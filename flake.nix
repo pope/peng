@@ -56,6 +56,7 @@
             nativeBuildInputs =
               with pkgs;
               [
+                pkg-config
                 zig
               ]
               ++ lib.optionals stdenv.isLinux [
@@ -65,6 +66,8 @@
               with pkgs;
               [
                 sdl3.dev
+                sdl3-ttf
+                sdl3-image
               ]
               ++ lib.optionals stdenv.isLinux [
                 libglvnd
