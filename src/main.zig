@@ -289,9 +289,12 @@ const ViewerState = struct {
     exiting: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     generation: usize = 0,
 
-    fn getCurrentEntry(self: *ViewerState) ?*CacheEntry {
+    fn getCurrentEntry(self: *ViewerState) ?CacheEntry {
+        c.SDL_LockMutex(self.cache_mutex);
+        defer c.SDL_UnlockMutex(self.cache_mutex);
+
         const idx = self.current_index orelse return null;
-        for (self.cache.items) |*entry| {
+        for (self.cache.items) |entry| {
             if (entry.index == idx) {
                 return entry;
             }
@@ -299,21 +302,22 @@ const ViewerState = struct {
         return null;
     }
 
-    fn prepareCurrent(self: *ViewerState) void {
+    fn prepareCacheTextures(self: *ViewerState) void {
         c.SDL_LockMutex(self.cache_mutex);
         defer c.SDL_UnlockMutex(self.cache_mutex);
 
-        const entry = self.getCurrentEntry() orelse return;
-        if (entry.status == .loaded and entry.texture == null and entry.surface != null) {
-            const start_upload = c.SDL_GetTicksNS();
-            entry.texture = c.SDL_CreateTextureFromSurface(self.renderer, entry.surface.?);
-            const end_upload = c.SDL_GetTicksNS();
-            if (entry.texture != null) {
-                entry.upload_time_ms = @as(f64, @floatFromInt(end_upload - start_upload)) / 1_000_000.0;
-                c.SDL_DestroySurface(entry.surface.?);
-                entry.surface = null;
-            } else {
-                std.log.err("Failed to create texture from surface: {s}", .{c.SDL_GetError()});
+        for (self.cache.items) |*entry| {
+            if (entry.status == .loaded and entry.texture == null and entry.surface != null) {
+                const start_upload = c.SDL_GetTicksNS();
+                entry.texture = c.SDL_CreateTextureFromSurface(self.renderer, entry.surface.?);
+                const end_upload = c.SDL_GetTicksNS();
+                if (entry.texture != null) {
+                    entry.upload_time_ms = @as(f64, @floatFromInt(end_upload - start_upload)) / 1_000_000.0;
+                    c.SDL_DestroySurface(entry.surface.?);
+                    entry.surface = null;
+                } else {
+                    std.log.err("Failed to create texture from surface: {s}", .{c.SDL_GetError()});
+                }
             }
         }
     }
@@ -955,7 +959,7 @@ pub fn main(init: std.process.Init) !void {
             available_width = @max(width - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0);
         }
 
-        state.prepareCurrent();
+        state.prepareCacheTextures();
 
         var draw_w: f32 = 0;
         var draw_h: f32 = 0;
