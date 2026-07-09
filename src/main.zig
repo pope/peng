@@ -276,6 +276,27 @@ fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
     return 0;
 }
 
+fn matchesQuery(path: []const u8, query: []const u8) bool {
+    if (query.len == 0) return true;
+
+    // Simple case-insensitive substring match
+    var i: usize = 0;
+    while (i + query.len <= path.len) : (i += 1) {
+        var match = true;
+        for (query, 0..) |q_char, j| {
+            const path_char = path[i + j];
+            const qc = if (q_char >= 'A' and q_char <= 'Z') q_char + 32 else q_char;
+            const pc = if (path_char >= 'A' and path_char <= 'Z') path_char + 32 else path_char;
+            if (qc != pc) {
+                match = false;
+                break;
+            }
+        }
+        if (match) return true;
+    }
+    return false;
+}
+
 const ViewerState = struct {
     renderer: ?*c.SDL_Renderer,
     image_list: std.ArrayList([]const u8),
@@ -288,6 +309,10 @@ const ViewerState = struct {
     active_threads: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     exiting: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     generation: usize = 0,
+    show_command_palette: bool = false,
+    palette_query: std.ArrayList(u8) = std.ArrayList(u8).empty,
+    palette_selected_idx: usize = 0,
+    palette_selection_dirty: bool = false,
 
     fn getCurrentEntry(self: *ViewerState) ?CacheEntry {
         c.SDL_LockMutex(self.cache_mutex);
@@ -519,7 +544,179 @@ const ViewerState = struct {
             }
         }
     }
+
+    fn handleKeyDown(self: *ViewerState, key: c.SDL_Keycode, mod: c.SDL_Keymod, window: ?*c.SDL_Window, is_fullscreen: *bool, running: *bool, show_stats_overlay: *bool) !void {
+        if (self.show_command_palette) {
+            switch (key) {
+                c.SDLK_ESCAPE => {
+                    self.show_command_palette = false;
+                    _ = c.SDL_StopTextInput(window);
+                },
+                c.SDLK_UP => {
+                    if (self.palette_selected_idx > 0) {
+                        self.palette_selected_idx -= 1;
+                        self.palette_selection_dirty = true;
+                    }
+                },
+                c.SDLK_DOWN => {
+                    // Count matches
+                    var matches_count: usize = 0;
+                    for (self.image_list.items) |item| {
+                        if (matchesQuery(item, self.palette_query.items)) {
+                            matches_count += 1;
+                        }
+                    }
+                    if (matches_count > 0 and self.palette_selected_idx + 1 < matches_count) {
+                        self.palette_selected_idx += 1;
+                        self.palette_selection_dirty = true;
+                    }
+                },
+                c.SDLK_RETURN => {
+                    // Find the selected match
+                    var matches_count: usize = 0;
+                    var real_idx_to_jump: ?usize = null;
+                    for (self.image_list.items, 0..) |item, real_idx| {
+                        if (matchesQuery(item, self.palette_query.items)) {
+                            if (matches_count == self.palette_selected_idx) {
+                                real_idx_to_jump = real_idx;
+                                break;
+                            }
+                            matches_count += 1;
+                        }
+                    }
+                    if (real_idx_to_jump) |ridx| {
+                        self.current_index = ridx;
+                        try self.updateCache();
+                    }
+                    self.show_command_palette = false;
+                    _ = c.SDL_StopTextInput(window);
+                },
+                c.SDLK_BACKSPACE => {
+                    if (self.palette_query.items.len > 0) {
+                        _ = self.palette_query.pop();
+                        self.palette_selected_idx = 0;
+                        self.palette_selection_dirty = true;
+                    }
+                },
+                else => {},
+            }
+        } else {
+            switch (key) {
+                c.SDLK_LEFT, c.SDLK_BACKSPACE => try self.prev(),
+                c.SDLK_RIGHT, c.SDLK_SPACE => try self.next(),
+                c.SDLK_F, c.SDLK_F11 => {
+                    is_fullscreen.* = !is_fullscreen.*;
+                    if (!c.SDL_SetWindowFullscreen(window, is_fullscreen.*)) {
+                        std.log.err("SDL_SetWindowFullscreen failed: {s}", .{c.SDL_GetError()});
+                    }
+                },
+                c.SDLK_ESCAPE => {
+                    if (is_fullscreen.*) {
+                        is_fullscreen.* = false;
+                        if (!c.SDL_SetWindowFullscreen(window, false)) {
+                            std.log.err("SDL_SetWindowFullscreen failed: {s}", .{c.SDL_GetError()});
+                        }
+                    } else {
+                        running.* = false;
+                    }
+                },
+                c.SDLK_D => {
+                    clay.setDebugModeEnabled(!clay.isDebugModeEnabled());
+                },
+                c.SDLK_I => {
+                    show_stats_overlay.* = !show_stats_overlay.*;
+                },
+                c.SDLK_P => {
+                    if (((mod & c.SDL_KMOD_CTRL) != 0) or ((mod & c.SDL_KMOD_GUI) != 0)) {
+                        self.show_command_palette = true;
+                        self.palette_query.clearRetainingCapacity();
+                        self.palette_selected_idx = self.current_index orelse 0;
+                        self.palette_selection_dirty = true;
+                        _ = c.SDL_StartTextInput(window);
+                    }
+                },
+                else => {},
+            }
+        }
+    }
 };
+
+fn truncateFilename(allocator: std.mem.Allocator, text: []const u8, max_w: f32, font_size: u16, data: *const MeasureTextUserData) []const u8 {
+    var text_config = clay.TextElementConfig{
+        .font_id = 0,
+        .font_size = font_size,
+    };
+
+    const initial_dim = sdl3MeasureText(text, &text_config, data);
+    if (initial_dim.w <= max_w) {
+        return text;
+    }
+
+    var low: usize = 0;
+    var high: usize = text.len;
+    var best_len: usize = 0;
+
+    while (low <= high) {
+        const mid = (low + high) / 2;
+        // Verify UTF-8 boundary before measuring
+        var byte_len = mid;
+        while (byte_len > 0 and byte_len < text.len and (text[byte_len] & 0xC0) == 0x80) {
+            byte_len -= 1;
+        }
+
+        const part_w = sdl3MeasureText(text[0..byte_len], &text_config, data).w;
+        const dots_w = sdl3MeasureText("...", &text_config, data).w;
+
+        if (part_w + dots_w <= max_w) {
+            best_len = byte_len;
+            low = mid + 1;
+        } else {
+            if (mid == 0) break;
+            high = mid - 1;
+        }
+    }
+
+    return std.fmt.allocPrint(allocator, "{s}...", .{text[0..best_len]}) catch text;
+}
+
+fn truncateDirectory(allocator: std.mem.Allocator, text: []const u8, max_w: f32, font_size: u16, data: *const MeasureTextUserData) []const u8 {
+    var text_config = clay.TextElementConfig{
+        .font_id = 0,
+        .font_size = font_size,
+    };
+
+    const initial_dim = sdl3MeasureText(text, &text_config, data);
+    if (initial_dim.w <= max_w) {
+        return text;
+    }
+
+    var low: usize = 0;
+    var high: usize = text.len;
+    var best_len: usize = 0;
+
+    while (low <= high) {
+        const mid = (low + high) / 2;
+        const start_idx = text.len - mid;
+        // Verify UTF-8 boundary
+        var byte_start = start_idx;
+        while (byte_start < text.len and (text[byte_start] & 0xC0) == 0x80) {
+            byte_start += 1;
+        }
+
+        const part_w = sdl3MeasureText(text[byte_start..], &text_config, data).w;
+        const dots_w = sdl3MeasureText("...", &text_config, data).w;
+
+        if (part_w + dots_w <= max_w) {
+            best_len = text.len - byte_start;
+            low = mid + 1;
+        } else {
+            if (mid == 0) break;
+            high = mid - 1;
+        }
+    }
+
+    return std.fmt.allocPrint(allocator, "...{s}", .{text[text.len - best_len ..]}) catch text;
+}
 
 fn formatSize(bytes: u64, buf: []u8) []const u8 {
     const kb = @as(f64, @floatFromInt(bytes)) / 1024.0;
@@ -664,6 +861,7 @@ pub fn main(init: std.process.Init) !void {
         }
         state.image_list.deinit(gpa);
         state.cache.deinit(gpa);
+        state.palette_query.deinit(gpa);
     }
 
     // Populate image list from command line argument
@@ -776,32 +974,16 @@ pub fn main(init: std.process.Init) !void {
                 mouse_inside = false;
             },
             c.SDL_EVENT_KEY_DOWN => {
-                switch (event.key.key) {
-                    c.SDLK_LEFT, c.SDLK_BACKSPACE => try state.prev(),
-                    c.SDLK_RIGHT, c.SDLK_SPACE => try state.next(),
-                    c.SDLK_F, c.SDLK_F11 => {
-                        is_fullscreen = !is_fullscreen;
-                        if (!c.SDL_SetWindowFullscreen(window, is_fullscreen)) {
-                            std.log.err("SDL_SetWindowFullscreen failed: {s}", .{c.SDL_GetError()});
-                        }
-                    },
-                    c.SDLK_ESCAPE => {
-                        if (is_fullscreen) {
-                            is_fullscreen = false;
-                            if (!c.SDL_SetWindowFullscreen(window, false)) {
-                                std.log.err("SDL_SetWindowFullscreen failed: {s}", .{c.SDL_GetError()});
-                            }
-                        } else {
-                            running = false;
-                        }
-                    },
-                    c.SDLK_D => {
-                        clay.setDebugModeEnabled(!clay.isDebugModeEnabled());
-                    },
-                    c.SDLK_I => {
-                        show_stats_overlay = !show_stats_overlay;
-                    },
-                    else => {},
+                try state.handleKeyDown(event.key.key, event.key.mod, window, &is_fullscreen, &running, &show_stats_overlay);
+            },
+            c.SDL_EVENT_TEXT_INPUT => {
+                if (state.show_command_palette) {
+                    if (event.text.text) |ptr| {
+                        const len = std.mem.len(ptr);
+                        try state.palette_query.appendSlice(gpa, ptr[0..len]);
+                        state.palette_selected_idx = 0;
+                        state.palette_selection_dirty = true;
+                    }
                 }
             },
             c.SDL_EVENT_DROP_FILE => {
@@ -853,32 +1035,16 @@ pub fn main(init: std.process.Init) !void {
                     mouse_inside = false;
                 },
                 c.SDL_EVENT_KEY_DOWN => {
-                    switch (event.key.key) {
-                        c.SDLK_LEFT, c.SDLK_BACKSPACE => try state.prev(),
-                        c.SDLK_RIGHT, c.SDLK_SPACE => try state.next(),
-                        c.SDLK_F, c.SDLK_F11 => {
-                            is_fullscreen = !is_fullscreen;
-                            if (!c.SDL_SetWindowFullscreen(window, is_fullscreen)) {
-                                std.log.err("SDL_SetWindowFullscreen failed: {s}", .{c.SDL_GetError()});
-                            }
-                        },
-                        c.SDLK_ESCAPE => {
-                            if (is_fullscreen) {
-                                is_fullscreen = false;
-                                if (!c.SDL_SetWindowFullscreen(window, false)) {
-                                    std.log.err("SDL_SetWindowFullscreen failed: {s}", .{c.SDL_GetError()});
-                                }
-                            } else {
-                                running = false;
-                            }
-                        },
-                        c.SDLK_D => {
-                            clay.setDebugModeEnabled(!clay.isDebugModeEnabled());
-                        },
-                        c.SDLK_I => {
-                            show_stats_overlay = !show_stats_overlay;
-                        },
-                        else => {},
+                    try state.handleKeyDown(event.key.key, event.key.mod, window, &is_fullscreen, &running, &show_stats_overlay);
+                },
+                c.SDL_EVENT_TEXT_INPUT => {
+                    if (state.show_command_palette) {
+                        if (event.text.text) |ptr| {
+                            const len = std.mem.len(ptr);
+                            try state.palette_query.appendSlice(gpa, ptr[0..len]);
+                            state.palette_selected_idx = 0;
+                            state.palette_selection_dirty = true;
+                        }
                     }
                 },
                 c.SDL_EVENT_DROP_FILE => {
@@ -1007,6 +1173,240 @@ pub fn main(init: std.process.Init) !void {
             },
             .background_color = .{ 24, 24, 37, 255 }, // Catppuccin Base (Mocha Mantle/Base)
         })({
+            if (state.show_command_palette) {
+                // Command Palette Overlay
+                clay.UI()(.{
+                    .id = clay.getElementId("CommandPalette"),
+                    .layout = .{
+                        .sizing = .{ .w = .fixed(550 * scale_x), .h = .fit },
+                        .direction = .top_to_bottom,
+                        .padding = .{ .left = 12, .right = 12, .top = 12, .bottom = 12 },
+                        .child_gap = 10,
+                    },
+                    .background_color = .{ 30, 30, 46, 245 }, // Catppuccin Base with opacity
+                    .corner_radius = .all(10),
+                    .border = .{ .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 }, .color = .{ 79, 79, 97, 255 } },
+                    .floating = .{
+                        .attach_to = .to_parent,
+                        .attach_points = .{ .element = .center_center, .parent = .center_center },
+                        .z_index = 200,
+                    },
+                })({
+                    // Title/Shortcut info
+                    clay.UI()(.{
+                        .layout = .{
+                            .sizing = .{ .w = .grow, .h = .fit },
+                            .direction = .left_to_right,
+                            .child_alignment = .{ .x = .left, .y = .center },
+                        },
+                    })({
+                        clay.text("Search Files", .{
+                            .color = .{ 245, 194, 231, 255 }, // Catppuccin Pink
+                            .font_size = @intFromFloat(13.0 * dpi_scale),
+                            .font_id = 0,
+                        });
+                    });
+
+                    // Search Input Box
+                    clay.UI()(.{
+                        .layout = .{
+                            .sizing = .{ .w = .grow, .h = .fixed(38 * scale_y) },
+                            .direction = .left_to_right,
+                            .child_alignment = .{ .x = .left, .y = .center },
+                            .padding = .{ .left = 12, .right = 12 },
+                        },
+                        .background_color = .{ 17, 17, 27, 255 }, // Catppuccin Crust (input background)
+                        .corner_radius = .all(6),
+                        .border = .{ .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 }, .color = .{ 137, 180, 250, 255 } }, // Blue active border
+                    })({
+                        const query_str = if (state.palette_query.items.len > 0) state.palette_query.items else "Type file name to search...";
+                        const query_color = if (state.palette_query.items.len > 0) clay.Color{ 205, 214, 244, 255 } else clay.Color{ 108, 112, 134, 255 };
+                        clay.text(query_str, .{
+                            .color = query_color,
+                            .font_size = @intFromFloat(14.0 * dpi_scale),
+                            .font_id = 0,
+                        });
+                    });
+
+                    // Results list scroll container
+                    const scroll_data = clay.cdefs.Clay_GetScrollContainerData(clay.getElementId("CommandPaletteList"));
+                    var scroll_offset = if (scroll_data.found) scroll_data.scroll_position.* else clay.Vector2{ .x = 0, .y = 0 };
+
+                    // Auto-scroll logic during keyboard navigation
+                    if (scroll_data.found and state.palette_selection_dirty) {
+                        const item_height = 50.0 * scale_y; // 46px height + 4px gap
+                        const viewport_height = 320.0 * scale_y;
+                        const item_top = @as(f32, @floatFromInt(state.palette_selected_idx)) * item_height;
+                        const item_bottom = item_top + item_height;
+                        const visible_top = -scroll_data.scroll_position.y;
+                        const visible_bottom = visible_top + viewport_height;
+
+                        if (item_top < visible_top) {
+                            scroll_data.scroll_position.y = -item_top;
+                            scroll_offset.y = -item_top;
+                        } else if (item_bottom > visible_bottom) {
+                            scroll_data.scroll_position.y = -(item_bottom - viewport_height);
+                            scroll_offset.y = -(item_bottom - viewport_height);
+                        }
+                        state.palette_selection_dirty = false;
+                    }
+
+                    // Collect all matching real indices
+                    var matching_indices = std.ArrayList(usize).empty;
+                    defer matching_indices.deinit(frame_allocator);
+                    for (state.image_list.items, 0..) |item, real_idx| {
+                        if (matchesQuery(item, state.palette_query.items)) {
+                            try matching_indices.append(frame_allocator, real_idx);
+                        }
+                    }
+
+                    clay.UI()(.{
+                        .id = clay.getElementId("CommandPaletteList"),
+                        .layout = .{
+                            .sizing = .{ .w = .grow, .h = .fixed(320 * scale_y) },
+                            .direction = .top_to_bottom,
+                            .child_gap = @intFromFloat(4 * scale_y),
+                        },
+                        .clip = .{
+                            .horizontal = false,
+                            .vertical = true,
+                            .child_offset = scroll_offset,
+                        },
+                    })({
+                        const item_height = 50.0 * scale_y;
+                        const viewport_height = 320.0 * scale_y;
+                        const visible_top = -scroll_offset.y;
+                        const visible_bottom = visible_top + viewport_height;
+
+                        var start_visible_idx = @as(usize, @intFromFloat(@max(0.0, @floor(visible_top / item_height))));
+                        var end_visible_idx = @as(usize, @intFromFloat(@max(0.0, @ceil(visible_bottom / item_height))));
+
+                        // Keep a buffer of 1 item on top and bottom
+                        start_visible_idx = if (start_visible_idx > 0) start_visible_idx - 1 else 0;
+                        end_visible_idx = end_visible_idx + 1;
+
+                        if (end_visible_idx > matching_indices.items.len) {
+                            end_visible_idx = matching_indices.items.len;
+                        }
+                        if (start_visible_idx > end_visible_idx) {
+                            start_visible_idx = end_visible_idx;
+                        }
+
+                        const top_spacer_h = @as(f32, @floatFromInt(start_visible_idx)) * item_height;
+                        const bottom_spacer_h = @as(f32, @floatFromInt(matching_indices.items.len - end_visible_idx)) * item_height;
+
+                        // Render Top Spacer if needed
+                        if (top_spacer_h > 0) {
+                            clay.UI()(.{
+                                .id = clay.getElementId("PaletteTopSpacer"),
+                                .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(top_spacer_h) } },
+                            })({});
+                        }
+
+                        // Render visible items
+                        var match_count = start_visible_idx;
+                        const selected_item_in_matches = state.palette_selected_idx;
+
+                        for (matching_indices.items[start_visible_idx..end_visible_idx]) |real_idx| {
+                            const item = state.image_list.items[real_idx];
+                            const is_selected = (match_count == selected_item_in_matches);
+                            const filename = std.fs.path.basename(item);
+                            const dirname = std.fs.path.dirname(item) orelse ".";
+
+                            const display_filename = truncateFilename(frame_allocator, filename, 492 * scale_x, @intFromFloat(13.0 * dpi_scale), &measure_data);
+                            const display_dir = truncateDirectory(frame_allocator, dirname, 492 * scale_x, @intFromFloat(11.0 * dpi_scale), &measure_data);
+
+                            // Generate clean ID for hover check
+                            const item_id_str = try std.fmt.allocPrint(frame_allocator, "PaletteItem_{d}", .{real_idx});
+                            const item_hovered = clay.pointerOver(clay.getElementId(item_id_str));
+
+                            clay.UI()(.{
+                                .id = clay.getElementId(item_id_str),
+                                .layout = .{
+                                    .sizing = .{ .w = .grow, .h = .fixed(46 * scale_y) },
+                                    .direction = .top_to_bottom,
+                                    .padding = .{ .left = 10, .right = 10, .top = 4, .bottom = 4 },
+                                    .child_gap = 2,
+                                },
+                                .background_color = if (is_selected) .{ 137, 180, 250, 50 } else if (item_hovered) .{ 49, 50, 68, 255 } else .{ 0, 0, 0, 0 },
+                                .corner_radius = .all(4),
+                            })({
+                                // Row 1: dot and filename
+                                clay.UI()(.{
+                                    .layout = .{
+                                        .sizing = .{ .w = .grow, .h = .fit },
+                                        .direction = .left_to_right,
+                                        .child_alignment = .{ .x = .left, .y = .center },
+                                        .child_gap = 8,
+                                    },
+                                })({
+                                    // Dot indicator
+                                    clay.UI()(.{
+                                        .layout = .{ .sizing = .{ .w = .fixed(6 * scale_x), .h = .fixed(6 * scale_y) } },
+                                        .background_color = if (is_selected) .{ 137, 180, 250, 255 } else .{ 108, 112, 134, 255 },
+                                        .corner_radius = .all(3),
+                                    })({});
+
+                                    // Filename
+                                    clay.text(display_filename, .{
+                                        .color = if (is_selected) .{ 137, 180, 250, 255 } else .{ 205, 214, 244, 255 },
+                                        .font_size = @intFromFloat(13.0 * dpi_scale),
+                                        .font_id = 0,
+                                    });
+                                });
+
+                                // Row 2: Parent folder path (indented slightly for alignment with filename)
+                                clay.UI()(.{
+                                    .layout = .{
+                                        .sizing = .{ .w = .grow, .h = .fit },
+                                        .direction = .left_to_right,
+                                        .padding = .{ .left = 14 },
+                                    },
+                                })({
+                                    clay.text(display_dir, .{
+                                        .color = .{ 166, 173, 200, 255 }, // Subtext
+                                        .font_size = @intFromFloat(11.0 * dpi_scale),
+                                        .font_id = 0,
+                                    });
+                                });
+                            });
+
+                            if (mouse_clicked and item_hovered) {
+                                state.current_index = real_idx;
+                                try state.updateCache();
+                                state.show_command_palette = false;
+                                _ = c.SDL_StopTextInput(window);
+                            }
+
+                            match_count += 1;
+                        }
+
+                        // Render Bottom Spacer if needed
+                        if (bottom_spacer_h > 0) {
+                            clay.UI()(.{
+                                .id = clay.getElementId("PaletteBottomSpacer"),
+                                .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(bottom_spacer_h) } },
+                            })({});
+                        }
+
+                        if (matching_indices.items.len == 0) {
+                            clay.UI()(.{
+                                .layout = .{
+                                    .sizing = .{ .w = .grow, .h = .fixed(36 * scale_y) },
+                                    .child_alignment = .{ .x = .center, .y = .center },
+                                },
+                            })({
+                                clay.text("No matching files found", .{
+                                    .color = .{ 108, 112, 134, 255 },
+                                    .font_size = @intFromFloat(13.0 * dpi_scale),
+                                    .font_id = 0,
+                                });
+                            });
+                        }
+                    });
+                });
+            }
+
             if (show_stats_overlay) {
                 const idx = state.current_index;
                 const path = if (idx != null and state.image_list.items.len > idx.?) state.image_list.items[idx.?] else "";
