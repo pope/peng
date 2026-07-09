@@ -43,8 +43,8 @@ fn renderFillRoundedRect(renderer: ?*c.SDL_Renderer, rect: c.SDL_FRect, corner_r
     const total_vertices = 4 + (4 * (num_circle_segments * 2)) + 8;
     const total_indices = 6 + (4 * (num_circle_segments * 3)) + 24;
 
-    var stack_vertices: [256]c.SDL_Vertex = undefined;
-    var stack_indices: [512]c_int = undefined;
+    var stack_vertices: [512]c.SDL_Vertex = undefined;
+    var stack_indices: [1024]c_int = undefined;
 
     const vertices = if (total_vertices <= stack_vertices.len)
         stack_vertices[0..@intCast(total_vertices)]
@@ -90,6 +90,10 @@ fn renderFillRoundedRect(renderer: ?*c.SDL_Renderer, rect: c.SDL_FRect, corner_r
     while (i < num_circle_segments) : (i += 1) {
         const angle_1 = @as(f32, @floatFromInt(i)) * step;
         const angle_2 = @as(f32, @floatFromInt(i + 1)) * step;
+        const cos_1 = @cos(angle_1);
+        const sin_1 = @sin(angle_1);
+        const cos_2 = @cos(angle_2);
+        const sin_2 = @sin(angle_2);
 
         var j: usize = 0;
         while (j < 4) : (j += 1) {
@@ -128,8 +132,8 @@ fn renderFillRoundedRect(renderer: ?*c.SDL_Renderer, rect: c.SDL_FRect, corner_r
 
             vertices[vertex_count] = .{
                 .position = .{
-                    .x = cx + @cos(angle_1) * clamped_radius * sign_x,
-                    .y = cy + @sin(angle_1) * clamped_radius * sign_y,
+                    .x = cx + cos_1 * clamped_radius * sign_x,
+                    .y = cy + sin_1 * clamped_radius * sign_y,
                 },
                 .color = color,
                 .tex_coord = .{ .x = 0, .y = 0 },
@@ -138,8 +142,8 @@ fn renderFillRoundedRect(renderer: ?*c.SDL_Renderer, rect: c.SDL_FRect, corner_r
 
             vertices[vertex_count] = .{
                 .position = .{
-                    .x = cx + @cos(angle_2) * clamped_radius * sign_x,
-                    .y = cy + @sin(angle_2) * clamped_radius * sign_y,
+                    .x = cx + cos_2 * clamped_radius * sign_x,
+                    .y = cy + sin_2 * clamped_radius * sign_y,
                 },
                 .color = color,
                 .tex_coord = .{ .x = 0, .y = 0 },
@@ -247,27 +251,49 @@ fn renderArc(renderer: ?*c.SDL_Renderer, center: c.SDL_FPoint, radius: f32, star
     const angle_step = (rad_end - rad_start) / @as(f32, @floatFromInt(num_circle_segments));
     const thickness_step: f32 = 0.4;
 
-    var stack_points: [128]c.SDL_FPoint = undefined;
     const points_len = @as(usize, @intCast(num_circle_segments + 1));
+
+    var stack_points: [128]c.SDL_FPoint = undefined;
     const points = if (points_len <= stack_points.len)
         stack_points[0..points_len]
     else
         try allocator.alloc(c.SDL_FPoint, points_len);
     defer if (points_len > stack_points.len) allocator.free(points);
 
+    var stack_cos: [128]f32 = undefined;
+    var stack_sin: [128]f32 = undefined;
+
+    const cos_table = if (points_len <= stack_cos.len)
+        stack_cos[0..points_len]
+    else
+        try allocator.alloc(f32, points_len);
+    defer if (points_len > stack_cos.len) allocator.free(cos_table);
+
+    const sin_table = if (points_len <= stack_sin.len)
+        stack_sin[0..points_len]
+    else
+        try allocator.alloc(f32, points_len);
+    defer if (points_len > stack_sin.len) allocator.free(sin_table);
+
+    var idx: usize = 0;
+    while (idx < points_len) : (idx += 1) {
+        const angle = rad_start + @as(f32, @floatFromInt(idx)) * angle_step;
+        cos_table[idx] = @cos(angle);
+        sin_table[idx] = @sin(angle);
+    }
+
     var t = thickness_step;
     while (t < thickness - thickness_step) : (t += thickness_step) {
         const clamped_radius = @max(radius - t, 1.0);
 
-        var i: i32 = 0;
-        while (i <= num_circle_segments) : (i += 1) {
-            const angle = rad_start + @as(f32, @floatFromInt(i)) * angle_step;
-            points[@intCast(i)] = .{
-                .x = @round(center.x + @cos(angle) * clamped_radius),
-                .y = @round(center.y + @sin(angle) * clamped_radius),
+        var i: usize = 0;
+        while (i < points_len) : (i += 1) {
+            points[i] = .{
+                .x = @round(center.x + cos_table[i] * clamped_radius),
+                .y = @round(center.y + sin_table[i] * clamped_radius),
             };
         }
-        if (!c.SDL_RenderLines(renderer, &points[0], @intCast(num_circle_segments + 1))) {
+        if (!c.SDL_RenderLines(renderer, &points[0], @intCast(points_len))) {
             std.log.err("SDL_RenderLines failed: {s}", .{c.SDL_GetError()});
         }
     }

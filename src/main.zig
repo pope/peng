@@ -168,6 +168,7 @@ const CacheEntry = struct {
     size_bytes: u64 = 0,
     mime_type: []const u8 = "unknown",
     decode_time_ms: f64 = 0.0,
+    conversion_time_ms: f64 = 0.0,
     upload_time_ms: f64 = 0.0,
     memory_size_bytes: usize = 0,
     surface: ?*c.SDL_Surface = null,
@@ -215,6 +216,24 @@ fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
         return 0;
     }
 
+    var final_surface = surface;
+    var conversion_time_ms: f64 = 0.0;
+    if (surface) |surf| {
+        if (state.window_pixel_format != c.SDL_PIXELFORMAT_UNKNOWN and surf.*.format != state.window_pixel_format) {
+            const start_convert = c.SDL_GetTicksNS();
+            const converted = c.SDL_ConvertSurface(surf, state.window_pixel_format);
+            const end_convert = c.SDL_GetTicksNS();
+
+            if (converted) |conv| {
+                conversion_time_ms = @as(f64, @floatFromInt(end_convert - start_convert)) / 1_000_000.0;
+                c.SDL_DestroySurface(surf);
+                final_surface = conv;
+            } else {
+                std.log.err("SDL_ConvertSurface failed: {s}", .{c.SDL_GetError()});
+            }
+        }
+    }
+
     // Stat the file
     var size_bytes: u64 = 0;
     if (std.Io.Dir.statFile(std.Io.Dir.cwd(), state.io, path, .{})) |s| {
@@ -222,7 +241,7 @@ fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
     } else |_| {}
 
     if (state.exiting.load(.acquire)) {
-        if (surface) |surf| c.SDL_DestroySurface(surf);
+        if (final_surface) |surf| c.SDL_DestroySurface(surf);
         return 0;
     }
 
@@ -231,7 +250,7 @@ fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
     defer c.SDL_UnlockMutex(state.cache_mutex);
 
     if (state.exiting.load(.acquire)) {
-        if (surface) |surf| c.SDL_DestroySurface(surf);
+        if (final_surface) |surf| c.SDL_DestroySurface(surf);
         return 0;
     }
 
@@ -240,7 +259,7 @@ fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
     for (state.cache.items) |*entry| {
         if (entry.index == index and entry.generation == args.generation) {
             found_in_cache = true;
-            if (surface) |surf| {
+            if (final_surface) |surf| {
                 if (entry.surface != null or entry.texture != null) {
                     c.SDL_DestroySurface(surf);
                 } else {
@@ -251,6 +270,7 @@ fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
                     entry.size_bytes = size_bytes;
                     entry.mime_type = mime_type;
                     entry.decode_time_ms = decode_time_ms;
+                    entry.conversion_time_ms = conversion_time_ms;
                     entry.status = .loaded;
                 }
             } else {
@@ -263,7 +283,7 @@ fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
     }
 
     if (!found_in_cache) {
-        if (surface) |surf| {
+        if (final_surface) |surf| {
             c.SDL_DestroySurface(surf);
         }
     } else {
@@ -313,6 +333,17 @@ const ViewerState = struct {
     palette_query: std.ArrayList(u8) = std.ArrayList(u8).empty,
     palette_selected_idx: usize = 0,
     palette_selection_dirty: bool = false,
+    window_pixel_format: c.SDL_PixelFormat = c.SDL_PIXELFORMAT_UNKNOWN,
+    palette_matches: std.ArrayList(usize) = std.ArrayList(usize).empty,
+
+    fn rebuildPaletteMatches(self: *ViewerState) !void {
+        self.palette_matches.clearRetainingCapacity();
+        for (self.image_list.items, 0..) |item, real_idx| {
+            if (matchesQuery(item, self.palette_query.items)) {
+                try self.palette_matches.append(self.allocator, real_idx);
+            }
+        }
+    }
 
     fn getCurrentEntry(self: *ViewerState) ?CacheEntry {
         c.SDL_LockMutex(self.cache_mutex);
@@ -543,6 +574,7 @@ const ViewerState = struct {
                 try self.updateCache();
             }
         }
+        try self.rebuildPaletteMatches();
     }
 
     fn handleKeyDown(self: *ViewerState, key: c.SDL_Keycode, mod: c.SDL_Keymod, window: ?*c.SDL_Window, is_fullscreen: *bool, running: *bool, show_stats_overlay: *bool) !void {
@@ -596,6 +628,7 @@ const ViewerState = struct {
                         _ = self.palette_query.pop();
                         self.palette_selected_idx = 0;
                         self.palette_selection_dirty = true;
+                        try self.rebuildPaletteMatches();
                     }
                 },
                 else => {},
@@ -632,6 +665,7 @@ const ViewerState = struct {
                         self.palette_query.clearRetainingCapacity();
                         self.palette_selected_idx = self.current_index orelse 0;
                         self.palette_selection_dirty = true;
+                        try self.rebuildPaletteMatches();
                         _ = c.SDL_StartTextInput(window);
                     }
                 },
@@ -846,6 +880,7 @@ pub fn main(init: std.process.Init) !void {
         .cache_mutex = cache_mutex,
         .allocator = gpa,
         .io = init.io,
+        .window_pixel_format = c.SDL_GetWindowPixelFormat(window),
     };
     defer {
         // Wait for worker threads to finish
@@ -862,6 +897,7 @@ pub fn main(init: std.process.Init) !void {
         state.image_list.deinit(gpa);
         state.cache.deinit(gpa);
         state.palette_query.deinit(gpa);
+        state.palette_matches.deinit(gpa);
     }
 
     // Populate image list from command line argument
@@ -933,9 +969,16 @@ pub fn main(init: std.process.Init) !void {
         const scale_x = if (current_win_w > 0) @as(f32, @floatFromInt(current_pix_w)) / @as(f32, @floatFromInt(current_win_w)) else 1.0;
         const scale_y = if (current_win_h > 0) @as(f32, @floatFromInt(current_pix_h)) / @as(f32, @floatFromInt(current_win_h)) else 1.0;
 
-        // Block until an event occurs to prevent spinning at 100% CPU when idle
-        if (!c.SDL_WaitEvent(&event)) {
-            break;
+        // Block until an event occurs, but use a timeout when the command palette is open
+        // so that scrolling and hover animations decay smoothly.
+        const wait_success = if (state.show_command_palette)
+            c.SDL_WaitEventTimeout(&event, 8)
+        else
+            c.SDL_WaitEvent(&event);
+
+        if (!wait_success) {
+            // Timeout occurred, clear event type so we don't reprocess a stale event.
+            event.type = 0;
         }
 
         // Process first event
@@ -983,6 +1026,7 @@ pub fn main(init: std.process.Init) !void {
                         try state.palette_query.appendSlice(gpa, ptr[0..len]);
                         state.palette_selected_idx = 0;
                         state.palette_selection_dirty = true;
+                        try state.rebuildPaletteMatches();
                     }
                 }
             },
@@ -1044,6 +1088,7 @@ pub fn main(init: std.process.Init) !void {
                             try state.palette_query.appendSlice(gpa, ptr[0..len]);
                             state.palette_selected_idx = 0;
                             state.palette_selection_dirty = true;
+                            try state.rebuildPaletteMatches();
                         }
                     }
                 },
@@ -1251,14 +1296,7 @@ pub fn main(init: std.process.Init) !void {
                         state.palette_selection_dirty = false;
                     }
 
-                    // Collect all matching real indices
-                    var matching_indices = std.ArrayList(usize).empty;
-                    defer matching_indices.deinit(frame_allocator);
-                    for (state.image_list.items, 0..) |item, real_idx| {
-                        if (matchesQuery(item, state.palette_query.items)) {
-                            try matching_indices.append(frame_allocator, real_idx);
-                        }
-                    }
+                    const matching_indices = state.palette_matches;
 
                     clay.UI()(.{
                         .id = clay.getElementId("CommandPaletteList"),
@@ -1420,6 +1458,7 @@ pub fn main(init: std.process.Init) !void {
                 var mime_type: []const u8 = "Loading...";
                 var res_str: []const u8 = "Loading...";
                 var decode_str: []const u8 = "Loading...";
+                var convert_str: []const u8 = "Loading...";
                 var process_str: []const u8 = "Loading...";
                 var screen_str: []const u8 = "Loading...";
 
@@ -1439,6 +1478,9 @@ pub fn main(init: std.process.Init) !void {
                         const decode_buf = try frame_allocator.alloc(u8, 64);
                         decode_str = try std.fmt.bufPrint(decode_buf, "{d:.2} ms", .{entry.decode_time_ms});
 
+                        const convert_buf = try frame_allocator.alloc(u8, 64);
+                        convert_str = try std.fmt.bufPrint(convert_buf, "{d:.2} ms", .{entry.conversion_time_ms});
+
                         const process_buf = try frame_allocator.alloc(u8, 64);
                         process_str = try std.fmt.bufPrint(process_buf, "{d:.2} ms", .{entry.upload_time_ms});
 
@@ -1450,6 +1492,7 @@ pub fn main(init: std.process.Init) !void {
                         mime_type = "Failed";
                         res_str = "Failed";
                         decode_str = "Failed";
+                        convert_str = "Failed";
                         process_str = "Failed";
                         screen_str = "Failed";
                     }
@@ -1521,6 +1564,7 @@ pub fn main(init: std.process.Init) !void {
                     try renderStatRow("Size on Disk", disk_size_str, scale_x, scale_y, dpi_scale);
                     try renderStatRow("Resolution", res_str, scale_x, scale_y, dpi_scale);
                     try renderStatRow("Decode Time", decode_str, scale_x, scale_y, dpi_scale);
+                    try renderStatRow("Convert Time", convert_str, scale_x, scale_y, dpi_scale);
                     try renderStatRow("Upload Time", process_str, scale_x, scale_y, dpi_scale);
                     try renderStatRow("Memory Size", mem_size_str, scale_x, scale_y, dpi_scale);
                     try renderStatRow("Viewport Size", screen_str, scale_x, scale_y, dpi_scale);
