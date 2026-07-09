@@ -273,7 +273,7 @@ fn renderArc(renderer: ?*c.SDL_Renderer, center: c.SDL_FPoint, radius: f32, star
     }
 }
 
-pub fn renderClayCommands(renderer: ?*c.SDL_Renderer, text_engine: ?*c.TTF_TextEngine, fonts: [*]?*c.TTF_Font, r_commands: []const clay.RenderCommand, allocator: std.mem.Allocator) !void {
+pub fn renderClayCommands(renderer: ?*c.SDL_Renderer, text_engine: ?*c.TTF_TextEngine, fonts: []const ?*c.TTF_Font, r_commands: []const clay.RenderCommand, allocator: std.mem.Allocator) !void {
     for (r_commands) |rcmd| {
         const bb = rcmd.bounding_box;
         const rect = c.SDL_FRect{
@@ -300,7 +300,8 @@ pub fn renderClayCommands(renderer: ?*c.SDL_Renderer, text_engine: ?*c.TTF_TextE
             },
             .text => {
                 const config = rcmd.render_data.text;
-                const font = fonts[config.font_id];
+                if (config.font_id >= fonts.len) continue;
+                const font = fonts[config.font_id] orelse continue;
                 if (!c.TTF_SetFontSize(font, @as(f32, @floatFromInt(config.font_size)))) {
                     std.log.err("TTF_SetFontSize failed: {s}", .{c.SDL_GetError()});
                 }

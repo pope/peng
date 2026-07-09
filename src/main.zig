@@ -10,12 +10,13 @@ pub const c = @cImport({
 
 const MeasureTextUserData = struct {
     text_engine: ?*c.TTF_TextEngine,
-    fonts: [*]?*c.TTF_Font,
+    fonts: []const ?*c.TTF_Font,
     allocator: std.mem.Allocator,
 };
 
 fn sdl3MeasureText(text: []const u8, config: *clay.TextElementConfig, data: *const MeasureTextUserData) clay.Dimensions {
-    const font = data.fonts[config.font_id];
+    if (config.font_id >= data.fonts.len) return .{ .w = 0, .h = 0 };
+    const font = data.fonts[config.font_id] orelse return .{ .w = 0, .h = 0 };
     if (!c.TTF_SetFontSize(font, @as(f32, @floatFromInt(config.font_size)))) {
         std.log.err("TTF_SetFontSize failed: {s}", .{c.SDL_GetError()});
     }
@@ -158,66 +159,285 @@ fn renderStatRow(label: []const u8, value: []const u8, scale_x: f32, scale_y: f3
     });
 }
 
+const CacheEntry = struct {
+    index: usize,
+    generation: usize,
+    texture: ?*c.SDL_Texture = null,
+    w: f32 = 0,
+    h: f32 = 0,
+    size_bytes: u64 = 0,
+    mime_type: []const u8 = "unknown",
+    decode_time_ms: f64 = 0.0,
+    upload_time_ms: f64 = 0.0,
+    memory_size_bytes: usize = 0,
+    surface: ?*c.SDL_Surface = null,
+    status: enum { decoding, loaded, failed } = .decoding,
+};
+
+const DecodeArgs = struct {
+    state: *ViewerState,
+    index: usize,
+    generation: usize,
+    path: []const u8,
+};
+
+fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
+    const args: *DecodeArgs = @ptrCast(@alignCast(data.?));
+    const state = args.state;
+    const index = args.index;
+    const path = args.path;
+
+    defer {
+        state.allocator.free(path);
+        state.allocator.destroy(args);
+        _ = state.active_threads.fetchSub(1, .monotonic);
+    }
+
+    if (state.exiting.load(.acquire)) return 0;
+
+    const path_z = state.allocator.dupeZ(u8, path) catch return 0;
+    defer state.allocator.free(path_z);
+
+    if (state.exiting.load(.acquire)) return 0;
+
+    const mime_type = detectMimeType(state.io, path);
+
+    if (state.exiting.load(.acquire)) return 0;
+
+    const start_decode = c.SDL_GetTicksNS();
+    const surface = c.IMG_Load(path_z.ptr);
+    const end_decode = c.SDL_GetTicksNS();
+
+    const decode_time_ms = @as(f64, @floatFromInt(end_decode - start_decode)) / 1_000_000.0;
+
+    if (state.exiting.load(.acquire)) {
+        if (surface) |surf| c.SDL_DestroySurface(surf);
+        return 0;
+    }
+
+    // Stat the file
+    var size_bytes: u64 = 0;
+    if (std.Io.Dir.statFile(std.Io.Dir.cwd(), state.io, path, .{})) |s| {
+        size_bytes = s.size;
+    } else |_| {}
+
+    if (state.exiting.load(.acquire)) {
+        if (surface) |surf| c.SDL_DestroySurface(surf);
+        return 0;
+    }
+
+    // Lock cache and update
+    c.SDL_LockMutex(state.cache_mutex);
+    defer c.SDL_UnlockMutex(state.cache_mutex);
+
+    if (state.exiting.load(.acquire)) {
+        if (surface) |surf| c.SDL_DestroySurface(surf);
+        return 0;
+    }
+
+    // Check if this index is still wanted
+    var found_in_cache = false;
+    for (state.cache.items) |*entry| {
+        if (entry.index == index and entry.generation == args.generation) {
+            found_in_cache = true;
+            if (surface) |surf| {
+                if (entry.surface != null or entry.texture != null) {
+                    c.SDL_DestroySurface(surf);
+                } else {
+                    entry.surface = surf;
+                    entry.w = @floatFromInt(surf.*.w);
+                    entry.h = @floatFromInt(surf.*.h);
+                    entry.memory_size_bytes = @intCast(surf.*.pitch * surf.*.h);
+                    entry.size_bytes = size_bytes;
+                    entry.mime_type = mime_type;
+                    entry.decode_time_ms = decode_time_ms;
+                    entry.status = .loaded;
+                }
+            } else {
+                if (entry.status != .loaded) {
+                    entry.status = .failed;
+                }
+            }
+            break;
+        }
+    }
+
+    if (!found_in_cache) {
+        if (surface) |surf| {
+            c.SDL_DestroySurface(surf);
+        }
+    } else {
+        // Push SDL user event to wake up the main loop
+        var event: c.SDL_Event = undefined;
+        event.type = c.SDL_EVENT_USER;
+        _ = c.SDL_PushEvent(&event);
+    }
+
+    return 0;
+}
+
 const ViewerState = struct {
     renderer: ?*c.SDL_Renderer,
     image_list: std.ArrayList([]const u8),
     current_index: ?usize = null,
-    current_texture: ?*c.SDL_Texture = null,
-    current_w: f32 = 0,
-    current_h: f32 = 0,
-    current_size_bytes: u64 = 0,
-    current_mime_type: []const u8 = "unknown",
-    decode_time_ms: f64 = 0.0,
-    upload_time_ms: f64 = 0.0,
-    memory_size_bytes: usize = 0,
+    cache: std.ArrayList(CacheEntry),
+    cache_mutex: *c.SDL_Mutex,
+    current_image_cache_hit: bool = false,
     allocator: std.mem.Allocator,
     io: std.Io,
+    active_threads: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    exiting: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    generation: usize = 0,
 
-    fn loadCurrent(self: *ViewerState) !void {
-        if (self.current_texture) |tex| {
-            c.SDL_DestroyTexture(tex);
-            self.current_texture = null;
+    fn getCurrentEntry(self: *ViewerState) ?*CacheEntry {
+        const idx = self.current_index orelse return null;
+        for (self.cache.items) |*entry| {
+            if (entry.index == idx) {
+                return entry;
+            }
         }
+        return null;
+    }
+
+    fn prepareCurrent(self: *ViewerState) void {
+        c.SDL_LockMutex(self.cache_mutex);
+        defer c.SDL_UnlockMutex(self.cache_mutex);
+
+        const entry = self.getCurrentEntry() orelse return;
+        if (entry.status == .loaded and entry.texture == null and entry.surface != null) {
+            const start_upload = c.SDL_GetTicksNS();
+            entry.texture = c.SDL_CreateTextureFromSurface(self.renderer, entry.surface.?);
+            const end_upload = c.SDL_GetTicksNS();
+            if (entry.texture != null) {
+                entry.upload_time_ms = @as(f64, @floatFromInt(end_upload - start_upload)) / 1_000_000.0;
+                c.SDL_DestroySurface(entry.surface.?);
+                entry.surface = null;
+            } else {
+                std.log.err("Failed to create texture from surface: {s}", .{c.SDL_GetError()});
+            }
+        }
+    }
+
+    fn clearCache(self: *ViewerState) void {
+        c.SDL_LockMutex(self.cache_mutex);
+        defer c.SDL_UnlockMutex(self.cache_mutex);
+
+        for (self.cache.items) |entry| {
+            if (entry.texture) |tex| {
+                c.SDL_DestroyTexture(tex);
+            }
+            if (entry.surface) |surf| {
+                c.SDL_DestroySurface(surf);
+            }
+        }
+        self.cache.clearRetainingCapacity();
+    }
+
+    fn updateCache(self: *ViewerState) !void {
+        c.SDL_LockMutex(self.cache_mutex);
+        defer c.SDL_UnlockMutex(self.cache_mutex);
+
+        const len = self.image_list.items.len;
+        if (len == 0) return;
 
         const idx = self.current_index orelse return;
-        const path = self.image_list.items[idx];
 
-        const path_z = try self.allocator.dupeZ(u8, path);
-        defer self.allocator.free(path_z);
-
-        self.current_mime_type = detectMimeType(self.io, path);
-
-        const start_decode = c.SDL_GetTicksNS();
-        const surface = c.IMG_Load(path_z.ptr);
-        const end_decode = c.SDL_GetTicksNS();
-
-        if (surface == null) {
-            std.log.err("Failed to load image surface '{s}': {s}", .{ path, c.SDL_GetError() });
-            return;
-        }
-        defer c.SDL_DestroySurface(surface);
-
-        self.decode_time_ms = @as(f64, @floatFromInt(end_decode - start_decode)) / 1_000_000.0;
-        self.memory_size_bytes = @intCast(surface.*.pitch * surface.*.h);
-
-        const start_upload = c.SDL_GetTicksNS();
-        self.current_texture = c.SDL_CreateTextureFromSurface(self.renderer, surface);
-        const end_upload = c.SDL_GetTicksNS();
-
-        if (self.current_texture == null) {
-            std.log.err("Failed to create texture from surface '{s}': {s}", .{ path, c.SDL_GetError() });
-            return;
+        // 1. Gather desired indices
+        var desired_count: usize = 0;
+        var desired: [5]usize = undefined;
+        for ([_]usize{
+            idx,
+            (idx + 1) % len,
+            (idx + 2) % len,
+            (idx + (len - 1)) % len,
+            (idx + (len - 2)) % len,
+        }) |d| {
+            var unique = true;
+            for (desired[0..desired_count]) |existing| {
+                if (existing == d) {
+                    unique = false;
+                    break;
+                }
+            }
+            if (unique) {
+                desired[desired_count] = d;
+                desired_count += 1;
+            }
         }
 
-        self.upload_time_ms = @as(f64, @floatFromInt(end_upload - start_upload)) / 1_000_000.0;
+        // 2. Evict cache entries that are no longer wanted
+        var i: usize = 0;
+        while (i < self.cache.items.len) {
+            const entry = &self.cache.items[i];
+            var wanted = false;
+            for (desired[0..desired_count]) |d| {
+                if (entry.index == d) {
+                    wanted = true;
+                    break;
+                }
+            }
+            if (!wanted) {
+                // Evict
+                if (entry.texture) |tex| {
+                    c.SDL_DestroyTexture(tex);
+                }
+                if (entry.surface) |surf| {
+                    c.SDL_DestroySurface(surf);
+                }
+                _ = self.cache.orderedRemove(i);
+            } else {
+                i += 1;
+            }
+        }
 
-        self.current_w = @floatFromInt(surface.*.w);
-        self.current_h = @floatFromInt(surface.*.h);
+        // 3. Add wanted entries that are not in the cache yet
+        var hit = false;
+        for (desired[0..desired_count]) |d| {
+            var exists = false;
+            for (self.cache.items) |entry| {
+                if (entry.index == d) {
+                    exists = true;
+                    if (d == idx and entry.status == .loaded) {
+                        hit = true;
+                    }
+                    break;
+                }
+            }
+            if (!exists) {
+                const path = try self.allocator.dupe(u8, self.image_list.items[d]);
+                errdefer self.allocator.free(path);
 
-        self.current_size_bytes = 0;
-        if (std.Io.Dir.statFile(std.Io.Dir.cwd(), self.io, path, .{})) |s| {
-            self.current_size_bytes = s.size;
-        } else |_| {}
+                const new_entry = CacheEntry{
+                    .index = d,
+                    .generation = self.generation,
+                    .status = .decoding,
+                };
+                try self.cache.append(self.allocator, new_entry);
+
+                // Spawn worker thread
+                const args = try self.allocator.create(DecodeArgs);
+                errdefer self.allocator.destroy(args);
+
+                args.* = DecodeArgs{
+                    .state = self,
+                    .index = d,
+                    .generation = self.generation,
+                    .path = path,
+                };
+
+                _ = self.active_threads.fetchAdd(1, .monotonic);
+                const thread = c.SDL_CreateThread(decodeWorker, "decode_worker", args);
+                if (thread) |t| {
+                    c.SDL_DetachThread(t);
+                } else {
+                    std.log.err("Failed to create SDL thread: {s}", .{c.SDL_GetError()});
+                    _ = self.active_threads.fetchSub(1, .monotonic);
+                    self.allocator.free(path);
+                    self.allocator.destroy(args);
+                }
+            }
+        }
+        self.current_image_cache_hit = hit;
     }
 
     fn next(self: *ViewerState) !void {
@@ -227,7 +447,7 @@ const ViewerState = struct {
         } else {
             self.current_index = 0;
         }
-        try self.loadCurrent();
+        try self.updateCache();
     }
 
     fn prev(self: *ViewerState) !void {
@@ -241,7 +461,7 @@ const ViewerState = struct {
         } else {
             self.current_index = 0;
         }
-        try self.loadCurrent();
+        try self.updateCache();
     }
 
     fn handlePathSelection(self: *ViewerState, path: []const u8) !void {
@@ -251,10 +471,8 @@ const ViewerState = struct {
         }
         self.image_list.clearRetainingCapacity();
 
-        if (self.current_texture) |tex| {
-            c.SDL_DestroyTexture(tex);
-            self.current_texture = null;
-        }
+        self.generation += 1;
+        self.clearCache();
         self.current_index = null;
 
         var stat: std.Io.File.Stat = undefined;
@@ -271,7 +489,7 @@ const ViewerState = struct {
                 try scanDirectory(self.allocator, self.io, path, &self.image_list);
                 if (self.image_list.items.len > 0) {
                     self.current_index = 0;
-                    try self.loadCurrent();
+                    try self.updateCache();
                 }
             } else {
                 const dir_path = std.fs.path.dirname(path) orelse ".";
@@ -293,7 +511,7 @@ const ViewerState = struct {
                     try self.image_list.append(self.allocator, dup);
                     self.current_index = self.image_list.items.len - 1;
                 }
-                try self.loadCurrent();
+                try self.updateCache();
             }
         }
     }
@@ -378,7 +596,8 @@ pub fn main(init: std.process.Init) !void {
         std.log.err("SDL_IOFromConstMem Error: {s}", .{c.SDL_GetError()});
         return error.SDLMemIOFailed;
     };
-    const font = c.TTF_OpenFontIO(stream, true, 20.0 * dpi_scale) orelse {
+    defer _ = c.SDL_CloseIO(stream);
+    const font = c.TTF_OpenFontIO(stream, false, 20.0 * dpi_scale) orelse {
         std.log.err("TTF_OpenFontIO Error: {s}", .{c.SDL_GetError()});
         return error.TTFOpenFontFailed;
     };
@@ -406,27 +625,41 @@ pub fn main(init: std.process.Init) !void {
     var fonts = [_]?*c.TTF_Font{font};
     const measure_data = MeasureTextUserData{
         .text_engine = text_engine,
-        .fonts = fonts[0..].ptr,
+        .fonts = fonts[0..],
         .allocator = frame_allocator,
     };
 
     clay.setMeasureTextFunction(*const MeasureTextUserData, &measure_data, sdl3MeasureText);
 
+    const cache_mutex = c.SDL_CreateMutex() orelse {
+        std.log.err("SDL_CreateMutex failed: {s}", .{c.SDL_GetError()});
+        return error.SDLCreateMutexFailed;
+    };
+    errdefer c.SDL_DestroyMutex(cache_mutex);
+
     // Initialize state
     var state = ViewerState{
         .renderer = renderer_ctx,
         .image_list = std.ArrayList([]const u8).empty,
+        .cache = std.ArrayList(CacheEntry).empty,
+        .cache_mutex = cache_mutex,
         .allocator = gpa,
         .io = init.io,
     };
     defer {
-        if (state.current_texture) |tex| {
-            c.SDL_DestroyTexture(tex);
+        // Wait for worker threads to finish
+        state.exiting.store(true, .release);
+        while (state.active_threads.load(.acquire) > 0) {
+            c.SDL_Delay(1);
         }
+
+        state.clearCache();
+        c.SDL_DestroyMutex(state.cache_mutex);
         for (state.image_list.items) |item| {
             gpa.free(item);
         }
         state.image_list.deinit(gpa);
+        state.cache.deinit(gpa);
     }
 
     // Populate image list from command line argument
@@ -461,7 +694,7 @@ pub fn main(init: std.process.Init) !void {
         }
         if (state.image_list.items.len > 0 and state.current_index == null) {
             state.current_index = 0;
-            try state.loadCurrent();
+            try state.updateCache();
         }
     }
 
@@ -722,34 +955,38 @@ pub fn main(init: std.process.Init) !void {
             available_width = @max(width - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0);
         }
 
+        state.prepareCurrent();
+
         var draw_w: f32 = 0;
         var draw_h: f32 = 0;
 
-        if (state.current_texture != null) {
-            const padding: f32 = 40.0;
-            const view_w = @max(available_width - padding * 2.0, 1.0);
-            const view_h = @max(height - title_bar_h - nav_bar_h - padding * 2.0, 1.0);
+        if (state.getCurrentEntry()) |entry| {
+            if (entry.texture != null) {
+                const padding: f32 = 40.0;
+                const view_w = @max(available_width - padding * 2.0, 1.0);
+                const view_h = @max(height - title_bar_h - nav_bar_h - padding * 2.0, 1.0);
 
-            const img_w = state.current_w;
-            const img_h = state.current_h;
+                const img_w = entry.w;
+                const img_h = entry.h;
 
-            if (img_w > 0 and img_h > 0) {
-                const r_img = img_w / img_h;
-                const r_view = view_w / view_h;
+                if (img_w > 0 and img_h > 0) {
+                    const r_img = img_w / img_h;
+                    const r_view = view_w / view_h;
 
-                if (r_img > r_view) {
-                    draw_w = view_w;
-                    draw_h = view_w / r_img;
-                    if (draw_h > view_h) {
-                        draw_h = view_h;
-                        draw_w = view_h * r_img;
-                    }
-                } else {
-                    draw_h = view_h;
-                    draw_w = view_h * r_img;
-                    if (draw_w > view_w) {
+                    if (r_img > r_view) {
                         draw_w = view_w;
                         draw_h = view_w / r_img;
+                        if (draw_h > view_h) {
+                            draw_h = view_h;
+                            draw_w = view_h * r_img;
+                        }
+                    } else {
+                        draw_h = view_h;
+                        draw_w = view_h * r_img;
+                        if (draw_w > view_w) {
+                            draw_w = view_w;
+                            draw_h = view_w / r_img;
+                        }
                     }
                 }
             }
@@ -774,24 +1011,45 @@ pub fn main(init: std.process.Init) !void {
 
                 const display_dir = if (dirname.len > 35) try std.fmt.allocPrint(frame_allocator, "...{s}", .{dirname[dirname.len - 32 ..]}) else dirname;
 
-                const disk_size_buf = try frame_allocator.alloc(u8, 64);
-                const disk_size_str = formatSize(state.current_size_bytes, disk_size_buf);
+                var disk_size_str: []const u8 = "Loading...";
+                var mem_size_str: []const u8 = "Loading...";
+                var mime_type: []const u8 = "Loading...";
+                var res_str: []const u8 = "Loading...";
+                var decode_str: []const u8 = "Loading...";
+                var process_str: []const u8 = "Loading...";
+                var screen_str: []const u8 = "Loading...";
 
-                const mem_size_buf = try frame_allocator.alloc(u8, 64);
-                const mem_size_str = formatSize(state.memory_size_bytes, mem_size_buf);
+                if (state.getCurrentEntry()) |entry| {
+                    mime_type = entry.mime_type;
+                    if (entry.status == .loaded or entry.texture != null) {
+                        const disk_size_buf = try frame_allocator.alloc(u8, 64);
+                        disk_size_str = formatSize(entry.size_bytes, disk_size_buf);
 
-                const megapixels = (state.current_w * state.current_h) / 1_000_000.0;
-                const res_buf = try frame_allocator.alloc(u8, 128);
-                const res_str = try std.fmt.bufPrint(res_buf, "{d:.0}x{d:.0} ({d:.2} MP)", .{ state.current_w, state.current_h, megapixels });
+                        const mem_size_buf = try frame_allocator.alloc(u8, 64);
+                        mem_size_str = formatSize(entry.memory_size_bytes, mem_size_buf);
 
-                const decode_buf = try frame_allocator.alloc(u8, 64);
-                const decode_str = try std.fmt.bufPrint(decode_buf, "{d:.2} ms", .{state.decode_time_ms});
+                        const megapixels = (entry.w * entry.h) / 1_000_000.0;
+                        const res_buf = try frame_allocator.alloc(u8, 128);
+                        res_str = try std.fmt.bufPrint(res_buf, "{d:.0}x{d:.0} ({d:.2} MP)", .{ entry.w, entry.h, megapixels });
 
-                const process_buf = try frame_allocator.alloc(u8, 64);
-                const process_str = try std.fmt.bufPrint(process_buf, "{d:.2} ms", .{state.upload_time_ms});
+                        const decode_buf = try frame_allocator.alloc(u8, 64);
+                        decode_str = try std.fmt.bufPrint(decode_buf, "{d:.2} ms", .{entry.decode_time_ms});
 
-                const screen_buf = try frame_allocator.alloc(u8, 64);
-                const screen_str = try std.fmt.bufPrint(screen_buf, "{d:.0}x{d:.0} px", .{ draw_w, draw_h });
+                        const process_buf = try frame_allocator.alloc(u8, 64);
+                        process_str = try std.fmt.bufPrint(process_buf, "{d:.2} ms", .{entry.upload_time_ms});
+
+                        const screen_buf = try frame_allocator.alloc(u8, 64);
+                        screen_str = try std.fmt.bufPrint(screen_buf, "{d:.0}x{d:.0} px", .{ draw_w, draw_h });
+                    } else if (entry.status == .failed) {
+                        disk_size_str = "Failed";
+                        mem_size_str = "Failed";
+                        mime_type = "Failed";
+                        res_str = "Failed";
+                        decode_str = "Failed";
+                        process_str = "Failed";
+                        screen_str = "Failed";
+                    }
+                }
 
                 clay.UI()(.{
                     .id = clay.getElementId("StatsPanel"),
@@ -853,7 +1111,9 @@ pub fn main(init: std.process.Init) !void {
 
                     try renderStatRow("File Name", filename, scale_x, scale_y, dpi_scale);
                     try renderStatRow("Directory", display_dir, scale_x, scale_y, dpi_scale);
-                    try renderStatRow("MIME Type", state.current_mime_type, scale_x, scale_y, dpi_scale);
+                    try renderStatRow("MIME Type", mime_type, scale_x, scale_y, dpi_scale);
+                    const hit_str = if (state.current_image_cache_hit) "Yes (Hit)" else "No (Miss)";
+                    try renderStatRow("Cache Hit", hit_str, scale_x, scale_y, dpi_scale);
                     try renderStatRow("Size on Disk", disk_size_str, scale_x, scale_y, dpi_scale);
                     try renderStatRow("Resolution", res_str, scale_x, scale_y, dpi_scale);
                     try renderStatRow("Decode Time", decode_str, scale_x, scale_y, dpi_scale);
@@ -879,14 +1139,6 @@ pub fn main(init: std.process.Init) !void {
                         const path = state.image_list.items[idx];
                         const filename = std.fs.path.basename(path);
 
-                        // File size conversion
-                        const size_buf = try frame_allocator.alloc(u8, 64);
-                        const size_str = formatSize(state.current_size_bytes, size_buf);
-
-                        // Dimensions metadata
-                        const meta_buf = try frame_allocator.alloc(u8, 128);
-                        const meta_str = try std.fmt.bufPrint(meta_buf, "{d:.0}x{d:.0} ({s})", .{ state.current_w, state.current_h, size_str });
-
                         clay.UI()(.{
                             .layout = .{
                                 .sizing = .{ .w = .grow, .h = .grow },
@@ -901,19 +1153,31 @@ pub fn main(init: std.process.Init) !void {
                             });
                         });
 
-                        clay.UI()(.{
-                            .layout = .{
-                                .sizing = .{ .w = .grow, .h = .grow },
-                                .direction = .left_to_right,
-                                .child_alignment = .{ .x = .right, .y = .center },
-                            },
-                        })({
-                            clay.text(meta_str, .{
-                                .color = .{ 166, 173, 200, 255 }, // Subtext0
-                                .font_size = @intFromFloat(14.0 * dpi_scale),
-                                .font_id = 0,
-                            });
-                        });
+                        if (state.getCurrentEntry()) |entry| {
+                            if (entry.texture != null) {
+                                // File size conversion
+                                const size_buf = try frame_allocator.alloc(u8, 64);
+                                const size_str = formatSize(entry.size_bytes, size_buf);
+
+                                // Dimensions metadata
+                                const meta_buf = try frame_allocator.alloc(u8, 128);
+                                const meta_str = try std.fmt.bufPrint(meta_buf, "{d:.0}x{d:.0} ({s})", .{ entry.w, entry.h, size_str });
+
+                                clay.UI()(.{
+                                    .layout = .{
+                                        .sizing = .{ .w = .grow, .h = .grow },
+                                        .direction = .left_to_right,
+                                        .child_alignment = .{ .x = .right, .y = .center },
+                                    },
+                                })({
+                                    clay.text(meta_str, .{
+                                        .color = .{ 166, 173, 200, 255 }, // Subtext0
+                                        .font_size = @intFromFloat(14.0 * dpi_scale),
+                                        .font_id = 0,
+                                    });
+                                });
+                            }
+                        }
                     } else {
                         clay.text("Peng Image Viewer", .{
                             .color = .{ 205, 214, 244, 255 },
@@ -932,16 +1196,48 @@ pub fn main(init: std.process.Init) !void {
                     .child_alignment = .{ .x = .center, .y = .center },
                 },
             })({
-                if (state.current_texture) |tex| {
-                    clay.UI()(.{
-                        .id = clay.getElementId("ImageCanvas"),
-                        .layout = .{
-                            .sizing = .{ .w = .fixed(draw_w), .h = .fixed(draw_h) },
-                        },
-                        .image = .{
-                            .image_data = @ptrCast(tex),
-                        },
-                    })({});
+                if (state.getCurrentEntry()) |entry| {
+                    if (entry.texture) |tex| {
+                        clay.UI()(.{
+                            .id = clay.getElementId("ImageCanvas"),
+                            .layout = .{
+                                .sizing = .{ .w = .fixed(draw_w), .h = .fixed(draw_h) },
+                            },
+                            .image = .{
+                                .image_data = @ptrCast(tex),
+                            },
+                        })({});
+                    } else if (entry.status == .decoding) {
+                        clay.UI()(.{
+                            .layout = .{
+                                .sizing = .{ .w = .grow, .h = .grow },
+                                .direction = .top_to_bottom,
+                                .child_alignment = .{ .x = .center, .y = .center },
+                                .child_gap = @intFromFloat(10 * scale_y),
+                            },
+                        })({
+                            clay.text("Loading image...", .{
+                                .color = .{ 245, 194, 231, 255 }, // Catppuccin Pink
+                                .font_size = @intFromFloat(22.0 * dpi_scale),
+                                .font_id = 0,
+                            });
+                        });
+                    } else {
+                        clay.UI()(.{
+                            .layout = .{
+                                .sizing = .{ .w = .grow, .h = .grow },
+                                .direction = .top_to_bottom,
+                                .child_alignment = .{ .x = .center, .y = .center },
+                                .child_gap = @intFromFloat(10 * scale_y),
+                            },
+                        })({
+                            clay.text("Failed to Load Image", .{
+                                .color = .{ 243, 139, 168, 255 }, // Catppuccin Red
+                                .font_size = @intFromFloat(22.0 * dpi_scale),
+                                .font_id = 0,
+                            });
+                        });
+                    }
                 } else {
                     // Empty state screen
                     clay.UI()(.{
@@ -1069,7 +1365,7 @@ pub fn main(init: std.process.Init) !void {
             std.log.err("SDL_RenderClear failed: {s}", .{c.SDL_GetError()});
         }
 
-        try renderer.renderClayCommands(renderer_ctx, text_engine, fonts[0..].ptr, render_commands, frame_allocator);
+        try renderer.renderClayCommands(renderer_ctx, text_engine, fonts[0..], render_commands, frame_allocator);
 
         if (!c.SDL_RenderPresent(renderer_ctx)) {
             std.log.err("SDL_RenderPresent failed: {s}", .{c.SDL_GetError()});
