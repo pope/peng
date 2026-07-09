@@ -27,7 +27,7 @@ fn setTextColor(text_obj: ?*c.TTF_Text, color: clay.Color) void {
     }
 }
 
-fn renderFillRoundedRect(renderer: ?*c.SDL_Renderer, rect: c.SDL_FRect, cornerRadius: f32, clay_color: clay.Color, allocator: std.mem.Allocator) !void {
+fn renderFillRoundedRect(renderer: ?*c.SDL_Renderer, rect: c.SDL_FRect, corner_radius: f32, clay_color: clay.Color, allocator: std.mem.Allocator) !void {
     const color = c.SDL_FColor{
         .r = clay_color[0] / 255.0,
         .g = clay_color[1] / 255.0,
@@ -35,235 +35,249 @@ fn renderFillRoundedRect(renderer: ?*c.SDL_Renderer, rect: c.SDL_FRect, cornerRa
         .a = clay_color[3] / 255.0,
     };
 
-    const minRadius = @min(rect.w, rect.h) / 2.0;
-    const clampedRadius = @min(cornerRadius, minRadius);
+    const min_radius = @min(rect.w, rect.h) / 2.0;
+    const clamped_radius = @min(corner_radius, min_radius);
 
-    const numCircleSegments = @max(@as(c_int, 16), @as(c_int, @intFromFloat(clampedRadius * 0.5)));
+    const num_circle_segments = @max(@as(c_int, 16), @as(c_int, @intFromFloat(clamped_radius * 0.5)));
 
-    const totalVertices = 4 + (4 * (numCircleSegments * 2)) + 8;
-    const totalIndices = 6 + (4 * (numCircleSegments * 3)) + 24;
+    const total_vertices = 4 + (4 * (num_circle_segments * 2)) + 8;
+    const total_indices = 6 + (4 * (num_circle_segments * 3)) + 24;
 
-    const vertices = try allocator.alloc(c.SDL_Vertex, @intCast(totalVertices));
-    defer allocator.free(vertices);
+    var stack_vertices: [256]c.SDL_Vertex = undefined;
+    var stack_indices: [512]c_int = undefined;
 
-    const indices = try allocator.alloc(c_int, @intCast(totalIndices));
-    defer allocator.free(indices);
+    const vertices = if (total_vertices <= stack_vertices.len)
+        stack_vertices[0..@intCast(total_vertices)]
+    else
+        try allocator.alloc(c.SDL_Vertex, @intCast(total_vertices));
+    defer if (total_vertices > stack_vertices.len) allocator.free(vertices);
 
-    var vertexCount: usize = 0;
-    var indexCount: usize = 0;
+    const indices = if (total_indices <= stack_indices.len)
+        stack_indices[0..@intCast(total_indices)]
+    else
+        try allocator.alloc(c_int, @intCast(total_indices));
+    defer if (total_indices > stack_indices.len) allocator.free(indices);
+
+    var vertex_count: usize = 0;
+    var index_count: usize = 0;
 
     // Define center rectangle
-    vertices[vertexCount] = .{ .position = .{ .x = rect.x + clampedRadius, .y = rect.y + clampedRadius }, .color = color, .tex_coord = .{ .x = 0, .y = 0 } };
-    vertexCount += 1;
-    vertices[vertexCount] = .{ .position = .{ .x = rect.x + rect.w - clampedRadius, .y = rect.y + clampedRadius }, .color = color, .tex_coord = .{ .x = 1, .y = 0 } };
-    vertexCount += 1;
-    vertices[vertexCount] = .{ .position = .{ .x = rect.x + rect.w - clampedRadius, .y = rect.y + rect.h - clampedRadius }, .color = color, .tex_coord = .{ .x = 1, .y = 1 } };
-    vertexCount += 1;
-    vertices[vertexCount] = .{ .position = .{ .x = rect.x + clampedRadius, .y = rect.y + rect.h - clampedRadius }, .color = color, .tex_coord = .{ .x = 0, .y = 1 } };
-    vertexCount += 1;
+    vertices[vertex_count] = .{ .position = .{ .x = rect.x + clamped_radius, .y = rect.y + clamped_radius }, .color = color, .tex_coord = .{ .x = 0, .y = 0 } };
+    vertex_count += 1;
+    vertices[vertex_count] = .{ .position = .{ .x = rect.x + rect.w - clamped_radius, .y = rect.y + clamped_radius }, .color = color, .tex_coord = .{ .x = 1, .y = 0 } };
+    vertex_count += 1;
+    vertices[vertex_count] = .{ .position = .{ .x = rect.x + rect.w - clamped_radius, .y = rect.y + rect.h - clamped_radius }, .color = color, .tex_coord = .{ .x = 1, .y = 1 } };
+    vertex_count += 1;
+    vertices[vertex_count] = .{ .position = .{ .x = rect.x + clamped_radius, .y = rect.y + rect.h - clamped_radius }, .color = color, .tex_coord = .{ .x = 0, .y = 1 } };
+    vertex_count += 1;
 
-    indices[indexCount] = 0;
-    indexCount += 1;
-    indices[indexCount] = 1;
-    indexCount += 1;
-    indices[indexCount] = 3;
-    indexCount += 1;
-    indices[indexCount] = 1;
-    indexCount += 1;
-    indices[indexCount] = 2;
-    indexCount += 1;
-    indices[indexCount] = 3;
-    indexCount += 1;
+    indices[index_count] = 0;
+    index_count += 1;
+    indices[index_count] = 1;
+    index_count += 1;
+    indices[index_count] = 3;
+    index_count += 1;
+    indices[index_count] = 1;
+    index_count += 1;
+    indices[index_count] = 2;
+    index_count += 1;
+    indices[index_count] = 3;
+    index_count += 1;
 
     // Define rounded corners as triangle fans
-    const step = (std.math.pi / 2.0) / @as(f32, @floatFromInt(numCircleSegments));
+    const step = (std.math.pi / 2.0) / @as(f32, @floatFromInt(num_circle_segments));
     var i: i32 = 0;
-    while (i < numCircleSegments) : (i += 1) {
-        const angle1 = @as(f32, @floatFromInt(i)) * step;
-        const angle2 = @as(f32, @floatFromInt(i + 1)) * step;
+    while (i < num_circle_segments) : (i += 1) {
+        const angle_1 = @as(f32, @floatFromInt(i)) * step;
+        const angle_2 = @as(f32, @floatFromInt(i + 1)) * step;
 
         var j: usize = 0;
         while (j < 4) : (j += 1) {
             var cx: f32 = 0;
             var cy: f32 = 0;
-            var signX: f32 = 0;
-            var signY: f32 = 0;
+            var sign_x: f32 = 0;
+            var sign_y: f32 = 0;
 
             switch (j) {
                 0 => {
-                    cx = rect.x + clampedRadius;
-                    cy = rect.y + clampedRadius;
-                    signX = -1;
-                    signY = -1;
+                    cx = rect.x + clamped_radius;
+                    cy = rect.y + clamped_radius;
+                    sign_x = -1;
+                    sign_y = -1;
                 },
                 1 => {
-                    cx = rect.x + rect.w - clampedRadius;
-                    cy = rect.y + clampedRadius;
-                    signX = 1;
-                    signY = -1;
+                    cx = rect.x + rect.w - clamped_radius;
+                    cy = rect.y + clamped_radius;
+                    sign_x = 1;
+                    sign_y = -1;
                 },
                 2 => {
-                    cx = rect.x + rect.w - clampedRadius;
-                    cy = rect.y + rect.h - clampedRadius;
-                    signX = 1;
-                    signY = 1;
+                    cx = rect.x + rect.w - clamped_radius;
+                    cy = rect.y + rect.h - clamped_radius;
+                    sign_x = 1;
+                    sign_y = 1;
                 },
                 3 => {
-                    cx = rect.x + clampedRadius;
-                    cy = rect.y + rect.h - clampedRadius;
-                    signX = -1;
-                    signY = 1;
+                    cx = rect.x + clamped_radius;
+                    cy = rect.y + rect.h - clamped_radius;
+                    sign_x = -1;
+                    sign_y = 1;
                 },
                 else => unreachable,
             }
 
-            vertices[vertexCount] = .{
+            vertices[vertex_count] = .{
                 .position = .{
-                    .x = cx + @cos(angle1) * clampedRadius * signX,
-                    .y = cy + @sin(angle1) * clampedRadius * signY,
+                    .x = cx + @cos(angle_1) * clamped_radius * sign_x,
+                    .y = cy + @sin(angle_1) * clamped_radius * sign_y,
                 },
                 .color = color,
                 .tex_coord = .{ .x = 0, .y = 0 },
             };
-            vertexCount += 1;
+            vertex_count += 1;
 
-            vertices[vertexCount] = .{
+            vertices[vertex_count] = .{
                 .position = .{
-                    .x = cx + @cos(angle2) * clampedRadius * signX,
-                    .y = cy + @sin(angle2) * clampedRadius * signY,
+                    .x = cx + @cos(angle_2) * clamped_radius * sign_x,
+                    .y = cy + @sin(angle_2) * clamped_radius * sign_y,
                 },
                 .color = color,
                 .tex_coord = .{ .x = 0, .y = 0 },
             };
-            vertexCount += 1;
+            vertex_count += 1;
 
-            indices[indexCount] = @intCast(j);
-            indexCount += 1;
-            indices[indexCount] = @intCast(vertexCount - 2);
-            indexCount += 1;
-            indices[indexCount] = @intCast(vertexCount - 1);
-            indexCount += 1;
+            indices[index_count] = @intCast(j);
+            index_count += 1;
+            indices[index_count] = @intCast(vertex_count - 2);
+            index_count += 1;
+            indices[index_count] = @intCast(vertex_count - 1);
+            index_count += 1;
         }
     }
 
     // Top edge
-    vertices[vertexCount] = .{ .position = .{ .x = rect.x + clampedRadius, .y = rect.y }, .color = color, .tex_coord = .{ .x = 0, .y = 0 } };
-    vertexCount += 1;
-    vertices[vertexCount] = .{ .position = .{ .x = rect.x + rect.w - clampedRadius, .y = rect.y }, .color = color, .tex_coord = .{ .x = 1, .y = 0 } };
-    vertexCount += 1;
+    vertices[vertex_count] = .{ .position = .{ .x = rect.x + clamped_radius, .y = rect.y }, .color = color, .tex_coord = .{ .x = 0, .y = 0 } };
+    vertex_count += 1;
+    vertices[vertex_count] = .{ .position = .{ .x = rect.x + rect.w - clamped_radius, .y = rect.y }, .color = color, .tex_coord = .{ .x = 1, .y = 0 } };
+    vertex_count += 1;
 
-    indices[indexCount] = 0;
-    indexCount += 1;
-    indices[indexCount] = @intCast(vertexCount - 2);
-    indexCount += 1;
-    indices[indexCount] = @intCast(vertexCount - 1);
-    indexCount += 1;
-    indices[indexCount] = 1;
-    indexCount += 1;
-    indices[indexCount] = 0;
-    indexCount += 1;
-    indices[indexCount] = @intCast(vertexCount - 1);
-    indexCount += 1;
+    indices[index_count] = 0;
+    index_count += 1;
+    indices[index_count] = @intCast(vertex_count - 2);
+    index_count += 1;
+    indices[index_count] = @intCast(vertex_count - 1);
+    index_count += 1;
+    indices[index_count] = 1;
+    index_count += 1;
+    indices[index_count] = 0;
+    index_count += 1;
+    indices[index_count] = @intCast(vertex_count - 1);
+    index_count += 1;
 
     // Right edge
-    vertices[vertexCount] = .{ .position = .{ .x = rect.x + rect.w, .y = rect.y + clampedRadius }, .color = color, .tex_coord = .{ .x = 1, .y = 0 } };
-    vertexCount += 1;
-    vertices[vertexCount] = .{ .position = .{ .x = rect.x + rect.w, .y = rect.y + rect.h - clampedRadius }, .color = color, .tex_coord = .{ .x = 1, .y = 1 } };
-    vertexCount += 1;
+    vertices[vertex_count] = .{ .position = .{ .x = rect.x + rect.w, .y = rect.y + clamped_radius }, .color = color, .tex_coord = .{ .x = 1, .y = 0 } };
+    vertex_count += 1;
+    vertices[vertex_count] = .{ .position = .{ .x = rect.x + rect.w, .y = rect.y + rect.h - clamped_radius }, .color = color, .tex_coord = .{ .x = 1, .y = 1 } };
+    vertex_count += 1;
 
-    indices[indexCount] = 1;
-    indexCount += 1;
-    indices[indexCount] = @intCast(vertexCount - 2);
-    indexCount += 1;
-    indices[indexCount] = @intCast(vertexCount - 1);
-    indexCount += 1;
-    indices[indexCount] = 2;
-    indexCount += 1;
-    indices[indexCount] = 1;
-    indexCount += 1;
-    indices[indexCount] = @intCast(vertexCount - 1);
-    indexCount += 1;
+    indices[index_count] = 1;
+    index_count += 1;
+    indices[index_count] = @intCast(vertex_count - 2);
+    index_count += 1;
+    indices[index_count] = @intCast(vertex_count - 1);
+    index_count += 1;
+    indices[index_count] = 2;
+    index_count += 1;
+    indices[index_count] = 1;
+    index_count += 1;
+    indices[index_count] = @intCast(vertex_count - 1);
+    index_count += 1;
 
     // Bottom edge
-    vertices[vertexCount] = .{ .position = .{ .x = rect.x + rect.w - clampedRadius, .y = rect.y + rect.h }, .color = color, .tex_coord = .{ .x = 1, .y = 1 } };
-    vertexCount += 1;
-    vertices[vertexCount] = .{ .position = .{ .x = rect.x + clampedRadius, .y = rect.y + rect.h }, .color = color, .tex_coord = .{ .x = 0, .y = 1 } };
-    vertexCount += 1;
+    vertices[vertex_count] = .{ .position = .{ .x = rect.x + rect.w - clamped_radius, .y = rect.y + rect.h }, .color = color, .tex_coord = .{ .x = 1, .y = 1 } };
+    vertex_count += 1;
+    vertices[vertex_count] = .{ .position = .{ .x = rect.x + clamped_radius, .y = rect.y + rect.h }, .color = color, .tex_coord = .{ .x = 0, .y = 1 } };
+    vertex_count += 1;
 
-    indices[indexCount] = 2;
-    indexCount += 1;
-    indices[indexCount] = @intCast(vertexCount - 2);
-    indexCount += 1;
-    indices[indexCount] = @intCast(vertexCount - 1);
-    indexCount += 1;
-    indices[indexCount] = 3;
-    indexCount += 1;
-    indices[indexCount] = 2;
-    indexCount += 1;
-    indices[indexCount] = @intCast(vertexCount - 1);
-    indexCount += 1;
+    indices[index_count] = 2;
+    index_count += 1;
+    indices[index_count] = @intCast(vertex_count - 2);
+    index_count += 1;
+    indices[index_count] = @intCast(vertex_count - 1);
+    index_count += 1;
+    indices[index_count] = 3;
+    index_count += 1;
+    indices[index_count] = 2;
+    index_count += 1;
+    indices[index_count] = @intCast(vertex_count - 1);
+    index_count += 1;
 
     // Left edge
-    vertices[vertexCount] = .{ .position = .{ .x = rect.x, .y = rect.y + rect.h - clampedRadius }, .color = color, .tex_coord = .{ .x = 0, .y = 1 } };
-    vertexCount += 1;
-    vertices[vertexCount] = .{ .position = .{ .x = rect.x, .y = rect.y + clampedRadius }, .color = color, .tex_coord = .{ .x = 0, .y = 0 } };
-    vertexCount += 1;
+    vertices[vertex_count] = .{ .position = .{ .x = rect.x, .y = rect.y + rect.h - clamped_radius }, .color = color, .tex_coord = .{ .x = 0, .y = 1 } };
+    vertex_count += 1;
+    vertices[vertex_count] = .{ .position = .{ .x = rect.x, .y = rect.y + clamped_radius }, .color = color, .tex_coord = .{ .x = 0, .y = 0 } };
+    vertex_count += 1;
 
-    indices[indexCount] = 3;
-    indexCount += 1;
-    indices[indexCount] = @intCast(vertexCount - 2);
-    indexCount += 1;
-    indices[indexCount] = @intCast(vertexCount - 1);
-    indexCount += 1;
-    indices[indexCount] = 0;
-    indexCount += 1;
-    indices[indexCount] = 3;
-    indexCount += 1;
-    indices[indexCount] = @intCast(vertexCount - 1);
-    indexCount += 1;
+    indices[index_count] = 3;
+    index_count += 1;
+    indices[index_count] = @intCast(vertex_count - 2);
+    index_count += 1;
+    indices[index_count] = @intCast(vertex_count - 1);
+    index_count += 1;
+    indices[index_count] = 0;
+    index_count += 1;
+    indices[index_count] = 3;
+    index_count += 1;
+    indices[index_count] = @intCast(vertex_count - 1);
+    index_count += 1;
 
-    if (!c.SDL_RenderGeometry(renderer, null, &vertices[0], @intCast(vertexCount), &indices[0], @intCast(indexCount))) {
+    if (!c.SDL_RenderGeometry(renderer, null, &vertices[0], @intCast(vertex_count), &indices[0], @intCast(index_count))) {
         std.log.err("SDL_RenderGeometry failed: {s}", .{c.SDL_GetError()});
     }
 }
 
-fn renderArc(renderer: ?*c.SDL_Renderer, center: c.SDL_FPoint, radius: f32, startAngle: f32, endAngle: f32, thickness: f32, clay_color: clay.Color, allocator: std.mem.Allocator) !void {
+fn renderArc(renderer: ?*c.SDL_Renderer, center: c.SDL_FPoint, radius: f32, start_angle: f32, end_angle: f32, thickness: f32, clay_color: clay.Color, allocator: std.mem.Allocator) !void {
     setRenderDrawColor(renderer, clay_color);
 
-    const radStart = startAngle * (std.math.pi / 180.0);
-    const radEnd = endAngle * (std.math.pi / 180.0);
+    const rad_start = start_angle * (std.math.pi / 180.0);
+    const rad_end = end_angle * (std.math.pi / 180.0);
 
-    const numCircleSegments = @max(@as(c_int, 16), @as(c_int, @intFromFloat(radius * 1.5)));
+    const num_circle_segments = @max(@as(c_int, 16), @as(c_int, @intFromFloat(radius * 1.5)));
 
-    const angleStep = (radEnd - radStart) / @as(f32, @floatFromInt(numCircleSegments));
-    const thicknessStep: f32 = 0.4;
+    const angle_step = (rad_end - rad_start) / @as(f32, @floatFromInt(num_circle_segments));
+    const thickness_step: f32 = 0.4;
 
-    const points = try allocator.alloc(c.SDL_FPoint, @intCast(numCircleSegments + 1));
-    defer allocator.free(points);
+    var stack_points: [128]c.SDL_FPoint = undefined;
+    const points_len = @as(usize, @intCast(num_circle_segments + 1));
+    const points = if (points_len <= stack_points.len)
+        stack_points[0..points_len]
+    else
+        try allocator.alloc(c.SDL_FPoint, points_len);
+    defer if (points_len > stack_points.len) allocator.free(points);
 
-    var t = thicknessStep;
-    while (t < thickness - thicknessStep) : (t += thicknessStep) {
-        const clampedRadius = @max(radius - t, 1.0);
+    var t = thickness_step;
+    while (t < thickness - thickness_step) : (t += thickness_step) {
+        const clamped_radius = @max(radius - t, 1.0);
 
         var i: i32 = 0;
-        while (i <= numCircleSegments) : (i += 1) {
-            const angle = radStart + @as(f32, @floatFromInt(i)) * angleStep;
+        while (i <= num_circle_segments) : (i += 1) {
+            const angle = rad_start + @as(f32, @floatFromInt(i)) * angle_step;
             points[@intCast(i)] = .{
-                .x = @round(center.x + @cos(angle) * clampedRadius),
-                .y = @round(center.y + @sin(angle) * clampedRadius),
+                .x = @round(center.x + @cos(angle) * clamped_radius),
+                .y = @round(center.y + @sin(angle) * clamped_radius),
             };
         }
-        if (!c.SDL_RenderLines(renderer, &points[0], @intCast(numCircleSegments + 1))) {
+        if (!c.SDL_RenderLines(renderer, &points[0], @intCast(num_circle_segments + 1))) {
             std.log.err("SDL_RenderLines failed: {s}", .{c.SDL_GetError()});
         }
     }
 }
 
-pub fn renderClayCommands(renderer: ?*c.SDL_Renderer, textEngine: ?*c.TTF_TextEngine, fonts: [*]?*c.TTF_Font, rcommands: clay.ClayArray(clay.RenderCommand), allocator: std.mem.Allocator) !void {
+pub fn renderClayCommands(renderer: ?*c.SDL_Renderer, text_engine: ?*c.TTF_TextEngine, fonts: [*]?*c.TTF_Font, r_commands: clay.ClayArray(clay.RenderCommand), allocator: std.mem.Allocator) !void {
     var i: usize = 0;
-    const len = @as(usize, @intCast(rcommands.length));
+    const len = @as(usize, @intCast(r_commands.length));
     while (i < len) : (i += 1) {
-        const rcmd = rcommands.internal_array[i];
+        const rcmd = r_commands.internal_array[i];
         const bb = rcmd.bounding_box;
         const rect = c.SDL_FRect{
             .x = @round(bb.x),
@@ -294,14 +308,15 @@ pub fn renderClayCommands(renderer: ?*c.SDL_Renderer, textEngine: ?*c.TTF_TextEn
                 // Copy string contents to stack/heap to null terminate
                 var stack_buf: [1024]u8 = undefined;
                 const str_len = @as(usize, @intCast(config.string_contents.length));
-                const buffer = if (str_len < stack_buf.len)
-                    stack_buf[0..str_len]
+                const buffer = if (str_len + 1 < stack_buf.len)
+                    stack_buf[0 .. str_len + 1]
                 else
-                    try allocator.alloc(u8, str_len);
-                defer if (str_len >= stack_buf.len) allocator.free(buffer);
-                @memcpy(buffer, config.string_contents.chars[0..str_len]);
+                    try allocator.alloc(u8, str_len + 1);
+                defer if (str_len + 1 >= stack_buf.len) allocator.free(buffer);
+                @memcpy(buffer[0..str_len], config.string_contents.chars[0..str_len]);
+                buffer[str_len] = 0;
 
-                const text_obj = c.TTF_CreateText(textEngine, font, buffer.ptr, str_len) orelse continue;
+                const text_obj = c.TTF_CreateText(text_engine, font, buffer.ptr, str_len) orelse continue;
                 defer c.TTF_DestroyText(text_obj);
 
                 setTextColor(text_obj, config.text_color);
@@ -311,24 +326,24 @@ pub fn renderClayCommands(renderer: ?*c.SDL_Renderer, textEngine: ?*c.TTF_TextEn
             },
             .border => {
                 const config = rcmd.render_data.border;
-                const minRadius = @min(rect.w, rect.h) / 2.0;
-                const clampedRadii = struct {
+                const min_radius = @min(rect.w, rect.h) / 2.0;
+                const clamped_radii = struct {
                     top_left: f32,
                     top_right: f32,
                     bottom_left: f32,
                     bottom_right: f32,
                 }{
-                    .top_left = @min(config.corner_radius.top_left, minRadius),
-                    .top_right = @min(config.corner_radius.top_right, minRadius),
-                    .bottom_left = @min(config.corner_radius.bottom_left, minRadius),
-                    .bottom_right = @min(config.corner_radius.bottom_right, minRadius),
+                    .top_left = @min(config.corner_radius.top_left, min_radius),
+                    .top_right = @min(config.corner_radius.top_right, min_radius),
+                    .bottom_left = @min(config.corner_radius.bottom_left, min_radius),
+                    .bottom_right = @min(config.corner_radius.bottom_right, min_radius),
                 };
 
                 setRenderDrawColor(renderer, config.color);
 
                 if (config.width.left > 0) {
-                    const starting_y = rect.y + clampedRadii.top_left;
-                    const length = rect.h - clampedRadii.top_left - clampedRadii.bottom_left;
+                    const starting_y = rect.y + clamped_radii.top_left;
+                    const length = rect.h - clamped_radii.top_left - clamped_radii.bottom_left;
                     const line = c.SDL_FRect{ .x = rect.x, .y = starting_y, .w = @floatFromInt(config.width.left), .h = length };
                     if (!c.SDL_RenderFillRect(renderer, &line)) {
                         std.log.err("SDL_RenderFillRect failed: {s}", .{c.SDL_GetError()});
@@ -336,25 +351,25 @@ pub fn renderClayCommands(renderer: ?*c.SDL_Renderer, textEngine: ?*c.TTF_TextEn
                 }
                 if (config.width.right > 0) {
                     const starting_x = rect.x + rect.w - @as(f32, @floatFromInt(config.width.right));
-                    const starting_y = rect.y + clampedRadii.top_right;
-                    const length = rect.h - clampedRadii.top_right - clampedRadii.bottom_right;
+                    const starting_y = rect.y + clamped_radii.top_right;
+                    const length = rect.h - clamped_radii.top_right - clamped_radii.bottom_right;
                     const line = c.SDL_FRect{ .x = starting_x, .y = starting_y, .w = @floatFromInt(config.width.right), .h = length };
                     if (!c.SDL_RenderFillRect(renderer, &line)) {
                         std.log.err("SDL_RenderFillRect failed: {s}", .{c.SDL_GetError()});
                     }
                 }
                 if (config.width.top > 0) {
-                    const starting_x = rect.x + clampedRadii.top_left;
-                    const length = rect.w - clampedRadii.top_left - clampedRadii.top_right;
+                    const starting_x = rect.x + clamped_radii.top_left;
+                    const length = rect.w - clamped_radii.top_left - clamped_radii.top_right;
                     const line = c.SDL_FRect{ .x = starting_x, .y = rect.y, .w = length, .h = @floatFromInt(config.width.top) };
                     if (!c.SDL_RenderFillRect(renderer, &line)) {
                         std.log.err("SDL_RenderFillRect failed: {s}", .{c.SDL_GetError()});
                     }
                 }
                 if (config.width.bottom > 0) {
-                    const starting_x = rect.x + clampedRadii.bottom_left;
+                    const starting_x = rect.x + clamped_radii.bottom_left;
                     const starting_y = rect.y + rect.h - @as(f32, @floatFromInt(config.width.bottom));
-                    const length = rect.w - clampedRadii.bottom_left - clampedRadii.bottom_right;
+                    const length = rect.w - clamped_radii.bottom_left - clamped_radii.bottom_right;
                     const line = c.SDL_FRect{ .x = starting_x, .y = starting_y, .w = length, .h = @floatFromInt(config.width.bottom) };
                     setRenderDrawColor(renderer, config.color);
                     if (!c.SDL_RenderFillRect(renderer, &line)) {
@@ -363,16 +378,16 @@ pub fn renderClayCommands(renderer: ?*c.SDL_Renderer, textEngine: ?*c.TTF_TextEn
                 }
 
                 if (config.corner_radius.top_left > 0) {
-                    try renderArc(renderer, .{ .x = rect.x + clampedRadii.top_left - 1, .y = rect.y + clampedRadii.top_left }, clampedRadii.top_left, 180.0, 270.0, @floatFromInt(config.width.top), config.color, allocator);
+                    try renderArc(renderer, .{ .x = rect.x + clamped_radii.top_left - 1, .y = rect.y + clamped_radii.top_left }, clamped_radii.top_left, 180.0, 270.0, @floatFromInt(config.width.top), config.color, allocator);
                 }
                 if (config.corner_radius.top_right > 0) {
-                    try renderArc(renderer, .{ .x = rect.x + rect.w - clampedRadii.top_right - 1, .y = rect.y + clampedRadii.top_right }, clampedRadii.top_right, 270.0, 360.0, @floatFromInt(config.width.top), config.color, allocator);
+                    try renderArc(renderer, .{ .x = rect.x + rect.w - clamped_radii.top_right - 1, .y = rect.y + clamped_radii.top_right }, clamped_radii.top_right, 270.0, 360.0, @floatFromInt(config.width.top), config.color, allocator);
                 }
                 if (config.corner_radius.bottom_left > 0) {
-                    try renderArc(renderer, .{ .x = rect.x + clampedRadii.bottom_left - 1, .y = rect.y + rect.h - clampedRadii.bottom_left - 1 }, clampedRadii.bottom_left, 90.0, 180.0, @floatFromInt(config.width.bottom), config.color, allocator);
+                    try renderArc(renderer, .{ .x = rect.x + clamped_radii.bottom_left - 1, .y = rect.y + rect.h - clamped_radii.bottom_left - 1 }, clamped_radii.bottom_left, 90.0, 180.0, @floatFromInt(config.width.bottom), config.color, allocator);
                 }
                 if (config.corner_radius.bottom_right > 0) {
-                    try renderArc(renderer, .{ .x = rect.x + rect.w - clampedRadii.bottom_right - 1, .y = rect.y + rect.h - clampedRadii.bottom_right - 1 }, clampedRadii.bottom_right, 0.0, 90.0, @floatFromInt(config.width.bottom), config.color, allocator);
+                    try renderArc(renderer, .{ .x = rect.x + rect.w - clamped_radii.bottom_right - 1, .y = rect.y + rect.h - clamped_radii.bottom_right - 1 }, clamped_radii.bottom_right, 0.0, 90.0, @floatFromInt(config.width.bottom), config.color, allocator);
                 }
             },
             .scissor_start => {
