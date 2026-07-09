@@ -96,6 +96,68 @@ fn scanDirectory(allocator: std.mem.Allocator, io: std.Io, dir_path: []const u8,
     try list.appendSlice(allocator, dir_entries.items);
 }
 
+fn detectMimeType(io: std.Io, path: []const u8) []const u8 {
+    var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, path, .{}) catch return "unknown";
+    defer file.close(io);
+
+    var header: [12]u8 = undefined;
+    var slices = [_][]u8{&header};
+    const bytes_read = file.readPositional(io, &slices, 0) catch return "unknown";
+    if (bytes_read < 4) return "unknown";
+
+    if (std.mem.startsWith(u8, &header, &[_]u8{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A })) {
+        return "image/png";
+    }
+    if (std.mem.startsWith(u8, &header, &[_]u8{ 0xFF, 0xD8, 0xFF })) {
+        return "image/jpeg";
+    }
+    if (std.mem.startsWith(u8, &header, "GIF87a") or std.mem.startsWith(u8, &header, "GIF89a")) {
+        return "image/gif";
+    }
+    if (std.mem.startsWith(u8, &header, "BM")) {
+        return "image/bmp";
+    }
+    if (bytes_read >= 12 and std.mem.startsWith(u8, &header, "RIFF") and std.mem.eql(u8, header[8..12], "WEBP")) {
+        return "image/webp";
+    }
+
+    const ext = std.fs.path.extension(path);
+    if (eqlIgnoreCase(ext, ".png")) return "image/png";
+    if (eqlIgnoreCase(ext, ".jpg") or eqlIgnoreCase(ext, ".jpeg")) return "image/jpeg";
+    if (eqlIgnoreCase(ext, ".gif")) return "image/gif";
+    if (eqlIgnoreCase(ext, ".bmp")) return "image/bmp";
+    if (eqlIgnoreCase(ext, ".webp")) return "image/webp";
+    if (eqlIgnoreCase(ext, ".tga")) return "image/x-tga";
+
+    return "unknown";
+}
+
+fn renderStatRow(label: []const u8, value: []const u8, scale_x: f32, scale_y: f32, dpi_scale: f32) !void {
+    clay.UI()(.{
+        .layout = .{
+            .sizing = .{ .w = .grow, .h = .fixed(20 * scale_y) },
+            .direction = .left_to_right,
+            .child_alignment = .{ .x = .left, .y = .center },
+        },
+    })({
+        clay.UI()(.{ .layout = .{ .sizing = .{ .w = .fixed(110 * scale_x), .h = .grow } } })({
+            clay.text(label, .{
+                .color = .{ 166, 173, 200, 255 }, // Subtext0
+                .font_size = @intFromFloat(13.0 * dpi_scale),
+                .font_id = 0,
+            });
+        });
+
+        clay.UI()(.{ .layout = .{ .sizing = .{ .w = .grow, .h = .grow } } })({
+            clay.text(value, .{
+                .color = .{ 205, 214, 244, 255 }, // Text
+                .font_size = @intFromFloat(13.0 * dpi_scale),
+                .font_id = 0,
+            });
+        });
+    });
+}
+
 const ViewerState = struct {
     renderer: ?*c.SDL_Renderer,
     image_list: std.ArrayList([]const u8),
@@ -104,6 +166,10 @@ const ViewerState = struct {
     current_w: f32 = 0,
     current_h: f32 = 0,
     current_size_bytes: u64 = 0,
+    current_mime_type: []const u8 = "unknown",
+    decode_time_ms: f64 = 0.0,
+    upload_time_ms: f64 = 0.0,
+    memory_size_bytes: usize = 0,
     allocator: std.mem.Allocator,
     io: std.Io,
 
@@ -119,15 +185,34 @@ const ViewerState = struct {
         const path_z = try self.allocator.dupeZ(u8, path);
         defer self.allocator.free(path_z);
 
-        self.current_texture = c.IMG_LoadTexture(self.renderer, path_z.ptr);
+        self.current_mime_type = detectMimeType(self.io, path);
+
+        const start_decode = c.SDL_GetTicksNS();
+        const surface = c.IMG_Load(path_z.ptr);
+        const end_decode = c.SDL_GetTicksNS();
+
+        if (surface == null) {
+            std.log.err("Failed to load image surface '{s}': {s}", .{ path, c.SDL_GetError() });
+            return;
+        }
+        defer c.SDL_DestroySurface(surface);
+
+        self.decode_time_ms = @as(f64, @floatFromInt(end_decode - start_decode)) / 1_000_000.0;
+        self.memory_size_bytes = @intCast(surface.*.pitch * surface.*.h);
+
+        const start_upload = c.SDL_GetTicksNS();
+        self.current_texture = c.SDL_CreateTextureFromSurface(self.renderer, surface);
+        const end_upload = c.SDL_GetTicksNS();
+
         if (self.current_texture == null) {
-            std.log.err("Failed to load texture '{s}': {s}", .{ path, c.SDL_GetError() });
+            std.log.err("Failed to create texture from surface '{s}': {s}", .{ path, c.SDL_GetError() });
             return;
         }
 
-        if (!c.SDL_GetTextureSize(self.current_texture.?, &self.current_w, &self.current_h)) {
-            std.log.err("Failed to query texture size: {s}", .{c.SDL_GetError()});
-        }
+        self.upload_time_ms = @as(f64, @floatFromInt(end_upload - start_upload)) / 1_000_000.0;
+
+        self.current_w = @floatFromInt(surface.*.w);
+        self.current_h = @floatFromInt(surface.*.h);
 
         self.current_size_bytes = 0;
         if (std.Io.Dir.statFile(std.Io.Dir.cwd(), self.io, path, .{})) |s| {
@@ -384,11 +469,34 @@ pub fn main(init: std.process.Init) !void {
     var is_fullscreen = false;
     var running = true;
     var mouse_inside = true;
+    var show_stats_overlay = false;
+    var stats_offset_x: f32 = 20.0;
+    var stats_offset_y: f32 = 20.0;
+    var stats_dragging = false;
+    var drag_start_x: f32 = 0.0;
+    var drag_start_y: f32 = 0.0;
     while (running) {
         var event: c.SDL_Event = undefined;
         var mouse_clicked = false;
         var scroll_delta_x: f32 = 0;
         var scroll_delta_y: f32 = 0;
+
+        // Get window sizes and scale (computed at the top of the loop for event switches)
+        var current_win_w: c_int = 0;
+        var current_win_h: c_int = 0;
+        if (!c.SDL_GetWindowSize(window, &current_win_w, &current_win_h)) {
+            std.log.err("SDL_GetWindowSize failed: {s}", .{c.SDL_GetError()});
+        }
+        var current_pix_w: c_int = 0;
+        var current_pix_h: c_int = 0;
+        if (!c.SDL_GetWindowSizeInPixels(window, &current_pix_w, &current_pix_h)) {
+            std.log.err("SDL_GetWindowSizeInPixels failed: {s}", .{c.SDL_GetError()});
+        }
+
+        const width = @as(f32, @floatFromInt(current_pix_w));
+        const height = @as(f32, @floatFromInt(current_pix_h));
+        const scale_x = if (current_win_w > 0) @as(f32, @floatFromInt(current_pix_w)) / @as(f32, @floatFromInt(current_win_w)) else 1.0;
+        const scale_y = if (current_win_h > 0) @as(f32, @floatFromInt(current_pix_h)) / @as(f32, @floatFromInt(current_win_h)) else 1.0;
 
         // Block until an event occurs to prevent spinning at 100% CPU when idle
         if (!c.SDL_WaitEvent(&event)) {
@@ -398,9 +506,25 @@ pub fn main(init: std.process.Init) !void {
         // Process first event
         switch (event.type) {
             c.SDL_EVENT_QUIT => running = false,
+            c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
+                if (event.button.button == c.SDL_BUTTON_LEFT) {
+                    var mouse_x: f32 = 0;
+                    var mouse_y: f32 = 0;
+                    _ = c.SDL_GetMouseState(&mouse_x, &mouse_y);
+                    if (show_stats_overlay and
+                        clay.pointerOver(clay.getElementId("StatsPanel")) and
+                        !clay.pointerOver(clay.getElementId("StatsCloseBtn")))
+                    {
+                        stats_dragging = true;
+                        drag_start_x = mouse_x * scale_x - stats_offset_x;
+                        drag_start_y = mouse_y * scale_y - stats_offset_y;
+                    }
+                }
+            },
             c.SDL_EVENT_MOUSE_BUTTON_UP => {
                 if (event.button.button == c.SDL_BUTTON_LEFT) {
                     mouse_clicked = true;
+                    stats_dragging = false;
                 }
             },
             c.SDL_EVENT_MOUSE_WHEEL => {
@@ -437,6 +561,9 @@ pub fn main(init: std.process.Init) !void {
                     c.SDLK_D => {
                         clay.setDebugModeEnabled(!clay.isDebugModeEnabled());
                     },
+                    c.SDLK_I => {
+                        show_stats_overlay = !show_stats_overlay;
+                    },
                     else => {},
                 }
             },
@@ -456,9 +583,25 @@ pub fn main(init: std.process.Init) !void {
         while (c.SDL_PollEvent(&event)) {
             switch (event.type) {
                 c.SDL_EVENT_QUIT => running = false,
+                c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
+                    if (event.button.button == c.SDL_BUTTON_LEFT) {
+                        var mouse_x: f32 = 0;
+                        var mouse_y: f32 = 0;
+                        _ = c.SDL_GetMouseState(&mouse_x, &mouse_y);
+                        if (show_stats_overlay and
+                            clay.pointerOver(clay.getElementId("StatsPanel")) and
+                            !clay.pointerOver(clay.getElementId("StatsCloseBtn")))
+                        {
+                            stats_dragging = true;
+                            drag_start_x = mouse_x * scale_x - stats_offset_x;
+                            drag_start_y = mouse_y * scale_y - stats_offset_y;
+                        }
+                    }
+                },
                 c.SDL_EVENT_MOUSE_BUTTON_UP => {
                     if (event.button.button == c.SDL_BUTTON_LEFT) {
                         mouse_clicked = true;
+                        stats_dragging = false;
                     }
                 },
                 c.SDL_EVENT_MOUSE_WHEEL => {
@@ -495,6 +638,9 @@ pub fn main(init: std.process.Init) !void {
                         c.SDLK_D => {
                             clay.setDebugModeEnabled(!clay.isDebugModeEnabled());
                         },
+                        c.SDLK_I => {
+                            show_stats_overlay = !show_stats_overlay;
+                        },
                         else => {},
                     }
                 },
@@ -513,29 +659,17 @@ pub fn main(init: std.process.Init) !void {
 
         _ = frame_arena.reset(.retain_capacity);
 
-        // Get window sizes
-        var current_win_w: c_int = 0;
-        var current_win_h: c_int = 0;
-        if (!c.SDL_GetWindowSize(window, &current_win_w, &current_win_h)) {
-            std.log.err("SDL_GetWindowSize failed: {s}", .{c.SDL_GetError()});
-        }
-        var current_pix_w: c_int = 0;
-        var current_pix_h: c_int = 0;
-        if (!c.SDL_GetWindowSizeInPixels(window, &current_pix_w, &current_pix_h)) {
-            std.log.err("SDL_GetWindowSizeInPixels failed: {s}", .{c.SDL_GetError()});
-        }
-
-        const width = @as(f32, @floatFromInt(current_pix_w));
-        const height = @as(f32, @floatFromInt(current_pix_h));
         clay.setLayoutDimensions(.{ .w = width, .h = height });
-
-        const scale_x = if (current_win_w > 0) @as(f32, @floatFromInt(current_pix_w)) / @as(f32, @floatFromInt(current_win_w)) else 1.0;
-        const scale_y = if (current_win_h > 0) @as(f32, @floatFromInt(current_pix_h)) / @as(f32, @floatFromInt(current_win_h)) else 1.0;
 
         // Get mouse coordinates and scale
         var mouse_x: f32 = 0;
         var mouse_y: f32 = 0;
         const mouse_state = c.SDL_GetMouseState(&mouse_x, &mouse_y);
+
+        if (stats_dragging) {
+            stats_offset_x = std.math.clamp(mouse_x * scale_x - drag_start_x, 0.0, width - 50.0);
+            stats_offset_y = std.math.clamp(mouse_y * scale_y - drag_start_y, 0.0, height - 50.0);
+        }
 
         if (mouse_inside) {
             clay.setPointerState(
@@ -570,6 +704,8 @@ pub fn main(init: std.process.Init) !void {
                 if (!c.SDL_SetWindowFullscreen(window, is_fullscreen)) {
                     std.log.err("SDL_SetWindowFullscreen failed: {s}", .{c.SDL_GetError()});
                 }
+            } else if (show_stats_overlay and clay.pointerOver(clay.getElementId("StatsCloseBtn"))) {
+                show_stats_overlay = false;
             }
         }
 
@@ -630,6 +766,103 @@ pub fn main(init: std.process.Init) !void {
             },
             .background_color = .{ 24, 24, 37, 255 }, // Catppuccin Base (Mocha Mantle/Base)
         })({
+            if (show_stats_overlay) {
+                const idx = state.current_index;
+                const path = if (idx != null and state.image_list.items.len > idx.?) state.image_list.items[idx.?] else "";
+                const filename = if (path.len > 0) std.fs.path.basename(path) else "None";
+                const dirname = if (path.len > 0) (std.fs.path.dirname(path) orelse ".") else "None";
+
+                const display_dir = if (dirname.len > 35) try std.fmt.allocPrint(frame_allocator, "...{s}", .{dirname[dirname.len - 32 ..]}) else dirname;
+
+                const disk_size_buf = try frame_allocator.alloc(u8, 64);
+                const disk_size_str = formatSize(state.current_size_bytes, disk_size_buf);
+
+                const mem_size_buf = try frame_allocator.alloc(u8, 64);
+                const mem_size_str = formatSize(state.memory_size_bytes, mem_size_buf);
+
+                const megapixels = (state.current_w * state.current_h) / 1_000_000.0;
+                const res_buf = try frame_allocator.alloc(u8, 128);
+                const res_str = try std.fmt.bufPrint(res_buf, "{d:.0}x{d:.0} ({d:.2} MP)", .{ state.current_w, state.current_h, megapixels });
+
+                const decode_buf = try frame_allocator.alloc(u8, 64);
+                const decode_str = try std.fmt.bufPrint(decode_buf, "{d:.2} ms", .{state.decode_time_ms});
+
+                const process_buf = try frame_allocator.alloc(u8, 64);
+                const process_str = try std.fmt.bufPrint(process_buf, "{d:.2} ms", .{state.upload_time_ms});
+
+                const screen_buf = try frame_allocator.alloc(u8, 64);
+                const screen_str = try std.fmt.bufPrint(screen_buf, "{d:.0}x{d:.0} px", .{ draw_w, draw_h });
+
+                clay.UI()(.{
+                    .id = clay.getElementId("StatsPanel"),
+                    .layout = .{
+                        .sizing = .{ .w = .fixed(380 * scale_x), .h = .fit },
+                        .direction = .top_to_bottom,
+                        .padding = .{ .left = 16, .right = 16, .top = 16, .bottom = 16 },
+                        .child_gap = 10,
+                    },
+                    .background_color = .{ 30, 30, 46, 220 }, // Catppuccin Mocha base with opacity (glassmorphism feel)
+                    .corner_radius = .all(10),
+                    .border = .{ .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 }, .color = .{ 49, 50, 68, 255 } },
+                    .floating = .{
+                        .attach_to = .to_parent,
+                        .attach_points = .{ .element = .left_top, .parent = .left_top },
+                        .offset = .{ .x = stats_offset_x, .y = stats_offset_y },
+                        .z_index = 100,
+                    },
+                })({
+                    // Header row
+                    clay.UI()(.{
+                        .layout = .{
+                            .sizing = .{ .w = .grow, .h = .fixed(24 * scale_y) },
+                            .direction = .left_to_right,
+                            .child_alignment = .{ .x = .left, .y = .center },
+                        },
+                    })({
+                        clay.UI()(.{ .layout = .{ .sizing = .{ .w = .grow, .h = .grow } } })({
+                            clay.text("Stats for Nerds", .{
+                                .color = .{ 245, 194, 231, 255 }, // Catppuccin Pink
+                                .font_size = @intFromFloat(16.0 * dpi_scale),
+                                .font_id = 0,
+                            });
+                        });
+
+                        const close_hovered = clay.pointerOver(clay.getElementId("StatsCloseBtn"));
+                        clay.UI()(.{
+                            .id = clay.getElementId("StatsCloseBtn"),
+                            .layout = .{
+                                .sizing = .{ .w = .fixed(24 * scale_x), .h = .fixed(24 * scale_y) },
+                                .child_alignment = .{ .x = .center, .y = .center },
+                            },
+                            .background_color = if (close_hovered) .{ 243, 139, 168, 255 } else .{ 0, 0, 0, 0 }, // Red hover
+                            .corner_radius = .all(4),
+                        })({
+                            clay.text("X", .{
+                                .color = .{ 205, 214, 244, 255 },
+                                .font_size = @intFromFloat(12.0 * dpi_scale),
+                                .font_id = 0,
+                            });
+                        });
+                    });
+
+                    // Divider
+                    clay.UI()(.{
+                        .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(1) } },
+                        .background_color = .{ 49, 50, 68, 255 },
+                    })({});
+
+                    try renderStatRow("File Name", filename, scale_x, scale_y, dpi_scale);
+                    try renderStatRow("Directory", display_dir, scale_x, scale_y, dpi_scale);
+                    try renderStatRow("MIME Type", state.current_mime_type, scale_x, scale_y, dpi_scale);
+                    try renderStatRow("Size on Disk", disk_size_str, scale_x, scale_y, dpi_scale);
+                    try renderStatRow("Resolution", res_str, scale_x, scale_y, dpi_scale);
+                    try renderStatRow("Decode Time", decode_str, scale_x, scale_y, dpi_scale);
+                    try renderStatRow("Upload Time", process_str, scale_x, scale_y, dpi_scale);
+                    try renderStatRow("Memory Size", mem_size_str, scale_x, scale_y, dpi_scale);
+                    try renderStatRow("Viewport Size", screen_str, scale_x, scale_y, dpi_scale);
+                });
+            }
+
             // 1. Header / Title Bar (hidden in fullscreen)
             if (!is_fullscreen) {
                 clay.UI()(.{
