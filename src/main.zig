@@ -179,7 +179,7 @@ const DecodeArgs = struct {
     state: *ViewerState,
     index: usize,
     generation: usize,
-    path: []const u8,
+    path: [:0]const u8,
 };
 
 fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
@@ -196,17 +196,12 @@ fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
 
     if (state.exiting.load(.acquire)) return 0;
 
-    const path_z = state.allocator.dupeZ(u8, path) catch return 0;
-    defer state.allocator.free(path_z);
-
-    if (state.exiting.load(.acquire)) return 0;
-
     const mime_type = detectMimeType(state.io, path);
 
     if (state.exiting.load(.acquire)) return 0;
 
     const start_decode = c.SDL_GetTicksNS();
-    const surface = c.IMG_Load(path_z.ptr);
+    const surface = c.IMG_Load(path.ptr);
     const end_decode = c.SDL_GetTicksNS();
 
     const decode_time_ms = @as(f64, @floatFromInt(end_decode - start_decode)) / 1_000_000.0;
@@ -296,18 +291,17 @@ fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
     return 0;
 }
 
-fn matchesQuery(path: []const u8, query: []const u8) bool {
-    if (query.len == 0) return true;
+fn matchesQueryLower(path: []const u8, query_lower: []const u8) bool {
+    if (query_lower.len == 0) return true;
+    if (query_lower.len > path.len) return false;
 
-    // Simple case-insensitive substring match
     var i: usize = 0;
-    while (i + query.len <= path.len) : (i += 1) {
+    const end = path.len - query_lower.len;
+    while (i <= end) : (i += 1) {
         var match = true;
-        for (query, 0..) |q_char, j| {
-            const path_char = path[i + j];
-            const qc = if (q_char >= 'A' and q_char <= 'Z') q_char + 32 else q_char;
-            const pc = if (path_char >= 'A' and path_char <= 'Z') path_char + 32 else path_char;
-            if (qc != pc) {
+        for (query_lower, 0..) |q_char, j| {
+            const pc = std.ascii.toLower(path[i + j]);
+            if (q_char != pc) {
                 match = false;
                 break;
             }
@@ -338,8 +332,31 @@ const ViewerState = struct {
 
     fn rebuildPaletteMatches(self: *ViewerState) !void {
         self.palette_matches.clearRetainingCapacity();
+        const query = self.palette_query.items;
+        if (query.len == 0) {
+            for (self.image_list.items, 0..) |_, real_idx| {
+                try self.palette_matches.append(self.allocator, real_idx);
+            }
+            return;
+        }
+
+        var stack_query_lower: [256]u8 = undefined;
+        const query_lower = if (query.len <= stack_query_lower.len) blk: {
+            for (query, 0..) |c_val, idx| {
+                stack_query_lower[idx] = std.ascii.toLower(c_val);
+            }
+            break :blk stack_query_lower[0..query.len];
+        } else blk: {
+            const mem = try self.allocator.alloc(u8, query.len);
+            for (query, 0..) |c_val, idx| {
+                mem[idx] = std.ascii.toLower(c_val);
+            }
+            break :blk mem;
+        };
+        defer if (query.len > stack_query_lower.len) self.allocator.free(query_lower);
+
         for (self.image_list.items, 0..) |item, real_idx| {
-            if (matchesQuery(item, self.palette_query.items)) {
+            if (matchesQueryLower(item, query_lower)) {
                 try self.palette_matches.append(self.allocator, real_idx);
             }
         }
@@ -464,7 +481,7 @@ const ViewerState = struct {
                 }
             }
             if (!exists) {
-                const path = try self.allocator.dupe(u8, self.image_list.items[d]);
+                const path = try self.allocator.dupeZ(u8, self.image_list.items[d]);
                 errdefer self.allocator.free(path);
 
                 const new_entry = CacheEntry{
@@ -591,32 +608,15 @@ const ViewerState = struct {
                     }
                 },
                 c.SDLK_DOWN => {
-                    // Count matches
-                    var matches_count: usize = 0;
-                    for (self.image_list.items) |item| {
-                        if (matchesQuery(item, self.palette_query.items)) {
-                            matches_count += 1;
-                        }
-                    }
+                    const matches_count = self.palette_matches.items.len;
                     if (matches_count > 0 and self.palette_selected_idx + 1 < matches_count) {
                         self.palette_selected_idx += 1;
                         self.palette_selection_dirty = true;
                     }
                 },
                 c.SDLK_RETURN => {
-                    // Find the selected match
-                    var matches_count: usize = 0;
-                    var real_idx_to_jump: ?usize = null;
-                    for (self.image_list.items, 0..) |item, real_idx| {
-                        if (matchesQuery(item, self.palette_query.items)) {
-                            if (matches_count == self.palette_selected_idx) {
-                                real_idx_to_jump = real_idx;
-                                break;
-                            }
-                            matches_count += 1;
-                        }
-                    }
-                    if (real_idx_to_jump) |ridx| {
+                    if (self.palette_selected_idx < self.palette_matches.items.len) {
+                        const ridx = self.palette_matches.items[self.palette_selected_idx];
                         self.current_index = ridx;
                         try self.updateCache();
                     }
@@ -686,6 +686,8 @@ fn truncateFilename(allocator: std.mem.Allocator, text: []const u8, max_w: f32, 
         return text;
     }
 
+    const dots_w = sdl3MeasureText("...", &text_config, data).w;
+
     var low: usize = 0;
     var high: usize = text.len;
     var best_len: usize = 0;
@@ -699,7 +701,6 @@ fn truncateFilename(allocator: std.mem.Allocator, text: []const u8, max_w: f32, 
         }
 
         const part_w = sdl3MeasureText(text[0..byte_len], &text_config, data).w;
-        const dots_w = sdl3MeasureText("...", &text_config, data).w;
 
         if (part_w + dots_w <= max_w) {
             best_len = byte_len;
@@ -724,6 +725,8 @@ fn truncateDirectory(allocator: std.mem.Allocator, text: []const u8, max_w: f32,
         return text;
     }
 
+    const dots_w = sdl3MeasureText("...", &text_config, data).w;
+
     var low: usize = 0;
     var high: usize = text.len;
     var best_len: usize = 0;
@@ -738,7 +741,6 @@ fn truncateDirectory(allocator: std.mem.Allocator, text: []const u8, max_w: f32,
         }
 
         const part_w = sdl3MeasureText(text[byte_start..], &text_config, data).w;
-        const dots_w = sdl3MeasureText("...", &text_config, data).w;
 
         if (part_w + dots_w <= max_w) {
             best_len = text.len - byte_start;
