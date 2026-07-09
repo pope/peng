@@ -340,6 +340,10 @@ const AppActionId = enum {
     zoom_in,
     zoom_out,
     reset_zoom,
+    set_scale_none,
+    set_scale_shrink,
+    set_scale_full,
+    set_scale_crop,
 };
 
 const AppAction = struct {
@@ -354,6 +358,10 @@ const app_actions = [_]AppAction{
     .{ .name = "Zoom In", .shortcut = "= / +", .id = .zoom_in },
     .{ .name = "Zoom Out", .shortcut = "-", .id = .zoom_out },
     .{ .name = "Reset Zoom & Pan", .shortcut = "R / 0", .id = .reset_zoom },
+    .{ .name = "Set Scale Mode: 100% (Actual Size)", .shortcut = "", .id = .set_scale_none },
+    .{ .name = "Set Scale Mode: Fit if Larger (Shrink)", .shortcut = "", .id = .set_scale_shrink },
+    .{ .name = "Set Scale Mode: Fit Window (Full)", .shortcut = "", .id = .set_scale_full },
+    .{ .name = "Set Scale Mode: Fill Window (Crop)", .shortcut = "", .id = .set_scale_crop },
     .{ .name = "Toggle Stats for Nerds", .shortcut = "I", .id = .toggle_stats },
     .{ .name = "Toggle Fullscreen", .shortcut = "F / F11", .id = .toggle_fullscreen },
     .{ .name = "Search Files (Go to File)", .shortcut = "Ctrl+P", .id = .open_file_finder },
@@ -398,6 +406,13 @@ pub const PaletteState = struct {
     }
 };
 
+pub const ScaleMode = enum {
+    none,
+    shrink,
+    full,
+    crop,
+};
+
 const ViewerState = struct {
     renderer: ?*c.SDL_Renderer,
     image_list: std.ArrayList([]const u8),
@@ -416,6 +431,7 @@ const ViewerState = struct {
     is_fullscreen: bool = false,
     running: bool = true,
     show_stats_overlay: bool = false,
+    scale_mode: ScaleMode = .full,
     zoom_factor: f32 = 1.0,
     pan_x: f32 = 0.0,
     pan_y: f32 = 0.0,
@@ -553,6 +569,22 @@ const ViewerState = struct {
                 self.pan_y *= (self.zoom_factor / old_zoom);
             },
             .reset_zoom => {
+                self.resetZoomPan();
+            },
+            .set_scale_none => {
+                self.scale_mode = .none;
+                self.resetZoomPan();
+            },
+            .set_scale_shrink => {
+                self.scale_mode = .shrink;
+                self.resetZoomPan();
+            },
+            .set_scale_full => {
+                self.scale_mode = .full;
+                self.resetZoomPan();
+            },
+            .set_scale_crop => {
+                self.scale_mode = .crop;
                 self.resetZoomPan();
             },
         }
@@ -1408,8 +1440,31 @@ pub fn main(init: std.process.Init) !void {
     _ = args_it.next();
 
     var arg_path: ?[]const u8 = null;
-    if (args_it.next()) |arg| {
-        arg_path = try gpa.dupe(u8, arg);
+    var default_scale: ScaleMode = .full;
+
+    while (args_it.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--scale")) {
+            if (args_it.next()) |val| {
+                if (std.mem.eql(u8, val, "none")) {
+                    default_scale = .none;
+                } else if (std.mem.eql(u8, val, "shrink")) {
+                    default_scale = .shrink;
+                } else if (std.mem.eql(u8, val, "full")) {
+                    default_scale = .full;
+                } else if (std.mem.eql(u8, val, "crop")) {
+                    default_scale = .crop;
+                } else {
+                    std.log.err("Unknown scale mode: {s}. Valid modes are: none, shrink, full, crop.", .{val});
+                }
+            } else {
+                std.log.err("Missing value for --scale flag.", .{});
+            }
+        } else {
+            // Treat non-flag arguments as path
+            if (arg_path == null) {
+                arg_path = try gpa.dupe(u8, arg);
+            }
+        }
     }
     defer if (arg_path) |p| gpa.free(p);
 
@@ -1518,6 +1573,7 @@ pub fn main(init: std.process.Init) !void {
         .io = init.io,
         .window_pixel_format = c.SDL_GetWindowPixelFormat(window),
         .palette = PaletteState.init(gpa),
+        .scale_mode = default_scale,
         .window = window,
         .is_fullscreen = false,
         .running = true,
@@ -1891,21 +1947,43 @@ pub fn main(init: std.process.Init) !void {
                 if (img_w > 0 and img_h > 0) {
                     const r_img = img_w / img_h;
                     const r_view = view_w / view_h;
-
-                    if (r_img > r_view) {
-                        draw_w = view_w;
-                        draw_h = view_w / r_img;
-                        if (draw_h > view_h) {
-                            draw_h = view_h;
-                            draw_w = view_h * r_img;
-                        }
-                    } else {
-                        draw_h = view_h;
-                        draw_w = view_h * r_img;
-                        if (draw_w > view_w) {
-                            draw_w = view_w;
-                            draw_h = view_w / r_img;
-                        }
+                    switch (state.scale_mode) {
+                        .none => {
+                            draw_w = img_w;
+                            draw_h = img_h;
+                        },
+                        .shrink => {
+                            if (img_w <= view_w and img_h <= view_h) {
+                                draw_w = img_w;
+                                draw_h = img_h;
+                            } else {
+                                if (r_img > r_view) {
+                                    draw_w = view_w;
+                                    draw_h = view_w / r_img;
+                                } else {
+                                    draw_h = view_h;
+                                    draw_w = view_h * r_img;
+                                }
+                            }
+                        },
+                        .full => {
+                            if (r_img > r_view) {
+                                draw_w = view_w;
+                                draw_h = view_w / r_img;
+                            } else {
+                                draw_h = view_h;
+                                draw_w = view_h * r_img;
+                            }
+                        },
+                        .crop => {
+                            if (r_img > r_view) {
+                                draw_h = view_h;
+                                draw_w = view_h * r_img;
+                            } else {
+                                draw_w = view_w;
+                                draw_h = view_w / r_img;
+                            }
+                        },
                     }
                 }
             }
@@ -1977,8 +2055,20 @@ pub fn main(init: std.process.Init) !void {
                     }
                 }
 
-                const zoom_buf = try frame_allocator.alloc(u8, 64);
-                const zoom_str = try std.fmt.bufPrint(zoom_buf, "{d:.1}x", .{state.zoom_factor});
+                var zoom_str: []const u8 = "1.0x";
+                if (state.getCurrentEntry()) |entry| {
+                    if (entry.w > 0) {
+                        const pixel_zoom_pct = ((draw_w * state.zoom_factor) / entry.w) * 100.0;
+                        const zoom_buf = try frame_allocator.alloc(u8, 128);
+                        zoom_str = try std.fmt.bufPrint(zoom_buf, "{d:.1}x ({d:.0}%)", .{ state.zoom_factor, pixel_zoom_pct });
+                    } else {
+                        const zoom_buf = try frame_allocator.alloc(u8, 64);
+                        zoom_str = try std.fmt.bufPrint(zoom_buf, "{d:.1}x", .{state.zoom_factor});
+                    }
+                } else {
+                    const zoom_buf = try frame_allocator.alloc(u8, 64);
+                    zoom_str = try std.fmt.bufPrint(zoom_buf, "{d:.1}x", .{state.zoom_factor});
+                }
 
                 const pan_buf = try frame_allocator.alloc(u8, 128);
                 const pan_str = try std.fmt.bufPrint(pan_buf, "{d:.0}, {d:.0} px", .{ state.pan_x, state.pan_y });
@@ -2055,6 +2145,13 @@ pub fn main(init: std.process.Init) !void {
                     try renderStatRow("Viewport Size", screen_str, scale_x, scale_y, dpi_scale);
                     try renderStatRow("Zoom Level", zoom_str, scale_x, scale_y, dpi_scale);
                     try renderStatRow("Pan Offset", pan_str, scale_x, scale_y, dpi_scale);
+                    const scale_mode_str = switch (state.scale_mode) {
+                        .none => "100% (Actual Size)",
+                        .shrink => "Shrink to Fit",
+                        .full => "Fit Window (Full)",
+                        .crop => "Fill Window (Crop)",
+                    };
+                    try renderStatRow("Scale Mode", scale_mode_str, scale_x, scale_y, dpi_scale);
                 });
             }
 
