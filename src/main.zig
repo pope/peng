@@ -357,6 +357,41 @@ const app_actions = [_]AppAction{
     .{ .name = "Exit Application", .shortcut = "Esc", .id = .exit },
 };
 
+pub const PaletteType = enum {
+    files,
+    actions,
+};
+
+pub const PaletteState = struct {
+    show: bool = false,
+    active_type: PaletteType = .files,
+    query: std.ArrayList(u8),
+    selected_idx: usize = 0,
+    selection_dirty: bool = false,
+    matches: std.ArrayList(usize),
+    allocator: std.mem.Allocator,
+
+    pub fn init(allocator: std.mem.Allocator) PaletteState {
+        return .{
+            .query = std.ArrayList(u8).empty,
+            .matches = std.ArrayList(usize).empty,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn deinit(self: *PaletteState) void {
+        self.query.deinit(self.allocator);
+        self.matches.deinit(self.allocator);
+    }
+
+    pub fn reset(self: *PaletteState) void {
+        self.query.clearRetainingCapacity();
+        self.matches.clearRetainingCapacity();
+        self.selected_idx = 0;
+        self.selection_dirty = true;
+    }
+};
+
 const ViewerState = struct {
     renderer: ?*c.SDL_Renderer,
     image_list: std.ArrayList([]const u8),
@@ -369,24 +404,35 @@ const ViewerState = struct {
     active_threads: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     exiting: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     generation: usize = 0,
-    show_command_palette: bool = false,
-    palette_query: std.ArrayList(u8) = std.ArrayList(u8).empty,
-    palette_selected_idx: usize = 0,
-    palette_selection_dirty: bool = false,
     window_pixel_format: c.SDL_PixelFormat = c.SDL_PIXELFORMAT_UNKNOWN,
-    palette_matches: std.ArrayList(usize) = std.ArrayList(usize).empty,
-    show_action_palette: bool = false,
-    action_query: std.ArrayList(u8) = std.ArrayList(u8).empty,
-    action_selected_idx: usize = 0,
-    action_selection_dirty: bool = false,
-    action_matches: std.ArrayList(usize) = std.ArrayList(usize).empty,
+    palette: PaletteState,
+    window: ?*c.SDL_Window,
+    is_fullscreen: bool = false,
+    running: bool = true,
+    show_stats_overlay: bool = false,
+
+    pub fn deinit(self: *ViewerState) void {
+        self.exiting.store(true, .release);
+        while (self.active_threads.load(.acquire) > 0) {
+            c.SDL_Delay(1);
+        }
+
+        self.clearCache();
+        c.SDL_DestroyMutex(self.cache_mutex);
+        for (self.image_list.items) |item| {
+            self.allocator.free(item);
+        }
+        self.image_list.deinit(self.allocator);
+        self.cache.deinit(self.allocator);
+        self.palette.deinit();
+    }
 
     fn rebuildPaletteMatches(self: *ViewerState) !void {
-        self.palette_matches.clearRetainingCapacity();
-        const query = self.palette_query.items;
+        self.palette.matches.clearRetainingCapacity();
+        const query = self.palette.query.items;
         if (query.len == 0) {
             for (self.image_list.items, 0..) |_, real_idx| {
-                try self.palette_matches.append(self.allocator, real_idx);
+                try self.palette.matches.append(self.allocator, real_idx);
             }
             return;
         }
@@ -408,17 +454,17 @@ const ViewerState = struct {
 
         for (self.image_list.items, 0..) |item, real_idx| {
             if (matchesQueryLower(item, query_lower)) {
-                try self.palette_matches.append(self.allocator, real_idx);
+                try self.palette.matches.append(self.allocator, real_idx);
             }
         }
     }
 
     fn rebuildActionMatches(self: *ViewerState) !void {
-        self.action_matches.clearRetainingCapacity();
-        const query = self.action_query.items;
+        self.palette.matches.clearRetainingCapacity();
+        const query = self.palette.query.items;
         if (query.len == 0) {
             for (app_actions, 0..) |_, idx| {
-                try self.action_matches.append(self.allocator, idx);
+                try self.palette.matches.append(self.allocator, idx);
             }
             return;
         }
@@ -440,32 +486,33 @@ const ViewerState = struct {
 
         for (app_actions, 0..) |item, idx| {
             if (matchesQueryLower(item.name, query_lower)) {
-                try self.action_matches.append(self.allocator, idx);
+                try self.palette.matches.append(self.allocator, idx);
             }
         }
     }
 
-    fn triggerAction(self: *ViewerState, action_id: AppActionId, window: ?*c.SDL_Window, is_fullscreen: *bool, running: *bool, show_stats_overlay: *bool) !void {
+    fn triggerAction(self: *ViewerState, action_id: AppActionId) !void {
         switch (action_id) {
             .next_image => try self.next(),
             .prev_image => try self.prev(),
-            .toggle_stats => show_stats_overlay.* = !show_stats_overlay.*,
+            .toggle_stats => self.show_stats_overlay = !self.show_stats_overlay,
             .toggle_fullscreen => {
-                is_fullscreen.* = !is_fullscreen.*;
-                if (!c.SDL_SetWindowFullscreen(window, is_fullscreen.*)) {
+                self.is_fullscreen = !self.is_fullscreen;
+                if (!c.SDL_SetWindowFullscreen(self.window, self.is_fullscreen)) {
                     std.log.err("SDL_SetWindowFullscreen failed: {s}", .{c.SDL_GetError()});
                 }
             },
             .open_file_finder => {
-                self.show_command_palette = true;
-                self.palette_query.clearRetainingCapacity();
-                self.palette_selected_idx = self.current_index orelse 0;
-                self.palette_selection_dirty = true;
+                self.palette.show = true;
+                self.palette.active_type = .files;
+                self.palette.query.clearRetainingCapacity();
+                self.palette.selected_idx = self.current_index orelse 0;
+                self.palette.selection_dirty = true;
                 try self.rebuildPaletteMatches();
-                startTextInput(window);
+                startTextInput(self.window);
             },
             .toggle_debug_mode => clay.setDebugModeEnabled(!clay.isDebugModeEnabled()),
-            .exit => running.* = false,
+            .exit => self.running = false,
             .first_image => {
                 if (self.image_list.items.len > 0) {
                     self.current_index = 0;
@@ -713,83 +760,71 @@ const ViewerState = struct {
         try self.rebuildPaletteMatches();
     }
 
-    fn handleKeyDown(self: *ViewerState, key: c.SDL_Keycode, mod: c.SDL_Keymod, window: ?*c.SDL_Window, is_fullscreen: *bool, running: *bool, show_stats_overlay: *bool) !void {
-        if (self.show_command_palette) {
-            switch (key) {
-                c.SDLK_ESCAPE => {
-                    self.show_command_palette = false;
-                    stopTextInput(window);
-                },
-                c.SDLK_UP => {
-                    if (self.palette_selected_idx > 0) {
-                        self.palette_selected_idx -= 1;
-                        self.palette_selection_dirty = true;
+    pub fn handlePaletteKeys(
+        self: *ViewerState,
+        key: c.SDL_Keycode,
+    ) !bool {
+        const palette = &self.palette;
+        if (!palette.show) return false;
+
+        switch (key) {
+            c.SDLK_ESCAPE => {
+                palette.show = false;
+                stopTextInput(self.window);
+                return true;
+            },
+            c.SDLK_UP => {
+                if (palette.selected_idx > 0) {
+                    palette.selected_idx -= 1;
+                    palette.selection_dirty = true;
+                }
+                return true;
+            },
+            c.SDLK_DOWN => {
+                const count = palette.matches.items.len;
+                if (count > 0 and palette.selected_idx + 1 < count) {
+                    palette.selected_idx += 1;
+                    palette.selection_dirty = true;
+                }
+                return true;
+            },
+            c.SDLK_RETURN => {
+                if (palette.selected_idx < palette.matches.items.len) {
+                    const target_idx = palette.matches.items[palette.selected_idx];
+                    switch (palette.active_type) {
+                        .files => {
+                            self.current_index = target_idx;
+                            try self.updateCache();
+                        },
+                        .actions => {
+                            const action = app_actions[target_idx];
+                            try self.triggerAction(action.id);
+                        },
                     }
-                },
-                c.SDLK_DOWN => {
-                    const matches_count = self.palette_matches.items.len;
-                    if (matches_count > 0 and self.palette_selected_idx + 1 < matches_count) {
-                        self.palette_selected_idx += 1;
-                        self.palette_selection_dirty = true;
+                }
+                palette.show = false;
+                stopTextInput(self.window);
+                return true;
+            },
+            c.SDLK_BACKSPACE => {
+                if (palette.query.items.len > 0) {
+                    _ = palette.query.pop();
+                    palette.selected_idx = 0;
+                    palette.selection_dirty = true;
+                    switch (palette.active_type) {
+                        .files => try self.rebuildPaletteMatches(),
+                        .actions => try self.rebuildActionMatches(),
                     }
-                },
-                c.SDLK_RETURN => {
-                    if (self.palette_selected_idx < self.palette_matches.items.len) {
-                        const ridx = self.palette_matches.items[self.palette_selected_idx];
-                        self.current_index = ridx;
-                        try self.updateCache();
-                    }
-                    self.show_command_palette = false;
-                    stopTextInput(window);
-                },
-                c.SDLK_BACKSPACE => {
-                    if (self.palette_query.items.len > 0) {
-                        _ = self.palette_query.pop();
-                        self.palette_selected_idx = 0;
-                        self.palette_selection_dirty = true;
-                        try self.rebuildPaletteMatches();
-                    }
-                },
-                else => {},
-            }
-        } else if (self.show_action_palette) {
-            switch (key) {
-                c.SDLK_ESCAPE => {
-                    self.show_action_palette = false;
-                    stopTextInput(window);
-                },
-                c.SDLK_UP => {
-                    if (self.action_selected_idx > 0) {
-                        self.action_selected_idx -= 1;
-                        self.action_selection_dirty = true;
-                    }
-                },
-                c.SDLK_DOWN => {
-                    const matches_count = self.action_matches.items.len;
-                    if (matches_count > 0 and self.action_selected_idx + 1 < matches_count) {
-                        self.action_selected_idx += 1;
-                        self.action_selection_dirty = true;
-                    }
-                },
-                c.SDLK_RETURN => {
-                    if (self.action_selected_idx < self.action_matches.items.len) {
-                        const act_idx = self.action_matches.items[self.action_selected_idx];
-                        const action = app_actions[act_idx];
-                        try self.triggerAction(action.id, window, is_fullscreen, running, show_stats_overlay);
-                    }
-                    self.show_action_palette = false;
-                    stopTextInput(window);
-                },
-                c.SDLK_BACKSPACE => {
-                    if (self.action_query.items.len > 0) {
-                        _ = self.action_query.pop();
-                        self.action_selected_idx = 0;
-                        self.action_selection_dirty = true;
-                        try self.rebuildActionMatches();
-                    }
-                },
-                else => {},
-            }
+                }
+                return true;
+            },
+            else => return false,
+        }
+    }
+
+    fn handleKeyDown(self: *ViewerState, key: c.SDL_Keycode, mod: c.SDL_Keymod) !void {
+        if (self.palette.show) {
+            _ = try self.handlePaletteKeys(key);
         } else {
             switch (key) {
                 c.SDLK_LEFT, c.SDLK_BACKSPACE => try self.prev(),
@@ -807,51 +842,54 @@ const ViewerState = struct {
                     }
                 },
                 c.SDLK_F, c.SDLK_F11 => {
-                    is_fullscreen.* = !is_fullscreen.*;
-                    if (!c.SDL_SetWindowFullscreen(window, is_fullscreen.*)) {
+                    self.is_fullscreen = !self.is_fullscreen;
+                    if (!c.SDL_SetWindowFullscreen(self.window, self.is_fullscreen)) {
                         std.log.err("SDL_SetWindowFullscreen failed: {s}", .{c.SDL_GetError()});
                     }
                 },
                 c.SDLK_ESCAPE => {
-                    if (is_fullscreen.*) {
-                        is_fullscreen.* = false;
-                        if (!c.SDL_SetWindowFullscreen(window, false)) {
+                    if (self.is_fullscreen) {
+                        self.is_fullscreen = false;
+                        if (!c.SDL_SetWindowFullscreen(self.window, false)) {
                             std.log.err("SDL_SetWindowFullscreen failed: {s}", .{c.SDL_GetError()});
                         }
                     } else {
-                        running.* = false;
+                        self.running = false;
                     }
                 },
                 c.SDLK_D => {
                     clay.setDebugModeEnabled(!clay.isDebugModeEnabled());
                 },
                 c.SDLK_I => {
-                    show_stats_overlay.* = !show_stats_overlay.*;
+                    self.show_stats_overlay = !self.show_stats_overlay;
                 },
                 c.SDLK_F1 => {
-                    self.show_action_palette = true;
-                    self.action_query.clearRetainingCapacity();
-                    self.action_selected_idx = 0;
-                    self.action_selection_dirty = true;
+                    self.palette.show = true;
+                    self.palette.active_type = .actions;
+                    self.palette.query.clearRetainingCapacity();
+                    self.palette.selected_idx = 0;
+                    self.palette.selection_dirty = true;
                     try self.rebuildActionMatches();
-                    startTextInput(window);
+                    startTextInput(self.window);
                 },
                 c.SDLK_P => {
                     if (((mod & c.SDL_KMOD_CTRL) != 0) or ((mod & c.SDL_KMOD_GUI) != 0)) {
                         if ((mod & c.SDL_KMOD_SHIFT) != 0) {
-                            self.show_action_palette = true;
-                            self.action_query.clearRetainingCapacity();
-                            self.action_selected_idx = 0;
-                            self.action_selection_dirty = true;
+                            self.palette.show = true;
+                            self.palette.active_type = .actions;
+                            self.palette.query.clearRetainingCapacity();
+                            self.palette.selected_idx = 0;
+                            self.palette.selection_dirty = true;
                             try self.rebuildActionMatches();
-                            startTextInput(window);
+                            startTextInput(self.window);
                         } else {
-                            self.show_command_palette = true;
-                            self.palette_query.clearRetainingCapacity();
-                            self.palette_selected_idx = self.current_index orelse 0;
-                            self.palette_selection_dirty = true;
+                            self.palette.show = true;
+                            self.palette.active_type = .files;
+                            self.palette.query.clearRetainingCapacity();
+                            self.palette.selected_idx = self.current_index orelse 0;
+                            self.palette.selection_dirty = true;
                             try self.rebuildPaletteMatches();
-                            startTextInput(window);
+                            startTextInput(self.window);
                         }
                     }
                 },
@@ -860,6 +898,346 @@ const ViewerState = struct {
         }
     }
 };
+
+fn renderPalette(
+    state: *ViewerState,
+    scale_x: f32,
+    scale_y: f32,
+    dpi_scale: f32,
+    mouse_clicked: bool,
+    frame_allocator: std.mem.Allocator,
+    measure_data: *const MeasureTextUserData,
+) !void {
+    const palette = &state.palette;
+    if (!palette.show) return;
+
+    const PaletteConfig = struct {
+        title: []const u8,
+        placeholder: []const u8,
+        element_id: []const u8,
+        list_id: []const u8,
+        item_prefix: []const u8,
+        top_spacer_id: []const u8,
+        bottom_spacer_id: []const u8,
+        base_item_height: f32,
+    };
+
+    const cfg = switch (palette.active_type) {
+        .files => PaletteConfig{
+            .title = "Search Files",
+            .placeholder = "Type file name to search...",
+            .element_id = "CommandPalette",
+            .list_id = "CommandPaletteList",
+            .item_prefix = "PaletteItem_",
+            .top_spacer_id = "PaletteTopSpacer",
+            .bottom_spacer_id = "PaletteBottomSpacer",
+            .base_item_height = 58.0,
+        },
+        .actions => PaletteConfig{
+            .title = "Command Palette",
+            .placeholder = "Type a command to run...",
+            .element_id = "ActionPalette",
+            .list_id = "ActionPaletteList",
+            .item_prefix = "ActionItem_",
+            .top_spacer_id = "ActionTopSpacer",
+            .bottom_spacer_id = "ActionBottomSpacer",
+            .base_item_height = 50.0,
+        },
+    };
+
+    // Render Floating Card container
+    clay.UI()(.{
+        .id = clay.getElementId(cfg.element_id),
+        .layout = .{
+            .sizing = .{ .w = .fixed(550 * scale_x), .h = .fit },
+            .direction = .top_to_bottom,
+            .padding = .{ .left = 12, .right = 12, .top = 12, .bottom = 12 },
+            .child_gap = 10,
+        },
+        .background_color = .{ 30, 30, 46, 245 }, // Catppuccin Base with opacity
+        .corner_radius = .all(10),
+        .border = .{ .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 }, .color = .{ 79, 79, 97, 255 } },
+        .floating = .{
+            .attach_to = .to_parent,
+            .attach_points = .{ .element = .center_center, .parent = .center_center },
+            .z_index = 200,
+        },
+    })({
+        // Title / Header
+        clay.UI()(.{
+            .layout = .{
+                .sizing = .{ .w = .grow, .h = .fit },
+                .direction = .left_to_right,
+                .child_alignment = .{ .x = .left, .y = .center },
+            },
+        })({
+            clay.text(cfg.title, .{
+                .color = switch (palette.active_type) {
+                    .files => clay.Color{ 245, 194, 231, 255 }, // Catppuccin Pink
+                    .actions => clay.Color{ 137, 180, 250, 255 }, // Catppuccin Blue
+                },
+                .font_size = @intFromFloat(13.0 * dpi_scale),
+                .font_id = 0,
+            });
+        });
+
+        // Search Input Box
+        clay.UI()(.{
+            .layout = .{
+                .sizing = .{ .w = .grow, .h = .fixed(38 * scale_y) },
+                .direction = .left_to_right,
+                .child_alignment = .{ .x = .left, .y = .center },
+                .padding = .{ .left = 12, .right = 12 },
+            },
+            .background_color = .{ 17, 17, 27, 255 }, // Catppuccin Crust (input background)
+            .corner_radius = .all(6),
+            .border = .{ .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 }, .color = .{ 137, 180, 250, 255 } }, // Blue active border
+        })({
+            const query_str = if (palette.query.items.len > 0) palette.query.items else cfg.placeholder;
+            const query_color = if (palette.query.items.len > 0) clay.Color{ 205, 214, 244, 255 } else clay.Color{ 108, 112, 134, 255 };
+            clay.text(query_str, .{
+                .color = query_color,
+                .font_size = @intFromFloat(14.0 * dpi_scale),
+                .font_id = 0,
+            });
+        });
+
+        // Results list scroll container
+        const scroll_data = clay.cdefs.Clay_GetScrollContainerData(clay.getElementId(cfg.list_id));
+        var scroll_offset = if (scroll_data.found) scroll_data.scroll_position.* else clay.Vector2{ .x = 0, .y = 0 };
+
+        // Auto-scroll logic during keyboard navigation
+        const item_height = cfg.base_item_height * scale_y;
+        const viewport_height = 320.0 * scale_y;
+
+        if (scroll_data.found and palette.selection_dirty) {
+            const item_top = @as(f32, @floatFromInt(palette.selected_idx)) * item_height;
+            const item_bottom = item_top + item_height;
+            const visible_top = -scroll_data.scroll_position.y;
+            const visible_bottom = visible_top + viewport_height;
+
+            if (item_top < visible_top) {
+                scroll_data.scroll_position.y = -item_top;
+                scroll_offset.y = -item_top;
+            } else if (item_bottom > visible_bottom) {
+                scroll_data.scroll_position.y = -(item_bottom - viewport_height);
+                scroll_offset.y = -(item_bottom - viewport_height);
+            }
+            palette.selection_dirty = false;
+        }
+
+        const matching_indices = palette.matches;
+
+        clay.UI()(.{
+            .id = clay.getElementId(cfg.list_id),
+            .layout = .{
+                .sizing = .{ .w = .grow, .h = .fixed(320 * scale_y) },
+                .direction = .top_to_bottom,
+                .child_gap = @intFromFloat(4 * scale_y),
+            },
+            .clip = .{
+                .horizontal = false,
+                .vertical = true,
+                .child_offset = scroll_offset,
+            },
+        })({
+            const visible_top = -scroll_offset.y;
+            const visible_bottom = visible_top + viewport_height;
+
+            var start_visible_idx = @as(usize, @intFromFloat(@max(0.0, @floor(visible_top / item_height))));
+            var end_visible_idx = @as(usize, @intFromFloat(@max(0.0, @ceil(visible_bottom / item_height))));
+
+            start_visible_idx = if (start_visible_idx > 0) start_visible_idx - 1 else 0;
+            end_visible_idx = end_visible_idx + 1;
+
+            if (end_visible_idx > matching_indices.items.len) {
+                end_visible_idx = matching_indices.items.len;
+            }
+            if (start_visible_idx > end_visible_idx) {
+                start_visible_idx = end_visible_idx;
+            }
+
+            const top_spacer_h = @as(f32, @floatFromInt(start_visible_idx)) * item_height;
+            const bottom_spacer_h = @as(f32, @floatFromInt(matching_indices.items.len - end_visible_idx)) * item_height;
+
+            // Render Top Spacer if needed
+            if (top_spacer_h > 0) {
+                clay.UI()(.{
+                    .id = clay.getElementId(cfg.top_spacer_id),
+                    .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(top_spacer_h) } },
+                })({});
+            }
+
+            // Render visible items
+            var match_count = start_visible_idx;
+            for (matching_indices.items[start_visible_idx..end_visible_idx]) |real_idx| {
+                const is_selected = (match_count == palette.selected_idx);
+
+                const item_id_buf = try frame_allocator.alloc(u8, 64);
+                const item_id_str = try std.fmt.bufPrint(item_id_buf, "{s}{}", .{ cfg.item_prefix, real_idx });
+
+                const item_hovered = clay.pointerOver(clay.getElementId(item_id_str));
+
+                // Item Container
+                clay.UI()(.{
+                    .id = clay.getElementId(item_id_str),
+                    .layout = .{
+                        .sizing = .{ .w = .grow, .h = .fixed(switch (palette.active_type) {
+                            .files => 54 * scale_y,
+                            .actions => 46 * scale_y,
+                        }) },
+                        .direction = .left_to_right,
+                        .child_alignment = .{ .x = .left, .y = .center },
+                        .padding = .{ .left = 12, .right = 12 },
+                    },
+                    .background_color = if (is_selected)
+                        clay.Color{ 49, 50, 68, 255 } // Catppuccin Surface0
+                    else if (item_hovered)
+                        clay.Color{ 30, 30, 46, 255 } // Catppuccin Base (lighter hover)
+                    else
+                        clay.Color{ 0, 0, 0, 0 },
+                    .corner_radius = .all(6),
+                })({
+                    switch (palette.active_type) {
+                        .files => {
+                            const path = state.image_list.items[real_idx];
+                            const display_filename = truncateFilename(frame_allocator, std.fs.path.basename(path), 492.0 * scale_x, @intFromFloat(13.0 * dpi_scale), measure_data);
+                            const display_dir = truncateDirectory(frame_allocator, std.fs.path.dirname(path) orelse ".", 488.0 * scale_x, @intFromFloat(11.0 * dpi_scale), measure_data);
+
+                            clay.UI()(.{
+                                .layout = .{
+                                    .sizing = .{ .w = .grow, .h = .fit },
+                                    .direction = .top_to_bottom,
+                                    .child_gap = 2,
+                                },
+                            })({
+                                // Row 1: Category Pill + Filename
+                                clay.UI()(.{
+                                    .layout = .{
+                                        .sizing = .{ .w = .grow, .h = .fit },
+                                        .direction = .left_to_right,
+                                        .child_alignment = .{ .x = .left, .y = .center },
+                                        .child_gap = 6,
+                                    },
+                                })({
+                                    // Small colored indicator tag representing category / type
+                                    clay.UI()(.{
+                                        .layout = .{
+                                            .sizing = .{ .w = .fixed(4 * scale_x), .h = .fixed(12 * scale_y) },
+                                        },
+                                        .background_color = if (is_selected) .{ 137, 180, 250, 255 } else .{ 108, 112, 134, 255 },
+                                        .corner_radius = .all(3),
+                                    })({});
+
+                                    // Filename
+                                    clay.text(display_filename, .{
+                                        .color = if (is_selected) .{ 137, 180, 250, 255 } else .{ 205, 214, 244, 255 },
+                                        .font_size = @intFromFloat(13.0 * dpi_scale),
+                                        .font_id = 0,
+                                    });
+                                });
+
+                                // Row 2: Parent folder path (indented slightly for alignment with filename)
+                                clay.UI()(.{
+                                    .layout = .{
+                                        .sizing = .{ .w = .grow, .h = .fit },
+                                        .direction = .left_to_right,
+                                        .padding = .{ .left = 14 },
+                                    },
+                                })({
+                                    clay.text(display_dir, .{
+                                        .color = .{ 166, 173, 200, 255 }, // Subtext
+                                        .font_size = @intFromFloat(11.0 * dpi_scale),
+                                        .font_id = 0,
+                                    });
+                                });
+                            });
+                        },
+                        .actions => {
+                            const action = app_actions[real_idx];
+
+                            // Action Name (Left aligned)
+                            clay.UI()(.{
+                                .layout = .{
+                                    .sizing = .{ .w = .grow, .h = .fit },
+                                },
+                            })({
+                                clay.text(action.name, .{
+                                    .color = if (is_selected) clay.Color{ 137, 180, 250, 255 } else clay.Color{ 205, 214, 244, 255 },
+                                    .font_size = @intFromFloat(13.0 * dpi_scale),
+                                    .font_id = 0,
+                                });
+                            });
+
+                            // Keyboard Shortcut (Right aligned)
+                            if (action.shortcut.len > 0) {
+                                clay.UI()(.{
+                                    .layout = .{
+                                        .sizing = .{ .w = .fit, .h = .fit },
+                                        .padding = .{ .left = 8, .right = 8, .top = 3, .bottom = 3 },
+                                    },
+                                    .background_color = .{ 17, 17, 27, 255 }, // Catppuccin Crust
+                                    .corner_radius = .all(4),
+                                    .border = .{ .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 }, .color = .{ 49, 50, 68, 255 } },
+                                })({
+                                    clay.text(action.shortcut, .{
+                                        .color = .{ 166, 173, 200, 255 },
+                                        .font_size = @intFromFloat(11.0 * dpi_scale),
+                                        .font_id = 0,
+                                    });
+                                });
+                            }
+                        },
+                    }
+                });
+
+                if (mouse_clicked and item_hovered) {
+                    switch (palette.active_type) {
+                        .files => {
+                            state.current_index = real_idx;
+                            try state.updateCache();
+                        },
+                        .actions => {
+                            const action = app_actions[real_idx];
+                            try state.triggerAction(action.id);
+                        },
+                    }
+                    palette.show = false;
+                    stopTextInput(state.window);
+                }
+
+                match_count += 1;
+            }
+
+            // Render Bottom Spacer if needed
+            if (bottom_spacer_h > 0) {
+                clay.UI()(.{
+                    .id = clay.getElementId(cfg.bottom_spacer_id),
+                    .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(bottom_spacer_h) } },
+                })({});
+            }
+
+            if (matching_indices.items.len == 0) {
+                clay.UI()(.{
+                    .layout = .{
+                        .sizing = .{ .w = .grow, .h = .fixed(36 * scale_y) },
+                        .child_alignment = .{ .x = .center, .y = .center },
+                    },
+                })({
+                    const no_match_msg = switch (palette.active_type) {
+                        .files => "No matching files found",
+                        .actions => "No matching commands found",
+                    };
+                    clay.text(no_match_msg, .{
+                        .color = .{ 108, 112, 134, 255 },
+                        .font_size = @intFromFloat(13.0 * dpi_scale),
+                        .font_id = 0,
+                    });
+                });
+            }
+        });
+    });
+}
 
 fn truncateFilename(allocator: std.mem.Allocator, text: []const u8, max_w: f32, font_size: u16, data: *const MeasureTextUserData) []const u8 {
     var text_config = clay.TextElementConfig{
@@ -1069,26 +1447,13 @@ pub fn main(init: std.process.Init) !void {
         .allocator = gpa,
         .io = init.io,
         .window_pixel_format = c.SDL_GetWindowPixelFormat(window),
+        .palette = PaletteState.init(gpa),
+        .window = window,
+        .is_fullscreen = false,
+        .running = true,
+        .show_stats_overlay = false,
     };
-    defer {
-        // Wait for worker threads to finish
-        state.exiting.store(true, .release);
-        while (state.active_threads.load(.acquire) > 0) {
-            c.SDL_Delay(1);
-        }
-
-        state.clearCache();
-        c.SDL_DestroyMutex(state.cache_mutex);
-        for (state.image_list.items) |item| {
-            gpa.free(item);
-        }
-        state.image_list.deinit(gpa);
-        state.cache.deinit(gpa);
-        state.palette_query.deinit(gpa);
-        state.palette_matches.deinit(gpa);
-        state.action_query.deinit(gpa);
-        state.action_matches.deinit(gpa);
-    }
+    defer state.deinit();
 
     // Populate image list from command line argument
     if (arg_path) |path| {
@@ -1127,16 +1492,13 @@ pub fn main(init: std.process.Init) !void {
     }
 
     var last_time = c.SDL_GetTicks();
-    var is_fullscreen = false;
-    var running = true;
     var mouse_inside = true;
-    var show_stats_overlay = false;
     var stats_offset_x: f32 = 20.0;
     var stats_offset_y: f32 = 20.0;
     var stats_dragging = false;
     var drag_start_x: f32 = 0.0;
     var drag_start_y: f32 = 0.0;
-    while (running) {
+    while (state.running) {
         var event: c.SDL_Event = undefined;
         var mouse_clicked = false;
         var scroll_delta_x: f32 = 0;
@@ -1161,7 +1523,7 @@ pub fn main(init: std.process.Init) !void {
 
         // Block until an event occurs, but use a timeout when the command palette is open
         // so that scrolling and hover animations decay smoothly.
-        const wait_success = if (state.show_command_palette or state.show_action_palette)
+        const wait_success = if (state.palette.show)
             c.SDL_WaitEventTimeout(&event, 8)
         else
             c.SDL_WaitEvent(&event);
@@ -1173,13 +1535,13 @@ pub fn main(init: std.process.Init) !void {
 
         // Process first event
         switch (event.type) {
-            c.SDL_EVENT_QUIT => running = false,
+            c.SDL_EVENT_QUIT => state.running = false,
             c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
                 if (event.button.button == c.SDL_BUTTON_LEFT) {
                     var mouse_x: f32 = 0;
                     var mouse_y: f32 = 0;
                     _ = c.SDL_GetMouseState(&mouse_x, &mouse_y);
-                    if (show_stats_overlay and
+                    if (state.show_stats_overlay and
                         clay.pointerOver(clay.getElementId("StatsPanel")) and
                         !clay.pointerOver(clay.getElementId("StatsCloseBtn")))
                     {
@@ -1207,24 +1569,19 @@ pub fn main(init: std.process.Init) !void {
                 mouse_inside = false;
             },
             c.SDL_EVENT_KEY_DOWN => {
-                try state.handleKeyDown(event.key.key, event.key.mod, window, &is_fullscreen, &running, &show_stats_overlay);
+                try state.handleKeyDown(event.key.key, event.key.mod);
             },
             c.SDL_EVENT_TEXT_INPUT => {
-                if (state.show_command_palette) {
+                if (state.palette.show) {
                     if (event.text.text) |ptr| {
                         const len = std.mem.len(ptr);
-                        try state.palette_query.appendSlice(gpa, ptr[0..len]);
-                        state.palette_selected_idx = 0;
-                        state.palette_selection_dirty = true;
-                        try state.rebuildPaletteMatches();
-                    }
-                } else if (state.show_action_palette) {
-                    if (event.text.text) |ptr| {
-                        const len = std.mem.len(ptr);
-                        try state.action_query.appendSlice(gpa, ptr[0..len]);
-                        state.action_selected_idx = 0;
-                        state.action_selection_dirty = true;
-                        try state.rebuildActionMatches();
+                        try state.palette.query.appendSlice(gpa, ptr[0..len]);
+                        state.palette.selected_idx = 0;
+                        state.palette.selection_dirty = true;
+                        switch (state.palette.active_type) {
+                            .files => try state.rebuildPaletteMatches(),
+                            .actions => try state.rebuildActionMatches(),
+                        }
                     }
                 }
             },
@@ -1243,13 +1600,13 @@ pub fn main(init: std.process.Init) !void {
         // Drain any other pending events in the queue
         while (c.SDL_PollEvent(&event)) {
             switch (event.type) {
-                c.SDL_EVENT_QUIT => running = false,
+                c.SDL_EVENT_QUIT => state.running = false,
                 c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
                     if (event.button.button == c.SDL_BUTTON_LEFT) {
                         var mouse_x: f32 = 0;
                         var mouse_y: f32 = 0;
                         _ = c.SDL_GetMouseState(&mouse_x, &mouse_y);
-                        if (show_stats_overlay and
+                        if (state.show_stats_overlay and
                             clay.pointerOver(clay.getElementId("StatsPanel")) and
                             !clay.pointerOver(clay.getElementId("StatsCloseBtn")))
                         {
@@ -1277,24 +1634,19 @@ pub fn main(init: std.process.Init) !void {
                     mouse_inside = false;
                 },
                 c.SDL_EVENT_KEY_DOWN => {
-                    try state.handleKeyDown(event.key.key, event.key.mod, window, &is_fullscreen, &running, &show_stats_overlay);
+                    try state.handleKeyDown(event.key.key, event.key.mod);
                 },
                 c.SDL_EVENT_TEXT_INPUT => {
-                    if (state.show_command_palette) {
+                    if (state.palette.show) {
                         if (event.text.text) |ptr| {
                             const len = std.mem.len(ptr);
-                            try state.palette_query.appendSlice(gpa, ptr[0..len]);
-                            state.palette_selected_idx = 0;
-                            state.palette_selection_dirty = true;
-                            try state.rebuildPaletteMatches();
-                        }
-                    } else if (state.show_action_palette) {
-                        if (event.text.text) |ptr| {
-                            const len = std.mem.len(ptr);
-                            try state.action_query.appendSlice(gpa, ptr[0..len]);
-                            state.action_selected_idx = 0;
-                            state.action_selection_dirty = true;
-                            try state.rebuildActionMatches();
+                            try state.palette.query.appendSlice(gpa, ptr[0..len]);
+                            state.palette.selected_idx = 0;
+                            state.palette.selection_dirty = true;
+                            switch (state.palette.active_type) {
+                                .files => try state.rebuildPaletteMatches(),
+                                .actions => try state.rebuildActionMatches(),
+                            }
                         }
                     }
                 },
@@ -1354,19 +1706,19 @@ pub fn main(init: std.process.Init) !void {
             } else if (clay.pointerOver(clay.getElementId("NextBtn"))) {
                 try state.next();
             } else if (clay.pointerOver(clay.getElementId("FsBtn"))) {
-                is_fullscreen = !is_fullscreen;
-                if (!c.SDL_SetWindowFullscreen(window, is_fullscreen)) {
+                state.is_fullscreen = !state.is_fullscreen;
+                if (!c.SDL_SetWindowFullscreen(window, state.is_fullscreen)) {
                     std.log.err("SDL_SetWindowFullscreen failed: {s}", .{c.SDL_GetError()});
                 }
-            } else if (show_stats_overlay and clay.pointerOver(clay.getElementId("StatsCloseBtn"))) {
-                show_stats_overlay = false;
+            } else if (state.show_stats_overlay and clay.pointerOver(clay.getElementId("StatsCloseBtn"))) {
+                state.show_stats_overlay = false;
             }
         }
 
         // Calculate Image Fitting Layout Boundaries
         var title_bar_h: f32 = 60.0;
         var nav_bar_h: f32 = 80.0;
-        if (is_fullscreen) {
+        if (state.is_fullscreen) {
             title_bar_h = 0;
             nav_bar_h = 0;
         }
@@ -1424,452 +1776,9 @@ pub fn main(init: std.process.Init) !void {
             },
             .background_color = .{ 24, 24, 37, 255 }, // Catppuccin Base (Mocha Mantle/Base)
         })({
-            if (state.show_command_palette) {
-                // Command Palette Overlay
-                clay.UI()(.{
-                    .id = clay.getElementId("CommandPalette"),
-                    .layout = .{
-                        .sizing = .{ .w = .fixed(550 * scale_x), .h = .fit },
-                        .direction = .top_to_bottom,
-                        .padding = .{ .left = 12, .right = 12, .top = 12, .bottom = 12 },
-                        .child_gap = 10,
-                    },
-                    .background_color = .{ 30, 30, 46, 245 }, // Catppuccin Base with opacity
-                    .corner_radius = .all(10),
-                    .border = .{ .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 }, .color = .{ 79, 79, 97, 255 } },
-                    .floating = .{
-                        .attach_to = .to_parent,
-                        .attach_points = .{ .element = .center_center, .parent = .center_center },
-                        .z_index = 200,
-                    },
-                })({
-                    // Title/Shortcut info
-                    clay.UI()(.{
-                        .layout = .{
-                            .sizing = .{ .w = .grow, .h = .fit },
-                            .direction = .left_to_right,
-                            .child_alignment = .{ .x = .left, .y = .center },
-                        },
-                    })({
-                        clay.text("Search Files", .{
-                            .color = .{ 245, 194, 231, 255 }, // Catppuccin Pink
-                            .font_size = @intFromFloat(13.0 * dpi_scale),
-                            .font_id = 0,
-                        });
-                    });
+            try renderPalette(&state, scale_x, scale_y, dpi_scale, mouse_clicked, frame_allocator, &measure_data);
 
-                    // Search Input Box
-                    clay.UI()(.{
-                        .layout = .{
-                            .sizing = .{ .w = .grow, .h = .fixed(38 * scale_y) },
-                            .direction = .left_to_right,
-                            .child_alignment = .{ .x = .left, .y = .center },
-                            .padding = .{ .left = 12, .right = 12 },
-                        },
-                        .background_color = .{ 17, 17, 27, 255 }, // Catppuccin Crust (input background)
-                        .corner_radius = .all(6),
-                        .border = .{ .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 }, .color = .{ 137, 180, 250, 255 } }, // Blue active border
-                    })({
-                        const query_str = if (state.palette_query.items.len > 0) state.palette_query.items else "Type file name to search...";
-                        const query_color = if (state.palette_query.items.len > 0) clay.Color{ 205, 214, 244, 255 } else clay.Color{ 108, 112, 134, 255 };
-                        clay.text(query_str, .{
-                            .color = query_color,
-                            .font_size = @intFromFloat(14.0 * dpi_scale),
-                            .font_id = 0,
-                        });
-                    });
-
-                    // Results list scroll container
-                    const scroll_data = clay.cdefs.Clay_GetScrollContainerData(clay.getElementId("CommandPaletteList"));
-                    var scroll_offset = if (scroll_data.found) scroll_data.scroll_position.* else clay.Vector2{ .x = 0, .y = 0 };
-
-                    // Auto-scroll logic during keyboard navigation
-                    if (scroll_data.found and state.palette_selection_dirty) {
-                        const item_height = 50.0 * scale_y; // 46px height + 4px gap
-                        const viewport_height = 320.0 * scale_y;
-                        const item_top = @as(f32, @floatFromInt(state.palette_selected_idx)) * item_height;
-                        const item_bottom = item_top + item_height;
-                        const visible_top = -scroll_data.scroll_position.y;
-                        const visible_bottom = visible_top + viewport_height;
-
-                        if (item_top < visible_top) {
-                            scroll_data.scroll_position.y = -item_top;
-                            scroll_offset.y = -item_top;
-                        } else if (item_bottom > visible_bottom) {
-                            scroll_data.scroll_position.y = -(item_bottom - viewport_height);
-                            scroll_offset.y = -(item_bottom - viewport_height);
-                        }
-                        state.palette_selection_dirty = false;
-                    }
-
-                    const matching_indices = state.palette_matches;
-
-                    clay.UI()(.{
-                        .id = clay.getElementId("CommandPaletteList"),
-                        .layout = .{
-                            .sizing = .{ .w = .grow, .h = .fixed(320 * scale_y) },
-                            .direction = .top_to_bottom,
-                            .child_gap = @intFromFloat(4 * scale_y),
-                        },
-                        .clip = .{
-                            .horizontal = false,
-                            .vertical = true,
-                            .child_offset = scroll_offset,
-                        },
-                    })({
-                        const item_height = 50.0 * scale_y;
-                        const viewport_height = 320.0 * scale_y;
-                        const visible_top = -scroll_offset.y;
-                        const visible_bottom = visible_top + viewport_height;
-
-                        var start_visible_idx = @as(usize, @intFromFloat(@max(0.0, @floor(visible_top / item_height))));
-                        var end_visible_idx = @as(usize, @intFromFloat(@max(0.0, @ceil(visible_bottom / item_height))));
-
-                        // Keep a buffer of 1 item on top and bottom
-                        start_visible_idx = if (start_visible_idx > 0) start_visible_idx - 1 else 0;
-                        end_visible_idx = end_visible_idx + 1;
-
-                        if (end_visible_idx > matching_indices.items.len) {
-                            end_visible_idx = matching_indices.items.len;
-                        }
-                        if (start_visible_idx > end_visible_idx) {
-                            start_visible_idx = end_visible_idx;
-                        }
-
-                        const top_spacer_h = @as(f32, @floatFromInt(start_visible_idx)) * item_height;
-                        const bottom_spacer_h = @as(f32, @floatFromInt(matching_indices.items.len - end_visible_idx)) * item_height;
-
-                        // Render Top Spacer if needed
-                        if (top_spacer_h > 0) {
-                            clay.UI()(.{
-                                .id = clay.getElementId("PaletteTopSpacer"),
-                                .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(top_spacer_h) } },
-                            })({});
-                        }
-
-                        // Render visible items
-                        var match_count = start_visible_idx;
-                        const selected_item_in_matches = state.palette_selected_idx;
-
-                        for (matching_indices.items[start_visible_idx..end_visible_idx]) |real_idx| {
-                            const item = state.image_list.items[real_idx];
-                            const is_selected = (match_count == selected_item_in_matches);
-                            const filename = std.fs.path.basename(item);
-                            const dirname = std.fs.path.dirname(item) orelse ".";
-
-                            const display_filename = truncateFilename(frame_allocator, filename, 492 * scale_x, @intFromFloat(13.0 * dpi_scale), &measure_data);
-                            const display_dir = truncateDirectory(frame_allocator, dirname, 492 * scale_x, @intFromFloat(11.0 * dpi_scale), &measure_data);
-
-                            // Generate clean ID for hover check
-                            const item_id_str = try std.fmt.allocPrint(frame_allocator, "PaletteItem_{d}", .{real_idx});
-                            const item_hovered = clay.pointerOver(clay.getElementId(item_id_str));
-
-                            clay.UI()(.{
-                                .id = clay.getElementId(item_id_str),
-                                .layout = .{
-                                    .sizing = .{ .w = .grow, .h = .fixed(46 * scale_y) },
-                                    .direction = .top_to_bottom,
-                                    .padding = .{ .left = 10, .right = 10, .top = 4, .bottom = 4 },
-                                    .child_gap = 2,
-                                },
-                                .background_color = if (is_selected) .{ 137, 180, 250, 50 } else if (item_hovered) .{ 49, 50, 68, 255 } else .{ 0, 0, 0, 0 },
-                                .corner_radius = .all(4),
-                            })({
-                                // Row 1: dot and filename
-                                clay.UI()(.{
-                                    .layout = .{
-                                        .sizing = .{ .w = .grow, .h = .fit },
-                                        .direction = .left_to_right,
-                                        .child_alignment = .{ .x = .left, .y = .center },
-                                        .child_gap = 8,
-                                    },
-                                })({
-                                    // Dot indicator
-                                    clay.UI()(.{
-                                        .layout = .{ .sizing = .{ .w = .fixed(6 * scale_x), .h = .fixed(6 * scale_y) } },
-                                        .background_color = if (is_selected) .{ 137, 180, 250, 255 } else .{ 108, 112, 134, 255 },
-                                        .corner_radius = .all(3),
-                                    })({});
-
-                                    // Filename
-                                    clay.text(display_filename, .{
-                                        .color = if (is_selected) .{ 137, 180, 250, 255 } else .{ 205, 214, 244, 255 },
-                                        .font_size = @intFromFloat(13.0 * dpi_scale),
-                                        .font_id = 0,
-                                    });
-                                });
-
-                                // Row 2: Parent folder path (indented slightly for alignment with filename)
-                                clay.UI()(.{
-                                    .layout = .{
-                                        .sizing = .{ .w = .grow, .h = .fit },
-                                        .direction = .left_to_right,
-                                        .padding = .{ .left = 14 },
-                                    },
-                                })({
-                                    clay.text(display_dir, .{
-                                        .color = .{ 166, 173, 200, 255 }, // Subtext
-                                        .font_size = @intFromFloat(11.0 * dpi_scale),
-                                        .font_id = 0,
-                                    });
-                                });
-                            });
-
-                            if (mouse_clicked and item_hovered) {
-                                state.current_index = real_idx;
-                                try state.updateCache();
-                                state.show_command_palette = false;
-                                stopTextInput(window);
-                            }
-
-                            match_count += 1;
-                        }
-
-                        // Render Bottom Spacer if needed
-                        if (bottom_spacer_h > 0) {
-                            clay.UI()(.{
-                                .id = clay.getElementId("PaletteBottomSpacer"),
-                                .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(bottom_spacer_h) } },
-                            })({});
-                        }
-
-                        if (matching_indices.items.len == 0) {
-                            clay.UI()(.{
-                                .layout = .{
-                                    .sizing = .{ .w = .grow, .h = .fixed(36 * scale_y) },
-                                    .child_alignment = .{ .x = .center, .y = .center },
-                                },
-                            })({
-                                clay.text("No matching files found", .{
-                                    .color = .{ 108, 112, 134, 255 },
-                                    .font_size = @intFromFloat(13.0 * dpi_scale),
-                                    .font_id = 0,
-                                });
-                            });
-                        }
-                    });
-                });
-            }
-
-            if (state.show_action_palette) {
-                // Action Palette Overlay
-                clay.UI()(.{
-                    .id = clay.getElementId("ActionPalette"),
-                    .layout = .{
-                        .sizing = .{ .w = .fixed(550 * scale_x), .h = .fit },
-                        .direction = .top_to_bottom,
-                        .padding = .{ .left = 12, .right = 12, .top = 12, .bottom = 12 },
-                        .child_gap = 10,
-                    },
-                    .background_color = .{ 30, 30, 46, 245 }, // Catppuccin Base with opacity
-                    .corner_radius = .all(10),
-                    .border = .{ .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 }, .color = .{ 79, 79, 97, 255 } },
-                    .floating = .{
-                        .attach_to = .to_parent,
-                        .attach_points = .{ .element = .center_center, .parent = .center_center },
-                        .z_index = 200,
-                    },
-                })({
-                    // Title/Header
-                    clay.UI()(.{
-                        .layout = .{
-                            .sizing = .{ .w = .grow, .h = .fit },
-                            .direction = .left_to_right,
-                            .child_alignment = .{ .x = .left, .y = .center },
-                        },
-                    })({
-                        clay.text("Command Palette", .{
-                            .color = .{ 137, 180, 250, 255 }, // Catppuccin Blue
-                            .font_size = @intFromFloat(13.0 * dpi_scale),
-                            .font_id = 0,
-                        });
-                    });
-
-                    // Search Input Box
-                    clay.UI()(.{
-                        .layout = .{
-                            .sizing = .{ .w = .grow, .h = .fixed(38 * scale_y) },
-                            .direction = .left_to_right,
-                            .child_alignment = .{ .x = .left, .y = .center },
-                            .padding = .{ .left = 12, .right = 12 },
-                        },
-                        .background_color = .{ 17, 17, 27, 255 }, // Catppuccin Crust
-                        .corner_radius = .all(6),
-                        .border = .{ .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 }, .color = .{ 137, 180, 250, 255 } },
-                    })({
-                        const query_str = if (state.action_query.items.len > 0) state.action_query.items else "Type a command to run...";
-                        const query_color = if (state.action_query.items.len > 0) clay.Color{ 205, 214, 244, 255 } else clay.Color{ 108, 112, 134, 255 };
-                        clay.text(query_str, .{
-                            .color = query_color,
-                            .font_size = @intFromFloat(14.0 * dpi_scale),
-                            .font_id = 0,
-                        });
-                    });
-
-                    // Results list scroll container
-                    const scroll_data = clay.cdefs.Clay_GetScrollContainerData(clay.getElementId("ActionPaletteList"));
-                    var scroll_offset = if (scroll_data.found) scroll_data.scroll_position.* else clay.Vector2{ .x = 0, .y = 0 };
-
-                    // Auto-scroll logic during keyboard navigation
-                    if (scroll_data.found and state.action_selection_dirty) {
-                        const item_height = 50.0 * scale_y;
-                        const viewport_height = 320.0 * scale_y;
-                        const item_top = @as(f32, @floatFromInt(state.action_selected_idx)) * item_height;
-                        const item_bottom = item_top + item_height;
-                        const visible_top = -scroll_data.scroll_position.y;
-                        const visible_bottom = visible_top + viewport_height;
-
-                        if (item_top < visible_top) {
-                            scroll_data.scroll_position.y = -item_top;
-                            scroll_offset.y = -item_top;
-                        } else if (item_bottom > visible_bottom) {
-                            scroll_data.scroll_position.y = -(item_bottom - viewport_height);
-                            scroll_offset.y = -(item_bottom - viewport_height);
-                        }
-                        state.action_selection_dirty = false;
-                    }
-
-                    const matching_indices = state.action_matches;
-
-                    clay.UI()(.{
-                        .id = clay.getElementId("ActionPaletteList"),
-                        .layout = .{
-                            .sizing = .{ .w = .grow, .h = .fixed(320 * scale_y) },
-                            .direction = .top_to_bottom,
-                            .child_gap = @intFromFloat(4 * scale_y),
-                        },
-                        .clip = .{
-                            .horizontal = false,
-                            .vertical = true,
-                            .child_offset = scroll_offset,
-                        },
-                    })({
-                        const item_height = 50.0 * scale_y;
-                        const viewport_height = 320.0 * scale_y;
-                        const visible_top = -scroll_offset.y;
-                        const visible_bottom = visible_top + viewport_height;
-
-                        var start_visible_idx = @as(usize, @intFromFloat(@max(0.0, @floor(visible_top / item_height))));
-                        var end_visible_idx = @as(usize, @intFromFloat(@max(0.0, @ceil(visible_bottom / item_height))));
-
-                        start_visible_idx = if (start_visible_idx > 0) start_visible_idx - 1 else 0;
-                        end_visible_idx = end_visible_idx + 1;
-
-                        if (end_visible_idx > matching_indices.items.len) {
-                            end_visible_idx = matching_indices.items.len;
-                        }
-                        if (start_visible_idx > end_visible_idx) {
-                            start_visible_idx = end_visible_idx;
-                        }
-
-                        const top_spacer_h = @as(f32, @floatFromInt(start_visible_idx)) * item_height;
-                        const bottom_spacer_h = @as(f32, @floatFromInt(matching_indices.items.len - end_visible_idx)) * item_height;
-
-                        // Render Top Spacer if needed
-                        if (top_spacer_h > 0) {
-                            clay.UI()(.{
-                                .id = clay.getElementId("ActionTopSpacer"),
-                                .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(top_spacer_h) } },
-                            })({});
-                        }
-
-                        // Render visible items
-                        var match_count = start_visible_idx;
-                        for (matching_indices.items[start_visible_idx..end_visible_idx]) |real_idx| {
-                            const action = app_actions[real_idx];
-                            const is_selected = (match_count == state.action_selected_idx);
-
-                            const item_id_buf = try frame_allocator.alloc(u8, 64);
-                            const item_id_str = try std.fmt.bufPrint(item_id_buf, "ActionItem_{}", .{real_idx});
-
-                            const item_hovered = clay.pointerOver(clay.getElementId(item_id_str));
-
-                            // Item Container
-                            clay.UI()(.{
-                                .id = clay.getElementId(item_id_str),
-                                .layout = .{
-                                    .sizing = .{ .w = .grow, .h = .fixed(46 * scale_y) },
-                                    .direction = .left_to_right,
-                                    .child_alignment = .{ .x = .left, .y = .center },
-                                    .padding = .{ .left = 12, .right = 12 },
-                                },
-                                .background_color = if (is_selected)
-                                    clay.Color{ 49, 50, 68, 255 } // Catppuccin Surface0
-                                else if (item_hovered)
-                                    clay.Color{ 30, 30, 46, 255 } // Catppuccin Base
-                                else
-                                    clay.Color{ 0, 0, 0, 0 },
-                                .corner_radius = .all(6),
-                            })({
-                                // Action Name (Left aligned)
-                                clay.UI()(.{
-                                    .layout = .{
-                                        .sizing = .{ .w = .grow, .h = .fit },
-                                    },
-                                })({
-                                    clay.text(action.name, .{
-                                        .color = if (is_selected) clay.Color{ 137, 180, 250, 255 } else clay.Color{ 205, 214, 244, 255 },
-                                        .font_size = @intFromFloat(13.0 * dpi_scale),
-                                        .font_id = 0,
-                                    });
-                                });
-
-                                // Keyboard Shortcut (Right aligned)
-                                if (action.shortcut.len > 0) {
-                                    clay.UI()(.{
-                                        .layout = .{
-                                            .sizing = .{ .w = .fit, .h = .fit },
-                                            .padding = .{ .left = 8, .right = 8, .top = 3, .bottom = 3 },
-                                        },
-                                        .background_color = .{ 17, 17, 27, 255 }, // Catppuccin Crust
-                                        .corner_radius = .all(4),
-                                        .border = .{ .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 }, .color = .{ 49, 50, 68, 255 } },
-                                    })({
-                                        clay.text(action.shortcut, .{
-                                            .color = .{ 166, 173, 200, 255 },
-                                            .font_size = @intFromFloat(11.0 * dpi_scale),
-                                            .font_id = 0,
-                                        });
-                                    });
-                                }
-                            });
-
-                            if (mouse_clicked and item_hovered) {
-                                try state.triggerAction(action.id, window, &is_fullscreen, &running, &show_stats_overlay);
-                                state.show_action_palette = false;
-                                stopTextInput(window);
-                            }
-
-                            match_count += 1;
-                        }
-
-                        // Render Bottom Spacer if needed
-                        if (bottom_spacer_h > 0) {
-                            clay.UI()(.{
-                                .id = clay.getElementId("ActionBottomSpacer"),
-                                .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(bottom_spacer_h) } },
-                            })({});
-                        }
-
-                        if (matching_indices.items.len == 0) {
-                            clay.UI()(.{
-                                .layout = .{
-                                    .sizing = .{ .w = .grow, .h = .fixed(36 * scale_y) },
-                                    .child_alignment = .{ .x = .center, .y = .center },
-                                },
-                            })({
-                                clay.text("No matching commands found", .{
-                                    .color = .{ 108, 112, 134, 255 },
-                                    .font_size = @intFromFloat(13.0 * dpi_scale),
-                                    .font_id = 0,
-                                });
-                            });
-                        }
-                    });
-                });
-            }
-
-            if (show_stats_overlay) {
+            if (state.show_stats_overlay) {
                 const idx = state.current_index;
                 const path = if (idx != null and state.image_list.items.len > idx.?) state.image_list.items[idx.?] else "";
                 const filename = if (path.len > 0) std.fs.path.basename(path) else "None";
@@ -1996,7 +1905,7 @@ pub fn main(init: std.process.Init) !void {
             }
 
             // 1. Header / Title Bar (hidden in fullscreen)
-            if (!is_fullscreen) {
+            if (!state.is_fullscreen) {
                 clay.UI()(.{
                     .id = clay.getElementId("TitleBar"),
                     .layout = .{
@@ -2136,7 +2045,7 @@ pub fn main(init: std.process.Init) !void {
             });
 
             // 3. Navigation Controls Bar (hidden in fullscreen)
-            if (!is_fullscreen) {
+            if (!state.is_fullscreen) {
                 clay.UI()(.{
                     .id = clay.getElementId("NavBar"),
                     .layout = .{
@@ -2229,13 +2138,15 @@ pub fn main(init: std.process.Init) !void {
 
         const render_commands = clay.endLayout();
 
-        if (state.show_command_palette and mouse_clicked and !clay.pointerOver(clay.getElementId("CommandPalette"))) {
-            state.show_command_palette = false;
-            stopTextInput(window);
-        }
-        if (state.show_action_palette and mouse_clicked and !clay.pointerOver(clay.getElementId("ActionPalette"))) {
-            state.show_action_palette = false;
-            stopTextInput(window);
+        if (state.palette.show and mouse_clicked) {
+            const element_id = switch (state.palette.active_type) {
+                .files => "CommandPalette",
+                .actions => "ActionPalette",
+            };
+            if (!clay.pointerOver(clay.getElementId(element_id))) {
+                state.palette.show = false;
+                stopTextInput(window);
+            }
         }
 
         // Render Frame
