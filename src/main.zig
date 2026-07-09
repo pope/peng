@@ -885,33 +885,33 @@ const ViewerState = struct {
         }
     }
 
-    fn handleKeyDown(self: *ViewerState, key: c.SDL_Keycode, mod: c.SDL_Keymod) !void {
+    fn handleKeyDown(self: *ViewerState, key: c.SDL_Keycode, mod: c.SDL_Keymod, scale_x: f32, scale_y: f32) !void {
         if (self.palette.show) {
             _ = try self.handlePaletteKeys(key);
         } else {
             switch (key) {
                 c.SDLK_LEFT => {
                     if (self.zoom_factor > 1.0) {
-                        self.pan_x += 30.0;
+                        self.pan_x += 30.0 * scale_x;
                     } else {
                         try self.prev();
                     }
                 },
                 c.SDLK_RIGHT => {
                     if (self.zoom_factor > 1.0) {
-                        self.pan_x -= 30.0;
+                        self.pan_x -= 30.0 * scale_x;
                     } else {
                         try self.next();
                     }
                 },
                 c.SDLK_UP => {
                     if (self.zoom_factor > 1.0) {
-                        self.pan_y += 30.0;
+                        self.pan_y += 30.0 * scale_y;
                     }
                 },
                 c.SDLK_DOWN => {
                     if (self.zoom_factor > 1.0) {
-                        self.pan_y -= 30.0;
+                        self.pan_y -= 30.0 * scale_y;
                     }
                 },
                 c.SDLK_BACKSPACE => try self.prev(),
@@ -1730,7 +1730,7 @@ pub fn main(init: std.process.Init) !void {
                 mouse_inside = false;
             },
             c.SDL_EVENT_KEY_DOWN => {
-                try state.handleKeyDown(event.key.key, event.key.mod);
+                try state.handleKeyDown(event.key.key, event.key.mod, scale_x, scale_y);
             },
             c.SDL_EVENT_TEXT_INPUT => {
                 if (state.palette.show) {
@@ -1827,7 +1827,7 @@ pub fn main(init: std.process.Init) !void {
                     mouse_inside = false;
                 },
                 c.SDL_EVENT_KEY_DOWN => {
-                    try state.handleKeyDown(event.key.key, event.key.mod);
+                    try state.handleKeyDown(event.key.key, event.key.mod, scale_x, scale_y);
                 },
                 c.SDL_EVENT_TEXT_INPUT => {
                     if (state.palette.show) {
@@ -1939,7 +1939,7 @@ pub fn main(init: std.process.Init) !void {
             if (entry.texture != null) {
                 const padding: f32 = 40.0;
                 const view_w = @max(available_width - padding * 2.0, 1.0);
-                const view_h = @max(height - title_bar_h - nav_bar_h - padding * 2.0, 1.0);
+                const view_h = @max(height - (title_bar_h + nav_bar_h) * scale_y - padding * 2.0, 1.0);
 
                 const img_w = entry.w;
                 const img_h = entry.h;
