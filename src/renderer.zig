@@ -273,11 +273,8 @@ fn renderArc(renderer: ?*c.SDL_Renderer, center: c.SDL_FPoint, radius: f32, star
     }
 }
 
-pub fn renderClayCommands(renderer: ?*c.SDL_Renderer, text_engine: ?*c.TTF_TextEngine, fonts: [*]?*c.TTF_Font, r_commands: clay.ClayArray(clay.RenderCommand), allocator: std.mem.Allocator) !void {
-    var i: usize = 0;
-    const len = @as(usize, @intCast(r_commands.length));
-    while (i < len) : (i += 1) {
-        const rcmd = r_commands.internal_array[i];
+pub fn renderClayCommands(renderer: ?*c.SDL_Renderer, text_engine: ?*c.TTF_TextEngine, fonts: [*]?*c.TTF_Font, r_commands: []const clay.RenderCommand, allocator: std.mem.Allocator) !void {
+    for (r_commands) |rcmd| {
         const bb = rcmd.bounding_box;
         const rect = c.SDL_FRect{
             .x = @round(bb.x),
@@ -304,6 +301,9 @@ pub fn renderClayCommands(renderer: ?*c.SDL_Renderer, text_engine: ?*c.TTF_TextE
             .text => {
                 const config = rcmd.render_data.text;
                 const font = fonts[config.font_id];
+                if (!c.TTF_SetFontSize(font, @as(f32, @floatFromInt(config.font_size)))) {
+                    std.log.err("TTF_SetFontSize failed: {s}", .{c.SDL_GetError()});
+                }
 
                 // Copy string contents to stack/heap to null terminate
                 var stack_buf: [1024]u8 = undefined;

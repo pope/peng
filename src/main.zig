@@ -14,11 +14,13 @@ const MeasureTextUserData = struct {
     allocator: std.mem.Allocator,
 };
 
-fn sdl3MeasureText(text: clay.StringSlice, config: *clay.TextElementConfig, user_data: ?*anyopaque) callconv(.c) clay.Dimensions {
-    const data: *const MeasureTextUserData = @ptrCast(@alignCast(user_data));
+fn sdl3MeasureText(text: []const u8, config: *clay.TextElementConfig, data: *const MeasureTextUserData) clay.Dimensions {
     const font = data.fonts[config.font_id];
+    if (!c.TTF_SetFontSize(font, @as(f32, @floatFromInt(config.font_size)))) {
+        std.log.err("TTF_SetFontSize failed: {s}", .{c.SDL_GetError()});
+    }
 
-    const len = @as(usize, @intCast(text.length));
+    const len = text.len;
 
     // Align layout text allocation: stack-allocate for standard strings, heap-allocate for large strings
     var stack_buf: [1024]u8 = undefined;
@@ -27,7 +29,7 @@ fn sdl3MeasureText(text: clay.StringSlice, config: *clay.TextElementConfig, user
     else
         data.allocator.alloc(u8, len + 1) catch return .{ .w = 0, .h = 0 };
     defer if (len + 1 >= stack_buf.len) data.allocator.free(buffer);
-    @memcpy(buffer[0..len], text.chars[0..len]);
+    @memcpy(buffer[0..len], text);
     buffer[len] = 0;
 
     const text_obj = c.TTF_CreateText(data.text_engine, font, buffer.ptr, len) orelse return .{ .w = 0, .h = 0 };
@@ -323,7 +325,7 @@ pub fn main(init: std.process.Init) !void {
         .allocator = frame_allocator,
     };
 
-    clay.cdefs.Clay_SetMeasureTextFunction(sdl3MeasureText, @constCast(&measure_data));
+    clay.setMeasureTextFunction(*const MeasureTextUserData, &measure_data, sdl3MeasureText);
 
     // Initialize state
     var state = ViewerState{
@@ -378,11 +380,15 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
+    var last_time = c.SDL_GetTicks();
     var is_fullscreen = false;
     var running = true;
+    var mouse_inside = true;
     while (running) {
         var event: c.SDL_Event = undefined;
         var mouse_clicked = false;
+        var scroll_delta_x: f32 = 0;
+        var scroll_delta_y: f32 = 0;
 
         // Block until an event occurs to prevent spinning at 100% CPU when idle
         if (!c.SDL_WaitEvent(&event)) {
@@ -397,21 +403,39 @@ pub fn main(init: std.process.Init) !void {
                     mouse_clicked = true;
                 }
             },
+            c.SDL_EVENT_MOUSE_WHEEL => {
+                const multiplier: f32 = if (event.wheel.direction == c.SDL_MOUSEWHEEL_FLIPPED) -1.0 else 1.0;
+                scroll_delta_x += event.wheel.x * multiplier * 6.0;
+                scroll_delta_y += event.wheel.y * multiplier * 6.0;
+            },
+            c.SDL_EVENT_WINDOW_MOUSE_ENTER => {
+                mouse_inside = true;
+            },
+            c.SDL_EVENT_WINDOW_MOUSE_LEAVE => {
+                mouse_inside = false;
+            },
             c.SDL_EVENT_KEY_DOWN => {
                 switch (event.key.key) {
                     c.SDLK_LEFT, c.SDLK_BACKSPACE => try state.prev(),
                     c.SDLK_RIGHT, c.SDLK_SPACE => try state.next(),
                     c.SDLK_F, c.SDLK_F11 => {
                         is_fullscreen = !is_fullscreen;
-                        _ = c.SDL_SetWindowFullscreen(window, is_fullscreen);
+                        if (!c.SDL_SetWindowFullscreen(window, is_fullscreen)) {
+                            std.log.err("SDL_SetWindowFullscreen failed: {s}", .{c.SDL_GetError()});
+                        }
                     },
                     c.SDLK_ESCAPE => {
                         if (is_fullscreen) {
                             is_fullscreen = false;
-                            _ = c.SDL_SetWindowFullscreen(window, false);
+                            if (!c.SDL_SetWindowFullscreen(window, false)) {
+                                std.log.err("SDL_SetWindowFullscreen failed: {s}", .{c.SDL_GetError()});
+                            }
                         } else {
                             running = false;
                         }
+                    },
+                    c.SDLK_D => {
+                        clay.setDebugModeEnabled(!clay.isDebugModeEnabled());
                     },
                     else => {},
                 }
@@ -437,21 +461,39 @@ pub fn main(init: std.process.Init) !void {
                         mouse_clicked = true;
                     }
                 },
+                c.SDL_EVENT_MOUSE_WHEEL => {
+                    const multiplier: f32 = if (event.wheel.direction == c.SDL_MOUSEWHEEL_FLIPPED) -1.0 else 1.0;
+                    scroll_delta_x += event.wheel.x * multiplier * 6.0;
+                    scroll_delta_y += event.wheel.y * multiplier * 6.0;
+                },
+                c.SDL_EVENT_WINDOW_MOUSE_ENTER => {
+                    mouse_inside = true;
+                },
+                c.SDL_EVENT_WINDOW_MOUSE_LEAVE => {
+                    mouse_inside = false;
+                },
                 c.SDL_EVENT_KEY_DOWN => {
                     switch (event.key.key) {
                         c.SDLK_LEFT, c.SDLK_BACKSPACE => try state.prev(),
                         c.SDLK_RIGHT, c.SDLK_SPACE => try state.next(),
                         c.SDLK_F, c.SDLK_F11 => {
                             is_fullscreen = !is_fullscreen;
-                            _ = c.SDL_SetWindowFullscreen(window, is_fullscreen);
+                            if (!c.SDL_SetWindowFullscreen(window, is_fullscreen)) {
+                                std.log.err("SDL_SetWindowFullscreen failed: {s}", .{c.SDL_GetError()});
+                            }
                         },
                         c.SDLK_ESCAPE => {
                             if (is_fullscreen) {
                                 is_fullscreen = false;
-                                _ = c.SDL_SetWindowFullscreen(window, false);
+                                if (!c.SDL_SetWindowFullscreen(window, false)) {
+                                    std.log.err("SDL_SetWindowFullscreen failed: {s}", .{c.SDL_GetError()});
+                                }
                             } else {
                                 running = false;
                             }
+                        },
+                        c.SDLK_D => {
+                            clay.setDebugModeEnabled(!clay.isDebugModeEnabled());
                         },
                         else => {},
                     }
@@ -494,20 +536,40 @@ pub fn main(init: std.process.Init) !void {
         var mouse_x: f32 = 0;
         var mouse_y: f32 = 0;
         const mouse_state = c.SDL_GetMouseState(&mouse_x, &mouse_y);
-        clay.setPointerState(
-            .{ .x = mouse_x * scale_x, .y = mouse_y * scale_y },
-            (mouse_state & c.SDL_BUTTON_MASK(c.SDL_BUTTON_LEFT)) != 0,
+
+        if (mouse_inside) {
+            clay.setPointerState(
+                .{ .x = mouse_x * scale_x, .y = mouse_y * scale_y },
+                (mouse_state & c.SDL_BUTTON_MASK(c.SDL_BUTTON_LEFT)) != 0,
+            );
+        } else {
+            clay.setPointerState(
+                .{ .x = -1.0, .y = -1.0 },
+                false,
+            );
+        }
+
+        const current_time = c.SDL_GetTicks();
+        const delta_time = @as(f32, @floatFromInt(current_time - last_time)) / 1000.0;
+        last_time = current_time;
+
+        clay.updateScrollContainers(
+            true,
+            .{ .x = scroll_delta_x, .y = scroll_delta_y },
+            delta_time,
         );
 
         // Process Click Actions before Layout pass (to read hover state correctly)
         if (mouse_clicked) {
-            if (clay.cdefs.Clay_PointerOver(clay.getElementId("PrevBtn"))) {
+            if (clay.pointerOver(clay.getElementId("PrevBtn"))) {
                 try state.prev();
-            } else if (clay.cdefs.Clay_PointerOver(clay.getElementId("NextBtn"))) {
+            } else if (clay.pointerOver(clay.getElementId("NextBtn"))) {
                 try state.next();
-            } else if (clay.cdefs.Clay_PointerOver(clay.getElementId("FsBtn"))) {
+            } else if (clay.pointerOver(clay.getElementId("FsBtn"))) {
                 is_fullscreen = !is_fullscreen;
-                _ = c.SDL_SetWindowFullscreen(window, is_fullscreen);
+                if (!c.SDL_SetWindowFullscreen(window, is_fullscreen)) {
+                    std.log.err("SDL_SetWindowFullscreen failed: {s}", .{c.SDL_GetError()});
+                }
             }
         }
 
@@ -519,12 +581,17 @@ pub fn main(init: std.process.Init) !void {
             nav_bar_h = 0;
         }
 
+        var available_width = width;
+        if (clay.isDebugModeEnabled()) {
+            available_width = @max(width - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0);
+        }
+
         var draw_w: f32 = 0;
         var draw_h: f32 = 0;
 
         if (state.current_texture != null) {
             const padding: f32 = 40.0;
-            const view_w = @max(width - padding * 2.0, 1.0);
+            const view_w = @max(available_width - padding * 2.0, 1.0);
             const view_h = @max(height - title_bar_h - nav_bar_h - padding * 2.0, 1.0);
 
             const img_w = state.current_w;
@@ -680,7 +747,7 @@ pub fn main(init: std.process.Init) !void {
                     },
                     .background_color = .{ 17, 17, 27, 255 }, // Catppuccin Crust
                 })({
-                    const prev_hovered = clay.cdefs.Clay_PointerOver(clay.getElementId("PrevBtn"));
+                    const prev_hovered = clay.pointerOver(clay.getElementId("PrevBtn"));
 
                     // 3a. Previous button
                     clay.UI()(.{
@@ -719,7 +786,7 @@ pub fn main(init: std.process.Init) !void {
                     });
 
                     // 3c. Next Button
-                    const next_hovered = clay.cdefs.Clay_PointerOver(clay.getElementId("NextBtn"));
+                    const next_hovered = clay.pointerOver(clay.getElementId("NextBtn"));
 
                     clay.UI()(.{
                         .id = clay.getElementId("NextBtn"),
@@ -738,7 +805,7 @@ pub fn main(init: std.process.Init) !void {
                     });
 
                     // 3d. Fullscreen Button
-                    const fs_hovered = clay.cdefs.Clay_PointerOver(clay.getElementId("FsBtn"));
+                    const fs_hovered = clay.pointerOver(clay.getElementId("FsBtn"));
 
                     clay.UI()(.{
                         .id = clay.getElementId("FsBtn"),
@@ -759,7 +826,7 @@ pub fn main(init: std.process.Init) !void {
             }
         });
 
-        const render_commands = clay.cdefs.Clay_EndLayout();
+        const render_commands = clay.endLayout();
 
         // Render Frame
         if (!c.SDL_SetRenderDrawColor(renderer_ctx, 0, 0, 0, 255)) {
