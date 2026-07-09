@@ -337,6 +337,9 @@ const AppActionId = enum {
     exit,
     first_image,
     last_image,
+    zoom_in,
+    zoom_out,
+    reset_zoom,
 };
 
 const AppAction = struct {
@@ -348,6 +351,9 @@ const AppAction = struct {
 const app_actions = [_]AppAction{
     .{ .name = "Next Image", .shortcut = "Right / Space", .id = .next_image },
     .{ .name = "Previous Image", .shortcut = "Left / Backspace", .id = .prev_image },
+    .{ .name = "Zoom In", .shortcut = "= / +", .id = .zoom_in },
+    .{ .name = "Zoom Out", .shortcut = "-", .id = .zoom_out },
+    .{ .name = "Reset Zoom & Pan", .shortcut = "R / 0", .id = .reset_zoom },
     .{ .name = "Toggle Stats for Nerds", .shortcut = "I", .id = .toggle_stats },
     .{ .name = "Toggle Fullscreen", .shortcut = "F / F11", .id = .toggle_fullscreen },
     .{ .name = "Search Files (Go to File)", .shortcut = "Ctrl+P", .id = .open_file_finder },
@@ -410,6 +416,9 @@ const ViewerState = struct {
     is_fullscreen: bool = false,
     running: bool = true,
     show_stats_overlay: bool = false,
+    zoom_factor: f32 = 1.0,
+    pan_x: f32 = 0.0,
+    pan_y: f32 = 0.0,
 
     pub fn deinit(self: *ViewerState) void {
         self.exiting.store(true, .release);
@@ -425,6 +434,12 @@ const ViewerState = struct {
         self.image_list.deinit(self.allocator);
         self.cache.deinit(self.allocator);
         self.palette.deinit();
+    }
+
+    pub fn resetZoomPan(self: *ViewerState) void {
+        self.zoom_factor = 1.0;
+        self.pan_x = 0.0;
+        self.pan_y = 0.0;
     }
 
     fn rebuildPaletteMatches(self: *ViewerState) !void {
@@ -525,6 +540,21 @@ const ViewerState = struct {
                     try self.updateCache();
                 }
             },
+            .zoom_in => {
+                const old_zoom = self.zoom_factor;
+                self.zoom_factor = std.math.clamp(self.zoom_factor + 0.5, 0.1, 10.0);
+                self.pan_x *= (self.zoom_factor / old_zoom);
+                self.pan_y *= (self.zoom_factor / old_zoom);
+            },
+            .zoom_out => {
+                const old_zoom = self.zoom_factor;
+                self.zoom_factor = std.math.clamp(self.zoom_factor - 0.5, 0.1, 10.0);
+                self.pan_x *= (self.zoom_factor / old_zoom);
+                self.pan_y *= (self.zoom_factor / old_zoom);
+            },
+            .reset_zoom => {
+                self.resetZoomPan();
+            },
         }
     }
 
@@ -577,6 +607,7 @@ const ViewerState = struct {
     }
 
     fn updateCache(self: *ViewerState) !void {
+        self.resetZoomPan();
         c.SDL_LockMutex(self.cache_mutex);
         defer c.SDL_UnlockMutex(self.cache_mutex);
 
@@ -827,8 +858,47 @@ const ViewerState = struct {
             _ = try self.handlePaletteKeys(key);
         } else {
             switch (key) {
-                c.SDLK_LEFT, c.SDLK_BACKSPACE => try self.prev(),
-                c.SDLK_RIGHT, c.SDLK_SPACE => try self.next(),
+                c.SDLK_LEFT => {
+                    if (self.zoom_factor > 1.0) {
+                        self.pan_x += 30.0;
+                    } else {
+                        try self.prev();
+                    }
+                },
+                c.SDLK_RIGHT => {
+                    if (self.zoom_factor > 1.0) {
+                        self.pan_x -= 30.0;
+                    } else {
+                        try self.next();
+                    }
+                },
+                c.SDLK_UP => {
+                    if (self.zoom_factor > 1.0) {
+                        self.pan_y += 30.0;
+                    }
+                },
+                c.SDLK_DOWN => {
+                    if (self.zoom_factor > 1.0) {
+                        self.pan_y -= 30.0;
+                    }
+                },
+                c.SDLK_BACKSPACE => try self.prev(),
+                c.SDLK_SPACE => try self.next(),
+                c.SDLK_R, c.SDLK_0, c.SDLK_KP_0 => {
+                    self.resetZoomPan();
+                },
+                c.SDLK_EQUALS, c.SDLK_KP_PLUS => {
+                    const old_zoom = self.zoom_factor;
+                    self.zoom_factor = std.math.clamp(self.zoom_factor + 0.1, 0.1, 10.0);
+                    self.pan_x *= (self.zoom_factor / old_zoom);
+                    self.pan_y *= (self.zoom_factor / old_zoom);
+                },
+                c.SDLK_MINUS, c.SDLK_KP_MINUS => {
+                    const old_zoom = self.zoom_factor;
+                    self.zoom_factor = std.math.clamp(self.zoom_factor - 0.1, 0.1, 10.0);
+                    self.pan_x *= (self.zoom_factor / old_zoom);
+                    self.pan_y *= (self.zoom_factor / old_zoom);
+                },
                 c.SDLK_HOME => {
                     if (self.image_list.items.len > 0) {
                         self.current_index = 0;
@@ -1498,6 +1568,9 @@ pub fn main(init: std.process.Init) !void {
     var stats_dragging = false;
     var drag_start_x: f32 = 0.0;
     var drag_start_y: f32 = 0.0;
+    var viewport_dragging = false;
+    var drag_last_x: f32 = 0.0;
+    var drag_last_y: f32 = 0.0;
     while (state.running) {
         var event: c.SDL_Event = undefined;
         var mouse_clicked = false;
@@ -1548,6 +1621,10 @@ pub fn main(init: std.process.Init) !void {
                         stats_dragging = true;
                         drag_start_x = mouse_x * scale_x - stats_offset_x;
                         drag_start_y = mouse_y * scale_y - stats_offset_y;
+                    } else if (!state.palette.show and clay.pointerOver(clay.getElementId("Viewport"))) {
+                        viewport_dragging = true;
+                        drag_last_x = mouse_x * scale_x;
+                        drag_last_y = mouse_y * scale_y;
                     }
                 }
             },
@@ -1555,12 +1632,40 @@ pub fn main(init: std.process.Init) !void {
                 if (event.button.button == c.SDL_BUTTON_LEFT) {
                     mouse_clicked = true;
                     stats_dragging = false;
+                    viewport_dragging = false;
                 }
             },
             c.SDL_EVENT_MOUSE_WHEEL => {
                 const multiplier: f32 = if (event.wheel.direction == c.SDL_MOUSEWHEEL_FLIPPED) -1.0 else 1.0;
-                scroll_delta_x += event.wheel.x * multiplier * 6.0;
-                scroll_delta_y += event.wheel.y * multiplier * 6.0;
+                if (!state.palette.show and clay.pointerOver(clay.getElementId("Viewport"))) {
+                    const old_zoom = state.zoom_factor;
+                    state.zoom_factor = std.math.clamp(state.zoom_factor + event.wheel.y * multiplier * 0.1, 0.1, 10.0);
+
+                    var mouse_x: f32 = 0;
+                    var mouse_y: f32 = 0;
+                    _ = c.SDL_GetMouseState(&mouse_x, &mouse_y);
+                    const mx = mouse_x * scale_x;
+                    const my = mouse_y * scale_y;
+
+                    const available_width = if (clay.isDebugModeEnabled()) @max(width - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0) else width;
+                    const center_x = available_width / 2.0;
+                    var title_bar_h: f32 = 60.0;
+                    var nav_bar_h: f32 = 80.0;
+                    if (state.is_fullscreen) {
+                        title_bar_h = 0;
+                        nav_bar_h = 0;
+                    }
+                    const center_y = (title_bar_h * scale_y) + ((height - (title_bar_h + nav_bar_h) * scale_y) / 2.0);
+
+                    const rel_x = mx - center_x;
+                    const rel_y = my - center_y;
+
+                    state.pan_x = rel_x - (rel_x - state.pan_x) * (state.zoom_factor / old_zoom);
+                    state.pan_y = rel_y - (rel_y - state.pan_y) * (state.zoom_factor / old_zoom);
+                } else {
+                    scroll_delta_x += event.wheel.x * multiplier * 6.0;
+                    scroll_delta_y += event.wheel.y * multiplier * 6.0;
+                }
             },
             c.SDL_EVENT_WINDOW_MOUSE_ENTER => {
                 mouse_inside = true;
@@ -1613,6 +1718,10 @@ pub fn main(init: std.process.Init) !void {
                             stats_dragging = true;
                             drag_start_x = mouse_x * scale_x - stats_offset_x;
                             drag_start_y = mouse_y * scale_y - stats_offset_y;
+                        } else if (!state.palette.show and clay.pointerOver(clay.getElementId("Viewport"))) {
+                            viewport_dragging = true;
+                            drag_last_x = mouse_x * scale_x;
+                            drag_last_y = mouse_y * scale_y;
                         }
                     }
                 },
@@ -1620,12 +1729,40 @@ pub fn main(init: std.process.Init) !void {
                     if (event.button.button == c.SDL_BUTTON_LEFT) {
                         mouse_clicked = true;
                         stats_dragging = false;
+                        viewport_dragging = false;
                     }
                 },
                 c.SDL_EVENT_MOUSE_WHEEL => {
                     const multiplier: f32 = if (event.wheel.direction == c.SDL_MOUSEWHEEL_FLIPPED) -1.0 else 1.0;
-                    scroll_delta_x += event.wheel.x * multiplier * 6.0;
-                    scroll_delta_y += event.wheel.y * multiplier * 6.0;
+                    if (!state.palette.show and clay.pointerOver(clay.getElementId("Viewport"))) {
+                        const old_zoom = state.zoom_factor;
+                        state.zoom_factor = std.math.clamp(state.zoom_factor + event.wheel.y * multiplier * 0.1, 0.1, 10.0);
+
+                        var mouse_x: f32 = 0;
+                        var mouse_y: f32 = 0;
+                        _ = c.SDL_GetMouseState(&mouse_x, &mouse_y);
+                        const mx = mouse_x * scale_x;
+                        const my = mouse_y * scale_y;
+
+                        const available_width = if (clay.isDebugModeEnabled()) @max(width - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0) else width;
+                        const center_x = available_width / 2.0;
+                        var title_bar_h: f32 = 60.0;
+                        var nav_bar_h: f32 = 80.0;
+                        if (state.is_fullscreen) {
+                            title_bar_h = 0;
+                            nav_bar_h = 0;
+                        }
+                        const center_y = (title_bar_h * scale_y) + ((height - (title_bar_h + nav_bar_h) * scale_y) / 2.0);
+
+                        const rel_x = mx - center_x;
+                        const rel_y = my - center_y;
+
+                        state.pan_x = rel_x - (rel_x - state.pan_x) * (state.zoom_factor / old_zoom);
+                        state.pan_y = rel_y - (rel_y - state.pan_y) * (state.zoom_factor / old_zoom);
+                    } else {
+                        scroll_delta_x += event.wheel.x * multiplier * 6.0;
+                        scroll_delta_y += event.wheel.y * multiplier * 6.0;
+                    }
                 },
                 c.SDL_EVENT_WINDOW_MOUSE_ENTER => {
                     mouse_inside = true;
@@ -1675,6 +1812,15 @@ pub fn main(init: std.process.Init) !void {
         if (stats_dragging) {
             stats_offset_x = std.math.clamp(mouse_x * scale_x - drag_start_x, 0.0, width - 50.0);
             stats_offset_y = std.math.clamp(mouse_y * scale_y - drag_start_y, 0.0, height - 50.0);
+        }
+
+        if (viewport_dragging) {
+            const current_x = mouse_x * scale_x;
+            const current_y = mouse_y * scale_y;
+            state.pan_x += (current_x - drag_last_x);
+            state.pan_y += (current_y - drag_last_y);
+            drag_last_x = current_x;
+            drag_last_y = current_y;
         }
 
         if (mouse_inside) {
@@ -1831,6 +1977,12 @@ pub fn main(init: std.process.Init) !void {
                     }
                 }
 
+                const zoom_buf = try frame_allocator.alloc(u8, 64);
+                const zoom_str = try std.fmt.bufPrint(zoom_buf, "{d:.1}x", .{state.zoom_factor});
+
+                const pan_buf = try frame_allocator.alloc(u8, 128);
+                const pan_str = try std.fmt.bufPrint(pan_buf, "{d:.0}, {d:.0} px", .{ state.pan_x, state.pan_y });
+
                 clay.UI()(.{
                     .id = clay.getElementId("StatsPanel"),
                     .layout = .{
@@ -1901,6 +2053,8 @@ pub fn main(init: std.process.Init) !void {
                     try renderStatRow("Upload Time", process_str, scale_x, scale_y, dpi_scale);
                     try renderStatRow("Memory Size", mem_size_str, scale_x, scale_y, dpi_scale);
                     try renderStatRow("Viewport Size", screen_str, scale_x, scale_y, dpi_scale);
+                    try renderStatRow("Zoom Level", zoom_str, scale_x, scale_y, dpi_scale);
+                    try renderStatRow("Pan Offset", pan_str, scale_x, scale_y, dpi_scale);
                 });
             }
 
@@ -1976,6 +2130,7 @@ pub fn main(init: std.process.Init) !void {
                     .sizing = .{ .w = .grow, .h = .grow },
                     .child_alignment = .{ .x = .center, .y = .center },
                 },
+                .clip = .{ .horizontal = true, .vertical = true },
             })({
                 if (state.getCurrentEntry()) |entry| {
                     if (entry.texture) |tex| {
@@ -2157,7 +2312,11 @@ pub fn main(init: std.process.Init) !void {
             std.log.err("SDL_RenderClear failed: {s}", .{c.SDL_GetError()});
         }
 
-        try renderer.renderClayCommands(renderer_ctx, text_engine, fonts[0..], render_commands, frame_allocator);
+        try renderer.renderClayCommands(renderer_ctx, text_engine, fonts[0..], render_commands, frame_allocator, .{
+            .zoom_factor = state.zoom_factor,
+            .pan_x = state.pan_x,
+            .pan_y = state.pan_y,
+        });
 
         if (!c.SDL_RenderPresent(renderer_ctx)) {
             std.log.err("SDL_RenderPresent failed: {s}", .{c.SDL_GetError()});

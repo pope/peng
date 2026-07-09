@@ -299,7 +299,13 @@ fn renderArc(renderer: ?*c.SDL_Renderer, center: c.SDL_FPoint, radius: f32, star
     }
 }
 
-pub fn renderClayCommands(renderer: ?*c.SDL_Renderer, text_engine: ?*c.TTF_TextEngine, fonts: []const ?*c.TTF_Font, r_commands: []const clay.RenderCommand, allocator: std.mem.Allocator) !void {
+pub const ZoomPan = struct {
+    zoom_factor: f32 = 1.0,
+    pan_x: f32 = 0.0,
+    pan_y: f32 = 0.0,
+};
+
+pub fn renderClayCommands(renderer: ?*c.SDL_Renderer, text_engine: ?*c.TTF_TextEngine, fonts: []const ?*c.TTF_Font, r_commands: []const clay.RenderCommand, allocator: std.mem.Allocator, zoom_pan: ZoomPan) !void {
     for (r_commands) |rcmd| {
         const bb = rcmd.bounding_box;
         const rect = c.SDL_FRect{
@@ -435,7 +441,12 @@ pub fn renderClayCommands(renderer: ?*c.SDL_Renderer, text_engine: ?*c.TTF_TextE
             },
             .image => {
                 const texture: ?*c.SDL_Texture = @ptrCast(@alignCast(rcmd.render_data.image.image_data));
-                if (!c.SDL_RenderTexture(renderer, texture, null, &rect)) {
+                var dst_rect = rect;
+                dst_rect.w = rect.w * zoom_pan.zoom_factor;
+                dst_rect.h = rect.h * zoom_pan.zoom_factor;
+                dst_rect.x = (rect.x + rect.w / 2.0) - (dst_rect.w / 2.0) + zoom_pan.pan_x;
+                dst_rect.y = (rect.y + rect.h / 2.0) - (dst_rect.h / 2.0) + zoom_pan.pan_y;
+                if (!c.SDL_RenderTexture(renderer, texture, null, &dst_rect)) {
                     std.log.err("SDL_RenderTexture failed: {s}", .{c.SDL_GetError()});
                 }
             },
