@@ -344,6 +344,9 @@ const AppActionId = enum {
     set_scale_shrink,
     set_scale_full,
     set_scale_crop,
+    rotate_cw,
+    rotate_ccw,
+    reset_rotation,
 };
 
 const AppAction = struct {
@@ -362,6 +365,9 @@ const app_actions = [_]AppAction{
     .{ .name = "Set Scale Mode: Fit if Larger (Shrink)", .shortcut = "", .id = .set_scale_shrink },
     .{ .name = "Set Scale Mode: Fit Window (Full)", .shortcut = "", .id = .set_scale_full },
     .{ .name = "Set Scale Mode: Fill Window (Crop)", .shortcut = "", .id = .set_scale_crop },
+    .{ .name = "Rotate Clockwise (90°)", .shortcut = "]", .id = .rotate_cw },
+    .{ .name = "Rotate Counter-Clockwise (90°)", .shortcut = "[", .id = .rotate_ccw },
+    .{ .name = "Reset Rotation", .shortcut = "", .id = .reset_rotation },
     .{ .name = "Toggle Stats for Nerds", .shortcut = "I", .id = .toggle_stats },
     .{ .name = "Toggle Fullscreen", .shortcut = "F / F11", .id = .toggle_fullscreen },
     .{ .name = "Search Files (Go to File)", .shortcut = "Ctrl+P", .id = .open_file_finder },
@@ -435,6 +441,8 @@ const ViewerState = struct {
     zoom_factor: f32 = 1.0,
     pan_x: f32 = 0.0,
     pan_y: f32 = 0.0,
+    rotation_angle: f32 = 0.0,
+    rotation_map: std.StringHashMap(f32),
 
     pub fn deinit(self: *ViewerState) void {
         self.exiting.store(true, .release);
@@ -450,6 +458,7 @@ const ViewerState = struct {
         self.image_list.deinit(self.allocator);
         self.cache.deinit(self.allocator);
         self.palette.deinit();
+        self.rotation_map.deinit();
     }
 
     pub fn resetZoomPan(self: *ViewerState) void {
@@ -587,6 +596,33 @@ const ViewerState = struct {
                 self.scale_mode = .crop;
                 self.resetZoomPan();
             },
+            .rotate_cw => {
+                self.rotation_angle = @mod(self.rotation_angle + 90.0, 360.0);
+                if (self.current_index) |idx| {
+                    if (idx < self.image_list.items.len) {
+                        const path = self.image_list.items[idx];
+                        try self.rotation_map.put(path, self.rotation_angle);
+                    }
+                }
+            },
+            .rotate_ccw => {
+                self.rotation_angle = @mod(self.rotation_angle - 90.0 + 360.0, 360.0);
+                if (self.current_index) |idx| {
+                    if (idx < self.image_list.items.len) {
+                        const path = self.image_list.items[idx];
+                        try self.rotation_map.put(path, self.rotation_angle);
+                    }
+                }
+            },
+            .reset_rotation => {
+                self.rotation_angle = 0.0;
+                if (self.current_index) |idx| {
+                    if (idx < self.image_list.items.len) {
+                        const path = self.image_list.items[idx];
+                        try self.rotation_map.put(path, self.rotation_angle);
+                    }
+                }
+            },
         }
     }
 
@@ -640,6 +676,13 @@ const ViewerState = struct {
 
     fn updateCache(self: *ViewerState) !void {
         self.resetZoomPan();
+        const current_idx = self.current_index;
+        if (current_idx != null and current_idx.? < self.image_list.items.len) {
+            const path = self.image_list.items[current_idx.?];
+            self.rotation_angle = self.rotation_map.get(path) orelse 0.0;
+        } else {
+            self.rotation_angle = 0.0;
+        }
         c.SDL_LockMutex(self.cache_mutex);
         defer c.SDL_UnlockMutex(self.cache_mutex);
 
@@ -776,6 +819,7 @@ const ViewerState = struct {
             self.allocator.free(item);
         }
         self.image_list.clearRetainingCapacity();
+        self.rotation_map.clearRetainingCapacity();
 
         self.generation += 1;
         self.clearCache();
@@ -958,6 +1002,12 @@ const ViewerState = struct {
                     } else {
                         self.running = false;
                     }
+                },
+                c.SDLK_LEFTBRACKET => {
+                    try self.triggerAction(.rotate_ccw);
+                },
+                c.SDLK_RIGHTBRACKET => {
+                    try self.triggerAction(.rotate_cw);
                 },
                 c.SDLK_D => {
                     clay.setDebugModeEnabled(!clay.isDebugModeEnabled());
@@ -1574,6 +1624,8 @@ pub fn main(init: std.process.Init) !void {
         .window_pixel_format = c.SDL_GetWindowPixelFormat(window),
         .palette = PaletteState.init(gpa),
         .scale_mode = default_scale,
+        .rotation_angle = 0.0,
+        .rotation_map = std.StringHashMap(f32).init(gpa),
         .window = window,
         .is_fullscreen = false,
         .running = true,
@@ -1941,8 +1993,13 @@ pub fn main(init: std.process.Init) !void {
                 const view_w = @max(available_width - padding * 2.0, 1.0);
                 const view_h = @max(height - (title_bar_h + nav_bar_h) * scale_y - padding * 2.0, 1.0);
 
-                const img_w = entry.w;
-                const img_h = entry.h;
+                const angle = @mod(state.rotation_angle, 360.0);
+                const is_90_or_270 = (std.math.approxEqAbs(f32, angle, 90.0, 0.1) or
+                    std.math.approxEqAbs(f32, angle, 270.0, 0.1) or
+                    std.math.approxEqAbs(f32, angle, -90.0, 0.1) or
+                    std.math.approxEqAbs(f32, angle, -270.0, 0.1));
+                const img_w = if (is_90_or_270) entry.h else entry.w;
+                const img_h = if (is_90_or_270) entry.w else entry.h;
 
                 if (img_w > 0 and img_h > 0) {
                     const r_img = img_w / img_h;
@@ -2073,6 +2130,9 @@ pub fn main(init: std.process.Init) !void {
                 const pan_buf = try frame_allocator.alloc(u8, 128);
                 const pan_str = try std.fmt.bufPrint(pan_buf, "{d:.0}, {d:.0} px", .{ state.pan_x, state.pan_y });
 
+                const rot_buf = try frame_allocator.alloc(u8, 64);
+                const rot_str = try std.fmt.bufPrint(rot_buf, "{d:.0}°", .{state.rotation_angle});
+
                 clay.UI()(.{
                     .id = clay.getElementId("StatsPanel"),
                     .layout = .{
@@ -2145,6 +2205,7 @@ pub fn main(init: std.process.Init) !void {
                     try renderStatRow("Viewport Size", screen_str, scale_x, scale_y, dpi_scale);
                     try renderStatRow("Zoom Level", zoom_str, scale_x, scale_y, dpi_scale);
                     try renderStatRow("Pan Offset", pan_str, scale_x, scale_y, dpi_scale);
+                    try renderStatRow("Rotation", rot_str, scale_x, scale_y, dpi_scale);
                     const scale_mode_str = switch (state.scale_mode) {
                         .none => "100% (Actual Size)",
                         .shrink => "Shrink to Fit",
@@ -2413,6 +2474,7 @@ pub fn main(init: std.process.Init) !void {
             .zoom_factor = state.zoom_factor,
             .pan_x = state.pan_x,
             .pan_y = state.pan_y,
+            .rotation_angle = state.rotation_angle,
         });
 
         if (!c.SDL_RenderPresent(renderer_ctx)) {
