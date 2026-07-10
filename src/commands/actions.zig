@@ -1,6 +1,5 @@
 const std = @import("std");
-const main = @import("../main.zig");
-const c = main.c;
+const c = @import("../app/c.zig").c;
 const clay = @import("zclay");
 const app_state = @import("../app/state.zig");
 const ViewerState = app_state.ViewerState;

@@ -1,15 +1,15 @@
 const std = @import("std");
 const clay = @import("zclay");
-const main = @import("../main.zig");
-const c = main.c;
+const c = @import("../app/c.zig").c;
 const app_state = @import("../app/state.zig");
 const ViewerState = app_state.ViewerState;
-const FrameInput = main.FrameInput;
-const MeasureTextUserData = main.MeasureTextUserData;
+const types = @import("../app/types.zig");
+const FrameInput = types.FrameInput;
+const MeasureTextUserData = types.MeasureTextUserData;
 const renderPalette = @import("palette.zig").renderPalette;
 const renderStatsOverlay = @import("stats.zig").renderStatsOverlay;
 const renderer = @import("renderer.zig");
-const saveTextureToPng = main.saveTextureToPng;
+const saveTextureToPng = @import("graphics.zig").saveTextureToPng;
 const ElementTag = app_state.ElementTag;
 
 pub fn renderFrame(
@@ -271,7 +271,10 @@ pub fn renderFrame(
 
     // Render Frame
     const cmd_buf = c.SDL_AcquireGPUCommandBuffer(state.gpu_device) orelse return error.CommandBufferAcquisitionFailed;
-    errdefer _ = c.SDL_CancelGPUCommandBuffer(cmd_buf); // Cancel command buffer on early errors to avoid leaks
+    var cmd_buf_submitted = false;
+    errdefer if (!cmd_buf_submitted) {
+        _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
+    };
 
     var swap_tex: ?*c.SDL_GPUTexture = null;
     var swap_w: u32 = 0;
@@ -286,6 +289,11 @@ pub fn renderFrame(
     }
 
     if (c.SDL_WaitAndAcquireGPUSwapchainTexture(cmd_buf, state.window, &swap_tex, &swap_w, &swap_h)) {
+        if (swap_w == 0 or swap_h == 0) {
+            cmd_buf_submitted = true;
+            _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+            return;
+        }
         try renderer.renderClayCommands(
             state,
             cmd_buf,
@@ -299,8 +307,10 @@ pub fn renderFrame(
         );
         if (capture_filename) |filename| {
             const swapchain_format = c.SDL_GetGPUSwapchainTextureFormat(state.gpu_device.?, state.window);
+            cmd_buf_submitted = true;
             try saveTextureToPng(state.gpu_device.?, cmd_buf, swap_tex.?, swap_w, swap_h, swapchain_format, filename);
         } else {
+            cmd_buf_submitted = true;
             _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
         }
 

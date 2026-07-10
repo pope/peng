@@ -1,15 +1,15 @@
 const std = @import("std");
 const clay = @import("zclay");
-const main = @import("../main.zig");
-const c = main.c;
+const c = @import("../app/c.zig").c;
 const app_state = @import("../app/state.zig");
 const ViewerState = app_state.ViewerState;
 const PaletteState = app_state.PaletteState;
 const stopTextInput = app_state.stopTextInput;
 const app_actions = @import("../commands/actions.zig").app_actions;
 const getActionMetadata = @import("../commands/actions.zig").getActionMetadata;
-const MeasureTextUserData = main.MeasureTextUserData;
-const sdl3MeasureText = main.sdl3MeasureText;
+const types = @import("../app/types.zig");
+const MeasureTextUserData = types.MeasureTextUserData;
+const sdl3MeasureText = @import("graphics.zig").sdl3MeasureText;
 
 pub fn renderPalette(
     state: *ViewerState,

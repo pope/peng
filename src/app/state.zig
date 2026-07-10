@@ -1,7 +1,8 @@
 const std = @import("std");
-const main = @import("../main.zig");
-const c = main.c;
-const clay = main.clay;
+const c = @import("c.zig").c;
+const clay = @import("zclay");
+const FrameInput = @import("types.zig").FrameInput;
+const app_input = @import("input.zig");
 const renderer = @import("../ui/renderer.zig");
 const commands = @import("../commands.zig");
 
@@ -41,6 +42,18 @@ pub const PaletteMode = enum {
     set_brightness,
     set_contrast,
     go_to_image,
+};
+
+pub const DragState = union(enum) {
+    none,
+    viewport: struct {
+        last_x: f32,
+        last_y: f32,
+    },
+    stats: struct {
+        start_x: f32,
+        start_y: f32,
+    },
 };
 
 pub const TextCacheKey = struct {
@@ -465,12 +478,7 @@ pub const ViewerState = struct {
     adjustments_dirty: bool = false,
     stats_offset_x: f32 = 20.0,
     stats_offset_y: f32 = 20.0,
-    stats_dragging: bool = false,
-    drag_start_x: f32 = 0.0,
-    drag_start_y: f32 = 0.0,
-    viewport_dragging: bool = false,
-    drag_last_x: f32 = 0.0,
-    drag_last_y: f32 = 0.0,
+    drag_state: DragState = .none,
     mouse_inside: bool = true,
 
     // Persistent double-buffered vertex resources
@@ -1046,17 +1054,9 @@ pub const ViewerState = struct {
         try self.rebuildPaletteMatches();
     }
 
-    pub fn handleKeyDown(self: *ViewerState, key: c.SDL_Keycode, mod: c.SDL_Keymod, scale_x: f32, scale_y: f32) !void {
-        const app_input = @import("input.zig");
-        try app_input.handleKeyDown(self, key, mod, scale_x, scale_y);
-    }
 
-    pub fn handlePaletteKeys(self: *ViewerState, key: c.SDL_Keycode) !bool {
-        const app_input = @import("input.zig");
-        return try app_input.handlePaletteKeys(self, key);
-    }
 
-    pub fn update(self: *ViewerState, input: main.FrameInput) !void {
+    pub fn update(self: *ViewerState, input: FrameInput) !void {
         // 1. Text input updates
         if (input.text_input) |text| {
             if (self.palette.mode != .inactive) {
@@ -1077,26 +1077,33 @@ pub const ViewerState = struct {
         }
 
         // 3. Mouse dragging updates
-        if (self.show_stats_overlay and self.stats_dragging) {
-            if (input.mouse_left_down) {
-                self.stats_offset_x = input.mouse_x - self.stats_offset_x;
-                self.stats_offset_y = input.mouse_y - self.stats_offset_y;
-            } else {
-                self.stats_dragging = false;
-            }
-        } else if (self.viewport_dragging) {
-            if (input.mouse_left_down) {
-                self.pan_x += input.mouse_x - self.drag_last_x;
-                self.pan_y += input.mouse_y - self.drag_last_y;
-                self.drag_last_x = input.mouse_x;
-                self.drag_last_y = input.mouse_y;
-            } else {
-                self.viewport_dragging = false;
-            }
+        var next_drag_state = self.drag_state;
+        switch (self.drag_state) {
+            .none => {},
+            .stats => |stats| {
+                if (input.mouse_left_down) {
+                    self.stats_offset_x = input.mouse_x - stats.start_x;
+                    self.stats_offset_y = input.mouse_y - stats.start_y;
+                } else {
+                    next_drag_state = .none;
+                }
+            },
+            .viewport => |*vp| {
+                if (input.mouse_left_down) {
+                    self.pan_x += input.mouse_x - vp.last_x;
+                    self.pan_y += input.mouse_y - vp.last_y;
+                    vp.last_x = input.mouse_x;
+                    vp.last_y = input.mouse_y;
+                } else {
+                    next_drag_state = .none;
+                }
+            },
         }
+        self.drag_state = next_drag_state;
 
         // 4. Mouse click triggers (starts dragging)
         if (input.mouse_left_clicked) {
+            var palette_closed_this_frame = false;
             // Check if we should close the palette
             if (self.palette.mode != .inactive) {
                 const element_id = switch (self.palette.mode) {
@@ -1110,6 +1117,7 @@ pub const ViewerState = struct {
                 if (!clay.pointerOver(clay.getElementId(element_id))) {
                     self.palette.mode = .inactive;
                     stopTextInput(self.window);
+                    palette_closed_this_frame = true;
                 }
             }
 
@@ -1117,13 +1125,19 @@ pub const ViewerState = struct {
                 clay.pointerOver(clay.getElementId("StatsPanel")) and
                 !clay.pointerOver(clay.getElementId("StatsCloseBtn")))
             {
-                self.stats_dragging = true;
-                self.drag_start_x = input.mouse_x - self.stats_offset_x;
-                self.drag_start_y = input.mouse_y - self.stats_offset_y;
-            } else if (self.palette.mode == .inactive and clay.pointerOver(clay.getElementId("Viewport"))) {
-                self.viewport_dragging = true;
-                self.drag_last_x = input.mouse_x;
-                self.drag_last_y = input.mouse_y;
+                self.drag_state = .{
+                    .stats = .{
+                        .start_x = input.mouse_x - self.stats_offset_x,
+                        .start_y = input.mouse_y - self.stats_offset_y,
+                    },
+                };
+            } else if (self.palette.mode == .inactive and !palette_closed_this_frame and clay.pointerOver(clay.getElementId("Viewport"))) {
+                self.drag_state = .{
+                    .viewport = .{
+                        .last_x = input.mouse_x,
+                        .last_y = input.mouse_y,
+                    },
+                };
             }
         }
 
@@ -1133,7 +1147,7 @@ pub const ViewerState = struct {
                 const old_zoom = self.zoom_factor;
                 self.zoom_factor = std.math.clamp(self.zoom_factor + input.scroll_delta_y * 0.1, 0.1, 10.0);
 
-                const available_width = if (clay.isDebugModeEnabled()) @max(input.pix_w - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0) else input.pix_w;
+                const available_width = if (clay.isDebugModeEnabled()) @max(input.pix_w - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)) * input.scale_x, 1.0) else input.pix_w;
                 const cx = available_width / 2.0;
                 var title_bar_h: f32 = 60.0;
                 if (self.is_fullscreen) {
@@ -1151,7 +1165,7 @@ pub const ViewerState = struct {
 
         // 6. Keyboard updates
         for (input.keys_pressed.items) |key| {
-            try self.handleKeyDown(key, input.key_modifiers, input.scale_x, input.scale_y);
+            try app_input.handleKeyDown(self, key, input.key_modifiers, input.scale_x, input.scale_y);
         }
     }
 };

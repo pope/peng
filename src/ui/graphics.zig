@@ -1,7 +1,8 @@
 const std = @import("std");
-const main = @import("../main.zig");
-const c = main.c;
+const c = @import("../app/c.zig").c;
 const renderer = @import("renderer.zig");
+const clay = @import("zclay");
+const MeasureTextUserData = @import("../app/types.zig").MeasureTextUserData;
 
 pub const GraphicsSetup = struct {
     window: *c.SDL_Window,
@@ -317,4 +318,99 @@ pub fn initGpuResources(gpu_device: *c.SDL_GPUDevice, window: *c.SDL_Window, ini
         .white_texture = white_texture,
         .fonts = fonts,
     };
+}
+
+fn getTextureFormatElementSize(format: c.SDL_GPUTextureFormat) u32 {
+    return switch (format) {
+        c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, c.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM, c.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB, c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB => 4,
+        c.SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT => 8,
+        c.SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT => 16,
+        else => 4, // Fallback safe default
+    };
+}
+
+pub fn saveTextureToPng(
+    device: *c.SDL_GPUDevice,
+    cmd_buf: *c.SDL_GPUCommandBuffer,
+    texture: *c.SDL_GPUTexture,
+    width: u32,
+    height: u32,
+    texture_format: c.SDL_GPUTextureFormat,
+    filename: [:0]const u8,
+) !void {
+    const bpp = getTextureFormatElementSize(texture_format);
+    const pitch = width * bpp;
+    const size = pitch * height;
+
+    const transfer_buf = c.SDL_CreateGPUTransferBuffer(device, &c.SDL_GPUTransferBufferCreateInfo{
+        .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,
+        .size = size,
+        .props = 0,
+    }) orelse {
+        std.log.err("Failed to create download transfer buffer: {s}", .{c.SDL_GetError()});
+        return error.TransferBufferCreationFailed;
+    };
+    defer c.SDL_ReleaseGPUTransferBuffer(device, transfer_buf);
+
+    const copy_pass = c.SDL_BeginGPUCopyPass(cmd_buf) orelse return error.CopyPassCreationFailed;
+    c.SDL_DownloadFromGPUTexture(copy_pass, &c.SDL_GPUTextureRegion{
+        .texture = texture,
+        .mip_level = 0,
+        .layer = 0,
+        .x = 0,
+        .y = 0,
+        .z = 0,
+        .w = width,
+        .h = height,
+        .d = 1,
+    }, &c.SDL_GPUTextureTransferInfo{
+        .transfer_buffer = transfer_buf,
+        .offset = 0,
+        .pixels_per_row = width,
+        .rows_per_layer = height,
+    });
+    c.SDL_EndGPUCopyPass(copy_pass);
+
+    _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+    _ = c.SDL_WaitForGPUIdle(device);
+
+    const data_ptr = c.SDL_MapGPUTransferBuffer(device, transfer_buf, false) orelse return error.MapBufferFailed;
+    defer c.SDL_UnmapGPUTransferBuffer(device, transfer_buf);
+
+    var sdl_format: c.SDL_PixelFormat = c.SDL_PIXELFORMAT_RGBA32;
+    if (texture_format == c.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM or
+        texture_format == c.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB)
+    {
+        sdl_format = c.SDL_PIXELFORMAT_BGRA32;
+    }
+
+    const surface = c.SDL_CreateSurfaceFrom(@intCast(width), @intCast(height), sdl_format, data_ptr, @intCast(pitch)) orelse {
+        std.log.err("SDL_CreateSurfaceFrom failed: {s}", .{c.SDL_GetError()});
+        return error.SurfaceCreationFailed;
+    };
+    defer c.SDL_DestroySurface(surface);
+
+    if (!c.IMG_SavePNG(surface, filename.ptr)) {
+        std.log.err("IMG_SavePNG failed: {s}", .{c.SDL_GetError()});
+        return error.SavePngFailed;
+    }
+}
+
+pub fn sdl3MeasureText(text: []const u8, config: *clay.TextElementConfig, data: *const MeasureTextUserData) clay.Dimensions {
+    if (config.font_id >= data.fonts.len) return .{ .w = 0, .h = 0 };
+    const font = data.fonts[config.font_id] orelse return .{ .w = 0, .h = 0 };
+    const target_size = @as(f32, @floatFromInt(config.font_size));
+    if (c.TTF_GetFontSize(font) != target_size) {
+        if (!c.TTF_SetFontSize(font, target_size)) {
+            std.log.err("TTF_SetFontSize failed: {s}", .{c.SDL_GetError()});
+        }
+    }
+
+    var w: c_int = 0;
+    var h: c_int = 0;
+    if (!c.TTF_GetStringSize(font, text.ptr, text.len, &w, &h)) {
+        return .{ .w = 0, .h = 0 };
+    }
+
+    return .{ .w = @floatFromInt(w), .h = @floatFromInt(h) };
 }
