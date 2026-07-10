@@ -398,6 +398,8 @@ const AppActionId = enum {
     increase_contrast,
     decrease_contrast,
     reset_adjustments,
+    set_brightness_value,
+    set_contrast_value,
 };
 
 const AppAction = struct {
@@ -427,6 +429,8 @@ const app_actions = [_]AppAction{
     .{ .name = "Increase Contrast (+10%)", .shortcut = "L", .id = .increase_contrast },
     .{ .name = "Decrease Contrast (-10%)", .shortcut = "K", .id = .decrease_contrast },
     .{ .name = "Reset Brightness & Contrast", .shortcut = "Shift+R", .id = .reset_adjustments },
+    .{ .name = "Set Brightness (Type Value)...", .shortcut = "Shift+B", .id = .set_brightness_value },
+    .{ .name = "Set Contrast (Type Value)...", .shortcut = "Shift+C", .id = .set_contrast_value },
     .{ .name = "Toggle Stats for Nerds", .shortcut = "I", .id = .toggle_stats },
     .{ .name = "Toggle Fullscreen", .shortcut = "F / F11", .id = .toggle_fullscreen },
     .{ .name = "Search Files (Go to File)", .shortcut = "Ctrl+P", .id = .open_file_finder },
@@ -439,6 +443,8 @@ const app_actions = [_]AppAction{
 pub const PaletteType = enum {
     files,
     actions,
+    set_brightness,
+    set_contrast,
 };
 
 pub const PaletteState = struct {
@@ -579,6 +585,7 @@ const ViewerState = struct {
                 switch (self.palette.active_type) {
                     .files => try self.rebuildPaletteMatches(),
                     .actions => try self.rebuildActionMatches(),
+                    .set_brightness, .set_contrast => {},
                 }
             }
         }
@@ -614,6 +621,8 @@ const ViewerState = struct {
                 const element_id = switch (self.palette.active_type) {
                     .files => "CommandPalette",
                     .actions => "ActionPalette",
+                    .set_brightness => "BrightnessPalette",
+                    .set_contrast => "ContrastPalette",
                 };
                 if (!clay.pointerOver(clay.getElementId(element_id))) {
                     self.palette.show = false;
@@ -885,6 +894,22 @@ const ViewerState = struct {
                 self.brightness = 0.0;
                 self.contrast = 1.0;
                 self.adjustments_dirty = true;
+            },
+            .set_brightness_value => {
+                self.palette.show = true;
+                self.palette.active_type = .set_brightness;
+                self.palette.query.clearRetainingCapacity();
+                self.palette.selected_idx = 0;
+                self.palette.selection_dirty = true;
+                startTextInput(self.window);
+            },
+            .set_contrast_value => {
+                self.palette.show = true;
+                self.palette.active_type = .set_contrast;
+                self.palette.query.clearRetainingCapacity();
+                self.palette.selected_idx = 0;
+                self.palette.selection_dirty = true;
+                startTextInput(self.window);
             },
         }
     }
@@ -1258,6 +1283,7 @@ const ViewerState = struct {
                 return true;
             },
             c.SDLK_UP => {
+                if (palette.active_type == .set_brightness or palette.active_type == .set_contrast) return true;
                 if (palette.selected_idx > 0) {
                     palette.selected_idx -= 1;
                     palette.selection_dirty = true;
@@ -1265,6 +1291,7 @@ const ViewerState = struct {
                 return true;
             },
             c.SDLK_DOWN => {
+                if (palette.active_type == .set_brightness or palette.active_type == .set_contrast) return true;
                 const count = palette.matches.items.len;
                 if (count > 0 and palette.selected_idx + 1 < count) {
                     palette.selected_idx += 1;
@@ -1273,22 +1300,54 @@ const ViewerState = struct {
                 return true;
             },
             c.SDLK_RETURN => {
-                if (palette.selected_idx < palette.matches.items.len) {
-                    const target_idx = palette.matches.items[palette.selected_idx];
-                    switch (palette.active_type) {
-                        .files => {
-                            self.current_index = target_idx;
-                            try self.updateCache();
-                        },
-                        .actions => {
-                            const action = app_actions[target_idx];
-                            try self.triggerAction(action.id);
-                        },
+                if (palette.active_type == .set_brightness or palette.active_type == .set_contrast) {
+                    const raw_str = palette.query.items;
+                    if (raw_str.len > 0) {
+                        const parsed_val_opt = std.fmt.parseFloat(f32, raw_str) catch null;
+                        if (parsed_val_opt) |val| {
+                            const min_val: f32 = if (palette.active_type == .set_brightness) -1.0 else 0.0;
+                            const max_val: f32 = if (palette.active_type == .set_brightness) 1.0 else 5.0;
+                            if (val >= min_val and val <= max_val) {
+                                if (palette.active_type == .set_brightness) {
+                                    self.brightness = val;
+                                } else {
+                                    self.contrast = val;
+                                }
+                                self.adjustments_dirty = true;
+                                palette.show = false;
+                                stopTextInput(self.window);
+                                return true;
+                            }
+                        }
                     }
+                    return true; // Keep open on invalid inputs
+                } else {
+                    if (palette.selected_idx < palette.matches.items.len) {
+                        const target_idx = palette.matches.items[palette.selected_idx];
+                        const old_type = palette.active_type;
+                        switch (palette.active_type) {
+                            .files => {
+                                self.current_index = target_idx;
+                                try self.updateCache();
+                                palette.show = false;
+                                stopTextInput(self.window);
+                            },
+                            .actions => {
+                                const action = app_actions[target_idx];
+                                try self.triggerAction(action.id);
+                                if (palette.active_type == old_type) {
+                                    palette.show = false;
+                                    stopTextInput(self.window);
+                                }
+                            },
+                            else => {},
+                        }
+                    } else {
+                        palette.show = false;
+                        stopTextInput(self.window);
+                    }
+                    return true;
                 }
-                palette.show = false;
-                stopTextInput(self.window);
-                return true;
             },
             c.SDLK_BACKSPACE => {
                 if (palette.query.items.len > 0) {
@@ -1298,6 +1357,7 @@ const ViewerState = struct {
                     switch (palette.active_type) {
                         .files => try self.rebuildPaletteMatches(),
                         .actions => try self.rebuildActionMatches(),
+                        else => {},
                     }
                 }
                 return true;
@@ -1437,6 +1497,16 @@ const ViewerState = struct {
                 c.SDLK_K => {
                     try self.triggerAction(.decrease_contrast);
                 },
+                c.SDLK_B => {
+                    if ((mod & c.SDL_KMOD_SHIFT) != 0) {
+                        try self.triggerAction(.set_brightness_value);
+                    }
+                },
+                c.SDLK_C => {
+                    if ((mod & c.SDL_KMOD_SHIFT) != 0) {
+                        try self.triggerAction(.set_contrast_value);
+                    }
+                },
                 else => {},
             }
         }
@@ -1487,6 +1557,26 @@ fn renderPalette(
             .bottom_spacer_id = "ActionBottomSpacer",
             .base_item_height = 50.0,
         },
+        .set_brightness => PaletteConfig{
+            .title = "Set Brightness",
+            .placeholder = "Enter brightness (-1.0 to 1.0, e.g. 0.2)...",
+            .element_id = "BrightnessPalette",
+            .list_id = "BrightnessPaletteList",
+            .item_prefix = "BrightnessItem_",
+            .top_spacer_id = "BrightnessTopSpacer",
+            .bottom_spacer_id = "BrightnessBottomSpacer",
+            .base_item_height = 50.0,
+        },
+        .set_contrast => PaletteConfig{
+            .title = "Set Contrast",
+            .placeholder = "Enter contrast (0.0 to 5.0, e.g. 1.5)...",
+            .element_id = "ContrastPalette",
+            .list_id = "ContrastPaletteList",
+            .item_prefix = "ContrastItem_",
+            .top_spacer_id = "ContrastTopSpacer",
+            .bottom_spacer_id = "ContrastBottomSpacer",
+            .base_item_height = 50.0,
+        },
     };
 
     // Render Floating Card container
@@ -1519,6 +1609,7 @@ fn renderPalette(
                 .color = switch (palette.active_type) {
                     .files => clay.Color{ 245, 194, 231, 255 }, // Catppuccin Pink
                     .actions => clay.Color{ 137, 180, 250, 255 }, // Catppuccin Blue
+                    .set_brightness, .set_contrast => clay.Color{ 250, 179, 135, 255 }, // Catppuccin Peach
                 },
                 .font_size = @intFromFloat(13.0 * dpi_scale),
                 .font_id = 0,
@@ -1546,239 +1637,304 @@ fn renderPalette(
             });
         });
 
-        // Results list scroll container
-        const scroll_data = clay.cdefs.Clay_GetScrollContainerData(clay.getElementId(cfg.list_id));
-        var scroll_offset = if (scroll_data.found) scroll_data.scroll_position.* else clay.Vector2{ .x = 0, .y = 0 };
+        if (palette.active_type == .set_brightness or palette.active_type == .set_contrast) {
+            clay.UI()(.{
+                .layout = .{
+                    .sizing = .{ .w = .grow, .h = .fixed(64 * scale_y) },
+                    .direction = .top_to_bottom,
+                    .child_alignment = .{ .x = .left, .y = .center },
+                    .padding = .{ .left = 12, .right = 12, .top = 10, .bottom = 10 },
+                    .child_gap = 6,
+                },
+                .background_color = .{ 17, 17, 27, 255 }, // Catppuccin Crust
+                .corner_radius = .all(6),
+            })({
+                const raw_str = palette.query.items;
+                if (raw_str.len == 0) {
+                    clay.text("Enter a number, then press Enter to apply.", .{
+                        .color = .{ 166, 173, 200, 255 },
+                        .font_size = @intFromFloat(13.0 * dpi_scale),
+                        .font_id = 0,
+                    });
+                    const range_str = if (palette.active_type == .set_brightness) "Allowed range: -1.0 to 1.0 (default: 0.0)" else "Allowed range: 0.0 to 5.0 (default: 1.0)";
+                    clay.text(range_str, .{
+                        .color = .{ 108, 112, 134, 255 }, // Subtext
+                        .font_size = @intFromFloat(11.0 * dpi_scale),
+                        .font_id = 0,
+                    });
+                } else {
+                    const parsed_val_opt = std.fmt.parseFloat(f32, raw_str) catch null;
+                    if (parsed_val_opt) |val| {
+                        const min_val: f32 = if (palette.active_type == .set_brightness) -1.0 else 0.0;
+                        const max_val: f32 = if (palette.active_type == .set_brightness) 1.0 else 5.0;
+                        if (val >= min_val and val <= max_val) {
+                            const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to set value to: {d:.2}", .{val});
+                            clay.text(success_str, .{
+                                .color = .{ 166, 227, 161, 255 }, // Green
+                                .font_size = @intFromFloat(13.0 * dpi_scale),
+                                .font_id = 0,
+                            });
+                        } else {
+                            const err_str = try std.fmt.allocPrint(frame_allocator, "Out of bounds: must be between {d:.1} and {d:.1}", .{ min_val, max_val });
+                            clay.text(err_str, .{
+                                .color = .{ 243, 139, 168, 255 }, // Red
+                                .font_size = @intFromFloat(13.0 * dpi_scale),
+                                .font_id = 0,
+                            });
+                        }
+                    } else {
+                        clay.text("Invalid number format. Use digits and decimal point (e.g. 0.5 or -0.2).", .{
+                            .color = .{ 243, 139, 168, 255 }, // Red
+                            .font_size = @intFromFloat(13.0 * dpi_scale),
+                            .font_id = 0,
+                        });
+                    }
+                }
+            });
+        } else {
+            // Results list scroll container
+            const scroll_data = clay.cdefs.Clay_GetScrollContainerData(clay.getElementId(cfg.list_id));
+            var scroll_offset = if (scroll_data.found) scroll_data.scroll_position.* else clay.Vector2{ .x = 0, .y = 0 };
 
-        // Auto-scroll logic during keyboard navigation
-        const item_height = cfg.base_item_height * scale_y;
-        const viewport_height = 320.0 * scale_y;
+            // Auto-scroll logic during keyboard navigation
+            const item_height = cfg.base_item_height * scale_y;
+            const viewport_height = 320.0 * scale_y;
 
-        if (scroll_data.found and palette.selection_dirty) {
-            const item_top = @as(f32, @floatFromInt(palette.selected_idx)) * item_height;
-            const item_bottom = item_top + item_height;
-            const visible_top = -scroll_data.scroll_position.y;
-            const visible_bottom = visible_top + viewport_height;
+            if (scroll_data.found and palette.selection_dirty) {
+                const item_top = @as(f32, @floatFromInt(palette.selected_idx)) * item_height;
+                const item_bottom = item_top + item_height;
+                const visible_top = -scroll_data.scroll_position.y;
+                const visible_bottom = visible_top + viewport_height;
 
-            if (item_top < visible_top) {
-                scroll_data.scroll_position.y = -item_top;
-                scroll_offset.y = -item_top;
-            } else if (item_bottom > visible_bottom) {
-                scroll_data.scroll_position.y = -(item_bottom - viewport_height);
-                scroll_offset.y = -(item_bottom - viewport_height);
+                if (item_top < visible_top) {
+                    scroll_data.scroll_position.y = -item_top;
+                    scroll_offset.y = -item_top;
+                } else if (item_bottom > visible_bottom) {
+                    scroll_data.scroll_position.y = -(item_bottom - viewport_height);
+                    scroll_offset.y = -(item_bottom - viewport_height);
+                }
+                palette.selection_dirty = false;
             }
-            palette.selection_dirty = false;
-        }
 
-        const matching_indices = palette.matches;
+            const matching_indices = palette.matches;
 
-        clay.UI()(.{
-            .id = clay.getElementId(cfg.list_id),
-            .layout = .{
-                .sizing = .{ .w = .grow, .h = .fixed(320 * scale_y) },
-                .direction = .top_to_bottom,
-                .child_gap = @intFromFloat(4 * scale_y),
-            },
-            .clip = .{
-                .horizontal = false,
-                .vertical = true,
-                .child_offset = scroll_offset,
-            },
-        })({
-            const visible_top = -scroll_offset.y;
-            const visible_bottom = visible_top + viewport_height;
+            clay.UI()(.{
+                .id = clay.getElementId(cfg.list_id),
+                .layout = .{
+                    .sizing = .{ .w = .grow, .h = .fixed(320 * scale_y) },
+                    .direction = .top_to_bottom,
+                    .child_gap = @intFromFloat(4 * scale_y),
+                },
+                .clip = .{
+                    .horizontal = false,
+                    .vertical = true,
+                    .child_offset = scroll_offset,
+                },
+            })({
+                const visible_top = -scroll_offset.y;
+                const visible_bottom = visible_top + viewport_height;
 
-            var start_visible_idx = @as(usize, @intFromFloat(@max(0.0, @floor(visible_top / item_height))));
-            var end_visible_idx = @as(usize, @intFromFloat(@max(0.0, @ceil(visible_bottom / item_height))));
+                var start_visible_idx = @as(usize, @intFromFloat(@max(0.0, @floor(visible_top / item_height))));
+                var end_visible_idx = @as(usize, @intFromFloat(@max(0.0, @ceil(visible_bottom / item_height))));
 
-            start_visible_idx = if (start_visible_idx > 0) start_visible_idx - 1 else 0;
-            end_visible_idx = end_visible_idx + 1;
+                start_visible_idx = if (start_visible_idx > 0) start_visible_idx - 1 else 0;
+                end_visible_idx = end_visible_idx + 1;
 
-            if (end_visible_idx > matching_indices.items.len) {
-                end_visible_idx = matching_indices.items.len;
-            }
-            if (start_visible_idx > end_visible_idx) {
-                start_visible_idx = end_visible_idx;
-            }
+                if (end_visible_idx > matching_indices.items.len) {
+                    end_visible_idx = matching_indices.items.len;
+                }
+                if (start_visible_idx > end_visible_idx) {
+                    start_visible_idx = end_visible_idx;
+                }
 
-            const top_spacer_h = @as(f32, @floatFromInt(start_visible_idx)) * item_height;
-            const bottom_spacer_h = @as(f32, @floatFromInt(matching_indices.items.len - end_visible_idx)) * item_height;
+                const top_spacer_h = @as(f32, @floatFromInt(start_visible_idx)) * item_height;
+                const bottom_spacer_h = @as(f32, @floatFromInt(matching_indices.items.len - end_visible_idx)) * item_height;
 
-            // Render Top Spacer if needed
-            if (top_spacer_h > 0) {
-                clay.UI()(.{
-                    .id = clay.getElementId(cfg.top_spacer_id),
-                    .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(top_spacer_h) } },
-                })({});
-            }
+                // Render Top Spacer if needed
+                if (top_spacer_h > 0) {
+                    clay.UI()(.{
+                        .id = clay.getElementId(cfg.top_spacer_id),
+                        .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(top_spacer_h) } },
+                    })({});
+                }
 
-            // Render visible items
-            var match_count = start_visible_idx;
-            for (matching_indices.items[start_visible_idx..end_visible_idx]) |real_idx| {
-                const is_selected = (match_count == palette.selected_idx);
+                // Render visible items
+                var match_count = start_visible_idx;
+                for (matching_indices.items[start_visible_idx..end_visible_idx]) |real_idx| {
+                    const is_selected = (match_count == palette.selected_idx);
 
-                const item_id_str = try std.fmt.allocPrint(frame_allocator, "{s}{}", .{ cfg.item_prefix, real_idx });
+                    const item_id_str = try std.fmt.allocPrint(frame_allocator, "{s}{}", .{ cfg.item_prefix, real_idx });
 
-                const item_hovered = clay.pointerOver(clay.getElementId(item_id_str));
+                    const item_hovered = clay.pointerOver(clay.getElementId(item_id_str));
 
-                // Item Container
-                clay.UI()(.{
-                    .id = clay.getElementId(item_id_str),
-                    .layout = .{
-                        .sizing = .{ .w = .grow, .h = .fixed(switch (palette.active_type) {
-                            .files => 54 * scale_y,
-                            .actions => 46 * scale_y,
-                        }) },
-                        .direction = .left_to_right,
-                        .child_alignment = .{ .x = .left, .y = .center },
-                        .padding = .{ .left = 12, .right = 12 },
-                    },
-                    .background_color = if (is_selected)
-                        clay.Color{ 49, 50, 68, 255 } // Catppuccin Surface0
-                    else if (item_hovered)
-                        clay.Color{ 30, 30, 46, 255 } // Catppuccin Base (lighter hover)
-                    else
-                        clay.Color{ 0, 0, 0, 0 },
-                    .corner_radius = .all(6),
-                })({
-                    switch (palette.active_type) {
-                        .files => {
-                            const path = state.image_list.items[real_idx];
-                            const display_filename = truncateFilename(frame_allocator, std.fs.path.basename(path), 492.0 * scale_x, @intFromFloat(13.0 * dpi_scale), measure_data);
-                            const display_dir = truncateDirectory(frame_allocator, std.fs.path.dirname(path) orelse ".", 488.0 * scale_x, @intFromFloat(11.0 * dpi_scale), measure_data);
+                    // Item Container
+                    clay.UI()(.{
+                        .id = clay.getElementId(item_id_str),
+                        .layout = .{
+                            .sizing = .{ .w = .grow, .h = .fixed(switch (palette.active_type) {
+                                .files => 54 * scale_y,
+                                .actions => 46 * scale_y,
+                                else => 0.0,
+                            }) },
+                            .direction = .left_to_right,
+                            .child_alignment = .{ .x = .left, .y = .center },
+                            .padding = .{ .left = 12, .right = 12 },
+                        },
+                        .background_color = if (is_selected)
+                            clay.Color{ 49, 50, 68, 255 } // Catppuccin Surface0
+                        else if (item_hovered)
+                            clay.Color{ 30, 30, 46, 255 } // Catppuccin Base (lighter hover)
+                        else
+                            clay.Color{ 0, 0, 0, 0 },
+                        .corner_radius = .all(6),
+                    })({
+                        switch (palette.active_type) {
+                            .files => {
+                                const path = state.image_list.items[real_idx];
+                                const display_filename = truncateFilename(frame_allocator, std.fs.path.basename(path), 492.0 * scale_x, @intFromFloat(13.0 * dpi_scale), measure_data);
+                                const display_dir = truncateDirectory(frame_allocator, std.fs.path.dirname(path) orelse ".", 488.0 * scale_x, @intFromFloat(11.0 * dpi_scale), measure_data);
 
-                            clay.UI()(.{
-                                .layout = .{
-                                    .sizing = .{ .w = .grow, .h = .fit },
-                                    .direction = .top_to_bottom,
-                                    .child_gap = 2,
-                                },
-                            })({
-                                // Row 1: Category Pill + Filename
                                 clay.UI()(.{
                                     .layout = .{
                                         .sizing = .{ .w = .grow, .h = .fit },
-                                        .direction = .left_to_right,
-                                        .child_alignment = .{ .x = .left, .y = .center },
-                                        .child_gap = 6,
+                                        .direction = .top_to_bottom,
+                                        .child_gap = 2,
                                     },
                                 })({
-                                    // Small colored indicator tag representing category / type
+                                    // Row 1: Category Pill + Filename
                                     clay.UI()(.{
                                         .layout = .{
-                                            .sizing = .{ .w = .fixed(4 * scale_x), .h = .fixed(12 * scale_y) },
+                                            .sizing = .{ .w = .grow, .h = .fit },
+                                            .direction = .left_to_right,
+                                            .child_alignment = .{ .x = .left, .y = .center },
+                                            .child_gap = 6,
                                         },
-                                        .background_color = if (is_selected) .{ 137, 180, 250, 255 } else .{ 108, 112, 134, 255 },
-                                        .corner_radius = .all(3),
-                                    })({});
+                                    })({
+                                        // Small colored indicator tag representing category / type
+                                        clay.UI()(.{
+                                            .layout = .{
+                                                .sizing = .{ .w = .fixed(4 * scale_x), .h = .fixed(12 * scale_y) },
+                                            },
+                                            .background_color = if (is_selected) .{ 137, 180, 250, 255 } else .{ 108, 112, 134, 255 },
+                                            .corner_radius = .all(3),
+                                        })({});
 
-                                    // Filename
-                                    clay.text(display_filename, .{
-                                        .color = if (is_selected) .{ 137, 180, 250, 255 } else .{ 205, 214, 244, 255 },
+                                        // Filename
+                                        clay.text(display_filename, .{
+                                            .color = if (is_selected) .{ 137, 180, 250, 255 } else .{ 205, 214, 244, 255 },
+                                            .font_size = @intFromFloat(13.0 * dpi_scale),
+                                            .font_id = 0,
+                                        });
+                                    });
+
+                                    // Row 2: Parent folder path (indented slightly for alignment with filename)
+                                    clay.UI()(.{
+                                        .layout = .{
+                                            .sizing = .{ .w = .grow, .h = .fit },
+                                            .direction = .left_to_right,
+                                            .padding = .{ .left = 14 },
+                                        },
+                                    })({
+                                        clay.text(display_dir, .{
+                                            .color = .{ 166, 173, 200, 255 }, // Subtext
+                                            .font_size = @intFromFloat(11.0 * dpi_scale),
+                                            .font_id = 0,
+                                        });
+                                    });
+                                });
+                            },
+                            .actions => {
+                                const action = app_actions[real_idx];
+
+                                // Action Name (Left aligned)
+                                clay.UI()(.{
+                                    .layout = .{
+                                        .sizing = .{ .w = .grow, .h = .fit },
+                                    },
+                                })({
+                                    clay.text(action.name, .{
+                                        .color = if (is_selected) clay.Color{ 137, 180, 250, 255 } else clay.Color{ 205, 214, 244, 255 },
                                         .font_size = @intFromFloat(13.0 * dpi_scale),
                                         .font_id = 0,
                                     });
                                 });
 
-                                // Row 2: Parent folder path (indented slightly for alignment with filename)
-                                clay.UI()(.{
-                                    .layout = .{
-                                        .sizing = .{ .w = .grow, .h = .fit },
-                                        .direction = .left_to_right,
-                                        .padding = .{ .left = 14 },
-                                    },
-                                })({
-                                    clay.text(display_dir, .{
-                                        .color = .{ 166, 173, 200, 255 }, // Subtext
-                                        .font_size = @intFromFloat(11.0 * dpi_scale),
-                                        .font_id = 0,
+                                // Keyboard Shortcut (Right aligned)
+                                if (action.shortcut.len > 0) {
+                                    clay.UI()(.{
+                                        .layout = .{
+                                            .sizing = .{ .w = .fit, .h = .fit },
+                                            .padding = .{ .left = 8, .right = 8, .top = 3, .bottom = 3 },
+                                        },
+                                        .background_color = .{ 17, 17, 27, 255 }, // Catppuccin Crust
+                                        .corner_radius = .all(4),
+                                        .border = .{ .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 }, .color = .{ 49, 50, 68, 255 } },
+                                    })({
+                                        clay.text(action.shortcut, .{
+                                            .color = .{ 166, 173, 200, 255 },
+                                            .font_size = @intFromFloat(11.0 * dpi_scale),
+                                            .font_id = 0,
+                                        });
                                     });
-                                });
-                            });
-                        },
-                        .actions => {
-                            const action = app_actions[real_idx];
+                                }
+                            },
+                            else => {},
+                        }
+                    });
 
-                            // Action Name (Left aligned)
-                            clay.UI()(.{
-                                .layout = .{
-                                    .sizing = .{ .w = .grow, .h = .fit },
-                                },
-                            })({
-                                clay.text(action.name, .{
-                                    .color = if (is_selected) clay.Color{ 137, 180, 250, 255 } else clay.Color{ 205, 214, 244, 255 },
-                                    .font_size = @intFromFloat(13.0 * dpi_scale),
-                                    .font_id = 0,
-                                });
-                            });
-
-                            // Keyboard Shortcut (Right aligned)
-                            if (action.shortcut.len > 0) {
-                                clay.UI()(.{
-                                    .layout = .{
-                                        .sizing = .{ .w = .fit, .h = .fit },
-                                        .padding = .{ .left = 8, .right = 8, .top = 3, .bottom = 3 },
-                                    },
-                                    .background_color = .{ 17, 17, 27, 255 }, // Catppuccin Crust
-                                    .corner_radius = .all(4),
-                                    .border = .{ .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 }, .color = .{ 49, 50, 68, 255 } },
-                                })({
-                                    clay.text(action.shortcut, .{
-                                        .color = .{ 166, 173, 200, 255 },
-                                        .font_size = @intFromFloat(11.0 * dpi_scale),
-                                        .font_id = 0,
-                                    });
-                                });
-                            }
-                        },
+                    if (mouse_clicked and item_hovered) {
+                        const old_type = palette.active_type;
+                        switch (palette.active_type) {
+                            .files => {
+                                state.current_index = real_idx;
+                                try state.updateCache();
+                                palette.show = false;
+                                stopTextInput(state.window);
+                            },
+                            .actions => {
+                                const action = app_actions[real_idx];
+                                try state.triggerAction(action.id);
+                                if (palette.active_type == old_type) {
+                                    palette.show = false;
+                                    stopTextInput(state.window);
+                                }
+                            },
+                            else => {},
+                        }
                     }
-                });
 
-                if (mouse_clicked and item_hovered) {
-                    switch (palette.active_type) {
-                        .files => {
-                            state.current_index = real_idx;
-                            try state.updateCache();
-                        },
-                        .actions => {
-                            const action = app_actions[real_idx];
-                            try state.triggerAction(action.id);
-                        },
-                    }
-                    palette.show = false;
-                    stopTextInput(state.window);
+                    match_count += 1;
                 }
 
-                match_count += 1;
-            }
+                // Render Bottom Spacer if needed
+                if (bottom_spacer_h > 0) {
+                    clay.UI()(.{
+                        .id = clay.getElementId(cfg.bottom_spacer_id),
+                        .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(bottom_spacer_h) } },
+                    })({});
+                }
 
-            // Render Bottom Spacer if needed
-            if (bottom_spacer_h > 0) {
-                clay.UI()(.{
-                    .id = clay.getElementId(cfg.bottom_spacer_id),
-                    .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(bottom_spacer_h) } },
-                })({});
-            }
-
-            if (matching_indices.items.len == 0) {
-                clay.UI()(.{
-                    .layout = .{
-                        .sizing = .{ .w = .grow, .h = .fixed(36 * scale_y) },
-                        .child_alignment = .{ .x = .center, .y = .center },
-                    },
-                })({
-                    const no_match_msg = switch (palette.active_type) {
-                        .files => "No matching files found",
-                        .actions => "No matching commands found",
-                    };
-                    clay.text(no_match_msg, .{
-                        .color = .{ 108, 112, 134, 255 },
-                        .font_size = @intFromFloat(13.0 * dpi_scale),
-                        .font_id = 0,
+                if (matching_indices.items.len == 0) {
+                    clay.UI()(.{
+                        .layout = .{
+                            .sizing = .{ .w = .grow, .h = .fixed(36 * scale_y) },
+                            .child_alignment = .{ .x = .center, .y = .center },
+                        },
+                    })({
+                        const no_match_msg = switch (palette.active_type) {
+                            .files => "No matching files found",
+                            .actions => "No matching commands found",
+                            else => "",
+                        };
+                        clay.text(no_match_msg, .{
+                            .color = .{ 108, 112, 134, 255 },
+                            .font_size = @intFromFloat(13.0 * dpi_scale),
+                            .font_id = 0,
+                        });
                     });
-                });
-            }
-        });
+                }
+            });
+        }
     });
 }
 
