@@ -767,7 +767,7 @@ pub fn renderClayCommands(
                 if (texture) |tex| {
                     var dst_w = rect.w;
                     var dst_h = rect.h;
-                    const angle = @mod(zoom_pan.rotation_angle, 360.0);
+                    const angle = zoom_pan.rotation_angle;
                     const is_90_or_270 = std.math.approxEqAbs(f32, angle, 90.0, 0.01) or std.math.approxEqAbs(f32, angle, 270.0, 0.01);
                     if (is_90_or_270) {
                         dst_w = rect.h;
