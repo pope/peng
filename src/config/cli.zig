@@ -1,6 +1,6 @@
 const std = @import("std");
-const main = @import("../main.zig");
-const ScaleMode = main.ScaleMode;
+const app_state = @import("../app/state.zig");
+const ScaleMode = app_state.ScaleMode;
 
 pub const ParsedArgs = struct {
     arg_path: ?[]const u8,

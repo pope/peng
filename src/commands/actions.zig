@@ -1,9 +1,10 @@
 const std = @import("std");
 const main = @import("../main.zig");
 const c = main.c;
-const clay = main.clay;
-const ViewerState = main.ViewerState;
-const startTextInput = main.startTextInput;
+const clay = @import("zclay");
+const app_state = @import("../app/state.zig");
+const ViewerState = app_state.ViewerState;
+const startTextInput = app_state.startTextInput;
 
 pub const AppActionId = enum {
     next_image,

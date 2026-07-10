@@ -2,6 +2,7 @@ const std = @import("std");
 const clay = @import("zclay");
 const main = @import("main.zig");
 const c = main.c;
+const app_state = @import("app/state.zig");
 
 pub const ZoomPan = struct {
     zoom_factor: f32 = 1.0,
@@ -507,7 +508,7 @@ pub fn renderClayCommands(
     win_h: i32,
     brightness: f32,
     contrast: f32,
-    texture_scale_mode: main.TextureScaleMode,
+    texture_scale_mode: app_state.TextureScaleMode,
 ) !void {
     _ = text_engine;
     const f_win_w = @as(f32, @floatFromInt(win_w));
@@ -685,7 +686,7 @@ pub fn renderClayCommands(
                     .bottom_right = @min(config.corner_radius.bottom_right, min_radius),
                 };
 
-                const tag = if (rcmd.user_data) |ptr| main.ElementTag.fromInt(@intFromPtr(ptr)) else .none;
+                const tag = if (rcmd.user_data) |ptr| app_state.ElementTag.fromInt(@intFromPtr(ptr)) else .none;
                 const is_dashed = (tag == .drop_zone_box);
 
                 const r = config.color[0] / 255.0;
