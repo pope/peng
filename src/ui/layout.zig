@@ -277,47 +277,25 @@ pub fn renderFrame(
     var swap_w: u32 = 0;
     var swap_h: u32 = 0;
 
-    var temp_textures = std.ArrayList(*c.SDL_GPUTexture).empty;
-    defer temp_textures.deinit(frame_allocator);
-    errdefer {
-        for (temp_textures.items) |tex| {
-            c.SDL_ReleaseGPUTexture(state.gpu_device, tex);
-        }
-    }
-
     var temp_buffers = std.ArrayList(*c.SDL_GPUTransferBuffer).empty;
     defer temp_buffers.deinit(frame_allocator);
     errdefer {
         for (temp_buffers.items) |buf| {
-            c.SDL_ReleaseGPUTransferBuffer(state.gpu_device, buf);
+            c.SDL_ReleaseGPUTransferBuffer(state.gpu_device.?, buf);
         }
     }
 
     if (c.SDL_WaitAndAcquireGPUSwapchainTexture(cmd_buf, state.window, &swap_tex, &swap_w, &swap_h)) {
         try renderer.renderClayCommands(
-            state.gpu_device,
+            state,
             cmd_buf,
-            swap_tex,
-            state.gpu_pipeline,
-            state.gpu_sampler,
-            state.white_texture,
-            state.gpu_text_engine,
+            swap_tex.?,
             fonts,
             render_commands,
             frame_allocator,
-            &temp_textures,
             &temp_buffers,
-            .{
-                .zoom_factor = state.zoom_factor,
-                .pan_x = state.pan_x,
-                .pan_y = state.pan_y,
-                .rotation_angle = state.rotation_angle,
-            },
             @intCast(swap_w),
             @intCast(swap_h),
-            state.brightness,
-            state.contrast,
-            state.texture_scale_mode,
         );
         if (capture_filename) |filename| {
             const swapchain_format = c.SDL_GetGPUSwapchainTextureFormat(state.gpu_device.?, state.window);
@@ -326,12 +304,8 @@ pub fn renderFrame(
             _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
         }
 
-        // Defer release of text textures until command buffer completes
-        for (temp_textures.items) |tex| {
-            c.SDL_ReleaseGPUTexture(state.gpu_device, tex);
-        }
         for (temp_buffers.items) |buf| {
-            c.SDL_ReleaseGPUTransferBuffer(state.gpu_device, buf);
+            c.SDL_ReleaseGPUTransferBuffer(state.gpu_device.?, buf);
         }
     } else {
         _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);

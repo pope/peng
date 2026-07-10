@@ -787,6 +787,7 @@ pub fn main(init: std.process.Init) !void {
         .io = init.io,
         .window_pixel_format = c.SDL_PIXELFORMAT_RGBA32,
         .palette = PaletteState.init(gpa),
+        .text_cache = std.AutoHashMap(app.state.TextCacheKey, app.state.TextCacheValue).init(gpa),
         .scale_mode = parsed.default_scale,
         .rotation_angle = 0.0,
         .rotation_map = std.StringHashMap(f32).init(gpa),
@@ -1038,4 +1039,6 @@ test "ElementTag.fromInt" {
     try std.testing.expectEqual(ElementTag.drop_zone_box, ElementTag.fromInt(1337));
     try std.testing.expectEqual(ElementTag.none, ElementTag.fromInt(9999));
     try std.testing.expectEqual(ElementTag.none, ElementTag.fromInt(0x7fffffffd000));
+
+    std.testing.refAllDecls(@import("app/state.zig"));
 }

@@ -43,6 +43,20 @@ pub const PaletteMode = enum {
     go_to_image,
 };
 
+pub const TextCacheKey = struct {
+    font_id: usize,
+    font_size: u16,
+    color: u32,
+    hash: u64,
+};
+
+pub const TextCacheValue = struct {
+    texture: *c.SDL_GPUTexture,
+    w: f32,
+    h: f32,
+    last_used_frame: usize,
+};
+
 pub const PaletteState = struct {
     mode: PaletteMode = .inactive,
     query: std.ArrayList(u8),
@@ -415,6 +429,15 @@ pub const ViewerState = struct {
     drag_last_y: f32 = 0.0,
     mouse_inside: bool = true,
 
+    // Persistent double-buffered vertex resources
+    gpu_vertex_buffers: [2]?*c.SDL_GPUBuffer = .{ null, null },
+    gpu_transfer_buffers: [2]?*c.SDL_GPUTransferBuffer = .{ null, null },
+    gpu_buffer_capacities: [2]usize = .{ 0, 0 },
+    gpu_frame_index: usize = 0,
+
+    // Font text texture cache
+    text_cache: std.AutoHashMap(TextCacheKey, TextCacheValue),
+
     pub fn deinit(self: *ViewerState) void {
         self.exiting.store(true, .release);
         while (self.active_threads.load(.acquire) > 0) {
@@ -422,6 +445,19 @@ pub const ViewerState = struct {
         }
 
         self.clearCache();
+
+        for (self.gpu_vertex_buffers) |vb| {
+            if (vb) |b| c.SDL_ReleaseGPUBuffer(self.gpu_device.?, b);
+        }
+        for (self.gpu_transfer_buffers) |tb| {
+            if (tb) |b| c.SDL_ReleaseGPUTransferBuffer(self.gpu_device.?, b);
+        }
+
+        var text_iter = self.text_cache.valueIterator();
+        while (text_iter.next()) |val| {
+            c.SDL_ReleaseGPUTexture(self.gpu_device.?, val.texture);
+        }
+        self.text_cache.deinit();
 
         if (self.gpu_pipeline) |pipeline| c.SDL_ReleaseGPUGraphicsPipeline(self.gpu_device, pipeline);
         if (self.gpu_sampler) |sampler| c.SDL_ReleaseGPUSampler(self.gpu_device, sampler);
@@ -562,6 +598,15 @@ pub const ViewerState = struct {
         };
         self.palette.selection_dirty = true;
 
+        const max_capacity = switch (active_type) {
+            .files => self.image_list.items.len,
+            .actions => commands.actions.app_actions.len,
+            else => 0,
+        };
+        if (max_capacity > 0) {
+            try self.palette.matches.ensureTotalCapacity(self.allocator, max_capacity);
+        }
+
         switch (active_type) {
             .files => try self.rebuildPaletteMatches(),
             .actions => try self.rebuildActionMatches(),
@@ -571,11 +616,22 @@ pub const ViewerState = struct {
         startTextInput(self.window);
     }
 
+    fn updateEntryStatusLocked(self: *ViewerState, index: usize, generation: usize, status: CacheStatus) bool {
+        for (self.cache.items) |*entry| {
+            if (entry.index == index and entry.generation == generation) {
+                entry.status = status;
+                return true;
+            }
+        }
+        return false;
+    }
+
     pub fn prepareCacheTextures(self: *ViewerState) void {
         c.SDL_LockMutex(self.cache_mutex);
 
         var upload_target: ?struct {
-            entry_ptr: *CacheEntry,
+            index: usize,
+            generation: usize,
             cpu: @TypeOf(@as(CacheStatus, undefined).loaded_cpu),
         } = null;
 
@@ -584,7 +640,8 @@ pub const ViewerState = struct {
                 const cpu = entry.status.loaded_cpu;
                 entry.status = .uploading;
                 upload_target = .{
-                    .entry_ptr = entry,
+                    .index = entry.index,
+                    .generation = entry.generation,
                     .cpu = cpu,
                 };
                 break;
@@ -658,7 +715,7 @@ pub const ViewerState = struct {
             if (tex == null) {
                 std.log.err("Create GPU Texture failed for image size {d}x{d}: {s}", .{ target.cpu.surface.*.w, target.cpu.surface.*.h, c.SDL_GetError() });
                 c.SDL_LockMutex(self.cache_mutex);
-                target.entry_ptr.status = .failed;
+                _ = self.updateEntryStatusLocked(target.index, target.generation, .failed);
                 c.SDL_UnlockMutex(self.cache_mutex);
                 return;
             }
@@ -667,7 +724,7 @@ pub const ViewerState = struct {
             const cmd_buf = c.SDL_AcquireGPUCommandBuffer(self.gpu_device) orelse {
                 c.SDL_ReleaseGPUTexture(self.gpu_device, gpu_tex);
                 c.SDL_LockMutex(self.cache_mutex);
-                target.entry_ptr.status = .failed;
+                _ = self.updateEntryStatusLocked(target.index, target.generation, .failed);
                 c.SDL_UnlockMutex(self.cache_mutex);
                 return;
             };
@@ -681,7 +738,7 @@ pub const ViewerState = struct {
                 _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
                 c.SDL_ReleaseGPUTexture(self.gpu_device, gpu_tex);
                 c.SDL_LockMutex(self.cache_mutex);
-                target.entry_ptr.status = .failed;
+                _ = self.updateEntryStatusLocked(target.index, target.generation, .failed);
                 c.SDL_UnlockMutex(self.cache_mutex);
                 return;
             };
@@ -691,7 +748,7 @@ pub const ViewerState = struct {
                 _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
                 c.SDL_ReleaseGPUTexture(self.gpu_device, gpu_tex);
                 c.SDL_LockMutex(self.cache_mutex);
-                target.entry_ptr.status = .failed;
+                _ = self.updateEntryStatusLocked(target.index, target.generation, .failed);
                 c.SDL_UnlockMutex(self.cache_mutex);
                 return;
             });
@@ -703,7 +760,7 @@ pub const ViewerState = struct {
                 _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
                 c.SDL_ReleaseGPUTexture(self.gpu_device, gpu_tex);
                 c.SDL_LockMutex(self.cache_mutex);
-                target.entry_ptr.status = .failed;
+                _ = self.updateEntryStatusLocked(target.index, target.generation, .failed);
                 c.SDL_UnlockMutex(self.cache_mutex);
                 return;
             };
@@ -725,7 +782,7 @@ pub const ViewerState = struct {
             const upload_time_ms = @as(f64, @floatFromInt(end_upload - start_upload)) / 1_000_000.0;
 
             c.SDL_LockMutex(self.cache_mutex);
-            target.entry_ptr.status = .{
+            const loaded_gpu_status = CacheStatus{
                 .loaded_gpu = .{
                     .gpu_texture = gpu_tex,
                     .w = @floatFromInt(img_w),
@@ -738,7 +795,14 @@ pub const ViewerState = struct {
                     .memory_size_bytes = size,
                 },
             };
+            const updated = self.updateEntryStatusLocked(target.index, target.generation, loaded_gpu_status);
             c.SDL_UnlockMutex(self.cache_mutex);
+
+            if (!updated) {
+                // The cache entry was evicted or cleared while we were uploading.
+                // We must release the GPU texture to prevent a leak!
+                c.SDL_ReleaseGPUTexture(self.gpu_device.?, gpu_tex);
+            }
         }
         if (self.adjustments_dirty) {
             self.adjustments_dirty = false;
@@ -1062,3 +1126,34 @@ pub const ViewerState = struct {
         }
     }
 };
+
+test "ViewerState.updateEntryStatusLocked" {
+    const allocator = std.testing.allocator;
+    var state: ViewerState = undefined;
+    state.cache = std.ArrayList(CacheEntry).empty;
+    defer state.cache.deinit(allocator);
+
+    try state.cache.append(allocator, .{
+        .index = 10,
+        .generation = 1,
+        .status = .decoding,
+    });
+    try state.cache.append(allocator, .{
+        .index = 20,
+        .generation = 1,
+        .status = .decoding,
+    });
+
+    // Test successful update
+    const updated = state.updateEntryStatusLocked(20, 1, .failed);
+    try std.testing.expect(updated);
+    try std.testing.expectEqual(CacheStatus.failed, state.cache.items[1].status);
+
+    // Test updating non-existent index
+    const updated_missing = state.updateEntryStatusLocked(30, 1, .failed);
+    try std.testing.expect(!updated_missing);
+
+    // Test updating matching index but mismatching generation
+    const updated_gen_mismatch = state.updateEntryStatusLocked(10, 2, .failed);
+    try std.testing.expect(!updated_gen_mismatch);
+}

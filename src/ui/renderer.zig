@@ -449,68 +449,50 @@ fn renderArc(
     }
 }
 
-fn uploadBuffer(device: *c.SDL_GPUDevice, cmd_buf: *c.SDL_GPUCommandBuffer, data: []const u8, size: usize) !*c.SDL_GPUBuffer {
-    const buffer = c.SDL_CreateGPUBuffer(device, &c.SDL_GPUBufferCreateInfo{
-        .usage = c.SDL_GPU_BUFFERUSAGE_VERTEX,
-        .size = @intCast(size),
-        .props = 0,
-    }) orelse return error.GPUBufferCreationFailed;
+fn scissorEqual(a: ?c.SDL_Rect, b: ?c.SDL_Rect) bool {
+    if (a == null and b == null) return true;
+    if (a == null or b == null) return false;
+    const sa = a.?;
+    const sb = b.?;
+    return sa.x == sb.x and sa.y == sb.y and sa.w == sb.w and sa.h == sb.h;
+}
 
-    const transfer_buf = c.SDL_CreateGPUTransferBuffer(device, &c.SDL_GPUTransferBufferCreateInfo{
-        .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
-        .size = @intCast(size),
-        .props = 0,
-    }) orelse {
-        c.SDL_ReleaseGPUBuffer(device, buffer);
-        return error.GPUTransferBufferCreationFailed;
-    };
-    defer c.SDL_ReleaseGPUTransferBuffer(device, transfer_buf);
-
-    const mapped: [*]u8 = @ptrCast(c.SDL_MapGPUTransferBuffer(device, transfer_buf, false) orelse {
-        c.SDL_ReleaseGPUBuffer(device, buffer);
-        return error.GPUMapFailed;
+fn addBatch(
+    batches: *std.ArrayList(BatchItem),
+    allocator: std.mem.Allocator,
+    start: u32,
+    count: u32,
+    texture: *c.SDL_GPUTexture,
+    is_image: bool,
+    scissor: ?c.SDL_Rect,
+) !void {
+    if (batches.items.len > 0) {
+        var last = &batches.items[batches.items.len - 1];
+        if (last.texture == texture and last.is_image == is_image and scissorEqual(last.scissor, scissor)) {
+            last.vertex_count += count;
+            return;
+        }
+    }
+    try batches.append(allocator, .{
+        .vertex_start = start,
+        .vertex_count = count,
+        .texture = texture,
+        .is_image = is_image,
+        .scissor = scissor,
     });
-    @memcpy(mapped[0..size], data[0..size]);
-    c.SDL_UnmapGPUTransferBuffer(device, transfer_buf);
-
-    const copy_pass = c.SDL_BeginGPUCopyPass(cmd_buf) orelse {
-        c.SDL_ReleaseGPUBuffer(device, buffer);
-        return error.GPUCopyPassFailed;
-    };
-    c.SDL_UploadToGPUBuffer(copy_pass, &c.SDL_GPUTransferBufferLocation{
-        .transfer_buffer = transfer_buf,
-        .offset = 0,
-    }, &c.SDL_GPUBufferRegion{
-        .buffer = buffer,
-        .offset = 0,
-        .size = @intCast(size),
-    }, false);
-    c.SDL_EndGPUCopyPass(copy_pass);
-
-    return buffer;
 }
 
 pub fn renderClayCommands(
-    device: ?*c.SDL_GPUDevice,
-    cmd_buf: ?*c.SDL_GPUCommandBuffer,
-    swap_tex: ?*c.SDL_GPUTexture,
-    pipeline: ?*c.SDL_GPUGraphicsPipeline,
-    sampler: ?*c.SDL_GPUSampler,
-    white_tex: ?*c.SDL_GPUTexture,
-    text_engine: ?*c.TTF_TextEngine,
+    state: *app_state.ViewerState,
+    cmd_buf: *c.SDL_GPUCommandBuffer,
+    swap_tex: *c.SDL_GPUTexture,
     fonts: []const ?*c.TTF_Font,
     r_commands: []const clay.RenderCommand,
     allocator: std.mem.Allocator,
-    temp_textures: *std.ArrayList(*c.SDL_GPUTexture),
     temp_buffers: *std.ArrayList(*c.SDL_GPUTransferBuffer),
-    zoom_pan: ZoomPan,
     win_w: i32,
     win_h: i32,
-    brightness: f32,
-    contrast: f32,
-    texture_scale_mode: app_state.TextureScaleMode,
 ) !void {
-    _ = text_engine;
     const f_win_w = @as(f32, @floatFromInt(win_w));
     const f_win_h = @as(f32, @floatFromInt(win_h));
 
@@ -555,13 +537,7 @@ pub fn renderClayCommands(
 
                 const count = @as(u32, @intCast(vertices.items.len)) - start;
                 if (count > 0) {
-                    try batches.append(allocator, .{
-                        .vertex_start = start,
-                        .vertex_count = count,
-                        .texture = white_tex.?,
-                        .is_image = false,
-                        .scissor = current_scissor,
-                    });
+                    try addBatch(&batches, allocator, start, count, state.white_texture.?, false, current_scissor);
                 }
             },
             .text => {
@@ -569,81 +545,124 @@ pub fn renderClayCommands(
                 if (text_data.font_id >= fonts.len) continue;
                 const font_ptr = fonts[text_data.font_id] orelse continue;
 
-                if (!c.TTF_SetFontSize(font_ptr, @as(f32, @floatFromInt(text_data.font_size)))) {
-                    std.log.err("TTF_SetFontSize failed: {s}", .{c.SDL_GetError()});
-                }
-
                 const len = @as(usize, @intCast(text_data.string_contents.length));
                 const text_slice = text_data.string_contents.chars[0..len];
-                const buffer = try allocator.alloc(u8, len + 1);
-                defer allocator.free(buffer);
-                @memcpy(buffer[0..len], text_slice);
-                buffer[len] = 0;
 
-                // Render text string to a high-quality surface via CPU FreeType rasterizer
-                const surf = c.TTF_RenderText_Blended(font_ptr, buffer.ptr, len, c.SDL_Color{
-                    .r = @intFromFloat(text_data.text_color[0]),
-                    .g = @intFromFloat(text_data.text_color[1]),
-                    .b = @intFromFloat(text_data.text_color[2]),
-                    .a = @intFromFloat(text_data.text_color[3]),
-                }) orelse continue;
-                defer c.SDL_DestroySurface(surf);
+                // 1. Check/Lookup cache
+                const color_u32 = @as(u32, @intFromFloat(text_data.text_color[0])) |
+                    (@as(u32, @intFromFloat(text_data.text_color[1])) << 8) |
+                    (@as(u32, @intFromFloat(text_data.text_color[2])) << 16) |
+                    (@as(u32, @intFromFloat(text_data.text_color[3])) << 24);
 
-                // Convert to RGBA32 format to match GPU texture format
-                const converted = c.SDL_ConvertSurface(surf, c.SDL_PIXELFORMAT_RGBA32) orelse continue;
-                defer c.SDL_DestroySurface(converted);
-
-                const tex_info = c.SDL_GPUTextureCreateInfo{
-                    .type = c.SDL_GPU_TEXTURETYPE_2D,
-                    .format = c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-                    .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER,
-                    .width = @intCast(converted.*.w),
-                    .height = @intCast(converted.*.h),
-                    .layer_count_or_depth = 1,
-                    .num_levels = 1,
-                    .sample_count = c.SDL_GPU_SAMPLECOUNT_1,
-                    .props = 0,
-                };
-                const tex = c.SDL_CreateGPUTexture(device.?, &tex_info) orelse continue;
-                temp_textures.append(allocator, tex) catch |err| {
-                    c.SDL_ReleaseGPUTexture(device.?, tex);
-                    return err;
+                const key = app_state.TextCacheKey{
+                    .font_id = text_data.font_id,
+                    .font_size = text_data.font_size,
+                    .color = color_u32,
+                    .hash = std.hash.Wyhash.hash(0, text_slice),
                 };
 
-                const size = @as(usize, @intCast(converted.*.w)) * @as(usize, @intCast(converted.*.h)) * 4;
-                const transfer_buf = c.SDL_CreateGPUTransferBuffer(device.?, &c.SDL_GPUTransferBufferCreateInfo{
-                    .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
-                    .size = @intCast(size),
-                    .props = 0,
-                }) orelse continue;
-                temp_buffers.append(allocator, transfer_buf) catch |err| {
-                    c.SDL_ReleaseGPUTransferBuffer(device.?, transfer_buf);
-                    return err;
-                };
+                var cached_tex: ?*c.SDL_GPUTexture = null;
+                var w_f: f32 = 0.0;
+                var h_f: f32 = 0.0;
 
-                const mapped: [*]u8 = @ptrCast(c.SDL_MapGPUTransferBuffer(device.?, transfer_buf, false) orelse continue);
-                const pixels: [*]const u8 = @ptrCast(converted.*.pixels);
-                @memcpy(mapped[0..size], pixels[0..size]);
-                c.SDL_UnmapGPUTransferBuffer(device.?, transfer_buf);
+                if (state.text_cache.getEntry(key)) |entry| {
+                    entry.value_ptr.last_used_frame = state.gpu_frame_index;
+                    cached_tex = entry.value_ptr.texture;
+                    w_f = entry.value_ptr.w;
+                    h_f = entry.value_ptr.h;
+                } else {
+                    // Set font size
+                    if (!c.TTF_SetFontSize(font_ptr, @as(f32, @floatFromInt(text_data.font_size)))) {
+                        std.log.err("TTF_SetFontSize failed: {s}", .{c.SDL_GetError()});
+                    }
 
-                const copy_pass = c.SDL_BeginGPUCopyPass(cmd_buf.?) orelse continue;
-                c.SDL_UploadToGPUTexture(copy_pass, &c.SDL_GPUTextureTransferInfo{
-                    .transfer_buffer = transfer_buf,
-                    .offset = 0,
-                    .pixels_per_row = @intCast(converted.*.w),
-                    .rows_per_layer = @intCast(converted.*.h),
-                }, &c.SDL_GPUTextureRegion{
-                    .texture = tex,
-                    .w = @intCast(converted.*.w),
-                    .h = @intCast(converted.*.h),
-                    .d = 1,
-                }, false);
-                c.SDL_EndGPUCopyPass(copy_pass);
+                    const buffer = try allocator.alloc(u8, len + 1);
+                    defer allocator.free(buffer);
+                    @memcpy(buffer[0..len], text_slice);
+                    buffer[len] = 0;
+
+                    const surf = c.TTF_RenderText_Blended(font_ptr, buffer.ptr, len, c.SDL_Color{
+                        .r = @intFromFloat(text_data.text_color[0]),
+                        .g = @intFromFloat(text_data.text_color[1]),
+                        .b = @intFromFloat(text_data.text_color[2]),
+                        .a = @intFromFloat(text_data.text_color[3]),
+                    }) orelse continue;
+                    defer c.SDL_DestroySurface(surf);
+
+                    const converted = c.SDL_ConvertSurface(surf, c.SDL_PIXELFORMAT_RGBA32) orelse continue;
+                    defer c.SDL_DestroySurface(converted);
+
+                    const tex_info = c.SDL_GPUTextureCreateInfo{
+                        .type = c.SDL_GPU_TEXTURETYPE_2D,
+                        .format = c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+                        .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER,
+                        .width = @intCast(converted.*.w),
+                        .height = @intCast(converted.*.h),
+                        .layer_count_or_depth = 1,
+                        .num_levels = 1,
+                        .sample_count = c.SDL_GPU_SAMPLECOUNT_1,
+                        .props = 0,
+                    };
+                    const tex = c.SDL_CreateGPUTexture(state.gpu_device.?, &tex_info) orelse continue;
+
+                    const size = @as(usize, @intCast(converted.*.w)) * @as(usize, @intCast(converted.*.h)) * 4;
+                    const transfer_buf = c.SDL_CreateGPUTransferBuffer(state.gpu_device.?, &c.SDL_GPUTransferBufferCreateInfo{
+                        .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+                        .size = @intCast(size),
+                        .props = 0,
+                    }) orelse {
+                        c.SDL_ReleaseGPUTexture(state.gpu_device.?, tex);
+                        continue;
+                    };
+                    temp_buffers.append(allocator, transfer_buf) catch {
+                        c.SDL_ReleaseGPUTransferBuffer(state.gpu_device.?, transfer_buf);
+                        c.SDL_ReleaseGPUTexture(state.gpu_device.?, tex);
+                        continue;
+                    };
+
+                    const mapped: [*]u8 = @ptrCast(c.SDL_MapGPUTransferBuffer(state.gpu_device.?, transfer_buf, false) orelse {
+                        c.SDL_ReleaseGPUTexture(state.gpu_device.?, tex);
+                        continue;
+                    });
+                    const pixels: [*]const u8 = @ptrCast(converted.*.pixels);
+                    @memcpy(mapped[0..size], pixels[0..size]);
+                    c.SDL_UnmapGPUTransferBuffer(state.gpu_device.?, transfer_buf);
+
+                    const copy_pass = c.SDL_BeginGPUCopyPass(cmd_buf) orelse {
+                        c.SDL_ReleaseGPUTexture(state.gpu_device.?, tex);
+                        continue;
+                    };
+                    c.SDL_UploadToGPUTexture(copy_pass, &c.SDL_GPUTextureTransferInfo{
+                        .transfer_buffer = transfer_buf,
+                        .offset = 0,
+                        .pixels_per_row = @intCast(converted.*.w),
+                        .rows_per_layer = @intCast(converted.*.h),
+                    }, &c.SDL_GPUTextureRegion{
+                        .texture = tex,
+                        .w = @intCast(converted.*.w),
+                        .h = @intCast(converted.*.h),
+                        .d = 1,
+                    }, false);
+                    c.SDL_EndGPUCopyPass(copy_pass);
+
+                    w_f = @floatFromInt(converted.*.w);
+                    h_f = @floatFromInt(converted.*.h);
+                    cached_tex = tex;
+
+                    state.text_cache.put(key, .{
+                        .texture = tex,
+                        .w = w_f,
+                        .h = h_f,
+                        .last_used_frame = state.gpu_frame_index,
+                    }) catch {
+                        c.SDL_ReleaseGPUTexture(state.gpu_device.?, tex);
+                        continue;
+                    };
+                }
+
+                const tex = cached_tex.?;
 
                 // Align to pixel grid
-                const w_f = @as(f32, @floatFromInt(converted.*.w));
-                const h_f = @as(f32, @floatFromInt(converted.*.h));
-
                 const offset_y = @round((rcmd.bounding_box.height - h_f) / 2.0);
                 const world_y = @round(rcmd.bounding_box.y) + @max(0.0, offset_y);
                 const world_x = @round(rcmd.bounding_box.x);
@@ -663,13 +682,7 @@ pub fn renderClayCommands(
                 try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y2, .u = 1.0, .v = 1.0, .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
                 try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y2, .u = 0.0, .v = 1.0, .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
 
-                try batches.append(allocator, .{
-                    .vertex_start = start,
-                    .vertex_count = 6,
-                    .texture = tex,
-                    .is_image = false,
-                    .scissor = current_scissor,
-                });
+                try addBatch(&batches, allocator, start, 6, tex, false, current_scissor);
             },
             .border => {
                 const config = rcmd.render_data.border;
@@ -754,13 +767,7 @@ pub fn renderClayCommands(
 
                 const count = @as(u32, @intCast(vertices.items.len)) - start_batch;
                 if (count > 0) {
-                    try batches.append(allocator, .{
-                        .vertex_start = start_batch,
-                        .vertex_count = count,
-                        .texture = white_tex.?,
-                        .is_image = false,
-                        .scissor = current_scissor,
-                    });
+                    try addBatch(&batches, allocator, start_batch, count, state.white_texture.?, false, current_scissor);
                 }
             },
             .image => {
@@ -768,19 +775,19 @@ pub fn renderClayCommands(
                 if (texture) |tex| {
                     var dst_w = rect.w;
                     var dst_h = rect.h;
-                    const angle = zoom_pan.rotation_angle;
+                    const angle = state.rotation_angle;
                     const is_90_or_270 = std.math.approxEqAbs(f32, angle, 90.0, 0.01) or std.math.approxEqAbs(f32, angle, 270.0, 0.01);
                     if (is_90_or_270) {
                         dst_w = rect.h;
                         dst_h = rect.w;
                     }
                     var dst_rect = rect;
-                    dst_rect.w = dst_w * zoom_pan.zoom_factor;
-                    dst_rect.h = dst_h * zoom_pan.zoom_factor;
+                    dst_rect.w = dst_w * state.zoom_factor;
+                    dst_rect.h = dst_h * state.zoom_factor;
                     const center_x = rect.x + rect.w / 2.0;
                     const center_y = rect.y + rect.h / 2.0;
-                    dst_rect.x = center_x - (dst_rect.w / 2.0) + zoom_pan.pan_x;
-                    dst_rect.y = center_y - (dst_rect.h / 2.0) + zoom_pan.pan_y;
+                    dst_rect.x = center_x - (dst_rect.w / 2.0) + state.pan_x;
+                    dst_rect.y = center_y - (dst_rect.h / 2.0) + state.pan_y;
 
                     const rad = angle * (std.math.pi / 180.0);
                     const cos_val = @cos(rad);
@@ -829,13 +836,7 @@ pub fn renderClayCommands(
                     try vertices.append(allocator, .{ .x = ndc_x3, .y = ndc_y3, .u = 1.0, .v = 1.0, .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
                     try vertices.append(allocator, .{ .x = ndc_x4, .y = ndc_y4, .u = 0.0, .v = 1.0, .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
 
-                    try batches.append(allocator, .{
-                        .vertex_start = start,
-                        .vertex_count = 6,
-                        .texture = tex,
-                        .is_image = true,
-                        .scissor = current_scissor,
-                    });
+                    try addBatch(&batches, allocator, start, 6, tex, true, current_scissor);
                 }
             },
             else => {
@@ -844,14 +845,60 @@ pub fn renderClayCommands(
         }
     }
 
+    // Persistent Vertex Buffer Double-Buffering
     var vert_buf: ?*c.SDL_GPUBuffer = null;
-    if (vertices.items.len > 0) {
-        vert_buf = try uploadBuffer(device.?, cmd_buf.?, std.mem.sliceAsBytes(vertices.items), vertices.items.len * @sizeOf(Vertex));
+    const needed_size = vertices.items.len * @sizeOf(Vertex);
+    const frame_idx = state.gpu_frame_index % 2;
+
+    if (needed_size > 0) {
+        if (state.gpu_vertex_buffers[frame_idx] == null or state.gpu_buffer_capacities[frame_idx] < needed_size) {
+            if (state.gpu_vertex_buffers[frame_idx]) |vb| {
+                c.SDL_ReleaseGPUBuffer(state.gpu_device.?, vb);
+            }
+            if (state.gpu_transfer_buffers[frame_idx]) |tb| {
+                c.SDL_ReleaseGPUTransferBuffer(state.gpu_device.?, tb);
+            }
+
+            const new_capacity = std.mem.alignForward(usize, needed_size * 2, 4096);
+
+            state.gpu_vertex_buffers[frame_idx] = c.SDL_CreateGPUBuffer(state.gpu_device.?, &c.SDL_GPUBufferCreateInfo{
+                .usage = c.SDL_GPU_BUFFERUSAGE_VERTEX,
+                .size = @intCast(new_capacity),
+                .props = 0,
+            }) orelse return error.GPUBufferCreationFailed;
+
+            state.gpu_transfer_buffers[frame_idx] = c.SDL_CreateGPUTransferBuffer(state.gpu_device.?, &c.SDL_GPUTransferBufferCreateInfo{
+                .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+                .size = @intCast(new_capacity),
+                .props = 0,
+            }) orelse return error.GPUTransferBufferCreationFailed;
+
+            state.gpu_buffer_capacities[frame_idx] = new_capacity;
+        }
+
+        const vb = state.gpu_vertex_buffers[frame_idx].?;
+        const tb = state.gpu_transfer_buffers[frame_idx].?;
+
+        const mapped: [*]Vertex = @ptrCast(@alignCast(c.SDL_MapGPUTransferBuffer(state.gpu_device.?, tb, false) orelse return error.GPUMapFailed));
+        @memcpy(mapped[0..vertices.items.len], vertices.items);
+        c.SDL_UnmapGPUTransferBuffer(state.gpu_device.?, tb);
+
+        const copy_pass = c.SDL_BeginGPUCopyPass(cmd_buf) orelse return error.GPUCopyPassFailed;
+        c.SDL_UploadToGPUBuffer(copy_pass, &c.SDL_GPUTransferBufferLocation{
+            .transfer_buffer = tb,
+            .offset = 0,
+        }, &c.SDL_GPUBufferRegion{
+            .buffer = vb,
+            .offset = 0,
+            .size = @intCast(needed_size),
+        }, false);
+        c.SDL_EndGPUCopyPass(copy_pass);
+
+        vert_buf = vb;
     }
-    defer if (vert_buf) |vb| c.SDL_ReleaseGPUBuffer(device.?, vb);
 
     const color_target = c.SDL_GPUColorTargetInfo{
-        .texture = swap_tex.?,
+        .texture = swap_tex,
         .clear_color = .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 },
         .load_op = c.SDL_GPU_LOADOP_CLEAR,
         .store_op = c.SDL_GPU_STOREOP_STORE,
@@ -860,10 +907,10 @@ pub fn renderClayCommands(
         .padding2 = 0,
     };
 
-    const render_pass = c.SDL_BeginGPURenderPass(cmd_buf.?, &color_target, 1, null) orelse return;
+    const render_pass = c.SDL_BeginGPURenderPass(cmd_buf, &color_target, 1, null) orelse return;
     defer c.SDL_EndGPURenderPass(render_pass);
 
-    c.SDL_BindGPUGraphicsPipeline(render_pass, pipeline.?);
+    c.SDL_BindGPUGraphicsPipeline(render_pass, state.gpu_pipeline.?);
 
     if (vert_buf) |vb| {
         const vert_binding = c.SDL_GPUBufferBinding{ .buffer = vb, .offset = 0 };
@@ -889,7 +936,7 @@ pub fn renderClayCommands(
                 c.SDL_SetGPUScissor(render_pass, &full_sc);
             }
 
-            const scale_mode_val: i32 = switch (texture_scale_mode) {
+            const scale_mode_val: i32 = switch (state.texture_scale_mode) {
                 .nearest => 0,
                 .linear => 1,
                 .pixel_art => 2,
@@ -897,15 +944,36 @@ pub fn renderClayCommands(
                 .lanczos3 => 4,
             };
             const ubo = Uniforms{
-                .brightness = brightness,
-                .contrast = contrast,
+                .brightness = state.brightness,
+                .contrast = state.contrast,
                 .is_text_or_color = if (batch.is_image) 0 else 1,
                 .scale_mode = scale_mode_val,
             };
-            c.SDL_PushGPUFragmentUniformData(cmd_buf.?, 0, &ubo, @sizeOf(Uniforms));
+            c.SDL_PushGPUFragmentUniformData(cmd_buf, 0, &ubo, @sizeOf(Uniforms));
 
-            c.SDL_BindGPUFragmentSamplers(render_pass, 0, &c.SDL_GPUTextureSamplerBinding{ .texture = batch.texture, .sampler = sampler.? }, 1);
+            c.SDL_BindGPUFragmentSamplers(render_pass, 0, &c.SDL_GPUTextureSamplerBinding{ .texture = batch.texture, .sampler = state.gpu_sampler.? }, 1);
             c.SDL_DrawGPUPrimitives(render_pass, batch.vertex_count, 1, batch.vertex_start, 0);
         }
     }
+
+    // 4. Cache eviction for text textures (unused for >120 frames)
+    var to_evict = std.ArrayList(app_state.TextCacheKey).empty;
+    defer to_evict.deinit(allocator);
+
+    var text_iter = state.text_cache.iterator();
+    while (text_iter.next()) |entry| {
+        if (state.gpu_frame_index > entry.value_ptr.last_used_frame and
+            state.gpu_frame_index - entry.value_ptr.last_used_frame > 120)
+        {
+            to_evict.append(allocator, entry.key_ptr.*) catch {};
+        }
+    }
+
+    for (to_evict.items) |k| {
+        if (state.text_cache.fetchRemove(k)) |removed| {
+            c.SDL_ReleaseGPUTexture(state.gpu_device.?, removed.value.texture);
+        }
+    }
+
+    state.gpu_frame_index += 1;
 }
