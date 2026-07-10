@@ -1669,7 +1669,6 @@ pub fn main(init: std.process.Init) !void {
         std.log.err("SDL_CreateMutex failed: {s}", .{c.SDL_GetError()});
         return error.SDLCreateMutexFailed;
     };
-    errdefer c.SDL_DestroyMutex(cache_mutex);
 
     // Initialize state
     var state = ViewerState{
@@ -1861,7 +1860,6 @@ pub fn main(init: std.process.Init) !void {
                     const path_len = std.mem.len(dropped_path);
                     const path_slice = dropped_path[0..path_len];
                     try state.handlePathSelection(path_slice);
-                    c.SDL_free(@constCast(dropped_path));
                 }
             },
             else => {},
@@ -1957,7 +1955,6 @@ pub fn main(init: std.process.Init) !void {
                         const path_len = std.mem.len(dropped_path);
                         const path_slice = dropped_path[0..path_len];
                         try state.handlePathSelection(path_slice);
-                        c.SDL_free(@constCast(dropped_path));
                     }
                 },
                 else => {},
