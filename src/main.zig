@@ -18,6 +18,32 @@ const MeasureTextUserData = struct {
     allocator: std.mem.Allocator,
 };
 
+const FrameInput = struct {
+    win_w: f32,
+    win_h: f32,
+    pix_w: f32,
+    pix_h: f32,
+    scale_x: f32,
+    scale_y: f32,
+    dpi_scale: f32,
+
+    mouse_x: f32,
+    mouse_y: f32,
+    mouse_left_down: bool,
+    mouse_left_clicked: bool,
+    mouse_inside: bool,
+    scroll_delta_x: f32,
+    scroll_delta_y: f32,
+
+    keys_pressed: std.ArrayList(c.SDL_Keycode),
+    key_modifiers: c.SDL_Keymod,
+    text_input: ?[]const u8,
+    dropped_path: ?[]const u8,
+
+    ticks: u64,
+    delta_time_ms: f32,
+};
+
 fn sdl3MeasureText(text: []const u8, config: *clay.TextElementConfig, data: *const MeasureTextUserData) clay.Dimensions {
     if (config.font_id >= data.fonts.len) return .{ .w = 0, .h = 0 };
     const font = data.fonts[config.font_id] orelse return .{ .w = 0, .h = 0 };
@@ -503,6 +529,15 @@ const ViewerState = struct {
     brightness: f32 = 0.0,
     contrast: f32 = 1.0,
     adjustments_dirty: bool = false,
+    stats_offset_x: f32 = 20.0,
+    stats_offset_y: f32 = 20.0,
+    stats_dragging: bool = false,
+    drag_start_x: f32 = 0.0,
+    drag_start_y: f32 = 0.0,
+    viewport_dragging: bool = false,
+    drag_last_x: f32 = 0.0,
+    drag_last_y: f32 = 0.0,
+    mouse_inside: bool = true,
 
     pub fn deinit(self: *ViewerState) void {
         self.exiting.store(true, .release);
@@ -532,6 +567,100 @@ const ViewerState = struct {
         self.zoom_factor = 1.0;
         self.pan_x = 0.0;
         self.pan_y = 0.0;
+    }
+
+    pub fn update(self: *ViewerState, input: FrameInput, gpa: std.mem.Allocator) !void {
+        // 1. Text input updates
+        if (input.text_input) |text| {
+            if (self.palette.show) {
+                try self.palette.query.appendSlice(gpa, text);
+                self.palette.selected_idx = 0;
+                self.palette.selection_dirty = true;
+                switch (self.palette.active_type) {
+                    .files => try self.rebuildPaletteMatches(),
+                    .actions => try self.rebuildActionMatches(),
+                }
+            }
+        }
+
+        // 2. Drop file/directory updates
+        if (input.dropped_path) |path| {
+            try self.handlePathSelection(path);
+        }
+
+        // 3. Mouse dragging updates
+        if (self.show_stats_overlay and self.stats_dragging) {
+            if (input.mouse_left_down) {
+                self.stats_offset_x = input.mouse_x - self.drag_start_x;
+                self.stats_offset_y = input.mouse_y - self.drag_start_y;
+            } else {
+                self.stats_dragging = false;
+            }
+        } else if (self.viewport_dragging) {
+            if (input.mouse_left_down) {
+                self.pan_x += input.mouse_x - self.drag_last_x;
+                self.pan_y += input.mouse_y - self.drag_last_y;
+                self.drag_last_x = input.mouse_x;
+                self.drag_last_y = input.mouse_y;
+            } else {
+                self.viewport_dragging = false;
+            }
+        }
+
+        // 4. Mouse click triggers (starts dragging)
+        if (input.mouse_left_clicked) {
+            // Check if we should close the palette
+            if (self.palette.show) {
+                const element_id = switch (self.palette.active_type) {
+                    .files => "CommandPalette",
+                    .actions => "ActionPalette",
+                };
+                if (!clay.pointerOver(clay.getElementId(element_id))) {
+                    self.palette.show = false;
+                    stopTextInput(self.window);
+                }
+            }
+
+            if (self.show_stats_overlay and
+                clay.pointerOver(clay.getElementId("StatsPanel")) and
+                !clay.pointerOver(clay.getElementId("StatsCloseBtn")))
+            {
+                self.stats_dragging = true;
+                self.drag_start_x = input.mouse_x - self.stats_offset_x;
+                self.drag_start_y = input.mouse_y - self.stats_offset_y;
+            } else if (!self.palette.show and clay.pointerOver(clay.getElementId("Viewport"))) {
+                self.viewport_dragging = true;
+                self.drag_last_x = input.mouse_x;
+                self.drag_last_y = input.mouse_y;
+            }
+        }
+
+        // 5. Mouse Wheel Zoom updates
+        if (input.scroll_delta_y != 0) {
+            if (!self.palette.show and clay.pointerOver(clay.getElementId("Viewport"))) {
+                const old_zoom = self.zoom_factor;
+                self.zoom_factor = std.math.clamp(self.zoom_factor + input.scroll_delta_y * 0.1, 0.1, 10.0);
+
+                const available_width = if (clay.isDebugModeEnabled()) @max(input.pix_w - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0) else input.pix_w;
+                const cx = available_width / 2.0;
+                var title_bar_h: f32 = 60.0;
+                if (self.is_fullscreen) {
+                    title_bar_h = 0;
+                }
+                const cy = (title_bar_h * input.scale_y) + ((input.pix_h - title_bar_h * input.scale_y) / 2.0);
+
+                const rel_x = input.mouse_x - cx;
+                const rel_y = input.mouse_y - cy;
+
+                self.pan_x = rel_x - (rel_x - self.pan_x) * (self.zoom_factor / old_zoom);
+                self.pan_y = rel_y - (rel_y - self.pan_y) * (self.zoom_factor / old_zoom);
+            }
+        }
+
+        // 6. Keyboard updates
+        for (input.keys_pressed.items) |key| {
+            try self.handleKeyDown(key, input.key_modifiers, input.scale_x, input.scale_y);
+        }
     }
 
     fn getSdlScaleMode(self: *ViewerState) c.SDL_ScaleMode {
@@ -821,7 +950,12 @@ const ViewerState = struct {
                             new_w = @max(1, new_w);
                             new_h = @max(1, new_h);
 
-                            const new_scale = c.SDL_ScaleSurface(current_surf, new_w, new_h, c.SDL_SCALEMODE_LINEAR);
+                            const new_scale = c.SDL_ScaleSurface(
+                                current_surf,
+                                new_w,
+                                new_h,
+                                c.SDL_SCALEMODE_LINEAR,
+                            );
                             if (new_scale) |ns| {
                                 if (scaled_surf) |s| c.SDL_DestroySurface(s);
                                 scaled_surf = ns;
@@ -1472,8 +1606,7 @@ fn renderPalette(
             for (matching_indices.items[start_visible_idx..end_visible_idx]) |real_idx| {
                 const is_selected = (match_count == palette.selected_idx);
 
-                const item_id_buf = try frame_allocator.alloc(u8, 64);
-                const item_id_str = try std.fmt.bufPrint(item_id_buf, "{s}{}", .{ cfg.item_prefix, real_idx });
+                const item_id_str = try std.fmt.allocPrint(frame_allocator, "{s}{}", .{ cfg.item_prefix, real_idx });
 
                 const item_hovered = clay.pointerOver(clay.getElementId(item_id_str));
 
@@ -1713,13 +1846,13 @@ fn truncateDirectory(allocator: std.mem.Allocator, text: []const u8, max_w: f32,
     return std.fmt.allocPrint(allocator, "...{s}", .{text[text.len - best_len ..]}) catch text;
 }
 
-fn formatSize(bytes: u64, buf: []u8) []const u8 {
+fn formatSize(allocator: std.mem.Allocator, bytes: u64) ![]const u8 {
     const kb = @as(f64, @floatFromInt(bytes)) / 1024.0;
     if (kb < 1024.0) {
-        return std.fmt.bufPrint(buf, "{d:.1} KB", .{kb}) catch "0 KB";
+        return std.fmt.allocPrint(allocator, "{d:.1} KB", .{kb});
     }
     const mb = kb / 1024.0;
-    return std.fmt.bufPrint(buf, "{d:.1} MB", .{mb}) catch "0 MB";
+    return std.fmt.allocPrint(allocator, "{d:.1} MB", .{mb});
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -1795,7 +1928,7 @@ pub fn main(init: std.process.Init) !void {
     if (!c.SDL_GetWindowSizeInPixels(window, &pix_w, &pix_h)) {
         std.log.err("SDL_GetWindowSizeInPixels failed: {s}", .{c.SDL_GetError()});
     }
-    const dpi_scale = if (win_w > 0) @as(f32, @floatFromInt(pix_w)) / @as(f32, @floatFromInt(win_w)) else 1.0;
+    const initial_dpi_scale = if (win_w > 0) @as(f32, @floatFromInt(pix_w)) / @as(f32, @floatFromInt(win_w)) else 1.0;
 
     // Create GPU Device
     const gpu_device = c.SDL_CreateGPUDevice(c.SDL_GPU_SHADERFORMAT_SPIRV, true, null) orelse {
@@ -1816,7 +1949,7 @@ pub fn main(init: std.process.Init) !void {
         return error.SDLMemIOFailed;
     };
     defer _ = c.SDL_CloseIO(stream);
-    const font = c.TTF_OpenFontIO(stream, false, 20.0 * dpi_scale) orelse {
+    const font = c.TTF_OpenFontIO(stream, false, 20.0 * initial_dpi_scale) orelse {
         std.log.err("TTF_OpenFontIO Error: {s}", .{c.SDL_GetError()});
         return error.TTFOpenFontFailed;
     };
@@ -1938,9 +2071,24 @@ pub fn main(init: std.process.Init) !void {
 
     // Create Graphics Pipeline
     const vertex_attribs = [_]c.SDL_GPUVertexAttribute{
-        .{ .location = 0, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, .offset = @offsetOf(renderer.Vertex, "x") },
-        .{ .location = 1, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, .offset = @offsetOf(renderer.Vertex, "u") },
-        .{ .location = 2, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, .offset = @offsetOf(renderer.Vertex, "r") },
+        .{
+            .location = 0,
+            .buffer_slot = 0,
+            .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2,
+            .offset = @offsetOf(renderer.Vertex, "x"),
+        },
+        .{
+            .location = 1,
+            .buffer_slot = 0,
+            .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2,
+            .offset = @offsetOf(renderer.Vertex, "u"),
+        },
+        .{
+            .location = 2,
+            .buffer_slot = 0,
+            .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4,
+            .offset = @offsetOf(renderer.Vertex, "r"),
+        },
     };
     const vertex_buf_descs = [_]c.SDL_GPUVertexBufferDescription{
         .{ .slot = 0, .pitch = @sizeOf(renderer.Vertex), .input_rate = c.SDL_GPU_VERTEXINPUTRATE_VERTEX, .instance_step_rate = 0 },
@@ -2002,8 +2150,18 @@ pub fn main(init: std.process.Init) !void {
         },
         .depth_stencil_state = .{
             .compare_op = c.SDL_GPU_COMPAREOP_NEVER,
-            .back_stencil_state = .{ .compare_op = c.SDL_GPU_COMPAREOP_NEVER, .fail_op = c.SDL_GPU_STENCILOP_KEEP, .pass_op = c.SDL_GPU_STENCILOP_KEEP, .depth_fail_op = c.SDL_GPU_STENCILOP_KEEP },
-            .front_stencil_state = .{ .compare_op = c.SDL_GPU_COMPAREOP_NEVER, .fail_op = c.SDL_GPU_STENCILOP_KEEP, .pass_op = c.SDL_GPU_STENCILOP_KEEP, .depth_fail_op = c.SDL_GPU_STENCILOP_KEEP },
+            .back_stencil_state = .{
+                .compare_op = c.SDL_GPU_COMPAREOP_NEVER,
+                .fail_op = c.SDL_GPU_STENCILOP_KEEP,
+                .pass_op = c.SDL_GPU_STENCILOP_KEEP,
+                .depth_fail_op = c.SDL_GPU_STENCILOP_KEEP,
+            },
+            .front_stencil_state = .{
+                .compare_op = c.SDL_GPU_COMPAREOP_NEVER,
+                .fail_op = c.SDL_GPU_STENCILOP_KEEP,
+                .pass_op = c.SDL_GPU_STENCILOP_KEEP,
+                .depth_fail_op = c.SDL_GPU_STENCILOP_KEEP,
+            },
             .compare_mask = 0,
             .write_mask = 0,
             .enable_depth_test = false,
@@ -2111,22 +2269,14 @@ pub fn main(init: std.process.Init) !void {
     }
 
     var last_time = c.SDL_GetTicks();
-    var mouse_inside = true;
-    var stats_offset_x: f32 = 20.0;
-    var stats_offset_y: f32 = 20.0;
-    var stats_dragging = false;
-    var drag_start_x: f32 = 0.0;
-    var drag_start_y: f32 = 0.0;
-    var viewport_dragging = false;
-    var drag_last_x: f32 = 0.0;
-    var drag_last_y: f32 = 0.0;
     while (state.running) {
-        var event: c.SDL_Event = undefined;
-        var mouse_clicked = false;
-        var scroll_delta_x: f32 = 0;
-        var scroll_delta_y: f32 = 0;
+        _ = frame_arena.reset(.retain_capacity);
 
-        // Get window sizes and scale (computed at the top of the loop for event switches)
+        const current_ticks = c.SDL_GetTicks();
+        const delta_time_ms = @as(f32, @floatFromInt(current_ticks - last_time));
+        last_time = current_ticks;
+
+        // Get window sizes and scale
         var current_win_w: c_int = 0;
         var current_win_h: c_int = 0;
         if (!c.SDL_GetWindowSize(window, &current_win_w, &current_win_h)) {
@@ -2142,236 +2292,105 @@ pub fn main(init: std.process.Init) !void {
         const height = @as(f32, @floatFromInt(current_pix_h));
         const scale_x = if (current_win_w > 0) @as(f32, @floatFromInt(current_pix_w)) / @as(f32, @floatFromInt(current_win_w)) else 1.0;
         const scale_y = if (current_win_h > 0) @as(f32, @floatFromInt(current_pix_h)) / @as(f32, @floatFromInt(current_win_h)) else 1.0;
+        const dpi_scale = scale_x;
 
-        // Block until an event occurs, but use a timeout when the command palette is open
-        // so that scrolling and hover animations decay smoothly.
+        // Poll events and build FrameInput
+        var keys_pressed = std.ArrayList(c.SDL_Keycode).empty;
+        defer keys_pressed.deinit(frame_allocator);
+        var text_input_opt: ?[]const u8 = null;
+        var dropped_path_opt: ?[]const u8 = null;
+        var scroll_delta_x: f32 = 0;
+        var scroll_delta_y: f32 = 0;
+        var mouse_left_clicked = false;
+
+        var event: c.SDL_Event = undefined;
         const wait_success = if (state.palette.show)
             c.SDL_WaitEventTimeout(&event, 8)
         else
             c.SDL_WaitEvent(&event);
 
         if (!wait_success) {
-            // Timeout occurred, clear event type so we don't reprocess a stale event.
             event.type = 0;
         }
 
-        // Process first event
-        switch (event.type) {
-            c.SDL_EVENT_QUIT => state.running = false,
-            c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
-                if (event.button.button == c.SDL_BUTTON_LEFT) {
-                    var mouse_x: f32 = 0;
-                    var mouse_y: f32 = 0;
-                    _ = c.SDL_GetMouseState(&mouse_x, &mouse_y);
-                    if (state.show_stats_overlay and
-                        clay.pointerOver(clay.getElementId("StatsPanel")) and
-                        !clay.pointerOver(clay.getElementId("StatsCloseBtn")))
-                    {
-                        stats_dragging = true;
-                        drag_start_x = mouse_x * scale_x - stats_offset_x;
-                        drag_start_y = mouse_y * scale_y - stats_offset_y;
-                    } else if (!state.palette.show and clay.pointerOver(clay.getElementId("Viewport"))) {
-                        viewport_dragging = true;
-                        drag_last_x = mouse_x * scale_x;
-                        drag_last_y = mouse_y * scale_y;
-                    }
-                }
-            },
-            c.SDL_EVENT_MOUSE_BUTTON_UP => {
-                if (event.button.button == c.SDL_BUTTON_LEFT) {
-                    mouse_clicked = true;
-                    stats_dragging = false;
-                    viewport_dragging = false;
-                }
-            },
-            c.SDL_EVENT_MOUSE_WHEEL => {
-                const multiplier: f32 = if (event.wheel.direction == c.SDL_MOUSEWHEEL_FLIPPED) -1.0 else 1.0;
-                if (!state.palette.show and clay.pointerOver(clay.getElementId("Viewport"))) {
-                    const old_zoom = state.zoom_factor;
-                    state.zoom_factor = std.math.clamp(state.zoom_factor + event.wheel.y * multiplier * 0.1, 0.1, 10.0);
-
-                    var mouse_x: f32 = 0;
-                    var mouse_y: f32 = 0;
-                    _ = c.SDL_GetMouseState(&mouse_x, &mouse_y);
-                    const mx = mouse_x * scale_x;
-                    const my = mouse_y * scale_y;
-
-                    const available_width = if (clay.isDebugModeEnabled()) @max(width - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0) else width;
-                    const center_x = available_width / 2.0;
-                    var title_bar_h: f32 = 60.0;
-                    const nav_bar_h: f32 = 0.0;
-                    if (state.is_fullscreen) {
-                        title_bar_h = 0;
-                    }
-                    const center_y = (title_bar_h * scale_y) + ((height - (title_bar_h + nav_bar_h) * scale_y) / 2.0);
-
-                    const rel_x = mx - center_x;
-                    const rel_y = my - center_y;
-
-                    state.pan_x = rel_x - (rel_x - state.pan_x) * (state.zoom_factor / old_zoom);
-                    state.pan_y = rel_y - (rel_y - state.pan_y) * (state.zoom_factor / old_zoom);
-                } else {
-                    scroll_delta_x += event.wheel.x * multiplier * 6.0;
-                    scroll_delta_y += event.wheel.y * multiplier * 6.0;
-                }
-            },
-            c.SDL_EVENT_WINDOW_MOUSE_ENTER => {
-                mouse_inside = true;
-            },
-            c.SDL_EVENT_WINDOW_MOUSE_LEAVE => {
-                mouse_inside = false;
-            },
-            c.SDL_EVENT_KEY_DOWN => {
-                try state.handleKeyDown(event.key.key, event.key.mod, scale_x, scale_y);
-            },
-            c.SDL_EVENT_TEXT_INPUT => {
-                if (state.palette.show) {
-                    if (event.text.text) |ptr| {
-                        const len = std.mem.len(ptr);
-                        try state.palette.query.appendSlice(gpa, ptr[0..len]);
-                        state.palette.selected_idx = 0;
-                        state.palette.selection_dirty = true;
-                        switch (state.palette.active_type) {
-                            .files => try state.rebuildPaletteMatches(),
-                            .actions => try state.rebuildActionMatches(),
-                        }
-                    }
-                }
-            },
-            c.SDL_EVENT_DROP_FILE => {
-                const dropped_path = event.drop.data;
-                if (dropped_path != null) {
-                    const path_len = std.mem.len(dropped_path);
-                    const path_slice = dropped_path[0..path_len];
-                    try state.handlePathSelection(path_slice);
-                }
-            },
-            else => {},
-        }
-
-        // Drain any other pending events in the queue
-        while (c.SDL_PollEvent(&event)) {
+        var has_event = wait_success;
+        while (has_event) {
             switch (event.type) {
                 c.SDL_EVENT_QUIT => state.running = false,
-                c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
-                    if (event.button.button == c.SDL_BUTTON_LEFT) {
-                        var mouse_x: f32 = 0;
-                        var mouse_y: f32 = 0;
-                        _ = c.SDL_GetMouseState(&mouse_x, &mouse_y);
-                        if (state.show_stats_overlay and
-                            clay.pointerOver(clay.getElementId("StatsPanel")) and
-                            !clay.pointerOver(clay.getElementId("StatsCloseBtn")))
-                        {
-                            stats_dragging = true;
-                            drag_start_x = mouse_x * scale_x - stats_offset_x;
-                            drag_start_y = mouse_y * scale_y - stats_offset_y;
-                        } else if (!state.palette.show and clay.pointerOver(clay.getElementId("Viewport"))) {
-                            viewport_dragging = true;
-                            drag_last_x = mouse_x * scale_x;
-                            drag_last_y = mouse_y * scale_y;
-                        }
+                c.SDL_EVENT_WINDOW_MOUSE_ENTER => {
+                    state.mouse_inside = true;
+                },
+                c.SDL_EVENT_WINDOW_MOUSE_LEAVE => {
+                    state.mouse_inside = false;
+                },
+                c.SDL_EVENT_KEY_DOWN => {
+                    try keys_pressed.append(frame_allocator, event.key.key);
+                },
+                c.SDL_EVENT_TEXT_INPUT => {
+                    if (event.text.text) |ptr| {
+                        const len = std.mem.len(ptr);
+                        const dup = try frame_allocator.dupe(u8, ptr[0..len]);
+                        text_input_opt = dup;
+                    }
+                },
+                c.SDL_EVENT_DROP_FILE => {
+                    if (event.drop.data) |ptr| {
+                        const len = std.mem.len(ptr);
+                        const dup = try frame_allocator.dupe(u8, ptr[0..len]);
+                        dropped_path_opt = dup;
                     }
                 },
                 c.SDL_EVENT_MOUSE_BUTTON_UP => {
                     if (event.button.button == c.SDL_BUTTON_LEFT) {
-                        mouse_clicked = true;
-                        stats_dragging = false;
-                        viewport_dragging = false;
+                        mouse_left_clicked = true;
                     }
                 },
                 c.SDL_EVENT_MOUSE_WHEEL => {
                     const multiplier: f32 = if (event.wheel.direction == c.SDL_MOUSEWHEEL_FLIPPED) -1.0 else 1.0;
-                    if (!state.palette.show and clay.pointerOver(clay.getElementId("Viewport"))) {
-                        const old_zoom = state.zoom_factor;
-                        state.zoom_factor = std.math.clamp(state.zoom_factor + event.wheel.y * multiplier * 0.1, 0.1, 10.0);
-
-                        var mouse_x: f32 = 0;
-                        var mouse_y: f32 = 0;
-                        _ = c.SDL_GetMouseState(&mouse_x, &mouse_y);
-                        const mx = mouse_x * scale_x;
-                        const my = mouse_y * scale_y;
-
-                        const available_width = if (clay.isDebugModeEnabled()) @max(width - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0) else width;
-                        const center_x = available_width / 2.0;
-                        var title_bar_h: f32 = 60.0;
-                        const nav_bar_h: f32 = 0.0;
-                        if (state.is_fullscreen) {
-                            title_bar_h = 0;
-                        }
-                        const center_y = (title_bar_h * scale_y) + ((height - (title_bar_h + nav_bar_h) * scale_y) / 2.0);
-
-                        const rel_x = mx - center_x;
-                        const rel_y = my - center_y;
-
-                        state.pan_x = rel_x - (rel_x - state.pan_x) * (state.zoom_factor / old_zoom);
-                        state.pan_y = rel_y - (rel_y - state.pan_y) * (state.zoom_factor / old_zoom);
-                    } else {
-                        scroll_delta_x += event.wheel.x * multiplier * 6.0;
-                        scroll_delta_y += event.wheel.y * multiplier * 6.0;
-                    }
-                },
-                c.SDL_EVENT_WINDOW_MOUSE_ENTER => {
-                    mouse_inside = true;
-                },
-                c.SDL_EVENT_WINDOW_MOUSE_LEAVE => {
-                    mouse_inside = false;
-                },
-                c.SDL_EVENT_KEY_DOWN => {
-                    try state.handleKeyDown(event.key.key, event.key.mod, scale_x, scale_y);
-                },
-                c.SDL_EVENT_TEXT_INPUT => {
-                    if (state.palette.show) {
-                        if (event.text.text) |ptr| {
-                            const len = std.mem.len(ptr);
-                            try state.palette.query.appendSlice(gpa, ptr[0..len]);
-                            state.palette.selected_idx = 0;
-                            state.palette.selection_dirty = true;
-                            switch (state.palette.active_type) {
-                                .files => try state.rebuildPaletteMatches(),
-                                .actions => try state.rebuildActionMatches(),
-                            }
-                        }
-                    }
-                },
-                c.SDL_EVENT_DROP_FILE => {
-                    const dropped_path = event.drop.data;
-                    if (dropped_path != null) {
-                        const path_len = std.mem.len(dropped_path);
-                        const path_slice = dropped_path[0..path_len];
-                        try state.handlePathSelection(path_slice);
-                    }
+                    scroll_delta_x += event.wheel.x * multiplier * 6.0;
+                    scroll_delta_y += event.wheel.y * multiplier * 6.0;
                 },
                 else => {},
             }
+            has_event = c.SDL_PollEvent(&event);
         }
 
-        _ = frame_arena.reset(.retain_capacity);
+        var mouse_x_raw: f32 = 0;
+        var mouse_y_raw: f32 = 0;
+        const mouse_buttons = c.SDL_GetMouseState(&mouse_x_raw, &mouse_y_raw);
+        const mouse_left_down = (mouse_buttons & c.SDL_BUTTON_MASK(c.SDL_BUTTON_LEFT)) != 0;
 
-        clay.setLayoutDimensions(.{ .w = width, .h = height });
+        const input = FrameInput{
+            .win_w = @as(f32, @floatFromInt(current_win_w)),
+            .win_h = @as(f32, @floatFromInt(current_win_h)),
+            .pix_w = width,
+            .pix_h = height,
+            .scale_x = scale_x,
+            .scale_y = scale_y,
+            .dpi_scale = dpi_scale,
+            .mouse_x = mouse_x_raw * scale_x,
+            .mouse_y = mouse_y_raw * scale_y,
+            .mouse_left_down = mouse_left_down,
+            .mouse_left_clicked = mouse_left_clicked,
+            .mouse_inside = state.mouse_inside,
+            .scroll_delta_x = scroll_delta_x,
+            .scroll_delta_y = scroll_delta_y,
+            .keys_pressed = keys_pressed,
+            .key_modifiers = c.SDL_GetModState(),
+            .text_input = text_input_opt,
+            .dropped_path = dropped_path_opt,
+            .ticks = current_ticks,
+            .delta_time_ms = delta_time_ms,
+        };
 
-        // Get mouse coordinates and scale
-        var mouse_x: f32 = 0;
-        var mouse_y: f32 = 0;
-        const mouse_state = c.SDL_GetMouseState(&mouse_x, &mouse_y);
+        try state.update(input, gpa);
 
-        if (stats_dragging) {
-            stats_offset_x = std.math.clamp(mouse_x * scale_x - drag_start_x, 0.0, width - 50.0);
-            stats_offset_y = std.math.clamp(mouse_y * scale_y - drag_start_y, 0.0, height - 50.0);
-        }
+        clay.setLayoutDimensions(.{ .w = input.pix_w, .h = input.pix_h });
 
-        if (viewport_dragging) {
-            const current_x = mouse_x * scale_x;
-            const current_y = mouse_y * scale_y;
-            state.pan_x += (current_x - drag_last_x);
-            state.pan_y += (current_y - drag_last_y);
-            drag_last_x = current_x;
-            drag_last_y = current_y;
-        }
-
-        if (mouse_inside) {
+        if (input.mouse_inside) {
             clay.setPointerState(
-                .{ .x = mouse_x * scale_x, .y = mouse_y * scale_y },
-                (mouse_state & c.SDL_BUTTON_MASK(c.SDL_BUTTON_LEFT)) != 0,
+                .{ .x = input.mouse_x, .y = input.mouse_y },
+                input.mouse_left_down,
             );
         } else {
             clay.setPointerState(
@@ -2380,18 +2399,13 @@ pub fn main(init: std.process.Init) !void {
             );
         }
 
-        const current_time = c.SDL_GetTicks();
-        const delta_time = @as(f32, @floatFromInt(current_time - last_time)) / 1000.0;
-        last_time = current_time;
-
         clay.updateScrollContainers(
             true,
-            .{ .x = scroll_delta_x, .y = scroll_delta_y },
-            delta_time,
+            .{ .x = input.scroll_delta_x, .y = input.scroll_delta_y },
+            input.delta_time_ms / 1000.0,
         );
 
-        // Process Click Actions before Layout pass (to read hover state correctly)
-        if (mouse_clicked) {
+        if (input.mouse_left_clicked) {
             if (state.show_stats_overlay and clay.pointerOver(clay.getElementId("StatsCloseBtn"))) {
                 state.show_stats_overlay = false;
             }
@@ -2484,7 +2498,15 @@ pub fn main(init: std.process.Init) !void {
             },
             .background_color = .{ 24, 24, 37, 255 }, // Catppuccin Base (Mocha Mantle/Base)
         })({
-            try renderPalette(&state, scale_x, scale_y, dpi_scale, mouse_clicked, frame_allocator, &measure_data);
+            try renderPalette(
+                &state,
+                scale_x,
+                scale_y,
+                dpi_scale,
+                input.mouse_left_clicked,
+                frame_allocator,
+                &measure_data,
+            );
 
             if (state.show_stats_overlay) {
                 const idx = state.current_index;
@@ -2506,27 +2528,15 @@ pub fn main(init: std.process.Init) !void {
                 if (state.getCurrentEntry()) |entry| {
                     mime_type = entry.mime_type;
                     if (entry.status == .loaded or entry.gpu_texture != null) {
-                        const disk_size_buf = try frame_allocator.alloc(u8, 64);
-                        disk_size_str = formatSize(entry.size_bytes, disk_size_buf);
-
-                        const mem_size_buf = try frame_allocator.alloc(u8, 64);
-                        mem_size_str = formatSize(entry.memory_size_bytes, mem_size_buf);
+                        disk_size_str = try formatSize(frame_allocator, entry.size_bytes);
+                        mem_size_str = try formatSize(frame_allocator, entry.memory_size_bytes);
 
                         const megapixels = (entry.w * entry.h) / 1_000_000.0;
-                        const res_buf = try frame_allocator.alloc(u8, 128);
-                        res_str = try std.fmt.bufPrint(res_buf, "{d:.0}x{d:.0} ({d:.2} MP)", .{ entry.w, entry.h, megapixels });
-
-                        const decode_buf = try frame_allocator.alloc(u8, 64);
-                        decode_str = try std.fmt.bufPrint(decode_buf, "{d:.2} ms", .{entry.decode_time_ms});
-
-                        const convert_buf = try frame_allocator.alloc(u8, 64);
-                        convert_str = try std.fmt.bufPrint(convert_buf, "{d:.2} ms", .{entry.conversion_time_ms});
-
-                        const process_buf = try frame_allocator.alloc(u8, 64);
-                        process_str = try std.fmt.bufPrint(process_buf, "{d:.2} ms", .{entry.upload_time_ms});
-
-                        const screen_buf = try frame_allocator.alloc(u8, 64);
-                        screen_str = try std.fmt.bufPrint(screen_buf, "{d:.0}x{d:.0} px", .{ draw_w, draw_h });
+                        res_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} ({d:.2} MP)", .{ entry.w, entry.h, megapixels });
+                        decode_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{entry.decode_time_ms});
+                        convert_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{entry.conversion_time_ms});
+                        process_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{entry.upload_time_ms});
+                        screen_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} px", .{ draw_w, draw_h });
                     } else if (entry.status == .failed) {
                         disk_size_str = "Failed";
                         mem_size_str = "Failed";
@@ -2543,22 +2553,16 @@ pub fn main(init: std.process.Init) !void {
                 if (state.getCurrentEntry()) |entry| {
                     if (entry.w > 0) {
                         const pixel_zoom_pct = ((draw_w * state.zoom_factor) / entry.w) * 100.0;
-                        const zoom_buf = try frame_allocator.alloc(u8, 128);
-                        zoom_str = try std.fmt.bufPrint(zoom_buf, "{d:.1}x ({d:.0}%)", .{ state.zoom_factor, pixel_zoom_pct });
+                        zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x ({d:.0}%)", .{ state.zoom_factor, pixel_zoom_pct });
                     } else {
-                        const zoom_buf = try frame_allocator.alloc(u8, 64);
-                        zoom_str = try std.fmt.bufPrint(zoom_buf, "{d:.1}x", .{state.zoom_factor});
+                        zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{state.zoom_factor});
                     }
                 } else {
-                    const zoom_buf = try frame_allocator.alloc(u8, 64);
-                    zoom_str = try std.fmt.bufPrint(zoom_buf, "{d:.1}x", .{state.zoom_factor});
+                    zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{state.zoom_factor});
                 }
 
-                const pan_buf = try frame_allocator.alloc(u8, 128);
-                const pan_str = try std.fmt.bufPrint(pan_buf, "{d:.0}, {d:.0} px", .{ state.pan_x, state.pan_y });
-
-                const rot_buf = try frame_allocator.alloc(u8, 64);
-                const rot_str = try std.fmt.bufPrint(rot_buf, "{d:.0}°", .{state.rotation_angle});
+                const pan_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}, {d:.0} px", .{ state.pan_x, state.pan_y });
+                const rot_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}°", .{state.rotation_angle});
 
                 clay.UI()(.{
                     .id = clay.getElementId("StatsPanel"),
@@ -2570,11 +2574,14 @@ pub fn main(init: std.process.Init) !void {
                     },
                     .background_color = .{ 30, 30, 46, 220 }, // Catppuccin Mocha base with opacity (glassmorphism feel)
                     .corner_radius = .all(10),
-                    .border = .{ .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 }, .color = .{ 49, 50, 68, 255 } },
+                    .border = .{
+                        .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                        .color = .{ 49, 50, 68, 255 },
+                    },
                     .floating = .{
                         .attach_to = .to_parent,
                         .attach_points = .{ .element = .left_top, .parent = .left_top },
-                        .offset = .{ .x = stats_offset_x, .y = stats_offset_y },
+                        .offset = .{ .x = state.stats_offset_x, .y = state.stats_offset_y },
                         .z_index = 100,
                     },
                 })({
@@ -2647,12 +2654,18 @@ pub fn main(init: std.process.Init) !void {
                     };
                     try renderStatRow("Scaling Filter", filter_str, scale_x, scale_y, dpi_scale);
 
-                    var brightness_buf: [32]u8 = undefined;
                     const brightness_val = state.brightness * 100.0;
-                    const brightness_str = try std.fmt.bufPrint(&brightness_buf, "{s}{d:.0}%", .{ if (brightness_val > 0) "+" else "", brightness_val });
-                    var contrast_buf: [32]u8 = undefined;
+                    const brightness_str = try std.fmt.allocPrint(
+                        frame_allocator,
+                        "{s}{d:.0}%",
+                        .{ if (brightness_val > 0) "+" else "", brightness_val },
+                    );
                     const contrast_val = (state.contrast - 1.0) * 100.0;
-                    const contrast_str = try std.fmt.bufPrint(&contrast_buf, "{s}{d:.0}%", .{ if (contrast_val > 0) "+" else "", contrast_val });
+                    const contrast_str = try std.fmt.allocPrint(
+                        frame_allocator,
+                        "{s}{d:.0}%",
+                        .{ if (contrast_val > 0) "+" else "", contrast_val },
+                    );
                     try renderStatRow("Brightness", brightness_str, scale_x, scale_y, dpi_scale);
                     try renderStatRow("Contrast", contrast_str, scale_x, scale_y, dpi_scale);
                 });
@@ -2688,8 +2701,11 @@ pub fn main(init: std.process.Init) !void {
                             });
                         });
 
-                        const index_buf = try frame_allocator.alloc(u8, 64);
-                        const index_text = try std.fmt.bufPrint(index_buf, "{d} of {d}", .{ idx + 1, state.image_list.items.len });
+                        const index_text = try std.fmt.allocPrint(
+                            frame_allocator,
+                            "{d} of {d}",
+                            .{ idx + 1, state.image_list.items.len },
+                        );
 
                         clay.UI()(.{
                             .layout = .{
@@ -2788,7 +2804,10 @@ pub fn main(init: std.process.Init) !void {
                                     .bottom = @intFromFloat(32 * scale_y),
                                 },
                             },
-                            .border = .{ .width = .{ .left = 2, .right = 2, .top = 2, .bottom = 2 }, .color = .{ 79, 79, 97, 255 } },
+                            .border = .{
+                                .width = .{ .left = 2, .right = 2, .top = 2, .bottom = 2 },
+                                .color = .{ 79, 79, 97, 255 },
+                            },
                             .corner_radius = .all(12),
                             .user_data = @ptrFromInt(@intFromEnum(ElementTag.drop_zone_box)),
                         })({
@@ -2813,17 +2832,6 @@ pub fn main(init: std.process.Init) !void {
 
         const render_commands = clay.endLayout();
 
-        if (state.palette.show and mouse_clicked) {
-            const element_id = switch (state.palette.active_type) {
-                .files => "CommandPalette",
-                .actions => "ActionPalette",
-            };
-            if (!clay.pointerOver(clay.getElementId(element_id))) {
-                state.palette.show = false;
-                stopTextInput(window);
-            }
-        }
-
         // Render Frame
         const cmd_buf = c.SDL_AcquireGPUCommandBuffer(state.gpu_device) orelse continue;
         var swap_tex: ?*c.SDL_GPUTexture = null;
@@ -2835,7 +2843,13 @@ pub fn main(init: std.process.Init) !void {
         var temp_buffers = std.ArrayList(*c.SDL_GPUTransferBuffer).empty;
         defer temp_buffers.deinit(frame_allocator);
 
-        if (c.SDL_WaitAndAcquireGPUSwapchainTexture(cmd_buf, window, &swap_tex, &swap_w, &swap_h)) {
+        if (c.SDL_WaitAndAcquireGPUSwapchainTexture(
+            cmd_buf,
+            window,
+            &swap_tex,
+            &swap_w,
+            &swap_h,
+        )) {
             try renderer.renderClayCommands(
                 state.gpu_device,
                 cmd_buf,
