@@ -347,6 +347,9 @@ const AppActionId = enum {
     rotate_cw,
     rotate_ccw,
     reset_rotation,
+    set_filter_nearest,
+    set_filter_linear,
+    set_filter_pixel_art,
 };
 
 const AppAction = struct {
@@ -368,6 +371,9 @@ const app_actions = [_]AppAction{
     .{ .name = "Rotate Clockwise (90°)", .shortcut = "]", .id = .rotate_cw },
     .{ .name = "Rotate Counter-Clockwise (90°)", .shortcut = "[", .id = .rotate_ccw },
     .{ .name = "Reset Rotation", .shortcut = "", .id = .reset_rotation },
+    .{ .name = "Set Scaling Filter: Nearest Neighbor", .shortcut = "", .id = .set_filter_nearest },
+    .{ .name = "Set Scaling Filter: Bilinear (Smooth)", .shortcut = "", .id = .set_filter_linear },
+    .{ .name = "Set Scaling Filter: Pixel Art (Crisp)", .shortcut = "", .id = .set_filter_pixel_art },
     .{ .name = "Toggle Stats for Nerds", .shortcut = "I", .id = .toggle_stats },
     .{ .name = "Toggle Fullscreen", .shortcut = "F / F11", .id = .toggle_fullscreen },
     .{ .name = "Search Files (Go to File)", .shortcut = "Ctrl+P", .id = .open_file_finder },
@@ -419,6 +425,12 @@ pub const ScaleMode = enum {
     crop,
 };
 
+pub const TextureScaleMode = enum {
+    nearest,
+    linear,
+    pixel_art,
+};
+
 const ViewerState = struct {
     renderer: ?*c.SDL_Renderer,
     image_list: std.ArrayList([]const u8),
@@ -443,6 +455,7 @@ const ViewerState = struct {
     pan_y: f32 = 0.0,
     rotation_angle: f32 = 0.0,
     rotation_map: std.StringHashMap(f32),
+    texture_scale_mode: TextureScaleMode = .linear,
 
     pub fn deinit(self: *ViewerState) void {
         self.exiting.store(true, .release);
@@ -465,6 +478,25 @@ const ViewerState = struct {
         self.zoom_factor = 1.0;
         self.pan_x = 0.0;
         self.pan_y = 0.0;
+    }
+
+    fn getSdlScaleMode(self: *ViewerState) c.SDL_ScaleMode {
+        return switch (self.texture_scale_mode) {
+            .nearest => c.SDL_SCALEMODE_NEAREST,
+            .linear => c.SDL_SCALEMODE_LINEAR,
+            .pixel_art => c.SDL_SCALEMODE_PIXELART,
+        };
+    }
+
+    fn applyTextureScaleMode(self: *ViewerState) void {
+        const sdl_mode = self.getSdlScaleMode();
+        c.SDL_LockMutex(self.cache_mutex);
+        defer c.SDL_UnlockMutex(self.cache_mutex);
+        for (self.cache.items) |entry| {
+            if (entry.texture) |tex| {
+                _ = c.SDL_SetTextureScaleMode(tex, sdl_mode);
+            }
+        }
     }
 
     fn rebuildPaletteMatches(self: *ViewerState) !void {
@@ -623,6 +655,18 @@ const ViewerState = struct {
                     }
                 }
             },
+            .set_filter_nearest => {
+                self.texture_scale_mode = .nearest;
+                self.applyTextureScaleMode();
+            },
+            .set_filter_linear => {
+                self.texture_scale_mode = .linear;
+                self.applyTextureScaleMode();
+            },
+            .set_filter_pixel_art => {
+                self.texture_scale_mode = .pixel_art;
+                self.applyTextureScaleMode();
+            },
         }
     }
 
@@ -649,6 +693,7 @@ const ViewerState = struct {
                 entry.texture = c.SDL_CreateTextureFromSurface(self.renderer, entry.surface.?);
                 const end_upload = c.SDL_GetTicksNS();
                 if (entry.texture != null) {
+                    _ = c.SDL_SetTextureScaleMode(entry.texture.?, self.getSdlScaleMode());
                     entry.upload_time_ms = @as(f64, @floatFromInt(end_upload - start_upload)) / 1_000_000.0;
                     c.SDL_DestroySurface(entry.surface.?);
                     entry.surface = null;
@@ -2213,6 +2258,12 @@ pub fn main(init: std.process.Init) !void {
                         .crop => "Fill Window (Crop)",
                     };
                     try renderStatRow("Scale Mode", scale_mode_str, scale_x, scale_y, dpi_scale);
+                    const filter_str = switch (state.texture_scale_mode) {
+                        .nearest => "Nearest Neighbor",
+                        .linear => "Bilinear (Smooth)",
+                        .pixel_art => "Pixel Art (Crisp)",
+                    };
+                    try renderStatRow("Scaling Filter", filter_str, scale_x, scale_y, dpi_scale);
                 });
             }
 
