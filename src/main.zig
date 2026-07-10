@@ -1803,10 +1803,9 @@ pub fn main(init: std.process.Init) !void {
                     const available_width = if (clay.isDebugModeEnabled()) @max(width - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0) else width;
                     const center_x = available_width / 2.0;
                     var title_bar_h: f32 = 60.0;
-                    var nav_bar_h: f32 = 80.0;
+                    const nav_bar_h: f32 = 0.0;
                     if (state.is_fullscreen) {
                         title_bar_h = 0;
-                        nav_bar_h = 0;
                     }
                     const center_y = (title_bar_h * scale_y) + ((height - (title_bar_h + nav_bar_h) * scale_y) / 2.0);
 
@@ -1900,10 +1899,9 @@ pub fn main(init: std.process.Init) !void {
                         const available_width = if (clay.isDebugModeEnabled()) @max(width - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0) else width;
                         const center_x = available_width / 2.0;
                         var title_bar_h: f32 = 60.0;
-                        var nav_bar_h: f32 = 80.0;
+                        const nav_bar_h: f32 = 0.0;
                         if (state.is_fullscreen) {
                             title_bar_h = 0;
-                            nav_bar_h = 0;
                         }
                         const center_y = (title_bar_h * scale_y) + ((height - (title_bar_h + nav_bar_h) * scale_y) / 2.0);
 
@@ -2000,26 +1998,16 @@ pub fn main(init: std.process.Init) !void {
 
         // Process Click Actions before Layout pass (to read hover state correctly)
         if (mouse_clicked) {
-            if (clay.pointerOver(clay.getElementId("PrevBtn"))) {
-                try state.prev();
-            } else if (clay.pointerOver(clay.getElementId("NextBtn"))) {
-                try state.next();
-            } else if (clay.pointerOver(clay.getElementId("FsBtn"))) {
-                state.is_fullscreen = !state.is_fullscreen;
-                if (!c.SDL_SetWindowFullscreen(window, state.is_fullscreen)) {
-                    std.log.err("SDL_SetWindowFullscreen failed: {s}", .{c.SDL_GetError()});
-                }
-            } else if (state.show_stats_overlay and clay.pointerOver(clay.getElementId("StatsCloseBtn"))) {
+            if (state.show_stats_overlay and clay.pointerOver(clay.getElementId("StatsCloseBtn"))) {
                 state.show_stats_overlay = false;
             }
         }
 
         // Calculate Image Fitting Layout Boundaries
         var title_bar_h: f32 = 60.0;
-        var nav_bar_h: f32 = 80.0;
+        const nav_bar_h: f32 = 0.0;
         if (state.is_fullscreen) {
             title_bar_h = 0;
-            nav_bar_h = 0;
         }
 
         var available_width = width;
@@ -2034,7 +2022,7 @@ pub fn main(init: std.process.Init) !void {
 
         if (state.getCurrentEntry()) |entry| {
             if (entry.texture != null) {
-                const padding: f32 = 40.0;
+                const padding: f32 = 0.0;
                 const view_w = @max(available_width - padding * 2.0, 1.0);
                 const view_h = @max(height - (title_bar_h + nav_bar_h) * scale_y - padding * 2.0, 1.0);
 
@@ -2297,31 +2285,22 @@ pub fn main(init: std.process.Init) !void {
                             });
                         });
 
-                        if (state.getCurrentEntry()) |entry| {
-                            if (entry.texture != null) {
-                                // File size conversion
-                                const size_buf = try frame_allocator.alloc(u8, 64);
-                                const size_str = formatSize(entry.size_bytes, size_buf);
+                        const index_buf = try frame_allocator.alloc(u8, 64);
+                        const index_text = try std.fmt.bufPrint(index_buf, "{d} of {d}", .{ idx + 1, state.image_list.items.len });
 
-                                // Dimensions metadata
-                                const meta_buf = try frame_allocator.alloc(u8, 128);
-                                const meta_str = try std.fmt.bufPrint(meta_buf, "{d:.0}x{d:.0} ({s})", .{ entry.w, entry.h, size_str });
-
-                                clay.UI()(.{
-                                    .layout = .{
-                                        .sizing = .{ .w = .grow, .h = .grow },
-                                        .direction = .left_to_right,
-                                        .child_alignment = .{ .x = .right, .y = .center },
-                                    },
-                                })({
-                                    clay.text(meta_str, .{
-                                        .color = .{ 166, 173, 200, 255 }, // Subtext0
-                                        .font_size = @intFromFloat(14.0 * dpi_scale),
-                                        .font_id = 0,
-                                    });
-                                });
-                            }
-                        }
+                        clay.UI()(.{
+                            .layout = .{
+                                .sizing = .{ .w = .fit, .h = .grow },
+                                .direction = .left_to_right,
+                                .child_alignment = .{ .x = .right, .y = .center },
+                            },
+                        })({
+                            clay.text(index_text, .{
+                                .color = .{ 166, 173, 200, 255 }, // Subtext0
+                                .font_size = @intFromFloat(14.0 * dpi_scale),
+                                .font_id = 0,
+                            });
+                        });
                     } else {
                         clay.text("Peng Image Viewer", .{
                             .color = .{ 205, 214, 244, 255 },
@@ -2408,96 +2387,7 @@ pub fn main(init: std.process.Init) !void {
                 }
             });
 
-            // 3. Navigation Controls Bar (hidden in fullscreen)
-            if (!state.is_fullscreen) {
-                clay.UI()(.{
-                    .id = clay.getElementId("NavBar"),
-                    .layout = .{
-                        .sizing = .{ .w = .grow, .h = .fixed(nav_bar_h * scale_y) },
-                        .direction = .left_to_right,
-                        .child_alignment = .{ .x = .center, .y = .center },
-                        .child_gap = @intFromFloat(30 * scale_x),
-                        .padding = .{ .left = @intFromFloat(20 * scale_x), .right = @intFromFloat(20 * scale_x) },
-                    },
-                    .background_color = .{ 17, 17, 27, 255 }, // Catppuccin Crust
-                })({
-                    const prev_hovered = clay.pointerOver(clay.getElementId("PrevBtn"));
-
-                    // 3a. Previous button
-                    clay.UI()(.{
-                        .id = clay.getElementId("PrevBtn"),
-                        .layout = .{
-                            .sizing = .{ .w = .fixed(120 * scale_x), .h = .fixed(40 * scale_y) },
-                            .child_alignment = .{ .x = .center, .y = .center },
-                        },
-                        .background_color = if (prev_hovered) .{ 49, 50, 68, 255 } else .{ 30, 30, 46, 255 },
-                        .corner_radius = .all(6),
-                    })({
-                        clay.text("Previous", .{
-                            .color = .{ 205, 214, 244, 255 },
-                            .font_size = @intFromFloat(14.0 * dpi_scale),
-                            .font_id = 0,
-                        });
-                    });
-
-                    // 3b. Index Metadata Info
-                    var index_text: []const u8 = "0 of 0";
-                    if (state.current_index) |idx| {
-                        const index_buf = try frame_allocator.alloc(u8, 64);
-                        index_text = try std.fmt.bufPrint(index_buf, "{d} of {d}", .{ idx + 1, state.image_list.items.len });
-                    }
-                    clay.UI()(.{
-                        .layout = .{
-                            .sizing = .{ .w = .fixed(150 * scale_x), .h = .grow },
-                            .child_alignment = .{ .x = .center, .y = .center },
-                        },
-                    })({
-                        clay.text(index_text, .{
-                            .color = .{ 205, 214, 244, 255 },
-                            .font_size = @intFromFloat(14.0 * dpi_scale),
-                            .font_id = 0,
-                        });
-                    });
-
-                    // 3c. Next Button
-                    const next_hovered = clay.pointerOver(clay.getElementId("NextBtn"));
-
-                    clay.UI()(.{
-                        .id = clay.getElementId("NextBtn"),
-                        .layout = .{
-                            .sizing = .{ .w = .fixed(120 * scale_x), .h = .fixed(40 * scale_y) },
-                            .child_alignment = .{ .x = .center, .y = .center },
-                        },
-                        .background_color = if (next_hovered) .{ 49, 50, 68, 255 } else .{ 30, 30, 46, 255 },
-                        .corner_radius = .all(6),
-                    })({
-                        clay.text("Next", .{
-                            .color = .{ 205, 214, 244, 255 },
-                            .font_size = @intFromFloat(14.0 * dpi_scale),
-                            .font_id = 0,
-                        });
-                    });
-
-                    // 3d. Fullscreen Button
-                    const fs_hovered = clay.pointerOver(clay.getElementId("FsBtn"));
-
-                    clay.UI()(.{
-                        .id = clay.getElementId("FsBtn"),
-                        .layout = .{
-                            .sizing = .{ .w = .fixed(120 * scale_x), .h = .fixed(40 * scale_y) },
-                            .child_alignment = .{ .x = .center, .y = .center },
-                        },
-                        .background_color = if (fs_hovered) .{ 49, 50, 68, 255 } else .{ 30, 30, 46, 255 },
-                        .corner_radius = .all(6),
-                    })({
-                        clay.text("Fullscreen", .{
-                            .color = .{ 205, 214, 244, 255 },
-                            .font_size = @intFromFloat(14.0 * dpi_scale),
-                            .font_id = 0,
-                        });
-                    });
-                });
-            }
+            // 3. Navigation Controls Bar (hidden in fullscreen) - REMOVED
         });
 
         const render_commands = clay.endLayout();
