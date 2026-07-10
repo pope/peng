@@ -43,6 +43,7 @@
           treefmt-eval = treefmt-nix.lib.evalModule pkgs (_: {
             projectRootFile = "flake.nix";
             programs = {
+              clang-format.enable = true;
               deadnix.enable = true;
               mdformat = {
                 enable = true;

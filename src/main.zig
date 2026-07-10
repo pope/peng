@@ -393,6 +393,8 @@ const AppActionId = enum {
     set_filter_nearest,
     set_filter_linear,
     set_filter_pixel_art,
+    set_filter_mitchell,
+    set_filter_lanczos3,
     increase_brightness,
     decrease_brightness,
     increase_contrast,
@@ -425,6 +427,8 @@ const app_actions = [_]AppAction{
     .{ .name = "Set Scaling Filter: Nearest Neighbor", .shortcut = "", .id = .set_filter_nearest },
     .{ .name = "Set Scaling Filter: Bilinear (Smooth)", .shortcut = "", .id = .set_filter_linear },
     .{ .name = "Set Scaling Filter: Pixel Art (Crisp)", .shortcut = "", .id = .set_filter_pixel_art },
+    .{ .name = "Set Scaling Filter: Mitchell-Netravali (HQ Bicubic)", .shortcut = "", .id = .set_filter_mitchell },
+    .{ .name = "Set Scaling Filter: Lanczos3 (Ultra HQ Resampler)", .shortcut = "", .id = .set_filter_lanczos3 },
     .{ .name = "Increase Brightness (+10%)", .shortcut = "P", .id = .increase_brightness },
     .{ .name = "Decrease Brightness (-10%)", .shortcut = "O", .id = .decrease_brightness },
     .{ .name = "Increase Contrast (+10%)", .shortcut = "L", .id = .increase_contrast },
@@ -491,6 +495,8 @@ pub const TextureScaleMode = enum {
     nearest,
     linear,
     pixel_art,
+    mitchell,
+    lanczos3,
 };
 pub const ElementTag = enum(usize) {
     none = 0,
@@ -681,6 +687,7 @@ const ViewerState = struct {
             .nearest => c.SDL_SCALEMODE_NEAREST,
             .linear => c.SDL_SCALEMODE_LINEAR,
             .pixel_art => c.SDL_SCALEMODE_PIXELART,
+            .mitchell, .lanczos3 => c.SDL_SCALEMODE_NEAREST,
         };
     }
 
@@ -876,6 +883,14 @@ const ViewerState = struct {
             },
             .set_filter_pixel_art => {
                 self.texture_scale_mode = .pixel_art;
+                self.applyTextureScaleMode();
+            },
+            .set_filter_mitchell => {
+                self.texture_scale_mode = .mitchell;
+                self.applyTextureScaleMode();
+            },
+            .set_filter_lanczos3 => {
+                self.texture_scale_mode = .lanczos3;
                 self.applyTextureScaleMode();
             },
             .increase_brightness => {
@@ -2871,6 +2886,8 @@ fn renderFrame(
                         .nearest => "Nearest Neighbor",
                         .linear => "Bilinear Filter",
                         .pixel_art => "Pixel Art Scaling",
+                        .mitchell => "Mitchell-Netravali",
+                        .lanczos3 => "Lanczos3 Resampler",
                     };
                     try renderStatRow("Scaling Filter", filter_str, scale_x, scale_y, dpi_scale);
 
@@ -3052,6 +3069,7 @@ fn renderFrame(
             @intCast(swap_h),
             state.brightness,
             state.contrast,
+            state.texture_scale_mode,
         );
         _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
 

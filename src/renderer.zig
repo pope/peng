@@ -25,7 +25,7 @@ const Uniforms = extern struct {
     brightness: f32,
     contrast: f32,
     is_text_or_color: i32,
-    padding: i32 = 0,
+    scale_mode: i32,
 };
 
 const BatchItem = struct {
@@ -507,6 +507,7 @@ pub fn renderClayCommands(
     win_h: i32,
     brightness: f32,
     contrast: f32,
+    texture_scale_mode: main.TextureScaleMode,
 ) !void {
     _ = text_engine;
     const f_win_w = @as(f32, @floatFromInt(win_w));
@@ -887,10 +888,18 @@ pub fn renderClayCommands(
                 c.SDL_SetGPUScissor(render_pass, &full_sc);
             }
 
+            const scale_mode_val: i32 = switch (texture_scale_mode) {
+                .nearest => 0,
+                .linear => 1,
+                .pixel_art => 2,
+                .mitchell => 3,
+                .lanczos3 => 4,
+            };
             const ubo = Uniforms{
                 .brightness = brightness,
                 .contrast = contrast,
                 .is_text_or_color = if (batch.is_image) 0 else 1,
+                .scale_mode = scale_mode_val,
             };
             c.SDL_PushGPUFragmentUniformData(cmd_buf.?, 0, &ubo, @sizeOf(Uniforms));
 
