@@ -448,24 +448,34 @@ fn renderArc(
     }
 }
 
-fn uploadBuffer(device: *c.SDL_GPUDevice, cmd_buf: *c.SDL_GPUCommandBuffer, data: []const u8, size: usize) *c.SDL_GPUBuffer {
+fn uploadBuffer(device: *c.SDL_GPUDevice, cmd_buf: *c.SDL_GPUCommandBuffer, data: []const u8, size: usize) !*c.SDL_GPUBuffer {
     const buffer = c.SDL_CreateGPUBuffer(device, &c.SDL_GPUBufferCreateInfo{
         .usage = c.SDL_GPU_BUFFERUSAGE_VERTEX,
         .size = @intCast(size),
         .props = 0,
-    }) orelse unreachable;
+    }) orelse return error.GPUBufferCreationFailed;
 
     const transfer_buf = c.SDL_CreateGPUTransferBuffer(device, &c.SDL_GPUTransferBufferCreateInfo{
         .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
         .size = @intCast(size),
         .props = 0,
-    }) orelse unreachable;
+    }) orelse {
+        c.SDL_ReleaseGPUBuffer(device, buffer);
+        return error.GPUTransferBufferCreationFailed;
+    };
+    defer c.SDL_ReleaseGPUTransferBuffer(device, transfer_buf);
 
-    const mapped: [*]u8 = @ptrCast(c.SDL_MapGPUTransferBuffer(device, transfer_buf, false) orelse unreachable);
+    const mapped: [*]u8 = @ptrCast(c.SDL_MapGPUTransferBuffer(device, transfer_buf, false) orelse {
+        c.SDL_ReleaseGPUBuffer(device, buffer);
+        return error.GPUMapFailed;
+    });
     @memcpy(mapped[0..size], data[0..size]);
     c.SDL_UnmapGPUTransferBuffer(device, transfer_buf);
 
-    const copy_pass = c.SDL_BeginGPUCopyPass(cmd_buf) orelse unreachable;
+    const copy_pass = c.SDL_BeginGPUCopyPass(cmd_buf) orelse {
+        c.SDL_ReleaseGPUBuffer(device, buffer);
+        return error.GPUCopyPassFailed;
+    };
     c.SDL_UploadToGPUBuffer(copy_pass, &c.SDL_GPUTransferBufferLocation{
         .transfer_buffer = transfer_buf,
         .offset = 0,
@@ -475,7 +485,6 @@ fn uploadBuffer(device: *c.SDL_GPUDevice, cmd_buf: *c.SDL_GPUCommandBuffer, data
         .size = @intCast(size),
     }, false);
     c.SDL_EndGPUCopyPass(copy_pass);
-    c.SDL_ReleaseGPUTransferBuffer(device, transfer_buf);
 
     return buffer;
 }
@@ -569,12 +578,6 @@ pub fn renderClayCommands(
                 @memcpy(buffer[0..len], text_slice);
                 buffer[len] = 0;
 
-                const color_val = text_data.text_color;
-                const r = color_val[0] / 255.0;
-                const g = color_val[1] / 255.0;
-                const b = color_val[2] / 255.0;
-                const a = color_val[3] / 255.0;
-
                 // Render text string to a high-quality surface via CPU FreeType rasterizer
                 const surf = c.TTF_RenderText_Blended(font_ptr, buffer.ptr, len, c.SDL_Color{
                     .r = @intFromFloat(text_data.text_color[0]),
@@ -600,7 +603,10 @@ pub fn renderClayCommands(
                     .props = 0,
                 };
                 const tex = c.SDL_CreateGPUTexture(device.?, &tex_info) orelse continue;
-                try temp_textures.append(allocator, tex);
+                temp_textures.append(allocator, tex) catch |err| {
+                    c.SDL_ReleaseGPUTexture(device.?, tex);
+                    return err;
+                };
 
                 const size = @as(usize, @intCast(converted.*.w)) * @as(usize, @intCast(converted.*.h)) * 4;
                 const transfer_buf = c.SDL_CreateGPUTransferBuffer(device.?, &c.SDL_GPUTransferBufferCreateInfo{
@@ -608,7 +614,10 @@ pub fn renderClayCommands(
                     .size = @intCast(size),
                     .props = 0,
                 }) orelse continue;
-                try temp_buffers.append(allocator, transfer_buf);
+                temp_buffers.append(allocator, transfer_buf) catch |err| {
+                    c.SDL_ReleaseGPUTransferBuffer(device.?, transfer_buf);
+                    return err;
+                };
 
                 const mapped: [*]u8 = @ptrCast(c.SDL_MapGPUTransferBuffer(device.?, transfer_buf, false) orelse continue);
                 const pixels: [*]const u8 = @ptrCast(converted.*.pixels);
@@ -644,13 +653,13 @@ pub fn renderClayCommands(
 
                 const start = @as(u32, @intCast(vertices.items.len));
 
-                // Append 6 vertices for 2 triangles
-                try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y1, .u = 0.0, .v = 0.0, .r = r, .g = g, .b = b, .a = a });
-                try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y1, .u = 1.0, .v = 0.0, .r = r, .g = g, .b = b, .a = a });
-                try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y2, .u = 0.0, .v = 1.0, .r = r, .g = g, .b = b, .a = a });
-                try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y1, .u = 1.0, .v = 0.0, .r = r, .g = g, .b = b, .a = a });
-                try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y2, .u = 1.0, .v = 1.0, .r = r, .g = g, .b = b, .a = a });
-                try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y2, .u = 0.0, .v = 1.0, .r = r, .g = g, .b = b, .a = a });
+                // Append 6 vertices for 2 triangles using white vertex color to avoid color squaring (pre-colored on CPU surface)
+                try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y1, .u = 0.0, .v = 0.0, .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
+                try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y1, .u = 1.0, .v = 0.0, .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
+                try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y2, .u = 0.0, .v = 1.0, .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
+                try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y1, .u = 1.0, .v = 0.0, .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
+                try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y2, .u = 1.0, .v = 1.0, .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
+                try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y2, .u = 0.0, .v = 1.0, .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
 
                 try batches.append(allocator, .{
                     .vertex_start = start,
@@ -835,7 +844,7 @@ pub fn renderClayCommands(
 
     var vert_buf: ?*c.SDL_GPUBuffer = null;
     if (vertices.items.len > 0) {
-        vert_buf = uploadBuffer(device.?, cmd_buf.?, std.mem.sliceAsBytes(vertices.items), vertices.items.len * @sizeOf(Vertex));
+        vert_buf = try uploadBuffer(device.?, cmd_buf.?, std.mem.sliceAsBytes(vertices.items), vertices.items.len * @sizeOf(Vertex));
     }
     defer if (vert_buf) |vb| c.SDL_ReleaseGPUBuffer(device.?, vb);
 
@@ -860,7 +869,19 @@ pub fn renderClayCommands(
 
         for (batches.items) |batch| {
             if (batch.scissor) |sc| {
-                c.SDL_SetGPUScissor(render_pass, &sc);
+                var safe_sc = sc;
+                safe_sc.x = @max(0, sc.x);
+                safe_sc.y = @max(0, sc.y);
+                safe_sc.w = @max(0, sc.w - (safe_sc.x - sc.x));
+                safe_sc.h = @max(0, sc.h - (safe_sc.y - sc.y));
+                if (safe_sc.x < win_w and safe_sc.y < win_h) {
+                    safe_sc.w = @min(safe_sc.w, win_w - safe_sc.x);
+                    safe_sc.h = @min(safe_sc.h, win_h - safe_sc.y);
+                    c.SDL_SetGPUScissor(render_pass, &safe_sc);
+                } else {
+                    const empty_sc = c.SDL_Rect{ .x = 0, .y = 0, .w = 0, .h = 0 };
+                    c.SDL_SetGPUScissor(render_pass, &empty_sc);
+                }
             } else {
                 const full_sc = c.SDL_Rect{ .x = 0, .y = 0, .w = win_w, .h = win_h };
                 c.SDL_SetGPUScissor(render_pass, &full_sc);

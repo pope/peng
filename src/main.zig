@@ -973,9 +973,12 @@ const ViewerState = struct {
                         std.log.err("Create GPU Texture failed for image size {d}x{d}: {s}", .{ entry.surface.?.*.w, entry.surface.?.*.h, c.SDL_GetError() });
                         continue;
                     }
-                    entry.gpu_texture = tex.?;
+                    const gpu_tex = tex.?;
 
-                    const cmd_buf = c.SDL_AcquireGPUCommandBuffer(self.gpu_device) orelse continue;
+                    const cmd_buf = c.SDL_AcquireGPUCommandBuffer(self.gpu_device) orelse {
+                        c.SDL_ReleaseGPUTexture(self.gpu_device, gpu_tex);
+                        continue;
+                    };
                     const size = @as(usize, @intCast(img_w)) * @as(usize, @intCast(img_h)) * 4;
                     const transfer_buf = c.SDL_CreateGPUTransferBuffer(self.gpu_device, &c.SDL_GPUTransferBufferCreateInfo{
                         .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
@@ -983,13 +986,15 @@ const ViewerState = struct {
                         .props = 0,
                     }) orelse {
                         std.log.err("Create transfer buffer failed: {s}", .{c.SDL_GetError()});
-                        _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+                        _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
+                        c.SDL_ReleaseGPUTexture(self.gpu_device, gpu_tex);
                         continue;
                     };
                     defer c.SDL_ReleaseGPUTransferBuffer(self.gpu_device, transfer_buf);
 
                     const mapped: [*]u8 = @ptrCast(c.SDL_MapGPUTransferBuffer(self.gpu_device, transfer_buf, false) orelse {
-                        _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+                        _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
+                        c.SDL_ReleaseGPUTexture(self.gpu_device, gpu_tex);
                         continue;
                     });
                     const pixels: [*]const u8 = @ptrCast(current_surf.*.pixels);
@@ -997,7 +1002,8 @@ const ViewerState = struct {
                     c.SDL_UnmapGPUTransferBuffer(self.gpu_device, transfer_buf);
 
                     const copy_pass = c.SDL_BeginGPUCopyPass(cmd_buf) orelse {
-                        _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+                        _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
+                        c.SDL_ReleaseGPUTexture(self.gpu_device, gpu_tex);
                         continue;
                     };
                     c.SDL_UploadToGPUTexture(copy_pass, &c.SDL_GPUTextureTransferInfo{
@@ -1006,13 +1012,17 @@ const ViewerState = struct {
                         .pixels_per_row = @intCast(img_w),
                         .rows_per_layer = @intCast(img_h),
                     }, &c.SDL_GPUTextureRegion{
-                        .texture = entry.gpu_texture,
+                        .texture = gpu_tex,
                         .w = @intCast(img_w),
                         .h = @intCast(img_h),
                         .d = 1,
                     }, false);
                     c.SDL_EndGPUCopyPass(copy_pass);
                     _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+
+                    entry.gpu_texture = gpu_tex;
+                    c.SDL_DestroySurface(entry.surface.?);
+                    entry.surface = null;
 
                     const end_upload = c.SDL_GetTicksNS();
                     entry.upload_time_ms = @as(f64, @floatFromInt(end_upload - start_upload)) / 1_000_000.0;
@@ -1149,6 +1159,7 @@ const ViewerState = struct {
                     _ = self.active_threads.fetchSub(1, .monotonic);
                     self.allocator.free(path);
                     self.allocator.destroy(args);
+                    _ = self.cache.pop();
                 }
             }
         }
@@ -1848,17 +1859,16 @@ fn truncateDirectory(allocator: std.mem.Allocator, text: []const u8, max_w: f32,
 
 fn formatSize(allocator: std.mem.Allocator, bytes: u64) ![]const u8 {
     const kb = @as(f64, @floatFromInt(bytes)) / 1024.0;
-    if (kb < 1024.0) {
-        return std.fmt.allocPrint(allocator, "{d:.1} KB", .{kb});
-    }
     const mb = kb / 1024.0;
     return std.fmt.allocPrint(allocator, "{d:.1} MB", .{mb});
 }
 
-pub fn main(init: std.process.Init) !void {
-    const gpa = init.gpa;
+const ParsedArgs = struct {
+    arg_path: ?[]const u8,
+    default_scale: ScaleMode,
+};
 
-    // Get command line arguments from std.process.Init
+fn parseCommandLineArgs(init: std.process.Init, gpa: std.mem.Allocator) !ParsedArgs {
     var args_it = try std.process.Args.Iterator.initAllocator(init.minimal.args, gpa);
     defer args_it.deinit();
 
@@ -1892,32 +1902,42 @@ pub fn main(init: std.process.Init) !void {
             }
         }
     }
-    defer if (arg_path) |p| gpa.free(p);
 
+    return ParsedArgs{
+        .arg_path = arg_path,
+        .default_scale = default_scale,
+    };
+}
+
+const GraphicsSetup = struct {
+    window: *c.SDL_Window,
+    gpu_device: *c.SDL_GPUDevice,
+    initial_dpi_scale: f32,
+};
+
+fn initGraphicsAndWindow(window_title: [:0]const u8) !GraphicsSetup {
     // Initialize SDL3
     if (!c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_EVENTS)) {
         std.log.err("SDL_Init Error: {s}", .{c.SDL_GetError()});
         return error.SDLInitFailed;
     }
-    defer c.SDL_Quit();
+    errdefer c.SDL_Quit();
 
     // Initialize SDL3_ttf
     if (!c.TTF_Init()) {
         std.log.err("TTF_Init Error: {s}", .{c.SDL_GetError()});
         return error.TTFInitFailed;
     }
-    defer c.TTF_Quit();
+    errdefer c.TTF_Quit();
 
-    // SDL3_image does not require manual initialization; it initializes automatically on load.
-
-    // Create Window with High Pixel Density enabled
-    const window = c.SDL_CreateWindow("Peng Image Viewer", 800, 600, c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY) orelse {
+    // Create window
+    const window = c.SDL_CreateWindow(window_title.ptr, 1024, 768, c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY) orelse {
         std.log.err("SDL_CreateWindow Error: {s}", .{c.SDL_GetError()});
-        return error.SDLCreateWindowFailed;
+        return error.WindowCreationFailed;
     };
-    defer c.SDL_DestroyWindow(window);
+    errdefer c.SDL_DestroyWindow(window);
 
-    // Calculate DPI scale factor at startup
+    // Get scales
     var win_w: c_int = 0;
     var win_h: c_int = 0;
     if (!c.SDL_GetWindowSize(window, &win_w, &win_h)) {
@@ -1935,74 +1955,107 @@ pub fn main(init: std.process.Init) !void {
         std.log.err("SDL_CreateGPUDevice Error: {s}", .{c.SDL_GetError()});
         return error.DeviceCreationFailed;
     };
-    defer c.SDL_DestroyGPUDevice(gpu_device);
+    errdefer c.SDL_DestroyGPUDevice(gpu_device);
 
     if (!c.SDL_ClaimWindowForGPUDevice(gpu_device, window)) {
         std.log.err("SDL_ClaimWindowForGPUDevice failed: {s}", .{c.SDL_GetError()});
         return error.ClaimWindowFailed;
     }
 
+    return GraphicsSetup{
+        .window = window,
+        .gpu_device = gpu_device,
+        .initial_dpi_scale = initial_dpi_scale,
+    };
+}
+
+const GpuResources = struct {
+    text_engine: *c.TTF_TextEngine,
+    pipeline: *c.SDL_GPUGraphicsPipeline,
+    sampler: *c.SDL_GPUSampler,
+    white_texture: *c.SDL_GPUTexture,
+    fonts: [2]?*c.TTF_Font,
+};
+
+fn initGpuResources(gpu_device: *c.SDL_GPUDevice, window: *c.SDL_Window, initial_dpi_scale: f32) !GpuResources {
     // Load Font from Memory using SDL_IOStream (scaled by DPI scale)
     const roboto_font_bytes = @embedFile("resources/Roboto-Regular.ttf");
     const stream = c.SDL_IOFromConstMem(roboto_font_bytes.ptr, roboto_font_bytes.len) orelse {
         std.log.err("SDL_IOFromConstMem Error: {s}", .{c.SDL_GetError()});
         return error.SDLMemIOFailed;
     };
-    defer _ = c.SDL_CloseIO(stream);
-    const font = c.TTF_OpenFontIO(stream, false, 20.0 * initial_dpi_scale) orelse {
+    errdefer _ = c.SDL_CloseIO(stream);
+    const font = c.TTF_OpenFontIO(stream, true, 20.0 * initial_dpi_scale) orelse {
         std.log.err("TTF_OpenFontIO Error: {s}", .{c.SDL_GetError()});
         return error.TTFOpenFontFailed;
     };
-    defer c.TTF_CloseFont(font);
+    errdefer c.TTF_CloseFont(font);
 
     // Create TTF GPU Text Engine
     const text_engine = c.TTF_CreateGPUTextEngine(gpu_device) orelse {
         std.log.err("TTF_CreateGPUTextEngine Error: {s}", .{c.SDL_GetError()});
         return error.TTFCreateEngineFailed;
     };
-    defer c.TTF_DestroyGPUTextEngine(text_engine);
+    errdefer c.TTF_DestroyGPUTextEngine(text_engine);
+
+    // Re-load font at smaller size for stat rows
+    const stream2 = c.SDL_IOFromConstMem(roboto_font_bytes.ptr, roboto_font_bytes.len) orelse {
+        std.log.err("SDL_IOFromConstMem Error: {s}", .{c.SDL_GetError()});
+        return error.SDLMemIOFailed;
+    };
+    errdefer _ = c.SDL_CloseIO(stream2);
+    const font_small = c.TTF_OpenFontIO(stream2, true, 14.0 * initial_dpi_scale) orelse {
+        std.log.err("TTF_OpenFontIO Error: {s}", .{c.SDL_GetError()});
+        return error.TTFOpenFontFailed;
+    };
+    errdefer c.TTF_CloseFont(font_small);
+
+    const fonts = [2]?*c.TTF_Font{ font, font_small };
 
     // Compile Shaders
-    const vert_shader_info = c.SDL_GPUShaderCreateInfo{
-        .code_size = vert_spv.len,
-        .code = vert_spv.ptr,
+    const vert_code = @embedFile("shaders/vert.spv");
+    const frag_code = @embedFile("shaders/frag.spv");
+
+    const vert_info = c.SDL_GPUShaderCreateInfo{
+        .code_size = vert_code.len,
+        .code = vert_code.ptr,
         .entrypoint = "main",
         .format = c.SDL_GPU_SHADERFORMAT_SPIRV,
         .stage = c.SDL_GPU_SHADERSTAGE_VERTEX,
         .num_samplers = 0,
-        .num_storage_textures = 0,
         .num_storage_buffers = 0,
+        .num_storage_textures = 0,
         .num_uniform_buffers = 0,
         .props = 0,
     };
-    const vert_shader = c.SDL_CreateGPUShader(gpu_device, &vert_shader_info) orelse {
-        std.log.err("Create Vertex Shader failed: {s}", .{c.SDL_GetError()});
-        return error.ShaderCompilationFailed;
+    const vert_shader = c.SDL_CreateGPUShader(gpu_device, &vert_info) orelse {
+        std.log.err("Failed to create vertex shader: {s}", .{c.SDL_GetError()});
+        return error.ShaderCreationFailed;
     };
     defer c.SDL_ReleaseGPUShader(gpu_device, vert_shader);
 
-    const frag_shader_info = c.SDL_GPUShaderCreateInfo{
-        .code_size = frag_spv.len,
-        .code = frag_spv.ptr,
+    const frag_info = c.SDL_GPUShaderCreateInfo{
+        .code_size = frag_code.len,
+        .code = frag_code.ptr,
         .entrypoint = "main",
         .format = c.SDL_GPU_SHADERFORMAT_SPIRV,
         .stage = c.SDL_GPU_SHADERSTAGE_FRAGMENT,
         .num_samplers = 1,
-        .num_storage_textures = 0,
         .num_storage_buffers = 0,
+        .num_storage_textures = 0,
         .num_uniform_buffers = 1,
         .props = 0,
     };
-    const frag_shader = c.SDL_CreateGPUShader(gpu_device, &frag_shader_info) orelse {
-        std.log.err("Create Fragment Shader failed: {s}", .{c.SDL_GetError()});
-        return error.ShaderCompilationFailed;
+    const frag_shader = c.SDL_CreateGPUShader(gpu_device, &frag_info) orelse {
+        std.log.err("Failed to create fragment shader: {s}", .{c.SDL_GetError()});
+        return error.ShaderCreationFailed;
     };
     defer c.SDL_ReleaseGPUShader(gpu_device, frag_shader);
 
-    // Create Sampler
+    // Create sampler
     const sampler_info = c.SDL_GPUSamplerCreateInfo{
-        .min_filter = @intCast(c.SDL_GPU_FILTER_LINEAR),
-        .mag_filter = @intCast(c.SDL_GPU_FILTER_LINEAR),
+        .min_filter = c.SDL_GPU_FILTER_LINEAR,
+        .mag_filter = c.SDL_GPU_FILTER_LINEAR,
         .mipmap_mode = c.SDL_GPU_SAMPLERMIPMAPMODE_LINEAR,
         .address_mode_u = c.SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
         .address_mode_v = c.SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
@@ -2015,15 +2068,16 @@ pub fn main(init: std.process.Init) !void {
         .props = 0,
     };
     const sampler = c.SDL_CreateGPUSampler(gpu_device, &sampler_info) orelse {
-        std.log.err("Create GPU Sampler failed: {s}", .{c.SDL_GetError()});
+        std.log.err("Failed to create GPU sampler: {s}", .{c.SDL_GetError()});
         return error.SamplerCreationFailed;
     };
+    errdefer c.SDL_ReleaseGPUSampler(gpu_device, sampler);
 
-    // Create 1x1 White Texture
-    const white_tex_info = c.SDL_GPUTextureCreateInfo{
+    // Create 1x1 white texture
+    const texture_info = c.SDL_GPUTextureCreateInfo{
         .type = c.SDL_GPU_TEXTURETYPE_2D,
         .format = c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-        .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER,
+        .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER | c.SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
         .width = 1,
         .height = 1,
         .layer_count_or_depth = 1,
@@ -2031,36 +2085,46 @@ pub fn main(init: std.process.Init) !void {
         .sample_count = c.SDL_GPU_SAMPLECOUNT_1,
         .props = 0,
     };
-    const white_tex = c.SDL_CreateGPUTexture(gpu_device, &white_tex_info) orelse {
-        std.log.err("Create White Texture failed: {s}", .{c.SDL_GetError()});
+    const white_texture = c.SDL_CreateGPUTexture(gpu_device, &texture_info) orelse {
+        std.log.err("Failed to create white texture: {s}", .{c.SDL_GetError()});
         return error.TextureCreationFailed;
     };
+    errdefer c.SDL_ReleaseGPUTexture(gpu_device, white_texture);
 
     // Upload white pixel
     {
-        const cmd_buf = c.SDL_AcquireGPUCommandBuffer(gpu_device) orelse return error.AcquireCmdBufferFailed;
+        const cmd_buf = c.SDL_AcquireGPUCommandBuffer(gpu_device) orelse return error.CommandBufferAcquisitionFailed;
         const transfer_buf = c.SDL_CreateGPUTransferBuffer(gpu_device, &c.SDL_GPUTransferBufferCreateInfo{
             .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
             .size = 4,
             .props = 0,
-        }) orelse return error.CreateTransferBufferFailed;
+        }) orelse {
+            _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+            return error.TransferBufferCreationFailed;
+        };
         defer c.SDL_ReleaseGPUTransferBuffer(gpu_device, transfer_buf);
 
-        const mapped: [*]u8 = @ptrCast(c.SDL_MapGPUTransferBuffer(gpu_device, transfer_buf, false) orelse return error.MapBufferFailed);
+        const mapped: [*]u8 = @ptrCast(c.SDL_MapGPUTransferBuffer(gpu_device, transfer_buf, false) orelse {
+            _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+            return error.MapFailed;
+        });
         mapped[0] = 255;
         mapped[1] = 255;
         mapped[2] = 255;
         mapped[3] = 255;
         c.SDL_UnmapGPUTransferBuffer(gpu_device, transfer_buf);
 
-        const copy_pass = c.SDL_BeginGPUCopyPass(cmd_buf) orelse return error.BeginCopyPassFailed;
+        const copy_pass = c.SDL_BeginGPUCopyPass(cmd_buf) orelse {
+            _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+            return error.CopyPassFailed;
+        };
         c.SDL_UploadToGPUTexture(copy_pass, &c.SDL_GPUTextureTransferInfo{
             .transfer_buffer = transfer_buf,
             .offset = 0,
             .pixels_per_row = 1,
             .rows_per_layer = 1,
         }, &c.SDL_GPUTextureRegion{
-            .texture = white_tex,
+            .texture = white_texture,
             .w = 1,
             .h = 1,
             .d = 1,
@@ -2071,70 +2135,31 @@ pub fn main(init: std.process.Init) !void {
 
     // Create Graphics Pipeline
     const vertex_attribs = [_]c.SDL_GPUVertexAttribute{
-        .{
-            .location = 0,
-            .buffer_slot = 0,
-            .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2,
-            .offset = @offsetOf(renderer.Vertex, "x"),
-        },
-        .{
-            .location = 1,
-            .buffer_slot = 0,
-            .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2,
-            .offset = @offsetOf(renderer.Vertex, "u"),
-        },
-        .{
-            .location = 2,
-            .buffer_slot = 0,
-            .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4,
-            .offset = @offsetOf(renderer.Vertex, "r"),
-        },
+        .{ .location = 0, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, .offset = @offsetOf(renderer.Vertex, "x") },
+        .{ .location = 1, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, .offset = @offsetOf(renderer.Vertex, "u") },
+        .{ .location = 2, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, .offset = @offsetOf(renderer.Vertex, "r") },
     };
     const vertex_buf_descs = [_]c.SDL_GPUVertexBufferDescription{
         .{ .slot = 0, .pitch = @sizeOf(renderer.Vertex), .input_rate = c.SDL_GPU_VERTEXINPUTRATE_VERTEX, .instance_step_rate = 0 },
     };
 
-    const target_info = c.SDL_GPUGraphicsPipelineTargetInfo{
-        .color_target_descriptions = &[_]c.SDL_GPUColorTargetDescription{.{
-            .format = c.SDL_GetGPUSwapchainTextureFormat(gpu_device, window),
-            .blend_state = .{
-                .src_color_blendfactor = c.SDL_GPU_BLENDFACTOR_SRC_ALPHA,
-                .dst_color_blendfactor = c.SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
-                .color_blend_op = c.SDL_GPU_BLENDOP_ADD,
-                .src_alpha_blendfactor = c.SDL_GPU_BLENDFACTOR_ONE,
-                .dst_alpha_blendfactor = c.SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
-                .alpha_blend_op = c.SDL_GPU_BLENDOP_ADD,
-                .enable_blend = true,
-                .enable_color_write_mask = false,
-                .padding1 = 0,
-                .padding2 = 0,
-            },
-        }},
-        .num_color_targets = 1,
-        .depth_stencil_format = c.SDL_GPU_TEXTUREFORMAT_D16_UNORM,
-        .has_depth_stencil_target = false,
-        .padding1 = 0,
-        .padding2 = 0,
-        .padding3 = 0,
-    };
-
-    const pipeline_info = c.SDL_GPUGraphicsPipelineCreateInfo{
+    var pipeline_info = c.SDL_GPUGraphicsPipelineCreateInfo{
         .vertex_shader = vert_shader,
         .fragment_shader = frag_shader,
         .vertex_input_state = .{
-            .vertex_buffer_descriptions = &vertex_buf_descs,
-            .num_vertex_buffers = vertex_buf_descs.len,
-            .vertex_attributes = &vertex_attribs,
             .num_vertex_attributes = vertex_attribs.len,
+            .vertex_attributes = &vertex_attribs,
+            .num_vertex_buffers = vertex_buf_descs.len,
+            .vertex_buffer_descriptions = &vertex_buf_descs,
         },
         .primitive_type = c.SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
         .rasterizer_state = .{
             .fill_mode = c.SDL_GPU_FILLMODE_FILL,
             .cull_mode = c.SDL_GPU_CULLMODE_NONE,
             .front_face = c.SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE,
-            .depth_bias_constant_factor = 0.0,
-            .depth_bias_clamp = 0.0,
-            .depth_bias_slope_factor = 0.0,
+            .depth_bias_constant_factor = 0,
+            .depth_bias_clamp = 0,
+            .depth_bias_slope_factor = 0,
             .enable_depth_bias = false,
             .enable_depth_clip = false,
             .padding1 = 0,
@@ -2149,19 +2174,9 @@ pub fn main(init: std.process.Init) !void {
             .padding3 = 0,
         },
         .depth_stencil_state = .{
-            .compare_op = c.SDL_GPU_COMPAREOP_NEVER,
-            .back_stencil_state = .{
-                .compare_op = c.SDL_GPU_COMPAREOP_NEVER,
-                .fail_op = c.SDL_GPU_STENCILOP_KEEP,
-                .pass_op = c.SDL_GPU_STENCILOP_KEEP,
-                .depth_fail_op = c.SDL_GPU_STENCILOP_KEEP,
-            },
-            .front_stencil_state = .{
-                .compare_op = c.SDL_GPU_COMPAREOP_NEVER,
-                .fail_op = c.SDL_GPU_STENCILOP_KEEP,
-                .pass_op = c.SDL_GPU_STENCILOP_KEEP,
-                .depth_fail_op = c.SDL_GPU_STENCILOP_KEEP,
-            },
+            .compare_op = c.SDL_GPU_COMPAREOP_ALWAYS,
+            .back_stencil_state = .{ .compare_op = c.SDL_GPU_COMPAREOP_ALWAYS, .fail_op = c.SDL_GPU_STENCILOP_KEEP, .pass_op = c.SDL_GPU_STENCILOP_KEEP, .depth_fail_op = c.SDL_GPU_STENCILOP_KEEP },
+            .front_stencil_state = .{ .compare_op = c.SDL_GPU_COMPAREOP_ALWAYS, .fail_op = c.SDL_GPU_STENCILOP_KEEP, .pass_op = c.SDL_GPU_STENCILOP_KEEP, .depth_fail_op = c.SDL_GPU_STENCILOP_KEEP },
             .compare_mask = 0,
             .write_mask = 0,
             .enable_depth_test = false,
@@ -2171,85 +2186,57 @@ pub fn main(init: std.process.Init) !void {
             .padding2 = 0,
             .padding3 = 0,
         },
-        .target_info = target_info,
+        .target_info = .{
+            .num_color_targets = 1,
+            .color_target_descriptions = &[_]c.SDL_GPUColorTargetDescription{.{
+                .format = c.SDL_GetGPUSwapchainTextureFormat(gpu_device, window),
+                .blend_state = .{
+                    .src_color_blendfactor = c.SDL_GPU_BLENDFACTOR_SRC_ALPHA,
+                    .dst_color_blendfactor = c.SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                    .color_blend_op = c.SDL_GPU_BLENDOP_ADD,
+                    .src_alpha_blendfactor = c.SDL_GPU_BLENDFACTOR_ONE,
+                    .dst_alpha_blendfactor = c.SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                    .alpha_blend_op = c.SDL_GPU_BLENDOP_ADD,
+                    .enable_blend = true,
+                    .enable_color_write_mask = false,
+                    .padding1 = 0,
+                    .padding2 = 0,
+                },
+            }},
+            .has_depth_stencil_target = false,
+            .depth_stencil_format = c.SDL_GPU_TEXTUREFORMAT_D16_UNORM,
+            .padding1 = 0,
+            .padding2 = 0,
+        },
         .props = 0,
     };
     const pipeline = c.SDL_CreateGPUGraphicsPipeline(gpu_device, &pipeline_info) orelse {
-        std.log.err("Create GPU Graphics Pipeline failed: {s}", .{c.SDL_GetError()});
+        std.log.err("Failed to create graphics pipeline: {s}", .{c.SDL_GetError()});
         return error.PipelineCreationFailed;
     };
 
-    // Allocate memory for Clay
-    const buffer_size = clay.minMemorySize();
-    const buffer = try gpa.alloc(u8, buffer_size);
-    defer gpa.free(buffer);
-
-    const arena = clay.Arena.init(buffer);
-    _ = clay.initialize(arena, .{ .w = @floatFromInt(pix_w), .h = @floatFromInt(pix_h) }, .{});
-
-    var frame_arena = std.heap.ArenaAllocator.init(gpa);
-    defer frame_arena.deinit();
-    const frame_allocator = frame_arena.allocator();
-
-    var fonts = [_]?*c.TTF_Font{font};
-    const measure_data = MeasureTextUserData{
+    return GpuResources{
         .text_engine = text_engine,
-        .fonts = fonts[0..],
-        .allocator = frame_allocator,
+        .pipeline = pipeline,
+        .sampler = sampler,
+        .white_texture = white_texture,
+        .fonts = fonts,
     };
+}
 
-    clay.setMeasureTextFunction(*const MeasureTextUserData, &measure_data, sdl3MeasureText);
-
-    const cache_mutex = c.SDL_CreateMutex() orelse {
-        std.log.err("SDL_CreateMutex failed: {s}", .{c.SDL_GetError()});
-        return error.SDLCreateMutexFailed;
-    };
-
-    // Initialize state
-    var state = ViewerState{
-        .gpu_device = gpu_device,
-        .gpu_pipeline = pipeline,
-        .gpu_sampler = sampler,
-        .white_texture = white_tex,
-        .gpu_text_engine = text_engine,
-        .image_list = std.ArrayList([]const u8).empty,
-        .cache = std.ArrayList(CacheEntry).empty,
-        .cache_mutex = cache_mutex,
-        .allocator = gpa,
-        .io = init.io,
-        .window_pixel_format = c.SDL_PIXELFORMAT_RGBA32,
-        .palette = PaletteState.init(gpa),
-        .scale_mode = default_scale,
-        .rotation_angle = 0.0,
-        .rotation_map = std.StringHashMap(f32).init(gpa),
-        .brightness = 0.0,
-        .contrast = 1.0,
-        .adjustments_dirty = false,
-        .window = window,
-        .is_fullscreen = false,
-        .running = true,
-        .show_stats_overlay = false,
-    };
-    defer state.deinit();
-
-    // Populate image list from command line argument
-    if (arg_path) |path| {
-        try state.handlePathSelection(path);
-    }
-
-    // Read from stdin if piped
-    const is_stdin_piped = !(std.Io.File.stdin().isTty(init.io) catch false);
+fn readPipedStdin(state: *ViewerState, io: std.Io, gpa: std.mem.Allocator) !void {
+    const is_stdin_piped = !(std.Io.File.stdin().isTty(io) catch false);
     if (is_stdin_piped) {
         var read_buf: [4096]u8 = undefined;
-        var stdin_file_reader = std.Io.File.Reader.init(std.Io.File.stdin(), init.io, &read_buf);
+        var stdin_file_reader = std.Io.File.Reader.init(std.Io.File.stdin(), io, &read_buf);
         const stdin = &stdin_file_reader.interface;
 
         while (try stdin.takeDelimiter('\n')) |line| {
             const trimmed = std.mem.trim(u8, line, "\r\n ");
             if (trimmed.len > 0) {
-                if (std.Io.Dir.statFile(std.Io.Dir.cwd(), init.io, trimmed, .{})) |s| {
+                if (std.Io.Dir.statFile(std.Io.Dir.cwd(), io, trimmed, .{})) |s| {
                     if (s.kind == .directory) {
-                        try scanDirectory(gpa, init.io, trimmed, &state.image_list);
+                        try scanDirectory(gpa, io, trimmed, &state.image_list);
                     } else if (isImageExtension(std.fs.path.extension(trimmed))) {
                         const dup = try gpa.dupe(u8, trimmed);
                         errdefer gpa.free(dup);
@@ -2267,122 +2254,678 @@ pub fn main(init: std.process.Init) !void {
             try state.updateCache();
         }
     }
+}
+
+fn pollFrameInput(
+    window: *c.SDL_Window,
+    frame_allocator: std.mem.Allocator,
+    last_time: *u64,
+    mouse_inside: *bool,
+    running: *bool,
+    palette_show: bool,
+) !FrameInput {
+    const current_ticks = c.SDL_GetTicks();
+    const delta_time_ms = @as(f32, @floatFromInt(current_ticks - last_time.*));
+    last_time.* = current_ticks;
+
+    // Get window sizes and scale
+    var win_w: c_int = 0;
+    var win_h: c_int = 0;
+    if (!c.SDL_GetWindowSize(window, &win_w, &win_h)) {
+        std.log.err("SDL_GetWindowSize failed: {s}", .{c.SDL_GetError()});
+    }
+    var pix_w: c_int = 0;
+    var pix_h: c_int = 0;
+    if (!c.SDL_GetWindowSizeInPixels(window, &pix_w, &pix_h)) {
+        std.log.err("SDL_GetWindowSizeInPixels failed: {s}", .{c.SDL_GetError()});
+    }
+
+    const width = @as(f32, @floatFromInt(pix_w));
+    const height = @as(f32, @floatFromInt(pix_h));
+    const scale_x = if (win_w > 0) @as(f32, @floatFromInt(pix_w)) / @as(f32, @floatFromInt(win_w)) else 1.0;
+    const scale_y = if (win_h > 0) @as(f32, @floatFromInt(pix_h)) / @as(f32, @floatFromInt(win_h)) else 1.0;
+    const dpi_scale = scale_x;
+
+    var keys_pressed = std.ArrayList(c.SDL_Keycode).empty;
+    errdefer keys_pressed.deinit(frame_allocator);
+    var text_input_opt: ?[]const u8 = null;
+    var dropped_path_opt: ?[]const u8 = null;
+    var scroll_delta_x: f32 = 0;
+    var scroll_delta_y: f32 = 0;
+    var mouse_left_clicked = false;
+
+    var event: c.SDL_Event = undefined;
+    const wait_success = if (palette_show)
+        c.SDL_WaitEventTimeout(&event, 8)
+    else
+        c.SDL_WaitEvent(&event);
+
+    if (!wait_success) {
+        event.type = 0;
+    }
+
+    var has_event = wait_success;
+    while (has_event) {
+        switch (event.type) {
+            c.SDL_EVENT_QUIT => running.* = false,
+            c.SDL_EVENT_WINDOW_MOUSE_ENTER => {
+                mouse_inside.* = true;
+            },
+            c.SDL_EVENT_WINDOW_MOUSE_LEAVE => {
+                mouse_inside.* = false;
+            },
+            c.SDL_EVENT_KEY_DOWN => {
+                try keys_pressed.append(frame_allocator, event.key.key);
+            },
+            c.SDL_EVENT_TEXT_INPUT => {
+                if (event.text.text) |ptr| {
+                    const len = std.mem.len(ptr);
+                    const dup = try frame_allocator.dupe(u8, ptr[0..len]);
+                    text_input_opt = dup;
+                }
+            },
+            c.SDL_EVENT_DROP_FILE => {
+                if (event.drop.data) |ptr| {
+                    const len = std.mem.len(ptr);
+                    const dup = try frame_allocator.dupe(u8, ptr[0..len]);
+                    dropped_path_opt = dup;
+                }
+            },
+            c.SDL_EVENT_MOUSE_BUTTON_UP => {
+                if (event.button.button == c.SDL_BUTTON_LEFT) {
+                    mouse_left_clicked = true;
+                }
+            },
+            c.SDL_EVENT_MOUSE_WHEEL => {
+                const multiplier: f32 = if (event.wheel.direction == c.SDL_MOUSEWHEEL_FLIPPED) -1.0 else 1.0;
+                scroll_delta_x += event.wheel.x * multiplier * 6.0;
+                scroll_delta_y += event.wheel.y * multiplier * 6.0;
+            },
+            else => {},
+        }
+        has_event = c.SDL_PollEvent(&event);
+    }
+
+    var mouse_x_raw: f32 = 0;
+    var mouse_y_raw: f32 = 0;
+    const mouse_buttons = c.SDL_GetMouseState(&mouse_x_raw, &mouse_y_raw);
+    const mouse_left_down = (mouse_buttons & c.SDL_BUTTON_MASK(c.SDL_BUTTON_LEFT)) != 0;
+
+    return FrameInput{
+        .win_w = @as(f32, @floatFromInt(win_w)),
+        .win_h = @as(f32, @floatFromInt(win_h)),
+        .pix_w = width,
+        .pix_h = height,
+        .scale_x = scale_x,
+        .scale_y = scale_y,
+        .dpi_scale = dpi_scale,
+        .mouse_x = mouse_x_raw * scale_x,
+        .mouse_y = mouse_y_raw * scale_y,
+        .mouse_left_down = mouse_left_down,
+        .mouse_left_clicked = mouse_left_clicked,
+        .mouse_inside = mouse_inside.*,
+        .scroll_delta_x = scroll_delta_x,
+        .scroll_delta_y = scroll_delta_y,
+        .keys_pressed = keys_pressed,
+        .key_modifiers = c.SDL_GetModState(),
+        .text_input = text_input_opt,
+        .dropped_path = dropped_path_opt,
+        .ticks = current_ticks,
+        .delta_time_ms = delta_time_ms,
+    };
+}
+
+fn renderFrame(
+    state: *ViewerState,
+    input: FrameInput,
+    frame_allocator: std.mem.Allocator,
+    fonts: []const ?*c.TTF_Font,
+    measure_data: *const MeasureTextUserData,
+) !void {
+    const width = input.pix_w;
+    const height = input.pix_h;
+    const scale_x = input.scale_x;
+    const scale_y = input.scale_y;
+    const dpi_scale = input.dpi_scale;
+    const current_entry = state.getCurrentEntry();
+
+    // Calculate Image Fitting Layout Boundaries
+    var title_bar_h: f32 = 60.0;
+    const nav_bar_h: f32 = 0.0;
+    if (state.is_fullscreen) {
+        title_bar_h = 0;
+    }
+
+    var available_width = width;
+    if (clay.isDebugModeEnabled()) {
+        available_width = @max(width - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0);
+    }
+
+    state.prepareCacheTextures();
+
+    var draw_w: f32 = 0;
+    var draw_h: f32 = 0;
+
+    if (current_entry) |entry| {
+        if (entry.gpu_texture != null) {
+            const padding: f32 = 0.0;
+            const view_w = @max(available_width - padding * 2.0, 1.0);
+            const view_h = @max(height - (title_bar_h + nav_bar_h) * scale_y - padding * 2.0, 1.0);
+
+            const angle = @mod(state.rotation_angle, 360.0);
+            const is_90_or_270 = (std.math.approxEqAbs(f32, angle, 90.0, 0.1) or
+                std.math.approxEqAbs(f32, angle, 270.0, 0.1) or
+                std.math.approxEqAbs(f32, angle, -90.0, 0.1) or
+                std.math.approxEqAbs(f32, angle, -270.0, 0.1));
+            const img_w = if (is_90_or_270) entry.h else entry.w;
+            const img_h = if (is_90_or_270) entry.w else entry.h;
+
+            if (img_w > 0 and img_h > 0) {
+                const r_img = img_w / img_h;
+                const r_view = view_w / view_h;
+                switch (state.scale_mode) {
+                    .none => {
+                        draw_w = img_w;
+                        draw_h = img_h;
+                    },
+                    .shrink => {
+                        if (img_w <= view_w and img_h <= view_h) {
+                            draw_w = img_w;
+                            draw_h = img_h;
+                        } else {
+                            if (r_img > r_view) {
+                                draw_w = view_w;
+                                draw_h = view_w / r_img;
+                            } else {
+                                draw_h = view_h;
+                                draw_w = view_h * r_img;
+                            }
+                        }
+                    },
+                    .full => {
+                        if (r_img > r_view) {
+                            draw_w = view_w;
+                            draw_h = view_w / r_img;
+                        } else {
+                            draw_h = view_h;
+                            draw_w = view_h * r_img;
+                        }
+                    },
+                    .crop => {
+                        if (r_img > r_view) {
+                            draw_h = view_h;
+                            draw_w = view_h * r_img;
+                        } else {
+                            draw_w = view_w;
+                            draw_h = view_w / r_img;
+                        }
+                    },
+                }
+            }
+        }
+    }
+
+    clay.beginLayout();
+
+    // Main Layout Container
+    clay.UI()(.{
+        .id = clay.getElementId("MainLayout"),
+        .layout = .{
+            .sizing = .{ .w = .grow, .h = .grow },
+            .direction = .top_to_bottom,
+        },
+        .background_color = .{ 24, 24, 37, 255 }, // Catppuccin Base (Mocha Mantle/Base)
+    })({
+        try renderPalette(
+            state,
+            scale_x,
+            scale_y,
+            dpi_scale,
+            input.mouse_left_clicked,
+            frame_allocator,
+            measure_data,
+        );
+
+        if (state.show_stats_overlay) {
+            const idx = state.current_index;
+            const path = if (idx != null and state.image_list.items.len > idx.?) state.image_list.items[idx.?] else "";
+            const filename = if (path.len > 0) std.fs.path.basename(path) else "None";
+            const dirname = if (path.len > 0) (std.fs.path.dirname(path) orelse ".") else "None";
+
+            const display_dir = if (dirname.len > 35) try std.fmt.allocPrint(frame_allocator, "...{s}", .{dirname[dirname.len - 32 ..]}) else dirname;
+
+            var disk_size_str: []const u8 = "Loading...";
+            var mem_size_str: []const u8 = "Loading...";
+            var mime_type: []const u8 = "Loading...";
+            var res_str: []const u8 = "Loading...";
+            var decode_str: []const u8 = "Loading...";
+            var convert_str: []const u8 = "Loading...";
+            var process_str: []const u8 = "Loading...";
+            var screen_str: []const u8 = "Loading...";
+
+            if (current_entry) |entry| {
+                mime_type = entry.mime_type;
+                if (entry.status == .loaded or entry.gpu_texture != null) {
+                    disk_size_str = try formatSize(frame_allocator, entry.size_bytes);
+                    mem_size_str = try formatSize(frame_allocator, entry.memory_size_bytes);
+
+                    const megapixels = (entry.w * entry.h) / 1_000_000.0;
+                    res_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} ({d:.2} MP)", .{ entry.w, entry.h, megapixels });
+                    decode_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{entry.decode_time_ms});
+                    convert_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{entry.conversion_time_ms});
+                    process_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{entry.upload_time_ms});
+                    screen_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} px", .{ draw_w, draw_h });
+                } else if (entry.status == .failed) {
+                    disk_size_str = "Failed";
+                    mem_size_str = "Failed";
+                    mime_type = "Failed";
+                    res_str = "Failed";
+                    decode_str = "Failed";
+                    convert_str = "Failed";
+                    process_str = "Failed";
+                    screen_str = "Failed";
+                }
+            }
+
+            var zoom_str: []const u8 = "1.0x";
+            if (current_entry) |entry| {
+                if (entry.w > 0) {
+                    const pixel_zoom_pct = ((draw_w * state.zoom_factor) / entry.w) * 100.0;
+                    zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x ({d:.0}%)", .{ state.zoom_factor, pixel_zoom_pct });
+                } else {
+                    zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{state.zoom_factor});
+                }
+            } else {
+                zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{state.zoom_factor});
+            }
+
+            const pan_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}, {d:.0} px", .{ state.pan_x, state.pan_y });
+            const rot_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}°", .{state.rotation_angle});
+
+            clay.UI()(.{
+                .id = clay.getElementId("StatsPanel"),
+                .layout = .{
+                    .sizing = .{ .w = .fixed(380 * scale_x), .h = .fit },
+                    .direction = .top_to_bottom,
+                    .padding = .{ .left = 16, .right = 16, .top = 16, .bottom = 16 },
+                    .child_gap = 10,
+                },
+                .background_color = .{ 30, 30, 46, 220 },
+                .corner_radius = .all(10),
+                .border = .{
+                    .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                    .color = .{ 49, 50, 68, 255 },
+                },
+                .floating = .{
+                    .attach_to = .to_parent,
+                    .attach_points = .{ .element = .left_top, .parent = .left_top },
+                    .offset = .{ .x = state.stats_offset_x, .y = state.stats_offset_y },
+                    .z_index = 100,
+                },
+            })({
+                // Header row
+                clay.UI()(.{
+                    .layout = .{
+                        .sizing = .{ .w = .grow, .h = .fixed(24 * scale_y) },
+                        .direction = .left_to_right,
+                        .child_alignment = .{ .x = .left, .y = .center },
+                    },
+                })({
+                    clay.UI()(.{ .layout = .{ .sizing = .{ .w = .grow, .h = .grow } } })({
+                        clay.text("Stats for Nerds", .{
+                            .color = .{ 245, 194, 231, 255 },
+                            .font_size = @intFromFloat(16.0 * dpi_scale),
+                            .font_id = 0,
+                        });
+                    });
+                    clay.UI()(.{
+                        .id = clay.getElementId("StatsCloseBtn"),
+                        .layout = .{
+                            .sizing = .{ .w = .fixed(24 * scale_x), .h = .fixed(24 * scale_y) },
+                            .child_alignment = .{ .x = .center, .y = .center },
+                        },
+                        .background_color = .{ 49, 50, 68, 255 },
+                        .corner_radius = .all(12),
+                    })({
+                        clay.text("x", .{
+                            .color = .{ 205, 214, 244, 255 },
+                            .font_size = @intFromFloat(12.0 * dpi_scale),
+                            .font_id = 0,
+                        });
+                    });
+                });
+
+                // Stats details
+                if (filename.len > 0) {
+                    try renderStatRow("File Name", filename, scale_x, scale_y, dpi_scale);
+                    try renderStatRow("Directory", display_dir, scale_x, scale_y, dpi_scale);
+                    try renderStatRow("MIME Type", mime_type, scale_x, scale_y, dpi_scale);
+                    const hit_str = if (state.current_image_cache_hit) "Yes" else "No";
+                    try renderStatRow("Cache Hit", hit_str, scale_x, scale_y, dpi_scale);
+                    try renderStatRow("Size on Disk", disk_size_str, scale_x, scale_y, dpi_scale);
+                    try renderStatRow("Resolution", res_str, scale_x, scale_y, dpi_scale);
+                    try renderStatRow("Decode Time", decode_str, scale_x, scale_y, dpi_scale);
+                    try renderStatRow("Convert Time", convert_str, scale_x, scale_y, dpi_scale);
+                    try renderStatRow("Upload Time", process_str, scale_x, scale_y, dpi_scale);
+                    try renderStatRow("Memory Size", mem_size_str, scale_x, scale_y, dpi_scale);
+                    try renderStatRow("Viewport Size", screen_str, scale_x, scale_y, dpi_scale);
+                    try renderStatRow("Zoom Level", zoom_str, scale_x, scale_y, dpi_scale);
+                    try renderStatRow("Pan Offset", pan_str, scale_x, scale_y, dpi_scale);
+                    try renderStatRow("Rotation", rot_str, scale_x, scale_y, dpi_scale);
+                    const scale_mode_str = switch (state.scale_mode) {
+                        .none => "Original size (100%)",
+                        .shrink => "Fit if larger",
+                        .full => "Fit to screen (Aspect Fit)",
+                        .crop => "Fill screen (Aspect Fill)",
+                    };
+                    try renderStatRow("Scale Mode", scale_mode_str, scale_x, scale_y, dpi_scale);
+                    const filter_str = switch (state.texture_scale_mode) {
+                        .nearest => "Nearest Neighbor",
+                        .linear => "Bilinear Filter",
+                        .pixel_art => "Pixel Art Scaling",
+                    };
+                    try renderStatRow("Scaling Filter", filter_str, scale_x, scale_y, dpi_scale);
+
+                    const brightness_val = state.brightness * 100.0;
+                    const brightness_str = try std.fmt.allocPrint(frame_allocator, "{s}{d:.0}%", .{ if (brightness_val > 0) "+" else "", brightness_val });
+                    const contrast_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{state.contrast});
+                    try renderStatRow("Brightness", brightness_str, scale_x, scale_y, dpi_scale);
+                    try renderStatRow("Contrast", contrast_str, scale_x, scale_y, dpi_scale);
+                }
+            });
+        }
+
+        // Header/Title bar UI
+        if (!state.is_fullscreen) {
+            clay.UI()(.{
+                .id = clay.getElementId("TitleBar"),
+                .layout = .{
+                    .sizing = .{ .w = .grow, .h = .fixed(title_bar_h * scale_y) },
+                    .direction = .left_to_right,
+                    .child_alignment = .{ .x = .left, .y = .center },
+                    .padding = .{
+                        .left = @intFromFloat(20 * scale_x),
+                        .right = @intFromFloat(20 * scale_x),
+                    },
+                },
+                .background_color = .{ 17, 17, 27, 255 },
+                .border = .{ .width = .{ .bottom = 1 }, .color = .{ 49, 50, 68, 255 } },
+            })({
+                clay.text("Peng Image Viewer", .{
+                    .color = .{ 205, 214, 244, 255 },
+                    .font_size = @intFromFloat(16.0 * dpi_scale),
+                    .font_id = 0,
+                });
+
+                clay.UI()(.{ .layout = .{ .sizing = .{ .w = .grow, .h = .grow } } })({});
+
+                if (state.image_list.items.len > 0) {
+                    const idx = (state.current_index orelse 0) + 1;
+                    const count_buf = try frame_allocator.alloc(u8, 64);
+                    const count_str = try std.fmt.bufPrint(count_buf, "Image {} of {}", .{ idx, state.image_list.items.len });
+                    clay.text(count_str, .{
+                        .color = .{ 166, 173, 200, 255 },
+                        .font_size = @intFromFloat(12.0 * dpi_scale),
+                        .font_id = 0,
+                    });
+                }
+            });
+        }
+
+        // Center Viewport Area
+        clay.UI()(.{
+            .id = clay.getElementId("Viewport"),
+            .layout = .{
+                .sizing = .{ .w = .grow, .h = .grow },
+                .child_alignment = .{ .x = .center, .y = .center },
+            },
+            .clip = .{ .horizontal = true, .vertical = true },
+        })({
+            if (current_entry) |entry| {
+                if (entry.gpu_texture) |tex| {
+                    clay.UI()(.{
+                        .id = clay.getElementId("ImageCanvas"),
+                        .layout = .{
+                            .sizing = .{ .w = .fixed(draw_w), .h = .fixed(draw_h) },
+                        },
+                        .image = .{
+                            .image_data = @ptrCast(tex),
+                        },
+                    })({});
+                } else if (entry.status == .decoding) {
+                    clay.UI()(.{
+                        .layout = .{
+                            .sizing = .{ .w = .grow, .h = .grow },
+                            .direction = .top_to_bottom,
+                            .child_alignment = .{ .x = .center, .y = .center },
+                            .child_gap = @intFromFloat(10 * scale_y),
+                        },
+                    })({
+                        clay.text("Loading image...", .{
+                            .color = .{ 245, 194, 231, 255 },
+                            .font_size = @intFromFloat(22.0 * dpi_scale),
+                            .font_id = 0,
+                        });
+                    });
+                } else {
+                    clay.UI()(.{
+                        .layout = .{
+                            .sizing = .{ .w = .grow, .h = .grow },
+                            .direction = .top_to_bottom,
+                            .child_alignment = .{ .x = .center, .y = .center },
+                            .child_gap = @intFromFloat(10 * scale_y),
+                        },
+                    })({
+                        clay.text("Failed to Load Image", .{
+                            .color = .{ 243, 139, 168, 255 },
+                            .font_size = @intFromFloat(22.0 * dpi_scale),
+                            .font_id = 0,
+                        });
+                    });
+                }
+            } else {
+                // Empty state screen
+                clay.UI()(.{
+                    .layout = .{
+                        .sizing = .{ .w = .grow, .h = .grow },
+                        .direction = .top_to_bottom,
+                        .child_alignment = .{ .x = .center, .y = .center },
+                    },
+                })({
+                    clay.UI()(.{
+                        .id = clay.ElementId.ID("DropZoneBox"),
+                        .layout = .{
+                            .sizing = .{ .w = .fit, .h = .fit },
+                            .direction = .top_to_bottom,
+                            .child_alignment = .{ .x = .center, .y = .center },
+                            .child_gap = @intFromFloat(16 * scale_y),
+                            .padding = .{
+                                .left = @intFromFloat(40 * scale_x),
+                                .right = @intFromFloat(40 * scale_x),
+                                .top = @intFromFloat(32 * scale_y),
+                                .bottom = @intFromFloat(32 * scale_y),
+                            },
+                        },
+                        .border = .{ .width = .{ .left = 2, .right = 2, .top = 2, .bottom = 2 }, .color = .{ 79, 79, 97, 255 } },
+                        .corner_radius = .all(12),
+                        .user_data = @ptrFromInt(@intFromEnum(ElementTag.drop_zone_box)),
+                    })({
+                        clay.text("No Images Loaded", .{
+                            .color = .{ 205, 214, 244, 255 },
+                            .font_size = @intFromFloat(22.0 * dpi_scale),
+                            .font_id = 0,
+                        });
+
+                        clay.text("Drag & Drop images or directories here to view them.", .{
+                            .color = .{ 166, 173, 200, 255 },
+                            .font_size = @intFromFloat(14.0 * dpi_scale),
+                            .font_id = 0,
+                        });
+                    });
+                });
+            }
+        });
+    });
+
+    const render_commands = clay.endLayout();
+
+    // Render Frame
+    const cmd_buf = c.SDL_AcquireGPUCommandBuffer(state.gpu_device) orelse return error.CommandBufferAcquisitionFailed;
+    var swap_tex: ?*c.SDL_GPUTexture = null;
+    var swap_w: u32 = 0;
+    var swap_h: u32 = 0;
+
+    var temp_textures = std.ArrayList(*c.SDL_GPUTexture).empty;
+    defer temp_textures.deinit(frame_allocator);
+    var temp_buffers = std.ArrayList(*c.SDL_GPUTransferBuffer).empty;
+    defer temp_buffers.deinit(frame_allocator);
+
+    if (c.SDL_WaitAndAcquireGPUSwapchainTexture(cmd_buf, state.window, &swap_tex, &swap_w, &swap_h)) {
+        try renderer.renderClayCommands(
+            state.gpu_device,
+            cmd_buf,
+            swap_tex,
+            state.gpu_pipeline,
+            state.gpu_sampler,
+            state.white_texture,
+            state.gpu_text_engine,
+            fonts,
+            render_commands,
+            frame_allocator,
+            &temp_textures,
+            &temp_buffers,
+            .{
+                .zoom_factor = state.zoom_factor,
+                .pan_x = state.pan_x,
+                .pan_y = state.pan_y,
+                .rotation_angle = state.rotation_angle,
+            },
+            @intCast(swap_w),
+            @intCast(swap_h),
+            state.brightness,
+            state.contrast,
+        );
+        _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+
+        // Defer release of text textures until command buffer completes
+        for (temp_textures.items) |tex| {
+            c.SDL_ReleaseGPUTexture(state.gpu_device, tex);
+        }
+        for (temp_buffers.items) |buf| {
+            c.SDL_ReleaseGPUTransferBuffer(state.gpu_device, buf);
+        }
+    } else {
+        _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+    }
+}
+
+pub fn main(init: std.process.Init) !void {
+    const gpa = init.gpa;
+
+    // Phase 1: Parse command line arguments
+    const parsed = try parseCommandLineArgs(init, gpa);
+    defer if (parsed.arg_path) |p| gpa.free(p);
+
+    // Phase 2: Graphics and Window Setup
+    const setup = try initGraphicsAndWindow("Peng Image Viewer");
+    defer {
+        c.SDL_DestroyWindow(setup.window);
+        c.SDL_Quit();
+        c.TTF_Quit();
+    }
+
+    // Phase 3: GPU Pipeline and Resources Setup
+    const resources = try initGpuResources(setup.gpu_device, setup.window, setup.initial_dpi_scale);
+    var own_resources = true;
+    defer {
+        if (own_resources) {
+            c.SDL_ReleaseGPUGraphicsPipeline(setup.gpu_device, resources.pipeline);
+            c.SDL_ReleaseGPUSampler(setup.gpu_device, resources.sampler);
+            c.SDL_ReleaseGPUTexture(setup.gpu_device, resources.white_texture);
+            c.TTF_DestroyGPUTextEngine(resources.text_engine);
+        }
+        for (resources.fonts) |f| {
+            if (f) |font| c.TTF_CloseFont(font);
+        }
+    }
+
+    const cache_mutex = c.SDL_CreateMutex() orelse {
+        std.log.err("SDL_CreateMutex failed: {s}", .{c.SDL_GetError()});
+        return error.SDLCreateMutexFailed;
+    };
+
+    // Phase 4: State Initialization
+    var state = ViewerState{
+        .gpu_device = setup.gpu_device,
+        .gpu_pipeline = resources.pipeline,
+        .gpu_sampler = resources.sampler,
+        .white_texture = resources.white_texture,
+        .gpu_text_engine = resources.text_engine,
+        .image_list = std.ArrayList([]const u8).empty,
+        .cache = std.ArrayList(CacheEntry).empty,
+        .cache_mutex = cache_mutex,
+        .allocator = gpa,
+        .io = init.io,
+        .window_pixel_format = c.SDL_PIXELFORMAT_RGBA32,
+        .palette = PaletteState.init(gpa),
+        .scale_mode = parsed.default_scale,
+        .rotation_angle = 0.0,
+        .rotation_map = std.StringHashMap(f32).init(gpa),
+        .brightness = 0.0,
+        .contrast = 1.0,
+        .adjustments_dirty = false,
+        .window = setup.window,
+        .is_fullscreen = false,
+        .running = true,
+        .show_stats_overlay = false,
+    };
+    defer state.deinit();
+    own_resources = false;
+
+    // Populate initial image list from arguments and piped stdin
+    if (parsed.arg_path) |path| {
+        try state.handlePathSelection(path);
+    }
+    try readPipedStdin(&state, init.io, gpa);
+
+    // Initialize Clay UI Layout Engine
+    const clay_memory_size = clay.minMemorySize();
+    const clay_memory = try gpa.alloc(u8, clay_memory_size);
+    defer gpa.free(clay_memory);
+    const clay_arena = clay.Arena.init(clay_memory);
+    _ = clay.initialize(clay_arena, .{
+        .w = @as(f32, @floatFromInt(1024)),
+        .h = @as(f32, @floatFromInt(768)),
+    }, .{});
+
+    var measure_data = MeasureTextUserData{
+        .text_engine = resources.text_engine,
+        .fonts = resources.fonts[0..],
+        .allocator = gpa,
+    };
+    clay.setMeasureTextFunction(*const MeasureTextUserData, &measure_data, sdl3MeasureText);
+
+    // Per-frame arena allocator
+    var frame_arena = std.heap.ArenaAllocator.init(gpa);
+    defer frame_arena.deinit();
+    const frame_allocator = frame_arena.allocator();
 
     var last_time = c.SDL_GetTicks();
+
+    // Phase 5: The Main Loop
     while (state.running) {
+        // Phase 5a: Input Accumulation
         _ = frame_arena.reset(.retain_capacity);
+        const input = try pollFrameInput(
+            setup.window,
+            frame_allocator,
+            &last_time,
+            &state.mouse_inside,
+            &state.running,
+            state.palette.show,
+        );
 
-        const current_ticks = c.SDL_GetTicks();
-        const delta_time_ms = @as(f32, @floatFromInt(current_ticks - last_time));
-        last_time = current_ticks;
-
-        // Get window sizes and scale
-        var current_win_w: c_int = 0;
-        var current_win_h: c_int = 0;
-        if (!c.SDL_GetWindowSize(window, &current_win_w, &current_win_h)) {
-            std.log.err("SDL_GetWindowSize failed: {s}", .{c.SDL_GetError()});
-        }
-        var current_pix_w: c_int = 0;
-        var current_pix_h: c_int = 0;
-        if (!c.SDL_GetWindowSizeInPixels(window, &current_pix_w, &current_pix_h)) {
-            std.log.err("SDL_GetWindowSizeInPixels failed: {s}", .{c.SDL_GetError()});
-        }
-
-        const width = @as(f32, @floatFromInt(current_pix_w));
-        const height = @as(f32, @floatFromInt(current_pix_h));
-        const scale_x = if (current_win_w > 0) @as(f32, @floatFromInt(current_pix_w)) / @as(f32, @floatFromInt(current_win_w)) else 1.0;
-        const scale_y = if (current_win_h > 0) @as(f32, @floatFromInt(current_pix_h)) / @as(f32, @floatFromInt(current_win_h)) else 1.0;
-        const dpi_scale = scale_x;
-
-        // Poll events and build FrameInput
-        var keys_pressed = std.ArrayList(c.SDL_Keycode).empty;
-        defer keys_pressed.deinit(frame_allocator);
-        var text_input_opt: ?[]const u8 = null;
-        var dropped_path_opt: ?[]const u8 = null;
-        var scroll_delta_x: f32 = 0;
-        var scroll_delta_y: f32 = 0;
-        var mouse_left_clicked = false;
-
-        var event: c.SDL_Event = undefined;
-        const wait_success = if (state.palette.show)
-            c.SDL_WaitEventTimeout(&event, 8)
-        else
-            c.SDL_WaitEvent(&event);
-
-        if (!wait_success) {
-            event.type = 0;
-        }
-
-        var has_event = wait_success;
-        while (has_event) {
-            switch (event.type) {
-                c.SDL_EVENT_QUIT => state.running = false,
-                c.SDL_EVENT_WINDOW_MOUSE_ENTER => {
-                    state.mouse_inside = true;
-                },
-                c.SDL_EVENT_WINDOW_MOUSE_LEAVE => {
-                    state.mouse_inside = false;
-                },
-                c.SDL_EVENT_KEY_DOWN => {
-                    try keys_pressed.append(frame_allocator, event.key.key);
-                },
-                c.SDL_EVENT_TEXT_INPUT => {
-                    if (event.text.text) |ptr| {
-                        const len = std.mem.len(ptr);
-                        const dup = try frame_allocator.dupe(u8, ptr[0..len]);
-                        text_input_opt = dup;
-                    }
-                },
-                c.SDL_EVENT_DROP_FILE => {
-                    if (event.drop.data) |ptr| {
-                        const len = std.mem.len(ptr);
-                        const dup = try frame_allocator.dupe(u8, ptr[0..len]);
-                        dropped_path_opt = dup;
-                    }
-                },
-                c.SDL_EVENT_MOUSE_BUTTON_UP => {
-                    if (event.button.button == c.SDL_BUTTON_LEFT) {
-                        mouse_left_clicked = true;
-                    }
-                },
-                c.SDL_EVENT_MOUSE_WHEEL => {
-                    const multiplier: f32 = if (event.wheel.direction == c.SDL_MOUSEWHEEL_FLIPPED) -1.0 else 1.0;
-                    scroll_delta_x += event.wheel.x * multiplier * 6.0;
-                    scroll_delta_y += event.wheel.y * multiplier * 6.0;
-                },
-                else => {},
-            }
-            has_event = c.SDL_PollEvent(&event);
-        }
-
-        var mouse_x_raw: f32 = 0;
-        var mouse_y_raw: f32 = 0;
-        const mouse_buttons = c.SDL_GetMouseState(&mouse_x_raw, &mouse_y_raw);
-        const mouse_left_down = (mouse_buttons & c.SDL_BUTTON_MASK(c.SDL_BUTTON_LEFT)) != 0;
-
-        const input = FrameInput{
-            .win_w = @as(f32, @floatFromInt(current_win_w)),
-            .win_h = @as(f32, @floatFromInt(current_win_h)),
-            .pix_w = width,
-            .pix_h = height,
-            .scale_x = scale_x,
-            .scale_y = scale_y,
-            .dpi_scale = dpi_scale,
-            .mouse_x = mouse_x_raw * scale_x,
-            .mouse_y = mouse_y_raw * scale_y,
-            .mouse_left_down = mouse_left_down,
-            .mouse_left_clicked = mouse_left_clicked,
-            .mouse_inside = state.mouse_inside,
-            .scroll_delta_x = scroll_delta_x,
-            .scroll_delta_y = scroll_delta_y,
-            .keys_pressed = keys_pressed,
-            .key_modifiers = c.SDL_GetModState(),
-            .text_input = text_input_opt,
-            .dropped_path = dropped_path_opt,
-            .ticks = current_ticks,
-            .delta_time_ms = delta_time_ms,
-        };
-
+        // Phase 5b: State Update
         try state.update(input, gpa);
 
         clay.setLayoutDimensions(.{ .w = input.pix_w, .h = input.pix_h });
@@ -2411,479 +2954,8 @@ pub fn main(init: std.process.Init) !void {
             }
         }
 
-        // Calculate Image Fitting Layout Boundaries
-        var title_bar_h: f32 = 60.0;
-        const nav_bar_h: f32 = 0.0;
-        if (state.is_fullscreen) {
-            title_bar_h = 0;
-        }
-
-        var available_width = width;
-        if (clay.isDebugModeEnabled()) {
-            available_width = @max(width - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0);
-        }
-
-        state.prepareCacheTextures();
-
-        var draw_w: f32 = 0;
-        var draw_h: f32 = 0;
-
-        if (state.getCurrentEntry()) |entry| {
-            if (entry.gpu_texture != null) {
-                const padding: f32 = 0.0;
-                const view_w = @max(available_width - padding * 2.0, 1.0);
-                const view_h = @max(height - (title_bar_h + nav_bar_h) * scale_y - padding * 2.0, 1.0);
-
-                const angle = @mod(state.rotation_angle, 360.0);
-                const is_90_or_270 = (std.math.approxEqAbs(f32, angle, 90.0, 0.1) or
-                    std.math.approxEqAbs(f32, angle, 270.0, 0.1) or
-                    std.math.approxEqAbs(f32, angle, -90.0, 0.1) or
-                    std.math.approxEqAbs(f32, angle, -270.0, 0.1));
-                const img_w = if (is_90_or_270) entry.h else entry.w;
-                const img_h = if (is_90_or_270) entry.w else entry.h;
-
-                if (img_w > 0 and img_h > 0) {
-                    const r_img = img_w / img_h;
-                    const r_view = view_w / view_h;
-                    switch (state.scale_mode) {
-                        .none => {
-                            draw_w = img_w;
-                            draw_h = img_h;
-                        },
-                        .shrink => {
-                            if (img_w <= view_w and img_h <= view_h) {
-                                draw_w = img_w;
-                                draw_h = img_h;
-                            } else {
-                                if (r_img > r_view) {
-                                    draw_w = view_w;
-                                    draw_h = view_w / r_img;
-                                } else {
-                                    draw_h = view_h;
-                                    draw_w = view_h * r_img;
-                                }
-                            }
-                        },
-                        .full => {
-                            if (r_img > r_view) {
-                                draw_w = view_w;
-                                draw_h = view_w / r_img;
-                            } else {
-                                draw_h = view_h;
-                                draw_w = view_h * r_img;
-                            }
-                        },
-                        .crop => {
-                            if (r_img > r_view) {
-                                draw_h = view_h;
-                                draw_w = view_h * r_img;
-                            } else {
-                                draw_w = view_w;
-                                draw_h = view_w / r_img;
-                            }
-                        },
-                    }
-                }
-            }
-        }
-
-        clay.beginLayout();
-
-        // Main Layout Container
-        clay.UI()(.{
-            .id = clay.getElementId("MainLayout"),
-            .layout = .{
-                .sizing = .{ .w = .grow, .h = .grow },
-                .direction = .top_to_bottom,
-            },
-            .background_color = .{ 24, 24, 37, 255 }, // Catppuccin Base (Mocha Mantle/Base)
-        })({
-            try renderPalette(
-                &state,
-                scale_x,
-                scale_y,
-                dpi_scale,
-                input.mouse_left_clicked,
-                frame_allocator,
-                &measure_data,
-            );
-
-            if (state.show_stats_overlay) {
-                const idx = state.current_index;
-                const path = if (idx != null and state.image_list.items.len > idx.?) state.image_list.items[idx.?] else "";
-                const filename = if (path.len > 0) std.fs.path.basename(path) else "None";
-                const dirname = if (path.len > 0) (std.fs.path.dirname(path) orelse ".") else "None";
-
-                const display_dir = if (dirname.len > 35) try std.fmt.allocPrint(frame_allocator, "...{s}", .{dirname[dirname.len - 32 ..]}) else dirname;
-
-                var disk_size_str: []const u8 = "Loading...";
-                var mem_size_str: []const u8 = "Loading...";
-                var mime_type: []const u8 = "Loading...";
-                var res_str: []const u8 = "Loading...";
-                var decode_str: []const u8 = "Loading...";
-                var convert_str: []const u8 = "Loading...";
-                var process_str: []const u8 = "Loading...";
-                var screen_str: []const u8 = "Loading...";
-
-                if (state.getCurrentEntry()) |entry| {
-                    mime_type = entry.mime_type;
-                    if (entry.status == .loaded or entry.gpu_texture != null) {
-                        disk_size_str = try formatSize(frame_allocator, entry.size_bytes);
-                        mem_size_str = try formatSize(frame_allocator, entry.memory_size_bytes);
-
-                        const megapixels = (entry.w * entry.h) / 1_000_000.0;
-                        res_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} ({d:.2} MP)", .{ entry.w, entry.h, megapixels });
-                        decode_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{entry.decode_time_ms});
-                        convert_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{entry.conversion_time_ms});
-                        process_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{entry.upload_time_ms});
-                        screen_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} px", .{ draw_w, draw_h });
-                    } else if (entry.status == .failed) {
-                        disk_size_str = "Failed";
-                        mem_size_str = "Failed";
-                        mime_type = "Failed";
-                        res_str = "Failed";
-                        decode_str = "Failed";
-                        convert_str = "Failed";
-                        process_str = "Failed";
-                        screen_str = "Failed";
-                    }
-                }
-
-                var zoom_str: []const u8 = "1.0x";
-                if (state.getCurrentEntry()) |entry| {
-                    if (entry.w > 0) {
-                        const pixel_zoom_pct = ((draw_w * state.zoom_factor) / entry.w) * 100.0;
-                        zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x ({d:.0}%)", .{ state.zoom_factor, pixel_zoom_pct });
-                    } else {
-                        zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{state.zoom_factor});
-                    }
-                } else {
-                    zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{state.zoom_factor});
-                }
-
-                const pan_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}, {d:.0} px", .{ state.pan_x, state.pan_y });
-                const rot_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}°", .{state.rotation_angle});
-
-                clay.UI()(.{
-                    .id = clay.getElementId("StatsPanel"),
-                    .layout = .{
-                        .sizing = .{ .w = .fixed(380 * scale_x), .h = .fit },
-                        .direction = .top_to_bottom,
-                        .padding = .{ .left = 16, .right = 16, .top = 16, .bottom = 16 },
-                        .child_gap = 10,
-                    },
-                    .background_color = .{ 30, 30, 46, 220 }, // Catppuccin Mocha base with opacity (glassmorphism feel)
-                    .corner_radius = .all(10),
-                    .border = .{
-                        .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-                        .color = .{ 49, 50, 68, 255 },
-                    },
-                    .floating = .{
-                        .attach_to = .to_parent,
-                        .attach_points = .{ .element = .left_top, .parent = .left_top },
-                        .offset = .{ .x = state.stats_offset_x, .y = state.stats_offset_y },
-                        .z_index = 100,
-                    },
-                })({
-                    // Header row
-                    clay.UI()(.{
-                        .layout = .{
-                            .sizing = .{ .w = .grow, .h = .fixed(24 * scale_y) },
-                            .direction = .left_to_right,
-                            .child_alignment = .{ .x = .left, .y = .center },
-                        },
-                    })({
-                        clay.UI()(.{ .layout = .{ .sizing = .{ .w = .grow, .h = .grow } } })({
-                            clay.text("Stats for Nerds", .{
-                                .color = .{ 245, 194, 231, 255 }, // Catppuccin Pink
-                                .font_size = @intFromFloat(16.0 * dpi_scale),
-                                .font_id = 0,
-                            });
-                        });
-
-                        const close_hovered = clay.pointerOver(clay.getElementId("StatsCloseBtn"));
-                        clay.UI()(.{
-                            .id = clay.getElementId("StatsCloseBtn"),
-                            .layout = .{
-                                .sizing = .{ .w = .fixed(24 * scale_x), .h = .fixed(24 * scale_y) },
-                                .child_alignment = .{ .x = .center, .y = .center },
-                            },
-                            .background_color = if (close_hovered) .{ 243, 139, 168, 255 } else .{ 0, 0, 0, 0 }, // Red hover
-                            .corner_radius = .all(4),
-                        })({
-                            clay.text("X", .{
-                                .color = .{ 205, 214, 244, 255 },
-                                .font_size = @intFromFloat(12.0 * dpi_scale),
-                                .font_id = 0,
-                            });
-                        });
-                    });
-
-                    // Divider
-                    clay.UI()(.{
-                        .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(1) } },
-                        .background_color = .{ 49, 50, 68, 255 },
-                    })({});
-
-                    try renderStatRow("File Name", filename, scale_x, scale_y, dpi_scale);
-                    try renderStatRow("Directory", display_dir, scale_x, scale_y, dpi_scale);
-                    try renderStatRow("MIME Type", mime_type, scale_x, scale_y, dpi_scale);
-                    const hit_str = if (state.current_image_cache_hit) "Yes (Hit)" else "No (Miss)";
-                    try renderStatRow("Cache Hit", hit_str, scale_x, scale_y, dpi_scale);
-                    try renderStatRow("Size on Disk", disk_size_str, scale_x, scale_y, dpi_scale);
-                    try renderStatRow("Resolution", res_str, scale_x, scale_y, dpi_scale);
-                    try renderStatRow("Decode Time", decode_str, scale_x, scale_y, dpi_scale);
-                    try renderStatRow("Convert Time", convert_str, scale_x, scale_y, dpi_scale);
-                    try renderStatRow("Upload Time", process_str, scale_x, scale_y, dpi_scale);
-                    try renderStatRow("Memory Size", mem_size_str, scale_x, scale_y, dpi_scale);
-                    try renderStatRow("Viewport Size", screen_str, scale_x, scale_y, dpi_scale);
-                    try renderStatRow("Zoom Level", zoom_str, scale_x, scale_y, dpi_scale);
-                    try renderStatRow("Pan Offset", pan_str, scale_x, scale_y, dpi_scale);
-                    try renderStatRow("Rotation", rot_str, scale_x, scale_y, dpi_scale);
-                    const scale_mode_str = switch (state.scale_mode) {
-                        .none => "100% (Actual Size)",
-                        .shrink => "Shrink to Fit",
-                        .full => "Fit Window (Full)",
-                        .crop => "Fill Window (Crop)",
-                    };
-                    try renderStatRow("Scale Mode", scale_mode_str, scale_x, scale_y, dpi_scale);
-                    const filter_str = switch (state.texture_scale_mode) {
-                        .nearest => "Nearest Neighbor",
-                        .linear => "Bilinear (Smooth)",
-                        .pixel_art => "Pixel Art (Crisp)",
-                    };
-                    try renderStatRow("Scaling Filter", filter_str, scale_x, scale_y, dpi_scale);
-
-                    const brightness_val = state.brightness * 100.0;
-                    const brightness_str = try std.fmt.allocPrint(
-                        frame_allocator,
-                        "{s}{d:.0}%",
-                        .{ if (brightness_val > 0) "+" else "", brightness_val },
-                    );
-                    const contrast_val = (state.contrast - 1.0) * 100.0;
-                    const contrast_str = try std.fmt.allocPrint(
-                        frame_allocator,
-                        "{s}{d:.0}%",
-                        .{ if (contrast_val > 0) "+" else "", contrast_val },
-                    );
-                    try renderStatRow("Brightness", brightness_str, scale_x, scale_y, dpi_scale);
-                    try renderStatRow("Contrast", contrast_str, scale_x, scale_y, dpi_scale);
-                });
-            }
-
-            // 1. Header / Title Bar (hidden in fullscreen)
-            if (!state.is_fullscreen) {
-                clay.UI()(.{
-                    .id = clay.getElementId("TitleBar"),
-                    .layout = .{
-                        .sizing = .{ .w = .grow, .h = .fixed(title_bar_h * scale_y) },
-                        .direction = .left_to_right,
-                        .child_alignment = .{ .x = .left, .y = .center },
-                        .padding = .{ .left = @intFromFloat(20 * scale_x), .right = @intFromFloat(20 * scale_x) },
-                    },
-                    .background_color = .{ 17, 17, 27, 255 }, // Catppuccin Crust
-                })({
-                    if (state.current_index) |idx| {
-                        const path = state.image_list.items[idx];
-                        const filename = std.fs.path.basename(path);
-
-                        clay.UI()(.{
-                            .layout = .{
-                                .sizing = .{ .w = .grow, .h = .grow },
-                                .direction = .left_to_right,
-                                .child_alignment = .{ .x = .left, .y = .center },
-                            },
-                        })({
-                            clay.text(filename, .{
-                                .color = .{ 205, 214, 244, 255 },
-                                .font_size = @intFromFloat(16.0 * dpi_scale),
-                                .font_id = 0,
-                            });
-                        });
-
-                        const index_text = try std.fmt.allocPrint(
-                            frame_allocator,
-                            "{d} of {d}",
-                            .{ idx + 1, state.image_list.items.len },
-                        );
-
-                        clay.UI()(.{
-                            .layout = .{
-                                .sizing = .{ .w = .fit, .h = .grow },
-                                .direction = .left_to_right,
-                                .child_alignment = .{ .x = .right, .y = .center },
-                            },
-                        })({
-                            clay.text(index_text, .{
-                                .color = .{ 166, 173, 200, 255 }, // Subtext0
-                                .font_size = @intFromFloat(14.0 * dpi_scale),
-                                .font_id = 0,
-                            });
-                        });
-                    } else {
-                        clay.text("Peng Image Viewer", .{
-                            .color = .{ 205, 214, 244, 255 },
-                            .font_size = @intFromFloat(16.0 * dpi_scale),
-                            .font_id = 0,
-                        });
-                    }
-                });
-            }
-
-            // 2. Center Viewport Area
-            clay.UI()(.{
-                .id = clay.getElementId("Viewport"),
-                .layout = .{
-                    .sizing = .{ .w = .grow, .h = .grow },
-                    .child_alignment = .{ .x = .center, .y = .center },
-                },
-                .clip = .{ .horizontal = true, .vertical = true },
-            })({
-                if (state.getCurrentEntry()) |entry| {
-                    if (entry.gpu_texture) |tex| {
-                        clay.UI()(.{
-                            .id = clay.getElementId("ImageCanvas"),
-                            .layout = .{
-                                .sizing = .{ .w = .fixed(draw_w), .h = .fixed(draw_h) },
-                            },
-                            .image = .{
-                                .image_data = @ptrCast(tex),
-                            },
-                        })({});
-                    } else if (entry.status == .decoding) {
-                        clay.UI()(.{
-                            .layout = .{
-                                .sizing = .{ .w = .grow, .h = .grow },
-                                .direction = .top_to_bottom,
-                                .child_alignment = .{ .x = .center, .y = .center },
-                                .child_gap = @intFromFloat(10 * scale_y),
-                            },
-                        })({
-                            clay.text("Loading image...", .{
-                                .color = .{ 245, 194, 231, 255 }, // Catppuccin Pink
-                                .font_size = @intFromFloat(22.0 * dpi_scale),
-                                .font_id = 0,
-                            });
-                        });
-                    } else {
-                        clay.UI()(.{
-                            .layout = .{
-                                .sizing = .{ .w = .grow, .h = .grow },
-                                .direction = .top_to_bottom,
-                                .child_alignment = .{ .x = .center, .y = .center },
-                                .child_gap = @intFromFloat(10 * scale_y),
-                            },
-                        })({
-                            clay.text("Failed to Load Image", .{
-                                .color = .{ 243, 139, 168, 255 }, // Catppuccin Red
-                                .font_size = @intFromFloat(22.0 * dpi_scale),
-                                .font_id = 0,
-                            });
-                        });
-                    }
-                } else {
-                    // Empty state screen
-                    clay.UI()(.{
-                        .layout = .{
-                            .sizing = .{ .w = .grow, .h = .grow },
-                            .direction = .top_to_bottom,
-                            .child_alignment = .{ .x = .center, .y = .center },
-                        },
-                    })({
-                        clay.UI()(.{
-                            .id = clay.ElementId.ID("DropZoneBox"),
-                            .layout = .{
-                                .sizing = .{ .w = .fit, .h = .fit },
-                                .direction = .top_to_bottom,
-                                .child_alignment = .{ .x = .center, .y = .center },
-                                .child_gap = @intFromFloat(16 * scale_y),
-                                .padding = .{
-                                    .left = @intFromFloat(40 * scale_x),
-                                    .right = @intFromFloat(40 * scale_x),
-                                    .top = @intFromFloat(32 * scale_y),
-                                    .bottom = @intFromFloat(32 * scale_y),
-                                },
-                            },
-                            .border = .{
-                                .width = .{ .left = 2, .right = 2, .top = 2, .bottom = 2 },
-                                .color = .{ 79, 79, 97, 255 },
-                            },
-                            .corner_radius = .all(12),
-                            .user_data = @ptrFromInt(@intFromEnum(ElementTag.drop_zone_box)),
-                        })({
-                            clay.text("No Images Loaded", .{
-                                .color = .{ 205, 214, 244, 255 },
-                                .font_size = @intFromFloat(22.0 * dpi_scale),
-                                .font_id = 0,
-                            });
-
-                            clay.text("Drag & Drop images or directories here to view them.", .{
-                                .color = .{ 166, 173, 200, 255 },
-                                .font_size = @intFromFloat(14.0 * dpi_scale),
-                                .font_id = 0,
-                            });
-                        });
-                    });
-                }
-            });
-
-            // 3. Navigation Controls Bar (hidden in fullscreen) - REMOVED
-        });
-
-        const render_commands = clay.endLayout();
-
-        // Render Frame
-        const cmd_buf = c.SDL_AcquireGPUCommandBuffer(state.gpu_device) orelse continue;
-        var swap_tex: ?*c.SDL_GPUTexture = null;
-        var swap_w: u32 = 0;
-        var swap_h: u32 = 0;
-
-        var temp_textures = std.ArrayList(*c.SDL_GPUTexture).empty;
-        defer temp_textures.deinit(frame_allocator);
-        var temp_buffers = std.ArrayList(*c.SDL_GPUTransferBuffer).empty;
-        defer temp_buffers.deinit(frame_allocator);
-
-        if (c.SDL_WaitAndAcquireGPUSwapchainTexture(
-            cmd_buf,
-            window,
-            &swap_tex,
-            &swap_w,
-            &swap_h,
-        )) {
-            try renderer.renderClayCommands(
-                state.gpu_device,
-                cmd_buf,
-                swap_tex,
-                state.gpu_pipeline,
-                state.gpu_sampler,
-                state.white_texture,
-                state.gpu_text_engine,
-                fonts[0..],
-                render_commands,
-                frame_allocator,
-                &temp_textures,
-                &temp_buffers,
-                .{
-                    .zoom_factor = state.zoom_factor,
-                    .pan_x = state.pan_x,
-                    .pan_y = state.pan_y,
-                    .rotation_angle = state.rotation_angle,
-                },
-                @intCast(swap_w),
-                @intCast(swap_h),
-                state.brightness,
-                state.contrast,
-            );
-        }
-
-        _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
-
-        for (temp_textures.items) |tex| {
-            c.SDL_ReleaseGPUTexture(state.gpu_device, tex);
-        }
-        for (temp_buffers.items) |buf| {
-            c.SDL_ReleaseGPUTransferBuffer(state.gpu_device, buf);
-        }
+        // Phase 5c: Draw / Render
+        try renderFrame(&state, input, frame_allocator, resources.fonts[0..], &measure_data);
     }
 }
 
