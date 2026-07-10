@@ -403,47 +403,307 @@ const AppActionId = enum {
     set_brightness_value,
     set_contrast_value,
     go_to_image,
+    open_action_palette,
 };
 
-const AppAction = struct {
+pub const KeyboardShortcut = struct {
+    key: c.SDL_Keycode,
+    mod: c.SDL_Keymod = 0,
+};
+
+pub const ActionMetadata = struct {
     name: []const u8,
-    shortcut: []const u8,
-    id: AppActionId,
+    shortcut_text: []const u8,
+    show_in_palette: bool,
+    shortcuts: []const KeyboardShortcut,
 };
 
-const app_actions = [_]AppAction{
-    .{ .name = "Next Image", .shortcut = "Right / Space", .id = .next_image },
-    .{ .name = "Previous Image", .shortcut = "Left / Backspace", .id = .prev_image },
-    .{ .name = "Zoom In", .shortcut = "= / +", .id = .zoom_in },
-    .{ .name = "Zoom Out", .shortcut = "-", .id = .zoom_out },
-    .{ .name = "Reset Zoom & Pan", .shortcut = "R / 0", .id = .reset_zoom },
-    .{ .name = "Set Scale Mode: 100% (Actual Size)", .shortcut = "", .id = .set_scale_none },
-    .{ .name = "Set Scale Mode: Fit if Larger (Shrink)", .shortcut = "", .id = .set_scale_shrink },
-    .{ .name = "Set Scale Mode: Fit Window (Full)", .shortcut = "", .id = .set_scale_full },
-    .{ .name = "Set Scale Mode: Fill Window (Crop)", .shortcut = "", .id = .set_scale_crop },
-    .{ .name = "Rotate Clockwise (90°)", .shortcut = "]", .id = .rotate_cw },
-    .{ .name = "Rotate Counter-Clockwise (90°)", .shortcut = "[", .id = .rotate_ccw },
-    .{ .name = "Reset Rotation", .shortcut = "", .id = .reset_rotation },
-    .{ .name = "Set Scaling Filter: Nearest Neighbor", .shortcut = "", .id = .set_filter_nearest },
-    .{ .name = "Set Scaling Filter: Bilinear (Smooth)", .shortcut = "", .id = .set_filter_linear },
-    .{ .name = "Set Scaling Filter: Pixel Art (Crisp)", .shortcut = "", .id = .set_filter_pixel_art },
-    .{ .name = "Set Scaling Filter: Mitchell-Netravali (HQ Bicubic)", .shortcut = "", .id = .set_filter_mitchell },
-    .{ .name = "Set Scaling Filter: Lanczos3 (Ultra HQ Resampler)", .shortcut = "", .id = .set_filter_lanczos3 },
-    .{ .name = "Increase Brightness (+10%)", .shortcut = "P", .id = .increase_brightness },
-    .{ .name = "Decrease Brightness (-10%)", .shortcut = "O", .id = .decrease_brightness },
-    .{ .name = "Increase Contrast (+10%)", .shortcut = "L", .id = .increase_contrast },
-    .{ .name = "Decrease Contrast (-10%)", .shortcut = "K", .id = .decrease_contrast },
-    .{ .name = "Reset Brightness & Contrast", .shortcut = "Shift+R", .id = .reset_adjustments },
-    .{ .name = "Set Brightness (Type Value)...", .shortcut = "Shift+B", .id = .set_brightness_value },
-    .{ .name = "Set Contrast (Type Value)...", .shortcut = "Shift+C", .id = .set_contrast_value },
-    .{ .name = "Go to Image...", .shortcut = "Shift+G", .id = .go_to_image },
-    .{ .name = "Toggle Stats for Nerds", .shortcut = "I", .id = .toggle_stats },
-    .{ .name = "Toggle Fullscreen", .shortcut = "F / F11", .id = .toggle_fullscreen },
-    .{ .name = "Search Files (Go to File)", .shortcut = "Ctrl+P", .id = .open_file_finder },
-    .{ .name = "Toggle Clay Debug Mode", .shortcut = "D", .id = .toggle_debug_mode },
-    .{ .name = "First Image", .shortcut = "Home", .id = .first_image },
-    .{ .name = "Last Image", .shortcut = "End", .id = .last_image },
-    .{ .name = "Exit Application", .shortcut = "Esc", .id = .exit },
+pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
+    return switch (action_id) {
+        .next_image => .{
+            .name = "Next Image",
+            .shortcut_text = "Space / Right",
+            .show_in_palette = true,
+            .shortcuts = &.{
+                .{ .key = c.SDLK_SPACE },
+                .{ .key = c.SDLK_RIGHT },
+            },
+        },
+        .prev_image => .{
+            .name = "Previous Image",
+            .shortcut_text = "Backspace / Left",
+            .show_in_palette = true,
+            .shortcuts = &.{
+                .{ .key = c.SDLK_BACKSPACE },
+                .{ .key = c.SDLK_LEFT },
+            },
+        },
+        .toggle_stats => .{
+            .name = "Toggle Stats for Nerds",
+            .shortcut_text = "I",
+            .show_in_palette = true,
+            .shortcuts = &.{
+                .{ .key = c.SDLK_I },
+            },
+        },
+        .toggle_fullscreen => .{
+            .name = "Toggle Fullscreen",
+            .shortcut_text = "F / F11",
+            .show_in_palette = true,
+            .shortcuts = &.{
+                .{ .key = c.SDLK_F },
+                .{ .key = c.SDLK_F11 },
+            },
+        },
+        .open_file_finder => .{
+            .name = "Search Files (Go to File)",
+            .shortcut_text = "Ctrl+P",
+            .show_in_palette = true,
+            .shortcuts = &.{
+                .{ .key = c.SDLK_P, .mod = c.SDL_KMOD_CTRL },
+                .{ .key = c.SDLK_P, .mod = c.SDL_KMOD_GUI },
+            },
+        },
+        .toggle_debug_mode => .{
+            .name = "Toggle Clay Debug Mode",
+            .shortcut_text = "D",
+            .show_in_palette = true,
+            .shortcuts = &.{
+                .{ .key = c.SDLK_D },
+            },
+        },
+        .exit => .{
+            .name = "Exit Application",
+            .shortcut_text = "Esc",
+            .show_in_palette = true,
+            .shortcuts = &.{
+                .{ .key = c.SDLK_ESCAPE },
+            },
+        },
+        .first_image => .{
+            .name = "First Image",
+            .shortcut_text = "Home",
+            .show_in_palette = true,
+            .shortcuts = &.{
+                .{ .key = c.SDLK_HOME },
+            },
+        },
+        .last_image => .{
+            .name = "Last Image",
+            .shortcut_text = "End",
+            .show_in_palette = true,
+            .shortcuts = &.{
+                .{ .key = c.SDLK_END },
+            },
+        },
+        .zoom_in => .{
+            .name = "Zoom In",
+            .shortcut_text = "= / +",
+            .show_in_palette = true,
+            .shortcuts = &.{
+                .{ .key = c.SDLK_EQUALS },
+                .{ .key = c.SDLK_KP_PLUS },
+            },
+        },
+        .zoom_out => .{
+            .name = "Zoom Out",
+            .shortcut_text = "-",
+            .show_in_palette = true,
+            .shortcuts = &.{
+                .{ .key = c.SDLK_MINUS },
+                .{ .key = c.SDLK_KP_MINUS },
+            },
+        },
+        .reset_zoom => .{
+            .name = "Reset Zoom & Pan",
+            .shortcut_text = "R / 0",
+            .show_in_palette = true,
+            .shortcuts = &.{
+                .{ .key = c.SDLK_R },
+                .{ .key = c.SDLK_0 },
+                .{ .key = c.SDLK_KP_0 },
+            },
+        },
+        .set_scale_none => .{
+            .name = "Set Scale Mode: 100% (Actual Size)",
+            .shortcut_text = "",
+            .show_in_palette = true,
+            .shortcuts = &.{},
+        },
+        .set_scale_shrink => .{
+            .name = "Set Scale Mode: Fit if Larger (Shrink)",
+            .shortcut_text = "",
+            .show_in_palette = true,
+            .shortcuts = &.{},
+        },
+        .set_scale_full => .{
+            .name = "Set Scale Mode: Fit Window (Full)",
+            .shortcut_text = "",
+            .show_in_palette = true,
+            .shortcuts = &.{},
+        },
+        .set_scale_crop => .{
+            .name = "Set Scale Mode: Fill Window (Crop)",
+            .shortcut_text = "",
+            .show_in_palette = true,
+            .shortcuts = &.{},
+        },
+        .rotate_cw => .{
+            .name = "Rotate Clockwise (90°)",
+            .shortcut_text = "]",
+            .show_in_palette = true,
+            .shortcuts = &.{
+                .{ .key = c.SDLK_RIGHTBRACKET },
+            },
+        },
+        .rotate_ccw => .{
+            .name = "Rotate Counter-Clockwise (90°)",
+            .shortcut_text = "[",
+            .show_in_palette = true,
+            .shortcuts = &.{
+                .{ .key = c.SDLK_LEFTBRACKET },
+            },
+        },
+        .reset_rotation => .{
+            .name = "Reset Rotation",
+            .shortcut_text = "",
+            .show_in_palette = true,
+            .shortcuts = &.{},
+        },
+        .set_filter_nearest => .{
+            .name = "Set Scaling Filter: Nearest Neighbor",
+            .shortcut_text = "",
+            .show_in_palette = true,
+            .shortcuts = &.{},
+        },
+        .set_filter_linear => .{
+            .name = "Set Scaling Filter: Bilinear (Smooth)",
+            .shortcut_text = "",
+            .show_in_palette = true,
+            .shortcuts = &.{},
+        },
+        .set_filter_pixel_art => .{
+            .name = "Set Scaling Filter: Pixel Art (Crisp)",
+            .shortcut_text = "",
+            .show_in_palette = true,
+            .shortcuts = &.{},
+        },
+        .set_filter_mitchell => .{
+            .name = "Set Scaling Filter: Mitchell-Netravali (HQ Bicubic)",
+            .shortcut_text = "",
+            .show_in_palette = true,
+            .shortcuts = &.{},
+        },
+        .set_filter_lanczos3 => .{
+            .name = "Set Scaling Filter: Lanczos3 (Ultra HQ Resampler)",
+            .shortcut_text = "",
+            .show_in_palette = true,
+            .shortcuts = &.{},
+        },
+        .increase_brightness => .{
+            .name = "Increase Brightness (+10%)",
+            .shortcut_text = "P",
+            .show_in_palette = true,
+            .shortcuts = &.{
+                .{ .key = c.SDLK_P },
+            },
+        },
+        .decrease_brightness => .{
+            .name = "Decrease Brightness (-10%)",
+            .shortcut_text = "O",
+            .show_in_palette = true,
+            .shortcuts = &.{
+                .{ .key = c.SDLK_O },
+            },
+        },
+        .increase_contrast => .{
+            .name = "Increase Contrast (+10%)",
+            .shortcut_text = "L",
+            .show_in_palette = true,
+            .shortcuts = &.{
+                .{ .key = c.SDLK_L },
+            },
+        },
+        .decrease_contrast => .{
+            .name = "Decrease Contrast (-10%)",
+            .shortcut_text = "K",
+            .show_in_palette = true,
+            .shortcuts = &.{
+                .{ .key = c.SDLK_K },
+            },
+        },
+        .reset_adjustments => .{
+            .name = "Reset Brightness & Contrast",
+            .shortcut_text = "Shift+R",
+            .show_in_palette = true,
+            .shortcuts = &.{
+                .{ .key = c.SDLK_R, .mod = c.SDL_KMOD_SHIFT },
+            },
+        },
+        .set_brightness_value => .{
+            .name = "Set Brightness (Type Value)...",
+            .shortcut_text = "Shift+B",
+            .show_in_palette = true,
+            .shortcuts = &.{
+                .{ .key = c.SDLK_B, .mod = c.SDL_KMOD_SHIFT },
+            },
+        },
+        .set_contrast_value => .{
+            .name = "Set Contrast (Type Value)...",
+            .shortcut_text = "Shift+C",
+            .show_in_palette = true,
+            .shortcuts = &.{
+                .{ .key = c.SDLK_C, .mod = c.SDL_KMOD_SHIFT },
+            },
+        },
+        .go_to_image => .{
+            .name = "Go to Image...",
+            .shortcut_text = "Shift+G",
+            .show_in_palette = true,
+            .shortcuts = &.{
+                .{ .key = c.SDLK_G, .mod = c.SDL_KMOD_SHIFT },
+            },
+        },
+        .open_action_palette => .{
+            .name = "Search Actions (Command Palette)",
+            .shortcut_text = "F1 / Ctrl+Shift+P",
+            .show_in_palette = true,
+            .shortcuts = &.{
+                .{ .key = c.SDLK_F1 },
+                .{ .key = c.SDLK_P, .mod = c.SDL_KMOD_CTRL | c.SDL_KMOD_SHIFT },
+                .{ .key = c.SDLK_P, .mod = c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT },
+            },
+        },
+    };
+}
+
+pub const app_actions = std.enums.values(AppActionId);
+
+pub const FlatShortcut = struct {
+    key: c.SDL_Keycode,
+    mod: c.SDL_Keymod,
+    action_id: AppActionId,
+};
+
+pub const flat_shortcuts = blk: {
+    var count: usize = 0;
+    for (app_actions) |action_id| {
+        count += getActionMetadata(action_id).shortcuts.len;
+    }
+    var arr: [count]FlatShortcut = undefined;
+    var idx: usize = 0;
+    for (app_actions) |action_id| {
+        const meta = getActionMetadata(action_id);
+        for (meta.shortcuts) |shortcut| {
+            arr[idx] = .{
+                .key = shortcut.key,
+                .mod = shortcut.mod,
+                .action_id = action_id,
+            };
+            idx += 1;
+        }
+    }
+    break :blk arr;
 };
 
 pub const PaletteType = enum {
@@ -776,8 +1036,9 @@ const ViewerState = struct {
         };
         defer if (query.len > stack_query_lower.len) self.allocator.free(query_lower);
 
-        for (app_actions, 0..) |item, idx| {
-            if (matchesQueryLower(item.name, query_lower)) {
+        for (app_actions, 0..) |action_id, idx| {
+            const meta = getActionMetadata(action_id);
+            if (matchesQueryLower(meta.name, query_lower)) {
                 try self.palette.matches.append(self.allocator, idx);
             }
         }
@@ -804,7 +1065,16 @@ const ViewerState = struct {
                 startTextInput(self.window);
             },
             .toggle_debug_mode => clay.setDebugModeEnabled(!clay.isDebugModeEnabled()),
-            .exit => self.running = false,
+            .exit => {
+                if (self.is_fullscreen) {
+                    self.is_fullscreen = false;
+                    if (!c.SDL_SetWindowFullscreen(self.window, false)) {
+                        std.log.err("SDL_SetWindowFullscreen failed: {s}", .{c.SDL_GetError()});
+                    }
+                } else {
+                    self.running = false;
+                }
+            },
             .first_image => {
                 if (self.image_list.items.len > 0) {
                     self.current_index = 0;
@@ -938,6 +1208,15 @@ const ViewerState = struct {
                 self.palette.query.clearRetainingCapacity();
                 self.palette.selected_idx = 0;
                 self.palette.selection_dirty = true;
+                startTextInput(self.window);
+            },
+            .open_action_palette => {
+                self.palette.show = true;
+                self.palette.active_type = .actions;
+                self.palette.query.clearRetainingCapacity();
+                self.palette.selected_idx = 0;
+                self.palette.selection_dirty = true;
+                try self.rebuildActionMatches();
                 startTextInput(self.window);
             },
         }
@@ -1375,8 +1654,8 @@ const ViewerState = struct {
                                 stopTextInput(self.window);
                             },
                             .actions => {
-                                const action = app_actions[target_idx];
-                                try self.triggerAction(action.id);
+                                const action_id = app_actions[target_idx];
+                                try self.triggerAction(action_id);
                                 if (palette.active_type == old_type) {
                                     palette.show = false;
                                     stopTextInput(self.window);
@@ -1411,150 +1690,62 @@ const ViewerState = struct {
     fn handleKeyDown(self: *ViewerState, key: c.SDL_Keycode, mod: c.SDL_Keymod, scale_x: f32, scale_y: f32) !void {
         if (self.palette.show) {
             _ = try self.handlePaletteKeys(key);
-        } else {
+            return;
+        }
+
+        // 1. Context-Sensitive Keys (Arrow Keys: Pan vs Navigate)
+        if (self.zoom_factor > 1.0) {
             switch (key) {
                 c.SDLK_LEFT => {
-                    if (self.zoom_factor > 1.0) {
-                        self.pan_x += 30.0 * scale_x;
-                    } else {
-                        try self.prev();
-                    }
+                    self.pan_x += 30.0 * scale_x;
+                    return;
                 },
                 c.SDLK_RIGHT => {
-                    if (self.zoom_factor > 1.0) {
-                        self.pan_x -= 30.0 * scale_x;
-                    } else {
-                        try self.next();
-                    }
+                    self.pan_x -= 30.0 * scale_x;
+                    return;
                 },
                 c.SDLK_UP => {
-                    if (self.zoom_factor > 1.0) {
-                        self.pan_y += 30.0 * scale_y;
-                    }
+                    self.pan_y += 30.0 * scale_y;
+                    return;
                 },
                 c.SDLK_DOWN => {
-                    if (self.zoom_factor > 1.0) {
-                        self.pan_y -= 30.0 * scale_y;
-                    }
-                },
-                c.SDLK_BACKSPACE => try self.prev(),
-                c.SDLK_SPACE => try self.next(),
-                c.SDLK_R, c.SDLK_0, c.SDLK_KP_0 => {
-                    if ((mod & c.SDL_KMOD_SHIFT) != 0) {
-                        try self.triggerAction(.reset_adjustments);
-                    } else {
-                        self.resetZoomPan();
-                    }
-                },
-                c.SDLK_EQUALS, c.SDLK_KP_PLUS => {
-                    const old_zoom = self.zoom_factor;
-                    self.zoom_factor = std.math.clamp(self.zoom_factor + 0.1, 0.1, 10.0);
-                    self.pan_x *= (self.zoom_factor / old_zoom);
-                    self.pan_y *= (self.zoom_factor / old_zoom);
-                },
-                c.SDLK_MINUS, c.SDLK_KP_MINUS => {
-                    const old_zoom = self.zoom_factor;
-                    self.zoom_factor = std.math.clamp(self.zoom_factor - 0.1, 0.1, 10.0);
-                    self.pan_x *= (self.zoom_factor / old_zoom);
-                    self.pan_y *= (self.zoom_factor / old_zoom);
-                },
-                c.SDLK_HOME => {
-                    if (self.image_list.items.len > 0) {
-                        self.current_index = 0;
-                        try self.updateCache();
-                    }
-                },
-                c.SDLK_END => {
-                    if (self.image_list.items.len > 0) {
-                        self.current_index = self.image_list.items.len - 1;
-                        try self.updateCache();
-                    }
-                },
-                c.SDLK_F, c.SDLK_F11 => {
-                    self.is_fullscreen = !self.is_fullscreen;
-                    if (!c.SDL_SetWindowFullscreen(self.window, self.is_fullscreen)) {
-                        std.log.err("SDL_SetWindowFullscreen failed: {s}", .{c.SDL_GetError()});
-                    }
-                },
-                c.SDLK_ESCAPE => {
-                    if (self.is_fullscreen) {
-                        self.is_fullscreen = false;
-                        if (!c.SDL_SetWindowFullscreen(self.window, false)) {
-                            std.log.err("SDL_SetWindowFullscreen failed: {s}", .{c.SDL_GetError()});
-                        }
-                    } else {
-                        self.running = false;
-                    }
-                },
-                c.SDLK_LEFTBRACKET => {
-                    try self.triggerAction(.rotate_ccw);
-                },
-                c.SDLK_RIGHTBRACKET => {
-                    try self.triggerAction(.rotate_cw);
-                },
-                c.SDLK_D => {
-                    clay.setDebugModeEnabled(!clay.isDebugModeEnabled());
-                },
-                c.SDLK_I => {
-                    self.show_stats_overlay = !self.show_stats_overlay;
-                },
-                c.SDLK_F1 => {
-                    self.palette.show = true;
-                    self.palette.active_type = .actions;
-                    self.palette.query.clearRetainingCapacity();
-                    self.palette.selected_idx = 0;
-                    self.palette.selection_dirty = true;
-                    try self.rebuildActionMatches();
-                    startTextInput(self.window);
-                },
-                c.SDLK_P => {
-                    if (((mod & c.SDL_KMOD_CTRL) != 0) or ((mod & c.SDL_KMOD_GUI) != 0)) {
-                        if ((mod & c.SDL_KMOD_SHIFT) != 0) {
-                            self.palette.show = true;
-                            self.palette.active_type = .actions;
-                            self.palette.query.clearRetainingCapacity();
-                            self.palette.selected_idx = 0;
-                            self.palette.selection_dirty = true;
-                            try self.rebuildActionMatches();
-                            startTextInput(self.window);
-                        } else {
-                            self.palette.show = true;
-                            self.palette.active_type = .files;
-                            self.palette.query.clearRetainingCapacity();
-                            self.palette.selected_idx = self.current_index orelse 0;
-                            self.palette.selection_dirty = true;
-                            try self.rebuildPaletteMatches();
-                            startTextInput(self.window);
-                        }
-                    } else {
-                        try self.triggerAction(.increase_brightness);
-                    }
-                },
-                c.SDLK_O => {
-                    try self.triggerAction(.decrease_brightness);
-                },
-                c.SDLK_L => {
-                    try self.triggerAction(.increase_contrast);
-                },
-                c.SDLK_K => {
-                    try self.triggerAction(.decrease_contrast);
-                },
-                c.SDLK_B => {
-                    if ((mod & c.SDL_KMOD_SHIFT) != 0) {
-                        try self.triggerAction(.set_brightness_value);
-                    }
-                },
-                c.SDLK_C => {
-                    if ((mod & c.SDL_KMOD_SHIFT) != 0) {
-                        try self.triggerAction(.set_contrast_value);
-                    }
-                },
-                c.SDLK_G => {
-                    if ((mod & c.SDL_KMOD_SHIFT) != 0) {
-                        try self.triggerAction(.go_to_image);
-                    }
+                    self.pan_y -= 30.0 * scale_y;
+                    return;
                 },
                 else => {},
+            }
+        }
+
+        // 2. Fine Zooming (keyboard-specific: +/- 0.1 step)
+        switch (key) {
+            c.SDLK_EQUALS, c.SDLK_KP_PLUS => {
+                const old_zoom = self.zoom_factor;
+                self.zoom_factor = std.math.clamp(self.zoom_factor + 0.1, 0.1, 10.0);
+                self.pan_x *= (self.zoom_factor / old_zoom);
+                self.pan_y *= (self.zoom_factor / old_zoom);
+                return;
+            },
+            c.SDLK_MINUS, c.SDLK_KP_MINUS => {
+                const old_zoom = self.zoom_factor;
+                self.zoom_factor = std.math.clamp(self.zoom_factor - 0.1, 0.1, 10.0);
+                self.pan_x *= (self.zoom_factor / old_zoom);
+                self.pan_y *= (self.zoom_factor / old_zoom);
+                return;
+            },
+            else => {},
+        }
+
+        // 3. Dynamic Registry Lookup
+        var clean_mod: c.SDL_Keymod = 0;
+        if ((mod & c.SDL_KMOD_SHIFT) != 0) clean_mod |= c.SDL_KMOD_SHIFT;
+        if ((mod & c.SDL_KMOD_CTRL) != 0) clean_mod |= c.SDL_KMOD_CTRL;
+        if ((mod & c.SDL_KMOD_ALT) != 0) clean_mod |= c.SDL_KMOD_ALT;
+        if ((mod & c.SDL_KMOD_GUI) != 0) clean_mod |= c.SDL_KMOD_GUI;
+
+        for (flat_shortcuts) |shortcut| {
+            if (key == shortcut.key and clean_mod == shortcut.mod) {
+                try self.triggerAction(shortcut.action_id);
+                return;
             }
         }
     }
@@ -1953,7 +2144,8 @@ fn renderPalette(
                                 });
                             },
                             .actions => {
-                                const action = app_actions[real_idx];
+                                const action_id = app_actions[real_idx];
+                                const meta = getActionMetadata(action_id);
 
                                 // Action Name (Left aligned)
                                 clay.UI()(.{
@@ -1961,7 +2153,7 @@ fn renderPalette(
                                         .sizing = .{ .w = .grow, .h = .fit },
                                     },
                                 })({
-                                    clay.text(action.name, .{
+                                    clay.text(meta.name, .{
                                         .color = if (is_selected) clay.Color{ 137, 180, 250, 255 } else clay.Color{ 205, 214, 244, 255 },
                                         .font_size = @intFromFloat(13.0 * dpi_scale),
                                         .font_id = 0,
@@ -1969,7 +2161,7 @@ fn renderPalette(
                                 });
 
                                 // Keyboard Shortcut (Right aligned)
-                                if (action.shortcut.len > 0) {
+                                if (meta.shortcut_text.len > 0) {
                                     clay.UI()(.{
                                         .layout = .{
                                             .sizing = .{ .w = .fit, .h = .fit },
@@ -1979,7 +2171,7 @@ fn renderPalette(
                                         .corner_radius = .all(4),
                                         .border = .{ .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 }, .color = .{ 49, 50, 68, 255 } },
                                     })({
-                                        clay.text(action.shortcut, .{
+                                        clay.text(meta.shortcut_text, .{
                                             .color = .{ 166, 173, 200, 255 },
                                             .font_size = @intFromFloat(11.0 * dpi_scale),
                                             .font_id = 0,
@@ -2001,8 +2193,8 @@ fn renderPalette(
                                 stopTextInput(state.window);
                             },
                             .actions => {
-                                const action = app_actions[real_idx];
-                                try state.triggerAction(action.id);
+                                const action_id = app_actions[real_idx];
+                                try state.triggerAction(action_id);
                                 if (palette.active_type == old_type) {
                                     palette.show = false;
                                     stopTextInput(state.window);
@@ -2713,7 +2905,7 @@ fn compareScreenshots(base_path: [:0]const u8, run_path: [:0]const u8, diff_path
             if (p_base != p_run) {
                 mismatched_pixels += 1;
                 // Paint mismatched pixel as bright red (0xFF0000FF in RGBA32 format)
-                pixels_diff[idx_diff] = 0xFF0000FF; 
+                pixels_diff[idx_diff] = 0xFF0000FF;
             } else {
                 // Dim color channels (divides by 4) and preserve alpha safely without channel bleeding
                 const b0 = (p_base >> 0) & 0xFF;
@@ -2740,10 +2932,7 @@ fn compareScreenshots(base_path: [:0]const u8, run_path: [:0]const u8, diff_path
 
 fn getTextureFormatElementSize(format: c.SDL_GPUTextureFormat) u32 {
     return switch (format) {
-        c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-        c.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
-        c.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB,
-        c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB => 4,
+        c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, c.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM, c.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB, c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB => 4,
         c.SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT => 8,
         c.SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT => 16,
         else => 4, // Fallback safe default
