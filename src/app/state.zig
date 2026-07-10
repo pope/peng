@@ -466,6 +466,7 @@ pub const ViewerState = struct {
     show_stats_overlay: bool = false,
     test_mode: bool = false,
     update_baselines: bool = false,
+    window_claimed: bool = false,
     scale_mode: ScaleMode = .full,
     zoom_factor: f32 = 1.0,
     pan_x: f32 = 0.0,

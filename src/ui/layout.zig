@@ -291,10 +291,6 @@ pub fn renderFrame(
         _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
     };
 
-    var swap_tex: ?*c.SDL_GPUTexture = null;
-    var swap_w: u32 = 0;
-    var swap_h: u32 = 0;
-
     var temp_buffers = std.ArrayList(*c.SDL_GPUTransferBuffer).empty;
     defer temp_buffers.deinit(frame_allocator);
     errdefer {
@@ -303,33 +299,74 @@ pub fn renderFrame(
         }
     }
 
-    if (c.SDL_WaitAndAcquireGPUSwapchainTexture(
-        cmd_buf,
-        state.window,
-        &swap_tex,
-        &swap_w,
-        &swap_h,
-    )) {
-        if (swap_w == 0 or swap_h == 0) {
+    const use_headless = !state.window_claimed;
+
+    var target_tex: ?*c.SDL_GPUTexture = null;
+    var target_w: u32 = 0;
+    var target_h: u32 = 0;
+    var target_format: c.SDL_GPUTextureFormat = c.SDL_GPU_TEXTUREFORMAT_INVALID;
+
+    if (use_headless) {
+        target_w = @intFromFloat(width);
+        target_h = @intFromFloat(height);
+        target_format = c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+
+        const target_tex_info = c.SDL_GPUTextureCreateInfo{
+            .type = c.SDL_GPU_TEXTURETYPE_2D,
+            .format = target_format,
+            .usage = c.SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
+            .width = target_w,
+            .height = target_h,
+            .layer_count_or_depth = 1,
+            .num_levels = 1,
+            .sample_count = c.SDL_GPU_SAMPLECOUNT_1,
+            .props = 0,
+        };
+        target_tex = c.SDL_CreateGPUTexture(state.gpu_device.?, &target_tex_info) orelse {
+            std.log.err("Failed to create offscreen target texture: {s}", .{c.SDL_GetError()});
+            return error.OffscreenTargetTextureCreationFailed;
+        };
+    } else {
+        var swap_tex: ?*c.SDL_GPUTexture = null;
+        var swap_w: u32 = 0;
+        var swap_h: u32 = 0;
+        if (c.SDL_WaitAndAcquireGPUSwapchainTexture(
+            cmd_buf,
+            state.window,
+            &swap_tex,
+            &swap_w,
+            &swap_h,
+        )) {
+            target_tex = swap_tex;
+            target_w = swap_w;
+            target_h = swap_h;
+            target_format = c.SDL_GetGPUSwapchainTextureFormat(state.gpu_device.?, state.window);
+        }
+    }
+
+    if (target_tex) |tex| {
+        if (target_w == 0 or target_h == 0) {
             cmd_buf_submitted = true;
             _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+            if (use_headless) {
+                c.SDL_ReleaseGPUTexture(state.gpu_device.?, tex);
+            }
             return;
         }
         try renderer.renderClayCommands(
             state,
             cmd_buf,
-            swap_tex.?,
+            tex,
             fonts,
             render_commands,
             frame_allocator,
             &temp_buffers,
-            @intCast(swap_w),
-            @intCast(swap_h),
+            @intCast(target_w),
+            @intCast(target_h),
         );
         if (capture_filename) |filename| {
-            const swapchain_format = c.SDL_GetGPUSwapchainTextureFormat(state.gpu_device.?, state.window);
             cmd_buf_submitted = true;
-            try saveTextureToPng(state.gpu_device.?, cmd_buf, swap_tex.?, swap_w, swap_h, swapchain_format, filename);
+            try saveTextureToPng(state.gpu_device.?, cmd_buf, tex, target_w, target_h, target_format, filename);
         } else {
             cmd_buf_submitted = true;
             _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
@@ -337,6 +374,11 @@ pub fn renderFrame(
 
         for (temp_buffers.items) |buf| {
             c.SDL_ReleaseGPUTransferBuffer(state.gpu_device.?, buf);
+        }
+
+        if (use_headless) {
+            _ = c.SDL_WaitForGPUIdle(state.gpu_device.?);
+            c.SDL_ReleaseGPUTexture(state.gpu_device.?, tex);
         }
     } else {
         _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);

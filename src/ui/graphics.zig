@@ -11,7 +11,9 @@ pub const GraphicsSetup = struct {
 };
 
 pub fn initGraphicsAndWindow(window_title: [:0]const u8, test_mode: bool) !GraphicsSetup {
-    _ = test_mode;
+    if (test_mode) {
+        _ = c.SDL_SetHint(c.SDL_HINT_VIDEO_DRIVER, "offscreen");
+    }
     // Initialize SDL3
     if (!c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_EVENTS)) {
         std.log.err("SDL_Init Error: {s}", .{c.SDL_GetError()});
@@ -27,7 +29,11 @@ pub fn initGraphicsAndWindow(window_title: [:0]const u8, test_mode: bool) !Graph
     errdefer c.TTF_Quit();
 
     // Create window
-    const window = c.SDL_CreateWindow(window_title.ptr, 1024, 768, c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY) orelse {
+    const win_flags = if (test_mode)
+        c.SDL_WINDOW_HIDDEN | c.SDL_WINDOW_HIGH_PIXEL_DENSITY
+    else
+        c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    const window = c.SDL_CreateWindow(window_title.ptr, 1024, 768, win_flags) orelse {
         std.log.err("SDL_CreateWindow Error: {s}", .{c.SDL_GetError()});
         return error.WindowCreationFailed;
     };
@@ -53,9 +59,11 @@ pub fn initGraphicsAndWindow(window_title: [:0]const u8, test_mode: bool) !Graph
     };
     errdefer c.SDL_DestroyGPUDevice(gpu_device);
 
-    if (!c.SDL_ClaimWindowForGPUDevice(gpu_device, window)) {
-        std.log.err("SDL_ClaimWindowForGPUDevice failed: {s}", .{c.SDL_GetError()});
-        return error.ClaimWindowFailed;
+    if (!test_mode) {
+        if (!c.SDL_ClaimWindowForGPUDevice(gpu_device, window)) {
+            std.log.err("SDL_ClaimWindowForGPUDevice failed: {s}", .{c.SDL_GetError()});
+            return error.ClaimWindowFailed;
+        }
     }
 
     return GraphicsSetup{
@@ -73,7 +81,12 @@ pub const GpuResources = struct {
     fonts: [2]?*c.TTF_Font,
 };
 
-pub fn initGpuResources(gpu_device: *c.SDL_GPUDevice, window: *c.SDL_Window, initial_dpi_scale: f32) !GpuResources {
+pub fn initGpuResources(gpu_device: *c.SDL_GPUDevice, window: *c.SDL_Window, initial_dpi_scale: f32, test_mode: bool) !GpuResources {
+    const target_format = if (test_mode)
+        @as(c.SDL_GPUTextureFormat, c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM)
+    else
+        c.SDL_GetGPUSwapchainTextureFormat(gpu_device, window);
+
     // Load Font from Memory using SDL_IOStream (scaled by DPI scale)
     const roboto_font_bytes = @embedFile("../resources/Roboto-Regular.ttf");
     const stream = c.SDL_IOFromConstMem(roboto_font_bytes.ptr, roboto_font_bytes.len) orelse {
@@ -285,7 +298,7 @@ pub fn initGpuResources(gpu_device: *c.SDL_GPUDevice, window: *c.SDL_Window, ini
         .target_info = .{
             .num_color_targets = 1,
             .color_target_descriptions = &[_]c.SDL_GPUColorTargetDescription{.{
-                .format = c.SDL_GetGPUSwapchainTextureFormat(gpu_device, window),
+                .format = target_format,
                 .blend_state = .{
                     .src_color_blendfactor = c.SDL_GPU_BLENDFACTOR_SRC_ALPHA,
                     .dst_color_blendfactor = c.SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,

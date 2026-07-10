@@ -234,7 +234,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     // Phase 3: GPU Pipeline and Resources Setup
-    const resources = try initGpuResources(setup.gpu_device, setup.window, setup.initial_dpi_scale);
+    const resources = try initGpuResources(setup.gpu_device, setup.window, setup.initial_dpi_scale, parsed.test_mode);
     var own_resources = true;
     defer {
         if (own_resources) {
@@ -280,6 +280,7 @@ pub fn main(init: std.process.Init) !void {
         .show_stats_overlay = false,
         .test_mode = parsed.test_mode,
         .update_baselines = parsed.update_baselines,
+        .window_claimed = !parsed.test_mode,
     };
     defer state.deinit();
     own_resources = false;
