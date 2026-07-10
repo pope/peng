@@ -400,6 +400,7 @@ const AppActionId = enum {
     reset_adjustments,
     set_brightness_value,
     set_contrast_value,
+    go_to_image,
 };
 
 const AppAction = struct {
@@ -431,6 +432,7 @@ const app_actions = [_]AppAction{
     .{ .name = "Reset Brightness & Contrast", .shortcut = "Shift+R", .id = .reset_adjustments },
     .{ .name = "Set Brightness (Type Value)...", .shortcut = "Shift+B", .id = .set_brightness_value },
     .{ .name = "Set Contrast (Type Value)...", .shortcut = "Shift+C", .id = .set_contrast_value },
+    .{ .name = "Go to Image...", .shortcut = "Shift+G", .id = .go_to_image },
     .{ .name = "Toggle Stats for Nerds", .shortcut = "I", .id = .toggle_stats },
     .{ .name = "Toggle Fullscreen", .shortcut = "F / F11", .id = .toggle_fullscreen },
     .{ .name = "Search Files (Go to File)", .shortcut = "Ctrl+P", .id = .open_file_finder },
@@ -445,6 +447,7 @@ pub const PaletteType = enum {
     actions,
     set_brightness,
     set_contrast,
+    go_to_image,
 };
 
 pub const PaletteState = struct {
@@ -585,7 +588,7 @@ const ViewerState = struct {
                 switch (self.palette.active_type) {
                     .files => try self.rebuildPaletteMatches(),
                     .actions => try self.rebuildActionMatches(),
-                    .set_brightness, .set_contrast => {},
+                    .set_brightness, .set_contrast, .go_to_image => {},
                 }
             }
         }
@@ -623,6 +626,7 @@ const ViewerState = struct {
                     .actions => "ActionPalette",
                     .set_brightness => "BrightnessPalette",
                     .set_contrast => "ContrastPalette",
+                    .go_to_image => "GoToImagePalette",
                 };
                 if (!clay.pointerOver(clay.getElementId(element_id))) {
                     self.palette.show = false;
@@ -906,6 +910,14 @@ const ViewerState = struct {
             .set_contrast_value => {
                 self.palette.show = true;
                 self.palette.active_type = .set_contrast;
+                self.palette.query.clearRetainingCapacity();
+                self.palette.selected_idx = 0;
+                self.palette.selection_dirty = true;
+                startTextInput(self.window);
+            },
+            .go_to_image => {
+                self.palette.show = true;
+                self.palette.active_type = .go_to_image;
                 self.palette.query.clearRetainingCapacity();
                 self.palette.selected_idx = 0;
                 self.palette.selection_dirty = true;
@@ -1283,7 +1295,7 @@ const ViewerState = struct {
                 return true;
             },
             c.SDLK_UP => {
-                if (palette.active_type == .set_brightness or palette.active_type == .set_contrast) return true;
+                if (palette.active_type == .set_brightness or palette.active_type == .set_contrast or palette.active_type == .go_to_image) return true;
                 if (palette.selected_idx > 0) {
                     palette.selected_idx -= 1;
                     palette.selection_dirty = true;
@@ -1291,7 +1303,7 @@ const ViewerState = struct {
                 return true;
             },
             c.SDLK_DOWN => {
-                if (palette.active_type == .set_brightness or palette.active_type == .set_contrast) return true;
+                if (palette.active_type == .set_brightness or palette.active_type == .set_contrast or palette.active_type == .go_to_image) return true;
                 const count = palette.matches.items.len;
                 if (count > 0 and palette.selected_idx + 1 < count) {
                     palette.selected_idx += 1;
@@ -1300,23 +1312,36 @@ const ViewerState = struct {
                 return true;
             },
             c.SDLK_RETURN => {
-                if (palette.active_type == .set_brightness or palette.active_type == .set_contrast) {
+                if (palette.active_type == .set_brightness or palette.active_type == .set_contrast or palette.active_type == .go_to_image) {
                     const raw_str = palette.query.items;
                     if (raw_str.len > 0) {
-                        const parsed_val_opt = std.fmt.parseFloat(f32, raw_str) catch null;
-                        if (parsed_val_opt) |val| {
-                            const min_val: f32 = if (palette.active_type == .set_brightness) -1.0 else 0.0;
-                            const max_val: f32 = if (palette.active_type == .set_brightness) 1.0 else 5.0;
-                            if (val >= min_val and val <= max_val) {
-                                if (palette.active_type == .set_brightness) {
-                                    self.brightness = val;
-                                } else {
-                                    self.contrast = val;
+                        if (palette.active_type == .go_to_image) {
+                            const val = std.fmt.parseInt(usize, raw_str, 10) catch null;
+                            if (val) |v| {
+                                if (v >= 1 and v <= self.image_list.items.len) {
+                                    self.current_index = v - 1;
+                                    try self.updateCache();
+                                    palette.show = false;
+                                    stopTextInput(self.window);
+                                    return true;
                                 }
-                                self.adjustments_dirty = true;
-                                palette.show = false;
-                                stopTextInput(self.window);
-                                return true;
+                            }
+                        } else {
+                            const parsed_val_opt = std.fmt.parseFloat(f32, raw_str) catch null;
+                            if (parsed_val_opt) |val| {
+                                const min_val: f32 = if (palette.active_type == .set_brightness) -1.0 else 0.0;
+                                const max_val: f32 = if (palette.active_type == .set_brightness) 1.0 else 5.0;
+                                if (val >= min_val and val <= max_val) {
+                                    if (palette.active_type == .set_brightness) {
+                                        self.brightness = val;
+                                    } else {
+                                        self.contrast = val;
+                                    }
+                                    self.adjustments_dirty = true;
+                                    palette.show = false;
+                                    stopTextInput(self.window);
+                                    return true;
+                                }
                             }
                         }
                     }
@@ -1507,6 +1532,11 @@ const ViewerState = struct {
                         try self.triggerAction(.set_contrast_value);
                     }
                 },
+                c.SDLK_G => {
+                    if ((mod & c.SDL_KMOD_SHIFT) != 0) {
+                        try self.triggerAction(.go_to_image);
+                    }
+                },
                 else => {},
             }
         }
@@ -1577,6 +1607,16 @@ fn renderPalette(
             .bottom_spacer_id = "ContrastBottomSpacer",
             .base_item_height = 50.0,
         },
+        .go_to_image => PaletteConfig{
+            .title = "Go to Image",
+            .placeholder = "Enter image number...",
+            .element_id = "GoToImagePalette",
+            .list_id = "GoToImageList",
+            .item_prefix = "GoToImageItem_",
+            .top_spacer_id = "GoToImageTopSpacer",
+            .bottom_spacer_id = "GoToImageBottomSpacer",
+            .base_item_height = 50.0,
+        },
     };
 
     // Render Floating Card container
@@ -1610,6 +1650,7 @@ fn renderPalette(
                     .files => clay.Color{ 245, 194, 231, 255 }, // Catppuccin Pink
                     .actions => clay.Color{ 137, 180, 250, 255 }, // Catppuccin Blue
                     .set_brightness, .set_contrast => clay.Color{ 250, 179, 135, 255 }, // Catppuccin Peach
+                    .go_to_image => clay.Color{ 166, 227, 161, 255 }, // Catppuccin Green
                 },
                 .font_size = @intFromFloat(13.0 * dpi_scale),
                 .font_id = 0,
@@ -1637,7 +1678,7 @@ fn renderPalette(
             });
         });
 
-        if (palette.active_type == .set_brightness or palette.active_type == .set_contrast) {
+        if (palette.active_type == .set_brightness or palette.active_type == .set_contrast or palette.active_type == .go_to_image) {
             clay.UI()(.{
                 .layout = .{
                     .sizing = .{ .w = .grow, .h = .fixed(64 * scale_y) },
@@ -1650,44 +1691,95 @@ fn renderPalette(
                 .corner_radius = .all(6),
             })({
                 const raw_str = palette.query.items;
-                if (raw_str.len == 0) {
-                    clay.text("Enter a number, then press Enter to apply.", .{
-                        .color = .{ 166, 173, 200, 255 },
-                        .font_size = @intFromFloat(13.0 * dpi_scale),
-                        .font_id = 0,
-                    });
-                    const range_str = if (palette.active_type == .set_brightness) "Allowed range: -1.0 to 1.0 (default: 0.0)" else "Allowed range: 0.0 to 5.0 (default: 1.0)";
-                    clay.text(range_str, .{
-                        .color = .{ 108, 112, 134, 255 }, // Subtext
-                        .font_size = @intFromFloat(11.0 * dpi_scale),
-                        .font_id = 0,
-                    });
-                } else {
-                    const parsed_val_opt = std.fmt.parseFloat(f32, raw_str) catch null;
-                    if (parsed_val_opt) |val| {
-                        const min_val: f32 = if (palette.active_type == .set_brightness) -1.0 else 0.0;
-                        const max_val: f32 = if (palette.active_type == .set_brightness) 1.0 else 5.0;
-                        if (val >= min_val and val <= max_val) {
-                            const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to set value to: {d:.2}", .{val});
-                            clay.text(success_str, .{
-                                .color = .{ 166, 227, 161, 255 }, // Green
-                                .font_size = @intFromFloat(13.0 * dpi_scale),
-                                .font_id = 0,
-                            });
+                const total_count = state.image_list.items.len;
+                if (palette.active_type == .go_to_image) {
+                    if (total_count == 0) {
+                        clay.text("No images loaded.", .{
+                            .color = .{ 243, 139, 168, 255 }, // Red
+                            .font_size = @intFromFloat(13.0 * dpi_scale),
+                            .font_id = 0,
+                        });
+                    } else if (raw_str.len == 0) {
+                        clay.text("Enter image number, then press Enter to apply.", .{
+                            .color = .{ 166, 173, 200, 255 },
+                            .font_size = @intFromFloat(13.0 * dpi_scale),
+                            .font_id = 0,
+                        });
+                        const range_str = try std.fmt.allocPrint(frame_allocator, "Allowed range: 1 to {} (current: {})", .{ total_count, (state.current_index orelse 0) + 1 });
+                        clay.text(range_str, .{
+                            .color = .{ 108, 112, 134, 255 }, // Subtext
+                            .font_size = @intFromFloat(11.0 * dpi_scale),
+                            .font_id = 0,
+                        });
+                    } else {
+                        const parsed_val_opt = std.fmt.parseInt(usize, raw_str, 10) catch null;
+                        if (parsed_val_opt) |val| {
+                            if (val >= 1 and val <= total_count) {
+                                const target_path = state.image_list.items[val - 1];
+                                const raw_basename = std.fs.path.basename(target_path);
+                                const display_filename = truncateFilename(frame_allocator, raw_basename, 492.0 * scale_x, @intFromFloat(12.0 * dpi_scale), measure_data);
+                                const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to go to {}: {s}", .{ val, display_filename });
+                                clay.text(success_str, .{
+                                    .color = .{ 166, 227, 161, 255 }, // Green
+                                    .font_size = @intFromFloat(13.0 * dpi_scale),
+                                    .font_id = 0,
+                                });
+                            } else {
+                                const err_str = try std.fmt.allocPrint(frame_allocator, "Out of bounds: must be between 1 and {}", .{total_count});
+                                clay.text(err_str, .{
+                                    .color = .{ 243, 139, 168, 255 }, // Red
+                                    .font_size = @intFromFloat(13.0 * dpi_scale),
+                                    .font_id = 0,
+                                });
+                            }
                         } else {
-                            const err_str = try std.fmt.allocPrint(frame_allocator, "Out of bounds: must be between {d:.1} and {d:.1}", .{ min_val, max_val });
-                            clay.text(err_str, .{
+                            clay.text("Invalid number format. Enter a positive integer.", .{
                                 .color = .{ 243, 139, 168, 255 }, // Red
                                 .font_size = @intFromFloat(13.0 * dpi_scale),
                                 .font_id = 0,
                             });
                         }
-                    } else {
-                        clay.text("Invalid number format. Use digits and decimal point (e.g. 0.5 or -0.2).", .{
-                            .color = .{ 243, 139, 168, 255 }, // Red
+                    }
+                } else {
+                    if (raw_str.len == 0) {
+                        clay.text("Enter a number, then press Enter to apply.", .{
+                            .color = .{ 166, 173, 200, 255 },
                             .font_size = @intFromFloat(13.0 * dpi_scale),
                             .font_id = 0,
                         });
+                        const range_str = if (palette.active_type == .set_brightness) "Allowed range: -1.0 to 1.0 (default: 0.0)" else "Allowed range: 0.0 to 5.0 (default: 1.0)";
+                        clay.text(range_str, .{
+                            .color = .{ 108, 112, 134, 255 }, // Subtext
+                            .font_size = @intFromFloat(11.0 * dpi_scale),
+                            .font_id = 0,
+                        });
+                    } else {
+                        const parsed_val_opt = std.fmt.parseFloat(f32, raw_str) catch null;
+                        if (parsed_val_opt) |val| {
+                            const min_val: f32 = if (palette.active_type == .set_brightness) -1.0 else 0.0;
+                            const max_val: f32 = if (palette.active_type == .set_brightness) 1.0 else 5.0;
+                            if (val >= min_val and val <= max_val) {
+                                const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to set value to: {d:.2}", .{val});
+                                clay.text(success_str, .{
+                                    .color = .{ 166, 227, 161, 255 }, // Green
+                                    .font_size = @intFromFloat(13.0 * dpi_scale),
+                                    .font_id = 0,
+                                });
+                            } else {
+                                const err_str = try std.fmt.allocPrint(frame_allocator, "Out of bounds: must be between {d:.1} and {d:.1}", .{ min_val, max_val });
+                                clay.text(err_str, .{
+                                    .color = .{ 243, 139, 168, 255 }, // Red
+                                    .font_size = @intFromFloat(13.0 * dpi_scale),
+                                    .font_id = 0,
+                                });
+                            }
+                        } else {
+                            clay.text("Invalid number format. Use digits and decimal point (e.g. 0.5 or -0.2).", .{
+                                .color = .{ 243, 139, 168, 255 }, // Red
+                                .font_size = @intFromFloat(13.0 * dpi_scale),
+                                .font_id = 0,
+                            });
+                        }
                     }
                 }
             });
