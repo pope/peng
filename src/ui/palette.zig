@@ -21,7 +21,7 @@ pub fn renderPalette(
     measure_data: *const MeasureTextUserData,
 ) !void {
     const palette = &state.palette;
-    if (!palette.show) return;
+    if (palette.mode == .inactive) return;
 
     const PaletteConfig = struct {
         title: []const u8,
@@ -34,7 +34,7 @@ pub fn renderPalette(
         base_item_height: f32,
     };
 
-    const cfg = switch (palette.active_type) {
+    const cfg = switch (palette.mode) {
         .files => PaletteConfig{
             .title = "Search Files",
             .placeholder = "Type file name to search...",
@@ -85,6 +85,7 @@ pub fn renderPalette(
             .bottom_spacer_id = "GoToImageBottomSpacer",
             .base_item_height = 50.0,
         },
+        .inactive => unreachable,
     };
 
     // Render Floating Card container
@@ -114,11 +115,12 @@ pub fn renderPalette(
             },
         })({
             clay.text(cfg.title, .{
-                .color = switch (palette.active_type) {
+                .color = switch (palette.mode) {
                     .files => clay.Color{ 245, 194, 231, 255 }, // Catppuccin Pink
                     .actions => clay.Color{ 137, 180, 250, 255 }, // Catppuccin Blue
                     .set_brightness, .set_contrast => clay.Color{ 250, 179, 135, 255 }, // Catppuccin Peach
                     .go_to_image => clay.Color{ 166, 227, 161, 255 }, // Catppuccin Green
+                    .inactive => unreachable,
                 },
                 .font_size = @intFromFloat(13.0 * dpi_scale),
                 .font_id = 0,
@@ -146,7 +148,7 @@ pub fn renderPalette(
             });
         });
 
-        if (palette.active_type == .set_brightness or palette.active_type == .set_contrast or palette.active_type == .go_to_image) {
+        if (palette.mode == .set_brightness or palette.mode == .set_contrast or palette.mode == .go_to_image) {
             clay.UI()(.{
                 .layout = .{
                     .sizing = .{ .w = .grow, .h = .fixed(64 * scale_y) },
@@ -160,7 +162,7 @@ pub fn renderPalette(
             })({
                 const raw_str = palette.query.items;
                 const total_count = state.image_list.items.len;
-                if (palette.active_type == .go_to_image) {
+                if (palette.mode == .go_to_image) {
                     if (total_count == 0) {
                         clay.text("No images loaded.", .{
                             .color = .{ 243, 139, 168, 255 }, // Red
@@ -215,7 +217,7 @@ pub fn renderPalette(
                             .font_size = @intFromFloat(13.0 * dpi_scale),
                             .font_id = 0,
                         });
-                        const range_str = if (palette.active_type == .set_brightness) "Allowed range: -1.0 to 1.0 (default: 0.0)" else "Allowed range: 0.0 to 5.0 (default: 1.0)";
+                        const range_str = if (palette.mode == .set_brightness) "Allowed range: -1.0 to 1.0 (default: 0.0)" else "Allowed range: 0.0 to 5.0 (default: 1.0)";
                         clay.text(range_str, .{
                             .color = .{ 108, 112, 134, 255 }, // Subtext
                             .font_size = @intFromFloat(11.0 * dpi_scale),
@@ -224,8 +226,8 @@ pub fn renderPalette(
                     } else {
                         const parsed_val_opt = std.fmt.parseFloat(f32, raw_str) catch null;
                         if (parsed_val_opt) |val| {
-                            const min_val: f32 = if (palette.active_type == .set_brightness) -1.0 else 0.0;
-                            const max_val: f32 = if (palette.active_type == .set_brightness) 1.0 else 5.0;
+                            const min_val: f32 = if (palette.mode == .set_brightness) -1.0 else 0.0;
+                            const max_val: f32 = if (palette.mode == .set_brightness) 1.0 else 5.0;
                             if (val >= min_val and val <= max_val) {
                                 const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to set value to: {d:.2}", .{val});
                                 clay.text(success_str, .{
@@ -307,8 +309,15 @@ pub fn renderPalette(
                     start_visible_idx = end_visible_idx;
                 }
 
-                const top_spacer_h = @as(f32, @floatFromInt(start_visible_idx)) * item_height;
-                const bottom_spacer_h = @as(f32, @floatFromInt(matching_indices.items.len - end_visible_idx)) * item_height;
+                const gap = 4.0 * scale_y;
+                const top_spacer_h = if (start_visible_idx > 0)
+                    @as(f32, @floatFromInt(start_visible_idx)) * item_height - gap
+                else
+                    0.0;
+                const bottom_spacer_h = if (matching_indices.items.len - end_visible_idx > 0)
+                    @as(f32, @floatFromInt(matching_indices.items.len - end_visible_idx)) * item_height - gap
+                else
+                    0.0;
 
                 // Render Top Spacer if needed
                 if (top_spacer_h > 0) {
@@ -323,7 +332,8 @@ pub fn renderPalette(
                 for (matching_indices.items[start_visible_idx..end_visible_idx]) |real_idx| {
                     const is_selected = (match_count == palette.selected_idx);
 
-                    const item_id_str = try std.fmt.allocPrint(frame_allocator, "{s}{}", .{ cfg.item_prefix, real_idx });
+                    var item_id_buf: [64]u8 = undefined;
+                    const item_id_str = std.fmt.bufPrint(&item_id_buf, "{s}{}", .{ cfg.item_prefix, real_idx }) catch cfg.item_prefix;
                     const item_id = clay.getElementId(item_id_str);
                     const item_hovered = clay.pointerOver(item_id);
 
@@ -331,7 +341,7 @@ pub fn renderPalette(
                     clay.UI()(.{
                         .id = item_id,
                         .layout = .{
-                            .sizing = .{ .w = .grow, .h = .fixed(switch (palette.active_type) {
+                            .sizing = .{ .w = .grow, .h = .fixed(switch (palette.mode) {
                                 .files => 54 * scale_y,
                                 .actions => 46 * scale_y,
                                 else => 0.0,
@@ -348,7 +358,7 @@ pub fn renderPalette(
                             clay.Color{ 0, 0, 0, 0 },
                         .corner_radius = .all(6),
                     })({
-                        switch (palette.active_type) {
+                        switch (palette.mode) {
                             .files => {
                                 const path = state.image_list.items[real_idx];
                                 const display_filename = truncateFilename(frame_allocator, std.fs.path.basename(path), 492.0 * scale_x, @intFromFloat(13.0 * dpi_scale), measure_data);
@@ -444,19 +454,19 @@ pub fn renderPalette(
                     });
 
                     if (mouse_clicked and item_hovered) {
-                        const old_type = palette.active_type;
-                        switch (palette.active_type) {
+                        const old_type = palette.mode;
+                        switch (palette.mode) {
                             .files => {
                                 state.current_index = real_idx;
                                 try state.updateCache();
-                                palette.show = false;
+                                palette.mode = .inactive;
                                 stopTextInput(state.window);
                             },
                             .actions => {
                                 const action_id = app_actions[real_idx];
                                 try state.triggerAction(action_id);
-                                if (palette.active_type == old_type) {
-                                    palette.show = false;
+                                if (palette.mode == old_type) {
+                                    palette.mode = .inactive;
                                     stopTextInput(state.window);
                                 }
                             },
@@ -482,7 +492,7 @@ pub fn renderPalette(
                             .child_alignment = .{ .x = .center, .y = .center },
                         },
                     })({
-                        const no_match_msg = switch (palette.active_type) {
+                        const no_match_msg = switch (palette.mode) {
                             .files => "No matching files found",
                             .actions => "No matching commands found",
                             else => "",

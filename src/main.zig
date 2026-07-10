@@ -932,21 +932,19 @@ pub fn main(init: std.process.Init) !void {
                     state.texture_scale_mode = .linear;
                     state.applyTextureScaleMode();
 
-                    state.palette.show = true;
-                    state.palette.active_type = .actions;
                     state.palette.reset();
+                    state.palette.mode = .actions;
                     try state.rebuildActionMatches();
                 },
                 5 => {
                     std.log.info("Test Mode Frame 5: Open Files Palette", .{});
-                    state.palette.show = true;
-                    state.palette.active_type = .files;
                     state.palette.reset();
+                    state.palette.mode = .files;
                     try state.rebuildPaletteMatches();
                 },
                 6 => {
                     std.log.info("Test Mode Frame 6: Navigate to Next Image", .{});
-                    state.palette.show = false;
+                    state.palette.mode = .inactive;
                     try state.next();
                 },
                 else => unreachable,
@@ -997,11 +995,11 @@ pub fn main(init: std.process.Init) !void {
                 &last_time,
                 &state.mouse_inside,
                 &state.running,
-                state.palette.show,
+                state.palette.mode != .inactive,
             );
 
             // Phase 5b: State Update
-            try state.update(input, gpa);
+            try state.update(input);
 
             clay.setLayoutDimensions(.{ .w = input.pix_w, .h = input.pix_h });
 

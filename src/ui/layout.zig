@@ -37,14 +37,15 @@ pub fn renderFrame(
 
     var available_width = width;
     if (clay.isDebugModeEnabled()) {
-        available_width = @max(width - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0);
+        available_width = @max(width - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)) * scale_x, 1.0);
     }
 
     var draw_w: f32 = 0;
     var draw_h: f32 = 0;
 
     if (current_entry) |entry| {
-        if (entry.gpu_texture != null) {
+        if (entry.status == .loaded_gpu) {
+            const gpu = entry.status.loaded_gpu;
             const padding: f32 = 0.0;
             const view_w = @max(available_width - padding * 2.0, 1.0);
             const view_h = @max(height - (title_bar_h + nav_bar_h) * scale_y - padding * 2.0, 1.0);
@@ -54,8 +55,8 @@ pub fn renderFrame(
                 std.math.approxEqAbs(f32, angle, 270.0, 0.1) or
                 std.math.approxEqAbs(f32, angle, -90.0, 0.1) or
                 std.math.approxEqAbs(f32, angle, -270.0, 0.1));
-            const img_w = if (is_90_or_270) entry.h else entry.w;
-            const img_h = if (is_90_or_270) entry.w else entry.h;
+            const img_w = if (is_90_or_270) gpu.h else gpu.w;
+            const img_h = if (is_90_or_270) gpu.w else gpu.h;
 
             if (img_w > 0 and img_h > 0) {
                 const r_img = img_w / img_h;
@@ -180,7 +181,8 @@ pub fn renderFrame(
             .clip = .{ .horizontal = true, .vertical = true },
         })({
             if (current_entry) |entry| {
-                if (entry.gpu_texture) |tex| {
+                if (entry.status == .loaded_gpu) {
+                    const tex = entry.status.loaded_gpu.gpu_texture;
                     clay.UI()(.{
                         .id = clay.getElementId("ImageCanvas"),
                         .layout = .{

@@ -354,13 +354,7 @@ pub fn triggerAction(self: *ViewerState, action_id: AppActionId) !void {
             }
         },
         .open_file_finder => {
-            self.palette.show = true;
-            self.palette.active_type = .files;
-            self.palette.query.clearRetainingCapacity();
-            self.palette.selected_idx = self.current_index orelse 0;
-            self.palette.selection_dirty = true;
-            try self.rebuildPaletteMatches();
-            startTextInput(self.window);
+            try self.openPalette(.files);
         },
         .toggle_debug_mode => clay.setDebugModeEnabled(!clay.isDebugModeEnabled()),
         .exit => {
@@ -489,37 +483,16 @@ pub fn triggerAction(self: *ViewerState, action_id: AppActionId) !void {
             self.adjustments_dirty = true;
         },
         .set_brightness_value => {
-            self.palette.show = true;
-            self.palette.active_type = .set_brightness;
-            self.palette.query.clearRetainingCapacity();
-            self.palette.selected_idx = 0;
-            self.palette.selection_dirty = true;
-            startTextInput(self.window);
+            try self.openPalette(.set_brightness);
         },
         .set_contrast_value => {
-            self.palette.show = true;
-            self.palette.active_type = .set_contrast;
-            self.palette.query.clearRetainingCapacity();
-            self.palette.selected_idx = 0;
-            self.palette.selection_dirty = true;
-            startTextInput(self.window);
+            try self.openPalette(.set_contrast);
         },
         .go_to_image => {
-            self.palette.show = true;
-            self.palette.active_type = .go_to_image;
-            self.palette.query.clearRetainingCapacity();
-            self.palette.selected_idx = 0;
-            self.palette.selection_dirty = true;
-            startTextInput(self.window);
+            try self.openPalette(.go_to_image);
         },
         .open_action_palette => {
-            self.palette.show = true;
-            self.palette.active_type = .actions;
-            self.palette.query.clearRetainingCapacity();
-            self.palette.selected_idx = 0;
-            self.palette.selection_dirty = true;
-            try self.rebuildActionMatches();
-            startTextInput(self.window);
+            try self.openPalette(.actions);
         },
     }
 }

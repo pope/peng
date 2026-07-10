@@ -68,33 +68,50 @@ pub fn renderStatsOverlay(
     var screen_str: []const u8 = "Loading...";
 
     if (current_entry) |entry| {
-        mime_type = entry.mime_type;
-        if (entry.status == .loaded or entry.gpu_texture != null) {
-            disk_size_str = try formatSize(frame_allocator, entry.size_bytes);
-            mem_size_str = try formatSize(frame_allocator, entry.memory_size_bytes);
+        switch (entry.status) {
+            .loaded_cpu => |cpu| {
+                mime_type = cpu.mime_type;
+                disk_size_str = try formatSize(frame_allocator, cpu.size_bytes);
+                const megapixels = (cpu.w * cpu.h) / 1_000_000.0;
+                res_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} ({d:.2} MP)", .{ cpu.w, cpu.h, megapixels });
+                decode_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{cpu.decode_time_ms});
+                convert_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{cpu.conversion_time_ms});
+            },
+            .loaded_gpu => |gpu| {
+                mime_type = gpu.mime_type;
+                disk_size_str = try formatSize(frame_allocator, gpu.size_bytes);
+                mem_size_str = try formatSize(frame_allocator, gpu.memory_size_bytes);
 
-            const megapixels = (entry.w * entry.h) / 1_000_000.0;
-            res_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} ({d:.2} MP)", .{ entry.w, entry.h, megapixels });
-            decode_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{entry.decode_time_ms});
-            convert_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{entry.conversion_time_ms});
-            process_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{entry.upload_time_ms});
-            screen_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} px", .{ draw_w, draw_h });
-        } else if (entry.status == .failed) {
-            disk_size_str = "Failed";
-            mem_size_str = "Failed";
-            mime_type = "Failed";
-            res_str = "Failed";
-            decode_str = "Failed";
-            convert_str = "Failed";
-            process_str = "Failed";
-            screen_str = "Failed";
+                const megapixels = (gpu.w * gpu.h) / 1_000_000.0;
+                res_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} ({d:.2} MP)", .{ gpu.w, gpu.h, megapixels });
+                decode_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{gpu.decode_time_ms});
+                convert_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{gpu.conversion_time_ms});
+                process_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{gpu.upload_time_ms});
+                screen_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} px", .{ draw_w, draw_h });
+            },
+            .failed => {
+                disk_size_str = "Failed";
+                mem_size_str = "Failed";
+                mime_type = "Failed";
+                res_str = "Failed";
+                decode_str = "Failed";
+                convert_str = "Failed";
+                process_str = "Failed";
+                screen_str = "Failed";
+            },
+            else => {},
         }
     }
 
     var zoom_str: []const u8 = "1.0x";
     if (current_entry) |entry| {
-        if (entry.w > 0) {
-            const pixel_zoom_pct = ((draw_w * state.zoom_factor) / entry.w) * 100.0;
+        const entry_w = switch (entry.status) {
+            .loaded_cpu => |cpu| cpu.w,
+            .loaded_gpu => |gpu| gpu.w,
+            else => 0.0,
+        };
+        if (entry_w > 0) {
+            const pixel_zoom_pct = ((draw_w * state.zoom_factor) / entry_w) * 100.0;
             zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x ({d:.0}%)", .{ state.zoom_factor, pixel_zoom_pct });
         } else {
             zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{state.zoom_factor});

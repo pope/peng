@@ -34,7 +34,8 @@ pub const ElementTag = enum(usize) {
     }
 };
 
-pub const PaletteType = enum {
+pub const PaletteMode = enum {
+    inactive,
     files,
     actions,
     set_brightness,
@@ -43,8 +44,7 @@ pub const PaletteType = enum {
 };
 
 pub const PaletteState = struct {
-    show: bool = false,
-    active_type: PaletteType = .files,
+    mode: PaletteMode = .inactive,
     query: std.ArrayList(u8),
     selected_idx: usize = 0,
     selection_dirty: bool = false,
@@ -67,25 +67,42 @@ pub const PaletteState = struct {
     pub fn reset(self: *PaletteState) void {
         self.query.clearRetainingCapacity();
         self.matches.clearRetainingCapacity();
+        self.mode = .inactive;
         self.selected_idx = 0;
         self.selection_dirty = true;
     }
 };
 
+pub const CacheStatus = union(enum) {
+    decoding: void,
+    loaded_cpu: struct {
+        surface: *c.SDL_Surface,
+        w: f32,
+        h: f32,
+        size_bytes: u64,
+        mime_type: []const u8,
+        decode_time_ms: f64,
+        conversion_time_ms: f64,
+    },
+    uploading: void,
+    loaded_gpu: struct {
+        gpu_texture: *c.SDL_GPUTexture,
+        w: f32,
+        h: f32,
+        size_bytes: u64,
+        mime_type: []const u8,
+        decode_time_ms: f64,
+        conversion_time_ms: f64,
+        upload_time_ms: f64,
+        memory_size_bytes: usize,
+    },
+    failed: void,
+};
+
 pub const CacheEntry = struct {
     index: usize,
     generation: usize,
-    gpu_texture: ?*c.SDL_GPUTexture = null,
-    w: f32 = 0,
-    h: f32 = 0,
-    size_bytes: u64 = 0,
-    mime_type: []const u8 = "unknown",
-    decode_time_ms: f64 = 0.0,
-    conversion_time_ms: f64 = 0.0,
-    upload_time_ms: f64 = 0.0,
-    memory_size_bytes: usize = 0,
-    surface: ?*c.SDL_Surface = null,
-    status: enum { decoding, loaded, failed } = .decoding,
+    status: CacheStatus = .decoding,
 };
 
 pub const DecodeArgs = struct {
@@ -297,21 +314,23 @@ pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
         if (entry.index == index and entry.generation == args.generation) {
             found_in_cache = true;
             if (final_surface) |surf| {
-                if (entry.surface != null or entry.gpu_texture != null) {
+                if (entry.status == .loaded_cpu or entry.status == .loaded_gpu) {
                     c.SDL_DestroySurface(surf);
                 } else {
-                    entry.surface = surf;
-                    entry.w = @floatFromInt(surf.*.w);
-                    entry.h = @floatFromInt(surf.*.h);
-                    entry.memory_size_bytes = @intCast(surf.*.pitch * surf.*.h);
-                    entry.size_bytes = size_bytes;
-                    entry.mime_type = mime_type;
-                    entry.decode_time_ms = decode_time_ms;
-                    entry.conversion_time_ms = conversion_time_ms;
-                    entry.status = .loaded;
+                    entry.status = .{
+                        .loaded_cpu = .{
+                            .surface = surf,
+                            .w = @floatFromInt(surf.*.w),
+                            .h = @floatFromInt(surf.*.h),
+                            .size_bytes = size_bytes,
+                            .mime_type = mime_type,
+                            .decode_time_ms = decode_time_ms,
+                            .conversion_time_ms = conversion_time_ms,
+                        },
+                    };
                 }
             } else {
-                if (entry.status != .loaded) {
+                if (entry.status != .loaded_cpu and entry.status != .loaded_gpu) {
                     entry.status = .failed;
                 }
             }
@@ -534,132 +553,192 @@ pub const ViewerState = struct {
         return null;
     }
 
+    pub fn openPalette(self: *ViewerState, active_type: PaletteMode) !void {
+        self.palette.reset();
+        self.palette.mode = active_type;
+        self.palette.selected_idx = switch (active_type) {
+            .files => self.current_index orelse 0,
+            else => 0,
+        };
+        self.palette.selection_dirty = true;
+
+        switch (active_type) {
+            .files => try self.rebuildPaletteMatches(),
+            .actions => try self.rebuildActionMatches(),
+            else => {},
+        }
+
+        startTextInput(self.window);
+    }
+
     pub fn prepareCacheTextures(self: *ViewerState) void {
         c.SDL_LockMutex(self.cache_mutex);
-        defer c.SDL_UnlockMutex(self.cache_mutex);
+
+        var upload_target: ?struct {
+            entry_ptr: *CacheEntry,
+            cpu: @TypeOf(@as(CacheStatus, undefined).loaded_cpu),
+        } = null;
 
         for (self.cache.items) |*entry| {
-            if (entry.status == .loaded and entry.surface != null) {
-                if (entry.gpu_texture == null) {
-                    const start_upload = c.SDL_GetTicksNS();
-                    var current_surf = entry.surface.?;
-                    var scaled_surf: ?*c.SDL_Surface = null;
-                    defer if (scaled_surf) |s| c.SDL_DestroySurface(s);
+            if (entry.status == .loaded_cpu) {
+                const cpu = entry.status.loaded_cpu;
+                entry.status = .uploading;
+                upload_target = .{
+                    .entry_ptr = entry,
+                    .cpu = cpu,
+                };
+                break;
+            }
+        }
 
-                    var img_w = current_surf.*.w;
-                    var img_h = current_surf.*.h;
-                    var tex: ?*c.SDL_GPUTexture = null;
+        c.SDL_UnlockMutex(self.cache_mutex);
 
-                    var try_max_dim: i32 = 16384;
-                    while (try_max_dim >= 2048) : (try_max_dim = @divTrunc(try_max_dim, 2)) {
-                        if (img_w <= try_max_dim and img_h <= try_max_dim) {
-                            const img_tex_info = c.SDL_GPUTextureCreateInfo{
-                                .type = c.SDL_GPU_TEXTURETYPE_2D,
-                                .format = c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-                                .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER,
-                                .width = @intCast(img_w),
-                                .height = @intCast(img_h),
-                                .layer_count_or_depth = 1,
-                                .num_levels = 1,
-                                .sample_count = c.SDL_GPU_SAMPLECOUNT_1,
-                                .props = 0,
-                            };
-                            tex = c.SDL_CreateGPUTexture(self.gpu_device, &img_tex_info);
-                            if (tex != null) break;
-                        }
+        if (upload_target) |target| {
+            const start_upload = c.SDL_GetTicksNS();
+            var current_surf = target.cpu.surface;
+            var scaled_surf: ?*c.SDL_Surface = null;
+            defer if (scaled_surf) |s| c.SDL_DestroySurface(s);
+            defer c.SDL_DestroySurface(target.cpu.surface);
 
-                        const next_dim = @divTrunc(try_max_dim, 2);
-                        if (img_w > next_dim or img_h > next_dim) {
-                            var new_w = img_w;
-                            var new_h = img_h;
-                            if (img_w > img_h) {
-                                new_w = next_dim;
-                                new_h = @divTrunc(img_h * next_dim, img_w);
-                            } else {
-                                new_h = next_dim;
-                                new_w = @divTrunc(img_w * next_dim, img_h);
-                            }
-                            new_w = @max(1, new_w);
-                            new_h = @max(1, new_h);
+            var img_w = current_surf.*.w;
+            var img_h = current_surf.*.h;
+            var tex: ?*c.SDL_GPUTexture = null;
 
-                            const new_scale = c.SDL_ScaleSurface(
-                                current_surf,
-                                new_w,
-                                new_h,
-                                c.SDL_SCALEMODE_LINEAR,
-                            );
-                            if (new_scale) |ns| {
-                                if (scaled_surf) |s| c.SDL_DestroySurface(s);
-                                scaled_surf = ns;
-                                current_surf = ns;
-                                img_w = new_w;
-                                img_h = new_h;
-                            } else {
-                                std.log.err("SDL_ScaleSurface failed: {s}", .{c.SDL_GetError()});
-                                break;
-                            }
-                        }
-                    }
-
-                    if (tex == null) {
-                        std.log.err("Create GPU Texture failed for image size {d}x{d}: {s}", .{ entry.surface.?.*.w, entry.surface.?.*.h, c.SDL_GetError() });
-                        continue;
-                    }
-                    const gpu_tex = tex.?;
-
-                    const cmd_buf = c.SDL_AcquireGPUCommandBuffer(self.gpu_device) orelse {
-                        c.SDL_ReleaseGPUTexture(self.gpu_device, gpu_tex);
-                        continue;
-                    };
-                    const size = @as(usize, @intCast(img_w)) * @as(usize, @intCast(img_h)) * 4;
-                    const transfer_buf = c.SDL_CreateGPUTransferBuffer(self.gpu_device, &c.SDL_GPUTransferBufferCreateInfo{
-                        .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
-                        .size = @intCast(size),
+            var try_max_dim: i32 = 16384;
+            while (try_max_dim >= 2048) : (try_max_dim = @divTrunc(try_max_dim, 2)) {
+                if (img_w <= try_max_dim and img_h <= try_max_dim) {
+                    const img_tex_info = c.SDL_GPUTextureCreateInfo{
+                        .type = c.SDL_GPU_TEXTURETYPE_2D,
+                        .format = c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+                        .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER,
+                        .width = @intCast(img_w),
+                        .height = @intCast(img_h),
+                        .layer_count_or_depth = 1,
+                        .num_levels = 1,
+                        .sample_count = c.SDL_GPU_SAMPLECOUNT_1,
                         .props = 0,
-                    }) orelse {
-                        std.log.err("Create transfer buffer failed: {s}", .{c.SDL_GetError()});
-                        _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
-                        c.SDL_ReleaseGPUTexture(self.gpu_device, gpu_tex);
-                        continue;
                     };
-                    defer c.SDL_ReleaseGPUTransferBuffer(self.gpu_device, transfer_buf);
+                    tex = c.SDL_CreateGPUTexture(self.gpu_device, &img_tex_info);
+                    if (tex != null) break;
+                }
 
-                    const mapped: [*]u8 = @ptrCast(c.SDL_MapGPUTransferBuffer(self.gpu_device, transfer_buf, false) orelse {
-                        _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
-                        c.SDL_ReleaseGPUTexture(self.gpu_device, gpu_tex);
-                        continue;
-                    });
-                    const pixels: [*]const u8 = @ptrCast(current_surf.*.pixels);
-                    @memcpy(mapped[0..size], pixels[0..size]);
-                    c.SDL_UnmapGPUTransferBuffer(self.gpu_device, transfer_buf);
+                const next_dim = @divTrunc(try_max_dim, 2);
+                if (img_w > next_dim or img_h > next_dim) {
+                    var new_w = img_w;
+                    var new_h = img_h;
+                    if (img_w > img_h) {
+                        new_w = next_dim;
+                        new_h = @divTrunc(img_h * next_dim, img_w);
+                    } else {
+                        new_h = next_dim;
+                        new_w = @divTrunc(img_w * next_dim, img_h);
+                    }
+                    new_w = @max(1, new_w);
+                    new_h = @max(1, new_h);
 
-                    const copy_pass = c.SDL_BeginGPUCopyPass(cmd_buf) orelse {
-                        _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
-                        c.SDL_ReleaseGPUTexture(self.gpu_device, gpu_tex);
-                        continue;
-                    };
-                    c.SDL_UploadToGPUTexture(copy_pass, &c.SDL_GPUTextureTransferInfo{
-                        .transfer_buffer = transfer_buf,
-                        .offset = 0,
-                        .pixels_per_row = @intCast(img_w),
-                        .rows_per_layer = @intCast(img_h),
-                    }, &c.SDL_GPUTextureRegion{
-                        .texture = gpu_tex,
-                        .w = @intCast(img_w),
-                        .h = @intCast(img_h),
-                        .d = 1,
-                    }, false);
-                    c.SDL_EndGPUCopyPass(copy_pass);
-                    _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
-
-                    entry.gpu_texture = gpu_tex;
-                    c.SDL_DestroySurface(entry.surface.?);
-                    entry.surface = null;
-
-                    const end_upload = c.SDL_GetTicksNS();
-                    entry.upload_time_ms = @as(f64, @floatFromInt(end_upload - start_upload)) / 1_000_000.0;
+                    const new_scale = c.SDL_ScaleSurface(
+                        current_surf,
+                        new_w,
+                        new_h,
+                        c.SDL_SCALEMODE_LINEAR,
+                    );
+                    if (new_scale) |ns| {
+                        if (scaled_surf) |s| c.SDL_DestroySurface(s);
+                        scaled_surf = ns;
+                        current_surf = ns;
+                        img_w = new_w;
+                        img_h = new_h;
+                    } else {
+                        std.log.err("SDL_ScaleSurface failed: {s}", .{c.SDL_GetError()});
+                        break;
+                    }
                 }
             }
+
+            if (tex == null) {
+                std.log.err("Create GPU Texture failed for image size {d}x{d}: {s}", .{ target.cpu.surface.*.w, target.cpu.surface.*.h, c.SDL_GetError() });
+                c.SDL_LockMutex(self.cache_mutex);
+                target.entry_ptr.status = .failed;
+                c.SDL_UnlockMutex(self.cache_mutex);
+                return;
+            }
+            const gpu_tex = tex.?;
+
+            const cmd_buf = c.SDL_AcquireGPUCommandBuffer(self.gpu_device) orelse {
+                c.SDL_ReleaseGPUTexture(self.gpu_device, gpu_tex);
+                c.SDL_LockMutex(self.cache_mutex);
+                target.entry_ptr.status = .failed;
+                c.SDL_UnlockMutex(self.cache_mutex);
+                return;
+            };
+            const size = @as(usize, @intCast(img_w)) * @as(usize, @intCast(img_h)) * 4;
+            const transfer_buf = c.SDL_CreateGPUTransferBuffer(self.gpu_device, &c.SDL_GPUTransferBufferCreateInfo{
+                .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+                .size = @intCast(size),
+                .props = 0,
+            }) orelse {
+                std.log.err("Create transfer buffer failed: {s}", .{c.SDL_GetError()});
+                _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
+                c.SDL_ReleaseGPUTexture(self.gpu_device, gpu_tex);
+                c.SDL_LockMutex(self.cache_mutex);
+                target.entry_ptr.status = .failed;
+                c.SDL_UnlockMutex(self.cache_mutex);
+                return;
+            };
+            defer c.SDL_ReleaseGPUTransferBuffer(self.gpu_device, transfer_buf);
+
+            const mapped: [*]u8 = @ptrCast(c.SDL_MapGPUTransferBuffer(self.gpu_device, transfer_buf, false) orelse {
+                _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
+                c.SDL_ReleaseGPUTexture(self.gpu_device, gpu_tex);
+                c.SDL_LockMutex(self.cache_mutex);
+                target.entry_ptr.status = .failed;
+                c.SDL_UnlockMutex(self.cache_mutex);
+                return;
+            });
+            const pixels: [*]const u8 = @ptrCast(current_surf.*.pixels);
+            @memcpy(mapped[0..size], pixels[0..size]);
+            c.SDL_UnmapGPUTransferBuffer(self.gpu_device, transfer_buf);
+
+            const copy_pass = c.SDL_BeginGPUCopyPass(cmd_buf) orelse {
+                _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
+                c.SDL_ReleaseGPUTexture(self.gpu_device, gpu_tex);
+                c.SDL_LockMutex(self.cache_mutex);
+                target.entry_ptr.status = .failed;
+                c.SDL_UnlockMutex(self.cache_mutex);
+                return;
+            };
+            c.SDL_UploadToGPUTexture(copy_pass, &c.SDL_GPUTextureTransferInfo{
+                .transfer_buffer = transfer_buf,
+                .offset = 0,
+                .pixels_per_row = @intCast(img_w),
+                .rows_per_layer = @intCast(img_h),
+            }, &c.SDL_GPUTextureRegion{
+                .texture = gpu_tex,
+                .w = @intCast(img_w),
+                .h = @intCast(img_h),
+                .d = 1,
+            }, false);
+            c.SDL_EndGPUCopyPass(copy_pass);
+            _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+
+            const end_upload = c.SDL_GetTicksNS();
+            const upload_time_ms = @as(f64, @floatFromInt(end_upload - start_upload)) / 1_000_000.0;
+
+            c.SDL_LockMutex(self.cache_mutex);
+            target.entry_ptr.status = .{
+                .loaded_gpu = .{
+                    .gpu_texture = gpu_tex,
+                    .w = @floatFromInt(img_w),
+                    .h = @floatFromInt(img_h),
+                    .size_bytes = target.cpu.size_bytes,
+                    .mime_type = target.cpu.mime_type,
+                    .decode_time_ms = target.cpu.decode_time_ms,
+                    .conversion_time_ms = target.cpu.conversion_time_ms,
+                    .upload_time_ms = upload_time_ms,
+                    .memory_size_bytes = size,
+                },
+            };
+            c.SDL_UnlockMutex(self.cache_mutex);
         }
         if (self.adjustments_dirty) {
             self.adjustments_dirty = false;
@@ -671,11 +750,10 @@ pub const ViewerState = struct {
         defer c.SDL_UnlockMutex(self.cache_mutex);
 
         for (self.cache.items) |entry| {
-            if (entry.gpu_texture) |tex| {
-                c.SDL_ReleaseGPUTexture(self.gpu_device, tex);
-            }
-            if (entry.surface) |surf| {
-                c.SDL_DestroySurface(surf);
+            switch (entry.status) {
+                .loaded_cpu => |cpu| c.SDL_DestroySurface(cpu.surface),
+                .loaded_gpu => |gpu| c.SDL_ReleaseGPUTexture(self.gpu_device, gpu.gpu_texture),
+                else => {},
             }
         }
         self.cache.clearRetainingCapacity();
@@ -734,11 +812,10 @@ pub const ViewerState = struct {
             }
             if (!wanted) {
                 // Evict
-                if (entry.gpu_texture) |tex| {
-                    c.SDL_ReleaseGPUTexture(self.gpu_device, tex);
-                }
-                if (entry.surface) |surf| {
-                    c.SDL_DestroySurface(surf);
+                switch (entry.status) {
+                    .loaded_cpu => |cpu| c.SDL_DestroySurface(cpu.surface),
+                    .loaded_gpu => |gpu| c.SDL_ReleaseGPUTexture(self.gpu_device, gpu.gpu_texture),
+                    else => {},
                 }
                 _ = self.cache.orderedRemove(i);
             } else {
@@ -753,7 +830,7 @@ pub const ViewerState = struct {
             for (self.cache.items) |entry| {
                 if (entry.index == d) {
                     exists = true;
-                    if (d == idx and entry.status == .loaded) {
+                    if (d == idx and (entry.status == .loaded_cpu or entry.status == .loaded_gpu)) {
                         hit = true;
                     }
                     break;
@@ -886,17 +963,17 @@ pub const ViewerState = struct {
         return try app_input.handlePaletteKeys(self, key);
     }
 
-    pub fn update(self: *ViewerState, input: main.FrameInput, gpa: std.mem.Allocator) !void {
+    pub fn update(self: *ViewerState, input: main.FrameInput) !void {
         // 1. Text input updates
         if (input.text_input) |text| {
-            if (self.palette.show) {
-                try self.palette.query.appendSlice(gpa, text);
+            if (self.palette.mode != .inactive) {
+                try self.palette.query.appendSlice(self.allocator, text);
                 self.palette.selected_idx = 0;
                 self.palette.selection_dirty = true;
-                switch (self.palette.active_type) {
+                switch (self.palette.mode) {
                     .files => try self.rebuildPaletteMatches(),
                     .actions => try self.rebuildActionMatches(),
-                    .set_brightness, .set_contrast, .go_to_image => {},
+                    else => {},
                 }
             }
         }
@@ -928,16 +1005,17 @@ pub const ViewerState = struct {
         // 4. Mouse click triggers (starts dragging)
         if (input.mouse_left_clicked) {
             // Check if we should close the palette
-            if (self.palette.show) {
-                const element_id = switch (self.palette.active_type) {
+            if (self.palette.mode != .inactive) {
+                const element_id = switch (self.palette.mode) {
                     .files => "CommandPalette",
                     .actions => "ActionPalette",
                     .set_brightness => "BrightnessPalette",
                     .set_contrast => "ContrastPalette",
                     .go_to_image => "GoToImagePalette",
+                    .inactive => unreachable,
                 };
                 if (!clay.pointerOver(clay.getElementId(element_id))) {
-                    self.palette.show = false;
+                    self.palette.mode = .inactive;
                     stopTextInput(self.window);
                 }
             }
@@ -949,7 +1027,7 @@ pub const ViewerState = struct {
                 self.stats_dragging = true;
                 self.drag_start_x = input.mouse_x - self.stats_offset_x;
                 self.drag_start_y = input.mouse_y - self.stats_offset_y;
-            } else if (!self.palette.show and clay.pointerOver(clay.getElementId("Viewport"))) {
+            } else if (self.palette.mode == .inactive and clay.pointerOver(clay.getElementId("Viewport"))) {
                 self.viewport_dragging = true;
                 self.drag_last_x = input.mouse_x;
                 self.drag_last_y = input.mouse_y;
@@ -958,7 +1036,7 @@ pub const ViewerState = struct {
 
         // 5. Mouse Wheel Zoom updates
         if (input.scroll_delta_y != 0) {
-            if (!self.palette.show and clay.pointerOver(clay.getElementId("Viewport"))) {
+            if (self.palette.mode == .inactive and clay.pointerOver(clay.getElementId("Viewport"))) {
                 const old_zoom = self.zoom_factor;
                 self.zoom_factor = std.math.clamp(self.zoom_factor + input.scroll_delta_y * 0.1, 0.1, 10.0);
 
