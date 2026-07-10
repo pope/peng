@@ -119,57 +119,29 @@ pub fn handlePaletteKeys(
     }
 }
 
-pub fn handleKeyDown(
-    self: *ViewerState,
-    key: c.SDL_Keycode,
-    mod: c.SDL_Keymod,
-    scale_x: f32,
-    scale_y: f32,
-) !void {
-    if (self.palette.mode != .inactive) {
-        _ = try handlePaletteKeys(self, key);
-        return;
-    }
+pub const InputAction = union(enum) {
+    none,
+    pan: struct { dx: f32, dy: f32 },
+    zoom: struct { factor_delta: f32 },
+    trigger_action: commands.actions.AppActionId,
+};
 
+pub fn mapKeyToAction(key: c.SDL_Keycode, mod: c.SDL_Keymod, is_zoomed: bool) InputAction {
     // 1. Context-Sensitive Keys (Arrow Keys: Pan vs Navigate)
-    if (self.zoom_factor > 1.0) {
+    if (is_zoomed) {
         switch (key) {
-            c.SDLK_LEFT => {
-                self.pan_x += 30.0 * scale_x;
-                return;
-            },
-            c.SDLK_RIGHT => {
-                self.pan_x -= 30.0 * scale_x;
-                return;
-            },
-            c.SDLK_UP => {
-                self.pan_y += 30.0 * scale_y;
-                return;
-            },
-            c.SDLK_DOWN => {
-                self.pan_y -= 30.0 * scale_y;
-                return;
-            },
+            c.SDLK_LEFT => return .{ .pan = .{ .dx = 30.0, .dy = 0.0 } },
+            c.SDLK_RIGHT => return .{ .pan = .{ .dx = -30.0, .dy = 0.0 } },
+            c.SDLK_UP => return .{ .pan = .{ .dx = 0.0, .dy = 30.0 } },
+            c.SDLK_DOWN => return .{ .pan = .{ .dx = 0.0, .dy = -30.0 } },
             else => {},
         }
     }
 
     // 2. Fine Zooming (keyboard-specific: +/- 0.1 step)
     switch (key) {
-        c.SDLK_EQUALS, c.SDLK_KP_PLUS => {
-            const old_zoom = self.zoom_factor;
-            self.zoom_factor = std.math.clamp(self.zoom_factor + 0.1, 0.1, 10.0);
-            self.pan_x *= (self.zoom_factor / old_zoom);
-            self.pan_y *= (self.zoom_factor / old_zoom);
-            return;
-        },
-        c.SDLK_MINUS, c.SDLK_KP_MINUS => {
-            const old_zoom = self.zoom_factor;
-            self.zoom_factor = std.math.clamp(self.zoom_factor - 0.1, 0.1, 10.0);
-            self.pan_x *= (self.zoom_factor / old_zoom);
-            self.pan_y *= (self.zoom_factor / old_zoom);
-            return;
-        },
+        c.SDLK_EQUALS, c.SDLK_KP_PLUS => return .{ .zoom = .{ .factor_delta = 0.1 } },
+        c.SDLK_MINUS, c.SDLK_KP_MINUS => return .{ .zoom = .{ .factor_delta = -0.1 } },
         else => {},
     }
 
@@ -182,8 +154,55 @@ pub fn handleKeyDown(
 
     for (flat_shortcuts) |shortcut| {
         if (key == shortcut.key and clean_mod == shortcut.mod) {
-            try self.triggerAction(shortcut.action_id);
-            return;
+            return .{ .trigger_action = shortcut.action_id };
         }
     }
+
+    return .none;
+}
+
+pub fn handleKeyDown(
+    self: *ViewerState,
+    key: c.SDL_Keycode,
+    mod: c.SDL_Keymod,
+    scale_x: f32,
+    scale_y: f32,
+) !void {
+    if (self.palette.mode != .inactive) {
+        _ = try handlePaletteKeys(self, key);
+        return;
+    }
+
+    const action = mapKeyToAction(key, mod, self.zoom_factor > 1.0);
+    switch (action) {
+        .none => {},
+        .pan => |p| {
+            self.pan_x += p.dx * scale_x;
+            self.pan_y += p.dy * scale_y;
+        },
+        .zoom => |z| {
+            const old_zoom = self.zoom_factor;
+            self.zoom_factor = std.math.clamp(self.zoom_factor + z.factor_delta, 0.1, 10.0);
+            self.pan_x *= (self.zoom_factor / old_zoom);
+            self.pan_y *= (self.zoom_factor / old_zoom);
+        },
+        .trigger_action => |action_id| {
+            try self.triggerAction(action_id);
+        },
+    }
+}
+
+test "mapKeyToAction mapping" {
+    // Zoom and Pan actions
+    const pan_left = mapKeyToAction(c.SDLK_LEFT, 0, true);
+    try std.testing.expect(pan_left == .pan);
+    try std.testing.expectEqual(@as(f32, 30.0), pan_left.pan.dx);
+
+    const pan_left_not_zoomed = mapKeyToAction(c.SDLK_LEFT, 0, false);
+    try std.testing.expect(pan_left_not_zoomed == .trigger_action);
+    try std.testing.expectEqual(commands.actions.AppActionId.prev_image, pan_left_not_zoomed.trigger_action);
+
+    const zoom_in = mapKeyToAction(c.SDLK_EQUALS, 0, false);
+    try std.testing.expect(zoom_in == .zoom);
+    try std.testing.expectEqual(@as(f32, 0.1), zoom_in.zoom.factor_delta);
 }

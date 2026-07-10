@@ -411,6 +411,7 @@ pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
 
 pub fn matchesQueryLower(path: []const u8, query_lower: []const u8) bool {
     if (query_lower.len == 0) return true;
+    if (path.len < query_lower.len) return false;
 
     var i: usize = 0;
     const end = path.len - query_lower.len;
@@ -1183,4 +1184,15 @@ test "CacheSlotMap.updateStatus" {
     // Test updating matching index but mismatching generation
     const updated_gen_mismatch = cache.updateStatus(10, 2, .failed);
     try std.testing.expect(!updated_gen_mismatch);
+}
+
+test "matchesQueryLower bounds check" {
+    // Normal matches
+    try std.testing.expect(matchesQueryLower("hello", "ell"));
+    try std.testing.expect(matchesQueryLower("HELLO", "ell"));
+    try std.testing.expect(!matchesQueryLower("hello", "world"));
+
+    // Query longer than path (should not overflow/panic)
+    try std.testing.expect(!matchesQueryLower("short", "longerquery"));
+    try std.testing.expect(matchesQueryLower("short", ""));
 }
