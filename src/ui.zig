@@ -3,3 +3,5 @@ pub const layout = @import("ui/layout.zig");
 pub const palette = @import("ui/palette.zig");
 pub const stats = @import("ui/stats.zig");
 pub const graphics = @import("ui/graphics.zig");
+pub const units = @import("ui/units.zig");
+pub const layout_helpers = @import("ui/layout_helpers.zig");

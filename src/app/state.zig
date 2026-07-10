@@ -1082,8 +1082,8 @@ pub const ViewerState = struct {
             .none => {},
             .stats => |stats| {
                 if (input.mouse_left_down) {
-                    self.stats_offset_x = input.mouse_x - stats.start_x;
-                    self.stats_offset_y = input.mouse_y - stats.start_y;
+                    self.stats_offset_x = (input.mouse_x - stats.start_x) / input.dpi_scale;
+                    self.stats_offset_y = (input.mouse_y - stats.start_y) / input.dpi_scale;
                 } else {
                     next_drag_state = .none;
                 }
@@ -1127,8 +1127,8 @@ pub const ViewerState = struct {
             {
                 self.drag_state = .{
                     .stats = .{
-                        .start_x = input.mouse_x - self.stats_offset_x,
-                        .start_y = input.mouse_y - self.stats_offset_y,
+                        .start_x = input.mouse_x - self.stats_offset_x * input.dpi_scale,
+                        .start_y = input.mouse_y - self.stats_offset_y * input.dpi_scale,
                     },
                 };
             } else if (self.palette.mode == .inactive and !palette_closed_this_frame and clay.pointerOver(clay.getElementId("Viewport"))) {

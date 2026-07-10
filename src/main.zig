@@ -175,8 +175,8 @@ fn pollFrameInput(
             },
             c.SDL_EVENT_MOUSE_WHEEL => {
                 const multiplier: f32 = if (event.wheel.direction == c.SDL_MOUSEWHEEL_FLIPPED) -1.0 else 1.0;
-                scroll_delta_x += event.wheel.x * multiplier * 6.0;
-                scroll_delta_y += event.wheel.y * multiplier * 6.0;
+                scroll_delta_x += event.wheel.x * multiplier * 6.0 * scale_x;
+                scroll_delta_y += event.wheel.y * multiplier * 6.0 * scale_y;
             },
             else => {},
         }

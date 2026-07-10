@@ -6,6 +6,8 @@ const ViewerState = app_state.ViewerState;
 const CacheEntry = app_state.CacheEntry;
 const formatSize = @import("palette.zig").formatSize;
 const MeasureTextUserData = @import("../app/types.zig").MeasureTextUserData;
+const layout_helpers = @import("layout_helpers.zig");
+const DpiScale = @import("units.zig").DpiScale;
 
 pub fn renderStatRow(label: []const u8, value: []const u8, scale_x: f32, scale_y: f32, dpi_scale: f32) !void {
     clay.UI()(.{
@@ -122,16 +124,18 @@ pub fn renderStatsOverlay(
     const pan_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}, {d:.0} px", .{ state.pan_x, state.pan_y });
     const rot_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}°", .{state.rotation_angle});
 
+    const scale = DpiScale.init(dpi_scale);
+
     clay.UI()(.{
         .id = clay.getElementId("StatsPanel"),
         .layout = .{
             .sizing = .{ .w = .fixed(380 * scale_x), .h = .fit },
             .direction = .top_to_bottom,
-            .padding = .{ .left = 16, .right = 16, .top = 16, .bottom = 16 },
-            .child_gap = 10,
+            .padding = layout_helpers.scalePadding(16, 16, 16, 16, scale),
+            .child_gap = @intFromFloat(10.0 * dpi_scale),
         },
         .background_color = .{ 30, 30, 46, 220 },
-        .corner_radius = .all(10),
+        .corner_radius = layout_helpers.scaleCornerRadius(10, scale),
         .border = .{
             .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
             .color = .{ 49, 50, 68, 255 },
@@ -139,7 +143,7 @@ pub fn renderStatsOverlay(
         .floating = .{
             .attach_to = .to_parent,
             .attach_points = .{ .element = .left_top, .parent = .left_top },
-            .offset = .{ .x = state.stats_offset_x, .y = state.stats_offset_y },
+            .offset = .{ .x = state.stats_offset_x * dpi_scale, .y = state.stats_offset_y * dpi_scale },
             .z_index = 100,
         },
     })({
@@ -165,7 +169,7 @@ pub fn renderStatsOverlay(
                     .child_alignment = .{ .x = .center, .y = .center },
                 },
                 .background_color = .{ 49, 50, 68, 255 },
-                .corner_radius = .all(12),
+                .corner_radius = layout_helpers.scaleCornerRadius(12, scale),
             })({
                 clay.text("x", .{
                     .color = .{ 205, 214, 244, 255 },

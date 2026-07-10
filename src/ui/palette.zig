@@ -10,6 +10,8 @@ const getActionMetadata = @import("../commands/actions.zig").getActionMetadata;
 const types = @import("../app/types.zig");
 const MeasureTextUserData = types.MeasureTextUserData;
 const sdl3MeasureText = @import("graphics.zig").sdl3MeasureText;
+const layout_helpers = @import("layout_helpers.zig");
+const DpiScale = @import("units.zig").DpiScale;
 
 pub fn renderPalette(
     state: *ViewerState,
@@ -89,16 +91,17 @@ pub fn renderPalette(
     };
 
     // Render Floating Card container
+    const scale = DpiScale.init(dpi_scale);
     clay.UI()(.{
         .id = clay.getElementId(cfg.element_id),
         .layout = .{
             .sizing = .{ .w = .fixed(550 * scale_x), .h = .fit },
             .direction = .top_to_bottom,
-            .padding = .{ .left = 12, .right = 12, .top = 12, .bottom = 12 },
-            .child_gap = 10,
+            .padding = layout_helpers.scalePadding(12, 12, 12, 12, scale),
+            .child_gap = @intFromFloat(10 * dpi_scale),
         },
         .background_color = .{ 30, 30, 46, 245 }, // Catppuccin Base with opacity
-        .corner_radius = .all(10),
+        .corner_radius = layout_helpers.scaleCornerRadius(10, scale),
         .border = .{ .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 }, .color = .{ 79, 79, 97, 255 } },
         .floating = .{
             .attach_to = .to_parent,
@@ -133,10 +136,10 @@ pub fn renderPalette(
                 .sizing = .{ .w = .grow, .h = .fixed(38 * scale_y) },
                 .direction = .left_to_right,
                 .child_alignment = .{ .x = .left, .y = .center },
-                .padding = .{ .left = 12, .right = 12 },
+                .padding = layout_helpers.scalePadding(0, 0, 12, 12, scale),
             },
             .background_color = .{ 17, 17, 27, 255 }, // Catppuccin Crust (input background)
-            .corner_radius = .all(6),
+            .corner_radius = layout_helpers.scaleCornerRadius(6, scale),
             .border = .{ .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 }, .color = .{ 137, 180, 250, 255 } }, // Blue active border
         })({
             const query_str = if (palette.query.items.len > 0) palette.query.items else cfg.placeholder;
