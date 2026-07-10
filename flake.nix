@@ -54,9 +54,11 @@
           packages =
             with pkgs;
             [
+              glslang
               hyperfine
               lldb
               self.formatter.${system}
+              shaderc
               zls
             ]
             ++ lib.optionals stdenv.isLinux [
@@ -113,6 +115,11 @@
 
                   (lib.getDev sdl3-image)
                   (lib.getLib sdl3-image)
+
+                  (lib.getDev shaderc)
+                  (lib.getLib shaderc)
+
+                  (lib.getDev glslang)
                 ];
                 env.LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath buildInputs;
               })

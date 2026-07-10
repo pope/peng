@@ -4,9 +4,13 @@ const renderer = @import("renderer.zig");
 
 pub const c = @cImport({
     @cInclude("SDL3/SDL.h");
+    @cInclude("SDL3/SDL_gpu.h");
     @cInclude("SDL3_ttf/SDL_ttf.h");
     @cInclude("SDL3_image/SDL_image.h");
 });
+
+pub const vert_spv = @embedFile("shaders/vert.spv");
+pub const frag_spv = @embedFile("shaders/frag.spv");
 
 const MeasureTextUserData = struct {
     text_engine: ?*c.TTF_TextEngine,
@@ -17,28 +21,16 @@ const MeasureTextUserData = struct {
 fn sdl3MeasureText(text: []const u8, config: *clay.TextElementConfig, data: *const MeasureTextUserData) clay.Dimensions {
     if (config.font_id >= data.fonts.len) return .{ .w = 0, .h = 0 };
     const font = data.fonts[config.font_id] orelse return .{ .w = 0, .h = 0 };
-    if (!c.TTF_SetFontSize(font, @as(f32, @floatFromInt(config.font_size)))) {
-        std.log.err("TTF_SetFontSize failed: {s}", .{c.SDL_GetError()});
+    const target_size = @as(f32, @floatFromInt(config.font_size));
+    if (c.TTF_GetFontSize(font) != target_size) {
+        if (!c.TTF_SetFontSize(font, target_size)) {
+            std.log.err("TTF_SetFontSize failed: {s}", .{c.SDL_GetError()});
+        }
     }
-
-    const len = text.len;
-
-    // Align layout text allocation: stack-allocate for standard strings, heap-allocate for large strings
-    var stack_buf: [1024]u8 = undefined;
-    const buffer = if (len + 1 < stack_buf.len)
-        stack_buf[0 .. len + 1]
-    else
-        data.allocator.alloc(u8, len + 1) catch return .{ .w = 0, .h = 0 };
-    defer if (len + 1 >= stack_buf.len) data.allocator.free(buffer);
-    @memcpy(buffer[0..len], text);
-    buffer[len] = 0;
-
-    const text_obj = c.TTF_CreateText(data.text_engine, font, buffer.ptr, len) orelse return .{ .w = 0, .h = 0 };
-    defer c.TTF_DestroyText(text_obj);
 
     var w: c_int = 0;
     var h: c_int = 0;
-    if (!c.TTF_GetTextSize(text_obj, &w, &h)) {
+    if (!c.TTF_GetStringSize(font, text.ptr, text.len, &w, &h)) {
         return .{ .w = 0, .h = 0 };
     }
 
@@ -162,7 +154,7 @@ fn renderStatRow(label: []const u8, value: []const u8, scale_x: f32, scale_y: f3
 const CacheEntry = struct {
     index: usize,
     generation: usize,
-    texture: ?*c.SDL_Texture = null,
+    gpu_texture: ?*c.SDL_GPUTexture = null,
     w: f32 = 0,
     h: f32 = 0,
     size_bytes: u64 = 0,
@@ -191,7 +183,7 @@ fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
     defer {
         state.allocator.free(path);
         state.allocator.destroy(args);
-        _ = state.active_threads.fetchSub(1, .monotonic);
+        _ = state.active_threads.fetchSub(1, .release);
     }
 
     if (state.exiting.load(.acquire)) return 0;
@@ -227,6 +219,31 @@ fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
                 std.log.err("SDL_ConvertSurface failed: {s}", .{c.SDL_GetError()});
             }
         }
+
+        if (final_surface) |f_surf| {
+            const max_dim: i32 = 8192;
+            if (f_surf.*.w > max_dim or f_surf.*.h > max_dim) {
+                var new_w = f_surf.*.w;
+                var new_h = f_surf.*.h;
+                if (f_surf.*.w > f_surf.*.h) {
+                    new_w = max_dim;
+                    new_h = @divTrunc(f_surf.*.h * max_dim, f_surf.*.w);
+                } else {
+                    new_h = max_dim;
+                    new_w = @divTrunc(f_surf.*.w * max_dim, f_surf.*.h);
+                }
+                new_w = @max(1, new_w);
+                new_h = @max(1, new_h);
+
+                const scaled = c.SDL_ScaleSurface(f_surf, new_w, new_h, c.SDL_SCALEMODE_LINEAR);
+                if (scaled) |sc| {
+                    c.SDL_DestroySurface(f_surf);
+                    final_surface = sc;
+                } else {
+                    std.log.err("decodeWorker: SDL_ScaleSurface failed: {s}", .{c.SDL_GetError()});
+                }
+            }
+        }
     }
 
     // Stat the file
@@ -255,7 +272,7 @@ fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
         if (entry.index == index and entry.generation == args.generation) {
             found_in_cache = true;
             if (final_surface) |surf| {
-                if (entry.surface != null or entry.texture != null) {
+                if (entry.surface != null or entry.gpu_texture != null) {
                     c.SDL_DestroySurface(surf);
                 } else {
                     entry.surface = surf;
@@ -350,6 +367,11 @@ const AppActionId = enum {
     set_filter_nearest,
     set_filter_linear,
     set_filter_pixel_art,
+    increase_brightness,
+    decrease_brightness,
+    increase_contrast,
+    decrease_contrast,
+    reset_adjustments,
 };
 
 const AppAction = struct {
@@ -374,6 +396,11 @@ const app_actions = [_]AppAction{
     .{ .name = "Set Scaling Filter: Nearest Neighbor", .shortcut = "", .id = .set_filter_nearest },
     .{ .name = "Set Scaling Filter: Bilinear (Smooth)", .shortcut = "", .id = .set_filter_linear },
     .{ .name = "Set Scaling Filter: Pixel Art (Crisp)", .shortcut = "", .id = .set_filter_pixel_art },
+    .{ .name = "Increase Brightness (+10%)", .shortcut = "P", .id = .increase_brightness },
+    .{ .name = "Decrease Brightness (-10%)", .shortcut = "O", .id = .decrease_brightness },
+    .{ .name = "Increase Contrast (+10%)", .shortcut = "L", .id = .increase_contrast },
+    .{ .name = "Decrease Contrast (-10%)", .shortcut = "K", .id = .decrease_contrast },
+    .{ .name = "Reset Brightness & Contrast", .shortcut = "Shift+R", .id = .reset_adjustments },
     .{ .name = "Toggle Stats for Nerds", .shortcut = "I", .id = .toggle_stats },
     .{ .name = "Toggle Fullscreen", .shortcut = "F / F11", .id = .toggle_fullscreen },
     .{ .name = "Search Files (Go to File)", .shortcut = "Ctrl+P", .id = .open_file_finder },
@@ -445,7 +472,11 @@ pub const ElementTag = enum(usize) {
 };
 
 const ViewerState = struct {
-    renderer: ?*c.SDL_Renderer,
+    gpu_device: ?*c.SDL_GPUDevice = null,
+    gpu_pipeline: ?*c.SDL_GPUGraphicsPipeline = null,
+    gpu_sampler: ?*c.SDL_GPUSampler = null,
+    white_texture: ?*c.SDL_GPUTexture = null,
+    gpu_text_engine: ?*c.TTF_TextEngine = null,
     image_list: std.ArrayList([]const u8),
     current_index: ?usize = null,
     cache: std.ArrayList(CacheEntry),
@@ -469,6 +500,9 @@ const ViewerState = struct {
     rotation_angle: f32 = 0.0,
     rotation_map: std.StringHashMap(f32),
     texture_scale_mode: TextureScaleMode = .linear,
+    brightness: f32 = 0.0,
+    contrast: f32 = 1.0,
+    adjustments_dirty: bool = false,
 
     pub fn deinit(self: *ViewerState) void {
         self.exiting.store(true, .release);
@@ -477,6 +511,13 @@ const ViewerState = struct {
         }
 
         self.clearCache();
+
+        if (self.gpu_pipeline) |pipeline| c.SDL_ReleaseGPUGraphicsPipeline(self.gpu_device, pipeline);
+        if (self.gpu_sampler) |sampler| c.SDL_ReleaseGPUSampler(self.gpu_device, sampler);
+        if (self.white_texture) |white_tex| c.SDL_ReleaseGPUTexture(self.gpu_device, white_tex);
+        if (self.gpu_text_engine) |engine| c.TTF_DestroyGPUTextEngine(engine);
+        if (self.window) |w| c.SDL_ReleaseWindowFromGPUDevice(self.gpu_device, w);
+
         c.SDL_DestroyMutex(self.cache_mutex);
         for (self.image_list.items) |item| {
             self.allocator.free(item);
@@ -502,14 +543,29 @@ const ViewerState = struct {
     }
 
     fn applyTextureScaleMode(self: *ViewerState) void {
-        const sdl_mode = self.getSdlScaleMode();
-        c.SDL_LockMutex(self.cache_mutex);
-        defer c.SDL_UnlockMutex(self.cache_mutex);
-        for (self.cache.items) |entry| {
-            if (entry.texture) |tex| {
-                _ = c.SDL_SetTextureScaleMode(tex, sdl_mode);
-            }
+        const filter = if (self.texture_scale_mode == .linear) c.SDL_GPU_FILTER_LINEAR else c.SDL_GPU_FILTER_NEAREST;
+        if (self.gpu_sampler) |old_sampler| {
+            c.SDL_ReleaseGPUSampler(self.gpu_device, old_sampler);
         }
+
+        const sampler_info = c.SDL_GPUSamplerCreateInfo{
+            .min_filter = @intCast(filter),
+            .mag_filter = @intCast(filter),
+            .mipmap_mode = c.SDL_GPU_SAMPLERMIPMAPMODE_LINEAR,
+            .address_mode_u = c.SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+            .address_mode_v = c.SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+            .address_mode_w = c.SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+            .mip_lod_bias = 0.0,
+            .max_anisotropy = 1.0,
+            .compare_op = c.SDL_GPU_COMPAREOP_NEVER,
+            .min_lod = 0.0,
+            .max_lod = 0.0,
+            .props = 0,
+        };
+        self.gpu_sampler = c.SDL_CreateGPUSampler(self.gpu_device, &sampler_info) orelse {
+            std.log.err("Failed to recreate GPU sampler: {s}", .{c.SDL_GetError()});
+            return;
+        };
     }
 
     fn rebuildPaletteMatches(self: *ViewerState) !void {
@@ -680,6 +736,27 @@ const ViewerState = struct {
                 self.texture_scale_mode = .pixel_art;
                 self.applyTextureScaleMode();
             },
+            .increase_brightness => {
+                self.brightness = std.math.clamp(self.brightness + 0.1, -1.0, 1.0);
+                self.adjustments_dirty = true;
+            },
+            .decrease_brightness => {
+                self.brightness = std.math.clamp(self.brightness - 0.1, -1.0, 1.0);
+                self.adjustments_dirty = true;
+            },
+            .increase_contrast => {
+                self.contrast = std.math.clamp(self.contrast + 0.1, 0.0, 5.0);
+                self.adjustments_dirty = true;
+            },
+            .decrease_contrast => {
+                self.contrast = std.math.clamp(self.contrast - 0.1, 0.0, 5.0);
+                self.adjustments_dirty = true;
+            },
+            .reset_adjustments => {
+                self.brightness = 0.0;
+                self.contrast = 1.0;
+                self.adjustments_dirty = true;
+            },
         }
     }
 
@@ -701,19 +778,115 @@ const ViewerState = struct {
         defer c.SDL_UnlockMutex(self.cache_mutex);
 
         for (self.cache.items) |*entry| {
-            if (entry.status == .loaded and entry.texture == null and entry.surface != null) {
-                const start_upload = c.SDL_GetTicksNS();
-                entry.texture = c.SDL_CreateTextureFromSurface(self.renderer, entry.surface.?);
-                const end_upload = c.SDL_GetTicksNS();
-                if (entry.texture != null) {
-                    _ = c.SDL_SetTextureScaleMode(entry.texture.?, self.getSdlScaleMode());
+            if (entry.status == .loaded and entry.surface != null) {
+                if (entry.gpu_texture == null) {
+                    const start_upload = c.SDL_GetTicksNS();
+                    var current_surf = entry.surface.?;
+                    var scaled_surf: ?*c.SDL_Surface = null;
+                    defer if (scaled_surf) |s| c.SDL_DestroySurface(s);
+
+                    var img_w = current_surf.*.w;
+                    var img_h = current_surf.*.h;
+                    var tex: ?*c.SDL_GPUTexture = null;
+
+                    var try_max_dim: i32 = 16384;
+                    while (try_max_dim >= 2048) : (try_max_dim = @divTrunc(try_max_dim, 2)) {
+                        if (img_w <= try_max_dim and img_h <= try_max_dim) {
+                            const img_tex_info = c.SDL_GPUTextureCreateInfo{
+                                .type = c.SDL_GPU_TEXTURETYPE_2D,
+                                .format = c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+                                .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER,
+                                .width = @intCast(img_w),
+                                .height = @intCast(img_h),
+                                .layer_count_or_depth = 1,
+                                .num_levels = 1,
+                                .sample_count = c.SDL_GPU_SAMPLECOUNT_1,
+                                .props = 0,
+                            };
+                            tex = c.SDL_CreateGPUTexture(self.gpu_device, &img_tex_info);
+                            if (tex != null) break;
+                        }
+
+                        const next_dim = @divTrunc(try_max_dim, 2);
+                        if (img_w > next_dim or img_h > next_dim) {
+                            var new_w = img_w;
+                            var new_h = img_h;
+                            if (img_w > img_h) {
+                                new_w = next_dim;
+                                new_h = @divTrunc(img_h * next_dim, img_w);
+                            } else {
+                                new_h = next_dim;
+                                new_w = @divTrunc(img_w * next_dim, img_h);
+                            }
+                            new_w = @max(1, new_w);
+                            new_h = @max(1, new_h);
+
+                            const new_scale = c.SDL_ScaleSurface(current_surf, new_w, new_h, c.SDL_SCALEMODE_LINEAR);
+                            if (new_scale) |ns| {
+                                if (scaled_surf) |s| c.SDL_DestroySurface(s);
+                                scaled_surf = ns;
+                                current_surf = ns;
+                                img_w = new_w;
+                                img_h = new_h;
+                            } else {
+                                std.log.err("SDL_ScaleSurface failed: {s}", .{c.SDL_GetError()});
+                                break;
+                            }
+                        }
+                    }
+
+                    if (tex == null) {
+                        std.log.err("Create GPU Texture failed for image size {d}x{d}: {s}", .{ entry.surface.?.*.w, entry.surface.?.*.h, c.SDL_GetError() });
+                        continue;
+                    }
+                    entry.gpu_texture = tex.?;
+
+                    const cmd_buf = c.SDL_AcquireGPUCommandBuffer(self.gpu_device) orelse continue;
+                    const size = @as(usize, @intCast(img_w)) * @as(usize, @intCast(img_h)) * 4;
+                    const transfer_buf = c.SDL_CreateGPUTransferBuffer(self.gpu_device, &c.SDL_GPUTransferBufferCreateInfo{
+                        .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+                        .size = @intCast(size),
+                        .props = 0,
+                    }) orelse {
+                        std.log.err("Create transfer buffer failed: {s}", .{c.SDL_GetError()});
+                        _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+                        continue;
+                    };
+                    defer c.SDL_ReleaseGPUTransferBuffer(self.gpu_device, transfer_buf);
+
+                    const mapped: [*]u8 = @ptrCast(c.SDL_MapGPUTransferBuffer(self.gpu_device, transfer_buf, false) orelse {
+                        _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+                        continue;
+                    });
+                    const pixels: [*]const u8 = @ptrCast(current_surf.*.pixels);
+                    @memcpy(mapped[0..size], pixels[0..size]);
+                    c.SDL_UnmapGPUTransferBuffer(self.gpu_device, transfer_buf);
+
+                    const copy_pass = c.SDL_BeginGPUCopyPass(cmd_buf) orelse {
+                        _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+                        continue;
+                    };
+                    c.SDL_UploadToGPUTexture(copy_pass, &c.SDL_GPUTextureTransferInfo{
+                        .transfer_buffer = transfer_buf,
+                        .offset = 0,
+                        .pixels_per_row = @intCast(img_w),
+                        .rows_per_layer = @intCast(img_h),
+                    }, &c.SDL_GPUTextureRegion{
+                        .texture = entry.gpu_texture,
+                        .w = @intCast(img_w),
+                        .h = @intCast(img_h),
+                        .d = 1,
+                    }, false);
+                    c.SDL_EndGPUCopyPass(copy_pass);
+                    _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+
+                    const end_upload = c.SDL_GetTicksNS();
                     entry.upload_time_ms = @as(f64, @floatFromInt(end_upload - start_upload)) / 1_000_000.0;
-                    c.SDL_DestroySurface(entry.surface.?);
-                    entry.surface = null;
-                } else {
-                    std.log.err("Failed to create texture from surface: {s}", .{c.SDL_GetError()});
                 }
             }
+        }
+        if (self.adjustments_dirty) {
+            self.adjustments_dirty = false;
         }
     }
 
@@ -722,8 +895,8 @@ const ViewerState = struct {
         defer c.SDL_UnlockMutex(self.cache_mutex);
 
         for (self.cache.items) |entry| {
-            if (entry.texture) |tex| {
-                c.SDL_DestroyTexture(tex);
+            if (entry.gpu_texture) |tex| {
+                c.SDL_ReleaseGPUTexture(self.gpu_device, tex);
             }
             if (entry.surface) |surf| {
                 c.SDL_DestroySurface(surf);
@@ -785,8 +958,8 @@ const ViewerState = struct {
             }
             if (!wanted) {
                 // Evict
-                if (entry.texture) |tex| {
-                    c.SDL_DestroyTexture(tex);
+                if (entry.gpu_texture) |tex| {
+                    c.SDL_ReleaseGPUTexture(self.gpu_device, tex);
                 }
                 if (entry.surface) |surf| {
                     c.SDL_DestroySurface(surf);
@@ -820,6 +993,7 @@ const ViewerState = struct {
                     .status = .decoding,
                 };
                 try self.cache.append(self.allocator, new_entry);
+                errdefer _ = self.cache.pop();
 
                 // Spawn worker thread
                 const args = try self.allocator.create(DecodeArgs);
@@ -1019,7 +1193,11 @@ const ViewerState = struct {
                 c.SDLK_BACKSPACE => try self.prev(),
                 c.SDLK_SPACE => try self.next(),
                 c.SDLK_R, c.SDLK_0, c.SDLK_KP_0 => {
-                    self.resetZoomPan();
+                    if ((mod & c.SDL_KMOD_SHIFT) != 0) {
+                        try self.triggerAction(.reset_adjustments);
+                    } else {
+                        self.resetZoomPan();
+                    }
                 },
                 c.SDLK_EQUALS, c.SDLK_KP_PLUS => {
                     const old_zoom = self.zoom_factor;
@@ -1101,7 +1279,18 @@ const ViewerState = struct {
                             try self.rebuildPaletteMatches();
                             startTextInput(self.window);
                         }
+                    } else {
+                        try self.triggerAction(.increase_brightness);
                     }
+                },
+                c.SDLK_O => {
+                    try self.triggerAction(.decrease_brightness);
+                },
+                c.SDLK_L => {
+                    try self.triggerAction(.increase_contrast);
+                },
+                c.SDLK_K => {
+                    try self.triggerAction(.decrease_contrast);
                 },
                 else => {},
             }
@@ -1450,42 +1639,38 @@ fn renderPalette(
 }
 
 fn truncateFilename(allocator: std.mem.Allocator, text: []const u8, max_w: f32, font_size: u16, data: *const MeasureTextUserData) []const u8 {
-    var text_config = clay.TextElementConfig{
-        .font_id = 0,
-        .font_size = font_size,
-    };
+    const font = data.fonts[0] orelse return text;
+    const target_size = @as(f32, @floatFromInt(font_size));
+    if (c.TTF_GetFontSize(font) != target_size) {
+        _ = c.TTF_SetFontSize(font, target_size);
+    }
 
-    const initial_dim = sdl3MeasureText(text, &text_config, data);
-    if (initial_dim.w <= max_w) {
+    var w: c_int = 0;
+    var h: c_int = 0;
+    if (!c.TTF_GetStringSize(font, text.ptr, text.len, &w, &h)) {
+        return text;
+    }
+    if (@as(f32, @floatFromInt(w)) <= max_w) {
         return text;
     }
 
-    const dots_w = sdl3MeasureText("...", &text_config, data).w;
+    var dots_w: c_int = 0;
+    var dots_h: c_int = 0;
+    _ = c.TTF_GetStringSize(font, "...", 3, &dots_w, &dots_h);
 
-    var low: usize = 0;
-    var high: usize = text.len;
-    var best_len: usize = 0;
+    const available_w = max_w - @as(f32, @floatFromInt(dots_w));
+    if (available_w <= 0) return "...";
 
-    while (low <= high) {
-        const mid = (low + high) / 2;
-        // Verify UTF-8 boundary before measuring
-        var byte_len = mid;
-        while (byte_len > 0 and byte_len < text.len and (text[byte_len] & 0xC0) == 0x80) {
-            byte_len -= 1;
+    var measured_w: c_int = 0;
+    var measured_len: usize = 0;
+    if (c.TTF_MeasureString(font, text.ptr, text.len, @intFromFloat(available_w), &measured_w, &measured_len)) {
+        var best_len = measured_len;
+        while (best_len > 0 and best_len < text.len and (text[best_len] & 0xC0) == 0x80) {
+            best_len -= 1;
         }
-
-        const part_w = sdl3MeasureText(text[0..byte_len], &text_config, data).w;
-
-        if (part_w + dots_w <= max_w) {
-            best_len = byte_len;
-            low = mid + 1;
-        } else {
-            if (mid == 0) break;
-            high = mid - 1;
-        }
+        return std.fmt.allocPrint(allocator, "{s}...", .{text[0..best_len]}) catch text;
     }
-
-    return std.fmt.allocPrint(allocator, "{s}...", .{text[0..best_len]}) catch text;
+    return text;
 }
 
 fn truncateDirectory(allocator: std.mem.Allocator, text: []const u8, max_w: f32, font_size: u16, data: *const MeasureTextUserData) []const u8 {
@@ -1612,16 +1797,16 @@ pub fn main(init: std.process.Init) !void {
     }
     const dpi_scale = if (win_w > 0) @as(f32, @floatFromInt(pix_w)) / @as(f32, @floatFromInt(win_w)) else 1.0;
 
-    // Create Renderer
-    const renderer_ctx = c.SDL_CreateRenderer(window, null) orelse {
-        std.log.err("SDL_CreateRenderer Error: {s}", .{c.SDL_GetError()});
-        return error.SDLCreateRendererFailed;
+    // Create GPU Device
+    const gpu_device = c.SDL_CreateGPUDevice(c.SDL_GPU_SHADERFORMAT_SPIRV, true, null) orelse {
+        std.log.err("SDL_CreateGPUDevice Error: {s}", .{c.SDL_GetError()});
+        return error.DeviceCreationFailed;
     };
-    defer c.SDL_DestroyRenderer(renderer_ctx);
+    defer c.SDL_DestroyGPUDevice(gpu_device);
 
-    // Enable VSync
-    if (!c.SDL_SetRenderVSync(renderer_ctx, 1)) {
-        std.log.err("SDL_SetRenderVSync failed: {s}", .{c.SDL_GetError()});
+    if (!c.SDL_ClaimWindowForGPUDevice(gpu_device, window)) {
+        std.log.err("SDL_ClaimWindowForGPUDevice failed: {s}", .{c.SDL_GetError()});
+        return error.ClaimWindowFailed;
     }
 
     // Load Font from Memory using SDL_IOStream (scaled by DPI scale)
@@ -1637,12 +1822,204 @@ pub fn main(init: std.process.Init) !void {
     };
     defer c.TTF_CloseFont(font);
 
-    // Create TTF Text Engine
-    const text_engine = c.TTF_CreateRendererTextEngine(renderer_ctx) orelse {
-        std.log.err("TTF_CreateRendererTextEngine Error: {s}", .{c.SDL_GetError()});
+    // Create TTF GPU Text Engine
+    const text_engine = c.TTF_CreateGPUTextEngine(gpu_device) orelse {
+        std.log.err("TTF_CreateGPUTextEngine Error: {s}", .{c.SDL_GetError()});
         return error.TTFCreateEngineFailed;
     };
-    defer c.TTF_DestroyRendererTextEngine(text_engine);
+    defer c.TTF_DestroyGPUTextEngine(text_engine);
+
+    // Compile Shaders
+    const vert_shader_info = c.SDL_GPUShaderCreateInfo{
+        .code_size = vert_spv.len,
+        .code = vert_spv.ptr,
+        .entrypoint = "main",
+        .format = c.SDL_GPU_SHADERFORMAT_SPIRV,
+        .stage = c.SDL_GPU_SHADERSTAGE_VERTEX,
+        .num_samplers = 0,
+        .num_storage_textures = 0,
+        .num_storage_buffers = 0,
+        .num_uniform_buffers = 0,
+        .props = 0,
+    };
+    const vert_shader = c.SDL_CreateGPUShader(gpu_device, &vert_shader_info) orelse {
+        std.log.err("Create Vertex Shader failed: {s}", .{c.SDL_GetError()});
+        return error.ShaderCompilationFailed;
+    };
+    defer c.SDL_ReleaseGPUShader(gpu_device, vert_shader);
+
+    const frag_shader_info = c.SDL_GPUShaderCreateInfo{
+        .code_size = frag_spv.len,
+        .code = frag_spv.ptr,
+        .entrypoint = "main",
+        .format = c.SDL_GPU_SHADERFORMAT_SPIRV,
+        .stage = c.SDL_GPU_SHADERSTAGE_FRAGMENT,
+        .num_samplers = 1,
+        .num_storage_textures = 0,
+        .num_storage_buffers = 0,
+        .num_uniform_buffers = 1,
+        .props = 0,
+    };
+    const frag_shader = c.SDL_CreateGPUShader(gpu_device, &frag_shader_info) orelse {
+        std.log.err("Create Fragment Shader failed: {s}", .{c.SDL_GetError()});
+        return error.ShaderCompilationFailed;
+    };
+    defer c.SDL_ReleaseGPUShader(gpu_device, frag_shader);
+
+    // Create Sampler
+    const sampler_info = c.SDL_GPUSamplerCreateInfo{
+        .min_filter = @intCast(c.SDL_GPU_FILTER_LINEAR),
+        .mag_filter = @intCast(c.SDL_GPU_FILTER_LINEAR),
+        .mipmap_mode = c.SDL_GPU_SAMPLERMIPMAPMODE_LINEAR,
+        .address_mode_u = c.SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+        .address_mode_v = c.SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+        .address_mode_w = c.SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+        .mip_lod_bias = 0.0,
+        .max_anisotropy = 1.0,
+        .compare_op = c.SDL_GPU_COMPAREOP_NEVER,
+        .min_lod = 0.0,
+        .max_lod = 0.0,
+        .props = 0,
+    };
+    const sampler = c.SDL_CreateGPUSampler(gpu_device, &sampler_info) orelse {
+        std.log.err("Create GPU Sampler failed: {s}", .{c.SDL_GetError()});
+        return error.SamplerCreationFailed;
+    };
+
+    // Create 1x1 White Texture
+    const white_tex_info = c.SDL_GPUTextureCreateInfo{
+        .type = c.SDL_GPU_TEXTURETYPE_2D,
+        .format = c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+        .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER,
+        .width = 1,
+        .height = 1,
+        .layer_count_or_depth = 1,
+        .num_levels = 1,
+        .sample_count = c.SDL_GPU_SAMPLECOUNT_1,
+        .props = 0,
+    };
+    const white_tex = c.SDL_CreateGPUTexture(gpu_device, &white_tex_info) orelse {
+        std.log.err("Create White Texture failed: {s}", .{c.SDL_GetError()});
+        return error.TextureCreationFailed;
+    };
+
+    // Upload white pixel
+    {
+        const cmd_buf = c.SDL_AcquireGPUCommandBuffer(gpu_device) orelse return error.AcquireCmdBufferFailed;
+        const transfer_buf = c.SDL_CreateGPUTransferBuffer(gpu_device, &c.SDL_GPUTransferBufferCreateInfo{
+            .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+            .size = 4,
+            .props = 0,
+        }) orelse return error.CreateTransferBufferFailed;
+        defer c.SDL_ReleaseGPUTransferBuffer(gpu_device, transfer_buf);
+
+        const mapped: [*]u8 = @ptrCast(c.SDL_MapGPUTransferBuffer(gpu_device, transfer_buf, false) orelse return error.MapBufferFailed);
+        mapped[0] = 255;
+        mapped[1] = 255;
+        mapped[2] = 255;
+        mapped[3] = 255;
+        c.SDL_UnmapGPUTransferBuffer(gpu_device, transfer_buf);
+
+        const copy_pass = c.SDL_BeginGPUCopyPass(cmd_buf) orelse return error.BeginCopyPassFailed;
+        c.SDL_UploadToGPUTexture(copy_pass, &c.SDL_GPUTextureTransferInfo{
+            .transfer_buffer = transfer_buf,
+            .offset = 0,
+            .pixels_per_row = 1,
+            .rows_per_layer = 1,
+        }, &c.SDL_GPUTextureRegion{
+            .texture = white_tex,
+            .w = 1,
+            .h = 1,
+            .d = 1,
+        }, false);
+        c.SDL_EndGPUCopyPass(copy_pass);
+        _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+    }
+
+    // Create Graphics Pipeline
+    const vertex_attribs = [_]c.SDL_GPUVertexAttribute{
+        .{ .location = 0, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, .offset = @offsetOf(renderer.Vertex, "x") },
+        .{ .location = 1, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, .offset = @offsetOf(renderer.Vertex, "u") },
+        .{ .location = 2, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, .offset = @offsetOf(renderer.Vertex, "r") },
+    };
+    const vertex_buf_descs = [_]c.SDL_GPUVertexBufferDescription{
+        .{ .slot = 0, .pitch = @sizeOf(renderer.Vertex), .input_rate = c.SDL_GPU_VERTEXINPUTRATE_VERTEX, .instance_step_rate = 0 },
+    };
+
+    const target_info = c.SDL_GPUGraphicsPipelineTargetInfo{
+        .color_target_descriptions = &[_]c.SDL_GPUColorTargetDescription{.{
+            .format = c.SDL_GetGPUSwapchainTextureFormat(gpu_device, window),
+            .blend_state = .{
+                .src_color_blendfactor = c.SDL_GPU_BLENDFACTOR_SRC_ALPHA,
+                .dst_color_blendfactor = c.SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                .color_blend_op = c.SDL_GPU_BLENDOP_ADD,
+                .src_alpha_blendfactor = c.SDL_GPU_BLENDFACTOR_ONE,
+                .dst_alpha_blendfactor = c.SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                .alpha_blend_op = c.SDL_GPU_BLENDOP_ADD,
+                .enable_blend = true,
+                .enable_color_write_mask = false,
+                .padding1 = 0,
+                .padding2 = 0,
+            },
+        }},
+        .num_color_targets = 1,
+        .depth_stencil_format = c.SDL_GPU_TEXTUREFORMAT_D16_UNORM,
+        .has_depth_stencil_target = false,
+        .padding1 = 0,
+        .padding2 = 0,
+        .padding3 = 0,
+    };
+
+    const pipeline_info = c.SDL_GPUGraphicsPipelineCreateInfo{
+        .vertex_shader = vert_shader,
+        .fragment_shader = frag_shader,
+        .vertex_input_state = .{
+            .vertex_buffer_descriptions = &vertex_buf_descs,
+            .num_vertex_buffers = vertex_buf_descs.len,
+            .vertex_attributes = &vertex_attribs,
+            .num_vertex_attributes = vertex_attribs.len,
+        },
+        .primitive_type = c.SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
+        .rasterizer_state = .{
+            .fill_mode = c.SDL_GPU_FILLMODE_FILL,
+            .cull_mode = c.SDL_GPU_CULLMODE_NONE,
+            .front_face = c.SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE,
+            .depth_bias_constant_factor = 0.0,
+            .depth_bias_clamp = 0.0,
+            .depth_bias_slope_factor = 0.0,
+            .enable_depth_bias = false,
+            .enable_depth_clip = false,
+            .padding1 = 0,
+            .padding2 = 0,
+        },
+        .multisample_state = .{
+            .sample_count = c.SDL_GPU_SAMPLECOUNT_1,
+            .sample_mask = 0,
+            .enable_mask = false,
+            .enable_alpha_to_coverage = false,
+            .padding2 = 0,
+            .padding3 = 0,
+        },
+        .depth_stencil_state = .{
+            .compare_op = c.SDL_GPU_COMPAREOP_NEVER,
+            .back_stencil_state = .{ .compare_op = c.SDL_GPU_COMPAREOP_NEVER, .fail_op = c.SDL_GPU_STENCILOP_KEEP, .pass_op = c.SDL_GPU_STENCILOP_KEEP, .depth_fail_op = c.SDL_GPU_STENCILOP_KEEP },
+            .front_stencil_state = .{ .compare_op = c.SDL_GPU_COMPAREOP_NEVER, .fail_op = c.SDL_GPU_STENCILOP_KEEP, .pass_op = c.SDL_GPU_STENCILOP_KEEP, .depth_fail_op = c.SDL_GPU_STENCILOP_KEEP },
+            .compare_mask = 0,
+            .write_mask = 0,
+            .enable_depth_test = false,
+            .enable_depth_write = false,
+            .enable_stencil_test = false,
+            .padding1 = 0,
+            .padding2 = 0,
+            .padding3 = 0,
+        },
+        .target_info = target_info,
+        .props = 0,
+    };
+    const pipeline = c.SDL_CreateGPUGraphicsPipeline(gpu_device, &pipeline_info) orelse {
+        std.log.err("Create GPU Graphics Pipeline failed: {s}", .{c.SDL_GetError()});
+        return error.PipelineCreationFailed;
+    };
 
     // Allocate memory for Clay
     const buffer_size = clay.minMemorySize();
@@ -1672,17 +2049,24 @@ pub fn main(init: std.process.Init) !void {
 
     // Initialize state
     var state = ViewerState{
-        .renderer = renderer_ctx,
+        .gpu_device = gpu_device,
+        .gpu_pipeline = pipeline,
+        .gpu_sampler = sampler,
+        .white_texture = white_tex,
+        .gpu_text_engine = text_engine,
         .image_list = std.ArrayList([]const u8).empty,
         .cache = std.ArrayList(CacheEntry).empty,
         .cache_mutex = cache_mutex,
         .allocator = gpa,
         .io = init.io,
-        .window_pixel_format = c.SDL_GetWindowPixelFormat(window),
+        .window_pixel_format = c.SDL_PIXELFORMAT_RGBA32,
         .palette = PaletteState.init(gpa),
         .scale_mode = default_scale,
         .rotation_angle = 0.0,
         .rotation_map = std.StringHashMap(f32).init(gpa),
+        .brightness = 0.0,
+        .contrast = 1.0,
+        .adjustments_dirty = false,
         .window = window,
         .is_fullscreen = false,
         .running = true,
@@ -2031,7 +2415,7 @@ pub fn main(init: std.process.Init) !void {
         var draw_h: f32 = 0;
 
         if (state.getCurrentEntry()) |entry| {
-            if (entry.texture != null) {
+            if (entry.gpu_texture != null) {
                 const padding: f32 = 0.0;
                 const view_w = @max(available_width - padding * 2.0, 1.0);
                 const view_h = @max(height - (title_bar_h + nav_bar_h) * scale_y - padding * 2.0, 1.0);
@@ -2121,7 +2505,7 @@ pub fn main(init: std.process.Init) !void {
 
                 if (state.getCurrentEntry()) |entry| {
                     mime_type = entry.mime_type;
-                    if (entry.status == .loaded or entry.texture != null) {
+                    if (entry.status == .loaded or entry.gpu_texture != null) {
                         const disk_size_buf = try frame_allocator.alloc(u8, 64);
                         disk_size_str = formatSize(entry.size_bytes, disk_size_buf);
 
@@ -2262,6 +2646,15 @@ pub fn main(init: std.process.Init) !void {
                         .pixel_art => "Pixel Art (Crisp)",
                     };
                     try renderStatRow("Scaling Filter", filter_str, scale_x, scale_y, dpi_scale);
+
+                    var brightness_buf: [32]u8 = undefined;
+                    const brightness_val = state.brightness * 100.0;
+                    const brightness_str = try std.fmt.bufPrint(&brightness_buf, "{s}{d:.0}%", .{ if (brightness_val > 0) "+" else "", brightness_val });
+                    var contrast_buf: [32]u8 = undefined;
+                    const contrast_val = (state.contrast - 1.0) * 100.0;
+                    const contrast_str = try std.fmt.bufPrint(&contrast_buf, "{s}{d:.0}%", .{ if (contrast_val > 0) "+" else "", contrast_val });
+                    try renderStatRow("Brightness", brightness_str, scale_x, scale_y, dpi_scale);
+                    try renderStatRow("Contrast", contrast_str, scale_x, scale_y, dpi_scale);
                 });
             }
 
@@ -2331,7 +2724,7 @@ pub fn main(init: std.process.Init) !void {
                 .clip = .{ .horizontal = true, .vertical = true },
             })({
                 if (state.getCurrentEntry()) |entry| {
-                    if (entry.texture) |tex| {
+                    if (entry.gpu_texture) |tex| {
                         clay.UI()(.{
                             .id = clay.getElementId("ImageCanvas"),
                             .layout = .{
@@ -2432,22 +2825,50 @@ pub fn main(init: std.process.Init) !void {
         }
 
         // Render Frame
-        if (!c.SDL_SetRenderDrawColor(renderer_ctx, 0, 0, 0, 255)) {
-            std.log.err("SDL_SetRenderDrawColor failed: {s}", .{c.SDL_GetError()});
-        }
-        if (!c.SDL_RenderClear(renderer_ctx)) {
-            std.log.err("SDL_RenderClear failed: {s}", .{c.SDL_GetError()});
+        const cmd_buf = c.SDL_AcquireGPUCommandBuffer(state.gpu_device) orelse continue;
+        var swap_tex: ?*c.SDL_GPUTexture = null;
+        var swap_w: u32 = 0;
+        var swap_h: u32 = 0;
+
+        var temp_textures = std.ArrayList(*c.SDL_GPUTexture).empty;
+        defer temp_textures.deinit(frame_allocator);
+        var temp_buffers = std.ArrayList(*c.SDL_GPUTransferBuffer).empty;
+        defer temp_buffers.deinit(frame_allocator);
+
+        if (c.SDL_WaitAndAcquireGPUSwapchainTexture(cmd_buf, window, &swap_tex, &swap_w, &swap_h)) {
+            try renderer.renderClayCommands(
+                state.gpu_device,
+                cmd_buf,
+                swap_tex,
+                state.gpu_pipeline,
+                state.gpu_sampler,
+                state.white_texture,
+                state.gpu_text_engine,
+                fonts[0..],
+                render_commands,
+                frame_allocator,
+                &temp_textures,
+                &temp_buffers,
+                .{
+                    .zoom_factor = state.zoom_factor,
+                    .pan_x = state.pan_x,
+                    .pan_y = state.pan_y,
+                    .rotation_angle = state.rotation_angle,
+                },
+                @intCast(swap_w),
+                @intCast(swap_h),
+                state.brightness,
+                state.contrast,
+            );
         }
 
-        try renderer.renderClayCommands(renderer_ctx, text_engine, fonts[0..], render_commands, frame_allocator, .{
-            .zoom_factor = state.zoom_factor,
-            .pan_x = state.pan_x,
-            .pan_y = state.pan_y,
-            .rotation_angle = state.rotation_angle,
-        });
+        _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
 
-        if (!c.SDL_RenderPresent(renderer_ctx)) {
-            std.log.err("SDL_RenderPresent failed: {s}", .{c.SDL_GetError()});
+        for (temp_textures.items) |tex| {
+            c.SDL_ReleaseGPUTexture(state.gpu_device, tex);
+        }
+        for (temp_buffers.items) |buf| {
+            c.SDL_ReleaseGPUTransferBuffer(state.gpu_device, buf);
         }
     }
 }

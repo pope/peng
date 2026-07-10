@@ -43,6 +43,15 @@ pub fn build(b: *std.Build) void {
 
     b.installArtifact(exe);
 
+    // Shader compilation
+    const compile_shaders = b.step("shaders", "Compile shaders");
+    const vert_cmd = b.addSystemCommand(&.{ "glslangValidator", "-V", "-S", "vert", "src/shaders/vert.glsl", "-o", "src/shaders/vert.spv" });
+    const frag_cmd = b.addSystemCommand(&.{ "glslangValidator", "-V", "-S", "frag", "src/shaders/frag.glsl", "-o", "src/shaders/frag.spv" });
+    compile_shaders.dependOn(&vert_cmd.step);
+    compile_shaders.dependOn(&frag_cmd.step);
+
+    exe.step.dependOn(compile_shaders);
+
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
