@@ -1147,7 +1147,7 @@ pub const ViewerState = struct {
                 const old_zoom = self.zoom_factor;
                 self.zoom_factor = std.math.clamp(self.zoom_factor + input.scroll_delta_y * 0.1, 0.1, 10.0);
 
-                const available_width = if (clay.isDebugModeEnabled()) @max(input.pix_w - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)) * input.scale_x, 1.0) else input.pix_w;
+                const available_width = if (clay.isDebugModeEnabled()) @max(input.pix_w - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0) else input.pix_w;
                 const cx = available_width / 2.0;
                 var title_bar_h: f32 = 60.0;
                 if (self.is_fullscreen) {

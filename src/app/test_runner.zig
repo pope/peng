@@ -129,8 +129,9 @@ pub fn runIntegrationTests(
         "test_4_action_palette.png",
         "test_5_files_palette.png",
         "test_6_next_image.png",
+        "test_7_debug_tools.png",
     };
-    while (test_frame < 7) : (test_frame += 1) {
+    while (test_frame < 8) : (test_frame += 1) {
         // Pump event loop to prevent OS "Application Unresponsive" warnings
         var event: c.SDL_Event = undefined;
         while (c.SDL_PollEvent(&event)) {}
@@ -222,6 +223,10 @@ pub fn runIntegrationTests(
                 state.palette.mode = .inactive;
                 try state.next();
             },
+            7 => {
+                std.log.info("Test Mode Frame 7: Toggle Clay Debug Mode", .{});
+                clay.setDebugModeEnabled(true);
+            },
             else => unreachable,
         }
 
@@ -259,5 +264,6 @@ pub fn runIntegrationTests(
             try compareScreenshots(base_filename, run_filename, diff_filename);
         }
     }
+    clay.setDebugModeEnabled(false);
     std.log.info("Test Mode completed successfully!", .{});
 }

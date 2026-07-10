@@ -37,7 +37,7 @@ pub fn renderFrame(
 
     var available_width = width;
     if (clay.isDebugModeEnabled()) {
-        available_width = @max(width - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)) * scale_x, 1.0);
+        available_width = @max(width - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0);
     }
 
     var draw_w: f32 = 0;
@@ -109,7 +109,7 @@ pub fn renderFrame(
     clay.UI()(.{
         .id = clay.getElementId("MainLayout"),
         .layout = .{
-            .sizing = .{ .w = .grow, .h = .grow },
+            .sizing = .{ .w = if (clay.isDebugModeEnabled()) .fixed(available_width) else .grow, .h = .grow },
             .direction = .top_to_bottom,
         },
         .background_color = .{ 24, 24, 37, 255 }, // Catppuccin Base (Mocha Mantle/Base)
