@@ -102,10 +102,16 @@ pub fn renderPalette(
         },
         .background_color = .{ 30, 30, 46, 245 }, // Catppuccin Base with opacity
         .corner_radius = layout_helpers.scaleCornerRadius(10, scale),
-        .border = .{ .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 }, .color = .{ 79, 79, 97, 255 } },
+        .border = .{
+            .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+            .color = .{ 79, 79, 97, 255 },
+        },
         .floating = .{
             .attach_to = .to_parent,
-            .attach_points = .{ .element = .center_center, .parent = .center_center },
+            .attach_points = .{
+                .element = .center_center,
+                .parent = .center_center,
+            },
             .z_index = 200,
         },
     })({
@@ -140,7 +146,10 @@ pub fn renderPalette(
             },
             .background_color = .{ 17, 17, 27, 255 }, // Catppuccin Crust (input background)
             .corner_radius = layout_helpers.scaleCornerRadius(6, scale),
-            .border = .{ .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 }, .color = .{ 137, 180, 250, 255 } }, // Blue active border
+            .border = .{
+                .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                .color = .{ 137, 180, 250, 255 },
+            }, // Blue active border
         })({
             const query_str = if (palette.query.items.len > 0) palette.query.items else cfg.placeholder;
             const query_color = if (palette.query.items.len > 0) clay.Color{ 205, 214, 244, 255 } else clay.Color{ 108, 112, 134, 255 };

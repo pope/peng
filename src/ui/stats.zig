@@ -17,7 +17,9 @@ pub fn renderStatRow(label: []const u8, value: []const u8, scale_x: f32, scale_y
             .child_alignment = .{ .x = .left, .y = .center },
         },
     })({
-        clay.UI()(.{ .layout = .{ .sizing = .{ .w = .fixed(110 * scale_x), .h = .grow } } })({
+        clay.UI()(.{ .layout = .{
+            .sizing = .{ .w = .fixed(110 * scale_x), .h = .grow },
+        } })({
             clay.text(label, .{
                 .color = .{ 166, 173, 200, 255 }, // Subtext0
                 .font_size = @intFromFloat(13.0 * dpi_scale),
@@ -143,7 +145,10 @@ pub fn renderStatsOverlay(
         .floating = .{
             .attach_to = .to_parent,
             .attach_points = .{ .element = .left_top, .parent = .left_top },
-            .offset = .{ .x = state.stats_offset_x * dpi_scale, .y = state.stats_offset_y * dpi_scale },
+            .offset = .{
+                .x = state.stats_offset_x * dpi_scale,
+                .y = state.stats_offset_y * dpi_scale,
+            },
             .z_index = 100,
         },
     })({
@@ -155,7 +160,9 @@ pub fn renderStatsOverlay(
                 .child_alignment = .{ .x = .left, .y = .center },
             },
         })({
-            clay.UI()(.{ .layout = .{ .sizing = .{ .w = .grow, .h = .grow } } })({
+            clay.UI()(.{ .layout = .{
+                .sizing = .{ .w = .grow, .h = .grow },
+            } })({
                 clay.text("Stats for Nerds", .{
                     .color = .{ 245, 194, 231, 255 },
                     .font_size = @intFromFloat(16.0 * dpi_scale),
@@ -165,7 +172,10 @@ pub fn renderStatsOverlay(
             clay.UI()(.{
                 .id = clay.getElementId("StatsCloseBtn"),
                 .layout = .{
-                    .sizing = .{ .w = .fixed(24 * scale_x), .h = .fixed(24 * scale_y) },
+                    .sizing = .{
+                        .w = .fixed(24 * scale_x),
+                        .h = .fixed(24 * scale_y),
+                    },
                     .child_alignment = .{ .x = .center, .y = .center },
                 },
                 .background_color = .{ 49, 50, 68, 255 },

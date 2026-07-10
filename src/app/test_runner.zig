@@ -252,16 +252,48 @@ pub fn runIntegrationTests(
         clay.setLayoutDimensions(.{ .w = input.pix_w, .h = input.pix_h });
         clay.setPointerState(.{ .x = -1.0, .y = -1.0 }, false);
 
-        const base_filename = try frame_allocator.dupeZ(u8, try std.fmt.allocPrint(frame_allocator, "testfiles/golden-screenshots/{s}", .{filenames[test_frame]}));
-        const run_filename = try frame_allocator.dupeZ(u8, try std.fmt.allocPrint(frame_allocator, "testfiles/current-run/{s}", .{filenames[test_frame]}));
-        const diff_filename = try frame_allocator.dupeZ(u8, try std.fmt.allocPrint(frame_allocator, "testfiles/current-run/diff_{s}", .{filenames[test_frame]}));
+        const base_filename = try frame_allocator.dupeZ(
+            u8,
+            try std.fmt.allocPrint(
+                frame_allocator,
+                "testfiles/golden-screenshots/{s}",
+                .{filenames[test_frame]},
+            ),
+        );
+        const run_filename = try frame_allocator.dupeZ(
+            u8,
+            try std.fmt.allocPrint(
+                frame_allocator,
+                "testfiles/current-run/{s}",
+                .{filenames[test_frame]},
+            ),
+        );
+        const diff_filename = try frame_allocator.dupeZ(
+            u8,
+            try std.fmt.allocPrint(
+                frame_allocator,
+                "testfiles/current-run/diff_{s}",
+                .{filenames[test_frame]},
+            ),
+        );
 
         const capture_path = if (state.update_baselines) base_filename else run_filename;
 
-        try renderFrame(state, input, frame_allocator, resources.fonts[0..], measure_data, capture_path);
+        try renderFrame(
+            state,
+            input,
+            frame_allocator,
+            resources.fonts[0..],
+            measure_data,
+            capture_path,
+        );
 
         if (!state.update_baselines) {
-            try compareScreenshots(base_filename, run_filename, diff_filename);
+            try compareScreenshots(
+                base_filename,
+                run_filename,
+                diff_filename,
+            );
         }
     }
     clay.setDebugModeEnabled(false);

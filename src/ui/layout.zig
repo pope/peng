@@ -109,7 +109,10 @@ pub fn renderFrame(
     clay.UI()(.{
         .id = clay.getElementId("MainLayout"),
         .layout = .{
-            .sizing = .{ .w = if (clay.isDebugModeEnabled()) .fixed(available_width) else .grow, .h = .grow },
+            .sizing = .{
+                .w = if (clay.isDebugModeEnabled()) .fixed(available_width) else .grow,
+                .h = .grow,
+            },
             .direction = .top_to_bottom,
         },
         .background_color = .{ 24, 24, 37, 255 }, // Catppuccin Base (Mocha Mantle/Base)
@@ -139,7 +142,10 @@ pub fn renderFrame(
             clay.UI()(.{
                 .id = clay.getElementId("TitleBar"),
                 .layout = .{
-                    .sizing = .{ .w = .grow, .h = .fixed(title_bar_h * scale_y) },
+                    .sizing = .{
+                        .w = .grow,
+                        .h = .fixed(title_bar_h * scale_y),
+                    },
                     .direction = .left_to_right,
                     .child_alignment = .{ .x = .left, .y = .center },
                     .padding = .{
@@ -148,7 +154,10 @@ pub fn renderFrame(
                     },
                 },
                 .background_color = .{ 17, 17, 27, 255 },
-                .border = .{ .width = .{ .bottom = 1 }, .color = .{ 49, 50, 68, 255 } },
+                .border = .{
+                    .width = .{ .bottom = 1 },
+                    .color = .{ 49, 50, 68, 255 },
+                },
             })({
                 clay.text("Peng Image Viewer", .{
                     .color = .{ 205, 214, 244, 255 },
@@ -186,7 +195,10 @@ pub fn renderFrame(
                     clay.UI()(.{
                         .id = clay.getElementId("ImageCanvas"),
                         .layout = .{
-                            .sizing = .{ .w = .fixed(draw_w), .h = .fixed(draw_h) },
+                            .sizing = .{
+                                .w = .fixed(draw_w),
+                                .h = .fixed(draw_h),
+                            },
                         },
                         .image = .{
                             .image_data = @ptrCast(tex),
@@ -246,7 +258,10 @@ pub fn renderFrame(
                                 .bottom = @intFromFloat(32 * scale_y),
                             },
                         },
-                        .border = .{ .width = .{ .left = 2, .right = 2, .top = 2, .bottom = 2 }, .color = .{ 79, 79, 97, 255 } },
+                        .border = .{
+                            .width = .{ .left = 2, .right = 2, .top = 2, .bottom = 2 },
+                            .color = .{ 79, 79, 97, 255 },
+                        },
                         .corner_radius = .all(12),
                         .user_data = @ptrFromInt(@intFromEnum(ElementTag.drop_zone_box)),
                     })({
@@ -288,7 +303,13 @@ pub fn renderFrame(
         }
     }
 
-    if (c.SDL_WaitAndAcquireGPUSwapchainTexture(cmd_buf, state.window, &swap_tex, &swap_w, &swap_h)) {
+    if (c.SDL_WaitAndAcquireGPUSwapchainTexture(
+        cmd_buf,
+        state.window,
+        &swap_tex,
+        &swap_w,
+        &swap_h,
+    )) {
         if (swap_w == 0 or swap_h == 0) {
             cmd_buf_submitted = true;
             _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);

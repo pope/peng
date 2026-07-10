@@ -1054,8 +1054,6 @@ pub const ViewerState = struct {
         try self.rebuildPaletteMatches();
     }
 
-
-
     pub fn update(self: *ViewerState, input: FrameInput) !void {
         // 1. Text input updates
         if (input.text_input) |text| {
