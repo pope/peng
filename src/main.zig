@@ -1,5 +1,5 @@
 const std = @import("std");
-const clay = @import("zclay");
+pub const clay = @import("zclay");
 const renderer = @import("renderer.zig");
 
 pub const c = @cImport({
@@ -429,6 +429,19 @@ pub const TextureScaleMode = enum {
     nearest,
     linear,
     pixel_art,
+};
+pub const ElementTag = enum(usize) {
+    none = 0,
+    drop_zone_box = 1337,
+
+    pub fn fromInt(val: usize) ElementTag {
+        inline for (std.meta.tags(ElementTag)) |tag| {
+            if (val == @intFromEnum(tag)) {
+                return tag;
+            }
+        }
+        return .none;
+    }
 };
 
 const ViewerState = struct {
@@ -2369,19 +2382,37 @@ pub fn main(init: std.process.Init) !void {
                             .sizing = .{ .w = .grow, .h = .grow },
                             .direction = .top_to_bottom,
                             .child_alignment = .{ .x = .center, .y = .center },
-                            .child_gap = @intFromFloat(10 * scale_y),
                         },
                     })({
-                        clay.text("No Images Loaded", .{
-                            .color = .{ 205, 214, 244, 255 },
-                            .font_size = @intFromFloat(22.0 * dpi_scale),
-                            .font_id = 0,
-                        });
+                        clay.UI()(.{
+                            .id = clay.ElementId.ID("DropZoneBox"),
+                            .layout = .{
+                                .sizing = .{ .w = .fit, .h = .fit },
+                                .direction = .top_to_bottom,
+                                .child_alignment = .{ .x = .center, .y = .center },
+                                .child_gap = @intFromFloat(16 * scale_y),
+                                .padding = .{
+                                    .left = @intFromFloat(40 * scale_x),
+                                    .right = @intFromFloat(40 * scale_x),
+                                    .top = @intFromFloat(32 * scale_y),
+                                    .bottom = @intFromFloat(32 * scale_y),
+                                },
+                            },
+                            .border = .{ .width = .{ .left = 2, .right = 2, .top = 2, .bottom = 2 }, .color = .{ 79, 79, 97, 255 } },
+                            .corner_radius = .all(12),
+                            .user_data = @ptrFromInt(@intFromEnum(ElementTag.drop_zone_box)),
+                        })({
+                            clay.text("No Images Loaded", .{
+                                .color = .{ 205, 214, 244, 255 },
+                                .font_size = @intFromFloat(22.0 * dpi_scale),
+                                .font_id = 0,
+                            });
 
-                        clay.text("Drag & Drop images or directories here to view them.", .{
-                            .color = .{ 166, 173, 200, 255 },
-                            .font_size = @intFromFloat(14.0 * dpi_scale),
-                            .font_id = 0,
+                            clay.text("Drag & Drop images or directories here to view them.", .{
+                                .color = .{ 166, 173, 200, 255 },
+                                .font_size = @intFromFloat(14.0 * dpi_scale),
+                                .font_id = 0,
+                            });
                         });
                     });
                 }
@@ -2422,4 +2453,11 @@ pub fn main(init: std.process.Init) !void {
             std.log.err("SDL_RenderPresent failed: {s}", .{c.SDL_GetError()});
         }
     }
+}
+
+test "ElementTag.fromInt" {
+    try std.testing.expectEqual(ElementTag.none, ElementTag.fromInt(0));
+    try std.testing.expectEqual(ElementTag.drop_zone_box, ElementTag.fromInt(1337));
+    try std.testing.expectEqual(ElementTag.none, ElementTag.fromInt(9999));
+    try std.testing.expectEqual(ElementTag.none, ElementTag.fromInt(0x7fffffffd000));
 }

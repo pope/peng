@@ -1,7 +1,8 @@
 const std = @import("std");
 const clay = @import("zclay");
 
-const c = @import("main.zig").c;
+const main = @import("main.zig");
+const c = main.c;
 
 fn setRenderDrawColor(renderer: ?*c.SDL_Renderer, color: clay.Color) void {
     if (!c.SDL_SetRenderDrawColor(
@@ -240,7 +241,33 @@ fn renderFillRoundedRect(renderer: ?*c.SDL_Renderer, rect: c.SDL_FRect, corner_r
     }
 }
 
-fn renderArc(renderer: ?*c.SDL_Renderer, center: c.SDL_FPoint, radius: f32, start_angle: f32, end_angle: f32, thickness: f32, clay_color: clay.Color, allocator: std.mem.Allocator) !void {
+fn drawDashedLineH(renderer: ?*c.SDL_Renderer, x1: f32, x2: f32, y: f32, thickness: f32, color: clay.Color, dash_len: f32, gap_len: f32) void {
+    setRenderDrawColor(renderer, color);
+    var x = x1;
+    while (x < x2) {
+        const draw_w = @min(dash_len, x2 - x);
+        const rect = c.SDL_FRect{ .x = x, .y = y, .w = draw_w, .h = thickness };
+        if (!c.SDL_RenderFillRect(renderer, &rect)) {
+            std.log.err("SDL_RenderFillRect failed: {s}", .{c.SDL_GetError()});
+        }
+        x += dash_len + gap_len;
+    }
+}
+
+fn drawDashedLineV(renderer: ?*c.SDL_Renderer, x: f32, y1: f32, y2: f32, thickness: f32, color: clay.Color, dash_len: f32, gap_len: f32) void {
+    setRenderDrawColor(renderer, color);
+    var y = y1;
+    while (y < y2) {
+        const draw_h = @min(dash_len, y2 - y);
+        const rect = c.SDL_FRect{ .x = x, .y = y, .w = thickness, .h = draw_h };
+        if (!c.SDL_RenderFillRect(renderer, &rect)) {
+            std.log.err("SDL_RenderFillRect failed: {s}", .{c.SDL_GetError()});
+        }
+        y += dash_len + gap_len;
+    }
+}
+
+fn renderArc(renderer: ?*c.SDL_Renderer, center: c.SDL_FPoint, radius: f32, start_angle: f32, end_angle: f32, thickness: f32, clay_color: clay.Color, allocator: std.mem.Allocator, is_dashed: bool) !void {
     setRenderDrawColor(renderer, clay_color);
 
     const rad_start = start_angle * (std.math.pi / 180.0);
@@ -293,8 +320,18 @@ fn renderArc(renderer: ?*c.SDL_Renderer, center: c.SDL_FPoint, radius: f32, star
                 .y = @round(center.y + sin_table[i] * clamped_radius),
             };
         }
-        if (!c.SDL_RenderLines(renderer, &points[0], @intCast(points_len))) {
-            std.log.err("SDL_RenderLines failed: {s}", .{c.SDL_GetError()});
+        if (is_dashed) {
+            var s: usize = 0;
+            while (s < points_len - 1) : (s += 4) {
+                const segment_len = @min(2, points_len - 1 - s);
+                if (!c.SDL_RenderLines(renderer, &points[s], @intCast(segment_len + 1))) {
+                    std.log.err("SDL_RenderLines failed: {s}", .{c.SDL_GetError()});
+                }
+            }
+        } else {
+            if (!c.SDL_RenderLines(renderer, &points[0], @intCast(points_len))) {
+                std.log.err("SDL_RenderLines failed: {s}", .{c.SDL_GetError()});
+            }
         }
     }
 }
@@ -373,55 +410,74 @@ pub fn renderClayCommands(renderer: ?*c.SDL_Renderer, text_engine: ?*c.TTF_TextE
                     .bottom_right = @min(config.corner_radius.bottom_right, min_radius),
                 };
 
+                const tag = if (rcmd.user_data) |ptr| main.ElementTag.fromInt(@intFromPtr(ptr)) else .none;
+                const is_dashed = (tag == .drop_zone_box);
+
                 setRenderDrawColor(renderer, config.color);
 
                 if (config.width.left > 0) {
                     const starting_y = rect.y + clamped_radii.top_left;
                     const length = rect.h - clamped_radii.top_left - clamped_radii.bottom_left;
-                    const line = c.SDL_FRect{ .x = rect.x, .y = starting_y, .w = @floatFromInt(config.width.left), .h = length };
-                    if (!c.SDL_RenderFillRect(renderer, &line)) {
-                        std.log.err("SDL_RenderFillRect failed: {s}", .{c.SDL_GetError()});
+                    if (is_dashed) {
+                        drawDashedLineV(renderer, rect.x, starting_y, starting_y + length, @floatFromInt(config.width.left), config.color, 8.0, 6.0);
+                    } else {
+                        const line = c.SDL_FRect{ .x = rect.x, .y = starting_y, .w = @floatFromInt(config.width.left), .h = length };
+                        if (!c.SDL_RenderFillRect(renderer, &line)) {
+                            std.log.err("SDL_RenderFillRect failed: {s}", .{c.SDL_GetError()});
+                        }
                     }
                 }
                 if (config.width.right > 0) {
                     const starting_x = rect.x + rect.w - @as(f32, @floatFromInt(config.width.right));
                     const starting_y = rect.y + clamped_radii.top_right;
                     const length = rect.h - clamped_radii.top_right - clamped_radii.bottom_right;
-                    const line = c.SDL_FRect{ .x = starting_x, .y = starting_y, .w = @floatFromInt(config.width.right), .h = length };
-                    if (!c.SDL_RenderFillRect(renderer, &line)) {
-                        std.log.err("SDL_RenderFillRect failed: {s}", .{c.SDL_GetError()});
+                    if (is_dashed) {
+                        drawDashedLineV(renderer, starting_x, starting_y, starting_y + length, @floatFromInt(config.width.right), config.color, 8.0, 6.0);
+                    } else {
+                        const line = c.SDL_FRect{ .x = starting_x, .y = starting_y, .w = @floatFromInt(config.width.right), .h = length };
+                        if (!c.SDL_RenderFillRect(renderer, &line)) {
+                            std.log.err("SDL_RenderFillRect failed: {s}", .{c.SDL_GetError()});
+                        }
                     }
                 }
                 if (config.width.top > 0) {
                     const starting_x = rect.x + clamped_radii.top_left;
                     const length = rect.w - clamped_radii.top_left - clamped_radii.top_right;
-                    const line = c.SDL_FRect{ .x = starting_x, .y = rect.y, .w = length, .h = @floatFromInt(config.width.top) };
-                    if (!c.SDL_RenderFillRect(renderer, &line)) {
-                        std.log.err("SDL_RenderFillRect failed: {s}", .{c.SDL_GetError()});
+                    if (is_dashed) {
+                        drawDashedLineH(renderer, starting_x, starting_x + length, rect.y, @floatFromInt(config.width.top), config.color, 8.0, 6.0);
+                    } else {
+                        const line = c.SDL_FRect{ .x = starting_x, .y = rect.y, .w = length, .h = @floatFromInt(config.width.top) };
+                        if (!c.SDL_RenderFillRect(renderer, &line)) {
+                            std.log.err("SDL_RenderFillRect failed: {s}", .{c.SDL_GetError()});
+                        }
                     }
                 }
                 if (config.width.bottom > 0) {
                     const starting_x = rect.x + clamped_radii.bottom_left;
                     const starting_y = rect.y + rect.h - @as(f32, @floatFromInt(config.width.bottom));
                     const length = rect.w - clamped_radii.bottom_left - clamped_radii.bottom_right;
-                    const line = c.SDL_FRect{ .x = starting_x, .y = starting_y, .w = length, .h = @floatFromInt(config.width.bottom) };
-                    setRenderDrawColor(renderer, config.color);
-                    if (!c.SDL_RenderFillRect(renderer, &line)) {
-                        std.log.err("SDL_RenderFillRect failed: {s}", .{c.SDL_GetError()});
+                    if (is_dashed) {
+                        drawDashedLineH(renderer, starting_x, starting_x + length, starting_y, @floatFromInt(config.width.bottom), config.color, 8.0, 6.0);
+                    } else {
+                        const line = c.SDL_FRect{ .x = starting_x, .y = starting_y, .w = length, .h = @floatFromInt(config.width.bottom) };
+                        setRenderDrawColor(renderer, config.color);
+                        if (!c.SDL_RenderFillRect(renderer, &line)) {
+                            std.log.err("SDL_RenderFillRect failed: {s}", .{c.SDL_GetError()});
+                        }
                     }
                 }
 
                 if (config.corner_radius.top_left > 0) {
-                    try renderArc(renderer, .{ .x = rect.x + clamped_radii.top_left - 1, .y = rect.y + clamped_radii.top_left }, clamped_radii.top_left, 180.0, 270.0, @floatFromInt(config.width.top), config.color, allocator);
+                    try renderArc(renderer, .{ .x = rect.x + clamped_radii.top_left - 1, .y = rect.y + clamped_radii.top_left }, clamped_radii.top_left, 180.0, 270.0, @floatFromInt(config.width.top), config.color, allocator, is_dashed);
                 }
                 if (config.corner_radius.top_right > 0) {
-                    try renderArc(renderer, .{ .x = rect.x + rect.w - clamped_radii.top_right - 1, .y = rect.y + clamped_radii.top_right }, clamped_radii.top_right, 270.0, 360.0, @floatFromInt(config.width.top), config.color, allocator);
+                    try renderArc(renderer, .{ .x = rect.x + rect.w - clamped_radii.top_right - 1, .y = rect.y + clamped_radii.top_right }, clamped_radii.top_right, 270.0, 360.0, @floatFromInt(config.width.top), config.color, allocator, is_dashed);
                 }
                 if (config.corner_radius.bottom_left > 0) {
-                    try renderArc(renderer, .{ .x = rect.x + clamped_radii.bottom_left - 1, .y = rect.y + rect.h - clamped_radii.bottom_left - 1 }, clamped_radii.bottom_left, 90.0, 180.0, @floatFromInt(config.width.bottom), config.color, allocator);
+                    try renderArc(renderer, .{ .x = rect.x + clamped_radii.bottom_left - 1, .y = rect.y + rect.h - clamped_radii.bottom_left - 1 }, clamped_radii.bottom_left, 90.0, 180.0, @floatFromInt(config.width.bottom), config.color, allocator, is_dashed);
                 }
                 if (config.corner_radius.bottom_right > 0) {
-                    try renderArc(renderer, .{ .x = rect.x + rect.w - clamped_radii.bottom_right - 1, .y = rect.y + rect.h - clamped_radii.bottom_right - 1 }, clamped_radii.bottom_right, 0.0, 90.0, @floatFromInt(config.width.bottom), config.color, allocator);
+                    try renderArc(renderer, .{ .x = rect.x + rect.w - clamped_radii.bottom_right - 1, .y = rect.y + rect.h - clamped_radii.bottom_right - 1 }, clamped_radii.bottom_right, 0.0, 90.0, @floatFromInt(config.width.bottom), config.color, allocator, is_dashed);
                 }
             },
             .scissor_start => {
