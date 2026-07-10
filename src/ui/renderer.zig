@@ -649,7 +649,7 @@ pub fn renderClayCommands(
                     h_f = @floatFromInt(converted.*.h);
                     cached_tex = tex;
 
-                    state.text_cache.put(key, .{
+                    state.text_cache.put(state.allocator, key, .{
                         .texture = tex,
                         .w = w_f,
                         .h = h_f,

@@ -119,6 +119,52 @@ pub const CacheEntry = struct {
     status: CacheStatus = .decoding,
 };
 
+pub const CacheSlotMap = struct {
+    entries: std.ArrayListUnmanaged(CacheEntry) = .empty,
+
+    pub fn deinit(self: *CacheSlotMap, allocator: std.mem.Allocator) void {
+        self.entries.deinit(allocator);
+    }
+
+    pub fn clearRetainingCapacity(self: *CacheSlotMap) void {
+        self.entries.clearRetainingCapacity();
+    }
+
+    pub fn get(self: *CacheSlotMap, index: usize) ?*CacheEntry {
+        for (self.entries.items) |*entry| {
+            if (entry.index == index) return entry;
+        }
+        return null;
+    }
+
+    pub fn getWithGeneration(self: *CacheSlotMap, index: usize, generation: usize) ?*CacheEntry {
+        for (self.entries.items) |*entry| {
+            if (entry.index == index and entry.generation == generation) return entry;
+        }
+        return null;
+    }
+
+    pub fn updateStatus(self: *CacheSlotMap, index: usize, generation: usize, status: CacheStatus) bool {
+        if (self.getWithGeneration(index, generation)) |entry| {
+            entry.status = status;
+            return true;
+        }
+        return false;
+    }
+
+    pub fn append(self: *CacheSlotMap, allocator: std.mem.Allocator, entry: CacheEntry) !void {
+        try self.entries.append(allocator, entry);
+    }
+
+    pub fn remove(self: *CacheSlotMap, i: usize) CacheEntry {
+        return self.entries.orderedRemove(i);
+    }
+
+    pub fn pop(self: *CacheSlotMap) ?CacheEntry {
+        return self.entries.pop();
+    }
+};
+
 pub const DecodeArgs = struct {
     state: *ViewerState,
     index: usize,
@@ -324,31 +370,28 @@ pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
 
     // Check if this index is still wanted
     var found_in_cache = false;
-    for (state.cache.items) |*entry| {
-        if (entry.index == index and entry.generation == args.generation) {
-            found_in_cache = true;
-            if (final_surface) |surf| {
-                if (entry.status == .loaded_cpu or entry.status == .loaded_gpu) {
-                    c.SDL_DestroySurface(surf);
-                } else {
-                    entry.status = .{
-                        .loaded_cpu = .{
-                            .surface = surf,
-                            .w = @floatFromInt(surf.*.w),
-                            .h = @floatFromInt(surf.*.h),
-                            .size_bytes = size_bytes,
-                            .mime_type = mime_type,
-                            .decode_time_ms = decode_time_ms,
-                            .conversion_time_ms = conversion_time_ms,
-                        },
-                    };
-                }
+    if (state.cache.getWithGeneration(index, args.generation)) |entry| {
+        found_in_cache = true;
+        if (final_surface) |surf| {
+            if (entry.status == .loaded_cpu or entry.status == .loaded_gpu) {
+                c.SDL_DestroySurface(surf);
             } else {
-                if (entry.status != .loaded_cpu and entry.status != .loaded_gpu) {
-                    entry.status = .failed;
-                }
+                entry.status = .{
+                    .loaded_cpu = .{
+                        .surface = surf,
+                        .w = @floatFromInt(surf.*.w),
+                        .h = @floatFromInt(surf.*.h),
+                        .size_bytes = size_bytes,
+                        .mime_type = mime_type,
+                        .decode_time_ms = decode_time_ms,
+                        .conversion_time_ms = conversion_time_ms,
+                    },
+                };
             }
-            break;
+        } else {
+            if (entry.status != .loaded_cpu and entry.status != .loaded_gpu) {
+                entry.status = .failed;
+            }
         }
     }
 
@@ -393,7 +436,7 @@ pub const ViewerState = struct {
     gpu_text_engine: ?*c.TTF_TextEngine = null,
     image_list: std.ArrayList([]const u8),
     current_index: ?usize = null,
-    cache: std.ArrayList(CacheEntry),
+    cache: CacheSlotMap,
     cache_mutex: *c.SDL_Mutex,
     current_image_cache_hit: bool = false,
     allocator: std.mem.Allocator,
@@ -436,7 +479,7 @@ pub const ViewerState = struct {
     gpu_frame_index: usize = 0,
 
     // Font text texture cache
-    text_cache: std.AutoHashMap(TextCacheKey, TextCacheValue),
+    text_cache: std.AutoHashMapUnmanaged(TextCacheKey, TextCacheValue) = .empty,
 
     pub fn deinit(self: *ViewerState) void {
         self.exiting.store(true, .release);
@@ -457,7 +500,7 @@ pub const ViewerState = struct {
         while (text_iter.next()) |val| {
             c.SDL_ReleaseGPUTexture(self.gpu_device.?, val.texture);
         }
-        self.text_cache.deinit();
+        self.text_cache.deinit(self.allocator);
 
         if (self.gpu_pipeline) |pipeline| c.SDL_ReleaseGPUGraphicsPipeline(self.gpu_device, pipeline);
         if (self.gpu_sampler) |sampler| c.SDL_ReleaseGPUSampler(self.gpu_device, sampler);
@@ -581,10 +624,8 @@ pub const ViewerState = struct {
         defer c.SDL_UnlockMutex(self.cache_mutex);
 
         const idx = self.current_index orelse return null;
-        for (self.cache.items) |entry| {
-            if (entry.index == idx) {
-                return entry;
-            }
+        if (self.cache.get(idx)) |entry| {
+            return entry.*;
         }
         return null;
     }
@@ -616,16 +657,6 @@ pub const ViewerState = struct {
         startTextInput(self.window);
     }
 
-    fn updateEntryStatusLocked(self: *ViewerState, index: usize, generation: usize, status: CacheStatus) bool {
-        for (self.cache.items) |*entry| {
-            if (entry.index == index and entry.generation == generation) {
-                entry.status = status;
-                return true;
-            }
-        }
-        return false;
-    }
-
     pub fn prepareCacheTextures(self: *ViewerState) void {
         c.SDL_LockMutex(self.cache_mutex);
 
@@ -635,7 +666,7 @@ pub const ViewerState = struct {
             cpu: @TypeOf(@as(CacheStatus, undefined).loaded_cpu),
         } = null;
 
-        for (self.cache.items) |*entry| {
+        for (self.cache.entries.items) |*entry| {
             if (entry.status == .loaded_cpu) {
                 const cpu = entry.status.loaded_cpu;
                 entry.status = .uploading;
@@ -715,7 +746,7 @@ pub const ViewerState = struct {
             if (tex == null) {
                 std.log.err("Create GPU Texture failed for image size {d}x{d}: {s}", .{ target.cpu.surface.*.w, target.cpu.surface.*.h, c.SDL_GetError() });
                 c.SDL_LockMutex(self.cache_mutex);
-                _ = self.updateEntryStatusLocked(target.index, target.generation, .failed);
+                _ = self.cache.updateStatus(target.index, target.generation, .failed);
                 c.SDL_UnlockMutex(self.cache_mutex);
                 return;
             }
@@ -724,7 +755,7 @@ pub const ViewerState = struct {
             const cmd_buf = c.SDL_AcquireGPUCommandBuffer(self.gpu_device) orelse {
                 c.SDL_ReleaseGPUTexture(self.gpu_device, gpu_tex);
                 c.SDL_LockMutex(self.cache_mutex);
-                _ = self.updateEntryStatusLocked(target.index, target.generation, .failed);
+                _ = self.cache.updateStatus(target.index, target.generation, .failed);
                 c.SDL_UnlockMutex(self.cache_mutex);
                 return;
             };
@@ -738,7 +769,7 @@ pub const ViewerState = struct {
                 _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
                 c.SDL_ReleaseGPUTexture(self.gpu_device, gpu_tex);
                 c.SDL_LockMutex(self.cache_mutex);
-                _ = self.updateEntryStatusLocked(target.index, target.generation, .failed);
+                _ = self.cache.updateStatus(target.index, target.generation, .failed);
                 c.SDL_UnlockMutex(self.cache_mutex);
                 return;
             };
@@ -748,7 +779,7 @@ pub const ViewerState = struct {
                 _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
                 c.SDL_ReleaseGPUTexture(self.gpu_device, gpu_tex);
                 c.SDL_LockMutex(self.cache_mutex);
-                _ = self.updateEntryStatusLocked(target.index, target.generation, .failed);
+                _ = self.cache.updateStatus(target.index, target.generation, .failed);
                 c.SDL_UnlockMutex(self.cache_mutex);
                 return;
             });
@@ -760,7 +791,7 @@ pub const ViewerState = struct {
                 _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
                 c.SDL_ReleaseGPUTexture(self.gpu_device, gpu_tex);
                 c.SDL_LockMutex(self.cache_mutex);
-                _ = self.updateEntryStatusLocked(target.index, target.generation, .failed);
+                _ = self.cache.updateStatus(target.index, target.generation, .failed);
                 c.SDL_UnlockMutex(self.cache_mutex);
                 return;
             };
@@ -795,7 +826,7 @@ pub const ViewerState = struct {
                     .memory_size_bytes = size,
                 },
             };
-            const updated = self.updateEntryStatusLocked(target.index, target.generation, loaded_gpu_status);
+            const updated = self.cache.updateStatus(target.index, target.generation, loaded_gpu_status);
             c.SDL_UnlockMutex(self.cache_mutex);
 
             if (!updated) {
@@ -813,7 +844,7 @@ pub const ViewerState = struct {
         c.SDL_LockMutex(self.cache_mutex);
         defer c.SDL_UnlockMutex(self.cache_mutex);
 
-        for (self.cache.items) |entry| {
+        for (self.cache.entries.items) |entry| {
             switch (entry.status) {
                 .loaded_cpu => |cpu| c.SDL_DestroySurface(cpu.surface),
                 .loaded_gpu => |gpu| c.SDL_ReleaseGPUTexture(self.gpu_device, gpu.gpu_texture),
@@ -865,8 +896,8 @@ pub const ViewerState = struct {
 
         // 2. Evict cache entries that are no longer wanted
         var i: usize = 0;
-        while (i < self.cache.items.len) {
-            const entry = &self.cache.items[i];
+        while (i < self.cache.entries.items.len) {
+            const entry = &self.cache.entries.items[i];
             var wanted = false;
             for (desired[0..desired_count]) |d| {
                 if (entry.index == d) {
@@ -881,7 +912,7 @@ pub const ViewerState = struct {
                     .loaded_gpu => |gpu| c.SDL_ReleaseGPUTexture(self.gpu_device, gpu.gpu_texture),
                     else => {},
                 }
-                _ = self.cache.orderedRemove(i);
+                _ = self.cache.remove(i);
             } else {
                 i += 1;
             }
@@ -891,13 +922,10 @@ pub const ViewerState = struct {
         var hit = false;
         for (desired[0..desired_count]) |d| {
             var exists = false;
-            for (self.cache.items) |entry| {
-                if (entry.index == d) {
-                    exists = true;
-                    if (d == idx and (entry.status == .loaded_cpu or entry.status == .loaded_gpu)) {
-                        hit = true;
-                    }
-                    break;
+            if (self.cache.get(d)) |entry| {
+                exists = true;
+                if (d == idx and (entry.status == .loaded_cpu or entry.status == .loaded_gpu)) {
+                    hit = true;
                 }
             }
             if (!exists) {
@@ -1127,33 +1155,32 @@ pub const ViewerState = struct {
     }
 };
 
-test "ViewerState.updateEntryStatusLocked" {
+test "CacheSlotMap.updateStatus" {
     const allocator = std.testing.allocator;
-    var state: ViewerState = undefined;
-    state.cache = std.ArrayList(CacheEntry).empty;
-    defer state.cache.deinit(allocator);
+    var cache = CacheSlotMap{};
+    defer cache.deinit(allocator);
 
-    try state.cache.append(allocator, .{
+    try cache.append(allocator, .{
         .index = 10,
         .generation = 1,
         .status = .decoding,
     });
-    try state.cache.append(allocator, .{
+    try cache.append(allocator, .{
         .index = 20,
         .generation = 1,
         .status = .decoding,
     });
 
     // Test successful update
-    const updated = state.updateEntryStatusLocked(20, 1, .failed);
+    const updated = cache.updateStatus(20, 1, .failed);
     try std.testing.expect(updated);
-    try std.testing.expectEqual(CacheStatus.failed, state.cache.items[1].status);
+    try std.testing.expectEqual(CacheStatus.failed, cache.entries.items[1].status);
 
     // Test updating non-existent index
-    const updated_missing = state.updateEntryStatusLocked(30, 1, .failed);
+    const updated_missing = cache.updateStatus(30, 1, .failed);
     try std.testing.expect(!updated_missing);
 
     // Test updating matching index but mismatching generation
-    const updated_gen_mismatch = state.updateEntryStatusLocked(10, 2, .failed);
+    const updated_gen_mismatch = cache.updateStatus(10, 2, .failed);
     try std.testing.expect(!updated_gen_mismatch);
 }
