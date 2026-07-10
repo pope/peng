@@ -534,6 +534,8 @@ const ViewerState = struct {
     is_fullscreen: bool = false,
     running: bool = true,
     show_stats_overlay: bool = false,
+    test_mode: bool = false,
+    update_baselines: bool = false,
     scale_mode: ScaleMode = .full,
     zoom_factor: f32 = 1.0,
     pan_x: f32 = 0.0,
@@ -2129,6 +2131,8 @@ fn formatSize(allocator: std.mem.Allocator, bytes: u64) ![]const u8 {
 const ParsedArgs = struct {
     arg_path: ?[]const u8,
     default_scale: ScaleMode,
+    test_mode: bool,
+    update_baselines: bool,
 };
 
 fn parseCommandLineArgs(init: std.process.Init, gpa: std.mem.Allocator) !ParsedArgs {
@@ -2140,9 +2144,15 @@ fn parseCommandLineArgs(init: std.process.Init, gpa: std.mem.Allocator) !ParsedA
 
     var arg_path: ?[]const u8 = null;
     var default_scale: ScaleMode = .full;
+    var test_mode = false;
+    var update_baselines = false;
 
     while (args_it.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--scale")) {
+        if (std.mem.eql(u8, arg, "--test-mode")) {
+            test_mode = true;
+        } else if (std.mem.eql(u8, arg, "--update-baselines")) {
+            update_baselines = true;
+        } else if (std.mem.eql(u8, arg, "--scale")) {
             if (args_it.next()) |val| {
                 if (std.mem.eql(u8, val, "none")) {
                     default_scale = .none;
@@ -2169,6 +2179,8 @@ fn parseCommandLineArgs(init: std.process.Init, gpa: std.mem.Allocator) !ParsedA
     return ParsedArgs{
         .arg_path = arg_path,
         .default_scale = default_scale,
+        .test_mode = test_mode,
+        .update_baselines = update_baselines,
     };
 }
 
@@ -2178,7 +2190,8 @@ const GraphicsSetup = struct {
     initial_dpi_scale: f32,
 };
 
-fn initGraphicsAndWindow(window_title: [:0]const u8) !GraphicsSetup {
+fn initGraphicsAndWindow(window_title: [:0]const u8, test_mode: bool) !GraphicsSetup {
+    _ = test_mode;
     // Initialize SDL3
     if (!c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_EVENTS)) {
         std.log.err("SDL_Init Error: {s}", .{c.SDL_GetError()});
@@ -2638,18 +2651,186 @@ fn pollFrameInput(
     };
 }
 
+fn compareScreenshots(base_path: [:0]const u8, run_path: [:0]const u8, diff_path: [:0]const u8) !void {
+    const raw_base_surf = c.IMG_Load(base_path.ptr) orelse {
+        std.log.err("Failed to load baseline screenshot: {s}. Run with --update-baselines to create it.", .{base_path});
+        return error.BaselineMissing;
+    };
+    defer c.SDL_DestroySurface(raw_base_surf);
+
+    const raw_run_surf = c.IMG_Load(run_path.ptr) orelse {
+        std.log.err("Failed to load run screenshot: {s}", .{run_path});
+        return error.RunScreenshotMissing;
+    };
+    defer c.SDL_DestroySurface(raw_run_surf);
+
+    if (raw_base_surf.*.w != raw_run_surf.*.w or raw_base_surf.*.h != raw_run_surf.*.h) {
+        std.log.err("Dimension mismatch: baseline is {d}x{d}, run is {d}x{d}", .{ raw_base_surf.*.w, raw_base_surf.*.h, raw_run_surf.*.w, raw_run_surf.*.h });
+        return error.DimensionMismatch;
+    }
+
+    const width = @as(u32, @intCast(raw_base_surf.*.w));
+    const height = @as(u32, @intCast(raw_base_surf.*.h));
+
+    // Convert both surfaces to a canonical RGBA32 format to guarantee alignment, pitch, and byte order matching
+    const base_surf = c.SDL_ConvertSurface(raw_base_surf, c.SDL_PIXELFORMAT_RGBA32) orelse {
+        std.log.err("Failed to convert baseline to RGBA32: {s}", .{c.SDL_GetError()});
+        return error.SurfaceConversionFailed;
+    };
+    defer c.SDL_DestroySurface(base_surf);
+
+    const run_surf = c.SDL_ConvertSurface(raw_run_surf, c.SDL_PIXELFORMAT_RGBA32) orelse {
+        std.log.err("Failed to convert run to RGBA32: {s}", .{c.SDL_GetError()});
+        return error.SurfaceConversionFailed;
+    };
+    defer c.SDL_DestroySurface(run_surf);
+
+    const diff_surf = c.SDL_CreateSurface(@intCast(width), @intCast(height), c.SDL_PIXELFORMAT_RGBA32) orelse {
+        std.log.err("Failed to create diff surface: {s}", .{c.SDL_GetError()});
+        return error.DiffSurfaceCreationFailed;
+    };
+    defer c.SDL_DestroySurface(diff_surf);
+
+    const pixels_base = @as([*]const u32, @ptrCast(@alignCast(base_surf.*.pixels)));
+    const pixels_run = @as([*]const u32, @ptrCast(@alignCast(run_surf.*.pixels)));
+    const pixels_diff = @as([*]u32, @ptrCast(@alignCast(diff_surf.*.pixels)));
+
+    const pitch_words_base = @as(usize, @intCast(base_surf.*.pitch)) / 4;
+    const pitch_words_run = @as(usize, @intCast(run_surf.*.pitch)) / 4;
+    const pitch_words_diff = @as(usize, @intCast(diff_surf.*.pitch)) / 4;
+
+    var mismatched_pixels: u32 = 0;
+    var y: u32 = 0;
+    while (y < height) : (y += 1) {
+        var x: u32 = 0;
+        while (x < width) : (x += 1) {
+            const idx_base = y * pitch_words_base + x;
+            const idx_run = y * pitch_words_run + x;
+            const idx_diff = y * pitch_words_diff + x;
+
+            const p_base = pixels_base[idx_base];
+            const p_run = pixels_run[idx_run];
+            if (p_base != p_run) {
+                mismatched_pixels += 1;
+                // Paint mismatched pixel as bright red (0xFF0000FF in RGBA32 format)
+                pixels_diff[idx_diff] = 0xFF0000FF; 
+            } else {
+                // Dim color channels (divides by 4) and preserve alpha safely without channel bleeding
+                const b0 = (p_base >> 0) & 0xFF;
+                const b1 = (p_base >> 8) & 0xFF;
+                const b2 = (p_base >> 16) & 0xFF;
+                const b3 = (p_base >> 24) & 0xFF;
+                pixels_diff[idx_diff] = (b0 / 4) | ((b1 / 4) << 8) | ((b2 / 4) << 16) | (b3 << 24);
+            }
+        }
+    }
+
+    if (mismatched_pixels > 0) {
+        const total_pixels = width * height;
+        const pct = (@as(f64, @floatFromInt(mismatched_pixels)) / @as(f64, @floatFromInt(total_pixels))) * 100.0;
+        std.log.err("Visual regression found: {d} pixels differ ({d:.3}%)", .{ mismatched_pixels, pct });
+        if (!c.IMG_SavePNG(diff_surf, diff_path.ptr)) {
+            std.log.err("Failed to save diff image: {s}", .{c.SDL_GetError()});
+        } else {
+            std.log.info("Diff image saved to: {s}", .{diff_path});
+        }
+        return error.VisualRegressionMismatch;
+    }
+}
+
+fn getTextureFormatElementSize(format: c.SDL_GPUTextureFormat) u32 {
+    return switch (format) {
+        c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+        c.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM,
+        c.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB,
+        c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB => 4,
+        c.SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT => 8,
+        c.SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT => 16,
+        else => 4, // Fallback safe default
+    };
+}
+
+fn saveTextureToPng(
+    device: *c.SDL_GPUDevice,
+    cmd_buf: *c.SDL_GPUCommandBuffer,
+    texture: *c.SDL_GPUTexture,
+    width: u32,
+    height: u32,
+    texture_format: c.SDL_GPUTextureFormat,
+    filename: [:0]const u8,
+) !void {
+    const bpp = getTextureFormatElementSize(texture_format);
+    const pitch = width * bpp;
+    const size = pitch * height;
+
+    const transfer_buf = c.SDL_CreateGPUTransferBuffer(device, &c.SDL_GPUTransferBufferCreateInfo{
+        .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,
+        .size = size,
+        .props = 0,
+    }) orelse {
+        std.log.err("Failed to create download transfer buffer: {s}", .{c.SDL_GetError()});
+        return error.TransferBufferCreationFailed;
+    };
+    defer c.SDL_ReleaseGPUTransferBuffer(device, transfer_buf);
+
+    const copy_pass = c.SDL_BeginGPUCopyPass(cmd_buf) orelse return error.CopyPassCreationFailed;
+    c.SDL_DownloadFromGPUTexture(copy_pass, &c.SDL_GPUTextureRegion{
+        .texture = texture,
+        .mip_level = 0,
+        .layer = 0,
+        .x = 0,
+        .y = 0,
+        .z = 0,
+        .w = width,
+        .h = height,
+        .d = 1,
+    }, &c.SDL_GPUTextureTransferInfo{
+        .transfer_buffer = transfer_buf,
+        .offset = 0,
+        .pixels_per_row = width,
+        .rows_per_layer = height,
+    });
+    c.SDL_EndGPUCopyPass(copy_pass);
+
+    _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+    _ = c.SDL_WaitForGPUIdle(device);
+
+    const data_ptr = c.SDL_MapGPUTransferBuffer(device, transfer_buf, false) orelse return error.MapBufferFailed;
+    defer c.SDL_UnmapGPUTransferBuffer(device, transfer_buf);
+
+    var sdl_format: c.SDL_PixelFormat = c.SDL_PIXELFORMAT_RGBA32;
+    if (texture_format == c.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM or
+        texture_format == c.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB)
+    {
+        sdl_format = c.SDL_PIXELFORMAT_BGRA32;
+    }
+
+    const surface = c.SDL_CreateSurfaceFrom(@intCast(width), @intCast(height), sdl_format, data_ptr, @intCast(pitch)) orelse {
+        std.log.err("SDL_CreateSurfaceFrom failed: {s}", .{c.SDL_GetError()});
+        return error.SurfaceCreationFailed;
+    };
+    defer c.SDL_DestroySurface(surface);
+
+    if (!c.IMG_SavePNG(surface, filename.ptr)) {
+        std.log.err("IMG_SavePNG failed: {s}", .{c.SDL_GetError()});
+        return error.SavePngFailed;
+    }
+}
+
 fn renderFrame(
     state: *ViewerState,
     input: FrameInput,
     frame_allocator: std.mem.Allocator,
     fonts: []const ?*c.TTF_Font,
     measure_data: *const MeasureTextUserData,
+    capture_filename: ?[:0]const u8,
 ) !void {
     const width = input.pix_w;
     const height = input.pix_h;
     const scale_x = input.scale_x;
     const scale_y = input.scale_y;
     const dpi_scale = input.dpi_scale;
+    state.prepareCacheTextures();
     const current_entry = state.getCurrentEntry();
 
     // Calculate Image Fitting Layout Boundaries
@@ -2663,8 +2844,6 @@ fn renderFrame(
     if (clay.isDebugModeEnabled()) {
         available_width = @max(width - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0);
     }
-
-    state.prepareCacheTextures();
 
     var draw_w: f32 = 0;
     var draw_h: f32 = 0;
@@ -3036,14 +3215,27 @@ fn renderFrame(
 
     // Render Frame
     const cmd_buf = c.SDL_AcquireGPUCommandBuffer(state.gpu_device) orelse return error.CommandBufferAcquisitionFailed;
+    errdefer _ = c.SDL_CancelGPUCommandBuffer(cmd_buf); // Cancel command buffer on early errors to avoid leaks
+
     var swap_tex: ?*c.SDL_GPUTexture = null;
     var swap_w: u32 = 0;
     var swap_h: u32 = 0;
 
     var temp_textures = std.ArrayList(*c.SDL_GPUTexture).empty;
     defer temp_textures.deinit(frame_allocator);
+    errdefer {
+        for (temp_textures.items) |tex| {
+            c.SDL_ReleaseGPUTexture(state.gpu_device, tex);
+        }
+    }
+
     var temp_buffers = std.ArrayList(*c.SDL_GPUTransferBuffer).empty;
     defer temp_buffers.deinit(frame_allocator);
+    errdefer {
+        for (temp_buffers.items) |buf| {
+            c.SDL_ReleaseGPUTransferBuffer(state.gpu_device, buf);
+        }
+    }
 
     if (c.SDL_WaitAndAcquireGPUSwapchainTexture(cmd_buf, state.window, &swap_tex, &swap_w, &swap_h)) {
         try renderer.renderClayCommands(
@@ -3071,7 +3263,12 @@ fn renderFrame(
             state.contrast,
             state.texture_scale_mode,
         );
-        _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+        if (capture_filename) |filename| {
+            const swapchain_format = c.SDL_GetGPUSwapchainTextureFormat(state.gpu_device.?, state.window);
+            try saveTextureToPng(state.gpu_device.?, cmd_buf, swap_tex.?, swap_w, swap_h, swapchain_format, filename);
+        } else {
+            _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+        }
 
         // Defer release of text textures until command buffer completes
         for (temp_textures.items) |tex| {
@@ -3093,7 +3290,7 @@ pub fn main(init: std.process.Init) !void {
     defer if (parsed.arg_path) |p| gpa.free(p);
 
     // Phase 2: Graphics and Window Setup
-    const setup = try initGraphicsAndWindow("Peng Image Viewer");
+    const setup = try initGraphicsAndWindow("Peng Image Viewer", parsed.test_mode);
     defer {
         c.SDL_DestroyWindow(setup.window);
         c.SDL_Quit();
@@ -3144,6 +3341,8 @@ pub fn main(init: std.process.Init) !void {
         .is_fullscreen = false,
         .running = true,
         .show_stats_overlay = false,
+        .test_mode = parsed.test_mode,
+        .update_baselines = parsed.update_baselines,
     };
     defer state.deinit();
     own_resources = false;
@@ -3178,50 +3377,205 @@ pub fn main(init: std.process.Init) !void {
 
     var last_time = c.SDL_GetTicks();
 
-    // Phase 5: The Main Loop
-    while (state.running) {
-        // Phase 5a: Input Accumulation
-        _ = frame_arena.reset(.retain_capacity);
-        const input = try pollFrameInput(
-            setup.window,
-            frame_allocator,
-            &last_time,
-            &state.mouse_inside,
-            &state.running,
-            state.palette.show,
-        );
+    // Phase 5: The Main Loop / Test Mode
+    if (state.test_mode) {
+        if (std.Io.Dir.openDir(std.Io.Dir.cwd(), state.io, "testfiles/current-run", .{ .iterate = true })) |dir| {
+            var it = std.Io.Dir.iterate(dir);
+            while (it.next(state.io) catch null) |entry| {
+                std.Io.Dir.deleteFile(dir, state.io, entry.name) catch {};
+            }
+            std.Io.Dir.close(dir, state.io);
+        } else |_| {}
 
-        // Phase 5b: State Update
-        try state.update(input, gpa);
+        std.Io.Dir.createDirPath(std.Io.Dir.cwd(), state.io, "testfiles/golden-screenshots") catch {};
+        std.Io.Dir.createDirPath(std.Io.Dir.cwd(), state.io, "testfiles/current-run") catch {};
 
-        clay.setLayoutDimensions(.{ .w = input.pix_w, .h = input.pix_h });
+        var test_frame: u32 = 0;
+        const filenames = [_][]const u8{
+            "test_0_init.png",
+            "test_1_zoom.png",
+            "test_2_adjust.png",
+            "test_3_filter.png",
+            "test_4_action_palette.png",
+            "test_5_files_palette.png",
+            "test_6_next_image.png",
+        };
+        while (test_frame < 7) : (test_frame += 1) {
+            // Pump event loop to prevent OS "Application Unresponsive" warnings
+            var event: c.SDL_Event = undefined;
+            while (c.SDL_PollEvent(&event)) {}
 
-        if (input.mouse_inside) {
-            clay.setPointerState(
-                .{ .x = input.mouse_x, .y = input.mouse_y },
-                input.mouse_left_down,
-            );
-        } else {
-            clay.setPointerState(
-                .{ .x = -1.0, .y = -1.0 },
-                false,
-            );
-        }
+            _ = frame_arena.reset(.retain_capacity);
 
-        clay.updateScrollContainers(
-            true,
-            .{ .x = input.scroll_delta_x, .y = input.scroll_delta_y },
-            input.delta_time_ms / 1000.0,
-        );
+            var win_w: c_int = 0;
+            var win_h: c_int = 0;
+            _ = c.SDL_GetWindowSize(setup.window, &win_w, &win_h);
 
-        if (input.mouse_left_clicked) {
-            if (state.show_stats_overlay and clay.pointerOver(clay.getElementId("StatsCloseBtn"))) {
-                state.show_stats_overlay = false;
+            var pix_w: c_int = 0;
+            var pix_h: c_int = 0;
+            _ = c.SDL_GetWindowSizeInPixels(setup.window, &pix_w, &pix_h);
+
+            const width = @as(f32, @floatFromInt(pix_w));
+            const height = @as(f32, @floatFromInt(pix_h));
+            const scale_x = if (win_w > 0) @as(f32, @floatFromInt(pix_w)) / @as(f32, @floatFromInt(win_w)) else 1.0;
+            const scale_y = if (win_h > 0) @as(f32, @floatFromInt(pix_h)) / @as(f32, @floatFromInt(win_h)) else 1.0;
+            const dpi_scale = scale_x;
+
+            const input = FrameInput{
+                .win_w = @as(f32, @floatFromInt(win_w)),
+                .win_h = @as(f32, @floatFromInt(win_h)),
+                .pix_w = width,
+                .pix_h = height,
+                .scale_x = scale_x,
+                .scale_y = scale_y,
+                .dpi_scale = dpi_scale,
+                .mouse_x = -1.0,
+                .mouse_y = -1.0,
+                .mouse_left_down = false,
+                .mouse_left_clicked = false,
+                .mouse_inside = false,
+                .scroll_delta_x = 0.0,
+                .scroll_delta_y = 0.0,
+                .keys_pressed = std.ArrayList(c.SDL_Keycode).empty,
+                .key_modifiers = 0,
+                .text_input = null,
+                .dropped_path = null,
+                .ticks = 0,
+                .delta_time_ms = 16.666,
+            };
+
+            switch (test_frame) {
+                0 => {
+                    std.log.info("Test Mode Frame 0: Initial Render", .{});
+                },
+                1 => {
+                    std.log.info("Test Mode Frame 1: Apply Zoom & Pan", .{});
+                    state.zoom_factor = 2.0;
+                    state.pan_x = 50.0;
+                    state.pan_y = -30.0;
+                },
+                2 => {
+                    std.log.info("Test Mode Frame 2: Apply Brightness & Contrast", .{});
+                    state.zoom_factor = 1.0;
+                    state.pan_x = 0.0;
+                    state.pan_y = 0.0;
+                    state.brightness = 0.3;
+                    state.contrast = 1.4;
+                    state.adjustments_dirty = true;
+                },
+                3 => {
+                    std.log.info("Test Mode Frame 3: Apply Mitchell Filter", .{});
+                    state.brightness = 0.0;
+                    state.contrast = 1.0;
+                    state.adjustments_dirty = true;
+                    state.texture_scale_mode = .mitchell;
+                    state.applyTextureScaleMode();
+                },
+                4 => {
+                    std.log.info("Test Mode Frame 4: Open Action Palette", .{});
+                    state.texture_scale_mode = .linear;
+                    state.applyTextureScaleMode();
+
+                    state.palette.show = true;
+                    state.palette.active_type = .actions;
+                    state.palette.reset();
+                    try state.rebuildActionMatches();
+                },
+                5 => {
+                    std.log.info("Test Mode Frame 5: Open Files Palette", .{});
+                    state.palette.show = true;
+                    state.palette.active_type = .files;
+                    state.palette.reset();
+                    try state.rebuildPaletteMatches();
+                },
+                6 => {
+                    std.log.info("Test Mode Frame 6: Navigate to Next Image", .{});
+                    state.palette.show = false;
+                    try state.next();
+                },
+                else => unreachable,
+            }
+
+            // Busy wait until the background loader finishes decoding the image
+            var wait_attempts: u32 = 0;
+            while (wait_attempts < 1000) : (wait_attempts += 1) {
+                // Pump event loop during wait to keep window manager happy
+                var ev: c.SDL_Event = undefined;
+                while (c.SDL_PollEvent(&ev)) {}
+
+                if (state.getCurrentEntry()) |entry| {
+                    if (entry.status != .decoding) {
+                        break;
+                    }
+                }
+                c.SDL_Delay(10);
+            }
+            if (state.getCurrentEntry() == null or state.getCurrentEntry().?.status == .failed) {
+                std.log.err("Timed out or failed waiting for test image to load in cache.", .{});
+                return error.TestImageLoadTimeout;
+            }
+
+            clay.setLayoutDimensions(.{ .w = input.pix_w, .h = input.pix_h });
+            clay.setPointerState(.{ .x = -1.0, .y = -1.0 }, false);
+
+            const base_filename = try frame_allocator.dupeZ(u8, try std.fmt.allocPrint(frame_allocator, "testfiles/golden-screenshots/{s}", .{filenames[test_frame]}));
+            const run_filename = try frame_allocator.dupeZ(u8, try std.fmt.allocPrint(frame_allocator, "testfiles/current-run/{s}", .{filenames[test_frame]}));
+            const diff_filename = try frame_allocator.dupeZ(u8, try std.fmt.allocPrint(frame_allocator, "testfiles/current-run/diff_{s}", .{filenames[test_frame]}));
+
+            const capture_path = if (state.update_baselines) base_filename else run_filename;
+
+            try renderFrame(&state, input, frame_allocator, resources.fonts[0..], &measure_data, capture_path);
+
+            if (!state.update_baselines) {
+                try compareScreenshots(base_filename, run_filename, diff_filename);
             }
         }
+        std.log.info("Test Mode completed successfully!", .{});
+    } else {
+        while (state.running) {
+            // Phase 5a: Input Accumulation
+            _ = frame_arena.reset(.retain_capacity);
+            const input = try pollFrameInput(
+                setup.window,
+                frame_allocator,
+                &last_time,
+                &state.mouse_inside,
+                &state.running,
+                state.palette.show,
+            );
 
-        // Phase 5c: Draw / Render
-        try renderFrame(&state, input, frame_allocator, resources.fonts[0..], &measure_data);
+            // Phase 5b: State Update
+            try state.update(input, gpa);
+
+            clay.setLayoutDimensions(.{ .w = input.pix_w, .h = input.pix_h });
+
+            if (input.mouse_inside) {
+                clay.setPointerState(
+                    .{ .x = input.mouse_x, .y = input.mouse_y },
+                    input.mouse_left_down,
+                );
+            } else {
+                clay.setPointerState(
+                    .{ .x = -1.0, .y = -1.0 },
+                    false,
+                );
+            }
+
+            clay.updateScrollContainers(
+                true,
+                .{ .x = input.scroll_delta_x, .y = input.scroll_delta_y },
+                input.delta_time_ms / 1000.0,
+            );
+
+            if (input.mouse_left_clicked) {
+                if (state.show_stats_overlay and clay.pointerOver(clay.getElementId("StatsCloseBtn"))) {
+                    state.show_stats_overlay = false;
+                }
+            }
+
+            // Phase 5c: Draw / Render
+            try renderFrame(&state, input, frame_allocator, resources.fonts[0..], &measure_data, null);
+        }
     }
 }
 
