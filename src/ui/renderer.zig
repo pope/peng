@@ -1,8 +1,8 @@
 const std = @import("std");
 const clay = @import("zclay");
-const main = @import("main.zig");
+const main = @import("../main.zig");
 const c = main.c;
-const app_state = @import("app/state.zig");
+const app_state = @import("../app/state.zig");
 
 pub const ZoomPan = struct {
     zoom_factor: f32 = 1.0,

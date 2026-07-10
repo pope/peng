@@ -2,7 +2,7 @@ const std = @import("std");
 const main = @import("../main.zig");
 const c = main.c;
 const clay = main.clay;
-const renderer = @import("../renderer.zig");
+const renderer = @import("../ui/renderer.zig");
 const commands = @import("../commands.zig");
 
 pub const ScaleMode = enum {
