@@ -1,6 +1,7 @@
-______________________________________________________________________
-
-## name: zig-gui-practices description: Reference guidelines and best practices for developing GUI applications in Zig with Clay and SDL3, focusing on layout math, DPI scaling, and memory safety. Trigger this skill when the user asks to implement, debug, or optimize GUI code, layouts, DPI scaling, aspect ratios, or memory management in Zig applications.
+---
+name: zig-gui-practices
+description: Reference guidelines and best practices for developing GUI applications in Zig with Clay and SDL3, focusing on layout math, DPI scaling, and memory safety. Trigger this skill when the user asks to implement, debug, or optimize GUI code, layouts, DPI scaling, aspect ratios, or memory management in Zig applications.
+---
 
 # Best Practices for Zig GUI Development
 
@@ -58,7 +59,7 @@ To zoom in/out while keeping the point under the mouse pointer static on the scr
 
 1. Compute the relative offset ($rel_x$, $rel_y$) of the mouse from the default screen center:
    $$rel_x = x\_{mouse} - x\_{center}$$
-1. Update the pan offset using the ratio of new zoom to old zoom:
+2. Update the pan offset using the ratio of new zoom to old zoom:
    $$pan\_{new} = rel_x - (rel_x - pan\_{old}) \\cdot \\frac{zoom\_{new}}{zoom\_{old}}$$
 
 ### Image Fitting & Aspect Ratios
@@ -94,3 +95,36 @@ Interactive GUI loops run at 60+ frames per second. Memory management must preve
   var args_it = try std.process.Args.Iterator.initAllocator(args, gpa);
   defer args_it.deinit();
   ```
+
+______________________________________________________________________
+
+## 5. High-Performance Hybrid GPU Rendering (Vulkan + SDL3 GPU)
+
+When rendering with high-performance APIs (Vulkan/Direct3D/Metal) using `SDL_GPUDevice`, the window swapchain is owned exclusively by the GPU device.
+
+- **Exclusivity Constraint**: You cannot attach both `SDL_Renderer` (legacy 2D API) and `SDL_GPUDevice` to the same window simultaneously. The rendering system must fully own the presentation pipeline.
+- **Pixel-Perfect Quad Alignment**: To prevent layout jitter and sub-pixel misalignment (blurriness), round the bounding box origin *once* before compiling vertex coordinates, rather than rounding coordinates on a per-vertex basis:
+  ```zig
+  const origin_x = @round(rcmd.bounding_box.x);
+  const origin_y = @round(rcmd.bounding_box.y);
+
+  const world_x = origin_x + pt_xy.x;
+  const world_y = origin_y - pt_xy.y;
+  ```
+
+______________________________________________________________________
+
+## 6. High-Quality Text Rendering with GPU Blitting Fallback
+
+The experimental `TTF_GPUTextEngine` in `SDL3_ttf` utilizes a dynamic glyph texture atlas that lacks mature font hinting and subpixel alignment, causing janky text and atlas bleeding (odd pixel artifacts around characters).
+
+- **Surface-to-Texture Rendering Pattern**:
+  For sharp, high-quality text rendering, rasterize text using the mature CPU FreeType rasterizer, convert the surface to the GPU-native pixel format, upload it to a temporary texture, and draw it as a single quad:
+  1. Rasterize string: `TTF_RenderText_Blended`
+  2. Convert format: `SDL_ConvertSurface` to `SDL_PIXELFORMAT_RGBA32`
+  3. Create texture: `SDL_CreateGPUTexture` using `SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM`
+  4. Copy pixel data via staging transfer buffer, copy commands, and submit.
+  5. Draw as a single textured quad in `.text` shader mode (bypassing adjustments).
+  6. Collect and release temporary textures and transfer buffers *after* command buffer submission to avoid leaking resources.
+- **Background Downscaling**:
+  Scale down massive images (exceeding GPU hardware limits like 8192x8192) inside the background thread (`decodeWorker`) using `SDL_ScaleSurface` before VRAM allocation. This prevents blocking the main thread and avoids frame drops.

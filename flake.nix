@@ -44,7 +44,18 @@
             projectRootFile = "flake.nix";
             programs = {
               deadnix.enable = true;
-              mdformat.enable = true;
+              mdformat = {
+                enable = true;
+                plugins =
+                  ps: with ps; [
+                    mdformat-frontmatter
+                    mdformat-gfm
+                  ];
+                settings = {
+                  end-of-line = "lf";
+                  number = true;
+                };
+              };
               nixfmt.enable = true;
               statix.enable = true;
               zig.enable = true;

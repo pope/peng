@@ -46,9 +46,9 @@ Since the shaders compile successfully (returning valid IDs like `41`) and the p
 
 1. **OpenGL Context & Function Pointer Loading**:
    - **Issue**: On Linux/X11/Wayland, shader functions (`glUseProgram`, `glCreateShader`, etc.) are extension entry points. Although they compile against header prototypes, they must be resolved at runtime using an extension loader (like Glad/GLEW) or via `SDL_GL_GetProcAddress`. Calling them without manual address resolution can result in silent no-ops on some drivers.
-1. **Viewport Coordinate Mapping**:
+2. **Viewport Coordinate Mapping**:
    - **Issue**: Even with `glOrtho` set to `SDL_GetRenderViewport`, high-DPI scaling or viewport clipping rects applied by `SDL_Renderer` might mismatch the logical coordinate space of our quad drawing.
-1. **Texture Synchronization / Thread Boundaries**:
+3. **Texture Synchronization / Thread Boundaries**:
    - **Issue**: SDL3 textures might be bound to specific framebuffers or contexts that are not current when we run raw GL operations during the UI render loop.
 
 ______________________________________________________________________
