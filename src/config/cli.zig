@@ -8,6 +8,7 @@ pub const ParsedArgs = struct {
     test_mode: bool,
     update_baselines: bool,
     headless: bool,
+    ipc_enabled: bool,
 };
 
 pub fn parseCommandLineArgs(init: std.process.Init, gpa: std.mem.Allocator) !ParsedArgs {
@@ -22,6 +23,7 @@ pub fn parseCommandLineArgs(init: std.process.Init, gpa: std.mem.Allocator) !Par
     var test_mode = false;
     var update_baselines = false;
     var headless = false;
+    var ipc_enabled = true;
 
     while (args_it.next()) |arg| {
         if (std.mem.eql(u8, arg, "--test-mode")) {
@@ -30,6 +32,8 @@ pub fn parseCommandLineArgs(init: std.process.Init, gpa: std.mem.Allocator) !Par
             headless = true;
         } else if (std.mem.eql(u8, arg, "--update-baselines")) {
             update_baselines = true;
+        } else if (std.mem.eql(u8, arg, "--no-ipc")) {
+            ipc_enabled = false;
         } else if (std.mem.eql(u8, arg, "--scale")) {
             if (args_it.next()) |val| {
                 if (std.mem.eql(u8, val, "none")) {
@@ -60,5 +64,6 @@ pub fn parseCommandLineArgs(init: std.process.Init, gpa: std.mem.Allocator) !Par
         .test_mode = test_mode,
         .update_baselines = update_baselines,
         .headless = headless,
+        .ipc_enabled = ipc_enabled,
     };
 }

@@ -166,16 +166,19 @@ pub fn main(init: std.process.Init) !void {
 
     // Phase 5: Initialize IPC Server
     const ipc = @import("app/ipc.zig");
-    const event_base = c.SDL_RegisterEvents(2);
-    if (event_base == 0xFFFFFFFF) {
-        std.log.err("Failed to register custom SDL events", .{});
-        return error.SdlEventRegistrationFailed;
-    }
-    ipc.PENG_IPC_EVENT = event_base + 1;
+    var ipc_server: ?*ipc.IpcServer = null;
+    if (parsed.ipc_enabled) {
+        const event_base = c.SDL_RegisterEvents(2);
+        if (event_base == 0xFFFFFFFF) {
+            std.log.err("Failed to register custom SDL events", .{});
+            return error.SdlEventRegistrationFailed;
+        }
+        ipc.PENG_IPC_EVENT = event_base + 1;
 
-    const IpcServer = ipc.IpcServer;
-    const ipc_server = try IpcServer.init(gpa, &state);
-    defer ipc_server.deinit();
+        const IpcServer = ipc.IpcServer;
+        ipc_server = try IpcServer.init(gpa, &state);
+    }
+    defer if (ipc_server) |srv| srv.deinit();
 
     var active_screenshot: ?struct {
         path: [:0]const u8,
@@ -243,13 +246,15 @@ pub fn main(init: std.process.Init) !void {
                     cmd_data.client_stream.close(state.io);
                 }
             } else {
-                ipc_server.executeCommand(&state, cmd_data.command, cmd_data.client_stream) catch |err| {
-                    var response_buf: [128]u8 = undefined;
-                    const response = std.fmt.bufPrint(&response_buf, "ERR {s}\n", .{@errorName(err)}) catch "ERR ExecutionFailed\n";
-                    var writer = cmd_data.client_stream.writer(state.io, &.{});
-                    writer.interface.writeAll(response) catch {};
-                    cmd_data.client_stream.close(state.io);
-                };
+                if (ipc_server) |srv| {
+                    srv.executeCommand(&state, cmd_data.command, cmd_data.client_stream) catch |err| {
+                        var response_buf: [128]u8 = undefined;
+                        const response = std.fmt.bufPrint(&response_buf, "ERR {s}\n", .{@errorName(err)}) catch "ERR ExecutionFailed\n";
+                        var writer = cmd_data.client_stream.writer(state.io, &.{});
+                        writer.interface.writeAll(response) catch {};
+                        cmd_data.client_stream.close(state.io);
+                    };
+                }
             }
             gpa.free(cmd_data.command);
             gpa.destroy(cmd_data);

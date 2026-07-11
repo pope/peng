@@ -56,6 +56,7 @@ Start the image viewer by passing a file or directory path:
 | `--headless`         | None                             | Runs without opening an OS display window.              |
 | `--test-mode`        | None                             | Puts the window and event loop into test configuration. |
 | `--update-baselines` | None                             | Overwrites baseline golden screenshots.                 |
+| `--no-ipc`           | None                             | Disables the IPC UNIX Domain Socket server.             |
 
 ______________________________________________________________________
 
