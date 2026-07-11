@@ -32,4 +32,5 @@ pub const FrameInput = struct {
 
     ticks: u64,
     delta_time_ms: f32,
+    pending_ipc_commands: std.ArrayList(*anyopaque),
 };

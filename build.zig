@@ -61,14 +61,42 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
+    const msg_exe = b.addExecutable(.{
+        .name = "peng-msg",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/msg_main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    b.installArtifact(msg_exe);
+
+    const test_runner_exe = b.addExecutable(.{
+        .name = "peng-test-runner",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/test_runner_main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+        }),
+    });
+    inline for (&.{ "sdl3", "sdl3-image" }) |lib| {
+        test_runner_exe.root_module.linkSystemLibrary(lib, .{});
+    }
+    b.installArtifact(test_runner_exe);
+
     const exe_tests = b.addTest(.{
         .root_module = exe.root_module,
     });
 
     const run_exe_tests = b.addRunArtifact(exe_tests);
 
-    const run_integration_tests = b.addRunArtifact(exe);
-    run_integration_tests.addArgs(&.{ "--test-mode", "--headless", "testfiles/images/000_0_1024x682.jpg" });
+    const run_integration_tests = b.addRunArtifact(test_runner_exe);
+    run_integration_tests.step.dependOn(b.getInstallStep());
+    if (b.args) |args| {
+        run_integration_tests.addArgs(args);
+    }
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_exe_tests.step);

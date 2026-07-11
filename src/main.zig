@@ -98,6 +98,7 @@ fn pollFrameInput(
     last_time: *u64,
     prev_mouse_inside: bool,
     palette_show: bool,
+    non_blocking: bool,
 ) !FrameInput {
     const current_ticks = c.SDL_GetTicks();
     const delta_time_ms = @as(f32, @floatFromInt(current_ticks - last_time.*));
@@ -123,6 +124,8 @@ fn pollFrameInput(
 
     var keys_pressed = std.ArrayList(c.SDL_Keycode).empty;
     errdefer keys_pressed.deinit(frame_allocator);
+    var pending_ipc_commands = std.ArrayList(*anyopaque).empty;
+    errdefer pending_ipc_commands.deinit(frame_allocator);
     var text_input_opt: ?[]const u8 = null;
     var dropped_path_opt: ?[]const u8 = null;
     var scroll_delta_x: f32 = 0;
@@ -132,7 +135,9 @@ fn pollFrameInput(
     var quit_requested = false;
 
     var event: c.SDL_Event = undefined;
-    const wait_success = if (palette_show)
+    const wait_success = if (non_blocking)
+        c.SDL_PollEvent(&event)
+    else if (palette_show)
         c.SDL_WaitEventTimeout(&event, 8)
     else
         c.SDL_WaitEvent(&event);
@@ -178,7 +183,14 @@ fn pollFrameInput(
                 scroll_delta_x += event.wheel.x * multiplier * 6.0 * scale_x;
                 scroll_delta_y += event.wheel.y * multiplier * 6.0 * scale_y;
             },
-            else => {},
+            else => {
+                const ipc = @import("app/ipc.zig");
+                if (event.type == ipc.PENG_IPC_EVENT) {
+                    if (event.user.data1) |ptr| {
+                        try pending_ipc_commands.append(frame_allocator, ptr);
+                    }
+                }
+            },
         }
         has_event = c.SDL_PollEvent(&event);
     }
@@ -210,6 +222,7 @@ fn pollFrameInput(
         .dropped_path = dropped_path_opt,
         .ticks = current_ticks,
         .delta_time_ms = delta_time_ms,
+        .pending_ipc_commands = pending_ipc_commands,
     };
 }
 
@@ -316,58 +329,147 @@ pub fn main(init: std.process.Init) !void {
 
     var last_time = c.SDL_GetTicks();
 
-    // Phase 5: The Main Loop / Test Mode
-    if (parsed.test_mode) {
-        const test_runner = @import("app/test_runner.zig");
-        try test_runner.runIntegrationTests(&state, &setup, &resources, &measure_data, gpa, parsed.update_baselines);
-    } else {
-        while (state.running) {
-            // Phase 5a: Input Accumulation
-            _ = frame_arena.reset(.retain_capacity);
-            const input = try pollFrameInput(
-                setup.window,
-                frame_allocator,
-                &last_time,
-                state.mouse_inside,
-                state.palette.mode != .inactive,
-            );
+    // Phase 5: Initialize IPC Server
+    const ipc = @import("app/ipc.zig");
+    const event_base = c.SDL_RegisterEvents(2);
+    if (event_base == 0xFFFFFFFF) {
+        std.log.err("Failed to register custom SDL events", .{});
+        return error.SdlEventRegistrationFailed;
+    }
+    ipc.PENG_IPC_EVENT = event_base + 1;
 
-            if (input.quit_requested) {
-                state.running = false;
-            }
-            state.mouse_inside = input.mouse_inside;
+    const IpcServer = ipc.IpcServer;
+    const ipc_server = try IpcServer.init(gpa, &state);
+    defer ipc_server.deinit();
 
-            // Phase 5b: State Update
-            try state.update(input);
+    var active_screenshot: ?struct {
+        path: [:0]const u8,
+        stream: std.Io.net.Stream,
+    } = null;
+    defer {
+        if (active_screenshot) |s| {
+            var writer = s.stream.writer(state.io, &.{});
+            writer.interface.writeAll("ERR quit\n") catch {};
+            s.stream.close(state.io);
+            gpa.free(s.path);
+        }
+    }
 
-            clay.setLayoutDimensions(.{ .w = input.pix_w, .h = input.pix_h });
+    // Phase 6: The Main Loop
+    while (state.running) {
+        // Phase 6a: Input Accumulation
+        _ = frame_arena.reset(.retain_capacity);
+        const input = try pollFrameInput(
+            setup.window,
+            frame_allocator,
+            &last_time,
+            state.mouse_inside,
+            state.palette.mode != .inactive,
+            parsed.test_mode or parsed.headless,
+        );
 
-            if (input.mouse_inside) {
-                clay.setPointerState(
-                    .{ .x = input.mouse_x, .y = input.mouse_y },
-                    input.mouse_left_down,
-                );
-            } else {
-                clay.setPointerState(
-                    .{ .x = -1.0, .y = -1.0 },
-                    false,
-                );
-            }
+        if (input.quit_requested) {
+            state.running = false;
+        }
+        state.mouse_inside = input.mouse_inside;
 
-            clay.updateScrollContainers(
-                true,
-                .{ .x = input.scroll_delta_x, .y = input.scroll_delta_y },
-                input.delta_time_ms / 1000.0,
-            );
-
-            if (input.mouse_left_clicked) {
-                if (state.show_stats_overlay and clay.pointerOver(clay.getElementId("StatsCloseBtn"))) {
-                    state.show_stats_overlay = false;
+        // Process any pending IPC commands collected during event polling
+        for (input.pending_ipc_commands.items) |ptr| {
+            const cmd_data = @as(*ipc.IpcCommandData, @ptrCast(@alignCast(ptr)));
+            var it = std.mem.tokenizeAny(u8, cmd_data.command, " \t\r\n");
+            const cmd = it.next() orelse "";
+            if (std.mem.eql(u8, cmd, "screenshot")) {
+                if (it.next()) |filepath| {
+                    if (filepath.len > 512) {
+                        var writer = cmd_data.client_stream.writer(state.io, &.{});
+                        writer.interface.writeAll("ERR PathTooLong\n") catch {};
+                        cmd_data.client_stream.close(state.io);
+                    } else if (active_screenshot) |_| {
+                        var writer = cmd_data.client_stream.writer(state.io, &.{});
+                        writer.interface.writeAll("ERR Busy\n") catch {};
+                        cmd_data.client_stream.close(state.io);
+                    } else {
+                        const dup_path = gpa.dupeZ(u8, filepath) catch {
+                            var writer = cmd_data.client_stream.writer(state.io, &.{});
+                            writer.interface.writeAll("ERR OutOfMemory\n") catch {};
+                            cmd_data.client_stream.close(state.io);
+                            gpa.free(cmd_data.command);
+                            gpa.destroy(cmd_data);
+                            continue;
+                        };
+                        active_screenshot = .{
+                            .path = dup_path,
+                            .stream = cmd_data.client_stream,
+                        };
+                    }
+                } else {
+                    var writer = cmd_data.client_stream.writer(state.io, &.{});
+                    writer.interface.writeAll("ERR MissingArgument\n") catch {};
+                    cmd_data.client_stream.close(state.io);
                 }
+            } else {
+                ipc_server.executeCommand(&state, cmd_data.command, cmd_data.client_stream) catch |err| {
+                    var response_buf: [128]u8 = undefined;
+                    const response = std.fmt.bufPrint(&response_buf, "ERR {s}\n", .{@errorName(err)}) catch "ERR ExecutionFailed\n";
+                    var writer = cmd_data.client_stream.writer(state.io, &.{});
+                    writer.interface.writeAll(response) catch {};
+                    cmd_data.client_stream.close(state.io);
+                };
             }
+            gpa.free(cmd_data.command);
+            gpa.destroy(cmd_data);
+        }
 
-            // Phase 5c: Draw / Render
-            try renderFrame(&state, input, frame_allocator, resources.fonts[0..], &measure_data, null);
+        // Phase 6b: State Update
+        try state.update(input);
+
+        clay.setLayoutDimensions(.{ .w = input.pix_w, .h = input.pix_h });
+
+        if (input.mouse_inside) {
+            clay.setPointerState(
+                .{ .x = input.mouse_x, .y = input.mouse_y },
+                input.mouse_left_down,
+            );
+        } else {
+            clay.setPointerState(
+                .{ .x = -1.0, .y = -1.0 },
+                false,
+            );
+        }
+
+        clay.updateScrollContainers(
+            true,
+            .{ .x = input.scroll_delta_x, .y = input.scroll_delta_y },
+            input.delta_time_ms / 1000.0,
+        );
+
+        if (input.mouse_left_clicked) {
+            if (state.show_stats_overlay and clay.pointerOver(clay.getElementId("StatsCloseBtn"))) {
+                state.show_stats_overlay = false;
+            }
+        }
+
+        // Phase 6c: Draw / Render
+        const capture_filename = if (active_screenshot) |s| s.path else null;
+        renderFrame(&state, input, frame_allocator, resources.fonts[0..], &measure_data, capture_filename) catch |err| {
+            if (active_screenshot) |s| {
+                var response_buf: [128]u8 = undefined;
+                const response = std.fmt.bufPrint(&response_buf, "ERR {s}\n", .{@errorName(err)}) catch "ERR SaveFailed\n";
+                var writer = s.stream.writer(state.io, &.{});
+                writer.interface.writeAll(response) catch {};
+                s.stream.close(state.io);
+                gpa.free(s.path);
+                active_screenshot = null;
+            }
+            return err;
+        };
+
+        if (active_screenshot) |s| {
+            var writer = s.stream.writer(state.io, &.{});
+            writer.interface.writeAll("OK\n") catch {};
+            s.stream.close(state.io);
+            gpa.free(s.path);
+            active_screenshot = null;
         }
     }
 }

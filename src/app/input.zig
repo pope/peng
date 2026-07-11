@@ -56,18 +56,20 @@ pub fn handlePaletteKeys(
                     } else {
                         const parsed_val_opt = std.fmt.parseFloat(f32, raw_str) catch null;
                         if (parsed_val_opt) |val| {
-                            const min_val: f32 = if (palette.mode == .set_brightness) -1.0 else 0.0;
-                            const max_val: f32 = if (palette.mode == .set_brightness) 1.0 else 5.0;
-                            if (val >= min_val and val <= max_val) {
-                                if (palette.mode == .set_brightness) {
-                                    self.brightness = val;
-                                } else {
-                                    self.contrast = val;
+                            if (!std.math.isNan(val) and !std.math.isInf(val)) {
+                                const min_val: f32 = if (palette.mode == .set_brightness) -1.0 else 0.0;
+                                const max_val: f32 = if (palette.mode == .set_brightness) 1.0 else 5.0;
+                                if (val >= min_val and val <= max_val) {
+                                    if (palette.mode == .set_brightness) {
+                                        self.brightness = val;
+                                    } else {
+                                        self.contrast = val;
+                                    }
+                                    self.adjustments_dirty = true;
+                                    palette.mode = .inactive;
+                                    stopTextInput(self.window);
+                                    return true;
                                 }
-                                self.adjustments_dirty = true;
-                                palette.mode = .inactive;
-                                stopTextInput(self.window);
-                                return true;
                             }
                         }
                     }

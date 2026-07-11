@@ -237,25 +237,30 @@ pub fn renderPalette(
                         });
                     } else {
                         const parsed_val_opt = std.fmt.parseFloat(f32, raw_str) catch null;
+                        var is_valid_float = false;
                         if (parsed_val_opt) |val| {
-                            const min_val: f32 = if (palette.mode == .set_brightness) -1.0 else 0.0;
-                            const max_val: f32 = if (palette.mode == .set_brightness) 1.0 else 5.0;
-                            if (val >= min_val and val <= max_val) {
-                                const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to set value to: {d:.2}", .{val});
-                                clay.text(success_str, .{
-                                    .color = .{ 166, 227, 161, 255 }, // Green
-                                    .font_size = @intFromFloat(13.0 * dpi_scale),
-                                    .font_id = 0,
-                                });
-                            } else {
-                                const err_str = try std.fmt.allocPrint(frame_allocator, "Out of bounds: must be between {d:.1} and {d:.1}", .{ min_val, max_val });
-                                clay.text(err_str, .{
-                                    .color = .{ 243, 139, 168, 255 }, // Red
-                                    .font_size = @intFromFloat(13.0 * dpi_scale),
-                                    .font_id = 0,
-                                });
+                            if (!std.math.isNan(val) and !std.math.isInf(val)) {
+                                is_valid_float = true;
+                                const min_val: f32 = if (palette.mode == .set_brightness) -1.0 else 0.0;
+                                const max_val: f32 = if (palette.mode == .set_brightness) 1.0 else 5.0;
+                                if (val >= min_val and val <= max_val) {
+                                    const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to set value to: {d:.2}", .{val});
+                                    clay.text(success_str, .{
+                                        .color = .{ 166, 227, 161, 255 }, // Green
+                                        .font_size = @intFromFloat(13.0 * dpi_scale),
+                                        .font_id = 0,
+                                    });
+                                } else {
+                                    const err_str = try std.fmt.allocPrint(frame_allocator, "Out of bounds: must be between {d:.1} and {d:.1}", .{ min_val, max_val });
+                                    clay.text(err_str, .{
+                                        .color = .{ 243, 139, 168, 255 }, // Red
+                                        .font_size = @intFromFloat(13.0 * dpi_scale),
+                                        .font_id = 0,
+                                    });
+                                }
                             }
-                        } else {
+                        }
+                        if (!is_valid_float) {
                             clay.text("Invalid float format. Enter a number.", .{
                                 .color = .{ 243, 139, 168, 255 }, // Red
                                 .font_size = @intFromFloat(13.0 * dpi_scale),
