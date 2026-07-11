@@ -67,6 +67,10 @@ pub fn build(b: *std.Build) void {
 
     const run_exe_tests = b.addRunArtifact(exe_tests);
 
+    const run_integration_tests = b.addRunArtifact(exe);
+    run_integration_tests.addArgs(&.{ "--test-mode", "--headless", "testfiles/images/000_0_1024x682.jpg" });
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_exe_tests.step);
+    test_step.dependOn(&run_integration_tests.step);
 }

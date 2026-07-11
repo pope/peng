@@ -225,7 +225,10 @@ pub fn main(init: std.process.Init) !void {
     defer if (parsed.arg_path) |p| gpa.free(p);
 
     // Phase 2: Graphics and Window Setup
-    const setup = try initGraphicsAndWindow("Peng Image Viewer", parsed.test_mode);
+    const setup = try initGraphicsAndWindow("Peng Image Viewer", .{
+        .headless = parsed.headless,
+        .high_dpi = !parsed.test_mode,
+    });
     defer {
         c.SDL_DestroyGPUDevice(setup.gpu_device);
         c.SDL_DestroyWindow(setup.window);
@@ -234,7 +237,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     // Phase 3: GPU Pipeline and Resources Setup
-    const resources = try initGpuResources(setup.gpu_device, setup.window, setup.initial_dpi_scale, parsed.test_mode);
+    const resources = try initGpuResources(setup.gpu_device, setup.window, setup.initial_dpi_scale, parsed.headless);
     var own_resources = true;
     defer {
         if (own_resources) {
@@ -278,9 +281,7 @@ pub fn main(init: std.process.Init) !void {
         .is_fullscreen = false,
         .running = true,
         .show_stats_overlay = false,
-        .test_mode = parsed.test_mode,
-        .update_baselines = parsed.update_baselines,
-        .window_claimed = !parsed.test_mode,
+        .window_claimed = !parsed.headless,
     };
     defer state.deinit();
     own_resources = false;
@@ -316,9 +317,9 @@ pub fn main(init: std.process.Init) !void {
     var last_time = c.SDL_GetTicks();
 
     // Phase 5: The Main Loop / Test Mode
-    if (state.test_mode) {
+    if (parsed.test_mode) {
         const test_runner = @import("app/test_runner.zig");
-        try test_runner.runIntegrationTests(&state, &setup, &resources, &measure_data, gpa);
+        try test_runner.runIntegrationTests(&state, &setup, &resources, &measure_data, gpa, parsed.update_baselines);
     } else {
         while (state.running) {
             // Phase 5a: Input Accumulation

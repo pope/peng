@@ -10,8 +10,13 @@ pub const GraphicsSetup = struct {
     initial_dpi_scale: f32,
 };
 
-pub fn initGraphicsAndWindow(window_title: [:0]const u8, test_mode: bool) !GraphicsSetup {
-    if (test_mode) {
+pub const GraphicsOptions = struct {
+    headless: bool = false,
+    high_dpi: bool = true,
+};
+
+pub fn initGraphicsAndWindow(window_title: [:0]const u8, options: GraphicsOptions) !GraphicsSetup {
+    if (options.headless) {
         _ = c.SDL_SetHint(c.SDL_HINT_VIDEO_DRIVER, "offscreen");
     }
     // Initialize SDL3
@@ -29,10 +34,12 @@ pub fn initGraphicsAndWindow(window_title: [:0]const u8, test_mode: bool) !Graph
     errdefer c.TTF_Quit();
 
     // Create window
-    const win_flags = if (test_mode)
-        c.SDL_WINDOW_HIDDEN | c.SDL_WINDOW_HIGH_PIXEL_DENSITY
+    const win_flags = if (options.headless)
+        c.SDL_WINDOW_HIDDEN
+    else if (options.high_dpi)
+        c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY
     else
-        c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY;
+        c.SDL_WINDOW_RESIZABLE;
     const window = c.SDL_CreateWindow(window_title.ptr, 1024, 768, win_flags) orelse {
         std.log.err("SDL_CreateWindow Error: {s}", .{c.SDL_GetError()});
         return error.WindowCreationFailed;
@@ -59,7 +66,7 @@ pub fn initGraphicsAndWindow(window_title: [:0]const u8, test_mode: bool) !Graph
     };
     errdefer c.SDL_DestroyGPUDevice(gpu_device);
 
-    if (!test_mode) {
+    if (!options.headless) {
         if (!c.SDL_ClaimWindowForGPUDevice(gpu_device, window)) {
             std.log.err("SDL_ClaimWindowForGPUDevice failed: {s}", .{c.SDL_GetError()});
             return error.ClaimWindowFailed;
@@ -81,8 +88,8 @@ pub const GpuResources = struct {
     fonts: [2]?*c.TTF_Font,
 };
 
-pub fn initGpuResources(gpu_device: *c.SDL_GPUDevice, window: *c.SDL_Window, initial_dpi_scale: f32, test_mode: bool) !GpuResources {
-    const target_format = if (test_mode)
+pub fn initGpuResources(gpu_device: *c.SDL_GPUDevice, window: *c.SDL_Window, initial_dpi_scale: f32, headless: bool) !GpuResources {
+    const target_format = if (headless)
         @as(c.SDL_GPUTextureFormat, c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM)
     else
         c.SDL_GetGPUSwapchainTextureFormat(gpu_device, window);

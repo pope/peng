@@ -464,8 +464,6 @@ pub const ViewerState = struct {
     is_fullscreen: bool = false,
     running: bool = true,
     show_stats_overlay: bool = false,
-    test_mode: bool = false,
-    update_baselines: bool = false,
     window_claimed: bool = false,
     scale_mode: ScaleMode = .full,
     zoom_factor: f32 = 1.0,
@@ -516,7 +514,9 @@ pub const ViewerState = struct {
         if (self.gpu_sampler) |sampler| c.SDL_ReleaseGPUSampler(self.gpu_device, sampler);
         if (self.white_texture) |white_tex| c.SDL_ReleaseGPUTexture(self.gpu_device, white_tex);
         if (self.gpu_text_engine) |engine| c.TTF_DestroyGPUTextEngine(engine);
-        if (self.window) |w| c.SDL_ReleaseWindowFromGPUDevice(self.gpu_device, w);
+        if (self.window_claimed) {
+            if (self.window) |w| c.SDL_ReleaseWindowFromGPUDevice(self.gpu_device, w);
+        }
 
         c.SDL_DestroyMutex(self.cache_mutex);
         for (self.image_list.items) |item| {

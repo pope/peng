@@ -104,6 +104,7 @@ pub fn runIntegrationTests(
     resources: *const GpuResources,
     measure_data: *const MeasureTextUserData,
     gpa: std.mem.Allocator,
+    update_baselines: bool,
 ) !void {
     if (std.Io.Dir.openDir(std.Io.Dir.cwd(), state.io, "testfiles/current-run", .{ .iterate = true })) |dir| {
         var it = std.Io.Dir.iterate(dir);
@@ -277,7 +278,7 @@ pub fn runIntegrationTests(
             ),
         );
 
-        const capture_path = if (state.update_baselines) base_filename else run_filename;
+        const capture_path = if (update_baselines) base_filename else run_filename;
 
         try renderFrame(
             state,
@@ -288,7 +289,7 @@ pub fn runIntegrationTests(
             capture_path,
         );
 
-        if (!state.update_baselines) {
+        if (!update_baselines) {
             try compareScreenshots(
                 base_filename,
                 run_filename,
