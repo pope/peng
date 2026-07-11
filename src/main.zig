@@ -173,7 +173,7 @@ fn pollFrameInput(
                     dropped_path_opt = dup;
                 }
             },
-            c.SDL_EVENT_MOUSE_BUTTON_UP => {
+            c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
                 if (event.button.button == c.SDL_BUTTON_LEFT) {
                     mouse_left_clicked = true;
                 }

@@ -1077,7 +1077,7 @@ pub const ViewerState = struct {
 
         // 3. Mouse dragging updates
         var next_drag_state = self.drag_state;
-        switch (self.drag_state) {
+        switch (next_drag_state) {
             .none => {},
             .stats => |stats| {
                 if (input.mouse_left_down) {
