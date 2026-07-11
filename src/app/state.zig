@@ -888,8 +888,8 @@ pub const ViewerState = struct {
             idx,
             (idx + 1) % len,
             (idx + 2) % len,
-            (idx + (len - 1)) % len,
-            (idx + (len - 2)) % len,
+            (idx + len - 1) % len,
+            if (len >= 2) (idx + len - 2) % len else idx,
         }) |d| {
             var unique = true;
             for (desired[0..desired_count]) |existing| {
