@@ -289,6 +289,159 @@ pub fn detectMimeType(io: std.Io, path: []const u8) []const u8 {
     return "unknown";
 }
 
+pub const GpuUploadResult = struct {
+    gpu_texture: *c.SDL_GPUTexture,
+    w: f32,
+    h: f32,
+    upload_time_ms: f64,
+    memory_size_bytes: usize,
+};
+
+pub fn uploadSurfaceToGpu(gpu_device: *c.SDL_GPUDevice, surf: *c.SDL_Surface) ?GpuUploadResult {
+    const start_upload = c.SDL_GetTicksNS();
+    var current_surf = surf;
+    var converted_tmp: ?*c.SDL_Surface = null;
+    defer if (converted_tmp) |cs| c.SDL_DestroySurface(cs);
+
+    if (current_surf.*.format != c.SDL_PIXELFORMAT_RGBA32) {
+        converted_tmp = c.SDL_ConvertSurface(current_surf, c.SDL_PIXELFORMAT_RGBA32);
+        if (converted_tmp) |cs| {
+            current_surf = cs;
+        } else {
+            return null;
+        }
+    }
+
+    var scaled_surf: ?*c.SDL_Surface = null;
+    defer if (scaled_surf) |s| c.SDL_DestroySurface(s);
+
+    var img_w = current_surf.*.w;
+    var img_h = current_surf.*.h;
+    var tex: ?*c.SDL_GPUTexture = null;
+
+    var try_max_dim: i32 = 16384;
+    while (try_max_dim >= 2048) : (try_max_dim = @divTrunc(try_max_dim, 2)) {
+        if (img_w <= try_max_dim and img_h <= try_max_dim) {
+            const img_tex_info = c.SDL_GPUTextureCreateInfo{
+                .type = c.SDL_GPU_TEXTURETYPE_2D,
+                .format = c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+                .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER,
+                .width = @intCast(img_w),
+                .height = @intCast(img_h),
+                .layer_count_or_depth = 1,
+                .num_levels = 1,
+                .sample_count = c.SDL_GPU_SAMPLECOUNT_1,
+                .props = 0,
+            };
+            tex = c.SDL_CreateGPUTexture(gpu_device, &img_tex_info);
+            if (tex != null) break;
+        }
+
+        const next_dim = @divTrunc(try_max_dim, 2);
+        if (img_w > next_dim or img_h > next_dim) {
+            var new_w = img_w;
+            var new_h = img_h;
+            if (img_w > img_h) {
+                new_w = next_dim;
+                new_h = @divTrunc(img_h * next_dim, img_w);
+            } else {
+                new_h = next_dim;
+                new_w = @divTrunc(img_w * next_dim, img_h);
+            }
+            new_w = @max(1, new_w);
+            new_h = @max(1, new_h);
+
+            const new_scale = c.SDL_ScaleSurface(
+                current_surf,
+                new_w,
+                new_h,
+                c.SDL_SCALEMODE_LINEAR,
+            );
+            if (new_scale) |ns| {
+                if (scaled_surf) |s| c.SDL_DestroySurface(s);
+                scaled_surf = ns;
+                current_surf = ns;
+                img_w = new_w;
+                img_h = new_h;
+            } else {
+                std.log.err("uploadSurfaceToGpu: SDL_ScaleSurface failed: {s}", .{c.SDL_GetError()});
+                break;
+            }
+        }
+    }
+
+    const gpu_tex = tex orelse return null;
+
+    const cmd_buf = c.SDL_AcquireGPUCommandBuffer(gpu_device) orelse {
+        c.SDL_ReleaseGPUTexture(gpu_device, gpu_tex);
+        return null;
+    };
+
+    const size = @as(usize, @intCast(img_w)) * @as(usize, @intCast(img_h)) * 4;
+    const transfer_buf = c.SDL_CreateGPUTransferBuffer(gpu_device, &c.SDL_GPUTransferBufferCreateInfo{
+        .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+        .size = @intCast(size),
+        .props = 0,
+    }) orelse {
+        std.log.err("Create transfer buffer failed: {s}", .{c.SDL_GetError()});
+        _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
+        c.SDL_ReleaseGPUTexture(gpu_device, gpu_tex);
+        return null;
+    };
+    defer c.SDL_ReleaseGPUTransferBuffer(gpu_device, transfer_buf);
+
+    const mapped: [*]u8 = @ptrCast(c.SDL_MapGPUTransferBuffer(gpu_device, transfer_buf, false) orelse {
+        _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
+        c.SDL_ReleaseGPUTexture(gpu_device, gpu_tex);
+        return null;
+    });
+    const pixels: [*]const u8 = @ptrCast(current_surf.*.pixels);
+    const row_bytes: usize = @intCast(img_w * 4);
+    const pitch: usize = @intCast(current_surf.*.pitch);
+    if (pitch == row_bytes) {
+        @memcpy(mapped[0..size], pixels[0..size]);
+    } else {
+        var y: usize = 0;
+        const height_u: usize = @intCast(img_h);
+        while (y < height_u) : (y += 1) {
+            const src_row = pixels[y * pitch .. y * pitch + row_bytes];
+            const dst_row = mapped[y * row_bytes .. (y + 1) * row_bytes];
+            @memcpy(dst_row, src_row);
+        }
+    }
+    c.SDL_UnmapGPUTransferBuffer(gpu_device, transfer_buf);
+
+    const copy_pass = c.SDL_BeginGPUCopyPass(cmd_buf) orelse {
+        _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
+        c.SDL_ReleaseGPUTexture(gpu_device, gpu_tex);
+        return null;
+    };
+    c.SDL_UploadToGPUTexture(copy_pass, &c.SDL_GPUTextureTransferInfo{
+        .transfer_buffer = transfer_buf,
+        .offset = 0,
+        .pixels_per_row = @intCast(img_w),
+        .rows_per_layer = @intCast(img_h),
+    }, &c.SDL_GPUTextureRegion{
+        .texture = gpu_tex,
+        .w = @intCast(img_w),
+        .h = @intCast(img_h),
+        .d = 1,
+    }, false);
+    c.SDL_EndGPUCopyPass(copy_pass);
+    _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+
+    const end_upload = c.SDL_GetTicksNS();
+    const upload_time_ms = @as(f64, @floatFromInt(end_upload - start_upload)) / 1_000_000.0;
+
+    return .{
+        .gpu_texture = gpu_tex,
+        .w = @floatFromInt(img_w),
+        .h = @floatFromInt(img_h),
+        .upload_time_ms = upload_time_ms,
+        .memory_size_bytes = size,
+    };
+}
+
 pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
     const args: *DecodeArgs = @ptrCast(@alignCast(data.?));
     const state = args.state;
@@ -372,51 +525,161 @@ pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
         return 0;
     }
 
-    // Lock cache and update
-    c.SDL_LockMutex(state.cache_mutex);
-    defer c.SDL_UnlockMutex(state.cache_mutex);
+    var uploaded_to_gpu = false;
+    if (final_surface) |f_surf| {
+        if (state.gpu_device) |gpu_dev| {
+            const orig_w: f32 = @floatFromInt(f_surf.*.w);
+            const orig_h: f32 = @floatFromInt(f_surf.*.h);
 
-    if (state.exiting.load(.acquire)) {
-        if (final_surface) |surf| c.SDL_DestroySurface(surf);
-        return 0;
+            // Progressive Thumbnail Pass for large images (> 1280px)
+            const thumb_max: i32 = 1280;
+            if (f_surf.*.w > thumb_max or f_surf.*.h > thumb_max) {
+                var tw = f_surf.*.w;
+                var th = f_surf.*.h;
+                if (tw > th) {
+                    tw = thumb_max;
+                    th = @divTrunc(f_surf.*.h * thumb_max, f_surf.*.w);
+                } else {
+                    th = thumb_max;
+                    tw = @divTrunc(f_surf.*.w * thumb_max, f_surf.*.h);
+                }
+                tw = @max(1, tw);
+                th = @max(1, th);
+
+                if (c.SDL_ScaleSurface(f_surf, tw, th, c.SDL_SCALEMODE_LINEAR)) |thumb_surf| {
+                    defer c.SDL_DestroySurface(thumb_surf);
+                    if (uploadSurfaceToGpu(gpu_dev, thumb_surf)) |thumb_res| {
+                        c.SDL_LockMutex(state.cache_mutex);
+                        if (!state.exiting.load(.acquire)) {
+                            if (state.cache.getWithGeneration(index, args.generation)) |entry| {
+                                if (entry.status != .loaded_gpu) {
+                                    switch (entry.status) {
+                                        .loaded_cpu => |cpu| c.SDL_DestroySurface(cpu.surface),
+                                        else => {},
+                                    }
+                                    entry.status = .{
+                                        .loaded_gpu = .{
+                                            .gpu_texture = thumb_res.gpu_texture,
+                                            .w = orig_w,
+                                            .h = orig_h,
+                                            .size_bytes = size_bytes,
+                                            .mime_type = mime_type,
+                                            .decode_time_ms = decode_time_ms,
+                                            .conversion_time_ms = conversion_time_ms,
+                                            .upload_time_ms = thumb_res.upload_time_ms,
+                                            .memory_size_bytes = thumb_res.memory_size_bytes,
+                                        },
+                                    };
+                                    var event = std.mem.zeroes(c.SDL_Event);
+                                    event.type = c.SDL_EVENT_USER;
+                                    _ = c.SDL_PushEvent(&event);
+                                } else {
+                                    c.SDL_ReleaseGPUTexture(gpu_dev, thumb_res.gpu_texture);
+                                }
+                            } else {
+                                c.SDL_ReleaseGPUTexture(gpu_dev, thumb_res.gpu_texture);
+                            }
+                        } else {
+                            c.SDL_ReleaseGPUTexture(gpu_dev, thumb_res.gpu_texture);
+                        }
+                        c.SDL_UnlockMutex(state.cache_mutex);
+                    }
+                }
+            }
+
+            // Full Resolution GPU Upload Pass
+            if (uploadSurfaceToGpu(gpu_dev, f_surf)) |full_res| {
+                uploaded_to_gpu = true;
+                c.SDL_LockMutex(state.cache_mutex);
+                defer c.SDL_UnlockMutex(state.cache_mutex);
+
+                c.SDL_DestroySurface(f_surf);
+                final_surface = null;
+
+                if (!state.exiting.load(.acquire)) {
+                    if (state.cache.getWithGeneration(index, args.generation)) |entry| {
+                        var old_thumb_tex: ?*c.SDL_GPUTexture = null;
+                        switch (entry.status) {
+                            .loaded_cpu => |cpu| c.SDL_DestroySurface(cpu.surface),
+                            .loaded_gpu => |gpu| old_thumb_tex = gpu.gpu_texture,
+                            else => {},
+                        }
+                        entry.status = .{
+                            .loaded_gpu = .{
+                                .gpu_texture = full_res.gpu_texture,
+                                .w = orig_w,
+                                .h = orig_h,
+                                .size_bytes = size_bytes,
+                                .mime_type = mime_type,
+                                .decode_time_ms = decode_time_ms,
+                                .conversion_time_ms = conversion_time_ms,
+                                .upload_time_ms = full_res.upload_time_ms,
+                                .memory_size_bytes = full_res.memory_size_bytes,
+                            },
+                        };
+                        if (old_thumb_tex) |old_tex| {
+                            if (old_tex != full_res.gpu_texture) {
+                                c.SDL_ReleaseGPUTexture(gpu_dev, old_tex);
+                            }
+                        }
+                        var event = std.mem.zeroes(c.SDL_Event);
+                        event.type = c.SDL_EVENT_USER;
+                        _ = c.SDL_PushEvent(&event);
+                    } else {
+                        // Entry was evicted while uploading full res
+                        c.SDL_ReleaseGPUTexture(gpu_dev, full_res.gpu_texture);
+                    }
+                } else {
+                    c.SDL_ReleaseGPUTexture(gpu_dev, full_res.gpu_texture);
+                }
+            }
+        }
     }
 
-    // Check if this index is still wanted
-    var found_in_cache = false;
-    if (state.cache.getWithGeneration(index, args.generation)) |entry| {
-        found_in_cache = true;
-        if (final_surface) |surf| {
-            if (entry.status == .loaded_cpu or entry.status == .loaded_gpu) {
-                c.SDL_DestroySurface(surf);
+    if (!uploaded_to_gpu) {
+        c.SDL_LockMutex(state.cache_mutex);
+        defer c.SDL_UnlockMutex(state.cache_mutex);
+
+        if (state.exiting.load(.acquire)) {
+            if (final_surface) |surf| c.SDL_DestroySurface(surf);
+            return 0;
+        }
+
+        var found_in_cache = false;
+        if (state.cache.getWithGeneration(index, args.generation)) |entry| {
+            found_in_cache = true;
+            if (final_surface) |surf| {
+                if (entry.status == .loaded_cpu or entry.status == .loaded_gpu) {
+                    c.SDL_DestroySurface(surf);
+                } else {
+                    entry.status = .{
+                        .loaded_cpu = .{
+                            .surface = surf,
+                            .w = @floatFromInt(surf.*.w),
+                            .h = @floatFromInt(surf.*.h),
+                            .size_bytes = size_bytes,
+                            .mime_type = mime_type,
+                            .decode_time_ms = decode_time_ms,
+                            .conversion_time_ms = conversion_time_ms,
+                        },
+                    };
+                }
             } else {
-                entry.status = .{
-                    .loaded_cpu = .{
-                        .surface = surf,
-                        .w = @floatFromInt(surf.*.w),
-                        .h = @floatFromInt(surf.*.h),
-                        .size_bytes = size_bytes,
-                        .mime_type = mime_type,
-                        .decode_time_ms = decode_time_ms,
-                        .conversion_time_ms = conversion_time_ms,
-                    },
-                };
+                if (entry.status != .loaded_cpu and entry.status != .loaded_gpu) {
+                    entry.status = .failed;
+                }
+            }
+        }
+
+        if (!found_in_cache) {
+            if (final_surface) |surf| {
+                c.SDL_DestroySurface(surf);
             }
         } else {
-            if (entry.status != .loaded_cpu and entry.status != .loaded_gpu) {
-                entry.status = .failed;
-            }
+            var event: c.SDL_Event = undefined;
+            event.type = c.SDL_EVENT_USER;
+            _ = c.SDL_PushEvent(&event);
         }
-    }
-
-    if (!found_in_cache) {
-        if (final_surface) |surf| {
-            c.SDL_DestroySurface(surf);
-        }
-    } else {
-        // Push SDL user event to wake up the main loop
-        var event: c.SDL_Event = undefined;
-        event.type = c.SDL_EVENT_USER;
-        _ = c.SDL_PushEvent(&event);
     }
 
     return 0;
@@ -692,157 +955,34 @@ pub const ViewerState = struct {
         c.SDL_UnlockMutex(self.cache_mutex);
 
         if (upload_target) |target| {
-            const start_upload = c.SDL_GetTicksNS();
-            var current_surf = target.cpu.surface;
-            var scaled_surf: ?*c.SDL_Surface = null;
-            defer if (scaled_surf) |s| c.SDL_DestroySurface(s);
             defer c.SDL_DestroySurface(target.cpu.surface);
-
-            var img_w = current_surf.*.w;
-            var img_h = current_surf.*.h;
-            var tex: ?*c.SDL_GPUTexture = null;
-
-            var try_max_dim: i32 = 16384;
-            while (try_max_dim >= 2048) : (try_max_dim = @divTrunc(try_max_dim, 2)) {
-                if (img_w <= try_max_dim and img_h <= try_max_dim) {
-                    const img_tex_info = c.SDL_GPUTextureCreateInfo{
-                        .type = c.SDL_GPU_TEXTURETYPE_2D,
-                        .format = c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-                        .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER,
-                        .width = @intCast(img_w),
-                        .height = @intCast(img_h),
-                        .layer_count_or_depth = 1,
-                        .num_levels = 1,
-                        .sample_count = c.SDL_GPU_SAMPLECOUNT_1,
-                        .props = 0,
+            if (self.gpu_device) |gpu_dev| {
+                if (uploadSurfaceToGpu(gpu_dev, target.cpu.surface)) |res| {
+                    c.SDL_LockMutex(self.cache_mutex);
+                    const loaded_gpu_status = CacheStatus{
+                        .loaded_gpu = .{
+                            .gpu_texture = res.gpu_texture,
+                            .w = target.cpu.w,
+                            .h = target.cpu.h,
+                            .size_bytes = target.cpu.size_bytes,
+                            .mime_type = target.cpu.mime_type,
+                            .decode_time_ms = target.cpu.decode_time_ms,
+                            .conversion_time_ms = target.cpu.conversion_time_ms,
+                            .upload_time_ms = res.upload_time_ms,
+                            .memory_size_bytes = res.memory_size_bytes,
+                        },
                     };
-                    tex = c.SDL_CreateGPUTexture(self.gpu_device, &img_tex_info);
-                    if (tex != null) break;
-                }
+                    const updated = self.cache.updateStatus(target.index, target.generation, loaded_gpu_status);
+                    c.SDL_UnlockMutex(self.cache_mutex);
 
-                const next_dim = @divTrunc(try_max_dim, 2);
-                if (img_w > next_dim or img_h > next_dim) {
-                    var new_w = img_w;
-                    var new_h = img_h;
-                    if (img_w > img_h) {
-                        new_w = next_dim;
-                        new_h = @divTrunc(img_h * next_dim, img_w);
-                    } else {
-                        new_h = next_dim;
-                        new_w = @divTrunc(img_w * next_dim, img_h);
+                    if (!updated) {
+                        c.SDL_ReleaseGPUTexture(gpu_dev, res.gpu_texture);
                     }
-                    new_w = @max(1, new_w);
-                    new_h = @max(1, new_h);
-
-                    const new_scale = c.SDL_ScaleSurface(
-                        current_surf,
-                        new_w,
-                        new_h,
-                        c.SDL_SCALEMODE_LINEAR,
-                    );
-                    if (new_scale) |ns| {
-                        if (scaled_surf) |s| c.SDL_DestroySurface(s);
-                        scaled_surf = ns;
-                        current_surf = ns;
-                        img_w = new_w;
-                        img_h = new_h;
-                    } else {
-                        std.log.err("SDL_ScaleSurface failed: {s}", .{c.SDL_GetError()});
-                        break;
-                    }
+                } else {
+                    c.SDL_LockMutex(self.cache_mutex);
+                    _ = self.cache.updateStatus(target.index, target.generation, .failed);
+                    c.SDL_UnlockMutex(self.cache_mutex);
                 }
-            }
-
-            if (tex == null) {
-                std.log.err("Create GPU Texture failed for image size {d}x{d}: {s}", .{ target.cpu.surface.*.w, target.cpu.surface.*.h, c.SDL_GetError() });
-                c.SDL_LockMutex(self.cache_mutex);
-                _ = self.cache.updateStatus(target.index, target.generation, .failed);
-                c.SDL_UnlockMutex(self.cache_mutex);
-                return;
-            }
-            const gpu_tex = tex.?;
-
-            const cmd_buf = c.SDL_AcquireGPUCommandBuffer(self.gpu_device) orelse {
-                c.SDL_ReleaseGPUTexture(self.gpu_device, gpu_tex);
-                c.SDL_LockMutex(self.cache_mutex);
-                _ = self.cache.updateStatus(target.index, target.generation, .failed);
-                c.SDL_UnlockMutex(self.cache_mutex);
-                return;
-            };
-            const size = @as(usize, @intCast(img_w)) * @as(usize, @intCast(img_h)) * 4;
-            const transfer_buf = c.SDL_CreateGPUTransferBuffer(self.gpu_device, &c.SDL_GPUTransferBufferCreateInfo{
-                .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
-                .size = @intCast(size),
-                .props = 0,
-            }) orelse {
-                std.log.err("Create transfer buffer failed: {s}", .{c.SDL_GetError()});
-                _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
-                c.SDL_ReleaseGPUTexture(self.gpu_device, gpu_tex);
-                c.SDL_LockMutex(self.cache_mutex);
-                _ = self.cache.updateStatus(target.index, target.generation, .failed);
-                c.SDL_UnlockMutex(self.cache_mutex);
-                return;
-            };
-            defer c.SDL_ReleaseGPUTransferBuffer(self.gpu_device, transfer_buf);
-
-            const mapped: [*]u8 = @ptrCast(c.SDL_MapGPUTransferBuffer(self.gpu_device, transfer_buf, false) orelse {
-                _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
-                c.SDL_ReleaseGPUTexture(self.gpu_device, gpu_tex);
-                c.SDL_LockMutex(self.cache_mutex);
-                _ = self.cache.updateStatus(target.index, target.generation, .failed);
-                c.SDL_UnlockMutex(self.cache_mutex);
-                return;
-            });
-            const pixels: [*]const u8 = @ptrCast(current_surf.*.pixels);
-            @memcpy(mapped[0..size], pixels[0..size]);
-            c.SDL_UnmapGPUTransferBuffer(self.gpu_device, transfer_buf);
-
-            const copy_pass = c.SDL_BeginGPUCopyPass(cmd_buf) orelse {
-                _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
-                c.SDL_ReleaseGPUTexture(self.gpu_device, gpu_tex);
-                c.SDL_LockMutex(self.cache_mutex);
-                _ = self.cache.updateStatus(target.index, target.generation, .failed);
-                c.SDL_UnlockMutex(self.cache_mutex);
-                return;
-            };
-            c.SDL_UploadToGPUTexture(copy_pass, &c.SDL_GPUTextureTransferInfo{
-                .transfer_buffer = transfer_buf,
-                .offset = 0,
-                .pixels_per_row = @intCast(img_w),
-                .rows_per_layer = @intCast(img_h),
-            }, &c.SDL_GPUTextureRegion{
-                .texture = gpu_tex,
-                .w = @intCast(img_w),
-                .h = @intCast(img_h),
-                .d = 1,
-            }, false);
-            c.SDL_EndGPUCopyPass(copy_pass);
-            _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
-
-            const end_upload = c.SDL_GetTicksNS();
-            const upload_time_ms = @as(f64, @floatFromInt(end_upload - start_upload)) / 1_000_000.0;
-
-            c.SDL_LockMutex(self.cache_mutex);
-            const loaded_gpu_status = CacheStatus{
-                .loaded_gpu = .{
-                    .gpu_texture = gpu_tex,
-                    .w = @floatFromInt(img_w),
-                    .h = @floatFromInt(img_h),
-                    .size_bytes = target.cpu.size_bytes,
-                    .mime_type = target.cpu.mime_type,
-                    .decode_time_ms = target.cpu.decode_time_ms,
-                    .conversion_time_ms = target.cpu.conversion_time_ms,
-                    .upload_time_ms = upload_time_ms,
-                    .memory_size_bytes = size,
-                },
-            };
-            const updated = self.cache.updateStatus(target.index, target.generation, loaded_gpu_status);
-            c.SDL_UnlockMutex(self.cache_mutex);
-
-            if (!updated) {
-                // The cache entry was evicted or cleared while we were uploading.
-                // We must release the GPU texture to prevent a leak!
-                c.SDL_ReleaseGPUTexture(self.gpu_device.?, gpu_tex);
             }
         }
         if (self.adjustments_dirty) {

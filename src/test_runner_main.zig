@@ -4,7 +4,12 @@ const c_lib = @cImport({
     @cInclude("SDL3_image/SDL_image.h");
 });
 
-fn compareScreenshots(base_path: [:0]const u8, run_path: [:0]const u8, diff_path: [:0]const u8) !void {
+pub const CompareResult = struct {
+    mismatched_pixels: u32,
+    pct: f64,
+};
+
+fn compareScreenshots(base_path: [:0]const u8, run_path: [:0]const u8, diff_path: [:0]const u8, max_tolerance_pct: f64) !CompareResult {
     const raw_base_surf = c_lib.IMG_Load(base_path.ptr) orelse {
         std.log.err("Failed to load baseline screenshot: {s}. Run with --update-baselines to create it.", .{base_path});
         return error.BaselineMissing;
@@ -78,14 +83,29 @@ fn compareScreenshots(base_path: [:0]const u8, run_path: [:0]const u8, diff_path
     if (mismatched_pixels > 0) {
         const total_pixels = width * height;
         const pct = (@as(f64, @floatFromInt(mismatched_pixels)) / @as(f64, @floatFromInt(total_pixels))) * 100.0;
-        std.log.err("Visual regression found: {d} pixels differ ({d:.3}%)", .{ mismatched_pixels, pct });
+
         if (!c_lib.IMG_SavePNG(diff_surf, diff_path.ptr)) {
             std.log.err("Failed to save diff image: {s}", .{c_lib.SDL_GetError()});
         } else {
             std.log.info("Diff image saved to: {s}", .{diff_path});
         }
-        return error.VisualRegressionMismatch;
+
+        if (pct > max_tolerance_pct) {
+            std.log.err("Major visual regression found: {d} pixels differ ({d:.3}% > max tolerance {d:.1}%)", .{ mismatched_pixels, pct, max_tolerance_pct });
+            return error.VisualRegressionMismatch;
+        } else {
+            std.log.warn("Visual discrepancy found: {d} pixels differ ({d:.3}% <= tolerance {d:.1}%)", .{ mismatched_pixels, pct, max_tolerance_pct });
+            return CompareResult{
+                .mismatched_pixels = mismatched_pixels,
+                .pct = pct,
+            };
+        }
     }
+
+    return CompareResult{
+        .mismatched_pixels = 0,
+        .pct = 0.0,
+    };
 }
 
 var global_io: std.Io = undefined;
@@ -146,9 +166,33 @@ pub fn main(init: std.process.Init) !void {
     defer args_it.deinit();
 
     var update_baselines = false;
+    var max_tolerance_pct: f64 = 2.0;
+
     while (args_it.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--update-baselines")) {
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            const help_text =
+                \\Peng Visual Integration Test Runner
+                \\
+                \\Usage:
+                \\  zig build test -- [options]
+                \\
+                \\Options:
+                \\  -h, --help           Show this help message and exit
+                \\  --update-baselines   Update golden baseline screenshots with output from current run
+                \\  --tolerance <pct>    Set max allowed pixel difference percentage per step (default: 2.0%)
+                \\  --max-diff-pct <pct> Alias for --tolerance
+                \\
+            ;
+            std.debug.print("{s}", .{help_text});
+            return;
+        } else if (std.mem.eql(u8, arg, "--update-baselines")) {
             update_baselines = true;
+        } else if (std.mem.eql(u8, arg, "--max-diff-pct") or std.mem.eql(u8, arg, "--tolerance")) {
+            if (args_it.next()) |val_str| {
+                if (std.fmt.parseFloat(f64, val_str)) |val| {
+                    max_tolerance_pct = val;
+                } else |_| {}
+            }
         }
     }
 
@@ -162,6 +206,12 @@ pub fn main(init: std.process.Init) !void {
         },
         .stdout = .pipe,
     });
+    defer {
+        if (child.id != null) {
+            child.kill(init.io);
+            _ = child.wait(init.io) catch {};
+        }
+    }
 
     // Read socket path from stdout
     var read_buf: [4096]u8 = undefined;
@@ -173,9 +223,11 @@ pub fn main(init: std.process.Init) !void {
 
     while (try stdout_stream.takeDelimiter('\n')) |line| {
         if (std.mem.indexOf(u8, line, "IPC socket: ")) |idx| {
-            const path = line[idx + "IPC socket: ".len ..];
-            @memcpy(socket_path_buf[0..path.len], path);
-            socket_path = socket_path_buf[0..path.len];
+            const raw_path = std.mem.trim(u8, line[idx + "IPC socket: ".len ..], " \t\r\n");
+            if (raw_path.len <= socket_path_buf.len) {
+                @memcpy(socket_path_buf[0..raw_path.len], raw_path);
+                socket_path = socket_path_buf[0..raw_path.len];
+            }
             break;
         }
     }
@@ -208,6 +260,8 @@ pub fn main(init: std.process.Init) !void {
     std.Io.Dir.createDirPath(std.Io.Dir.cwd(), init.io, base_dir) catch {};
     std.Io.Dir.createDirPath(std.Io.Dir.cwd(), init.io, run_dir) catch {};
 
+    var steps_with_discrepancies: usize = 0;
+
     // 0. Initial Render
     {
         const capture_path = try std.fmt.allocPrint(gpa, "{s}/test_0_init.png", .{if (update_baselines) base_dir else run_dir});
@@ -216,11 +270,13 @@ pub fn main(init: std.process.Init) !void {
         defer gpa.free(cmd);
         try sendCommand(socket_path, cmd);
         if (!update_baselines) {
-            try compareScreenshots(
+            const res = try compareScreenshots(
                 base_dir ++ "/test_0_init.png",
                 run_dir ++ "/test_0_init.png",
                 run_dir ++ "/diff_test_0_init.png",
+                max_tolerance_pct,
             );
+            if (res.mismatched_pixels > 0) steps_with_discrepancies += 1;
         }
     }
 
@@ -234,11 +290,13 @@ pub fn main(init: std.process.Init) !void {
         defer gpa.free(cmd);
         try sendCommand(socket_path, cmd);
         if (!update_baselines) {
-            try compareScreenshots(
+            const res = try compareScreenshots(
                 base_dir ++ "/test_1_zoom.png",
                 run_dir ++ "/test_1_zoom.png",
                 run_dir ++ "/diff_test_1_zoom.png",
+                max_tolerance_pct,
             );
+            if (res.mismatched_pixels > 0) steps_with_discrepancies += 1;
         }
     }
 
@@ -253,11 +311,13 @@ pub fn main(init: std.process.Init) !void {
         defer gpa.free(cmd);
         try sendCommand(socket_path, cmd);
         if (!update_baselines) {
-            try compareScreenshots(
+            const res = try compareScreenshots(
                 base_dir ++ "/test_2_adjust.png",
                 run_dir ++ "/test_2_adjust.png",
                 run_dir ++ "/diff_test_2_adjust.png",
+                max_tolerance_pct,
             );
+            if (res.mismatched_pixels > 0) steps_with_discrepancies += 1;
         }
     }
 
@@ -271,11 +331,13 @@ pub fn main(init: std.process.Init) !void {
         defer gpa.free(cmd);
         try sendCommand(socket_path, cmd);
         if (!update_baselines) {
-            try compareScreenshots(
+            const res = try compareScreenshots(
                 base_dir ++ "/test_3_filter.png",
                 run_dir ++ "/test_3_filter.png",
                 run_dir ++ "/diff_test_3_filter.png",
+                max_tolerance_pct,
             );
+            if (res.mismatched_pixels > 0) steps_with_discrepancies += 1;
         }
     }
 
@@ -289,11 +351,13 @@ pub fn main(init: std.process.Init) !void {
         defer gpa.free(cmd);
         try sendCommand(socket_path, cmd);
         if (!update_baselines) {
-            try compareScreenshots(
+            const res = try compareScreenshots(
                 base_dir ++ "/test_4_action_palette.png",
                 run_dir ++ "/test_4_action_palette.png",
                 run_dir ++ "/diff_test_4_action_palette.png",
+                max_tolerance_pct,
             );
+            if (res.mismatched_pixels > 0) steps_with_discrepancies += 1;
         }
     }
 
@@ -306,11 +370,13 @@ pub fn main(init: std.process.Init) !void {
         defer gpa.free(cmd);
         try sendCommand(socket_path, cmd);
         if (!update_baselines) {
-            try compareScreenshots(
+            const res = try compareScreenshots(
                 base_dir ++ "/test_5_files_palette.png",
                 run_dir ++ "/test_5_files_palette.png",
                 run_dir ++ "/diff_test_5_files_palette.png",
+                max_tolerance_pct,
             );
+            if (res.mismatched_pixels > 0) steps_with_discrepancies += 1;
         }
     }
 
@@ -325,11 +391,13 @@ pub fn main(init: std.process.Init) !void {
         defer gpa.free(cmd);
         try sendCommand(socket_path, cmd);
         if (!update_baselines) {
-            try compareScreenshots(
+            const res = try compareScreenshots(
                 base_dir ++ "/test_6_next_image.png",
                 run_dir ++ "/test_6_next_image.png",
                 run_dir ++ "/diff_test_6_next_image.png",
+                max_tolerance_pct,
             );
+            if (res.mismatched_pixels > 0) steps_with_discrepancies += 1;
         }
     }
 
@@ -343,11 +411,13 @@ pub fn main(init: std.process.Init) !void {
         defer gpa.free(cmd);
         try sendCommand(socket_path, cmd);
         if (!update_baselines) {
-            try compareScreenshots(
+            const res = try compareScreenshots(
                 base_dir ++ "/test_7_debug_tools.png",
                 run_dir ++ "/test_7_debug_tools.png",
                 run_dir ++ "/diff_test_7_debug_tools.png",
+                max_tolerance_pct,
             );
+            if (res.mismatched_pixels > 0) steps_with_discrepancies += 1;
         }
     }
 
@@ -373,5 +443,11 @@ pub fn main(init: std.process.Init) !void {
     try sendCommand(socket_path, "quit");
 
     _ = try child.wait(init.io);
+
+    if (steps_with_discrepancies > 0) {
+        std.log.err("Visual integration tests completed all steps with {d} step(s) containing visual discrepancies (diff PNGs saved to {s}).", .{ steps_with_discrepancies, run_dir });
+        return error.VisualRegressionMismatch;
+    }
+
     std.log.info("All visual integration tests completed successfully!", .{});
 }
