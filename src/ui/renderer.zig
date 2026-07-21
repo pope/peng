@@ -113,6 +113,42 @@ fn appendLineQuad(
     try vertices.append(allocator, .{ .x = ndc_x4, .y = ndc_y4, .u = 0.0, .v = 1.0, .r = r, .g = g, .b = b, .a = a });
 }
 
+const TrigStep = struct {
+    cos_val: f32,
+    sin_val: f32,
+};
+
+const TRIG_QUADRANT_STEPS = 32;
+var trig_quadrant_table: [TRIG_QUADRANT_STEPS + 1]TrigStep = undefined;
+var trig_table_initialized: bool = false;
+
+fn ensureTrigTableInitialized() void {
+    if (trig_table_initialized) return;
+    const step = (std.math.pi / 2.0) / @as(f32, @floatFromInt(TRIG_QUADRANT_STEPS));
+    var i: usize = 0;
+    while (i <= TRIG_QUADRANT_STEPS) : (i += 1) {
+        const angle = @as(f32, @floatFromInt(i)) * step;
+        trig_quadrant_table[i] = .{
+            .cos_val = @cos(angle),
+            .sin_val = @sin(angle),
+        };
+    }
+    trig_table_initialized = true;
+}
+
+fn getTrigQuadrant(step_idx: usize, total_steps: usize) TrigStep {
+    ensureTrigTableInitialized();
+    if (total_steps == TRIG_QUADRANT_STEPS) {
+        return trig_quadrant_table[@min(step_idx, TRIG_QUADRANT_STEPS)];
+    }
+    const ratio = @as(f32, @floatFromInt(step_idx)) / @as(f32, @floatFromInt(total_steps));
+    const angle = ratio * (std.math.pi / 2.0);
+    return .{
+        .cos_val = @cos(angle),
+        .sin_val = @sin(angle),
+    };
+}
+
 fn renderFillRoundedRect(
     vertices: *std.ArrayList(Vertex),
     allocator: std.mem.Allocator,
@@ -177,15 +213,15 @@ fn renderFillRoundedRect(
     indices[index_count] = 3;
     index_count += 1;
 
-    const step = (std.math.pi / 2.0) / @as(f32, @floatFromInt(num_circle_segments));
-    var i: i32 = 0;
-    while (i < num_circle_segments) : (i += 1) {
-        const angle_1 = @as(f32, @floatFromInt(i)) * step;
-        const angle_2 = @as(f32, @floatFromInt(i + 1)) * step;
-        const cos_1 = @cos(angle_1);
-        const sin_1 = @sin(angle_1);
-        const cos_2 = @cos(angle_2);
-        const sin_2 = @sin(angle_2);
+    const num_seg_u: usize = @intCast(num_circle_segments);
+    var i: usize = 0;
+    while (i < num_seg_u) : (i += 1) {
+        const t1 = getTrigQuadrant(i, num_seg_u);
+        const t2 = getTrigQuadrant(i + 1, num_seg_u);
+        const cos_1 = t1.cos_val;
+        const sin_1 = t1.sin_val;
+        const cos_2 = t2.cos_val;
+        const sin_2 = t2.sin_val;
 
         var j: usize = 0;
         while (j < 4) : (j += 1) {

@@ -441,14 +441,7 @@ pub const ViewerState = struct {
         c.SDL_LockMutex(self.cache_mutex);
         defer c.SDL_UnlockMutex(self.cache_mutex);
 
-        for (self.cache.entries.items) |entry| {
-            switch (entry.status) {
-                .loaded_cpu => |cpu| c.SDL_DestroySurface(cpu.surface),
-                .loaded_gpu => |gpu| c.SDL_ReleaseGPUTexture(self.gpu_device, gpu.gpu_texture),
-                else => {},
-            }
-        }
-        self.cache.clearRetainingCapacity();
+        self.cache.clear(self.gpu_device);
     }
 
     pub fn updateCache(self: *ViewerState) !void {
@@ -460,8 +453,6 @@ pub const ViewerState = struct {
         } else {
             self.rotation_angle = 0.0;
         }
-        c.SDL_LockMutex(self.cache_mutex);
-        defer c.SDL_UnlockMutex(self.cache_mutex);
 
         const len = self.image_list.items.len;
         if (len == 0) return;
@@ -491,77 +482,101 @@ pub const ViewerState = struct {
             }
         }
 
-        // 2. Evict cache entries that are no longer wanted
-        var i: usize = 0;
-        while (i < self.cache.entries.items.len) {
-            const entry = &self.cache.entries.items[i];
-            var wanted = false;
-            for (desired[0..desired_count]) |d| {
-                if (entry.index == d) {
-                    wanted = true;
-                    break;
-                }
-            }
-            if (!wanted) {
-                // Evict
-                switch (entry.status) {
-                    .loaded_cpu => |cpu| c.SDL_DestroySurface(cpu.surface),
-                    .loaded_gpu => |gpu| c.SDL_ReleaseGPUTexture(self.gpu_device, gpu.gpu_texture),
-                    else => {},
-                }
-                _ = self.cache.remove(i);
-            } else {
-                i += 1;
-            }
-        }
-
-        // 3. Add wanted entries that are not in the cache yet
+        var to_spawn_count: usize = 0;
+        var to_spawn_indices: [5]usize = undefined;
         var hit = false;
-        for (desired[0..desired_count]) |d| {
-            var exists = false;
-            if (self.cache.get(d)) |entry| {
-                exists = true;
-                if (d == idx and (entry.status == .loaded_cpu or entry.status == .loaded_gpu)) {
-                    hit = true;
+
+        {
+            c.SDL_LockMutex(self.cache_mutex);
+            defer c.SDL_UnlockMutex(self.cache_mutex);
+
+            // 2. Evict cache entries that are no longer wanted
+            var i: usize = 0;
+            while (i < self.cache.entries.items.len) {
+                const entry = &self.cache.entries.items[i];
+                var wanted = false;
+                for (desired[0..desired_count]) |d| {
+                    if (entry.index == d) {
+                        wanted = true;
+                        break;
+                    }
+                }
+                if (!wanted) {
+                    // Evict
+                    switch (entry.status) {
+                        .loaded_cpu => |cpu| c.SDL_DestroySurface(cpu.surface),
+                        .loaded_gpu => |gpu| c.SDL_ReleaseGPUTexture(self.gpu_device, gpu.gpu_texture),
+                        else => {},
+                    }
+                    _ = self.cache.remove(i);
+                } else {
+                    i += 1;
                 }
             }
-            if (!exists) {
-                const path = try self.allocator.dupeZ(u8, self.image_list.items[d]);
-                errdefer self.allocator.free(path);
 
-                const new_entry = CacheEntry{
-                    .index = d,
-                    .generation = self.generation,
-                    .status = .decoding,
-                };
-                try self.cache.append(self.allocator, new_entry);
-                errdefer _ = self.cache.pop();
+            // 3. Mark wanted entries that are not in the cache yet as .decoding
+            for (desired[0..desired_count]) |d| {
+                var exists = false;
+                if (self.cache.get(d)) |entry| {
+                    exists = true;
+                    if (d == idx and (entry.status == .loaded_cpu or entry.status == .loaded_gpu)) {
+                        hit = true;
+                    }
+                }
+                if (!exists) {
+                    const new_entry = CacheEntry{
+                        .index = d,
+                        .generation = self.generation,
+                        .status = .decoding,
+                    };
+                    try self.cache.append(self.allocator, new_entry);
+                    to_spawn_indices[to_spawn_count] = d;
+                    to_spawn_count += 1;
+                }
+            }
+            self.current_image_cache_hit = hit;
+        }
 
-                // Spawn worker thread
-                const args = try self.allocator.create(DecodeArgs);
-                errdefer self.allocator.destroy(args);
+        // 4. Spawn worker threads outside cache_mutex lock
+        for (to_spawn_indices[0..to_spawn_count]) |d| {
+            const path = try self.allocator.dupeZ(u8, self.image_list.items[d]);
+            errdefer self.allocator.free(path);
 
-                args.* = DecodeArgs{
-                    .state = self,
-                    .index = d,
-                    .generation = self.generation,
-                    .path = path,
-                };
+            const args = try self.allocator.create(DecodeArgs);
+            errdefer self.allocator.destroy(args);
 
-                _ = self.active_threads.fetchAdd(1, .monotonic);
-                const thread = c.SDL_CreateThread(decodeWorker, "decode_worker", args);
-                if (thread) |t| {
-                    c.SDL_DetachThread(t);
-                } else {
-                    std.log.err("Failed to create SDL thread: {s}", .{c.SDL_GetError()});
-                    _ = self.active_threads.fetchSub(1, .monotonic);
-                    self.allocator.free(path);
-                    self.allocator.destroy(args);
-                    _ = self.cache.pop();
+            args.* = DecodeArgs{
+                .state = self,
+                .index = d,
+                .generation = self.generation,
+                .path = path,
+            };
+
+            _ = self.active_threads.fetchAdd(1, .monotonic);
+            const thread = c.SDL_CreateThread(decodeWorker, "decode_worker", args);
+            if (thread) |t| {
+                c.SDL_DetachThread(t);
+            } else {
+                std.log.err("Failed to create SDL thread: {s}", .{c.SDL_GetError()});
+                _ = self.active_threads.fetchSub(1, .monotonic);
+                self.allocator.free(path);
+                self.allocator.destroy(args);
+
+                c.SDL_LockMutex(self.cache_mutex);
+                defer c.SDL_UnlockMutex(self.cache_mutex);
+                if (self.cache.get(d)) |entry| {
+                    if (entry.status == .decoding) {
+                        var k: usize = 0;
+                        while (k < self.cache.entries.items.len) : (k += 1) {
+                            if (self.cache.entries.items[k].index == d) {
+                                _ = self.cache.remove(k);
+                                break;
+                            }
+                        }
+                    }
                 }
             }
         }
-        self.current_image_cache_hit = hit;
     }
 
     pub fn next(self: *ViewerState) !void {

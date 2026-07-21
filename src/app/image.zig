@@ -49,6 +49,11 @@ pub const CacheSlotMap = struct {
     entries: std.ArrayListUnmanaged(CacheEntry) = .empty,
 
     pub fn deinit(self: *CacheSlotMap, allocator: std.mem.Allocator, gpu_device: ?*c.SDL_GPUDevice) void {
+        self.clear(gpu_device);
+        self.entries.deinit(allocator);
+    }
+
+    pub fn clear(self: *CacheSlotMap, gpu_device: ?*c.SDL_GPUDevice) void {
         for (self.entries.items) |entry| {
             switch (entry.status) {
                 .loaded_cpu => |cpu| c.SDL_DestroySurface(cpu.surface),
@@ -60,7 +65,7 @@ pub const CacheSlotMap = struct {
                 else => {},
             }
         }
-        self.entries.deinit(allocator);
+        self.entries.clearRetainingCapacity();
     }
 
     pub fn clearRetainingCapacity(self: *CacheSlotMap) void {
@@ -101,20 +106,7 @@ pub const CacheSlotMap = struct {
         return self.entries.pop();
     }
 
-    pub fn clear(self: *CacheSlotMap, gpu_device: ?*c.SDL_GPUDevice) void {
-        for (self.entries.items) |entry| {
-            switch (entry.status) {
-                .loaded_cpu => |cpu| c.SDL_DestroySurface(cpu.surface),
-                .loaded_gpu => |gpu| {
-                    if (gpu_device) |gpu_dev| {
-                        c.SDL_ReleaseGPUTexture(gpu_dev, gpu.gpu_texture);
-                    }
-                },
-                else => {},
-            }
-        }
-        self.entries.clearRetainingCapacity();
-    }
+
 };
 
 pub const DecodeArgs = struct {
