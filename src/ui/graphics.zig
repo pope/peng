@@ -434,3 +434,157 @@ pub fn sdl3MeasureText(text: []const u8, config: *clay.TextElementConfig, data: 
 
     return .{ .w = @floatFromInt(w), .h = @floatFromInt(h) };
 }
+
+pub const GpuUploadResult = struct {
+    gpu_texture: *c.SDL_GPUTexture,
+    w: f32,
+    h: f32,
+    upload_time_ms: f64,
+    memory_size_bytes: usize,
+};
+
+pub fn uploadSurfaceToGpu(gpu_device: *c.SDL_GPUDevice, surf: *c.SDL_Surface) ?GpuUploadResult {
+    const start_upload = c.SDL_GetTicksNS();
+    var current_surf = surf;
+    var converted_tmp: ?*c.SDL_Surface = null;
+    defer if (converted_tmp) |cs| c.SDL_DestroySurface(cs);
+
+    if (current_surf.*.format != c.SDL_PIXELFORMAT_RGBA32) {
+        converted_tmp = c.SDL_ConvertSurface(current_surf, c.SDL_PIXELFORMAT_RGBA32);
+        if (converted_tmp) |cs| {
+            current_surf = cs;
+        } else {
+            return null;
+        }
+    }
+
+    var scaled_surf: ?*c.SDL_Surface = null;
+    defer if (scaled_surf) |s| c.SDL_DestroySurface(s);
+
+    var img_w = current_surf.*.w;
+    var img_h = current_surf.*.h;
+    var tex: ?*c.SDL_GPUTexture = null;
+
+    var try_max_dim: i32 = 16384;
+    while (try_max_dim >= 2048) : (try_max_dim = @divTrunc(try_max_dim, 2)) {
+        if (img_w <= try_max_dim and img_h <= try_max_dim) {
+            const img_tex_info = c.SDL_GPUTextureCreateInfo{
+                .type = c.SDL_GPU_TEXTURETYPE_2D,
+                .format = c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+                .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER,
+                .width = @intCast(img_w),
+                .height = @intCast(img_h),
+                .layer_count_or_depth = 1,
+                .num_levels = 1,
+                .sample_count = c.SDL_GPU_SAMPLECOUNT_1,
+                .props = 0,
+            };
+            tex = c.SDL_CreateGPUTexture(gpu_device, &img_tex_info);
+            if (tex != null) break;
+        }
+
+        const next_dim = @divTrunc(try_max_dim, 2);
+        if (img_w > next_dim or img_h > next_dim) {
+            var new_w = img_w;
+            var new_h = img_h;
+            if (img_w > img_h) {
+                new_w = next_dim;
+                new_h = @divTrunc(img_h * next_dim, img_w);
+            } else {
+                new_h = next_dim;
+                new_w = @divTrunc(img_w * next_dim, img_h);
+            }
+            new_w = @max(1, new_w);
+            new_h = @max(1, new_h);
+
+            const new_scale = c.SDL_ScaleSurface(
+                current_surf,
+                new_w,
+                new_h,
+                c.SDL_SCALEMODE_LINEAR,
+            );
+            if (new_scale) |ns| {
+                if (scaled_surf) |s| c.SDL_DestroySurface(s);
+                scaled_surf = ns;
+                current_surf = ns;
+                img_w = new_w;
+                img_h = new_h;
+            } else {
+                std.log.err("uploadSurfaceToGpu: SDL_ScaleSurface failed: {s}", .{c.SDL_GetError()});
+                break;
+            }
+        }
+    }
+
+    const gpu_tex = tex orelse return null;
+
+    const cmd_buf = c.SDL_AcquireGPUCommandBuffer(gpu_device) orelse {
+        c.SDL_ReleaseGPUTexture(gpu_device, gpu_tex);
+        return null;
+    };
+
+    const size = @as(usize, @intCast(img_w)) * @as(usize, @intCast(img_h)) * 4;
+    const transfer_buf = c.SDL_CreateGPUTransferBuffer(gpu_device, &c.SDL_GPUTransferBufferCreateInfo{
+        .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+        .size = @intCast(size),
+        .props = 0,
+    }) orelse {
+        std.log.err("Create transfer buffer failed: {s}", .{c.SDL_GetError()});
+        _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
+        c.SDL_ReleaseGPUTexture(gpu_device, gpu_tex);
+        return null;
+    };
+    defer c.SDL_ReleaseGPUTransferBuffer(gpu_device, transfer_buf);
+
+    const mapped: [*]u8 = @ptrCast(c.SDL_MapGPUTransferBuffer(gpu_device, transfer_buf, false) orelse {
+        _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
+        c.SDL_ReleaseGPUTexture(gpu_device, gpu_tex);
+        return null;
+    });
+    const pixels: [*]const u8 = @ptrCast(current_surf.*.pixels);
+    const row_bytes: usize = @intCast(img_w * 4);
+    const pitch: usize = @intCast(current_surf.*.pitch);
+    if (pitch == row_bytes) {
+        @memcpy(mapped[0..size], pixels[0..size]);
+    } else {
+        var y: usize = 0;
+        const height_u: usize = @intCast(img_h);
+        while (y < height_u) : (y += 1) {
+            const src_row = pixels[y * pitch .. y * pitch + row_bytes];
+            const dst_row = mapped[y * row_bytes .. (y + 1) * row_bytes];
+            @memcpy(dst_row, src_row);
+        }
+    }
+    c.SDL_UnmapGPUTransferBuffer(gpu_device, transfer_buf);
+
+    const copy_pass = c.SDL_BeginGPUCopyPass(cmd_buf) orelse {
+        _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
+        c.SDL_ReleaseGPUTexture(gpu_device, gpu_tex);
+        return null;
+    };
+    c.SDL_UploadToGPUTexture(copy_pass, &c.SDL_GPUTextureTransferInfo{
+        .transfer_buffer = transfer_buf,
+        .offset = 0,
+        .pixels_per_row = @intCast(img_w),
+        .rows_per_layer = @intCast(img_h),
+    }, &c.SDL_GPUTextureRegion{
+        .texture = gpu_tex,
+        .w = @intCast(img_w),
+        .h = @intCast(img_h),
+        .d = 1,
+    }, false);
+    c.SDL_EndGPUCopyPass(copy_pass);
+    _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+
+    const end_upload = c.SDL_GetTicksNS();
+    const upload_time_ms = @as(f64, @floatFromInt(end_upload - start_upload)) / 1_000_000.0;
+
+    return .{
+        .gpu_texture = gpu_tex,
+        .w = @floatFromInt(img_w),
+        .h = @floatFromInt(img_h),
+        .upload_time_ms = upload_time_ms,
+        .memory_size_bytes = size,
+    };
+}
+

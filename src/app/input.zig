@@ -7,6 +7,141 @@ const startTextInput = app_state.startTextInput;
 const stopTextInput = app_state.stopTextInput;
 const app_actions = commands.actions.app_actions;
 const flat_shortcuts = commands.actions.flat_shortcuts;
+const FrameInput = @import("types.zig").FrameInput;
+const ipc = @import("ipc.zig");
+
+pub fn pollFrameInput(
+    window: *c.SDL_Window,
+    frame_allocator: std.mem.Allocator,
+    last_time: *u64,
+    prev_mouse_inside: bool,
+    palette_show: bool,
+    non_blocking: bool,
+) !FrameInput {
+    const current_ticks = c.SDL_GetTicks();
+    const delta_time_ms = @as(f32, @floatFromInt(current_ticks - last_time.*));
+    last_time.* = current_ticks;
+
+    // Get window sizes and scale
+    var win_w: c_int = 0;
+    var win_h: c_int = 0;
+    if (!c.SDL_GetWindowSize(window, &win_w, &win_h)) {
+        std.log.err("SDL_GetWindowSize failed: {s}", .{c.SDL_GetError()});
+    }
+    var pix_w: c_int = 0;
+    var pix_h: c_int = 0;
+    if (!c.SDL_GetWindowSizeInPixels(window, &pix_w, &pix_h)) {
+        std.log.err("SDL_GetWindowSizeInPixels failed: {s}", .{c.SDL_GetError()});
+    }
+
+    const width = @as(f32, @floatFromInt(pix_w));
+    const height = @as(f32, @floatFromInt(pix_h));
+    const scale_x = if (win_w > 0) @as(f32, @floatFromInt(pix_w)) / @as(f32, @floatFromInt(win_w)) else 1.0;
+    const scale_y = if (win_h > 0) @as(f32, @floatFromInt(pix_h)) / @as(f32, @floatFromInt(win_h)) else 1.0;
+    const dpi_scale = scale_x;
+
+    var keys_pressed = std.ArrayList(c.SDL_Keycode).empty;
+    errdefer keys_pressed.deinit(frame_allocator);
+    var pending_ipc_commands = std.ArrayList(*anyopaque).empty;
+    errdefer pending_ipc_commands.deinit(frame_allocator);
+    var text_input_opt: ?[]const u8 = null;
+    var dropped_path_opt: ?[]const u8 = null;
+    var scroll_delta_x: f32 = 0;
+    var scroll_delta_y: f32 = 0;
+    var mouse_left_clicked = false;
+    var mouse_inside = prev_mouse_inside;
+    var quit_requested = false;
+
+    var event: c.SDL_Event = undefined;
+    const wait_success = if (non_blocking)
+        c.SDL_PollEvent(&event)
+    else if (palette_show)
+        c.SDL_WaitEventTimeout(&event, 8)
+    else
+        c.SDL_WaitEvent(&event);
+
+    if (!wait_success) {
+        event.type = 0;
+    }
+
+    var has_event = wait_success;
+    while (has_event) {
+        switch (event.type) {
+            c.SDL_EVENT_QUIT => quit_requested = true,
+            c.SDL_EVENT_WINDOW_MOUSE_ENTER => {
+                mouse_inside = true;
+            },
+            c.SDL_EVENT_WINDOW_MOUSE_LEAVE => {
+                mouse_inside = false;
+            },
+            c.SDL_EVENT_KEY_DOWN => {
+                try keys_pressed.append(frame_allocator, event.key.key);
+            },
+            c.SDL_EVENT_TEXT_INPUT => {
+                if (event.text.text) |ptr| {
+                    const len = std.mem.len(ptr);
+                    const dup = try frame_allocator.dupe(u8, ptr[0..len]);
+                    text_input_opt = dup;
+                }
+            },
+            c.SDL_EVENT_DROP_FILE => {
+                if (event.drop.data) |ptr| {
+                    const len = std.mem.len(ptr);
+                    const dup = try frame_allocator.dupe(u8, ptr[0..len]);
+                    dropped_path_opt = dup;
+                }
+            },
+            c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
+                if (event.button.button == c.SDL_BUTTON_LEFT) {
+                    mouse_left_clicked = true;
+                }
+            },
+            c.SDL_EVENT_MOUSE_WHEEL => {
+                const multiplier: f32 = if (event.wheel.direction == c.SDL_MOUSEWHEEL_FLIPPED) -1.0 else 1.0;
+                scroll_delta_x += event.wheel.x * multiplier * 6.0 * scale_x;
+                scroll_delta_y += event.wheel.y * multiplier * 6.0 * scale_y;
+            },
+            else => {
+                if (event.type == ipc.PENG_IPC_EVENT) {
+                    if (event.user.data1) |ptr| {
+                        try pending_ipc_commands.append(frame_allocator, ptr);
+                    }
+                }
+            },
+        }
+        has_event = c.SDL_PollEvent(&event);
+    }
+
+    var mouse_x_raw: f32 = 0;
+    var mouse_y_raw: f32 = 0;
+    const mouse_buttons = c.SDL_GetMouseState(&mouse_x_raw, &mouse_y_raw);
+    const mouse_left_down = (mouse_buttons & c.SDL_BUTTON_MASK(c.SDL_BUTTON_LEFT)) != 0;
+
+    return FrameInput{
+        .win_w = @as(f32, @floatFromInt(win_w)),
+        .win_h = @as(f32, @floatFromInt(win_h)),
+        .pix_w = width,
+        .pix_h = height,
+        .scale_x = scale_x,
+        .scale_y = scale_y,
+        .dpi_scale = dpi_scale,
+        .mouse_x = mouse_x_raw * scale_x,
+        .mouse_y = mouse_y_raw * scale_y,
+        .mouse_left_down = mouse_left_down,
+        .mouse_left_clicked = mouse_left_clicked,
+        .mouse_inside = mouse_inside,
+        .quit_requested = quit_requested,
+        .scroll_delta_x = scroll_delta_x,
+        .scroll_delta_y = scroll_delta_y,
+        .keys_pressed = keys_pressed,
+        .key_modifiers = c.SDL_GetModState(),
+        .text_input = text_input_opt,
+        .dropped_path = dropped_path_opt,
+        .ticks = current_ticks,
+        .delta_time_ms = delta_time_ms,
+        .pending_ipc_commands = pending_ipc_commands,
+    };
+}
 
 pub fn handlePaletteKeys(
     self: *ViewerState,
