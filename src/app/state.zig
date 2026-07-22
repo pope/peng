@@ -230,6 +230,7 @@ pub const ViewerState = struct {
         }
 
 
+        self.text_cache.deinit(self.allocator);
         c.SDL_DestroyMutex(self.cache_mutex);
         for (self.image_list.items) |item| {
             self.allocator.free(item);
@@ -237,6 +238,10 @@ pub const ViewerState = struct {
         self.image_list.deinit(self.allocator);
         self.cache.deinit(self.allocator, self.gpu_device);
         self.palette.deinit();
+        var rot_iter = self.rotation_map.keyIterator();
+        while (rot_iter.next()) |key| {
+            self.allocator.free(key.*);
+        }
         self.rotation_map.deinit();
     }
 
@@ -617,6 +622,10 @@ pub const ViewerState = struct {
             self.allocator.free(item);
         }
         self.image_list.clearRetainingCapacity();
+        var rot_iter = self.rotation_map.keyIterator();
+        while (rot_iter.next()) |key| {
+            self.allocator.free(key.*);
+        }
         self.rotation_map.clearRetainingCapacity();
 
         self.generation += 1;

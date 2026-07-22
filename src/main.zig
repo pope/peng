@@ -104,7 +104,6 @@ pub fn main(init: std.process.Init) !void {
         std.log.err("SDL_CreateMutex failed: {s}", .{c.SDL_GetError()});
         return error.MutexCreationFailed;
     };
-    defer c.SDL_DestroyMutex(cache_mutex);
 
     // Phase 4: State Initialization
     var state = ViewerState{
