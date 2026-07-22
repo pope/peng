@@ -283,6 +283,8 @@ pub fn main(init: std.process.Init) !void {
             input.delta_time_ms / 1000.0,
         );
 
+        state.checkIdlePreload();
+
         if (input.mouse_left_clicked) {
             if (state.show_stats_overlay and clay.pointerOver(clay.getElementId("StatsCloseBtn"))) {
                 state.show_stats_overlay = false;
@@ -322,4 +324,5 @@ test "ElementTag.fromInt" {
 
     std.testing.refAllDecls(@import("app/state.zig"));
     std.testing.refAllDecls(@import("app/input.zig"));
+    std.testing.refAllDecls(@import("app/image.zig"));
 }

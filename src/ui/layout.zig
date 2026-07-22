@@ -44,8 +44,23 @@ pub fn renderFrame(
     var draw_h: f32 = 0;
 
     if (current_entry) |entry| {
+        var src_w: f32 = 0;
+        var src_h: f32 = 0;
         if (entry.status == .loaded_gpu) {
-            const gpu = entry.status.loaded_gpu;
+            src_w = entry.status.loaded_gpu.w;
+            src_h = entry.status.loaded_gpu.h;
+        } else if (entry.status == .loaded_cpu) {
+            src_w = entry.status.loaded_cpu.w;
+            src_h = entry.status.loaded_cpu.h;
+        } else if (entry.full_w > 0 and entry.full_h > 0) {
+            src_w = entry.full_w;
+            src_h = entry.full_h;
+        } else if (entry.thumb_gpu_texture != null) {
+            src_w = entry.thumb_w;
+            src_h = entry.thumb_h;
+        }
+
+        if (src_w > 0 and src_h > 0) {
             const padding: f32 = 0.0;
             const view_w = @max(available_width - padding * 2.0, 1.0);
             const view_h = @max(height - (title_bar_h + nav_bar_h) * scale_y - padding * 2.0, 1.0);
@@ -55,8 +70,8 @@ pub fn renderFrame(
                 std.math.approxEqAbs(f32, angle, 270.0, 0.1) or
                 std.math.approxEqAbs(f32, angle, -90.0, 0.1) or
                 std.math.approxEqAbs(f32, angle, -270.0, 0.1));
-            const img_w = if (is_90_or_270) gpu.h else gpu.w;
-            const img_h = if (is_90_or_270) gpu.w else gpu.h;
+            const img_w = if (is_90_or_270) src_h else src_w;
+            const img_h = if (is_90_or_270) src_w else src_h;
 
             if (img_w > 0 and img_h > 0) {
                 const r_img = img_w / img_h;
@@ -190,7 +205,22 @@ pub fn renderFrame(
             .clip = .{ .horizontal = true, .vertical = true },
         })({
             if (current_entry) |entry| {
-                if (entry.status == .loaded_gpu) {
+                const show_thumb = (state.debug_show_thumb or entry.status != .loaded_gpu) and (entry.thumb_gpu_texture != null);
+                if (show_thumb) {
+                    const thumb_tex = entry.thumb_gpu_texture.?;
+                    clay.UI()(.{
+                        .id = clay.getElementId("ImageCanvas"),
+                        .layout = .{
+                            .sizing = .{
+                                .w = .fixed(draw_w),
+                                .h = .fixed(draw_h),
+                            },
+                        },
+                        .image = .{
+                            .image_data = @ptrCast(thumb_tex),
+                        },
+                    })({});
+                } else if (entry.status == .loaded_gpu) {
                     const tex = entry.status.loaded_gpu.gpu_texture;
                     clay.UI()(.{
                         .id = clay.getElementId("ImageCanvas"),
@@ -202,6 +232,16 @@ pub fn renderFrame(
                         },
                         .image = .{
                             .image_data = @ptrCast(tex),
+                        },
+                    })({});
+                } else if (entry.status == .loaded_cpu) {
+                    clay.UI()(.{
+                        .id = clay.getElementId("ImageCanvas"),
+                        .layout = .{
+                            .sizing = .{
+                                .w = .fixed(draw_w),
+                                .h = .fixed(draw_h),
+                            },
                         },
                     })({});
                 } else if (entry.status == .decoding) {

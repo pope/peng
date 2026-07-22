@@ -177,6 +177,7 @@ pub const ViewerState = struct {
     is_fullscreen: bool = false,
     running: bool = true,
     show_stats_overlay: bool = false,
+    debug_show_thumb: bool = false,
     window_claimed: bool = false,
     scale_mode: ScaleMode = .full,
     zoom_factor: f32 = 1.0,
@@ -192,6 +193,7 @@ pub const ViewerState = struct {
     stats_offset_y: f32 = 20.0,
     drag_state: DragState = .none,
     mouse_inside: bool = true,
+    last_nav_time_ms: u64 = 0,
 
     // Persistent double-buffered vertex resources
     gpu_vertex_buffers: [2]?*c.SDL_GPUBuffer = .{ null, null },
@@ -204,6 +206,55 @@ pub const ViewerState = struct {
 
     pub fn readJpegExifOrientation(self: *const ViewerState, path: []const u8) ?f32 {
         return image.readJpegExifOrientation(self.io, path);
+    }
+
+    pub fn setDebugShowThumb(self: *ViewerState, enable: bool) !void {
+        self.debug_show_thumb = enable;
+        if (!enable) return;
+
+        const entry = self.getCurrentEntry() orelse return;
+        if (entry.thumb_gpu_texture != null) return;
+
+        const idx = self.current_index orelse return;
+        if (idx >= self.image_list.items.len) return;
+
+        const path = self.image_list.items[idx];
+        var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), self.io, path, .{}) catch return;
+        defer file.close(self.io);
+
+        var header_buf: [65536]u8 = undefined;
+        var slices = [_][]u8{&header_buf};
+        const n = file.readPositional(self.io, &slices, 0) catch return;
+        if (n == 0) return;
+
+        const full_dims = image.readJpegDimensions(header_buf[0..n]);
+        const thumb_bytes = image.extractJpegThumbnail(header_buf[0..n]) orelse return;
+        const io_mem = c.SDL_IOFromConstMem(thumb_bytes.ptr, thumb_bytes.len) orelse return;
+        const thumb_surf = c.IMG_Load_IO(io_mem, true) orelse return;
+        defer c.SDL_DestroySurface(thumb_surf);
+
+        const gpu_dev = self.gpu_device orelse return;
+        const upload_res = graphics.uploadSurfaceToGpu(gpu_dev, thumb_surf) orelse return;
+
+        c.SDL_LockMutex(self.cache_mutex);
+        defer c.SDL_UnlockMutex(self.cache_mutex);
+
+        if (self.cache.getWithGeneration(entry.index, entry.generation)) |e| {
+            if (e.thumb_gpu_texture) |old_t| {
+                c.SDL_ReleaseGPUTexture(gpu_dev, old_t);
+            }
+            e.thumb_gpu_texture = upload_res.gpu_texture;
+            e.thumb_w = upload_res.w;
+            e.thumb_h = upload_res.h;
+            if (full_dims) |dims| {
+                e.full_w = dims.w;
+                e.full_h = dims.h;
+            }
+            e.has_thumb = true;
+            e.thumb_upload_time_ms = upload_res.upload_time_ms;
+        } else {
+            c.SDL_ReleaseGPUTexture(gpu_dev, upload_res.gpu_texture);
+        }
     }
 
     pub fn deinit(self: *ViewerState) void {
@@ -255,12 +306,12 @@ pub const ViewerState = struct {
         const raw_w: f32 = switch (entry.status) {
             .loaded_gpu => |gpu| gpu.w,
             .loaded_cpu => |cpu| cpu.w,
-            else => 0.0,
+            else => if (entry.full_w > 0) entry.full_w else entry.thumb_w,
         };
         const raw_h: f32 = switch (entry.status) {
             .loaded_gpu => |gpu| gpu.h,
             .loaded_cpu => |cpu| cpu.h,
-            else => 0.0,
+            else => if (entry.full_h > 0) entry.full_h else entry.thumb_h,
         };
         if (raw_w <= 0.0 or raw_h <= 0.0) return 1.0;
 
@@ -550,6 +601,19 @@ pub const ViewerState = struct {
         self.cache.clear(self.gpu_device);
     }
 
+    pub fn checkIdlePreload(self: *ViewerState) void {
+        if (self.image_list.items.len <= 1) return;
+        const now = c.SDL_GetTicks();
+        if (now - self.last_nav_time_ms >= 150) {
+            c.SDL_LockMutex(self.cache_mutex);
+            const entry_count = self.cache.entries.items.len;
+            c.SDL_UnlockMutex(self.cache_mutex);
+            if (entry_count <= 1) {
+                self.updateCache() catch {};
+            }
+        }
+    }
+
     pub fn updateCache(self: *ViewerState) !void {
         self.resetZoomPan();
         const current_idx = self.current_index;
@@ -569,26 +633,34 @@ pub const ViewerState = struct {
 
         const idx = self.current_index orelse return;
 
+        const now = c.SDL_GetTicks();
+        const is_rapid_scrolling = (now - self.last_nav_time_ms < 150);
+        self.last_nav_time_ms = now;
+
         // 1. Gather desired indices
         var desired_count: usize = 0;
         var desired: [5]usize = undefined;
-        for ([_]usize{
-            idx,
-            (idx + 1) % len,
-            (idx + 2) % len,
-            (idx + len - 1) % len,
-            if (len >= 2) (idx + len - 2) % len else idx,
-        }) |d| {
-            var unique = true;
-            for (desired[0..desired_count]) |existing| {
-                if (existing == d) {
-                    unique = false;
-                    break;
+        desired[0] = idx;
+        desired_count = 1;
+
+        if (!is_rapid_scrolling) {
+            for ([_]usize{
+                (idx + 1) % len,
+                (idx + 2) % len,
+                (idx + len - 1) % len,
+                if (len >= 2) (idx + len - 2) % len else idx,
+            }) |d| {
+                var unique = true;
+                for (desired[0..desired_count]) |existing| {
+                    if (existing == d) {
+                        unique = false;
+                        break;
+                    }
                 }
-            }
-            if (unique) {
-                desired[desired_count] = d;
-                desired_count += 1;
+                if (unique) {
+                    desired[desired_count] = d;
+                    desired_count += 1;
+                }
             }
         }
 
@@ -613,12 +685,7 @@ pub const ViewerState = struct {
                 }
                 if (!wanted) {
                     // Evict
-                    switch (entry.status) {
-                        .loaded_cpu => |cpu| c.SDL_DestroySurface(cpu.surface),
-                        .loaded_gpu => |gpu| c.SDL_ReleaseGPUTexture(self.gpu_device, gpu.gpu_texture),
-                        else => {},
-                    }
-                    _ = self.cache.remove(i);
+                    self.cache.removeAndDeinit(i, self.gpu_device);
                 } else {
                     i += 1;
                 }
@@ -634,10 +701,31 @@ pub const ViewerState = struct {
                     }
                 }
                 if (!exists) {
+                    var full_w: f32 = 0.0;
+                    var full_h: f32 = 0.0;
+                    if (d < self.image_list.items.len) {
+                        const path = self.image_list.items[d];
+                        var header_buf: [65536]u8 = undefined;
+                        var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), self.io, path, .{}) catch null;
+                        if (file) |*f| {
+                            defer f.close(self.io);
+                            var slices = [_][]u8{&header_buf};
+                            const n = f.readPositional(self.io, &slices, 0) catch 0;
+                            if (n > 0) {
+                                if (image.readJpegDimensions(header_buf[0..n])) |dims| {
+                                    full_w = dims.w;
+                                    full_h = dims.h;
+                                }
+                            }
+                        }
+                    }
+
                     const new_entry = CacheEntry{
                         .index = d,
                         .generation = self.generation,
                         .status = .decoding,
+                        .full_w = full_w,
+                        .full_h = full_h,
                     };
                     try self.cache.append(self.allocator, new_entry);
                     to_spawn_indices[to_spawn_count] = d;
@@ -654,7 +742,7 @@ pub const ViewerState = struct {
                 var k: usize = 0;
                 while (k < self.cache.entries.items.len) : (k += 1) {
                     if (self.cache.entries.items[k].index == d) {
-                        _ = self.cache.remove(k);
+                        self.cache.removeAndDeinit(k, self.gpu_device);
                         break;
                     }
                 }
@@ -669,7 +757,7 @@ pub const ViewerState = struct {
                 var k: usize = 0;
                 while (k < self.cache.entries.items.len) : (k += 1) {
                     if (self.cache.entries.items[k].index == d) {
-                        _ = self.cache.remove(k);
+                        self.cache.removeAndDeinit(k, self.gpu_device);
                         break;
                     }
                 }

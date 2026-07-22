@@ -202,6 +202,54 @@ pub fn renderStatsOverlay(
             try renderStatRow("Decode Time", decode_str, scale_x, scale_y, dpi_scale);
             try renderStatRow("Convert Time", convert_str, scale_x, scale_y, dpi_scale);
             try renderStatRow("GPU Upload", upload_str, scale_x, scale_y, dpi_scale);
+
+            var thumb_info_str: []const u8 = "None";
+            var thumb_time_str: []const u8 = "N/A";
+            if (current_entry) |entry| {
+                var is_jpeg = std.mem.eql(u8, mime_type, "image/jpeg");
+                if (state.current_index) |idx| {
+                    if (idx < state.image_list.items.len) {
+                        const ext = std.fs.path.extension(state.image_list.items[idx]);
+                        if (std.ascii.eqlIgnoreCase(ext, ".jpg") or std.ascii.eqlIgnoreCase(ext, ".jpeg")) {
+                            is_jpeg = true;
+                        }
+                    }
+                }
+                const has_thumb = switch (entry.status) {
+                    .loaded_gpu => |gpu| gpu.has_thumb,
+                    .loaded_cpu => |cpu| cpu.has_thumb,
+                    else => entry.has_thumb,
+                };
+                const t_w = switch (entry.status) {
+                    .loaded_gpu => |gpu| gpu.thumb_w,
+                    .loaded_cpu => |cpu| cpu.thumb_w,
+                    else => entry.thumb_w,
+                };
+                const t_h = switch (entry.status) {
+                    .loaded_gpu => |gpu| gpu.thumb_h,
+                    .loaded_cpu => |cpu| cpu.thumb_h,
+                    else => entry.thumb_h,
+                };
+                const t_time = switch (entry.status) {
+                    .loaded_gpu => |gpu| gpu.thumb_upload_time_ms,
+                    .loaded_cpu => |cpu| cpu.thumb_upload_time_ms,
+                    else => entry.thumb_upload_time_ms,
+                };
+
+                if (has_thumb) {
+                    thumb_info_str = try std.fmt.allocPrint(frame_allocator, "Present ({d:.0}x{d:.0} px)", .{ t_w, t_h });
+                    thumb_time_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{t_time});
+                } else if (is_jpeg) {
+                    thumb_info_str = "None (No EXIF Thumb)";
+                    thumb_time_str = "N/A";
+                } else {
+                    thumb_info_str = "N/A (Non-JPEG)";
+                    thumb_time_str = "N/A";
+                }
+            }
+
+            try renderStatRow("EXIF Thumbnail", thumb_info_str, scale_x, scale_y, dpi_scale);
+            try renderStatRow("Thumb Load Time", thumb_time_str, scale_x, scale_y, dpi_scale);
             try renderStatRow("Memory Size", mem_size_str, scale_x, scale_y, dpi_scale);
 
             const total_vram_bytes = state.cache.getTotalVramBytes();

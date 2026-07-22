@@ -99,6 +99,21 @@ pub const IpcServer = struct {
                 return error.UnknownPalette;
             }
             try respondOk(state.io, stream);
+        } else if (std.mem.eql(u8, cmd, "thumb")) {
+            if (it.next()) |val| {
+                if (std.mem.eql(u8, val, "true")) {
+                    try state.setDebugShowThumb(true);
+                } else if (std.mem.eql(u8, val, "false")) {
+                    try state.setDebugShowThumb(false);
+                } else if (std.mem.eql(u8, val, "toggle")) {
+                    try state.setDebugShowThumb(!state.debug_show_thumb);
+                } else {
+                    return error.InvalidArgument;
+                }
+            } else {
+                try state.setDebugShowThumb(!state.debug_show_thumb);
+            }
+            try respondOk(state.io, stream);
         } else if (std.mem.eql(u8, cmd, "debug")) {
             const val = it.next() orelse return error.MissingArgument;
             if (std.mem.eql(u8, val, "true")) {

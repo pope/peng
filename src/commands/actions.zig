@@ -12,6 +12,7 @@ pub const AppActionId = enum {
     toggle_fullscreen,
     open_file_finder,
     toggle_debug_mode,
+    toggle_debug_thumb,
     exit,
     first_image,
     last_image,
@@ -105,6 +106,14 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
             .show_in_palette = true,
             .shortcuts = &.{
                 .{ .key = c.SDLK_D },
+            },
+        },
+        .toggle_debug_thumb => .{
+            .name = "Toggle EXIF Thumbnail Debug View",
+            .shortcut_text = "T",
+            .show_in_palette = true,
+            .shortcuts = &.{
+                .{ .key = c.SDLK_T },
             },
         },
         .exit => .{
@@ -356,6 +365,7 @@ pub fn triggerAction(self: *ViewerState, action_id: AppActionId) !void {
             try self.openPalette(.files);
         },
         .toggle_debug_mode => clay.setDebugModeEnabled(!clay.isDebugModeEnabled()),
+        .toggle_debug_thumb => try self.setDebugShowThumb(!self.debug_show_thumb),
         .exit => {
             if (self.is_fullscreen) {
                 self.is_fullscreen = false;
