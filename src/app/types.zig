@@ -2,7 +2,6 @@ const std = @import("std");
 const c = @import("c.zig").c;
 
 pub const MeasureTextUserData = struct {
-    text_engine: ?*c.TTF_TextEngine,
     fonts: []const ?*c.TTF_Font,
     allocator: std.mem.Allocator,
 };

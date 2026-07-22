@@ -158,7 +158,7 @@ pub const ViewerState = struct {
     gpu_pipeline: ?*c.SDL_GPUGraphicsPipeline = null,
     gpu_sampler: ?*c.SDL_GPUSampler = null,
     white_texture: ?*c.SDL_GPUTexture = null,
-    gpu_text_engine: ?*c.TTF_TextEngine = null,
+
     image_list: std.ArrayList([]const u8),
     current_index: ?usize = null,
     cache: CacheSlotMap,
@@ -228,7 +228,7 @@ pub const ViewerState = struct {
                 if (self.window) |w| c.SDL_ReleaseWindowFromGPUDevice(gpu_dev, w);
             }
         }
-        if (self.gpu_text_engine) |engine| c.TTF_DestroyGPUTextEngine(engine);
+
 
         c.SDL_DestroyMutex(self.cache_mutex);
         for (self.image_list.items) |item| {

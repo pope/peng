@@ -92,7 +92,7 @@ pub fn main(init: std.process.Init) !void {
             c.SDL_ReleaseGPUGraphicsPipeline(setup.gpu_device, resources.pipeline);
             c.SDL_ReleaseGPUSampler(setup.gpu_device, resources.sampler);
             c.SDL_ReleaseGPUTexture(setup.gpu_device, resources.white_texture);
-            c.TTF_DestroyGPUTextEngine(resources.text_engine);
+
         }
         for (resources.fonts) |f| {
             if (f) |font| c.TTF_CloseFont(font);
@@ -112,7 +112,7 @@ pub fn main(init: std.process.Init) !void {
         .gpu_pipeline = resources.pipeline,
         .gpu_sampler = resources.sampler,
         .white_texture = resources.white_texture,
-        .gpu_text_engine = resources.text_engine,
+
         .image_list = std.ArrayList([]const u8).empty,
         .cache = .{},
         .cache_mutex = cache_mutex,
@@ -153,7 +153,6 @@ pub fn main(init: std.process.Init) !void {
     }, .{});
 
     var measure_data = MeasureTextUserData{
-        .text_engine = resources.text_engine,
         .fonts = resources.fonts[0..],
         .allocator = gpa,
     };

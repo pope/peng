@@ -81,7 +81,6 @@ pub fn initGraphicsAndWindow(window_title: [:0]const u8, options: GraphicsOption
 }
 
 pub const GpuResources = struct {
-    text_engine: *c.TTF_TextEngine,
     pipeline: *c.SDL_GPUGraphicsPipeline,
     sampler: *c.SDL_GPUSampler,
     white_texture: *c.SDL_GPUTexture,
@@ -107,12 +106,7 @@ pub fn initGpuResources(gpu_device: *c.SDL_GPUDevice, window: *c.SDL_Window, ini
     };
     errdefer c.TTF_CloseFont(font);
 
-    // Create TTF GPU Text Engine
-    const text_engine = c.TTF_CreateGPUTextEngine(gpu_device) orelse {
-        std.log.err("TTF_CreateGPUTextEngine Error: {s}", .{c.SDL_GetError()});
-        return error.TTFCreateEngineFailed;
-    };
-    errdefer c.TTF_DestroyGPUTextEngine(text_engine);
+
 
     // Re-load font at smaller size for stat rows
     const stream2 = c.SDL_IOFromConstMem(roboto_font_bytes.ptr, roboto_font_bytes.len) orelse {
@@ -332,7 +326,6 @@ pub fn initGpuResources(gpu_device: *c.SDL_GPUDevice, window: *c.SDL_Window, ini
     };
 
     return GpuResources{
-        .text_engine = text_engine,
         .pipeline = pipeline,
         .sampler = sampler,
         .white_texture = white_texture,
