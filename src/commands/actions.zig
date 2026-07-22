@@ -432,12 +432,17 @@ pub fn triggerAction(self: *ViewerState, action_id: AppActionId) !void {
             }
         },
         .reset_rotation => {
-            self.rotation_angle = 0.0;
             if (self.current_index) |idx| {
                 if (idx < self.image_list.items.len) {
                     const path = self.image_list.items[idx];
+                    const exif_rot = self.readJpegExifOrientation(path) orelse 0.0;
+                    self.rotation_angle = exif_rot;
                     try self.rotation_map.put(path, self.rotation_angle);
+                } else {
+                    self.rotation_angle = 0.0;
                 }
+            } else {
+                self.rotation_angle = 0.0;
             }
         },
         .set_filter_nearest => {

@@ -16,6 +16,8 @@ pub const TextureHandle = image.TextureHandle;
 pub const DecodeArgs = image.DecodeArgs;
 pub const detectMimeType = image.detectMimeType;
 pub const decodeWorker = image.decodeWorker;
+pub const parseExifOrientation = image.parseExifOrientation;
+pub const readJpegExifOrientation = image.readJpegExifOrientation;
 pub const eqlIgnoreCase = fs.eqlIgnoreCase;
 pub const isImageExtension = fs.isImageExtension;
 pub const scanDirectory = fs.scanDirectory;
@@ -199,6 +201,10 @@ pub const ViewerState = struct {
 
     // Font text texture cache
     text_cache: std.AutoHashMapUnmanaged(TextCacheKey, TextCacheValue) = .empty,
+
+    pub fn readJpegExifOrientation(self: *const ViewerState, path: []const u8) ?f32 {
+        return image.readJpegExifOrientation(self.io, path);
+    }
 
     pub fn deinit(self: *ViewerState) void {
         self.exiting.store(true, .release);
@@ -549,7 +555,11 @@ pub const ViewerState = struct {
         const current_idx = self.current_index;
         if (current_idx != null and current_idx.? < self.image_list.items.len) {
             const path = self.image_list.items[current_idx.?];
-            self.rotation_angle = self.rotation_map.get(path) orelse 0.0;
+            if (self.rotation_map.get(path)) |user_rot| {
+                self.rotation_angle = user_rot;
+            } else {
+                self.rotation_angle = image.readJpegExifOrientation(self.io, path) orelse 0.0;
+            }
         } else {
             self.rotation_angle = 0.0;
         }

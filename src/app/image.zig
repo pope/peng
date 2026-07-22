@@ -404,3 +404,152 @@ pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
 
     return 0;
 }
+
+pub fn parseExifOrientation(data: []const u8) ?f32 {
+    if (data.len < 14) return null;
+    if (data[0] != 0xFF or data[1] != 0xD8) return null;
+
+    var idx: usize = 2;
+    while (idx + 4 <= data.len) {
+        if (data[idx] != 0xFF) break;
+        var marker_offset = idx + 1;
+        while (marker_offset < data.len and data[marker_offset] == 0xFF) {
+            marker_offset += 1;
+        }
+        if (marker_offset >= data.len) break;
+        const marker = data[marker_offset];
+        idx = marker_offset + 1;
+
+        if (marker == 0xD9 or marker == 0xDA) break;
+
+        if (idx + 2 > data.len) break;
+        const seg_len = (@as(usize, data[idx]) << 8) | @as(usize, data[idx + 1]);
+        if (seg_len < 2 or idx + seg_len > data.len) break;
+
+        const payload = data[idx + 2 .. idx + seg_len];
+        idx += seg_len;
+
+        if (marker == 0xE1) {
+            if (payload.len < 14) continue;
+            if (!std.mem.startsWith(u8, payload, "Exif\x00\x00")) continue;
+
+            const tiff = payload[6..];
+            if (tiff.len < 8) continue;
+
+            const is_le = if (std.mem.eql(u8, tiff[0..2], "II")) true else if (std.mem.eql(u8, tiff[0..2], "MM")) false else continue;
+
+            const sig = if (is_le) std.mem.readInt(u16, tiff[2..4][0..2], .little) else std.mem.readInt(u16, tiff[2..4][0..2], .big);
+            if (sig != 0x002A) continue;
+
+            const ifd0_off = if (is_le) std.mem.readInt(u32, tiff[4..8][0..4], .little) else std.mem.readInt(u32, tiff[4..8][0..4], .big);
+            if (ifd0_off >= tiff.len or ifd0_off + 2 > tiff.len) continue;
+
+            const num_entries = if (is_le) std.mem.readInt(u16, tiff[ifd0_off..][0..2], .little) else std.mem.readInt(u16, tiff[ifd0_off..][0..2], .big);
+            var entry_off = ifd0_off + 2;
+
+            var i: usize = 0;
+            while (i < num_entries) : (i += 1) {
+                if (entry_off + 12 > tiff.len) break;
+                const entry = tiff[entry_off .. entry_off + 12];
+                entry_off += 12;
+
+                const tag = if (is_le) std.mem.readInt(u16, entry[0..2][0..2], .little) else std.mem.readInt(u16, entry[0..2][0..2], .big);
+                if (tag == 0x0112) {
+                    const val = if (is_le) std.mem.readInt(u16, entry[8..10][0..2], .little) else std.mem.readInt(u16, entry[8..10][0..2], .big);
+                    return switch (val) {
+                        1 => 0.0,
+                        3 => 180.0,
+                        6 => 90.0,
+                        8 => 270.0,
+                        5 => 270.0,
+                        7 => 90.0,
+                        4 => 180.0,
+                        else => 0.0,
+                    };
+                }
+            }
+        }
+    }
+    return null;
+}
+
+pub fn readJpegExifOrientation(io: std.Io, path: []const u8) ?f32 {
+    const ext = std.fs.path.extension(path);
+    if (!fs.eqlIgnoreCase(ext, ".jpg") and !fs.eqlIgnoreCase(ext, ".jpeg")) return null;
+
+    var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, path, .{}) catch return null;
+    defer file.close(io);
+
+    var buf: [65536]u8 = undefined;
+    var slices = [_][]u8{&buf};
+    const n = file.readPositional(io, &slices, 0) catch return null;
+    return parseExifOrientation(buf[0..n]);
+}
+
+test "parseExifOrientation" {
+    // 1. Invalid JPEG header -> null
+    try std.testing.expectEqual(@as(?f32, null), parseExifOrientation("not a jpeg file"));
+
+    // 2. Little Endian EXIF with Orientation 6 (90 degrees)
+    const le_exif = [_]u8{
+        0xFF, 0xD8, // SOI
+        0xFF, 0xE1, // APP1
+        0x00, 0x1E, // Length = 30
+        'E', 'x', 'i', 'f', 0x00, 0x00, // Header
+        'I', 'I', // Little Endian
+        0x2A, 0x00, // Signature 42
+        0x08, 0x00, 0x00, 0x00, // IFD0 Offset = 8
+        0x01, 0x00, // 1 entry
+        0x12, 0x01, // Tag 0x0112 (Orientation)
+        0x03, 0x00, // Type SHORT
+        0x01, 0x00, 0x00, 0x00, // Count 1
+        0x06, 0x00, 0x00, 0x00, // Value 6 (90 degrees)
+        0x00, 0x00, 0x00, 0x00, // Next IFD
+    };
+    try std.testing.expectEqual(@as(?f32, 90.0), parseExifOrientation(&le_exif));
+
+    // 3. Big Endian EXIF with Orientation 8 (270 degrees)
+    const be_exif = [_]u8{
+        0xFF, 0xD8, // SOI
+        0xFF, 0xE1, // APP1
+        0x00, 0x1E, // Length = 30
+        'E', 'x', 'i', 'f', 0x00, 0x00, // Header
+        'M', 'M', // Big Endian
+        0x00, 0x2A, // Signature 42
+        0x00, 0x00, 0x00, 0x08, // IFD0 Offset = 8
+        0x00, 0x01, // 1 entry
+        0x01, 0x12, // Tag 0x0112 (Orientation)
+        0x00, 0x03, // Type SHORT
+        0x00, 0x00, 0x00, 0x01, // Count 1
+        0x00, 0x08, 0x00, 0x00, // Value 8 (270 degrees)
+        0x00, 0x00, 0x00, 0x00, // Next IFD
+    };
+    try std.testing.expectEqual(@as(?f32, 270.0), parseExifOrientation(&be_exif));
+
+    // 4. Big Endian EXIF with Orientation 3 (180 degrees)
+    const be_exif_180 = [_]u8{
+        0xFF, 0xD8, // SOI
+        0xFF, 0xE1, // APP1
+        0x00, 0x1E, // Length = 30
+        'E', 'x', 'i', 'f', 0x00, 0x00, // Header
+        'M', 'M', // Big Endian
+        0x00, 0x2A, // Signature 42
+        0x00, 0x00, 0x00, 0x08, // IFD0 Offset = 8
+        0x00, 0x01, // 1 entry
+        0x01, 0x12, // Tag 0x0112 (Orientation)
+        0x00, 0x03, // Type SHORT
+        0x00, 0x00, 0x00, 0x01, // Count 1
+        0x00, 0x03, 0x00, 0x00, // Value 3 (180 degrees)
+        0x00, 0x00, 0x00, 0x00, // Next IFD
+    };
+    try std.testing.expectEqual(@as(?f32, 180.0), parseExifOrientation(&be_exif_180));
+}
+
+test "readJpegExifOrientation on non-jpeg file" {
+    var io_threaded = std.Io.Threaded.init(std.testing.allocator, .{});
+    defer io_threaded.deinit();
+    const io = io_threaded.io();
+
+    const rot = readJpegExifOrientation(io, "src/main.zig");
+    try std.testing.expectEqual(@as(?f32, null), rot);
+}
