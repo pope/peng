@@ -67,8 +67,7 @@ pub fn renderStatsOverlay(
     var res_str: []const u8 = "Loading...";
     var decode_str: []const u8 = "Loading...";
     var convert_str: []const u8 = "Loading...";
-    var thumb_upload_str: []const u8 = "Loading...";
-    var full_upload_str: []const u8 = "Loading...";
+    var upload_str: []const u8 = "Loading...";
     var screen_str: []const u8 = "Loading...";
 
     if (current_entry) |entry| {
@@ -90,12 +89,7 @@ pub fn renderStatsOverlay(
                 res_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} ({d:.2} MP)", .{ gpu.w, gpu.h, megapixels });
                 decode_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{gpu.decode_time_ms});
                 convert_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{gpu.conversion_time_ms});
-                if (gpu.thumb_upload_time_ms) |t_time| {
-                    thumb_upload_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{t_time});
-                } else {
-                    thumb_upload_str = "N/A (small image)";
-                }
-                full_upload_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{gpu.upload_time_ms});
+                upload_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{gpu.upload_time_ms});
                 screen_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} px", .{ draw_w, draw_h });
             },
             .failed => {
@@ -105,8 +99,7 @@ pub fn renderStatsOverlay(
                 res_str = "Failed";
                 decode_str = "Failed";
                 convert_str = "Failed";
-                thumb_upload_str = "Failed";
-                full_upload_str = "Failed";
+                upload_str = "Failed";
                 screen_str = "Failed";
             },
             else => {},
@@ -207,13 +200,12 @@ pub fn renderStatsOverlay(
             try renderStatRow("Resolution", res_str, scale_x, scale_y, dpi_scale);
             try renderStatRow("Decode Time", decode_str, scale_x, scale_y, dpi_scale);
             try renderStatRow("Convert Time", convert_str, scale_x, scale_y, dpi_scale);
-            try renderStatRow("Thumb Upload", thumb_upload_str, scale_x, scale_y, dpi_scale);
-            try renderStatRow("Full Upload", full_upload_str, scale_x, scale_y, dpi_scale);
+            try renderStatRow("GPU Upload", upload_str, scale_x, scale_y, dpi_scale);
             try renderStatRow("Memory Size", mem_size_str, scale_x, scale_y, dpi_scale);
 
             const total_vram_bytes = state.cache.getTotalVramBytes();
             const formatted_total_vram = try formatSize(frame_allocator, total_vram_bytes);
-            const total_vram_str = try std.fmt.allocPrint(frame_allocator, "{s} / 256 MB ({d} slots)", .{ formatted_total_vram, state.cache.entries.items.len });
+            const total_vram_str = try std.fmt.allocPrint(frame_allocator, "{s} / 1024 MB ({d} slots)", .{ formatted_total_vram, state.cache.entries.items.len });
             try renderStatRow("Total Cache VRAM", total_vram_str, scale_x, scale_y, dpi_scale);
 
             var mipmap_status_str: []const u8 = "Disabled (1 Level)";

@@ -128,7 +128,7 @@ pub const CacheSlotMap = struct {
         return self.entries.orderedRemove(index_in_list);
     }
 
-    pub const DEFAULT_MAX_VRAM_BYTES: usize = 256 * 1024 * 1024;
+    pub const DEFAULT_MAX_VRAM_BYTES: usize = 1024 * 1024 * 1024;
 
     pub fn getTotalVramBytes(self: *const CacheSlotMap) usize {
         var total: usize = 0;
@@ -150,6 +150,8 @@ pub const CacheSlotMap = struct {
                     if (current_index) |cur| {
                         if (entry.index == cur) continue;
                         const dist = if (entry.index > cur) entry.index - cur else cur - entry.index;
+                        // Protect immediate neighbors (dist <= 2) if possible
+                        if (dist <= 2 and self.entries.items.len <= 5) continue;
                         if (dist >= max_dist) {
                             max_dist = dist;
                             victim_idx = i;
@@ -172,8 +174,6 @@ pub const CacheSlotMap = struct {
             }
         }
     }
-
-
 };
 
 pub const DecodeArgs = struct {
@@ -308,69 +308,7 @@ pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
             const orig_w: f32 = @floatFromInt(f_surf.*.w);
             const orig_h: f32 = @floatFromInt(f_surf.*.h);
 
-            var thumb_upload_time_ms: ?f64 = null;
-
-            // Progressive Thumbnail Pass for large images (> 1280px)
-            const thumb_max: i32 = 1280;
-            if (f_surf.*.w > thumb_max or f_surf.*.h > thumb_max) {
-                var tw = f_surf.*.w;
-                var th = f_surf.*.h;
-                if (tw > th) {
-                    tw = thumb_max;
-                    th = @divTrunc(f_surf.*.h * thumb_max, f_surf.*.w);
-                } else {
-                    th = thumb_max;
-                    tw = @divTrunc(f_surf.*.w * thumb_max, f_surf.*.h);
-                }
-                tw = @max(1, tw);
-                th = @max(1, th);
-
-                if (c.SDL_ScaleSurface(f_surf, tw, th, c.SDL_SCALEMODE_LINEAR)) |thumb_surf| {
-                    defer c.SDL_DestroySurface(thumb_surf);
-                    if (graphics.uploadSurfaceToGpu(gpu_dev, thumb_surf)) |thumb_res| {
-                        thumb_upload_time_ms = thumb_res.upload_time_ms;
-                        c.SDL_LockMutex(state.cache_mutex);
-                        if (!state.exiting.load(.acquire)) {
-                            if (state.cache.getWithGeneration(index, args.generation)) |entry| {
-                                if (entry.status != .loaded_gpu) {
-                                    switch (entry.status) {
-                                        .loaded_cpu => |cpu| c.SDL_DestroySurface(cpu.surface),
-                                        else => {},
-                                    }
-                                    entry.status = .{
-                                        .loaded_gpu = .{
-                                            .gpu_texture = thumb_res.gpu_texture,
-                                            .w = orig_w,
-                                            .h = orig_h,
-                                            .size_bytes = size_bytes,
-                                            .mime_type = mime_type,
-                                            .decode_time_ms = decode_time_ms,
-                                            .conversion_time_ms = conversion_time_ms,
-                                            .thumb_upload_time_ms = thumb_res.upload_time_ms,
-                                            .upload_time_ms = thumb_res.upload_time_ms,
-                                            .memory_size_bytes = thumb_res.memory_size_bytes,
-                                            .num_mip_levels = thumb_res.num_mip_levels,
-                                            .mipmap_time_ms = thumb_res.mipmap_time_ms,
-                                        },
-                                    };
-                                    var event = std.mem.zeroes(c.SDL_Event);
-                                    event.type = c.SDL_EVENT_USER;
-                                    _ = c.SDL_PushEvent(&event);
-                                } else {
-                                    c.SDL_ReleaseGPUTexture(gpu_dev, thumb_res.gpu_texture);
-                                }
-                            } else {
-                                c.SDL_ReleaseGPUTexture(gpu_dev, thumb_res.gpu_texture);
-                            }
-                        } else {
-                            c.SDL_ReleaseGPUTexture(gpu_dev, thumb_res.gpu_texture);
-                        }
-                        c.SDL_UnlockMutex(state.cache_mutex);
-                    }
-                }
-            }
-
-            // Full Resolution GPU Upload Pass
+            // Direct GPU Upload Pass (GPU hardware handles mipmap downsampling)
             if (graphics.uploadSurfaceToGpu(gpu_dev, f_surf)) |full_res| {
                 uploaded_to_gpu = true;
                 c.SDL_LockMutex(state.cache_mutex);
@@ -381,10 +319,9 @@ pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
 
                 if (!state.exiting.load(.acquire)) {
                     if (state.cache.getWithGeneration(index, args.generation)) |entry| {
-                        var old_thumb_tex: ?*c.SDL_GPUTexture = null;
                         switch (entry.status) {
                             .loaded_cpu => |cpu| c.SDL_DestroySurface(cpu.surface),
-                            .loaded_gpu => |gpu| old_thumb_tex = gpu.gpu_texture,
+                            .loaded_gpu => |gpu| c.SDL_ReleaseGPUTexture(gpu_dev, gpu.gpu_texture),
                             else => {},
                         }
                         entry.status = .{
@@ -396,18 +333,12 @@ pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
                                 .mime_type = mime_type,
                                 .decode_time_ms = decode_time_ms,
                                 .conversion_time_ms = conversion_time_ms,
-                                .thumb_upload_time_ms = thumb_upload_time_ms,
                                 .upload_time_ms = full_res.upload_time_ms,
                                 .memory_size_bytes = full_res.memory_size_bytes,
                                 .num_mip_levels = full_res.num_mip_levels,
                                 .mipmap_time_ms = full_res.mipmap_time_ms,
                             },
                         };
-                        if (old_thumb_tex) |old_tex| {
-                            if (old_tex != full_res.gpu_texture) {
-                                c.SDL_ReleaseGPUTexture(gpu_dev, old_tex);
-                            }
-                        }
                         var event = std.mem.zeroes(c.SDL_Event);
                         event.type = c.SDL_EVENT_USER;
                         _ = c.SDL_PushEvent(&event);
