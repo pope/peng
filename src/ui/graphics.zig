@@ -106,8 +106,6 @@ pub fn initGpuResources(gpu_device: *c.SDL_GPUDevice, window: *c.SDL_Window, ini
     };
     errdefer c.TTF_CloseFont(font);
 
-
-
     // Re-load font at smaller size for stat rows
     const stream2 = c.SDL_IOFromConstMem(roboto_font_bytes.ptr, roboto_font_bytes.len) orelse {
         std.log.err("SDL_IOFromConstMem Error: {s}", .{c.SDL_GetError()});
@@ -600,4 +598,3 @@ pub fn uploadSurfaceToGpu(gpu_device: *c.SDL_GPUDevice, surf: *c.SDL_Surface) ?G
         .mipmap_time_ms = mipmap_time_ms,
     };
 }
-

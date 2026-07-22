@@ -92,7 +92,6 @@ pub fn main(init: std.process.Init) !void {
             c.SDL_ReleaseGPUGraphicsPipeline(setup.gpu_device, resources.pipeline);
             c.SDL_ReleaseGPUSampler(setup.gpu_device, resources.sampler);
             c.SDL_ReleaseGPUTexture(setup.gpu_device, resources.white_texture);
-
         }
         for (resources.fonts) |f| {
             if (f) |font| c.TTF_CloseFont(font);

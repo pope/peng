@@ -132,7 +132,6 @@ pub fn stopTextInput(window: ?*c.SDL_Window) void {
     }
 }
 
-
 pub fn matchesQueryLower(path: []const u8, query_lower: []const u8) bool {
     if (query_lower.len == 0) return true;
     if (path.len < query_lower.len) return false;
@@ -228,7 +227,6 @@ pub const ViewerState = struct {
                 if (self.window) |w| c.SDL_ReleaseWindowFromGPUDevice(gpu_dev, w);
             }
         }
-
 
         self.text_cache.deinit(self.allocator);
         c.SDL_DestroyMutex(self.cache_mutex);
