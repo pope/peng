@@ -545,10 +545,33 @@ pub const ViewerState = struct {
 
         // 4. Spawn worker threads outside cache_mutex lock
         for (to_spawn_indices[0..to_spawn_count]) |d| {
-            const path = try self.allocator.dupeZ(u8, self.image_list.items[d]);
+            const path = self.allocator.dupeZ(u8, self.image_list.items[d]) catch |err| {
+                c.SDL_LockMutex(self.cache_mutex);
+                var k: usize = 0;
+                while (k < self.cache.entries.items.len) : (k += 1) {
+                    if (self.cache.entries.items[k].index == d) {
+                        _ = self.cache.remove(k);
+                        break;
+                    }
+                }
+                c.SDL_UnlockMutex(self.cache_mutex);
+                return err;
+            };
             errdefer self.allocator.free(path);
 
-            const args = try self.allocator.create(DecodeArgs);
+            const args = self.allocator.create(DecodeArgs) catch |err| {
+                self.allocator.free(path);
+                c.SDL_LockMutex(self.cache_mutex);
+                var k: usize = 0;
+                while (k < self.cache.entries.items.len) : (k += 1) {
+                    if (self.cache.entries.items[k].index == d) {
+                        _ = self.cache.remove(k);
+                        break;
+                    }
+                }
+                c.SDL_UnlockMutex(self.cache_mutex);
+                return err;
+            };
             errdefer self.allocator.destroy(args);
 
             args.* = DecodeArgs{
@@ -610,15 +633,6 @@ pub const ViewerState = struct {
     }
 
     pub fn handlePathSelection(self: *ViewerState, path: []const u8) !void {
-        // Clear existing list and rotation map via instant O(1) arena reset
-        _ = self.directory_arena.reset(.retain_capacity);
-        self.image_list.clearRetainingCapacity();
-        self.rotation_map.clearRetainingCapacity();
-
-        self.generation += 1;
-        self.clearCache();
-        self.current_index = null;
-
         var stat: std.Io.File.Stat = undefined;
         var has_stat = true;
         if (std.Io.Dir.statFile(std.Io.Dir.cwd(), self.io, path, .{})) |s| {
@@ -627,6 +641,14 @@ pub const ViewerState = struct {
             std.log.err("Failed to access path '{s}': {}", .{ path, err });
             has_stat = false;
         }
+
+        // Clear existing cache and rotation map before resetting directory_arena
+        self.generation += 1;
+        self.clearCache();
+        self.rotation_map.clearRetainingCapacity();
+        self.image_list.clearRetainingCapacity();
+        _ = self.directory_arena.reset(.retain_capacity);
+        self.current_index = null;
 
         if (has_stat) {
             if (stat.kind == .directory) {
