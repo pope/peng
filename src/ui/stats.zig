@@ -67,7 +67,8 @@ pub fn renderStatsOverlay(
     var res_str: []const u8 = "Loading...";
     var decode_str: []const u8 = "Loading...";
     var convert_str: []const u8 = "Loading...";
-    var process_str: []const u8 = "Loading...";
+    var thumb_upload_str: []const u8 = "Loading...";
+    var full_upload_str: []const u8 = "Loading...";
     var screen_str: []const u8 = "Loading...";
 
     if (current_entry) |entry| {
@@ -89,7 +90,12 @@ pub fn renderStatsOverlay(
                 res_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} ({d:.2} MP)", .{ gpu.w, gpu.h, megapixels });
                 decode_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{gpu.decode_time_ms});
                 convert_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{gpu.conversion_time_ms});
-                process_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{gpu.upload_time_ms});
+                if (gpu.thumb_upload_time_ms) |t_time| {
+                    thumb_upload_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{t_time});
+                } else {
+                    thumb_upload_str = "N/A (small image)";
+                }
+                full_upload_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{gpu.upload_time_ms});
                 screen_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} px", .{ draw_w, draw_h });
             },
             .failed => {
@@ -99,7 +105,8 @@ pub fn renderStatsOverlay(
                 res_str = "Failed";
                 decode_str = "Failed";
                 convert_str = "Failed";
-                process_str = "Failed";
+                thumb_upload_str = "Failed";
+                full_upload_str = "Failed";
                 screen_str = "Failed";
             },
             else => {},
@@ -200,7 +207,8 @@ pub fn renderStatsOverlay(
             try renderStatRow("Resolution", res_str, scale_x, scale_y, dpi_scale);
             try renderStatRow("Decode Time", decode_str, scale_x, scale_y, dpi_scale);
             try renderStatRow("Convert Time", convert_str, scale_x, scale_y, dpi_scale);
-            try renderStatRow("Upload Time", process_str, scale_x, scale_y, dpi_scale);
+            try renderStatRow("Thumb Upload Time", thumb_upload_str, scale_x, scale_y, dpi_scale);
+            try renderStatRow("Full Upload Time", full_upload_str, scale_x, scale_y, dpi_scale);
             try renderStatRow("Memory Size", mem_size_str, scale_x, scale_y, dpi_scale);
 
             const total_vram_bytes = state.cache.getTotalVramBytes();

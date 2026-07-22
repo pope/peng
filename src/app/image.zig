@@ -32,6 +32,7 @@ pub const CacheStatus = union(CacheStatusTag) {
         mime_type: []const u8,
         decode_time_ms: f64,
         conversion_time_ms: f64,
+        thumb_upload_time_ms: ?f64 = null,
         upload_time_ms: f64,
         memory_size_bytes: usize,
         num_mip_levels: u32 = 1,
@@ -307,6 +308,8 @@ pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
             const orig_w: f32 = @floatFromInt(f_surf.*.w);
             const orig_h: f32 = @floatFromInt(f_surf.*.h);
 
+            var thumb_upload_time_ms: ?f64 = null;
+
             // Progressive Thumbnail Pass for large images (> 1280px)
             const thumb_max: i32 = 1280;
             if (f_surf.*.w > thumb_max or f_surf.*.h > thumb_max) {
@@ -325,6 +328,7 @@ pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
                 if (c.SDL_ScaleSurface(f_surf, tw, th, c.SDL_SCALEMODE_LINEAR)) |thumb_surf| {
                     defer c.SDL_DestroySurface(thumb_surf);
                     if (graphics.uploadSurfaceToGpu(gpu_dev, thumb_surf)) |thumb_res| {
+                        thumb_upload_time_ms = thumb_res.upload_time_ms;
                         c.SDL_LockMutex(state.cache_mutex);
                         if (!state.exiting.load(.acquire)) {
                             if (state.cache.getWithGeneration(index, args.generation)) |entry| {
@@ -342,6 +346,7 @@ pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
                                             .mime_type = mime_type,
                                             .decode_time_ms = decode_time_ms,
                                             .conversion_time_ms = conversion_time_ms,
+                                            .thumb_upload_time_ms = thumb_res.upload_time_ms,
                                             .upload_time_ms = thumb_res.upload_time_ms,
                                             .memory_size_bytes = thumb_res.memory_size_bytes,
                                             .num_mip_levels = thumb_res.num_mip_levels,
@@ -391,6 +396,7 @@ pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
                                 .mime_type = mime_type,
                                 .decode_time_ms = decode_time_ms,
                                 .conversion_time_ms = conversion_time_ms,
+                                .thumb_upload_time_ms = thumb_upload_time_ms,
                                 .upload_time_ms = full_res.upload_time_ms,
                                 .memory_size_bytes = full_res.memory_size_bytes,
                                 .num_mip_levels = full_res.num_mip_levels,
