@@ -18,7 +18,7 @@ pub fn isImageExtension(ext: []const u8) bool {
     return false;
 }
 
-pub fn scanDirectory(allocator: std.mem.Allocator, io: std.Io, dir_path: []const u8, list: *std.ArrayList([]const u8)) !void {
+pub fn scanDirectory(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, dir_path: []const u8, list: *std.ArrayList([]const u8)) !void {
     var dir = std.Io.Dir.openDir(std.Io.Dir.cwd(), io, dir_path, .{ .iterate = true }) catch |err| {
         std.log.err("Failed to open directory '{s}': {}", .{ dir_path, err });
         return;
@@ -27,19 +27,14 @@ pub fn scanDirectory(allocator: std.mem.Allocator, io: std.Io, dir_path: []const
 
     var it = dir.iterate();
     var dir_entries = std.ArrayList([]const u8).empty;
-    defer dir_entries.deinit(allocator);
-    errdefer {
-        for (dir_entries.items) |entry| {
-            allocator.free(entry);
-        }
-    }
+    defer dir_entries.deinit(gpa);
 
     while (try it.next(io)) |entry| {
         if (entry.kind == .file) {
             const ext = std.fs.path.extension(entry.name);
             if (isImageExtension(ext)) {
-                const full_path = try std.fs.path.join(allocator, &.{ dir_path, entry.name });
-                try dir_entries.append(allocator, full_path);
+                const full_path = try std.fs.path.join(arena, &.{ dir_path, entry.name });
+                try dir_entries.append(gpa, full_path);
             }
         }
     }
@@ -51,7 +46,7 @@ pub fn scanDirectory(allocator: std.mem.Allocator, io: std.Io, dir_path: []const
         }
     }.lessThan);
 
-    try list.appendSlice(allocator, dir_entries.items);
+    try list.appendSlice(gpa, dir_entries.items);
 }
 
 pub fn readPipedStdin(state: *ViewerState, io: std.Io, gpa: std.mem.Allocator) !void {
@@ -66,15 +61,13 @@ pub fn readPipedStdin(state: *ViewerState, io: std.Io, gpa: std.mem.Allocator) !
             if (trimmed.len > 0) {
                 if (std.Io.Dir.statFile(std.Io.Dir.cwd(), io, trimmed, .{})) |s| {
                     if (s.kind == .directory) {
-                        try scanDirectory(gpa, io, trimmed, &state.image_list);
+                        try scanDirectory(gpa, state.directory_arena.allocator(), io, trimmed, &state.image_list);
                     } else if (isImageExtension(std.fs.path.extension(trimmed))) {
-                        const dup = try gpa.dupe(u8, trimmed);
-                        errdefer gpa.free(dup);
+                        const dup = try state.directory_arena.allocator().dupe(u8, trimmed);
                         try state.image_list.append(gpa, dup);
                     }
                 } else |_| {
-                    const dup = try gpa.dupe(u8, trimmed);
-                    errdefer gpa.free(dup);
+                    const dup = try state.directory_arena.allocator().dupe(u8, trimmed);
                     try state.image_list.append(gpa, dup);
                 }
             }

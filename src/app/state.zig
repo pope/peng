@@ -158,6 +158,7 @@ pub const ViewerState = struct {
     gpu_sampler: ?*c.SDL_GPUSampler = null,
     white_texture: ?*c.SDL_GPUTexture = null,
 
+    directory_arena: std.heap.ArenaAllocator,
     image_list: std.ArrayList([]const u8),
     current_index: ?usize = null,
     cache: CacheSlotMap,
@@ -230,17 +231,11 @@ pub const ViewerState = struct {
 
         self.text_cache.deinit(self.allocator);
         c.SDL_DestroyMutex(self.cache_mutex);
-        for (self.image_list.items) |item| {
-            self.allocator.free(item);
-        }
         self.image_list.deinit(self.allocator);
         self.cache.deinit(self.allocator, self.gpu_device);
         self.palette.deinit();
-        var rot_iter = self.rotation_map.keyIterator();
-        while (rot_iter.next()) |key| {
-            self.allocator.free(key.*);
-        }
         self.rotation_map.deinit();
+        self.directory_arena.deinit();
     }
 
     pub fn resetZoomPan(self: *ViewerState) void {
@@ -615,15 +610,9 @@ pub const ViewerState = struct {
     }
 
     pub fn handlePathSelection(self: *ViewerState, path: []const u8) !void {
-        // Clear existing list
-        for (self.image_list.items) |item| {
-            self.allocator.free(item);
-        }
+        // Clear existing list and rotation map via instant O(1) arena reset
+        _ = self.directory_arena.reset(.retain_capacity);
         self.image_list.clearRetainingCapacity();
-        var rot_iter = self.rotation_map.keyIterator();
-        while (rot_iter.next()) |key| {
-            self.allocator.free(key.*);
-        }
         self.rotation_map.clearRetainingCapacity();
 
         self.generation += 1;
@@ -641,14 +630,14 @@ pub const ViewerState = struct {
 
         if (has_stat) {
             if (stat.kind == .directory) {
-                try scanDirectory(self.allocator, self.io, path, &self.image_list);
+                try scanDirectory(self.allocator, self.directory_arena.allocator(), self.io, path, &self.image_list);
                 if (self.image_list.items.len > 0) {
                     self.current_index = 0;
                     try self.updateCache();
                 }
             } else {
                 const dir_path = std.fs.path.dirname(path) orelse ".";
-                try scanDirectory(self.allocator, self.io, dir_path, &self.image_list);
+                try scanDirectory(self.allocator, self.directory_arena.allocator(), self.io, dir_path, &self.image_list);
 
                 var found_idx: ?usize = null;
                 for (self.image_list.items, 0..) |item, i| {
@@ -661,8 +650,7 @@ pub const ViewerState = struct {
                 if (found_idx) |idx| {
                     self.current_index = idx;
                 } else {
-                    const dup = try self.allocator.dupe(u8, path);
-                    errdefer self.allocator.free(dup);
+                    const dup = try self.directory_arena.allocator().dupe(u8, path);
                     try self.image_list.append(self.allocator, dup);
                     self.current_index = self.image_list.items.len - 1;
                 }

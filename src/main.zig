@@ -111,6 +111,7 @@ pub fn main(init: std.process.Init) !void {
         .gpu_sampler = resources.sampler,
         .white_texture = resources.white_texture,
 
+        .directory_arena = std.heap.ArenaAllocator.init(gpa),
         .image_list = std.ArrayList([]const u8).empty,
         .cache = .{},
         .cache_mutex = cache_mutex,
