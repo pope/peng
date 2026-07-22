@@ -244,6 +244,100 @@ pub const ViewerState = struct {
         self.pan_y = 0.0;
     }
 
+    pub fn getBaseScale(self: *ViewerState) f32 {
+        const entry = self.getCurrentEntry() orelse return 1.0;
+        const raw_w: f32 = switch (entry.status) {
+            .loaded_gpu => |gpu| gpu.w,
+            .loaded_cpu => |cpu| cpu.w,
+            else => 0.0,
+        };
+        const raw_h: f32 = switch (entry.status) {
+            .loaded_gpu => |gpu| gpu.h,
+            .loaded_cpu => |cpu| cpu.h,
+            else => 0.0,
+        };
+        if (raw_w <= 0.0 or raw_h <= 0.0) return 1.0;
+
+        const angle = self.rotation_angle;
+        const is_90_or_270 = (std.math.approxEqAbs(f32, angle, 90.0, 0.1) or
+            std.math.approxEqAbs(f32, angle, 270.0, 0.1) or
+            std.math.approxEqAbs(f32, angle, -90.0, 0.1) or
+            std.math.approxEqAbs(f32, angle, -270.0, 0.1));
+        const img_w = if (is_90_or_270) raw_h else raw_w;
+        const img_h = if (is_90_or_270) raw_w else raw_h;
+
+        var pix_w: i32 = 1024;
+        var pix_h: i32 = 768;
+        if (self.window) |win| {
+            var w: i32 = 0;
+            var h: i32 = 0;
+            if (c.SDL_GetWindowSizeInPixels(win, &w, &h) and w > 0 and h > 0) {
+                pix_w = w;
+                pix_h = h;
+            }
+        }
+
+        const title_bar_h: f32 = if (self.is_fullscreen) 0.0 else 60.0;
+        var scale_y: f32 = 1.0;
+        if (self.window) |win| {
+            var win_h: i32 = 0;
+            if (c.SDL_GetWindowSize(win, null, &win_h) and win_h > 0) {
+                scale_y = @as(f32, @floatFromInt(pix_h)) / @as(f32, @floatFromInt(win_h));
+            }
+        }
+
+        var available_width = @as(f32, @floatFromInt(pix_w));
+        if (clay.isDebugModeEnabled()) {
+            available_width = @max(available_width - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0);
+        }
+        const view_w = @max(available_width, 1.0);
+        const view_h = @max(@as(f32, @floatFromInt(pix_h)) - title_bar_h * scale_y, 1.0);
+
+        const r_img = img_w / img_h;
+        const r_view = view_w / view_h;
+
+        var draw_w: f32 = img_w;
+        switch (self.scale_mode) {
+            .none => {
+                draw_w = img_w;
+            },
+            .shrink => {
+                if (img_w <= view_w and img_h <= view_h) {
+                    draw_w = img_w;
+                } else {
+                    if (r_img > r_view) {
+                        draw_w = view_w;
+                    } else {
+                        draw_w = view_h * r_img;
+                    }
+                }
+            },
+            .full => {
+                if (r_img > r_view) {
+                    draw_w = view_w;
+                } else {
+                    draw_w = view_h * r_img;
+                }
+            },
+            .crop => {
+                if (r_img > r_view) {
+                    draw_w = view_h * r_img;
+                } else {
+                    draw_w = view_w;
+                }
+            },
+        }
+
+        return draw_w / img_w;
+    }
+
+    pub fn clampZoomFactor(self: *ViewerState, new_factor: f32) f32 {
+        const base_scale = self.getBaseScale();
+        const min_factor = if (base_scale > 0.0) 0.1 / base_scale else 0.1;
+        const max_factor = if (base_scale > 0.0) 10.0 / base_scale else 10.0;
+        return std.math.clamp(new_factor, min_factor, max_factor);
+    }
+
     pub fn getTextureByHandle(self: *ViewerState, handle: TextureHandle) ?*c.SDL_GPUTexture {
         c.SDL_LockMutex(self.cache_mutex);
         defer c.SDL_UnlockMutex(self.cache_mutex);
@@ -771,7 +865,7 @@ pub const ViewerState = struct {
         if (input.scroll_delta_y != 0) {
             if (self.palette.mode == .inactive and clay.pointerOver(clay.getElementId("Viewport"))) {
                 const old_zoom = self.zoom_factor;
-                self.zoom_factor = std.math.clamp(self.zoom_factor + input.scroll_delta_y * 0.1, 0.1, 10.0);
+                self.zoom_factor = self.clampZoomFactor(self.zoom_factor + input.scroll_delta_y * 0.1);
 
                 const available_width = if (clay.isDebugModeEnabled()) @max(input.pix_w - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0) else input.pix_w;
                 const cx = available_width / 2.0;
@@ -835,4 +929,75 @@ test "matchesQueryLower bounds check" {
     // Query longer than path (should not overflow/panic)
     try std.testing.expect(!matchesQueryLower("short", "longerquery"));
     try std.testing.expect(matchesQueryLower("short", ""));
+}
+
+test "ViewerState.clampZoomFactor bounds based on image dimensions" {
+    const clay_memory = try std.testing.allocator.alloc(u8, clay.minMemorySize());
+    defer std.testing.allocator.free(clay_memory);
+    _ = clay.initialize(clay.Arena.init(clay_memory), .{ .w = 1024, .h = 768 }, .{});
+
+    const cache_mutex = c.SDL_CreateMutex() orelse unreachable;
+    defer c.SDL_DestroyMutex(cache_mutex);
+
+    var state = ViewerState{
+        .directory_arena = std.heap.ArenaAllocator.init(std.testing.allocator),
+        .image_list = std.ArrayList([]const u8).empty,
+        .cache = .{},
+        .cache_mutex = cache_mutex,
+        .allocator = std.testing.allocator,
+        .io = undefined,
+        .palette = PaletteState.init(std.testing.allocator),
+        .rotation_map = std.StringHashMap(f32).init(std.testing.allocator),
+        .scale_mode = .none,
+        .window = null,
+    };
+    defer {
+        state.cache.deinit(std.testing.allocator, null);
+        state.palette.deinit();
+        state.rotation_map.deinit();
+        state.directory_arena.deinit();
+        state.image_list.deinit(std.testing.allocator);
+    }
+
+    // Default base_scale without loaded image is 1.0
+    try std.testing.expectEqual(@as(f32, 1.0), state.getBaseScale());
+    try std.testing.expectEqual(@as(f32, 10.0), state.clampZoomFactor(15.0));
+    try std.testing.expectEqual(@as(f32, 0.1), state.clampZoomFactor(0.05));
+
+    // Test with loaded CPU image entry
+    const surf = c.SDL_CreateSurface(4000, 3000, c.SDL_PIXELFORMAT_RGBA32) orelse unreachable;
+    try state.cache.append(std.testing.allocator, .{
+        .index = 0,
+        .generation = 0,
+        .status = .{
+            .loaded_cpu = .{
+                .surface = surf,
+                .w = 4000.0,
+                .h = 3000.0,
+                .mime_type = "image/png",
+                .size_bytes = 1000,
+                .decode_time_ms = 0.0,
+                .conversion_time_ms = 0.0,
+            },
+        },
+    });
+    state.current_index = 0;
+
+    // In .none mode on 4000x3000 image, base_scale is 1.0
+    state.scale_mode = .none;
+    const base_none = state.getBaseScale();
+    try std.testing.expectEqual(@as(f32, 1.0), base_none);
+    const clamped_max_none = state.clampZoomFactor(15.0);
+    try std.testing.expectEqual(@as(f32, 10.0), base_none * clamped_max_none);
+
+    // In .full mode in default 1024x708 viewport
+    state.scale_mode = .full;
+    const base_full = state.getBaseScale();
+    try std.testing.expect(base_full < 1.0);
+    const clamped_max_full = state.clampZoomFactor(100.0);
+    // Effective max zoom level (base_scale * zoom_factor) must be 10.0x of actual image size
+    try std.testing.expectApproxEqAbs(@as(f32, 10.0), base_full * clamped_max_full, 0.001);
+    const clamped_min_full = state.clampZoomFactor(0.001);
+    // Effective min zoom level (base_scale * zoom_factor) must be 0.1x of actual image size
+    try std.testing.expectApproxEqAbs(@as(f32, 0.1), base_full * clamped_min_full, 0.001);
 }

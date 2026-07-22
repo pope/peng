@@ -49,7 +49,7 @@ pub const IpcServer = struct {
             if (factor_str.len > 128) return error.InvalidArgument;
             const factor = try std.fmt.parseFloat(f32, factor_str);
             if (std.math.isNan(factor) or std.math.isInf(factor)) return error.InvalidArgument;
-            state.zoom_factor = std.math.clamp(factor, 0.1, 10.0);
+            state.zoom_factor = state.clampZoomFactor(factor);
             try respondOk(state.io, stream);
         } else if (std.mem.eql(u8, cmd, "pan")) {
             const px_str = it.next() orelse return error.MissingArgument;

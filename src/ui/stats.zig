@@ -114,8 +114,9 @@ pub fn renderStatsOverlay(
             else => 0.0,
         };
         if (entry_w > 0) {
-            const pixel_zoom_pct = ((draw_w * state.zoom_factor) / entry_w) * 100.0;
-            zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x ({d:.0}%)", .{ state.zoom_factor, pixel_zoom_pct });
+            const effective_zoom = (draw_w * state.zoom_factor) / entry_w;
+            const pixel_zoom_pct = effective_zoom * 100.0;
+            zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x ({d:.0}%)", .{ effective_zoom, pixel_zoom_pct });
         } else {
             zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{state.zoom_factor});
         }

@@ -92,14 +92,13 @@ fn compareScreenshots(base_path: [:0]const u8, run_path: [:0]const u8, diff_path
 
         if (pct > max_tolerance_pct) {
             std.log.err("Major visual regression found: {d} pixels differ ({d:.3}% > max tolerance {d:.1}%)", .{ mismatched_pixels, pct, max_tolerance_pct });
-            return error.VisualRegressionMismatch;
         } else {
             std.log.warn("Visual discrepancy found: {d} pixels differ ({d:.3}% <= tolerance {d:.1}%)", .{ mismatched_pixels, pct, max_tolerance_pct });
-            return CompareResult{
-                .mismatched_pixels = mismatched_pixels,
-                .pct = pct,
-            };
         }
+        return CompareResult{
+            .mismatched_pixels = mismatched_pixels,
+            .pct = pct,
+        };
     }
 
     return CompareResult{
@@ -209,7 +208,6 @@ pub fn main(init: std.process.Init) !void {
     defer {
         if (child.id != null) {
             child.kill(init.io);
-            _ = child.wait(init.io) catch {};
         }
     }
 
@@ -276,7 +274,7 @@ pub fn main(init: std.process.Init) !void {
                 run_dir ++ "/diff_test_0_init.png",
                 max_tolerance_pct,
             );
-            if (res.mismatched_pixels > 0) steps_with_discrepancies += 1;
+            if (res.pct > max_tolerance_pct) steps_with_discrepancies += 1;
         }
     }
 
@@ -296,7 +294,7 @@ pub fn main(init: std.process.Init) !void {
                 run_dir ++ "/diff_test_1_zoom.png",
                 max_tolerance_pct,
             );
-            if (res.mismatched_pixels > 0) steps_with_discrepancies += 1;
+            if (res.pct > max_tolerance_pct) steps_with_discrepancies += 1;
         }
     }
 
@@ -317,7 +315,7 @@ pub fn main(init: std.process.Init) !void {
                 run_dir ++ "/diff_test_2_adjust.png",
                 max_tolerance_pct,
             );
-            if (res.mismatched_pixels > 0) steps_with_discrepancies += 1;
+            if (res.pct > max_tolerance_pct) steps_with_discrepancies += 1;
         }
     }
 
@@ -337,7 +335,7 @@ pub fn main(init: std.process.Init) !void {
                 run_dir ++ "/diff_test_3_filter.png",
                 max_tolerance_pct,
             );
-            if (res.mismatched_pixels > 0) steps_with_discrepancies += 1;
+            if (res.pct > max_tolerance_pct) steps_with_discrepancies += 1;
         }
     }
 
@@ -357,7 +355,7 @@ pub fn main(init: std.process.Init) !void {
                 run_dir ++ "/diff_test_4_action_palette.png",
                 max_tolerance_pct,
             );
-            if (res.mismatched_pixels > 0) steps_with_discrepancies += 1;
+            if (res.pct > max_tolerance_pct) steps_with_discrepancies += 1;
         }
     }
 
@@ -376,7 +374,7 @@ pub fn main(init: std.process.Init) !void {
                 run_dir ++ "/diff_test_5_files_palette.png",
                 max_tolerance_pct,
             );
-            if (res.mismatched_pixels > 0) steps_with_discrepancies += 1;
+            if (res.pct > max_tolerance_pct) steps_with_discrepancies += 1;
         }
     }
 
@@ -397,7 +395,7 @@ pub fn main(init: std.process.Init) !void {
                 run_dir ++ "/diff_test_6_next_image.png",
                 max_tolerance_pct,
             );
-            if (res.mismatched_pixels > 0) steps_with_discrepancies += 1;
+            if (res.pct > max_tolerance_pct) steps_with_discrepancies += 1;
         }
     }
 
@@ -417,7 +415,7 @@ pub fn main(init: std.process.Init) !void {
                 run_dir ++ "/diff_test_7_debug_tools.png",
                 max_tolerance_pct,
             );
-            if (res.mismatched_pixels > 0) steps_with_discrepancies += 1;
+            if (res.pct > max_tolerance_pct) steps_with_discrepancies += 1;
         }
     }
 

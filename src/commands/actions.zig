@@ -380,13 +380,13 @@ pub fn triggerAction(self: *ViewerState, action_id: AppActionId) !void {
         },
         .zoom_in => {
             const old_zoom = self.zoom_factor;
-            self.zoom_factor = std.math.clamp(self.zoom_factor + 0.5, 0.1, 10.0);
+            self.zoom_factor = self.clampZoomFactor(self.zoom_factor + 0.5);
             self.pan_x *= (self.zoom_factor / old_zoom);
             self.pan_y *= (self.zoom_factor / old_zoom);
         },
         .zoom_out => {
             const old_zoom = self.zoom_factor;
-            self.zoom_factor = std.math.clamp(self.zoom_factor - 0.5, 0.1, 10.0);
+            self.zoom_factor = self.clampZoomFactor(self.zoom_factor - 0.5);
             self.pan_x *= (self.zoom_factor / old_zoom);
             self.pan_y *= (self.zoom_factor / old_zoom);
         },

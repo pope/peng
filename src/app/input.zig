@@ -318,7 +318,7 @@ pub fn handleKeyDown(
         },
         .zoom => |z| {
             const old_zoom = self.zoom_factor;
-            self.zoom_factor = std.math.clamp(self.zoom_factor + z.factor_delta, 0.1, 10.0);
+            self.zoom_factor = self.clampZoomFactor(self.zoom_factor + z.factor_delta);
             self.pan_x *= (self.zoom_factor / old_zoom);
             self.pan_y *= (self.zoom_factor / old_zoom);
         },
