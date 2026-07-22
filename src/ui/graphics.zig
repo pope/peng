@@ -174,7 +174,7 @@ pub fn initGpuResources(gpu_device: *c.SDL_GPUDevice, window: *c.SDL_Window, ini
         .max_anisotropy = 1.0,
         .compare_op = c.SDL_GPU_COMPAREOP_NEVER,
         .min_lod = 0.0,
-        .max_lod = 0.0,
+        .max_lod = 1000.0,
         .props = 0,
     };
     const sampler = c.SDL_CreateGPUSampler(gpu_device, &sampler_info) orelse {
@@ -459,6 +459,8 @@ pub fn uploadSurfaceToGpu(gpu_device: *c.SDL_GPUDevice, surf: *c.SDL_Surface) ?G
     var img_w = current_surf.*.w;
     var img_h = current_surf.*.h;
     var tex: ?*c.SDL_GPUTexture = null;
+    const max_dim_u: u32 = @intCast(@max(img_w, img_h));
+    const num_levels: u32 = if (max_dim_u > 1) @intCast(std.math.log2(max_dim_u) + 1) else 1;
 
     var try_max_dim: i32 = 16384;
     while (try_max_dim >= 2048) : (try_max_dim = @divTrunc(try_max_dim, 2)) {
@@ -466,11 +468,11 @@ pub fn uploadSurfaceToGpu(gpu_device: *c.SDL_GPUDevice, surf: *c.SDL_Surface) ?G
             const img_tex_info = c.SDL_GPUTextureCreateInfo{
                 .type = c.SDL_GPU_TEXTURETYPE_2D,
                 .format = c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-                .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER,
+                .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER | c.SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
                 .width = @intCast(img_w),
                 .height = @intCast(img_h),
                 .layer_count_or_depth = 1,
-                .num_levels = 1,
+                .num_levels = num_levels,
                 .sample_count = c.SDL_GPU_SAMPLECOUNT_1,
                 .props = 0,
             };
@@ -569,17 +571,33 @@ pub fn uploadSurfaceToGpu(gpu_device: *c.SDL_GPUDevice, surf: *c.SDL_Surface) ?G
         .d = 1,
     }, false);
     c.SDL_EndGPUCopyPass(copy_pass);
+
+    var mipmap_time_ms: f64 = 0.0;
+    if (num_levels > 1) {
+        const start_mip = c.SDL_GetTicksNS();
+        c.SDL_GenerateMipmapsForGPUTexture(cmd_buf, gpu_tex);
+        const end_mip = c.SDL_GetTicksNS();
+        mipmap_time_ms = @as(f64, @floatFromInt(end_mip - start_mip)) / 1_000_000.0;
+    }
+
     _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
 
     const end_upload = c.SDL_GetTicksNS();
     const upload_time_ms = @as(f64, @floatFromInt(end_upload - start_upload)) / 1_000_000.0;
+
+    var memory_size_bytes: usize = size;
+    if (num_levels > 1) {
+        memory_size_bytes = (memory_size_bytes * 4) / 3;
+    }
 
     return .{
         .gpu_texture = gpu_tex,
         .w = @floatFromInt(img_w),
         .h = @floatFromInt(img_h),
         .upload_time_ms = upload_time_ms,
-        .memory_size_bytes = size,
+        .memory_size_bytes = memory_size_bytes,
+        .num_mip_levels = num_levels,
+        .mipmap_time_ms = mipmap_time_ms,
     };
 }
 

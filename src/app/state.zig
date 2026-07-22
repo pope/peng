@@ -269,7 +269,7 @@ pub const ViewerState = struct {
             .max_anisotropy = 1.0,
             .compare_op = c.SDL_GPU_COMPAREOP_NEVER,
             .min_lod = 0.0,
-            .max_lod = 0.0,
+            .max_lod = 1000.0,
             .props = 0,
         };
         self.gpu_sampler = c.SDL_CreateGPUSampler(self.gpu_device, &sampler_info) orelse {
