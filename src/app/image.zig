@@ -34,6 +34,8 @@ pub const CacheStatus = union(CacheStatusTag) {
         conversion_time_ms: f64,
         upload_time_ms: f64,
         memory_size_bytes: usize,
+        num_mip_levels: u32 = 1,
+        mipmap_time_ms: f64 = 0.0,
     },
     uploading: void,
     failed: void,
@@ -342,6 +344,8 @@ pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
                                             .conversion_time_ms = conversion_time_ms,
                                             .upload_time_ms = thumb_res.upload_time_ms,
                                             .memory_size_bytes = thumb_res.memory_size_bytes,
+                                            .num_mip_levels = thumb_res.num_mip_levels,
+                                            .mipmap_time_ms = thumb_res.mipmap_time_ms,
                                         },
                                     };
                                     var event = std.mem.zeroes(c.SDL_Event);
@@ -389,6 +393,8 @@ pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
                                 .conversion_time_ms = conversion_time_ms,
                                 .upload_time_ms = full_res.upload_time_ms,
                                 .memory_size_bytes = full_res.memory_size_bytes,
+                                .num_mip_levels = full_res.num_mip_levels,
+                                .mipmap_time_ms = full_res.mipmap_time_ms,
                             },
                         };
                         if (old_thumb_tex) |old_tex| {

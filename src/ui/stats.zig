@@ -202,6 +202,28 @@ pub fn renderStatsOverlay(
             try renderStatRow("Convert Time", convert_str, scale_x, scale_y, dpi_scale);
             try renderStatRow("Upload Time", process_str, scale_x, scale_y, dpi_scale);
             try renderStatRow("Memory Size", mem_size_str, scale_x, scale_y, dpi_scale);
+
+            const total_vram_bytes = state.cache.getTotalVramBytes();
+            const formatted_total_vram = try formatSize(frame_allocator, total_vram_bytes);
+            const total_vram_str = try std.fmt.allocPrint(frame_allocator, "{s} / 256 MB ({d} slots)", .{ formatted_total_vram, state.cache.entries.items.len });
+            try renderStatRow("Total Cache VRAM", total_vram_str, scale_x, scale_y, dpi_scale);
+
+            var mipmap_status_str: []const u8 = "Disabled (1 Level)";
+            var mipmap_time_str: []const u8 = "0.00 ms";
+            if (current_entry) |entry| {
+                switch (entry.status) {
+                    .loaded_gpu => |gpu| {
+                        if (gpu.num_mip_levels > 1) {
+                            mipmap_status_str = try std.fmt.allocPrint(frame_allocator, "Enabled ({d} Levels)", .{gpu.num_mip_levels});
+                            mipmap_time_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{gpu.mipmap_time_ms});
+                        }
+                    },
+                    else => {},
+                }
+            }
+            try renderStatRow("Mipmap Status", mipmap_status_str, scale_x, scale_y, dpi_scale);
+            try renderStatRow("Mipmap Gen Time", mipmap_time_str, scale_x, scale_y, dpi_scale);
+
             try renderStatRow("Viewport Size", screen_str, scale_x, scale_y, dpi_scale);
             try renderStatRow("Zoom Level", zoom_str, scale_x, scale_y, dpi_scale);
             try renderStatRow("Pan Offset", pan_str, scale_x, scale_y, dpi_scale);

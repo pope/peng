@@ -434,6 +434,8 @@ pub const GpuUploadResult = struct {
     h: f32,
     upload_time_ms: f64,
     memory_size_bytes: usize,
+    num_mip_levels: u32 = 1,
+    mipmap_time_ms: f64 = 0.0,
 };
 
 pub fn uploadSurfaceToGpu(gpu_device: *c.SDL_GPUDevice, surf: *c.SDL_Surface) ?GpuUploadResult {
