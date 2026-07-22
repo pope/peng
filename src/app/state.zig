@@ -207,26 +207,27 @@ pub const ViewerState = struct {
 
         self.clearCache();
 
-        for (self.gpu_vertex_buffers) |vb| {
-            if (vb) |b| c.SDL_ReleaseGPUBuffer(self.gpu_device.?, b);
-        }
-        for (self.gpu_transfer_buffers) |tb| {
-            if (tb) |b| c.SDL_ReleaseGPUTransferBuffer(self.gpu_device.?, b);
-        }
+        if (self.gpu_device) |gpu_dev| {
+            for (self.gpu_vertex_buffers) |vb| {
+                if (vb) |b| c.SDL_ReleaseGPUBuffer(gpu_dev, b);
+            }
+            for (self.gpu_transfer_buffers) |tb| {
+                if (tb) |b| c.SDL_ReleaseGPUTransferBuffer(gpu_dev, b);
+            }
 
-        var text_iter = self.text_cache.valueIterator();
-        while (text_iter.next()) |val| {
-            c.SDL_ReleaseGPUTexture(self.gpu_device.?, val.texture);
-        }
-        self.text_cache.deinit(self.allocator);
+            var text_iter = self.text_cache.valueIterator();
+            while (text_iter.next()) |val| {
+                c.SDL_ReleaseGPUTexture(gpu_dev, val.texture);
+            }
 
-        if (self.gpu_pipeline) |pipeline| c.SDL_ReleaseGPUGraphicsPipeline(self.gpu_device, pipeline);
-        if (self.gpu_sampler) |sampler| c.SDL_ReleaseGPUSampler(self.gpu_device, sampler);
-        if (self.white_texture) |white_tex| c.SDL_ReleaseGPUTexture(self.gpu_device, white_tex);
+            if (self.gpu_pipeline) |pipeline| c.SDL_ReleaseGPUGraphicsPipeline(gpu_dev, pipeline);
+            if (self.gpu_sampler) |sampler| c.SDL_ReleaseGPUSampler(gpu_dev, sampler);
+            if (self.white_texture) |white_tex| c.SDL_ReleaseGPUTexture(gpu_dev, white_tex);
+            if (self.window_claimed) {
+                if (self.window) |w| c.SDL_ReleaseWindowFromGPUDevice(gpu_dev, w);
+            }
+        }
         if (self.gpu_text_engine) |engine| c.TTF_DestroyGPUTextEngine(engine);
-        if (self.window_claimed) {
-            if (self.window) |w| c.SDL_ReleaseWindowFromGPUDevice(self.gpu_device, w);
-        }
 
         c.SDL_DestroyMutex(self.cache_mutex);
         for (self.image_list.items) |item| {

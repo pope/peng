@@ -30,6 +30,7 @@ pub const IpcServer = struct {
             allocator.destroy(self);
             return error.ThreadCreationFailed;
         };
+        c_lib.SDL_DetachThread(self.thread.?);
 
         return self;
     }
