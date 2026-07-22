@@ -102,8 +102,49 @@ pub const CacheSlotMap = struct {
         return self.entries.orderedRemove(index_in_list);
     }
 
-    pub fn pop(self: *CacheSlotMap) ?CacheEntry {
-        return self.entries.pop();
+    pub const DEFAULT_MAX_VRAM_BYTES: usize = 256 * 1024 * 1024;
+
+    pub fn getTotalVramBytes(self: *const CacheSlotMap) usize {
+        var total: usize = 0;
+        for (self.entries.items) |entry| {
+            if (entry.status == .loaded_gpu) {
+                total += entry.status.loaded_gpu.memory_size_bytes;
+            }
+        }
+        return total;
+    }
+
+    pub fn enforceVramBudget(self: *CacheSlotMap, gpu_device: ?*c.SDL_GPUDevice, current_index: ?usize, max_bytes: usize) void {
+        while (self.getTotalVramBytes() > max_bytes) {
+            var max_dist: usize = 0;
+            var victim_idx: ?usize = null;
+
+            for (self.entries.items, 0..) |entry, i| {
+                if (entry.status == .loaded_gpu) {
+                    if (current_index) |cur| {
+                        if (entry.index == cur) continue;
+                        const dist = if (entry.index > cur) entry.index - cur else cur - entry.index;
+                        if (dist >= max_dist) {
+                            max_dist = dist;
+                            victim_idx = i;
+                        }
+                    } else {
+                        victim_idx = i;
+                        break;
+                    }
+                }
+            }
+
+            if (victim_idx) |v_i| {
+                const entry = &self.entries.items[v_i];
+                if (gpu_device) |gpu_dev| {
+                    c.SDL_ReleaseGPUTexture(gpu_dev, entry.status.loaded_gpu.gpu_texture);
+                }
+                _ = self.entries.orderedRemove(v_i);
+            } else {
+                break;
+            }
+        }
     }
 
 
@@ -335,6 +376,8 @@ pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
                         var event = std.mem.zeroes(c.SDL_Event);
                         event.type = c.SDL_EVENT_USER;
                         _ = c.SDL_PushEvent(&event);
+
+                        state.cache.enforceVramBudget(gpu_dev, state.current_index, CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
                     } else {
                         // Entry was evicted while uploading full res
                         c.SDL_ReleaseGPUTexture(gpu_dev, full_res.gpu_texture);
