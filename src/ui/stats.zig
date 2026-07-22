@@ -18,7 +18,7 @@ pub fn renderStatRow(label: []const u8, value: []const u8, scale_x: f32, scale_y
         },
     })({
         clay.UI()(.{ .layout = .{
-            .sizing = .{ .w = .fixed(110 * scale_x), .h = .grow },
+            .sizing = .{ .w = .fixed(145 * scale_x), .h = .grow },
         } })({
             clay.text(label, .{
                 .color = .{ 166, 173, 200, 255 }, // Subtext0
@@ -138,7 +138,7 @@ pub fn renderStatsOverlay(
     clay.UI()(.{
         .id = clay.getElementId("StatsPanel"),
         .layout = .{
-            .sizing = .{ .w = .fixed(380 * scale_x), .h = .fit },
+            .sizing = .{ .w = .fixed(420 * scale_x), .h = .fit },
             .direction = .top_to_bottom,
             .padding = layout_helpers.scalePadding(16, 16, 16, 16, scale),
             .child_gap = @intFromFloat(10.0 * dpi_scale),
@@ -207,8 +207,8 @@ pub fn renderStatsOverlay(
             try renderStatRow("Resolution", res_str, scale_x, scale_y, dpi_scale);
             try renderStatRow("Decode Time", decode_str, scale_x, scale_y, dpi_scale);
             try renderStatRow("Convert Time", convert_str, scale_x, scale_y, dpi_scale);
-            try renderStatRow("Thumb Upload Time", thumb_upload_str, scale_x, scale_y, dpi_scale);
-            try renderStatRow("Full Upload Time", full_upload_str, scale_x, scale_y, dpi_scale);
+            try renderStatRow("Thumb Upload", thumb_upload_str, scale_x, scale_y, dpi_scale);
+            try renderStatRow("Full Upload", full_upload_str, scale_x, scale_y, dpi_scale);
             try renderStatRow("Memory Size", mem_size_str, scale_x, scale_y, dpi_scale);
 
             const total_vram_bytes = state.cache.getTotalVramBytes();
@@ -230,7 +230,7 @@ pub fn renderStatsOverlay(
                 }
             }
             try renderStatRow("Mipmap Status", mipmap_status_str, scale_x, scale_y, dpi_scale);
-            try renderStatRow("Mipmap Gen Time", mipmap_time_str, scale_x, scale_y, dpi_scale);
+            try renderStatRow("Mipmap Gen", mipmap_time_str, scale_x, scale_y, dpi_scale);
 
             try renderStatRow("Viewport Size", screen_str, scale_x, scale_y, dpi_scale);
             try renderStatRow("Zoom Level", zoom_str, scale_x, scale_y, dpi_scale);
