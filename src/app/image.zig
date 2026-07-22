@@ -45,6 +45,11 @@ pub const CacheEntry = struct {
     status: CacheStatus,
 };
 
+pub const TextureHandle = struct {
+    index: usize,
+    generation: usize,
+};
+
 pub const CacheSlotMap = struct {
     entries: std.ArrayListUnmanaged(CacheEntry) = .empty,
 
@@ -82,6 +87,24 @@ pub const CacheSlotMap = struct {
     pub fn getWithGeneration(self: *CacheSlotMap, index: usize, generation: usize) ?*CacheEntry {
         for (self.entries.items) |*entry| {
             if (entry.index == index and entry.generation == generation) return entry;
+        }
+        return null;
+    }
+
+    pub fn getTexture(self: *CacheSlotMap, handle: TextureHandle) ?*c.SDL_GPUTexture {
+        if (self.getWithGeneration(handle.index, handle.generation)) |entry| {
+            if (entry.status == .loaded_gpu) {
+                return entry.status.loaded_gpu.gpu_texture;
+            }
+        }
+        return null;
+    }
+
+    pub fn getSurface(self: *CacheSlotMap, handle: TextureHandle) ?*c.SDL_Surface {
+        if (self.getWithGeneration(handle.index, handle.generation)) |entry| {
+            if (entry.status == .loaded_cpu) {
+                return entry.status.loaded_cpu.surface;
+            }
         }
         return null;
     }

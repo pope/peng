@@ -12,6 +12,7 @@ pub const fs = @import("fs.zig");
 pub const CacheStatus = image.CacheStatus;
 pub const CacheEntry = image.CacheEntry;
 pub const CacheSlotMap = image.CacheSlotMap;
+pub const TextureHandle = image.TextureHandle;
 pub const DecodeArgs = image.DecodeArgs;
 pub const detectMimeType = image.detectMimeType;
 pub const decodeWorker = image.decodeWorker;
@@ -243,6 +244,12 @@ pub const ViewerState = struct {
         self.zoom_factor = 1.0;
         self.pan_x = 0.0;
         self.pan_y = 0.0;
+    }
+
+    pub fn getTextureByHandle(self: *ViewerState, handle: TextureHandle) ?*c.SDL_GPUTexture {
+        c.SDL_LockMutex(self.cache_mutex);
+        defer c.SDL_UnlockMutex(self.cache_mutex);
+        return self.cache.getTexture(handle);
     }
 
     pub fn applyTextureScaleMode(self: *ViewerState) void {
