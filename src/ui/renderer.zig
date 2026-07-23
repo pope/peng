@@ -15,11 +15,28 @@ pub const Vertex = extern struct {
     y: f32,
     u: f32,
     v: f32,
-    r: f32,
-    g: f32,
-    b: f32,
-    a: f32,
+    color: u32,
 };
+
+pub inline fn packRgba(r: u8, g: u8, b: u8, a: u8) u32 {
+    return @as(u32, r) | (@as(u32, g) << 8) | (@as(u32, b) << 16) | (@as(u32, a) << 24);
+}
+
+pub inline fn packRgbaClay(clay_color: clay.Color) u32 {
+    const ur: u32 = @intFromFloat(@round(std.math.clamp(clay_color[0], 0.0, 255.0)));
+    const ug: u32 = @intFromFloat(@round(std.math.clamp(clay_color[1], 0.0, 255.0)));
+    const ub: u32 = @intFromFloat(@round(std.math.clamp(clay_color[2], 0.0, 255.0)));
+    const ua: u32 = @intFromFloat(@round(std.math.clamp(clay_color[3], 0.0, 255.0)));
+    return ur | (ug << 8) | (ub << 16) | (ua << 24);
+}
+
+pub inline fn packRgbaF(r: f32, g: f32, b: f32, a: f32) u32 {
+    const ur: u32 = @intFromFloat(@round(std.math.clamp(r * 255.0, 0.0, 255.0)));
+    const ug: u32 = @intFromFloat(@round(std.math.clamp(g * 255.0, 0.0, 255.0)));
+    const ub: u32 = @intFromFloat(@round(std.math.clamp(b * 255.0, 0.0, 255.0)));
+    const ua: u32 = @intFromFloat(@round(std.math.clamp(a * 255.0, 0.0, 255.0)));
+    return ur | (ug << 8) | (ub << 16) | (ua << 24);
+}
 
 const Uniforms = extern struct {
     brightness: f32,
@@ -49,17 +66,14 @@ fn appendRectQuad(
     const ndc_y1 = 1.0 - (rect.y / win_h) * 2.0;
     const ndc_y2 = 1.0 - ((rect.y + rect.h) / win_h) * 2.0;
 
-    const r = clay_color[0] / 255.0;
-    const g = clay_color[1] / 255.0;
-    const b = clay_color[2] / 255.0;
-    const a = clay_color[3] / 255.0;
+    const color = packRgbaClay(clay_color);
 
-    try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y1, .u = 0.0, .v = 0.0, .r = r, .g = g, .b = b, .a = a });
-    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y1, .u = 1.0, .v = 0.0, .r = r, .g = g, .b = b, .a = a });
-    try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y2, .u = 0.0, .v = 1.0, .r = r, .g = g, .b = b, .a = a });
-    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y1, .u = 1.0, .v = 0.0, .r = r, .g = g, .b = b, .a = a });
-    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y2, .u = 1.0, .v = 1.0, .r = r, .g = g, .b = b, .a = a });
-    try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y2, .u = 0.0, .v = 1.0, .r = r, .g = g, .b = b, .a = a });
+    try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y1, .u = 0.0, .v = 0.0, .color = color });
+    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y1, .u = 1.0, .v = 0.0, .color = color });
+    try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y2, .u = 0.0, .v = 1.0, .color = color });
+    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y1, .u = 1.0, .v = 0.0, .color = color });
+    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y2, .u = 1.0, .v = 1.0, .color = color });
+    try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y2, .u = 0.0, .v = 1.0, .color = color });
 }
 
 fn appendLineQuad(
@@ -104,13 +118,15 @@ fn appendLineQuad(
     const ndc_x4 = (x4 / win_w) * 2.0 - 1.0;
     const ndc_y4 = 1.0 - (y4 / win_h) * 2.0;
 
-    try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y1, .u = 0.0, .v = 0.0, .r = r, .g = g, .b = b, .a = a });
-    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y2, .u = 1.0, .v = 0.0, .r = r, .g = g, .b = b, .a = a });
-    try vertices.append(allocator, .{ .x = ndc_x3, .y = ndc_y3, .u = 1.0, .v = 1.0, .r = r, .g = g, .b = b, .a = a });
+    const color = packRgbaF(r, g, b, a);
 
-    try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y1, .u = 0.0, .v = 0.0, .r = r, .g = g, .b = b, .a = a });
-    try vertices.append(allocator, .{ .x = ndc_x3, .y = ndc_y3, .u = 1.0, .v = 1.0, .r = r, .g = g, .b = b, .a = a });
-    try vertices.append(allocator, .{ .x = ndc_x4, .y = ndc_y4, .u = 0.0, .v = 1.0, .r = r, .g = g, .b = b, .a = a });
+    try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y1, .u = 0.0, .v = 0.0, .color = color });
+    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y2, .u = 1.0, .v = 0.0, .color = color });
+    try vertices.append(allocator, .{ .x = ndc_x3, .y = ndc_y3, .u = 1.0, .v = 1.0, .color = color });
+
+    try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y1, .u = 0.0, .v = 0.0, .color = color });
+    try vertices.append(allocator, .{ .x = ndc_x3, .y = ndc_y3, .u = 1.0, .v = 1.0, .color = color });
+    try vertices.append(allocator, .{ .x = ndc_x4, .y = ndc_y4, .u = 0.0, .v = 1.0, .color = color });
 }
 
 const TrigStep = struct {
@@ -119,34 +135,23 @@ const TrigStep = struct {
 };
 
 const TRIG_QUADRANT_STEPS = 32;
-var trig_quadrant_table: [TRIG_QUADRANT_STEPS + 1]TrigStep = undefined;
-var trig_table_initialized: bool = false;
-
-fn ensureTrigTableInitialized() void {
-    if (trig_table_initialized) return;
+const trig_quadrant_table: [TRIG_QUADRANT_STEPS + 1]TrigStep = blk: {
+    var table: [TRIG_QUADRANT_STEPS + 1]TrigStep = undefined;
     const step = (std.math.pi / 2.0) / @as(f32, @floatFromInt(TRIG_QUADRANT_STEPS));
-    var i: usize = 0;
-    while (i <= TRIG_QUADRANT_STEPS) : (i += 1) {
+    for (&table, 0..) |*item, i| {
         const angle = @as(f32, @floatFromInt(i)) * step;
-        trig_quadrant_table[i] = .{
+        item.* = .{
             .cos_val = @cos(angle),
             .sin_val = @sin(angle),
         };
     }
-    trig_table_initialized = true;
-}
+    break :blk table;
+};
 
 fn getTrigQuadrant(step_idx: usize, total_steps: usize) TrigStep {
-    ensureTrigTableInitialized();
-    if (total_steps == TRIG_QUADRANT_STEPS) {
-        return trig_quadrant_table[@min(step_idx, TRIG_QUADRANT_STEPS)];
-    }
-    const ratio = @as(f32, @floatFromInt(step_idx)) / @as(f32, @floatFromInt(total_steps));
-    const angle = ratio * (std.math.pi / 2.0);
-    return .{
-        .cos_val = @cos(angle),
-        .sin_val = @sin(angle),
-    };
+    if (total_steps == 0) return trig_quadrant_table[0];
+    const lut_idx = (step_idx * TRIG_QUADRANT_STEPS) / total_steps;
+    return trig_quadrant_table[@min(lut_idx, TRIG_QUADRANT_STEPS)];
 }
 
 fn renderFillRoundedRect(
@@ -374,10 +379,7 @@ fn renderFillRoundedRect(
             .y = ndc_y,
             .u = v.tex_coord.x,
             .v = v.tex_coord.y,
-            .r = v.color.r,
-            .g = v.color.g,
-            .b = v.color.b,
-            .a = v.color.a,
+            .color = packRgbaF(v.color.r, v.color.g, v.color.b, v.color.a),
         });
     }
 }
@@ -668,7 +670,27 @@ pub fn renderClayCommands(
                     while (row_y < surf_h) : (row_y += 1) {
                         const src_row = src_pixels[row_y * pitch .. row_y * pitch + row_bytes];
                         const dst_row = mapped[row_y * row_bytes .. row_y * row_bytes + row_bytes];
-                        @memcpy(dst_row, src_row);
+                        var px: usize = 0;
+                        while (px < row_bytes) : (px += 4) {
+                            const a = src_row[px + 3];
+                            if (a == 255) {
+                                dst_row[px] = src_row[px];
+                                dst_row[px + 1] = src_row[px + 1];
+                                dst_row[px + 2] = src_row[px + 2];
+                                dst_row[px + 3] = 255;
+                            } else if (a == 0) {
+                                dst_row[px] = 0;
+                                dst_row[px + 1] = 0;
+                                dst_row[px + 2] = 0;
+                                dst_row[px + 3] = 0;
+                            } else {
+                                const alpha_f = @as(f32, @floatFromInt(a)) / 255.0;
+                                dst_row[px] = @intFromFloat(@round(@as(f32, @floatFromInt(src_row[px])) * alpha_f));
+                                dst_row[px + 1] = @intFromFloat(@round(@as(f32, @floatFromInt(src_row[px + 1])) * alpha_f));
+                                dst_row[px + 2] = @intFromFloat(@round(@as(f32, @floatFromInt(src_row[px + 2])) * alpha_f));
+                                dst_row[px + 3] = a;
+                            }
+                        }
                     }
                     c.SDL_UnmapGPUTransferBuffer(state.gpu_device.?, transfer_buf);
 
@@ -718,13 +740,14 @@ pub fn renderClayCommands(
 
                 const start = @as(u32, @intCast(vertices.items.len));
 
-                // Append 6 vertices for 2 triangles using white vertex color to avoid color squaring (pre-colored on CPU surface)
-                try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y1, .u = 0.0, .v = 0.0, .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
-                try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y1, .u = 1.0, .v = 0.0, .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
-                try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y2, .u = 0.0, .v = 1.0, .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
-                try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y1, .u = 1.0, .v = 0.0, .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
-                try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y2, .u = 1.0, .v = 1.0, .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
-                try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y2, .u = 0.0, .v = 1.0, .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
+                // Append 6 vertices for 2 triangles using white vertex color (packed RGBA8)
+                const white_color = packRgba(255, 255, 255, 255);
+                try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y1, .u = 0.0, .v = 0.0, .color = white_color });
+                try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y1, .u = 1.0, .v = 0.0, .color = white_color });
+                try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y2, .u = 0.0, .v = 1.0, .color = white_color });
+                try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y1, .u = 1.0, .v = 0.0, .color = white_color });
+                try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y2, .u = 1.0, .v = 1.0, .color = white_color });
+                try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y2, .u = 0.0, .v = 1.0, .color = white_color });
 
                 try addBatch(&batches, allocator, start, 6, tex, false, current_scissor);
             },
@@ -873,12 +896,13 @@ pub fn renderClayCommands(
                     const ndc_y4 = 1.0 - (world_y4 / f_win_h) * 2.0;
 
                     const start = @as(u32, @intCast(vertices.items.len));
-                    try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y1, .u = 0.0, .v = 0.0, .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
-                    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y2, .u = 1.0, .v = 0.0, .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
-                    try vertices.append(allocator, .{ .x = ndc_x4, .y = ndc_y4, .u = 0.0, .v = 1.0, .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
-                    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y2, .u = 1.0, .v = 0.0, .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
-                    try vertices.append(allocator, .{ .x = ndc_x3, .y = ndc_y3, .u = 1.0, .v = 1.0, .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
-                    try vertices.append(allocator, .{ .x = ndc_x4, .y = ndc_y4, .u = 0.0, .v = 1.0, .r = 1.0, .g = 1.0, .b = 1.0, .a = 1.0 });
+                    const white_color = packRgba(255, 255, 255, 255);
+                    try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y1, .u = 0.0, .v = 0.0, .color = white_color });
+                    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y2, .u = 1.0, .v = 0.0, .color = white_color });
+                    try vertices.append(allocator, .{ .x = ndc_x4, .y = ndc_y4, .u = 0.0, .v = 1.0, .color = white_color });
+                    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y2, .u = 1.0, .v = 0.0, .color = white_color });
+                    try vertices.append(allocator, .{ .x = ndc_x3, .y = ndc_y3, .u = 1.0, .v = 1.0, .color = white_color });
+                    try vertices.append(allocator, .{ .x = ndc_x4, .y = ndc_y4, .u = 0.0, .v = 1.0, .color = white_color });
 
                     try addBatch(&batches, allocator, start, 6, tex, true, current_scissor);
                 }

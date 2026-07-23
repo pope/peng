@@ -640,25 +640,23 @@ pub const ViewerState = struct {
         c.SDL_LockMutex(self.image_list_mutex);
         const len = self.image_list.items.len;
         const current_idx = self.current_index;
-        var current_path_opt: ?[]const u8 = null;
-        if (current_idx) |idx| {
-            if (idx < len) {
-                current_path_opt = self.image_list.items[idx];
-            }
-        }
-        c.SDL_UnlockMutex(self.image_list_mutex);
-
-        if (current_path_opt) |path| {
-            if (self.rotation_map.get(path)) |user_rot| {
-                self.rotation_angle = user_rot;
-            } else if (self.getCurrentEntry()) |entry| {
-                self.rotation_angle = entry.exif_orientation;
+        if (current_idx) |c_idx| {
+            if (c_idx < len) {
+                const path = self.image_list.items[c_idx];
+                if (self.rotation_map.get(path)) |user_rot| {
+                    self.rotation_angle = user_rot;
+                } else if (self.getCurrentEntry()) |entry| {
+                    self.rotation_angle = entry.exif_orientation;
+                } else {
+                    self.rotation_angle = 0.0;
+                }
             } else {
                 self.rotation_angle = 0.0;
             }
         } else {
             self.rotation_angle = 0.0;
         }
+        c.SDL_UnlockMutex(self.image_list_mutex);
 
         if (len == 0) return;
 
@@ -752,10 +750,26 @@ pub const ViewerState = struct {
             self.current_image_cache_hit = hit;
         }
 
-        // 4. Spawn worker threads outside cache_mutex lock
+        // 4. Batch-fetch file paths under a single image_list_mutex lock
+        var to_spawn_paths: [5]?[:0]const u8 = undefined;
+        {
+            c.SDL_LockMutex(self.image_list_mutex);
+            defer c.SDL_UnlockMutex(self.image_list_mutex);
+            for (to_spawn_indices[0..to_spawn_count], 0..) |d, s_idx| {
+                if (d < self.image_list.items.len) {
+                    to_spawn_paths[s_idx] = self.allocator.dupeZ(u8, self.image_list.items[d]) catch null;
+                } else {
+                    to_spawn_paths[s_idx] = null;
+                }
+            }
+        }
+
+        // 5. Spawn worker threads outside cache_mutex lock
         const max_decodes = getMaxConcurrentDecodes();
-        for (to_spawn_indices[0..to_spawn_count]) |d| {
-            if (self.active_decode_threads.load(.acquire) >= max_decodes) {
+        for (to_spawn_indices[0..to_spawn_count], 0..) |d, s_idx| {
+            const path_opt = to_spawn_paths[s_idx];
+            if (path_opt == null or self.active_decode_threads.load(.acquire) >= max_decodes) {
+                if (path_opt) |p| self.allocator.free(p);
                 if (d != idx) {
                     c.SDL_LockMutex(self.cache_mutex);
                     var k: usize = 0;
@@ -770,27 +784,13 @@ pub const ViewerState = struct {
                 continue;
             }
 
-            c.SDL_LockMutex(self.image_list_mutex);
-            const raw_path = if (d < self.image_list.items.len) self.image_list.items[d] else null;
-            const path = if (raw_path) |p| self.allocator.dupeZ(u8, p) catch null else null;
-            c.SDL_UnlockMutex(self.image_list_mutex);
-
-            if (path == null) {
-                c.SDL_LockMutex(self.cache_mutex);
-                var k: usize = 0;
-                while (k < self.cache.entries.items.len) : (k += 1) {
-                    if (self.cache.entries.items[k].index == d) {
-                        self.cache.removeAndDeinit(k, self.gpu_device);
-                        break;
-                    }
-                }
-                c.SDL_UnlockMutex(self.cache_mutex);
-                continue;
-            }
-            const dup_path = path.?;
-            errdefer self.allocator.free(dup_path);
+            const dup_path = path_opt.?;
 
             const args = self.allocator.create(DecodeArgs) catch |err| {
+                self.allocator.free(dup_path);
+                for (to_spawn_paths[s_idx + 1 .. to_spawn_count]) |rem_path_opt| {
+                    if (rem_path_opt) |rp| self.allocator.free(rp);
+                }
                 c.SDL_LockMutex(self.cache_mutex);
                 var k: usize = 0;
                 while (k < self.cache.entries.items.len) : (k += 1) {
@@ -802,7 +802,6 @@ pub const ViewerState = struct {
                 c.SDL_UnlockMutex(self.cache_mutex);
                 return err;
             };
-            errdefer self.allocator.destroy(args);
 
             c.SDL_LockMutex(self.cache_mutex);
             if (self.cache.get(d)) |entry| {

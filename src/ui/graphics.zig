@@ -289,7 +289,7 @@ pub fn initGpuResources(gpu_device: *c.SDL_GPUDevice, window: *c.SDL_Window, ini
     const vertex_attribs = [_]c.SDL_GPUVertexAttribute{
         .{ .location = 0, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, .offset = @offsetOf(renderer.Vertex, "x") },
         .{ .location = 1, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, .offset = @offsetOf(renderer.Vertex, "u") },
-        .{ .location = 2, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4, .offset = @offsetOf(renderer.Vertex, "r") },
+        .{ .location = 2, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4_NORM, .offset = @offsetOf(renderer.Vertex, "color") },
     };
     const vertex_buf_descs = [_]c.SDL_GPUVertexBufferDescription{
         .{ .slot = 0, .pitch = @sizeOf(renderer.Vertex), .input_rate = c.SDL_GPU_VERTEXINPUTRATE_VERTEX, .instance_step_rate = 0 },
@@ -343,7 +343,7 @@ pub fn initGpuResources(gpu_device: *c.SDL_GPUDevice, window: *c.SDL_Window, ini
             .color_target_descriptions = &[_]c.SDL_GPUColorTargetDescription{.{
                 .format = target_format,
                 .blend_state = .{
-                    .src_color_blendfactor = c.SDL_GPU_BLENDFACTOR_SRC_ALPHA,
+                    .src_color_blendfactor = c.SDL_GPU_BLENDFACTOR_ONE,
                     .dst_color_blendfactor = c.SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
                     .color_blend_op = c.SDL_GPU_BLENDOP_ADD,
                     .src_alpha_blendfactor = c.SDL_GPU_BLENDFACTOR_ONE,
