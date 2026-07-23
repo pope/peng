@@ -37,3 +37,14 @@ ______________________________________________________________________
   During rapid scrolling (< 150ms step interval), constrain preload queues strictly to the active image `idx`. Suppress neighbor preloading (+1, -1, +2, -2) to prevent thread/VRAM contention and avoid driver queue submission exhaustion (`VK_ERROR_DEVICE_LOST`).
 - **Settled Preload Trigger**:
   In the main frame loop, check if navigation has settled (> 150ms idle time). When idle, invoke `checkIdlePreload()` once to populate neighboring images into VRAM during idle time.
+
+______________________________________________________________________
+
+## 4. Concurrency, GPU Lifecycles & Dynamic Thread Scaling
+
+- **Main-Thread GPU Resource Lifecycles**:
+  Deallocate and release all GPU textures, vertex buffers, and pipeline objects (`SDL_ReleaseGPUTexture`) exclusively on the main UI thread between frame render passes (e.g. inside `prepareCacheTextures()` before command buffers are recorded), rather than directly inside background worker threads. Releasing GPU textures on worker threads while main-thread command buffers are recording causes driver use-after-free crashes (`SEGV_MAPERR` in `VULKAN_BindFragmentSamplers`).
+- **Atomic Worker Thread Counter Placement**:
+  Increment atomic thread counters (`active_decode_threads.fetchAdd`) on the main thread *immediately before* calling thread creation APIs (`SDL_CreateThread`), and decrement them in a `defer` block inside the worker thread upon exit. Incrementing counters inside the worker thread body creates race conditions where rapid main-thread checks query stale thread counts before newly spawned OS threads execute.
+- **Dynamic CPU Core Worker Scaling**:
+  Scale max concurrent decode worker threads dynamically at runtime based on hardware CPU count (`std.Thread.getCpuCount() catch 4`), e.g. `@max(2, @min(6, cpu_count - 1))`. This ensures high-throughput background decoding on multi-core systems while leaving 1 core dedicated to main-thread rendering and preventing thread contention on lower-core systems.

@@ -50,3 +50,10 @@ The experimental `TTF_GPUTextEngine` in `SDL3_ttf` utilizes a dynamic glyph text
   6. Collect and release temporary textures and transfer buffers *after* command buffer submission to avoid leaking resources.
 - **Hardware Mipmapping over CPU Downscaling**:
   Do NOT perform single-threaded CPU software surface downscaling (`SDL_ScaleSurface`) prior to GPU upload. CPU software downscaling on multi-megapixel buffers takes 20-60 ms, whereas direct DMA surface uploads take 2-4 ms. Upload the unscaled surface directly to VRAM and invoke hardware mipmap generation (`SDL_GenerateMipmapsForGPUTexture`). The GPU creates the full downsampled LOD pyramid in hardware in ~0.04 ms (40 microseconds), offering optimal downsampled rendering with zero CPU overhead.
+
+______________________________________________________________________
+
+## 4. Safe Tagged Union Access in Zig Release Modes
+
+- **Explicit `switch (union)` Pattern Matching**:
+  When accessing fields inside `union(enum)` payloads in Zig (such as `CacheStatus`), ALWAYS use explicit `switch (union)` pattern matching rather than direct property access (e.g. `entry.status.loaded_gpu.gpu_texture`). In `-OReleaseFast` optimizations, LLVM disables active union safety checks; accessing a union field directly when the union holds a different active tag causes invalid memory access, undefined behavior, or segmentation faults.
