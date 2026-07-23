@@ -50,18 +50,24 @@ pub fn renderFrame(
     if (current_entry) |entry| {
         var src_w: f32 = 0;
         var src_h: f32 = 0;
-        if (entry.status == .loaded_gpu) {
-            src_w = entry.status.loaded_gpu.w;
-            src_h = entry.status.loaded_gpu.h;
-        } else if (entry.status == .loaded_cpu) {
-            src_w = entry.status.loaded_cpu.w;
-            src_h = entry.status.loaded_cpu.h;
-        } else if (entry.full_w > 0 and entry.full_h > 0) {
-            src_w = entry.full_w;
-            src_h = entry.full_h;
-        } else if (entry.thumb_gpu_texture != null) {
-            src_w = entry.thumb_w;
-            src_h = entry.thumb_h;
+        switch (entry.status) {
+            .loaded_gpu => |gpu| {
+                src_w = gpu.w;
+                src_h = gpu.h;
+            },
+            .loaded_cpu => |cpu| {
+                src_w = cpu.w;
+                src_h = cpu.h;
+            },
+            else => {
+                if (entry.full_w > 0 and entry.full_h > 0) {
+                    src_w = entry.full_w;
+                    src_h = entry.full_h;
+                } else if (entry.thumb_gpu_texture != null) {
+                    src_w = entry.thumb_w;
+                    src_h = entry.thumb_h;
+                }
+            },
         }
 
         if (src_w > 0 and src_h > 0) {
@@ -234,60 +240,65 @@ pub fn renderFrame(
                             .image_data = @ptrCast(thumb_tex),
                         },
                     })({});
-                } else if (entry.status == .loaded_gpu) {
-                    const tex = entry.status.loaded_gpu.gpu_texture;
-                    clay.UI()(.{
-                        .id = clay.getElementId("ImageCanvas"),
-                        .layout = .{
-                            .sizing = .{
-                                .w = .fixed(draw_w),
-                                .h = .fixed(draw_h),
+                } else switch (entry.status) {
+                    .loaded_gpu => |gpu| {
+                        const tex = gpu.gpu_texture;
+                        clay.UI()(.{
+                            .id = clay.getElementId("ImageCanvas"),
+                            .layout = .{
+                                .sizing = .{
+                                    .w = .fixed(draw_w),
+                                    .h = .fixed(draw_h),
+                                },
                             },
-                        },
-                        .image = .{
-                            .image_data = @ptrCast(tex),
-                        },
-                    })({});
-                } else if (entry.status == .loaded_cpu) {
-                    clay.UI()(.{
-                        .id = clay.getElementId("ImageCanvas"),
-                        .layout = .{
-                            .sizing = .{
-                                .w = .fixed(draw_w),
-                                .h = .fixed(draw_h),
+                            .image = .{
+                                .image_data = @ptrCast(tex),
                             },
-                        },
-                    })({});
-                } else if (entry.status == .decoding) {
-                    clay.UI()(.{
-                        .layout = .{
-                            .sizing = .{ .w = .grow, .h = .grow },
-                            .direction = .top_to_bottom,
-                            .child_alignment = .{ .x = .center, .y = .center },
-                            .child_gap = @intFromFloat(10 * scale_y),
-                        },
-                    })({
-                        clay.text("Loading image...", .{
-                            .color = .{ 245, 194, 231, 255 },
-                            .font_size = @intFromFloat(22.0 * dpi_scale),
-                            .font_id = 0,
+                        })({});
+                    },
+                    .loaded_cpu => {
+                        clay.UI()(.{
+                            .id = clay.getElementId("ImageCanvas"),
+                            .layout = .{
+                                .sizing = .{
+                                    .w = .fixed(draw_w),
+                                    .h = .fixed(draw_h),
+                                },
+                            },
+                        })({});
+                    },
+                    .decoding => {
+                        clay.UI()(.{
+                            .layout = .{
+                                .sizing = .{ .w = .grow, .h = .grow },
+                                .direction = .top_to_bottom,
+                                .child_alignment = .{ .x = .center, .y = .center },
+                                .child_gap = @intFromFloat(10 * scale_y),
+                            },
+                        })({
+                            clay.text("Loading image...", .{
+                                .color = .{ 245, 194, 231, 255 },
+                                .font_size = @intFromFloat(22.0 * dpi_scale),
+                                .font_id = 0,
+                            });
                         });
-                    });
-                } else {
-                    clay.UI()(.{
-                        .layout = .{
-                            .sizing = .{ .w = .grow, .h = .grow },
-                            .direction = .top_to_bottom,
-                            .child_alignment = .{ .x = .center, .y = .center },
-                            .child_gap = @intFromFloat(10 * scale_y),
-                        },
-                    })({
-                        clay.text("Failed to Load Image", .{
-                            .color = .{ 243, 139, 168, 255 },
-                            .font_size = @intFromFloat(22.0 * dpi_scale),
-                            .font_id = 0,
+                    },
+                    else => {
+                        clay.UI()(.{
+                            .layout = .{
+                                .sizing = .{ .w = .grow, .h = .grow },
+                                .direction = .top_to_bottom,
+                                .child_alignment = .{ .x = .center, .y = .center },
+                                .child_gap = @intFromFloat(10 * scale_y),
+                            },
+                        })({
+                            clay.text("Failed to Load Image", .{
+                                .color = .{ 243, 139, 168, 255 },
+                                .font_size = @intFromFloat(22.0 * dpi_scale),
+                                .font_id = 0,
+                            });
                         });
-                    });
+                    },
                 }
             } else if (state.is_loading_files.load(.acquire) or total_images > 0) {
                 // Centered viewport loading screen while file discovery is active

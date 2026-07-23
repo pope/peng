@@ -14,7 +14,9 @@ pub const CacheStatusTag = enum {
 };
 
 pub const CacheStatus = union(CacheStatusTag) {
-    decoding: void,
+    decoding: struct {
+        has_thread: bool = false,
+    },
     loaded_cpu: struct {
         surface: *c.SDL_Surface,
         w: f32,
@@ -58,6 +60,7 @@ pub const CacheEntry = struct {
     thumb_h: f32 = 0.0,
     full_w: f32 = 0.0,
     full_h: f32 = 0.0,
+    exif_orientation: f32 = 0.0,
     has_thumb: bool = false,
     thumb_upload_time_ms: f64 = 0.0,
 
@@ -120,8 +123,9 @@ pub const CacheSlotMap = struct {
 
     pub fn getTexture(self: *CacheSlotMap, handle: TextureHandle) ?*c.SDL_GPUTexture {
         if (self.getWithGeneration(handle.index, handle.generation)) |entry| {
-            if (entry.status == .loaded_gpu) {
-                return entry.status.loaded_gpu.gpu_texture;
+            switch (entry.status) {
+                .loaded_gpu => |gpu| return gpu.gpu_texture,
+                else => {},
             }
         }
         return null;
@@ -129,8 +133,9 @@ pub const CacheSlotMap = struct {
 
     pub fn getSurface(self: *CacheSlotMap, handle: TextureHandle) ?*c.SDL_Surface {
         if (self.getWithGeneration(handle.index, handle.generation)) |entry| {
-            if (entry.status == .loaded_cpu) {
-                return entry.status.loaded_cpu.surface;
+            switch (entry.status) {
+                .loaded_cpu => |cpu| return cpu.surface,
+                else => {},
             }
         }
         return null;
@@ -162,8 +167,9 @@ pub const CacheSlotMap = struct {
     pub fn getTotalVramBytes(self: *const CacheSlotMap) usize {
         var total: usize = 0;
         for (self.entries.items) |entry| {
-            if (entry.status == .loaded_gpu) {
-                total += entry.status.loaded_gpu.memory_size_bytes;
+            switch (entry.status) {
+                .loaded_gpu => |gpu| total += gpu.memory_size_bytes,
+                else => {},
             }
         }
         return total;
@@ -249,12 +255,16 @@ pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
     const state = args.state;
     const index = args.index;
     const path = args.path;
-
     defer {
-        state.allocator.free(path);
-        state.allocator.destroy(args);
+        const alloc = state.allocator;
+        alloc.free(path);
+        alloc.destroy(args);
+        _ = state.active_decode_threads.fetchSub(1, .release);
         _ = state.active_threads.fetchSub(1, .release);
+        fs.wakeUpMainThread();
     }
+
+    const exif_rot = readJpegExifOrientation(state.io, path) orelse 0.0;
 
     const isValidJob = struct {
         fn check(st: *ViewerState, idx: usize, gen: usize) bool {
@@ -295,6 +305,7 @@ pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
                                         entry.thumb_gpu_texture = t_tex;
                                         entry.thumb_w = upload_res.w;
                                         entry.thumb_h = upload_res.h;
+                                        entry.exif_orientation = exif_rot;
                                         if (full_dims) |dims| {
                                             entry.full_w = dims.w;
                                             entry.full_h = dims.h;
@@ -402,12 +413,6 @@ pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
 
                 if (!state.exiting.load(.acquire)) {
                     if (state.cache.getWithGeneration(index, args.generation)) |entry| {
-                        if (!state.debug_show_thumb) {
-                            if (entry.thumb_gpu_texture) |t| {
-                                c.SDL_ReleaseGPUTexture(gpu_dev, t);
-                                entry.thumb_gpu_texture = null;
-                            }
-                        }
                         switch (entry.status) {
                             .loaded_cpu => |cpu| c.SDL_DestroySurface(cpu.surface),
                             .loaded_gpu => |gpu| c.SDL_ReleaseGPUTexture(gpu_dev, gpu.gpu_texture),

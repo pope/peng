@@ -56,7 +56,7 @@ const StdinArgs = struct {
     gpa: std.mem.Allocator,
 };
 
-fn wakeUpMainThread() void {
+pub fn wakeUpMainThread() void {
     var event = std.mem.zeroes(c.SDL_Event);
     event.type = c.SDL_EVENT_USER;
     _ = c.SDL_PushEvent(&event);

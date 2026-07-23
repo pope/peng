@@ -659,8 +659,17 @@ pub fn renderClayCommands(
                         c.SDL_ReleaseGPUTexture(state.gpu_device.?, tex);
                         continue;
                     });
-                    const pixels: [*]const u8 = @ptrCast(converted.*.pixels);
-                    @memcpy(mapped[0..size], pixels[0..size]);
+                    const src_pixels: [*]const u8 = @ptrCast(converted.*.pixels);
+                    const surf_w: usize = @intCast(converted.*.w);
+                    const surf_h: usize = @intCast(converted.*.h);
+                    const row_bytes: usize = surf_w * 4;
+                    const pitch: usize = @intCast(converted.*.pitch);
+                    var row_y: usize = 0;
+                    while (row_y < surf_h) : (row_y += 1) {
+                        const src_row = src_pixels[row_y * pitch .. row_y * pitch + row_bytes];
+                        const dst_row = mapped[row_y * row_bytes .. row_y * row_bytes + row_bytes];
+                        @memcpy(dst_row, src_row);
+                    }
                     c.SDL_UnmapGPUTransferBuffer(state.gpu_device.?, transfer_buf);
 
                     const copy_pass = c.SDL_BeginGPUCopyPass(cmd_buf) orelse {

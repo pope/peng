@@ -172,6 +172,7 @@ pub const ViewerState = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     active_threads: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    active_decode_threads: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     exiting: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     generation: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     window_pixel_format: c.SDL_PixelFormat = c.SDL_PIXELFORMAT_UNKNOWN,
@@ -551,6 +552,12 @@ pub const ViewerState = struct {
         } = null;
 
         for (self.cache.entries.items) |*entry| {
+            if (entry.status == .loaded_gpu and entry.thumb_gpu_texture != null and !self.debug_show_thumb) {
+                if (self.gpu_device) |gpu_dev| {
+                    c.SDL_ReleaseGPUTexture(gpu_dev, entry.thumb_gpu_texture.?);
+                }
+                entry.thumb_gpu_texture = null;
+            }
             if (entry.status == .loaded_cpu) {
                 const cpu = entry.status.loaded_cpu;
                 entry.status = .uploading;
@@ -621,6 +628,12 @@ pub const ViewerState = struct {
         }
     }
 
+    pub fn getMaxConcurrentDecodes() usize {
+        const cpu_count = std.Thread.getCpuCount() catch 4;
+        if (cpu_count <= 2) return 2;
+        return @min(6, cpu_count - 1);
+    }
+
     pub fn updateCache(self: *ViewerState) !void {
         self.resetZoomPan();
 
@@ -638,8 +651,10 @@ pub const ViewerState = struct {
         if (current_path_opt) |path| {
             if (self.rotation_map.get(path)) |user_rot| {
                 self.rotation_angle = user_rot;
+            } else if (self.getCurrentEntry()) |entry| {
+                self.rotation_angle = entry.exif_orientation;
             } else {
-                self.rotation_angle = image.readJpegExifOrientation(self.io, path) orelse 0.0;
+                self.rotation_angle = 0.0;
             }
         } else {
             self.rotation_angle = 0.0;
@@ -710,22 +725,26 @@ pub const ViewerState = struct {
 
             // 3. Mark wanted entries that are not in the cache yet as .decoding
             for (desired[0..desired_count]) |d| {
-                var exists = false;
+                var needs_thread = false;
                 if (self.cache.get(d)) |entry| {
-                    exists = true;
                     if (d == idx and (entry.status == .loaded_cpu or entry.status == .loaded_gpu)) {
                         hit = true;
                     }
-                }
-                if (!exists) {
+                    if (entry.status == .decoding and !entry.status.decoding.has_thread) {
+                        needs_thread = true;
+                    }
+                } else {
                     const new_entry = CacheEntry{
                         .index = d,
                         .generation = gen,
-                        .status = .decoding,
+                        .status = .{ .decoding = .{ .has_thread = false } },
                         .full_w = 0.0,
                         .full_h = 0.0,
                     };
                     try self.cache.append(self.allocator, new_entry);
+                    needs_thread = true;
+                }
+                if (needs_thread) {
                     to_spawn_indices[to_spawn_count] = d;
                     to_spawn_count += 1;
                 }
@@ -734,7 +753,23 @@ pub const ViewerState = struct {
         }
 
         // 4. Spawn worker threads outside cache_mutex lock
+        const max_decodes = getMaxConcurrentDecodes();
         for (to_spawn_indices[0..to_spawn_count]) |d| {
+            if (self.active_decode_threads.load(.acquire) >= max_decodes) {
+                if (d != idx) {
+                    c.SDL_LockMutex(self.cache_mutex);
+                    var k: usize = 0;
+                    while (k < self.cache.entries.items.len) : (k += 1) {
+                        if (self.cache.entries.items[k].index == d) {
+                            self.cache.removeAndDeinit(k, self.gpu_device);
+                            break;
+                        }
+                    }
+                    c.SDL_UnlockMutex(self.cache_mutex);
+                }
+                continue;
+            }
+
             c.SDL_LockMutex(self.image_list_mutex);
             const raw_path = if (d < self.image_list.items.len) self.image_list.items[d] else null;
             const path = if (raw_path) |p| self.allocator.dupeZ(u8, p) catch null else null;
@@ -756,7 +791,6 @@ pub const ViewerState = struct {
             errdefer self.allocator.free(dup_path);
 
             const args = self.allocator.create(DecodeArgs) catch |err| {
-                self.allocator.free(dup_path);
                 c.SDL_LockMutex(self.cache_mutex);
                 var k: usize = 0;
                 while (k < self.cache.entries.items.len) : (k += 1) {
@@ -770,6 +804,14 @@ pub const ViewerState = struct {
             };
             errdefer self.allocator.destroy(args);
 
+            c.SDL_LockMutex(self.cache_mutex);
+            if (self.cache.get(d)) |entry| {
+                if (entry.status == .decoding) {
+                    entry.status.decoding.has_thread = true;
+                }
+            }
+            c.SDL_UnlockMutex(self.cache_mutex);
+
             args.* = DecodeArgs{
                 .state = self,
                 .index = d,
@@ -777,13 +819,15 @@ pub const ViewerState = struct {
                 .path = dup_path,
             };
 
+            _ = self.active_decode_threads.fetchAdd(1, .monotonic);
             _ = self.active_threads.fetchAdd(1, .monotonic);
             const thread = c.SDL_CreateThread(decodeWorker, "decode_worker", args);
             if (thread) |t| {
                 c.SDL_DetachThread(t);
             } else {
-                std.log.err("Failed to create SDL thread: {s}", .{c.SDL_GetError()});
+                _ = self.active_decode_threads.fetchSub(1, .monotonic);
                 _ = self.active_threads.fetchSub(1, .monotonic);
+                std.log.err("Failed to create SDL thread: {s}", .{c.SDL_GetError()});
                 self.allocator.free(dup_path);
                 self.allocator.destroy(args);
 
@@ -994,12 +1038,12 @@ test "CacheSlotMap.updateStatus" {
     try cache.append(allocator, .{
         .index = 10,
         .generation = 1,
-        .status = .decoding,
+        .status = .{ .decoding = .{} },
     });
     try cache.append(allocator, .{
         .index = 20,
         .generation = 1,
-        .status = .decoding,
+        .status = .{ .decoding = .{} },
     });
 
     // Test successful update

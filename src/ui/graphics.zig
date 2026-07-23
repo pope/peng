@@ -99,7 +99,6 @@ pub fn initGpuResources(gpu_device: *c.SDL_GPUDevice, window: *c.SDL_Window, ini
         std.log.err("SDL_IOFromConstMem Error: {s}", .{c.SDL_GetError()});
         return error.SDLMemIOFailed;
     };
-    errdefer _ = c.SDL_CloseIO(stream);
     const font = c.TTF_OpenFontIO(stream, true, 20.0 * initial_dpi_scale) orelse {
         std.log.err("TTF_OpenFontIO Error: {s}", .{c.SDL_GetError()});
         return error.TTFOpenFontFailed;
@@ -111,7 +110,6 @@ pub fn initGpuResources(gpu_device: *c.SDL_GPUDevice, window: *c.SDL_Window, ini
         std.log.err("SDL_IOFromConstMem Error: {s}", .{c.SDL_GetError()});
         return error.SDLMemIOFailed;
     };
-    errdefer _ = c.SDL_CloseIO(stream2);
     const font_small = c.TTF_OpenFontIO(stream2, true, 14.0 * initial_dpi_scale) orelse {
         std.log.err("TTF_OpenFontIO Error: {s}", .{c.SDL_GetError()});
         return error.TTFOpenFontFailed;

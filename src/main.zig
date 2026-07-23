@@ -78,10 +78,10 @@ pub fn main(init: std.process.Init) !void {
         .high_dpi = !parsed.test_mode,
     });
     defer {
+        c.TTF_Quit();
         c.SDL_DestroyGPUDevice(setup.gpu_device);
         c.SDL_DestroyWindow(setup.window);
         c.SDL_Quit();
-        c.TTF_Quit();
     }
 
     // Phase 3: GPU Pipeline and Resources Setup
@@ -173,12 +173,12 @@ pub fn main(init: std.process.Init) !void {
     const ipc = @import("app/ipc.zig");
     var ipc_server: ?*ipc.IpcServer = null;
     if (parsed.ipc_enabled) {
-        const event_base = c.SDL_RegisterEvents(2);
+        const event_base = c.SDL_RegisterEvents(1);
         if (event_base == 0xFFFFFFFF) {
             std.log.err("Failed to register custom SDL events", .{});
             return error.SdlEventRegistrationFailed;
         }
-        ipc.PENG_IPC_EVENT = event_base + 1;
+        ipc.PENG_IPC_EVENT = event_base;
 
         const IpcServer = ipc.IpcServer;
         ipc_server = try IpcServer.init(gpa, &state);
@@ -274,19 +274,21 @@ pub fn main(init: std.process.Init) !void {
         }
 
         // Phase 6b: State Update
-        if (state.current_index != null and state.getCurrentEntry() == null) {
-            c.SDL_LockMutex(state.image_list_mutex);
-            const count = state.image_list.items.len;
-            c.SDL_UnlockMutex(state.image_list_mutex);
-            if (count > 0) {
-                state.updateCache() catch |err| std.log.err("Failed to update cache: {}", .{err});
+        const needs_cache_update = blk: {
+            if (state.getCurrentEntry()) |entry| {
+                switch (entry.status) {
+                    .decoding => |d| break :blk !d.has_thread,
+                    else => break :blk false,
+                }
             }
-        } else if (state.current_index == null) {
+            break :blk (state.current_index != null);
+        };
+        if (needs_cache_update and state.active_decode_threads.load(.acquire) < app.state.ViewerState.getMaxConcurrentDecodes()) {
             c.SDL_LockMutex(state.image_list_mutex);
             const count = state.image_list.items.len;
             c.SDL_UnlockMutex(state.image_list_mutex);
             if (count > 0) {
-                state.current_index = 0;
+                if (state.current_index == null) state.current_index = 0;
                 state.updateCache() catch |err| std.log.err("Failed to update cache: {}", .{err});
             }
         }
