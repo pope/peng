@@ -144,6 +144,21 @@ pub const IpcServer = struct {
         } else if (std.mem.eql(u8, cmd, "quit")) {
             state.running = false;
             try respondOk(state.io, stream);
+            const pid = std.posix.system.getpid();
+            var path_buf: [128]u8 = undefined;
+            if (std.fmt.bufPrint(&path_buf, "/tmp/peng-{d}.sock", .{pid})) |sock_path| {
+                const addr = std.Io.net.UnixAddress.init(sock_path) catch |err| {
+                    std.log.debug("IPC quit dummy address init failed: {any}", .{err});
+                    return;
+                };
+                const dummy = addr.connect(state.io) catch |err| {
+                    std.log.debug("IPC quit dummy connect failed: {any}", .{err});
+                    return;
+                };
+                dummy.close(state.io);
+            } else |err| {
+                std.log.debug("IPC quit bufPrint failed: {any}", .{err});
+            }
         } else {
             return error.UnknownCommand;
         }
@@ -166,20 +181,26 @@ fn runIpcServer(state: *ViewerState) !void {
     var path_buf: [128]u8 = undefined;
     const socket_path = try std.fmt.bufPrint(&path_buf, "/tmp/peng-{d}.sock", .{pid});
 
-    std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, socket_path) catch {};
+    std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, socket_path) catch |err| {
+        std.log.debug("IPC socket pre-delete failed (file may not exist): {any}", .{err});
+    };
 
     const address = try std.Io.net.UnixAddress.init(socket_path);
     var server = try address.listen(io, .{});
     defer {
         server.deinit(io);
-        std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, socket_path) catch {};
+        std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, socket_path) catch |err| {
+            std.log.debug("IPC socket cleanup delete failed: {any}", .{err});
+        };
     }
 
     // Print path to stdout for test runner discovery
     const msg = try std.fmt.allocPrint(gpa, "IPC socket: {s}\n", .{socket_path});
     const stdout = std.Io.File.stdout();
     var writer = stdout.writer(io, &.{});
-    writer.interface.writeAll(msg) catch {};
+    writer.interface.writeAll(msg) catch |err| {
+        std.log.warn("IPC write socket path to stdout failed: {any}", .{err});
+    };
     gpa.free(msg);
 
     while (state.running) {

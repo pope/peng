@@ -389,7 +389,9 @@ pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
     var size_bytes: u64 = 0;
     if (std.Io.Dir.statFile(std.Io.Dir.cwd(), state.io, path, .{})) |s| {
         size_bytes = s.size;
-    } else |_| {}
+    } else |err| {
+        std.log.debug("decodeWorker: statFile failed for '{s}': {any}", .{ path, err });
+    }
 
     if (!isValidJob(state, index, args.generation)) {
         if (final_surface) |surf| c.SDL_DestroySurface(surf);

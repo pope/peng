@@ -82,14 +82,20 @@ fn appendPathThreadSafe(state: *ViewerState, gpa: std.mem.Allocator, path: []con
 }
 
 fn scanDirectoryThreadSafe(state: *ViewerState, gpa: std.mem.Allocator, io: std.Io, dir_path: []const u8, initial_gen: usize) void {
-    var dir = std.Io.Dir.openDir(std.Io.Dir.cwd(), io, dir_path, .{ .iterate = true }) catch return;
+    var dir = std.Io.Dir.openDir(std.Io.Dir.cwd(), io, dir_path, .{ .iterate = true }) catch |err| {
+        std.log.warn("scanDirectoryThreadSafe: openDir failed for '{s}': {any}", .{ dir_path, err });
+        return;
+    };
     defer dir.close(io);
 
     var it = dir.iterate();
     var dir_entries = std.ArrayList([]const u8).empty;
     defer dir_entries.deinit(gpa);
 
-    while (it.next(io) catch null) |entry| {
+    while (it.next(io) catch |err| blk: {
+        std.log.warn("scanDirectoryThreadSafe: iterate next failed for '{s}': {any}", .{ dir_path, err });
+        break :blk null;
+    }) |entry| {
         if (entry.kind == .file) {
             const ext = std.fs.path.extension(entry.name);
             if (isImageExtension(ext)) {
@@ -155,7 +161,8 @@ fn stdinWorker(ptr: ?*anyopaque) callconv(.c) c_int {
                 } else if (isImageExtension(std.fs.path.extension(trimmed))) {
                     appendPathThreadSafe(state, gpa, trimmed, initial_gen);
                 }
-            } else |_| {
+            } else |err| {
+                std.log.debug("statFile failed for '{s}': {any}, treating as file path", .{ trimmed, err });
                 appendPathThreadSafe(state, gpa, trimmed, initial_gen);
             }
         }
