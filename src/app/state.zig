@@ -628,6 +628,30 @@ pub const ViewerState = struct {
         }
     }
 
+    pub fn updateCurrentRotation(self: *ViewerState) void {
+        const path_opt = blk: {
+            c.SDL_LockMutex(self.image_list_mutex);
+            defer c.SDL_UnlockMutex(self.image_list_mutex);
+            const len = self.image_list.items.len;
+            const current_idx = self.current_index orelse break :blk null;
+            if (current_idx >= len) break :blk null;
+            break :blk self.image_list.items[current_idx];
+        };
+
+        const path = path_opt orelse {
+            self.rotation_angle = 0.0;
+            return;
+        };
+
+        if (self.rotation_map.get(path)) |user_rot| {
+            self.rotation_angle = user_rot;
+        } else if (self.getCurrentEntry()) |entry| {
+            self.rotation_angle = entry.exif_orientation;
+        } else {
+            self.rotation_angle = 0.0;
+        }
+    }
+
     pub fn getMaxConcurrentDecodes() usize {
         const cpu_count = std.Thread.getCpuCount() catch 4;
         if (cpu_count <= 2) return 2;
@@ -636,26 +660,10 @@ pub const ViewerState = struct {
 
     pub fn updateCache(self: *ViewerState) !void {
         self.resetZoomPan();
+        self.updateCurrentRotation();
 
         c.SDL_LockMutex(self.image_list_mutex);
         const len = self.image_list.items.len;
-        const current_idx = self.current_index;
-        if (current_idx) |c_idx| {
-            if (c_idx < len) {
-                const path = self.image_list.items[c_idx];
-                if (self.rotation_map.get(path)) |user_rot| {
-                    self.rotation_angle = user_rot;
-                } else if (self.getCurrentEntry()) |entry| {
-                    self.rotation_angle = entry.exif_orientation;
-                } else {
-                    self.rotation_angle = 0.0;
-                }
-            } else {
-                self.rotation_angle = 0.0;
-            }
-        } else {
-            self.rotation_angle = 0.0;
-        }
         c.SDL_UnlockMutex(self.image_list_mutex);
 
         if (len == 0) return;
@@ -916,6 +924,8 @@ pub const ViewerState = struct {
     }
 
     pub fn update(self: *ViewerState, input: FrameInput) !void {
+        self.updateCurrentRotation();
+
         // 1. Text input updates
         if (input.text_input) |text| {
             if (self.palette.mode != .inactive) {
@@ -1142,4 +1152,60 @@ test "ViewerState.clampZoomFactor bounds based on image dimensions" {
     const clamped_min_full = state.clampZoomFactor(0.001);
     // Effective min zoom level (base_scale * zoom_factor) must be 0.1x of actual image size
     try std.testing.expectApproxEqAbs(@as(f32, 0.1), base_full * clamped_min_full, 0.001);
+}
+
+test "ViewerState.updateCurrentRotation syncs EXIF orientation" {
+    const cache_mutex = c.SDL_CreateMutex() orelse unreachable;
+    defer c.SDL_DestroyMutex(cache_mutex);
+    const image_list_mutex = c.SDL_CreateMutex() orelse unreachable;
+    defer c.SDL_DestroyMutex(image_list_mutex);
+
+    var state = ViewerState{
+        .directory_arena = std.heap.ArenaAllocator.init(std.testing.allocator),
+        .image_list = std.ArrayList([]const u8).empty,
+        .image_list_mutex = image_list_mutex,
+        .cache = .{},
+        .cache_mutex = cache_mutex,
+        .allocator = std.testing.allocator,
+        .io = undefined,
+        .palette = PaletteState.init(std.testing.allocator),
+        .rotation_map = std.StringHashMap(f32).init(std.testing.allocator),
+        .window = null,
+    };
+    defer {
+        state.cache.deinit(std.testing.allocator, null);
+        state.palette.deinit();
+        state.rotation_map.deinit();
+        state.directory_arena.deinit();
+        state.image_list.deinit(std.testing.allocator);
+    }
+
+    try state.image_list.append(std.testing.allocator, "test_photo_1.jpg");
+    state.current_index = 0;
+
+    // Initially uncached -> rotation_angle should be 0.0
+    state.updateCurrentRotation();
+    try std.testing.expectEqual(@as(f32, 0.0), state.rotation_angle);
+
+    // Simulate worker thread caching EXIF orientation of 90.0
+    try state.cache.append(std.testing.allocator, .{
+        .index = 0,
+        .generation = 0,
+        .status = .{ .decoding = .{} },
+        .exif_orientation = 90.0,
+    });
+
+    // Calling updateCurrentRotation updates rotation_angle from entry
+    state.updateCurrentRotation();
+    try std.testing.expectEqual(@as(f32, 90.0), state.rotation_angle);
+
+    // Test out of bounds index
+    state.current_index = 99;
+    state.updateCurrentRotation();
+    try std.testing.expectEqual(@as(f32, 0.0), state.rotation_angle);
+
+    // Test null index
+    state.current_index = null;
+    state.updateCurrentRotation();
+    try std.testing.expectEqual(@as(f32, 0.0), state.rotation_angle);
 }

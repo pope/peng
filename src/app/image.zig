@@ -265,6 +265,18 @@ pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
     }
 
     const exif_rot = readJpegExifOrientation(state.io, path) orelse 0.0;
+    {
+        c.SDL_LockMutex(state.cache_mutex);
+        if (state.cache.getWithGeneration(index, args.generation)) |entry| {
+            entry.exif_orientation = exif_rot;
+        }
+        c.SDL_UnlockMutex(state.cache_mutex);
+    }
+    if (exif_rot != 0.0) {
+        var event = std.mem.zeroes(c.SDL_Event);
+        event.type = c.SDL_EVENT_USER;
+        _ = c.SDL_PushEvent(&event);
+    }
 
     const isValidJob = struct {
         fn check(st: *ViewerState, idx: usize, gen: usize) bool {
