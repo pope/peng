@@ -670,27 +670,7 @@ pub fn renderClayCommands(
                     while (row_y < surf_h) : (row_y += 1) {
                         const src_row = src_pixels[row_y * pitch .. row_y * pitch + row_bytes];
                         const dst_row = mapped[row_y * row_bytes .. row_y * row_bytes + row_bytes];
-                        var px: usize = 0;
-                        while (px < row_bytes) : (px += 4) {
-                            const a = src_row[px + 3];
-                            if (a == 255) {
-                                dst_row[px] = src_row[px];
-                                dst_row[px + 1] = src_row[px + 1];
-                                dst_row[px + 2] = src_row[px + 2];
-                                dst_row[px + 3] = 255;
-                            } else if (a == 0) {
-                                dst_row[px] = 0;
-                                dst_row[px + 1] = 0;
-                                dst_row[px + 2] = 0;
-                                dst_row[px + 3] = 0;
-                            } else {
-                                const alpha_f = @as(f32, @floatFromInt(a)) / 255.0;
-                                dst_row[px] = @intFromFloat(@round(@as(f32, @floatFromInt(src_row[px])) * alpha_f));
-                                dst_row[px + 1] = @intFromFloat(@round(@as(f32, @floatFromInt(src_row[px + 1])) * alpha_f));
-                                dst_row[px + 2] = @intFromFloat(@round(@as(f32, @floatFromInt(src_row[px + 2])) * alpha_f));
-                                dst_row[px + 3] = a;
-                            }
-                        }
+                        @memcpy(dst_row, src_row);
                     }
                     c.SDL_UnmapGPUTransferBuffer(state.gpu_device.?, transfer_buf);
 

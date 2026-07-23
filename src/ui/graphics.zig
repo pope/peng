@@ -343,7 +343,7 @@ pub fn initGpuResources(gpu_device: *c.SDL_GPUDevice, window: *c.SDL_Window, ini
             .color_target_descriptions = &[_]c.SDL_GPUColorTargetDescription{.{
                 .format = target_format,
                 .blend_state = .{
-                    .src_color_blendfactor = c.SDL_GPU_BLENDFACTOR_ONE,
+                    .src_color_blendfactor = c.SDL_GPU_BLENDFACTOR_SRC_ALPHA,
                     .dst_color_blendfactor = c.SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
                     .color_blend_op = c.SDL_GPU_BLENDOP_ADD,
                     .src_alpha_blendfactor = c.SDL_GPU_BLENDFACTOR_ONE,
