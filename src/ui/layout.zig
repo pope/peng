@@ -430,6 +430,12 @@ pub fn renderFrame(
         }
     }
 
+    errdefer if (use_headless) {
+        if (target_tex) |tex| {
+            c.SDL_ReleaseGPUTexture(state.gpu_device.?, tex);
+        }
+    };
+
     if (target_tex) |tex| {
         if (target_w == 0 or target_h == 0) {
             cmd_buf_submitted = true;
@@ -453,6 +459,16 @@ pub fn renderFrame(
         if (capture_filename) |filename| {
             cmd_buf_submitted = true;
             try saveTextureToPng(state.gpu_device.?, cmd_buf, tex, target_w, target_h, target_format, filename);
+        } else if (use_headless) {
+            cmd_buf_submitted = true;
+            const fence_opt = c.SDL_SubmitGPUCommandBufferAndAcquireFence(cmd_buf);
+            if (fence_opt) |fence| {
+                _ = c.SDL_WaitForGPUFences(state.gpu_device.?, true, &fence, 1);
+                c.SDL_ReleaseGPUFence(state.gpu_device.?, fence);
+            } else {
+                std.log.err("Failed to acquire GPU fence for headless render: {s}", .{c.SDL_GetError()});
+                return error.FenceAcquisitionFailed;
+            }
         } else {
             cmd_buf_submitted = true;
             _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
@@ -463,7 +479,6 @@ pub fn renderFrame(
         }
 
         if (use_headless) {
-            _ = c.SDL_WaitForGPUIdle(state.gpu_device.?);
             c.SDL_ReleaseGPUTexture(state.gpu_device.?, tex);
         }
     } else {

@@ -71,6 +71,7 @@
               lldb
               self.formatter.${system}
               shaderc
+              spirv-cross
               zls
             ]
             ++ lib.optionals stdenv.isLinux [
@@ -103,39 +104,41 @@
         {
           devShells.${system}.default = pkgs.mkShell {
             inherit nativeBuildInputs buildInputs;
-            packages = packages ++ [
-              (jailed-agents.lib.${system}.makeJailedAgent {
-                name = "agy";
-                pkg = llm-agents.packages.${system}.antigravity-cli;
-                baseJailOptions = with jail.combinators; [
-                  (fwd-env "PKG_CONFIG_PATH")
-                  gpu
-                  gui
-                  network
-                  no-new-session
-                  time-zone
-                  wayland
-                ];
-                configPaths = [
-                  "~/.antigravity"
-                  "~/.gemini"
-                ];
-                extraPkgs = packages ++ nativeBuildInputs ++ buildInputs;
-                extraReadonlyDirs = with pkgs; [
-                  (lib.getDev sdl3)
-                  (lib.getLib sdl3)
+            packages =
+              packages
+              ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+                (jailed-agents.lib.${system}.makeJailedAgent {
+                  name = "agy";
+                  pkg = llm-agents.packages.${system}.antigravity-cli;
+                  baseJailOptions = with jail.combinators; [
+                    (fwd-env "PKG_CONFIG_PATH")
+                    gpu
+                    gui
+                    network
+                    no-new-session
+                    time-zone
+                    wayland
+                  ];
+                  configPaths = [
+                    "~/.antigravity"
+                    "~/.gemini"
+                  ];
+                  extraPkgs = packages ++ nativeBuildInputs ++ buildInputs;
+                  extraReadonlyDirs = with pkgs; [
+                    (lib.getDev sdl3)
+                    (lib.getLib sdl3)
 
-                  (lib.getDev sdl3-image)
-                  (lib.getLib sdl3-image)
+                    (lib.getDev sdl3-image)
+                    (lib.getLib sdl3-image)
 
-                  (lib.getDev shaderc)
-                  (lib.getLib shaderc)
+                    (lib.getDev shaderc)
+                    (lib.getLib shaderc)
 
-                  (lib.getDev glslang)
-                ];
-                env.LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath buildInputs;
-              })
-            ];
+                    (lib.getDev glslang)
+                  ];
+                  env.LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath buildInputs;
+                })
+              ];
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath buildInputs;
           };
           formatter.${system} = treefmt-eval.config.build.wrapper;

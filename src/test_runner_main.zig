@@ -48,9 +48,9 @@ fn compareScreenshots(base_path: [:0]const u8, run_path: [:0]const u8, diff_path
     };
     defer c_lib.SDL_DestroySurface(diff_surf);
 
-    const pixels_base = @as([*]const u32, @ptrCast(@alignCast(base_surf.*.pixels)));
-    const pixels_run = @as([*]const u32, @ptrCast(@alignCast(run_surf.*.pixels)));
-    const pixels_diff = @as([*]u32, @ptrCast(@alignCast(diff_surf.*.pixels)));
+    const pixels_base = @as([*]align(1) const u32, @ptrCast(base_surf.*.pixels));
+    const pixels_run = @as([*]align(1) const u32, @ptrCast(run_surf.*.pixels));
+    const pixels_diff = @as([*]align(1) u32, @ptrCast(diff_surf.*.pixels));
 
     const pitch_words_base = @as(usize, @intCast(base_surf.*.pitch)) / 4;
     const pitch_words_run = @as(usize, @intCast(run_surf.*.pitch)) / 4;
@@ -110,6 +110,7 @@ fn compareScreenshots(base_path: [:0]const u8, run_path: [:0]const u8, diff_path
 var global_io: std.Io = undefined;
 
 fn sendCommand(socket_path: []const u8, command: []const u8) !void {
+    std.log.info("Sending IPC command: {s}", .{command});
     const io = global_io;
     const address = try std.Io.net.UnixAddress.init(socket_path);
     const stream = try address.connect(io);
@@ -208,6 +209,8 @@ pub fn main(init: std.process.Init) !void {
     defer {
         if (child.id != null) {
             child.kill(init.io);
+            _ = child.wait(init.io) catch {};
+            child.id = null;
         }
     }
 
@@ -262,6 +265,7 @@ pub fn main(init: std.process.Init) !void {
 
     // 0. Initial Render
     {
+        try sendCommand(socket_path, "wait_load");
         const capture_path = try std.fmt.allocPrint(gpa, "{s}/test_0_init.png", .{if (update_baselines) base_dir else run_dir});
         defer gpa.free(capture_path);
         const cmd = try std.fmt.allocPrint(gpa, "screenshot {s}", .{capture_path});
@@ -441,6 +445,7 @@ pub fn main(init: std.process.Init) !void {
     try sendCommand(socket_path, "quit");
 
     _ = try child.wait(init.io);
+    child.id = null;
 
     if (steps_with_discrepancies > 0) {
         std.log.err("Visual integration tests completed all steps with {d} step(s) containing visual discrepancies (diff PNGs saved to {s}).", .{ steps_with_discrepancies, run_dir });

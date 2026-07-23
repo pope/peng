@@ -15,8 +15,10 @@ pub const GraphicsOptions = struct {
     high_dpi: bool = true,
 };
 
+const builtin = @import("builtin");
+
 pub fn initGraphicsAndWindow(window_title: [:0]const u8, options: GraphicsOptions) !GraphicsSetup {
-    if (options.headless) {
+    if (options.headless and builtin.os.tag != .macos) {
         _ = c.SDL_SetHint(c.SDL_HINT_VIDEO_DRIVER, "offscreen");
     }
     // Initialize SDL3
@@ -60,7 +62,7 @@ pub fn initGraphicsAndWindow(window_title: [:0]const u8, options: GraphicsOption
     const initial_dpi_scale = if (win_w > 0) @as(f32, @floatFromInt(pix_w)) / @as(f32, @floatFromInt(win_w)) else 1.0;
 
     // Create GPU Device
-    const gpu_device = c.SDL_CreateGPUDevice(c.SDL_GPU_SHADERFORMAT_SPIRV, true, null) orelse {
+    const gpu_device = c.SDL_CreateGPUDevice(c.SDL_GPU_SHADERFORMAT_SPIRV | c.SDL_GPU_SHADERFORMAT_MSL, true, null) orelse {
         std.log.err("SDL_CreateGPUDevice Error: {s}", .{c.SDL_GetError()});
         return error.DeviceCreationFailed;
     };
@@ -119,39 +121,83 @@ pub fn initGpuResources(gpu_device: *c.SDL_GPUDevice, window: *c.SDL_Window, ini
     const fonts = [2]?*c.TTF_Font{ font, font_small };
 
     // Compile Shaders
-    const vert_code = @embedFile("../shaders/vert.spv");
-    const frag_code = @embedFile("../shaders/frag.spv");
+    const vert_code_spv = @embedFile("../shaders/vert.spv");
+    const frag_code_spv = @embedFile("../shaders/frag.spv");
+    const vert_code_msl = @embedFile("../shaders/vert.msl");
+    const frag_code_msl = @embedFile("../shaders/frag.msl");
 
-    const vert_info = c.SDL_GPUShaderCreateInfo{
-        .code_size = vert_code.len,
-        .code = vert_code.ptr,
-        .entrypoint = "main",
-        .format = c.SDL_GPU_SHADERFORMAT_SPIRV,
-        .stage = c.SDL_GPU_SHADERSTAGE_VERTEX,
-        .num_samplers = 0,
-        .num_storage_buffers = 0,
-        .num_storage_textures = 0,
-        .num_uniform_buffers = 0,
-        .props = 0,
+    const shader_formats = c.SDL_GetGPUShaderFormats(gpu_device);
+
+    // Vertex Shader Info
+    const vert_info = if ((shader_formats & c.SDL_GPU_SHADERFORMAT_SPIRV) != 0)
+        c.SDL_GPUShaderCreateInfo{
+            .code_size = vert_code_spv.len,
+            .code = vert_code_spv.ptr,
+            .entrypoint = "main",
+            .format = c.SDL_GPU_SHADERFORMAT_SPIRV,
+            .stage = c.SDL_GPU_SHADERSTAGE_VERTEX,
+            .num_samplers = 0,
+            .num_storage_buffers = 0,
+            .num_storage_textures = 0,
+            .num_uniform_buffers = 0,
+            .props = 0,
+        }
+    else if ((shader_formats & c.SDL_GPU_SHADERFORMAT_MSL) != 0)
+        c.SDL_GPUShaderCreateInfo{
+            .code_size = vert_code_msl.len,
+            .code = vert_code_msl.ptr,
+            .entrypoint = "main0",
+            .format = c.SDL_GPU_SHADERFORMAT_MSL,
+            .stage = c.SDL_GPU_SHADERSTAGE_VERTEX,
+            .num_samplers = 0,
+            .num_storage_buffers = 0,
+            .num_storage_textures = 0,
+            .num_uniform_buffers = 0,
+            .props = 0,
+        }
+    else {
+        std.log.err("No supported shader format for vertex shader (formats mask: {X})", .{shader_formats});
+        return error.UnsupportedShaderFormat;
     };
+
     const vert_shader = c.SDL_CreateGPUShader(gpu_device, &vert_info) orelse {
         std.log.err("Failed to create vertex shader: {s}", .{c.SDL_GetError()});
         return error.ShaderCreationFailed;
     };
     defer c.SDL_ReleaseGPUShader(gpu_device, vert_shader);
 
-    const frag_info = c.SDL_GPUShaderCreateInfo{
-        .code_size = frag_code.len,
-        .code = frag_code.ptr,
-        .entrypoint = "main",
-        .format = c.SDL_GPU_SHADERFORMAT_SPIRV,
-        .stage = c.SDL_GPU_SHADERSTAGE_FRAGMENT,
-        .num_samplers = 1,
-        .num_storage_buffers = 0,
-        .num_storage_textures = 0,
-        .num_uniform_buffers = 1,
-        .props = 0,
+    // Fragment Shader Info
+    const frag_info = if ((shader_formats & c.SDL_GPU_SHADERFORMAT_SPIRV) != 0)
+        c.SDL_GPUShaderCreateInfo{
+            .code_size = frag_code_spv.len,
+            .code = frag_code_spv.ptr,
+            .entrypoint = "main",
+            .format = c.SDL_GPU_SHADERFORMAT_SPIRV,
+            .stage = c.SDL_GPU_SHADERSTAGE_FRAGMENT,
+            .num_samplers = 1,
+            .num_storage_buffers = 0,
+            .num_storage_textures = 0,
+            .num_uniform_buffers = 1,
+            .props = 0,
+        }
+    else if ((shader_formats & c.SDL_GPU_SHADERFORMAT_MSL) != 0)
+        c.SDL_GPUShaderCreateInfo{
+            .code_size = frag_code_msl.len,
+            .code = frag_code_msl.ptr,
+            .entrypoint = "main0",
+            .format = c.SDL_GPU_SHADERFORMAT_MSL,
+            .stage = c.SDL_GPU_SHADERSTAGE_FRAGMENT,
+            .num_samplers = 1,
+            .num_storage_buffers = 0,
+            .num_storage_textures = 0,
+            .num_uniform_buffers = 1,
+            .props = 0,
+        }
+    else {
+        std.log.err("No supported shader format for fragment shader (formats mask: {X})", .{shader_formats});
+        return error.UnsupportedShaderFormat;
     };
+
     const frag_shader = c.SDL_CreateGPUShader(gpu_device, &frag_info) orelse {
         std.log.err("Failed to create fragment shader: {s}", .{c.SDL_GetError()});
         return error.ShaderCreationFailed;
@@ -303,8 +349,9 @@ pub fn initGpuResources(gpu_device: *c.SDL_GPUDevice, window: *c.SDL_Window, ini
                     .src_alpha_blendfactor = c.SDL_GPU_BLENDFACTOR_ONE,
                     .dst_alpha_blendfactor = c.SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
                     .alpha_blend_op = c.SDL_GPU_BLENDOP_ADD,
+                    .color_write_mask = c.SDL_GPU_COLORCOMPONENT_R | c.SDL_GPU_COLORCOMPONENT_G | c.SDL_GPU_COLORCOMPONENT_B | c.SDL_GPU_COLORCOMPONENT_A,
                     .enable_blend = true,
-                    .enable_color_write_mask = false,
+                    .enable_color_write_mask = true,
                     .padding1 = 0,
                     .padding2 = 0,
                 },
@@ -361,7 +408,10 @@ pub fn saveTextureToPng(
     };
     defer c.SDL_ReleaseGPUTransferBuffer(device, transfer_buf);
 
-    const copy_pass = c.SDL_BeginGPUCopyPass(cmd_buf) orelse return error.CopyPassCreationFailed;
+    const copy_pass = c.SDL_BeginGPUCopyPass(cmd_buf) orelse {
+        _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
+        return error.CopyPassCreationFailed;
+    };
     c.SDL_DownloadFromGPUTexture(copy_pass, &c.SDL_GPUTextureRegion{
         .texture = texture,
         .mip_level = 0,
@@ -380,8 +430,14 @@ pub fn saveTextureToPng(
     });
     c.SDL_EndGPUCopyPass(copy_pass);
 
-    _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
-    _ = c.SDL_WaitForGPUIdle(device);
+    const fence_opt = c.SDL_SubmitGPUCommandBufferAndAcquireFence(cmd_buf);
+    if (fence_opt) |fence| {
+        _ = c.SDL_WaitForGPUFences(device, true, &fence, 1);
+        c.SDL_ReleaseGPUFence(device, fence);
+    } else {
+        std.log.err("Failed to acquire GPU fence for screenshot save: {s}", .{c.SDL_GetError()});
+        return error.FenceAcquisitionFailed;
+    }
 
     const data_ptr = c.SDL_MapGPUTransferBuffer(device, transfer_buf, false) orelse return error.MapBufferFailed;
     defer c.SDL_UnmapGPUTransferBuffer(device, transfer_buf);

@@ -3,4 +3,5 @@
 /zig-out/
 /zig-pkg/
 *.spv
+*.msl
 /testfiles/current-run/

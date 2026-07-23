@@ -50,6 +50,14 @@ pub fn build(b: *std.Build) void {
     compile_shaders.dependOn(&vert_cmd.step);
     compile_shaders.dependOn(&frag_cmd.step);
 
+    const vert_msl_cmd = b.addSystemCommand(&.{ "spirv-cross", "src/shaders/vert.spv", "--msl", "--output", "src/shaders/vert.msl" });
+    vert_msl_cmd.step.dependOn(&vert_cmd.step);
+    const frag_msl_cmd = b.addSystemCommand(&.{ "spirv-cross", "src/shaders/frag.spv", "--msl", "--output", "src/shaders/frag.msl" });
+    frag_msl_cmd.step.dependOn(&frag_cmd.step);
+
+    compile_shaders.dependOn(&vert_msl_cmd.step);
+    compile_shaders.dependOn(&frag_msl_cmd.step);
+
     exe.step.dependOn(compile_shaders);
 
     const run_step = b.step("run", "Run the app");
