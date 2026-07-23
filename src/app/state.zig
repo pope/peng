@@ -160,8 +160,11 @@ pub const ViewerState = struct {
     gpu_sampler: ?*c.SDL_GPUSampler = null,
     white_texture: ?*c.SDL_GPUTexture = null,
 
+    /// Thread Safety: directory_arena allocations must only occur while holding image_list_mutex.
     directory_arena: std.heap.ArenaAllocator,
     image_list: std.ArrayList([]const u8),
+    image_list_mutex: *c.SDL_Mutex,
+    is_loading_files: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     current_index: ?usize = null,
     cache: CacheSlotMap,
     cache_mutex: *c.SDL_Mutex,
@@ -170,7 +173,7 @@ pub const ViewerState = struct {
     io: std.Io,
     active_threads: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     exiting: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    generation: usize = 0,
+    generation: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     window_pixel_format: c.SDL_PixelFormat = c.SDL_PIXELFORMAT_UNKNOWN,
     palette: PaletteState,
     window: ?*c.SDL_Window,
@@ -288,6 +291,7 @@ pub const ViewerState = struct {
 
         self.text_cache.deinit(self.allocator);
         c.SDL_DestroyMutex(self.cache_mutex);
+        c.SDL_DestroyMutex(self.image_list_mutex);
         self.image_list.deinit(self.allocator);
         self.cache.deinit(self.allocator, self.gpu_device);
         self.palette.deinit();
@@ -428,6 +432,9 @@ pub const ViewerState = struct {
     }
 
     pub fn rebuildPaletteMatches(self: *ViewerState) !void {
+        c.SDL_LockMutex(self.image_list_mutex);
+        defer c.SDL_UnlockMutex(self.image_list_mutex);
+
         self.palette.matches.clearRetainingCapacity();
         const query = self.palette.query.items;
         if (query.len == 0) {
@@ -616,9 +623,19 @@ pub const ViewerState = struct {
 
     pub fn updateCache(self: *ViewerState) !void {
         self.resetZoomPan();
+
+        c.SDL_LockMutex(self.image_list_mutex);
+        const len = self.image_list.items.len;
         const current_idx = self.current_index;
-        if (current_idx != null and current_idx.? < self.image_list.items.len) {
-            const path = self.image_list.items[current_idx.?];
+        var current_path_opt: ?[]const u8 = null;
+        if (current_idx) |idx| {
+            if (idx < len) {
+                current_path_opt = self.image_list.items[idx];
+            }
+        }
+        c.SDL_UnlockMutex(self.image_list_mutex);
+
+        if (current_path_opt) |path| {
             if (self.rotation_map.get(path)) |user_rot| {
                 self.rotation_angle = user_rot;
             } else {
@@ -628,10 +645,10 @@ pub const ViewerState = struct {
             self.rotation_angle = 0.0;
         }
 
-        const len = self.image_list.items.len;
         if (len == 0) return;
 
         const idx = self.current_index orelse return;
+        const gen = self.generation.load(.acquire);
 
         const now = c.SDL_GetTicks();
         const is_rapid_scrolling = (now - self.last_nav_time_ms < 150);
@@ -701,31 +718,12 @@ pub const ViewerState = struct {
                     }
                 }
                 if (!exists) {
-                    var full_w: f32 = 0.0;
-                    var full_h: f32 = 0.0;
-                    if (d < self.image_list.items.len) {
-                        const path = self.image_list.items[d];
-                        var header_buf: [65536]u8 = undefined;
-                        var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), self.io, path, .{}) catch null;
-                        if (file) |*f| {
-                            defer f.close(self.io);
-                            var slices = [_][]u8{&header_buf};
-                            const n = f.readPositional(self.io, &slices, 0) catch 0;
-                            if (n > 0) {
-                                if (image.readJpegDimensions(header_buf[0..n])) |dims| {
-                                    full_w = dims.w;
-                                    full_h = dims.h;
-                                }
-                            }
-                        }
-                    }
-
                     const new_entry = CacheEntry{
                         .index = d,
-                        .generation = self.generation,
+                        .generation = gen,
                         .status = .decoding,
-                        .full_w = full_w,
-                        .full_h = full_h,
+                        .full_w = 0.0,
+                        .full_h = 0.0,
                     };
                     try self.cache.append(self.allocator, new_entry);
                     to_spawn_indices[to_spawn_count] = d;
@@ -737,7 +735,12 @@ pub const ViewerState = struct {
 
         // 4. Spawn worker threads outside cache_mutex lock
         for (to_spawn_indices[0..to_spawn_count]) |d| {
-            const path = self.allocator.dupeZ(u8, self.image_list.items[d]) catch |err| {
+            c.SDL_LockMutex(self.image_list_mutex);
+            const raw_path = if (d < self.image_list.items.len) self.image_list.items[d] else null;
+            const path = if (raw_path) |p| self.allocator.dupeZ(u8, p) catch null else null;
+            c.SDL_UnlockMutex(self.image_list_mutex);
+
+            if (path == null) {
                 c.SDL_LockMutex(self.cache_mutex);
                 var k: usize = 0;
                 while (k < self.cache.entries.items.len) : (k += 1) {
@@ -747,12 +750,13 @@ pub const ViewerState = struct {
                     }
                 }
                 c.SDL_UnlockMutex(self.cache_mutex);
-                return err;
-            };
-            errdefer self.allocator.free(path);
+                continue;
+            }
+            const dup_path = path.?;
+            errdefer self.allocator.free(dup_path);
 
             const args = self.allocator.create(DecodeArgs) catch |err| {
-                self.allocator.free(path);
+                self.allocator.free(dup_path);
                 c.SDL_LockMutex(self.cache_mutex);
                 var k: usize = 0;
                 while (k < self.cache.entries.items.len) : (k += 1) {
@@ -769,8 +773,8 @@ pub const ViewerState = struct {
             args.* = DecodeArgs{
                 .state = self,
                 .index = d,
-                .generation = self.generation,
-                .path = path,
+                .generation = gen,
+                .path = dup_path,
             };
 
             _ = self.active_threads.fetchAdd(1, .monotonic);
@@ -780,7 +784,7 @@ pub const ViewerState = struct {
             } else {
                 std.log.err("Failed to create SDL thread: {s}", .{c.SDL_GetError()});
                 _ = self.active_threads.fetchSub(1, .monotonic);
-                self.allocator.free(path);
+                self.allocator.free(dup_path);
                 self.allocator.destroy(args);
 
                 c.SDL_LockMutex(self.cache_mutex);
@@ -801,9 +805,13 @@ pub const ViewerState = struct {
     }
 
     pub fn next(self: *ViewerState) !void {
-        if (self.image_list.items.len == 0) return;
+        c.SDL_LockMutex(self.image_list_mutex);
+        const len = self.image_list.items.len;
+        c.SDL_UnlockMutex(self.image_list_mutex);
+
+        if (len == 0) return;
         if (self.current_index) |idx| {
-            self.current_index = (idx + 1) % self.image_list.items.len;
+            self.current_index = (idx + 1) % len;
         } else {
             self.current_index = 0;
         }
@@ -811,10 +819,14 @@ pub const ViewerState = struct {
     }
 
     pub fn prev(self: *ViewerState) !void {
-        if (self.image_list.items.len == 0) return;
+        c.SDL_LockMutex(self.image_list_mutex);
+        const len = self.image_list.items.len;
+        c.SDL_UnlockMutex(self.image_list_mutex);
+
+        if (len == 0) return;
         if (self.current_index) |idx| {
             if (idx == 0) {
-                self.current_index = self.image_list.items.len - 1;
+                self.current_index = len - 1;
             } else {
                 self.current_index = idx - 1;
             }
@@ -834,8 +846,11 @@ pub const ViewerState = struct {
             has_stat = false;
         }
 
+        c.SDL_LockMutex(self.image_list_mutex);
+        defer c.SDL_UnlockMutex(self.image_list_mutex);
+
         // Clear existing cache and rotation map before resetting directory_arena
-        self.generation += 1;
+        _ = self.generation.fetchAdd(1, .release);
         self.clearCache();
         self.rotation_map.clearRetainingCapacity();
         self.image_list.clearRetainingCapacity();
@@ -844,31 +859,14 @@ pub const ViewerState = struct {
 
         if (has_stat) {
             if (stat.kind == .directory) {
-                try scanDirectory(self.allocator, self.directory_arena.allocator(), self.io, path, &self.image_list);
-                if (self.image_list.items.len > 0) {
-                    self.current_index = 0;
-                    try self.updateCache();
-                }
+                try fs.startAsyncPathScan(self, path, true);
             } else {
-                const dir_path = std.fs.path.dirname(path) orelse ".";
-                try scanDirectory(self.allocator, self.directory_arena.allocator(), self.io, dir_path, &self.image_list);
-
-                var found_idx: ?usize = null;
-                for (self.image_list.items, 0..) |item, i| {
-                    if (std.mem.eql(u8, item, path)) {
-                        found_idx = i;
-                        break;
-                    }
-                }
-
-                if (found_idx) |idx| {
-                    self.current_index = idx;
-                } else {
-                    const dup = try self.directory_arena.allocator().dupe(u8, path);
-                    try self.image_list.append(self.allocator, dup);
-                    self.current_index = self.image_list.items.len - 1;
-                }
+                const dup = try self.directory_arena.allocator().dupe(u8, path);
+                try self.image_list.append(self.allocator, dup);
+                self.current_index = 0;
                 try self.updateCache();
+
+                try fs.startAsyncPathScan(self, path, false);
             }
         }
         try self.rebuildPaletteMatches();
@@ -1036,10 +1034,13 @@ test "ViewerState.clampZoomFactor bounds based on image dimensions" {
 
     const cache_mutex = c.SDL_CreateMutex() orelse unreachable;
     defer c.SDL_DestroyMutex(cache_mutex);
+    const image_list_mutex = c.SDL_CreateMutex() orelse unreachable;
+    defer c.SDL_DestroyMutex(image_list_mutex);
 
     var state = ViewerState{
         .directory_arena = std.heap.ArenaAllocator.init(std.testing.allocator),
         .image_list = std.ArrayList([]const u8).empty,
+        .image_list_mutex = image_list_mutex,
         .cache = .{},
         .cache_mutex = cache_mutex,
         .allocator = std.testing.allocator,

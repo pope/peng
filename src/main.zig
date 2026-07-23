@@ -103,6 +103,10 @@ pub fn main(init: std.process.Init) !void {
         std.log.err("SDL_CreateMutex failed: {s}", .{c.SDL_GetError()});
         return error.MutexCreationFailed;
     };
+    const image_list_mutex = c.SDL_CreateMutex() orelse {
+        std.log.err("SDL_CreateMutex failed: {s}", .{c.SDL_GetError()});
+        return error.MutexCreationFailed;
+    };
 
     // Phase 4: State Initialization
     var state = ViewerState{
@@ -113,6 +117,7 @@ pub fn main(init: std.process.Init) !void {
 
         .directory_arena = std.heap.ArenaAllocator.init(gpa),
         .image_list = std.ArrayList([]const u8).empty,
+        .image_list_mutex = image_list_mutex,
         .cache = .{},
         .cache_mutex = cache_mutex,
         .allocator = gpa,
@@ -197,6 +202,13 @@ pub fn main(init: std.process.Init) !void {
     while (state.running) {
         // Phase 6a: Input Accumulation
         _ = frame_arena.reset(.retain_capacity);
+        const is_current_loading = blk: {
+            if (state.getCurrentEntry()) |entry| {
+                break :blk (entry.status == .decoding or entry.status == .uploading);
+            }
+            break :blk (state.current_index != null);
+        };
+        const is_busy = state.is_loading_files.load(.acquire) or (state.active_threads.load(.acquire) > 0) or is_current_loading;
         const input = try app_input.pollFrameInput(
             setup.window,
             frame_allocator,
@@ -204,6 +216,7 @@ pub fn main(init: std.process.Init) !void {
             state.mouse_inside,
             state.palette.mode != .inactive,
             parsed.test_mode or parsed.headless,
+            is_busy,
         );
 
         if (input.quit_requested) {
@@ -261,6 +274,23 @@ pub fn main(init: std.process.Init) !void {
         }
 
         // Phase 6b: State Update
+        if (state.current_index != null and state.getCurrentEntry() == null) {
+            c.SDL_LockMutex(state.image_list_mutex);
+            const count = state.image_list.items.len;
+            c.SDL_UnlockMutex(state.image_list_mutex);
+            if (count > 0) {
+                state.updateCache() catch |err| std.log.err("Failed to update cache: {}", .{err});
+            }
+        } else if (state.current_index == null) {
+            c.SDL_LockMutex(state.image_list_mutex);
+            const count = state.image_list.items.len;
+            c.SDL_UnlockMutex(state.image_list_mutex);
+            if (count > 0) {
+                state.current_index = 0;
+                state.updateCache() catch |err| std.log.err("Failed to update cache: {}", .{err});
+            }
+        }
+
         try state.update(input);
 
         clay.setLayoutDimensions(.{ .w = input.pix_w, .h = input.pix_h });

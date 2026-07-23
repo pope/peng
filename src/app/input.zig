@@ -17,6 +17,7 @@ pub fn pollFrameInput(
     prev_mouse_inside: bool,
     palette_show: bool,
     non_blocking: bool,
+    is_busy: bool,
 ) !FrameInput {
     const current_ticks = c.SDL_GetTicks();
     const delta_time_ms = @as(f32, @floatFromInt(current_ticks - last_time.*));
@@ -55,7 +56,7 @@ pub fn pollFrameInput(
     var event: c.SDL_Event = undefined;
     const wait_success = if (non_blocking)
         c.SDL_PollEvent(&event)
-    else if (palette_show)
+    else if (palette_show or is_busy)
         c.SDL_WaitEventTimeout(&event, 8)
     else
         c.SDL_WaitEvent(&event);

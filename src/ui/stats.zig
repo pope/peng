@@ -53,6 +53,8 @@ pub fn renderStatsOverlay(
     const current_entry = state.getCurrentEntry();
 
     if (state.current_index) |idx| {
+        c.SDL_LockMutex(state.image_list_mutex);
+        defer c.SDL_UnlockMutex(state.image_list_mutex);
         if (idx < state.image_list.items.len) {
             const path = state.image_list.items[idx];
             filename = std.fs.path.basename(path);

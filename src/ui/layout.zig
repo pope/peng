@@ -28,6 +28,10 @@ pub fn renderFrame(
     state.prepareCacheTextures();
     const current_entry = state.getCurrentEntry();
 
+    c.SDL_LockMutex(state.image_list_mutex);
+    const total_images = state.image_list.items.len;
+    c.SDL_UnlockMutex(state.image_list_mutex);
+
     // Calculate Image Fitting Layout Boundaries
     var title_bar_h: f32 = 60.0;
     const nav_bar_h: f32 = 0.0;
@@ -182,11 +186,21 @@ pub fn renderFrame(
 
                 clay.UI()(.{ .layout = .{ .sizing = .{ .w = .grow, .h = .grow } } })({});
 
-                if (state.image_list.items.len > 0) {
+                const is_loading = state.is_loading_files.load(.acquire);
+                if (total_images > 0) {
                     const idx = (state.current_index orelse 0) + 1;
                     const count_buf = try frame_allocator.alloc(u8, 64);
-                    const count_str = try std.fmt.bufPrint(count_buf, "Image {} of {}", .{ idx, state.image_list.items.len });
+                    const count_str = if (is_loading)
+                        try std.fmt.bufPrint(count_buf, "Image {} of {}...", .{ idx, total_images })
+                    else
+                        try std.fmt.bufPrint(count_buf, "Image {} of {}", .{ idx, total_images });
                     clay.text(count_str, .{
+                        .color = .{ 166, 173, 200, 255 },
+                        .font_size = @intFromFloat(12.0 * dpi_scale),
+                        .font_id = 0,
+                    });
+                } else if (is_loading) {
+                    clay.text("Loading images...", .{
                         .color = .{ 166, 173, 200, 255 },
                         .font_size = @intFromFloat(12.0 * dpi_scale),
                         .font_id = 0,
@@ -275,6 +289,27 @@ pub fn renderFrame(
                         });
                     });
                 }
+            } else if (state.is_loading_files.load(.acquire) or total_images > 0) {
+                // Centered viewport loading screen while file discovery is active
+                clay.UI()(.{
+                    .layout = .{
+                        .sizing = .{ .w = .grow, .h = .grow },
+                        .direction = .top_to_bottom,
+                        .child_alignment = .{ .x = .center, .y = .center },
+                        .child_gap = @intFromFloat(12 * scale_y),
+                    },
+                })({
+                    clay.text("Loading Images...", .{
+                        .color = .{ 245, 194, 231, 255 },
+                        .font_size = @intFromFloat(22.0 * dpi_scale),
+                        .font_id = 0,
+                    });
+                    clay.text("Discovering files in background...", .{
+                        .color = .{ 166, 173, 200, 255 },
+                        .font_size = @intFromFloat(14.0 * dpi_scale),
+                        .font_id = 0,
+                    });
+                });
             } else {
                 // Empty state screen
                 clay.UI()(.{
