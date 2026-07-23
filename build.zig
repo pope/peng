@@ -45,8 +45,8 @@ pub fn build(b: *std.Build) void {
 
     // Shader compilation
     const compile_shaders = b.step("shaders", "Compile shaders");
-    const vert_cmd = b.addSystemCommand(&.{ "glslangValidator", "-V", "-S", "vert", "src/shaders/vert.glsl", "-o", "src/shaders/vert.spv" });
-    const frag_cmd = b.addSystemCommand(&.{ "glslangValidator", "-V", "-S", "frag", "src/shaders/frag.glsl", "-o", "src/shaders/frag.spv" });
+    const vert_cmd = b.addSystemCommand(&.{ "glslangValidator", "-V", "-Os", "-S", "vert", "src/shaders/vert.glsl", "-o", "src/shaders/vert.spv" });
+    const frag_cmd = b.addSystemCommand(&.{ "glslangValidator", "-V", "-Os", "-S", "frag", "src/shaders/frag.glsl", "-o", "src/shaders/frag.spv" });
     compile_shaders.dependOn(&vert_cmd.step);
     compile_shaders.dependOn(&frag_cmd.step);
 

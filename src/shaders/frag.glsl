@@ -16,119 +16,135 @@ layout(std140, set = 3, binding = 0) uniform UBO {
 }
 ubo;
 
-float mitchell_weight(float x) {
-    float ax = abs(x);
-    if (ax < 1.0) {
-        return (7.0 / 6.0) * ax * ax * ax - 2.0 * ax * ax + (8.0 / 9.0);
-    } else if (ax < 2.0) {
-        return (-7.0 / 18.0) * ax * ax * ax + 2.0 * ax * ax -
-               (10.0 / 3.0) * ax + (16.0 / 9.0);
+// Horner's method polynomial evaluation for Mitchell-Netravali (B=1/3, C=1/3)
+float mitchell_p1(float x) {
+    return ((7.0 / 6.0 * x - 2.0) * x) * x + (8.0 / 9.0);
+}
+
+float mitchell_p2(float x) {
+    return (((-7.0 / 18.0 * x + 2.0) * x - 10.0 / 3.0) * x) + (16.0 / 9.0);
+}
+
+void mitchell_weights_1d(float f, out float w0, out float w1, out float w2,
+                         out float w3) {
+    w0 = mitchell_p2(1.0 + f);
+    w1 = mitchell_p1(f);
+    w2 = mitchell_p1(1.0 - f);
+    w3 = mitchell_p2(2.0 - f);
+}
+
+// 16-Tap Mitchell-Netravali Filter using Horner's method
+vec4 sample_mitchell(sampler2D tex, vec2 uv) {
+    vec2 tex_size = vec2(textureSize(tex, 0));
+    vec2 inv_tex_size = 1.0 / tex_size;
+    vec2 p = uv * tex_size - 0.5;
+    vec2 i = floor(p);
+    vec2 f = fract(p);
+
+    float wx0, wx1, wx2, wx3;
+    float wy0, wy1, wy2, wy3;
+    mitchell_weights_1d(f.x, wx0, wx1, wx2, wx3);
+    mitchell_weights_1d(f.y, wy0, wy1, wy2, wy3);
+
+    float wx[4] = float[4](wx0, wx1, wx2, wx3);
+    float wy[4] = float[4](wy0, wy1, wy2, wy3);
+
+    vec4 sum = vec4(0.0);
+    float total_w = 0.0;
+    vec2 base_uv = (i + vec2(-1.0, -1.0) + 0.5) * inv_tex_size;
+
+#pragma unroll
+    for (int r = 0; r < 4; r++) {
+        float wyr = wy[r];
+        vec2 row_uv = base_uv + vec2(0.0, float(r) * inv_tex_size.y);
+#pragma unroll
+        for (int c = 0; c < 4; c++) {
+            float w = wx[c] * wyr;
+            sum +=
+                texture(tex, row_uv + vec2(float(c) * inv_tex_size.x, 0.0)) * w;
+            total_w += w;
+        }
     }
-    return 0.0;
+
+    return sum / mix(1.0, total_w, step(0.00001, total_w));
 }
 
 float sinc(float x) {
-    if (abs(x) < 0.0001)
-        return 1.0;
-    float pi_x = 3.141592653589793 * x;
-    return sin(pi_x) / pi_x;
+    float ax = abs(x);
+    float is_zero = step(ax, 0.0001);
+    float pi_x = 3.141592653589793 * ax;
+    float safe_pi_x = mix(pi_x, 1.0, is_zero);
+    float s = sin(safe_pi_x) / safe_pi_x;
+    return mix(s, 1.0, is_zero);
 }
 
 float lanczos3_weight(float x) {
     float ax = abs(x);
-    if (ax < 3.0) {
-        return sinc(ax) * sinc(ax / 3.0);
-    }
-    return 0.0;
+    float w = sinc(ax) * sinc(ax * (1.0 / 3.0));
+    return w * step(ax, 3.0);
 }
 
-vec4 sample_mitchell(sampler2D tex, vec2 uv) {
-    vec2 tex_size = vec2(textureSize(tex, 0));
-    vec2 p = uv * tex_size - 0.5;
-    vec2 i = floor(p);
-    vec2 f = fract(p);
-
-    float wx[4];
-    wx[0] = mitchell_weight(-1.0 - f.x);
-    wx[1] = mitchell_weight(-f.x);
-    wx[2] = mitchell_weight(1.0 - f.x);
-    wx[3] = mitchell_weight(2.0 - f.x);
-
-    float wy[4];
-    wy[0] = mitchell_weight(-1.0 - f.y);
-    wy[1] = mitchell_weight(-f.y);
-    wy[2] = mitchell_weight(1.0 - f.y);
-    wy[3] = mitchell_weight(2.0 - f.y);
-
-    vec4 sum = vec4(0.0);
-    float total_w = 0.0;
-
-    for (int row = 0; row < 4; row++) {
-        float wy_val = wy[row];
-        for (int col = 0; col < 4; col++) {
-            float w = wx[col] * wy_val;
-            vec2 sample_uv =
-                (i + vec2(float(col - 1), float(row - 1)) + 0.5) / tex_size;
-            sum += texture(tex, sample_uv) * w;
-            total_w += w;
-        }
-    }
-    return sum / (total_w > 0.0 ? total_w : 1.0);
+void lanczos3_weights_1d(float f, out float w0, out float w1, out float w2,
+                         out float w3, out float w4, out float w5) {
+    w0 = lanczos3_weight(2.0 + f);
+    w1 = lanczos3_weight(1.0 + f);
+    w2 = lanczos3_weight(f);
+    w3 = lanczos3_weight(1.0 - f);
+    w4 = lanczos3_weight(2.0 - f);
+    w5 = lanczos3_weight(3.0 - f);
 }
 
+// 36-Tap Unrolled Lanczos3 Filter
 vec4 sample_lanczos3(sampler2D tex, vec2 uv) {
     vec2 tex_size = vec2(textureSize(tex, 0));
+    vec2 inv_tex_size = 1.0 / tex_size;
     vec2 p = uv * tex_size - 0.5;
     vec2 i = floor(p);
     vec2 f = fract(p);
 
-    float wx[6];
-    wx[0] = lanczos3_weight(-2.0 - f.x);
-    wx[1] = lanczos3_weight(-1.0 - f.x);
-    wx[2] = lanczos3_weight(-f.x);
-    wx[3] = lanczos3_weight(1.0 - f.x);
-    wx[4] = lanczos3_weight(2.0 - f.x);
-    wx[5] = lanczos3_weight(3.0 - f.x);
-
-    float wy[6];
-    wy[0] = lanczos3_weight(-2.0 - f.y);
-    wy[1] = lanczos3_weight(-1.0 - f.y);
-    wy[2] = lanczos3_weight(-f.y);
-    wy[3] = lanczos3_weight(1.0 - f.y);
-    wy[4] = lanczos3_weight(2.0 - f.y);
-    wy[5] = lanczos3_weight(3.0 - f.y);
+    float wx0, wx1, wx2, wx3, wx4, wx5;
+    float wy0, wy1, wy2, wy3, wy4, wy5;
+    lanczos3_weights_1d(f.x, wx0, wx1, wx2, wx3, wx4, wx5);
+    lanczos3_weights_1d(f.y, wy0, wy1, wy2, wy3, wy4, wy5);
 
     vec4 sum = vec4(0.0);
     float total_w = 0.0;
+    vec2 base_uv = (i + vec2(-2.0, -2.0) + 0.5) * inv_tex_size;
 
-    for (int row = 0; row < 6; row++) {
-        float wy_val = wy[row];
-        for (int col = 0; col < 6; col++) {
-            float w = wx[col] * wy_val;
-            vec2 sample_uv =
-                (i + vec2(float(col - 2), float(row - 2)) + 0.5) / tex_size;
-            sum += texture(tex, sample_uv) * w;
+    float wy[6] = float[6](wy0, wy1, wy2, wy3, wy4, wy5);
+    float wx[6] = float[6](wx0, wx1, wx2, wx3, wx4, wx5);
+
+#pragma unroll
+    for (int r = 0; r < 6; r++) {
+        float wyr = wy[r];
+        vec2 row_uv = base_uv + vec2(0.0, float(r) * inv_tex_size.y);
+#pragma unroll
+        for (int c = 0; c < 6; c++) {
+            float w = wx[c] * wyr;
+            sum +=
+                texture(tex, row_uv + vec2(float(c) * inv_tex_size.x, 0.0)) * w;
             total_w += w;
         }
     }
-    return sum / (total_w > 0.0 ? total_w : 1.0);
+
+    return sum / mix(1.0, total_w, step(0.00001, total_w));
 }
 
 void main() {
-    vec4 color;
-    if (ubo.is_text_or_color == 0) {
-        if (ubo.scale_mode == 3) {
-            color = sample_mitchell(texSampler, inTexCoord) * inColor;
-        } else if (ubo.scale_mode == 4) {
-            color = sample_lanczos3(texSampler, inTexCoord) * inColor;
-        } else {
-            color = texture(texSampler, inTexCoord) * inColor;
-        }
-
-        // Apply brightness/contrast on GPU for images
-        color.rgb = (color.rgb - 0.5) * ubo.contrast + 0.5 + ubo.brightness;
+    vec4 texColor;
+    if (ubo.scale_mode == 3) {
+        texColor = sample_mitchell(texSampler, inTexCoord);
+    } else if (ubo.scale_mode == 4) {
+        texColor = sample_lanczos3(texSampler, inTexCoord);
     } else {
-        color = texture(texSampler, inTexCoord) * inColor;
+        texColor = texture(texSampler, inTexCoord);
     }
+
+    vec4 color = texColor * inColor;
+
+    vec3 adjColor = (color.rgb - 0.5) * ubo.contrast + 0.5 + ubo.brightness;
+    float isImg = step(float(ubo.is_text_or_color), 0.5);
+    color.rgb = mix(color.rgb, adjColor, isImg);
+
     outColor = color;
 }
