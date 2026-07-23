@@ -265,17 +265,15 @@ pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
     }
 
     const exif_rot = readJpegExifOrientation(state.io, path) orelse 0.0;
-    {
-        c.SDL_LockMutex(state.cache_mutex);
-        if (state.cache.getWithGeneration(index, args.generation)) |entry| {
-            entry.exif_orientation = exif_rot;
-        }
-        c.SDL_UnlockMutex(state.cache_mutex);
-    }
     if (exif_rot != 0.0) {
-        var event = std.mem.zeroes(c.SDL_Event);
-        event.type = c.SDL_EVENT_USER;
-        _ = c.SDL_PushEvent(&event);
+        state.event_queue.push(state.allocator, .{
+            .exif_orientation_parsed = .{
+                .index = index,
+                .generation = args.generation,
+                .orientation = exif_rot,
+            },
+        }) catch {};
+        fs.wakeUpMainThread();
     }
 
     const isValidJob = struct {
@@ -308,32 +306,23 @@ pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
                     if (mem) |io_mem| {
                         const thumb_surf = c.IMG_Load_IO(io_mem, true);
                         if (thumb_surf) |t_surf| {
-                            defer c.SDL_DestroySurface(t_surf);
-                            if (state.gpu_device) |gpu_dev| {
-                                if (graphics.uploadSurfaceToGpu(gpu_dev, t_surf)) |upload_res| {
-                                    const t_tex = upload_res.gpu_texture;
-                                    c.SDL_LockMutex(state.cache_mutex);
-                                    if (state.cache.getWithGeneration(index, args.generation)) |entry| {
-                                        entry.thumb_gpu_texture = t_tex;
-                                        entry.thumb_w = upload_res.w;
-                                        entry.thumb_h = upload_res.h;
-                                        entry.exif_orientation = exif_rot;
-                                        if (full_dims) |dims| {
-                                            entry.full_w = dims.w;
-                                            entry.full_h = dims.h;
-                                        }
-                                        entry.has_thumb = true;
-                                        entry.thumb_upload_time_ms = upload_res.upload_time_ms;
-                                    } else {
-                                        c.SDL_ReleaseGPUTexture(gpu_dev, t_tex);
-                                    }
-                                    c.SDL_UnlockMutex(state.cache_mutex);
-
-                                    var event = std.mem.zeroes(c.SDL_Event);
-                                    event.type = c.SDL_EVENT_USER;
-                                    _ = c.SDL_PushEvent(&event);
-                                }
-                            }
+                            const full_w: f32 = if (full_dims) |d| d.w else 0.0;
+                            const full_h: f32 = if (full_dims) |d| d.h else 0.0;
+                            state.event_queue.push(state.allocator, .{
+                                .thumb_decoded = .{
+                                    .index = index,
+                                    .generation = args.generation,
+                                    .surface = t_surf,
+                                    .w = @floatFromInt(t_surf.*.w),
+                                    .h = @floatFromInt(t_surf.*.h),
+                                    .full_w = full_w,
+                                    .full_h = full_h,
+                                    .exif_orientation = exif_rot,
+                                },
+                            }) catch {
+                                c.SDL_DestroySurface(t_surf);
+                            };
+                            fs.wakeUpMainThread();
                         }
                     }
                 }
@@ -410,118 +399,35 @@ pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
         return 0;
     }
 
-    var uploaded_to_gpu = false;
     if (final_surface) |f_surf| {
-        if (state.gpu_device) |gpu_dev| {
-            const orig_w: f32 = @floatFromInt(f_surf.*.w);
-            const orig_h: f32 = @floatFromInt(f_surf.*.h);
+        const orig_w: f32 = @floatFromInt(f_surf.*.w);
+        const orig_h: f32 = @floatFromInt(f_surf.*.h);
 
-            // Direct GPU Upload Pass (GPU hardware handles mipmap downsampling)
-            if (graphics.uploadSurfaceToGpu(gpu_dev, f_surf)) |full_res| {
-                uploaded_to_gpu = true;
-                c.SDL_LockMutex(state.cache_mutex);
-                defer c.SDL_UnlockMutex(state.cache_mutex);
-
-                c.SDL_DestroySurface(f_surf);
-                final_surface = null;
-
-                if (!state.exiting.load(.acquire)) {
-                    if (state.cache.getWithGeneration(index, args.generation)) |entry| {
-                        switch (entry.status) {
-                            .loaded_cpu => |cpu| c.SDL_DestroySurface(cpu.surface),
-                            .loaded_gpu => |gpu| c.SDL_ReleaseGPUTexture(gpu_dev, gpu.gpu_texture),
-                            else => {},
-                        }
-                        entry.status = .{
-                            .loaded_gpu = .{
-                                .gpu_texture = full_res.gpu_texture,
-                                .w = orig_w,
-                                .h = orig_h,
-                                .size_bytes = size_bytes,
-                                .mime_type = mime_type,
-                                .decode_time_ms = decode_time_ms,
-                                .conversion_time_ms = conversion_time_ms,
-                                .upload_time_ms = full_res.upload_time_ms,
-                                .memory_size_bytes = full_res.memory_size_bytes,
-                                .num_mip_levels = full_res.num_mip_levels,
-                                .mipmap_time_ms = full_res.mipmap_time_ms,
-                                .has_thumb = entry.has_thumb,
-                                .thumb_w = entry.thumb_w,
-                                .thumb_h = entry.thumb_h,
-                                .thumb_upload_time_ms = entry.thumb_upload_time_ms,
-                            },
-                        };
-                        var event = std.mem.zeroes(c.SDL_Event);
-                        event.type = c.SDL_EVENT_USER;
-                        _ = c.SDL_PushEvent(&event);
-
-                        state.cache.enforceVramBudget(gpu_dev, state.current_index, CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
-                    } else {
-                        // Entry was evicted while uploading full res
-                        c.SDL_ReleaseGPUTexture(gpu_dev, full_res.gpu_texture);
-                    }
-                } else {
-                    c.SDL_ReleaseGPUTexture(gpu_dev, full_res.gpu_texture);
-                }
-            }
-        }
-    }
-
-    if (!uploaded_to_gpu) {
-        c.SDL_LockMutex(state.cache_mutex);
-        defer c.SDL_UnlockMutex(state.cache_mutex);
-
-        if (state.exiting.load(.acquire)) {
-            if (final_surface) |surf| c.SDL_DestroySurface(surf);
-            return 0;
-        }
-
-        var found_in_cache = false;
-        if (state.cache.getWithGeneration(index, args.generation)) |entry| {
-            found_in_cache = true;
-            if (final_surface) |surf| {
-                const orig_w: f32 = @floatFromInt(surf.*.w);
-                const orig_h: f32 = @floatFromInt(surf.*.h);
-
-                if (!state.debug_show_thumb) {
-                    if (entry.thumb_gpu_texture) |t| {
-                        if (state.gpu_device) |gpu_dev| c.SDL_ReleaseGPUTexture(gpu_dev, t);
-                        entry.thumb_gpu_texture = null;
-                    }
-                }
-                switch (entry.status) {
-                    .loaded_cpu => |cpu| c.SDL_DestroySurface(cpu.surface),
-                    .loaded_gpu => |gpu| c.SDL_ReleaseGPUTexture(state.gpu_device.?, gpu.gpu_texture),
-                    else => {},
-                }
-
-                entry.status = .{
-                    .loaded_cpu = .{
-                        .surface = surf,
-                        .w = orig_w,
-                        .h = orig_h,
-                        .size_bytes = size_bytes,
-                        .mime_type = mime_type,
-                        .decode_time_ms = decode_time_ms,
-                        .conversion_time_ms = conversion_time_ms,
-                        .has_thumb = entry.has_thumb,
-                        .thumb_w = entry.thumb_w,
-                        .thumb_h = entry.thumb_h,
-                        .thumb_upload_time_ms = entry.thumb_upload_time_ms,
-                    },
-                };
-            } else {
-                entry.status = .failed;
-            }
-        } else {
-            if (final_surface) |surf| c.SDL_DestroySurface(surf);
-        }
-
-        if (found_in_cache) {
-            var event = std.mem.zeroes(c.SDL_Event);
-            event.type = c.SDL_EVENT_USER;
-            _ = c.SDL_PushEvent(&event);
-        }
+        state.event_queue.push(state.allocator, .{
+            .image_decoded = .{
+                .index = index,
+                .generation = args.generation,
+                .surface = f_surf,
+                .w = orig_w,
+                .h = orig_h,
+                .mime_type = mime_type,
+                .size_bytes = size_bytes,
+                .decode_time_ms = decode_time_ms,
+                .conversion_time_ms = conversion_time_ms,
+                .exif_orientation = exif_rot,
+            },
+        }) catch {
+            c.SDL_DestroySurface(f_surf);
+        };
+        fs.wakeUpMainThread();
+    } else {
+        state.event_queue.push(state.allocator, .{
+            .decode_failed = .{
+                .index = index,
+                .generation = args.generation,
+            },
+        }) catch {};
+        fs.wakeUpMainThread();
     }
 
     return 0;

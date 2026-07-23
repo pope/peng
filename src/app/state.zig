@@ -8,6 +8,8 @@ const commands = @import("../commands.zig");
 const graphics = @import("../ui/graphics.zig");
 pub const image = @import("image.zig");
 pub const fs = @import("fs.zig");
+pub const events = @import("events.zig");
+pub const pipeline = @import("pipeline.zig");
 
 pub const CacheStatus = image.CacheStatus;
 pub const CacheEntry = image.CacheEntry;
@@ -198,6 +200,7 @@ pub const ViewerState = struct {
     drag_state: DragState = .none,
     mouse_inside: bool = true,
     last_nav_time_ms: u64 = 0,
+    event_queue: events.MpscQueue(events.BackgroundEvent),
 
     // Persistent double-buffered vertex resources
     gpu_vertex_buffers: [2]?*c.SDL_GPUBuffer = .{ null, null },
@@ -282,7 +285,7 @@ pub const ViewerState = struct {
                 c.SDL_ReleaseGPUTexture(gpu_dev, val.texture);
             }
 
-            if (self.gpu_pipeline) |pipeline| c.SDL_ReleaseGPUGraphicsPipeline(gpu_dev, pipeline);
+            if (self.gpu_pipeline) |pipe| c.SDL_ReleaseGPUGraphicsPipeline(gpu_dev, pipe);
             if (self.gpu_sampler) |sampler| c.SDL_ReleaseGPUSampler(gpu_dev, sampler);
             if (self.white_texture) |white_tex| c.SDL_ReleaseGPUTexture(gpu_dev, white_tex);
             if (self.window_claimed) {
@@ -290,6 +293,7 @@ pub const ViewerState = struct {
             }
         }
 
+        self.event_queue.deinit(self.allocator);
         self.text_cache.deinit(self.allocator);
         c.SDL_DestroyMutex(self.cache_mutex);
         c.SDL_DestroyMutex(self.image_list_mutex);
@@ -650,6 +654,141 @@ pub const ViewerState = struct {
         } else {
             self.rotation_angle = 0.0;
         }
+    }
+
+    pub fn processBackgroundEvents(self: *ViewerState) bool {
+        var event_batch = std.ArrayList(events.BackgroundEvent).empty;
+        defer event_batch.deinit(self.allocator);
+
+        self.event_queue.drain(self.allocator, &event_batch) catch return false;
+        if (event_batch.items.len == 0) return false;
+        const current_gen = self.generation.load(.acquire);
+
+        for (event_batch.items) |*evt| {
+            defer evt.deinit(self.allocator);
+
+            switch (evt.*) {
+                .exif_orientation_parsed => |e| {
+                    if (e.generation != current_gen) continue;
+                    c.SDL_LockMutex(self.cache_mutex);
+                    if (self.cache.getWithGeneration(e.index, e.generation)) |entry| {
+                        entry.exif_orientation = e.orientation;
+                    }
+                    c.SDL_UnlockMutex(self.cache_mutex);
+                    self.updateCurrentRotation();
+                },
+                .thumb_decoded => |t| {
+                    if (t.generation != current_gen) continue;
+                    if (t.surface == null) continue;
+                    if (self.gpu_device) |gpu_dev| {
+                        if (graphics.uploadSurfaceToGpu(gpu_dev, t.surface.?)) |upload_res| {
+                            c.SDL_LockMutex(self.cache_mutex);
+                            if (self.cache.getWithGeneration(t.index, t.generation)) |entry| {
+                                entry.thumb_gpu_texture = upload_res.gpu_texture;
+                                entry.thumb_w = upload_res.w;
+                                entry.thumb_h = upload_res.h;
+                                entry.exif_orientation = t.exif_orientation;
+                                if (t.full_w > 0 and t.full_h > 0) {
+                                    entry.full_w = t.full_w;
+                                    entry.full_h = t.full_h;
+                                }
+                                entry.has_thumb = true;
+                                entry.thumb_upload_time_ms = upload_res.upload_time_ms;
+                            } else {
+                                c.SDL_ReleaseGPUTexture(gpu_dev, upload_res.gpu_texture);
+                            }
+                            c.SDL_UnlockMutex(self.cache_mutex);
+                            self.updateCurrentRotation();
+                        }
+                    }
+                },
+                .image_decoded => |*d| {
+                    if (d.generation != current_gen) continue;
+                    if (d.surface == null) continue;
+                    if (self.gpu_device) |gpu_dev| {
+                        if (graphics.uploadSurfaceToGpu(gpu_dev, d.surface.?)) |full_res| {
+                            c.SDL_LockMutex(self.cache_mutex);
+                            if (self.cache.getWithGeneration(d.index, d.generation)) |entry| {
+                                switch (entry.status) {
+                                    .loaded_cpu => |cpu| c.SDL_DestroySurface(cpu.surface),
+                                    .loaded_gpu => |gpu| c.SDL_ReleaseGPUTexture(gpu_dev, gpu.gpu_texture),
+                                    else => {},
+                                }
+                                entry.exif_orientation = d.exif_orientation;
+                                entry.status = .{
+                                    .loaded_gpu = .{
+                                        .gpu_texture = full_res.gpu_texture,
+                                        .w = d.w,
+                                        .h = d.h,
+                                        .size_bytes = d.size_bytes,
+                                        .mime_type = d.mime_type,
+                                        .decode_time_ms = d.decode_time_ms,
+                                        .conversion_time_ms = d.conversion_time_ms,
+                                        .upload_time_ms = full_res.upload_time_ms,
+                                        .memory_size_bytes = full_res.memory_size_bytes,
+                                        .num_mip_levels = full_res.num_mip_levels,
+                                        .mipmap_time_ms = full_res.mipmap_time_ms,
+                                        .has_thumb = entry.has_thumb,
+                                        .thumb_w = entry.thumb_w,
+                                        .thumb_h = entry.thumb_h,
+                                        .thumb_upload_time_ms = entry.thumb_upload_time_ms,
+                                    },
+                                };
+                                self.cache.enforceVramBudget(gpu_dev, self.current_index, CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
+                            } else {
+                                c.SDL_ReleaseGPUTexture(gpu_dev, full_res.gpu_texture);
+                            }
+                            c.SDL_UnlockMutex(self.cache_mutex);
+                            self.updateCurrentRotation();
+                        }
+                    } else {
+                        c.SDL_LockMutex(self.cache_mutex);
+                        if (self.cache.getWithGeneration(d.index, d.generation)) |entry| {
+                            entry.exif_orientation = d.exif_orientation;
+                            entry.status = .{
+                                .loaded_cpu = .{
+                                    .surface = d.surface.?,
+                                    .w = d.w,
+                                    .h = d.h,
+                                    .size_bytes = d.size_bytes,
+                                    .mime_type = d.mime_type,
+                                    .decode_time_ms = d.decode_time_ms,
+                                    .conversion_time_ms = d.conversion_time_ms,
+                                    .has_thumb = entry.has_thumb,
+                                    .thumb_w = entry.thumb_w,
+                                    .thumb_h = entry.thumb_h,
+                                    .thumb_upload_time_ms = entry.thumb_upload_time_ms,
+                                },
+                            };
+                            d.surface = null; // Transfer ownership to CacheEntry
+                        }
+                        c.SDL_UnlockMutex(self.cache_mutex);
+                        self.updateCurrentRotation();
+                    }
+                },
+                .decode_failed => |f| {
+                    if (f.generation != current_gen) continue;
+                    c.SDL_LockMutex(self.cache_mutex);
+                    _ = self.cache.updateStatus(f.index, f.generation, .failed);
+                    c.SDL_UnlockMutex(self.cache_mutex);
+                },
+                .path_discovered => |p| {
+                    if (p.generation != current_gen) continue;
+                    c.SDL_LockMutex(self.image_list_mutex);
+                    const dup = self.directory_arena.allocator().dupe(u8, p.path) catch {
+                        c.SDL_UnlockMutex(self.image_list_mutex);
+                        continue;
+                    };
+                    self.image_list.append(self.allocator, dup) catch {};
+                    if (self.current_index == null and self.image_list.items.len > 0) {
+                        self.current_index = 0;
+                    }
+                    c.SDL_UnlockMutex(self.image_list_mutex);
+                },
+                .directory_scan_complete => {},
+            }
+        }
+        return true;
     }
 
     pub fn getMaxConcurrentDecodes() usize {
@@ -1086,9 +1225,7 @@ test "ViewerState.clampZoomFactor bounds based on image dimensions" {
     _ = clay.initialize(clay.Arena.init(clay_memory), .{ .w = 1024, .h = 768 }, .{});
 
     const cache_mutex = c.SDL_CreateMutex() orelse unreachable;
-    defer c.SDL_DestroyMutex(cache_mutex);
     const image_list_mutex = c.SDL_CreateMutex() orelse unreachable;
-    defer c.SDL_DestroyMutex(image_list_mutex);
 
     var state = ViewerState{
         .directory_arena = std.heap.ArenaAllocator.init(std.testing.allocator),
@@ -1102,14 +1239,9 @@ test "ViewerState.clampZoomFactor bounds based on image dimensions" {
         .rotation_map = std.StringHashMap(f32).init(std.testing.allocator),
         .scale_mode = .none,
         .window = null,
+        .event_queue = try events.MpscQueue(events.BackgroundEvent).init(),
     };
-    defer {
-        state.cache.deinit(std.testing.allocator, null);
-        state.palette.deinit();
-        state.rotation_map.deinit();
-        state.directory_arena.deinit();
-        state.image_list.deinit(std.testing.allocator);
-    }
+    defer state.deinit();
 
     // Default base_scale without loaded image is 1.0
     try std.testing.expectEqual(@as(f32, 1.0), state.getBaseScale());
@@ -1156,9 +1288,7 @@ test "ViewerState.clampZoomFactor bounds based on image dimensions" {
 
 test "ViewerState.updateCurrentRotation syncs EXIF orientation" {
     const cache_mutex = c.SDL_CreateMutex() orelse unreachable;
-    defer c.SDL_DestroyMutex(cache_mutex);
     const image_list_mutex = c.SDL_CreateMutex() orelse unreachable;
-    defer c.SDL_DestroyMutex(image_list_mutex);
 
     var state = ViewerState{
         .directory_arena = std.heap.ArenaAllocator.init(std.testing.allocator),
@@ -1171,14 +1301,9 @@ test "ViewerState.updateCurrentRotation syncs EXIF orientation" {
         .palette = PaletteState.init(std.testing.allocator),
         .rotation_map = std.StringHashMap(f32).init(std.testing.allocator),
         .window = null,
+        .event_queue = try events.MpscQueue(events.BackgroundEvent).init(),
     };
-    defer {
-        state.cache.deinit(std.testing.allocator, null);
-        state.palette.deinit();
-        state.rotation_map.deinit();
-        state.directory_arena.deinit();
-        state.image_list.deinit(std.testing.allocator);
-    }
+    defer state.deinit();
 
     try state.image_list.append(std.testing.allocator, "test_photo_1.jpg");
     state.current_index = 0;

@@ -13,3 +13,15 @@
 ## Offscreen & Frame Synchronization
 
 - Synchronize offscreen texture copies and headless frame completions using GPU fences (`SDL_SubmitGPUCommandBufferAndAcquireFence` & `SDL_WaitForGPUFences`) instead of unfenced calls (`SDL_WaitForGPUIdle`).
+
+## Event Loop Wakeup & Active Polling Synchronization
+
+- Draining background event queues on the main thread often updates application state (e.g. GPU texture creation). If `processBackgroundEvents()` processes one or more events, it MUST return `true` (or flag activity) to include in `is_busy` / active polling mode for that frame. Otherwise, `SDL_WaitEvent` will block *before* rendering can occur, stalling UI updates until manual user interaction (e.g. mouse movement).
+
+## Event Payload Pointer Ownership Transfer
+
+- When transferring pointer ownership (e.g. `?*c.SDL_Surface` or string slices) from a background event payload into a long-lived cache struct, set the event payload field to `null` (or disown it) immediately before `defer evt.deinit()` runs. This ensures `evt.deinit()` cleanly skips destroying the transferred resource, preventing double-frees and use-after-free crashes.
+
+## Atomic Reference Counting Memory Barriers
+
+- Always use `.acq_rel` (Acquire-Release) on atomic fetch-decrement operations (e.g. `ref_count.fetchSub(1, .acq_rel)`) so that the thread performing final deallocation observes all prior writes from other threads.

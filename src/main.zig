@@ -136,6 +136,7 @@ pub fn main(init: std.process.Init) !void {
         .running = true,
         .show_stats_overlay = false,
         .window_claimed = !parsed.headless,
+        .event_queue = try app.state.events.MpscQueue(app.state.events.BackgroundEvent).init(),
     };
     defer state.deinit();
     own_resources = false;
@@ -200,6 +201,8 @@ pub fn main(init: std.process.Init) !void {
 
     // Phase 6: The Main Loop
     while (state.running) {
+        const bg_events_processed = state.processBackgroundEvents();
+
         // Phase 6a: Input Accumulation
         _ = frame_arena.reset(.retain_capacity);
         const is_current_loading = blk: {
@@ -208,7 +211,7 @@ pub fn main(init: std.process.Init) !void {
             }
             break :blk (state.current_index != null);
         };
-        const is_busy = state.is_loading_files.load(.acquire) or (state.active_threads.load(.acquire) > 0) or is_current_loading;
+        const is_busy = state.is_loading_files.load(.acquire) or (state.active_threads.load(.acquire) > 0) or is_current_loading or bg_events_processed;
         const input = try app_input.pollFrameInput(
             setup.window,
             frame_allocator,
