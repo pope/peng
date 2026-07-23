@@ -43,7 +43,7 @@ pub fn pollFrameInput(
 
     var keys_pressed = std.ArrayList(c.SDL_Keycode).empty;
     errdefer keys_pressed.deinit(frame_allocator);
-    var pending_ipc_commands = std.ArrayList(*anyopaque).empty;
+    var pending_ipc_commands = std.ArrayList(*ipc.IpcCommandData).empty;
     errdefer pending_ipc_commands.deinit(frame_allocator);
     var text_input_opt: ?[]const u8 = null;
     var dropped_path_opt: ?[]const u8 = null;
@@ -105,7 +105,8 @@ pub fn pollFrameInput(
             else => {
                 if (event.type == ipc.PENG_IPC_EVENT) {
                     if (event.user.data1) |ptr| {
-                        try pending_ipc_commands.append(frame_allocator, ptr);
+                        const cmd_ptr: *ipc.IpcCommandData = @ptrCast(@alignCast(ptr));
+                        try pending_ipc_commands.append(frame_allocator, cmd_ptr);
                     }
                 }
             },

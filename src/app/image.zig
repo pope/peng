@@ -250,8 +250,7 @@ pub fn detectMimeType(io: std.Io, path: []const u8) []const u8 {
     return "unknown";
 }
 
-pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
-    const args: *DecodeArgs = @ptrCast(@alignCast(data.?));
+pub fn decodeWorker(args: *DecodeArgs) void {
     const state = args.state;
     const index = args.index;
     const path = args.path;
@@ -266,30 +265,30 @@ pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
 
     const exif_rot = readJpegExifOrientation(state.io, path) orelse 0.0;
     if (exif_rot != 0.0) {
-        state.event_queue.push(state.allocator, .{
+        state.event_queue.push(state.allocator, state.io, .{
             .exif_orientation_parsed = .{
                 .index = index,
                 .generation = args.generation,
                 .orientation = exif_rot,
             },
-        }) catch {};
+        }) catch |err| std.log.err("Failed to push EXIF orientation event: {}", .{err});
         fs.wakeUpMainThread();
     }
 
     const isValidJob = struct {
         fn check(st: *ViewerState, idx: usize, gen: usize) bool {
             if (st.exiting.load(.acquire)) return false;
-            c.SDL_LockMutex(st.cache_mutex);
-            defer c.SDL_UnlockMutex(st.cache_mutex);
+            st.cache_mutex.lockUncancelable(st.io);
+            defer st.cache_mutex.unlock(st.io);
             return st.cache.getWithGeneration(idx, gen) != null;
         }
     }.check;
 
-    if (!isValidJob(state, index, args.generation)) return 0;
+    if (!isValidJob(state, index, args.generation)) return;
 
     const mime_type = detectMimeType(state.io, path);
 
-    if (!isValidJob(state, index, args.generation)) return 0;
+    if (!isValidJob(state, index, args.generation)) return;
 
     // Attempt fast EXIF thumbnail decoding for instant placeholder preview
     if (std.mem.eql(u8, mime_type, "image/jpeg") and state.gpu_device != null) {
@@ -308,7 +307,7 @@ pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
                         if (thumb_surf) |t_surf| {
                             const full_w: f32 = if (full_dims) |d| d.w else 0.0;
                             const full_h: f32 = if (full_dims) |d| d.h else 0.0;
-                            state.event_queue.push(state.allocator, .{
+                            state.event_queue.push(state.allocator, state.io, .{
                                 .thumb_decoded = .{
                                     .index = index,
                                     .generation = args.generation,
@@ -330,7 +329,7 @@ pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
         }
     }
 
-    if (!isValidJob(state, index, args.generation)) return 0;
+    if (!isValidJob(state, index, args.generation)) return;
 
     const start_decode = c.SDL_GetTicksNS();
     const surface = c.IMG_Load(path.ptr);
@@ -340,7 +339,7 @@ pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
 
     if (!isValidJob(state, index, args.generation)) {
         if (surface) |surf| c.SDL_DestroySurface(surf);
-        return 0;
+        return;
     }
 
     var final_surface = surface;
@@ -396,14 +395,14 @@ pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
 
     if (!isValidJob(state, index, args.generation)) {
         if (final_surface) |surf| c.SDL_DestroySurface(surf);
-        return 0;
+        return;
     }
 
     if (final_surface) |f_surf| {
         const orig_w: f32 = @floatFromInt(f_surf.*.w);
         const orig_h: f32 = @floatFromInt(f_surf.*.h);
 
-        state.event_queue.push(state.allocator, .{
+        state.event_queue.push(state.allocator, state.io, .{
             .image_decoded = .{
                 .index = index,
                 .generation = args.generation,
@@ -421,16 +420,16 @@ pub fn decodeWorker(data: ?*anyopaque) callconv(.c) c_int {
         };
         fs.wakeUpMainThread();
     } else {
-        state.event_queue.push(state.allocator, .{
+        state.event_queue.push(state.allocator, state.io, .{
             .decode_failed = .{
                 .index = index,
                 .generation = args.generation,
             },
-        }) catch {};
+        }) catch |err| std.log.err("Failed to push image decode event: {}", .{err});
         fs.wakeUpMainThread();
     }
 
-    return 0;
+    return;
 }
 
 pub const JpegDimensions = struct { w: f32, h: f32 };

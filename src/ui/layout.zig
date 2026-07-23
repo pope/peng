@@ -28,9 +28,9 @@ pub fn renderFrame(
     state.prepareCacheTextures();
     const current_entry = state.getCurrentEntry();
 
-    c.SDL_LockMutex(state.image_list_mutex);
+    state.lockImageList();
     const total_images = state.image_list.items.len;
-    c.SDL_UnlockMutex(state.image_list_mutex);
+    state.unlockImageList();
 
     // Calculate Image Fitting Layout Boundaries
     var title_bar_h: f32 = 60.0;

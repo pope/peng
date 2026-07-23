@@ -23,7 +23,6 @@ pub const detectMimeType = app.state.detectMimeType;
 
 pub const CacheEntry = app.state.CacheEntry;
 pub const DecodeArgs = app.state.DecodeArgs;
-pub const decodeWorker = app.state.decodeWorker;
 pub const matchesQueryLower = app.state.matchesQueryLower;
 pub const startTextInput = app.state.startTextInput;
 pub const stopTextInput = app.state.stopTextInput;
@@ -98,16 +97,6 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    // Initialize Cache Mutex
-    const cache_mutex = c.SDL_CreateMutex() orelse {
-        std.log.err("SDL_CreateMutex failed: {s}", .{c.SDL_GetError()});
-        return error.MutexCreationFailed;
-    };
-    const image_list_mutex = c.SDL_CreateMutex() orelse {
-        std.log.err("SDL_CreateMutex failed: {s}", .{c.SDL_GetError()});
-        return error.MutexCreationFailed;
-    };
-
     // Phase 4: State Initialization
     var state = ViewerState{
         .gpu_device = setup.gpu_device,
@@ -117,9 +106,9 @@ pub fn main(init: std.process.Init) !void {
 
         .directory_arena = std.heap.ArenaAllocator.init(gpa),
         .image_list = std.ArrayList([]const u8).empty,
-        .image_list_mutex = image_list_mutex,
+        .image_list_mutex = .init,
         .cache = .{},
-        .cache_mutex = cache_mutex,
+        .cache_mutex = .init,
         .allocator = gpa,
         .io = init.io,
         .window_pixel_format = c.SDL_PIXELFORMAT_RGBA32,
@@ -136,7 +125,6 @@ pub fn main(init: std.process.Init) !void {
         .running = true,
         .show_stats_overlay = false,
         .window_claimed = !parsed.headless,
-        .event_queue = try app.state.events.MpscQueue(app.state.events.BackgroundEvent).init(),
     };
     defer state.deinit();
     own_resources = false;
@@ -184,7 +172,7 @@ pub fn main(init: std.process.Init) !void {
         const IpcServer = ipc.IpcServer;
         ipc_server = try IpcServer.init(gpa, &state);
     }
-    defer if (ipc_server) |srv| srv.deinit();
+    defer if (ipc_server) |srv| srv.deinit(init.io);
 
     var active_screenshot: ?struct {
         path: [:0]const u8,
@@ -192,8 +180,10 @@ pub fn main(init: std.process.Init) !void {
     } = null;
     defer {
         if (active_screenshot) |s| {
-            var writer = s.stream.writer(state.io, &.{});
-            writer.interface.writeAll("ERR quit\n") catch {};
+            var write_buf: [64]u8 = undefined;
+            var writer = s.stream.writer(state.io, &write_buf);
+            writer.interface.writeAll("ERR quit\n") catch |err| std.log.warn("Emergency screenshot response write failed: {}", .{err});
+            writer.interface.flush() catch |err| std.log.warn("Emergency screenshot response flush failed: {}", .{err});
             s.stream.close(state.io);
             gpa.free(s.path);
         }
@@ -228,24 +218,29 @@ pub fn main(init: std.process.Init) !void {
         state.mouse_inside = input.mouse_inside;
 
         // Process any pending IPC commands collected during event polling
-        for (input.pending_ipc_commands.items) |ptr| {
-            const cmd_data = @as(*ipc.IpcCommandData, @ptrCast(@alignCast(ptr)));
+        for (input.pending_ipc_commands.items) |cmd_data| {
             var it = std.mem.tokenizeAny(u8, cmd_data.command, " \t\r\n");
             const cmd = it.next() orelse "";
             if (std.mem.eql(u8, cmd, "screenshot")) {
                 if (it.next()) |filepath| {
                     if (filepath.len > 512) {
-                        var writer = cmd_data.client_stream.writer(state.io, &.{});
-                        writer.interface.writeAll("ERR PathTooLong\n") catch {};
+                        var write_buf: [128]u8 = undefined;
+                        var writer = cmd_data.client_stream.writer(state.io, &write_buf);
+                        writer.interface.writeAll("ERR PathTooLong\n") catch |err| std.log.warn("IPC screenshot response failed: {}", .{err});
+                        writer.interface.flush() catch |err| std.log.warn("IPC flush failed: {}", .{err});
                         cmd_data.client_stream.close(state.io);
                     } else if (active_screenshot) |_| {
-                        var writer = cmd_data.client_stream.writer(state.io, &.{});
-                        writer.interface.writeAll("ERR Busy\n") catch {};
+                        var write_buf: [128]u8 = undefined;
+                        var writer = cmd_data.client_stream.writer(state.io, &write_buf);
+                        writer.interface.writeAll("ERR Busy\n") catch |err| std.log.warn("IPC screenshot response failed: {}", .{err});
+                        writer.interface.flush() catch |err| std.log.warn("IPC flush failed: {}", .{err});
                         cmd_data.client_stream.close(state.io);
                     } else {
                         const dup_path = gpa.dupeZ(u8, filepath) catch {
-                            var writer = cmd_data.client_stream.writer(state.io, &.{});
-                            writer.interface.writeAll("ERR OutOfMemory\n") catch {};
+                            var write_buf: [128]u8 = undefined;
+                            var writer = cmd_data.client_stream.writer(state.io, &write_buf);
+                            writer.interface.writeAll("ERR OutOfMemory\n") catch |err| std.log.warn("IPC screenshot response failed: {}", .{err});
+                            writer.interface.flush() catch |err| std.log.warn("IPC flush failed: {}", .{err});
                             cmd_data.client_stream.close(state.io);
                             gpa.free(cmd_data.command);
                             gpa.destroy(cmd_data);
@@ -257,8 +252,10 @@ pub fn main(init: std.process.Init) !void {
                         };
                     }
                 } else {
-                    var writer = cmd_data.client_stream.writer(state.io, &.{});
-                    writer.interface.writeAll("ERR MissingArgument\n") catch {};
+                    var write_buf: [128]u8 = undefined;
+                    var writer = cmd_data.client_stream.writer(state.io, &write_buf);
+                    writer.interface.writeAll("ERR MissingArgument\n") catch |err| std.log.warn("IPC screenshot response failed: {}", .{err});
+                    writer.interface.flush() catch |err| std.log.warn("IPC flush failed: {}", .{err});
                     cmd_data.client_stream.close(state.io);
                 }
             } else {
@@ -266,8 +263,10 @@ pub fn main(init: std.process.Init) !void {
                     srv.executeCommand(&state, cmd_data.command, cmd_data.client_stream) catch |err| {
                         var response_buf: [128]u8 = undefined;
                         const response = std.fmt.bufPrint(&response_buf, "ERR {s}\n", .{@errorName(err)}) catch "ERR ExecutionFailed\n";
-                        var writer = cmd_data.client_stream.writer(state.io, &.{});
-                        writer.interface.writeAll(response) catch {};
+                        var write_buf: [128]u8 = undefined;
+                        var writer = cmd_data.client_stream.writer(state.io, &write_buf);
+                        writer.interface.writeAll(response) catch |err2| std.log.warn("IPC error response failed: {}", .{err2});
+                        writer.interface.flush() catch |err2| std.log.warn("IPC flush failed: {}", .{err2});
                         cmd_data.client_stream.close(state.io);
                     };
                 }
@@ -287,9 +286,9 @@ pub fn main(init: std.process.Init) !void {
             break :blk (state.current_index != null);
         };
         if (needs_cache_update and state.active_decode_threads.load(.acquire) < app.state.ViewerState.getMaxConcurrentDecodes()) {
-            c.SDL_LockMutex(state.image_list_mutex);
+            state.lockImageList();
             const count = state.image_list.items.len;
-            c.SDL_UnlockMutex(state.image_list_mutex);
+            state.unlockImageList();
             if (count > 0) {
                 if (state.current_index == null) state.current_index = 0;
                 state.updateCache() catch |err| std.log.err("Failed to update cache: {}", .{err});
@@ -332,8 +331,10 @@ pub fn main(init: std.process.Init) !void {
             if (active_screenshot) |s| {
                 var response_buf: [128]u8 = undefined;
                 const response = std.fmt.bufPrint(&response_buf, "ERR {s}\n", .{@errorName(err)}) catch "ERR SaveFailed\n";
-                var writer = s.stream.writer(state.io, &.{});
-                writer.interface.writeAll(response) catch {};
+                var write_buf: [128]u8 = undefined;
+                var writer = s.stream.writer(state.io, &write_buf);
+                writer.interface.writeAll(response) catch |werr| std.log.warn("Screenshot response failed: {}", .{werr});
+                writer.interface.flush() catch |ferr| std.log.warn("Screenshot response flush failed: {}", .{ferr});
                 s.stream.close(state.io);
                 gpa.free(s.path);
                 active_screenshot = null;
@@ -342,8 +343,10 @@ pub fn main(init: std.process.Init) !void {
         };
 
         if (active_screenshot) |s| {
-            var writer = s.stream.writer(state.io, &.{});
-            writer.interface.writeAll("OK\n") catch {};
+            var write_buf: [128]u8 = undefined;
+            var writer = s.stream.writer(state.io, &write_buf);
+            writer.interface.writeAll("OK\n") catch |werr| std.log.warn("Screenshot response failed: {}", .{werr});
+            writer.interface.flush() catch |ferr| std.log.warn("Screenshot response flush failed: {}", .{ferr});
             s.stream.close(state.io);
             gpa.free(s.path);
             active_screenshot = null;

@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = @import("c.zig").c;
+const ipc = @import("ipc.zig");
 
 pub const MeasureTextUserData = struct {
     fonts: []const ?*c.TTF_Font,
@@ -31,5 +32,5 @@ pub const FrameInput = struct {
 
     ticks: u64,
     delta_time_ms: f32,
-    pending_ipc_commands: std.ArrayList(*anyopaque),
+    pending_ipc_commands: std.ArrayList(*ipc.IpcCommandData),
 };

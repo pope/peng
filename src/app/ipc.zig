@@ -8,34 +8,55 @@ const clay = @import("zclay");
 
 pub var PENG_IPC_EVENT: u32 = 0xFFFFFFFF;
 
+/// Low-level POSIX unbuffered write system call binding.
+/// Used to write the IPC Unix Domain Socket path directly to STDOUT_FILENO (fd 1)
+/// without stdio stream buffering. This ensures child process stdout pipes
+/// (such as peng-test-runner) receive the socket path string instantly.
+extern fn write(fd: c_int, buf: [*]const u8, count: usize) isize;
+
 pub const IpcCommandData = struct {
     command: []const u8,
     client_stream: std.Io.net.Stream,
 };
 
 pub const IpcServer = struct {
-    thread: ?*c_lib.SDL_Thread = null,
     allocator: std.mem.Allocator,
 
     pub fn init(allocator: std.mem.Allocator, state: *ViewerState) !*IpcServer {
         const self = try allocator.create(IpcServer);
         self.* = .{
             .allocator = allocator,
-            .thread = null,
         };
 
-        // Start the background server thread using SDL3's SDL_CreateThread
-        self.thread = c_lib.SDL_CreateThread(ipcServerWorker, "IpcServerThread", state) orelse {
-            std.log.err("Failed to create UDS IPC server thread: {s}", .{c_lib.SDL_GetError()});
+        if (std.Thread.spawn(.{}, ipcServerWorkerTask, .{state})) |t| {
+            t.detach();
+        } else |err| {
+            std.log.err("Failed to create UDS IPC server thread: {}", .{err});
             allocator.destroy(self);
             return error.ThreadCreationFailed;
-        };
-        c_lib.SDL_DetachThread(self.thread.?);
+        }
 
         return self;
     }
 
-    pub fn deinit(self: *IpcServer) void {
+    pub fn deinit(self: *IpcServer, io: std.Io) void {
+        const pid = std.posix.system.getpid();
+        var path_buf: [128]u8 = undefined;
+        if (std.fmt.bufPrint(&path_buf, "/tmp/peng-{d}.sock", .{pid})) |sock_path| {
+            if (std.Io.net.UnixAddress.init(sock_path)) |addr| {
+                if (addr.connect(io)) |dummy| {
+                    dummy.close(io);
+                } else |err| {
+                    if (err != error.FileNotFound) {
+                        std.log.debug("IPC deinit dummy connect failed: {any}", .{err});
+                    }
+                }
+            } else |err| {
+                std.log.debug("IPC deinit address init failed: {any}", .{err});
+            }
+        } else |err| {
+            std.log.debug("IPC deinit socket path format failed: {any}", .{err});
+        }
         self.allocator.destroy(self);
     }
 
@@ -127,6 +148,8 @@ pub const IpcServer = struct {
         } else if (std.mem.eql(u8, cmd, "wait_load")) {
             var attempts: u32 = 0;
             while (attempts < 1000) : (attempts += 1) {
+                _ = state.processBackgroundEvents();
+                state.prepareCacheTextures();
                 if (state.getCurrentEntry()) |entry| {
                     if (entry.status != .decoding) {
                         break;
@@ -165,12 +188,10 @@ pub const IpcServer = struct {
     }
 };
 
-fn ipcServerWorker(data: ?*anyopaque) callconv(.c) c_int {
-    const state = @as(*ViewerState, @ptrCast(@alignCast(data.?)));
+fn ipcServerWorkerTask(state: *ViewerState) void {
     runIpcServer(state) catch |err| {
         std.log.err("IPC Server error: {any}", .{err});
     };
-    return 0;
 }
 
 fn runIpcServer(state: *ViewerState) !void {
@@ -194,14 +215,9 @@ fn runIpcServer(state: *ViewerState) !void {
         };
     }
 
-    // Print path to stdout for test runner discovery
     const msg = try std.fmt.allocPrint(gpa, "IPC socket: {s}\n", .{socket_path});
-    const stdout = std.Io.File.stdout();
-    var writer = stdout.writer(io, &.{});
-    writer.interface.writeAll(msg) catch |err| {
-        std.log.warn("IPC write socket path to stdout failed: {any}", .{err});
-    };
-    gpa.free(msg);
+    defer gpa.free(msg);
+    _ = write(1, msg.ptr, msg.len);
 
     while (state.running) {
         var client_stream = server.accept(io) catch |err| {
@@ -257,7 +273,9 @@ fn runIpcServer(state: *ViewerState) !void {
 }
 
 fn respondOk(io: std.Io, stream: std.Io.net.Stream) !void {
-    var writer = stream.writer(io, &.{});
+    var write_buf: [64]u8 = undefined;
+    var writer = stream.writer(io, &write_buf);
     try writer.interface.writeAll("OK\n");
+    try writer.interface.flush();
     stream.close(io);
 }

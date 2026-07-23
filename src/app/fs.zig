@@ -11,6 +11,16 @@ pub fn eqlIgnoreCase(a: []const u8, b: []const u8) bool {
     return true;
 }
 
+pub fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
+    if (needle.len == 0) return true;
+    if (haystack.len < needle.len) return false;
+    var i: usize = 0;
+    while (i <= haystack.len - needle.len) : (i += 1) {
+        if (eqlIgnoreCase(haystack[i .. i + needle.len], needle)) return true;
+    }
+    return false;
+}
+
 pub fn isImageExtension(ext: []const u8) bool {
     const extensions = [_][]const u8{ ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tga", ".webp" };
     for (extensions) |e| {
@@ -63,8 +73,8 @@ pub fn wakeUpMainThread() void {
 }
 
 fn appendPathThreadSafe(state: *ViewerState, gpa: std.mem.Allocator, path: []const u8, initial_gen: usize) void {
-    c.SDL_LockMutex(state.image_list_mutex);
-    defer c.SDL_UnlockMutex(state.image_list_mutex);
+    state.image_list_mutex.lockUncancelable(state.io);
+    defer state.image_list_mutex.unlock(state.io);
 
     if (state.generation.load(.acquire) != initial_gen or state.exiting.load(.acquire)) return;
     const dup = state.directory_arena.allocator().dupe(u8, path) catch |err| {
@@ -96,24 +106,20 @@ fn scanDirectoryThreadSafe(state: *ViewerState, gpa: std.mem.Allocator, io: std.
         std.log.warn("scanDirectoryThreadSafe: iterate next failed for '{s}': {any}", .{ dir_path, err });
         break :blk null;
     }) |entry| {
+        if (state.generation.load(.acquire) != initial_gen or state.exiting.load(.acquire)) return;
         if (entry.kind == .file) {
             const ext = std.fs.path.extension(entry.name);
             if (isImageExtension(ext)) {
-                c.SDL_LockMutex(state.image_list_mutex);
-                if (state.generation.load(.acquire) != initial_gen or state.exiting.load(.acquire)) {
-                    c.SDL_UnlockMutex(state.image_list_mutex);
-                    return;
-                }
-                const full_path = std.fs.path.join(state.directory_arena.allocator(), &.{ dir_path, entry.name }) catch {
-                    c.SDL_UnlockMutex(state.image_list_mutex);
+                const name_dup = gpa.dupe(u8, entry.name) catch continue;
+                dir_entries.append(gpa, name_dup) catch {
+                    gpa.free(name_dup);
                     continue;
-                };
-                c.SDL_UnlockMutex(state.image_list_mutex);
-                dir_entries.append(gpa, full_path) catch |err| {
-                    std.log.err("Failed to append entry '{s}': {}", .{ full_path, err });
                 };
             }
         }
+    }
+    defer {
+        for (dir_entries.items) |name| gpa.free(name);
     }
 
     std.mem.sort([]const u8, dir_entries.items, {}, struct {
@@ -122,20 +128,26 @@ fn scanDirectoryThreadSafe(state: *ViewerState, gpa: std.mem.Allocator, io: std.
         }
     }.lessThan);
 
-    c.SDL_LockMutex(state.image_list_mutex);
-    defer c.SDL_UnlockMutex(state.image_list_mutex);
+    state.image_list_mutex.lockUncancelable(io);
+    defer state.image_list_mutex.unlock(io);
     if (state.generation.load(.acquire) != initial_gen or state.exiting.load(.acquire)) return;
-    state.image_list.appendSlice(gpa, dir_entries.items) catch |err| {
-        std.log.err("Failed to append directory entries to image list: {}", .{err});
-    };
+
+    for (dir_entries.items) |name| {
+        const full_path = std.fs.path.join(state.directory_arena.allocator(), &.{ dir_path, name }) catch |err| {
+            std.log.err("Failed to join path for '{s}': {}", .{ name, err });
+            continue;
+        };
+        state.image_list.append(gpa, full_path) catch |err| {
+            std.log.err("Failed to append entry '{s}': {}", .{ full_path, err });
+        };
+    }
     if (state.current_index == null and state.image_list.items.len > 0) {
         state.current_index = 0;
     }
     wakeUpMainThread();
 }
 
-fn stdinWorker(ptr: ?*anyopaque) callconv(.c) c_int {
-    const args: *StdinArgs = @ptrCast(@alignCast(ptr orelse return 0));
+fn stdinWorker(args: *StdinArgs) void {
     const state = args.state;
     const io = args.io;
     const gpa = args.gpa;
@@ -167,7 +179,6 @@ fn stdinWorker(ptr: ?*anyopaque) callconv(.c) c_int {
             }
         }
     }
-    return 0;
 }
 
 pub fn readPipedStdin(state: *ViewerState, io: std.Io, gpa: std.mem.Allocator) !void {
@@ -183,10 +194,10 @@ pub fn readPipedStdin(state: *ViewerState, io: std.Io, gpa: std.mem.Allocator) !
         _ = state.active_threads.fetchAdd(1, .monotonic);
         state.is_loading_files.store(true, .release);
 
-        const thread = c.SDL_CreateThread(stdinWorker, "stdin_worker", args);
-        if (thread) |t| {
-            c.SDL_DetachThread(t);
-        } else {
+        if (std.Thread.spawn(.{}, stdinWorker, .{args})) |t| {
+            t.detach();
+        } else |err| {
+            std.log.err("std.Thread.spawn stdin worker failed: {}", .{err});
             _ = state.active_threads.fetchSub(1, .monotonic);
             state.is_loading_files.store(false, .release);
             state.allocator.destroy(args);
@@ -202,8 +213,7 @@ pub const PathScanArgs = struct {
     is_dir: bool,
 };
 
-fn pathScanWorker(ptr: ?*anyopaque) callconv(.c) c_int {
-    const args: *PathScanArgs = @ptrCast(@alignCast(ptr orelse return 0));
+fn pathScanWorker(args: *PathScanArgs) void {
     const state = args.state;
     const io = args.io;
     const gpa = args.gpa;
@@ -221,7 +231,10 @@ fn pathScanWorker(ptr: ?*anyopaque) callconv(.c) c_int {
 
     const dir_path = if (is_dir) target_path else (std.fs.path.dirname(target_path) orelse ".");
 
-    var dir = std.Io.Dir.openDir(std.Io.Dir.cwd(), io, dir_path, .{ .iterate = true }) catch return 0;
+    var dir = std.Io.Dir.openDir(std.Io.Dir.cwd(), io, dir_path, .{ .iterate = true }) catch |err| {
+        std.log.err("Failed to open dir '{s}': {}", .{ dir_path, err });
+        return;
+    };
     defer dir.close(io);
 
     var it = dir.iterate();
@@ -245,7 +258,7 @@ fn pathScanWorker(ptr: ?*anyopaque) callconv(.c) c_int {
         }
     }
 
-    if (state.generation.load(.acquire) != initial_gen or state.exiting.load(.acquire)) return 0;
+    if (state.generation.load(.acquire) != initial_gen or state.exiting.load(.acquire)) return;
 
     // Sort entries alphabetically
     std.mem.sort([]const u8, dir_entries.items, {}, struct {
@@ -254,10 +267,10 @@ fn pathScanWorker(ptr: ?*anyopaque) callconv(.c) c_int {
         }
     }.lessThan);
 
-    c.SDL_LockMutex(state.image_list_mutex);
-    defer c.SDL_UnlockMutex(state.image_list_mutex);
+    state.lockImageList();
+    defer state.unlockImageList();
 
-    if (state.generation.load(.acquire) != initial_gen or state.exiting.load(.acquire)) return 0;
+    if (state.generation.load(.acquire) != initial_gen or state.exiting.load(.acquire)) return;
 
     if (is_dir) {
         for (dir_entries.items) |item| {
@@ -303,8 +316,6 @@ fn pathScanWorker(ptr: ?*anyopaque) callconv(.c) c_int {
             state.current_index = 0;
         }
     }
-
-    return 0;
 }
 
 pub fn startAsyncPathScan(state: *ViewerState, path: []const u8, is_dir: bool) !void {
@@ -323,10 +334,10 @@ pub fn startAsyncPathScan(state: *ViewerState, path: []const u8, is_dir: bool) !
     _ = state.active_threads.fetchAdd(1, .monotonic);
     state.is_loading_files.store(true, .release);
 
-    const thread = c.SDL_CreateThread(pathScanWorker, "path_scan_worker", args);
-    if (thread) |t| {
-        c.SDL_DetachThread(t);
-    } else {
+    if (std.Thread.spawn(.{}, pathScanWorker, .{args})) |t| {
+        t.detach();
+    } else |err| {
+        std.log.err("std.Thread.spawn path scan worker failed: {}", .{err});
         _ = state.active_threads.fetchSub(1, .monotonic);
         state.is_loading_files.store(false, .release);
         state.allocator.free(dup_path);

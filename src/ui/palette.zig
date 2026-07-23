@@ -173,9 +173,9 @@ pub fn renderPalette(
                 .corner_radius = .all(6),
             })({
                 const raw_str = palette.query.items;
-                c.SDL_LockMutex(state.image_list_mutex);
+                state.lockImageList();
                 const total_count = state.image_list.items.len;
-                c.SDL_UnlockMutex(state.image_list_mutex);
+                state.unlockImageList();
                 if (palette.mode == .go_to_image) {
                     if (total_count == 0) {
                         clay.text("No images loaded.", .{
@@ -199,9 +199,9 @@ pub fn renderPalette(
                         const parsed_val_opt = std.fmt.parseInt(usize, raw_str, 10) catch null;
                         if (parsed_val_opt) |val| {
                             if (val >= 1 and val <= total_count) {
-                                c.SDL_LockMutex(state.image_list_mutex);
+                                state.lockImageList();
                                 const target_path = if (val - 1 < state.image_list.items.len) state.image_list.items[val - 1] else "";
-                                c.SDL_UnlockMutex(state.image_list_mutex);
+                                state.unlockImageList();
                                 const raw_basename = std.fs.path.basename(target_path);
                                 const display_filename = truncateFilename(frame_allocator, raw_basename, 492.0 * scale_x, @intFromFloat(12.0 * dpi_scale), measure_data);
                                 const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to go to {}: {s}", .{ val, display_filename });
@@ -381,9 +381,9 @@ pub fn renderPalette(
                     })({
                         switch (palette.mode) {
                             .files => {
-                                c.SDL_LockMutex(state.image_list_mutex);
+                                state.lockImageList();
                                 const path = if (real_idx < state.image_list.items.len) state.image_list.items[real_idx] else "";
-                                c.SDL_UnlockMutex(state.image_list_mutex);
+                                state.unlockImageList();
                                 const display_filename = truncateFilename(frame_allocator, std.fs.path.basename(path), 492.0 * scale_x, @intFromFloat(13.0 * dpi_scale), measure_data);
                                 const display_dir = truncateDirectory(frame_allocator, std.fs.path.dirname(path) orelse ".", 488.0 * scale_x, @intFromFloat(11.0 * dpi_scale), measure_data);
 

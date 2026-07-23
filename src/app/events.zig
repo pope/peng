@@ -70,18 +70,17 @@ pub const BackgroundEvent = union(enum) {
 
 pub fn MpscQueue(comptime T: type) type {
     return struct {
-        mutex: *c.SDL_Mutex,
+        mutex: std.Io.Mutex = .init,
         items: std.ArrayListUnmanaged(T) = .empty,
 
         const Self = @This();
 
-        pub fn init() !Self {
-            const m = c.SDL_CreateMutex() orelse return error.SdlMutexCreationFailed;
-            return .{ .mutex = m };
+        pub fn init() Self {
+            return .{};
         }
 
-        pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
-            c.SDL_LockMutex(self.mutex);
+        pub fn deinit(self: *Self, allocator: std.mem.Allocator, io: std.Io) void {
+            self.mutex.lockUncancelable(io);
             const info = @typeInfo(T);
             if (info == .@"struct" or info == .@"union") {
                 for (self.items.items) |*item| {
@@ -98,19 +97,18 @@ pub fn MpscQueue(comptime T: type) type {
                 }
             }
             self.items.deinit(allocator);
-            c.SDL_UnlockMutex(self.mutex);
-            c.SDL_DestroyMutex(self.mutex);
+            self.mutex.unlock(io);
         }
 
-        pub fn push(self: *Self, allocator: std.mem.Allocator, item: T) !void {
-            c.SDL_LockMutex(self.mutex);
-            defer c.SDL_UnlockMutex(self.mutex);
+        pub fn push(self: *Self, allocator: std.mem.Allocator, io: std.Io, item: T) !void {
+            self.mutex.lockUncancelable(io);
+            defer self.mutex.unlock(io);
             try self.items.append(allocator, item);
         }
 
-        pub fn drain(self: *Self, allocator: std.mem.Allocator, out_list: *std.ArrayList(T)) !void {
-            c.SDL_LockMutex(self.mutex);
-            defer c.SDL_UnlockMutex(self.mutex);
+        pub fn drain(self: *Self, allocator: std.mem.Allocator, io: std.Io, out_list: *std.ArrayList(T)) !void {
+            self.mutex.lockUncancelable(io);
+            defer self.mutex.unlock(io);
             if (self.items.items.len == 0) return;
             try out_list.appendSlice(allocator, self.items.items);
             self.items.clearRetainingCapacity();
@@ -120,21 +118,22 @@ pub fn MpscQueue(comptime T: type) type {
 
 test "MpscQueue push and drain" {
     const allocator = std.testing.allocator;
-    var queue = try MpscQueue(i32).init();
-    defer queue.deinit(allocator);
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var queue = MpscQueue(i32).init();
+    defer queue.deinit(allocator, io);
 
-    try queue.push(allocator, 10);
-    try queue.push(allocator, 20);
+    try queue.push(allocator, io, 10);
+    try queue.push(allocator, io, 20);
 
     var batch = std.ArrayList(i32).empty;
     defer batch.deinit(allocator);
 
-    try queue.drain(allocator, &batch);
+    try queue.drain(allocator, io, &batch);
     try std.testing.expectEqual(@as(usize, 2), batch.items.len);
     try std.testing.expectEqual(@as(i32, 10), batch.items[0]);
     try std.testing.expectEqual(@as(i32, 20), batch.items[1]);
 
     batch.clearRetainingCapacity();
-    try queue.drain(allocator, &batch);
+    try queue.drain(allocator, io, &batch);
     try std.testing.expectEqual(@as(usize, 0), batch.items.len);
 }
