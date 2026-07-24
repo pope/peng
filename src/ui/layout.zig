@@ -1,6 +1,6 @@
 const std = @import("std");
 const clay = @import("zclay");
-const c = @import("../app/c.zig").c;
+const sdl = @import("../sdl/root.zig");
 const app_state = @import("../app/state.zig");
 const ViewerState = app_state.ViewerState;
 const types = @import("../app/types.zig");
@@ -16,7 +16,7 @@ pub fn renderFrame(
     state: *ViewerState,
     input: FrameInput,
     frame_allocator: std.mem.Allocator,
-    fonts: []const ?*c.TTF_Font,
+    fonts: []const ?sdl.Font,
     measure_data: *const MeasureTextUserData,
     capture_filename: ?[:0]const u8,
 ) !void {
@@ -237,7 +237,7 @@ pub fn renderFrame(
                             },
                         },
                         .image = .{
-                            .image_data = @ptrCast(thumb_tex),
+                            .image_data = thumb_tex.asOpaque(),
                         },
                     })({});
                 } else switch (entry.status) {
@@ -252,7 +252,7 @@ pub fn renderFrame(
                                 },
                             },
                             .image = .{
-                                .image_data = @ptrCast(tex),
+                                .image_data = tex.asOpaque(),
                             },
                         })({});
                     },
@@ -371,83 +371,79 @@ pub fn renderFrame(
     const render_commands = clay.endLayout();
 
     // Render Frame
-    const cmd_buf = c.SDL_AcquireGPUCommandBuffer(state.gpu_device) orelse return error.CommandBufferAcquisitionFailed;
+    const dev = state.gpu_device.?;
+    const cmd_wrapper = dev.acquireCommandBuffer() orelse return error.CommandBufferAcquisitionFailed;
     var cmd_buf_submitted = false;
     errdefer if (!cmd_buf_submitted) {
-        _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
+        _ = cmd_wrapper.cancel();
     };
 
-    var temp_buffers = std.ArrayList(*c.SDL_GPUTransferBuffer).empty;
+    var temp_buffers = std.ArrayList(sdl.gpu.TransferBuffer).empty;
     defer temp_buffers.deinit(frame_allocator);
     errdefer {
         for (temp_buffers.items) |buf| {
-            c.SDL_ReleaseGPUTransferBuffer(state.gpu_device.?, buf);
+            dev.releaseTransferBuffer(buf);
         }
     }
 
     const use_headless = !state.window_claimed;
 
-    var target_tex: ?*c.SDL_GPUTexture = null;
+    var target_tex: ?sdl.gpu.Texture = null;
     var target_w: u32 = 0;
     var target_h: u32 = 0;
-    var target_format: c.SDL_GPUTextureFormat = c.SDL_GPU_TEXTUREFORMAT_INVALID;
+    var target_format: sdl.gpu.TextureFormat = .invalid;
 
     if (use_headless) {
         target_w = @intFromFloat(width);
         target_h = @intFromFloat(height);
-        target_format = c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        target_format = .rgba8_unorm;
 
-        const target_tex_info = c.SDL_GPUTextureCreateInfo{
-            .type = c.SDL_GPU_TEXTURETYPE_2D,
-            .format = target_format,
-            .usage = c.SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
+        const target_tex_info = sdl.gpu.TextureCreateInfo{
+            .type = .type_2d,
+            .format = .rgba8_unorm,
+            .usage = sdl.gpu.TextureUsage.color_target,
             .width = target_w,
             .height = target_h,
             .layer_count_or_depth = 1,
             .num_levels = 1,
-            .sample_count = c.SDL_GPU_SAMPLECOUNT_1,
+            .sample_count = .count_1,
             .props = 0,
         };
-        target_tex = c.SDL_CreateGPUTexture(state.gpu_device.?, &target_tex_info) orelse {
-            std.log.err("Failed to create offscreen target texture: {s}", .{c.SDL_GetError()});
+        target_tex = dev.createTexture(&target_tex_info) orelse {
+            std.log.err("Failed to create offscreen target texture: {s}", .{sdl.getError()});
             return error.OffscreenTargetTextureCreationFailed;
         };
     } else {
-        var swap_tex: ?*c.SDL_GPUTexture = null;
         var swap_w: u32 = 0;
         var swap_h: u32 = 0;
-        if (c.SDL_WaitAndAcquireGPUSwapchainTexture(
-            cmd_buf,
-            state.window,
-            &swap_tex,
-            &swap_w,
-            &swap_h,
-        )) {
-            target_tex = swap_tex;
-            target_w = swap_w;
-            target_h = swap_h;
-            target_format = c.SDL_GetGPUSwapchainTextureFormat(state.gpu_device.?, state.window);
+        if (state.window) |w| {
+            if (w.waitAndAcquireSwapchainTexture(cmd_wrapper, &swap_w, &swap_h)) |swap_tex| {
+                target_tex = swap_tex;
+                target_w = swap_w;
+                target_h = swap_h;
+                target_format = dev.getSwapchainTextureFormat(w);
+            }
         }
     }
 
     errdefer if (use_headless) {
         if (target_tex) |tex| {
-            c.SDL_ReleaseGPUTexture(state.gpu_device.?, tex);
+            dev.releaseTexture(tex);
         }
     };
 
     if (target_tex) |tex| {
         if (target_w == 0 or target_h == 0) {
             cmd_buf_submitted = true;
-            _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+            _ = cmd_wrapper.submit();
             if (use_headless) {
-                c.SDL_ReleaseGPUTexture(state.gpu_device.?, tex);
+                dev.releaseTexture(tex);
             }
             return;
         }
         try renderer.renderClayCommands(
             state,
-            cmd_buf,
+            cmd_wrapper,
             tex,
             fonts,
             render_commands,
@@ -458,30 +454,30 @@ pub fn renderFrame(
         );
         if (capture_filename) |filename| {
             cmd_buf_submitted = true;
-            try saveTextureToPng(state.gpu_device.?, cmd_buf, tex, target_w, target_h, target_format, filename);
+            try saveTextureToPng(dev, cmd_wrapper, tex, target_w, target_h, target_format, filename);
         } else if (use_headless) {
             cmd_buf_submitted = true;
-            const fence_opt = c.SDL_SubmitGPUCommandBufferAndAcquireFence(cmd_buf);
+            const fence_opt = cmd_wrapper.submitAndAcquireFence();
             if (fence_opt) |fence| {
-                _ = c.SDL_WaitForGPUFences(state.gpu_device.?, true, &fence, 1);
-                c.SDL_ReleaseGPUFence(state.gpu_device.?, fence);
+                _ = dev.waitForFence(fence);
+                dev.releaseFence(fence);
             } else {
-                std.log.err("Failed to acquire GPU fence for headless render: {s}", .{c.SDL_GetError()});
+                std.log.err("Failed to acquire GPU fence for headless render: {s}", .{sdl.getError()});
                 return error.FenceAcquisitionFailed;
             }
         } else {
             cmd_buf_submitted = true;
-            _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+            _ = cmd_wrapper.submit();
         }
 
         for (temp_buffers.items) |buf| {
-            c.SDL_ReleaseGPUTransferBuffer(state.gpu_device.?, buf);
+            dev.releaseTransferBuffer(buf);
         }
 
         if (use_headless) {
-            c.SDL_ReleaseGPUTexture(state.gpu_device.?, tex);
+            dev.releaseTexture(tex);
         }
     } else {
-        _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+        _ = cmd_wrapper.submit();
     }
 }

@@ -1,6 +1,6 @@
 const std = @import("std");
 const clay = @import("zclay");
-const c = @import("../app/c.zig").c;
+const sdl = @import("../sdl/root.zig");
 const app_state = @import("../app/state.zig");
 
 pub const ZoomPan = struct {
@@ -48,15 +48,15 @@ const Uniforms = extern struct {
 const BatchItem = struct {
     vertex_start: u32,
     vertex_count: u32,
-    texture: *c.SDL_GPUTexture,
+    texture: sdl.gpu.Texture,
     is_image: bool,
-    scissor: ?c.SDL_Rect,
+    scissor: ?sdl.Rect,
 };
 
 fn appendRectQuad(
     vertices: *std.ArrayList(Vertex),
     allocator: std.mem.Allocator,
-    rect: c.SDL_FRect,
+    rect: sdl.FRect,
     clay_color: clay.Color,
     win_w: f32,
     win_h: f32,
@@ -79,8 +79,8 @@ fn appendRectQuad(
 fn appendLineQuad(
     vertices: *std.ArrayList(Vertex),
     allocator: std.mem.Allocator,
-    p1: c.SDL_FPoint,
-    p2: c.SDL_FPoint,
+    p1: sdl.FPoint,
+    p2: sdl.FPoint,
     thickness: f32,
     r: f32,
     g: f32,
@@ -157,13 +157,13 @@ fn getTrigQuadrant(step_idx: usize, total_steps: usize) TrigStep {
 fn renderFillRoundedRect(
     vertices: *std.ArrayList(Vertex),
     allocator: std.mem.Allocator,
-    rect: c.SDL_FRect,
+    rect: sdl.FRect,
     corner_radius: f32,
     clay_color: clay.Color,
     win_w: f32,
     win_h: f32,
 ) !void {
-    const color = c.SDL_FColor{
+    const color = sdl.FColor{
         .r = clay_color[0] / 255.0,
         .g = clay_color[1] / 255.0,
         .b = clay_color[2] / 255.0,
@@ -178,13 +178,13 @@ fn renderFillRoundedRect(
     const total_vertices = 4 + (4 * (num_circle_segments * 2)) + 8;
     const total_indices = 6 + (4 * (num_circle_segments * 3)) + 24;
 
-    var stack_vertices: [512]c.SDL_Vertex = undefined;
+    var stack_vertices: [512]sdl.Vertex = undefined;
     var stack_indices: [1024]c_int = undefined;
 
     const vertices_src = if (total_vertices <= stack_vertices.len)
         stack_vertices[0..@intCast(total_vertices)]
     else
-        try allocator.alloc(c.SDL_Vertex, @intCast(total_vertices));
+        try allocator.alloc(sdl.Vertex, @intCast(total_vertices));
     defer if (total_vertices > stack_vertices.len) allocator.free(vertices_src);
 
     const indices = if (total_indices <= stack_indices.len)
@@ -388,7 +388,7 @@ fn drawDashedLineH(vertices: *std.ArrayList(Vertex), allocator: std.mem.Allocato
     var x = x1;
     while (x < x2) {
         const draw_w = @min(dash_len, x2 - x);
-        const rect = c.SDL_FRect{ .x = x, .y = y, .w = draw_w, .h = thickness };
+        const rect = sdl.FRect{ .x = x, .y = y, .w = draw_w, .h = thickness };
         try appendRectQuad(vertices, allocator, rect, color, win_w, win_h);
         x += dash_len + gap_len;
     }
@@ -398,7 +398,7 @@ fn drawDashedLineV(vertices: *std.ArrayList(Vertex), allocator: std.mem.Allocato
     var y = y1;
     while (y < y2) {
         const draw_h = @min(dash_len, y2 - y);
-        const rect = c.SDL_FRect{ .x = x, .y = y, .w = thickness, .h = draw_h };
+        const rect = sdl.FRect{ .x = x, .y = y, .w = thickness, .h = draw_h };
         try appendRectQuad(vertices, allocator, rect, color, win_w, win_h);
         y += dash_len + gap_len;
     }
@@ -406,7 +406,7 @@ fn drawDashedLineV(vertices: *std.ArrayList(Vertex), allocator: std.mem.Allocato
 
 fn renderArc(
     vertices: *std.ArrayList(Vertex),
-    center: c.SDL_FPoint,
+    center: sdl.FPoint,
     radius: f32,
     start_angle: f32,
     end_angle: f32,
@@ -429,11 +429,11 @@ fn renderArc(
 
     const points_len = @as(usize, @intCast(num_circle_segments + 1));
 
-    var stack_points: [128]c.SDL_FPoint = undefined;
+    var stack_points: [128]sdl.FPoint = undefined;
     const points = if (points_len <= stack_points.len)
         stack_points[0..points_len]
     else
-        try allocator.alloc(c.SDL_FPoint, points_len);
+        try allocator.alloc(sdl.FPoint, points_len);
     defer if (points_len > stack_points.len) allocator.free(points);
 
     var stack_cos: [128]f32 = undefined;
@@ -486,7 +486,7 @@ fn renderArc(
     }
 }
 
-fn scissorEqual(a: ?c.SDL_Rect, b: ?c.SDL_Rect) bool {
+fn scissorEqual(a: ?sdl.Rect, b: ?sdl.Rect) bool {
     if (a == null and b == null) return true;
     if (a == null or b == null) return false;
     const sa = a.?;
@@ -499,13 +499,13 @@ fn addBatch(
     allocator: std.mem.Allocator,
     start: u32,
     count: u32,
-    texture: *c.SDL_GPUTexture,
+    texture: sdl.gpu.Texture,
     is_image: bool,
-    scissor: ?c.SDL_Rect,
+    scissor: ?sdl.Rect,
 ) !void {
     if (batches.items.len > 0) {
         var last = &batches.items[batches.items.len - 1];
-        if (last.texture == texture and last.is_image == is_image and scissorEqual(last.scissor, scissor)) {
+        if (last.texture.eql(texture) and last.is_image == is_image and scissorEqual(last.scissor, scissor)) {
             last.vertex_count += count;
             return;
         }
@@ -521,12 +521,12 @@ fn addBatch(
 
 pub fn renderClayCommands(
     state: *app_state.ViewerState,
-    cmd_buf: *c.SDL_GPUCommandBuffer,
-    swap_tex: *c.SDL_GPUTexture,
-    fonts: []const ?*c.TTF_Font,
+    cmd_buf: sdl.gpu.CommandBuffer,
+    swap_tex: sdl.gpu.Texture,
+    fonts: []const ?sdl.Font,
     r_commands: []const clay.RenderCommand,
     allocator: std.mem.Allocator,
-    temp_buffers: *std.ArrayList(*c.SDL_GPUTransferBuffer),
+    temp_buffers: *std.ArrayList(sdl.gpu.TransferBuffer),
     win_w: i32,
     win_h: i32,
 ) !void {
@@ -539,11 +539,11 @@ pub fn renderClayCommands(
     var batches = std.ArrayList(BatchItem).empty;
     defer batches.deinit(allocator);
 
-    var current_scissor: ?c.SDL_Rect = null;
+    var current_scissor: ?sdl.Rect = null;
 
     for (r_commands) |rcmd| {
         const bb = rcmd.bounding_box;
-        const rect = c.SDL_FRect{
+        const rect = sdl.FRect{
             .x = @round(bb.x),
             .y = @round(bb.y),
             .w = @round(bb.width),
@@ -552,7 +552,7 @@ pub fn renderClayCommands(
 
         switch (rcmd.command_type) {
             .scissor_start => {
-                current_scissor = c.SDL_Rect{
+                current_scissor = sdl.Rect{
                     .x = @intFromFloat(@round(bb.x)),
                     .y = @intFromFloat(@round(bb.y)),
                     .w = @intFromFloat(@round(bb.width)),
@@ -580,7 +580,7 @@ pub fn renderClayCommands(
             .text => {
                 const text_data = rcmd.render_data.text;
                 if (text_data.font_id >= fonts.len) continue;
-                const font_ptr = fonts[text_data.font_id] orelse continue;
+                const font = fonts[text_data.font_id] orelse continue;
 
                 const len = @as(usize, @intCast(text_data.string_contents.length));
                 const text_slice = text_data.string_contents.chars[0..len];
@@ -598,7 +598,7 @@ pub fn renderClayCommands(
                     .hash = std.hash.Wyhash.hash(0, text_slice),
                 };
 
-                var cached_tex: ?*c.SDL_GPUTexture = null;
+                var cached_tex: ?sdl.gpu.Texture = null;
                 var w_f: f32 = 0.0;
                 var h_f: f32 = 0.0;
 
@@ -608,91 +608,85 @@ pub fn renderClayCommands(
                     w_f = entry.value_ptr.w;
                     h_f = entry.value_ptr.h;
                 } else {
-                    // Set font size
-                    if (!c.TTF_SetFontSize(font_ptr, @as(f32, @floatFromInt(text_data.font_size)))) {
-                        std.log.err("TTF_SetFontSize failed: {s}", .{c.SDL_GetError()});
-                    }
+                    _ = font.setFontSize(@as(f32, @floatFromInt(text_data.font_size)));
 
-                    const buffer = try allocator.alloc(u8, len + 1);
-                    defer allocator.free(buffer);
-                    @memcpy(buffer[0..len], text_slice);
-                    buffer[len] = 0;
-
-                    const surf = c.TTF_RenderText_Blended(font_ptr, buffer.ptr, len, c.SDL_Color{
+                    const surf = font.renderTextBlended(text_slice, .{
                         .r = @intFromFloat(text_data.text_color[0]),
                         .g = @intFromFloat(text_data.text_color[1]),
                         .b = @intFromFloat(text_data.text_color[2]),
                         .a = @intFromFloat(text_data.text_color[3]),
-                    }) orelse continue;
-                    defer c.SDL_DestroySurface(surf);
+                    }) catch continue;
+                    defer surf.destroy();
 
-                    const converted = c.SDL_ConvertSurface(surf, c.SDL_PIXELFORMAT_RGBA32) orelse continue;
-                    defer c.SDL_DestroySurface(converted);
+                    const converted = surf.convert(sdl.PixelFormat.rgba32) orelse continue;
+                    defer converted.destroy();
 
-                    const tex_info = c.SDL_GPUTextureCreateInfo{
-                        .type = c.SDL_GPU_TEXTURETYPE_2D,
-                        .format = c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-                        .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER,
-                        .width = @intCast(converted.*.w),
-                        .height = @intCast(converted.*.h),
+                    const dev = state.gpu_device.?;
+
+                    const tex_info = sdl.gpu.TextureCreateInfo{
+                        .type = .type_2d,
+                        .format = .rgba8_unorm,
+                        .usage = sdl.gpu.TextureUsage.sampler,
+                        .width = @intCast(converted.w()),
+                        .height = @intCast(converted.h()),
                         .layer_count_or_depth = 1,
                         .num_levels = 1,
-                        .sample_count = c.SDL_GPU_SAMPLECOUNT_1,
+                        .sample_count = .count_1,
                         .props = 0,
                     };
-                    const tex = c.SDL_CreateGPUTexture(state.gpu_device.?, &tex_info) orelse continue;
+                    const tex = dev.createTexture(&tex_info) orelse continue;
 
-                    const size = @as(usize, @intCast(converted.*.w)) * @as(usize, @intCast(converted.*.h)) * 4;
-                    const transfer_buf = c.SDL_CreateGPUTransferBuffer(state.gpu_device.?, &c.SDL_GPUTransferBufferCreateInfo{
-                        .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+                    const size = @as(usize, @intCast(converted.w())) * @as(usize, @intCast(converted.h())) * 4;
+                    const transfer_buf = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
+                        .usage = .upload,
                         .size = @intCast(size),
                         .props = 0,
                     }) orelse {
-                        c.SDL_ReleaseGPUTexture(state.gpu_device.?, tex);
+                        dev.releaseTexture(tex);
                         continue;
                     };
                     temp_buffers.append(allocator, transfer_buf) catch {
-                        c.SDL_ReleaseGPUTransferBuffer(state.gpu_device.?, transfer_buf);
-                        c.SDL_ReleaseGPUTexture(state.gpu_device.?, tex);
+                        dev.releaseTransferBuffer(transfer_buf);
+                        dev.releaseTexture(tex);
                         continue;
                     };
 
-                    const mapped: [*]u8 = @ptrCast(c.SDL_MapGPUTransferBuffer(state.gpu_device.?, transfer_buf, false) orelse {
-                        c.SDL_ReleaseGPUTexture(state.gpu_device.?, tex);
+                    const mapped = dev.mapTransferBuffer(transfer_buf, false) orelse {
+                        dev.releaseTexture(tex);
                         continue;
-                    });
-                    const src_pixels: [*]const u8 = @ptrCast(converted.*.pixels);
-                    const surf_w: usize = @intCast(converted.*.w);
-                    const surf_h: usize = @intCast(converted.*.h);
+                    };
+                    const surf_w: usize = @intCast(converted.w());
+                    const surf_h: usize = @intCast(converted.h());
                     const row_bytes: usize = surf_w * 4;
-                    const pitch: usize = @intCast(converted.*.pitch);
+                    const pitch: usize = @intCast(converted.pitch());
                     var row_y: usize = 0;
                     while (row_y < surf_h) : (row_y += 1) {
-                        const src_row = src_pixels[row_y * pitch .. row_y * pitch + row_bytes];
+                        const src_row = converted.pixels()[row_y * pitch .. row_y * pitch + row_bytes];
                         const dst_row = mapped[row_y * row_bytes .. row_y * row_bytes + row_bytes];
                         @memcpy(dst_row, src_row);
                     }
-                    c.SDL_UnmapGPUTransferBuffer(state.gpu_device.?, transfer_buf);
+                    dev.unmapTransferBuffer(transfer_buf);
 
-                    const copy_pass = c.SDL_BeginGPUCopyPass(cmd_buf) orelse {
-                        c.SDL_ReleaseGPUTexture(state.gpu_device.?, tex);
+                    const cmd = cmd_buf;
+                    const copy_pass = cmd.beginCopyPass() orelse {
+                        dev.releaseTexture(tex);
                         continue;
                     };
-                    c.SDL_UploadToGPUTexture(copy_pass, &c.SDL_GPUTextureTransferInfo{
+                    copy_pass.uploadToTexture(&sdl.gpu.TextureTransferInfo{
                         .transfer_buffer = transfer_buf,
                         .offset = 0,
-                        .pixels_per_row = @intCast(converted.*.w),
-                        .rows_per_layer = @intCast(converted.*.h),
-                    }, &c.SDL_GPUTextureRegion{
+                        .pixels_per_row = @intCast(converted.w()),
+                        .rows_per_layer = @intCast(converted.h()),
+                    }, &sdl.gpu.TextureRegion{
                         .texture = tex,
-                        .w = @intCast(converted.*.w),
-                        .h = @intCast(converted.*.h),
+                        .w = @intCast(converted.w()),
+                        .h = @intCast(converted.h()),
                         .d = 1,
                     }, false);
-                    c.SDL_EndGPUCopyPass(copy_pass);
+                    copy_pass.end();
 
-                    w_f = @floatFromInt(converted.*.w);
-                    h_f = @floatFromInt(converted.*.h);
+                    w_f = @floatFromInt(converted.w());
+                    h_f = @floatFromInt(converted.h());
                     cached_tex = tex;
 
                     state.text_cache.put(state.allocator, key, .{
@@ -701,7 +695,7 @@ pub fn renderClayCommands(
                         .h = h_f,
                         .last_used_frame = state.gpu_frame_index,
                     }) catch {
-                        c.SDL_ReleaseGPUTexture(state.gpu_device.?, tex);
+                        dev.releaseTexture(tex);
                         continue;
                     };
                 }
@@ -762,7 +756,7 @@ pub fn renderClayCommands(
                     if (is_dashed) {
                         try drawDashedLineV(&vertices, allocator, rect.x, starting_y, starting_y + length, @floatFromInt(config.width.left), config.color, 8.0, 6.0, f_win_w, f_win_h);
                     } else {
-                        const line = c.SDL_FRect{ .x = rect.x, .y = starting_y, .w = @floatFromInt(config.width.left), .h = length };
+                        const line = sdl.FRect{ .x = rect.x, .y = starting_y, .w = @floatFromInt(config.width.left), .h = length };
                         try appendRectQuad(&vertices, allocator, line, config.color, f_win_w, f_win_h);
                     }
                 }
@@ -773,7 +767,7 @@ pub fn renderClayCommands(
                     if (is_dashed) {
                         try drawDashedLineV(&vertices, allocator, starting_x, starting_y, starting_y + length, @floatFromInt(config.width.right), config.color, 8.0, 6.0, f_win_w, f_win_h);
                     } else {
-                        const line = c.SDL_FRect{ .x = starting_x, .y = starting_y, .w = @floatFromInt(config.width.right), .h = length };
+                        const line = sdl.FRect{ .x = starting_x, .y = starting_y, .w = @floatFromInt(config.width.right), .h = length };
                         try appendRectQuad(&vertices, allocator, line, config.color, f_win_w, f_win_h);
                     }
                 }
@@ -783,7 +777,7 @@ pub fn renderClayCommands(
                     if (is_dashed) {
                         try drawDashedLineH(&vertices, allocator, starting_x, starting_x + length, rect.y, @floatFromInt(config.width.top), config.color, 8.0, 6.0, f_win_w, f_win_h);
                     } else {
-                        const line = c.SDL_FRect{ .x = starting_x, .y = rect.y, .w = length, .h = @floatFromInt(config.width.top) };
+                        const line = sdl.FRect{ .x = starting_x, .y = rect.y, .w = length, .h = @floatFromInt(config.width.top) };
                         try appendRectQuad(&vertices, allocator, line, config.color, f_win_w, f_win_h);
                     }
                 }
@@ -794,7 +788,7 @@ pub fn renderClayCommands(
                     if (is_dashed) {
                         try drawDashedLineH(&vertices, allocator, starting_x, starting_x + length, starting_y, @floatFromInt(config.width.bottom), config.color, 8.0, 6.0, f_win_w, f_win_h);
                     } else {
-                        const line = c.SDL_FRect{ .x = starting_x, .y = starting_y, .w = length, .h = @floatFromInt(config.width.bottom) };
+                        const line = sdl.FRect{ .x = starting_x, .y = starting_y, .w = length, .h = @floatFromInt(config.width.bottom) };
                         try appendRectQuad(&vertices, allocator, line, config.color, f_win_w, f_win_h);
                     }
                 }
@@ -818,7 +812,7 @@ pub fn renderClayCommands(
                 }
             },
             .image => {
-                const texture: ?*c.SDL_GPUTexture = @ptrCast(@alignCast(rcmd.render_data.image.image_data));
+                const texture: ?sdl.gpu.Texture = if (rcmd.render_data.image.image_data) |ptr| sdl.gpu.Texture{ .ptr = @ptrCast(@alignCast(ptr)) } else null;
                 if (texture) |tex| {
                     var dst_w = rect.w;
                     var dst_h = rect.h;
@@ -894,29 +888,33 @@ pub fn renderClayCommands(
     }
 
     // Persistent Vertex Buffer Double-Buffering
-    var vert_buf: ?*c.SDL_GPUBuffer = null;
+    var vert_buf: ?sdl.gpu.Buffer = null;
     const needed_size = vertices.items.len * @sizeOf(Vertex);
     const frame_idx = state.gpu_frame_index % 2;
+
+    const dev = state.gpu_device.?;
 
     if (needed_size > 0) {
         if (state.gpu_vertex_buffers[frame_idx] == null or state.gpu_buffer_capacities[frame_idx] < needed_size) {
             if (state.gpu_vertex_buffers[frame_idx]) |vb| {
-                c.SDL_ReleaseGPUBuffer(state.gpu_device.?, vb);
+                dev.releaseBuffer(vb);
+                state.gpu_vertex_buffers[frame_idx] = null;
             }
             if (state.gpu_transfer_buffers[frame_idx]) |tb| {
-                c.SDL_ReleaseGPUTransferBuffer(state.gpu_device.?, tb);
+                dev.releaseTransferBuffer(tb);
+                state.gpu_transfer_buffers[frame_idx] = null;
             }
 
             const new_capacity = std.mem.alignForward(usize, needed_size * 2, 4096);
 
-            state.gpu_vertex_buffers[frame_idx] = c.SDL_CreateGPUBuffer(state.gpu_device.?, &c.SDL_GPUBufferCreateInfo{
-                .usage = c.SDL_GPU_BUFFERUSAGE_VERTEX,
+            state.gpu_vertex_buffers[frame_idx] = dev.createBuffer(&sdl.gpu.BufferCreateInfo{
+                .usage = sdl.gpu.BufferUsage.vertex,
                 .size = @intCast(new_capacity),
                 .props = 0,
             }) orelse return error.GPUBufferCreationFailed;
 
-            state.gpu_transfer_buffers[frame_idx] = c.SDL_CreateGPUTransferBuffer(state.gpu_device.?, &c.SDL_GPUTransferBufferCreateInfo{
-                .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+            state.gpu_transfer_buffers[frame_idx] = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
+                .usage = .upload,
                 .size = @intCast(new_capacity),
                 .props = 0,
             }) orelse return error.GPUTransferBufferCreationFailed;
@@ -927,42 +925,42 @@ pub fn renderClayCommands(
         const vb = state.gpu_vertex_buffers[frame_idx].?;
         const tb = state.gpu_transfer_buffers[frame_idx].?;
 
-        const mapped: [*]Vertex = @ptrCast(@alignCast(c.SDL_MapGPUTransferBuffer(state.gpu_device.?, tb, false) orelse return error.GPUMapFailed));
+        const mapped: [*]Vertex = @ptrCast(@alignCast(dev.mapTransferBuffer(tb, false) orelse return error.GPUMapFailed));
         @memcpy(mapped[0..vertices.items.len], vertices.items);
-        c.SDL_UnmapGPUTransferBuffer(state.gpu_device.?, tb);
+        dev.unmapTransferBuffer(tb);
 
-        const copy_pass = c.SDL_BeginGPUCopyPass(cmd_buf) orelse return error.GPUCopyPassFailed;
-        c.SDL_UploadToGPUBuffer(copy_pass, &c.SDL_GPUTransferBufferLocation{
+        const cmd = cmd_buf;
+        const copy_pass = cmd.beginCopyPass() orelse return error.GPUCopyPassFailed;
+        copy_pass.uploadToBuffer(&sdl.gpu.TransferBufferLocation{
             .transfer_buffer = tb,
             .offset = 0,
-        }, &c.SDL_GPUBufferRegion{
+        }, &sdl.gpu.BufferRegion{
             .buffer = vb,
             .offset = 0,
             .size = @intCast(needed_size),
         }, false);
-        c.SDL_EndGPUCopyPass(copy_pass);
+        copy_pass.end();
 
         vert_buf = vb;
     }
 
-    const color_target = c.SDL_GPUColorTargetInfo{
+    const color_target = sdl.gpu.ColorTargetAttachment{
         .texture = swap_tex,
         .clear_color = .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 },
-        .load_op = c.SDL_GPU_LOADOP_CLEAR,
-        .store_op = c.SDL_GPU_STOREOP_STORE,
+        .load_op = .clear,
+        .store_op = .store,
         .cycle = false,
-        .padding1 = 0,
-        .padding2 = 0,
     };
 
-    const render_pass = c.SDL_BeginGPURenderPass(cmd_buf, &color_target, 1, null) orelse return;
-    defer c.SDL_EndGPURenderPass(render_pass);
+    const cmd = cmd_buf;
+    const render_pass = cmd.beginRenderPass(&color_target) orelse return;
+    defer render_pass.end();
 
-    c.SDL_BindGPUGraphicsPipeline(render_pass, state.gpu_pipeline.?);
+    render_pass.bindPipeline(state.gpu_pipeline.?);
 
     if (vert_buf) |vb| {
-        const vert_binding = c.SDL_GPUBufferBinding{ .buffer = vb, .offset = 0 };
-        c.SDL_BindGPUVertexBuffers(render_pass, 0, &vert_binding, 1);
+        const vert_binding = sdl.gpu.BufferBinding{ .buffer = vb, .offset = 0 };
+        render_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{vert_binding});
 
         for (batches.items) |batch| {
             if (batch.scissor) |sc| {
@@ -974,14 +972,14 @@ pub fn renderClayCommands(
                 if (safe_sc.x < win_w and safe_sc.y < win_h) {
                     safe_sc.w = @min(safe_sc.w, win_w - safe_sc.x);
                     safe_sc.h = @min(safe_sc.h, win_h - safe_sc.y);
-                    c.SDL_SetGPUScissor(render_pass, &safe_sc);
+                    render_pass.setScissor(&safe_sc);
                 } else {
-                    const empty_sc = c.SDL_Rect{ .x = 0, .y = 0, .w = 0, .h = 0 };
-                    c.SDL_SetGPUScissor(render_pass, &empty_sc);
+                    const empty_sc = sdl.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 };
+                    render_pass.setScissor(&empty_sc);
                 }
             } else {
-                const full_sc = c.SDL_Rect{ .x = 0, .y = 0, .w = win_w, .h = win_h };
-                c.SDL_SetGPUScissor(render_pass, &full_sc);
+                const full_sc = sdl.Rect{ .x = 0, .y = 0, .w = win_w, .h = win_h };
+                render_pass.setScissor(&full_sc);
             }
 
             const scale_mode_val: i32 = switch (state.texture_scale_mode) {
@@ -997,10 +995,10 @@ pub fn renderClayCommands(
                 .is_text_or_color = if (batch.is_image) 0 else 1,
                 .scale_mode = scale_mode_val,
             };
-            c.SDL_PushGPUFragmentUniformData(cmd_buf, 0, &ubo, @sizeOf(Uniforms));
+            cmd.pushFragmentUniform(0, std.mem.asBytes(&ubo));
 
-            c.SDL_BindGPUFragmentSamplers(render_pass, 0, &c.SDL_GPUTextureSamplerBinding{ .texture = batch.texture, .sampler = state.gpu_sampler.? }, 1);
-            c.SDL_DrawGPUPrimitives(render_pass, batch.vertex_count, 1, batch.vertex_start, 0);
+            render_pass.bindFragmentSamplers(0, &[_]sdl.gpu.TextureSamplerBinding{.{ .texture = batch.texture, .sampler = state.gpu_sampler.? }});
+            render_pass.drawPrimitives(batch.vertex_count, 1, batch.vertex_start, 0);
         }
     }
 
@@ -1019,7 +1017,7 @@ pub fn renderClayCommands(
 
     for (to_evict.items) |k| {
         if (state.text_cache.fetchRemove(k)) |removed| {
-            c.SDL_ReleaseGPUTexture(state.gpu_device.?, removed.value.texture);
+            dev.releaseTexture(removed.value.texture);
         }
     }
 

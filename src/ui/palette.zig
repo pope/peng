@@ -1,6 +1,6 @@
 const std = @import("std");
 const clay = @import("zclay");
-const c = @import("../app/c.zig").c;
+const sdl = @import("../sdl/root.zig");
 const app_state = @import("../app/state.zig");
 const ViewerState = app_state.ViewerState;
 const PaletteState = app_state.PaletteState;
@@ -535,30 +535,22 @@ pub fn renderPalette(
 pub fn truncateFilename(allocator: std.mem.Allocator, text: []const u8, max_w: f32, font_size: u16, data: *const MeasureTextUserData) []const u8 {
     const font = data.fonts[0] orelse return text;
     const target_size = @as(f32, @floatFromInt(font_size));
-    if (c.TTF_GetFontSize(font) != target_size) {
-        _ = c.TTF_SetFontSize(font, target_size);
+    if (font.getFontSize() != target_size) {
+        _ = font.setFontSize(target_size);
     }
 
-    var w: c_int = 0;
-    var h: c_int = 0;
-    if (!c.TTF_GetStringSize(font, text.ptr, text.len, &w, &h)) {
-        return text;
-    }
-    if (@as(f32, @floatFromInt(w)) <= max_w) {
+    const size = font.getStringSize(text) orelse return text;
+    if (@as(f32, @floatFromInt(size.w)) <= max_w) {
         return text;
     }
 
-    var dots_w: c_int = 0;
-    var dots_h: c_int = 0;
-    _ = c.TTF_GetStringSize(font, "...", 3, &dots_w, &dots_h);
+    const dots_size = font.getStringSize("...") orelse sdl.Font.TextSize{ .w = 0, .h = 0 };
 
-    const available_w = max_w - @as(f32, @floatFromInt(dots_w));
+    const available_w = max_w - @as(f32, @floatFromInt(dots_size.w));
     if (available_w <= 0) return "...";
 
-    var measured_w: c_int = 0;
-    var measured_len: usize = 0;
-    if (c.TTF_MeasureString(font, text.ptr, text.len, @intFromFloat(available_w), &measured_w, &measured_len)) {
-        var best_len = measured_len;
+    if (font.measureString(text, @intFromFloat(available_w))) |m| {
+        var best_len = m.measured_len;
         while (best_len > 0 and best_len < text.len and (text[best_len] & 0xC0) == 0x80) {
             best_len -= 1;
         }

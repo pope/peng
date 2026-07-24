@@ -1,5 +1,5 @@
 const std = @import("std");
-const c_lib = @import("c.zig").c;
+const sdl = @import("../sdl/root.zig");
 const app_state = @import("state.zig");
 const ViewerState = app_state.ViewerState;
 const ScaleMode = app_state.ScaleMode;
@@ -153,7 +153,7 @@ pub const IpcServer = struct {
                         break;
                     }
                 }
-                _ = c_lib.SDL_Delay(10);
+                sdl.timer.delay(10);
             }
             try respondOk(state.io, stream);
         } else if (std.mem.eql(u8, cmd, "next")) {

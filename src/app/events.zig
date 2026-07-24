@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("c.zig").c;
+const sdl = @import("../sdl/root.zig");
 const ipc = @import("ipc.zig");
 
 pub const ExifParsedPayload = struct {
@@ -11,7 +11,7 @@ pub const ExifParsedPayload = struct {
 pub const ThumbDecodedPayload = struct {
     index: usize,
     generation: usize,
-    surface: ?*c.SDL_Surface,
+    surface: ?sdl.Surface,
     w: f32,
     h: f32,
     full_w: f32,
@@ -22,7 +22,7 @@ pub const ThumbDecodedPayload = struct {
 pub const ImageDecodedPayload = struct {
     index: usize,
     generation: usize,
-    surface: ?*c.SDL_Surface,
+    surface: ?sdl.Surface,
     w: f32,
     h: f32,
     mime_type: []const u8,
@@ -59,10 +59,10 @@ pub const BackgroundEvent = union(enum) {
     pub fn deinit(self: *BackgroundEvent, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .thumb_decoded => |t| {
-                if (t.surface) |surf| c.SDL_DestroySurface(surf);
+                if (t.surface) |surf| surf.destroy();
             },
             .image_decoded => |d| {
-                if (d.surface) |surf| c.SDL_DestroySurface(surf);
+                if (d.surface) |surf| surf.destroy();
             },
             .path_discovered => |p| allocator.free(p.path),
             else => {},

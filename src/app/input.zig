@@ -1,89 +1,90 @@
 const std = @import("std");
-const c = @import("c.zig").c;
+const sdl = @import("../sdl/root.zig");
 const commands = @import("../commands.zig");
 const app_state = @import("state.zig");
 const types = @import("types.zig");
 const Key = types.Key;
 const KeyModifiers = types.KeyModifiers;
+const FrameInput = types.FrameInput;
+const PaletteState = app_state.PaletteState;
 const ViewerState = app_state.ViewerState;
 const startTextInput = app_state.startTextInput;
 const stopTextInput = app_state.stopTextInput;
 const app_actions = commands.actions.app_actions;
 const flat_shortcuts = commands.actions.flat_shortcuts;
-const FrameInput = types.FrameInput;
 
-pub fn mapKeyFromSdl(key: c.SDL_Keycode) Key {
+pub fn mapKeyFromSdl(key: sdl.keys.Keycode) Key {
     return switch (key) {
-        c.SDLK_ESCAPE => .escape,
-        c.SDLK_RETURN, c.SDLK_KP_ENTER => .return_key,
-        c.SDLK_BACKSPACE => .backspace,
-        c.SDLK_TAB => .tab,
-        c.SDLK_SPACE => .space,
-        c.SDLK_LEFT => .left,
-        c.SDLK_RIGHT => .right,
-        c.SDLK_UP => .up,
-        c.SDLK_DOWN => .down,
-        c.SDLK_EQUALS, c.SDLK_KP_PLUS => .equals,
-        c.SDLK_MINUS, c.SDLK_KP_MINUS => .minus,
-        c.SDLK_LEFTBRACKET => .left_bracket,
-        c.SDLK_RIGHTBRACKET => .right_bracket,
-        c.SDLK_HOME => .home,
-        c.SDLK_END => .end,
-        c.SDLK_PAGEUP => .page_up,
-        c.SDLK_PAGEDOWN => .page_down,
-        c.SDLK_F1 => .f1,
-        c.SDLK_F11 => .f11,
-        c.SDLK_0, c.SDLK_KP_0 => .char_0,
-        c.SDLK_1, c.SDLK_KP_1 => .char_1,
-        c.SDLK_2, c.SDLK_KP_2 => .char_2,
-        c.SDLK_3, c.SDLK_KP_3 => .char_3,
-        c.SDLK_4, c.SDLK_KP_4 => .char_4,
-        c.SDLK_5, c.SDLK_KP_5 => .char_5,
-        c.SDLK_6, c.SDLK_KP_6 => .char_6,
-        c.SDLK_7, c.SDLK_KP_7 => .char_7,
-        c.SDLK_8, c.SDLK_KP_8 => .char_8,
-        c.SDLK_9, c.SDLK_KP_9 => .char_9,
-        c.SDLK_A => .char_a,
-        c.SDLK_B => .char_b,
-        c.SDLK_C => .char_c,
-        c.SDLK_D => .char_d,
-        c.SDLK_E => .char_e,
-        c.SDLK_F => .char_f,
-        c.SDLK_G => .char_g,
-        c.SDLK_H => .char_h,
-        c.SDLK_I => .char_i,
-        c.SDLK_J => .char_j,
-        c.SDLK_K => .char_k,
-        c.SDLK_L => .char_l,
-        c.SDLK_M => .char_m,
-        c.SDLK_N => .char_n,
-        c.SDLK_O => .char_o,
-        c.SDLK_P => .char_p,
-        c.SDLK_Q => .char_q,
-        c.SDLK_R => .char_r,
-        c.SDLK_S => .char_s,
-        c.SDLK_T => .char_t,
-        c.SDLK_U => .char_u,
-        c.SDLK_V => .char_v,
-        c.SDLK_W => .char_w,
-        c.SDLK_X => .char_x,
-        c.SDLK_Y => .char_y,
-        c.SDLK_Z => .char_z,
+        sdl.keys.escape => .escape,
+        sdl.keys.return_key, sdl.keys.kp_enter => .return_key,
+        sdl.keys.backspace => .backspace,
+        sdl.keys.tab => .tab,
+        sdl.keys.space => .space,
+        sdl.keys.left => .left,
+        sdl.keys.right => .right,
+        sdl.keys.up => .up,
+        sdl.keys.down => .down,
+        sdl.keys.equals, sdl.keys.kp_plus => .equals,
+        sdl.keys.minus, sdl.keys.kp_minus => .minus,
+        sdl.keys.left_bracket => .left_bracket,
+        sdl.keys.right_bracket => .right_bracket,
+        sdl.keys.home => .home,
+        sdl.keys.end => .end,
+        sdl.keys.page_up => .page_up,
+        sdl.keys.page_down => .page_down,
+        sdl.keys.f1 => .f1,
+        sdl.keys.f11 => .f11,
+        sdl.keys.char_0, sdl.keys.kp_0 => .char_0,
+        sdl.keys.char_1, sdl.keys.kp_1 => .char_1,
+        sdl.keys.char_2, sdl.keys.kp_2 => .char_2,
+        sdl.keys.char_3, sdl.keys.kp_3 => .char_3,
+        sdl.keys.char_4, sdl.keys.kp_4 => .char_4,
+        sdl.keys.char_5, sdl.keys.kp_5 => .char_5,
+        sdl.keys.char_6, sdl.keys.kp_6 => .char_6,
+        sdl.keys.char_7, sdl.keys.kp_7 => .char_7,
+        sdl.keys.char_8, sdl.keys.kp_8 => .char_8,
+        sdl.keys.char_9, sdl.keys.kp_9 => .char_9,
+        sdl.keys.key_a => .char_a,
+        sdl.keys.key_b => .char_b,
+        sdl.keys.key_c => .char_c,
+        sdl.keys.key_d => .char_d,
+        sdl.keys.key_e => .char_e,
+        sdl.keys.key_f => .char_f,
+        sdl.keys.key_g => .char_g,
+        sdl.keys.key_h => .char_h,
+        sdl.keys.key_i => .char_i,
+        sdl.keys.key_j => .char_j,
+        sdl.keys.key_k => .char_k,
+        sdl.keys.key_l => .char_l,
+        sdl.keys.key_m => .char_m,
+        sdl.keys.key_n => .char_n,
+        sdl.keys.key_o => .char_o,
+        sdl.keys.key_p => .char_p,
+        sdl.keys.key_q => .char_q,
+        sdl.keys.key_r => .char_r,
+        sdl.keys.key_s => .char_s,
+        sdl.keys.key_t => .char_t,
+        sdl.keys.key_u => .char_u,
+        sdl.keys.key_v => .char_v,
+        sdl.keys.key_w => .char_w,
+        sdl.keys.key_x => .char_x,
+        sdl.keys.key_y => .char_y,
+        sdl.keys.key_z => .char_z,
         else => .unknown,
     };
 }
 
-pub fn mapModFromSdl(mod: c.SDL_Keymod) KeyModifiers {
+pub fn mapModFromSdl(mod: u16) KeyModifiers {
     return .{
-        .ctrl = (mod & c.SDL_KMOD_CTRL) != 0,
-        .shift = (mod & c.SDL_KMOD_SHIFT) != 0,
-        .alt = (mod & c.SDL_KMOD_ALT) != 0,
-        .gui = (mod & c.SDL_KMOD_GUI) != 0,
+        .ctrl = (mod & sdl.keys.mod.ctrl) != 0,
+        .shift = (mod & sdl.keys.mod.shift) != 0,
+        .alt = (mod & sdl.keys.mod.alt) != 0,
+        .gui = (mod & sdl.keys.mod.gui) != 0,
     };
 }
 
 pub fn pollFrameInput(
-    window: *c.SDL_Window,
+    window: sdl.Window,
     frame_allocator: std.mem.Allocator,
     last_time: *u64,
     prev_mouse_inside: bool,
@@ -91,26 +92,18 @@ pub fn pollFrameInput(
     non_blocking: bool,
     is_busy: bool,
 ) !FrameInput {
-    const current_ticks = c.SDL_GetTicks();
+    const current_ticks = sdl.timer.getTicks();
     const delta_time_ms = @as(f32, @floatFromInt(current_ticks - last_time.*));
     last_time.* = current_ticks;
 
     // Get window sizes and scale
-    var win_w: c_int = 0;
-    var win_h: c_int = 0;
-    if (!c.SDL_GetWindowSize(window, &win_w, &win_h)) {
-        std.log.err("SDL_GetWindowSize failed: {s}", .{c.SDL_GetError()});
-    }
-    var pix_w: c_int = 0;
-    var pix_h: c_int = 0;
-    if (!c.SDL_GetWindowSizeInPixels(window, &pix_w, &pix_h)) {
-        std.log.err("SDL_GetWindowSizeInPixels failed: {s}", .{c.SDL_GetError()});
-    }
+    const win_size = window.getSize();
+    const pix_size = window.getSizeInPixels();
 
-    const width = @as(f32, @floatFromInt(pix_w));
-    const height = @as(f32, @floatFromInt(pix_h));
-    const scale_x = if (win_w > 0) @as(f32, @floatFromInt(pix_w)) / @as(f32, @floatFromInt(win_w)) else 1.0;
-    const scale_y = if (win_h > 0) @as(f32, @floatFromInt(pix_h)) / @as(f32, @floatFromInt(win_h)) else 1.0;
+    const width = @as(f32, @floatFromInt(pix_size.w));
+    const height = @as(f32, @floatFromInt(pix_size.h));
+    const scale_x = if (win_size.w > 0) @as(f32, @floatFromInt(pix_size.w)) / @as(f32, @floatFromInt(win_size.w)) else 1.0;
+    const scale_y = if (win_size.h > 0) @as(f32, @floatFromInt(pix_size.h)) / @as(f32, @floatFromInt(win_size.h)) else 1.0;
     const dpi_scale = scale_x;
 
     var keys_pressed = std.ArrayList(Key).empty;
@@ -123,13 +116,13 @@ pub fn pollFrameInput(
     var mouse_inside = prev_mouse_inside;
     var quit_requested = false;
 
-    var event: c.SDL_Event = undefined;
+    var event: sdl.Event = undefined;
     const wait_success = if (non_blocking)
-        c.SDL_PollEvent(&event)
+        sdl.events.pollEvent(&event)
     else if (palette_show or is_busy)
-        c.SDL_WaitEventTimeout(&event, 8)
+        sdl.events.waitEventTimeout(&event, 8)
     else
-        c.SDL_WaitEvent(&event);
+        sdl.events.waitEvent(&event);
 
     if (!wait_success) {
         event.type = 0;
@@ -138,53 +131,53 @@ pub fn pollFrameInput(
     var has_event = wait_success;
     while (has_event) {
         switch (event.type) {
-            c.SDL_EVENT_QUIT => quit_requested = true,
-            c.SDL_EVENT_WINDOW_MOUSE_ENTER => {
+            sdl.event_type.quit => quit_requested = true,
+            sdl.event_type.mouse_enter => {
                 mouse_inside = true;
             },
-            c.SDL_EVENT_WINDOW_MOUSE_LEAVE => {
+            sdl.event_type.mouse_leave => {
                 mouse_inside = false;
             },
-            c.SDL_EVENT_KEY_DOWN => {
+            sdl.event_type.key_down => {
                 try keys_pressed.append(frame_allocator, mapKeyFromSdl(event.key.key));
             },
-            c.SDL_EVENT_TEXT_INPUT => {
+            sdl.event_type.text_input => {
                 if (event.text.text) |ptr| {
                     const len = std.mem.len(ptr);
                     const dup = try frame_allocator.dupe(u8, ptr[0..len]);
                     text_input_opt = dup;
                 }
             },
-            c.SDL_EVENT_DROP_FILE => {
+            sdl.event_type.drop_file => {
                 if (event.drop.data) |ptr| {
                     const len = std.mem.len(ptr);
                     const dup = try frame_allocator.dupe(u8, ptr[0..len]);
                     dropped_path_opt = dup;
                 }
             },
-            c.SDL_EVENT_MOUSE_BUTTON_DOWN => {
-                if (event.button.button == c.SDL_BUTTON_LEFT) {
+            sdl.event_type.mouse_button_down => {
+                if (event.button.button == sdl.mouse.left) {
                     mouse_left_clicked = true;
                 }
             },
-            c.SDL_EVENT_MOUSE_WHEEL => {
-                const multiplier: f32 = if (event.wheel.direction == c.SDL_MOUSEWHEEL_FLIPPED) -1.0 else 1.0;
+            sdl.event_type.mouse_wheel => {
+                const multiplier: f32 = if (event.wheel.direction == sdl.mouse.wheel_flipped) -1.0 else 1.0;
                 scroll_delta_x += event.wheel.x * multiplier * 6.0 * scale_x;
                 scroll_delta_y += event.wheel.y * multiplier * 6.0 * scale_y;
             },
             else => {},
         }
-        has_event = c.SDL_PollEvent(&event);
+        has_event = sdl.events.pollEvent(&event);
     }
 
     var mouse_x_raw: f32 = 0;
     var mouse_y_raw: f32 = 0;
-    const mouse_buttons = c.SDL_GetMouseState(&mouse_x_raw, &mouse_y_raw);
-    const mouse_left_down = (mouse_buttons & c.SDL_BUTTON_MASK(c.SDL_BUTTON_LEFT)) != 0;
+    const mouse_buttons = sdl.mouse.getState(&mouse_x_raw, &mouse_y_raw);
+    const mouse_left_down = (mouse_buttons & sdl.mouse.mask(sdl.mouse.left)) != 0;
 
     return FrameInput{
-        .win_w = @as(f32, @floatFromInt(win_w)),
-        .win_h = @as(f32, @floatFromInt(win_h)),
+        .win_w = @as(f32, @floatFromInt(win_size.w)),
+        .win_h = @as(f32, @floatFromInt(win_size.h)),
         .pix_w = width,
         .pix_h = height,
         .scale_x = scale_x,
@@ -199,7 +192,7 @@ pub fn pollFrameInput(
         .scroll_delta_x = scroll_delta_x,
         .scroll_delta_y = scroll_delta_y,
         .keys_pressed = keys_pressed,
-        .key_modifiers = mapModFromSdl(c.SDL_GetModState()),
+        .key_modifiers = mapModFromSdl(sdl.keys.getModState()),
         .text_input = text_input_opt,
         .dropped_path = dropped_path_opt,
         .ticks = current_ticks,

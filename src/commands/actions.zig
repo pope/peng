@@ -1,5 +1,4 @@
 const std = @import("std");
-const c = @import("../app/c.zig").c;
 const clay = @import("zclay");
 const app_state = @import("../app/state.zig");
 const app_types = @import("../app/types.zig");
@@ -357,8 +356,8 @@ pub fn triggerAction(self: *ViewerState, action_id: AppActionId) !void {
         .toggle_stats => self.show_stats_overlay = !self.show_stats_overlay,
         .toggle_fullscreen => {
             self.is_fullscreen = !self.is_fullscreen;
-            if (!c.SDL_SetWindowFullscreen(self.window, self.is_fullscreen)) {
-                std.log.err("SDL_SetWindowFullscreen failed: {s}", .{c.SDL_GetError()});
+            if (self.window) |win| {
+                win.setFullscreen(self.is_fullscreen) catch |err| std.log.err("setFullscreen failed: {}", .{err});
             }
         },
         .open_file_finder => {
@@ -369,8 +368,8 @@ pub fn triggerAction(self: *ViewerState, action_id: AppActionId) !void {
         .exit => {
             if (self.is_fullscreen) {
                 self.is_fullscreen = false;
-                if (!c.SDL_SetWindowFullscreen(self.window, false)) {
-                    std.log.err("SDL_SetWindowFullscreen failed: {s}", .{c.SDL_GetError()});
+                if (self.window) |win| {
+                    win.setFullscreen(false) catch |err| std.log.err("setFullscreen failed: {}", .{err});
                 }
             } else {
                 self.running = false;

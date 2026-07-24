@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("c.zig").c;
+const sdl = @import("../sdl/root.zig");
 const graphics = @import("../ui/graphics.zig");
 const fs = @import("fs.zig");
 const app_state = @import("state.zig");
@@ -18,7 +18,7 @@ pub const CacheStatus = union(CacheStatusTag) {
         has_thread: bool = false,
     },
     loaded_cpu: struct {
-        surface: *c.SDL_Surface,
+        surface: sdl.Surface,
         w: f32,
         h: f32,
         size_bytes: u64,
@@ -31,7 +31,7 @@ pub const CacheStatus = union(CacheStatusTag) {
         thumb_upload_time_ms: f64 = 0.0,
     },
     loaded_gpu: struct {
-        gpu_texture: *c.SDL_GPUTexture,
+        gpu_texture: sdl.gpu.Texture,
         w: f32,
         h: f32,
         size_bytes: u64,
@@ -55,7 +55,7 @@ pub const CacheEntry = struct {
     index: usize,
     generation: usize,
     status: CacheStatus,
-    thumb_gpu_texture: ?*c.SDL_GPUTexture = null,
+    thumb_gpu_texture: ?sdl.gpu.Texture = null,
     thumb_w: f32 = 0.0,
     thumb_h: f32 = 0.0,
     full_w: f32 = 0.0,
@@ -64,18 +64,18 @@ pub const CacheEntry = struct {
     has_thumb: bool = false,
     thumb_upload_time_ms: f64 = 0.0,
 
-    pub fn deinit(self: *CacheEntry, gpu_device: ?*c.SDL_GPUDevice) void {
+    pub fn deinit(self: *CacheEntry, gpu_device: ?sdl.gpu.Device) void {
         if (self.thumb_gpu_texture) |thumb_tex| {
-            if (gpu_device) |gpu_dev| {
-                c.SDL_ReleaseGPUTexture(gpu_dev, thumb_tex);
+            if (gpu_device) |dev| {
+                dev.releaseTexture(thumb_tex);
             }
             self.thumb_gpu_texture = null;
         }
         switch (self.status) {
-            .loaded_cpu => |cpu| c.SDL_DestroySurface(cpu.surface),
+            .loaded_cpu => |cpu| cpu.surface.destroy(),
             .loaded_gpu => |gpu| {
-                if (gpu_device) |gpu_dev| {
-                    c.SDL_ReleaseGPUTexture(gpu_dev, gpu.gpu_texture);
+                if (gpu_device) |dev| {
+                    dev.releaseTexture(gpu.gpu_texture);
                 }
             },
             else => {},
@@ -91,12 +91,14 @@ pub const TextureHandle = struct {
 pub const CacheSlotMap = struct {
     entries: std.ArrayListUnmanaged(CacheEntry) = .empty,
 
-    pub fn deinit(self: *CacheSlotMap, allocator: std.mem.Allocator, gpu_device: ?*c.SDL_GPUDevice) void {
-        self.clear(gpu_device);
+    pub fn deinit(self: *CacheSlotMap, allocator: std.mem.Allocator, gpu_device: ?sdl.gpu.Device) void {
+        for (self.entries.items) |*entry| {
+            entry.deinit(gpu_device);
+        }
         self.entries.deinit(allocator);
     }
 
-    pub fn clear(self: *CacheSlotMap, gpu_device: ?*c.SDL_GPUDevice) void {
+    pub fn clear(self: *CacheSlotMap, gpu_device: ?sdl.gpu.Device) void {
         for (self.entries.items) |*entry| {
             entry.deinit(gpu_device);
         }
@@ -121,7 +123,7 @@ pub const CacheSlotMap = struct {
         return null;
     }
 
-    pub fn getTexture(self: *CacheSlotMap, handle: TextureHandle) ?*c.SDL_GPUTexture {
+    pub fn getTexture(self: *CacheSlotMap, handle: TextureHandle) ?sdl.gpu.Texture {
         if (self.getWithGeneration(handle.index, handle.generation)) |entry| {
             switch (entry.status) {
                 .loaded_gpu => |gpu| return gpu.gpu_texture,
@@ -131,7 +133,7 @@ pub const CacheSlotMap = struct {
         return null;
     }
 
-    pub fn getSurface(self: *CacheSlotMap, handle: TextureHandle) ?*c.SDL_Surface {
+    pub fn getSurface(self: *CacheSlotMap, handle: TextureHandle) ?sdl.Surface {
         if (self.getWithGeneration(handle.index, handle.generation)) |entry| {
             switch (entry.status) {
                 .loaded_cpu => |cpu| return cpu.surface,
@@ -157,7 +159,7 @@ pub const CacheSlotMap = struct {
         return self.entries.orderedRemove(index_in_list);
     }
 
-    pub fn removeAndDeinit(self: *CacheSlotMap, index_in_list: usize, gpu_device: ?*c.SDL_GPUDevice) void {
+    pub fn removeAndDeinit(self: *CacheSlotMap, index_in_list: usize, gpu_device: ?sdl.gpu.Device) void {
         var entry = self.entries.orderedRemove(index_in_list);
         entry.deinit(gpu_device);
     }
@@ -175,7 +177,7 @@ pub const CacheSlotMap = struct {
         return total;
     }
 
-    pub fn enforceVramBudget(self: *CacheSlotMap, gpu_device: ?*c.SDL_GPUDevice, current_index: ?usize, max_bytes: usize) void {
+    pub fn enforceVramBudget(self: *CacheSlotMap, gpu_device: ?sdl.gpu.Device, current_index: ?usize, max_bytes: usize) void {
         while (self.getTotalVramBytes() > max_bytes) {
             var max_dist: usize = 0;
             var victim_idx: ?usize = null;
@@ -301,28 +303,24 @@ pub fn decodeWorker(args: *DecodeArgs) void {
             if (n > 0) {
                 const full_dims = readJpegDimensions(header_buf[0..n]);
                 if (extractJpegThumbnail(header_buf[0..n])) |thumb_bytes| {
-                    const mem = c.SDL_IOFromConstMem(thumb_bytes.ptr, thumb_bytes.len);
-                    if (mem) |io_mem| {
-                        const thumb_surf = c.IMG_Load_IO(io_mem, true);
-                        if (thumb_surf) |t_surf| {
-                            const full_w: f32 = if (full_dims) |d| d.w else 0.0;
-                            const full_h: f32 = if (full_dims) |d| d.h else 0.0;
-                            state.event_queue.push(state.allocator, state.io, .{
-                                .thumb_decoded = .{
-                                    .index = index,
-                                    .generation = args.generation,
-                                    .surface = t_surf,
-                                    .w = @floatFromInt(t_surf.*.w),
-                                    .h = @floatFromInt(t_surf.*.h),
-                                    .full_w = full_w,
-                                    .full_h = full_h,
-                                    .exif_orientation = exif_rot,
-                                },
-                            }) catch {
-                                c.SDL_DestroySurface(t_surf);
-                            };
-                            fs.wakeUpMainThread();
-                        }
+                    if (sdl.Surface.loadConstMemOpt(thumb_bytes)) |t_surf| {
+                        const full_w: f32 = if (full_dims) |d| d.w else 0.0;
+                        const full_h: f32 = if (full_dims) |d| d.h else 0.0;
+                        state.event_queue.push(state.allocator, state.io, .{
+                            .thumb_decoded = .{
+                                .index = index,
+                                .generation = args.generation,
+                                .surface = t_surf,
+                                .w = @floatFromInt(t_surf.w()),
+                                .h = @floatFromInt(t_surf.h()),
+                                .full_w = full_w,
+                                .full_h = full_h,
+                                .exif_orientation = exif_rot,
+                            },
+                        }) catch {
+                            t_surf.destroy();
+                        };
+                        fs.wakeUpMainThread();
                     }
                 }
             }
@@ -331,55 +329,55 @@ pub fn decodeWorker(args: *DecodeArgs) void {
 
     if (!isValidJob(state, index, args.generation)) return;
 
-    const start_decode = c.SDL_GetTicksNS();
-    const surface = c.IMG_Load(path.ptr);
-    const end_decode = c.SDL_GetTicksNS();
+    const start_decode = sdl.timer.getTicksNs();
+    const surface = sdl.Surface.loadFilePtr(path.ptr);
+    const end_decode = sdl.timer.getTicksNs();
 
     const decode_time_ms = @as(f64, @floatFromInt(end_decode - start_decode)) / 1_000_000.0;
 
     if (!isValidJob(state, index, args.generation)) {
-        if (surface) |surf| c.SDL_DestroySurface(surf);
+        if (surface) |surf| surf.destroy();
         return;
     }
 
     var final_surface = surface;
     var conversion_time_ms: f64 = 0.0;
     if (surface) |surf| {
-        if (state.window_pixel_format != c.SDL_PIXELFORMAT_UNKNOWN and surf.*.format != state.window_pixel_format) {
-            const start_convert = c.SDL_GetTicksNS();
-            const converted = c.SDL_ConvertSurface(surf, state.window_pixel_format);
-            const end_convert = c.SDL_GetTicksNS();
+        if (state.window_pixel_format != sdl.PixelFormat.unknown and surf.format() != state.window_pixel_format) {
+            const start_convert = sdl.timer.getTicksNs();
+            const converted = surf.convert(state.window_pixel_format);
+            const end_convert = sdl.timer.getTicksNs();
 
             if (converted) |conv| {
                 conversion_time_ms = @as(f64, @floatFromInt(end_convert - start_convert)) / 1_000_000.0;
-                c.SDL_DestroySurface(surf);
+                surf.destroy();
                 final_surface = conv;
             } else {
-                std.log.err("SDL_ConvertSurface failed: {s}", .{c.SDL_GetError()});
+                std.log.err("SDL_ConvertSurface failed: {s}", .{sdl.getError()});
             }
         }
 
         if (final_surface) |f_surf| {
             const max_dim: i32 = 8192;
-            if (f_surf.*.w > max_dim or f_surf.*.h > max_dim) {
-                var new_w = f_surf.*.w;
-                var new_h = f_surf.*.h;
-                if (f_surf.*.w > f_surf.*.h) {
+            if (f_surf.w() > max_dim or f_surf.h() > max_dim) {
+                var new_w = f_surf.w();
+                var new_h = f_surf.h();
+                if (f_surf.w() > f_surf.h()) {
                     new_w = max_dim;
-                    new_h = @divTrunc(f_surf.*.h * max_dim, f_surf.*.w);
+                    new_h = @divTrunc(f_surf.h() * max_dim, f_surf.w());
                 } else {
                     new_h = max_dim;
-                    new_w = @divTrunc(f_surf.*.w * max_dim, f_surf.*.h);
+                    new_w = @divTrunc(f_surf.w() * max_dim, f_surf.h());
                 }
                 new_w = @max(1, new_w);
                 new_h = @max(1, new_h);
 
-                const scaled = c.SDL_ScaleSurface(f_surf, new_w, new_h, c.SDL_SCALEMODE_LINEAR);
+                const scaled = f_surf.scale(new_w, new_h, .linear);
                 if (scaled) |sc| {
-                    c.SDL_DestroySurface(f_surf);
+                    f_surf.destroy();
                     final_surface = sc;
                 } else {
-                    std.log.err("decodeWorker: SDL_ScaleSurface failed: {s}", .{c.SDL_GetError()});
+                    std.log.err("decodeWorker: SDL_ScaleSurface failed: {s}", .{sdl.getError()});
                 }
             }
         }
@@ -394,13 +392,13 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     }
 
     if (!isValidJob(state, index, args.generation)) {
-        if (final_surface) |surf| c.SDL_DestroySurface(surf);
+        if (final_surface) |surf| surf.destroy();
         return;
     }
 
     if (final_surface) |f_surf| {
-        const orig_w: f32 = @floatFromInt(f_surf.*.w);
-        const orig_h: f32 = @floatFromInt(f_surf.*.h);
+        const orig_w: f32 = @floatFromInt(f_surf.w());
+        const orig_h: f32 = @floatFromInt(f_surf.h());
 
         state.event_queue.push(state.allocator, state.io, .{
             .image_decoded = .{
@@ -416,7 +414,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                 .exif_orientation = exif_rot,
             },
         }) catch {
-            c.SDL_DestroySurface(f_surf);
+            f_surf.destroy();
         };
         fs.wakeUpMainThread();
     } else {

@@ -1,5 +1,4 @@
 const std = @import("std");
-const c = @import("c.zig").c;
 
 pub const JobPriority = enum(u8) {
     high = 0, // Currently visible image

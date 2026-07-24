@@ -1,8 +1,8 @@
 const std = @import("std");
-const c = @import("c.zig").c;
+const sdl = @import("../sdl/root.zig");
 
 pub const MeasureTextUserData = struct {
-    fonts: []const ?*c.TTF_Font,
+    fonts: []const ?sdl.Font,
     allocator: std.mem.Allocator,
 };
 

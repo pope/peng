@@ -1,6 +1,5 @@
 const std = @import("std");
 const clay = @import("zclay");
-const c = @import("../app/c.zig").c;
 const app_state = @import("../app/state.zig");
 const ViewerState = app_state.ViewerState;
 const CacheEntry = app_state.CacheEntry;

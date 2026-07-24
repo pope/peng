@@ -5,8 +5,7 @@ const renderer = ui.renderer;
 const commands = @import("commands.zig");
 const app_config = @import("config.zig");
 const app = @import("app.zig");
-
-pub const c = app.c;
+const sdl = @import("sdl/root.zig");
 
 pub const vert_spv = @embedFile("shaders/vert.spv");
 pub const frag_spv = @embedFile("shaders/frag.spv");
@@ -42,15 +41,6 @@ pub const TextureScaleMode = app.state.TextureScaleMode;
 pub const ElementTag = app.state.ElementTag;
 pub const ViewerState = app.state.ViewerState;
 
-fn getSdlScaleMode(self: *ViewerState) c.SDL_ScaleMode {
-    return switch (self.texture_scale_mode) {
-        .nearest => c.SDL_SCALEMODE_NEAREST,
-        .linear => c.SDL_SCALEMODE_LINEAR,
-        .pixel_art => c.SDL_SCALEMODE_PIXELART,
-        .mitchell, .lanczos3 => c.SDL_SCALEMODE_NEAREST,
-    };
-}
-
 pub const ParsedArgs = app_config.cli.ParsedArgs;
 pub const parseCommandLineArgs = app_config.cli.parseCommandLineArgs;
 
@@ -77,10 +67,10 @@ pub fn main(init: std.process.Init) !void {
         .high_dpi = !parsed.test_mode,
     });
     defer {
-        c.TTF_Quit();
-        c.SDL_DestroyGPUDevice(setup.gpu_device);
-        c.SDL_DestroyWindow(setup.window);
-        c.SDL_Quit();
+        sdl.quitTtf();
+        setup.gpu_device.destroy();
+        setup.window.destroy();
+        sdl.quit();
     }
 
     // Phase 3: GPU Pipeline and Resources Setup
@@ -88,12 +78,13 @@ pub fn main(init: std.process.Init) !void {
     var own_resources = true;
     defer {
         if (own_resources) {
-            c.SDL_ReleaseGPUGraphicsPipeline(setup.gpu_device, resources.pipeline);
-            c.SDL_ReleaseGPUSampler(setup.gpu_device, resources.sampler);
-            c.SDL_ReleaseGPUTexture(setup.gpu_device, resources.white_texture);
+            const dev = setup.gpu_device;
+            dev.releasePipeline(resources.pipeline);
+            dev.releaseSampler(resources.sampler);
+            dev.releaseTexture(resources.white_texture);
         }
         for (resources.fonts) |f| {
-            if (f) |font| c.TTF_CloseFont(font);
+            if (f) |font| font.close();
         }
     }
 
@@ -111,7 +102,7 @@ pub fn main(init: std.process.Init) !void {
         .cache_mutex = .init,
         .allocator = gpa,
         .io = init.io,
-        .window_pixel_format = c.SDL_PIXELFORMAT_RGBA32,
+        .window_pixel_format = sdl.PixelFormat.rgba32,
         .palette = PaletteState.init(gpa),
         .text_cache = .{},
         .scale_mode = parsed.default_scale,
@@ -156,7 +147,7 @@ pub fn main(init: std.process.Init) !void {
     defer frame_arena.deinit();
     const frame_allocator = frame_arena.allocator();
 
-    var last_time = c.SDL_GetTicks();
+    var last_time = sdl.timer.getTicks();
 
     // Phase 5: Initialize IPC Server
     const ipc = @import("app/ipc.zig");

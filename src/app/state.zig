@@ -1,5 +1,5 @@
 const std = @import("std");
-const c = @import("c.zig").c;
+const sdl = @import("../sdl/root.zig");
 const clay = @import("zclay");
 const FrameInput = @import("types.zig").FrameInput;
 const app_input = @import("input.zig");
@@ -84,7 +84,7 @@ pub const TextCacheKey = struct {
 };
 
 pub const TextCacheValue = struct {
-    texture: *c.SDL_GPUTexture,
+    texture: sdl.gpu.Texture,
     w: f32,
     h: f32,
     last_used_frame: usize,
@@ -120,18 +120,18 @@ pub const PaletteState = struct {
     }
 };
 
-pub fn startTextInput(window: ?*c.SDL_Window) void {
+pub fn startTextInput(window: ?sdl.Window) void {
     if (window) |win| {
-        if (!c.SDL_StartTextInput(win)) {
-            std.log.err("SDL_StartTextInput failed: {s}", .{c.SDL_GetError()});
+        if (!win.startTextInput()) {
+            std.log.err("SDL_StartTextInput failed: {s}", .{sdl.getError()});
         }
     }
 }
 
-pub fn stopTextInput(window: ?*c.SDL_Window) void {
+pub fn stopTextInput(window: ?sdl.Window) void {
     if (window) |win| {
-        if (!c.SDL_StopTextInput(win)) {
-            std.log.err("SDL_StopTextInput failed: {s}", .{c.SDL_GetError()});
+        if (!win.stopTextInput()) {
+            std.log.err("SDL_StopTextInput failed: {s}", .{sdl.getError()});
         }
     }
 }
@@ -157,10 +157,10 @@ pub fn matchesQueryLower(path: []const u8, query_lower: []const u8) bool {
 }
 
 pub const ViewerState = struct {
-    gpu_device: ?*c.SDL_GPUDevice = null,
-    gpu_pipeline: ?*c.SDL_GPUGraphicsPipeline = null,
-    gpu_sampler: ?*c.SDL_GPUSampler = null,
-    white_texture: ?*c.SDL_GPUTexture = null,
+    gpu_device: ?sdl.gpu.Device = null,
+    gpu_pipeline: ?sdl.gpu.Pipeline = null,
+    gpu_sampler: ?sdl.gpu.Sampler = null,
+    white_texture: ?sdl.gpu.Texture = null,
 
     /// Thread Safety: directory_arena allocations must only occur while holding image_list_mutex.
     directory_arena: std.heap.ArenaAllocator,
@@ -177,9 +177,9 @@ pub const ViewerState = struct {
     active_decode_threads: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     exiting: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     generation: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
-    window_pixel_format: c.SDL_PixelFormat = c.SDL_PIXELFORMAT_UNKNOWN,
+    window_pixel_format: u32 = sdl.PixelFormat.unknown,
     palette: PaletteState,
-    window: ?*c.SDL_Window,
+    window: ?sdl.Window,
     is_fullscreen: bool = false,
     running: bool = true,
     show_stats_overlay: bool = false,
@@ -204,8 +204,8 @@ pub const ViewerState = struct {
     pending_ipc_commands: std.ArrayListUnmanaged(*ipc.IpcCommandData) = .empty,
 
     // Persistent double-buffered vertex resources
-    gpu_vertex_buffers: [2]?*c.SDL_GPUBuffer = .{ null, null },
-    gpu_transfer_buffers: [2]?*c.SDL_GPUTransferBuffer = .{ null, null },
+    gpu_vertex_buffers: [2]?sdl.gpu.Buffer = .{ null, null },
+    gpu_transfer_buffers: [2]?sdl.gpu.TransferBuffer = .{ null, null },
     gpu_buffer_capacities: [2]usize = .{ 0, 0 },
     gpu_frame_index: usize = 0,
 
@@ -237,9 +237,8 @@ pub const ViewerState = struct {
 
         const full_dims = image.readJpegDimensions(header_buf[0..n]);
         const thumb_bytes = image.extractJpegThumbnail(header_buf[0..n]) orelse return;
-        const io_mem = c.SDL_IOFromConstMem(thumb_bytes.ptr, thumb_bytes.len) orelse return;
-        const thumb_surf = c.IMG_Load_IO(io_mem, true) orelse return;
-        defer c.SDL_DestroySurface(thumb_surf);
+        const thumb_surf = sdl.Surface.loadConstMemOpt(thumb_bytes) orelse return;
+        defer thumb_surf.destroy();
 
         const gpu_dev = self.gpu_device orelse return;
         const upload_res = graphics.uploadSurfaceToGpu(gpu_dev, thumb_surf) orelse return;
@@ -249,7 +248,7 @@ pub const ViewerState = struct {
 
         if (self.cache.getWithGeneration(entry.index, entry.generation)) |e| {
             if (e.thumb_gpu_texture) |old_t| {
-                c.SDL_ReleaseGPUTexture(gpu_dev, old_t);
+                gpu_dev.releaseTexture(old_t);
             }
             e.thumb_gpu_texture = upload_res.gpu_texture;
             e.thumb_w = upload_res.w;
@@ -261,36 +260,36 @@ pub const ViewerState = struct {
             e.has_thumb = true;
             e.thumb_upload_time_ms = upload_res.upload_time_ms;
         } else {
-            c.SDL_ReleaseGPUTexture(gpu_dev, upload_res.gpu_texture);
+            gpu_dev.releaseTexture(upload_res.gpu_texture);
         }
     }
 
     pub fn deinit(self: *ViewerState) void {
         self.exiting.store(true, .release);
         while (self.active_threads.load(.acquire) > 0) {
-            c.SDL_Delay(1);
+            sdl.timer.delay(1);
         }
 
         self.clearCache();
 
-        if (self.gpu_device) |gpu_dev| {
+        if (self.gpu_device) |dev| {
             for (self.gpu_vertex_buffers) |vb| {
-                if (vb) |b| c.SDL_ReleaseGPUBuffer(gpu_dev, b);
+                if (vb) |b| dev.releaseBuffer(b);
             }
             for (self.gpu_transfer_buffers) |tb| {
-                if (tb) |b| c.SDL_ReleaseGPUTransferBuffer(gpu_dev, b);
+                if (tb) |b| dev.releaseTransferBuffer(b);
             }
 
             var text_iter = self.text_cache.valueIterator();
             while (text_iter.next()) |val| {
-                c.SDL_ReleaseGPUTexture(gpu_dev, val.texture);
+                dev.releaseTexture(val.texture);
             }
 
-            if (self.gpu_pipeline) |pipe| c.SDL_ReleaseGPUGraphicsPipeline(gpu_dev, pipe);
-            if (self.gpu_sampler) |sampler| c.SDL_ReleaseGPUSampler(gpu_dev, sampler);
-            if (self.white_texture) |white_tex| c.SDL_ReleaseGPUTexture(gpu_dev, white_tex);
+            if (self.gpu_pipeline) |pipe| dev.releasePipeline(pipe);
+            if (self.gpu_sampler) |samp| dev.releaseSampler(samp);
+            if (self.white_texture) |tex| dev.releaseTexture(tex);
             if (self.window_claimed) {
-                if (self.window) |w| c.SDL_ReleaseWindowFromGPUDevice(gpu_dev, w);
+                if (self.window) |w| w.releaseFromGpu(dev);
             }
         }
 
@@ -355,20 +354,19 @@ pub const ViewerState = struct {
         var pix_w: i32 = 1024;
         var pix_h: i32 = 768;
         if (self.window) |win| {
-            var w: i32 = 0;
-            var h: i32 = 0;
-            if (c.SDL_GetWindowSizeInPixels(win, &w, &h) and w > 0 and h > 0) {
-                pix_w = w;
-                pix_h = h;
+            const pix_size = win.getSizeInPixels();
+            if (pix_size.w > 0 and pix_size.h > 0) {
+                pix_w = pix_size.w;
+                pix_h = pix_size.h;
             }
         }
 
         const title_bar_h: f32 = if (self.is_fullscreen) 0.0 else 60.0;
         var scale_y: f32 = 1.0;
         if (self.window) |win| {
-            var win_h: i32 = 0;
-            if (c.SDL_GetWindowSize(win, null, &win_h) and win_h > 0) {
-                scale_y = @as(f32, @floatFromInt(pix_h)) / @as(f32, @floatFromInt(win_h));
+            const win_size = win.getSize();
+            if (win_size.h > 0) {
+                scale_y = @as(f32, @floatFromInt(pix_h)) / @as(f32, @floatFromInt(win_size.h));
             }
         }
 
@@ -424,36 +422,35 @@ pub const ViewerState = struct {
         return std.math.clamp(new_factor, min_factor, max_factor);
     }
 
-    pub fn getTextureByHandle(self: *ViewerState, handle: TextureHandle) ?*c.SDL_GPUTexture {
+    pub fn getTextureByHandle(self: *ViewerState, handle: TextureHandle) ?sdl.gpu.Texture {
         self.lockCache();
         defer self.unlockCache();
         return self.cache.getTexture(handle);
     }
 
     pub fn applyTextureScaleMode(self: *ViewerState) void {
-        const filter = if (self.texture_scale_mode == .linear) c.SDL_GPU_FILTER_LINEAR else c.SDL_GPU_FILTER_NEAREST;
-        if (self.gpu_sampler) |old_sampler| {
-            c.SDL_ReleaseGPUSampler(self.gpu_device, old_sampler);
-        }
+        const filter = if (self.texture_scale_mode == .linear) sdl.gpu.Filter.linear else sdl.gpu.Filter.nearest;
+        if (self.gpu_device) |gpu_dev| {
+            if (self.gpu_sampler) |old_sampler| {
+                gpu_dev.releaseSampler(old_sampler);
+            }
 
-        const sampler_info = c.SDL_GPUSamplerCreateInfo{
-            .min_filter = @intCast(filter),
-            .mag_filter = @intCast(filter),
-            .mipmap_mode = c.SDL_GPU_SAMPLERMIPMAPMODE_LINEAR,
-            .address_mode_u = c.SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
-            .address_mode_v = c.SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
-            .address_mode_w = c.SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
-            .mip_lod_bias = 0.0,
-            .max_anisotropy = 1.0,
-            .compare_op = c.SDL_GPU_COMPAREOP_NEVER,
-            .min_lod = 0.0,
-            .max_lod = 1000.0,
-            .props = 0,
-        };
-        self.gpu_sampler = c.SDL_CreateGPUSampler(self.gpu_device, &sampler_info) orelse {
-            std.log.err("Failed to recreate GPU sampler: {s}", .{c.SDL_GetError()});
-            return;
-        };
+            const sampler_info = sdl.gpu.SamplerCreateInfo{
+                .min_filter = filter,
+                .mag_filter = filter,
+                .mipmap_mode = .linear,
+                .address_mode_u = .clamp_to_edge,
+                .address_mode_v = .clamp_to_edge,
+                .address_mode_w = .clamp_to_edge,
+                .mip_lod_bias = 0.0,
+                .max_anisotropy = 1.0,
+                .compare_op = .never,
+                .min_lod = 0.0,
+                .max_lod = 1000.0,
+                .props = 0,
+            };
+            self.gpu_sampler = gpu_dev.createSampler(&sampler_info);
+        }
     }
 
     pub fn rebuildPaletteMatches(self: *ViewerState) !void {
@@ -564,7 +561,7 @@ pub const ViewerState = struct {
         for (self.cache.entries.items) |*entry| {
             if (entry.status == .loaded_gpu and entry.thumb_gpu_texture != null and !self.debug_show_thumb) {
                 if (self.gpu_device) |gpu_dev| {
-                    c.SDL_ReleaseGPUTexture(gpu_dev, entry.thumb_gpu_texture.?);
+                    gpu_dev.releaseTexture(entry.thumb_gpu_texture.?);
                 }
                 entry.thumb_gpu_texture = null;
             }
@@ -583,7 +580,7 @@ pub const ViewerState = struct {
         self.unlockCache();
 
         if (upload_target) |target| {
-            defer c.SDL_DestroySurface(target.cpu.surface);
+            defer target.cpu.surface.destroy();
             if (self.gpu_device) |gpu_dev| {
                 if (uploadSurfaceToGpu(gpu_dev, target.cpu.surface)) |res| {
                     self.lockCache();
@@ -604,7 +601,7 @@ pub const ViewerState = struct {
                     self.unlockCache();
 
                     if (!updated) {
-                        c.SDL_ReleaseGPUTexture(gpu_dev, res.gpu_texture);
+                        gpu_dev.releaseTexture(res.gpu_texture);
                     }
                 } else {
                     self.lockCache();
@@ -627,7 +624,7 @@ pub const ViewerState = struct {
 
     pub fn checkIdlePreload(self: *ViewerState) void {
         if (self.image_list.items.len <= 1) return;
-        const now = c.SDL_GetTicks();
+        const now = sdl.timer.getTicks();
         if (now - self.last_nav_time_ms >= 150) {
             self.lockCache();
             const entry_count = self.cache.entries.items.len;
@@ -701,7 +698,7 @@ pub const ViewerState = struct {
                                 entry.has_thumb = true;
                                 entry.thumb_upload_time_ms = upload_res.upload_time_ms;
                             } else {
-                                c.SDL_ReleaseGPUTexture(gpu_dev, upload_res.gpu_texture);
+                                gpu_dev.releaseTexture(upload_res.gpu_texture);
                             }
                             self.unlockCache();
                             self.updateCurrentRotation();
@@ -716,8 +713,8 @@ pub const ViewerState = struct {
                             self.lockCache();
                             if (self.cache.getWithGeneration(d.index, d.generation)) |entry| {
                                 switch (entry.status) {
-                                    .loaded_cpu => |cpu| c.SDL_DestroySurface(cpu.surface),
-                                    .loaded_gpu => |gpu| c.SDL_ReleaseGPUTexture(gpu_dev, gpu.gpu_texture),
+                                    .loaded_cpu => |cpu| cpu.surface.destroy(),
+                                    .loaded_gpu => |gpu| gpu_dev.releaseTexture(gpu.gpu_texture),
                                     else => {},
                                 }
                                 entry.exif_orientation = d.exif_orientation;
@@ -742,7 +739,7 @@ pub const ViewerState = struct {
                                 };
                                 self.cache.enforceVramBudget(gpu_dev, self.current_index, CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
                             } else {
-                                c.SDL_ReleaseGPUTexture(gpu_dev, full_res.gpu_texture);
+                                gpu_dev.releaseTexture(full_res.gpu_texture);
                             }
                             self.unlockCache();
                             self.updateCurrentRotation();
@@ -821,7 +818,7 @@ pub const ViewerState = struct {
         const idx = self.current_index orelse return;
         const gen = self.generation.load(.acquire);
 
-        const now = c.SDL_GetTicks();
+        const now = sdl.timer.getTicks();
         const is_rapid_scrolling = (now - self.last_nav_time_ms < 150);
         self.last_nav_time_ms = now;
 
@@ -1244,7 +1241,7 @@ test "ViewerState.clampZoomFactor bounds based on image dimensions" {
     try std.testing.expectEqual(@as(f32, 0.1), state.clampZoomFactor(0.05));
 
     // Test with loaded CPU image entry
-    const surf = c.SDL_CreateSurface(4000, 3000, c.SDL_PIXELFORMAT_RGBA32) orelse unreachable;
+    const surf = sdl.Surface.create(4000, 3000, sdl.PixelFormat.rgba32) orelse unreachable;
     try state.cache.append(std.testing.allocator, .{
         .index = 0,
         .generation = 0,

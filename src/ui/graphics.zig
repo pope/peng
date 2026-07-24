@@ -1,12 +1,12 @@
 const std = @import("std");
-const c = @import("../app/c.zig").c;
+const sdl = @import("../sdl/root.zig");
 const renderer = @import("renderer.zig");
 const clay = @import("zclay");
 const MeasureTextUserData = @import("../app/types.zig").MeasureTextUserData;
 
 pub const GraphicsSetup = struct {
-    window: *c.SDL_Window,
-    gpu_device: *c.SDL_GPUDevice,
+    window: sdl.Window,
+    gpu_device: sdl.gpu.Device,
     initial_dpi_scale: f32,
 };
 
@@ -19,106 +19,90 @@ const builtin = @import("builtin");
 
 pub fn initGraphicsAndWindow(window_title: [:0]const u8, options: GraphicsOptions) !GraphicsSetup {
     if (options.headless and builtin.os.tag != .macos) {
-        _ = c.SDL_SetHint(c.SDL_HINT_VIDEO_DRIVER, "offscreen");
+        _ = sdl.hint.set("SDL_VIDEO_DRIVER", "offscreen");
     }
-    // Initialize SDL3
-    if (!c.SDL_Init(c.SDL_INIT_VIDEO | c.SDL_INIT_EVENTS)) {
-        std.log.err("SDL_Init Error: {s}", .{c.SDL_GetError()});
+
+    if (!sdl.init(sdl.init_flags.video | sdl.init_flags.events)) {
+        std.log.err("SDL_Init Error: {s}", .{sdl.getError()});
         return error.SDLInitFailed;
     }
-    errdefer c.SDL_Quit();
+    errdefer sdl.quit();
 
-    // Initialize SDL3_ttf
-    if (!c.TTF_Init()) {
-        std.log.err("TTF_Init Error: {s}", .{c.SDL_GetError()});
+    sdl.initTtf() catch |err| {
+        std.log.err("TTF_Init Error: {}", .{err});
         return error.TTFInitFailed;
-    }
-    errdefer c.TTF_Quit();
+    };
+    errdefer sdl.quitTtf();
 
     // Create window
     const win_flags = if (options.headless)
-        c.SDL_WINDOW_HIDDEN
+        sdl.window_flags.hidden
     else if (options.high_dpi)
-        c.SDL_WINDOW_RESIZABLE | c.SDL_WINDOW_HIGH_PIXEL_DENSITY
+        sdl.window_flags.resizable | sdl.window_flags.high_pixel_density
     else
-        c.SDL_WINDOW_RESIZABLE;
-    const window = c.SDL_CreateWindow(window_title.ptr, 1024, 768, win_flags) orelse {
-        std.log.err("SDL_CreateWindow Error: {s}", .{c.SDL_GetError()});
+        sdl.window_flags.resizable;
+    const window = sdl.Window.createZ(window_title, 1024, 768, win_flags) orelse {
+        std.log.err("SDL_CreateWindow Error: {s}", .{sdl.getError()});
         return error.WindowCreationFailed;
     };
-    errdefer c.SDL_DestroyWindow(window);
+    errdefer window.destroy();
 
     // Get scales
-    var win_w: c_int = 0;
-    var win_h: c_int = 0;
-    if (!c.SDL_GetWindowSize(window, &win_w, &win_h)) {
-        std.log.err("SDL_GetWindowSize failed: {s}", .{c.SDL_GetError()});
-    }
-    var pix_w: c_int = 0;
-    var pix_h: c_int = 0;
-    if (!c.SDL_GetWindowSizeInPixels(window, &pix_w, &pix_h)) {
-        std.log.err("SDL_GetWindowSizeInPixels failed: {s}", .{c.SDL_GetError()});
-    }
-    const initial_dpi_scale = if (win_w > 0) @as(f32, @floatFromInt(pix_w)) / @as(f32, @floatFromInt(win_w)) else 1.0;
+    const win_size = window.getSize();
+    const pix_size = window.getSizeInPixels();
+    const initial_dpi_scale = if (win_size.w > 0) @as(f32, @floatFromInt(pix_size.w)) / @as(f32, @floatFromInt(win_size.w)) else 1.0;
 
     // Create GPU Device
-    const gpu_device = c.SDL_CreateGPUDevice(c.SDL_GPU_SHADERFORMAT_SPIRV | c.SDL_GPU_SHADERFORMAT_MSL, true, null) orelse {
-        std.log.err("SDL_CreateGPUDevice Error: {s}", .{c.SDL_GetError()});
+    const dev = sdl.gpu.Device.create(sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl, true) orelse {
+        std.log.err("SDL_CreateGPUDevice Error: {s}", .{sdl.getError()});
         return error.DeviceCreationFailed;
     };
-    errdefer c.SDL_DestroyGPUDevice(gpu_device);
+    errdefer dev.destroy();
 
+    // Claim window for GPU
     if (!options.headless) {
-        if (!c.SDL_ClaimWindowForGPUDevice(gpu_device, window)) {
-            std.log.err("SDL_ClaimWindowForGPUDevice failed: {s}", .{c.SDL_GetError()});
+        if (!window.claimForGpu(dev)) {
+            std.log.err("SDL_ClaimWindowForGPUDevice failed: {s}", .{sdl.getError()});
             return error.ClaimWindowFailed;
         }
     }
 
     return GraphicsSetup{
         .window = window,
-        .gpu_device = gpu_device,
+        .gpu_device = dev,
         .initial_dpi_scale = initial_dpi_scale,
     };
 }
 
 pub const GpuResources = struct {
-    pipeline: *c.SDL_GPUGraphicsPipeline,
-    sampler: *c.SDL_GPUSampler,
-    white_texture: *c.SDL_GPUTexture,
-    fonts: [2]?*c.TTF_Font,
+    pipeline: sdl.gpu.Pipeline,
+    sampler: sdl.gpu.Sampler,
+    white_texture: sdl.gpu.Texture,
+    fonts: [2]?sdl.Font,
 };
 
-pub fn initGpuResources(gpu_device: *c.SDL_GPUDevice, window: *c.SDL_Window, initial_dpi_scale: f32, headless: bool) !GpuResources {
+pub fn initGpuResources(dev: sdl.gpu.Device, window: sdl.Window, initial_dpi_scale: f32, headless: bool) !GpuResources {
     const target_format = if (headless)
-        @as(c.SDL_GPUTextureFormat, c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM)
+        sdl.gpu.TextureFormat.rgba8_unorm
     else
-        c.SDL_GetGPUSwapchainTextureFormat(gpu_device, window);
+        dev.getSwapchainTextureFormat(window);
 
     // Load Font from Memory using SDL_IOStream (scaled by DPI scale)
     const roboto_font_bytes = @embedFile("../resources/Roboto-Regular.ttf");
-    const stream = c.SDL_IOFromConstMem(roboto_font_bytes.ptr, roboto_font_bytes.len) orelse {
-        std.log.err("SDL_IOFromConstMem Error: {s}", .{c.SDL_GetError()});
-        return error.SDLMemIOFailed;
-    };
-    const font = c.TTF_OpenFontIO(stream, true, 20.0 * initial_dpi_scale) orelse {
-        std.log.err("TTF_OpenFontIO Error: {s}", .{c.SDL_GetError()});
+    const font = sdl.Font.openConstMem(roboto_font_bytes, 20.0 * initial_dpi_scale) orelse {
+        std.log.err("TTF_OpenFontIO Error: {s}", .{sdl.getError()});
         return error.TTFOpenFontFailed;
     };
-    errdefer c.TTF_CloseFont(font);
+    errdefer font.close();
 
     // Re-load font at smaller size for stat rows
-    const stream2 = c.SDL_IOFromConstMem(roboto_font_bytes.ptr, roboto_font_bytes.len) orelse {
-        std.log.err("SDL_IOFromConstMem Error: {s}", .{c.SDL_GetError()});
-        return error.SDLMemIOFailed;
-    };
-    const font_small = c.TTF_OpenFontIO(stream2, true, 14.0 * initial_dpi_scale) orelse {
-        std.log.err("TTF_OpenFontIO Error: {s}", .{c.SDL_GetError()});
+    const font_small = sdl.Font.openConstMem(roboto_font_bytes, 14.0 * initial_dpi_scale) orelse {
+        std.log.err("TTF_OpenFontIO Error: {s}", .{sdl.getError()});
         return error.TTFOpenFontFailed;
     };
-    errdefer c.TTF_CloseFont(font_small);
+    errdefer font_small.close();
 
-    const fonts = [2]?*c.TTF_Font{ font, font_small };
+    const fonts = [2]?sdl.Font{ font, font_small };
 
     // Compile Shaders
     const vert_code_spv = @embedFile("../shaders/vert.spv");
@@ -126,29 +110,29 @@ pub fn initGpuResources(gpu_device: *c.SDL_GPUDevice, window: *c.SDL_Window, ini
     const vert_code_msl = @embedFile("../shaders/vert.msl");
     const frag_code_msl = @embedFile("../shaders/frag.msl");
 
-    const shader_formats = c.SDL_GetGPUShaderFormats(gpu_device);
+    const shader_formats = dev.getShaderFormats();
 
     // Vertex Shader Info
-    const vert_info = if ((shader_formats & c.SDL_GPU_SHADERFORMAT_SPIRV) != 0)
-        c.SDL_GPUShaderCreateInfo{
+    const vert_info = if ((shader_formats & sdl.gpu.ShaderFormat.spirv) != 0)
+        sdl.gpu.ShaderCreateInfo{
             .code_size = vert_code_spv.len,
             .code = vert_code_spv.ptr,
             .entrypoint = "main",
-            .format = c.SDL_GPU_SHADERFORMAT_SPIRV,
-            .stage = c.SDL_GPU_SHADERSTAGE_VERTEX,
+            .format = sdl.gpu.ShaderFormat.spirv,
+            .stage = .vertex,
             .num_samplers = 0,
             .num_storage_buffers = 0,
             .num_storage_textures = 0,
             .num_uniform_buffers = 0,
             .props = 0,
         }
-    else if ((shader_formats & c.SDL_GPU_SHADERFORMAT_MSL) != 0)
-        c.SDL_GPUShaderCreateInfo{
+    else if ((shader_formats & sdl.gpu.ShaderFormat.msl) != 0)
+        sdl.gpu.ShaderCreateInfo{
             .code_size = vert_code_msl.len,
             .code = vert_code_msl.ptr,
             .entrypoint = "main0",
-            .format = c.SDL_GPU_SHADERFORMAT_MSL,
-            .stage = c.SDL_GPU_SHADERSTAGE_VERTEX,
+            .format = sdl.gpu.ShaderFormat.msl,
+            .stage = .vertex,
             .num_samplers = 0,
             .num_storage_buffers = 0,
             .num_storage_textures = 0,
@@ -160,33 +144,33 @@ pub fn initGpuResources(gpu_device: *c.SDL_GPUDevice, window: *c.SDL_Window, ini
         return error.UnsupportedShaderFormat;
     };
 
-    const vert_shader = c.SDL_CreateGPUShader(gpu_device, &vert_info) orelse {
-        std.log.err("Failed to create vertex shader: {s}", .{c.SDL_GetError()});
+    const vert_shader = dev.createShader(&vert_info) orelse {
+        std.log.err("Failed to create vertex shader: {s}", .{sdl.getError()});
         return error.ShaderCreationFailed;
     };
-    defer c.SDL_ReleaseGPUShader(gpu_device, vert_shader);
+    defer dev.releaseShader(vert_shader);
 
     // Fragment Shader Info
-    const frag_info = if ((shader_formats & c.SDL_GPU_SHADERFORMAT_SPIRV) != 0)
-        c.SDL_GPUShaderCreateInfo{
+    const frag_info = if ((shader_formats & sdl.gpu.ShaderFormat.spirv) != 0)
+        sdl.gpu.ShaderCreateInfo{
             .code_size = frag_code_spv.len,
             .code = frag_code_spv.ptr,
             .entrypoint = "main",
-            .format = c.SDL_GPU_SHADERFORMAT_SPIRV,
-            .stage = c.SDL_GPU_SHADERSTAGE_FRAGMENT,
+            .format = sdl.gpu.ShaderFormat.spirv,
+            .stage = .fragment,
             .num_samplers = 1,
             .num_storage_buffers = 0,
             .num_storage_textures = 0,
             .num_uniform_buffers = 1,
             .props = 0,
         }
-    else if ((shader_formats & c.SDL_GPU_SHADERFORMAT_MSL) != 0)
-        c.SDL_GPUShaderCreateInfo{
+    else if ((shader_formats & sdl.gpu.ShaderFormat.msl) != 0)
+        sdl.gpu.ShaderCreateInfo{
             .code_size = frag_code_msl.len,
             .code = frag_code_msl.ptr,
             .entrypoint = "main0",
-            .format = c.SDL_GPU_SHADERFORMAT_MSL,
-            .stage = c.SDL_GPU_SHADERSTAGE_FRAGMENT,
+            .format = sdl.gpu.ShaderFormat.msl,
+            .stage = .fragment,
             .num_samplers = 1,
             .num_storage_buffers = 0,
             .num_storage_textures = 0,
@@ -198,104 +182,104 @@ pub fn initGpuResources(gpu_device: *c.SDL_GPUDevice, window: *c.SDL_Window, ini
         return error.UnsupportedShaderFormat;
     };
 
-    const frag_shader = c.SDL_CreateGPUShader(gpu_device, &frag_info) orelse {
-        std.log.err("Failed to create fragment shader: {s}", .{c.SDL_GetError()});
+    const frag_shader = dev.createShader(&frag_info) orelse {
+        std.log.err("Failed to create fragment shader: {s}", .{sdl.getError()});
         return error.ShaderCreationFailed;
     };
-    defer c.SDL_ReleaseGPUShader(gpu_device, frag_shader);
+    defer dev.releaseShader(frag_shader);
 
     // Create sampler
-    const sampler_info = c.SDL_GPUSamplerCreateInfo{
-        .min_filter = c.SDL_GPU_FILTER_LINEAR,
-        .mag_filter = c.SDL_GPU_FILTER_LINEAR,
-        .mipmap_mode = c.SDL_GPU_SAMPLERMIPMAPMODE_LINEAR,
-        .address_mode_u = c.SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
-        .address_mode_v = c.SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
-        .address_mode_w = c.SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE,
+    const sampler_info = sdl.gpu.SamplerCreateInfo{
+        .min_filter = .linear,
+        .mag_filter = .linear,
+        .mipmap_mode = .linear,
+        .address_mode_u = .clamp_to_edge,
+        .address_mode_v = .clamp_to_edge,
+        .address_mode_w = .clamp_to_edge,
         .mip_lod_bias = 0.0,
         .max_anisotropy = 1.0,
-        .compare_op = c.SDL_GPU_COMPAREOP_NEVER,
+        .compare_op = .never,
         .min_lod = 0.0,
         .max_lod = 1000.0,
         .props = 0,
     };
-    const sampler = c.SDL_CreateGPUSampler(gpu_device, &sampler_info) orelse {
-        std.log.err("Failed to create GPU sampler: {s}", .{c.SDL_GetError()});
+    const sampler = dev.createSampler(&sampler_info) orelse {
+        std.log.err("Failed to create GPU sampler: {s}", .{sdl.getError()});
         return error.SamplerCreationFailed;
     };
-    errdefer c.SDL_ReleaseGPUSampler(gpu_device, sampler);
+    errdefer dev.releaseSampler(sampler);
 
     // Create 1x1 white texture
-    const texture_info = c.SDL_GPUTextureCreateInfo{
-        .type = c.SDL_GPU_TEXTURETYPE_2D,
-        .format = c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-        .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER | c.SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
+    const texture_info = sdl.gpu.TextureCreateInfo{
+        .type = .type_2d,
+        .format = .rgba8_unorm,
+        .usage = sdl.gpu.TextureUsage.sampler | sdl.gpu.TextureUsage.color_target,
         .width = 1,
         .height = 1,
         .layer_count_or_depth = 1,
         .num_levels = 1,
-        .sample_count = c.SDL_GPU_SAMPLECOUNT_1,
+        .sample_count = .count_1,
         .props = 0,
     };
-    const white_texture = c.SDL_CreateGPUTexture(gpu_device, &texture_info) orelse {
-        std.log.err("Failed to create white texture: {s}", .{c.SDL_GetError()});
+    const white_texture = dev.createTexture(&texture_info) orelse {
+        std.log.err("Failed to create white texture: {s}", .{sdl.getError()});
         return error.TextureCreationFailed;
     };
-    errdefer c.SDL_ReleaseGPUTexture(gpu_device, white_texture);
+    errdefer dev.releaseTexture(white_texture);
 
     // Upload white pixel
     {
-        const cmd_buf = c.SDL_AcquireGPUCommandBuffer(gpu_device) orelse return error.CommandBufferAcquisitionFailed;
-        const transfer_buf = c.SDL_CreateGPUTransferBuffer(gpu_device, &c.SDL_GPUTransferBufferCreateInfo{
-            .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+        const cmd_buf_wrapper = dev.acquireCommandBuffer() orelse return error.CommandBufferAcquisitionFailed;
+        const transfer_buf = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
+            .usage = .upload,
             .size = 4,
             .props = 0,
         }) orelse {
-            _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+            _ = cmd_buf_wrapper.submit();
             return error.TransferBufferCreationFailed;
         };
-        defer c.SDL_ReleaseGPUTransferBuffer(gpu_device, transfer_buf);
+        defer dev.releaseTransferBuffer(transfer_buf);
 
-        const mapped: [*]u8 = @ptrCast(c.SDL_MapGPUTransferBuffer(gpu_device, transfer_buf, false) orelse {
-            _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+        const mapped = dev.mapTransferBuffer(transfer_buf, false) orelse {
+            _ = cmd_buf_wrapper.submit();
             return error.MapFailed;
-        });
+        };
         mapped[0] = 255;
         mapped[1] = 255;
         mapped[2] = 255;
         mapped[3] = 255;
-        c.SDL_UnmapGPUTransferBuffer(gpu_device, transfer_buf);
+        dev.unmapTransferBuffer(transfer_buf);
 
-        const copy_pass = c.SDL_BeginGPUCopyPass(cmd_buf) orelse {
-            _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
-            return error.CopyPassFailed;
+        const copy_pass = cmd_buf_wrapper.beginCopyPass() orelse {
+            _ = cmd_buf_wrapper.submit();
+            return error.CopyPassCreationFailed;
         };
-        c.SDL_UploadToGPUTexture(copy_pass, &c.SDL_GPUTextureTransferInfo{
+        copy_pass.uploadToTexture(&sdl.gpu.TextureTransferInfo{
             .transfer_buffer = transfer_buf,
             .offset = 0,
             .pixels_per_row = 1,
             .rows_per_layer = 1,
-        }, &c.SDL_GPUTextureRegion{
+        }, &sdl.gpu.TextureRegion{
             .texture = white_texture,
             .w = 1,
             .h = 1,
             .d = 1,
         }, false);
-        c.SDL_EndGPUCopyPass(copy_pass);
-        _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+        copy_pass.end();
+        _ = cmd_buf_wrapper.submit();
     }
 
     // Create Graphics Pipeline
-    const vertex_attribs = [_]c.SDL_GPUVertexAttribute{
-        .{ .location = 0, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, .offset = @offsetOf(renderer.Vertex, "x") },
-        .{ .location = 1, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, .offset = @offsetOf(renderer.Vertex, "u") },
-        .{ .location = 2, .buffer_slot = 0, .format = c.SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4_NORM, .offset = @offsetOf(renderer.Vertex, "color") },
+    const vertex_attribs = [_]sdl.gpu.VertexAttribute{
+        .{ .location = 0, .buffer_slot = 0, .format = .float2, .offset = @offsetOf(renderer.Vertex, "x") },
+        .{ .location = 1, .buffer_slot = 0, .format = .float2, .offset = @offsetOf(renderer.Vertex, "u") },
+        .{ .location = 2, .buffer_slot = 0, .format = .ubyte4_norm, .offset = @offsetOf(renderer.Vertex, "color") },
     };
-    const vertex_buf_descs = [_]c.SDL_GPUVertexBufferDescription{
-        .{ .slot = 0, .pitch = @sizeOf(renderer.Vertex), .input_rate = c.SDL_GPU_VERTEXINPUTRATE_VERTEX, .instance_step_rate = 0 },
+    const vertex_buf_descs = [_]sdl.gpu.VertexBufferDescription{
+        .{ .slot = 0, .pitch = @sizeOf(renderer.Vertex), .input_rate = .vertex, .instance_step_rate = 0 },
     };
 
-    var pipeline_info = c.SDL_GPUGraphicsPipelineCreateInfo{
+    var pipeline_info = sdl.gpu.GraphicsPipelineCreateInfo{
         .vertex_shader = vert_shader,
         .fragment_shader = frag_shader,
         .vertex_input_state = .{
@@ -304,67 +288,41 @@ pub fn initGpuResources(gpu_device: *c.SDL_GPUDevice, window: *c.SDL_Window, ini
             .num_vertex_buffers = vertex_buf_descs.len,
             .vertex_buffer_descriptions = &vertex_buf_descs,
         },
-        .primitive_type = c.SDL_GPU_PRIMITIVETYPE_TRIANGLELIST,
+        .primitive_type = .triangle_list,
         .rasterizer_state = .{
-            .fill_mode = c.SDL_GPU_FILLMODE_FILL,
-            .cull_mode = c.SDL_GPU_CULLMODE_NONE,
-            .front_face = c.SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE,
-            .depth_bias_constant_factor = 0,
-            .depth_bias_clamp = 0,
-            .depth_bias_slope_factor = 0,
-            .enable_depth_bias = false,
-            .enable_depth_clip = false,
-            .padding1 = 0,
-            .padding2 = 0,
+            .fill_mode = .fill,
+            .cull_mode = .none,
+            .front_face = .counter_clockwise,
         },
         .multisample_state = .{
-            .sample_count = c.SDL_GPU_SAMPLECOUNT_1,
-            .sample_mask = 0,
-            .enable_mask = false,
-            .enable_alpha_to_coverage = false,
-            .padding2 = 0,
-            .padding3 = 0,
+            .sample_count = .count_1,
         },
         .depth_stencil_state = .{
-            .compare_op = c.SDL_GPU_COMPAREOP_ALWAYS,
-            .back_stencil_state = .{ .compare_op = c.SDL_GPU_COMPAREOP_ALWAYS, .fail_op = c.SDL_GPU_STENCILOP_KEEP, .pass_op = c.SDL_GPU_STENCILOP_KEEP, .depth_fail_op = c.SDL_GPU_STENCILOP_KEEP },
-            .front_stencil_state = .{ .compare_op = c.SDL_GPU_COMPAREOP_ALWAYS, .fail_op = c.SDL_GPU_STENCILOP_KEEP, .pass_op = c.SDL_GPU_STENCILOP_KEEP, .depth_fail_op = c.SDL_GPU_STENCILOP_KEEP },
-            .compare_mask = 0,
-            .write_mask = 0,
-            .enable_depth_test = false,
-            .enable_depth_write = false,
-            .enable_stencil_test = false,
-            .padding1 = 0,
-            .padding2 = 0,
-            .padding3 = 0,
+            .compare_op = .always,
         },
         .target_info = .{
             .num_color_targets = 1,
-            .color_target_descriptions = &[_]c.SDL_GPUColorTargetDescription{.{
+            .color_target_descriptions = &[_]sdl.gpu.ColorTargetDescription{.{
                 .format = target_format,
                 .blend_state = .{
-                    .src_color_blendfactor = c.SDL_GPU_BLENDFACTOR_SRC_ALPHA,
-                    .dst_color_blendfactor = c.SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
-                    .color_blend_op = c.SDL_GPU_BLENDOP_ADD,
-                    .src_alpha_blendfactor = c.SDL_GPU_BLENDFACTOR_ONE,
-                    .dst_alpha_blendfactor = c.SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
-                    .alpha_blend_op = c.SDL_GPU_BLENDOP_ADD,
-                    .color_write_mask = c.SDL_GPU_COLORCOMPONENT_R | c.SDL_GPU_COLORCOMPONENT_G | c.SDL_GPU_COLORCOMPONENT_B | c.SDL_GPU_COLORCOMPONENT_A,
+                    .src_color_blendfactor = .src_alpha,
+                    .dst_color_blendfactor = .one_minus_src_alpha,
+                    .color_blend_op = .add,
+                    .src_alpha_blendfactor = .one,
+                    .dst_alpha_blendfactor = .one_minus_src_alpha,
+                    .alpha_blend_op = .add,
+                    .color_write_mask = sdl.gpu.ColorComponent.r | sdl.gpu.ColorComponent.g | sdl.gpu.ColorComponent.b | sdl.gpu.ColorComponent.a,
                     .enable_blend = true,
                     .enable_color_write_mask = true,
-                    .padding1 = 0,
-                    .padding2 = 0,
                 },
             }},
             .has_depth_stencil_target = false,
-            .depth_stencil_format = c.SDL_GPU_TEXTUREFORMAT_D16_UNORM,
-            .padding1 = 0,
-            .padding2 = 0,
+            .depth_stencil_format = .d16_unorm,
         },
         .props = 0,
     };
-    const pipeline = c.SDL_CreateGPUGraphicsPipeline(gpu_device, &pipeline_info) orelse {
-        std.log.err("Failed to create graphics pipeline: {s}", .{c.SDL_GetError()});
+    const pipeline = dev.createPipeline(&pipeline_info) orelse {
+        std.log.err("Failed to create graphics pipeline: {s}", .{sdl.getError()});
         return error.PipelineCreationFailed;
     };
 
@@ -376,43 +334,43 @@ pub fn initGpuResources(gpu_device: *c.SDL_GPUDevice, window: *c.SDL_Window, ini
     };
 }
 
-fn getTextureFormatElementSize(format: c.SDL_GPUTextureFormat) u32 {
+fn getTextureFormatElementSize(format: sdl.gpu.TextureFormat) u32 {
     return switch (format) {
-        c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, c.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM, c.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB, c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB => 4,
-        c.SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT => 8,
-        c.SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT => 16,
+        .rgba8_unorm, .bgra8_unorm, .bgra8_unorm_srgb, .rgba8_unorm_srgb => 4,
+        .r16g16b16a16_float => 8,
+        .r32g32b32a32_float => 16,
         else => 4, // Fallback safe default
     };
 }
 
 pub fn saveTextureToPng(
-    device: *c.SDL_GPUDevice,
-    cmd_buf: *c.SDL_GPUCommandBuffer,
-    texture: *c.SDL_GPUTexture,
+    dev: sdl.gpu.Device,
+    cmd: sdl.gpu.CommandBuffer,
+    texture: sdl.gpu.Texture,
     width: u32,
     height: u32,
-    texture_format: c.SDL_GPUTextureFormat,
+    texture_format: sdl.gpu.TextureFormat,
     filename: [:0]const u8,
 ) !void {
     const bpp = getTextureFormatElementSize(texture_format);
     const pitch = width * bpp;
     const size = pitch * height;
 
-    const transfer_buf = c.SDL_CreateGPUTransferBuffer(device, &c.SDL_GPUTransferBufferCreateInfo{
-        .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD,
+    const transfer_buf = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
+        .usage = .download,
         .size = size,
         .props = 0,
     }) orelse {
-        std.log.err("Failed to create download transfer buffer: {s}", .{c.SDL_GetError()});
+        std.log.err("Failed to create download transfer buffer: {s}", .{sdl.getError()});
         return error.TransferBufferCreationFailed;
     };
-    defer c.SDL_ReleaseGPUTransferBuffer(device, transfer_buf);
+    defer dev.releaseTransferBuffer(transfer_buf);
 
-    const copy_pass = c.SDL_BeginGPUCopyPass(cmd_buf) orelse {
-        _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
+    const copy_pass = cmd.beginCopyPass() orelse {
+        _ = cmd.cancel();
         return error.CopyPassCreationFailed;
     };
-    c.SDL_DownloadFromGPUTexture(copy_pass, &c.SDL_GPUTextureRegion{
+    copy_pass.downloadFromTexture(&sdl.gpu.TextureRegion{
         .texture = texture,
         .mip_level = 0,
         .layer = 0,
@@ -422,41 +380,41 @@ pub fn saveTextureToPng(
         .w = width,
         .h = height,
         .d = 1,
-    }, &c.SDL_GPUTextureTransferInfo{
+    }, &sdl.gpu.TextureTransferInfo{
         .transfer_buffer = transfer_buf,
         .offset = 0,
         .pixels_per_row = width,
         .rows_per_layer = height,
     });
-    c.SDL_EndGPUCopyPass(copy_pass);
+    copy_pass.end();
 
-    const fence_opt = c.SDL_SubmitGPUCommandBufferAndAcquireFence(cmd_buf);
+    const fence_opt = cmd.submitAndAcquireFence();
     if (fence_opt) |fence| {
-        _ = c.SDL_WaitForGPUFences(device, true, &fence, 1);
-        c.SDL_ReleaseGPUFence(device, fence);
+        _ = dev.waitForFence(fence);
+        dev.releaseFence(fence);
     } else {
-        std.log.err("Failed to acquire GPU fence for screenshot save: {s}", .{c.SDL_GetError()});
+        std.log.err("Failed to acquire GPU fence for screenshot save: {s}", .{sdl.getError()});
         return error.FenceAcquisitionFailed;
     }
 
-    const data_ptr = c.SDL_MapGPUTransferBuffer(device, transfer_buf, false) orelse return error.MapBufferFailed;
-    defer c.SDL_UnmapGPUTransferBuffer(device, transfer_buf);
+    const data_ptr = dev.mapTransferBuffer(transfer_buf, false) orelse return error.MapBufferFailed;
+    defer dev.unmapTransferBuffer(transfer_buf);
 
-    var sdl_format: c.SDL_PixelFormat = c.SDL_PIXELFORMAT_RGBA32;
-    if (texture_format == c.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM or
-        texture_format == c.SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB)
+    var pixel_fmt = sdl.PixelFormat.rgba32;
+    if (texture_format == .bgra8_unorm or
+        texture_format == .bgra8_unorm_srgb)
     {
-        sdl_format = c.SDL_PIXELFORMAT_BGRA32;
+        pixel_fmt = sdl.PixelFormat.bgra32;
     }
 
-    const surface = c.SDL_CreateSurfaceFrom(@intCast(width), @intCast(height), sdl_format, data_ptr, @intCast(pitch)) orelse {
-        std.log.err("SDL_CreateSurfaceFrom failed: {s}", .{c.SDL_GetError()});
+    const surface = sdl.Surface.createFrom(@intCast(width), @intCast(height), pixel_fmt, data_ptr, @intCast(pitch)) orelse {
+        std.log.err("SDL_CreateSurfaceFrom failed: {s}", .{sdl.getError()});
         return error.SurfaceCreationFailed;
     };
-    defer c.SDL_DestroySurface(surface);
+    defer surface.destroy();
 
-    if (!c.IMG_SavePNG(surface, filename.ptr)) {
-        std.log.err("IMG_SavePNG failed: {s}", .{c.SDL_GetError()});
+    if (!surface.savePng(filename)) {
+        std.log.err("IMG_SavePNG failed: {s}", .{sdl.getError()});
         return error.SavePngFailed;
     }
 }
@@ -465,23 +423,16 @@ pub fn sdl3MeasureText(text: []const u8, config: *clay.TextElementConfig, data: 
     if (config.font_id >= data.fonts.len) return .{ .w = 0, .h = 0 };
     const font = data.fonts[config.font_id] orelse return .{ .w = 0, .h = 0 };
     const target_size = @as(f32, @floatFromInt(config.font_size));
-    if (c.TTF_GetFontSize(font) != target_size) {
-        if (!c.TTF_SetFontSize(font, target_size)) {
-            std.log.err("TTF_SetFontSize failed: {s}", .{c.SDL_GetError()});
-        }
+    if (font.getFontSize() != target_size) {
+        _ = font.setFontSize(target_size);
     }
 
-    var w: c_int = 0;
-    var h: c_int = 0;
-    if (!c.TTF_GetStringSize(font, text.ptr, text.len, &w, &h)) {
-        return .{ .w = 0, .h = 0 };
-    }
-
-    return .{ .w = @floatFromInt(w), .h = @floatFromInt(h) };
+    const size = font.getStringSize(text) orelse return .{ .w = 0, .h = 0 };
+    return .{ .w = @floatFromInt(size.w), .h = @floatFromInt(size.h) };
 }
 
 pub const GpuUploadResult = struct {
-    gpu_texture: *c.SDL_GPUTexture,
+    gpu_texture: sdl.gpu.Texture,
     w: f32,
     h: f32,
     upload_time_ms: f64,
@@ -490,14 +441,14 @@ pub const GpuUploadResult = struct {
     mipmap_time_ms: f64 = 0.0,
 };
 
-pub fn uploadSurfaceToGpu(gpu_device: *c.SDL_GPUDevice, surf: *c.SDL_Surface) ?GpuUploadResult {
-    const start_upload = c.SDL_GetTicksNS();
+pub fn uploadSurfaceToGpu(dev: sdl.gpu.Device, surf: sdl.Surface) ?GpuUploadResult {
+    const start_upload = sdl.timer.getTicksNs();
     var current_surf = surf;
-    var converted_tmp: ?*c.SDL_Surface = null;
-    defer if (converted_tmp) |cs| c.SDL_DestroySurface(cs);
+    var converted_tmp: ?sdl.Surface = null;
+    defer if (converted_tmp) |cs| cs.destroy();
 
-    if (current_surf.*.format != c.SDL_PIXELFORMAT_RGBA32) {
-        converted_tmp = c.SDL_ConvertSurface(current_surf, c.SDL_PIXELFORMAT_RGBA32);
+    if (current_surf.format() != sdl.PixelFormat.rgba32) {
+        converted_tmp = current_surf.convert(sdl.PixelFormat.rgba32);
         if (converted_tmp) |cs| {
             current_surf = cs;
         } else {
@@ -505,30 +456,30 @@ pub fn uploadSurfaceToGpu(gpu_device: *c.SDL_GPUDevice, surf: *c.SDL_Surface) ?G
         }
     }
 
-    var scaled_surf: ?*c.SDL_Surface = null;
-    defer if (scaled_surf) |s| c.SDL_DestroySurface(s);
+    var scaled_surf: ?sdl.Surface = null;
+    defer if (scaled_surf) |s| s.destroy();
 
-    var img_w = current_surf.*.w;
-    var img_h = current_surf.*.h;
-    var tex: ?*c.SDL_GPUTexture = null;
+    var img_w = current_surf.w();
+    var img_h = current_surf.h();
+    var tex: ?sdl.gpu.Texture = null;
     const max_dim_u: u32 = @intCast(@max(img_w, img_h));
     const num_levels: u32 = if (max_dim_u > 1) @intCast(std.math.log2(max_dim_u) + 1) else 1;
 
     var try_max_dim: i32 = 16384;
     while (try_max_dim >= 2048) : (try_max_dim = @divTrunc(try_max_dim, 2)) {
         if (img_w <= try_max_dim and img_h <= try_max_dim) {
-            const img_tex_info = c.SDL_GPUTextureCreateInfo{
-                .type = c.SDL_GPU_TEXTURETYPE_2D,
-                .format = c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-                .usage = c.SDL_GPU_TEXTUREUSAGE_SAMPLER | c.SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
+            const img_tex_info = sdl.gpu.TextureCreateInfo{
+                .type = .type_2d,
+                .format = .rgba8_unorm,
+                .usage = sdl.gpu.TextureUsage.sampler | sdl.gpu.TextureUsage.color_target,
                 .width = @intCast(img_w),
                 .height = @intCast(img_h),
                 .layer_count_or_depth = 1,
                 .num_levels = num_levels,
-                .sample_count = c.SDL_GPU_SAMPLECOUNT_1,
+                .sample_count = .count_1,
                 .props = 0,
             };
-            tex = c.SDL_CreateGPUTexture(gpu_device, &img_tex_info);
+            tex = dev.createTexture(&img_tex_info);
             if (tex != null) break;
         }
 
@@ -546,20 +497,15 @@ pub fn uploadSurfaceToGpu(gpu_device: *c.SDL_GPUDevice, surf: *c.SDL_Surface) ?G
             new_w = @max(1, new_w);
             new_h = @max(1, new_h);
 
-            const new_scale = c.SDL_ScaleSurface(
-                current_surf,
-                new_w,
-                new_h,
-                c.SDL_SCALEMODE_LINEAR,
-            );
+            const new_scale = current_surf.scale(new_w, new_h, .linear);
             if (new_scale) |ns| {
-                if (scaled_surf) |s| c.SDL_DestroySurface(s);
+                if (scaled_surf) |s| s.destroy();
                 scaled_surf = ns;
                 current_surf = ns;
                 img_w = new_w;
                 img_h = new_h;
             } else {
-                std.log.err("uploadSurfaceToGpu: SDL_ScaleSurface failed: {s}", .{c.SDL_GetError()});
+                std.log.err("uploadSurfaceToGpu: SDL_ScaleSurface failed: {s}", .{sdl.getError()});
                 break;
             }
         }
@@ -567,32 +513,32 @@ pub fn uploadSurfaceToGpu(gpu_device: *c.SDL_GPUDevice, surf: *c.SDL_Surface) ?G
 
     const gpu_tex = tex orelse return null;
 
-    const cmd_buf = c.SDL_AcquireGPUCommandBuffer(gpu_device) orelse {
-        c.SDL_ReleaseGPUTexture(gpu_device, gpu_tex);
+    const cmd_wrapper = dev.acquireCommandBuffer() orelse {
+        dev.releaseTexture(gpu_tex);
         return null;
     };
 
     const size = @as(usize, @intCast(img_w)) * @as(usize, @intCast(img_h)) * 4;
-    const transfer_buf = c.SDL_CreateGPUTransferBuffer(gpu_device, &c.SDL_GPUTransferBufferCreateInfo{
-        .usage = c.SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD,
+    const transfer_buf = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
+        .usage = .upload,
         .size = @intCast(size),
         .props = 0,
     }) orelse {
-        std.log.err("Create transfer buffer failed: {s}", .{c.SDL_GetError()});
-        _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
-        c.SDL_ReleaseGPUTexture(gpu_device, gpu_tex);
+        std.log.err("Create transfer buffer failed: {s}", .{sdl.getError()});
+        _ = cmd_wrapper.cancel();
+        dev.releaseTexture(gpu_tex);
         return null;
     };
-    defer c.SDL_ReleaseGPUTransferBuffer(gpu_device, transfer_buf);
+    defer dev.releaseTransferBuffer(transfer_buf);
 
-    const mapped: [*]u8 = @ptrCast(c.SDL_MapGPUTransferBuffer(gpu_device, transfer_buf, false) orelse {
-        _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
-        c.SDL_ReleaseGPUTexture(gpu_device, gpu_tex);
+    const mapped = dev.mapTransferBuffer(transfer_buf, false) orelse {
+        _ = cmd_wrapper.cancel();
+        dev.releaseTexture(gpu_tex);
         return null;
-    });
-    const pixels: [*]const u8 = @ptrCast(current_surf.*.pixels);
+    };
+    const pixels: [*]const u8 = current_surf.pixels();
     const row_bytes: usize = @intCast(img_w * 4);
-    const pitch: usize = @intCast(current_surf.*.pitch);
+    const pitch: usize = @intCast(current_surf.pitch());
     if (pitch == row_bytes) {
         @memcpy(mapped[0..size], pixels[0..size]);
     } else {
@@ -604,37 +550,37 @@ pub fn uploadSurfaceToGpu(gpu_device: *c.SDL_GPUDevice, surf: *c.SDL_Surface) ?G
             @memcpy(dst_row, src_row);
         }
     }
-    c.SDL_UnmapGPUTransferBuffer(gpu_device, transfer_buf);
+    dev.unmapTransferBuffer(transfer_buf);
 
-    const copy_pass = c.SDL_BeginGPUCopyPass(cmd_buf) orelse {
-        _ = c.SDL_CancelGPUCommandBuffer(cmd_buf);
-        c.SDL_ReleaseGPUTexture(gpu_device, gpu_tex);
+    const copy_pass = cmd_wrapper.beginCopyPass() orelse {
+        _ = cmd_wrapper.cancel();
+        dev.releaseTexture(gpu_tex);
         return null;
     };
-    c.SDL_UploadToGPUTexture(copy_pass, &c.SDL_GPUTextureTransferInfo{
+    copy_pass.uploadToTexture(&sdl.gpu.TextureTransferInfo{
         .transfer_buffer = transfer_buf,
         .offset = 0,
         .pixels_per_row = @intCast(img_w),
         .rows_per_layer = @intCast(img_h),
-    }, &c.SDL_GPUTextureRegion{
+    }, &sdl.gpu.TextureRegion{
         .texture = gpu_tex,
         .w = @intCast(img_w),
         .h = @intCast(img_h),
         .d = 1,
     }, false);
-    c.SDL_EndGPUCopyPass(copy_pass);
+    copy_pass.end();
 
     var mipmap_time_ms: f64 = 0.0;
     if (num_levels > 1) {
-        const start_mip = c.SDL_GetTicksNS();
-        c.SDL_GenerateMipmapsForGPUTexture(cmd_buf, gpu_tex);
-        const end_mip = c.SDL_GetTicksNS();
+        const start_mip = sdl.timer.getTicksNs();
+        cmd_wrapper.generateMipmaps(gpu_tex);
+        const end_mip = sdl.timer.getTicksNs();
         mipmap_time_ms = @as(f64, @floatFromInt(end_mip - start_mip)) / 1_000_000.0;
     }
 
-    _ = c.SDL_SubmitGPUCommandBuffer(cmd_buf);
+    _ = cmd_wrapper.submit();
 
-    const end_upload = c.SDL_GetTicksNS();
+    const end_upload = sdl.timer.getTicksNs();
     const upload_time_ms = @as(f64, @floatFromInt(end_upload - start_upload)) / 1_000_000.0;
 
     var memory_size_bytes: usize = size;

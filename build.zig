@@ -89,7 +89,7 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
-    inline for (&.{ "sdl3", "sdl3-image" }) |lib| {
+    inline for (&.{ "sdl3", "sdl3-ttf", "sdl3-image" }) |lib| {
         test_runner_exe.root_module.linkSystemLibrary(lib, .{});
     }
     b.installArtifact(test_runner_exe);

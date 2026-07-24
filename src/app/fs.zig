@@ -1,7 +1,7 @@
 const std = @import("std");
 const app_state = @import("state.zig");
 const ViewerState = app_state.ViewerState;
-const c = @import("c.zig").c;
+const sdl = @import("../sdl/root.zig");
 
 pub fn eqlIgnoreCase(a: []const u8, b: []const u8) bool {
     if (a.len != b.len) return false;
@@ -67,9 +67,7 @@ const StdinArgs = struct {
 };
 
 pub fn wakeUpMainThread() void {
-    var event = std.mem.zeroes(c.SDL_Event);
-    event.type = c.SDL_EVENT_USER;
-    _ = c.SDL_PushEvent(&event);
+    _ = sdl.events.pushUserEvent();
 }
 
 fn appendPathThreadSafe(state: *ViewerState, gpa: std.mem.Allocator, path: []const u8, initial_gen: usize) void {

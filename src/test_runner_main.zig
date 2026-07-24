@@ -1,8 +1,5 @@
 const std = @import("std");
-const c_lib = @cImport({
-    @cInclude("SDL3/SDL.h");
-    @cInclude("SDL3_image/SDL_image.h");
-});
+const sdl = @import("sdl/root.zig");
 
 pub const CompareResult = struct {
     mismatched_pixels: u32,
@@ -10,51 +7,51 @@ pub const CompareResult = struct {
 };
 
 fn compareScreenshots(base_path: [:0]const u8, run_path: [:0]const u8, diff_path: [:0]const u8, max_tolerance_pct: f64) !CompareResult {
-    const raw_base_surf = c_lib.IMG_Load(base_path.ptr) orelse {
+    const raw_base_surf = sdl.Surface.loadFile(base_path) catch {
         std.log.err("Failed to load baseline screenshot: {s}. Run with --update-baselines to create it.", .{base_path});
         return error.BaselineMissing;
     };
-    defer c_lib.SDL_DestroySurface(raw_base_surf);
+    defer raw_base_surf.destroy();
 
-    const raw_run_surf = c_lib.IMG_Load(run_path.ptr) orelse {
+    const raw_run_surf = sdl.Surface.loadFile(run_path) catch {
         std.log.err("Failed to load run screenshot: {s}", .{run_path});
         return error.RunScreenshotMissing;
     };
-    defer c_lib.SDL_DestroySurface(raw_run_surf);
+    defer raw_run_surf.destroy();
 
-    if (raw_base_surf.*.w != raw_run_surf.*.w or raw_base_surf.*.h != raw_run_surf.*.h) {
-        std.log.err("Dimension mismatch: baseline is {d}x{d}, run is {d}x{d}", .{ raw_base_surf.*.w, raw_base_surf.*.h, raw_run_surf.*.w, raw_run_surf.*.h });
+    if (raw_base_surf.w() != raw_run_surf.w() or raw_base_surf.h() != raw_run_surf.h()) {
+        std.log.err("Dimension mismatch: baseline is {d}x{d}, run is {d}x{d}", .{ raw_base_surf.w(), raw_base_surf.h(), raw_run_surf.w(), raw_run_surf.h() });
         return error.DimensionMismatch;
     }
 
-    const width = @as(u32, @intCast(raw_base_surf.*.w));
-    const height = @as(u32, @intCast(raw_base_surf.*.h));
+    const width = @as(u32, @intCast(raw_base_surf.w()));
+    const height = @as(u32, @intCast(raw_base_surf.h()));
 
-    const base_surf = c_lib.SDL_ConvertSurface(raw_base_surf, c_lib.SDL_PIXELFORMAT_RGBA32) orelse {
-        std.log.err("Failed to convert baseline to RGBA32: {s}", .{c_lib.SDL_GetError()});
+    const base_surf = raw_base_surf.convert(sdl.PixelFormat.rgba32) orelse {
+        std.log.err("Failed to convert baseline to RGBA32", .{});
         return error.SurfaceConversionFailed;
     };
-    defer c_lib.SDL_DestroySurface(base_surf);
+    defer base_surf.destroy();
 
-    const run_surf = c_lib.SDL_ConvertSurface(raw_run_surf, c_lib.SDL_PIXELFORMAT_RGBA32) orelse {
-        std.log.err("Failed to convert run to RGBA32: {s}", .{c_lib.SDL_GetError()});
+    const run_surf = raw_run_surf.convert(sdl.PixelFormat.rgba32) orelse {
+        std.log.err("Failed to convert run to RGBA32", .{});
         return error.SurfaceConversionFailed;
     };
-    defer c_lib.SDL_DestroySurface(run_surf);
+    defer run_surf.destroy();
 
-    const diff_surf = c_lib.SDL_CreateSurface(@intCast(width), @intCast(height), c_lib.SDL_PIXELFORMAT_RGBA32) orelse {
-        std.log.err("Failed to create diff surface: {s}", .{c_lib.SDL_GetError()});
+    const diff_surf = sdl.Surface.create(@intCast(width), @intCast(height), sdl.PixelFormat.rgba32) orelse {
+        std.log.err("Failed to create diff surface", .{});
         return error.DiffSurfaceCreationFailed;
     };
-    defer c_lib.SDL_DestroySurface(diff_surf);
+    defer diff_surf.destroy();
 
-    const pixels_base = @as([*]align(1) const u32, @ptrCast(base_surf.*.pixels));
-    const pixels_run = @as([*]align(1) const u32, @ptrCast(run_surf.*.pixels));
-    const pixels_diff = @as([*]align(1) u32, @ptrCast(diff_surf.*.pixels));
+    const pixels_base = @as([*]align(1) const u32, @ptrCast(base_surf.pixels()));
+    const pixels_run = @as([*]align(1) const u32, @ptrCast(run_surf.pixels()));
+    const pixels_diff = @as([*]align(1) u32, @ptrCast(diff_surf.pixels()));
 
-    const pitch_words_base = @as(usize, @intCast(base_surf.*.pitch)) / 4;
-    const pitch_words_run = @as(usize, @intCast(run_surf.*.pitch)) / 4;
-    const pitch_words_diff = @as(usize, @intCast(diff_surf.*.pitch)) / 4;
+    const pitch_words_base = @as(usize, @intCast(base_surf.pitch())) / 4;
+    const pitch_words_run = @as(usize, @intCast(run_surf.pitch())) / 4;
+    const pitch_words_diff = @as(usize, @intCast(diff_surf.pitch())) / 4;
 
     var mismatched_pixels: u32 = 0;
     var y: u32 = 0;
@@ -84,8 +81,8 @@ fn compareScreenshots(base_path: [:0]const u8, run_path: [:0]const u8, diff_path
         const total_pixels = width * height;
         const pct = (@as(f64, @floatFromInt(mismatched_pixels)) / @as(f64, @floatFromInt(total_pixels))) * 100.0;
 
-        if (!c_lib.IMG_SavePNG(diff_surf, diff_path.ptr)) {
-            std.log.err("Failed to save diff image: {s}", .{c_lib.SDL_GetError()});
+        if (!diff_surf.savePng(diff_path)) {
+            std.log.err("Failed to save diff image", .{});
         } else {
             std.log.info("Diff image saved to: {s}", .{diff_path});
         }
@@ -241,11 +238,11 @@ pub fn main(init: std.process.Init) !void {
     std.log.info("Test runner connected to IPC socket: {s}", .{socket_path});
 
     // Initialize SDL3 for image loading
-    if (!c_lib.SDL_Init(0)) {
-        std.log.err("SDL_Init failed: {s}", .{c_lib.SDL_GetError()});
+    if (!sdl.init(0)) {
+        std.log.err("SDL_Init failed", .{});
         return error.SDLInitFailed;
     }
-    defer c_lib.SDL_Quit();
+    defer sdl.quit();
 
     const base_dir = "testfiles/golden-screenshots";
     const run_dir = "testfiles/current-run";
