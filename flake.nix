@@ -63,6 +63,7 @@
             };
             settings.global.excludes = [ ".envrc" ];
           });
+          sdl3-image = pkgs.sdl3-image.override { enableSTB = false; };
           packages =
             with pkgs;
             [
