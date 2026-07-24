@@ -14,7 +14,16 @@
 
 - When using `std.StringHashMap` or `std.AutoHashMapUnmanaged` with dynamically allocated keys (`allocator.dupe`), iterating over `keyIterator()` to free `key.*` MUST occur prior to calling `clearRetainingCapacity()` or `deinit()`.
 
+## Typed Worker Procedure Signatures (No `*anyopaque` Downcasting)
+
+- Background threads spawned via `std.Thread.spawn` MUST use strongly typed function signatures (e.g. `fn(*DecodeArgs) void` or `fn(*IpcServerState) void`) rather than C-ABI wrapper functions taking `?*anyopaque`.
+- Eliminate manual `@ptrCast(@alignCast(...))` downcasts across thread boundaries to guarantee compile-time type safety and eliminate pointer alignment bugs.
+
+## Structured Error Logging Invariant
+
+- NEVER swallow errors silently with empty `catch {}` or `else |_| {}` blocks.
+- Always log errors using structured `std.log` calls (`std.log.err`, `std.log.warn`, or `std.log.debug`) with actionable error names and contextual details to assist post-mortem debugging.
+
 ## Mutex Ownership & Teardown
 
-- Destroy `SDL_Mutex` objects in exactly one owner lifecycle method (e.g. `ViewerState.deinit()`).
-- NEVER put duplicate `defer c.SDL_DestroyMutex()` calls at initialization callsites, as double-destroying a mutex causes heap corruption (`malloc_consolidate`: unaligned fastbin chunk).
+- Clean up locks and resources in exactly one owner lifecycle method (e.g. `ViewerState.deinit()`).

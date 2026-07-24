@@ -7,8 +7,17 @@
 
 ## Atomic Worker Thread Counter Placement
 
-- Increment atomic thread counters (`active_decode_threads.fetchAdd`) on the main thread IMMEDIATELY BEFORE spawning worker threads (`SDL_CreateThread`).
+- Increment atomic thread counters (`active_threads.fetchAdd`) on the main thread IMMEDIATELY BEFORE spawning worker threads (`std.Thread.spawn`).
 - Decrement the counter inside a `defer` block upon worker thread exit. Incrementing inside the thread body causes race conditions during rapid main-thread status checks.
+
+## Non-Recursive Mutex Re-entrancy Invariants (`std.Io.Mutex`)
+
+- `std.Io.Mutex` in Zig 0.16 is **non-recursive**. Functions or thread worker routines holding a mutex (`image_list_mutex` or `cache_mutex`) MUST NEVER invoke helper methods that attempt to re-acquire the same mutex on the same thread. Doing so causes an immediate self-deadlock.
+
+## Event Channel Transport (`MpscQueue`) & Main Loop Wakeup
+
+- Cross-thread events (e.g. image decodes, EXIF metadata, IPC socket commands) MUST be pushed directly to thread-safe `MpscQueue` instances (`BackgroundEvent`).
+- Use `fs.wakeUpMainThread()` (`SDL_PushEvent(SDL_EVENT_USER)`) strictly as a lightweight main loop wakeup pulse, rather than passing raw C pointers through custom SDL event data fields.
 
 ## Offscreen & Frame Synchronization
 
