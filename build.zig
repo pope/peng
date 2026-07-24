@@ -44,11 +44,6 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addIncludePath(clay_dep.path(""));
     exe.root_module.addIncludePath(clay_dep.path("renderers/SDL3"));
 
-    // Add Clay's C implementation (which compiles the SDL3 renderer code)
-    exe.root_module.addCSourceFile(.{
-        .file = b.path("src/clay.c"),
-    });
-
     b.installArtifact(exe);
 
     // Shader compilation
