@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = @import("c.zig").c;
+const ipc = @import("ipc.zig");
 
 pub const ExifParsedPayload = struct {
     index: usize,
@@ -53,6 +54,7 @@ pub const BackgroundEvent = union(enum) {
     decode_failed: DecodeFailedPayload,
     path_discovered: PathDiscoveredPayload,
     directory_scan_complete: DirectoryScanCompletePayload,
+    ipc_command: *ipc.IpcCommandData,
 
     pub fn deinit(self: *BackgroundEvent, allocator: std.mem.Allocator) void {
         switch (self.*) {

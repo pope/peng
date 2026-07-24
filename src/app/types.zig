@@ -1,10 +1,75 @@
 const std = @import("std");
 const c = @import("c.zig").c;
-const ipc = @import("ipc.zig");
 
 pub const MeasureTextUserData = struct {
     fonts: []const ?*c.TTF_Font,
     allocator: std.mem.Allocator,
+};
+
+pub const KeyModifiers = struct {
+    ctrl: bool = false,
+    shift: bool = false,
+    alt: bool = false,
+    gui: bool = false,
+};
+
+pub const Key = enum {
+    escape,
+    return_key,
+    backspace,
+    tab,
+    space,
+    left,
+    right,
+    up,
+    down,
+    equals,
+    minus,
+    left_bracket,
+    right_bracket,
+    home,
+    end,
+    page_up,
+    page_down,
+    f1,
+    f11,
+    char_0,
+    char_1,
+    char_2,
+    char_3,
+    char_4,
+    char_5,
+    char_6,
+    char_7,
+    char_8,
+    char_9,
+    char_a,
+    char_b,
+    char_c,
+    char_d,
+    char_e,
+    char_f,
+    char_g,
+    char_h,
+    char_i,
+    char_j,
+    char_k,
+    char_l,
+    char_m,
+    char_n,
+    char_o,
+    char_p,
+    char_q,
+    char_r,
+    char_s,
+    char_t,
+    char_u,
+    char_v,
+    char_w,
+    char_x,
+    char_y,
+    char_z,
+    unknown,
 };
 
 pub const FrameInput = struct {
@@ -25,12 +90,11 @@ pub const FrameInput = struct {
     scroll_delta_x: f32,
     scroll_delta_y: f32,
 
-    keys_pressed: std.ArrayList(c.SDL_Keycode),
-    key_modifiers: c.SDL_Keymod,
+    keys_pressed: std.ArrayList(Key),
+    key_modifiers: KeyModifiers,
     text_input: ?[]const u8,
     dropped_path: ?[]const u8,
 
     ticks: u64,
     delta_time_ms: f32,
-    pending_ipc_commands: std.ArrayList(*ipc.IpcCommandData),
 };

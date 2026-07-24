@@ -2,6 +2,9 @@ const std = @import("std");
 const c = @import("../app/c.zig").c;
 const clay = @import("zclay");
 const app_state = @import("../app/state.zig");
+const app_types = @import("../app/types.zig");
+const Key = app_types.Key;
+const KeyModifiers = app_types.KeyModifiers;
 const ViewerState = app_state.ViewerState;
 const startTextInput = app_state.startTextInput;
 
@@ -43,8 +46,8 @@ pub const AppActionId = enum {
 };
 
 pub const KeyboardShortcut = struct {
-    key: c.SDL_Keycode,
-    mod: c.SDL_Keymod = 0,
+    key: Key,
+    mod: KeyModifiers = .{},
 };
 
 pub const ActionMetadata = struct {
@@ -61,8 +64,8 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
             .shortcut_text = "Space / Right",
             .show_in_palette = true,
             .shortcuts = &.{
-                .{ .key = c.SDLK_SPACE },
-                .{ .key = c.SDLK_RIGHT },
+                .{ .key = .space },
+                .{ .key = .right },
             },
         },
         .prev_image => .{
@@ -70,8 +73,8 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
             .shortcut_text = "Backspace / Left",
             .show_in_palette = true,
             .shortcuts = &.{
-                .{ .key = c.SDLK_BACKSPACE },
-                .{ .key = c.SDLK_LEFT },
+                .{ .key = .backspace },
+                .{ .key = .left },
             },
         },
         .toggle_stats => .{
@@ -79,7 +82,7 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
             .shortcut_text = "I",
             .show_in_palette = true,
             .shortcuts = &.{
-                .{ .key = c.SDLK_I },
+                .{ .key = .char_i },
             },
         },
         .toggle_fullscreen => .{
@@ -87,8 +90,8 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
             .shortcut_text = "F / F11",
             .show_in_palette = true,
             .shortcuts = &.{
-                .{ .key = c.SDLK_F },
-                .{ .key = c.SDLK_F11 },
+                .{ .key = .char_f },
+                .{ .key = .f11 },
             },
         },
         .open_file_finder => .{
@@ -96,8 +99,8 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
             .shortcut_text = "Ctrl+P",
             .show_in_palette = true,
             .shortcuts = &.{
-                .{ .key = c.SDLK_P, .mod = c.SDL_KMOD_CTRL },
-                .{ .key = c.SDLK_P, .mod = c.SDL_KMOD_GUI },
+                .{ .key = .char_p, .mod = .{ .ctrl = true } },
+                .{ .key = .char_p, .mod = .{ .gui = true } },
             },
         },
         .toggle_debug_mode => .{
@@ -105,7 +108,7 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
             .shortcut_text = "D",
             .show_in_palette = true,
             .shortcuts = &.{
-                .{ .key = c.SDLK_D },
+                .{ .key = .char_d },
             },
         },
         .toggle_debug_thumb => .{
@@ -113,7 +116,7 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
             .shortcut_text = "T",
             .show_in_palette = true,
             .shortcuts = &.{
-                .{ .key = c.SDLK_T },
+                .{ .key = .char_t },
             },
         },
         .exit => .{
@@ -121,7 +124,7 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
             .shortcut_text = "Esc",
             .show_in_palette = true,
             .shortcuts = &.{
-                .{ .key = c.SDLK_ESCAPE },
+                .{ .key = .escape },
             },
         },
         .first_image => .{
@@ -129,7 +132,7 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
             .shortcut_text = "Home",
             .show_in_palette = true,
             .shortcuts = &.{
-                .{ .key = c.SDLK_HOME },
+                .{ .key = .home },
             },
         },
         .last_image => .{
@@ -137,7 +140,7 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
             .shortcut_text = "End",
             .show_in_palette = true,
             .shortcuts = &.{
-                .{ .key = c.SDLK_END },
+                .{ .key = .end },
             },
         },
         .zoom_in => .{
@@ -145,8 +148,7 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
             .shortcut_text = "= / +",
             .show_in_palette = true,
             .shortcuts = &.{
-                .{ .key = c.SDLK_EQUALS },
-                .{ .key = c.SDLK_KP_PLUS },
+                .{ .key = .equals },
             },
         },
         .zoom_out => .{
@@ -154,8 +156,7 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
             .shortcut_text = "-",
             .show_in_palette = true,
             .shortcuts = &.{
-                .{ .key = c.SDLK_MINUS },
-                .{ .key = c.SDLK_KP_MINUS },
+                .{ .key = .minus },
             },
         },
         .reset_zoom => .{
@@ -163,9 +164,8 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
             .shortcut_text = "R / 0",
             .show_in_palette = true,
             .shortcuts = &.{
-                .{ .key = c.SDLK_R },
-                .{ .key = c.SDLK_0 },
-                .{ .key = c.SDLK_KP_0 },
+                .{ .key = .char_r },
+                .{ .key = .char_0 },
             },
         },
         .set_scale_none => .{
@@ -197,7 +197,7 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
             .shortcut_text = "]",
             .show_in_palette = true,
             .shortcuts = &.{
-                .{ .key = c.SDLK_RIGHTBRACKET },
+                .{ .key = .right_bracket },
             },
         },
         .rotate_ccw => .{
@@ -205,7 +205,7 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
             .shortcut_text = "[",
             .show_in_palette = true,
             .shortcuts = &.{
-                .{ .key = c.SDLK_LEFTBRACKET },
+                .{ .key = .left_bracket },
             },
         },
         .reset_rotation => .{
@@ -249,7 +249,7 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
             .shortcut_text = "P",
             .show_in_palette = true,
             .shortcuts = &.{
-                .{ .key = c.SDLK_P },
+                .{ .key = .char_p },
             },
         },
         .decrease_brightness => .{
@@ -257,7 +257,7 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
             .shortcut_text = "O",
             .show_in_palette = true,
             .shortcuts = &.{
-                .{ .key = c.SDLK_O },
+                .{ .key = .char_o },
             },
         },
         .increase_contrast => .{
@@ -265,7 +265,7 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
             .shortcut_text = "L",
             .show_in_palette = true,
             .shortcuts = &.{
-                .{ .key = c.SDLK_L },
+                .{ .key = .char_l },
             },
         },
         .decrease_contrast => .{
@@ -273,7 +273,7 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
             .shortcut_text = "K",
             .show_in_palette = true,
             .shortcuts = &.{
-                .{ .key = c.SDLK_K },
+                .{ .key = .char_k },
             },
         },
         .reset_adjustments => .{
@@ -281,7 +281,7 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
             .shortcut_text = "Shift+R",
             .show_in_palette = true,
             .shortcuts = &.{
-                .{ .key = c.SDLK_R, .mod = c.SDL_KMOD_SHIFT },
+                .{ .key = .char_r, .mod = .{ .shift = true } },
             },
         },
         .set_brightness_value => .{
@@ -289,7 +289,7 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
             .shortcut_text = "Shift+B",
             .show_in_palette = true,
             .shortcuts = &.{
-                .{ .key = c.SDLK_B, .mod = c.SDL_KMOD_SHIFT },
+                .{ .key = .char_b, .mod = .{ .shift = true } },
             },
         },
         .set_contrast_value => .{
@@ -297,7 +297,7 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
             .shortcut_text = "Shift+C",
             .show_in_palette = true,
             .shortcuts = &.{
-                .{ .key = c.SDLK_C, .mod = c.SDL_KMOD_SHIFT },
+                .{ .key = .char_c, .mod = .{ .shift = true } },
             },
         },
         .go_to_image => .{
@@ -305,7 +305,7 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
             .shortcut_text = "Shift+G",
             .show_in_palette = true,
             .shortcuts = &.{
-                .{ .key = c.SDLK_G, .mod = c.SDL_KMOD_SHIFT },
+                .{ .key = .char_g, .mod = .{ .shift = true } },
             },
         },
         .open_action_palette => .{
@@ -313,9 +313,9 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
             .shortcut_text = "F1 / Ctrl+Shift+P",
             .show_in_palette = true,
             .shortcuts = &.{
-                .{ .key = c.SDLK_F1 },
-                .{ .key = c.SDLK_P, .mod = c.SDL_KMOD_CTRL | c.SDL_KMOD_SHIFT },
-                .{ .key = c.SDLK_P, .mod = c.SDL_KMOD_GUI | c.SDL_KMOD_SHIFT },
+                .{ .key = .f1 },
+                .{ .key = .char_p, .mod = .{ .ctrl = true, .shift = true } },
+                .{ .key = .char_p, .mod = .{ .gui = true, .shift = true } },
             },
         },
     };
@@ -324,8 +324,8 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
 pub const app_actions = std.enums.values(AppActionId);
 
 pub const FlatShortcut = struct {
-    key: c.SDL_Keycode,
-    mod: c.SDL_Keymod,
+    key: Key,
+    mod: KeyModifiers,
     action_id: AppActionId,
 };
 

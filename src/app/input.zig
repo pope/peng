@@ -2,13 +2,85 @@ const std = @import("std");
 const c = @import("c.zig").c;
 const commands = @import("../commands.zig");
 const app_state = @import("state.zig");
+const types = @import("types.zig");
+const Key = types.Key;
+const KeyModifiers = types.KeyModifiers;
 const ViewerState = app_state.ViewerState;
 const startTextInput = app_state.startTextInput;
 const stopTextInput = app_state.stopTextInput;
 const app_actions = commands.actions.app_actions;
 const flat_shortcuts = commands.actions.flat_shortcuts;
-const FrameInput = @import("types.zig").FrameInput;
-const ipc = @import("ipc.zig");
+const FrameInput = types.FrameInput;
+
+pub fn mapKeyFromSdl(key: c.SDL_Keycode) Key {
+    return switch (key) {
+        c.SDLK_ESCAPE => .escape,
+        c.SDLK_RETURN, c.SDLK_KP_ENTER => .return_key,
+        c.SDLK_BACKSPACE => .backspace,
+        c.SDLK_TAB => .tab,
+        c.SDLK_SPACE => .space,
+        c.SDLK_LEFT => .left,
+        c.SDLK_RIGHT => .right,
+        c.SDLK_UP => .up,
+        c.SDLK_DOWN => .down,
+        c.SDLK_EQUALS, c.SDLK_KP_PLUS => .equals,
+        c.SDLK_MINUS, c.SDLK_KP_MINUS => .minus,
+        c.SDLK_LEFTBRACKET => .left_bracket,
+        c.SDLK_RIGHTBRACKET => .right_bracket,
+        c.SDLK_HOME => .home,
+        c.SDLK_END => .end,
+        c.SDLK_PAGEUP => .page_up,
+        c.SDLK_PAGEDOWN => .page_down,
+        c.SDLK_F1 => .f1,
+        c.SDLK_F11 => .f11,
+        c.SDLK_0, c.SDLK_KP_0 => .char_0,
+        c.SDLK_1, c.SDLK_KP_1 => .char_1,
+        c.SDLK_2, c.SDLK_KP_2 => .char_2,
+        c.SDLK_3, c.SDLK_KP_3 => .char_3,
+        c.SDLK_4, c.SDLK_KP_4 => .char_4,
+        c.SDLK_5, c.SDLK_KP_5 => .char_5,
+        c.SDLK_6, c.SDLK_KP_6 => .char_6,
+        c.SDLK_7, c.SDLK_KP_7 => .char_7,
+        c.SDLK_8, c.SDLK_KP_8 => .char_8,
+        c.SDLK_9, c.SDLK_KP_9 => .char_9,
+        c.SDLK_A => .char_a,
+        c.SDLK_B => .char_b,
+        c.SDLK_C => .char_c,
+        c.SDLK_D => .char_d,
+        c.SDLK_E => .char_e,
+        c.SDLK_F => .char_f,
+        c.SDLK_G => .char_g,
+        c.SDLK_H => .char_h,
+        c.SDLK_I => .char_i,
+        c.SDLK_J => .char_j,
+        c.SDLK_K => .char_k,
+        c.SDLK_L => .char_l,
+        c.SDLK_M => .char_m,
+        c.SDLK_N => .char_n,
+        c.SDLK_O => .char_o,
+        c.SDLK_P => .char_p,
+        c.SDLK_Q => .char_q,
+        c.SDLK_R => .char_r,
+        c.SDLK_S => .char_s,
+        c.SDLK_T => .char_t,
+        c.SDLK_U => .char_u,
+        c.SDLK_V => .char_v,
+        c.SDLK_W => .char_w,
+        c.SDLK_X => .char_x,
+        c.SDLK_Y => .char_y,
+        c.SDLK_Z => .char_z,
+        else => .unknown,
+    };
+}
+
+pub fn mapModFromSdl(mod: c.SDL_Keymod) KeyModifiers {
+    return .{
+        .ctrl = (mod & c.SDL_KMOD_CTRL) != 0,
+        .shift = (mod & c.SDL_KMOD_SHIFT) != 0,
+        .alt = (mod & c.SDL_KMOD_ALT) != 0,
+        .gui = (mod & c.SDL_KMOD_GUI) != 0,
+    };
+}
 
 pub fn pollFrameInput(
     window: *c.SDL_Window,
@@ -41,10 +113,8 @@ pub fn pollFrameInput(
     const scale_y = if (win_h > 0) @as(f32, @floatFromInt(pix_h)) / @as(f32, @floatFromInt(win_h)) else 1.0;
     const dpi_scale = scale_x;
 
-    var keys_pressed = std.ArrayList(c.SDL_Keycode).empty;
+    var keys_pressed = std.ArrayList(Key).empty;
     errdefer keys_pressed.deinit(frame_allocator);
-    var pending_ipc_commands = std.ArrayList(*ipc.IpcCommandData).empty;
-    errdefer pending_ipc_commands.deinit(frame_allocator);
     var text_input_opt: ?[]const u8 = null;
     var dropped_path_opt: ?[]const u8 = null;
     var scroll_delta_x: f32 = 0;
@@ -76,7 +146,7 @@ pub fn pollFrameInput(
                 mouse_inside = false;
             },
             c.SDL_EVENT_KEY_DOWN => {
-                try keys_pressed.append(frame_allocator, event.key.key);
+                try keys_pressed.append(frame_allocator, mapKeyFromSdl(event.key.key));
             },
             c.SDL_EVENT_TEXT_INPUT => {
                 if (event.text.text) |ptr| {
@@ -102,14 +172,7 @@ pub fn pollFrameInput(
                 scroll_delta_x += event.wheel.x * multiplier * 6.0 * scale_x;
                 scroll_delta_y += event.wheel.y * multiplier * 6.0 * scale_y;
             },
-            else => {
-                if (event.type == ipc.PENG_IPC_EVENT) {
-                    if (event.user.data1) |ptr| {
-                        const cmd_ptr: *ipc.IpcCommandData = @ptrCast(@alignCast(ptr));
-                        try pending_ipc_commands.append(frame_allocator, cmd_ptr);
-                    }
-                }
-            },
+            else => {},
         }
         has_event = c.SDL_PollEvent(&event);
     }
@@ -136,29 +199,28 @@ pub fn pollFrameInput(
         .scroll_delta_x = scroll_delta_x,
         .scroll_delta_y = scroll_delta_y,
         .keys_pressed = keys_pressed,
-        .key_modifiers = c.SDL_GetModState(),
+        .key_modifiers = mapModFromSdl(c.SDL_GetModState()),
         .text_input = text_input_opt,
         .dropped_path = dropped_path_opt,
         .ticks = current_ticks,
         .delta_time_ms = delta_time_ms,
-        .pending_ipc_commands = pending_ipc_commands,
     };
 }
 
 pub fn handlePaletteKeys(
     self: *ViewerState,
-    key: c.SDL_Keycode,
+    key: Key,
 ) !bool {
     const palette = &self.palette;
     if (palette.mode == .inactive) return false;
 
     switch (key) {
-        c.SDLK_ESCAPE => {
+        .escape => {
             palette.mode = .inactive;
             stopTextInput(self.window);
             return true;
         },
-        c.SDLK_UP => {
+        .up => {
             if (palette.mode == .set_brightness or palette.mode == .set_contrast or palette.mode == .go_to_image) return true;
             if (palette.selected_idx > 0) {
                 palette.selected_idx -= 1;
@@ -166,7 +228,7 @@ pub fn handlePaletteKeys(
             }
             return true;
         },
-        c.SDLK_DOWN => {
+        .down => {
             if (palette.mode == .set_brightness or palette.mode == .set_contrast or palette.mode == .go_to_image) return true;
             const count = palette.matches.items.len;
             if (count > 0 and palette.selected_idx + 1 < count) {
@@ -175,7 +237,7 @@ pub fn handlePaletteKeys(
             }
             return true;
         },
-        c.SDLK_RETURN => {
+        .return_key => {
             if (palette.mode == .set_brightness or palette.mode == .set_contrast or palette.mode == .go_to_image) {
                 const raw_str = palette.query.items;
                 if (raw_str.len > 0) {
@@ -240,7 +302,7 @@ pub fn handlePaletteKeys(
                 return true;
             }
         },
-        c.SDLK_BACKSPACE => {
+        .backspace => {
             if (palette.query.items.len > 0) {
                 _ = palette.query.pop();
                 palette.selected_idx = 0;
@@ -264,34 +326,33 @@ pub const InputAction = union(enum) {
     trigger_action: commands.actions.AppActionId,
 };
 
-pub fn mapKeyToAction(key: c.SDL_Keycode, mod: c.SDL_Keymod, is_zoomed: bool) InputAction {
+pub fn mapKeyToAction(key: Key, mod: KeyModifiers, is_zoomed: bool) InputAction {
     // 1. Context-Sensitive Keys (Arrow Keys: Pan vs Navigate)
     if (is_zoomed) {
         switch (key) {
-            c.SDLK_LEFT => return .{ .pan = .{ .dx = 30.0, .dy = 0.0 } },
-            c.SDLK_RIGHT => return .{ .pan = .{ .dx = -30.0, .dy = 0.0 } },
-            c.SDLK_UP => return .{ .pan = .{ .dx = 0.0, .dy = 30.0 } },
-            c.SDLK_DOWN => return .{ .pan = .{ .dx = 0.0, .dy = -30.0 } },
+            .left => return .{ .pan = .{ .dx = 30.0, .dy = 0.0 } },
+            .right => return .{ .pan = .{ .dx = -30.0, .dy = 0.0 } },
+            .up => return .{ .pan = .{ .dx = 0.0, .dy = 30.0 } },
+            .down => return .{ .pan = .{ .dx = 0.0, .dy = -30.0 } },
             else => {},
         }
     }
 
     // 2. Fine Zooming (keyboard-specific: +/- 0.1 step)
     switch (key) {
-        c.SDLK_EQUALS, c.SDLK_KP_PLUS => return .{ .zoom = .{ .factor_delta = 0.1 } },
-        c.SDLK_MINUS, c.SDLK_KP_MINUS => return .{ .zoom = .{ .factor_delta = -0.1 } },
+        .equals => return .{ .zoom = .{ .factor_delta = 0.1 } },
+        .minus => return .{ .zoom = .{ .factor_delta = -0.1 } },
         else => {},
     }
 
-    // 3. Dynamic Registry Lookup (Left/Right Modifier Translation)
-    var clean_mod: c.SDL_Keymod = 0;
-    if ((mod & c.SDL_KMOD_SHIFT) != 0) clean_mod |= c.SDL_KMOD_SHIFT;
-    if ((mod & c.SDL_KMOD_CTRL) != 0) clean_mod |= c.SDL_KMOD_CTRL;
-    if ((mod & c.SDL_KMOD_ALT) != 0) clean_mod |= c.SDL_KMOD_ALT;
-    if ((mod & c.SDL_KMOD_GUI) != 0) clean_mod |= c.SDL_KMOD_GUI;
-
+    // 3. Dynamic Registry Lookup
     for (flat_shortcuts) |shortcut| {
-        if (key == shortcut.key and clean_mod == shortcut.mod) {
+        if (key == shortcut.key and
+            mod.ctrl == shortcut.mod.ctrl and
+            mod.shift == shortcut.mod.shift and
+            mod.alt == shortcut.mod.alt and
+            mod.gui == shortcut.mod.gui)
+        {
             return .{ .trigger_action = shortcut.action_id };
         }
     }
@@ -301,8 +362,8 @@ pub fn mapKeyToAction(key: c.SDL_Keycode, mod: c.SDL_Keymod, is_zoomed: bool) In
 
 pub fn handleKeyDown(
     self: *ViewerState,
-    key: c.SDL_Keycode,
-    mod: c.SDL_Keymod,
+    key: Key,
+    mod: KeyModifiers,
     scale_x: f32,
     scale_y: f32,
 ) !void {
@@ -332,15 +393,15 @@ pub fn handleKeyDown(
 
 test "mapKeyToAction mapping" {
     // Zoom and Pan actions
-    const pan_left = mapKeyToAction(c.SDLK_LEFT, 0, true);
+    const pan_left = mapKeyToAction(.left, .{}, true);
     try std.testing.expect(pan_left == .pan);
     try std.testing.expectEqual(@as(f32, 30.0), pan_left.pan.dx);
 
-    const pan_left_not_zoomed = mapKeyToAction(c.SDLK_LEFT, 0, false);
+    const pan_left_not_zoomed = mapKeyToAction(.left, .{}, false);
     try std.testing.expect(pan_left_not_zoomed == .trigger_action);
     try std.testing.expectEqual(commands.actions.AppActionId.prev_image, pan_left_not_zoomed.trigger_action);
 
-    const zoom_in = mapKeyToAction(c.SDLK_EQUALS, 0, false);
+    const zoom_in = mapKeyToAction(.equals, .{}, false);
     try std.testing.expect(zoom_in == .zoom);
     try std.testing.expectEqual(@as(f32, 0.1), zoom_in.zoom.factor_delta);
 }

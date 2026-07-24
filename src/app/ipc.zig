@@ -6,8 +6,6 @@ const ScaleMode = app_state.ScaleMode;
 const TextureScaleMode = app_state.TextureScaleMode;
 const clay = @import("zclay");
 
-pub var PENG_IPC_EVENT: u32 = 0xFFFFFFFF;
-
 /// Low-level POSIX unbuffered write system call binding.
 /// Used to write the IPC Unix Domain Socket path directly to STDOUT_FILENO (fd 1)
 /// without stdio stream buffering. This ensures child process stdout pipes
@@ -260,15 +258,14 @@ fn runIpcServer(state: *ViewerState) !void {
             .client_stream = client_stream,
         };
 
-        var event: c_lib.SDL_Event = undefined;
-        event.type = PENG_IPC_EVENT;
-        event.user.data1 = cmd_data;
-        if (!c_lib.SDL_PushEvent(&event)) {
-            std.log.err("Failed to push IPC event to SDL event queue", .{});
+        state.event_queue.push(gpa, io, .{ .ipc_command = cmd_data }) catch |err| {
+            std.log.err("Failed to push IPC command to MpscQueue: {}", .{err});
             gpa.free(cmd_str);
             gpa.destroy(cmd_data);
             client_stream.close(io);
-        }
+            continue;
+        };
+        app_state.fs.wakeUpMainThread();
     }
 }
 

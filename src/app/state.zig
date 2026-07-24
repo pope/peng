@@ -10,6 +10,7 @@ pub const image = @import("image.zig");
 pub const fs = @import("fs.zig");
 pub const events = @import("events.zig");
 pub const pipeline = @import("pipeline.zig");
+pub const ipc = @import("ipc.zig");
 
 pub const CacheStatus = image.CacheStatus;
 pub const CacheEntry = image.CacheEntry;
@@ -200,6 +201,7 @@ pub const ViewerState = struct {
     mouse_inside: bool = true,
     last_nav_time_ms: u64 = 0,
     event_queue: events.MpscQueue(events.BackgroundEvent) = .{},
+    pending_ipc_commands: std.ArrayListUnmanaged(*ipc.IpcCommandData) = .empty,
 
     // Persistent double-buffered vertex resources
     gpu_vertex_buffers: [2]?*c.SDL_GPUBuffer = .{ null, null },
@@ -292,6 +294,11 @@ pub const ViewerState = struct {
             }
         }
 
+        for (self.pending_ipc_commands.items) |cmd_data| {
+            self.allocator.free(cmd_data.command);
+            self.allocator.destroy(cmd_data);
+        }
+        self.pending_ipc_commands.deinit(self.allocator);
         self.event_queue.deinit(self.allocator, self.io);
         self.text_cache.deinit(self.allocator);
         self.image_list.deinit(self.allocator);
@@ -785,6 +792,11 @@ pub const ViewerState = struct {
                     self.unlockImageList();
                 },
                 .directory_scan_complete => {},
+                .ipc_command => |cmd_data| {
+                    self.pending_ipc_commands.append(self.allocator, cmd_data) catch |err| {
+                        std.log.err("Failed to append IPC command to pending list: {}", .{err});
+                    };
+                },
             }
         }
         return true;

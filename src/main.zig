@@ -162,13 +162,6 @@ pub fn main(init: std.process.Init) !void {
     const ipc = @import("app/ipc.zig");
     var ipc_server: ?*ipc.IpcServer = null;
     if (parsed.ipc_enabled) {
-        const event_base = c.SDL_RegisterEvents(1);
-        if (event_base == 0xFFFFFFFF) {
-            std.log.err("Failed to register custom SDL events", .{});
-            return error.SdlEventRegistrationFailed;
-        }
-        ipc.PENG_IPC_EVENT = event_base;
-
         const IpcServer = ipc.IpcServer;
         ipc_server = try IpcServer.init(gpa, &state);
     }
@@ -217,8 +210,8 @@ pub fn main(init: std.process.Init) !void {
         }
         state.mouse_inside = input.mouse_inside;
 
-        // Process any pending IPC commands collected during event polling
-        for (input.pending_ipc_commands.items) |cmd_data| {
+        // Process any pending IPC commands collected during event processing
+        for (state.pending_ipc_commands.items) |cmd_data| {
             var it = std.mem.tokenizeAny(u8, cmd_data.command, " \t\r\n");
             const cmd = it.next() orelse "";
             if (std.mem.eql(u8, cmd, "screenshot")) {
@@ -274,6 +267,7 @@ pub fn main(init: std.process.Init) !void {
             gpa.free(cmd_data.command);
             gpa.destroy(cmd_data);
         }
+        state.pending_ipc_commands.clearRetainingCapacity();
 
         // Phase 6b: State Update
         const needs_cache_update = blk: {
