@@ -138,52 +138,6 @@ pub fn matchesQueryLower(path: []const u8, query_lower: []const u8) bool {
     return false;
 }
 
-pub const ConversionStats = struct {
-    count: u64 = 0,
-    sum_convert_ms: f64 = 0.0,
-    sum_sq_convert_ms: f64 = 0.0,
-    sum_ratio_pct: f64 = 0.0,
-    sum_sq_ratio_pct: f64 = 0.0,
-
-    pub fn record(self: *ConversionStats, convert_ms: f64, decode_ms: f64) void {
-        self.count += 1;
-        self.sum_convert_ms += convert_ms;
-        self.sum_sq_convert_ms += convert_ms * convert_ms;
-
-        if (decode_ms > 0.0) {
-            const ratio = (convert_ms / decode_ms) * 100.0;
-            self.sum_ratio_pct += ratio;
-            self.sum_sq_ratio_pct += ratio * ratio;
-        }
-    }
-
-    pub fn getConvertAvg(self: ConversionStats) f64 {
-        if (self.count == 0) return 0.0;
-        return self.sum_convert_ms / @as(f64, @floatFromInt(self.count));
-    }
-
-    pub fn getConvertStdDev(self: ConversionStats) f64 {
-        if (self.count < 2) return 0.0;
-        const n = @as(f64, @floatFromInt(self.count));
-        const mean = self.sum_convert_ms / n;
-        const variance = (self.sum_sq_convert_ms / n) - (mean * mean);
-        return std.math.sqrt(@max(0.0, variance));
-    }
-
-    pub fn getRatioAvg(self: ConversionStats) f64 {
-        if (self.count == 0) return 0.0;
-        return self.sum_ratio_pct / @as(f64, @floatFromInt(self.count));
-    }
-
-    pub fn getRatioStdDev(self: ConversionStats) f64 {
-        if (self.count < 2) return 0.0;
-        const n = @as(f64, @floatFromInt(self.count));
-        const mean = self.sum_ratio_pct / n;
-        const variance = (self.sum_sq_ratio_pct / n) - (mean * mean);
-        return std.math.sqrt(@max(0.0, variance));
-    }
-};
-
 pub const ViewerState = struct {
     gpu_device: ?sdl.gpu.Device = null,
     gpu_pipeline: ?sdl.gpu.Pipeline = null,
@@ -199,7 +153,6 @@ pub const ViewerState = struct {
     cache: CacheSlotMap,
     cache_mutex: std.Io.Mutex = .init,
     current_image_cache_hit: bool = false,
-    conversion_stats: ConversionStats = .{},
     allocator: std.mem.Allocator,
     io: std.Io,
     active_threads: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
@@ -695,7 +648,6 @@ pub const ViewerState = struct {
                 .image_decoded => |*d| {
                     if (d.generation != current_gen) continue;
                     if (d.surface == null) continue;
-                    self.conversion_stats.record(d.conversion_time_ms, d.decode_time_ms);
                     if (self.gpu_device) |gpu_dev| {
                         if (graphics.uploadSurfaceToGpu(gpu_dev, d.surface.?)) |full_res| {
                             self.lockCache();
@@ -714,7 +666,7 @@ pub const ViewerState = struct {
                                         .size_bytes = d.size_bytes,
                                         .mime_type = d.mime_type,
                                         .decode_time_ms = d.decode_time_ms,
-                                        .conversion_time_ms = d.conversion_time_ms,
+                                        .conversion_time_ms = full_res.conversion_time_ms,
                                         .upload_time_ms = full_res.upload_time_ms,
                                         .memory_size_bytes = full_res.memory_size_bytes,
                                         .num_mip_levels = full_res.num_mip_levels,

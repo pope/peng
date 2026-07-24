@@ -53,10 +53,39 @@ fn compareScreenshots(base_path: [:0]const u8, run_path: [:0]const u8, diff_path
     const pitch_words_run = @as(usize, @intCast(run_surf.pitch())) / 4;
     const pitch_words_diff = @as(usize, @intCast(diff_surf.pitch())) / 4;
 
+    const Vec8u32 = @Vector(8, u32);
     var mismatched_pixels: u32 = 0;
     var y: u32 = 0;
     while (y < height) : (y += 1) {
         var x: u32 = 0;
+        while (x + 8 <= width) : (x += 8) {
+            const offset_base = y * pitch_words_base + x;
+            const offset_run = y * pitch_words_run + x;
+            const offset_diff = y * pitch_words_diff + x;
+
+            const v_base = @as(*align(1) const Vec8u32, @ptrCast(&pixels_base[offset_base])).*;
+            const v_run = @as(*align(1) const Vec8u32, @ptrCast(&pixels_run[offset_run])).*;
+
+            const cmp = v_base != v_run;
+            if (@reduce(.Or, cmp)) {
+                inline for (0..8) |i| {
+                    const pb = v_base[i];
+                    const pr = v_run[i];
+                    if (pb != pr) {
+                        mismatched_pixels += 1;
+                        pixels_diff[offset_diff + i] = 0xFF0000FF;
+                    } else {
+                        pixels_diff[offset_diff + i] = ((pb >> 2) & 0x003F3F3F) | (pb & 0xFF000000);
+                    }
+                }
+            } else {
+                const rgb_dimmed = (v_base >> @as(Vec8u32, @splat(2))) & @as(Vec8u32, @splat(0x003F3F3F));
+                const alpha = v_base & @as(Vec8u32, @splat(0xFF000000));
+                const dimmed_vec = rgb_dimmed | alpha;
+                @as(*align(1) Vec8u32, @ptrCast(&pixels_diff[offset_diff])).* = dimmed_vec;
+            }
+        }
+
         while (x < width) : (x += 1) {
             const idx_base = y * pitch_words_base + x;
             const idx_run = y * pitch_words_run + x;
@@ -68,11 +97,7 @@ fn compareScreenshots(base_path: [:0]const u8, run_path: [:0]const u8, diff_path
                 mismatched_pixels += 1;
                 pixels_diff[idx_diff] = 0xFF0000FF;
             } else {
-                const b0 = (p_base >> 0) & 0xFF;
-                const b1 = (p_base >> 8) & 0xFF;
-                const b2 = (p_base >> 16) & 0xFF;
-                const b3 = (p_base >> 24) & 0xFF;
-                pixels_diff[idx_diff] = (b0 / 4) | ((b1 / 4) << 8) | ((b2 / 4) << 16) | (b3 << 24);
+                pixels_diff[idx_diff] = ((p_base >> 2) & 0x003F3F3F) | (p_base & 0xFF000000);
             }
         }
     }

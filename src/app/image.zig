@@ -350,12 +350,10 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     var final_surface = surface;
     var conversion_time_ms: f64 = 0.0;
     if (surface) |surf| {
-        if (state.window_pixel_format != sdl.PixelFormat.unknown and surf.format() != state.window_pixel_format) {
+        if (state.gpu_device == null and state.window_pixel_format != sdl.PixelFormat.unknown and surf.format() != state.window_pixel_format) {
             const start_convert = sdl.timer.getTicksNs();
-            const converted = surf.convert(state.window_pixel_format);
-            const end_convert = sdl.timer.getTicksNs();
-
-            if (converted) |conv| {
+            if (surf.convert(state.window_pixel_format)) |conv| {
+                const end_convert = sdl.timer.getTicksNs();
                 conversion_time_ms = @as(f64, @floatFromInt(end_convert - start_convert)) / 1_000_000.0;
                 surf.destroy();
                 final_surface = conv;

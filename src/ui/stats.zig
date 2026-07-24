@@ -203,51 +203,6 @@ pub fn renderStatsOverlay(
             try renderStatRow("Resolution", res_str, scale_x, scale_y, dpi_scale);
             try renderStatRow("Decode Time", decode_str, scale_x, scale_y, dpi_scale);
             try renderStatRow("Convert Time", convert_str, scale_x, scale_y, dpi_scale);
-
-            var convert_avg_str: []const u8 = "N/A";
-            var convert_ratio_str: []const u8 = "N/A";
-
-            if (state.conversion_stats.count > 0) {
-                const avg = state.conversion_stats.getConvertAvg();
-                const stddev = state.conversion_stats.getConvertStdDev();
-                convert_avg_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms ± {d:.2} ms (n={d})", .{
-                    avg, stddev, state.conversion_stats.count,
-                });
-
-                const r_avg = state.conversion_stats.getRatioAvg();
-                const r_std = state.conversion_stats.getRatioStdDev();
-
-                var cur_pct_prefix: []const u8 = "";
-                if (current_entry) |entry| {
-                    const cur_dec = switch (entry.status) {
-                        .loaded_cpu => |cpu| cpu.decode_time_ms,
-                        .loaded_gpu => |gpu| gpu.decode_time_ms,
-                        else => 0.0,
-                    };
-                    const cur_conv = switch (entry.status) {
-                        .loaded_cpu => |cpu| cpu.conversion_time_ms,
-                        .loaded_gpu => |gpu| gpu.conversion_time_ms,
-                        else => 0.0,
-                    };
-                    if (cur_dec > 0.0) {
-                        const pct = (cur_conv / cur_dec) * 100.0;
-                        cur_pct_prefix = try std.fmt.allocPrint(frame_allocator, "{d:.1}% (Avg: ", .{pct});
-                    }
-                }
-
-                if (cur_pct_prefix.len > 0) {
-                    convert_ratio_str = try std.fmt.allocPrint(frame_allocator, "{s}{d:.1}% ± {d:.1}%)", .{
-                        cur_pct_prefix, r_avg, r_std,
-                    });
-                } else {
-                    convert_ratio_str = try std.fmt.allocPrint(frame_allocator, "Avg: {d:.1}% ± {d:.1}%", .{
-                        r_avg, r_std,
-                    });
-                }
-            }
-
-            try renderStatRow("Convert Avg/Std", convert_avg_str, scale_x, scale_y, dpi_scale);
-            try renderStatRow("Convert / Decode", convert_ratio_str, scale_x, scale_y, dpi_scale);
             try renderStatRow("GPU Upload", upload_str, scale_x, scale_y, dpi_scale);
 
             var thumb_info_str: []const u8 = "None";

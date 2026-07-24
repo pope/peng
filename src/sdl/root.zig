@@ -7,9 +7,10 @@ pub const FColor = c.SDL_FColor;
 
 pub const Window = @import("window.zig").Window;
 pub const window_flags = @import("window.zig").window_flags;
-pub const Surface = @import("surface.zig").Surface;
-pub const ScaleMode = @import("surface.zig").ScaleMode;
-pub const PixelFormat = @import("surface.zig").PixelFormat;
+pub const surface = @import("surface.zig");
+pub const Surface = surface.Surface;
+pub const ScaleMode = surface.ScaleMode;
+pub const PixelFormat = surface.PixelFormat;
 pub const Font = @import("font.zig").Font;
 pub const Color = @import("font.zig").Color;
 pub const initTtf = @import("font.zig").initTtf;

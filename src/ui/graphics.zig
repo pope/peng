@@ -439,22 +439,18 @@ pub const GpuUploadResult = struct {
     memory_size_bytes: usize,
     num_mip_levels: u32 = 1,
     mipmap_time_ms: f64 = 0.0,
+    conversion_time_ms: f64 = 0.0,
 };
 
 pub fn uploadSurfaceToGpu(dev: sdl.gpu.Device, surf: sdl.Surface) ?GpuUploadResult {
     const start_upload = sdl.timer.getTicksNs();
     var current_surf = surf;
-    var converted_tmp: ?sdl.Surface = null;
-    defer if (converted_tmp) |cs| cs.destroy();
 
-    if (current_surf.format() != sdl.PixelFormat.rgba32) {
-        converted_tmp = current_surf.convert(sdl.PixelFormat.rgba32);
-        if (converted_tmp) |cs| {
-            current_surf = cs;
-        } else {
-            return null;
-        }
-    }
+    const src_fmt = current_surf.format();
+    const gpu_format: sdl.gpu.TextureFormat = if (src_fmt == sdl.PixelFormat.bgra32)
+        .bgra8_unorm
+    else
+        .rgba8_unorm;
 
     var scaled_surf: ?sdl.Surface = null;
     defer if (scaled_surf) |s| s.destroy();
@@ -470,7 +466,7 @@ pub fn uploadSurfaceToGpu(dev: sdl.gpu.Device, surf: sdl.Surface) ?GpuUploadResu
         if (img_w <= try_max_dim and img_h <= try_max_dim) {
             const img_tex_info = sdl.gpu.TextureCreateInfo{
                 .type = .type_2d,
-                .format = .rgba8_unorm,
+                .format = gpu_format,
                 .usage = sdl.gpu.TextureUsage.sampler | sdl.gpu.TextureUsage.color_target,
                 .width = @intCast(img_w),
                 .height = @intCast(img_h),
@@ -518,7 +514,11 @@ pub fn uploadSurfaceToGpu(dev: sdl.gpu.Device, surf: sdl.Surface) ?GpuUploadResu
         return null;
     };
 
-    const size = @as(usize, @intCast(img_w)) * @as(usize, @intCast(img_h)) * 4;
+    const u_w: usize = @intCast(img_w);
+    const u_h: usize = @intCast(img_h);
+    const dst_pitch: usize = std.mem.alignForward(usize, u_w * 4, 256);
+    const size = dst_pitch * u_h;
+
     const transfer_buf = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
         .usage = .upload,
         .size = @intCast(size),
@@ -536,18 +536,52 @@ pub fn uploadSurfaceToGpu(dev: sdl.gpu.Device, surf: sdl.Surface) ?GpuUploadResu
         dev.releaseTexture(gpu_tex);
         return null;
     };
+
+    const src_pitch: usize = @intCast(current_surf.pitch());
     const pixels: [*]const u8 = current_surf.pixels();
-    const row_bytes: usize = @intCast(img_w * 4);
-    const pitch: usize = @intCast(current_surf.pitch());
-    if (pitch == row_bytes) {
-        @memcpy(mapped[0..size], pixels[0..size]);
+    const cur_fmt = current_surf.format();
+    var conversion_time_ms: f64 = 0.0;
+
+    if (cur_fmt == sdl.PixelFormat.rgba32 or cur_fmt == sdl.PixelFormat.bgra32) {
+        if (src_pitch == dst_pitch) {
+            @memcpy(mapped[0..size], pixels[0..size]);
+        } else {
+            var y: usize = 0;
+            while (y < u_h) : (y += 1) {
+                @memcpy(mapped[y * dst_pitch .. y * dst_pitch + u_w * 4], pixels[y * src_pitch .. y * src_pitch + u_w * 4]);
+            }
+        }
+    } else if (cur_fmt == sdl.PixelFormat.rgb24) {
+        const start_conv = sdl.timer.getTicksNs();
+        sdl.surface.convertRgb24ToRgba32Simd(pixels[0 .. src_pitch * u_h], mapped[0..size], u_w, u_h, src_pitch, dst_pitch);
+        const end_conv = sdl.timer.getTicksNs();
+        conversion_time_ms = @as(f64, @floatFromInt(end_conv - start_conv)) / 1_000_000.0;
+    } else if (cur_fmt == sdl.PixelFormat.bgr24) {
+        const start_conv = sdl.timer.getTicksNs();
+        sdl.surface.convertBgr24ToRgba32Simd(pixels[0 .. src_pitch * u_h], mapped[0..size], u_w, u_h, src_pitch, dst_pitch);
+        const end_conv = sdl.timer.getTicksNs();
+        conversion_time_ms = @as(f64, @floatFromInt(end_conv - start_conv)) / 1_000_000.0;
     } else {
-        var y: usize = 0;
-        const height_u: usize = @intCast(img_h);
-        while (y < height_u) : (y += 1) {
-            const src_row = pixels[y * pitch .. y * pitch + row_bytes];
-            const dst_row = mapped[y * row_bytes .. (y + 1) * row_bytes];
-            @memcpy(dst_row, src_row);
+        const start_conv = sdl.timer.getTicksNs();
+        const tmp_surf = current_surf.convert(sdl.PixelFormat.rgba32);
+        if (tmp_surf) |ts| {
+            defer ts.destroy();
+            const ts_pixels = ts.pixels();
+            const ts_pitch: usize = @intCast(ts.pitch());
+            if (ts_pitch == dst_pitch) {
+                @memcpy(mapped[0..size], ts_pixels[0..size]);
+            } else {
+                var y: usize = 0;
+                while (y < u_h) : (y += 1) {
+                    @memcpy(mapped[y * dst_pitch .. y * dst_pitch + u_w * 4], ts_pixels[y * ts_pitch .. y * ts_pitch + u_w * 4]);
+                }
+            }
+            const end_conv = sdl.timer.getTicksNs();
+            conversion_time_ms = @as(f64, @floatFromInt(end_conv - start_conv)) / 1_000_000.0;
+        } else {
+            _ = cmd_wrapper.cancel();
+            dev.releaseTexture(gpu_tex);
+            return null;
         }
     }
     dev.unmapTransferBuffer(transfer_buf);
@@ -560,7 +594,7 @@ pub fn uploadSurfaceToGpu(dev: sdl.gpu.Device, surf: sdl.Surface) ?GpuUploadResu
     copy_pass.uploadToTexture(&sdl.gpu.TextureTransferInfo{
         .transfer_buffer = transfer_buf,
         .offset = 0,
-        .pixels_per_row = @intCast(img_w),
+        .pixels_per_row = @intCast(dst_pitch / 4),
         .rows_per_layer = @intCast(img_h),
     }, &sdl.gpu.TextureRegion{
         .texture = gpu_tex,
@@ -596,5 +630,6 @@ pub fn uploadSurfaceToGpu(dev: sdl.gpu.Device, surf: sdl.Surface) ?GpuUploadResu
         .memory_size_bytes = memory_size_bytes,
         .num_mip_levels = num_levels,
         .mipmap_time_ms = mipmap_time_ms,
+        .conversion_time_ms = conversion_time_ms,
     };
 }
