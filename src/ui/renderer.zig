@@ -1,6 +1,6 @@
 const std = @import("std");
 const clay = @import("zclay");
-const sdl = @import("../sdl/root.zig");
+const sdl = @import("sdl");
 const app_state = @import("../app/state.zig");
 
 pub const ZoomPan = struct {

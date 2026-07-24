@@ -1,5 +1,5 @@
 const std = @import("std");
-const sdl = @import("sdl/root.zig");
+const sdl = @import("sdl");
 
 pub const CompareResult = struct {
     mismatched_pixels: u32,

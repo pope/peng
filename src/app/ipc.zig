@@ -1,5 +1,5 @@
 const std = @import("std");
-const sdl = @import("../sdl/root.zig");
+const sdl = @import("sdl");
 const app_state = @import("state.zig");
 const ViewerState = app_state.ViewerState;
 const ScaleMode = app_state.ScaleMode;

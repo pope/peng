@@ -5,7 +5,7 @@ const renderer = ui.renderer;
 const commands = @import("commands.zig");
 const app_config = @import("config.zig");
 const app = @import("app.zig");
-const sdl = @import("sdl/root.zig");
+const sdl = @import("sdl");
 
 pub const vert_spv = @embedFile("shaders/vert.spv");
 pub const frag_spv = @embedFile("shaders/frag.spv");

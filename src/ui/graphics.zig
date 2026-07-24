@@ -1,5 +1,5 @@
 const std = @import("std");
-const sdl = @import("../sdl/root.zig");
+const sdl = @import("sdl");
 const renderer = @import("renderer.zig");
 const clay = @import("zclay");
 const MeasureTextUserData = @import("../app/types.zig").MeasureTextUserData;

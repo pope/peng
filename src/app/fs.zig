@@ -1,7 +1,7 @@
 const std = @import("std");
 const app_state = @import("state.zig");
 const ViewerState = app_state.ViewerState;
-const sdl = @import("../sdl/root.zig");
+const sdl = @import("sdl");
 
 pub fn eqlIgnoreCase(a: []const u8, b: []const u8) bool {
     if (a.len != b.len) return false;

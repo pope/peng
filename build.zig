@@ -12,6 +12,18 @@ pub fn build(b: *std.Build) void {
     // Transitively retrieve the clay dependency from zclay's sub-builder
     const clay_dep = zclay_dep.builder.dependency("clay", .{});
 
+    // Create the standalone SDL boundary module
+    const sdl_module = b.createModule(.{
+        .root_source_file = b.path("src/sdl/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    const sys_libs = [_][]const u8{ "sdl3", "sdl3-ttf", "sdl3-image" };
+    inline for (sys_libs) |lib| {
+        sdl_module.linkSystemLibrary(lib, .{});
+    }
+
     const exe = b.addExecutable(.{
         .name = "peng",
         .root_module = b.createModule(.{
@@ -22,12 +34,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    // Configure system library dependencies.
-    // We link them dynamically to the executable so they are resolved at final link time.
-    const sys_libs = [_][]const u8{ "sdl3", "sdl3-ttf", "sdl3-image" };
-    inline for (sys_libs) |lib| {
-        exe.root_module.linkSystemLibrary(lib, .{});
-    }
+    // Import the sdl module into executable module
+    exe.root_module.addImport("sdl", sdl_module);
 
     // Import the zclay Zig module into our executable module
     exe.root_module.addImport("zclay", zclay_dep.module("zclay"));
@@ -89,9 +97,7 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
-    inline for (&.{ "sdl3", "sdl3-ttf", "sdl3-image" }) |lib| {
-        test_runner_exe.root_module.linkSystemLibrary(lib, .{});
-    }
+    test_runner_exe.root_module.addImport("sdl", sdl_module);
     b.installArtifact(test_runner_exe);
 
     const exe_tests = b.addTest(.{
@@ -106,7 +112,13 @@ pub fn build(b: *std.Build) void {
         run_integration_tests.addArgs(args);
     }
 
+    const sdl_tests = b.addTest(.{
+        .root_module = sdl_module,
+    });
+    const run_sdl_tests = b.addRunArtifact(sdl_tests);
+
     const test_step = b.step("test", "Run tests");
+    test_step.dependOn(&run_sdl_tests.step);
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_integration_tests.step);
 }

@@ -1,5 +1,5 @@
 const std = @import("std");
-const sdl = @import("../sdl/root.zig");
+const sdl = @import("sdl");
 const graphics = @import("../ui/graphics.zig");
 const fs = @import("fs.zig");
 const app_state = @import("state.zig");

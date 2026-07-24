@@ -1,5 +1,5 @@
 const std = @import("std");
-const sdl = @import("../sdl/root.zig");
+const sdl = @import("sdl");
 const ipc = @import("ipc.zig");
 
 pub const ExifParsedPayload = struct {

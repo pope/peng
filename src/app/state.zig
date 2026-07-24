@@ -1,5 +1,5 @@
 const std = @import("std");
-const sdl = @import("../sdl/root.zig");
+const sdl = @import("sdl");
 const clay = @import("zclay");
 const FrameInput = @import("types.zig").FrameInput;
 const app_input = @import("input.zig");
