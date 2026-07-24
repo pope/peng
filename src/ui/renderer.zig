@@ -10,33 +10,11 @@ pub const ZoomPan = struct {
     rotation_angle: f32 = 0.0,
 };
 
-pub const Vertex = extern struct {
-    x: f32,
-    y: f32,
-    u: f32,
-    v: f32,
-    color: u32,
-};
-
-pub inline fn packRgba(r: u8, g: u8, b: u8, a: u8) u32 {
-    return @as(u32, r) | (@as(u32, g) << 8) | (@as(u32, b) << 16) | (@as(u32, a) << 24);
-}
-
-pub inline fn packRgbaClay(clay_color: clay.Color) u32 {
-    const ur: u32 = @intFromFloat(@round(std.math.clamp(clay_color[0], 0.0, 255.0)));
-    const ug: u32 = @intFromFloat(@round(std.math.clamp(clay_color[1], 0.0, 255.0)));
-    const ub: u32 = @intFromFloat(@round(std.math.clamp(clay_color[2], 0.0, 255.0)));
-    const ua: u32 = @intFromFloat(@round(std.math.clamp(clay_color[3], 0.0, 255.0)));
-    return ur | (ug << 8) | (ub << 16) | (ua << 24);
-}
-
-pub inline fn packRgbaF(r: f32, g: f32, b: f32, a: f32) u32 {
-    const ur: u32 = @intFromFloat(@round(std.math.clamp(r * 255.0, 0.0, 255.0)));
-    const ug: u32 = @intFromFloat(@round(std.math.clamp(g * 255.0, 0.0, 255.0)));
-    const ub: u32 = @intFromFloat(@round(std.math.clamp(b * 255.0, 0.0, 255.0)));
-    const ua: u32 = @intFromFloat(@round(std.math.clamp(a * 255.0, 0.0, 255.0)));
-    return ur | (ug << 8) | (ub << 16) | (ua << 24);
-}
+const geometry = @import("geometry.zig");
+pub const Vertex = geometry.Vertex;
+pub const packRgba = geometry.packRgba;
+pub const packRgbaClay = geometry.packRgbaClay;
+pub const packRgbaF = geometry.packRgbaF;
 
 const Uniforms = extern struct {
     brightness: f32,
@@ -52,439 +30,6 @@ const BatchItem = struct {
     is_image: bool,
     scissor: ?sdl.Rect,
 };
-
-fn appendRectQuad(
-    vertices: *std.ArrayList(Vertex),
-    allocator: std.mem.Allocator,
-    rect: sdl.FRect,
-    clay_color: clay.Color,
-    win_w: f32,
-    win_h: f32,
-) !void {
-    const ndc_x1 = (rect.x / win_w) * 2.0 - 1.0;
-    const ndc_x2 = ((rect.x + rect.w) / win_w) * 2.0 - 1.0;
-    const ndc_y1 = 1.0 - (rect.y / win_h) * 2.0;
-    const ndc_y2 = 1.0 - ((rect.y + rect.h) / win_h) * 2.0;
-
-    const color = packRgbaClay(clay_color);
-
-    try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y1, .u = 0.0, .v = 0.0, .color = color });
-    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y1, .u = 1.0, .v = 0.0, .color = color });
-    try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y2, .u = 0.0, .v = 1.0, .color = color });
-    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y1, .u = 1.0, .v = 0.0, .color = color });
-    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y2, .u = 1.0, .v = 1.0, .color = color });
-    try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y2, .u = 0.0, .v = 1.0, .color = color });
-}
-
-fn appendLineQuad(
-    vertices: *std.ArrayList(Vertex),
-    allocator: std.mem.Allocator,
-    p1: sdl.FPoint,
-    p2: sdl.FPoint,
-    thickness: f32,
-    r: f32,
-    g: f32,
-    b: f32,
-    a: f32,
-    win_w: f32,
-    win_h: f32,
-) !void {
-    const dx = p2.x - p1.x;
-    const dy = p2.y - p1.y;
-    const len = @sqrt(dx * dx + dy * dy);
-    if (len == 0.0) return;
-
-    const nx = -dy / len;
-    const ny = dx / len;
-
-    const ox = nx * thickness * 0.5;
-    const oy = ny * thickness * 0.5;
-
-    const x1 = p1.x - ox;
-    const y1 = p1.y - oy;
-    const x2 = p1.x + ox;
-    const y2 = p1.y + oy;
-    const x3 = p2.x + ox;
-    const y3 = p2.y + oy;
-    const x4 = p2.x - ox;
-    const y4 = p2.y - oy;
-
-    const ndc_x1 = (x1 / win_w) * 2.0 - 1.0;
-    const ndc_y1 = 1.0 - (y1 / win_h) * 2.0;
-    const ndc_x2 = (x2 / win_w) * 2.0 - 1.0;
-    const ndc_y2 = 1.0 - (y2 / win_h) * 2.0;
-    const ndc_x3 = (x3 / win_w) * 2.0 - 1.0;
-    const ndc_y3 = 1.0 - (y3 / win_h) * 2.0;
-    const ndc_x4 = (x4 / win_w) * 2.0 - 1.0;
-    const ndc_y4 = 1.0 - (y4 / win_h) * 2.0;
-
-    const color = packRgbaF(r, g, b, a);
-
-    try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y1, .u = 0.0, .v = 0.0, .color = color });
-    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y2, .u = 1.0, .v = 0.0, .color = color });
-    try vertices.append(allocator, .{ .x = ndc_x3, .y = ndc_y3, .u = 1.0, .v = 1.0, .color = color });
-
-    try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y1, .u = 0.0, .v = 0.0, .color = color });
-    try vertices.append(allocator, .{ .x = ndc_x3, .y = ndc_y3, .u = 1.0, .v = 1.0, .color = color });
-    try vertices.append(allocator, .{ .x = ndc_x4, .y = ndc_y4, .u = 0.0, .v = 1.0, .color = color });
-}
-
-const TrigStep = struct {
-    cos_val: f32,
-    sin_val: f32,
-};
-
-const TRIG_QUADRANT_STEPS = 32;
-const trig_quadrant_table: [TRIG_QUADRANT_STEPS + 1]TrigStep = blk: {
-    var table: [TRIG_QUADRANT_STEPS + 1]TrigStep = undefined;
-    const step = (std.math.pi / 2.0) / @as(f32, @floatFromInt(TRIG_QUADRANT_STEPS));
-    for (&table, 0..) |*item, i| {
-        const angle = @as(f32, @floatFromInt(i)) * step;
-        item.* = .{
-            .cos_val = @cos(angle),
-            .sin_val = @sin(angle),
-        };
-    }
-    break :blk table;
-};
-
-fn getTrigQuadrant(step_idx: usize, total_steps: usize) TrigStep {
-    if (total_steps == 0) return trig_quadrant_table[0];
-    const lut_idx = (step_idx * TRIG_QUADRANT_STEPS) / total_steps;
-    return trig_quadrant_table[@min(lut_idx, TRIG_QUADRANT_STEPS)];
-}
-
-fn renderFillRoundedRect(
-    vertices: *std.ArrayList(Vertex),
-    allocator: std.mem.Allocator,
-    rect: sdl.FRect,
-    corner_radius: f32,
-    clay_color: clay.Color,
-    win_w: f32,
-    win_h: f32,
-) !void {
-    const color = sdl.FColor{
-        .r = clay_color[0] / 255.0,
-        .g = clay_color[1] / 255.0,
-        .b = clay_color[2] / 255.0,
-        .a = clay_color[3] / 255.0,
-    };
-
-    const min_radius = @min(rect.w, rect.h) / 2.0;
-    const clamped_radius = @min(corner_radius, min_radius);
-
-    const num_circle_segments = @max(@as(c_int, 16), @as(c_int, @intFromFloat(clamped_radius * 0.5)));
-
-    const total_vertices = 4 + (4 * (num_circle_segments * 2)) + 8;
-    const total_indices = 6 + (4 * (num_circle_segments * 3)) + 24;
-
-    var stack_vertices: [512]sdl.Vertex = undefined;
-    var stack_indices: [1024]c_int = undefined;
-
-    const vertices_src = if (total_vertices <= stack_vertices.len)
-        stack_vertices[0..@intCast(total_vertices)]
-    else
-        try allocator.alloc(sdl.Vertex, @intCast(total_vertices));
-    defer if (total_vertices > stack_vertices.len) allocator.free(vertices_src);
-
-    const indices = if (total_indices <= stack_indices.len)
-        stack_indices[0..@intCast(total_indices)]
-    else
-        try allocator.alloc(c_int, @intCast(total_indices));
-    defer if (total_indices > stack_indices.len) allocator.free(indices);
-
-    var vertex_count: usize = 0;
-    var index_count: usize = 0;
-
-    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + clamped_radius, .y = rect.y + clamped_radius }, .color = color, .tex_coord = .{ .x = 0, .y = 0 } };
-    vertex_count += 1;
-    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + rect.w - clamped_radius, .y = rect.y + clamped_radius }, .color = color, .tex_coord = .{ .x = 1, .y = 0 } };
-    vertex_count += 1;
-    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + rect.w - clamped_radius, .y = rect.y + rect.h - clamped_radius }, .color = color, .tex_coord = .{ .x = 1, .y = 1 } };
-    vertex_count += 1;
-    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + clamped_radius, .y = rect.y + rect.h - clamped_radius }, .color = color, .tex_coord = .{ .x = 0, .y = 1 } };
-    vertex_count += 1;
-
-    indices[index_count] = 0;
-    index_count += 1;
-    indices[index_count] = 1;
-    index_count += 1;
-    indices[index_count] = 3;
-    index_count += 1;
-    indices[index_count] = 1;
-    index_count += 1;
-    indices[index_count] = 2;
-    index_count += 1;
-    indices[index_count] = 3;
-    index_count += 1;
-
-    const num_seg_u: usize = @intCast(num_circle_segments);
-    var i: usize = 0;
-    while (i < num_seg_u) : (i += 1) {
-        const t1 = getTrigQuadrant(i, num_seg_u);
-        const t2 = getTrigQuadrant(i + 1, num_seg_u);
-        const cos_1 = t1.cos_val;
-        const sin_1 = t1.sin_val;
-        const cos_2 = t2.cos_val;
-        const sin_2 = t2.sin_val;
-
-        var j: usize = 0;
-        while (j < 4) : (j += 1) {
-            var cx: f32 = 0;
-            var cy: f32 = 0;
-            var sign_x: f32 = 0;
-            var sign_y: f32 = 0;
-
-            switch (j) {
-                0 => {
-                    cx = rect.x + clamped_radius;
-                    cy = rect.y + clamped_radius;
-                    sign_x = -1;
-                    sign_y = -1;
-                },
-                1 => {
-                    cx = rect.x + rect.w - clamped_radius;
-                    cy = rect.y + clamped_radius;
-                    sign_x = 1;
-                    sign_y = -1;
-                },
-                2 => {
-                    cx = rect.x + rect.w - clamped_radius;
-                    cy = rect.y + rect.h - clamped_radius;
-                    sign_x = 1;
-                    sign_y = 1;
-                },
-                3 => {
-                    cx = rect.x + clamped_radius;
-                    cy = rect.y + rect.h - clamped_radius;
-                    sign_x = -1;
-                    sign_y = 1;
-                },
-                else => unreachable,
-            }
-
-            vertices_src[vertex_count] = .{
-                .position = .{
-                    .x = cx + cos_1 * clamped_radius * sign_x,
-                    .y = cy + sin_1 * clamped_radius * sign_y,
-                },
-                .color = color,
-                .tex_coord = .{ .x = 0, .y = 0 },
-            };
-            vertex_count += 1;
-
-            vertices_src[vertex_count] = .{
-                .position = .{
-                    .x = cx + cos_2 * clamped_radius * sign_x,
-                    .y = cy + sin_2 * clamped_radius * sign_y,
-                },
-                .color = color,
-                .tex_coord = .{ .x = 0, .y = 0 },
-            };
-            vertex_count += 1;
-
-            indices[index_count] = @intCast(j);
-            index_count += 1;
-            indices[index_count] = @intCast(vertex_count - 2);
-            index_count += 1;
-            indices[index_count] = @intCast(vertex_count - 1);
-            index_count += 1;
-        }
-    }
-
-    // Top edge
-    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + clamped_radius, .y = rect.y }, .color = color, .tex_coord = .{ .x = 0, .y = 0 } };
-    vertex_count += 1;
-    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + rect.w - clamped_radius, .y = rect.y }, .color = color, .tex_coord = .{ .x = 1, .y = 0 } };
-    vertex_count += 1;
-
-    indices[index_count] = 0;
-    index_count += 1;
-    indices[index_count] = @intCast(vertex_count - 2);
-    index_count += 1;
-    indices[index_count] = @intCast(vertex_count - 1);
-    index_count += 1;
-    indices[index_count] = 1;
-    index_count += 1;
-    indices[index_count] = 0;
-    index_count += 1;
-    indices[index_count] = @intCast(vertex_count - 1);
-    index_count += 1;
-
-    // Right edge
-    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + rect.w, .y = rect.y + clamped_radius }, .color = color, .tex_coord = .{ .x = 1, .y = 0 } };
-    vertex_count += 1;
-    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + rect.w, .y = rect.y + rect.h - clamped_radius }, .color = color, .tex_coord = .{ .x = 1, .y = 1 } };
-    vertex_count += 1;
-
-    indices[index_count] = 1;
-    index_count += 1;
-    indices[index_count] = @intCast(vertex_count - 2);
-    index_count += 1;
-    indices[index_count] = @intCast(vertex_count - 1);
-    index_count += 1;
-    indices[index_count] = 2;
-    index_count += 1;
-    indices[index_count] = 1;
-    index_count += 1;
-    indices[index_count] = @intCast(vertex_count - 1);
-    index_count += 1;
-
-    // Bottom edge
-    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + rect.w - clamped_radius, .y = rect.y + rect.h }, .color = color, .tex_coord = .{ .x = 1, .y = 1 } };
-    vertex_count += 1;
-    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + clamped_radius, .y = rect.y + rect.h }, .color = color, .tex_coord = .{ .x = 0, .y = 1 } };
-    vertex_count += 1;
-
-    indices[index_count] = 2;
-    index_count += 1;
-    indices[index_count] = @intCast(vertex_count - 2);
-    index_count += 1;
-    indices[index_count] = @intCast(vertex_count - 1);
-    index_count += 1;
-    indices[index_count] = 3;
-    index_count += 1;
-    indices[index_count] = 2;
-    index_count += 1;
-    indices[index_count] = @intCast(vertex_count - 1);
-    index_count += 1;
-
-    // Left edge
-    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x, .y = rect.y + rect.h - clamped_radius }, .color = color, .tex_coord = .{ .x = 0, .y = 1 } };
-    vertex_count += 1;
-    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x, .y = rect.y + clamped_radius }, .color = color, .tex_coord = .{ .x = 0, .y = 0 } };
-    vertex_count += 1;
-
-    indices[index_count] = 3;
-    index_count += 1;
-    indices[index_count] = @intCast(vertex_count - 2);
-    index_count += 1;
-    indices[index_count] = @intCast(vertex_count - 1);
-    index_count += 1;
-    indices[index_count] = 0;
-    index_count += 1;
-    indices[index_count] = 3;
-    index_count += 1;
-    indices[index_count] = @intCast(vertex_count - 1);
-    index_count += 1;
-
-    // Map indexed vertices into the global non-indexed list
-    for (indices[0..index_count]) |idx| {
-        const v = vertices_src[@intCast(idx)];
-        const ndc_x = (v.position.x / win_w) * 2.0 - 1.0;
-        const ndc_y = 1.0 - (v.position.y / win_h) * 2.0;
-
-        try vertices.append(allocator, .{
-            .x = ndc_x,
-            .y = ndc_y,
-            .u = v.tex_coord.x,
-            .v = v.tex_coord.y,
-            .color = packRgbaF(v.color.r, v.color.g, v.color.b, v.color.a),
-        });
-    }
-}
-
-fn drawDashedLineH(vertices: *std.ArrayList(Vertex), allocator: std.mem.Allocator, x1: f32, x2: f32, y: f32, thickness: f32, color: clay.Color, dash_len: f32, gap_len: f32, win_w: f32, win_h: f32) !void {
-    var x = x1;
-    while (x < x2) {
-        const draw_w = @min(dash_len, x2 - x);
-        const rect = sdl.FRect{ .x = x, .y = y, .w = draw_w, .h = thickness };
-        try appendRectQuad(vertices, allocator, rect, color, win_w, win_h);
-        x += dash_len + gap_len;
-    }
-}
-
-fn drawDashedLineV(vertices: *std.ArrayList(Vertex), allocator: std.mem.Allocator, x: f32, y1: f32, y2: f32, thickness: f32, color: clay.Color, dash_len: f32, gap_len: f32, win_w: f32, win_h: f32) !void {
-    var y = y1;
-    while (y < y2) {
-        const draw_h = @min(dash_len, y2 - y);
-        const rect = sdl.FRect{ .x = x, .y = y, .w = thickness, .h = draw_h };
-        try appendRectQuad(vertices, allocator, rect, color, win_w, win_h);
-        y += dash_len + gap_len;
-    }
-}
-
-fn renderArc(
-    vertices: *std.ArrayList(Vertex),
-    center: sdl.FPoint,
-    radius: f32,
-    start_angle: f32,
-    end_angle: f32,
-    thickness: f32,
-    r: f32,
-    g: f32,
-    b: f32,
-    a: f32,
-    allocator: std.mem.Allocator,
-    is_dashed: bool,
-    win_w: f32,
-    win_h: f32,
-) !void {
-    const rad_start = start_angle * (std.math.pi / 180.0);
-    const rad_end = end_angle * (std.math.pi / 180.0);
-
-    const num_circle_segments = @max(@as(c_int, 16), @as(c_int, @intFromFloat(radius * 1.5)));
-
-    const angle_step = (rad_end - rad_start) / @as(f32, @floatFromInt(num_circle_segments));
-
-    const points_len = @as(usize, @intCast(num_circle_segments + 1));
-
-    var stack_points: [128]sdl.FPoint = undefined;
-    const points = if (points_len <= stack_points.len)
-        stack_points[0..points_len]
-    else
-        try allocator.alloc(sdl.FPoint, points_len);
-    defer if (points_len > stack_points.len) allocator.free(points);
-
-    var stack_cos: [128]f32 = undefined;
-    var stack_sin: [128]f32 = undefined;
-
-    const cos_table = if (points_len <= stack_cos.len)
-        stack_cos[0..points_len]
-    else
-        try allocator.alloc(f32, points_len);
-    defer if (points_len > stack_cos.len) allocator.free(cos_table);
-
-    const sin_table = if (points_len <= stack_sin.len)
-        stack_sin[0..points_len]
-    else
-        try allocator.alloc(f32, points_len);
-    defer if (points_len > stack_sin.len) allocator.free(sin_table);
-
-    var idx: usize = 0;
-    while (idx < points_len) : (idx += 1) {
-        const angle = rad_start + @as(f32, @floatFromInt(idx)) * angle_step;
-        cos_table[idx] = @cos(angle);
-        sin_table[idx] = @sin(angle);
-    }
-
-    // Calculate points along the middle line of the arc thickness
-    const clamped_radius = @max(radius - thickness * 0.5, 1.0);
-
-    var i: usize = 0;
-    while (i < points_len) : (i += 1) {
-        points[i] = .{
-            .x = center.x + cos_table[i] * clamped_radius,
-            .y = center.y + sin_table[i] * clamped_radius,
-        };
-    }
-
-    if (is_dashed) {
-        var s: usize = 0;
-        while (s < points_len - 1) : (s += 4) {
-            const segment_len = @min(2, points_len - 1 - s);
-            var k: usize = 0;
-            while (k < segment_len) : (k += 1) {
-                try appendLineQuad(vertices, allocator, points[s + k], points[s + k + 1], thickness, r, g, b, a, win_w, win_h);
-            }
-        }
-    } else {
-        var s: usize = 0;
-        while (s < points_len - 1) : (s += 1) {
-            try appendLineQuad(vertices, allocator, points[s], points[s + 1], thickness, r, g, b, a, win_w, win_h);
-        }
-    }
-}
 
 fn scissorEqual(a: ?sdl.Rect, b: ?sdl.Rect) bool {
     if (a == null and b == null) return true;
@@ -567,9 +112,9 @@ pub fn renderClayCommands(
                 const start = @as(u32, @intCast(vertices.items.len));
 
                 if (config.corner_radius.top_left > 0) {
-                    try renderFillRoundedRect(&vertices, allocator, rect, config.corner_radius.top_left, config.background_color, f_win_w, f_win_h);
+                    try geometry.renderFillRoundedRect(&vertices, allocator, rect, config.corner_radius.top_left, config.background_color, f_win_w, f_win_h);
                 } else {
-                    try appendRectQuad(&vertices, allocator, rect, config.background_color, f_win_w, f_win_h);
+                    try geometry.appendRectQuad(&vertices, allocator, rect, config.background_color, f_win_w, f_win_h);
                 }
 
                 const count = @as(u32, @intCast(vertices.items.len)) - start;
@@ -754,10 +299,10 @@ pub fn renderClayCommands(
                     const starting_y = rect.y + clamped_radii.top_left;
                     const length = rect.h - clamped_radii.top_left - clamped_radii.bottom_left;
                     if (is_dashed) {
-                        try drawDashedLineV(&vertices, allocator, rect.x, starting_y, starting_y + length, @floatFromInt(config.width.left), config.color, 8.0, 6.0, f_win_w, f_win_h);
+                        try geometry.drawDashedLineV(&vertices, allocator, rect.x, starting_y, starting_y + length, @floatFromInt(config.width.left), config.color, 8.0, 6.0, f_win_w, f_win_h);
                     } else {
                         const line = sdl.FRect{ .x = rect.x, .y = starting_y, .w = @floatFromInt(config.width.left), .h = length };
-                        try appendRectQuad(&vertices, allocator, line, config.color, f_win_w, f_win_h);
+                        try geometry.appendRectQuad(&vertices, allocator, line, config.color, f_win_w, f_win_h);
                     }
                 }
                 if (config.width.right > 0) {
@@ -765,20 +310,20 @@ pub fn renderClayCommands(
                     const starting_y = rect.y + clamped_radii.top_right;
                     const length = rect.h - clamped_radii.top_right - clamped_radii.bottom_right;
                     if (is_dashed) {
-                        try drawDashedLineV(&vertices, allocator, starting_x, starting_y, starting_y + length, @floatFromInt(config.width.right), config.color, 8.0, 6.0, f_win_w, f_win_h);
+                        try geometry.drawDashedLineV(&vertices, allocator, starting_x, starting_y, starting_y + length, @floatFromInt(config.width.right), config.color, 8.0, 6.0, f_win_w, f_win_h);
                     } else {
                         const line = sdl.FRect{ .x = starting_x, .y = starting_y, .w = @floatFromInt(config.width.right), .h = length };
-                        try appendRectQuad(&vertices, allocator, line, config.color, f_win_w, f_win_h);
+                        try geometry.appendRectQuad(&vertices, allocator, line, config.color, f_win_w, f_win_h);
                     }
                 }
                 if (config.width.top > 0) {
                     const starting_x = rect.x + clamped_radii.top_left;
                     const length = rect.w - clamped_radii.top_left - clamped_radii.top_right;
                     if (is_dashed) {
-                        try drawDashedLineH(&vertices, allocator, starting_x, starting_x + length, rect.y, @floatFromInt(config.width.top), config.color, 8.0, 6.0, f_win_w, f_win_h);
+                        try geometry.drawDashedLineH(&vertices, allocator, starting_x, starting_x + length, rect.y, @floatFromInt(config.width.top), config.color, 8.0, 6.0, f_win_w, f_win_h);
                     } else {
                         const line = sdl.FRect{ .x = starting_x, .y = rect.y, .w = length, .h = @floatFromInt(config.width.top) };
-                        try appendRectQuad(&vertices, allocator, line, config.color, f_win_w, f_win_h);
+                        try geometry.appendRectQuad(&vertices, allocator, line, config.color, f_win_w, f_win_h);
                     }
                 }
                 if (config.width.bottom > 0) {
@@ -786,24 +331,24 @@ pub fn renderClayCommands(
                     const starting_y = rect.y + rect.h - @as(f32, @floatFromInt(config.width.bottom));
                     const length = rect.w - clamped_radii.bottom_left - clamped_radii.bottom_right;
                     if (is_dashed) {
-                        try drawDashedLineH(&vertices, allocator, starting_x, starting_x + length, starting_y, @floatFromInt(config.width.bottom), config.color, 8.0, 6.0, f_win_w, f_win_h);
+                        try geometry.drawDashedLineH(&vertices, allocator, starting_x, starting_x + length, starting_y, @floatFromInt(config.width.bottom), config.color, 8.0, 6.0, f_win_w, f_win_h);
                     } else {
                         const line = sdl.FRect{ .x = starting_x, .y = starting_y, .w = length, .h = @floatFromInt(config.width.bottom) };
-                        try appendRectQuad(&vertices, allocator, line, config.color, f_win_w, f_win_h);
+                        try geometry.appendRectQuad(&vertices, allocator, line, config.color, f_win_w, f_win_h);
                     }
                 }
 
                 if (config.corner_radius.top_left > 0) {
-                    try renderArc(&vertices, .{ .x = rect.x + clamped_radii.top_left, .y = rect.y + clamped_radii.top_left }, clamped_radii.top_left, 180.0, 270.0, @floatFromInt(config.width.top), r, g, b, a, allocator, is_dashed, f_win_w, f_win_h);
+                    try geometry.renderArc(&vertices, .{ .x = rect.x + clamped_radii.top_left, .y = rect.y + clamped_radii.top_left }, clamped_radii.top_left, 180.0, 270.0, @floatFromInt(config.width.top), r, g, b, a, allocator, is_dashed, f_win_w, f_win_h);
                 }
                 if (config.corner_radius.top_right > 0) {
-                    try renderArc(&vertices, .{ .x = rect.x + rect.w - clamped_radii.top_right, .y = rect.y + clamped_radii.top_right }, clamped_radii.top_right, 270.0, 360.0, @floatFromInt(config.width.top), r, g, b, a, allocator, is_dashed, f_win_w, f_win_h);
+                    try geometry.renderArc(&vertices, .{ .x = rect.x + rect.w - clamped_radii.top_right, .y = rect.y + clamped_radii.top_right }, clamped_radii.top_right, 270.0, 360.0, @floatFromInt(config.width.top), r, g, b, a, allocator, is_dashed, f_win_w, f_win_h);
                 }
                 if (config.corner_radius.bottom_left > 0) {
-                    try renderArc(&vertices, .{ .x = rect.x + clamped_radii.bottom_left, .y = rect.y + rect.h - clamped_radii.bottom_left }, clamped_radii.bottom_left, 90.0, 180.0, @floatFromInt(config.width.bottom), r, g, b, a, allocator, is_dashed, f_win_w, f_win_h);
+                    try geometry.renderArc(&vertices, .{ .x = rect.x + clamped_radii.bottom_left, .y = rect.y + rect.h - clamped_radii.bottom_left }, clamped_radii.bottom_left, 90.0, 180.0, @floatFromInt(config.width.bottom), r, g, b, a, allocator, is_dashed, f_win_w, f_win_h);
                 }
                 if (config.corner_radius.bottom_right > 0) {
-                    try renderArc(&vertices, .{ .x = rect.x + rect.w - clamped_radii.bottom_right, .y = rect.y + rect.h - clamped_radii.bottom_right }, clamped_radii.bottom_right, 0.0, 90.0, @floatFromInt(config.width.bottom), r, g, b, a, allocator, is_dashed, f_win_w, f_win_h);
+                    try geometry.renderArc(&vertices, .{ .x = rect.x + rect.w - clamped_radii.bottom_right, .y = rect.y + rect.h - clamped_radii.bottom_right }, clamped_radii.bottom_right, 0.0, 90.0, @floatFromInt(config.width.bottom), r, g, b, a, allocator, is_dashed, f_win_w, f_win_h);
                 }
 
                 const count = @as(u32, @intCast(vertices.items.len)) - start_batch;
@@ -1003,23 +548,7 @@ pub fn renderClayCommands(
     }
 
     // 4. Cache eviction for text textures (unused for >120 frames)
-    var to_evict = std.ArrayList(app_state.TextCacheKey).empty;
-    defer to_evict.deinit(allocator);
-
-    var text_iter = state.text_cache.iterator();
-    while (text_iter.next()) |entry| {
-        if (state.gpu_frame_index > entry.value_ptr.last_used_frame and
-            state.gpu_frame_index - entry.value_ptr.last_used_frame > 120)
-        {
-            to_evict.append(allocator, entry.key_ptr.*) catch {};
-        }
-    }
-
-    for (to_evict.items) |k| {
-        if (state.text_cache.fetchRemove(k)) |removed| {
-            dev.releaseTexture(removed.value.texture);
-        }
-    }
+    state.text_cache.evictUnused(allocator, dev, state.gpu_frame_index, 120);
 
     state.gpu_frame_index += 1;
 }

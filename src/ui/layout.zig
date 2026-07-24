@@ -1,6 +1,7 @@
 const std = @import("std");
 const clay = @import("zclay");
 const sdl = @import("sdl");
+const theme = @import("theme.zig");
 const app_state = @import("../app/state.zig");
 const ViewerState = app_state.ViewerState;
 const types = @import("../app/types.zig");
@@ -75,56 +76,10 @@ pub fn renderFrame(
             const view_w = @max(available_width - padding * 2.0, 1.0);
             const view_h = @max(height - (title_bar_h + nav_bar_h) * scale_y - padding * 2.0, 1.0);
 
-            const angle = state.rotation_angle;
-            const is_90_or_270 = (std.math.approxEqAbs(f32, angle, 90.0, 0.1) or
-                std.math.approxEqAbs(f32, angle, 270.0, 0.1) or
-                std.math.approxEqAbs(f32, angle, -90.0, 0.1) or
-                std.math.approxEqAbs(f32, angle, -270.0, 0.1));
-            const img_w = if (is_90_or_270) src_h else src_w;
-            const img_h = if (is_90_or_270) src_w else src_h;
-
-            if (img_w > 0 and img_h > 0) {
-                const r_img = img_w / img_h;
-                const r_view = view_w / view_h;
-                switch (state.scale_mode) {
-                    .none => {
-                        draw_w = img_w;
-                        draw_h = img_h;
-                    },
-                    .shrink => {
-                        if (img_w <= view_w and img_h <= view_h) {
-                            draw_w = img_w;
-                            draw_h = img_h;
-                        } else {
-                            if (r_img > r_view) {
-                                draw_w = view_w;
-                                draw_h = view_w / r_img;
-                            } else {
-                                draw_h = view_h;
-                                draw_w = view_h * r_img;
-                            }
-                        }
-                    },
-                    .full => {
-                        if (r_img > r_view) {
-                            draw_w = view_w;
-                            draw_h = view_w / r_img;
-                        } else {
-                            draw_h = view_h;
-                            draw_w = view_h * r_img;
-                        }
-                    },
-                    .crop => {
-                        if (r_img > r_view) {
-                            draw_h = view_h;
-                            draw_w = view_h * r_img;
-                        } else {
-                            draw_w = view_w;
-                            draw_h = view_w / r_img;
-                        }
-                    },
-                }
-            }
+            const view_transform = @import("../app/view_transform.zig");
+            const dims = view_transform.computeViewDims(src_w, src_h, state.rotation_angle, view_w, view_h, state.scale_mode);
+            draw_w = dims.draw_w;
+            draw_h = dims.draw_h;
         }
     }
 
@@ -140,7 +95,7 @@ pub fn renderFrame(
             },
             .direction = .top_to_bottom,
         },
-        .background_color = .{ 24, 24, 37, 255 }, // Catppuccin Base (Mocha Mantle/Base)
+        .background_color = theme.mantle,
     })({
         try renderPalette(
             state,
@@ -178,14 +133,14 @@ pub fn renderFrame(
                         .right = @intFromFloat(20 * scale_x),
                     },
                 },
-                .background_color = .{ 17, 17, 27, 255 },
+                .background_color = theme.crust,
                 .border = .{
                     .width = .{ .bottom = 1 },
-                    .color = .{ 49, 50, 68, 255 },
+                    .color = theme.surface0,
                 },
             })({
                 clay.text("Peng Image Viewer", .{
-                    .color = .{ 205, 214, 244, 255 },
+                    .color = theme.text,
                     .font_size = @intFromFloat(16.0 * dpi_scale),
                     .font_id = 0,
                 });
@@ -201,13 +156,13 @@ pub fn renderFrame(
                     else
                         try std.fmt.bufPrint(count_buf, "Image {} of {}", .{ idx, total_images });
                     clay.text(count_str, .{
-                        .color = .{ 166, 173, 200, 255 },
+                        .color = theme.subtext0,
                         .font_size = @intFromFloat(12.0 * dpi_scale),
                         .font_id = 0,
                     });
                 } else if (is_loading) {
                     clay.text("Loading images...", .{
-                        .color = .{ 166, 173, 200, 255 },
+                        .color = theme.subtext0,
                         .font_size = @intFromFloat(12.0 * dpi_scale),
                         .font_id = 0,
                     });
@@ -277,7 +232,7 @@ pub fn renderFrame(
                             },
                         })({
                             clay.text("Loading image...", .{
-                                .color = .{ 245, 194, 231, 255 },
+                                .color = theme.pink,
                                 .font_size = @intFromFloat(22.0 * dpi_scale),
                                 .font_id = 0,
                             });
@@ -293,7 +248,7 @@ pub fn renderFrame(
                             },
                         })({
                             clay.text("Failed to Load Image", .{
-                                .color = .{ 243, 139, 168, 255 },
+                                .color = theme.red,
                                 .font_size = @intFromFloat(22.0 * dpi_scale),
                                 .font_id = 0,
                             });
@@ -311,12 +266,12 @@ pub fn renderFrame(
                     },
                 })({
                     clay.text("Loading Images...", .{
-                        .color = .{ 245, 194, 231, 255 },
+                        .color = theme.pink,
                         .font_size = @intFromFloat(22.0 * dpi_scale),
                         .font_id = 0,
                     });
                     clay.text("Discovering files in background...", .{
-                        .color = .{ 166, 173, 200, 255 },
+                        .color = theme.subtext0,
                         .font_size = @intFromFloat(14.0 * dpi_scale),
                         .font_id = 0,
                     });
@@ -346,19 +301,19 @@ pub fn renderFrame(
                         },
                         .border = .{
                             .width = .{ .left = 2, .right = 2, .top = 2, .bottom = 2 },
-                            .color = .{ 79, 79, 97, 255 },
+                            .color = theme.overlay0,
                         },
                         .corner_radius = .all(12),
                         .user_data = @ptrFromInt(@intFromEnum(ElementTag.drop_zone_box)),
                     })({
                         clay.text("No Images Loaded", .{
-                            .color = .{ 205, 214, 244, 255 },
+                            .color = theme.text,
                             .font_size = @intFromFloat(22.0 * dpi_scale),
                             .font_id = 0,
                         });
 
                         clay.text("Drag & Drop images or directories here to view them.", .{
-                            .color = .{ 166, 173, 200, 255 },
+                            .color = theme.subtext0,
                             .font_size = @intFromFloat(14.0 * dpi_scale),
                             .font_id = 0,
                         });

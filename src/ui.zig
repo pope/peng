@@ -5,3 +5,7 @@ pub const stats = @import("ui/stats.zig");
 pub const graphics = @import("ui/graphics.zig");
 pub const units = @import("ui/units.zig");
 pub const layout_helpers = @import("ui/layout_helpers.zig");
+pub const text_utils = @import("ui/text_utils.zig");
+pub const theme = @import("ui/theme.zig");
+pub const geometry = @import("ui/geometry.zig");
+pub const text_cache = @import("ui/text_cache.zig");

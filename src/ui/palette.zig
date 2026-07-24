@@ -12,6 +12,11 @@ const MeasureTextUserData = types.MeasureTextUserData;
 const sdl3MeasureText = @import("graphics.zig").sdl3MeasureText;
 const layout_helpers = @import("layout_helpers.zig");
 const DpiScale = @import("units.zig").DpiScale;
+const text_utils = @import("text_utils.zig");
+const truncateFilename = text_utils.truncateFilename;
+const truncateDirectory = text_utils.truncateDirectory;
+const formatSize = text_utils.formatSize;
+const theme = @import("theme.zig");
 
 pub fn renderPalette(
     state: *ViewerState,
@@ -100,11 +105,11 @@ pub fn renderPalette(
             .padding = layout_helpers.scalePadding(12, 12, 12, 12, scale),
             .child_gap = @intFromFloat(10 * dpi_scale),
         },
-        .background_color = .{ 30, 30, 46, 245 }, // Catppuccin Base with opacity
+        .background_color = theme.base_translucent, // Catppuccin Base with opacity
         .corner_radius = layout_helpers.scaleCornerRadius(10, scale),
         .border = .{
             .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-            .color = .{ 79, 79, 97, 255 },
+            .color = theme.overlay0,
         },
         .floating = .{
             .attach_to = .to_parent,
@@ -125,10 +130,10 @@ pub fn renderPalette(
         })({
             clay.text(cfg.title, .{
                 .color = switch (palette.mode) {
-                    .files => clay.Color{ 245, 194, 231, 255 }, // Catppuccin Pink
-                    .actions => clay.Color{ 137, 180, 250, 255 }, // Catppuccin Blue
-                    .set_brightness, .set_contrast => clay.Color{ 250, 179, 135, 255 }, // Catppuccin Peach
-                    .go_to_image => clay.Color{ 166, 227, 161, 255 }, // Catppuccin Green
+                    .files => theme.pink, // Catppuccin Pink
+                    .actions => theme.blue, // Catppuccin Blue
+                    .set_brightness, .set_contrast => theme.peach, // Catppuccin Peach
+                    .go_to_image => theme.green, // Catppuccin Green
                     .inactive => unreachable,
                 },
                 .font_size = @intFromFloat(13.0 * dpi_scale),
@@ -144,15 +149,15 @@ pub fn renderPalette(
                 .child_alignment = .{ .x = .left, .y = .center },
                 .padding = layout_helpers.scalePadding(0, 0, 12, 12, scale),
             },
-            .background_color = .{ 17, 17, 27, 255 }, // Catppuccin Crust (input background)
+            .background_color = theme.crust, // Catppuccin Crust (input background)
             .corner_radius = layout_helpers.scaleCornerRadius(6, scale),
             .border = .{
                 .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-                .color = .{ 137, 180, 250, 255 },
+                .color = theme.blue,
             }, // Blue active border
         })({
             const query_str = if (palette.query.items.len > 0) palette.query.items else cfg.placeholder;
-            const query_color = if (palette.query.items.len > 0) clay.Color{ 205, 214, 244, 255 } else clay.Color{ 108, 112, 134, 255 };
+            const query_color = if (palette.query.items.len > 0) theme.text else theme.subtext1;
             clay.text(query_str, .{
                 .color = query_color,
                 .font_size = @intFromFloat(14.0 * dpi_scale),
@@ -169,7 +174,7 @@ pub fn renderPalette(
                     .padding = .{ .left = 12, .right = 12, .top = 10, .bottom = 10 },
                     .child_gap = 6,
                 },
-                .background_color = .{ 17, 17, 27, 255 }, // Catppuccin Crust
+                .background_color = theme.crust, // Catppuccin Crust
                 .corner_radius = .all(6),
             })({
                 const raw_str = palette.query.items;
@@ -179,19 +184,19 @@ pub fn renderPalette(
                 if (palette.mode == .go_to_image) {
                     if (total_count == 0) {
                         clay.text("No images loaded.", .{
-                            .color = .{ 243, 139, 168, 255 }, // Red
+                            .color = theme.red, // Red
                             .font_size = @intFromFloat(13.0 * dpi_scale),
                             .font_id = 0,
                         });
                     } else if (raw_str.len == 0) {
                         clay.text("Enter image number, then press Enter to apply.", .{
-                            .color = .{ 166, 173, 200, 255 },
+                            .color = theme.subtext0,
                             .font_size = @intFromFloat(13.0 * dpi_scale),
                             .font_id = 0,
                         });
                         const range_str = try std.fmt.allocPrint(frame_allocator, "Allowed range: 1 to {} (current: {})", .{ total_count, (state.current_index orelse 0) + 1 });
                         clay.text(range_str, .{
-                            .color = .{ 108, 112, 134, 255 }, // Subtext
+                            .color = theme.subtext1, // Subtext
                             .font_size = @intFromFloat(11.0 * dpi_scale),
                             .font_id = 0,
                         });
@@ -206,21 +211,21 @@ pub fn renderPalette(
                                 const display_filename = truncateFilename(frame_allocator, raw_basename, 492.0 * scale_x, @intFromFloat(12.0 * dpi_scale), measure_data);
                                 const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to go to {}: {s}", .{ val, display_filename });
                                 clay.text(success_str, .{
-                                    .color = .{ 166, 227, 161, 255 }, // Green
+                                    .color = theme.green, // Green
                                     .font_size = @intFromFloat(13.0 * dpi_scale),
                                     .font_id = 0,
                                 });
                             } else {
                                 const err_str = try std.fmt.allocPrint(frame_allocator, "Out of bounds: must be between 1 and {}", .{total_count});
                                 clay.text(err_str, .{
-                                    .color = .{ 243, 139, 168, 255 }, // Red
+                                    .color = theme.red, // Red
                                     .font_size = @intFromFloat(13.0 * dpi_scale),
                                     .font_id = 0,
                                 });
                             }
                         } else {
                             clay.text("Invalid number format. Enter a positive integer.", .{
-                                .color = .{ 243, 139, 168, 255 }, // Red
+                                .color = theme.red, // Red
                                 .font_size = @intFromFloat(13.0 * dpi_scale),
                                 .font_id = 0,
                             });
@@ -229,13 +234,13 @@ pub fn renderPalette(
                 } else {
                     if (raw_str.len == 0) {
                         clay.text("Enter a number, then press Enter to apply.", .{
-                            .color = .{ 166, 173, 200, 255 },
+                            .color = theme.subtext0,
                             .font_size = @intFromFloat(13.0 * dpi_scale),
                             .font_id = 0,
                         });
                         const range_str = if (palette.mode == .set_brightness) "Allowed range: -1.0 to 1.0 (default: 0.0)" else "Allowed range: 0.0 to 5.0 (default: 1.0)";
                         clay.text(range_str, .{
-                            .color = .{ 108, 112, 134, 255 }, // Subtext
+                            .color = theme.subtext1, // Subtext
                             .font_size = @intFromFloat(11.0 * dpi_scale),
                             .font_id = 0,
                         });
@@ -250,14 +255,14 @@ pub fn renderPalette(
                                 if (val >= min_val and val <= max_val) {
                                     const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to set value to: {d:.2}", .{val});
                                     clay.text(success_str, .{
-                                        .color = .{ 166, 227, 161, 255 }, // Green
+                                        .color = theme.green, // Green
                                         .font_size = @intFromFloat(13.0 * dpi_scale),
                                         .font_id = 0,
                                     });
                                 } else {
                                     const err_str = try std.fmt.allocPrint(frame_allocator, "Out of bounds: must be between {d:.1} and {d:.1}", .{ min_val, max_val });
                                     clay.text(err_str, .{
-                                        .color = .{ 243, 139, 168, 255 }, // Red
+                                        .color = theme.red, // Red
                                         .font_size = @intFromFloat(13.0 * dpi_scale),
                                         .font_id = 0,
                                     });
@@ -266,7 +271,7 @@ pub fn renderPalette(
                         }
                         if (!is_valid_float) {
                             clay.text("Invalid float format. Enter a number.", .{
-                                .color = .{ 243, 139, 168, 255 }, // Red
+                                .color = theme.red, // Red
                                 .font_size = @intFromFloat(13.0 * dpi_scale),
                                 .font_id = 0,
                             });
@@ -372,9 +377,9 @@ pub fn renderPalette(
                             .padding = .{ .left = 12, .right = 12 },
                         },
                         .background_color = if (is_selected)
-                            clay.Color{ 49, 50, 68, 255 } // Catppuccin Surface0
+                            theme.surface0 // Catppuccin Surface0
                         else if (item_hovered)
-                            clay.Color{ 30, 30, 46, 255 } // Catppuccin Base (lighter hover)
+                            theme.base // Catppuccin Base (lighter hover)
                         else
                             clay.Color{ 0, 0, 0, 0 },
                         .corner_radius = .all(6),
@@ -408,13 +413,13 @@ pub fn renderPalette(
                                             .layout = .{
                                                 .sizing = .{ .w = .fixed(4 * scale_x), .h = .fixed(12 * scale_y) },
                                             },
-                                            .background_color = if (is_selected) .{ 137, 180, 250, 255 } else .{ 108, 112, 134, 255 },
+                                            .background_color = if (is_selected) theme.blue else theme.subtext1,
                                             .corner_radius = .all(3),
                                         })({});
 
                                         // Filename
                                         clay.text(display_filename, .{
-                                            .color = if (is_selected) .{ 137, 180, 250, 255 } else .{ 205, 214, 244, 255 },
+                                            .color = if (is_selected) theme.blue else theme.text,
                                             .font_size = @intFromFloat(13.0 * dpi_scale),
                                             .font_id = 0,
                                         });
@@ -429,7 +434,7 @@ pub fn renderPalette(
                                         },
                                     })({
                                         clay.text(display_dir, .{
-                                            .color = .{ 166, 173, 200, 255 }, // Subtext
+                                            .color = theme.subtext0, // Subtext
                                             .font_size = @intFromFloat(11.0 * dpi_scale),
                                             .font_id = 0,
                                         });
@@ -447,7 +452,7 @@ pub fn renderPalette(
                                     },
                                 })({
                                     clay.text(meta.name, .{
-                                        .color = if (is_selected) clay.Color{ 137, 180, 250, 255 } else clay.Color{ 205, 214, 244, 255 },
+                                        .color = if (is_selected) theme.blue else theme.text,
                                         .font_size = @intFromFloat(13.0 * dpi_scale),
                                         .font_id = 0,
                                     });
@@ -460,12 +465,12 @@ pub fn renderPalette(
                                             .sizing = .{ .w = .fit, .h = .fit },
                                             .padding = .{ .left = 8, .right = 8, .top = 3, .bottom = 3 },
                                         },
-                                        .background_color = .{ 17, 17, 27, 255 }, // Catppuccin Crust
+                                        .background_color = theme.crust, // Catppuccin Crust
                                         .corner_radius = .all(4),
-                                        .border = .{ .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 }, .color = .{ 49, 50, 68, 255 } },
+                                        .border = .{ .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 }, .color = theme.surface0 },
                                     })({
                                         clay.text(meta.shortcut_text, .{
-                                            .color = .{ 166, 173, 200, 255 },
+                                            .color = theme.subtext0,
                                             .font_size = @intFromFloat(11.0 * dpi_scale),
                                             .font_id = 0,
                                         });
@@ -521,7 +526,7 @@ pub fn renderPalette(
                             else => "",
                         };
                         clay.text(no_match_msg, .{
-                            .color = .{ 108, 112, 134, 255 },
+                            .color = theme.subtext1,
                             .font_size = @intFromFloat(13.0 * dpi_scale),
                             .font_id = 0,
                         });
@@ -530,77 +535,4 @@ pub fn renderPalette(
             });
         }
     });
-}
-
-pub fn truncateFilename(allocator: std.mem.Allocator, text: []const u8, max_w: f32, font_size: u16, data: *const MeasureTextUserData) []const u8 {
-    const font = data.fonts[0] orelse return text;
-    const target_size = @as(f32, @floatFromInt(font_size));
-    if (font.getFontSize() != target_size) {
-        _ = font.setFontSize(target_size);
-    }
-
-    const size = font.getStringSize(text) orelse return text;
-    if (@as(f32, @floatFromInt(size.w)) <= max_w) {
-        return text;
-    }
-
-    const dots_size = font.getStringSize("...") orelse sdl.Font.TextSize{ .w = 0, .h = 0 };
-
-    const available_w = max_w - @as(f32, @floatFromInt(dots_size.w));
-    if (available_w <= 0) return "...";
-
-    if (font.measureString(text, @intFromFloat(available_w))) |m| {
-        var best_len = m.measured_len;
-        while (best_len > 0 and best_len < text.len and (text[best_len] & 0xC0) == 0x80) {
-            best_len -= 1;
-        }
-        return std.fmt.allocPrint(allocator, "{s}...", .{text[0..best_len]}) catch text;
-    }
-    return text;
-}
-
-pub fn truncateDirectory(allocator: std.mem.Allocator, text: []const u8, max_w: f32, font_size: u16, data: *const MeasureTextUserData) []const u8 {
-    var text_config = clay.TextElementConfig{
-        .font_id = 0,
-        .font_size = font_size,
-    };
-
-    const initial_dim = sdl3MeasureText(text, &text_config, data);
-    if (initial_dim.w <= max_w) {
-        return text;
-    }
-
-    const dots_w = sdl3MeasureText("...", &text_config, data).w;
-
-    var low: usize = 0;
-    var high: usize = text.len;
-    var best_len: usize = 0;
-
-    while (low <= high) {
-        const mid = (low + high) / 2;
-        const start_idx = text.len - mid;
-        // Verify UTF-8 boundary
-        var byte_start = start_idx;
-        while (byte_start < text.len and (text[byte_start] & 0xC0) == 0x80) {
-            byte_start += 1;
-        }
-
-        const part_w = sdl3MeasureText(text[byte_start..], &text_config, data).w;
-
-        if (part_w + dots_w <= max_w) {
-            best_len = text.len - byte_start;
-            low = mid + 1;
-        } else {
-            if (mid == 0) break;
-            high = mid - 1;
-        }
-    }
-
-    return std.fmt.allocPrint(allocator, "...{s}", .{text[text.len - best_len ..]}) catch text;
-}
-
-pub fn formatSize(allocator: std.mem.Allocator, bytes: u64) ![]const u8 {
-    const kb = @as(f64, @floatFromInt(bytes)) / 1024.0;
-    const mb = kb / 1024.0;
-    return std.fmt.allocPrint(allocator, "{d:.1} MB", .{mb});
 }

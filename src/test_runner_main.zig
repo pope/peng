@@ -201,6 +201,7 @@ pub fn main(init: std.process.Init) !void {
             "--test-mode",
             "testfiles/images/000_0_1024x682.jpg",
         },
+        .stdin = .ignore,
         .stdout = .pipe,
     });
     defer {

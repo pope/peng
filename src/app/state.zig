@@ -1,7 +1,8 @@
 const std = @import("std");
 const sdl = @import("sdl");
 const clay = @import("zclay");
-const FrameInput = @import("types.zig").FrameInput;
+const types = @import("types.zig");
+const FrameInput = types.FrameInput;
 const app_input = @import("input.zig");
 const renderer = @import("../ui/renderer.zig");
 const commands = @import("../commands.zig");
@@ -11,6 +12,8 @@ pub const fs = @import("fs.zig");
 pub const events = @import("events.zig");
 pub const pipeline = @import("pipeline.zig");
 pub const ipc = @import("ipc.zig");
+pub const exif = @import("exif.zig");
+const screenshot = @import("screenshot.zig");
 
 pub const CacheStatus = image.CacheStatus;
 pub const CacheEntry = image.CacheEntry;
@@ -18,28 +21,16 @@ pub const CacheSlotMap = image.CacheSlotMap;
 pub const TextureHandle = image.TextureHandle;
 pub const DecodeArgs = image.DecodeArgs;
 pub const detectMimeType = image.detectMimeType;
-pub const parseExifOrientation = image.parseExifOrientation;
-pub const readJpegExifOrientation = image.readJpegExifOrientation;
+pub const parseExifOrientation = exif.parseExifOrientation;
+pub const readJpegExifOrientation = exif.readJpegExifOrientation;
 pub const eqlIgnoreCase = fs.eqlIgnoreCase;
 pub const isImageExtension = fs.isImageExtension;
 pub const scanDirectory = fs.scanDirectory;
 pub const uploadSurfaceToGpu = graphics.uploadSurfaceToGpu;
 pub const GpuUploadResult = graphics.GpuUploadResult;
 
-pub const ScaleMode = enum {
-    none,
-    shrink,
-    full,
-    crop,
-};
-
-pub const TextureScaleMode = enum {
-    nearest,
-    linear,
-    pixel_art,
-    mitchell,
-    lanczos3,
-};
+pub const ScaleMode = types.ScaleMode;
+pub const TextureScaleMode = types.TextureScaleMode;
 
 pub const ElementTag = enum(usize) {
     none = 0,
@@ -76,19 +67,10 @@ pub const DragState = union(enum) {
     },
 };
 
-pub const TextCacheKey = struct {
-    font_id: usize,
-    font_size: u16,
-    color: u32,
-    hash: u64,
-};
-
-pub const TextCacheValue = struct {
-    texture: sdl.gpu.Texture,
-    w: f32,
-    h: f32,
-    last_used_frame: usize,
-};
+pub const TextCacheModule = @import("../ui/text_cache.zig");
+pub const TextCacheKey = TextCacheModule.TextCacheKey;
+pub const TextCacheValue = TextCacheModule.TextCacheValue;
+pub const TextCache = TextCacheModule.TextCache;
 
 pub const PaletteState = struct {
     mode: PaletteMode = .inactive,
@@ -210,10 +192,11 @@ pub const ViewerState = struct {
     gpu_frame_index: usize = 0,
 
     // Font text texture cache
-    text_cache: std.AutoHashMapUnmanaged(TextCacheKey, TextCacheValue) = .empty,
+    text_cache: TextCache = .{},
+    active_screenshot: ?screenshot.ActiveScreenshot = null,
 
     pub fn readJpegExifOrientation(self: *const ViewerState, path: []const u8) ?f32 {
-        return image.readJpegExifOrientation(self.io, path);
+        return exif.readJpegExifOrientation(self.io, path);
     }
 
     pub fn setDebugShowThumb(self: *ViewerState, enable: bool) !void {
@@ -235,8 +218,8 @@ pub const ViewerState = struct {
         const n = file.readPositional(self.io, &slices, 0) catch return;
         if (n == 0) return;
 
-        const full_dims = image.readJpegDimensions(header_buf[0..n]);
-        const thumb_bytes = image.extractJpegThumbnail(header_buf[0..n]) orelse return;
+        const full_dims = exif.readJpegDimensions(header_buf[0..n]);
+        const thumb_bytes = exif.extractJpegThumbnail(header_buf[0..n]) orelse return;
         const thumb_surf = sdl.Surface.loadConstMemOpt(thumb_bytes) orelse return;
         defer thumb_surf.destroy();
 
@@ -280,11 +263,6 @@ pub const ViewerState = struct {
                 if (tb) |b| dev.releaseTransferBuffer(b);
             }
 
-            var text_iter = self.text_cache.valueIterator();
-            while (text_iter.next()) |val| {
-                dev.releaseTexture(val.texture);
-            }
-
             if (self.gpu_pipeline) |pipe| dev.releasePipeline(pipe);
             if (self.gpu_sampler) |samp| dev.releaseSampler(samp);
             if (self.white_texture) |tex| dev.releaseTexture(tex);
@@ -293,13 +271,17 @@ pub const ViewerState = struct {
             }
         }
 
+        if (self.active_screenshot) |*s| {
+            s.respondQuit(self.io, self.allocator);
+            self.active_screenshot = null;
+        }
         for (self.pending_ipc_commands.items) |cmd_data| {
             self.allocator.free(cmd_data.command);
             self.allocator.destroy(cmd_data);
         }
         self.pending_ipc_commands.deinit(self.allocator);
         self.event_queue.deinit(self.allocator, self.io);
-        self.text_cache.deinit(self.allocator);
+        self.text_cache.deinit(self.allocator, self.gpu_device);
         self.image_list.deinit(self.allocator);
         self.cache.deinit(self.allocator, self.gpu_device);
         self.palette.deinit();
@@ -343,14 +325,6 @@ pub const ViewerState = struct {
         };
         if (raw_w <= 0.0 or raw_h <= 0.0) return 1.0;
 
-        const angle = self.rotation_angle;
-        const is_90_or_270 = (std.math.approxEqAbs(f32, angle, 90.0, 0.1) or
-            std.math.approxEqAbs(f32, angle, 270.0, 0.1) or
-            std.math.approxEqAbs(f32, angle, -90.0, 0.1) or
-            std.math.approxEqAbs(f32, angle, -270.0, 0.1));
-        const img_w = if (is_90_or_270) raw_h else raw_w;
-        const img_h = if (is_90_or_270) raw_w else raw_h;
-
         var pix_w: i32 = 1024;
         var pix_h: i32 = 768;
         if (self.window) |win| {
@@ -377,49 +351,15 @@ pub const ViewerState = struct {
         const view_w = @max(available_width, 1.0);
         const view_h = @max(@as(f32, @floatFromInt(pix_h)) - title_bar_h * scale_y, 1.0);
 
-        const r_img = img_w / img_h;
-        const r_view = view_w / view_h;
-
-        var draw_w: f32 = img_w;
-        switch (self.scale_mode) {
-            .none => {
-                draw_w = img_w;
-            },
-            .shrink => {
-                if (img_w <= view_w and img_h <= view_h) {
-                    draw_w = img_w;
-                } else {
-                    if (r_img > r_view) {
-                        draw_w = view_w;
-                    } else {
-                        draw_w = view_h * r_img;
-                    }
-                }
-            },
-            .full => {
-                if (r_img > r_view) {
-                    draw_w = view_w;
-                } else {
-                    draw_w = view_h * r_img;
-                }
-            },
-            .crop => {
-                if (r_img > r_view) {
-                    draw_w = view_h * r_img;
-                } else {
-                    draw_w = view_w;
-                }
-            },
-        }
-
-        return draw_w / img_w;
+        const view_transform = @import("view_transform.zig");
+        const dims = view_transform.computeViewDims(raw_w, raw_h, self.rotation_angle, view_w, view_h, self.scale_mode);
+        return dims.base_scale;
     }
 
     pub fn clampZoomFactor(self: *ViewerState, new_factor: f32) f32 {
         const base_scale = self.getBaseScale();
-        const min_factor = if (base_scale > 0.0) 0.1 / base_scale else 0.1;
-        const max_factor = if (base_scale > 0.0) 10.0 / base_scale else 10.0;
-        return std.math.clamp(new_factor, min_factor, max_factor);
+        const view_transform = @import("view_transform.zig");
+        return view_transform.clampZoomFactor(base_scale, new_factor);
     }
 
     pub fn getTextureByHandle(self: *ViewerState, handle: TextureHandle) ?sdl.gpu.Texture {
@@ -1171,6 +1111,105 @@ pub const ViewerState = struct {
             try app_input.handleKeyDown(self, key, input.key_modifiers, input.scale_x, input.scale_y);
         }
     }
+
+    pub fn processIpcCommands(self: *ViewerState, ipc_server: ?*ipc.IpcServer) void {
+        for (self.pending_ipc_commands.items) |cmd_data| {
+            var it = std.mem.tokenizeAny(u8, cmd_data.command, " \t\r\n");
+            const cmd = it.next() orelse "";
+            if (std.mem.eql(u8, cmd, "screenshot")) {
+                if (it.next()) |filepath| {
+                    if (filepath.len > 512) {
+                        var write_buf: [128]u8 = undefined;
+                        var writer = cmd_data.client_stream.writer(self.io, &write_buf);
+                        writer.interface.writeAll("ERR PathTooLong\n") catch |err| std.log.warn("IPC screenshot response failed: {}", .{err});
+                        writer.interface.flush() catch |err| std.log.warn("IPC flush failed: {}", .{err});
+                        cmd_data.client_stream.close(self.io);
+                    } else if (self.active_screenshot) |_| {
+                        var write_buf: [128]u8 = undefined;
+                        var writer = cmd_data.client_stream.writer(self.io, &write_buf);
+                        writer.interface.writeAll("ERR Busy\n") catch |err| std.log.warn("IPC screenshot response failed: {}", .{err});
+                        writer.interface.flush() catch |err| std.log.warn("IPC flush failed: {}", .{err});
+                        cmd_data.client_stream.close(self.io);
+                    } else {
+                        const dup_path = self.allocator.dupeZ(u8, filepath) catch {
+                            var write_buf: [128]u8 = undefined;
+                            var writer = cmd_data.client_stream.writer(self.io, &write_buf);
+                            writer.interface.writeAll("ERR OutOfMemory\n") catch |err| std.log.warn("IPC screenshot response failed: {}", .{err});
+                            writer.interface.flush() catch |err| std.log.warn("IPC flush failed: {}", .{err});
+                            cmd_data.client_stream.close(self.io);
+                            self.allocator.free(cmd_data.command);
+                            self.allocator.destroy(cmd_data);
+                            continue;
+                        };
+                        self.active_screenshot = screenshot.ActiveScreenshot{
+                            .path = dup_path,
+                            .stream = cmd_data.client_stream,
+                        };
+                    }
+                } else {
+                    var write_buf: [128]u8 = undefined;
+                    var writer = cmd_data.client_stream.writer(self.io, &write_buf);
+                    writer.interface.writeAll("ERR MissingArgument\n") catch |err| std.log.warn("IPC screenshot response failed: {}", .{err});
+                    writer.interface.flush() catch |err| std.log.warn("IPC flush failed: {}", .{err});
+                    cmd_data.client_stream.close(self.io);
+                }
+            } else {
+                if (ipc_server) |srv| {
+                    srv.executeCommand(self, cmd_data.command, cmd_data.client_stream) catch |err| {
+                        var response_buf: [128]u8 = undefined;
+                        const response = std.fmt.bufPrint(&response_buf, "ERR {s}\n", .{@errorName(err)}) catch "ERR ExecutionFailed\n";
+                        var write_buf: [128]u8 = undefined;
+                        var writer = cmd_data.client_stream.writer(self.io, &write_buf);
+                        writer.interface.writeAll(response) catch |err2| std.log.warn("IPC error response failed: {}", .{err2});
+                        writer.interface.flush() catch |err2| std.log.warn("IPC flush failed: {}", .{err2});
+                        cmd_data.client_stream.close(self.io);
+                    };
+                }
+            }
+            self.allocator.free(cmd_data.command);
+            self.allocator.destroy(cmd_data);
+        }
+        self.pending_ipc_commands.clearRetainingCapacity();
+    }
+
+    pub fn handleScreenshotPostRender(self: *ViewerState, render_err: ?anyerror) void {
+        if (self.active_screenshot) |*s| {
+            if (render_err) |err| {
+                s.respondErr(self.io, self.allocator, err);
+            } else {
+                s.respondOk(self.io, self.allocator);
+            }
+            self.active_screenshot = null;
+        }
+    }
+
+    pub fn setZoom(self: *ViewerState, factor: f32) void {
+        self.zoom_factor = self.clampZoomFactor(factor);
+    }
+
+    pub fn setPan(self: *ViewerState, px: f32, py: f32) void {
+        self.pan_x = px;
+        self.pan_y = py;
+    }
+
+    pub fn setAdjustments(self: *ViewerState, br: f32, co: f32) void {
+        self.brightness = std.math.clamp(br, -1.0, 1.0);
+        self.contrast = std.math.clamp(co, 0.0, 5.0);
+        self.adjustments_dirty = true;
+    }
+
+    pub fn setTextureScaleMode(self: *ViewerState, mode: TextureScaleMode) void {
+        self.texture_scale_mode = mode;
+        self.applyTextureScaleMode();
+    }
+
+    pub fn setPaletteMode(self: *ViewerState, mode: PaletteMode) void {
+        self.palette.mode = mode;
+    }
+
+    pub fn requestQuit(self: *ViewerState) void {
+        self.running = false;
+    }
 };
 
 test "CacheSlotMap.updateStatus" {
@@ -1322,4 +1361,11 @@ test "ViewerState.updateCurrentRotation syncs EXIF orientation" {
     state.current_index = null;
     state.updateCurrentRotation();
     try std.testing.expectEqual(@as(f32, 0.0), state.rotation_angle);
+}
+
+test "ElementTag.fromInt" {
+    try std.testing.expectEqual(ElementTag.none, ElementTag.fromInt(0));
+    try std.testing.expectEqual(ElementTag.drop_zone_box, ElementTag.fromInt(1337));
+    try std.testing.expectEqual(ElementTag.none, ElementTag.fromInt(9999));
+    try std.testing.expectEqual(ElementTag.none, ElementTag.fromInt(0x7fffffffd000));
 }

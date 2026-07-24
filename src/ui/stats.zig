@@ -1,9 +1,10 @@
 const std = @import("std");
 const clay = @import("zclay");
+const theme = @import("theme.zig");
 const app_state = @import("../app/state.zig");
 const ViewerState = app_state.ViewerState;
 const CacheEntry = app_state.CacheEntry;
-const formatSize = @import("palette.zig").formatSize;
+const formatSize = @import("text_utils.zig").formatSize;
 const MeasureTextUserData = @import("../app/types.zig").MeasureTextUserData;
 const layout_helpers = @import("layout_helpers.zig");
 const DpiScale = @import("units.zig").DpiScale;
@@ -20,7 +21,7 @@ pub fn renderStatRow(label: []const u8, value: []const u8, scale_x: f32, scale_y
             .sizing = .{ .w = .fixed(145 * scale_x), .h = .grow },
         } })({
             clay.text(label, .{
-                .color = .{ 166, 173, 200, 255 }, // Subtext0
+                .color = theme.subtext0,
                 .font_size = @intFromFloat(13.0 * dpi_scale),
                 .font_id = 0,
             });
@@ -28,7 +29,7 @@ pub fn renderStatRow(label: []const u8, value: []const u8, scale_x: f32, scale_y
 
         clay.UI()(.{ .layout = .{ .sizing = .{ .w = .grow, .h = .grow } } })({
             clay.text(value, .{
-                .color = .{ 205, 214, 244, 255 }, // Text
+                .color = theme.text,
                 .font_size = @intFromFloat(13.0 * dpi_scale),
                 .font_id = 0,
             });
@@ -138,11 +139,11 @@ pub fn renderStatsOverlay(
             .padding = layout_helpers.scalePadding(16, 16, 16, 16, scale),
             .child_gap = @intFromFloat(10.0 * dpi_scale),
         },
-        .background_color = .{ 30, 30, 46, 220 },
+        .background_color = theme.base_overlay,
         .corner_radius = layout_helpers.scaleCornerRadius(10, scale),
         .border = .{
             .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-            .color = .{ 49, 50, 68, 255 },
+            .color = theme.surface0,
         },
         .floating = .{
             .attach_to = .to_parent,
@@ -166,7 +167,7 @@ pub fn renderStatsOverlay(
                 .sizing = .{ .w = .grow, .h = .grow },
             } })({
                 clay.text("Stats for Nerds", .{
-                    .color = .{ 245, 194, 231, 255 },
+                    .color = theme.pink,
                     .font_size = @intFromFloat(16.0 * dpi_scale),
                     .font_id = 0,
                 });
@@ -180,11 +181,11 @@ pub fn renderStatsOverlay(
                     },
                     .child_alignment = .{ .x = .center, .y = .center },
                 },
-                .background_color = .{ 49, 50, 68, 255 },
+                .background_color = theme.surface0,
                 .corner_radius = layout_helpers.scaleCornerRadius(12, scale),
             })({
                 clay.text("x", .{
-                    .color = .{ 205, 214, 244, 255 },
+                    .color = theme.text,
                     .font_size = @intFromFloat(12.0 * dpi_scale),
                     .font_id = 0,
                 });

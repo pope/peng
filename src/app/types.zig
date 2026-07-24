@@ -1,6 +1,21 @@
 const std = @import("std");
 const sdl = @import("sdl");
 
+pub const ScaleMode = enum {
+    none,
+    shrink,
+    full,
+    crop,
+};
+
+pub const TextureScaleMode = enum {
+    nearest,
+    linear,
+    pixel_art,
+    mitchell,
+    lanczos3,
+};
+
 pub const MeasureTextUserData = struct {
     fonts: []const ?sdl.Font,
     allocator: std.mem.Allocator,

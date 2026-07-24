@@ -68,7 +68,7 @@ pub const IpcServer = struct {
             if (factor_str.len > 128) return error.InvalidArgument;
             const factor = try std.fmt.parseFloat(f32, factor_str);
             if (std.math.isNan(factor) or std.math.isInf(factor)) return error.InvalidArgument;
-            state.zoom_factor = state.clampZoomFactor(factor);
+            state.setZoom(factor);
             try respondOk(state.io, stream);
         } else if (std.mem.eql(u8, cmd, "pan")) {
             const px_str = it.next() orelse return error.MissingArgument;
@@ -77,8 +77,7 @@ pub const IpcServer = struct {
             const px = try std.fmt.parseFloat(f32, px_str);
             const py = try std.fmt.parseFloat(f32, py_str);
             if (std.math.isNan(px) or std.math.isInf(px) or std.math.isNan(py) or std.math.isInf(py)) return error.InvalidArgument;
-            state.pan_x = px;
-            state.pan_y = py;
+            state.setPan(px, py);
             try respondOk(state.io, stream);
         } else if (std.mem.eql(u8, cmd, "adjust")) {
             const br_str = it.next() orelse return error.MissingArgument;
@@ -87,24 +86,23 @@ pub const IpcServer = struct {
             const br = try std.fmt.parseFloat(f32, br_str);
             const co = try std.fmt.parseFloat(f32, co_str);
             if (std.math.isNan(br) or std.math.isInf(br) or std.math.isNan(co) or std.math.isInf(co)) return error.InvalidArgument;
-            state.brightness = std.math.clamp(br, -1.0, 1.0);
-            state.contrast = std.math.clamp(co, 0.0, 5.0);
-            state.adjustments_dirty = true;
+            state.setAdjustments(br, co);
             try respondOk(state.io, stream);
         } else if (std.mem.eql(u8, cmd, "filter")) {
             const val = it.next() orelse return error.MissingArgument;
+            var mode: TextureScaleMode = undefined;
             if (std.mem.eql(u8, val, "mitchell")) {
-                state.texture_scale_mode = .mitchell;
+                mode = .mitchell;
             } else if (std.mem.eql(u8, val, "lanczos3")) {
-                state.texture_scale_mode = .lanczos3;
+                mode = .lanczos3;
             } else if (std.mem.eql(u8, val, "linear")) {
-                state.texture_scale_mode = .linear;
+                mode = .linear;
             } else if (std.mem.eql(u8, val, "pixel_art")) {
-                state.texture_scale_mode = .pixel_art;
+                mode = .pixel_art;
             } else {
                 return error.UnknownFilter;
             }
-            state.applyTextureScaleMode();
+            state.setTextureScaleMode(mode);
             try respondOk(state.io, stream);
         } else if (std.mem.eql(u8, cmd, "palette")) {
             const pal_name = it.next() orelse return error.MissingArgument;
@@ -113,7 +111,7 @@ pub const IpcServer = struct {
             } else if (std.mem.eql(u8, pal_name, "files")) {
                 try state.openPalette(.files);
             } else if (std.mem.eql(u8, pal_name, "none")) {
-                state.palette.mode = .inactive;
+                state.setPaletteMode(.inactive);
             } else {
                 return error.UnknownPalette;
             }
@@ -163,7 +161,7 @@ pub const IpcServer = struct {
             try state.prev();
             try respondOk(state.io, stream);
         } else if (std.mem.eql(u8, cmd, "quit")) {
-            state.running = false;
+            state.requestQuit();
             try respondOk(state.io, stream);
             const pid = std.posix.system.getpid();
             var path_buf: [128]u8 = undefined;

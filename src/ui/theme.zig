@@ -1,0 +1,17 @@
+const clay = @import("zclay");
+
+pub const mantle = clay.Color{ 24, 24, 37, 255 };
+pub const crust = clay.Color{ 17, 17, 27, 255 };
+pub const base = clay.Color{ 30, 30, 46, 255 };
+pub const base_translucent = clay.Color{ 30, 30, 46, 245 };
+pub const base_overlay = clay.Color{ 30, 30, 46, 220 };
+pub const surface0 = clay.Color{ 49, 50, 68, 255 };
+pub const overlay0 = clay.Color{ 79, 79, 97, 255 };
+pub const subtext0 = clay.Color{ 166, 173, 200, 255 };
+pub const subtext1 = clay.Color{ 108, 112, 134, 255 };
+pub const text = clay.Color{ 205, 214, 244, 255 };
+pub const blue = clay.Color{ 137, 180, 250, 255 };
+pub const green = clay.Color{ 166, 227, 161, 255 };
+pub const red = clay.Color{ 243, 139, 168, 255 };
+pub const pink = clay.Color{ 245, 194, 231, 255 };
+pub const peach = clay.Color{ 250, 179, 135, 255 };
