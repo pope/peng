@@ -18,7 +18,7 @@ pub const GraphicsOptions = struct {
 const builtin = @import("builtin");
 
 pub fn initGraphicsAndWindow(window_title: [:0]const u8, options: GraphicsOptions) !GraphicsSetup {
-    if (options.headless and builtin.os.tag != .macos) {
+    if (options.headless and builtin.os.tag != .macos and builtin.os.tag != .windows) {
         _ = sdl.hint.set("SDL_VIDEO_DRIVER", "offscreen");
     }
 

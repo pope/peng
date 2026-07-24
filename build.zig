@@ -19,9 +19,42 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .link_libc = true,
     });
-    const sys_libs = [_][]const u8{ "sdl3", "sdl3-ttf", "sdl3-image" };
-    inline for (sys_libs) |lib| {
-        sdl_module.linkSystemLibrary(lib, .{});
+    if (target.result.os.tag == .windows) {
+        const sdl3_dep = b.dependency("sdl3_devel", .{});
+        const ttf_dep = b.dependency("sdl3_ttf_devel", .{});
+        const img_dep = b.dependency("sdl3_image_devel", .{});
+
+        const deps = [_]*std.Build.Dependency{ sdl3_dep, ttf_dep, img_dep };
+        inline for (deps) |dep| {
+            sdl_module.addIncludePath(dep.path("include"));
+            sdl_module.addLibraryPath(dep.path("lib/x64"));
+        }
+        const sys_libs = [_][]const u8{ "SDL3", "SDL3_ttf", "SDL3_image" };
+        inline for (sys_libs) |lib| {
+            sdl_module.linkSystemLibrary(lib, .{});
+        }
+
+        const install_bin = struct {
+            fn run(builder: *std.Build, lazy_path: std.Build.LazyPath, filename: []const u8) void {
+                const install_step = builder.addInstallBinFile(lazy_path, filename);
+                builder.getInstallStep().dependOn(&install_step.step);
+            }
+        }.run;
+
+        install_bin(b, sdl3_dep.path("lib/x64/SDL3.dll"), "SDL3.dll");
+        install_bin(b, ttf_dep.path("lib/x64/SDL3_ttf.dll"), "SDL3_ttf.dll");
+        install_bin(b, img_dep.path("lib/x64/SDL3_image.dll"), "SDL3_image.dll");
+        install_bin(b, img_dep.path("lib/x64/optional/libavif-16.dll"), "libavif-16.dll");
+        install_bin(b, img_dep.path("lib/x64/optional/libpng16-16.dll"), "libpng16-16.dll");
+        install_bin(b, img_dep.path("lib/x64/optional/libtiff-6.dll"), "libtiff-6.dll");
+        install_bin(b, img_dep.path("lib/x64/optional/libwebp-7.dll"), "libwebp-7.dll");
+        install_bin(b, img_dep.path("lib/x64/optional/libwebpdemux-2.dll"), "libwebpdemux-2.dll");
+        install_bin(b, img_dep.path("lib/x64/optional/libwebpmux-3.dll"), "libwebpmux-3.dll");
+    } else {
+        const sys_libs = [_][]const u8{ "sdl3", "sdl3-ttf", "sdl3-image" };
+        inline for (sys_libs) |lib| {
+            sdl_module.linkSystemLibrary(lib, .{});
+        }
     }
 
     const exe = b.addExecutable(.{
@@ -100,6 +133,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const run_exe_tests = b.addRunArtifact(exe_tests);
+    run_exe_tests.step.dependOn(b.getInstallStep());
 
     const run_integration_tests = b.addRunArtifact(test_runner_exe);
     run_integration_tests.step.dependOn(b.getInstallStep());
@@ -111,6 +145,13 @@ pub fn build(b: *std.Build) void {
         .root_module = sdl_module,
     });
     const run_sdl_tests = b.addRunArtifact(sdl_tests);
+    run_sdl_tests.step.dependOn(b.getInstallStep());
+
+    if (target.result.os.tag == .windows) {
+        run_exe_tests.addPathDir(b.getInstallPath(.bin, ""));
+        run_sdl_tests.addPathDir(b.getInstallPath(.bin, ""));
+        run_integration_tests.addPathDir(b.getInstallPath(.bin, ""));
+    }
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_sdl_tests.step);

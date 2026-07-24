@@ -6,11 +6,16 @@ const ScaleMode = app_state.ScaleMode;
 const TextureScaleMode = app_state.TextureScaleMode;
 const clay = @import("zclay");
 
-/// Low-level POSIX unbuffered write system call binding.
-/// Used to write the IPC Unix Domain Socket path directly to STDOUT_FILENO (fd 1)
-/// without stdio stream buffering. This ensures child process stdout pipes
-/// (such as peng-test-runner) receive the socket path string instantly.
-extern fn write(fd: c_int, buf: [*]const u8, count: usize) isize;
+extern "kernel32" fn GetCurrentProcessId() callconv(std.builtin.CallingConvention.winapi) u32;
+
+fn getProcessId() u32 {
+    const builtin = @import("builtin");
+    if (builtin.os.tag == .windows) {
+        return GetCurrentProcessId();
+    } else {
+        return @intCast(std.posix.system.getpid());
+    }
+}
 
 pub const IpcCommandData = struct {
     command: []const u8,
@@ -38,22 +43,25 @@ pub const IpcServer = struct {
     }
 
     pub fn deinit(self: *IpcServer, io: std.Io) void {
-        const pid = std.posix.system.getpid();
-        var path_buf: [128]u8 = undefined;
-        if (std.fmt.bufPrint(&path_buf, "/tmp/peng-{d}.sock", .{pid})) |sock_path| {
-            if (std.Io.net.UnixAddress.init(sock_path)) |addr| {
-                if (addr.connect(io)) |dummy| {
-                    dummy.close(io);
-                } else |err| {
-                    if (err != error.FileNotFound) {
-                        std.log.debug("IPC deinit dummy connect failed: {any}", .{err});
+        const builtin = @import("builtin");
+        if (builtin.os.tag != .windows) {
+            const pid = getProcessId();
+            var path_buf: [128]u8 = undefined;
+            if (std.fmt.bufPrint(&path_buf, "/tmp/peng-{d}.sock", .{pid})) |sock_path| {
+                if (std.Io.net.UnixAddress.init(sock_path)) |addr| {
+                    if (addr.connect(io)) |dummy| {
+                        dummy.close(io);
+                    } else |err| {
+                        if (err != error.FileNotFound and err != error.ConnectionRefused) {
+                            std.log.debug("IPC deinit dummy connect failed: {any}", .{err});
+                        }
                     }
+                } else |err| {
+                    std.log.debug("IPC deinit address init failed: {any}", .{err});
                 }
             } else |err| {
-                std.log.debug("IPC deinit address init failed: {any}", .{err});
+                std.log.debug("IPC deinit socket path format failed: {any}", .{err});
             }
-        } else |err| {
-            std.log.debug("IPC deinit socket path format failed: {any}", .{err});
         }
         self.allocator.destroy(self);
     }
@@ -163,7 +171,7 @@ pub const IpcServer = struct {
         } else if (std.mem.eql(u8, cmd, "quit")) {
             state.requestQuit();
             try respondOk(state.io, stream);
-            const pid = std.posix.system.getpid();
+            const pid = getProcessId();
             var path_buf: [128]u8 = undefined;
             if (std.fmt.bufPrint(&path_buf, "/tmp/peng-{d}.sock", .{pid})) |sock_path| {
                 const addr = std.Io.net.UnixAddress.init(sock_path) catch |err| {
@@ -194,9 +202,11 @@ fn runIpcServer(state: *ViewerState) !void {
     const io = state.io;
     const gpa = state.allocator;
 
-    const pid = std.posix.system.getpid();
+    const pid = getProcessId();
     var path_buf: [128]u8 = undefined;
     const socket_path = try std.fmt.bufPrint(&path_buf, "/tmp/peng-{d}.sock", .{pid});
+
+    std.Io.Dir.createDir(std.Io.Dir.cwd(), io, "/tmp", @enumFromInt(0)) catch {};
 
     std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, socket_path) catch |err| {
         std.log.debug("IPC socket pre-delete failed (file may not exist): {any}", .{err});
@@ -213,7 +223,10 @@ fn runIpcServer(state: *ViewerState) !void {
 
     const msg = try std.fmt.allocPrint(gpa, "IPC socket: {s}\n", .{socket_path});
     defer gpa.free(msg);
-    _ = write(1, msg.ptr, msg.len);
+    var stdout_write_buf: [256]u8 = undefined;
+    var stdout_writer = std.Io.File.Writer.init(std.Io.File.stdout(), io, &stdout_write_buf);
+    stdout_writer.interface.writeAll(msg) catch {};
+    stdout_writer.interface.flush() catch {};
 
     while (state.running) {
         var client_stream = server.accept(io) catch |err| {
