@@ -74,8 +74,7 @@
               zon2nix
             ];
             text = ''
-              zon2nix > nix/deps.nix
-              sed 's|?ref=.*"|"|' -i nix/deps.nix
+              zon2nix | sed 's/?ref=[^"]*//' > nix/deps.nix
               treefmt
             '';
           };
