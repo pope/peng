@@ -166,14 +166,29 @@ pub fn renderClayCommands(
                     const converted = surf.convert(sdl.PixelFormat.rgba32) orelse continue;
                     defer converted.destroy();
 
+                    var leading_spaces: usize = 0;
+                    while (leading_spaces < text_slice.len and text_slice[leading_spaces] == ' ') : (leading_spaces += 1) {}
+
+                    var leading_space_w: usize = 0;
+                    if (leading_spaces > 0 and leading_spaces < text_slice.len) {
+                        if (font.getStringSize(text_slice[0..leading_spaces])) |s| {
+                            leading_space_w = @intCast(s.w);
+                        }
+                    }
+
+                    const surf_w: usize = @intCast(converted.w());
+                    const surf_h: usize = @intCast(converted.h());
+                    const target_w: usize = @max(surf_w + leading_space_w, @as(usize, @intFromFloat(@round(rcmd.bounding_box.width))));
+                    const dst_start_byte = @min(leading_space_w * 4, if (target_w > surf_w) (target_w - surf_w) * 4 else 0);
+
                     const dev = state.gpu_device.?;
 
                     const tex_info = sdl.gpu.TextureCreateInfo{
                         .type = .type_2d,
                         .format = .rgba8_unorm,
                         .usage = sdl.gpu.TextureUsage.sampler,
-                        .width = @intCast(converted.w()),
-                        .height = @intCast(converted.h()),
+                        .width = @intCast(target_w),
+                        .height = @intCast(surf_h),
                         .layer_count_or_depth = 1,
                         .num_levels = 1,
                         .sample_count = .count_1,
@@ -181,7 +196,7 @@ pub fn renderClayCommands(
                     };
                     const tex = dev.createTexture(&tex_info) orelse continue;
 
-                    const size = @as(usize, @intCast(converted.w())) * @as(usize, @intCast(converted.h())) * 4;
+                    const size = target_w * surf_h * 4;
                     const transfer_buf = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
                         .usage = .upload,
                         .size = @intCast(size),
@@ -200,14 +215,16 @@ pub fn renderClayCommands(
                         dev.releaseTexture(tex);
                         continue;
                     };
-                    const surf_w: usize = @intCast(converted.w());
-                    const surf_h: usize = @intCast(converted.h());
-                    const row_bytes: usize = surf_w * 4;
+                    const src_row_bytes: usize = surf_w * 4;
+                    const dst_row_bytes: usize = target_w * 4;
                     const pitch: usize = @intCast(converted.pitch());
+
+                    @memset(mapped[0..size], 0);
+
                     var row_y: usize = 0;
                     while (row_y < surf_h) : (row_y += 1) {
-                        const src_row = converted.pixels()[row_y * pitch .. row_y * pitch + row_bytes];
-                        const dst_row = mapped[row_y * row_bytes .. row_y * row_bytes + row_bytes];
+                        const src_row = converted.pixels()[row_y * pitch .. row_y * pitch + src_row_bytes];
+                        const dst_row = mapped[row_y * dst_row_bytes + dst_start_byte .. row_y * dst_row_bytes + dst_start_byte + src_row_bytes];
                         @memcpy(dst_row, src_row);
                     }
                     dev.unmapTransferBuffer(transfer_buf);
@@ -220,18 +237,18 @@ pub fn renderClayCommands(
                     copy_pass.uploadToTexture(&sdl.gpu.TextureTransferInfo{
                         .transfer_buffer = transfer_buf,
                         .offset = 0,
-                        .pixels_per_row = @intCast(converted.w()),
-                        .rows_per_layer = @intCast(converted.h()),
+                        .pixels_per_row = @intCast(target_w),
+                        .rows_per_layer = @intCast(surf_h),
                     }, &sdl.gpu.TextureRegion{
                         .texture = tex,
-                        .w = @intCast(converted.w()),
-                        .h = @intCast(converted.h()),
+                        .w = @intCast(target_w),
+                        .h = @intCast(surf_h),
                         .d = 1,
                     }, false);
                     copy_pass.end();
 
-                    w_f = @floatFromInt(converted.w());
-                    h_f = @floatFromInt(converted.h());
+                    w_f = @floatFromInt(target_w);
+                    h_f = @floatFromInt(surf_h);
                     cached_tex = tex;
 
                     state.text_cache.put(state.allocator, key, .{

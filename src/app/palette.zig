@@ -196,3 +196,44 @@ test "PaletteState.rebuildFileMatches fuzzy search" {
     try std.testing.expectEqual(@as(usize, 1), palette.matches.items.len);
     try std.testing.expectEqual(@as(usize, 0), palette.matches.items[0]);
 }
+
+test "PaletteState scoreMatches character indices and partitioning" {
+    var palette = PaletteState.init(std.testing.allocator);
+    defer palette.deinit();
+
+    const searcher = try palette.getSearcher(64, 16);
+
+    // Test action name match indices
+    const action_name = "Zoom In";
+    const action_res = searcher.scoreMatches(action_name, "zin");
+    try std.testing.expect(action_res.score != null);
+    try std.testing.expect(action_res.matches.len > 0);
+
+    // Test file path match partitioning
+    const item_path = "/photos/sunset_beach.jpg";
+    const basename = std.fs.path.basename(item_path);
+    const dirname = std.fs.path.dirname(item_path) orelse ".";
+    const basename_offset = item_path.len - basename.len;
+
+    const full_res = searcher.scoreMatches(item_path, "photos/beach");
+    try std.testing.expect(full_res.score != null);
+
+    var b_matches = std.ArrayList(usize).empty;
+    defer b_matches.deinit(std.testing.allocator);
+    var d_matches = std.ArrayList(usize).empty;
+    defer d_matches.deinit(std.testing.allocator);
+
+    for (full_res.matches) |m_idx| {
+        if (m_idx >= basename_offset) {
+            const b_idx = m_idx - basename_offset;
+            if (b_idx < basename.len) {
+                try b_matches.append(std.testing.allocator, b_idx);
+            }
+        } else if (m_idx < dirname.len) {
+            try d_matches.append(std.testing.allocator, m_idx);
+        }
+    }
+
+    try std.testing.expect(d_matches.items.len > 0);
+    try std.testing.expect(b_matches.items.len > 0);
+}

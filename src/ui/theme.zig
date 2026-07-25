@@ -15,3 +15,5 @@ pub const green = clay.Color{ 166, 227, 161, 255 };
 pub const red = clay.Color{ 243, 139, 168, 255 };
 pub const pink = clay.Color{ 245, 194, 231, 255 };
 pub const peach = clay.Color{ 250, 179, 135, 255 };
+pub const yellow = clay.Color{ 249, 226, 175, 255 };
+pub const mauve = clay.Color{ 203, 166, 247, 255 };

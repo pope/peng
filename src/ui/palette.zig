@@ -18,6 +18,143 @@ const truncateDirectory = text_utils.truncateDirectory;
 const formatSize = text_utils.formatSize;
 const theme = @import("theme.zig");
 
+pub const TextChunk = struct {
+    slice: []const u8,
+    is_matched: bool,
+};
+
+fn appendOrMergeChunk(list: *std.ArrayList(TextChunk), allocator: std.mem.Allocator, slice: []const u8, is_matched: bool) !void {
+    if (slice.len == 0) return;
+    if (list.items.len > 0 and list.items[list.items.len - 1].is_matched == is_matched) {
+        const last = &list.items[list.items.len - 1];
+        const combined_len = last.slice.len + slice.len;
+        last.slice = last.slice.ptr[0..combined_len];
+    } else {
+        try list.append(allocator, .{
+            .slice = slice,
+            .is_matched = is_matched,
+        });
+    }
+}
+
+pub fn partitionHighlightedText(
+    allocator: std.mem.Allocator,
+    text: []const u8,
+    match_indices: []const usize,
+) ![]TextChunk {
+    if (text.len == 0 or match_indices.len == 0) {
+        if (text.len == 0) return &.{};
+        var list = try std.ArrayList(TextChunk).initCapacity(allocator, 1);
+        list.appendAssumeCapacity(.{ .slice = text, .is_matched = false });
+        return list.toOwnedSlice(allocator);
+    }
+
+    for (match_indices) |m_idx| {
+        if (m_idx >= text.len) {
+            std.log.warn("Fuzzy highlight match index {} out of bounds for string '{s}' (length {})", .{ m_idx, text, text.len });
+        }
+    }
+
+    var list = std.ArrayList(TextChunk).empty;
+    errdefer list.deinit(allocator);
+
+    var idx: usize = 0;
+    var match_ptr: usize = 0;
+
+    while (idx < text.len) {
+        while (match_ptr < match_indices.len and match_indices[match_ptr] < idx) {
+            match_ptr += 1;
+        }
+        const is_matched = (match_ptr < match_indices.len and match_indices[match_ptr] == idx);
+
+        const start = idx;
+        idx += 1;
+
+        if (is_matched) {
+            match_ptr += 1;
+            while (idx < text.len and match_ptr < match_indices.len and match_indices[match_ptr] == idx) {
+                idx += 1;
+                match_ptr += 1;
+            }
+
+            var match_start = start;
+            var match_end = idx;
+
+            while (match_start < match_end and std.ascii.isWhitespace(text[match_start])) {
+                match_start += 1;
+            }
+            while (match_end > match_start and std.ascii.isWhitespace(text[match_end - 1])) {
+                match_end -= 1;
+            }
+
+            if (match_start >= match_end) {
+                try appendOrMergeChunk(&list, allocator, text[start..idx], false);
+            } else {
+                if (match_start > start) {
+                    try appendOrMergeChunk(&list, allocator, text[start..match_start], false);
+                }
+                try appendOrMergeChunk(&list, allocator, text[match_start..match_end], true);
+                if (idx > match_end) {
+                    try appendOrMergeChunk(&list, allocator, text[match_end..idx], false);
+                }
+            }
+        } else {
+            while (idx < text.len) {
+                while (match_ptr < match_indices.len and match_indices[match_ptr] < idx) {
+                    match_ptr += 1;
+                }
+                if (match_ptr < match_indices.len and match_indices[match_ptr] == idx) {
+                    break;
+                }
+                idx += 1;
+            }
+
+            try appendOrMergeChunk(&list, allocator, text[start..idx], false);
+        }
+    }
+
+    return try list.toOwnedSlice(allocator);
+}
+
+pub fn renderHighlightedText(
+    allocator: std.mem.Allocator,
+    text: []const u8,
+    match_indices: []const usize,
+    font_size: u16,
+    normal_color: clay.Color,
+    highlight_color: clay.Color,
+) void {
+    if (text.len == 0) return;
+    if (match_indices.len == 0) {
+        clay.text(text, .{
+            .color = normal_color,
+            .font_size = font_size,
+            .font_id = 0,
+        });
+        return;
+    }
+
+    const chunks = partitionHighlightedText(allocator, text, match_indices) catch {
+        clay.text(text, .{ .color = normal_color, .font_size = font_size, .font_id = 0 });
+        return;
+    };
+
+    clay.UI()(.{
+        .layout = .{
+            .sizing = .{ .w = .fit, .h = .fit },
+            .direction = .left_to_right,
+        },
+    })({
+        for (chunks) |chunk| {
+            clay.text(chunk.slice, .{
+                .color = if (chunk.is_matched) highlight_color else normal_color,
+                .font_size = font_size,
+                .font_id = 0,
+            });
+        }
+    });
+}
+
 pub fn renderPalette(
     state: *ViewerState,
     scale_x: f32,
@@ -394,8 +531,58 @@ pub fn renderPalette(
                         switch (palette.mode) {
                             .files => {
                                 const path = if (real_idx < state.image_list.items.len) state.image_list.items[real_idx] else "";
-                                const display_filename = truncateFilename(frame_allocator, std.fs.path.basename(path), 492.0 * scale_x, @intFromFloat(13.0 * dpi_scale), measure_data);
-                                const display_dir = truncateDirectory(frame_allocator, std.fs.path.dirname(path) orelse ".", 488.0 * scale_x, @intFromFloat(11.0 * dpi_scale), measure_data);
+                                const basename = std.fs.path.basename(path);
+                                const dirname = std.fs.path.dirname(path) orelse ".";
+                                const query_str = palette.query.items;
+
+                                var basename_matches = std.ArrayList(usize).empty;
+                                var dirname_matches = std.ArrayList(usize).empty;
+
+                                if (query_str.len > 0 and path.len > 0) {
+                                    if (palette.getSearcher(@max(path.len, 64), query_str.len) catch null) |searcher_ptr| {
+                                        const has_slash = std.mem.indexOfScalar(u8, query_str, '/') != null or std.mem.indexOfScalar(u8, query_str, '\\') != null;
+                                        var matched_base = false;
+                                        if (!has_slash) {
+                                            const base_res = searcher_ptr.scoreMatches(basename, query_str);
+                                            if (base_res.score != null) {
+                                                basename_matches.appendSlice(frame_allocator, base_res.matches) catch {};
+                                                matched_base = true;
+                                            }
+                                        }
+                                        if (!matched_base) {
+                                            const full_res = searcher_ptr.scoreMatches(path, query_str);
+                                            if (full_res.score != null) {
+                                                const basename_offset = path.len - basename.len;
+                                                for (full_res.matches) |m_idx| {
+                                                    if (m_idx >= basename_offset) {
+                                                        const b_idx = m_idx - basename_offset;
+                                                        if (b_idx < basename.len) {
+                                                            basename_matches.append(frame_allocator, b_idx) catch {};
+                                                        }
+                                                    } else if (m_idx < dirname.len) {
+                                                        dirname_matches.append(frame_allocator, m_idx) catch {};
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                const display_filename = truncateFilename(frame_allocator, basename, 492.0 * scale_x, @intFromFloat(13.0 * dpi_scale), measure_data);
+                                const display_dir = truncateDirectory(frame_allocator, dirname, 488.0 * scale_x, @intFromFloat(11.0 * dpi_scale), measure_data);
+
+                                var final_dir_matches = std.ArrayList(usize).empty;
+                                if (display_dir.len > 0 and std.mem.startsWith(u8, display_dir, "...")) {
+                                    const kept_len = display_dir.len - 3;
+                                    const start_offset = if (dirname.len > kept_len) dirname.len - kept_len else 0;
+                                    for (dirname_matches.items) |m_idx| {
+                                        if (m_idx >= start_offset) {
+                                            final_dir_matches.append(frame_allocator, (m_idx - start_offset) + 3) catch {};
+                                        }
+                                    }
+                                } else {
+                                    final_dir_matches = dirname_matches;
+                                }
 
                                 clay.UI()(.{
                                     .layout = .{
@@ -423,11 +610,14 @@ pub fn renderPalette(
                                         })({});
 
                                         // Filename
-                                        clay.text(display_filename, .{
-                                            .color = if (is_selected) theme.blue else theme.text,
-                                            .font_size = @intFromFloat(13.0 * dpi_scale),
-                                            .font_id = 0,
-                                        });
+                                        renderHighlightedText(
+                                            frame_allocator,
+                                            display_filename,
+                                            basename_matches.items,
+                                            @intFromFloat(13.0 * dpi_scale),
+                                            if (is_selected) theme.blue else theme.text,
+                                            theme.yellow,
+                                        );
                                     });
 
                                     // Row 2: Parent folder path (indented slightly for alignment with filename)
@@ -438,17 +628,31 @@ pub fn renderPalette(
                                             .padding = .{ .left = 14 },
                                         },
                                     })({
-                                        clay.text(display_dir, .{
-                                            .color = theme.subtext0, // Subtext
-                                            .font_size = @intFromFloat(11.0 * dpi_scale),
-                                            .font_id = 0,
-                                        });
+                                        renderHighlightedText(
+                                            frame_allocator,
+                                            display_dir,
+                                            final_dir_matches.items,
+                                            @intFromFloat(11.0 * dpi_scale),
+                                            theme.subtext0,
+                                            theme.yellow,
+                                        );
                                     });
                                 });
                             },
                             .actions => {
                                 const action_id = app_actions[real_idx];
                                 const meta = getActionMetadata(action_id);
+                                const query_str = palette.query.items;
+
+                                var action_matches: []const usize = &.{};
+                                if (query_str.len > 0) {
+                                    if (palette.getSearcher(meta.name.len, query_str.len) catch null) |searcher_ptr| {
+                                        const res = searcher_ptr.scoreMatches(meta.name, query_str);
+                                        if (res.score != null) {
+                                            action_matches = res.matches;
+                                        }
+                                    }
+                                }
 
                                 // Action Name (Left aligned)
                                 clay.UI()(.{
@@ -456,11 +660,14 @@ pub fn renderPalette(
                                         .sizing = .{ .w = .grow, .h = .fit },
                                     },
                                 })({
-                                    clay.text(meta.name, .{
-                                        .color = if (is_selected) theme.blue else theme.text,
-                                        .font_size = @intFromFloat(13.0 * dpi_scale),
-                                        .font_id = 0,
-                                    });
+                                    renderHighlightedText(
+                                        frame_allocator,
+                                        meta.name,
+                                        action_matches,
+                                        @intFromFloat(13.0 * dpi_scale),
+                                        if (is_selected) theme.blue else theme.text,
+                                        theme.yellow,
+                                    );
                                 });
 
                                 // Keyboard Shortcut (Right aligned)
@@ -540,4 +747,88 @@ pub fn renderPalette(
             });
         }
     });
+}
+
+test "renderHighlightedText whitespace boundary handling" {
+    renderHighlightedText(std.testing.allocator, "Scale Nearest Neighbor", &.{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 }, 13, theme.text, theme.yellow);
+    renderHighlightedText(std.testing.allocator, "Scale Mode: Fit", &.{ 0, 1, 2, 3, 4, 5 }, 13, theme.text, theme.yellow);
+    renderHighlightedText(std.testing.allocator, "   leading and trailing   ", &.{ 3, 4, 5 }, 13, theme.text, theme.yellow);
+}
+
+test "partitionHighlightedText correctly partitions matched and unmatched chunks" {
+    // Scenario 1: Query "sc" matching "Set Contrast" (indices 0 and 4)
+    const text1 = "Set Contrast";
+    const matches1 = [_]usize{ 0, 4 };
+
+    const chunks1 = try partitionHighlightedText(std.testing.allocator, text1, &matches1);
+    defer std.testing.allocator.free(chunks1);
+
+    try std.testing.expectEqual(@as(usize, 4), chunks1.len);
+    try std.testing.expectEqualStrings("S", chunks1[0].slice);
+    try std.testing.expect(chunks1[0].is_matched);
+    try std.testing.expectEqualStrings("et ", chunks1[1].slice);
+    try std.testing.expect(!chunks1[1].is_matched);
+    try std.testing.expectEqualStrings("C", chunks1[2].slice);
+    try std.testing.expect(chunks1[2].is_matched);
+    try std.testing.expectEqualStrings("ontrast", chunks1[3].slice);
+    try std.testing.expect(!chunks1[3].is_matched);
+}
+
+test "partitionHighlightedText merges isolated whitespace matches back into unmatched text" {
+    // Scenario 2: Query "sc " matching "Set Contrast (Type Value)..." (indices 0, 4, and 12)
+    const text2 = "Set Contrast (Type Value)...";
+    const matches2 = [_]usize{ 0, 4, 12 };
+
+    const chunks2 = try partitionHighlightedText(std.testing.allocator, text2, &matches2);
+    defer std.testing.allocator.free(chunks2);
+
+    try std.testing.expectEqual(@as(usize, 4), chunks2.len);
+    try std.testing.expectEqualStrings("S", chunks2[0].slice);
+    try std.testing.expect(chunks2[0].is_matched);
+    try std.testing.expectEqualStrings("et ", chunks2[1].slice);
+    try std.testing.expect(!chunks2[1].is_matched);
+    try std.testing.expectEqualStrings("C", chunks2[2].slice);
+    try std.testing.expect(chunks2[2].is_matched);
+    try std.testing.expectEqualStrings("ontrast (Type Value)...", chunks2[3].slice);
+    try std.testing.expect(!chunks2[3].is_matched);
+}
+
+test "partitionHighlightedText edge cases" {
+    // Empty text
+    const empty_chunks = try partitionHighlightedText(std.testing.allocator, "", &[_]usize{0});
+    try std.testing.expectEqual(@as(usize, 0), empty_chunks.len);
+
+    // Empty matches
+    const no_match_chunks = try partitionHighlightedText(std.testing.allocator, "text", &[_]usize{});
+    defer std.testing.allocator.free(no_match_chunks);
+    try std.testing.expectEqual(@as(usize, 1), no_match_chunks.len);
+    try std.testing.expectEqualStrings("text", no_match_chunks[0].slice);
+    try std.testing.expect(!no_match_chunks[0].is_matched);
+
+    // Out-of-bounds matches (should be ignored gracefully)
+    const oob_chunks = try partitionHighlightedText(std.testing.allocator, "abc", &[_]usize{ 0, 5, 10 });
+    defer std.testing.allocator.free(oob_chunks);
+    try std.testing.expectEqual(@as(usize, 2), oob_chunks.len);
+    try std.testing.expectEqualStrings("a", oob_chunks[0].slice);
+    try std.testing.expect(oob_chunks[0].is_matched);
+    try std.testing.expectEqualStrings("bc", oob_chunks[1].slice);
+    try std.testing.expect(!oob_chunks[1].is_matched);
+
+    // Internal whitespace should NOT be stripped
+    const internal_ws_chunks = try partitionHighlightedText(std.testing.allocator, "a  b", &[_]usize{ 0, 1, 2, 3 });
+    defer std.testing.allocator.free(internal_ws_chunks);
+    try std.testing.expectEqual(@as(usize, 1), internal_ws_chunks.len);
+    try std.testing.expectEqualStrings("a  b", internal_ws_chunks[0].slice);
+    try std.testing.expect(internal_ws_chunks[0].is_matched);
+
+    // Leading and trailing whitespace should be stripped
+    const edge_ws_chunks = try partitionHighlightedText(std.testing.allocator, " a ", &[_]usize{ 0, 1, 2 });
+    defer std.testing.allocator.free(edge_ws_chunks);
+    try std.testing.expectEqual(@as(usize, 3), edge_ws_chunks.len);
+    try std.testing.expectEqualStrings(" ", edge_ws_chunks[0].slice);
+    try std.testing.expect(!edge_ws_chunks[0].is_matched);
+    try std.testing.expectEqualStrings("a", edge_ws_chunks[1].slice);
+    try std.testing.expect(edge_ws_chunks[1].is_matched);
+    try std.testing.expectEqualStrings(" ", edge_ws_chunks[2].slice);
+    try std.testing.expect(!edge_ws_chunks[2].is_matched);
 }
