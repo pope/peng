@@ -328,6 +328,14 @@ pub const ViewerState = struct {
         return dims.base_scale;
     }
 
+    pub fn isPointerInDebugPanel(self: *const ViewerState, input: FrameInput) bool {
+        _ = self;
+        if (!clay.isDebugModeEnabled()) return false;
+        const debug_w = @as(f32, @floatFromInt(clay.Clay__debugViewWidth));
+        return input.mouse_x >= (input.pix_w - debug_w) and input.mouse_x <= input.pix_w and
+            input.mouse_y >= 0 and input.mouse_y <= input.pix_h;
+    }
+
     pub fn clampZoomFactor(self: *ViewerState, new_factor: f32) f32 {
         const base_scale = self.getBaseScale();
         const view_transform = @import("view_transform.zig");
@@ -1017,6 +1025,7 @@ pub const ViewerState = struct {
 
         // 4. Mouse click triggers (starts dragging)
         if (input.mouse_left_clicked) {
+            const is_in_debug_panel = self.isPointerInDebugPanel(input);
             var palette_closed_this_frame = false;
             // Check if we should close the palette
             if (self.palette.mode != .inactive) {
@@ -1029,36 +1038,38 @@ pub const ViewerState = struct {
                     .directory_navigator => "DirectoryNavigatorPalette",
                     .inactive => unreachable,
                 };
-                if (!clay.pointerOver(clay.getElementId(element_id))) {
+                if (!clay.pointerOver(clay.getElementId(element_id)) and !is_in_debug_panel) {
                     self.palette.mode = .inactive;
                     stopTextInput(self.window);
                     palette_closed_this_frame = true;
                 }
             }
 
-            if (self.show_stats_overlay and
-                clay.pointerOver(clay.getElementId("StatsPanel")) and
-                !clay.pointerOver(clay.getElementId("StatsCloseBtn")))
-            {
-                self.drag_state = .{
-                    .stats = .{
-                        .start_x = input.mouse_x - self.stats_offset_x * input.dpi_scale,
-                        .start_y = input.mouse_y - self.stats_offset_y * input.dpi_scale,
-                    },
-                };
-            } else if (self.palette.mode == .inactive and !palette_closed_this_frame and clay.pointerOver(clay.getElementId("Viewport"))) {
-                self.drag_state = .{
-                    .viewport = .{
-                        .last_x = input.mouse_x,
-                        .last_y = input.mouse_y,
-                    },
-                };
+            if (!is_in_debug_panel) {
+                if (self.show_stats_overlay and
+                    clay.pointerOver(clay.getElementId("StatsPanel")) and
+                    !clay.pointerOver(clay.getElementId("StatsCloseBtn")))
+                {
+                    self.drag_state = .{
+                        .stats = .{
+                            .start_x = input.mouse_x - self.stats_offset_x * input.dpi_scale,
+                            .start_y = input.mouse_y - self.stats_offset_y * input.dpi_scale,
+                        },
+                    };
+                } else if (self.palette.mode == .inactive and !palette_closed_this_frame and clay.pointerOver(clay.getElementId("Viewport"))) {
+                    self.drag_state = .{
+                        .viewport = .{
+                            .last_x = input.mouse_x,
+                            .last_y = input.mouse_y,
+                        },
+                    };
+                }
             }
         }
 
         // 5. Mouse Wheel Zoom updates
         if (input.scroll_delta_y != 0) {
-            if (self.palette.mode == .inactive and clay.pointerOver(clay.getElementId("Viewport"))) {
+            if (self.palette.mode == .inactive and !self.isPointerInDebugPanel(input) and clay.pointerOver(clay.getElementId("Viewport"))) {
                 const old_zoom = self.zoom_factor;
                 self.zoom_factor = self.clampZoomFactor(self.zoom_factor + input.scroll_delta_y * 0.1);
 
@@ -1225,10 +1236,10 @@ test "matchesQueryLower bounds check" {
     try std.testing.expect(matchesQueryLower("short", ""));
 }
 
+var test_clay_memory: [1024 * 1024]u8 = undefined;
+
 test "ViewerState.clampZoomFactor bounds based on image dimensions" {
-    const clay_memory = try std.testing.allocator.alloc(u8, clay.minMemorySize());
-    defer std.testing.allocator.free(clay_memory);
-    _ = clay.initialize(clay.Arena.init(clay_memory), .{ .w = 1024, .h = 768 }, .{});
+    _ = clay.initialize(clay.Arena.init(&test_clay_memory), .{ .w = 1024, .h = 768 }, .{});
 
     var state = ViewerState{
         .directory_arena = std.heap.ArenaAllocator.init(std.testing.allocator),
@@ -1438,4 +1449,87 @@ test "ViewerState.openPalette directory_navigator steps up if 0 subdirectories" 
         }
     }
     try std.testing.expect(found_leaf_selected);
+}
+
+test "ViewerState.isPointerInDebugPanel and click localization" {
+    _ = clay.initialize(clay.Arena.init(&test_clay_memory), .{ .w = 1000, .h = 800 }, .{});
+
+    clay.setDebugModeEnabled(true);
+    defer clay.setDebugModeEnabled(false);
+
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = ViewerState{
+        .directory_arena = std.heap.ArenaAllocator.init(allocator),
+        .image_list = std.ArrayList([]const u8).empty,
+        .image_list_mutex = .init,
+        .cache = .{},
+        .cache_mutex = .init,
+        .allocator = allocator,
+        .io = io,
+        .palette = PaletteState.init(allocator),
+        .rotation_map = std.StringHashMap(f32).init(allocator),
+        .window = null,
+        .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
+    };
+    defer state.deinit();
+
+    const debug_w = @as(f32, @floatFromInt(clay.Clay__debugViewWidth));
+    const win_w: f32 = 1000.0;
+    const win_h: f32 = 800.0;
+
+    const input_inside = types.FrameInput{
+        .win_w = win_w,
+        .win_h = win_h,
+        .pix_w = win_w,
+        .pix_h = win_h,
+        .scale_x = 1.0,
+        .scale_y = 1.0,
+        .dpi_scale = 1.0,
+        .mouse_x = win_w - debug_w + 10.0,
+        .mouse_y = 100.0,
+        .mouse_left_down = false,
+        .mouse_left_clicked = true,
+        .mouse_inside = true,
+        .quit_requested = false,
+        .scroll_delta_x = 0,
+        .scroll_delta_y = 0,
+        .keys_pressed = std.ArrayList(types.Key).empty,
+        .key_modifiers = .{},
+        .text_input = null,
+        .dropped_path = null,
+        .ticks = 0,
+        .delta_time_ms = 16.0,
+    };
+    try std.testing.expect(state.isPointerInDebugPanel(input_inside));
+
+    const input_outside = types.FrameInput{
+        .win_w = win_w,
+        .win_h = win_h,
+        .pix_w = win_w,
+        .pix_h = win_h,
+        .scale_x = 1.0,
+        .scale_y = 1.0,
+        .dpi_scale = 1.0,
+        .mouse_x = 100.0,
+        .mouse_y = 100.0,
+        .mouse_left_down = false,
+        .mouse_left_clicked = true,
+        .mouse_inside = true,
+        .quit_requested = false,
+        .scroll_delta_x = 0,
+        .scroll_delta_y = 0,
+        .keys_pressed = std.ArrayList(types.Key).empty,
+        .key_modifiers = .{},
+        .text_input = null,
+        .dropped_path = null,
+        .ticks = 0,
+        .delta_time_ms = 16.0,
+    };
+    try std.testing.expect(!state.isPointerInDebugPanel(input_outside));
+
+    state.palette.mode = .actions;
+    try state.update(input_inside);
+    try std.testing.expect(state.palette.mode == .actions);
 }

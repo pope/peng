@@ -104,7 +104,7 @@ pub fn renderFrame(
             scale_x,
             scale_y,
             dpi_scale,
-            input.mouse_left_clicked,
+            input.mouse_left_clicked and !state.isPointerInDebugPanel(input),
             frame_allocator,
             measure_data,
         );

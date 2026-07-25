@@ -186,7 +186,7 @@ pub fn main(init: std.process.Init) !void {
         state.checkIdlePreload();
 
         if (input.mouse_left_clicked) {
-            if (state.show_stats_overlay and clay.pointerOver(clay.getElementId("StatsCloseBtn"))) {
+            if (state.show_stats_overlay and !state.isPointerInDebugPanel(input) and clay.pointerOver(clay.getElementId("StatsCloseBtn"))) {
                 state.show_stats_overlay = false;
             }
         }
