@@ -64,54 +64,34 @@
             settings.global.excludes = [ ".envrc" ];
           });
           sdl3-image = pkgs.sdl3-image.override { enableSTB = false; };
-          packages =
-            with pkgs;
-            [
-              glslang
-              hyperfine
-              lldb
-              self.formatter.${system}
-              shaderc
-              spirv-cross
-              zls
-            ]
-            ++ lib.optionals stdenv.isLinux [
-              perf
-              poop
-            ];
-          nativeBuildInputs =
-            with pkgs;
-            [
-              pkg-config
-              zig
-            ]
-            ++ lib.optionals stdenv.isLinux [
-              wayland-scanner
-            ];
-          buildInputs =
-            with pkgs;
-            [
-              sdl3.dev
-              sdl3-ttf
-              sdl3-image
-            ]
-            ++ lib.optionals stdenv.isLinux [
-              libglvnd
-              libxkbcommon
-              wayland
-            ];
+          peng = pkgs.callPackage ./nix/peng.nix { inherit sdl3-image; };
           jail = jailed-agents.lib.${system}.internals.jail;
         in
         {
+          packages.${system} = {
+            inherit peng;
+            default = peng;
+          };
           devShells.${system}.default = pkgs.mkShell {
-            inherit nativeBuildInputs buildInputs;
+            inputsFrom = [ peng ];
             packages =
-              packages
-              ++ pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+              with pkgs;
+              [
+                hyperfine
+                lldb
+                self.formatter.${system}
+                zls
+                zon2nix
+              ]
+              ++ lib.optionals stdenv.hostPlatform.isLinux [
+                perf
+                poop
                 (jailed-agents.lib.${system}.makeJailedAgent {
                   name = "agy";
                   pkg = llm-agents.packages.${system}.antigravity-cli;
                   baseJailOptions = with jail.combinators; [
+                    (fwd-env "LD_LIBRARY_PATH")
+                    (fwd-env "PATH")
                     (fwd-env "PKG_CONFIG_PATH")
                     gpu
                     gui
@@ -124,23 +104,14 @@
                     "~/.antigravity"
                     "~/.gemini"
                   ];
-                  extraPkgs = packages ++ nativeBuildInputs ++ buildInputs;
-                  extraReadonlyDirs = with pkgs; [
-                    (lib.getDev sdl3)
-                    (lib.getLib sdl3)
-
-                    (lib.getDev sdl3-image)
-                    (lib.getLib sdl3-image)
-
-                    (lib.getDev shaderc)
-                    (lib.getLib shaderc)
-
-                    (lib.getDev glslang)
-                  ];
-                  env.LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath buildInputs;
+                  extraReadonlyDirs = [ "/nix/store" ];
                 })
               ];
-            LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath buildInputs;
+            LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
+              pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+                pkgs.libglvnd
+              ]
+            );
           };
           formatter.${system} = treefmt-eval.config.build.wrapper;
           checks.${system}.treefmt = treefmt-eval.config.build.check self;
