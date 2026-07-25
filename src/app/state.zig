@@ -148,6 +148,9 @@ pub const ViewerState = struct {
     stats_offset_y: f32 = 20.0,
     drag_state: DragState = .none,
     mouse_inside: bool = true,
+    slideshow_active: bool = false,
+    slideshow_interval_s: f32 = 0.0,
+    slideshow_timer_ms: f32 = 0.0,
     last_nav_time_ms: u64 = 0,
     last_scanned_dir: std.ArrayList(u8) = std.ArrayList(u8).empty,
     event_queue: events.MpscQueue(events.BackgroundEvent) = .{},
@@ -893,6 +896,7 @@ pub const ViewerState = struct {
     }
 
     pub fn next(self: *ViewerState) !void {
+        self.slideshow_timer_ms = 0.0;
         self.lockImageList();
         const len = self.image_list.items.len;
         self.unlockImageList();
@@ -907,6 +911,7 @@ pub const ViewerState = struct {
     }
 
     pub fn prev(self: *ViewerState) !void {
+        self.slideshow_timer_ms = 0.0;
         self.lockImageList();
         const len = self.image_list.items.len;
         self.unlockImageList();
@@ -978,6 +983,15 @@ pub const ViewerState = struct {
     pub fn update(self: *ViewerState, input: FrameInput) !void {
         self.updateCurrentRotation();
 
+        // 0. Slideshow timer update
+        if (self.slideshow_active and self.slideshow_interval_s > 0.0) {
+            self.slideshow_timer_ms += input.delta_time_ms;
+            if (self.slideshow_timer_ms >= self.slideshow_interval_s * 1000.0) {
+                self.slideshow_timer_ms = 0.0;
+                try self.next();
+            }
+        }
+
         // 1. Text input updates
         if (input.text_input) |text| {
             if (self.palette.mode != .inactive) {
@@ -1036,6 +1050,7 @@ pub const ViewerState = struct {
                     .set_contrast => "ContrastPalette",
                     .go_to_image => "GoToImagePalette",
                     .directory_navigator => "DirectoryNavigatorPalette",
+                    .set_slideshow_interval => "SlideshowPalette",
                     .inactive => unreachable,
                 };
                 if (!clay.pointerOver(clay.getElementId(element_id)) and !is_in_debug_panel) {
@@ -1532,4 +1547,61 @@ test "ViewerState.isPointerInDebugPanel and click localization" {
     state.palette.mode = .actions;
     try state.update(input_inside);
     try std.testing.expect(state.palette.mode == .actions);
+}
+
+test "ViewerState slideshow timer auto-advances slide" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = ViewerState{
+        .directory_arena = std.heap.ArenaAllocator.init(allocator),
+        .image_list = std.ArrayList([]const u8).empty,
+        .image_list_mutex = .init,
+        .cache = .{},
+        .cache_mutex = .init,
+        .allocator = allocator,
+        .io = io,
+        .palette = PaletteState.init(allocator),
+        .rotation_map = std.StringHashMap(f32).init(allocator),
+        .window = null,
+        .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
+    };
+    defer state.deinit();
+
+    try state.image_list.append(allocator, "img1.jpg");
+    try state.image_list.append(allocator, "img2.jpg");
+    state.current_index = 0;
+    state.slideshow_active = true;
+    state.slideshow_interval_s = 2.0;
+
+    const frame_input_1s = types.FrameInput{
+        .win_w = 100,
+        .win_h = 100,
+        .pix_w = 100,
+        .pix_h = 100,
+        .scale_x = 1,
+        .scale_y = 1,
+        .dpi_scale = 1,
+        .mouse_x = 0,
+        .mouse_y = 0,
+        .mouse_left_down = false,
+        .mouse_left_clicked = false,
+        .mouse_inside = true,
+        .quit_requested = false,
+        .scroll_delta_x = 0,
+        .scroll_delta_y = 0,
+        .keys_pressed = std.ArrayList(types.Key).empty,
+        .key_modifiers = .{},
+        .text_input = null,
+        .dropped_path = null,
+        .ticks = 0,
+        .delta_time_ms = 1000.0,
+    };
+
+    try state.update(frame_input_1s);
+    try std.testing.expectEqual(@as(usize, 0), state.current_index.?);
+
+    // Pass another second (total 2000ms >= 2.0s interval) -> advances to index 1
+    try state.update(frame_input_1s);
+    try std.testing.expectEqual(@as(usize, 1), state.current_index.?);
 }

@@ -122,7 +122,7 @@ pub fn main(init: std.process.Init) !void {
             }
             break :blk (state.current_index != null);
         };
-        const is_busy = state.is_loading_files.load(.acquire) or (state.active_threads.load(.acquire) > 0) or is_current_loading or bg_events_processed;
+        const is_busy = state.is_loading_files.load(.acquire) or (state.active_threads.load(.acquire) > 0) or is_current_loading or bg_events_processed or state.slideshow_active;
         const input = try app.input.pollFrameInput(
             setup.window,
             frame_allocator,

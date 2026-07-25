@@ -160,11 +160,14 @@ pub fn renderFrame(
             var count_str: ?[]const u8 = null;
             if (total_images > 0) {
                 const idx = (state.current_index orelse 0) + 1;
-                const count_buf = try frame_allocator.alloc(u8, 64);
-                count_str = if (is_loading)
-                    try std.fmt.bufPrint(count_buf, "Image {} of {}...", .{ idx, total_images })
-                else
-                    try std.fmt.bufPrint(count_buf, "Image {} of {}", .{ idx, total_images });
+                const count_buf = try frame_allocator.alloc(u8, 128);
+                if (state.slideshow_active) {
+                    count_str = try std.fmt.bufPrint(count_buf, "Image {} of {} [Slide Show {d:.1}s]", .{ idx, total_images, state.slideshow_interval_s });
+                } else if (is_loading) {
+                    count_str = try std.fmt.bufPrint(count_buf, "Image {} of {}...", .{ idx, total_images });
+                } else {
+                    count_str = try std.fmt.bufPrint(count_buf, "Image {} of {}", .{ idx, total_images });
+                }
             } else if (is_loading) {
                 count_str = "Loading images...";
             }

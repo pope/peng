@@ -43,6 +43,8 @@ pub const AppActionId = enum {
     set_contrast_value,
     go_to_image,
     open_action_palette,
+    start_slideshow,
+    stop_slideshow,
 };
 
 pub const KeyboardShortcut = struct {
@@ -326,6 +328,18 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
                 .{ .key = .char_p, .mod = .{ .gui = true, .shift = true } },
             },
         },
+        .start_slideshow => .{
+            .name = "Start Slide Show...",
+            .shortcut_text = "",
+            .show_in_palette = true,
+            .shortcuts = &.{},
+        },
+        .stop_slideshow => .{
+            .name = "Stop Slide Show",
+            .shortcut_text = "",
+            .show_in_palette = true,
+            .shortcuts = &.{},
+        },
     };
 }
 
@@ -519,6 +533,12 @@ pub fn triggerAction(self: *ViewerState, action_id: AppActionId) !void {
         .open_action_palette => {
             try self.openPalette(.actions);
         },
+        .start_slideshow => {
+            try self.openPalette(.set_slideshow_interval);
+        },
+        .stop_slideshow => {
+            self.slideshow_active = false;
+        },
     }
 }
 
@@ -530,4 +550,10 @@ test "open_directory_navigator metadata" {
     try std.testing.expectEqual(@as(usize, 1), meta.shortcuts.len);
     try std.testing.expectEqual(Key.char_o, meta.shortcuts[0].key);
     try std.testing.expect(meta.shortcuts[0].mod.ctrl);
+}
+
+test "start_slideshow metadata" {
+    const meta = getActionMetadata(.start_slideshow);
+    try std.testing.expectEqualStrings("Start Slide Show...", meta.name);
+    try std.testing.expect(meta.show_in_palette);
 }

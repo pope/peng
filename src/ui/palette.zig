@@ -239,6 +239,16 @@ pub fn renderPalette(
             .bottom_spacer_id = "DirBottomSpacer",
             .base_item_height = 50.0,
         },
+        .set_slideshow_interval => PaletteConfig{
+            .title = "Start Slide Show",
+            .placeholder = "Enter delay in seconds (e.g. 3 or 2.5)...",
+            .element_id = "SlideshowPalette",
+            .list_id = "SlideshowPaletteList",
+            .item_prefix = "SlideshowItem_",
+            .top_spacer_id = "SlideshowTopSpacer",
+            .bottom_spacer_id = "SlideshowBottomSpacer",
+            .base_item_height = 50.0,
+        },
         .inactive => unreachable,
     };
 
@@ -282,6 +292,7 @@ pub fn renderPalette(
                     .set_brightness, .set_contrast => theme.peach, // Catppuccin Peach
                     .go_to_image => theme.green, // Catppuccin Green
                     .directory_navigator => theme.mauve,
+                    .set_slideshow_interval => theme.yellow,
                     .inactive => unreachable,
                 },
                 .font_size = @intFromFloat(13.0 * dpi_scale),
@@ -390,7 +401,7 @@ pub fn renderPalette(
             });
         });
 
-        if (palette.mode == .set_brightness or palette.mode == .set_contrast or palette.mode == .go_to_image) {
+        if (palette.mode.isTextInputDialog()) {
             clay.UI()(.{
                 .layout = .{
                     .sizing = .{ .w = .grow, .h = .fixed(64 * scale_y) },
@@ -406,102 +417,141 @@ pub fn renderPalette(
                 state.lockImageList();
                 const total_count = state.image_list.items.len;
                 state.unlockImageList();
-                if (palette.mode == .go_to_image) {
-                    if (total_count == 0) {
-                        clay.text("No images loaded.", .{
-                            .color = theme.red, // Red
-                            .font_size = @intFromFloat(13.0 * dpi_scale),
-                            .font_id = 0,
-                        });
-                    } else if (raw_str.len == 0) {
-                        clay.text("Enter image number, then press Enter to apply.", .{
-                            .color = theme.subtext0,
-                            .font_size = @intFromFloat(13.0 * dpi_scale),
-                            .font_id = 0,
-                        });
-                        const range_str = try std.fmt.allocPrint(frame_allocator, "Allowed range: 1 to {} (current: {})", .{ total_count, (state.current_index orelse 0) + 1 });
-                        clay.text(range_str, .{
-                            .color = theme.subtext1, // Subtext
-                            .font_size = @intFromFloat(11.0 * dpi_scale),
-                            .font_id = 0,
-                        });
-                    } else {
-                        const parsed_val_opt = std.fmt.parseInt(usize, raw_str, 10) catch null;
-                        if (parsed_val_opt) |val| {
-                            if (val >= 1 and val <= total_count) {
-                                state.lockImageList();
-                                const target_path = if (val - 1 < state.image_list.items.len) state.image_list.items[val - 1] else "";
-                                state.unlockImageList();
-                                const raw_basename = std.fs.path.basename(target_path);
-                                const display_filename = truncateFilename(frame_allocator, raw_basename, 492.0 * scale_x, @intFromFloat(12.0 * dpi_scale), measure_data);
-                                const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to go to {}: {s}", .{ val, display_filename });
-                                clay.text(success_str, .{
-                                    .color = theme.green, // Green
-                                    .font_size = @intFromFloat(13.0 * dpi_scale),
-                                    .font_id = 0,
-                                });
-                            } else {
-                                const err_str = try std.fmt.allocPrint(frame_allocator, "Out of bounds: must be between 1 and {}", .{total_count});
-                                clay.text(err_str, .{
-                                    .color = theme.red, // Red
-                                    .font_size = @intFromFloat(13.0 * dpi_scale),
-                                    .font_id = 0,
-                                });
-                            }
-                        } else {
-                            clay.text("Invalid number format. Enter a positive integer.", .{
+                switch (palette.mode) {
+                    .go_to_image => {
+                        if (total_count == 0) {
+                            clay.text("No images loaded.", .{
                                 .color = theme.red, // Red
                                 .font_size = @intFromFloat(13.0 * dpi_scale),
                                 .font_id = 0,
                             });
-                        }
-                    }
-                } else {
-                    if (raw_str.len == 0) {
-                        clay.text("Enter a number, then press Enter to apply.", .{
-                            .color = theme.subtext0,
-                            .font_size = @intFromFloat(13.0 * dpi_scale),
-                            .font_id = 0,
-                        });
-                        const range_str = if (palette.mode == .set_brightness) "Allowed range: -1.0 to 1.0 (default: 0.0)" else "Allowed range: 0.0 to 5.0 (default: 1.0)";
-                        clay.text(range_str, .{
-                            .color = theme.subtext1, // Subtext
-                            .font_size = @intFromFloat(11.0 * dpi_scale),
-                            .font_id = 0,
-                        });
-                    } else {
-                        const parsed_val_opt = std.fmt.parseFloat(f32, raw_str) catch null;
-                        var is_valid_float = false;
-                        if (parsed_val_opt) |val| {
-                            if (!std.math.isNan(val) and !std.math.isInf(val)) {
-                                is_valid_float = true;
-                                const min_val: f32 = if (palette.mode == .set_brightness) -1.0 else 0.0;
-                                const max_val: f32 = if (palette.mode == .set_brightness) 1.0 else 5.0;
-                                if (val >= min_val and val <= max_val) {
-                                    const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to set value to: {d:.2}", .{val});
+                        } else if (raw_str.len == 0) {
+                            clay.text("Enter image number, then press Enter to apply.", .{
+                                .color = theme.subtext0,
+                                .font_size = @intFromFloat(13.0 * dpi_scale),
+                                .font_id = 0,
+                            });
+                            const range_str = try std.fmt.allocPrint(frame_allocator, "Allowed range: 1 to {} (current: {})", .{ total_count, (state.current_index orelse 0) + 1 });
+                            clay.text(range_str, .{
+                                .color = theme.subtext1, // Subtext
+                                .font_size = @intFromFloat(11.0 * dpi_scale),
+                                .font_id = 0,
+                            });
+                        } else {
+                            const parsed_val_opt = std.fmt.parseInt(usize, raw_str, 10) catch null;
+                            if (parsed_val_opt) |val| {
+                                if (val >= 1 and val <= total_count) {
+                                    state.lockImageList();
+                                    const target_path = if (val - 1 < state.image_list.items.len) state.image_list.items[val - 1] else "";
+                                    state.unlockImageList();
+                                    const raw_basename = std.fs.path.basename(target_path);
+                                    const display_filename = truncateFilename(frame_allocator, raw_basename, 492.0 * scale_x, @intFromFloat(12.0 * dpi_scale), measure_data);
+                                    const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to go to {}: {s}", .{ val, display_filename });
                                     clay.text(success_str, .{
                                         .color = theme.green, // Green
                                         .font_size = @intFromFloat(13.0 * dpi_scale),
                                         .font_id = 0,
                                     });
                                 } else {
-                                    const err_str = try std.fmt.allocPrint(frame_allocator, "Out of bounds: must be between {d:.1} and {d:.1}", .{ min_val, max_val });
+                                    const err_str = try std.fmt.allocPrint(frame_allocator, "Out of bounds: must be between 1 and {}", .{total_count});
                                     clay.text(err_str, .{
                                         .color = theme.red, // Red
                                         .font_size = @intFromFloat(13.0 * dpi_scale),
                                         .font_id = 0,
                                     });
                                 }
+                            } else {
+                                clay.text("Invalid number format. Enter a positive integer.", .{
+                                    .color = theme.red, // Red
+                                    .font_size = @intFromFloat(13.0 * dpi_scale),
+                                    .font_id = 0,
+                                });
                             }
                         }
-                        if (!is_valid_float) {
-                            clay.text("Invalid float format. Enter a number.", .{
-                                .color = theme.red, // Red
+                    },
+                    .set_slideshow_interval => {
+                        if (raw_str.len == 0) {
+                            clay.text("Enter delay in seconds, then press Enter to start.", .{
+                                .color = theme.subtext0,
                                 .font_size = @intFromFloat(13.0 * dpi_scale),
                                 .font_id = 0,
                             });
+                            clay.text("Example: 3 for 3 seconds per slide", .{
+                                .color = theme.subtext1,
+                                .font_size = @intFromFloat(11.0 * dpi_scale),
+                                .font_id = 0,
+                            });
+                        } else {
+                            const parsed_val_opt = std.fmt.parseFloat(f32, raw_str) catch null;
+                            var is_valid = false;
+                            if (parsed_val_opt) |val| {
+                                if (!std.math.isNan(val) and !std.math.isInf(val) and val > 0.0) {
+                                    is_valid = true;
+                                    const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to start slide show ({d:.1}s per slide)", .{val});
+                                    clay.text(success_str, .{
+                                        .color = theme.green,
+                                        .font_size = @intFromFloat(13.0 * dpi_scale),
+                                        .font_id = 0,
+                                    });
+                                }
+                            }
+                            if (!is_valid) {
+                                clay.text("Invalid duration. Must be greater than 0 seconds.", .{
+                                    .color = theme.red,
+                                    .font_size = @intFromFloat(13.0 * dpi_scale),
+                                    .font_id = 0,
+                                });
+                            }
                         }
-                    }
+                    },
+                    .set_brightness, .set_contrast => {
+                        if (raw_str.len == 0) {
+                            clay.text("Enter a number, then press Enter to apply.", .{
+                                .color = theme.subtext0,
+                                .font_size = @intFromFloat(13.0 * dpi_scale),
+                                .font_id = 0,
+                            });
+                            const range_str = if (palette.mode == .set_brightness) "Allowed range: -1.0 to 1.0 (default: 0.0)" else "Allowed range: 0.0 to 5.0 (default: 1.0)";
+                            clay.text(range_str, .{
+                                .color = theme.subtext1, // Subtext
+                                .font_size = @intFromFloat(11.0 * dpi_scale),
+                                .font_id = 0,
+                            });
+                        } else {
+                            const parsed_val_opt = std.fmt.parseFloat(f32, raw_str) catch null;
+                            var is_valid_float = false;
+                            if (parsed_val_opt) |val| {
+                                if (!std.math.isNan(val) and !std.math.isInf(val)) {
+                                    is_valid_float = true;
+                                    const min_val: f32 = if (palette.mode == .set_brightness) -1.0 else 0.0;
+                                    const max_val: f32 = if (palette.mode == .set_brightness) 1.0 else 5.0;
+                                    if (val >= min_val and val <= max_val) {
+                                        const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to set value to: {d:.2}", .{val});
+                                        clay.text(success_str, .{
+                                            .color = theme.green, // Green
+                                            .font_size = @intFromFloat(13.0 * dpi_scale),
+                                            .font_id = 0,
+                                        });
+                                    } else {
+                                        const err_str = try std.fmt.allocPrint(frame_allocator, "Out of bounds: must be between {d:.1} and {d:.1}", .{ min_val, max_val });
+                                        clay.text(err_str, .{
+                                            .color = theme.red, // Red
+                                            .font_size = @intFromFloat(13.0 * dpi_scale),
+                                            .font_id = 0,
+                                        });
+                                    }
+                                }
+                            }
+                            if (!is_valid_float) {
+                                clay.text("Invalid float format. Enter a number.", .{
+                                    .color = theme.red, // Red
+                                    .font_size = @intFromFloat(13.0 * dpi_scale),
+                                    .font_id = 0,
+                                });
+                            }
+                        }
+                    },
+                    .inactive, .files, .actions, .directory_navigator => unreachable,
                 }
             });
         } else {

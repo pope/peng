@@ -11,6 +11,14 @@ pub const PaletteMode = enum {
     set_contrast,
     go_to_image,
     directory_navigator,
+    set_slideshow_interval,
+
+    pub fn isTextInputDialog(self: PaletteMode) bool {
+        return switch (self) {
+            .set_brightness, .set_contrast, .go_to_image, .set_slideshow_interval => true,
+            .inactive, .files, .actions, .directory_navigator => false,
+        };
+    }
 };
 
 pub const ScoredMatch = struct {

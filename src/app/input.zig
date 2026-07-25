@@ -246,7 +246,7 @@ pub fn handlePaletteKeys(
             return false;
         },
         .up => {
-            if (palette.mode == .set_brightness or palette.mode == .set_contrast or palette.mode == .go_to_image) return true;
+            if (palette.mode.isTextInputDialog()) return true;
             if (palette.selected_idx > 0) {
                 palette.selected_idx -= 1;
                 palette.selection_dirty = true;
@@ -254,7 +254,7 @@ pub fn handlePaletteKeys(
             return true;
         },
         .down => {
-            if (palette.mode == .set_brightness or palette.mode == .set_contrast or palette.mode == .go_to_image) return true;
+            if (palette.mode.isTextInputDialog()) return true;
             const count = palette.matches.items.len;
             if (count > 0 and palette.selected_idx + 1 < count) {
                 palette.selected_idx += 1;
@@ -263,10 +263,10 @@ pub fn handlePaletteKeys(
             return true;
         },
         .return_key => {
-            if (palette.mode == .set_brightness or palette.mode == .set_contrast or palette.mode == .go_to_image) {
-                const raw_str = palette.query.items;
-                if (raw_str.len > 0) {
-                    if (palette.mode == .go_to_image) {
+            switch (palette.mode) {
+                .go_to_image => {
+                    const raw_str = palette.query.items;
+                    if (raw_str.len > 0) {
                         const val = std.fmt.parseInt(usize, raw_str, 10) catch null;
                         if (val) |v| {
                             if (v >= 1 and v <= self.image_list.items.len) {
@@ -277,7 +277,29 @@ pub fn handlePaletteKeys(
                                 return true;
                             }
                         }
-                    } else {
+                    }
+                    return true;
+                },
+                .set_slideshow_interval => {
+                    const raw_str = palette.query.items;
+                    if (raw_str.len > 0) {
+                        const parsed_val_opt = std.fmt.parseFloat(f32, raw_str) catch null;
+                        if (parsed_val_opt) |val| {
+                            if (!std.math.isNan(val) and !std.math.isInf(val) and val > 0.0) {
+                                self.slideshow_interval_s = val;
+                                self.slideshow_timer_ms = 0.0;
+                                self.slideshow_active = true;
+                                palette.mode = .inactive;
+                                stopTextInput(self.window);
+                                return true;
+                            }
+                        }
+                    }
+                    return true;
+                },
+                .set_brightness, .set_contrast => {
+                    const raw_str = palette.query.items;
+                    if (raw_str.len > 0) {
                         const parsed_val_opt = std.fmt.parseFloat(f32, raw_str) catch null;
                         if (parsed_val_opt) |val| {
                             if (!std.math.isNan(val) and !std.math.isInf(val)) {
@@ -297,51 +319,54 @@ pub fn handlePaletteKeys(
                             }
                         }
                     }
-                }
-                return true; // Keep open on invalid inputs
-            } else if (palette.mode == .directory_navigator) {
-                if (mod.shift) {
-                    try self.startAsyncPathScan(palette.current_nav_dir.items, true);
-                    self.palette.reset();
-                    stopTextInput(self.window);
-                } else {
-                    if (palette.selected_idx < palette.matches.items.len) {
-                        const match_idx = palette.matches.items[palette.selected_idx];
-                        if (match_idx < palette.dir_items.items.len) {
-                            const entry = palette.dir_items.items[match_idx];
-                            try self.startAsyncPathScan(entry.full_path, true);
-                            self.palette.reset();
-                            stopTextInput(self.window);
-                        }
-                    }
-                }
-                return true;
-            } else {
-                if (palette.selected_idx < palette.matches.items.len) {
-                    const target_idx = palette.matches.items[palette.selected_idx];
-                    const old_type = palette.mode;
-                    switch (palette.mode) {
-                        .files => {
-                            self.current_index = target_idx;
-                            try self.updateCache();
-                            palette.mode = .inactive;
-                            stopTextInput(self.window);
-                        },
-                        .actions => {
-                            const action_id = app_actions[target_idx];
-                            try self.triggerAction(action_id);
-                            if (palette.mode == old_type) {
-                                palette.mode = .inactive;
+                    return true;
+                },
+                .directory_navigator => {
+                    if (mod.shift) {
+                        try self.startAsyncPathScan(palette.current_nav_dir.items, true);
+                        self.palette.reset();
+                        stopTextInput(self.window);
+                    } else {
+                        if (palette.selected_idx < palette.matches.items.len) {
+                            const match_idx = palette.matches.items[palette.selected_idx];
+                            if (match_idx < palette.dir_items.items.len) {
+                                const entry = palette.dir_items.items[match_idx];
+                                try self.startAsyncPathScan(entry.full_path, true);
+                                self.palette.reset();
                                 stopTextInput(self.window);
                             }
-                        },
-                        else => {},
+                        }
                     }
-                } else {
-                    palette.mode = .inactive;
-                    stopTextInput(self.window);
-                }
-                return true;
+                    return true;
+                },
+                .files, .actions => {
+                    if (palette.selected_idx < palette.matches.items.len) {
+                        const target_idx = palette.matches.items[palette.selected_idx];
+                        const old_type = palette.mode;
+                        switch (palette.mode) {
+                            .files => {
+                                self.current_index = target_idx;
+                                try self.updateCache();
+                                palette.mode = .inactive;
+                                stopTextInput(self.window);
+                            },
+                            .actions => {
+                                const action_id = app_actions[target_idx];
+                                try self.triggerAction(action_id);
+                                if (palette.mode == old_type) {
+                                    palette.mode = .inactive;
+                                    stopTextInput(self.window);
+                                }
+                            },
+                            else => unreachable,
+                        }
+                    } else {
+                        palette.mode = .inactive;
+                        stopTextInput(self.window);
+                    }
+                    return true;
+                },
+                .inactive => unreachable,
             }
         },
         .backspace => {
@@ -353,7 +378,7 @@ pub fn handlePaletteKeys(
                     .files => try self.rebuildPaletteMatches(),
                     .actions => try self.rebuildActionMatches(),
                     .directory_navigator => try palette.rebuildDirectoryMatches(),
-                    else => {},
+                    .set_brightness, .set_contrast, .go_to_image, .set_slideshow_interval, .inactive => {},
                 }
             } else if (palette.mode == .directory_navigator) {
                 if (std.fs.path.dirname(palette.current_nav_dir.items)) |parent_dir| {

@@ -118,6 +118,8 @@ pub const IpcServer = struct {
                 try state.openPalette(.actions);
             } else if (std.mem.eql(u8, pal_name, "files")) {
                 try state.openPalette(.files);
+            } else if (std.mem.eql(u8, pal_name, "slideshow")) {
+                try state.openPalette(.set_slideshow_interval);
             } else if (std.mem.eql(u8, pal_name, "none")) {
                 state.setPaletteMode(.inactive);
             } else {
