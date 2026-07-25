@@ -205,4 +205,5 @@ test "ElementTag.fromInt" {
     std.testing.refAllDecls(app.state);
     std.testing.refAllDecls(app.input);
     std.testing.refAllDecls(app.image);
+    std.testing.refAllDecls(app.fs);
 }

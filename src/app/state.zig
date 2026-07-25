@@ -149,6 +149,7 @@ pub const ViewerState = struct {
     drag_state: DragState = .none,
     mouse_inside: bool = true,
     last_nav_time_ms: u64 = 0,
+    last_scanned_dir: std.ArrayList(u8) = std.ArrayList(u8).empty,
     event_queue: events.MpscQueue(events.BackgroundEvent) = .{},
     pending_ipc_commands: std.ArrayListUnmanaged(*ipc.IpcCommandData) = .empty,
 
@@ -249,6 +250,7 @@ pub const ViewerState = struct {
         if (self.cached_window_title) |t| {
             self.allocator.free(t);
         }
+        self.last_scanned_dir.deinit(self.allocator);
         self.pending_ipc_commands.deinit(self.allocator);
         self.event_queue.deinit(self.allocator, self.io);
         self.text_cache.deinit(self.allocator, self.gpu_device);
@@ -409,6 +411,35 @@ pub const ViewerState = struct {
         switch (active_type) {
             .files => try self.rebuildPaletteMatches(),
             .actions => try self.rebuildActionMatches(),
+            .directory_navigator => {
+                const start_dir = blk: {
+                    self.lockImageList();
+                    defer self.unlockImageList();
+                    if (self.current_index) |idx| {
+                        if (idx < self.image_list.items.len) {
+                            break :blk std.fs.path.dirname(self.image_list.items[idx]) orelse ".";
+                        }
+                    }
+                    if (self.last_scanned_dir.items.len > 0) {
+                        break :blk self.last_scanned_dir.items;
+                    }
+                    if (self.palette.last_nav_dir.items.len > 0) {
+                        break :blk self.palette.last_nav_dir.items;
+                    }
+                    break :blk ".";
+                };
+                try self.palette.loadDirectoryEntries(self.io, start_dir);
+                while (self.palette.dir_items.items.len == 0) {
+                    const curr = self.palette.current_nav_dir.items;
+                    if (std.fs.path.dirname(curr)) |parent_dir| {
+                        if (!std.mem.eql(u8, parent_dir, curr)) {
+                            try self.palette.loadDirectoryEntries(self.io, parent_dir);
+                            continue;
+                        }
+                    }
+                    break;
+                }
+            },
             else => {},
         }
 
@@ -895,6 +926,14 @@ pub const ViewerState = struct {
             has_stat = false;
         }
 
+        const dir_target = if (has_stat and stat.kind == .directory)
+            path
+        else
+            std.fs.path.dirname(path) orelse ".";
+
+        self.last_scanned_dir.clearRetainingCapacity();
+        try self.last_scanned_dir.appendSlice(self.allocator, dir_target);
+
         self.lockImageList();
         // Clear existing cache and rotation map before resetting directory_arena
         _ = self.generation.fetchAdd(1, .release);
@@ -923,6 +962,11 @@ pub const ViewerState = struct {
         try self.rebuildPaletteMatches();
     }
 
+    pub fn startAsyncPathScan(self: *ViewerState, path: []const u8, is_dir: bool) !void {
+        _ = is_dir;
+        try self.handlePathSelection(path);
+    }
+
     pub fn update(self: *ViewerState, input: FrameInput) !void {
         self.updateCurrentRotation();
 
@@ -935,6 +979,7 @@ pub const ViewerState = struct {
                 switch (self.palette.mode) {
                     .files => try self.rebuildPaletteMatches(),
                     .actions => try self.rebuildActionMatches(),
+                    .directory_navigator => try self.palette.rebuildDirectoryMatches(),
                     else => {},
                 }
             }
@@ -981,6 +1026,7 @@ pub const ViewerState = struct {
                     .set_brightness => "BrightnessPalette",
                     .set_contrast => "ContrastPalette",
                     .go_to_image => "GoToImagePalette",
+                    .directory_navigator => "DirectoryNavigatorPalette",
                     .inactive => unreachable,
                 };
                 if (!clay.pointerOver(clay.getElementId(element_id))) {
@@ -1294,4 +1340,102 @@ test "ElementTag.fromInt" {
     try std.testing.expectEqual(ElementTag.drop_zone_box, ElementTag.fromInt(1337));
     try std.testing.expectEqual(ElementTag.none, ElementTag.fromInt(9999));
     try std.testing.expectEqual(ElementTag.none, ElementTag.fromInt(0x7fffffffd000));
+}
+
+test "ViewerState.openPalette directory_navigator starting directory rules" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const cwd = std.Io.Dir.cwd();
+
+    const tmp_dir = "testfiles/tmp_palette_open_dir_test";
+    std.Io.Dir.createDirPath(cwd, io, tmp_dir ++ "/sub1") catch {};
+    defer {
+        std.Io.Dir.deleteTree(cwd, io, tmp_dir) catch {};
+    }
+
+    var state = ViewerState{
+        .directory_arena = std.heap.ArenaAllocator.init(allocator),
+        .image_list = std.ArrayList([]const u8).empty,
+        .image_list_mutex = .init,
+        .cache = .{},
+        .cache_mutex = .init,
+        .allocator = allocator,
+        .io = io,
+        .palette = PaletteState.init(allocator),
+        .rotation_map = std.StringHashMap(f32).init(allocator),
+        .window = null,
+        .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
+    };
+    defer state.deinit();
+
+    // Rule 1: current_index is valid -> starting directory is dirname of current image
+    const sample_path = tmp_dir ++ "/image1.jpg";
+    try state.image_list.append(allocator, sample_path);
+    state.current_index = 0;
+
+    try state.openPalette(.directory_navigator);
+    try std.testing.expectEqual(PaletteMode.directory_navigator, state.palette.mode);
+    try std.testing.expectEqualStrings(tmp_dir, state.palette.current_nav_dir.items);
+
+    // Rule 2: current_index is null -> starting directory remembers last_nav_dir
+    state.current_index = null;
+    try state.openPalette(.directory_navigator);
+    try std.testing.expectEqualStrings(tmp_dir, state.palette.current_nav_dir.items);
+
+    // Rule 3: current_index is null and last_nav_dir is empty -> starting directory falls back to "."
+    state.palette.last_nav_dir.clearRetainingCapacity();
+    try state.openPalette(.directory_navigator);
+    try std.testing.expectEqualStrings(".", state.palette.current_nav_dir.items);
+
+    // Rule 4: current_index out of bounds and last_nav_dir is empty -> starting directory falls back to "."
+    state.current_index = 999;
+    state.palette.last_nav_dir.clearRetainingCapacity();
+    try state.openPalette(.directory_navigator);
+    try std.testing.expectEqualStrings(".", state.palette.current_nav_dir.items);
+}
+
+test "ViewerState.openPalette directory_navigator steps up if 0 subdirectories" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const cwd = std.Io.Dir.cwd();
+
+    const tmp_dir = "testfiles/tmp_palette_step_up_test";
+    const sub_leaf = tmp_dir ++ "/child_leaf";
+    std.Io.Dir.createDirPath(cwd, io, sub_leaf) catch {};
+    defer {
+        std.Io.Dir.deleteTree(cwd, io, tmp_dir) catch {};
+    }
+
+    var state = ViewerState{
+        .directory_arena = std.heap.ArenaAllocator.init(allocator),
+        .image_list = std.ArrayList([]const u8).empty,
+        .image_list_mutex = .init,
+        .cache = .{},
+        .cache_mutex = .init,
+        .allocator = allocator,
+        .io = io,
+        .palette = PaletteState.init(allocator),
+        .rotation_map = std.StringHashMap(f32).init(allocator),
+        .window = null,
+        .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
+    };
+    defer state.deinit();
+
+    // Image in child_leaf (which has 0 subdirectories itself)
+    const img_path = sub_leaf ++ "/photo.png";
+    try state.image_list.append(allocator, img_path);
+    state.current_index = 0;
+
+    // openPalette should see sub_leaf has 0 subdirectories, so it steps up to tmp_dir and pre-selects child_leaf
+    try state.openPalette(.directory_navigator);
+    try std.testing.expectEqualStrings(tmp_dir, state.palette.current_nav_dir.items);
+
+    // Verify child_leaf is selected
+    var found_leaf_selected = false;
+    if (state.palette.selected_idx < state.palette.dir_items.items.len) {
+        if (std.mem.eql(u8, state.palette.dir_items.items[state.palette.selected_idx].name, "child_leaf")) {
+            found_leaf_selected = true;
+        }
+    }
+    try std.testing.expect(found_leaf_selected);
 }

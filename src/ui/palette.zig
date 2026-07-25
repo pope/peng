@@ -229,6 +229,16 @@ pub fn renderPalette(
             .bottom_spacer_id = "GoToImageBottomSpacer",
             .base_item_height = 50.0,
         },
+        .directory_navigator => PaletteConfig{
+            .title = "Directory Navigator",
+            .placeholder = "Search subfolders...",
+            .element_id = "DirectoryNavigatorPalette",
+            .list_id = "DirectoryNavigatorList",
+            .item_prefix = "DirItem_",
+            .top_spacer_id = "DirTopSpacer",
+            .bottom_spacer_id = "DirBottomSpacer",
+            .base_item_height = 50.0,
+        },
         .inactive => unreachable,
     };
 
@@ -271,12 +281,90 @@ pub fn renderPalette(
                     .actions => theme.blue, // Catppuccin Blue
                     .set_brightness, .set_contrast => theme.peach, // Catppuccin Peach
                     .go_to_image => theme.green, // Catppuccin Green
+                    .directory_navigator => theme.mauve,
                     .inactive => unreachable,
                 },
                 .font_size = @intFromFloat(13.0 * dpi_scale),
                 .font_id = 0,
             });
         });
+
+        // Breadcrumb box for directory_navigator
+        if (palette.mode == .directory_navigator) {
+            const display_dir = truncateDirectory(frame_allocator, palette.current_nav_dir.items, 320.0 * scale_x, @intFromFloat(12.0 * dpi_scale), measure_data);
+            const curr_img_count = palette.current_dir_image_count;
+            const count_str = try std.fmt.allocPrint(frame_allocator, "{} image{s}", .{ curr_img_count, if (curr_img_count == 1) "" else "s" });
+            const count_color = if (curr_img_count == 0) theme.subtext1 else theme.green;
+
+            clay.UI()(.{
+                .layout = .{
+                    .sizing = .{ .w = .grow, .h = .fit },
+                    .direction = .left_to_right,
+                    .child_alignment = .{ .x = .left, .y = .center },
+                    .padding = layout_helpers.scalePadding(4, 4, 8, 8, scale),
+                    .child_gap = @intFromFloat(8 * dpi_scale),
+                },
+                .background_color = theme.crust,
+                .corner_radius = layout_helpers.scaleCornerRadius(6, scale),
+                .border = .{
+                    .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                    .color = theme.surface0,
+                },
+            })({
+                clay.UI()(.{
+                    .layout = .{
+                        .sizing = .{ .w = .grow, .h = .fit },
+                        .direction = .left_to_right,
+                        .child_alignment = .{ .x = .left, .y = .center },
+                        .child_gap = @intFromFloat(8 * dpi_scale),
+                    },
+                })({
+                    clay.UI()(.{
+                        .layout = .{
+                            .sizing = .{ .w = .fit, .h = .fit },
+                            .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
+                        },
+                        .background_color = theme.crust,
+                        .corner_radius = .all(4),
+                        .border = .{
+                            .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                            .color = theme.mauve,
+                        },
+                    })({
+                        clay.text("DIR", .{
+                            .color = theme.mauve,
+                            .font_size = @intFromFloat(11.0 * dpi_scale),
+                            .font_id = 0,
+                        });
+                    });
+
+                    clay.text(display_dir, .{
+                        .color = theme.mauve,
+                        .font_size = @intFromFloat(12.0 * dpi_scale),
+                        .font_id = 0,
+                    });
+                });
+
+                clay.UI()(.{
+                    .layout = .{
+                        .sizing = .{ .w = .fit, .h = .fit },
+                        .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
+                    },
+                    .background_color = theme.crust,
+                    .corner_radius = .all(4),
+                    .border = .{
+                        .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                        .color = if (curr_img_count == 0) theme.surface0 else theme.green,
+                    },
+                })({
+                    clay.text(count_str, .{
+                        .color = count_color,
+                        .font_size = @intFromFloat(11.0 * dpi_scale),
+                        .font_id = 0,
+                    });
+                });
+            });
+        }
 
         // Search Input Box
         clay.UI()(.{
@@ -513,7 +601,7 @@ pub fn renderPalette(
                         .layout = .{
                             .sizing = .{ .w = .grow, .h = .fixed(switch (palette.mode) {
                                 .files => 54 * scale_y,
-                                .actions => 46 * scale_y,
+                                .actions, .directory_navigator => 46 * scale_y,
                                 else => 0.0,
                             }) },
                             .direction = .left_to_right,
@@ -689,6 +777,113 @@ pub fn renderPalette(
                                     });
                                 }
                             },
+                            .directory_navigator => {
+                                if (real_idx < palette.dir_items.items.len) {
+                                    const entry = palette.dir_items.items[real_idx];
+                                    var dir_matches = std.ArrayList(usize).empty;
+                                    const query_str = palette.query.items;
+
+                                    if (query_str.len > 0 and entry.name.len > 0) {
+                                        if (palette.getSearcher(entry.name.len, query_str.len) catch null) |searcher_ptr| {
+                                            const res = searcher_ptr.scoreMatches(entry.name, query_str);
+                                            if (res.score != null) {
+                                                dir_matches.appendSlice(frame_allocator, res.matches) catch {};
+                                            }
+                                        }
+                                    }
+
+                                    clay.UI()(.{
+                                        .layout = .{
+                                            .sizing = .{ .w = .grow, .h = .fit },
+                                            .direction = .left_to_right,
+                                            .child_alignment = .{ .x = .left, .y = .center },
+                                            .child_gap = 8,
+                                        },
+                                    })({
+                                        clay.UI()(.{
+                                            .layout = .{
+                                                .sizing = .{ .w = .fit, .h = .fit },
+                                                .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
+                                            },
+                                            .background_color = theme.crust,
+                                            .corner_radius = .all(4),
+                                            .border = .{
+                                                .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                                                .color = theme.blue,
+                                            },
+                                        })({
+                                            clay.text("DIR", .{
+                                                .color = theme.blue,
+                                                .font_size = @intFromFloat(11.0 * dpi_scale),
+                                                .font_id = 0,
+                                            });
+                                        });
+
+                                        const display_foldername = truncateFilename(frame_allocator, entry.name, 350.0 * scale_x, @intFromFloat(13.0 * dpi_scale), measure_data);
+
+                                        renderHighlightedText(
+                                            frame_allocator,
+                                            display_foldername,
+                                            dir_matches.items,
+                                            @intFromFloat(13.0 * dpi_scale),
+                                            if (is_selected) theme.blue else theme.text,
+                                            theme.yellow,
+                                        );
+                                    });
+
+                                    const count_str = try std.fmt.allocPrint(frame_allocator, "{} image{s}", .{ entry.image_count, if (entry.image_count == 1) "" else "s" });
+                                    const count_color = if (entry.image_count == 0) theme.subtext1 else theme.green;
+
+                                    const sub_str = try std.fmt.allocPrint(frame_allocator, "{} subfolder{s}", .{ entry.subdir_count, if (entry.subdir_count == 1) "" else "s" });
+                                    const sub_color = if (entry.subdir_count == 0) theme.subtext1 else theme.blue;
+
+                                    clay.UI()(.{
+                                        .layout = .{
+                                            .sizing = .{ .w = .fit, .h = .fit },
+                                            .direction = .left_to_right,
+                                            .child_gap = 6,
+                                        },
+                                    })({
+                                        clay.UI()(.{
+                                            .layout = .{
+                                                .sizing = .{ .w = .fit, .h = .fit },
+                                                .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
+                                            },
+                                            .background_color = theme.crust,
+                                            .corner_radius = .all(4),
+                                            .border = .{
+                                                .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                                                .color = if (entry.image_count == 0) theme.surface0 else theme.green,
+                                            },
+                                        })({
+                                            clay.text(count_str, .{
+                                                .color = count_color,
+                                                .font_size = @intFromFloat(11.0 * dpi_scale),
+                                                .font_id = 0,
+                                            });
+                                        });
+
+                                        clay.UI()(.{
+                                            .layout = .{
+                                                .sizing = .{ .w = .fit, .h = .fit },
+                                                .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
+                                            },
+                                            .background_color = theme.crust,
+                                            .corner_radius = .all(4),
+                                            .border = .{
+                                                .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                                                .color = if (entry.subdir_count == 0) theme.surface0 else theme.blue,
+                                            },
+                                        })({
+                                            clay.text(sub_str, .{
+                                                .color = sub_color,
+                                                .font_size = @intFromFloat(11.0 * dpi_scale),
+                                                .font_id = 0,
+                                            });
+                                        });
+                                    });
+                                }
+                            },
                             else => {},
                         }
                     });
@@ -708,6 +903,14 @@ pub fn renderPalette(
                                 if (palette.mode == old_type) {
                                     palette.mode = .inactive;
                                     stopTextInput(state.window);
+                                }
+                            },
+                            .directory_navigator => {
+                                if (real_idx < palette.dir_items.items.len) {
+                                    const entry = palette.dir_items.items[real_idx];
+                                    const path_copy = try frame_allocator.dupe(u8, entry.full_path);
+                                    try palette.loadDirectoryEntries(state.io, path_copy);
+                                    palette.query.clearRetainingCapacity();
                                 }
                             },
                             else => {},
@@ -735,11 +938,73 @@ pub fn renderPalette(
                         const no_match_msg = switch (palette.mode) {
                             .files => "No matching files found",
                             .actions => "No matching commands found",
+                            .directory_navigator => if (palette.query.items.len > 0) "No matching subfolders found" else "0 subfolders found",
                             else => "",
                         };
                         clay.text(no_match_msg, .{
                             .color = theme.subtext1,
                             .font_size = @intFromFloat(13.0 * dpi_scale),
+                            .font_id = 0,
+                        });
+                    });
+                }
+            });
+        }
+
+        // Footer Legend for Directory Navigator
+        if (palette.mode == .directory_navigator) {
+            const LegendItem = struct { key: []const u8, label: []const u8 };
+            const legend_items = [_]LegendItem{
+                .{ .key = "Right", .label = "Open" },
+                .{ .key = "Enter", .label = "Load Selected" },
+                .{ .key = "Shift+Enter", .label = "Load Current" },
+                .{ .key = "Left", .label = "Up" },
+                .{ .key = "Esc", .label = "Close" },
+            };
+
+            clay.UI()(.{
+                .layout = .{
+                    .sizing = .{ .w = .grow, .h = .fit },
+                    .direction = .left_to_right,
+                    .child_alignment = .{ .x = .center, .y = .center },
+                    .padding = .{ .top = 6, .bottom = 2 },
+                    .child_gap = @intFromFloat(6 * scale_x),
+                },
+            })({
+                inline for (legend_items) |item| {
+                    clay.UI()(.{
+                        .layout = .{
+                            .sizing = .{ .w = .fit, .h = .fit },
+                            .direction = .left_to_right,
+                            .child_alignment = .{ .x = .left, .y = .center },
+                            .padding = .{ .left = 5, .right = 7, .top = 3, .bottom = 3 },
+                            .child_gap = @intFromFloat(5 * scale_x),
+                        },
+                        .background_color = theme.crust,
+                        .corner_radius = .all(4),
+                        .border = .{
+                            .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                            .color = theme.surface0,
+                        },
+                    })({
+                        clay.UI()(.{
+                            .layout = .{
+                                .sizing = .{ .w = .fit, .h = .fit },
+                                .padding = .{ .left = 4, .right = 4, .top = 1, .bottom = 1 },
+                            },
+                            .background_color = theme.surface0,
+                            .corner_radius = .all(3),
+                        })({
+                            clay.text(item.key, .{
+                                .color = theme.mauve,
+                                .font_size = @intFromFloat(10.0 * dpi_scale),
+                                .font_id = 0,
+                            });
+                        });
+
+                        clay.text(item.label, .{
+                            .color = theme.subtext0,
+                            .font_size = @intFromFloat(11.0 * dpi_scale),
                             .font_id = 0,
                         });
                     });
@@ -831,4 +1096,33 @@ test "partitionHighlightedText edge cases" {
     try std.testing.expect(edge_ws_chunks[1].is_matched);
     try std.testing.expectEqualStrings(" ", edge_ws_chunks[2].slice);
     try std.testing.expect(!edge_ws_chunks[2].is_matched);
+}
+
+test "PaletteState directory_navigator mode configuration and item matching" {
+    var palette = PaletteState.init(std.testing.allocator);
+    defer palette.deinit();
+
+    palette.mode = .directory_navigator;
+    try palette.current_nav_dir.appendSlice(std.testing.allocator, "/home/user/Pictures");
+
+    try palette.dir_items.append(std.testing.allocator, .{
+        .name = try std.testing.allocator.dupe(u8, ".."),
+        .full_path = try std.testing.allocator.dupe(u8, "/home/user"),
+        .image_count = 0,
+        .is_parent = true,
+    });
+    try palette.dir_items.append(std.testing.allocator, .{
+        .name = try std.testing.allocator.dupe(u8, "Vacation"),
+        .full_path = try std.testing.allocator.dupe(u8, "/home/user/Pictures/Vacation"),
+        .image_count = 12,
+        .is_parent = false,
+    });
+
+    try palette.rebuildDirectoryMatches();
+    try std.testing.expectEqual(@as(usize, 2), palette.matches.items.len);
+
+    try palette.query.appendSlice(std.testing.allocator, "Vac");
+    try palette.rebuildDirectoryMatches();
+    try std.testing.expectEqual(@as(usize, 2), palette.matches.items.len);
+    try std.testing.expectEqual(@as(usize, 1), palette.matches.items[0]);
 }

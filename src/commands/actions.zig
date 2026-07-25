@@ -13,6 +13,7 @@ pub const AppActionId = enum {
     toggle_stats,
     toggle_fullscreen,
     open_file_finder,
+    open_directory_navigator,
     toggle_debug_mode,
     toggle_debug_thumb,
     exit,
@@ -100,6 +101,14 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
             .shortcuts = &.{
                 .{ .key = .char_p, .mod = .{ .ctrl = true } },
                 .{ .key = .char_p, .mod = .{ .gui = true } },
+            },
+        },
+        .open_directory_navigator => .{
+            .name = "Navigate Directories...",
+            .shortcut_text = "Ctrl+O",
+            .show_in_palette = true,
+            .shortcuts = &.{
+                .{ .key = .char_o, .mod = .{ .ctrl = true } },
             },
         },
         .toggle_debug_mode => .{
@@ -363,6 +372,9 @@ pub fn triggerAction(self: *ViewerState, action_id: AppActionId) !void {
         .open_file_finder => {
             try self.openPalette(.files);
         },
+        .open_directory_navigator => {
+            try self.openPalette(.directory_navigator);
+        },
         .toggle_debug_mode => clay.setDebugModeEnabled(!clay.isDebugModeEnabled()),
         .toggle_debug_thumb => try self.setDebugShowThumb(!self.debug_show_thumb),
         .exit => {
@@ -508,4 +520,14 @@ pub fn triggerAction(self: *ViewerState, action_id: AppActionId) !void {
             try self.openPalette(.actions);
         },
     }
+}
+
+test "open_directory_navigator metadata" {
+    const meta = getActionMetadata(.open_directory_navigator);
+    try std.testing.expectEqualStrings("Navigate Directories...", meta.name);
+    try std.testing.expectEqualStrings("Ctrl+O", meta.shortcut_text);
+    try std.testing.expect(meta.show_in_palette);
+    try std.testing.expectEqual(@as(usize, 1), meta.shortcuts.len);
+    try std.testing.expectEqual(Key.char_o, meta.shortcuts[0].key);
+    try std.testing.expect(meta.shortcuts[0].mod.ctrl);
 }

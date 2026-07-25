@@ -12,6 +12,7 @@ const startTextInput = app_state.startTextInput;
 const stopTextInput = app_state.stopTextInput;
 const app_actions = commands.actions.app_actions;
 const flat_shortcuts = commands.actions.flat_shortcuts;
+const events = app_state.events;
 
 pub fn mapKeyFromSdl(key: sdl.keys.Keycode) Key {
     return switch (key) {
@@ -200,9 +201,12 @@ pub fn pollFrameInput(
     };
 }
 
+const fs = app_state.fs;
+
 pub fn handlePaletteKeys(
     self: *ViewerState,
     key: Key,
+    mod: KeyModifiers,
 ) !bool {
     const palette = &self.palette;
     if (palette.mode == .inactive) return false;
@@ -212,6 +216,34 @@ pub fn handlePaletteKeys(
             palette.mode = .inactive;
             stopTextInput(self.window);
             return true;
+        },
+        .left => {
+            if (palette.mode == .directory_navigator) {
+                if (std.fs.path.dirname(palette.current_nav_dir.items)) |parent_dir| {
+                    const parent_copy = try self.allocator.dupe(u8, parent_dir);
+                    defer self.allocator.free(parent_copy);
+                    palette.query.clearRetainingCapacity();
+                    try palette.loadDirectoryEntries(self.io, parent_copy);
+                }
+                return true;
+            }
+            return false;
+        },
+        .right => {
+            if (palette.mode == .directory_navigator) {
+                if (palette.selected_idx < palette.matches.items.len) {
+                    const match_idx = palette.matches.items[palette.selected_idx];
+                    if (match_idx < palette.dir_items.items.len) {
+                        const entry = palette.dir_items.items[match_idx];
+                        const path_copy = try self.allocator.dupe(u8, entry.full_path);
+                        defer self.allocator.free(path_copy);
+                        palette.query.clearRetainingCapacity();
+                        try palette.loadDirectoryEntries(self.io, path_copy);
+                    }
+                }
+                return true;
+            }
+            return false;
         },
         .up => {
             if (palette.mode == .set_brightness or palette.mode == .set_contrast or palette.mode == .go_to_image) return true;
@@ -267,6 +299,23 @@ pub fn handlePaletteKeys(
                     }
                 }
                 return true; // Keep open on invalid inputs
+            } else if (palette.mode == .directory_navigator) {
+                if (mod.shift) {
+                    try self.startAsyncPathScan(palette.current_nav_dir.items, true);
+                    self.palette.reset();
+                    stopTextInput(self.window);
+                } else {
+                    if (palette.selected_idx < palette.matches.items.len) {
+                        const match_idx = palette.matches.items[palette.selected_idx];
+                        if (match_idx < palette.dir_items.items.len) {
+                            const entry = palette.dir_items.items[match_idx];
+                            try self.startAsyncPathScan(entry.full_path, true);
+                            self.palette.reset();
+                            stopTextInput(self.window);
+                        }
+                    }
+                }
+                return true;
             } else {
                 if (palette.selected_idx < palette.matches.items.len) {
                     const target_idx = palette.matches.items[palette.selected_idx];
@@ -303,7 +352,15 @@ pub fn handlePaletteKeys(
                 switch (palette.mode) {
                     .files => try self.rebuildPaletteMatches(),
                     .actions => try self.rebuildActionMatches(),
+                    .directory_navigator => try palette.rebuildDirectoryMatches(),
                     else => {},
+                }
+            } else if (palette.mode == .directory_navigator) {
+                if (std.fs.path.dirname(palette.current_nav_dir.items)) |parent_dir| {
+                    const parent_copy = try self.allocator.dupe(u8, parent_dir);
+                    defer self.allocator.free(parent_copy);
+                    palette.query.clearRetainingCapacity();
+                    try palette.loadDirectoryEntries(self.io, parent_copy);
                 }
             }
             return true;
@@ -361,7 +418,7 @@ pub fn handleKeyDown(
     scale_y: f32,
 ) !void {
     if (self.palette.mode != .inactive) {
-        _ = try handlePaletteKeys(self, key);
+        _ = try handlePaletteKeys(self, key, mod);
         return;
     }
 
@@ -397,4 +454,79 @@ test "mapKeyToAction mapping" {
     const zoom_in = mapKeyToAction(.equals, .{}, false);
     try std.testing.expect(zoom_in == .zoom);
     try std.testing.expectEqual(@as(f32, 0.1), zoom_in.zoom.factor_delta);
+}
+
+test "handlePaletteKeys directory_navigator key interactions" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const cwd = std.Io.Dir.cwd();
+
+    const tmp_dir = "testfiles/tmp_palette_key_test";
+    const sub_has_img = tmp_dir ++ "/sub_has_images";
+    const sub_no_img = tmp_dir ++ "/sub_no_images";
+
+    std.Io.Dir.createDirPath(cwd, io, sub_has_img) catch {};
+    std.Io.Dir.createDirPath(cwd, io, sub_no_img) catch {};
+
+    // Create a dummy image file in sub_has_img
+    var f = try std.Io.Dir.createFile(cwd, io, sub_has_img ++ "/pic.png", .{});
+    f.close(io);
+
+    defer {
+        std.Io.Dir.deleteTree(cwd, io, tmp_dir) catch {};
+    }
+
+    var state = ViewerState{
+        .directory_arena = std.heap.ArenaAllocator.init(allocator),
+        .image_list = std.ArrayList([]const u8).empty,
+        .image_list_mutex = .init,
+        .cache = .{},
+        .cache_mutex = .init,
+        .allocator = allocator,
+        .io = io,
+        .palette = PaletteState.init(allocator),
+        .rotation_map = std.StringHashMap(f32).init(allocator),
+        .window = null,
+        .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
+    };
+    defer state.deinit();
+
+    // 1. Open directory navigator at tmp_dir
+    try state.palette.loadDirectoryEntries(io, tmp_dir);
+    state.palette.mode = .directory_navigator;
+
+    // Locate index of sub_no_images
+    var match_idx_no_img: usize = 0;
+    for (state.palette.dir_items.items, 0..) |item, i| {
+        if (std.mem.eql(u8, item.name, "sub_no_images")) {
+            match_idx_no_img = i;
+            break;
+        }
+    }
+
+    // Test Right key on sub_no_images -> navigate into folder
+    state.palette.selected_idx = match_idx_no_img;
+    _ = try handlePaletteKeys(&state, .right, .{});
+    try std.testing.expectEqual(app_state.PaletteMode.directory_navigator, state.palette.mode);
+    try std.testing.expectEqualStrings(sub_no_img, state.palette.current_nav_dir.items);
+    try std.testing.expectEqual(@as(usize, 0), state.palette.query.items.len);
+
+    // Test Left key -> step up to parent directory, remembering sub_no_images
+    _ = try handlePaletteKeys(&state, .left, .{});
+    try std.testing.expectEqual(app_state.PaletteMode.directory_navigator, state.palette.mode);
+    try std.testing.expectEqualStrings(tmp_dir, state.palette.current_nav_dir.items);
+    try std.testing.expectEqual(match_idx_no_img, state.palette.selected_idx);
+
+    // Test Enter key on sub_no_images -> starts async path scan for sub_no_images and closes palette
+    state.palette.selected_idx = match_idx_no_img;
+    _ = try handlePaletteKeys(&state, .return_key, .{});
+    try std.testing.expectEqual(app_state.PaletteMode.inactive, state.palette.mode);
+
+    // Re-open palette
+    try state.palette.loadDirectoryEntries(io, tmp_dir);
+    state.palette.mode = .directory_navigator;
+
+    // Test Shift+Enter key on current directory -> starts async path scan and closes palette
+    _ = try handlePaletteKeys(&state, .return_key, .{ .shift = true });
+    try std.testing.expectEqual(app_state.PaletteMode.inactive, state.palette.mode);
 }

@@ -1,6 +1,7 @@
 const std = @import("std");
 const fuzzig = @import("fuzzig");
 const commands = @import("../commands/actions.zig");
+const fs = @import("fs.zig");
 
 pub const PaletteMode = enum {
     inactive,
@@ -9,6 +10,7 @@ pub const PaletteMode = enum {
     set_brightness,
     set_contrast,
     go_to_image,
+    directory_navigator,
 };
 
 pub const ScoredMatch = struct {
@@ -23,6 +25,11 @@ pub const PaletteState = struct {
     selection_dirty: bool = false,
     matches: std.ArrayList(usize),
     scored_matches: std.ArrayList(ScoredMatch),
+    current_nav_dir: std.ArrayList(u8),
+    last_nav_dir: std.ArrayList(u8),
+    last_child_dir: std.ArrayList(u8),
+    dir_items: std.ArrayList(fs.DirectoryEntry),
+    current_dir_image_count: usize = 0,
     allocator: std.mem.Allocator,
     searcher: ?fuzzig.Ascii = null,
     max_haystack_len: usize = 64,
@@ -32,6 +39,11 @@ pub const PaletteState = struct {
             .query = std.ArrayList(u8).empty,
             .matches = std.ArrayList(usize).empty,
             .scored_matches = std.ArrayList(ScoredMatch).empty,
+            .current_nav_dir = std.ArrayList(u8).empty,
+            .last_nav_dir = std.ArrayList(u8).empty,
+            .last_child_dir = std.ArrayList(u8).empty,
+            .dir_items = std.ArrayList(fs.DirectoryEntry).empty,
+            .current_dir_image_count = 0,
             .allocator = allocator,
             .searcher = null,
             .max_haystack_len = 64,
@@ -45,15 +57,114 @@ pub const PaletteState = struct {
         self.query.deinit(self.allocator);
         self.matches.deinit(self.allocator);
         self.scored_matches.deinit(self.allocator);
+        self.current_nav_dir.deinit(self.allocator);
+        self.last_nav_dir.deinit(self.allocator);
+        self.last_child_dir.deinit(self.allocator);
+        self.clearDirItems();
+        self.dir_items.deinit(self.allocator);
+    }
+
+    fn clearDirItems(self: *PaletteState) void {
+        for (self.dir_items.items) |entry| {
+            self.allocator.free(entry.name);
+            self.allocator.free(entry.full_path);
+        }
+        self.dir_items.clearRetainingCapacity();
     }
 
     pub fn reset(self: *PaletteState) void {
         self.query.clearRetainingCapacity();
         self.matches.clearRetainingCapacity();
         self.scored_matches.clearRetainingCapacity();
+        self.current_nav_dir.clearRetainingCapacity();
+        self.last_child_dir.clearRetainingCapacity();
+        self.clearDirItems();
         self.mode = .inactive;
         self.selected_idx = 0;
         self.selection_dirty = true;
+    }
+
+    pub fn loadDirectoryEntries(self: *PaletteState, io: std.Io, dir_path: []const u8) !void {
+        const dir_path_copy = try self.allocator.dupe(u8, dir_path);
+        defer self.allocator.free(dir_path_copy);
+
+        var navigated_up = false;
+        if (self.current_nav_dir.items.len > 0) {
+            if (std.fs.path.dirname(self.current_nav_dir.items)) |parent_dir| {
+                if (std.mem.eql(u8, dir_path_copy, parent_dir)) {
+                    navigated_up = true;
+                }
+            }
+        }
+
+        if (navigated_up) {
+            const child_base = std.fs.path.basename(self.current_nav_dir.items);
+            self.last_child_dir.clearRetainingCapacity();
+            try self.last_child_dir.appendSlice(self.allocator, child_base);
+        } else {
+            self.last_child_dir.clearRetainingCapacity();
+        }
+
+        self.current_nav_dir.clearRetainingCapacity();
+        try self.current_nav_dir.appendSlice(self.allocator, dir_path_copy);
+
+        self.last_nav_dir.clearRetainingCapacity();
+        try self.last_nav_dir.appendSlice(self.allocator, dir_path_copy);
+
+        self.current_dir_image_count = fs.countFolderImages(io, dir_path_copy);
+
+        self.clearDirItems();
+        fs.scanDirectoryEntries(self.allocator, io, dir_path_copy, &self.dir_items) catch |err| {
+            std.log.warn("Failed to scan directory '{s}': {}", .{ dir_path_copy, err });
+        };
+        try self.rebuildDirectoryMatches();
+        self.selection_dirty = true;
+    }
+
+    pub fn rebuildDirectoryMatches(self: *PaletteState) !void {
+        self.matches.clearRetainingCapacity();
+        self.scored_matches.clearRetainingCapacity();
+        self.selected_idx = 0;
+        const query_str = self.query.items;
+
+        if (query_str.len == 0) {
+            for (self.dir_items.items, 0..) |_, idx| {
+                try self.matches.append(self.allocator, idx);
+            }
+            if (self.last_child_dir.items.len > 0) {
+                for (self.dir_items.items, 0..) |entry, match_idx| {
+                    if (std.mem.eql(u8, entry.name, self.last_child_dir.items)) {
+                        self.selected_idx = match_idx;
+                        break;
+                    }
+                }
+            }
+            return;
+        }
+
+        var max_h: usize = self.max_haystack_len;
+        for (self.dir_items.items) |entry| {
+            max_h = @max(max_h, entry.name.len);
+        }
+        self.max_haystack_len = max_h;
+
+        const searcher_ptr = try self.getSearcher(max_h, query_str.len);
+
+        for (self.dir_items.items, 0..) |entry, idx| {
+            if (searcher_ptr.score(entry.name, query_str)) |score| {
+                try self.scored_matches.append(self.allocator, .{ .index = idx, .score = score });
+            }
+        }
+
+        std.mem.sort(ScoredMatch, self.scored_matches.items, {}, struct {
+            fn lessThan(_: void, a: ScoredMatch, b: ScoredMatch) bool {
+                return a.score > b.score;
+            }
+        }.lessThan);
+
+        for (self.scored_matches.items) |item| {
+            try self.matches.append(self.allocator, item.index);
+        }
     }
 
     pub fn getSearcher(self: *PaletteState, max_haystack: usize, max_needle: usize) !*fuzzig.Ascii {
@@ -236,4 +347,109 @@ test "PaletteState scoreMatches character indices and partitioning" {
 
     try std.testing.expect(d_matches.items.len > 0);
     try std.testing.expect(b_matches.items.len > 0);
+}
+
+test "PaletteState.loadDirectoryEntries" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const cwd = std.Io.Dir.cwd();
+
+    const tmp_dir = "testfiles/tmp_palette_nav_test";
+    std.Io.Dir.createDirPath(cwd, io, tmp_dir ++ "/folder1") catch {};
+    std.Io.Dir.createDirPath(cwd, io, tmp_dir ++ "/folder2") catch {};
+    defer {
+        std.Io.Dir.deleteTree(cwd, io, tmp_dir) catch {};
+    }
+
+    var palette = PaletteState.init(allocator);
+    defer palette.deinit();
+
+    try palette.loadDirectoryEntries(io, tmp_dir);
+
+    try std.testing.expectEqualStrings(tmp_dir, palette.current_nav_dir.items);
+    try std.testing.expect(palette.dir_items.items.len >= 2);
+    try std.testing.expectEqual(palette.dir_items.items.len, palette.matches.items.len);
+}
+
+test "PaletteState.rebuildDirectoryMatches" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const cwd = std.Io.Dir.cwd();
+
+    const tmp_dir = "testfiles/tmp_palette_rebuild_test";
+    std.Io.Dir.createDirPath(cwd, io, tmp_dir ++ "/sub_alpha") catch {};
+    std.Io.Dir.createDirPath(cwd, io, tmp_dir ++ "/sub_beta") catch {};
+    defer {
+        std.Io.Dir.deleteTree(cwd, io, tmp_dir) catch {};
+    }
+
+    var palette = PaletteState.init(allocator);
+    defer palette.deinit();
+
+    try palette.loadDirectoryEntries(io, tmp_dir);
+
+    // Empty query matches all entries
+    try std.testing.expectEqual(palette.dir_items.items.len, palette.matches.items.len);
+
+    // Query "alpha" should match sub_alpha as top match
+    try palette.query.appendSlice(allocator, "alpha");
+    try palette.rebuildDirectoryMatches();
+
+    try std.testing.expect(palette.matches.items.len > 0);
+    const top_idx = palette.matches.items[0];
+    try std.testing.expectEqualStrings("sub_alpha", palette.dir_items.items[top_idx].name);
+
+    // Reset query and test "beta"
+    palette.query.clearRetainingCapacity();
+    try palette.query.appendSlice(allocator, "beta");
+    try palette.rebuildDirectoryMatches();
+
+    try std.testing.expect(palette.matches.items.len > 0);
+    const top_beta_idx = palette.matches.items[0];
+    try std.testing.expectEqualStrings("sub_beta", palette.dir_items.items[top_beta_idx].name);
+
+    // Reset palette to verify reset clears directory state properly
+    palette.reset();
+    try std.testing.expectEqual(@as(usize, 0), palette.current_nav_dir.items.len);
+    try std.testing.expectEqual(@as(usize, 0), palette.dir_items.items.len);
+}
+
+test "PaletteState.navigating_up_remembers_previous_folder" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const cwd = std.Io.Dir.cwd();
+
+    const tmp_dir = "testfiles/tmp_palette_nav_up_test";
+    const sub_dir = tmp_dir ++ "/child_folder";
+    std.Io.Dir.createDirPath(cwd, io, sub_dir) catch {};
+    defer {
+        std.Io.Dir.deleteTree(cwd, io, tmp_dir) catch {};
+    }
+
+    var palette = PaletteState.init(allocator);
+    defer palette.deinit();
+
+    // 1. Load root tmp_dir
+    try palette.loadDirectoryEntries(io, tmp_dir);
+    try std.testing.expectEqualStrings("", palette.last_child_dir.items);
+    try std.testing.expectEqual(@as(usize, 0), palette.selected_idx);
+
+    // 2. Navigate down into child_folder
+    try palette.loadDirectoryEntries(io, sub_dir);
+    try std.testing.expectEqualStrings("", palette.last_child_dir.items);
+    try std.testing.expectEqual(@as(usize, 0), palette.selected_idx);
+
+    // 3. Navigate up back to tmp_dir
+    try palette.loadDirectoryEntries(io, tmp_dir);
+    try std.testing.expectEqualStrings("child_folder", palette.last_child_dir.items);
+
+    // Find the index of child_folder in dir_items
+    var expected_idx: usize = 0;
+    for (palette.dir_items.items, 0..) |item, i| {
+        if (std.mem.eql(u8, item.name, "child_folder")) {
+            expected_idx = i;
+            break;
+        }
+    }
+    try std.testing.expectEqual(expected_idx, palette.selected_idx);
 }

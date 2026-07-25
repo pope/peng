@@ -28,3 +28,17 @@
 ## Mutex Ownership & Teardown
 
 - Clean up locks and resources in exactly one owner lifecycle method (e.g. `ViewerState.deinit()`).
+
+## Slice Aliasing Protection (`@memcpy` Aliasing)
+
+- Passing a slice of a struct field (e.g. `self.current_nav_dir.items`) into a method that mutates/clears `self.current_nav_dir` causes `@memcpy` parameter aliasing panics in Zig.
+- ALWAYS duplicate input path slices (`const copy = try allocator.dupe(u8, input_slice); defer allocator.free(copy);`) at the start of container methods before clearing destination lists.
+
+## Arena Allocator Reset Synchronization
+
+- Clearing an `ArrayList` of strings allocated via an `ArenaAllocator` (`list.clearRetainingCapacity()`) empties the list structure but leaves allocated strings in memory.
+- ALWAYS invoke `_ = arena.reset(.retain_capacity)` prior to `list.clearRetainingCapacity()` when replacing collections of arena-allocated objects.
+
+## Single-Pass Filesystem Traversal
+
+- Combine file and subfolder counting into a single directory traversal (`countFolderContents`) returning a composite struct (`FolderCounts`) to cut filesystem disk I/O operations in half.

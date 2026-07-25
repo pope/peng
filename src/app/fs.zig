@@ -29,6 +29,92 @@ pub fn isImageExtension(ext: []const u8) bool {
     return false;
 }
 
+pub const DirectoryEntry = struct {
+    name: []const u8,
+    full_path: []const u8,
+    image_count: usize,
+    subdir_count: usize = 0,
+    is_parent: bool = false,
+    is_current: bool = false,
+};
+
+pub const FolderCounts = struct {
+    image_count: usize = 0,
+    subdir_count: usize = 0,
+};
+
+pub fn countFolderContents(io: std.Io, folder_path: []const u8) FolderCounts {
+    var dir = std.Io.Dir.openDir(std.Io.Dir.cwd(), io, folder_path, .{ .iterate = true }) catch return .{};
+    defer dir.close(io);
+
+    var counts: FolderCounts = .{};
+    var it = dir.iterate();
+    while (it.next(io) catch null) |entry| {
+        if (entry.kind == .file) {
+            const ext = std.fs.path.extension(entry.name);
+            if (isImageExtension(ext)) {
+                counts.image_count += 1;
+            }
+        } else if (entry.kind == .directory) {
+            if (!std.mem.startsWith(u8, entry.name, ".")) {
+                counts.subdir_count += 1;
+            }
+        }
+    }
+    return counts;
+}
+
+pub fn countFolderImages(io: std.Io, folder_path: []const u8) usize {
+    return countFolderContents(io, folder_path).image_count;
+}
+
+pub fn countFolderSubdirs(io: std.Io, folder_path: []const u8) usize {
+    return countFolderContents(io, folder_path).subdir_count;
+}
+
+pub fn scanDirectoryEntries(gpa: std.mem.Allocator, io: std.Io, dir_path: []const u8, entries: *std.ArrayList(DirectoryEntry)) !void {
+    const start_len = entries.items.len;
+    errdefer {
+        for (entries.items[start_len..]) |entry| {
+            gpa.free(entry.name);
+            gpa.free(entry.full_path);
+        }
+        entries.shrinkRetainingCapacity(start_len);
+    }
+
+    var dir = try std.Io.Dir.openDir(std.Io.Dir.cwd(), io, dir_path, .{ .iterate = true });
+    defer dir.close(io);
+
+    var it = dir.iterate();
+    while (try it.next(io)) |entry| {
+        if (entry.kind == .directory) {
+            if (std.mem.startsWith(u8, entry.name, ".")) continue;
+
+            const full_path = try std.fs.path.join(gpa, &.{ dir_path, entry.name });
+            errdefer gpa.free(full_path);
+            const name = try gpa.dupe(u8, entry.name);
+            errdefer gpa.free(name);
+
+            const counts = countFolderContents(io, full_path);
+
+            try entries.append(gpa, .{
+                .name = name,
+                .full_path = full_path,
+                .image_count = counts.image_count,
+                .subdir_count = counts.subdir_count,
+                .is_parent = false,
+                .is_current = false,
+            });
+        }
+    }
+
+    std.mem.sort(DirectoryEntry, entries.items, {}, struct {
+        fn lessThan(_: void, a: DirectoryEntry, b: DirectoryEntry) bool {
+            return std.ascii.lessThanIgnoreCase(a.name, b.name);
+        }
+    }.lessThan);
+}
+
 pub fn scanDirectory(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.Io, dir_path: []const u8, list: *std.ArrayList([]const u8)) !void {
     var dir = std.Io.Dir.openDir(std.Io.Dir.cwd(), io, dir_path, .{ .iterate = true }) catch |err| {
         std.log.err("Failed to open directory '{s}': {}", .{ dir_path, err });
@@ -50,10 +136,10 @@ pub fn scanDirectory(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.I
         }
     }
 
-    // Sort entries alphabetically
+    // Sort entries alphabetically ignoring case
     std.mem.sort([]const u8, dir_entries.items, {}, struct {
         fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-            return std.mem.lessThan(u8, a, b);
+            return std.ascii.lessThanIgnoreCase(a, b);
         }
     }.lessThan);
 
@@ -98,7 +184,10 @@ fn scanDirectoryThreadSafe(state: *ViewerState, gpa: std.mem.Allocator, io: std.
 
     var it = dir.iterate();
     var dir_entries = std.ArrayList([]const u8).empty;
-    defer dir_entries.deinit(gpa);
+    defer {
+        for (dir_entries.items) |name| gpa.free(name);
+        dir_entries.deinit(gpa);
+    }
 
     while (it.next(io) catch |err| blk: {
         std.log.warn("scanDirectoryThreadSafe: iterate next failed for '{s}': {any}", .{ dir_path, err });
@@ -116,13 +205,10 @@ fn scanDirectoryThreadSafe(state: *ViewerState, gpa: std.mem.Allocator, io: std.
             }
         }
     }
-    defer {
-        for (dir_entries.items) |name| gpa.free(name);
-    }
 
     std.mem.sort([]const u8, dir_entries.items, {}, struct {
         fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-            return std.mem.lessThan(u8, a, b);
+            return std.ascii.lessThanIgnoreCase(a, b);
         }
     }.lessThan);
 
@@ -261,7 +347,7 @@ fn pathScanWorker(args: *PathScanArgs) void {
     // Sort entries alphabetically
     std.mem.sort([]const u8, dir_entries.items, {}, struct {
         fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-            return std.mem.lessThan(u8, a, b);
+            return std.ascii.lessThanIgnoreCase(a, b);
         }
     }.lessThan);
 
@@ -292,6 +378,7 @@ fn pathScanWorker(args: *PathScanArgs) void {
             }
         }
 
+        _ = state.directory_arena.reset(.retain_capacity);
         state.image_list.clearRetainingCapacity();
         for (dir_entries.items, 0..) |item, i| {
             const dup = state.directory_arena.allocator().dupe(u8, item) catch |err| {
@@ -341,4 +428,65 @@ pub fn startAsyncPathScan(state: *ViewerState, path: []const u8, is_dir: bool) !
         state.allocator.free(dup_path);
         state.allocator.destroy(args);
     }
+}
+
+test "scanDirectoryEntries" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const cwd = std.Io.Dir.cwd();
+
+    const tmp_dir_path = "testfiles/tmp_scan_nav_test";
+
+    // Setup directory structure
+    std.Io.Dir.createDirPath(cwd, io, tmp_dir_path ++ "/sub_b") catch {};
+    std.Io.Dir.createDirPath(cwd, io, tmp_dir_path ++ "/sub_a") catch {};
+    std.Io.Dir.createDirPath(cwd, io, tmp_dir_path ++ "/sub_empty") catch {};
+
+    defer {
+        std.Io.Dir.deleteTree(cwd, io, tmp_dir_path) catch {};
+    }
+
+    // Create test files
+    {
+        var f0 = try std.Io.Dir.createFile(cwd, io, tmp_dir_path ++ "/root.png", .{});
+        f0.close(io);
+
+        var f1 = try std.Io.Dir.createFile(cwd, io, tmp_dir_path ++ "/sub_b/img1.png", .{});
+        f1.close(io);
+        var f2 = try std.Io.Dir.createFile(cwd, io, tmp_dir_path ++ "/sub_b/img2.jpg", .{});
+        f2.close(io);
+        var f3 = try std.Io.Dir.createFile(cwd, io, tmp_dir_path ++ "/sub_b/txt1.txt", .{});
+        f3.close(io);
+
+        var f4 = try std.Io.Dir.createFile(cwd, io, tmp_dir_path ++ "/sub_a/pic.webp", .{});
+        f4.close(io);
+    }
+
+    var entries = std.ArrayList(DirectoryEntry).empty;
+    defer {
+        for (entries.items) |e| {
+            allocator.free(e.name);
+            allocator.free(e.full_path);
+        }
+        entries.deinit(allocator);
+    }
+
+    try scanDirectoryEntries(allocator, io, tmp_dir_path, &entries);
+
+    try std.testing.expectEqual(@as(usize, 3), entries.items.len);
+
+    // Index 0: sub_a
+    try std.testing.expectEqualStrings("sub_a", entries.items[0].name);
+    try std.testing.expectEqualStrings(tmp_dir_path ++ "/sub_a", entries.items[0].full_path);
+    try std.testing.expectEqual(@as(usize, 1), entries.items[0].image_count);
+
+    // Index 1: sub_b
+    try std.testing.expectEqualStrings("sub_b", entries.items[1].name);
+    try std.testing.expectEqualStrings(tmp_dir_path ++ "/sub_b", entries.items[1].full_path);
+    try std.testing.expectEqual(@as(usize, 2), entries.items[1].image_count);
+
+    // Index 2: sub_empty
+    try std.testing.expectEqualStrings("sub_empty", entries.items[2].name);
+    try std.testing.expectEqualStrings(tmp_dir_path ++ "/sub_empty", entries.items[2].full_path);
+    try std.testing.expectEqual(@as(usize, 0), entries.items[2].image_count);
 }
