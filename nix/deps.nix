@@ -10,14 +10,14 @@ linkFarm "zig-packages" [
   {
     name = "N-V-__8AAAYE5AKCegs5QNyDr6NipLJEpDIZnWm6mTn9Ec-k";
     path = fetchzip {
-      url = "https://github.com/libsdl-org/SDL_image/releases/download/release-3.4.4/SDL3_image-devel-3.4.4-VC.zip";
+      url = "https://release-assets.githubusercontent.com/github-production-release-asset/331517360/8ab4173d-1331-4bd2-9c87-1f99e2d2c076?sp=r&sv=2018-11-09&sr=b&spr=https&se=2026-07-25T16%3A52%3A47Z&rscd=attachment%3B+filename%3DSDL3_image-devel-3.4.4-VC.zip&rsct=application%2Foctet-stream&skoid=96c2d410-5711-43a1-aedd-ab1947aa7ab0&sktid=398a6654-997b-47e9-b12b-9515b896b4de&skt=2026-07-25T15%3A52%3A07Z&ske=2026-07-25T16%3A52%3A47Z&sks=b&skv=2018-11-09&sig=19fF56WdlEXxig4UeUrU8WB8OrcQ70otcggbooa%2BXs8%3D&jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmVsZWFzZS1hc3NldHMuZ2l0aHVidXNlcmNvbnRlbnQuY29tIiwia2V5Ijoia2V5MSIsImV4cCI6MTc4NDk5NjY3NywibmJmIjoxNzg0OTk0ODc3LCJwYXRoIjoicmVsZWFzZWFzc2V0cHJvZHVjdGlvbi5ibG9iLmNvcmUud2luZG93cy5uZXQifQ.pLGlbU2kfr_NCpL0-WgTb5w0GS7I6D4HEtFvWFswU-o&response-content-disposition=attachment%3B%20filename%3DSDL3_image-devel-3.4.4-VC.zip&response-content-type=application%2Foctet-stream";
       hash = "sha256-MEIoED1JGt4db3gqAlCKD2R098KvjO0N51wczFTXIr4=";
     };
   }
   {
     name = "N-V-__8AAE4JlAMyAncBlb_JYlu-9ZZHJlu9H-XNIGZspCR-";
     path = fetchzip {
-      url = "https://github.com/libsdl-org/SDL/releases/download/release-3.4.12/SDL3-devel-3.4.12-VC.zip";
+      url = "https://release-assets.githubusercontent.com/github-production-release-asset/330008801/d4fa4c0b-df4c-4548-bd04-07933431f02b?sp=r&sv=2018-11-09&sr=b&spr=https&se=2026-07-25T16%3A44%3A44Z&rscd=attachment%3B+filename%3DSDL3-devel-3.4.12-VC.zip&rsct=application%2Foctet-stream&skoid=96c2d410-5711-43a1-aedd-ab1947aa7ab0&sktid=398a6654-997b-47e9-b12b-9515b896b4de&skt=2026-07-25T15%3A43%3A53Z&ske=2026-07-25T16%3A44%3A44Z&sks=b&skv=2018-11-09&sig=0i1rqo2h0I0UcNUHreqYfHUXHJJycpJuEij1ZOW7p2o%3D&jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmVsZWFzZS1hc3NldHMuZ2l0aHVidXNlcmNvbnRlbnQuY29tIiwia2V5Ijoia2V5MSIsImV4cCI6MTc4NDk5NjY3NiwibmJmIjoxNzg0OTk0ODc2LCJwYXRoIjoicmVsZWFzZWFzc2V0cHJvZHVjdGlvbi5ibG9iLmNvcmUud2luZG93cy5uZXQifQ.epcb2dkLlozqQmRSA8wxy7OTAI5VhfdG1VKZUcaJQ_Y&response-content-disposition=attachment%3B%20filename%3DSDL3-devel-3.4.12-VC.zip&response-content-type=application%2Foctet-stream";
       hash = "sha256-912WsEbT/cXdVJvCgmLk6gWVZ/YXViu1k0odugKQZvA=";
     };
   }
@@ -32,8 +32,16 @@ linkFarm "zig-packages" [
   {
     name = "N-V-__8AAMHAnwPtValhGCZ2fBN0jcJtDqmUP6bS6RqshJhz";
     path = fetchzip {
-      url = "https://github.com/libsdl-org/SDL_ttf/releases/download/release-3.2.2/SDL3_ttf-devel-3.2.2-VC.zip";
+      url = "https://release-assets.githubusercontent.com/github-production-release-asset/337745832/f0b0fd85-2ec2-40bc-b535-33828bebd49f?sp=r&sv=2018-11-09&sr=b&spr=https&se=2026-07-25T16%3A44%3A06Z&rscd=attachment%3B+filename%3DSDL3_ttf-devel-3.2.2-VC.zip&rsct=application%2Foctet-stream&skoid=96c2d410-5711-43a1-aedd-ab1947aa7ab0&sktid=398a6654-997b-47e9-b12b-9515b896b4de&skt=2026-07-25T15%3A43%3A49Z&ske=2026-07-25T16%3A44%3A06Z&sks=b&skv=2018-11-09&sig=5JfffJcPaKudW%2F91usl95ujcuY8E7G1FxPtkX5sg9vg%3D&jwt=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJnaXRodWIuY29tIiwiYXVkIjoicmVsZWFzZS1hc3NldHMuZ2l0aHVidXNlcmNvbnRlbnQuY29tIiwia2V5Ijoia2V5MSIsImV4cCI6MTc4NDk5NjY3NiwibmJmIjoxNzg0OTk0ODc2LCJwYXRoIjoicmVsZWFzZWFzc2V0cHJvZHVjdGlvbi5ibG9iLmNvcmUud2luZG93cy5uZXQifQ.epcb2dkLlozqQmRSA8wxy7OTAI5VhfdG1VKZUcaJQ_Y&response-content-disposition=attachment%3B%20filename%3DSDL3_ttf-devel-3.2.2-VC.zip&response-content-type=application%2Foctet-stream";
       hash = "sha256-6x1bz70xfUJrx/rhy51hcDQuSJJIKu0fV9ig4hQe9O8=";
+    };
+  }
+  {
+    name = "fuzzig-0.1.3-Ji0xit9oAQAxavWq4UDsI9S0nsUVOsqZbxUbZUzlKu4x";
+    path = fetchgit {
+      url = "https://codeberg.org/fjebaker/fuzzig";
+      rev = "97ed5ef57c2a11cbc21db061a2ea093c3df64de2";
+      hash = "sha256-chHxGrLAiq2qlzldHxdGrZ1oCxRwtRLwqguvbcGRrKU=";
     };
   }
   {
@@ -42,6 +50,13 @@ linkFarm "zig-packages" [
       url = "https://github.com/johan0A/clay-zig-bindings";
       rev = "e0286c488a303b93501944ccde10730cc74ecd58";
       hash = "sha256-D/npnyjGykDygu4z+wrUR1TCGWnG3vMbtF+tH/JrB+g=";
+    };
+  }
+  {
+    name = "zg-0.16.2-oGqU3HqftgI6rwFS90ypwfjgToH8Pz829OKuFURlm773";
+    path = fetchzip {
+      url = "https://codeberg.org/atman/zg/archive/v0.16.2.tar.gz";
+      hash = "sha256-YeLHpMVSyzhe8uvh9uIiEhdSLhQuE8DEQDsHjuDycYY=";
     };
   }
 ]

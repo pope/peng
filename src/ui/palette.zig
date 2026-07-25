@@ -354,6 +354,13 @@ pub fn renderPalette(
                 }
 
                 // Render visible items
+                if (palette.mode == .files) {
+                    state.lockImageList();
+                }
+                defer if (palette.mode == .files) {
+                    state.unlockImageList();
+                };
+
                 var match_count = start_visible_idx;
                 for (matching_indices.items[start_visible_idx..end_visible_idx]) |real_idx| {
                     const is_selected = (match_count == palette.selected_idx);
@@ -386,9 +393,7 @@ pub fn renderPalette(
                     })({
                         switch (palette.mode) {
                             .files => {
-                                state.lockImageList();
                                 const path = if (real_idx < state.image_list.items.len) state.image_list.items[real_idx] else "";
-                                state.unlockImageList();
                                 const display_filename = truncateFilename(frame_allocator, std.fs.path.basename(path), 492.0 * scale_x, @intFromFloat(13.0 * dpi_scale), measure_data);
                                 const display_dir = truncateDirectory(frame_allocator, std.fs.path.dirname(path) orelse ".", 488.0 * scale_x, @intFromFloat(11.0 * dpi_scale), measure_data);
 

@@ -66,6 +66,19 @@
           sdl3-image = pkgs.sdl3-image.override { enableSTB = false; };
           peng = pkgs.callPackage ./nix/peng.nix { inherit sdl3-image; };
           jail = jailed-agents.lib.${system}.internals.jail;
+          updateNixDeps = pkgs.writeShellApplication {
+            name = "update-nix-deps";
+            runtimeInputs = with pkgs; [
+              gnused
+              self.formatter.${system}
+              zon2nix
+            ];
+            text = ''
+              zon2nix > nix/deps.nix
+              sed 's|?ref=.*"|"|' -i nix/deps.nix
+              treefmt
+            '';
+          };
         in
         {
           packages.${system} = {
@@ -80,8 +93,8 @@
                 hyperfine
                 lldb
                 self.formatter.${system}
+                updateNixDeps
                 zls
-                zon2nix
               ]
               ++ lib.optionals stdenv.hostPlatform.isLinux [
                 perf

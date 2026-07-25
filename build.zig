@@ -12,6 +12,11 @@ pub fn build(b: *std.Build) void {
     // Transitively retrieve the clay dependency from zclay's sub-builder
     const clay_dep = zclay_dep.builder.dependency("clay", .{});
 
+    const fuzzig_dep = b.dependency("fuzzig", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Create the standalone SDL boundary module
     const sdl_module = b.createModule(.{
         .root_source_file = b.path("src/sdl/root.zig"),
@@ -72,6 +77,9 @@ pub fn build(b: *std.Build) void {
 
     // Import the zclay Zig module into our executable module
     exe.root_module.addImport("zclay", zclay_dep.module("zclay"));
+
+    // Import fuzzig module into executable module
+    exe.root_module.addImport("fuzzig", fuzzig_dep.module("fuzzig"));
 
     // Include Clay and its SDL3 renderer via root_module
     exe.root_module.addIncludePath(clay_dep.path(""));

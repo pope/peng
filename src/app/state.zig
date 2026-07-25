@@ -1,4 +1,5 @@
 const std = @import("std");
+const fuzzig = @import("fuzzig");
 const sdl = @import("sdl");
 const clay = @import("zclay");
 const types = @import("types.zig");
@@ -46,14 +47,9 @@ pub const ElementTag = enum(usize) {
     }
 };
 
-pub const PaletteMode = enum {
-    inactive,
-    files,
-    actions,
-    set_brightness,
-    set_contrast,
-    go_to_image,
-};
+pub const palette_module = @import("palette.zig");
+pub const PaletteMode = palette_module.PaletteMode;
+pub const PaletteState = palette_module.PaletteState;
 
 pub const DragState = union(enum) {
     none,
@@ -71,36 +67,6 @@ pub const TextCacheModule = @import("../ui/text_cache.zig");
 pub const TextCacheKey = TextCacheModule.TextCacheKey;
 pub const TextCacheValue = TextCacheModule.TextCacheValue;
 pub const TextCache = TextCacheModule.TextCache;
-
-pub const PaletteState = struct {
-    mode: PaletteMode = .inactive,
-    query: std.ArrayList(u8),
-    selected_idx: usize = 0,
-    selection_dirty: bool = false,
-    matches: std.ArrayList(usize),
-    allocator: std.mem.Allocator,
-
-    pub fn init(allocator: std.mem.Allocator) PaletteState {
-        return .{
-            .query = std.ArrayList(u8).empty,
-            .matches = std.ArrayList(usize).empty,
-            .allocator = allocator,
-        };
-    }
-
-    pub fn deinit(self: *PaletteState) void {
-        self.query.deinit(self.allocator);
-        self.matches.deinit(self.allocator);
-    }
-
-    pub fn reset(self: *PaletteState) void {
-        self.query.clearRetainingCapacity();
-        self.matches.clearRetainingCapacity();
-        self.mode = .inactive;
-        self.selected_idx = 0;
-        self.selection_dirty = true;
-    }
-};
 
 pub fn startTextInput(window: ?sdl.Window) void {
     if (window) |win| {
@@ -400,55 +366,11 @@ pub const ViewerState = struct {
     pub fn rebuildPaletteMatches(self: *ViewerState) !void {
         self.lockImageList();
         defer self.unlockImageList();
-
-        self.palette.matches.clearRetainingCapacity();
-        const query = self.palette.query.items;
-        if (query.len == 0) {
-            for (self.image_list.items, 0..) |_, real_idx| {
-                try self.palette.matches.append(self.allocator, real_idx);
-            }
-            return;
-        }
-
-        for (self.image_list.items, 0..) |item_path, real_idx| {
-            const basename = std.fs.path.basename(item_path);
-            if (fs.containsIgnoreCase(basename, query)) {
-                try self.palette.matches.append(self.allocator, real_idx);
-            }
-        }
+        try self.palette.rebuildFileMatches(self.image_list.items);
     }
 
     pub fn rebuildActionMatches(self: *ViewerState) !void {
-        self.palette.matches.clearRetainingCapacity();
-        const query = self.palette.query.items;
-        if (query.len == 0) {
-            for (commands.actions.app_actions, 0..) |_, idx| {
-                try self.palette.matches.append(self.allocator, idx);
-            }
-            return;
-        }
-
-        var stack_query_lower: [256]u8 = undefined;
-        const query_lower = if (query.len <= stack_query_lower.len) blk: {
-            for (query, 0..) |c_val, idx| {
-                stack_query_lower[idx] = std.ascii.toLower(c_val);
-            }
-            break :blk stack_query_lower[0..query.len];
-        } else blk: {
-            const buf = try self.allocator.alloc(u8, query.len);
-            for (query, 0..) |c_val, idx| {
-                buf[idx] = std.ascii.toLower(c_val);
-            }
-            break :blk buf;
-        };
-        defer if (query.len > stack_query_lower.len) self.allocator.free(query_lower);
-
-        for (commands.actions.app_actions, 0..) |action_id, idx| {
-            const meta = commands.actions.getActionMetadata(action_id);
-            if (matchesQueryLower(meta.name, query_lower)) {
-                try self.palette.matches.append(self.allocator, idx);
-            }
-        }
+        try self.palette.rebuildActionMatches(commands.actions.app_actions);
     }
 
     pub fn triggerAction(self: *ViewerState, action_id: commands.actions.AppActionId) !void {
