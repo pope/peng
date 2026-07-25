@@ -136,7 +136,7 @@ pub fn convertRgb24ToRgba32Simd(src: []const u8, dst: []u8, width: usize, height
             x_src += 12;
             x_dst += 16;
         }) {
-            const chunk = @as(*align(1) const Vec16, @ptrCast(&src_row[x_src])).* ;
+            const chunk = @as(*align(1) const Vec16, @ptrCast(&src_row[x_src])).*;
             const rgba_vec = @shuffle(u8, chunk, alphas, mask);
             @as(*align(1) Vec16, @ptrCast(&dst_row[x_dst])).* = rgba_vec;
         }
@@ -171,7 +171,7 @@ pub fn convertBgr24ToRgba32Simd(src: []const u8, dst: []u8, width: usize, height
             x_src += 12;
             x_dst += 16;
         }) {
-            const chunk = @as(*align(1) const Vec16, @ptrCast(&src_row[x_src])).* ;
+            const chunk = @as(*align(1) const Vec16, @ptrCast(&src_row[x_src])).*;
             const rgba_vec = @shuffle(u8, chunk, alphas, bgr_mask);
             @as(*align(1) Vec16, @ptrCast(&dst_row[x_dst])).* = rgba_vec;
         }
@@ -212,4 +212,3 @@ test "convertBgr24ToRgba32Simd correctness" {
     try std.testing.expectEqual(@as(u8, 150), dst[18]);
     try std.testing.expectEqual(@as(u8, 255), dst[19]);
 }
-
