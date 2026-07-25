@@ -213,7 +213,9 @@ pub fn main(init: std.process.Init) !void {
             if (args_it.next()) |val_str| {
                 if (std.fmt.parseFloat(f64, val_str)) |val| {
                     max_tolerance_pct = val;
-                } else |_| {}
+                } else |err| {
+                    std.log.warn("Invalid float value '{s}' for --tolerance: {}", .{ val_str, err });
+                }
             }
         }
     }
@@ -228,11 +230,12 @@ pub fn main(init: std.process.Init) !void {
         },
         .stdin = .ignore,
         .stdout = .pipe,
+        .stderr = .ignore,
     });
     defer {
         if (child.id != null) {
             child.kill(init.io);
-            _ = child.wait(init.io) catch {};
+            _ = child.wait(init.io) catch |err| std.log.warn("Failed to wait for child process exit: {}", .{err});
             child.id = null;
         }
     }
@@ -276,13 +279,24 @@ pub fn main(init: std.process.Init) !void {
     // Recreate current-run dir
     if (std.Io.Dir.openDir(std.Io.Dir.cwd(), init.io, run_dir, .{ .iterate = true })) |dir| {
         var it = std.Io.Dir.iterate(dir);
-        while (it.next(init.io) catch null) |entry| {
-            std.Io.Dir.deleteFile(dir, init.io, entry.name) catch {};
+        while (it.next(init.io) catch |err| blk: {
+            std.log.warn("Iterating run dir failed: {}", .{err});
+            break :blk null;
+        }) |entry| {
+            std.Io.Dir.deleteFile(dir, init.io, entry.name) catch |err| {
+                std.log.warn("Deleting old file '{s}' failed: {}", .{ entry.name, err });
+            };
         }
         std.Io.Dir.close(dir, init.io);
-    } else |_| {}
-    std.Io.Dir.createDirPath(std.Io.Dir.cwd(), init.io, base_dir) catch {};
-    std.Io.Dir.createDirPath(std.Io.Dir.cwd(), init.io, run_dir) catch {};
+    } else |err| {
+        std.log.warn("Could not open existing run dir '{s}': {}", .{ run_dir, err });
+    }
+    std.Io.Dir.createDirPath(std.Io.Dir.cwd(), init.io, base_dir) catch |err| {
+        std.log.err("Failed to create base dir '{s}': {}", .{ base_dir, err });
+    };
+    std.Io.Dir.createDirPath(std.Io.Dir.cwd(), init.io, run_dir) catch |err| {
+        std.log.err("Failed to create run dir '{s}': {}", .{ run_dir, err });
+    };
 
     var steps_with_discrepancies: usize = 0;
 
