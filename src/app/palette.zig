@@ -93,12 +93,13 @@ pub const PaletteState = struct {
     }
 
     pub fn loadDirectoryEntries(self: *PaletteState, io: std.Io, dir_path: []const u8) !void {
-        const dir_path_copy = try self.allocator.dupe(u8, dir_path);
+        const dir_path_copy = try self.allocator.dupe(u8, std.mem.trimEnd(u8, dir_path, "/\\"));
         defer self.allocator.free(dir_path_copy);
 
         var navigated_up = false;
         if (self.current_nav_dir.items.len > 0) {
-            if (std.fs.path.dirname(self.current_nav_dir.items)) |parent_dir| {
+            var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
+            if (fs.getParentDirBuf(self.current_nav_dir.items, &parent_buf)) |parent_dir| {
                 if (std.mem.eql(u8, dir_path_copy, parent_dir)) {
                     navigated_up = true;
                 }
@@ -106,7 +107,8 @@ pub const PaletteState = struct {
         }
 
         if (navigated_up) {
-            const child_base = std.fs.path.basename(self.current_nav_dir.items);
+            var buf: [std.fs.max_path_bytes]u8 = undefined;
+            const child_base = fs.getChildBasename(io, self.current_nav_dir.items, &buf);
             self.last_child_dir.clearRetainingCapacity();
             try self.last_child_dir.appendSlice(self.allocator, child_base);
         } else {

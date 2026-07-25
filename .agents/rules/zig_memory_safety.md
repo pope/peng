@@ -43,3 +43,17 @@
 ## Single-Pass Filesystem Traversal
 
 - Combine file and subfolder counting into a single directory traversal (`countFolderContents`) returning a composite struct (`FolderCounts`) to cut filesystem disk I/O operations in half.
+
+## Consistent Return Memory Ownership
+
+- Functions accepting an `allocator` MUST maintain uniform memory ownership across all return branches. NEVER return a dynamically allocated slice in one control path while returning borrowed parameters or static literals in others.
+- PREFER non-allocating, buffer-based function signatures (`fn foo(dir: []const u8, buf: []u8) ?[]const u8`) using caller-provided stack buffers over mixed heap/borrowed return slices.
+
+## Leak Detection in Unit Tests
+
+- DO NOT wrap `std.testing.allocator` inside an `ArenaAllocator` when testing non-arena code. Arena bulk-deallocation masks memory leaks and prevents Zig's test runner leak detector from catching un-freed allocations.
+
+## No Silent Error Swallowing on Fallbacks
+
+- NEVER use silent error suppression (e.g. `catch null`, `catch {}`, or `else |_| {}`) when catching formatting or filesystem errors.
+- ALWAYS log a diagnostic warning (`std.log.warn` or `std.log.err`) with contextual parameters before returning fallback or `null` values.

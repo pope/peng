@@ -442,7 +442,8 @@ pub const ViewerState = struct {
                 try self.palette.loadDirectoryEntries(self.io, start_dir);
                 while (self.palette.dir_items.items.len == 0) {
                     const curr = self.palette.current_nav_dir.items;
-                    if (std.fs.path.dirname(curr)) |parent_dir| {
+                    var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
+                    if (fs.getParentDirBuf(curr, &parent_buf)) |parent_dir| {
                         if (!std.mem.eql(u8, parent_dir, curr)) {
                             try self.palette.loadDirectoryEntries(self.io, parent_dir);
                             continue;
@@ -1460,6 +1461,50 @@ test "ViewerState.openPalette directory_navigator steps up if 0 subdirectories" 
     var found_leaf_selected = false;
     if (state.palette.selected_idx < state.palette.dir_items.items.len) {
         if (std.mem.eql(u8, state.palette.dir_items.items[state.palette.selected_idx].name, "child_leaf")) {
+            found_leaf_selected = true;
+        }
+    }
+    try std.testing.expect(found_leaf_selected);
+}
+
+test "ViewerState.openPalette steps up from top-level relative leaf dir without slashes to dot" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const cwd = std.Io.Dir.cwd();
+
+    const top_leaf = "tmp_top_level_leaf_test";
+    std.Io.Dir.createDirPath(cwd, io, top_leaf) catch {};
+    defer {
+        std.Io.Dir.deleteTree(cwd, io, top_leaf) catch {};
+    }
+
+    var state = ViewerState{
+        .directory_arena = std.heap.ArenaAllocator.init(allocator),
+        .image_list = std.ArrayList([]const u8).empty,
+        .image_list_mutex = .init,
+        .cache = .{},
+        .cache_mutex = .init,
+        .allocator = allocator,
+        .io = io,
+        .palette = PaletteState.init(allocator),
+        .rotation_map = std.StringHashMap(f32).init(allocator),
+        .window = null,
+        .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
+    };
+    defer state.deinit();
+
+    const img_path = top_leaf ++ "/photo.png";
+    try state.image_list.append(allocator, img_path);
+    state.current_index = 0;
+
+    try state.openPalette(.directory_navigator);
+    // Should step up to "." because top_leaf has 0 subdirectories
+    try std.testing.expectEqualStrings(".", state.palette.current_nav_dir.items);
+
+    // Verify top_leaf is pre-selected in "."
+    var found_leaf_selected = false;
+    if (state.palette.selected_idx < state.palette.dir_items.items.len) {
+        if (std.mem.eql(u8, state.palette.dir_items.items[state.palette.selected_idx].name, top_leaf)) {
             found_leaf_selected = true;
         }
     }

@@ -219,11 +219,10 @@ pub fn handlePaletteKeys(
         },
         .left => {
             if (palette.mode == .directory_navigator) {
-                if (std.fs.path.dirname(palette.current_nav_dir.items)) |parent_dir| {
-                    const parent_copy = try self.allocator.dupe(u8, parent_dir);
-                    defer self.allocator.free(parent_copy);
+                var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
+                if (fs.getParentDirBuf(palette.current_nav_dir.items, &parent_buf)) |parent_dir| {
                     palette.query.clearRetainingCapacity();
-                    try palette.loadDirectoryEntries(self.io, parent_copy);
+                    try palette.loadDirectoryEntries(self.io, parent_dir);
                 }
                 return true;
             }
@@ -381,11 +380,10 @@ pub fn handlePaletteKeys(
                     .set_brightness, .set_contrast, .go_to_image, .set_slideshow_interval, .inactive => {},
                 }
             } else if (palette.mode == .directory_navigator) {
-                if (std.fs.path.dirname(palette.current_nav_dir.items)) |parent_dir| {
-                    const parent_copy = try self.allocator.dupe(u8, parent_dir);
-                    defer self.allocator.free(parent_copy);
+                var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
+                if (fs.getParentDirBuf(palette.current_nav_dir.items, &parent_buf)) |parent_dir| {
                     palette.query.clearRetainingCapacity();
-                    try palette.loadDirectoryEntries(self.io, parent_copy);
+                    try palette.loadDirectoryEntries(self.io, parent_dir);
                 }
             }
             return true;
@@ -554,4 +552,39 @@ test "handlePaletteKeys directory_navigator key interactions" {
     // Test Shift+Enter key on current directory -> starts async path scan and closes palette
     _ = try handlePaletteKeys(&state, .return_key, .{ .shift = true });
     try std.testing.expectEqual(app_state.PaletteMode.inactive, state.palette.mode);
+}
+
+test "handlePaletteKeys stepping up from dot to parent directory preselects working dir" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = ViewerState{
+        .directory_arena = std.heap.ArenaAllocator.init(allocator),
+        .image_list = std.ArrayList([]const u8).empty,
+        .image_list_mutex = .init,
+        .cache = .{},
+        .cache_mutex = .init,
+        .allocator = allocator,
+        .io = io,
+        .palette = PaletteState.init(allocator),
+        .rotation_map = std.StringHashMap(f32).init(allocator),
+        .window = null,
+        .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
+    };
+    defer state.deinit();
+
+    try state.palette.loadDirectoryEntries(io, ".");
+    state.palette.mode = .directory_navigator;
+    try std.testing.expectEqualStrings(".", state.palette.current_nav_dir.items);
+
+    _ = try handlePaletteKeys(&state, .left, .{});
+    try std.testing.expectEqualStrings("..", state.palette.current_nav_dir.items);
+
+    var found_cwd_selected = false;
+    if (state.palette.selected_idx < state.palette.dir_items.items.len) {
+        if (std.mem.eql(u8, state.palette.dir_items.items[state.palette.selected_idx].name, "peng")) {
+            found_cwd_selected = true;
+        }
+    }
+    try std.testing.expect(found_cwd_selected);
 }

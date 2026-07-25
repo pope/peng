@@ -29,6 +29,59 @@ pub fn isImageExtension(ext: []const u8) bool {
     return false;
 }
 
+fn isAllDotDots(path: []const u8) bool {
+    var it = std.mem.tokenizeAny(u8, path, "/\\");
+    var count: usize = 0;
+    while (it.next()) |comp| {
+        if (!std.mem.eql(u8, comp, "..")) return false;
+        count += 1;
+    }
+    return count > 0;
+}
+
+pub fn getParentDirBuf(dir: []const u8, buf: []u8) ?[]const u8 {
+    const trimmed = std.mem.trimEnd(u8, dir, "/\\");
+    if (trimmed.len == 0) return null;
+
+    if (isAllDotDots(trimmed)) {
+        const sep = if (std.mem.indexOfScalar(u8, trimmed, '\\') != null) "\\" else "/";
+        return std.fmt.bufPrint(buf, "{s}{s}..", .{ trimmed, sep }) catch |err| {
+            std.log.warn("Failed to format parent directory for '{s}': {}", .{ trimmed, err });
+            return null;
+        };
+    }
+
+    var last_sep: ?usize = null;
+    var i: usize = trimmed.len;
+    while (i > 0) {
+        i -= 1;
+        if (trimmed[i] == '/' or trimmed[i] == '\\') {
+            last_sep = i;
+            break;
+        }
+    }
+
+    if (last_sep) |sep_idx| {
+        if (sep_idx == 0) {
+            return trimmed[0..1];
+        }
+        if (sep_idx == 2 and std.ascii.isAlphabetic(trimmed[0]) and trimmed[1] == ':') {
+            return trimmed[0..3];
+        }
+        return trimmed[0..sep_idx];
+    }
+
+    if (std.mem.eql(u8, trimmed, ".")) {
+        return "..";
+    }
+
+    if (std.mem.eql(u8, trimmed, "/") or (trimmed.len == 2 and std.ascii.isAlphabetic(trimmed[0]) and trimmed[1] == ':')) {
+        return null;
+    }
+
+    return ".";
+}
+
 pub const DirectoryEntry = struct {
     name: []const u8,
     full_path: []const u8,
@@ -489,4 +542,67 @@ test "scanDirectoryEntries" {
     try std.testing.expectEqualStrings("sub_empty", entries.items[2].name);
     try std.testing.expectEqualStrings(tmp_dir_path ++ "/sub_empty", entries.items[2].full_path);
     try std.testing.expectEqual(@as(usize, 0), entries.items[2].image_count);
+}
+
+pub fn getChildBasename(io: std.Io, path: []const u8, buf: []u8) []const u8 {
+    const trimmed = std.mem.trimEnd(u8, path, "/\\");
+    const base = blk: {
+        var i = trimmed.len;
+        while (i > 0) {
+            i -= 1;
+            if (trimmed[i] == '/' or trimmed[i] == '\\') {
+                break :blk trimmed[i + 1 ..];
+            }
+        }
+        break :blk trimmed;
+    };
+    if (std.mem.eql(u8, base, ".") or std.mem.eql(u8, base, "..")) {
+        if (std.Io.Dir.openDir(std.Io.Dir.cwd(), io, trimmed, .{})) |dir| {
+            var mut_dir = dir;
+            defer mut_dir.close(io);
+            if (mut_dir.realPath(io, buf)) |len| {
+                const real_trimmed = std.mem.trimEnd(u8, buf[0..len], "/\\");
+                var i = real_trimmed.len;
+                while (i > 0) {
+                    i -= 1;
+                    if (real_trimmed[i] == '/' or real_trimmed[i] == '\\') {
+                        return real_trimmed[i + 1 ..];
+                    }
+                }
+                return real_trimmed;
+            } else |err| {
+                std.log.debug("realPath failed for '{s}': {}", .{ trimmed, err });
+            }
+        } else |err| {
+            std.log.debug("openDir failed for '{s}': {}", .{ trimmed, err });
+        }
+    }
+    return base;
+}
+
+test "getParentDirBuf" {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+
+    try std.testing.expectEqualStrings(".", getParentDirBuf("5 Centimeters per Second", &buf).?);
+    try std.testing.expectEqualStrings("foo", getParentDirBuf("foo/bar", &buf).?);
+    try std.testing.expectEqualStrings("foo", getParentDirBuf("foo/bar/", &buf).?);
+    try std.testing.expectEqualStrings("foo", getParentDirBuf("foo\\bar", &buf).?);
+    try std.testing.expectEqualStrings("foo", getParentDirBuf("foo\\bar\\", &buf).?);
+    try std.testing.expectEqualStrings(".", getParentDirBuf("./foo", &buf).?);
+    try std.testing.expectEqualStrings("..", getParentDirBuf(".", &buf).?);
+    try std.testing.expectEqualStrings("../..", getParentDirBuf("..", &buf).?);
+    try std.testing.expectEqualStrings("../../..", getParentDirBuf("../..", &buf).?);
+    try std.testing.expectEqualStrings("..\\..\\..", getParentDirBuf("..\\..", &buf).?);
+    try std.testing.expect(getParentDirBuf("/", &buf) == null);
+    try std.testing.expect(getParentDirBuf("C:", &buf) == null);
+    try std.testing.expect(getParentDirBuf("C:\\", &buf) == null);
+    try std.testing.expect(getParentDirBuf("C:/", &buf) == null);
+    try std.testing.expect(getParentDirBuf("", &buf) == null);
+}
+
+test "getChildBasename" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const b = getChildBasename(io, ".", &buf);
+    try std.testing.expectEqualStrings("peng", b);
 }
