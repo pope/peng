@@ -162,6 +162,7 @@ pub const ViewerState = struct {
     window_pixel_format: u32 = sdl.PixelFormat.unknown,
     palette: PaletteState,
     window: ?sdl.Window,
+    cached_window_title: ?[]const u8 = null,
     is_fullscreen: bool = false,
     running: bool = true,
     show_stats_overlay: bool = false,
@@ -278,6 +279,9 @@ pub const ViewerState = struct {
         for (self.pending_ipc_commands.items) |cmd_data| {
             self.allocator.free(cmd_data.command);
             self.allocator.destroy(cmd_data);
+        }
+        if (self.cached_window_title) |t| {
+            self.allocator.free(t);
         }
         self.pending_ipc_commands.deinit(self.allocator);
         self.event_queue.deinit(self.allocator, self.io);

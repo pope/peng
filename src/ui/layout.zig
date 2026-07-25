@@ -12,6 +12,8 @@ const renderStatsOverlay = @import("stats.zig").renderStatsOverlay;
 const renderer = @import("renderer.zig");
 const saveTextureToPng = @import("graphics.zig").saveTextureToPng;
 const ElementTag = app_state.ElementTag;
+const truncateFilename = @import("text_utils.zig").truncateFilename;
+const sdl3MeasureText = @import("graphics.zig").sdl3MeasureText;
 
 pub fn renderFrame(
     state: *ViewerState,
@@ -119,6 +121,70 @@ pub fn renderFrame(
 
         // Header/Title bar UI
         if (!state.is_fullscreen) {
+            var raw_title: []const u8 = "Peng Image Viewer";
+            if (total_images > 0) {
+                if (state.current_index) |idx| {
+                    state.lockImageList();
+                    defer state.unlockImageList();
+                    if (idx < state.image_list.items.len) {
+                        const path = state.image_list.items[idx];
+                        raw_title = std.fs.path.basename(path);
+                    }
+                }
+            }
+
+            if (state.window) |win| {
+                const title_changed = if (state.cached_window_title) |cached|
+                    !std.mem.eql(u8, cached, raw_title)
+                else
+                    true;
+
+                if (title_changed) {
+                    if (frame_allocator.dupeZ(u8, raw_title)) |tz| {
+                        win.setTitle(tz);
+                    } else |err| {
+                        std.log.err("Failed to allocate window title string: {}", .{err});
+                    }
+
+                    if (state.cached_window_title) |cached| {
+                        state.allocator.free(cached);
+                    }
+                    state.cached_window_title = state.allocator.dupe(u8, raw_title) catch |err| blk: {
+                        std.log.err("Failed to update cached window title: {}", .{err});
+                        break :blk null;
+                    };
+                }
+            }
+
+            const is_loading = state.is_loading_files.load(.acquire);
+            var count_str: ?[]const u8 = null;
+            if (total_images > 0) {
+                const idx = (state.current_index orelse 0) + 1;
+                const count_buf = try frame_allocator.alloc(u8, 64);
+                count_str = if (is_loading)
+                    try std.fmt.bufPrint(count_buf, "Image {} of {}...", .{ idx, total_images })
+                else
+                    try std.fmt.bufPrint(count_buf, "Image {} of {}", .{ idx, total_images });
+            } else if (is_loading) {
+                count_str = "Loading images...";
+            }
+
+            var right_text_w: f32 = 0.0;
+            if (count_str) |cstr| {
+                var count_cfg = clay.TextElementConfig{
+                    .font_id = 0,
+                    .font_size = @intFromFloat(12.0 * dpi_scale),
+                };
+                right_text_w = sdl3MeasureText(cstr, &count_cfg, measure_data).w;
+            }
+
+            const padding_w = 40.0 * scale_x;
+            const gap_w = 20.0 * scale_x;
+            const max_title_w = @max(available_width - padding_w - right_text_w - gap_w, 40.0 * scale_x);
+
+            const font_size_u16: u16 = @intFromFloat(16.0 * dpi_scale);
+            const title_display = truncateFilename(frame_allocator, raw_title, max_title_w, font_size_u16, measure_data);
+
             clay.UI()(.{
                 .id = clay.getElementId("TitleBar"),
                 .layout = .{
@@ -139,29 +205,16 @@ pub fn renderFrame(
                     .color = theme.surface0,
                 },
             })({
-                clay.text("Peng Image Viewer", .{
+                clay.text(title_display, .{
                     .color = theme.text,
-                    .font_size = @intFromFloat(16.0 * dpi_scale),
+                    .font_size = font_size_u16,
                     .font_id = 0,
                 });
 
                 clay.UI()(.{ .layout = .{ .sizing = .{ .w = .grow, .h = .grow } } })({});
 
-                const is_loading = state.is_loading_files.load(.acquire);
-                if (total_images > 0) {
-                    const idx = (state.current_index orelse 0) + 1;
-                    const count_buf = try frame_allocator.alloc(u8, 64);
-                    const count_str = if (is_loading)
-                        try std.fmt.bufPrint(count_buf, "Image {} of {}...", .{ idx, total_images })
-                    else
-                        try std.fmt.bufPrint(count_buf, "Image {} of {}", .{ idx, total_images });
-                    clay.text(count_str, .{
-                        .color = theme.subtext0,
-                        .font_size = @intFromFloat(12.0 * dpi_scale),
-                        .font_id = 0,
-                    });
-                } else if (is_loading) {
-                    clay.text("Loading images...", .{
+                if (count_str) |cstr| {
+                    clay.text(cstr, .{
                         .color = theme.subtext0,
                         .font_size = @intFromFloat(12.0 * dpi_scale),
                         .font_id = 0,

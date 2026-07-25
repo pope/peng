@@ -77,3 +77,18 @@ pub fn formatSize(allocator: std.mem.Allocator, bytes: u64) ![]const u8 {
     const mb = kb / 1024.0;
     return std.fmt.allocPrint(allocator, "{d:.1} MB", .{mb});
 }
+
+test "formatSize" {
+    const str = try formatSize(std.testing.allocator, 1048576);
+    defer std.testing.allocator.free(str);
+    try std.testing.expectEqualStrings("1.0 MB", str);
+}
+
+test "truncateFilename fallback without fonts" {
+    const data = MeasureTextUserData{
+        .fonts = &.{null},
+        .allocator = std.testing.allocator,
+    };
+    const res = truncateFilename(std.testing.allocator, "very_long_filename.png", 100.0, 16, &data);
+    try std.testing.expectEqualStrings("very_long_filename.png", res);
+}

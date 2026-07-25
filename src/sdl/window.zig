@@ -35,6 +35,10 @@ pub const Window = struct {
         }
     }
 
+    pub fn setTitle(self: Window, title: [:0]const u8) void {
+        _ = c.SDL_SetWindowTitle(self.ptr, title.ptr);
+    }
+
     pub fn claimForGpu(self: Window, device: @import("gpu.zig").Device) bool {
         return c.SDL_ClaimWindowForGPUDevice(device.ptr, @ptrCast(self.ptr));
     }
