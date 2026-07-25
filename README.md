@@ -1,17 +1,38 @@
 # Peng — GPU-Accelerated Image Viewer
 
-Peng is a modern, high-performance, GPU-accelerated image viewer built in **Zig** using **SDL3**, **Vulkan**, and **Clay UI**. It is designed to be extremely fast, memory-safe, and scriptable via a thread-safe UNIX Domain Socket (UDS) IPC interface.
+Peng is a modern, high-performance, GPU-accelerated image viewer built in **Zig** using **SDL3** (Vulkan/Metal), and **Clay UI**. It is designed to be extremely fast, memory-safe, and scriptable via a thread-safe UNIX Domain Socket (UDS) IPC interface.
 
 ______________________________________________________________________
 
 ## Features
 
-- **GPU Acceleration:** Uses the modern SDL3 GPU API with a Vulkan backend.
+- **GPU Acceleration:** Uses the modern SDL3 GPU API with Vulkan and Metal backends.
 - **Advanced Filtering & Resampling:** Features high-quality resampling shaders including Bilinear, Mitchell-Netravali, and Lanczos3 filters.
-- **Command Palette:** Built-in searchable palettes for commands (`Ctrl+P`) and file navigation (`Ctrl+O`).
-- **Interactive Stats Overlay:** Toggleable sidebar (`S` key) displaying CPU/GPU decoding times, active resampling shader, rendering metrics, and image attributes.
+- **Command Palette:** Built-in searchable palettes for commands (`F1` or `Ctrl+Shift+P`) and file navigation (`Ctrl+P`).
+- **Interactive Stats Overlay:** Toggleable sidebar (`I` key) displaying CPU/GPU decoding times, active resampling shader, rendering metrics, and image attributes.
 - **Non-Blocking Headless Mode:** Runs offscreen without X11 or Wayland (ideal for CI and servers) with `--headless`.
 - **Scriptable IPC Control:** External client controls the viewer's zoom, pan, filters, and takes screenshots in real-time.
+
+______________________________________________________________________
+
+## Keyboard Shortcuts
+
+| Shortcut              | Action                               |
+| :-------------------- | :----------------------------------- |
+| `F1` / `Ctrl+Shift+P` | Open Command Palette (Actions)       |
+| `Ctrl+P`              | Open File Search Palette             |
+| `I`                   | Toggle Stats Overlay                 |
+| `F` / `F11`           | Toggle Fullscreen                    |
+| `Space` / `Right`     | Next Image                           |
+| `Backspace` / `Left`  | Previous Image                       |
+| `Home` / `End`        | Jump to First / Last Image           |
+| `=` / `-`             | Zoom In / Out                        |
+| `R` / `0`             | Reset Zoom & Pan                     |
+| `[` / `]`             | Rotate Counter-Clockwise / Clockwise |
+| `P` / `O`             | Increase / Decrease Brightness       |
+| `L` / `K`             | Increase / Decrease Contrast         |
+| `Shift+R`             | Reset Brightness & Contrast          |
+| `Esc`                 | Close Palette / Exit Application     |
 
 ______________________________________________________________________
 
@@ -25,7 +46,7 @@ direnv allow
 # OR: nix develop
 
 # Build all executables in release or debug mode
-zig build --libc libc.txt
+zig build
 ```
 
 This compiles three executables to `./zig-out/bin/`:
@@ -77,22 +98,29 @@ You can send commands to a running instance using the `peng-msg` utility:
 # Pan coordinates (x, y)
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock pan 100 -50
 
-# Apply Resampling Filter
+# Adjust brightness and contrast
+./zig-out/bin/peng-msg /tmp/peng-1234.sock adjust 0.2 -0.1
+
+# Apply Resampling Filter (mitchell, lanczos3, linear, pixel_art)
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock filter mitchell
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock filter lanczos3
 
-# Toggle UI Palettes
+# Navigation
+./zig-out/bin/peng-msg /tmp/peng-1234.sock next
+./zig-out/bin/peng-msg /tmp/peng-1234.sock prev
+
+# Toggle UI Palettes (action, files, none)
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock palette action
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock palette none
+
+# Toggle Thumbnail Preview (true, false, toggle)
+./zig-out/bin/peng-msg /tmp/peng-1234.sock thumb toggle
 
 # Toggle Clay Layout Debug Borders
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock debug true
 
 # Wait for background image decoder to finish loading
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock wait_load
-
-# Capture a screenshot (deferred until GPU render pass completes)
-./zig-out/bin/peng-msg /tmp/peng-1234.sock screenshot output.png
 
 # Quit the app
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock quit
@@ -106,7 +134,7 @@ We have a native visual regression testing suite that runs the app in headless m
 
 ```bash
 # Run all unit tests and visual integration tests
-zig build test --libc libc.txt
+zig build test
 
 # Overwrite golden baseline screenshots with the current run's outputs
 ./zig-out/bin/peng-test-runner --update-baselines
