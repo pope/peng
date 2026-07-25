@@ -9,6 +9,7 @@
 
 - Use a dedicated per-frame Arena allocator (`frame_arena`) for temporary string formatting and dynamic UI generation inside high-frequency render loops.
 - Reclaim memory at the beginning of each frame iteration via `_ = frame_arena.reset(.retain_capacity)`.
+- DO NOT use fixed stack buffers (`FixedBufferAllocator` with hardcoded item limits) for per-frame UI text partitioning or string operations.
 
 ## HashMap Key Lifecycle Cleanup
 
@@ -21,9 +22,9 @@
 
 ## Structured Error Logging Invariant
 
-- NEVER swallow errors silently with empty `catch {}` or `else |_| {}` blocks or ignore error payloads.
+- NEVER swallow errors silently with empty `catch {}` or `else |_| {}` blocks, or ignore error payloads.
 - Always log errors using structured `std.log` calls (`std.log.err`, `std.log.warn`, or `std.log.debug`) with actionable error names and contextual details (e.g. `std.log.err("Operation failed: {}", .{err})`) to guarantee empirical diagnosability.
-- If an operation cannot fail in practice, prefer explicit handling or assertion over empty blocks.
+- Whenever implementing defensive bounds checking or index fallback recovery (such as ignoring out-of-bounds match indices), ALWAYS log a structured warning before executing the fallback.
 
 ## Mutex Ownership & Teardown
 

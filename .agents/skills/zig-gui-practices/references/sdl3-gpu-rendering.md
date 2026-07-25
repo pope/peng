@@ -1,11 +1,11 @@
 # SDL3 GPU & Vulkan Hybrid Rendering
 
-## 1. Memory Safety & Lifecycle Management in UI Loops
+## 1. Memory Management in UI Loops
 
 Interactive GUI loops run at 60+ frames per second. Memory management must prevent heap fragmentation and leaks.
 
 - **Per-Frame Arena Allocator**:
-  Use a per-frame Arena allocator (`frame_arena`) for all allocations inside the rendering loop (such as UI text generation, formatted strings, and layout structures).
+  Use a per-frame Arena allocator (`frame_arena`) for all temporary allocations inside the rendering loop (such as UI text generation, formatted strings, and layout structures).
 - **Reset Arena capacity**:
   Reset the arena at the start of each frame iteration to reclaim memory instantly without freeing and re-allocating heap headers:
   ```zig
@@ -51,9 +51,5 @@ The experimental `TTF_GPUTextEngine` in `SDL3_ttf` utilizes a dynamic glyph text
 - **Hardware Mipmapping over CPU Downscaling**:
   Do NOT perform single-threaded CPU software surface downscaling (`SDL_ScaleSurface`) prior to GPU upload. CPU software downscaling on multi-megapixel buffers takes 20-60 ms, whereas direct DMA surface uploads take 2-4 ms. Upload the unscaled surface directly to VRAM and invoke hardware mipmap generation (`SDL_GenerateMipmapsForGPUTexture`). The GPU creates the full downsampled LOD pyramid in hardware in ~0.04 ms (40 microseconds), offering optimal downsampled rendering with zero CPU overhead.
 
-______________________________________________________________________
-
-## 4. Safe Tagged Union Access in Zig Release Modes
-
-- **Explicit `switch (union)` Pattern Matching**:
-  When accessing fields inside `union(enum)` payloads in Zig (such as `CacheStatus`), ALWAYS use explicit `switch (union)` pattern matching rather than direct property access (e.g. `entry.status.loaded_gpu.gpu_texture`). In `-OReleaseFast` optimizations, LLVM disables active union safety checks; accessing a union field directly when the union holds a different active tag causes invalid memory access, undefined behavior, or segmentation faults.
+> [!NOTE]
+> For strict memory safety rules regarding tagged union pattern matching, refer to \[.agents/rules/zig_memory_safety.md\](file:///home/pope/Code/peng/.agents/rules/zig_memory_safety.md).

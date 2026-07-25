@@ -1,15 +1,15 @@
 # VRAM Budgeting, EXIF Header Parsing & Navigation Throttling
 
-## 1. VRAM Cache Budgeting & Memory Safety Invariants
+## 1. VRAM Cache Budgeting & Memory Management
 
 - **VRAM Budget Calculation with Mipmap Overhead**:
   When computing VRAM memory footprints, account for the base RGBA32 texture size ($W \\times H \\times 4\\text{ bytes}$) plus the $+33%$ mipmap pyramid overhead ($\\frac{4}{3} \\times \\text{base size}$). Ensure budget caps (e.g. $1024\\text{ MB}$) can accommodate multiple high-resolution ($24\\text{MP}-50\\text{MP}$) images simultaneously.
 - **Neighbor Slot Protection**:
   In VRAM cache eviction routines (`enforceVramBudget`), protect the current image and its immediate neighbors ($\\pm 2$ slots) from eviction to prevent constant re-decoding during user navigation.
-- **Mutex Ownership Invariants**:
-  Destroy `SDL_Mutex` objects in exactly one owner lifecycle method (e.g. `ViewerState.deinit()`). Do NOT place duplicate `defer c.SDL_DestroyMutex()` calls at initialization callsites, as double-destroying a mutex triggers glibc heap corruption (`malloc_consolidate`: unaligned fastbin chunk).
-- **HashMap String Key Lifetimes in Zig**:
-  Calling `clearRetainingCapacity()` or `deinit()` on a `std.StringHashMap` or `std.AutoHashMapUnmanaged` with dynamically allocated keys (`allocator.dupe`) clears map slots without freeing key memory. Always iterate `keyIterator()` to free `key.*` before clearing or deinitializing:
+- **Mutex Lifecycle & Standard Library Synchronization**:
+  Clean up lock primitives (`std.Io.Mutex`) in exactly one owner lifecycle method (e.g. `ViewerState.deinit()`).
+- **HashMap String Key Lifetimes**:
+  Always iterate `keyIterator()` to free dynamically allocated string keys before calling `clearRetainingCapacity()` or `deinit()` on hash maps:
   ```zig
   var rot_iter = self.rotation_map.keyIterator();
   while (rot_iter.next()) |key| {
@@ -40,11 +40,12 @@ ______________________________________________________________________
 
 ______________________________________________________________________
 
-## 4. Concurrency, GPU Lifecycles & Dynamic Thread Scaling
+## 4. Concurrency & Dynamic Thread Scaling
 
-- **Main-Thread GPU Resource Lifecycles**:
-  Deallocate and release all GPU textures, vertex buffers, and pipeline objects (`SDL_ReleaseGPUTexture`) exclusively on the main UI thread between frame render passes (e.g. inside `prepareCacheTextures()` before command buffers are recorded), rather than directly inside background worker threads. Releasing GPU textures on worker threads while main-thread command buffers are recording causes driver use-after-free crashes (`SEGV_MAPERR` in `VULKAN_BindFragmentSamplers`).
-- **Atomic Worker Thread Counter Placement**:
-  Increment atomic thread counters (`active_decode_threads.fetchAdd`) on the main thread *immediately before* calling thread creation APIs (`SDL_CreateThread`), and decrement them in a `defer` block inside the worker thread upon exit. Incrementing counters inside the worker thread body creates race conditions where rapid main-thread checks query stale thread counts before newly spawned OS threads execute.
+- **Worker Thread Spawning (`std.Thread.spawn`)**:
+  Increment atomic thread counters (`active_decode_threads.fetchAdd`) on the main thread immediately before spawning threads via `std.Thread.spawn`, and decrement them in a `defer` block inside the worker procedure upon exit.
 - **Dynamic CPU Core Worker Scaling**:
-  Scale max concurrent decode worker threads dynamically at runtime based on hardware CPU count (`std.Thread.getCpuCount() catch 4`), e.g. `@max(2, @min(6, cpu_count - 1))`. This ensures high-throughput background decoding on multi-core systems while leaving 1 core dedicated to main-thread rendering and preventing thread contention on lower-core systems.
+  Scale max concurrent decode worker threads dynamically at runtime based on hardware CPU count (`std.Thread.getCpuCount() catch 4`), e.g. `@max(2, @min(6, cpu_count - 1))`. This ensures high-throughput background decoding on multi-core systems while leaving 1 core dedicated to main-thread rendering.
+
+> [!NOTE]
+> For strict main-thread GPU texture release invariants and atomic memory barriers, refer to \[.agents/rules/concurrency_and_gpu_threading.md\](file:///home/pope/Code/peng/.agents/rules/concurrency_and_gpu_threading.md).

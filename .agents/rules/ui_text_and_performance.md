@@ -1,4 +1,16 @@
-# Zig SIMD & Image Codec Performance Rules
+# UI Text Formatting, SIMD & Codec Performance Invariants
+
+## Highlighting Chunk Partitioning & Whitespace Merging
+
+- Trim leading and trailing whitespace from matched index ranges when partitioning text strings into matched/unmatched layout nodes.
+- DO NOT create standalone matched text nodes for whitespace-only matches (`' '` or `'\t'`). Whitespace characters have 0 visible pixels and splitting text at space boundaries breaks font kerning across text nodes.
+- Merge adjacent unmatched slices back into single continuous string slices (`last.slice.ptr[0..combined_len]`) so text layout engines (e.g. Clay UI, FreeType, SDL_ttf) render phrases as single unified strings with natural font kerning.
+
+## GPU Text Texture Offset & Advance Alignment
+
+- When uploading text surfaces to GPU textures, calculate the leading space advance width (`leading_space_w`) for text slices starting with whitespace.
+- Set the GPU texture target width to `@max(surf_w + leading_space_w, bounding_box_w)` and offset the byte write by `leading_space_w * 4`.
+- This guarantees glyph pixels align 100% pixel-perfect inside measured layout boxes without 8–16px spurious layout gaps.
 
 ## Zero-Copy Vector Memory Loads in `@Vector` Loops
 
@@ -7,7 +19,7 @@
   ```zig
   const chunk = @as(*align(1) const Vec16, @ptrCast(&slice[offset])).* ;
   ```
-- Pair unaligned reads with safe loop bounds (`offset + 16 <= slice.len`) so reading 16 bytes is guaranteed to remain strictly inside slice bounds. Any trailing 1 to 4 elements must be cleanly handled by a scalar tail loop.
+- Pair unaligned reads with safe loop bounds (`offset + 16 <= slice.len`) so reading 16 bytes is guaranteed to remain strictly inside slice bounds. Any trailing elements must be cleanly handled by a scalar tail loop.
 
 ## Bitwise SIMD Fast-Paths & Reduction Masks
 
