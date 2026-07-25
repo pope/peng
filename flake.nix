@@ -69,12 +69,14 @@
           updateNixDeps = pkgs.writeShellApplication {
             name = "update-nix-deps";
             runtimeInputs = with pkgs; [
-              gnused
+              git
+              nix
+              nix-prefetch-git
               self.formatter.${system}
-              zon2nix
+              zig
             ];
             text = ''
-              zon2nix | sed 's/?ref=[^"]*//' > nix/deps.nix
+              zig run tools/zon2nix.zig > nix/deps.nix
               treefmt
             '';
           };
