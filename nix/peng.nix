@@ -52,4 +52,11 @@ stdenv.mkDerivation (_finalAttrs: {
     libxkbcommon
     wayland
   ];
+
+  meta = {
+    description = "GPU-accelerated image viewer built in Zig";
+    homepage = "https://p0.pe/my-git-repos/peng.git";
+    license = lib.licenses.gpl3Only;
+    mainProgram = "peng";
+  };
 })

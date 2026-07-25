@@ -141,3 +141,9 @@ zig build test
 ```
 
 Mismatched pixels are highlighted in red and saved as a diff image under `testfiles/current-run/diff_*.png`.
+
+______________________________________________________________________
+
+## License
+
+This project is licensed under the [GNU General Public License v3.0](LICENSE) (GPLv3).
