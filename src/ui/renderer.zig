@@ -461,6 +461,7 @@ pub fn renderClayCommands(
     scale_x: f32,
     scale_y: f32,
 ) !void {
+    const start_render = sdl.timer.getTicksNs();
     const f_win_w = @as(f32, @floatFromInt(win_w));
     const f_win_h = @as(f32, @floatFromInt(win_h));
 
@@ -710,6 +711,11 @@ pub fn renderClayCommands(
 
     // 4. Cache eviction for text textures (unused for >120 frames)
     state.text_cache.evictUnused(allocator, dev, state.gpu_frame_index, 120);
+
+    const end_render = sdl.timer.getTicksNs();
+    state.last_ui_render_time_ms = @as(f64, @floatFromInt(end_render - start_render)) / 1_000_000.0;
+    state.last_ui_vertex_count = vertices.items.len;
+    state.last_ui_batch_count = batches.items.len;
 
     state.gpu_frame_index += 1;
 }

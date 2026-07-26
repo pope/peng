@@ -293,6 +293,13 @@ pub fn renderStatsOverlay(
             const contrast_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{state.contrast});
             try renderStatRow("Brightness", brightness_str);
             try renderStatRow("Contrast", contrast_str);
+
+            const ui_render_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{state.last_ui_render_time_ms});
+            const ui_batches_str = try std.fmt.allocPrint(frame_allocator, "{d}", .{state.last_ui_batch_count});
+            const ui_verts_str = try std.fmt.allocPrint(frame_allocator, "{d}", .{state.last_ui_vertex_count});
+            try renderStatRow("UI Render Pass", ui_render_str);
+            try renderStatRow("UI Batches", ui_batches_str);
+            try renderStatRow("UI Vertices", ui_verts_str);
         }
     });
 }

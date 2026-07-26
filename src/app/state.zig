@@ -156,6 +156,11 @@ pub const ViewerState = struct {
     event_queue: events.MpscQueue(events.BackgroundEvent) = .{},
     pending_ipc_commands: std.ArrayListUnmanaged(*ipc.IpcCommandData) = .empty,
 
+    // UI Render Performance Statistics
+    last_ui_render_time_ms: f64 = 0.0,
+    last_ui_vertex_count: usize = 0,
+    last_ui_batch_count: usize = 0,
+
     // Persistent double-buffered vertex resources
     gpu_vertex_buffers: [2]?sdl.gpu.Buffer = .{ null, null },
     gpu_transfer_buffers: [2]?sdl.gpu.TransferBuffer = .{ null, null },
