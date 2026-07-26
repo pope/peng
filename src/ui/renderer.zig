@@ -295,7 +295,12 @@ fn getOrRenderCachedText(
     const font = fonts[text_data.font_id] orelse return null;
 
     const len = @as(usize, @intCast(text_data.string_contents.length));
-    const text_slice = text_data.string_contents.chars[0..len];
+    if (len == 0) return null;
+    var text_slice = text_data.string_contents.chars[0..len];
+    if (std.mem.indexOfScalar(u8, text_slice, 0)) |null_idx| {
+        text_slice = text_slice[0..null_idx];
+    }
+    if (text_slice.len == 0) return null;
 
     const target_font_size = @as(f32, @floatFromInt(text_data.font_size)) * scale_x;
     const target_font_size_u16 = @as(u16, @intFromFloat(@round(target_font_size)));
@@ -333,7 +338,7 @@ fn getOrRenderCachedText(
         .b = @intFromFloat(text_data.text_color[2]),
         .a = @intFromFloat(text_data.text_color[3]),
     }) catch |err| {
-        std.log.err("font.renderTextBlended failed for '{s}': {}", .{ text_slice, err });
+        std.log.warn("font.renderTextBlended failed for '{s}': {}", .{ text_slice, err });
         return null;
     };
     defer surf.destroy();

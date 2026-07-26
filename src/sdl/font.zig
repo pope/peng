@@ -73,12 +73,16 @@ pub const Font = struct {
     }
 
     pub fn renderTextBlended(self: Font, allocator: std.mem.Allocator, text: []const u8, color: Color) !Surface {
-        const c_text = allocator.dupeZ(u8, text) catch |err| {
-            std.log.err("dupeZ failed in renderTextBlended for '{s}': {}", .{ text, err });
+        const clean_text = if (std.mem.indexOfScalar(u8, text, 0)) |idx| text[0..idx] else text;
+        if (clean_text.len == 0) return error.TtfRenderFailed;
+
+        const c_text = allocator.dupeZ(u8, clean_text) catch |err| {
+            std.log.err("dupeZ failed in renderTextBlended for '{s}': {}", .{ clean_text, err });
             return err;
         };
         defer allocator.free(c_text);
-        const raw = c.TTF_RenderText_Blended(self.ptr, c_text.ptr, text.len, color.toSdlColor()) orelse return error.TtfRenderFailed;
+
+        const raw = c.TTF_RenderText_Blended(self.ptr, c_text.ptr, clean_text.len, color.toSdlColor()) orelse return error.TtfRenderFailed;
         return .{ .ptr = raw };
     }
 

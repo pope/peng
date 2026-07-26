@@ -420,6 +420,9 @@ pub fn saveTextureToPng(
 }
 
 pub fn sdl3MeasureText(text: []const u8, config: *clay.TextElementConfig, data: *const MeasureTextUserData) clay.Dimensions {
+    const clean_text = if (std.mem.indexOfScalar(u8, text, 0)) |idx| text[0..idx] else text;
+    if (clean_text.len == 0) return .{ .w = 0, .h = 0 };
+
     if (config.font_id >= data.fonts.len) return .{ .w = 0, .h = 0 };
     const font = data.fonts[config.font_id] orelse return .{ .w = 0, .h = 0 };
     const target_size = @as(f32, @floatFromInt(config.font_size));
@@ -427,7 +430,7 @@ pub fn sdl3MeasureText(text: []const u8, config: *clay.TextElementConfig, data: 
         _ = font.setFontSize(target_size);
     }
 
-    const size = font.getStringSize(data.allocator, text) orelse return .{ .w = 0, .h = 0 };
+    const size = font.getStringSize(data.allocator, clean_text) orelse return .{ .w = 0, .h = 0 };
     return .{ .w = @floatFromInt(size.w), .h = @floatFromInt(size.h) };
 }
 
