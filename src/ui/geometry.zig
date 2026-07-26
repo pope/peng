@@ -148,20 +148,10 @@ pub fn renderFillRoundedRect(
     const total_vertices = 4 + (4 * (num_circle_segments * 2)) + 8;
     const total_indices = 6 + (4 * (num_circle_segments * 3)) + 24;
 
-    var stack_vertices: [1024]sdl.Vertex = undefined;
-    var stack_indices: [2048]c_int = undefined;
-
-    const vertices_src = if (total_vertices <= stack_vertices.len)
-        stack_vertices[0..@intCast(total_vertices)]
-    else
-        try allocator.alloc(sdl.Vertex, @intCast(total_vertices));
-    defer if (total_vertices > stack_vertices.len) allocator.free(vertices_src);
-
-    const indices = if (total_indices <= stack_indices.len)
-        stack_indices[0..@intCast(total_indices)]
-    else
-        try allocator.alloc(c_int, @intCast(total_indices));
-    defer if (total_indices > stack_indices.len) allocator.free(indices);
+    const vertices_src = try allocator.alloc(sdl.Vertex, total_vertices);
+    defer allocator.free(vertices_src);
+    const indices = try allocator.alloc(c_int, total_indices);
+    defer allocator.free(indices);
 
     var vertex_count: usize = 0;
     var index_count: usize = 0;

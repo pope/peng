@@ -23,3 +23,12 @@
 
 - Keep mouse pointer coordinates in `FrameInput` in logical window points as the primary input state. Provide helper methods (`pixMouseX()`, `pixMouseY()`) for pixel-space conversions.
 - Keep mouse scroll wheel deltas in logical points to maintain uniform scroll speed across displays with different scaling factors.
+
+## 5. SDL GPU Render Loop Optimizations
+
+- **Zero-Area Scissor Skipping**: When calculating scissor bounds, if `scissor.w <= 0` or `scissor.h <= 0` (or if origin lies off-screen), skip setting scissors and skip dispatching `drawPrimitives` for that batch entirely to avoid unnecessary GPU pipeline state changes.
+- **Transfer Buffer Pooling**: Pack transient text texture surfaces and dynamic vertex geometry into persistent per-frame `TransferBuffer`s using aligned offsets (`std.mem.alignForward(usize, offset, 512)`), avoiding per-element buffer allocation and release overhead inside the render loop.
+
+## 6. Generic Allocator Polymorphism
+
+- Functions accepting `allocator: std.mem.Allocator` must always pair `allocator.alloc()` with `defer allocator.free()`, even when called in an arena context. This guarantees memory safety and leak-free operation regardless of whether an Arena, GeneralPurposeAllocator, or Testing allocator is passed behind the vtable interface.

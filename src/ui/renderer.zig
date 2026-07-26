@@ -88,6 +88,10 @@ pub fn renderClayCommands(
 
     var current_scissor: ?sdl.Rect = null;
 
+    const dev = state.gpu_device.?;
+    const frame_idx = state.gpu_frame_index % 2;
+    var tb_offset: usize = 0;
+
     for (r_commands) |rcmd| {
         const bb = rcmd.bounding_box;
         const rect = sdl.FRect{
@@ -187,8 +191,6 @@ pub fn renderClayCommands(
                     const target_w: usize = @max(surf_w + leading_space_w, @as(usize, @intFromFloat(@round(bb.width * scale_x))));
                     const dst_start_byte = @min(leading_space_w * 4, if (target_w > surf_w) (target_w - surf_w) * 4 else 0);
 
-                    const dev = state.gpu_device.?;
-
                     const tex_info = sdl.gpu.TextureCreateInfo{
                         .type = .type_2d,
                         .format = .rgba8_unorm,
@@ -203,24 +205,33 @@ pub fn renderClayCommands(
                     const tex = dev.createTexture(&tex_info) orelse continue;
 
                     const size = target_w * surf_h * 4;
-                    const transfer_buf = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
-                        .usage = .upload,
-                        .size = @intCast(size),
-                        .props = 0,
-                    }) orelse {
-                        dev.releaseTexture(tex);
-                        continue;
-                    };
-                    temp_buffers.append(allocator, transfer_buf) catch {
-                        dev.releaseTransferBuffer(transfer_buf);
-                        dev.releaseTexture(tex);
-                        continue;
-                    };
+                    const aligned_offset = std.mem.alignForward(usize, tb_offset, 512);
+                    const required_capacity = aligned_offset + size;
 
-                    const mapped = dev.mapTransferBuffer(transfer_buf, false) orelse {
+                    if (state.gpu_transfer_buffers[frame_idx] == null or state.gpu_buffer_capacities[frame_idx] < required_capacity) {
+                        const new_tbcap = std.mem.alignForward(usize, @max(required_capacity * 2, 65536), 4096);
+                        if (state.gpu_transfer_buffers[frame_idx]) |old_tb| {
+                            temp_buffers.append(allocator, old_tb) catch {};
+                        }
+                        state.gpu_transfer_buffers[frame_idx] = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
+                            .usage = .upload,
+                            .size = @intCast(new_tbcap),
+                            .props = 0,
+                        });
+                        if (state.gpu_transfer_buffers[frame_idx] == null) {
+                            state.gpu_buffer_capacities[frame_idx] = 0;
+                            dev.releaseTexture(tex);
+                            continue;
+                        }
+                        state.gpu_buffer_capacities[frame_idx] = new_tbcap;
+                    }
+
+                    const transfer_buf = state.gpu_transfer_buffers[frame_idx].?;
+                    const mapped_raw: [*]u8 = dev.mapTransferBuffer(transfer_buf, false) orelse {
                         dev.releaseTexture(tex);
                         continue;
                     };
+                    const mapped = mapped_raw + aligned_offset;
                     const src_row_bytes: usize = surf_w * 4;
                     const dst_row_bytes: usize = target_w * 4;
                     const pitch: usize = @intCast(converted.pitch());
@@ -242,7 +253,7 @@ pub fn renderClayCommands(
                     };
                     copy_pass.uploadToTexture(&sdl.gpu.TextureTransferInfo{
                         .transfer_buffer = transfer_buf,
-                        .offset = 0,
+                        .offset = @intCast(aligned_offset),
                         .pixels_per_row = @intCast(target_w),
                         .rows_per_layer = @intCast(surf_h),
                     }, &sdl.gpu.TextureRegion{
@@ -252,6 +263,8 @@ pub fn renderClayCommands(
                         .d = 1,
                     }, false);
                     copy_pass.end();
+
+                    tb_offset = aligned_offset + size;
 
                     w_f = @floatFromInt(target_w);
                     h_f = @floatFromInt(surf_h);
@@ -463,42 +476,43 @@ pub fn renderClayCommands(
     // Persistent Vertex Buffer Double-Buffering
     var vert_buf: ?sdl.gpu.Buffer = null;
     const needed_size = vertices.items.len * @sizeOf(Vertex);
-    const frame_idx = state.gpu_frame_index % 2;
-
-    const dev = state.gpu_device.?;
 
     if (needed_size > 0) {
-        if (state.gpu_vertex_buffers[frame_idx] == null or state.gpu_buffer_capacities[frame_idx] < needed_size) {
+        if (state.gpu_vertex_buffers[frame_idx] == null or state.gpu_vertex_capacities[frame_idx] < needed_size) {
             if (state.gpu_vertex_buffers[frame_idx]) |vb| {
                 dev.releaseBuffer(vb);
                 state.gpu_vertex_buffers[frame_idx] = null;
             }
-            if (state.gpu_transfer_buffers[frame_idx]) |tb| {
-                dev.releaseTransferBuffer(tb);
-                state.gpu_transfer_buffers[frame_idx] = null;
-            }
-
-            const new_capacity = std.mem.alignForward(usize, needed_size * 2, 4096);
-
+            const new_vcap = std.mem.alignForward(usize, needed_size * 2, 4096);
             state.gpu_vertex_buffers[frame_idx] = dev.createBuffer(&sdl.gpu.BufferCreateInfo{
                 .usage = sdl.gpu.BufferUsage.vertex,
-                .size = @intCast(new_capacity),
+                .size = @intCast(new_vcap),
                 .props = 0,
             }) orelse return error.GPUBufferCreationFailed;
+            state.gpu_vertex_capacities[frame_idx] = new_vcap;
+        }
 
+        const vert_offset = std.mem.alignForward(usize, tb_offset, 512);
+        const total_tb_needed = vert_offset + needed_size;
+
+        if (state.gpu_transfer_buffers[frame_idx] == null or state.gpu_buffer_capacities[frame_idx] < total_tb_needed) {
+            if (state.gpu_transfer_buffers[frame_idx]) |old_tb| {
+                try temp_buffers.append(allocator, old_tb);
+            }
+            const new_tbcap = std.mem.alignForward(usize, total_tb_needed * 2, 4096);
             state.gpu_transfer_buffers[frame_idx] = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
                 .usage = .upload,
-                .size = @intCast(new_capacity),
+                .size = @intCast(new_tbcap),
                 .props = 0,
             }) orelse return error.GPUTransferBufferCreationFailed;
-
-            state.gpu_buffer_capacities[frame_idx] = new_capacity;
+            state.gpu_buffer_capacities[frame_idx] = new_tbcap;
         }
 
         const vb = state.gpu_vertex_buffers[frame_idx].?;
         const tb = state.gpu_transfer_buffers[frame_idx].?;
 
-        const mapped: [*]Vertex = @ptrCast(@alignCast(dev.mapTransferBuffer(tb, false) orelse return error.GPUMapFailed));
+        const mapped_raw: [*]u8 = dev.mapTransferBuffer(tb, false) orelse return error.GPUMapFailed;
+        const mapped: [*]Vertex = @ptrCast(@alignCast(mapped_raw + vert_offset));
         @memcpy(mapped[0..vertices.items.len], vertices.items);
         dev.unmapTransferBuffer(tb);
 
@@ -506,7 +520,7 @@ pub fn renderClayCommands(
         const copy_pass = cmd.beginCopyPass() orelse return error.GPUCopyPassFailed;
         copy_pass.uploadToBuffer(&sdl.gpu.TransferBufferLocation{
             .transfer_buffer = tb,
-            .offset = 0,
+            .offset = @intCast(vert_offset),
         }, &sdl.gpu.BufferRegion{
             .buffer = vb,
             .offset = 0,
@@ -542,14 +556,10 @@ pub fn renderClayCommands(
                 safe_sc.y = @max(0, sc.y);
                 safe_sc.w = @max(0, sc.w - (safe_sc.x - sc.x));
                 safe_sc.h = @max(0, sc.h - (safe_sc.y - sc.y));
-                if (safe_sc.x < win_w and safe_sc.y < win_h) {
-                    safe_sc.w = @min(safe_sc.w, win_w - safe_sc.x);
-                    safe_sc.h = @min(safe_sc.h, win_h - safe_sc.y);
-                    render_pass.setScissor(&safe_sc);
-                } else {
-                    const empty_sc = sdl.Rect{ .x = 0, .y = 0, .w = 0, .h = 0 };
-                    render_pass.setScissor(&empty_sc);
-                }
+                if (safe_sc.w <= 0 or safe_sc.h <= 0 or safe_sc.x >= win_w or safe_sc.y >= win_h) continue;
+                safe_sc.w = @min(safe_sc.w, win_w - safe_sc.x);
+                safe_sc.h = @min(safe_sc.h, win_h - safe_sc.y);
+                render_pass.setScissor(&safe_sc);
             } else {
                 const full_sc = sdl.Rect{ .x = 0, .y = 0, .w = win_w, .h = win_h };
                 render_pass.setScissor(&full_sc);

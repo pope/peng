@@ -160,6 +160,7 @@ pub const ViewerState = struct {
     gpu_vertex_buffers: [2]?sdl.gpu.Buffer = .{ null, null },
     gpu_transfer_buffers: [2]?sdl.gpu.TransferBuffer = .{ null, null },
     gpu_buffer_capacities: [2]usize = .{ 0, 0 },
+    gpu_vertex_capacities: [2]usize = .{ 0, 0 },
     gpu_frame_index: usize = 0,
 
     // Font text texture cache
