@@ -833,7 +833,10 @@ pub const ViewerState = struct {
             defer self.unlockImageList();
             for (to_spawn_indices[0..to_spawn_count], 0..) |d, s_idx| {
                 if (d < self.image_list.items.len) {
-                    to_spawn_paths[s_idx] = self.allocator.dupeZ(u8, self.image_list.items[d]) catch null;
+                    to_spawn_paths[s_idx] = self.allocator.dupeZ(u8, self.image_list.items[d]) catch |err| blk: {
+                        std.log.err("updateCache: dupeZ failed for image index {d}: {}", .{ d, err });
+                        break :blk null;
+                    };
                 } else {
                     to_spawn_paths[s_idx] = null;
                 }

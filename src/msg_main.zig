@@ -47,7 +47,9 @@ pub fn main(init: std.process.Init) !void {
         std.log.err("Failed to send command: {any}", .{err});
         std.process.exit(1);
     };
-    writer.interface.flush() catch {};
+    writer.interface.flush() catch |err| {
+        std.log.debug("Failed to flush command stream: {any}", .{err});
+    };
 
     var read_buf: [1024]u8 = undefined;
     var reader = stream.reader(io, &read_buf);

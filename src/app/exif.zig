@@ -195,12 +195,18 @@ pub fn readJpegExifOrientation(io: std.Io, path: []const u8) ?f32 {
     const ext = std.fs.path.extension(path);
     if (!std.ascii.eqlIgnoreCase(ext, ".jpg") and !std.ascii.eqlIgnoreCase(ext, ".jpeg")) return null;
 
-    var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, path, .{}) catch return null;
+    var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, path, .{}) catch |err| {
+        std.log.debug("readJpegExifOrientation: openFile failed for '{s}': {}", .{ path, err });
+        return null;
+    };
     defer file.close(io);
 
     var buf: [65536]u8 = undefined;
     var slices = [_][]u8{&buf};
-    const n = file.readPositional(io, &slices, 0) catch return null;
+    const n = file.readPositional(io, &slices, 0) catch |err| {
+        std.log.debug("readJpegExifOrientation: readPositional failed for '{s}': {}", .{ path, err });
+        return null;
+    };
     return parseExifOrientation(buf[0..n]);
 }
 

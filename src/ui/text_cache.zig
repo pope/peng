@@ -45,7 +45,9 @@ pub const TextCache = struct {
             if (current_frame > entry.value_ptr.last_used_frame and
                 current_frame - entry.value_ptr.last_used_frame > max_unused_frames)
             {
-                to_evict.append(allocator, entry.key_ptr.*) catch {};
+                to_evict.append(allocator, entry.key_ptr.*) catch |err| {
+                    std.log.err("Failed to append key to eviction list: {}", .{err});
+                };
             }
         }
 

@@ -324,7 +324,8 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                                 .full_h = full_h,
                                 .exif_orientation = exif_rot,
                             },
-                        }) catch {
+                        }) catch |err| {
+                            std.log.err("Failed to push thumbnail decode event: {}", .{err});
                             t_surf.destroy();
                         };
                         fs.wakeUpMainThread();
@@ -418,7 +419,8 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                 .conversion_time_ms = conversion_time_ms,
                 .exif_orientation = exif_rot,
             },
-        }) catch {
+        }) catch |err| {
+            std.log.err("Failed to push image decode event: {}", .{err});
             f_surf.destroy();
         };
         fs.wakeUpMainThread();

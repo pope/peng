@@ -208,7 +208,9 @@ fn runIpcServer(state: *ViewerState) !void {
     var path_buf: [128]u8 = undefined;
     const socket_path = try std.fmt.bufPrint(&path_buf, "/tmp/peng-{d}.sock", .{pid});
 
-    std.Io.Dir.createDir(std.Io.Dir.cwd(), io, "/tmp", @enumFromInt(0)) catch {};
+    std.Io.Dir.createDir(std.Io.Dir.cwd(), io, "/tmp", @enumFromInt(0)) catch |err| {
+        std.log.debug("IPC createDir /tmp failed or already exists: {any}", .{err});
+    };
 
     std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, socket_path) catch |err| {
         std.log.debug("IPC socket pre-delete failed (file may not exist): {any}", .{err});
@@ -227,8 +229,12 @@ fn runIpcServer(state: *ViewerState) !void {
     defer gpa.free(msg);
     var stdout_write_buf: [256]u8 = undefined;
     var stdout_writer = std.Io.File.Writer.init(std.Io.File.stdout(), io, &stdout_write_buf);
-    stdout_writer.interface.writeAll(msg) catch {};
-    stdout_writer.interface.flush() catch {};
+    stdout_writer.interface.writeAll(msg) catch |err| {
+        std.log.debug("IPC writeAll to stdout failed: {any}", .{err});
+    };
+    stdout_writer.interface.flush() catch |err| {
+        std.log.debug("IPC flush to stdout failed: {any}", .{err});
+    };
 
     while (state.running) {
         var client_stream = server.accept(io) catch |err| {
@@ -257,11 +263,13 @@ fn runIpcServer(state: *ViewerState) !void {
             continue;
         }
 
-        const cmd_data = gpa.create(IpcCommandData) catch {
+        const cmd_data = gpa.create(IpcCommandData) catch |err| {
+            std.log.err("IPC create command data failed: {}", .{err});
             client_stream.close(io);
             continue;
         };
-        const cmd_str = gpa.dupe(u8, trimmed) catch {
+        const cmd_str = gpa.dupe(u8, trimmed) catch |err| {
+            std.log.err("IPC dupe command string failed: {}", .{err});
             gpa.destroy(cmd_data);
             client_stream.close(io);
             continue;

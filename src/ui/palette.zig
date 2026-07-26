@@ -136,7 +136,8 @@ pub fn renderFuzzyMatchText(
         return;
     }
 
-    const chunks = partitionHighlightedText(allocator, text, match_indices) catch {
+    const chunks = partitionHighlightedText(allocator, text, match_indices) catch |err| {
+        std.log.err("partitionHighlightedText failed for '{s}': {}", .{ text, err });
         clay.text(text, .{ .color = normal_color, .font_size = font_size, .font_id = 0 });
         return;
     };
@@ -664,13 +665,19 @@ pub fn renderSelectionList(
                         var dirname_matches = std.ArrayList(usize).empty;
 
                         if (query_str.len > 0 and path.len > 0) {
-                            if (palette.getSearcher(@max(path.len, 64), query_str.len) catch null) |searcher_ptr| {
+                            const searcher_opt = palette.getSearcher(@max(path.len, 64), query_str.len) catch |err| blk: {
+                                std.log.err("getSearcher failed: {}", .{err});
+                                break :blk null;
+                            };
+                            if (searcher_opt) |searcher_ptr| {
                                 const has_slash = std.mem.indexOfScalar(u8, query_str, '/') != null or std.mem.indexOfScalar(u8, query_str, '\\') != null;
                                 var matched_base = false;
                                 if (!has_slash) {
                                     const base_res = searcher_ptr.scoreMatches(basename, query_str);
                                     if (base_res.score != null) {
-                                        basename_matches.appendSlice(frame_allocator, base_res.matches) catch {};
+                                        basename_matches.appendSlice(frame_allocator, base_res.matches) catch |err| {
+                                            std.log.err("appendSlice failed: {}", .{err});
+                                        };
                                         matched_base = true;
                                     }
                                 }
@@ -682,10 +689,14 @@ pub fn renderSelectionList(
                                             if (m_idx >= basename_offset) {
                                                 const b_idx = m_idx - basename_offset;
                                                 if (b_idx < basename.len) {
-                                                    basename_matches.append(frame_allocator, b_idx) catch {};
+                                                    basename_matches.append(frame_allocator, b_idx) catch |err| {
+                                                        std.log.err("append failed: {}", .{err});
+                                                    };
                                                 }
                                             } else if (m_idx < dirname.len) {
-                                                dirname_matches.append(frame_allocator, m_idx) catch {};
+                                                dirname_matches.append(frame_allocator, m_idx) catch |err| {
+                                                    std.log.err("append failed: {}", .{err});
+                                                };
                                             }
                                         }
                                     }
@@ -702,7 +713,9 @@ pub fn renderSelectionList(
                             const start_offset = if (dirname.len > kept_len) dirname.len - kept_len else 0;
                             for (dirname_matches.items) |m_idx| {
                                 if (m_idx >= start_offset) {
-                                    final_dir_matches.append(frame_allocator, (m_idx - start_offset) + 3) catch {};
+                                    final_dir_matches.append(frame_allocator, (m_idx - start_offset) + 3) catch |err| {
+                                        std.log.err("append final_dir_matches failed: {}", .{err});
+                                    };
                                 }
                             }
                         } else {
@@ -767,7 +780,11 @@ pub fn renderSelectionList(
 
                         var action_matches: []const usize = &.{};
                         if (query_str.len > 0) {
-                            if (palette.getSearcher(meta.name.len, query_str.len) catch null) |searcher_ptr| {
+                            const searcher_opt = palette.getSearcher(meta.name.len, query_str.len) catch |err| blk: {
+                                std.log.err("getSearcher failed: {}", .{err});
+                                break :blk null;
+                            };
+                            if (searcher_opt) |searcher_ptr| {
                                 const res = searcher_ptr.scoreMatches(meta.name, query_str);
                                 if (res.score != null) {
                                     action_matches = res.matches;
@@ -815,10 +832,16 @@ pub fn renderSelectionList(
                             const query_str = palette.query.items;
 
                             if (query_str.len > 0 and entry.name.len > 0) {
-                                if (palette.getSearcher(entry.name.len, query_str.len) catch null) |searcher_ptr| {
+                                const searcher_opt = palette.getSearcher(entry.name.len, query_str.len) catch |err| blk: {
+                                    std.log.err("getSearcher failed: {}", .{err});
+                                    break :blk null;
+                                };
+                                if (searcher_opt) |searcher_ptr| {
                                     const res = searcher_ptr.scoreMatches(entry.name, query_str);
                                     if (res.score != null) {
-                                        dir_matches.appendSlice(frame_allocator, res.matches) catch {};
+                                        dir_matches.appendSlice(frame_allocator, res.matches) catch |err| {
+                                            std.log.err("appendSlice dir_matches failed: {}", .{err});
+                                        };
                                     }
                                 }
                             }

@@ -333,7 +333,10 @@ fn getOrRenderCachedText(
         .g = @intFromFloat(text_data.text_color[1]),
         .b = @intFromFloat(text_data.text_color[2]),
         .a = @intFromFloat(text_data.text_color[3]),
-    }) catch return null;
+    }) catch |err| {
+        std.log.err("font.renderTextBlended failed for '{s}': {}", .{ text_slice, err });
+        return null;
+    };
     defer surf.destroy();
 
     const converted = surf.convert(sdl.PixelFormat.rgba32) orelse return null;
@@ -374,7 +377,9 @@ fn getOrRenderCachedText(
     if (state.gpu_transfer_buffers[frame_idx] == null or state.gpu_buffer_capacities[frame_idx] < required_capacity) {
         const new_tbcap = std.mem.alignForward(usize, @max(required_capacity * 2, 65536), 4096);
         if (state.gpu_transfer_buffers[frame_idx]) |old_tb| {
-            temp_buffers.append(allocator, old_tb) catch {};
+            temp_buffers.append(allocator, old_tb) catch |err| {
+                std.log.err("Failed to append old transfer buffer to cleanup list: {}", .{err});
+            };
         }
         state.gpu_transfer_buffers[frame_idx] = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
             .usage = .upload,
@@ -436,7 +441,8 @@ fn getOrRenderCachedText(
         .w = w_f,
         .h = h_f,
         .last_used_frame = state.gpu_frame_index,
-    }) catch {
+    }) catch |err| {
+        std.log.err("Failed to cache rendered text: {}", .{err});
         dev.releaseTexture(tex);
         return null;
     };

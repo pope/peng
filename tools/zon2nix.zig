@@ -89,7 +89,7 @@ pub fn parseZonDependencies(allocator: std.mem.Allocator, io: std.Io, path: []co
         deps.deinit(allocator);
     }
 
-    const file_contents = std.Io.Dir.readFileAllocOptions(
+    const file_contents = try std.Io.Dir.readFileAllocOptions(
         std.Io.Dir.cwd(),
         io,
         path,
@@ -97,22 +97,13 @@ pub fn parseZonDependencies(allocator: std.mem.Allocator, io: std.Io, path: []co
         @enumFromInt(1024 * 1024),
         .of(u8),
         0,
-    ) catch |err| {
-        std.log.err("failed to read ZON file '{s}': {any}", .{ path, err });
-        return err;
-    };
+    );
     defer allocator.free(file_contents);
 
-    var ast = std.zig.Ast.parse(allocator, file_contents, .zon) catch |err| {
-        std.log.err("ZON AST parse error in '{s}': {any}", .{ path, err });
-        return err;
-    };
+    var ast = try std.zig.Ast.parse(allocator, file_contents, .zon);
     defer ast.deinit(allocator);
 
-    var zoir = std.zig.ZonGen.generate(allocator, ast, .{ .parse_str_lits = true }) catch |err| {
-        std.log.err("ZOIR generation error in '{s}': {any}", .{ path, err });
-        return err;
-    };
+    var zoir = try std.zig.ZonGen.generate(allocator, ast, .{ .parse_str_lits = true });
     defer zoir.deinit(allocator);
 
     const root_node = std.zig.Zoir.Node.Index.root.get(zoir);
@@ -200,13 +191,10 @@ fn fetchUrlBytes(allocator: std.mem.Allocator, io: std.Io, url: []const u8) ![]u
 
     var aw: std.Io.Writer.Allocating = .fromArrayList(allocator, &array_list);
 
-    const res = client.fetch(.{
+    const res = try client.fetch(.{
         .location = .{ .url = url },
         .response_writer = &aw.writer,
-    }) catch |err| {
-        std.log.err("failed HTTP fetch for '{s}': {any}", .{ url, err });
-        return err;
-    };
+    });
 
     if (res.status != .ok) {
         std.log.err("HTTP fetch returned non-OK status {s} for '{s}'", .{ @tagName(res.status), url });
@@ -217,71 +205,55 @@ fn fetchUrlBytes(allocator: std.mem.Allocator, io: std.Io, url: []const u8) ![]u
 }
 
 /// Invokes `nix-prefetch-git` to calculate the SRI hash for a Git repository revision.
-fn prefetchGitHash(allocator: std.mem.Allocator, io: std.Io, repo_url: []const u8, rev: []const u8) ?[]const u8 {
-    const res = std.process.run(allocator, io, .{
+fn prefetchGitHash(allocator: std.mem.Allocator, io: std.Io, repo_url: []const u8, rev: []const u8) ![]const u8 {
+    const res = try std.process.run(allocator, io, .{
         .argv = &.{ "nix-prefetch-git", "--quiet", repo_url, rev },
         .expand_arg0 = .expand,
-    }) catch |err| {
-        if (err != error.FileNotFound) {
-            std.log.warn("nix-prefetch-git failed to execute for '{s}': {any}", .{ repo_url, err });
-        }
-        return null;
-    };
+    });
     defer allocator.free(res.stdout);
     defer allocator.free(res.stderr);
 
     if (res.term != .exited or res.term.exited != 0) {
-        std.log.warn("nix-prefetch-git exited with status {any} for '{s}': {s}", .{ res.term, repo_url, res.stderr });
-        return null;
+        std.log.err("nix-prefetch-git exited with status {any} for '{s}': {s}", .{ res.term, repo_url, res.stderr });
+        return error.PrefetchGitFailed;
     }
 
     const JsonHash = struct { hash: ?[]const u8 = null };
-    const parsed = std.json.parseFromSlice(JsonHash, allocator, res.stdout, .{ .ignore_unknown_fields = true }) catch |err| {
-        std.log.warn("failed to parse JSON output from nix-prefetch-git for '{s}': {any}", .{ repo_url, err });
-        return null;
-    };
+    const parsed = try std.json.parseFromSlice(JsonHash, allocator, res.stdout, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
 
     if (parsed.value.hash) |h| {
-        return allocator.dupe(u8, h) catch null;
+        return try allocator.dupe(u8, h);
     }
-    return null;
+    return error.MissingHashInJson;
 }
 
 /// Invokes `nix store prefetch-file --unpack --json` to calculate the SRI hash for an archive URL.
-fn prefetchUrlHash(allocator: std.mem.Allocator, io: std.Io, url: []const u8) ?[]const u8 {
-    const res = std.process.run(allocator, io, .{
+fn prefetchUrlHash(allocator: std.mem.Allocator, io: std.Io, url: []const u8) ![]const u8 {
+    const res = try std.process.run(allocator, io, .{
         .argv = &.{ "nix", "store", "prefetch-file", "--unpack", "--json", url },
         .expand_arg0 = .expand,
-    }) catch |err| {
-        if (err != error.FileNotFound) {
-            std.log.warn("nix store prefetch-file failed to execute for '{s}': {any}", .{ url, err });
-        }
-        return null;
-    };
+    });
     defer allocator.free(res.stdout);
     defer allocator.free(res.stderr);
 
     if (res.term != .exited or res.term.exited != 0) {
-        std.log.warn("nix store prefetch-file exited with status {any} for '{s}': {s}", .{ res.term, url, res.stderr });
-        return null;
+        std.log.err("nix store prefetch-file exited with status {any} for '{s}': {s}", .{ res.term, url, res.stderr });
+        return error.PrefetchUrlFailed;
     }
 
     const JsonHash = struct { hash: ?[]const u8 = null };
-    const parsed = std.json.parseFromSlice(JsonHash, allocator, res.stdout, .{ .ignore_unknown_fields = true }) catch |err| {
-        std.log.warn("failed to parse JSON output from nix store prefetch-file for '{s}': {any}", .{ url, err });
-        return null;
-    };
+    const parsed = try std.json.parseFromSlice(JsonHash, allocator, res.stdout, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
 
     if (parsed.value.hash) |h| {
-        return allocator.dupe(u8, h) catch null;
+        return try allocator.dupe(u8, h);
     }
-    return null;
+    return error.MissingHashInJson;
 }
 
 /// Searches an existing `nix/deps.nix` file for a previously calculated SRI hash matching the specified ZON multihash.
-fn lookupExistingHash(allocator: std.mem.Allocator, io: std.Io, nix_deps_path: []const u8, zon_hash: []const u8) ?[]const u8 {
+fn lookupExistingHash(allocator: std.mem.Allocator, io: std.Io, nix_deps_path: []const u8, zon_hash: []const u8) !?[]const u8 {
     const file_contents = std.Io.Dir.readFileAllocOptions(
         std.Io.Dir.cwd(),
         io,
@@ -290,11 +262,9 @@ fn lookupExistingHash(allocator: std.mem.Allocator, io: std.Io, nix_deps_path: [
         @enumFromInt(1024 * 1024),
         .of(u8),
         0,
-    ) catch |err| {
-        if (err != error.FileNotFound) {
-            std.log.warn("could not read '{s}' for existing hash lookup: {any}", .{ nix_deps_path, err });
-        }
-        return null;
+    ) catch |err| switch (err) {
+        error.FileNotFound => return null,
+        else => return err,
     };
     defer allocator.free(file_contents);
 
@@ -310,7 +280,7 @@ fn lookupExistingHash(allocator: std.mem.Allocator, io: std.Io, nix_deps_path: [
                 const quote_start = std.mem.indexOfPos(u8, line, hash_idx + 6, "\"") orelse continue;
                 const quote_end = std.mem.indexOfPos(u8, line, quote_start + 1, "\"") orelse continue;
                 const extracted = line[quote_start + 1 .. quote_end];
-                return allocator.dupe(u8, extracted) catch null;
+                return try allocator.dupe(u8, extracted);
             }
             if (std.mem.indexOf(u8, line, "};") != null) {
                 found_name = false;
@@ -347,18 +317,27 @@ fn checkCachedPackage(allocator: std.mem.Allocator, io: std.Io, environ_map: *st
                 if (std.Io.Dir.cwd().openFile(io, zon_file, .{})) |f| {
                     f.close(io);
                     return .{ .zon_found = zon_file };
-                } else |_| {
-                    allocator.free(zon_file);
-                    return .{ .package_cached_no_zon = try allocator.dupe(u8, direct_dir) };
+                } else |err| switch (err) {
+                    error.FileNotFound => {
+                        allocator.free(zon_file);
+                        return .{ .package_cached_no_zon = try allocator.dupe(u8, direct_dir) };
+                    },
+                    else => return err,
                 }
             }
-        } else |_| {}
+        } else |err| switch (err) {
+            error.FileNotFound => {},
+            else => return err,
+        }
 
-        var dir = std.Io.Dir.cwd().openDir(io, base_path, .{ .iterate = true }) catch continue;
+        var dir = std.Io.Dir.cwd().openDir(io, base_path, .{ .iterate = true }) catch |err| switch (err) {
+            error.FileNotFound => continue,
+            else => return err,
+        };
         defer dir.close(io);
 
         var it = dir.iterate();
-        while (it.next(io) catch null) |entry| {
+        while (try it.next(io)) |entry| {
             if (entry.kind == .directory and std.mem.indexOf(u8, entry.name, dep_hash) != null) {
                 const matched_dir = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ base_path, entry.name });
                 defer allocator.free(matched_dir);
@@ -369,9 +348,12 @@ fn checkCachedPackage(allocator: std.mem.Allocator, io: std.Io, environ_map: *st
                 if (std.Io.Dir.cwd().openFile(io, zon_file, .{})) |f| {
                     f.close(io);
                     return .{ .zon_found = zon_file };
-                } else |_| {
-                    allocator.free(zon_file);
-                    return .{ .package_cached_no_zon = try allocator.dupe(u8, matched_dir) };
+                } else |err| switch (err) {
+                    error.FileNotFound => {
+                        allocator.free(zon_file);
+                        return .{ .package_cached_no_zon = try allocator.dupe(u8, matched_dir) };
+                    },
+                    else => return err,
                 }
             }
         }
@@ -393,15 +375,12 @@ fn fetchAndExtractZon(
 
     if (git_info.is_git) {
         std.log.info("cache miss for '{s}', cloning git repository '{s}'...", .{ dep.key, git_info.repo_url });
-        _ = std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
+        try std.Io.Dir.cwd().deleteTree(io, tmp_path);
 
-        const clone_res = std.process.run(allocator, io, .{
+        const clone_res = try std.process.run(allocator, io, .{
             .argv = &.{ "git", "clone", "--quiet", "--depth", "1", git_info.repo_url, tmp_path },
             .expand_arg0 = .expand,
-        }) catch |err| {
-            std.log.err("git clone command failed for '{s}': {any}", .{ git_info.repo_url, err });
-            return err;
-        };
+        });
         defer allocator.free(clone_res.stdout);
         defer allocator.free(clone_res.stderr);
 
@@ -414,9 +393,12 @@ fn fetchAndExtractZon(
         if (std.Io.Dir.cwd().openFile(io, nested_zon, .{})) |f| {
             f.close(io);
             return nested_zon;
-        } else |_| {
-            allocator.free(nested_zon);
-            return null;
+        } else |err| switch (err) {
+            error.FileNotFound => {
+                allocator.free(nested_zon);
+                return null;
+            },
+            else => return err,
         }
     } else {
         std.log.info("cache miss for '{s}', downloading archive '{s}'...", .{ dep.key, dep.url });
@@ -440,7 +422,7 @@ fn fetchAndExtractZon(
         try arc_fw.flush();
         arc_file.close(io);
 
-        _ = std.Io.Dir.cwd().deleteTree(io, tmp_path) catch {};
+        try std.Io.Dir.cwd().deleteTree(io, tmp_path);
         try std.Io.Dir.cwd().createDirPath(io, tmp_path);
         var dest_dir = try std.Io.Dir.cwd().openDir(io, tmp_path, .{ .iterate = true });
         defer dest_dir.close(io);
@@ -452,10 +434,7 @@ fn fetchAndExtractZon(
             defer open_zip.close(io);
 
             var zip_reader = open_zip.reader(io, &read_buf);
-            std.zip.extract(dest_dir, &zip_reader, .{}) catch |err| {
-                std.log.err("failed to extract zip archive for '{s}': {any}", .{ dep.url, err });
-                return err;
-            };
+            try std.zip.extract(dest_dir, &zip_reader, .{});
         } else if (std.mem.endsWith(u8, dep.url, ".tar.gz") or std.mem.endsWith(u8, dep.url, ".tgz")) {
             var open_tar = try std.Io.Dir.cwd().openFile(io, archive_path, .{});
             defer open_tar.close(io);
@@ -464,13 +443,10 @@ fn fetchAndExtractZon(
             var window_buffer: [std.compress.flate.max_window_len]u8 = undefined;
             var decompressor = std.compress.flate.Decompress.init(&tar_reader.interface, .gzip, &window_buffer);
 
-            std.tar.extract(io, dest_dir, &decompressor.reader, .{}) catch |err| {
-                std.log.err("failed to extract tarball archive for '{s}': {any}", .{ dep.url, err });
-                return err;
-            };
+            try std.tar.extract(io, dest_dir, &decompressor.reader, .{});
         } else {
-            std.log.warn("unsupported archive format for '{s}'", .{dep.url});
-            return null;
+            std.log.err("unsupported archive format for '{s}'", .{dep.url});
+            return error.UnsupportedArchiveFormat;
         }
 
         var walker = try dest_dir.walk(allocator);
@@ -589,13 +565,13 @@ pub fn main(init: std.process.Init) !void {
             }
 
             var sri_hash: ?[]const u8 = if (git_info.is_git)
-                prefetchGitHash(allocator, io, git_info.repo_url, git_info.rev)
+                prefetchGitHash(allocator, io, git_info.repo_url, git_info.rev) catch null
             else
-                prefetchUrlHash(allocator, io, dep.url);
+                prefetchUrlHash(allocator, io, dep.url) catch null;
 
             var used_lookup = false;
             if (sri_hash == null) {
-                sri_hash = lookupExistingHash(allocator, io, nix_deps_path, dep.hash);
+                sri_hash = try lookupExistingHash(allocator, io, nix_deps_path, dep.hash);
                 used_lookup = true;
             }
 

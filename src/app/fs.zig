@@ -97,12 +97,18 @@ pub const FolderCounts = struct {
 };
 
 pub fn countFolderContents(io: std.Io, folder_path: []const u8) FolderCounts {
-    var dir = std.Io.Dir.openDir(std.Io.Dir.cwd(), io, folder_path, .{ .iterate = true }) catch return .{};
+    var dir = std.Io.Dir.openDir(std.Io.Dir.cwd(), io, folder_path, .{ .iterate = true }) catch |err| {
+        std.log.debug("countFolderContents openDir failed for '{s}': {}", .{ folder_path, err });
+        return .{};
+    };
     defer dir.close(io);
 
     var counts: FolderCounts = .{};
     var it = dir.iterate();
-    while (it.next(io) catch null) |entry| {
+    while ((it.next(io) catch |err| {
+        std.log.debug("countFolderContents iterate failed for '{s}': {}", .{ folder_path, err });
+        return counts;
+    })) |entry| {
         if (entry.kind == .file) {
             const ext = std.fs.path.extension(entry.name);
             if (isImageExtension(ext)) {
@@ -250,8 +256,12 @@ fn scanDirectoryThreadSafe(state: *ViewerState, gpa: std.mem.Allocator, io: std.
         if (entry.kind == .file) {
             const ext = std.fs.path.extension(entry.name);
             if (isImageExtension(ext)) {
-                const name_dup = gpa.dupe(u8, entry.name) catch continue;
-                dir_entries.append(gpa, name_dup) catch {
+                const name_dup = gpa.dupe(u8, entry.name) catch |err| {
+                    std.log.err("Failed to dupe entry name '{s}': {}", .{ entry.name, err });
+                    continue;
+                };
+                dir_entries.append(gpa, name_dup) catch |err| {
+                    std.log.err("Failed to append entry name '{s}': {}", .{ entry.name, err });
                     gpa.free(name_dup);
                     continue;
                 };
@@ -382,12 +392,19 @@ fn pathScanWorker(args: *PathScanArgs) void {
     }
 
     while (!state.exiting.load(.acquire) and state.generation.load(.acquire) == initial_gen) {
-        const entry = (it.next(io) catch break) orelse break;
+        const entry = (it.next(io) catch |err| {
+            std.log.warn("pathScanWorker iterate failed for '{s}': {}", .{ dir_path, err });
+            break;
+        }) orelse break;
         if (entry.kind == .file) {
             const ext = std.fs.path.extension(entry.name);
             if (isImageExtension(ext)) {
-                const full_path = std.fs.path.join(gpa, &.{ dir_path, entry.name }) catch continue;
-                dir_entries.append(gpa, full_path) catch {
+                const full_path = std.fs.path.join(gpa, &.{ dir_path, entry.name }) catch |err| {
+                    std.log.err("Failed to join path for '{s}': {}", .{ entry.name, err });
+                    continue;
+                };
+                dir_entries.append(gpa, full_path) catch |err| {
+                    std.log.err("Failed to append path '{s}': {}", .{ full_path, err });
                     gpa.free(full_path);
                     continue;
                 };
