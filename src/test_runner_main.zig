@@ -226,6 +226,7 @@ pub fn main(init: std.process.Init) !void {
             "./zig-out/bin/peng",
             "--headless",
             "--test-mode",
+            "--ipc",
             "testfiles/images/000_0_1024x682.jpg",
         },
         .stdin = .ignore,
