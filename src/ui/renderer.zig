@@ -279,9 +279,9 @@ fn appendImageCommand(
 
 fn getOrRenderCachedText(
     state: *app_state.ViewerState,
-    cmd_buf: sdl.gpu.CommandBuffer,
+    copy_pass: sdl.gpu.CopyPass,
     fonts: []const ?sdl.Font,
-    text_data: clay.TextRenderData,
+    text_data: *clay.TextRenderData,
     scale_x: f32,
     allocator: std.mem.Allocator,
     temp_buffers: *std.ArrayList(sdl.gpu.TransferBuffer),
@@ -367,6 +367,8 @@ fn getOrRenderCachedText(
     if (state.gpu_transfer_buffers[frame_idx] == null or state.gpu_buffer_capacities[frame_idx] < required_capacity) {
         const new_tbcap = std.mem.alignForward(usize, @max(required_capacity * 2, 65536), 4096);
         if (state.gpu_transfer_buffers[frame_idx]) |old_tb| {
+            // Catch OOM on the deferred cleanup list so a non-critical array append failure
+            // does not abort the entire frame's render pass. Log the error and continue rendering.
             temp_buffers.append(allocator, old_tb) catch |err| {
                 std.log.err("Failed to append old transfer buffer to cleanup list: {}", .{err});
             };
@@ -404,11 +406,6 @@ fn getOrRenderCachedText(
     }
     dev.unmapTransferBuffer(transfer_buf);
 
-    const copy_pass = cmd_buf.beginCopyPass() orelse {
-        std.log.err("SDL GPU beginCopyPass failed in getOrRenderCachedText: {s}", .{sdl.getError()});
-        dev.releaseTexture(tex);
-        return null;
-    };
     copy_pass.uploadToTexture(&sdl.gpu.TextureTransferInfo{
         .transfer_buffer = transfer_buf,
         .offset = @intCast(aligned_offset),
@@ -420,7 +417,6 @@ fn getOrRenderCachedText(
         .h = @intCast(surf_h),
         .d = 1,
     }, false);
-    copy_pass.end();
 
     tb_offset.* = aligned_offset + size;
 
@@ -454,10 +450,9 @@ pub inline fn isScissorInvisible(sc: ?sdl.Rect, win_w: i32, win_h: i32) bool {
     return false;
 }
 
-pub fn renderClayCommands(
+fn buildGeometryFromCommands(
     state: *app_state.ViewerState,
-    cmd_buf: sdl.gpu.CommandBuffer,
-    swap_tex: sdl.gpu.Texture,
+    copy_pass: sdl.gpu.CopyPass,
     fonts: []const ?sdl.Font,
     r_commands: []const clay.RenderCommand,
     allocator: std.mem.Allocator,
@@ -466,22 +461,14 @@ pub fn renderClayCommands(
     win_h: i32,
     scale_x: f32,
     scale_y: f32,
+    vertices: *std.ArrayList(Vertex),
+    batches: *std.ArrayList(BatchItem),
+    tb_offset: *usize,
 ) !void {
-    const start_render = sdl.timer.getTicksNs();
     const f_win_w = @as(f32, @floatFromInt(win_w));
     const f_win_h = @as(f32, @floatFromInt(win_h));
 
-    var vertices = std.ArrayList(Vertex).empty;
-    defer vertices.deinit(allocator);
-
-    var batches = std.ArrayList(BatchItem).empty;
-    defer batches.deinit(allocator);
-
     var current_scissor: ?sdl.Rect = null;
-
-    const dev = state.gpu_device.?;
-    const frame_idx = state.gpu_frame_index % 2;
-    var tb_offset: usize = 0;
     var prev_text_bb: ?clay.BoundingBox = null;
     var prev_text_end_x: f32 = 0.0;
 
@@ -509,7 +496,6 @@ pub fn renderClayCommands(
             continue;
         }
 
-        // Skip geometry generation early if current scissor is zero-area or offscreen
         if (isScissorInvisible(current_scissor, win_w, win_h)) continue;
 
         switch (rcmd.command_type) {
@@ -519,8 +505,8 @@ pub fn renderClayCommands(
             .rectangle => {
                 prev_text_bb = null;
                 try appendRectangleCommand(
-                    &vertices,
-                    &batches,
+                    vertices,
+                    batches,
                     allocator,
                     rect,
                     rcmd.render_data.rectangle,
@@ -532,15 +518,16 @@ pub fn renderClayCommands(
                 );
             },
             .text => {
+                var text_data = rcmd.render_data.text;
                 if (try getOrRenderCachedText(
                     state,
-                    cmd_buf,
+                    copy_pass,
                     fonts,
-                    rcmd.render_data.text,
+                    &text_data,
                     scale_x,
                     allocator,
                     temp_buffers,
-                    &tb_offset,
+                    tb_offset,
                 )) |cached| {
                     const offset_y = @round((rect.h - cached.h) / 2.0);
                     const world_y = rect.y + @max(0.0, offset_y);
@@ -557,28 +544,26 @@ pub fn renderClayCommands(
                     prev_text_bb = bb;
                     prev_text_end_x = world_x + cached.w;
 
-                    const ndc_x1 = (world_x / f_win_w) * 2.0 - 1.0;
-                    const ndc_y1 = 1.0 - (world_y / f_win_h) * 2.0;
-                    const ndc_x2 = ((world_x + cached.w) / f_win_w) * 2.0 - 1.0;
-                    const ndc_y2 = 1.0 - ((world_y + cached.h) / f_win_h) * 2.0;
+                    const p1 = geometry.toNdc(world_x, world_y, f_win_w, f_win_h);
+                    const p2 = geometry.toNdc(world_x + cached.w, world_y + cached.h, f_win_w, f_win_h);
 
                     const start = @as(u32, @intCast(vertices.items.len));
                     const white_color = packRgba(255, 255, 255, 255);
-                    try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y1, .u = 0.0, .v = 0.0, .color = white_color });
-                    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y1, .u = 1.0, .v = 0.0, .color = white_color });
-                    try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y2, .u = 0.0, .v = 1.0, .color = white_color });
-                    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y1, .u = 1.0, .v = 0.0, .color = white_color });
-                    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y2, .u = 1.0, .v = 1.0, .color = white_color });
-                    try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y2, .u = 0.0, .v = 1.0, .color = white_color });
+                    try vertices.append(allocator, .{ .x = p1.x, .y = p1.y, .u = 0.0, .v = 0.0, .color = white_color });
+                    try vertices.append(allocator, .{ .x = p2.x, .y = p1.y, .u = 1.0, .v = 0.0, .color = white_color });
+                    try vertices.append(allocator, .{ .x = p1.x, .y = p2.y, .u = 0.0, .v = 1.0, .color = white_color });
+                    try vertices.append(allocator, .{ .x = p2.x, .y = p1.y, .u = 1.0, .v = 0.0, .color = white_color });
+                    try vertices.append(allocator, .{ .x = p2.x, .y = p2.y, .u = 1.0, .v = 1.0, .color = white_color });
+                    try vertices.append(allocator, .{ .x = p1.x, .y = p2.y, .u = 0.0, .v = 1.0, .color = white_color });
 
-                    try addBatch(&batches, allocator, start, 6, cached.texture, false, current_scissor);
+                    try addBatch(batches, allocator, start, 6, cached.texture, false, current_scissor);
                 }
             },
             .border => {
                 prev_text_bb = null;
                 try appendBorderCommand(
-                    &vertices,
-                    &batches,
+                    vertices,
+                    batches,
                     allocator,
                     rect,
                     rcmd.render_data.border,
@@ -593,8 +578,8 @@ pub fn renderClayCommands(
             .image => {
                 prev_text_bb = null;
                 try appendImageCommand(
-                    &vertices,
-                    &batches,
+                    vertices,
+                    batches,
                     allocator,
                     rect,
                     rcmd.render_data.image.image_data,
@@ -609,65 +594,84 @@ pub fn renderClayCommands(
             },
         }
     }
+}
 
-    // Persistent Vertex Buffer Double-Buffering
-    var vert_buf: ?sdl.gpu.Buffer = null;
-    const needed_size = vertices.items.len * @sizeOf(Vertex);
+fn uploadVertexData(
+    state: *app_state.ViewerState,
+    dev: sdl.gpu.Device,
+    frame_idx: usize,
+    copy_pass: sdl.gpu.CopyPass,
+    allocator: std.mem.Allocator,
+    temp_buffers: *std.ArrayList(sdl.gpu.TransferBuffer),
+    vertex_items: []const Vertex,
+    tb_offset: usize,
+) !?sdl.gpu.Buffer {
+    const needed_size = vertex_items.len * @sizeOf(Vertex);
+    if (needed_size == 0) return null;
 
-    if (needed_size > 0) {
-        if (state.gpu_vertex_buffers[frame_idx] == null or state.gpu_vertex_capacities[frame_idx] < needed_size) {
-            if (state.gpu_vertex_buffers[frame_idx]) |vb| {
-                dev.releaseBuffer(vb);
-                state.gpu_vertex_buffers[frame_idx] = null;
-            }
-            const new_vcap = std.mem.alignForward(usize, needed_size * 2, 4096);
-            state.gpu_vertex_buffers[frame_idx] = dev.createBuffer(&sdl.gpu.BufferCreateInfo{
-                .usage = sdl.gpu.BufferUsage.vertex,
-                .size = @intCast(new_vcap),
-                .props = 0,
-            }) orelse return error.GPUBufferCreationFailed;
-            state.gpu_vertex_capacities[frame_idx] = new_vcap;
+    if (state.gpu_vertex_buffers[frame_idx] == null or state.gpu_vertex_capacities[frame_idx] < needed_size) {
+        if (state.gpu_vertex_buffers[frame_idx]) |vb| {
+            dev.releaseBuffer(vb);
+            state.gpu_vertex_buffers[frame_idx] = null;
         }
-
-        const vert_offset = std.mem.alignForward(usize, tb_offset, 512);
-        const total_tb_needed = vert_offset + needed_size;
-
-        if (state.gpu_transfer_buffers[frame_idx] == null or state.gpu_buffer_capacities[frame_idx] < total_tb_needed) {
-            if (state.gpu_transfer_buffers[frame_idx]) |old_tb| {
-                try temp_buffers.append(allocator, old_tb);
-            }
-            const new_tbcap = std.mem.alignForward(usize, total_tb_needed * 2, 4096);
-            state.gpu_transfer_buffers[frame_idx] = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
-                .usage = .upload,
-                .size = @intCast(new_tbcap),
-                .props = 0,
-            }) orelse return error.GPUTransferBufferCreationFailed;
-            state.gpu_buffer_capacities[frame_idx] = new_tbcap;
-        }
-
-        const vb = state.gpu_vertex_buffers[frame_idx].?;
-        const tb = state.gpu_transfer_buffers[frame_idx].?;
-
-        const mapped_raw: [*]u8 = dev.mapTransferBuffer(tb, false) orelse return error.GPUMapFailed;
-        const mapped: [*]Vertex = @ptrCast(@alignCast(mapped_raw + vert_offset));
-        @memcpy(mapped[0..vertices.items.len], vertices.items);
-        dev.unmapTransferBuffer(tb);
-
-        const cmd = cmd_buf;
-        const copy_pass = cmd.beginCopyPass() orelse return error.GPUCopyPassFailed;
-        copy_pass.uploadToBuffer(&sdl.gpu.TransferBufferLocation{
-            .transfer_buffer = tb,
-            .offset = @intCast(vert_offset),
-        }, &sdl.gpu.BufferRegion{
-            .buffer = vb,
-            .offset = 0,
-            .size = @intCast(needed_size),
-        }, false);
-        copy_pass.end();
-
-        vert_buf = vb;
+        const new_vcap = std.mem.alignForward(usize, needed_size * 2, 4096);
+        state.gpu_vertex_buffers[frame_idx] = dev.createBuffer(&sdl.gpu.BufferCreateInfo{
+            .usage = sdl.gpu.BufferUsage.vertex,
+            .size = @intCast(new_vcap),
+            .props = 0,
+        }) orelse return error.GPUVertexBufferCreationFailed;
+        state.gpu_vertex_capacities[frame_idx] = new_vcap;
     }
 
+    const vert_offset = std.mem.alignForward(usize, tb_offset, 512);
+    const total_tb_needed = vert_offset + needed_size;
+
+    if (state.gpu_transfer_buffers[frame_idx] == null or state.gpu_buffer_capacities[frame_idx] < total_tb_needed) {
+        if (state.gpu_transfer_buffers[frame_idx]) |old_tb| {
+            // Catch OOM on the deferred cleanup list so a non-critical array append failure
+            // does not abort the entire frame's render pass. Log the error and continue rendering.
+            temp_buffers.append(allocator, old_tb) catch |err| {
+                std.log.err("Failed to append old transfer buffer to cleanup list in uploadVertexData: {}", .{err});
+            };
+        }
+        const new_tbcap = std.mem.alignForward(usize, total_tb_needed * 2, 4096);
+        state.gpu_transfer_buffers[frame_idx] = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
+            .usage = .upload,
+            .size = @intCast(new_tbcap),
+            .props = 0,
+        }) orelse return error.GPUTransferBufferCreationFailed;
+        state.gpu_buffer_capacities[frame_idx] = new_tbcap;
+    }
+
+    const vb = state.gpu_vertex_buffers[frame_idx].?;
+    const tb = state.gpu_transfer_buffers[frame_idx].?;
+
+    const mapped_raw: [*]u8 = dev.mapTransferBuffer(tb, false) orelse return error.GPUMapFailed;
+    const mapped: [*]Vertex = @ptrCast(@alignCast(mapped_raw + vert_offset));
+    @memcpy(mapped[0..vertex_items.len], vertex_items);
+    dev.unmapTransferBuffer(tb);
+
+    copy_pass.uploadToBuffer(&sdl.gpu.TransferBufferLocation{
+        .transfer_buffer = tb,
+        .offset = @intCast(vert_offset),
+    }, &sdl.gpu.BufferRegion{
+        .buffer = vb,
+        .offset = 0,
+        .size = @intCast(needed_size),
+    }, false);
+
+    return vb;
+}
+
+fn executeRenderPass(
+    state: *app_state.ViewerState,
+    cmd_buf: sdl.gpu.CommandBuffer,
+    swap_tex: sdl.gpu.Texture,
+    batches: []const BatchItem,
+    vert_buf: ?sdl.gpu.Buffer,
+    win_w: i32,
+    win_h: i32,
+) void {
     const color_target = sdl.gpu.ColorTargetAttachment{
         .texture = swap_tex,
         .clear_color = .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 },
@@ -676,8 +680,7 @@ pub fn renderClayCommands(
         .cycle = false,
     };
 
-    const cmd = cmd_buf;
-    const render_pass = cmd.beginRenderPass(&color_target) orelse {
+    const render_pass = cmd_buf.beginRenderPass(&color_target) orelse {
         std.log.err("SDL GPU beginRenderPass failed in renderClayCommands: {s}", .{sdl.getError()});
         return;
     };
@@ -689,7 +692,7 @@ pub fn renderClayCommands(
         const vert_binding = sdl.gpu.BufferBinding{ .buffer = vb, .offset = 0 };
         render_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{vert_binding});
 
-        for (batches.items) |batch| {
+        for (batches) |batch| {
             if (batch.scissor) |sc| {
                 var safe_sc = sc;
                 safe_sc.x = @max(0, sc.x);
@@ -718,14 +721,85 @@ pub fn renderClayCommands(
                 .is_text_or_color = if (batch.is_image) 0 else 1,
                 .scale_mode = scale_mode_val,
             };
-            cmd.pushFragmentUniform(0, std.mem.asBytes(&ubo));
+            cmd_buf.pushFragmentUniform(0, std.mem.asBytes(&ubo));
 
             render_pass.bindFragmentSamplers(0, &[_]sdl.gpu.TextureSamplerBinding{.{ .texture = batch.texture, .sampler = state.gpu_sampler.? }});
             render_pass.drawPrimitives(batch.vertex_count, 1, batch.vertex_start, 0);
         }
     }
+}
 
-    // 4. Cache eviction for text textures (unused for >120 frames)
+pub fn renderClayCommands(
+    state: *app_state.ViewerState,
+    cmd_buf: sdl.gpu.CommandBuffer,
+    swap_tex: sdl.gpu.Texture,
+    fonts: []const ?sdl.Font,
+    r_commands: []const clay.RenderCommand,
+    allocator: std.mem.Allocator,
+    temp_buffers: *std.ArrayList(sdl.gpu.TransferBuffer),
+    win_w: i32,
+    win_h: i32,
+    scale_x: f32,
+    scale_y: f32,
+) !void {
+    const start_render = sdl.timer.getTicksNs();
+    const dev = state.gpu_device.?;
+    const frame_idx = state.gpu_frame_index % 2;
+
+    var vertices = std.ArrayList(Vertex).empty;
+    defer vertices.deinit(allocator);
+
+    var batches = std.ArrayList(BatchItem).empty;
+    defer batches.deinit(allocator);
+
+    var tb_offset: usize = 0;
+
+    const copy_pass = cmd_buf.beginCopyPass() orelse {
+        std.log.err("SDL GPU beginCopyPass failed in renderClayCommands: {s}", .{sdl.getError()});
+        return error.GPUCopyPassFailed;
+    };
+    errdefer copy_pass.end();
+
+    try buildGeometryFromCommands(
+        state,
+        copy_pass,
+        fonts,
+        r_commands,
+        allocator,
+        temp_buffers,
+        win_w,
+        win_h,
+        scale_x,
+        scale_y,
+        &vertices,
+        &batches,
+        &tb_offset,
+    );
+
+    const vert_buf = try uploadVertexData(
+        state,
+        dev,
+        frame_idx,
+        copy_pass,
+        allocator,
+        temp_buffers,
+        vertices.items,
+        tb_offset,
+    );
+
+    copy_pass.end();
+
+    executeRenderPass(
+        state,
+        cmd_buf,
+        swap_tex,
+        batches.items,
+        vert_buf,
+        win_w,
+        win_h,
+    );
+
+    // Cache eviction for text textures (unused for >120 frames)
     state.text_cache.evictUnused(allocator, dev, state.gpu_frame_index, 120);
 
     const end_render = sdl.timer.getTicksNs();

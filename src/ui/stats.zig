@@ -198,6 +198,24 @@ pub fn renderStatsOverlay(
             try renderStatRow("Convert Time", convert_str);
             try renderStatRow("GPU Upload", upload_str);
 
+            var upload_mode_str: []const u8 = "Direct VRAM";
+            var fallback_time_str: []const u8 = "N/A";
+            if (current_entry) |entry| {
+                switch (entry.status) {
+                    .loaded_gpu => |gpu| {
+                        if (gpu.was_fallback) {
+                            upload_mode_str = "CPU Downscale Fallback";
+                            fallback_time_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{gpu.fallback_time_ms});
+                        }
+                    },
+                    else => {},
+                }
+            }
+            try renderStatRow("GPU Upload Mode", upload_mode_str);
+            if (std.mem.eql(u8, upload_mode_str, "CPU Downscale Fallback")) {
+                try renderStatRow("CPU Fallback Time", fallback_time_str);
+            }
+
             var thumb_info_str: []const u8 = "None";
             var thumb_time_str: []const u8 = "N/A";
             if (current_entry) |entry| {

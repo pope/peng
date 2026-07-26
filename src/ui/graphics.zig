@@ -414,6 +414,8 @@ pub const GpuUploadResult = struct {
     num_mip_levels: u32 = 1,
     mipmap_time_ms: f64 = 0.0,
     conversion_time_ms: f64 = 0.0,
+    was_fallback: bool = false,
+    fallback_time_ms: f64 = 0.0,
 };
 
 pub fn uploadSurfaceToGpu(dev: sdl.gpu.Device, surf: sdl.Surface) ?GpuUploadResult {
@@ -434,51 +436,65 @@ pub fn uploadSurfaceToGpu(dev: sdl.gpu.Device, surf: sdl.Surface) ?GpuUploadResu
     var tex: ?sdl.gpu.Texture = null;
     const max_dim_u: u32 = @intCast(@max(img_w, img_h));
     const num_levels: u32 = if (max_dim_u > 1) @intCast(std.math.log2(max_dim_u) + 1) else 1;
+    var was_fallback: bool = false;
+    var fallback_time_ms: f64 = 0.0;
 
-    var try_max_dim: i32 = 16384;
-    while (try_max_dim >= 2048) : (try_max_dim = @divTrunc(try_max_dim, 2)) {
-        if (img_w <= try_max_dim and img_h <= try_max_dim) {
-            const img_tex_info = sdl.gpu.TextureCreateInfo{
-                .type = .type_2d,
-                .format = gpu_format,
-                .usage = sdl.gpu.TextureUsage.sampler | sdl.gpu.TextureUsage.color_target,
-                .width = @intCast(img_w),
-                .height = @intCast(img_h),
-                .layer_count_or_depth = 1,
-                .num_levels = num_levels,
-                .sample_count = .count_1,
-                .props = 0,
-            };
-            tex = dev.createTexture(&img_tex_info);
-            if (tex != null) break;
-        }
+    // Directly attempt VRAM texture creation at unscaled image dimensions first
+    var img_tex_info = sdl.gpu.TextureCreateInfo{
+        .type = .type_2d,
+        .format = gpu_format,
+        .usage = sdl.gpu.TextureUsage.sampler | sdl.gpu.TextureUsage.color_target,
+        .width = @intCast(img_w),
+        .height = @intCast(img_h),
+        .layer_count_or_depth = 1,
+        .num_levels = num_levels,
+        .sample_count = .count_1,
+        .props = 0,
+    };
+    tex = dev.createTexture(&img_tex_info);
 
-        const next_dim = @divTrunc(try_max_dim, 2);
-        if (img_w > next_dim or img_h > next_dim) {
-            var new_w = img_w;
-            var new_h = img_h;
-            if (img_w > img_h) {
-                new_w = next_dim;
-                new_h = @divTrunc(img_h * next_dim, img_w);
-            } else {
-                new_h = next_dim;
-                new_w = @divTrunc(img_w * next_dim, img_h);
+    // Fallback: only if texture creation failed for giant image dimensions exceeding GPU limits
+    if (tex == null) {
+        const start_fb = sdl.timer.getTicksNs();
+        was_fallback = true;
+        var try_max_dim: i32 = 8192;
+        while (try_max_dim >= 2048) : (try_max_dim = @divTrunc(try_max_dim, 2)) {
+            if (img_w > try_max_dim or img_h > try_max_dim) {
+                var new_w = img_w;
+                var new_h = img_h;
+                if (img_w > img_h) {
+                    new_w = try_max_dim;
+                    new_h = @divTrunc(img_h * try_max_dim, img_w);
+                } else {
+                    new_h = try_max_dim;
+                    new_w = @divTrunc(img_w * try_max_dim, img_h);
+                }
+                new_w = @max(1, new_w);
+                new_h = @max(1, new_h);
+
+                const new_scale = current_surf.scale(new_w, new_h, .linear);
+                if (new_scale) |ns| {
+                    if (scaled_surf) |s| s.destroy();
+                    scaled_surf = ns;
+                    current_surf = ns;
+                    img_w = new_w;
+                    img_h = new_h;
+
+                    const fb_max_dim: u32 = @intCast(@max(img_w, img_h));
+                    const fb_levels: u32 = if (fb_max_dim > 1) @intCast(std.math.log2(fb_max_dim) + 1) else 1;
+                    img_tex_info.width = @intCast(img_w);
+                    img_tex_info.height = @intCast(img_h);
+                    img_tex_info.num_levels = fb_levels;
+                    tex = dev.createTexture(&img_tex_info);
+                    if (tex != null) break;
+                } else {
+                    std.log.err("uploadSurfaceToGpu: SDL_ScaleSurface fallback failed: {s}", .{sdl.getError()});
+                    break;
+                }
             }
-            new_w = @max(1, new_w);
-            new_h = @max(1, new_h);
-
-            const new_scale = current_surf.scale(new_w, new_h, .linear);
-            if (new_scale) |ns| {
-                if (scaled_surf) |s| s.destroy();
-                scaled_surf = ns;
-                current_surf = ns;
-                img_w = new_w;
-                img_h = new_h;
-            } else {
-                std.log.err("uploadSurfaceToGpu: SDL_ScaleSurface failed: {s}", .{sdl.getError()});
-                break;
-            }
         }
+        const end_fb = sdl.timer.getTicksNs();
+        fallback_time_ms = @as(f64, @floatFromInt(end_fb - start_fb)) / 1_000_000.0;
     }
 
     const gpu_tex = tex orelse return null;
@@ -605,5 +621,7 @@ pub fn uploadSurfaceToGpu(dev: sdl.gpu.Device, surf: sdl.Surface) ?GpuUploadResu
         .num_mip_levels = num_levels,
         .mipmap_time_ms = mipmap_time_ms,
         .conversion_time_ms = conversion_time_ms,
+        .was_fallback = was_fallback,
+        .fallback_time_ms = fallback_time_ms,
     };
 }

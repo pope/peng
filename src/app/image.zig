@@ -41,6 +41,8 @@ pub const CacheStatus = union(enum) {
         memory_size_bytes: usize,
         num_mip_levels: u32 = 1,
         mipmap_time_ms: f64 = 0.0,
+        was_fallback: bool = false,
+        fallback_time_ms: f64 = 0.0,
         has_thumb: bool = false,
         thumb_w: f32 = 0.0,
         thumb_h: f32 = 0.0,
