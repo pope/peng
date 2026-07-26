@@ -106,29 +106,18 @@ pub fn appendLineQuad(
     try vertices.append(allocator, .{ .x = ndc_x4, .y = ndc_y4, .u = 0.0, .v = 1.0, .color = color });
 }
 
-const TrigStep = struct {
+pub const TrigStep = struct {
     cos_val: f32,
     sin_val: f32,
 };
 
-const TRIG_QUADRANT_STEPS = 32;
-const trig_quadrant_table: [TRIG_QUADRANT_STEPS + 1]TrigStep = blk: {
-    var table: [TRIG_QUADRANT_STEPS + 1]TrigStep = undefined;
-    const step = (std.math.pi / 2.0) / @as(f32, @floatFromInt(TRIG_QUADRANT_STEPS));
-    for (&table, 0..) |*item, i| {
-        const angle = @as(f32, @floatFromInt(i)) * step;
-        item.* = .{
-            .cos_val = @cos(angle),
-            .sin_val = @sin(angle),
-        };
-    }
-    break :blk table;
-};
-
 pub fn getTrigQuadrant(step_idx: usize, total_steps: usize) TrigStep {
-    if (total_steps == 0) return trig_quadrant_table[0];
-    const lut_idx = (step_idx * TRIG_QUADRANT_STEPS) / total_steps;
-    return trig_quadrant_table[@min(lut_idx, TRIG_QUADRANT_STEPS)];
+    if (total_steps == 0) return .{ .cos_val = 1.0, .sin_val = 0.0 };
+    const angle = (@as(f32, @floatFromInt(step_idx)) / @as(f32, @floatFromInt(total_steps))) * (std.math.pi / 2.0);
+    return .{
+        .cos_val = @cos(angle),
+        .sin_val = @sin(angle),
+    };
 }
 
 pub fn renderFillRoundedRect(
@@ -150,13 +139,17 @@ pub fn renderFillRoundedRect(
     const min_radius = @min(rect.w, rect.h) / 2.0;
     const clamped_radius = @min(corner_radius, min_radius);
 
-    const num_circle_segments = @max(@as(c_int, 16), @as(c_int, @intFromFloat(clamped_radius * 0.5)));
+    if (clamped_radius <= 0.001) {
+        return appendRectQuad(vertices, allocator, rect, clay_color, win_w, win_h);
+    }
+
+    const num_circle_segments = @max(@as(usize, 8), @as(usize, @intFromFloat(clamped_radius * 0.75)));
 
     const total_vertices = 4 + (4 * (num_circle_segments * 2)) + 8;
     const total_indices = 6 + (4 * (num_circle_segments * 3)) + 24;
 
-    var stack_vertices: [512]sdl.Vertex = undefined;
-    var stack_indices: [1024]c_int = undefined;
+    var stack_vertices: [1024]sdl.Vertex = undefined;
+    var stack_indices: [2048]c_int = undefined;
 
     const vertices_src = if (total_vertices <= stack_vertices.len)
         stack_vertices[0..@intCast(total_vertices)]
@@ -195,7 +188,7 @@ pub fn renderFillRoundedRect(
     indices[index_count] = 3;
     index_count += 1;
 
-    const num_seg_u: usize = @intCast(num_circle_segments);
+    const num_seg_u: usize = num_circle_segments;
     var i: usize = 0;
     while (i < num_seg_u) : (i += 1) {
         const t1 = getTrigQuadrant(i, num_seg_u);
@@ -260,12 +253,29 @@ pub fn renderFillRoundedRect(
             };
             vertex_count += 1;
 
-            indices[index_count] = @intCast(j);
-            index_count += 1;
-            indices[index_count] = @intCast(vertex_count - 2);
-            index_count += 1;
-            indices[index_count] = @intCast(vertex_count - 1);
-            index_count += 1;
+            const v1_idx: c_int = @intCast(vertex_count - 2);
+            const v2_idx: c_int = @intCast(vertex_count - 1);
+            const center_idx: c_int = @intCast(j);
+
+            switch (j) {
+                0, 2 => {
+                    indices[index_count] = center_idx;
+                    index_count += 1;
+                    indices[index_count] = v1_idx;
+                    index_count += 1;
+                    indices[index_count] = v2_idx;
+                    index_count += 1;
+                },
+                1, 3 => {
+                    indices[index_count] = center_idx;
+                    index_count += 1;
+                    indices[index_count] = v2_idx;
+                    index_count += 1;
+                    indices[index_count] = v1_idx;
+                    index_count += 1;
+                },
+                else => unreachable,
+            }
         }
     }
 
@@ -399,66 +409,60 @@ pub fn renderArc(
 ) !void {
     const rad_start = start_angle * (std.math.pi / 180.0);
     const rad_end = end_angle * (std.math.pi / 180.0);
+    const angle_span = @abs(rad_end - rad_start);
 
-    const num_circle_segments = @max(@as(c_int, 16), @as(c_int, @intFromFloat(radius * 1.5)));
+    const quadrant_segs = @max(@as(usize, 8), @as(usize, @intFromFloat(radius * 0.75)));
+    const segs_f = @as(f32, @floatFromInt(quadrant_segs)) * (angle_span / (std.math.pi / 2.0));
+    const num_circle_segments = @max(@as(usize, 8), @as(usize, @intFromFloat(@round(segs_f))));
 
     const angle_step = (rad_end - rad_start) / @as(f32, @floatFromInt(num_circle_segments));
 
-    const points_len = @as(usize, @intCast(num_circle_segments + 1));
+    const r_outer = radius;
+    const r_inner = @max(radius - thickness, 0.0);
+    const color = packRgbaF(r, g, b, a);
 
-    var stack_points: [128]sdl.FPoint = undefined;
-    const points = if (points_len <= stack_points.len)
-        stack_points[0..points_len]
-    else
-        try allocator.alloc(sdl.FPoint, points_len);
-    defer if (points_len > stack_points.len) allocator.free(points);
+    var s: usize = 0;
+    while (s < num_circle_segments) : (s += 1) {
+        if (is_dashed and (s % 4 >= 2)) continue;
 
-    var stack_cos: [128]f32 = undefined;
-    var stack_sin: [128]f32 = undefined;
+        const a1 = rad_start + @as(f32, @floatFromInt(s)) * angle_step;
+        const a2 = rad_start + @as(f32, @floatFromInt(s + 1)) * angle_step;
 
-    const cos_table = if (points_len <= stack_cos.len)
-        stack_cos[0..points_len]
-    else
-        try allocator.alloc(f32, points_len);
-    defer if (points_len > stack_cos.len) allocator.free(cos_table);
+        const cos1 = @cos(a1);
+        const sin1 = @sin(a1);
+        const cos2 = @cos(a2);
+        const sin2 = @sin(a2);
 
-    const sin_table = if (points_len <= stack_sin.len)
-        stack_sin[0..points_len]
-    else
-        try allocator.alloc(f32, points_len);
-    defer if (points_len > stack_sin.len) allocator.free(sin_table);
+        const out1_x = center.x + cos1 * r_outer;
+        const out1_y = center.y + sin1 * r_outer;
+        const out2_x = center.x + cos2 * r_outer;
+        const out2_y = center.y + sin2 * r_outer;
 
-    var idx: usize = 0;
-    while (idx < points_len) : (idx += 1) {
-        const angle = rad_start + @as(f32, @floatFromInt(idx)) * angle_step;
-        cos_table[idx] = @cos(angle);
-        sin_table[idx] = @sin(angle);
-    }
+        const in1_x = center.x + cos1 * r_inner;
+        const in1_y = center.y + sin1 * r_inner;
+        const in2_x = center.x + cos2 * r_inner;
+        const in2_y = center.y + sin2 * r_inner;
 
-    // Calculate points along the middle line of the arc thickness
-    const clamped_radius = @max(radius - thickness * 0.5, 1.0);
+        const ndc_out1_x = (out1_x / win_w) * 2.0 - 1.0;
+        const ndc_out1_y = 1.0 - (out1_y / win_h) * 2.0;
 
-    var i: usize = 0;
-    while (i < points_len) : (i += 1) {
-        points[i] = .{
-            .x = center.x + cos_table[i] * clamped_radius,
-            .y = center.y + sin_table[i] * clamped_radius,
-        };
-    }
+        const ndc_out2_x = (out2_x / win_w) * 2.0 - 1.0;
+        const ndc_out2_y = 1.0 - (out2_y / win_h) * 2.0;
 
-    if (is_dashed) {
-        var s: usize = 0;
-        while (s < points_len - 1) : (s += 4) {
-            const segment_len = @min(2, points_len - 1 - s);
-            var k: usize = 0;
-            while (k < segment_len) : (k += 1) {
-                try appendLineQuad(vertices, allocator, points[s + k], points[s + k + 1], thickness, r, g, b, a, win_w, win_h);
-            }
-        }
-    } else {
-        var s: usize = 0;
-        while (s < points_len - 1) : (s += 1) {
-            try appendLineQuad(vertices, allocator, points[s], points[s + 1], thickness, r, g, b, a, win_w, win_h);
-        }
+        const ndc_in1_x = (in1_x / win_w) * 2.0 - 1.0;
+        const ndc_in1_y = 1.0 - (in1_y / win_h) * 2.0;
+
+        const ndc_in2_x = (in2_x / win_w) * 2.0 - 1.0;
+        const ndc_in2_y = 1.0 - (in2_y / win_h) * 2.0;
+
+        // Triangle 1: out1, out2, in2
+        try vertices.append(allocator, .{ .x = ndc_out1_x, .y = ndc_out1_y, .u = 0.0, .v = 0.0, .color = color });
+        try vertices.append(allocator, .{ .x = ndc_out2_x, .y = ndc_out2_y, .u = 1.0, .v = 0.0, .color = color });
+        try vertices.append(allocator, .{ .x = ndc_in2_x, .y = ndc_in2_y, .u = 1.0, .v = 1.0, .color = color });
+
+        // Triangle 2: out1, in2, in1
+        try vertices.append(allocator, .{ .x = ndc_out1_x, .y = ndc_out1_y, .u = 0.0, .v = 0.0, .color = color });
+        try vertices.append(allocator, .{ .x = ndc_in2_x, .y = ndc_in2_y, .u = 1.0, .v = 1.0, .color = color });
+        try vertices.append(allocator, .{ .x = ndc_in1_x, .y = ndc_in1_y, .u = 0.0, .v = 1.0, .color = color });
     }
 }

@@ -163,7 +163,7 @@ pub fn main(init: std.process.Init) !void {
 
         try state.update(input);
 
-        clay.setLayoutDimensions(.{ .w = input.pix_w, .h = input.pix_h });
+        clay.setLayoutDimensions(.{ .w = input.win_w, .h = input.win_h });
 
         if (input.mouse_inside) {
             clay.setPointerState(

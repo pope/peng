@@ -157,9 +157,6 @@ pub fn renderHighlightedText(
 
 pub fn renderPalette(
     state: *ViewerState,
-    scale_x: f32,
-    scale_y: f32,
-    dpi_scale: f32,
     mouse_clicked: bool,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
@@ -253,17 +250,16 @@ pub fn renderPalette(
     };
 
     // Render Floating Card container
-    const scale = DpiScale.init(dpi_scale);
     clay.UI()(.{
         .id = clay.getElementId(cfg.element_id),
         .layout = .{
-            .sizing = .{ .w = .fixed(550 * scale_x), .h = .fit },
+            .sizing = .{ .w = .fixed(550), .h = .fit },
             .direction = .top_to_bottom,
-            .padding = layout_helpers.scalePadding(12, 12, 12, 12, scale),
-            .child_gap = @intFromFloat(10 * dpi_scale),
+            .padding = .{ .top = 12, .bottom = 12, .left = 12, .right = 12 },
+            .child_gap = 10,
         },
         .background_color = theme.base_translucent, // Catppuccin Base with opacity
-        .corner_radius = layout_helpers.scaleCornerRadius(10, scale),
+        .corner_radius = .all(10),
         .border = .{
             .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
             .color = theme.overlay0,
@@ -295,14 +291,14 @@ pub fn renderPalette(
                     .set_slideshow_interval => theme.yellow,
                     .inactive => unreachable,
                 },
-                .font_size = @intFromFloat(13.0 * dpi_scale),
+                .font_size = 13,
                 .font_id = 0,
             });
         });
 
         // Breadcrumb box for directory_navigator
         if (palette.mode == .directory_navigator) {
-            const display_dir = truncateDirectory(frame_allocator, palette.current_nav_dir.items, 320.0 * scale_x, @intFromFloat(12.0 * dpi_scale), measure_data);
+            const display_dir = truncateDirectory(frame_allocator, palette.current_nav_dir.items, 320.0, 12, measure_data);
             const curr_img_count = palette.current_dir_image_count;
             const count_str = try std.fmt.allocPrint(frame_allocator, "{} image{s}", .{ curr_img_count, if (curr_img_count == 1) "" else "s" });
             const count_color = if (curr_img_count == 0) theme.subtext1 else theme.green;
@@ -312,11 +308,11 @@ pub fn renderPalette(
                     .sizing = .{ .w = .grow, .h = .fit },
                     .direction = .left_to_right,
                     .child_alignment = .{ .x = .left, .y = .center },
-                    .padding = layout_helpers.scalePadding(4, 4, 8, 8, scale),
-                    .child_gap = @intFromFloat(8 * dpi_scale),
+                    .padding = .{ .top = 4, .bottom = 4, .left = 8, .right = 8 },
+                    .child_gap = 8,
                 },
                 .background_color = theme.crust,
-                .corner_radius = layout_helpers.scaleCornerRadius(6, scale),
+                .corner_radius = .all(6),
                 .border = .{
                     .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
                     .color = theme.surface0,
@@ -327,7 +323,7 @@ pub fn renderPalette(
                         .sizing = .{ .w = .grow, .h = .fit },
                         .direction = .left_to_right,
                         .child_alignment = .{ .x = .left, .y = .center },
-                        .child_gap = @intFromFloat(8 * dpi_scale),
+                        .child_gap = 8,
                     },
                 })({
                     clay.UI()(.{
@@ -344,14 +340,14 @@ pub fn renderPalette(
                     })({
                         clay.text("DIR", .{
                             .color = theme.mauve,
-                            .font_size = @intFromFloat(11.0 * dpi_scale),
+                            .font_size = 11,
                             .font_id = 0,
                         });
                     });
 
                     clay.text(display_dir, .{
                         .color = theme.mauve,
-                        .font_size = @intFromFloat(12.0 * dpi_scale),
+                        .font_size = 12,
                         .font_id = 0,
                     });
                 });
@@ -370,7 +366,7 @@ pub fn renderPalette(
                 })({
                     clay.text(count_str, .{
                         .color = count_color,
-                        .font_size = @intFromFloat(11.0 * dpi_scale),
+                        .font_size = 11,
                         .font_id = 0,
                     });
                 });
@@ -380,13 +376,13 @@ pub fn renderPalette(
         // Search Input Box
         clay.UI()(.{
             .layout = .{
-                .sizing = .{ .w = .grow, .h = .fixed(38 * scale_y) },
+                .sizing = .{ .w = .grow, .h = .fixed(38) },
                 .direction = .left_to_right,
                 .child_alignment = .{ .x = .left, .y = .center },
-                .padding = layout_helpers.scalePadding(0, 0, 12, 12, scale),
+                .padding = .{ .left = 12, .right = 12 },
             },
             .background_color = theme.crust, // Catppuccin Crust (input background)
-            .corner_radius = layout_helpers.scaleCornerRadius(6, scale),
+            .corner_radius = .all(6),
             .border = .{
                 .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
                 .color = theme.blue,
@@ -396,7 +392,7 @@ pub fn renderPalette(
             const query_color = if (palette.query.items.len > 0) theme.text else theme.subtext1;
             clay.text(query_str, .{
                 .color = query_color,
-                .font_size = @intFromFloat(14.0 * dpi_scale),
+                .font_size = 14,
                 .font_id = 0,
             });
         });
@@ -404,7 +400,7 @@ pub fn renderPalette(
         if (palette.mode.isTextInputDialog()) {
             clay.UI()(.{
                 .layout = .{
-                    .sizing = .{ .w = .grow, .h = .fixed(64 * scale_y) },
+                    .sizing = .{ .w = .grow, .h = .fixed(64) },
                     .direction = .top_to_bottom,
                     .child_alignment = .{ .x = .left, .y = .center },
                     .padding = .{ .left = 12, .right = 12, .top = 10, .bottom = 10 },
@@ -422,19 +418,19 @@ pub fn renderPalette(
                         if (total_count == 0) {
                             clay.text("No images loaded.", .{
                                 .color = theme.red, // Red
-                                .font_size = @intFromFloat(13.0 * dpi_scale),
+                                .font_size = 13,
                                 .font_id = 0,
                             });
                         } else if (raw_str.len == 0) {
                             clay.text("Enter image number, then press Enter to apply.", .{
                                 .color = theme.subtext0,
-                                .font_size = @intFromFloat(13.0 * dpi_scale),
+                                .font_size = 13,
                                 .font_id = 0,
                             });
                             const range_str = try std.fmt.allocPrint(frame_allocator, "Allowed range: 1 to {} (current: {})", .{ total_count, (state.current_index orelse 0) + 1 });
                             clay.text(range_str, .{
                                 .color = theme.subtext1, // Subtext
-                                .font_size = @intFromFloat(11.0 * dpi_scale),
+                                .font_size = 11,
                                 .font_id = 0,
                             });
                         } else {
@@ -445,25 +441,25 @@ pub fn renderPalette(
                                     const target_path = if (val - 1 < state.image_list.items.len) state.image_list.items[val - 1] else "";
                                     state.unlockImageList();
                                     const raw_basename = std.fs.path.basename(target_path);
-                                    const display_filename = truncateFilename(frame_allocator, raw_basename, 492.0 * scale_x, @intFromFloat(12.0 * dpi_scale), measure_data);
+                                    const display_filename = truncateFilename(frame_allocator, raw_basename, 492.0, 12, measure_data);
                                     const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to go to {}: {s}", .{ val, display_filename });
                                     clay.text(success_str, .{
                                         .color = theme.green, // Green
-                                        .font_size = @intFromFloat(13.0 * dpi_scale),
+                                        .font_size = 13,
                                         .font_id = 0,
                                     });
                                 } else {
                                     const err_str = try std.fmt.allocPrint(frame_allocator, "Out of bounds: must be between 1 and {}", .{total_count});
                                     clay.text(err_str, .{
                                         .color = theme.red, // Red
-                                        .font_size = @intFromFloat(13.0 * dpi_scale),
+                                        .font_size = 13,
                                         .font_id = 0,
                                     });
                                 }
                             } else {
                                 clay.text("Invalid number format. Enter a positive integer.", .{
                                     .color = theme.red, // Red
-                                    .font_size = @intFromFloat(13.0 * dpi_scale),
+                                    .font_size = 13,
                                     .font_id = 0,
                                 });
                             }
@@ -473,12 +469,12 @@ pub fn renderPalette(
                         if (raw_str.len == 0) {
                             clay.text("Enter delay in seconds, then press Enter to start.", .{
                                 .color = theme.subtext0,
-                                .font_size = @intFromFloat(13.0 * dpi_scale),
+                                .font_size = 13,
                                 .font_id = 0,
                             });
                             clay.text("Example: 3 for 3 seconds per slide", .{
                                 .color = theme.subtext1,
-                                .font_size = @intFromFloat(11.0 * dpi_scale),
+                                .font_size = 11,
                                 .font_id = 0,
                             });
                         } else {
@@ -490,7 +486,7 @@ pub fn renderPalette(
                                     const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to start slide show ({d:.1}s per slide)", .{val});
                                     clay.text(success_str, .{
                                         .color = theme.green,
-                                        .font_size = @intFromFloat(13.0 * dpi_scale),
+                                        .font_size = 13,
                                         .font_id = 0,
                                     });
                                 }
@@ -498,7 +494,7 @@ pub fn renderPalette(
                             if (!is_valid) {
                                 clay.text("Invalid duration. Must be greater than 0 seconds.", .{
                                     .color = theme.red,
-                                    .font_size = @intFromFloat(13.0 * dpi_scale),
+                                    .font_size = 13,
                                     .font_id = 0,
                                 });
                             }
@@ -508,13 +504,13 @@ pub fn renderPalette(
                         if (raw_str.len == 0) {
                             clay.text("Enter a number, then press Enter to apply.", .{
                                 .color = theme.subtext0,
-                                .font_size = @intFromFloat(13.0 * dpi_scale),
+                                .font_size = 13,
                                 .font_id = 0,
                             });
                             const range_str = if (palette.mode == .set_brightness) "Allowed range: -1.0 to 1.0 (default: 0.0)" else "Allowed range: 0.0 to 5.0 (default: 1.0)";
                             clay.text(range_str, .{
                                 .color = theme.subtext1, // Subtext
-                                .font_size = @intFromFloat(11.0 * dpi_scale),
+                                .font_size = 11,
                                 .font_id = 0,
                             });
                         } else {
@@ -529,14 +525,14 @@ pub fn renderPalette(
                                         const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to set value to: {d:.2}", .{val});
                                         clay.text(success_str, .{
                                             .color = theme.green, // Green
-                                            .font_size = @intFromFloat(13.0 * dpi_scale),
+                                            .font_size = 13,
                                             .font_id = 0,
                                         });
                                     } else {
                                         const err_str = try std.fmt.allocPrint(frame_allocator, "Out of bounds: must be between {d:.1} and {d:.1}", .{ min_val, max_val });
                                         clay.text(err_str, .{
                                             .color = theme.red, // Red
-                                            .font_size = @intFromFloat(13.0 * dpi_scale),
+                                            .font_size = 13,
                                             .font_id = 0,
                                         });
                                     }
@@ -545,7 +541,7 @@ pub fn renderPalette(
                             if (!is_valid_float) {
                                 clay.text("Invalid float format. Enter a number.", .{
                                     .color = theme.red, // Red
-                                    .font_size = @intFromFloat(13.0 * dpi_scale),
+                                    .font_size = 13,
                                     .font_id = 0,
                                 });
                             }
@@ -560,8 +556,8 @@ pub fn renderPalette(
             var scroll_offset = if (scroll_data.found) scroll_data.scroll_position.* else clay.Vector2{ .x = 0, .y = 0 };
 
             // Auto-scroll logic during keyboard navigation
-            const item_height = cfg.base_item_height * scale_y;
-            const viewport_height = 320.0 * scale_y;
+            const item_height = cfg.base_item_height;
+            const viewport_height = 320.0;
 
             if (scroll_data.found and palette.selection_dirty) {
                 const item_top = @as(f32, @floatFromInt(palette.selected_idx)) * item_height;
@@ -584,9 +580,9 @@ pub fn renderPalette(
             clay.UI()(.{
                 .id = clay.getElementId(cfg.list_id),
                 .layout = .{
-                    .sizing = .{ .w = .grow, .h = .fixed(320 * scale_y) },
+                    .sizing = .{ .w = .grow, .h = .fixed(320) },
                     .direction = .top_to_bottom,
-                    .child_gap = @intFromFloat(4 * scale_y),
+                    .child_gap = 4,
                 },
                 .clip = .{
                     .horizontal = false,
@@ -610,7 +606,7 @@ pub fn renderPalette(
                     start_visible_idx = end_visible_idx;
                 }
 
-                const gap = 4.0 * scale_y;
+                const gap: f32 = 4.0;
                 const top_spacer_h = if (start_visible_idx > 0)
                     @as(f32, @floatFromInt(start_visible_idx)) * item_height - gap
                 else
@@ -650,8 +646,8 @@ pub fn renderPalette(
                         .id = item_id,
                         .layout = .{
                             .sizing = .{ .w = .grow, .h = .fixed(switch (palette.mode) {
-                                .files => 54 * scale_y,
-                                .actions, .directory_navigator => 46 * scale_y,
+                                .files => 54.0,
+                                .actions, .directory_navigator => 46.0,
                                 else => 0.0,
                             }) },
                             .direction = .left_to_right,
@@ -706,8 +702,8 @@ pub fn renderPalette(
                                     }
                                 }
 
-                                const display_filename = truncateFilename(frame_allocator, basename, 492.0 * scale_x, @intFromFloat(13.0 * dpi_scale), measure_data);
-                                const display_dir = truncateDirectory(frame_allocator, dirname, 488.0 * scale_x, @intFromFloat(11.0 * dpi_scale), measure_data);
+                                const display_filename = truncateFilename(frame_allocator, basename, 492.0, 13, measure_data);
+                                const display_dir = truncateDirectory(frame_allocator, dirname, 488.0, 11, measure_data);
 
                                 var final_dir_matches = std.ArrayList(usize).empty;
                                 if (display_dir.len > 0 and std.mem.startsWith(u8, display_dir, "...")) {
@@ -741,7 +737,7 @@ pub fn renderPalette(
                                         // Small colored indicator tag representing category / type
                                         clay.UI()(.{
                                             .layout = .{
-                                                .sizing = .{ .w = .fixed(4 * scale_x), .h = .fixed(12 * scale_y) },
+                                                .sizing = .{ .w = .fixed(4), .h = .fixed(12) },
                                             },
                                             .background_color = if (is_selected) theme.blue else theme.subtext1,
                                             .corner_radius = .all(3),
@@ -752,7 +748,7 @@ pub fn renderPalette(
                                             frame_allocator,
                                             display_filename,
                                             basename_matches.items,
-                                            @intFromFloat(13.0 * dpi_scale),
+                                            13,
                                             if (is_selected) theme.blue else theme.text,
                                             theme.yellow,
                                         );
@@ -770,7 +766,7 @@ pub fn renderPalette(
                                             frame_allocator,
                                             display_dir,
                                             final_dir_matches.items,
-                                            @intFromFloat(11.0 * dpi_scale),
+                                            11,
                                             theme.subtext0,
                                             theme.yellow,
                                         );
@@ -802,7 +798,7 @@ pub fn renderPalette(
                                         frame_allocator,
                                         meta.name,
                                         action_matches,
-                                        @intFromFloat(13.0 * dpi_scale),
+                                        13,
                                         if (is_selected) theme.blue else theme.text,
                                         theme.yellow,
                                     );
@@ -821,7 +817,7 @@ pub fn renderPalette(
                                     })({
                                         clay.text(meta.shortcut_text, .{
                                             .color = theme.subtext0,
-                                            .font_size = @intFromFloat(11.0 * dpi_scale),
+                                            .font_size = 11,
                                             .font_id = 0,
                                         });
                                     });
@@ -864,18 +860,18 @@ pub fn renderPalette(
                                         })({
                                             clay.text("DIR", .{
                                                 .color = theme.blue,
-                                                .font_size = @intFromFloat(11.0 * dpi_scale),
+                                                .font_size = 11,
                                                 .font_id = 0,
                                             });
                                         });
 
-                                        const display_foldername = truncateFilename(frame_allocator, entry.name, 350.0 * scale_x, @intFromFloat(13.0 * dpi_scale), measure_data);
+                                        const display_foldername = truncateFilename(frame_allocator, entry.name, 350.0, 13, measure_data);
 
                                         renderHighlightedText(
                                             frame_allocator,
                                             display_foldername,
                                             dir_matches.items,
-                                            @intFromFloat(13.0 * dpi_scale),
+                                            13,
                                             if (is_selected) theme.blue else theme.text,
                                             theme.yellow,
                                         );
@@ -908,7 +904,7 @@ pub fn renderPalette(
                                         })({
                                             clay.text(count_str, .{
                                                 .color = count_color,
-                                                .font_size = @intFromFloat(11.0 * dpi_scale),
+                                                .font_size = 11,
                                                 .font_id = 0,
                                             });
                                         });
@@ -927,7 +923,7 @@ pub fn renderPalette(
                                         })({
                                             clay.text(sub_str, .{
                                                 .color = sub_color,
-                                                .font_size = @intFromFloat(11.0 * dpi_scale),
+                                                .font_size = 11,
                                                 .font_id = 0,
                                             });
                                         });
@@ -981,7 +977,7 @@ pub fn renderPalette(
                 if (matching_indices.items.len == 0) {
                     clay.UI()(.{
                         .layout = .{
-                            .sizing = .{ .w = .grow, .h = .fixed(36 * scale_y) },
+                            .sizing = .{ .w = .grow, .h = .fixed(36) },
                             .child_alignment = .{ .x = .center, .y = .center },
                         },
                     })({
@@ -993,7 +989,7 @@ pub fn renderPalette(
                         };
                         clay.text(no_match_msg, .{
                             .color = theme.subtext1,
-                            .font_size = @intFromFloat(13.0 * dpi_scale),
+                            .font_size = 13,
                             .font_id = 0,
                         });
                     });
@@ -1018,7 +1014,7 @@ pub fn renderPalette(
                     .direction = .left_to_right,
                     .child_alignment = .{ .x = .center, .y = .center },
                     .padding = .{ .top = 6, .bottom = 2 },
-                    .child_gap = @intFromFloat(6 * scale_x),
+                    .child_gap = 6,
                 },
             })({
                 inline for (legend_items) |item| {
@@ -1028,7 +1024,7 @@ pub fn renderPalette(
                             .direction = .left_to_right,
                             .child_alignment = .{ .x = .left, .y = .center },
                             .padding = .{ .left = 5, .right = 7, .top = 3, .bottom = 3 },
-                            .child_gap = @intFromFloat(5 * scale_x),
+                            .child_gap = 5,
                         },
                         .background_color = theme.crust,
                         .corner_radius = .all(4),
@@ -1047,14 +1043,14 @@ pub fn renderPalette(
                         })({
                             clay.text(item.key, .{
                                 .color = theme.mauve,
-                                .font_size = @intFromFloat(10.0 * dpi_scale),
+                                .font_size = 10,
                                 .font_id = 0,
                             });
                         });
 
                         clay.text(item.label, .{
                             .color = theme.subtext0,
-                            .font_size = @intFromFloat(11.0 * dpi_scale),
+                            .font_size = 11,
                             .font_id = 0,
                         });
                     });

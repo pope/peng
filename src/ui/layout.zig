@@ -23,11 +23,10 @@ pub fn renderFrame(
     measure_data: *const MeasureTextUserData,
     capture_filename: ?[:0]const u8,
 ) !void {
-    const width = input.pix_w;
-    const height = input.pix_h;
+    const width = input.win_w;
+    const height = input.win_h;
     const scale_x = input.scale_x;
     const scale_y = input.scale_y;
-    const dpi_scale = input.dpi_scale;
     state.prepareCacheTextures();
     const current_entry = state.getCurrentEntry();
 
@@ -76,7 +75,7 @@ pub fn renderFrame(
         if (src_w > 0 and src_h > 0) {
             const padding: f32 = 0.0;
             const view_w = @max(available_width - padding * 2.0, 1.0);
-            const view_h = @max(height - (title_bar_h + nav_bar_h) * scale_y - padding * 2.0, 1.0);
+            const view_h = @max(height - (title_bar_h + nav_bar_h) - padding * 2.0, 1.0);
 
             const view_transform = @import("../app/view_transform.zig");
             const dims = view_transform.computeViewDims(src_w, src_h, state.rotation_angle, view_w, view_h, state.scale_mode);
@@ -101,9 +100,6 @@ pub fn renderFrame(
     })({
         try renderPalette(
             state,
-            scale_x,
-            scale_y,
-            dpi_scale,
             input.mouse_left_clicked and !state.isPointerInDebugPanel(input),
             frame_allocator,
             measure_data,
@@ -111,9 +107,6 @@ pub fn renderFrame(
 
         try renderStatsOverlay(
             state,
-            scale_x,
-            scale_y,
-            dpi_scale,
             draw_w,
             draw_h,
             frame_allocator,
@@ -176,16 +169,16 @@ pub fn renderFrame(
             if (count_str) |cstr| {
                 var count_cfg = clay.TextElementConfig{
                     .font_id = 0,
-                    .font_size = @intFromFloat(12.0 * dpi_scale),
+                    .font_size = 12,
                 };
                 right_text_w = sdl3MeasureText(cstr, &count_cfg, measure_data).w;
             }
 
-            const padding_w = 40.0 * scale_x;
-            const gap_w = 20.0 * scale_x;
-            const max_title_w = @max(available_width - padding_w - right_text_w - gap_w, 40.0 * scale_x);
+            const padding_w = 40.0;
+            const gap_w = 20.0;
+            const max_title_w = @max(available_width - padding_w - right_text_w - gap_w, 40.0);
 
-            const font_size_u16: u16 = @intFromFloat(16.0 * dpi_scale);
+            const font_size_u16: u16 = 16;
             const title_display = truncateFilename(frame_allocator, raw_title, max_title_w, font_size_u16, measure_data);
 
             clay.UI()(.{
@@ -193,13 +186,13 @@ pub fn renderFrame(
                 .layout = .{
                     .sizing = .{
                         .w = .grow,
-                        .h = .fixed(title_bar_h * scale_y),
+                        .h = .fixed(title_bar_h),
                     },
                     .direction = .left_to_right,
                     .child_alignment = .{ .x = .left, .y = .center },
                     .padding = .{
-                        .left = @intFromFloat(20 * scale_x),
-                        .right = @intFromFloat(20 * scale_x),
+                        .left = 20,
+                        .right = 20,
                     },
                 },
                 .background_color = theme.crust,
@@ -219,7 +212,7 @@ pub fn renderFrame(
                 if (count_str) |cstr| {
                     clay.text(cstr, .{
                         .color = theme.subtext0,
-                        .font_size = @intFromFloat(12.0 * dpi_scale),
+                        .font_size = 12,
                         .font_id = 0,
                     });
                 }
@@ -284,12 +277,12 @@ pub fn renderFrame(
                                 .sizing = .{ .w = .grow, .h = .grow },
                                 .direction = .top_to_bottom,
                                 .child_alignment = .{ .x = .center, .y = .center },
-                                .child_gap = @intFromFloat(10 * scale_y),
+                                .child_gap = 10,
                             },
                         })({
                             clay.text("Loading image...", .{
                                 .color = theme.pink,
-                                .font_size = @intFromFloat(22.0 * dpi_scale),
+                                .font_size = 22,
                                 .font_id = 0,
                             });
                         });
@@ -300,12 +293,12 @@ pub fn renderFrame(
                                 .sizing = .{ .w = .grow, .h = .grow },
                                 .direction = .top_to_bottom,
                                 .child_alignment = .{ .x = .center, .y = .center },
-                                .child_gap = @intFromFloat(10 * scale_y),
+                                .child_gap = 10,
                             },
                         })({
                             clay.text("Failed to Load Image", .{
                                 .color = theme.red,
-                                .font_size = @intFromFloat(22.0 * dpi_scale),
+                                .font_size = 22,
                                 .font_id = 0,
                             });
                         });
@@ -318,17 +311,17 @@ pub fn renderFrame(
                         .sizing = .{ .w = .grow, .h = .grow },
                         .direction = .top_to_bottom,
                         .child_alignment = .{ .x = .center, .y = .center },
-                        .child_gap = @intFromFloat(12 * scale_y),
+                        .child_gap = 12,
                     },
                 })({
                     clay.text("Loading Images...", .{
                         .color = theme.pink,
-                        .font_size = @intFromFloat(22.0 * dpi_scale),
+                        .font_size = 22,
                         .font_id = 0,
                     });
                     clay.text("Discovering files in background...", .{
                         .color = theme.subtext0,
-                        .font_size = @intFromFloat(14.0 * dpi_scale),
+                        .font_size = 14,
                         .font_id = 0,
                     });
                 });
@@ -347,12 +340,12 @@ pub fn renderFrame(
                             .sizing = .{ .w = .fit, .h = .fit },
                             .direction = .top_to_bottom,
                             .child_alignment = .{ .x = .center, .y = .center },
-                            .child_gap = @intFromFloat(16 * scale_y),
+                            .child_gap = 16,
                             .padding = .{
-                                .left = @intFromFloat(40 * scale_x),
-                                .right = @intFromFloat(40 * scale_x),
-                                .top = @intFromFloat(32 * scale_y),
-                                .bottom = @intFromFloat(32 * scale_y),
+                                .left = 40,
+                                .right = 40,
+                                .top = 32,
+                                .bottom = 32,
                             },
                         },
                         .border = .{
@@ -364,13 +357,13 @@ pub fn renderFrame(
                     })({
                         clay.text("No Images Loaded", .{
                             .color = theme.text,
-                            .font_size = @intFromFloat(22.0 * dpi_scale),
+                            .font_size = 22,
                             .font_id = 0,
                         });
 
                         clay.text("Drag & Drop images or directories here to view them.", .{
                             .color = theme.subtext0,
-                            .font_size = @intFromFloat(14.0 * dpi_scale),
+                            .font_size = 14,
                             .font_id = 0,
                         });
                     });
@@ -462,6 +455,8 @@ pub fn renderFrame(
             &temp_buffers,
             @intCast(target_w),
             @intCast(target_h),
+            scale_x,
+            scale_y,
         );
         if (capture_filename) |filename| {
             cmd_buf_submitted = true;

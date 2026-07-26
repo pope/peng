@@ -112,4 +112,12 @@ pub const FrameInput = struct {
 
     ticks: u64,
     delta_time_ms: f32,
+
+    pub fn pixMouseX(self: FrameInput) f32 {
+        return self.mouse_x * self.scale_x;
+    }
+
+    pub fn pixMouseY(self: FrameInput) f32 {
+        return self.mouse_y * self.scale_y;
+    }
 };

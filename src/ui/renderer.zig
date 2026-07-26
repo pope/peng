@@ -74,6 +74,8 @@ pub fn renderClayCommands(
     temp_buffers: *std.ArrayList(sdl.gpu.TransferBuffer),
     win_w: i32,
     win_h: i32,
+    scale_x: f32,
+    scale_y: f32,
 ) !void {
     const f_win_w = @as(f32, @floatFromInt(win_w));
     const f_win_h = @as(f32, @floatFromInt(win_h));
@@ -89,19 +91,19 @@ pub fn renderClayCommands(
     for (r_commands) |rcmd| {
         const bb = rcmd.bounding_box;
         const rect = sdl.FRect{
-            .x = @round(bb.x),
-            .y = @round(bb.y),
-            .w = @round(bb.width),
-            .h = @round(bb.height),
+            .x = @round(bb.x * scale_x),
+            .y = @round(bb.y * scale_y),
+            .w = @round(bb.width * scale_x),
+            .h = @round(bb.height * scale_y),
         };
 
         switch (rcmd.command_type) {
             .scissor_start => {
                 current_scissor = sdl.Rect{
-                    .x = @intFromFloat(@round(bb.x)),
-                    .y = @intFromFloat(@round(bb.y)),
-                    .w = @intFromFloat(@round(bb.width)),
-                    .h = @intFromFloat(@round(bb.height)),
+                    .x = @intFromFloat(@round(bb.x * scale_x)),
+                    .y = @intFromFloat(@round(bb.y * scale_y)),
+                    .w = @intFromFloat(@round(bb.width * scale_x)),
+                    .h = @intFromFloat(@round(bb.height * scale_y)),
                 };
             },
             .scissor_end => {
@@ -111,8 +113,9 @@ pub fn renderClayCommands(
                 const config = rcmd.render_data.rectangle;
                 const start = @as(u32, @intCast(vertices.items.len));
 
-                if (config.corner_radius.top_left > 0) {
-                    try geometry.renderFillRoundedRect(&vertices, allocator, rect, config.corner_radius.top_left, config.background_color, f_win_w, f_win_h);
+                const corner_radius = config.corner_radius.top_left * scale_x;
+                if (corner_radius > 0) {
+                    try geometry.renderFillRoundedRect(&vertices, allocator, rect, corner_radius, config.background_color, f_win_w, f_win_h);
                 } else {
                     try geometry.appendRectQuad(&vertices, allocator, rect, config.background_color, f_win_w, f_win_h);
                 }
@@ -130,6 +133,9 @@ pub fn renderClayCommands(
                 const len = @as(usize, @intCast(text_data.string_contents.length));
                 const text_slice = text_data.string_contents.chars[0..len];
 
+                const target_font_size = @as(f32, @floatFromInt(text_data.font_size)) * scale_x;
+                const target_font_size_u16 = @as(u16, @intFromFloat(@round(target_font_size)));
+
                 // 1. Check/Lookup cache
                 const color_u32 = @as(u32, @intFromFloat(text_data.text_color[0])) |
                     (@as(u32, @intFromFloat(text_data.text_color[1])) << 8) |
@@ -138,7 +144,7 @@ pub fn renderClayCommands(
 
                 const key = app_state.TextCacheKey{
                     .font_id = text_data.font_id,
-                    .font_size = text_data.font_size,
+                    .font_size = target_font_size_u16,
                     .color = color_u32,
                     .hash = std.hash.Wyhash.hash(0, text_slice),
                 };
@@ -153,7 +159,7 @@ pub fn renderClayCommands(
                     w_f = entry.value_ptr.w;
                     h_f = entry.value_ptr.h;
                 } else {
-                    _ = font.setFontSize(@as(f32, @floatFromInt(text_data.font_size)));
+                    _ = font.setFontSize(target_font_size);
 
                     const surf = font.renderTextBlended(text_slice, .{
                         .r = @intFromFloat(text_data.text_color[0]),
@@ -178,7 +184,7 @@ pub fn renderClayCommands(
 
                     const surf_w: usize = @intCast(converted.w());
                     const surf_h: usize = @intCast(converted.h());
-                    const target_w: usize = @max(surf_w + leading_space_w, @as(usize, @intFromFloat(@round(rcmd.bounding_box.width))));
+                    const target_w: usize = @max(surf_w + leading_space_w, @as(usize, @intFromFloat(@round(bb.width * scale_x))));
                     const dst_start_byte = @min(leading_space_w * 4, if (target_w > surf_w) (target_w - surf_w) * 4 else 0);
 
                     const dev = state.gpu_device.?;
@@ -265,9 +271,9 @@ pub fn renderClayCommands(
                 const tex = cached_tex.?;
 
                 // Align to pixel grid
-                const offset_y = @round((rcmd.bounding_box.height - h_f) / 2.0);
-                const world_y = @round(rcmd.bounding_box.y) + @max(0.0, offset_y);
-                const world_x = @round(rcmd.bounding_box.x);
+                const offset_y = @round((rect.h - h_f) / 2.0);
+                const world_y = rect.y + @max(0.0, offset_y);
+                const world_x = rect.x;
 
                 const ndc_x1 = (world_x / f_win_w) * 2.0 - 1.0;
                 const ndc_y1 = 1.0 - (world_y / f_win_h) * 2.0;
@@ -296,10 +302,10 @@ pub fn renderClayCommands(
                     bottom_left: f32,
                     bottom_right: f32,
                 }{
-                    .top_left = @min(config.corner_radius.top_left, min_radius),
-                    .top_right = @min(config.corner_radius.top_right, min_radius),
-                    .bottom_left = @min(config.corner_radius.bottom_left, min_radius),
-                    .bottom_right = @min(config.corner_radius.bottom_right, min_radius),
+                    .top_left = @min(config.corner_radius.top_left * scale_x, min_radius),
+                    .top_right = @min(config.corner_radius.top_right * scale_x, min_radius),
+                    .bottom_left = @min(config.corner_radius.bottom_left * scale_x, min_radius),
+                    .bottom_right = @min(config.corner_radius.bottom_right * scale_x, min_radius),
                 };
 
                 const tag = if (rcmd.user_data) |ptr| app_state.ElementTag.fromInt(@intFromPtr(ptr)) else .none;
@@ -312,60 +318,65 @@ pub fn renderClayCommands(
 
                 const start_batch = @as(u32, @intCast(vertices.items.len));
 
-                if (config.width.left > 0) {
+                const border_left = @as(f32, @floatFromInt(config.width.left)) * scale_x;
+                const border_right = @as(f32, @floatFromInt(config.width.right)) * scale_x;
+                const border_top = @as(f32, @floatFromInt(config.width.top)) * scale_x;
+                const border_bottom = @as(f32, @floatFromInt(config.width.bottom)) * scale_x;
+
+                if (border_left > 0) {
                     const starting_y = rect.y + clamped_radii.top_left;
                     const length = rect.h - clamped_radii.top_left - clamped_radii.bottom_left;
                     if (is_dashed) {
-                        try geometry.drawDashedLineV(&vertices, allocator, rect.x, starting_y, starting_y + length, @floatFromInt(config.width.left), config.color, 8.0, 6.0, f_win_w, f_win_h);
+                        try geometry.drawDashedLineV(&vertices, allocator, rect.x, starting_y, starting_y + length, border_left, config.color, 8.0 * scale_x, 6.0 * scale_x, f_win_w, f_win_h);
                     } else {
-                        const line = sdl.FRect{ .x = rect.x, .y = starting_y, .w = @floatFromInt(config.width.left), .h = length };
+                        const line = sdl.FRect{ .x = rect.x, .y = starting_y, .w = border_left, .h = length };
                         try geometry.appendRectQuad(&vertices, allocator, line, config.color, f_win_w, f_win_h);
                     }
                 }
-                if (config.width.right > 0) {
-                    const starting_x = rect.x + rect.w - @as(f32, @floatFromInt(config.width.right));
+                if (border_right > 0) {
+                    const starting_x = rect.x + rect.w - border_right;
                     const starting_y = rect.y + clamped_radii.top_right;
                     const length = rect.h - clamped_radii.top_right - clamped_radii.bottom_right;
                     if (is_dashed) {
-                        try geometry.drawDashedLineV(&vertices, allocator, starting_x, starting_y, starting_y + length, @floatFromInt(config.width.right), config.color, 8.0, 6.0, f_win_w, f_win_h);
+                        try geometry.drawDashedLineV(&vertices, allocator, starting_x, starting_y, starting_y + length, border_right, config.color, 8.0 * scale_x, 6.0 * scale_x, f_win_w, f_win_h);
                     } else {
-                        const line = sdl.FRect{ .x = starting_x, .y = starting_y, .w = @floatFromInt(config.width.right), .h = length };
+                        const line = sdl.FRect{ .x = starting_x, .y = starting_y, .w = border_right, .h = length };
                         try geometry.appendRectQuad(&vertices, allocator, line, config.color, f_win_w, f_win_h);
                     }
                 }
-                if (config.width.top > 0) {
+                if (border_top > 0) {
                     const starting_x = rect.x + clamped_radii.top_left;
                     const length = rect.w - clamped_radii.top_left - clamped_radii.top_right;
                     if (is_dashed) {
-                        try geometry.drawDashedLineH(&vertices, allocator, starting_x, starting_x + length, rect.y, @floatFromInt(config.width.top), config.color, 8.0, 6.0, f_win_w, f_win_h);
+                        try geometry.drawDashedLineH(&vertices, allocator, starting_x, starting_x + length, rect.y, border_top, config.color, 8.0 * scale_x, 6.0 * scale_x, f_win_w, f_win_h);
                     } else {
-                        const line = sdl.FRect{ .x = starting_x, .y = rect.y, .w = length, .h = @floatFromInt(config.width.top) };
+                        const line = sdl.FRect{ .x = starting_x, .y = rect.y, .w = length, .h = border_top };
                         try geometry.appendRectQuad(&vertices, allocator, line, config.color, f_win_w, f_win_h);
                     }
                 }
-                if (config.width.bottom > 0) {
+                if (border_bottom > 0) {
                     const starting_x = rect.x + clamped_radii.bottom_left;
-                    const starting_y = rect.y + rect.h - @as(f32, @floatFromInt(config.width.bottom));
+                    const starting_y = rect.y + rect.h - border_bottom;
                     const length = rect.w - clamped_radii.bottom_left - clamped_radii.bottom_right;
                     if (is_dashed) {
-                        try geometry.drawDashedLineH(&vertices, allocator, starting_x, starting_x + length, starting_y, @floatFromInt(config.width.bottom), config.color, 8.0, 6.0, f_win_w, f_win_h);
+                        try geometry.drawDashedLineH(&vertices, allocator, starting_x, starting_x + length, starting_y, border_bottom, config.color, 8.0 * scale_x, 6.0 * scale_x, f_win_w, f_win_h);
                     } else {
-                        const line = sdl.FRect{ .x = starting_x, .y = starting_y, .w = length, .h = @floatFromInt(config.width.bottom) };
+                        const line = sdl.FRect{ .x = starting_x, .y = starting_y, .w = length, .h = border_bottom };
                         try geometry.appendRectQuad(&vertices, allocator, line, config.color, f_win_w, f_win_h);
                     }
                 }
 
-                if (config.corner_radius.top_left > 0) {
-                    try geometry.renderArc(&vertices, .{ .x = rect.x + clamped_radii.top_left, .y = rect.y + clamped_radii.top_left }, clamped_radii.top_left, 180.0, 270.0, @floatFromInt(config.width.top), r, g, b, a, allocator, is_dashed, f_win_w, f_win_h);
+                if (clamped_radii.top_left > 0) {
+                    try geometry.renderArc(&vertices, .{ .x = rect.x + clamped_radii.top_left, .y = rect.y + clamped_radii.top_left }, clamped_radii.top_left, 180.0, 270.0, border_top, r, g, b, a, allocator, is_dashed, f_win_w, f_win_h);
                 }
-                if (config.corner_radius.top_right > 0) {
-                    try geometry.renderArc(&vertices, .{ .x = rect.x + rect.w - clamped_radii.top_right, .y = rect.y + clamped_radii.top_right }, clamped_radii.top_right, 270.0, 360.0, @floatFromInt(config.width.top), r, g, b, a, allocator, is_dashed, f_win_w, f_win_h);
+                if (clamped_radii.top_right > 0) {
+                    try geometry.renderArc(&vertices, .{ .x = rect.x + rect.w - clamped_radii.top_right, .y = rect.y + clamped_radii.top_right }, clamped_radii.top_right, 270.0, 360.0, border_top, r, g, b, a, allocator, is_dashed, f_win_w, f_win_h);
                 }
-                if (config.corner_radius.bottom_left > 0) {
-                    try geometry.renderArc(&vertices, .{ .x = rect.x + clamped_radii.bottom_left, .y = rect.y + rect.h - clamped_radii.bottom_left }, clamped_radii.bottom_left, 90.0, 180.0, @floatFromInt(config.width.bottom), r, g, b, a, allocator, is_dashed, f_win_w, f_win_h);
+                if (clamped_radii.bottom_left > 0) {
+                    try geometry.renderArc(&vertices, .{ .x = rect.x + clamped_radii.bottom_left, .y = rect.y + rect.h - clamped_radii.bottom_left }, clamped_radii.bottom_left, 90.0, 180.0, border_bottom, r, g, b, a, allocator, is_dashed, f_win_w, f_win_h);
                 }
-                if (config.corner_radius.bottom_right > 0) {
-                    try geometry.renderArc(&vertices, .{ .x = rect.x + rect.w - clamped_radii.bottom_right, .y = rect.y + rect.h - clamped_radii.bottom_right }, clamped_radii.bottom_right, 0.0, 90.0, @floatFromInt(config.width.bottom), r, g, b, a, allocator, is_dashed, f_win_w, f_win_h);
+                if (clamped_radii.bottom_right > 0) {
+                    try geometry.renderArc(&vertices, .{ .x = rect.x + rect.w - clamped_radii.bottom_right, .y = rect.y + rect.h - clamped_radii.bottom_right }, clamped_radii.bottom_right, 0.0, 90.0, border_bottom, r, g, b, a, allocator, is_dashed, f_win_w, f_win_h);
                 }
 
                 const count = @as(u32, @intCast(vertices.items.len)) - start_batch;

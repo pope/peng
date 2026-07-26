@@ -163,8 +163,8 @@ pub fn pollFrameInput(
             },
             sdl.event_type.mouse_wheel => {
                 const multiplier: f32 = if (event.wheel.direction == sdl.mouse.wheel_flipped) -1.0 else 1.0;
-                scroll_delta_x += event.wheel.x * multiplier * 6.0 * scale_x;
-                scroll_delta_y += event.wheel.y * multiplier * 6.0 * scale_y;
+                scroll_delta_x += event.wheel.x * multiplier * 6.0;
+                scroll_delta_y += event.wheel.y * multiplier * 6.0;
             },
             else => {},
         }
@@ -184,8 +184,8 @@ pub fn pollFrameInput(
         .scale_x = scale_x,
         .scale_y = scale_y,
         .dpi_scale = dpi_scale,
-        .mouse_x = mouse_x_raw * scale_x,
-        .mouse_y = mouse_y_raw * scale_y,
+        .mouse_x = mouse_x_raw,
+        .mouse_y = mouse_y_raw,
         .mouse_left_down = mouse_left_down,
         .mouse_left_clicked = mouse_left_clicked,
         .mouse_inside = mouse_inside,

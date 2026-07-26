@@ -311,20 +311,22 @@ pub const ViewerState = struct {
         }
 
         const title_bar_h: f32 = if (self.is_fullscreen) 0.0 else 60.0;
-        var scale_y: f32 = 1.0;
+        var win_w: f32 = 1024.0;
+        var win_h: f32 = 768.0;
         if (self.window) |win| {
             const win_size = win.getSize();
-            if (win_size.h > 0) {
-                scale_y = @as(f32, @floatFromInt(pix_h)) / @as(f32, @floatFromInt(win_size.h));
+            if (win_size.w > 0 and win_size.h > 0) {
+                win_w = @floatFromInt(win_size.w);
+                win_h = @floatFromInt(win_size.h);
             }
         }
 
-        var available_width = @as(f32, @floatFromInt(pix_w));
+        var available_width = win_w;
         if (clay.isDebugModeEnabled()) {
             available_width = @max(available_width - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0);
         }
         const view_w = @max(available_width, 1.0);
-        const view_h = @max(@as(f32, @floatFromInt(pix_h)) - title_bar_h * scale_y, 1.0);
+        const view_h = @max(win_h - title_bar_h, 1.0);
 
         const view_transform = @import("view_transform.zig");
         const dims = view_transform.computeViewDims(raw_w, raw_h, self.rotation_angle, view_w, view_h, self.scale_mode);
@@ -335,8 +337,8 @@ pub const ViewerState = struct {
         _ = self;
         if (!clay.isDebugModeEnabled()) return false;
         const debug_w = @as(f32, @floatFromInt(clay.Clay__debugViewWidth));
-        return input.mouse_x >= (input.pix_w - debug_w) and input.mouse_x <= input.pix_w and
-            input.mouse_y >= 0 and input.mouse_y <= input.pix_h;
+        return input.mouse_x >= (input.win_w - debug_w) and input.mouse_x <= input.win_w and
+            input.mouse_y >= 0 and input.mouse_y <= input.win_h;
     }
 
     pub fn clampZoomFactor(self: *ViewerState, new_factor: f32) f32 {
@@ -1019,18 +1021,20 @@ pub const ViewerState = struct {
             .none => {},
             .stats => |stats| {
                 if (input.mouse_left_down) {
-                    self.stats_offset_x = (input.mouse_x - stats.start_x) / input.dpi_scale;
-                    self.stats_offset_y = (input.mouse_y - stats.start_y) / input.dpi_scale;
+                    self.stats_offset_x = input.mouse_x - stats.start_x;
+                    self.stats_offset_y = input.mouse_y - stats.start_y;
                 } else {
                     next_drag_state = .none;
                 }
             },
             .viewport => |*vp| {
                 if (input.mouse_left_down) {
-                    self.pan_x += input.mouse_x - vp.last_x;
-                    self.pan_y += input.mouse_y - vp.last_y;
-                    vp.last_x = input.mouse_x;
-                    vp.last_y = input.mouse_y;
+                    const pix_x = input.pixMouseX();
+                    const pix_y = input.pixMouseY();
+                    self.pan_x += pix_x - vp.last_x;
+                    self.pan_y += pix_y - vp.last_y;
+                    vp.last_x = pix_x;
+                    vp.last_y = pix_y;
                 } else {
                     next_drag_state = .none;
                 }
@@ -1068,15 +1072,15 @@ pub const ViewerState = struct {
                 {
                     self.drag_state = .{
                         .stats = .{
-                            .start_x = input.mouse_x - self.stats_offset_x * input.dpi_scale,
-                            .start_y = input.mouse_y - self.stats_offset_y * input.dpi_scale,
+                            .start_x = input.mouse_x - self.stats_offset_x,
+                            .start_y = input.mouse_y - self.stats_offset_y,
                         },
                     };
                 } else if (self.palette.mode == .inactive and !palette_closed_this_frame and clay.pointerOver(clay.getElementId("Viewport"))) {
                     self.drag_state = .{
                         .viewport = .{
-                            .last_x = input.mouse_x,
-                            .last_y = input.mouse_y,
+                            .last_x = input.pixMouseX(),
+                            .last_y = input.pixMouseY(),
                         },
                     };
                 }
@@ -1089,16 +1093,16 @@ pub const ViewerState = struct {
                 const old_zoom = self.zoom_factor;
                 self.zoom_factor = self.clampZoomFactor(self.zoom_factor + input.scroll_delta_y * 0.1);
 
-                const available_width = if (clay.isDebugModeEnabled()) @max(input.pix_w - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0) else input.pix_w;
+                const available_width = if (clay.isDebugModeEnabled()) @max(input.win_w - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0) else input.win_w;
                 const cx = available_width / 2.0;
                 var title_bar_h: f32 = 60.0;
                 if (self.is_fullscreen) {
                     title_bar_h = 0;
                 }
-                const cy = (title_bar_h * input.scale_y) + ((input.pix_h - title_bar_h * input.scale_y) / 2.0);
+                const cy = title_bar_h + ((input.win_h - title_bar_h) / 2.0);
 
-                const rel_x = input.mouse_x - cx;
-                const rel_y = input.mouse_y - cy;
+                const rel_x = (input.mouse_x - cx) * input.scale_x;
+                const rel_y = (input.mouse_y - cy) * input.scale_y;
 
                 self.pan_x = rel_x - (rel_x - self.pan_x) * (self.zoom_factor / old_zoom);
                 self.pan_y = rel_y - (rel_y - self.pan_y) * (self.zoom_factor / old_zoom);

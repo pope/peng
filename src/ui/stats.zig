@@ -6,23 +6,21 @@ const ViewerState = app_state.ViewerState;
 const CacheEntry = app_state.CacheEntry;
 const formatSize = @import("text_utils.zig").formatSize;
 const MeasureTextUserData = @import("../app/types.zig").MeasureTextUserData;
-const layout_helpers = @import("layout_helpers.zig");
-const DpiScale = @import("units.zig").DpiScale;
 
-pub fn renderStatRow(label: []const u8, value: []const u8, scale_x: f32, scale_y: f32, dpi_scale: f32) !void {
+pub fn renderStatRow(label: []const u8, value: []const u8) !void {
     clay.UI()(.{
         .layout = .{
-            .sizing = .{ .w = .grow, .h = .fixed(20 * scale_y) },
+            .sizing = .{ .w = .grow, .h = .fixed(20) },
             .direction = .left_to_right,
             .child_alignment = .{ .x = .left, .y = .center },
         },
     })({
         clay.UI()(.{ .layout = .{
-            .sizing = .{ .w = .fixed(145 * scale_x), .h = .grow },
+            .sizing = .{ .w = .fixed(145), .h = .grow },
         } })({
             clay.text(label, .{
                 .color = theme.subtext0,
-                .font_size = @intFromFloat(13.0 * dpi_scale),
+                .font_size = 13,
                 .font_id = 0,
             });
         });
@@ -30,7 +28,7 @@ pub fn renderStatRow(label: []const u8, value: []const u8, scale_x: f32, scale_y
         clay.UI()(.{ .layout = .{ .sizing = .{ .w = .grow, .h = .grow } } })({
             clay.text(value, .{
                 .color = theme.text,
-                .font_size = @intFromFloat(13.0 * dpi_scale),
+                .font_size = 13,
                 .font_id = 0,
             });
         });
@@ -39,9 +37,6 @@ pub fn renderStatRow(label: []const u8, value: []const u8, scale_x: f32, scale_y
 
 pub fn renderStatsOverlay(
     state: *ViewerState,
-    scale_x: f32,
-    scale_y: f32,
-    dpi_scale: f32,
     draw_w: f32,
     draw_h: f32,
     frame_allocator: std.mem.Allocator,
@@ -129,18 +124,16 @@ pub fn renderStatsOverlay(
     const pan_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}, {d:.0} px", .{ state.pan_x, state.pan_y });
     const rot_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}°", .{state.rotation_angle});
 
-    const scale = DpiScale.init(dpi_scale);
-
     clay.UI()(.{
         .id = clay.getElementId("StatsPanel"),
         .layout = .{
-            .sizing = .{ .w = .fixed(420 * scale_x), .h = .fit },
+            .sizing = .{ .w = .fixed(420), .h = .fit },
             .direction = .top_to_bottom,
-            .padding = layout_helpers.scalePadding(16, 16, 16, 16, scale),
-            .child_gap = @intFromFloat(10.0 * dpi_scale),
+            .padding = .{ .top = 16, .bottom = 16, .left = 16, .right = 16 },
+            .child_gap = 10,
         },
         .background_color = theme.base_overlay,
-        .corner_radius = layout_helpers.scaleCornerRadius(10, scale),
+        .corner_radius = .all(10),
         .border = .{
             .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
             .color = theme.surface0,
@@ -149,8 +142,8 @@ pub fn renderStatsOverlay(
             .attach_to = .to_parent,
             .attach_points = .{ .element = .left_top, .parent = .left_top },
             .offset = .{
-                .x = state.stats_offset_x * dpi_scale,
-                .y = state.stats_offset_y * dpi_scale,
+                .x = state.stats_offset_x,
+                .y = state.stats_offset_y,
             },
             .z_index = 100,
         },
@@ -158,7 +151,7 @@ pub fn renderStatsOverlay(
         // Header row
         clay.UI()(.{
             .layout = .{
-                .sizing = .{ .w = .grow, .h = .fixed(24 * scale_y) },
+                .sizing = .{ .w = .grow, .h = .fixed(24) },
                 .direction = .left_to_right,
                 .child_alignment = .{ .x = .left, .y = .center },
             },
@@ -168,7 +161,7 @@ pub fn renderStatsOverlay(
             } })({
                 clay.text("Stats for Nerds", .{
                     .color = theme.pink,
-                    .font_size = @intFromFloat(16.0 * dpi_scale),
+                    .font_size = 16,
                     .font_id = 0,
                 });
             });
@@ -176,17 +169,17 @@ pub fn renderStatsOverlay(
                 .id = clay.getElementId("StatsCloseBtn"),
                 .layout = .{
                     .sizing = .{
-                        .w = .fixed(24 * scale_x),
-                        .h = .fixed(24 * scale_y),
+                        .w = .fixed(24),
+                        .h = .fixed(24),
                     },
                     .child_alignment = .{ .x = .center, .y = .center },
                 },
                 .background_color = theme.surface0,
-                .corner_radius = layout_helpers.scaleCornerRadius(12, scale),
+                .corner_radius = .all(12),
             })({
                 clay.text("x", .{
                     .color = theme.text,
-                    .font_size = @intFromFloat(12.0 * dpi_scale),
+                    .font_size = 12,
                     .font_id = 0,
                 });
             });
@@ -194,16 +187,16 @@ pub fn renderStatsOverlay(
 
         // Stats details
         if (filename.len > 0) {
-            try renderStatRow("File Name", filename, scale_x, scale_y, dpi_scale);
-            try renderStatRow("Directory", display_dir, scale_x, scale_y, dpi_scale);
-            try renderStatRow("MIME Type", mime_type, scale_x, scale_y, dpi_scale);
+            try renderStatRow("File Name", filename);
+            try renderStatRow("Directory", display_dir);
+            try renderStatRow("MIME Type", mime_type);
             const hit_str = if (state.current_image_cache_hit) "Yes" else "No";
-            try renderStatRow("Cache Hit", hit_str, scale_x, scale_y, dpi_scale);
-            try renderStatRow("Size on Disk", disk_size_str, scale_x, scale_y, dpi_scale);
-            try renderStatRow("Resolution", res_str, scale_x, scale_y, dpi_scale);
-            try renderStatRow("Decode Time", decode_str, scale_x, scale_y, dpi_scale);
-            try renderStatRow("Convert Time", convert_str, scale_x, scale_y, dpi_scale);
-            try renderStatRow("GPU Upload", upload_str, scale_x, scale_y, dpi_scale);
+            try renderStatRow("Cache Hit", hit_str);
+            try renderStatRow("Size on Disk", disk_size_str);
+            try renderStatRow("Resolution", res_str);
+            try renderStatRow("Decode Time", decode_str);
+            try renderStatRow("Convert Time", convert_str);
+            try renderStatRow("GPU Upload", upload_str);
 
             var thumb_info_str: []const u8 = "None";
             var thumb_time_str: []const u8 = "N/A";
@@ -250,14 +243,14 @@ pub fn renderStatsOverlay(
                 }
             }
 
-            try renderStatRow("EXIF Thumbnail", thumb_info_str, scale_x, scale_y, dpi_scale);
-            try renderStatRow("Thumb Load Time", thumb_time_str, scale_x, scale_y, dpi_scale);
-            try renderStatRow("Memory Size", mem_size_str, scale_x, scale_y, dpi_scale);
+            try renderStatRow("EXIF Thumbnail", thumb_info_str);
+            try renderStatRow("Thumb Load Time", thumb_time_str);
+            try renderStatRow("Memory Size", mem_size_str);
 
             const total_vram_bytes = state.cache.getTotalVramBytes();
             const formatted_total_vram = try formatSize(frame_allocator, total_vram_bytes);
             const total_vram_str = try std.fmt.allocPrint(frame_allocator, "{s} / 1024 MB ({d} slots)", .{ formatted_total_vram, state.cache.entries.items.len });
-            try renderStatRow("Total Cache VRAM", total_vram_str, scale_x, scale_y, dpi_scale);
+            try renderStatRow("Total Cache VRAM", total_vram_str);
 
             var mipmap_status_str: []const u8 = "Disabled (1 Level)";
             var mipmap_time_str: []const u8 = "0.00 ms";
@@ -272,20 +265,20 @@ pub fn renderStatsOverlay(
                     else => {},
                 }
             }
-            try renderStatRow("Mipmap Status", mipmap_status_str, scale_x, scale_y, dpi_scale);
-            try renderStatRow("Mipmap Gen", mipmap_time_str, scale_x, scale_y, dpi_scale);
+            try renderStatRow("Mipmap Status", mipmap_status_str);
+            try renderStatRow("Mipmap Gen", mipmap_time_str);
 
-            try renderStatRow("Viewport Size", screen_str, scale_x, scale_y, dpi_scale);
-            try renderStatRow("Zoom Level", zoom_str, scale_x, scale_y, dpi_scale);
-            try renderStatRow("Pan Offset", pan_str, scale_x, scale_y, dpi_scale);
-            try renderStatRow("Rotation", rot_str, scale_x, scale_y, dpi_scale);
+            try renderStatRow("Viewport Size", screen_str);
+            try renderStatRow("Zoom Level", zoom_str);
+            try renderStatRow("Pan Offset", pan_str);
+            try renderStatRow("Rotation", rot_str);
             const scale_mode_str = switch (state.scale_mode) {
                 .none => "Original size (100%)",
                 .shrink => "Fit if larger",
                 .full => "Fit to screen (Aspect Fit)",
                 .crop => "Fill screen (Aspect Fill)",
             };
-            try renderStatRow("Scale Mode", scale_mode_str, scale_x, scale_y, dpi_scale);
+            try renderStatRow("Scale Mode", scale_mode_str);
             const filter_str = switch (state.texture_scale_mode) {
                 .nearest => "Nearest Neighbor",
                 .linear => "Bilinear Filter",
@@ -293,13 +286,13 @@ pub fn renderStatsOverlay(
                 .mitchell => "Mitchell-Netravali",
                 .lanczos3 => "Lanczos3 Resampler",
             };
-            try renderStatRow("Scaling Filter", filter_str, scale_x, scale_y, dpi_scale);
+            try renderStatRow("Scaling Filter", filter_str);
 
             const brightness_val = state.brightness * 100.0;
             const brightness_str = try std.fmt.allocPrint(frame_allocator, "{s}{d:.0}%", .{ if (brightness_val > 0) "+" else "", brightness_val });
             const contrast_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{state.contrast});
-            try renderStatRow("Brightness", brightness_str, scale_x, scale_y, dpi_scale);
-            try renderStatRow("Contrast", contrast_str, scale_x, scale_y, dpi_scale);
+            try renderStatRow("Brightness", brightness_str);
+            try renderStatRow("Contrast", contrast_str);
         }
     });
 }
