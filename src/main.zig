@@ -228,6 +228,9 @@ pub fn runMainLoop(ctx: *AppGraphicsAndState) !void {
         ctx.state.checkIdlePreload();
 
         if (input.mouse_left_clicked) {
+            if (ctx.state.show_info_overlay and !ctx.state.isPointerInDebugPanel(input) and clay.pointerOver(clay.getElementId("InfoCloseBtn"))) {
+                ctx.state.show_info_overlay = false;
+            }
             if (ctx.state.show_stats_overlay and !ctx.state.isPointerInDebugPanel(input) and clay.pointerOver(clay.getElementId("StatsCloseBtn"))) {
                 ctx.state.show_stats_overlay = false;
             }

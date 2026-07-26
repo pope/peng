@@ -57,6 +57,10 @@ pub const DragState = union(enum) {
         last_x: f32,
         last_y: f32,
     },
+    info: struct {
+        start_x: f32,
+        start_y: f32,
+    },
     stats: struct {
         start_x: f32,
         start_y: f32,
@@ -170,6 +174,7 @@ pub const ViewerState = struct {
     cached_window_title: ?[]const u8 = null,
     is_fullscreen: bool = false,
     running: bool = true,
+    show_info_overlay: bool = false,
     show_stats_overlay: bool = false,
     debug_show_thumb: bool = false,
     window_claimed: bool = false,
@@ -183,7 +188,9 @@ pub const ViewerState = struct {
     brightness: f32 = 0.0,
     contrast: f32 = 1.0,
     adjustments_dirty: bool = false,
-    stats_offset_x: f32 = 20.0,
+    info_offset_x: f32 = 20.0,
+    info_offset_y: f32 = 20.0,
+    stats_offset_x: f32 = -20.0,
     stats_offset_y: f32 = 20.0,
     drag_state: DragState = .none,
     mouse_inside: bool = true,
@@ -1093,6 +1100,14 @@ pub const ViewerState = struct {
         var next_drag_state = self.drag_state;
         switch (next_drag_state) {
             .none => {},
+            .info => |info| {
+                if (input.mouse_left_down) {
+                    self.info_offset_x = input.mouse_x - info.start_x;
+                    self.info_offset_y = input.mouse_y - info.start_y;
+                } else {
+                    next_drag_state = .none;
+                }
+            },
             .stats => |stats| {
                 if (input.mouse_left_down) {
                     self.stats_offset_x = input.mouse_x - stats.start_x;
@@ -1119,7 +1134,17 @@ pub const ViewerState = struct {
         if (input.mouse_left_clicked) {
             const is_in_debug_panel = self.isPointerInDebugPanel(input);
             if (!is_in_debug_panel) {
-                if (self.show_stats_overlay and
+                if (self.show_info_overlay and
+                    clay.pointerOver(clay.getElementId("InfoPanel")) and
+                    !clay.pointerOver(clay.getElementId("InfoCloseBtn")))
+                {
+                    self.drag_state = .{
+                        .info = .{
+                            .start_x = input.mouse_x - self.info_offset_x,
+                            .start_y = input.mouse_y - self.info_offset_y,
+                        },
+                    };
+                } else if (self.show_stats_overlay and
                     clay.pointerOver(clay.getElementId("StatsPanel")) and
                     !clay.pointerOver(clay.getElementId("StatsCloseBtn")))
                 {
