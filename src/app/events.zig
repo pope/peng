@@ -68,6 +68,16 @@ pub const BackgroundEvent = union(enum) {
             else => {},
         }
     }
+
+    pub fn deinitQueueItem(self: *BackgroundEvent, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .ipc_command => |cmd| {
+                allocator.free(cmd.command);
+                allocator.destroy(cmd);
+            },
+            else => self.deinit(allocator),
+        }
+    }
 };
 
 pub fn MpscQueue(comptime T: type) type {
@@ -83,10 +93,13 @@ pub fn MpscQueue(comptime T: type) type {
 
         pub fn deinit(self: *Self, allocator: std.mem.Allocator, io: std.Io) void {
             self.mutex.lockUncancelable(io);
+            defer self.mutex.unlock(io);
             const info = @typeInfo(T);
             if (info == .@"struct" or info == .@"union") {
                 for (self.items.items) |*item| {
-                    if (@hasDecl(T, "deinit")) {
+                    if (@hasDecl(T, "deinitQueueItem")) {
+                        item.deinitQueueItem(allocator);
+                    } else if (@hasDecl(T, "deinit")) {
                         const deinit_info = @typeInfo(@TypeOf(T.deinit));
                         if (deinit_info == .@"fn") {
                             if (deinit_info.@"fn".params.len == 2) {
@@ -99,7 +112,6 @@ pub fn MpscQueue(comptime T: type) type {
                 }
             }
             self.items.deinit(allocator);
-            self.mutex.unlock(io);
         }
 
         pub fn push(self: *Self, allocator: std.mem.Allocator, io: std.Io, item: T) !void {

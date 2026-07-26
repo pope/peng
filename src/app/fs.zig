@@ -82,18 +82,44 @@ pub fn getParentDirBuf(dir: []const u8, buf: []u8) ?[]const u8 {
     return ".";
 }
 
-pub const DirectoryEntry = struct {
-    name: []const u8,
-    full_path: []const u8,
-    image_count: usize,
-    subdir_count: usize = 0,
-    is_parent: bool = false,
-    is_current: bool = false,
-};
-
 pub const FolderCounts = struct {
     image_count: usize = 0,
     subdir_count: usize = 0,
+};
+
+pub const DirectoryEntryKind = union(enum) {
+    parent,
+    current,
+    directory: FolderCounts,
+    file,
+};
+
+pub const DirectoryEntry = struct {
+    name: []const u8,
+    full_path: []const u8,
+    kind: DirectoryEntryKind = .{ .directory = .{} },
+
+    pub fn isParent(self: DirectoryEntry) bool {
+        return self.kind == .parent;
+    }
+
+    pub fn isCurrent(self: DirectoryEntry) bool {
+        return self.kind == .current;
+    }
+
+    pub fn getImageCount(self: DirectoryEntry) usize {
+        return switch (self.kind) {
+            .directory => |c| c.image_count,
+            else => 0,
+        };
+    }
+
+    pub fn getSubdirCount(self: DirectoryEntry) usize {
+        return switch (self.kind) {
+            .directory => |c| c.subdir_count,
+            else => 0,
+        };
+    }
 };
 
 pub fn countFolderContents(io: std.Io, folder_path: []const u8) FolderCounts {
@@ -159,10 +185,7 @@ pub fn scanDirectoryEntries(gpa: std.mem.Allocator, io: std.Io, dir_path: []cons
             try entries.append(gpa, .{
                 .name = name,
                 .full_path = full_path,
-                .image_count = counts.image_count,
-                .subdir_count = counts.subdir_count,
-                .is_parent = false,
-                .is_current = false,
+                .kind = .{ .directory = counts },
             });
         }
     }
@@ -548,17 +571,17 @@ test "scanDirectoryEntries" {
     // Index 0: sub_a
     try std.testing.expectEqualStrings("sub_a", entries.items[0].name);
     try std.testing.expectEqualStrings(tmp_dir_path ++ "/sub_a", entries.items[0].full_path);
-    try std.testing.expectEqual(@as(usize, 1), entries.items[0].image_count);
+    try std.testing.expectEqual(@as(usize, 1), entries.items[0].getImageCount());
 
     // Index 1: sub_b
     try std.testing.expectEqualStrings("sub_b", entries.items[1].name);
     try std.testing.expectEqualStrings(tmp_dir_path ++ "/sub_b", entries.items[1].full_path);
-    try std.testing.expectEqual(@as(usize, 2), entries.items[1].image_count);
+    try std.testing.expectEqual(@as(usize, 2), entries.items[1].getImageCount());
 
     // Index 2: sub_empty
     try std.testing.expectEqualStrings("sub_empty", entries.items[2].name);
     try std.testing.expectEqualStrings(tmp_dir_path ++ "/sub_empty", entries.items[2].full_path);
-    try std.testing.expectEqual(@as(usize, 0), entries.items[2].image_count);
+    try std.testing.expectEqual(@as(usize, 0), entries.items[2].getImageCount());
 }
 
 pub fn getChildBasename(io: std.Io, path: []const u8, buf: []u8) []const u8 {

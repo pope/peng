@@ -385,14 +385,14 @@ pub fn handlePaletteKeys(
                                     stopTextInput(self.window);
                                 }
                             },
-                            else => unreachable,
+                            else => return false,
                         }
                     } else {
                         palette.mode = .inactive;
                         stopTextInput(self.window);
                     }
                 },
-                .inactive => unreachable,
+                .inactive => return false,
             }
             return true;
         },

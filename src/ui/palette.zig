@@ -243,7 +243,7 @@ pub fn getPaletteConfig(mode: PaletteMode) PaletteConfig {
             .bottom_spacer_id = "SlideshowBottomSpacer",
             .base_item_height = 50.0,
         },
-        .inactive => unreachable,
+        .inactive => getPaletteConfig(.files),
     };
 }
 
@@ -263,7 +263,7 @@ fn renderHeader(mode: PaletteMode, title: []const u8) void {
                 .go_to_image => theme.green,
                 .directory_navigator => theme.mauve,
                 .set_slideshow_interval => theme.yellow,
-                .inactive => unreachable,
+                .inactive => theme.text,
             },
             .font_size = 13,
             .font_id = 0,
@@ -505,8 +505,9 @@ pub fn renderTextInputDialog(
                     if (std.fmt.parseFloat(f32, raw_str)) |val| {
                         if (!std.math.isNan(val) and !std.math.isInf(val)) {
                             is_valid_float = true;
-                            const min_val: f32 = if (palette.mode == .set_brightness) -1.0 else 0.0;
-                            const max_val: f32 = if (palette.mode == .set_brightness) 1.0 else 5.0;
+                            const bounds = palette.mode.getTextInputBounds() orelse app_state.palette_module.TextInputBounds{ .min = 0.0, .max = 1.0 };
+                            const min_val = bounds.min;
+                            const max_val = bounds.max;
                             if (val >= min_val and val <= max_val) {
                                 const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to set value to: {d:.2}", .{val});
                                 clay.text(success_str, .{
@@ -535,7 +536,7 @@ pub fn renderTextInputDialog(
                     }
                 }
             },
-            .inactive, .files, .actions, .directory_navigator => unreachable,
+            else => {},
         }
     });
 }
@@ -885,11 +886,13 @@ pub fn renderSelectionList(
                                 );
                             });
 
-                            const count_str = try std.fmt.allocPrint(frame_allocator, "{} image{s}", .{ entry.image_count, if (entry.image_count == 1) "" else "s" });
-                            const count_color = if (entry.image_count == 0) theme.subtext1 else theme.green;
+                            const image_count = entry.getImageCount();
+                            const subdir_count = entry.getSubdirCount();
+                            const count_str = try std.fmt.allocPrint(frame_allocator, "{} image{s}", .{ image_count, if (image_count == 1) "" else "s" });
+                            const count_color = if (image_count == 0) theme.subtext1 else theme.green;
 
-                            const sub_str = try std.fmt.allocPrint(frame_allocator, "{} subfolder{s}", .{ entry.subdir_count, if (entry.subdir_count == 1) "" else "s" });
-                            const sub_color = if (entry.subdir_count == 0) theme.subtext1 else theme.blue;
+                            const sub_str = try std.fmt.allocPrint(frame_allocator, "{} subfolder{s}", .{ subdir_count, if (subdir_count == 1) "" else "s" });
+                            const sub_color = if (subdir_count == 0) theme.subtext1 else theme.blue;
 
                             clay.UI()(.{
                                 .layout = .{
@@ -907,7 +910,7 @@ pub fn renderSelectionList(
                                     .corner_radius = .all(4),
                                     .border = .{
                                         .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-                                        .color = if (entry.image_count == 0) theme.surface0 else theme.green,
+                                        .color = if (image_count == 0) theme.surface0 else theme.green,
                                     },
                                 })({
                                     clay.text(count_str, .{
@@ -926,7 +929,7 @@ pub fn renderSelectionList(
                                     .corner_radius = .all(4),
                                     .border = .{
                                         .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-                                        .color = if (entry.subdir_count == 0) theme.surface0 else theme.blue,
+                                        .color = if (subdir_count == 0) theme.surface0 else theme.blue,
                                     },
                                 })({
                                     clay.text(sub_str, .{
@@ -1217,14 +1220,12 @@ test "PaletteState directory_navigator mode configuration and item matching" {
     try palette.dir_items.append(std.testing.allocator, .{
         .name = try std.testing.allocator.dupe(u8, ".."),
         .full_path = try std.testing.allocator.dupe(u8, "/home/user"),
-        .image_count = 0,
-        .is_parent = true,
+        .kind = .parent,
     });
     try palette.dir_items.append(std.testing.allocator, .{
         .name = try std.testing.allocator.dupe(u8, "Vacation"),
         .full_path = try std.testing.allocator.dupe(u8, "/home/user/Pictures/Vacation"),
-        .image_count = 12,
-        .is_parent = false,
+        .kind = .{ .directory = .{ .image_count = 12 } },
     });
 
     try palette.rebuildDirectoryMatches();

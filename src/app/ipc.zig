@@ -4,6 +4,7 @@ const app_state = @import("state.zig");
 const ViewerState = app_state.ViewerState;
 const ScaleMode = app_state.ScaleMode;
 const TextureScaleMode = app_state.TextureScaleMode;
+const screenshot = @import("screenshot.zig");
 const clay = @import("zclay");
 
 extern "kernel32" fn GetCurrentProcessId() callconv(std.builtin.CallingConvention.winapi) u32;
@@ -31,9 +32,11 @@ pub const IpcServer = struct {
             .allocator = allocator,
         };
 
+        _ = state.active_threads.fetchAdd(1, .monotonic);
         if (std.Thread.spawn(.{}, ipcServerWorkerTask, .{state})) |t| {
             t.detach();
         } else |err| {
+            _ = state.active_threads.fetchSub(1, .release);
             std.log.err("Failed to create UDS IPC server thread: {}", .{err});
             allocator.destroy(self);
             return error.ThreadCreationFailed;
@@ -68,16 +71,138 @@ pub const IpcServer = struct {
 
     pub fn executeCommand(self: *IpcServer, state: *ViewerState, command: []const u8, stream: std.Io.net.Stream) !void {
         _ = self;
+        const parsed = try IpcCommand.parse(command);
+        switch (parsed) {
+            .zoom => |factor| {
+                state.setZoom(factor);
+                try respondOk(state.io, stream);
+            },
+            .pan => |p| {
+                state.setPan(p.x, p.y);
+                try respondOk(state.io, stream);
+            },
+            .adjust => |adj| {
+                state.setAdjustments(adj.brightness, adj.contrast);
+                try respondOk(state.io, stream);
+            },
+            .filter => |mode| {
+                state.setTextureScaleMode(mode);
+                try respondOk(state.io, stream);
+            },
+            .palette => |target| {
+                switch (target) {
+                    .actions => try state.openPalette(.actions),
+                    .files => try state.openPalette(.files),
+                    .slideshow => try state.openPalette(.set_slideshow_interval),
+                    .none => state.setPaletteMode(.inactive),
+                }
+                try respondOk(state.io, stream);
+            },
+            .thumb => |action| {
+                switch (action) {
+                    .enable => try state.setDebugShowThumb(true),
+                    .disable => try state.setDebugShowThumb(false),
+                    .toggle => try state.setDebugShowThumb(!state.debug_show_thumb),
+                }
+                try respondOk(state.io, stream);
+            },
+            .debug => |enabled| {
+                clay.setDebugModeEnabled(enabled);
+                try respondOk(state.io, stream);
+            },
+            .wait_load => {
+                var attempts: u32 = 0;
+                while (attempts < 1000) : (attempts += 1) {
+                    _ = state.processBackgroundEvents();
+                    state.prepareCacheTextures();
+                    if (state.getCurrentEntry()) |entry| {
+                        if (entry.status != .decoding) {
+                            break;
+                        }
+                    }
+                    sdl.timer.delay(10);
+                }
+                try respondOk(state.io, stream);
+            },
+            .next => {
+                try state.next();
+                try respondOk(state.io, stream);
+            },
+            .prev => {
+                try state.prev();
+                try respondOk(state.io, stream);
+            },
+            .screenshot => |filepath| {
+                if (state.active_screenshot) |_| {
+                    return error.Busy;
+                } else {
+                    const dup_path = try state.allocator.dupeZ(u8, filepath);
+                    state.active_screenshot = screenshot.ActiveScreenshot{
+                        .path = dup_path,
+                        .stream = stream,
+                    };
+                }
+            },
+            .quit => {
+                state.requestQuit();
+                try respondOk(state.io, stream);
+                const pid = getProcessId();
+                var path_buf: [128]u8 = undefined;
+                if (std.fmt.bufPrint(&path_buf, "/tmp/peng-{d}.sock", .{pid})) |sock_path| {
+                    if (std.Io.net.UnixAddress.init(sock_path)) |addr| {
+                        if (addr.connect(state.io)) |dummy| {
+                            dummy.close(state.io);
+                        } else |err| {
+                            std.log.debug("IPC quit dummy connect failed: {any}", .{err});
+                        }
+                    } else |err| {
+                        std.log.debug("IPC quit address init failed: {any}", .{err});
+                    }
+                } else |err| {
+                    std.log.debug("IPC quit bufPrint failed: {any}", .{err});
+                }
+            },
+        }
+    }
+};
+
+pub const PaletteTarget = enum {
+    actions,
+    files,
+    slideshow,
+    none,
+};
+
+pub const ThumbAction = enum {
+    enable,
+    disable,
+    toggle,
+};
+
+pub const IpcCommand = union(enum) {
+    zoom: f32,
+    pan: struct { x: f32, y: f32 },
+    adjust: struct { brightness: f32, contrast: f32 },
+    filter: TextureScaleMode,
+    palette: PaletteTarget,
+    thumb: ThumbAction,
+    debug: bool,
+    wait_load,
+    next,
+    prev,
+    quit,
+    screenshot: []const u8,
+
+    pub fn parse(command: []const u8) !IpcCommand {
         var it = std.mem.tokenizeAny(u8, command, " \t\r\n");
-        const cmd = it.next() orelse return;
+        const cmd = it.next() orelse return error.UnknownCommand;
 
         if (std.mem.eql(u8, cmd, "zoom")) {
             const factor_str = it.next() orelse return error.MissingArgument;
             if (factor_str.len > 128) return error.InvalidArgument;
             const factor = try std.fmt.parseFloat(f32, factor_str);
             if (std.math.isNan(factor) or std.math.isInf(factor)) return error.InvalidArgument;
-            state.setZoom(factor);
-            try respondOk(state.io, stream);
+            return .{ .zoom = factor };
         } else if (std.mem.eql(u8, cmd, "pan")) {
             const px_str = it.next() orelse return error.MissingArgument;
             const py_str = it.next() orelse return error.MissingArgument;
@@ -85,8 +210,7 @@ pub const IpcServer = struct {
             const px = try std.fmt.parseFloat(f32, px_str);
             const py = try std.fmt.parseFloat(f32, py_str);
             if (std.math.isNan(px) or std.math.isInf(px) or std.math.isNan(py) or std.math.isInf(py)) return error.InvalidArgument;
-            state.setPan(px, py);
-            try respondOk(state.io, stream);
+            return .{ .pan = .{ .x = px, .y = py } };
         } else if (std.mem.eql(u8, cmd, "adjust")) {
             const br_str = it.next() orelse return error.MissingArgument;
             const co_str = it.next() orelse return error.MissingArgument;
@@ -94,100 +218,61 @@ pub const IpcServer = struct {
             const br = try std.fmt.parseFloat(f32, br_str);
             const co = try std.fmt.parseFloat(f32, co_str);
             if (std.math.isNan(br) or std.math.isInf(br) or std.math.isNan(co) or std.math.isInf(co)) return error.InvalidArgument;
-            state.setAdjustments(br, co);
-            try respondOk(state.io, stream);
+            return .{ .adjust = .{ .brightness = br, .contrast = co } };
         } else if (std.mem.eql(u8, cmd, "filter")) {
             const val = it.next() orelse return error.MissingArgument;
-            var mode: TextureScaleMode = undefined;
-            if (std.mem.eql(u8, val, "mitchell")) {
-                mode = .mitchell;
-            } else if (std.mem.eql(u8, val, "lanczos3")) {
-                mode = .lanczos3;
-            } else if (std.mem.eql(u8, val, "linear")) {
-                mode = .linear;
-            } else if (std.mem.eql(u8, val, "pixel_art")) {
-                mode = .pixel_art;
-            } else {
-                return error.UnknownFilter;
+            if (std.meta.stringToEnum(TextureScaleMode, val)) |mode| {
+                return .{ .filter = mode };
             }
-            state.setTextureScaleMode(mode);
-            try respondOk(state.io, stream);
+            return error.UnknownFilter;
         } else if (std.mem.eql(u8, cmd, "palette")) {
             const pal_name = it.next() orelse return error.MissingArgument;
             if (std.mem.eql(u8, pal_name, "action")) {
-                try state.openPalette(.actions);
+                return .{ .palette = .actions };
             } else if (std.mem.eql(u8, pal_name, "files")) {
-                try state.openPalette(.files);
+                return .{ .palette = .files };
             } else if (std.mem.eql(u8, pal_name, "slideshow")) {
-                try state.openPalette(.set_slideshow_interval);
+                return .{ .palette = .slideshow };
             } else if (std.mem.eql(u8, pal_name, "none")) {
-                state.setPaletteMode(.inactive);
+                return .{ .palette = .none };
             } else {
                 return error.UnknownPalette;
             }
-            try respondOk(state.io, stream);
         } else if (std.mem.eql(u8, cmd, "thumb")) {
             if (it.next()) |val| {
                 if (std.mem.eql(u8, val, "true")) {
-                    try state.setDebugShowThumb(true);
+                    return .{ .thumb = .enable };
                 } else if (std.mem.eql(u8, val, "false")) {
-                    try state.setDebugShowThumb(false);
+                    return .{ .thumb = .disable };
                 } else if (std.mem.eql(u8, val, "toggle")) {
-                    try state.setDebugShowThumb(!state.debug_show_thumb);
+                    return .{ .thumb = .toggle };
                 } else {
                     return error.InvalidArgument;
                 }
             } else {
-                try state.setDebugShowThumb(!state.debug_show_thumb);
+                return .{ .thumb = .toggle };
             }
-            try respondOk(state.io, stream);
         } else if (std.mem.eql(u8, cmd, "debug")) {
             const val = it.next() orelse return error.MissingArgument;
             if (std.mem.eql(u8, val, "true")) {
-                clay.setDebugModeEnabled(true);
+                return .{ .debug = true };
             } else if (std.mem.eql(u8, val, "false")) {
-                clay.setDebugModeEnabled(false);
+                return .{ .debug = false };
             } else {
                 return error.InvalidArgument;
             }
-            try respondOk(state.io, stream);
         } else if (std.mem.eql(u8, cmd, "wait_load")) {
-            var attempts: u32 = 0;
-            while (attempts < 1000) : (attempts += 1) {
-                _ = state.processBackgroundEvents();
-                state.prepareCacheTextures();
-                if (state.getCurrentEntry()) |entry| {
-                    if (entry.status != .decoding) {
-                        break;
-                    }
-                }
-                sdl.timer.delay(10);
-            }
-            try respondOk(state.io, stream);
+            return .wait_load;
         } else if (std.mem.eql(u8, cmd, "next")) {
-            try state.next();
-            try respondOk(state.io, stream);
+            return .next;
         } else if (std.mem.eql(u8, cmd, "prev")) {
-            try state.prev();
-            try respondOk(state.io, stream);
+            return .prev;
+        } else if (std.mem.eql(u8, cmd, "screenshot")) {
+            const filepath = it.next() orelse return error.MissingArgument;
+            if (filepath.len > 512) return error.PathTooLong;
+            return .{ .screenshot = filepath };
         } else if (std.mem.eql(u8, cmd, "quit")) {
-            state.requestQuit();
-            try respondOk(state.io, stream);
-            const pid = getProcessId();
-            var path_buf: [128]u8 = undefined;
-            if (std.fmt.bufPrint(&path_buf, "/tmp/peng-{d}.sock", .{pid})) |sock_path| {
-                const addr = std.Io.net.UnixAddress.init(sock_path) catch |err| {
-                    std.log.debug("IPC quit dummy address init failed: {any}", .{err});
-                    return;
-                };
-                const dummy = addr.connect(state.io) catch |err| {
-                    std.log.debug("IPC quit dummy connect failed: {any}", .{err});
-                    return;
-                };
-                dummy.close(state.io);
-            } else |err| {
-                std.log.debug("IPC quit bufPrint failed: {any}", .{err});
-            }
+            return .quit;
         } else {
             return error.UnknownCommand;
         }
@@ -195,6 +280,7 @@ pub const IpcServer = struct {
 };
 
 fn ipcServerWorkerTask(state: *ViewerState) void {
+    defer _ = state.active_threads.fetchSub(1, .release);
     runIpcServer(state) catch |err| {
         std.log.err("IPC Server error: {any}", .{err});
     };
@@ -296,4 +382,21 @@ fn respondOk(io: std.Io, stream: std.Io.net.Stream) !void {
     try writer.interface.writeAll("OK\n");
     try writer.interface.flush();
     stream.close(io);
+}
+
+test "IpcCommand parsing" {
+    const cmd_zoom = try IpcCommand.parse("zoom 2.5");
+    try std.testing.expectEqual(@as(f32, 2.5), cmd_zoom.zoom);
+
+    const cmd_pan = try IpcCommand.parse("pan 100 -50");
+    try std.testing.expectEqual(@as(f32, 100), cmd_pan.pan.x);
+    try std.testing.expectEqual(@as(f32, -50), cmd_pan.pan.y);
+
+    const cmd_filter = try IpcCommand.parse("filter mitchell");
+    try std.testing.expectEqual(TextureScaleMode.mitchell, cmd_filter.filter);
+
+    const cmd_next = try IpcCommand.parse("next");
+    try std.testing.expectEqual(IpcCommand.next, cmd_next);
+
+    try std.testing.expectError(error.UnknownCommand, IpcCommand.parse("invalid_command"));
 }

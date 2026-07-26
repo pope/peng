@@ -189,26 +189,34 @@ pub fn convertBgr24ToRgba32Simd(src: []const u8, dst: []u8, width: usize, height
 }
 
 test "convertBgr24ToRgba32Simd correctness" {
+    // 6 pixels = 18 bytes (exercises 16-byte SIMD loop + scalar tail)
     const src = [_]u8{
-        30, 20, 10, // BGR Pixel 0 -> RGBA: 10, 20, 30, 255
-        60, 50, 40, // BGR Pixel 1
-        90, 80, 70, // BGR Pixel 2
-        120, 110, 100, // BGR Pixel 3
-        150, 140, 130, // BGR Pixel 4 (tail)
+        30, 20, 10, // Pixel 0 -> RGBA: 10, 20, 30, 255
+        60, 50, 40, // Pixel 1 -> RGBA: 40, 50, 60, 255
+        90, 80, 70, // Pixel 2 -> RGBA: 70, 80, 90, 255
+        120, 110, 100, // Pixel 3 -> RGBA: 100, 110, 120, 255
+        150, 140, 130, // Pixel 4 -> RGBA: 130, 140, 150, 255
+        180, 170, 160, // Pixel 5 -> RGBA: 160, 170, 180, 255
     };
-    var dst: [20]u8 = undefined;
+    var dst: [24]u8 = undefined;
 
-    convertBgr24ToRgba32Simd(&src, &dst, 5, 1, 15, 20);
+    convertBgr24ToRgba32Simd(&src, &dst, 6, 1, 18, 24);
 
-    // Pixel 0
+    // Pixel 0 (SIMD path)
     try std.testing.expectEqual(@as(u8, 10), dst[0]);
     try std.testing.expectEqual(@as(u8, 20), dst[1]);
     try std.testing.expectEqual(@as(u8, 30), dst[2]);
     try std.testing.expectEqual(@as(u8, 255), dst[3]);
 
-    // Pixel 4 (tail)
-    try std.testing.expectEqual(@as(u8, 130), dst[16]);
-    try std.testing.expectEqual(@as(u8, 140), dst[17]);
-    try std.testing.expectEqual(@as(u8, 150), dst[18]);
-    try std.testing.expectEqual(@as(u8, 255), dst[19]);
+    // Pixel 3 (SIMD path)
+    try std.testing.expectEqual(@as(u8, 100), dst[12]);
+    try std.testing.expectEqual(@as(u8, 110), dst[13]);
+    try std.testing.expectEqual(@as(u8, 120), dst[14]);
+    try std.testing.expectEqual(@as(u8, 255), dst[15]);
+
+    // Pixel 5 (tail path)
+    try std.testing.expectEqual(@as(u8, 160), dst[20]);
+    try std.testing.expectEqual(@as(u8, 170), dst[21]);
+    try std.testing.expectEqual(@as(u8, 180), dst[22]);
+    try std.testing.expectEqual(@as(u8, 255), dst[23]);
 }

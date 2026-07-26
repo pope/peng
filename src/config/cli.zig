@@ -36,14 +36,8 @@ pub fn parseCommandLineArgs(init: std.process.Init, gpa: std.mem.Allocator) !Par
             ipc_enabled = false;
         } else if (std.mem.eql(u8, arg, "--scale")) {
             if (args_it.next()) |val| {
-                if (std.mem.eql(u8, val, "none")) {
-                    default_scale = .none;
-                } else if (std.mem.eql(u8, val, "shrink")) {
-                    default_scale = .shrink;
-                } else if (std.mem.eql(u8, val, "full")) {
-                    default_scale = .full;
-                } else if (std.mem.eql(u8, val, "crop")) {
-                    default_scale = .crop;
+                if (std.meta.stringToEnum(ScaleMode, val)) |mode| {
+                    default_scale = mode;
                 } else {
                     std.log.err("Unknown scale mode: {s}. Valid modes are: none, shrink, full, crop.", .{val});
                 }

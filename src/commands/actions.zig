@@ -542,6 +542,67 @@ pub fn triggerAction(self: *ViewerState, action_id: AppActionId) !void {
     }
 }
 
+pub const AppAction = union(enum) {
+    next_image,
+    prev_image,
+    toggle_stats,
+    toggle_fullscreen,
+    open_file_finder,
+    open_directory_navigator,
+    toggle_debug_mode,
+    toggle_debug_thumb,
+    exit,
+    first_image,
+    last_image,
+    zoom_in,
+    zoom_out,
+    reset_zoom,
+    set_scale: app_types.ScaleMode,
+    rotate_cw,
+    rotate_ccw,
+    reset_rotation,
+    set_filter: app_types.TextureScaleMode,
+    increase_brightness,
+    decrease_brightness,
+    increase_contrast,
+    decrease_contrast,
+    reset_adjustments,
+    set_brightness: f32,
+    set_contrast: f32,
+    go_to_image: usize,
+    open_action_palette,
+    start_slideshow,
+    stop_slideshow,
+    action_id: AppActionId,
+};
+
+pub fn executeAction(self: *ViewerState, action: AppAction) !void {
+    switch (action) {
+        .set_brightness => |val| self.setAdjustments(val, self.contrast),
+        .set_contrast => |val| self.setAdjustments(self.brightness, val),
+        .go_to_image => |idx| {
+            if (self.image_list.items.len > 0) {
+                self.current_index = @min(idx, self.image_list.items.len - 1);
+                try self.updateCache();
+            }
+        },
+        .set_scale => |mode| {
+            self.scale_mode = mode;
+            self.resetZoomPan();
+        },
+        .set_filter => |mode| {
+            self.texture_scale_mode = mode;
+            self.applyTextureScaleMode();
+        },
+        .action_id => |id| try triggerAction(self, id),
+        else => {
+            if (std.meta.stringToEnum(AppActionId, @tagName(action))) |id| {
+                try triggerAction(self, id);
+            }
+        },
+    }
+}
+
 test "open_directory_navigator metadata" {
     const meta = getActionMetadata(.open_directory_navigator);
     try std.testing.expectEqualStrings("Navigate Directories...", meta.name);

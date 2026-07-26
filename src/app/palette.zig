@@ -3,6 +3,11 @@ const fuzzig = @import("fuzzig");
 const commands = @import("../commands/actions.zig");
 const fs = @import("fs.zig");
 
+pub const TextInputBounds = struct {
+    min: f32,
+    max: f32,
+};
+
 pub const PaletteMode = enum {
     inactive,
     files,
@@ -19,11 +24,37 @@ pub const PaletteMode = enum {
             .inactive, .files, .actions, .directory_navigator => false,
         };
     }
+
+    pub fn getTextInputBounds(self: PaletteMode) ?TextInputBounds {
+        return switch (self) {
+            .set_brightness => .{ .min = -1.0, .max = 1.0 },
+            .set_contrast => .{ .min = 0.0, .max = 5.0 },
+            .set_slideshow_interval => .{ .min = 0.1, .max = 3600.0 },
+            .go_to_image, .inactive, .files, .actions, .directory_navigator => null,
+        };
+    }
 };
 
 pub const ScoredMatch = struct {
     index: usize,
     score: i32,
+};
+
+pub const PaletteModeData = union(enum) {
+    inactive,
+    files: struct {
+        matches: []const usize,
+    },
+    actions: struct {
+        scored_matches: []const ScoredMatch,
+    },
+    directory_navigator: struct {
+        current_dir: []const u8,
+        dir_items: []const fs.DirectoryEntry,
+    },
+    text_input: struct {
+        bounds: ?TextInputBounds,
+    },
 };
 
 pub const PaletteState = struct {
@@ -41,6 +72,25 @@ pub const PaletteState = struct {
     allocator: std.mem.Allocator,
     searcher: ?fuzzig.Ascii = null,
     max_haystack_len: usize = 64,
+
+    pub fn getModeData(self: *const PaletteState) PaletteModeData {
+        return switch (self.mode) {
+            .inactive => .inactive,
+            .files => .{ .files = .{ .matches = self.matches.items } },
+            .actions => .{ .actions = .{ .scored_matches = self.scored_matches.items } },
+            .directory_navigator => .{
+                .directory_navigator = .{
+                    .current_dir = self.current_nav_dir.items,
+                    .dir_items = self.dir_items.items,
+                },
+            },
+            .set_brightness, .set_contrast, .go_to_image, .set_slideshow_interval => .{
+                .text_input = .{
+                    .bounds = self.mode.getTextInputBounds(),
+                },
+            },
+        };
+    }
 
     pub fn init(allocator: std.mem.Allocator) PaletteState {
         return .{
@@ -462,4 +512,39 @@ test "PaletteState.navigating_up_remembers_previous_folder" {
         }
     }
     try std.testing.expectEqual(expected_idx, palette.selected_idx);
+}
+
+test "PaletteMode.getTextInputBounds" {
+    const brightness_bounds = PaletteMode.set_brightness.getTextInputBounds().?;
+    try std.testing.expectEqual(@as(f32, -1.0), brightness_bounds.min);
+    try std.testing.expectEqual(@as(f32, 1.0), brightness_bounds.max);
+
+    const contrast_bounds = PaletteMode.set_contrast.getTextInputBounds().?;
+    try std.testing.expectEqual(@as(f32, 0.0), contrast_bounds.min);
+    try std.testing.expectEqual(@as(f32, 5.0), contrast_bounds.max);
+
+    try std.testing.expect(PaletteMode.files.getTextInputBounds() == null);
+}
+
+test "PaletteState.getModeData" {
+    var palette = PaletteState.init(std.testing.allocator);
+    defer palette.deinit();
+
+    try std.testing.expect(palette.getModeData() == .inactive);
+
+    palette.mode = .files;
+    switch (palette.getModeData()) {
+        .files => |f| try std.testing.expectEqual(@as(usize, 0), f.matches.len),
+        else => @panic("expected .files mode data"),
+    }
+
+    palette.mode = .set_brightness;
+    switch (palette.getModeData()) {
+        .text_input => |t| {
+            const bounds = t.bounds.?;
+            try std.testing.expectEqual(@as(f32, -1.0), bounds.min);
+            try std.testing.expectEqual(@as(f32, 1.0), bounds.max);
+        },
+        else => @panic("expected .text_input mode data"),
+    }
 }

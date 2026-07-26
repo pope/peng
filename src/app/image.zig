@@ -12,15 +12,7 @@ const JpegDimensions = exif.JpegDimensions;
 const parseExifDimensions = exif.parseExifDimensions;
 const parseExifOrientation = exif.parseExifOrientation;
 
-pub const CacheStatusTag = enum {
-    decoding,
-    loaded_cpu,
-    loaded_gpu,
-    uploading,
-    failed,
-};
-
-pub const CacheStatus = union(CacheStatusTag) {
+pub const CacheStatus = union(enum) {
     decoding: struct {
         has_thread: bool = false,
     },

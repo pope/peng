@@ -100,12 +100,6 @@ pub fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
     own_gpu_resources = false;
     errdefer state.deinit();
 
-    // Populate initial image list from arguments and piped stdin
-    if (parsed.arg_path) |path| {
-        try state.handlePathSelection(path);
-    }
-    try app.fs.readPipedStdin(&state, init.io, gpa);
-
     // 5. Initialize Clay UI Layout Engine
     const clay_memory_size = clay.minMemorySize();
     const clay_memory = try gpa.alloc(u8, clay_memory_size);
@@ -143,6 +137,12 @@ pub fn runMainLoop(ctx: *AppGraphicsAndState) !void {
     if (ctx.parsed.ipc_enabled) {
         ctx.ipc_server = try app.ipc.IpcServer.init(ctx.gpa, &ctx.state);
     }
+
+    // Populate initial image list from arguments and piped stdin using stable pointer to state
+    if (ctx.parsed.arg_path) |path| {
+        try ctx.state.handlePathSelection(path);
+    }
+    try app.fs.readPipedStdin(&ctx.state, ctx.io, ctx.gpa);
 
     // Per-frame arena allocator
     var frame_arena = std.heap.ArenaAllocator.init(ctx.gpa);
