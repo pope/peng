@@ -9,6 +9,7 @@ const FrameInput = types.FrameInput;
 const MeasureTextUserData = types.MeasureTextUserData;
 const renderPalette = @import("palette.zig").renderPalette;
 const renderStatsOverlay = @import("stats.zig").renderStatsOverlay;
+const renderAtlasOverlay = @import("stats.zig").renderAtlasOverlay;
 const renderer = @import("renderer.zig");
 const saveTextureToPng = @import("graphics.zig").saveTextureToPng;
 const ElementTag = app_state.ElementTag;
@@ -112,6 +113,13 @@ pub fn renderFrame(
             draw_w,
             draw_h,
             frame_allocator,
+        );
+
+        try renderAtlasOverlay(
+            state,
+            frame_allocator,
+            available_width,
+            height,
         );
 
         try renderHeaderBar(

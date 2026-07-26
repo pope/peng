@@ -1,7 +1,9 @@
 const std = @import("std");
 const sdl = @import("sdl");
 const renderer = @import("renderer.zig");
+const text_cache = @import("text_cache.zig");
 const clay = @import("zclay");
+const app_state = @import("../app/state.zig");
 const MeasureTextUserData = @import("../app/types.zig").MeasureTextUserData;
 
 pub const GraphicsSetup = struct {
@@ -180,65 +182,9 @@ pub fn initGpuResources(dev: sdl.gpu.Device, window: sdl.Window, initial_dpi_sca
     };
     errdefer dev.releaseSampler(sampler);
 
-    // Create 1x1 white texture
-    const texture_info = sdl.gpu.TextureCreateInfo{
-        .type = .type_2d,
-        .format = .rgba8_unorm,
-        .usage = sdl.gpu.TextureUsage.sampler | sdl.gpu.TextureUsage.color_target,
-        .width = 1,
-        .height = 1,
-        .layer_count_or_depth = 1,
-        .num_levels = 1,
-        .sample_count = .count_1,
-        .props = 0,
-    };
-    const white_texture = dev.createTexture(&texture_info) orelse {
-        std.log.err("Failed to create white texture: {s}", .{sdl.getError()});
-        return error.TextureCreationFailed;
-    };
+    // Create UI Texture Atlas #0
+    const white_texture = try createAtlasTexture(dev);
     errdefer dev.releaseTexture(white_texture);
-
-    // Upload white pixel
-    {
-        const cmd_buf_wrapper = dev.acquireCommandBuffer() orelse return error.CommandBufferAcquisitionFailed;
-        const transfer_buf = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
-            .usage = .upload,
-            .size = 4,
-            .props = 0,
-        }) orelse {
-            _ = cmd_buf_wrapper.submit();
-            return error.TransferBufferCreationFailed;
-        };
-        defer dev.releaseTransferBuffer(transfer_buf);
-
-        const mapped = dev.mapTransferBuffer(transfer_buf, false) orelse {
-            _ = cmd_buf_wrapper.submit();
-            return error.MapFailed;
-        };
-        mapped[0] = 255;
-        mapped[1] = 255;
-        mapped[2] = 255;
-        mapped[3] = 255;
-        dev.unmapTransferBuffer(transfer_buf);
-
-        const copy_pass = cmd_buf_wrapper.beginCopyPass() orelse {
-            _ = cmd_buf_wrapper.submit();
-            return error.CopyPassCreationFailed;
-        };
-        copy_pass.uploadToTexture(&sdl.gpu.TextureTransferInfo{
-            .transfer_buffer = transfer_buf,
-            .offset = 0,
-            .pixels_per_row = 1,
-            .rows_per_layer = 1,
-        }, &sdl.gpu.TextureRegion{
-            .texture = white_texture,
-            .w = 1,
-            .h = 1,
-            .d = 1,
-        }, false);
-        copy_pass.end();
-        _ = cmd_buf_wrapper.submit();
-    }
 
     // Create Graphics Pipeline
     const vertex_attribs = [_]sdl.gpu.VertexAttribute{
@@ -303,6 +249,73 @@ pub fn initGpuResources(dev: sdl.gpu.Device, window: sdl.Window, initial_dpi_sca
         .white_texture = white_texture,
         .fonts = fonts,
     };
+}
+
+pub fn createAtlasTexture(dev: sdl.gpu.Device) !sdl.gpu.Texture {
+    const texture_info = sdl.gpu.TextureCreateInfo{
+        .type = .type_2d,
+        .format = .rgba8_unorm,
+        .usage = sdl.gpu.TextureUsage.sampler | sdl.gpu.TextureUsage.color_target,
+        .width = text_cache.ATLAS_SIZE,
+        .height = text_cache.ATLAS_SIZE,
+        .layer_count_or_depth = 1,
+        .num_levels = 1,
+        .sample_count = .count_1,
+        .props = 0,
+    };
+    const atlas_tex = dev.createTexture(&texture_info) orelse {
+        std.log.err("Failed to create texture atlas: {s}", .{sdl.getError()});
+        return error.TextureCreationFailed;
+    };
+    errdefer dev.releaseTexture(atlas_tex);
+
+    // Upload 2x2 white pixel block to top-left corner
+    const cmd_buf_wrapper = dev.acquireCommandBuffer() orelse return error.CommandBufferAcquisitionFailed;
+    const transfer_buf = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
+        .usage = .upload,
+        .size = 16,
+        .props = 0,
+    }) orelse {
+        _ = cmd_buf_wrapper.submit();
+        return error.TransferBufferCreationFailed;
+    };
+    defer dev.releaseTransferBuffer(transfer_buf);
+
+    const mapped = dev.mapTransferBuffer(transfer_buf, false) orelse {
+        _ = cmd_buf_wrapper.submit();
+        return error.MapFailed;
+    };
+    @memset(mapped[0..16], 255);
+    dev.unmapTransferBuffer(transfer_buf);
+
+    const copy_pass = cmd_buf_wrapper.beginCopyPass() orelse {
+        _ = cmd_buf_wrapper.submit();
+        return error.CopyPassCreationFailed;
+    };
+    copy_pass.uploadToTexture(&sdl.gpu.TextureTransferInfo{
+        .transfer_buffer = transfer_buf,
+        .offset = 0,
+        .pixels_per_row = 2,
+        .rows_per_layer = 2,
+    }, &sdl.gpu.TextureRegion{
+        .texture = atlas_tex,
+        .w = 2,
+        .h = 2,
+        .d = 1,
+    }, false);
+    copy_pass.end();
+    _ = cmd_buf_wrapper.submit();
+
+    return atlas_tex;
+}
+
+pub fn createGpuResources(state: *app_state.ViewerState) !void {
+    const dev = state.gpu_device.?;
+
+    const resources = try initGpuResources(dev, state.window.?, state.dpi_scale, false);
+    state.gpu_pipeline = resources.pipeline;
+    state.gpu_sampler = resources.sampler;
+    state.white_texture = resources.white_texture;
 }
 
 fn getTextureFormatElementSize(format: sdl.gpu.TextureFormat) u32 {

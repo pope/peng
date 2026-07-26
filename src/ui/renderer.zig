@@ -48,6 +48,7 @@ fn addBatch(
     is_image: bool,
     scissor: ?sdl.Rect,
 ) !void {
+    if (count == 0) return;
     if (batches.items.len > 0) {
         var last = &batches.items[batches.items.len - 1];
         if (last.texture.eql(texture) and last.is_image == is_image and scissorEqual(last.scissor, scissor)) {
@@ -65,7 +66,10 @@ fn addBatch(
 }
 
 const CachedText = struct {
-    texture: sdl.gpu.Texture,
+    u_min: f32,
+    v_min: f32,
+    u_max: f32,
+    v_max: f32,
     w: f32,
     h: f32,
 };
@@ -214,25 +218,32 @@ fn appendImageCommand(
     const texture: ?sdl.gpu.Texture = if (image_data) |ptr| sdl.gpu.Texture{ .ptr = @ptrCast(@alignCast(ptr)) } else null;
     const tex = texture orelse return;
 
-    var dst_w = rect.w;
-    var dst_h = rect.h;
-    const angle = state.rotation_angle;
-    const is_90_or_270 = std.math.approxEqAbs(f32, angle, 90.0, 0.01) or std.math.approxEqAbs(f32, angle, 270.0, 0.01);
-    if (is_90_or_270) {
-        dst_w = rect.h;
-        dst_h = rect.w;
-    }
-    var dst_rect = rect;
-    dst_rect.w = dst_w * state.zoom_factor;
-    dst_rect.h = dst_h * state.zoom_factor;
-    const center_x = rect.x + rect.w / 2.0;
-    const center_y = rect.y + rect.h / 2.0;
-    dst_rect.x = center_x - (dst_rect.w / 2.0) + state.pan_x;
-    dst_rect.y = center_y - (dst_rect.h / 2.0) + state.pan_y;
+    const is_ui_image = (state.white_texture != null and tex.ptr == state.white_texture.?.ptr);
 
-    const rad = angle * (std.math.pi / 180.0);
-    const cos_val = @cos(rad);
-    const sin_val = @sin(rad);
+    var dst_rect = rect;
+    var cos_val: f32 = 1.0;
+    var sin_val: f32 = 0.0;
+
+    if (!is_ui_image) {
+        var dst_w = rect.w;
+        var dst_h = rect.h;
+        const angle = state.rotation_angle;
+        const is_90_or_270 = std.math.approxEqAbs(f32, angle, 90.0, 0.01) or std.math.approxEqAbs(f32, angle, 270.0, 0.01);
+        if (is_90_or_270) {
+            dst_w = rect.h;
+            dst_h = rect.w;
+        }
+        dst_rect.w = dst_w * state.zoom_factor;
+        dst_rect.h = dst_h * state.zoom_factor;
+        const center_x = rect.x + rect.w / 2.0;
+        const center_y = rect.y + rect.h / 2.0;
+        dst_rect.x = center_x - (dst_rect.w / 2.0) + state.pan_x;
+        dst_rect.y = center_y - (dst_rect.h / 2.0) + state.pan_y;
+
+        const rad = angle * (std.math.pi / 180.0);
+        cos_val = @cos(rad);
+        sin_val = @sin(rad);
+    }
 
     const half_w = dst_rect.w * 0.5;
     const half_h = dst_rect.h * 0.5;
@@ -274,7 +285,7 @@ fn appendImageCommand(
     try vertices.append(allocator, .{ .x = p3.x, .y = p3.y, .u = 1.0, .v = 1.0, .color = white_color });
     try vertices.append(allocator, .{ .x = p4.x, .y = p4.y, .u = 0.0, .v = 1.0, .color = white_color });
 
-    try addBatch(batches, allocator, start, 6, tex, true, scissor);
+    try addBatch(batches, allocator, start, 6, tex, !is_ui_image, scissor);
 }
 
 fn getOrRenderCachedText(
@@ -290,8 +301,8 @@ fn getOrRenderCachedText(
     if (text_data.font_id >= fonts.len) return null;
     const font = fonts[text_data.font_id] orelse return null;
 
-    const len = @as(usize, @intCast(text_data.string_contents.length));
-    if (len == 0) return null;
+    if (text_data.string_contents.length <= 0) return null;
+    const len: usize = @intCast(text_data.string_contents.length);
     var text_slice = text_data.string_contents.chars[0..len];
     if (std.mem.indexOfScalar(u8, text_slice, 0)) |null_idx| {
         text_slice = text_slice[0..null_idx];
@@ -299,27 +310,31 @@ fn getOrRenderCachedText(
     if (text_slice.len == 0) return null;
 
     const target_font_size = @as(f32, @floatFromInt(text_data.font_size)) * scale_x;
+    if (target_font_size <= 0.0) return null;
     const target_font_size_u16 = @as(u16, @intFromFloat(@round(target_font_size)));
 
-    // 1. Check/Lookup cache
-    const color_u32 = @as(u32, @intFromFloat(text_data.text_color[0])) |
-        (@as(u32, @intFromFloat(text_data.text_color[1])) << 8) |
-        (@as(u32, @intFromFloat(text_data.text_color[2])) << 16) |
-        (@as(u32, @intFromFloat(text_data.text_color[3])) << 24);
+    const color_u32 = packRgba(
+        @intFromFloat(text_data.text_color[0]),
+        @intFromFloat(text_data.text_color[1]),
+        @intFromFloat(text_data.text_color[2]),
+        @intFromFloat(text_data.text_color[3]),
+    );
 
-    const key = app_state.TextCacheKey{
+    const key = app_state.TextCacheModule.TextCacheKey{
         .font_id = text_data.font_id,
         .font_size = target_font_size_u16,
         .color = color_u32,
         .hash = std.hash.Wyhash.hash(0, text_slice),
     };
 
-    if (state.text_cache.getEntry(key)) |entry| {
-        entry.value_ptr.last_used_frame = state.gpu_frame_index;
+    if (state.text_cache.get(key)) |val| {
         return CachedText{
-            .texture = entry.value_ptr.texture,
-            .w = entry.value_ptr.w,
-            .h = entry.value_ptr.h,
+            .u_min = val.u_min,
+            .v_min = val.v_min,
+            .u_max = val.u_max,
+            .v_max = val.v_max,
+            .w = val.w,
+            .h = val.h,
         };
     }
 
@@ -329,10 +344,10 @@ fn getOrRenderCachedText(
     _ = font.setFontSize(target_font_size);
 
     const surf = font.renderTextBlended(allocator, text_slice, .{
-        .r = @intFromFloat(text_data.text_color[0]),
-        .g = @intFromFloat(text_data.text_color[1]),
-        .b = @intFromFloat(text_data.text_color[2]),
-        .a = @intFromFloat(text_data.text_color[3]),
+        .r = @intFromFloat(@round(std.math.clamp(text_data.text_color[0], 0.0, 255.0))),
+        .g = @intFromFloat(@round(std.math.clamp(text_data.text_color[1], 0.0, 255.0))),
+        .b = @intFromFloat(@round(std.math.clamp(text_data.text_color[2], 0.0, 255.0))),
+        .a = @intFromFloat(@round(std.math.clamp(text_data.text_color[3], 0.0, 255.0))),
     }) catch |err| {
         std.log.warn("font.renderTextBlended failed for '{s}': {}", .{ text_slice, err });
         return null;
@@ -344,31 +359,18 @@ fn getOrRenderCachedText(
 
     const surf_w: usize = @intCast(converted.w());
     const surf_h: usize = @intCast(converted.h());
-    const target_w: usize = surf_w;
-    const dst_start_byte: usize = 0;
 
-    const tex_info = sdl.gpu.TextureCreateInfo{
-        .type = .type_2d,
-        .format = .rgba8_unorm,
-        .usage = sdl.gpu.TextureUsage.sampler,
-        .width = @intCast(target_w),
-        .height = @intCast(surf_h),
-        .layer_count_or_depth = 1,
-        .num_levels = 1,
-        .sample_count = .count_1,
-        .props = 0,
-    };
-    const tex = dev.createTexture(&tex_info) orelse return null;
+    const slot = state.text_cache.allocateSlot(@intCast(surf_w), @intCast(surf_h)) orelse return null;
+    const atlas_tex = state.white_texture.?;
 
-    const size = target_w * surf_h * 4;
+    const dst_row_bytes = std.mem.alignForward(usize, surf_w * 4, 256);
+    const size = dst_row_bytes * surf_h;
     const aligned_offset = std.mem.alignForward(usize, tb_offset.*, 512);
     const required_capacity = aligned_offset + size;
 
     if (state.gpu_transfer_buffers[frame_idx] == null or state.gpu_buffer_capacities[frame_idx] < required_capacity) {
         const new_tbcap = std.mem.alignForward(usize, @max(required_capacity * 2, 65536), 4096);
         if (state.gpu_transfer_buffers[frame_idx]) |old_tb| {
-            // Catch OOM on the deferred cleanup list so a non-critical array append failure
-            // does not abort the entire frame's render pass. Log the error and continue rendering.
             temp_buffers.append(allocator, old_tb) catch |err| {
                 std.log.err("Failed to append old transfer buffer to cleanup list: {}", .{err});
             };
@@ -380,28 +382,21 @@ fn getOrRenderCachedText(
         });
         if (state.gpu_transfer_buffers[frame_idx] == null) {
             state.gpu_buffer_capacities[frame_idx] = 0;
-            dev.releaseTexture(tex);
             return null;
         }
         state.gpu_buffer_capacities[frame_idx] = new_tbcap;
     }
 
     const transfer_buf = state.gpu_transfer_buffers[frame_idx].?;
-    const mapped_raw: [*]u8 = dev.mapTransferBuffer(transfer_buf, false) orelse {
-        dev.releaseTexture(tex);
-        return null;
-    };
+    const mapped_raw: [*]u8 = dev.mapTransferBuffer(transfer_buf, false) orelse return null;
     const mapped = mapped_raw + aligned_offset;
     const src_row_bytes: usize = surf_w * 4;
-    const dst_row_bytes: usize = target_w * 4;
     const pitch: usize = @intCast(converted.pitch());
-
-    @memset(mapped[0..size], 0);
 
     var row_y: usize = 0;
     while (row_y < surf_h) : (row_y += 1) {
         const src_row = converted.pixels()[row_y * pitch .. row_y * pitch + src_row_bytes];
-        const dst_row = mapped[row_y * dst_row_bytes + dst_start_byte .. row_y * dst_row_bytes + dst_start_byte + src_row_bytes];
+        const dst_row = mapped[row_y * dst_row_bytes .. row_y * dst_row_bytes + src_row_bytes];
         @memcpy(dst_row, src_row);
     }
     dev.unmapTransferBuffer(transfer_buf);
@@ -409,33 +404,47 @@ fn getOrRenderCachedText(
     copy_pass.uploadToTexture(&sdl.gpu.TextureTransferInfo{
         .transfer_buffer = transfer_buf,
         .offset = @intCast(aligned_offset),
-        .pixels_per_row = @intCast(target_w),
+        .pixels_per_row = @intCast(dst_row_bytes / 4),
         .rows_per_layer = @intCast(surf_h),
     }, &sdl.gpu.TextureRegion{
-        .texture = tex,
-        .w = @intCast(target_w),
+        .texture = atlas_tex,
+        .x = @intCast(slot.x),
+        .y = @intCast(slot.y),
+        .w = @intCast(surf_w),
         .h = @intCast(surf_h),
         .d = 1,
     }, false);
 
     tb_offset.* = aligned_offset + size;
 
-    const w_f: f32 = @floatFromInt(target_w);
+    const w_f: f32 = @floatFromInt(surf_w);
     const h_f: f32 = @floatFromInt(surf_h);
+    const atlas_size_f: f32 = @floatFromInt(app_state.TextCacheModule.ATLAS_SIZE);
 
-    state.text_cache.put(state.allocator, key, .{
-        .texture = tex,
+    const u_min = @as(f32, @floatFromInt(slot.x)) / atlas_size_f;
+    const v_min = @as(f32, @floatFromInt(slot.y)) / atlas_size_f;
+    const u_max = @as(f32, @floatFromInt(slot.x + surf_w)) / atlas_size_f;
+    const v_max = @as(f32, @floatFromInt(slot.y + surf_h)) / atlas_size_f;
+
+    const cache_val = app_state.TextCacheModule.TextCacheValue{
+        .u_min = u_min,
+        .v_min = v_min,
+        .u_max = u_max,
+        .v_max = v_max,
         .w = w_f,
         .h = h_f,
-        .last_used_frame = state.gpu_frame_index,
-    }) catch |err| {
+    };
+
+    state.text_cache.put(state.allocator, key, cache_val) catch |err| {
         std.log.err("Failed to cache rendered text: {}", .{err});
-        dev.releaseTexture(tex);
         return null;
     };
 
     return CachedText{
-        .texture = tex,
+        .u_min = u_min,
+        .v_min = v_min,
+        .u_max = u_max,
+        .v_max = v_max,
         .w = w_f,
         .h = h_f,
     };
@@ -448,6 +457,35 @@ pub inline fn isScissorInvisible(sc: ?sdl.Rect, win_w: i32, win_h: i32) bool {
         if (s.x + s.w <= 0 or s.y + s.h <= 0) return true;
     }
     return false;
+}
+
+pub inline fn normalizeScissor(sc: ?sdl.Rect, win_w: i32, win_h: i32) ?sdl.Rect {
+    const s = sc orelse return null;
+    if (s.w <= 0 or s.h <= 0) return s;
+
+    const clamped_x = @max(0, s.x);
+    const clamped_y = @max(0, s.y);
+
+    const diff_x = clamped_x - s.x;
+    const diff_y = clamped_y - s.y;
+
+    if (s.w <= diff_x or s.h <= diff_y) return s;
+
+    var clamped_w = s.w - diff_x;
+    var clamped_h = s.h - diff_y;
+
+    if (clamped_x >= win_w or clamped_y >= win_h) return s;
+
+    clamped_w = @min(clamped_w, win_w - clamped_x);
+    clamped_h = @min(clamped_h, win_h - clamped_y);
+
+    if (clamped_w <= 0 or clamped_h <= 0) return s;
+
+    if (clamped_x == 0 and clamped_y == 0 and clamped_w >= win_w and clamped_h >= win_h) {
+        return null;
+    }
+
+    return sdl.Rect{ .x = clamped_x, .y = clamped_y, .w = clamped_w, .h = clamped_h };
 }
 
 fn buildGeometryFromCommands(
@@ -483,12 +521,13 @@ fn buildGeometryFromCommands(
 
         if (rcmd.command_type == .scissor_start) {
             prev_text_bb = null;
-            current_scissor = sdl.Rect{
+            const raw_sc = sdl.Rect{
                 .x = @intFromFloat(@round(bb.x * scale_x)),
                 .y = @intFromFloat(@round(bb.y * scale_y)),
                 .w = @intFromFloat(@round(bb.width * scale_x)),
                 .h = @intFromFloat(@round(bb.height * scale_y)),
             };
+            current_scissor = normalizeScissor(raw_sc, win_w, win_h);
             continue;
         } else if (rcmd.command_type == .scissor_end) {
             prev_text_bb = null;
@@ -549,14 +588,14 @@ fn buildGeometryFromCommands(
 
                     const start = @as(u32, @intCast(vertices.items.len));
                     const white_color = packRgba(255, 255, 255, 255);
-                    try vertices.append(allocator, .{ .x = p1.x, .y = p1.y, .u = 0.0, .v = 0.0, .color = white_color });
-                    try vertices.append(allocator, .{ .x = p2.x, .y = p1.y, .u = 1.0, .v = 0.0, .color = white_color });
-                    try vertices.append(allocator, .{ .x = p1.x, .y = p2.y, .u = 0.0, .v = 1.0, .color = white_color });
-                    try vertices.append(allocator, .{ .x = p2.x, .y = p1.y, .u = 1.0, .v = 0.0, .color = white_color });
-                    try vertices.append(allocator, .{ .x = p2.x, .y = p2.y, .u = 1.0, .v = 1.0, .color = white_color });
-                    try vertices.append(allocator, .{ .x = p1.x, .y = p2.y, .u = 0.0, .v = 1.0, .color = white_color });
+                    try vertices.append(allocator, .{ .x = p1.x, .y = p1.y, .u = cached.u_min, .v = cached.v_min, .color = white_color });
+                    try vertices.append(allocator, .{ .x = p2.x, .y = p1.y, .u = cached.u_max, .v = cached.v_min, .color = white_color });
+                    try vertices.append(allocator, .{ .x = p1.x, .y = p2.y, .u = cached.u_min, .v = cached.v_max, .color = white_color });
+                    try vertices.append(allocator, .{ .x = p2.x, .y = p1.y, .u = cached.u_max, .v = cached.v_min, .color = white_color });
+                    try vertices.append(allocator, .{ .x = p2.x, .y = p2.y, .u = cached.u_max, .v = cached.v_max, .color = white_color });
+                    try vertices.append(allocator, .{ .x = p1.x, .y = p2.y, .u = cached.u_min, .v = cached.v_max, .color = white_color });
 
-                    try addBatch(batches, allocator, start, 6, cached.texture, false, current_scissor);
+                    try addBatch(batches, allocator, start, 6, state.white_texture.?, false, current_scissor);
                 }
             },
             .border => {
@@ -632,6 +671,7 @@ fn uploadVertexData(
             // does not abort the entire frame's render pass. Log the error and continue rendering.
             temp_buffers.append(allocator, old_tb) catch |err| {
                 std.log.err("Failed to append old transfer buffer to cleanup list in uploadVertexData: {}", .{err});
+                dev.releaseTransferBuffer(old_tb);
             };
         }
         const new_tbcap = std.mem.alignForward(usize, total_tb_needed * 2, 4096);
@@ -708,13 +748,13 @@ fn executeRenderPass(
                 render_pass.setScissor(&full_sc);
             }
 
-            const scale_mode_val: i32 = switch (state.texture_scale_mode) {
+            const scale_mode_val: i32 = if (batch.is_image) switch (state.texture_scale_mode) {
                 .nearest => 0,
                 .linear => 1,
                 .pixel_art => 2,
                 .mitchell => 3,
                 .lanczos3 => 4,
-            };
+            } else 0;
             const ubo = Uniforms{
                 .brightness = state.brightness,
                 .contrast = state.contrast,
@@ -745,6 +785,10 @@ pub fn renderClayCommands(
     const start_render = sdl.timer.getTicksNs();
     const dev = state.gpu_device.?;
     const frame_idx = state.gpu_frame_index % 2;
+
+    if (state.text_cache.needs_reset) {
+        state.text_cache.resetAtlas();
+    }
 
     var vertices = std.ArrayList(Vertex).empty;
     defer vertices.deinit(allocator);
@@ -798,9 +842,6 @@ pub fn renderClayCommands(
         win_w,
         win_h,
     );
-
-    // Cache eviction for text textures (unused for >120 frames)
-    state.text_cache.evictUnused(allocator, dev, state.gpu_frame_index, 120);
 
     const end_render = sdl.timer.getTicksNs();
     const render_time_ms = @as(f64, @floatFromInt(end_render - start_render)) / 1_000_000.0;

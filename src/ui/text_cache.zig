@@ -1,6 +1,10 @@
 const std = @import("std");
 const sdl = @import("sdl");
 
+pub const ATLAS_SIZE: u32 = 1024;
+pub const WHITE_U: f32 = 1.0 / @as(f32, @floatFromInt(ATLAS_SIZE));
+pub const WHITE_V: f32 = 1.0 / @as(f32, @floatFromInt(ATLAS_SIZE));
+
 pub const TextCacheKey = struct {
     font_id: usize,
     font_size: u16,
@@ -9,52 +13,80 @@ pub const TextCacheKey = struct {
 };
 
 pub const TextCacheValue = struct {
-    texture: sdl.gpu.Texture,
+    u_min: f32,
+    v_min: f32,
+    u_max: f32,
+    v_max: f32,
     w: f32,
     h: f32,
-    last_used_frame: usize,
 };
 
 pub const TextCache = struct {
     map: std.AutoHashMapUnmanaged(TextCacheKey, TextCacheValue) = .empty,
+    row_x: u32 = 4,
+    row_y: u32 = 0,
+    row_h: u32 = 4,
+    needs_reset: bool = false,
 
     pub fn deinit(self: *TextCache, allocator: std.mem.Allocator, dev_opt: ?sdl.gpu.Device) void {
-        if (dev_opt) |dev| {
-            var iter = self.map.iterator();
-            while (iter.next()) |entry| {
-                dev.releaseTexture(entry.value_ptr.texture);
-            }
-        }
+        _ = dev_opt;
         self.map.deinit(allocator);
     }
 
-    pub fn getEntry(self: *TextCache, key: TextCacheKey) ?std.AutoHashMapUnmanaged(TextCacheKey, TextCacheValue).Entry {
-        return self.map.getEntry(key);
+    pub fn get(self: *const TextCache, key: TextCacheKey) ?TextCacheValue {
+        return self.map.get(key);
     }
 
-    pub fn put(self: *TextCache, allocator: std.mem.Allocator, key: TextCacheKey, value: TextCacheValue) !void {
-        try self.map.put(allocator, key, value);
+    pub fn resetAtlas(self: *TextCache) void {
+        self.map.clearRetainingCapacity();
+        self.row_x = 4;
+        self.row_y = 0;
+        self.row_h = 4;
+        self.needs_reset = false;
     }
 
-    pub fn evictUnused(self: *TextCache, allocator: std.mem.Allocator, dev: sdl.gpu.Device, current_frame: usize, max_unused_frames: usize) void {
-        var to_evict = std.ArrayList(TextCacheKey).empty;
-        defer to_evict.deinit(allocator);
+    pub fn allocateSlot(self: *TextCache, surf_w: u32, surf_h: u32) ?struct { x: u32, y: u32 } {
+        const slot_w = surf_w + 1;
+        const slot_h = surf_h + 1;
 
-        var iter = self.map.iterator();
-        while (iter.next()) |entry| {
-            if (current_frame > entry.value_ptr.last_used_frame and
-                current_frame - entry.value_ptr.last_used_frame > max_unused_frames)
-            {
-                to_evict.append(allocator, entry.key_ptr.*) catch |err| {
-                    std.log.err("Failed to append key to eviction list: {}", .{err});
-                };
-            }
+        if (slot_w > ATLAS_SIZE or slot_h > ATLAS_SIZE) return null;
+
+        if (self.row_x + slot_w > ATLAS_SIZE) {
+            self.row_y += self.row_h;
+            self.row_x = 0;
+            self.row_h = 0;
         }
 
-        for (to_evict.items) |k| {
-            if (self.map.fetchRemove(k)) |removed| {
-                dev.releaseTexture(removed.value.texture);
-            }
+        if (self.row_y + slot_h > ATLAS_SIZE) {
+            self.needs_reset = true;
+            return null;
         }
+
+        const alloc_x = self.row_x;
+        const alloc_y = self.row_y;
+
+        self.row_x += slot_w;
+        self.row_h = @max(self.row_h, slot_h);
+
+        return .{ .x = alloc_x, .y = alloc_y };
+    }
+
+    pub fn put(self: *TextCache, allocator: std.mem.Allocator, key: TextCacheKey, val: TextCacheValue) !void {
+        try self.map.put(allocator, key, val);
+    }
+
+    pub fn getAtlasSize(self: *const TextCache) u32 {
+        _ = self;
+        return ATLAS_SIZE;
+    }
+
+    pub fn getTextCount(self: *const TextCache) usize {
+        return self.map.count();
+    }
+
+    pub fn getAtlasUsagePct(self: *const TextCache) f32 {
+        const total_pixels: f32 = @floatFromInt(ATLAS_SIZE * ATLAS_SIZE);
+        const used_pixels: f32 = @floatFromInt(self.row_y * ATLAS_SIZE + self.row_x * self.row_h);
+        return (used_pixels / total_pixels) * 100.0;
     }
 };

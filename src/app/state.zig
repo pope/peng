@@ -170,6 +170,7 @@ pub const ViewerState = struct {
     is_fullscreen: bool = false,
     running: bool = true,
     show_stats_overlay: bool = false,
+    show_atlas_overlay: bool = false,
     debug_show_thumb: bool = false,
     window_claimed: bool = false,
     scale_mode: ScaleMode = .full,

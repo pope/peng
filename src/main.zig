@@ -229,6 +229,9 @@ pub fn runMainLoop(ctx: *AppGraphicsAndState) !void {
             if (ctx.state.show_stats_overlay and !ctx.state.isPointerInDebugPanel(input) and clay.pointerOver(clay.getElementId("StatsCloseBtn"))) {
                 ctx.state.show_stats_overlay = false;
             }
+            if (ctx.state.show_atlas_overlay and !ctx.state.isPointerInDebugPanel(input) and clay.pointerOver(clay.getElementId("AtlasOverlayCloseBtn"))) {
+                ctx.state.show_atlas_overlay = false;
+            }
         }
 
         // Draw / Render

@@ -322,3 +322,95 @@ pub fn renderStatsOverlay(
         }
     });
 }
+
+pub fn renderAtlasOverlay(
+    state: *app_state.ViewerState,
+    frame_allocator: std.mem.Allocator,
+    win_w: f32,
+    win_h: f32,
+) !void {
+    _ = frame_allocator;
+    if (!state.show_atlas_overlay) return;
+    const tex = state.white_texture orelse return;
+
+    const padding: f32 = 32.0;
+    const header_h: f32 = 32.0;
+    const gap_h: f32 = 12.0;
+    const chrome_h = padding + header_h + gap_h;
+
+    const max_avail_w = win_w * 0.80 - 32.0;
+    const max_avail_h = win_h * 0.80 - chrome_h;
+
+    const image_side = @max(100.0, @min(max_avail_w, max_avail_h));
+
+    const modal_w = image_side + 32.0;
+    const modal_h = image_side + chrome_h;
+
+    clay.UI()(.{
+        .id = clay.getElementId("AtlasOverlayWindow"),
+        .layout = .{
+            .sizing = .{ .w = .fixed(modal_w), .h = .fixed(modal_h) },
+            .direction = .top_to_bottom,
+            .padding = .{ .top = 16, .bottom = 16, .left = 16, .right = 16 },
+            .child_gap = 12,
+        },
+        .floating = .{
+            .attach_to = .to_parent,
+            .attach_points = .{ .element = .center_center, .parent = .center_center },
+            .z_index = 100,
+        },
+        .background_color = theme.base_overlay,
+        .corner_radius = .all(12),
+        .border = .{
+            .width = .{ .left = 2, .right = 2, .top = 2, .bottom = 2 },
+            .color = theme.surface0,
+        },
+    })({
+        clay.UI()(.{
+            .id = clay.getElementId("AtlasOverlayHeader"),
+            .layout = .{
+                .sizing = .{ .w = .grow, .h = .fixed(32) },
+                .direction = .left_to_right,
+                .child_alignment = .{ .y = .center },
+            },
+        })({
+            clay.text("UI Texture Atlas Inspector", .{
+                .font_id = 0,
+                .font_size = 18,
+                .color = theme.text,
+            });
+
+            clay.UI()(.{
+                .id = clay.getElementId("AtlasOverlayHeaderSpacer"),
+                .layout = .{ .sizing = .{ .w = .grow } },
+            })({});
+
+            clay.UI()(.{
+                .id = clay.getElementId("AtlasOverlayCloseBtn"),
+                .layout = .{
+                    .padding = .{ .left = 12, .right = 12, .top = 6, .bottom = 6 },
+                },
+                .background_color = theme.surface0,
+                .corner_radius = .all(6),
+            })({
+                clay.text("Close [Shift+A]", .{
+                    .font_id = 0,
+                    .font_size = 13,
+                    .color = theme.subtext0,
+                });
+            });
+        });
+
+        clay.UI()(.{
+            .id = clay.getElementId("AtlasPreviewImageContainer"),
+            .layout = .{
+                .sizing = .{ .w = .fixed(image_side), .h = .fixed(image_side) },
+            },
+            .background_color = theme.surface0,
+            .corner_radius = .all(8),
+            .image = .{
+                .image_data = tex.asOpaque(),
+            },
+        })({});
+    });
+}

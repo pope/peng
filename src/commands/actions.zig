@@ -11,6 +11,7 @@ pub const AppActionId = enum {
     next_image,
     prev_image,
     toggle_stats,
+    toggle_atlas,
     toggle_fullscreen,
     open_file_finder,
     open_directory_navigator,
@@ -85,6 +86,14 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
             .show_in_palette = true,
             .shortcuts = &.{
                 .{ .key = .char_i },
+            },
+        },
+        .toggle_atlas => .{
+            .name = "Toggle Texture Atlas Inspector",
+            .shortcut_text = "Shift+A",
+            .show_in_palette = true,
+            .shortcuts = &.{
+                .{ .key = .char_a, .mod = .{ .shift = true } },
             },
         },
         .toggle_fullscreen => .{
@@ -377,6 +386,7 @@ pub fn triggerAction(self: *ViewerState, action_id: AppActionId) !void {
         .next_image => try self.next(),
         .prev_image => try self.prev(),
         .toggle_stats => self.show_stats_overlay = !self.show_stats_overlay,
+        .toggle_atlas => self.show_atlas_overlay = !self.show_atlas_overlay,
         .toggle_fullscreen => {
             self.is_fullscreen = !self.is_fullscreen;
             if (self.window) |win| {

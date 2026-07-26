@@ -86,6 +86,11 @@ pub const Font = struct {
         return .{ .ptr = raw };
     }
 
+    pub fn renderGlyphBlended(self: Font, codepoint: u32, color: Color) !Surface {
+        const raw = c.TTF_RenderGlyph_Blended(self.ptr, codepoint, color.toSdlColor()) orelse return error.TtfRenderFailed;
+        return .{ .ptr = raw };
+    }
+
     pub fn close(self: Font) void {
         c.TTF_CloseFont(self.ptr);
     }

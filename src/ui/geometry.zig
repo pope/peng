@@ -1,6 +1,7 @@
 const std = @import("std");
 const clay = @import("zclay");
 const sdl = @import("sdl");
+const text_cache = @import("text_cache.zig");
 
 pub const Vertex = extern struct {
     x: f32,
@@ -9,6 +10,9 @@ pub const Vertex = extern struct {
     v: f32,
     color: u32,
 };
+
+pub const WHITE_U: f32 = text_cache.WHITE_U;
+pub const WHITE_V: f32 = text_cache.WHITE_V;
 
 pub inline fn packRgba(r: u8, g: u8, b: u8, a: u8) u32 {
     return @as(u32, r) | (@as(u32, g) << 8) | (@as(u32, b) << 16) | (@as(u32, a) << 24);
@@ -55,12 +59,12 @@ pub fn appendRectQuad(
 
     const color = packRgbaClay(clay_color);
 
-    try vertices.append(allocator, .{ .x = p1.x, .y = p1.y, .u = 0.0, .v = 0.0, .color = color });
-    try vertices.append(allocator, .{ .x = p2.x, .y = p1.y, .u = 1.0, .v = 0.0, .color = color });
-    try vertices.append(allocator, .{ .x = p1.x, .y = p2.y, .u = 0.0, .v = 1.0, .color = color });
-    try vertices.append(allocator, .{ .x = p2.x, .y = p1.y, .u = 1.0, .v = 0.0, .color = color });
-    try vertices.append(allocator, .{ .x = p2.x, .y = p2.y, .u = 1.0, .v = 1.0, .color = color });
-    try vertices.append(allocator, .{ .x = p1.x, .y = p2.y, .u = 0.0, .v = 1.0, .color = color });
+    try vertices.append(allocator, .{ .x = p1.x, .y = p1.y, .u = WHITE_U, .v = WHITE_V, .color = color });
+    try vertices.append(allocator, .{ .x = p2.x, .y = p1.y, .u = WHITE_U, .v = WHITE_V, .color = color });
+    try vertices.append(allocator, .{ .x = p1.x, .y = p2.y, .u = WHITE_U, .v = WHITE_V, .color = color });
+    try vertices.append(allocator, .{ .x = p2.x, .y = p1.y, .u = WHITE_U, .v = WHITE_V, .color = color });
+    try vertices.append(allocator, .{ .x = p2.x, .y = p2.y, .u = WHITE_U, .v = WHITE_V, .color = color });
+    try vertices.append(allocator, .{ .x = p1.x, .y = p2.y, .u = WHITE_U, .v = WHITE_V, .color = color });
 }
 
 pub fn appendLineQuad(
@@ -91,13 +95,13 @@ pub fn appendLineQuad(
     const np3 = toNdc(p2.x + ox, p2.y + oy, win_w, win_h);
     const np4 = toNdc(p2.x - ox, p2.y - oy, win_w, win_h);
 
-    try vertices.append(allocator, .{ .x = np1.x, .y = np1.y, .u = 0.0, .v = 0.0, .color = packed_color });
-    try vertices.append(allocator, .{ .x = np2.x, .y = np2.y, .u = 1.0, .v = 0.0, .color = packed_color });
-    try vertices.append(allocator, .{ .x = np3.x, .y = np3.y, .u = 1.0, .v = 1.0, .color = packed_color });
+    try vertices.append(allocator, .{ .x = np1.x, .y = np1.y, .u = WHITE_U, .v = WHITE_V, .color = packed_color });
+    try vertices.append(allocator, .{ .x = np2.x, .y = np2.y, .u = WHITE_U, .v = WHITE_V, .color = packed_color });
+    try vertices.append(allocator, .{ .x = np3.x, .y = np3.y, .u = WHITE_U, .v = WHITE_V, .color = packed_color });
 
-    try vertices.append(allocator, .{ .x = np1.x, .y = np1.y, .u = 0.0, .v = 0.0, .color = packed_color });
-    try vertices.append(allocator, .{ .x = np3.x, .y = np3.y, .u = 1.0, .v = 1.0, .color = packed_color });
-    try vertices.append(allocator, .{ .x = np4.x, .y = np4.y, .u = 0.0, .v = 1.0, .color = packed_color });
+    try vertices.append(allocator, .{ .x = np1.x, .y = np1.y, .u = WHITE_U, .v = WHITE_V, .color = packed_color });
+    try vertices.append(allocator, .{ .x = np3.x, .y = np3.y, .u = WHITE_U, .v = WHITE_V, .color = packed_color });
+    try vertices.append(allocator, .{ .x = np4.x, .y = np4.y, .u = WHITE_U, .v = WHITE_V, .color = packed_color });
 }
 
 pub fn appendCornerArc(
@@ -131,7 +135,7 @@ pub fn appendCornerArc(
                 .y = center_pos.y + sin_1 * radius,
             },
             .color = color,
-            .tex_coord = .{ .x = 0, .y = 0 },
+            .tex_coord = .{ .x = WHITE_U, .y = WHITE_V },
         };
         vertex_count.* += 1;
 
@@ -141,7 +145,7 @@ pub fn appendCornerArc(
                 .y = center_pos.y + sin_2 * radius,
             },
             .color = color,
-            .tex_coord = .{ .x = 0, .y = 0 },
+            .tex_coord = .{ .x = WHITE_U, .y = WHITE_V },
         };
         vertex_count.* += 1;
 
@@ -193,13 +197,13 @@ pub fn renderFillRoundedRect(
     var vertex_count: usize = 0;
     var index_count: usize = 0;
 
-    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + clamped_radius, .y = rect.y + clamped_radius }, .color = color, .tex_coord = .{ .x = 0, .y = 0 } };
+    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + clamped_radius, .y = rect.y + clamped_radius }, .color = color, .tex_coord = .{ .x = WHITE_U, .y = WHITE_V } };
     vertex_count += 1;
-    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + rect.w - clamped_radius, .y = rect.y + clamped_radius }, .color = color, .tex_coord = .{ .x = 1, .y = 0 } };
+    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + rect.w - clamped_radius, .y = rect.y + clamped_radius }, .color = color, .tex_coord = .{ .x = WHITE_U, .y = WHITE_V } };
     vertex_count += 1;
-    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + rect.w - clamped_radius, .y = rect.y + rect.h - clamped_radius }, .color = color, .tex_coord = .{ .x = 1, .y = 1 } };
+    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + rect.w - clamped_radius, .y = rect.y + rect.h - clamped_radius }, .color = color, .tex_coord = .{ .x = WHITE_U, .y = WHITE_V } };
     vertex_count += 1;
-    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + clamped_radius, .y = rect.y + rect.h - clamped_radius }, .color = color, .tex_coord = .{ .x = 0, .y = 1 } };
+    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + clamped_radius, .y = rect.y + rect.h - clamped_radius }, .color = color, .tex_coord = .{ .x = WHITE_U, .y = WHITE_V } };
     vertex_count += 1;
 
     indices[index_count] = 0;
@@ -228,9 +232,9 @@ pub fn renderFillRoundedRect(
     appendCornerArc(vertices_src, indices, &vertex_count, &index_count, 3, clamped_radius, std.math.pi * 0.5, std.math.pi, color, num_circle_segments);
 
     // Top edge
-    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + clamped_radius, .y = rect.y }, .color = color, .tex_coord = .{ .x = 0, .y = 0 } };
+    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + clamped_radius, .y = rect.y }, .color = color, .tex_coord = .{ .x = WHITE_U, .y = WHITE_V } };
     vertex_count += 1;
-    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + rect.w - clamped_radius, .y = rect.y }, .color = color, .tex_coord = .{ .x = 1, .y = 0 } };
+    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + rect.w - clamped_radius, .y = rect.y }, .color = color, .tex_coord = .{ .x = WHITE_U, .y = WHITE_V } };
     vertex_count += 1;
 
     indices[index_count] = 0;
@@ -247,9 +251,9 @@ pub fn renderFillRoundedRect(
     index_count += 1;
 
     // Right edge
-    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + rect.w, .y = rect.y + clamped_radius }, .color = color, .tex_coord = .{ .x = 1, .y = 0 } };
+    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + rect.w, .y = rect.y + clamped_radius }, .color = color, .tex_coord = .{ .x = WHITE_U, .y = WHITE_V } };
     vertex_count += 1;
-    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + rect.w, .y = rect.y + rect.h - clamped_radius }, .color = color, .tex_coord = .{ .x = 1, .y = 1 } };
+    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + rect.w, .y = rect.y + rect.h - clamped_radius }, .color = color, .tex_coord = .{ .x = WHITE_U, .y = WHITE_V } };
     vertex_count += 1;
 
     indices[index_count] = 1;
@@ -266,9 +270,9 @@ pub fn renderFillRoundedRect(
     index_count += 1;
 
     // Bottom edge
-    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + rect.w - clamped_radius, .y = rect.y + rect.h }, .color = color, .tex_coord = .{ .x = 1, .y = 1 } };
+    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + rect.w - clamped_radius, .y = rect.y + rect.h }, .color = color, .tex_coord = .{ .x = WHITE_U, .y = WHITE_V } };
     vertex_count += 1;
-    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + clamped_radius, .y = rect.y + rect.h }, .color = color, .tex_coord = .{ .x = 0, .y = 1 } };
+    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + clamped_radius, .y = rect.y + rect.h }, .color = color, .tex_coord = .{ .x = WHITE_U, .y = WHITE_V } };
     vertex_count += 1;
 
     indices[index_count] = 2;
@@ -285,9 +289,9 @@ pub fn renderFillRoundedRect(
     index_count += 1;
 
     // Left edge
-    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x, .y = rect.y + rect.h - clamped_radius }, .color = color, .tex_coord = .{ .x = 0, .y = 1 } };
+    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x, .y = rect.y + rect.h - clamped_radius }, .color = color, .tex_coord = .{ .x = WHITE_U, .y = WHITE_V } };
     vertex_count += 1;
-    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x, .y = rect.y + clamped_radius }, .color = color, .tex_coord = .{ .x = 0, .y = 0 } };
+    vertices_src[vertex_count] = .{ .position = .{ .x = rect.x, .y = rect.y + clamped_radius }, .color = color, .tex_coord = .{ .x = WHITE_U, .y = WHITE_V } };
     vertex_count += 1;
 
     indices[index_count] = 3;
@@ -396,13 +400,13 @@ pub fn renderArc(
         const in2 = toNdc(in2_x, in2_y, win_w, win_h);
 
         // Triangle 1: out1, out2, in2
-        try vertices.append(allocator, .{ .x = out1.x, .y = out1.y, .u = 0.0, .v = 0.0, .color = color });
-        try vertices.append(allocator, .{ .x = out2.x, .y = out2.y, .u = 1.0, .v = 0.0, .color = color });
-        try vertices.append(allocator, .{ .x = in2.x, .y = in2.y, .u = 1.0, .v = 1.0, .color = color });
+        try vertices.append(allocator, .{ .x = out1.x, .y = out1.y, .u = WHITE_U, .v = WHITE_V, .color = color });
+        try vertices.append(allocator, .{ .x = out2.x, .y = out2.y, .u = WHITE_U, .v = WHITE_V, .color = color });
+        try vertices.append(allocator, .{ .x = in2.x, .y = in2.y, .u = WHITE_U, .v = WHITE_V, .color = color });
 
         // Triangle 2: out1, in2, in1
-        try vertices.append(allocator, .{ .x = out1.x, .y = out1.y, .u = 0.0, .v = 0.0, .color = color });
-        try vertices.append(allocator, .{ .x = in2.x, .y = in2.y, .u = 1.0, .v = 1.0, .color = color });
-        try vertices.append(allocator, .{ .x = in1.x, .y = in1.y, .u = 0.0, .v = 1.0, .color = color });
+        try vertices.append(allocator, .{ .x = out1.x, .y = out1.y, .u = WHITE_U, .v = WHITE_V, .color = color });
+        try vertices.append(allocator, .{ .x = in2.x, .y = in2.y, .u = WHITE_U, .v = WHITE_V, .color = color });
+        try vertices.append(allocator, .{ .x = in1.x, .y = in1.y, .u = WHITE_U, .v = WHITE_V, .color = color });
     }
 }
