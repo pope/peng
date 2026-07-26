@@ -6,30 +6,58 @@ const app_config = @import("config.zig");
 const app = @import("app.zig");
 const sdl = @import("sdl");
 
-pub fn main(init: std.process.Init) !void {
+/// Application context encapsulating initialized graphics, state, resources, and IPC server.
+pub const AppGraphicsAndState = struct {
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    parsed: app_config.cli.ParsedArgs,
+    setup: ui.graphics.GraphicsSetup,
+    resources: ui.graphics.GpuResources,
+    state: app.state.ViewerState,
+    clay_memory: []u8,
+    measure_data: app.types.MeasureTextUserData,
+    ipc_server: ?*app.ipc.IpcServer,
+
+    pub fn deinit(self: *AppGraphicsAndState) void {
+        if (self.ipc_server) |srv| srv.deinit(self.io);
+        self.gpa.free(self.clay_memory);
+        self.state.deinit();
+        for (self.resources.fonts) |f| {
+            if (f) |font| font.close();
+        }
+        sdl.quitTtf();
+        self.setup.gpu_device.destroy();
+        self.setup.window.destroy();
+        sdl.quit();
+        if (self.parsed.arg_path) |p| self.gpa.free(p);
+    }
+};
+
+/// Phase 1: Initializes CLI options, SDL graphics, GPU resources, viewer state, Clay layout engine, and IPC server.
+pub fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
     const gpa = init.gpa;
 
-    // Phase 1: Parse command line arguments
+    // 1. Parse command line arguments
     const parsed = try app_config.cli.parseCommandLineArgs(init, gpa);
-    defer if (parsed.arg_path) |p| gpa.free(p);
+    errdefer if (parsed.arg_path) |p| gpa.free(p);
 
-    // Phase 2: Graphics and Window Setup
+    // 2. Graphics and Window Setup
     const setup = try ui.graphics.initGraphicsAndWindow("Peng Image Viewer", .{
         .headless = parsed.headless,
         .high_dpi = !parsed.test_mode,
     });
-    defer {
+    errdefer {
         sdl.quitTtf();
         setup.gpu_device.destroy();
         setup.window.destroy();
         sdl.quit();
     }
 
-    // Phase 3: GPU Pipeline and Resources Setup
+    // 3. GPU Pipeline and Resources Setup
     const resources = try ui.graphics.initGpuResources(setup.gpu_device, setup.window, setup.initial_dpi_scale, parsed.headless);
-    var own_resources = true;
-    defer {
-        if (own_resources) {
+    var own_gpu_resources = true;
+    errdefer {
+        if (own_gpu_resources) {
             const dev = setup.gpu_device;
             dev.releasePipeline(resources.pipeline);
             dev.releaseSampler(resources.sampler);
@@ -40,7 +68,7 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    // Phase 4: State Initialization
+    // 4. State Initialization
     var state = app.state.ViewerState{
         .gpu_device = setup.gpu_device,
         .gpu_pipeline = resources.pipeline,
@@ -69,8 +97,8 @@ pub fn main(init: std.process.Init) !void {
         .show_stats_overlay = false,
         .window_claimed = !parsed.headless,
     };
-    defer state.deinit();
-    own_resources = false;
+    own_gpu_resources = false;
+    errdefer state.deinit();
 
     // Populate initial image list from arguments and piped stdin
     if (parsed.arg_path) |path| {
@@ -78,90 +106,102 @@ pub fn main(init: std.process.Init) !void {
     }
     try app.fs.readPipedStdin(&state, init.io, gpa);
 
-    // Initialize Clay UI Layout Engine
+    // 5. Initialize Clay UI Layout Engine
     const clay_memory_size = clay.minMemorySize();
     const clay_memory = try gpa.alloc(u8, clay_memory_size);
-    defer gpa.free(clay_memory);
+    errdefer gpa.free(clay_memory);
+
     const clay_arena = clay.Arena.init(clay_memory);
     _ = clay.initialize(clay_arena, .{
         .w = @as(f32, @floatFromInt(1024)),
         .h = @as(f32, @floatFromInt(768)),
     }, .{});
 
-    var measure_data = app.types.MeasureTextUserData{
-        .fonts = resources.fonts[0..],
-        .allocator = gpa,
+    return AppGraphicsAndState{
+        .gpa = gpa,
+        .io = init.io,
+        .parsed = parsed,
+        .setup = setup,
+        .resources = resources,
+        .state = state,
+        .clay_memory = clay_memory,
+        .measure_data = undefined,
+        .ipc_server = null,
     };
-    clay.setMeasureTextFunction(*const app.types.MeasureTextUserData, &measure_data, ui.graphics.sdl3MeasureText);
+}
+
+/// Phase 2: Runs the main application event processing, state updating, and rendering loop.
+pub fn runMainLoop(ctx: *AppGraphicsAndState) !void {
+    // Configure Clay measure text function with a stable pointer to measure_data
+    ctx.measure_data = app.types.MeasureTextUserData{
+        .fonts = ctx.resources.fonts[0..],
+        .allocator = ctx.gpa,
+    };
+    clay.setMeasureTextFunction(*const app.types.MeasureTextUserData, &ctx.measure_data, ui.graphics.sdl3MeasureText);
+
+    // Initialize IPC server with a stable pointer to state
+    if (ctx.parsed.ipc_enabled) {
+        ctx.ipc_server = try app.ipc.IpcServer.init(ctx.gpa, &ctx.state);
+    }
 
     // Per-frame arena allocator
-    var frame_arena = std.heap.ArenaAllocator.init(gpa);
+    var frame_arena = std.heap.ArenaAllocator.init(ctx.gpa);
     defer frame_arena.deinit();
     const frame_allocator = frame_arena.allocator();
 
     var last_time = sdl.timer.getTicks();
 
-    // Phase 5: Initialize IPC Server
-    const ipc = app.ipc;
-    var ipc_server: ?*ipc.IpcServer = null;
-    if (parsed.ipc_enabled) {
-        const IpcServer = ipc.IpcServer;
-        ipc_server = try IpcServer.init(gpa, &state);
-    }
-    defer if (ipc_server) |srv| srv.deinit(init.io);
+    while (ctx.state.running) {
+        const bg_events_processed = ctx.state.processBackgroundEvents();
 
-    // Phase 6: The Main Loop
-    while (state.running) {
-        const bg_events_processed = state.processBackgroundEvents();
-
-        // Phase 6a: Input Accumulation
+        // Input Accumulation
         _ = frame_arena.reset(.retain_capacity);
         const is_current_loading = blk: {
-            if (state.getCurrentEntry()) |entry| {
+            if (ctx.state.getCurrentEntry()) |entry| {
                 break :blk (entry.status == .decoding or entry.status == .uploading);
             }
-            break :blk (state.current_index != null);
+            break :blk (ctx.state.current_index != null);
         };
-        const is_busy = state.is_loading_files.load(.acquire) or (state.active_threads.load(.acquire) > 0) or is_current_loading or bg_events_processed or state.slideshow_active;
+        const is_busy = ctx.state.is_loading_files.load(.acquire) or (ctx.state.active_threads.load(.acquire) > 0) or is_current_loading or bg_events_processed or ctx.state.slideshow_active;
         const input = try app.input.pollFrameInput(
-            setup.window,
+            ctx.setup.window,
             frame_allocator,
             &last_time,
-            state.mouse_inside,
-            state.palette.mode != .inactive,
-            parsed.test_mode or parsed.headless,
+            ctx.state.mouse_inside,
+            ctx.state.palette.mode != .inactive,
+            ctx.parsed.test_mode or ctx.parsed.headless,
             is_busy,
         );
 
         if (input.quit_requested) {
-            state.running = false;
+            ctx.state.running = false;
         }
-        state.mouse_inside = input.mouse_inside;
+        ctx.state.mouse_inside = input.mouse_inside;
 
         // Process any pending IPC commands collected during event processing
-        state.processIpcCommands(ipc_server);
+        ctx.state.processIpcCommands(ctx.ipc_server);
 
-        // Phase 6b: State Update
+        // State Update
         const needs_cache_update = blk: {
-            if (state.getCurrentEntry()) |entry| {
+            if (ctx.state.getCurrentEntry()) |entry| {
                 switch (entry.status) {
                     .decoding => |d| break :blk !d.has_thread,
                     else => break :blk false,
                 }
             }
-            break :blk (state.current_index != null);
+            break :blk (ctx.state.current_index != null);
         };
-        if (needs_cache_update and state.active_decode_threads.load(.acquire) < app.state.ViewerState.getMaxConcurrentDecodes()) {
-            state.lockImageList();
-            const count = state.image_list.items.len;
-            state.unlockImageList();
+        if (needs_cache_update and ctx.state.active_decode_threads.load(.acquire) < app.state.ViewerState.getMaxConcurrentDecodes()) {
+            ctx.state.lockImageList();
+            const count = ctx.state.image_list.items.len;
+            ctx.state.unlockImageList();
             if (count > 0) {
-                if (state.current_index == null) state.current_index = 0;
-                state.updateCache() catch |err| std.log.err("Failed to update cache: {}", .{err});
+                if (ctx.state.current_index == null) ctx.state.current_index = 0;
+                ctx.state.updateCache() catch |err| std.log.err("Failed to update cache: {}", .{err});
             }
         }
 
-        try state.update(input);
+        try ctx.state.update(input);
 
         clay.setLayoutDimensions(.{ .w = input.win_w, .h = input.win_h });
 
@@ -183,22 +223,29 @@ pub fn main(init: std.process.Init) !void {
             input.delta_time_ms / 1000.0,
         );
 
-        state.checkIdlePreload();
+        ctx.state.checkIdlePreload();
 
         if (input.mouse_left_clicked) {
-            if (state.show_stats_overlay and !state.isPointerInDebugPanel(input) and clay.pointerOver(clay.getElementId("StatsCloseBtn"))) {
-                state.show_stats_overlay = false;
+            if (ctx.state.show_stats_overlay and !ctx.state.isPointerInDebugPanel(input) and clay.pointerOver(clay.getElementId("StatsCloseBtn"))) {
+                ctx.state.show_stats_overlay = false;
             }
         }
 
-        // Phase 6c: Draw / Render
-        const capture_filename = if (state.active_screenshot) |s| s.path else null;
-        ui.layout.renderFrame(&state, input, frame_allocator, resources.fonts[0..], &measure_data, capture_filename) catch |err| {
-            state.handleScreenshotPostRender(err);
+        // Draw / Render
+        const capture_filename = if (ctx.state.active_screenshot) |s| s.path else null;
+        ui.layout.renderFrame(&ctx.state, input, frame_allocator, ctx.resources.fonts[0..], &ctx.measure_data, capture_filename) catch |err| {
+            ctx.state.handleScreenshotPostRender(err);
             return err;
         };
-        state.handleScreenshotPostRender(null);
+        ctx.state.handleScreenshotPostRender(null);
     }
+}
+
+pub fn main(init: std.process.Init) !void {
+    var app_ctx = try initAppGraphicsAndState(init);
+    defer app_ctx.deinit();
+
+    try runMainLoop(&app_ctx);
 }
 
 test "ElementTag.fromInt" {

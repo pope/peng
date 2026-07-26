@@ -106,18 +106,61 @@ pub fn appendLineQuad(
     try vertices.append(allocator, .{ .x = ndc_x4, .y = ndc_y4, .u = 0.0, .v = 1.0, .color = color });
 }
 
-pub const TrigStep = struct {
-    cos_val: f32,
-    sin_val: f32,
-};
+pub fn appendCornerArc(
+    vertices_src: []sdl.Vertex,
+    indices: []c_int,
+    vertex_count: *usize,
+    index_count: *usize,
+    center: c_int,
+    radius: f32,
+    start_angle: f32,
+    end_angle: f32,
+    color: sdl.FColor,
+    num_circle_segments: usize,
+) void {
+    const center_pos = vertices_src[@intCast(center)].position;
+    const angle_step = (end_angle - start_angle) / @as(f32, @floatFromInt(num_circle_segments));
 
-pub fn getTrigQuadrant(step_idx: usize, total_steps: usize) TrigStep {
-    if (total_steps == 0) return .{ .cos_val = 1.0, .sin_val = 0.0 };
-    const angle = (@as(f32, @floatFromInt(step_idx)) / @as(f32, @floatFromInt(total_steps))) * (std.math.pi / 2.0);
-    return .{
-        .cos_val = @cos(angle),
-        .sin_val = @sin(angle),
-    };
+    var i: usize = 0;
+    while (i < num_circle_segments) : (i += 1) {
+        const a1 = start_angle + @as(f32, @floatFromInt(i)) * angle_step;
+        const a2 = start_angle + @as(f32, @floatFromInt(i + 1)) * angle_step;
+
+        const cos_1 = @cos(a1);
+        const sin_1 = @sin(a1);
+        const cos_2 = @cos(a2);
+        const sin_2 = @sin(a2);
+
+        vertices_src[vertex_count.*] = .{
+            .position = .{
+                .x = center_pos.x + cos_1 * radius,
+                .y = center_pos.y + sin_1 * radius,
+            },
+            .color = color,
+            .tex_coord = .{ .x = 0, .y = 0 },
+        };
+        vertex_count.* += 1;
+
+        vertices_src[vertex_count.*] = .{
+            .position = .{
+                .x = center_pos.x + cos_2 * radius,
+                .y = center_pos.y + sin_2 * radius,
+            },
+            .color = color,
+            .tex_coord = .{ .x = 0, .y = 0 },
+        };
+        vertex_count.* += 1;
+
+        const v1_idx: c_int = @intCast(vertex_count.* - 2);
+        const v2_idx: c_int = @intCast(vertex_count.* - 1);
+
+        indices[index_count.*] = center;
+        index_count.* += 1;
+        indices[index_count.*] = v1_idx;
+        index_count.* += 1;
+        indices[index_count.*] = v2_idx;
+        index_count.* += 1;
+    }
 }
 
 pub fn renderFillRoundedRect(
@@ -178,96 +221,17 @@ pub fn renderFillRoundedRect(
     indices[index_count] = 3;
     index_count += 1;
 
-    const num_seg_u: usize = num_circle_segments;
-    var i: usize = 0;
-    while (i < num_seg_u) : (i += 1) {
-        const t1 = getTrigQuadrant(i, num_seg_u);
-        const t2 = getTrigQuadrant(i + 1, num_seg_u);
-        const cos_1 = t1.cos_val;
-        const sin_1 = t1.sin_val;
-        const cos_2 = t2.cos_val;
-        const sin_2 = t2.sin_val;
+    // Top-Left corner: 180° to 270°
+    appendCornerArc(vertices_src, indices, &vertex_count, &index_count, 0, clamped_radius, std.math.pi, std.math.pi * 1.5, color, num_circle_segments);
 
-        var j: usize = 0;
-        while (j < 4) : (j += 1) {
-            var cx: f32 = 0;
-            var cy: f32 = 0;
-            var sign_x: f32 = 0;
-            var sign_y: f32 = 0;
+    // Top-Right corner: 270° to 360°
+    appendCornerArc(vertices_src, indices, &vertex_count, &index_count, 1, clamped_radius, std.math.pi * 1.5, std.math.pi * 2.0, color, num_circle_segments);
 
-            switch (j) {
-                0 => {
-                    cx = rect.x + clamped_radius;
-                    cy = rect.y + clamped_radius;
-                    sign_x = -1;
-                    sign_y = -1;
-                },
-                1 => {
-                    cx = rect.x + rect.w - clamped_radius;
-                    cy = rect.y + clamped_radius;
-                    sign_x = 1;
-                    sign_y = -1;
-                },
-                2 => {
-                    cx = rect.x + rect.w - clamped_radius;
-                    cy = rect.y + rect.h - clamped_radius;
-                    sign_x = 1;
-                    sign_y = 1;
-                },
-                3 => {
-                    cx = rect.x + clamped_radius;
-                    cy = rect.y + rect.h - clamped_radius;
-                    sign_x = -1;
-                    sign_y = 1;
-                },
-                else => unreachable,
-            }
+    // Bottom-Right corner: 0° to 90°
+    appendCornerArc(vertices_src, indices, &vertex_count, &index_count, 2, clamped_radius, 0.0, std.math.pi * 0.5, color, num_circle_segments);
 
-            vertices_src[vertex_count] = .{
-                .position = .{
-                    .x = cx + cos_1 * clamped_radius * sign_x,
-                    .y = cy + sin_1 * clamped_radius * sign_y,
-                },
-                .color = color,
-                .tex_coord = .{ .x = 0, .y = 0 },
-            };
-            vertex_count += 1;
-
-            vertices_src[vertex_count] = .{
-                .position = .{
-                    .x = cx + cos_2 * clamped_radius * sign_x,
-                    .y = cy + sin_2 * clamped_radius * sign_y,
-                },
-                .color = color,
-                .tex_coord = .{ .x = 0, .y = 0 },
-            };
-            vertex_count += 1;
-
-            const v1_idx: c_int = @intCast(vertex_count - 2);
-            const v2_idx: c_int = @intCast(vertex_count - 1);
-            const center_idx: c_int = @intCast(j);
-
-            switch (j) {
-                0, 2 => {
-                    indices[index_count] = center_idx;
-                    index_count += 1;
-                    indices[index_count] = v1_idx;
-                    index_count += 1;
-                    indices[index_count] = v2_idx;
-                    index_count += 1;
-                },
-                1, 3 => {
-                    indices[index_count] = center_idx;
-                    index_count += 1;
-                    indices[index_count] = v2_idx;
-                    index_count += 1;
-                    indices[index_count] = v1_idx;
-                    index_count += 1;
-                },
-                else => unreachable,
-            }
-        }
-    }
+    // Bottom-Left corner: 90° to 180°
+    appendCornerArc(vertices_src, indices, &vertex_count, &index_count, 3, clamped_radius, std.math.pi * 0.5, std.math.pi, color, num_circle_segments);
 
     // Top edge
     vertices_src[vertex_count] = .{ .position = .{ .x = rect.x + clamped_radius, .y = rect.y }, .color = color, .tex_coord = .{ .x = 0, .y = 0 } };

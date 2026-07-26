@@ -14,6 +14,8 @@ const app_actions = commands.actions.app_actions;
 const flat_shortcuts = commands.actions.flat_shortcuts;
 const events = app_state.events;
 
+pub const MOUSE_WHEEL_SCROLL_MULTIPLIER: f32 = 6.0;
+
 pub fn mapKeyFromSdl(key: sdl.keys.Keycode) Key {
     return switch (key) {
         sdl.keys.escape => .escape,
@@ -129,8 +131,8 @@ pub fn processSDLEvent(event: sdl.Event, frame_input: *FrameInputState) !void {
         },
         sdl.event_type.mouse_wheel => {
             const multiplier: f32 = if (event.wheel.direction == sdl.mouse.wheel_flipped) -1.0 else 1.0;
-            frame_input.scroll_delta_x += event.wheel.x * multiplier * 6.0;
-            frame_input.scroll_delta_y += event.wheel.y * multiplier * 6.0;
+            frame_input.scroll_delta_x += event.wheel.x * multiplier * MOUSE_WHEEL_SCROLL_MULTIPLIER;
+            frame_input.scroll_delta_y += event.wheel.y * multiplier * MOUSE_WHEEL_SCROLL_MULTIPLIER;
         },
         else => {},
     }
@@ -216,13 +218,62 @@ pub fn pollFrameInput(
 
 const fs = app_state.fs;
 
+fn handlePaletteReturnGoToImage(self: *ViewerState, raw_str: []const u8) !void {
+    if (raw_str.len > 0) {
+        if (std.fmt.parseInt(usize, raw_str, 10)) |v| {
+            if (v >= 1 and v <= self.image_list.items.len) {
+                self.current_index = v - 1;
+                try self.updateCache();
+                self.palette.mode = .inactive;
+                stopTextInput(self.window);
+            }
+        } else |err| {
+            std.log.debug("Failed to parse go-to-image index '{s}': {}", .{ raw_str, err });
+        }
+    }
+}
+
+fn handlePaletteReturnSlideshow(self: *ViewerState, raw_str: []const u8) !void {
+    if (raw_str.len > 0) {
+        if (std.fmt.parseFloat(f32, raw_str)) |val| {
+            if (!std.math.isNan(val) and !std.math.isInf(val) and val > 0.0) {
+                self.slideshow_interval_s = val;
+                self.slideshow_timer_ms = 0.0;
+                self.slideshow_active = true;
+                self.palette.mode = .inactive;
+                stopTextInput(self.window);
+            }
+        } else |err| {
+            std.log.debug("Failed to parse slideshow interval '{s}': {}", .{ raw_str, err });
+        }
+    }
+}
+
+fn handlePaletteReturnDirectory(self: *ViewerState, mod: KeyModifiers) !void {
+    const palette = &self.palette;
+    if (mod.shift) {
+        try self.startAsyncPathScan(palette.current_nav_dir.items, true);
+        self.palette.reset();
+        stopTextInput(self.window);
+    } else {
+        if (palette.selected_idx < palette.matches.items.len) {
+            const match_idx = palette.matches.items[palette.selected_idx];
+            if (match_idx < palette.dir_items.items.len) {
+                const entry = palette.dir_items.items[match_idx];
+                try self.startAsyncPathScan(entry.full_path, true);
+                self.palette.reset();
+                stopTextInput(self.window);
+            }
+        }
+    }
+}
+
 pub fn handlePaletteKeys(
     self: *ViewerState,
     key: Key,
     mod: KeyModifiers,
 ) !bool {
     const palette = &self.palette;
-    if (palette.mode == .inactive) return false;
 
     switch (key) {
         .escape => {
@@ -230,16 +281,20 @@ pub fn handlePaletteKeys(
             stopTextInput(self.window);
             return true;
         },
-        .left => {
-            if (palette.mode == .directory_navigator) {
-                var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
-                if (fs.getParentDirBuf(palette.current_nav_dir.items, &parent_buf)) |parent_dir| {
-                    palette.query.clearRetainingCapacity();
-                    try palette.loadDirectoryEntries(self.io, parent_dir);
-                }
-                return true;
+        .up => {
+            if (palette.selected_idx > 0) {
+                palette.selected_idx -= 1;
+                palette.selection_dirty = true;
             }
-            return false;
+            return true;
+        },
+        .down => {
+            const max_count = if (palette.mode == .directory_navigator) palette.dir_items.items.len else palette.matches.items.len;
+            if (max_count > 0 and palette.selected_idx + 1 < max_count) {
+                palette.selected_idx += 1;
+                palette.selection_dirty = true;
+            }
+            return true;
         },
         .right => {
             if (palette.mode == .directory_navigator) {
@@ -255,65 +310,42 @@ pub fn handlePaletteKeys(
                 }
                 return true;
             }
-            return false;
         },
-        .up => {
-            if (palette.mode.isTextInputDialog()) return true;
-            if (palette.selected_idx > 0) {
-                palette.selected_idx -= 1;
-                palette.selection_dirty = true;
+        .left => {
+            if (palette.mode == .directory_navigator) {
+                var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
+                if (fs.getParentDirBuf(palette.current_nav_dir.items, &parent_buf)) |parent_dir| {
+                    palette.query.clearRetainingCapacity();
+                    try palette.loadDirectoryEntries(self.io, parent_dir);
+                }
+                return true;
             }
+        },
+        .page_up => {
+            if (palette.selected_idx >= 5) {
+                palette.selected_idx -= 5;
+            } else {
+                palette.selected_idx = 0;
+            }
+            palette.selection_dirty = true;
             return true;
         },
-        .down => {
-            if (palette.mode.isTextInputDialog()) return true;
-            const count = palette.matches.items.len;
-            if (count > 0 and palette.selected_idx + 1 < count) {
-                palette.selected_idx += 1;
+        .page_down => {
+            const max_count = if (palette.mode == .directory_navigator) palette.dir_items.items.len else palette.matches.items.len;
+            if (max_count > 0) {
+                palette.selected_idx = @min(palette.selected_idx + 5, max_count - 1);
                 palette.selection_dirty = true;
             }
             return true;
         },
         .return_key => {
+            const raw_str = palette.query.items;
             switch (palette.mode) {
-                .go_to_image => {
-                    const raw_str = palette.query.items;
-                    if (raw_str.len > 0) {
-                        const val = std.fmt.parseInt(usize, raw_str, 10) catch null;
-                        if (val) |v| {
-                            if (v >= 1 and v <= self.image_list.items.len) {
-                                self.current_index = v - 1;
-                                try self.updateCache();
-                                palette.mode = .inactive;
-                                stopTextInput(self.window);
-                                return true;
-                            }
-                        }
-                    }
-                    return true;
-                },
-                .set_slideshow_interval => {
-                    const raw_str = palette.query.items;
-                    if (raw_str.len > 0) {
-                        const parsed_val_opt = std.fmt.parseFloat(f32, raw_str) catch null;
-                        if (parsed_val_opt) |val| {
-                            if (!std.math.isNan(val) and !std.math.isInf(val) and val > 0.0) {
-                                self.slideshow_interval_s = val;
-                                self.slideshow_timer_ms = 0.0;
-                                self.slideshow_active = true;
-                                palette.mode = .inactive;
-                                stopTextInput(self.window);
-                                return true;
-                            }
-                        }
-                    }
-                    return true;
-                },
+                .go_to_image => try handlePaletteReturnGoToImage(self, raw_str),
+                .set_slideshow_interval => try handlePaletteReturnSlideshow(self, raw_str),
                 .set_brightness, .set_contrast => {
-                    const raw_str = palette.query.items;
                     if (raw_str.len > 0) {
-                        const parsed_val_opt = std.fmt.parseFloat(f32, raw_str) catch null;
-                        if (parsed_val_opt) |val| {
+                        if (std.fmt.parseFloat(f32, raw_str)) |val| {
                             if (!std.math.isNan(val) and !std.math.isInf(val)) {
                                 const min_val: f32 = if (palette.mode == .set_brightness) -1.0 else 0.0;
                                 const max_val: f32 = if (palette.mode == .set_brightness) 1.0 else 5.0;
@@ -326,31 +358,14 @@ pub fn handlePaletteKeys(
                                     self.adjustments_dirty = true;
                                     palette.mode = .inactive;
                                     stopTextInput(self.window);
-                                    return true;
                                 }
                             }
+                        } else |err| {
+                            std.log.debug("Failed to parse brightness/contrast value '{s}': {}", .{ raw_str, err });
                         }
                     }
-                    return true;
                 },
-                .directory_navigator => {
-                    if (mod.shift) {
-                        try self.startAsyncPathScan(palette.current_nav_dir.items, true);
-                        self.palette.reset();
-                        stopTextInput(self.window);
-                    } else {
-                        if (palette.selected_idx < palette.matches.items.len) {
-                            const match_idx = palette.matches.items[palette.selected_idx];
-                            if (match_idx < palette.dir_items.items.len) {
-                                const entry = palette.dir_items.items[match_idx];
-                                try self.startAsyncPathScan(entry.full_path, true);
-                                self.palette.reset();
-                                stopTextInput(self.window);
-                            }
-                        }
-                    }
-                    return true;
-                },
+                .directory_navigator => try handlePaletteReturnDirectory(self, mod),
                 .files, .actions => {
                     if (palette.selected_idx < palette.matches.items.len) {
                         const target_idx = palette.matches.items[palette.selected_idx];
@@ -376,11 +391,12 @@ pub fn handlePaletteKeys(
                         palette.mode = .inactive;
                         stopTextInput(self.window);
                     }
-                    return true;
                 },
                 .inactive => unreachable,
             }
+            return true;
         },
+
         .backspace => {
             if (palette.query.items.len > 0) {
                 _ = palette.query.pop();
@@ -403,6 +419,7 @@ pub fn handlePaletteKeys(
         },
         else => return false,
     }
+    return false;
 }
 
 pub const InputAction = union(enum) {
@@ -623,4 +640,3 @@ test "processSDLEvent updates FrameInputState" {
     try processSDLEvent(evt, &state);
     try std.testing.expect(state.quit_requested);
 }
-

@@ -32,3 +32,13 @@
 ## 6. Generic Allocator Polymorphism
 
 - Functions accepting `allocator: std.mem.Allocator` must always pair `allocator.alloc()` with `defer allocator.free()`, even when called in an arena context. This guarantees memory safety and leak-free operation regardless of whether an Arena, GeneralPurposeAllocator, or Testing allocator is passed behind the vtable interface.
+
+## 7. Error Handling & Traceable Logging
+
+- **No Silent Error Swallowing**: Never use empty `else |_| {}`, silent `catch null`, or unlogged `catch return` blocks when errors occur during parsing, allocation, or system calls.
+- **Traceable Error Logging**: Always log captured errors using `std.log.err` or `std.log.debug`/`std.log.warn` with descriptive context (e.g. `else |err| std.log.debug("Failed to parse integer '{s}': {}", .{ str, err });` or `catch |err| { std.log.err("Failed to duplicate path '{s}': {}", .{ path, err }); return; }`) to maintain full runtime traceability.
+
+## 8. Mutex & Lock Scope Hygiene
+
+- **Immediate `defer` Unlocking**: Every lock acquisition (`state.lockImageList()`) must be immediately followed on the next line by `defer state.unlockImageList()`.
+- **Scoped Lock Duration**: Wrap short lock queries inside scoped or labeled blocks (`blk: { state.lockImageList(); defer state.unlockImageList(); break :blk ...; }`) to guarantee immediate unlock upon scope exit and avoid holding locks across heavy operations.

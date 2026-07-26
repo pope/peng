@@ -571,6 +571,114 @@ pub const ViewerState = struct {
         }
     }
 
+    pub fn handleExifThumbnailEvent(self: *ViewerState, thumb_data: events.ThumbDecodedPayload) void {
+        const current_gen = self.generation.load(.acquire);
+        if (thumb_data.generation != current_gen) return;
+        if (thumb_data.surface == null) return;
+        if (self.gpu_device) |gpu_dev| {
+            if (graphics.uploadSurfaceToGpu(gpu_dev, thumb_data.surface.?)) |upload_res| {
+                self.lockCache();
+                if (self.cache.getWithGeneration(thumb_data.index, thumb_data.generation)) |entry| {
+                    entry.thumb_gpu_texture = upload_res.gpu_texture;
+                    entry.thumb_w = upload_res.w;
+                    entry.thumb_h = upload_res.h;
+                    entry.exif_orientation = thumb_data.exif_orientation;
+                    if (thumb_data.full_w > 0 and thumb_data.full_h > 0) {
+                        entry.full_w = thumb_data.full_w;
+                        entry.full_h = thumb_data.full_h;
+                    }
+                    entry.has_thumb = true;
+                    entry.thumb_upload_time_ms = upload_res.upload_time_ms;
+                } else {
+                    gpu_dev.releaseTexture(upload_res.gpu_texture);
+                }
+                self.unlockCache();
+                self.updateCurrentRotation();
+            }
+        }
+    }
+
+    pub fn handleImageDecodedEvent(self: *ViewerState, decoded_data: *events.ImageDecodedPayload) void {
+        const current_gen = self.generation.load(.acquire);
+        if (decoded_data.generation != current_gen) return;
+        if (decoded_data.surface == null) return;
+        if (self.gpu_device) |gpu_dev| {
+            if (graphics.uploadSurfaceToGpu(gpu_dev, decoded_data.surface.?)) |full_res| {
+                self.lockCache();
+                if (self.cache.getWithGeneration(decoded_data.index, decoded_data.generation)) |entry| {
+                    switch (entry.status) {
+                        .loaded_cpu => |cpu| cpu.surface.destroy(),
+                        .loaded_gpu => |gpu| gpu_dev.releaseTexture(gpu.gpu_texture),
+                        else => {},
+                    }
+                    entry.exif_orientation = decoded_data.exif_orientation;
+                    entry.status = .{
+                        .loaded_gpu = .{
+                            .gpu_texture = full_res.gpu_texture,
+                            .w = decoded_data.w,
+                            .h = decoded_data.h,
+                            .size_bytes = decoded_data.size_bytes,
+                            .mime_type = decoded_data.mime_type,
+                            .decode_time_ms = decoded_data.decode_time_ms,
+                            .conversion_time_ms = full_res.conversion_time_ms,
+                            .upload_time_ms = full_res.upload_time_ms,
+                            .memory_size_bytes = full_res.memory_size_bytes,
+                            .num_mip_levels = full_res.num_mip_levels,
+                            .mipmap_time_ms = full_res.mipmap_time_ms,
+                            .has_thumb = entry.has_thumb,
+                            .thumb_w = entry.thumb_w,
+                            .thumb_h = entry.thumb_h,
+                            .thumb_upload_time_ms = entry.thumb_upload_time_ms,
+                        },
+                    };
+                    self.cache.enforceVramBudget(gpu_dev, self.current_index, CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
+                } else {
+                    gpu_dev.releaseTexture(full_res.gpu_texture);
+                }
+                self.unlockCache();
+                self.updateCurrentRotation();
+            }
+        } else {
+            self.lockCache();
+            if (self.cache.getWithGeneration(decoded_data.index, decoded_data.generation)) |entry| {
+                entry.exif_orientation = decoded_data.exif_orientation;
+                entry.status = .{
+                    .loaded_cpu = .{
+                        .surface = decoded_data.surface.?,
+                        .w = decoded_data.w,
+                        .h = decoded_data.h,
+                        .size_bytes = decoded_data.size_bytes,
+                        .mime_type = decoded_data.mime_type,
+                        .decode_time_ms = decoded_data.decode_time_ms,
+                        .conversion_time_ms = decoded_data.conversion_time_ms,
+                        .has_thumb = entry.has_thumb,
+                        .thumb_w = entry.thumb_w,
+                        .thumb_h = entry.thumb_h,
+                        .thumb_upload_time_ms = entry.thumb_upload_time_ms,
+                    },
+                };
+                decoded_data.surface = null; // Transfer ownership to CacheEntry
+            }
+            self.unlockCache();
+            self.updateCurrentRotation();
+        }
+    }
+
+    pub fn handleDirScannedEvent(self: *ViewerState, scanned_data: events.PathDiscoveredPayload) void {
+        const current_gen = self.generation.load(.acquire);
+        if (scanned_data.generation != current_gen) return;
+        self.lockImageList();
+        defer self.unlockImageList();
+        const dup = self.directory_arena.allocator().dupe(u8, scanned_data.path) catch |err| {
+            std.log.err("Failed to duplicate path '{s}' in directory arena: {}", .{ scanned_data.path, err });
+            return;
+        };
+        self.image_list.append(self.allocator, dup) catch |err| std.log.err("Failed to append discovered path to image_list: {}", .{err});
+        if (self.current_index == null and self.image_list.items.len > 0) {
+            self.current_index = 0;
+        }
+    }
+
     pub fn processBackgroundEvents(self: *ViewerState) bool {
         var event_batch = std.ArrayList(events.BackgroundEvent).empty;
         defer event_batch.deinit(self.allocator);
@@ -592,114 +700,15 @@ pub const ViewerState = struct {
                     self.unlockCache();
                     self.updateCurrentRotation();
                 },
-                .thumb_decoded => |t| {
-                    if (t.generation != current_gen) continue;
-                    if (t.surface == null) continue;
-                    if (self.gpu_device) |gpu_dev| {
-                        if (graphics.uploadSurfaceToGpu(gpu_dev, t.surface.?)) |upload_res| {
-                            self.lockCache();
-                            if (self.cache.getWithGeneration(t.index, t.generation)) |entry| {
-                                entry.thumb_gpu_texture = upload_res.gpu_texture;
-                                entry.thumb_w = upload_res.w;
-                                entry.thumb_h = upload_res.h;
-                                entry.exif_orientation = t.exif_orientation;
-                                if (t.full_w > 0 and t.full_h > 0) {
-                                    entry.full_w = t.full_w;
-                                    entry.full_h = t.full_h;
-                                }
-                                entry.has_thumb = true;
-                                entry.thumb_upload_time_ms = upload_res.upload_time_ms;
-                            } else {
-                                gpu_dev.releaseTexture(upload_res.gpu_texture);
-                            }
-                            self.unlockCache();
-                            self.updateCurrentRotation();
-                        }
-                    }
-                },
-                .image_decoded => |*d| {
-                    if (d.generation != current_gen) continue;
-                    if (d.surface == null) continue;
-                    if (self.gpu_device) |gpu_dev| {
-                        if (graphics.uploadSurfaceToGpu(gpu_dev, d.surface.?)) |full_res| {
-                            self.lockCache();
-                            if (self.cache.getWithGeneration(d.index, d.generation)) |entry| {
-                                switch (entry.status) {
-                                    .loaded_cpu => |cpu| cpu.surface.destroy(),
-                                    .loaded_gpu => |gpu| gpu_dev.releaseTexture(gpu.gpu_texture),
-                                    else => {},
-                                }
-                                entry.exif_orientation = d.exif_orientation;
-                                entry.status = .{
-                                    .loaded_gpu = .{
-                                        .gpu_texture = full_res.gpu_texture,
-                                        .w = d.w,
-                                        .h = d.h,
-                                        .size_bytes = d.size_bytes,
-                                        .mime_type = d.mime_type,
-                                        .decode_time_ms = d.decode_time_ms,
-                                        .conversion_time_ms = full_res.conversion_time_ms,
-                                        .upload_time_ms = full_res.upload_time_ms,
-                                        .memory_size_bytes = full_res.memory_size_bytes,
-                                        .num_mip_levels = full_res.num_mip_levels,
-                                        .mipmap_time_ms = full_res.mipmap_time_ms,
-                                        .has_thumb = entry.has_thumb,
-                                        .thumb_w = entry.thumb_w,
-                                        .thumb_h = entry.thumb_h,
-                                        .thumb_upload_time_ms = entry.thumb_upload_time_ms,
-                                    },
-                                };
-                                self.cache.enforceVramBudget(gpu_dev, self.current_index, CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
-                            } else {
-                                gpu_dev.releaseTexture(full_res.gpu_texture);
-                            }
-                            self.unlockCache();
-                            self.updateCurrentRotation();
-                        }
-                    } else {
-                        self.lockCache();
-                        if (self.cache.getWithGeneration(d.index, d.generation)) |entry| {
-                            entry.exif_orientation = d.exif_orientation;
-                            entry.status = .{
-                                .loaded_cpu = .{
-                                    .surface = d.surface.?,
-                                    .w = d.w,
-                                    .h = d.h,
-                                    .size_bytes = d.size_bytes,
-                                    .mime_type = d.mime_type,
-                                    .decode_time_ms = d.decode_time_ms,
-                                    .conversion_time_ms = d.conversion_time_ms,
-                                    .has_thumb = entry.has_thumb,
-                                    .thumb_w = entry.thumb_w,
-                                    .thumb_h = entry.thumb_h,
-                                    .thumb_upload_time_ms = entry.thumb_upload_time_ms,
-                                },
-                            };
-                            d.surface = null; // Transfer ownership to CacheEntry
-                        }
-                        self.unlockCache();
-                        self.updateCurrentRotation();
-                    }
-                },
+                .thumb_decoded => |t| handleExifThumbnailEvent(self, t),
+                .image_decoded => |*d| handleImageDecodedEvent(self, d),
                 .decode_failed => |f| {
                     if (f.generation != current_gen) continue;
                     self.lockCache();
                     _ = self.cache.updateStatus(f.index, f.generation, .failed);
                     self.unlockCache();
                 },
-                .path_discovered => |p| {
-                    if (p.generation != current_gen) continue;
-                    self.lockImageList();
-                    const dup = self.directory_arena.allocator().dupe(u8, p.path) catch {
-                        self.unlockImageList();
-                        continue;
-                    };
-                    self.image_list.append(self.allocator, dup) catch |err| std.log.err("Failed to append discovered path to image_list: {}", .{err});
-                    if (self.current_index == null and self.image_list.items.len > 0) {
-                        self.current_index = 0;
-                    }
-                    self.unlockImageList();
-                },
+                .path_discovered => |p| handleDirScannedEvent(self, p),
                 .directory_scan_complete => {},
                 .ipc_command => |cmd_data| {
                     self.pending_ipc_commands.append(self.allocator, cmd_data) catch |err| {
@@ -901,9 +910,11 @@ pub const ViewerState = struct {
 
     pub fn next(self: *ViewerState) !void {
         self.slideshow_timer_ms = 0.0;
-        self.lockImageList();
-        const len = self.image_list.items.len;
-        self.unlockImageList();
+        const len = blk: {
+            self.lockImageList();
+            defer self.unlockImageList();
+            break :blk self.image_list.items.len;
+        };
 
         if (len == 0) return;
         if (self.current_index) |idx| {
@@ -916,9 +927,11 @@ pub const ViewerState = struct {
 
     pub fn prev(self: *ViewerState) !void {
         self.slideshow_timer_ms = 0.0;
-        self.lockImageList();
-        const len = self.image_list.items.len;
-        self.unlockImageList();
+        const len = blk: {
+            self.lockImageList();
+            defer self.unlockImageList();
+            break :blk self.image_list.items.len;
+        };
 
         if (len == 0) return;
         if (self.current_index) |idx| {
@@ -951,25 +964,29 @@ pub const ViewerState = struct {
         self.last_scanned_dir.clearRetainingCapacity();
         try self.last_scanned_dir.appendSlice(self.allocator, dir_target);
 
-        self.lockImageList();
-        // Clear existing cache and rotation map before resetting directory_arena
-        _ = self.generation.fetchAdd(1, .release);
-        self.clearCache();
-        self.rotation_map.clearRetainingCapacity();
-        self.image_list.clearRetainingCapacity();
-        _ = self.directory_arena.reset(.retain_capacity);
-        self.current_index = null;
-        self.unlockImageList();
+        {
+            self.lockImageList();
+            defer self.unlockImageList();
+            // Clear existing cache and rotation map before resetting directory_arena
+            _ = self.generation.fetchAdd(1, .release);
+            self.clearCache();
+            self.rotation_map.clearRetainingCapacity();
+            self.image_list.clearRetainingCapacity();
+            _ = self.directory_arena.reset(.retain_capacity);
+            self.current_index = null;
+        }
 
         if (has_stat) {
             if (stat.kind == .directory) {
                 try fs.startAsyncPathScan(self, path, true);
             } else {
-                self.lockImageList();
-                const dup = try self.directory_arena.allocator().dupe(u8, path);
-                try self.image_list.append(self.allocator, dup);
-                self.current_index = 0;
-                self.unlockImageList();
+                {
+                    self.lockImageList();
+                    defer self.unlockImageList();
+                    const dup = try self.directory_arena.allocator().dupe(u8, path);
+                    try self.image_list.append(self.allocator, dup);
+                    self.current_index = 0;
+                }
 
                 try self.updateCache();
 

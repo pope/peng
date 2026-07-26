@@ -30,9 +30,11 @@ pub fn renderFrame(
     state.prepareCacheTextures();
     const current_entry = state.getCurrentEntry();
 
-    state.lockImageList();
-    const total_images = state.image_list.items.len;
-    state.unlockImageList();
+    const total_images = blk: {
+        state.lockImageList();
+        defer state.unlockImageList();
+        break :blk state.image_list.items.len;
+    };
 
     // Calculate Image Fitting Layout Boundaries
     var title_bar_h: f32 = 60.0;
@@ -533,4 +535,3 @@ pub fn renderViewport(
         }
     });
 }
-

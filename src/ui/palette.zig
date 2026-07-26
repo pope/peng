@@ -417,12 +417,13 @@ pub fn renderTextInputDialog(
                         .font_id = 0,
                     });
                 } else {
-                    const parsed_val_opt = std.fmt.parseInt(usize, raw_str, 10) catch null;
-                    if (parsed_val_opt) |val| {
+                    if (std.fmt.parseInt(usize, raw_str, 10)) |val| {
                         if (val >= 1 and val <= total_count) {
-                            state.lockImageList();
-                            const target_path = if (val - 1 < state.image_list.items.len) state.image_list.items[val - 1] else "";
-                            state.unlockImageList();
+                            const target_path = blk: {
+                                state.lockImageList();
+                                defer state.unlockImageList();
+                                break :blk if (val - 1 < state.image_list.items.len) state.image_list.items[val - 1] else "";
+                            };
                             const raw_basename = std.fs.path.basename(target_path);
                             const display_filename = truncateFilename(frame_allocator, raw_basename, 492.0, 12, measure_data);
                             const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to go to {}: {s}", .{ val, display_filename });
@@ -439,7 +440,8 @@ pub fn renderTextInputDialog(
                                 .font_id = 0,
                             });
                         }
-                    } else {
+                    } else |err| {
+                        std.log.debug("Failed to parse integer in palette input '{s}': {}", .{ raw_str, err });
                         clay.text("Invalid number format. Enter a positive integer.", .{
                             .color = theme.red,
                             .font_size = 13,
@@ -461,9 +463,8 @@ pub fn renderTextInputDialog(
                         .font_id = 0,
                     });
                 } else {
-                    const parsed_val_opt = std.fmt.parseFloat(f32, raw_str) catch null;
                     var is_valid = false;
-                    if (parsed_val_opt) |val| {
+                    if (std.fmt.parseFloat(f32, raw_str)) |val| {
                         if (!std.math.isNan(val) and !std.math.isInf(val) and val > 0.0) {
                             is_valid = true;
                             const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to start slide show ({d:.1}s per slide)", .{val});
@@ -473,6 +474,8 @@ pub fn renderTextInputDialog(
                                 .font_id = 0,
                             });
                         }
+                    } else |err| {
+                        std.log.debug("Failed to parse slideshow float '{s}': {}", .{ raw_str, err });
                     }
                     if (!is_valid) {
                         clay.text("Invalid duration. Must be greater than 0 seconds.", .{
@@ -497,9 +500,8 @@ pub fn renderTextInputDialog(
                         .font_id = 0,
                     });
                 } else {
-                    const parsed_val_opt = std.fmt.parseFloat(f32, raw_str) catch null;
                     var is_valid_float = false;
-                    if (parsed_val_opt) |val| {
+                    if (std.fmt.parseFloat(f32, raw_str)) |val| {
                         if (!std.math.isNan(val) and !std.math.isInf(val)) {
                             is_valid_float = true;
                             const min_val: f32 = if (palette.mode == .set_brightness) -1.0 else 0.0;
@@ -520,6 +522,8 @@ pub fn renderTextInputDialog(
                                 });
                             }
                         }
+                    } else |err| {
+                        std.log.debug("Failed to parse adjustment float '{s}': {}", .{ raw_str, err });
                     }
                     if (!is_valid_float) {
                         clay.text("Invalid float format. Enter a number.", .{
@@ -1233,4 +1237,3 @@ test "getPaletteConfig metadata lookup helper" {
     const slide_cfg = getPaletteConfig(.set_slideshow_interval);
     try std.testing.expectEqualStrings("Start Slide Show", slide_cfg.title);
 }
-
