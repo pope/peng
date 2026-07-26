@@ -63,6 +63,44 @@ pub const DragState = union(enum) {
     },
 };
 
+pub const RollingStats = struct {
+    samples: [60]f64 = [_]f64{0.0} ** 60,
+    count: usize = 0,
+    index: usize = 0,
+
+    pub fn addSample(self: *RollingStats, value: f64) void {
+        self.samples[self.index] = value;
+        self.index = (self.index + 1) % self.samples.len;
+        if (self.count < self.samples.len) {
+            self.count += 1;
+        }
+    }
+
+    pub fn getMeanAndStdev(self: *const RollingStats) struct { mean: f64, stdev: f64 } {
+        if (self.count == 0) return .{ .mean = 0.0, .stdev = 0.0 };
+        var sum: f64 = 0.0;
+        for (0..self.count) |i| {
+            sum += self.samples[i];
+        }
+        const mean = sum / @as(f64, @floatFromInt(self.count));
+        if (self.count < 2) return .{ .mean = mean, .stdev = 0.0 };
+
+        var variance_sum: f64 = 0.0;
+        for (0..self.count) |i| {
+            const diff = self.samples[i] - mean;
+            variance_sum += diff * diff;
+        }
+        const variance = @max(0.0, variance_sum) / @as(f64, @floatFromInt(self.count - 1));
+        const stdev = @sqrt(variance);
+        return .{ .mean = mean, .stdev = stdev };
+    }
+
+    pub fn reset(self: *RollingStats) void {
+        self.count = 0;
+        self.index = 0;
+    }
+};
+
 pub const TextCacheModule = @import("../ui/text_cache.zig");
 pub const TextCacheKey = TextCacheModule.TextCacheKey;
 pub const TextCacheValue = TextCacheModule.TextCacheValue;
@@ -158,6 +196,7 @@ pub const ViewerState = struct {
 
     // UI Render Performance Statistics
     last_ui_render_time_ms: f64 = 0.0,
+    ui_render_stats: RollingStats = .{},
     last_ui_vertex_count: usize = 0,
     last_ui_batch_count: usize = 0,
 
@@ -1693,4 +1732,35 @@ test "ViewerState slideshow timer auto-advances slide" {
     // Pass another second (total 2000ms >= 2.0s interval) -> advances to index 1
     try state.update(frame_input_1s);
     try std.testing.expectEqual(@as(usize, 1), state.current_index.?);
+}
+
+test "RollingStats mean and stdev" {
+    var stats = RollingStats{};
+    try std.testing.expectEqual(@as(f64, 0.0), stats.getMeanAndStdev().mean);
+    try std.testing.expectEqual(@as(f64, 0.0), stats.getMeanAndStdev().stdev);
+
+    stats.addSample(10.0);
+    try std.testing.expectEqual(@as(f64, 10.0), stats.getMeanAndStdev().mean);
+    try std.testing.expectEqual(@as(f64, 0.0), stats.getMeanAndStdev().stdev);
+
+    stats.addSample(20.0);
+    const result = stats.getMeanAndStdev();
+    try std.testing.expectApproxEqAbs(@as(f64, 15.0), result.mean, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f64, 7.0710678), result.stdev, 0.0001);
+
+    // Fill to 60 samples all with 10.0
+    stats.reset();
+    for (0..60) |_| {
+        stats.addSample(10.0);
+    }
+    const r60 = stats.getMeanAndStdev();
+    try std.testing.expectApproxEqAbs(@as(f64, 10.0), r60.mean, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0), r60.stdev, 0.0001);
+
+    // Overfill beyond 60 samples
+    for (0..10) |_| {
+        stats.addSample(20.0);
+    }
+    const r_over = stats.getMeanAndStdev();
+    try std.testing.expectApproxEqAbs(@as(f64, 11.6666667), r_over.mean, 0.0001);
 }

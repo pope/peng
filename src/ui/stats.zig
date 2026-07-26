@@ -312,7 +312,8 @@ pub fn renderStatsOverlay(
             try renderStatRow("Brightness", brightness_str);
             try renderStatRow("Contrast", contrast_str);
 
-            const ui_render_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{state.last_ui_render_time_ms});
+            const render_stats = state.ui_render_stats.getMeanAndStdev();
+            const ui_render_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ± {d:.2} ms", .{ render_stats.mean, render_stats.stdev });
             const ui_batches_str = try std.fmt.allocPrint(frame_allocator, "{d}", .{state.last_ui_batch_count});
             const ui_verts_str = try std.fmt.allocPrint(frame_allocator, "{d}", .{state.last_ui_vertex_count});
             try renderStatRow("UI Render Pass", ui_render_str);
