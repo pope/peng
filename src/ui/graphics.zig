@@ -460,10 +460,17 @@ pub fn uploadSurfaceToGpu(
     var current_surf = surf;
 
     const src_fmt = current_surf.format();
-    const gpu_format: sdl.gpu.TextureFormat = if (src_fmt == sdl.PixelFormat.bgra32)
-        .bgra8_unorm
-    else
-        .rgba8_unorm;
+    const gpu_format: sdl.gpu.TextureFormat = switch (src_fmt) {
+        sdl.PixelFormat.bgra32,
+        sdl.PixelFormat.xrgb8888,
+        sdl.PixelFormat.bgrx8888 => .bgra8_unorm,
+
+        sdl.PixelFormat.rgba32,
+        sdl.PixelFormat.xbgr8888,
+        sdl.PixelFormat.rgbx8888 => .rgba8_unorm,
+
+        else => .rgba8_unorm,
+    };
 
     var scaled_surf: ?sdl.Surface = null;
     defer if (scaled_surf) |s| s.destroy();
@@ -669,7 +676,7 @@ pub fn uploadSurfaceToGpu(
         return null;
     };
 
-    const dst_pitch: usize = std.mem.alignForward(usize, u_w * 4, 256);
+    const dst_pitch: usize = u_w * 4;
     const size = dst_pitch * u_h;
 
     const transfer_buf = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
@@ -694,7 +701,16 @@ pub fn uploadSurfaceToGpu(
     const pixels: [*]const u8 = current_surf.pixels();
     var conversion_time_ms: f64 = 0.0;
 
-    if (cur_fmt == sdl.PixelFormat.rgba32 or cur_fmt == sdl.PixelFormat.bgra32) {
+    const is_32bit_fmt = switch (cur_fmt) {
+        sdl.PixelFormat.rgba32,
+        sdl.PixelFormat.bgra32,
+        sdl.PixelFormat.xrgb8888,
+        sdl.PixelFormat.xbgr8888,
+        sdl.PixelFormat.rgbx8888,
+        sdl.PixelFormat.bgrx8888 => true,
+        else => false,
+    };
+    if (is_32bit_fmt) {
         if (src_pitch == dst_pitch) {
             @memcpy(mapped[0..size], pixels[0..size]);
         } else {

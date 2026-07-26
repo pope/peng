@@ -39,3 +39,8 @@
 ## Atomic Reference Counting Memory Barriers
 
 - Always use `.acq_rel` (Acquire-Release) on atomic fetch-decrement operations (e.g. `ref_count.fetchSub(1, .acq_rel)`) so that the thread performing final deallocation observes all prior writes from other threads.
+
+## GPU Transfer Buffer Pitch Alignment & 32-Bit Format Streaming
+
+- **2D Texture Upload Pitch Alignment**: When uploading image pixel data from a transfer buffer to a standard 2D GPU texture (`uploadToTexture`), set `dst_pitch = u_w * 4` (unpadded). Do NOT artificially align row pitch with `alignForward(..., 256)`. Setting `.pixels_per_row > u_w` for tight 2D textures causes Metal/Vulkan blit encoders to insert scanline stride offsets, resulting in diagonal striped image corruption.
+- **32-Bit Pixel Format Direct Streaming**: Treat all 32-bit pixel formats (`XRGB8888`, `XBGR8888`, `RGBX8888`, `BGRX8888`, `ARGB8888`, `ABGR8888`, `RGBA32`, `BGRA32`) as native 4-byte-per-pixel layouts. Map `BGRA`/`XRGB` formats to `.bgra8_unorm` GPU textures and `RGBA`/`RGBX` formats to `.rgba8_unorm` GPU textures with direct `@memcpy` streaming, bypassing CPU surface conversion (`SDL_ConvertSurface`) to guarantee zero CPU conversion time (`conversion_time_ms = 0.0`).
