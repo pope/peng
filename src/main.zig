@@ -60,6 +60,7 @@ pub fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
         if (own_gpu_resources) {
             const dev = setup.gpu_device;
             dev.releasePipeline(resources.pipeline);
+            if (resources.unpack_compute_pipeline) |pipe| dev.releaseComputePipeline(pipe);
             dev.releaseSampler(resources.sampler);
             dev.releaseTexture(resources.white_texture);
         }
@@ -72,6 +73,7 @@ pub fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
     var state = app.state.ViewerState{
         .gpu_device = setup.gpu_device,
         .gpu_pipeline = resources.pipeline,
+        .unpack_compute_pipeline = resources.unpack_compute_pipeline,
         .gpu_sampler = resources.sampler,
         .white_texture = resources.white_texture,
 

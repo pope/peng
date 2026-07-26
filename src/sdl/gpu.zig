@@ -31,11 +31,15 @@ pub const TextureType = enum(c_int) {
 pub const TextureUsage = struct {
     pub const sampler: u32 = c.SDL_GPU_TEXTUREUSAGE_SAMPLER;
     pub const color_target: u32 = c.SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+    pub const compute_storage_write: u32 = c.SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE;
+    pub const compute_storage_simultaneous_read_write: u32 = c.SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_SIMULTANEOUS_READ_WRITE;
 };
 
 pub const BufferUsage = struct {
     pub const vertex: u32 = c.SDL_GPU_BUFFERUSAGE_VERTEX;
     pub const index: u32 = c.SDL_GPU_BUFFERUSAGE_INDEX;
+    pub const compute_storage_read: u32 = c.SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_READ;
+    pub const compute_storage_write: u32 = c.SDL_GPU_BUFFERUSAGE_COMPUTE_STORAGE_WRITE;
 };
 
 pub const SampleCount = enum(c_int) {
@@ -188,6 +192,10 @@ pub const Pipeline = struct {
     ptr: *c.SDL_GPUGraphicsPipeline,
 };
 
+pub const ComputePipeline = struct {
+    ptr: *c.SDL_GPUComputePipeline,
+};
+
 pub const TransferBuffer = struct {
     ptr: *c.SDL_GPUTransferBuffer,
 };
@@ -234,6 +242,35 @@ pub const ShaderCreateInfo = struct {
     num_storage_buffers: u32 = 0,
     num_uniform_buffers: u32 = 0,
     props: u32 = 0,
+};
+
+pub const ComputePipelineCreateInfo = struct {
+    code_size: usize,
+    code: [*]const u8,
+    entrypoint: [:0]const u8,
+    format: u32,
+    num_samplers: u32 = 0,
+    num_readonly_storage_textures: u32 = 0,
+    num_readonly_storage_buffers: u32 = 0,
+    num_readwrite_storage_textures: u32 = 0,
+    num_readwrite_storage_buffers: u32 = 0,
+    num_uniform_buffers: u32 = 0,
+    threadcount_x: u32 = 16,
+    threadcount_y: u32 = 16,
+    threadcount_z: u32 = 1,
+    props: u32 = 0,
+};
+
+pub const StorageTextureReadWriteBinding = struct {
+    texture: Texture,
+    mip_level: u32 = 0,
+    layer: u32 = 0,
+    cycle: bool = false,
+};
+
+pub const StorageBufferReadWriteBinding = struct {
+    buffer: Buffer,
+    cycle: bool = false,
 };
 
 pub const TransferBufferCreateInfo = struct {
@@ -481,6 +518,40 @@ pub const CopyPass = struct {
     }
 };
 
+pub const ComputePass = struct {
+    ptr: *c.SDL_GPUComputePass,
+
+    pub fn bindPipeline(self: ComputePass, pipeline: ComputePipeline) void {
+        c.SDL_BindGPUComputePipeline(self.ptr, pipeline.ptr);
+    }
+
+    pub fn bindStorageBuffers(self: ComputePass, first_slot: u32, buffers: []const Buffer) void {
+        var c_bufs: [4]*c.SDL_GPUBuffer = undefined;
+        const count = @min(buffers.len, 4);
+        for (0..count) |i| {
+            c_bufs[i] = buffers[i].ptr;
+        }
+        c.SDL_BindGPUComputeStorageBuffers(self.ptr, first_slot, &c_bufs, @intCast(count));
+    }
+
+    pub fn bindStorageTextures(self: ComputePass, first_slot: u32, textures: []const Texture) void {
+        var c_texs: [4]*c.SDL_GPUTexture = undefined;
+        const count = @min(textures.len, 4);
+        for (0..count) |i| {
+            c_texs[i] = textures[i].ptr;
+        }
+        c.SDL_BindGPUComputeStorageTextures(self.ptr, first_slot, &c_texs, @intCast(count));
+    }
+
+    pub fn dispatch(self: ComputePass, group_count_x: u32, group_count_y: u32, group_count_z: u32) void {
+        c.SDL_DispatchGPUCompute(self.ptr, group_count_x, group_count_y, group_count_z);
+    }
+
+    pub fn end(self: ComputePass) void {
+        c.SDL_EndGPUComputePass(self.ptr);
+    }
+};
+
 pub const CommandBuffer = struct {
     ptr: *c.SDL_GPUCommandBuffer,
 
@@ -525,6 +596,60 @@ pub const CommandBuffer = struct {
 
     pub fn beginCopyPass(self: CommandBuffer) ?CopyPass {
         const raw = c.SDL_BeginGPUCopyPass(self.ptr);
+        return if (raw) |r| .{ .ptr = r } else null;
+    }
+
+    pub fn pushComputeUniform(self: CommandBuffer, slot: u32, data: []const u8) void {
+        c.SDL_PushGPUComputeUniformData(self.ptr, slot, data.ptr, @intCast(data.len));
+    }
+
+    pub fn beginComputePass(
+        self: CommandBuffer,
+        storage_textures: ?[]const StorageTextureReadWriteBinding,
+        storage_buffers: ?[]const StorageBufferReadWriteBinding,
+    ) ?ComputePass {
+        var c_storage_tex: [4]c.SDL_GPUStorageTextureReadWriteBinding = undefined;
+        var tex_count: u32 = 0;
+        if (storage_textures) |stexs| {
+            tex_count = @intCast(stexs.len);
+            std.debug.assert(tex_count <= 4);
+            for (0..tex_count) |i| {
+                const b = stexs[i];
+                c_storage_tex[i] = .{
+                    .texture = b.texture.ptr,
+                    .mip_level = b.mip_level,
+                    .layer = b.layer,
+                    .cycle = b.cycle,
+                    .padding1 = 0,
+                    .padding2 = 0,
+                };
+            }
+        }
+
+        var c_storage_buf: [4]c.SDL_GPUStorageBufferReadWriteBinding = undefined;
+        var buf_count: u32 = 0;
+        if (storage_buffers) |sbufs| {
+            buf_count = @intCast(sbufs.len);
+            std.debug.assert(buf_count <= 4);
+            for (0..buf_count) |i| {
+                const b = sbufs[i];
+                c_storage_buf[i] = .{
+                    .buffer = b.buffer.ptr,
+                    .cycle = b.cycle,
+                    .padding1 = 0,
+                    .padding2 = 0,
+                    .padding3 = 0,
+                };
+            }
+        }
+
+        const raw = c.SDL_BeginGPUComputePass(
+            self.ptr,
+            if (tex_count > 0) &c_storage_tex else null,
+            tex_count,
+            if (buf_count > 0) &c_storage_buf else null,
+            buf_count,
+        );
         return if (raw) |r| .{ .ptr = r } else null;
     }
 
@@ -634,6 +759,31 @@ pub const Device = struct {
 
     pub fn releaseShader(self: Device, shader: Shader) void {
         c.SDL_ReleaseGPUShader(self.ptr, shader.ptr);
+    }
+
+    pub fn createComputePipeline(self: Device, info: *const ComputePipelineCreateInfo) ?ComputePipeline {
+        const c_info = c.SDL_GPUComputePipelineCreateInfo{
+            .code_size = info.code_size,
+            .code = info.code,
+            .entrypoint = info.entrypoint.ptr,
+            .format = info.format,
+            .num_samplers = info.num_samplers,
+            .num_readonly_storage_textures = info.num_readonly_storage_textures,
+            .num_readonly_storage_buffers = info.num_readonly_storage_buffers,
+            .num_readwrite_storage_textures = info.num_readwrite_storage_textures,
+            .num_readwrite_storage_buffers = info.num_readwrite_storage_buffers,
+            .num_uniform_buffers = info.num_uniform_buffers,
+            .threadcount_x = info.threadcount_x,
+            .threadcount_y = info.threadcount_y,
+            .threadcount_z = info.threadcount_z,
+            .props = info.props,
+        };
+        const raw = c.SDL_CreateGPUComputePipeline(self.ptr, &c_info);
+        return if (raw) |r| .{ .ptr = r } else null;
+    }
+
+    pub fn releaseComputePipeline(self: Device, pipeline: ComputePipeline) void {
+        c.SDL_ReleaseGPUComputePipeline(self.ptr, pipeline.ptr);
     }
 
     pub fn createPipeline(self: Device, info: *const GraphicsPipelineCreateInfo) ?Pipeline {

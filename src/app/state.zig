@@ -145,6 +145,7 @@ pub fn matchesQueryLower(path: []const u8, query_lower: []const u8) bool {
 pub const ViewerState = struct {
     gpu_device: ?sdl.gpu.Device = null,
     gpu_pipeline: ?sdl.gpu.Pipeline = null,
+    unpack_compute_pipeline: ?sdl.gpu.ComputePipeline = null,
     gpu_sampler: ?sdl.gpu.Sampler = null,
     white_texture: ?sdl.gpu.Texture = null,
 
@@ -240,7 +241,7 @@ pub const ViewerState = struct {
         defer thumb_surf.destroy();
 
         const gpu_dev = self.gpu_device orelse return;
-        const upload_res = graphics.uploadSurfaceToGpu(gpu_dev, thumb_surf) orelse return;
+        const upload_res = graphics.uploadSurfaceToGpu(gpu_dev, thumb_surf, self.unpack_compute_pipeline) orelse return;
 
         self.lockCache();
         defer self.unlockCache();
@@ -280,6 +281,7 @@ pub const ViewerState = struct {
             }
 
             if (self.gpu_pipeline) |pipe| dev.releasePipeline(pipe);
+            if (self.unpack_compute_pipeline) |pipe| dev.releaseComputePipeline(pipe);
             if (self.gpu_sampler) |samp| dev.releaseSampler(samp);
             if (self.white_texture) |tex| dev.releaseTexture(tex);
             if (self.window_claimed) {
@@ -538,7 +540,7 @@ pub const ViewerState = struct {
         if (upload_target) |target| {
             defer target.cpu.surface.destroy();
             if (self.gpu_device) |gpu_dev| {
-                if (uploadSurfaceToGpu(gpu_dev, target.cpu.surface)) |res| {
+                if (uploadSurfaceToGpu(gpu_dev, target.cpu.surface, self.unpack_compute_pipeline)) |res| {
                     self.lockCache();
                     const loaded_gpu_status = CacheStatus{
                         .loaded_gpu = .{
@@ -620,7 +622,7 @@ pub const ViewerState = struct {
         if (thumb_data.generation != current_gen) return;
         if (thumb_data.surface == null) return;
         if (self.gpu_device) |gpu_dev| {
-            if (graphics.uploadSurfaceToGpu(gpu_dev, thumb_data.surface.?)) |upload_res| {
+            if (graphics.uploadSurfaceToGpu(gpu_dev, thumb_data.surface.?, self.unpack_compute_pipeline)) |upload_res| {
                 self.lockCache();
                 if (self.cache.getWithGeneration(thumb_data.index, thumb_data.generation)) |entry| {
                     entry.thumb_gpu_texture = upload_res.gpu_texture;
@@ -647,7 +649,7 @@ pub const ViewerState = struct {
         if (decoded_data.generation != current_gen) return;
         if (decoded_data.surface == null) return;
         if (self.gpu_device) |gpu_dev| {
-            if (graphics.uploadSurfaceToGpu(gpu_dev, decoded_data.surface.?)) |full_res| {
+            if (graphics.uploadSurfaceToGpu(gpu_dev, decoded_data.surface.?, self.unpack_compute_pipeline)) |full_res| {
                 self.lockCache();
                 if (self.cache.getWithGeneration(decoded_data.index, decoded_data.generation)) |entry| {
                     switch (entry.status) {
