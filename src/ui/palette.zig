@@ -14,6 +14,8 @@ const layout_helpers = @import("layout_helpers.zig");
 const DpiScale = @import("units.zig").DpiScale;
 const text_utils = @import("text_utils.zig");
 const truncateFilename = text_utils.truncateFilename;
+const truncateFilenameMiddle = text_utils.truncateFilenameMiddle;
+const remapMiddleTruncatedMatches = text_utils.remapMiddleTruncatedMatches;
 const truncateDirectory = text_utils.truncateDirectory;
 const formatSize = text_utils.formatSize;
 const theme = @import("theme.zig");
@@ -71,11 +73,17 @@ pub fn partitionHighlightedText(
 
         const start = idx;
         idx += 1;
+        while (idx < text.len and (text[idx] & 0xC0) == 0x80) {
+            idx += 1;
+        }
 
         if (is_matched) {
             match_ptr += 1;
             while (idx < text.len and match_ptr < match_indices.len and match_indices[match_ptr] == idx) {
                 idx += 1;
+                while (idx < text.len and (text[idx] & 0xC0) == 0x80) {
+                    idx += 1;
+                }
                 match_ptr += 1;
             }
 
@@ -708,11 +716,14 @@ pub fn renderSelectionList(
                             }
                         }
 
-                        const display_filename = truncateFilename(frame_allocator, basename, 492.0, 13, measure_data);
+                        const trunc_filename = truncateFilenameMiddle(frame_allocator, basename, 492.0, 13, measure_data);
+                        const display_filename = trunc_filename.display;
+                        const final_basename_matches = remapMiddleTruncatedMatches(frame_allocator, basename_matches.items, trunc_filename.head_len, trunc_filename.tail_start_idx) catch basename_matches.items;
+
                         const display_dir = truncateDirectory(frame_allocator, dirname, 488.0, 11, measure_data);
 
                         var final_dir_matches = std.ArrayList(usize).empty;
-                        if (display_dir.len > 0 and std.mem.startsWith(u8, display_dir, "...")) {
+                        if (display_dir.ptr != dirname.ptr and display_dir.len > 0 and std.mem.startsWith(u8, display_dir, "...")) {
                             const kept_len = display_dir.len - 3;
                             const start_offset = if (dirname.len > kept_len) dirname.len - kept_len else 0;
                             for (dirname_matches.items) |m_idx| {
@@ -752,7 +763,7 @@ pub fn renderSelectionList(
                                 renderFuzzyMatchText(
                                     frame_allocator,
                                     display_filename,
-                                    basename_matches.items,
+                                    final_basename_matches,
                                     13,
                                     if (is_selected) theme.blue else theme.text,
                                     theme.yellow,
@@ -879,12 +890,14 @@ pub fn renderSelectionList(
                                     });
                                 });
 
-                                const display_foldername = truncateFilename(frame_allocator, entry.name, 350.0, 13, measure_data);
+                                const trunc_folder = truncateFilenameMiddle(frame_allocator, entry.name, 350.0, 13, measure_data);
+                                const display_foldername = trunc_folder.display;
+                                const final_folder_matches = remapMiddleTruncatedMatches(frame_allocator, dir_matches.items, trunc_folder.head_len, trunc_folder.tail_start_idx) catch dir_matches.items;
 
                                 renderFuzzyMatchText(
                                     frame_allocator,
                                     display_foldername,
-                                    dir_matches.items,
+                                    final_folder_matches,
                                     13,
                                     if (is_selected) theme.blue else theme.text,
                                     theme.yellow,
@@ -1281,4 +1294,73 @@ test "getPaletteConfig metadata lookup helper" {
 
     const slide_cfg = getPaletteConfig(.set_slideshow_interval);
     try std.testing.expectEqualStrings("Start Slide Show", slide_cfg.title);
+}
+
+test "partitionHighlightedText with middle-truncated remapped matches" {
+    const long_text = "DSC_2026_Yosemite_National_Park_High_Resolution_Sunset_Panorama_HDR_Final.jpg";
+    // Suppose head_len = 25 ("DSC_2026_Yosemite_National")
+    // tail_start_idx = 50 ("Sunset_Panorama_HDR_Final.jpg")
+    const head_len: usize = 25;
+    const tail_start_idx: usize = 50;
+    const display = try std.fmt.allocPrint(std.testing.allocator, "{s}...{s}", .{ long_text[0..head_len], long_text[tail_start_idx..] });
+    defer std.testing.allocator.free(display);
+
+    // Matches at index 2 ('C' in DSC), index 57 ('P' in Panorama)
+    const matches = [_]usize{ 2, 57 };
+    const remapped = try remapMiddleTruncatedMatches(std.testing.allocator, &matches, head_len, tail_start_idx);
+    defer std.testing.allocator.free(remapped);
+
+    // remapped should be index 2 and (57 - 50) + 25 + 3 = 35
+    try std.testing.expectEqualSlices(usize, &[_]usize{ 2, 35 }, remapped);
+
+    const chunks = try partitionHighlightedText(std.testing.allocator, display, remapped);
+    defer std.testing.allocator.free(chunks);
+
+    try std.testing.expect(chunks.len > 0);
+    // Ensure all matches lie within display bounds without warning
+    for (remapped) |m_idx| {
+        try std.testing.expect(m_idx < display.len);
+    }
+}
+
+test "partitionHighlightedText multi-byte UTF-8 character boundary safety" {
+    // "café" -> 'c' (0), 'a' (1), 'f' (2), 'é' (3..4: 0xC3 0xA9)
+    const utf8_text = "café_au_lait.jpg";
+    // Match index 3 points to start of 'é' (0xC3)
+    const matches = [_]usize{3};
+
+    const chunks = try partitionHighlightedText(std.testing.allocator, utf8_text, &matches);
+    defer std.testing.allocator.free(chunks);
+
+    // Chunks should be: "caf" (unmatched), "é" (matched, full 2-byte code point), "_au_lait.jpg" (unmatched)
+    try std.testing.expectEqual(@as(usize, 3), chunks.len);
+    try std.testing.expectEqualStrings("caf", chunks[0].slice);
+    try std.testing.expect(!chunks[0].is_matched);
+    try std.testing.expectEqualStrings("é", chunks[1].slice);
+    try std.testing.expect(chunks[1].is_matched);
+    try std.testing.expectEqualStrings("_au_lait.jpg", chunks[2].slice);
+    try std.testing.expect(!chunks[2].is_matched);
+}
+
+test "untruncated directory starting with dots preserves matches" {
+    const dirname = ".../my_photos";
+    const display_dir = dirname; // untruncated (same pointer)
+    const dirname_matches = [_]usize{ 0, 1, 2, 4 }; // matches '...', 'm'
+
+    var final_dir_matches = std.ArrayList(usize).empty;
+    defer final_dir_matches.deinit(std.testing.allocator);
+
+    if (display_dir.ptr != dirname.ptr and display_dir.len > 0 and std.mem.startsWith(u8, display_dir, "...")) {
+        const kept_len = display_dir.len - 3;
+        const start_offset = if (dirname.len > kept_len) dirname.len - kept_len else 0;
+        for (dirname_matches) |m_idx| {
+            if (m_idx >= start_offset) {
+                try final_dir_matches.append(std.testing.allocator, (m_idx - start_offset) + 3);
+            }
+        }
+    } else {
+        try final_dir_matches.appendSlice(std.testing.allocator, &dirname_matches);
+    }
+
+    try std.testing.expectEqualSlices(usize, &dirname_matches, final_dir_matches.items);
 }
