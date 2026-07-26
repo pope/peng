@@ -2,6 +2,7 @@ const std = @import("std");
 const sdl = @import("sdl");
 const renderer = @import("renderer.zig");
 const clay = @import("zclay");
+const theme = @import("theme.zig");
 const MeasureTextUserData = @import("../app/types.zig").MeasureTextUserData;
 
 pub const GraphicsSetup = struct {
@@ -424,7 +425,11 @@ pub fn sdl3MeasureText(text: []const u8, config: *clay.TextElementConfig, data: 
 
     if (config.font_id >= data.fonts.len) return .{ .w = 0, .h = 0 };
     const font = data.fonts[config.font_id] orelse return .{ .w = 0, .h = 0 };
-    const target_size = @as(f32, @floatFromInt(config.font_size));
+    var target_size = @as(f32, @floatFromInt(config.font_size));
+    if (data.is_debug_measuring) {
+        // Scale down hardcoded 16px Clay debug text to 12px (0.75x) during debug panel layout
+        target_size *= theme.debug_font_scale;
+    }
     if (font.getFontSize() != target_size) {
         _ = font.setFontSize(target_size);
     }

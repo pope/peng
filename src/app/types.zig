@@ -19,6 +19,10 @@ pub const TextureScaleMode = enum {
 pub const MeasureTextUserData = struct {
     fonts: []const ?sdl.Font,
     allocator: std.mem.Allocator,
+    /// Transient flag active only during clay.endLayout() when Clay's internal debug panel
+    /// elements are being measured. Signals sdl3MeasureText to apply theme.debug_font_scale (0.75)
+    /// so text bounding boxes match the smaller 12px debug font size.
+    is_debug_measuring: bool = false,
 };
 
 pub const KeyModifiers = struct {

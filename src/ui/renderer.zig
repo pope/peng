@@ -1,5 +1,6 @@
 const std = @import("std");
 const clay = @import("zclay");
+const theme = @import("theme.zig");
 const sdl = @import("sdl");
 const app_state = @import("../app/state.zig");
 
@@ -519,6 +520,12 @@ fn buildGeometryFromCommands(
             },
             .text => {
                 var text_data = rcmd.render_data.text;
+                const debug_w = @as(f32, @floatFromInt(clay.Clay__debugViewWidth));
+                if (clay.isDebugModeEnabled() and bb.x >= (f_win_w - debug_w - 0.5)) {
+                    // Scale down hardcoded 16px Clay debug text to 12px (0.75x) for GPU text rendering
+                    const scaled_size = @as(f32, @floatFromInt(text_data.font_size)) * theme.debug_font_scale;
+                    text_data.font_size = @intFromFloat(@round(scaled_size));
+                }
                 if (try getOrRenderCachedText(
                     state,
                     copy_pass,

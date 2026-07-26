@@ -20,7 +20,7 @@ pub fn renderFrame(
     input: FrameInput,
     frame_allocator: std.mem.Allocator,
     fonts: []const ?sdl.Font,
-    measure_data: *const MeasureTextUserData,
+    measure_data: *MeasureTextUserData,
     capture_filename: ?[:0]const u8,
 ) !void {
     const width = input.win_w;
@@ -132,7 +132,11 @@ pub fn renderFrame(
         );
     });
 
+    // Clay's internal debug panel layout elements are generated inside clay.endLayout().
+    // Flag measure_data so sdl3MeasureText scales debug text down (16px -> 12px) during layout.
+    measure_data.is_debug_measuring = clay.isDebugModeEnabled();
     const render_commands = clay.endLayout();
+    measure_data.is_debug_measuring = false;
 
     // Render Frame
     const dev = state.gpu_device.?;
