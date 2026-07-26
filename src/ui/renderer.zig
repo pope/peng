@@ -260,23 +260,19 @@ fn appendImageCommand(
     const world_x4 = c_x + rx4;
     const world_y4 = c_y + ry4;
 
-    const ndc_x1 = (world_x1 / f_win_w) * 2.0 - 1.0;
-    const ndc_y1 = 1.0 - (world_y1 / f_win_h) * 2.0;
-    const ndc_x2 = (world_x2 / f_win_w) * 2.0 - 1.0;
-    const ndc_y2 = 1.0 - (world_y2 / f_win_h) * 2.0;
-    const ndc_x3 = (world_x3 / f_win_w) * 2.0 - 1.0;
-    const ndc_y3 = 1.0 - (world_y3 / f_win_h) * 2.0;
-    const ndc_x4 = (world_x4 / f_win_w) * 2.0 - 1.0;
-    const ndc_y4 = 1.0 - (world_y4 / f_win_h) * 2.0;
+    const p1 = geometry.toNdc(world_x1, world_y1, f_win_w, f_win_h);
+    const p2 = geometry.toNdc(world_x2, world_y2, f_win_w, f_win_h);
+    const p3 = geometry.toNdc(world_x3, world_y3, f_win_w, f_win_h);
+    const p4 = geometry.toNdc(world_x4, world_y4, f_win_w, f_win_h);
 
     const start = @as(u32, @intCast(vertices.items.len));
     const white_color = packRgba(255, 255, 255, 255);
-    try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y1, .u = 0.0, .v = 0.0, .color = white_color });
-    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y2, .u = 1.0, .v = 0.0, .color = white_color });
-    try vertices.append(allocator, .{ .x = ndc_x4, .y = ndc_y4, .u = 0.0, .v = 1.0, .color = white_color });
-    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y2, .u = 1.0, .v = 0.0, .color = white_color });
-    try vertices.append(allocator, .{ .x = ndc_x3, .y = ndc_y3, .u = 1.0, .v = 1.0, .color = white_color });
-    try vertices.append(allocator, .{ .x = ndc_x4, .y = ndc_y4, .u = 0.0, .v = 1.0, .color = white_color });
+    try vertices.append(allocator, .{ .x = p1.x, .y = p1.y, .u = 0.0, .v = 0.0, .color = white_color });
+    try vertices.append(allocator, .{ .x = p2.x, .y = p2.y, .u = 1.0, .v = 0.0, .color = white_color });
+    try vertices.append(allocator, .{ .x = p4.x, .y = p4.y, .u = 0.0, .v = 1.0, .color = white_color });
+    try vertices.append(allocator, .{ .x = p2.x, .y = p2.y, .u = 1.0, .v = 0.0, .color = white_color });
+    try vertices.append(allocator, .{ .x = p3.x, .y = p3.y, .u = 1.0, .v = 1.0, .color = white_color });
+    try vertices.append(allocator, .{ .x = p4.x, .y = p4.y, .u = 0.0, .v = 1.0, .color = white_color });
 
     try addBatch(batches, allocator, start, 6, tex, true, scissor);
 }
@@ -409,6 +405,7 @@ fn getOrRenderCachedText(
     dev.unmapTransferBuffer(transfer_buf);
 
     const copy_pass = cmd_buf.beginCopyPass() orelse {
+        std.log.err("SDL GPU beginCopyPass failed in getOrRenderCachedText: {s}", .{sdl.getError()});
         dev.releaseTexture(tex);
         return null;
     };
@@ -448,6 +445,15 @@ fn getOrRenderCachedText(
     };
 }
 
+pub inline fn isScissorInvisible(sc: ?sdl.Rect, win_w: i32, win_h: i32) bool {
+    if (sc) |s| {
+        if (s.w <= 0 or s.h <= 0) return true;
+        if (s.x >= win_w or s.y >= win_h) return true;
+        if (s.x + s.w <= 0 or s.y + s.h <= 0) return true;
+    }
+    return false;
+}
+
 pub fn renderClayCommands(
     state: *app_state.ViewerState,
     cmd_buf: sdl.gpu.CommandBuffer,
@@ -476,7 +482,6 @@ pub fn renderClayCommands(
     const dev = state.gpu_device.?;
     const frame_idx = state.gpu_frame_index % 2;
     var tb_offset: usize = 0;
-
     var prev_text_bb: ?clay.BoundingBox = null;
     var prev_text_end_x: f32 = 0.0;
 
@@ -489,19 +494,27 @@ pub fn renderClayCommands(
             .h = @round(bb.height * scale_y),
         };
 
+        if (rcmd.command_type == .scissor_start) {
+            prev_text_bb = null;
+            current_scissor = sdl.Rect{
+                .x = @intFromFloat(@round(bb.x * scale_x)),
+                .y = @intFromFloat(@round(bb.y * scale_y)),
+                .w = @intFromFloat(@round(bb.width * scale_x)),
+                .h = @intFromFloat(@round(bb.height * scale_y)),
+            };
+            continue;
+        } else if (rcmd.command_type == .scissor_end) {
+            prev_text_bb = null;
+            current_scissor = null;
+            continue;
+        }
+
+        // Skip geometry generation early if current scissor is zero-area or offscreen
+        if (isScissorInvisible(current_scissor, win_w, win_h)) continue;
+
         switch (rcmd.command_type) {
-            .scissor_start => {
-                prev_text_bb = null;
-                current_scissor = sdl.Rect{
-                    .x = @intFromFloat(@round(bb.x * scale_x)),
-                    .y = @intFromFloat(@round(bb.y * scale_y)),
-                    .w = @intFromFloat(@round(bb.width * scale_x)),
-                    .h = @intFromFloat(@round(bb.height * scale_y)),
-                };
-            },
-            .scissor_end => {
-                prev_text_bb = null;
-                current_scissor = null;
+            .scissor_start, .scissor_end => {
+                std.log.err("Unexpected scissor command in render switch: {}", .{rcmd.command_type});
             },
             .rectangle => {
                 prev_text_bb = null;
@@ -664,7 +677,10 @@ pub fn renderClayCommands(
     };
 
     const cmd = cmd_buf;
-    const render_pass = cmd.beginRenderPass(&color_target) orelse return;
+    const render_pass = cmd.beginRenderPass(&color_target) orelse {
+        std.log.err("SDL GPU beginRenderPass failed in renderClayCommands: {s}", .{sdl.getError()});
+        return;
+    };
     defer render_pass.end();
 
     render_pass.bindPipeline(state.gpu_pipeline.?);

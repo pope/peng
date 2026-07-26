@@ -81,6 +81,46 @@ pub const GpuResources = struct {
     fonts: [2]?sdl.Font,
 };
 
+fn createShaderFromFormat(
+    dev: sdl.gpu.Device,
+    shader_formats: u32,
+    stage: sdl.gpu.ShaderStage,
+    spv: []const u8,
+    msl: []const u8,
+    num_samplers: u32,
+    num_uniform_buffers: u32,
+) !sdl.gpu.Shader {
+    const is_spirv = (shader_formats & sdl.gpu.ShaderFormat.spirv) != 0;
+    const is_msl = (shader_formats & sdl.gpu.ShaderFormat.msl) != 0;
+
+    if (!is_spirv and !is_msl) {
+        std.log.err("No supported shader format for stage {} (formats mask: {X})", .{ stage, shader_formats });
+        return error.UnsupportedShaderFormat;
+    }
+
+    const code = if (is_spirv) spv else msl;
+    const fmt = if (is_spirv) sdl.gpu.ShaderFormat.spirv else sdl.gpu.ShaderFormat.msl;
+    const entry = if (is_spirv) "main" else "main0";
+
+    const info = sdl.gpu.ShaderCreateInfo{
+        .code_size = code.len,
+        .code = code.ptr,
+        .entrypoint = entry,
+        .format = fmt,
+        .stage = stage,
+        .num_samplers = num_samplers,
+        .num_storage_buffers = 0,
+        .num_storage_textures = 0,
+        .num_uniform_buffers = num_uniform_buffers,
+        .props = 0,
+    };
+
+    return dev.createShader(&info) orelse {
+        std.log.err("Failed to create shader for stage {}: {s}", .{ stage, sdl.getError() });
+        return error.ShaderCreationFailed;
+    };
+}
+
 pub fn initGpuResources(dev: sdl.gpu.Device, window: sdl.Window, initial_dpi_scale: f32, headless: bool) !GpuResources {
     const target_format = if (headless)
         sdl.gpu.TextureFormat.rgba8_unorm
@@ -112,80 +152,11 @@ pub fn initGpuResources(dev: sdl.gpu.Device, window: sdl.Window, initial_dpi_sca
 
     const shader_formats = dev.getShaderFormats();
 
-    // Vertex Shader Info
-    const vert_info = if ((shader_formats & sdl.gpu.ShaderFormat.spirv) != 0)
-        sdl.gpu.ShaderCreateInfo{
-            .code_size = vert_code_spv.len,
-            .code = vert_code_spv.ptr,
-            .entrypoint = "main",
-            .format = sdl.gpu.ShaderFormat.spirv,
-            .stage = .vertex,
-            .num_samplers = 0,
-            .num_storage_buffers = 0,
-            .num_storage_textures = 0,
-            .num_uniform_buffers = 0,
-            .props = 0,
-        }
-    else if ((shader_formats & sdl.gpu.ShaderFormat.msl) != 0)
-        sdl.gpu.ShaderCreateInfo{
-            .code_size = vert_code_msl.len,
-            .code = vert_code_msl.ptr,
-            .entrypoint = "main0",
-            .format = sdl.gpu.ShaderFormat.msl,
-            .stage = .vertex,
-            .num_samplers = 0,
-            .num_storage_buffers = 0,
-            .num_storage_textures = 0,
-            .num_uniform_buffers = 0,
-            .props = 0,
-        }
-    else {
-        std.log.err("No supported shader format for vertex shader (formats mask: {X})", .{shader_formats});
-        return error.UnsupportedShaderFormat;
-    };
-
-    const vert_shader = dev.createShader(&vert_info) orelse {
-        std.log.err("Failed to create vertex shader: {s}", .{sdl.getError()});
-        return error.ShaderCreationFailed;
-    };
+    // Vertex & Fragment Shaders
+    const vert_shader = try createShaderFromFormat(dev, shader_formats, .vertex, vert_code_spv, vert_code_msl, 0, 0);
     defer dev.releaseShader(vert_shader);
 
-    // Fragment Shader Info
-    const frag_info = if ((shader_formats & sdl.gpu.ShaderFormat.spirv) != 0)
-        sdl.gpu.ShaderCreateInfo{
-            .code_size = frag_code_spv.len,
-            .code = frag_code_spv.ptr,
-            .entrypoint = "main",
-            .format = sdl.gpu.ShaderFormat.spirv,
-            .stage = .fragment,
-            .num_samplers = 1,
-            .num_storage_buffers = 0,
-            .num_storage_textures = 0,
-            .num_uniform_buffers = 1,
-            .props = 0,
-        }
-    else if ((shader_formats & sdl.gpu.ShaderFormat.msl) != 0)
-        sdl.gpu.ShaderCreateInfo{
-            .code_size = frag_code_msl.len,
-            .code = frag_code_msl.ptr,
-            .entrypoint = "main0",
-            .format = sdl.gpu.ShaderFormat.msl,
-            .stage = .fragment,
-            .num_samplers = 1,
-            .num_storage_buffers = 0,
-            .num_storage_textures = 0,
-            .num_uniform_buffers = 1,
-            .props = 0,
-        }
-    else {
-        std.log.err("No supported shader format for fragment shader (formats mask: {X})", .{shader_formats});
-        return error.UnsupportedShaderFormat;
-    };
-
-    const frag_shader = dev.createShader(&frag_info) orelse {
-        std.log.err("Failed to create fragment shader: {s}", .{sdl.getError()});
-        return error.ShaderCreationFailed;
-    };
+    const frag_shader = try createShaderFromFormat(dev, shader_formats, .fragment, frag_code_spv, frag_code_msl, 1, 1);
     defer dev.releaseShader(frag_shader);
 
     // Create sampler

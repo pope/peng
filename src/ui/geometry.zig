@@ -30,6 +30,18 @@ pub inline fn packRgbaF(r: f32, g: f32, b: f32, a: f32) u32 {
     return ur | (ug << 8) | (ub << 16) | (ua << 24);
 }
 
+pub const NdcPoint = struct {
+    x: f32,
+    y: f32,
+};
+
+pub inline fn toNdc(x: f32, y: f32, win_w: f32, win_h: f32) NdcPoint {
+    return .{
+        .x = (x / win_w) * 2.0 - 1.0,
+        .y = 1.0 - (y / win_h) * 2.0,
+    };
+}
+
 pub fn appendRectQuad(
     vertices: *std.ArrayList(Vertex),
     allocator: std.mem.Allocator,
@@ -38,19 +50,17 @@ pub fn appendRectQuad(
     win_w: f32,
     win_h: f32,
 ) !void {
-    const ndc_x1 = (rect.x / win_w) * 2.0 - 1.0;
-    const ndc_x2 = ((rect.x + rect.w) / win_w) * 2.0 - 1.0;
-    const ndc_y1 = 1.0 - (rect.y / win_h) * 2.0;
-    const ndc_y2 = 1.0 - ((rect.y + rect.h) / win_h) * 2.0;
+    const p1 = toNdc(rect.x, rect.y, win_w, win_h);
+    const p2 = toNdc(rect.x + rect.w, rect.y + rect.h, win_w, win_h);
 
     const color = packRgbaClay(clay_color);
 
-    try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y1, .u = 0.0, .v = 0.0, .color = color });
-    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y1, .u = 1.0, .v = 0.0, .color = color });
-    try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y2, .u = 0.0, .v = 1.0, .color = color });
-    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y1, .u = 1.0, .v = 0.0, .color = color });
-    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y2, .u = 1.0, .v = 1.0, .color = color });
-    try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y2, .u = 0.0, .v = 1.0, .color = color });
+    try vertices.append(allocator, .{ .x = p1.x, .y = p1.y, .u = 0.0, .v = 0.0, .color = color });
+    try vertices.append(allocator, .{ .x = p2.x, .y = p1.y, .u = 1.0, .v = 0.0, .color = color });
+    try vertices.append(allocator, .{ .x = p1.x, .y = p2.y, .u = 0.0, .v = 1.0, .color = color });
+    try vertices.append(allocator, .{ .x = p2.x, .y = p1.y, .u = 1.0, .v = 0.0, .color = color });
+    try vertices.append(allocator, .{ .x = p2.x, .y = p2.y, .u = 1.0, .v = 1.0, .color = color });
+    try vertices.append(allocator, .{ .x = p1.x, .y = p2.y, .u = 0.0, .v = 1.0, .color = color });
 }
 
 pub fn appendLineQuad(
@@ -71,39 +81,23 @@ pub fn appendLineQuad(
     const len = @sqrt(dx * dx + dy * dy);
     if (len == 0.0) return;
 
-    const nx = -dy / len;
-    const ny = dx / len;
+    const ox = (-dy / len) * thickness * 0.5;
+    const oy = (dx / len) * thickness * 0.5;
 
-    const ox = nx * thickness * 0.5;
-    const oy = ny * thickness * 0.5;
+    const packed_color = packRgbaF(r, g, b, a);
 
-    const x1 = p1.x - ox;
-    const y1 = p1.y - oy;
-    const x2 = p1.x + ox;
-    const y2 = p1.y + oy;
-    const x3 = p2.x + ox;
-    const y3 = p2.y + oy;
-    const x4 = p2.x - ox;
-    const y4 = p2.y - oy;
+    const np1 = toNdc(p1.x - ox, p1.y - oy, win_w, win_h);
+    const np2 = toNdc(p1.x + ox, p1.y + oy, win_w, win_h);
+    const np3 = toNdc(p2.x + ox, p2.y + oy, win_w, win_h);
+    const np4 = toNdc(p2.x - ox, p2.y - oy, win_w, win_h);
 
-    const ndc_x1 = (x1 / win_w) * 2.0 - 1.0;
-    const ndc_y1 = 1.0 - (y1 / win_h) * 2.0;
-    const ndc_x2 = (x2 / win_w) * 2.0 - 1.0;
-    const ndc_y2 = 1.0 - (y2 / win_h) * 2.0;
-    const ndc_x3 = (x3 / win_w) * 2.0 - 1.0;
-    const ndc_y3 = 1.0 - (y3 / win_h) * 2.0;
-    const ndc_x4 = (x4 / win_w) * 2.0 - 1.0;
-    const ndc_y4 = 1.0 - (y4 / win_h) * 2.0;
+    try vertices.append(allocator, .{ .x = np1.x, .y = np1.y, .u = 0.0, .v = 0.0, .color = packed_color });
+    try vertices.append(allocator, .{ .x = np2.x, .y = np2.y, .u = 1.0, .v = 0.0, .color = packed_color });
+    try vertices.append(allocator, .{ .x = np3.x, .y = np3.y, .u = 1.0, .v = 1.0, .color = packed_color });
 
-    const color = packRgbaF(r, g, b, a);
-
-    try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y1, .u = 0.0, .v = 0.0, .color = color });
-    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y2, .u = 1.0, .v = 0.0, .color = color });
-    try vertices.append(allocator, .{ .x = ndc_x3, .y = ndc_y3, .u = 1.0, .v = 1.0, .color = color });
-
-    try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y1, .u = 0.0, .v = 0.0, .color = color });
-    try vertices.append(allocator, .{ .x = ndc_x3, .y = ndc_y3, .u = 1.0, .v = 1.0, .color = color });
-    try vertices.append(allocator, .{ .x = ndc_x4, .y = ndc_y4, .u = 0.0, .v = 1.0, .color = color });
+    try vertices.append(allocator, .{ .x = np1.x, .y = np1.y, .u = 0.0, .v = 0.0, .color = packed_color });
+    try vertices.append(allocator, .{ .x = np3.x, .y = np3.y, .u = 1.0, .v = 1.0, .color = packed_color });
+    try vertices.append(allocator, .{ .x = np4.x, .y = np4.y, .u = 0.0, .v = 1.0, .color = packed_color });
 }
 
 pub fn appendCornerArc(
@@ -312,12 +306,11 @@ pub fn renderFillRoundedRect(
     // Map indexed vertices into the global non-indexed list
     for (indices[0..index_count]) |idx| {
         const v = vertices_src[@intCast(idx)];
-        const ndc_x = (v.position.x / win_w) * 2.0 - 1.0;
-        const ndc_y = 1.0 - (v.position.y / win_h) * 2.0;
+        const pt = toNdc(v.position.x, v.position.y, win_w, win_h);
 
         try vertices.append(allocator, .{
-            .x = ndc_x,
-            .y = ndc_y,
+            .x = pt.x,
+            .y = pt.y,
             .u = v.tex_coord.x,
             .v = v.tex_coord.y,
             .color = packRgbaF(v.color.r, v.color.g, v.color.b, v.color.a),
@@ -397,26 +390,19 @@ pub fn renderArc(
         const in2_x = center.x + cos2 * r_inner;
         const in2_y = center.y + sin2 * r_inner;
 
-        const ndc_out1_x = (out1_x / win_w) * 2.0 - 1.0;
-        const ndc_out1_y = 1.0 - (out1_y / win_h) * 2.0;
-
-        const ndc_out2_x = (out2_x / win_w) * 2.0 - 1.0;
-        const ndc_out2_y = 1.0 - (out2_y / win_h) * 2.0;
-
-        const ndc_in1_x = (in1_x / win_w) * 2.0 - 1.0;
-        const ndc_in1_y = 1.0 - (in1_y / win_h) * 2.0;
-
-        const ndc_in2_x = (in2_x / win_w) * 2.0 - 1.0;
-        const ndc_in2_y = 1.0 - (in2_y / win_h) * 2.0;
+        const out1 = toNdc(out1_x, out1_y, win_w, win_h);
+        const out2 = toNdc(out2_x, out2_y, win_w, win_h);
+        const in1 = toNdc(in1_x, in1_y, win_w, win_h);
+        const in2 = toNdc(in2_x, in2_y, win_w, win_h);
 
         // Triangle 1: out1, out2, in2
-        try vertices.append(allocator, .{ .x = ndc_out1_x, .y = ndc_out1_y, .u = 0.0, .v = 0.0, .color = color });
-        try vertices.append(allocator, .{ .x = ndc_out2_x, .y = ndc_out2_y, .u = 1.0, .v = 0.0, .color = color });
-        try vertices.append(allocator, .{ .x = ndc_in2_x, .y = ndc_in2_y, .u = 1.0, .v = 1.0, .color = color });
+        try vertices.append(allocator, .{ .x = out1.x, .y = out1.y, .u = 0.0, .v = 0.0, .color = color });
+        try vertices.append(allocator, .{ .x = out2.x, .y = out2.y, .u = 1.0, .v = 0.0, .color = color });
+        try vertices.append(allocator, .{ .x = in2.x, .y = in2.y, .u = 1.0, .v = 1.0, .color = color });
 
         // Triangle 2: out1, in2, in1
-        try vertices.append(allocator, .{ .x = ndc_out1_x, .y = ndc_out1_y, .u = 0.0, .v = 0.0, .color = color });
-        try vertices.append(allocator, .{ .x = ndc_in2_x, .y = ndc_in2_y, .u = 1.0, .v = 1.0, .color = color });
-        try vertices.append(allocator, .{ .x = ndc_in1_x, .y = ndc_in1_y, .u = 0.0, .v = 1.0, .color = color });
+        try vertices.append(allocator, .{ .x = out1.x, .y = out1.y, .u = 0.0, .v = 0.0, .color = color });
+        try vertices.append(allocator, .{ .x = in2.x, .y = in2.y, .u = 1.0, .v = 1.0, .color = color });
+        try vertices.append(allocator, .{ .x = in1.x, .y = in1.y, .u = 0.0, .v = 1.0, .color = color });
     }
 }
