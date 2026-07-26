@@ -44,26 +44,41 @@ pub const Font = struct {
         return c.TTF_SetFontSize(self.ptr, ptsize);
     }
 
-    pub fn getStringSize(self: Font, text: []const u8) ?TextSize {
+    pub fn getStringSize(self: Font, allocator: std.mem.Allocator, text: []const u8) ?TextSize {
         var w: c_int = 0;
         var h: c_int = 0;
-        if (c.TTF_GetStringSize(self.ptr, text.ptr, text.len, &w, &h)) {
+        const c_text = allocator.dupeZ(u8, text) catch |err| {
+            std.log.err("dupeZ failed in getStringSize for '{s}': {}", .{ text, err });
+            return null;
+        };
+        defer allocator.free(c_text);
+        if (c.TTF_GetStringSize(self.ptr, c_text.ptr, text.len, &w, &h)) {
             return TextSize{ .w = w, .h = h };
         }
         return null;
     }
 
-    pub fn measureString(self: Font, text: []const u8, max_w: i32) ?struct { measured_w: usize, measured_len: usize } {
+    pub fn measureString(self: Font, allocator: std.mem.Allocator, text: []const u8, max_w: i32) ?struct { measured_w: usize, measured_len: usize } {
         var measured_w: c_int = 0;
         var measured_len: usize = 0;
-        if (c.TTF_MeasureString(self.ptr, text.ptr, text.len, max_w, &measured_w, &measured_len)) {
+        const c_text = allocator.dupeZ(u8, text) catch |err| {
+            std.log.err("dupeZ failed in measureString for '{s}': {}", .{ text, err });
+            return null;
+        };
+        defer allocator.free(c_text);
+        if (c.TTF_MeasureString(self.ptr, c_text.ptr, text.len, max_w, &measured_w, &measured_len)) {
             return .{ .measured_w = @intCast(measured_w), .measured_len = measured_len };
         }
         return null;
     }
 
-    pub fn renderTextBlended(self: Font, text: []const u8, color: Color) !Surface {
-        const raw = c.TTF_RenderText_Blended(self.ptr, text.ptr, text.len, color.toSdlColor()) orelse return error.TtfRenderFailed;
+    pub fn renderTextBlended(self: Font, allocator: std.mem.Allocator, text: []const u8, color: Color) !Surface {
+        const c_text = allocator.dupeZ(u8, text) catch |err| {
+            std.log.err("dupeZ failed in renderTextBlended for '{s}': {}", .{ text, err });
+            return err;
+        };
+        defer allocator.free(c_text);
+        const raw = c.TTF_RenderText_Blended(self.ptr, c_text.ptr, text.len, color.toSdlColor()) orelse return error.TtfRenderFailed;
         return .{ .ptr = raw };
     }
 

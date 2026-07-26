@@ -132,13 +132,14 @@ pub fn renderFuzzyMatchText(
             .color = normal_color,
             .font_size = font_size,
             .font_id = 0,
+            .wrap_mode = .none,
         });
         return;
     }
 
     const chunks = partitionHighlightedText(allocator, text, match_indices) catch |err| {
         std.log.err("partitionHighlightedText failed for '{s}': {}", .{ text, err });
-        clay.text(text, .{ .color = normal_color, .font_size = font_size, .font_id = 0 });
+        clay.text(text, .{ .color = normal_color, .font_size = font_size, .font_id = 0, .wrap_mode = .none });
         return;
     };
 
@@ -146,6 +147,7 @@ pub fn renderFuzzyMatchText(
         .layout = .{
             .sizing = .{ .w = .fit, .h = .fit },
             .direction = .left_to_right,
+            .child_alignment = .{ .x = .left, .y = .center },
         },
     })({
         for (chunks) |chunk| {
@@ -153,6 +155,7 @@ pub fn renderFuzzyMatchText(
                 .color = if (chunk.is_matched) highlight_color else normal_color,
                 .font_size = font_size,
                 .font_id = 0,
+                .wrap_mode = .none,
             });
         }
     });
@@ -796,6 +799,8 @@ pub fn renderSelectionList(
                         clay.UI()(.{
                             .layout = .{
                                 .sizing = .{ .w = .grow, .h = .fit },
+                                .direction = .left_to_right,
+                                .child_alignment = .{ .x = .left, .y = .center },
                             },
                         })({
                             renderFuzzyMatchText(
@@ -1130,6 +1135,22 @@ test "renderHighlightedText whitespace boundary handling" {
     renderHighlightedText(std.testing.allocator, "Scale Nearest Neighbor", &.{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 }, 13, theme.text, theme.yellow);
     renderHighlightedText(std.testing.allocator, "Scale Mode: Fit", &.{ 0, 1, 2, 3, 4, 5 }, 13, theme.text, theme.yellow);
     renderHighlightedText(std.testing.allocator, "   leading and trailing   ", &.{ 3, 4, 5 }, 13, theme.text, theme.yellow);
+}
+
+test "partitionHighlightedText filterh query on Set Scaling Filter: Bilinear (Smooth)" {
+    var palette = PaletteState.init(std.testing.allocator);
+    defer palette.deinit();
+
+    const searcher = try palette.getSearcher(64, 16);
+    const text = "Set Scaling Filter: Bilinear (Smooth)";
+    const res = searcher.scoreMatches(text, "filterh");
+    std.debug.print("\n=== MATCHES for filterh: {any} ===\n", .{res.matches});
+
+    const chunks = try partitionHighlightedText(std.testing.allocator, text, res.matches);
+    defer std.testing.allocator.free(chunks);
+    for (chunks, 0..) |chunk, i| {
+        std.debug.print("Chunk {d}: '{s}' (matched={})\n", .{ i, chunk.slice, chunk.is_matched });
+    }
 }
 
 test "partitionHighlightedText correctly partitions matched and unmatched chunks" {

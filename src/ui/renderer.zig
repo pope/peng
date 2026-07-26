@@ -286,7 +286,6 @@ fn getOrRenderCachedText(
     cmd_buf: sdl.gpu.CommandBuffer,
     fonts: []const ?sdl.Font,
     text_data: clay.TextRenderData,
-    bb: clay.BoundingBox,
     scale_x: f32,
     allocator: std.mem.Allocator,
     temp_buffers: *std.ArrayList(sdl.gpu.TransferBuffer),
@@ -328,7 +327,7 @@ fn getOrRenderCachedText(
 
     _ = font.setFontSize(target_font_size);
 
-    const surf = font.renderTextBlended(text_slice, .{
+    const surf = font.renderTextBlended(allocator, text_slice, .{
         .r = @intFromFloat(text_data.text_color[0]),
         .g = @intFromFloat(text_data.text_color[1]),
         .b = @intFromFloat(text_data.text_color[2]),
@@ -342,20 +341,10 @@ fn getOrRenderCachedText(
     const converted = surf.convert(sdl.PixelFormat.rgba32) orelse return null;
     defer converted.destroy();
 
-    var leading_spaces: usize = 0;
-    while (leading_spaces < text_slice.len and text_slice[leading_spaces] == ' ') : (leading_spaces += 1) {}
-
-    var leading_space_w: usize = 0;
-    if (leading_spaces > 0 and leading_spaces < text_slice.len) {
-        if (font.getStringSize(text_slice[0..leading_spaces])) |s| {
-            leading_space_w = @intCast(s.w);
-        }
-    }
-
     const surf_w: usize = @intCast(converted.w());
     const surf_h: usize = @intCast(converted.h());
-    const target_w: usize = @max(surf_w + leading_space_w, @as(usize, @intFromFloat(@round(bb.width * scale_x))));
-    const dst_start_byte = @min(leading_space_w * 4, if (target_w > surf_w) (target_w - surf_w) * 4 else 0);
+    const target_w: usize = surf_w;
+    const dst_start_byte: usize = 0;
 
     const tex_info = sdl.gpu.TextureCreateInfo{
         .type = .type_2d,
@@ -482,6 +471,9 @@ pub fn renderClayCommands(
     const frame_idx = state.gpu_frame_index % 2;
     var tb_offset: usize = 0;
 
+    var prev_text_bb: ?clay.BoundingBox = null;
+    var prev_text_end_x: f32 = 0.0;
+
     for (r_commands) |rcmd| {
         const bb = rcmd.bounding_box;
         const rect = sdl.FRect{
@@ -493,6 +485,7 @@ pub fn renderClayCommands(
 
         switch (rcmd.command_type) {
             .scissor_start => {
+                prev_text_bb = null;
                 current_scissor = sdl.Rect{
                     .x = @intFromFloat(@round(bb.x * scale_x)),
                     .y = @intFromFloat(@round(bb.y * scale_y)),
@@ -501,9 +494,11 @@ pub fn renderClayCommands(
                 };
             },
             .scissor_end => {
+                prev_text_bb = null;
                 current_scissor = null;
             },
             .rectangle => {
+                prev_text_bb = null;
                 try appendRectangleCommand(
                     &vertices,
                     &batches,
@@ -523,7 +518,6 @@ pub fn renderClayCommands(
                     cmd_buf,
                     fonts,
                     rcmd.render_data.text,
-                    bb,
                     scale_x,
                     allocator,
                     temp_buffers,
@@ -531,7 +525,18 @@ pub fn renderClayCommands(
                 )) |cached| {
                     const offset_y = @round((rect.h - cached.h) / 2.0);
                     const world_y = rect.y + @max(0.0, offset_y);
-                    const world_x = rect.x;
+                    var world_x = rect.x;
+
+                    if (prev_text_bb) |pbb| {
+                        const is_same_line = std.math.approxEqAbs(f32, pbb.y, bb.y, 0.5);
+                        const is_adjacent = std.math.approxEqAbs(f32, pbb.x + pbb.width, bb.x, 0.5);
+                        if (is_same_line and is_adjacent) {
+                            world_x = prev_text_end_x;
+                        }
+                    }
+
+                    prev_text_bb = bb;
+                    prev_text_end_x = world_x + cached.w;
 
                     const ndc_x1 = (world_x / f_win_w) * 2.0 - 1.0;
                     const ndc_y1 = 1.0 - (world_y / f_win_h) * 2.0;
@@ -551,6 +556,7 @@ pub fn renderClayCommands(
                 }
             },
             .border => {
+                prev_text_bb = null;
                 try appendBorderCommand(
                     &vertices,
                     &batches,
@@ -566,6 +572,7 @@ pub fn renderClayCommands(
                 );
             },
             .image => {
+                prev_text_bb = null;
                 try appendImageCommand(
                     &vertices,
                     &batches,

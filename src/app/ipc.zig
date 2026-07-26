@@ -90,11 +90,22 @@ pub const IpcServer = struct {
                 try respondOk(state.io, stream);
             },
             .palette => |target| {
-                switch (target) {
+                switch (target.kind) {
                     .actions => try state.openPalette(.actions),
                     .files => try state.openPalette(.files),
                     .slideshow => try state.openPalette(.set_slideshow_interval),
                     .none => state.setPaletteMode(.inactive),
+                }
+                if (target.query) |q| {
+                    state.palette.query.clearRetainingCapacity();
+                    try state.palette.query.appendSlice(state.allocator, q);
+                    state.palette.selected_idx = 0;
+                    state.palette.selection_dirty = true;
+                    if (state.palette.mode == .actions) {
+                        try state.rebuildActionMatches();
+                    } else if (state.palette.mode == .files) {
+                        try state.rebuildPaletteMatches();
+                    }
                 }
                 try respondOk(state.io, stream);
             },
@@ -166,11 +177,16 @@ pub const IpcServer = struct {
     }
 };
 
-pub const PaletteTarget = enum {
+pub const PaletteKind = enum {
     actions,
     files,
     slideshow,
     none,
+};
+
+pub const PaletteTarget = struct {
+    kind: PaletteKind,
+    query: ?[]const u8 = null,
 };
 
 pub const ThumbAction = enum {
@@ -227,17 +243,20 @@ pub const IpcCommand = union(enum) {
             return error.UnknownFilter;
         } else if (std.mem.eql(u8, cmd, "palette")) {
             const pal_name = it.next() orelse return error.MissingArgument;
-            if (std.mem.eql(u8, pal_name, "action")) {
-                return .{ .palette = .actions };
+            var kind: PaletteKind = undefined;
+            if (std.mem.eql(u8, pal_name, "action") or std.mem.eql(u8, pal_name, "actions")) {
+                kind = .actions;
             } else if (std.mem.eql(u8, pal_name, "files")) {
-                return .{ .palette = .files };
+                kind = .files;
             } else if (std.mem.eql(u8, pal_name, "slideshow")) {
-                return .{ .palette = .slideshow };
+                kind = .slideshow;
             } else if (std.mem.eql(u8, pal_name, "none")) {
-                return .{ .palette = .none };
+                kind = .none;
             } else {
                 return error.UnknownPalette;
             }
+            const query_opt = it.next();
+            return .{ .palette = .{ .kind = kind, .query = query_opt } };
         } else if (std.mem.eql(u8, cmd, "thumb")) {
             if (it.next()) |val| {
                 if (std.mem.eql(u8, val, "true")) {

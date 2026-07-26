@@ -12,17 +12,17 @@ pub fn truncateFilename(allocator: std.mem.Allocator, text: []const u8, max_w: f
         _ = font.setFontSize(target_size);
     }
 
-    const size = font.getStringSize(text) orelse return text;
+    const size = font.getStringSize(allocator, text) orelse return text;
     if (@as(f32, @floatFromInt(size.w)) <= max_w) {
         return text;
     }
 
-    const dots_size = font.getStringSize("...") orelse sdl.Font.TextSize{ .w = 0, .h = 0 };
+    const dots_size = font.getStringSize(allocator, "...") orelse sdl.Font.TextSize{ .w = 0, .h = 0 };
 
     const available_w = max_w - @as(f32, @floatFromInt(dots_size.w));
     if (available_w <= 0) return "...";
 
-    if (font.measureString(text, @intFromFloat(available_w))) |m| {
+    if (font.measureString(allocator, text, @intFromFloat(available_w))) |m| {
         var best_len = m.measured_len;
         while (best_len > 0 and best_len < text.len and (text[best_len] & 0xC0) == 0x80) {
             best_len -= 1;

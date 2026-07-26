@@ -400,6 +400,25 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
+    // 4b. Action Palette Search ("filterh")
+    {
+        try sendCommand(socket_path, "palette action filterh");
+        const capture_path = try std.fmt.allocPrint(gpa, "{s}/test_4b_action_palette_search.png", .{if (update_baselines) base_dir else run_dir});
+        defer gpa.free(capture_path);
+        const cmd = try std.fmt.allocPrint(gpa, "screenshot {s}", .{capture_path});
+        defer gpa.free(cmd);
+        try sendCommand(socket_path, cmd);
+        if (!update_baselines) {
+            const res = try compareScreenshots(
+                base_dir ++ "/test_4b_action_palette_search.png",
+                run_dir ++ "/test_4b_action_palette_search.png",
+                run_dir ++ "/diff_test_4b_action_palette_search.png",
+                max_tolerance_pct,
+            );
+            if (res.pct > max_tolerance_pct) steps_with_discrepancies += 1;
+        }
+    }
+
     // 5. Files Palette
     {
         try sendCommand(socket_path, "palette files");
