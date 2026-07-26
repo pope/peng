@@ -984,19 +984,7 @@ pub const ViewerState = struct {
         try self.handlePathSelection(path);
     }
 
-    pub fn update(self: *ViewerState, input: FrameInput) !void {
-        self.updateCurrentRotation();
-
-        // 0. Slideshow timer update
-        if (self.slideshow_active and self.slideshow_interval_s > 0.0) {
-            self.slideshow_timer_ms += input.delta_time_ms;
-            if (self.slideshow_timer_ms >= self.slideshow_interval_s * 1000.0) {
-                self.slideshow_timer_ms = 0.0;
-                try self.next();
-            }
-        }
-
-        // 1. Text input updates
+    pub fn processPaletteInput(self: *ViewerState, input: FrameInput) !bool {
         if (input.text_input) |text| {
             if (self.palette.mode != .inactive) {
                 try self.palette.query.appendSlice(self.allocator, text);
@@ -1011,12 +999,29 @@ pub const ViewerState = struct {
             }
         }
 
-        // 2. Drop file/directory updates
-        if (input.dropped_path) |path| {
-            try self.handlePathSelection(path);
+        var palette_closed_this_frame = false;
+        if (input.mouse_left_clicked and self.palette.mode != .inactive) {
+            const is_in_debug_panel = self.isPointerInDebugPanel(input);
+            const element_id = switch (self.palette.mode) {
+                .files => "CommandPalette",
+                .actions => "ActionPalette",
+                .set_brightness => "BrightnessPalette",
+                .set_contrast => "ContrastPalette",
+                .go_to_image => "GoToImagePalette",
+                .directory_navigator => "DirectoryNavigatorPalette",
+                .set_slideshow_interval => "SlideshowPalette",
+                .inactive => unreachable,
+            };
+            if (!clay.pointerOver(clay.getElementId(element_id)) and !is_in_debug_panel) {
+                self.palette.mode = .inactive;
+                stopTextInput(self.window);
+                palette_closed_this_frame = true;
+            }
         }
+        return palette_closed_this_frame;
+    }
 
-        // 3. Mouse dragging updates
+    pub fn processDragState(self: *ViewerState, input: FrameInput, palette_closed_this_frame: bool) void {
         var next_drag_state = self.drag_state;
         switch (next_drag_state) {
             .none => {},
@@ -1043,29 +1048,8 @@ pub const ViewerState = struct {
         }
         self.drag_state = next_drag_state;
 
-        // 4. Mouse click triggers (starts dragging)
         if (input.mouse_left_clicked) {
             const is_in_debug_panel = self.isPointerInDebugPanel(input);
-            var palette_closed_this_frame = false;
-            // Check if we should close the palette
-            if (self.palette.mode != .inactive) {
-                const element_id = switch (self.palette.mode) {
-                    .files => "CommandPalette",
-                    .actions => "ActionPalette",
-                    .set_brightness => "BrightnessPalette",
-                    .set_contrast => "ContrastPalette",
-                    .go_to_image => "GoToImagePalette",
-                    .directory_navigator => "DirectoryNavigatorPalette",
-                    .set_slideshow_interval => "SlideshowPalette",
-                    .inactive => unreachable,
-                };
-                if (!clay.pointerOver(clay.getElementId(element_id)) and !is_in_debug_panel) {
-                    self.palette.mode = .inactive;
-                    stopTextInput(self.window);
-                    palette_closed_this_frame = true;
-                }
-            }
-
             if (!is_in_debug_panel) {
                 if (self.show_stats_overlay and
                     clay.pointerOver(clay.getElementId("StatsPanel")) and
@@ -1087,8 +1071,9 @@ pub const ViewerState = struct {
                 }
             }
         }
+    }
 
-        // 5. Mouse Wheel Zoom updates
+    pub fn processZoomAtCursor(self: *ViewerState, input: FrameInput) void {
         if (input.scroll_delta_y != 0) {
             if (self.palette.mode == .inactive and !self.isPointerInDebugPanel(input) and clay.pointerOver(clay.getElementId("Viewport"))) {
                 const old_zoom = self.zoom_factor;
@@ -1109,8 +1094,35 @@ pub const ViewerState = struct {
                 self.pan_y = rel_y - (rel_y - self.pan_y) * (self.zoom_factor / old_zoom);
             }
         }
+    }
 
-        // 6. Keyboard updates
+    pub fn update(self: *ViewerState, input: FrameInput) !void {
+        self.updateCurrentRotation();
+
+        // 0. Slideshow timer update
+        if (self.slideshow_active and self.slideshow_interval_s > 0.0) {
+            self.slideshow_timer_ms += input.delta_time_ms;
+            if (self.slideshow_timer_ms >= self.slideshow_interval_s * 1000.0) {
+                self.slideshow_timer_ms = 0.0;
+                try self.next();
+            }
+        }
+
+        // 1. Text input & palette dismissal updates
+        const palette_closed_this_frame = try self.processPaletteInput(input);
+
+        // 2. Drop file/directory updates
+        if (input.dropped_path) |path| {
+            try self.handlePathSelection(path);
+        }
+
+        // 3. Mouse dragging updates
+        self.processDragState(input, palette_closed_this_frame);
+
+        // 4. Mouse Wheel Zoom updates
+        self.processZoomAtCursor(input);
+
+        // 5. Keyboard updates
         for (input.keys_pressed.items) |key| {
             try app_input.handleKeyDown(self, key, input.key_modifiers, input.scale_x, input.scale_y);
         }

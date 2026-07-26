@@ -84,6 +84,58 @@ pub fn mapModFromSdl(mod: u16) KeyModifiers {
     };
 }
 
+pub const FrameInputState = struct {
+    frame_allocator: std.mem.Allocator,
+    keys_pressed: std.ArrayList(Key),
+    text_input_opt: ?[]const u8 = null,
+    dropped_path_opt: ?[]const u8 = null,
+    scroll_delta_x: f32 = 0,
+    scroll_delta_y: f32 = 0,
+    mouse_left_clicked: bool = false,
+    mouse_inside: bool = false,
+    quit_requested: bool = false,
+};
+
+pub fn processSDLEvent(event: sdl.Event, frame_input: *FrameInputState) !void {
+    switch (event.type) {
+        sdl.event_type.quit => frame_input.quit_requested = true,
+        sdl.event_type.mouse_enter => {
+            frame_input.mouse_inside = true;
+        },
+        sdl.event_type.mouse_leave => {
+            frame_input.mouse_inside = false;
+        },
+        sdl.event_type.key_down => {
+            try frame_input.keys_pressed.append(frame_input.frame_allocator, mapKeyFromSdl(event.key.key));
+        },
+        sdl.event_type.text_input => {
+            if (event.text.text) |ptr| {
+                const len = std.mem.len(ptr);
+                const dup = try frame_input.frame_allocator.dupe(u8, ptr[0..len]);
+                frame_input.text_input_opt = dup;
+            }
+        },
+        sdl.event_type.drop_file => {
+            if (event.drop.data) |ptr| {
+                const len = std.mem.len(ptr);
+                const dup = try frame_input.frame_allocator.dupe(u8, ptr[0..len]);
+                frame_input.dropped_path_opt = dup;
+            }
+        },
+        sdl.event_type.mouse_button_down => {
+            if (event.button.button == sdl.mouse.left) {
+                frame_input.mouse_left_clicked = true;
+            }
+        },
+        sdl.event_type.mouse_wheel => {
+            const multiplier: f32 = if (event.wheel.direction == sdl.mouse.wheel_flipped) -1.0 else 1.0;
+            frame_input.scroll_delta_x += event.wheel.x * multiplier * 6.0;
+            frame_input.scroll_delta_y += event.wheel.y * multiplier * 6.0;
+        },
+        else => {},
+    }
+}
+
 pub fn pollFrameInput(
     window: sdl.Window,
     frame_allocator: std.mem.Allocator,
@@ -107,15 +159,12 @@ pub fn pollFrameInput(
     const scale_y = if (win_size.h > 0) @as(f32, @floatFromInt(pix_size.h)) / @as(f32, @floatFromInt(win_size.h)) else 1.0;
     const dpi_scale = scale_x;
 
-    var keys_pressed = std.ArrayList(Key).empty;
-    errdefer keys_pressed.deinit(frame_allocator);
-    var text_input_opt: ?[]const u8 = null;
-    var dropped_path_opt: ?[]const u8 = null;
-    var scroll_delta_x: f32 = 0;
-    var scroll_delta_y: f32 = 0;
-    var mouse_left_clicked = false;
-    var mouse_inside = prev_mouse_inside;
-    var quit_requested = false;
+    var frame_input_state = FrameInputState{
+        .frame_allocator = frame_allocator,
+        .keys_pressed = std.ArrayList(Key).empty,
+        .mouse_inside = prev_mouse_inside,
+    };
+    errdefer frame_input_state.keys_pressed.deinit(frame_allocator);
 
     var event: sdl.Event = undefined;
     const wait_success = if (non_blocking)
@@ -131,43 +180,7 @@ pub fn pollFrameInput(
 
     var has_event = wait_success;
     while (has_event) {
-        switch (event.type) {
-            sdl.event_type.quit => quit_requested = true,
-            sdl.event_type.mouse_enter => {
-                mouse_inside = true;
-            },
-            sdl.event_type.mouse_leave => {
-                mouse_inside = false;
-            },
-            sdl.event_type.key_down => {
-                try keys_pressed.append(frame_allocator, mapKeyFromSdl(event.key.key));
-            },
-            sdl.event_type.text_input => {
-                if (event.text.text) |ptr| {
-                    const len = std.mem.len(ptr);
-                    const dup = try frame_allocator.dupe(u8, ptr[0..len]);
-                    text_input_opt = dup;
-                }
-            },
-            sdl.event_type.drop_file => {
-                if (event.drop.data) |ptr| {
-                    const len = std.mem.len(ptr);
-                    const dup = try frame_allocator.dupe(u8, ptr[0..len]);
-                    dropped_path_opt = dup;
-                }
-            },
-            sdl.event_type.mouse_button_down => {
-                if (event.button.button == sdl.mouse.left) {
-                    mouse_left_clicked = true;
-                }
-            },
-            sdl.event_type.mouse_wheel => {
-                const multiplier: f32 = if (event.wheel.direction == sdl.mouse.wheel_flipped) -1.0 else 1.0;
-                scroll_delta_x += event.wheel.x * multiplier * 6.0;
-                scroll_delta_y += event.wheel.y * multiplier * 6.0;
-            },
-            else => {},
-        }
+        try processSDLEvent(event, &frame_input_state);
         has_event = sdl.events.pollEvent(&event);
     }
 
@@ -187,15 +200,15 @@ pub fn pollFrameInput(
         .mouse_x = mouse_x_raw,
         .mouse_y = mouse_y_raw,
         .mouse_left_down = mouse_left_down,
-        .mouse_left_clicked = mouse_left_clicked,
-        .mouse_inside = mouse_inside,
-        .quit_requested = quit_requested,
-        .scroll_delta_x = scroll_delta_x,
-        .scroll_delta_y = scroll_delta_y,
-        .keys_pressed = keys_pressed,
+        .mouse_left_clicked = frame_input_state.mouse_left_clicked,
+        .mouse_inside = frame_input_state.mouse_inside,
+        .quit_requested = frame_input_state.quit_requested,
+        .scroll_delta_x = frame_input_state.scroll_delta_x,
+        .scroll_delta_y = frame_input_state.scroll_delta_y,
+        .keys_pressed = frame_input_state.keys_pressed,
         .key_modifiers = mapModFromSdl(sdl.keys.getModState()),
-        .text_input = text_input_opt,
-        .dropped_path = dropped_path_opt,
+        .text_input = frame_input_state.text_input_opt,
+        .dropped_path = frame_input_state.dropped_path_opt,
         .ticks = current_ticks,
         .delta_time_ms = delta_time_ms,
     };
@@ -588,3 +601,26 @@ test "handlePaletteKeys stepping up from dot to parent directory preselects work
     }
     try std.testing.expect(found_cwd_selected);
 }
+
+test "processSDLEvent updates FrameInputState" {
+    const allocator = std.testing.allocator;
+    var state = FrameInputState{
+        .frame_allocator = allocator,
+        .keys_pressed = std.ArrayList(Key).empty,
+        .mouse_inside = false,
+    };
+    defer state.keys_pressed.deinit(allocator);
+
+    var evt = sdl.Event{
+        .type = sdl.event_type.mouse_enter,
+    };
+    try processSDLEvent(evt, &state);
+    try std.testing.expect(state.mouse_inside);
+
+    evt = sdl.Event{
+        .type = sdl.event_type.quit,
+    };
+    try processSDLEvent(evt, &state);
+    try std.testing.expect(state.quit_requested);
+}
+

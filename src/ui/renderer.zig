@@ -64,6 +64,390 @@ fn addBatch(
     });
 }
 
+const CachedText = struct {
+    texture: sdl.gpu.Texture,
+    w: f32,
+    h: f32,
+};
+
+fn appendRectangleCommand(
+    vertices: *std.ArrayList(Vertex),
+    batches: *std.ArrayList(BatchItem),
+    allocator: std.mem.Allocator,
+    rect: sdl.FRect,
+    config: clay.RectangleRenderData,
+    scale_x: f32,
+    f_win_w: f32,
+    f_win_h: f32,
+    white_texture: sdl.gpu.Texture,
+    scissor: ?sdl.Rect,
+) !void {
+    const start = @as(u32, @intCast(vertices.items.len));
+
+    const corner_radius = config.corner_radius.top_left * scale_x;
+    if (corner_radius > 0) {
+        try geometry.renderFillRoundedRect(vertices, allocator, rect, corner_radius, config.background_color, f_win_w, f_win_h);
+    } else {
+        try geometry.appendRectQuad(vertices, allocator, rect, config.background_color, f_win_w, f_win_h);
+    }
+
+    const count = @as(u32, @intCast(vertices.items.len)) - start;
+    if (count > 0) {
+        try addBatch(batches, allocator, start, count, white_texture, false, scissor);
+    }
+}
+
+fn appendBorderCommand(
+    vertices: *std.ArrayList(Vertex),
+    batches: *std.ArrayList(BatchItem),
+    allocator: std.mem.Allocator,
+    rect: sdl.FRect,
+    config: clay.BorderRenderData,
+    user_data: ?*anyopaque,
+    scale_x: f32,
+    f_win_w: f32,
+    f_win_h: f32,
+    white_texture: sdl.gpu.Texture,
+    scissor: ?sdl.Rect,
+) !void {
+    const min_radius = @min(rect.w, rect.h) / 2.0;
+    const clamped_radii = struct {
+        top_left: f32,
+        top_right: f32,
+        bottom_left: f32,
+        bottom_right: f32,
+    }{
+        .top_left = @min(config.corner_radius.top_left * scale_x, min_radius),
+        .top_right = @min(config.corner_radius.top_right * scale_x, min_radius),
+        .bottom_left = @min(config.corner_radius.bottom_left * scale_x, min_radius),
+        .bottom_right = @min(config.corner_radius.bottom_right * scale_x, min_radius),
+    };
+
+    const tag = if (user_data) |ptr| app_state.ElementTag.fromInt(@intFromPtr(ptr)) else .none;
+    const is_dashed = (tag == .drop_zone_box);
+
+    const r = config.color[0] / 255.0;
+    const g = config.color[1] / 255.0;
+    const b = config.color[2] / 255.0;
+    const a = config.color[3] / 255.0;
+
+    const start_batch = @as(u32, @intCast(vertices.items.len));
+
+    const border_left = @as(f32, @floatFromInt(config.width.left)) * scale_x;
+    const border_right = @as(f32, @floatFromInt(config.width.right)) * scale_x;
+    const border_top = @as(f32, @floatFromInt(config.width.top)) * scale_x;
+    const border_bottom = @as(f32, @floatFromInt(config.width.bottom)) * scale_x;
+
+    if (border_left > 0) {
+        const starting_y = rect.y + clamped_radii.top_left;
+        const length = rect.h - clamped_radii.top_left - clamped_radii.bottom_left;
+        if (is_dashed) {
+            try geometry.drawDashedLineV(vertices, allocator, rect.x, starting_y, starting_y + length, border_left, config.color, 8.0 * scale_x, 6.0 * scale_x, f_win_w, f_win_h);
+        } else {
+            const line = sdl.FRect{ .x = rect.x, .y = starting_y, .w = border_left, .h = length };
+            try geometry.appendRectQuad(vertices, allocator, line, config.color, f_win_w, f_win_h);
+        }
+    }
+    if (border_right > 0) {
+        const starting_x = rect.x + rect.w - border_right;
+        const starting_y = rect.y + clamped_radii.top_right;
+        const length = rect.h - clamped_radii.top_right - clamped_radii.bottom_right;
+        if (is_dashed) {
+            try geometry.drawDashedLineV(vertices, allocator, starting_x, starting_y, starting_y + length, border_right, config.color, 8.0 * scale_x, 6.0 * scale_x, f_win_w, f_win_h);
+        } else {
+            const line = sdl.FRect{ .x = starting_x, .y = starting_y, .w = border_right, .h = length };
+            try geometry.appendRectQuad(vertices, allocator, line, config.color, f_win_w, f_win_h);
+        }
+    }
+    if (border_top > 0) {
+        const starting_x = rect.x + clamped_radii.top_left;
+        const length = rect.w - clamped_radii.top_left - clamped_radii.top_right;
+        if (is_dashed) {
+            try geometry.drawDashedLineH(vertices, allocator, starting_x, starting_x + length, rect.y, border_top, config.color, 8.0 * scale_x, 6.0 * scale_x, f_win_w, f_win_h);
+        } else {
+            const line = sdl.FRect{ .x = starting_x, .y = rect.y, .w = length, .h = border_top };
+            try geometry.appendRectQuad(vertices, allocator, line, config.color, f_win_w, f_win_h);
+        }
+    }
+    if (border_bottom > 0) {
+        const starting_x = rect.x + clamped_radii.bottom_left;
+        const starting_y = rect.y + rect.h - border_bottom;
+        const length = rect.w - clamped_radii.bottom_left - clamped_radii.bottom_right;
+        if (is_dashed) {
+            try geometry.drawDashedLineH(vertices, allocator, starting_x, starting_x + length, starting_y, border_bottom, config.color, 8.0 * scale_x, 6.0 * scale_x, f_win_w, f_win_h);
+        } else {
+            const line = sdl.FRect{ .x = starting_x, .y = starting_y, .w = length, .h = border_bottom };
+            try geometry.appendRectQuad(vertices, allocator, line, config.color, f_win_w, f_win_h);
+        }
+    }
+
+    if (clamped_radii.top_left > 0) {
+        try geometry.renderArc(vertices, .{ .x = rect.x + clamped_radii.top_left, .y = rect.y + clamped_radii.top_left }, clamped_radii.top_left, 180.0, 270.0, border_top, r, g, b, a, allocator, is_dashed, f_win_w, f_win_h);
+    }
+    if (clamped_radii.top_right > 0) {
+        try geometry.renderArc(vertices, .{ .x = rect.x + rect.w - clamped_radii.top_right, .y = rect.y + clamped_radii.top_right }, clamped_radii.top_right, 270.0, 360.0, border_top, r, g, b, a, allocator, is_dashed, f_win_w, f_win_h);
+    }
+    if (clamped_radii.bottom_left > 0) {
+        try geometry.renderArc(vertices, .{ .x = rect.x + clamped_radii.bottom_left, .y = rect.y + rect.h - clamped_radii.bottom_left }, clamped_radii.bottom_left, 90.0, 180.0, border_bottom, r, g, b, a, allocator, is_dashed, f_win_w, f_win_h);
+    }
+    if (clamped_radii.bottom_right > 0) {
+        try geometry.renderArc(vertices, .{ .x = rect.x + rect.w - clamped_radii.bottom_right, .y = rect.y + rect.h - clamped_radii.bottom_right }, clamped_radii.bottom_right, 0.0, 90.0, border_bottom, r, g, b, a, allocator, is_dashed, f_win_w, f_win_h);
+    }
+
+    const count = @as(u32, @intCast(vertices.items.len)) - start_batch;
+    if (count > 0) {
+        try addBatch(batches, allocator, start_batch, count, white_texture, false, scissor);
+    }
+}
+
+fn appendImageCommand(
+    vertices: *std.ArrayList(Vertex),
+    batches: *std.ArrayList(BatchItem),
+    allocator: std.mem.Allocator,
+    rect: sdl.FRect,
+    image_data: ?*anyopaque,
+    state: *const app_state.ViewerState,
+    f_win_w: f32,
+    f_win_h: f32,
+    scissor: ?sdl.Rect,
+) !void {
+    const texture: ?sdl.gpu.Texture = if (image_data) |ptr| sdl.gpu.Texture{ .ptr = @ptrCast(@alignCast(ptr)) } else null;
+    const tex = texture orelse return;
+
+    var dst_w = rect.w;
+    var dst_h = rect.h;
+    const angle = state.rotation_angle;
+    const is_90_or_270 = std.math.approxEqAbs(f32, angle, 90.0, 0.01) or std.math.approxEqAbs(f32, angle, 270.0, 0.01);
+    if (is_90_or_270) {
+        dst_w = rect.h;
+        dst_h = rect.w;
+    }
+    var dst_rect = rect;
+    dst_rect.w = dst_w * state.zoom_factor;
+    dst_rect.h = dst_h * state.zoom_factor;
+    const center_x = rect.x + rect.w / 2.0;
+    const center_y = rect.y + rect.h / 2.0;
+    dst_rect.x = center_x - (dst_rect.w / 2.0) + state.pan_x;
+    dst_rect.y = center_y - (dst_rect.h / 2.0) + state.pan_y;
+
+    const rad = angle * (std.math.pi / 180.0);
+    const cos_val = @cos(rad);
+    const sin_val = @sin(rad);
+
+    const half_w = dst_rect.w * 0.5;
+    const half_h = dst_rect.h * 0.5;
+    const c_x = dst_rect.x + half_w;
+    const c_y = dst_rect.y + half_h;
+
+    const rx1 = -half_w * cos_val - (-half_h) * sin_val;
+    const ry1 = -half_w * sin_val + (-half_h) * cos_val;
+
+    const rx2 = half_w * cos_val - (-half_h) * sin_val;
+    const ry2 = half_w * sin_val + (-half_h) * cos_val;
+
+    const rx3 = half_w * cos_val - half_h * sin_val;
+    const ry3 = half_w * sin_val + half_h * cos_val;
+
+    const rx4 = -half_w * cos_val - half_h * sin_val;
+    const ry4 = -half_w * sin_val + half_h * cos_val;
+
+    const world_x1 = c_x + rx1;
+    const world_y1 = c_y + ry1;
+    const world_x2 = c_x + rx2;
+    const world_y2 = c_y + ry2;
+    const world_x3 = c_x + rx3;
+    const world_y3 = c_y + ry3;
+    const world_x4 = c_x + rx4;
+    const world_y4 = c_y + ry4;
+
+    const ndc_x1 = (world_x1 / f_win_w) * 2.0 - 1.0;
+    const ndc_y1 = 1.0 - (world_y1 / f_win_h) * 2.0;
+    const ndc_x2 = (world_x2 / f_win_w) * 2.0 - 1.0;
+    const ndc_y2 = 1.0 - (world_y2 / f_win_h) * 2.0;
+    const ndc_x3 = (world_x3 / f_win_w) * 2.0 - 1.0;
+    const ndc_y3 = 1.0 - (world_y3 / f_win_h) * 2.0;
+    const ndc_x4 = (world_x4 / f_win_w) * 2.0 - 1.0;
+    const ndc_y4 = 1.0 - (world_y4 / f_win_h) * 2.0;
+
+    const start = @as(u32, @intCast(vertices.items.len));
+    const white_color = packRgba(255, 255, 255, 255);
+    try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y1, .u = 0.0, .v = 0.0, .color = white_color });
+    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y2, .u = 1.0, .v = 0.0, .color = white_color });
+    try vertices.append(allocator, .{ .x = ndc_x4, .y = ndc_y4, .u = 0.0, .v = 1.0, .color = white_color });
+    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y2, .u = 1.0, .v = 0.0, .color = white_color });
+    try vertices.append(allocator, .{ .x = ndc_x3, .y = ndc_y3, .u = 1.0, .v = 1.0, .color = white_color });
+    try vertices.append(allocator, .{ .x = ndc_x4, .y = ndc_y4, .u = 0.0, .v = 1.0, .color = white_color });
+
+    try addBatch(batches, allocator, start, 6, tex, true, scissor);
+}
+
+fn getOrRenderCachedText(
+    state: *app_state.ViewerState,
+    cmd_buf: sdl.gpu.CommandBuffer,
+    fonts: []const ?sdl.Font,
+    text_data: clay.TextRenderData,
+    bb: clay.BoundingBox,
+    scale_x: f32,
+    allocator: std.mem.Allocator,
+    temp_buffers: *std.ArrayList(sdl.gpu.TransferBuffer),
+    tb_offset: *usize,
+) !?CachedText {
+    if (text_data.font_id >= fonts.len) return null;
+    const font = fonts[text_data.font_id] orelse return null;
+
+    const len = @as(usize, @intCast(text_data.string_contents.length));
+    const text_slice = text_data.string_contents.chars[0..len];
+
+    const target_font_size = @as(f32, @floatFromInt(text_data.font_size)) * scale_x;
+    const target_font_size_u16 = @as(u16, @intFromFloat(@round(target_font_size)));
+
+    // 1. Check/Lookup cache
+    const color_u32 = @as(u32, @intFromFloat(text_data.text_color[0])) |
+        (@as(u32, @intFromFloat(text_data.text_color[1])) << 8) |
+        (@as(u32, @intFromFloat(text_data.text_color[2])) << 16) |
+        (@as(u32, @intFromFloat(text_data.text_color[3])) << 24);
+
+    const key = app_state.TextCacheKey{
+        .font_id = text_data.font_id,
+        .font_size = target_font_size_u16,
+        .color = color_u32,
+        .hash = std.hash.Wyhash.hash(0, text_slice),
+    };
+
+    if (state.text_cache.getEntry(key)) |entry| {
+        entry.value_ptr.last_used_frame = state.gpu_frame_index;
+        return CachedText{
+            .texture = entry.value_ptr.texture,
+            .w = entry.value_ptr.w,
+            .h = entry.value_ptr.h,
+        };
+    }
+
+    const dev = state.gpu_device.?;
+    const frame_idx = state.gpu_frame_index % 2;
+
+    _ = font.setFontSize(target_font_size);
+
+    const surf = font.renderTextBlended(text_slice, .{
+        .r = @intFromFloat(text_data.text_color[0]),
+        .g = @intFromFloat(text_data.text_color[1]),
+        .b = @intFromFloat(text_data.text_color[2]),
+        .a = @intFromFloat(text_data.text_color[3]),
+    }) catch return null;
+    defer surf.destroy();
+
+    const converted = surf.convert(sdl.PixelFormat.rgba32) orelse return null;
+    defer converted.destroy();
+
+    var leading_spaces: usize = 0;
+    while (leading_spaces < text_slice.len and text_slice[leading_spaces] == ' ') : (leading_spaces += 1) {}
+
+    var leading_space_w: usize = 0;
+    if (leading_spaces > 0 and leading_spaces < text_slice.len) {
+        if (font.getStringSize(text_slice[0..leading_spaces])) |s| {
+            leading_space_w = @intCast(s.w);
+        }
+    }
+
+    const surf_w: usize = @intCast(converted.w());
+    const surf_h: usize = @intCast(converted.h());
+    const target_w: usize = @max(surf_w + leading_space_w, @as(usize, @intFromFloat(@round(bb.width * scale_x))));
+    const dst_start_byte = @min(leading_space_w * 4, if (target_w > surf_w) (target_w - surf_w) * 4 else 0);
+
+    const tex_info = sdl.gpu.TextureCreateInfo{
+        .type = .type_2d,
+        .format = .rgba8_unorm,
+        .usage = sdl.gpu.TextureUsage.sampler,
+        .width = @intCast(target_w),
+        .height = @intCast(surf_h),
+        .layer_count_or_depth = 1,
+        .num_levels = 1,
+        .sample_count = .count_1,
+        .props = 0,
+    };
+    const tex = dev.createTexture(&tex_info) orelse return null;
+
+    const size = target_w * surf_h * 4;
+    const aligned_offset = std.mem.alignForward(usize, tb_offset.*, 512);
+    const required_capacity = aligned_offset + size;
+
+    if (state.gpu_transfer_buffers[frame_idx] == null or state.gpu_buffer_capacities[frame_idx] < required_capacity) {
+        const new_tbcap = std.mem.alignForward(usize, @max(required_capacity * 2, 65536), 4096);
+        if (state.gpu_transfer_buffers[frame_idx]) |old_tb| {
+            temp_buffers.append(allocator, old_tb) catch {};
+        }
+        state.gpu_transfer_buffers[frame_idx] = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
+            .usage = .upload,
+            .size = @intCast(new_tbcap),
+            .props = 0,
+        });
+        if (state.gpu_transfer_buffers[frame_idx] == null) {
+            state.gpu_buffer_capacities[frame_idx] = 0;
+            dev.releaseTexture(tex);
+            return null;
+        }
+        state.gpu_buffer_capacities[frame_idx] = new_tbcap;
+    }
+
+    const transfer_buf = state.gpu_transfer_buffers[frame_idx].?;
+    const mapped_raw: [*]u8 = dev.mapTransferBuffer(transfer_buf, false) orelse {
+        dev.releaseTexture(tex);
+        return null;
+    };
+    const mapped = mapped_raw + aligned_offset;
+    const src_row_bytes: usize = surf_w * 4;
+    const dst_row_bytes: usize = target_w * 4;
+    const pitch: usize = @intCast(converted.pitch());
+
+    @memset(mapped[0..size], 0);
+
+    var row_y: usize = 0;
+    while (row_y < surf_h) : (row_y += 1) {
+        const src_row = converted.pixels()[row_y * pitch .. row_y * pitch + src_row_bytes];
+        const dst_row = mapped[row_y * dst_row_bytes + dst_start_byte .. row_y * dst_row_bytes + dst_start_byte + src_row_bytes];
+        @memcpy(dst_row, src_row);
+    }
+    dev.unmapTransferBuffer(transfer_buf);
+
+    const copy_pass = cmd_buf.beginCopyPass() orelse {
+        dev.releaseTexture(tex);
+        return null;
+    };
+    copy_pass.uploadToTexture(&sdl.gpu.TextureTransferInfo{
+        .transfer_buffer = transfer_buf,
+        .offset = @intCast(aligned_offset),
+        .pixels_per_row = @intCast(target_w),
+        .rows_per_layer = @intCast(surf_h),
+    }, &sdl.gpu.TextureRegion{
+        .texture = tex,
+        .w = @intCast(target_w),
+        .h = @intCast(surf_h),
+        .d = 1,
+    }, false);
+    copy_pass.end();
+
+    tb_offset.* = aligned_offset + size;
+
+    const w_f: f32 = @floatFromInt(target_w);
+    const h_f: f32 = @floatFromInt(surf_h);
+
+    state.text_cache.put(state.allocator, key, .{
+        .texture = tex,
+        .w = w_f,
+        .h = h_f,
+        .last_used_frame = state.gpu_frame_index,
+    }) catch {
+        dev.releaseTexture(tex);
+        return null;
+    };
+
+    return CachedText{
+        .texture = tex,
+        .w = w_f,
+        .h = h_f,
+    };
+}
+
 pub fn renderClayCommands(
     state: *app_state.ViewerState,
     cmd_buf: sdl.gpu.CommandBuffer,
@@ -114,358 +498,79 @@ pub fn renderClayCommands(
                 current_scissor = null;
             },
             .rectangle => {
-                const config = rcmd.render_data.rectangle;
-                const start = @as(u32, @intCast(vertices.items.len));
-
-                const corner_radius = config.corner_radius.top_left * scale_x;
-                if (corner_radius > 0) {
-                    try geometry.renderFillRoundedRect(&vertices, allocator, rect, corner_radius, config.background_color, f_win_w, f_win_h);
-                } else {
-                    try geometry.appendRectQuad(&vertices, allocator, rect, config.background_color, f_win_w, f_win_h);
-                }
-
-                const count = @as(u32, @intCast(vertices.items.len)) - start;
-                if (count > 0) {
-                    try addBatch(&batches, allocator, start, count, state.white_texture.?, false, current_scissor);
-                }
+                try appendRectangleCommand(
+                    &vertices,
+                    &batches,
+                    allocator,
+                    rect,
+                    rcmd.render_data.rectangle,
+                    scale_x,
+                    f_win_w,
+                    f_win_h,
+                    state.white_texture.?,
+                    current_scissor,
+                );
             },
             .text => {
-                const text_data = rcmd.render_data.text;
-                if (text_data.font_id >= fonts.len) continue;
-                const font = fonts[text_data.font_id] orelse continue;
+                if (try getOrRenderCachedText(
+                    state,
+                    cmd_buf,
+                    fonts,
+                    rcmd.render_data.text,
+                    bb,
+                    scale_x,
+                    allocator,
+                    temp_buffers,
+                    &tb_offset,
+                )) |cached| {
+                    const offset_y = @round((rect.h - cached.h) / 2.0);
+                    const world_y = rect.y + @max(0.0, offset_y);
+                    const world_x = rect.x;
 
-                const len = @as(usize, @intCast(text_data.string_contents.length));
-                const text_slice = text_data.string_contents.chars[0..len];
-
-                const target_font_size = @as(f32, @floatFromInt(text_data.font_size)) * scale_x;
-                const target_font_size_u16 = @as(u16, @intFromFloat(@round(target_font_size)));
-
-                // 1. Check/Lookup cache
-                const color_u32 = @as(u32, @intFromFloat(text_data.text_color[0])) |
-                    (@as(u32, @intFromFloat(text_data.text_color[1])) << 8) |
-                    (@as(u32, @intFromFloat(text_data.text_color[2])) << 16) |
-                    (@as(u32, @intFromFloat(text_data.text_color[3])) << 24);
-
-                const key = app_state.TextCacheKey{
-                    .font_id = text_data.font_id,
-                    .font_size = target_font_size_u16,
-                    .color = color_u32,
-                    .hash = std.hash.Wyhash.hash(0, text_slice),
-                };
-
-                var cached_tex: ?sdl.gpu.Texture = null;
-                var w_f: f32 = 0.0;
-                var h_f: f32 = 0.0;
-
-                if (state.text_cache.getEntry(key)) |entry| {
-                    entry.value_ptr.last_used_frame = state.gpu_frame_index;
-                    cached_tex = entry.value_ptr.texture;
-                    w_f = entry.value_ptr.w;
-                    h_f = entry.value_ptr.h;
-                } else {
-                    _ = font.setFontSize(target_font_size);
-
-                    const surf = font.renderTextBlended(text_slice, .{
-                        .r = @intFromFloat(text_data.text_color[0]),
-                        .g = @intFromFloat(text_data.text_color[1]),
-                        .b = @intFromFloat(text_data.text_color[2]),
-                        .a = @intFromFloat(text_data.text_color[3]),
-                    }) catch continue;
-                    defer surf.destroy();
-
-                    const converted = surf.convert(sdl.PixelFormat.rgba32) orelse continue;
-                    defer converted.destroy();
-
-                    var leading_spaces: usize = 0;
-                    while (leading_spaces < text_slice.len and text_slice[leading_spaces] == ' ') : (leading_spaces += 1) {}
-
-                    var leading_space_w: usize = 0;
-                    if (leading_spaces > 0 and leading_spaces < text_slice.len) {
-                        if (font.getStringSize(text_slice[0..leading_spaces])) |s| {
-                            leading_space_w = @intCast(s.w);
-                        }
-                    }
-
-                    const surf_w: usize = @intCast(converted.w());
-                    const surf_h: usize = @intCast(converted.h());
-                    const target_w: usize = @max(surf_w + leading_space_w, @as(usize, @intFromFloat(@round(bb.width * scale_x))));
-                    const dst_start_byte = @min(leading_space_w * 4, if (target_w > surf_w) (target_w - surf_w) * 4 else 0);
-
-                    const tex_info = sdl.gpu.TextureCreateInfo{
-                        .type = .type_2d,
-                        .format = .rgba8_unorm,
-                        .usage = sdl.gpu.TextureUsage.sampler,
-                        .width = @intCast(target_w),
-                        .height = @intCast(surf_h),
-                        .layer_count_or_depth = 1,
-                        .num_levels = 1,
-                        .sample_count = .count_1,
-                        .props = 0,
-                    };
-                    const tex = dev.createTexture(&tex_info) orelse continue;
-
-                    const size = target_w * surf_h * 4;
-                    const aligned_offset = std.mem.alignForward(usize, tb_offset, 512);
-                    const required_capacity = aligned_offset + size;
-
-                    if (state.gpu_transfer_buffers[frame_idx] == null or state.gpu_buffer_capacities[frame_idx] < required_capacity) {
-                        const new_tbcap = std.mem.alignForward(usize, @max(required_capacity * 2, 65536), 4096);
-                        if (state.gpu_transfer_buffers[frame_idx]) |old_tb| {
-                            temp_buffers.append(allocator, old_tb) catch {};
-                        }
-                        state.gpu_transfer_buffers[frame_idx] = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
-                            .usage = .upload,
-                            .size = @intCast(new_tbcap),
-                            .props = 0,
-                        });
-                        if (state.gpu_transfer_buffers[frame_idx] == null) {
-                            state.gpu_buffer_capacities[frame_idx] = 0;
-                            dev.releaseTexture(tex);
-                            continue;
-                        }
-                        state.gpu_buffer_capacities[frame_idx] = new_tbcap;
-                    }
-
-                    const transfer_buf = state.gpu_transfer_buffers[frame_idx].?;
-                    const mapped_raw: [*]u8 = dev.mapTransferBuffer(transfer_buf, false) orelse {
-                        dev.releaseTexture(tex);
-                        continue;
-                    };
-                    const mapped = mapped_raw + aligned_offset;
-                    const src_row_bytes: usize = surf_w * 4;
-                    const dst_row_bytes: usize = target_w * 4;
-                    const pitch: usize = @intCast(converted.pitch());
-
-                    @memset(mapped[0..size], 0);
-
-                    var row_y: usize = 0;
-                    while (row_y < surf_h) : (row_y += 1) {
-                        const src_row = converted.pixels()[row_y * pitch .. row_y * pitch + src_row_bytes];
-                        const dst_row = mapped[row_y * dst_row_bytes + dst_start_byte .. row_y * dst_row_bytes + dst_start_byte + src_row_bytes];
-                        @memcpy(dst_row, src_row);
-                    }
-                    dev.unmapTransferBuffer(transfer_buf);
-
-                    const cmd = cmd_buf;
-                    const copy_pass = cmd.beginCopyPass() orelse {
-                        dev.releaseTexture(tex);
-                        continue;
-                    };
-                    copy_pass.uploadToTexture(&sdl.gpu.TextureTransferInfo{
-                        .transfer_buffer = transfer_buf,
-                        .offset = @intCast(aligned_offset),
-                        .pixels_per_row = @intCast(target_w),
-                        .rows_per_layer = @intCast(surf_h),
-                    }, &sdl.gpu.TextureRegion{
-                        .texture = tex,
-                        .w = @intCast(target_w),
-                        .h = @intCast(surf_h),
-                        .d = 1,
-                    }, false);
-                    copy_pass.end();
-
-                    tb_offset = aligned_offset + size;
-
-                    w_f = @floatFromInt(target_w);
-                    h_f = @floatFromInt(surf_h);
-                    cached_tex = tex;
-
-                    state.text_cache.put(state.allocator, key, .{
-                        .texture = tex,
-                        .w = w_f,
-                        .h = h_f,
-                        .last_used_frame = state.gpu_frame_index,
-                    }) catch {
-                        dev.releaseTexture(tex);
-                        continue;
-                    };
-                }
-
-                const tex = cached_tex.?;
-
-                // Align to pixel grid
-                const offset_y = @round((rect.h - h_f) / 2.0);
-                const world_y = rect.y + @max(0.0, offset_y);
-                const world_x = rect.x;
-
-                const ndc_x1 = (world_x / f_win_w) * 2.0 - 1.0;
-                const ndc_y1 = 1.0 - (world_y / f_win_h) * 2.0;
-                const ndc_x2 = ((world_x + w_f) / f_win_w) * 2.0 - 1.0;
-                const ndc_y2 = 1.0 - ((world_y + h_f) / f_win_h) * 2.0;
-
-                const start = @as(u32, @intCast(vertices.items.len));
-
-                // Append 6 vertices for 2 triangles using white vertex color (packed RGBA8)
-                const white_color = packRgba(255, 255, 255, 255);
-                try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y1, .u = 0.0, .v = 0.0, .color = white_color });
-                try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y1, .u = 1.0, .v = 0.0, .color = white_color });
-                try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y2, .u = 0.0, .v = 1.0, .color = white_color });
-                try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y1, .u = 1.0, .v = 0.0, .color = white_color });
-                try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y2, .u = 1.0, .v = 1.0, .color = white_color });
-                try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y2, .u = 0.0, .v = 1.0, .color = white_color });
-
-                try addBatch(&batches, allocator, start, 6, tex, false, current_scissor);
-            },
-            .border => {
-                const config = rcmd.render_data.border;
-                const min_radius = @min(rect.w, rect.h) / 2.0;
-                const clamped_radii = struct {
-                    top_left: f32,
-                    top_right: f32,
-                    bottom_left: f32,
-                    bottom_right: f32,
-                }{
-                    .top_left = @min(config.corner_radius.top_left * scale_x, min_radius),
-                    .top_right = @min(config.corner_radius.top_right * scale_x, min_radius),
-                    .bottom_left = @min(config.corner_radius.bottom_left * scale_x, min_radius),
-                    .bottom_right = @min(config.corner_radius.bottom_right * scale_x, min_radius),
-                };
-
-                const tag = if (rcmd.user_data) |ptr| app_state.ElementTag.fromInt(@intFromPtr(ptr)) else .none;
-                const is_dashed = (tag == .drop_zone_box);
-
-                const r = config.color[0] / 255.0;
-                const g = config.color[1] / 255.0;
-                const b = config.color[2] / 255.0;
-                const a = config.color[3] / 255.0;
-
-                const start_batch = @as(u32, @intCast(vertices.items.len));
-
-                const border_left = @as(f32, @floatFromInt(config.width.left)) * scale_x;
-                const border_right = @as(f32, @floatFromInt(config.width.right)) * scale_x;
-                const border_top = @as(f32, @floatFromInt(config.width.top)) * scale_x;
-                const border_bottom = @as(f32, @floatFromInt(config.width.bottom)) * scale_x;
-
-                if (border_left > 0) {
-                    const starting_y = rect.y + clamped_radii.top_left;
-                    const length = rect.h - clamped_radii.top_left - clamped_radii.bottom_left;
-                    if (is_dashed) {
-                        try geometry.drawDashedLineV(&vertices, allocator, rect.x, starting_y, starting_y + length, border_left, config.color, 8.0 * scale_x, 6.0 * scale_x, f_win_w, f_win_h);
-                    } else {
-                        const line = sdl.FRect{ .x = rect.x, .y = starting_y, .w = border_left, .h = length };
-                        try geometry.appendRectQuad(&vertices, allocator, line, config.color, f_win_w, f_win_h);
-                    }
-                }
-                if (border_right > 0) {
-                    const starting_x = rect.x + rect.w - border_right;
-                    const starting_y = rect.y + clamped_radii.top_right;
-                    const length = rect.h - clamped_radii.top_right - clamped_radii.bottom_right;
-                    if (is_dashed) {
-                        try geometry.drawDashedLineV(&vertices, allocator, starting_x, starting_y, starting_y + length, border_right, config.color, 8.0 * scale_x, 6.0 * scale_x, f_win_w, f_win_h);
-                    } else {
-                        const line = sdl.FRect{ .x = starting_x, .y = starting_y, .w = border_right, .h = length };
-                        try geometry.appendRectQuad(&vertices, allocator, line, config.color, f_win_w, f_win_h);
-                    }
-                }
-                if (border_top > 0) {
-                    const starting_x = rect.x + clamped_radii.top_left;
-                    const length = rect.w - clamped_radii.top_left - clamped_radii.top_right;
-                    if (is_dashed) {
-                        try geometry.drawDashedLineH(&vertices, allocator, starting_x, starting_x + length, rect.y, border_top, config.color, 8.0 * scale_x, 6.0 * scale_x, f_win_w, f_win_h);
-                    } else {
-                        const line = sdl.FRect{ .x = starting_x, .y = rect.y, .w = length, .h = border_top };
-                        try geometry.appendRectQuad(&vertices, allocator, line, config.color, f_win_w, f_win_h);
-                    }
-                }
-                if (border_bottom > 0) {
-                    const starting_x = rect.x + clamped_radii.bottom_left;
-                    const starting_y = rect.y + rect.h - border_bottom;
-                    const length = rect.w - clamped_radii.bottom_left - clamped_radii.bottom_right;
-                    if (is_dashed) {
-                        try geometry.drawDashedLineH(&vertices, allocator, starting_x, starting_x + length, starting_y, border_bottom, config.color, 8.0 * scale_x, 6.0 * scale_x, f_win_w, f_win_h);
-                    } else {
-                        const line = sdl.FRect{ .x = starting_x, .y = starting_y, .w = length, .h = border_bottom };
-                        try geometry.appendRectQuad(&vertices, allocator, line, config.color, f_win_w, f_win_h);
-                    }
-                }
-
-                if (clamped_radii.top_left > 0) {
-                    try geometry.renderArc(&vertices, .{ .x = rect.x + clamped_radii.top_left, .y = rect.y + clamped_radii.top_left }, clamped_radii.top_left, 180.0, 270.0, border_top, r, g, b, a, allocator, is_dashed, f_win_w, f_win_h);
-                }
-                if (clamped_radii.top_right > 0) {
-                    try geometry.renderArc(&vertices, .{ .x = rect.x + rect.w - clamped_radii.top_right, .y = rect.y + clamped_radii.top_right }, clamped_radii.top_right, 270.0, 360.0, border_top, r, g, b, a, allocator, is_dashed, f_win_w, f_win_h);
-                }
-                if (clamped_radii.bottom_left > 0) {
-                    try geometry.renderArc(&vertices, .{ .x = rect.x + clamped_radii.bottom_left, .y = rect.y + rect.h - clamped_radii.bottom_left }, clamped_radii.bottom_left, 90.0, 180.0, border_bottom, r, g, b, a, allocator, is_dashed, f_win_w, f_win_h);
-                }
-                if (clamped_radii.bottom_right > 0) {
-                    try geometry.renderArc(&vertices, .{ .x = rect.x + rect.w - clamped_radii.bottom_right, .y = rect.y + rect.h - clamped_radii.bottom_right }, clamped_radii.bottom_right, 0.0, 90.0, border_bottom, r, g, b, a, allocator, is_dashed, f_win_w, f_win_h);
-                }
-
-                const count = @as(u32, @intCast(vertices.items.len)) - start_batch;
-                if (count > 0) {
-                    try addBatch(&batches, allocator, start_batch, count, state.white_texture.?, false, current_scissor);
-                }
-            },
-            .image => {
-                const texture: ?sdl.gpu.Texture = if (rcmd.render_data.image.image_data) |ptr| sdl.gpu.Texture{ .ptr = @ptrCast(@alignCast(ptr)) } else null;
-                if (texture) |tex| {
-                    var dst_w = rect.w;
-                    var dst_h = rect.h;
-                    const angle = state.rotation_angle;
-                    const is_90_or_270 = std.math.approxEqAbs(f32, angle, 90.0, 0.01) or std.math.approxEqAbs(f32, angle, 270.0, 0.01);
-                    if (is_90_or_270) {
-                        dst_w = rect.h;
-                        dst_h = rect.w;
-                    }
-                    var dst_rect = rect;
-                    dst_rect.w = dst_w * state.zoom_factor;
-                    dst_rect.h = dst_h * state.zoom_factor;
-                    const center_x = rect.x + rect.w / 2.0;
-                    const center_y = rect.y + rect.h / 2.0;
-                    dst_rect.x = center_x - (dst_rect.w / 2.0) + state.pan_x;
-                    dst_rect.y = center_y - (dst_rect.h / 2.0) + state.pan_y;
-
-                    const rad = angle * (std.math.pi / 180.0);
-                    const cos_val = @cos(rad);
-                    const sin_val = @sin(rad);
-
-                    const half_w = dst_rect.w * 0.5;
-                    const half_h = dst_rect.h * 0.5;
-                    const c_x = dst_rect.x + half_w;
-                    const c_y = dst_rect.y + half_h;
-
-                    const rx1 = -half_w * cos_val - (-half_h) * sin_val;
-                    const ry1 = -half_w * sin_val + (-half_h) * cos_val;
-
-                    const rx2 = half_w * cos_val - (-half_h) * sin_val;
-                    const ry2 = half_w * sin_val + (-half_h) * cos_val;
-
-                    const rx3 = half_w * cos_val - half_h * sin_val;
-                    const ry3 = half_w * sin_val + half_h * cos_val;
-
-                    const rx4 = -half_w * cos_val - half_h * sin_val;
-                    const ry4 = -half_w * sin_val + half_h * cos_val;
-
-                    const world_x1 = c_x + rx1;
-                    const world_y1 = c_y + ry1;
-                    const world_x2 = c_x + rx2;
-                    const world_y2 = c_y + ry2;
-                    const world_x3 = c_x + rx3;
-                    const world_y3 = c_y + ry3;
-                    const world_x4 = c_x + rx4;
-                    const world_y4 = c_y + ry4;
-
-                    const ndc_x1 = (world_x1 / f_win_w) * 2.0 - 1.0;
-                    const ndc_y1 = 1.0 - (world_y1 / f_win_h) * 2.0;
-                    const ndc_x2 = (world_x2 / f_win_w) * 2.0 - 1.0;
-                    const ndc_y2 = 1.0 - (world_y2 / f_win_h) * 2.0;
-                    const ndc_x3 = (world_x3 / f_win_w) * 2.0 - 1.0;
-                    const ndc_y3 = 1.0 - (world_y3 / f_win_h) * 2.0;
-                    const ndc_x4 = (world_x4 / f_win_w) * 2.0 - 1.0;
-                    const ndc_y4 = 1.0 - (world_y4 / f_win_h) * 2.0;
+                    const ndc_x1 = (world_x / f_win_w) * 2.0 - 1.0;
+                    const ndc_y1 = 1.0 - (world_y / f_win_h) * 2.0;
+                    const ndc_x2 = ((world_x + cached.w) / f_win_w) * 2.0 - 1.0;
+                    const ndc_y2 = 1.0 - ((world_y + cached.h) / f_win_h) * 2.0;
 
                     const start = @as(u32, @intCast(vertices.items.len));
                     const white_color = packRgba(255, 255, 255, 255);
                     try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y1, .u = 0.0, .v = 0.0, .color = white_color });
-                    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y2, .u = 1.0, .v = 0.0, .color = white_color });
-                    try vertices.append(allocator, .{ .x = ndc_x4, .y = ndc_y4, .u = 0.0, .v = 1.0, .color = white_color });
-                    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y2, .u = 1.0, .v = 0.0, .color = white_color });
-                    try vertices.append(allocator, .{ .x = ndc_x3, .y = ndc_y3, .u = 1.0, .v = 1.0, .color = white_color });
-                    try vertices.append(allocator, .{ .x = ndc_x4, .y = ndc_y4, .u = 0.0, .v = 1.0, .color = white_color });
+                    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y1, .u = 1.0, .v = 0.0, .color = white_color });
+                    try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y2, .u = 0.0, .v = 1.0, .color = white_color });
+                    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y1, .u = 1.0, .v = 0.0, .color = white_color });
+                    try vertices.append(allocator, .{ .x = ndc_x2, .y = ndc_y2, .u = 1.0, .v = 1.0, .color = white_color });
+                    try vertices.append(allocator, .{ .x = ndc_x1, .y = ndc_y2, .u = 0.0, .v = 1.0, .color = white_color });
 
-                    try addBatch(&batches, allocator, start, 6, tex, true, current_scissor);
+                    try addBatch(&batches, allocator, start, 6, cached.texture, false, current_scissor);
                 }
+            },
+            .border => {
+                try appendBorderCommand(
+                    &vertices,
+                    &batches,
+                    allocator,
+                    rect,
+                    rcmd.render_data.border,
+                    rcmd.user_data,
+                    scale_x,
+                    f_win_w,
+                    f_win_h,
+                    state.white_texture.?,
+                    current_scissor,
+                );
+            },
+            .image => {
+                try appendImageCommand(
+                    &vertices,
+                    &batches,
+                    allocator,
+                    rect,
+                    rcmd.render_data.image.image_data,
+                    state,
+                    f_win_w,
+                    f_win_h,
+                    current_scissor,
+                );
             },
             else => {
                 std.log.warn("Skipping unhandled render command type: {}", .{rcmd.command_type});

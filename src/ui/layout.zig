@@ -112,264 +112,22 @@ pub fn renderFrame(
             frame_allocator,
         );
 
-        // Header/Title bar UI
-        if (!state.is_fullscreen) {
-            var raw_title: []const u8 = "Peng Image Viewer";
-            if (total_images > 0) {
-                if (state.current_index) |idx| {
-                    state.lockImageList();
-                    defer state.unlockImageList();
-                    if (idx < state.image_list.items.len) {
-                        const path = state.image_list.items[idx];
-                        raw_title = std.fs.path.basename(path);
-                    }
-                }
-            }
+        try renderHeaderBar(
+            state,
+            total_images,
+            available_width,
+            title_bar_h,
+            frame_allocator,
+            measure_data,
+        );
 
-            if (state.window) |win| {
-                const title_changed = if (state.cached_window_title) |cached|
-                    !std.mem.eql(u8, cached, raw_title)
-                else
-                    true;
-
-                if (title_changed) {
-                    if (frame_allocator.dupeZ(u8, raw_title)) |tz| {
-                        win.setTitle(tz);
-                    } else |err| {
-                        std.log.err("Failed to allocate window title string: {}", .{err});
-                    }
-
-                    if (state.cached_window_title) |cached| {
-                        state.allocator.free(cached);
-                    }
-                    state.cached_window_title = state.allocator.dupe(u8, raw_title) catch |err| blk: {
-                        std.log.err("Failed to update cached window title: {}", .{err});
-                        break :blk null;
-                    };
-                }
-            }
-
-            const is_loading = state.is_loading_files.load(.acquire);
-            var count_str: ?[]const u8 = null;
-            if (total_images > 0) {
-                const idx = (state.current_index orelse 0) + 1;
-                const count_buf = try frame_allocator.alloc(u8, 128);
-                if (state.slideshow_active) {
-                    count_str = try std.fmt.bufPrint(count_buf, "Image {} of {} [Slide Show {d:.1}s]", .{ idx, total_images, state.slideshow_interval_s });
-                } else if (is_loading) {
-                    count_str = try std.fmt.bufPrint(count_buf, "Image {} of {}...", .{ idx, total_images });
-                } else {
-                    count_str = try std.fmt.bufPrint(count_buf, "Image {} of {}", .{ idx, total_images });
-                }
-            } else if (is_loading) {
-                count_str = "Loading images...";
-            }
-
-            var right_text_w: f32 = 0.0;
-            if (count_str) |cstr| {
-                var count_cfg = clay.TextElementConfig{
-                    .font_id = 0,
-                    .font_size = 12,
-                };
-                right_text_w = sdl3MeasureText(cstr, &count_cfg, measure_data).w;
-            }
-
-            const padding_w = 40.0;
-            const gap_w = 20.0;
-            const max_title_w = @max(available_width - padding_w - right_text_w - gap_w, 40.0);
-
-            const font_size_u16: u16 = 16;
-            const title_display = truncateFilename(frame_allocator, raw_title, max_title_w, font_size_u16, measure_data);
-
-            clay.UI()(.{
-                .id = clay.getElementId("TitleBar"),
-                .layout = .{
-                    .sizing = .{
-                        .w = .grow,
-                        .h = .fixed(title_bar_h),
-                    },
-                    .direction = .left_to_right,
-                    .child_alignment = .{ .x = .left, .y = .center },
-                    .padding = .{
-                        .left = 20,
-                        .right = 20,
-                    },
-                },
-                .background_color = theme.crust,
-                .border = .{
-                    .width = .{ .bottom = 1 },
-                    .color = theme.surface0,
-                },
-            })({
-                clay.text(title_display, .{
-                    .color = theme.text,
-                    .font_size = font_size_u16,
-                    .font_id = 0,
-                });
-
-                clay.UI()(.{ .layout = .{ .sizing = .{ .w = .grow, .h = .grow } } })({});
-
-                if (count_str) |cstr| {
-                    clay.text(cstr, .{
-                        .color = theme.subtext0,
-                        .font_size = 12,
-                        .font_id = 0,
-                    });
-                }
-            });
-        }
-
-        // Center Viewport Area
-        clay.UI()(.{
-            .id = clay.getElementId("Viewport"),
-            .layout = .{
-                .sizing = .{ .w = .grow, .h = .grow },
-                .child_alignment = .{ .x = .center, .y = .center },
-            },
-            .clip = .{ .horizontal = true, .vertical = true },
-        })({
-            if (current_entry) |entry| {
-                const show_thumb = (state.debug_show_thumb or entry.status != .loaded_gpu) and (entry.thumb_gpu_texture != null);
-                if (show_thumb) {
-                    const thumb_tex = entry.thumb_gpu_texture.?;
-                    clay.UI()(.{
-                        .id = clay.getElementId("ImageCanvas"),
-                        .layout = .{
-                            .sizing = .{
-                                .w = .fixed(draw_w),
-                                .h = .fixed(draw_h),
-                            },
-                        },
-                        .image = .{
-                            .image_data = thumb_tex.asOpaque(),
-                        },
-                    })({});
-                } else switch (entry.status) {
-                    .loaded_gpu => |gpu| {
-                        const tex = gpu.gpu_texture;
-                        clay.UI()(.{
-                            .id = clay.getElementId("ImageCanvas"),
-                            .layout = .{
-                                .sizing = .{
-                                    .w = .fixed(draw_w),
-                                    .h = .fixed(draw_h),
-                                },
-                            },
-                            .image = .{
-                                .image_data = tex.asOpaque(),
-                            },
-                        })({});
-                    },
-                    .loaded_cpu => {
-                        clay.UI()(.{
-                            .id = clay.getElementId("ImageCanvas"),
-                            .layout = .{
-                                .sizing = .{
-                                    .w = .fixed(draw_w),
-                                    .h = .fixed(draw_h),
-                                },
-                            },
-                        })({});
-                    },
-                    .decoding => {
-                        clay.UI()(.{
-                            .layout = .{
-                                .sizing = .{ .w = .grow, .h = .grow },
-                                .direction = .top_to_bottom,
-                                .child_alignment = .{ .x = .center, .y = .center },
-                                .child_gap = 10,
-                            },
-                        })({
-                            clay.text("Loading image...", .{
-                                .color = theme.pink,
-                                .font_size = 22,
-                                .font_id = 0,
-                            });
-                        });
-                    },
-                    else => {
-                        clay.UI()(.{
-                            .layout = .{
-                                .sizing = .{ .w = .grow, .h = .grow },
-                                .direction = .top_to_bottom,
-                                .child_alignment = .{ .x = .center, .y = .center },
-                                .child_gap = 10,
-                            },
-                        })({
-                            clay.text("Failed to Load Image", .{
-                                .color = theme.red,
-                                .font_size = 22,
-                                .font_id = 0,
-                            });
-                        });
-                    },
-                }
-            } else if (state.is_loading_files.load(.acquire) or total_images > 0) {
-                // Centered viewport loading screen while file discovery is active
-                clay.UI()(.{
-                    .layout = .{
-                        .sizing = .{ .w = .grow, .h = .grow },
-                        .direction = .top_to_bottom,
-                        .child_alignment = .{ .x = .center, .y = .center },
-                        .child_gap = 12,
-                    },
-                })({
-                    clay.text("Loading Images...", .{
-                        .color = theme.pink,
-                        .font_size = 22,
-                        .font_id = 0,
-                    });
-                    clay.text("Discovering files in background...", .{
-                        .color = theme.subtext0,
-                        .font_size = 14,
-                        .font_id = 0,
-                    });
-                });
-            } else {
-                // Empty state screen
-                clay.UI()(.{
-                    .layout = .{
-                        .sizing = .{ .w = .grow, .h = .grow },
-                        .direction = .top_to_bottom,
-                        .child_alignment = .{ .x = .center, .y = .center },
-                    },
-                })({
-                    clay.UI()(.{
-                        .id = clay.ElementId.ID("DropZoneBox"),
-                        .layout = .{
-                            .sizing = .{ .w = .fit, .h = .fit },
-                            .direction = .top_to_bottom,
-                            .child_alignment = .{ .x = .center, .y = .center },
-                            .child_gap = 16,
-                            .padding = .{
-                                .left = 40,
-                                .right = 40,
-                                .top = 32,
-                                .bottom = 32,
-                            },
-                        },
-                        .border = .{
-                            .width = .{ .left = 2, .right = 2, .top = 2, .bottom = 2 },
-                            .color = theme.overlay0,
-                        },
-                        .corner_radius = .all(12),
-                        .user_data = @ptrFromInt(@intFromEnum(ElementTag.drop_zone_box)),
-                    })({
-                        clay.text("No Images Loaded", .{
-                            .color = theme.text,
-                            .font_size = 22,
-                            .font_id = 0,
-                        });
-
-                        clay.text("Drag & Drop images or directories here to view them.", .{
-                            .color = theme.subtext0,
-                            .font_size = 14,
-                            .font_id = 0,
-                        });
-                    });
-                });
-            }
-        });
+        renderViewport(
+            state,
+            current_entry,
+            draw_w,
+            draw_h,
+            total_images,
+        );
     });
 
     const render_commands = clay.endLayout();
@@ -487,3 +245,292 @@ pub fn renderFrame(
         _ = cmd_wrapper.submit();
     }
 }
+
+pub fn updateWindowTitle(
+    state: *ViewerState,
+    total_images: usize,
+    frame_allocator: std.mem.Allocator,
+) []const u8 {
+    var raw_title: []const u8 = "Peng Image Viewer";
+    if (total_images > 0) {
+        if (state.current_index) |idx| {
+            state.lockImageList();
+            defer state.unlockImageList();
+            if (idx < state.image_list.items.len) {
+                const path = state.image_list.items[idx];
+                raw_title = std.fs.path.basename(path);
+            }
+        }
+    }
+
+    if (state.window) |win| {
+        const title_changed = if (state.cached_window_title) |cached|
+            !std.mem.eql(u8, cached, raw_title)
+        else
+            true;
+
+        if (title_changed) {
+            if (frame_allocator.dupeZ(u8, raw_title)) |tz| {
+                win.setTitle(tz);
+            } else |err| {
+                std.log.err("Failed to allocate window title string: {}", .{err});
+            }
+
+            if (state.cached_window_title) |cached| {
+                state.allocator.free(cached);
+            }
+            state.cached_window_title = state.allocator.dupe(u8, raw_title) catch |err| blk: {
+                std.log.err("Failed to update cached window title: {}", .{err});
+                break :blk null;
+            };
+        }
+    }
+
+    return raw_title;
+}
+
+pub fn renderHeaderBar(
+    state: *ViewerState,
+    total_images: usize,
+    available_width: f32,
+    title_bar_h: f32,
+    frame_allocator: std.mem.Allocator,
+    measure_data: *const MeasureTextUserData,
+) !void {
+    if (state.is_fullscreen) return;
+
+    const raw_title = updateWindowTitle(state, total_images, frame_allocator);
+
+    const is_loading = state.is_loading_files.load(.acquire);
+    var count_str: ?[]const u8 = null;
+    if (total_images > 0) {
+        const idx = (state.current_index orelse 0) + 1;
+        const count_buf = try frame_allocator.alloc(u8, 128);
+        if (state.slideshow_active) {
+            count_str = try std.fmt.bufPrint(count_buf, "Image {} of {} [Slide Show {d:.1}s]", .{ idx, total_images, state.slideshow_interval_s });
+        } else if (is_loading) {
+            count_str = try std.fmt.bufPrint(count_buf, "Image {} of {}...", .{ idx, total_images });
+        } else {
+            count_str = try std.fmt.bufPrint(count_buf, "Image {} of {}", .{ idx, total_images });
+        }
+    } else if (is_loading) {
+        count_str = "Loading images...";
+    }
+
+    var right_text_w: f32 = 0.0;
+    if (count_str) |cstr| {
+        var count_cfg = clay.TextElementConfig{
+            .font_id = 0,
+            .font_size = 12,
+        };
+        right_text_w = sdl3MeasureText(cstr, &count_cfg, measure_data).w;
+    }
+
+    const padding_w = 40.0;
+    const gap_w = 20.0;
+    const max_title_w = @max(available_width - padding_w - right_text_w - gap_w, 40.0);
+
+    const font_size_u16: u16 = 16;
+    const title_display = truncateFilename(frame_allocator, raw_title, max_title_w, font_size_u16, measure_data);
+
+    clay.UI()(.{
+        .id = clay.getElementId("TitleBar"),
+        .layout = .{
+            .sizing = .{
+                .w = .grow,
+                .h = .fixed(title_bar_h),
+            },
+            .direction = .left_to_right,
+            .child_alignment = .{ .x = .left, .y = .center },
+            .padding = .{
+                .left = 20,
+                .right = 20,
+            },
+        },
+        .background_color = theme.crust,
+        .border = .{
+            .width = .{ .bottom = 1 },
+            .color = theme.surface0,
+        },
+    })({
+        clay.text(title_display, .{
+            .color = theme.text,
+            .font_size = font_size_u16,
+            .font_id = 0,
+        });
+
+        clay.UI()(.{ .layout = .{ .sizing = .{ .w = .grow, .h = .grow } } })({});
+
+        if (count_str) |cstr| {
+            clay.text(cstr, .{
+                .color = theme.subtext0,
+                .font_size = 12,
+                .font_id = 0,
+            });
+        }
+    });
+}
+
+pub fn renderEmptyState() void {
+    clay.UI()(.{
+        .layout = .{
+            .sizing = .{ .w = .grow, .h = .grow },
+            .direction = .top_to_bottom,
+            .child_alignment = .{ .x = .center, .y = .center },
+        },
+    })({
+        clay.UI()(.{
+            .id = clay.ElementId.ID("DropZoneBox"),
+            .layout = .{
+                .sizing = .{ .w = .fit, .h = .fit },
+                .direction = .top_to_bottom,
+                .child_alignment = .{ .x = .center, .y = .center },
+                .child_gap = 16,
+                .padding = .{
+                    .left = 40,
+                    .right = 40,
+                    .top = 32,
+                    .bottom = 32,
+                },
+            },
+            .border = .{
+                .width = .{ .left = 2, .right = 2, .top = 2, .bottom = 2 },
+                .color = theme.overlay0,
+            },
+            .corner_radius = .all(12),
+            .user_data = @ptrFromInt(@intFromEnum(ElementTag.drop_zone_box)),
+        })({
+            clay.text("No Images Loaded", .{
+                .color = theme.text,
+                .font_size = 22,
+                .font_id = 0,
+            });
+
+            clay.text("Drag & Drop images or directories here to view them.", .{
+                .color = theme.subtext0,
+                .font_size = 14,
+                .font_id = 0,
+            });
+        });
+    });
+}
+
+pub fn renderViewport(
+    state: *ViewerState,
+    current_entry: ?app_state.CacheEntry,
+    draw_w: f32,
+    draw_h: f32,
+    total_images: usize,
+) void {
+    clay.UI()(.{
+        .id = clay.getElementId("Viewport"),
+        .layout = .{
+            .sizing = .{ .w = .grow, .h = .grow },
+            .child_alignment = .{ .x = .center, .y = .center },
+        },
+        .clip = .{ .horizontal = true, .vertical = true },
+    })({
+        if (current_entry) |entry| {
+            const show_thumb = (state.debug_show_thumb or entry.status != .loaded_gpu) and (entry.thumb_gpu_texture != null);
+            if (show_thumb) {
+                const thumb_tex = entry.thumb_gpu_texture.?;
+                clay.UI()(.{
+                    .id = clay.getElementId("ImageCanvas"),
+                    .layout = .{
+                        .sizing = .{
+                            .w = .fixed(draw_w),
+                            .h = .fixed(draw_h),
+                        },
+                    },
+                    .image = .{
+                        .image_data = thumb_tex.asOpaque(),
+                    },
+                })({});
+            } else switch (entry.status) {
+                .loaded_gpu => |gpu| {
+                    const tex = gpu.gpu_texture;
+                    clay.UI()(.{
+                        .id = clay.getElementId("ImageCanvas"),
+                        .layout = .{
+                            .sizing = .{
+                                .w = .fixed(draw_w),
+                                .h = .fixed(draw_h),
+                            },
+                        },
+                        .image = .{
+                            .image_data = tex.asOpaque(),
+                        },
+                    })({});
+                },
+                .loaded_cpu => {
+                    clay.UI()(.{
+                        .id = clay.getElementId("ImageCanvas"),
+                        .layout = .{
+                            .sizing = .{
+                                .w = .fixed(draw_w),
+                                .h = .fixed(draw_h),
+                            },
+                        },
+                    })({});
+                },
+                .decoding => {
+                    clay.UI()(.{
+                        .layout = .{
+                            .sizing = .{ .w = .grow, .h = .grow },
+                            .direction = .top_to_bottom,
+                            .child_alignment = .{ .x = .center, .y = .center },
+                            .child_gap = 10,
+                        },
+                    })({
+                        clay.text("Loading image...", .{
+                            .color = theme.pink,
+                            .font_size = 22,
+                            .font_id = 0,
+                        });
+                    });
+                },
+                else => {
+                    clay.UI()(.{
+                        .layout = .{
+                            .sizing = .{ .w = .grow, .h = .grow },
+                            .direction = .top_to_bottom,
+                            .child_alignment = .{ .x = .center, .y = .center },
+                            .child_gap = 10,
+                        },
+                    })({
+                        clay.text("Failed to Load Image", .{
+                            .color = theme.red,
+                            .font_size = 22,
+                            .font_id = 0,
+                        });
+                    });
+                },
+            }
+        } else if (state.is_loading_files.load(.acquire) or total_images > 0) {
+            // Centered viewport loading screen while file discovery is active
+            clay.UI()(.{
+                .layout = .{
+                    .sizing = .{ .w = .grow, .h = .grow },
+                    .direction = .top_to_bottom,
+                    .child_alignment = .{ .x = .center, .y = .center },
+                    .child_gap = 12,
+                },
+            })({
+                clay.text("Loading Images...", .{
+                    .color = theme.pink,
+                    .font_size = 22,
+                    .font_id = 0,
+                });
+                clay.text("Discovering files in background...", .{
+                    .color = theme.subtext0,
+                    .font_size = 14,
+                    .font_id = 0,
+                });
+            });
+        } else {
+            // Empty state screen
+            renderEmptyState();
+        }
+    });
+}
+
