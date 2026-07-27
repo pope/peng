@@ -461,13 +461,9 @@ pub fn uploadSurfaceToGpu(
 
     const src_fmt = current_surf.format();
     const gpu_format: sdl.gpu.TextureFormat = switch (src_fmt) {
-        sdl.PixelFormat.bgra32,
-        sdl.PixelFormat.xrgb8888,
-        sdl.PixelFormat.bgrx8888 => .bgra8_unorm,
+        sdl.PixelFormat.bgra32, sdl.PixelFormat.xrgb8888, sdl.PixelFormat.bgrx8888 => .bgra8_unorm,
 
-        sdl.PixelFormat.rgba32,
-        sdl.PixelFormat.xbgr8888,
-        sdl.PixelFormat.rgbx8888 => .rgba8_unorm,
+        sdl.PixelFormat.rgba32, sdl.PixelFormat.xbgr8888, sdl.PixelFormat.rgbx8888 => .rgba8_unorm,
 
         else => .rgba8_unorm,
     };
@@ -702,12 +698,7 @@ pub fn uploadSurfaceToGpu(
     var conversion_time_ms: f64 = 0.0;
 
     const is_32bit_fmt = switch (cur_fmt) {
-        sdl.PixelFormat.rgba32,
-        sdl.PixelFormat.bgra32,
-        sdl.PixelFormat.xrgb8888,
-        sdl.PixelFormat.xbgr8888,
-        sdl.PixelFormat.rgbx8888,
-        sdl.PixelFormat.bgrx8888 => true,
+        sdl.PixelFormat.rgba32, sdl.PixelFormat.bgra32, sdl.PixelFormat.xrgb8888, sdl.PixelFormat.xbgr8888, sdl.PixelFormat.rgbx8888, sdl.PixelFormat.bgrx8888 => true,
         else => false,
     };
     if (is_32bit_fmt) {
