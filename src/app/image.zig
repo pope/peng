@@ -337,6 +337,10 @@ pub fn decodeWorker(args: *DecodeArgs) void {
 
     const decode_time_ms = @as(f64, @floatFromInt(end_decode - start_decode)) / 1_000_000.0;
 
+    if (surface == null) {
+        std.log.err("decodeWorker: failed to load image '{s}': {s}", .{ path, sdl.getError() });
+    }
+
     if (!isValidJob(state, index, args.generation)) {
         if (surface) |surf| surf.destroy();
         return;

@@ -21,12 +21,22 @@ pub fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
     return false;
 }
 
+pub fn isAppleDouble(filename: []const u8) bool {
+    const basename = std.fs.path.basename(filename);
+    return std.mem.startsWith(u8, basename, "._");
+}
+
 pub fn isImageExtension(ext: []const u8) bool {
     const extensions = [_][]const u8{ ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tga", ".webp" };
     for (extensions) |e| {
         if (eqlIgnoreCase(ext, e)) return true;
     }
     return false;
+}
+
+pub fn isImageFile(filename: []const u8) bool {
+    if (isAppleDouble(filename)) return false;
+    return isImageExtension(std.fs.path.extension(filename));
 }
 
 fn isAllDotDots(path: []const u8) bool {
@@ -136,8 +146,7 @@ pub fn countFolderContents(io: std.Io, folder_path: []const u8) FolderCounts {
         return counts;
     })) |entry| {
         if (entry.kind == .file) {
-            const ext = std.fs.path.extension(entry.name);
-            if (isImageExtension(ext)) {
+            if (isImageFile(entry.name)) {
                 counts.image_count += 1;
             }
         } else if (entry.kind == .directory) {
@@ -210,8 +219,7 @@ pub fn scanDirectory(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.I
 
     while (try it.next(io)) |entry| {
         if (entry.kind == .file) {
-            const ext = std.fs.path.extension(entry.name);
-            if (isImageExtension(ext)) {
+            if (isImageFile(entry.name)) {
                 const full_path = try std.fs.path.join(arena, &.{ dir_path, entry.name });
                 try dir_entries.append(gpa, full_path);
             }
@@ -277,8 +285,7 @@ fn scanDirectoryThreadSafe(state: *ViewerState, gpa: std.mem.Allocator, io: std.
     }) |entry| {
         if (state.generation.load(.acquire) != initial_gen or state.exiting.load(.acquire)) return;
         if (entry.kind == .file) {
-            const ext = std.fs.path.extension(entry.name);
-            if (isImageExtension(ext)) {
+            if (isImageFile(entry.name)) {
                 const name_dup = gpa.dupe(u8, entry.name) catch |err| {
                     std.log.err("Failed to dupe entry name '{s}': {}", .{ entry.name, err });
                     continue;
@@ -340,7 +347,7 @@ fn stdinWorker(args: *StdinArgs) void {
             if (std.Io.Dir.statFile(std.Io.Dir.cwd(), io, trimmed, .{})) |s| {
                 if (s.kind == .directory) {
                     scanDirectoryThreadSafe(state, gpa, io, trimmed, initial_gen);
-                } else if (isImageExtension(std.fs.path.extension(trimmed))) {
+                } else if (isImageFile(trimmed)) {
                     appendPathThreadSafe(state, gpa, trimmed, initial_gen);
                 }
             } else |err| {
@@ -420,8 +427,7 @@ fn pathScanWorker(args: *PathScanArgs) void {
             break;
         }) orelse break;
         if (entry.kind == .file) {
-            const ext = std.fs.path.extension(entry.name);
-            if (isImageExtension(ext)) {
+            if (isImageFile(entry.name)) {
                 const full_path = std.fs.path.join(gpa, &.{ dir_path, entry.name }) catch |err| {
                     std.log.err("Failed to join path for '{s}': {}", .{ entry.name, err });
                     continue;
