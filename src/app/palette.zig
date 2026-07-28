@@ -3,37 +3,8 @@ const fuzzig = @import("fuzzig");
 const types = @import("types.zig");
 const fs = @import("fs.zig");
 
-pub const TextInputBounds = struct {
-    min: f32,
-    max: f32,
-};
-
-pub const PaletteMode = enum {
-    inactive,
-    files,
-    actions,
-    set_brightness,
-    set_contrast,
-    go_to_image,
-    directory_navigator,
-    set_slideshow_interval,
-
-    pub fn isTextInputDialog(self: PaletteMode) bool {
-        return switch (self) {
-            .set_brightness, .set_contrast, .go_to_image, .set_slideshow_interval => true,
-            .inactive, .files, .actions, .directory_navigator => false,
-        };
-    }
-
-    pub fn getTextInputBounds(self: PaletteMode) ?TextInputBounds {
-        return switch (self) {
-            .set_brightness => .{ .min = -1.0, .max = 1.0 },
-            .set_contrast => .{ .min = 0.0, .max = 5.0 },
-            .set_slideshow_interval => .{ .min = 0.1, .max = 3600.0 },
-            .go_to_image, .inactive, .files, .actions, .directory_navigator => null,
-        };
-    }
-};
+pub const TextInputBounds = types.TextInputBounds;
+pub const PaletteMode = types.PaletteMode;
 
 pub const ScoredMatch = struct {
     index: usize,

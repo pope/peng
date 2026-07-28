@@ -12,42 +12,57 @@ const JpegDimensions = exif.JpegDimensions;
 const parseExifDimensions = exif.parseExifDimensions;
 const parseExifOrientation = exif.parseExifOrientation;
 
+/// CPU surface component holding decoded image pixel buffer, dimensions, and decode timing.
+pub const CpuSurfaceComponent = struct {
+    surface: sdl.Surface,
+    w: f32,
+    h: f32,
+    size_bytes: u64,
+    mime_type: []const u8 = "",
+    decode_time_ms: f64 = 0.0,
+    conversion_time_ms: f64 = 0.0,
+    has_thumb: bool = false,
+    thumb_w: f32 = 0.0,
+    thumb_h: f32 = 0.0,
+    thumb_upload_time_ms: f64 = 0.0,
+};
+
+/// GPU texture component holding VRAM texture handle, mipmap metadata, and memory size.
+pub const GpuTextureComponent = struct {
+    gpu_texture: sdl.gpu.Texture,
+    w: f32,
+    h: f32,
+    size_bytes: u64,
+    mime_type: []const u8 = "",
+    decode_time_ms: f64 = 0.0,
+    conversion_time_ms: f64 = 0.0,
+    upload_time_ms: f64 = 0.0,
+    memory_size_bytes: usize,
+    num_mip_levels: u32 = 1,
+    mipmap_time_ms: f64 = 0.0,
+    was_fallback: bool = false,
+    fallback_time_ms: f64 = 0.0,
+    has_thumb: bool = false,
+    thumb_w: f32 = 0.0,
+    thumb_h: f32 = 0.0,
+    thumb_upload_time_ms: f64 = 0.0,
+};
+
+/// Thumbnail component holding lightweight preview GPU texture.
+pub const ThumbComponent = struct {
+    texture: sdl.gpu.Texture,
+    w: f32,
+    h: f32,
+    upload_time_ms: f64,
+};
+
+/// Tagged union tracking the lifecycle state of a cached image entity.
 pub const CacheStatus = union(enum) {
     decoding: struct {
         has_thread: bool = false,
     },
-    loaded_cpu: struct {
-        surface: sdl.Surface,
-        w: f32,
-        h: f32,
-        size_bytes: u64,
-        mime_type: []const u8,
-        decode_time_ms: f64,
-        conversion_time_ms: f64,
-        has_thumb: bool = false,
-        thumb_w: f32 = 0.0,
-        thumb_h: f32 = 0.0,
-        thumb_upload_time_ms: f64 = 0.0,
-    },
-    loaded_gpu: struct {
-        gpu_texture: sdl.gpu.Texture,
-        w: f32,
-        h: f32,
-        size_bytes: u64,
-        mime_type: []const u8,
-        decode_time_ms: f64,
-        conversion_time_ms: f64,
-        upload_time_ms: f64,
-        memory_size_bytes: usize,
-        num_mip_levels: u32 = 1,
-        mipmap_time_ms: f64 = 0.0,
-        was_fallback: bool = false,
-        fallback_time_ms: f64 = 0.0,
-        has_thumb: bool = false,
-        thumb_w: f32 = 0.0,
-        thumb_h: f32 = 0.0,
-        thumb_upload_time_ms: f64 = 0.0,
-    },
+    loaded_cpu: CpuSurfaceComponent,
+    loaded_gpu: GpuTextureComponent,
     uploading: void,
     failed: void,
 };

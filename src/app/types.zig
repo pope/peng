@@ -16,6 +16,57 @@ pub const TextureScaleMode = enum {
     lanczos3,
 };
 
+/// Defines numeric boundaries (min/max range) for text input modal dialogs.
+pub const TextInputBounds = struct {
+    min: f32,
+    max: f32,
+};
+
+/// Tagged enum representing active Command Palette and Modal Overlay view modes.
+pub const PaletteMode = enum {
+    inactive,
+    files,
+    actions,
+    set_brightness,
+    set_contrast,
+    go_to_image,
+    directory_navigator,
+    set_slideshow_interval,
+
+    /// Returns true if this palette mode represents an active text entry dialog.
+    pub fn isTextInputDialog(self: PaletteMode) bool {
+        return switch (self) {
+            .set_brightness, .set_contrast, .go_to_image, .set_slideshow_interval => true,
+            .inactive, .files, .actions, .directory_navigator => false,
+        };
+    }
+
+    /// Returns the valid numeric range for text input dialogs, or null for search modes.
+    pub fn getTextInputBounds(self: PaletteMode) ?TextInputBounds {
+        return switch (self) {
+            .set_brightness => .{ .min = -1.0, .max = 1.0 },
+            .set_contrast => .{ .min = 0.0, .max = 5.0 },
+            .set_slideshow_interval => .{ .min = 0.1, .max = 3600.0 },
+            .go_to_image, .inactive, .files, .actions, .directory_navigator => null,
+        };
+    }
+};
+
+/// Data-driven event payload unifying keyboard shortcuts, IPC socket messages,
+/// command palette triggers, and automated test instructions.
+pub const AppEvent = union(enum) {
+    action: AppActionId,
+    set_zoom: f32,
+    set_pan: struct { dx: f32, dy: f32 },
+    set_adjustments: struct { brightness: f32, contrast: f32 },
+    set_filter: TextureScaleMode,
+    set_palette_mode: PaletteMode,
+    set_debug: bool,
+    wait_load,
+    screenshot: struct { path: []const u8, stream: ?std.net.Stream = null },
+    quit,
+};
+
 pub const MeasureTextUserData = struct {
     fonts: []const ?sdl.Font,
     allocator: std.mem.Allocator,

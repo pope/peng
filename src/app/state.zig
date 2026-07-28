@@ -328,6 +328,14 @@ pub const ColorAdjustments = struct {
     dirty: bool = false,
 };
 
+pub const OverlayFlags = packed struct(u8) {
+    show_info: bool = false,
+    show_stats: bool = false,
+    debug_show_thumb: bool = false,
+    mouse_inside: bool = true,
+    _padding: u4 = 0,
+};
+
 /// UI overlay visibility toggles and dragged positions.
 pub const OverlayState = struct {
     show_info: bool = false,
@@ -338,6 +346,7 @@ pub const OverlayState = struct {
     stats_offset_x: f32 = -20.0,
     stats_offset_y: f32 = 20.0,
     mouse_inside: bool = true,
+    flags: OverlayFlags = .{},
 };
 
 /// UI render performance and batch statistics.

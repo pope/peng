@@ -745,6 +745,97 @@ fn executeRenderPass(
     }
 }
 
+/// Data-driven render packet holding geometry vertices, texture batch draw calls,
+/// and transfer buffer offsets for 2-pass UI frame rendering.
+pub const RenderPacket = struct {
+    vertices: std.ArrayList(Vertex) = .empty,
+    batches: std.ArrayList(BatchItem) = .empty,
+    tb_offset: usize = 0,
+
+    /// Releases vertex and batch command memory.
+    pub fn deinit(self: *RenderPacket, allocator: std.mem.Allocator) void {
+        self.vertices.deinit(allocator);
+        self.batches.deinit(allocator);
+    }
+};
+
+/// Pass 1 of 2-pass rendering: Traverses layout tree and builds geometry vertices
+/// and texture draw command batches into a RenderPacket without submitting GPU render passes.
+pub fn buildRenderPacket(
+    state: *app_state.ViewerState,
+    gpu_res: *app_state.RenderResources,
+    copy_pass: sdl.gpu.CopyPass,
+    fonts: []const ?sdl.Font,
+    r_commands: []const clay.RenderCommand,
+    allocator: std.mem.Allocator,
+    temp_buffers: *std.ArrayList(sdl.gpu.TransferBuffer),
+    win_w: i32,
+    win_h: i32,
+    scale_x: f32,
+    scale_y: f32,
+) !RenderPacket {
+    var packet = RenderPacket{};
+
+    try buildGeometryFromCommands(
+        state,
+        gpu_res,
+        copy_pass,
+        fonts,
+        r_commands,
+        allocator,
+        temp_buffers,
+        win_w,
+        win_h,
+        scale_x,
+        scale_y,
+        &packet.vertices,
+        &packet.batches,
+        &packet.tb_offset,
+    );
+
+    return packet;
+}
+
+/// Pass 2 of 2-pass rendering: Uploads vertex data to GPU memory and executes
+/// batched GPU render pass draw calls for the extracted RenderPacket.
+pub fn executeRenderPacket(
+    state: *app_state.ViewerState,
+    gpu_res: *app_state.RenderResources,
+    cmd_buf: sdl.gpu.CommandBuffer,
+    copy_pass: sdl.gpu.CopyPass,
+    swap_tex: sdl.gpu.Texture,
+    packet: *const RenderPacket,
+    allocator: std.mem.Allocator,
+    temp_buffers: *std.ArrayList(sdl.gpu.TransferBuffer),
+    win_w: i32,
+    win_h: i32,
+) !void {
+    const frame_idx = gpu_res.frame_index % 2;
+
+    const vert_buf = try uploadVertexData(
+        gpu_res,
+        frame_idx,
+        copy_pass,
+        allocator,
+        temp_buffers,
+        packet.vertices.items,
+        packet.tb_offset,
+    );
+
+    copy_pass.end();
+
+    executeRenderPass(
+        state,
+        gpu_res,
+        cmd_buf,
+        swap_tex,
+        packet.batches.items,
+        vert_buf,
+        win_w,
+        win_h,
+    );
+}
+
 pub fn renderClayCommands(
     state: *app_state.ViewerState,
     cmd_buf: sdl.gpu.CommandBuffer,
@@ -761,15 +852,6 @@ pub fn renderClayCommands(
     const start_render = sdl.timer.getTicksNs();
     const gpu_res = if (state.gpu) |*g| g else return error.GpuNotInitialized;
     const dev = gpu_res.device;
-    const frame_idx = gpu_res.frame_index % 2;
-
-    var vertices: std.ArrayList(Vertex) = .empty;
-    defer vertices.deinit(allocator);
-
-    var batches: std.ArrayList(BatchItem) = .empty;
-    defer batches.deinit(allocator);
-
-    var tb_offset: usize = 0;
 
     const copy_pass = cmd_buf.beginCopyPass() orelse {
         std.log.err("SDL GPU beginCopyPass failed in renderClayCommands: {s}", .{sdl.getError()});
@@ -777,7 +859,7 @@ pub fn renderClayCommands(
     };
     errdefer copy_pass.end();
 
-    try buildGeometryFromCommands(
+    var packet = try buildRenderPacket(
         state,
         gpu_res,
         copy_pass,
@@ -789,30 +871,21 @@ pub fn renderClayCommands(
         win_h,
         scale_x,
         scale_y,
-        &vertices,
-        &batches,
-        &tb_offset,
     );
+    defer packet.deinit(allocator);
 
-    const vert_buf = try uploadVertexData(
-        gpu_res,
-        frame_idx,
-        copy_pass,
-        allocator,
-        temp_buffers,
-        vertices.items,
-        tb_offset,
-    );
+    const vertex_count = packet.vertices.items.len;
+    const batch_count = packet.batches.items.len;
 
-    copy_pass.end();
-
-    executeRenderPass(
+    try executeRenderPacket(
         state,
         gpu_res,
         cmd_buf,
+        copy_pass,
         swap_tex,
-        batches.items,
-        vert_buf,
+        &packet,
+        allocator,
+        temp_buffers,
         win_w,
         win_h,
     );
@@ -824,8 +897,8 @@ pub fn renderClayCommands(
     const render_time_ms = @as(f64, @floatFromInt(end_render - start_render)) / 1_000_000.0;
     state.metrics.last_ui_render_time_ms = render_time_ms;
     state.metrics.ui_render_stats.addSample(render_time_ms);
-    state.metrics.last_ui_vertex_count = vertices.items.len;
-    state.metrics.last_ui_batch_count = batches.items.len;
+    state.metrics.last_ui_vertex_count = vertex_count;
+    state.metrics.last_ui_batch_count = batch_count;
 
     gpu_res.frame_index += 1;
 }

@@ -1,6 +1,8 @@
 const std = @import("std");
 const sdl = @import("sdl");
 
+/// Result payload returned after uploading a CPU surface to an SDL GPU texture,
+/// including dimensions, memory usage, and timing statistics.
 pub const GpuUploadResult = struct {
     gpu_texture: sdl.gpu.Texture,
     w: f32,
@@ -14,6 +16,8 @@ pub const GpuUploadResult = struct {
     fallback_time_ms: f64 = 0.0,
 };
 
+/// Uploads a CPU SDL surface to an SDL GPU texture using direct transfer buffers
+/// or high-performance compute shader pixel unpacking when available.
 pub fn uploadSurfaceToGpu(
     dev: sdl.gpu.Device,
     surf: sdl.Surface,
