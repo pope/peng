@@ -485,17 +485,7 @@ test "PaletteState.navigating_up_remembers_previous_folder" {
     try std.testing.expectEqual(expected_idx, palette.selected_idx);
 }
 
-test "PaletteMode.getTextInputBounds" {
-    const brightness_bounds = PaletteMode.set_brightness.getTextInputBounds().?;
-    try std.testing.expectEqual(@as(f32, -1.0), brightness_bounds.min);
-    try std.testing.expectEqual(@as(f32, 1.0), brightness_bounds.max);
 
-    const contrast_bounds = PaletteMode.set_contrast.getTextInputBounds().?;
-    try std.testing.expectEqual(@as(f32, 0.0), contrast_bounds.min);
-    try std.testing.expectEqual(@as(f32, 5.0), contrast_bounds.max);
-
-    try std.testing.expect(PaletteMode.files.getTextInputBounds() == null);
-}
 
 test "PaletteState.getModeData" {
     var palette = PaletteState.init(std.testing.allocator);

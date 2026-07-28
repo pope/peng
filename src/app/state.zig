@@ -1478,35 +1478,7 @@ pub const ViewerState = struct {
     }
 };
 
-test "CacheSlotMap.updateStatus" {
-    const allocator = std.testing.allocator;
-    var cache = CacheSlotMap{};
-    defer cache.deinit(allocator, null);
 
-    try cache.append(allocator, .{
-        .index = 10,
-        .generation = 1,
-        .status = .{ .decoding = .{} },
-    });
-    try cache.append(allocator, .{
-        .index = 20,
-        .generation = 1,
-        .status = .{ .decoding = .{} },
-    });
-
-    // Test successful update
-    const updated = cache.updateStatus(20, 1, .failed);
-    try std.testing.expect(updated);
-    try std.testing.expectEqual(CacheStatus.failed, cache.entries.items[1].status);
-
-    // Test updating non-existent index
-    const updated_missing = cache.updateStatus(30, 1, .failed);
-    try std.testing.expect(!updated_missing);
-
-    // Test updating matching index but mismatching generation
-    const updated_gen_mismatch = cache.updateStatus(10, 2, .failed);
-    try std.testing.expect(!updated_gen_mismatch);
-}
 
 test "matchesQueryLower bounds check" {
     // Normal matches

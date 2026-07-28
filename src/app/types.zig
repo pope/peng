@@ -550,3 +550,15 @@ pub const flat_shortcuts = blk: {
     }
     break :blk list;
 };
+
+test "PaletteMode.getTextInputBounds" {
+    const brightness_bounds = PaletteMode.set_brightness.getTextInputBounds().?;
+    try std.testing.expectEqual(@as(f32, -1.0), brightness_bounds.min);
+    try std.testing.expectEqual(@as(f32, 1.0), brightness_bounds.max);
+
+    const contrast_bounds = PaletteMode.set_contrast.getTextInputBounds().?;
+    try std.testing.expectEqual(@as(f32, 0.0), contrast_bounds.min);
+    try std.testing.expectEqual(@as(f32, 5.0), contrast_bounds.max);
+
+    try std.testing.expect(PaletteMode.files.getTextInputBounds() == null);
+}
