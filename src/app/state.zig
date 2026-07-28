@@ -5,9 +5,8 @@ const clay = @import("zclay");
 const types = @import("types.zig");
 const FrameInput = types.FrameInput;
 const app_input = @import("input.zig");
-const renderer = @import("ui").renderer;
-const commands = @import("commands");
-const graphics = @import("ui").graphics;
+pub const app_gpu = @import("gpu.zig");
+pub const TextCacheModule = @import("text_cache.zig");
 pub const image = @import("image.zig");
 pub const fs = @import("fs.zig");
 pub const events = @import("events.zig");
@@ -27,8 +26,8 @@ pub const readJpegExifOrientation = exif.readJpegExifOrientation;
 pub const eqlIgnoreCase = fs.eqlIgnoreCase;
 pub const isImageExtension = fs.isImageExtension;
 pub const scanDirectory = fs.scanDirectory;
-pub const uploadSurfaceToGpu = graphics.uploadSurfaceToGpu;
-pub const GpuUploadResult = graphics.GpuUploadResult;
+pub const uploadSurfaceToGpu = app_gpu.uploadSurfaceToGpu;
+pub const GpuUploadResult = app_gpu.GpuUploadResult;
 
 pub const ScaleMode = types.ScaleMode;
 pub const TextureScaleMode = types.TextureScaleMode;
@@ -105,7 +104,6 @@ pub const RollingStats = struct {
     }
 };
 
-pub const TextCacheModule = @import("ui").text_cache;
 pub const TextCacheKey = TextCacheModule.TextCacheKey;
 pub const TextCacheValue = TextCacheModule.TextCacheValue;
 pub const TextCache = TextCacheModule.TextCache;
@@ -358,6 +356,8 @@ pub const UiRenderMetrics = struct {
 ///   value copies of parameters (paths, generation counters) and touch zero shared state.
 /// - Workers communicate exclusively by pushing event messages into `event_queue` (MpscQueue).
 /// - The main thread consumes background events during frame updates and updates `ViewerState` safely.
+pub const ActionHandler = *const fn (state: *ViewerState, action_id: types.AppActionId) anyerror!void;
+
 pub const ViewerState = struct {
     gpu: ?RenderResources = null,
 
@@ -374,6 +374,7 @@ pub const ViewerState = struct {
     exiting: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     generation: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     palette: PaletteState,
+    action_handler: ?ActionHandler = null,
 
     // Sub-struct State Encapsulations
     viewport: ViewportState = .{},
@@ -433,7 +434,7 @@ pub const ViewerState = struct {
         defer thumb_surf.destroy();
 
         const gpu_res = self.gpu orelse return;
-        const upload_res = graphics.uploadSurfaceToGpu(gpu_res.device, thumb_surf, gpu_res.unpack_compute_pipeline) orelse return;
+        const upload_res = uploadSurfaceToGpu(gpu_res.device, thumb_surf, gpu_res.unpack_compute_pipeline) orelse return;
 
         if (self.cache.getWithGeneration(entry.index, entry.generation)) |e| {
             if (e.thumb_gpu_texture) |old_t| {
@@ -614,11 +615,13 @@ pub const ViewerState = struct {
     }
 
     pub fn rebuildActionMatches(self: *ViewerState) !void {
-        try self.palette.rebuildActionMatches(commands.actions.app_actions);
+        try self.palette.rebuildActionMatches(types.app_actions);
     }
 
-    pub fn triggerAction(self: *ViewerState, action_id: commands.actions.AppActionId) !void {
-        try commands.actions.triggerAction(self, action_id);
+    pub fn triggerAction(self: *ViewerState, action_id: types.AppActionId) !void {
+        if (self.action_handler) |handler| {
+            try handler(self, action_id);
+        }
     }
 
     pub fn getCurrentEntry(self: *ViewerState) ?CacheEntry {
@@ -640,7 +643,7 @@ pub const ViewerState = struct {
 
         const max_capacity = switch (active_type) {
             .files => self.image_list.items.len,
-            .actions => commands.actions.app_actions.len,
+            .actions => types.app_actions.len,
             else => 0,
         };
         if (max_capacity > 0) {
@@ -789,7 +792,7 @@ pub const ViewerState = struct {
         if (thumb_data.generation != current_gen) return;
         const surf = thumb_data.surface orelse return;
         if (self.gpu) |gpu_res| {
-            if (graphics.uploadSurfaceToGpu(gpu_res.device, surf, gpu_res.unpack_compute_pipeline)) |upload_res| {
+            if (uploadSurfaceToGpu(gpu_res.device, surf, gpu_res.unpack_compute_pipeline)) |upload_res| {
                 if (self.cache.getWithGeneration(thumb_data.index, thumb_data.generation)) |entry| {
                     entry.thumb_gpu_texture = upload_res.gpu_texture;
                     entry.thumb_w = upload_res.w;
@@ -814,7 +817,7 @@ pub const ViewerState = struct {
         if (decoded_data.generation != current_gen) return;
         const surf = decoded_data.surface orelse return;
         if (self.gpu) |gpu_res| {
-            if (graphics.uploadSurfaceToGpu(gpu_res.device, surf, gpu_res.unpack_compute_pipeline)) |full_res| {
+            if (uploadSurfaceToGpu(gpu_res.device, surf, gpu_res.unpack_compute_pipeline)) |full_res| {
                 if (self.cache.getWithGeneration(decoded_data.index, decoded_data.generation)) |entry| {
                     switch (entry.status) {
                         .loaded_cpu => |cpu| cpu.surface.destroy(),

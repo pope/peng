@@ -89,8 +89,6 @@ pub fn build(b: *std.Build) void {
     app_module.addImport("sdl", sdl_module);
     app_module.addImport("zclay", zclay_dep.module("zclay"));
     app_module.addImport("fuzzig", fuzzig_dep.module("fuzzig"));
-    app_module.addImport("ui", ui_module);
-    app_module.addImport("commands", commands_module);
 
     ui_module.addImport("sdl", sdl_module);
     ui_module.addImport("zclay", zclay_dep.module("zclay"));

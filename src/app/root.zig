@@ -9,3 +9,5 @@ pub const image = @import("image.zig");
 pub const view_transform = @import("view_transform.zig");
 pub const exif = @import("exif.zig");
 pub const screenshot = @import("screenshot.zig");
+pub const text_cache = @import("text_cache.zig");
+pub const gpu = @import("gpu.zig");

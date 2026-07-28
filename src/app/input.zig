@@ -1,6 +1,5 @@
 const std = @import("std");
 const sdl = @import("sdl");
-const commands = @import("commands");
 const app_state = @import("state.zig");
 const types = @import("types.zig");
 const Key = types.Key;
@@ -10,8 +9,8 @@ const PaletteState = app_state.PaletteState;
 const ViewerState = app_state.ViewerState;
 const startTextInput = app_state.startTextInput;
 const stopTextInput = app_state.stopTextInput;
-const app_actions = commands.actions.app_actions;
-const flat_shortcuts = commands.actions.flat_shortcuts;
+const app_actions = types.app_actions;
+const flat_shortcuts = types.flat_shortcuts;
 const events = app_state.events;
 
 pub const MOUSE_WHEEL_SCROLL_MULTIPLIER: f32 = 6.0;
@@ -429,7 +428,7 @@ pub const InputAction = union(enum) {
     none,
     pan: struct { dx: f32, dy: f32 },
     zoom: struct { factor_delta: f32 },
-    trigger_action: commands.actions.AppActionId,
+    trigger_action: types.AppActionId,
 };
 
 pub fn mapKeyToAction(key: Key, mod: KeyModifiers, is_zoomed: bool) InputAction {
@@ -505,7 +504,7 @@ test "mapKeyToAction mapping" {
 
     const pan_left_not_zoomed = mapKeyToAction(.left, .{}, false);
     try std.testing.expect(pan_left_not_zoomed == .trigger_action);
-    try std.testing.expectEqual(commands.actions.AppActionId.prev_image, pan_left_not_zoomed.trigger_action);
+    try std.testing.expectEqual(types.AppActionId.prev_image, pan_left_not_zoomed.trigger_action);
 
     const zoom_in = mapKeyToAction(.equals, .{}, false);
     try std.testing.expect(zoom_in == .zoom);

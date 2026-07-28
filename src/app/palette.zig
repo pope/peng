@@ -1,6 +1,6 @@
 const std = @import("std");
 const fuzzig = @import("fuzzig");
-const commands = @import("commands").actions;
+const types = @import("types.zig");
 const fs = @import("fs.zig");
 
 pub const TextInputBounds = struct {
@@ -299,7 +299,7 @@ pub const PaletteState = struct {
         }
     }
 
-    pub fn rebuildActionMatches(self: *PaletteState, app_actions: []const commands.AppActionId) !void {
+    pub fn rebuildActionMatches(self: *PaletteState, app_actions: []const types.AppActionId) !void {
         self.matches.clearRetainingCapacity();
         const query_str = self.query.items;
         if (query_str.len == 0) {
@@ -311,7 +311,7 @@ pub const PaletteState = struct {
 
         var max_h: usize = 0;
         for (app_actions) |action_id| {
-            const meta = commands.getActionMetadata(action_id);
+            const meta = types.getActionMetadata(action_id);
             max_h = @max(max_h, meta.name.len);
         }
 
@@ -320,7 +320,7 @@ pub const PaletteState = struct {
         self.scored_matches.clearRetainingCapacity();
 
         for (app_actions, 0..) |action_id, idx| {
-            const meta = commands.getActionMetadata(action_id);
+            const meta = types.getActionMetadata(action_id);
             if (searcher_ptr.score(meta.name, query_str)) |score| {
                 try self.scored_matches.append(self.allocator, .{ .index = idx, .score = score });
             }
@@ -343,11 +343,11 @@ test "PaletteState.rebuildActionMatches fuzzy search" {
     defer palette.deinit();
 
     try palette.query.appendSlice(std.testing.allocator, "zin");
-    try palette.rebuildActionMatches(commands.app_actions);
+    try palette.rebuildActionMatches(types.app_actions);
 
     try std.testing.expect(palette.matches.items.len > 0);
-    const top_action_id = commands.app_actions[palette.matches.items[0]];
-    const top_meta = commands.getActionMetadata(top_action_id);
+    const top_action_id = types.app_actions[palette.matches.items[0]];
+    const top_meta = types.getActionMetadata(top_action_id);
     try std.testing.expectEqualStrings("Zoom In", top_meta.name);
 }
 
