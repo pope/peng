@@ -552,6 +552,74 @@ pub fn renderTextInputDialog(
     });
 }
 
+/// Strategy and calculation for virtualized list windowing in Clay
+/// immediate mode UI.
+///
+/// Immediate Mode Virtualization Strategy:
+/// 1. Window Calculation:
+///    Computes the visible item slice `[start_idx..end_idx]` based on
+///    current scroll position (`scroll_offset.y`), viewport height, and
+///    fixed item stride (`item_height`).
+/// 2. Overscan Guard Band:
+///    Adds a 1-item overscan buffer above and below the visible viewport
+///    slice (`start_idx - 1` and `end_idx + 1`). Because Clay layout tree
+///    generation and GPU rendering occur synchronously in the exact same
+///    frame pass, `@floor` and `@ceil` math captures all visible elements.
+///    The 1-item overscan serves as a guard band for sub-pixel `child_gap`
+///    offsets, border widths, and viewport edge hit-testing
+///    (`clay.pointerOver`).
+/// 3. Top & Bottom Spacers:
+///    Replaces non-rendered items outside the window with single empty
+///    container elements (`top_spacer_h` and `bottom_spacer_h`), properly
+///    accounting for layout child gaps to preserve total scrollable height.
+pub const VirtualWindow = struct {
+    start_idx: usize,
+    end_idx: usize,
+    top_spacer_h: f32,
+    bottom_spacer_h: f32,
+
+    pub fn compute(
+        total_items: usize,
+        scroll_offset_y: f32,
+        viewport_height: f32,
+        item_height: f32,
+        gap: f32,
+    ) VirtualWindow {
+        if (total_items == 0) {
+            return .{ .start_idx = 0, .end_idx = 0, .top_spacer_h = 0, .bottom_spacer_h = 0 };
+        }
+
+        const visible_top = -scroll_offset_y;
+        const visible_bottom = visible_top + viewport_height;
+
+        var start_idx = @as(usize, @intFromFloat(@max(0.0, @floor(visible_top / item_height))));
+        var end_idx = @as(usize, @intFromFloat(@max(0.0, @ceil(visible_bottom / item_height))));
+
+        start_idx = if (start_idx > 0) start_idx - 1 else 0;
+        end_idx = end_idx + 1;
+
+        if (end_idx > total_items) end_idx = total_items;
+        if (start_idx > end_idx) start_idx = end_idx;
+
+        const top_spacer_h = if (start_idx > 0)
+            @as(f32, @floatFromInt(start_idx)) * item_height - gap
+        else
+            0.0;
+
+        const bottom_spacer_h = if (total_items - end_idx > 0)
+            @as(f32, @floatFromInt(total_items - end_idx)) * item_height - gap
+        else
+            0.0;
+
+        return .{
+            .start_idx = start_idx,
+            .end_idx = end_idx,
+            .top_spacer_h = top_spacer_h,
+            .bottom_spacer_h = bottom_spacer_h,
+        };
+    }
+};
+
 pub fn renderSelectionList(
     state: *ViewerState,
     cfg: PaletteConfig,
@@ -583,6 +651,13 @@ pub fn renderSelectionList(
     }
 
     const matching_indices = &palette.matches;
+    const window = VirtualWindow.compute(
+        matching_indices.items.len,
+        scroll_offset.y,
+        viewport_height,
+        item_height,
+        4.0,
+    );
 
     clay.UI()(.{
         .id = clay.getElementId(cfg.list_id),
@@ -597,36 +672,10 @@ pub fn renderSelectionList(
             .child_offset = scroll_offset,
         },
     })({
-        const visible_top = -scroll_offset.y;
-        const visible_bottom = visible_top + viewport_height;
-
-        var start_visible_idx = @as(usize, @intFromFloat(@max(0.0, @floor(visible_top / item_height))));
-        var end_visible_idx = @as(usize, @intFromFloat(@max(0.0, @ceil(visible_bottom / item_height))));
-
-        start_visible_idx = if (start_visible_idx > 0) start_visible_idx - 1 else 0;
-        end_visible_idx = end_visible_idx + 1;
-
-        if (end_visible_idx > matching_indices.items.len) {
-            end_visible_idx = matching_indices.items.len;
-        }
-        if (start_visible_idx > end_visible_idx) {
-            start_visible_idx = end_visible_idx;
-        }
-
-        const gap: f32 = 4.0;
-        const top_spacer_h = if (start_visible_idx > 0)
-            @as(f32, @floatFromInt(start_visible_idx)) * item_height - gap
-        else
-            0.0;
-        const bottom_spacer_h = if (matching_indices.items.len - end_visible_idx > 0)
-            @as(f32, @floatFromInt(matching_indices.items.len - end_visible_idx)) * item_height - gap
-        else
-            0.0;
-
-        if (top_spacer_h > 0) {
+        if (window.top_spacer_h > 0) {
             clay.UI()(.{
                 .id = clay.getElementId(cfg.top_spacer_id),
-                .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(top_spacer_h) } },
+                .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(window.top_spacer_h) } },
             })({});
         }
 
@@ -637,8 +686,8 @@ pub fn renderSelectionList(
             state.unlockImageList();
         };
 
-        var match_count = start_visible_idx;
-        for (matching_indices.items[start_visible_idx..end_visible_idx]) |real_idx| {
+        var match_count = window.start_idx;
+        for (matching_indices.items[window.start_idx..window.end_idx]) |real_idx| {
             const is_selected = (match_count == palette.selected_idx);
 
             var item_id_buf: [64]u8 = undefined;
@@ -995,10 +1044,10 @@ pub fn renderSelectionList(
             match_count += 1;
         }
 
-        if (bottom_spacer_h > 0) {
+        if (window.bottom_spacer_h > 0) {
             clay.UI()(.{
                 .id = clay.getElementId(cfg.bottom_spacer_id),
-                .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(bottom_spacer_h) } },
+                .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(window.bottom_spacer_h) } },
             })({});
         }
 
@@ -1186,7 +1235,8 @@ test "partitionHighlightedText correctly partitions matched and unmatched chunks
 }
 
 test "partitionHighlightedText merges isolated whitespace matches back into unmatched text" {
-    // Scenario 2: Query "sc " matching "Set Contrast (Type Value)..." (indices 0, 4, and 12)
+    // Scenario 2: Query "sc " matching "Set Contrast (Type Value)..."
+    // (indices 0, 4, and 12)
     const text2 = "Set Contrast (Type Value)...";
     const matches2 = [_]usize{ 0, 4, 12 };
 
@@ -1332,7 +1382,8 @@ test "partitionHighlightedText multi-byte UTF-8 character boundary safety" {
     const chunks = try partitionHighlightedText(std.testing.allocator, utf8_text, &matches);
     defer std.testing.allocator.free(chunks);
 
-    // Chunks should be: "caf" (unmatched), "é" (matched, full 2-byte code point), "_au_lait.jpg" (unmatched)
+    // Chunks should be: "caf" (unmatched), "é" (matched, full 2-byte UTF-8
+    // code point), "_au_lait.jpg" (unmatched)
     try std.testing.expectEqual(@as(usize, 3), chunks.len);
     try std.testing.expectEqualStrings("caf", chunks[0].slice);
     try std.testing.expect(!chunks[0].is_matched);
@@ -1363,4 +1414,40 @@ test "untruncated directory starting with dots preserves matches" {
     }
 
     try std.testing.expectEqualSlices(usize, &dirname_matches, final_dir_matches.items);
+}
+
+test "VirtualWindow compute calculations and edge cases" {
+    const item_height: f32 = 50.0;
+    const viewport_h: f32 = 320.0;
+    const gap: f32 = 4.0;
+
+    // Case 1: Empty list
+    const w0 = VirtualWindow.compute(0, 0.0, viewport_h, item_height, gap);
+    try std.testing.expectEqual(@as(usize, 0), w0.start_idx);
+    try std.testing.expectEqual(@as(usize, 0), w0.end_idx);
+    try std.testing.expectEqual(@as(f32, 0.0), w0.top_spacer_h);
+    try std.testing.expectEqual(@as(f32, 0.0), w0.bottom_spacer_h);
+
+    // Case 2: At top of 100-item list (scroll = 0)
+    // visible top = 0, visible bottom = 320.
+    // floor(0/50) = 0, ceil(320/50) = 7.
+    // overscan: start = 0, end = 8.
+    const w1 = VirtualWindow.compute(100, 0.0, viewport_h, item_height, gap);
+    try std.testing.expectEqual(@as(usize, 0), w1.start_idx);
+    try std.testing.expectEqual(@as(usize, 8), w1.end_idx);
+    try std.testing.expectEqual(@as(f32, 0.0), w1.top_spacer_h);
+    // bottom spacer = (100 - 8) * 50 - 4 = 4600 - 4 = 4596
+    try std.testing.expectEqual(@as(f32, 4596.0), w1.bottom_spacer_h);
+
+    // Case 3: Middle of list (scroll = -500.0, 10 items scrolled off-screen)
+    // visible top = 500, visible bottom = 820.
+    // floor(500/50) = 10, ceil(820/50) = 17.
+    // overscan: start = 9, end = 18.
+    const w2 = VirtualWindow.compute(100, -500.0, viewport_h, item_height, gap);
+    try std.testing.expectEqual(@as(usize, 9), w2.start_idx);
+    try std.testing.expectEqual(@as(usize, 18), w2.end_idx);
+    // top spacer = 9 * 50 - 4 = 446.0
+    try std.testing.expectEqual(@as(f32, 446.0), w2.top_spacer_h);
+    // bottom spacer = (100 - 18) * 50 - 4 = 82 * 50 - 4 = 4096.0
+    try std.testing.expectEqual(@as(f32, 4096.0), w2.bottom_spacer_h);
 }
