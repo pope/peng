@@ -6,6 +6,8 @@ ______________________________________________________________________
 
 ## Project Rules (`.agents/rules/`)
 
+- **[`zig_state_machine_design.md`](rules/zig_state_machine_design.md)**: State machine architecture, tagged union invariants, streaming dataset isolation, and domain type passing.
+
 - **[`zig_memory_safety.md`](rules/zig_memory_safety.md)**: Universal memory safety, resource lifecycle, and error logging rules.
 
   - **Structured Error Logging Invariant**: Never swallow errors with empty `catch {}` or `else |_| {}` blocks. Always log errors via `std.log` with contextual details.
