@@ -1,10 +1,126 @@
+const builtin = @import("builtin");
 const std = @import("std");
 const clay = @import("zclay");
 const ui = @import("ui");
-const commands = @import("commands");
 const app_config = @import("config");
 const app = @import("app");
 const sdl = @import("sdl");
+
+const LibViewer = struct {
+    const lib_name = switch (builtin.target.os.tag) {
+        .macos => "zig-out/lib/libviewer.dylib",
+        .linux => "zig-out/lib/libviewer.so",
+        else => @panic("unsupported for hot reloading"),
+    };
+    const lib_temp_name = switch (builtin.target.os.tag) {
+        .macos => "zig-out/lib/libviewer-temp.dylib",
+        .linux => "zig-out/lib/libviewer-temp.so",
+        else => @panic("unsupported for hot reloading"),
+    };
+
+    handle: std.DynLib,
+    last_mod_time: std.Io.Timestamp,
+    is_valid: bool = true,
+    load_assets: *const fn (*app.state.ViewerState) callconv(.c) void,
+    unload_assets: *const fn (*app.state.ViewerState) callconv(.c) void,
+    update: *const fn (
+        app_state: *app.state.ViewerState,
+        window_ptr: *anyopaque,
+        resources_ptr: *anyopaque,
+        measure_data_ptr: *anyopaque,
+        ipc_server_ptr: ?*anyopaque,
+        parsed_headless: bool,
+        parsed_test_mode: bool,
+        frame_arena_ptr: *anyopaque,
+        last_time_ptr: *u64,
+    ) callconv(.c) void,
+
+    fn init(io: std.Io) !LibViewer {
+        const cwd = std.Io.Dir.cwd();
+
+        const f = try cwd.openFile(io, lib_name, .{});
+        defer f.close(io);
+        const stat = try f.stat(io);
+
+        try std.Io.Dir.copyFile(
+            cwd,
+            lib_name,
+            cwd,
+            lib_temp_name,
+            io,
+            .{},
+        );
+
+        var handle = try std.DynLib.open(lib_temp_name);
+
+        return .{
+            .handle = handle,
+            .last_mod_time = stat.mtime,
+            .is_valid = true,
+            .load_assets = handle.lookup(
+                @FieldType(LibViewer, "load_assets"),
+                "viewer_load_assets",
+            ) orelse return error.SymbolNotFound,
+            .unload_assets = handle.lookup(
+                @FieldType(LibViewer, "unload_assets"),
+                "viewer_unload_assets",
+            ) orelse return error.SymbolNotFound,
+            .update = handle.lookup(
+                @FieldType(LibViewer, "update"),
+                "viewer_update",
+            ) orelse return error.SymbolNotFound,
+        };
+    }
+
+    fn deinit(self: *LibViewer, io: std.Io) !void {
+        if (self.is_valid) {
+            self.handle.close();
+            self.is_valid = false;
+        }
+        try std.Io.Dir.cwd().deleteFile(io, lib_temp_name);
+    }
+
+    fn check_outdated(self: LibViewer, io: std.Io) !bool {
+        const f = try std.Io.Dir.cwd().openFile(io, lib_name, .{});
+        defer f.close(io);
+        const stat = try f.stat(io);
+        return self.last_mod_time.nanoseconds < stat.mtime.nanoseconds;
+    }
+
+    fn updateLib(self: *LibViewer, io: std.Io, app_state: *app.state.ViewerState) !void {
+        // Drain active threads before unloading dynamic library
+        _ = app_state.generation.fetchAdd(1, .monotonic);
+        while (app_state.active_threads.load(.acquire) > 0) {
+            sdl.timer.delay(1); // 1ms
+            _ = app_state.processBackgroundEvents();
+        }
+
+        if (self.is_valid) {
+            self.unload_assets(app_state);
+            self.handle.close();
+            self.is_valid = false;
+        }
+
+        const new_viewer = try LibViewer.init(io);
+        self.* = new_viewer;
+        self.load_assets(app_state);
+    }
+
+    fn safeReload(self: *LibViewer, io: std.Io, app_state: *app.state.ViewerState) void {
+        const is_outdated = self.check_outdated(io) catch |err| {
+            std.log.err("Unable to check reload of viewer lib: {}", .{err});
+            return;
+        };
+
+        if (is_outdated or !self.is_valid) {
+            if (self.updateLib(io, app_state)) {
+                std.log.info("Viewer dynamic library reloaded successfully!", .{});
+            } else |err| {
+                std.log.err("Unable to reload viewer lib: {}", .{err});
+            }
+        }
+    }
+};
 
 /// Application context encapsulating initialized graphics, state, resources, and IPC server.
 pub const AppGraphicsAndState = struct {
@@ -15,6 +131,7 @@ pub const AppGraphicsAndState = struct {
     resources: ui.graphics.GpuResources,
     state: app.state.ViewerState,
     clay_memory: []u8,
+    clay_context: *clay.Context,
     measure_data: app.types.MeasureTextUserData,
     ipc_server: ?*app.ipc.IpcServer,
 
@@ -107,7 +224,7 @@ pub fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
     errdefer gpa.free(clay_memory);
 
     const clay_arena = clay.Arena.init(clay_memory);
-    _ = clay.initialize(clay_arena, .{
+    const clay_ctx = clay.initialize(clay_arena, .{
         .w = @as(f32, @floatFromInt(1024)),
         .h = @as(f32, @floatFromInt(768)),
     }, .{});
@@ -120,6 +237,7 @@ pub fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
         .resources = resources,
         .state = state,
         .clay_memory = clay_memory,
+        .clay_context = clay_ctx,
         .measure_data = undefined,
         .ipc_server = null,
     };
@@ -148,109 +266,55 @@ pub fn runMainLoop(ctx: *AppGraphicsAndState) !void {
     // Per-frame arena allocator
     var frame_arena = std.heap.ArenaAllocator.init(ctx.gpa);
     defer frame_arena.deinit();
-    const frame_allocator = frame_arena.allocator();
 
     var last_time = sdl.timer.getTicks();
 
-    while (ctx.state.running) {
-        const bg_events_processed = ctx.state.processBackgroundEvents();
+    const build_options = @import("build_options");
+    if (build_options.hot_reload) {
+        var lib_viewer: LibViewer = try .init(ctx.io);
+        defer lib_viewer.deinit(ctx.io) catch {};
 
-        // Input Accumulation
-        _ = frame_arena.reset(.retain_capacity);
-        const is_current_loading = blk: {
-            if (ctx.state.getCurrentEntry()) |entry| {
-                break :blk (entry.status == .decoding or entry.status == .uploading);
-            }
-            break :blk (ctx.state.current_index != null);
-        };
-        const is_busy = ctx.state.is_loading_files.load(.acquire) or (ctx.state.active_threads.load(.acquire) > 0) or is_current_loading or bg_events_processed or ctx.state.isSlideshowActive();
-        const input = try app.input.pollFrameInput(
-            ctx.setup.window,
-            frame_allocator,
-            &last_time,
-            ctx.state.overlays.mouse_inside,
-            ctx.state.palette.mode != .inactive,
-            ctx.parsed.test_mode or ctx.parsed.headless,
-            is_busy,
-        );
+        lib_viewer.load_assets(&ctx.state);
+        defer lib_viewer.unload_assets(&ctx.state);
 
-        if (input.quit_requested) {
-            ctx.state.running = false;
-        }
-        ctx.state.overlays.mouse_inside = input.mouse_inside;
-
-        // Process any pending IPC commands collected during event processing
-        ctx.state.processIpcCommands(ctx.ipc_server);
-
-        // State Update
-        const needs_cache_update = blk: {
-            if (ctx.state.getCurrentEntry()) |entry| {
-                switch (entry.status) {
-                    .decoding => |d| break :blk !d.has_thread,
-                    else => break :blk false,
-                }
-            }
-            break :blk (ctx.state.current_index != null);
-        };
-        if (needs_cache_update and ctx.state.active_decode_threads.load(.acquire) < app.state.ViewerState.getMaxConcurrentDecodes()) {
-            const count = ctx.state.image_list.items.len;
-            if (count > 0) {
-                if (ctx.state.current_index == null) ctx.state.current_index = 0;
-                ctx.state.updateCache() catch |err| std.log.err("Failed to update cache: {}", .{err});
+        while (ctx.state.running) {
+            defer _ = frame_arena.reset(.retain_capacity);
+            clay.setCurrentContext(ctx.clay_context);
+            lib_viewer.safeReload(ctx.io, &ctx.state);
+            if (lib_viewer.is_valid) {
+                lib_viewer.update(
+                    &ctx.state,
+                    ctx.setup.window.ptr,
+                    &ctx.resources,
+                    &ctx.measure_data,
+                    ctx.ipc_server,
+                    ctx.parsed.headless,
+                    ctx.parsed.test_mode,
+                    &frame_arena,
+                    &last_time,
+                );
             }
         }
+    } else {
+        const viewer = @import("viewer");
 
-        try ctx.state.update(input);
+        try viewer.loadAssets(&ctx.state);
+        defer viewer.unloadAssets(&ctx.state);
 
-        // Process any queued user actions
-        for (ctx.state.action_queue.items) |action_id| {
-            commands.actions.triggerAction(&ctx.state, action_id) catch |err| {
-                std.log.err("Failed to execute queued action {s}: {any}", .{ @tagName(action_id), err });
-            };
-        }
-        ctx.state.action_queue.clearRetainingCapacity();
-
-        clay.setLayoutDimensions(.{ .w = input.win_w, .h = input.win_h });
-
-        if (input.mouse_inside) {
-            clay.setPointerState(
-                .{ .x = input.mouse_x, .y = input.mouse_y },
-                input.mouse_left_down,
-            );
-        } else {
-            clay.setPointerState(
-                .{ .x = -1.0, .y = -1.0 },
-                false,
+        while (ctx.state.running) {
+            defer _ = frame_arena.reset(.retain_capacity);
+            try viewer.updateFrame(
+                &ctx.state,
+                ctx.setup.window,
+                &ctx.resources,
+                &ctx.measure_data,
+                ctx.ipc_server,
+                ctx.parsed.headless,
+                ctx.parsed.test_mode,
+                &frame_arena,
+                &last_time,
             );
         }
-
-        clay.updateScrollContainers(
-            true,
-            .{ .x = input.scroll_delta_x, .y = input.scroll_delta_y },
-            input.delta_time_ms / 1000.0,
-        );
-
-        ctx.state.checkIdlePreload();
-
-        if (input.mouse_left_clicked) {
-            if (ctx.state.overlays.show_info and !ctx.state.isPointerInDebugPanel(input) and clay.pointerOver(clay.getElementId("InfoCloseBtn"))) {
-                ctx.state.overlays.show_info = false;
-            }
-            if (ctx.state.overlays.show_stats and !ctx.state.isPointerInDebugPanel(input) and clay.pointerOver(clay.getElementId("StatsCloseBtn"))) {
-                ctx.state.overlays.show_stats = false;
-            }
-        }
-
-        // Draw / Render
-        const capture_filename = switch (ctx.state.screenshot_mode) {
-            .idle => null,
-            .capturing => |s| s.path,
-        };
-        ui.layout.renderFrame(&ctx.state, input, frame_allocator, ctx.resources.fonts[0..], &ctx.measure_data, capture_filename) catch |err| {
-            ctx.state.handleScreenshotPostRender(err);
-            return err;
-        };
-        ctx.state.handleScreenshotPostRender(null);
     }
 }
 

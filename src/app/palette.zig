@@ -485,8 +485,6 @@ test "PaletteState.navigating_up_remembers_previous_folder" {
     try std.testing.expectEqual(expected_idx, palette.selected_idx);
 }
 
-
-
 test "PaletteState.getModeData" {
     var palette = PaletteState.init(std.testing.allocator);
     defer palette.deinit();

@@ -1478,8 +1478,6 @@ pub const ViewerState = struct {
     }
 };
 
-
-
 test "matchesQueryLower bounds check" {
     // Normal matches
     try std.testing.expect(matchesQueryLower("hello", "ell"));
