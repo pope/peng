@@ -93,15 +93,10 @@ pub fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
             },
         },
         .palette = app.state.PaletteState.init(gpa),
-        .text_cache = .{},
-        .scale_mode = parsed.default_scale,
-        .rotation_angle = 0.0,
+        .viewport = .{ .scale_mode = parsed.default_scale },
+        .adjustments = .{},
         .rotation_map = .init(gpa),
-        .brightness = 0.0,
-        .contrast = 1.0,
-        .adjustments_dirty = false,
         .running = true,
-        .show_stats_overlay = false,
     };
     own_gpu_resources = false;
     errdefer state.deinit();
@@ -173,7 +168,7 @@ pub fn runMainLoop(ctx: *AppGraphicsAndState) !void {
             ctx.setup.window,
             frame_allocator,
             &last_time,
-            ctx.state.mouse_inside,
+            ctx.state.overlays.mouse_inside,
             ctx.state.palette.mode != .inactive,
             ctx.parsed.test_mode or ctx.parsed.headless,
             is_busy,
@@ -182,7 +177,7 @@ pub fn runMainLoop(ctx: *AppGraphicsAndState) !void {
         if (input.quit_requested) {
             ctx.state.running = false;
         }
-        ctx.state.mouse_inside = input.mouse_inside;
+        ctx.state.overlays.mouse_inside = input.mouse_inside;
 
         // Process any pending IPC commands collected during event processing
         ctx.state.processIpcCommands(ctx.ipc_server);
@@ -230,11 +225,11 @@ pub fn runMainLoop(ctx: *AppGraphicsAndState) !void {
         ctx.state.checkIdlePreload();
 
         if (input.mouse_left_clicked) {
-            if (ctx.state.show_info_overlay and !ctx.state.isPointerInDebugPanel(input) and clay.pointerOver(clay.getElementId("InfoCloseBtn"))) {
-                ctx.state.show_info_overlay = false;
+            if (ctx.state.overlays.show_info and !ctx.state.isPointerInDebugPanel(input) and clay.pointerOver(clay.getElementId("InfoCloseBtn"))) {
+                ctx.state.overlays.show_info = false;
             }
-            if (ctx.state.show_stats_overlay and !ctx.state.isPointerInDebugPanel(input) and clay.pointerOver(clay.getElementId("StatsCloseBtn"))) {
-                ctx.state.show_stats_overlay = false;
+            if (ctx.state.overlays.show_stats and !ctx.state.isPointerInDebugPanel(input) and clay.pointerOver(clay.getElementId("StatsCloseBtn"))) {
+                ctx.state.overlays.show_stats = false;
             }
         }
 

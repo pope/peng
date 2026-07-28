@@ -76,7 +76,7 @@ pub fn renderFrame(
             const view_h = @max(height - (title_bar_h + nav_bar_h) - padding * 2.0, 1.0);
 
             const view_transform = @import("../app/view_transform.zig");
-            const dims = view_transform.computeViewDims(src_w, src_h, state.rotation_angle, view_w, view_h, state.scale_mode);
+            const dims = view_transform.computeViewDims(src_w, src_h, state.viewport.rotation_angle, view_w, view_h, state.viewport.scale_mode);
             draw_w = dims.draw_w;
             draw_h = dims.draw_h;
         }
@@ -442,7 +442,7 @@ pub fn renderViewport(
         .clip = .{ .horizontal = true, .vertical = true },
     })({
         if (current_entry) |entry| {
-            const show_thumb = (state.debug_show_thumb or entry.status != .loaded_gpu) and (entry.thumb_gpu_texture != null);
+            const show_thumb = (state.overlays.debug_show_thumb or entry.status != .loaded_gpu) and (entry.thumb_gpu_texture != null);
             if (show_thumb) {
                 const thumb_tex = entry.thumb_gpu_texture.?;
                 clay.UI()(.{

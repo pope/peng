@@ -354,11 +354,11 @@ pub fn handlePaletteKeys(
                                 const max_val: f32 = if (palette.mode == .set_brightness) 1.0 else 5.0;
                                 if (val >= min_val and val <= max_val) {
                                     if (palette.mode == .set_brightness) {
-                                        self.brightness = val;
+                                        self.adjustments.brightness = val;
                                     } else {
-                                        self.contrast = val;
+                                        self.adjustments.contrast = val;
                                     }
-                                    self.adjustments_dirty = true;
+                                    self.adjustments.dirty = true;
                                     palette.mode = .inactive;
                                     stopTextInput(self.display);
                                 }
@@ -478,18 +478,18 @@ pub fn handleKeyDown(
         return;
     }
 
-    const action = mapKeyToAction(key, mod, self.zoom_factor > 1.0);
+    const action = mapKeyToAction(key, mod, self.viewport.zoom_factor > 1.0);
     switch (action) {
         .none => {},
         .pan => |p| {
-            self.pan_x += p.dx * scale_x;
-            self.pan_y += p.dy * scale_y;
+            self.viewport.pan_x += p.dx * scale_x;
+            self.viewport.pan_y += p.dy * scale_y;
         },
         .zoom => |z| {
-            const old_zoom = self.zoom_factor;
-            self.zoom_factor = self.clampZoomFactor(self.zoom_factor + z.factor_delta);
-            self.pan_x *= (self.zoom_factor / old_zoom);
-            self.pan_y *= (self.zoom_factor / old_zoom);
+            const old_zoom = self.viewport.zoom_factor;
+            self.viewport.zoom_factor = self.clampZoomFactor(self.viewport.zoom_factor + z.factor_delta);
+            self.viewport.pan_x *= (self.viewport.zoom_factor / old_zoom);
+            self.viewport.pan_y *= (self.viewport.zoom_factor / old_zoom);
         },
         .trigger_action => |action_id| {
             try self.triggerAction(action_id);

@@ -385,8 +385,8 @@ pub fn triggerAction(self: *ViewerState, action_id: AppActionId) !void {
     switch (action_id) {
         .next_image => try self.next(),
         .prev_image => try self.prev(),
-        .toggle_info => self.show_info_overlay = !self.show_info_overlay,
-        .toggle_stats => self.show_stats_overlay = !self.show_stats_overlay,
+        .toggle_info => self.overlays.show_info = !self.overlays.show_info,
+        .toggle_stats => self.overlays.show_stats = !self.overlays.show_stats,
         .toggle_fullscreen => {
             switch (self.display) {
                 .headless => {},
@@ -403,7 +403,7 @@ pub fn triggerAction(self: *ViewerState, action_id: AppActionId) !void {
             try self.openPalette(.directory_navigator);
         },
         .toggle_debug_mode => clay.setDebugModeEnabled(!clay.isDebugModeEnabled()),
-        .toggle_debug_thumb => try self.setDebugShowThumb(!self.debug_show_thumb),
+        .toggle_debug_thumb => try self.setDebugShowThumb(!self.overlays.debug_show_thumb),
         .exit => {
             switch (self.display) {
                 .headless => self.running = false,
@@ -430,55 +430,55 @@ pub fn triggerAction(self: *ViewerState, action_id: AppActionId) !void {
             }
         },
         .zoom_in => {
-            const old_zoom = self.zoom_factor;
-            self.zoom_factor = self.clampZoomFactor(self.zoom_factor + 0.5);
-            self.pan_x *= (self.zoom_factor / old_zoom);
-            self.pan_y *= (self.zoom_factor / old_zoom);
+            const old_zoom = self.viewport.zoom_factor;
+            self.viewport.zoom_factor = self.clampZoomFactor(self.viewport.zoom_factor + 0.5);
+            self.viewport.pan_x *= (self.viewport.zoom_factor / old_zoom);
+            self.viewport.pan_y *= (self.viewport.zoom_factor / old_zoom);
         },
         .zoom_out => {
-            const old_zoom = self.zoom_factor;
-            self.zoom_factor = self.clampZoomFactor(self.zoom_factor - 0.5);
-            self.pan_x *= (self.zoom_factor / old_zoom);
-            self.pan_y *= (self.zoom_factor / old_zoom);
+            const old_zoom = self.viewport.zoom_factor;
+            self.viewport.zoom_factor = self.clampZoomFactor(self.viewport.zoom_factor - 0.5);
+            self.viewport.pan_x *= (self.viewport.zoom_factor / old_zoom);
+            self.viewport.pan_y *= (self.viewport.zoom_factor / old_zoom);
         },
         .reset_zoom => {
             self.resetZoomPan();
         },
         .set_scale_none => {
-            self.scale_mode = .none;
+            self.viewport.scale_mode = .none;
             self.resetZoomPan();
         },
         .set_scale_shrink => {
-            self.scale_mode = .shrink;
+            self.viewport.scale_mode = .shrink;
             self.resetZoomPan();
         },
         .set_scale_full => {
-            self.scale_mode = .full;
+            self.viewport.scale_mode = .full;
             self.resetZoomPan();
         },
         .set_scale_crop => {
-            self.scale_mode = .crop;
+            self.viewport.scale_mode = .crop;
             self.resetZoomPan();
         },
         .rotate_cw => {
-            var val = self.rotation_angle + 90.0;
+            var val = self.viewport.rotation_angle + 90.0;
             if (val >= 360.0) val -= 360.0;
-            self.rotation_angle = val;
+            self.viewport.rotation_angle = val;
             if (self.current_index) |idx| {
                 if (idx < self.image_list.items.len) {
                     const path = self.image_list.items[idx];
-                    try self.rotation_map.put(path, self.rotation_angle);
+                    try self.rotation_map.put(path, self.viewport.rotation_angle);
                 }
             }
         },
         .rotate_ccw => {
-            var val = self.rotation_angle - 90.0;
+            var val = self.viewport.rotation_angle - 90.0;
             if (val < 0.0) val += 360.0;
-            self.rotation_angle = val;
+            self.viewport.rotation_angle = val;
             if (self.current_index) |idx| {
                 if (idx < self.image_list.items.len) {
                     const path = self.image_list.items[idx];
-                    try self.rotation_map.put(path, self.rotation_angle);
+                    try self.rotation_map.put(path, self.viewport.rotation_angle);
                 }
             }
         },
@@ -487,55 +487,55 @@ pub fn triggerAction(self: *ViewerState, action_id: AppActionId) !void {
                 if (idx < self.image_list.items.len) {
                     const path = self.image_list.items[idx];
                     const exif_rot = self.readJpegExifOrientation(path) orelse 0.0;
-                    self.rotation_angle = exif_rot;
-                    try self.rotation_map.put(path, self.rotation_angle);
+                    self.viewport.rotation_angle = exif_rot;
+                    try self.rotation_map.put(path, self.viewport.rotation_angle);
                 } else {
-                    self.rotation_angle = 0.0;
+                    self.viewport.rotation_angle = 0.0;
                 }
             } else {
-                self.rotation_angle = 0.0;
+                self.viewport.rotation_angle = 0.0;
             }
         },
         .set_filter_nearest => {
-            self.texture_scale_mode = .nearest;
+            self.adjustments.texture_scale_mode = .nearest;
             self.applyTextureScaleMode();
         },
         .set_filter_linear => {
-            self.texture_scale_mode = .linear;
+            self.adjustments.texture_scale_mode = .linear;
             self.applyTextureScaleMode();
         },
         .set_filter_pixel_art => {
-            self.texture_scale_mode = .pixel_art;
+            self.adjustments.texture_scale_mode = .pixel_art;
             self.applyTextureScaleMode();
         },
         .set_filter_mitchell => {
-            self.texture_scale_mode = .mitchell;
+            self.adjustments.texture_scale_mode = .mitchell;
             self.applyTextureScaleMode();
         },
         .set_filter_lanczos3 => {
-            self.texture_scale_mode = .lanczos3;
+            self.adjustments.texture_scale_mode = .lanczos3;
             self.applyTextureScaleMode();
         },
         .increase_brightness => {
-            self.brightness = std.math.clamp(self.brightness + 0.1, -1.0, 1.0);
-            self.adjustments_dirty = true;
+            self.adjustments.brightness = std.math.clamp(self.adjustments.brightness + 0.1, -1.0, 1.0);
+            self.adjustments.dirty = true;
         },
         .decrease_brightness => {
-            self.brightness = std.math.clamp(self.brightness - 0.1, -1.0, 1.0);
-            self.adjustments_dirty = true;
+            self.adjustments.brightness = std.math.clamp(self.adjustments.brightness - 0.1, -1.0, 1.0);
+            self.adjustments.dirty = true;
         },
         .increase_contrast => {
-            self.contrast = std.math.clamp(self.contrast + 0.1, 0.0, 5.0);
-            self.adjustments_dirty = true;
+            self.adjustments.contrast = std.math.clamp(self.adjustments.contrast + 0.1, 0.0, 5.0);
+            self.adjustments.dirty = true;
         },
         .decrease_contrast => {
-            self.contrast = std.math.clamp(self.contrast - 0.1, 0.0, 5.0);
-            self.adjustments_dirty = true;
+            self.adjustments.contrast = std.math.clamp(self.adjustments.contrast - 0.1, 0.0, 5.0);
+            self.adjustments.dirty = true;
         },
         .reset_adjustments => {
-            self.brightness = 0.0;
-            self.contrast = 1.0;
-            self.adjustments_dirty = true;
+            self.adjustments.brightness = 0.0;
+            self.adjustments.contrast = 1.0;
+            self.adjustments.dirty = true;
         },
         .set_brightness_value => {
             try self.openPalette(.set_brightness);
@@ -595,8 +595,8 @@ pub const AppAction = union(enum) {
 
 pub fn executeAction(self: *ViewerState, action: AppAction) !void {
     switch (action) {
-        .set_brightness => |val| self.setAdjustments(val, self.contrast),
-        .set_contrast => |val| self.setAdjustments(self.brightness, val),
+        .set_brightness => |val| self.setAdjustments(val, self.adjustments.contrast),
+        .set_contrast => |val| self.setAdjustments(self.adjustments.brightness, val),
         .go_to_image => |idx| {
             if (self.image_list.items.len > 0) {
                 self.current_index = @min(idx, self.image_list.items.len - 1);
@@ -604,11 +604,11 @@ pub fn executeAction(self: *ViewerState, action: AppAction) !void {
             }
         },
         .set_scale => |mode| {
-            self.scale_mode = mode;
+            self.viewport.scale_mode = mode;
             self.resetZoomPan();
         },
         .set_filter => |mode| {
-            self.texture_scale_mode = mode;
+            self.adjustments.texture_scale_mode = mode;
             self.applyTextureScaleMode();
         },
         .action_id => |id| try triggerAction(self, id),

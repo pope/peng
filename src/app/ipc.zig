@@ -113,7 +113,7 @@ pub const IpcServer = struct {
                 switch (action) {
                     .enable => try state.setDebugShowThumb(true),
                     .disable => try state.setDebugShowThumb(false),
-                    .toggle => try state.setDebugShowThumb(!state.debug_show_thumb),
+                    .toggle => try state.setDebugShowThumb(!state.overlays.debug_show_thumb),
                 }
                 try respondOk(state.io, stream);
             },

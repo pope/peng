@@ -219,19 +219,19 @@ fn appendImageCommand(
 
     var dst_w = rect.w;
     var dst_h = rect.h;
-    const angle = state.rotation_angle;
+    const angle = state.viewport.rotation_angle;
     const is_90_or_270 = std.math.approxEqAbs(f32, angle, 90.0, 0.01) or std.math.approxEqAbs(f32, angle, 270.0, 0.01);
     if (is_90_or_270) {
         dst_w = rect.h;
         dst_h = rect.w;
     }
     var dst_rect = rect;
-    dst_rect.w = dst_w * state.zoom_factor;
-    dst_rect.h = dst_h * state.zoom_factor;
+    dst_rect.w = dst_w * state.viewport.zoom_factor;
+    dst_rect.h = dst_h * state.viewport.zoom_factor;
     const center_x = rect.x + rect.w / 2.0;
     const center_y = rect.y + rect.h / 2.0;
-    dst_rect.x = center_x - (dst_rect.w / 2.0) + state.pan_x;
-    dst_rect.y = center_y - (dst_rect.h / 2.0) + state.pan_y;
+    dst_rect.x = center_x - (dst_rect.w / 2.0) + state.viewport.pan_x;
+    dst_rect.y = center_y - (dst_rect.h / 2.0) + state.viewport.pan_y;
 
     const rad = angle * (std.math.pi / 180.0);
     const cos_val = @cos(rad);
@@ -317,8 +317,11 @@ fn getOrRenderCachedText(
         .hash = std.hash.Wyhash.hash(0, text_slice),
     };
 
-    if (state.text_cache.getEntry(key)) |entry| {
-        entry.value_ptr.last_used_frame = if (state.gpu) |g| g.frame_index else 0;
+    const gpu_res = if (state.gpu) |*g| g else return null;
+    const dev = gpu_res.device;
+
+    if (gpu_res.text_cache.getEntry(key)) |entry| {
+        entry.value_ptr.last_used_frame = gpu_res.frame_index;
         return CachedText{
             .texture = entry.value_ptr.texture,
             .w = entry.value_ptr.w,
@@ -326,8 +329,6 @@ fn getOrRenderCachedText(
         };
     }
 
-    const gpu_res = if (state.gpu) |*g| g else return null;
-    const dev = gpu_res.device;
     const frame_idx = gpu_res.frame_index % 2;
 
     _ = font.setFontSize(target_font_size);
@@ -372,9 +373,10 @@ fn getOrRenderCachedText(
         const new_tbcap = std.mem.alignForward(usize, @max(required_capacity * 2, 65536), 4096);
         if (gpu_res.transfer_buffers[frame_idx]) |old_tb| {
             // Catch OOM on the deferred cleanup list so a non-critical array append failure
-            // does not abort the entire frame's render pass. Log the error and continue rendering.
+            // does not abort the entire frame's render pass. Release old_tb to prevent GPU memory leak.
             temp_buffers.append(allocator, old_tb) catch |err| {
                 std.log.err("Failed to append old transfer buffer to cleanup list: {}", .{err});
+                dev.releaseTransferBuffer(old_tb);
             };
         }
         gpu_res.transfer_buffers[frame_idx] = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
@@ -427,7 +429,7 @@ fn getOrRenderCachedText(
     const w_f: f32 = @floatFromInt(target_w);
     const h_f: f32 = @floatFromInt(surf_h);
 
-    state.text_cache.put(state.allocator, key, .{
+    gpu_res.text_cache.put(state.allocator, key, .{
         .texture = tex,
         .w = w_f,
         .h = h_f,
@@ -456,7 +458,7 @@ pub inline fn isScissorInvisible(sc: ?sdl.Rect, win_w: i32, win_h: i32) bool {
 
 fn buildGeometryFromCommands(
     state: *app_state.ViewerState,
-    gpu: app_state.RenderResources,
+    gpu: *const app_state.RenderResources,
     copy_pass: sdl.gpu.CopyPass,
     fonts: []const ?sdl.Font,
     r_commands: []const clay.RenderCommand,
@@ -641,9 +643,10 @@ fn uploadVertexData(
     if (gpu_res.transfer_buffers[frame_idx] == null or gpu_res.buffer_capacities[frame_idx] < total_tb_needed) {
         if (gpu_res.transfer_buffers[frame_idx]) |old_tb| {
             // Catch OOM on the deferred cleanup list so a non-critical array append failure
-            // does not abort the entire frame's render pass. Log the error and continue rendering.
+            // does not abort the entire frame's render pass. Release old_tb to prevent GPU memory leak.
             temp_buffers.append(allocator, old_tb) catch |err| {
                 std.log.err("Failed to append old transfer buffer to cleanup list in uploadVertexData: {}", .{err});
+                dev.releaseTransferBuffer(old_tb);
             };
         }
         const new_tbcap = std.mem.alignForward(usize, total_tb_needed * 2, 4096);
@@ -677,7 +680,7 @@ fn uploadVertexData(
 
 fn executeRenderPass(
     state: *app_state.ViewerState,
-    gpu: app_state.RenderResources,
+    gpu: *const app_state.RenderResources,
     cmd_buf: sdl.gpu.CommandBuffer,
     swap_tex: sdl.gpu.Texture,
     batches: []const BatchItem,
@@ -721,7 +724,7 @@ fn executeRenderPass(
                 render_pass.setScissor(&full_sc);
             }
 
-            const scale_mode_val: i32 = switch (state.texture_scale_mode) {
+            const scale_mode_val: i32 = switch (state.adjustments.texture_scale_mode) {
                 .nearest => 0,
                 .linear => 1,
                 .pixel_art => 2,
@@ -729,8 +732,8 @@ fn executeRenderPass(
                 .lanczos3 => 4,
             };
             const ubo = Uniforms{
-                .brightness = state.brightness,
-                .contrast = state.contrast,
+                .brightness = state.adjustments.brightness,
+                .contrast = state.adjustments.contrast,
                 .is_text_or_color = if (batch.is_image) 0 else 1,
                 .scale_mode = scale_mode_val,
             };
@@ -776,7 +779,7 @@ pub fn renderClayCommands(
 
     try buildGeometryFromCommands(
         state,
-        gpu_res.*,
+        gpu_res,
         copy_pass,
         fonts,
         r_commands,
@@ -805,7 +808,7 @@ pub fn renderClayCommands(
 
     executeRenderPass(
         state,
-        gpu_res.*,
+        gpu_res,
         cmd_buf,
         swap_tex,
         batches.items,
@@ -815,14 +818,14 @@ pub fn renderClayCommands(
     );
 
     // Cache eviction for text textures (unused for >120 frames)
-    state.text_cache.evictUnused(allocator, dev, gpu_res.frame_index, 120);
+    gpu_res.text_cache.evictUnused(allocator, dev, gpu_res.frame_index, 120);
 
     const end_render = sdl.timer.getTicksNs();
     const render_time_ms = @as(f64, @floatFromInt(end_render - start_render)) / 1_000_000.0;
-    state.last_ui_render_time_ms = render_time_ms;
-    state.ui_render_stats.addSample(render_time_ms);
-    state.last_ui_vertex_count = vertices.items.len;
-    state.last_ui_batch_count = batches.items.len;
+    state.metrics.last_ui_render_time_ms = render_time_ms;
+    state.metrics.ui_render_stats.addSample(render_time_ms);
+    state.metrics.last_ui_vertex_count = vertices.items.len;
+    state.metrics.last_ui_batch_count = batches.items.len;
 
     gpu_res.frame_index += 1;
 }

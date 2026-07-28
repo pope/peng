@@ -286,8 +286,12 @@ pub const RenderResources = struct {
     vertex_capacities: [2]usize = .{ 0, 0 },
     frame_index: usize = 0,
 
-    /// Releases GPU pipelines, samplers, fallback textures, and staging buffers on application teardown.
-    pub fn deinit(self: *RenderResources) void {
+    // Font text texture cache
+    text_cache: TextCache = .{},
+
+    /// Releases GPU pipelines, samplers, fallback textures, staging buffers, and text cache on application teardown.
+    pub fn deinit(self: *RenderResources, allocator: std.mem.Allocator) void {
+        self.text_cache.deinit(allocator, self.device);
         for (self.vertex_buffers) |vb| {
             if (vb) |b| self.device.releaseBuffer(b);
         }
@@ -301,6 +305,49 @@ pub const RenderResources = struct {
         self.device.releaseSampler(self.sampler);
         self.device.releaseTexture(self.white_texture);
     }
+};
+
+/// Viewport spatial transform state (zoom, pan, rotation, scale mode).
+pub const ViewportState = struct {
+    scale_mode: ScaleMode = .full,
+    zoom_factor: f32 = 1.0,
+    pan_x: f32 = 0.0,
+    pan_y: f32 = 0.0,
+    rotation_angle: f32 = 0.0,
+
+    pub fn reset(self: *ViewportState) void {
+        self.zoom_factor = 1.0;
+        self.pan_x = 0.0;
+        self.pan_y = 0.0;
+    }
+};
+
+/// Image color and shader adjustment state.
+pub const ColorAdjustments = struct {
+    brightness: f32 = 0.0,
+    contrast: f32 = 1.0,
+    texture_scale_mode: TextureScaleMode = .linear,
+    dirty: bool = false,
+};
+
+/// UI overlay visibility toggles and dragged positions.
+pub const OverlayState = struct {
+    show_info: bool = false,
+    show_stats: bool = false,
+    debug_show_thumb: bool = false,
+    info_offset_x: f32 = 20.0,
+    info_offset_y: f32 = 20.0,
+    stats_offset_x: f32 = -20.0,
+    stats_offset_y: f32 = 20.0,
+    mouse_inside: bool = true,
+};
+
+/// UI render performance and batch statistics.
+pub const UiRenderMetrics = struct {
+    last_ui_render_time_ms: f64 = 0.0,
+    ui_render_stats: RollingStats = .{},
+    last_ui_vertex_count: usize = 0,
+    last_ui_batch_count: usize = 0,
 };
 
 /// Main Application State Architecture
@@ -328,6 +375,13 @@ pub const ViewerState = struct {
     generation: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     palette: PaletteState,
 
+    // Sub-struct State Encapsulations
+    viewport: ViewportState = .{},
+    adjustments: ColorAdjustments = .{},
+    overlays: OverlayState = .{},
+    metrics: UiRenderMetrics = .{},
+    rotation_map: std.StringHashMap(f32),
+
     // Tagged Union State Machines
     display: DisplayState = .headless,
     slideshow: SlideshowMode = .inactive,
@@ -335,37 +389,10 @@ pub const ViewerState = struct {
     drag_state: DragState = .none,
 
     running: bool = true,
-    show_info_overlay: bool = false,
-    show_stats_overlay: bool = false,
-    debug_show_thumb: bool = false,
-    scale_mode: ScaleMode = .full,
-    zoom_factor: f32 = 1.0,
-    pan_x: f32 = 0.0,
-    pan_y: f32 = 0.0,
-    rotation_angle: f32 = 0.0,
-    rotation_map: std.StringHashMap(f32),
-    texture_scale_mode: TextureScaleMode = .linear,
-    brightness: f32 = 0.0,
-    contrast: f32 = 1.0,
-    adjustments_dirty: bool = false,
-    info_offset_x: f32 = 20.0,
-    info_offset_y: f32 = 20.0,
-    stats_offset_x: f32 = -20.0,
-    stats_offset_y: f32 = 20.0,
-    mouse_inside: bool = true,
     last_nav_time_ms: u64 = 0,
     last_scanned_dir: std.ArrayList(u8) = .empty,
     event_queue: events.MpscQueue(events.BackgroundEvent) = .{},
     pending_ipc_commands: std.ArrayListUnmanaged(*ipc.IpcCommandData) = .empty,
-
-    // UI Render Performance Statistics
-    last_ui_render_time_ms: f64 = 0.0,
-    ui_render_stats: RollingStats = .{},
-    last_ui_vertex_count: usize = 0,
-    last_ui_batch_count: usize = 0,
-
-    // Font text texture cache
-    text_cache: TextCache = .{},
 
     pub inline fn isFullscreen(self: *const ViewerState) bool {
         return self.display.isFullscreen();
@@ -382,7 +409,7 @@ pub const ViewerState = struct {
     }
 
     pub fn setDebugShowThumb(self: *ViewerState, enable: bool) !void {
-        self.debug_show_thumb = enable;
+        self.overlays.debug_show_thumb = enable;
         if (!enable) return;
 
         const entry = self.getCurrentEntry() orelse return;
@@ -446,15 +473,13 @@ pub const ViewerState = struct {
                 },
             }
 
-            self.text_cache.deinit(self.allocator, gpu_res.device);
             self.cache.deinit(self.allocator, gpu_res.device);
-            gpu_res.deinit();
+            gpu_res.deinit(self.allocator);
         } else {
             switch (self.display) {
                 .headless => {},
                 .windowed => |*w| w.deinit(self.allocator),
             }
-            self.text_cache.deinit(self.allocator, null);
             self.cache.deinit(self.allocator, null);
         }
 
@@ -487,9 +512,7 @@ pub const ViewerState = struct {
     }
 
     pub fn resetZoomPan(self: *ViewerState) void {
-        self.zoom_factor = 1.0;
-        self.pan_x = 0.0;
-        self.pan_y = 0.0;
+        self.viewport.reset();
     }
 
     pub fn getBaseScale(self: *ViewerState) f32 {
@@ -537,7 +560,7 @@ pub const ViewerState = struct {
         const view_h = @max(win_h - title_bar_h, 1.0);
 
         const view_transform = @import("view_transform.zig");
-        const dims = view_transform.computeViewDims(raw_w, raw_h, self.rotation_angle, view_w, view_h, self.scale_mode);
+        const dims = view_transform.computeViewDims(raw_w, raw_h, self.viewport.rotation_angle, view_w, view_h, self.viewport.scale_mode);
         return dims.base_scale;
     }
 
@@ -562,7 +585,7 @@ pub const ViewerState = struct {
     }
 
     pub fn applyTextureScaleMode(self: *ViewerState) void {
-        const filter = if (self.texture_scale_mode == .linear) sdl.gpu.Filter.linear else sdl.gpu.Filter.nearest;
+        const filter = if (self.adjustments.texture_scale_mode == .linear) sdl.gpu.Filter.linear else sdl.gpu.Filter.nearest;
         if (self.gpu) |*gpu_res| {
             gpu_res.device.releaseSampler(gpu_res.sampler);
 
@@ -669,7 +692,7 @@ pub const ViewerState = struct {
         } = null;
 
         for (self.cache.entries.items) |*entry| {
-            if (entry.status == .loaded_gpu and !self.debug_show_thumb) {
+            if (entry.status == .loaded_gpu and !self.overlays.debug_show_thumb) {
                 if (entry.thumb_gpu_texture) |thumb_tex| {
                     if (self.gpu) |gpu_res| {
                         gpu_res.device.releaseTexture(thumb_tex);
@@ -718,8 +741,8 @@ pub const ViewerState = struct {
                 }
             }
         }
-        if (self.adjustments_dirty) {
-            self.adjustments_dirty = false;
+        if (self.adjustments.dirty) {
+            self.adjustments.dirty = false;
         }
     }
 
@@ -748,16 +771,16 @@ pub const ViewerState = struct {
         };
 
         const path = path_opt orelse {
-            self.rotation_angle = 0.0;
+            self.viewport.rotation_angle = 0.0;
             return;
         };
 
         if (self.rotation_map.get(path)) |user_rot| {
-            self.rotation_angle = user_rot;
+            self.viewport.rotation_angle = user_rot;
         } else if (self.getCurrentEntry()) |entry| {
-            self.rotation_angle = entry.exif_orientation;
+            self.viewport.rotation_angle = entry.exif_orientation;
         } else {
-            self.rotation_angle = 0.0;
+            self.viewport.rotation_angle = 0.0;
         }
     }
 
@@ -1258,8 +1281,8 @@ pub const ViewerState = struct {
                 if (input.mouse_left_down) {
                     const dx = input.pixMouseX() - v.last_x;
                     const dy = input.pixMouseY() - v.last_y;
-                    self.pan_x += dx;
-                    self.pan_y += dy;
+                    self.viewport.pan_x += dx;
+                    self.viewport.pan_y += dy;
                     next_drag_state = .{ .viewport = .{ .last_x = input.pixMouseX(), .last_y = input.pixMouseY() } };
                 } else {
                     next_drag_state = .none;
@@ -1267,16 +1290,16 @@ pub const ViewerState = struct {
             },
             .info => |inf| {
                 if (input.mouse_left_down) {
-                    self.info_offset_x = input.mouse_x - inf.start_x;
-                    self.info_offset_y = input.mouse_y - inf.start_y;
+                    self.overlays.info_offset_x = input.mouse_x - inf.start_x;
+                    self.overlays.info_offset_y = input.mouse_y - inf.start_y;
                 } else {
                     next_drag_state = .none;
                 }
             },
             .stats => |st| {
                 if (input.mouse_left_down) {
-                    self.stats_offset_x = input.mouse_x - st.start_x;
-                    self.stats_offset_y = input.mouse_y - st.start_y;
+                    self.overlays.stats_offset_x = input.mouse_x - st.start_x;
+                    self.overlays.stats_offset_y = input.mouse_y - st.start_y;
                 } else {
                     next_drag_state = .none;
                 }
@@ -1286,10 +1309,10 @@ pub const ViewerState = struct {
         if (next_drag_state == .none and input.mouse_left_clicked and !palette_closed_this_frame) {
             if (self.palette.mode == .inactive) {
                 const is_in_debug_panel = self.isPointerInDebugPanel(input);
-                if (self.show_info_overlay and !is_in_debug_panel and clay.pointerOver(clay.getElementId("InfoCard"))) {
-                    next_drag_state = .{ .info = .{ .start_x = input.mouse_x - self.info_offset_x, .start_y = input.mouse_y - self.info_offset_y } };
-                } else if (self.show_stats_overlay and !is_in_debug_panel and clay.pointerOver(clay.getElementId("StatsCard"))) {
-                    next_drag_state = .{ .stats = .{ .start_x = input.mouse_x - self.stats_offset_x, .start_y = input.mouse_y - self.stats_offset_y } };
+                if (self.overlays.show_info and !is_in_debug_panel and clay.pointerOver(clay.getElementId("InfoCard"))) {
+                    next_drag_state = .{ .info = .{ .start_x = input.mouse_x - self.overlays.info_offset_x, .start_y = input.mouse_y - self.overlays.info_offset_y } };
+                } else if (self.overlays.show_stats and !is_in_debug_panel and clay.pointerOver(clay.getElementId("StatsCard"))) {
+                    next_drag_state = .{ .stats = .{ .start_x = input.mouse_x - self.overlays.stats_offset_x, .start_y = input.mouse_y - self.overlays.stats_offset_y } };
                 } else if (!is_in_debug_panel and clay.pointerOver(clay.getElementId("Viewport"))) {
                     next_drag_state = .{ .viewport = .{ .last_x = input.pixMouseX(), .last_y = input.pixMouseY() } };
                 }
@@ -1301,8 +1324,8 @@ pub const ViewerState = struct {
     pub fn processZoomAtCursor(self: *ViewerState, input: FrameInput) void {
         if (input.scroll_delta_y != 0) {
             if (self.palette.mode == .inactive and !self.isPointerInDebugPanel(input) and clay.pointerOver(clay.getElementId("Viewport"))) {
-                const old_zoom = self.zoom_factor;
-                self.zoom_factor = self.clampZoomFactor(self.zoom_factor + input.scroll_delta_y * 0.1);
+                const old_zoom = self.viewport.zoom_factor;
+                self.viewport.zoom_factor = self.clampZoomFactor(self.viewport.zoom_factor + input.scroll_delta_y * 0.1);
 
                 const available_width = if (clay.isDebugModeEnabled()) @max(input.win_w - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0) else input.win_w;
                 const cx = available_width / 2.0;
@@ -1315,8 +1338,8 @@ pub const ViewerState = struct {
                 const rel_x = (input.mouse_x - cx) * input.scale_x;
                 const rel_y = (input.mouse_y - cy) * input.scale_y;
 
-                self.pan_x = rel_x - (rel_x - self.pan_x) * (self.zoom_factor / old_zoom);
-                self.pan_y = rel_y - (rel_y - self.pan_y) * (self.zoom_factor / old_zoom);
+                self.viewport.pan_x = rel_x - (rel_x - self.viewport.pan_x) * (self.viewport.zoom_factor / old_zoom);
+                self.viewport.pan_y = rel_y - (rel_y - self.viewport.pan_y) * (self.viewport.zoom_factor / old_zoom);
             }
         }
     }
@@ -1426,22 +1449,22 @@ pub const ViewerState = struct {
     }
 
     pub fn setZoom(self: *ViewerState, factor: f32) void {
-        self.zoom_factor = self.clampZoomFactor(factor);
+        self.viewport.zoom_factor = self.clampZoomFactor(factor);
     }
 
     pub fn setPan(self: *ViewerState, px: f32, py: f32) void {
-        self.pan_x = px;
-        self.pan_y = py;
+        self.viewport.pan_x = px;
+        self.viewport.pan_y = py;
     }
 
     pub fn setAdjustments(self: *ViewerState, br: f32, co: f32) void {
-        self.brightness = std.math.clamp(br, -1.0, 1.0);
-        self.contrast = std.math.clamp(co, 0.0, 5.0);
-        self.adjustments_dirty = true;
+        self.adjustments.brightness = std.math.clamp(br, -1.0, 1.0);
+        self.adjustments.contrast = std.math.clamp(co, 0.0, 5.0);
+        self.adjustments.dirty = true;
     }
 
     pub fn setTextureScaleMode(self: *ViewerState, mode: TextureScaleMode) void {
-        self.texture_scale_mode = mode;
+        self.adjustments.texture_scale_mode = mode;
         self.applyTextureScaleMode();
     }
 
@@ -1508,7 +1531,7 @@ test "ViewerState.clampZoomFactor bounds based on image dimensions" {
         .io = std.Io.Threaded.global_single_threaded.io(),
         .palette = PaletteState.init(std.testing.allocator),
         .rotation_map = .init(std.testing.allocator),
-        .scale_mode = .none,
+        .viewport = .{ .scale_mode = .none },
         .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
     };
     defer state.deinit();
@@ -1538,14 +1561,14 @@ test "ViewerState.clampZoomFactor bounds based on image dimensions" {
     state.current_index = 0;
 
     // In .none mode on 4000x3000 image, base_scale is 1.0
-    state.scale_mode = .none;
+    state.viewport.scale_mode = .none;
     const base_none = state.getBaseScale();
     try std.testing.expectEqual(@as(f32, 1.0), base_none);
     const clamped_max_none = state.clampZoomFactor(15.0);
     try std.testing.expectEqual(@as(f32, 10.0), base_none * clamped_max_none);
 
     // In .full mode in default 1024x708 viewport
-    state.scale_mode = .full;
+    state.viewport.scale_mode = .full;
     const base_full = state.getBaseScale();
     try std.testing.expect(base_full < 1.0);
     const clamped_max_full = state.clampZoomFactor(100.0);
@@ -1574,7 +1597,7 @@ test "ViewerState.updateCurrentRotation syncs EXIF orientation" {
 
     // Initially uncached -> rotation_angle should be 0.0
     state.updateCurrentRotation();
-    try std.testing.expectEqual(@as(f32, 0.0), state.rotation_angle);
+    try std.testing.expectEqual(@as(f32, 0.0), state.viewport.rotation_angle);
 
     // Simulate worker thread caching EXIF orientation of 90.0
     try state.cache.append(std.testing.allocator, .{
@@ -1586,17 +1609,17 @@ test "ViewerState.updateCurrentRotation syncs EXIF orientation" {
 
     // Calling updateCurrentRotation updates rotation_angle from entry
     state.updateCurrentRotation();
-    try std.testing.expectEqual(@as(f32, 90.0), state.rotation_angle);
+    try std.testing.expectEqual(@as(f32, 90.0), state.viewport.rotation_angle);
 
     // Test out of bounds index
     state.current_index = 99;
     state.updateCurrentRotation();
-    try std.testing.expectEqual(@as(f32, 0.0), state.rotation_angle);
+    try std.testing.expectEqual(@as(f32, 0.0), state.viewport.rotation_angle);
 
     // Test null index
     state.current_index = null;
     state.updateCurrentRotation();
-    try std.testing.expectEqual(@as(f32, 0.0), state.rotation_angle);
+    try std.testing.expectEqual(@as(f32, 0.0), state.viewport.rotation_angle);
 }
 
 test "ElementTag.fromInt" {

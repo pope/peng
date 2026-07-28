@@ -41,7 +41,7 @@ pub fn renderInfoOverlay(
     draw_h: f32,
     frame_allocator: std.mem.Allocator,
 ) !void {
-    if (!state.show_info_overlay) return;
+    if (!state.overlays.show_info) return;
 
     var filename: []const u8 = "None";
     var display_dir: []const u8 = "N/A";
@@ -97,18 +97,18 @@ pub fn renderInfoOverlay(
             else => 0.0,
         };
         if (entry_w > 0) {
-            const effective_zoom = (draw_w * state.zoom_factor) / entry_w;
+            const effective_zoom = (draw_w * state.viewport.zoom_factor) / entry_w;
             const pixel_zoom_pct = effective_zoom * 100.0;
             zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x ({d:.0}%)", .{ effective_zoom, pixel_zoom_pct });
         } else {
-            zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{state.zoom_factor});
+            zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{state.viewport.zoom_factor});
         }
     } else {
-        zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{state.zoom_factor});
+        zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{state.viewport.zoom_factor});
     }
 
-    const pan_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}, {d:.0} px", .{ state.pan_x, state.pan_y });
-    const rot_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}°", .{state.rotation_angle});
+    const pan_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}, {d:.0} px", .{ state.viewport.pan_x, state.viewport.pan_y });
+    const rot_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}°", .{state.viewport.rotation_angle});
 
     var thumb_info_str: []const u8 = "N/A";
     if (current_entry) |entry| {
@@ -164,8 +164,8 @@ pub fn renderInfoOverlay(
             .attach_to = .to_parent,
             .attach_points = .{ .element = .left_top, .parent = .left_top },
             .offset = .{
-                .x = state.info_offset_x,
-                .y = state.info_offset_y,
+                .x = state.overlays.info_offset_x,
+                .y = state.overlays.info_offset_y,
             },
             .z_index = 100,
         },
@@ -181,8 +181,8 @@ pub fn renderInfoOverlay(
             clay.UI()(.{ .layout = .{
                 .sizing = .{ .w = .grow, .h = .grow },
             } })({
-                clay.text("Image Info", .{
-                    .color = theme.pink,
+                clay.text("Info Overlay", .{
+                    .color = theme.mauve,
                     .font_size = 16,
                     .font_id = 0,
                 });
@@ -214,7 +214,7 @@ pub fn renderInfoOverlay(
         try renderStatRow("Resolution", res_str);
         try renderStatRow("Size on Disk", disk_size_str);
         try renderStatRow("Viewport Size", screen_str);
-        const scale_mode_str = switch (state.scale_mode) {
+        const scale_mode_str = switch (state.viewport.scale_mode) {
             .none => "Original size (100%)",
             .shrink => "Fit if larger",
             .full => "Fit to screen (Aspect Fit)",
@@ -224,7 +224,7 @@ pub fn renderInfoOverlay(
         try renderStatRow("Zoom Level", zoom_str);
         try renderStatRow("Pan Offset", pan_str);
         try renderStatRow("Rotation", rot_str);
-        const filter_str = switch (state.texture_scale_mode) {
+        const filter_str = switch (state.adjustments.texture_scale_mode) {
             .nearest => "Nearest Neighbor",
             .linear => "Bilinear Filter",
             .pixel_art => "Pixel Art Scaling",
@@ -233,9 +233,9 @@ pub fn renderInfoOverlay(
         };
         try renderStatRow("Scaling Filter", filter_str);
 
-        const brightness_val = state.brightness * 100.0;
+        const brightness_val = state.adjustments.brightness * 100.0;
         const brightness_str = try std.fmt.allocPrint(frame_allocator, "{s}{d:.0}%", .{ if (brightness_val > 0) "+" else "", brightness_val });
-        const contrast_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{state.contrast});
+        const contrast_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{state.adjustments.contrast});
         try renderStatRow("Brightness", brightness_str);
         try renderStatRow("Contrast", contrast_str);
         try renderStatRow("EXIF Thumbnail", thumb_info_str);
@@ -250,7 +250,7 @@ pub fn renderStatsOverlay(
 ) !void {
     try renderInfoOverlay(state, draw_w, draw_h, frame_allocator);
 
-    if (!state.show_stats_overlay) return;
+    if (!state.overlays.show_stats) return;
 
     const current_entry = state.getCurrentEntry();
 
@@ -305,8 +305,8 @@ pub fn renderStatsOverlay(
             .attach_to = .to_parent,
             .attach_points = .{ .element = .right_top, .parent = .right_top },
             .offset = .{
-                .x = state.stats_offset_x,
-                .y = state.stats_offset_y,
+                .x = state.overlays.stats_offset_x,
+                .y = state.overlays.stats_offset_y,
             },
             .z_index = 100,
         },
@@ -415,10 +415,10 @@ pub fn renderStatsOverlay(
         try renderStatRow("Mipmap Status", mipmap_status_str);
         try renderStatRow("Mipmap Gen", mipmap_time_str);
 
-        const render_stats = state.ui_render_stats.getMeanAndStdev();
+        const render_stats = state.metrics.ui_render_stats.getMeanAndStdev();
         const ui_render_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ± {d:.2} ms", .{ render_stats.mean, render_stats.stdev });
-        const ui_batches_str = try std.fmt.allocPrint(frame_allocator, "{d}", .{state.last_ui_batch_count});
-        const ui_verts_str = try std.fmt.allocPrint(frame_allocator, "{d}", .{state.last_ui_vertex_count});
+        const ui_batches_str = try std.fmt.allocPrint(frame_allocator, "{d}", .{state.metrics.last_ui_batch_count});
+        const ui_verts_str = try std.fmt.allocPrint(frame_allocator, "{d}", .{state.metrics.last_ui_vertex_count});
         try renderStatRow("UI Render Pass", ui_render_str);
         try renderStatRow("UI Batches", ui_batches_str);
         try renderStatRow("UI Vertices", ui_verts_str);
