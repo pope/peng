@@ -23,7 +23,7 @@ pub fn parseCommandLineArgs(init: std.process.Init, gpa: std.mem.Allocator) !Par
     var test_mode = false;
     var update_baselines = false;
     var headless = false;
-    var ipc_enabled = true;
+    var ipc_enabled = false;
 
     while (args_it.next()) |arg| {
         if (std.mem.eql(u8, arg, "--test-mode")) {
@@ -32,8 +32,8 @@ pub fn parseCommandLineArgs(init: std.process.Init, gpa: std.mem.Allocator) !Par
             headless = true;
         } else if (std.mem.eql(u8, arg, "--update-baselines")) {
             update_baselines = true;
-        } else if (std.mem.eql(u8, arg, "--no-ipc")) {
-            ipc_enabled = false;
+        } else if (std.mem.eql(u8, arg, "--ipc") or std.mem.eql(u8, arg, "--enable-ipc")) {
+            ipc_enabled = true;
         } else if (std.mem.eql(u8, arg, "--scale")) {
             if (args_it.next()) |val| {
                 if (std.meta.stringToEnum(ScaleMode, val)) |mode| {

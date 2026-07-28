@@ -57,6 +57,10 @@ pub const DragState = union(enum) {
         last_x: f32,
         last_y: f32,
     },
+    info: struct {
+        start_x: f32,
+        start_y: f32,
+    },
     stats: struct {
         start_x: f32,
         start_y: f32,
@@ -145,6 +149,7 @@ pub fn matchesQueryLower(path: []const u8, query_lower: []const u8) bool {
 pub const ViewerState = struct {
     gpu_device: ?sdl.gpu.Device = null,
     gpu_pipeline: ?sdl.gpu.Pipeline = null,
+    unpack_compute_pipeline: ?sdl.gpu.ComputePipeline = null,
     gpu_sampler: ?sdl.gpu.Sampler = null,
     white_texture: ?sdl.gpu.Texture = null,
 
@@ -169,6 +174,7 @@ pub const ViewerState = struct {
     cached_window_title: ?[]const u8 = null,
     is_fullscreen: bool = false,
     running: bool = true,
+    show_info_overlay: bool = false,
     show_stats_overlay: bool = false,
     show_atlas_overlay: bool = false,
     debug_show_thumb: bool = false,
@@ -183,7 +189,9 @@ pub const ViewerState = struct {
     brightness: f32 = 0.0,
     contrast: f32 = 1.0,
     adjustments_dirty: bool = false,
-    stats_offset_x: f32 = 20.0,
+    info_offset_x: f32 = 20.0,
+    info_offset_y: f32 = 20.0,
+    stats_offset_x: f32 = -20.0,
     stats_offset_y: f32 = 20.0,
     drag_state: DragState = .none,
     mouse_inside: bool = true,
@@ -241,7 +249,7 @@ pub const ViewerState = struct {
         defer thumb_surf.destroy();
 
         const gpu_dev = self.gpu_device orelse return;
-        const upload_res = graphics.uploadSurfaceToGpu(gpu_dev, thumb_surf) orelse return;
+        const upload_res = graphics.uploadSurfaceToGpu(gpu_dev, thumb_surf, self.unpack_compute_pipeline) orelse return;
 
         self.lockCache();
         defer self.unlockCache();
@@ -281,6 +289,7 @@ pub const ViewerState = struct {
             }
 
             if (self.gpu_pipeline) |pipe| dev.releasePipeline(pipe);
+            if (self.unpack_compute_pipeline) |pipe| dev.releaseComputePipeline(pipe);
             if (self.gpu_sampler) |samp| dev.releaseSampler(samp);
             if (self.white_texture) |tex| dev.releaseTexture(tex);
             if (self.window_claimed) {
@@ -539,7 +548,7 @@ pub const ViewerState = struct {
         if (upload_target) |target| {
             defer target.cpu.surface.destroy();
             if (self.gpu_device) |gpu_dev| {
-                if (uploadSurfaceToGpu(gpu_dev, target.cpu.surface)) |res| {
+                if (uploadSurfaceToGpu(gpu_dev, target.cpu.surface, self.unpack_compute_pipeline)) |res| {
                     self.lockCache();
                     const loaded_gpu_status = CacheStatus{
                         .loaded_gpu = .{
@@ -621,7 +630,7 @@ pub const ViewerState = struct {
         if (thumb_data.generation != current_gen) return;
         if (thumb_data.surface == null) return;
         if (self.gpu_device) |gpu_dev| {
-            if (graphics.uploadSurfaceToGpu(gpu_dev, thumb_data.surface.?)) |upload_res| {
+            if (graphics.uploadSurfaceToGpu(gpu_dev, thumb_data.surface.?, self.unpack_compute_pipeline)) |upload_res| {
                 self.lockCache();
                 if (self.cache.getWithGeneration(thumb_data.index, thumb_data.generation)) |entry| {
                     entry.thumb_gpu_texture = upload_res.gpu_texture;
@@ -648,7 +657,7 @@ pub const ViewerState = struct {
         if (decoded_data.generation != current_gen) return;
         if (decoded_data.surface == null) return;
         if (self.gpu_device) |gpu_dev| {
-            if (graphics.uploadSurfaceToGpu(gpu_dev, decoded_data.surface.?)) |full_res| {
+            if (graphics.uploadSurfaceToGpu(gpu_dev, decoded_data.surface.?, self.unpack_compute_pipeline)) |full_res| {
                 self.lockCache();
                 if (self.cache.getWithGeneration(decoded_data.index, decoded_data.generation)) |entry| {
                     switch (entry.status) {
@@ -1092,6 +1101,14 @@ pub const ViewerState = struct {
         var next_drag_state = self.drag_state;
         switch (next_drag_state) {
             .none => {},
+            .info => |info| {
+                if (input.mouse_left_down) {
+                    self.info_offset_x = input.mouse_x - info.start_x;
+                    self.info_offset_y = input.mouse_y - info.start_y;
+                } else {
+                    next_drag_state = .none;
+                }
+            },
             .stats => |stats| {
                 if (input.mouse_left_down) {
                     self.stats_offset_x = input.mouse_x - stats.start_x;
@@ -1118,7 +1135,17 @@ pub const ViewerState = struct {
         if (input.mouse_left_clicked) {
             const is_in_debug_panel = self.isPointerInDebugPanel(input);
             if (!is_in_debug_panel) {
-                if (self.show_stats_overlay and
+                if (self.show_info_overlay and
+                    clay.pointerOver(clay.getElementId("InfoPanel")) and
+                    !clay.pointerOver(clay.getElementId("InfoCloseBtn")))
+                {
+                    self.drag_state = .{
+                        .info = .{
+                            .start_x = input.mouse_x - self.info_offset_x,
+                            .start_y = input.mouse_y - self.info_offset_y,
+                        },
+                    };
+                } else if (self.show_stats_overlay and
                     clay.pointerOver(clay.getElementId("StatsPanel")) and
                     !clay.pointerOver(clay.getElementId("StatsCloseBtn")))
                 {

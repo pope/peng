@@ -60,6 +60,7 @@ pub fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
         if (own_gpu_resources) {
             const dev = setup.gpu_device;
             dev.releasePipeline(resources.pipeline);
+            if (resources.unpack_compute_pipeline) |pipe| dev.releaseComputePipeline(pipe);
             dev.releaseSampler(resources.sampler);
             dev.releaseTexture(resources.white_texture);
         }
@@ -72,6 +73,7 @@ pub fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
     var state = app.state.ViewerState{
         .gpu_device = setup.gpu_device,
         .gpu_pipeline = resources.pipeline,
+        .unpack_compute_pipeline = resources.unpack_compute_pipeline,
         .gpu_sampler = resources.sampler,
         .white_texture = resources.white_texture,
 
@@ -226,6 +228,9 @@ pub fn runMainLoop(ctx: *AppGraphicsAndState) !void {
         ctx.state.checkIdlePreload();
 
         if (input.mouse_left_clicked) {
+            if (ctx.state.show_info_overlay and !ctx.state.isPointerInDebugPanel(input) and clay.pointerOver(clay.getElementId("InfoCloseBtn"))) {
+                ctx.state.show_info_overlay = false;
+            }
             if (ctx.state.show_stats_overlay and !ctx.state.isPointerInDebugPanel(input) and clay.pointerOver(clay.getElementId("StatsCloseBtn"))) {
                 ctx.state.show_stats_overlay = false;
             }

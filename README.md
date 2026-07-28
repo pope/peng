@@ -77,13 +77,13 @@ Start the image viewer by passing a file or directory path:
 | `--headless`         | None                             | Runs without opening an OS display window.              |
 | `--test-mode`        | None                             | Puts the window and event loop into test configuration. |
 | `--update-baselines` | None                             | Overwrites baseline golden screenshots.                 |
-| `--no-ipc`           | None                             | Disables the IPC UNIX Domain Socket server.             |
+| `--ipc`              | None                             | Enables the IPC UNIX Domain Socket server.              |
 
 ______________________________________________________________________
 
 ## Remote IPC Control (`peng-msg`)
 
-Whenever `peng` is launched, it starts a UDS server at `/tmp/peng-$PID.sock` and prints the socket path to `stdout`.
+When `peng` is launched with the `--ipc` flag, it starts a UDS server at `/tmp/peng-$PID.sock` and prints the socket path to `stdout`.
 
 You can send commands to a running instance using the `peng-msg` utility:
 

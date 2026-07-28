@@ -91,16 +91,21 @@ pub fn build(b: *std.Build) void {
     const compile_shaders = b.step("shaders", "Compile shaders");
     const vert_cmd = b.addSystemCommand(&.{ "glslangValidator", "-V", "-Os", "-S", "vert", "src/shaders/vert.glsl", "-o", "src/shaders/vert.spv" });
     const frag_cmd = b.addSystemCommand(&.{ "glslangValidator", "-V", "-Os", "-S", "frag", "src/shaders/frag.glsl", "-o", "src/shaders/frag.spv" });
+    const comp_cmd = b.addSystemCommand(&.{ "glslangValidator", "-V", "-Os", "-S", "comp", "src/shaders/unpack_rgb.comp.glsl", "-o", "src/shaders/unpack_rgb.spv" });
     compile_shaders.dependOn(&vert_cmd.step);
     compile_shaders.dependOn(&frag_cmd.step);
+    compile_shaders.dependOn(&comp_cmd.step);
 
     const vert_msl_cmd = b.addSystemCommand(&.{ "spirv-cross", "src/shaders/vert.spv", "--msl", "--output", "src/shaders/vert.msl" });
     vert_msl_cmd.step.dependOn(&vert_cmd.step);
     const frag_msl_cmd = b.addSystemCommand(&.{ "spirv-cross", "src/shaders/frag.spv", "--msl", "--output", "src/shaders/frag.msl" });
     frag_msl_cmd.step.dependOn(&frag_cmd.step);
+    const comp_msl_cmd = b.addSystemCommand(&.{ "spirv-cross", "src/shaders/unpack_rgb.spv", "--msl", "--output", "src/shaders/unpack_rgb.msl" });
+    comp_msl_cmd.step.dependOn(&comp_cmd.step);
 
     compile_shaders.dependOn(&vert_msl_cmd.step);
     compile_shaders.dependOn(&frag_msl_cmd.step);
+    compile_shaders.dependOn(&comp_msl_cmd.step);
 
     exe.step.dependOn(compile_shaders);
 

@@ -10,6 +10,7 @@ const startTextInput = app_state.startTextInput;
 pub const AppActionId = enum {
     next_image,
     prev_image,
+    toggle_info,
     toggle_stats,
     toggle_atlas,
     toggle_fullscreen,
@@ -80,8 +81,8 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
                 .{ .key = .left },
             },
         },
-        .toggle_stats => .{
-            .name = "Toggle Stats for Nerds",
+        .toggle_info => .{
+            .name = "Toggle Image Info",
             .shortcut_text = "I",
             .show_in_palette = true,
             .shortcuts = &.{
@@ -94,6 +95,14 @@ pub fn getActionMetadata(action_id: AppActionId) ActionMetadata {
             .show_in_palette = true,
             .shortcuts = &.{
                 .{ .key = .char_a, .mod = .{ .shift = true } },
+            },
+        },
+        .toggle_stats => .{
+            .name = "Toggle Stats for Nerds",
+            .shortcut_text = "Shift+I",
+            .show_in_palette = true,
+            .shortcuts = &.{
+                .{ .key = .char_i, .mod = .{ .shift = true } },
             },
         },
         .toggle_fullscreen => .{
@@ -385,6 +394,7 @@ pub fn triggerAction(self: *ViewerState, action_id: AppActionId) !void {
     switch (action_id) {
         .next_image => try self.next(),
         .prev_image => try self.prev(),
+        .toggle_info => self.show_info_overlay = !self.show_info_overlay,
         .toggle_stats => self.show_stats_overlay = !self.show_stats_overlay,
         .toggle_atlas => self.show_atlas_overlay = !self.show_atlas_overlay,
         .toggle_fullscreen => {
@@ -555,6 +565,7 @@ pub fn triggerAction(self: *ViewerState, action_id: AppActionId) !void {
 pub const AppAction = union(enum) {
     next_image,
     prev_image,
+    toggle_info,
     toggle_stats,
     toggle_fullscreen,
     open_file_finder,
