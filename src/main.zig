@@ -93,7 +93,6 @@ pub fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
             },
         },
         .palette = app.state.PaletteState.init(gpa),
-        .action_handler = commands.actions.triggerAction,
         .viewport = .{ .scale_mode = parsed.default_scale },
         .adjustments = .{},
         .rotation_map = .init(gpa),
@@ -202,6 +201,14 @@ pub fn runMainLoop(ctx: *AppGraphicsAndState) !void {
         }
 
         try ctx.state.update(input);
+
+        // Process any queued user actions
+        for (ctx.state.action_queue.items) |action_id| {
+            commands.actions.triggerAction(&ctx.state, action_id) catch |err| {
+                std.log.err("Failed to execute queued action {s}: {any}", .{ @tagName(action_id), err });
+            };
+        }
+        ctx.state.action_queue.clearRetainingCapacity();
 
         clay.setLayoutDimensions(.{ .w = input.win_w, .h = input.win_h });
 

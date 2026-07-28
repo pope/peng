@@ -356,8 +356,6 @@ pub const UiRenderMetrics = struct {
 ///   value copies of parameters (paths, generation counters) and touch zero shared state.
 /// - Workers communicate exclusively by pushing event messages into `event_queue` (MpscQueue).
 /// - The main thread consumes background events during frame updates and updates `ViewerState` safely.
-pub const ActionHandler = *const fn (state: *ViewerState, action_id: types.AppActionId) anyerror!void;
-
 pub const ViewerState = struct {
     gpu: ?RenderResources = null,
 
@@ -374,7 +372,7 @@ pub const ViewerState = struct {
     exiting: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     generation: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     palette: PaletteState,
-    action_handler: ?ActionHandler = null,
+    action_queue: std.ArrayListUnmanaged(types.AppActionId) = .empty,
 
     // Sub-struct State Encapsulations
     viewport: ViewportState = .{},
@@ -498,6 +496,7 @@ pub const ViewerState = struct {
         }
         self.last_scanned_dir.deinit(self.allocator);
         self.pending_ipc_commands.deinit(self.allocator);
+        self.action_queue.deinit(self.allocator);
         self.event_queue.deinit(self.allocator, self.io);
         self.image_list.deinit(self.allocator);
         self.palette.deinit();
@@ -619,9 +618,7 @@ pub const ViewerState = struct {
     }
 
     pub fn triggerAction(self: *ViewerState, action_id: types.AppActionId) !void {
-        if (self.action_handler) |handler| {
-            try handler(self, action_id);
-        }
+        try self.action_queue.append(self.allocator, action_id);
     }
 
     pub fn getCurrentEntry(self: *ViewerState) ?CacheEntry {
