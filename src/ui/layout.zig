@@ -142,7 +142,7 @@ pub fn renderFrame(
         _ = cmd_wrapper.cancel();
     };
 
-    var temp_buffers = std.ArrayList(sdl.gpu.TransferBuffer).empty;
+    var temp_buffers: std.ArrayList(sdl.gpu.TransferBuffer) = .empty;
     defer temp_buffers.deinit(frame_allocator);
     errdefer {
         for (temp_buffers.items) |buf| {

@@ -80,7 +80,7 @@ pub fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
         },
 
         .directory_arena = std.heap.ArenaAllocator.init(gpa),
-        .image_list = std.ArrayList([]const u8).empty,
+        .image_list = .empty,
         .cache = .{},
         .allocator = gpa,
         .io = init.io,
@@ -96,7 +96,7 @@ pub fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
         .text_cache = .{},
         .scale_mode = parsed.default_scale,
         .rotation_angle = 0.0,
-        .rotation_map = std.StringHashMap(f32).init(gpa),
+        .rotation_map = .init(gpa),
         .brightness = 0.0,
         .contrast = 1.0,
         .adjustments_dirty = false,

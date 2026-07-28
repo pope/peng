@@ -214,7 +214,7 @@ pub fn scanDirectory(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.I
     defer dir.close(io);
 
     var it = dir.iterate();
-    var dir_entries = std.ArrayList([]const u8).empty;
+    var dir_entries: std.ArrayList([]const u8) = .empty;
     defer dir_entries.deinit(gpa);
 
     while (try it.next(io)) |entry| {
@@ -273,7 +273,7 @@ fn scanDirectoryThreadSafe(state: *ViewerState, gpa: std.mem.Allocator, io: std.
     defer dir.close(io);
 
     var it = dir.iterate();
-    var dir_entries = std.ArrayList([]const u8).empty;
+    var dir_entries: std.ArrayList([]const u8) = .empty;
     defer {
         for (dir_entries.items) |name| gpa.free(name);
         dir_entries.deinit(gpa);
@@ -416,7 +416,7 @@ fn pathScanWorker(args: *PathScanArgs) void {
     defer dir.close(io);
 
     var it = dir.iterate();
-    var dir_entries = std.ArrayList([]const u8).empty;
+    var dir_entries: std.ArrayList([]const u8) = .empty;
     defer {
         for (dir_entries.items) |item| gpa.free(item);
         dir_entries.deinit(gpa);
@@ -534,7 +534,7 @@ test "scanDirectoryEntries" {
         f4.close(io);
     }
 
-    var entries = std.ArrayList(DirectoryEntry).empty;
+    var entries: std.ArrayList(DirectoryEntry) = .empty;
     defer {
         for (entries.items) |e| {
             allocator.free(e.name);

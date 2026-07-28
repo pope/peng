@@ -92,7 +92,7 @@ pub fn remapMiddleTruncatedMatches(
     if (matches.len == 0) return &.{};
 
     const actual_tail_start = @max(tail_start_idx, head_len);
-    var list = try std.ArrayList(usize).initCapacity(allocator, matches.len);
+    var list: std.ArrayList(usize) = try .initCapacity(allocator, matches.len);
     errdefer list.deinit(allocator);
 
     for (matches) |m_idx| {

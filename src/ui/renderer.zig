@@ -759,10 +759,10 @@ pub fn renderClayCommands(
     const dev = gpu.device;
     const frame_idx = state.gpu_frame_index % 2;
 
-    var vertices = std.ArrayList(Vertex).empty;
+    var vertices: std.ArrayList(Vertex) = .empty;
     defer vertices.deinit(allocator);
 
-    var batches = std.ArrayList(BatchItem).empty;
+    var batches: std.ArrayList(BatchItem) = .empty;
     defer batches.deinit(allocator);
 
     var tb_offset: usize = 0;

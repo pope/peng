@@ -152,7 +152,7 @@ test "MpscQueue push and drain" {
     try queue.push(allocator, io, 10);
     try queue.push(allocator, io, 20);
 
-    var batch = std.ArrayList(i32).empty;
+    var batch: std.ArrayList(i32) = .empty;
     defer batch.deinit(allocator);
 
     try queue.drain(allocator, io, &batch);

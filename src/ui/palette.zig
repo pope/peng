@@ -48,7 +48,7 @@ pub fn partitionHighlightedText(
 ) ![]TextChunk {
     if (text.len == 0 or match_indices.len == 0) {
         if (text.len == 0) return &.{};
-        var list = try std.ArrayList(TextChunk).initCapacity(allocator, 1);
+        var list: std.ArrayList(TextChunk) = try .initCapacity(allocator, 1);
         list.appendAssumeCapacity(.{ .slice = text, .is_matched = false });
         return list.toOwnedSlice(allocator);
     }
@@ -59,7 +59,7 @@ pub fn partitionHighlightedText(
         }
     }
 
-    var list = std.ArrayList(TextChunk).empty;
+    var list: std.ArrayList(TextChunk) = .empty;
     errdefer list.deinit(allocator);
 
     var idx: usize = 0;
@@ -709,8 +709,8 @@ pub fn renderSelectionList(
                         const dirname = std.fs.path.dirname(path) orelse ".";
                         const query_str = palette.query.items;
 
-                        var basename_matches = std.ArrayList(usize).empty;
-                        var dirname_matches = std.ArrayList(usize).empty;
+                        var basename_matches: std.ArrayList(usize) = .empty;
+                        var dirname_matches: std.ArrayList(usize) = .empty;
 
                         if (query_str.len > 0 and path.len > 0) {
                             const searcher_opt = palette.getSearcher(@max(path.len, 64), query_str.len) catch |err| blk: {
@@ -758,7 +758,7 @@ pub fn renderSelectionList(
 
                         const display_dir = truncateDirectory(frame_allocator, dirname, 488.0, 11, measure_data);
 
-                        var final_dir_matches = std.ArrayList(usize).empty;
+                        var final_dir_matches: std.ArrayList(usize) = .empty;
                         if (display_dir.ptr != dirname.ptr and display_dir.len > 0 and std.mem.startsWith(u8, display_dir, "...")) {
                             const kept_len = display_dir.len - 3;
                             const start_offset = if (dirname.len > kept_len) dirname.len - kept_len else 0;
@@ -881,7 +881,7 @@ pub fn renderSelectionList(
                     .directory_navigator => {
                         if (real_idx < palette.dir_items.items.len) {
                             const entry = palette.dir_items.items[real_idx];
-                            var dir_matches = std.ArrayList(usize).empty;
+                            var dir_matches: std.ArrayList(usize) = .empty;
                             const query_str = palette.query.items;
 
                             if (query_str.len > 0 and entry.name.len > 0) {
@@ -1385,7 +1385,7 @@ test "untruncated directory starting with dots preserves matches" {
     const display_dir = dirname; // untruncated (same pointer)
     const dirname_matches = [_]usize{ 0, 1, 2, 4 }; // matches '...', 'm'
 
-    var final_dir_matches = std.ArrayList(usize).empty;
+    var final_dir_matches: std.ArrayList(usize) = .empty;
     defer final_dir_matches.deinit(std.testing.allocator);
 
     if (display_dir.ptr != dirname.ptr and display_dir.len > 0 and std.mem.startsWith(u8, display_dir, "...")) {

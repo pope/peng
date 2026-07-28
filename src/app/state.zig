@@ -341,7 +341,7 @@ pub const ViewerState = struct {
     stats_offset_y: f32 = 20.0,
     mouse_inside: bool = true,
     last_nav_time_ms: u64 = 0,
-    last_scanned_dir: std.ArrayList(u8) = std.ArrayList(u8).empty,
+    last_scanned_dir: std.ArrayList(u8) = .empty,
     event_queue: events.MpscQueue(events.BackgroundEvent) = .{},
     pending_ipc_commands: std.ArrayListUnmanaged(*ipc.IpcCommandData) = .empty,
 
@@ -918,7 +918,7 @@ pub const ViewerState = struct {
     }
 
     pub fn processBackgroundEvents(self: *ViewerState) bool {
-        var event_batch = std.ArrayList(events.BackgroundEvent).empty;
+        var event_batch: std.ArrayList(events.BackgroundEvent) = .empty;
         defer event_batch.deinit(self.allocator);
 
         self.event_queue.drain(self.allocator, self.io, &event_batch) catch return false;
@@ -1503,12 +1503,12 @@ test "ViewerState.clampZoomFactor bounds based on image dimensions" {
 
     var state = ViewerState{
         .directory_arena = std.heap.ArenaAllocator.init(std.testing.allocator),
-        .image_list = std.ArrayList([]const u8).empty,
+        .image_list = .empty,
         .cache = .{},
         .allocator = std.testing.allocator,
         .io = std.Io.Threaded.global_single_threaded.io(),
         .palette = PaletteState.init(std.testing.allocator),
-        .rotation_map = std.StringHashMap(f32).init(std.testing.allocator),
+        .rotation_map = .init(std.testing.allocator),
         .scale_mode = .none,
         .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
     };
@@ -1560,12 +1560,12 @@ test "ViewerState.clampZoomFactor bounds based on image dimensions" {
 test "ViewerState.updateCurrentRotation syncs EXIF orientation" {
     var state = ViewerState{
         .directory_arena = std.heap.ArenaAllocator.init(std.testing.allocator),
-        .image_list = std.ArrayList([]const u8).empty,
+        .image_list = .empty,
         .cache = .{},
         .allocator = std.testing.allocator,
         .io = std.Io.Threaded.global_single_threaded.io(),
         .palette = PaletteState.init(std.testing.allocator),
-        .rotation_map = std.StringHashMap(f32).init(std.testing.allocator),
+        .rotation_map = .init(std.testing.allocator),
         .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
     };
     defer state.deinit();
@@ -1620,12 +1620,12 @@ test "ViewerState.openPalette directory_navigator starting directory rules" {
 
     var state = ViewerState{
         .directory_arena = std.heap.ArenaAllocator.init(allocator),
-        .image_list = std.ArrayList([]const u8).empty,
+        .image_list = .empty,
         .cache = .{},
         .allocator = allocator,
         .io = io,
         .palette = PaletteState.init(allocator),
-        .rotation_map = std.StringHashMap(f32).init(allocator),
+        .rotation_map = .init(allocator),
         .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
     };
     defer state.deinit();
@@ -1670,12 +1670,12 @@ test "ViewerState.openPalette directory_navigator steps up if 0 subdirectories" 
 
     var state = ViewerState{
         .directory_arena = std.heap.ArenaAllocator.init(allocator),
-        .image_list = std.ArrayList([]const u8).empty,
+        .image_list = .empty,
         .cache = .{},
         .allocator = allocator,
         .io = io,
         .palette = PaletteState.init(allocator),
-        .rotation_map = std.StringHashMap(f32).init(allocator),
+        .rotation_map = .init(allocator),
         .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
     };
     defer state.deinit();
@@ -1712,12 +1712,12 @@ test "ViewerState.openPalette steps up from top-level relative leaf dir without 
 
     var state = ViewerState{
         .directory_arena = std.heap.ArenaAllocator.init(allocator),
-        .image_list = std.ArrayList([]const u8).empty,
+        .image_list = .empty,
         .cache = .{},
         .allocator = allocator,
         .io = io,
         .palette = PaletteState.init(allocator),
-        .rotation_map = std.StringHashMap(f32).init(allocator),
+        .rotation_map = .init(allocator),
         .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
     };
     defer state.deinit();
@@ -1751,12 +1751,12 @@ test "ViewerState.isPointerInDebugPanel and click localization" {
 
     var state = ViewerState{
         .directory_arena = std.heap.ArenaAllocator.init(allocator),
-        .image_list = std.ArrayList([]const u8).empty,
+        .image_list = .empty,
         .cache = .{},
         .allocator = allocator,
         .io = io,
         .palette = PaletteState.init(allocator),
-        .rotation_map = std.StringHashMap(f32).init(allocator),
+        .rotation_map = .init(allocator),
         .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
     };
     defer state.deinit();
@@ -1781,7 +1781,7 @@ test "ViewerState.isPointerInDebugPanel and click localization" {
         .quit_requested = false,
         .scroll_delta_x = 0,
         .scroll_delta_y = 0,
-        .keys_pressed = std.ArrayList(types.Key).empty,
+        .keys_pressed = .empty,
         .key_modifiers = .{},
         .text_input = null,
         .dropped_path = null,
@@ -1806,7 +1806,7 @@ test "ViewerState.isPointerInDebugPanel and click localization" {
         .quit_requested = false,
         .scroll_delta_x = 0,
         .scroll_delta_y = 0,
-        .keys_pressed = std.ArrayList(types.Key).empty,
+        .keys_pressed = .empty,
         .key_modifiers = .{},
         .text_input = null,
         .dropped_path = null,
@@ -1826,12 +1826,12 @@ test "ViewerState slideshow timer auto-advances slide" {
 
     var state = ViewerState{
         .directory_arena = std.heap.ArenaAllocator.init(allocator),
-        .image_list = std.ArrayList([]const u8).empty,
+        .image_list = .empty,
         .cache = .{},
         .allocator = allocator,
         .io = io,
         .palette = PaletteState.init(allocator),
-        .rotation_map = std.StringHashMap(f32).init(allocator),
+        .rotation_map = .init(allocator),
         .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
     };
     defer state.deinit();
@@ -1857,7 +1857,7 @@ test "ViewerState slideshow timer auto-advances slide" {
         .quit_requested = false,
         .scroll_delta_x = 0,
         .scroll_delta_y = 0,
-        .keys_pressed = std.ArrayList(types.Key).empty,
+        .keys_pressed = .empty,
         .key_modifiers = .{},
         .text_input = null,
         .dropped_path = null,

@@ -163,7 +163,7 @@ pub fn pollFrameInput(
 
     var frame_input_state = FrameInputState{
         .frame_allocator = frame_allocator,
-        .keys_pressed = std.ArrayList(Key).empty,
+        .keys_pressed = .empty,
         .mouse_inside = prev_mouse_inside,
     };
     errdefer frame_input_state.keys_pressed.deinit(frame_allocator);
@@ -534,12 +534,12 @@ test "handlePaletteKeys directory_navigator key interactions" {
 
     var state = ViewerState{
         .directory_arena = std.heap.ArenaAllocator.init(allocator),
-        .image_list = std.ArrayList([]const u8).empty,
+        .image_list = .empty,
         .cache = .{},
         .allocator = allocator,
         .io = io,
         .palette = PaletteState.init(allocator),
-        .rotation_map = std.StringHashMap(f32).init(allocator),
+        .rotation_map = .init(allocator),
         .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
     };
     defer state.deinit();
@@ -590,12 +590,12 @@ test "handlePaletteKeys stepping up from dot to parent directory preselects work
 
     var state = ViewerState{
         .directory_arena = std.heap.ArenaAllocator.init(allocator),
-        .image_list = std.ArrayList([]const u8).empty,
+        .image_list = .empty,
         .cache = .{},
         .allocator = allocator,
         .io = io,
         .palette = PaletteState.init(allocator),
-        .rotation_map = std.StringHashMap(f32).init(allocator),
+        .rotation_map = .init(allocator),
         .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
     };
     defer state.deinit();
@@ -620,7 +620,7 @@ test "processSDLEvent updates FrameInputState" {
     const allocator = std.testing.allocator;
     var state = FrameInputState{
         .frame_allocator = allocator,
-        .keys_pressed = std.ArrayList(Key).empty,
+        .keys_pressed = .empty,
         .mouse_inside = false,
     };
     defer state.keys_pressed.deinit(allocator);

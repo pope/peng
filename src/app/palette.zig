@@ -94,13 +94,13 @@ pub const PaletteState = struct {
 
     pub fn init(allocator: std.mem.Allocator) PaletteState {
         return .{
-            .query = std.ArrayList(u8).empty,
-            .matches = std.ArrayList(usize).empty,
-            .scored_matches = std.ArrayList(ScoredMatch).empty,
-            .current_nav_dir = std.ArrayList(u8).empty,
-            .last_nav_dir = std.ArrayList(u8).empty,
-            .last_child_dir = std.ArrayList(u8).empty,
-            .dir_items = std.ArrayList(fs.DirectoryEntry).empty,
+            .query = .empty,
+            .matches = .empty,
+            .scored_matches = .empty,
+            .current_nav_dir = .empty,
+            .last_nav_dir = .empty,
+            .last_child_dir = .empty,
+            .dir_items = .empty,
             .current_dir_image_count = 0,
             .allocator = allocator,
             .searcher = null,
@@ -389,9 +389,9 @@ test "PaletteState scoreMatches character indices and partitioning" {
     const full_res = searcher.scoreMatches(item_path, "photos/beach");
     try std.testing.expect(full_res.score != null);
 
-    var b_matches = std.ArrayList(usize).empty;
+    var b_matches: std.ArrayList(usize) = .empty;
     defer b_matches.deinit(std.testing.allocator);
-    var d_matches = std.ArrayList(usize).empty;
+    var d_matches: std.ArrayList(usize) = .empty;
     defer d_matches.deinit(std.testing.allocator);
 
     for (full_res.matches) |m_idx| {

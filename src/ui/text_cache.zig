@@ -37,7 +37,7 @@ pub const TextCache = struct {
     }
 
     pub fn evictUnused(self: *TextCache, allocator: std.mem.Allocator, dev: sdl.gpu.Device, current_frame: usize, max_unused_frames: usize) void {
-        var to_evict = std.ArrayList(TextCacheKey).empty;
+        var to_evict: std.ArrayList(TextCacheKey) = .empty;
         defer to_evict.deinit(allocator);
 
         var iter = self.map.iterator();
