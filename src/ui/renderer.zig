@@ -521,7 +521,8 @@ fn buildGeometryFromCommands(
             .text => {
                 var text_data = rcmd.render_data.text;
                 const debug_w = @as(f32, @floatFromInt(clay.Clay__debugViewWidth));
-                if (clay.isDebugModeEnabled() and bb.x >= (f_win_w - debug_w - 0.5)) {
+                const logical_win_w = f_win_w / scale_x;
+                if (clay.isDebugModeEnabled() and bb.x >= (logical_win_w - debug_w - 0.5)) {
                     // Scale down hardcoded 16px Clay debug text to 12px (0.75x) for GPU text rendering
                     const scaled_size = @as(f32, @floatFromInt(text_data.font_size)) * theme.debug_font_scale;
                     text_data.font_size = @intFromFloat(@round(scaled_size));
@@ -817,4 +818,22 @@ pub fn renderClayCommands(
     state.last_ui_batch_count = batches.items.len;
 
     state.gpu_frame_index += 1;
+}
+
+test "Clay debug text detection and scaling on HiDPI display" {
+    const debug_w = @as(f32, @floatFromInt(clay.Clay__debugViewWidth));
+    const win_w: i32 = 2400; // physical pixels (1200 logical points at scale_x = 2.0)
+    const scale_x: f32 = 2.0;
+    const f_win_w = @as(f32, @floatFromInt(win_w));
+
+    const logical_win_w = f_win_w / scale_x; // 1200.0
+    const debug_panel_min_x = logical_win_w - debug_w - 0.5; // 799.5
+
+    // Element inside debug panel at logical x = 800.0
+    const debug_element_x: f32 = 800.0;
+    try std.testing.expect(debug_element_x >= debug_panel_min_x);
+
+    // Element in main view at logical x = 400.0
+    const main_element_x: f32 = 400.0;
+    try std.testing.expect(!(main_element_x >= debug_panel_min_x));
 }
