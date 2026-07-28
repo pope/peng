@@ -285,7 +285,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     if (!state.isJobValid(args.generation)) return;
 
     // Attempt fast EXIF thumbnail decoding for instant placeholder preview
-    if (std.mem.eql(u8, mime_type, "image/jpeg") and state.gpu_device != null) {
+    if (std.mem.eql(u8, mime_type, "image/jpeg") and state.gpu != null) {
         var header_buf: [65536]u8 = undefined;
         var thumb_file = std.Io.Dir.openFile(std.Io.Dir.cwd(), state.io, path, .{}) catch null;
         if (thumb_file) |*f| {
@@ -341,7 +341,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     var conversion_time_ms: f64 = 0.0;
     if (surface) |surf| {
         const pix_fmt = state.display.getPixelFormat();
-        if (state.gpu_device == null and pix_fmt != sdl.PixelFormat.unknown and surf.format() != pix_fmt) {
+        if (state.gpu == null and pix_fmt != sdl.PixelFormat.unknown and surf.format() != pix_fmt) {
             const start_convert = sdl.timer.getTicksNs();
             if (surf.convert(pix_fmt)) |conv| {
                 const end_convert = sdl.timer.getTicksNs();

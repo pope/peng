@@ -71,11 +71,13 @@ pub fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
 
     // 4. State Initialization
     var state = app.state.ViewerState{
-        .gpu_device = setup.gpu_device,
-        .gpu_pipeline = resources.pipeline,
-        .unpack_compute_pipeline = resources.unpack_compute_pipeline,
-        .gpu_sampler = resources.sampler,
-        .white_texture = resources.white_texture,
+        .gpu = .{
+            .device = setup.gpu_device,
+            .pipeline = resources.pipeline,
+            .unpack_compute_pipeline = resources.unpack_compute_pipeline,
+            .sampler = resources.sampler,
+            .white_texture = resources.white_texture,
+        },
 
         .directory_arena = std.heap.ArenaAllocator.init(gpa),
         .image_list = std.ArrayList([]const u8).empty,

@@ -271,6 +271,25 @@ pub const ScreenshotMode = union(enum) {
     capturing: screenshot.ActiveScreenshot,
 };
 
+/// Cohesive GPU context and render resources initialized for GPU-accelerated rendering.
+pub const RenderResources = struct {
+    device: sdl.gpu.Device,
+    pipeline: sdl.gpu.Pipeline,
+    unpack_compute_pipeline: ?sdl.gpu.ComputePipeline = null,
+    sampler: sdl.gpu.Sampler,
+    white_texture: sdl.gpu.Texture,
+
+    /// Releases GPU pipelines, samplers, and fallback textures on application teardown.
+    pub fn deinit(self: *RenderResources) void {
+        self.device.releasePipeline(self.pipeline);
+        if (self.unpack_compute_pipeline) |pipe| {
+            self.device.releaseComputePipeline(pipe);
+        }
+        self.device.releaseSampler(self.sampler);
+        self.device.releaseTexture(self.white_texture);
+    }
+};
+
 /// Main Application State Architecture
 ///
 /// Single-Threaded ViewerState Model:
@@ -280,11 +299,7 @@ pub const ScreenshotMode = union(enum) {
 /// - Workers communicate exclusively by pushing event messages into `event_queue` (MpscQueue).
 /// - The main thread consumes background events during frame updates and updates `ViewerState` safely.
 pub const ViewerState = struct {
-    gpu_device: ?sdl.gpu.Device = null,
-    gpu_pipeline: ?sdl.gpu.Pipeline = null,
-    unpack_compute_pipeline: ?sdl.gpu.ComputePipeline = null,
-    gpu_sampler: ?sdl.gpu.Sampler = null,
-    white_texture: ?sdl.gpu.Texture = null,
+    gpu: ?RenderResources = null,
 
     directory_arena: std.heap.ArenaAllocator,
     image_list: std.ArrayList([]const u8),
@@ -384,12 +399,12 @@ pub const ViewerState = struct {
         const thumb_surf = sdl.Surface.loadConstMemOpt(thumb_bytes) orelse return;
         defer thumb_surf.destroy();
 
-        const gpu_dev = self.gpu_device orelse return;
-        const upload_res = graphics.uploadSurfaceToGpu(gpu_dev, thumb_surf, self.unpack_compute_pipeline) orelse return;
+        const gpu_res = self.gpu orelse return;
+        const upload_res = graphics.uploadSurfaceToGpu(gpu_res.device, thumb_surf, gpu_res.unpack_compute_pipeline) orelse return;
 
         if (self.cache.getWithGeneration(entry.index, entry.generation)) |e| {
             if (e.thumb_gpu_texture) |old_t| {
-                gpu_dev.releaseTexture(old_t);
+                gpu_res.device.releaseTexture(old_t);
             }
             e.thumb_gpu_texture = upload_res.gpu_texture;
             e.thumb_w = upload_res.w;
@@ -401,7 +416,7 @@ pub const ViewerState = struct {
             e.has_thumb = true;
             e.thumb_upload_time_ms = upload_res.upload_time_ms;
         } else {
-            gpu_dev.releaseTexture(upload_res.gpu_texture);
+            gpu_res.device.releaseTexture(upload_res.gpu_texture);
         }
     }
 
@@ -411,32 +426,37 @@ pub const ViewerState = struct {
             sdl.timer.delay(1);
         }
 
-        self.clearCache();
+        const dev_opt = if (self.gpu) |g| g.device else null;
+        self.cache.clear(dev_opt);
 
-        if (self.gpu_device) |dev| {
+        if (self.gpu) |*gpu_res| {
             for (self.gpu_vertex_buffers) |vb| {
-                if (vb) |b| dev.releaseBuffer(b);
+                if (vb) |b| gpu_res.device.releaseBuffer(b);
             }
             for (self.gpu_transfer_buffers) |tb| {
-                if (tb) |b| dev.releaseTransferBuffer(b);
+                if (tb) |b| gpu_res.device.releaseTransferBuffer(b);
             }
 
-            if (self.gpu_pipeline) |pipe| dev.releasePipeline(pipe);
-            if (self.unpack_compute_pipeline) |pipe| dev.releaseComputePipeline(pipe);
-            if (self.gpu_sampler) |samp| dev.releaseSampler(samp);
-            if (self.white_texture) |tex| dev.releaseTexture(tex);
-        }
-
-        switch (self.display) {
-            .headless => {},
-            .windowed => |*w| {
-                if (w.claimed) {
-                    if (self.gpu_device) |dev| {
-                        w.handle.releaseFromGpu(dev);
+            switch (self.display) {
+                .headless => {},
+                .windowed => |*w| {
+                    if (w.claimed) {
+                        w.handle.releaseFromGpu(gpu_res.device);
                     }
-                }
-                w.deinit(self.allocator);
-            },
+                    w.deinit(self.allocator);
+                },
+            }
+
+            self.text_cache.deinit(self.allocator, gpu_res.device);
+            self.cache.deinit(self.allocator, gpu_res.device);
+            gpu_res.deinit();
+        } else {
+            switch (self.display) {
+                .headless => {},
+                .windowed => |*w| w.deinit(self.allocator),
+            }
+            self.text_cache.deinit(self.allocator, null);
+            self.cache.deinit(self.allocator, null);
         }
 
         switch (self.screenshot_mode) {
@@ -454,9 +474,7 @@ pub const ViewerState = struct {
         self.last_scanned_dir.deinit(self.allocator);
         self.pending_ipc_commands.deinit(self.allocator);
         self.event_queue.deinit(self.allocator, self.io);
-        self.text_cache.deinit(self.allocator, self.gpu_device);
         self.image_list.deinit(self.allocator);
-        self.cache.deinit(self.allocator, self.gpu_device);
         self.palette.deinit();
         self.rotation_map.deinit();
         self.directory_arena.deinit();
@@ -546,10 +564,8 @@ pub const ViewerState = struct {
 
     pub fn applyTextureScaleMode(self: *ViewerState) void {
         const filter = if (self.texture_scale_mode == .linear) sdl.gpu.Filter.linear else sdl.gpu.Filter.nearest;
-        if (self.gpu_device) |gpu_dev| {
-            if (self.gpu_sampler) |old_sampler| {
-                gpu_dev.releaseSampler(old_sampler);
-            }
+        if (self.gpu) |*gpu_res| {
+            gpu_res.device.releaseSampler(gpu_res.sampler);
 
             const sampler_info = sdl.gpu.SamplerCreateInfo{
                 .min_filter = filter,
@@ -565,7 +581,9 @@ pub const ViewerState = struct {
                 .max_lod = 1000.0,
                 .props = 0,
             };
-            self.gpu_sampler = gpu_dev.createSampler(&sampler_info);
+            if (gpu_res.device.createSampler(&sampler_info)) |new_sampler| {
+                gpu_res.sampler = new_sampler;
+            }
         }
     }
 
@@ -653,8 +671,8 @@ pub const ViewerState = struct {
 
         for (self.cache.entries.items) |*entry| {
             if (entry.status == .loaded_gpu and entry.thumb_gpu_texture != null and !self.debug_show_thumb) {
-                if (self.gpu_device) |gpu_dev| {
-                    gpu_dev.releaseTexture(entry.thumb_gpu_texture.?);
+                if (self.gpu) |gpu_res| {
+                    gpu_res.device.releaseTexture(entry.thumb_gpu_texture.?);
                 }
                 entry.thumb_gpu_texture = null;
             }
@@ -672,8 +690,8 @@ pub const ViewerState = struct {
 
         if (upload_target) |target| {
             defer target.cpu.surface.destroy();
-            if (self.gpu_device) |gpu_dev| {
-                if (uploadSurfaceToGpu(gpu_dev, target.cpu.surface, self.unpack_compute_pipeline)) |res| {
+            if (self.gpu) |gpu_res| {
+                if (uploadSurfaceToGpu(gpu_res.device, target.cpu.surface, gpu_res.unpack_compute_pipeline)) |res| {
                     const loaded_gpu_status = CacheStatus{
                         .loaded_gpu = .{
                             .gpu_texture = res.gpu_texture,
@@ -690,7 +708,7 @@ pub const ViewerState = struct {
                     const updated = self.cache.updateStatus(target.index, target.generation, loaded_gpu_status);
 
                     if (!updated) {
-                        gpu_dev.releaseTexture(res.gpu_texture);
+                        gpu_res.device.releaseTexture(res.gpu_texture);
                     }
                 } else {
                     _ = self.cache.updateStatus(target.index, target.generation, .failed);
@@ -703,7 +721,8 @@ pub const ViewerState = struct {
     }
 
     pub fn clearCache(self: *ViewerState) void {
-        self.cache.clear(self.gpu_device);
+        const dev_opt = if (self.gpu) |g| g.device else null;
+        self.cache.clear(dev_opt);
     }
 
     pub fn checkIdlePreload(self: *ViewerState) void {
@@ -743,8 +762,8 @@ pub const ViewerState = struct {
         const current_gen = self.generation.load(.acquire);
         if (thumb_data.generation != current_gen) return;
         if (thumb_data.surface == null) return;
-        if (self.gpu_device) |gpu_dev| {
-            if (graphics.uploadSurfaceToGpu(gpu_dev, thumb_data.surface.?, self.unpack_compute_pipeline)) |upload_res| {
+        if (self.gpu) |gpu_res| {
+            if (graphics.uploadSurfaceToGpu(gpu_res.device, thumb_data.surface.?, gpu_res.unpack_compute_pipeline)) |upload_res| {
                 if (self.cache.getWithGeneration(thumb_data.index, thumb_data.generation)) |entry| {
                     entry.thumb_gpu_texture = upload_res.gpu_texture;
                     entry.thumb_w = upload_res.w;
@@ -757,7 +776,7 @@ pub const ViewerState = struct {
                     entry.has_thumb = true;
                     entry.thumb_upload_time_ms = upload_res.upload_time_ms;
                 } else {
-                    gpu_dev.releaseTexture(upload_res.gpu_texture);
+                    gpu_res.device.releaseTexture(upload_res.gpu_texture);
                 }
                 self.updateCurrentRotation();
             }
@@ -768,12 +787,12 @@ pub const ViewerState = struct {
         const current_gen = self.generation.load(.acquire);
         if (decoded_data.generation != current_gen) return;
         if (decoded_data.surface == null) return;
-        if (self.gpu_device) |gpu_dev| {
-            if (graphics.uploadSurfaceToGpu(gpu_dev, decoded_data.surface.?, self.unpack_compute_pipeline)) |full_res| {
+        if (self.gpu) |gpu_res| {
+            if (graphics.uploadSurfaceToGpu(gpu_res.device, decoded_data.surface.?, gpu_res.unpack_compute_pipeline)) |full_res| {
                 if (self.cache.getWithGeneration(decoded_data.index, decoded_data.generation)) |entry| {
                     switch (entry.status) {
                         .loaded_cpu => |cpu| cpu.surface.destroy(),
-                        .loaded_gpu => |gpu| gpu_dev.releaseTexture(gpu.gpu_texture),
+                        .loaded_gpu => |gpu| gpu_res.device.releaseTexture(gpu.gpu_texture),
                         else => {},
                     }
                     entry.exif_orientation = decoded_data.exif_orientation;
@@ -798,9 +817,9 @@ pub const ViewerState = struct {
                             .thumb_upload_time_ms = entry.thumb_upload_time_ms,
                         },
                     };
-                    self.cache.enforceVramBudget(gpu_dev, self.current_index, CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
+                    self.cache.enforceVramBudget(gpu_res.device, self.current_index, CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
                 } else {
-                    gpu_dev.releaseTexture(full_res.gpu_texture);
+                    gpu_res.device.releaseTexture(full_res.gpu_texture);
                 }
                 self.updateCurrentRotation();
             }
@@ -984,6 +1003,8 @@ pub const ViewerState = struct {
         var to_spawn_indices: [5]usize = undefined;
         var hit = false;
 
+        const dev_opt = if (self.gpu) |g| g.device else null;
+
         // 2. Evict cache entries that are no longer wanted
         var i: usize = 0;
         while (i < self.cache.entries.items.len) {
@@ -997,7 +1018,7 @@ pub const ViewerState = struct {
             }
             if (!wanted) {
                 // Evict
-                self.cache.removeAndDeinit(i, self.gpu_device);
+                self.cache.removeAndDeinit(i, dev_opt);
             } else {
                 i += 1;
             }
@@ -1054,7 +1075,7 @@ pub const ViewerState = struct {
                     var k: usize = 0;
                     while (k < self.cache.entries.items.len) : (k += 1) {
                         if (self.cache.entries.items[k].index == d) {
-                            self.cache.removeAndDeinit(k, self.gpu_device);
+                            self.cache.removeAndDeinit(k, dev_opt);
                             break;
                         }
                     }
@@ -1072,7 +1093,7 @@ pub const ViewerState = struct {
                 var k: usize = 0;
                 while (k < self.cache.entries.items.len) : (k += 1) {
                     if (self.cache.entries.items[k].index == d) {
-                        self.cache.removeAndDeinit(k, self.gpu_device);
+                        self.cache.removeAndDeinit(k, dev_opt);
                         break;
                     }
                 }

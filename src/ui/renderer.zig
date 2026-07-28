@@ -324,7 +324,7 @@ fn getOrRenderCachedText(
         };
     }
 
-    const dev = state.gpu_device.?;
+    const dev = if (state.gpu) |g| g.device else return null;
     const frame_idx = state.gpu_frame_index % 2;
 
     _ = font.setFontSize(target_font_size);
@@ -453,6 +453,7 @@ pub inline fn isScissorInvisible(sc: ?sdl.Rect, win_w: i32, win_h: i32) bool {
 
 fn buildGeometryFromCommands(
     state: *app_state.ViewerState,
+    gpu: app_state.RenderResources,
     copy_pass: sdl.gpu.CopyPass,
     fonts: []const ?sdl.Font,
     r_commands: []const clay.RenderCommand,
@@ -514,7 +515,7 @@ fn buildGeometryFromCommands(
                     scale_x,
                     f_win_w,
                     f_win_h,
-                    state.white_texture.?,
+                    gpu.white_texture,
                     current_scissor,
                 );
             },
@@ -579,7 +580,7 @@ fn buildGeometryFromCommands(
                     scale_x,
                     f_win_w,
                     f_win_h,
-                    state.white_texture.?,
+                    gpu.white_texture,
                     current_scissor,
                 );
             },
@@ -673,6 +674,7 @@ fn uploadVertexData(
 
 fn executeRenderPass(
     state: *app_state.ViewerState,
+    gpu: app_state.RenderResources,
     cmd_buf: sdl.gpu.CommandBuffer,
     swap_tex: sdl.gpu.Texture,
     batches: []const BatchItem,
@@ -694,7 +696,7 @@ fn executeRenderPass(
     };
     defer render_pass.end();
 
-    render_pass.bindPipeline(state.gpu_pipeline.?);
+    render_pass.bindPipeline(gpu.pipeline);
 
     if (vert_buf) |vb| {
         const vert_binding = sdl.gpu.BufferBinding{ .buffer = vb, .offset = 0 };
@@ -731,7 +733,7 @@ fn executeRenderPass(
             };
             cmd_buf.pushFragmentUniform(0, std.mem.asBytes(&ubo));
 
-            render_pass.bindFragmentSamplers(0, &[_]sdl.gpu.TextureSamplerBinding{.{ .texture = batch.texture, .sampler = state.gpu_sampler.? }});
+            render_pass.bindFragmentSamplers(0, &[_]sdl.gpu.TextureSamplerBinding{.{ .texture = batch.texture, .sampler = gpu.sampler }});
             render_pass.drawPrimitives(batch.vertex_count, 1, batch.vertex_start, 0);
         }
     }
@@ -751,7 +753,8 @@ pub fn renderClayCommands(
     scale_y: f32,
 ) !void {
     const start_render = sdl.timer.getTicksNs();
-    const dev = state.gpu_device.?;
+    const gpu = state.gpu orelse return error.GpuNotInitialized;
+    const dev = gpu.device;
     const frame_idx = state.gpu_frame_index % 2;
 
     var vertices = std.ArrayList(Vertex).empty;
@@ -770,6 +773,7 @@ pub fn renderClayCommands(
 
     try buildGeometryFromCommands(
         state,
+        gpu,
         copy_pass,
         fonts,
         r_commands,
@@ -799,6 +803,7 @@ pub fn renderClayCommands(
 
     executeRenderPass(
         state,
+        gpu,
         cmd_buf,
         swap_tex,
         batches.items,

@@ -135,7 +135,7 @@ pub fn renderFrame(
     measure_data.is_debug_measuring = false;
 
     // Render Frame
-    const dev = state.gpu_device.?;
+    const dev = if (state.gpu) |g| g.device else return error.GpuNotInitialized;
     const cmd_wrapper = dev.acquireCommandBuffer() orelse return error.CommandBufferAcquisitionFailed;
     var cmd_buf_submitted = false;
     errdefer if (!cmd_buf_submitted) {
