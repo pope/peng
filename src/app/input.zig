@@ -216,8 +216,6 @@ pub fn pollFrameInput(
     };
 }
 
-
-
 fn handlePaletteReturnGoToImage(self: *ViewerState, raw_str: []const u8) !void {
     if (raw_str.len > 0) {
         if (std.fmt.parseInt(usize, raw_str, 10)) |v| {

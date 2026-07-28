@@ -4,37 +4,29 @@ This directory contains project-specific agent rules, subagent definitions, and 
 
 ______________________________________________________________________
 
-## Project Rules (`.agents/rules/`)
+## Core Rule Architecture (`.agents/rules/`)
 
-- **[`zig_state_machine_design.md`](rules/zig_state_machine_design.md)**: State machine architecture, tagged union invariants, streaming dataset isolation, and domain type passing.
+- **[`01_memory_and_resource_safety.md`](rules/01_memory_and_resource_safety.md)**:
+  Tagged union pattern matching (`switch (union)`), per-frame arenas, HashMap key lifecycle cleanup, typed worker signatures, non-negotiable structured error logging (`std.log`), and slice aliasing protection.
 
-- **[`zig_memory_safety.md`](rules/zig_memory_safety.md)**: Universal memory safety, resource lifecycle, and error logging rules.
+- **[`02_concurrency_and_architecture.md`](rules/02_concurrency_and_architecture.md)**:
+  Main-thread exclusive GPU operations, non-recursive `std.Io.Mutex` safety, atomic thread counters (`.acq_rel`), `MpscQueue` event bus transport, Action Queue deferred commands (`AppActionId`), `OverlayFlags` packed structs, and component-based image pipeline composition.
 
-  - **Structured Error Logging Invariant**: Never swallow errors with empty `catch {}` or `else |_| {}` blocks. Always log errors via `std.log` with contextual details.
-  - **No Silent Error Swallowing on Fallbacks**: Log a `std.log.warn` or `std.log.err` prior to returning fallbacks or `null`.
-  - **Tagged Union Access**: Always match via `switch (union)` to avoid Release mode safety bypasses.
-  - **Per-Frame Arenas & HashMap Key Cleanup**: Arena resets and proper key iterator lifecycle before clearing maps.
-  - **Thread Procedure Types**: Strongly-typed thread worker signatures without `?*anyopaque` downcasting.
+- **[`03_c_abi_and_module_hygiene.md`](rules/03_c_abi_and_module_hygiene.md)**:
+  Single canonical `@cImport` file (`src/sdl/c.zig`), C-handle encapsulation, complete enum mapping invariant, single top-level `@import` standard, prohibition of proxy re-exports, and `.empty` / `.init(...)` initialization style.
 
-- **[`concurrency_and_gpu_threading.md`](rules/concurrency_and_gpu_threading.md)**: GPU texture lifetime, main-thread rendering restrictions, and SDL3 GPU backend invariants.
-
-- **[`clay-dpi-rendering.md`](rules/clay-dpi-rendering.md)**: High-DPI scaling, Clay UI layout, and Retina scale factor calculations.
-
-- **[`directory_navigation_and_sorting.md`](rules/directory_navigation_and_sorting.md)**: Single-pass filesystem counting and directory sorting rules.
-
-- **[`native_zig_type_abstractions.md`](rules/native_zig_type_abstractions.md)**: Type-safe Zig abstractions and C-interop guidelines.
-
-- **[`ui_text_and_performance.md`](rules/ui_text_and_performance.md)**: FreeType text cache lifecycle and performance optimization.
+- **[`04_ui_rendering_and_performance.md`](rules/04_ui_rendering_and_performance.md)**:
+  2-Pass UI Render Packet architecture (`RenderPacket`), allocation-free execution pass, logical vs physical DPI coordinate scaling, zero-area scissor skipping, SIMD zero-copy bounds safety, and case-insensitive sorting (`lessThanIgnoreCase`).
 
 ______________________________________________________________________
 
 ## Skills (`.agents/skills/`)
 
-- **[`zig-gui-practices`](skills/zig-gui-practices/SKILL.md)**: Best practices for Zig GUI development with Clay, SDL3 GPU rendering, EXIF image decoding, and shader optimization.
+- **[`zig-gui-practices`](skills/zig-gui-practices/SKILL.md)**: Best practices for Zig GUI development with Clay, SDL3 GPU rendering, EXIF image decoding, shader optimization, DPI layout math, and SIMD vector reference recipes.
 
 ______________________________________________________________________
 
 ## Subagents (`.agents/agents/`)
 
-- **`zig-reviewer`**: Audits Zig source code against all project rules, including structured error logging (`zig_memory_safety.md`) and thread safety rules.
+- **`zig-reviewer`**: Audits Zig source code against all 4 core project rules.
 - **`task-executor`**: Fast-path execution subagent for straightforward code implementations.
