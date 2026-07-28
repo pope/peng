@@ -110,19 +110,29 @@ pub const TextCacheKey = TextCacheModule.TextCacheKey;
 pub const TextCacheValue = TextCacheModule.TextCacheValue;
 pub const TextCache = TextCacheModule.TextCache;
 
-pub fn startTextInput(window: ?sdl.Window) void {
-    if (window) |win| {
-        if (!win.startTextInput()) {
-            std.log.err("SDL_StartTextInput failed: {s}", .{sdl.getError()});
-        }
+/// Enables SDL text input events if the current display mode is windowed GUI.
+/// No-op when in headless rendering mode.
+pub fn startTextInput(display: DisplayState) void {
+    switch (display) {
+        .headless => {},
+        .windowed => |win| {
+            if (!win.handle.startTextInput()) {
+                std.log.err("SDL_StartTextInput failed: {s}", .{sdl.getError()});
+            }
+        },
     }
 }
 
-pub fn stopTextInput(window: ?sdl.Window) void {
-    if (window) |win| {
-        if (!win.stopTextInput()) {
-            std.log.err("SDL_StopTextInput failed: {s}", .{sdl.getError()});
-        }
+/// Disables SDL text input events if the current display mode is windowed GUI.
+/// No-op when in headless rendering mode.
+pub fn stopTextInput(display: DisplayState) void {
+    switch (display) {
+        .headless => {},
+        .windowed => |win| {
+            if (!win.handle.stopTextInput()) {
+                std.log.err("SDL_StopTextInput failed: {s}", .{sdl.getError()});
+            }
+        },
     }
 }
 
@@ -145,6 +155,121 @@ pub fn matchesQueryLower(path: []const u8, query_lower: []const u8) bool {
     }
     return false;
 }
+
+/// Mutually exclusive state machine for automated image slideshow transitions.
+///
+/// Variants:
+/// - `inactive`: Slideshow is stopped. Timer memory and interval variables do not exist.
+/// - `active`: Slideshow is actively advancing images.
+///   - `interval_s`: Duration (in seconds) to display each image before transitioning.
+///   - `timer_ms`: Accumulated millisecond counter tracking progress toward the next slide transition.
+pub const SlideshowMode = union(enum) {
+    inactive,
+    active: struct {
+        interval_s: f32,
+        timer_ms: f32 = 0.0,
+    },
+
+    /// Advances the slideshow timer by `delta_ms`.
+    /// Returns `true` when the timer exceeds `interval_s`, triggering an image transition.
+    pub fn tick(self: *SlideshowMode, delta_ms: f32) bool {
+        switch (self.*) {
+            .inactive => return false,
+            .active => |*data| {
+                if (data.interval_s <= 0.0) return false;
+                data.timer_ms += delta_ms;
+                if (data.timer_ms >= data.interval_s * 1000.0) {
+                    data.timer_ms = 0.0;
+                    return true;
+                }
+                return false;
+            },
+        }
+    }
+
+    /// Resets the accumulated slide transition timer back to 0.0ms without deactivating the slideshow.
+    pub fn resetTimer(self: *SlideshowMode) void {
+        switch (self.*) {
+            .inactive => {},
+            .active => |*data| data.timer_ms = 0.0,
+        }
+    }
+};
+
+/// Encapsulates resources and state specific to an active windowed GUI session.
+///
+/// Fields:
+/// - `handle`: The underlying SDL window handle for OS window operations.
+/// - `pixel_format`: Swapchain GPU texture format associated with the window.
+/// - `cached_title`: Heap-allocated buffer of the active window title to prevent redundant SDL title updates.
+/// - `is_fullscreen`: Boolean tracking whether the window is currently expanded to fullscreen.
+/// - `claimed`: True if the window has claimed focus and rendering output (false during headless tests).
+pub const ActiveWindow = struct {
+    handle: sdl.Window,
+    pixel_format: u32 = sdl.PixelFormat.unknown,
+    cached_title: ?[]const u8 = null,
+    is_fullscreen: bool = false,
+    claimed: bool = false,
+
+    /// Frees cached window title memory upon window teardown.
+    pub fn deinit(self: *ActiveWindow, gpa: std.mem.Allocator) void {
+        if (self.cached_title) |t| {
+            gpa.free(t);
+        }
+    }
+};
+
+/// Tagged union discriminating between offscreen/headless mode and active windowed GUI mode.
+///
+/// Variants:
+/// - `headless`: Render operations execute offscreen; no physical OS window or swapchain exists.
+/// - `windowed`: Active GUI windowing mode containing an `ActiveWindow` instance.
+pub const DisplayState = union(enum) {
+    headless,
+    windowed: ActiveWindow,
+
+    /// Returns the cached window title slice if windowed, or `null` if headless.
+    pub inline fn getTitle(self: DisplayState) ?[]const u8 {
+        return switch (self) {
+            .headless => null,
+            .windowed => |w| w.cached_title,
+        };
+    }
+
+    /// Returns whether the display is currently in fullscreen mode (always `false` in headless mode).
+    pub inline fn isFullscreen(self: DisplayState) bool {
+        return switch (self) {
+            .headless => false,
+            .windowed => |w| w.is_fullscreen,
+        };
+    }
+
+    /// Returns whether the window has claimed rendering output.
+    pub inline fn isClaimed(self: DisplayState) bool {
+        return switch (self) {
+            .headless => false,
+            .windowed => |w| w.claimed,
+        };
+    }
+
+    /// Returns the GPU swapchain pixel format for windowed mode, or default format if headless.
+    pub inline fn getPixelFormat(self: DisplayState) u32 {
+        return switch (self) {
+            .headless => sdl.PixelFormat.unknown,
+            .windowed => |w| w.pixel_format,
+        };
+    }
+};
+
+/// Tagged union modeling IPC screenshot capture state.
+///
+/// Variants:
+/// - `idle`: No screenshot capture request is currently in progress.
+/// - `capturing`: A screenshot capture is currently executing for a connected IPC socket client.
+pub const ScreenshotMode = union(enum) {
+    idle,
+    capturing: screenshot.ActiveScreenshot,
+};
 
 /// Main Application State Architecture
 ///
@@ -173,16 +298,18 @@ pub const ViewerState = struct {
     active_decode_threads: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     exiting: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     generation: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
-    window_pixel_format: u32 = sdl.PixelFormat.unknown,
     palette: PaletteState,
-    window: ?sdl.Window,
-    cached_window_title: ?[]const u8 = null,
-    is_fullscreen: bool = false,
+
+    // Tagged Union State Machines
+    display: DisplayState = .headless,
+    slideshow: SlideshowMode = .inactive,
+    screenshot_mode: ScreenshotMode = .idle,
+    drag_state: DragState = .none,
+
     running: bool = true,
     show_info_overlay: bool = false,
     show_stats_overlay: bool = false,
     debug_show_thumb: bool = false,
-    window_claimed: bool = false,
     scale_mode: ScaleMode = .full,
     zoom_factor: f32 = 1.0,
     pan_x: f32 = 0.0,
@@ -197,11 +324,7 @@ pub const ViewerState = struct {
     info_offset_y: f32 = 20.0,
     stats_offset_x: f32 = -20.0,
     stats_offset_y: f32 = 20.0,
-    drag_state: DragState = .none,
     mouse_inside: bool = true,
-    slideshow_active: bool = false,
-    slideshow_interval_s: f32 = 0.0,
-    slideshow_timer_ms: f32 = 0.0,
     last_nav_time_ms: u64 = 0,
     last_scanned_dir: std.ArrayList(u8) = std.ArrayList(u8).empty,
     event_queue: events.MpscQueue(events.BackgroundEvent) = .{},
@@ -222,7 +345,16 @@ pub const ViewerState = struct {
 
     // Font text texture cache
     text_cache: TextCache = .{},
-    active_screenshot: ?screenshot.ActiveScreenshot = null,
+
+    pub inline fn isFullscreen(self: *const ViewerState) bool {
+        return self.display.isFullscreen();
+    }
+    pub inline fn isSlideshowActive(self: *const ViewerState) bool {
+        return self.slideshow == .active;
+    }
+    pub inline fn isBusy(self: *const ViewerState) bool {
+        return self.is_loading_files.load(.acquire) or (self.active_threads.load(.acquire) > 0) or self.isSlideshowActive();
+    }
 
     pub fn readJpegExifOrientation(self: *const ViewerState, path: []const u8) ?f32 {
         return exif.readJpegExifOrientation(self.io, path);
@@ -293,21 +425,31 @@ pub const ViewerState = struct {
             if (self.unpack_compute_pipeline) |pipe| dev.releaseComputePipeline(pipe);
             if (self.gpu_sampler) |samp| dev.releaseSampler(samp);
             if (self.white_texture) |tex| dev.releaseTexture(tex);
-            if (self.window_claimed) {
-                if (self.window) |w| w.releaseFromGpu(dev);
-            }
         }
 
-        if (self.active_screenshot) |*s| {
-            s.respondQuit(self.io, self.allocator);
-            self.active_screenshot = null;
+        switch (self.display) {
+            .headless => {},
+            .windowed => |*w| {
+                if (w.claimed) {
+                    if (self.gpu_device) |dev| {
+                        w.handle.releaseFromGpu(dev);
+                    }
+                }
+                w.deinit(self.allocator);
+            },
         }
+
+        switch (self.screenshot_mode) {
+            .idle => {},
+            .capturing => |*s| {
+                s.respondQuit(self.io, self.allocator);
+                self.screenshot_mode = .idle;
+            },
+        }
+
         for (self.pending_ipc_commands.items) |cmd_data| {
             self.allocator.free(cmd_data.command);
             self.allocator.destroy(cmd_data);
-        }
-        if (self.cached_window_title) |t| {
-            self.allocator.free(t);
         }
         self.last_scanned_dir.deinit(self.allocator);
         self.pending_ipc_commands.deinit(self.allocator);
@@ -349,24 +491,26 @@ pub const ViewerState = struct {
 
         var pix_w: i32 = 1024;
         var pix_h: i32 = 768;
-        if (self.window) |win| {
-            const pix_size = win.getSizeInPixels();
-            if (pix_size.w > 0 and pix_size.h > 0) {
-                pix_w = pix_size.w;
-                pix_h = pix_size.h;
-            }
-        }
-
-        const title_bar_h: f32 = if (self.is_fullscreen) 0.0 else 60.0;
         var win_w: f32 = 1024.0;
         var win_h: f32 = 768.0;
-        if (self.window) |win| {
-            const win_size = win.getSize();
-            if (win_size.w > 0 and win_size.h > 0) {
-                win_w = @floatFromInt(win_size.w);
-                win_h = @floatFromInt(win_size.h);
-            }
+
+        switch (self.display) {
+            .headless => {},
+            .windowed => |win| {
+                const pix_size = win.handle.getSizeInPixels();
+                if (pix_size.w > 0 and pix_size.h > 0) {
+                    pix_w = pix_size.w;
+                    pix_h = pix_size.h;
+                }
+                const win_size = win.handle.getSize();
+                if (win_size.w > 0 and win_size.h > 0) {
+                    win_w = @floatFromInt(win_size.w);
+                    win_h = @floatFromInt(win_size.h);
+                }
+            },
         }
+
+        const title_bar_h: f32 = if (self.isFullscreen()) 0.0 else 60.0;
 
         var available_width = win_w;
         if (clay.isDebugModeEnabled()) {
@@ -497,7 +641,7 @@ pub const ViewerState = struct {
             else => {},
         }
 
-        startTextInput(self.window);
+        startTextInput(self.display);
     }
 
     pub fn prepareCacheTextures(self: *ViewerState) void {
@@ -963,7 +1107,7 @@ pub const ViewerState = struct {
     }
 
     pub fn next(self: *ViewerState) !void {
-        self.slideshow_timer_ms = 0.0;
+        self.slideshow.resetTimer();
         const len = self.image_list.items.len;
 
         if (len == 0) return;
@@ -976,7 +1120,7 @@ pub const ViewerState = struct {
     }
 
     pub fn prev(self: *ViewerState) !void {
-        self.slideshow_timer_ms = 0.0;
+        self.slideshow.resetTimer();
         const len = self.image_list.items.len;
 
         if (len == 0) return;
@@ -1069,7 +1213,7 @@ pub const ViewerState = struct {
             };
             if (!clay.pointerOver(clay.getElementId(element_id)) and !is_in_debug_panel) {
                 self.palette.mode = .inactive;
-                stopTextInput(self.window);
+                stopTextInput(self.display);
                 palette_closed_this_frame = true;
             }
         }
@@ -1080,70 +1224,48 @@ pub const ViewerState = struct {
         var next_drag_state = self.drag_state;
         switch (next_drag_state) {
             .none => {},
-            .info => |info| {
+            .viewport => |v| {
                 if (input.mouse_left_down) {
-                    self.info_offset_x = input.mouse_x - info.start_x;
-                    self.info_offset_y = input.mouse_y - info.start_y;
+                    const dx = input.pixMouseX() - v.last_x;
+                    const dy = input.pixMouseY() - v.last_y;
+                    self.pan_x += dx;
+                    self.pan_y += dy;
+                    next_drag_state = .{ .viewport = .{ .last_x = input.pixMouseX(), .last_y = input.pixMouseY() } };
                 } else {
                     next_drag_state = .none;
                 }
             },
-            .stats => |stats| {
+            .info => |inf| {
                 if (input.mouse_left_down) {
-                    self.stats_offset_x = input.mouse_x - stats.start_x;
-                    self.stats_offset_y = input.mouse_y - stats.start_y;
+                    self.info_offset_x = input.mouse_x - inf.start_x;
+                    self.info_offset_y = input.mouse_y - inf.start_y;
                 } else {
                     next_drag_state = .none;
                 }
             },
-            .viewport => |*vp| {
+            .stats => |st| {
                 if (input.mouse_left_down) {
-                    const pix_x = input.pixMouseX();
-                    const pix_y = input.pixMouseY();
-                    self.pan_x += pix_x - vp.last_x;
-                    self.pan_y += pix_y - vp.last_y;
-                    vp.last_x = pix_x;
-                    vp.last_y = pix_y;
+                    self.stats_offset_x = input.mouse_x - st.start_x;
+                    self.stats_offset_y = input.mouse_y - st.start_y;
                 } else {
                     next_drag_state = .none;
                 }
             },
         }
-        self.drag_state = next_drag_state;
 
-        if (input.mouse_left_clicked) {
-            const is_in_debug_panel = self.isPointerInDebugPanel(input);
-            if (!is_in_debug_panel) {
-                if (self.show_info_overlay and
-                    clay.pointerOver(clay.getElementId("InfoPanel")) and
-                    !clay.pointerOver(clay.getElementId("InfoCloseBtn")))
-                {
-                    self.drag_state = .{
-                        .info = .{
-                            .start_x = input.mouse_x - self.info_offset_x,
-                            .start_y = input.mouse_y - self.info_offset_y,
-                        },
-                    };
-                } else if (self.show_stats_overlay and
-                    clay.pointerOver(clay.getElementId("StatsPanel")) and
-                    !clay.pointerOver(clay.getElementId("StatsCloseBtn")))
-                {
-                    self.drag_state = .{
-                        .stats = .{
-                            .start_x = input.mouse_x - self.stats_offset_x,
-                            .start_y = input.mouse_y - self.stats_offset_y,
-                        },
-                    };
-                } else if (self.palette.mode == .inactive and !palette_closed_this_frame and clay.pointerOver(clay.getElementId("Viewport"))) {
-                    self.drag_state = .{
-                        .viewport = .{
-                            .last_x = input.pixMouseX(),
-                            .last_y = input.pixMouseY(),
-                        },
-                    };
+        if (next_drag_state == .none and input.mouse_left_clicked and !palette_closed_this_frame) {
+            if (self.palette.mode == .inactive) {
+                const is_in_debug_panel = self.isPointerInDebugPanel(input);
+                if (self.show_info_overlay and !is_in_debug_panel and clay.pointerOver(clay.getElementId("InfoCard"))) {
+                    next_drag_state = .{ .info = .{ .start_x = input.mouse_x - self.info_offset_x, .start_y = input.mouse_y - self.info_offset_y } };
+                } else if (self.show_stats_overlay and !is_in_debug_panel and clay.pointerOver(clay.getElementId("StatsCard"))) {
+                    next_drag_state = .{ .stats = .{ .start_x = input.mouse_x - self.stats_offset_x, .start_y = input.mouse_y - self.stats_offset_y } };
+                } else if (!is_in_debug_panel and clay.pointerOver(clay.getElementId("Viewport"))) {
+                    next_drag_state = .{ .viewport = .{ .last_x = input.pixMouseX(), .last_y = input.pixMouseY() } };
                 }
             }
         }
+        self.drag_state = next_drag_state;
     }
 
     pub fn processZoomAtCursor(self: *ViewerState, input: FrameInput) void {
@@ -1155,7 +1277,7 @@ pub const ViewerState = struct {
                 const available_width = if (clay.isDebugModeEnabled()) @max(input.win_w - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0) else input.win_w;
                 const cx = available_width / 2.0;
                 var title_bar_h: f32 = 60.0;
-                if (self.is_fullscreen) {
+                if (self.isFullscreen()) {
                     title_bar_h = 0;
                 }
                 const cy = title_bar_h + ((input.win_h - title_bar_h) / 2.0);
@@ -1173,12 +1295,8 @@ pub const ViewerState = struct {
         self.updateCurrentRotation();
 
         // 0. Slideshow timer update
-        if (self.slideshow_active and self.slideshow_interval_s > 0.0) {
-            self.slideshow_timer_ms += input.delta_time_ms;
-            if (self.slideshow_timer_ms >= self.slideshow_interval_s * 1000.0) {
-                self.slideshow_timer_ms = 0.0;
-                try self.next();
-            }
+        if (self.slideshow.tick(input.delta_time_ms)) {
+            try self.next();
         }
 
         // 1. Text input & palette dismissal updates
@@ -1213,7 +1331,7 @@ pub const ViewerState = struct {
                         writer.interface.writeAll("ERR PathTooLong\n") catch |err| std.log.warn("IPC screenshot response failed: {}", .{err});
                         writer.interface.flush() catch |err| std.log.warn("IPC flush failed: {}", .{err});
                         cmd_data.client_stream.close(self.io);
-                    } else if (self.active_screenshot) |_| {
+                    } else if (self.screenshot_mode == .capturing) {
                         var write_buf: [128]u8 = undefined;
                         var writer = cmd_data.client_stream.writer(self.io, &write_buf);
                         writer.interface.writeAll("ERR Busy\n") catch |err| std.log.warn("IPC screenshot response failed: {}", .{err});
@@ -1230,9 +1348,11 @@ pub const ViewerState = struct {
                             self.allocator.destroy(cmd_data);
                             continue;
                         };
-                        self.active_screenshot = screenshot.ActiveScreenshot{
-                            .path = dup_path,
-                            .stream = cmd_data.client_stream,
+                        self.screenshot_mode = .{
+                            .capturing = screenshot.ActiveScreenshot{
+                                .path = dup_path,
+                                .stream = cmd_data.client_stream,
+                            },
                         };
                     }
                 } else {
@@ -1262,13 +1382,16 @@ pub const ViewerState = struct {
     }
 
     pub fn handleScreenshotPostRender(self: *ViewerState, render_err: ?anyerror) void {
-        if (self.active_screenshot) |*s| {
-            if (render_err) |err| {
-                s.respondErr(self.io, self.allocator, err);
-            } else {
-                s.respondOk(self.io, self.allocator);
-            }
-            self.active_screenshot = null;
+        switch (self.screenshot_mode) {
+            .idle => {},
+            .capturing => |*s| {
+                if (render_err) |err| {
+                    s.respondErr(self.io, self.allocator, err);
+                } else {
+                    s.respondOk(self.io, self.allocator);
+                }
+                self.screenshot_mode = .idle;
+            },
         }
     }
 
@@ -1356,7 +1479,6 @@ test "ViewerState.clampZoomFactor bounds based on image dimensions" {
         .palette = PaletteState.init(std.testing.allocator),
         .rotation_map = std.StringHashMap(f32).init(std.testing.allocator),
         .scale_mode = .none,
-        .window = null,
         .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
     };
     defer state.deinit();
@@ -1413,7 +1535,6 @@ test "ViewerState.updateCurrentRotation syncs EXIF orientation" {
         .io = std.Io.Threaded.global_single_threaded.io(),
         .palette = PaletteState.init(std.testing.allocator),
         .rotation_map = std.StringHashMap(f32).init(std.testing.allocator),
-        .window = null,
         .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
     };
     defer state.deinit();
@@ -1474,7 +1595,6 @@ test "ViewerState.openPalette directory_navigator starting directory rules" {
         .io = io,
         .palette = PaletteState.init(allocator),
         .rotation_map = std.StringHashMap(f32).init(allocator),
-        .window = null,
         .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
     };
     defer state.deinit();
@@ -1525,7 +1645,6 @@ test "ViewerState.openPalette directory_navigator steps up if 0 subdirectories" 
         .io = io,
         .palette = PaletteState.init(allocator),
         .rotation_map = std.StringHashMap(f32).init(allocator),
-        .window = null,
         .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
     };
     defer state.deinit();
@@ -1568,7 +1687,6 @@ test "ViewerState.openPalette steps up from top-level relative leaf dir without 
         .io = io,
         .palette = PaletteState.init(allocator),
         .rotation_map = std.StringHashMap(f32).init(allocator),
-        .window = null,
         .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
     };
     defer state.deinit();
@@ -1608,7 +1726,6 @@ test "ViewerState.isPointerInDebugPanel and click localization" {
         .io = io,
         .palette = PaletteState.init(allocator),
         .rotation_map = std.StringHashMap(f32).init(allocator),
-        .window = null,
         .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
     };
     defer state.deinit();
@@ -1684,7 +1801,6 @@ test "ViewerState slideshow timer auto-advances slide" {
         .io = io,
         .palette = PaletteState.init(allocator),
         .rotation_map = std.StringHashMap(f32).init(allocator),
-        .window = null,
         .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
     };
     defer state.deinit();
@@ -1692,8 +1808,7 @@ test "ViewerState slideshow timer auto-advances slide" {
     try state.image_list.append(allocator, "img1.jpg");
     try state.image_list.append(allocator, "img2.jpg");
     state.current_index = 0;
-    state.slideshow_active = true;
-    state.slideshow_interval_s = 2.0;
+    state.slideshow = .{ .active = .{ .interval_s = 2.0 } };
 
     const frame_input_1s = types.FrameInput{
         .win_w = 100,

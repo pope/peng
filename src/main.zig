@@ -82,7 +82,14 @@ pub fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
         .cache = .{},
         .allocator = gpa,
         .io = init.io,
-        .window_pixel_format = sdl.PixelFormat.rgba32,
+        .display = if (parsed.headless) .headless else .{
+            .windowed = .{
+                .handle = setup.window,
+                .pixel_format = sdl.PixelFormat.rgba32,
+                .is_fullscreen = false,
+                .claimed = true,
+            },
+        },
         .palette = app.state.PaletteState.init(gpa),
         .text_cache = .{},
         .scale_mode = parsed.default_scale,
@@ -91,11 +98,8 @@ pub fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
         .brightness = 0.0,
         .contrast = 1.0,
         .adjustments_dirty = false,
-        .window = setup.window,
-        .is_fullscreen = false,
         .running = true,
         .show_stats_overlay = false,
-        .window_claimed = !parsed.headless,
     };
     own_gpu_resources = false;
     errdefer state.deinit();
@@ -162,7 +166,7 @@ pub fn runMainLoop(ctx: *AppGraphicsAndState) !void {
             }
             break :blk (ctx.state.current_index != null);
         };
-        const is_busy = ctx.state.is_loading_files.load(.acquire) or (ctx.state.active_threads.load(.acquire) > 0) or is_current_loading or bg_events_processed or ctx.state.slideshow_active;
+        const is_busy = ctx.state.is_loading_files.load(.acquire) or (ctx.state.active_threads.load(.acquire) > 0) or is_current_loading or bg_events_processed or ctx.state.isSlideshowActive();
         const input = try app.input.pollFrameInput(
             ctx.setup.window,
             frame_allocator,
@@ -233,7 +237,10 @@ pub fn runMainLoop(ctx: *AppGraphicsAndState) !void {
         }
 
         // Draw / Render
-        const capture_filename = if (ctx.state.active_screenshot) |s| s.path else null;
+        const capture_filename = switch (ctx.state.screenshot_mode) {
+            .idle => null,
+            .capturing => |s| s.path,
+        };
         ui.layout.renderFrame(&ctx.state, input, frame_allocator, ctx.resources.fonts[0..], &ctx.measure_data, capture_filename) catch |err| {
             ctx.state.handleScreenshotPostRender(err);
             return err;

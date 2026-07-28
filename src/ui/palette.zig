@@ -1006,14 +1006,14 @@ pub fn renderSelectionList(
                         state.current_index = real_idx;
                         try state.updateCache();
                         palette.mode = .inactive;
-                        stopTextInput(state.window);
+                        stopTextInput(state.display);
                     },
                     .actions => {
                         const action_id = app_actions[real_idx];
                         try state.triggerAction(action_id);
                         if (palette.mode == old_type) {
                             palette.mode = .inactive;
-                            stopTextInput(state.window);
+                            stopTextInput(state.display);
                         }
                     },
                     .directory_navigator => {

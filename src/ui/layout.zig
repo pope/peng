@@ -35,7 +35,7 @@ pub fn renderFrame(
     // Calculate Image Fitting Layout Boundaries
     var title_bar_h: f32 = 60.0;
     const nav_bar_h: f32 = 0.0;
-    if (state.is_fullscreen) {
+    if (state.isFullscreen()) {
         title_bar_h = 0;
     }
 
@@ -150,7 +150,7 @@ pub fn renderFrame(
         }
     }
 
-    const use_headless = !state.window_claimed;
+    const use_headless = !state.display.isClaimed();
 
     var target_tex: ?sdl.gpu.Texture = null;
     var target_w: u32 = 0;
@@ -180,13 +180,16 @@ pub fn renderFrame(
     } else {
         var swap_w: u32 = 0;
         var swap_h: u32 = 0;
-        if (state.window) |w| {
-            if (w.waitAndAcquireSwapchainTexture(cmd_wrapper, &swap_w, &swap_h)) |swap_tex| {
-                target_tex = swap_tex;
-                target_w = swap_w;
-                target_h = swap_h;
-                target_format = dev.getSwapchainTextureFormat(w);
-            }
+        switch (state.display) {
+            .headless => {},
+            .windowed => |win| {
+                if (win.handle.waitAndAcquireSwapchainTexture(cmd_wrapper, &swap_w, &swap_h)) |swap_tex| {
+                    target_tex = swap_tex;
+                    target_w = swap_w;
+                    target_h = swap_h;
+                    target_format = dev.getSwapchainTextureFormat(win.handle);
+                }
+            },
         }
     }
 
@@ -263,27 +266,30 @@ pub fn updateWindowTitle(
         }
     }
 
-    if (state.window) |win| {
-        const title_changed = if (state.cached_window_title) |cached|
-            !std.mem.eql(u8, cached, raw_title)
-        else
-            true;
+    switch (state.display) {
+        .headless => {},
+        .windowed => |*win| {
+            const title_changed = if (win.cached_title) |cached|
+                !std.mem.eql(u8, cached, raw_title)
+            else
+                true;
 
-        if (title_changed) {
-            if (frame_allocator.dupeZ(u8, raw_title)) |tz| {
-                win.setTitle(tz);
-            } else |err| {
-                std.log.err("Failed to allocate window title string: {}", .{err});
-            }
+            if (title_changed) {
+                if (frame_allocator.dupeZ(u8, raw_title)) |tz| {
+                    win.handle.setTitle(tz);
+                } else |err| {
+                    std.log.err("Failed to allocate window title string: {}", .{err});
+                }
 
-            if (state.cached_window_title) |cached| {
-                state.allocator.free(cached);
+                if (win.cached_title) |cached| {
+                    state.allocator.free(cached);
+                }
+                win.cached_title = state.allocator.dupe(u8, raw_title) catch |err| blk: {
+                    std.log.err("Failed to update cached window title: {}", .{err});
+                    break :blk null;
+                };
             }
-            state.cached_window_title = state.allocator.dupe(u8, raw_title) catch |err| blk: {
-                std.log.err("Failed to update cached window title: {}", .{err});
-                break :blk null;
-            };
-        }
+        },
     }
 
     return raw_title;
@@ -297,7 +303,7 @@ pub fn renderHeaderBar(
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
 ) !void {
-    if (state.is_fullscreen) return;
+    if (state.isFullscreen()) return;
 
     const raw_title = updateWindowTitle(state, total_images, frame_allocator);
 
@@ -306,12 +312,17 @@ pub fn renderHeaderBar(
     if (total_images > 0) {
         const idx = (state.current_index orelse 0) + 1;
         const count_buf = try frame_allocator.alloc(u8, 128);
-        if (state.slideshow_active) {
-            count_str = try std.fmt.bufPrint(count_buf, "Image {} of {} [Slide Show {d:.1}s]", .{ idx, total_images, state.slideshow_interval_s });
-        } else if (is_loading) {
-            count_str = try std.fmt.bufPrint(count_buf, "Image {} of {}...", .{ idx, total_images });
-        } else {
-            count_str = try std.fmt.bufPrint(count_buf, "Image {} of {}", .{ idx, total_images });
+        switch (state.slideshow) {
+            .active => |s| {
+                count_str = try std.fmt.bufPrint(count_buf, "Image {} of {} [Slide Show {d:.1}s]", .{ idx, total_images, s.interval_s });
+            },
+            .inactive => {
+                if (is_loading) {
+                    count_str = try std.fmt.bufPrint(count_buf, "Image {} of {}...", .{ idx, total_images });
+                } else {
+                    count_str = try std.fmt.bufPrint(count_buf, "Image {} of {}", .{ idx, total_images });
+                }
+            },
         }
     } else if (is_loading) {
         count_str = "Loading images...";

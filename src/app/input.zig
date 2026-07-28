@@ -225,7 +225,7 @@ fn handlePaletteReturnGoToImage(self: *ViewerState, raw_str: []const u8) !void {
                 self.current_index = v - 1;
                 try self.updateCache();
                 self.palette.mode = .inactive;
-                stopTextInput(self.window);
+                stopTextInput(self.display);
             }
         } else |err| {
             std.log.debug("Failed to parse go-to-image index '{s}': {}", .{ raw_str, err });
@@ -237,11 +237,14 @@ fn handlePaletteReturnSlideshow(self: *ViewerState, raw_str: []const u8) !void {
     if (raw_str.len > 0) {
         if (std.fmt.parseFloat(f32, raw_str)) |val| {
             if (!std.math.isNan(val) and !std.math.isInf(val) and val > 0.0) {
-                self.slideshow_interval_s = val;
-                self.slideshow_timer_ms = 0.0;
-                self.slideshow_active = true;
+                self.slideshow = .{
+                    .active = .{
+                        .interval_s = val,
+                        .timer_ms = 0.0,
+                    },
+                };
                 self.palette.mode = .inactive;
-                stopTextInput(self.window);
+                stopTextInput(self.display);
             }
         } else |err| {
             std.log.debug("Failed to parse slideshow interval '{s}': {}", .{ raw_str, err });
@@ -254,7 +257,7 @@ fn handlePaletteReturnDirectory(self: *ViewerState, mod: KeyModifiers) !void {
     if (mod.shift) {
         try self.startAsyncPathScan(palette.current_nav_dir.items, true);
         self.palette.reset();
-        stopTextInput(self.window);
+        stopTextInput(self.display);
     } else {
         if (palette.selected_idx < palette.matches.items.len) {
             const match_idx = palette.matches.items[palette.selected_idx];
@@ -262,7 +265,7 @@ fn handlePaletteReturnDirectory(self: *ViewerState, mod: KeyModifiers) !void {
                 const entry = palette.dir_items.items[match_idx];
                 try self.startAsyncPathScan(entry.full_path, true);
                 self.palette.reset();
-                stopTextInput(self.window);
+                stopTextInput(self.display);
             }
         }
     }
@@ -278,7 +281,7 @@ pub fn handlePaletteKeys(
     switch (key) {
         .escape => {
             palette.mode = .inactive;
-            stopTextInput(self.window);
+            stopTextInput(self.display);
             return true;
         },
         .up => {
@@ -357,7 +360,7 @@ pub fn handlePaletteKeys(
                                     }
                                     self.adjustments_dirty = true;
                                     palette.mode = .inactive;
-                                    stopTextInput(self.window);
+                                    stopTextInput(self.display);
                                 }
                             }
                         } else |err| {
@@ -375,21 +378,21 @@ pub fn handlePaletteKeys(
                                 self.current_index = target_idx;
                                 try self.updateCache();
                                 palette.mode = .inactive;
-                                stopTextInput(self.window);
+                                stopTextInput(self.display);
                             },
                             .actions => {
                                 const action_id = app_actions[target_idx];
                                 try self.triggerAction(action_id);
                                 if (palette.mode == old_type) {
                                     palette.mode = .inactive;
-                                    stopTextInput(self.window);
+                                    stopTextInput(self.display);
                                 }
                             },
                             else => return false,
                         }
                     } else {
                         palette.mode = .inactive;
-                        stopTextInput(self.window);
+                        stopTextInput(self.display);
                     }
                 },
                 .inactive => return false,
@@ -537,7 +540,6 @@ test "handlePaletteKeys directory_navigator key interactions" {
         .io = io,
         .palette = PaletteState.init(allocator),
         .rotation_map = std.StringHashMap(f32).init(allocator),
-        .window = null,
         .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
     };
     defer state.deinit();
@@ -594,7 +596,6 @@ test "handlePaletteKeys stepping up from dot to parent directory preselects work
         .io = io,
         .palette = PaletteState.init(allocator),
         .rotation_map = std.StringHashMap(f32).init(allocator),
-        .window = null,
         .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
     };
     defer state.deinit();

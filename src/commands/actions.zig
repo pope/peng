@@ -388,9 +388,12 @@ pub fn triggerAction(self: *ViewerState, action_id: AppActionId) !void {
         .toggle_info => self.show_info_overlay = !self.show_info_overlay,
         .toggle_stats => self.show_stats_overlay = !self.show_stats_overlay,
         .toggle_fullscreen => {
-            self.is_fullscreen = !self.is_fullscreen;
-            if (self.window) |win| {
-                win.setFullscreen(self.is_fullscreen) catch |err| std.log.err("setFullscreen failed: {}", .{err});
+            switch (self.display) {
+                .headless => {},
+                .windowed => |*win| {
+                    win.is_fullscreen = !win.is_fullscreen;
+                    win.handle.setFullscreen(win.is_fullscreen) catch |err| std.log.err("setFullscreen failed: {}", .{err});
+                },
             }
         },
         .open_file_finder => {
@@ -402,13 +405,16 @@ pub fn triggerAction(self: *ViewerState, action_id: AppActionId) !void {
         .toggle_debug_mode => clay.setDebugModeEnabled(!clay.isDebugModeEnabled()),
         .toggle_debug_thumb => try self.setDebugShowThumb(!self.debug_show_thumb),
         .exit => {
-            if (self.is_fullscreen) {
-                self.is_fullscreen = false;
-                if (self.window) |win| {
-                    win.setFullscreen(false) catch |err| std.log.err("setFullscreen failed: {}", .{err});
-                }
-            } else {
-                self.running = false;
+            switch (self.display) {
+                .headless => self.running = false,
+                .windowed => |*win| {
+                    if (win.is_fullscreen) {
+                        win.is_fullscreen = false;
+                        win.handle.setFullscreen(false) catch |err| std.log.err("setFullscreen failed: {}", .{err});
+                    } else {
+                        self.running = false;
+                    }
+                },
             }
         },
         .first_image => {
@@ -547,7 +553,7 @@ pub fn triggerAction(self: *ViewerState, action_id: AppActionId) !void {
             try self.openPalette(.set_slideshow_interval);
         },
         .stop_slideshow => {
-            self.slideshow_active = false;
+            self.slideshow = .inactive;
         },
     }
 }

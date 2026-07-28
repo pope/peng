@@ -144,14 +144,17 @@ pub const IpcServer = struct {
                 try respondOk(state.io, stream);
             },
             .screenshot => |filepath| {
-                if (state.active_screenshot) |_| {
-                    return error.Busy;
-                } else {
-                    const dup_path = try state.allocator.dupeZ(u8, filepath);
-                    state.active_screenshot = screenshot.ActiveScreenshot{
-                        .path = dup_path,
-                        .stream = stream,
-                    };
+                switch (state.screenshot_mode) {
+                    .capturing => return error.Busy,
+                    .idle => {
+                        const dup_path = try state.allocator.dupeZ(u8, filepath);
+                        state.screenshot_mode = .{
+                            .capturing = screenshot.ActiveScreenshot{
+                                .path = dup_path,
+                                .stream = stream,
+                            },
+                        };
+                    },
                 }
             },
             .quit => {
