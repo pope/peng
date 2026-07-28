@@ -481,9 +481,8 @@ pub fn uploadSurfaceToGpu(
 
     const u_w: usize = @intCast(img_w);
     const u_h: usize = @intCast(img_h);
-    const total_pixels = u_w * u_h;
     const cur_fmt = current_surf.format();
-    const comp_pipeline_opt: ?sdl.gpu.ComputePipeline = if (total_pixels >= 1_000_000 and (cur_fmt == sdl.PixelFormat.rgb24 or cur_fmt == sdl.PixelFormat.bgr24)) comp_pipeline else null;
+    const comp_pipeline_opt: ?sdl.gpu.ComputePipeline = if (cur_fmt == sdl.PixelFormat.rgb24 or cur_fmt == sdl.PixelFormat.bgr24) comp_pipeline else null;
 
     var tex_usage = sdl.gpu.TextureUsage.sampler | sdl.gpu.TextureUsage.color_target;
     if (comp_pipeline_opt != null) {
@@ -795,17 +794,7 @@ pub fn uploadSurfaceToGpu(
     };
 }
 
-test "uploadSurfaceToGpu hybrid threshold logic" {
-    const small_pixels: usize = 500 * 500; // 250,000 pixels (< 1MP -> CPU SIMD path)
-    const large_pixels: usize = 1000 * 1000; // 1,000,000 pixels (>= 1MP -> GPU Compute Unpack path)
-    const megapx_24: usize = 6000 * 4000; // 24,000,000 pixels
-
-    try std.testing.expect(small_pixels < 1_000_000);
-    try std.testing.expect(large_pixels >= 1_000_000);
-    try std.testing.expect(megapx_24 >= 1_000_000);
-}
-
-test "uploadSurfaceToGpu compute unpack 1MP surface execution" {
+test "uploadSurfaceToGpu compute unpack surface execution" {
     const dev_opt = sdl.gpu.Device.create(sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl, true);
     if (dev_opt) |dev| {
         defer dev.destroy();
@@ -833,7 +822,8 @@ test "uploadSurfaceToGpu compute unpack 1MP surface execution" {
         const unpack_pipeline = dev.createComputePipeline(&comp_pipeline_info) orelse return;
         defer dev.releaseComputePipeline(unpack_pipeline);
 
-        const surf = sdl.Surface.create(1000, 1000, sdl.PixelFormat.rgb24) orelse return;
+        // Test with small image (< 1MP) to ensure compute path is used regardless of size
+        const surf = sdl.Surface.create(500, 500, sdl.PixelFormat.rgb24) orelse return;
         defer surf.destroy();
 
         const upload_res = uploadSurfaceToGpu(dev, surf, unpack_pipeline);
@@ -841,8 +831,10 @@ test "uploadSurfaceToGpu compute unpack 1MP surface execution" {
 
         if (upload_res) |res| {
             dev.releaseTexture(res.gpu_texture);
-            try std.testing.expectEqual(@as(f32, 1000.0), res.w);
-            try std.testing.expectEqual(@as(f32, 1000.0), res.h);
+            try std.testing.expectEqual(@as(f32, 500.0), res.w);
+            try std.testing.expectEqual(@as(f32, 500.0), res.h);
+            // CPU conversion time should be 0.0 since compute unpack was used
+            try std.testing.expectEqual(@as(f64, 0.0), res.conversion_time_ms);
         }
     }
 }
