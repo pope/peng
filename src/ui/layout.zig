@@ -30,11 +30,7 @@ pub fn renderFrame(
     state.prepareCacheTextures();
     const current_entry = state.getCurrentEntry();
 
-    const total_images = blk: {
-        state.lockImageList();
-        defer state.unlockImageList();
-        break :blk state.image_list.items.len;
-    };
+    const total_images = state.image_list.items.len;
 
     // Calculate Image Fitting Layout Boundaries
     var title_bar_h: f32 = 60.0;
@@ -260,8 +256,6 @@ pub fn updateWindowTitle(
     var raw_title: []const u8 = "Peng Image Viewer";
     if (total_images > 0) {
         if (state.current_index) |idx| {
-            state.lockImageList();
-            defer state.unlockImageList();
             if (idx < state.image_list.items.len) {
                 const path = state.image_list.items[idx];
                 raw_title = std.fs.path.basename(path);

@@ -48,8 +48,6 @@ pub fn renderInfoOverlay(
     const current_entry = state.getCurrentEntry();
 
     if (state.current_index) |idx| {
-        state.lockImageList();
-        defer state.unlockImageList();
         if (idx < state.image_list.items.len) {
             const path = state.image_list.items[idx];
             filename = std.fs.path.basename(path);
@@ -116,8 +114,6 @@ pub fn renderInfoOverlay(
     if (current_entry) |entry| {
         var is_jpeg = std.mem.eql(u8, mime_type, "image/jpeg");
         if (state.current_index) |idx| {
-            state.lockImageList();
-            defer state.unlockImageList();
             if (idx < state.image_list.items.len) {
                 const ext = std.fs.path.extension(state.image_list.items[idx]);
                 if (std.ascii.eqlIgnoreCase(ext, ".jpg") or std.ascii.eqlIgnoreCase(ext, ".jpeg")) {

@@ -42,6 +42,13 @@ pub const PathDiscoveredPayload = struct {
     path: []const u8,
 };
 
+pub const DirectoryScanResultPayload = struct {
+    generation: usize,
+    target_path: []const u8,
+    is_dir: bool,
+    paths: [][]const u8,
+};
+
 pub const DirectoryScanCompletePayload = struct {
     generation: usize,
     total_count: usize,
@@ -53,6 +60,7 @@ pub const BackgroundEvent = union(enum) {
     image_decoded: ImageDecodedPayload,
     decode_failed: DecodeFailedPayload,
     path_discovered: PathDiscoveredPayload,
+    directory_scan_result: DirectoryScanResultPayload,
     directory_scan_complete: DirectoryScanCompletePayload,
     ipc_command: *ipc.IpcCommandData,
 
@@ -65,6 +73,11 @@ pub const BackgroundEvent = union(enum) {
                 if (d.surface) |surf| surf.destroy();
             },
             .path_discovered => |p| allocator.free(p.path),
+            .directory_scan_result => |res| {
+                allocator.free(res.target_path);
+                for (res.paths) |p| allocator.free(p);
+                allocator.free(res.paths);
+            },
             else => {},
         }
     }

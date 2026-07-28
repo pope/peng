@@ -146,6 +146,14 @@ pub fn matchesQueryLower(path: []const u8, query_lower: []const u8) bool {
     return false;
 }
 
+/// Main Application State Architecture
+///
+/// Single-Threaded ViewerState Model:
+/// - `ViewerState` lives 100% on the main thread and contains ZERO mutexes.
+/// - Background workers (decode, scan, IPC) run as isolated tasks that receive plain
+///   value copies of parameters (paths, generation counters) and touch zero shared state.
+/// - Workers communicate exclusively by pushing event messages into `event_queue` (MpscQueue).
+/// - The main thread consumes background events during frame updates and updates `ViewerState` safely.
 pub const ViewerState = struct {
     gpu_device: ?sdl.gpu.Device = null,
     gpu_pipeline: ?sdl.gpu.Pipeline = null,
@@ -153,14 +161,11 @@ pub const ViewerState = struct {
     gpu_sampler: ?sdl.gpu.Sampler = null,
     white_texture: ?sdl.gpu.Texture = null,
 
-    /// Thread Safety: directory_arena allocations must only occur while holding image_list_mutex.
     directory_arena: std.heap.ArenaAllocator,
     image_list: std.ArrayList([]const u8),
-    image_list_mutex: std.Io.Mutex = .init,
     is_loading_files: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     current_index: ?usize = null,
     cache: CacheSlotMap,
-    cache_mutex: std.Io.Mutex = .init,
     current_image_cache_hit: bool = false,
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -250,9 +255,6 @@ pub const ViewerState = struct {
         const gpu_dev = self.gpu_device orelse return;
         const upload_res = graphics.uploadSurfaceToGpu(gpu_dev, thumb_surf, self.unpack_compute_pipeline) orelse return;
 
-        self.lockCache();
-        defer self.unlockCache();
-
         if (self.cache.getWithGeneration(entry.index, entry.generation)) |e| {
             if (e.thumb_gpu_texture) |old_t| {
                 gpu_dev.releaseTexture(old_t);
@@ -318,20 +320,11 @@ pub const ViewerState = struct {
         self.directory_arena.deinit();
     }
 
-    pub fn lockCache(self: *ViewerState) void {
-        self.cache_mutex.lockUncancelable(self.io);
-    }
-
-    pub fn unlockCache(self: *ViewerState) void {
-        self.cache_mutex.unlock(self.io);
-    }
-
-    pub fn lockImageList(self: *ViewerState) void {
-        self.image_list_mutex.lockUncancelable(self.io);
-    }
-
-    pub fn unlockImageList(self: *ViewerState) void {
-        self.image_list_mutex.unlock(self.io);
+    /// Returns true if the application is still running and the background job's
+    /// snapshot generation matches the current viewer state generation.
+    /// Used by worker threads to drop stale results early when navigation changes.
+    pub fn isJobValid(self: *ViewerState, generation: usize) bool {
+        return !self.exiting.load(.acquire) and self.generation.load(.acquire) == generation;
     }
 
     pub fn resetZoomPan(self: *ViewerState) void {
@@ -433,8 +426,6 @@ pub const ViewerState = struct {
     }
 
     pub fn rebuildPaletteMatches(self: *ViewerState) !void {
-        self.lockImageList();
-        defer self.unlockImageList();
         try self.palette.rebuildFileMatches(self.image_list.items);
     }
 
@@ -447,9 +438,6 @@ pub const ViewerState = struct {
     }
 
     pub fn getCurrentEntry(self: *ViewerState) ?CacheEntry {
-        self.lockCache();
-        defer self.unlockCache();
-
         const idx = self.current_index orelse return null;
         if (self.cache.get(idx)) |entry| {
             return entry.*;
@@ -480,8 +468,6 @@ pub const ViewerState = struct {
             .actions => try self.rebuildActionMatches(),
             .directory_navigator => {
                 const start_dir = blk: {
-                    self.lockImageList();
-                    defer self.unlockImageList();
                     if (self.current_index) |idx| {
                         if (idx < self.image_list.items.len) {
                             break :blk std.fs.path.dirname(self.image_list.items[idx]) orelse ".";
@@ -515,8 +501,6 @@ pub const ViewerState = struct {
     }
 
     pub fn prepareCacheTextures(self: *ViewerState) void {
-        self.lockCache();
-
         var upload_target: ?struct {
             index: usize,
             generation: usize,
@@ -542,13 +526,10 @@ pub const ViewerState = struct {
             }
         }
 
-        self.unlockCache();
-
         if (upload_target) |target| {
             defer target.cpu.surface.destroy();
             if (self.gpu_device) |gpu_dev| {
                 if (uploadSurfaceToGpu(gpu_dev, target.cpu.surface, self.unpack_compute_pipeline)) |res| {
-                    self.lockCache();
                     const loaded_gpu_status = CacheStatus{
                         .loaded_gpu = .{
                             .gpu_texture = res.gpu_texture,
@@ -563,15 +544,12 @@ pub const ViewerState = struct {
                         },
                     };
                     const updated = self.cache.updateStatus(target.index, target.generation, loaded_gpu_status);
-                    self.unlockCache();
 
                     if (!updated) {
                         gpu_dev.releaseTexture(res.gpu_texture);
                     }
                 } else {
-                    self.lockCache();
                     _ = self.cache.updateStatus(target.index, target.generation, .failed);
-                    self.unlockCache();
                 }
             }
         }
@@ -581,9 +559,6 @@ pub const ViewerState = struct {
     }
 
     pub fn clearCache(self: *ViewerState) void {
-        self.lockCache();
-        defer self.unlockCache();
-
         self.cache.clear(self.gpu_device);
     }
 
@@ -591,9 +566,7 @@ pub const ViewerState = struct {
         if (self.image_list.items.len <= 1) return;
         const now = sdl.timer.getTicks();
         if (now - self.last_nav_time_ms >= 150) {
-            self.lockCache();
             const entry_count = self.cache.entries.items.len;
-            self.unlockCache();
             if (entry_count <= 1) {
                 self.updateCache() catch |err| std.log.warn("Idle preload updateCache failed: {}", .{err});
             }
@@ -602,8 +575,6 @@ pub const ViewerState = struct {
 
     pub fn updateCurrentRotation(self: *ViewerState) void {
         const path_opt = blk: {
-            self.lockImageList();
-            defer self.unlockImageList();
             const len = self.image_list.items.len;
             const current_idx = self.current_index orelse break :blk null;
             if (current_idx >= len) break :blk null;
@@ -630,7 +601,6 @@ pub const ViewerState = struct {
         if (thumb_data.surface == null) return;
         if (self.gpu_device) |gpu_dev| {
             if (graphics.uploadSurfaceToGpu(gpu_dev, thumb_data.surface.?, self.unpack_compute_pipeline)) |upload_res| {
-                self.lockCache();
                 if (self.cache.getWithGeneration(thumb_data.index, thumb_data.generation)) |entry| {
                     entry.thumb_gpu_texture = upload_res.gpu_texture;
                     entry.thumb_w = upload_res.w;
@@ -645,7 +615,6 @@ pub const ViewerState = struct {
                 } else {
                     gpu_dev.releaseTexture(upload_res.gpu_texture);
                 }
-                self.unlockCache();
                 self.updateCurrentRotation();
             }
         }
@@ -657,7 +626,6 @@ pub const ViewerState = struct {
         if (decoded_data.surface == null) return;
         if (self.gpu_device) |gpu_dev| {
             if (graphics.uploadSurfaceToGpu(gpu_dev, decoded_data.surface.?, self.unpack_compute_pipeline)) |full_res| {
-                self.lockCache();
                 if (self.cache.getWithGeneration(decoded_data.index, decoded_data.generation)) |entry| {
                     switch (entry.status) {
                         .loaded_cpu => |cpu| cpu.surface.destroy(),
@@ -690,11 +658,9 @@ pub const ViewerState = struct {
                 } else {
                     gpu_dev.releaseTexture(full_res.gpu_texture);
                 }
-                self.unlockCache();
                 self.updateCurrentRotation();
             }
         } else {
-            self.lockCache();
             if (self.cache.getWithGeneration(decoded_data.index, decoded_data.generation)) |entry| {
                 entry.exif_orientation = decoded_data.exif_orientation;
                 entry.status = .{
@@ -714,7 +680,6 @@ pub const ViewerState = struct {
                 };
                 decoded_data.surface = null; // Transfer ownership to CacheEntry
             }
-            self.unlockCache();
             self.updateCurrentRotation();
         }
     }
@@ -722,8 +687,6 @@ pub const ViewerState = struct {
     pub fn handleDirScannedEvent(self: *ViewerState, scanned_data: events.PathDiscoveredPayload) void {
         const current_gen = self.generation.load(.acquire);
         if (scanned_data.generation != current_gen) return;
-        self.lockImageList();
-        defer self.unlockImageList();
         const dup = self.directory_arena.allocator().dupe(u8, scanned_data.path) catch |err| {
             std.log.err("Failed to duplicate path '{s}' in directory arena: {}", .{ scanned_data.path, err });
             return;
@@ -732,6 +695,59 @@ pub const ViewerState = struct {
         if (self.current_index == null and self.image_list.items.len > 0) {
             self.current_index = 0;
         }
+    }
+
+    pub fn handleDirectoryScanResultEvent(self: *ViewerState, result_data: events.DirectoryScanResultPayload) void {
+        const current_gen = self.generation.load(.acquire);
+        if (result_data.generation != current_gen) return;
+
+        if (result_data.is_dir) {
+            for (result_data.paths) |item| {
+                const dup = self.directory_arena.allocator().dupe(u8, item) catch |err| {
+                    std.log.err("Failed to duplicate directory item '{s}': {}", .{ item, err });
+                    continue;
+                };
+                self.image_list.append(self.allocator, dup) catch |err| {
+                    std.log.err("Failed to append image '{s}' to list: {}", .{ dup, err });
+                };
+            }
+            if (self.current_index == null and self.image_list.items.len > 0) {
+                self.current_index = 0;
+            }
+        } else {
+            var target_idx_in_dir: ?usize = null;
+            for (result_data.paths, 0..) |item, i| {
+                if (std.mem.eql(u8, item, result_data.target_path)) {
+                    target_idx_in_dir = i;
+                    break;
+                }
+            }
+
+            _ = self.directory_arena.reset(.retain_capacity);
+            self.image_list.clearRetainingCapacity();
+            for (result_data.paths, 0..) |item, i| {
+                const dup = self.directory_arena.allocator().dupe(u8, item) catch |err| {
+                    std.log.err("Failed to duplicate directory item '{s}': {}", .{ item, err });
+                    continue;
+                };
+                self.image_list.append(self.allocator, dup) catch |err| {
+                    std.log.err("Failed to append image '{s}' to list: {}", .{ dup, err });
+                };
+                if (target_idx_in_dir == null and std.mem.eql(u8, item, result_data.target_path)) {
+                    target_idx_in_dir = i;
+                }
+            }
+
+            if (target_idx_in_dir) |target_i| {
+                if (target_i < self.image_list.items.len) {
+                    self.current_index = target_i;
+                }
+            } else {
+                self.current_index = 0;
+            }
+        }
+
+        self.updateCache() catch |err| std.log.err("Failed to update cache after directory scan result: {}", .{err});
     }
 
     pub fn processBackgroundEvents(self: *ViewerState) bool {
@@ -748,22 +764,19 @@ pub const ViewerState = struct {
             switch (evt.*) {
                 .exif_orientation_parsed => |e| {
                     if (e.generation != current_gen) continue;
-                    self.lockCache();
                     if (self.cache.getWithGeneration(e.index, e.generation)) |entry| {
                         entry.exif_orientation = e.orientation;
                     }
-                    self.unlockCache();
                     self.updateCurrentRotation();
                 },
                 .thumb_decoded => |t| handleExifThumbnailEvent(self, t),
                 .image_decoded => |*d| handleImageDecodedEvent(self, d),
                 .decode_failed => |f| {
                     if (f.generation != current_gen) continue;
-                    self.lockCache();
                     _ = self.cache.updateStatus(f.index, f.generation, .failed);
-                    self.unlockCache();
                 },
                 .path_discovered => |p| handleDirScannedEvent(self, p),
+                .directory_scan_result => |res| handleDirectoryScanResultEvent(self, res),
                 .directory_scan_complete => {},
                 .ipc_command => |cmd_data| {
                     self.pending_ipc_commands.append(self.allocator, cmd_data) catch |err| {
@@ -785,9 +798,7 @@ pub const ViewerState = struct {
         self.resetZoomPan();
         self.updateCurrentRotation();
 
-        self.lockImageList();
         const len = self.image_list.items.len;
-        self.unlockImageList();
 
         if (len == 0) return;
 
@@ -829,83 +840,73 @@ pub const ViewerState = struct {
         var to_spawn_indices: [5]usize = undefined;
         var hit = false;
 
-        {
-            self.lockCache();
-            defer self.unlockCache();
-
-            // 2. Evict cache entries that are no longer wanted
-            var i: usize = 0;
-            while (i < self.cache.entries.items.len) {
-                const entry = &self.cache.entries.items[i];
-                var wanted = false;
-                for (desired[0..desired_count]) |d| {
-                    if (entry.index == d) {
-                        wanted = true;
-                        break;
-                    }
-                }
-                if (!wanted) {
-                    // Evict
-                    self.cache.removeAndDeinit(i, self.gpu_device);
-                } else {
-                    i += 1;
+        // 2. Evict cache entries that are no longer wanted
+        var i: usize = 0;
+        while (i < self.cache.entries.items.len) {
+            const entry = &self.cache.entries.items[i];
+            var wanted = false;
+            for (desired[0..desired_count]) |d| {
+                if (entry.index == d) {
+                    wanted = true;
+                    break;
                 }
             }
+            if (!wanted) {
+                // Evict
+                self.cache.removeAndDeinit(i, self.gpu_device);
+            } else {
+                i += 1;
+            }
+        }
 
-            // 3. Mark wanted entries that are not in the cache yet as .decoding
-            for (desired[0..desired_count]) |d| {
-                var needs_thread = false;
-                if (self.cache.get(d)) |entry| {
-                    if (d == idx and (entry.status == .loaded_cpu or entry.status == .loaded_gpu)) {
-                        hit = true;
-                    }
-                    if (entry.status == .decoding and !entry.status.decoding.has_thread) {
-                        needs_thread = true;
-                    }
-                } else {
-                    const new_entry = CacheEntry{
-                        .index = d,
-                        .generation = gen,
-                        .status = .{ .decoding = .{ .has_thread = false } },
-                        .full_w = 0.0,
-                        .full_h = 0.0,
-                    };
-                    try self.cache.append(self.allocator, new_entry);
+        // 3. Mark wanted entries that are not in the cache yet as .decoding
+        for (desired[0..desired_count]) |d| {
+            var needs_thread = false;
+            if (self.cache.get(d)) |entry| {
+                if (d == idx and (entry.status == .loaded_cpu or entry.status == .loaded_gpu)) {
+                    hit = true;
+                }
+                if (entry.status == .decoding and !entry.status.decoding.has_thread) {
                     needs_thread = true;
                 }
-                if (needs_thread) {
-                    to_spawn_indices[to_spawn_count] = d;
-                    to_spawn_count += 1;
-                }
+            } else {
+                const new_entry = CacheEntry{
+                    .index = d,
+                    .generation = gen,
+                    .status = .{ .decoding = .{ .has_thread = false } },
+                    .full_w = 0.0,
+                    .full_h = 0.0,
+                };
+                try self.cache.append(self.allocator, new_entry);
+                needs_thread = true;
             }
-            self.current_image_cache_hit = hit;
+            if (needs_thread) {
+                to_spawn_indices[to_spawn_count] = d;
+                to_spawn_count += 1;
+            }
         }
+        self.current_image_cache_hit = hit;
 
-        // 4. Batch-fetch file paths under a single image_list_mutex lock
+        // 4. Batch-fetch file paths
         var to_spawn_paths: [5]?[:0]const u8 = undefined;
-        {
-            self.lockImageList();
-            defer self.unlockImageList();
-            for (to_spawn_indices[0..to_spawn_count], 0..) |d, s_idx| {
-                if (d < self.image_list.items.len) {
-                    to_spawn_paths[s_idx] = self.allocator.dupeZ(u8, self.image_list.items[d]) catch |err| blk: {
-                        std.log.err("updateCache: dupeZ failed for image index {d}: {}", .{ d, err });
-                        break :blk null;
-                    };
-                } else {
-                    to_spawn_paths[s_idx] = null;
-                }
+        for (to_spawn_indices[0..to_spawn_count], 0..) |d, s_idx| {
+            if (d < self.image_list.items.len) {
+                to_spawn_paths[s_idx] = self.allocator.dupeZ(u8, self.image_list.items[d]) catch |err| blk: {
+                    std.log.err("updateCache: dupeZ failed for image index {d}: {}", .{ d, err });
+                    break :blk null;
+                };
+            } else {
+                to_spawn_paths[s_idx] = null;
             }
         }
 
-        // 5. Spawn worker threads outside cache_mutex lock
+        // 5. Spawn worker threads
         const max_decodes = getMaxConcurrentDecodes();
         for (to_spawn_indices[0..to_spawn_count], 0..) |d, s_idx| {
             const path_opt = to_spawn_paths[s_idx];
             if (path_opt == null or self.active_decode_threads.load(.acquire) >= max_decodes) {
                 if (path_opt) |p| self.allocator.free(p);
                 if (d != idx) {
-                    self.lockCache();
                     var k: usize = 0;
                     while (k < self.cache.entries.items.len) : (k += 1) {
                         if (self.cache.entries.items[k].index == d) {
@@ -913,7 +914,6 @@ pub const ViewerState = struct {
                             break;
                         }
                     }
-                    self.unlockCache();
                 }
                 continue;
             }
@@ -925,7 +925,6 @@ pub const ViewerState = struct {
                 for (to_spawn_paths[s_idx + 1 .. to_spawn_count]) |rem_path_opt| {
                     if (rem_path_opt) |rp| self.allocator.free(rp);
                 }
-                self.lockCache();
                 var k: usize = 0;
                 while (k < self.cache.entries.items.len) : (k += 1) {
                     if (self.cache.entries.items[k].index == d) {
@@ -933,17 +932,14 @@ pub const ViewerState = struct {
                         break;
                     }
                 }
-                self.unlockCache();
                 return err;
             };
 
-            self.lockCache();
             if (self.cache.get(d)) |entry| {
                 if (entry.status == .decoding) {
                     entry.status.decoding.has_thread = true;
                 }
             }
-            self.unlockCache();
 
             args.* = DecodeArgs{
                 .state = self,
@@ -968,11 +964,7 @@ pub const ViewerState = struct {
 
     pub fn next(self: *ViewerState) !void {
         self.slideshow_timer_ms = 0.0;
-        const len = blk: {
-            self.lockImageList();
-            defer self.unlockImageList();
-            break :blk self.image_list.items.len;
-        };
+        const len = self.image_list.items.len;
 
         if (len == 0) return;
         if (self.current_index) |idx| {
@@ -985,11 +977,7 @@ pub const ViewerState = struct {
 
     pub fn prev(self: *ViewerState) !void {
         self.slideshow_timer_ms = 0.0;
-        const len = blk: {
-            self.lockImageList();
-            defer self.unlockImageList();
-            break :blk self.image_list.items.len;
-        };
+        const len = self.image_list.items.len;
 
         if (len == 0) return;
         if (self.current_index) |idx| {
@@ -1022,29 +1010,21 @@ pub const ViewerState = struct {
         self.last_scanned_dir.clearRetainingCapacity();
         try self.last_scanned_dir.appendSlice(self.allocator, dir_target);
 
-        {
-            self.lockImageList();
-            defer self.unlockImageList();
-            // Clear existing cache and rotation map before resetting directory_arena
-            _ = self.generation.fetchAdd(1, .release);
-            self.clearCache();
-            self.rotation_map.clearRetainingCapacity();
-            self.image_list.clearRetainingCapacity();
-            _ = self.directory_arena.reset(.retain_capacity);
-            self.current_index = null;
-        }
+        // Clear existing cache and rotation map before resetting directory_arena
+        _ = self.generation.fetchAdd(1, .release);
+        self.clearCache();
+        self.rotation_map.clearRetainingCapacity();
+        self.image_list.clearRetainingCapacity();
+        _ = self.directory_arena.reset(.retain_capacity);
+        self.current_index = null;
 
         if (has_stat) {
             if (stat.kind == .directory) {
                 try fs.startAsyncPathScan(self, path, true);
             } else {
-                {
-                    self.lockImageList();
-                    defer self.unlockImageList();
-                    const dup = try self.directory_arena.allocator().dupe(u8, path);
-                    try self.image_list.append(self.allocator, dup);
-                    self.current_index = 0;
-                }
+                const dup = try self.directory_arena.allocator().dupe(u8, path);
+                try self.image_list.append(self.allocator, dup);
+                self.current_index = 0;
 
                 try self.updateCache();
 
@@ -1370,9 +1350,7 @@ test "ViewerState.clampZoomFactor bounds based on image dimensions" {
     var state = ViewerState{
         .directory_arena = std.heap.ArenaAllocator.init(std.testing.allocator),
         .image_list = std.ArrayList([]const u8).empty,
-        .image_list_mutex = .init,
         .cache = .{},
-        .cache_mutex = .init,
         .allocator = std.testing.allocator,
         .io = std.Io.Threaded.global_single_threaded.io(),
         .palette = PaletteState.init(std.testing.allocator),
@@ -1430,9 +1408,7 @@ test "ViewerState.updateCurrentRotation syncs EXIF orientation" {
     var state = ViewerState{
         .directory_arena = std.heap.ArenaAllocator.init(std.testing.allocator),
         .image_list = std.ArrayList([]const u8).empty,
-        .image_list_mutex = .init,
         .cache = .{},
-        .cache_mutex = .init,
         .allocator = std.testing.allocator,
         .io = std.Io.Threaded.global_single_threaded.io(),
         .palette = PaletteState.init(std.testing.allocator),
@@ -1493,9 +1469,7 @@ test "ViewerState.openPalette directory_navigator starting directory rules" {
     var state = ViewerState{
         .directory_arena = std.heap.ArenaAllocator.init(allocator),
         .image_list = std.ArrayList([]const u8).empty,
-        .image_list_mutex = .init,
         .cache = .{},
-        .cache_mutex = .init,
         .allocator = allocator,
         .io = io,
         .palette = PaletteState.init(allocator),
@@ -1546,9 +1520,7 @@ test "ViewerState.openPalette directory_navigator steps up if 0 subdirectories" 
     var state = ViewerState{
         .directory_arena = std.heap.ArenaAllocator.init(allocator),
         .image_list = std.ArrayList([]const u8).empty,
-        .image_list_mutex = .init,
         .cache = .{},
-        .cache_mutex = .init,
         .allocator = allocator,
         .io = io,
         .palette = PaletteState.init(allocator),
@@ -1591,9 +1563,7 @@ test "ViewerState.openPalette steps up from top-level relative leaf dir without 
     var state = ViewerState{
         .directory_arena = std.heap.ArenaAllocator.init(allocator),
         .image_list = std.ArrayList([]const u8).empty,
-        .image_list_mutex = .init,
         .cache = .{},
-        .cache_mutex = .init,
         .allocator = allocator,
         .io = io,
         .palette = PaletteState.init(allocator),
@@ -1633,9 +1603,7 @@ test "ViewerState.isPointerInDebugPanel and click localization" {
     var state = ViewerState{
         .directory_arena = std.heap.ArenaAllocator.init(allocator),
         .image_list = std.ArrayList([]const u8).empty,
-        .image_list_mutex = .init,
         .cache = .{},
-        .cache_mutex = .init,
         .allocator = allocator,
         .io = io,
         .palette = PaletteState.init(allocator),
@@ -1711,9 +1679,7 @@ test "ViewerState slideshow timer auto-advances slide" {
     var state = ViewerState{
         .directory_arena = std.heap.ArenaAllocator.init(allocator),
         .image_list = std.ArrayList([]const u8).empty,
-        .image_list_mutex = .init,
         .cache = .{},
-        .cache_mutex = .init,
         .allocator = allocator,
         .io = io,
         .palette = PaletteState.init(allocator),

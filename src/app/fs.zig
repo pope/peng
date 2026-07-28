@@ -247,21 +247,21 @@ pub fn wakeUpMainThread() void {
 }
 
 fn appendPathThreadSafe(state: *ViewerState, gpa: std.mem.Allocator, path: []const u8, initial_gen: usize) void {
-    state.image_list_mutex.lockUncancelable(state.io);
-    defer state.image_list_mutex.unlock(state.io);
-
     if (state.generation.load(.acquire) != initial_gen or state.exiting.load(.acquire)) return;
-    const dup = state.directory_arena.allocator().dupe(u8, path) catch |err| {
+    const dup = gpa.dupe(u8, path) catch |err| {
         std.log.err("Failed to duplicate path '{s}': {}", .{ path, err });
         return;
     };
-    state.image_list.append(gpa, dup) catch |err| {
-        std.log.err("Failed to append path '{s}' to image_list: {}", .{ path, err });
+    state.event_queue.push(gpa, state.io, .{
+        .path_discovered = .{
+            .generation = initial_gen,
+            .path = dup,
+        },
+    }) catch |err| {
+        std.log.err("Failed to push path_discovered event for '{s}': {}", .{ path, err });
+        gpa.free(dup);
         return;
     };
-    if (state.current_index == null) {
-        state.current_index = 0;
-    }
     wakeUpMainThread();
 }
 
@@ -305,21 +305,22 @@ fn scanDirectoryThreadSafe(state: *ViewerState, gpa: std.mem.Allocator, io: std.
         }
     }.lessThan);
 
-    state.image_list_mutex.lockUncancelable(io);
-    defer state.image_list_mutex.unlock(io);
     if (state.generation.load(.acquire) != initial_gen or state.exiting.load(.acquire)) return;
 
     for (dir_entries.items) |name| {
-        const full_path = std.fs.path.join(state.directory_arena.allocator(), &.{ dir_path, name }) catch |err| {
+        const full_path = std.fs.path.join(gpa, &.{ dir_path, name }) catch |err| {
             std.log.err("Failed to join path for '{s}': {}", .{ name, err });
             continue;
         };
-        state.image_list.append(gpa, full_path) catch |err| {
-            std.log.err("Failed to append entry '{s}': {}", .{ full_path, err });
+        state.event_queue.push(gpa, io, .{
+            .path_discovered = .{
+                .generation = initial_gen,
+                .path = full_path,
+            },
+        }) catch |err| {
+            std.log.err("Failed to push path_discovered event for '{s}': {}", .{ full_path, err });
+            gpa.free(full_path);
         };
-    }
-    if (state.current_index == null and state.image_list.items.len > 0) {
-        state.current_index = 0;
     }
     wakeUpMainThread();
 }
@@ -450,56 +451,28 @@ fn pathScanWorker(args: *PathScanArgs) void {
         }
     }.lessThan);
 
-    state.lockImageList();
-    defer state.unlockImageList();
-
     if (state.generation.load(.acquire) != initial_gen or state.exiting.load(.acquire)) return;
 
-    if (is_dir) {
-        for (dir_entries.items) |item| {
-            const dup = state.directory_arena.allocator().dupe(u8, item) catch |err| {
-                std.log.err("Failed to duplicate directory item '{s}': {}", .{ item, err });
-                continue;
-            };
-            state.image_list.append(gpa, dup) catch |err| {
-                std.log.err("Failed to append image '{s}' to list: {}", .{ dup, err });
-            };
-        }
-        if (state.current_index == null and state.image_list.items.len > 0) {
-            state.current_index = 0;
-        }
-    } else {
-        var target_idx_in_dir: ?usize = null;
-        for (dir_entries.items, 0..) |item, i| {
-            if (std.mem.eql(u8, item, target_path)) {
-                target_idx_in_dir = i;
-                break;
-            }
-        }
+    const dup_target = gpa.dupe(u8, target_path) catch return;
+    const paths_slice = dir_entries.toOwnedSlice(gpa) catch {
+        gpa.free(dup_target);
+        return;
+    };
 
-        _ = state.directory_arena.reset(.retain_capacity);
-        state.image_list.clearRetainingCapacity();
-        for (dir_entries.items, 0..) |item, i| {
-            const dup = state.directory_arena.allocator().dupe(u8, item) catch |err| {
-                std.log.err("Failed to duplicate directory item '{s}': {}", .{ item, err });
-                continue;
-            };
-            state.image_list.append(gpa, dup) catch |err| {
-                std.log.err("Failed to append image '{s}' to list: {}", .{ dup, err });
-            };
-            if (target_idx_in_dir == null and std.mem.eql(u8, item, target_path)) {
-                target_idx_in_dir = i;
-            }
-        }
-
-        if (target_idx_in_dir) |target_i| {
-            if (target_i < state.image_list.items.len) {
-                state.current_index = target_i;
-            }
-        } else {
-            state.current_index = 0;
-        }
-    }
+    state.event_queue.push(gpa, io, .{
+        .directory_scan_result = .{
+            .generation = initial_gen,
+            .target_path = dup_target,
+            .is_dir = is_dir,
+            .paths = paths_slice,
+        },
+    }) catch |err| {
+        std.log.err("Failed to push directory_scan_result event: {}", .{err});
+        gpa.free(dup_target);
+        for (paths_slice) |item| gpa.free(item);
+        gpa.free(paths_slice);
+    };
+    wakeUpMainThread();
 }
 
 pub fn startAsyncPathScan(state: *ViewerState, path: []const u8, is_dir: bool) !void {

@@ -532,9 +532,7 @@ test "handlePaletteKeys directory_navigator key interactions" {
     var state = ViewerState{
         .directory_arena = std.heap.ArenaAllocator.init(allocator),
         .image_list = std.ArrayList([]const u8).empty,
-        .image_list_mutex = .init,
         .cache = .{},
-        .cache_mutex = .init,
         .allocator = allocator,
         .io = io,
         .palette = PaletteState.init(allocator),
@@ -591,9 +589,7 @@ test "handlePaletteKeys stepping up from dot to parent directory preselects work
     var state = ViewerState{
         .directory_arena = std.heap.ArenaAllocator.init(allocator),
         .image_list = std.ArrayList([]const u8).empty,
-        .image_list_mutex = .init,
         .cache = .{},
-        .cache_mutex = .init,
         .allocator = allocator,
         .io = io,
         .palette = PaletteState.init(allocator),

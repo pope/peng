@@ -79,9 +79,7 @@ pub fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
 
         .directory_arena = std.heap.ArenaAllocator.init(gpa),
         .image_list = std.ArrayList([]const u8).empty,
-        .image_list_mutex = .init,
         .cache = .{},
-        .cache_mutex = .init,
         .allocator = gpa,
         .io = init.io,
         .window_pixel_format = sdl.PixelFormat.rgba32,
@@ -194,9 +192,7 @@ pub fn runMainLoop(ctx: *AppGraphicsAndState) !void {
             break :blk (ctx.state.current_index != null);
         };
         if (needs_cache_update and ctx.state.active_decode_threads.load(.acquire) < app.state.ViewerState.getMaxConcurrentDecodes()) {
-            ctx.state.lockImageList();
             const count = ctx.state.image_list.items.len;
-            ctx.state.unlockImageList();
             if (count > 0) {
                 if (ctx.state.current_index == null) ctx.state.current_index = 0;
                 ctx.state.updateCache() catch |err| std.log.err("Failed to update cache: {}", .{err});

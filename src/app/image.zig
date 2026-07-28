@@ -278,20 +278,11 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         fs.wakeUpMainThread();
     }
 
-    const isValidJob = struct {
-        fn check(st: *ViewerState, idx: usize, gen: usize) bool {
-            if (st.exiting.load(.acquire)) return false;
-            st.cache_mutex.lockUncancelable(st.io);
-            defer st.cache_mutex.unlock(st.io);
-            return st.cache.getWithGeneration(idx, gen) != null;
-        }
-    }.check;
-
-    if (!isValidJob(state, index, args.generation)) return;
+    if (!state.isJobValid(args.generation)) return;
 
     const mime_type = detectMimeType(state.io, path);
 
-    if (!isValidJob(state, index, args.generation)) return;
+    if (!state.isJobValid(args.generation)) return;
 
     // Attempt fast EXIF thumbnail decoding for instant placeholder preview
     if (std.mem.eql(u8, mime_type, "image/jpeg") and state.gpu_device != null) {
@@ -329,7 +320,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         }
     }
 
-    if (!isValidJob(state, index, args.generation)) return;
+    if (!state.isJobValid(args.generation)) return;
 
     const start_decode = sdl.timer.getTicksNs();
     const surface = sdl.Surface.loadFilePtr(path.ptr);
@@ -341,7 +332,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         std.log.err("decodeWorker: failed to load image '{s}': {s}", .{ path, sdl.getError() });
     }
 
-    if (!isValidJob(state, index, args.generation)) {
+    if (!state.isJobValid(args.generation)) {
         if (surface) |surf| surf.destroy();
         return;
     }
@@ -395,7 +386,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         std.log.debug("decodeWorker: statFile failed for '{s}': {any}", .{ path, err });
     }
 
-    if (!isValidJob(state, index, args.generation)) {
+    if (!state.isJobValid(args.generation)) {
         if (final_surface) |surf| surf.destroy();
         return;
     }

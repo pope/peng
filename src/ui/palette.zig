@@ -405,9 +405,7 @@ pub fn renderTextInputDialog(
         .corner_radius = .all(6),
     })({
         const raw_str = palette.query.items;
-        state.lockImageList();
         const total_count = state.image_list.items.len;
-        state.unlockImageList();
         switch (palette.mode) {
             .go_to_image => {
                 if (total_count == 0) {
@@ -431,11 +429,7 @@ pub fn renderTextInputDialog(
                 } else {
                     if (std.fmt.parseInt(usize, raw_str, 10)) |val| {
                         if (val >= 1 and val <= total_count) {
-                            const target_path = blk: {
-                                state.lockImageList();
-                                defer state.unlockImageList();
-                                break :blk if (val - 1 < state.image_list.items.len) state.image_list.items[val - 1] else "";
-                            };
+                            const target_path = if (val - 1 < state.image_list.items.len) state.image_list.items[val - 1] else "";
                             const raw_basename = std.fs.path.basename(target_path);
                             const display_filename = truncateFilename(frame_allocator, raw_basename, 492.0, 12, measure_data);
                             const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to go to {}: {s}", .{ val, display_filename });
@@ -678,13 +672,6 @@ pub fn renderSelectionList(
                 .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(window.top_spacer_h) } },
             })({});
         }
-
-        if (palette.mode == .files) {
-            state.lockImageList();
-        }
-        defer if (palette.mode == .files) {
-            state.unlockImageList();
-        };
 
         var match_count = window.start_idx;
         for (matching_indices.items[window.start_idx..window.end_idx]) |real_idx| {
