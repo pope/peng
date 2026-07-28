@@ -3,7 +3,8 @@ const sdl = @import("sdl");
 const renderer = @import("renderer.zig");
 const clay = @import("zclay");
 const theme = @import("theme.zig");
-const MeasureTextUserData = @import("app").types.MeasureTextUserData;
+const app = @import("app");
+const MeasureTextUserData = app.types.MeasureTextUserData;
 
 pub const GraphicsSetup = struct {
     window: sdl.Window,

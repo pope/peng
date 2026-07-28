@@ -1,5 +1,6 @@
 pub const state = @import("state.zig");
 pub const input = @import("input.zig");
+pub const palette = @import("palette.zig");
 pub const types = @import("types.zig");
 pub const events = @import("events.zig");
 pub const pipeline = @import("pipeline.zig");

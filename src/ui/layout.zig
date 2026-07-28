@@ -2,9 +2,10 @@ const std = @import("std");
 const clay = @import("zclay");
 const sdl = @import("sdl");
 const theme = @import("theme.zig");
-const app_state = @import("app").state;
+const app = @import("app");
+const app_state = app.state;
+const types = app.types;
 const ViewerState = app_state.ViewerState;
-const types = @import("app").types;
 const FrameInput = types.FrameInput;
 const MeasureTextUserData = types.MeasureTextUserData;
 const renderPalette = @import("palette.zig").renderPalette;
@@ -12,6 +13,7 @@ const renderStatsOverlay = @import("stats.zig").renderStatsOverlay;
 const renderer = @import("renderer.zig");
 const saveTextureToPng = @import("graphics.zig").saveTextureToPng;
 const ElementTag = app_state.ElementTag;
+const CacheEntry = app.image.CacheEntry;
 const truncateFilename = @import("text_utils.zig").truncateFilename;
 const sdl3MeasureText = @import("graphics.zig").sdl3MeasureText;
 
@@ -428,7 +430,7 @@ pub fn renderEmptyState() void {
 
 pub fn renderViewport(
     state: *ViewerState,
-    current_entry: ?app_state.CacheEntry,
+    current_entry: ?CacheEntry,
     draw_w: f32,
     draw_h: f32,
     total_images: usize,

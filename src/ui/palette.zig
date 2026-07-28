@@ -1,13 +1,14 @@
 const std = @import("std");
 const clay = @import("zclay");
 const sdl = @import("sdl");
-const app_state = @import("app").state;
+const app = @import("app");
+const app_state = app.state;
+const types = app.types;
 const ViewerState = app_state.ViewerState;
-const PaletteState = app_state.PaletteState;
+const PaletteState = app.palette.PaletteState;
 const stopTextInput = app_state.stopTextInput;
 const app_actions = @import("commands").actions.app_actions;
 const getActionMetadata = @import("commands").actions.getActionMetadata;
-const types = @import("app").types;
 const MeasureTextUserData = types.MeasureTextUserData;
 const sdl3MeasureText = @import("graphics.zig").sdl3MeasureText;
 const layout_helpers = @import("layout_helpers.zig");
@@ -20,7 +21,7 @@ const truncateDirectory = text_utils.truncateDirectory;
 const formatSize = text_utils.formatSize;
 const theme = @import("theme.zig");
 
-const PaletteMode = app_state.PaletteMode;
+const PaletteMode = types.PaletteMode;
 
 pub const TextChunk = struct {
     slice: []const u8,
@@ -510,7 +511,7 @@ pub fn renderTextInputDialog(
                     if (std.fmt.parseFloat(f32, raw_str)) |val| {
                         if (!std.math.isNan(val) and !std.math.isInf(val)) {
                             is_valid_float = true;
-                            const bounds = palette.mode.getTextInputBounds() orelse app_state.palette_module.TextInputBounds{ .min = 0.0, .max = 1.0 };
+                            const bounds = palette.mode.getTextInputBounds() orelse types.TextInputBounds{ .min = 0.0, .max = 1.0 };
                             const min_val = bounds.min;
                             const max_val = bounds.max;
                             if (val >= min_val and val <= max_val) {

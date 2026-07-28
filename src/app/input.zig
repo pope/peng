@@ -2,6 +2,7 @@ const std = @import("std");
 const sdl = @import("sdl");
 const app_state = @import("state.zig");
 const types = @import("types.zig");
+const fs = @import("fs.zig");
 const Key = types.Key;
 const KeyModifiers = types.KeyModifiers;
 const FrameInput = types.FrameInput;
@@ -215,7 +216,7 @@ pub fn pollFrameInput(
     };
 }
 
-const fs = app_state.fs;
+
 
 fn handlePaletteReturnGoToImage(self: *ViewerState, raw_str: []const u8) !void {
     if (raw_str.len > 0) {

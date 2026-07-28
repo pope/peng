@@ -2,7 +2,9 @@ const std = @import("std");
 const clay = @import("zclay");
 const theme = @import("theme.zig");
 const sdl = @import("sdl");
-const app_state = @import("app").state;
+const app = @import("app");
+const app_state = app.state;
+const TextCacheKey = app.text_cache.TextCacheKey;
 
 pub const ZoomPan = struct {
     zoom_factor: f32 = 1.0,
@@ -310,7 +312,7 @@ fn getOrRenderCachedText(
         (@as(u32, @intFromFloat(text_data.text_color[2])) << 16) |
         (@as(u32, @intFromFloat(text_data.text_color[3])) << 24);
 
-    const key = app_state.TextCacheKey{
+    const key = TextCacheKey{
         .font_id = text_data.font_id,
         .font_size = target_font_size_u16,
         .color = color_u32,

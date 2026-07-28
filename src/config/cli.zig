@@ -1,6 +1,6 @@
 const std = @import("std");
-const app_state = @import("app").state;
-const ScaleMode = app_state.ScaleMode;
+const app = @import("app");
+const ScaleMode = app.types.ScaleMode;
 
 pub const ParsedArgs = struct {
     arg_path: ?[]const u8,

@@ -2,8 +2,10 @@ const std = @import("std");
 const sdl = @import("sdl");
 const app_state = @import("state.zig");
 const ViewerState = app_state.ViewerState;
-const ScaleMode = app_state.ScaleMode;
-const TextureScaleMode = app_state.TextureScaleMode;
+const types = @import("types.zig");
+const ScaleMode = types.ScaleMode;
+const TextureScaleMode = types.TextureScaleMode;
+const fs = @import("fs.zig");
 const screenshot = @import("screenshot.zig");
 const clay = @import("zclay");
 
@@ -394,7 +396,7 @@ fn runIpcServer(state: *ViewerState) !void {
             client_stream.close(io);
             continue;
         };
-        app_state.fs.wakeUpMainThread();
+        fs.wakeUpMainThread();
     }
 }
 

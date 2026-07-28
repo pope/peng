@@ -5,32 +5,24 @@ const clay = @import("zclay");
 const types = @import("types.zig");
 const FrameInput = types.FrameInput;
 const app_input = @import("input.zig");
-pub const app_gpu = @import("gpu.zig");
-pub const TextCacheModule = @import("text_cache.zig");
-pub const image = @import("image.zig");
-pub const fs = @import("fs.zig");
-pub const events = @import("events.zig");
-pub const pipeline = @import("pipeline.zig");
-pub const ipc = @import("ipc.zig");
-pub const exif = @import("exif.zig");
+const app_gpu = @import("gpu.zig");
+const TextCacheModule = @import("text_cache.zig");
+const image = @import("image.zig");
+const fs = @import("fs.zig");
+const events = @import("events.zig");
+const pipeline = @import("pipeline.zig");
+const ipc = @import("ipc.zig");
+const exif = @import("exif.zig");
 const screenshot = @import("screenshot.zig");
 
-pub const CacheStatus = image.CacheStatus;
-pub const CacheEntry = image.CacheEntry;
-pub const CacheSlotMap = image.CacheSlotMap;
-pub const TextureHandle = image.TextureHandle;
-pub const DecodeArgs = image.DecodeArgs;
-pub const detectMimeType = image.detectMimeType;
-pub const parseExifOrientation = exif.parseExifOrientation;
-pub const readJpegExifOrientation = exif.readJpegExifOrientation;
-pub const eqlIgnoreCase = fs.eqlIgnoreCase;
-pub const isImageExtension = fs.isImageExtension;
-pub const scanDirectory = fs.scanDirectory;
-pub const uploadSurfaceToGpu = app_gpu.uploadSurfaceToGpu;
-pub const GpuUploadResult = app_gpu.GpuUploadResult;
-
-pub const ScaleMode = types.ScaleMode;
-pub const TextureScaleMode = types.TextureScaleMode;
+const uploadSurfaceToGpu = app_gpu.uploadSurfaceToGpu;
+const CacheStatus = image.CacheStatus;
+const CacheEntry = image.CacheEntry;
+const CacheSlotMap = image.CacheSlotMap;
+const TextureHandle = image.TextureHandle;
+const DecodeArgs = image.DecodeArgs;
+const ScaleMode = types.ScaleMode;
+const TextureScaleMode = types.TextureScaleMode;
 
 pub const ElementTag = enum(usize) {
     none = 0,
@@ -46,8 +38,8 @@ pub const ElementTag = enum(usize) {
     }
 };
 
-pub const palette_module = @import("palette.zig");
-pub const PaletteMode = palette_module.PaletteMode;
+const palette_module = @import("palette.zig");
+const PaletteMode = palette_module.PaletteMode;
 pub const PaletteState = palette_module.PaletteState;
 
 pub const DragState = union(enum) {
