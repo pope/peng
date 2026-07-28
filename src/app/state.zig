@@ -297,29 +297,6 @@ pub const RenderResources = struct {
     }
 };
 
-/// Viewport spatial transform state (zoom, pan, rotation, scale mode).
-pub const ViewportState = struct {
-    scale_mode: ScaleMode = .full,
-    zoom_factor: f32 = 1.0,
-    pan_x: f32 = 0.0,
-    pan_y: f32 = 0.0,
-    rotation_angle: f32 = 0.0,
-
-    pub fn reset(self: *ViewportState) void {
-        self.zoom_factor = 1.0;
-        self.pan_x = 0.0;
-        self.pan_y = 0.0;
-    }
-};
-
-/// Image color and shader adjustment state.
-pub const ColorAdjustments = struct {
-    brightness: f32 = 0.0,
-    contrast: f32 = 1.0,
-    texture_scale_mode: TextureScaleMode = .linear,
-    dirty: bool = false,
-};
-
 pub const OverlayFlags = packed struct(u8) {
     show_info: bool = false,
     show_stats: bool = false,
@@ -376,8 +353,7 @@ pub const ViewerState = struct {
     action_queue: std.ArrayListUnmanaged(types.AppActionId) = .empty,
 
     // Sub-struct State Encapsulations
-    viewport: ViewportState = .{},
-    adjustments: ColorAdjustments = .{},
+    viewport: types.ViewportParams = .{},
     overlays: OverlayState = .{},
     metrics: UiRenderMetrics = .{},
     rotation_map: std.StringHashMap(f32),
@@ -561,7 +537,7 @@ pub const ViewerState = struct {
         const view_h = @max(win_h - title_bar_h, 1.0);
 
         const view_transform = @import("view_transform.zig");
-        const dims = view_transform.computeViewDims(raw_w, raw_h, self.viewport.rotation_angle, view_w, view_h, self.viewport.scale_mode);
+        const dims = view_transform.computeViewDims(raw_w, raw_h, self.viewport.rotation_angle, view_w, view_h, self.viewport.fit_mode);
         return dims.base_scale;
     }
 
@@ -586,7 +562,7 @@ pub const ViewerState = struct {
     }
 
     pub fn applyTextureScaleMode(self: *ViewerState) void {
-        const filter = if (self.adjustments.texture_scale_mode == .linear) sdl.gpu.Filter.linear else sdl.gpu.Filter.nearest;
+        const filter = if (self.viewport.texture_scale_mode == .linear) sdl.gpu.Filter.linear else sdl.gpu.Filter.nearest;
         if (self.gpu) |*gpu_res| {
             gpu_res.device.releaseSampler(gpu_res.sampler);
 
@@ -741,9 +717,6 @@ pub const ViewerState = struct {
                     _ = self.cache.updateStatus(target.index, target.generation, .failed);
                 }
             }
-        }
-        if (self.adjustments.dirty) {
-            self.adjustments.dirty = false;
         }
     }
 
@@ -1459,13 +1432,12 @@ pub const ViewerState = struct {
     }
 
     pub fn setAdjustments(self: *ViewerState, br: f32, co: f32) void {
-        self.adjustments.brightness = std.math.clamp(br, -1.0, 1.0);
-        self.adjustments.contrast = std.math.clamp(co, 0.0, 5.0);
-        self.adjustments.dirty = true;
+        self.viewport.brightness = std.math.clamp(br, -1.0, 1.0);
+        self.viewport.contrast = std.math.clamp(co, 0.0, 5.0);
     }
 
     pub fn setTextureScaleMode(self: *ViewerState, mode: TextureScaleMode) void {
-        self.adjustments.texture_scale_mode = mode;
+        self.viewport.texture_scale_mode = mode;
         self.applyTextureScaleMode();
     }
 
@@ -1502,7 +1474,7 @@ test "ViewerState.clampZoomFactor bounds based on image dimensions" {
         .io = std.Io.Threaded.global_single_threaded.io(),
         .palette = PaletteState.init(std.testing.allocator),
         .rotation_map = .init(std.testing.allocator),
-        .viewport = .{ .scale_mode = .none },
+        .viewport = .{ .fit_mode = .none },
         .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
     };
     defer state.deinit();
@@ -1532,14 +1504,14 @@ test "ViewerState.clampZoomFactor bounds based on image dimensions" {
     state.current_index = 0;
 
     // In .none mode on 4000x3000 image, base_scale is 1.0
-    state.viewport.scale_mode = .none;
+    state.viewport.fit_mode = .none;
     const base_none = state.getBaseScale();
     try std.testing.expectEqual(@as(f32, 1.0), base_none);
     const clamped_max_none = state.clampZoomFactor(15.0);
     try std.testing.expectEqual(@as(f32, 10.0), base_none * clamped_max_none);
 
     // In .full mode in default 1024x708 viewport
-    state.viewport.scale_mode = .full;
+    state.viewport.fit_mode = .full;
     const base_full = state.getBaseScale();
     try std.testing.expect(base_full < 1.0);
     const clamped_max_full = state.clampZoomFactor(100.0);

@@ -210,8 +210,7 @@ pub fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
             },
         },
         .palette = app.state.PaletteState.init(gpa),
-        .viewport = .{ .scale_mode = parsed.default_scale },
-        .adjustments = .{},
+        .viewport = .{ .fit_mode = parsed.default_scale },
         .rotation_map = .init(gpa),
         .running = true,
     };

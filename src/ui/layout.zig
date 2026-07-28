@@ -78,7 +78,7 @@ pub fn renderFrame(
             const view_h = @max(height - (title_bar_h + nav_bar_h) - padding * 2.0, 1.0);
 
             const view_transform = @import("app").view_transform;
-            const dims = view_transform.computeViewDims(src_w, src_h, state.viewport.rotation_angle, view_w, view_h, state.viewport.scale_mode);
+            const dims = view_transform.computeViewDims(src_w, src_h, state.viewport.rotation_angle, view_w, view_h, state.viewport.fit_mode);
             draw_w = dims.draw_w;
             draw_h = dims.draw_h;
         }
@@ -210,18 +210,22 @@ pub fn renderFrame(
             }
             return;
         }
+        const gpu_res = if (state.gpu) |*g| g else return error.GpuNotInitialized;
         try renderer.renderClayCommands(
-            state,
+            state.viewport,
+            gpu_res,
             cmd_wrapper,
             tex,
             fonts,
             render_commands,
+            state.allocator,
             frame_allocator,
             &temp_buffers,
             @intCast(target_w),
             @intCast(target_h),
             scale_x,
             scale_y,
+            &state.metrics,
         );
         if (capture_filename) |filename| {
             cmd_buf_submitted = true;

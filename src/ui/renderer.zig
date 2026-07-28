@@ -18,6 +18,7 @@ pub const Vertex = geometry.Vertex;
 pub const packRgba = geometry.packRgba;
 pub const packRgbaClay = geometry.packRgbaClay;
 pub const packRgbaF = geometry.packRgbaF;
+pub const ViewportParams = app.types.ViewportParams;
 
 const Uniforms = extern struct {
     brightness: f32,
@@ -26,11 +27,17 @@ const Uniforms = extern struct {
     scale_mode: i32,
 };
 
+/// Defines batch rendering material pipelines, controlling whether image adjustment shader uniforms apply.
+pub const MaterialType = enum {
+    ui_element,
+    image_viewer,
+};
+
 const BatchItem = struct {
     vertex_start: u32,
     vertex_count: u32,
     texture: sdl.gpu.Texture,
-    is_image: bool,
+    material: MaterialType = .ui_element,
     scissor: ?sdl.Rect,
 };
 
@@ -50,12 +57,12 @@ fn addBatch(
     start: u32,
     count: u32,
     texture: sdl.gpu.Texture,
-    is_image: bool,
+    material: MaterialType,
     scissor: ?sdl.Rect,
 ) !void {
     if (batches.items.len > 0) {
         var last = &batches.items[batches.items.len - 1];
-        if (last.texture.eql(texture) and last.is_image == is_image and scissorEqual(last.scissor, scissor)) {
+        if (last.texture.eql(texture) and last.material == material and scissorEqual(last.scissor, scissor)) {
             last.vertex_count += count;
             return;
         }
@@ -64,7 +71,7 @@ fn addBatch(
         .vertex_start = start,
         .vertex_count = count,
         .texture = texture,
-        .is_image = is_image,
+        .material = material,
         .scissor = scissor,
     });
 }
@@ -98,7 +105,7 @@ fn appendRectangleCommand(
 
     const count = @as(u32, @intCast(vertices.items.len)) - start;
     if (count > 0) {
-        try addBatch(batches, allocator, start, count, white_texture, false, scissor);
+        try addBatch(batches, allocator, start, count, white_texture, .ui_element, scissor);
     }
 }
 
@@ -201,7 +208,7 @@ fn appendBorderCommand(
 
     const count = @as(u32, @intCast(vertices.items.len)) - start_batch;
     if (count > 0) {
-        try addBatch(batches, allocator, start_batch, count, white_texture, false, scissor);
+        try addBatch(batches, allocator, start_batch, count, white_texture, .ui_element, scissor);
     }
 }
 
@@ -211,7 +218,7 @@ fn appendImageCommand(
     allocator: std.mem.Allocator,
     rect: sdl.FRect,
     image_data: ?*anyopaque,
-    state: *const app_state.ViewerState,
+    view_params: ViewportParams,
     f_win_w: f32,
     f_win_h: f32,
     scissor: ?sdl.Rect,
@@ -221,19 +228,19 @@ fn appendImageCommand(
 
     var dst_w = rect.w;
     var dst_h = rect.h;
-    const angle = state.viewport.rotation_angle;
+    const angle = view_params.rotation_angle;
     const is_90_or_270 = std.math.approxEqAbs(f32, angle, 90.0, 0.01) or std.math.approxEqAbs(f32, angle, 270.0, 0.01);
     if (is_90_or_270) {
         dst_w = rect.h;
         dst_h = rect.w;
     }
     var dst_rect = rect;
-    dst_rect.w = dst_w * state.viewport.zoom_factor;
-    dst_rect.h = dst_h * state.viewport.zoom_factor;
+    dst_rect.w = dst_w * view_params.zoom_factor;
+    dst_rect.h = dst_h * view_params.zoom_factor;
     const center_x = rect.x + rect.w / 2.0;
     const center_y = rect.y + rect.h / 2.0;
-    dst_rect.x = center_x - (dst_rect.w / 2.0) + state.viewport.pan_x;
-    dst_rect.y = center_y - (dst_rect.h / 2.0) + state.viewport.pan_y;
+    dst_rect.x = center_x - (dst_rect.w / 2.0) + view_params.pan_x;
+    dst_rect.y = center_y - (dst_rect.h / 2.0) + view_params.pan_y;
 
     const rad = angle * (std.math.pi / 180.0);
     const cos_val = @cos(rad);
@@ -279,16 +286,17 @@ fn appendImageCommand(
     try vertices.append(allocator, .{ .x = p3.x, .y = p3.y, .u = 1.0, .v = 1.0, .color = white_color });
     try vertices.append(allocator, .{ .x = p4.x, .y = p4.y, .u = 0.0, .v = 1.0, .color = white_color });
 
-    try addBatch(batches, allocator, start, 6, tex, true, scissor);
+    try addBatch(batches, allocator, start, 6, tex, .image_viewer, scissor);
 }
 
 fn getOrRenderCachedText(
-    state: *app_state.ViewerState,
+    gpu_res: *app_state.RenderResources,
     copy_pass: sdl.gpu.CopyPass,
     fonts: []const ?sdl.Font,
     text_data: *clay.TextRenderData,
     scale_x: f32,
-    allocator: std.mem.Allocator,
+    gpa_allocator: std.mem.Allocator,
+    frame_allocator: std.mem.Allocator,
     temp_buffers: *std.ArrayList(sdl.gpu.TransferBuffer),
     tb_offset: *usize,
 ) !?CachedText {
@@ -319,7 +327,6 @@ fn getOrRenderCachedText(
         .hash = std.hash.Wyhash.hash(0, text_slice),
     };
 
-    const gpu_res = if (state.gpu) |*g| g else return null;
     const dev = gpu_res.device;
 
     if (gpu_res.text_cache.getEntry(key)) |entry| {
@@ -335,7 +342,7 @@ fn getOrRenderCachedText(
 
     _ = font.setFontSize(target_font_size);
 
-    const surf = font.renderTextBlended(allocator, text_slice, .{
+    const surf = font.renderTextBlended(frame_allocator, text_slice, .{
         .r = @intFromFloat(text_data.text_color[0]),
         .g = @intFromFloat(text_data.text_color[1]),
         .b = @intFromFloat(text_data.text_color[2]),
@@ -376,7 +383,7 @@ fn getOrRenderCachedText(
         if (gpu_res.transfer_buffers[frame_idx]) |old_tb| {
             // Catch OOM on the deferred cleanup list so a non-critical array append failure
             // does not abort the entire frame's render pass. Release old_tb to prevent GPU memory leak.
-            temp_buffers.append(allocator, old_tb) catch |err| {
+            temp_buffers.append(frame_allocator, old_tb) catch |err| {
                 std.log.err("Failed to append old transfer buffer to cleanup list: {}", .{err});
                 dev.releaseTransferBuffer(old_tb);
             };
@@ -431,7 +438,7 @@ fn getOrRenderCachedText(
     const w_f: f32 = @floatFromInt(target_w);
     const h_f: f32 = @floatFromInt(surf_h);
 
-    gpu_res.text_cache.put(state.allocator, key, .{
+    gpu_res.text_cache.put(gpa_allocator, key, .{
         .texture = tex,
         .w = w_f,
         .h = h_f,
@@ -459,12 +466,13 @@ pub inline fn isScissorInvisible(sc: ?sdl.Rect, win_w: i32, win_h: i32) bool {
 }
 
 fn buildGeometryFromCommands(
-    state: *app_state.ViewerState,
-    gpu: *const app_state.RenderResources,
+    view_params: ViewportParams,
+    gpu: *app_state.RenderResources,
     copy_pass: sdl.gpu.CopyPass,
     fonts: []const ?sdl.Font,
     r_commands: []const clay.RenderCommand,
-    allocator: std.mem.Allocator,
+    gpa_allocator: std.mem.Allocator,
+    frame_allocator: std.mem.Allocator,
     temp_buffers: *std.ArrayList(sdl.gpu.TransferBuffer),
     win_w: i32,
     win_h: i32,
@@ -516,7 +524,7 @@ fn buildGeometryFromCommands(
                 try appendRectangleCommand(
                     vertices,
                     batches,
-                    allocator,
+                    frame_allocator,
                     rect,
                     rcmd.render_data.rectangle,
                     scale_x,
@@ -536,12 +544,13 @@ fn buildGeometryFromCommands(
                     text_data.font_size = @intFromFloat(@round(scaled_size));
                 }
                 if (try getOrRenderCachedText(
-                    state,
+                    gpu,
                     copy_pass,
                     fonts,
                     &text_data,
                     scale_x,
-                    allocator,
+                    gpa_allocator,
+                    frame_allocator,
                     temp_buffers,
                     tb_offset,
                 )) |cached| {
@@ -565,14 +574,14 @@ fn buildGeometryFromCommands(
 
                     const start = @as(u32, @intCast(vertices.items.len));
                     const white_color = packRgba(255, 255, 255, 255);
-                    try vertices.append(allocator, .{ .x = p1.x, .y = p1.y, .u = 0.0, .v = 0.0, .color = white_color });
-                    try vertices.append(allocator, .{ .x = p2.x, .y = p1.y, .u = 1.0, .v = 0.0, .color = white_color });
-                    try vertices.append(allocator, .{ .x = p1.x, .y = p2.y, .u = 0.0, .v = 1.0, .color = white_color });
-                    try vertices.append(allocator, .{ .x = p2.x, .y = p1.y, .u = 1.0, .v = 0.0, .color = white_color });
-                    try vertices.append(allocator, .{ .x = p2.x, .y = p2.y, .u = 1.0, .v = 1.0, .color = white_color });
-                    try vertices.append(allocator, .{ .x = p1.x, .y = p2.y, .u = 0.0, .v = 1.0, .color = white_color });
+                    try vertices.append(frame_allocator, .{ .x = p1.x, .y = p1.y, .u = 0.0, .v = 0.0, .color = white_color });
+                    try vertices.append(frame_allocator, .{ .x = p2.x, .y = p1.y, .u = 1.0, .v = 0.0, .color = white_color });
+                    try vertices.append(frame_allocator, .{ .x = p1.x, .y = p2.y, .u = 0.0, .v = 1.0, .color = white_color });
+                    try vertices.append(frame_allocator, .{ .x = p2.x, .y = p1.y, .u = 1.0, .v = 0.0, .color = white_color });
+                    try vertices.append(frame_allocator, .{ .x = p2.x, .y = p2.y, .u = 1.0, .v = 1.0, .color = white_color });
+                    try vertices.append(frame_allocator, .{ .x = p1.x, .y = p2.y, .u = 0.0, .v = 1.0, .color = white_color });
 
-                    try addBatch(batches, allocator, start, 6, cached.texture, false, current_scissor);
+                    try addBatch(batches, frame_allocator, start, 6, cached.texture, .ui_element, current_scissor);
                 }
             },
             .border => {
@@ -580,7 +589,7 @@ fn buildGeometryFromCommands(
                 try appendBorderCommand(
                     vertices,
                     batches,
-                    allocator,
+                    frame_allocator,
                     rect,
                     rcmd.render_data.border,
                     rcmd.user_data,
@@ -596,10 +605,10 @@ fn buildGeometryFromCommands(
                 try appendImageCommand(
                     vertices,
                     batches,
-                    allocator,
+                    frame_allocator,
                     rect,
                     rcmd.render_data.image.image_data,
-                    state,
+                    view_params,
                     f_win_w,
                     f_win_h,
                     current_scissor,
@@ -616,7 +625,7 @@ fn uploadVertexData(
     gpu_res: *app_state.RenderResources,
     frame_idx: usize,
     copy_pass: sdl.gpu.CopyPass,
-    allocator: std.mem.Allocator,
+    frame_allocator: std.mem.Allocator,
     temp_buffers: *std.ArrayList(sdl.gpu.TransferBuffer),
     vertex_items: []const Vertex,
     tb_offset: usize,
@@ -646,7 +655,7 @@ fn uploadVertexData(
         if (gpu_res.transfer_buffers[frame_idx]) |old_tb| {
             // Catch OOM on the deferred cleanup list so a non-critical array append failure
             // does not abort the entire frame's render pass. Release old_tb to prevent GPU memory leak.
-            temp_buffers.append(allocator, old_tb) catch |err| {
+            temp_buffers.append(frame_allocator, old_tb) catch |err| {
                 std.log.err("Failed to append old transfer buffer to cleanup list in uploadVertexData: {}", .{err});
                 dev.releaseTransferBuffer(old_tb);
             };
@@ -681,7 +690,7 @@ fn uploadVertexData(
 }
 
 fn executeRenderPass(
-    state: *app_state.ViewerState,
+    view_params: ViewportParams,
     gpu: *const app_state.RenderResources,
     cmd_buf: sdl.gpu.CommandBuffer,
     swap_tex: sdl.gpu.Texture,
@@ -710,6 +719,7 @@ fn executeRenderPass(
         const vert_binding = sdl.gpu.BufferBinding{ .buffer = vb, .offset = 0 };
         render_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{vert_binding});
 
+        var last_material: ?MaterialType = null;
         for (batches) |batch| {
             if (batch.scissor) |sc| {
                 var safe_sc = sc;
@@ -726,20 +736,17 @@ fn executeRenderPass(
                 render_pass.setScissor(&full_sc);
             }
 
-            const scale_mode_val: i32 = switch (state.adjustments.texture_scale_mode) {
-                .nearest => 0,
-                .linear => 1,
-                .pixel_art => 2,
-                .mitchell => 3,
-                .lanczos3 => 4,
-            };
-            const ubo = Uniforms{
-                .brightness = state.adjustments.brightness,
-                .contrast = state.adjustments.contrast,
-                .is_text_or_color = if (batch.is_image) 0 else 1,
-                .scale_mode = scale_mode_val,
-            };
-            cmd_buf.pushFragmentUniform(0, std.mem.asBytes(&ubo));
+            if (last_material == null or last_material.? != batch.material) {
+                const is_image = batch.material == .image_viewer;
+                const ubo = Uniforms{
+                    .brightness = if (is_image) view_params.brightness else 0.0,
+                    .contrast = if (is_image) view_params.contrast else 1.0,
+                    .is_text_or_color = if (is_image) 0 else 1,
+                    .scale_mode = if (is_image) view_params.getShaderScaleModeInt() else 1,
+                };
+                cmd_buf.pushFragmentUniform(0, std.mem.asBytes(&ubo));
+                last_material = batch.material;
+            }
 
             render_pass.bindFragmentSamplers(0, &[_]sdl.gpu.TextureSamplerBinding{.{ .texture = batch.texture, .sampler = gpu.sampler }});
             render_pass.drawPrimitives(batch.vertex_count, 1, batch.vertex_start, 0);
@@ -764,12 +771,13 @@ pub const RenderPacket = struct {
 /// Pass 1 of 2-pass rendering: Traverses layout tree and builds geometry vertices
 /// and texture draw command batches into a RenderPacket without submitting GPU render passes.
 pub fn buildRenderPacket(
-    state: *app_state.ViewerState,
+    view_params: ViewportParams,
     gpu_res: *app_state.RenderResources,
     copy_pass: sdl.gpu.CopyPass,
     fonts: []const ?sdl.Font,
     r_commands: []const clay.RenderCommand,
-    allocator: std.mem.Allocator,
+    gpa_allocator: std.mem.Allocator,
+    frame_allocator: std.mem.Allocator,
     temp_buffers: *std.ArrayList(sdl.gpu.TransferBuffer),
     win_w: i32,
     win_h: i32,
@@ -779,12 +787,13 @@ pub fn buildRenderPacket(
     var packet = RenderPacket{};
 
     try buildGeometryFromCommands(
-        state,
+        view_params,
         gpu_res,
         copy_pass,
         fonts,
         r_commands,
-        allocator,
+        gpa_allocator,
+        frame_allocator,
         temp_buffers,
         win_w,
         win_h,
@@ -801,13 +810,13 @@ pub fn buildRenderPacket(
 /// Pass 2 of 2-pass rendering: Uploads vertex data to GPU memory and executes
 /// batched GPU render pass draw calls for the extracted RenderPacket.
 pub fn executeRenderPacket(
-    state: *app_state.ViewerState,
+    view_params: ViewportParams,
     gpu_res: *app_state.RenderResources,
     cmd_buf: sdl.gpu.CommandBuffer,
     copy_pass: sdl.gpu.CopyPass,
     swap_tex: sdl.gpu.Texture,
     packet: *const RenderPacket,
-    allocator: std.mem.Allocator,
+    frame_allocator: std.mem.Allocator,
     temp_buffers: *std.ArrayList(sdl.gpu.TransferBuffer),
     win_w: i32,
     win_h: i32,
@@ -818,7 +827,7 @@ pub fn executeRenderPacket(
         gpu_res,
         frame_idx,
         copy_pass,
-        allocator,
+        frame_allocator,
         temp_buffers,
         packet.vertices.items,
         packet.tb_offset,
@@ -827,7 +836,7 @@ pub fn executeRenderPacket(
     copy_pass.end();
 
     executeRenderPass(
-        state,
+        view_params,
         gpu_res,
         cmd_buf,
         swap_tex,
@@ -838,21 +847,24 @@ pub fn executeRenderPacket(
     );
 }
 
+/// Orchestrates 2-pass UI and image rendering from Clay layout commands using decoupled ViewportParams.
 pub fn renderClayCommands(
-    state: *app_state.ViewerState,
+    view_params: ViewportParams,
+    gpu_res: *app_state.RenderResources,
     cmd_buf: sdl.gpu.CommandBuffer,
     swap_tex: sdl.gpu.Texture,
     fonts: []const ?sdl.Font,
     r_commands: []const clay.RenderCommand,
-    allocator: std.mem.Allocator,
+    gpa_allocator: std.mem.Allocator,
+    frame_allocator: std.mem.Allocator,
     temp_buffers: *std.ArrayList(sdl.gpu.TransferBuffer),
     win_w: i32,
     win_h: i32,
     scale_x: f32,
     scale_y: f32,
+    metrics: ?*app_state.UiRenderMetrics,
 ) !void {
     const start_render = sdl.timer.getTicksNs();
-    const gpu_res = if (state.gpu) |*g| g else return error.GpuNotInitialized;
     const dev = gpu_res.device;
 
     const copy_pass = cmd_buf.beginCopyPass() orelse {
@@ -862,45 +874,48 @@ pub fn renderClayCommands(
     errdefer copy_pass.end();
 
     var packet = try buildRenderPacket(
-        state,
+        view_params,
         gpu_res,
         copy_pass,
         fonts,
         r_commands,
-        allocator,
+        gpa_allocator,
+        frame_allocator,
         temp_buffers,
         win_w,
         win_h,
         scale_x,
         scale_y,
     );
-    defer packet.deinit(allocator);
+    defer packet.deinit(frame_allocator);
 
     const vertex_count = packet.vertices.items.len;
     const batch_count = packet.batches.items.len;
 
     try executeRenderPacket(
-        state,
+        view_params,
         gpu_res,
         cmd_buf,
         copy_pass,
         swap_tex,
         &packet,
-        allocator,
+        frame_allocator,
         temp_buffers,
         win_w,
         win_h,
     );
 
     // Cache eviction for text textures (unused for >120 frames)
-    gpu_res.text_cache.evictUnused(allocator, dev, gpu_res.frame_index, 120);
+    gpu_res.text_cache.evictUnused(gpa_allocator, dev, gpu_res.frame_index, 120);
 
     const end_render = sdl.timer.getTicksNs();
     const render_time_ms = @as(f64, @floatFromInt(end_render - start_render)) / 1_000_000.0;
-    state.metrics.last_ui_render_time_ms = render_time_ms;
-    state.metrics.ui_render_stats.addSample(render_time_ms);
-    state.metrics.last_ui_vertex_count = vertex_count;
-    state.metrics.last_ui_batch_count = batch_count;
+    if (metrics) |m| {
+        m.last_ui_render_time_ms = render_time_ms;
+        m.ui_render_stats.addSample(render_time_ms);
+        m.last_ui_vertex_count = vertex_count;
+        m.last_ui_batch_count = batch_count;
+    }
 
     gpu_res.frame_index += 1;
 }

@@ -352,11 +352,10 @@ pub fn handlePaletteKeys(
                                 const max_val: f32 = if (palette.mode == .set_brightness) 1.0 else 5.0;
                                 if (val >= min_val and val <= max_val) {
                                     if (palette.mode == .set_brightness) {
-                                        self.adjustments.brightness = val;
+                                        self.viewport.brightness = val;
                                     } else {
-                                        self.adjustments.contrast = val;
+                                        self.viewport.contrast = val;
                                     }
-                                    self.adjustments.dirty = true;
                                     palette.mode = .inactive;
                                     stopTextInput(self.display);
                                 }

@@ -81,19 +81,19 @@ pub fn triggerAction(self: *ViewerState, action_id: AppActionId) !void {
             self.resetZoomPan();
         },
         .set_scale_none => {
-            self.viewport.scale_mode = .none;
+            self.viewport.fit_mode = .none;
             self.resetZoomPan();
         },
         .set_scale_shrink => {
-            self.viewport.scale_mode = .shrink;
+            self.viewport.fit_mode = .shrink;
             self.resetZoomPan();
         },
         .set_scale_full => {
-            self.viewport.scale_mode = .full;
+            self.viewport.fit_mode = .full;
             self.resetZoomPan();
         },
         .set_scale_crop => {
-            self.viewport.scale_mode = .crop;
+            self.viewport.fit_mode = .crop;
             self.resetZoomPan();
         },
         .rotate_cw => {
@@ -133,45 +133,40 @@ pub fn triggerAction(self: *ViewerState, action_id: AppActionId) !void {
             }
         },
         .set_filter_nearest => {
-            self.adjustments.texture_scale_mode = .nearest;
+            self.viewport.texture_scale_mode = .nearest;
             self.applyTextureScaleMode();
         },
         .set_filter_linear => {
-            self.adjustments.texture_scale_mode = .linear;
+            self.viewport.texture_scale_mode = .linear;
             self.applyTextureScaleMode();
         },
         .set_filter_pixel_art => {
-            self.adjustments.texture_scale_mode = .pixel_art;
+            self.viewport.texture_scale_mode = .pixel_art;
             self.applyTextureScaleMode();
         },
         .set_filter_mitchell => {
-            self.adjustments.texture_scale_mode = .mitchell;
+            self.viewport.texture_scale_mode = .mitchell;
             self.applyTextureScaleMode();
         },
         .set_filter_lanczos3 => {
-            self.adjustments.texture_scale_mode = .lanczos3;
+            self.viewport.texture_scale_mode = .lanczos3;
             self.applyTextureScaleMode();
         },
         .increase_brightness => {
-            self.adjustments.brightness = std.math.clamp(self.adjustments.brightness + 0.1, -1.0, 1.0);
-            self.adjustments.dirty = true;
+            self.viewport.brightness = std.math.clamp(self.viewport.brightness + 0.1, -1.0, 1.0);
         },
         .decrease_brightness => {
-            self.adjustments.brightness = std.math.clamp(self.adjustments.brightness - 0.1, -1.0, 1.0);
-            self.adjustments.dirty = true;
+            self.viewport.brightness = std.math.clamp(self.viewport.brightness - 0.1, -1.0, 1.0);
         },
         .increase_contrast => {
-            self.adjustments.contrast = std.math.clamp(self.adjustments.contrast + 0.1, 0.0, 5.0);
-            self.adjustments.dirty = true;
+            self.viewport.contrast = std.math.clamp(self.viewport.contrast + 0.1, 0.0, 5.0);
         },
         .decrease_contrast => {
-            self.adjustments.contrast = std.math.clamp(self.adjustments.contrast - 0.1, 0.0, 5.0);
-            self.adjustments.dirty = true;
+            self.viewport.contrast = std.math.clamp(self.viewport.contrast - 0.1, 0.0, 5.0);
         },
         .reset_adjustments => {
-            self.adjustments.brightness = 0.0;
-            self.adjustments.contrast = 1.0;
-            self.adjustments.dirty = true;
+            self.viewport.brightness = 0.0;
+            self.viewport.contrast = 1.0;
         },
         .set_brightness_value => {
             try self.openPalette(.set_brightness);
@@ -231,8 +226,8 @@ pub const AppAction = union(enum) {
 
 pub fn executeAction(self: *ViewerState, action: AppAction) !void {
     switch (action) {
-        .set_brightness => |val| self.setAdjustments(val, self.adjustments.contrast),
-        .set_contrast => |val| self.setAdjustments(self.adjustments.brightness, val),
+        .set_brightness => |val| self.setAdjustments(val, self.viewport.contrast),
+        .set_contrast => |val| self.setAdjustments(self.viewport.brightness, val),
         .go_to_image => |idx| {
             if (self.image_list.items.len > 0) {
                 self.current_index = @min(idx, self.image_list.items.len - 1);
@@ -240,11 +235,11 @@ pub fn executeAction(self: *ViewerState, action: AppAction) !void {
             }
         },
         .set_scale => |mode| {
-            self.viewport.scale_mode = mode;
+            self.viewport.fit_mode = mode;
             self.resetZoomPan();
         },
         .set_filter => |mode| {
-            self.adjustments.texture_scale_mode = mode;
+            self.viewport.texture_scale_mode = mode;
             self.applyTextureScaleMode();
         },
         .action_id => |id| try triggerAction(self, id),

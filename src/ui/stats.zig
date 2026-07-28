@@ -215,7 +215,7 @@ pub fn renderInfoOverlay(
         try renderStatRow("Resolution", res_str);
         try renderStatRow("Size on Disk", disk_size_str);
         try renderStatRow("Viewport Size", screen_str);
-        const scale_mode_str = switch (state.viewport.scale_mode) {
+        const scale_mode_str = switch (state.viewport.fit_mode) {
             .none => "Original size (100%)",
             .shrink => "Fit if larger",
             .full => "Fit to screen (Aspect Fit)",
@@ -225,7 +225,7 @@ pub fn renderInfoOverlay(
         try renderStatRow("Zoom Level", zoom_str);
         try renderStatRow("Pan Offset", pan_str);
         try renderStatRow("Rotation", rot_str);
-        const filter_str = switch (state.adjustments.texture_scale_mode) {
+        const filter_str = switch (state.viewport.texture_scale_mode) {
             .nearest => "Nearest Neighbor",
             .linear => "Bilinear Filter",
             .pixel_art => "Pixel Art Scaling",
@@ -234,9 +234,9 @@ pub fn renderInfoOverlay(
         };
         try renderStatRow("Scaling Filter", filter_str);
 
-        const brightness_val = state.adjustments.brightness * 100.0;
+        const brightness_val = state.viewport.brightness * 100.0;
         const brightness_str = try std.fmt.allocPrint(frame_allocator, "{s}{d:.0}%", .{ if (brightness_val > 0) "+" else "", brightness_val });
-        const contrast_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{state.adjustments.contrast});
+        const contrast_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{state.viewport.contrast});
         try renderStatRow("Brightness", brightness_str);
         try renderStatRow("Contrast", contrast_str);
         try renderStatRow("EXIF Thumbnail", thumb_info_str);

@@ -8,12 +8,49 @@ pub const ScaleMode = enum {
     crop,
 };
 
+/// Defines GPU texture resampling algorithms supported by resampling shaders.
 pub const TextureScaleMode = enum {
     nearest,
     linear,
     pixel_art,
     mitchell,
     lanczos3,
+
+    /// Returns the corresponding integer identifier for GPU fragment shader uniform push constants.
+    pub fn toScaleModeInt(self: TextureScaleMode) i32 {
+        return switch (self) {
+            .nearest => 0,
+            .linear => 1,
+            .pixel_art => 2,
+            .mitchell => 3,
+            .lanczos3 => 4,
+        };
+    }
+};
+
+/// Unified parameters describing image view transforms, color adjustments, and window fitting modes
+/// passed down to rendering pipelines.
+pub const ViewportParams = struct {
+    zoom_factor: f32 = 1.0,
+    pan_x: f32 = 0.0,
+    pan_y: f32 = 0.0,
+    rotation_angle: f32 = 0.0,
+    brightness: f32 = 0.0,
+    contrast: f32 = 1.0,
+    texture_scale_mode: TextureScaleMode = .linear,
+    fit_mode: ScaleMode = .full,
+
+    /// Resets 2D zoom factor and pan offsets back to default values.
+    pub fn reset(self: *ViewportParams) void {
+        self.zoom_factor = 1.0;
+        self.pan_x = 0.0;
+        self.pan_y = 0.0;
+    }
+
+    /// Returns the integer scale mode identifier required by fragment shader uniform push constants.
+    pub inline fn getShaderScaleModeInt(self: ViewportParams) i32 {
+        return self.texture_scale_mode.toScaleModeInt();
+    }
 };
 
 /// Defines numeric boundaries (min/max range) for text input modal dialogs.
