@@ -1,6 +1,6 @@
 const std = @import("std");
 const fuzzig = @import("fuzzig");
-const commands = @import("../commands/actions.zig");
+const commands = @import("commands").actions;
 const fs = @import("fs.zig");
 
 pub const TextInputBounds = struct {

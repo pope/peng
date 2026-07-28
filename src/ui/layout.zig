@@ -2,9 +2,9 @@ const std = @import("std");
 const clay = @import("zclay");
 const sdl = @import("sdl");
 const theme = @import("theme.zig");
-const app_state = @import("../app/state.zig");
+const app_state = @import("app").state;
 const ViewerState = app_state.ViewerState;
-const types = @import("../app/types.zig");
+const types = @import("app").types;
 const FrameInput = types.FrameInput;
 const MeasureTextUserData = types.MeasureTextUserData;
 const renderPalette = @import("palette.zig").renderPalette;
@@ -75,7 +75,7 @@ pub fn renderFrame(
             const view_w = @max(available_width - padding * 2.0, 1.0);
             const view_h = @max(height - (title_bar_h + nav_bar_h) - padding * 2.0, 1.0);
 
-            const view_transform = @import("../app/view_transform.zig");
+            const view_transform = @import("app").view_transform;
             const dims = view_transform.computeViewDims(src_w, src_h, state.viewport.rotation_angle, view_w, view_h, state.viewport.scale_mode);
             draw_w = dims.draw_w;
             draw_h = dims.draw_h;

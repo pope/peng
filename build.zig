@@ -62,6 +62,46 @@ pub fn build(b: *std.Build) void {
         }
     }
 
+    const app_module = b.createModule(.{
+        .root_source_file = b.path("src/app/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const ui_module = b.createModule(.{
+        .root_source_file = b.path("src/ui/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const commands_module = b.createModule(.{
+        .root_source_file = b.path("src/commands/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const config_module = b.createModule(.{
+        .root_source_file = b.path("src/config/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    app_module.addImport("sdl", sdl_module);
+    app_module.addImport("zclay", zclay_dep.module("zclay"));
+    app_module.addImport("fuzzig", fuzzig_dep.module("fuzzig"));
+    app_module.addImport("ui", ui_module);
+    app_module.addImport("commands", commands_module);
+
+    ui_module.addImport("sdl", sdl_module);
+    ui_module.addImport("zclay", zclay_dep.module("zclay"));
+    ui_module.addImport("app", app_module);
+    ui_module.addImport("commands", commands_module);
+
+    commands_module.addImport("zclay", zclay_dep.module("zclay"));
+    commands_module.addImport("app", app_module);
+
+    config_module.addImport("app", app_module);
+
     const exe = b.addExecutable(.{
         .name = "peng",
         .root_module = b.createModule(.{
@@ -81,6 +121,12 @@ pub fn build(b: *std.Build) void {
     // Import fuzzig module into executable module
     exe.root_module.addImport("fuzzig", fuzzig_dep.module("fuzzig"));
 
+    // Import internal modules into executable module
+    exe.root_module.addImport("app", app_module);
+    exe.root_module.addImport("ui", ui_module);
+    exe.root_module.addImport("commands", commands_module);
+    exe.root_module.addImport("config", config_module);
+
     // Include Clay and its SDL3 renderer via root_module
     exe.root_module.addIncludePath(clay_dep.path(""));
     exe.root_module.addIncludePath(clay_dep.path("renderers/SDL3"));
@@ -89,18 +135,18 @@ pub fn build(b: *std.Build) void {
 
     // Shader compilation
     const compile_shaders = b.step("shaders", "Compile shaders");
-    const vert_cmd = b.addSystemCommand(&.{ "glslangValidator", "-V", "-Os", "-S", "vert", "src/shaders/vert.glsl", "-o", "src/shaders/vert.spv" });
-    const frag_cmd = b.addSystemCommand(&.{ "glslangValidator", "-V", "-Os", "-S", "frag", "src/shaders/frag.glsl", "-o", "src/shaders/frag.spv" });
-    const comp_cmd = b.addSystemCommand(&.{ "glslangValidator", "-V", "-Os", "-S", "comp", "src/shaders/unpack_rgb.comp.glsl", "-o", "src/shaders/unpack_rgb.spv" });
+    const vert_cmd = b.addSystemCommand(&.{ "glslangValidator", "-V", "-Os", "-S", "vert", "src/ui/shaders/vert.glsl", "-o", "src/ui/shaders/vert.spv" });
+    const frag_cmd = b.addSystemCommand(&.{ "glslangValidator", "-V", "-Os", "-S", "frag", "src/ui/shaders/frag.glsl", "-o", "src/ui/shaders/frag.spv" });
+    const comp_cmd = b.addSystemCommand(&.{ "glslangValidator", "-V", "-Os", "-S", "comp", "src/ui/shaders/unpack_rgb.comp.glsl", "-o", "src/ui/shaders/unpack_rgb.spv" });
     compile_shaders.dependOn(&vert_cmd.step);
     compile_shaders.dependOn(&frag_cmd.step);
     compile_shaders.dependOn(&comp_cmd.step);
 
-    const vert_msl_cmd = b.addSystemCommand(&.{ "spirv-cross", "src/shaders/vert.spv", "--msl", "--output", "src/shaders/vert.msl" });
+    const vert_msl_cmd = b.addSystemCommand(&.{ "spirv-cross", "src/ui/shaders/vert.spv", "--msl", "--output", "src/ui/shaders/vert.msl" });
     vert_msl_cmd.step.dependOn(&vert_cmd.step);
-    const frag_msl_cmd = b.addSystemCommand(&.{ "spirv-cross", "src/shaders/frag.spv", "--msl", "--output", "src/shaders/frag.msl" });
+    const frag_msl_cmd = b.addSystemCommand(&.{ "spirv-cross", "src/ui/shaders/frag.spv", "--msl", "--output", "src/ui/shaders/frag.msl" });
     frag_msl_cmd.step.dependOn(&frag_cmd.step);
-    const comp_msl_cmd = b.addSystemCommand(&.{ "spirv-cross", "src/shaders/unpack_rgb.spv", "--msl", "--output", "src/shaders/unpack_rgb.msl" });
+    const comp_msl_cmd = b.addSystemCommand(&.{ "spirv-cross", "src/ui/shaders/unpack_rgb.spv", "--msl", "--output", "src/ui/shaders/unpack_rgb.msl" });
     comp_msl_cmd.step.dependOn(&comp_cmd.step);
 
     compile_shaders.dependOn(&vert_msl_cmd.step);
@@ -139,6 +185,12 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_runner_exe.root_module.addImport("sdl", sdl_module);
+    test_runner_exe.root_module.addImport("zclay", zclay_dep.module("zclay"));
+    test_runner_exe.root_module.addImport("fuzzig", fuzzig_dep.module("fuzzig"));
+    test_runner_exe.root_module.addImport("app", app_module);
+    test_runner_exe.root_module.addImport("ui", ui_module);
+    test_runner_exe.root_module.addImport("commands", commands_module);
+    test_runner_exe.root_module.addImport("config", config_module);
     b.installArtifact(test_runner_exe);
 
     const exe_tests = b.addTest(.{

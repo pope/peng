@@ -1,9 +1,9 @@
 const std = @import("std");
 const clay = @import("zclay");
-const ui = @import("ui.zig");
-const commands = @import("commands.zig");
-const app_config = @import("config.zig");
-const app = @import("app.zig");
+const ui = @import("ui");
+const commands = @import("commands");
+const app_config = @import("config");
+const app = @import("app");
 const sdl = @import("sdl");
 
 /// Application context encapsulating initialized graphics, state, resources, and IPC server.

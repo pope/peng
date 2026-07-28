@@ -5,9 +5,9 @@ const clay = @import("zclay");
 const types = @import("types.zig");
 const FrameInput = types.FrameInput;
 const app_input = @import("input.zig");
-const renderer = @import("../ui/renderer.zig");
-const commands = @import("../commands.zig");
-const graphics = @import("../ui/graphics.zig");
+const renderer = @import("ui").renderer;
+const commands = @import("commands");
+const graphics = @import("ui").graphics;
 pub const image = @import("image.zig");
 pub const fs = @import("fs.zig");
 pub const events = @import("events.zig");
@@ -105,7 +105,7 @@ pub const RollingStats = struct {
     }
 };
 
-pub const TextCacheModule = @import("../ui/text_cache.zig");
+pub const TextCacheModule = @import("ui").text_cache;
 pub const TextCacheKey = TextCacheModule.TextCacheKey;
 pub const TextCacheValue = TextCacheModule.TextCacheValue;
 pub const TextCache = TextCacheModule.TextCache;

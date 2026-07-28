@@ -1,11 +1,11 @@
 const std = @import("std");
 const clay = @import("zclay");
 const theme = @import("theme.zig");
-const app_state = @import("../app/state.zig");
+const app_state = @import("app").state;
 const ViewerState = app_state.ViewerState;
 const CacheEntry = app_state.CacheEntry;
 const formatSize = @import("text_utils.zig").formatSize;
-const MeasureTextUserData = @import("../app/types.zig").MeasureTextUserData;
+const MeasureTextUserData = @import("app").types.MeasureTextUserData;
 
 pub fn renderStatRow(label: []const u8, value: []const u8) !void {
     clay.UI()(.{

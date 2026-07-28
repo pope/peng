@@ -1,6 +1,6 @@
 const std = @import("std");
 const sdl = @import("sdl");
-const commands = @import("../commands.zig");
+const commands = @import("commands");
 const app_state = @import("state.zig");
 const types = @import("types.zig");
 const Key = types.Key;

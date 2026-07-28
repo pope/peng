@@ -1,5 +1,5 @@
 const std = @import("std");
-const app_state = @import("../app/state.zig");
+const app_state = @import("app").state;
 const ScaleMode = app_state.ScaleMode;
 
 pub const ParsedArgs = struct {

@@ -1,6 +1,6 @@
 const std = @import("std");
 const sdl = @import("sdl");
-const graphics = @import("../ui/graphics.zig");
+const graphics = @import("ui").graphics;
 const fs = @import("fs.zig");
 const app_state = @import("state.zig");
 const ViewerState = app_state.ViewerState;

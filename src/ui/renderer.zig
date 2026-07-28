@@ -2,7 +2,7 @@ const std = @import("std");
 const clay = @import("zclay");
 const theme = @import("theme.zig");
 const sdl = @import("sdl");
-const app_state = @import("../app/state.zig");
+const app_state = @import("app").state;
 
 pub const ZoomPan = struct {
     zoom_factor: f32 = 1.0,

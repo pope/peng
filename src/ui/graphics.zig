@@ -3,7 +3,7 @@ const sdl = @import("sdl");
 const renderer = @import("renderer.zig");
 const clay = @import("zclay");
 const theme = @import("theme.zig");
-const MeasureTextUserData = @import("../app/types.zig").MeasureTextUserData;
+const MeasureTextUserData = @import("app").types.MeasureTextUserData;
 
 pub const GraphicsSetup = struct {
     window: sdl.Window,
@@ -130,7 +130,7 @@ pub fn initGpuResources(dev: sdl.gpu.Device, window: sdl.Window, initial_dpi_sca
         dev.getSwapchainTextureFormat(window);
 
     // Load Font from Memory using SDL_IOStream (scaled by DPI scale)
-    const roboto_font_bytes = @embedFile("../resources/Roboto-Regular.ttf");
+    const roboto_font_bytes = @embedFile("resources/Roboto-Regular.ttf");
     const font = sdl.Font.openConstMem(roboto_font_bytes, 20.0 * initial_dpi_scale) orelse {
         std.log.err("TTF_OpenFontIO Error: {s}", .{sdl.getError()});
         return error.TTFOpenFontFailed;
@@ -147,10 +147,10 @@ pub fn initGpuResources(dev: sdl.gpu.Device, window: sdl.Window, initial_dpi_sca
     const fonts = [2]?sdl.Font{ font, font_small };
 
     // Compile Shaders
-    const vert_code_spv = @embedFile("../shaders/vert.spv");
-    const frag_code_spv = @embedFile("../shaders/frag.spv");
-    const vert_code_msl = @embedFile("../shaders/vert.msl");
-    const frag_code_msl = @embedFile("../shaders/frag.msl");
+    const vert_code_spv = @embedFile("shaders/vert.spv");
+    const frag_code_spv = @embedFile("shaders/frag.spv");
+    const vert_code_msl = @embedFile("shaders/vert.msl");
+    const frag_code_msl = @embedFile("shaders/frag.msl");
 
     const shader_formats = dev.getShaderFormats();
 
@@ -300,8 +300,8 @@ pub fn initGpuResources(dev: sdl.gpu.Device, window: sdl.Window, initial_dpi_sca
     };
 
     // Compute Shader for RGB/BGR Unpack
-    const comp_code_spv = @embedFile("../shaders/unpack_rgb.spv");
-    const comp_code_msl = @embedFile("../shaders/unpack_rgb.msl");
+    const comp_code_spv = @embedFile("shaders/unpack_rgb.spv");
+    const comp_code_msl = @embedFile("shaders/unpack_rgb.msl");
 
     const is_comp_spirv = (shader_formats & sdl.gpu.ShaderFormat.spirv) != 0;
     const comp_code = if (is_comp_spirv) comp_code_spv else comp_code_msl;
@@ -799,8 +799,8 @@ test "uploadSurfaceToGpu compute unpack surface execution" {
     if (dev_opt) |dev| {
         defer dev.destroy();
 
-        const comp_code_spv = @embedFile("../shaders/unpack_rgb.spv");
-        const comp_code_msl = @embedFile("../shaders/unpack_rgb.msl");
+        const comp_code_spv = @embedFile("shaders/unpack_rgb.spv");
+        const comp_code_msl = @embedFile("shaders/unpack_rgb.msl");
         const shader_formats = dev.getShaderFormats();
         const is_spirv = (shader_formats & sdl.gpu.ShaderFormat.spirv) != 0;
         const comp_code = if (is_spirv) comp_code_spv else comp_code_msl;
