@@ -670,21 +670,25 @@ pub const ViewerState = struct {
         } = null;
 
         for (self.cache.entries.items) |*entry| {
-            if (entry.status == .loaded_gpu and entry.thumb_gpu_texture != null and !self.debug_show_thumb) {
-                if (self.gpu) |gpu_res| {
-                    gpu_res.device.releaseTexture(entry.thumb_gpu_texture.?);
+            if (entry.status == .loaded_gpu and !self.debug_show_thumb) {
+                if (entry.thumb_gpu_texture) |thumb_tex| {
+                    if (self.gpu) |gpu_res| {
+                        gpu_res.device.releaseTexture(thumb_tex);
+                    }
+                    entry.thumb_gpu_texture = null;
                 }
-                entry.thumb_gpu_texture = null;
             }
-            if (entry.status == .loaded_cpu) {
-                const cpu = entry.status.loaded_cpu;
-                entry.status = .uploading;
-                upload_target = .{
-                    .index = entry.index,
-                    .generation = entry.generation,
-                    .cpu = cpu,
-                };
-                break;
+            switch (entry.status) {
+                .loaded_cpu => |cpu| {
+                    entry.status = .uploading;
+                    upload_target = .{
+                        .index = entry.index,
+                        .generation = entry.generation,
+                        .cpu = cpu,
+                    };
+                    break;
+                },
+                else => {},
             }
         }
 
@@ -761,9 +765,9 @@ pub const ViewerState = struct {
     pub fn handleExifThumbnailEvent(self: *ViewerState, thumb_data: events.ThumbDecodedPayload) void {
         const current_gen = self.generation.load(.acquire);
         if (thumb_data.generation != current_gen) return;
-        if (thumb_data.surface == null) return;
+        const surf = thumb_data.surface orelse return;
         if (self.gpu) |gpu_res| {
-            if (graphics.uploadSurfaceToGpu(gpu_res.device, thumb_data.surface.?, gpu_res.unpack_compute_pipeline)) |upload_res| {
+            if (graphics.uploadSurfaceToGpu(gpu_res.device, surf, gpu_res.unpack_compute_pipeline)) |upload_res| {
                 if (self.cache.getWithGeneration(thumb_data.index, thumb_data.generation)) |entry| {
                     entry.thumb_gpu_texture = upload_res.gpu_texture;
                     entry.thumb_w = upload_res.w;
@@ -786,9 +790,9 @@ pub const ViewerState = struct {
     pub fn handleImageDecodedEvent(self: *ViewerState, decoded_data: *events.ImageDecodedPayload) void {
         const current_gen = self.generation.load(.acquire);
         if (decoded_data.generation != current_gen) return;
-        if (decoded_data.surface == null) return;
+        const surf = decoded_data.surface orelse return;
         if (self.gpu) |gpu_res| {
-            if (graphics.uploadSurfaceToGpu(gpu_res.device, decoded_data.surface.?, gpu_res.unpack_compute_pipeline)) |full_res| {
+            if (graphics.uploadSurfaceToGpu(gpu_res.device, surf, gpu_res.unpack_compute_pipeline)) |full_res| {
                 if (self.cache.getWithGeneration(decoded_data.index, decoded_data.generation)) |entry| {
                     switch (entry.status) {
                         .loaded_cpu => |cpu| cpu.surface.destroy(),
@@ -1031,8 +1035,13 @@ pub const ViewerState = struct {
                 if (d == idx and (entry.status == .loaded_cpu or entry.status == .loaded_gpu)) {
                     hit = true;
                 }
-                if (entry.status == .decoding and !entry.status.decoding.has_thread) {
-                    needs_thread = true;
+                switch (entry.status) {
+                    .decoding => |dec| {
+                        if (!dec.has_thread) {
+                            needs_thread = true;
+                        }
+                    },
+                    else => {},
                 }
             } else {
                 const new_entry = CacheEntry{
@@ -1101,8 +1110,9 @@ pub const ViewerState = struct {
             };
 
             if (self.cache.get(d)) |entry| {
-                if (entry.status == .decoding) {
-                    entry.status.decoding.has_thread = true;
+                switch (entry.status) {
+                    .decoding => |*dec| dec.has_thread = true,
+                    else => {},
                 }
             }
 

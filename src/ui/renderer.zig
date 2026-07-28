@@ -33,11 +33,13 @@ const BatchItem = struct {
 };
 
 fn scissorEqual(a: ?sdl.Rect, b: ?sdl.Rect) bool {
-    if (a == null and b == null) return true;
-    if (a == null or b == null) return false;
-    const sa = a.?;
-    const sb = b.?;
-    return sa.x == sb.x and sa.y == sb.y and sa.w == sb.w and sa.h == sb.h;
+    if (a) |sa| {
+        if (b) |sb| {
+            return sa.x == sb.x and sa.y == sb.y and sa.w == sb.w and sa.h == sb.h;
+        }
+        return false;
+    }
+    return b == null;
 }
 
 fn addBatch(
