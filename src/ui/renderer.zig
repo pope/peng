@@ -318,7 +318,7 @@ fn getOrRenderCachedText(
     };
 
     if (state.text_cache.getEntry(key)) |entry| {
-        entry.value_ptr.last_used_frame = state.gpu_frame_index;
+        entry.value_ptr.last_used_frame = if (state.gpu) |g| g.frame_index else 0;
         return CachedText{
             .texture = entry.value_ptr.texture,
             .w = entry.value_ptr.w,
@@ -326,8 +326,9 @@ fn getOrRenderCachedText(
         };
     }
 
-    const dev = if (state.gpu) |g| g.device else return null;
-    const frame_idx = state.gpu_frame_index % 2;
+    const gpu_res = if (state.gpu) |*g| g else return null;
+    const dev = gpu_res.device;
+    const frame_idx = gpu_res.frame_index % 2;
 
     _ = font.setFontSize(target_font_size);
 
@@ -367,29 +368,29 @@ fn getOrRenderCachedText(
     const aligned_offset = std.mem.alignForward(usize, tb_offset.*, 512);
     const required_capacity = aligned_offset + size;
 
-    if (state.gpu_transfer_buffers[frame_idx] == null or state.gpu_buffer_capacities[frame_idx] < required_capacity) {
+    if (gpu_res.transfer_buffers[frame_idx] == null or gpu_res.buffer_capacities[frame_idx] < required_capacity) {
         const new_tbcap = std.mem.alignForward(usize, @max(required_capacity * 2, 65536), 4096);
-        if (state.gpu_transfer_buffers[frame_idx]) |old_tb| {
+        if (gpu_res.transfer_buffers[frame_idx]) |old_tb| {
             // Catch OOM on the deferred cleanup list so a non-critical array append failure
             // does not abort the entire frame's render pass. Log the error and continue rendering.
             temp_buffers.append(allocator, old_tb) catch |err| {
                 std.log.err("Failed to append old transfer buffer to cleanup list: {}", .{err});
             };
         }
-        state.gpu_transfer_buffers[frame_idx] = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
+        gpu_res.transfer_buffers[frame_idx] = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
             .usage = .upload,
             .size = @intCast(new_tbcap),
             .props = 0,
         });
-        if (state.gpu_transfer_buffers[frame_idx] == null) {
-            state.gpu_buffer_capacities[frame_idx] = 0;
+        if (gpu_res.transfer_buffers[frame_idx] == null) {
+            gpu_res.buffer_capacities[frame_idx] = 0;
             dev.releaseTexture(tex);
             return null;
         }
-        state.gpu_buffer_capacities[frame_idx] = new_tbcap;
+        gpu_res.buffer_capacities[frame_idx] = new_tbcap;
     }
 
-    const transfer_buf = state.gpu_transfer_buffers[frame_idx].?;
+    const transfer_buf = gpu_res.transfer_buffers[frame_idx].?;
     const mapped_raw: [*]u8 = dev.mapTransferBuffer(transfer_buf, false) orelse {
         dev.releaseTexture(tex);
         return null;
@@ -430,7 +431,7 @@ fn getOrRenderCachedText(
         .texture = tex,
         .w = w_f,
         .h = h_f,
-        .last_used_frame = state.gpu_frame_index,
+        .last_used_frame = gpu_res.frame_index,
     }) catch |err| {
         std.log.err("Failed to cache rendered text: {}", .{err});
         dev.releaseTexture(tex);
@@ -608,8 +609,7 @@ fn buildGeometryFromCommands(
 }
 
 fn uploadVertexData(
-    state: *app_state.ViewerState,
-    dev: sdl.gpu.Device,
+    gpu_res: *app_state.RenderResources,
     frame_idx: usize,
     copy_pass: sdl.gpu.CopyPass,
     allocator: std.mem.Allocator,
@@ -617,28 +617,29 @@ fn uploadVertexData(
     vertex_items: []const Vertex,
     tb_offset: usize,
 ) !?sdl.gpu.Buffer {
+    const dev = gpu_res.device;
     const needed_size = vertex_items.len * @sizeOf(Vertex);
     if (needed_size == 0) return null;
 
-    if (state.gpu_vertex_buffers[frame_idx] == null or state.gpu_vertex_capacities[frame_idx] < needed_size) {
-        if (state.gpu_vertex_buffers[frame_idx]) |vb| {
+    if (gpu_res.vertex_buffers[frame_idx] == null or gpu_res.vertex_capacities[frame_idx] < needed_size) {
+        if (gpu_res.vertex_buffers[frame_idx]) |vb| {
             dev.releaseBuffer(vb);
-            state.gpu_vertex_buffers[frame_idx] = null;
+            gpu_res.vertex_buffers[frame_idx] = null;
         }
         const new_vcap = std.mem.alignForward(usize, needed_size * 2, 4096);
-        state.gpu_vertex_buffers[frame_idx] = dev.createBuffer(&sdl.gpu.BufferCreateInfo{
+        gpu_res.vertex_buffers[frame_idx] = dev.createBuffer(&sdl.gpu.BufferCreateInfo{
             .usage = sdl.gpu.BufferUsage.vertex,
             .size = @intCast(new_vcap),
             .props = 0,
         }) orelse return error.GPUVertexBufferCreationFailed;
-        state.gpu_vertex_capacities[frame_idx] = new_vcap;
+        gpu_res.vertex_capacities[frame_idx] = new_vcap;
     }
 
     const vert_offset = std.mem.alignForward(usize, tb_offset, 512);
     const total_tb_needed = vert_offset + needed_size;
 
-    if (state.gpu_transfer_buffers[frame_idx] == null or state.gpu_buffer_capacities[frame_idx] < total_tb_needed) {
-        if (state.gpu_transfer_buffers[frame_idx]) |old_tb| {
+    if (gpu_res.transfer_buffers[frame_idx] == null or gpu_res.buffer_capacities[frame_idx] < total_tb_needed) {
+        if (gpu_res.transfer_buffers[frame_idx]) |old_tb| {
             // Catch OOM on the deferred cleanup list so a non-critical array append failure
             // does not abort the entire frame's render pass. Log the error and continue rendering.
             temp_buffers.append(allocator, old_tb) catch |err| {
@@ -646,16 +647,16 @@ fn uploadVertexData(
             };
         }
         const new_tbcap = std.mem.alignForward(usize, total_tb_needed * 2, 4096);
-        state.gpu_transfer_buffers[frame_idx] = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
+        gpu_res.transfer_buffers[frame_idx] = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
             .usage = .upload,
             .size = @intCast(new_tbcap),
             .props = 0,
         }) orelse return error.GPUTransferBufferCreationFailed;
-        state.gpu_buffer_capacities[frame_idx] = new_tbcap;
+        gpu_res.buffer_capacities[frame_idx] = new_tbcap;
     }
 
-    const vb = state.gpu_vertex_buffers[frame_idx].?;
-    const tb = state.gpu_transfer_buffers[frame_idx].?;
+    const vb = gpu_res.vertex_buffers[frame_idx].?;
+    const tb = gpu_res.transfer_buffers[frame_idx].?;
 
     const mapped_raw: [*]u8 = dev.mapTransferBuffer(tb, false) orelse return error.GPUMapFailed;
     const mapped: [*]Vertex = @ptrCast(@alignCast(mapped_raw + vert_offset));
@@ -755,9 +756,9 @@ pub fn renderClayCommands(
     scale_y: f32,
 ) !void {
     const start_render = sdl.timer.getTicksNs();
-    const gpu = state.gpu orelse return error.GpuNotInitialized;
-    const dev = gpu.device;
-    const frame_idx = state.gpu_frame_index % 2;
+    const gpu_res = if (state.gpu) |*g| g else return error.GpuNotInitialized;
+    const dev = gpu_res.device;
+    const frame_idx = gpu_res.frame_index % 2;
 
     var vertices: std.ArrayList(Vertex) = .empty;
     defer vertices.deinit(allocator);
@@ -775,7 +776,7 @@ pub fn renderClayCommands(
 
     try buildGeometryFromCommands(
         state,
-        gpu,
+        gpu_res.*,
         copy_pass,
         fonts,
         r_commands,
@@ -791,8 +792,7 @@ pub fn renderClayCommands(
     );
 
     const vert_buf = try uploadVertexData(
-        state,
-        dev,
+        gpu_res,
         frame_idx,
         copy_pass,
         allocator,
@@ -805,7 +805,7 @@ pub fn renderClayCommands(
 
     executeRenderPass(
         state,
-        gpu,
+        gpu_res.*,
         cmd_buf,
         swap_tex,
         batches.items,
@@ -815,7 +815,7 @@ pub fn renderClayCommands(
     );
 
     // Cache eviction for text textures (unused for >120 frames)
-    state.text_cache.evictUnused(allocator, dev, state.gpu_frame_index, 120);
+    state.text_cache.evictUnused(allocator, dev, gpu_res.frame_index, 120);
 
     const end_render = sdl.timer.getTicksNs();
     const render_time_ms = @as(f64, @floatFromInt(end_render - start_render)) / 1_000_000.0;
@@ -824,7 +824,7 @@ pub fn renderClayCommands(
     state.last_ui_vertex_count = vertices.items.len;
     state.last_ui_batch_count = batches.items.len;
 
-    state.gpu_frame_index += 1;
+    gpu_res.frame_index += 1;
 }
 
 test "Clay debug text detection and scaling on HiDPI display" {

@@ -279,8 +279,21 @@ pub const RenderResources = struct {
     sampler: sdl.gpu.Sampler,
     white_texture: sdl.gpu.Texture,
 
-    /// Releases GPU pipelines, samplers, and fallback textures on application teardown.
+    // Persistent double-buffered vertex and transfer staging buffers
+    vertex_buffers: [2]?sdl.gpu.Buffer = .{ null, null },
+    transfer_buffers: [2]?sdl.gpu.TransferBuffer = .{ null, null },
+    buffer_capacities: [2]usize = .{ 0, 0 },
+    vertex_capacities: [2]usize = .{ 0, 0 },
+    frame_index: usize = 0,
+
+    /// Releases GPU pipelines, samplers, fallback textures, and staging buffers on application teardown.
     pub fn deinit(self: *RenderResources) void {
+        for (self.vertex_buffers) |vb| {
+            if (vb) |b| self.device.releaseBuffer(b);
+        }
+        for (self.transfer_buffers) |tb| {
+            if (tb) |b| self.device.releaseTransferBuffer(b);
+        }
         self.device.releasePipeline(self.pipeline);
         if (self.unpack_compute_pipeline) |pipe| {
             self.device.releaseComputePipeline(pipe);
@@ -350,13 +363,6 @@ pub const ViewerState = struct {
     ui_render_stats: RollingStats = .{},
     last_ui_vertex_count: usize = 0,
     last_ui_batch_count: usize = 0,
-
-    // Persistent double-buffered vertex resources
-    gpu_vertex_buffers: [2]?sdl.gpu.Buffer = .{ null, null },
-    gpu_transfer_buffers: [2]?sdl.gpu.TransferBuffer = .{ null, null },
-    gpu_buffer_capacities: [2]usize = .{ 0, 0 },
-    gpu_vertex_capacities: [2]usize = .{ 0, 0 },
-    gpu_frame_index: usize = 0,
 
     // Font text texture cache
     text_cache: TextCache = .{},
@@ -430,13 +436,6 @@ pub const ViewerState = struct {
         self.cache.clear(dev_opt);
 
         if (self.gpu) |*gpu_res| {
-            for (self.gpu_vertex_buffers) |vb| {
-                if (vb) |b| gpu_res.device.releaseBuffer(b);
-            }
-            for (self.gpu_transfer_buffers) |tb| {
-                if (tb) |b| gpu_res.device.releaseTransferBuffer(b);
-            }
-
             switch (self.display) {
                 .headless => {},
                 .windowed => |*w| {
