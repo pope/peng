@@ -252,41 +252,55 @@ pub fn uploadSurfaceToGpu(
         return null;
     };
 
-    const start_conv = sdl.timer.getTicksNs();
     const src_pixels: [*]const u8 = current_surf.pixels();
     const src_pitch: usize = @intCast(current_surf.pitch());
-
-    if (src_fmt == sdl.PixelFormat.rgba32 or src_fmt == sdl.PixelFormat.bgra32) {
+    var conversion_time_ms: f64 = 0.0;
+    const is_32bit_fmt = switch (cur_fmt) {
+        sdl.PixelFormat.rgba32, sdl.PixelFormat.bgra32, sdl.PixelFormat.xrgb8888, sdl.PixelFormat.xbgr8888, sdl.PixelFormat.rgbx8888, sdl.PixelFormat.bgrx8888 => true,
+        else => false,
+    };
+    if (is_32bit_fmt) {
         if (src_pitch == dst_pitch) {
             @memcpy(mapped[0..size], src_pixels[0..size]);
         } else {
-            var row: usize = 0;
-            while (row < u_h) : (row += 1) {
-                const src_row = src_pixels[(row * src_pitch)..((row * src_pitch) + dst_pitch)];
-                const dst_row = mapped[(row * dst_pitch)..((row * dst_pitch) + dst_pitch)];
-                @memcpy(dst_row, src_row);
+            var y: usize = 0;
+            while (y < u_h) : (y += 1) {
+                @memcpy(mapped[y * dst_pitch .. y * dst_pitch + u_w * 4], src_pixels[y * src_pitch .. y * src_pitch + u_w * 4]);
             }
         }
+    } else if (cur_fmt == sdl.PixelFormat.rgb24) {
+        const start_conv = sdl.timer.getTicksNs();
+        sdl.surface.convertRgb24ToRgba32Simd(src_pixels[0 .. src_pitch * u_h], mapped[0..size], u_w, u_h, src_pitch, dst_pitch);
+        const end_conv = sdl.timer.getTicksNs();
+        conversion_time_ms = @as(f64, @floatFromInt(end_conv - start_conv)) / 1_000_000.0;
+    } else if (cur_fmt == sdl.PixelFormat.bgr24) {
+        const start_conv = sdl.timer.getTicksNs();
+        sdl.surface.convertBgr24ToRgba32Simd(src_pixels[0 .. src_pitch * u_h], mapped[0..size], u_w, u_h, src_pitch, dst_pitch);
+        const end_conv = sdl.timer.getTicksNs();
+        conversion_time_ms = @as(f64, @floatFromInt(end_conv - start_conv)) / 1_000_000.0;
     } else {
-        var row: usize = 0;
-        while (row < u_h) : (row += 1) {
-            const src_row_offset = row * src_pitch;
-            const dst_row_offset = row * dst_pitch;
-            var col: usize = 0;
-            while (col < u_w) : (col += 1) {
-                const sp = src_row_offset + (col * 3);
-                const dp = dst_row_offset + (col * 4);
-                mapped[dp + 0] = src_pixels[sp + 0];
-                mapped[dp + 1] = src_pixels[sp + 1];
-                mapped[dp + 2] = src_pixels[sp + 2];
-                mapped[dp + 3] = 255;
+        const start_conv = sdl.timer.getTicksNs();
+        const tmp_surf = current_surf.convert(sdl.PixelFormat.rgba32);
+        if (tmp_surf) |ts| {
+            defer ts.destroy();
+            const ts_pixels = ts.pixels();
+            const ts_pitch: usize = @intCast(ts.pitch());
+            if (ts_pitch == dst_pitch) {
+                @memcpy(mapped[0..size], ts_pixels[0..size]);
+            } else {
+                var y: usize = 0;
+                while (y < u_h) : (y += 1) {
+                    @memcpy(mapped[y * dst_pitch .. y * dst_pitch + u_w * 4], ts_pixels[y * ts_pitch .. y * ts_pitch + u_w * 4]);
+                }
             }
+            const end_conv = sdl.timer.getTicksNs();
+            conversion_time_ms = @as(f64, @floatFromInt(end_conv - start_conv)) / 1_000_000.0;
+        } else {
+            _ = cmd_wrapper.cancel();
+            dev.releaseTexture(gpu_tex);
+            return null;
         }
     }
-
-    dev.unmapTransferBuffer(transfer_buf);
-    const end_conv = sdl.timer.getTicksNs();
-    const conversion_time_ms = @as(f64, @floatFromInt(end_conv - start_conv)) / 1_000_000.0;
 
     const copy_pass = cmd_wrapper.beginCopyPass() orelse {
         _ = cmd_wrapper.cancel();
@@ -337,4 +351,50 @@ pub fn uploadSurfaceToGpu(
         .was_fallback = was_fallback,
         .fallback_time_ms = fallback_time_ms,
     };
+}
+
+test "uploadSurfaceToGpu handles indexed and non-32bit pixel formats safely" {
+    const dev_opt = sdl.gpu.Device.create(sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl, true);
+    if (dev_opt == null) return;
+    const dev = dev_opt.?;
+    defer dev.destroy();
+
+    // 1. Test index8 (indexed 8-bit image surface format)
+    {
+        const surf = sdl.Surface.create(16, 16, sdl.PixelFormat.index8) orelse return;
+        defer surf.destroy();
+        const upload_res = uploadSurfaceToGpu(dev, surf, null);
+        try std.testing.expect(upload_res != null);
+        if (upload_res) |res| {
+            dev.releaseTexture(res.gpu_texture);
+            try std.testing.expectEqual(@as(f32, 16.0), res.w);
+            try std.testing.expectEqual(@as(f32, 16.0), res.h);
+        }
+    }
+
+    // 2. Test rgb24 surface
+    {
+        const surf = sdl.Surface.create(16, 16, sdl.PixelFormat.rgb24) orelse return;
+        defer surf.destroy();
+        const upload_res = uploadSurfaceToGpu(dev, surf, null);
+        try std.testing.expect(upload_res != null);
+        if (upload_res) |res| {
+            dev.releaseTexture(res.gpu_texture);
+            try std.testing.expectEqual(@as(f32, 16.0), res.w);
+            try std.testing.expectEqual(@as(f32, 16.0), res.h);
+        }
+    }
+
+    // 3. Test bgr24 surface
+    {
+        const surf = sdl.Surface.create(16, 16, sdl.PixelFormat.bgr24) orelse return;
+        defer surf.destroy();
+        const upload_res = uploadSurfaceToGpu(dev, surf, null);
+        try std.testing.expect(upload_res != null);
+        if (upload_res) |res| {
+            dev.releaseTexture(res.gpu_texture);
+            try std.testing.expectEqual(@as(f32, 16.0), res.w);
+            try std.testing.expectEqual(@as(f32, 16.0), res.h);
+        }
+    }
 }
