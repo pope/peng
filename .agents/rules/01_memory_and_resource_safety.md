@@ -41,3 +41,12 @@ const data = readBuffer() catch |err| {
 ## 7. Caller-Provided Output Buffers
 
 - Functions generating variable-length data should accept caller-provided output buffers or explicit allocators rather than returning unowned heap memory.
+
+## 8. Surface Pixel Format Bounds & Conversion Safety
+
+- When processing raw pixel buffers or `sdl.Surface` memory, NEVER assume non-32bit formats are fixed 3-byte RGB24.
+- Indexed 8-bit (`index8`), grayscale (`L8`), or 16-bit surfaces have different bytes-per-pixel strides. Naive index calculation (`sp = col * 3`) causes `SIGSEGV` buffer overruns on 1-byte indexed buffers.
+- Always use explicit pixel format matching (`switch (cur_fmt)`):
+  - Direct `@memcpy` for RGBA32 / BGRA32 / XRGB8888.
+  - High-performance SIMD converters for RGB24 / BGR24.
+  - Safe fallback surface conversion (`current_surf.convert(PixelFormat.rgba32)`) for indexed 8-bit, grayscale, and arbitrary formats before GPU buffer upload.

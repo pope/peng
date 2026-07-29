@@ -7,8 +7,8 @@
 
 ## 2. Mutex Safety & Deadlock Prevention
 
-- All mutex locks (`std.Io.Mutex`) MUST be released via `defer mutex.unlock()`.
-- Never acquire a mutex twice on the same thread sequence—`std.Io.Mutex` is non-recursive and will deadlock on re-entry.
+- All mutex locks (`std.Thread.Mutex`) MUST be released via `defer mutex.unlock()`.
+- Never acquire a mutex twice on the same thread sequence—`std.Thread.Mutex` is non-recursive and will deadlock on re-entry.
 
 ## 3. Atomic Worker Thread Counters
 
@@ -33,3 +33,17 @@
 - Model mutually exclusive sub-states using `union(enum)` tagged unions (`SlideshowMode`, `DisplayState`, `CacheStatus`).
 - Model UI overlay visibility toggles as packed byte bitfield structs (`OverlayFlags = packed struct(u8)`).
 - Compose image cache state via explicit component structs (`CpuSurfaceComponent`, `GpuTextureComponent`, `ThumbComponent`).
+
+## 7. Pure System Passes & 5-Stage Engine Loop (`systems.zig`)
+
+- Procedural tick logic, input sampling, slideshow timers, and asset uploads MUST be extracted into pure system pass functions in `src/app/systems.zig`:
+  - `sysExecuteIntents`: Drains queued `AppIntent` payloads.
+  - `sysUpdateSlideshow`: Manages slideshow timer ticks.
+  - `sysUpdateViewport`: Handles mouse drag deltas and mouse-wheel zoom-at-cursor calculations.
+  - `sysProcessAssetUploads`: Handles EXIF orientation, CPU-to-GPU texture uploads, background events, and idle preloading.
+- The main frame update in `src/viewer.zig` (`updateFrame`) MUST follow the strict 5-stage engine pipeline:
+  1. Sampling & IPC Receive
+  2. Asset Upload & Preload Pre-pass (`sysProcessAssetUploads`)
+  3. System Ticks & State Updates (`sysExecuteIntents`, `sysUpdateSlideshow`, `sysUpdateViewport`)
+  4. Clay UI Pointer & Layout State Updates
+  5. GPU Execution Pass & Screenshot Post-Processing

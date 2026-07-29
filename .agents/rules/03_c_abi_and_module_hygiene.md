@@ -37,3 +37,7 @@
 ## 7. Result Location Initialization Style (`.empty`, `.init(...)`)
 
 - Use leading-dot result location type inference for array lists, optionals, and struct initializations (`.empty`, `.init(allocator)`, `.{ .field = val }`).
+
+## 8. Feature-Complete Canonical Implementations
+
+- When deduplicating utility functions or re-exporting symbols across modules (e.g. `pub const uploadSurfaceToGpu = app.gpu.uploadSurfaceToGpu`), verify that the retained canonical implementation is the robust, feature-complete version—not a simplified or legacy variant.
