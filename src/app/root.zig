@@ -4,7 +4,7 @@
 //! IPC protocol handling, image decoding pipelines, and system update passes.
 
 pub const state = @import("state.zig");
-pub const input = @import("input.zig");
+pub const input = @import("input/root.zig");
 pub const palette = @import("palette.zig");
 pub const types = @import("types.zig");
 pub const events = @import("events.zig");
