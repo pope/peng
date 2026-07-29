@@ -64,34 +64,13 @@ pub fn updateFrame(
     // Process any pending IPC commands collected during event processing
     state.processIpcCommands(app.actions.handleIpcCommand);
 
-    // State Update
-    const needs_cache_update = blk: {
-        if (state.getCurrentEntry()) |entry| {
-            switch (entry.status) {
-                .decoding => |d| break :blk !d.has_thread,
-                else => break :blk false,
-            }
-        }
-        break :blk (state.navigation.current_index != null);
-    };
-    if (needs_cache_update and state.active_decode_threads.load(.acquire) < app.state.ViewerState.getMaxConcurrentDecodes()) {
-        const count = state.navigation.image_list.items.len;
-        if (count > 0) {
-            if (state.navigation.current_index == null) state.navigation.current_index = 0;
-            state.updateCache() catch |err| std.log.err("Failed to update cache: {}", .{err});
-        }
-    }
+    // Stage 1: Asset Uploads & Preload Pre-pass
+    app.systems.sysProcessAssetUploads(state);
 
+    // Stage 2: System Ticks & State Updates (Execute intents, update slideshow, update viewport)
     try state.update(input);
 
-    // Process any pending intents and queued user actions
-    for (state.pending_intents.items) |intent| {
-        app.actions.executeIntent(state, intent) catch |err| {
-            std.log.err("Failed to execute intent {s}: {any}", .{ @tagName(intent), err });
-        };
-    }
-    state.clearIntents();
-
+    // Stage 3: Clay Pointer & Scroll State Updates
     clay.setLayoutDimensions(.{ .w = input.win_w, .h = input.win_h });
 
     if (input.mouse_inside) {
@@ -111,8 +90,6 @@ pub fn updateFrame(
         .{ .x = input.scroll_delta_x, .y = input.scroll_delta_y },
         input.delta_time_ms / 1000.0,
     );
-
-    state.checkIdlePreload();
 
     if (input.mouse_left_clicked) {
         if (state.ui.overlays.show_info and !state.isPointerInDebugPanel(input) and clay.pointerOver(clay.getElementId("InfoCloseBtn"))) {

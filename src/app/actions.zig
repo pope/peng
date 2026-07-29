@@ -61,7 +61,7 @@ pub fn executeIntent(self: *ViewerState, intent: intents.AppIntent) !void {
             if (self.navigation.getCurrentImagePath()) |path| {
                 const exif_rot = self.readJpegExifOrientation(path) orelse 0.0;
                 self.viewport.rotation_angle = exif_rot;
-                _ = self.rotation_map.remove(path);
+                try self.rotation_map.put(path, self.viewport.rotation_angle);
             } else {
                 self.viewport.rotation_angle = 0.0;
             }

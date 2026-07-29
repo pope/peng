@@ -14,6 +14,7 @@ const pipeline = @import("pipeline.zig");
 const ipc = @import("ipc.zig");
 const exif = @import("exif.zig");
 const screenshot = @import("screenshot.zig");
+const systems = @import("systems.zig");
 
 const uploadSurfaceToGpu = app_gpu.uploadSurfaceToGpu;
 const CacheStatus = image.CacheStatus;
@@ -1186,24 +1187,22 @@ pub const ViewerState = struct {
     pub fn update(self: *ViewerState, input: FrameInput) !void {
         self.updateCurrentRotation();
 
-        // 0. Slideshow timer update
-        if (self.navigation.slideshow.tick(input.delta_time_ms)) {
-            try self.next();
-        }
+        // 0. Enqueued Intents pass
+        try systems.sysExecuteIntents(self);
 
-        // 1. Text input & palette dismissal updates
+        // 1. Slideshow timer update pass
+        try systems.sysUpdateSlideshow(self, input.delta_time_ms);
+
+        // 2. Text input & palette dismissal updates
         const palette_closed_this_frame = try self.processPaletteInput(input);
 
-        // 2. Drop file/directory updates
+        // 3. Drop file/directory updates
         if (input.dropped_path) |path| {
             try self.handlePathSelection(path);
         }
 
-        // 3. Mouse dragging updates
-        self.processDragState(input, palette_closed_this_frame);
-
-        // 4. Mouse Wheel Zoom updates
-        self.processZoomAtCursor(input);
+        // 4. Viewport Mouse Drag & Scroll Zoom pass
+        systems.sysUpdateViewport(self, input, palette_closed_this_frame);
 
         // 5. Keyboard updates
         for (input.keys_pressed.items) |key| {
