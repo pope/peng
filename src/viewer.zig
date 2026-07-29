@@ -1,7 +1,6 @@
 const std = @import("std");
 const clay = @import("zclay");
 const ui = @import("ui");
-const commands = @import("commands");
 const app = @import("app");
 const sdl = @import("sdl");
 
@@ -32,6 +31,7 @@ pub fn updateFrame(
     frame_arena: *std.heap.ArenaAllocator,
     last_time: *u64,
 ) !void {
+    _ = ipc_server;
     // Re-bind Clay measure text function pointer to the reloaded code address
     clay.setMeasureTextFunction(*const app.types.MeasureTextUserData, measure_data, ui.graphics.sdl3MeasureText);
 
@@ -62,7 +62,7 @@ pub fn updateFrame(
     state.overlays.mouse_inside = input.mouse_inside;
 
     // Process any pending IPC commands collected during event processing
-    state.processIpcCommands(ipc_server);
+    state.processIpcCommands(app.actions.handleIpcCommand);
 
     // State Update
     const needs_cache_update = blk: {
@@ -84,13 +84,13 @@ pub fn updateFrame(
 
     try state.update(input);
 
-    // Process any queued user actions
-    for (state.action_queue.items) |action_id| {
-        commands.actions.triggerAction(state, action_id) catch |err| {
-            std.log.err("Failed to execute queued action {s}: {any}", .{ @tagName(action_id), err });
+    // Process any pending intents and queued user actions
+    for (state.pending_intents.items) |intent| {
+        app.actions.executeIntent(state, intent) catch |err| {
+            std.log.err("Failed to execute intent {s}: {any}", .{ @tagName(intent), err });
         };
     }
-    state.action_queue.clearRetainingCapacity();
+    state.clearIntents();
 
     clay.setLayoutDimensions(.{ .w = input.win_w, .h = input.win_h });
 

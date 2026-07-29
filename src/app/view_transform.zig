@@ -1,6 +1,6 @@
 const std = @import("std");
 const types = @import("types.zig");
-const ScaleMode = types.ScaleMode;
+const ScaleMode = @import("intents").ScaleMode;
 
 pub fn isAngle90or270(angle: f32) bool {
     return std.math.approxEqAbs(f32, angle, 90.0, 0.1) or

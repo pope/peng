@@ -12,3 +12,4 @@ pub const exif = @import("exif.zig");
 pub const screenshot = @import("screenshot.zig");
 pub const text_cache = @import("text_cache.zig");
 pub const gpu = @import("gpu.zig");
+pub const actions = @import("actions.zig");

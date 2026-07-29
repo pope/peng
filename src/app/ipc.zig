@@ -2,9 +2,8 @@ const std = @import("std");
 const sdl = @import("sdl");
 const app_state = @import("state.zig");
 const ViewerState = app_state.ViewerState;
-const types = @import("types.zig");
-const ScaleMode = types.ScaleMode;
-const TextureScaleMode = types.TextureScaleMode;
+const intents = @import("intents");
+const TextureScaleMode = intents.TextureScaleMode;
 const fs = @import("fs.zig");
 const screenshot = @import("screenshot.zig");
 const clay = @import("zclay");
@@ -70,116 +69,6 @@ pub const IpcServer = struct {
         }
         self.allocator.destroy(self);
     }
-
-    pub fn executeCommand(self: *IpcServer, state: *ViewerState, command: []const u8, stream: std.Io.net.Stream) !void {
-        _ = self;
-        const parsed = try IpcCommand.parse(command);
-        switch (parsed) {
-            .zoom => |factor| {
-                state.setZoom(factor);
-                try respondOk(state.io, stream);
-            },
-            .pan => |p| {
-                state.setPan(p.x, p.y);
-                try respondOk(state.io, stream);
-            },
-            .adjust => |adj| {
-                state.setAdjustments(adj.brightness, adj.contrast);
-                try respondOk(state.io, stream);
-            },
-            .filter => |mode| {
-                state.setTextureScaleMode(mode);
-                try respondOk(state.io, stream);
-            },
-            .palette => |target| {
-                switch (target.kind) {
-                    .actions => try state.openPalette(.actions),
-                    .files => try state.openPalette(.files),
-                    .slideshow => try state.openPalette(.set_slideshow_interval),
-                    .none => state.setPaletteMode(.inactive),
-                }
-                if (target.query) |q| {
-                    state.palette.query.clearRetainingCapacity();
-                    try state.palette.query.appendSlice(state.allocator, q);
-                    state.palette.selected_idx = 0;
-                    state.palette.selection_dirty = true;
-                    if (state.palette.mode == .actions) {
-                        try state.rebuildActionMatches();
-                    } else if (state.palette.mode == .files) {
-                        try state.rebuildPaletteMatches();
-                    }
-                }
-                try respondOk(state.io, stream);
-            },
-            .thumb => |action| {
-                switch (action) {
-                    .enable => try state.setDebugShowThumb(true),
-                    .disable => try state.setDebugShowThumb(false),
-                    .toggle => try state.setDebugShowThumb(!state.overlays.debug_show_thumb),
-                }
-                try respondOk(state.io, stream);
-            },
-            .debug => |enabled| {
-                clay.setDebugModeEnabled(enabled);
-                try respondOk(state.io, stream);
-            },
-            .wait_load => {
-                var attempts: u32 = 0;
-                while (attempts < 1000) : (attempts += 1) {
-                    _ = state.processBackgroundEvents();
-                    state.prepareCacheTextures();
-                    if (state.getCurrentEntry()) |entry| {
-                        if (entry.status != .decoding) {
-                            break;
-                        }
-                    }
-                    sdl.timer.delay(10);
-                }
-                try respondOk(state.io, stream);
-            },
-            .next => {
-                try state.next();
-                try respondOk(state.io, stream);
-            },
-            .prev => {
-                try state.prev();
-                try respondOk(state.io, stream);
-            },
-            .screenshot => |filepath| {
-                switch (state.screenshot_mode) {
-                    .capturing => return error.Busy,
-                    .idle => {
-                        const dup_path = try state.allocator.dupeZ(u8, filepath);
-                        state.screenshot_mode = .{
-                            .capturing = screenshot.ActiveScreenshot{
-                                .path = dup_path,
-                                .stream = stream,
-                            },
-                        };
-                    },
-                }
-            },
-            .quit => {
-                state.requestQuit();
-                try respondOk(state.io, stream);
-                const pid = getProcessId();
-                var path_buf: [128]u8 = undefined;
-                if (std.fmt.bufPrint(&path_buf, "/tmp/peng-{d}.sock", .{pid})) |sock_path| {
-                    if (std.Io.net.UnixAddress.init(sock_path)) |addr| {
-                        if (addr.connect(state.io)) |dummy| {
-                            dummy.close(state.io);
-                        } else |err| {
-                            std.log.debug("IPC quit dummy connect failed: {any}", .{err});
-                        }
-                    } else |err| {
-                        std.log.debug("IPC quit address init failed: {any}", .{err});
-                    }
-                } else |err| {
-                    std.log.debug("IPC quit bufPrint failed: {any}", .{err});
-                }
-            },
-        }
-    }
 };
 
 pub const PaletteKind = enum {
@@ -213,6 +102,45 @@ pub const IpcCommand = union(enum) {
     prev,
     quit,
     screenshot: []const u8,
+
+    pub fn toIntent(self: IpcCommand, state: *const ViewerState) ?intents.AppIntent {
+        switch (self) {
+            .zoom => |factor| return .{ .set_zoom = factor },
+            .pan => |p| return .{ .set_pan = .{ .x = p.x, .y = p.y } },
+            .adjust => return null,
+            .filter => |mode| return .{ .set_filter = mode },
+            .palette => |target| {
+                const mode: intents.PaletteMode = switch (target.kind) {
+                    .actions => .actions,
+                    .files => .files,
+                    .slideshow => .set_slideshow_interval,
+                    .none => .inactive,
+                };
+                return .{ .set_palette = .{ .mode = mode, .query = target.query } };
+            },
+            .thumb => |action| {
+                switch (action) {
+                    .enable => {
+                        if (!state.overlays.debug_show_thumb) return .toggle_debug_thumb;
+                        return null;
+                    },
+                    .disable => {
+                        if (state.overlays.debug_show_thumb) return .toggle_debug_thumb;
+                        return null;
+                    },
+                    .toggle => return .toggle_debug_thumb,
+                }
+            },
+            .debug => |enabled| {
+                if (clay.isDebugModeEnabled() != enabled) return .toggle_debug_mode;
+                return null;
+            },
+            .next => return .next_image,
+            .prev => return .prev_image,
+            .quit => return .quit,
+            .wait_load, .screenshot => return null,
+        }
+    }
 
     pub fn parse(command: []const u8) !IpcCommand {
         var it = std.mem.tokenizeAny(u8, command, " \t\r\n");
@@ -400,7 +328,7 @@ fn runIpcServer(state: *ViewerState) !void {
     }
 }
 
-fn respondOk(io: std.Io, stream: std.Io.net.Stream) !void {
+pub fn respondOk(io: std.Io, stream: std.Io.net.Stream) !void {
     var write_buf: [64]u8 = undefined;
     var writer = stream.writer(io, &write_buf);
     try writer.interface.writeAll("OK\n");

@@ -1,10 +1,11 @@
 const std = @import("std");
 const fuzzig = @import("fuzzig");
+const intents = @import("intents");
 const types = @import("types.zig");
 const fs = @import("fs.zig");
 
-pub const TextInputBounds = types.TextInputBounds;
-pub const PaletteMode = types.PaletteMode;
+pub const TextInputBounds = intents.TextInputBounds;
+pub const PaletteMode = intents.PaletteMode;
 
 pub const ScoredMatch = struct {
     index: usize,
@@ -270,29 +271,27 @@ pub const PaletteState = struct {
         }
     }
 
-    pub fn rebuildActionMatches(self: *PaletteState, app_actions: []const types.AppActionId) !void {
+    pub fn rebuildActionMatches(self: *PaletteState) !void {
         self.matches.clearRetainingCapacity();
         const query_str = self.query.items;
         if (query_str.len == 0) {
-            for (app_actions, 0..) |_, idx| {
+            for (types.palette_action_items, 0..) |_, idx| {
                 try self.matches.append(self.allocator, idx);
             }
             return;
         }
 
         var max_h: usize = 0;
-        for (app_actions) |action_id| {
-            const meta = types.getActionMetadata(action_id);
-            max_h = @max(max_h, meta.name.len);
+        for (types.palette_action_items) |item| {
+            max_h = @max(max_h, item.name.len);
         }
 
         const searcher_ptr = try self.getSearcher(max_h, query_str.len);
 
         self.scored_matches.clearRetainingCapacity();
 
-        for (app_actions, 0..) |action_id, idx| {
-            const meta = types.getActionMetadata(action_id);
-            if (searcher_ptr.score(meta.name, query_str)) |score| {
+        for (types.palette_action_items, 0..) |item, idx| {
+            if (searcher_ptr.score(item.name, query_str)) |score| {
                 try self.scored_matches.append(self.allocator, .{ .index = idx, .score = score });
             }
         }
@@ -313,12 +312,11 @@ test "PaletteState.rebuildActionMatches fuzzy search" {
     var palette = PaletteState.init(std.testing.allocator);
     defer palette.deinit();
 
-    try palette.query.appendSlice(std.testing.allocator, "zin");
-    try palette.rebuildActionMatches(types.app_actions);
+    try palette.query.appendSlice(std.testing.allocator, "zoom");
+    try palette.rebuildActionMatches();
 
     try std.testing.expect(palette.matches.items.len > 0);
-    const top_action_id = types.app_actions[palette.matches.items[0]];
-    const top_meta = types.getActionMetadata(top_action_id);
+    const top_meta = types.palette_action_items[palette.matches.items[0]];
     try std.testing.expectEqualStrings("Zoom In", top_meta.name);
 }
 

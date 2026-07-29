@@ -7,8 +7,7 @@ const types = app.types;
 const ViewerState = app_state.ViewerState;
 const PaletteState = app.palette.PaletteState;
 const stopTextInput = app_state.stopTextInput;
-const app_actions = @import("commands").actions.app_actions;
-const getActionMetadata = @import("commands").actions.getActionMetadata;
+
 const MeasureTextUserData = types.MeasureTextUserData;
 const sdl3MeasureText = @import("graphics.zig").sdl3MeasureText;
 const layout_helpers = @import("layout_helpers.zig");
@@ -21,7 +20,8 @@ const truncateDirectory = text_utils.truncateDirectory;
 const formatSize = text_utils.formatSize;
 const theme = @import("theme.zig");
 
-const PaletteMode = types.PaletteMode;
+const intents = @import("intents");
+const PaletteMode = intents.PaletteMode;
 
 pub const TextChunk = struct {
     slice: []const u8,
@@ -826,8 +826,7 @@ pub fn renderSelectionList(
                         });
                     },
                     .actions => {
-                        const action_id = app_actions[real_idx];
-                        const meta = getActionMetadata(action_id);
+                        const meta = types.palette_action_items[real_idx];
                         const query_str = palette.query.items;
 
                         var action_matches: []const usize = &.{};
@@ -1010,8 +1009,8 @@ pub fn renderSelectionList(
                         stopTextInput(state.display);
                     },
                     .actions => {
-                        const action_id = app_actions[real_idx];
-                        try state.triggerAction(action_id);
+                        const item = types.palette_action_items[real_idx];
+                        try state.pushIntent(item.intent);
                         if (palette.mode == old_type) {
                             palette.mode = .inactive;
                             stopTextInput(state.display);

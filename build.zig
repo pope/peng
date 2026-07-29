@@ -84,6 +84,12 @@ pub fn build(b: *std.Build) void {
         }
     }
 
+    const intents_module = b.createModule(.{
+        .root_source_file = b.path("src/intents/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const app_module = b.createModule(.{
         .root_source_file = b.path("src/app/root.zig"),
         .target = target,
@@ -92,12 +98,6 @@ pub fn build(b: *std.Build) void {
 
     const ui_module = b.createModule(.{
         .root_source_file = b.path("src/ui/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const commands_module = b.createModule(.{
-        .root_source_file = b.path("src/commands/root.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -111,16 +111,15 @@ pub fn build(b: *std.Build) void {
     app_module.addImport("sdl", sdl_module);
     app_module.addImport("zclay", zclay_dep.module("zclay"));
     app_module.addImport("fuzzig", fuzzig_dep.module("fuzzig"));
+    app_module.addImport("intents", intents_module);
 
     ui_module.addImport("sdl", sdl_module);
     ui_module.addImport("zclay", zclay_dep.module("zclay"));
     ui_module.addImport("app", app_module);
-    ui_module.addImport("commands", commands_module);
-
-    commands_module.addImport("zclay", zclay_dep.module("zclay"));
-    commands_module.addImport("app", app_module);
+    ui_module.addImport("intents", intents_module);
 
     config_module.addImport("app", app_module);
+    config_module.addImport("intents", intents_module);
 
     const viewer_lib = b.addLibrary(.{
         .name = "viewer",
@@ -137,8 +136,8 @@ pub fn build(b: *std.Build) void {
     viewer_lib.root_module.addImport("fuzzig", fuzzig_dep.module("fuzzig"));
     viewer_lib.root_module.addImport("app", app_module);
     viewer_lib.root_module.addImport("ui", ui_module);
-    viewer_lib.root_module.addImport("commands", commands_module);
     viewer_lib.root_module.addImport("config", config_module);
+    viewer_lib.root_module.addImport("intents", intents_module);
     viewer_lib.root_module.addIncludePath(clay_dep.path(""));
     viewer_lib.root_module.addIncludePath(clay_dep.path("renderers/SDL3"));
 

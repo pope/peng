@@ -10,6 +10,7 @@ const PaletteState = app_state.PaletteState;
 const ViewerState = app_state.ViewerState;
 const startTextInput = app_state.startTextInput;
 const stopTextInput = app_state.stopTextInput;
+const intents = @import("intents");
 const app_actions = types.app_actions;
 const flat_shortcuts = types.flat_shortcuts;
 const events = app_state.events;
@@ -352,9 +353,9 @@ pub fn handlePaletteKeys(
                                 const max_val: f32 = if (palette.mode == .set_brightness) 1.0 else 5.0;
                                 if (val >= min_val and val <= max_val) {
                                     if (palette.mode == .set_brightness) {
-                                        self.viewport.brightness = val;
+                                        try self.pushIntent(.{ .set_brightness = val });
                                     } else {
-                                        self.viewport.contrast = val;
+                                        try self.pushIntent(.{ .set_contrast = val });
                                     }
                                     palette.mode = .inactive;
                                     stopTextInput(self.display);
@@ -369,28 +370,15 @@ pub fn handlePaletteKeys(
                 .files, .actions => {
                     if (palette.selected_idx < palette.matches.items.len) {
                         const target_idx = palette.matches.items[palette.selected_idx];
-                        const old_type = palette.mode;
-                        switch (palette.mode) {
-                            .files => {
-                                self.current_index = target_idx;
-                                try self.updateCache();
-                                palette.mode = .inactive;
-                                stopTextInput(self.display);
-                            },
-                            .actions => {
-                                const action_id = app_actions[target_idx];
-                                try self.triggerAction(action_id);
-                                if (palette.mode == old_type) {
-                                    palette.mode = .inactive;
-                                    stopTextInput(self.display);
-                                }
-                            },
-                            else => return false,
+                        if (palette.mode == .files) {
+                            try self.pushIntent(.{ .go_to_image = target_idx });
+                        } else if (palette.mode == .actions) {
+                            const item = types.palette_action_items[target_idx];
+                            try self.pushIntent(item.intent);
                         }
-                    } else {
-                        palette.mode = .inactive;
-                        stopTextInput(self.display);
                     }
+                    palette.mode = .inactive;
+                    stopTextInput(self.display);
                 },
                 .inactive => return false,
             }
@@ -426,7 +414,7 @@ pub const InputAction = union(enum) {
     none,
     pan: struct { dx: f32, dy: f32 },
     zoom: struct { factor_delta: f32 },
-    trigger_action: types.AppActionId,
+    trigger_intent: intents.AppIntent,
 };
 
 pub fn mapKeyToAction(key: Key, mod: KeyModifiers, is_zoomed: bool) InputAction {
@@ -456,7 +444,7 @@ pub fn mapKeyToAction(key: Key, mod: KeyModifiers, is_zoomed: bool) InputAction 
             mod.alt == shortcut.mod.alt and
             mod.gui == shortcut.mod.gui)
         {
-            return .{ .trigger_action = shortcut.action_id };
+            return .{ .trigger_intent = shortcut.intent };
         }
     }
 
@@ -488,8 +476,8 @@ pub fn handleKeyDown(
             self.viewport.pan_x *= (self.viewport.zoom_factor / old_zoom);
             self.viewport.pan_y *= (self.viewport.zoom_factor / old_zoom);
         },
-        .trigger_action => |action_id| {
-            try self.triggerAction(action_id);
+        .trigger_intent => |intent| {
+            try self.pushIntent(intent);
         },
     }
 }
@@ -501,8 +489,8 @@ test "mapKeyToAction mapping" {
     try std.testing.expectEqual(@as(f32, 30.0), pan_left.pan.dx);
 
     const pan_left_not_zoomed = mapKeyToAction(.left, .{}, false);
-    try std.testing.expect(pan_left_not_zoomed == .trigger_action);
-    try std.testing.expectEqual(types.AppActionId.prev_image, pan_left_not_zoomed.trigger_action);
+    try std.testing.expect(pan_left_not_zoomed == .trigger_intent);
+    try std.testing.expectEqual(intents.AppIntent.prev_image, pan_left_not_zoomed.trigger_intent);
 
     const zoom_in = mapKeyToAction(.equals, .{}, false);
     try std.testing.expect(zoom_in == .zoom);

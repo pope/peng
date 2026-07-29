@@ -21,8 +21,11 @@ const CacheEntry = image.CacheEntry;
 const CacheSlotMap = image.CacheSlotMap;
 const TextureHandle = image.TextureHandle;
 const DecodeArgs = image.DecodeArgs;
-const ScaleMode = types.ScaleMode;
-const TextureScaleMode = types.TextureScaleMode;
+const intents = @import("intents");
+const ScaleMode = intents.ScaleMode;
+const TextureScaleMode = intents.TextureScaleMode;
+const PaletteMode = intents.PaletteMode;
+const AppIntent = intents.AppIntent;
 
 pub const ElementTag = enum(usize) {
     none = 0,
@@ -39,7 +42,6 @@ pub const ElementTag = enum(usize) {
 };
 
 const palette_module = @import("palette.zig");
-const PaletteMode = palette_module.PaletteMode;
 pub const PaletteState = palette_module.PaletteState;
 
 pub const DragState = union(enum) {
@@ -350,7 +352,6 @@ pub const ViewerState = struct {
     exiting: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     generation: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     palette: PaletteState,
-    action_queue: std.ArrayListUnmanaged(types.AppActionId) = .empty,
 
     // Sub-struct State Encapsulations
     viewport: types.ViewportParams = .{},
@@ -369,6 +370,15 @@ pub const ViewerState = struct {
     last_scanned_dir: std.ArrayList(u8) = .empty,
     event_queue: events.MpscQueue(events.BackgroundEvent) = .{},
     pending_ipc_commands: std.ArrayListUnmanaged(*ipc.IpcCommandData) = .empty,
+    pending_intents: std.ArrayListUnmanaged(AppIntent) = .empty,
+
+    pub fn pushIntent(self: *ViewerState, intent: AppIntent) !void {
+        try self.pending_intents.append(self.allocator, intent);
+    }
+
+    pub fn clearIntents(self: *ViewerState) void {
+        self.pending_intents.clearRetainingCapacity();
+    }
 
     pub inline fn isFullscreen(self: *const ViewerState) bool {
         return self.display.isFullscreen();
@@ -473,7 +483,7 @@ pub const ViewerState = struct {
         }
         self.last_scanned_dir.deinit(self.allocator);
         self.pending_ipc_commands.deinit(self.allocator);
-        self.action_queue.deinit(self.allocator);
+        self.pending_intents.deinit(self.allocator);
         self.event_queue.deinit(self.allocator, self.io);
         self.image_list.deinit(self.allocator);
         self.palette.deinit();
@@ -591,11 +601,7 @@ pub const ViewerState = struct {
     }
 
     pub fn rebuildActionMatches(self: *ViewerState) !void {
-        try self.palette.rebuildActionMatches(types.app_actions);
-    }
-
-    pub fn triggerAction(self: *ViewerState, action_id: types.AppActionId) !void {
-        try self.action_queue.append(self.allocator, action_id);
+        try self.palette.rebuildActionMatches();
     }
 
     pub fn getCurrentEntry(self: *ViewerState) ?CacheEntry {
@@ -617,7 +623,7 @@ pub const ViewerState = struct {
 
         const max_capacity = switch (active_type) {
             .files => self.image_list.items.len,
-            .actions => types.app_actions.len,
+            .actions => types.palette_action_items.len,
             else => 0,
         };
         if (max_capacity > 0) {
@@ -1346,7 +1352,9 @@ pub const ViewerState = struct {
         }
     }
 
-    pub fn processIpcCommands(self: *ViewerState, ipc_server: ?*ipc.IpcServer) void {
+    pub const IpcHandlerFn = *const fn (state: *ViewerState, command: []const u8, stream: std.Io.net.Stream) anyerror!void;
+
+    pub fn processIpcCommands(self: *ViewerState, handler_fn: ?IpcHandlerFn) void {
         for (self.pending_ipc_commands.items) |cmd_data| {
             var it = std.mem.tokenizeAny(u8, cmd_data.command, " \t\r\n");
             const cmd = it.next() orelse "";
@@ -1390,8 +1398,8 @@ pub const ViewerState = struct {
                     cmd_data.client_stream.close(self.io);
                 }
             } else {
-                if (ipc_server) |srv| {
-                    srv.executeCommand(self, cmd_data.command, cmd_data.client_stream) catch |err| {
+                if (handler_fn) |handler| {
+                    handler(self, cmd_data.command, cmd_data.client_stream) catch |err| {
                         var response_buf: [128]u8 = undefined;
                         const response = std.fmt.bufPrint(&response_buf, "ERR {s}\n", .{@errorName(err)}) catch "ERR ExecutionFailed\n";
                         var write_buf: [128]u8 = undefined;
