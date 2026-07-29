@@ -3,7 +3,7 @@
 ## 1. Single Canonical `@cImport` File
 
 - All C header imports (`SDL3`, `SDL3_ttf`, `SDL3_image`) MUST be consolidated inside a single canonical file: `src/sdl/c.zig`.
-- Do NOT issue `@cImport` calls in application modules (`src/app/`, `src/ui/`, `src/commands/`).
+- Do NOT issue `@cImport` calls in application modules (`src/app/`, `src/ui/`, `src/config/`).
 
 ## 2. Private C Module & Handle Encapsulation
 

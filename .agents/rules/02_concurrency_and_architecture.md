@@ -21,11 +21,12 @@
 - Producers MUST invoke `fs.wakeUpMainThread()` after pushing events into the queue.
 - Disown or null pointer payloads inside `AppEvent` prior to `defer evt.deinit()` execution.
 
-## 5. Action Queue & Deferred Commands (`AppActionId`)
+## 5. Zero-Dependency Intent Queue (`AppIntent`) & Co-Located Actions
 
-- UI buttons, menu items, and keyboard shortcuts must map to central `types.AppActionId` enums.
-- UI inputs MUST NOT execute state mutations inline; they push `AppActionId` identifiers into `ViewerState.action_queue` via `triggerAction(self, action_id)`.
-- `action_queue` items are drained and processed sequentially at the end of the frame update loop in `main.zig`.
+- UI buttons, menu items, keyboard shortcuts, and IPC socket commands MUST map directly to high-level `intents.AppIntent` payloads from the standalone `intents` module (`src/intents/root.zig`).
+- UI inputs MUST NOT execute state mutations inline; they push `AppIntent` values into `ViewerState.pending_intents` via `state.pushIntent(intent)`.
+- `pending_intents` is an allocation-free `std.ArrayListUnmanaged(AppIntent)` cleared frame-over-frame using `.clearRetainingCapacity()`.
+- Intent execution logic is co-located inside `src/app/actions.zig` (`executeIntent`), operating directly against `ViewerState` without needing an isolated top-level `commands` package.
 
 ## 6. Data-Driven State & Packed Struct Overlay Flags (`OverlayFlags`)
 
