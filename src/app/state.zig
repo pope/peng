@@ -27,6 +27,18 @@ const TextureScaleMode = intents.TextureScaleMode;
 const PaletteMode = intents.PaletteMode;
 const AppIntent = intents.AppIntent;
 
+const navigation = @import("navigation.zig");
+pub const NavigationState = navigation.NavigationState;
+pub const SlideshowMode = navigation.SlideshowMode;
+
+const ui_state = @import("ui_state.zig");
+pub const UiState = ui_state.UiState;
+pub const OverlayState = ui_state.OverlayState;
+pub const OverlayFlags = ui_state.OverlayFlags;
+pub const UiRenderMetrics = ui_state.UiRenderMetrics;
+pub const ScreenshotMode = ui_state.ScreenshotMode;
+pub const RollingStats = ui_state.RollingStats;
+
 pub const ElementTag = enum(usize) {
     none = 0,
     drop_zone_box = 1337,
@@ -58,44 +70,6 @@ pub const DragState = union(enum) {
         start_x: f32,
         start_y: f32,
     },
-};
-
-pub const RollingStats = struct {
-    samples: [60]f64 = [_]f64{0.0} ** 60,
-    count: usize = 0,
-    index: usize = 0,
-
-    pub fn addSample(self: *RollingStats, value: f64) void {
-        self.samples[self.index] = value;
-        self.index = (self.index + 1) % self.samples.len;
-        if (self.count < self.samples.len) {
-            self.count += 1;
-        }
-    }
-
-    pub fn getMeanAndStdev(self: *const RollingStats) struct { mean: f64, stdev: f64 } {
-        if (self.count == 0) return .{ .mean = 0.0, .stdev = 0.0 };
-        var sum: f64 = 0.0;
-        for (0..self.count) |i| {
-            sum += self.samples[i];
-        }
-        const mean = sum / @as(f64, @floatFromInt(self.count));
-        if (self.count < 2) return .{ .mean = mean, .stdev = 0.0 };
-
-        var variance_sum: f64 = 0.0;
-        for (0..self.count) |i| {
-            const diff = self.samples[i] - mean;
-            variance_sum += diff * diff;
-        }
-        const variance = @max(0.0, variance_sum) / @as(f64, @floatFromInt(self.count - 1));
-        const stdev = @sqrt(variance);
-        return .{ .mean = mean, .stdev = stdev };
-    }
-
-    pub fn reset(self: *RollingStats) void {
-        self.count = 0;
-        self.index = 0;
-    }
 };
 
 pub const TextCacheKey = TextCacheModule.TextCacheKey;
@@ -147,46 +121,6 @@ pub fn matchesQueryLower(path: []const u8, query_lower: []const u8) bool {
     }
     return false;
 }
-
-/// Mutually exclusive state machine for automated image slideshow transitions.
-///
-/// Variants:
-/// - `inactive`: Slideshow is stopped. Timer memory and interval variables do not exist.
-/// - `active`: Slideshow is actively advancing images.
-///   - `interval_s`: Duration (in seconds) to display each image before transitioning.
-///   - `timer_ms`: Accumulated millisecond counter tracking progress toward the next slide transition.
-pub const SlideshowMode = union(enum) {
-    inactive,
-    active: struct {
-        interval_s: f32,
-        timer_ms: f32 = 0.0,
-    },
-
-    /// Advances the slideshow timer by `delta_ms`.
-    /// Returns `true` when the timer exceeds `interval_s`, triggering an image transition.
-    pub fn tick(self: *SlideshowMode, delta_ms: f32) bool {
-        switch (self.*) {
-            .inactive => return false,
-            .active => |*data| {
-                if (data.interval_s <= 0.0) return false;
-                data.timer_ms += delta_ms;
-                if (data.timer_ms >= data.interval_s * 1000.0) {
-                    data.timer_ms = 0.0;
-                    return true;
-                }
-                return false;
-            },
-        }
-    }
-
-    /// Resets the accumulated slide transition timer back to 0.0ms without deactivating the slideshow.
-    pub fn resetTimer(self: *SlideshowMode) void {
-        switch (self.*) {
-            .inactive => {},
-            .active => |*data| data.timer_ms = 0.0,
-        }
-    }
-};
 
 /// Encapsulates resources and state specific to an active windowed GUI session.
 ///
@@ -253,16 +187,6 @@ pub const DisplayState = union(enum) {
     }
 };
 
-/// Tagged union modeling IPC screenshot capture state.
-///
-/// Variants:
-/// - `idle`: No screenshot capture request is currently in progress.
-/// - `capturing`: A screenshot capture is currently executing for a connected IPC socket client.
-pub const ScreenshotMode = union(enum) {
-    idle,
-    capturing: screenshot.ActiveScreenshot,
-};
-
 /// Cohesive GPU context and render resources initialized for GPU-accelerated rendering.
 pub const RenderResources = struct {
     device: sdl.gpu.Device,
@@ -299,35 +223,6 @@ pub const RenderResources = struct {
     }
 };
 
-pub const OverlayFlags = packed struct(u8) {
-    show_info: bool = false,
-    show_stats: bool = false,
-    debug_show_thumb: bool = false,
-    mouse_inside: bool = true,
-    _padding: u4 = 0,
-};
-
-/// UI overlay visibility toggles and dragged positions.
-pub const OverlayState = struct {
-    show_info: bool = false,
-    show_stats: bool = false,
-    debug_show_thumb: bool = false,
-    info_offset_x: f32 = 20.0,
-    info_offset_y: f32 = 20.0,
-    stats_offset_x: f32 = -20.0,
-    stats_offset_y: f32 = 20.0,
-    mouse_inside: bool = true,
-    flags: OverlayFlags = .{},
-};
-
-/// UI render performance and batch statistics.
-pub const UiRenderMetrics = struct {
-    last_ui_render_time_ms: f64 = 0.0,
-    ui_render_stats: RollingStats = .{},
-    last_ui_vertex_count: usize = 0,
-    last_ui_batch_count: usize = 0,
-};
-
 /// Main Application State Architecture
 ///
 /// Single-Threaded ViewerState Model:
@@ -339,10 +234,11 @@ pub const UiRenderMetrics = struct {
 pub const ViewerState = struct {
     gpu: ?RenderResources = null,
 
-    directory_arena: std.heap.ArenaAllocator,
-    image_list: std.ArrayList([]const u8),
-    is_loading_files: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    current_index: ?usize = null,
+    // Domain Sub-States
+    viewport: types.ViewportParams = .{},
+    navigation: NavigationState,
+    ui: UiState,
+
     cache: CacheSlotMap,
     current_image_cache_hit: bool = false,
     allocator: std.mem.Allocator,
@@ -351,23 +247,14 @@ pub const ViewerState = struct {
     active_decode_threads: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     exiting: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     generation: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
-    palette: PaletteState,
-
-    // Sub-struct State Encapsulations
-    viewport: types.ViewportParams = .{},
-    overlays: OverlayState = .{},
-    metrics: UiRenderMetrics = .{},
-    rotation_map: std.StringHashMap(f32),
 
     // Tagged Union State Machines
     display: DisplayState = .headless,
-    slideshow: SlideshowMode = .inactive,
-    screenshot_mode: ScreenshotMode = .idle,
     drag_state: DragState = .none,
 
     running: bool = true,
     last_nav_time_ms: u64 = 0,
-    last_scanned_dir: std.ArrayList(u8) = .empty,
+    rotation_map: std.StringHashMap(f32),
     event_queue: events.MpscQueue(events.BackgroundEvent) = .{},
     pending_ipc_commands: std.ArrayListUnmanaged(*ipc.IpcCommandData) = .empty,
     pending_intents: std.ArrayListUnmanaged(AppIntent) = .empty,
@@ -384,10 +271,10 @@ pub const ViewerState = struct {
         return self.display.isFullscreen();
     }
     pub inline fn isSlideshowActive(self: *const ViewerState) bool {
-        return self.slideshow == .active;
+        return self.navigation.isSlideshowActive();
     }
     pub inline fn isBusy(self: *const ViewerState) bool {
-        return self.is_loading_files.load(.acquire) or (self.active_threads.load(.acquire) > 0) or self.isSlideshowActive();
+        return self.navigation.is_loading_files.load(.acquire) or (self.active_threads.load(.acquire) > 0) or self.isSlideshowActive();
     }
 
     pub fn readJpegExifOrientation(self: *const ViewerState, path: []const u8) ?f32 {
@@ -395,16 +282,16 @@ pub const ViewerState = struct {
     }
 
     pub fn setDebugShowThumb(self: *ViewerState, enable: bool) !void {
-        self.overlays.debug_show_thumb = enable;
+        self.ui.overlays.debug_show_thumb = enable;
         if (!enable) return;
 
         const entry = self.getCurrentEntry() orelse return;
         if (entry.thumb_gpu_texture != null) return;
 
-        const idx = self.current_index orelse return;
-        if (idx >= self.image_list.items.len) return;
+        const idx = self.navigation.current_index orelse return;
+        if (idx >= self.navigation.image_list.items.len) return;
 
-        const path = self.image_list.items[idx];
+        const path = self.navigation.image_list.items[idx];
         var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), self.io, path, .{}) catch return;
         defer file.close(self.io);
 
@@ -469,26 +356,16 @@ pub const ViewerState = struct {
             self.cache.deinit(self.allocator, null);
         }
 
-        switch (self.screenshot_mode) {
-            .idle => {},
-            .capturing => |*s| {
-                s.respondQuit(self.io, self.allocator);
-                self.screenshot_mode = .idle;
-            },
-        }
-
         for (self.pending_ipc_commands.items) |cmd_data| {
             self.allocator.free(cmd_data.command);
             self.allocator.destroy(cmd_data);
         }
-        self.last_scanned_dir.deinit(self.allocator);
+        self.navigation.deinit(self.allocator);
+        self.ui.deinit(self.io, self.allocator);
         self.pending_ipc_commands.deinit(self.allocator);
         self.pending_intents.deinit(self.allocator);
         self.event_queue.deinit(self.allocator, self.io);
-        self.image_list.deinit(self.allocator);
-        self.palette.deinit();
         self.rotation_map.deinit();
-        self.directory_arena.deinit();
     }
 
     /// Returns true if the application is still running and the background job's
@@ -597,15 +474,15 @@ pub const ViewerState = struct {
     }
 
     pub fn rebuildPaletteMatches(self: *ViewerState) !void {
-        try self.palette.rebuildFileMatches(self.image_list.items);
+        try self.ui.palette.rebuildFileMatches(self.navigation.image_list.items);
     }
 
     pub fn rebuildActionMatches(self: *ViewerState) !void {
-        try self.palette.rebuildActionMatches();
+        try self.ui.palette.rebuildActionMatches();
     }
 
     pub fn getCurrentEntry(self: *ViewerState) ?CacheEntry {
-        const idx = self.current_index orelse return null;
+        const idx = self.navigation.current_index orelse return null;
         if (self.cache.get(idx)) |entry| {
             return entry.*;
         }
@@ -613,21 +490,21 @@ pub const ViewerState = struct {
     }
 
     pub fn openPalette(self: *ViewerState, active_type: PaletteMode) !void {
-        self.palette.reset();
-        self.palette.mode = active_type;
-        self.palette.selected_idx = switch (active_type) {
-            .files => self.current_index orelse 0,
+        self.ui.palette.reset();
+        self.ui.palette.mode = active_type;
+        self.ui.palette.selected_idx = switch (active_type) {
+            .files => self.navigation.current_index orelse 0,
             else => 0,
         };
-        self.palette.selection_dirty = true;
+        self.ui.palette.selection_dirty = true;
 
         const max_capacity = switch (active_type) {
-            .files => self.image_list.items.len,
+            .files => self.navigation.image_list.items.len,
             .actions => types.palette_action_items.len,
             else => 0,
         };
         if (max_capacity > 0) {
-            try self.palette.matches.ensureTotalCapacity(self.allocator, max_capacity);
+            try self.ui.palette.matches.ensureTotalCapacity(self.allocator, max_capacity);
         }
 
         switch (active_type) {
@@ -635,26 +512,26 @@ pub const ViewerState = struct {
             .actions => try self.rebuildActionMatches(),
             .directory_navigator => {
                 const start_dir = blk: {
-                    if (self.current_index) |idx| {
-                        if (idx < self.image_list.items.len) {
-                            break :blk std.fs.path.dirname(self.image_list.items[idx]) orelse ".";
+                    if (self.navigation.current_index) |idx| {
+                        if (idx < self.navigation.image_list.items.len) {
+                            break :blk std.fs.path.dirname(self.navigation.image_list.items[idx]) orelse ".";
                         }
                     }
-                    if (self.last_scanned_dir.items.len > 0) {
-                        break :blk self.last_scanned_dir.items;
+                    if (self.navigation.last_scanned_dir.items.len > 0) {
+                        break :blk self.navigation.last_scanned_dir.items;
                     }
-                    if (self.palette.last_nav_dir.items.len > 0) {
-                        break :blk self.palette.last_nav_dir.items;
+                    if (self.ui.palette.last_nav_dir.items.len > 0) {
+                        break :blk self.ui.palette.last_nav_dir.items;
                     }
                     break :blk ".";
                 };
-                try self.palette.loadDirectoryEntries(self.io, start_dir);
-                while (self.palette.dir_items.items.len == 0) {
-                    const curr = self.palette.current_nav_dir.items;
+                try self.ui.palette.loadDirectoryEntries(self.io, start_dir);
+                while (self.ui.palette.dir_items.items.len == 0) {
+                    const curr = self.ui.palette.current_nav_dir.items;
                     var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
                     if (fs.getParentDirBuf(curr, &parent_buf)) |parent_dir| {
                         if (!std.mem.eql(u8, parent_dir, curr)) {
-                            try self.palette.loadDirectoryEntries(self.io, parent_dir);
+                            try self.ui.palette.loadDirectoryEntries(self.io, parent_dir);
                             continue;
                         }
                     }
@@ -675,7 +552,7 @@ pub const ViewerState = struct {
         } = null;
 
         for (self.cache.entries.items) |*entry| {
-            if (entry.status == .loaded_gpu and !self.overlays.debug_show_thumb) {
+            if (entry.status == .loaded_gpu and !self.ui.overlays.debug_show_thumb) {
                 if (entry.thumb_gpu_texture) |thumb_tex| {
                     if (self.gpu) |gpu_res| {
                         gpu_res.device.releaseTexture(thumb_tex);
@@ -732,7 +609,7 @@ pub const ViewerState = struct {
     }
 
     pub fn checkIdlePreload(self: *ViewerState) void {
-        if (self.image_list.items.len <= 1) return;
+        if (self.navigation.image_list.items.len <= 1) return;
         const now = sdl.timer.getTicks();
         if (now - self.last_nav_time_ms >= 150) {
             const entry_count = self.cache.entries.items.len;
@@ -744,10 +621,10 @@ pub const ViewerState = struct {
 
     pub fn updateCurrentRotation(self: *ViewerState) void {
         const path_opt = blk: {
-            const len = self.image_list.items.len;
-            const current_idx = self.current_index orelse break :blk null;
+            const len = self.navigation.image_list.items.len;
+            const current_idx = self.navigation.current_index orelse break :blk null;
             if (current_idx >= len) break :blk null;
-            break :blk self.image_list.items[current_idx];
+            break :blk self.navigation.image_list.items[current_idx];
         };
 
         const path = path_opt orelse {
@@ -823,7 +700,7 @@ pub const ViewerState = struct {
                             .thumb_upload_time_ms = entry.thumb_upload_time_ms,
                         },
                     };
-                    self.cache.enforceVramBudget(gpu_res.device, self.current_index, CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
+                    self.cache.enforceVramBudget(gpu_res.device, self.navigation.current_index, CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
                 } else {
                     gpu_res.device.releaseTexture(full_res.gpu_texture);
                 }
@@ -856,13 +733,13 @@ pub const ViewerState = struct {
     pub fn handleDirScannedEvent(self: *ViewerState, scanned_data: events.PathDiscoveredPayload) void {
         const current_gen = self.generation.load(.acquire);
         if (scanned_data.generation != current_gen) return;
-        const dup = self.directory_arena.allocator().dupe(u8, scanned_data.path) catch |err| {
+        const dup = self.navigation.directory_arena.allocator().dupe(u8, scanned_data.path) catch |err| {
             std.log.err("Failed to duplicate path '{s}' in directory arena: {}", .{ scanned_data.path, err });
             return;
         };
-        self.image_list.append(self.allocator, dup) catch |err| std.log.err("Failed to append discovered path to image_list: {}", .{err});
-        if (self.current_index == null and self.image_list.items.len > 0) {
-            self.current_index = 0;
+        self.navigation.image_list.append(self.allocator, dup) catch |err| std.log.err("Failed to append discovered path to image_list: {}", .{err});
+        if (self.navigation.current_index == null and self.navigation.image_list.items.len > 0) {
+            self.navigation.current_index = 0;
         }
     }
 
@@ -872,16 +749,16 @@ pub const ViewerState = struct {
 
         if (result_data.is_dir) {
             for (result_data.paths) |item| {
-                const dup = self.directory_arena.allocator().dupe(u8, item) catch |err| {
+                const dup = self.navigation.directory_arena.allocator().dupe(u8, item) catch |err| {
                     std.log.err("Failed to duplicate directory item '{s}': {}", .{ item, err });
                     continue;
                 };
-                self.image_list.append(self.allocator, dup) catch |err| {
+                self.navigation.image_list.append(self.allocator, dup) catch |err| {
                     std.log.err("Failed to append image '{s}' to list: {}", .{ dup, err });
                 };
             }
-            if (self.current_index == null and self.image_list.items.len > 0) {
-                self.current_index = 0;
+            if (self.navigation.current_index == null and self.navigation.image_list.items.len > 0) {
+                self.navigation.current_index = 0;
             }
         } else {
             var target_idx_in_dir: ?usize = null;
@@ -892,14 +769,14 @@ pub const ViewerState = struct {
                 }
             }
 
-            _ = self.directory_arena.reset(.retain_capacity);
-            self.image_list.clearRetainingCapacity();
+            _ = self.navigation.directory_arena.reset(.retain_capacity);
+            self.navigation.image_list.clearRetainingCapacity();
             for (result_data.paths, 0..) |item, i| {
-                const dup = self.directory_arena.allocator().dupe(u8, item) catch |err| {
+                const dup = self.navigation.directory_arena.allocator().dupe(u8, item) catch |err| {
                     std.log.err("Failed to duplicate directory item '{s}': {}", .{ item, err });
                     continue;
                 };
-                self.image_list.append(self.allocator, dup) catch |err| {
+                self.navigation.image_list.append(self.allocator, dup) catch |err| {
                     std.log.err("Failed to append image '{s}' to list: {}", .{ dup, err });
                 };
                 if (target_idx_in_dir == null and std.mem.eql(u8, item, result_data.target_path)) {
@@ -908,11 +785,11 @@ pub const ViewerState = struct {
             }
 
             if (target_idx_in_dir) |target_i| {
-                if (target_i < self.image_list.items.len) {
-                    self.current_index = target_i;
+                if (target_i < self.navigation.image_list.items.len) {
+                    self.navigation.current_index = target_i;
                 }
             } else {
-                self.current_index = 0;
+                self.navigation.current_index = 0;
             }
         }
 
@@ -967,11 +844,11 @@ pub const ViewerState = struct {
         self.resetZoomPan();
         self.updateCurrentRotation();
 
-        const len = self.image_list.items.len;
+        const len = self.navigation.image_list.items.len;
 
         if (len == 0) return;
 
-        const idx = self.current_index orelse return;
+        const idx = self.navigation.current_index orelse return;
         const gen = self.generation.load(.acquire);
 
         const now = sdl.timer.getTicks();
@@ -1066,8 +943,8 @@ pub const ViewerState = struct {
         // 4. Batch-fetch file paths
         var to_spawn_paths: [5]?[:0]const u8 = undefined;
         for (to_spawn_indices[0..to_spawn_count], 0..) |d, s_idx| {
-            if (d < self.image_list.items.len) {
-                to_spawn_paths[s_idx] = self.allocator.dupeZ(u8, self.image_list.items[d]) catch |err| blk: {
+            if (d < self.navigation.image_list.items.len) {
+                to_spawn_paths[s_idx] = self.allocator.dupeZ(u8, self.navigation.image_list.items[d]) catch |err| blk: {
                     std.log.err("updateCache: dupeZ failed for image index {d}: {}", .{ d, err });
                     break :blk null;
                 };
@@ -1140,33 +1017,15 @@ pub const ViewerState = struct {
     }
 
     pub fn next(self: *ViewerState) !void {
-        self.slideshow.resetTimer();
-        const len = self.image_list.items.len;
-
-        if (len == 0) return;
-        if (self.current_index) |idx| {
-            self.current_index = (idx + 1) % len;
-        } else {
-            self.current_index = 0;
+        if (self.navigation.nextIndex() != null) {
+            try self.updateCache();
         }
-        try self.updateCache();
     }
 
     pub fn prev(self: *ViewerState) !void {
-        self.slideshow.resetTimer();
-        const len = self.image_list.items.len;
-
-        if (len == 0) return;
-        if (self.current_index) |idx| {
-            if (idx == 0) {
-                self.current_index = len - 1;
-            } else {
-                self.current_index = idx - 1;
-            }
-        } else {
-            self.current_index = 0;
+        if (self.navigation.prevIndex() != null) {
+            try self.updateCache();
         }
-        try self.updateCache();
     }
 
     pub fn handlePathSelection(self: *ViewerState, path: []const u8) !void {
@@ -1184,24 +1043,24 @@ pub const ViewerState = struct {
         else
             std.fs.path.dirname(path) orelse ".";
 
-        self.last_scanned_dir.clearRetainingCapacity();
-        try self.last_scanned_dir.appendSlice(self.allocator, dir_target);
+        self.navigation.last_scanned_dir.clearRetainingCapacity();
+        try self.navigation.last_scanned_dir.appendSlice(self.allocator, dir_target);
 
         // Clear existing cache and rotation map before resetting directory_arena
         _ = self.generation.fetchAdd(1, .release);
         self.clearCache();
         self.rotation_map.clearRetainingCapacity();
-        self.image_list.clearRetainingCapacity();
-        _ = self.directory_arena.reset(.retain_capacity);
-        self.current_index = null;
+        self.navigation.image_list.clearRetainingCapacity();
+        _ = self.navigation.directory_arena.reset(.retain_capacity);
+        self.navigation.current_index = null;
 
         if (has_stat) {
             if (stat.kind == .directory) {
                 try fs.startAsyncPathScan(self, path, true);
             } else {
-                const dup = try self.directory_arena.allocator().dupe(u8, path);
-                try self.image_list.append(self.allocator, dup);
-                self.current_index = 0;
+                const dup = try self.navigation.directory_arena.allocator().dupe(u8, path);
+                try self.navigation.image_list.append(self.allocator, dup);
+                self.navigation.current_index = 0;
 
                 try self.updateCache();
 
@@ -1218,23 +1077,23 @@ pub const ViewerState = struct {
 
     pub fn processPaletteInput(self: *ViewerState, input: FrameInput) !bool {
         if (input.text_input) |text| {
-            if (self.palette.mode != .inactive) {
-                try self.palette.query.appendSlice(self.allocator, text);
-                self.palette.selected_idx = 0;
-                self.palette.selection_dirty = true;
-                switch (self.palette.mode) {
+            if (self.ui.palette.mode != .inactive) {
+                try self.ui.palette.query.appendSlice(self.allocator, text);
+                self.ui.palette.selected_idx = 0;
+                self.ui.palette.selection_dirty = true;
+                switch (self.ui.palette.mode) {
                     .files => try self.rebuildPaletteMatches(),
                     .actions => try self.rebuildActionMatches(),
-                    .directory_navigator => try self.palette.rebuildDirectoryMatches(),
+                    .directory_navigator => try self.ui.palette.rebuildDirectoryMatches(),
                     else => {},
                 }
             }
         }
 
         var palette_closed_this_frame = false;
-        if (input.mouse_left_clicked and self.palette.mode != .inactive) {
+        if (input.mouse_left_clicked and self.ui.palette.mode != .inactive) {
             const is_in_debug_panel = self.isPointerInDebugPanel(input);
-            const element_id = switch (self.palette.mode) {
+            const element_id = switch (self.ui.palette.mode) {
                 .files => "CommandPalette",
                 .actions => "ActionPalette",
                 .set_brightness => "BrightnessPalette",
@@ -1245,7 +1104,7 @@ pub const ViewerState = struct {
                 .inactive => unreachable,
             };
             if (!clay.pointerOver(clay.getElementId(element_id)) and !is_in_debug_panel) {
-                self.palette.mode = .inactive;
+                self.ui.palette.mode = .inactive;
                 stopTextInput(self.display);
                 palette_closed_this_frame = true;
             }
@@ -1270,16 +1129,16 @@ pub const ViewerState = struct {
             },
             .info => |inf| {
                 if (input.mouse_left_down) {
-                    self.overlays.info_offset_x = input.mouse_x - inf.start_x;
-                    self.overlays.info_offset_y = input.mouse_y - inf.start_y;
+                    self.ui.overlays.info_offset_x = input.mouse_x - inf.start_x;
+                    self.ui.overlays.info_offset_y = input.mouse_y - inf.start_y;
                 } else {
                     next_drag_state = .none;
                 }
             },
             .stats => |st| {
                 if (input.mouse_left_down) {
-                    self.overlays.stats_offset_x = input.mouse_x - st.start_x;
-                    self.overlays.stats_offset_y = input.mouse_y - st.start_y;
+                    self.ui.overlays.stats_offset_x = input.mouse_x - st.start_x;
+                    self.ui.overlays.stats_offset_y = input.mouse_y - st.start_y;
                 } else {
                     next_drag_state = .none;
                 }
@@ -1287,12 +1146,12 @@ pub const ViewerState = struct {
         }
 
         if (next_drag_state == .none and input.mouse_left_clicked and !palette_closed_this_frame) {
-            if (self.palette.mode == .inactive) {
+            if (self.ui.palette.mode == .inactive) {
                 const is_in_debug_panel = self.isPointerInDebugPanel(input);
-                if (self.overlays.show_info and !is_in_debug_panel and clay.pointerOver(clay.getElementId("InfoCard"))) {
-                    next_drag_state = .{ .info = .{ .start_x = input.mouse_x - self.overlays.info_offset_x, .start_y = input.mouse_y - self.overlays.info_offset_y } };
-                } else if (self.overlays.show_stats and !is_in_debug_panel and clay.pointerOver(clay.getElementId("StatsCard"))) {
-                    next_drag_state = .{ .stats = .{ .start_x = input.mouse_x - self.overlays.stats_offset_x, .start_y = input.mouse_y - self.overlays.stats_offset_y } };
+                if (self.ui.overlays.show_info and !is_in_debug_panel and clay.pointerOver(clay.getElementId("InfoCard"))) {
+                    next_drag_state = .{ .info = .{ .start_x = input.mouse_x - self.ui.overlays.info_offset_x, .start_y = input.mouse_y - self.ui.overlays.info_offset_y } };
+                } else if (self.ui.overlays.show_stats and !is_in_debug_panel and clay.pointerOver(clay.getElementId("StatsCard"))) {
+                    next_drag_state = .{ .stats = .{ .start_x = input.mouse_x - self.ui.overlays.stats_offset_x, .start_y = input.mouse_y - self.ui.overlays.stats_offset_y } };
                 } else if (!is_in_debug_panel and clay.pointerOver(clay.getElementId("Viewport"))) {
                     next_drag_state = .{ .viewport = .{ .last_x = input.pixMouseX(), .last_y = input.pixMouseY() } };
                 }
@@ -1303,7 +1162,7 @@ pub const ViewerState = struct {
 
     pub fn processZoomAtCursor(self: *ViewerState, input: FrameInput) void {
         if (input.scroll_delta_y != 0) {
-            if (self.palette.mode == .inactive and !self.isPointerInDebugPanel(input) and clay.pointerOver(clay.getElementId("Viewport"))) {
+            if (self.ui.palette.mode == .inactive and !self.isPointerInDebugPanel(input) and clay.pointerOver(clay.getElementId("Viewport"))) {
                 const old_zoom = self.viewport.zoom_factor;
                 self.viewport.zoom_factor = self.clampZoomFactor(self.viewport.zoom_factor + input.scroll_delta_y * 0.1);
 
@@ -1328,7 +1187,7 @@ pub const ViewerState = struct {
         self.updateCurrentRotation();
 
         // 0. Slideshow timer update
-        if (self.slideshow.tick(input.delta_time_ms)) {
+        if (self.navigation.slideshow.tick(input.delta_time_ms)) {
             try self.next();
         }
 
@@ -1366,7 +1225,7 @@ pub const ViewerState = struct {
                         writer.interface.writeAll("ERR PathTooLong\n") catch |err| std.log.warn("IPC screenshot response failed: {}", .{err});
                         writer.interface.flush() catch |err| std.log.warn("IPC flush failed: {}", .{err});
                         cmd_data.client_stream.close(self.io);
-                    } else if (self.screenshot_mode == .capturing) {
+                    } else if (self.ui.screenshot_mode == .capturing) {
                         var write_buf: [128]u8 = undefined;
                         var writer = cmd_data.client_stream.writer(self.io, &write_buf);
                         writer.interface.writeAll("ERR Busy\n") catch |err| std.log.warn("IPC screenshot response failed: {}", .{err});
@@ -1383,7 +1242,7 @@ pub const ViewerState = struct {
                             self.allocator.destroy(cmd_data);
                             continue;
                         };
-                        self.screenshot_mode = .{
+                        self.ui.screenshot_mode = .{
                             .capturing = screenshot.ActiveScreenshot{
                                 .path = dup_path,
                                 .stream = cmd_data.client_stream,
@@ -1417,7 +1276,7 @@ pub const ViewerState = struct {
     }
 
     pub fn handleScreenshotPostRender(self: *ViewerState, render_err: ?anyerror) void {
-        switch (self.screenshot_mode) {
+        switch (self.ui.screenshot_mode) {
             .idle => {},
             .capturing => |*s| {
                 if (render_err) |err| {
@@ -1425,7 +1284,7 @@ pub const ViewerState = struct {
                 } else {
                     s.respondOk(self.io, self.allocator);
                 }
-                self.screenshot_mode = .idle;
+                self.ui.screenshot_mode = .idle;
             },
         }
     }
@@ -1450,7 +1309,7 @@ pub const ViewerState = struct {
     }
 
     pub fn setPaletteMode(self: *ViewerState, mode: PaletteMode) void {
-        self.palette.mode = mode;
+        self.ui.palette.mode = mode;
     }
 
     pub fn requestQuit(self: *ViewerState) void {
@@ -1475,12 +1334,11 @@ test "ViewerState.clampZoomFactor bounds based on image dimensions" {
     _ = clay.initialize(clay.Arena.init(&test_clay_memory), .{ .w = 1024, .h = 768 }, .{});
 
     var state = ViewerState{
-        .directory_arena = std.heap.ArenaAllocator.init(std.testing.allocator),
-        .image_list = .empty,
+        .navigation = NavigationState.init(std.testing.allocator),
+        .ui = UiState.init(std.testing.allocator),
         .cache = .{},
         .allocator = std.testing.allocator,
         .io = std.Io.Threaded.global_single_threaded.io(),
-        .palette = PaletteState.init(std.testing.allocator),
         .rotation_map = .init(std.testing.allocator),
         .viewport = .{ .fit_mode = .none },
         .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
@@ -1509,7 +1367,7 @@ test "ViewerState.clampZoomFactor bounds based on image dimensions" {
             },
         },
     });
-    state.current_index = 0;
+    state.navigation.current_index = 0;
 
     // In .none mode on 4000x3000 image, base_scale is 1.0
     state.viewport.fit_mode = .none;
@@ -1592,12 +1450,11 @@ test "ViewerState.openPalette directory_navigator starting directory rules" {
     }
 
     var state = ViewerState{
-        .directory_arena = std.heap.ArenaAllocator.init(allocator),
-        .image_list = .empty,
+        .navigation = NavigationState.init(allocator),
+        .ui = UiState.init(allocator),
         .cache = .{},
         .allocator = allocator,
         .io = io,
-        .palette = PaletteState.init(allocator),
         .rotation_map = .init(allocator),
         .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
     };
@@ -1605,28 +1462,28 @@ test "ViewerState.openPalette directory_navigator starting directory rules" {
 
     // Rule 1: current_index is valid -> starting directory is dirname of current image
     const sample_path = tmp_dir ++ "/image1.jpg";
-    try state.image_list.append(allocator, sample_path);
-    state.current_index = 0;
+    try state.navigation.image_list.append(allocator, sample_path);
+    state.navigation.current_index = 0;
 
     try state.openPalette(.directory_navigator);
-    try std.testing.expectEqual(PaletteMode.directory_navigator, state.palette.mode);
-    try std.testing.expectEqualStrings(tmp_dir, state.palette.current_nav_dir.items);
+    try std.testing.expectEqual(PaletteMode.directory_navigator, state.ui.palette.mode);
+    try std.testing.expectEqualStrings(tmp_dir, state.ui.palette.current_nav_dir.items);
 
     // Rule 2: current_index is null -> starting directory remembers last_nav_dir
-    state.current_index = null;
+    state.navigation.current_index = null;
     try state.openPalette(.directory_navigator);
-    try std.testing.expectEqualStrings(tmp_dir, state.palette.current_nav_dir.items);
+    try std.testing.expectEqualStrings(tmp_dir, state.ui.palette.current_nav_dir.items);
 
     // Rule 3: current_index is null and last_nav_dir is empty -> starting directory falls back to "."
-    state.palette.last_nav_dir.clearRetainingCapacity();
+    state.ui.palette.last_nav_dir.clearRetainingCapacity();
     try state.openPalette(.directory_navigator);
-    try std.testing.expectEqualStrings(".", state.palette.current_nav_dir.items);
+    try std.testing.expectEqualStrings(".", state.ui.palette.current_nav_dir.items);
 
     // Rule 4: current_index out of bounds and last_nav_dir is empty -> starting directory falls back to "."
-    state.current_index = 999;
-    state.palette.last_nav_dir.clearRetainingCapacity();
+    state.navigation.current_index = 999;
+    state.ui.palette.last_nav_dir.clearRetainingCapacity();
     try state.openPalette(.directory_navigator);
-    try std.testing.expectEqualStrings(".", state.palette.current_nav_dir.items);
+    try std.testing.expectEqualStrings(".", state.ui.palette.current_nav_dir.items);
 }
 
 test "ViewerState.openPalette directory_navigator steps up if 0 subdirectories" {
@@ -1642,12 +1499,11 @@ test "ViewerState.openPalette directory_navigator steps up if 0 subdirectories" 
     }
 
     var state = ViewerState{
-        .directory_arena = std.heap.ArenaAllocator.init(allocator),
-        .image_list = .empty,
+        .navigation = NavigationState.init(allocator),
+        .ui = UiState.init(allocator),
         .cache = .{},
         .allocator = allocator,
         .io = io,
-        .palette = PaletteState.init(allocator),
         .rotation_map = .init(allocator),
         .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
     };
@@ -1655,17 +1511,17 @@ test "ViewerState.openPalette directory_navigator steps up if 0 subdirectories" 
 
     // Image in child_leaf (which has 0 subdirectories itself)
     const img_path = sub_leaf ++ "/photo.png";
-    try state.image_list.append(allocator, img_path);
-    state.current_index = 0;
+    try state.navigation.image_list.append(allocator, img_path);
+    state.navigation.current_index = 0;
 
     // openPalette should see sub_leaf has 0 subdirectories, so it steps up to tmp_dir and pre-selects child_leaf
     try state.openPalette(.directory_navigator);
-    try std.testing.expectEqualStrings(tmp_dir, state.palette.current_nav_dir.items);
+    try std.testing.expectEqualStrings(tmp_dir, state.ui.palette.current_nav_dir.items);
 
     // Verify child_leaf is selected
     var found_leaf_selected = false;
-    if (state.palette.selected_idx < state.palette.dir_items.items.len) {
-        if (std.mem.eql(u8, state.palette.dir_items.items[state.palette.selected_idx].name, "child_leaf")) {
+    if (state.ui.palette.selected_idx < state.ui.palette.dir_items.items.len) {
+        if (std.mem.eql(u8, state.ui.palette.dir_items.items[state.ui.palette.selected_idx].name, "child_leaf")) {
             found_leaf_selected = true;
         }
     }
@@ -1684,29 +1540,28 @@ test "ViewerState.openPalette steps up from top-level relative leaf dir without 
     }
 
     var state = ViewerState{
-        .directory_arena = std.heap.ArenaAllocator.init(allocator),
-        .image_list = .empty,
+        .navigation = NavigationState.init(allocator),
+        .ui = UiState.init(allocator),
         .cache = .{},
         .allocator = allocator,
         .io = io,
-        .palette = PaletteState.init(allocator),
         .rotation_map = .init(allocator),
         .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
     };
     defer state.deinit();
 
     const img_path = top_leaf ++ "/photo.png";
-    try state.image_list.append(allocator, img_path);
-    state.current_index = 0;
+    try state.navigation.image_list.append(allocator, img_path);
+    state.navigation.current_index = 0;
 
     try state.openPalette(.directory_navigator);
     // Should step up to "." because top_leaf has 0 subdirectories
-    try std.testing.expectEqualStrings(".", state.palette.current_nav_dir.items);
+    try std.testing.expectEqualStrings(".", state.ui.palette.current_nav_dir.items);
 
     // Verify top_leaf is pre-selected in "."
     var found_leaf_selected = false;
-    if (state.palette.selected_idx < state.palette.dir_items.items.len) {
-        if (std.mem.eql(u8, state.palette.dir_items.items[state.palette.selected_idx].name, top_leaf)) {
+    if (state.ui.palette.selected_idx < state.ui.palette.dir_items.items.len) {
+        if (std.mem.eql(u8, state.ui.palette.dir_items.items[state.ui.palette.selected_idx].name, top_leaf)) {
             found_leaf_selected = true;
         }
     }
@@ -1723,12 +1578,11 @@ test "ViewerState.isPointerInDebugPanel and click localization" {
     const io = std.Io.Threaded.global_single_threaded.io();
 
     var state = ViewerState{
-        .directory_arena = std.heap.ArenaAllocator.init(allocator),
-        .image_list = .empty,
+        .navigation = NavigationState.init(allocator),
+        .ui = UiState.init(allocator),
         .cache = .{},
         .allocator = allocator,
         .io = io,
-        .palette = PaletteState.init(allocator),
         .rotation_map = .init(allocator),
         .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
     };
@@ -1788,9 +1642,9 @@ test "ViewerState.isPointerInDebugPanel and click localization" {
     };
     try std.testing.expect(!state.isPointerInDebugPanel(input_outside));
 
-    state.palette.mode = .actions;
+    state.ui.palette.mode = .actions;
     try state.update(input_inside);
-    try std.testing.expect(state.palette.mode == .actions);
+    try std.testing.expect(state.ui.palette.mode == .actions);
 }
 
 test "ViewerState slideshow timer auto-advances slide" {
@@ -1798,21 +1652,20 @@ test "ViewerState slideshow timer auto-advances slide" {
     const io = std.Io.Threaded.global_single_threaded.io();
 
     var state = ViewerState{
-        .directory_arena = std.heap.ArenaAllocator.init(allocator),
-        .image_list = .empty,
+        .navigation = NavigationState.init(allocator),
+        .ui = UiState.init(allocator),
         .cache = .{},
         .allocator = allocator,
         .io = io,
-        .palette = PaletteState.init(allocator),
         .rotation_map = .init(allocator),
         .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
     };
     defer state.deinit();
 
-    try state.image_list.append(allocator, "img1.jpg");
-    try state.image_list.append(allocator, "img2.jpg");
-    state.current_index = 0;
-    state.slideshow = .{ .active = .{ .interval_s = 2.0 } };
+    try state.navigation.image_list.append(allocator, "img1.jpg");
+    try state.navigation.image_list.append(allocator, "img2.jpg");
+    state.navigation.current_index = 0;
+    state.navigation.slideshow = .{ .active = .{ .interval_s = 2.0 } };
 
     const frame_input_1s = types.FrameInput{
         .win_w = 100,
@@ -1839,11 +1692,11 @@ test "ViewerState slideshow timer auto-advances slide" {
     };
 
     try state.update(frame_input_1s);
-    try std.testing.expectEqual(@as(usize, 0), state.current_index.?);
+    try std.testing.expectEqual(@as(usize, 0), state.navigation.current_index.?);
 
     // Pass another second (total 2000ms >= 2.0s interval) -> advances to index 1
     try state.update(frame_input_1s);
-    try std.testing.expectEqual(@as(usize, 1), state.current_index.?);
+    try std.testing.expectEqual(@as(usize, 1), state.navigation.current_index.?);
 }
 
 test "RollingStats mean and stdev" {

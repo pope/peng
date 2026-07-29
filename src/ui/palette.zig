@@ -393,7 +393,7 @@ pub fn renderTextInputDialog(
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
 ) !void {
-    const palette = &state.palette;
+    const palette = &state.ui.palette;
     clay.UI()(.{
         .layout = .{
             .sizing = .{ .w = .grow, .h = .fixed(64) },
@@ -406,7 +406,7 @@ pub fn renderTextInputDialog(
         .corner_radius = .all(6),
     })({
         const raw_str = palette.query.items;
-        const total_count = state.image_list.items.len;
+        const total_count = state.navigation.image_list.items.len;
         switch (palette.mode) {
             .go_to_image => {
                 if (total_count == 0) {
@@ -421,7 +421,7 @@ pub fn renderTextInputDialog(
                         .font_size = 13,
                         .font_id = 0,
                     });
-                    const range_str = try std.fmt.allocPrint(frame_allocator, "Allowed range: 1 to {} (current: {})", .{ total_count, (state.current_index orelse 0) + 1 });
+                    const range_str = try std.fmt.allocPrint(frame_allocator, "Allowed range: 1 to {} (current: {})", .{ total_count, (state.navigation.current_index orelse 0) + 1 });
                     clay.text(range_str, .{
                         .color = theme.subtext1,
                         .font_size = 11,
@@ -430,7 +430,7 @@ pub fn renderTextInputDialog(
                 } else {
                     if (std.fmt.parseInt(usize, raw_str, 10)) |val| {
                         if (val >= 1 and val <= total_count) {
-                            const target_path = if (val - 1 < state.image_list.items.len) state.image_list.items[val - 1] else "";
+                            const target_path = if (val - 1 < state.navigation.image_list.items.len) state.navigation.image_list.items[val - 1] else "";
                             const raw_basename = std.fs.path.basename(target_path);
                             const display_filename = truncateFilename(frame_allocator, raw_basename, 492.0, 12, measure_data);
                             const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to go to {}: {s}", .{ val, display_filename });
@@ -622,7 +622,7 @@ pub fn renderSelectionList(
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
 ) !void {
-    const palette = &state.palette;
+    const palette = &state.ui.palette;
     const scroll_data = clay.cdefs.Clay_GetScrollContainerData(clay.getElementId(cfg.list_id));
     var scroll_offset = if (scroll_data.found) scroll_data.scroll_position.* else clay.Vector2{ .x = 0, .y = 0 };
 
@@ -705,7 +705,7 @@ pub fn renderSelectionList(
             })({
                 switch (palette.mode) {
                     .files => {
-                        const path = if (real_idx < state.image_list.items.len) state.image_list.items[real_idx] else "";
+                        const path = if (real_idx < state.navigation.image_list.items.len) state.navigation.image_list.items[real_idx] else "";
                         const basename = std.fs.path.basename(path);
                         const dirname = std.fs.path.dirname(path) orelse ".";
                         const query_str = palette.query.items;
@@ -1003,7 +1003,7 @@ pub fn renderSelectionList(
                 const old_type = palette.mode;
                 switch (palette.mode) {
                     .files => {
-                        state.current_index = real_idx;
+                        state.navigation.current_index = real_idx;
                         try state.updateCache();
                         palette.mode = .inactive;
                         stopTextInput(state.display);
@@ -1127,7 +1127,7 @@ pub fn renderPalette(
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
 ) !void {
-    const palette = &state.palette;
+    const palette = &state.ui.palette;
     if (palette.mode == .inactive) return;
 
     const cfg = getPaletteConfig(palette.mode);

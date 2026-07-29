@@ -196,8 +196,8 @@ pub fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
             .white_texture = resources.white_texture,
         },
 
-        .directory_arena = std.heap.ArenaAllocator.init(gpa),
-        .image_list = .empty,
+        .navigation = app.navigation.NavigationState.init(gpa),
+        .ui = app.ui_state.UiState.init(gpa),
         .cache = .{},
         .allocator = gpa,
         .io = init.io,
@@ -209,7 +209,6 @@ pub fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
                 .claimed = true,
             },
         },
-        .palette = app.state.PaletteState.init(gpa),
         .viewport = .{ .fit_mode = parsed.default_scale },
         .rotation_map = .init(gpa),
         .running = true,

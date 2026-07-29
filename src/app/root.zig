@@ -13,3 +13,5 @@ pub const screenshot = @import("screenshot.zig");
 pub const text_cache = @import("text_cache.zig");
 pub const gpu = @import("gpu.zig");
 pub const actions = @import("actions.zig");
+pub const navigation = @import("navigation.zig");
+pub const ui_state = @import("ui_state.zig");

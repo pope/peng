@@ -42,15 +42,15 @@ pub fn renderInfoOverlay(
     draw_h: f32,
     frame_allocator: std.mem.Allocator,
 ) !void {
-    if (!state.overlays.show_info) return;
+    if (!state.ui.overlays.show_info) return;
 
     var filename: []const u8 = "None";
     var display_dir: []const u8 = "N/A";
     const current_entry = state.getCurrentEntry();
 
-    if (state.current_index) |idx| {
-        if (idx < state.image_list.items.len) {
-            const path = state.image_list.items[idx];
+    if (state.navigation.current_index) |idx| {
+        if (idx < state.navigation.image_list.items.len) {
+            const path = state.navigation.image_list.items[idx];
             filename = std.fs.path.basename(path);
             const dirname = std.fs.path.dirname(path) orelse ".";
             display_dir = if (dirname.len > 35) try std.fmt.allocPrint(frame_allocator, "...{s}", .{dirname[dirname.len - 32 ..]}) else dirname;
@@ -114,9 +114,9 @@ pub fn renderInfoOverlay(
     var thumb_info_str: []const u8 = "N/A";
     if (current_entry) |entry| {
         var is_jpeg = std.mem.eql(u8, mime_type, "image/jpeg");
-        if (state.current_index) |idx| {
-            if (idx < state.image_list.items.len) {
-                const ext = std.fs.path.extension(state.image_list.items[idx]);
+        if (state.navigation.current_index) |idx| {
+            if (idx < state.navigation.image_list.items.len) {
+                const ext = std.fs.path.extension(state.navigation.image_list.items[idx]);
                 if (std.ascii.eqlIgnoreCase(ext, ".jpg") or std.ascii.eqlIgnoreCase(ext, ".jpeg")) {
                     is_jpeg = true;
                 }
@@ -165,8 +165,8 @@ pub fn renderInfoOverlay(
             .attach_to = .to_parent,
             .attach_points = .{ .element = .left_top, .parent = .left_top },
             .offset = .{
-                .x = state.overlays.info_offset_x,
-                .y = state.overlays.info_offset_y,
+                .x = state.ui.overlays.info_offset_x,
+                .y = state.ui.overlays.info_offset_y,
             },
             .z_index = 100,
         },
@@ -250,8 +250,7 @@ pub fn renderStatsOverlay(
     frame_allocator: std.mem.Allocator,
 ) !void {
     try renderInfoOverlay(state, draw_w, draw_h, frame_allocator);
-
-    if (!state.overlays.show_stats) return;
+    if (!state.ui.overlays.show_stats) return;
 
     const current_entry = state.getCurrentEntry();
 
@@ -306,8 +305,8 @@ pub fn renderStatsOverlay(
             .attach_to = .to_parent,
             .attach_points = .{ .element = .right_top, .parent = .right_top },
             .offset = .{
-                .x = state.overlays.stats_offset_x,
-                .y = state.overlays.stats_offset_y,
+                .x = state.ui.overlays.stats_offset_x,
+                .y = state.ui.overlays.stats_offset_y,
             },
             .z_index = 100,
         },
@@ -416,10 +415,10 @@ pub fn renderStatsOverlay(
         try renderStatRow("Mipmap Status", mipmap_status_str);
         try renderStatRow("Mipmap Gen", mipmap_time_str);
 
-        const render_stats = state.metrics.ui_render_stats.getMeanAndStdev();
+        const render_stats = state.ui.metrics.ui_render_stats.getMeanAndStdev();
         const ui_render_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ± {d:.2} ms", .{ render_stats.mean, render_stats.stdev });
-        const ui_batches_str = try std.fmt.allocPrint(frame_allocator, "{d}", .{state.metrics.last_ui_batch_count});
-        const ui_verts_str = try std.fmt.allocPrint(frame_allocator, "{d}", .{state.metrics.last_ui_vertex_count});
+        const ui_batches_str = try std.fmt.allocPrint(frame_allocator, "{d}", .{state.ui.metrics.last_ui_batch_count});
+        const ui_verts_str = try std.fmt.allocPrint(frame_allocator, "{d}", .{state.ui.metrics.last_ui_vertex_count});
         try renderStatRow("UI Render Pass", ui_render_str);
         try renderStatRow("UI Batches", ui_batches_str);
         try renderStatRow("UI Vertices", ui_verts_str);

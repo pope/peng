@@ -7,6 +7,8 @@ const Key = types.Key;
 const KeyModifiers = types.KeyModifiers;
 const FrameInput = types.FrameInput;
 const PaletteState = app_state.PaletteState;
+const NavigationState = @import("navigation.zig").NavigationState;
+const UiState = @import("ui_state.zig").UiState;
 const ViewerState = app_state.ViewerState;
 const startTextInput = app_state.startTextInput;
 const stopTextInput = app_state.stopTextInput;
@@ -220,10 +222,10 @@ pub fn pollFrameInput(
 fn handlePaletteReturnGoToImage(self: *ViewerState, raw_str: []const u8) !void {
     if (raw_str.len > 0) {
         if (std.fmt.parseInt(usize, raw_str, 10)) |v| {
-            if (v >= 1 and v <= self.image_list.items.len) {
-                self.current_index = v - 1;
+            if (v >= 1 and v <= self.navigation.image_list.items.len) {
+                self.navigation.current_index = v - 1;
                 try self.updateCache();
-                self.palette.mode = .inactive;
+                self.ui.palette.mode = .inactive;
                 stopTextInput(self.display);
             }
         } else |err| {
@@ -236,13 +238,13 @@ fn handlePaletteReturnSlideshow(self: *ViewerState, raw_str: []const u8) !void {
     if (raw_str.len > 0) {
         if (std.fmt.parseFloat(f32, raw_str)) |val| {
             if (!std.math.isNan(val) and !std.math.isInf(val) and val > 0.0) {
-                self.slideshow = .{
+                self.navigation.slideshow = .{
                     .active = .{
                         .interval_s = val,
                         .timer_ms = 0.0,
                     },
                 };
-                self.palette.mode = .inactive;
+                self.ui.palette.mode = .inactive;
                 stopTextInput(self.display);
             }
         } else |err| {
@@ -252,10 +254,10 @@ fn handlePaletteReturnSlideshow(self: *ViewerState, raw_str: []const u8) !void {
 }
 
 fn handlePaletteReturnDirectory(self: *ViewerState, mod: KeyModifiers) !void {
-    const palette = &self.palette;
+    const palette = &self.ui.palette;
     if (mod.shift) {
         try self.startAsyncPathScan(palette.current_nav_dir.items, true);
-        self.palette.reset();
+        self.ui.palette.reset();
         stopTextInput(self.display);
     } else {
         if (palette.selected_idx < palette.matches.items.len) {
@@ -263,7 +265,7 @@ fn handlePaletteReturnDirectory(self: *ViewerState, mod: KeyModifiers) !void {
             if (match_idx < palette.dir_items.items.len) {
                 const entry = palette.dir_items.items[match_idx];
                 try self.startAsyncPathScan(entry.full_path, true);
-                self.palette.reset();
+                self.ui.palette.reset();
                 stopTextInput(self.display);
             }
         }
@@ -275,7 +277,7 @@ pub fn handlePaletteKeys(
     key: Key,
     mod: KeyModifiers,
 ) !bool {
-    const palette = &self.palette;
+    const palette = &self.ui.palette;
 
     switch (key) {
         .escape => {
@@ -458,7 +460,7 @@ pub fn handleKeyDown(
     scale_x: f32,
     scale_y: f32,
 ) !void {
-    if (self.palette.mode != .inactive) {
+    if (self.ui.palette.mode != .inactive) {
         _ = try handlePaletteKeys(self, key, mod);
         return;
     }
@@ -518,24 +520,23 @@ test "handlePaletteKeys directory_navigator key interactions" {
     }
 
     var state = ViewerState{
-        .directory_arena = std.heap.ArenaAllocator.init(allocator),
-        .image_list = .empty,
+        .navigation = NavigationState.init(allocator),
+        .ui = UiState.init(allocator),
         .cache = .{},
         .allocator = allocator,
         .io = io,
-        .palette = PaletteState.init(allocator),
         .rotation_map = .init(allocator),
         .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
     };
     defer state.deinit();
 
     // 1. Open directory navigator at tmp_dir
-    try state.palette.loadDirectoryEntries(io, tmp_dir);
-    state.palette.mode = .directory_navigator;
+    try state.ui.palette.loadDirectoryEntries(io, tmp_dir);
+    state.ui.palette.mode = .directory_navigator;
 
     // Locate index of sub_no_images
     var match_idx_no_img: usize = 0;
-    for (state.palette.dir_items.items, 0..) |item, i| {
+    for (state.ui.palette.dir_items.items, 0..) |item, i| {
         if (std.mem.eql(u8, item.name, "sub_no_images")) {
             match_idx_no_img = i;
             break;
@@ -543,30 +544,30 @@ test "handlePaletteKeys directory_navigator key interactions" {
     }
 
     // Test Right key on sub_no_images -> navigate into folder
-    state.palette.selected_idx = match_idx_no_img;
+    state.ui.palette.selected_idx = match_idx_no_img;
     _ = try handlePaletteKeys(&state, .right, .{});
-    try std.testing.expectEqual(app_state.PaletteMode.directory_navigator, state.palette.mode);
-    try std.testing.expectEqualStrings(sub_no_img, state.palette.current_nav_dir.items);
-    try std.testing.expectEqual(@as(usize, 0), state.palette.query.items.len);
+    try std.testing.expectEqual(app_state.PaletteMode.directory_navigator, state.ui.palette.mode);
+    try std.testing.expectEqualStrings(sub_no_img, state.ui.palette.current_nav_dir.items);
+    try std.testing.expectEqual(@as(usize, 0), state.ui.palette.query.items.len);
 
     // Test Left key -> step up to parent directory, remembering sub_no_images
     _ = try handlePaletteKeys(&state, .left, .{});
-    try std.testing.expectEqual(app_state.PaletteMode.directory_navigator, state.palette.mode);
-    try std.testing.expectEqualStrings(tmp_dir, state.palette.current_nav_dir.items);
-    try std.testing.expectEqual(match_idx_no_img, state.palette.selected_idx);
+    try std.testing.expectEqual(app_state.PaletteMode.directory_navigator, state.ui.palette.mode);
+    try std.testing.expectEqualStrings(tmp_dir, state.ui.palette.current_nav_dir.items);
+    try std.testing.expectEqual(match_idx_no_img, state.ui.palette.selected_idx);
 
     // Test Enter key on sub_no_images -> starts async path scan for sub_no_images and closes palette
-    state.palette.selected_idx = match_idx_no_img;
+    state.ui.palette.selected_idx = match_idx_no_img;
     _ = try handlePaletteKeys(&state, .return_key, .{});
-    try std.testing.expectEqual(app_state.PaletteMode.inactive, state.palette.mode);
+    try std.testing.expectEqual(app_state.PaletteMode.inactive, state.ui.palette.mode);
 
     // Re-open palette
-    try state.palette.loadDirectoryEntries(io, tmp_dir);
-    state.palette.mode = .directory_navigator;
+    try state.ui.palette.loadDirectoryEntries(io, tmp_dir);
+    state.ui.palette.mode = .directory_navigator;
 
     // Test Shift+Enter key on current directory -> starts async path scan and closes palette
     _ = try handlePaletteKeys(&state, .return_key, .{ .shift = true });
-    try std.testing.expectEqual(app_state.PaletteMode.inactive, state.palette.mode);
+    try std.testing.expectEqual(app_state.PaletteMode.inactive, state.ui.palette.mode);
 }
 
 test "handlePaletteKeys stepping up from dot to parent directory preselects working dir" {
@@ -574,27 +575,26 @@ test "handlePaletteKeys stepping up from dot to parent directory preselects work
     const io = std.Io.Threaded.global_single_threaded.io();
 
     var state = ViewerState{
-        .directory_arena = std.heap.ArenaAllocator.init(allocator),
-        .image_list = .empty,
+        .navigation = NavigationState.init(allocator),
+        .ui = UiState.init(allocator),
         .cache = .{},
         .allocator = allocator,
         .io = io,
-        .palette = PaletteState.init(allocator),
         .rotation_map = .init(allocator),
         .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
     };
     defer state.deinit();
 
-    try state.palette.loadDirectoryEntries(io, ".");
-    state.palette.mode = .directory_navigator;
-    try std.testing.expectEqualStrings(".", state.palette.current_nav_dir.items);
+    try state.ui.palette.loadDirectoryEntries(io, ".");
+    state.ui.palette.mode = .directory_navigator;
+    try std.testing.expectEqualStrings(".", state.ui.palette.current_nav_dir.items);
 
     _ = try handlePaletteKeys(&state, .left, .{});
-    try std.testing.expectEqualStrings("..", state.palette.current_nav_dir.items);
+    try std.testing.expectEqualStrings("..", state.ui.palette.current_nav_dir.items);
 
     var found_cwd_selected = false;
-    if (state.palette.selected_idx < state.palette.dir_items.items.len) {
-        if (std.mem.eql(u8, state.palette.dir_items.items[state.palette.selected_idx].name, "peng")) {
+    if (state.ui.palette.selected_idx < state.ui.palette.dir_items.items.len) {
+        if (std.mem.eql(u8, state.ui.palette.dir_items.items[state.ui.palette.selected_idx].name, "peng")) {
             found_cwd_selected = true;
         }
     }

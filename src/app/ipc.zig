@@ -121,11 +121,11 @@ pub const IpcCommand = union(enum) {
             .thumb => |action| {
                 switch (action) {
                     .enable => {
-                        if (!state.overlays.debug_show_thumb) return .toggle_debug_thumb;
+                        if (!state.ui.overlays.debug_show_thumb) return .toggle_debug_thumb;
                         return null;
                     },
                     .disable => {
-                        if (state.overlays.debug_show_thumb) return .toggle_debug_thumb;
+                        if (state.ui.overlays.debug_show_thumb) return .toggle_debug_thumb;
                         return null;
                     },
                     .toggle => return .toggle_debug_thumb,

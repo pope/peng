@@ -32,7 +32,7 @@ pub fn renderFrame(
     state.prepareCacheTextures();
     const current_entry = state.getCurrentEntry();
 
-    const total_images = state.image_list.items.len;
+    const total_images = state.navigation.image_list.items.len;
 
     // Calculate Image Fitting Layout Boundaries
     var title_bar_h: f32 = 60.0;
@@ -225,7 +225,7 @@ pub fn renderFrame(
             @intCast(target_h),
             scale_x,
             scale_y,
-            &state.metrics,
+            &state.ui.metrics,
         );
         if (capture_filename) |filename| {
             cmd_buf_submitted = true;
@@ -264,9 +264,9 @@ pub fn updateWindowTitle(
 ) []const u8 {
     var raw_title: []const u8 = "Peng Image Viewer";
     if (total_images > 0) {
-        if (state.current_index) |idx| {
-            if (idx < state.image_list.items.len) {
-                const path = state.image_list.items[idx];
+        if (state.navigation.current_index) |idx| {
+            if (idx < state.navigation.image_list.items.len) {
+                const path = state.navigation.image_list.items[idx];
                 raw_title = std.fs.path.basename(path);
             }
         }
@@ -313,12 +313,12 @@ pub fn renderHeaderBar(
 
     const raw_title = updateWindowTitle(state, total_images, frame_allocator);
 
-    const is_loading = state.is_loading_files.load(.acquire);
+    const is_loading = state.navigation.is_loading_files.load(.acquire);
     var count_str: ?[]const u8 = null;
     if (total_images > 0) {
-        const idx = (state.current_index orelse 0) + 1;
+        const idx = (state.navigation.current_index orelse 0) + 1;
         const count_buf = try frame_allocator.alloc(u8, 128);
-        switch (state.slideshow) {
+        switch (state.navigation.slideshow) {
             .active => |s| {
                 count_str = try std.fmt.bufPrint(count_buf, "Image {} of {} [Slide Show {d:.1}s]", .{ idx, total_images, s.interval_s });
             },
@@ -448,7 +448,7 @@ pub fn renderViewport(
         .clip = .{ .horizontal = true, .vertical = true },
     })({
         if (current_entry) |entry| {
-            const show_thumb = (state.overlays.debug_show_thumb or entry.status != .loaded_gpu) and (entry.thumb_gpu_texture != null);
+            const show_thumb = (state.ui.overlays.debug_show_thumb or entry.status != .loaded_gpu) and (entry.thumb_gpu_texture != null);
             if (show_thumb) {
                 const thumb_tex = entry.thumb_gpu_texture.?;
                 clay.UI()(.{
@@ -523,7 +523,7 @@ pub fn renderViewport(
                     });
                 },
             }
-        } else if (state.is_loading_files.load(.acquire) or total_images > 0) {
+        } else if (state.navigation.is_loading_files.load(.acquire) or total_images > 0) {
             // Centered viewport loading screen while file discovery is active
             clay.UI()(.{
                 .layout = .{

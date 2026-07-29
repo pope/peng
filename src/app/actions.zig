@@ -45,34 +45,23 @@ pub fn executeIntent(self: *ViewerState, intent: intents.AppIntent) !void {
             var val = self.viewport.rotation_angle + 90.0;
             if (val >= 360.0) val -= 360.0;
             self.viewport.rotation_angle = val;
-            if (self.current_index) |idx| {
-                if (idx < self.image_list.items.len) {
-                    const path = self.image_list.items[idx];
-                    try self.rotation_map.put(path, self.viewport.rotation_angle);
-                }
+            if (self.navigation.getCurrentImagePath()) |path| {
+                try self.rotation_map.put(path, self.viewport.rotation_angle);
             }
         },
         .rotate_ccw => {
             var val = self.viewport.rotation_angle - 90.0;
             if (val < 0.0) val += 360.0;
             self.viewport.rotation_angle = val;
-            if (self.current_index) |idx| {
-                if (idx < self.image_list.items.len) {
-                    const path = self.image_list.items[idx];
-                    try self.rotation_map.put(path, self.viewport.rotation_angle);
-                }
+            if (self.navigation.getCurrentImagePath()) |path| {
+                try self.rotation_map.put(path, self.viewport.rotation_angle);
             }
         },
         .reset_rotation => {
-            if (self.current_index) |idx| {
-                if (idx < self.image_list.items.len) {
-                    const path = self.image_list.items[idx];
-                    const exif_rot = self.readJpegExifOrientation(path) orelse 0.0;
-                    self.viewport.rotation_angle = exif_rot;
-                    try self.rotation_map.put(path, self.viewport.rotation_angle);
-                } else {
-                    self.viewport.rotation_angle = 0.0;
-                }
+            if (self.navigation.getCurrentImagePath()) |path| {
+                const exif_rot = self.readJpegExifOrientation(path) orelse 0.0;
+                self.viewport.rotation_angle = exif_rot;
+                _ = self.rotation_map.remove(path);
             } else {
                 self.viewport.rotation_angle = 0.0;
             }
@@ -80,20 +69,18 @@ pub fn executeIntent(self: *ViewerState, intent: intents.AppIntent) !void {
         .next_image => try self.next(),
         .prev_image => try self.prev(),
         .first_image => {
-            if (self.image_list.items.len > 0) {
-                self.current_index = 0;
+            if (self.navigation.goToIndex(0) != null) {
                 try self.updateCache();
             }
         },
         .last_image => {
-            if (self.image_list.items.len > 0) {
-                self.current_index = self.image_list.items.len - 1;
+            if (self.navigation.image_list.items.len > 0) {
+                _ = self.navigation.goToIndex(self.navigation.image_list.items.len - 1);
                 try self.updateCache();
             }
         },
         .go_to_image => |idx| {
-            if (self.image_list.items.len > 0) {
-                self.current_index = @min(idx, self.image_list.items.len - 1);
+            if (self.navigation.goToIndex(idx) != null) {
                 try self.updateCache();
             }
         },
@@ -103,20 +90,20 @@ pub fn executeIntent(self: *ViewerState, intent: intents.AppIntent) !void {
             } else {
                 try self.openPalette(p.mode);
                 if (p.query) |q| {
-                    self.palette.query.clearRetainingCapacity();
-                    try self.palette.query.appendSlice(self.allocator, q);
-                    self.palette.selected_idx = 0;
-                    self.palette.selection_dirty = true;
-                    if (self.palette.mode == .actions) {
+                    self.ui.palette.query.clearRetainingCapacity();
+                    try self.ui.palette.query.appendSlice(self.allocator, q);
+                    self.ui.palette.selected_idx = 0;
+                    self.ui.palette.selection_dirty = true;
+                    if (self.ui.palette.mode == .actions) {
                         try self.rebuildActionMatches();
-                    } else if (self.palette.mode == .files) {
+                    } else if (self.ui.palette.mode == .files) {
                         try self.rebuildPaletteMatches();
                     }
                 }
             }
         },
-        .toggle_info => self.overlays.show_info = !self.overlays.show_info,
-        .toggle_stats => self.overlays.show_stats = !self.overlays.show_stats,
+        .toggle_info => self.ui.overlays.show_info = !self.ui.overlays.show_info,
+        .toggle_stats => self.ui.overlays.show_stats = !self.ui.overlays.show_stats,
         .toggle_fullscreen => {
             switch (self.display) {
                 .headless => {},
@@ -127,9 +114,9 @@ pub fn executeIntent(self: *ViewerState, intent: intents.AppIntent) !void {
             }
         },
         .toggle_debug_mode => clay.setDebugModeEnabled(!clay.isDebugModeEnabled()),
-        .toggle_debug_thumb => try self.setDebugShowThumb(!self.overlays.debug_show_thumb),
+        .toggle_debug_thumb => try self.setDebugShowThumb(!self.ui.overlays.debug_show_thumb),
         .start_slideshow => try self.openPalette(.set_slideshow_interval),
-        .stop_slideshow => self.slideshow = .inactive,
+        .stop_slideshow => self.navigation.slideshow = .inactive,
         .quit => self.requestQuit(),
     }
 }

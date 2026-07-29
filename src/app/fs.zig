@@ -331,7 +331,7 @@ fn stdinWorker(args: *StdinArgs) void {
     const gpa = args.gpa;
     const initial_gen = state.generation.load(.acquire);
     defer {
-        state.is_loading_files.store(false, .release);
+        state.navigation.is_loading_files.store(false, .release);
         wakeUpMainThread();
         state.allocator.destroy(args);
         _ = state.active_threads.fetchSub(1, .release);
@@ -370,14 +370,14 @@ pub fn readPipedStdin(state: *ViewerState, io: std.Io, gpa: std.mem.Allocator) !
         };
 
         _ = state.active_threads.fetchAdd(1, .monotonic);
-        state.is_loading_files.store(true, .release);
+        state.navigation.is_loading_files.store(true, .release);
 
         if (std.Thread.spawn(.{}, stdinWorker, .{args})) |t| {
             t.detach();
         } else |err| {
             std.log.err("std.Thread.spawn stdin worker failed: {}", .{err});
             _ = state.active_threads.fetchSub(1, .monotonic);
-            state.is_loading_files.store(false, .release);
+            state.navigation.is_loading_files.store(false, .release);
             state.allocator.destroy(args);
         }
     }
@@ -400,7 +400,7 @@ fn pathScanWorker(args: *PathScanArgs) void {
     const initial_gen = state.generation.load(.acquire);
 
     defer {
-        state.is_loading_files.store(false, .release);
+        state.navigation.is_loading_files.store(false, .release);
         wakeUpMainThread();
         gpa.free(target_path);
         gpa.destroy(args);
@@ -489,14 +489,14 @@ pub fn startAsyncPathScan(state: *ViewerState, path: []const u8, is_dir: bool) !
     };
 
     _ = state.active_threads.fetchAdd(1, .monotonic);
-    state.is_loading_files.store(true, .release);
+    state.navigation.is_loading_files.store(true, .release);
 
     if (std.Thread.spawn(.{}, pathScanWorker, .{args})) |t| {
         t.detach();
     } else |err| {
         std.log.err("std.Thread.spawn path scan worker failed: {}", .{err});
         _ = state.active_threads.fetchSub(1, .monotonic);
-        state.is_loading_files.store(false, .release);
+        state.navigation.is_loading_files.store(false, .release);
         state.allocator.free(dup_path);
         state.allocator.destroy(args);
     }

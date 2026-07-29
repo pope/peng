@@ -43,15 +43,15 @@ pub fn updateFrame(
         if (state.getCurrentEntry()) |entry| {
             break :blk (entry.status == .decoding or entry.status == .uploading);
         }
-        break :blk (state.current_index != null);
+        break :blk (state.navigation.current_index != null);
     };
-    const is_busy = state.is_loading_files.load(.acquire) or (state.active_threads.load(.acquire) > 0) or is_current_loading or bg_events_processed or state.isSlideshowActive();
+    const is_busy = state.navigation.is_loading_files.load(.acquire) or (state.active_threads.load(.acquire) > 0) or is_current_loading or bg_events_processed or state.isSlideshowActive();
     const input = try app.input.pollFrameInput(
         window,
         frame_allocator,
         last_time,
-        state.overlays.mouse_inside,
-        state.palette.mode != .inactive,
+        state.ui.overlays.mouse_inside,
+        state.ui.palette.mode != .inactive,
         parsed_test_mode or parsed_headless,
         is_busy,
     );
@@ -59,7 +59,7 @@ pub fn updateFrame(
     if (input.quit_requested) {
         state.running = false;
     }
-    state.overlays.mouse_inside = input.mouse_inside;
+    state.ui.overlays.mouse_inside = input.mouse_inside;
 
     // Process any pending IPC commands collected during event processing
     state.processIpcCommands(app.actions.handleIpcCommand);
@@ -72,12 +72,12 @@ pub fn updateFrame(
                 else => break :blk false,
             }
         }
-        break :blk (state.current_index != null);
+        break :blk (state.navigation.current_index != null);
     };
     if (needs_cache_update and state.active_decode_threads.load(.acquire) < app.state.ViewerState.getMaxConcurrentDecodes()) {
-        const count = state.image_list.items.len;
+        const count = state.navigation.image_list.items.len;
         if (count > 0) {
-            if (state.current_index == null) state.current_index = 0;
+            if (state.navigation.current_index == null) state.navigation.current_index = 0;
             state.updateCache() catch |err| std.log.err("Failed to update cache: {}", .{err});
         }
     }
@@ -115,16 +115,16 @@ pub fn updateFrame(
     state.checkIdlePreload();
 
     if (input.mouse_left_clicked) {
-        if (state.overlays.show_info and !state.isPointerInDebugPanel(input) and clay.pointerOver(clay.getElementId("InfoCloseBtn"))) {
-            state.overlays.show_info = false;
+        if (state.ui.overlays.show_info and !state.isPointerInDebugPanel(input) and clay.pointerOver(clay.getElementId("InfoCloseBtn"))) {
+            state.ui.overlays.show_info = false;
         }
-        if (state.overlays.show_stats and !state.isPointerInDebugPanel(input) and clay.pointerOver(clay.getElementId("StatsCloseBtn"))) {
-            state.overlays.show_stats = false;
+        if (state.ui.overlays.show_stats and !state.isPointerInDebugPanel(input) and clay.pointerOver(clay.getElementId("StatsCloseBtn"))) {
+            state.ui.overlays.show_stats = false;
         }
     }
 
     // Draw / Render
-    const capture_filename = switch (state.screenshot_mode) {
+    const capture_filename = switch (state.ui.screenshot_mode) {
         .idle => null,
         .capturing => |s| s.path,
     };
