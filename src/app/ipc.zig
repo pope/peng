@@ -103,7 +103,7 @@ pub const IpcCommand = union(enum) {
     quit,
     screenshot: []const u8,
 
-    pub fn toIntent(self: IpcCommand, state: *const ViewerState) ?intents.AppIntent {
+    pub fn toIntent(self: IpcCommand) ?intents.AppIntent {
         switch (self) {
             .zoom => |factor| return .{ .set_zoom = factor },
             .pan => |p| return .{ .set_pan = .{ .x = p.x, .y = p.y } },
@@ -120,21 +120,12 @@ pub const IpcCommand = union(enum) {
             },
             .thumb => |action| {
                 switch (action) {
-                    .enable => {
-                        if (!state.ui.overlays.debug_show_thumb) return .toggle_debug_thumb;
-                        return null;
-                    },
-                    .disable => {
-                        if (state.ui.overlays.debug_show_thumb) return .toggle_debug_thumb;
-                        return null;
-                    },
+                    .enable => return .{ .set_debug_thumb = true },
+                    .disable => return .{ .set_debug_thumb = false },
                     .toggle => return .toggle_debug_thumb,
                 }
             },
-            .debug => |enabled| {
-                if (clay.isDebugModeEnabled() != enabled) return .toggle_debug_mode;
-                return null;
-            },
+            .debug => |enabled| return .{ .set_debug_mode = enabled },
             .next => return .next_image,
             .prev => return .prev_image,
             .quit => return .quit,

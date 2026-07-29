@@ -1,3 +1,8 @@
+//! SDL3 Low-Level Platform Abstraction Module
+//!
+//! Idiomatic Zig wrappers around SDL3 C APIs for window management,
+//! GPU command buffers, event polling, surfaces, fonts, and timers.
+
 const c = @import("c.zig").c;
 pub const Rect = c.SDL_Rect;
 pub const FRect = c.SDL_FRect;

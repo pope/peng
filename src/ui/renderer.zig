@@ -4,7 +4,7 @@ const theme = @import("theme.zig");
 const sdl = @import("sdl");
 const app = @import("app");
 const app_state = app.state;
-const TextCacheKey = app.text_cache.TextCacheKey;
+const TextCacheKey = @import("text_cache.zig").TextCacheKey;
 
 pub const ZoomPan = struct {
     zoom_factor: f32 = 1.0,

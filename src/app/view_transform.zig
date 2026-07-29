@@ -1,5 +1,4 @@
 const std = @import("std");
-const types = @import("types.zig");
 const ScaleMode = @import("intents").ScaleMode;
 
 pub fn isAngle90or270(angle: f32) bool {

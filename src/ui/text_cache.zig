@@ -1,6 +1,12 @@
+//! GPU Text Texture Cache
+//!
+//! Provides hash-based caching and LRU eviction for rendered text textures
+//! to avoid re-rendering static UI labels every frame.
+
 const std = @import("std");
 const sdl = @import("sdl");
 
+/// Lookup key for cached text GPU textures.
 pub const TextCacheKey = struct {
     font_id: usize,
     font_size: u16,
@@ -8,6 +14,7 @@ pub const TextCacheKey = struct {
     hash: u64,
 };
 
+/// Cached text GPU texture entry with dimensions and frame last-used timestamp.
 pub const TextCacheValue = struct {
     texture: sdl.gpu.Texture,
     w: f32,
@@ -15,6 +22,7 @@ pub const TextCacheValue = struct {
     last_used_frame: usize,
 };
 
+/// Text GPU texture cache with LRU eviction.
 pub const TextCache = struct {
     map: std.AutoHashMapUnmanaged(TextCacheKey, TextCacheValue) = .empty,
 

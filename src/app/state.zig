@@ -5,8 +5,8 @@ const clay = @import("zclay");
 const types = @import("types.zig");
 const FrameInput = types.FrameInput;
 const app_input = @import("input.zig");
-const app_gpu = @import("gpu.zig");
-const TextCacheModule = @import("text_cache.zig");
+const graphics = @import("ui").graphics;
+const TextCacheModule = @import("ui").text_cache;
 const image = @import("image.zig");
 const fs = @import("fs.zig");
 const events = @import("events.zig");
@@ -16,7 +16,7 @@ const exif = @import("exif.zig");
 const screenshot = @import("screenshot.zig");
 const systems = @import("systems.zig");
 
-const uploadSurfaceToGpu = app_gpu.uploadSurfaceToGpu;
+const uploadSurfaceToGpu = graphics.uploadSurfaceToGpu;
 const CacheStatus = image.CacheStatus;
 const CacheEntry = image.CacheEntry;
 const CacheSlotMap = image.CacheSlotMap;
@@ -254,6 +254,7 @@ pub const ViewerState = struct {
     drag_state: DragState = .none,
 
     running: bool = true,
+    dirty: bool = true,
     last_nav_time_ms: u64 = 0,
     rotation_map: std.StringHashMap(f32),
     event_queue: events.MpscQueue(events.BackgroundEvent) = .{},

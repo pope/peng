@@ -9,7 +9,10 @@ const KeyModifiers = app_types.KeyModifiers;
 const ViewerState = app_state.ViewerState;
 const startTextInput = app_state.startTextInput;
 
+/// Central intent dispatcher. Maps an AppIntent variant to application state mutations
+/// and marks the application state dirty for re-rendering.
 pub fn executeIntent(self: *ViewerState, intent: intents.AppIntent) !void {
+    self.dirty = true;
     switch (intent) {
         .set_zoom => |factor| self.setZoom(factor),
         .zoom_in => {
@@ -103,7 +106,9 @@ pub fn executeIntent(self: *ViewerState, intent: intents.AppIntent) !void {
             }
         },
         .toggle_info => self.ui.overlays.show_info = !self.ui.overlays.show_info,
+        .set_info => |val| self.ui.overlays.show_info = val,
         .toggle_stats => self.ui.overlays.show_stats = !self.ui.overlays.show_stats,
+        .set_stats => |val| self.ui.overlays.show_stats = val,
         .toggle_fullscreen => {
             switch (self.display) {
                 .headless => {},
@@ -113,14 +118,26 @@ pub fn executeIntent(self: *ViewerState, intent: intents.AppIntent) !void {
                 },
             }
         },
+        .set_fullscreen => |val| {
+            switch (self.display) {
+                .headless => {},
+                .windowed => |*win| {
+                    win.is_fullscreen = val;
+                    win.handle.setFullscreen(val) catch |err| std.log.err("setFullscreen failed: {}", .{err});
+                },
+            }
+        },
         .toggle_debug_mode => clay.setDebugModeEnabled(!clay.isDebugModeEnabled()),
+        .set_debug_mode => |val| clay.setDebugModeEnabled(val),
         .toggle_debug_thumb => try self.setDebugShowThumb(!self.ui.overlays.debug_show_thumb),
+        .set_debug_thumb => |val| try self.setDebugShowThumb(val),
         .start_slideshow => try self.openPalette(.set_slideshow_interval),
         .stop_slideshow => self.navigation.slideshow = .inactive,
         .quit => self.requestQuit(),
     }
 }
 
+/// Parses raw string commands received over UNIX Domain Socket IPC stream and executes corresponding intents.
 pub fn handleIpcCommand(self: *ViewerState, command: []const u8, stream: std.Io.net.Stream) !void {
     const parsed = try ipc.IpcCommand.parse(command);
     switch (parsed) {
@@ -143,7 +160,7 @@ pub fn handleIpcCommand(self: *ViewerState, command: []const u8, stream: std.Io.
             try ipc.respondOk(self.io, stream);
         },
         else => {
-            if (parsed.toIntent(self)) |intent| {
+            if (parsed.toIntent()) |intent| {
                 try executeIntent(self, intent);
             }
             try ipc.respondOk(self.io, stream);

@@ -1,5 +1,4 @@
 const std = @import("std");
-const app = @import("app");
 const ScaleMode = @import("intents").ScaleMode;
 
 pub const ParsedArgs = struct {
