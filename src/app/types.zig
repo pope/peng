@@ -1,12 +1,43 @@
 const std = @import("std");
 const sdl = @import("sdl");
-
+const clay = @import("zclay");
 const intents = @import("intents");
+const image = @import("image.zig");
+const navigation = @import("navigation.zig");
+const ui_state = @import("ui_state.zig");
+const palette_mod = @import("palette.zig");
+const state_mod = @import("state.zig");
+
+/// Type-safe zoom factor wrapper protecting against zero-initialization, division-by-zero, and NaN.
+pub const ZoomFactor = struct {
+    value: f32 = 1.0,
+
+    pub const MIN: f32 = 0.01;
+    pub const MAX: f32 = 500.0;
+
+    pub fn init(raw: f32) ZoomFactor {
+        if (std.math.isNan(raw) or raw <= 0.0) {
+            return .{ .value = 1.0 };
+        }
+        return .{ .value = std.math.clamp(raw, MIN, MAX) };
+    }
+
+    pub fn get(self: ZoomFactor) f32 {
+        if (self.value <= 0.0 or std.math.isNan(self.value)) {
+            return 1.0;
+        }
+        return self.value;
+    }
+
+    pub fn ratioTo(self: ZoomFactor, new_zoom: ZoomFactor) f32 {
+        return new_zoom.get() / self.get();
+    }
+};
 
 /// Unified parameters describing image view transforms, color adjustments, and window fitting modes
 /// passed down to rendering pipelines.
 pub const ViewportParams = struct {
-    zoom_factor: f32 = 1.0,
+    zoom_factor: ZoomFactor = .{},
     pan_x: f32 = 0.0,
     pan_y: f32 = 0.0,
     rotation_angle: f32 = 0.0,
@@ -17,9 +48,12 @@ pub const ViewportParams = struct {
 
     /// Resets 2D zoom factor and pan offsets back to default values.
     pub fn reset(self: *ViewportParams) void {
-        self.zoom_factor = 1.0;
+        self.zoom_factor = .{};
         self.pan_x = 0.0;
         self.pan_y = 0.0;
+        self.brightness = 0.0;
+        self.contrast = 1.0;
+        self.fit_mode = .full;
     }
 
     /// Returns the integer scale mode identifier required by fragment shader uniform push constants.
@@ -28,11 +62,11 @@ pub const ViewportParams = struct {
     }
 };
 
-/// Plain data snapshot containing viewport dimensions, DPI scaling factors, and screen mode for frame layout/rendering.
+/// View parameters passed down to UI layout and rendering routines without exposing full ViewerState.
 pub const ViewParams = struct {
     viewport: ViewportParams = .{},
-    win_w: f32 = 1024.0,
-    win_h: f32 = 768.0,
+    win_w: f32 = 0.0,
+    win_h: f32 = 0.0,
     scale_x: f32 = 1.0,
     scale_y: f32 = 1.0,
     is_fullscreen: bool = false,
@@ -44,18 +78,18 @@ pub const UiViewModel = struct {
     total_images: usize = 0,
     current_index: ?usize = null,
     current_image_path: ?[]const u8 = null,
-    current_entry: ?@import("image.zig").CacheEntry = null,
+    current_entry: ?image.CacheEntry = null,
     is_loading_files: bool = false,
-    slideshow: @import("navigation.zig").SlideshowMode = .inactive,
-    overlays: @import("ui_state.zig").OverlayState = .{},
-    metrics: *@import("ui_state.zig").UiRenderMetrics,
+    slideshow: navigation.SlideshowMode = .inactive,
+    overlays: ui_state.OverlayState = .{},
+    metrics: *ui_state.UiRenderMetrics,
     viewport: ViewportParams = .{},
-    palette: *@import("palette.zig").PaletteState,
-    display: *@import("state.zig").DisplayState,
+    palette: *palette_mod.PaletteState,
+    display: *state_mod.DisplayState,
     gpa_allocator: std.mem.Allocator,
     io: std.Io,
-    cache_slot_map: *@import("image.zig").CacheSlotMap,
-    navigation: *@import("navigation.zig").NavigationState,
+    cache_slot_map: *image.CacheSlotMap,
+    navigation: *navigation.NavigationState,
     pending_intents: *std.ArrayListUnmanaged(intents.AppIntent),
     current_image_cache_hit: bool = false,
     debug_show_thumb: bool = false,
@@ -185,6 +219,13 @@ pub const FrameInput = struct {
 
     pub fn pixMouseY(self: FrameInput) f32 {
         return self.mouse_y * self.scale_y;
+    }
+
+    pub fn isPointerInDebugPanel(self: FrameInput) bool {
+        if (!clay.isDebugModeEnabled()) return false;
+        const debug_w = @as(f32, @floatFromInt(clay.Clay__debugViewWidth));
+        return self.mouse_x >= (self.win_w - debug_w) and self.mouse_x <= self.win_w and
+            self.mouse_y >= 0 and self.mouse_y <= self.win_h;
     }
 };
 

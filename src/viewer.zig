@@ -92,10 +92,10 @@ pub fn updateFrame(
     );
 
     if (input.mouse_left_clicked) {
-        if (state.ui.overlays.show_info and !state.isPointerInDebugPanel(input) and clay.pointerOver(clay.getElementId("InfoCloseBtn"))) {
+        if (state.ui.overlays.show_info and !input.isPointerInDebugPanel() and clay.pointerOver(clay.getElementId("InfoCloseBtn"))) {
             state.ui.overlays.show_info = false;
         }
-        if (state.ui.overlays.show_stats and !state.isPointerInDebugPanel(input) and clay.pointerOver(clay.getElementId("StatsCloseBtn"))) {
+        if (state.ui.overlays.show_stats and !input.isPointerInDebugPanel() and clay.pointerOver(clay.getElementId("StatsCloseBtn"))) {
             state.ui.overlays.show_stats = false;
         }
     }

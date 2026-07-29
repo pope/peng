@@ -99,14 +99,14 @@ pub fn renderInfoOverlay(
             else => 0.0,
         };
         if (entry_w > 0) {
-            const effective_zoom = (draw_w * ui_model.viewport.zoom_factor) / entry_w;
+            const effective_zoom = (draw_w * ui_model.viewport.zoom_factor.get()) / entry_w;
             const pixel_zoom_pct = effective_zoom * 100.0;
             zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x ({d:.0}%)", .{ effective_zoom, pixel_zoom_pct });
         } else {
-            zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{ui_model.viewport.zoom_factor});
+            zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{ui_model.viewport.zoom_factor.get()});
         }
     } else {
-        zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{ui_model.viewport.zoom_factor});
+        zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{ui_model.viewport.zoom_factor.get()});
     }
 
     const pan_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}, {d:.0} px", .{ ui_model.viewport.pan_x, ui_model.viewport.pan_y });

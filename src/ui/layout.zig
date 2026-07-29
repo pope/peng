@@ -15,6 +15,7 @@ const renderer = @import("renderer.zig");
 const saveTextureToPng = @import("graphics.zig").saveTextureToPng;
 const ElementTag = app_state.ElementTag;
 const CacheEntry = app.image.CacheEntry;
+const view_transform = app.view_transform;
 const truncateFilename = @import("text_utils.zig").truncateFilename;
 const sdl3MeasureText = @import("graphics.zig").sdl3MeasureText;
 
@@ -79,7 +80,6 @@ pub fn renderFrame(
             const view_w = @max(available_width - padding * 2.0, 1.0);
             const view_h = @max(height - (title_bar_h + nav_bar_h) - padding * 2.0, 1.0);
 
-            const view_transform = @import("app").view_transform;
             const dims = view_transform.computeViewDims(src_w, src_h, view_params.viewport.rotation_angle, view_w, view_h, view_params.viewport.fit_mode);
             draw_w = dims.draw_w;
             draw_h = dims.draw_h;

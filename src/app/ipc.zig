@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const sdl = @import("sdl");
 const app_state = @import("state.zig");
 const ViewerState = app_state.ViewerState;
@@ -11,7 +12,6 @@ const clay = @import("zclay");
 extern "kernel32" fn GetCurrentProcessId() callconv(std.builtin.CallingConvention.winapi) u32;
 
 fn getProcessId() u32 {
-    const builtin = @import("builtin");
     if (builtin.os.tag == .windows) {
         return GetCurrentProcessId();
     } else {
@@ -47,7 +47,6 @@ pub const IpcServer = struct {
     }
 
     pub fn deinit(self: *IpcServer, io: std.Io) void {
-        const builtin = @import("builtin");
         if (builtin.os.tag != .windows) {
             const pid = getProcessId();
             var path_buf: [128]u8 = undefined;

@@ -18,4 +18,4 @@ pub const screenshot = @import("screenshot.zig");
 pub const actions = @import("actions.zig");
 pub const navigation = @import("navigation.zig");
 pub const ui_state = @import("ui_state.zig");
-pub const systems = @import("systems.zig");
+pub const systems = @import("systems/root.zig");

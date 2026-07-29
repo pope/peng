@@ -235,8 +235,8 @@ fn appendImageCommand(
         dst_h = rect.w;
     }
     var dst_rect = rect;
-    dst_rect.w = dst_w * view_params.zoom_factor;
-    dst_rect.h = dst_h * view_params.zoom_factor;
+    dst_rect.w = dst_w * view_params.zoom_factor.get();
+    dst_rect.h = dst_h * view_params.zoom_factor.get();
     const center_x = rect.x + rect.w / 2.0;
     const center_y = rect.y + rect.h / 2.0;
     dst_rect.x = center_x - (dst_rect.w / 2.0) + view_params.pan_x;

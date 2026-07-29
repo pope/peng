@@ -85,8 +85,10 @@ pub fn computeViewDims(raw_w: f32, raw_h: f32, rotation_angle: f32, view_w: f32,
     };
 }
 
-pub fn clampZoomFactor(base_scale: f32, factor: f32) f32 {
+const ZoomFactor = @import("types.zig").ZoomFactor;
+
+pub fn clampZoomFactor(base_scale: f32, factor: f32) ZoomFactor {
     const min_factor = if (base_scale > 0.0) 0.1 / base_scale else 0.1;
     const max_factor = if (base_scale > 0.0) 10.0 / base_scale else 10.0;
-    return std.math.clamp(factor, min_factor, max_factor);
+    return ZoomFactor.init(std.math.clamp(factor, min_factor, max_factor));
 }

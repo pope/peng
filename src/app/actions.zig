@@ -1,4 +1,5 @@
 const std = @import("std");
+const sdl = @import("sdl");
 const clay = @import("zclay");
 const app_state = @import("state.zig");
 const intents = @import("intents");
@@ -17,15 +18,17 @@ pub fn executeIntent(self: *ViewerState, intent: intents.AppIntent) !void {
         .set_zoom => |factor| self.setZoom(factor),
         .zoom_in => {
             const old_zoom = self.viewport.zoom_factor;
-            self.viewport.zoom_factor = self.clampZoomFactor(self.viewport.zoom_factor + 0.5);
-            self.viewport.pan_x *= (self.viewport.zoom_factor / old_zoom);
-            self.viewport.pan_y *= (self.viewport.zoom_factor / old_zoom);
+            self.viewport.zoom_factor = self.clampZoomFactor(old_zoom.get() + 0.5);
+            const ratio = old_zoom.ratioTo(self.viewport.zoom_factor);
+            self.viewport.pan_x *= ratio;
+            self.viewport.pan_y *= ratio;
         },
         .zoom_out => {
             const old_zoom = self.viewport.zoom_factor;
-            self.viewport.zoom_factor = self.clampZoomFactor(self.viewport.zoom_factor - 0.5);
-            self.viewport.pan_x *= (self.viewport.zoom_factor / old_zoom);
-            self.viewport.pan_y *= (self.viewport.zoom_factor / old_zoom);
+            self.viewport.zoom_factor = self.clampZoomFactor(old_zoom.get() - 0.5);
+            const ratio = old_zoom.ratioTo(self.viewport.zoom_factor);
+            self.viewport.pan_x *= ratio;
+            self.viewport.pan_y *= ratio;
         },
         .set_pan => |p| self.setPan(p.x, p.y),
         .reset_zoom => self.resetZoomPan(),
@@ -142,7 +145,6 @@ pub fn handleIpcCommand(self: *ViewerState, command: []const u8, stream: std.Io.
     const parsed = try ipc.IpcCommand.parse(command);
     switch (parsed) {
         .wait_load => {
-            const sdl = @import("sdl");
             var attempts: u32 = 0;
             while (attempts < 1000) : (attempts += 1) {
                 _ = self.processBackgroundEvents();
@@ -171,6 +173,6 @@ pub fn handleIpcCommand(self: *ViewerState, command: []const u8, stream: std.Io.
 test "palette_action_items metadata" {
     const nav_item = app_types.palette_action_items[6];
     try std.testing.expectEqualStrings("Navigate Directories...", nav_item.name);
-    try std.testing.expectEqualStrings("Ctrl+d", nav_item.shortcut_text);
+    try std.testing.expectEqualStrings("Ctrl+O", nav_item.shortcut_text);
     try std.testing.expect(nav_item.show_in_palette);
 }

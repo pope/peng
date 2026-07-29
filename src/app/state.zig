@@ -15,6 +15,7 @@ const ipc = @import("ipc.zig");
 const exif = @import("exif.zig");
 const screenshot = @import("screenshot.zig");
 const systems = @import("systems.zig");
+const view_transform = @import("view_transform.zig");
 
 const uploadSurfaceToGpu = graphics.uploadSurfaceToGpu;
 const CacheStatus = image.CacheStatus;
@@ -425,22 +426,17 @@ pub const ViewerState = struct {
         const view_w = @max(available_width, 1.0);
         const view_h = @max(win_h - title_bar_h, 1.0);
 
-        const view_transform = @import("view_transform.zig");
         const dims = view_transform.computeViewDims(raw_w, raw_h, self.viewport.rotation_angle, view_w, view_h, self.viewport.fit_mode);
         return dims.base_scale;
     }
 
     pub fn isPointerInDebugPanel(self: *const ViewerState, input: FrameInput) bool {
         _ = self;
-        if (!clay.isDebugModeEnabled()) return false;
-        const debug_w = @as(f32, @floatFromInt(clay.Clay__debugViewWidth));
-        return input.mouse_x >= (input.win_w - debug_w) and input.mouse_x <= input.win_w and
-            input.mouse_y >= 0 and input.mouse_y <= input.win_h;
+        return input.isPointerInDebugPanel();
     }
 
-    pub fn clampZoomFactor(self: *ViewerState, new_factor: f32) f32 {
+    pub fn clampZoomFactor(self: *ViewerState, new_factor: f32) types.ZoomFactor {
         const base_scale = self.getBaseScale();
-        const view_transform = @import("view_transform.zig");
         return view_transform.clampZoomFactor(base_scale, new_factor);
     }
 
@@ -1114,77 +1110,6 @@ pub const ViewerState = struct {
         return palette_closed_this_frame;
     }
 
-    pub fn processDragState(self: *ViewerState, input: FrameInput, palette_closed_this_frame: bool) void {
-        var next_drag_state = self.drag_state;
-        switch (next_drag_state) {
-            .none => {},
-            .viewport => |v| {
-                if (input.mouse_left_down) {
-                    const dx = input.pixMouseX() - v.last_x;
-                    const dy = input.pixMouseY() - v.last_y;
-                    self.viewport.pan_x += dx;
-                    self.viewport.pan_y += dy;
-                    next_drag_state = .{ .viewport = .{ .last_x = input.pixMouseX(), .last_y = input.pixMouseY() } };
-                } else {
-                    next_drag_state = .none;
-                }
-            },
-            .info => |inf| {
-                if (input.mouse_left_down) {
-                    self.ui.overlays.info_offset_x = input.mouse_x - inf.start_x;
-                    self.ui.overlays.info_offset_y = input.mouse_y - inf.start_y;
-                } else {
-                    next_drag_state = .none;
-                }
-            },
-            .stats => |st| {
-                if (input.mouse_left_down) {
-                    self.ui.overlays.stats_offset_x = input.mouse_x - st.start_x;
-                    self.ui.overlays.stats_offset_y = input.mouse_y - st.start_y;
-                } else {
-                    next_drag_state = .none;
-                }
-            },
-        }
-
-        if (next_drag_state == .none and input.mouse_left_clicked and !palette_closed_this_frame) {
-            if (self.ui.palette.mode == .inactive) {
-                const is_in_debug_panel = self.isPointerInDebugPanel(input);
-                if (self.ui.overlays.show_info and !is_in_debug_panel and clay.pointerOver(clay.getElementId("InfoCard"))) {
-                    next_drag_state = .{ .info = .{ .start_x = input.mouse_x - self.ui.overlays.info_offset_x, .start_y = input.mouse_y - self.ui.overlays.info_offset_y } };
-                } else if (self.ui.overlays.show_stats and !is_in_debug_panel and clay.pointerOver(clay.getElementId("StatsCard"))) {
-                    next_drag_state = .{ .stats = .{ .start_x = input.mouse_x - self.ui.overlays.stats_offset_x, .start_y = input.mouse_y - self.ui.overlays.stats_offset_y } };
-                } else if (!is_in_debug_panel and clay.pointerOver(clay.getElementId("Viewport"))) {
-                    next_drag_state = .{ .viewport = .{ .last_x = input.pixMouseX(), .last_y = input.pixMouseY() } };
-                }
-            }
-        }
-        self.drag_state = next_drag_state;
-    }
-
-    pub fn processZoomAtCursor(self: *ViewerState, input: FrameInput) void {
-        if (input.scroll_delta_y != 0) {
-            if (self.ui.palette.mode == .inactive and !self.isPointerInDebugPanel(input) and clay.pointerOver(clay.getElementId("Viewport"))) {
-                const old_zoom = self.viewport.zoom_factor;
-                self.viewport.zoom_factor = self.clampZoomFactor(self.viewport.zoom_factor + input.scroll_delta_y * 0.1);
-
-                const available_width = if (clay.isDebugModeEnabled()) @max(input.win_w - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0) else input.win_w;
-                const cx = available_width / 2.0;
-                var title_bar_h: f32 = 60.0;
-                if (self.isFullscreen()) {
-                    title_bar_h = 0;
-                }
-                const cy = title_bar_h + ((input.win_h - title_bar_h) / 2.0);
-
-                const rel_x = (input.mouse_x - cx) * input.scale_x;
-                const rel_y = (input.mouse_y - cy) * input.scale_y;
-
-                self.viewport.pan_x = rel_x - (rel_x - self.viewport.pan_x) * (self.viewport.zoom_factor / old_zoom);
-                self.viewport.pan_y = rel_y - (rel_y - self.viewport.pan_y) * (self.viewport.zoom_factor / old_zoom);
-            }
-        }
-    }
-
     pub fn update(self: *ViewerState, input: FrameInput) !void {
         self.updateCurrentRotation();
 
@@ -1347,8 +1272,8 @@ test "ViewerState.clampZoomFactor bounds based on image dimensions" {
 
     // Default base_scale without loaded image is 1.0
     try std.testing.expectEqual(@as(f32, 1.0), state.getBaseScale());
-    try std.testing.expectEqual(@as(f32, 10.0), state.clampZoomFactor(15.0));
-    try std.testing.expectEqual(@as(f32, 0.1), state.clampZoomFactor(0.05));
+    try std.testing.expectEqual(@as(f32, 10.0), state.clampZoomFactor(15.0).get());
+    try std.testing.expectEqual(@as(f32, 0.1), state.clampZoomFactor(0.05).get());
 
     // Test with loaded CPU image entry
     const surf = sdl.Surface.create(4000, 3000, sdl.PixelFormat.rgba32) orelse unreachable;
@@ -1374,7 +1299,7 @@ test "ViewerState.clampZoomFactor bounds based on image dimensions" {
     const base_none = state.getBaseScale();
     try std.testing.expectEqual(@as(f32, 1.0), base_none);
     const clamped_max_none = state.clampZoomFactor(15.0);
-    try std.testing.expectEqual(@as(f32, 10.0), base_none * clamped_max_none);
+    try std.testing.expectEqual(@as(f32, 10.0), base_none * clamped_max_none.get());
 
     // In .full mode in default 1024x708 viewport
     state.viewport.fit_mode = .full;
@@ -1382,10 +1307,10 @@ test "ViewerState.clampZoomFactor bounds based on image dimensions" {
     try std.testing.expect(base_full < 1.0);
     const clamped_max_full = state.clampZoomFactor(100.0);
     // Effective max zoom level (base_scale * zoom_factor) must be 10.0x of actual image size
-    try std.testing.expectApproxEqAbs(@as(f32, 10.0), base_full * clamped_max_full, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 10.0), base_full * clamped_max_full.get(), 0.001);
     const clamped_min_full = state.clampZoomFactor(0.001);
     // Effective min zoom level (base_scale * zoom_factor) must be 0.1x of actual image size
-    try std.testing.expectApproxEqAbs(@as(f32, 0.1), base_full * clamped_min_full, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.1), base_full * clamped_min_full.get(), 0.001);
 }
 
 test "ViewerState.updateCurrentRotation syncs EXIF orientation" {

@@ -465,7 +465,7 @@ pub fn handleKeyDown(
         return;
     }
 
-    const action = mapKeyToAction(key, mod, self.viewport.zoom_factor > 1.0);
+    const action = mapKeyToAction(key, mod, self.viewport.zoom_factor.get() > 1.0);
     switch (action) {
         .none => {},
         .pan => |p| {
@@ -474,9 +474,10 @@ pub fn handleKeyDown(
         },
         .zoom => |z| {
             const old_zoom = self.viewport.zoom_factor;
-            self.viewport.zoom_factor = self.clampZoomFactor(self.viewport.zoom_factor + z.factor_delta);
-            self.viewport.pan_x *= (self.viewport.zoom_factor / old_zoom);
-            self.viewport.pan_y *= (self.viewport.zoom_factor / old_zoom);
+            self.viewport.zoom_factor = self.clampZoomFactor(old_zoom.get() + z.factor_delta);
+            const ratio = old_zoom.ratioTo(self.viewport.zoom_factor);
+            self.viewport.pan_x *= ratio;
+            self.viewport.pan_y *= ratio;
         },
         .trigger_intent => |intent| {
             try self.pushIntent(intent);
