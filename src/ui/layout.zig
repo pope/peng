@@ -5,7 +5,8 @@ const theme = @import("theme.zig");
 const app = @import("app");
 const app_state = app.state;
 const types = app.types;
-const ViewerState = app_state.ViewerState;
+const ViewParams = types.ViewParams;
+const UiViewModel = types.UiViewModel;
 const FrameInput = types.FrameInput;
 const MeasureTextUserData = types.MeasureTextUserData;
 const renderPalette = @import("palette.zig").renderPalette;
@@ -18,7 +19,9 @@ const truncateFilename = @import("text_utils.zig").truncateFilename;
 const sdl3MeasureText = @import("graphics.zig").sdl3MeasureText;
 
 pub fn renderFrame(
-    state: *ViewerState,
+    view_params: ViewParams,
+    ui_model: UiViewModel,
+    gpu_res: *app_state.RenderResources,
     input: FrameInput,
     frame_allocator: std.mem.Allocator,
     fonts: []const ?sdl.Font,
@@ -29,15 +32,14 @@ pub fn renderFrame(
     const height = input.win_h;
     const scale_x = input.scale_x;
     const scale_y = input.scale_y;
-    state.prepareCacheTextures();
-    const current_entry = state.getCurrentEntry();
+    const current_entry = ui_model.current_entry;
 
-    const total_images = state.navigation.image_list.items.len;
+    const total_images = ui_model.total_images;
 
     // Calculate Image Fitting Layout Boundaries
     var title_bar_h: f32 = 60.0;
     const nav_bar_h: f32 = 0.0;
-    if (state.isFullscreen()) {
+    if (view_params.is_fullscreen) {
         title_bar_h = 0;
     }
 
@@ -78,7 +80,7 @@ pub fn renderFrame(
             const view_h = @max(height - (title_bar_h + nav_bar_h) - padding * 2.0, 1.0);
 
             const view_transform = @import("app").view_transform;
-            const dims = view_transform.computeViewDims(src_w, src_h, state.viewport.rotation_angle, view_w, view_h, state.viewport.fit_mode);
+            const dims = view_transform.computeViewDims(src_w, src_h, view_params.viewport.rotation_angle, view_w, view_h, view_params.viewport.fit_mode);
             draw_w = dims.draw_w;
             draw_h = dims.draw_h;
         }
@@ -99,22 +101,21 @@ pub fn renderFrame(
         .background_color = theme.mantle,
     })({
         try renderPalette(
-            state,
-            input.mouse_left_clicked and !state.isPointerInDebugPanel(input),
+            ui_model,
+            input.mouse_left_clicked,
             frame_allocator,
             measure_data,
         );
 
         try renderStatsOverlay(
-            state,
+            ui_model,
             draw_w,
             draw_h,
             frame_allocator,
         );
 
         try renderHeaderBar(
-            state,
-            total_images,
+            ui_model,
             available_width,
             title_bar_h,
             frame_allocator,
@@ -122,7 +123,7 @@ pub fn renderFrame(
         );
 
         renderViewport(
-            state,
+            ui_model,
             current_entry,
             draw_w,
             draw_h,
@@ -137,7 +138,7 @@ pub fn renderFrame(
     measure_data.is_debug_measuring = false;
 
     // Render Frame
-    const dev = if (state.gpu) |g| g.device else return error.GpuNotInitialized;
+    const dev = gpu_res.device;
     const cmd_wrapper = dev.acquireCommandBuffer() orelse return error.CommandBufferAcquisitionFailed;
     var cmd_buf_submitted = false;
     errdefer if (!cmd_buf_submitted) {
@@ -152,7 +153,7 @@ pub fn renderFrame(
         }
     }
 
-    const use_headless = !state.display.isClaimed();
+    const use_headless = !ui_model.display.isClaimed();
 
     var target_tex: ?sdl.gpu.Texture = null;
     var target_w: u32 = 0;
@@ -182,7 +183,7 @@ pub fn renderFrame(
     } else {
         var swap_w: u32 = 0;
         var swap_h: u32 = 0;
-        switch (state.display) {
+        switch (ui_model.display.*) {
             .headless => {},
             .windowed => |win| {
                 if (win.handle.waitAndAcquireSwapchainTexture(cmd_wrapper, &swap_w, &swap_h)) |swap_tex| {
@@ -210,22 +211,21 @@ pub fn renderFrame(
             }
             return;
         }
-        const gpu_res = if (state.gpu) |*g| g else return error.GpuNotInitialized;
         try renderer.renderClayCommands(
-            state.viewport,
+            view_params.viewport,
             gpu_res,
             cmd_wrapper,
             tex,
             fonts,
             render_commands,
-            state.allocator,
+            ui_model.gpa_allocator,
             frame_allocator,
             &temp_buffers,
             @intCast(target_w),
             @intCast(target_h),
             scale_x,
             scale_y,
-            &state.ui.metrics,
+            ui_model.metrics,
         );
         if (capture_filename) |filename| {
             cmd_buf_submitted = true;
@@ -258,21 +258,21 @@ pub fn renderFrame(
 }
 
 pub fn updateWindowTitle(
-    state: *ViewerState,
-    total_images: usize,
+    ui_model: UiViewModel,
     frame_allocator: std.mem.Allocator,
 ) []const u8 {
     var raw_title: []const u8 = "Peng Image Viewer";
+    const total_images = ui_model.total_images;
     if (total_images > 0) {
-        if (state.navigation.current_index) |idx| {
-            if (idx < state.navigation.image_list.items.len) {
-                const path = state.navigation.image_list.items[idx];
+        if (ui_model.current_index) |idx| {
+            if (idx < ui_model.navigation.image_list.items.len) {
+                const path = ui_model.navigation.image_list.items[idx];
                 raw_title = std.fs.path.basename(path);
             }
         }
     }
 
-    switch (state.display) {
+    switch (ui_model.display.*) {
         .headless => {},
         .windowed => |*win| {
             const title_changed = if (win.cached_title) |cached|
@@ -288,9 +288,9 @@ pub fn updateWindowTitle(
                 }
 
                 if (win.cached_title) |cached| {
-                    state.allocator.free(cached);
+                    ui_model.gpa_allocator.free(cached);
                 }
-                win.cached_title = state.allocator.dupe(u8, raw_title) catch |err| blk: {
+                win.cached_title = ui_model.gpa_allocator.dupe(u8, raw_title) catch |err| blk: {
                     std.log.err("Failed to update cached window title: {}", .{err});
                     break :blk null;
                 };
@@ -302,23 +302,23 @@ pub fn updateWindowTitle(
 }
 
 pub fn renderHeaderBar(
-    state: *ViewerState,
-    total_images: usize,
+    ui_model: UiViewModel,
     available_width: f32,
     title_bar_h: f32,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
 ) !void {
-    if (state.isFullscreen()) return;
+    if (ui_model.is_fullscreen) return;
 
-    const raw_title = updateWindowTitle(state, total_images, frame_allocator);
+    const raw_title = updateWindowTitle(ui_model, frame_allocator);
 
-    const is_loading = state.navigation.is_loading_files.load(.acquire);
+    const is_loading = ui_model.is_loading_files;
+    const total_images = ui_model.total_images;
     var count_str: ?[]const u8 = null;
     if (total_images > 0) {
-        const idx = (state.navigation.current_index orelse 0) + 1;
+        const idx = (ui_model.current_index orelse 0) + 1;
         const count_buf = try frame_allocator.alloc(u8, 128);
-        switch (state.navigation.slideshow) {
+        switch (ui_model.slideshow) {
             .active => |s| {
                 count_str = try std.fmt.bufPrint(count_buf, "Image {} of {} [Slide Show {d:.1}s]", .{ idx, total_images, s.interval_s });
             },
@@ -433,7 +433,7 @@ pub fn renderEmptyState() void {
 }
 
 pub fn renderViewport(
-    state: *ViewerState,
+    ui_model: UiViewModel,
     current_entry: ?CacheEntry,
     draw_w: f32,
     draw_h: f32,
@@ -448,7 +448,7 @@ pub fn renderViewport(
         .clip = .{ .horizontal = true, .vertical = true },
     })({
         if (current_entry) |entry| {
-            const show_thumb = (state.ui.overlays.debug_show_thumb or entry.status != .loaded_gpu) and (entry.thumb_gpu_texture != null);
+            const show_thumb = (ui_model.debug_show_thumb or entry.status != .loaded_gpu) and (entry.thumb_gpu_texture != null);
             if (show_thumb) {
                 const thumb_tex = entry.thumb_gpu_texture.?;
                 clay.UI()(.{
@@ -523,7 +523,7 @@ pub fn renderViewport(
                     });
                 },
             }
-        } else if (state.navigation.is_loading_files.load(.acquire) or total_images > 0) {
+        } else if (ui_model.is_loading_files or total_images > 0) {
             // Centered viewport loading screen while file discovery is active
             clay.UI()(.{
                 .layout = .{

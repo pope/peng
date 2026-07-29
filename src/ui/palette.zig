@@ -4,7 +4,7 @@ const sdl = @import("sdl");
 const app = @import("app");
 const app_state = app.state;
 const types = app.types;
-const ViewerState = app_state.ViewerState;
+const UiViewModel = types.UiViewModel;
 const PaletteState = app.palette.PaletteState;
 const stopTextInput = app_state.stopTextInput;
 
@@ -165,11 +165,11 @@ fn renderSearchInput(palette: *const PaletteState, placeholder: []const u8) void
 }
 
 pub fn renderTextInputDialog(
-    state: *ViewerState,
+    ui_model: UiViewModel,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
 ) !void {
-    const palette = &state.ui.palette;
+    const palette = ui_model.palette;
     clay.UI()(.{
         .layout = .{
             .sizing = .{ .w = .grow, .h = .fixed(64) },
@@ -182,7 +182,7 @@ pub fn renderTextInputDialog(
         .corner_radius = .all(6),
     })({
         const raw_str = palette.query.items;
-        const total_count = state.navigation.image_list.items.len;
+        const total_count = ui_model.navigation.image_list.items.len;
         switch (palette.mode) {
             .go_to_image => {
                 if (total_count == 0) {
@@ -197,7 +197,7 @@ pub fn renderTextInputDialog(
                         .font_size = 13,
                         .font_id = 0,
                     });
-                    const range_str = try std.fmt.allocPrint(frame_allocator, "Allowed range: 1 to {} (current: {})", .{ total_count, (state.navigation.current_index orelse 0) + 1 });
+                    const range_str = try std.fmt.allocPrint(frame_allocator, "Allowed range: 1 to {} (current: {})", .{ total_count, (ui_model.navigation.current_index orelse 0) + 1 });
                     clay.text(range_str, .{
                         .color = theme.subtext1,
                         .font_size = 11,
@@ -206,7 +206,7 @@ pub fn renderTextInputDialog(
                 } else {
                     if (std.fmt.parseInt(usize, raw_str, 10)) |val| {
                         if (val >= 1 and val <= total_count) {
-                            const target_path = if (val - 1 < state.navigation.image_list.items.len) state.navigation.image_list.items[val - 1] else "";
+                            const target_path = if (val - 1 < ui_model.navigation.image_list.items.len) ui_model.navigation.image_list.items[val - 1] else "";
                             const raw_basename = std.fs.path.basename(target_path);
                             const display_filename = truncateFilename(frame_allocator, raw_basename, 492.0, 12, measure_data);
                             const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to go to {}: {s}", .{ val, display_filename });
@@ -340,13 +340,13 @@ pub fn renderTextInputDialog(
 ///    offsets, border widths, and viewport edge hit-testing
 ///    (`clay.pointerOver`).
 pub fn renderSelectionList(
-    state: *ViewerState,
+    ui_model: UiViewModel,
     cfg: PaletteConfig,
     mouse_clicked: bool,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
 ) !void {
-    const palette = &state.ui.palette;
+    const palette = ui_model.palette;
     const scroll_data = clay.cdefs.Clay_GetScrollContainerData(clay.getElementId(cfg.list_id));
     var scroll_offset = if (scroll_data.found) scroll_data.scroll_position.* else clay.Vector2{ .x = 0, .y = 0 };
 
@@ -429,7 +429,7 @@ pub fn renderSelectionList(
             })({
                 switch (palette.mode) {
                     .files => {
-                        const path = if (real_idx < state.navigation.image_list.items.len) state.navigation.image_list.items[real_idx] else "";
+                        const path = if (real_idx < ui_model.navigation.image_list.items.len) ui_model.navigation.image_list.items[real_idx] else "";
                         const basename = std.fs.path.basename(path);
                         const dirname = std.fs.path.dirname(path) orelse ".";
                         const query_str = palette.query.items;
@@ -727,24 +727,28 @@ pub fn renderSelectionList(
                 const old_type = palette.mode;
                 switch (palette.mode) {
                     .files => {
-                        state.navigation.current_index = real_idx;
-                        try state.updateCache();
+                        ui_model.navigation.current_index = real_idx;
+                        ui_model.pending_intents.append(ui_model.gpa_allocator, .{ .go_to_image = real_idx }) catch |err| {
+                            std.log.err("Failed to push go_to_image intent: {}", .{err});
+                        };
                         palette.mode = .inactive;
-                        stopTextInput(state.display);
+                        stopTextInput(ui_model.display.*);
                     },
                     .actions => {
                         const item = types.palette_action_items[real_idx];
-                        try state.pushIntent(item.intent);
+                        ui_model.pending_intents.append(ui_model.gpa_allocator, item.intent) catch |err| {
+                            std.log.err("Failed to push action intent: {}", .{err});
+                        };
                         if (palette.mode == old_type) {
                             palette.mode = .inactive;
-                            stopTextInput(state.display);
+                            stopTextInput(ui_model.display.*);
                         }
                     },
                     .directory_navigator => {
                         if (real_idx < palette.dir_items.items.len) {
                             const entry = palette.dir_items.items[real_idx];
                             const path_copy = try frame_allocator.dupe(u8, entry.full_path);
-                            try palette.loadDirectoryEntries(state.io, path_copy);
+                            try palette.loadDirectoryEntries(ui_model.io, path_copy);
                             palette.query.clearRetainingCapacity();
                         }
                     },
@@ -846,12 +850,12 @@ fn renderDirectoryLegend() void {
 }
 
 pub fn renderPalette(
-    state: *ViewerState,
+    ui_model: UiViewModel,
     mouse_clicked: bool,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
 ) !void {
-    const palette = &state.ui.palette;
+    const palette = ui_model.palette;
     if (palette.mode == .inactive) return;
 
     const cfg = getPaletteConfig(palette.mode);
@@ -892,9 +896,9 @@ pub fn renderPalette(
         renderSearchInput(palette, cfg.placeholder);
 
         if (palette.mode.isTextInputDialog()) {
-            try renderTextInputDialog(state, frame_allocator, measure_data);
+            try renderTextInputDialog(ui_model, frame_allocator, measure_data);
         } else {
-            try renderSelectionList(state, cfg, mouse_clicked, frame_allocator, measure_data);
+            try renderSelectionList(ui_model, cfg, mouse_clicked, frame_allocator, measure_data);
         }
 
         // Footer Legend for Directory Navigator

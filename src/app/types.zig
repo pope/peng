@@ -28,6 +28,39 @@ pub const ViewportParams = struct {
     }
 };
 
+/// Plain data snapshot containing viewport dimensions, DPI scaling factors, and screen mode for frame layout/rendering.
+pub const ViewParams = struct {
+    viewport: ViewportParams = .{},
+    win_w: f32 = 1024.0,
+    win_h: f32 = 768.0,
+    scale_x: f32 = 1.0,
+    scale_y: f32 = 1.0,
+    is_fullscreen: bool = false,
+};
+
+/// Snapshot view-model containing read-only state data and sub-system references required for UI layout construction.
+pub const UiViewModel = struct {
+    is_fullscreen: bool = false,
+    total_images: usize = 0,
+    current_index: ?usize = null,
+    current_image_path: ?[]const u8 = null,
+    current_entry: ?@import("image.zig").CacheEntry = null,
+    is_loading_files: bool = false,
+    slideshow: @import("navigation.zig").SlideshowMode = .inactive,
+    overlays: @import("ui_state.zig").OverlayState = .{},
+    metrics: *@import("ui_state.zig").UiRenderMetrics,
+    viewport: ViewportParams = .{},
+    palette: *@import("palette.zig").PaletteState,
+    display: *@import("state.zig").DisplayState,
+    gpa_allocator: std.mem.Allocator,
+    io: std.Io,
+    cache_slot_map: *@import("image.zig").CacheSlotMap,
+    navigation: *@import("navigation.zig").NavigationState,
+    pending_intents: *std.ArrayListUnmanaged(intents.AppIntent),
+    current_image_cache_hit: bool = false,
+    debug_show_thumb: bool = false,
+};
+
 pub const TextInputBounds = intents.TextInputBounds;
 
 /// Data-driven event payload unifying keyboard shortcuts, IPC socket messages,

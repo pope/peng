@@ -1,7 +1,6 @@
 const std = @import("std");
 const clay = @import("zclay");
 const app = @import("app");
-const ViewerState = app.state.ViewerState;
 const types = app.types;
 const MeasureTextUserData = types.MeasureTextUserData;
 const text_utils = @import("text_utils.zig");

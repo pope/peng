@@ -100,12 +100,49 @@ pub fn updateFrame(
         }
     }
 
+    // Construct view parameters and UI view model snapshots
+    const view_params = app.types.ViewParams{
+        .viewport = state.viewport,
+        .win_w = input.win_w,
+        .win_h = input.win_h,
+        .scale_x = input.scale_x,
+        .scale_y = input.scale_y,
+        .is_fullscreen = state.isFullscreen(),
+    };
+
+    const gpu_res = if (state.gpu) |*g| g else return error.GpuNotInitialized;
+
+    const ui_model = app.types.UiViewModel{
+        .is_fullscreen = state.isFullscreen(),
+        .total_images = state.navigation.image_list.items.len,
+        .current_index = state.navigation.current_index,
+        .current_image_path = if (state.navigation.current_index) |idx|
+            if (idx < state.navigation.image_list.items.len) state.navigation.image_list.items[idx] else null
+        else
+            null,
+        .current_entry = state.getCurrentEntry(),
+        .is_loading_files = state.navigation.is_loading_files.load(.acquire),
+        .slideshow = state.navigation.slideshow,
+        .overlays = state.ui.overlays,
+        .metrics = &state.ui.metrics,
+        .viewport = state.viewport,
+        .palette = &state.ui.palette,
+        .display = &state.display,
+        .gpa_allocator = state.allocator,
+        .io = state.io,
+        .cache_slot_map = &state.cache,
+        .navigation = &state.navigation,
+        .pending_intents = &state.pending_intents,
+        .current_image_cache_hit = state.current_image_cache_hit,
+        .debug_show_thumb = state.ui.overlays.debug_show_thumb,
+    };
+
     // Draw / Render
     const capture_filename = switch (state.ui.screenshot_mode) {
         .idle => null,
         .capturing => |s| s.path,
     };
-    ui.layout.renderFrame(state, input, frame_allocator, resources.fonts[0..], measure_data, capture_filename) catch |err| {
+    ui.layout.renderFrame(view_params, ui_model, gpu_res, input, frame_allocator, resources.fonts[0..], measure_data, capture_filename) catch |err| {
         state.handleScreenshotPostRender(err);
         return err;
     };
