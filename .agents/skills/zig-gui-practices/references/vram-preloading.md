@@ -44,12 +44,14 @@ ______________________________________________________________________
 
 ______________________________________________________________________
 
-## 4. Concurrency & Dynamic Thread Scaling
+## 4. Task Concurrency & Dynamic Core Scaling
 
-- **Worker Thread Spawning (`std.Thread.spawn`)**:
-  Increment atomic thread counters (`active_decode_threads.fetchAdd`) on the main thread immediately before spawning threads via `std.Thread.spawn`, and decrement them in a `defer` block inside the worker procedure upon exit.
+- **`std.Io.Group` Task Spawning**:
+  Spawn background decode tasks using `std.Io.Group` (`state.worker_group.async(io, decodeTask, args)`). Tasks in a `Group` automatically release their task allocation upon return.
+- **Native Cancellation & Epoch Validation**:
+  Cancel active background tasks via `state.worker_group.cancel(state.io)`. In worker functions, check `io.isCanceled()` before queuing event payloads. On the main thread, validate incoming event payloads against the active `ViewerState.generation` epoch before mutating cache entries.
 - **Dynamic CPU Core Worker Scaling**:
-  Scale max concurrent decode worker threads dynamically at runtime based on hardware CPU count (`std.Thread.getCpuCount() catch 4`), e.g. `@max(2, @min(6, cpu_count - 1))`. This ensures high-throughput background decoding on multi-core systems while leaving 1 core dedicated to main-thread rendering.
+  Scale max concurrent decode tasks dynamically at runtime based on hardware CPU count (`std.Thread.getCpuCount() catch 4`), e.g. `@max(2, @min(6, cpu_count - 1))`. This ensures high-throughput background decoding on multi-core systems while leaving 1 core dedicated to main-thread rendering.
 
 > [!NOTE]
-> For strict main-thread GPU texture release invariants and atomic memory barriers, refer to [02_concurrency_and_architecture.md](../../../rules/02_concurrency_and_architecture.md).
+> For strict main-thread GPU texture release invariants and std.Io task group details, refer to [02_concurrency_and_architecture.md](../../../rules/02_concurrency_and_architecture.md).

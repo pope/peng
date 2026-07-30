@@ -50,3 +50,8 @@ const data = readBuffer() catch |err| {
   - Direct `@memcpy` for RGBA32 / BGRA32 / XRGB8888.
   - High-performance SIMD converters for RGB24 / BGR24.
   - Safe fallback surface conversion (`current_surf.convert(PixelFormat.rgba32)`) for indexed 8-bit, grayscale, and arbitrary formats before GPU buffer upload.
+
+## 9. `std.Io.net.Stream` Socket Teardown Invariants
+
+- Always invoke `stream.close(io)` on `std.Io.net.Stream` socket handles during queue item teardown (`deinitQueueItem`) and state deallocation (`ViewerState.deinit`).
+- Dropping or freeing structs containing socket streams without calling `.close(io)` leaks OS file and socket descriptors on application shutdown or event cancellation.

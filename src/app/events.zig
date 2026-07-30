@@ -4,13 +4,11 @@ const ipc = @import("ipc.zig");
 
 pub const ExifParsedPayload = struct {
     index: usize,
-    generation: usize,
     orientation: f32,
 };
 
 pub const ThumbDecodedPayload = struct {
     index: usize,
-    generation: usize,
     surface: ?sdl.Surface,
     w: f32,
     h: f32,
@@ -21,7 +19,6 @@ pub const ThumbDecodedPayload = struct {
 
 pub const ImageDecodedPayload = struct {
     index: usize,
-    generation: usize,
     surface: ?sdl.Surface,
     w: f32,
     h: f32,
@@ -34,23 +31,19 @@ pub const ImageDecodedPayload = struct {
 
 pub const DecodeFailedPayload = struct {
     index: usize,
-    generation: usize,
 };
 
 pub const PathDiscoveredPayload = struct {
-    generation: usize,
     path: []const u8,
 };
 
 pub const DirectoryScanResultPayload = struct {
-    generation: usize,
     target_path: []const u8,
     is_dir: bool,
     paths: [][]const u8,
 };
 
 pub const DirectoryScanCompletePayload = struct {
-    generation: usize,
     total_count: usize,
 };
 
@@ -82,9 +75,10 @@ pub const BackgroundEvent = union(enum) {
         }
     }
 
-    pub fn deinitQueueItem(self: *BackgroundEvent, allocator: std.mem.Allocator) void {
+    pub fn deinitQueueItem(self: *BackgroundEvent, allocator: std.mem.Allocator, io: std.Io) void {
         switch (self.*) {
             .ipc_command => |cmd| {
+                cmd.client_stream.close(io);
                 allocator.free(cmd.command);
                 allocator.destroy(cmd);
             },
@@ -111,7 +105,7 @@ pub fn MpscQueue(comptime T: type) type {
             if (info == .@"struct" or info == .@"union") {
                 for (self.items.items) |*item| {
                     if (@hasDecl(T, "deinitQueueItem")) {
-                        item.deinitQueueItem(allocator);
+                        item.deinitQueueItem(allocator, io);
                     } else if (@hasDecl(T, "deinit")) {
                         const deinit_info = @typeInfo(@TypeOf(T.deinit));
                         if (deinit_info == .@"fn") {

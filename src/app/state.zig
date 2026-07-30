@@ -158,7 +158,11 @@ pub const ViewerState = struct {
     active_threads: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     active_decode_threads: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     exiting: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    generation: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    /// Monotonically increasing cache epoch counter. Incremented on directory/file resets
+    /// (resetNavigation) so main-thread event handlers (e.g. handleImageDecodedEvent)
+    /// can verify incoming background events match the active image list epoch before modifying CacheEntry slots.
+    generation: usize = 0,
+    worker_group: std.Io.Group = .init,
 
     // Tagged Union State Machines
     display: DisplayState = .headless,
@@ -242,6 +246,7 @@ pub const ViewerState = struct {
 
     pub fn deinit(self: *ViewerState) void {
         self.exiting.store(true, .release);
+        self.worker_group.cancel(self.io);
         while (self.active_threads.load(.acquire) > 0) {
             sdl.timer.delay(1);
         }
@@ -270,6 +275,7 @@ pub const ViewerState = struct {
         }
 
         for (self.pending_ipc_commands.items) |cmd_data| {
+            cmd_data.client_stream.close(self.io);
             self.allocator.free(cmd_data.command);
             self.allocator.destroy(cmd_data);
         }
@@ -297,13 +303,6 @@ pub const ViewerState = struct {
             self.allocator.free(key_ptr.*);
         }
         self.rotation_map.clearRetainingCapacity();
-    }
-
-    /// Returns true if the application is still running and the background job's
-    /// snapshot generation matches the current viewer state generation.
-    /// Used by worker threads to drop stale results early when navigation changes.
-    pub fn isJobValid(self: *ViewerState, generation: usize) bool {
-        return !self.exiting.load(.acquire) and self.generation.load(.acquire) == generation;
     }
 
     pub fn resetZoomPan(self: *ViewerState) void {
@@ -547,12 +546,11 @@ pub const ViewerState = struct {
     }
 
     pub fn handleExifThumbnailEvent(self: *ViewerState, thumb_data: events.ThumbDecodedPayload) void {
-        const current_gen = self.generation.load(.acquire);
-        if (thumb_data.generation != current_gen) return;
         const surf = thumb_data.surface orelse return;
+        const current_gen = self.generation;
         if (self.gpu_device) |gpu_dev| {
             if (uploadSurfaceToGpu(gpu_dev, surf, self.unpack_compute_pipeline)) |upload_res| {
-                if (self.cache.getWithGeneration(thumb_data.index, thumb_data.generation)) |entry| {
+                if (self.cache.getWithGeneration(thumb_data.index, current_gen)) |entry| {
                     entry.thumb_gpu_texture = upload_res.gpu_texture;
                     entry.thumb_w = upload_res.w;
                     entry.thumb_h = upload_res.h;
@@ -572,12 +570,11 @@ pub const ViewerState = struct {
     }
 
     pub fn handleImageDecodedEvent(self: *ViewerState, decoded_data: *events.ImageDecodedPayload) void {
-        const current_gen = self.generation.load(.acquire);
-        if (decoded_data.generation != current_gen) return;
         const surf = decoded_data.surface orelse return;
+        const current_gen = self.generation;
         if (self.gpu_device) |gpu_dev| {
             if (uploadSurfaceToGpu(gpu_dev, surf, self.unpack_compute_pipeline)) |full_res| {
-                if (self.cache.getWithGeneration(decoded_data.index, decoded_data.generation)) |entry| {
+                if (self.cache.getWithGeneration(decoded_data.index, current_gen)) |entry| {
                     switch (entry.status) {
                         .loaded_cpu => |cpu| cpu.surface.destroy(),
                         .loaded_gpu => |gpu| gpu_dev.releaseTexture(gpu.gpu_texture),
@@ -612,7 +609,7 @@ pub const ViewerState = struct {
                 self.updateCurrentRotation();
             }
         } else {
-            if (self.cache.getWithGeneration(decoded_data.index, decoded_data.generation)) |entry| {
+            if (self.cache.getWithGeneration(decoded_data.index, current_gen)) |entry| {
                 entry.exif_orientation = decoded_data.exif_orientation;
                 entry.status = .{
                     .loaded_cpu = .{
@@ -636,8 +633,6 @@ pub const ViewerState = struct {
     }
 
     pub fn handleDirScannedEvent(self: *ViewerState, scanned_data: events.PathDiscoveredPayload) void {
-        const current_gen = self.generation.load(.acquire);
-        if (scanned_data.generation != current_gen) return;
         const dup = self.navigation.directory_arena.allocator().dupe(u8, scanned_data.path) catch |err| {
             std.log.err("Failed to duplicate path '{s}' in directory arena: {}", .{ scanned_data.path, err });
             return;
@@ -649,9 +644,6 @@ pub const ViewerState = struct {
     }
 
     pub fn handleDirectoryScanResultEvent(self: *ViewerState, result_data: events.DirectoryScanResultPayload) void {
-        const current_gen = self.generation.load(.acquire);
-        if (result_data.generation != current_gen) return;
-
         if (result_data.is_dir) {
             for (result_data.paths) |item| {
                 const dup = self.navigation.directory_arena.allocator().dupe(u8, item) catch |err| {
@@ -706,15 +698,14 @@ pub const ViewerState = struct {
         self.event_queue.drain(self.allocator, self.io, &self.event_batch) catch return false;
         if (self.event_batch.items.len == 0) return false;
         self.dirty = true;
-        const current_gen = self.generation.load(.acquire);
+        const current_gen = self.generation;
 
         for (self.event_batch.items) |*evt| {
             defer evt.deinit(self.allocator);
 
             switch (evt.*) {
                 .exif_orientation_parsed => |e| {
-                    if (e.generation != current_gen) continue;
-                    if (self.cache.getWithGeneration(e.index, e.generation)) |entry| {
+                    if (self.cache.getWithGeneration(e.index, current_gen)) |entry| {
                         entry.exif_orientation = e.orientation;
                     }
                     self.updateCurrentRotation();
@@ -722,8 +713,7 @@ pub const ViewerState = struct {
                 .thumb_decoded => |t| handleExifThumbnailEvent(self, t),
                 .image_decoded => |*d| handleImageDecodedEvent(self, d),
                 .decode_failed => |f| {
-                    if (f.generation != current_gen) continue;
-                    _ = self.cache.updateStatus(f.index, f.generation, .failed);
+                    _ = self.cache.updateStatus(f.index, current_gen, .failed);
                 },
                 .path_discovered => |p| handleDirScannedEvent(self, p),
                 .directory_scan_result => |res| handleDirectoryScanResultEvent(self, res),
@@ -753,7 +743,7 @@ pub const ViewerState = struct {
         if (len == 0) return;
 
         const idx = self.navigation.current_index orelse return;
-        const gen = self.generation.load(.acquire);
+        const gen = self.generation;
 
         const now = sdl.timer.getTicks();
         const is_rapid_scrolling = (now - self.last_nav_time_ms < 150);
@@ -902,8 +892,9 @@ pub const ViewerState = struct {
             args.* = DecodeArgs{
                 .state = self,
                 .index = d,
-                .generation = gen,
                 .path = dup_path,
+                .has_gpu_device = self.gpu_device != null,
+                .pixel_format = self.display.getPixelFormat(),
             };
 
             workers_mod.spawnDecode(args) catch |err| {
@@ -945,7 +936,7 @@ pub const ViewerState = struct {
         try self.navigation.last_scanned_dir.appendSlice(self.allocator, dir_target);
 
         // Clear existing cache and rotation map before resetting directory_arena
-        _ = self.generation.fetchAdd(1, .release);
+        self.generation += 1;
         self.clearCache();
         self.clearRotationMap();
         self.navigation.image_list.clearRetainingCapacity();

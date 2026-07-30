@@ -24,7 +24,7 @@ pub const StdinArgs = stdin.StdinArgs;
 pub const WorkerManager = struct {
     /// Invalidate all running worker jobs and block until active threads exit.
     pub fn drainAndQuiesce(state: *ViewerState) void {
-        _ = state.generation.fetchAdd(1, .monotonic);
+        state.worker_group.cancel(state.io);
         while (state.active_threads.load(.acquire) > 0) {
             sdl.timer.delay(1);
             _ = state.processBackgroundEvents();
@@ -35,45 +35,22 @@ pub const WorkerManager = struct {
 pub fn spawnDecode(args: *DecodeArgs) !void {
     _ = args.state.active_decode_threads.fetchAdd(1, .monotonic);
     _ = args.state.active_threads.fetchAdd(1, .monotonic);
-    if (std.Thread.spawn(.{}, decode.decodeWorker, .{args})) |t| {
-        t.detach();
-    } else |err| {
-        _ = args.state.active_decode_threads.fetchSub(1, .release);
-        _ = args.state.active_threads.fetchSub(1, .release);
-        return err;
-    }
+    args.state.worker_group.async(args.state.io, decode.decodeWorker, .{args});
 }
 
 pub fn spawnPathScan(args: *PathScanArgs) !void {
     _ = args.state.active_threads.fetchAdd(1, .monotonic);
     args.state.navigation.is_loading_files.store(true, .release);
-    if (std.Thread.spawn(.{}, path_scan.pathScanWorker, .{args})) |t| {
-        t.detach();
-    } else |err| {
-        _ = args.state.active_threads.fetchSub(1, .monotonic);
-        args.state.navigation.is_loading_files.store(false, .release);
-        return err;
-    }
+    args.state.worker_group.async(args.state.io, path_scan.pathScanWorker, .{args});
 }
 
 pub fn spawnStdin(args: *StdinArgs) !void {
     _ = args.state.active_threads.fetchAdd(1, .monotonic);
     args.state.navigation.is_loading_files.store(true, .release);
-    if (std.Thread.spawn(.{}, stdin.stdinWorker, .{args})) |t| {
-        t.detach();
-    } else |err| {
-        _ = args.state.active_threads.fetchSub(1, .monotonic);
-        args.state.navigation.is_loading_files.store(false, .release);
-        return err;
-    }
+    args.state.worker_group.async(args.state.io, stdin.stdinWorker, .{args});
 }
 
 pub fn spawnIpcServer(state: *ViewerState) !void {
     _ = state.active_threads.fetchAdd(1, .monotonic);
-    if (std.Thread.spawn(.{}, ipc_server.ipcServerWorkerTask, .{state})) |t| {
-        t.detach();
-    } else |err| {
-        _ = state.active_threads.fetchSub(1, .release);
-        return err;
-    }
+    state.worker_group.async(state.io, ipc_server.ipcServerWorkerTask, .{state});
 }

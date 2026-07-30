@@ -12,15 +12,14 @@ pub const PathScanArgs = struct {
     is_dir: bool,
 };
 
-pub fn appendPathThreadSafe(state: *ViewerState, gpa: std.mem.Allocator, path: []const u8, initial_gen: usize) void {
-    if (state.generation.load(.acquire) != initial_gen or state.exiting.load(.acquire)) return;
+pub fn appendPathThreadSafe(state: *ViewerState, gpa: std.mem.Allocator, path: []const u8) void {
+    if (state.exiting.load(.acquire)) return;
     const dup = gpa.dupe(u8, path) catch |err| {
         std.log.err("Failed to duplicate path '{s}': {}", .{ path, err });
         return;
     };
     state.event_queue.push(gpa, state.io, .{
         .path_discovered = .{
-            .generation = initial_gen,
             .path = dup,
         },
     }) catch |err| {
@@ -31,7 +30,7 @@ pub fn appendPathThreadSafe(state: *ViewerState, gpa: std.mem.Allocator, path: [
     context.wakeUpMainThread();
 }
 
-pub fn scanDirectoryThreadSafe(state: *ViewerState, gpa: std.mem.Allocator, io: std.Io, dir_path: []const u8, initial_gen: usize) void {
+pub fn scanDirectoryThreadSafe(state: *ViewerState, gpa: std.mem.Allocator, io: std.Io, dir_path: []const u8) void {
     var dir = std.Io.Dir.openDir(std.Io.Dir.cwd(), io, dir_path, .{ .iterate = true }) catch |err| {
         std.log.warn("scanDirectoryThreadSafe: openDir failed for '{s}': {any}", .{ dir_path, err });
         return;
@@ -49,7 +48,7 @@ pub fn scanDirectoryThreadSafe(state: *ViewerState, gpa: std.mem.Allocator, io: 
         std.log.warn("scanDirectoryThreadSafe: iterate next failed for '{s}': {any}", .{ dir_path, err });
         break :blk null;
     }) |entry| {
-        if (state.generation.load(.acquire) != initial_gen or state.exiting.load(.acquire)) return;
+        if (state.exiting.load(.acquire)) return;
         if (entry.kind == .file) {
             if (fs.isImageFile(entry.name)) {
                 const name_dup = gpa.dupe(u8, entry.name) catch |err| {
@@ -71,7 +70,7 @@ pub fn scanDirectoryThreadSafe(state: *ViewerState, gpa: std.mem.Allocator, io: 
         }
     }.lessThan);
 
-    if (state.generation.load(.acquire) != initial_gen or state.exiting.load(.acquire)) return;
+    if (state.exiting.load(.acquire)) return;
 
     for (dir_entries.items) |name| {
         const full_path = std.fs.path.join(gpa, &.{ dir_path, name }) catch |err| {
@@ -80,7 +79,6 @@ pub fn scanDirectoryThreadSafe(state: *ViewerState, gpa: std.mem.Allocator, io: 
         };
         state.event_queue.push(gpa, io, .{
             .path_discovered = .{
-                .generation = initial_gen,
                 .path = full_path,
             },
         }) catch |err| {
@@ -97,7 +95,6 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
     const gpa = args.gpa;
     const target_path = args.target_path;
     const is_dir = args.is_dir;
-    const initial_gen = state.generation.load(.acquire);
 
     defer {
         state.navigation.is_loading_files.store(false, .release);
@@ -122,10 +119,13 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
         dir_entries.deinit(gpa);
     }
 
-    while (!state.exiting.load(.acquire) and state.generation.load(.acquire) == initial_gen) {
-        const entry = (it.next(io) catch |err| {
-            std.log.warn("pathScanWorker iterate failed for '{s}': {}", .{ dir_path, err });
-            break;
+    while (!state.exiting.load(.acquire)) {
+        const entry = (it.next(io) catch |err| switch (err) {
+            error.Canceled => break,
+            else => {
+                std.log.warn("pathScanWorker iterate failed for '{s}': {}", .{ dir_path, err });
+                break;
+            },
         }) orelse break;
         if (entry.kind == .file) {
             if (fs.isImageFile(entry.name)) {
@@ -142,7 +142,7 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
         }
     }
 
-    if (state.generation.load(.acquire) != initial_gen or state.exiting.load(.acquire)) return;
+    if (state.exiting.load(.acquire)) return;
 
     // Sort entries alphabetically
     std.mem.sort([]const u8, dir_entries.items, {}, struct {
@@ -151,7 +151,7 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
         }
     }.lessThan);
 
-    if (state.generation.load(.acquire) != initial_gen or state.exiting.load(.acquire)) return;
+    if (state.exiting.load(.acquire)) return;
 
     const dup_target = gpa.dupe(u8, target_path) catch return;
     const paths_slice = dir_entries.toOwnedSlice(gpa) catch {
@@ -161,7 +161,6 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
 
     state.event_queue.push(gpa, io, .{
         .directory_scan_result = .{
-            .generation = initial_gen,
             .target_path = dup_target,
             .is_dir = is_dir,
             .paths = paths_slice,

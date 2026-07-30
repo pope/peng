@@ -10,10 +10,12 @@
 - All mutex locks (`std.Io.Mutex`) MUST be released via `defer mutex.unlock(io)`.
 - Never acquire a mutex twice on the same thread sequence—`std.Io.Mutex` is non-recursive and will deadlock on re-entry.
 
-## 3. Atomic Worker Thread Counters
+## 3. `std.Io.Group` Task Spawning & Native Cancellation
 
-- Increment worker thread atomic counters (`active_threads.fetchAdd(1, .monotonic)`) *before* spawning threads, and decrement inside `defer active_threads.fetchSub(1, .release)` at thread exit.
-- Acquire atomic thread counters on the main thread using `.acquire` memory ordering.
+- **Avoid Orphaned `io.async` Future Leaks**: Never discard the return value of `io.async` (`_ = io.async(...)`). `io.async` allocates a `Future` on the heap that leaks if not explicitly awaited or canceled.
+- **Use `std.Io.Group`**: For background worker tasks or task pools, spawn tasks using `std.Io.Group` (`state.worker_group.async(io, func, args)`). Tasks in a `Group` automatically release their task memory when they return.
+- **Native Task Cancellation**: Use `state.worker_group.cancel(state.io)` to cancel active background tasks instead of polling manual atomic generation counters.
+- **`error.Canceled` & C-Call Checks**: Handle `error.Canceled` from `std.Io` calls (`openDir`, `iterate`, `readPositional`, `takeDelimiter`). After non-cancellable external C calls (e.g. SDL image loading), check `io.isCanceled()` before pushing results to event queues.
 
 ## 4. MpscQueue Transport & Event Loop Wakeup
 
@@ -47,3 +49,8 @@
   3. System Ticks & State Updates (`sysExecuteIntents`, `sysUpdateSlideshow`, `sysUpdateViewport`)
   4. Clay UI Pointer & Layout State Updates
   5. GPU Execution Pass & Screenshot Post-Processing
+
+## 8. Thread Isolation & Cache Epoch Versioning
+
+- **Thread Isolation**: Background worker tasks must touch zero shared non-atomic main-thread state (`ViewerState`, `DisplayState`, `Device`). Capture immutable value copies (`has_gpu_device: bool`, `pixel_format: u32`) inside worker argument structs (`DecodeArgs`) at spawn time.
+- **Cache Epoch Versioning**: Use a plain main-thread `usize` epoch counter (`ViewerState.generation`) incremented on navigation/directory resets (`resetNavigation`) to validate that incoming background event payloads match the active image list epoch before modifying `CacheSlotMap` entries.

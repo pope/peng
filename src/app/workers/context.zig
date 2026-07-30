@@ -12,11 +12,10 @@ pub const WorkerContext = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     event_queue: *events.MpscQueue(events.BackgroundEvent),
-    current_generation: *const std.atomic.Value(usize),
     exiting: *const std.atomic.Value(bool),
 
-    pub fn isStale(self: WorkerContext, gen: usize) bool {
-        return self.exiting.load(.acquire) or self.current_generation.load(.acquire) != gen;
+    pub fn isExiting(self: WorkerContext) bool {
+        return self.exiting.load(.acquire);
     }
 
     pub fn pushEvent(self: WorkerContext, event: events.BackgroundEvent) !void {

@@ -10,8 +10,9 @@ const context = @import("context.zig");
 pub const DecodeArgs = struct {
     state: *ViewerState,
     index: usize,
-    generation: usize,
     path: [:0]const u8,
+    has_gpu_device: bool,
+    pixel_format: u32,
 };
 
 pub fn decodeWorker(args: *DecodeArgs) void {
@@ -32,21 +33,20 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         state.event_queue.push(state.allocator, state.io, .{
             .exif_orientation_parsed = .{
                 .index = index,
-                .generation = args.generation,
                 .orientation = exif_rot,
             },
         }) catch |err| std.log.err("Failed to push EXIF orientation event: {}", .{err});
         context.wakeUpMainThread();
     }
 
-    if (!state.isJobValid(args.generation)) return;
+    if (state.exiting.load(.acquire)) return;
 
     const mime_type = image.detectMimeType(state.io, path);
 
-    if (!state.isJobValid(args.generation)) return;
+    if (state.exiting.load(.acquire)) return;
 
     // Attempt fast EXIF thumbnail decoding for instant placeholder preview
-    if (std.mem.eql(u8, mime_type, "image/jpeg") and state.gpu_device != null) {
+    if (std.mem.eql(u8, mime_type, "image/jpeg") and args.has_gpu_device) {
         var header_buf: [65536]u8 = undefined;
         var thumb_file = std.Io.Dir.openFile(std.Io.Dir.cwd(), state.io, path, .{}) catch null;
         if (thumb_file) |*f| {
@@ -62,7 +62,6 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                         state.event_queue.push(state.allocator, state.io, .{
                             .thumb_decoded = .{
                                 .index = index,
-                                .generation = args.generation,
                                 .surface = t_surf,
                                 .w = @floatFromInt(t_surf.w()),
                                 .h = @floatFromInt(t_surf.h()),
@@ -81,7 +80,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         }
     }
 
-    if (!state.isJobValid(args.generation)) return;
+    if (state.exiting.load(.acquire)) return;
 
     const start_decode = sdl.timer.getTicksNs();
     const surface = sdl.Surface.loadFilePtr(path.ptr);
@@ -93,7 +92,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         std.log.err("decodeWorker: failed to load image '{s}': {s}", .{ path, sdl.getError() });
     }
 
-    if (!state.isJobValid(args.generation)) {
+    if (state.exiting.load(.acquire)) {
         if (surface) |surf| surf.destroy();
         return;
     }
@@ -101,8 +100,8 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     var final_surface = surface;
     var conversion_time_ms: f64 = 0.0;
     if (surface) |surf| {
-        const pix_fmt = state.display.getPixelFormat();
-        if (state.gpu_device == null and pix_fmt != sdl.PixelFormat.unknown and surf.format() != pix_fmt) {
+        const pix_fmt = args.pixel_format;
+        if (!args.has_gpu_device and pix_fmt != sdl.PixelFormat.unknown and surf.format() != pix_fmt) {
             const start_convert = sdl.timer.getTicksNs();
             if (surf.convert(pix_fmt)) |conv| {
                 const end_convert = sdl.timer.getTicksNs();
@@ -148,7 +147,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         std.log.debug("decodeWorker: statFile failed for '{s}': {any}", .{ path, err });
     }
 
-    if (!state.isJobValid(args.generation)) {
+    if (state.exiting.load(.acquire)) {
         if (final_surface) |surf| surf.destroy();
         return;
     }
@@ -160,7 +159,6 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         state.event_queue.push(state.allocator, state.io, .{
             .image_decoded = .{
                 .index = index,
-                .generation = args.generation,
                 .surface = f_surf,
                 .w = orig_w,
                 .h = orig_h,
@@ -179,7 +177,6 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         state.event_queue.push(state.allocator, state.io, .{
             .decode_failed = .{
                 .index = index,
-                .generation = args.generation,
             },
         }) catch |err| std.log.err("Failed to push image decode event: {}", .{err});
         context.wakeUpMainThread();
