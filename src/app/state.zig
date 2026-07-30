@@ -14,6 +14,8 @@ const ipc = @import("ipc.zig");
 const exif = @import("exif.zig");
 const screenshot = @import("screenshot.zig");
 const systems = @import("systems.zig");
+const workers_mod = @import("workers/root.zig");
+
 const view_transform = state_pkg.view_transform;
 
 const uploadSurfaceToGpu = image.uploadSurfaceToGpu;
@@ -21,7 +23,8 @@ const CacheStatus = state_pkg.CacheStatus;
 const CacheEntry = state_pkg.CacheEntry;
 const CacheSlotMap = image.CacheSlotMap;
 const TextureHandle = image.TextureHandle;
-const DecodeArgs = image.DecodeArgs;
+const DecodeArgs = workers_mod.DecodeArgs;
+
 const intents = @import("intents");
 const ScaleMode = intents.ScaleMode;
 const TextureScaleMode = intents.TextureScaleMode;
@@ -72,8 +75,6 @@ pub const DragState = union(enum) {
         start_y: f32,
     },
 };
-
-
 
 /// Enables SDL text input events if the current display mode is windowed GUI.
 /// No-op when in headless rendering mode.
@@ -133,8 +134,6 @@ const ActiveWindow = state_pkg.ActiveWindow;
 const DisplayState = state_pkg.DisplayState;
 
 /// Cohesive GPU context and render resources initialized for GPU-accelerated rendering.
-
-
 /// Main Application State Architecture
 ///
 /// Single-Threaded ViewerState Model:
@@ -907,17 +906,11 @@ pub const ViewerState = struct {
                 .path = dup_path,
             };
 
-            _ = self.active_decode_threads.fetchAdd(1, .monotonic);
-            _ = self.active_threads.fetchAdd(1, .monotonic);
-            if (std.Thread.spawn(.{}, image.decodeWorker, .{args})) |t| {
-                t.detach();
-            } else |err| {
-                std.log.err("std.Thread.spawn failed: {}", .{err});
-                _ = self.active_decode_threads.fetchSub(1, .release);
-                _ = self.active_threads.fetchSub(1, .release);
+            workers_mod.spawnDecode(args) catch |err| {
+                std.log.err("workers.spawnDecode failed: {}", .{err});
                 self.allocator.free(dup_path);
                 self.allocator.destroy(args);
-            }
+            };
         }
     }
 

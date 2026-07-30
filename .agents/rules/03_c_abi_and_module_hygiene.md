@@ -27,12 +27,13 @@
   const types = app.types;
   const CacheEntry = app.image.CacheEntry;
   ```
-- Declare all type aliases as top-level `const` variables at the top of the file. Do NOT write inline `@import(...)` expressions inside function signatures or bodies.
+- Declare all type aliases as top-level `const` variables at the very top of the file. NEVER write inline `@import(...)` expressions inside function bodies, local blocks, or mid-file declarations.
 
 ## 6. No Proxy Re-Exports
 
 - Do NOT re-export types from unrelated sub-modules (`pub const CacheEntry = image.CacheEntry` inside `state.zig`).
-- Keep symbol declarations in their home module so import paths remain authoritative and unit tests stay isolated.
+- Do NOT add temporary or backward-compatibility type/function re-exports (e.g. `pub const StdinArgs = workers.StdinArgs;`) when refactoring code. Instead, update all call sites, usage, and tests across the codebase to reference the new authoritative home module directly.
+- Keep symbol declarations strictly in their home module so import paths remain authoritative and unit tests stay isolated.
 
 ## 7. Result Location Initialization Style (`.empty`, `.init(...)`)
 
@@ -40,4 +41,4 @@
 
 ## 8. Feature-Complete Canonical Implementations
 
-- When deduplicating utility functions or re-exporting symbols across modules (e.g. `pub const uploadSurfaceToGpu = app.gpu.uploadSurfaceToGpu`), verify that the retained canonical implementation is the robust, feature-complete version—not a simplified or legacy variant.
+- When deduplicating utility functions or consolidating symbols into their canonical home module, verify that the retained canonical implementation is the robust, feature-complete version—not a simplified or legacy variant.

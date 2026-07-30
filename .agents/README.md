@@ -10,7 +10,7 @@ ______________________________________________________________________
   Tagged union pattern matching (`switch (union)`), per-frame arenas, HashMap key lifecycle cleanup, typed worker signatures, non-negotiable structured error logging (`std.log`), and slice aliasing protection.
 
 - **[`02_concurrency_and_architecture.md`](rules/02_concurrency_and_architecture.md)**:
-  Main-thread exclusive GPU operations, non-recursive `std.Thread.Mutex` safety, atomic thread counters (`.monotonic`/`.release`/`.acquire`), `MpscQueue` event transport, Zero-Dependency Intent Queue (`AppIntent`), `systems.zig` pure system passes, `OverlayFlags` packed structs, and component-based image pipeline composition.
+  Main-thread exclusive GPU operations, non-recursive `std.Io.Mutex` safety, atomic thread counters (`.monotonic`/`.release`/`.acquire`), `MpscQueue` event transport, Zero-Dependency Intent Queue (`AppIntent`), `systems.zig` pure system passes, `OverlayFlags` packed structs, and component-based image pipeline composition.
 
 - **[`03_c_abi_and_module_hygiene.md`](rules/03_c_abi_and_module_hygiene.md)**:
   Single canonical `@cImport` file (`src/sdl/c.zig`), C-handle encapsulation, complete enum mapping invariant, single top-level `@import` standard, prohibition of proxy re-exports, and `.empty` / `.init(...)` initialization style.

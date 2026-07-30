@@ -7,8 +7,8 @@
 
 ## 2. Mutex Safety & Deadlock Prevention
 
-- All mutex locks (`std.Thread.Mutex`) MUST be released via `defer mutex.unlock()`.
-- Never acquire a mutex twice on the same thread sequence—`std.Thread.Mutex` is non-recursive and will deadlock on re-entry.
+- All mutex locks (`std.Io.Mutex`) MUST be released via `defer mutex.unlock(io)`.
+- Never acquire a mutex twice on the same thread sequence—`std.Io.Mutex` is non-recursive and will deadlock on re-entry.
 
 ## 3. Atomic Worker Thread Counters
 
@@ -17,9 +17,9 @@
 
 ## 4. MpscQueue Transport & Event Loop Wakeup
 
-- Background workers communicate with the main loop by pushing `types.AppEvent` payloads into `ViewerState.event_queue` (`MpscQueue`).
+- Background workers communicate with the main loop by pushing `events.BackgroundEvent` payloads into `ViewerState.event_queue` (`MpscQueue`).
 - Producers MUST invoke `fs.wakeUpMainThread()` after pushing events into the queue.
-- Disown or null pointer payloads inside `AppEvent` prior to `defer evt.deinit()` execution.
+- Disown or null pointer payloads inside `BackgroundEvent` prior to `defer evt.deinit()` execution.
 
 ## 5. Zero-Dependency Intent Queue (`AppIntent`) & Co-Located Actions
 

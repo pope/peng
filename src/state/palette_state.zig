@@ -152,7 +152,6 @@ pub const PaletteState = struct {
         }
     }
 
-
     pub fn rebuildActionMatches(self: *PaletteState) !void {
         self.matches.clearRetainingCapacity();
         const query_str = self.query.items;

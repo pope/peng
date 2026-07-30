@@ -3,6 +3,7 @@ const state_pkg = @import("state");
 const app_state = @import("state.zig");
 const ViewerState = app_state.ViewerState;
 const sdl = @import("sdl");
+const workers_mod = @import("workers/root.zig");
 
 pub fn eqlIgnoreCase(a: []const u8, b: []const u8) bool {
     if (a.len != b.len) return false;
@@ -206,250 +207,33 @@ pub fn scanDirectory(gpa: std.mem.Allocator, arena: std.mem.Allocator, io: std.I
     try list.appendSlice(gpa, dir_entries.items);
 }
 
-const StdinArgs = struct {
-    state: *ViewerState,
-    io: std.Io,
-    gpa: std.mem.Allocator,
-};
-
 pub fn wakeUpMainThread() void {
     _ = sdl.events.pushUserEvent();
-}
-
-fn appendPathThreadSafe(state: *ViewerState, gpa: std.mem.Allocator, path: []const u8, initial_gen: usize) void {
-    if (state.generation.load(.acquire) != initial_gen or state.exiting.load(.acquire)) return;
-    const dup = gpa.dupe(u8, path) catch |err| {
-        std.log.err("Failed to duplicate path '{s}': {}", .{ path, err });
-        return;
-    };
-    state.event_queue.push(gpa, state.io, .{
-        .path_discovered = .{
-            .generation = initial_gen,
-            .path = dup,
-        },
-    }) catch |err| {
-        std.log.err("Failed to push path_discovered event for '{s}': {}", .{ path, err });
-        gpa.free(dup);
-        return;
-    };
-    wakeUpMainThread();
-}
-
-fn scanDirectoryThreadSafe(state: *ViewerState, gpa: std.mem.Allocator, io: std.Io, dir_path: []const u8, initial_gen: usize) void {
-    var dir = std.Io.Dir.openDir(std.Io.Dir.cwd(), io, dir_path, .{ .iterate = true }) catch |err| {
-        std.log.warn("scanDirectoryThreadSafe: openDir failed for '{s}': {any}", .{ dir_path, err });
-        return;
-    };
-    defer dir.close(io);
-
-    var it = dir.iterate();
-    var dir_entries: std.ArrayList([]const u8) = .empty;
-    defer {
-        for (dir_entries.items) |name| gpa.free(name);
-        dir_entries.deinit(gpa);
-    }
-
-    while (it.next(io) catch |err| blk: {
-        std.log.warn("scanDirectoryThreadSafe: iterate next failed for '{s}': {any}", .{ dir_path, err });
-        break :blk null;
-    }) |entry| {
-        if (state.generation.load(.acquire) != initial_gen or state.exiting.load(.acquire)) return;
-        if (entry.kind == .file) {
-            if (isImageFile(entry.name)) {
-                const name_dup = gpa.dupe(u8, entry.name) catch |err| {
-                    std.log.err("Failed to dupe entry name '{s}': {}", .{ entry.name, err });
-                    continue;
-                };
-                dir_entries.append(gpa, name_dup) catch |err| {
-                    std.log.err("Failed to append entry name '{s}': {}", .{ entry.name, err });
-                    gpa.free(name_dup);
-                    continue;
-                };
-            }
-        }
-    }
-
-    std.mem.sort([]const u8, dir_entries.items, {}, struct {
-        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-            return std.ascii.lessThanIgnoreCase(a, b);
-        }
-    }.lessThan);
-
-    if (state.generation.load(.acquire) != initial_gen or state.exiting.load(.acquire)) return;
-
-    for (dir_entries.items) |name| {
-        const full_path = std.fs.path.join(gpa, &.{ dir_path, name }) catch |err| {
-            std.log.err("Failed to join path for '{s}': {}", .{ name, err });
-            continue;
-        };
-        state.event_queue.push(gpa, io, .{
-            .path_discovered = .{
-                .generation = initial_gen,
-                .path = full_path,
-            },
-        }) catch |err| {
-            std.log.err("Failed to push path_discovered event for '{s}': {}", .{ full_path, err });
-            gpa.free(full_path);
-        };
-    }
-    wakeUpMainThread();
-}
-
-fn stdinWorker(args: *StdinArgs) void {
-    const state = args.state;
-    const io = args.io;
-    const gpa = args.gpa;
-    const initial_gen = state.generation.load(.acquire);
-    defer {
-        state.navigation.is_loading_files.store(false, .release);
-        wakeUpMainThread();
-        state.allocator.destroy(args);
-        _ = state.active_threads.fetchSub(1, .release);
-    }
-
-    var read_buf: [4096]u8 = undefined;
-    var stdin_file_reader = std.Io.File.Reader.init(std.Io.File.stdin(), io, &read_buf);
-    const stdin = &stdin_file_reader.interface;
-
-    while (!state.exiting.load(.acquire) and state.generation.load(.acquire) == initial_gen) {
-        const line = (stdin.takeDelimiter('\n') catch break) orelse break;
-        const trimmed = std.mem.trim(u8, line, "\r\n ");
-        if (trimmed.len > 0) {
-            if (std.Io.Dir.statFile(std.Io.Dir.cwd(), io, trimmed, .{})) |s| {
-                if (s.kind == .directory) {
-                    scanDirectoryThreadSafe(state, gpa, io, trimmed, initial_gen);
-                } else if (isImageFile(trimmed)) {
-                    appendPathThreadSafe(state, gpa, trimmed, initial_gen);
-                }
-            } else |err| {
-                std.log.debug("statFile failed for '{s}': {any}, treating as file path", .{ trimmed, err });
-                appendPathThreadSafe(state, gpa, trimmed, initial_gen);
-            }
-        }
-    }
 }
 
 pub fn readPipedStdin(state: *ViewerState, io: std.Io, gpa: std.mem.Allocator) !void {
     const is_stdin_piped = !(std.Io.File.stdin().isTty(io) catch false);
     if (is_stdin_piped) {
-        const args = try state.allocator.create(StdinArgs);
+        const args = try state.allocator.create(workers_mod.StdinArgs);
         args.* = .{
             .state = state,
             .io = io,
             .gpa = gpa,
         };
 
-        _ = state.active_threads.fetchAdd(1, .monotonic);
-        state.navigation.is_loading_files.store(true, .release);
-
-        if (std.Thread.spawn(.{}, stdinWorker, .{args})) |t| {
-            t.detach();
-        } else |err| {
-            std.log.err("std.Thread.spawn stdin worker failed: {}", .{err});
-            _ = state.active_threads.fetchSub(1, .monotonic);
+        workers_mod.spawnStdin(args) catch |err| {
+            std.log.err("workers.spawnStdin failed: {}", .{err});
             state.navigation.is_loading_files.store(false, .release);
             state.allocator.destroy(args);
-        }
+        };
     }
-}
-
-pub const PathScanArgs = struct {
-    state: *ViewerState,
-    io: std.Io,
-    gpa: std.mem.Allocator,
-    target_path: []const u8,
-    is_dir: bool,
-};
-
-fn pathScanWorker(args: *PathScanArgs) void {
-    const state = args.state;
-    const io = args.io;
-    const gpa = args.gpa;
-    const target_path = args.target_path;
-    const is_dir = args.is_dir;
-    const initial_gen = state.generation.load(.acquire);
-
-    defer {
-        state.navigation.is_loading_files.store(false, .release);
-        wakeUpMainThread();
-        gpa.free(target_path);
-        gpa.destroy(args);
-        _ = state.active_threads.fetchSub(1, .release);
-    }
-
-    const dir_path = if (is_dir) target_path else (std.fs.path.dirname(target_path) orelse ".");
-
-    var dir = std.Io.Dir.openDir(std.Io.Dir.cwd(), io, dir_path, .{ .iterate = true }) catch |err| {
-        std.log.err("Failed to open dir '{s}': {}", .{ dir_path, err });
-        return;
-    };
-    defer dir.close(io);
-
-    var it = dir.iterate();
-    var dir_entries: std.ArrayList([]const u8) = .empty;
-    defer {
-        for (dir_entries.items) |item| gpa.free(item);
-        dir_entries.deinit(gpa);
-    }
-
-    while (!state.exiting.load(.acquire) and state.generation.load(.acquire) == initial_gen) {
-        const entry = (it.next(io) catch |err| {
-            std.log.warn("pathScanWorker iterate failed for '{s}': {}", .{ dir_path, err });
-            break;
-        }) orelse break;
-        if (entry.kind == .file) {
-            if (isImageFile(entry.name)) {
-                const full_path = std.fs.path.join(gpa, &.{ dir_path, entry.name }) catch |err| {
-                    std.log.err("Failed to join path for '{s}': {}", .{ entry.name, err });
-                    continue;
-                };
-                dir_entries.append(gpa, full_path) catch |err| {
-                    std.log.err("Failed to append path '{s}': {}", .{ full_path, err });
-                    gpa.free(full_path);
-                    continue;
-                };
-            }
-        }
-    }
-
-    if (state.generation.load(.acquire) != initial_gen or state.exiting.load(.acquire)) return;
-
-    // Sort entries alphabetically
-    std.mem.sort([]const u8, dir_entries.items, {}, struct {
-        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-            return std.ascii.lessThanIgnoreCase(a, b);
-        }
-    }.lessThan);
-
-    if (state.generation.load(.acquire) != initial_gen or state.exiting.load(.acquire)) return;
-
-    const dup_target = gpa.dupe(u8, target_path) catch return;
-    const paths_slice = dir_entries.toOwnedSlice(gpa) catch {
-        gpa.free(dup_target);
-        return;
-    };
-
-    state.event_queue.push(gpa, io, .{
-        .directory_scan_result = .{
-            .generation = initial_gen,
-            .target_path = dup_target,
-            .is_dir = is_dir,
-            .paths = paths_slice,
-        },
-    }) catch |err| {
-        std.log.err("Failed to push directory_scan_result event: {}", .{err});
-        gpa.free(dup_target);
-        for (paths_slice) |item| gpa.free(item);
-        gpa.free(paths_slice);
-    };
-    wakeUpMainThread();
 }
 
 pub fn startAsyncPathScan(state: *ViewerState, path: []const u8, is_dir: bool) !void {
     const dup_path = try state.allocator.dupe(u8, path);
     errdefer state.allocator.free(dup_path);
 
-    const args = try state.allocator.create(PathScanArgs);
+    const args = try state.allocator.create(workers_mod.PathScanArgs);
     args.* = .{
         .state = state,
         .io = state.io,
@@ -458,18 +242,11 @@ pub fn startAsyncPathScan(state: *ViewerState, path: []const u8, is_dir: bool) !
         .is_dir = is_dir,
     };
 
-    _ = state.active_threads.fetchAdd(1, .monotonic);
-    state.navigation.is_loading_files.store(true, .release);
-
-    if (std.Thread.spawn(.{}, pathScanWorker, .{args})) |t| {
-        t.detach();
-    } else |err| {
-        std.log.err("std.Thread.spawn path scan worker failed: {}", .{err});
-        _ = state.active_threads.fetchSub(1, .monotonic);
-        state.navigation.is_loading_files.store(false, .release);
+    workers_mod.spawnPathScan(args) catch |err| {
+        std.log.err("workers.spawnPathScan failed: {}", .{err});
         state.allocator.free(dup_path);
         state.allocator.destroy(args);
-    }
+    };
 }
 
 test "scanDirectoryEntries" {

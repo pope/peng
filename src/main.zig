@@ -91,12 +91,8 @@ const LibViewer = struct {
     }
 
     fn updateLib(self: *LibViewer, io: std.Io, app_state: *app.state.ViewerState) !void {
-        // Drain active threads before unloading dynamic library
-        _ = app_state.generation.fetchAdd(1, .monotonic);
-        while (app_state.active_threads.load(.acquire) > 0) {
-            sdl.timer.delay(1); // 1ms
-            _ = app_state.processBackgroundEvents();
-        }
+        // Drain active worker threads before unloading dynamic library
+        app.workers.WorkerManager.drainAndQuiesce(app_state);
 
         if (self.is_valid) {
             self.unload_assets();

@@ -4,12 +4,16 @@
 
 - **VRAM Budget Calculation with Mipmap Overhead**:
   When computing VRAM memory footprints, account for the base RGBA32 texture size ($W \\times H \\times 4\\text{ bytes}$) plus the $+33%$ mipmap pyramid overhead ($\\frac{4}{3} \\times \\text{base size}$). Ensure budget caps (e.g. $1024\\text{ MB}$) can accommodate multiple high-resolution ($24\\text{MP}-50\\text{MP}$) images simultaneously.
+
 - **Neighbor Slot Protection**:
   In VRAM cache eviction routines (`enforceVramBudget`), protect the current image and its immediate neighbors ($\\pm 2$ slots) from eviction to prevent constant re-decoding during user navigation.
+
 - **Mutex Lifecycle & Standard Library Synchronization**:
   Clean up lock primitives (`std.Io.Mutex`) in exactly one owner lifecycle method (e.g. `ViewerState.deinit()`).
+
 - **HashMap String Key Lifetimes**:
   Always iterate `keyIterator()` to free dynamically allocated string keys before calling `clearRetainingCapacity()` or `deinit()` on hash maps:
+
   ```zig
   var rot_iter = self.rotation_map.keyIterator();
   while (rot_iter.next()) |key| {
@@ -48,4 +52,4 @@ ______________________________________________________________________
   Scale max concurrent decode worker threads dynamically at runtime based on hardware CPU count (`std.Thread.getCpuCount() catch 4`), e.g. `@max(2, @min(6, cpu_count - 1))`. This ensures high-throughput background decoding on multi-core systems while leaving 1 core dedicated to main-thread rendering.
 
 > [!NOTE]
-> For strict main-thread GPU texture release invariants and atomic memory barriers, refer to \[.agents/rules/concurrency_and_gpu_threading.md\](file:///home/pope/Code/peng/.agents/rules/concurrency_and_gpu_threading.md).
+> For strict main-thread GPU texture release invariants and atomic memory barriers, refer to [02_concurrency_and_architecture.md](../../../rules/02_concurrency_and_architecture.md).
