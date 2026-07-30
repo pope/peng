@@ -162,6 +162,9 @@ pub const ViewerState = struct {
     /// (resetNavigation) so main-thread event handlers (e.g. handleImageDecodedEvent)
     /// can verify incoming background events match the active image list epoch before modifying CacheEntry slots.
     generation: usize = 0,
+    thumb_header_hits: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    thumb_positional_hits: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    thumb_misses: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     worker_group: std.Io.Group = .init,
 
     // Tagged Union State Machines

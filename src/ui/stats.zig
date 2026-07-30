@@ -398,6 +398,13 @@ pub fn renderStatsOverlay(
         }
         try renderStatRow("Thumb Load Time", thumb_time_str);
 
+        const total_thumbs = ui_model.thumb_header_hits + ui_model.thumb_positional_hits + ui_model.thumb_misses;
+        const thumb_hits_str = if (total_thumbs > 0)
+            try std.fmt.allocPrint(frame_allocator, "{d} Header / {d} Pos / {d} Miss", .{ ui_model.thumb_header_hits, ui_model.thumb_positional_hits, ui_model.thumb_misses })
+        else
+            "0 Header / 0 Pos / 0 Miss";
+        try renderStatRow("Thumb Hit Ratio", thumb_hits_str);
+
         var mipmap_status_str: []const u8 = if (current_entry != null) "Disabled (1 Level)" else "N/A";
         var mipmap_time_str: []const u8 = if (current_entry != null) "0.00 ms" else "N/A";
         if (current_entry) |entry| {

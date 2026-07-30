@@ -55,7 +55,41 @@ pub fn decodeWorker(args: *DecodeArgs) void {
             const n = f.readPositional(state.io, &slices, 0) catch 0;
             if (n > 0) {
                 const full_dims = exif.readJpegDimensions(header_buf[0..n]);
-                if (exif.extractJpegThumbnail(header_buf[0..n])) |thumb_bytes| {
+                var thumb_bytes_opt: ?[]const u8 = exif.extractJpegThumbnail(header_buf[0..n]);
+                var heap_thumb_buf: ?[]u8 = null;
+                defer if (heap_thumb_buf) |b| state.allocator.free(b);
+
+                if (thumb_bytes_opt != null) {
+                    _ = state.thumb_header_hits.fetchAdd(1, .monotonic);
+                } else if (exif.extractJpegThumbnailLocation(header_buf[0..n])) |loc| {
+                    const max_thumb_size_bytes = 512 * 1024; // 512 KiB sanity limit for EXIF thumbnails
+                    if (loc.length > 0 and loc.length <= max_thumb_size_bytes) {
+                        if (state.allocator.alloc(u8, loc.length)) |t_buf| {
+                            heap_thumb_buf = t_buf;
+                            var t_slices = [_][]u8{t_buf};
+                            const read_n = f.readPositional(state.io, &t_slices, loc.file_offset) catch |err| blk: {
+                                std.log.warn("decodeWorker: readPositional for thumbnail failed at offset {d} (len {d}): {}", .{ loc.file_offset, loc.length, err });
+                                break :blk 0;
+                            };
+                            if (read_n == loc.length) {
+                                thumb_bytes_opt = t_buf;
+                                _ = state.thumb_positional_hits.fetchAdd(1, .monotonic);
+                            } else {
+                                std.log.warn("decodeWorker: incomplete thumbnail read at offset {d}: expected {d} bytes, got {d}", .{ loc.file_offset, loc.length, read_n });
+                                _ = state.thumb_misses.fetchAdd(1, .monotonic);
+                            }
+                        } else |err| {
+                            std.log.warn("decodeWorker: failed to allocate {d} bytes for thumbnail: {}", .{ loc.length, err });
+                            _ = state.thumb_misses.fetchAdd(1, .monotonic);
+                        }
+                    } else {
+                        _ = state.thumb_misses.fetchAdd(1, .monotonic);
+                    }
+                } else {
+                    _ = state.thumb_misses.fetchAdd(1, .monotonic);
+                }
+
+                if (thumb_bytes_opt) |thumb_bytes| {
                     if (sdl.Surface.loadConstMemOpt(thumb_bytes)) |t_surf| {
                         const full_w: f32 = if (full_dims) |d| d.w else 0.0;
                         const full_h: f32 = if (full_dims) |d| d.h else 0.0;

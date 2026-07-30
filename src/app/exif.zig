@@ -210,6 +210,54 @@ pub fn readJpegExifOrientation(io: std.Io, path: []const u8) ?f32 {
     return parseExifOrientation(buf[0..n]);
 }
 
+pub const ThumbnailLocation = struct {
+    file_offset: u64,
+    length: u32,
+};
+
+pub fn extractJpegThumbnailLocation(data: []const u8) ?ThumbnailLocation {
+    const header = findTiffPayload(data) orelse return null;
+    const tiff = header.tiff;
+    const is_le = header.is_le;
+    const ifd0_off = header.ifd0_off;
+
+    const num_ifd0_entries = if (is_le) std.mem.readInt(u16, tiff[ifd0_off..][0..2], .little) else std.mem.readInt(u16, tiff[ifd0_off..][0..2], .big);
+    const ifd1_ptr_off = ifd0_off + 2 + @as(usize, num_ifd0_entries) * 12;
+    if (ifd1_ptr_off + 4 > tiff.len) return null;
+
+    const ifd1_off = if (is_le) std.mem.readInt(u32, tiff[ifd1_ptr_off..][0..4], .little) else std.mem.readInt(u32, tiff[ifd1_ptr_off..][0..4], .big);
+    if (ifd1_off == 0 or ifd1_off >= tiff.len or ifd1_off + 2 > tiff.len) return null;
+
+    const num_ifd1_entries = if (is_le) std.mem.readInt(u16, tiff[ifd1_off..][0..2], .little) else std.mem.readInt(u16, tiff[ifd1_off..][0..2], .big);
+    var entry_off = ifd1_off + 2;
+
+    var thumb_off: ?u32 = null;
+    var thumb_len: ?u32 = null;
+
+    var i: usize = 0;
+    while (i < num_ifd1_entries) : (i += 1) {
+        if (entry_off + 12 > tiff.len) break;
+        const entry = tiff[entry_off .. entry_off + 12];
+        entry_off += 12;
+
+        const tag = if (is_le) std.mem.readInt(u16, entry[0..2][0..2], .little) else std.mem.readInt(u16, entry[0..2][0..2], .big);
+        if (tag == 0x0201) {
+            thumb_off = if (is_le) std.mem.readInt(u32, entry[8..12][0..4], .little) else std.mem.readInt(u32, entry[8..12][0..4], .big);
+        } else if (tag == 0x0202) {
+            thumb_len = if (is_le) std.mem.readInt(u32, entry[8..12][0..4], .little) else std.mem.readInt(u32, entry[8..12][0..4], .big);
+        }
+    }
+
+    if (thumb_off != null and thumb_len != null) {
+        const tiff_start_off = @intFromPtr(tiff.ptr) - @intFromPtr(data.ptr);
+        return .{
+            .file_offset = tiff_start_off + @as(u64, thumb_off.?),
+            .length = thumb_len.?,
+        };
+    }
+    return null;
+}
+
 pub fn extractJpegThumbnail(data: []const u8) ?[]const u8 {
     const header = findTiffPayload(data) orelse return null;
     const tiff = header.tiff;

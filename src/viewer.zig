@@ -132,6 +132,9 @@ pub fn updateFrame(
         .pending_intents = &state.pending_intents,
         .current_image_cache_hit = state.current_image_cache_hit,
         .debug_show_thumb = state.ui.overlays.debug_show_thumb,
+        .thumb_header_hits = state.thumb_header_hits.load(.acquire),
+        .thumb_positional_hits = state.thumb_positional_hits.load(.acquire),
+        .thumb_misses = state.thumb_misses.load(.acquire),
     };
 
     // Skip layout construction and rendering if state is clean and idle

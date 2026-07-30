@@ -485,6 +485,9 @@ pub const UiViewModel = struct {
     pending_intents: *std.ArrayList(intents.AppIntent),
     current_image_cache_hit: bool,
     debug_show_thumb: bool,
+    thumb_header_hits: usize = 0,
+    thumb_positional_hits: usize = 0,
+    thumb_misses: usize = 0,
 };
 
 pub const MeasureTextUserData = struct {
