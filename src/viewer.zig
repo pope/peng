@@ -137,6 +137,18 @@ pub fn updateFrame(
         .debug_show_thumb = state.ui.overlays.debug_show_thumb,
     };
 
+    // Skip layout construction and rendering if state is clean and idle
+    const is_dirty = state.dirty or
+        input.mouse_left_down or input.mouse_left_clicked or
+        input.scroll_delta_x != 0 or input.scroll_delta_y != 0 or
+        input.keys_pressed.items.len > 0 or input.text_input != null or
+        input.dropped_path != null or state.navigation.slideshow == .active or
+        state.ui.palette.mode != .inactive or state.ui.screenshot_mode != .idle;
+
+    if (!is_dirty and !parsed_test_mode and !parsed_headless) {
+        return;
+    }
+
     // Draw / Render
     const capture_filename = switch (state.ui.screenshot_mode) {
         .idle => null,
@@ -147,6 +159,7 @@ pub fn updateFrame(
         return err;
     };
     state.handleScreenshotPostRender(null);
+    state.dirty = false;
 }
 
 //////////////////////////////////////////////////////////////////////////////

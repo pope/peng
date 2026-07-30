@@ -96,7 +96,7 @@ pub const BackgroundEvent = union(enum) {
 pub fn MpscQueue(comptime T: type) type {
     return struct {
         mutex: std.Io.Mutex = .init,
-        items: std.ArrayListUnmanaged(T) = .empty,
+        items: std.ArrayList(T) = .empty,
 
         const Self = @This();
 

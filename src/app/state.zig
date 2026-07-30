@@ -259,8 +259,9 @@ pub const ViewerState = struct {
     last_nav_time_ms: u64 = 0,
     rotation_map: std.StringHashMap(f32),
     event_queue: events.MpscQueue(events.BackgroundEvent) = .{},
-    pending_ipc_commands: std.ArrayListUnmanaged(*ipc.IpcCommandData) = .empty,
-    pending_intents: std.ArrayListUnmanaged(AppIntent) = .empty,
+    event_batch: std.ArrayList(events.BackgroundEvent) = .empty,
+    pending_ipc_commands: std.ArrayList(*ipc.IpcCommandData) = .empty,
+    pending_intents: std.ArrayList(AppIntent) = .empty,
 
     pub fn pushIntent(self: *ViewerState, intent: AppIntent) !void {
         try self.pending_intents.append(self.allocator, intent);
@@ -367,6 +368,7 @@ pub const ViewerState = struct {
         self.ui.deinit(self.io, self.allocator);
         self.pending_ipc_commands.deinit(self.allocator);
         self.pending_intents.deinit(self.allocator);
+        self.event_batch.deinit(self.allocator);
         self.event_queue.deinit(self.allocator, self.io);
         self.rotation_map.deinit();
     }
@@ -795,14 +797,13 @@ pub const ViewerState = struct {
     }
 
     pub fn processBackgroundEvents(self: *ViewerState) bool {
-        var event_batch: std.ArrayList(events.BackgroundEvent) = .empty;
-        defer event_batch.deinit(self.allocator);
-
-        self.event_queue.drain(self.allocator, self.io, &event_batch) catch return false;
-        if (event_batch.items.len == 0) return false;
+        self.event_batch.clearRetainingCapacity();
+        self.event_queue.drain(self.allocator, self.io, &self.event_batch) catch return false;
+        if (self.event_batch.items.len == 0) return false;
+        self.dirty = true;
         const current_gen = self.generation.load(.acquire);
 
-        for (event_batch.items) |*evt| {
+        for (self.event_batch.items) |*evt| {
             defer evt.deinit(self.allocator);
 
             switch (evt.*) {

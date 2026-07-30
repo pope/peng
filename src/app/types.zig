@@ -90,7 +90,7 @@ pub const UiViewModel = struct {
     io: std.Io,
     cache_slot_map: *image.CacheSlotMap,
     navigation: *navigation.NavigationState,
-    pending_intents: *std.ArrayListUnmanaged(intents.AppIntent),
+    pending_intents: *std.ArrayList(intents.AppIntent),
     current_image_cache_hit: bool = false,
     debug_show_thumb: bool = false,
 };

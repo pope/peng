@@ -104,7 +104,7 @@ pub const TextureHandle = struct {
 };
 
 pub const CacheSlotMap = struct {
-    entries: std.ArrayListUnmanaged(CacheEntry) = .empty,
+    entries: std.ArrayList(CacheEntry) = .empty,
 
     pub fn deinit(self: *CacheSlotMap, allocator: std.mem.Allocator, gpu_device: ?sdl.gpu.Device) void {
         for (self.entries.items) |*entry| {
