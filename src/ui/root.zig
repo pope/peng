@@ -4,6 +4,7 @@
 //! text caching, overlay panels, and SDL3 GPU rendering pipelines.
 
 pub const renderer = @import("renderer.zig");
+pub const render_image = @import("render_image.zig");
 pub const layout = @import("layout.zig");
 pub const palette = @import("palette.zig");
 pub const palette_items = @import("palette_items.zig");
