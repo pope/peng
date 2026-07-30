@@ -2,9 +2,8 @@ const std = @import("std");
 const clay = @import("zclay");
 const sdl = @import("sdl");
 const theme = @import("theme.zig");
-const app = @import("app");
-const app_state = app.state;
-const types = app.types;
+const state = @import("state");
+const types = state.types;
 const ViewParams = types.ViewParams;
 const UiViewModel = types.UiViewModel;
 const FrameInput = types.FrameInput;
@@ -13,16 +12,16 @@ const renderPalette = @import("palette.zig").renderPalette;
 const renderStatsOverlay = @import("stats.zig").renderStatsOverlay;
 const renderer = @import("renderer.zig");
 const saveTextureToPng = @import("graphics.zig").saveTextureToPng;
-const ElementTag = app_state.ElementTag;
-const CacheEntry = app.image.CacheEntry;
-const view_transform = app.view_transform;
+const ElementTag = types.ElementTag;
+const view_transform = state.view_transform;
 const truncateFilename = @import("text_utils.zig").truncateFilename;
 const sdl3MeasureText = @import("graphics.zig").sdl3MeasureText;
+const RenderResources = @import("graphics.zig").RenderResources;
 
 pub fn renderFrame(
     view_params: ViewParams,
     ui_model: UiViewModel,
-    gpu_res: *app_state.RenderResources,
+    gpu_res: *RenderResources,
     input: FrameInput,
     frame_allocator: std.mem.Allocator,
     fonts: []const ?sdl.Font,
@@ -265,8 +264,8 @@ pub fn updateWindowTitle(
     const total_images = ui_model.total_images;
     if (total_images > 0) {
         if (ui_model.current_index) |idx| {
-            if (idx < ui_model.navigation.image_list.items.len) {
-                const path = ui_model.navigation.image_list.items[idx];
+            if (idx < ui_model.image_list.len) {
+                const path = ui_model.image_list[idx];
                 raw_title = std.fs.path.basename(path);
             }
         }
@@ -434,7 +433,7 @@ pub fn renderEmptyState() void {
 
 pub fn renderViewport(
     ui_model: UiViewModel,
-    current_entry: ?CacheEntry,
+    current_entry: anytype,
     draw_w: f32,
     draw_h: f32,
     total_images: usize,

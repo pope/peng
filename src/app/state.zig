@@ -2,11 +2,10 @@ const std = @import("std");
 const fuzzig = @import("fuzzig");
 const sdl = @import("sdl");
 const clay = @import("zclay");
-const types = @import("types.zig");
+const state_pkg = @import("state");
+const types = state_pkg.types;
 const FrameInput = types.FrameInput;
 const app_input = @import("input.zig");
-const graphics = @import("ui").graphics;
-const TextCacheModule = @import("ui").text_cache;
 const image = @import("image.zig");
 const fs = @import("fs.zig");
 const events = @import("events.zig");
@@ -15,11 +14,11 @@ const ipc = @import("ipc.zig");
 const exif = @import("exif.zig");
 const screenshot = @import("screenshot.zig");
 const systems = @import("systems.zig");
-const view_transform = @import("view_transform.zig");
+const view_transform = state_pkg.view_transform;
 
-const uploadSurfaceToGpu = graphics.uploadSurfaceToGpu;
-const CacheStatus = image.CacheStatus;
-const CacheEntry = image.CacheEntry;
+const uploadSurfaceToGpu = image.uploadSurfaceToGpu;
+const CacheStatus = state_pkg.CacheStatus;
+const CacheEntry = state_pkg.CacheEntry;
 const CacheSlotMap = image.CacheSlotMap;
 const TextureHandle = image.TextureHandle;
 const DecodeArgs = image.DecodeArgs;
@@ -31,13 +30,13 @@ const AppIntent = intents.AppIntent;
 
 const navigation = @import("navigation.zig");
 pub const NavigationState = navigation.NavigationState;
-pub const SlideshowMode = navigation.SlideshowMode;
+const SlideshowMode = state_pkg.SlideshowMode;
 
 const ui_state = @import("ui_state.zig");
 pub const UiState = ui_state.UiState;
-pub const OverlayState = ui_state.OverlayState;
+const OverlayState = state_pkg.OverlayState;
 pub const OverlayFlags = ui_state.OverlayFlags;
-pub const UiRenderMetrics = ui_state.UiRenderMetrics;
+const UiRenderMetrics = state_pkg.UiRenderMetrics;
 pub const ScreenshotMode = ui_state.ScreenshotMode;
 pub const RollingStats = ui_state.RollingStats;
 
@@ -56,7 +55,7 @@ pub const ElementTag = enum(usize) {
 };
 
 const palette_module = @import("palette.zig");
-pub const PaletteState = palette_module.PaletteState;
+const PaletteState = state_pkg.PaletteState;
 
 pub const DragState = union(enum) {
     none,
@@ -74,9 +73,7 @@ pub const DragState = union(enum) {
     },
 };
 
-pub const TextCacheKey = TextCacheModule.TextCacheKey;
-pub const TextCacheValue = TextCacheModule.TextCacheValue;
-pub const TextCache = TextCacheModule.TextCache;
+
 
 /// Enables SDL text input events if the current display mode is windowed GUI.
 /// No-op when in headless rendering mode.
@@ -132,98 +129,11 @@ pub fn matchesQueryLower(path: []const u8, query_lower: []const u8) bool {
 /// - `cached_title`: Heap-allocated buffer of the active window title to prevent redundant SDL title updates.
 /// - `is_fullscreen`: Boolean tracking whether the window is currently expanded to fullscreen.
 /// - `claimed`: True if the window has claimed focus and rendering output (false during headless tests).
-pub const ActiveWindow = struct {
-    handle: sdl.Window,
-    pixel_format: u32 = sdl.PixelFormat.unknown,
-    cached_title: ?[]const u8 = null,
-    is_fullscreen: bool = false,
-    claimed: bool = false,
-
-    /// Frees cached window title memory upon window teardown.
-    pub fn deinit(self: *ActiveWindow, gpa: std.mem.Allocator) void {
-        if (self.cached_title) |t| {
-            gpa.free(t);
-        }
-    }
-};
-
-/// Tagged union discriminating between offscreen/headless mode and active windowed GUI mode.
-///
-/// Variants:
-/// - `headless`: Render operations execute offscreen; no physical OS window or swapchain exists.
-/// - `windowed`: Active GUI windowing mode containing an `ActiveWindow` instance.
-pub const DisplayState = union(enum) {
-    headless,
-    windowed: ActiveWindow,
-
-    /// Returns the cached window title slice if windowed, or `null` if headless.
-    pub inline fn getTitle(self: DisplayState) ?[]const u8 {
-        return switch (self) {
-            .headless => null,
-            .windowed => |w| w.cached_title,
-        };
-    }
-
-    /// Returns whether the display is currently in fullscreen mode (always `false` in headless mode).
-    pub inline fn isFullscreen(self: DisplayState) bool {
-        return switch (self) {
-            .headless => false,
-            .windowed => |w| w.is_fullscreen,
-        };
-    }
-
-    /// Returns whether the window has claimed rendering output.
-    pub inline fn isClaimed(self: DisplayState) bool {
-        return switch (self) {
-            .headless => false,
-            .windowed => |w| w.claimed,
-        };
-    }
-
-    /// Returns the GPU swapchain pixel format for windowed mode, or default format if headless.
-    pub inline fn getPixelFormat(self: DisplayState) u32 {
-        return switch (self) {
-            .headless => sdl.PixelFormat.unknown,
-            .windowed => |w| w.pixel_format,
-        };
-    }
-};
+const ActiveWindow = state_pkg.ActiveWindow;
+const DisplayState = state_pkg.DisplayState;
 
 /// Cohesive GPU context and render resources initialized for GPU-accelerated rendering.
-pub const RenderResources = struct {
-    device: sdl.gpu.Device,
-    pipeline: sdl.gpu.Pipeline,
-    unpack_compute_pipeline: ?sdl.gpu.ComputePipeline = null,
-    sampler: sdl.gpu.Sampler,
-    white_texture: sdl.gpu.Texture,
 
-    // Persistent double-buffered vertex and transfer staging buffers
-    vertex_buffers: [2]?sdl.gpu.Buffer = .{ null, null },
-    transfer_buffers: [2]?sdl.gpu.TransferBuffer = .{ null, null },
-    buffer_capacities: [2]usize = .{ 0, 0 },
-    vertex_capacities: [2]usize = .{ 0, 0 },
-    frame_index: usize = 0,
-
-    // Font text texture cache
-    text_cache: TextCache = .{},
-
-    /// Releases GPU pipelines, samplers, fallback textures, staging buffers, and text cache on application teardown.
-    pub fn deinit(self: *RenderResources, allocator: std.mem.Allocator) void {
-        self.text_cache.deinit(allocator, self.device);
-        for (self.vertex_buffers) |vb| {
-            if (vb) |b| self.device.releaseBuffer(b);
-        }
-        for (self.transfer_buffers) |tb| {
-            if (tb) |b| self.device.releaseTransferBuffer(b);
-        }
-        self.device.releasePipeline(self.pipeline);
-        if (self.unpack_compute_pipeline) |pipe| {
-            self.device.releaseComputePipeline(pipe);
-        }
-        self.device.releaseSampler(self.sampler);
-        self.device.releaseTexture(self.white_texture);
-    }
-};
 
 /// Main Application State Architecture
 ///
@@ -234,7 +144,8 @@ pub const RenderResources = struct {
 /// - Workers communicate exclusively by pushing event messages into `event_queue` (MpscQueue).
 /// - The main thread consumes background events during frame updates and updates `ViewerState` safely.
 pub const ViewerState = struct {
-    gpu: ?RenderResources = null,
+    gpu_device: ?sdl.gpu.Device = null,
+    unpack_compute_pipeline: ?sdl.gpu.ComputePipeline = null,
 
     // Domain Sub-States
     viewport: types.ViewportParams = .{},
@@ -309,12 +220,12 @@ pub const ViewerState = struct {
         const thumb_surf = sdl.Surface.loadConstMemOpt(thumb_bytes) orelse return;
         defer thumb_surf.destroy();
 
-        const gpu_res = self.gpu orelse return;
-        const upload_res = uploadSurfaceToGpu(gpu_res.device, thumb_surf, gpu_res.unpack_compute_pipeline) orelse return;
+        const dev = self.gpu_device orelse return;
+        const upload_res = uploadSurfaceToGpu(dev, thumb_surf, self.unpack_compute_pipeline) orelse return;
 
         if (self.cache.getWithGeneration(entry.index, entry.generation)) |e| {
             if (e.thumb_gpu_texture) |old_t| {
-                gpu_res.device.releaseTexture(old_t);
+                dev.releaseTexture(old_t);
             }
             e.thumb_gpu_texture = upload_res.gpu_texture;
             e.thumb_w = upload_res.w;
@@ -326,7 +237,7 @@ pub const ViewerState = struct {
             e.has_thumb = true;
             e.thumb_upload_time_ms = upload_res.upload_time_ms;
         } else {
-            gpu_res.device.releaseTexture(upload_res.gpu_texture);
+            dev.releaseTexture(upload_res.gpu_texture);
         }
     }
 
@@ -336,22 +247,21 @@ pub const ViewerState = struct {
             sdl.timer.delay(1);
         }
 
-        const dev_opt = if (self.gpu) |g| g.device else null;
+        const dev_opt = self.gpu_device;
         self.cache.clear(dev_opt);
 
-        if (self.gpu) |*gpu_res| {
+        if (self.gpu_device) |dev| {
             switch (self.display) {
                 .headless => {},
                 .windowed => |*w| {
                     if (w.claimed) {
-                        w.handle.releaseFromGpu(gpu_res.device);
+                        w.handle.releaseFromGpu(dev);
                     }
                     w.deinit(self.allocator);
                 },
             }
 
-            self.cache.deinit(self.allocator, gpu_res.device);
-            gpu_res.deinit(self.allocator);
+            self.cache.deinit(self.allocator, dev);
         } else {
             switch (self.display) {
                 .headless => {},
@@ -370,7 +280,24 @@ pub const ViewerState = struct {
         self.pending_intents.deinit(self.allocator);
         self.event_batch.deinit(self.allocator);
         self.event_queue.deinit(self.allocator, self.io);
+        self.clearRotationMap();
         self.rotation_map.deinit();
+    }
+
+    pub fn putRotation(self: *ViewerState, path: []const u8, angle: f32) !void {
+        const gop = try self.rotation_map.getOrPut(path);
+        if (!gop.found_existing) {
+            gop.key_ptr.* = try self.allocator.dupe(u8, path);
+        }
+        gop.value_ptr.* = angle;
+    }
+
+    pub fn clearRotationMap(self: *ViewerState) void {
+        var it = self.rotation_map.keyIterator();
+        while (it.next()) |key_ptr| {
+            self.allocator.free(key_ptr.*);
+        }
+        self.rotation_map.clearRetainingCapacity();
     }
 
     /// Returns true if the application is still running and the background job's
@@ -449,28 +376,7 @@ pub const ViewerState = struct {
     }
 
     pub fn applyTextureScaleMode(self: *ViewerState) void {
-        const filter = if (self.viewport.texture_scale_mode == .linear) sdl.gpu.Filter.linear else sdl.gpu.Filter.nearest;
-        if (self.gpu) |*gpu_res| {
-            gpu_res.device.releaseSampler(gpu_res.sampler);
-
-            const sampler_info = sdl.gpu.SamplerCreateInfo{
-                .min_filter = filter,
-                .mag_filter = filter,
-                .mipmap_mode = .linear,
-                .address_mode_u = .clamp_to_edge,
-                .address_mode_v = .clamp_to_edge,
-                .address_mode_w = .clamp_to_edge,
-                .mip_lod_bias = 0.0,
-                .max_anisotropy = 1.0,
-                .compare_op = .never,
-                .min_lod = 0.0,
-                .max_lod = 1000.0,
-                .props = 0,
-            };
-            if (gpu_res.device.createSampler(&sampler_info)) |new_sampler| {
-                gpu_res.sampler = new_sampler;
-            }
-        }
+        self.dirty = true;
     }
 
     pub fn rebuildPaletteMatches(self: *ViewerState) !void {
@@ -525,13 +431,13 @@ pub const ViewerState = struct {
                     }
                     break :blk ".";
                 };
-                try self.ui.palette.loadDirectoryEntries(self.io, start_dir);
+                try palette_module.loadDirectoryEntries(&self.ui.palette, self.io, start_dir);
                 while (self.ui.palette.dir_items.items.len == 0) {
                     const curr = self.ui.palette.current_nav_dir.items;
                     var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
                     if (fs.getParentDirBuf(curr, &parent_buf)) |parent_dir| {
                         if (!std.mem.eql(u8, parent_dir, curr)) {
-                            try self.ui.palette.loadDirectoryEntries(self.io, parent_dir);
+                            try palette_module.loadDirectoryEntries(&self.ui.palette, self.io, parent_dir);
                             continue;
                         }
                     }
@@ -554,8 +460,8 @@ pub const ViewerState = struct {
         for (self.cache.entries.items) |*entry| {
             if (entry.status == .loaded_gpu and !self.ui.overlays.debug_show_thumb) {
                 if (entry.thumb_gpu_texture) |thumb_tex| {
-                    if (self.gpu) |gpu_res| {
-                        gpu_res.device.releaseTexture(thumb_tex);
+                    if (self.gpu_device) |gpu_dev| {
+                        gpu_dev.releaseTexture(thumb_tex);
                     }
                     entry.thumb_gpu_texture = null;
                 }
@@ -576,8 +482,8 @@ pub const ViewerState = struct {
 
         if (upload_target) |target| {
             defer target.cpu.surface.destroy();
-            if (self.gpu) |gpu_res| {
-                if (uploadSurfaceToGpu(gpu_res.device, target.cpu.surface, gpu_res.unpack_compute_pipeline)) |res| {
+            if (self.gpu_device) |gpu_dev| {
+                if (uploadSurfaceToGpu(gpu_dev, target.cpu.surface, self.unpack_compute_pipeline)) |res| {
                     const loaded_gpu_status = CacheStatus{
                         .loaded_gpu = .{
                             .gpu_texture = res.gpu_texture,
@@ -594,7 +500,7 @@ pub const ViewerState = struct {
                     const updated = self.cache.updateStatus(target.index, target.generation, loaded_gpu_status);
 
                     if (!updated) {
-                        gpu_res.device.releaseTexture(res.gpu_texture);
+                        gpu_dev.releaseTexture(res.gpu_texture);
                     }
                 } else {
                     _ = self.cache.updateStatus(target.index, target.generation, .failed);
@@ -604,7 +510,7 @@ pub const ViewerState = struct {
     }
 
     pub fn clearCache(self: *ViewerState) void {
-        const dev_opt = if (self.gpu) |g| g.device else null;
+        const dev_opt = self.gpu_device;
         self.cache.clear(dev_opt);
     }
 
@@ -645,8 +551,8 @@ pub const ViewerState = struct {
         const current_gen = self.generation.load(.acquire);
         if (thumb_data.generation != current_gen) return;
         const surf = thumb_data.surface orelse return;
-        if (self.gpu) |gpu_res| {
-            if (uploadSurfaceToGpu(gpu_res.device, surf, gpu_res.unpack_compute_pipeline)) |upload_res| {
+        if (self.gpu_device) |gpu_dev| {
+            if (uploadSurfaceToGpu(gpu_dev, surf, self.unpack_compute_pipeline)) |upload_res| {
                 if (self.cache.getWithGeneration(thumb_data.index, thumb_data.generation)) |entry| {
                     entry.thumb_gpu_texture = upload_res.gpu_texture;
                     entry.thumb_w = upload_res.w;
@@ -659,7 +565,7 @@ pub const ViewerState = struct {
                     entry.has_thumb = true;
                     entry.thumb_upload_time_ms = upload_res.upload_time_ms;
                 } else {
-                    gpu_res.device.releaseTexture(upload_res.gpu_texture);
+                    gpu_dev.releaseTexture(upload_res.gpu_texture);
                 }
                 self.updateCurrentRotation();
             }
@@ -670,12 +576,12 @@ pub const ViewerState = struct {
         const current_gen = self.generation.load(.acquire);
         if (decoded_data.generation != current_gen) return;
         const surf = decoded_data.surface orelse return;
-        if (self.gpu) |gpu_res| {
-            if (uploadSurfaceToGpu(gpu_res.device, surf, gpu_res.unpack_compute_pipeline)) |full_res| {
+        if (self.gpu_device) |gpu_dev| {
+            if (uploadSurfaceToGpu(gpu_dev, surf, self.unpack_compute_pipeline)) |full_res| {
                 if (self.cache.getWithGeneration(decoded_data.index, decoded_data.generation)) |entry| {
                     switch (entry.status) {
                         .loaded_cpu => |cpu| cpu.surface.destroy(),
-                        .loaded_gpu => |gpu| gpu_res.device.releaseTexture(gpu.gpu_texture),
+                        .loaded_gpu => |gpu| gpu_dev.releaseTexture(gpu.gpu_texture),
                         else => {},
                     }
                     entry.exif_orientation = decoded_data.exif_orientation;
@@ -700,9 +606,9 @@ pub const ViewerState = struct {
                             .thumb_upload_time_ms = entry.thumb_upload_time_ms,
                         },
                     };
-                    self.cache.enforceVramBudget(gpu_res.device, self.navigation.current_index, CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
+                    self.cache.enforceVramBudget(gpu_dev, self.navigation.current_index, CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
                 } else {
-                    gpu_res.device.releaseTexture(full_res.gpu_texture);
+                    gpu_dev.releaseTexture(full_res.gpu_texture);
                 }
                 self.updateCurrentRotation();
             }
@@ -885,7 +791,7 @@ pub const ViewerState = struct {
         var to_spawn_indices: [5]usize = undefined;
         var hit = false;
 
-        const dev_opt = if (self.gpu) |g| g.device else null;
+        const dev_opt = self.gpu_device;
 
         // 2. Evict cache entries that are no longer wanted
         var i: usize = 0;
@@ -1048,7 +954,7 @@ pub const ViewerState = struct {
         // Clear existing cache and rotation map before resetting directory_arena
         _ = self.generation.fetchAdd(1, .release);
         self.clearCache();
-        self.rotation_map.clearRetainingCapacity();
+        self.clearRotationMap();
         self.navigation.image_list.clearRetainingCapacity();
         _ = self.navigation.directory_arena.reset(.retain_capacity);
         self.navigation.current_index = null;

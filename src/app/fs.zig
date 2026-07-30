@@ -1,4 +1,5 @@
 const std = @import("std");
+const state_pkg = @import("state");
 const app_state = @import("state.zig");
 const ViewerState = app_state.ViewerState;
 const sdl = @import("sdl");
@@ -97,40 +98,7 @@ pub const FolderCounts = struct {
     subdir_count: usize = 0,
 };
 
-pub const DirectoryEntryKind = union(enum) {
-    parent,
-    current,
-    directory: FolderCounts,
-    file,
-};
-
-pub const DirectoryEntry = struct {
-    name: []const u8,
-    full_path: []const u8,
-    kind: DirectoryEntryKind = .{ .directory = .{} },
-
-    pub fn isParent(self: DirectoryEntry) bool {
-        return self.kind == .parent;
-    }
-
-    pub fn isCurrent(self: DirectoryEntry) bool {
-        return self.kind == .current;
-    }
-
-    pub fn getImageCount(self: DirectoryEntry) usize {
-        return switch (self.kind) {
-            .directory => |c| c.image_count,
-            else => 0,
-        };
-    }
-
-    pub fn getSubdirCount(self: DirectoryEntry) usize {
-        return switch (self.kind) {
-            .directory => |c| c.subdir_count,
-            else => 0,
-        };
-    }
-};
+const DirectoryEntry = state_pkg.DirectoryEntry;
 
 pub fn countFolderContents(io: std.Io, folder_path: []const u8) FolderCounts {
     var dir = std.Io.Dir.openDir(std.Io.Dir.cwd(), io, folder_path, .{ .iterate = true }) catch |err| {
@@ -194,7 +162,9 @@ pub fn scanDirectoryEntries(gpa: std.mem.Allocator, io: std.Io, dir_path: []cons
             try entries.append(gpa, .{
                 .name = name,
                 .full_path = full_path,
-                .kind = .{ .directory = counts },
+                .kind = .directory,
+                .image_count = counts.image_count,
+                .subdir_count = counts.subdir_count,
             });
         }
     }

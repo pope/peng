@@ -1,12 +1,13 @@
 const std = @import("std");
 const sdl = @import("sdl");
 const clay = @import("zclay");
+const state = @import("state");
 const app_state = @import("state.zig");
+const palette_module = @import("palette.zig");
 const intents = @import("intents");
-const app_types = @import("types.zig");
 const ipc = @import("ipc.zig");
-const Key = app_types.Key;
-const KeyModifiers = app_types.KeyModifiers;
+const Key = state.Key;
+const KeyModifiers = state.KeyModifiers;
 const ViewerState = app_state.ViewerState;
 const startTextInput = app_state.startTextInput;
 
@@ -37,7 +38,7 @@ pub fn executeIntent(self: *ViewerState, intent: intents.AppIntent) !void {
             self.resetZoomPan();
         },
         .set_filter => |mode| {
-            self.viewport.texture_scale_mode = mode;
+            self.viewport.scale_filter = mode;
             self.applyTextureScaleMode();
         },
         .set_brightness => |val| self.setAdjustments(val, self.viewport.contrast),
@@ -52,7 +53,7 @@ pub fn executeIntent(self: *ViewerState, intent: intents.AppIntent) !void {
             if (val >= 360.0) val -= 360.0;
             self.viewport.rotation_angle = val;
             if (self.navigation.getCurrentImagePath()) |path| {
-                try self.rotation_map.put(path, self.viewport.rotation_angle);
+                try self.putRotation(path, self.viewport.rotation_angle);
             }
         },
         .rotate_ccw => {
@@ -60,14 +61,14 @@ pub fn executeIntent(self: *ViewerState, intent: intents.AppIntent) !void {
             if (val < 0.0) val += 360.0;
             self.viewport.rotation_angle = val;
             if (self.navigation.getCurrentImagePath()) |path| {
-                try self.rotation_map.put(path, self.viewport.rotation_angle);
+                try self.putRotation(path, self.viewport.rotation_angle);
             }
         },
         .reset_rotation => {
             if (self.navigation.getCurrentImagePath()) |path| {
                 const exif_rot = self.readJpegExifOrientation(path) orelse 0.0;
                 self.viewport.rotation_angle = exif_rot;
-                try self.rotation_map.put(path, self.viewport.rotation_angle);
+                try self.putRotation(path, self.viewport.rotation_angle);
             } else {
                 self.viewport.rotation_angle = 0.0;
             }
@@ -94,16 +95,21 @@ pub fn executeIntent(self: *ViewerState, intent: intents.AppIntent) !void {
             if (p.mode == .inactive) {
                 self.setPaletteMode(.inactive);
             } else {
-                try self.openPalette(p.mode);
-                if (p.query) |q| {
-                    self.ui.palette.query.clearRetainingCapacity();
-                    try self.ui.palette.query.appendSlice(self.allocator, q);
-                    self.ui.palette.selected_idx = 0;
-                    self.ui.palette.selection_dirty = true;
-                    if (self.ui.palette.mode == .actions) {
-                        try self.rebuildActionMatches();
-                    } else if (self.ui.palette.mode == .files) {
-                        try self.rebuildPaletteMatches();
+                if (p.mode == .directory_navigator and p.query != null) {
+                    try palette_module.loadDirectoryEntries(&self.ui.palette, self.io, p.query.?);
+                    self.setPaletteMode(.directory_navigator);
+                } else {
+                    try self.openPalette(p.mode);
+                    if (p.query) |q| {
+                        self.ui.palette.query.clearRetainingCapacity();
+                        try self.ui.palette.query.appendSlice(self.allocator, q);
+                        self.ui.palette.selected_idx = 0;
+                        self.ui.palette.selection_dirty = true;
+                        if (self.ui.palette.mode == .actions) {
+                            try self.rebuildActionMatches();
+                        } else if (self.ui.palette.mode == .files) {
+                            try self.rebuildPaletteMatches();
+                        }
                     }
                 }
             }
@@ -171,7 +177,7 @@ pub fn handleIpcCommand(self: *ViewerState, command: []const u8, stream: std.Io.
 }
 
 test "palette_action_items metadata" {
-    const nav_item = app_types.palette_action_items[6];
+    const nav_item = state.palette_action_items[6];
     try std.testing.expectEqualStrings("Navigate Directories...", nav_item.name);
     try std.testing.expectEqualStrings("Ctrl+O", nav_item.shortcut_text);
     try std.testing.expect(nav_item.show_in_palette);

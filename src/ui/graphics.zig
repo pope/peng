@@ -3,8 +3,8 @@ const sdl = @import("sdl");
 const renderer = @import("renderer.zig");
 const clay = @import("zclay");
 const theme = @import("theme.zig");
-const app = @import("app");
-const MeasureTextUserData = app.types.MeasureTextUserData;
+const state = @import("state");
+const MeasureTextUserData = state.types.MeasureTextUserData;
 
 pub const GraphicsSetup = struct {
     window: sdl.Window,
@@ -18,6 +18,47 @@ pub const GraphicsOptions = struct {
 };
 
 const builtin = @import("builtin");
+const TextCache = @import("text_cache.zig").TextCache;
+
+/// Cohesive GPU context and render resources initialized for GPU-accelerated rendering.
+pub const RenderResources = struct {
+    device: sdl.gpu.Device,
+    pipeline: sdl.gpu.Pipeline,
+    unpack_compute_pipeline: ?sdl.gpu.ComputePipeline = null,
+    sampler: sdl.gpu.Sampler,
+    white_texture: sdl.gpu.Texture,
+
+    // Persistent double-buffered vertex and transfer staging buffers
+    vertex_buffers: [2]?sdl.gpu.Buffer = .{ null, null },
+    transfer_buffers: [2]?sdl.gpu.TransferBuffer = .{ null, null },
+    buffer_capacities: [2]usize = .{ 0, 0 },
+    vertex_capacities: [2]usize = .{ 0, 0 },
+    frame_index: usize = 0,
+
+    // Font text texture cache & fonts
+    text_cache: TextCache = .{},
+    fonts: [2]?sdl.Font = .{ null, null },
+
+    /// Releases GPU pipelines, samplers, fallback textures, staging buffers, text cache, and fonts on application teardown.
+    pub fn deinit(self: *RenderResources, allocator: std.mem.Allocator) void {
+        self.text_cache.deinit(allocator, self.device);
+        for (self.fonts) |f| {
+            if (f) |font| font.close();
+        }
+        for (self.vertex_buffers) |vb| {
+            if (vb) |b| self.device.releaseBuffer(b);
+        }
+        for (self.transfer_buffers) |tb| {
+            if (tb) |b| self.device.releaseTransferBuffer(b);
+        }
+        self.device.releasePipeline(self.pipeline);
+        if (self.unpack_compute_pipeline) |pipe| {
+            self.device.releaseComputePipeline(pipe);
+        }
+        self.device.releaseSampler(self.sampler);
+        self.device.releaseTexture(self.white_texture);
+    }
+};
 
 pub fn initGraphicsAndWindow(window_title: [:0]const u8, options: GraphicsOptions) !GraphicsSetup {
     if (options.headless and builtin.os.tag != .macos and builtin.os.tag != .windows) {
@@ -76,13 +117,7 @@ pub fn initGraphicsAndWindow(window_title: [:0]const u8, options: GraphicsOption
     };
 }
 
-pub const GpuResources = struct {
-    pipeline: sdl.gpu.Pipeline,
-    unpack_compute_pipeline: ?sdl.gpu.ComputePipeline = null,
-    sampler: sdl.gpu.Sampler,
-    white_texture: sdl.gpu.Texture,
-    fonts: [2]?sdl.Font,
-};
+pub const GpuResources = RenderResources;
 
 fn createShaderFromFormat(
     dev: sdl.gpu.Device,
@@ -327,6 +362,7 @@ pub fn initGpuResources(dev: sdl.gpu.Device, window: sdl.Window, initial_dpi_sca
     }
 
     return GpuResources{
+        .device = dev,
         .pipeline = pipeline,
         .unpack_compute_pipeline = unpack_compute_pipeline,
         .sampler = sampler,

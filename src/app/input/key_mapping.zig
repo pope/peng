@@ -1,8 +1,8 @@
 const std = @import("std");
-const types = @import("../types.zig");
+const state = @import("state");
 const intents = @import("intents");
-const Key = types.Key;
-const KeyModifiers = types.KeyModifiers;
+const Key = state.Key;
+const KeyModifiers = state.KeyModifiers;
 
 pub const KeyContext = enum {
     global,
@@ -42,8 +42,8 @@ pub fn mapKeyToAction(key: Key, mod: KeyModifiers, ctx: KeyContext) InputAction 
         }
     }
 
-    // 3. Command Palette Single Source of Truth Lookup (types.flat_shortcuts)
-    for (types.flat_shortcuts) |shortcut| {
+    // 3. Command Palette Single Source of Truth Lookup (state.flat_shortcuts)
+    for (state.flat_shortcuts) |shortcut| {
         if (key == shortcut.key and
             mod.ctrl == shortcut.mod.ctrl and
             mod.shift == shortcut.mod.shift and

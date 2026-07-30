@@ -1,11 +1,11 @@
 const std = @import("std");
 const sdl = @import("sdl");
 const geometry = @import("geometry.zig");
-const app = @import("app");
+const state = @import("state");
 
 pub const Vertex = geometry.Vertex;
 pub const packRgba = geometry.packRgba;
-pub const ViewportParams = app.types.ViewportParams;
+pub const ViewportParams = state.ViewportParams;
 
 /// Defines batch rendering material pipelines, controlling whether image adjustment shader uniforms apply.
 pub const MaterialType = enum {
@@ -47,7 +47,7 @@ pub fn appendImageCommand(
     var dst_w = rect.w;
     var dst_h = rect.h;
     const angle = view_params.rotation_angle;
-    const is_90_or_270 = app.view_transform.isAngle90or270(angle);
+    const is_90_or_270 = state.view_transform.isAngle90or270(angle);
     if (is_90_or_270) {
         dst_w = rect.h;
         dst_h = rect.w;

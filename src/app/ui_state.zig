@@ -10,17 +10,8 @@ pub const OverlayFlags = packed struct(u8) {
     _padding: u4 = 0,
 };
 
-pub const OverlayState = struct {
-    show_info: bool = false,
-    show_stats: bool = false,
-    debug_show_thumb: bool = false,
-    info_offset_x: f32 = 20.0,
-    info_offset_y: f32 = 20.0,
-    stats_offset_x: f32 = -20.0,
-    stats_offset_y: f32 = 20.0,
-    mouse_inside: bool = true,
-    flags: OverlayFlags = .{},
-};
+const state_pkg = @import("state");
+const OverlayState = state_pkg.OverlayState;
 
 pub const RollingStats = struct {
     samples: [60]f64 = [_]f64{0.0} ** 60,
@@ -64,12 +55,7 @@ pub const RollingStats = struct {
     }
 };
 
-pub const UiRenderMetrics = struct {
-    last_ui_render_time_ms: f64 = 0.0,
-    ui_render_stats: RollingStats = .{},
-    last_ui_vertex_count: usize = 0,
-    last_ui_batch_count: usize = 0,
-};
+const UiRenderMetrics = state_pkg.UiRenderMetrics;
 
 pub const ScreenshotMode = union(enum) {
     idle,
@@ -77,14 +63,14 @@ pub const ScreenshotMode = union(enum) {
 };
 
 pub const UiState = struct {
-    palette: palette.PaletteState,
+    palette: state_pkg.PaletteState,
     overlays: OverlayState = .{},
     metrics: UiRenderMetrics = .{},
     screenshot_mode: ScreenshotMode = .idle,
 
     pub fn init(allocator: std.mem.Allocator) UiState {
         return .{
-            .palette = palette.PaletteState.init(allocator),
+            .palette = state_pkg.PaletteState.init(allocator),
         };
     }
 

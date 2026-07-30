@@ -1,12 +1,11 @@
 const std = @import("std");
 const clay = @import("zclay");
 const sdl = @import("sdl");
-const app = @import("app");
-const app_state = app.state;
-const types = app.types;
+const state = @import("state");
+const types = state.types;
 const UiViewModel = types.UiViewModel;
-const PaletteState = app.palette.PaletteState;
-const stopTextInput = app_state.stopTextInput;
+const PaletteState = state.PaletteState;
+const stopTextInput = state.stopTextInput;
 
 const MeasureTextUserData = types.MeasureTextUserData;
 const sdl3MeasureText = @import("graphics.zig").sdl3MeasureText;
@@ -182,7 +181,7 @@ pub fn renderTextInputDialog(
         .corner_radius = .all(6),
     })({
         const raw_str = palette.query.items;
-        const total_count = ui_model.navigation.image_list.items.len;
+        const total_count = ui_model.total_images;
         switch (palette.mode) {
             .go_to_image => {
                 if (total_count == 0) {
@@ -197,7 +196,7 @@ pub fn renderTextInputDialog(
                         .font_size = 13,
                         .font_id = 0,
                     });
-                    const range_str = try std.fmt.allocPrint(frame_allocator, "Allowed range: 1 to {} (current: {})", .{ total_count, (ui_model.navigation.current_index orelse 0) + 1 });
+                    const range_str = try std.fmt.allocPrint(frame_allocator, "Allowed range: 1 to {} (current: {})", .{ total_count, (ui_model.current_index orelse 0) + 1 });
                     clay.text(range_str, .{
                         .color = theme.subtext1,
                         .font_size = 11,
@@ -206,7 +205,7 @@ pub fn renderTextInputDialog(
                 } else {
                     if (std.fmt.parseInt(usize, raw_str, 10)) |val| {
                         if (val >= 1 and val <= total_count) {
-                            const target_path = if (val - 1 < ui_model.navigation.image_list.items.len) ui_model.navigation.image_list.items[val - 1] else "";
+                            const target_path = if (val - 1 < total_count and ui_model.current_image_path != null and val - 1 == (ui_model.current_index orelse 0)) ui_model.current_image_path.? else "";
                             const raw_basename = std.fs.path.basename(target_path);
                             const display_filename = truncateFilename(frame_allocator, raw_basename, 492.0, 12, measure_data);
                             const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to go to {}: {s}", .{ val, display_filename });
@@ -287,7 +286,7 @@ pub fn renderTextInputDialog(
                     if (std.fmt.parseFloat(f32, raw_str)) |val| {
                         if (!std.math.isNan(val) and !std.math.isInf(val)) {
                             is_valid_float = true;
-                            const bounds = palette.mode.getTextInputBounds() orelse types.TextInputBounds{ .min = 0.0, .max = 1.0 };
+                            const bounds = palette.mode.getTextInputBounds() orelse intents.TextInputBounds{ .min = 0.0, .max = 1.0 };
                             const min_val = bounds.min;
                             const max_val = bounds.max;
                             if (val >= min_val and val <= max_val) {
@@ -429,7 +428,7 @@ pub fn renderSelectionList(
             })({
                 switch (palette.mode) {
                     .files => {
-                        const path = if (real_idx < ui_model.navigation.image_list.items.len) ui_model.navigation.image_list.items[real_idx] else "";
+                        const path = if (real_idx < ui_model.image_list.len) ui_model.image_list[real_idx] else "";
                         const basename = std.fs.path.basename(path);
                         const dirname = std.fs.path.dirname(path) orelse ".";
                         const query_str = palette.query.items;
@@ -668,8 +667,8 @@ pub fn renderSelectionList(
                                 );
                             });
 
-                            const image_count = entry.getImageCount();
-                            const subdir_count = entry.getSubdirCount();
+                            const image_count = entry.getImageCount() orelse 0;
+                            const subdir_count = entry.getSubdirCount() orelse 0;
                             const count_str = try std.fmt.allocPrint(frame_allocator, "{} image{s}", .{ image_count, if (image_count == 1) "" else "s" });
                             const count_color = if (image_count == 0) theme.subtext1 else theme.green;
 
@@ -731,7 +730,6 @@ pub fn renderSelectionList(
                 const old_type = palette.mode;
                 switch (palette.mode) {
                     .files => {
-                        ui_model.navigation.current_index = real_idx;
                         ui_model.pending_intents.append(ui_model.gpa_allocator, .{ .go_to_image = real_idx }) catch |err| {
                             std.log.err("Failed to push go_to_image intent: {}", .{err});
                         };
@@ -752,8 +750,9 @@ pub fn renderSelectionList(
                         if (real_idx < palette.dir_items.items.len) {
                             const entry = palette.dir_items.items[real_idx];
                             const path_copy = try frame_allocator.dupe(u8, entry.full_path);
-                            try palette.loadDirectoryEntries(ui_model.io, path_copy);
-                            palette.query.clearRetainingCapacity();
+                            try ui_model.pending_intents.append(ui_model.gpa_allocator, .{
+                                .set_palette = .{ .mode = .directory_navigator, .query = path_copy },
+                            });
                         }
                     },
                     else => {},

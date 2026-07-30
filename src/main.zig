@@ -5,6 +5,9 @@ const ui = @import("ui");
 const app_config = @import("config");
 const app = @import("app");
 const sdl = @import("sdl");
+const state_pkg = @import("state");
+const build_options = @import("build_options");
+const viewer = @import("viewer");
 
 const LibViewer = struct {
     const lib_name = switch (builtin.target.os.tag) {
@@ -21,8 +24,8 @@ const LibViewer = struct {
     handle: std.DynLib,
     last_mod_time: std.Io.Timestamp,
     is_valid: bool = true,
-    load_assets: *const fn (*app.state.ViewerState) callconv(.c) void,
-    unload_assets: *const fn (*app.state.ViewerState) callconv(.c) void,
+    load_assets: *const fn () callconv(.c) void,
+    unload_assets: *const fn () callconv(.c) void,
     update: *const fn (
         app_state: *app.state.ViewerState,
         window_ptr: *anyopaque,
@@ -96,14 +99,14 @@ const LibViewer = struct {
         }
 
         if (self.is_valid) {
-            self.unload_assets(app_state);
+            self.unload_assets();
             self.handle.close();
             self.is_valid = false;
         }
 
         const new_viewer = try LibViewer.init(io);
         self.* = new_viewer;
-        self.load_assets(app_state);
+        self.load_assets();
     }
 
     fn safeReload(self: *LibViewer, io: std.Io, app_state: *app.state.ViewerState) void {
@@ -132,16 +135,14 @@ pub const AppGraphicsAndState = struct {
     state: app.state.ViewerState,
     clay_memory: []u8,
     clay_context: *clay.Context,
-    measure_data: app.types.MeasureTextUserData,
+    measure_data: state_pkg.types.MeasureTextUserData,
     ipc_server: ?*app.ipc.IpcServer,
 
     pub fn deinit(self: *AppGraphicsAndState) void {
         if (self.ipc_server) |srv| srv.deinit(self.io);
         self.gpa.free(self.clay_memory);
         self.state.deinit();
-        for (self.resources.fonts) |f| {
-            if (f) |font| font.close();
-        }
+        self.resources.deinit(self.gpa);
         sdl.quitTtf();
         self.setup.gpu_device.destroy();
         self.setup.window.destroy();
@@ -188,13 +189,8 @@ pub fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
 
     // 4. State Initialization
     var state = app.state.ViewerState{
-        .gpu = .{
-            .device = setup.gpu_device,
-            .pipeline = resources.pipeline,
-            .unpack_compute_pipeline = resources.unpack_compute_pipeline,
-            .sampler = resources.sampler,
-            .white_texture = resources.white_texture,
-        },
+        .gpu_device = setup.gpu_device,
+        .unpack_compute_pipeline = resources.unpack_compute_pipeline,
 
         .navigation = app.navigation.NavigationState.init(gpa),
         .ui = app.ui_state.UiState.init(gpa),
@@ -244,11 +240,11 @@ pub fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
 /// Phase 2: Runs the main application event processing, state updating, and rendering loop.
 pub fn runMainLoop(ctx: *AppGraphicsAndState) !void {
     // Configure Clay measure text function with a stable pointer to measure_data
-    ctx.measure_data = app.types.MeasureTextUserData{
+    ctx.measure_data = state_pkg.types.MeasureTextUserData{
         .fonts = ctx.resources.fonts[0..],
         .allocator = ctx.gpa,
     };
-    clay.setMeasureTextFunction(*const app.types.MeasureTextUserData, &ctx.measure_data, ui.graphics.sdl3MeasureText);
+    clay.setMeasureTextFunction(*const state_pkg.types.MeasureTextUserData, &ctx.measure_data, ui.graphics.sdl3MeasureText);
 
     // Initialize IPC server with a stable pointer to state
     if (ctx.parsed.ipc_enabled) {
@@ -267,13 +263,12 @@ pub fn runMainLoop(ctx: *AppGraphicsAndState) !void {
 
     var last_time = sdl.timer.getTicks();
 
-    const build_options = @import("build_options");
     if (build_options.hot_reload) {
         var lib_viewer: LibViewer = try .init(ctx.io);
         defer lib_viewer.deinit(ctx.io) catch {};
 
-        lib_viewer.load_assets(&ctx.state);
-        defer lib_viewer.unload_assets(&ctx.state);
+        lib_viewer.load_assets();
+        defer lib_viewer.unload_assets();
 
         while (ctx.state.running) {
             defer _ = frame_arena.reset(.retain_capacity);
@@ -294,10 +289,8 @@ pub fn runMainLoop(ctx: *AppGraphicsAndState) !void {
             }
         }
     } else {
-        const viewer = @import("viewer");
-
-        try viewer.loadAssets(&ctx.state);
-        defer viewer.unloadAssets(&ctx.state);
+        try viewer.loadAssets();
+        defer viewer.unloadAssets();
 
         while (ctx.state.running) {
             defer _ = frame_arena.reset(.retain_capacity);

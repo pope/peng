@@ -1,30 +1,24 @@
 const std = @import("std");
 const clay = @import("zclay");
+const state_pkg = @import("state");
 const ui = @import("ui");
 const app = @import("app");
 const sdl = @import("sdl");
 
 /// Entry point for loading dynamic UI resources / assets.
-pub fn loadAssets(state: *app.state.ViewerState) !void {
-    if (state.gpu) |*gpu_res| {
-        gpu_res.text_cache.clearAll(state.allocator, gpu_res.device);
-    }
+pub fn loadAssets() !void {
     clay.cdefs.Clay_ResetMeasureTextCache();
 }
 
 /// Entry point for unloading dynamic UI resources / assets upon library reload.
-pub fn unloadAssets(state: *app.state.ViewerState) void {
-    if (state.gpu) |*gpu_res| {
-        gpu_res.text_cache.clearAll(state.allocator, gpu_res.device);
-    }
-}
+pub fn unloadAssets() void {}
 
 /// Main frame update function encapsulated within the hot-reloadable viewer library.
 pub fn updateFrame(
     state: *app.state.ViewerState,
     window: sdl.Window,
     resources: *ui.graphics.GpuResources,
-    measure_data: *app.types.MeasureTextUserData,
+    measure_data: *state_pkg.MeasureTextUserData,
     ipc_server: ?*app.ipc.IpcServer,
     parsed_headless: bool,
     parsed_test_mode: bool,
@@ -33,7 +27,7 @@ pub fn updateFrame(
 ) !void {
     _ = ipc_server;
     // Re-bind Clay measure text function pointer to the reloaded code address
-    clay.setMeasureTextFunction(*const app.types.MeasureTextUserData, measure_data, ui.graphics.sdl3MeasureText);
+    clay.setMeasureTextFunction(*const state_pkg.MeasureTextUserData, measure_data, ui.graphics.sdl3MeasureText);
 
     const frame_allocator = frame_arena.allocator();
     const bg_events_processed = state.processBackgroundEvents();
@@ -101,7 +95,7 @@ pub fn updateFrame(
     }
 
     // Construct view parameters and UI view model snapshots
-    const view_params = app.types.ViewParams{
+    const view_params = state_pkg.ViewParams{
         .viewport = state.viewport,
         .win_w = input.win_w,
         .win_h = input.win_h,
@@ -110,11 +104,12 @@ pub fn updateFrame(
         .is_fullscreen = state.isFullscreen(),
     };
 
-    const gpu_res = if (state.gpu) |*g| g else return error.GpuNotInitialized;
+    if (state.gpu_device == null) return error.GpuNotInitialized;
 
-    const ui_model = app.types.UiViewModel{
+    const ui_model = state_pkg.UiViewModel{
         .is_fullscreen = state.isFullscreen(),
         .total_images = state.navigation.image_list.items.len,
+        .image_list = state.navigation.image_list.items,
         .current_index = state.navigation.current_index,
         .current_image_path = if (state.navigation.current_index) |idx|
             if (idx < state.navigation.image_list.items.len) state.navigation.image_list.items[idx] else null
@@ -128,6 +123,8 @@ pub fn updateFrame(
         .viewport = state.viewport,
         .palette = &state.ui.palette,
         .display = &state.display,
+        .total_vram_bytes = state.cache.getTotalVramBytes(),
+        .cached_slot_count = state.cache.entries.items.len,
         .gpa_allocator = state.allocator,
         .io = state.io,
         .cache_slot_map = &state.cache,
@@ -154,7 +151,7 @@ pub fn updateFrame(
         .idle => null,
         .capturing => |s| s.path,
     };
-    ui.layout.renderFrame(view_params, ui_model, gpu_res, input, frame_allocator, resources.fonts[0..], measure_data, capture_filename) catch |err| {
+    ui.layout.renderFrame(view_params, ui_model, resources, input, frame_allocator, resources.fonts[0..], measure_data, capture_filename) catch |err| {
         state.handleScreenshotPostRender(err);
         return err;
     };
@@ -165,14 +162,14 @@ pub fn updateFrame(
 //////////////////////////////////////////////////////////////////////////////
 // C Exports for Hot Reloading Dynamic Library Boundary
 
-export fn viewer_load_assets(app_state: *app.state.ViewerState) callconv(.c) void {
-    loadAssets(app_state) catch |err| {
+export fn viewer_load_assets() callconv(.c) void {
+    loadAssets() catch |err| {
         std.log.err("Failed to load assets: {}", .{err});
     };
 }
 
-export fn viewer_unload_assets(app_state: *app.state.ViewerState) callconv(.c) void {
-    unloadAssets(app_state);
+export fn viewer_unload_assets() callconv(.c) void {
+    unloadAssets();
 }
 
 export fn viewer_update(
@@ -188,7 +185,7 @@ export fn viewer_update(
 ) callconv(.c) void {
     const window: sdl.Window = .{ .ptr = @ptrCast(@alignCast(window_ptr)) };
     const resources: *ui.graphics.GpuResources = @ptrCast(@alignCast(resources_ptr));
-    const measure_data: *app.types.MeasureTextUserData = @ptrCast(@alignCast(measure_data_ptr));
+    const measure_data: *state_pkg.MeasureTextUserData = @ptrCast(@alignCast(measure_data_ptr));
     const ipc_server: ?*app.ipc.IpcServer = if (ipc_server_ptr) |ptr| @ptrCast(@alignCast(ptr)) else null;
     const frame_arena: *std.heap.ArenaAllocator = @ptrCast(@alignCast(frame_arena_ptr));
 

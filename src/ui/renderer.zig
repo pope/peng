@@ -2,8 +2,7 @@ const std = @import("std");
 const clay = @import("zclay");
 const theme = @import("theme.zig");
 const sdl = @import("sdl");
-const app = @import("app");
-const app_state = app.state;
+const state = @import("state");
 const TextCacheKey = @import("text_cache.zig").TextCacheKey;
 
 pub const ZoomPan = struct {
@@ -18,7 +17,9 @@ pub const Vertex = geometry.Vertex;
 pub const packRgba = geometry.packRgba;
 pub const packRgbaClay = geometry.packRgbaClay;
 pub const packRgbaF = geometry.packRgbaF;
-pub const ViewportParams = app.types.ViewportParams;
+pub const ViewportParams = state.ViewportParams;
+pub const RenderResources = @import("graphics.zig").RenderResources;
+pub const ElementTag = state.types.ElementTag;
 pub const render_image = @import("render_image.zig");
 
 pub const Uniforms = render_image.Uniforms;
@@ -119,7 +120,7 @@ fn appendBorderCommand(
         .bottom_right = @min(config.corner_radius.bottom_right * scale_x, min_radius),
     };
 
-    const tag = if (user_data) |ptr| app_state.ElementTag.fromInt(@intFromPtr(ptr)) else .none;
+    const tag = if (user_data) |ptr| ElementTag.fromInt(@intFromPtr(ptr)) else .none;
     const is_dashed = (tag == .drop_zone_box);
 
     const r = config.color[0] / 255.0;
@@ -197,7 +198,7 @@ fn appendBorderCommand(
 }
 
 fn getOrRenderCachedText(
-    gpu_res: *app_state.RenderResources,
+    gpu_res: *RenderResources,
     copy_pass: sdl.gpu.CopyPass,
     fonts: []const ?sdl.Font,
     text_data: *clay.TextRenderData,
@@ -374,7 +375,7 @@ pub inline fn isScissorInvisible(sc: ?sdl.Rect, win_w: i32, win_h: i32) bool {
 
 fn buildGeometryFromCommands(
     view_params: ViewportParams,
-    gpu: *app_state.RenderResources,
+    gpu: *RenderResources,
     copy_pass: sdl.gpu.CopyPass,
     fonts: []const ?sdl.Font,
     r_commands: []const clay.RenderCommand,
@@ -530,7 +531,7 @@ fn buildGeometryFromCommands(
 }
 
 fn uploadVertexData(
-    gpu_res: *app_state.RenderResources,
+    gpu_res: *RenderResources,
     frame_idx: usize,
     copy_pass: sdl.gpu.CopyPass,
     frame_allocator: std.mem.Allocator,
@@ -599,7 +600,7 @@ fn uploadVertexData(
 
 fn executeRenderPass(
     view_params: ViewportParams,
-    gpu: *const app_state.RenderResources,
+    gpu: *const RenderResources,
     cmd_buf: sdl.gpu.CommandBuffer,
     swap_tex: sdl.gpu.Texture,
     batches: []const BatchItem,
@@ -680,7 +681,7 @@ pub const RenderPacket = struct {
 /// and texture draw command batches into a RenderPacket without submitting GPU render passes.
 pub fn buildRenderPacket(
     view_params: ViewportParams,
-    gpu_res: *app_state.RenderResources,
+    gpu_res: *RenderResources,
     copy_pass: sdl.gpu.CopyPass,
     fonts: []const ?sdl.Font,
     r_commands: []const clay.RenderCommand,
@@ -719,7 +720,7 @@ pub fn buildRenderPacket(
 /// batched GPU render pass draw calls for the extracted RenderPacket.
 pub fn executeRenderPacket(
     view_params: ViewportParams,
-    gpu_res: *app_state.RenderResources,
+    gpu_res: *RenderResources,
     cmd_buf: sdl.gpu.CommandBuffer,
     copy_pass: sdl.gpu.CopyPass,
     swap_tex: sdl.gpu.Texture,
@@ -758,7 +759,7 @@ pub fn executeRenderPacket(
 /// Orchestrates 2-pass UI and image rendering from Clay layout commands using decoupled ViewportParams.
 pub fn renderClayCommands(
     view_params: ViewportParams,
-    gpu_res: *app_state.RenderResources,
+    gpu_res: *RenderResources,
     cmd_buf: sdl.gpu.CommandBuffer,
     swap_tex: sdl.gpu.Texture,
     fonts: []const ?sdl.Font,
@@ -770,7 +771,7 @@ pub fn renderClayCommands(
     win_h: i32,
     scale_x: f32,
     scale_y: f32,
-    metrics: ?*app_state.UiRenderMetrics,
+    metrics: ?*state.types.UiRenderMetrics,
 ) !void {
     const start_render = sdl.timer.getTicksNs();
     const dev = gpu_res.device;

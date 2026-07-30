@@ -1,9 +1,9 @@
 const std = @import("std");
 const sdl = @import("sdl");
-const types = @import("../types.zig");
-const Key = types.Key;
-const KeyModifiers = types.KeyModifiers;
-const FrameInput = types.FrameInput;
+const state = @import("state");
+const Key = state.Key;
+const KeyModifiers = state.KeyModifiers;
+const FrameInput = state.FrameInput;
 
 pub const MOUSE_WHEEL_SCROLL_MULTIPLIER: f32 = 6.0;
 

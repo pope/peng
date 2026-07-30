@@ -1,5 +1,6 @@
 const std = @import("std");
 const c = @import("c.zig").c;
+const gpu = @import("gpu.zig");
 
 pub const window_flags = struct {
     pub const hidden: u64 = c.SDL_WINDOW_HIDDEN;
@@ -39,15 +40,15 @@ pub const Window = struct {
         _ = c.SDL_SetWindowTitle(self.ptr, title.ptr);
     }
 
-    pub fn claimForGpu(self: Window, device: @import("gpu.zig").Device) bool {
+    pub fn claimForGpu(self: Window, device: gpu.Device) bool {
         return c.SDL_ClaimWindowForGPUDevice(device.ptr, @ptrCast(self.ptr));
     }
 
-    pub fn releaseFromGpu(self: Window, device: @import("gpu.zig").Device) void {
+    pub fn releaseFromGpu(self: Window, device: gpu.Device) void {
         c.SDL_ReleaseWindowFromGPUDevice(device.ptr, self.ptr);
     }
 
-    pub fn waitAndAcquireSwapchainTexture(self: Window, cmd_buf: @import("gpu.zig").CommandBuffer, swap_w: *u32, swap_h: *u32) ?@import("gpu.zig").Texture {
+    pub fn waitAndAcquireSwapchainTexture(self: Window, cmd_buf: gpu.CommandBuffer, swap_w: *u32, swap_h: *u32) ?gpu.Texture {
         var raw_tex: ?*c.SDL_GPUTexture = null;
         if (c.SDL_WaitAndAcquireGPUSwapchainTexture(cmd_buf.ptr, self.ptr, &raw_tex, swap_w, swap_h)) {
             return if (raw_tex) |t| .{ .ptr = t } else null;

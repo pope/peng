@@ -1,34 +1,6 @@
 const std = @import("std");
-
-pub const SlideshowMode = union(enum) {
-    inactive,
-    active: struct {
-        interval_s: f32,
-        timer_ms: f64,
-    },
-
-    pub fn tick(self: *SlideshowMode, delta_ms: f32) bool {
-        switch (self.*) {
-            .inactive => return false,
-            .active => |*data| {
-                if (data.interval_s <= 0.0) return false;
-                data.timer_ms += delta_ms;
-                if (data.timer_ms >= data.interval_s * 1000.0) {
-                    data.timer_ms = 0.0;
-                    return true;
-                }
-                return false;
-            },
-        }
-    }
-
-    pub fn resetTimer(self: *SlideshowMode) void {
-        switch (self.*) {
-            .inactive => {},
-            .active => |*a| a.timer_ms = 0.0,
-        }
-    }
-};
+const state_pkg = @import("state");
+const SlideshowMode = state_pkg.SlideshowMode;
 
 pub const NavigationState = struct {
     image_list: std.ArrayList([]const u8) = .empty,

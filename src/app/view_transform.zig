@@ -85,7 +85,7 @@ pub fn computeViewDims(raw_w: f32, raw_h: f32, rotation_angle: f32, view_w: f32,
     };
 }
 
-const ZoomFactor = @import("types.zig").ZoomFactor;
+const ZoomFactor = @import("state").ZoomFactor;
 
 pub fn clampZoomFactor(base_scale: f32, factor: f32) ZoomFactor {
     const min_factor = if (base_scale > 0.0) 0.1 / base_scale else 0.1;

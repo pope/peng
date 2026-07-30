@@ -1,9 +1,13 @@
 const std = @import("std");
+const state_pkg = @import("state");
 const app_state = @import("../state.zig");
-const types = @import("../types.zig");
 const intents = @import("intents");
-const Key = types.Key;
-const KeyModifiers = types.KeyModifiers;
+const navigation = @import("../navigation.zig");
+const ui_state = @import("../ui_state.zig");
+const app_palette = @import("../palette.zig");
+const sdl = @import("sdl");
+const Key = state_pkg.Key;
+const KeyModifiers = state_pkg.KeyModifiers;
 const ViewerState = app_state.ViewerState;
 
 pub const polling = @import("polling.zig");
@@ -92,8 +96,8 @@ test "handlePaletteKeys directory_navigator key interactions" {
     }
 
     var state = ViewerState{
-        .navigation = @import("../navigation.zig").NavigationState.init(allocator),
-        .ui = @import("../ui_state.zig").UiState.init(allocator),
+        .navigation = navigation.NavigationState.init(allocator),
+        .ui = ui_state.UiState.init(allocator),
         .cache = .{},
         .allocator = allocator,
         .io = io,
@@ -103,7 +107,7 @@ test "handlePaletteKeys directory_navigator key interactions" {
     defer state.deinit();
 
     // 1. Open directory navigator at tmp_dir
-    try state.ui.palette.loadDirectoryEntries(io, tmp_dir);
+    try app_palette.loadDirectoryEntries(&state.ui.palette, io, tmp_dir);
     state.ui.palette.mode = .directory_navigator;
 
     // Locate index of sub_no_images
@@ -134,7 +138,7 @@ test "handlePaletteKeys directory_navigator key interactions" {
     try std.testing.expectEqual(app_state.PaletteMode.inactive, state.ui.palette.mode);
 
     // Re-open palette
-    try state.ui.palette.loadDirectoryEntries(io, tmp_dir);
+    try app_palette.loadDirectoryEntries(&state.ui.palette, io, tmp_dir);
     state.ui.palette.mode = .directory_navigator;
 
     // Test Shift+Enter key on current directory -> starts async path scan and closes palette
@@ -147,8 +151,8 @@ test "handlePaletteKeys stepping up from dot to parent directory preselects work
     const io = std.Io.Threaded.global_single_threaded.io();
 
     var state = ViewerState{
-        .navigation = @import("../navigation.zig").NavigationState.init(allocator),
-        .ui = @import("../ui_state.zig").UiState.init(allocator),
+        .navigation = navigation.NavigationState.init(allocator),
+        .ui = ui_state.UiState.init(allocator),
         .cache = .{},
         .allocator = allocator,
         .io = io,
@@ -157,7 +161,7 @@ test "handlePaletteKeys stepping up from dot to parent directory preselects work
     };
     defer state.deinit();
 
-    try state.ui.palette.loadDirectoryEntries(io, ".");
+    try app_palette.loadDirectoryEntries(&state.ui.palette, io, ".");
     state.ui.palette.mode = .directory_navigator;
     try std.testing.expectEqualStrings(".", state.ui.palette.current_nav_dir.items);
 
@@ -175,7 +179,6 @@ test "handlePaletteKeys stepping up from dot to parent directory preselects work
 
 test "processSDLEvent updates FrameInputState" {
     const allocator = std.testing.allocator;
-    const sdl = @import("sdl");
     var state = FrameInputState{
         .frame_allocator = allocator,
         .keys_pressed = .empty,

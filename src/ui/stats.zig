@@ -1,13 +1,11 @@
 const std = @import("std");
 const clay = @import("zclay");
 const theme = @import("theme.zig");
-const app = @import("app");
-const app_state = app.state;
-const types = app.types;
+const state = @import("state");
+const types = state.types;
 const UiViewModel = types.UiViewModel;
-const CacheEntry = app.image.CacheEntry;
 const formatSize = @import("text_utils.zig").formatSize;
-const MeasureTextUserData = app.types.MeasureTextUserData;
+const MeasureTextUserData = types.MeasureTextUserData;
 
 pub fn renderStatRow(label: []const u8, value: []const u8) !void {
     clay.UI()(.{
@@ -50,8 +48,8 @@ pub fn renderInfoOverlay(
     const current_entry = ui_model.current_entry;
 
     if (ui_model.current_index) |idx| {
-        if (idx < ui_model.navigation.image_list.items.len) {
-            const path = ui_model.navigation.image_list.items[idx];
+        if (idx < ui_model.image_list.len) {
+            const path = ui_model.image_list[idx];
             filename = std.fs.path.basename(path);
             const dirname = std.fs.path.dirname(path) orelse ".";
             display_dir = if (dirname.len > 35) try std.fmt.allocPrint(frame_allocator, "...{s}", .{dirname[dirname.len - 32 ..]}) else dirname;
@@ -116,8 +114,8 @@ pub fn renderInfoOverlay(
     if (current_entry) |entry| {
         var is_jpeg = std.mem.eql(u8, mime_type, "image/jpeg");
         if (ui_model.current_index) |idx| {
-            if (idx < ui_model.navigation.image_list.items.len) {
-                const ext = std.fs.path.extension(ui_model.navigation.image_list.items[idx]);
+            if (idx < ui_model.image_list.len) {
+                const ext = std.fs.path.extension(ui_model.image_list[idx]);
                 if (std.ascii.eqlIgnoreCase(ext, ".jpg") or std.ascii.eqlIgnoreCase(ext, ".jpeg")) {
                     is_jpeg = true;
                 }
@@ -354,9 +352,9 @@ pub fn renderStatsOverlay(
         try renderStatRow("Cache Hit", hit_str);
         try renderStatRow("Memory Size", mem_size_str);
 
-        const total_vram_bytes = ui_model.cache_slot_map.getTotalVramBytes();
+        const total_vram_bytes = ui_model.total_vram_bytes;
         const formatted_total_vram = try formatSize(frame_allocator, total_vram_bytes);
-        const total_vram_str = try std.fmt.allocPrint(frame_allocator, "{s} / 1024 MB ({d} slots)", .{ formatted_total_vram, ui_model.cache_slot_map.entries.items.len });
+        const total_vram_str = try std.fmt.allocPrint(frame_allocator, "{s} / 1024 MB ({d} slots)", .{ formatted_total_vram, ui_model.cached_slot_count });
         try renderStatRow("Total Cache VRAM", total_vram_str);
 
         try renderStatRow("Decode Time", decode_str);

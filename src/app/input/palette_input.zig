@@ -1,9 +1,10 @@
 const std = @import("std");
+const state = @import("state");
 const app_state = @import("../state.zig");
-const types = @import("../types.zig");
+const app_palette = @import("../palette.zig");
 const fs = @import("../fs.zig");
-const Key = types.Key;
-const KeyModifiers = types.KeyModifiers;
+const Key = state.Key;
+const KeyModifiers = state.KeyModifiers;
 const ViewerState = app_state.ViewerState;
 const stopTextInput = app_state.stopTextInput;
 
@@ -97,7 +98,7 @@ pub fn handlePaletteKeys(
                         const path_copy = try self.allocator.dupe(u8, entry.full_path);
                         defer self.allocator.free(path_copy);
                         palette.query.clearRetainingCapacity();
-                        try palette.loadDirectoryEntries(self.io, path_copy);
+                        try app_palette.loadDirectoryEntries(palette, self.io, path_copy);
                     }
                 }
                 return true;
@@ -108,7 +109,7 @@ pub fn handlePaletteKeys(
                 var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
                 if (fs.getParentDirBuf(palette.current_nav_dir.items, &parent_buf)) |parent_dir| {
                     palette.query.clearRetainingCapacity();
-                    try palette.loadDirectoryEntries(self.io, parent_dir);
+                    try app_palette.loadDirectoryEntries(palette, self.io, parent_dir);
                 }
                 return true;
             }
@@ -163,7 +164,7 @@ pub fn handlePaletteKeys(
                         if (palette.mode == .files) {
                             try self.pushIntent(.{ .go_to_image = target_idx });
                         } else if (palette.mode == .actions) {
-                            const item = types.palette_action_items[target_idx];
+                            const item = state.palette_action_items[target_idx];
                             try self.pushIntent(item.intent);
                         }
                     }
@@ -190,7 +191,7 @@ pub fn handlePaletteKeys(
                 var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
                 if (fs.getParentDirBuf(palette.current_nav_dir.items, &parent_buf)) |parent_dir| {
                     palette.query.clearRetainingCapacity();
-                    try palette.loadDirectoryEntries(self.io, parent_dir);
+                    try app_palette.loadDirectoryEntries(palette, self.io, parent_dir);
                 }
             }
             return true;
