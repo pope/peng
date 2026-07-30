@@ -158,7 +158,7 @@ pub fn handleIpcCommand(self: *ViewerState, command: []const u8, stream: std.Io.
                 if (self.getCurrentEntry()) |entry| {
                     if (entry.status != .decoding) break;
                 }
-                sdl.timer.delay(10);
+                std.Io.sleep(self.io, std.Io.Duration.fromMilliseconds(10), .awake) catch {};
             }
             try ipc.respondOk(self.io, stream);
         },

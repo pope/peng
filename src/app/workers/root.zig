@@ -25,10 +25,7 @@ pub const WorkerManager = struct {
     /// Invalidate all running worker jobs and block until active threads exit.
     pub fn drainAndQuiesce(state: *ViewerState) void {
         state.worker_group.cancel(state.io);
-        while (state.active_threads.load(.acquire) > 0) {
-            sdl.timer.delay(1);
-            _ = state.processBackgroundEvents();
-        }
+        _ = state.processBackgroundEvents();
     }
 };
 

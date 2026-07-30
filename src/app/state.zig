@@ -247,9 +247,6 @@ pub const ViewerState = struct {
     pub fn deinit(self: *ViewerState) void {
         self.exiting.store(true, .release);
         self.worker_group.cancel(self.io);
-        while (self.active_threads.load(.acquire) > 0) {
-            sdl.timer.delay(1);
-        }
 
         const dev_opt = self.gpu_device;
         self.cache.clear(dev_opt);
