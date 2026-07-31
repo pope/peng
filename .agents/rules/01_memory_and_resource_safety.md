@@ -53,7 +53,7 @@ const data = readBuffer() catch |err| {
 
 ## 9. `std.Io.net.Stream` Socket Teardown Invariants
 
-- Always invoke `stream.close(io)` on `std.Io.net.Stream` socket handles during queue item teardown (`deinitQueueItem`) and state deallocation (`ViewerState.deinit`).
+- Always invoke `stream.close(io)` on `std.Io.net.Stream` socket handles during queue item teardown (`deinitQueueItem`) and state deallocation (`AppState.deinit`).
 - Dropping or freeing structs containing socket streams without calling `.close(io)` leaks OS file and socket descriptors on application shutdown or event cancellation.
 
 ## 10. Worker Task Early-Exit & Fail-Fast Error Invariants
@@ -61,6 +61,21 @@ const data = readBuffer() catch |err| {
 When a worker task encounters a file I/O failure (`statFile`, `openFile`, initial `readPositional`) or decoder failure (e.g., `sdl.Surface.loadFilePtr` returning null):
 
 1. **Never swallow errors** with `catch null`, `catch 0`, or logging without state notification.
-2. **Always notify state**: Push a corresponding failure event (e.g., `.decode_failed`) to `event_queue` and wake up the main thread (`context.wakeUpMainThread()`).
+2. **Always notify state**: Push a corresponding failure event (e.g., `.decode_failed`) to `context.workers.event_queue` and wake up the main thread (`context.wakeUpMainThread()`).
 3. **Exit early immediately**: Execute `return` right after logging and event dispatch.
 4. **Avoid redundant checks**: Once an early exit check handles `n == 0` or error cases, do not wrap subsequent code in redundant `if (n > 0)` checks.
+
+## 11. Lifecycle Teardown & Deinitialization Invariants
+
+Every struct owning heap memory, GPU handles, socket connections, or child sub-states MUST provide an explicit `deinit` method accepting appropriate allocator/context parameters:
+
+- **`RenderResources.deinit(allocator)`**: Must be invoked on main thread shutdown to release font text cache (`text_cache.deinit(allocator, device)`), font handles (`font.close()`), double-buffered vertex and transfer staging buffers (`releaseBuffer`, `releaseTransferBuffer`), graphics pipelines (`releasePipeline`), compute pipelines (`releaseComputePipeline`), samplers, and fallback textures.
+- **`DisplayState.deinit(allocator)`**: Must be invoked during `ViewerState.deinit` to clean up windowed mode heap allocations (`allocator.free(cached_title)`).
+- **`ParsedArgs.deinit(gpa)`**: Must be invoked during CLI configuration teardown to free heap-allocated argument path slices (`arg_path`).
+- **Canonical Top-Level Teardown Order (`AppGraphicsAndState.deinit`)**:
+  1. `parsed.deinit(gpa)` (CLI allocations)
+  2. `ipc_server.deinit(io)` (Socket handles & threads)
+  3. `gpa.free(clay_memory)` (UI layout buffer)
+  4. `state.deinit()` (Workers, cache, intents, and `viewer.deinit(gpa, io)`)
+  5. `resources.deinit(gpa)` (GPU staging buffers, fonts, pipelines)
+  6. `gpu_device.destroy()` & `window.destroy()` (SDL hardware context)

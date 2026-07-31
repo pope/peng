@@ -1,8 +1,8 @@
 const std = @import("std");
 const app_state = @import("../state.zig");
-const ViewerState = app_state.ViewerState;
+const AppState = app_state.AppState;
 const ipc = @import("../ipc.zig");
-const screenshot = @import("../screenshot.zig");
+const state_pkg = @import("state");
 const intents = @import("intents");
 
 const actions = @import("../actions.zig");
@@ -10,7 +10,7 @@ const events_system = @import("events.zig");
 
 /// System function that drains queued socket commands from `state.pending_ipc_commands`,
 /// parses commands (`zoom`, `pan`, `next`, `filter`), and executes corresponding intents.
-pub fn sysExecuteIpcCommands(state: *ViewerState) void {
+pub fn sysExecuteIpcCommands(state: *AppState) void {
     if (state.pending_ipc_commands.items.len == 0) return;
 
     for (state.pending_ipc_commands.items) |cmd_data| {
@@ -60,7 +60,7 @@ pub fn sysExecuteIpcCommands(state: *ViewerState) void {
                     writer.interface.writeAll("ERR PathTooLong\n") catch |err| std.log.warn("IPC screenshot response failed: {}", .{err});
                     writer.interface.flush() catch |err| std.log.warn("IPC flush failed: {}", .{err});
                     cmd_data.client_stream.close(state.io);
-                } else if (state.ui.screenshot_mode == .capturing) {
+                } else if (state.viewer.ui.screenshot_mode == .capturing) {
                     var write_buf: [128]u8 = undefined;
                     var writer = cmd_data.client_stream.writer(state.io, &write_buf);
                     writer.interface.writeAll("ERR Busy\n") catch |err| std.log.warn("IPC screenshot response failed: {}", .{err});
@@ -75,8 +75,8 @@ pub fn sysExecuteIpcCommands(state: *ViewerState) void {
                         cmd_data.client_stream.close(state.io);
                         continue;
                     };
-                    state.ui.screenshot_mode = .{
-                        .capturing = screenshot.ActiveScreenshot{
+                    state.viewer.ui.screenshot_mode = .{
+                        .capturing = state_pkg.types.ActiveScreenshot{
                             .path = dup_path,
                             .stream = cmd_data.client_stream,
                         },
@@ -103,7 +103,7 @@ pub fn sysExecuteIpcCommands(state: *ViewerState) void {
 test "sysExecuteIpcCommands - drains pending commands and mutates state" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    var state = try ViewerState.initHeadless(allocator, io);
+    var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
     // Create mock IPC command data
@@ -118,13 +118,13 @@ test "sysExecuteIpcCommands - drains pending commands and mutates state" {
     sysExecuteIpcCommands(&state);
 
     try std.testing.expectEqual(@as(usize, 0), state.pending_ipc_commands.items.len);
-    try std.testing.expectEqual(@as(f32, 2.0), state.viewport.zoom);
+    try std.testing.expectEqual(@as(f32, 2.0), state.viewer.viewport.zoom_factor.get());
 }
 
 test "sysExecuteIpcCommands - multiple queued commands and adjust command" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    var state = try ViewerState.initHeadless(allocator, io);
+    var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
     const cmd1_str = try allocator.dupe(u8, "adjust 0.5 2.0");
@@ -135,6 +135,6 @@ test "sysExecuteIpcCommands - multiple queued commands and adjust command" {
     sysExecuteIpcCommands(&state);
 
     try std.testing.expectEqual(@as(usize, 0), state.pending_ipc_commands.items.len);
-    try std.testing.expectEqual(@as(f32, 0.5), state.viewport.brightness);
-    try std.testing.expectEqual(@as(f32, 2.0), state.viewport.contrast);
+    try std.testing.expectEqual(@as(f32, 0.5), state.viewer.viewport.brightness);
+    try std.testing.expectEqual(@as(f32, 2.0), state.viewer.viewport.contrast);
 }

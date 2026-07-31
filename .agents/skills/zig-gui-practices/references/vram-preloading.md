@@ -9,7 +9,7 @@
   In VRAM cache eviction routines (`enforceVramBudget`), protect the current image and its immediate neighbors ($\\pm 2$ slots) from eviction to prevent constant re-decoding during user navigation.
 
 - **Mutex Lifecycle & Standard Library Synchronization**:
-  Clean up lock primitives (`std.Io.Mutex`) in exactly one owner lifecycle method (e.g. `ViewerState.deinit()`).
+  Clean up lock primitives (`std.Io.Mutex`) in exactly one owner lifecycle method (e.g. `AppState.deinit()`).
 
 - **HashMap String Key Lifetimes**:
   Always iterate `keyIterator()` to free dynamically allocated string keys before calling `clearRetainingCapacity()` or `deinit()` on hash maps:
@@ -47,9 +47,9 @@ ______________________________________________________________________
 ## 4. Task Concurrency & Dynamic Core Scaling
 
 - **`std.Io.Group` Task Spawning**:
-  Spawn background decode tasks using `std.Io.Group` (`state.worker_group.async(io, decodeTask, args)`). Tasks in a `Group` automatically release their task allocation upon return.
+  Spawn background decode tasks using `std.Io.Group` via `WorkerManager` (`state.workers.group.async(io, decodeTask, args)`). Tasks in a `Group` automatically release their task allocation upon return.
 - **Native Cancellation & Epoch Validation**:
-  Cancel active background tasks via `state.worker_group.cancel(state.io)`. In worker functions, check `io.isCanceled()` before queuing event payloads. On the main thread, validate incoming event payloads against the active `ViewerState.generation` epoch before mutating cache entries.
+  Cancel active background tasks via `state.workers.drainAndQuiesce(io)` or `state.workers.group.cancel(state.io)`. In worker functions, check `io.isCanceled()` before queuing event payloads. On the main thread, validate incoming event payloads against the active `state.viewer.generation` epoch before mutating cache entries.
 - **Dynamic CPU Core Worker Scaling**:
   Scale max concurrent decode tasks dynamically at runtime based on hardware CPU count (`std.Thread.getCpuCount() catch 4`), e.g. `@max(2, @min(6, cpu_count - 1))`. This ensures high-throughput background decoding on multi-core systems while leaving 1 core dedicated to main-thread rendering.
 

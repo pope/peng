@@ -1,22 +1,22 @@
 const std = @import("std");
 const app_state = @import("../state.zig");
-const ViewerState = app_state.ViewerState;
+const AppState = app_state.AppState;
 
 /// System function that copies real-time atomic worker counters, active image GPU telemetry,
-/// and cache status into `state.stats` once per frame tick for UI layout rendering ("Stats for Nerds").
-pub fn sysSyncMetrics(state: *ViewerState) void {
-    state.stats.thumb_header_hits = state.workers.thumb_header_hits.load(.acquire);
-    state.stats.thumb_positional_hits = state.workers.thumb_positional_hits.load(.acquire);
-    state.stats.thumb_misses = state.workers.thumb_misses.load(.acquire);
-    state.stats.active_worker_threads = state.workers.active_threads.load(.acquire);
-    state.stats.active_decode_threads = state.workers.active_decode_threads.load(.acquire);
-    state.stats.cached_slot_count = state.cache.entries.items.len;
-    state.stats.total_vram_bytes = state.cache.getTotalVramBytes();
+/// and cache status into `state.viewer.stats` once per frame tick for UI layout rendering ("Stats for Nerds").
+pub fn sysSyncMetrics(state: *AppState) void {
+    state.viewer.stats.thumb_header_hits = state.workers.thumb_header_hits.load(.acquire);
+    state.viewer.stats.thumb_positional_hits = state.workers.thumb_positional_hits.load(.acquire);
+    state.viewer.stats.thumb_misses = state.workers.thumb_misses.load(.acquire);
+    state.viewer.stats.active_worker_threads = state.workers.active_threads.load(.acquire);
+    state.viewer.stats.active_decode_threads = state.workers.active_decode_threads.load(.acquire);
+    state.viewer.stats.cached_slot_count = state.cache.entries.items.len;
+    state.viewer.stats.total_vram_bytes = state.cache.getTotalVramBytes();
 
     if (state.getCurrentEntry()) |entry| {
         switch (entry.status) {
             .loaded_gpu => |gpu| {
-                state.stats.active_image = .{
+                state.viewer.stats.active_image = .{
                     .num_mip_levels = gpu.num_mip_levels,
                     .mipmap_time_ms = gpu.mipmap_time_ms,
                     .gpu_upload_time_ms = gpu.upload_time_ms,
@@ -29,7 +29,7 @@ pub fn sysSyncMetrics(state: *ViewerState) void {
                 };
             },
             .loaded_cpu => |cpu| {
-                state.stats.active_image = .{
+                state.viewer.stats.active_image = .{
                     .num_mip_levels = 1,
                     .mipmap_time_ms = 0.0,
                     .gpu_upload_time_ms = 0.0,
@@ -42,13 +42,13 @@ pub fn sysSyncMetrics(state: *ViewerState) void {
                 };
             },
             else => {
-                state.stats.active_image = .{
+                state.viewer.stats.active_image = .{
                     .has_thumb = entry.has_thumb,
                     .thumb_upload_time_ms = entry.thumb_upload_time_ms,
                 };
             },
         }
     } else {
-        state.stats.active_image = .{};
+        state.viewer.stats.active_image = .{};
     }
 }

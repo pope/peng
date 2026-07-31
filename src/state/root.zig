@@ -7,7 +7,13 @@
 pub const types = @import("types.zig");
 pub const view_transform = @import("view_transform.zig");
 pub const palette_state = @import("palette_state.zig");
+pub const viewer_state = @import("viewer_state.zig");
+pub const navigation = @import("navigation.zig");
+pub const ui_state = @import("ui_state.zig");
 
+pub const ViewerState = viewer_state.ViewerState;
+pub const NavigationState = navigation.NavigationState;
+pub const UiState = ui_state.UiState;
 pub const ZoomFactor = types.ZoomFactor;
 pub const ViewportParams = types.ViewportParams;
 pub const ViewParams = types.ViewParams;
@@ -35,5 +41,15 @@ pub const GpuTextureComponent = types.GpuTextureComponent;
 pub const ThumbComponent = types.ThumbComponent;
 pub const ActiveWindow = types.ActiveWindow;
 pub const DisplayState = types.DisplayState;
+pub const DragState = types.DragState;
 pub const SlideshowMode = types.SlideshowMode;
 pub const stopTextInput = types.stopTextInput;
+
+test {
+    _ = types;
+    _ = view_transform;
+    _ = palette_state;
+    _ = viewer_state;
+    _ = navigation;
+    _ = ui_state;
+}

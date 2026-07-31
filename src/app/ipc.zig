@@ -2,13 +2,10 @@ const std = @import("std");
 const builtin = @import("builtin");
 const sdl = @import("sdl");
 const app_state = @import("state.zig");
-const ViewerState = app_state.ViewerState;
+const AppState = app_state.AppState;
+const workers_mod = @import("workers/root.zig");
 const intents = @import("intents");
 const TextureScaleMode = intents.TextureScaleMode;
-const fs = @import("fs.zig");
-const screenshot = @import("screenshot.zig");
-const clay = @import("zclay");
-const workers_mod = @import("workers/root.zig");
 
 extern "kernel32" fn GetCurrentProcessId() callconv(std.builtin.CallingConvention.winapi) u32;
 
@@ -28,7 +25,7 @@ pub const IpcCommandData = struct {
 pub const IpcServer = struct {
     allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator, state: *ViewerState) !*IpcServer {
+    pub fn init(allocator: std.mem.Allocator, state: *AppState) !*IpcServer {
         const self = try allocator.create(IpcServer);
         self.* = .{
             .allocator = allocator,

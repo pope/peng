@@ -1,6 +1,6 @@
 const std = @import("std");
-const state_pkg = @import("state");
-const SlideshowMode = state_pkg.SlideshowMode;
+const types = @import("types.zig");
+const SlideshowMode = types.SlideshowMode;
 
 pub const NavigationState = struct {
     image_list: std.ArrayList([]const u8) = .empty,

@@ -1,6 +1,6 @@
 const std = @import("std");
-const palette = @import("palette.zig");
-const screenshot = @import("screenshot.zig");
+const types = @import("types.zig");
+const palette_state = @import("palette_state.zig");
 
 pub const OverlayFlags = packed struct(u8) {
     show_info: bool = false,
@@ -9,9 +9,6 @@ pub const OverlayFlags = packed struct(u8) {
     mouse_inside: bool = true,
     _padding: u4 = 0,
 };
-
-const state_pkg = @import("state");
-const OverlayState = state_pkg.OverlayState;
 
 pub const RollingStats = struct {
     samples: [60]f64 = [_]f64{0.0} ** 60,
@@ -55,22 +52,23 @@ pub const RollingStats = struct {
     }
 };
 
-const UiRenderMetrics = state_pkg.UiRenderMetrics;
+const UiRenderMetrics = types.UiRenderMetrics;
+const OverlayState = types.OverlayState;
 
 pub const ScreenshotMode = union(enum) {
     idle,
-    capturing: screenshot.ActiveScreenshot,
+    capturing: types.ActiveScreenshot,
 };
 
 pub const UiState = struct {
-    palette: state_pkg.PaletteState,
+    palette: palette_state.PaletteState,
     overlays: OverlayState = .{},
     metrics: UiRenderMetrics = .{},
     screenshot_mode: ScreenshotMode = .idle,
 
     pub fn init(allocator: std.mem.Allocator) UiState {
         return .{
-            .palette = state_pkg.PaletteState.init(allocator),
+            .palette = palette_state.PaletteState.init(allocator),
         };
     }
 

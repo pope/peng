@@ -103,7 +103,7 @@ pub fn spawnStdin(args: *StdinArgs) !void {
 }
 
 /// Spawns a background `ipcServerWorkerTask` listener to accept incoming IPC socket connections.
-pub fn spawnIpcServer(state: *ViewerState) !void {
+pub fn spawnIpcServer(state: *app_state.AppState) !void {
     const args = try state.allocator.create(ipc_server.IpcServerArgs);
     args.* = .{
         .workers = &state.workers,
@@ -112,4 +112,12 @@ pub fn spawnIpcServer(state: *ViewerState) !void {
     };
     _ = state.workers.active_threads.fetchAdd(1, .monotonic);
     state.workers.group.async(state.io, ipc_server.ipcServerWorkerTask, .{args});
+}
+
+test {
+    _ = context;
+    _ = decode;
+    _ = path_scan;
+    _ = stdin;
+    _ = ipc_server;
 }

@@ -42,3 +42,19 @@
 ## 8. Feature-Complete Canonical Implementations
 
 - When deduplicating utility functions or consolidating symbols into their canonical home module, verify that the retained canonical implementation is the robust, feature-complete version—not a simplified or legacy variant.
+
+## 9. Submodule Test Exposure Pattern (`test { _ = submodule; }`) for Zig 0.16
+
+- **Zig 0.16 Lazy Test Discovery Invariant**: In Zig 0.16, the compiler lazily analyzes test declarations. Unit tests declared inside child submodules or files are **ONLY** compiled and executed during `zig build test` if explicitly referenced inside an active test container block in the parent/root module (`root.zig` or `main.zig`).
+- **Standard Module Root Pattern**: Every package entrypoint or module root (`src/main.zig`, `src/state/root.zig`, `src/app/root.zig`, `src/ui/root.zig`, `src/app/systems/root.zig`) MUST include a top-level `test` block referencing all imported child modules:
+  ```zig
+  test {
+      _ = types;
+      _ = view_transform;
+      _ = palette_state;
+      _ = viewer_state;
+      _ = navigation;
+      _ = ui_state;
+  }
+  ```
+- **Rule**: Omitting `_ = child_module;` inside top-level `test` blocks will cause Zig to silently skip all unit tests inside those submodules. Always maintain complete submodule test exposure across module root files.

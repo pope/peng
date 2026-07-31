@@ -1,6 +1,6 @@
 const std = @import("std");
 const app_state = @import("../state.zig");
-const ViewerState = app_state.ViewerState;
+const AppState = app_state.AppState;
 const state_pkg = @import("state");
 const CacheEntry = state_pkg.CacheEntry;
 const CacheSlotMap = app_state.CacheSlotMap;
@@ -10,18 +10,18 @@ const sdl = @import("sdl");
 
 /// System function that manages RAM/GPU cache slot eviction, calculates prefetch windows
 /// (accounting for rapid navigation throttling), and spawns background image decode workers.
-pub fn sysUpdateCache(state: *ViewerState) !void {
+pub fn sysUpdateCache(state: *AppState) !void {
     state.updateCurrentRotation();
 
-    const len = state.navigation.image_list.items.len;
+    const len = state.viewer.navigation.image_list.items.len;
     if (len == 0) return;
 
-    const idx = state.navigation.current_index orelse return;
-    const gen = state.generation;
+    const idx = state.viewer.navigation.current_index orelse return;
+    const gen = state.viewer.generation;
 
     const now = sdl.timer.getTicks();
-    const is_rapid_scrolling = (now - state.navigation.last_nav_time_ms < 150);
-    state.navigation.last_nav_time_ms = now;
+    const is_rapid_scrolling = (now - state.viewer.navigation.last_nav_time_ms < 150);
+    state.viewer.navigation.last_nav_time_ms = now;
 
     // 1. Gather desired indices
     var desired_count: usize = 0;
@@ -105,13 +105,13 @@ pub fn sysUpdateCache(state: *ViewerState) !void {
             to_spawn_count += 1;
         }
     }
-    state.stats.current_image_cache_hit = hit;
+    state.viewer.stats.current_image_cache_hit = hit;
 
     // 4. Batch-fetch file paths
     var to_spawn_paths: [5]?[:0]const u8 = undefined;
     for (to_spawn_indices[0..to_spawn_count], 0..) |d, s_idx| {
-        if (d < state.navigation.image_list.items.len) {
-            to_spawn_paths[s_idx] = state.allocator.dupeZ(u8, state.navigation.image_list.items[d]) catch |err| blk: {
+        if (d < state.viewer.navigation.image_list.items.len) {
+            to_spawn_paths[s_idx] = state.allocator.dupeZ(u8, state.viewer.navigation.image_list.items[d]) catch |err| blk: {
                 std.log.err("sysUpdateCache: dupeZ failed for image index {d}: {}", .{ d, err });
                 break :blk null;
             };
@@ -168,7 +168,7 @@ pub fn sysUpdateCache(state: *ViewerState) !void {
             .index = d,
             .path = dup_path,
             .has_gpu_device = state.gpu_device != null,
-            .pixel_format = state.display.getPixelFormat(),
+            .pixel_format = state.viewer.display.getPixelFormat(),
         };
 
         workers_mod.spawnDecode(args) catch |err| {
@@ -186,10 +186,10 @@ pub fn sysUpdateCache(state: *ViewerState) !void {
 }
 
 /// System function that triggers background cache prefetching when the engine loop is idle.
-pub fn sysCheckIdlePreload(state: *ViewerState) void {
-    if (state.navigation.image_list.items.len <= 1) return;
+pub fn sysCheckIdlePreload(state: *AppState) void {
+    if (state.viewer.navigation.image_list.items.len <= 1) return;
     const now = sdl.timer.getTicks();
-    if (now - state.navigation.last_nav_time_ms >= 150) {
+    if (now - state.viewer.navigation.last_nav_time_ms >= 150) {
         const entry_count = state.cache.entries.items.len;
         if (entry_count <= 1) {
             sysUpdateCache(state) catch |err| std.log.warn("Idle preload sysUpdateCache failed: {}", .{err});
@@ -199,7 +199,7 @@ pub fn sysCheckIdlePreload(state: *ViewerState) void {
 
 test "sysUpdateCache - empty image list" {
     const allocator = std.testing.allocator;
-    var state = try ViewerState.initHeadless(allocator, std.Io.Threaded.global_single_threaded.io());
+    var state = try AppState.initHeadless(allocator, std.Io.Threaded.global_single_threaded.io());
     defer state.deinit();
 
     try sysUpdateCache(&state);
@@ -209,21 +209,21 @@ test "sysUpdateCache - empty image list" {
 test "sysUpdateCache - populates prefetch window and evicts unwanted entries" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    var state = try ViewerState.initHeadless(allocator, io);
+    var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
     // Populate mock image list with 5 images
     const paths = [_][]const u8{ "img0.png", "img1.png", "img2.png", "img3.png", "img4.png" };
     for (paths) |p| {
-        const dup = try state.navigation.directory_arena.allocator().dupe(u8, p);
-        try state.navigation.image_list.append(allocator, dup);
+        const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, p);
+        try state.viewer.navigation.image_list.append(allocator, dup);
     }
-    state.navigation.current_index = 0;
+    state.viewer.navigation.current_index = 0;
 
     // Add an out-of-window entry at index 99
     try state.cache.append(allocator, .{
         .index = 99,
-        .generation = state.generation,
+        .generation = state.viewer.generation,
         .status = .{ .failed = {} },
     });
     try std.testing.expectEqual(@as(usize, 1), state.cache.entries.items.len);
@@ -237,7 +237,7 @@ test "sysUpdateCache - populates prefetch window and evicts unwanted entries" {
 
 test "sysCheckIdlePreload - single image list" {
     const allocator = std.testing.allocator;
-    var state = try ViewerState.initHeadless(allocator, std.Io.Threaded.global_single_threaded.io());
+    var state = try AppState.initHeadless(allocator, std.Io.Threaded.global_single_threaded.io());
     defer state.deinit();
 
     sysCheckIdlePreload(&state);
@@ -247,16 +247,16 @@ test "sysCheckIdlePreload - single image list" {
 test "sysCheckIdlePreload - triggers preloading when idle" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    var state = try ViewerState.initHeadless(allocator, io);
+    var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
     const paths = [_][]const u8{ "a.png", "b.png" };
     for (paths) |p| {
-        const dup = try state.navigation.directory_arena.allocator().dupe(u8, p);
-        try state.navigation.image_list.append(allocator, dup);
+        const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, p);
+        try state.viewer.navigation.image_list.append(allocator, dup);
     }
-    state.navigation.current_index = 0;
-    state.navigation.last_nav_time_ms = 0; // Simulated past time to satisfy idle threshold (>150ms)
+    state.viewer.navigation.current_index = 0;
+    state.viewer.navigation.last_nav_time_ms = 0; // Simulated past time to satisfy idle threshold (>150ms)
 
     sysCheckIdlePreload(&state);
     try std.testing.expect(state.cache.entries.items.len > 0);

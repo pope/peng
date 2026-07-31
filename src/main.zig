@@ -27,7 +27,7 @@ const LibViewer = struct {
     load_assets: *const fn () callconv(.c) void,
     unload_assets: *const fn () callconv(.c) void,
     update: *const fn (
-        app_state: *app.state.ViewerState,
+        app_state: *app.state.AppState,
         window_ptr: *anyopaque,
         resources_ptr: *anyopaque,
         measure_data_ptr: *anyopaque,
@@ -76,24 +76,22 @@ const LibViewer = struct {
     }
 
     fn deinit(self: *LibViewer, io: std.Io) !void {
-        if (self.is_valid) {
-            self.handle.close();
-            self.is_valid = false;
-        }
-        try std.Io.Dir.cwd().deleteFile(io, lib_temp_name);
+        const cwd = std.Io.Dir.cwd();
+        self.handle.close();
+        cwd.deleteFile(io, lib_temp_name) catch {};
     }
 
-    fn check_outdated(self: LibViewer, io: std.Io) !bool {
-        const f = try std.Io.Dir.cwd().openFile(io, lib_name, .{});
+    fn check_outdated(self: *LibViewer, io: std.Io) !bool {
+        const cwd = std.Io.Dir.cwd();
+        const f = try cwd.openFile(io, lib_name, .{});
         defer f.close(io);
         const stat = try f.stat(io);
-        return self.last_mod_time.nanoseconds < stat.mtime.nanoseconds;
+
+        return stat.mtime.nanoseconds != self.last_mod_time.nanoseconds;
     }
 
-    fn updateLib(self: *LibViewer, io: std.Io, app_state: *app.state.ViewerState) !void {
-        // Drain active worker threads before unloading dynamic library
-        app.workers.WorkerManager.drainAndQuiesce(app_state);
-
+    fn updateLib(self: *LibViewer, io: std.Io, app_state: *app.state.AppState) !void {
+        _ = app_state;
         if (self.is_valid) {
             self.unload_assets();
             self.handle.close();
@@ -105,7 +103,7 @@ const LibViewer = struct {
         self.load_assets();
     }
 
-    fn safeReload(self: *LibViewer, io: std.Io, app_state: *app.state.ViewerState) void {
+    fn safeReload(self: *LibViewer, io: std.Io, app_state: *app.state.AppState) void {
         const is_outdated = self.check_outdated(io) catch |err| {
             std.log.err("Unable to check reload of viewer lib: {}", .{err});
             return;
@@ -128,13 +126,14 @@ pub const AppGraphicsAndState = struct {
     parsed: app_config.cli.ParsedArgs,
     setup: ui.graphics.GraphicsSetup,
     resources: ui.graphics.GpuResources,
-    state: app.state.ViewerState,
+    state: app.state.AppState,
     clay_memory: []u8,
     clay_context: *clay.Context,
     measure_data: state_pkg.types.MeasureTextUserData,
     ipc_server: ?*app.ipc.IpcServer,
 
     pub fn deinit(self: *AppGraphicsAndState) void {
+        self.parsed.deinit(self.gpa);
         if (self.ipc_server) |srv| srv.deinit(self.io);
         self.gpa.free(self.clay_memory);
         self.state.deinit();
@@ -143,7 +142,6 @@ pub const AppGraphicsAndState = struct {
         self.setup.gpu_device.destroy();
         self.setup.window.destroy();
         sdl.quit();
-        if (self.parsed.arg_path) |p| self.gpa.free(p);
     }
 };
 
@@ -184,26 +182,27 @@ pub fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
     }
 
     // 4. State Initialization
-    var state = app.state.ViewerState{
+    var state = app.state.AppState{
+        .viewer = .{
+            .navigation = state_pkg.NavigationState.init(gpa),
+            .ui = state_pkg.UiState.init(gpa),
+            .display = if (parsed.headless) .headless else .{
+                .windowed = .{
+                    .handle = setup.window,
+                    .pixel_format = sdl.PixelFormat.rgba32,
+                    .is_fullscreen = false,
+                    .claimed = true,
+                },
+            },
+            .viewport = .{ .fit_mode = parsed.default_scale },
+            .rotation_map = .init(gpa),
+            .running = true,
+        },
         .gpu_device = setup.gpu_device,
         .unpack_compute_pipeline = resources.unpack_compute_pipeline,
-
-        .navigation = app.navigation.NavigationState.init(gpa),
-        .ui = app.ui_state.UiState.init(gpa),
         .cache = .{},
         .allocator = gpa,
         .io = init.io,
-        .display = if (parsed.headless) .headless else .{
-            .windowed = .{
-                .handle = setup.window,
-                .pixel_format = sdl.PixelFormat.rgba32,
-                .is_fullscreen = false,
-                .claimed = true,
-            },
-        },
-        .viewport = .{ .fit_mode = parsed.default_scale },
-        .rotation_map = .init(gpa),
-        .running = true,
     };
     own_gpu_resources = false;
     errdefer state.deinit();
@@ -266,7 +265,7 @@ pub fn runMainLoop(ctx: *AppGraphicsAndState) !void {
         lib_viewer.load_assets();
         defer lib_viewer.unload_assets();
 
-        while (ctx.state.running) {
+        while (ctx.state.viewer.running) {
             defer _ = frame_arena.reset(.retain_capacity);
             clay.setCurrentContext(ctx.clay_context);
             lib_viewer.safeReload(ctx.io, &ctx.state);
@@ -288,7 +287,7 @@ pub fn runMainLoop(ctx: *AppGraphicsAndState) !void {
         try viewer.loadAssets();
         defer viewer.unloadAssets();
 
-        while (ctx.state.running) {
+        while (ctx.state.viewer.running) {
             defer _ = frame_arena.reset(.retain_capacity);
             try viewer.updateFrame(
                 &ctx.state,
@@ -312,9 +311,10 @@ pub fn main(init: std.process.Init) !void {
     try runMainLoop(&app_ctx);
 }
 
-test "ElementTag.fromInt" {
-    std.testing.refAllDecls(app.state);
-    std.testing.refAllDecls(app.input);
-    std.testing.refAllDecls(app.image);
-    std.testing.refAllDecls(app.fs);
+test {
+    _ = app;
+    _ = ui;
+    _ = state_pkg;
+    _ = sdl;
+    _ = viewer;
 }

@@ -211,7 +211,9 @@ pub fn wakeUpMainThread() void {
     _ = sdl.events.pushUserEvent();
 }
 
-pub fn readPipedStdin(state: *ViewerState, io: std.Io, gpa: std.mem.Allocator) !void {
+const AppState = app_state.AppState;
+
+pub fn readPipedStdin(state: *AppState, io: std.Io, gpa: std.mem.Allocator) !void {
     const is_stdin_piped = !(std.Io.File.stdin().isTty(io) catch false);
     if (is_stdin_piped) {
         const args = try gpa.create(workers_mod.StdinArgs);
@@ -219,18 +221,18 @@ pub fn readPipedStdin(state: *ViewerState, io: std.Io, gpa: std.mem.Allocator) !
             .workers = &state.workers,
             .allocator = gpa,
             .io = io,
-            .is_loading_files = &state.navigation.is_loading_files,
+            .is_loading_files = &state.viewer.navigation.is_loading_files,
         };
 
         workers_mod.spawnStdin(args) catch |err| {
             std.log.err("workers.spawnStdin failed: {}", .{err});
-            state.navigation.is_loading_files.store(false, .release);
+            state.viewer.navigation.is_loading_files.store(false, .release);
             gpa.destroy(args);
         };
     }
 }
 
-pub fn startAsyncPathScan(state: *ViewerState, path: []const u8, is_dir: bool) !void {
+pub fn startAsyncPathScan(state: *AppState, path: []const u8, is_dir: bool) !void {
     const dup_path = try state.allocator.dupe(u8, path);
     errdefer state.allocator.free(dup_path);
 
@@ -241,12 +243,13 @@ pub fn startAsyncPathScan(state: *ViewerState, path: []const u8, is_dir: bool) !
         .io = state.io,
         .target_path = dup_path,
         .is_dir = is_dir,
-        .is_loading_files = &state.navigation.is_loading_files,
+        .is_loading_files = &state.viewer.navigation.is_loading_files,
     };
 
     workers_mod.spawnPathScan(args) catch |err| {
         std.log.err("workers.spawnPathScan failed: {}", .{err});
         state.allocator.free(dup_path);
+        state.viewer.navigation.is_loading_files.store(false, .release);
         state.allocator.destroy(args);
     };
 }

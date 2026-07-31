@@ -13,9 +13,22 @@ pub const ipc = @import("ipc.zig");
 pub const image = @import("image.zig");
 pub const view_transform = @import("view_transform.zig");
 pub const exif = @import("exif.zig");
-pub const screenshot = @import("screenshot.zig");
 pub const actions = @import("actions.zig");
-pub const navigation = @import("navigation.zig");
-pub const ui_state = @import("ui_state.zig");
 pub const systems = @import("systems/root.zig");
 pub const workers = @import("workers/root.zig");
+
+test {
+    _ = state;
+    _ = input;
+    _ = palette;
+    _ = events;
+    _ = pipeline;
+    _ = fs;
+    _ = ipc;
+    _ = image;
+    _ = view_transform;
+    _ = exif;
+    _ = actions;
+    _ = systems;
+    _ = workers;
+}

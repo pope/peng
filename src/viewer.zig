@@ -15,7 +15,7 @@ pub fn unloadAssets() void {}
 
 /// Main frame update function encapsulated within the hot-reloadable viewer library.
 pub fn updateFrame(
-    state: *app.state.ViewerState,
+    app_state: *app.state.AppState,
     window: sdl.Window,
     resources: *ui.graphics.GpuResources,
     measure_data: *state_pkg.MeasureTextUserData,
@@ -30,46 +30,46 @@ pub fn updateFrame(
     clay.setMeasureTextFunction(*const state_pkg.MeasureTextUserData, measure_data, ui.graphics.sdl3MeasureText);
 
     // 1. Background Event Ingestion System
-    const bg_events_processed = app.systems.sysProcessBackgroundEvents(state);
+    const bg_events_processed = app.systems.sysProcessBackgroundEvents(app_state);
 
     // 2. Socket Command Ingestion System
-    app.systems.sysExecuteIpcCommands(state);
+    app.systems.sysExecuteIpcCommands(app_state);
 
     // Input Accumulation
     const is_current_loading = blk: {
-        if (state.getCurrentEntry()) |entry| {
+        if (app_state.getCurrentEntry()) |entry| {
             break :blk (entry.status == .decoding or entry.status == .uploading);
         }
-        break :blk (state.navigation.current_index != null);
+        break :blk (app_state.viewer.navigation.current_index != null);
     };
-    const is_busy = state.isBusy() or is_current_loading or bg_events_processed;
+    const is_busy = app_state.isBusy() or is_current_loading or bg_events_processed;
     const frame_allocator = frame_arena.allocator();
     const input = try app.input.pollFrameInput(
         window,
         frame_allocator,
         last_time,
-        state.ui.overlays.mouse_inside,
-        state.ui.palette.mode != .inactive,
+        app_state.viewer.ui.overlays.mouse_inside,
+        app_state.viewer.ui.palette.mode != .inactive,
         parsed_test_mode or parsed_headless,
         is_busy,
     );
 
     if (input.quit_requested) {
-        state.running = false;
+        app_state.viewer.running = false;
     }
-    state.ui.overlays.mouse_inside = input.mouse_inside;
+    app_state.viewer.ui.overlays.mouse_inside = input.mouse_inside;
 
     // 3. Logic & Intent Systems (sysExecuteIntents, sysUpdateSlideshow, sysUpdateViewport)
-    try state.update(input);
+    try app_state.update(input);
 
     // 4. Asset Upload & Texture Pipeline System
-    app.systems.sysProcessAssetUploads(state);
+    app.systems.sysProcessAssetUploads(app_state);
 
     // 5. Cache Slot Management System
-    app.systems.sysUpdateCache(state) catch |err| std.log.err("Failed to update cache: {}", .{err});
+    app.systems.sysUpdateCache(app_state) catch |err| std.log.err("Failed to update cache: {}", .{err});
 
     // 6. Idle Cache Preloading System
-    app.systems.sysCheckIdlePreload(state);
+    app.systems.sysCheckIdlePreload(app_state);
 
     // Stage 3: Clay Pointer & Scroll State Updates
     clay.setLayoutDimensions(.{ .w = input.win_w, .h = input.win_h });
@@ -93,79 +93,79 @@ pub fn updateFrame(
     );
 
     if (input.mouse_left_clicked) {
-        if (state.ui.overlays.show_info and !input.isPointerInDebugPanel() and clay.pointerOver(clay.getElementId("InfoCloseBtn"))) {
-            state.ui.overlays.show_info = false;
+        if (app_state.viewer.ui.overlays.show_info and !input.isPointerInDebugPanel() and clay.pointerOver(clay.getElementId("InfoCloseBtn"))) {
+            app_state.viewer.ui.overlays.show_info = false;
         }
-        if (state.ui.overlays.show_stats and !input.isPointerInDebugPanel() and clay.pointerOver(clay.getElementId("StatsCloseBtn"))) {
-            state.ui.overlays.show_stats = false;
+        if (app_state.viewer.ui.overlays.show_stats and !input.isPointerInDebugPanel() and clay.pointerOver(clay.getElementId("StatsCloseBtn"))) {
+            app_state.viewer.ui.overlays.show_stats = false;
         }
     }
 
     // Construct view parameters and UI view model snapshots
     const view_params = state_pkg.ViewParams{
-        .viewport = state.viewport,
+        .viewport = app_state.viewer.viewport,
         .win_w = input.win_w,
         .win_h = input.win_h,
         .scale_x = input.scale_x,
         .scale_y = input.scale_y,
-        .is_fullscreen = state.isFullscreen(),
+        .is_fullscreen = app_state.viewer.isFullscreen(),
     };
 
-    if (state.gpu_device == null) return error.GpuNotInitialized;
+    if (app_state.gpu_device == null) return error.GpuNotInitialized;
 
-    app.systems.sysSyncMetrics(state);
+    app.systems.sysSyncMetrics(app_state);
 
     const ui_model = state_pkg.UiViewModel{
-        .is_fullscreen = state.isFullscreen(),
-        .total_images = state.navigation.image_list.items.len,
-        .image_list = state.navigation.image_list.items,
-        .current_index = state.navigation.current_index,
-        .current_image_path = if (state.navigation.current_index) |idx|
-            if (idx < state.navigation.image_list.items.len) state.navigation.image_list.items[idx] else null
+        .is_fullscreen = app_state.viewer.isFullscreen(),
+        .total_images = app_state.viewer.navigation.image_list.items.len,
+        .image_list = app_state.viewer.navigation.image_list.items,
+        .current_index = app_state.viewer.navigation.current_index,
+        .current_image_path = if (app_state.viewer.navigation.current_index) |idx|
+            if (idx < app_state.viewer.navigation.image_list.items.len) app_state.viewer.navigation.image_list.items[idx] else null
         else
             null,
-        .current_entry = state.getCurrentEntry(),
-        .is_loading_files = state.navigation.is_loading_files.load(.acquire),
-        .slideshow = state.navigation.slideshow,
-        .overlays = state.ui.overlays,
-        .metrics = &state.ui.metrics,
-        .viewport = state.viewport,
-        .palette = &state.ui.palette,
-        .display = &state.display,
-        .total_vram_bytes = state.stats.total_vram_bytes,
-        .cached_slot_count = state.stats.cached_slot_count,
-        .gpa_allocator = state.allocator,
-        .io = state.io,
-        .cache_slot_map = &state.cache,
-        .navigation = &state.navigation,
-        .pending_intents = &state.pending_intents,
-        .debug_show_thumb = state.ui.overlays.debug_show_thumb,
-        .stats = state.stats,
+        .current_entry = app_state.getCurrentEntry(),
+        .is_loading_files = app_state.viewer.navigation.is_loading_files.load(.acquire),
+        .slideshow = app_state.viewer.navigation.slideshow,
+        .overlays = app_state.viewer.ui.overlays,
+        .metrics = &app_state.viewer.ui.metrics,
+        .viewport = app_state.viewer.viewport,
+        .palette = &app_state.viewer.ui.palette,
+        .display = &app_state.viewer.display,
+        .total_vram_bytes = app_state.viewer.stats.total_vram_bytes,
+        .cached_slot_count = app_state.viewer.stats.cached_slot_count,
+        .gpa_allocator = app_state.allocator,
+        .io = app_state.io,
+        .cache_slot_map = &app_state.cache,
+        .navigation = &app_state.viewer.navigation,
+        .pending_intents = &app_state.pending_intents,
+        .debug_show_thumb = app_state.viewer.ui.overlays.debug_show_thumb,
+        .stats = app_state.viewer.stats,
     };
 
     // Skip layout construction and rendering if state is clean and idle
-    const is_dirty = state.dirty or
+    const is_dirty = app_state.viewer.dirty or
         input.mouse_left_down or input.mouse_left_clicked or
         input.scroll_delta_x != 0 or input.scroll_delta_y != 0 or
         input.keys_pressed.items.len > 0 or input.text_input != null or
-        input.dropped_path != null or state.navigation.slideshow == .active or
-        state.ui.palette.mode != .inactive or state.ui.screenshot_mode != .idle;
+        input.dropped_path != null or app_state.viewer.navigation.slideshow == .active or
+        app_state.viewer.ui.palette.mode != .inactive or app_state.viewer.ui.screenshot_mode != .idle;
 
     if (!is_dirty and !parsed_test_mode and !parsed_headless) {
         return;
     }
 
     // Draw / Render
-    const capture_filename = switch (state.ui.screenshot_mode) {
+    const capture_filename = switch (app_state.viewer.ui.screenshot_mode) {
         .idle => null,
         .capturing => |s| s.path,
     };
     ui.layout.renderFrame(view_params, ui_model, resources, input, frame_allocator, resources.fonts[0..], measure_data, capture_filename) catch |err| {
-        state.handleScreenshotPostRender(err);
+        app_state.handleScreenshotPostRender(err);
         return err;
     };
-    state.handleScreenshotPostRender(null);
-    state.dirty = false;
+    app_state.handleScreenshotPostRender(null);
+    app_state.viewer.dirty = false;
 }
 
 //////////////////////////////////////////////////////////////////////////////
@@ -182,7 +182,7 @@ export fn viewer_unload_assets() callconv(.c) void {
 }
 
 export fn viewer_update(
-    app_state: *app.state.ViewerState,
+    app_state: *app.state.AppState,
     window_ptr: *anyopaque,
     resources_ptr: *anyopaque,
     measure_data_ptr: *anyopaque,

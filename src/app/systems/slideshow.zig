@@ -1,10 +1,10 @@
 const std = @import("std");
 const app_state = @import("../state.zig");
-const ViewerState = app_state.ViewerState;
+const AppState = app_state.AppState;
 
 /// System Pass: Update slideshow timer
-pub fn sysUpdateSlideshow(state: *ViewerState, delta_time_ms: f64) !void {
-    if (state.navigation.slideshow.tick(@floatCast(delta_time_ms))) {
+pub fn sysUpdateSlideshow(state: *AppState, delta_time_ms: f64) !void {
+    if (state.viewer.navigation.slideshow.tick(@floatCast(delta_time_ms))) {
         try state.next();
     }
 }

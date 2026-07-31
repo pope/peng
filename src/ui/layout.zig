@@ -271,30 +271,28 @@ pub fn updateWindowTitle(
         }
     }
 
-    switch (ui_model.display.*) {
-        .headless => {},
-        .windowed => |*win| {
-            const title_changed = if (win.cached_title) |cached|
-                !std.mem.eql(u8, cached, raw_title)
-            else
-                true;
+    if (ui_model.display.* == .windowed) {
+        const win = &ui_model.display.windowed;
+        const title_changed = if (win.cached_title) |cached|
+            !std.mem.eql(u8, cached, raw_title)
+        else
+            true;
 
-            if (title_changed) {
-                if (frame_allocator.dupeZ(u8, raw_title)) |tz| {
-                    win.handle.setTitle(tz);
-                } else |err| {
-                    std.log.err("Failed to allocate window title string: {}", .{err});
-                }
-
-                if (win.cached_title) |cached| {
-                    ui_model.gpa_allocator.free(cached);
-                }
-                win.cached_title = ui_model.gpa_allocator.dupe(u8, raw_title) catch |err| blk: {
-                    std.log.err("Failed to update cached window title: {}", .{err});
-                    break :blk null;
-                };
+        if (title_changed) {
+            if (frame_allocator.dupeZ(u8, raw_title)) |tz| {
+                win.handle.setTitle(tz);
+            } else |err| {
+                std.log.err("Failed to allocate window title string: {}", .{err});
             }
-        },
+
+            if (win.cached_title) |cached| {
+                ui_model.gpa_allocator.free(cached);
+            }
+            win.cached_title = ui_model.gpa_allocator.dupe(u8, raw_title) catch |err| blk: {
+                std.log.err("Failed to update cached window title: {}", .{err});
+                break :blk null;
+            };
+        }
     }
 
     return raw_title;

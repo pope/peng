@@ -18,3 +18,21 @@ pub const text_utils = @import("text_utils.zig");
 pub const theme = @import("theme.zig");
 pub const geometry = @import("geometry.zig");
 pub const text_cache = @import("text_cache.zig");
+
+test {
+    _ = renderer;
+    _ = render_image;
+    _ = layout;
+    _ = palette;
+    _ = palette_items;
+    _ = palette_scroll;
+    _ = palette_layout;
+    _ = stats;
+    _ = graphics;
+    _ = units;
+    _ = layout_helpers;
+    _ = text_utils;
+    _ = theme;
+    _ = geometry;
+    _ = text_cache;
+}

@@ -2,17 +2,21 @@ const std = @import("std");
 const state_pkg = @import("state");
 const app_state = @import("../state.zig");
 const intents = @import("intents");
-const navigation = @import("../navigation.zig");
-const ui_state = @import("../ui_state.zig");
 const app_palette = @import("../palette.zig");
 const sdl = @import("sdl");
 const Key = state_pkg.Key;
 const KeyModifiers = state_pkg.KeyModifiers;
-const ViewerState = app_state.ViewerState;
+const AppState = app_state.AppState;
 
 pub const polling = @import("polling.zig");
 pub const key_mapping = @import("key_mapping.zig");
 pub const palette_input = @import("palette_input.zig");
+
+test {
+    _ = key_mapping;
+    _ = palette_input;
+    _ = polling;
+}
 
 pub const mapKeyFromSdl = polling.mapKeyFromSdl;
 pub const mapModFromSdl = polling.mapModFromSdl;
@@ -29,31 +33,31 @@ pub const handlePaletteKeys = palette_input.handlePaletteKeys;
 
 /// Resolves active key context and handles key down events
 pub fn handleKeyDown(
-    self: *ViewerState,
+    self: *AppState,
     key: Key,
     mod: KeyModifiers,
     scale_x: f32,
     scale_y: f32,
 ) !void {
-    if (self.ui.palette.mode != .inactive) {
+    if (self.viewer.ui.palette.mode != .inactive) {
         _ = try handlePaletteKeys(self, key, mod);
         return;
     }
 
-    const ctx: KeyContext = if (self.viewport.zoom_factor.get() > 1.0) .viewer_zoomed else .viewer_normal;
+    const ctx: KeyContext = if (self.viewer.viewport.zoom_factor.get() > 1.0) .viewer_zoomed else .viewer_normal;
     const action = mapKeyToAction(key, mod, ctx);
     switch (action) {
         .none => {},
         .pan => |p| {
-            self.viewport.pan_x += p.dx * scale_x;
-            self.viewport.pan_y += p.dy * scale_y;
+            self.viewer.viewport.pan_x += p.dx * scale_x;
+            self.viewer.viewport.pan_y += p.dy * scale_y;
         },
         .zoom => |z| {
-            const old_zoom = self.viewport.zoom_factor;
-            self.viewport.zoom_factor = self.clampZoomFactor(old_zoom.get() + z.factor_delta);
-            const ratio = old_zoom.ratioTo(self.viewport.zoom_factor);
-            self.viewport.pan_x *= ratio;
-            self.viewport.pan_y *= ratio;
+            const old_zoom = self.viewer.viewport.zoom_factor;
+            self.viewer.viewport.zoom_factor = self.clampZoomFactor(old_zoom.get() + z.factor_delta);
+            const ratio = old_zoom.ratioTo(self.viewer.viewport.zoom_factor);
+            self.viewer.viewport.pan_x *= ratio;
+            self.viewer.viewport.pan_y *= ratio;
         },
         .trigger_intent => |intent| {
             try self.pushIntent(intent);
@@ -95,24 +99,16 @@ test "handlePaletteKeys directory_navigator key interactions" {
         std.Io.Dir.deleteTree(cwd, io, tmp_dir) catch {};
     }
 
-    var state = ViewerState{
-        .navigation = navigation.NavigationState.init(allocator),
-        .ui = ui_state.UiState.init(allocator),
-        .cache = .{},
-        .allocator = allocator,
-        .io = io,
-        .rotation_map = .init(allocator),
-        .event_queue = app_state.events.MpscQueue(app_state.events.BackgroundEvent).init(),
-    };
+    var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
     // 1. Open directory navigator at tmp_dir
-    try app_palette.loadDirectoryEntries(&state.ui.palette, io, tmp_dir);
-    state.ui.palette.mode = .directory_navigator;
+    try app_palette.loadDirectoryEntries(&state.viewer.ui.palette, io, tmp_dir);
+    state.viewer.ui.palette.mode = .directory_navigator;
 
     // Locate index of sub_no_images
     var match_idx_no_img: usize = 0;
-    for (state.ui.palette.dir_items.items, 0..) |item, i| {
+    for (state.viewer.ui.palette.dir_items.items, 0..) |item, i| {
         if (std.mem.eql(u8, item.name, "sub_no_images")) {
             match_idx_no_img = i;
             break;
@@ -120,57 +116,49 @@ test "handlePaletteKeys directory_navigator key interactions" {
     }
 
     // Test Right key on sub_no_images -> navigate into folder
-    state.ui.palette.selected_idx = match_idx_no_img;
+    state.viewer.ui.palette.selected_idx = match_idx_no_img;
     _ = try handlePaletteKeys(&state, .right, .{});
-    try std.testing.expectEqual(app_state.PaletteMode.directory_navigator, state.ui.palette.mode);
-    try std.testing.expectEqualStrings(sub_no_img, state.ui.palette.current_nav_dir.items);
-    try std.testing.expectEqual(@as(usize, 0), state.ui.palette.query.items.len);
+    try std.testing.expectEqual(app_state.PaletteMode.directory_navigator, state.viewer.ui.palette.mode);
+    try std.testing.expectEqualStrings(sub_no_img, state.viewer.ui.palette.current_nav_dir.items);
+    try std.testing.expectEqual(@as(usize, 0), state.viewer.ui.palette.query.items.len);
 
     // Test Left key -> step up to parent directory, remembering sub_no_images
     _ = try handlePaletteKeys(&state, .left, .{});
-    try std.testing.expectEqual(app_state.PaletteMode.directory_navigator, state.ui.palette.mode);
-    try std.testing.expectEqualStrings(tmp_dir, state.ui.palette.current_nav_dir.items);
-    try std.testing.expectEqual(match_idx_no_img, state.ui.palette.selected_idx);
+    try std.testing.expectEqual(app_state.PaletteMode.directory_navigator, state.viewer.ui.palette.mode);
+    try std.testing.expectEqualStrings(tmp_dir, state.viewer.ui.palette.current_nav_dir.items);
+    try std.testing.expectEqual(match_idx_no_img, state.viewer.ui.palette.selected_idx);
 
     // Test Enter key on sub_no_images -> starts async path scan for sub_no_images and closes palette
-    state.ui.palette.selected_idx = match_idx_no_img;
+    state.viewer.ui.palette.selected_idx = match_idx_no_img;
     _ = try handlePaletteKeys(&state, .return_key, .{});
-    try std.testing.expectEqual(app_state.PaletteMode.inactive, state.ui.palette.mode);
+    try std.testing.expectEqual(app_state.PaletteMode.inactive, state.viewer.ui.palette.mode);
 
     // Re-open palette
-    try app_palette.loadDirectoryEntries(&state.ui.palette, io, tmp_dir);
-    state.ui.palette.mode = .directory_navigator;
+    try app_palette.loadDirectoryEntries(&state.viewer.ui.palette, io, tmp_dir);
+    state.viewer.ui.palette.mode = .directory_navigator;
 
     // Test Shift+Enter key on current directory -> starts async path scan and closes palette
     _ = try handlePaletteKeys(&state, .return_key, .{ .shift = true });
-    try std.testing.expectEqual(app_state.PaletteMode.inactive, state.ui.palette.mode);
+    try std.testing.expectEqual(app_state.PaletteMode.inactive, state.viewer.ui.palette.mode);
 }
 
 test "handlePaletteKeys stepping up from dot to parent directory preselects working dir" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
 
-    var state = ViewerState{
-        .navigation = navigation.NavigationState.init(allocator),
-        .ui = ui_state.UiState.init(allocator),
-        .cache = .{},
-        .allocator = allocator,
-        .io = io,
-        .rotation_map = .init(allocator),
-        .event_queue = app_state.events.MpscQueue(app_state.events.BackgroundEvent).init(),
-    };
+    var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    try app_palette.loadDirectoryEntries(&state.ui.palette, io, ".");
-    state.ui.palette.mode = .directory_navigator;
-    try std.testing.expectEqualStrings(".", state.ui.palette.current_nav_dir.items);
+    try app_palette.loadDirectoryEntries(&state.viewer.ui.palette, io, ".");
+    state.viewer.ui.palette.mode = .directory_navigator;
+    try std.testing.expectEqualStrings(".", state.viewer.ui.palette.current_nav_dir.items);
 
     _ = try handlePaletteKeys(&state, .left, .{});
-    try std.testing.expectEqualStrings("..", state.ui.palette.current_nav_dir.items);
+    try std.testing.expectEqualStrings("..", state.viewer.ui.palette.current_nav_dir.items);
 
     var found_cwd_selected = false;
-    if (state.ui.palette.selected_idx < state.ui.palette.dir_items.items.len) {
-        if (std.mem.eql(u8, state.ui.palette.dir_items.items[state.ui.palette.selected_idx].name, "peng")) {
+    if (state.viewer.ui.palette.selected_idx < state.viewer.ui.palette.dir_items.items.len) {
+        if (std.mem.eql(u8, state.viewer.ui.palette.dir_items.items[state.viewer.ui.palette.selected_idx].name, "peng")) {
             found_cwd_selected = true;
         }
     }

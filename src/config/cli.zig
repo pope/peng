@@ -8,6 +8,13 @@ pub const ParsedArgs = struct {
     update_baselines: bool,
     headless: bool,
     ipc_enabled: bool,
+
+    pub fn deinit(self: *ParsedArgs, gpa: std.mem.Allocator) void {
+        if (self.arg_path) |p| {
+            gpa.free(p);
+            self.arg_path = null;
+        }
+    }
 };
 
 pub fn parseCommandLineArgs(init: std.process.Init, gpa: std.mem.Allocator) !ParsedArgs {

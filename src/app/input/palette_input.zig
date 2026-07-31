@@ -6,17 +6,17 @@ const systems = @import("../systems.zig");
 const fs = @import("../fs.zig");
 const Key = state.Key;
 const KeyModifiers = state.KeyModifiers;
-const ViewerState = app_state.ViewerState;
+const AppState = app_state.AppState;
 const stopTextInput = app_state.stopTextInput;
 
-fn handlePaletteReturnGoToImage(self: *ViewerState, raw_str: []const u8) !void {
+fn handlePaletteReturnGoToImage(self: *AppState, raw_str: []const u8) !void {
     if (raw_str.len > 0) {
         if (std.fmt.parseInt(usize, raw_str, 10)) |v| {
-            if (v >= 1 and v <= self.navigation.image_list.items.len) {
-                self.navigation.current_index = v - 1;
+            if (v >= 1 and v <= self.viewer.navigation.image_list.items.len) {
+                self.viewer.navigation.current_index = v - 1;
                 try systems.sysUpdateCache(self);
-                self.ui.palette.mode = .inactive;
-                stopTextInput(self.display);
+                self.viewer.ui.palette.mode = .inactive;
+                stopTextInput(self.viewer.display);
             }
         } else |err| {
             std.log.debug("Failed to parse go-to-image index '{s}': {}", .{ raw_str, err });
@@ -24,18 +24,18 @@ fn handlePaletteReturnGoToImage(self: *ViewerState, raw_str: []const u8) !void {
     }
 }
 
-fn handlePaletteReturnSlideshow(self: *ViewerState, raw_str: []const u8) !void {
+fn handlePaletteReturnSlideshow(self: *AppState, raw_str: []const u8) !void {
     if (raw_str.len > 0) {
         if (std.fmt.parseFloat(f32, raw_str)) |val| {
             if (!std.math.isNan(val) and !std.math.isInf(val) and val > 0.0) {
-                self.navigation.slideshow = .{
+                self.viewer.navigation.slideshow = .{
                     .active = .{
                         .interval_s = val,
                         .timer_ms = 0.0,
                     },
                 };
-                self.ui.palette.mode = .inactive;
-                stopTextInput(self.display);
+                self.viewer.ui.palette.mode = .inactive;
+                stopTextInput(self.viewer.display);
             }
         } else |err| {
             std.log.debug("Failed to parse slideshow interval '{s}': {}", .{ raw_str, err });
@@ -43,36 +43,36 @@ fn handlePaletteReturnSlideshow(self: *ViewerState, raw_str: []const u8) !void {
     }
 }
 
-fn handlePaletteReturnDirectory(self: *ViewerState, mod: KeyModifiers) !void {
-    const palette = &self.ui.palette;
+fn handlePaletteReturnDirectory(self: *AppState, mod: KeyModifiers) !void {
+    const palette = &self.viewer.ui.palette;
     if (mod.shift) {
         try self.startAsyncPathScan(palette.current_nav_dir.items, true);
-        self.ui.palette.reset();
-        stopTextInput(self.display);
+        self.viewer.ui.palette.reset();
+        stopTextInput(self.viewer.display);
     } else {
         if (palette.selected_idx < palette.matches.items.len) {
             const match_idx = palette.matches.items[palette.selected_idx];
             if (match_idx < palette.dir_items.items.len) {
                 const entry = palette.dir_items.items[match_idx];
                 try self.startAsyncPathScan(entry.full_path, true);
-                self.ui.palette.reset();
-                stopTextInput(self.display);
+                self.viewer.ui.palette.reset();
+                stopTextInput(self.viewer.display);
             }
         }
     }
 }
 
 pub fn handlePaletteKeys(
-    self: *ViewerState,
+    self: *AppState,
     key: Key,
     mod: KeyModifiers,
 ) !bool {
-    const palette = &self.ui.palette;
+    const palette = &self.viewer.ui.palette;
 
     switch (key) {
         .escape => {
             palette.mode = .inactive;
-            stopTextInput(self.display);
+            stopTextInput(self.viewer.display);
             return true;
         },
         .up => {
@@ -150,7 +150,7 @@ pub fn handlePaletteKeys(
                                         try self.pushIntent(.{ .set_contrast = val });
                                     }
                                     palette.mode = .inactive;
-                                    stopTextInput(self.display);
+                                    stopTextInput(self.viewer.display);
                                 }
                             }
                         } else |err| {
@@ -170,7 +170,7 @@ pub fn handlePaletteKeys(
                         }
                     }
                     palette.mode = .inactive;
-                    stopTextInput(self.display);
+                    stopTextInput(self.viewer.display);
                 },
                 .inactive => return false,
             }

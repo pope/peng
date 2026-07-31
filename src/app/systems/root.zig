@@ -17,6 +17,13 @@ pub const sysUpdateCache = cache.sysUpdateCache;
 pub const sysCheckIdlePreload = cache.sysCheckIdlePreload;
 pub const sysExecuteIpcCommands = ipc.sysExecuteIpcCommands;
 
-test "systems root exports" {
-    @import("std").testing.refAllDecls(@This());
+test {
+    _ = intent_dispatch;
+    _ = slideshow;
+    _ = viewport;
+    _ = asset_upload;
+    _ = metrics;
+    _ = events;
+    _ = cache;
+    _ = ipc;
 }

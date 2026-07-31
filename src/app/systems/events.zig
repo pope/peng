@@ -1,18 +1,18 @@
 const std = @import("std");
 const app_state = @import("../state.zig");
-const ViewerState = app_state.ViewerState;
+const AppState = app_state.AppState;
 const events = @import("../events.zig");
 const image = @import("../image.zig");
 const cache_system = @import("cache.zig");
 
 /// System function that drains background thread events (`image_decoded`, `path_scanned`, `ipc_command`)
 /// from `workers.event_queue` and updates cache slots, navigation list, and pending IPC lists.
-pub fn sysProcessBackgroundEvents(state: *ViewerState) bool {
+pub fn sysProcessBackgroundEvents(state: *AppState) bool {
     state.event_batch.clearRetainingCapacity();
     state.workers.event_queue.drain(state.allocator, state.io, &state.event_batch) catch return false;
     if (state.event_batch.items.len == 0) return false;
-    state.dirty = true;
-    const current_gen = state.generation;
+    state.viewer.dirty = true;
+    const current_gen = state.viewer.generation;
 
     for (state.event_batch.items) |*evt| {
         defer evt.deinit(state.allocator);
@@ -42,9 +42,9 @@ pub fn sysProcessBackgroundEvents(state: *ViewerState) bool {
     return true;
 }
 
-fn handleExifThumbnailEvent(state: *ViewerState, thumb_data: events.ThumbDecodedPayload) void {
+fn handleExifThumbnailEvent(state: *AppState, thumb_data: events.ThumbDecodedPayload) void {
     const surf = thumb_data.surface orelse return;
-    const current_gen = state.generation;
+    const current_gen = state.viewer.generation;
     if (state.gpu_device) |gpu_dev| {
         if (image.uploadSurfaceToGpu(gpu_dev, surf, state.unpack_compute_pipeline)) |upload_res| {
             if (state.cache.getWithGeneration(thumb_data.index, current_gen)) |entry| {
@@ -66,9 +66,9 @@ fn handleExifThumbnailEvent(state: *ViewerState, thumb_data: events.ThumbDecoded
     }
 }
 
-fn handleImageDecodedEvent(state: *ViewerState, decoded_data: *events.ImageDecodedPayload) void {
+fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedPayload) void {
     const surf = decoded_data.surface orelse return;
-    const current_gen = state.generation;
+    const current_gen = state.viewer.generation;
     if (state.gpu_device) |gpu_dev| {
         if (image.uploadSurfaceToGpu(gpu_dev, surf, state.unpack_compute_pipeline)) |full_res| {
             if (state.cache.getWithGeneration(decoded_data.index, current_gen)) |entry| {
@@ -99,7 +99,7 @@ fn handleImageDecodedEvent(state: *ViewerState, decoded_data: *events.ImageDecod
                         .thumb_upload_time_ms = entry.thumb_upload_time_ms,
                     },
                 };
-                state.cache.enforceVramBudget(gpu_dev, state.navigation.current_index, image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
+                state.cache.enforceVramBudget(gpu_dev, state.viewer.navigation.current_index, image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
             } else {
                 gpu_dev.releaseTexture(full_res.gpu_texture);
             }
@@ -133,30 +133,30 @@ fn handleImageDecodedEvent(state: *ViewerState, decoded_data: *events.ImageDecod
     }
 }
 
-fn handleDirScannedEvent(state: *ViewerState, scanned_data: events.PathDiscoveredPayload) void {
-    const dup = state.navigation.directory_arena.allocator().dupe(u8, scanned_data.path) catch |err| {
+fn handleDirScannedEvent(state: *AppState, scanned_data: events.PathDiscoveredPayload) void {
+    const dup = state.viewer.navigation.directory_arena.allocator().dupe(u8, scanned_data.path) catch |err| {
         std.log.err("Failed to duplicate path '{s}' in directory arena: {}", .{ scanned_data.path, err });
         return;
     };
-    state.navigation.image_list.append(state.allocator, dup) catch |err| std.log.err("Failed to append discovered path to image_list: {}", .{err});
-    if (state.navigation.current_index == null and state.navigation.image_list.items.len > 0) {
-        state.navigation.current_index = 0;
+    state.viewer.navigation.image_list.append(state.allocator, dup) catch |err| std.log.err("Failed to append discovered path to image_list: {}", .{err});
+    if (state.viewer.navigation.current_index == null and state.viewer.navigation.image_list.items.len > 0) {
+        state.viewer.navigation.current_index = 0;
     }
 }
 
-fn handleDirectoryScanResultEvent(state: *ViewerState, result_data: events.DirectoryScanResultPayload) void {
+fn handleDirectoryScanResultEvent(state: *AppState, result_data: events.DirectoryScanResultPayload) void {
     if (result_data.is_dir) {
         for (result_data.paths) |item| {
-            const dup = state.navigation.directory_arena.allocator().dupe(u8, item) catch |err| {
+            const dup = state.viewer.navigation.directory_arena.allocator().dupe(u8, item) catch |err| {
                 std.log.err("Failed to duplicate directory item '{s}': {}", .{ item, err });
                 continue;
             };
-            state.navigation.image_list.append(state.allocator, dup) catch |err| {
+            state.viewer.navigation.image_list.append(state.allocator, dup) catch |err| {
                 std.log.err("Failed to append image '{s}' to list: {}", .{ dup, err });
             };
         }
-        if (state.navigation.current_index == null and state.navigation.image_list.items.len > 0) {
-            state.navigation.current_index = 0;
+        if (state.viewer.navigation.current_index == null and state.viewer.navigation.image_list.items.len > 0) {
+            state.viewer.navigation.current_index = 0;
         }
     } else {
         var target_idx_in_dir: ?usize = null;
@@ -167,14 +167,14 @@ fn handleDirectoryScanResultEvent(state: *ViewerState, result_data: events.Direc
             }
         }
 
-        _ = state.navigation.directory_arena.reset(.retain_capacity);
-        state.navigation.image_list.clearRetainingCapacity();
+        _ = state.viewer.navigation.directory_arena.reset(.retain_capacity);
+        state.viewer.navigation.image_list.clearRetainingCapacity();
         for (result_data.paths, 0..) |item, i| {
-            const dup = state.navigation.directory_arena.allocator().dupe(u8, item) catch |err| {
+            const dup = state.viewer.navigation.directory_arena.allocator().dupe(u8, item) catch |err| {
                 std.log.err("Failed to duplicate directory item '{s}': {}", .{ item, err });
                 continue;
             };
-            state.navigation.image_list.append(state.allocator, dup) catch |err| {
+            state.viewer.navigation.image_list.append(state.allocator, dup) catch |err| {
                 std.log.err("Failed to append image '{s}' to list: {}", .{ dup, err });
             };
             if (target_idx_in_dir == null and std.mem.eql(u8, item, result_data.target_path)) {
@@ -183,20 +183,18 @@ fn handleDirectoryScanResultEvent(state: *ViewerState, result_data: events.Direc
         }
 
         if (target_idx_in_dir) |target_i| {
-            if (target_i < state.navigation.image_list.items.len) {
-                state.navigation.current_index = target_i;
+            if (target_i < state.viewer.navigation.image_list.items.len) {
+                state.viewer.navigation.current_index = target_i;
             }
         } else {
-            state.navigation.current_index = 0;
+            state.viewer.navigation.current_index = 0;
         }
     }
-
-    cache_system.sysUpdateCache(state) catch |err| std.log.err("Failed to update cache after directory scan result: {}", .{err});
 }
 
 test "sysProcessBackgroundEvents - empty queue" {
     const allocator = std.testing.allocator;
-    var state = try ViewerState.initHeadless(allocator, std.Io.Threaded.global_single_threaded.io());
+    var state = try AppState.initHeadless(allocator, std.Io.Threaded.global_single_threaded.io());
     defer state.deinit();
 
     const processed = sysProcessBackgroundEvents(&state);
@@ -206,7 +204,7 @@ test "sysProcessBackgroundEvents - empty queue" {
 test "sysProcessBackgroundEvents - path_discovered" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    var state = try ViewerState.initHeadless(allocator, io);
+    var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
     const path_dup = try allocator.dupe(u8, "/test/path.jpg");
@@ -214,20 +212,20 @@ test "sysProcessBackgroundEvents - path_discovered" {
 
     const processed = sysProcessBackgroundEvents(&state);
     try std.testing.expect(processed);
-    try std.testing.expect(state.dirty);
-    try std.testing.expectEqual(@as(usize, 1), state.navigation.image_list.items.len);
-    try std.testing.expectEqual(@as(?usize, 0), state.navigation.current_index);
+    try std.testing.expect(state.viewer.dirty);
+    try std.testing.expectEqual(@as(usize, 1), state.viewer.navigation.image_list.items.len);
+    try std.testing.expectEqual(@as(?usize, 0), state.viewer.navigation.current_index);
 }
 
 test "sysProcessBackgroundEvents - exif_orientation_parsed & decode_failed" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    var state = try ViewerState.initHeadless(allocator, io);
+    var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
     try state.cache.append(allocator, .{
         .index = 0,
-        .generation = state.generation,
+        .generation = state.viewer.generation,
         .status = .{ .decoding = .{ .has_thread = true } },
     });
 
@@ -245,7 +243,7 @@ test "sysProcessBackgroundEvents - exif_orientation_parsed & decode_failed" {
 test "sysProcessBackgroundEvents - directory_scan_result and ipc_command" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    var state = try ViewerState.initHeadless(allocator, io);
+    var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
     const target_path = try allocator.dupe(u8, "/imgs/b.jpg");
@@ -270,7 +268,7 @@ test "sysProcessBackgroundEvents - directory_scan_result and ipc_command" {
 
     const processed = sysProcessBackgroundEvents(&state);
     try std.testing.expect(processed);
-    try std.testing.expectEqual(@as(usize, 2), state.navigation.image_list.items.len);
-    try std.testing.expectEqual(@as(?usize, 1), state.navigation.current_index);
+    try std.testing.expectEqual(@as(usize, 2), state.viewer.navigation.image_list.items.len);
+    try std.testing.expectEqual(@as(?usize, 1), state.viewer.navigation.current_index);
     try std.testing.expectEqual(@as(usize, 1), state.pending_ipc_commands.items.len);
 }
