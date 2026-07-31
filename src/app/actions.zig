@@ -6,6 +6,7 @@ const app_state = @import("state.zig");
 const palette_module = @import("palette.zig");
 const intents = @import("intents");
 const ipc = @import("ipc.zig");
+const systems = @import("systems.zig");
 const Key = state.Key;
 const KeyModifiers = state.KeyModifiers;
 const ViewerState = app_state.ViewerState;
@@ -73,22 +74,32 @@ pub fn executeIntent(self: *ViewerState, intent: intents.AppIntent) !void {
                 self.viewport.rotation_angle = 0.0;
             }
         },
-        .next_image => try self.next(),
-        .prev_image => try self.prev(),
+
+        .next_image => {
+            self.resetZoomPan();
+            try self.next();
+        },
+        .prev_image => {
+            self.resetZoomPan();
+            try self.prev();
+        },
         .first_image => {
             if (self.navigation.goToIndex(0) != null) {
-                try self.updateCache();
+                self.resetZoomPan();
+                try systems.sysUpdateCache(self);
             }
         },
         .last_image => {
             if (self.navigation.image_list.items.len > 0) {
                 _ = self.navigation.goToIndex(self.navigation.image_list.items.len - 1);
-                try self.updateCache();
+                self.resetZoomPan();
+                try systems.sysUpdateCache(self);
             }
         },
         .go_to_image => |idx| {
             if (self.navigation.goToIndex(idx) != null) {
-                try self.updateCache();
+                self.resetZoomPan();
+                try systems.sysUpdateCache(self);
             }
         },
         .set_palette => |p| {
@@ -143,36 +154,6 @@ pub fn executeIntent(self: *ViewerState, intent: intents.AppIntent) !void {
         .start_slideshow => try self.openPalette(.set_slideshow_interval),
         .stop_slideshow => self.navigation.slideshow = .inactive,
         .quit => self.requestQuit(),
-    }
-}
-
-/// Parses raw string commands received over UNIX Domain Socket IPC stream and executes corresponding intents.
-pub fn handleIpcCommand(self: *ViewerState, command: []const u8, stream: std.Io.net.Stream) !void {
-    const parsed = try ipc.IpcCommand.parse(command);
-    switch (parsed) {
-        .wait_load => {
-            var attempts: u32 = 0;
-            while (attempts < 1000) : (attempts += 1) {
-                _ = self.processBackgroundEvents();
-                self.prepareCacheTextures();
-                if (self.getCurrentEntry()) |entry| {
-                    if (entry.status != .decoding) break;
-                }
-                std.Io.sleep(self.io, std.Io.Duration.fromMilliseconds(10), .awake) catch {};
-            }
-            try ipc.respondOk(self.io, stream);
-        },
-        .adjust => |adj| {
-            try executeIntent(self, .{ .set_brightness = adj.brightness });
-            try executeIntent(self, .{ .set_contrast = adj.contrast });
-            try ipc.respondOk(self.io, stream);
-        },
-        else => {
-            if (parsed.toIntent()) |intent| {
-                try executeIntent(self, intent);
-            }
-            try ipc.respondOk(self.io, stream);
-        },
     }
 }
 

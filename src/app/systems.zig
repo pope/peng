@@ -5,3 +5,11 @@ pub const sysUpdateSlideshow = systems.sysUpdateSlideshow;
 pub const sysUpdateViewport = systems.sysUpdateViewport;
 pub const sysProcessAssetUploads = systems.sysProcessAssetUploads;
 pub const sysSyncMetrics = systems.sysSyncMetrics;
+pub const sysProcessBackgroundEvents = systems.sysProcessBackgroundEvents;
+pub const sysUpdateCache = systems.sysUpdateCache;
+pub const sysCheckIdlePreload = systems.sysCheckIdlePreload;
+pub const sysExecuteIpcCommands = systems.sysExecuteIpcCommands;
+
+test "systems facade exports" {
+    @import("std").testing.refAllDecls(@This());
+}

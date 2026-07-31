@@ -2,28 +2,17 @@ const std = @import("std");
 const app_state = @import("../state.zig");
 const ViewerState = app_state.ViewerState;
 
-/// System Pass: Asset Upload & Preload Pipeline
+/// System Pass: Uploads decoded CPU surfaces in cache slots to GPU textures.
 pub fn sysProcessAssetUploads(state: *ViewerState) void {
     state.updateCurrentRotation();
     state.prepareCacheTextures();
-    _ = state.processBackgroundEvents();
+}
 
-    const needs_cache_update = blk: {
-        if (state.getCurrentEntry()) |entry| {
-            switch (entry.status) {
-                .decoding => |d| break :blk !d.has_thread,
-                else => break :blk false,
-            }
-        }
-        break :blk (state.navigation.current_index != null);
-    };
-    if (needs_cache_update and state.workers.canSpawnDecode()) {
-        const count = state.navigation.image_list.items.len;
-        if (count > 0) {
-            if (state.navigation.current_index == null) state.navigation.current_index = 0;
-            state.updateCache() catch |err| std.log.err("Failed to update cache: {}", .{err});
-        }
-    }
+test "sysProcessAssetUploads - safe execution on headless state" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try ViewerState.initHeadless(allocator, io);
+    defer state.deinit();
 
-    state.checkIdlePreload();
+    sysProcessAssetUploads(&state);
 }

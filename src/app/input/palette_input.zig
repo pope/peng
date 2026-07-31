@@ -2,6 +2,7 @@ const std = @import("std");
 const state = @import("state");
 const app_state = @import("../state.zig");
 const app_palette = @import("../palette.zig");
+const systems = @import("../systems.zig");
 const fs = @import("../fs.zig");
 const Key = state.Key;
 const KeyModifiers = state.KeyModifiers;
@@ -13,7 +14,7 @@ fn handlePaletteReturnGoToImage(self: *ViewerState, raw_str: []const u8) !void {
         if (std.fmt.parseInt(usize, raw_str, 10)) |v| {
             if (v >= 1 and v <= self.navigation.image_list.items.len) {
                 self.navigation.current_index = v - 1;
-                try self.updateCache();
+                try systems.sysUpdateCache(self);
                 self.ui.palette.mode = .inactive;
                 stopTextInput(self.display);
             }

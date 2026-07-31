@@ -29,8 +29,11 @@ pub fn updateFrame(
     // Re-bind Clay measure text function pointer to the reloaded code address
     clay.setMeasureTextFunction(*const state_pkg.MeasureTextUserData, measure_data, ui.graphics.sdl3MeasureText);
 
-    const frame_allocator = frame_arena.allocator();
-    const bg_events_processed = state.processBackgroundEvents();
+    // 1. Background Event Ingestion System
+    const bg_events_processed = app.systems.sysProcessBackgroundEvents(state);
+
+    // 2. Socket Command Ingestion System
+    app.systems.sysExecuteIpcCommands(state);
 
     // Input Accumulation
     const is_current_loading = blk: {
@@ -40,6 +43,7 @@ pub fn updateFrame(
         break :blk (state.navigation.current_index != null);
     };
     const is_busy = state.isBusy() or is_current_loading or bg_events_processed;
+    const frame_allocator = frame_arena.allocator();
     const input = try app.input.pollFrameInput(
         window,
         frame_allocator,
@@ -55,14 +59,17 @@ pub fn updateFrame(
     }
     state.ui.overlays.mouse_inside = input.mouse_inside;
 
-    // Process any pending IPC commands collected during event processing
-    state.processIpcCommands(app.actions.handleIpcCommand);
+    // 3. Logic & Intent Systems (sysExecuteIntents, sysUpdateSlideshow, sysUpdateViewport)
+    try state.update(input);
 
-    // Stage 1: Asset Uploads & Preload Pre-pass
+    // 4. Asset Upload & Texture Pipeline System
     app.systems.sysProcessAssetUploads(state);
 
-    // Stage 2: System Ticks & State Updates (Execute intents, update slideshow, update viewport)
-    try state.update(input);
+    // 5. Cache Slot Management System
+    app.systems.sysUpdateCache(state) catch |err| std.log.err("Failed to update cache: {}", .{err});
+
+    // 6. Idle Cache Preloading System
+    app.systems.sysCheckIdlePreload(state);
 
     // Stage 3: Clay Pointer & Scroll State Updates
     clay.setLayoutDimensions(.{ .w = input.win_w, .h = input.win_h });

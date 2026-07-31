@@ -36,20 +36,26 @@
 - Model UI overlay visibility toggles as packed byte bitfield structs (`OverlayFlags = packed struct(u8)`).
 - Compose image cache state via explicit component structs (`CpuSurfaceComponent`, `GpuTextureComponent`, `ThumbComponent`).
 
-## 7. Pure System Passes & 5-Stage Engine Loop (`systems.zig`)
+## 7. Pure System Passes & Top-Level Linear Engine Pipeline (`src/app/systems/`)
 
-- Procedural tick logic, input sampling, slideshow timers, and asset uploads MUST be extracted into pure system pass functions in `src/app/systems.zig`:
+- Procedural tick logic, background event ingestion, socket command handling, input sampling, slideshow timers, asset uploads, and telemetry MUST be extracted into pure system pass functions in `src/app/systems/`:
+  - `sysProcessBackgroundEvents`: Drains worker thread event queues.
+  - `sysExecuteIpcCommands`: Parses and dispatches socket commands.
   - `sysExecuteIntents`: Drains queued `AppIntent` payloads.
   - `sysUpdateSlideshow`: Manages slideshow timer ticks.
   - `sysUpdateViewport`: Handles mouse drag deltas and mouse-wheel zoom-at-cursor calculations.
-  - `sysProcessAssetUploads`: Handles EXIF orientation, CPU-to-GPU texture uploads, background events, and idle preloading.
+  - `sysProcessAssetUploads`: Handles EXIF orientation and CPU-to-GPU texture uploads.
+  - `sysUpdateCache`: Manages cache slot eviction and spawns decode workers.
+  - `sysCheckIdlePreload`: Prefetches neighbor slots when engine tick is idle.
   - `sysSyncMetrics`: Copies atomic worker counters, active image GPU telemetry, and cache status into `ViewerStats` once per frame tick.
-- The main frame update in `src/viewer.zig` (`updateFrame`) MUST follow the strict 5-stage engine pipeline:
-  1. Sampling & IPC Receive
-  2. Asset Upload & Preload Pre-pass (`sysProcessAssetUploads`)
-  3. System Ticks & State Updates (`sysExecuteIntents`, `sysUpdateSlideshow`, `sysUpdateViewport`)
-  4. System Metric Synchronization (`sysSyncMetrics`) & Clay UI Pointer / Layout State Updates
-  5. GPU Execution Pass & Screenshot Post-Processing
+- Systems MUST NOT invoke other systems nested inside them.
+- The main frame update in `src/viewer.zig` (`updateFrame`) MUST follow the strict top-level unnested engine pipeline:
+  1. Worker & Socket Event Ingestion (`sysProcessBackgroundEvents`, `sysExecuteIpcCommands`)
+  2. Input Accumulation (`pollFrameInput`)
+  3. Logic & Intent Systems (`sysExecuteIntents`, `sysUpdateSlideshow`, `sysUpdateViewport`)
+  4. Asset Upload & Cache Systems (`sysProcessAssetUploads`, `sysUpdateCache`, `sysCheckIdlePreload`)
+  5. System Metric Synchronization (`sysSyncMetrics`) & Clay UI Pointer / Layout State Updates
+  6. GPU Execution Pass & Screenshot Post-Processing
 
 ## 8. Worker Thread Isolation, Telemetry (`ViewerStats`), & Cache Epochs
 
