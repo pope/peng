@@ -43,16 +43,19 @@
   - `sysUpdateSlideshow`: Manages slideshow timer ticks.
   - `sysUpdateViewport`: Handles mouse drag deltas and mouse-wheel zoom-at-cursor calculations.
   - `sysProcessAssetUploads`: Handles EXIF orientation, CPU-to-GPU texture uploads, background events, and idle preloading.
+  - `sysSyncMetrics`: Copies atomic worker counters, active image GPU telemetry, and cache status into `ViewerStats` once per frame tick.
 - The main frame update in `src/viewer.zig` (`updateFrame`) MUST follow the strict 5-stage engine pipeline:
   1. Sampling & IPC Receive
   2. Asset Upload & Preload Pre-pass (`sysProcessAssetUploads`)
   3. System Ticks & State Updates (`sysExecuteIntents`, `sysUpdateSlideshow`, `sysUpdateViewport`)
-  4. Clay UI Pointer & Layout State Updates
+  4. System Metric Synchronization (`sysSyncMetrics`) & Clay UI Pointer / Layout State Updates
   5. GPU Execution Pass & Screenshot Post-Processing
 
-## 8. Thread Isolation & Cache Epoch Versioning
+## 8. Worker Thread Isolation, Telemetry (`ViewerStats`), & Cache Epochs
 
-- **Thread Isolation**: Background worker tasks must touch zero shared non-atomic main-thread state (`ViewerState`, `DisplayState`, `Device`). Capture immutable value copies (`has_gpu_device: bool`, `pixel_format: u32`) inside worker argument structs (`DecodeArgs`) at spawn time.
+- **Worker Thread Isolation**: Background worker tasks (`decodeWorker`, `pathScanWorker`, `stdinWorker`, `ipcServerWorkerTask`) MUST NOT import or receive `*ViewerState`. They accept explicit parameter structs (`DecodeArgs`, `PathScanArgs`, `StdinArgs`, `IpcServerArgs`) containing `workers: *WorkerManager`, `allocator: std.mem.Allocator`, and `io: std.Io`.
+- **Explicit Argument Initialization**: Instantiation of argument structs on the caller side MUST populate explicit field values directly. Avoid setting struct fields to `= undefined` placeholders before passing them into spawner functions.
+- **Telemetry Consolidation (`ViewerStats`)**: Separate UI/Stats telemetry from core business logic. Keep atomic counters (`active_threads`, `active_decode_threads`, `exiting`) in `WorkerManager` for control flow throttling (`canSpawnDecode()`, `isBusy()`). Once per frame, `sysSyncMetrics` snapshots live atomics and active image metrics into plain `usize`/`bool` fields on `state.stats` (`ViewerStats`) for UI rendering ("Stats for Nerds") without reading atomics during layout evaluation.
 - **Cache Epoch Versioning**: Use a plain main-thread `usize` epoch counter (`ViewerState.generation`) incremented on navigation/directory resets (`resetNavigation`) to validate that incoming background event payloads match the active image list epoch before modifying `CacheSlotMap` entries.
 
 ## 9. Single-Pass I/O Header & Metadata Consolidation in Workers
