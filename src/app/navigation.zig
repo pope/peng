@@ -7,6 +7,7 @@ pub const NavigationState = struct {
     current_index: ?usize = null,
     slideshow: SlideshowMode = .inactive,
     is_loading_files: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    last_nav_time_ms: u64 = 0,
     last_scanned_dir: std.ArrayList(u8) = .empty,
     directory_arena: std.heap.ArenaAllocator,
 

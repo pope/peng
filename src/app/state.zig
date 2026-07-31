@@ -156,14 +156,10 @@ pub const ViewerState = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     workers: workers_mod.WorkerManager = .{},
-    exiting: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     /// Monotonically increasing cache epoch counter. Incremented on directory/file resets
     /// (resetNavigation) so main-thread event handlers (e.g. handleImageDecodedEvent)
     /// can verify incoming background events match the active image list epoch before modifying CacheEntry slots.
     generation: usize = 0,
-    thumb_header_hits: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
-    thumb_positional_hits: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
-    thumb_misses: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
 
     // Tagged Union State Machines
     display: DisplayState = .headless,
@@ -171,9 +167,7 @@ pub const ViewerState = struct {
 
     running: bool = true,
     dirty: bool = true,
-    last_nav_time_ms: u64 = 0,
     rotation_map: std.StringHashMap(f32),
-    event_queue: events.MpscQueue(events.BackgroundEvent) = .{},
     event_batch: std.ArrayList(events.BackgroundEvent) = .empty,
     pending_ipc_commands: std.ArrayList(*ipc.IpcCommandData) = .empty,
     pending_intents: std.ArrayList(AppIntent) = .empty,
@@ -246,7 +240,6 @@ pub const ViewerState = struct {
     }
 
     pub fn deinit(self: *ViewerState) void {
-        self.exiting.store(true, .release);
         self.workers.drainAndQuiesce(self.io);
 
         const dev_opt = self.gpu_device;
@@ -282,7 +275,7 @@ pub const ViewerState = struct {
         self.pending_ipc_commands.deinit(self.allocator);
         self.pending_intents.deinit(self.allocator);
         self.event_batch.deinit(self.allocator);
-        self.event_queue.deinit(self.allocator, self.io);
+        self.workers.event_queue.deinit(self.allocator, self.io);
         self.clearRotationMap();
         self.rotation_map.deinit();
     }
@@ -513,7 +506,7 @@ pub const ViewerState = struct {
     pub fn checkIdlePreload(self: *ViewerState) void {
         if (self.navigation.image_list.items.len <= 1) return;
         const now = sdl.timer.getTicks();
-        if (now - self.last_nav_time_ms >= 150) {
+        if (now - self.navigation.last_nav_time_ms >= 150) {
             const entry_count = self.cache.entries.items.len;
             if (entry_count <= 1) {
                 self.updateCache() catch |err| std.log.warn("Idle preload updateCache failed: {}", .{err});
@@ -693,7 +686,7 @@ pub const ViewerState = struct {
 
     pub fn processBackgroundEvents(self: *ViewerState) bool {
         self.event_batch.clearRetainingCapacity();
-        self.event_queue.drain(self.allocator, self.io, &self.event_batch) catch return false;
+        self.workers.event_queue.drain(self.allocator, self.io, &self.event_batch) catch return false;
         if (self.event_batch.items.len == 0) return false;
         self.dirty = true;
         const current_gen = self.generation;
@@ -738,8 +731,8 @@ pub const ViewerState = struct {
         const gen = self.generation;
 
         const now = sdl.timer.getTicks();
-        const is_rapid_scrolling = (now - self.last_nav_time_ms < 150);
-        self.last_nav_time_ms = now;
+        const is_rapid_scrolling = (now - self.navigation.last_nav_time_ms < 150);
+        self.navigation.last_nav_time_ms = now;
 
         // 1. Gather desired indices
         var desired_count: usize = 0;
@@ -881,7 +874,9 @@ pub const ViewerState = struct {
             }
 
             args.* = DecodeArgs{
-                .state = self,
+                .workers = &self.workers,
+                .allocator = self.allocator,
+                .io = self.io,
                 .index = d,
                 .path = dup_path,
                 .has_gpu_device = self.gpu_device != null,

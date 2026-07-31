@@ -1,24 +1,25 @@
 const std = @import("std");
-const app_state = @import("../state.zig");
-const ViewerState = app_state.ViewerState;
 const fs = @import("../fs.zig");
 const context = @import("context.zig");
+const root = @import("root.zig");
+const WorkerManager = root.WorkerManager;
 
 pub const PathScanArgs = struct {
-    state: *ViewerState,
+    workers: *WorkerManager,
+    allocator: std.mem.Allocator,
     io: std.Io,
-    gpa: std.mem.Allocator,
     target_path: []const u8,
     is_dir: bool,
+    is_loading_files: ?*std.atomic.Value(bool) = null,
 };
 
-pub fn appendPathThreadSafe(state: *ViewerState, gpa: std.mem.Allocator, path: []const u8) void {
-    if (state.exiting.load(.acquire)) return;
+pub fn appendPathThreadSafe(workers: *WorkerManager, gpa: std.mem.Allocator, io: std.Io, path: []const u8) void {
+    if (workers.exiting.load(.acquire)) return;
     const dup = gpa.dupe(u8, path) catch |err| {
         std.log.err("Failed to duplicate path '{s}': {}", .{ path, err });
         return;
     };
-    state.event_queue.push(gpa, state.io, .{
+    workers.event_queue.push(gpa, io, .{
         .path_discovered = .{
             .path = dup,
         },
@@ -30,7 +31,7 @@ pub fn appendPathThreadSafe(state: *ViewerState, gpa: std.mem.Allocator, path: [
     context.wakeUpMainThread();
 }
 
-pub fn scanDirectoryThreadSafe(state: *ViewerState, gpa: std.mem.Allocator, io: std.Io, dir_path: []const u8) void {
+pub fn scanDirectoryThreadSafe(workers: *WorkerManager, gpa: std.mem.Allocator, io: std.Io, dir_path: []const u8) void {
     var dir = std.Io.Dir.openDir(std.Io.Dir.cwd(), io, dir_path, .{ .iterate = true }) catch |err| {
         std.log.warn("scanDirectoryThreadSafe: openDir failed for '{s}': {any}", .{ dir_path, err });
         return;
@@ -48,7 +49,7 @@ pub fn scanDirectoryThreadSafe(state: *ViewerState, gpa: std.mem.Allocator, io: 
         std.log.warn("scanDirectoryThreadSafe: iterate next failed for '{s}': {any}", .{ dir_path, err });
         break :blk null;
     }) |entry| {
-        if (state.exiting.load(.acquire)) return;
+        if (workers.exiting.load(.acquire)) return;
         if (entry.kind == .file) {
             if (fs.isImageFile(entry.name)) {
                 const name_dup = gpa.dupe(u8, entry.name) catch |err| {
@@ -70,14 +71,14 @@ pub fn scanDirectoryThreadSafe(state: *ViewerState, gpa: std.mem.Allocator, io: 
         }
     }.lessThan);
 
-    if (state.exiting.load(.acquire)) return;
+    if (workers.exiting.load(.acquire)) return;
 
     for (dir_entries.items) |name| {
         const full_path = std.fs.path.join(gpa, &.{ dir_path, name }) catch |err| {
             std.log.err("Failed to join path for '{s}': {}", .{ name, err });
             continue;
         };
-        state.event_queue.push(gpa, io, .{
+        workers.event_queue.push(gpa, io, .{
             .path_discovered = .{
                 .path = full_path,
             },
@@ -85,23 +86,23 @@ pub fn scanDirectoryThreadSafe(state: *ViewerState, gpa: std.mem.Allocator, io: 
             std.log.err("Failed to push path_discovered event for '{s}': {}", .{ full_path, err });
             gpa.free(full_path);
         };
+        context.wakeUpMainThread();
     }
-    context.wakeUpMainThread();
 }
 
 pub fn pathScanWorker(args: *PathScanArgs) void {
-    const state = args.state;
+    const workers = args.workers;
     const io = args.io;
-    const gpa = args.gpa;
+    const gpa = args.allocator;
     const target_path = args.target_path;
     const is_dir = args.is_dir;
 
     defer {
-        state.navigation.is_loading_files.store(false, .release);
+        if (args.is_loading_files) |flag| flag.store(false, .release);
         context.wakeUpMainThread();
         gpa.free(target_path);
         gpa.destroy(args);
-        _ = state.workers.active_threads.fetchSub(1, .release);
+        _ = workers.active_threads.fetchSub(1, .release);
     }
 
     const dir_path = if (is_dir) target_path else (std.fs.path.dirname(target_path) orelse ".");
@@ -119,7 +120,7 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
         dir_entries.deinit(gpa);
     }
 
-    while (!state.exiting.load(.acquire)) {
+    while (!workers.exiting.load(.acquire)) {
         const entry = (it.next(io) catch |err| switch (err) {
             error.Canceled => break,
             else => {
@@ -142,7 +143,7 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
         }
     }
 
-    if (state.exiting.load(.acquire)) return;
+    if (workers.exiting.load(.acquire)) return;
 
     // Sort entries alphabetically
     std.mem.sort([]const u8, dir_entries.items, {}, struct {
@@ -151,7 +152,7 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
         }
     }.lessThan);
 
-    if (state.exiting.load(.acquire)) return;
+    if (workers.exiting.load(.acquire)) return;
 
     const dup_target = gpa.dupe(u8, target_path) catch return;
     const paths_slice = dir_entries.toOwnedSlice(gpa) catch {
@@ -159,7 +160,7 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
         return;
     };
 
-    state.event_queue.push(gpa, io, .{
+    workers.event_queue.push(gpa, io, .{
         .directory_scan_result = .{
             .target_path = dup_target,
             .is_dir = is_dir,

@@ -214,17 +214,18 @@ pub fn wakeUpMainThread() void {
 pub fn readPipedStdin(state: *ViewerState, io: std.Io, gpa: std.mem.Allocator) !void {
     const is_stdin_piped = !(std.Io.File.stdin().isTty(io) catch false);
     if (is_stdin_piped) {
-        const args = try state.allocator.create(workers_mod.StdinArgs);
+        const args = try gpa.create(workers_mod.StdinArgs);
         args.* = .{
-            .state = state,
+            .workers = &state.workers,
+            .allocator = gpa,
             .io = io,
-            .gpa = gpa,
+            .is_loading_files = &state.navigation.is_loading_files,
         };
 
         workers_mod.spawnStdin(args) catch |err| {
             std.log.err("workers.spawnStdin failed: {}", .{err});
             state.navigation.is_loading_files.store(false, .release);
-            state.allocator.destroy(args);
+            gpa.destroy(args);
         };
     }
 }
@@ -235,11 +236,12 @@ pub fn startAsyncPathScan(state: *ViewerState, path: []const u8, is_dir: bool) !
 
     const args = try state.allocator.create(workers_mod.PathScanArgs);
     args.* = .{
-        .state = state,
+        .workers = &state.workers,
+        .allocator = state.allocator,
         .io = state.io,
-        .gpa = state.allocator,
         .target_path = dup_path,
         .is_dir = is_dir,
+        .is_loading_files = &state.navigation.is_loading_files,
     };
 
     workers_mod.spawnPathScan(args) catch |err| {

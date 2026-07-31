@@ -1,9 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const app_state = @import("../state.zig");
-const ViewerState = app_state.ViewerState;
 const ipc = @import("../ipc.zig");
 const context = @import("context.zig");
+const root = @import("root.zig");
+const WorkerManager = root.WorkerManager;
 
 extern "kernel32" fn GetCurrentProcessId() callconv(std.builtin.CallingConvention.winapi) u32;
 
@@ -15,17 +15,26 @@ fn getProcessId() u32 {
     }
 }
 
-pub fn ipcServerWorkerTask(state: *ViewerState) void {
-    defer _ = state.workers.active_threads.fetchSub(1, .release);
-    runIpcServer(state) catch |err| {
+pub const IpcServerArgs = struct {
+    workers: *WorkerManager,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+};
+
+pub fn ipcServerWorkerTask(args: *IpcServerArgs) void {
+    const workers = args.workers;
+    const gpa = args.allocator;
+    const io = args.io;
+    defer {
+        gpa.destroy(args);
+        _ = workers.active_threads.fetchSub(1, .release);
+    }
+    runIpcServer(workers, gpa, io) catch |err| {
         std.log.err("IPC Server error: {any}", .{err});
     };
 }
 
-fn runIpcServer(state: *ViewerState) !void {
-    const io = state.io;
-    const gpa = state.allocator;
-
+fn runIpcServer(workers: *WorkerManager, gpa: std.mem.Allocator, io: std.Io) !void {
     const pid = getProcessId();
     var path_buf: [128]u8 = undefined;
     const socket_path = try std.fmt.bufPrint(&path_buf, "/tmp/peng-{d}.sock", .{pid});
@@ -58,11 +67,11 @@ fn runIpcServer(state: *ViewerState) !void {
         std.log.debug("IPC flush to stdout failed: {any}", .{err});
     };
 
-    while (!state.exiting.load(.acquire)) {
+    while (!workers.exiting.load(.acquire)) {
         var client_stream = server.accept(io) catch |err| switch (err) {
             error.Canceled => break,
             else => {
-                if (state.exiting.load(.acquire)) break;
+                if (workers.exiting.load(.acquire)) break;
                 std.log.err("IPC server accept failed: {any}", .{err});
                 continue;
             },
@@ -104,7 +113,7 @@ fn runIpcServer(state: *ViewerState) !void {
             .client_stream = client_stream,
         };
 
-        state.event_queue.push(gpa, io, .{ .ipc_command = cmd_data }) catch |err| {
+        workers.event_queue.push(gpa, io, .{ .ipc_command = cmd_data }) catch |err| {
             std.log.err("Failed to push IPC command to MpscQueue: {}", .{err});
             gpa.free(cmd_str);
             gpa.destroy(cmd_data);
