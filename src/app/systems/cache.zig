@@ -19,34 +19,28 @@ pub fn sysUpdateCache(state: *AppState) !void {
     const idx = state.viewer.navigation.current_index orelse return;
     const gen = state.viewer.generation;
 
-    const now = sdl.timer.getTicks();
-    const is_rapid_scrolling = (now - state.viewer.navigation.last_nav_time_ms < 150);
-    state.viewer.navigation.last_nav_time_ms = now;
-
-    // 1. Gather desired indices
+    // 1. Gather desired indices (5-slot window: idx, +1, +2, -1, -2)
     var desired_count: usize = 0;
     var desired: [5]usize = undefined;
     desired[0] = idx;
     desired_count = 1;
 
-    if (!is_rapid_scrolling) {
-        for ([_]usize{
-            (idx + 1) % len,
-            (idx + 2) % len,
-            (idx + len - 1) % len,
-            if (len >= 2) (idx + len - 2) % len else idx,
-        }) |d| {
-            var unique = true;
-            for (desired[0..desired_count]) |existing| {
-                if (existing == d) {
-                    unique = false;
-                    break;
-                }
+    for ([_]usize{
+        (idx + 1) % len,
+        (idx + 2) % len,
+        (idx + len - 1) % len,
+        if (len >= 2) (idx + len - 2) % len else idx,
+    }) |d| {
+        var unique = true;
+        for (desired[0..desired_count]) |existing| {
+            if (existing == d) {
+                unique = false;
+                break;
             }
-            if (unique) {
-                desired[desired_count] = d;
-                desired_count += 1;
-            }
+        }
+        if (unique) {
+            desired[desired_count] = d;
+            desired_count += 1;
         }
     }
 
@@ -74,8 +68,14 @@ pub fn sysUpdateCache(state: *AppState) !void {
         }
     }
 
+    const now = sdl.timer.getTicks();
+    const is_fast_scrolling = (now - state.viewer.navigation.last_nav_time_ms < 150);
+
     // 3. Mark wanted entries that are not in the cache yet as .decoding
     for (desired[0..desired_count]) |d| {
+        // While fast-scrolling, only spawn decodes for the current index to avoid CPU/IO stutter.
+        if (is_fast_scrolling and d != idx) continue;
+
         var needs_thread = false;
         if (state.cache.get(d)) |entry| {
             if (d == idx and (entry.status == .loaded_cpu or entry.status == .loaded_gpu)) {
@@ -125,15 +125,6 @@ pub fn sysUpdateCache(state: *AppState) !void {
         const path_opt = to_spawn_paths[s_idx];
         if (path_opt == null or !state.workers.canSpawnDecode()) {
             if (path_opt) |p| state.allocator.free(p);
-            if (d != idx) {
-                var k: usize = 0;
-                while (k < state.cache.entries.items.len) : (k += 1) {
-                    if (state.cache.entries.items[k].index == d) {
-                        state.cache.removeAndDeinit(k, dev_opt);
-                        break;
-                    }
-                }
-            }
             continue;
         }
 
@@ -190,10 +181,7 @@ pub fn sysCheckIdlePreload(state: *AppState) void {
     if (state.viewer.navigation.image_list.items.len <= 1) return;
     const now = sdl.timer.getTicks();
     if (now - state.viewer.navigation.last_nav_time_ms >= 150) {
-        const entry_count = state.cache.entries.items.len;
-        if (entry_count <= 1) {
-            sysUpdateCache(state) catch |err| std.log.warn("Idle preload sysUpdateCache failed: {}", .{err});
-        }
+        sysUpdateCache(state) catch |err| std.log.warn("Idle preload sysUpdateCache failed: {}", .{err});
     }
 }
 

@@ -175,6 +175,7 @@ pub const FrameInput = struct {
     dropped_path: ?[]const u8,
     ticks: u64,
     delta_time_ms: f32,
+    window_resized: bool = false,
 
     pub fn pixMouseX(self: FrameInput) f32 {
         return self.mouse_x;
@@ -187,9 +188,7 @@ pub const FrameInput = struct {
     pub fn isPointerInDebugPanel(self: FrameInput) bool {
         if (!clay.isDebugModeEnabled()) return false;
         const debug_w: f32 = @floatFromInt(clay.Clay__debugViewWidth);
-        const logical_w = if (self.scale_x > 0.0) self.win_w / self.scale_x else self.win_w;
-        const logical_mouse_x = if (self.scale_x > 0.0) self.mouse_x / self.scale_x else self.mouse_x;
-        return logical_mouse_x >= (logical_w - debug_w);
+        return self.mouse_x >= (self.win_w - debug_w);
     }
 };
 
@@ -302,6 +301,8 @@ pub const OverlayState = struct {
     mouse_inside: bool = true,
     last_mouse_x: f32 = -1.0,
     last_mouse_y: f32 = -1.0,
+    last_win_w: f32 = 0.0,
+    last_win_h: f32 = 0.0,
 };
 
 pub const RenderStats = struct {

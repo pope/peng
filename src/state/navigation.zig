@@ -1,4 +1,5 @@
 const std = @import("std");
+const sdl = @import("sdl");
 const types = @import("types.zig");
 const SlideshowMode = types.SlideshowMode;
 
@@ -41,6 +42,7 @@ pub const NavigationState = struct {
 
     pub fn nextIndex(self: *NavigationState) ?usize {
         self.slideshow.resetTimer();
+        self.last_nav_time_ms = sdl.timer.getTicks();
         const len = self.image_list.items.len;
         if (len == 0) return null;
         if (self.current_index) |idx| {
@@ -53,6 +55,7 @@ pub const NavigationState = struct {
 
     pub fn prevIndex(self: *NavigationState) ?usize {
         self.slideshow.resetTimer();
+        self.last_nav_time_ms = sdl.timer.getTicks();
         const len = self.image_list.items.len;
         if (len == 0) return null;
         if (self.current_index) |idx| {
@@ -69,6 +72,7 @@ pub const NavigationState = struct {
 
     pub fn goToIndex(self: *NavigationState, idx: usize) ?usize {
         self.slideshow.resetTimer();
+        self.last_nav_time_ms = sdl.timer.getTicks();
         const len = self.image_list.items.len;
         if (len == 0) return null;
         self.current_index = @min(idx, len - 1);

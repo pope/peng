@@ -42,7 +42,16 @@ pub fn updateFrame(
         }
         break :blk (app_state.viewer.navigation.current_index != null);
     };
-    const is_busy = app_state.isBusy() or is_current_loading or bg_events_processed or (app_state.viewer.drag_state != .none);
+    const has_unpopulated_cache = blk: {
+        const len = app_state.viewer.navigation.image_list.items.len;
+        if (len <= 1) break :blk false;
+        break :blk (app_state.cache.entries.items.len < @min(5, len));
+    };
+    const cur_win_size = window.getSize();
+    const cur_win_w = @as(f32, @floatFromInt(cur_win_size.w));
+    const cur_win_h = @as(f32, @floatFromInt(cur_win_size.h));
+    const window_resized = (app_state.viewer.ui.overlays.last_win_w != 0 and (app_state.viewer.ui.overlays.last_win_w != cur_win_w or app_state.viewer.ui.overlays.last_win_h != cur_win_h));
+    const is_busy = app_state.isBusy() or is_current_loading or bg_events_processed or (app_state.viewer.drag_state != .none) or has_unpopulated_cache or window_resized;
     const frame_allocator = frame_arena.allocator();
     const input = try app.input.pollFrameInput(
         window,
@@ -61,6 +70,8 @@ pub fn updateFrame(
 
     // Clay Pointer & Scroll State Updates (MUST happen BEFORE app_state.update(input) so sysUpdateViewport queries fresh Clay pointer states)
     clay.setLayoutDimensions(.{ .w = input.win_w, .h = input.win_h });
+    app_state.viewer.ui.overlays.last_win_w = input.win_w;
+    app_state.viewer.ui.overlays.last_win_h = input.win_h;
 
     if (input.mouse_inside) {
         clay.setPointerState(

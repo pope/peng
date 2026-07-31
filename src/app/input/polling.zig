@@ -87,11 +87,15 @@ pub const FrameInputState = struct {
     mouse_left_clicked: bool = false,
     mouse_inside: bool = false,
     quit_requested: bool = false,
+    window_resized: bool = false,
 };
 
 pub fn processSDLEvent(event: sdl.Event, frame_input: *FrameInputState) !void {
     switch (event.type) {
         sdl.event_type.quit => frame_input.quit_requested = true,
+        sdl.event_type.window_resized, sdl.event_type.window_pixel_size_changed, sdl.event_type.window_exposed => {
+            frame_input.window_resized = true;
+        },
         sdl.event_type.mouse_enter => {
             frame_input.mouse_inside = true;
         },
@@ -204,5 +208,6 @@ pub fn pollFrameInput(
         .dropped_path = frame_input_state.dropped_path_opt,
         .ticks = current_ticks,
         .delta_time_ms = delta_time_ms,
+        .window_resized = frame_input_state.window_resized,
     };
 }

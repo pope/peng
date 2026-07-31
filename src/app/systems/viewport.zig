@@ -69,8 +69,8 @@ pub fn sysUpdateViewport(state: *AppState, input: FrameInput, palette_closed_thi
             }
             const cy = title_bar_h + ((input.win_h - title_bar_h) / 2.0);
 
-            const rel_x = (input.mouse_x - cx) * input.scale_x;
-            const rel_y = (input.mouse_y - cy) * input.scale_y;
+            const rel_x = input.mouse_x - cx;
+            const rel_y = input.mouse_y - cy;
 
             state.viewer.viewport.pan_x = rel_x - (rel_x - state.viewer.viewport.pan_x) * ratio;
             state.viewer.viewport.pan_y = rel_y - (rel_y - state.viewer.viewport.pan_y) * ratio;
