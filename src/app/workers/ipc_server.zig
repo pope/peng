@@ -58,11 +58,14 @@ fn runIpcServer(state: *ViewerState) !void {
         std.log.debug("IPC flush to stdout failed: {any}", .{err});
     };
 
-    while (state.running) {
-        var client_stream = server.accept(io) catch |err| {
-            if (!state.running) break;
-            std.log.err("IPC server accept failed: {any}", .{err});
-            continue;
+    while (!state.exiting.load(.acquire)) {
+        var client_stream = server.accept(io) catch |err| switch (err) {
+            error.Canceled => break,
+            else => {
+                if (state.exiting.load(.acquire)) break;
+                std.log.err("IPC server accept failed: {any}", .{err});
+                continue;
+            },
         };
         errdefer client_stream.close(io);
 
