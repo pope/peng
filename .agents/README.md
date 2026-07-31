@@ -7,10 +7,10 @@ ______________________________________________________________________
 ## Core Rule Architecture (`.agents/rules/`)
 
 - **[`01_memory_and_resource_safety.md`](rules/01_memory_and_resource_safety.md)**:
-  Tagged union pattern matching (`switch (union)`), per-frame arenas, HashMap key lifecycle cleanup, typed worker signatures, non-negotiable structured error logging (`std.log`), and slice aliasing protection.
+  Tagged union pattern matching (`switch (union)`), per-frame arenas, HashMap key lifecycle cleanup, typed worker signatures, non-negotiable structured error logging (`std.log`), slice aliasing protection, socket stream teardown, and worker early-exit error invariants (`failDecodeWorker`).
 
 - **[`02_concurrency_and_architecture.md`](rules/02_concurrency_and_architecture.md)**:
-  Main-thread exclusive GPU operations, non-recursive `std.Io.Mutex` safety, `std.Io.Group` task spawning & native cancellation, `MpscQueue` event transport, Zero-Dependency Intent Queue (`AppIntent`), `systems.zig` pure system passes, `OverlayFlags` packed structs, and main-thread cache epoch versioning.
+  Main-thread exclusive GPU operations, non-recursive `std.Io.Mutex` safety, `std.Io.Group` task spawning & native cancellation, `MpscQueue` event transport, Zero-Dependency Intent Queue (`AppIntent`), `systems.zig` pure system passes, `OverlayFlags` packed structs, main-thread cache epoch versioning, and single-pass I/O header consolidation in workers.
 
 - **[`03_c_abi_and_module_hygiene.md`](rules/03_c_abi_and_module_hygiene.md)**:
   Single canonical `@cImport` file (`src/sdl/c.zig`), C-handle encapsulation, complete enum mapping invariant, single top-level `@import` standard, prohibition of proxy re-exports, and `.empty` / `.init(...)` initialization style.

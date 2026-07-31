@@ -143,28 +143,20 @@ pub const CacheSlotMap = struct {
     }
 };
 
-pub fn detectMimeType(io: std.Io, path: []const u8) []const u8 {
-    var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, path, .{}) catch return "unknown";
-    defer file.close(io);
-
-    var header: [12]u8 = undefined;
-    var slices = [_][]u8{&header};
-    const bytes_read = file.readPositional(io, &slices, 0) catch return "unknown";
-    if (bytes_read < 4) return "unknown";
-
-    if (std.mem.startsWith(u8, &header, &[_]u8{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A })) {
+pub fn detectMimeType(header: []const u8, path: []const u8) []const u8 {
+    if (header.len >= 8 and std.mem.startsWith(u8, header, &[_]u8{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A })) {
         return "image/png";
     }
-    if (std.mem.startsWith(u8, &header, &[_]u8{ 0xFF, 0xD8, 0xFF })) {
+    if (header.len >= 3 and std.mem.startsWith(u8, header, &[_]u8{ 0xFF, 0xD8, 0xFF })) {
         return "image/jpeg";
     }
-    if (std.mem.startsWith(u8, &header, "GIF87a") or std.mem.startsWith(u8, &header, "GIF89a")) {
+    if (header.len >= 6 and (std.mem.startsWith(u8, header, "GIF87a") or std.mem.startsWith(u8, header, "GIF89a"))) {
         return "image/gif";
     }
-    if (std.mem.startsWith(u8, &header, "BM")) {
+    if (header.len >= 2 and std.mem.startsWith(u8, header, "BM")) {
         return "image/bmp";
     }
-    if (bytes_read >= 12 and std.mem.startsWith(u8, &header, "RIFF") and std.mem.eql(u8, header[8..12], "WEBP")) {
+    if (header.len >= 12 and std.mem.startsWith(u8, header, "RIFF") and std.mem.eql(u8, header[8..12], "WEBP")) {
         return "image/webp";
     }
 

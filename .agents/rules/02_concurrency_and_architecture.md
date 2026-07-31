@@ -54,3 +54,12 @@
 
 - **Thread Isolation**: Background worker tasks must touch zero shared non-atomic main-thread state (`ViewerState`, `DisplayState`, `Device`). Capture immutable value copies (`has_gpu_device: bool`, `pixel_format: u32`) inside worker argument structs (`DecodeArgs`) at spawn time.
 - **Cache Epoch Versioning**: Use a plain main-thread `usize` epoch counter (`ViewerState.generation`) incremented on navigation/directory resets (`resetNavigation`) to validate that incoming background event payloads match the active image list epoch before modifying `CacheSlotMap` entries.
+
+## 9. Single-Pass I/O Header & Metadata Consolidation in Workers
+
+Worker tasks performing file inspection and decoding MUST consolidate file I/O operations:
+
+1. **Single File Stat**: Issue `statFile` once at the top of the worker to retrieve `size_bytes`.
+2. **Single File Open**: Open `std.Io.Dir.openFile` once for the duration of the worker task pass.
+3. **Single Header Read**: Issue `file.readPositional(io, &slices, 0)` once to populate a 64KB stack buffer (`header_buf`).
+4. **In-Memory Zero-Copy Operations**: Pass `header_buf[0..n]` in-memory to all metadata parsers (`exif.parseExifOrientation`, `image.detectMimeType`, `exif.readJpegDimensions`, `exif.extractJpegThumbnail`). Never open or read the file multiple times per worker pass.

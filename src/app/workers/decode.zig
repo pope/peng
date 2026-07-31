@@ -15,6 +15,14 @@ pub const DecodeArgs = struct {
     pixel_format: u32,
 };
 
+fn failDecodeWorker(state: *ViewerState, index: usize, path: []const u8, comptime fmt: []const u8, fmt_args: anytype) void {
+    std.log.err(fmt, fmt_args);
+    state.event_queue.push(state.allocator, state.io, .{
+        .decode_failed = .{ .index = index },
+    }) catch |e| std.log.err("Failed to push decode_failed event for '{s}': {}", .{ path, e });
+    context.wakeUpMainThread();
+}
+
 pub fn decodeWorker(args: *DecodeArgs) void {
     const state = args.state;
     const index = args.index;
@@ -28,7 +36,34 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         context.wakeUpMainThread();
     }
 
-    const exif_rot = exif.readJpegExifOrientation(state.io, path) orelse 0.0;
+    const s = std.Io.Dir.statFile(std.Io.Dir.cwd(), state.io, path, .{}) catch |err| {
+        failDecodeWorker(state, index, path, "decodeWorker: statFile failed for '{s}': {}", .{ path, err });
+        return;
+    };
+    const size_bytes = s.size;
+
+    var header_buf: [65536]u8 = undefined;
+    var exif_rot: f32 = 0.0;
+    var mime_type: []const u8 = "unknown";
+
+    var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), state.io, path, .{}) catch |err| {
+        failDecodeWorker(state, index, path, "decodeWorker: openFile failed for '{s}': {}", .{ path, err });
+        return;
+    };
+    defer file.close(state.io);
+
+    var slices = [_][]u8{&header_buf};
+    const n = file.readPositional(state.io, &slices, 0) catch |err| {
+        failDecodeWorker(state, index, path, "decodeWorker: initial readPositional failed for '{s}': {}", .{ path, err });
+        return;
+    };
+
+    if (n == 0) {
+        failDecodeWorker(state, index, path, "decodeWorker: empty file or 0-byte header read for '{s}'", .{path});
+        return;
+    }
+
+    exif_rot = exif.parseExifOrientation(header_buf[0..n]) orelse 0.0;
     if (exif_rot != 0.0) {
         state.event_queue.push(state.allocator, state.io, .{
             .exif_orientation_parsed = .{
@@ -39,77 +74,66 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         context.wakeUpMainThread();
     }
 
-    if (state.exiting.load(.acquire)) return;
-
-    const mime_type = image.detectMimeType(state.io, path);
-
-    if (state.exiting.load(.acquire)) return;
+    mime_type = image.detectMimeType(header_buf[0..n], path);
 
     // Attempt fast EXIF thumbnail decoding for instant placeholder preview
     if (std.mem.eql(u8, mime_type, "image/jpeg") and args.has_gpu_device) {
-        var header_buf: [65536]u8 = undefined;
-        var thumb_file = std.Io.Dir.openFile(std.Io.Dir.cwd(), state.io, path, .{}) catch null;
-        if (thumb_file) |*f| {
-            defer f.close(state.io);
-            var slices = [_][]u8{&header_buf};
-            const n = f.readPositional(state.io, &slices, 0) catch 0;
-            if (n > 0) {
-                const full_dims = exif.readJpegDimensions(header_buf[0..n]);
-                var thumb_bytes_opt: ?[]const u8 = exif.extractJpegThumbnail(header_buf[0..n]);
-                var heap_thumb_buf: ?[]u8 = null;
-                defer if (heap_thumb_buf) |b| state.allocator.free(b);
+        const full_dims = exif.readJpegDimensions(header_buf[0..n]);
+        var thumb_bytes_opt: ?[]const u8 = exif.extractJpegThumbnail(header_buf[0..n]);
+        var heap_thumb_buf: ?[]u8 = null;
+        defer if (heap_thumb_buf) |b| state.allocator.free(b);
 
-                if (thumb_bytes_opt != null) {
-                    _ = state.thumb_header_hits.fetchAdd(1, .monotonic);
-                } else if (exif.extractJpegThumbnailLocation(header_buf[0..n])) |loc| {
-                    const max_thumb_size_bytes = 512 * 1024; // 512 KiB sanity limit for EXIF thumbnails
-                    if (loc.length > 0 and loc.length <= max_thumb_size_bytes) {
-                        if (state.allocator.alloc(u8, loc.length)) |t_buf| {
-                            heap_thumb_buf = t_buf;
-                            var t_slices = [_][]u8{t_buf};
-                            const read_n = f.readPositional(state.io, &t_slices, loc.file_offset) catch |err| blk: {
-                                std.log.warn("decodeWorker: readPositional for thumbnail failed at offset {d} (len {d}): {}", .{ loc.file_offset, loc.length, err });
-                                break :blk 0;
-                            };
-                            if (read_n == loc.length) {
-                                thumb_bytes_opt = t_buf;
-                                _ = state.thumb_positional_hits.fetchAdd(1, .monotonic);
-                            } else {
-                                std.log.warn("decodeWorker: incomplete thumbnail read at offset {d}: expected {d} bytes, got {d}", .{ loc.file_offset, loc.length, read_n });
-                                _ = state.thumb_misses.fetchAdd(1, .monotonic);
-                            }
-                        } else |err| {
-                            std.log.warn("decodeWorker: failed to allocate {d} bytes for thumbnail: {}", .{ loc.length, err });
-                            _ = state.thumb_misses.fetchAdd(1, .monotonic);
-                        }
+        if (thumb_bytes_opt != null) {
+            _ = state.thumb_header_hits.fetchAdd(1, .monotonic);
+        } else if (exif.extractJpegThumbnailLocation(header_buf[0..n])) |loc| {
+            const max_thumb_size_bytes = 512 * 1024; // 512 KiB sanity limit for EXIF thumbnails
+            const within_file_bounds = (size_bytes == 0 or (loc.file_offset + loc.length <= size_bytes));
+
+            if (loc.length > 0 and loc.length <= max_thumb_size_bytes and within_file_bounds) {
+                if (state.allocator.alloc(u8, loc.length)) |t_buf| {
+                    heap_thumb_buf = t_buf;
+                    var t_slices = [_][]u8{t_buf};
+                    const read_n = file.readPositional(state.io, &t_slices, loc.file_offset) catch |err| blk: {
+                        std.log.warn("decodeWorker: readPositional for thumbnail failed at offset {d} (len {d}): {}", .{ loc.file_offset, loc.length, err });
+                        break :blk 0;
+                    };
+                    if (read_n == loc.length) {
+                        thumb_bytes_opt = t_buf;
+                        _ = state.thumb_positional_hits.fetchAdd(1, .monotonic);
                     } else {
+                        std.log.warn("decodeWorker: incomplete thumbnail read at offset {d}: expected {d} bytes, got {d}", .{ loc.file_offset, loc.length, read_n });
                         _ = state.thumb_misses.fetchAdd(1, .monotonic);
                     }
-                } else {
+                } else |err| {
+                    std.log.warn("decodeWorker: failed to allocate {d} bytes for thumbnail: {}", .{ loc.length, err });
                     _ = state.thumb_misses.fetchAdd(1, .monotonic);
                 }
+            } else {
+                _ = state.thumb_misses.fetchAdd(1, .monotonic);
+            }
+        } else {
+            _ = state.thumb_misses.fetchAdd(1, .monotonic);
+        }
 
-                if (thumb_bytes_opt) |thumb_bytes| {
-                    if (sdl.Surface.loadConstMemOpt(thumb_bytes)) |t_surf| {
-                        const full_w: f32 = if (full_dims) |d| d.w else 0.0;
-                        const full_h: f32 = if (full_dims) |d| d.h else 0.0;
-                        state.event_queue.push(state.allocator, state.io, .{
-                            .thumb_decoded = .{
-                                .index = index,
-                                .surface = t_surf,
-                                .w = @floatFromInt(t_surf.w()),
-                                .h = @floatFromInt(t_surf.h()),
-                                .full_w = full_w,
-                                .full_h = full_h,
-                                .exif_orientation = exif_rot,
-                            },
-                        }) catch |err| {
-                            std.log.err("Failed to push thumbnail decode event: {}", .{err});
-                            t_surf.destroy();
-                        };
-                        context.wakeUpMainThread();
-                    }
-                }
+        if (thumb_bytes_opt) |thumb_bytes| {
+            if (sdl.Surface.loadConstMemOpt(thumb_bytes)) |t_surf| {
+                const full_w: f32 = if (full_dims) |d| d.w else 0.0;
+                const full_h: f32 = if (full_dims) |d| d.h else 0.0;
+                state.event_queue.push(state.allocator, state.io, .{
+                    .thumb_decoded = .{
+                        .index = index,
+                        .surface = t_surf,
+                        .w = @floatFromInt(t_surf.w()),
+                        .h = @floatFromInt(t_surf.h()),
+                        .full_w = full_w,
+                        .full_h = full_h,
+                        .exif_orientation = exif_rot,
+                    },
+                }) catch |err| {
+                    std.log.err("Failed to push thumbnail decode event: {}", .{err});
+                    t_surf.destroy();
+                };
+                context.wakeUpMainThread();
             }
         }
     }
@@ -123,7 +147,8 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     const decode_time_ms = @as(f64, @floatFromInt(end_decode - start_decode)) / 1_000_000.0;
 
     if (surface == null) {
-        std.log.err("decodeWorker: failed to load image '{s}': {s}", .{ path, sdl.getError() });
+        failDecodeWorker(state, index, path, "decodeWorker: failed to load image '{s}': {s}", .{ path, sdl.getError() });
+        return;
     }
 
     if (state.exiting.load(.acquire)) {
@@ -171,14 +196,6 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                 }
             }
         }
-    }
-
-    // Stat the file
-    var size_bytes: u64 = 0;
-    if (std.Io.Dir.statFile(std.Io.Dir.cwd(), state.io, path, .{})) |s| {
-        size_bytes = s.size;
-    } else |err| {
-        std.log.debug("decodeWorker: statFile failed for '{s}': {any}", .{ path, err });
     }
 
     if (state.exiting.load(.acquire)) {

@@ -55,3 +55,12 @@ const data = readBuffer() catch |err| {
 
 - Always invoke `stream.close(io)` on `std.Io.net.Stream` socket handles during queue item teardown (`deinitQueueItem`) and state deallocation (`ViewerState.deinit`).
 - Dropping or freeing structs containing socket streams without calling `.close(io)` leaks OS file and socket descriptors on application shutdown or event cancellation.
+
+## 10. Worker Task Early-Exit & Fail-Fast Error Invariants
+
+When a worker task encounters a file I/O failure (`statFile`, `openFile`, initial `readPositional`) or decoder failure (e.g., `sdl.Surface.loadFilePtr` returning null):
+
+1. **Never swallow errors** with `catch null`, `catch 0`, or logging without state notification.
+2. **Always notify state**: Push a corresponding failure event (e.g., `.decode_failed`) to `event_queue` and wake up the main thread (`context.wakeUpMainThread()`).
+3. **Exit early immediately**: Execute `return` right after logging and event dispatch.
+4. **Avoid redundant checks**: Once an early exit check handles `n == 0` or error cases, do not wrap subsequent code in redundant `if (n > 0)` checks.
