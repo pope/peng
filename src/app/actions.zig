@@ -15,7 +15,6 @@ const startTextInput = app_state.startTextInput;
 /// Central intent dispatcher. Maps an AppIntent variant to application state mutations
 /// and marks the application state dirty for re-rendering.
 pub fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
-    self.viewer.dirty = true;
     switch (intent) {
         .set_zoom => |factor| self.setZoom(factor),
         .zoom_in => {
@@ -38,10 +37,7 @@ pub fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
             self.viewer.viewport.fit_mode = mode;
             self.resetZoomPan();
         },
-        .set_filter => |mode| {
-            self.viewer.viewport.scale_filter = mode;
-            self.applyTextureScaleMode();
-        },
+        .set_filter => |mode| self.viewer.viewport.scale_filter = mode,
         .set_brightness => |val| self.setAdjustments(val, self.viewer.viewport.contrast),
         .increase_brightness => self.viewer.viewport.brightness = std.math.clamp(self.viewer.viewport.brightness + 0.1, -1.0, 1.0),
         .decrease_brightness => self.viewer.viewport.brightness = std.math.clamp(self.viewer.viewport.brightness - 0.1, -1.0, 1.0),

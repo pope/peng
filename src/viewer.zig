@@ -42,7 +42,7 @@ pub fn updateFrame(
         }
         break :blk (app_state.viewer.navigation.current_index != null);
     };
-    const is_busy = app_state.isBusy() or is_current_loading or bg_events_processed;
+    const is_busy = app_state.isBusy() or is_current_loading or bg_events_processed or (app_state.viewer.drag_state != .none);
     const frame_allocator = frame_arena.allocator();
     const input = try app.input.pollFrameInput(
         window,
@@ -59,19 +59,7 @@ pub fn updateFrame(
     }
     app_state.viewer.ui.overlays.mouse_inside = input.mouse_inside;
 
-    // 3. Logic & Intent Systems (sysExecuteIntents, sysUpdateSlideshow, sysUpdateViewport)
-    try app_state.update(input);
-
-    // 4. Asset Upload & Texture Pipeline System
-    app.systems.sysProcessAssetUploads(app_state);
-
-    // 5. Cache Slot Management System
-    app.systems.sysUpdateCache(app_state) catch |err| std.log.err("Failed to update cache: {}", .{err});
-
-    // 6. Idle Cache Preloading System
-    app.systems.sysCheckIdlePreload(app_state);
-
-    // Stage 3: Clay Pointer & Scroll State Updates
+    // Clay Pointer & Scroll State Updates (MUST happen BEFORE app_state.update(input) so sysUpdateViewport queries fresh Clay pointer states)
     clay.setLayoutDimensions(.{ .w = input.win_w, .h = input.win_h });
 
     if (input.mouse_inside) {
@@ -92,6 +80,9 @@ pub fn updateFrame(
         input.delta_time_ms / 1000.0,
     );
 
+    app_state.viewer.ui.overlays.last_mouse_x = input.mouse_x;
+    app_state.viewer.ui.overlays.last_mouse_y = input.mouse_y;
+
     if (input.mouse_left_clicked) {
         if (app_state.viewer.ui.overlays.show_info and !input.isPointerInDebugPanel() and clay.pointerOver(clay.getElementId("InfoCloseBtn"))) {
             app_state.viewer.ui.overlays.show_info = false;
@@ -100,6 +91,18 @@ pub fn updateFrame(
             app_state.viewer.ui.overlays.show_stats = false;
         }
     }
+
+    // 3. Logic & Intent Systems (sysExecuteIntents, sysUpdateSlideshow, sysUpdateViewport)
+    try app_state.update(input);
+
+    // 4. Asset Upload & Texture Pipeline System
+    app.systems.sysProcessAssetUploads(app_state);
+
+    // 5. Cache Slot Management System
+    app.systems.sysUpdateCache(app_state) catch |err| std.log.err("Failed to update cache: {}", .{err});
+
+    // 6. Idle Cache Preloading System
+    app.systems.sysCheckIdlePreload(app_state);
 
     // Construct view parameters and UI view model snapshots
     const view_params = state_pkg.ViewParams{
@@ -143,18 +146,6 @@ pub fn updateFrame(
         .stats = app_state.viewer.stats,
     };
 
-    // Skip layout construction and rendering if state is clean and idle
-    const is_dirty = app_state.viewer.dirty or
-        input.mouse_left_down or input.mouse_left_clicked or
-        input.scroll_delta_x != 0 or input.scroll_delta_y != 0 or
-        input.keys_pressed.items.len > 0 or input.text_input != null or
-        input.dropped_path != null or app_state.viewer.navigation.slideshow == .active or
-        app_state.viewer.ui.palette.mode != .inactive or app_state.viewer.ui.screenshot_mode != .idle;
-
-    if (!is_dirty and !parsed_test_mode and !parsed_headless) {
-        return;
-    }
-
     // Draw / Render
     const capture_filename = switch (app_state.viewer.ui.screenshot_mode) {
         .idle => null,
@@ -165,7 +156,6 @@ pub fn updateFrame(
         return err;
     };
     app_state.handleScreenshotPostRender(null);
-    app_state.viewer.dirty = false;
 }
 
 //////////////////////////////////////////////////////////////////////////////

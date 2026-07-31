@@ -323,10 +323,6 @@ pub const AppState = struct {
         return self.cache.getTexture(handle);
     }
 
-    pub fn applyTextureScaleMode(self: *AppState) void {
-        self.viewer.dirty = true;
-    }
-
     pub fn rebuildPaletteMatches(self: *AppState) !void {
         try self.viewer.ui.palette.rebuildFileMatches(self.viewer.navigation.image_list.items);
     }
@@ -636,7 +632,6 @@ pub const AppState = struct {
 
     pub fn setTextureScaleMode(self: *AppState, mode: TextureScaleMode) void {
         self.viewer.viewport.texture_scale_mode = mode;
-        self.applyTextureScaleMode();
     }
 
     pub fn setPaletteMode(self: *AppState, mode: PaletteMode) void {

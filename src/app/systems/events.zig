@@ -11,7 +11,6 @@ pub fn sysProcessBackgroundEvents(state: *AppState) bool {
     state.event_batch.clearRetainingCapacity();
     state.workers.event_queue.drain(state.allocator, state.io, &state.event_batch) catch return false;
     if (state.event_batch.items.len == 0) return false;
-    state.viewer.dirty = true;
     const current_gen = state.viewer.generation;
 
     for (state.event_batch.items) |*evt| {

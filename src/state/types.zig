@@ -2,6 +2,7 @@ const std = @import("std");
 const sdl = @import("sdl");
 const intents = @import("intents");
 const palette_state = @import("palette_state.zig");
+const clay = @import("zclay");
 
 pub const Key = enum {
     unknown,
@@ -184,7 +185,8 @@ pub const FrameInput = struct {
     }
 
     pub fn isPointerInDebugPanel(self: FrameInput) bool {
-        const debug_w: f32 = 400.0; // Clay debug view width
+        if (!clay.isDebugModeEnabled()) return false;
+        const debug_w: f32 = @floatFromInt(clay.Clay__debugViewWidth);
         const logical_w = if (self.scale_x > 0.0) self.win_w / self.scale_x else self.win_w;
         const logical_mouse_x = if (self.scale_x > 0.0) self.mouse_x / self.scale_x else self.mouse_x;
         return logical_mouse_x >= (logical_w - debug_w);
@@ -298,6 +300,8 @@ pub const OverlayState = struct {
     stats_offset_x: f32 = -20.0,
     stats_offset_y: f32 = 20.0,
     mouse_inside: bool = true,
+    last_mouse_x: f32 = -1.0,
+    last_mouse_y: f32 = -1.0,
 };
 
 pub const RenderStats = struct {

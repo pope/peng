@@ -116,6 +116,7 @@ pub fn build(b: *std.Build) void {
     state_module.addImport("intents", intents_module);
     state_module.addImport("sdl", sdl_module);
     state_module.addImport("fuzzig", fuzzig_dep.module("fuzzig"));
+    state_module.addImport("zclay", zclay_dep.module("zclay"));
 
     app_module.addImport("sdl", sdl_module);
     app_module.addImport("zclay", zclay_dep.module("zclay"));
