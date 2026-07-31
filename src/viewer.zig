@@ -39,7 +39,7 @@ pub fn updateFrame(
         }
         break :blk (state.navigation.current_index != null);
     };
-    const is_busy = state.navigation.is_loading_files.load(.acquire) or (state.active_threads.load(.acquire) > 0) or is_current_loading or bg_events_processed or state.isSlideshowActive();
+    const is_busy = state.isBusy() or is_current_loading or bg_events_processed;
     const input = try app.input.pollFrameInput(
         window,
         frame_allocator,

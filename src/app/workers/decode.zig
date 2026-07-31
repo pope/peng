@@ -31,8 +31,8 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         const alloc = state.allocator;
         alloc.free(path);
         alloc.destroy(args);
-        _ = state.active_decode_threads.fetchSub(1, .release);
-        _ = state.active_threads.fetchSub(1, .release);
+        _ = state.workers.active_decode_threads.fetchSub(1, .release);
+        _ = state.workers.active_threads.fetchSub(1, .release);
         context.wakeUpMainThread();
     }
 

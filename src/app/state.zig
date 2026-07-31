@@ -155,8 +155,7 @@ pub const ViewerState = struct {
     current_image_cache_hit: bool = false,
     allocator: std.mem.Allocator,
     io: std.Io,
-    active_threads: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
-    active_decode_threads: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    workers: workers_mod.WorkerManager = .{},
     exiting: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     /// Monotonically increasing cache epoch counter. Incremented on directory/file resets
     /// (resetNavigation) so main-thread event handlers (e.g. handleImageDecodedEvent)
@@ -165,7 +164,6 @@ pub const ViewerState = struct {
     thumb_header_hits: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     thumb_positional_hits: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     thumb_misses: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
-    worker_group: std.Io.Group = .init,
 
     // Tagged Union State Machines
     display: DisplayState = .headless,
@@ -195,7 +193,7 @@ pub const ViewerState = struct {
         return self.navigation.isSlideshowActive();
     }
     pub inline fn isBusy(self: *const ViewerState) bool {
-        return self.navigation.is_loading_files.load(.acquire) or (self.active_threads.load(.acquire) > 0) or self.isSlideshowActive();
+        return self.navigation.is_loading_files.load(.acquire) or self.workers.isBusy() or self.isSlideshowActive();
     }
 
     pub fn readJpegExifOrientation(self: *const ViewerState, path: []const u8) ?f32 {
@@ -249,7 +247,7 @@ pub const ViewerState = struct {
 
     pub fn deinit(self: *ViewerState) void {
         self.exiting.store(true, .release);
-        self.worker_group.cancel(self.io);
+        self.workers.drainAndQuiesce(self.io);
 
         const dev_opt = self.gpu_device;
         self.cache.clear(dev_opt);
@@ -728,12 +726,6 @@ pub const ViewerState = struct {
         return true;
     }
 
-    pub fn getMaxConcurrentDecodes() usize {
-        const cpu_count = std.Thread.getCpuCount() catch 4;
-        if (cpu_count <= 2) return 2;
-        return @min(6, cpu_count - 1);
-    }
-
     pub fn updateCache(self: *ViewerState) !void {
         self.resetZoomPan();
         self.updateCurrentRotation();
@@ -848,10 +840,9 @@ pub const ViewerState = struct {
         }
 
         // 5. Spawn worker threads
-        const max_decodes = getMaxConcurrentDecodes();
         for (to_spawn_indices[0..to_spawn_count], 0..) |d, s_idx| {
             const path_opt = to_spawn_paths[s_idx];
-            if (path_opt == null or self.active_decode_threads.load(.acquire) >= max_decodes) {
+            if (path_opt == null or !self.workers.canSpawnDecode()) {
                 if (path_opt) |p| self.allocator.free(p);
                 if (d != idx) {
                     var k: usize = 0;

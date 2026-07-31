@@ -17,7 +17,7 @@ pub fn sysProcessAssetUploads(state: *ViewerState) void {
         }
         break :blk (state.navigation.current_index != null);
     };
-    if (needs_cache_update and state.active_decode_threads.load(.acquire) < ViewerState.getMaxConcurrentDecodes()) {
+    if (needs_cache_update and state.workers.canSpawnDecode()) {
         const count = state.navigation.image_list.items.len;
         if (count > 0) {
             if (state.navigation.current_index == null) state.navigation.current_index = 0;

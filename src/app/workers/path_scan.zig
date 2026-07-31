@@ -101,7 +101,7 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
         context.wakeUpMainThread();
         gpa.free(target_path);
         gpa.destroy(args);
-        _ = state.active_threads.fetchSub(1, .release);
+        _ = state.workers.active_threads.fetchSub(1, .release);
     }
 
     const dir_path = if (is_dir) target_path else (std.fs.path.dirname(target_path) orelse ".");

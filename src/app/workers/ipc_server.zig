@@ -16,7 +16,7 @@ fn getProcessId() u32 {
 }
 
 pub fn ipcServerWorkerTask(state: *ViewerState) void {
-    defer _ = state.active_threads.fetchSub(1, .release);
+    defer _ = state.workers.active_threads.fetchSub(1, .release);
     runIpcServer(state) catch |err| {
         std.log.err("IPC Server error: {any}", .{err});
     };

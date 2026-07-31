@@ -19,7 +19,7 @@ pub fn stdinWorker(args: *StdinArgs) void {
         state.navigation.is_loading_files.store(false, .release);
         context.wakeUpMainThread();
         state.allocator.destroy(args);
-        _ = state.active_threads.fetchSub(1, .release);
+        _ = state.workers.active_threads.fetchSub(1, .release);
     }
 
     var read_buf: [4096]u8 = undefined;
