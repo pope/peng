@@ -106,6 +106,8 @@ pub fn updateFrame(
 
     if (state.gpu_device == null) return error.GpuNotInitialized;
 
+    app.systems.sysSyncMetrics(state);
+
     const ui_model = state_pkg.UiViewModel{
         .is_fullscreen = state.isFullscreen(),
         .total_images = state.navigation.image_list.items.len,
@@ -123,18 +125,15 @@ pub fn updateFrame(
         .viewport = state.viewport,
         .palette = &state.ui.palette,
         .display = &state.display,
-        .total_vram_bytes = state.cache.getTotalVramBytes(),
-        .cached_slot_count = state.cache.entries.items.len,
+        .total_vram_bytes = state.stats.total_vram_bytes,
+        .cached_slot_count = state.stats.cached_slot_count,
         .gpa_allocator = state.allocator,
         .io = state.io,
         .cache_slot_map = &state.cache,
         .navigation = &state.navigation,
         .pending_intents = &state.pending_intents,
-        .current_image_cache_hit = state.current_image_cache_hit,
         .debug_show_thumb = state.ui.overlays.debug_show_thumb,
-        .thumb_header_hits = state.workers.thumb_header_hits.load(.acquire),
-        .thumb_positional_hits = state.workers.thumb_positional_hits.load(.acquire),
-        .thumb_misses = state.workers.thumb_misses.load(.acquire),
+        .stats = state.stats,
     };
 
     // Skip layout construction and rendering if state is clean and idle

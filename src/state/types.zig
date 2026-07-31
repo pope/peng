@@ -462,6 +462,40 @@ pub const SlideshowMode = union(enum) {
     }
 };
 
+/// Telemetry metrics for the active image GPU/Decoder status.
+pub const ActiveImageStats = struct {
+    num_mip_levels: u32 = 1,
+    mipmap_time_ms: f64 = 0.0,
+    gpu_upload_time_ms: f64 = 0.0,
+    decode_time_ms: f64 = 0.0,
+    conversion_time_ms: f64 = 0.0,
+    fallback_time_ms: f64 = 0.0,
+    was_fallback: bool = false,
+    has_thumb: bool = false,
+    thumb_upload_time_ms: f64 = 0.0,
+};
+
+/// Snapshot of application telemetry and diagnostic counters copied once per frame
+/// for UI rendering ("Stats for Nerds") without reading live atomics.
+pub const ViewerStats = struct {
+    // EXIF Thumbnail extraction telemetry
+    thumb_header_hits: usize = 0,
+    thumb_positional_hits: usize = 0,
+    thumb_misses: usize = 0,
+
+    // Cache telemetry
+    current_image_cache_hit: bool = false,
+    cached_slot_count: usize = 0,
+    total_vram_bytes: usize = 0,
+
+    // Worker telemetry (frame snapshot)
+    active_worker_threads: usize = 0,
+    active_decode_threads: usize = 0,
+
+    // Active image GPU & decoder stats
+    active_image: ActiveImageStats = .{},
+};
+
 pub const UiViewModel = struct {
     is_fullscreen: bool,
     total_images: usize,
@@ -483,11 +517,8 @@ pub const UiViewModel = struct {
     cache_slot_map: *anyopaque,
     navigation: *anyopaque,
     pending_intents: *std.ArrayList(intents.AppIntent),
-    current_image_cache_hit: bool,
     debug_show_thumb: bool,
-    thumb_header_hits: usize = 0,
-    thumb_positional_hits: usize = 0,
-    thumb_misses: usize = 0,
+    stats: ViewerStats = .{},
 };
 
 pub const MeasureTextUserData = struct {

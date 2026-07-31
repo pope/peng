@@ -348,75 +348,43 @@ pub fn renderStatsOverlay(
         });
 
         // Stats details
-        const hit_str = if (ui_model.current_image_cache_hit) "Yes" else "No";
+        const s = ui_model.stats;
+        const img = s.active_image;
+
+        const hit_str = if (s.current_image_cache_hit) "Yes" else "No";
         try renderStatRow("Cache Hit", hit_str);
         try renderStatRow("Memory Size", mem_size_str);
 
-        const total_vram_bytes = ui_model.total_vram_bytes;
-        const formatted_total_vram = try formatSize(frame_allocator, total_vram_bytes);
-        const total_vram_str = try std.fmt.allocPrint(frame_allocator, "{s} / 1024 MB ({d} slots)", .{ formatted_total_vram, ui_model.cached_slot_count });
+        const formatted_total_vram = try formatSize(frame_allocator, s.total_vram_bytes);
+        const total_vram_str = try std.fmt.allocPrint(frame_allocator, "{s} / 1024 MB ({d} slots)", .{ formatted_total_vram, s.cached_slot_count });
         try renderStatRow("Total Cache VRAM", total_vram_str);
 
         try renderStatRow("Decode Time", decode_str);
         try renderStatRow("Convert Time", convert_str);
         try renderStatRow("GPU Upload", upload_str);
 
-        var upload_mode_str: []const u8 = if (current_entry != null) "Direct VRAM" else "N/A";
-        var fallback_time_str: []const u8 = "N/A";
-        if (current_entry) |entry| {
-            switch (entry.status) {
-                .loaded_gpu => |gpu| {
-                    if (gpu.was_fallback) {
-                        upload_mode_str = "CPU Downscale Fallback";
-                        fallback_time_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{gpu.fallback_time_ms});
-                    }
-                },
-                else => {},
-            }
-        }
+        const upload_mode_str: []const u8 = if (current_entry == null) "N/A" else if (img.was_fallback) "CPU Downscale Fallback" else "Direct VRAM";
+        const fallback_time_str: []const u8 = if (img.was_fallback) try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{img.fallback_time_ms}) else "N/A";
         try renderStatRow("GPU Upload Mode", upload_mode_str);
-        if (std.mem.eql(u8, upload_mode_str, "CPU Downscale Fallback")) {
+        if (img.was_fallback) {
             try renderStatRow("CPU Fallback Time", fallback_time_str);
         }
 
-        var thumb_time_str: []const u8 = "N/A";
-        if (current_entry) |entry| {
-            const has_thumb = switch (entry.status) {
-                .loaded_gpu => |gpu| gpu.has_thumb,
-                .loaded_cpu => |cpu| cpu.has_thumb,
-                else => entry.has_thumb,
-            };
-            const t_time = switch (entry.status) {
-                .loaded_gpu => |gpu| gpu.thumb_upload_time_ms,
-                .loaded_cpu => |cpu| cpu.thumb_upload_time_ms,
-                else => entry.thumb_upload_time_ms,
-            };
-
-            if (has_thumb) {
-                thumb_time_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{t_time});
-            }
-        }
+        const thumb_time_str: []const u8 = if (img.has_thumb) try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{img.thumb_upload_time_ms}) else "N/A";
         try renderStatRow("Thumb Load Time", thumb_time_str);
 
-        const total_thumbs = ui_model.thumb_header_hits + ui_model.thumb_positional_hits + ui_model.thumb_misses;
+        const total_thumbs = s.thumb_header_hits + s.thumb_positional_hits + s.thumb_misses;
         const thumb_hits_str = if (total_thumbs > 0)
-            try std.fmt.allocPrint(frame_allocator, "{d} Header / {d} Pos / {d} Miss", .{ ui_model.thumb_header_hits, ui_model.thumb_positional_hits, ui_model.thumb_misses })
+            try std.fmt.allocPrint(frame_allocator, "{d} Header / {d} Pos / {d} Miss", .{ s.thumb_header_hits, s.thumb_positional_hits, s.thumb_misses })
         else
             "0 Header / 0 Pos / 0 Miss";
         try renderStatRow("Thumb Hit Ratio", thumb_hits_str);
 
         var mipmap_status_str: []const u8 = if (current_entry != null) "Disabled (1 Level)" else "N/A";
         var mipmap_time_str: []const u8 = if (current_entry != null) "0.00 ms" else "N/A";
-        if (current_entry) |entry| {
-            switch (entry.status) {
-                .loaded_gpu => |gpu| {
-                    if (gpu.num_mip_levels > 1) {
-                        mipmap_status_str = try std.fmt.allocPrint(frame_allocator, "Enabled ({d} Levels)", .{gpu.num_mip_levels});
-                        mipmap_time_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{gpu.mipmap_time_ms});
-                    }
-                },
-                else => {},
-            }
+        if (img.num_mip_levels > 1) {
+            mipmap_status_str = try std.fmt.allocPrint(frame_allocator, "Enabled ({d} Levels)", .{img.num_mip_levels});
+            mipmap_time_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{img.mipmap_time_ms});
         }
         try renderStatRow("Mipmap Status", mipmap_status_str);
         try renderStatRow("Mipmap Gen", mipmap_time_str);

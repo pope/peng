@@ -152,7 +152,7 @@ pub const ViewerState = struct {
     ui: UiState,
 
     cache: CacheSlotMap,
-    current_image_cache_hit: bool = false,
+    stats: types.ViewerStats = .{},
     allocator: std.mem.Allocator,
     io: std.Io,
     workers: workers_mod.WorkerManager = .{},
@@ -817,7 +817,7 @@ pub const ViewerState = struct {
                 to_spawn_count += 1;
             }
         }
-        self.current_image_cache_hit = hit;
+        self.stats.current_image_cache_hit = hit;
 
         // 4. Batch-fetch file paths
         var to_spawn_paths: [5]?[:0]const u8 = undefined;
