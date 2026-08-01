@@ -2,10 +2,10 @@ const std = @import("std");
 const sdl = @import("sdl");
 const clay = @import("zclay");
 const state = @import("state");
-const app_state = @import("state.zig");
-const palette_module = @import("core/palette.zig");
+const app_state = @import("../state.zig");
+const palette_module = @import("../core/palette.zig");
 const intents = @import("intents");
-const systems = @import("systems.zig");
+const systems = @import("../systems.zig");
 const Key = state.Key;
 const KeyModifiers = state.KeyModifiers;
 const AppState = app_state.AppState;
@@ -13,7 +13,7 @@ const startTextInput = app_state.startTextInput;
 
 /// Central intent dispatcher. Maps an AppIntent variant to application state mutations
 /// and marks the application state dirty for re-rendering.
-pub fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
+fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
     switch (intent) {
         .set_zoom => |factor| self.setZoom(factor),
         .zoom_in => {
@@ -154,6 +154,15 @@ pub fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
         .stop_slideshow => self.viewer.navigation.slideshow = .inactive,
         .quit => self.requestQuit(),
     }
+}
+
+/// System Pass: Execute queued discrete intents
+pub fn sysExecuteIntents(self: *AppState) !void {
+    if (self.pending_intents.items.len == 0) return;
+    for (self.pending_intents.items) |intent| {
+        try executeIntent(self, intent);
+    }
+    self.clearIntents();
 }
 
 test "palette_action_items metadata" {

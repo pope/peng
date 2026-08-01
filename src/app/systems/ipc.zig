@@ -5,7 +5,7 @@ const ipc = @import("ipc");
 const state_pkg = @import("state");
 const intents = @import("intents");
 
-const actions = @import("../actions.zig");
+const intents_system = @import("intents.zig");
 const events_system = @import("events.zig");
 
 /// System function that drains queued socket commands from `state.pending_ipc_commands`,
@@ -47,8 +47,9 @@ pub fn sysExecuteIpcCommands(state: *AppState) void {
                 };
             },
             .adjust => |adj| {
-                actions.executeIntent(state, .{ .set_brightness = adj.brightness }) catch |err| std.log.err("Failed to execute brightness adjust intent: {}", .{err});
-                actions.executeIntent(state, .{ .set_contrast = adj.contrast }) catch |err| std.log.err("Failed to execute contrast adjust intent: {}", .{err});
+                state.pushIntent(.{ .set_brightness = adj.brightness }) catch |err| std.log.err("Failed to push brightness adjust intent: {}", .{err});
+                state.pushIntent(.{ .set_contrast = adj.contrast }) catch |err| std.log.err("Failed to push contrast adjust intent: {}", .{err});
+                intents_system.sysExecuteIntents(state) catch |err| std.log.err("Failed to execute IPC adjust intents: {}", .{err});
                 ipc.respondOk(state.io, cmd_data.client_stream) catch |err| {
                     std.log.err("Failed to respond OK for adjust command: {}", .{err});
                 };
@@ -85,9 +86,10 @@ pub fn sysExecuteIpcCommands(state: *AppState) void {
             },
             else => {
                 if (parsed.toIntent()) |intent| {
-                    actions.executeIntent(state, intent) catch |err| {
-                        std.log.err("Failed to execute intent from IPC command: {}", .{err});
+                    state.pushIntent(intent) catch |err| {
+                        std.log.err("Failed to push intent from IPC command: {}", .{err});
                     };
+                    intents_system.sysExecuteIntents(state) catch |err| std.log.err("Failed to execute IPC intent: {}", .{err});
                     ipc.respondOk(state.io, cmd_data.client_stream) catch |err| {
                         std.log.err("Failed to respond OK to IPC client: {}", .{err});
                     };
