@@ -8,6 +8,40 @@ const workers_mod = @import("../workers/root.zig");
 const DecodeArgs = workers_mod.DecodeArgs;
 const sdl = @import("sdl");
 
+fn spawnCacheDecodeSlot(state: *AppState, index: usize, dup_path: [:0]const u8) !void {
+    errdefer state.allocator.free(dup_path);
+
+    const args = try state.allocator.create(DecodeArgs);
+    errdefer state.allocator.destroy(args);
+
+    if (state.cache.get(index)) |entry| {
+        switch (entry.status) {
+            .decoding => |*dec| dec.has_thread = true,
+            else => {},
+        }
+    }
+    errdefer {
+        if (state.cache.get(index)) |entry| {
+            switch (entry.status) {
+                .decoding => |*dec| dec.has_thread = false,
+                else => {},
+            }
+        }
+    }
+
+    args.* = DecodeArgs{
+        .workers = &state.workers,
+        .allocator = state.allocator,
+        .io = state.io,
+        .index = index,
+        .path = dup_path,
+        .has_gpu_device = state.gpu_device != null,
+        .pixel_format = state.viewer.display.getPixelFormat(),
+    };
+
+    try workers_mod.spawnDecode(args);
+}
+
 /// System function that manages RAM/GPU cache slot eviction, calculates prefetch windows
 /// (accounting for rapid navigation throttling), and spawns background image decode workers.
 pub fn sysUpdateCache(state: *AppState) !void {
@@ -44,10 +78,6 @@ pub fn sysUpdateCache(state: *AppState) !void {
         }
     }
 
-    var to_spawn_count: usize = 0;
-    var to_spawn_indices: [5]usize = undefined;
-    var hit = false;
-
     const dev_opt = state.gpu_device;
 
     // 2. Evict cache entries that are no longer wanted
@@ -68,59 +98,51 @@ pub fn sysUpdateCache(state: *AppState) !void {
         }
     }
 
+    // Fast-scrolling check
     const now = sdl.timer.getTicks();
     const is_fast_scrolling = (now - state.viewer.navigation.last_nav_time_ms < 150);
 
-    // 3. Mark wanted entries that are not in the cache yet as .decoding
+    // 3. Mark missing slots as decoding in cache map
+    var to_spawn_indices: [5]usize = undefined;
+    var to_spawn_paths: [5]?[:0]const u8 = [1]?[:0]const u8{null} ** 5;
+    var to_spawn_count: usize = 0;
+    var hit = false;
+
     for (desired[0..desired_count]) |d| {
-        // While fast-scrolling, only spawn decodes for the current index to avoid CPU/IO stutter.
+        if (d >= state.viewer.navigation.image_list.items.len) continue;
+
         if (is_fast_scrolling and d != idx) continue;
 
-        var needs_thread = false;
-        if (state.cache.get(d)) |entry| {
+        if (state.cache.getWithGeneration(d, gen)) |entry| {
             if (d == idx and (entry.status == .loaded_cpu or entry.status == .loaded_gpu)) {
                 hit = true;
             }
+        } else if (state.cache.get(d) == null) {
+            try state.cache.append(state.allocator, .{
+                .index = d,
+                .generation = gen,
+                .status = .{ .decoding = .{} },
+            });
+        }
+
+        if (state.cache.get(d)) |entry| {
             switch (entry.status) {
                 .decoding => |dec| {
                     if (!dec.has_thread) {
-                        needs_thread = true;
+                        if (to_spawn_count < 5) {
+                            to_spawn_indices[to_spawn_count] = d;
+                            to_spawn_paths[to_spawn_count] = try state.allocator.dupeZ(u8, state.viewer.navigation.image_list.items[d]);
+                            to_spawn_count += 1;
+                        }
                     }
                 },
                 else => {},
             }
-        } else {
-            const new_entry = CacheEntry{
-                .index = d,
-                .generation = gen,
-                .status = .{ .decoding = .{ .has_thread = false } },
-                .full_w = 0.0,
-                .full_h = 0.0,
-            };
-            try state.cache.append(state.allocator, new_entry);
-            needs_thread = true;
-        }
-        if (needs_thread) {
-            to_spawn_indices[to_spawn_count] = d;
-            to_spawn_count += 1;
         }
     }
     state.viewer.stats.current_image_cache_hit = hit;
 
-    // 4. Batch-fetch file paths
-    var to_spawn_paths: [5]?[:0]const u8 = undefined;
-    for (to_spawn_indices[0..to_spawn_count], 0..) |d, s_idx| {
-        if (d < state.viewer.navigation.image_list.items.len) {
-            to_spawn_paths[s_idx] = state.allocator.dupeZ(u8, state.viewer.navigation.image_list.items[d]) catch |err| blk: {
-                std.log.err("sysUpdateCache: dupeZ failed for image index {d}: {}", .{ d, err });
-                break :blk null;
-            };
-        } else {
-            to_spawn_paths[s_idx] = null;
-        }
-    }
-
-    // 5. Spawn worker threads
+    // 4. Spawn worker threads
     for (to_spawn_indices[0..to_spawn_count], 0..) |d, s_idx| {
         const path_opt = to_spawn_paths[s_idx];
         if (path_opt == null or !state.workers.canSpawnDecode()) {
@@ -129,49 +151,8 @@ pub fn sysUpdateCache(state: *AppState) !void {
         }
 
         const dup_path = path_opt.?;
-
-        const args = state.allocator.create(DecodeArgs) catch |err| {
-            state.allocator.free(dup_path);
-            for (to_spawn_paths[s_idx + 1 .. to_spawn_count]) |rem_path_opt| {
-                if (rem_path_opt) |rp| state.allocator.free(rp);
-            }
-            var k: usize = 0;
-            while (k < state.cache.entries.items.len) : (k += 1) {
-                if (state.cache.entries.items[k].index == d) {
-                    state.cache.removeAndDeinit(k, dev_opt);
-                    break;
-                }
-            }
-            return err;
-        };
-
-        if (state.cache.get(d)) |entry| {
-            switch (entry.status) {
-                .decoding => |*dec| dec.has_thread = true,
-                else => {},
-            }
-        }
-
-        args.* = DecodeArgs{
-            .workers = &state.workers,
-            .allocator = state.allocator,
-            .io = state.io,
-            .index = d,
-            .path = dup_path,
-            .has_gpu_device = state.gpu_device != null,
-            .pixel_format = state.viewer.display.getPixelFormat(),
-        };
-
-        workers_mod.spawnDecode(args) catch |err| {
-            std.log.err("workers.spawnDecode failed: {}", .{err});
-            state.allocator.free(dup_path);
-            state.allocator.destroy(args);
-            if (state.cache.get(d)) |entry| {
-                switch (entry.status) {
-                    .decoding => |*dec| dec.has_thread = false,
-                    else => {},
-                }
-            }
+        spawnCacheDecodeSlot(state, d, dup_path) catch |err| {
+            std.log.err("Failed to spawn decode worker for index {}: {}", .{ d, err });
         };
     }
 }

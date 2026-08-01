@@ -217,6 +217,8 @@ pub fn readPipedStdin(state: *AppState, io: std.Io, gpa: std.mem.Allocator) !voi
     const is_stdin_piped = !(std.Io.File.stdin().isTty(io) catch false);
     if (is_stdin_piped) {
         const args = try gpa.create(workers_mod.StdinArgs);
+        errdefer gpa.destroy(args);
+
         args.* = .{
             .workers = &state.workers,
             .allocator = gpa,
@@ -224,11 +226,9 @@ pub fn readPipedStdin(state: *AppState, io: std.Io, gpa: std.mem.Allocator) !voi
             .is_loading_files = &state.viewer.navigation.is_loading_files,
         };
 
-        workers_mod.spawnStdin(args) catch |err| {
-            std.log.err("workers.spawnStdin failed: {}", .{err});
-            state.viewer.navigation.is_loading_files.store(false, .release);
-            gpa.destroy(args);
-        };
+        errdefer state.viewer.navigation.is_loading_files.store(false, .release);
+
+        try workers_mod.spawnStdin(args);
     }
 }
 
@@ -237,6 +237,8 @@ pub fn startAsyncPathScan(state: *AppState, path: []const u8, is_dir: bool) !voi
     errdefer state.allocator.free(dup_path);
 
     const args = try state.allocator.create(workers_mod.PathScanArgs);
+    errdefer state.allocator.destroy(args);
+
     args.* = .{
         .workers = &state.workers,
         .allocator = state.allocator,
@@ -246,12 +248,9 @@ pub fn startAsyncPathScan(state: *AppState, path: []const u8, is_dir: bool) !voi
         .is_loading_files = &state.viewer.navigation.is_loading_files,
     };
 
-    workers_mod.spawnPathScan(args) catch |err| {
-        std.log.err("workers.spawnPathScan failed: {}", .{err});
-        state.allocator.free(dup_path);
-        state.viewer.navigation.is_loading_files.store(false, .release);
-        state.allocator.destroy(args);
-    };
+    errdefer state.viewer.navigation.is_loading_files.store(false, .release);
+
+    try workers_mod.spawnPathScan(args);
 }
 
 test "scanDirectoryEntries" {

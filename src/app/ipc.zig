@@ -27,15 +27,13 @@ pub const IpcServer = struct {
 
     pub fn init(allocator: std.mem.Allocator, state: *AppState) !*IpcServer {
         const self = try allocator.create(IpcServer);
+        errdefer allocator.destroy(self);
+
         self.* = .{
             .allocator = allocator,
         };
 
-        workers_mod.spawnIpcServer(state) catch |err| {
-            std.log.err("Failed to create UDS IPC server thread: {}", .{err});
-            allocator.destroy(self);
-            return error.ThreadCreationFailed;
-        };
+        try workers_mod.spawnIpcServer(state);
 
         return self;
     }

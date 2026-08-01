@@ -1,6 +1,7 @@
 ---
 name: zig-gui-practices
-description: Best practices for Zig GUI development with Clay, SDL3, Vulkan/Metal GPU rendering, EXIF image decoding, navigation preloading, and GLSL shader optimization.
+description: >-
+  Best practices for Zig GUI development with Clay, SDL3, Vulkan/Metal GPU rendering, EXIF image decoding, navigation preloading, and GLSL shader optimization.
   Trigger immediately for:
   - Layout & DPI: Clay UI layout, High-DPI/Retina scaling, zoom-to-mouse math, aspect fit/fill calculations.
   - Image & Memory: EXIF header dimension parsing, APP1 segment skipping, VRAM cache budgeting, navigation throttling, settled preloading.
