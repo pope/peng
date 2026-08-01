@@ -1,7 +1,7 @@
 const std = @import("std");
 const app_state = @import("../state.zig");
 const AppState = app_state.AppState;
-const ipc = @import("../ipc.zig");
+const ipc = @import("ipc");
 const state_pkg = @import("state");
 const intents = @import("intents");
 
@@ -47,8 +47,8 @@ pub fn sysExecuteIpcCommands(state: *AppState) void {
                 };
             },
             .adjust => |adj| {
-                actions.executeIntent(state, .{ .set_brightness = adj.brightness }) catch {};
-                actions.executeIntent(state, .{ .set_contrast = adj.contrast }) catch {};
+                actions.executeIntent(state, .{ .set_brightness = adj.brightness }) catch |err| std.log.err("Failed to execute brightness adjust intent: {}", .{err});
+                actions.executeIntent(state, .{ .set_contrast = adj.contrast }) catch |err| std.log.err("Failed to execute contrast adjust intent: {}", .{err});
                 ipc.respondOk(state.io, cmd_data.client_stream) catch |err| {
                     std.log.err("Failed to respond OK for adjust command: {}", .{err});
                 };

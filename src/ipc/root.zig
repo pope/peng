@@ -1,9 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const sdl = @import("sdl");
-const app_state = @import("state.zig");
-const AppState = app_state.AppState;
-const workers_mod = @import("workers/root.zig");
 const intents = @import("intents");
 const TextureScaleMode = intents.TextureScaleMode;
 
@@ -25,16 +22,11 @@ pub const IpcCommandData = struct {
 pub const IpcServer = struct {
     allocator: std.mem.Allocator,
 
-    pub fn init(allocator: std.mem.Allocator, state: *AppState) !*IpcServer {
+    pub fn init(allocator: std.mem.Allocator) !*IpcServer {
         const self = try allocator.create(IpcServer);
-        errdefer allocator.destroy(self);
-
         self.* = .{
             .allocator = allocator,
         };
-
-        try workers_mod.spawnIpcServer(state);
-
         return self;
     }
 

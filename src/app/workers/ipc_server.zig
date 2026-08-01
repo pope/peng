@@ -1,6 +1,6 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const ipc = @import("../ipc.zig");
+const ipc = @import("ipc");
 const context = @import("context.zig");
 const root = @import("root.zig");
 const WorkerManager = root.WorkerManager;

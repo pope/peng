@@ -5,7 +5,6 @@ const state = @import("state");
 const app_state = @import("state.zig");
 const palette_module = @import("palette.zig");
 const intents = @import("intents");
-const ipc = @import("ipc.zig");
 const systems = @import("systems.zig");
 const Key = state.Key;
 const KeyModifiers = state.KeyModifiers;

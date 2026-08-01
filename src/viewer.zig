@@ -3,6 +3,8 @@ const clay = @import("zclay");
 const state_pkg = @import("state");
 const ui = @import("ui");
 const app = @import("app");
+const ipc = @import("ipc");
+const input_pkg = @import("input");
 const sdl = @import("sdl");
 
 /// Entry point for loading dynamic UI resources / assets.
@@ -19,7 +21,7 @@ pub fn updateFrame(
     window: sdl.Window,
     resources: *ui.graphics.GpuResources,
     measure_data: *state_pkg.MeasureTextUserData,
-    ipc_server: ?*app.ipc.IpcServer,
+    ipc_server: ?*ipc.IpcServer,
     parsed_headless: bool,
     parsed_test_mode: bool,
     frame_arena: *std.heap.ArenaAllocator,
@@ -53,7 +55,7 @@ pub fn updateFrame(
     const window_resized = (app_state.viewer.ui.overlays.last_win_w != 0 and (app_state.viewer.ui.overlays.last_win_w != cur_win_w or app_state.viewer.ui.overlays.last_win_h != cur_win_h));
     const is_busy = app_state.isBusy() or is_current_loading or bg_events_processed or (app_state.viewer.drag_state != .none) or has_unpopulated_cache or window_resized;
     const frame_allocator = frame_arena.allocator();
-    const input = try app.input.pollFrameInput(
+    const input = try input_pkg.pollFrameInput(
         window,
         frame_allocator,
         last_time,
@@ -196,7 +198,7 @@ export fn viewer_update(
     const window: sdl.Window = .{ .ptr = @ptrCast(@alignCast(window_ptr)) };
     const resources: *ui.graphics.GpuResources = @ptrCast(@alignCast(resources_ptr));
     const measure_data: *state_pkg.MeasureTextUserData = @ptrCast(@alignCast(measure_data_ptr));
-    const ipc_server: ?*app.ipc.IpcServer = if (ipc_server_ptr) |ptr| @ptrCast(@alignCast(ptr)) else null;
+    const ipc_server: ?*ipc.IpcServer = if (ipc_server_ptr) |ptr| @ptrCast(@alignCast(ptr)) else null;
     const frame_arena: *std.heap.ArenaAllocator = @ptrCast(@alignCast(frame_arena_ptr));
 
     updateFrame(

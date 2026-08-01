@@ -58,3 +58,14 @@
   }
   ```
 - **Rule**: Omitting `_ = child_module;` inside top-level `test` blocks will cause Zig to silently skip all unit tests inside those submodules. Always maintain complete submodule test exposure across module root files.
+
+## 10. Standalone Top-Level Package Hierarchy & Proxy Re-Export Prohibition
+
+- **Standalone Package Isolation**: Pure domain types, input mapping, command parsers, event payloads, and state models MUST live in dedicated top-level packages under `src/`:
+  - `src/intents/`: Pure `AppIntent` variants and payload structs.
+  - `src/input/`: Pure `FrameInput` event polling and keybind mapping.
+  - `src/ipc/`: Pure `IpcCommand` parsing, `IpcServer` handle, and socket response helpers.
+  - `src/events/`: Pure `BackgroundEvent` payloads and thread-safe `MpscQueue(T)`.
+  - `src/state/`: Pure visual/UI data models (`ViewerState`, `UiState`, `CacheSlotMap`).
+- **Prohibition of Proxy Re-exports in `src/app/`**: `src/app/root.zig` MUST NOT proxy re-export top-level packages (e.g. `pub const ipc = @import("ipc");` or `pub const events = @import("events");`). Consuming code MUST import top-level packages directly via `@import("ipc")`, `@import("events")`, etc.
+- **Acyclic Dependency Invariants**: Pure domain modules (`intents`, `input`, `ipc`, `events`) MUST NOT import `AppState` or application system passes.

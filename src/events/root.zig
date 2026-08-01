@@ -1,6 +1,6 @@
 const std = @import("std");
 const sdl = @import("sdl");
-const ipc = @import("ipc.zig");
+const ipc = @import("ipc");
 
 pub const ExifParsedPayload = struct {
     index: usize,

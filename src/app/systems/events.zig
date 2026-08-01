@@ -1,10 +1,10 @@
 const std = @import("std");
 const app_state = @import("../state.zig");
 const AppState = app_state.AppState;
-const events = @import("../events.zig");
+const events = @import("events");
 const image = @import("../image.zig");
 const cache_system = @import("cache.zig");
-const ipc = @import("../ipc.zig");
+const ipc = @import("ipc");
 
 /// System function that drains background thread events (`image_decoded`, `path_scanned`, `ipc_command`)
 /// from `workers.event_queue` and updates cache slots, navigation list, and pending IPC lists.

@@ -4,6 +4,10 @@ const clay = @import("zclay");
 const ui = @import("ui");
 const app_config = @import("config");
 const app = @import("app");
+const ipc = @import("ipc");
+const events = @import("events");
+const input = @import("input");
+const intents = @import("intents");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const build_options = @import("build_options");
@@ -28,15 +32,15 @@ const LibViewer = struct {
     unload_assets: *const fn () callconv(.c) void,
     update: *const fn (
         app_state: *app.state.AppState,
-        window_ptr: *anyopaque,
-        resources_ptr: *anyopaque,
-        measure_data_ptr: *anyopaque,
-        ipc_server_ptr: ?*anyopaque,
+        window: sdl.Window,
+        resources: *ui.graphics.GpuResources,
+        measure_data: *state_pkg.types.MeasureTextUserData,
+        ipc_server: ?*ipc.IpcServer,
         parsed_headless: bool,
         parsed_test_mode: bool,
-        frame_arena_ptr: *anyopaque,
-        last_time_ptr: *u64,
-    ) callconv(.c) void,
+        frame_arena: *std.heap.ArenaAllocator,
+        last_time: *u64,
+    ) anyerror!void,
 
     fn init(io: std.Io) !LibViewer {
         const cwd = std.Io.Dir.cwd();
@@ -130,7 +134,7 @@ pub const AppGraphicsAndState = struct {
     clay_memory: []u8,
     clay_context: *clay.Context,
     measure_data: state_pkg.types.MeasureTextUserData,
-    ipc_server: ?*app.ipc.IpcServer,
+    ipc_server: ?*ipc.IpcServer,
 
     pub fn deinit(self: *AppGraphicsAndState) void {
         self.parsed.deinit(self.gpa);
@@ -241,9 +245,14 @@ pub fn runMainLoop(ctx: *AppGraphicsAndState) !void {
     };
     clay.setMeasureTextFunction(*const state_pkg.types.MeasureTextUserData, &ctx.measure_data, ui.graphics.sdl3MeasureText);
 
-    // Initialize IPC server with a stable pointer to state
+    // Initialize IPC server and spawn IPC worker task
     if (ctx.parsed.ipc_enabled) {
-        ctx.ipc_server = try app.ipc.IpcServer.init(ctx.gpa, &ctx.state);
+        ctx.ipc_server = try ipc.IpcServer.init(ctx.gpa);
+        errdefer {
+            ctx.ipc_server.?.deinit(ctx.io);
+            ctx.ipc_server = null;
+        }
+        try app.workers.spawnIpcServer(&ctx.state);
     }
 
     // Populate initial image list from arguments and piped stdin using stable pointer to state
@@ -270,9 +279,9 @@ pub fn runMainLoop(ctx: *AppGraphicsAndState) !void {
             clay.setCurrentContext(ctx.clay_context);
             lib_viewer.safeReload(ctx.io, &ctx.state);
             if (lib_viewer.is_valid) {
-                lib_viewer.update(
+                try lib_viewer.update(
                     &ctx.state,
-                    ctx.setup.window.ptr,
+                    ctx.setup.window,
                     &ctx.resources,
                     &ctx.measure_data,
                     ctx.ipc_server,
@@ -317,4 +326,8 @@ test {
     _ = state_pkg;
     _ = sdl;
     _ = viewer;
+    _ = ipc;
+    _ = events;
+    _ = input;
+    _ = intents;
 }
