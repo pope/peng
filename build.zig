@@ -135,14 +135,6 @@ pub fn build(b: *std.Build) void {
     ipc_module.addImport("sdl", sdl_module);
     ipc_module.addImport("intents", intents_module);
 
-    const events_module = b.createModule(.{
-        .root_source_file = b.path("src/events/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    events_module.addImport("sdl", sdl_module);
-    events_module.addImport("ipc", ipc_module);
-
     app_module.addImport("sdl", sdl_module);
     app_module.addImport("zclay", zclay_dep.module("zclay"));
     app_module.addImport("fuzzig", fuzzig_dep.module("fuzzig"));
@@ -150,14 +142,12 @@ pub fn build(b: *std.Build) void {
     app_module.addImport("state", state_module);
     app_module.addImport("input", input_module);
     app_module.addImport("ipc", ipc_module);
-    app_module.addImport("events", events_module);
 
     ui_module.addImport("sdl", sdl_module);
     ui_module.addImport("zclay", zclay_dep.module("zclay"));
     ui_module.addImport("intents", intents_module);
     ui_module.addImport("state", state_module);
     ui_module.addImport("ipc", ipc_module);
-    ui_module.addImport("events", events_module);
 
     config_module.addImport("app", app_module);
     config_module.addImport("intents", intents_module);
@@ -182,7 +172,6 @@ pub fn build(b: *std.Build) void {
     viewer_lib.root_module.addImport("intents", intents_module);
     viewer_lib.root_module.addImport("input", input_module);
     viewer_lib.root_module.addImport("ipc", ipc_module);
-    viewer_lib.root_module.addImport("events", events_module);
     viewer_lib.root_module.addIncludePath(clay_dep.path(""));
     viewer_lib.root_module.addIncludePath(clay_dep.path("renderers/SDL3"));
 
@@ -213,7 +202,6 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("state", state_module);
     exe.root_module.addImport("config", config_module);
     exe.root_module.addImport("ipc", ipc_module);
-    exe.root_module.addImport("events", events_module);
     exe.root_module.addImport("input", input_module);
     exe.root_module.addImport("intents", intents_module);
 

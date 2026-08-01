@@ -1,5 +1,5 @@
 const std = @import("std");
-const fs = @import("../fs.zig");
+const core_fs = @import("../core/fs.zig");
 const path_scan = @import("path_scan.zig");
 const context = @import("context.zig");
 const root = @import("root.zig");
@@ -34,7 +34,7 @@ pub fn stdinWorker(args: *StdinArgs) void {
             if (std.Io.Dir.statFile(std.Io.Dir.cwd(), io, trimmed, .{})) |s| {
                 if (s.kind == .directory) {
                     path_scan.scanDirectoryThreadSafe(workers, gpa, io, trimmed);
-                } else if (fs.isImageFile(trimmed)) {
+                } else if (core_fs.isImageFile(trimmed)) {
                     path_scan.appendPathThreadSafe(workers, gpa, io, trimmed);
                 }
             } else |err| {

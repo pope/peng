@@ -1,5 +1,5 @@
 const std = @import("std");
-const fs = @import("../fs.zig");
+const core_fs = @import("../core/fs.zig");
 const context = @import("context.zig");
 const root = @import("root.zig");
 const WorkerManager = root.WorkerManager;
@@ -51,7 +51,7 @@ pub fn scanDirectoryThreadSafe(workers: *WorkerManager, gpa: std.mem.Allocator, 
     }) |entry| {
         if (workers.exiting.load(.acquire)) return;
         if (entry.kind == .file) {
-            if (fs.isImageFile(entry.name)) {
+            if (core_fs.isImageFile(entry.name)) {
                 const name_dup = gpa.dupe(u8, entry.name) catch |err| {
                     std.log.err("Failed to dupe entry name '{s}': {}", .{ entry.name, err });
                     continue;
@@ -129,7 +129,7 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
             },
         }) orelse break;
         if (entry.kind == .file) {
-            if (fs.isImageFile(entry.name)) {
+            if (core_fs.isImageFile(entry.name)) {
                 const full_path = std.fs.path.join(gpa, &.{ dir_path, entry.name }) catch |err| {
                     std.log.err("Failed to join path for '{s}': {}", .{ entry.name, err });
                     continue;

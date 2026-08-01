@@ -59,13 +59,21 @@
   ```
 - **Rule**: Omitting `_ = child_module;` inside top-level `test` blocks will cause Zig to silently skip all unit tests inside those submodules. Always maintain complete submodule test exposure across module root files.
 
-## 10. Standalone Top-Level Package Hierarchy & Proxy Re-Export Prohibition
+## 10. Standalone Package Hierarchy & App-Private Core (`src/app/core/`) Architecture
 
-- **Standalone Package Isolation**: Pure domain types, input mapping, command parsers, event payloads, and state models MUST live in dedicated top-level packages under `src/`:
+- **Standalone Package Isolation**: Shared domain types, input mapping, command parsers, and state models MUST live in dedicated top-level packages under `src/`:
   - `src/intents/`: Pure `AppIntent` variants and payload structs.
   - `src/input/`: Pure `FrameInput` event polling and keybind mapping.
   - `src/ipc/`: Pure `IpcCommand` parsing, `IpcServer` handle, and socket response helpers.
-  - `src/events/`: Pure `BackgroundEvent` payloads and thread-safe `MpscQueue(T)`.
   - `src/state/`: Pure visual/UI data models (`ViewerState`, `UiState`, `CacheSlotMap`).
-- **Prohibition of Proxy Re-exports in `src/app/`**: `src/app/root.zig` MUST NOT proxy re-export top-level packages (e.g. `pub const ipc = @import("ipc");` or `pub const events = @import("events");`). Consuming code MUST import top-level packages directly via `@import("ipc")`, `@import("events")`, etc.
-- **Acyclic Dependency Invariants**: Pure domain modules (`intents`, `input`, `ipc`, `events`) MUST NOT import `AppState` or application system passes.
+- **App-Private Core Subdirectory (`src/app/core/`)**: App-internal, state-free utility types, file system helpers, EXIF parsers, image slot maps, palette matching logic, and event constructs MUST live inside `src/app/core/`:
+  - `src/app/core/events.zig`: Background event payloads and thread-safe `MpscQueue(T)`.
+  - `src/app/core/fs.zig`: Pure file system inspection & path manipulation helpers.
+  - `src/app/core/exif.zig`: EXIF header parsing & orientation detection.
+  - `src/app/core/image.zig`: Image MIME detection, `CacheSlotMap`, and GPU surface upload helpers.
+  - `src/app/core/palette.zig`: Palette directory loading & fuzzy match search index rebuilding.
+  - **Core Isolation Invariant**: Code inside `src/app/core/` MUST NOT depend on ANY code in `src/app/` outside of `src/app/core/` (zero imports of `AppState`, system passes, worker tasks, or app actions).
+- **Prohibition of Proxy Re-Exports**:
+  - `src/app/root.zig` MUST NOT proxy re-export top-level packages (e.g. `pub const ipc = @import("ipc");`) or `src/app/core/` sub-modules directly at the top level of `app`.
+  - Consuming code MUST import top-level packages directly (`@import("ipc")`, `@import("input")`) or access core modules via `app.core` (`@import("core/fs.zig")`, `@import("core/image.zig")`, `@import("core/palette.zig")`, `@import("core/events.zig")`, `@import("core/exif.zig")`).
+- **Acyclic Dependency Invariants**: Pure domain modules (`intents`, `input`, `ipc`, `state`, `core`) MUST NOT import `AppState`, application system passes, worker tasks, or app actions.

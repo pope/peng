@@ -5,7 +5,6 @@ const ui = @import("ui");
 const app_config = @import("config");
 const app = @import("app");
 const ipc = @import("ipc");
-const events = @import("events");
 const input = @import("input");
 const intents = @import("intents");
 const sdl = @import("sdl");
@@ -327,7 +326,6 @@ test {
     _ = sdl;
     _ = viewer;
     _ = ipc;
-    _ = events;
     _ = input;
     _ = intents;
 }

@@ -1,6 +1,6 @@
 const std = @import("std");
 const state_pkg = @import("state");
-const fs = @import("fs.zig");
+const core_fs = @import("fs.zig");
 
 const PaletteState = state_pkg.PaletteState;
 const PaletteModeData = state_pkg.PaletteModeData;
@@ -15,7 +15,7 @@ pub fn loadDirectoryEntries(self: *PaletteState, io: std.Io, dir_path: []const u
     var navigated_up = false;
     if (self.current_nav_dir.items.len > 0) {
         var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
-        if (fs.getParentDirBuf(self.current_nav_dir.items, &parent_buf)) |parent_dir| {
+        if (core_fs.getParentDirBuf(self.current_nav_dir.items, &parent_buf)) |parent_dir| {
             if (std.mem.eql(u8, dir_path_copy, parent_dir)) {
                 navigated_up = true;
             }
@@ -24,7 +24,7 @@ pub fn loadDirectoryEntries(self: *PaletteState, io: std.Io, dir_path: []const u
 
     if (navigated_up) {
         var buf: [std.fs.max_path_bytes]u8 = undefined;
-        const child_base = fs.getChildBasename(io, self.current_nav_dir.items, &buf);
+        const child_base = core_fs.getChildBasename(io, self.current_nav_dir.items, &buf);
         self.last_child_dir.clearRetainingCapacity();
         try self.last_child_dir.appendSlice(self.allocator, child_base);
     } else {
@@ -37,10 +37,10 @@ pub fn loadDirectoryEntries(self: *PaletteState, io: std.Io, dir_path: []const u
     self.last_nav_dir.clearRetainingCapacity();
     try self.last_nav_dir.appendSlice(self.allocator, dir_path_copy);
 
-    self.current_dir_image_count = fs.countFolderImages(io, dir_path_copy);
+    self.current_dir_image_count = core_fs.countFolderImages(io, dir_path_copy);
 
     clearDirItems(self);
-    fs.scanDirectoryEntries(self.allocator, io, dir_path_copy, &self.dir_items) catch |err| {
+    core_fs.scanDirectoryEntries(self.allocator, io, dir_path_copy, &self.dir_items) catch |err| {
         std.log.warn("Failed to scan directory '{s}': {}", .{ dir_path_copy, err });
     };
     try rebuildDirectoryMatches(self);

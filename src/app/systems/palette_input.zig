@@ -2,9 +2,9 @@ const std = @import("std");
 const clay = @import("zclay");
 const state_pkg = @import("state");
 const app_state = @import("../state.zig");
-const app_palette = @import("../palette.zig");
+const app_palette = @import("../core/palette.zig");
 const systems = @import("../systems.zig");
-const fs = @import("../fs.zig");
+const core_fs = @import("../core/fs.zig");
 const Key = state_pkg.Key;
 const KeyModifiers = state_pkg.KeyModifiers;
 const FrameInput = state_pkg.FrameInput;
@@ -110,7 +110,7 @@ pub fn handlePaletteKeys(
         .left => {
             if (palette.mode == .directory_navigator) {
                 var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
-                if (fs.getParentDirBuf(palette.current_nav_dir.items, &parent_buf)) |parent_dir| {
+                if (core_fs.getParentDirBuf(palette.current_nav_dir.items, &parent_buf)) |parent_dir| {
                     palette.query.clearRetainingCapacity();
                     try app_palette.loadDirectoryEntries(palette, self.io, parent_dir);
                 }
@@ -192,7 +192,7 @@ pub fn handlePaletteKeys(
                 }
             } else if (palette.mode == .directory_navigator) {
                 var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
-                if (fs.getParentDirBuf(palette.current_nav_dir.items, &parent_buf)) |parent_dir| {
+                if (core_fs.getParentDirBuf(palette.current_nav_dir.items, &parent_buf)) |parent_dir| {
                     palette.query.clearRetainingCapacity();
                     try app_palette.loadDirectoryEntries(palette, self.io, parent_dir);
                 }

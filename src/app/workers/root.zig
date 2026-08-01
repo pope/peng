@@ -14,7 +14,7 @@ pub const path_scan = @import("path_scan.zig");
 pub const stdin = @import("stdin.zig");
 pub const ipc_server = @import("ipc_server.zig");
 
-const events = @import("events");
+const events = @import("../core/events.zig");
 
 pub const WorkerContext = context.WorkerContext;
 pub const DecodeArgs = decode.DecodeArgs;

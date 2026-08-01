@@ -6,11 +6,12 @@ const state_pkg = @import("state");
 const types = state_pkg.types;
 const FrameInput = types.FrameInput;
 const app_input = @import("input");
-const image = @import("image.zig");
+const image = @import("core/image.zig");
 const fs = @import("fs.zig");
-const events = @import("events");
+const core_fs = @import("core/fs.zig");
+const events = @import("core/events.zig");
 const ipc = @import("ipc");
-const exif = @import("exif.zig");
+const exif = @import("core/exif.zig");
 const systems = @import("systems.zig");
 const workers_mod = @import("workers/root.zig");
 
@@ -47,7 +48,7 @@ pub const ElementTag = enum(usize) {
     }
 };
 
-const palette_module = @import("palette.zig");
+const palette_module = @import("core/palette.zig");
 const PaletteState = state_pkg.PaletteState;
 
 const DragState = state_pkg.DragState;
@@ -378,7 +379,7 @@ pub const AppState = struct {
                 while (self.viewer.ui.palette.dir_items.items.len == 0) {
                     const curr = self.viewer.ui.palette.current_nav_dir.items;
                     var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
-                    if (fs.getParentDirBuf(curr, &parent_buf)) |parent_dir| {
+                    if (core_fs.getParentDirBuf(curr, &parent_buf)) |parent_dir| {
                         if (!std.mem.eql(u8, parent_dir, curr)) {
                             try palette_module.loadDirectoryEntries(&self.viewer.ui.palette, self.io, parent_dir);
                             continue;

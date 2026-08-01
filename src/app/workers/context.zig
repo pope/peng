@@ -1,6 +1,6 @@
 const std = @import("std");
 const sdl = @import("sdl");
-const events = @import("events");
+const events = @import("../core/events.zig");
 
 pub fn wakeUpMainThread() void {
     _ = sdl.events.pushUserEvent();

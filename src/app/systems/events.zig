@@ -1,8 +1,8 @@
 const std = @import("std");
 const app_state = @import("../state.zig");
 const AppState = app_state.AppState;
-const events = @import("events");
-const image = @import("../image.zig");
+const events = @import("../core/events.zig");
+const image = @import("../core/image.zig");
 const cache_system = @import("cache.zig");
 const ipc = @import("ipc");
 
