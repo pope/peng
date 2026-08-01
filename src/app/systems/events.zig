@@ -4,6 +4,7 @@ const AppState = app_state.AppState;
 const events = @import("../events.zig");
 const image = @import("../image.zig");
 const cache_system = @import("cache.zig");
+const ipc = @import("../ipc.zig");
 
 /// System function that drains background thread events (`image_decoded`, `path_scanned`, `ipc_command`)
 /// from `workers.event_queue` and updates cache slots, navigation list, and pending IPC lists.
@@ -261,7 +262,7 @@ test "sysProcessBackgroundEvents - directory_scan_result and ipc_command" {
     });
 
     const cmd_str = try allocator.dupe(u8, "next");
-    const cmd_data = try allocator.create(@import("../ipc.zig").IpcCommandData);
+    const cmd_data = try allocator.create(ipc.IpcCommandData);
     cmd_data.* = .{ .command = cmd_str, .client_stream = undefined };
     try state.workers.event_queue.push(allocator, io, .{ .ipc_command = cmd_data });
 

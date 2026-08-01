@@ -118,11 +118,21 @@ pub fn build(b: *std.Build) void {
     state_module.addImport("fuzzig", fuzzig_dep.module("fuzzig"));
     state_module.addImport("zclay", zclay_dep.module("zclay"));
 
+    const input_module = b.createModule(.{
+        .root_source_file = b.path("src/input/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    input_module.addImport("sdl", sdl_module);
+    input_module.addImport("state", state_module);
+    input_module.addImport("intents", intents_module);
+
     app_module.addImport("sdl", sdl_module);
     app_module.addImport("zclay", zclay_dep.module("zclay"));
     app_module.addImport("fuzzig", fuzzig_dep.module("fuzzig"));
     app_module.addImport("intents", intents_module);
     app_module.addImport("state", state_module);
+    app_module.addImport("input", input_module);
 
     ui_module.addImport("sdl", sdl_module);
     ui_module.addImport("zclay", zclay_dep.module("zclay"));
@@ -150,6 +160,7 @@ pub fn build(b: *std.Build) void {
     viewer_lib.root_module.addImport("state", state_module);
     viewer_lib.root_module.addImport("config", config_module);
     viewer_lib.root_module.addImport("intents", intents_module);
+    viewer_lib.root_module.addImport("input", input_module);
     viewer_lib.root_module.addIncludePath(clay_dep.path(""));
     viewer_lib.root_module.addIncludePath(clay_dep.path("renderers/SDL3"));
 

@@ -36,20 +36,27 @@
 - `pending_intents` is an allocation-free `std.ArrayList(AppIntent)` cleared frame-over-frame using `.clearRetainingCapacity()`.
 - Intent execution logic is co-located inside `src/app/actions.zig` (`executeIntent`), operating directly against `*AppState` without needing an isolated top-level `commands` package.
 
-## 7. Data-Driven State & Packed Struct Overlay Flags (`OverlayFlags`)
+## 7. Decoupled Data-Driven Input & System Passes
+
+- **Pure Input Package (`src/input/`)**: Input event polling (`pollFrameInput`) and shortcut mapping (`mapKeyToAction`) operate exclusively on immutable data snapshots (`FrameInput`) and emit pure intent variants (`?AppIntent`). The `src/input/` package MUST have zero dependencies on `AppState`.
+- **System Passes (`src/app/systems/`)**: Application input processing is performed via dedicated system passes (`sysProcessInput`, `sysProcessPaletteInput`). These system passes take `FrameInput` data snapshots and map active inputs into `AppIntent` variants dispatched through `sysExecuteIntents`.
+
+## 8. Data-Driven State & Packed Struct Overlay Flags (`OverlayFlags`)
 
 - Model mutually exclusive sub-states using `union(enum)` tagged unions (`SlideshowMode`, `DisplayState`, `CacheStatus`).
 - Model UI overlay visibility toggles as packed byte bitfield structs (`OverlayFlags = packed struct(u8)`).
 - Compose image cache state via explicit component structs (`CpuSurfaceComponent`, `GpuTextureComponent`, `ThumbComponent`).
 
-## 8. Pure System Passes & Top-Level Linear Engine Pipeline (`src/app/systems/`)
+## 9. Pure System Passes & Top-Level Linear Engine Pipeline (`src/app/systems/`)
 
 - Procedural tick logic, background event ingestion, socket command handling, input sampling, slideshow timers, asset uploads, and telemetry MUST be extracted into pure system pass functions taking `*AppState` in `src/app/systems/`:
   - `sysProcessBackgroundEvents`: Drains worker thread event queues (`state.workers.event_queue`).
   - `sysExecuteIpcCommands`: Parses and dispatches socket commands (`state.pending_ipc_commands`).
   - `sysExecuteIntents`: Drains queued `AppIntent` payloads (`state.pending_intents`).
   - `sysUpdateSlideshow`: Manages slideshow timer ticks.
+  - `sysProcessPaletteInput`: Manages command palette query text, list navigation, and click-outside dismissal.
   - `sysUpdateViewport`: Handles mouse drag deltas and mouse-wheel zoom-at-cursor calculations.
+  - `sysProcessInput`: Translates active keyboard shortcuts into `AppIntent` objects.
   - `sysProcessAssetUploads`: Handles EXIF orientation and CPU-to-GPU texture uploads.
   - `sysUpdateCache`: Manages cache slot eviction and spawns decode workers.
   - `sysCheckIdlePreload`: Prefetches neighbor slots when engine tick is idle.
@@ -57,20 +64,21 @@
 - Systems MUST NOT invoke other systems nested inside them.
 - The main frame update in `src/viewer.zig` (`updateFrame`) MUST follow the strict top-level unnested engine pipeline:
   1. Worker & Socket Event Ingestion (`sysProcessBackgroundEvents`, `sysExecuteIpcCommands`)
-  2. Input Accumulation (`pollFrameInput`)
-  3. Logic & Intent Systems (`sysExecuteIntents`, `sysUpdateSlideshow`, `sysUpdateViewport`)
-  4. Asset Upload & Cache Systems (`sysProcessAssetUploads`, `sysUpdateCache`, `sysCheckIdlePreload`)
-  5. System Metric Synchronization (`sysSyncMetrics`) & Clay UI Pointer / Layout State Updates
-  6. GPU Execution Pass & Screenshot Post-Processing
+  2. Input Sampling (`pollFrameInput`)
+  3. Palette & Input System Passes (`sysProcessPaletteInput`, `sysProcessInput`)
+  4. Logic & Intent Systems (`sysExecuteIntents`, `sysUpdateSlideshow`, `sysUpdateViewport`)
+  5. Asset Upload & Cache Systems (`sysProcessAssetUploads`, `sysUpdateCache`, `sysCheckIdlePreload`)
+  6. System Metric Synchronization (`sysSyncMetrics`) & Clay UI Pointer / Layout State Updates
+  7. GPU Execution Pass & Screenshot Post-Processing
 
-## 9. Worker Thread Isolation, Telemetry (`ViewerStats`), & Cache Epochs
+## 10. Worker Thread Isolation, Telemetry (`ViewerStats`), & Cache Epochs
 
 - **Worker Thread Isolation**: Background worker tasks (`decodeWorker`, `pathScanWorker`, `stdinWorker`, `ipcServerWorkerTask`) MUST NOT import or receive `*AppState` or `*ViewerState`. They accept explicit parameter structs (`DecodeArgs`, `PathScanArgs`, `StdinArgs`, `IpcServerArgs`) containing `workers: *WorkerManager`, `allocator: std.mem.Allocator`, and `io: std.Io`.
 - **Explicit Argument Initialization**: Instantiation of argument structs on the caller side MUST populate explicit field values directly. Avoid setting struct fields to `= undefined` placeholders before passing them into spawner functions.
 - **Telemetry Consolidation (`ViewerStats`)**: Separate UI/Stats telemetry from core business logic. Keep atomic counters (`active_threads`, `active_decode_threads`, `exiting`) in `WorkerManager` for control flow throttling (`canSpawnDecode()`, `isBusy()`). Once per frame, `sysSyncMetrics` snapshots live atomics and active image metrics into plain `usize`/`bool` fields on `state.viewer.stats` (`ViewerStats`) for UI rendering ("Stats for Nerds") without reading atomics during layout evaluation.
 - **Cache Epoch Versioning**: Use a plain main-thread `usize` epoch counter (`state.viewer.generation`) incremented on navigation/directory resets (`resetNavigation`) to validate that incoming background event payloads match the active image list epoch before modifying `CacheSlotMap` entries.
 
-## 10. Single-Pass I/O Header & Metadata Consolidation in Workers
+## 11. Single-Pass I/O Header & Metadata Consolidation in Workers
 
 Worker tasks performing file inspection and decoding MUST consolidate file I/O operations:
 

@@ -26,7 +26,7 @@ ______________________________________________________________________
 - **[SDL3 GPU Rendering Workflows](references/sdl3-gpu-rendering.md)**
 
   - Pixel-perfect quad alignment to prevent sub-pixel layout jitter.
-  - High-quality FreeType text surface-to-texture blitting pipeline.
+  - High-quality SDL3_ttf GPU text rendering pipeline.
   - Hardware mipmap generation (`SDL_GenerateMipmapsForGPUTexture`) over CPU software scaling.
 
 - **[VRAM Budgeting & EXIF Parsing Recipes](references/vram-preloading.md)**

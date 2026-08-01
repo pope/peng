@@ -24,3 +24,8 @@
 ## 5. Case-Insensitive Alphabetical Sorting Invariant
 
 - All filesystem traversals, image lists, and directory items MUST be sorted using case-insensitive comparison (`std.ascii.lessThanIgnoreCase`) to guarantee deterministic cross-platform navigation order.
+
+## 6. Event Loop Polling & Window Dimension Invariants
+
+- When using blocking event polling (`waitEvent`) for power optimization, the `is_busy` calculation MUST include window dimension changes (`cur_win_w != last_win_w` or `window_resized`).
+- This guarantees the event loop unblocks immediately for layout recalculation (Clay `setLayoutDimensions`) and GPU frame presentation upon window resizing or fullscreen toggling without requiring mouse movement.

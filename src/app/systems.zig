@@ -9,6 +9,8 @@ pub const sysProcessBackgroundEvents = systems.sysProcessBackgroundEvents;
 pub const sysUpdateCache = systems.sysUpdateCache;
 pub const sysCheckIdlePreload = systems.sysCheckIdlePreload;
 pub const sysExecuteIpcCommands = systems.sysExecuteIpcCommands;
+pub const sysProcessInput = systems.sysProcessInput;
+pub const sysProcessPaletteInput = systems.sysProcessPaletteInput;
 
 test "systems facade exports" {
     @import("std").testing.refAllDecls(@This());

@@ -75,6 +75,7 @@ pub const AppIntent = union(enum) {
     zoom_in,
     zoom_out,
     set_pan: struct { x: f32, y: f32 },
+    pan_by: struct { dx: f32, dy: f32 },
     reset_zoom,
 
     // Image scaling modes & GPU filters

@@ -32,6 +32,10 @@ pub fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
             self.viewer.viewport.pan_y *= ratio;
         },
         .set_pan => |p| self.setPan(p.x, p.y),
+        .pan_by => |p| {
+            self.viewer.viewport.pan_x += p.dx;
+            self.viewer.viewport.pan_y += p.dy;
+        },
         .reset_zoom => self.resetZoomPan(),
         .set_scale => |mode| {
             self.viewer.viewport.fit_mode = mode;

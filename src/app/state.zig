@@ -5,7 +5,7 @@ const clay = @import("zclay");
 const state_pkg = @import("state");
 const types = state_pkg.types;
 const FrameInput = types.FrameInput;
-const app_input = @import("input.zig");
+const app_input = @import("input");
 const image = @import("image.zig");
 const fs = @import("fs.zig");
 const events = @import("events.zig");
@@ -539,43 +539,6 @@ pub const AppState = struct {
         try self.handlePathSelection(path);
     }
 
-    pub fn processPaletteInput(self: *AppState, input: FrameInput) !bool {
-        if (input.text_input) |text| {
-            if (self.viewer.ui.palette.mode != .inactive) {
-                try self.viewer.ui.palette.query.appendSlice(self.allocator, text);
-                self.viewer.ui.palette.selected_idx = 0;
-                self.viewer.ui.palette.selection_dirty = true;
-                switch (self.viewer.ui.palette.mode) {
-                    .files => try self.rebuildPaletteMatches(),
-                    .actions => try self.rebuildActionMatches(),
-                    .directory_navigator => try self.viewer.ui.palette.rebuildDirectoryMatches(),
-                    else => {},
-                }
-            }
-        }
-
-        var palette_closed_this_frame = false;
-        if (input.mouse_left_clicked and self.viewer.ui.palette.mode != .inactive) {
-            const is_in_debug_panel = self.isPointerInDebugPanel(input);
-            const element_id = switch (self.viewer.ui.palette.mode) {
-                .files => "CommandPalette",
-                .actions => "ActionPalette",
-                .set_brightness => "BrightnessPalette",
-                .set_contrast => "ContrastPalette",
-                .go_to_image => "GoToImagePalette",
-                .directory_navigator => "DirectoryNavigatorPalette",
-                .set_slideshow_interval => "SlideshowPalette",
-                .inactive => unreachable,
-            };
-            if (!clay.pointerOver(clay.getElementId(element_id)) and !is_in_debug_panel) {
-                self.viewer.ui.palette.mode = .inactive;
-                stopTextInput(self.viewer.display);
-                palette_closed_this_frame = true;
-            }
-        }
-        return palette_closed_this_frame;
-    }
-
     pub fn update(self: *AppState, input: FrameInput) !void {
         self.updateCurrentRotation();
 
@@ -585,8 +548,8 @@ pub const AppState = struct {
         // 1. Slideshow timer update pass
         try systems.sysUpdateSlideshow(self, input.delta_time_ms);
 
-        // 2. Text input & palette dismissal updates
-        const palette_closed_this_frame = try self.processPaletteInput(input);
+        // 2. Command Palette System pass (text input, list selection, click-outside dismissal)
+        const palette_closed_this_frame = try systems.sysProcessPaletteInput(self, input);
 
         // 3. Drop file/directory updates
         if (input.dropped_path) |path| {
@@ -596,10 +559,9 @@ pub const AppState = struct {
         // 4. Viewport Mouse Drag & Scroll Zoom pass
         systems.sysUpdateViewport(self, input, palette_closed_this_frame);
 
-        // 5. Keyboard updates
-        for (input.keys_pressed.items) |key| {
-            try app_input.handleKeyDown(self, key, input.key_modifiers, input.scale_x, input.scale_y);
-        }
+        // 5. Main Keyboard & Action System passes (sysProcessInput)
+        try systems.sysProcessInput(self, input);
+        try systems.sysExecuteIntents(self);
     }
 
     pub fn handleScreenshotPostRender(self: *AppState, render_err: ?anyerror) void {
