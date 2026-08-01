@@ -9,7 +9,6 @@ const app_input = @import("input");
 const image = @import("image.zig");
 const fs = @import("fs.zig");
 const events = @import("events");
-const pipeline = @import("pipeline.zig");
 const ipc = @import("ipc");
 const exif = @import("exif.zig");
 const systems = @import("systems.zig");
