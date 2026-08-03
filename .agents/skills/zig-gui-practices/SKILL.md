@@ -18,6 +18,12 @@ ______________________________________________________________________
 
 ## Technical Reference Guides
 
+- **[Systems Architecture & Execution Rules](references/systems-architecture.md)**
+
+  - 3-Phase frame loop: Ingestion (1) -> Systems Update Phase (2) -> Render (3).
+  - System lifetime bound to single frame iteration via `FrameContext` (`frame_allocator`).
+  - Strict prohibition of direct inter-system calls (intent-driven communication).
+
 - **[Layout, DPI Scaling & Centering Math](references/dpi-layout-math.md)**
 
   - Unified state & configuration structs (`PaletteState`, `PaletteConfig`).
