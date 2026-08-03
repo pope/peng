@@ -406,8 +406,6 @@ pub const CacheStatus = union(enum) {
 };
 
 pub const CacheEntry = struct {
-    index: usize,
-    generation: usize,
     status: CacheStatus,
     thumb_gpu_texture: ?sdl.gpu.Texture = null,
     thumb_w: f32 = 0.0,

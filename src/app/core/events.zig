@@ -1,14 +1,16 @@
 const std = @import("std");
 const sdl = @import("sdl");
 const ipc = @import("ipc");
+const image = @import("image.zig");
+const CacheKey = image.CacheKey;
 
 pub const ExifParsedPayload = struct {
-    index: usize,
+    key: CacheKey,
     orientation: f32,
 };
 
 pub const ThumbDecodedPayload = struct {
-    index: usize,
+    key: CacheKey,
     surface: ?sdl.Surface,
     w: f32,
     h: f32,
@@ -18,7 +20,7 @@ pub const ThumbDecodedPayload = struct {
 };
 
 pub const ImageDecodedPayload = struct {
-    index: usize,
+    key: CacheKey,
     surface: ?sdl.Surface,
     w: f32,
     h: f32,
@@ -30,7 +32,7 @@ pub const ImageDecodedPayload = struct {
 };
 
 pub const DecodeFailedPayload = struct {
-    index: usize,
+    key: CacheKey,
 };
 
 pub const PathDiscoveredPayload = struct {

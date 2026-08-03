@@ -3,7 +3,8 @@ const app_state = @import("../state.zig");
 const AppState = app_state.AppState;
 const state_pkg = @import("state");
 const CacheEntry = state_pkg.CacheEntry;
-const CacheSlotMap = app_state.CacheSlotMap;
+const image = @import("../core/image.zig");
+const CacheSlotMap = image.CacheSlotMap;
 const workers_mod = @import("../workers/root.zig");
 const DecodeArgs = workers_mod.DecodeArgs;
 const sdl = @import("sdl");
@@ -14,14 +15,15 @@ fn spawnCacheDecodeSlot(state: *AppState, index: usize, dup_path: [:0]const u8) 
     const args = try state.allocator.create(DecodeArgs);
     errdefer state.allocator.destroy(args);
 
-    if (state.cache.get(index)) |entry| {
+    const key = state.cache.activeKey(index);
+    if (state.cache.get(key)) |entry| {
         switch (entry.status) {
             .decoding => |*dec| dec.has_thread = true,
             else => {},
         }
     }
     errdefer {
-        if (state.cache.get(index)) |entry| {
+        if (state.cache.get(key)) |entry| {
             switch (entry.status) {
                 .decoding => |*dec| dec.has_thread = false,
                 else => {},
@@ -33,7 +35,7 @@ fn spawnCacheDecodeSlot(state: *AppState, index: usize, dup_path: [:0]const u8) 
         .workers = &state.workers,
         .allocator = state.allocator,
         .io = state.io,
-        .index = index,
+        .key = key,
         .path = dup_path,
         .has_gpu_device = state.gpu_device != null,
         .pixel_format = state.viewer.display.getPixelFormat(),
@@ -51,7 +53,6 @@ pub fn sysUpdateCache(state: *AppState) !void {
     if (len == 0) return;
 
     const idx = state.viewer.navigation.current_index orelse return;
-    const gen = state.viewer.generation;
 
     // 1. Gather desired indices (5-slot window: idx, +1, +2, -1, -2)
     var desired_count: usize = 0;
@@ -83,10 +84,10 @@ pub fn sysUpdateCache(state: *AppState) !void {
     // 2. Evict cache entries that are no longer wanted
     var i: usize = 0;
     while (i < state.cache.entries.items.len) {
-        const entry = &state.cache.entries.items[i];
+        const key = state.cache.keys.items[i];
         var wanted = false;
         for (desired[0..desired_count]) |d| {
-            if (entry.index == d) {
+            if (key.index == d) {
                 wanted = true;
                 break;
             }
@@ -113,19 +114,16 @@ pub fn sysUpdateCache(state: *AppState) !void {
 
         if (is_fast_scrolling and d != idx) continue;
 
-        if (state.cache.getWithGeneration(d, gen)) |entry| {
+        const key = state.cache.activeKey(d);
+        if (state.cache.get(key)) |entry| {
             if (d == idx and (entry.status == .loaded_cpu or entry.status == .loaded_gpu)) {
                 hit = true;
             }
-        } else if (state.cache.get(d) == null) {
-            try state.cache.append(state.allocator, .{
-                .index = d,
-                .generation = gen,
-                .status = .{ .decoding = .{} },
-            });
+        } else {
+            _ = try state.cache.appendSlot(state.allocator, d, .{ .decoding = .{} });
         }
 
-        if (state.cache.get(d)) |entry| {
+        if (state.cache.get(key)) |entry| {
             switch (entry.status) {
                 .decoding => |dec| {
                     if (!dec.has_thread) {
@@ -190,9 +188,10 @@ test "sysUpdateCache - populates prefetch window and evicts unwanted entries" {
     state.viewer.navigation.current_index = 0;
 
     // Add an out-of-window entry at index 99
-    try state.cache.append(allocator, .{
+    try state.cache.appendWithKey(allocator, .{
         .index = 99,
         .generation = state.viewer.generation,
+    }, .{
         .status = .{ .failed = {} },
     });
     try std.testing.expectEqual(@as(usize, 1), state.cache.entries.items.len);
@@ -200,8 +199,8 @@ test "sysUpdateCache - populates prefetch window and evicts unwanted entries" {
     try sysUpdateCache(&state);
 
     // Index 99 should have been evicted, and current index 0 should be present
-    try std.testing.expect(state.cache.get(99) == null);
-    try std.testing.expect(state.cache.get(0) != null);
+    try std.testing.expect(state.cache.get(state.activeKey(99)) == null);
+    try std.testing.expect(state.cache.get(state.activeKey(0)) != null);
 }
 
 test "sysCheckIdlePreload - single image list" {

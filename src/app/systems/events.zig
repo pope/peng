@@ -12,14 +12,13 @@ pub fn sysProcessBackgroundEvents(state: *AppState) bool {
     state.event_batch.clearRetainingCapacity();
     state.workers.event_queue.drain(state.allocator, state.io, &state.event_batch) catch return false;
     if (state.event_batch.items.len == 0) return false;
-    const current_gen = state.viewer.generation;
 
     for (state.event_batch.items) |*evt| {
         defer evt.deinit(state.allocator);
 
         switch (evt.*) {
             .exif_orientation_parsed => |e| {
-                if (state.cache.getWithGeneration(e.index, current_gen)) |entry| {
+                if (state.cache.get(e.key)) |entry| {
                     entry.exif_orientation = e.orientation;
                 }
                 state.updateCurrentRotation();
@@ -27,7 +26,7 @@ pub fn sysProcessBackgroundEvents(state: *AppState) bool {
             .thumb_decoded => |t| handleExifThumbnailEvent(state, t),
             .image_decoded => |*d| handleImageDecodedEvent(state, d),
             .decode_failed => |f| {
-                _ = state.cache.updateStatus(f.index, current_gen, .failed);
+                _ = state.cache.updateStatus(f.key, .failed);
             },
             .path_discovered => |p| handleDirScannedEvent(state, p),
             .directory_scan_result => |res| handleDirectoryScanResultEvent(state, res),
@@ -44,10 +43,9 @@ pub fn sysProcessBackgroundEvents(state: *AppState) bool {
 
 fn handleExifThumbnailEvent(state: *AppState, thumb_data: events.ThumbDecodedPayload) void {
     const surf = thumb_data.surface orelse return;
-    const current_gen = state.viewer.generation;
     if (state.gpu_device) |gpu_dev| {
         if (image.uploadSurfaceToGpu(gpu_dev, surf, state.unpack_compute_pipeline)) |upload_res| {
-            if (state.cache.getWithGeneration(thumb_data.index, current_gen)) |entry| {
+            if (state.cache.get(thumb_data.key)) |entry| {
                 entry.thumb_gpu_texture = upload_res.gpu_texture;
                 entry.thumb_w = upload_res.w;
                 entry.thumb_h = upload_res.h;
@@ -68,10 +66,9 @@ fn handleExifThumbnailEvent(state: *AppState, thumb_data: events.ThumbDecodedPay
 
 fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedPayload) void {
     const surf = decoded_data.surface orelse return;
-    const current_gen = state.viewer.generation;
     if (state.gpu_device) |gpu_dev| {
         if (image.uploadSurfaceToGpu(gpu_dev, surf, state.unpack_compute_pipeline)) |full_res| {
-            if (state.cache.getWithGeneration(decoded_data.index, current_gen)) |entry| {
+            if (state.cache.get(decoded_data.key)) |entry| {
                 switch (entry.status) {
                     .loaded_cpu => |cpu| cpu.surface.destroy(),
                     .loaded_gpu => |gpu| gpu_dev.releaseTexture(gpu.gpu_texture),
@@ -106,7 +103,7 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
             state.updateCurrentRotation();
         }
     } else {
-        if (state.cache.getWithGeneration(decoded_data.index, current_gen)) |entry| {
+        if (state.cache.get(decoded_data.key)) |entry| {
             switch (entry.status) {
                 .loaded_cpu => |cpu| cpu.surface.destroy(),
                 else => {},
@@ -223,18 +220,19 @@ test "sysProcessBackgroundEvents - exif_orientation_parsed & decode_failed" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    try state.cache.append(allocator, .{
+    try state.cache.appendWithKey(allocator, .{
         .index = 0,
         .generation = state.viewer.generation,
+    }, .{
         .status = .{ .decoding = .{ .has_thread = true } },
     });
 
-    try state.workers.event_queue.push(allocator, io, .{ .exif_orientation_parsed = .{ .index = 0, .orientation = 90.0 } });
+    try state.workers.event_queue.push(allocator, io, .{ .exif_orientation_parsed = .{ .key = state.activeKey(0), .orientation = 90.0 } });
     const processed1 = sysProcessBackgroundEvents(&state);
     try std.testing.expect(processed1);
     try std.testing.expectEqual(@as(f32, 90.0), state.cache.entries.items[0].exif_orientation);
 
-    try state.workers.event_queue.push(allocator, io, .{ .decode_failed = .{ .index = 0 } });
+    try state.workers.event_queue.push(allocator, io, .{ .decode_failed = .{ .key = state.activeKey(0) } });
     const processed2 = sysProcessBackgroundEvents(&state);
     try std.testing.expect(processed2);
     try std.testing.expectEqual(@as(@TypeOf(state.cache.entries.items[0].status), .failed), state.cache.entries.items[0].status);

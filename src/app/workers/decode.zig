@@ -7,20 +7,22 @@ const context = @import("context.zig");
 const root = @import("root.zig");
 const WorkerManager = root.WorkerManager;
 
+const CacheKey = image.CacheKey;
+
 pub const DecodeArgs = struct {
     workers: *WorkerManager,
     allocator: std.mem.Allocator,
     io: std.Io,
-    index: usize,
+    key: CacheKey,
     path: [:0]const u8,
     has_gpu_device: bool,
     pixel_format: u32,
 };
 
-fn failDecodeWorker(workers: *WorkerManager, alloc: std.mem.Allocator, io: std.Io, index: usize, path: []const u8, comptime fmt: []const u8, fmt_args: anytype) void {
+fn failDecodeWorker(workers: *WorkerManager, alloc: std.mem.Allocator, io: std.Io, key: CacheKey, path: []const u8, comptime fmt: []const u8, fmt_args: anytype) void {
     std.log.err(fmt, fmt_args);
     workers.event_queue.push(alloc, io, .{
-        .decode_failed = .{ .index = index },
+        .decode_failed = .{ .key = key },
     }) catch |e| std.log.err("Failed to push decode_failed event for '{s}': {}", .{ path, e });
     context.wakeUpMainThread();
 }
@@ -29,7 +31,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     const workers = args.workers;
     const alloc = args.allocator;
     const io = args.io;
-    const index = args.index;
+    const key = args.key;
     const path = args.path;
     defer {
         alloc.free(path);
@@ -40,7 +42,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     }
 
     const s = std.Io.Dir.statFile(std.Io.Dir.cwd(), io, path, .{}) catch |err| {
-        failDecodeWorker(workers, alloc, io, index, path, "decodeWorker: statFile failed for '{s}': {}", .{ path, err });
+        failDecodeWorker(workers, alloc, io, key, path, "decodeWorker: statFile failed for '{s}': {}", .{ path, err });
         return;
     };
     const size_bytes = s.size;
@@ -50,19 +52,19 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     var mime_type: []const u8 = "unknown";
 
     var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, path, .{}) catch |err| {
-        failDecodeWorker(workers, alloc, io, index, path, "decodeWorker: openFile failed for '{s}': {}", .{ path, err });
+        failDecodeWorker(workers, alloc, io, key, path, "decodeWorker: openFile failed for '{s}': {}", .{ path, err });
         return;
     };
     defer file.close(io);
 
     var slices = [_][]u8{&header_buf};
     const n = file.readPositional(io, &slices, 0) catch |err| {
-        failDecodeWorker(workers, alloc, io, index, path, "decodeWorker: initial readPositional failed for '{s}': {}", .{ path, err });
+        failDecodeWorker(workers, alloc, io, key, path, "decodeWorker: initial readPositional failed for '{s}': {}", .{ path, err });
         return;
     };
 
     if (n == 0) {
-        failDecodeWorker(workers, alloc, io, index, path, "decodeWorker: empty file or 0-byte header read for '{s}'", .{path});
+        failDecodeWorker(workers, alloc, io, key, path, "decodeWorker: empty file or 0-byte header read for '{s}'", .{path});
         return;
     }
 
@@ -70,7 +72,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     if (exif_rot != 0.0) {
         workers.event_queue.push(alloc, io, .{
             .exif_orientation_parsed = .{
-                .index = index,
+                .key = key,
                 .orientation = exif_rot,
             },
         }) catch |err| std.log.err("Failed to push EXIF orientation event: {}", .{err});
@@ -124,7 +126,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                 const full_h: f32 = if (full_dims) |d| d.h else 0.0;
                 workers.event_queue.push(alloc, io, .{
                     .thumb_decoded = .{
-                        .index = index,
+                        .key = key,
                         .surface = t_surf,
                         .w = @floatFromInt(t_surf.w()),
                         .h = @floatFromInt(t_surf.h()),
@@ -150,7 +152,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     const decode_time_ms = @as(f64, @floatFromInt(end_decode - start_decode)) / 1_000_000.0;
 
     if (surface == null) {
-        failDecodeWorker(workers, alloc, io, index, path, "decodeWorker: failed to load image '{s}': {s}", .{ path, sdl.getError() });
+        failDecodeWorker(workers, alloc, io, key, path, "decodeWorker: failed to load image '{s}': {s}", .{ path, sdl.getError() });
         return;
     }
 
@@ -212,7 +214,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
 
         workers.event_queue.push(alloc, io, .{
             .image_decoded = .{
-                .index = index,
+                .key = key,
                 .surface = f_surf,
                 .w = orig_w,
                 .h = orig_h,
@@ -230,7 +232,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     } else {
         workers.event_queue.push(alloc, io, .{
             .decode_failed = .{
-                .index = index,
+                .key = key,
             },
         }) catch |err| std.log.err("Failed to push image decode event: {}", .{err});
         context.wakeUpMainThread();

@@ -15,18 +15,30 @@ const ThumbComponent = state_pkg.ThumbComponent;
 const CacheStatus = state_pkg.CacheStatus;
 const CacheEntry = state_pkg.CacheEntry;
 
-pub const TextureHandle = struct {
+pub const CacheKey = struct {
     index: usize,
     generation: usize,
 };
+pub const TextureHandle = CacheKey;
 
 pub const CacheSlotMap = struct {
+    keys: std.ArrayList(CacheKey) = .empty,
     entries: std.ArrayList(CacheEntry) = .empty,
+    generation: usize = 0,
+
+    pub fn setGeneration(self: *CacheSlotMap, generation: usize) void {
+        self.generation = generation;
+    }
+
+    pub fn activeKey(self: *const CacheSlotMap, index: usize) CacheKey {
+        return .{ .index = index, .generation = self.generation };
+    }
 
     pub fn deinit(self: *CacheSlotMap, allocator: std.mem.Allocator, gpu_device: ?sdl.gpu.Device) void {
         for (self.entries.items) |*entry| {
             entry.deinit(gpu_device);
         }
+        self.keys.deinit(allocator);
         self.entries.deinit(allocator);
     }
 
@@ -34,29 +46,29 @@ pub const CacheSlotMap = struct {
         for (self.entries.items) |*entry| {
             entry.deinit(gpu_device);
         }
+        self.keys.clearRetainingCapacity();
         self.entries.clearRetainingCapacity();
     }
 
     pub fn clearRetainingCapacity(self: *CacheSlotMap) void {
+        self.keys.clearRetainingCapacity();
         self.entries.clearRetainingCapacity();
     }
 
-    pub fn get(self: *CacheSlotMap, index: usize) ?*CacheEntry {
-        for (self.entries.items) |*entry| {
-            if (entry.index == index) return entry;
+    pub fn getIndex(self: *const CacheSlotMap, key: CacheKey) ?usize {
+        for (self.keys.items, 0..) |k, i| {
+            if (k.index == key.index and k.generation == key.generation) return i;
         }
         return null;
     }
 
-    pub fn getWithGeneration(self: *CacheSlotMap, index: usize, generation: usize) ?*CacheEntry {
-        for (self.entries.items) |*entry| {
-            if (entry.index == index and entry.generation == generation) return entry;
-        }
+    pub fn get(self: *CacheSlotMap, key: CacheKey) ?*CacheEntry {
+        if (self.getIndex(key)) |i| return &self.entries.items[i];
         return null;
     }
 
-    pub fn getTexture(self: *CacheSlotMap, handle: TextureHandle) ?sdl.gpu.Texture {
-        if (self.getWithGeneration(handle.index, handle.generation)) |entry| {
+    pub fn getTexture(self: *CacheSlotMap, key: CacheKey) ?sdl.gpu.Texture {
+        if (self.get(key)) |entry| {
             switch (entry.status) {
                 .loaded_gpu => |gpu| return gpu.gpu_texture,
                 else => {},
@@ -65,8 +77,8 @@ pub const CacheSlotMap = struct {
         return null;
     }
 
-    pub fn getSurface(self: *CacheSlotMap, handle: TextureHandle) ?sdl.Surface {
-        if (self.getWithGeneration(handle.index, handle.generation)) |entry| {
+    pub fn getSurface(self: *CacheSlotMap, key: CacheKey) ?sdl.Surface {
+        if (self.get(key)) |entry| {
             switch (entry.status) {
                 .loaded_cpu => |cpu| return cpu.surface,
                 else => {},
@@ -75,23 +87,30 @@ pub const CacheSlotMap = struct {
         return null;
     }
 
-    pub fn updateStatus(self: *CacheSlotMap, index: usize, generation: usize, status: CacheStatus) bool {
-        if (self.getWithGeneration(index, generation)) |entry| {
+    pub fn updateStatus(self: *CacheSlotMap, key: CacheKey, status: CacheStatus) bool {
+        if (self.get(key)) |entry| {
             entry.status = status;
             return true;
         }
         return false;
     }
 
-    pub fn append(self: *CacheSlotMap, allocator: std.mem.Allocator, entry: CacheEntry) !void {
+    pub fn appendSlot(self: *CacheSlotMap, allocator: std.mem.Allocator, index: usize, status: CacheStatus) !CacheKey {
+        const key = CacheKey{ .index = index, .generation = self.generation };
+        try self.keys.append(allocator, key);
+        errdefer _ = self.keys.pop();
+        try self.entries.append(allocator, .{ .status = status });
+        return key;
+    }
+
+    pub fn appendWithKey(self: *CacheSlotMap, allocator: std.mem.Allocator, key: CacheKey, entry: CacheEntry) !void {
+        try self.keys.append(allocator, key);
+        errdefer _ = self.keys.pop();
         try self.entries.append(allocator, entry);
     }
 
-    pub fn remove(self: *CacheSlotMap, index_in_list: usize) CacheEntry {
-        return self.entries.orderedRemove(index_in_list);
-    }
-
     pub fn removeAndDeinit(self: *CacheSlotMap, index_in_list: usize, gpu_device: ?sdl.gpu.Device) void {
+        _ = self.keys.orderedRemove(index_in_list);
         var entry = self.entries.orderedRemove(index_in_list);
         entry.deinit(gpu_device);
     }
@@ -116,9 +135,10 @@ pub const CacheSlotMap = struct {
 
             for (self.entries.items, 0..) |entry, i| {
                 if (entry.status == .loaded_gpu) {
+                    const key = self.keys.items[i];
                     if (current_index) |cur| {
-                        if (entry.index == cur) continue;
-                        const dist = if (entry.index > cur) entry.index - cur else cur - entry.index;
+                        if (key.index == cur) continue;
+                        const dist = if (key.index > cur) key.index - cur else cur - key.index;
                         // Protect immediate neighbors (dist <= 2) if possible
                         if (dist <= 2 and self.entries.items.len <= 5) continue;
                         if (dist >= max_dist) {
@@ -174,28 +194,24 @@ test "CacheSlotMap.updateStatus" {
     var cache = CacheSlotMap{};
     defer cache.deinit(allocator, null);
 
-    try cache.append(allocator, .{
-        .index = 10,
-        .generation = 1,
+    try cache.appendWithKey(allocator, .{ .index = 10, .generation = 1 }, .{
         .status = .{ .decoding = .{} },
     });
-    try cache.append(allocator, .{
-        .index = 20,
-        .generation = 1,
+    try cache.appendWithKey(allocator, .{ .index = 20, .generation = 1 }, .{
         .status = .{ .decoding = .{} },
     });
 
     // Test successful update
-    const updated = cache.updateStatus(20, 1, .failed);
+    const updated = cache.updateStatus(.{ .index = 20, .generation = 1 }, .failed);
     try std.testing.expect(updated);
     try std.testing.expectEqual(CacheStatus.failed, cache.entries.items[1].status);
 
     // Test updating non-existent index
-    const updated_missing = cache.updateStatus(30, 1, .failed);
+    const updated_missing = cache.updateStatus(.{ .index = 30, .generation = 1 }, .failed);
     try std.testing.expect(!updated_missing);
 
     // Test updating matching index but mismatching generation
-    const updated_gen_mismatch = cache.updateStatus(10, 2, .failed);
+    const updated_gen_mismatch = cache.updateStatus(.{ .index = 10, .generation = 2 }, .failed);
     try std.testing.expect(!updated_gen_mismatch);
 }
 

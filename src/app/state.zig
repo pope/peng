@@ -21,6 +21,7 @@ const uploadSurfaceToGpu = image.uploadSurfaceToGpu;
 const CacheStatus = state_pkg.CacheStatus;
 const CacheEntry = state_pkg.CacheEntry;
 const CacheSlotMap = image.CacheSlotMap;
+const CacheKey = image.CacheKey;
 const TextureHandle = image.TextureHandle;
 const DecodeArgs = workers_mod.DecodeArgs;
 
@@ -175,8 +176,8 @@ pub const AppState = struct {
         self.viewer.ui.overlays.debug_show_thumb = enable;
         if (!enable) return;
 
-        const entry = self.getCurrentEntry() orelse return;
-        if (entry.thumb_gpu_texture != null) return;
+        const e = self.getCurrentEntryPtr() orelse return;
+        if (e.thumb_gpu_texture != null) return;
 
         const idx = self.viewer.navigation.current_index orelse return;
         if (idx >= self.viewer.navigation.image_list.items.len) return;
@@ -198,22 +199,18 @@ pub const AppState = struct {
         const dev = self.gpu_device orelse return;
         const upload_res = uploadSurfaceToGpu(dev, thumb_surf, self.unpack_compute_pipeline) orelse return;
 
-        if (self.cache.getWithGeneration(entry.index, entry.generation)) |e| {
-            if (e.thumb_gpu_texture) |old_t| {
-                dev.releaseTexture(old_t);
-            }
-            e.thumb_gpu_texture = upload_res.gpu_texture;
-            e.thumb_w = upload_res.w;
-            e.thumb_h = upload_res.h;
-            if (full_dims) |dims| {
-                e.full_w = dims.w;
-                e.full_h = dims.h;
-            }
-            e.has_thumb = true;
-            e.thumb_upload_time_ms = upload_res.upload_time_ms;
-        } else {
-            dev.releaseTexture(upload_res.gpu_texture);
+        if (e.thumb_gpu_texture) |old_t| {
+            dev.releaseTexture(old_t);
         }
+        e.thumb_gpu_texture = upload_res.gpu_texture;
+        e.thumb_w = upload_res.w;
+        e.thumb_h = upload_res.h;
+        if (full_dims) |dims| {
+            e.full_w = dims.w;
+            e.full_h = dims.h;
+        }
+        e.has_thumb = true;
+        e.thumb_upload_time_ms = upload_res.upload_time_ms;
     }
 
     pub fn deinit(self: *AppState) void {
@@ -331,9 +328,13 @@ pub const AppState = struct {
         try self.viewer.ui.palette.rebuildActionMatches();
     }
 
-    pub fn getCurrentEntry(self: *AppState) ?CacheEntry {
+    pub fn getCurrentEntryPtr(self: *AppState) ?*CacheEntry {
         const idx = self.viewer.navigation.current_index orelse return null;
-        if (self.cache.get(idx)) |entry| {
+        return self.cache.get(self.cache.activeKey(idx));
+    }
+
+    pub fn getCurrentEntry(self: *AppState) ?CacheEntry {
+        if (self.getCurrentEntryPtr()) |entry| {
             return entry.*;
         }
         return null;
@@ -396,12 +397,11 @@ pub const AppState = struct {
 
     pub fn prepareCacheTextures(self: *AppState) void {
         var upload_target: ?struct {
-            index: usize,
-            generation: usize,
+            key: CacheKey,
             cpu: @TypeOf(@as(CacheStatus, undefined).loaded_cpu),
         } = null;
 
-        for (self.cache.entries.items) |*entry| {
+        for (self.cache.entries.items, self.cache.keys.items) |*entry, key| {
             if (entry.status == .loaded_gpu and !self.viewer.ui.overlays.debug_show_thumb) {
                 if (entry.thumb_gpu_texture) |thumb_tex| {
                     if (self.gpu_device) |gpu_dev| {
@@ -414,8 +414,7 @@ pub const AppState = struct {
                 .loaded_cpu => |cpu| {
                     entry.status = .uploading;
                     upload_target = .{
-                        .index = entry.index,
-                        .generation = entry.generation,
+                        .key = key,
                         .cpu = cpu,
                     };
                     break;
@@ -441,19 +440,20 @@ pub const AppState = struct {
                             .memory_size_bytes = res.memory_size_bytes,
                         },
                     };
-                    const updated = self.cache.updateStatus(target.index, target.generation, loaded_gpu_status);
+                    const updated = self.cache.updateStatus(target.key, loaded_gpu_status);
 
                     if (!updated) {
                         gpu_dev.releaseTexture(res.gpu_texture);
                     }
                 } else {
-                    _ = self.cache.updateStatus(target.index, target.generation, .failed);
+                    _ = self.cache.updateStatus(target.key, .failed);
                 }
             }
         }
     }
 
     pub fn clearCache(self: *AppState) void {
+        self.cache.setGeneration(self.viewer.generation);
         const dev_opt = self.gpu_device;
         self.cache.clear(dev_opt);
     }
@@ -631,9 +631,7 @@ test "AppState.clampZoomFactor bounds based on image dimensions" {
 
     // Test with loaded CPU image entry
     const surf = sdl.Surface.create(4000, 3000, sdl.PixelFormat.rgba32) orelse unreachable;
-    try state.cache.append(std.testing.allocator, .{
-        .index = 0,
-        .generation = 0,
+    try state.cache.appendWithKey(std.testing.allocator, .{ .index = 0, .generation = 0 }, .{
         .status = .{
             .loaded_cpu = .{
                 .surface = surf,
@@ -679,9 +677,7 @@ test "AppState.updateCurrentRotation syncs EXIF orientation" {
     try std.testing.expectEqual(@as(f32, 0.0), state.viewer.viewport.rotation_angle);
 
     // Simulate worker thread caching EXIF orientation of 90.0
-    try state.cache.append(std.testing.allocator, .{
-        .index = 0,
-        .generation = 0,
+    try state.cache.appendWithKey(std.testing.allocator, .{ .index = 0, .generation = 0 }, .{
         .status = .{ .decoding = .{} },
         .exif_orientation = 90.0,
     });
