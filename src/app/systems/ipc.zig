@@ -6,7 +6,7 @@ const state_pkg = @import("state");
 const intents = @import("intents");
 
 const intents_system = @import("intents.zig");
-const events_system = @import("events.zig");
+const app_events = @import("../events.zig");
 
 /// System function that drains queued socket commands from `state.pending_ipc_commands`,
 /// parses commands (`zoom`, `pan`, `next`, `filter`), and executes corresponding intents.
@@ -35,7 +35,7 @@ pub fn sysExecuteIpcCommands(state: *AppState) void {
             .wait_load => {
                 var attempts: u32 = 0;
                 while (attempts < 1000) : (attempts += 1) {
-                    _ = events_system.sysProcessBackgroundEvents(state);
+                    _ = app_events.drainWorkerEvents(state);
                     state.prepareCacheTextures();
                     if (state.getCurrentEntry()) |entry| {
                         if (entry.status != .decoding) break;

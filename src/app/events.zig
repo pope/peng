@@ -1,14 +1,13 @@
 const std = @import("std");
-const app_state = @import("../state.zig");
+const app_state = @import("state.zig");
 const AppState = app_state.AppState;
-const events = @import("../core/events.zig");
-const image = @import("../core/image.zig");
-const cache_system = @import("cache.zig");
+const events = @import("core/events.zig");
+const image = @import("core/image.zig");
 const ipc = @import("ipc");
 
-/// System function that drains background thread events (`image_decoded`, `path_scanned`, `ipc_command`)
+/// Drains background thread events (`image_decoded`, `path_scanned`, `ipc_command`)
 /// from `workers.event_queue` and updates cache slots, navigation list, and pending IPC lists.
-pub fn sysProcessBackgroundEvents(state: *AppState) bool {
+pub fn drainWorkerEvents(state: *AppState) bool {
     state.event_batch.clearRetainingCapacity();
     state.workers.event_queue.drain(state.allocator, state.io, &state.event_batch) catch return false;
     if (state.event_batch.items.len == 0) return false;
@@ -34,6 +33,9 @@ pub fn sysProcessBackgroundEvents(state: *AppState) bool {
             .ipc_command => |cmd_data| {
                 state.pending_ipc_commands.append(state.allocator, cmd_data) catch |err| {
                     std.log.err("Failed to append IPC command to pending list: {}", .{err});
+                    cmd_data.client_stream.close(state.io);
+                    state.allocator.free(cmd_data.command);
+                    state.allocator.destroy(cmd_data);
                 };
             },
         }
@@ -190,16 +192,16 @@ fn handleDirectoryScanResultEvent(state: *AppState, result_data: events.Director
     }
 }
 
-test "sysProcessBackgroundEvents - empty queue" {
+test "drainWorkerEvents - empty queue" {
     const allocator = std.testing.allocator;
     var state = try AppState.initHeadless(allocator, std.Io.Threaded.global_single_threaded.io());
     defer state.deinit();
 
-    const processed = sysProcessBackgroundEvents(&state);
+    const processed = drainWorkerEvents(&state);
     try std.testing.expect(!processed);
 }
 
-test "sysProcessBackgroundEvents - path_discovered" {
+test "drainWorkerEvents - path_discovered" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var state = try AppState.initHeadless(allocator, io);
@@ -208,14 +210,14 @@ test "sysProcessBackgroundEvents - path_discovered" {
     const path_dup = try allocator.dupe(u8, "/test/path.jpg");
     try state.workers.event_queue.push(allocator, io, .{ .path_discovered = .{ .path = path_dup } });
 
-    const processed = sysProcessBackgroundEvents(&state);
+    const processed = drainWorkerEvents(&state);
     try std.testing.expect(processed);
     try std.testing.expect(state.viewer.dirty);
     try std.testing.expectEqual(@as(usize, 1), state.viewer.navigation.image_list.items.len);
     try std.testing.expectEqual(@as(?usize, 0), state.viewer.navigation.current_index);
 }
 
-test "sysProcessBackgroundEvents - exif_orientation_parsed & decode_failed" {
+test "drainWorkerEvents - exif_orientation_parsed & decode_failed" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var state = try AppState.initHeadless(allocator, io);
@@ -229,17 +231,17 @@ test "sysProcessBackgroundEvents - exif_orientation_parsed & decode_failed" {
     });
 
     try state.workers.event_queue.push(allocator, io, .{ .exif_orientation_parsed = .{ .key = state.activeKey(0), .orientation = 90.0 } });
-    const processed1 = sysProcessBackgroundEvents(&state);
+    const processed1 = drainWorkerEvents(&state);
     try std.testing.expect(processed1);
     try std.testing.expectEqual(@as(f32, 90.0), state.cache.entries.items[0].exif_orientation);
 
     try state.workers.event_queue.push(allocator, io, .{ .decode_failed = .{ .key = state.activeKey(0) } });
-    const processed2 = sysProcessBackgroundEvents(&state);
+    const processed2 = drainWorkerEvents(&state);
     try std.testing.expect(processed2);
     try std.testing.expectEqual(@as(@TypeOf(state.cache.entries.items[0].status), .failed), state.cache.entries.items[0].status);
 }
 
-test "sysProcessBackgroundEvents - directory_scan_result and ipc_command" {
+test "drainWorkerEvents - directory_scan_result and ipc_command" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var state = try AppState.initHeadless(allocator, io);
@@ -265,7 +267,7 @@ test "sysProcessBackgroundEvents - directory_scan_result and ipc_command" {
     cmd_data.* = .{ .command = cmd_str, .client_stream = undefined };
     try state.workers.event_queue.push(allocator, io, .{ .ipc_command = cmd_data });
 
-    const processed = sysProcessBackgroundEvents(&state);
+    const processed = drainWorkerEvents(&state);
     try std.testing.expect(processed);
     try std.testing.expectEqual(@as(usize, 2), state.viewer.navigation.image_list.items.len);
     try std.testing.expectEqual(@as(?usize, 1), state.viewer.navigation.current_index);

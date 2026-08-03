@@ -32,7 +32,7 @@ pub fn updateFrame(
     clay.setMeasureTextFunction(*const state_pkg.MeasureTextUserData, measure_data, ui.graphics.sdl3MeasureText);
 
     // 1. Background Event Ingestion System
-    const bg_events_processed = app.systems.sysProcessBackgroundEvents(app_state);
+    const bg_events_processed = app.drainWorkerEvents(app_state);
 
     // 2. Socket Command Ingestion System
     app.systems.sysExecuteIpcCommands(app_state);

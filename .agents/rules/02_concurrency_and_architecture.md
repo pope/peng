@@ -49,8 +49,8 @@
 
 ## 9. Pure System Passes & Top-Level Linear Engine Pipeline (`src/app/systems/`)
 
-- Procedural tick logic, background event ingestion, socket command handling, input sampling, slideshow timers, asset uploads, and telemetry MUST be extracted into pure system pass functions taking `*AppState` in `src/app/systems/`:
-  - `sysProcessBackgroundEvents`: Drains worker thread event queues (`state.workers.event_queue`).
+- Procedural tick logic, socket command handling, input sampling, slideshow timers, asset uploads, and telemetry MUST be extracted into pure system pass functions taking `*AppState` in `src/app/systems/`, while worker event queue draining is handled by `app.drainWorkerEvents` in `src/app/events.zig`:
+  - `drainWorkerEvents`: Drains worker thread event queues (`state.workers.event_queue`).
   - `sysExecuteIpcCommands`: Parses and dispatches socket commands (`state.pending_ipc_commands`).
   - `sysExecuteIntents`: Drains queued `AppIntent` payloads (`state.pending_intents`).
   - `sysUpdateSlideshow`: Manages slideshow timer ticks.
@@ -63,7 +63,7 @@
   - `sysSyncMetrics`: Copies atomic worker counters (`state.workers`), active image GPU telemetry, and cache status into `ViewerStats` (`state.viewer.stats`) once per frame tick.
 - Systems MUST NOT invoke other systems nested inside them.
 - The main frame update in `src/viewer.zig` (`updateFrame`) MUST follow the strict top-level unnested engine pipeline:
-  1. Worker & Socket Event Ingestion (`sysProcessBackgroundEvents`, `sysExecuteIpcCommands`)
+  1. Worker & Socket Event Ingestion (`drainWorkerEvents`, `sysExecuteIpcCommands`)
   2. Input Sampling (`pollFrameInput`)
   3. Palette & Input System Passes (`sysProcessPaletteInput`, `sysProcessInput`)
   4. Logic & Intent Systems (`sysExecuteIntents`, `sysUpdateSlideshow`, `sysUpdateViewport`)
