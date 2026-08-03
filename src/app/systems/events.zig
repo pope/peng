@@ -46,16 +46,25 @@ fn handleExifThumbnailEvent(state: *AppState, thumb_data: events.ThumbDecodedPay
     if (state.gpu_device) |gpu_dev| {
         if (image.uploadSurfaceToGpu(gpu_dev, surf, state.unpack_compute_pipeline)) |upload_res| {
             if (state.cache.get(thumb_data.key)) |entry| {
-                entry.thumb_gpu_texture = upload_res.gpu_texture;
-                entry.thumb_w = upload_res.w;
-                entry.thumb_h = upload_res.h;
                 entry.exif_orientation = thumb_data.exif_orientation;
                 if (thumb_data.full_w > 0 and thumb_data.full_h > 0) {
                     entry.full_w = thumb_data.full_w;
                     entry.full_h = thumb_data.full_h;
                 }
-                entry.has_thumb = true;
-                entry.thumb_upload_time_ms = upload_res.upload_time_ms;
+                switch (entry.thumbnail) {
+                    .loaded => |old_thumb| gpu_dev.releaseTexture(old_thumb.texture),
+                    else => {},
+                }
+                entry.thumbnail = .{
+                    .loaded = .{
+                        .texture = upload_res.gpu_texture,
+                        .info = .{
+                            .w = upload_res.w,
+                            .h = upload_res.h,
+                            .upload_time_ms = upload_res.upload_time_ms,
+                        },
+                    },
+                };
             } else {
                 gpu_dev.releaseTexture(upload_res.gpu_texture);
             }
@@ -90,10 +99,6 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
                         .mipmap_time_ms = full_res.mipmap_time_ms,
                         .was_fallback = full_res.was_fallback,
                         .fallback_time_ms = full_res.fallback_time_ms,
-                        .has_thumb = entry.has_thumb,
-                        .thumb_w = entry.thumb_w,
-                        .thumb_h = entry.thumb_h,
-                        .thumb_upload_time_ms = entry.thumb_upload_time_ms,
                     },
                 };
                 state.cache.enforceVramBudget(gpu_dev, state.viewer.navigation.current_index, image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
@@ -118,10 +123,6 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
                     .mime_type = decoded_data.mime_type,
                     .decode_time_ms = decoded_data.decode_time_ms,
                     .conversion_time_ms = decoded_data.conversion_time_ms,
-                    .has_thumb = entry.has_thumb,
-                    .thumb_w = entry.thumb_w,
-                    .thumb_h = entry.thumb_h,
-                    .thumb_upload_time_ms = entry.thumb_upload_time_ms,
                 },
             };
             decoded_data.surface = null;

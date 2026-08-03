@@ -14,6 +14,12 @@ pub fn sysSyncMetrics(state: *AppState) void {
     state.viewer.stats.total_vram_bytes = state.cache.getTotalVramBytes();
 
     if (state.getCurrentEntry()) |entry| {
+        const has_thumb, const thumb_upload_time_ms =
+            if (entry.thumbnail.getInfo()) |info|
+                .{ true, info.upload_time_ms }
+            else
+                .{ false, 0.0 };
+
         switch (entry.status) {
             .loaded_gpu => |gpu| {
                 state.viewer.stats.active_image = .{
@@ -24,8 +30,8 @@ pub fn sysSyncMetrics(state: *AppState) void {
                     .conversion_time_ms = gpu.conversion_time_ms,
                     .fallback_time_ms = gpu.fallback_time_ms,
                     .was_fallback = gpu.was_fallback,
-                    .has_thumb = gpu.has_thumb,
-                    .thumb_upload_time_ms = gpu.thumb_upload_time_ms,
+                    .has_thumb = has_thumb,
+                    .thumb_upload_time_ms = thumb_upload_time_ms,
                 };
             },
             .loaded_cpu => |cpu| {
@@ -37,14 +43,14 @@ pub fn sysSyncMetrics(state: *AppState) void {
                     .conversion_time_ms = cpu.conversion_time_ms,
                     .fallback_time_ms = 0.0,
                     .was_fallback = false,
-                    .has_thumb = cpu.has_thumb,
-                    .thumb_upload_time_ms = cpu.thumb_upload_time_ms,
+                    .has_thumb = has_thumb,
+                    .thumb_upload_time_ms = thumb_upload_time_ms,
                 };
             },
             else => {
                 state.viewer.stats.active_image = .{
-                    .has_thumb = entry.has_thumb,
-                    .thumb_upload_time_ms = entry.thumb_upload_time_ms,
+                    .has_thumb = has_thumb,
+                    .thumb_upload_time_ms = thumb_upload_time_ms,
                 };
             },
         }

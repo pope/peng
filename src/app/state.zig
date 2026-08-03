@@ -35,19 +35,7 @@ const SlideshowMode = state_pkg.SlideshowMode;
 const OverlayState = state_pkg.OverlayState;
 const UiRenderMetrics = state_pkg.UiRenderMetrics;
 
-pub const ElementTag = enum(usize) {
-    none = 0,
-    drop_zone_box = 1337,
-
-    pub fn fromInt(val: usize) ElementTag {
-        inline for (std.meta.tags(ElementTag)) |tag| {
-            if (val == @intFromEnum(tag)) {
-                return tag;
-            }
-        }
-        return .none;
-    }
-};
+pub const ElementTag = state_pkg.ElementTag;
 
 const palette_module = @import("core/palette.zig");
 const PaletteState = state_pkg.PaletteState;
@@ -177,7 +165,7 @@ pub const AppState = struct {
         if (!enable) return;
 
         const e = self.getCurrentEntryPtr() orelse return;
-        if (e.thumb_gpu_texture != null) return;
+        if (e.thumbnail == .loaded) return;
 
         const idx = self.viewer.navigation.current_index orelse return;
         if (idx >= self.viewer.navigation.image_list.items.len) return;
@@ -199,18 +187,26 @@ pub const AppState = struct {
         const dev = self.gpu_device orelse return;
         const upload_res = uploadSurfaceToGpu(dev, thumb_surf, self.unpack_compute_pipeline) orelse return;
 
-        if (e.thumb_gpu_texture) |old_t| {
-            dev.releaseTexture(old_t);
+        switch (e.thumbnail) {
+            .loaded => |thumb| dev.releaseTexture(thumb.texture),
+            else => {},
         }
-        e.thumb_gpu_texture = upload_res.gpu_texture;
-        e.thumb_w = upload_res.w;
-        e.thumb_h = upload_res.h;
+
         if (full_dims) |dims| {
             e.full_w = dims.w;
             e.full_h = dims.h;
         }
-        e.has_thumb = true;
-        e.thumb_upload_time_ms = upload_res.upload_time_ms;
+
+        e.thumbnail = .{
+            .loaded = .{
+                .texture = upload_res.gpu_texture,
+                .info = .{
+                    .w = upload_res.w,
+                    .h = upload_res.h,
+                    .upload_time_ms = upload_res.upload_time_ms,
+                },
+            },
+        };
     }
 
     pub fn deinit(self: *AppState) void {
@@ -263,12 +259,12 @@ pub const AppState = struct {
         const raw_w: f32 = switch (entry.status) {
             .loaded_gpu => |gpu| gpu.w,
             .loaded_cpu => |cpu| cpu.w,
-            else => if (entry.full_w > 0) entry.full_w else entry.thumb_w,
+            else => if (entry.full_w > 0) entry.full_w else if (entry.thumbnail.getInfo()) |info| info.w else 0.0,
         };
         const raw_h: f32 = switch (entry.status) {
             .loaded_gpu => |gpu| gpu.h,
             .loaded_cpu => |cpu| cpu.h,
-            else => if (entry.full_h > 0) entry.full_h else entry.thumb_h,
+            else => if (entry.full_h > 0) entry.full_h else if (entry.thumbnail.getInfo()) |info| info.h else 0.0,
         };
         if (raw_w <= 0.0 or raw_h <= 0.0) return 1.0;
 
@@ -403,11 +399,14 @@ pub const AppState = struct {
 
         for (self.cache.entries.items, self.cache.keys.items) |*entry, key| {
             if (entry.status == .loaded_gpu and !self.viewer.ui.overlays.debug_show_thumb) {
-                if (entry.thumb_gpu_texture) |thumb_tex| {
-                    if (self.gpu_device) |gpu_dev| {
-                        gpu_dev.releaseTexture(thumb_tex);
-                    }
-                    entry.thumb_gpu_texture = null;
+                switch (entry.thumbnail) {
+                    .loaded => |thumb| {
+                        if (self.gpu_device) |gpu_dev| {
+                            gpu_dev.releaseTexture(thumb.texture);
+                        }
+                        entry.thumbnail = .{ .unloaded = thumb.info };
+                    },
+                    else => {},
                 }
             }
             switch (entry.status) {

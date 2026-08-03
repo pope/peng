@@ -362,10 +362,6 @@ pub const CpuSurfaceComponent = struct {
     mime_type: []const u8 = "",
     decode_time_ms: f64 = 0.0,
     conversion_time_ms: f64 = 0.0,
-    has_thumb: bool = false,
-    thumb_w: f32 = 0.0,
-    thumb_h: f32 = 0.0,
-    thumb_upload_time_ms: f64 = 0.0,
 };
 
 pub const GpuTextureComponent = struct {
@@ -382,10 +378,6 @@ pub const GpuTextureComponent = struct {
     mipmap_time_ms: f64 = 0.0,
     was_fallback: bool = false,
     fallback_time_ms: f64 = 0.0,
-    has_thumb: bool = false,
-    thumb_w: f32 = 0.0,
-    thumb_h: f32 = 0.0,
-    thumb_upload_time_ms: f64 = 0.0,
 };
 
 pub const ThumbComponent = struct {
@@ -405,24 +397,47 @@ pub const CacheStatus = union(enum) {
     failed: void,
 };
 
+pub const ThumbnailInfo = struct {
+    w: f32 = 0.0,
+    h: f32 = 0.0,
+    upload_time_ms: f64 = 0.0,
+};
+
+pub const ThumbnailState = union(enum) {
+    none,
+    unloaded: ThumbnailInfo,
+    loaded: struct {
+        texture: sdl.gpu.Texture,
+        info: ThumbnailInfo,
+    },
+
+    pub fn getInfo(self: ThumbnailState) ?ThumbnailInfo {
+        return switch (self) {
+            .none => null,
+            .unloaded => |info| info,
+            .loaded => |l| l.info,
+        };
+    }
+};
+
 pub const CacheEntry = struct {
     status: CacheStatus,
-    thumb_gpu_texture: ?sdl.gpu.Texture = null,
-    thumb_w: f32 = 0.0,
-    thumb_h: f32 = 0.0,
+    thumbnail: ThumbnailState = .none,
     full_w: f32 = 0.0,
     full_h: f32 = 0.0,
     exif_orientation: f32 = 0.0,
-    has_thumb: bool = false,
-    thumb_upload_time_ms: f64 = 0.0,
 
     pub fn deinit(self: *CacheEntry, gpu_device: ?sdl.gpu.Device) void {
-        if (self.thumb_gpu_texture) |thumb_tex| {
-            if (gpu_device) |dev| {
-                dev.releaseTexture(thumb_tex);
-            }
-            self.thumb_gpu_texture = null;
+        switch (self.thumbnail) {
+            .loaded => |thumb| {
+                if (gpu_device) |dev| {
+                    dev.releaseTexture(thumb.texture);
+                }
+            },
+            else => {},
         }
+        self.thumbnail = .none;
+
         switch (self.status) {
             .loaded_cpu => |cpu| cpu.surface.destroy(),
             .loaded_gpu => |gpu| {

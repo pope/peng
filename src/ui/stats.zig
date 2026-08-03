@@ -94,7 +94,7 @@ pub fn renderInfoOverlay(
         const entry_w = switch (entry.status) {
             .loaded_cpu => |cpu| cpu.w,
             .loaded_gpu => |gpu| gpu.w,
-            else => 0.0,
+            else => if (entry.full_w > 0) entry.full_w else if (entry.thumbnail.getInfo()) |info| info.w else 0.0,
         };
         if (entry_w > 0) {
             const effective_zoom = (draw_w * ui_model.viewport.zoom_factor.get()) / entry_w;
@@ -121,21 +121,10 @@ pub fn renderInfoOverlay(
                 }
             }
         }
-        const has_thumb = switch (entry.status) {
-            .loaded_gpu => |gpu| gpu.has_thumb,
-            .loaded_cpu => |cpu| cpu.has_thumb,
-            else => entry.has_thumb,
-        };
-        const t_w = switch (entry.status) {
-            .loaded_gpu => |gpu| gpu.thumb_w,
-            .loaded_cpu => |cpu| cpu.thumb_w,
-            else => entry.thumb_w,
-        };
-        const t_h = switch (entry.status) {
-            .loaded_gpu => |gpu| gpu.thumb_h,
-            .loaded_cpu => |cpu| cpu.thumb_h,
-            else => entry.thumb_h,
-        };
+        const has_thumb, const t_w, const t_h = if (entry.thumbnail.getInfo()) |info|
+            .{ true, info.w, info.h }
+        else
+            .{ false, 0.0, 0.0 };
 
         if (has_thumb) {
             thumb_info_str = try std.fmt.allocPrint(frame_allocator, "Embedded ({d:.0}x{d:.0} px)", .{ t_w, t_h });

@@ -67,9 +67,9 @@ pub fn renderFrame(
                 if (entry.full_w > 0 and entry.full_h > 0) {
                     src_w = entry.full_w;
                     src_h = entry.full_h;
-                } else if (entry.thumb_gpu_texture != null) {
-                    src_w = entry.thumb_w;
-                    src_h = entry.thumb_h;
+                } else if (entry.thumbnail.getInfo()) |info| {
+                    src_w = info.w;
+                    src_h = info.h;
                 }
             },
         }
@@ -271,28 +271,30 @@ pub fn updateWindowTitle(
         }
     }
 
-    if (ui_model.display.* == .windowed) {
-        const win = &ui_model.display.windowed;
-        const title_changed = if (win.cached_title) |cached|
-            !std.mem.eql(u8, cached, raw_title)
-        else
-            true;
+    switch (ui_model.display.*) {
+        .windowed => |*win| {
+            const title_changed = if (win.cached_title) |cached|
+                !std.mem.eql(u8, cached, raw_title)
+            else
+                true;
 
-        if (title_changed) {
-            if (frame_allocator.dupeZ(u8, raw_title)) |tz| {
-                win.handle.setTitle(tz);
-            } else |err| {
-                std.log.err("Failed to allocate window title string: {}", .{err});
-            }
+            if (title_changed) {
+                if (frame_allocator.dupeZ(u8, raw_title)) |tz| {
+                    win.handle.setTitle(tz);
+                } else |err| {
+                    std.log.err("Failed to allocate window title string: {}", .{err});
+                }
 
-            if (win.cached_title) |cached| {
-                ui_model.gpa_allocator.free(cached);
+                if (win.cached_title) |cached| {
+                    ui_model.gpa_allocator.free(cached);
+                }
+                win.cached_title = ui_model.gpa_allocator.dupe(u8, raw_title) catch |err| blk: {
+                    std.log.err("Failed to update cached window title: {}", .{err});
+                    break :blk null;
+                };
             }
-            win.cached_title = ui_model.gpa_allocator.dupe(u8, raw_title) catch |err| blk: {
-                std.log.err("Failed to update cached window title: {}", .{err});
-                break :blk null;
-            };
-        }
+        },
+        else => {},
     }
 
     return raw_title;
@@ -445,22 +447,29 @@ pub fn renderViewport(
         .clip = .{ .horizontal = true, .vertical = true },
     })({
         if (current_entry) |entry| {
-            const show_thumb = (ui_model.debug_show_thumb or entry.status != .loaded_gpu) and (entry.thumb_gpu_texture != null);
-            if (show_thumb) {
-                const thumb_tex = entry.thumb_gpu_texture.?;
-                clay.UI()(.{
-                    .id = clay.getElementId("ImageCanvas"),
-                    .layout = .{
-                        .sizing = .{
-                            .w = .fixed(draw_w),
-                            .h = .fixed(draw_h),
-                        },
-                    },
-                    .image = .{
-                        .image_data = thumb_tex.asOpaque(),
-                    },
-                })({});
-            } else switch (entry.status) {
+            var drew_thumb = false;
+            switch (entry.thumbnail) {
+                .loaded => |thumb| {
+                    if (ui_model.debug_show_thumb or entry.status != .loaded_gpu) {
+                        drew_thumb = true;
+                        const thumb_tex = thumb.texture;
+                        clay.UI()(.{
+                            .id = clay.getElementId("ImageCanvas"),
+                            .layout = .{
+                                .sizing = .{
+                                    .w = .fixed(draw_w),
+                                    .h = .fixed(draw_h),
+                                },
+                            },
+                            .image = .{
+                                .image_data = thumb_tex.asOpaque(),
+                            },
+                        })({});
+                    }
+                },
+                else => {},
+            }
+            if (!drew_thumb) switch (entry.status) {
                 .loaded_gpu => |gpu| {
                     const tex = gpu.gpu_texture;
                     clay.UI()(.{
@@ -519,7 +528,7 @@ pub fn renderViewport(
                         });
                     });
                 },
-            }
+            };
         } else if (ui_model.is_loading_files or total_images > 0) {
             // Centered viewport loading screen while file discovery is active
             clay.UI()(.{
