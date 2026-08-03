@@ -15,6 +15,50 @@ pub fn loadAssets() !void {
 /// Entry point for unloading dynamic UI resources / assets upon library reload.
 pub fn unloadAssets() void {}
 
+/// Sequential execution of all systems during the Update Phase of the event loop.
+/// Guaranteed: All systems run in deterministic order, use frame_allocator, and do NOT call each other.
+pub fn runUpdatePhase(
+    app_state: *app.state.AppState,
+    input: state_pkg.FrameInput,
+    frame_allocator: std.mem.Allocator,
+) !void {
+    const ctx = app.systems.FrameContext{
+        .state = app_state,
+        .frame_allocator = frame_allocator,
+        .input = input,
+        .delta_time_ms = input.delta_time_ms,
+    };
+
+    // 1. Socket Command Ingestion System (parses IPC commands -> pending_intents)
+    app.systems.sysExecuteIpcCommands(ctx);
+
+    // 2. Keyboard Input System (maps keypresses -> pending_intents)
+    try app.systems.sysProcessInput(ctx);
+
+    // 3. Execute Ingested Intents (IPC + Keyboard intents)
+    try app.systems.sysExecuteIntents(ctx);
+
+    // 4. Command Palette Input System (typing query updates, selection, click-outside)
+    const palette_closed_this_frame = try app.systems.sysProcessPaletteInput(ctx);
+
+    // 5. Viewport & Motion Systems (mouse drag/zoom & slideshow timer)
+    app.systems.sysUpdateViewport(ctx, palette_closed_this_frame);
+    try app.systems.sysUpdateSlideshow(ctx);
+
+    // 6. Execute Remaining Intents (Palette & Slideshow intents)
+    try app.systems.sysExecuteIntents(ctx);
+
+    // 7. Asset Upload & Texture Pipeline System
+    app.systems.sysProcessAssetUploads(ctx);
+
+    // 8. Cache Slot Management System (evicts slots & spawns prefetch workers)
+    app.systems.sysUpdateCache(ctx) catch |err| std.log.err("Failed to update cache: {}", .{err});
+
+    // 9. Metrics & Telemetry System
+    app.systems.sysSyncMetrics(ctx);
+}
+
+
 /// Main frame update function encapsulated within the hot-reloadable viewer library.
 pub fn updateFrame(
     app_state: *app.state.AppState,
@@ -31,13 +75,9 @@ pub fn updateFrame(
     // Re-bind Clay measure text function pointer to the reloaded code address
     clay.setMeasureTextFunction(*const state_pkg.MeasureTextUserData, measure_data, ui.graphics.sdl3MeasureText);
 
-    // 1. Background Event Ingestion System
+    // Phase 1: Background Event & Input Ingestion
     const bg_events_processed = app.drainWorkerEvents(app_state);
 
-    // 2. Socket Command Ingestion System
-    app.systems.sysExecuteIpcCommands(app_state);
-
-    // Input Accumulation
     const is_current_loading = blk: {
         if (app_state.getCurrentEntry()) |entry| {
             break :blk (entry.status == .decoding or entry.status == .uploading);
@@ -70,7 +110,7 @@ pub fn updateFrame(
     }
     app_state.viewer.ui.overlays.mouse_inside = input.mouse_inside;
 
-    // Clay Pointer & Scroll State Updates (MUST happen BEFORE app_state.update(input) so sysUpdateViewport queries fresh Clay pointer states)
+    // Clay Pointer & Scroll State Updates
     clay.setLayoutDimensions(.{ .w = input.win_w, .h = input.win_h });
     app_state.viewer.ui.overlays.last_win_w = input.win_w;
     app_state.viewer.ui.overlays.last_win_h = input.win_h;
@@ -105,19 +145,10 @@ pub fn updateFrame(
         }
     }
 
-    // 3. Logic & Intent Systems (sysExecuteIntents, sysUpdateSlideshow, sysUpdateViewport)
-    try app_state.update(input);
+    // Phase 2: Update Phase — Run all systems sequentially
+    try runUpdatePhase(app_state, input, frame_allocator);
 
-    // 4. Asset Upload & Texture Pipeline System
-    app.systems.sysProcessAssetUploads(app_state);
-
-    // 5. Cache Slot Management System
-    app.systems.sysUpdateCache(app_state) catch |err| std.log.err("Failed to update cache: {}", .{err});
-
-    // 6. Idle Cache Preloading System
-    app.systems.sysCheckIdlePreload(app_state);
-
-    // Construct view parameters and UI view model snapshots
+    // Phase 3: Render Phase
     const view_params = state_pkg.ViewParams{
         .viewport = app_state.viewer.viewport,
         .win_w = input.win_w,
@@ -129,9 +160,8 @@ pub fn updateFrame(
 
     if (app_state.gpu_device == null) return error.GpuNotInitialized;
 
-    app.systems.sysSyncMetrics(app_state);
-
     const ui_model = state_pkg.UiViewModel{
+
         .is_fullscreen = app_state.viewer.isFullscreen(),
         .total_images = app_state.viewer.navigation.image_list.items.len,
         .image_list = app_state.viewer.navigation.image_list.items,

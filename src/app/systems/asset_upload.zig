@@ -1,9 +1,11 @@
 const std = @import("std");
 const app_state = @import("../state.zig");
 const AppState = app_state.AppState;
+const FrameContext = @import("root.zig").FrameContext;
 
 /// System Pass: Uploads decoded CPU surfaces in cache slots to GPU textures.
-pub fn sysProcessAssetUploads(state: *AppState) void {
+pub fn sysProcessAssetUploads(ctx: FrameContext) void {
+    const state = ctx.state;
     state.updateCurrentRotation();
     state.prepareCacheTextures();
 }
@@ -14,5 +16,7 @@ test "sysProcessAssetUploads - safe execution on headless state" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    sysProcessAssetUploads(&state);
+    const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
+    sysProcessAssetUploads(ctx);
 }
+

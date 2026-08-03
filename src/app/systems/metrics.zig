@@ -1,10 +1,10 @@
-const std = @import("std");
-const app_state = @import("../state.zig");
-const AppState = app_state.AppState;
+const FrameContext = @import("root.zig").FrameContext;
 
 /// System function that copies real-time atomic worker counters, active image GPU telemetry,
 /// and cache status into `state.viewer.stats` once per frame tick for UI layout rendering ("Stats for Nerds").
-pub fn sysSyncMetrics(state: *AppState) void {
+pub fn sysSyncMetrics(ctx: FrameContext) void {
+    const state = ctx.state;
+
     state.viewer.stats.thumb_header_hits = state.workers.thumb_header_hits.load(.acquire);
     state.viewer.stats.thumb_positional_hits = state.workers.thumb_positional_hits.load(.acquire);
     state.viewer.stats.thumb_misses = state.workers.thumb_misses.load(.acquire);

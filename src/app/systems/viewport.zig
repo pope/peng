@@ -3,10 +3,13 @@ const clay = @import("zclay");
 const state_pkg = @import("state");
 const app_state = @import("../state.zig");
 const AppState = app_state.AppState;
-const FrameInput = state_pkg.FrameInput;
+const FrameContext = @import("root.zig").FrameContext;
 
 /// System Pass: Viewport input processing (Mouse Drag & Scroll-Zoom at Cursor)
-pub fn sysUpdateViewport(state: *AppState, input: FrameInput, palette_closed_this_frame: bool) void {
+pub fn sysUpdateViewport(ctx: FrameContext, palette_closed_this_frame: bool) void {
+    const state = ctx.state;
+    const input = ctx.input orelse return;
+
     // 1. Mouse Drag state machine
     var next_drag_state = state.viewer.drag_state;
     switch (next_drag_state) {

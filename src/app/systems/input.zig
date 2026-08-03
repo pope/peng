@@ -26,9 +26,14 @@ pub fn handleKeyDown(
     }
 }
 
+const FrameContext = @import("root.zig").FrameContext;
+
 /// System Pass: Process FrameInput snapshot and map keypresses/shortcuts to AppIntents
-pub fn sysProcessInput(state: *AppState, input: FrameInput) !void {
+pub fn sysProcessInput(ctx: FrameContext) !void {
+    const state = ctx.state;
+    const input = ctx.input orelse return;
     for (input.keys_pressed.items) |key| {
         try handleKeyDown(state, key, input.key_modifiers);
     }
 }
+

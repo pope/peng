@@ -3,8 +3,7 @@ const clay = @import("zclay");
 const state_pkg = @import("state");
 const app_state = @import("../state.zig");
 const app_palette = @import("../core/palette.zig");
-const systems = @import("../systems.zig");
-const core_fs = @import("../core/fs.zig");
+const FrameContext = @import("root.zig").FrameContext;
 const Key = state_pkg.Key;
 const KeyModifiers = state_pkg.KeyModifiers;
 const FrameInput = state_pkg.FrameInput;
@@ -16,7 +15,6 @@ fn handlePaletteReturnGoToImage(self: *AppState, raw_str: []const u8) !void {
         if (std.fmt.parseInt(usize, raw_str, 10)) |v| {
             if (v >= 1 and v <= self.viewer.navigation.image_list.items.len) {
                 self.viewer.navigation.current_index = v - 1;
-                try systems.sysUpdateCache(self);
                 self.viewer.ui.palette.mode = .inactive;
                 stopTextInput(self.viewer.display);
             }
@@ -25,6 +23,7 @@ fn handlePaletteReturnGoToImage(self: *AppState, raw_str: []const u8) !void {
         }
     }
 }
+
 
 fn handlePaletteReturnSlideshow(self: *AppState, raw_str: []const u8) !void {
     if (raw_str.len > 0) {
@@ -204,9 +203,14 @@ pub fn handlePaletteKeys(
     return false;
 }
 
+const core_fs = @import("../core/fs.zig");
+
 /// System Pass: Process active Command Palette text typing, list navigation, and click-outside dismissal.
 /// Returns true if a open palette was dismissed on this frame.
-pub fn sysProcessPaletteInput(self: *AppState, input: FrameInput) !bool {
+pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
+    const self = ctx.state;
+    const input = ctx.input orelse return false;
+
     if (self.viewer.ui.palette.mode == .inactive) return false;
 
     // 1. Text Typing Query Updates
@@ -245,6 +249,7 @@ pub fn sysProcessPaletteInput(self: *AppState, input: FrameInput) !bool {
 
     return palette_closed_this_frame;
 }
+
 
 test "handlePaletteKeys directory_navigator key interactions" {
     const allocator = std.testing.allocator;

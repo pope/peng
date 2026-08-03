@@ -480,15 +480,11 @@ pub const AppState = struct {
     }
 
     pub fn next(self: *AppState) !void {
-        if (self.viewer.navigation.nextIndex() != null) {
-            try systems.sysUpdateCache(self);
-        }
+        _ = self.viewer.navigation.nextIndex();
     }
 
     pub fn prev(self: *AppState) !void {
-        if (self.viewer.navigation.prevIndex() != null) {
-            try systems.sysUpdateCache(self);
-        }
+        _ = self.viewer.navigation.prevIndex();
     }
 
     pub fn handlePathSelection(self: *AppState, path: []const u8) !void {
@@ -525,8 +521,6 @@ pub const AppState = struct {
                 try self.viewer.navigation.image_list.append(self.allocator, dup);
                 self.viewer.navigation.current_index = 0;
 
-                try systems.sysUpdateCache(self);
-
                 try fs.startAsyncPathScan(self, path, false);
             }
         }
@@ -538,30 +532,8 @@ pub const AppState = struct {
         try self.handlePathSelection(path);
     }
 
-    pub fn update(self: *AppState, input: FrameInput) !void {
-        self.updateCurrentRotation();
 
-        // 0. Enqueued Intents pass
-        try systems.sysExecuteIntents(self);
 
-        // 1. Slideshow timer update pass
-        try systems.sysUpdateSlideshow(self, input.delta_time_ms);
-
-        // 2. Command Palette System pass (text input, list selection, click-outside dismissal)
-        const palette_closed_this_frame = try systems.sysProcessPaletteInput(self, input);
-
-        // 3. Drop file/directory updates
-        if (input.dropped_path) |path| {
-            try self.handlePathSelection(path);
-        }
-
-        // 4. Viewport Mouse Drag & Scroll Zoom pass
-        systems.sysUpdateViewport(self, input, palette_closed_this_frame);
-
-        // 5. Main Keyboard & Action System passes (sysProcessInput)
-        try systems.sysProcessInput(self, input);
-        try systems.sysExecuteIntents(self);
-    }
 
     pub fn handleScreenshotPostRender(self: *AppState, render_err: ?anyerror) void {
         switch (self.viewer.ui.screenshot_mode) {
@@ -876,7 +848,7 @@ test "AppState.isPointerInDebugPanel and click localization" {
     try std.testing.expect(!state.isPointerInDebugPanel(input_outside));
 
     state.viewer.ui.palette.mode = .actions;
-    try state.update(input_inside);
+    _ = try systems.sysProcessPaletteInput(.{ .state = &state, .frame_allocator = allocator, .input = input_inside });
     try std.testing.expect(state.viewer.ui.palette.mode == .actions);
 }
 
@@ -916,13 +888,15 @@ test "AppState slideshow timer auto-advances slide" {
         .delta_time_ms = 1000.0,
     };
 
-    try state.update(frame_input_1s);
+    try systems.sysUpdateSlideshow(.{ .state = &state, .frame_allocator = allocator, .input = frame_input_1s, .delta_time_ms = 1000.0 });
     try std.testing.expectEqual(@as(usize, 0), state.viewer.navigation.current_index.?);
 
     // Pass another second (total 2000ms >= 2.0s interval) -> advances to index 1
-    try state.update(frame_input_1s);
+    try systems.sysUpdateSlideshow(.{ .state = &state, .frame_allocator = allocator, .input = frame_input_1s, .delta_time_ms = 1000.0 });
     try std.testing.expectEqual(@as(usize, 1), state.viewer.navigation.current_index.?);
 }
+
+
 
 test "RollingStats mean and stdev" {
     var stats = state_pkg.ui_state.RollingStats{};

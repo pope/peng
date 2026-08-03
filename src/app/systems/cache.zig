@@ -44,9 +44,12 @@ fn spawnCacheDecodeSlot(state: *AppState, index: usize, dup_path: [:0]const u8) 
     try workers_mod.spawnDecode(args);
 }
 
+const FrameContext = @import("root.zig").FrameContext;
+
 /// System function that manages RAM/GPU cache slot eviction, calculates prefetch windows
 /// (accounting for rapid navigation throttling), and spawns background image decode workers.
-pub fn sysUpdateCache(state: *AppState) !void {
+pub fn sysUpdateCache(ctx: FrameContext) !void {
+    const state = ctx.state;
     state.updateCurrentRotation();
 
     const len = state.viewer.navigation.image_list.items.len;
@@ -155,21 +158,13 @@ pub fn sysUpdateCache(state: *AppState) !void {
     }
 }
 
-/// System function that triggers background cache prefetching when the engine loop is idle.
-pub fn sysCheckIdlePreload(state: *AppState) void {
-    if (state.viewer.navigation.image_list.items.len <= 1) return;
-    const now = sdl.timer.getTicks();
-    if (now - state.viewer.navigation.last_nav_time_ms >= 150) {
-        sysUpdateCache(state) catch |err| std.log.warn("Idle preload sysUpdateCache failed: {}", .{err});
-    }
-}
-
 test "sysUpdateCache - empty image list" {
     const allocator = std.testing.allocator;
     var state = try AppState.initHeadless(allocator, std.Io.Threaded.global_single_threaded.io());
     defer state.deinit();
 
-    try sysUpdateCache(&state);
+    const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
+    try sysUpdateCache(ctx);
     try std.testing.expectEqual(@as(usize, 0), state.cache.entries.items.len);
 }
 
@@ -196,36 +191,11 @@ test "sysUpdateCache - populates prefetch window and evicts unwanted entries" {
     });
     try std.testing.expectEqual(@as(usize, 1), state.cache.entries.items.len);
 
-    try sysUpdateCache(&state);
+    const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
+    try sysUpdateCache(ctx);
 
     // Index 99 should have been evicted, and current index 0 should be present
     try std.testing.expect(state.cache.get(state.activeKey(99)) == null);
     try std.testing.expect(state.cache.get(state.activeKey(0)) != null);
 }
 
-test "sysCheckIdlePreload - single image list" {
-    const allocator = std.testing.allocator;
-    var state = try AppState.initHeadless(allocator, std.Io.Threaded.global_single_threaded.io());
-    defer state.deinit();
-
-    sysCheckIdlePreload(&state);
-    try std.testing.expectEqual(@as(usize, 0), state.cache.entries.items.len);
-}
-
-test "sysCheckIdlePreload - triggers preloading when idle" {
-    const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
-    var state = try AppState.initHeadless(allocator, io);
-    defer state.deinit();
-
-    const paths = [_][]const u8{ "a.png", "b.png" };
-    for (paths) |p| {
-        const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, p);
-        try state.viewer.navigation.image_list.append(allocator, dup);
-    }
-    state.viewer.navigation.current_index = 0;
-    state.viewer.navigation.last_nav_time_ms = 0; // Simulated past time to satisfy idle threshold (>150ms)
-
-    sysCheckIdlePreload(&state);
-    try std.testing.expect(state.cache.entries.items.len > 0);
-}

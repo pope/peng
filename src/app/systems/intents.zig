@@ -5,7 +5,7 @@ const state = @import("state");
 const app_state = @import("../state.zig");
 const palette_module = @import("../core/palette.zig");
 const intents = @import("intents");
-const systems = @import("../systems.zig");
+const FrameContext = @import("root.zig").FrameContext;
 const Key = state.Key;
 const KeyModifiers = state.KeyModifiers;
 const AppState = app_state.AppState;
@@ -85,20 +85,17 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
         .first_image => {
             if (self.viewer.navigation.goToIndex(0) != null) {
                 self.resetZoomPan();
-                try systems.sysUpdateCache(self);
             }
         },
         .last_image => {
             if (self.viewer.navigation.image_list.items.len > 0) {
                 _ = self.viewer.navigation.goToIndex(self.viewer.navigation.image_list.items.len - 1);
                 self.resetZoomPan();
-                try systems.sysUpdateCache(self);
             }
         },
         .go_to_image => |idx| {
             if (self.viewer.navigation.goToIndex(idx) != null) {
                 self.resetZoomPan();
-                try systems.sysUpdateCache(self);
             }
         },
         .set_palette => |p| {
@@ -157,13 +154,15 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
 }
 
 /// System Pass: Execute queued discrete intents
-pub fn sysExecuteIntents(self: *AppState) !void {
+pub fn sysExecuteIntents(ctx: FrameContext) !void {
+    const self = ctx.state;
     if (self.pending_intents.items.len == 0) return;
     for (self.pending_intents.items) |intent| {
         try executeIntent(self, intent);
     }
     self.clearIntents();
 }
+
 
 test "palette_action_items metadata" {
     const nav_item = state.palette_action_items[6];

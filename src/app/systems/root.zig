@@ -1,3 +1,14 @@
+const std = @import("std");
+const state_pkg = @import("state");
+const AppState = @import("../state.zig").AppState;
+
+pub const FrameContext = struct {
+    state: *AppState,
+    frame_allocator: std.mem.Allocator,
+    input: ?state_pkg.FrameInput = null,
+    delta_time_ms: f64 = 0.0,
+};
+
 pub const intents = @import("intents.zig");
 pub const slideshow = @import("slideshow.zig");
 pub const viewport = @import("viewport.zig");
@@ -14,7 +25,6 @@ pub const sysUpdateViewport = viewport.sysUpdateViewport;
 pub const sysProcessAssetUploads = asset_upload.sysProcessAssetUploads;
 pub const sysSyncMetrics = metrics.sysSyncMetrics;
 pub const sysUpdateCache = cache.sysUpdateCache;
-pub const sysCheckIdlePreload = cache.sysCheckIdlePreload;
 pub const sysExecuteIpcCommands = ipc.sysExecuteIpcCommands;
 pub const sysProcessInput = input.sysProcessInput;
 pub const sysProcessPaletteInput = palette_input.sysProcessPaletteInput;
@@ -30,3 +40,4 @@ test {
     _ = input;
     _ = palette_input;
 }
+

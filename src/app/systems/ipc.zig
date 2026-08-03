@@ -5,12 +5,14 @@ const ipc = @import("ipc");
 const state_pkg = @import("state");
 const intents = @import("intents");
 
+const FrameContext = @import("root.zig").FrameContext;
 const intents_system = @import("intents.zig");
 const app_events = @import("../events.zig");
 
 /// System function that drains queued socket commands from `state.pending_ipc_commands`,
-/// parses commands (`zoom`, `pan`, `next`, `filter`), and executes corresponding intents.
-pub fn sysExecuteIpcCommands(state: *AppState) void {
+/// parses commands (`zoom`, `pan`, `next`, `filter`), and pushes corresponding intents into `pending_intents`.
+pub fn sysExecuteIpcCommands(ctx: FrameContext) void {
+    const state = ctx.state;
     if (state.pending_ipc_commands.items.len == 0) return;
 
     for (state.pending_ipc_commands.items) |cmd_data| {
@@ -49,7 +51,6 @@ pub fn sysExecuteIpcCommands(state: *AppState) void {
             .adjust => |adj| {
                 state.pushIntent(.{ .set_brightness = adj.brightness }) catch |err| std.log.err("Failed to push brightness adjust intent: {}", .{err});
                 state.pushIntent(.{ .set_contrast = adj.contrast }) catch |err| std.log.err("Failed to push contrast adjust intent: {}", .{err});
-                intents_system.sysExecuteIntents(state) catch |err| std.log.err("Failed to execute IPC adjust intents: {}", .{err});
                 ipc.respondOk(state.io, cmd_data.client_stream) catch |err| {
                     std.log.err("Failed to respond OK for adjust command: {}", .{err});
                 };
@@ -86,10 +87,20 @@ pub fn sysExecuteIpcCommands(state: *AppState) void {
             },
             else => {
                 if (parsed.toIntent()) |intent| {
-                    state.pushIntent(intent) catch |err| {
+                    var final_intent = intent;
+                    switch (intent) {
+                        .set_palette => |p| {
+                            if (p.query) |q| {
+                                if (ctx.frame_allocator.dupe(u8, q)) |dup_q| {
+                                    final_intent = .{ .set_palette = .{ .mode = p.mode, .query = dup_q } };
+                                } else |_| {}
+                            }
+                        },
+                        else => {},
+                    }
+                    state.pushIntent(final_intent) catch |err| {
                         std.log.err("Failed to push intent from IPC command: {}", .{err});
                     };
-                    intents_system.sysExecuteIntents(state) catch |err| std.log.err("Failed to execute IPC intent: {}", .{err});
                     ipc.respondOk(state.io, cmd_data.client_stream) catch |err| {
                         std.log.err("Failed to respond OK to IPC client: {}", .{err});
                     };
@@ -97,6 +108,7 @@ pub fn sysExecuteIpcCommands(state: *AppState) void {
                     cmd_data.client_stream.close(state.io);
                 }
             },
+
         }
     }
     state.pending_ipc_commands.clearRetainingCapacity();
@@ -117,7 +129,9 @@ test "sysExecuteIpcCommands - drains pending commands and mutates state" {
     };
 
     try state.pending_ipc_commands.append(allocator, cmd_data);
-    sysExecuteIpcCommands(&state);
+    const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
+    sysExecuteIpcCommands(ctx);
+    try intents_system.sysExecuteIntents(ctx);
 
     try std.testing.expectEqual(@as(usize, 0), state.pending_ipc_commands.items.len);
     try std.testing.expectEqual(@as(f32, 2.0), state.viewer.viewport.zoom_factor.get());
@@ -134,9 +148,12 @@ test "sysExecuteIpcCommands - multiple queued commands and adjust command" {
     cmd1_data.* = .{ .command = cmd1_str, .client_stream = undefined };
     try state.pending_ipc_commands.append(allocator, cmd1_data);
 
-    sysExecuteIpcCommands(&state);
+    const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
+    sysExecuteIpcCommands(ctx);
+    try intents_system.sysExecuteIntents(ctx);
 
     try std.testing.expectEqual(@as(usize, 0), state.pending_ipc_commands.items.len);
     try std.testing.expectEqual(@as(f32, 0.5), state.viewer.viewport.brightness);
     try std.testing.expectEqual(@as(f32, 2.0), state.viewer.viewport.contrast);
 }
+
