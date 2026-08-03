@@ -163,7 +163,6 @@ pub fn sysExecuteIntents(ctx: FrameContext) !void {
     self.clearIntents();
 }
 
-
 test "palette_action_items metadata" {
     const nav_item = state.palette_action_items[6];
     try std.testing.expectEqualStrings("Navigate Directories...", nav_item.name);

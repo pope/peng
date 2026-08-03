@@ -36,4 +36,3 @@ pub fn sysProcessInput(ctx: FrameContext) !void {
         try handleKeyDown(state, key, input.key_modifiers);
     }
 }
-

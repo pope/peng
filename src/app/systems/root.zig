@@ -40,4 +40,3 @@ test {
     _ = input;
     _ = palette_input;
 }
-

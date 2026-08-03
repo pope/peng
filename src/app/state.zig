@@ -532,9 +532,6 @@ pub const AppState = struct {
         try self.handlePathSelection(path);
     }
 
-
-
-
     pub fn handleScreenshotPostRender(self: *AppState, render_err: ?anyerror) void {
         switch (self.viewer.ui.screenshot_mode) {
             .idle => {},
@@ -895,8 +892,6 @@ test "AppState slideshow timer auto-advances slide" {
     try systems.sysUpdateSlideshow(.{ .state = &state, .frame_allocator = allocator, .input = frame_input_1s, .delta_time_ms = 1000.0 });
     try std.testing.expectEqual(@as(usize, 1), state.viewer.navigation.current_index.?);
 }
-
-
 
 test "RollingStats mean and stdev" {
     var stats = state_pkg.ui_state.RollingStats{};

@@ -10,4 +10,3 @@ pub fn sysUpdateSlideshow(ctx: FrameContext) !void {
         try state.next();
     }
 }
-

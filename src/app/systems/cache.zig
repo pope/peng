@@ -198,4 +198,3 @@ test "sysUpdateCache - populates prefetch window and evicts unwanted entries" {
     try std.testing.expect(state.cache.get(state.activeKey(99)) == null);
     try std.testing.expect(state.cache.get(state.activeKey(0)) != null);
 }
-

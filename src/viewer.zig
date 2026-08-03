@@ -58,7 +58,6 @@ pub fn runUpdatePhase(
     app.systems.sysSyncMetrics(ctx);
 }
 
-
 /// Main frame update function encapsulated within the hot-reloadable viewer library.
 pub fn updateFrame(
     app_state: *app.state.AppState,
@@ -161,7 +160,6 @@ pub fn updateFrame(
     if (app_state.gpu_device == null) return error.GpuNotInitialized;
 
     const ui_model = state_pkg.UiViewModel{
-
         .is_fullscreen = app_state.viewer.isFullscreen(),
         .total_images = app_state.viewer.navigation.image_list.items.len,
         .image_list = app_state.viewer.navigation.image_list.items,

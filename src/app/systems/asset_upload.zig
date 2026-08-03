@@ -19,4 +19,3 @@ test "sysProcessAssetUploads - safe execution on headless state" {
     const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
     sysProcessAssetUploads(ctx);
 }
-

@@ -24,7 +24,6 @@ fn handlePaletteReturnGoToImage(self: *AppState, raw_str: []const u8) !void {
     }
 }
 
-
 fn handlePaletteReturnSlideshow(self: *AppState, raw_str: []const u8) !void {
     if (raw_str.len > 0) {
         if (std.fmt.parseFloat(f32, raw_str)) |val| {
@@ -249,7 +248,6 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
 
     return palette_closed_this_frame;
 }
-
 
 test "handlePaletteKeys directory_navigator key interactions" {
     const allocator = std.testing.allocator;

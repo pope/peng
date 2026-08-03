@@ -108,7 +108,6 @@ pub fn sysExecuteIpcCommands(ctx: FrameContext) void {
                     cmd_data.client_stream.close(state.io);
                 }
             },
-
         }
     }
     state.pending_ipc_commands.clearRetainingCapacity();
@@ -156,4 +155,3 @@ test "sysExecuteIpcCommands - multiple queued commands and adjust command" {
     try std.testing.expectEqual(@as(f32, 0.5), state.viewer.viewport.brightness);
     try std.testing.expectEqual(@as(f32, 2.0), state.viewer.viewport.contrast);
 }
-
