@@ -11,24 +11,68 @@ pub const ScoredMatch = struct {
     score: i32,
 };
 
-pub const DirectoryEntryType = enum {
-    directory,
-    image_file,
+pub const FolderScanState = union(enum) {
+    unscanned,
+    permission_denied,
+    scanned: struct {
+        image_count: usize = 0,
+        subdir_count: usize = 0,
+    },
 };
 
-pub const DirectoryEntry = struct {
-    name: []const u8,
-    kind: DirectoryEntryType,
-    full_path: []const u8 = "",
-    image_count: ?usize = null,
-    subdir_count: ?usize = null,
+pub const DirectoryEntry = union(enum) {
+    parent: struct {
+        name: []const u8,
+        full_path: []const u8 = "",
+    },
+    directory: struct {
+        name: []const u8,
+        full_path: []const u8 = "",
+        scan: FolderScanState = .unscanned,
+    },
+    image_file: struct {
+        name: []const u8,
+        full_path: []const u8 = "",
+    },
+
+    pub fn getName(self: DirectoryEntry) []const u8 {
+        return switch (self) {
+            .parent => |p| p.name,
+            .directory => |d| d.name,
+            .image_file => |f| f.name,
+        };
+    }
+
+    pub fn getFullPath(self: DirectoryEntry) []const u8 {
+        return switch (self) {
+            .parent => |p| p.full_path,
+            .directory => |d| d.full_path,
+            .image_file => |f| f.full_path,
+        };
+    }
+
+    pub fn isDirectory(self: DirectoryEntry) bool {
+        return self == .directory or self == .parent;
+    }
 
     pub fn getImageCount(self: DirectoryEntry) ?usize {
-        return self.image_count;
+        return switch (self) {
+            .directory => |d| switch (d.scan) {
+                .scanned => |s| s.image_count,
+                else => null,
+            },
+            else => null,
+        };
     }
 
     pub fn getSubdirCount(self: DirectoryEntry) ?usize {
-        return self.subdir_count;
+        return switch (self) {
+            .directory => |d| switch (d.scan) {
+                .scanned => |s| s.subdir_count,
+                else => null,
+            },
+            else => null,
+        };
     }
 };
 
@@ -114,10 +158,10 @@ pub const PaletteState = struct {
         self.dir_items.deinit(self.allocator);
     }
 
-    fn clearDirItems(self: *PaletteState) void {
+    pub fn clearDirItems(self: *PaletteState) void {
         for (self.dir_items.items) |entry| {
-            self.allocator.free(entry.name);
-            if (entry.full_path.len > 0) self.allocator.free(entry.full_path);
+            self.allocator.free(entry.getName());
+            if (entry.getFullPath().len > 0) self.allocator.free(entry.getFullPath());
         }
         self.dir_items.clearRetainingCapacity();
     }
@@ -198,19 +242,27 @@ pub const PaletteState = struct {
             for (self.dir_items.items, 0..) |_, idx| {
                 try self.matches.append(self.allocator, idx);
             }
+            if (self.last_child_dir.items.len > 0) {
+                for (self.dir_items.items, 0..) |entry, match_idx| {
+                    if (std.mem.eql(u8, entry.getName(), self.last_child_dir.items)) {
+                        self.selected_idx = match_idx;
+                        break;
+                    }
+                }
+            }
             return;
         }
 
         var max_h: usize = self.max_haystack_len;
         for (self.dir_items.items) |entry| {
-            max_h = @max(max_h, entry.name.len);
+            max_h = @max(max_h, entry.getName().len);
         }
         self.max_haystack_len = max_h;
 
         const searcher_ptr = try self.getSearcher(max_h, query_str.len);
 
         for (self.dir_items.items, 0..) |entry, idx| {
-            if (searcher_ptr.score(entry.name, query_str)) |score| {
+            if (searcher_ptr.score(entry.getName(), query_str)) |score| {
                 try self.scored_matches.append(self.allocator, .{ .index = idx, .score = score });
             }
         }

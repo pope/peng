@@ -134,8 +134,8 @@ pub fn scanDirectoryEntries(gpa: std.mem.Allocator, io: std.Io, dir_path: []cons
     const start_len = entries.items.len;
     errdefer {
         for (entries.items[start_len..]) |entry| {
-            gpa.free(entry.name);
-            gpa.free(entry.full_path);
+            gpa.free(entry.getName());
+            if (entry.getFullPath().len > 0) gpa.free(entry.getFullPath());
         }
         entries.shrinkRetainingCapacity(start_len);
     }
@@ -155,14 +155,25 @@ pub fn scanDirectoryEntries(gpa: std.mem.Allocator, io: std.Io, dir_path: []cons
 
             const counts = countFolderContents(io, full_path);
             try entries.append(gpa, .{
-                .name = name,
-                .full_path = full_path,
-                .kind = .directory,
-                .image_count = counts.image_count,
-                .subdir_count = counts.subdir_count,
+                .directory = .{
+                    .name = name,
+                    .full_path = full_path,
+                    .scan = .{
+                        .scanned = .{
+                            .image_count = counts.image_count,
+                            .subdir_count = counts.subdir_count,
+                        },
+                    },
+                },
             });
         }
     }
+
+    std.mem.sort(DirectoryEntry, entries.items[start_len..], {}, struct {
+        fn lessThan(_: void, a: DirectoryEntry, b: DirectoryEntry) bool {
+            return std.ascii.lessThanIgnoreCase(a.getName(), b.getName());
+        }
+    }.lessThan);
 }
 
 pub fn getChildBasename(io: std.Io, path: []const u8, buf: []u8) []const u8 {

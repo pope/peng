@@ -611,13 +611,13 @@ pub fn renderSelectionList(
                             defer dir_matches.deinit(frame_allocator);
                             const query_str = palette.query.items;
 
-                            if (query_str.len > 0 and entry.name.len > 0) {
-                                const searcher_opt = palette.getSearcher(entry.name.len, query_str.len) catch |err| blk: {
+                            if (query_str.len > 0 and entry.getName().len > 0) {
+                                const searcher_opt = palette.getSearcher(entry.getName().len, query_str.len) catch |err| blk: {
                                     std.log.err("getSearcher failed: {}", .{err});
                                     break :blk null;
                                 };
                                 if (searcher_opt) |searcher_ptr| {
-                                    const res = searcher_ptr.scoreMatches(entry.name, query_str);
+                                    const res = searcher_ptr.scoreMatches(entry.getName(), query_str);
                                     if (res.score != null) {
                                         dir_matches.appendSlice(frame_allocator, res.matches) catch |err| {
                                             std.log.err("appendSlice dir_matches failed: {}", .{err});
@@ -653,7 +653,7 @@ pub fn renderSelectionList(
                                     });
                                 });
 
-                                const trunc_folder = truncateFilenameMiddle(frame_allocator, entry.name, 350.0, 13, measure_data);
+                                const trunc_folder = truncateFilenameMiddle(frame_allocator, entry.getName(), 350.0, 13, measure_data);
                                 const display_foldername = trunc_folder.display;
                                 const final_folder_matches = remapMiddleTruncatedMatches(frame_allocator, dir_matches.items, trunc_folder.head_len, trunc_folder.tail_start_idx) catch dir_matches.items;
 
@@ -749,7 +749,7 @@ pub fn renderSelectionList(
                     .directory_navigator => {
                         if (real_idx < palette.dir_items.items.len) {
                             const entry = palette.dir_items.items[real_idx];
-                            const path_copy = try frame_allocator.dupe(u8, entry.full_path);
+                            const path_copy = try frame_allocator.dupe(u8, entry.getFullPath());
                             try ui_model.pending_intents.append(ui_model.gpa_allocator, .{
                                 .set_palette = .{ .mode = .directory_navigator, .query = path_copy },
                             });
@@ -1020,14 +1020,17 @@ test "PaletteState directory_navigator mode configuration and item matching" {
     try palette.current_nav_dir.appendSlice(std.testing.allocator, "/home/user/Pictures");
 
     try palette.dir_items.append(std.testing.allocator, .{
-        .name = try std.testing.allocator.dupe(u8, ".."),
-        .full_path = try std.testing.allocator.dupe(u8, "/home/user"),
-        .kind = .parent,
+        .parent = .{
+            .name = try std.testing.allocator.dupe(u8, ".."),
+            .full_path = try std.testing.allocator.dupe(u8, "/home/user"),
+        },
     });
     try palette.dir_items.append(std.testing.allocator, .{
-        .name = try std.testing.allocator.dupe(u8, "Vacation"),
-        .full_path = try std.testing.allocator.dupe(u8, "/home/user/Pictures/Vacation"),
-        .kind = .{ .directory = .{ .image_count = 12 } },
+        .directory = .{
+            .name = try std.testing.allocator.dupe(u8, "Vacation"),
+            .full_path = try std.testing.allocator.dupe(u8, "/home/user/Pictures/Vacation"),
+            .scan = .{ .scanned = .{ .image_count = 12 } },
+        },
     });
 
     try palette.rebuildDirectoryMatches();

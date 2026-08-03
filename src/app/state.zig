@@ -770,7 +770,7 @@ test "AppState.openPalette directory_navigator steps up if 0 subdirectories" {
     // Verify child_leaf is selected
     var found_leaf_selected = false;
     if (state.viewer.ui.palette.selected_idx < state.viewer.ui.palette.dir_items.items.len) {
-        if (std.mem.eql(u8, state.viewer.ui.palette.dir_items.items[state.viewer.ui.palette.selected_idx].name, "child_leaf")) {
+        if (std.mem.eql(u8, state.viewer.ui.palette.dir_items.items[state.viewer.ui.palette.selected_idx].getName(), "child_leaf")) {
             found_leaf_selected = true;
         }
     }
@@ -802,7 +802,7 @@ test "AppState.openPalette steps up from top-level relative leaf dir without sla
     // Verify top_leaf is pre-selected in "."
     var found_leaf_selected = false;
     if (state.viewer.ui.palette.selected_idx < state.viewer.ui.palette.dir_items.items.len) {
-        if (std.mem.eql(u8, state.viewer.ui.palette.dir_items.items[state.viewer.ui.palette.selected_idx].name, top_leaf)) {
+        if (std.mem.eql(u8, state.viewer.ui.palette.dir_items.items[state.viewer.ui.palette.selected_idx].getName(), top_leaf)) {
             found_leaf_selected = true;
         }
     }

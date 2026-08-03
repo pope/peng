@@ -56,7 +56,7 @@ fn handlePaletteReturnDirectory(self: *AppState, mod: KeyModifiers) !void {
             const match_idx = palette.matches.items[palette.selected_idx];
             if (match_idx < palette.dir_items.items.len) {
                 const entry = palette.dir_items.items[match_idx];
-                try self.startAsyncPathScan(entry.full_path, true);
+                try self.startAsyncPathScan(entry.getFullPath(), true);
                 self.viewer.ui.palette.reset();
                 stopTextInput(self.viewer.display);
             }
@@ -98,7 +98,7 @@ pub fn handlePaletteKeys(
                     const match_idx = palette.matches.items[palette.selected_idx];
                     if (match_idx < palette.dir_items.items.len) {
                         const entry = palette.dir_items.items[match_idx];
-                        const path_copy = try self.allocator.dupe(u8, entry.full_path);
+                        const path_copy = try self.allocator.dupe(u8, entry.getFullPath());
                         defer self.allocator.free(path_copy);
                         palette.query.clearRetainingCapacity();
                         try app_palette.loadDirectoryEntries(palette, self.io, path_copy);
@@ -276,7 +276,7 @@ test "handlePaletteKeys directory_navigator key interactions" {
     // Locate index of sub_no_images
     var match_idx_no_img: usize = 0;
     for (state.viewer.ui.palette.dir_items.items, 0..) |item, i| {
-        if (std.mem.eql(u8, item.name, "sub_no_images")) {
+        if (std.mem.eql(u8, item.getName(), "sub_no_images")) {
             match_idx_no_img = i;
             break;
         }
@@ -325,7 +325,7 @@ test "handlePaletteKeys stepping up from dot to parent directory preselects work
 
     var found_cwd_selected = false;
     if (state.viewer.ui.palette.selected_idx < state.viewer.ui.palette.dir_items.items.len) {
-        if (std.mem.eql(u8, state.viewer.ui.palette.dir_items.items[state.viewer.ui.palette.selected_idx].name, "peng")) {
+        if (std.mem.eql(u8, state.viewer.ui.palette.dir_items.items[state.viewer.ui.palette.selected_idx].getName(), "peng")) {
             found_cwd_selected = true;
         }
     }

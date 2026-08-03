@@ -119,8 +119,8 @@ test "scanDirectoryEntries" {
     var entries: std.ArrayList(DirectoryEntry) = .empty;
     defer {
         for (entries.items) |e| {
-            allocator.free(e.name);
-            allocator.free(e.full_path);
+            allocator.free(e.getName());
+            if (e.getFullPath().len > 0) allocator.free(e.getFullPath());
         }
         entries.deinit(allocator);
     }
@@ -130,17 +130,17 @@ test "scanDirectoryEntries" {
     try std.testing.expectEqual(@as(usize, 3), entries.items.len);
 
     // Index 0: sub_a
-    try std.testing.expectEqualStrings("sub_a", entries.items[0].name);
-    try std.testing.expectEqualStrings(tmp_dir_path ++ "/sub_a", entries.items[0].full_path);
-    try std.testing.expectEqual(@as(usize, 1), entries.items[0].getImageCount());
+    try std.testing.expectEqualStrings("sub_a", entries.items[0].getName());
+    try std.testing.expectEqualStrings(tmp_dir_path ++ "/sub_a", entries.items[0].getFullPath());
+    try std.testing.expectEqual(@as(usize, 1), entries.items[0].getImageCount().?);
 
     // Index 1: sub_b
-    try std.testing.expectEqualStrings("sub_b", entries.items[1].name);
-    try std.testing.expectEqualStrings(tmp_dir_path ++ "/sub_b", entries.items[1].full_path);
-    try std.testing.expectEqual(@as(usize, 2), entries.items[1].getImageCount());
+    try std.testing.expectEqualStrings("sub_b", entries.items[1].getName());
+    try std.testing.expectEqualStrings(tmp_dir_path ++ "/sub_b", entries.items[1].getFullPath());
+    try std.testing.expectEqual(@as(usize, 2), entries.items[1].getImageCount().?);
 
     // Index 2: sub_empty
-    try std.testing.expectEqualStrings("sub_empty", entries.items[2].name);
-    try std.testing.expectEqualStrings(tmp_dir_path ++ "/sub_empty", entries.items[2].full_path);
-    try std.testing.expectEqual(@as(usize, 0), entries.items[2].getImageCount());
+    try std.testing.expectEqualStrings("sub_empty", entries.items[2].getName());
+    try std.testing.expectEqualStrings(tmp_dir_path ++ "/sub_empty", entries.items[2].getFullPath());
+    try std.testing.expectEqual(@as(usize, 0), entries.items[2].getImageCount().?);
 }
