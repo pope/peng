@@ -1,6 +1,5 @@
 const std = @import("std");
-const app_state = @import("../app/state.zig");
-const ScaleMode = app_state.ScaleMode;
+const ScaleMode = @import("intents").ScaleMode;
 
 pub const ParsedArgs = struct {
     arg_path: ?[]const u8,
@@ -9,6 +8,13 @@ pub const ParsedArgs = struct {
     update_baselines: bool,
     headless: bool,
     ipc_enabled: bool,
+
+    pub fn deinit(self: *ParsedArgs, gpa: std.mem.Allocator) void {
+        if (self.arg_path) |p| {
+            gpa.free(p);
+            self.arg_path = null;
+        }
+    }
 };
 
 pub fn parseCommandLineArgs(init: std.process.Init, gpa: std.mem.Allocator) !ParsedArgs {

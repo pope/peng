@@ -16,7 +16,7 @@ pub fn main(init: std.process.Init) !void {
     };
 
     // Join the rest of the arguments with space
-    var command_buf = std.ArrayList(u8).empty;
+    var command_buf: std.ArrayList(u8) = .empty;
     defer command_buf.deinit(gpa);
     var idx: usize = 0;
     while (args_it.next()) |arg| : (idx += 1) {

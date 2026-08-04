@@ -1,3 +1,8 @@
+//! GPU Text Texture Atlas Cache
+//!
+//! Provides a single shared 1024x1024 RGBA texture atlas and row/shelf slot allocation
+//! for rendered text snippets to maximize GPU batching and eliminate per-label texture overhead.
+
 const std = @import("std");
 const sdl = @import("sdl");
 
@@ -5,6 +10,7 @@ pub const ATLAS_SIZE: u32 = 1024;
 pub const WHITE_U: f32 = 1.0 / @as(f32, @floatFromInt(ATLAS_SIZE));
 pub const WHITE_V: f32 = 1.0 / @as(f32, @floatFromInt(ATLAS_SIZE));
 
+/// Lookup key for cached text entries within the texture atlas.
 pub const TextCacheKey = struct {
     font_id: usize,
     font_size: u16,
@@ -12,6 +18,7 @@ pub const TextCacheKey = struct {
     hash: u64,
 };
 
+/// UV coordinates and metrics of text uploaded to the shared atlas texture.
 pub const TextCacheValue = struct {
     u_min: f32,
     v_min: f32,
@@ -21,6 +28,7 @@ pub const TextCacheValue = struct {
     h: f32,
 };
 
+/// Sub-texture atlas manager using dynamic row/shelf packing.
 pub const TextCache = struct {
     map: std.AutoHashMapUnmanaged(TextCacheKey, TextCacheValue) = .empty,
     row_x: u32 = 4,
@@ -88,5 +96,11 @@ pub const TextCache = struct {
         const total_pixels: f32 = @floatFromInt(ATLAS_SIZE * ATLAS_SIZE);
         const used_pixels: f32 = @floatFromInt(self.row_y * ATLAS_SIZE + self.row_x * self.row_h);
         return (used_pixels / total_pixels) * 100.0;
+    }
+
+    pub fn clearAll(self: *TextCache, allocator: std.mem.Allocator, dev_opt: ?sdl.gpu.Device) void {
+        _ = dev_opt;
+        _ = allocator;
+        self.resetAtlas();
     }
 };

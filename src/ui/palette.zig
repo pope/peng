@@ -1,13 +1,12 @@
 const std = @import("std");
 const clay = @import("zclay");
 const sdl = @import("sdl");
-const app_state = @import("../app/state.zig");
-const ViewerState = app_state.ViewerState;
-const PaletteState = app_state.PaletteState;
-const stopTextInput = app_state.stopTextInput;
-const app_actions = @import("../commands/actions.zig").app_actions;
-const getActionMetadata = @import("../commands/actions.zig").getActionMetadata;
-const types = @import("../app/types.zig");
+const state = @import("state");
+const types = state.types;
+const UiViewModel = types.UiViewModel;
+const PaletteState = state.PaletteState;
+const stopTextInput = state.stopTextInput;
+
 const MeasureTextUserData = types.MeasureTextUserData;
 const sdl3MeasureText = @import("graphics.zig").sdl3MeasureText;
 const layout_helpers = @import("layout_helpers.zig");
@@ -20,243 +19,20 @@ const truncateDirectory = text_utils.truncateDirectory;
 const formatSize = text_utils.formatSize;
 const theme = @import("theme.zig");
 
-const PaletteMode = app_state.PaletteMode;
+const intents = @import("intents");
+const PaletteMode = intents.PaletteMode;
 
-pub const TextChunk = struct {
-    slice: []const u8,
-    is_matched: bool,
-};
+pub const palette_items = @import("palette_items.zig");
+pub const TextChunk = palette_items.TextChunk;
+pub const partitionHighlightedText = palette_items.partitionHighlightedText;
+pub const renderFuzzyMatchText = palette_items.renderFuzzyMatchText;
+pub const renderHighlightedText = palette_items.renderHighlightedText;
+pub const palette_scroll = @import("palette_scroll.zig");
+pub const VirtualWindow = palette_scroll.VirtualWindow;
 
-fn appendOrMergeChunk(list: *std.ArrayList(TextChunk), allocator: std.mem.Allocator, slice: []const u8, is_matched: bool) !void {
-    if (slice.len == 0) return;
-    if (list.items.len > 0 and list.items[list.items.len - 1].is_matched == is_matched) {
-        const last = &list.items[list.items.len - 1];
-        const combined_len = last.slice.len + slice.len;
-        last.slice = last.slice.ptr[0..combined_len];
-    } else {
-        try list.append(allocator, .{
-            .slice = slice,
-            .is_matched = is_matched,
-        });
-    }
-}
-
-pub fn partitionHighlightedText(
-    allocator: std.mem.Allocator,
-    text: []const u8,
-    match_indices: []const usize,
-) ![]TextChunk {
-    if (text.len == 0 or match_indices.len == 0) {
-        if (text.len == 0) return &.{};
-        var list = try std.ArrayList(TextChunk).initCapacity(allocator, 1);
-        list.appendAssumeCapacity(.{ .slice = text, .is_matched = false });
-        return list.toOwnedSlice(allocator);
-    }
-
-    for (match_indices) |m_idx| {
-        if (m_idx >= text.len) {
-            std.log.warn("Fuzzy highlight match index {} out of bounds for string '{s}' (length {})", .{ m_idx, text, text.len });
-        }
-    }
-
-    var list = std.ArrayList(TextChunk).empty;
-    errdefer list.deinit(allocator);
-
-    var idx: usize = 0;
-    var match_ptr: usize = 0;
-
-    while (idx < text.len) {
-        while (match_ptr < match_indices.len and match_indices[match_ptr] < idx) {
-            match_ptr += 1;
-        }
-        const is_matched = (match_ptr < match_indices.len and match_indices[match_ptr] == idx);
-
-        const start = idx;
-        idx += 1;
-        while (idx < text.len and (text[idx] & 0xC0) == 0x80) {
-            idx += 1;
-        }
-
-        if (is_matched) {
-            match_ptr += 1;
-            while (idx < text.len and match_ptr < match_indices.len and match_indices[match_ptr] == idx) {
-                idx += 1;
-                while (idx < text.len and (text[idx] & 0xC0) == 0x80) {
-                    idx += 1;
-                }
-                match_ptr += 1;
-            }
-
-            var match_start = start;
-            var match_end = idx;
-
-            while (match_start < match_end and std.ascii.isWhitespace(text[match_start])) {
-                match_start += 1;
-            }
-            while (match_end > match_start and std.ascii.isWhitespace(text[match_end - 1])) {
-                match_end -= 1;
-            }
-
-            if (match_start >= match_end) {
-                try appendOrMergeChunk(&list, allocator, text[start..idx], false);
-            } else {
-                if (match_start > start) {
-                    try appendOrMergeChunk(&list, allocator, text[start..match_start], false);
-                }
-                try appendOrMergeChunk(&list, allocator, text[match_start..match_end], true);
-                if (idx > match_end) {
-                    try appendOrMergeChunk(&list, allocator, text[match_end..idx], false);
-                }
-            }
-        } else {
-            while (idx < text.len) {
-                while (match_ptr < match_indices.len and match_indices[match_ptr] < idx) {
-                    match_ptr += 1;
-                }
-                if (match_ptr < match_indices.len and match_indices[match_ptr] == idx) {
-                    break;
-                }
-                idx += 1;
-            }
-
-            try appendOrMergeChunk(&list, allocator, text[start..idx], false);
-        }
-    }
-
-    return try list.toOwnedSlice(allocator);
-}
-
-pub fn renderFuzzyMatchText(
-    allocator: std.mem.Allocator,
-    text: []const u8,
-    match_indices: []const usize,
-    font_size: u16,
-    normal_color: clay.Color,
-    highlight_color: clay.Color,
-) void {
-    if (text.len == 0) return;
-    if (match_indices.len == 0) {
-        clay.text(text, .{
-            .color = normal_color,
-            .font_size = font_size,
-            .font_id = 0,
-            .wrap_mode = .none,
-        });
-        return;
-    }
-
-    const chunks = partitionHighlightedText(allocator, text, match_indices) catch |err| {
-        std.log.err("partitionHighlightedText failed for '{s}': {}", .{ text, err });
-        clay.text(text, .{ .color = normal_color, .font_size = font_size, .font_id = 0, .wrap_mode = .none });
-        return;
-    };
-
-    clay.UI()(.{
-        .layout = .{
-            .sizing = .{ .w = .fit, .h = .fit },
-            .direction = .left_to_right,
-            .child_alignment = .{ .x = .left, .y = .center },
-        },
-    })({
-        for (chunks) |chunk| {
-            clay.text(chunk.slice, .{
-                .color = if (chunk.is_matched) highlight_color else normal_color,
-                .font_size = font_size,
-                .font_id = 0,
-                .wrap_mode = .none,
-            });
-        }
-    });
-}
-
-pub const renderHighlightedText = renderFuzzyMatchText;
-
-pub const PaletteConfig = struct {
-    title: []const u8,
-    placeholder: []const u8,
-    element_id: []const u8,
-    list_id: []const u8,
-    item_prefix: []const u8,
-    top_spacer_id: []const u8,
-    bottom_spacer_id: []const u8,
-    base_item_height: f32,
-};
-
-pub fn getPaletteConfig(mode: PaletteMode) PaletteConfig {
-    return switch (mode) {
-        .files => .{
-            .title = "Search Files",
-            .placeholder = "Type file name to search...",
-            .element_id = "CommandPalette",
-            .list_id = "CommandPaletteList",
-            .item_prefix = "PaletteItem_",
-            .top_spacer_id = "PaletteTopSpacer",
-            .bottom_spacer_id = "PaletteBottomSpacer",
-            .base_item_height = 58.0,
-        },
-        .actions => .{
-            .title = "Command Palette",
-            .placeholder = "Type a command to run...",
-            .element_id = "ActionPalette",
-            .list_id = "ActionPaletteList",
-            .item_prefix = "ActionItem_",
-            .top_spacer_id = "ActionTopSpacer",
-            .bottom_spacer_id = "ActionBottomSpacer",
-            .base_item_height = 50.0,
-        },
-        .set_brightness => .{
-            .title = "Set Brightness",
-            .placeholder = "Enter brightness (-1.0 to 1.0, e.g. 0.2)...",
-            .element_id = "BrightnessPalette",
-            .list_id = "BrightnessPaletteList",
-            .item_prefix = "BrightnessItem_",
-            .top_spacer_id = "BrightnessTopSpacer",
-            .bottom_spacer_id = "BrightnessBottomSpacer",
-            .base_item_height = 50.0,
-        },
-        .set_contrast => .{
-            .title = "Set Contrast",
-            .placeholder = "Enter contrast (0.0 to 5.0, e.g. 1.5)...",
-            .element_id = "ContrastPalette",
-            .list_id = "ContrastPaletteList",
-            .item_prefix = "ContrastItem_",
-            .top_spacer_id = "ContrastTopSpacer",
-            .bottom_spacer_id = "ContrastBottomSpacer",
-            .base_item_height = 50.0,
-        },
-        .go_to_image => .{
-            .title = "Go to Image",
-            .placeholder = "Enter image number...",
-            .element_id = "GoToImagePalette",
-            .list_id = "GoToImageList",
-            .item_prefix = "GoToImageItem_",
-            .top_spacer_id = "GoToImageTopSpacer",
-            .bottom_spacer_id = "GoToImageBottomSpacer",
-            .base_item_height = 50.0,
-        },
-        .directory_navigator => .{
-            .title = "Directory Navigator",
-            .placeholder = "Search subfolders...",
-            .element_id = "DirectoryNavigatorPalette",
-            .list_id = "DirectoryNavigatorList",
-            .item_prefix = "DirItem_",
-            .top_spacer_id = "DirTopSpacer",
-            .bottom_spacer_id = "DirBottomSpacer",
-            .base_item_height = 50.0,
-        },
-        .set_slideshow_interval => .{
-            .title = "Start Slide Show",
-            .placeholder = "Enter delay in seconds (e.g. 3 or 2.5)...",
-            .element_id = "SlideshowPalette",
-            .list_id = "SlideshowPaletteList",
-            .item_prefix = "SlideshowItem_",
-            .top_spacer_id = "SlideshowTopSpacer",
-            .bottom_spacer_id = "SlideshowBottomSpacer",
-            .base_item_height = 50.0,
-        },
-        .inactive => getPaletteConfig(.files),
-    };
-}
+pub const palette_layout = @import("palette_layout.zig");
+pub const PaletteConfig = palette_layout.PaletteConfig;
+pub const getPaletteConfig = palette_layout.getPaletteConfig;
 
 fn renderHeader(mode: PaletteMode, title: []const u8) void {
     clay.UI()(.{
@@ -388,11 +164,11 @@ fn renderSearchInput(palette: *const PaletteState, placeholder: []const u8) void
 }
 
 pub fn renderTextInputDialog(
-    state: *ViewerState,
+    ui_model: UiViewModel,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
 ) !void {
-    const palette = &state.palette;
+    const palette = ui_model.palette;
     clay.UI()(.{
         .layout = .{
             .sizing = .{ .w = .grow, .h = .fixed(64) },
@@ -405,9 +181,7 @@ pub fn renderTextInputDialog(
         .corner_radius = .all(6),
     })({
         const raw_str = palette.query.items;
-        state.lockImageList();
-        const total_count = state.image_list.items.len;
-        state.unlockImageList();
+        const total_count = ui_model.total_images;
         switch (palette.mode) {
             .go_to_image => {
                 if (total_count == 0) {
@@ -422,7 +196,7 @@ pub fn renderTextInputDialog(
                         .font_size = 13,
                         .font_id = 0,
                     });
-                    const range_str = try std.fmt.allocPrint(frame_allocator, "Allowed range: 1 to {} (current: {})", .{ total_count, (state.current_index orelse 0) + 1 });
+                    const range_str = try std.fmt.allocPrint(frame_allocator, "Allowed range: 1 to {} (current: {})", .{ total_count, (ui_model.current_index orelse 0) + 1 });
                     clay.text(range_str, .{
                         .color = theme.subtext1,
                         .font_size = 11,
@@ -431,11 +205,7 @@ pub fn renderTextInputDialog(
                 } else {
                     if (std.fmt.parseInt(usize, raw_str, 10)) |val| {
                         if (val >= 1 and val <= total_count) {
-                            const target_path = blk: {
-                                state.lockImageList();
-                                defer state.unlockImageList();
-                                break :blk if (val - 1 < state.image_list.items.len) state.image_list.items[val - 1] else "";
-                            };
+                            const target_path = if (val - 1 < total_count and ui_model.current_image_path != null and val - 1 == (ui_model.current_index orelse 0)) ui_model.current_image_path.? else "";
                             const raw_basename = std.fs.path.basename(target_path);
                             const display_filename = truncateFilename(frame_allocator, raw_basename, 492.0, 12, measure_data);
                             const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to go to {}: {s}", .{ val, display_filename });
@@ -516,7 +286,7 @@ pub fn renderTextInputDialog(
                     if (std.fmt.parseFloat(f32, raw_str)) |val| {
                         if (!std.math.isNan(val) and !std.math.isInf(val)) {
                             is_valid_float = true;
-                            const bounds = palette.mode.getTextInputBounds() orelse app_state.palette_module.TextInputBounds{ .min = 0.0, .max = 1.0 };
+                            const bounds = palette.mode.getTextInputBounds() orelse intents.TextInputBounds{ .min = 0.0, .max = 1.0 };
                             const min_val = bounds.min;
                             const max_val = bounds.max;
                             if (val >= min_val and val <= max_val) {
@@ -552,14 +322,30 @@ pub fn renderTextInputDialog(
     });
 }
 
+/// Strategy and calculation for virtualized list windowing in Clay
+/// immediate mode UI.
+///
+/// Immediate Mode Virtualization Strategy:
+/// 1. Window Calculation:
+///    Computes the visible item slice `[start_idx..end_idx]` based on
+///    current scroll position (`scroll_offset.y`), viewport height, and
+///    fixed item stride (`item_height`).
+/// 2. Overscan Guard Band:
+///    Adds a 1-item overscan buffer above and below the visible viewport
+///    slice (`start_idx - 1` and `end_idx + 1`). Because Clay layout tree
+///    generation and GPU rendering occur synchronously in the exact same
+///    frame pass, `@floor` and `@ceil` math captures all visible elements.
+///    The 1-item overscan serves as a guard band for sub-pixel `child_gap`
+///    offsets, border widths, and viewport edge hit-testing
+///    (`clay.pointerOver`).
 pub fn renderSelectionList(
-    state: *ViewerState,
+    ui_model: UiViewModel,
     cfg: PaletteConfig,
     mouse_clicked: bool,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
 ) !void {
-    const palette = &state.palette;
+    const palette = ui_model.palette;
     const scroll_data = clay.cdefs.Clay_GetScrollContainerData(clay.getElementId(cfg.list_id));
     var scroll_offset = if (scroll_data.found) scroll_data.scroll_position.* else clay.Vector2{ .x = 0, .y = 0 };
 
@@ -583,6 +369,13 @@ pub fn renderSelectionList(
     }
 
     const matching_indices = &palette.matches;
+    const window = VirtualWindow.compute(
+        matching_indices.items.len,
+        scroll_offset.y,
+        viewport_height,
+        item_height,
+        4.0,
+    );
 
     clay.UI()(.{
         .id = clay.getElementId(cfg.list_id),
@@ -597,48 +390,15 @@ pub fn renderSelectionList(
             .child_offset = scroll_offset,
         },
     })({
-        const visible_top = -scroll_offset.y;
-        const visible_bottom = visible_top + viewport_height;
-
-        var start_visible_idx = @as(usize, @intFromFloat(@max(0.0, @floor(visible_top / item_height))));
-        var end_visible_idx = @as(usize, @intFromFloat(@max(0.0, @ceil(visible_bottom / item_height))));
-
-        start_visible_idx = if (start_visible_idx > 0) start_visible_idx - 1 else 0;
-        end_visible_idx = end_visible_idx + 1;
-
-        if (end_visible_idx > matching_indices.items.len) {
-            end_visible_idx = matching_indices.items.len;
-        }
-        if (start_visible_idx > end_visible_idx) {
-            start_visible_idx = end_visible_idx;
-        }
-
-        const gap: f32 = 4.0;
-        const top_spacer_h = if (start_visible_idx > 0)
-            @as(f32, @floatFromInt(start_visible_idx)) * item_height - gap
-        else
-            0.0;
-        const bottom_spacer_h = if (matching_indices.items.len - end_visible_idx > 0)
-            @as(f32, @floatFromInt(matching_indices.items.len - end_visible_idx)) * item_height - gap
-        else
-            0.0;
-
-        if (top_spacer_h > 0) {
+        if (window.top_spacer_h > 0) {
             clay.UI()(.{
                 .id = clay.getElementId(cfg.top_spacer_id),
-                .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(top_spacer_h) } },
+                .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(window.top_spacer_h) } },
             })({});
         }
 
-        if (palette.mode == .files) {
-            state.lockImageList();
-        }
-        defer if (palette.mode == .files) {
-            state.unlockImageList();
-        };
-
-        var match_count = start_visible_idx;
-        for (matching_indices.items[start_visible_idx..end_visible_idx]) |real_idx| {
+        var match_count = window.start_idx;
+        for (matching_indices.items[window.start_idx..window.end_idx]) |real_idx| {
             const is_selected = (match_count == palette.selected_idx);
 
             var item_id_buf: [64]u8 = undefined;
@@ -668,13 +428,15 @@ pub fn renderSelectionList(
             })({
                 switch (palette.mode) {
                     .files => {
-                        const path = if (real_idx < state.image_list.items.len) state.image_list.items[real_idx] else "";
+                        const path = if (real_idx < ui_model.image_list.len) ui_model.image_list[real_idx] else "";
                         const basename = std.fs.path.basename(path);
                         const dirname = std.fs.path.dirname(path) orelse ".";
                         const query_str = palette.query.items;
 
-                        var basename_matches = std.ArrayList(usize).empty;
-                        var dirname_matches = std.ArrayList(usize).empty;
+                        var basename_matches = try std.ArrayList(usize).initCapacity(frame_allocator, 16);
+                        defer basename_matches.deinit(frame_allocator);
+                        var dirname_matches = try std.ArrayList(usize).initCapacity(frame_allocator, 16);
+                        defer dirname_matches.deinit(frame_allocator);
 
                         if (query_str.len > 0 and path.len > 0) {
                             const searcher_opt = palette.getSearcher(@max(path.len, 64), query_str.len) catch |err| blk: {
@@ -722,7 +484,8 @@ pub fn renderSelectionList(
 
                         const display_dir = truncateDirectory(frame_allocator, dirname, 488.0, 11, measure_data);
 
-                        var final_dir_matches = std.ArrayList(usize).empty;
+                        var final_dir_matches = try std.ArrayList(usize).initCapacity(frame_allocator, 16);
+                        defer final_dir_matches.deinit(frame_allocator);
                         if (display_dir.ptr != dirname.ptr and display_dir.len > 0 and std.mem.startsWith(u8, display_dir, "...")) {
                             const kept_len = display_dir.len - 3;
                             const start_offset = if (dirname.len > kept_len) dirname.len - kept_len else 0;
@@ -789,8 +552,7 @@ pub fn renderSelectionList(
                         });
                     },
                     .actions => {
-                        const action_id = app_actions[real_idx];
-                        const meta = getActionMetadata(action_id);
+                        const meta = types.palette_action_items[real_idx];
                         const query_str = palette.query.items;
 
                         var action_matches: []const usize = &.{};
@@ -845,16 +607,17 @@ pub fn renderSelectionList(
                     .directory_navigator => {
                         if (real_idx < palette.dir_items.items.len) {
                             const entry = palette.dir_items.items[real_idx];
-                            var dir_matches = std.ArrayList(usize).empty;
+                            var dir_matches = try std.ArrayList(usize).initCapacity(frame_allocator, 16);
+                            defer dir_matches.deinit(frame_allocator);
                             const query_str = palette.query.items;
 
-                            if (query_str.len > 0 and entry.name.len > 0) {
-                                const searcher_opt = palette.getSearcher(entry.name.len, query_str.len) catch |err| blk: {
+                            if (query_str.len > 0 and entry.getName().len > 0) {
+                                const searcher_opt = palette.getSearcher(entry.getName().len, query_str.len) catch |err| blk: {
                                     std.log.err("getSearcher failed: {}", .{err});
                                     break :blk null;
                                 };
                                 if (searcher_opt) |searcher_ptr| {
-                                    const res = searcher_ptr.scoreMatches(entry.name, query_str);
+                                    const res = searcher_ptr.scoreMatches(entry.getName(), query_str);
                                     if (res.score != null) {
                                         dir_matches.appendSlice(frame_allocator, res.matches) catch |err| {
                                             std.log.err("appendSlice dir_matches failed: {}", .{err});
@@ -890,7 +653,7 @@ pub fn renderSelectionList(
                                     });
                                 });
 
-                                const trunc_folder = truncateFilenameMiddle(frame_allocator, entry.name, 350.0, 13, measure_data);
+                                const trunc_folder = truncateFilenameMiddle(frame_allocator, entry.getName(), 350.0, 13, measure_data);
                                 const display_foldername = trunc_folder.display;
                                 const final_folder_matches = remapMiddleTruncatedMatches(frame_allocator, dir_matches.items, trunc_folder.head_len, trunc_folder.tail_start_idx) catch dir_matches.items;
 
@@ -904,8 +667,8 @@ pub fn renderSelectionList(
                                 );
                             });
 
-                            const image_count = entry.getImageCount();
-                            const subdir_count = entry.getSubdirCount();
+                            const image_count = entry.getImageCount() orelse 0;
+                            const subdir_count = entry.getSubdirCount() orelse 0;
                             const count_str = try std.fmt.allocPrint(frame_allocator, "{} image{s}", .{ image_count, if (image_count == 1) "" else "s" });
                             const count_color = if (image_count == 0) theme.subtext1 else theme.green;
 
@@ -967,25 +730,29 @@ pub fn renderSelectionList(
                 const old_type = palette.mode;
                 switch (palette.mode) {
                     .files => {
-                        state.current_index = real_idx;
-                        try state.updateCache();
+                        ui_model.pending_intents.append(ui_model.gpa_allocator, .{ .go_to_image = real_idx }) catch |err| {
+                            std.log.err("Failed to push go_to_image intent: {}", .{err});
+                        };
                         palette.mode = .inactive;
-                        stopTextInput(state.window);
+                        stopTextInput(ui_model.display.*);
                     },
                     .actions => {
-                        const action_id = app_actions[real_idx];
-                        try state.triggerAction(action_id);
+                        const item = types.palette_action_items[real_idx];
+                        ui_model.pending_intents.append(ui_model.gpa_allocator, item.intent) catch |err| {
+                            std.log.err("Failed to push action intent: {}", .{err});
+                        };
                         if (palette.mode == old_type) {
                             palette.mode = .inactive;
-                            stopTextInput(state.window);
+                            stopTextInput(ui_model.display.*);
                         }
                     },
                     .directory_navigator => {
                         if (real_idx < palette.dir_items.items.len) {
                             const entry = palette.dir_items.items[real_idx];
-                            const path_copy = try frame_allocator.dupe(u8, entry.full_path);
-                            try palette.loadDirectoryEntries(state.io, path_copy);
-                            palette.query.clearRetainingCapacity();
+                            const path_copy = try frame_allocator.dupe(u8, entry.getFullPath());
+                            try ui_model.pending_intents.append(ui_model.gpa_allocator, .{
+                                .set_palette = .{ .mode = .directory_navigator, .query = path_copy },
+                            });
                         }
                     },
                     else => {},
@@ -995,10 +762,10 @@ pub fn renderSelectionList(
             match_count += 1;
         }
 
-        if (bottom_spacer_h > 0) {
+        if (window.bottom_spacer_h > 0) {
             clay.UI()(.{
                 .id = clay.getElementId(cfg.bottom_spacer_id),
-                .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(bottom_spacer_h) } },
+                .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(window.bottom_spacer_h) } },
             })({});
         }
 
@@ -1086,12 +853,12 @@ fn renderDirectoryLegend() void {
 }
 
 pub fn renderPalette(
-    state: *ViewerState,
+    ui_model: UiViewModel,
     mouse_clicked: bool,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
 ) !void {
-    const palette = &state.palette;
+    const palette = ui_model.palette;
     if (palette.mode == .inactive) return;
 
     const cfg = getPaletteConfig(palette.mode);
@@ -1132,9 +899,9 @@ pub fn renderPalette(
         renderSearchInput(palette, cfg.placeholder);
 
         if (palette.mode.isTextInputDialog()) {
-            try renderTextInputDialog(state, frame_allocator, measure_data);
+            try renderTextInputDialog(ui_model, frame_allocator, measure_data);
         } else {
-            try renderSelectionList(state, cfg, mouse_clicked, frame_allocator, measure_data);
+            try renderSelectionList(ui_model, cfg, mouse_clicked, frame_allocator, measure_data);
         }
 
         // Footer Legend for Directory Navigator
@@ -1186,7 +953,8 @@ test "partitionHighlightedText correctly partitions matched and unmatched chunks
 }
 
 test "partitionHighlightedText merges isolated whitespace matches back into unmatched text" {
-    // Scenario 2: Query "sc " matching "Set Contrast (Type Value)..." (indices 0, 4, and 12)
+    // Scenario 2: Query "sc " matching "Set Contrast (Type Value)..."
+    // (indices 0, 4, and 12)
     const text2 = "Set Contrast (Type Value)...";
     const matches2 = [_]usize{ 0, 4, 12 };
 
@@ -1252,14 +1020,17 @@ test "PaletteState directory_navigator mode configuration and item matching" {
     try palette.current_nav_dir.appendSlice(std.testing.allocator, "/home/user/Pictures");
 
     try palette.dir_items.append(std.testing.allocator, .{
-        .name = try std.testing.allocator.dupe(u8, ".."),
-        .full_path = try std.testing.allocator.dupe(u8, "/home/user"),
-        .kind = .parent,
+        .parent = .{
+            .name = try std.testing.allocator.dupe(u8, ".."),
+            .full_path = try std.testing.allocator.dupe(u8, "/home/user"),
+        },
     });
     try palette.dir_items.append(std.testing.allocator, .{
-        .name = try std.testing.allocator.dupe(u8, "Vacation"),
-        .full_path = try std.testing.allocator.dupe(u8, "/home/user/Pictures/Vacation"),
-        .kind = .{ .directory = .{ .image_count = 12 } },
+        .directory = .{
+            .name = try std.testing.allocator.dupe(u8, "Vacation"),
+            .full_path = try std.testing.allocator.dupe(u8, "/home/user/Pictures/Vacation"),
+            .scan = .{ .scanned = .{ .image_count = 12 } },
+        },
     });
 
     try palette.rebuildDirectoryMatches();
@@ -1332,7 +1103,8 @@ test "partitionHighlightedText multi-byte UTF-8 character boundary safety" {
     const chunks = try partitionHighlightedText(std.testing.allocator, utf8_text, &matches);
     defer std.testing.allocator.free(chunks);
 
-    // Chunks should be: "caf" (unmatched), "é" (matched, full 2-byte code point), "_au_lait.jpg" (unmatched)
+    // Chunks should be: "caf" (unmatched), "é" (matched, full 2-byte UTF-8
+    // code point), "_au_lait.jpg" (unmatched)
     try std.testing.expectEqual(@as(usize, 3), chunks.len);
     try std.testing.expectEqualStrings("caf", chunks[0].slice);
     try std.testing.expect(!chunks[0].is_matched);
@@ -1347,7 +1119,7 @@ test "untruncated directory starting with dots preserves matches" {
     const display_dir = dirname; // untruncated (same pointer)
     const dirname_matches = [_]usize{ 0, 1, 2, 4 }; // matches '...', 'm'
 
-    var final_dir_matches = std.ArrayList(usize).empty;
+    var final_dir_matches: std.ArrayList(usize) = .empty;
     defer final_dir_matches.deinit(std.testing.allocator);
 
     if (display_dir.ptr != dirname.ptr and display_dir.len > 0 and std.mem.startsWith(u8, display_dir, "...")) {
@@ -1363,4 +1135,40 @@ test "untruncated directory starting with dots preserves matches" {
     }
 
     try std.testing.expectEqualSlices(usize, &dirname_matches, final_dir_matches.items);
+}
+
+test "VirtualWindow compute calculations and edge cases" {
+    const item_height: f32 = 50.0;
+    const viewport_h: f32 = 320.0;
+    const gap: f32 = 4.0;
+
+    // Case 1: Empty list
+    const w0 = VirtualWindow.compute(0, 0.0, viewport_h, item_height, gap);
+    try std.testing.expectEqual(@as(usize, 0), w0.start_idx);
+    try std.testing.expectEqual(@as(usize, 0), w0.end_idx);
+    try std.testing.expectEqual(@as(f32, 0.0), w0.top_spacer_h);
+    try std.testing.expectEqual(@as(f32, 0.0), w0.bottom_spacer_h);
+
+    // Case 2: At top of 100-item list (scroll = 0)
+    // visible top = 0, visible bottom = 320.
+    // floor(0/50) = 0, ceil(320/50) = 7.
+    // overscan: start = 0, end = 8.
+    const w1 = VirtualWindow.compute(100, 0.0, viewport_h, item_height, gap);
+    try std.testing.expectEqual(@as(usize, 0), w1.start_idx);
+    try std.testing.expectEqual(@as(usize, 8), w1.end_idx);
+    try std.testing.expectEqual(@as(f32, 0.0), w1.top_spacer_h);
+    // bottom spacer = (100 - 8) * 50 - 4 = 4600 - 4 = 4596
+    try std.testing.expectEqual(@as(f32, 4596.0), w1.bottom_spacer_h);
+
+    // Case 3: Middle of list (scroll = -500.0, 10 items scrolled off-screen)
+    // visible top = 500, visible bottom = 820.
+    // floor(500/50) = 10, ceil(820/50) = 17.
+    // overscan: start = 9, end = 18.
+    const w2 = VirtualWindow.compute(100, -500.0, viewport_h, item_height, gap);
+    try std.testing.expectEqual(@as(usize, 9), w2.start_idx);
+    try std.testing.expectEqual(@as(usize, 18), w2.end_idx);
+    // top spacer = 9 * 50 - 4 = 446.0
+    try std.testing.expectEqual(@as(f32, 446.0), w2.top_spacer_h);
+    // bottom spacer = (100 - 18) * 50 - 4 = 82 * 50 - 4 = 4096.0
+    try std.testing.expectEqual(@as(f32, 4096.0), w2.bottom_spacer_h);
 }

@@ -1,153 +1,275 @@
 const std = @import("std");
-const sdl = @import("sdl");
-const ipc = @import("ipc.zig");
+const app_state = @import("state.zig");
+const AppState = app_state.AppState;
+const events = @import("core/events.zig");
+const image = @import("core/image.zig");
+const ipc = @import("ipc");
 
-pub const ExifParsedPayload = struct {
-    index: usize,
-    generation: usize,
-    orientation: f32,
-};
+/// Drains background thread events (`image_decoded`, `path_scanned`, `ipc_command`)
+/// from `workers.event_queue` and updates cache slots, navigation list, and pending IPC lists.
+pub fn drainWorkerEvents(state: *AppState) bool {
+    state.event_batch.clearRetainingCapacity();
+    state.workers.event_queue.drain(state.allocator, state.io, &state.event_batch) catch return false;
+    if (state.event_batch.items.len == 0) return false;
 
-pub const ThumbDecodedPayload = struct {
-    index: usize,
-    generation: usize,
-    surface: ?sdl.Surface,
-    w: f32,
-    h: f32,
-    full_w: f32,
-    full_h: f32,
-    exif_orientation: f32,
-};
+    for (state.event_batch.items) |*evt| {
+        defer evt.deinit(state.allocator);
 
-pub const ImageDecodedPayload = struct {
-    index: usize,
-    generation: usize,
-    surface: ?sdl.Surface,
-    w: f32,
-    h: f32,
-    mime_type: []const u8,
-    size_bytes: u64,
-    decode_time_ms: f64,
-    conversion_time_ms: f64,
-    exif_orientation: f32,
-};
-
-pub const DecodeFailedPayload = struct {
-    index: usize,
-    generation: usize,
-};
-
-pub const PathDiscoveredPayload = struct {
-    generation: usize,
-    path: []const u8,
-};
-
-pub const DirectoryScanCompletePayload = struct {
-    generation: usize,
-    total_count: usize,
-};
-
-pub const BackgroundEvent = union(enum) {
-    exif_orientation_parsed: ExifParsedPayload,
-    thumb_decoded: ThumbDecodedPayload,
-    image_decoded: ImageDecodedPayload,
-    decode_failed: DecodeFailedPayload,
-    path_discovered: PathDiscoveredPayload,
-    directory_scan_complete: DirectoryScanCompletePayload,
-    ipc_command: *ipc.IpcCommandData,
-
-    pub fn deinit(self: *BackgroundEvent, allocator: std.mem.Allocator) void {
-        switch (self.*) {
-            .thumb_decoded => |t| {
-                if (t.surface) |surf| surf.destroy();
-            },
-            .image_decoded => |d| {
-                if (d.surface) |surf| surf.destroy();
-            },
-            .path_discovered => |p| allocator.free(p.path),
-            else => {},
-        }
-    }
-
-    pub fn deinitQueueItem(self: *BackgroundEvent, allocator: std.mem.Allocator) void {
-        switch (self.*) {
-            .ipc_command => |cmd| {
-                allocator.free(cmd.command);
-                allocator.destroy(cmd);
-            },
-            else => self.deinit(allocator),
-        }
-    }
-};
-
-pub fn MpscQueue(comptime T: type) type {
-    return struct {
-        mutex: std.Io.Mutex = .init,
-        items: std.ArrayListUnmanaged(T) = .empty,
-
-        const Self = @This();
-
-        pub fn init() Self {
-            return .{};
-        }
-
-        pub fn deinit(self: *Self, allocator: std.mem.Allocator, io: std.Io) void {
-            self.mutex.lockUncancelable(io);
-            defer self.mutex.unlock(io);
-            const info = @typeInfo(T);
-            if (info == .@"struct" or info == .@"union") {
-                for (self.items.items) |*item| {
-                    if (@hasDecl(T, "deinitQueueItem")) {
-                        item.deinitQueueItem(allocator);
-                    } else if (@hasDecl(T, "deinit")) {
-                        const deinit_info = @typeInfo(@TypeOf(T.deinit));
-                        if (deinit_info == .@"fn") {
-                            if (deinit_info.@"fn".params.len == 2) {
-                                item.deinit(allocator);
-                            } else if (deinit_info.@"fn".params.len == 1) {
-                                item.deinit();
-                            }
-                        }
-                    }
+        switch (evt.*) {
+            .exif_orientation_parsed => |e| {
+                if (state.cache.get(e.key)) |entry| {
+                    entry.exif_orientation = e.orientation;
                 }
-            }
-            self.items.deinit(allocator);
+                state.updateCurrentRotation();
+            },
+            .thumb_decoded => |t| handleExifThumbnailEvent(state, t),
+            .image_decoded => |*d| handleImageDecodedEvent(state, d),
+            .decode_failed => |f| {
+                _ = state.cache.updateStatus(f.key, .failed);
+            },
+            .path_discovered => |p| handleDirScannedEvent(state, p),
+            .directory_scan_result => |res| handleDirectoryScanResultEvent(state, res),
+            .directory_scan_complete => {},
+            .ipc_command => |cmd_data| {
+                state.pending_ipc_commands.append(state.allocator, cmd_data) catch |err| {
+                    std.log.err("Failed to append IPC command to pending list: {}", .{err});
+                    cmd_data.client_stream.close(state.io);
+                    state.allocator.free(cmd_data.command);
+                    state.allocator.destroy(cmd_data);
+                };
+            },
         }
-
-        pub fn push(self: *Self, allocator: std.mem.Allocator, io: std.Io, item: T) !void {
-            self.mutex.lockUncancelable(io);
-            defer self.mutex.unlock(io);
-            try self.items.append(allocator, item);
-        }
-
-        pub fn drain(self: *Self, allocator: std.mem.Allocator, io: std.Io, out_list: *std.ArrayList(T)) !void {
-            self.mutex.lockUncancelable(io);
-            defer self.mutex.unlock(io);
-            if (self.items.items.len == 0) return;
-            try out_list.appendSlice(allocator, self.items.items);
-            self.items.clearRetainingCapacity();
-        }
-    };
+    }
+    return true;
 }
 
-test "MpscQueue push and drain" {
+fn handleExifThumbnailEvent(state: *AppState, thumb_data: events.ThumbDecodedPayload) void {
+    const surf = thumb_data.surface orelse return;
+    if (state.gpu_device) |gpu_dev| {
+        if (image.uploadSurfaceToGpu(gpu_dev, surf, state.unpack_compute_pipeline)) |upload_res| {
+            if (state.cache.get(thumb_data.key)) |entry| {
+                entry.exif_orientation = thumb_data.exif_orientation;
+                if (thumb_data.full_w > 0 and thumb_data.full_h > 0) {
+                    entry.full_w = thumb_data.full_w;
+                    entry.full_h = thumb_data.full_h;
+                }
+                switch (entry.thumbnail) {
+                    .loaded => |old_thumb| gpu_dev.releaseTexture(old_thumb.texture),
+                    else => {},
+                }
+                entry.thumbnail = .{
+                    .loaded = .{
+                        .texture = upload_res.gpu_texture,
+                        .info = .{
+                            .w = upload_res.w,
+                            .h = upload_res.h,
+                            .upload_time_ms = upload_res.upload_time_ms,
+                        },
+                    },
+                };
+            } else {
+                gpu_dev.releaseTexture(upload_res.gpu_texture);
+            }
+            state.updateCurrentRotation();
+        }
+    }
+}
+
+fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedPayload) void {
+    const surf = decoded_data.surface orelse return;
+    if (state.gpu_device) |gpu_dev| {
+        if (image.uploadSurfaceToGpu(gpu_dev, surf, state.unpack_compute_pipeline)) |full_res| {
+            if (state.cache.get(decoded_data.key)) |entry| {
+                switch (entry.status) {
+                    .loaded_cpu => |cpu| cpu.surface.destroy(),
+                    .loaded_gpu => |gpu| gpu_dev.releaseTexture(gpu.gpu_texture),
+                    else => {},
+                }
+                entry.exif_orientation = decoded_data.exif_orientation;
+                entry.status = .{
+                    .loaded_gpu = .{
+                        .gpu_texture = full_res.gpu_texture,
+                        .w = decoded_data.w,
+                        .h = decoded_data.h,
+                        .size_bytes = decoded_data.size_bytes,
+                        .mime_type = decoded_data.mime_type,
+                        .decode_time_ms = decoded_data.decode_time_ms,
+                        .conversion_time_ms = full_res.conversion_time_ms,
+                        .upload_time_ms = full_res.upload_time_ms,
+                        .memory_size_bytes = full_res.memory_size_bytes,
+                        .num_mip_levels = full_res.num_mip_levels,
+                        .mipmap_time_ms = full_res.mipmap_time_ms,
+                        .was_fallback = full_res.was_fallback,
+                        .fallback_time_ms = full_res.fallback_time_ms,
+                    },
+                };
+                state.cache.enforceVramBudget(gpu_dev, state.viewer.navigation.current_index, image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
+            } else {
+                gpu_dev.releaseTexture(full_res.gpu_texture);
+            }
+            state.updateCurrentRotation();
+        }
+    } else {
+        if (state.cache.get(decoded_data.key)) |entry| {
+            switch (entry.status) {
+                .loaded_cpu => |cpu| cpu.surface.destroy(),
+                else => {},
+            }
+            entry.exif_orientation = decoded_data.exif_orientation;
+            entry.status = .{
+                .loaded_cpu = .{
+                    .surface = decoded_data.surface.?,
+                    .w = decoded_data.w,
+                    .h = decoded_data.h,
+                    .size_bytes = decoded_data.size_bytes,
+                    .mime_type = decoded_data.mime_type,
+                    .decode_time_ms = decoded_data.decode_time_ms,
+                    .conversion_time_ms = decoded_data.conversion_time_ms,
+                },
+            };
+            decoded_data.surface = null;
+        }
+        state.updateCurrentRotation();
+    }
+}
+
+fn handleDirScannedEvent(state: *AppState, scanned_data: events.PathDiscoveredPayload) void {
+    const dup = state.viewer.navigation.directory_arena.allocator().dupe(u8, scanned_data.path) catch |err| {
+        std.log.err("Failed to duplicate path '{s}' in directory arena: {}", .{ scanned_data.path, err });
+        return;
+    };
+    state.viewer.navigation.image_list.append(state.allocator, dup) catch |err| std.log.err("Failed to append discovered path to image_list: {}", .{err});
+    if (state.viewer.navigation.current_index == null and state.viewer.navigation.image_list.items.len > 0) {
+        state.viewer.navigation.current_index = 0;
+    }
+}
+
+fn handleDirectoryScanResultEvent(state: *AppState, result_data: events.DirectoryScanResultPayload) void {
+    if (result_data.is_dir) {
+        for (result_data.paths) |item| {
+            const dup = state.viewer.navigation.directory_arena.allocator().dupe(u8, item) catch |err| {
+                std.log.err("Failed to duplicate directory item '{s}': {}", .{ item, err });
+                continue;
+            };
+            state.viewer.navigation.image_list.append(state.allocator, dup) catch |err| {
+                std.log.err("Failed to append image '{s}' to list: {}", .{ dup, err });
+            };
+        }
+        if (state.viewer.navigation.current_index == null and state.viewer.navigation.image_list.items.len > 0) {
+            state.viewer.navigation.current_index = 0;
+        }
+    } else {
+        var target_idx_in_dir: ?usize = null;
+        for (result_data.paths, 0..) |item, i| {
+            if (std.mem.eql(u8, item, result_data.target_path)) {
+                target_idx_in_dir = i;
+                break;
+            }
+        }
+
+        _ = state.viewer.navigation.directory_arena.reset(.retain_capacity);
+        state.viewer.navigation.image_list.clearRetainingCapacity();
+        for (result_data.paths, 0..) |item, i| {
+            const dup = state.viewer.navigation.directory_arena.allocator().dupe(u8, item) catch |err| {
+                std.log.err("Failed to duplicate directory item '{s}': {}", .{ item, err });
+                continue;
+            };
+            state.viewer.navigation.image_list.append(state.allocator, dup) catch |err| {
+                std.log.err("Failed to append image '{s}' to list: {}", .{ dup, err });
+            };
+            if (target_idx_in_dir == null and std.mem.eql(u8, item, result_data.target_path)) {
+                target_idx_in_dir = i;
+            }
+        }
+
+        if (target_idx_in_dir) |target_i| {
+            if (target_i < state.viewer.navigation.image_list.items.len) {
+                state.viewer.navigation.current_index = target_i;
+            }
+        } else {
+            state.viewer.navigation.current_index = 0;
+        }
+    }
+}
+
+test "drainWorkerEvents - empty queue" {
+    const allocator = std.testing.allocator;
+    var state = try AppState.initHeadless(allocator, std.Io.Threaded.global_single_threaded.io());
+    defer state.deinit();
+
+    const processed = drainWorkerEvents(&state);
+    try std.testing.expect(!processed);
+}
+
+test "drainWorkerEvents - path_discovered" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    var queue = MpscQueue(i32).init();
-    defer queue.deinit(allocator, io);
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
 
-    try queue.push(allocator, io, 10);
-    try queue.push(allocator, io, 20);
+    const path_dup = try allocator.dupe(u8, "/test/path.jpg");
+    try state.workers.event_queue.push(allocator, io, .{ .path_discovered = .{ .path = path_dup } });
 
-    var batch = std.ArrayList(i32).empty;
-    defer batch.deinit(allocator);
+    const processed = drainWorkerEvents(&state);
+    try std.testing.expect(processed);
+    try std.testing.expect(state.viewer.dirty);
+    try std.testing.expectEqual(@as(usize, 1), state.viewer.navigation.image_list.items.len);
+    try std.testing.expectEqual(@as(?usize, 0), state.viewer.navigation.current_index);
+}
 
-    try queue.drain(allocator, io, &batch);
-    try std.testing.expectEqual(@as(usize, 2), batch.items.len);
-    try std.testing.expectEqual(@as(i32, 10), batch.items[0]);
-    try std.testing.expectEqual(@as(i32, 20), batch.items[1]);
+test "drainWorkerEvents - exif_orientation_parsed & decode_failed" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
 
-    batch.clearRetainingCapacity();
-    try queue.drain(allocator, io, &batch);
-    try std.testing.expectEqual(@as(usize, 0), batch.items.len);
+    try state.cache.appendWithKey(allocator, .{
+        .index = 0,
+        .generation = state.cache.getGeneration(),
+    }, .{
+        .status = .{ .decoding = .{ .has_thread = true } },
+    });
+
+    try state.workers.event_queue.push(allocator, io, .{ .exif_orientation_parsed = .{ .key = state.cache.activeKey(0), .orientation = 90.0 } });
+    const processed1 = drainWorkerEvents(&state);
+    try std.testing.expect(processed1);
+    try std.testing.expectEqual(@as(f32, 90.0), state.cache.entries.items[0].exif_orientation);
+
+    try state.workers.event_queue.push(allocator, io, .{ .decode_failed = .{ .key = state.cache.activeKey(0) } });
+    const processed2 = drainWorkerEvents(&state);
+    try std.testing.expect(processed2);
+    try std.testing.expectEqual(@as(@TypeOf(state.cache.entries.items[0].status), .failed), state.cache.entries.items[0].status);
+}
+
+test "drainWorkerEvents - directory_scan_result and ipc_command" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    const target_path = try allocator.dupe(u8, "/imgs/b.jpg");
+    const path0 = try allocator.dupe(u8, "/imgs/a.jpg");
+    const path1 = try allocator.dupe(u8, "/imgs/b.jpg");
+    const paths_slice = try allocator.alloc([]const u8, 2);
+    paths_slice[0] = path0;
+    paths_slice[1] = path1;
+
+    try state.workers.event_queue.push(allocator, io, .{
+        .directory_scan_result = .{
+            .target_path = target_path,
+            .is_dir = false,
+            .paths = paths_slice,
+        },
+    });
+
+    const cmd_str = try allocator.dupe(u8, "next");
+    const cmd_data = try allocator.create(ipc.IpcCommandData);
+    cmd_data.* = .{ .command = cmd_str, .client_stream = undefined };
+    try state.workers.event_queue.push(allocator, io, .{ .ipc_command = cmd_data });
+
+    const processed = drainWorkerEvents(&state);
+    try std.testing.expect(processed);
+    try std.testing.expectEqual(@as(usize, 2), state.viewer.navigation.image_list.items.len);
+    try std.testing.expectEqual(@as(?usize, 1), state.viewer.navigation.current_index);
+    try std.testing.expectEqual(@as(usize, 1), state.pending_ipc_commands.items.len);
 }

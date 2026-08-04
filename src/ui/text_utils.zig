@@ -1,7 +1,7 @@
 const std = @import("std");
 const clay = @import("zclay");
 const sdl = @import("sdl");
-const types = @import("../app/types.zig");
+const types = @import("state").types;
 const MeasureTextUserData = types.MeasureTextUserData;
 const sdl3MeasureText = @import("graphics.zig").sdl3MeasureText;
 
@@ -92,7 +92,7 @@ pub fn remapMiddleTruncatedMatches(
     if (matches.len == 0) return &.{};
 
     const actual_tail_start = @max(tail_start_idx, head_len);
-    var list = try std.ArrayList(usize).initCapacity(allocator, matches.len);
+    var list: std.ArrayList(usize) = try .initCapacity(allocator, matches.len);
     errdefer list.deinit(allocator);
 
     for (matches) |m_idx| {

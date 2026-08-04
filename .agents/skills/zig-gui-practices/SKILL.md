@@ -1,6 +1,7 @@
 ---
 name: zig-gui-practices
-description: Best practices for Zig GUI development with Clay, SDL3, Vulkan/Metal GPU rendering, EXIF image decoding, navigation preloading, and GLSL shader optimization.
+description: >-
+  Best practices for Zig GUI development with Clay, SDL3, Vulkan/Metal GPU rendering, EXIF image decoding, navigation preloading, and GLSL shader optimization.
   Trigger immediately for:
   - Layout & DPI: Clay UI layout, High-DPI/Retina scaling, zoom-to-mouse math, aspect fit/fill calculations.
   - Image & Memory: EXIF header dimension parsing, APP1 segment skipping, VRAM cache budgeting, navigation throttling, settled preloading.
@@ -17,6 +18,12 @@ ______________________________________________________________________
 
 ## Technical Reference Guides
 
+- **[Systems Architecture & Execution Rules](references/systems-architecture.md)**
+
+  - 3-Phase frame loop: Ingestion (1) -> Systems Update Phase (2) -> Render (3).
+  - System lifetime bound to single frame iteration via `FrameContext` (`frame_allocator`).
+  - Strict prohibition of direct inter-system calls (intent-driven communication).
+
 - **[Layout, DPI Scaling & Centering Math](references/dpi-layout-math.md)**
 
   - Unified state & configuration structs (`PaletteState`, `PaletteConfig`).
@@ -26,7 +33,7 @@ ______________________________________________________________________
 - **[SDL3 GPU Rendering Workflows](references/sdl3-gpu-rendering.md)**
 
   - Pixel-perfect quad alignment to prevent sub-pixel layout jitter.
-  - High-quality FreeType text surface-to-texture blitting pipeline.
+  - High-quality SDL3_ttf GPU text rendering pipeline.
   - Hardware mipmap generation (`SDL_GenerateMipmapsForGPUTexture`) over CPU software scaling.
 
 - **[VRAM Budgeting & EXIF Parsing Recipes](references/vram-preloading.md)**

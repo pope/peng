@@ -1,11 +1,12 @@
 const std = @import("std");
+const sdl = @import("sdl");
 const clay = @import("zclay");
 const theme = @import("theme.zig");
-const app_state = @import("../app/state.zig");
-const ViewerState = app_state.ViewerState;
-const CacheEntry = app_state.CacheEntry;
+const state = @import("state");
+const types = state.types;
+const UiViewModel = types.UiViewModel;
 const formatSize = @import("text_utils.zig").formatSize;
-const MeasureTextUserData = @import("../app/types.zig").MeasureTextUserData;
+const MeasureTextUserData = types.MeasureTextUserData;
 
 pub fn renderStatRow(label: []const u8, value: []const u8) !void {
     clay.UI()(.{
@@ -36,22 +37,20 @@ pub fn renderStatRow(label: []const u8, value: []const u8) !void {
 }
 
 pub fn renderInfoOverlay(
-    state: *ViewerState,
+    ui_model: UiViewModel,
     draw_w: f32,
     draw_h: f32,
     frame_allocator: std.mem.Allocator,
 ) !void {
-    if (!state.show_info_overlay) return;
+    if (!ui_model.overlays.show_info) return;
 
     var filename: []const u8 = "None";
     var display_dir: []const u8 = "N/A";
-    const current_entry = state.getCurrentEntry();
+    const current_entry = ui_model.current_entry;
 
-    if (state.current_index) |idx| {
-        state.lockImageList();
-        defer state.unlockImageList();
-        if (idx < state.image_list.items.len) {
-            const path = state.image_list.items[idx];
+    if (ui_model.current_index) |idx| {
+        if (idx < ui_model.image_list.len) {
+            const path = ui_model.image_list[idx];
             filename = std.fs.path.basename(path);
             const dirname = std.fs.path.dirname(path) orelse ".";
             display_dir = if (dirname.len > 35) try std.fmt.allocPrint(frame_allocator, "...{s}", .{dirname[dirname.len - 32 ..]}) else dirname;
@@ -96,69 +95,56 @@ pub fn renderInfoOverlay(
         const entry_w = switch (entry.status) {
             .loaded_cpu => |cpu| cpu.w,
             .loaded_gpu => |gpu| gpu.w,
-            else => 0.0,
+            else => if (entry.full_w > 0) entry.full_w else if (entry.thumbnail.getInfo()) |info| info.w else 0.0,
         };
         if (entry_w > 0) {
-            const effective_zoom = (draw_w * state.zoom_factor) / entry_w;
+            const effective_zoom = (draw_w * ui_model.viewport.zoom_factor.get()) / entry_w;
             const pixel_zoom_pct = effective_zoom * 100.0;
             zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x ({d:.0}%)", .{ effective_zoom, pixel_zoom_pct });
         } else {
-            zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{state.zoom_factor});
+            zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{ui_model.viewport.zoom_factor.get()});
         }
     } else {
-        zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{state.zoom_factor});
+        zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{ui_model.viewport.zoom_factor.get()});
     }
 
-    const pan_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}, {d:.0} px", .{ state.pan_x, state.pan_y });
-    const rot_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}°", .{state.rotation_angle});
+    const pan_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}, {d:.0} px", .{ ui_model.viewport.pan_x, ui_model.viewport.pan_y });
+    const rot_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}°", .{ui_model.viewport.rotation_angle});
 
     var thumb_info_str: []const u8 = "N/A";
     if (current_entry) |entry| {
         var is_jpeg = std.mem.eql(u8, mime_type, "image/jpeg");
-        if (state.current_index) |idx| {
-            state.lockImageList();
-            defer state.unlockImageList();
-            if (idx < state.image_list.items.len) {
-                const ext = std.fs.path.extension(state.image_list.items[idx]);
+        if (ui_model.current_index) |idx| {
+            if (idx < ui_model.image_list.len) {
+                const ext = std.fs.path.extension(ui_model.image_list[idx]);
                 if (std.ascii.eqlIgnoreCase(ext, ".jpg") or std.ascii.eqlIgnoreCase(ext, ".jpeg")) {
                     is_jpeg = true;
                 }
             }
         }
-        const has_thumb = switch (entry.status) {
-            .loaded_gpu => |gpu| gpu.has_thumb,
-            .loaded_cpu => |cpu| cpu.has_thumb,
-            else => entry.has_thumb,
-        };
-        const t_w = switch (entry.status) {
-            .loaded_gpu => |gpu| gpu.thumb_w,
-            .loaded_cpu => |cpu| cpu.thumb_w,
-            else => entry.thumb_w,
-        };
-        const t_h = switch (entry.status) {
-            .loaded_gpu => |gpu| gpu.thumb_h,
-            .loaded_cpu => |cpu| cpu.thumb_h,
-            else => entry.thumb_h,
-        };
+        const has_thumb, const t_w, const t_h = if (entry.thumbnail.getInfo()) |info|
+            .{ true, info.w, info.h }
+        else
+            .{ false, 0.0, 0.0 };
 
         if (has_thumb) {
-            thumb_info_str = try std.fmt.allocPrint(frame_allocator, "Present ({d:.0}x{d:.0} px)", .{ t_w, t_h });
+            thumb_info_str = try std.fmt.allocPrint(frame_allocator, "Embedded ({d:.0}x{d:.0} px)", .{ t_w, t_h });
         } else if (is_jpeg) {
-            thumb_info_str = "None (No EXIF Thumb)";
+            thumb_info_str = "None (Full decode used)";
         } else {
             thumb_info_str = "N/A (Non-JPEG)";
         }
     }
 
     clay.UI()(.{
-        .id = clay.getElementId("InfoPanel"),
+        .id = clay.getElementId("InfoOverlayCard"),
         .layout = .{
             .sizing = .{ .w = .fixed(380), .h = .fit },
             .direction = .top_to_bottom,
-            .padding = .{ .top = 16, .bottom = 16, .left = 16, .right = 16 },
-            .child_gap = 10,
+            .padding = .{ .top = 12, .bottom = 12, .left = 14, .right = 14 },
+            .child_gap = 6,
         },
-        .background_color = theme.base_overlay,
+        .background_color = theme.base_translucent,
         .corner_radius = .all(10),
         .border = .{
             .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
@@ -168,8 +154,8 @@ pub fn renderInfoOverlay(
             .attach_to = .to_parent,
             .attach_points = .{ .element = .left_top, .parent = .left_top },
             .offset = .{
-                .x = state.info_offset_x,
-                .y = state.info_offset_y,
+                .x = ui_model.overlays.info_offset_x,
+                .y = ui_model.overlays.info_offset_y,
             },
             .z_index = 100,
         },
@@ -185,8 +171,8 @@ pub fn renderInfoOverlay(
             clay.UI()(.{ .layout = .{
                 .sizing = .{ .w = .grow, .h = .grow },
             } })({
-                clay.text("Image Info", .{
-                    .color = theme.pink,
+                clay.text("Info Overlay", .{
+                    .color = theme.mauve,
                     .font_size = 16,
                     .font_id = 0,
                 });
@@ -218,7 +204,7 @@ pub fn renderInfoOverlay(
         try renderStatRow("Resolution", res_str);
         try renderStatRow("Size on Disk", disk_size_str);
         try renderStatRow("Viewport Size", screen_str);
-        const scale_mode_str = switch (state.scale_mode) {
+        const scale_mode_str = switch (ui_model.viewport.fit_mode) {
             .none => "Original size (100%)",
             .shrink => "Fit if larger",
             .full => "Fit to screen (Aspect Fit)",
@@ -228,7 +214,7 @@ pub fn renderInfoOverlay(
         try renderStatRow("Zoom Level", zoom_str);
         try renderStatRow("Pan Offset", pan_str);
         try renderStatRow("Rotation", rot_str);
-        const filter_str = switch (state.texture_scale_mode) {
+        const filter_str = switch (ui_model.viewport.texture_scale_mode) {
             .nearest => "Nearest Neighbor",
             .linear => "Bilinear Filter",
             .pixel_art => "Pixel Art Scaling",
@@ -237,9 +223,9 @@ pub fn renderInfoOverlay(
         };
         try renderStatRow("Scaling Filter", filter_str);
 
-        const brightness_val = state.brightness * 100.0;
+        const brightness_val = ui_model.viewport.brightness * 100.0;
         const brightness_str = try std.fmt.allocPrint(frame_allocator, "{s}{d:.0}%", .{ if (brightness_val > 0) "+" else "", brightness_val });
-        const contrast_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{state.contrast});
+        const contrast_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{ui_model.viewport.contrast});
         try renderStatRow("Brightness", brightness_str);
         try renderStatRow("Contrast", contrast_str);
         try renderStatRow("EXIF Thumbnail", thumb_info_str);
@@ -247,16 +233,15 @@ pub fn renderInfoOverlay(
 }
 
 pub fn renderStatsOverlay(
-    state: *ViewerState,
+    ui_model: UiViewModel,
     draw_w: f32,
     draw_h: f32,
     frame_allocator: std.mem.Allocator,
 ) !void {
-    try renderInfoOverlay(state, draw_w, draw_h, frame_allocator);
+    try renderInfoOverlay(ui_model, draw_w, draw_h, frame_allocator);
+    if (!ui_model.overlays.show_stats) return;
 
-    if (!state.show_stats_overlay) return;
-
-    const current_entry = state.getCurrentEntry();
+    const current_entry = ui_model.current_entry;
 
     var mem_size_str: []const u8 = "N/A";
     var decode_str: []const u8 = "N/A";
@@ -309,8 +294,8 @@ pub fn renderStatsOverlay(
             .attach_to = .to_parent,
             .attach_points = .{ .element = .right_top, .parent = .right_top },
             .offset = .{
-                .x = state.stats_offset_x,
-                .y = state.stats_offset_y,
+                .x = ui_model.overlays.stats_offset_x,
+                .y = ui_model.overlays.stats_offset_y,
             },
             .z_index = 100,
         },
@@ -353,76 +338,51 @@ pub fn renderStatsOverlay(
         });
 
         // Stats details
-        const hit_str = if (state.current_image_cache_hit) "Yes" else "No";
+        const s = ui_model.stats;
+        const img = s.active_image;
+
+        const hit_str = if (s.current_image_cache_hit) "Yes" else "No";
         try renderStatRow("Cache Hit", hit_str);
         try renderStatRow("Memory Size", mem_size_str);
 
-        const total_vram_bytes = state.cache.getTotalVramBytes();
-        const formatted_total_vram = try formatSize(frame_allocator, total_vram_bytes);
-        const total_vram_str = try std.fmt.allocPrint(frame_allocator, "{s} / 1024 MB ({d} slots)", .{ formatted_total_vram, state.cache.entries.items.len });
+        const formatted_total_vram = try formatSize(frame_allocator, s.total_vram_bytes);
+        const total_vram_str = try std.fmt.allocPrint(frame_allocator, "{s} / 1024 MB ({d} slots)", .{ formatted_total_vram, s.cached_slot_count });
         try renderStatRow("Total Cache VRAM", total_vram_str);
 
         try renderStatRow("Decode Time", decode_str);
         try renderStatRow("Convert Time", convert_str);
         try renderStatRow("GPU Upload", upload_str);
 
-        var upload_mode_str: []const u8 = if (current_entry != null) "Direct VRAM" else "N/A";
-        var fallback_time_str: []const u8 = "N/A";
-        if (current_entry) |entry| {
-            switch (entry.status) {
-                .loaded_gpu => |gpu| {
-                    if (gpu.was_fallback) {
-                        upload_mode_str = "CPU Downscale Fallback";
-                        fallback_time_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{gpu.fallback_time_ms});
-                    }
-                },
-                else => {},
-            }
-        }
+        const upload_mode_str: []const u8 = if (current_entry == null) "N/A" else if (img.was_fallback) "CPU Downscale Fallback" else "Direct VRAM";
+        const fallback_time_str: []const u8 = if (img.was_fallback) try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{img.fallback_time_ms}) else "N/A";
         try renderStatRow("GPU Upload Mode", upload_mode_str);
-        if (std.mem.eql(u8, upload_mode_str, "CPU Downscale Fallback")) {
+        if (img.was_fallback) {
             try renderStatRow("CPU Fallback Time", fallback_time_str);
         }
 
-        var thumb_time_str: []const u8 = "N/A";
-        if (current_entry) |entry| {
-            const has_thumb = switch (entry.status) {
-                .loaded_gpu => |gpu| gpu.has_thumb,
-                .loaded_cpu => |cpu| cpu.has_thumb,
-                else => entry.has_thumb,
-            };
-            const t_time = switch (entry.status) {
-                .loaded_gpu => |gpu| gpu.thumb_upload_time_ms,
-                .loaded_cpu => |cpu| cpu.thumb_upload_time_ms,
-                else => entry.thumb_upload_time_ms,
-            };
-
-            if (has_thumb) {
-                thumb_time_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{t_time});
-            }
-        }
+        const thumb_time_str: []const u8 = if (img.has_thumb) try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{img.thumb_upload_time_ms}) else "N/A";
         try renderStatRow("Thumb Load Time", thumb_time_str);
+
+        const total_thumbs = s.thumb_header_hits + s.thumb_positional_hits + s.thumb_misses;
+        const thumb_hits_str = if (total_thumbs > 0)
+            try std.fmt.allocPrint(frame_allocator, "{d} Header / {d} Pos / {d} Miss", .{ s.thumb_header_hits, s.thumb_positional_hits, s.thumb_misses })
+        else
+            "0 Header / 0 Pos / 0 Miss";
+        try renderStatRow("Thumb Hit Ratio", thumb_hits_str);
 
         var mipmap_status_str: []const u8 = if (current_entry != null) "Disabled (1 Level)" else "N/A";
         var mipmap_time_str: []const u8 = if (current_entry != null) "0.00 ms" else "N/A";
-        if (current_entry) |entry| {
-            switch (entry.status) {
-                .loaded_gpu => |gpu| {
-                    if (gpu.num_mip_levels > 1) {
-                        mipmap_status_str = try std.fmt.allocPrint(frame_allocator, "Enabled ({d} Levels)", .{gpu.num_mip_levels});
-                        mipmap_time_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{gpu.mipmap_time_ms});
-                    }
-                },
-                else => {},
-            }
+        if (img.num_mip_levels > 1) {
+            mipmap_status_str = try std.fmt.allocPrint(frame_allocator, "Enabled ({d} Levels)", .{img.num_mip_levels});
+            mipmap_time_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{img.mipmap_time_ms});
         }
         try renderStatRow("Mipmap Status", mipmap_status_str);
         try renderStatRow("Mipmap Gen", mipmap_time_str);
 
-        const render_stats = state.ui_render_stats.getMeanAndStdev();
+        const render_stats = ui_model.metrics.ui_render_stats.getMeanAndStdev();
         const ui_render_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ± {d:.2} ms", .{ render_stats.mean, render_stats.stdev });
-        const ui_batches_str = try std.fmt.allocPrint(frame_allocator, "{d}", .{state.last_ui_batch_count});
-        const ui_verts_str = try std.fmt.allocPrint(frame_allocator, "{d}", .{state.last_ui_vertex_count});
+        const ui_batches_str = try std.fmt.allocPrint(frame_allocator, "{d}", .{ui_model.metrics.last_ui_batch_count});
+        const ui_verts_str = try std.fmt.allocPrint(frame_allocator, "{d}", .{ui_model.metrics.last_ui_vertex_count});
         try renderStatRow("UI Render Pass", ui_render_str);
         try renderStatRow("UI Batches", ui_batches_str);
         try renderStatRow("UI Vertices", ui_verts_str);
@@ -430,14 +390,15 @@ pub fn renderStatsOverlay(
 }
 
 pub fn renderAtlasOverlay(
-    state: *app_state.ViewerState,
+    ui_model: state.types.UiViewModel,
+    atlas_texture: ?sdl.gpu.Texture,
     frame_allocator: std.mem.Allocator,
     win_w: f32,
     win_h: f32,
 ) !void {
     _ = frame_allocator;
-    if (!state.show_atlas_overlay) return;
-    const tex = state.white_texture orelse return;
+    if (!ui_model.overlays.show_atlas_overlay) return;
+    const tex = atlas_texture orelse return;
 
     const padding: f32 = 32.0;
     const header_h: f32 = 32.0;

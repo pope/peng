@@ -2,9 +2,10 @@ const std = @import("std");
 const clay = @import("zclay");
 const sdl = @import("sdl");
 const theme = @import("theme.zig");
-const app_state = @import("../app/state.zig");
-const ViewerState = app_state.ViewerState;
-const types = @import("../app/types.zig");
+const state = @import("state");
+const types = state.types;
+const ViewParams = types.ViewParams;
+const UiViewModel = types.UiViewModel;
 const FrameInput = types.FrameInput;
 const MeasureTextUserData = types.MeasureTextUserData;
 const renderPalette = @import("palette.zig").renderPalette;
@@ -12,12 +13,16 @@ const renderStatsOverlay = @import("stats.zig").renderStatsOverlay;
 const renderAtlasOverlay = @import("stats.zig").renderAtlasOverlay;
 const renderer = @import("renderer.zig");
 const saveTextureToPng = @import("graphics.zig").saveTextureToPng;
-const ElementTag = app_state.ElementTag;
+const ElementTag = types.ElementTag;
+const view_transform = state.view_transform;
 const truncateFilename = @import("text_utils.zig").truncateFilename;
 const sdl3MeasureText = @import("graphics.zig").sdl3MeasureText;
+const RenderResources = @import("graphics.zig").RenderResources;
 
 pub fn renderFrame(
-    state: *ViewerState,
+    view_params: ViewParams,
+    ui_model: UiViewModel,
+    gpu_res: *RenderResources,
     input: FrameInput,
     frame_allocator: std.mem.Allocator,
     fonts: []const ?sdl.Font,
@@ -28,19 +33,14 @@ pub fn renderFrame(
     const height = input.win_h;
     const scale_x = input.scale_x;
     const scale_y = input.scale_y;
-    state.prepareCacheTextures();
-    const current_entry = state.getCurrentEntry();
+    const current_entry = ui_model.current_entry;
 
-    const total_images = blk: {
-        state.lockImageList();
-        defer state.unlockImageList();
-        break :blk state.image_list.items.len;
-    };
+    const total_images = ui_model.total_images;
 
     // Calculate Image Fitting Layout Boundaries
     var title_bar_h: f32 = 60.0;
     const nav_bar_h: f32 = 0.0;
-    if (state.is_fullscreen) {
+    if (view_params.is_fullscreen) {
         title_bar_h = 0;
     }
 
@@ -68,9 +68,9 @@ pub fn renderFrame(
                 if (entry.full_w > 0 and entry.full_h > 0) {
                     src_w = entry.full_w;
                     src_h = entry.full_h;
-                } else if (entry.thumb_gpu_texture != null) {
-                    src_w = entry.thumb_w;
-                    src_h = entry.thumb_h;
+                } else if (entry.thumbnail.getInfo()) |info| {
+                    src_w = info.w;
+                    src_h = info.h;
                 }
             },
         }
@@ -80,8 +80,7 @@ pub fn renderFrame(
             const view_w = @max(available_width - padding * 2.0, 1.0);
             const view_h = @max(height - (title_bar_h + nav_bar_h) - padding * 2.0, 1.0);
 
-            const view_transform = @import("../app/view_transform.zig");
-            const dims = view_transform.computeViewDims(src_w, src_h, state.rotation_angle, view_w, view_h, state.scale_mode);
+            const dims = view_transform.computeViewDims(src_w, src_h, view_params.viewport.rotation_angle, view_w, view_h, view_params.viewport.fit_mode);
             draw_w = dims.draw_w;
             draw_h = dims.draw_h;
         }
@@ -102,29 +101,29 @@ pub fn renderFrame(
         .background_color = theme.mantle,
     })({
         try renderPalette(
-            state,
-            input.mouse_left_clicked and !state.isPointerInDebugPanel(input),
+            ui_model,
+            input.mouse_left_clicked,
             frame_allocator,
             measure_data,
         );
 
         try renderStatsOverlay(
-            state,
+            ui_model,
             draw_w,
             draw_h,
             frame_allocator,
         );
 
         try renderAtlasOverlay(
-            state,
+            ui_model,
+            gpu_res.white_texture,
             frame_allocator,
-            available_width,
-            height,
+            draw_w,
+            draw_h,
         );
 
         try renderHeaderBar(
-            state,
-            total_images,
+            ui_model,
             available_width,
             title_bar_h,
             frame_allocator,
@@ -132,7 +131,7 @@ pub fn renderFrame(
         );
 
         renderViewport(
-            state,
+            ui_model,
             current_entry,
             draw_w,
             draw_h,
@@ -147,14 +146,14 @@ pub fn renderFrame(
     measure_data.is_debug_measuring = false;
 
     // Render Frame
-    const dev = state.gpu_device.?;
+    const dev = gpu_res.device;
     const cmd_wrapper = dev.acquireCommandBuffer() orelse return error.CommandBufferAcquisitionFailed;
     var cmd_buf_submitted = false;
     errdefer if (!cmd_buf_submitted) {
         _ = cmd_wrapper.cancel();
     };
 
-    var temp_buffers = std.ArrayList(sdl.gpu.TransferBuffer).empty;
+    var temp_buffers: std.ArrayList(sdl.gpu.TransferBuffer) = .empty;
     defer temp_buffers.deinit(frame_allocator);
     errdefer {
         for (temp_buffers.items) |buf| {
@@ -162,7 +161,7 @@ pub fn renderFrame(
         }
     }
 
-    const use_headless = !state.window_claimed;
+    const use_headless = !ui_model.display.isClaimed();
 
     var target_tex: ?sdl.gpu.Texture = null;
     var target_w: u32 = 0;
@@ -192,13 +191,16 @@ pub fn renderFrame(
     } else {
         var swap_w: u32 = 0;
         var swap_h: u32 = 0;
-        if (state.window) |w| {
-            if (w.waitAndAcquireSwapchainTexture(cmd_wrapper, &swap_w, &swap_h)) |swap_tex| {
-                target_tex = swap_tex;
-                target_w = swap_w;
-                target_h = swap_h;
-                target_format = dev.getSwapchainTextureFormat(w);
-            }
+        switch (ui_model.display.*) {
+            .headless => {},
+            .windowed => |win| {
+                if (win.handle.waitAndAcquireSwapchainTexture(cmd_wrapper, &swap_w, &swap_h)) |swap_tex| {
+                    target_tex = swap_tex;
+                    target_w = swap_w;
+                    target_h = swap_h;
+                    target_format = dev.getSwapchainTextureFormat(win.handle);
+                }
+            },
         }
     }
 
@@ -218,17 +220,20 @@ pub fn renderFrame(
             return;
         }
         try renderer.renderClayCommands(
-            state,
+            view_params.viewport,
+            gpu_res,
             cmd_wrapper,
             tex,
             fonts,
             render_commands,
+            ui_model.gpa_allocator,
             frame_allocator,
             &temp_buffers,
             @intCast(target_w),
             @intCast(target_h),
             scale_x,
             scale_y,
+            ui_model.metrics,
         );
         if (capture_filename) |filename| {
             cmd_buf_submitted = true;
@@ -261,71 +266,77 @@ pub fn renderFrame(
 }
 
 pub fn updateWindowTitle(
-    state: *ViewerState,
-    total_images: usize,
+    ui_model: UiViewModel,
     frame_allocator: std.mem.Allocator,
 ) []const u8 {
     var raw_title: []const u8 = "Peng Image Viewer";
+    const total_images = ui_model.total_images;
     if (total_images > 0) {
-        if (state.current_index) |idx| {
-            state.lockImageList();
-            defer state.unlockImageList();
-            if (idx < state.image_list.items.len) {
-                const path = state.image_list.items[idx];
+        if (ui_model.current_index) |idx| {
+            if (idx < ui_model.image_list.len) {
+                const path = ui_model.image_list[idx];
                 raw_title = std.fs.path.basename(path);
             }
         }
     }
 
-    if (state.window) |win| {
-        const title_changed = if (state.cached_window_title) |cached|
-            !std.mem.eql(u8, cached, raw_title)
-        else
-            true;
+    switch (ui_model.display.*) {
+        .windowed => |*win| {
+            const title_changed = if (win.cached_title) |cached|
+                !std.mem.eql(u8, cached, raw_title)
+            else
+                true;
 
-        if (title_changed) {
-            if (frame_allocator.dupeZ(u8, raw_title)) |tz| {
-                win.setTitle(tz);
-            } else |err| {
-                std.log.err("Failed to allocate window title string: {}", .{err});
-            }
+            if (title_changed) {
+                if (frame_allocator.dupeZ(u8, raw_title)) |tz| {
+                    win.handle.setTitle(tz);
+                } else |err| {
+                    std.log.err("Failed to allocate window title string: {}", .{err});
+                }
 
-            if (state.cached_window_title) |cached| {
-                state.allocator.free(cached);
+                if (win.cached_title) |cached| {
+                    ui_model.gpa_allocator.free(cached);
+                }
+                win.cached_title = ui_model.gpa_allocator.dupe(u8, raw_title) catch |err| blk: {
+                    std.log.err("Failed to update cached window title: {}", .{err});
+                    break :blk null;
+                };
             }
-            state.cached_window_title = state.allocator.dupe(u8, raw_title) catch |err| blk: {
-                std.log.err("Failed to update cached window title: {}", .{err});
-                break :blk null;
-            };
-        }
+        },
+        else => {},
     }
 
     return raw_title;
 }
 
 pub fn renderHeaderBar(
-    state: *ViewerState,
-    total_images: usize,
+    ui_model: UiViewModel,
     available_width: f32,
     title_bar_h: f32,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
 ) !void {
-    if (state.is_fullscreen) return;
+    if (ui_model.is_fullscreen) return;
 
-    const raw_title = updateWindowTitle(state, total_images, frame_allocator);
+    const raw_title = updateWindowTitle(ui_model, frame_allocator);
 
-    const is_loading = state.is_loading_files.load(.acquire);
+    const is_loading = ui_model.is_loading_files;
+    const total_images = ui_model.total_images;
     var count_str: ?[]const u8 = null;
     if (total_images > 0) {
-        const idx = (state.current_index orelse 0) + 1;
+        const idx = (ui_model.current_index orelse 0) + 1;
         const count_buf = try frame_allocator.alloc(u8, 128);
-        if (state.slideshow_active) {
-            count_str = try std.fmt.bufPrint(count_buf, "Image {} of {} [Slide Show {d:.1}s]", .{ idx, total_images, state.slideshow_interval_s });
-        } else if (is_loading) {
-            count_str = try std.fmt.bufPrint(count_buf, "Image {} of {}...", .{ idx, total_images });
-        } else {
-            count_str = try std.fmt.bufPrint(count_buf, "Image {} of {}", .{ idx, total_images });
+        switch (ui_model.slideshow) {
+            .active => |s| {
+                count_str = try std.fmt.bufPrint(count_buf, "Image {} of {} [Slide Show {d:.1}s]", .{ idx, total_images, s.interval_s });
+            },
+            .inactive => {
+                if (is_loading) {
+                    count_str = try std.fmt.bufPrint(count_buf, "Image {} of {}...", .{ idx, total_images });
+                } else {
+                    count_str = try std.fmt.bufPrint(count_buf, "Image {} of {}", .{ idx, total_images });
+                }
+            },
         }
     } else if (is_loading) {
         count_str = "Loading images...";
@@ -430,8 +441,8 @@ pub fn renderEmptyState() void {
 }
 
 pub fn renderViewport(
-    state: *ViewerState,
-    current_entry: ?app_state.CacheEntry,
+    ui_model: UiViewModel,
+    current_entry: anytype,
     draw_w: f32,
     draw_h: f32,
     total_images: usize,
@@ -445,22 +456,29 @@ pub fn renderViewport(
         .clip = .{ .horizontal = true, .vertical = true },
     })({
         if (current_entry) |entry| {
-            const show_thumb = (state.debug_show_thumb or entry.status != .loaded_gpu) and (entry.thumb_gpu_texture != null);
-            if (show_thumb) {
-                const thumb_tex = entry.thumb_gpu_texture.?;
-                clay.UI()(.{
-                    .id = clay.getElementId("ImageCanvas"),
-                    .layout = .{
-                        .sizing = .{
-                            .w = .fixed(draw_w),
-                            .h = .fixed(draw_h),
-                        },
-                    },
-                    .image = .{
-                        .image_data = thumb_tex.asOpaque(),
-                    },
-                })({});
-            } else switch (entry.status) {
+            var drew_thumb = false;
+            switch (entry.thumbnail) {
+                .loaded => |thumb| {
+                    if (ui_model.debug_show_thumb or entry.status != .loaded_gpu) {
+                        drew_thumb = true;
+                        const thumb_tex = thumb.texture;
+                        clay.UI()(.{
+                            .id = clay.getElementId("ImageCanvas"),
+                            .layout = .{
+                                .sizing = .{
+                                    .w = .fixed(draw_w),
+                                    .h = .fixed(draw_h),
+                                },
+                            },
+                            .image = .{
+                                .image_data = thumb_tex.asOpaque(),
+                            },
+                        })({});
+                    }
+                },
+                else => {},
+            }
+            if (!drew_thumb) switch (entry.status) {
                 .loaded_gpu => |gpu| {
                     const tex = gpu.gpu_texture;
                     clay.UI()(.{
@@ -519,8 +537,8 @@ pub fn renderViewport(
                         });
                     });
                 },
-            }
-        } else if (state.is_loading_files.load(.acquire) or total_images > 0) {
+            };
+        } else if (ui_model.is_loading_files or total_images > 0) {
             // Centered viewport loading screen while file discovery is active
             clay.UI()(.{
                 .layout = .{

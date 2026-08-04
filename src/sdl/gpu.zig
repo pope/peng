@@ -1,6 +1,7 @@
 const std = @import("std");
 const c = @import("c.zig").c;
 const Window = @import("window.zig").Window;
+const root = @import("root.zig");
 
 pub const TextureFormat = enum(c_int) {
     rgba8_unorm = c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
@@ -390,7 +391,7 @@ pub const GraphicsPipelineCreateInfo = struct {
 
 pub const ColorTargetAttachment = struct {
     texture: Texture,
-    clear_color: @import("root.zig").FColor = .{ .r = 0, .g = 0, .b = 0, .a = 1 },
+    clear_color: root.FColor = .{ .r = 0, .g = 0, .b = 0, .a = 1 },
     load_op: LoadOp = .clear,
     store_op: StoreOp = .store,
     cycle: bool = false,
@@ -433,7 +434,7 @@ pub const RenderPass = struct {
         c.SDL_BindGPUVertexBuffers(self.ptr, first_slot, &c_bindings, @intCast(bindings.len));
     }
 
-    pub fn setScissor(self: RenderPass, rect: *const @import("root.zig").Rect) void {
+    pub fn setScissor(self: RenderPass, rect: *const root.Rect) void {
         c.SDL_SetGPUScissor(self.ptr, rect);
     }
 

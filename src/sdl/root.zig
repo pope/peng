@@ -1,3 +1,9 @@
+//! SDL3 Low-Level Platform Abstraction Module
+//!
+//! Idiomatic Zig wrappers around SDL3 C APIs for window management,
+//! GPU command buffers, event polling, surfaces, fonts, and timers.
+
+const std = @import("std");
 const c = @import("c.zig").c;
 pub const Rect = c.SDL_Rect;
 pub const FRect = c.SDL_FRect;
@@ -29,7 +35,6 @@ pub const getError = events.getError;
 pub const gpu = @import("gpu.zig");
 
 test "sdl enum mapping and boundary sanity checks" {
-    const std = @import("std");
 
     // ScaleMode roundtrip
     try std.testing.expectEqual(@as(c_int, c.SDL_SCALEMODE_NEAREST), @intFromEnum(ScaleMode.nearest));

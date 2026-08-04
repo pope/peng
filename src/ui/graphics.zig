@@ -3,9 +3,10 @@ const sdl = @import("sdl");
 const renderer = @import("renderer.zig");
 const text_cache = @import("text_cache.zig");
 const clay = @import("zclay");
-const app_state = @import("../app/state.zig");
+const app_state = @import("app").state;
 const theme = @import("theme.zig");
-const MeasureTextUserData = @import("../app/types.zig").MeasureTextUserData;
+const state = @import("state");
+const MeasureTextUserData = state.types.MeasureTextUserData;
 
 pub const GraphicsSetup = struct {
     window: sdl.Window,
@@ -19,6 +20,47 @@ pub const GraphicsOptions = struct {
 };
 
 const builtin = @import("builtin");
+const TextCache = @import("text_cache.zig").TextCache;
+
+/// Cohesive GPU context and render resources initialized for GPU-accelerated rendering.
+pub const RenderResources = struct {
+    device: sdl.gpu.Device,
+    pipeline: sdl.gpu.Pipeline,
+    unpack_compute_pipeline: ?sdl.gpu.ComputePipeline = null,
+    sampler: sdl.gpu.Sampler,
+    white_texture: sdl.gpu.Texture,
+
+    // Persistent double-buffered vertex and transfer staging buffers
+    vertex_buffers: [2]?sdl.gpu.Buffer = .{ null, null },
+    transfer_buffers: [2]?sdl.gpu.TransferBuffer = .{ null, null },
+    buffer_capacities: [2]usize = .{ 0, 0 },
+    vertex_capacities: [2]usize = .{ 0, 0 },
+    frame_index: usize = 0,
+
+    // Font text texture cache & fonts
+    text_cache: TextCache = .{},
+    fonts: [2]?sdl.Font = .{ null, null },
+
+    /// Releases GPU pipelines, samplers, fallback textures, staging buffers, text cache, and fonts on application teardown.
+    pub fn deinit(self: *RenderResources, allocator: std.mem.Allocator) void {
+        self.text_cache.deinit(allocator, self.device);
+        for (self.fonts) |f| {
+            if (f) |font| font.close();
+        }
+        for (self.vertex_buffers) |vb| {
+            if (vb) |b| self.device.releaseBuffer(b);
+        }
+        for (self.transfer_buffers) |tb| {
+            if (tb) |b| self.device.releaseTransferBuffer(b);
+        }
+        self.device.releasePipeline(self.pipeline);
+        if (self.unpack_compute_pipeline) |pipe| {
+            self.device.releaseComputePipeline(pipe);
+        }
+        self.device.releaseSampler(self.sampler);
+        self.device.releaseTexture(self.white_texture);
+    }
+};
 
 pub fn initGraphicsAndWindow(window_title: [:0]const u8, options: GraphicsOptions) !GraphicsSetup {
     if (options.headless and builtin.os.tag != .macos and builtin.os.tag != .windows) {
@@ -77,13 +119,7 @@ pub fn initGraphicsAndWindow(window_title: [:0]const u8, options: GraphicsOption
     };
 }
 
-pub const GpuResources = struct {
-    pipeline: sdl.gpu.Pipeline,
-    unpack_compute_pipeline: ?sdl.gpu.ComputePipeline = null,
-    sampler: sdl.gpu.Sampler,
-    white_texture: sdl.gpu.Texture,
-    fonts: [2]?sdl.Font,
-};
+pub const GpuResources = RenderResources;
 
 fn createShaderFromFormat(
     dev: sdl.gpu.Device,
@@ -132,7 +168,7 @@ pub fn initGpuResources(dev: sdl.gpu.Device, window: sdl.Window, initial_dpi_sca
         dev.getSwapchainTextureFormat(window);
 
     // Load Font from Memory using SDL_IOStream (scaled by DPI scale)
-    const roboto_font_bytes = @embedFile("../resources/Roboto-Regular.ttf");
+    const roboto_font_bytes = @embedFile("resources/Roboto-Regular.ttf");
     const font = sdl.Font.openConstMem(roboto_font_bytes, 20.0 * initial_dpi_scale) orelse {
         std.log.err("TTF_OpenFontIO Error: {s}", .{sdl.getError()});
         return error.TTFOpenFontFailed;
@@ -149,10 +185,10 @@ pub fn initGpuResources(dev: sdl.gpu.Device, window: sdl.Window, initial_dpi_sca
     const fonts = [2]?sdl.Font{ font, font_small };
 
     // Compile Shaders
-    const vert_code_spv = @embedFile("../shaders/vert.spv");
-    const frag_code_spv = @embedFile("../shaders/frag.spv");
-    const vert_code_msl = @embedFile("../shaders/vert.msl");
-    const frag_code_msl = @embedFile("../shaders/frag.msl");
+    const vert_code_spv = @embedFile("shaders/vert.spv");
+    const frag_code_spv = @embedFile("shaders/frag.spv");
+    const vert_code_msl = @embedFile("shaders/vert.msl");
+    const frag_code_msl = @embedFile("shaders/frag.msl");
 
     const shader_formats = dev.getShaderFormats();
 
@@ -246,8 +282,8 @@ pub fn initGpuResources(dev: sdl.gpu.Device, window: sdl.Window, initial_dpi_sca
     };
 
     // Compute Shader for RGB/BGR Unpack
-    const comp_code_spv = @embedFile("../shaders/unpack_rgb.spv");
-    const comp_code_msl = @embedFile("../shaders/unpack_rgb.msl");
+    const comp_code_spv = @embedFile("shaders/unpack_rgb.spv");
+    const comp_code_msl = @embedFile("shaders/unpack_rgb.msl");
 
     const is_comp_spirv = (shader_formats & sdl.gpu.ShaderFormat.spirv) != 0;
     const comp_code = if (is_comp_spirv) comp_code_spv else comp_code_msl;
@@ -272,6 +308,7 @@ pub fn initGpuResources(dev: sdl.gpu.Device, window: sdl.Window, initial_dpi_sca
     }
 
     return GpuResources{
+        .device = dev,
         .pipeline = pipeline,
         .unpack_compute_pipeline = unpack_compute_pipeline,
         .sampler = sampler,
@@ -338,14 +375,7 @@ pub fn createAtlasTexture(dev: sdl.gpu.Device) !sdl.gpu.Texture {
     return atlas_tex;
 }
 
-pub fn createGpuResources(state: *app_state.ViewerState) !void {
-    const dev = state.gpu_device.?;
 
-    const resources = try initGpuResources(dev, state.window.?, state.dpi_scale, false);
-    state.gpu_pipeline = resources.pipeline;
-    state.gpu_sampler = resources.sampler;
-    state.white_texture = resources.white_texture;
-}
 
 fn getTextureFormatElementSize(format: sdl.gpu.TextureFormat) u32 {
     return switch (format) {
@@ -457,7 +487,7 @@ pub const GpuUploadResult = struct {
     h: f32,
     upload_time_ms: f64,
     memory_size_bytes: usize,
-    num_mip_levels: u32 = 1,
+    num_mip_levels: u32,
     mipmap_time_ms: f64 = 0.0,
     conversion_time_ms: f64 = 0.0,
     was_fallback: bool = false,
@@ -475,9 +505,7 @@ pub fn uploadSurfaceToGpu(
     const src_fmt = current_surf.format();
     const gpu_format: sdl.gpu.TextureFormat = switch (src_fmt) {
         sdl.PixelFormat.bgra32, sdl.PixelFormat.xrgb8888, sdl.PixelFormat.bgrx8888 => .bgra8_unorm,
-
         sdl.PixelFormat.rgba32, sdl.PixelFormat.xbgr8888, sdl.PixelFormat.rgbx8888 => .rgba8_unorm,
-
         else => .rgba8_unorm,
     };
 
@@ -502,7 +530,6 @@ pub fn uploadSurfaceToGpu(
         tex_usage |= sdl.gpu.TextureUsage.compute_storage_write;
     }
 
-    // Directly attempt VRAM texture creation at unscaled image dimensions first
     var img_tex_info = sdl.gpu.TextureCreateInfo{
         .type = .type_2d,
         .format = gpu_format,
@@ -516,7 +543,6 @@ pub fn uploadSurfaceToGpu(
     };
     tex = dev.createTexture(&img_tex_info);
 
-    // Fallback: only if texture creation failed for giant image dimensions exceeding GPU limits
     if (tex == null) {
         const start_fb = sdl.timer.getTicksNs();
         was_fallback = true;
@@ -563,7 +589,6 @@ pub fn uploadSurfaceToGpu(
     const gpu_tex = tex orelse return null;
 
     if (comp_pipeline_opt) |pipeline| {
-        // GPU Compute Shader Unpack Path (Raw 3-byte RGB upload -> Compute Shader unpack)
         const src_pitch: usize = @intCast(current_surf.pitch());
         const pixels: [*]const u8 = current_surf.pixels();
         const raw_bytes_len = src_pitch * u_h;
@@ -678,7 +703,6 @@ pub fn uploadSurfaceToGpu(
         };
     }
 
-    // CPU SIMD Path (Small images / fallback path)
     const cmd_wrapper = dev.acquireCommandBuffer() orelse {
         dev.releaseTexture(gpu_tex);
         return null;
@@ -692,7 +716,6 @@ pub fn uploadSurfaceToGpu(
         .size = @intCast(size),
         .props = 0,
     }) orelse {
-        std.log.err("Create transfer buffer failed: {s}", .{sdl.getError()});
         _ = cmd_wrapper.cancel();
         dev.releaseTexture(gpu_tex);
         return null;
@@ -705,31 +728,30 @@ pub fn uploadSurfaceToGpu(
         return null;
     };
 
+    const src_pixels: [*]const u8 = current_surf.pixels();
     const src_pitch: usize = @intCast(current_surf.pitch());
-    const pixels: [*]const u8 = current_surf.pixels();
     var conversion_time_ms: f64 = 0.0;
-
     const is_32bit_fmt = switch (cur_fmt) {
         sdl.PixelFormat.rgba32, sdl.PixelFormat.bgra32, sdl.PixelFormat.xrgb8888, sdl.PixelFormat.xbgr8888, sdl.PixelFormat.rgbx8888, sdl.PixelFormat.bgrx8888 => true,
         else => false,
     };
     if (is_32bit_fmt) {
         if (src_pitch == dst_pitch) {
-            @memcpy(mapped[0..size], pixels[0..size]);
+            @memcpy(mapped[0..size], src_pixels[0..size]);
         } else {
             var y: usize = 0;
             while (y < u_h) : (y += 1) {
-                @memcpy(mapped[y * dst_pitch .. y * dst_pitch + u_w * 4], pixels[y * src_pitch .. y * src_pitch + u_w * 4]);
+                @memcpy(mapped[y * dst_pitch .. y * dst_pitch + u_w * 4], src_pixels[y * src_pitch .. y * src_pitch + u_w * 4]);
             }
         }
     } else if (cur_fmt == sdl.PixelFormat.rgb24) {
         const start_conv = sdl.timer.getTicksNs();
-        sdl.surface.convertRgb24ToRgba32Simd(pixels[0 .. src_pitch * u_h], mapped[0..size], u_w, u_h, src_pitch, dst_pitch);
+        sdl.surface.convertRgb24ToRgba32Simd(src_pixels[0 .. src_pitch * u_h], mapped[0..size], u_w, u_h, src_pitch, dst_pitch);
         const end_conv = sdl.timer.getTicksNs();
         conversion_time_ms = @as(f64, @floatFromInt(end_conv - start_conv)) / 1_000_000.0;
     } else if (cur_fmt == sdl.PixelFormat.bgr24) {
         const start_conv = sdl.timer.getTicksNs();
-        sdl.surface.convertBgr24ToRgba32Simd(pixels[0 .. src_pitch * u_h], mapped[0..size], u_w, u_h, src_pitch, dst_pitch);
+        sdl.surface.convertBgr24ToRgba32Simd(src_pixels[0 .. src_pitch * u_h], mapped[0..size], u_w, u_h, src_pitch, dst_pitch);
         const end_conv = sdl.timer.getTicksNs();
         conversion_time_ms = @as(f64, @floatFromInt(end_conv - start_conv)) / 1_000_000.0;
     } else {
@@ -755,18 +777,18 @@ pub fn uploadSurfaceToGpu(
             return null;
         }
     }
-    dev.unmapTransferBuffer(transfer_buf);
 
     const copy_pass = cmd_wrapper.beginCopyPass() orelse {
         _ = cmd_wrapper.cancel();
         dev.releaseTexture(gpu_tex);
         return null;
     };
+
     copy_pass.uploadToTexture(&sdl.gpu.TextureTransferInfo{
         .transfer_buffer = transfer_buf,
         .offset = 0,
-        .pixels_per_row = @intCast(dst_pitch / 4),
-        .rows_per_layer = @intCast(img_h),
+        .pixels_per_row = @intCast(u_w),
+        .rows_per_layer = @intCast(u_h),
     }, &sdl.gpu.TextureRegion{
         .texture = gpu_tex,
         .w = @intCast(img_w),
@@ -812,8 +834,8 @@ test "uploadSurfaceToGpu compute unpack surface execution" {
     if (dev_opt) |dev| {
         defer dev.destroy();
 
-        const comp_code_spv = @embedFile("../shaders/unpack_rgb.spv");
-        const comp_code_msl = @embedFile("../shaders/unpack_rgb.msl");
+        const comp_code_spv = @embedFile("shaders/unpack_rgb.spv");
+        const comp_code_msl = @embedFile("shaders/unpack_rgb.msl");
         const shader_formats = dev.getShaderFormats();
         const is_spirv = (shader_formats & sdl.gpu.ShaderFormat.spirv) != 0;
         const comp_code = if (is_spirv) comp_code_spv else comp_code_msl;

@@ -2,127 +2,70 @@ const std = @import("std");
 const fuzzig = @import("fuzzig");
 const sdl = @import("sdl");
 const clay = @import("zclay");
-const types = @import("types.zig");
+const state_pkg = @import("state");
+const types = state_pkg.types;
 const FrameInput = types.FrameInput;
-const app_input = @import("input.zig");
-const renderer = @import("../ui/renderer.zig");
-const commands = @import("../commands.zig");
-const graphics = @import("../ui/graphics.zig");
-pub const image = @import("image.zig");
-pub const fs = @import("fs.zig");
-pub const events = @import("events.zig");
-pub const pipeline = @import("pipeline.zig");
-pub const ipc = @import("ipc.zig");
-pub const exif = @import("exif.zig");
-const screenshot = @import("screenshot.zig");
+const app_input = @import("input");
+const image = @import("core/image.zig");
+const fs = @import("fs.zig");
+const core_fs = @import("core/fs.zig");
+const events = @import("core/events.zig");
+const ipc = @import("ipc");
+const exif = @import("core/exif.zig");
+const systems = @import("systems.zig");
+const workers_mod = @import("workers/root.zig");
 
-pub const CacheStatus = image.CacheStatus;
-pub const CacheEntry = image.CacheEntry;
-pub const CacheSlotMap = image.CacheSlotMap;
-pub const TextureHandle = image.TextureHandle;
-pub const DecodeArgs = image.DecodeArgs;
-pub const detectMimeType = image.detectMimeType;
-pub const parseExifOrientation = exif.parseExifOrientation;
-pub const readJpegExifOrientation = exif.readJpegExifOrientation;
-pub const eqlIgnoreCase = fs.eqlIgnoreCase;
-pub const isImageExtension = fs.isImageExtension;
-pub const scanDirectory = fs.scanDirectory;
-pub const uploadSurfaceToGpu = graphics.uploadSurfaceToGpu;
-pub const GpuUploadResult = graphics.GpuUploadResult;
+const view_transform = state_pkg.view_transform;
 
-pub const ScaleMode = types.ScaleMode;
-pub const TextureScaleMode = types.TextureScaleMode;
+const uploadSurfaceToGpu = image.uploadSurfaceToGpu;
+const CacheStatus = state_pkg.CacheStatus;
+const CacheEntry = state_pkg.CacheEntry;
+const CacheSlotMap = image.CacheSlotMap;
+const CacheKey = image.CacheKey;
+const TextureHandle = image.TextureHandle;
+const DecodeArgs = workers_mod.DecodeArgs;
 
-pub const ElementTag = enum(usize) {
-    none = 0,
-    drop_zone_box = 1337,
+const intents = @import("intents");
+const ScaleMode = intents.ScaleMode;
+const TextureScaleMode = intents.TextureScaleMode;
+const PaletteMode = intents.PaletteMode;
+const AppIntent = intents.AppIntent;
 
-    pub fn fromInt(val: usize) ElementTag {
-        inline for (std.meta.tags(ElementTag)) |tag| {
-            if (val == @intFromEnum(tag)) {
-                return tag;
+const SlideshowMode = state_pkg.SlideshowMode;
+const OverlayState = state_pkg.OverlayState;
+const UiRenderMetrics = state_pkg.UiRenderMetrics;
+
+pub const ElementTag = state_pkg.ElementTag;
+
+const palette_module = @import("core/palette.zig");
+const PaletteState = state_pkg.PaletteState;
+
+const DragState = state_pkg.DragState;
+const ViewerState = state_pkg.ViewerState;
+
+/// Enables SDL text input events if the current display mode is windowed GUI.
+/// No-op when in headless rendering mode.
+pub fn startTextInput(display: DisplayState) void {
+    switch (display) {
+        .headless => {},
+        .windowed => |win| {
+            if (!win.handle.startTextInput()) {
+                std.log.err("SDL_StartTextInput failed: {s}", .{sdl.getError()});
             }
-        }
-        return .none;
-    }
-};
-
-pub const palette_module = @import("palette.zig");
-pub const PaletteMode = palette_module.PaletteMode;
-pub const PaletteState = palette_module.PaletteState;
-
-pub const DragState = union(enum) {
-    none,
-    viewport: struct {
-        last_x: f32,
-        last_y: f32,
-    },
-    info: struct {
-        start_x: f32,
-        start_y: f32,
-    },
-    stats: struct {
-        start_x: f32,
-        start_y: f32,
-    },
-};
-
-pub const RollingStats = struct {
-    samples: [60]f64 = [_]f64{0.0} ** 60,
-    count: usize = 0,
-    index: usize = 0,
-
-    pub fn addSample(self: *RollingStats, value: f64) void {
-        self.samples[self.index] = value;
-        self.index = (self.index + 1) % self.samples.len;
-        if (self.count < self.samples.len) {
-            self.count += 1;
-        }
-    }
-
-    pub fn getMeanAndStdev(self: *const RollingStats) struct { mean: f64, stdev: f64 } {
-        if (self.count == 0) return .{ .mean = 0.0, .stdev = 0.0 };
-        var sum: f64 = 0.0;
-        for (0..self.count) |i| {
-            sum += self.samples[i];
-        }
-        const mean = sum / @as(f64, @floatFromInt(self.count));
-        if (self.count < 2) return .{ .mean = mean, .stdev = 0.0 };
-
-        var variance_sum: f64 = 0.0;
-        for (0..self.count) |i| {
-            const diff = self.samples[i] - mean;
-            variance_sum += diff * diff;
-        }
-        const variance = @max(0.0, variance_sum) / @as(f64, @floatFromInt(self.count - 1));
-        const stdev = @sqrt(variance);
-        return .{ .mean = mean, .stdev = stdev };
-    }
-
-    pub fn reset(self: *RollingStats) void {
-        self.count = 0;
-        self.index = 0;
-    }
-};
-
-pub const TextCacheModule = @import("../ui/text_cache.zig");
-pub const TextCacheKey = TextCacheModule.TextCacheKey;
-pub const TextCacheValue = TextCacheModule.TextCacheValue;
-pub const TextCache = TextCacheModule.TextCache;
-
-pub fn startTextInput(window: ?sdl.Window) void {
-    if (window) |win| {
-        if (!win.startTextInput()) {
-            std.log.err("SDL_StartTextInput failed: {s}", .{sdl.getError()});
-        }
+        },
     }
 }
 
-pub fn stopTextInput(window: ?sdl.Window) void {
-    if (window) |win| {
-        if (!win.stopTextInput()) {
-            std.log.err("SDL_StopTextInput failed: {s}", .{sdl.getError()});
-        }
+/// Disables SDL text input events if the current display mode is windowed GUI.
+/// No-op when in headless rendering mode.
+pub fn stopTextInput(display: DisplayState) void {
+    switch (display) {
+        .headless => {},
+        .windowed => |win| {
+            if (!win.handle.stopTextInput()) {
+                std.log.err("SDL_StopTextInput failed: {s}", .{sdl.getError()});
+            }
+        },
     }
 }
 
@@ -146,95 +89,88 @@ pub fn matchesQueryLower(path: []const u8, query_lower: []const u8) bool {
     return false;
 }
 
-pub const ViewerState = struct {
-    gpu_device: ?sdl.gpu.Device = null,
-    gpu_pipeline: ?sdl.gpu.Pipeline = null,
-    unpack_compute_pipeline: ?sdl.gpu.ComputePipeline = null,
-    gpu_sampler: ?sdl.gpu.Sampler = null,
-    white_texture: ?sdl.gpu.Texture = null,
+/// Encapsulates resources and state specific to an active windowed GUI session.
+///
+/// Fields:
+/// - `handle`: The underlying SDL window handle for OS window operations.
+/// - `pixel_format`: Swapchain GPU texture format associated with the window.
+/// - `cached_title`: Heap-allocated buffer of the active window title to prevent redundant SDL title updates.
+/// - `is_fullscreen`: Boolean tracking whether the window is currently expanded to fullscreen.
+/// - `claimed`: True if the window has claimed focus and rendering output (false during headless tests).
+const ActiveWindow = state_pkg.ActiveWindow;
+const DisplayState = state_pkg.DisplayState;
 
-    /// Thread Safety: directory_arena allocations must only occur while holding image_list_mutex.
-    directory_arena: std.heap.ArenaAllocator,
-    image_list: std.ArrayList([]const u8),
-    image_list_mutex: std.Io.Mutex = .init,
-    is_loading_files: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    current_index: ?usize = null,
-    cache: CacheSlotMap,
-    cache_mutex: std.Io.Mutex = .init,
-    current_image_cache_hit: bool = false,
+/// Cohesive GPU context and render resources initialized for GPU-accelerated rendering.
+/// Main Application State Architecture
+///
+/// Single-Threaded ViewerState Model:
+/// - `ViewerState` lives 100% on the main thread and contains ZERO mutexes.
+/// - Background workers (decode, scan, IPC) run as isolated tasks that receive plain
+///   value copies of parameters (paths, generation counters) and touch zero shared state.
+/// - Workers communicate exclusively by pushing event messages into `event_queue` (MpscQueue).
+/// - The main thread consumes background events during frame updates and updates `ViewerState` safely.
+/// Main Top-Level Application State & Engine Container.
+///
+/// Owns the visual model (`viewer: ViewerState`), hardware contexts (`gpu_device`),
+/// memory allocators (`allocator`), async I/O (`io`), worker task pools (`workers`),
+/// texture slot caches (`cache`), and event/command queues.
+pub const AppState = struct {
+    /// Pure Visual & UI State Model
+    viewer: ViewerState,
+
+    /// Hardware & Pipeline Resources
+    gpu_device: ?sdl.gpu.Device = null,
+    unpack_compute_pipeline: ?sdl.gpu.ComputePipeline = null,
+
+    /// Memory & Async I/O Context
     allocator: std.mem.Allocator,
     io: std.Io,
-    active_threads: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
-    active_decode_threads: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
-    exiting: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
-    generation: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
-    window_pixel_format: u32 = sdl.PixelFormat.unknown,
-    palette: PaletteState,
-    window: ?sdl.Window,
-    cached_window_title: ?[]const u8 = null,
-    is_fullscreen: bool = false,
-    running: bool = true,
-    show_info_overlay: bool = false,
-    show_stats_overlay: bool = false,
-    show_atlas_overlay: bool = false,
-    debug_show_thumb: bool = false,
-    window_claimed: bool = false,
-    scale_mode: ScaleMode = .full,
-    zoom_factor: f32 = 1.0,
-    pan_x: f32 = 0.0,
-    pan_y: f32 = 0.0,
-    rotation_angle: f32 = 0.0,
-    rotation_map: std.StringHashMap(f32),
-    texture_scale_mode: TextureScaleMode = .linear,
-    brightness: f32 = 0.0,
-    contrast: f32 = 1.0,
-    adjustments_dirty: bool = false,
-    info_offset_x: f32 = 20.0,
-    info_offset_y: f32 = 20.0,
-    stats_offset_x: f32 = -20.0,
-    stats_offset_y: f32 = 20.0,
-    drag_state: DragState = .none,
-    mouse_inside: bool = true,
-    slideshow_active: bool = false,
-    slideshow_interval_s: f32 = 0.0,
-    slideshow_timer_ms: f32 = 0.0,
-    last_nav_time_ms: u64 = 0,
-    last_scanned_dir: std.ArrayList(u8) = std.ArrayList(u8).empty,
-    event_queue: events.MpscQueue(events.BackgroundEvent) = .{},
-    pending_ipc_commands: std.ArrayListUnmanaged(*ipc.IpcCommandData) = .empty,
 
-    // UI Render Performance Statistics
-    last_ui_render_time_ms: f64 = 0.0,
-    ui_render_stats: RollingStats = .{},
-    last_ui_vertex_count: usize = 0,
-    last_ui_batch_count: usize = 0,
+    /// Subsystems
+    cache: CacheSlotMap,
+    workers: workers_mod.WorkerManager = .{},
 
-    // Persistent double-buffered vertex resources
-    gpu_vertex_buffers: [2]?sdl.gpu.Buffer = .{ null, null },
-    gpu_transfer_buffers: [2]?sdl.gpu.TransferBuffer = .{ null, null },
-    gpu_buffer_capacities: [2]usize = .{ 0, 0 },
-    gpu_vertex_capacities: [2]usize = .{ 0, 0 },
-    gpu_frame_index: usize = 0,
+    /// Queues
+    event_batch: std.ArrayList(events.BackgroundEvent) = .empty,
+    pending_ipc_commands: std.ArrayList(*ipc.IpcCommandData) = .empty,
+    pending_intents: std.ArrayList(AppIntent) = .empty,
 
-    // Font text texture cache
-    text_cache: TextCache = .{},
-    active_screenshot: ?screenshot.ActiveScreenshot = null,
+    pub fn initHeadless(allocator: std.mem.Allocator, io: std.Io) !AppState {
+        return AppState{
+            .viewer = ViewerState.initHeadless(allocator),
+            .cache = .{},
+            .allocator = allocator,
+            .io = io,
+        };
+    }
 
-    pub fn readJpegExifOrientation(self: *const ViewerState, path: []const u8) ?f32 {
+    pub fn pushIntent(self: *AppState, intent: AppIntent) !void {
+        try self.pending_intents.append(self.allocator, intent);
+    }
+
+    pub fn clearIntents(self: *AppState) void {
+        self.pending_intents.clearRetainingCapacity();
+    }
+
+    pub inline fn isBusy(self: *const AppState) bool {
+        return self.viewer.navigation.is_loading_files.load(.acquire) or self.workers.isBusy() or self.viewer.isSlideshowActive();
+    }
+
+    pub fn readJpegExifOrientation(self: *const AppState, path: []const u8) ?f32 {
         return exif.readJpegExifOrientation(self.io, path);
     }
 
-    pub fn setDebugShowThumb(self: *ViewerState, enable: bool) !void {
-        self.debug_show_thumb = enable;
+    pub fn setDebugShowThumb(self: *AppState, enable: bool) !void {
+        self.viewer.ui.overlays.debug_show_thumb = enable;
         if (!enable) return;
 
-        const entry = self.getCurrentEntry() orelse return;
-        if (entry.thumb_gpu_texture != null) return;
+        const e = self.getCurrentEntryPtr() orelse return;
+        if (e.thumbnail == .loaded) return;
 
-        const idx = self.current_index orelse return;
-        if (idx >= self.image_list.items.len) return;
+        const idx = self.viewer.navigation.current_index orelse return;
+        if (idx >= self.viewer.navigation.image_list.items.len) return;
 
-        const path = self.image_list.items[idx];
+        const path = self.viewer.navigation.image_list.items[idx];
         var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), self.io, path, .{}) catch return;
         defer file.close(self.io);
 
@@ -248,133 +184,112 @@ pub const ViewerState = struct {
         const thumb_surf = sdl.Surface.loadConstMemOpt(thumb_bytes) orelse return;
         defer thumb_surf.destroy();
 
-        const gpu_dev = self.gpu_device orelse return;
-        const upload_res = graphics.uploadSurfaceToGpu(gpu_dev, thumb_surf, self.unpack_compute_pipeline) orelse return;
+        const dev = self.gpu_device orelse return;
+        const upload_res = uploadSurfaceToGpu(dev, thumb_surf, self.unpack_compute_pipeline) orelse return;
 
-        self.lockCache();
-        defer self.unlockCache();
-
-        if (self.cache.getWithGeneration(entry.index, entry.generation)) |e| {
-            if (e.thumb_gpu_texture) |old_t| {
-                gpu_dev.releaseTexture(old_t);
-            }
-            e.thumb_gpu_texture = upload_res.gpu_texture;
-            e.thumb_w = upload_res.w;
-            e.thumb_h = upload_res.h;
-            if (full_dims) |dims| {
-                e.full_w = dims.w;
-                e.full_h = dims.h;
-            }
-            e.has_thumb = true;
-            e.thumb_upload_time_ms = upload_res.upload_time_ms;
-        } else {
-            gpu_dev.releaseTexture(upload_res.gpu_texture);
+        switch (e.thumbnail) {
+            .loaded => |thumb| dev.releaseTexture(thumb.texture),
+            else => {},
         }
+
+        if (full_dims) |dims| {
+            e.full_w = dims.w;
+            e.full_h = dims.h;
+        }
+
+        e.thumbnail = .{
+            .loaded = .{
+                .texture = upload_res.gpu_texture,
+                .info = .{
+                    .w = upload_res.w,
+                    .h = upload_res.h,
+                    .upload_time_ms = upload_res.upload_time_ms,
+                },
+            },
+        };
     }
 
-    pub fn deinit(self: *ViewerState) void {
-        self.exiting.store(true, .release);
-        while (self.active_threads.load(.acquire) > 0) {
-            sdl.timer.delay(1);
-        }
+    pub fn deinit(self: *AppState) void {
+        self.workers.drainAndQuiesce(self.io);
 
-        self.clearCache();
+        const dev_opt = self.gpu_device;
+        self.cache.clear(dev_opt);
 
         if (self.gpu_device) |dev| {
-            for (self.gpu_vertex_buffers) |vb| {
-                if (vb) |b| dev.releaseBuffer(b);
-            }
-            for (self.gpu_transfer_buffers) |tb| {
-                if (tb) |b| dev.releaseTransferBuffer(b);
+            switch (self.viewer.display) {
+                .headless => {},
+                .windowed => |*w| {
+                    if (w.claimed) {
+                        w.handle.releaseFromGpu(dev);
+                    }
+                },
             }
 
-            if (self.gpu_pipeline) |pipe| dev.releasePipeline(pipe);
-            if (self.unpack_compute_pipeline) |pipe| dev.releaseComputePipeline(pipe);
-            if (self.gpu_sampler) |samp| dev.releaseSampler(samp);
-            if (self.white_texture) |tex| dev.releaseTexture(tex);
-            if (self.window_claimed) {
-                if (self.window) |w| w.releaseFromGpu(dev);
-            }
+            self.cache.deinit(self.allocator, dev);
+        } else {
+            self.cache.deinit(self.allocator, null);
         }
 
-        if (self.active_screenshot) |*s| {
-            s.respondQuit(self.io, self.allocator);
-            self.active_screenshot = null;
-        }
         for (self.pending_ipc_commands.items) |cmd_data| {
+            cmd_data.client_stream.close(self.io);
             self.allocator.free(cmd_data.command);
             self.allocator.destroy(cmd_data);
         }
-        if (self.cached_window_title) |t| {
-            self.allocator.free(t);
-        }
-        self.last_scanned_dir.deinit(self.allocator);
+        self.viewer.deinit(self.allocator, self.io);
         self.pending_ipc_commands.deinit(self.allocator);
-        self.event_queue.deinit(self.allocator, self.io);
-        self.text_cache.deinit(self.allocator, self.gpu_device);
-        self.image_list.deinit(self.allocator);
-        self.cache.deinit(self.allocator, self.gpu_device);
-        self.palette.deinit();
-        self.rotation_map.deinit();
-        self.directory_arena.deinit();
+        self.pending_intents.deinit(self.allocator);
+        self.event_batch.deinit(self.allocator);
+        self.workers.event_queue.deinit(self.allocator, self.io);
     }
 
-    pub fn lockCache(self: *ViewerState) void {
-        self.cache_mutex.lockUncancelable(self.io);
+    pub fn putRotation(self: *AppState, path: []const u8, angle: f32) !void {
+        try self.viewer.putRotation(self.allocator, path, angle);
     }
 
-    pub fn unlockCache(self: *ViewerState) void {
-        self.cache_mutex.unlock(self.io);
+    pub fn clearRotationMap(self: *AppState) void {
+        self.viewer.clearRotationMap(self.allocator);
     }
 
-    pub fn lockImageList(self: *ViewerState) void {
-        self.image_list_mutex.lockUncancelable(self.io);
+    pub fn resetZoomPan(self: *AppState) void {
+        self.viewer.resetZoomPan();
     }
 
-    pub fn unlockImageList(self: *ViewerState) void {
-        self.image_list_mutex.unlock(self.io);
-    }
-
-    pub fn resetZoomPan(self: *ViewerState) void {
-        self.zoom_factor = 1.0;
-        self.pan_x = 0.0;
-        self.pan_y = 0.0;
-    }
-
-    pub fn getBaseScale(self: *ViewerState) f32 {
+    pub fn getBaseScale(self: *AppState) f32 {
         const entry = self.getCurrentEntry() orelse return 1.0;
         const raw_w: f32 = switch (entry.status) {
             .loaded_gpu => |gpu| gpu.w,
             .loaded_cpu => |cpu| cpu.w,
-            else => if (entry.full_w > 0) entry.full_w else entry.thumb_w,
+            else => if (entry.full_w > 0) entry.full_w else if (entry.thumbnail.getInfo()) |info| info.w else 0.0,
         };
         const raw_h: f32 = switch (entry.status) {
             .loaded_gpu => |gpu| gpu.h,
             .loaded_cpu => |cpu| cpu.h,
-            else => if (entry.full_h > 0) entry.full_h else entry.thumb_h,
+            else => if (entry.full_h > 0) entry.full_h else if (entry.thumbnail.getInfo()) |info| info.h else 0.0,
         };
         if (raw_w <= 0.0 or raw_h <= 0.0) return 1.0;
 
         var pix_w: i32 = 1024;
         var pix_h: i32 = 768;
-        if (self.window) |win| {
-            const pix_size = win.getSizeInPixels();
-            if (pix_size.w > 0 and pix_size.h > 0) {
-                pix_w = pix_size.w;
-                pix_h = pix_size.h;
-            }
-        }
-
-        const title_bar_h: f32 = if (self.is_fullscreen) 0.0 else 60.0;
         var win_w: f32 = 1024.0;
         var win_h: f32 = 768.0;
-        if (self.window) |win| {
-            const win_size = win.getSize();
-            if (win_size.w > 0 and win_size.h > 0) {
-                win_w = @floatFromInt(win_size.w);
-                win_h = @floatFromInt(win_size.h);
-            }
+
+        switch (self.viewer.display) {
+            .headless => {},
+            .windowed => |win| {
+                const pix_size = win.handle.getSizeInPixels();
+                if (pix_size.w > 0 and pix_size.h > 0) {
+                    pix_w = pix_size.w;
+                    pix_h = pix_size.h;
+                }
+                const win_size = win.handle.getSize();
+                if (win_size.w > 0 and win_size.h > 0) {
+                    win_w = @floatFromInt(win_size.w);
+                    win_h = @floatFromInt(win_size.h);
+                }
+            },
         }
+
+        const title_bar_h: f32 = if (self.viewer.isFullscreen()) 0.0 else 60.0;
 
         var available_width = win_w;
         if (clay.isDebugModeEnabled()) {
@@ -383,97 +298,60 @@ pub const ViewerState = struct {
         const view_w = @max(available_width, 1.0);
         const view_h = @max(win_h - title_bar_h, 1.0);
 
-        const view_transform = @import("view_transform.zig");
-        const dims = view_transform.computeViewDims(raw_w, raw_h, self.rotation_angle, view_w, view_h, self.scale_mode);
+        const dims = view_transform.computeViewDims(raw_w, raw_h, self.viewer.viewport.rotation_angle, view_w, view_h, self.viewer.viewport.fit_mode);
         return dims.base_scale;
     }
 
-    pub fn isPointerInDebugPanel(self: *const ViewerState, input: FrameInput) bool {
+    pub fn isPointerInDebugPanel(self: *const AppState, input: FrameInput) bool {
         _ = self;
-        if (!clay.isDebugModeEnabled()) return false;
-        const debug_w = @as(f32, @floatFromInt(clay.Clay__debugViewWidth));
-        return input.mouse_x >= (input.win_w - debug_w) and input.mouse_x <= input.win_w and
-            input.mouse_y >= 0 and input.mouse_y <= input.win_h;
+        return input.isPointerInDebugPanel();
     }
 
-    pub fn clampZoomFactor(self: *ViewerState, new_factor: f32) f32 {
+    pub fn clampZoomFactor(self: *AppState, new_factor: f32) types.ZoomFactor {
         const base_scale = self.getBaseScale();
-        const view_transform = @import("view_transform.zig");
         return view_transform.clampZoomFactor(base_scale, new_factor);
     }
 
-    pub fn getTextureByHandle(self: *ViewerState, handle: TextureHandle) ?sdl.gpu.Texture {
-        self.lockCache();
-        defer self.unlockCache();
+    pub fn getTextureByHandle(self: *AppState, handle: TextureHandle) ?sdl.gpu.Texture {
         return self.cache.getTexture(handle);
     }
 
-    pub fn applyTextureScaleMode(self: *ViewerState) void {
-        const filter = if (self.texture_scale_mode == .linear) sdl.gpu.Filter.linear else sdl.gpu.Filter.nearest;
-        if (self.gpu_device) |gpu_dev| {
-            if (self.gpu_sampler) |old_sampler| {
-                gpu_dev.releaseSampler(old_sampler);
-            }
-
-            const sampler_info = sdl.gpu.SamplerCreateInfo{
-                .min_filter = filter,
-                .mag_filter = filter,
-                .mipmap_mode = .linear,
-                .address_mode_u = .clamp_to_edge,
-                .address_mode_v = .clamp_to_edge,
-                .address_mode_w = .clamp_to_edge,
-                .mip_lod_bias = 0.0,
-                .max_anisotropy = 1.0,
-                .compare_op = .never,
-                .min_lod = 0.0,
-                .max_lod = 1000.0,
-                .props = 0,
-            };
-            self.gpu_sampler = gpu_dev.createSampler(&sampler_info);
-        }
+    pub fn rebuildPaletteMatches(self: *AppState) !void {
+        try self.viewer.ui.palette.rebuildFileMatches(self.viewer.navigation.image_list.items);
     }
 
-    pub fn rebuildPaletteMatches(self: *ViewerState) !void {
-        self.lockImageList();
-        defer self.unlockImageList();
-        try self.palette.rebuildFileMatches(self.image_list.items);
+    pub fn rebuildActionMatches(self: *AppState) !void {
+        try self.viewer.ui.palette.rebuildActionMatches();
     }
 
-    pub fn rebuildActionMatches(self: *ViewerState) !void {
-        try self.palette.rebuildActionMatches(commands.actions.app_actions);
+    pub fn getCurrentEntryPtr(self: *AppState) ?*CacheEntry {
+        const idx = self.viewer.navigation.current_index orelse return null;
+        return self.cache.get(self.cache.activeKey(idx));
     }
 
-    pub fn triggerAction(self: *ViewerState, action_id: commands.actions.AppActionId) !void {
-        try commands.actions.triggerAction(self, action_id);
-    }
-
-    pub fn getCurrentEntry(self: *ViewerState) ?CacheEntry {
-        self.lockCache();
-        defer self.unlockCache();
-
-        const idx = self.current_index orelse return null;
-        if (self.cache.get(idx)) |entry| {
+    pub fn getCurrentEntry(self: *AppState) ?CacheEntry {
+        if (self.getCurrentEntryPtr()) |entry| {
             return entry.*;
         }
         return null;
     }
 
-    pub fn openPalette(self: *ViewerState, active_type: PaletteMode) !void {
-        self.palette.reset();
-        self.palette.mode = active_type;
-        self.palette.selected_idx = switch (active_type) {
-            .files => self.current_index orelse 0,
+    pub fn openPalette(self: *AppState, active_type: PaletteMode) !void {
+        self.viewer.ui.palette.reset();
+        self.viewer.ui.palette.mode = active_type;
+        self.viewer.ui.palette.selected_idx = switch (active_type) {
+            .files => self.viewer.navigation.current_index orelse 0,
             else => 0,
         };
-        self.palette.selection_dirty = true;
+        self.viewer.ui.palette.selection_dirty = true;
 
         const max_capacity = switch (active_type) {
-            .files => self.image_list.items.len,
-            .actions => commands.actions.app_actions.len,
+            .files => self.viewer.navigation.image_list.items.len,
+            .actions => types.palette_action_items.len,
             else => 0,
         };
         if (max_capacity > 0) {
-            try self.palette.matches.ensureTotalCapacity(self.allocator, max_capacity);
+            try self.viewer.ui.palette.matches.ensureTotalCapacity(self.allocator, max_capacity);
         }
 
         switch (active_type) {
@@ -481,28 +359,26 @@ pub const ViewerState = struct {
             .actions => try self.rebuildActionMatches(),
             .directory_navigator => {
                 const start_dir = blk: {
-                    self.lockImageList();
-                    defer self.unlockImageList();
-                    if (self.current_index) |idx| {
-                        if (idx < self.image_list.items.len) {
-                            break :blk std.fs.path.dirname(self.image_list.items[idx]) orelse ".";
+                    if (self.viewer.navigation.current_index) |idx| {
+                        if (idx < self.viewer.navigation.image_list.items.len) {
+                            break :blk std.fs.path.dirname(self.viewer.navigation.image_list.items[idx]) orelse ".";
                         }
                     }
-                    if (self.last_scanned_dir.items.len > 0) {
-                        break :blk self.last_scanned_dir.items;
+                    if (self.viewer.navigation.last_scanned_dir.items.len > 0) {
+                        break :blk self.viewer.navigation.last_scanned_dir.items;
                     }
-                    if (self.palette.last_nav_dir.items.len > 0) {
-                        break :blk self.palette.last_nav_dir.items;
+                    if (self.viewer.ui.palette.last_nav_dir.items.len > 0) {
+                        break :blk self.viewer.ui.palette.last_nav_dir.items;
                     }
                     break :blk ".";
                 };
-                try self.palette.loadDirectoryEntries(self.io, start_dir);
-                while (self.palette.dir_items.items.len == 0) {
-                    const curr = self.palette.current_nav_dir.items;
+                try palette_module.loadDirectoryEntries(&self.viewer.ui.palette, self.io, start_dir);
+                while (self.viewer.ui.palette.dir_items.items.len == 0) {
+                    const curr = self.viewer.ui.palette.current_nav_dir.items;
                     var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
-                    if (fs.getParentDirBuf(curr, &parent_buf)) |parent_dir| {
+                    if (core_fs.getParentDirBuf(curr, &parent_buf)) |parent_dir| {
                         if (!std.mem.eql(u8, parent_dir, curr)) {
-                            try self.palette.loadDirectoryEntries(self.io, parent_dir);
+                            try palette_module.loadDirectoryEntries(&self.viewer.ui.palette, self.io, parent_dir);
                             continue;
                         }
                     }
@@ -512,44 +388,44 @@ pub const ViewerState = struct {
             else => {},
         }
 
-        startTextInput(self.window);
+        startTextInput(self.viewer.display);
     }
 
-    pub fn prepareCacheTextures(self: *ViewerState) void {
-        self.lockCache();
-
+    pub fn prepareCacheTextures(self: *AppState) void {
         var upload_target: ?struct {
-            index: usize,
-            generation: usize,
+            key: CacheKey,
             cpu: @TypeOf(@as(CacheStatus, undefined).loaded_cpu),
         } = null;
 
-        for (self.cache.entries.items) |*entry| {
-            if (entry.status == .loaded_gpu and entry.thumb_gpu_texture != null and !self.debug_show_thumb) {
-                if (self.gpu_device) |gpu_dev| {
-                    gpu_dev.releaseTexture(entry.thumb_gpu_texture.?);
+        for (self.cache.entries.items, self.cache.keys.items) |*entry, key| {
+            if (entry.status == .loaded_gpu and !self.viewer.ui.overlays.debug_show_thumb) {
+                switch (entry.thumbnail) {
+                    .loaded => |thumb| {
+                        if (self.gpu_device) |gpu_dev| {
+                            gpu_dev.releaseTexture(thumb.texture);
+                        }
+                        entry.thumbnail = .{ .unloaded = thumb.info };
+                    },
+                    else => {},
                 }
-                entry.thumb_gpu_texture = null;
             }
-            if (entry.status == .loaded_cpu) {
-                const cpu = entry.status.loaded_cpu;
-                entry.status = .uploading;
-                upload_target = .{
-                    .index = entry.index,
-                    .generation = entry.generation,
-                    .cpu = cpu,
-                };
-                break;
+            switch (entry.status) {
+                .loaded_cpu => |cpu| {
+                    entry.status = .uploading;
+                    upload_target = .{
+                        .key = key,
+                        .cpu = cpu,
+                    };
+                    break;
+                },
+                else => {},
             }
         }
-
-        self.unlockCache();
 
         if (upload_target) |target| {
             defer target.cpu.surface.destroy();
             if (self.gpu_device) |gpu_dev| {
                 if (uploadSurfaceToGpu(gpu_dev, target.cpu.surface, self.unpack_compute_pipeline)) |res| {
-                    self.lockCache();
                     const loaded_gpu_status = CacheStatus{
                         .loaded_gpu = .{
                             .gpu_texture = res.gpu_texture,
@@ -563,449 +439,54 @@ pub const ViewerState = struct {
                             .memory_size_bytes = res.memory_size_bytes,
                         },
                     };
-                    const updated = self.cache.updateStatus(target.index, target.generation, loaded_gpu_status);
-                    self.unlockCache();
+                    const updated = self.cache.updateStatus(target.key, loaded_gpu_status);
 
                     if (!updated) {
                         gpu_dev.releaseTexture(res.gpu_texture);
                     }
                 } else {
-                    self.lockCache();
-                    _ = self.cache.updateStatus(target.index, target.generation, .failed);
-                    self.unlockCache();
+                    _ = self.cache.updateStatus(target.key, .failed);
                 }
             }
         }
-        if (self.adjustments_dirty) {
-            self.adjustments_dirty = false;
-        }
     }
 
-    pub fn clearCache(self: *ViewerState) void {
-        self.lockCache();
-        defer self.unlockCache();
-
-        self.cache.clear(self.gpu_device);
+    pub fn clearCache(self: *AppState) void {
+        const dev_opt = self.gpu_device;
+        self.cache.clear(dev_opt);
     }
 
-    pub fn checkIdlePreload(self: *ViewerState) void {
-        if (self.image_list.items.len <= 1) return;
-        const now = sdl.timer.getTicks();
-        if (now - self.last_nav_time_ms >= 150) {
-            self.lockCache();
-            const entry_count = self.cache.entries.items.len;
-            self.unlockCache();
-            if (entry_count <= 1) {
-                self.updateCache() catch |err| std.log.warn("Idle preload updateCache failed: {}", .{err});
-            }
-        }
-    }
-
-    pub fn updateCurrentRotation(self: *ViewerState) void {
+    pub fn updateCurrentRotation(self: *AppState) void {
         const path_opt = blk: {
-            self.lockImageList();
-            defer self.unlockImageList();
-            const len = self.image_list.items.len;
-            const current_idx = self.current_index orelse break :blk null;
+            const len = self.viewer.navigation.image_list.items.len;
+            const current_idx = self.viewer.navigation.current_index orelse break :blk null;
             if (current_idx >= len) break :blk null;
-            break :blk self.image_list.items[current_idx];
+            break :blk self.viewer.navigation.image_list.items[current_idx];
         };
 
         const path = path_opt orelse {
-            self.rotation_angle = 0.0;
+            self.viewer.viewport.rotation_angle = 0.0;
             return;
         };
 
-        if (self.rotation_map.get(path)) |user_rot| {
-            self.rotation_angle = user_rot;
+        if (self.viewer.rotation_map.get(path)) |user_rot| {
+            self.viewer.viewport.rotation_angle = user_rot;
         } else if (self.getCurrentEntry()) |entry| {
-            self.rotation_angle = entry.exif_orientation;
+            self.viewer.viewport.rotation_angle = entry.exif_orientation;
         } else {
-            self.rotation_angle = 0.0;
+            self.viewer.viewport.rotation_angle = 0.0;
         }
     }
 
-    pub fn handleExifThumbnailEvent(self: *ViewerState, thumb_data: events.ThumbDecodedPayload) void {
-        const current_gen = self.generation.load(.acquire);
-        if (thumb_data.generation != current_gen) return;
-        if (thumb_data.surface == null) return;
-        if (self.gpu_device) |gpu_dev| {
-            if (graphics.uploadSurfaceToGpu(gpu_dev, thumb_data.surface.?, self.unpack_compute_pipeline)) |upload_res| {
-                self.lockCache();
-                if (self.cache.getWithGeneration(thumb_data.index, thumb_data.generation)) |entry| {
-                    entry.thumb_gpu_texture = upload_res.gpu_texture;
-                    entry.thumb_w = upload_res.w;
-                    entry.thumb_h = upload_res.h;
-                    entry.exif_orientation = thumb_data.exif_orientation;
-                    if (thumb_data.full_w > 0 and thumb_data.full_h > 0) {
-                        entry.full_w = thumb_data.full_w;
-                        entry.full_h = thumb_data.full_h;
-                    }
-                    entry.has_thumb = true;
-                    entry.thumb_upload_time_ms = upload_res.upload_time_ms;
-                } else {
-                    gpu_dev.releaseTexture(upload_res.gpu_texture);
-                }
-                self.unlockCache();
-                self.updateCurrentRotation();
-            }
-        }
+    pub fn next(self: *AppState) !void {
+        _ = self.viewer.navigation.nextIndex();
     }
 
-    pub fn handleImageDecodedEvent(self: *ViewerState, decoded_data: *events.ImageDecodedPayload) void {
-        const current_gen = self.generation.load(.acquire);
-        if (decoded_data.generation != current_gen) return;
-        if (decoded_data.surface == null) return;
-        if (self.gpu_device) |gpu_dev| {
-            if (graphics.uploadSurfaceToGpu(gpu_dev, decoded_data.surface.?, self.unpack_compute_pipeline)) |full_res| {
-                self.lockCache();
-                if (self.cache.getWithGeneration(decoded_data.index, decoded_data.generation)) |entry| {
-                    switch (entry.status) {
-                        .loaded_cpu => |cpu| cpu.surface.destroy(),
-                        .loaded_gpu => |gpu| gpu_dev.releaseTexture(gpu.gpu_texture),
-                        else => {},
-                    }
-                    entry.exif_orientation = decoded_data.exif_orientation;
-                    entry.status = .{
-                        .loaded_gpu = .{
-                            .gpu_texture = full_res.gpu_texture,
-                            .w = decoded_data.w,
-                            .h = decoded_data.h,
-                            .size_bytes = decoded_data.size_bytes,
-                            .mime_type = decoded_data.mime_type,
-                            .decode_time_ms = decoded_data.decode_time_ms,
-                            .conversion_time_ms = full_res.conversion_time_ms,
-                            .upload_time_ms = full_res.upload_time_ms,
-                            .memory_size_bytes = full_res.memory_size_bytes,
-                            .num_mip_levels = full_res.num_mip_levels,
-                            .mipmap_time_ms = full_res.mipmap_time_ms,
-                            .was_fallback = full_res.was_fallback,
-                            .fallback_time_ms = full_res.fallback_time_ms,
-                            .has_thumb = entry.has_thumb,
-                            .thumb_w = entry.thumb_w,
-                            .thumb_h = entry.thumb_h,
-                            .thumb_upload_time_ms = entry.thumb_upload_time_ms,
-                        },
-                    };
-                    self.cache.enforceVramBudget(gpu_dev, self.current_index, CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
-                } else {
-                    gpu_dev.releaseTexture(full_res.gpu_texture);
-                }
-                self.unlockCache();
-                self.updateCurrentRotation();
-            }
-        } else {
-            self.lockCache();
-            if (self.cache.getWithGeneration(decoded_data.index, decoded_data.generation)) |entry| {
-                entry.exif_orientation = decoded_data.exif_orientation;
-                entry.status = .{
-                    .loaded_cpu = .{
-                        .surface = decoded_data.surface.?,
-                        .w = decoded_data.w,
-                        .h = decoded_data.h,
-                        .size_bytes = decoded_data.size_bytes,
-                        .mime_type = decoded_data.mime_type,
-                        .decode_time_ms = decoded_data.decode_time_ms,
-                        .conversion_time_ms = decoded_data.conversion_time_ms,
-                        .has_thumb = entry.has_thumb,
-                        .thumb_w = entry.thumb_w,
-                        .thumb_h = entry.thumb_h,
-                        .thumb_upload_time_ms = entry.thumb_upload_time_ms,
-                    },
-                };
-                decoded_data.surface = null; // Transfer ownership to CacheEntry
-            }
-            self.unlockCache();
-            self.updateCurrentRotation();
-        }
+    pub fn prev(self: *AppState) !void {
+        _ = self.viewer.navigation.prevIndex();
     }
 
-    pub fn handleDirScannedEvent(self: *ViewerState, scanned_data: events.PathDiscoveredPayload) void {
-        const current_gen = self.generation.load(.acquire);
-        if (scanned_data.generation != current_gen) return;
-        self.lockImageList();
-        defer self.unlockImageList();
-        const dup = self.directory_arena.allocator().dupe(u8, scanned_data.path) catch |err| {
-            std.log.err("Failed to duplicate path '{s}' in directory arena: {}", .{ scanned_data.path, err });
-            return;
-        };
-        self.image_list.append(self.allocator, dup) catch |err| std.log.err("Failed to append discovered path to image_list: {}", .{err});
-        if (self.current_index == null and self.image_list.items.len > 0) {
-            self.current_index = 0;
-        }
-    }
-
-    pub fn processBackgroundEvents(self: *ViewerState) bool {
-        var event_batch = std.ArrayList(events.BackgroundEvent).empty;
-        defer event_batch.deinit(self.allocator);
-
-        self.event_queue.drain(self.allocator, self.io, &event_batch) catch return false;
-        if (event_batch.items.len == 0) return false;
-        const current_gen = self.generation.load(.acquire);
-
-        for (event_batch.items) |*evt| {
-            defer evt.deinit(self.allocator);
-
-            switch (evt.*) {
-                .exif_orientation_parsed => |e| {
-                    if (e.generation != current_gen) continue;
-                    self.lockCache();
-                    if (self.cache.getWithGeneration(e.index, e.generation)) |entry| {
-                        entry.exif_orientation = e.orientation;
-                    }
-                    self.unlockCache();
-                    self.updateCurrentRotation();
-                },
-                .thumb_decoded => |t| handleExifThumbnailEvent(self, t),
-                .image_decoded => |*d| handleImageDecodedEvent(self, d),
-                .decode_failed => |f| {
-                    if (f.generation != current_gen) continue;
-                    self.lockCache();
-                    _ = self.cache.updateStatus(f.index, f.generation, .failed);
-                    self.unlockCache();
-                },
-                .path_discovered => |p| handleDirScannedEvent(self, p),
-                .directory_scan_complete => {},
-                .ipc_command => |cmd_data| {
-                    self.pending_ipc_commands.append(self.allocator, cmd_data) catch |err| {
-                        std.log.err("Failed to append IPC command to pending list: {}", .{err});
-                    };
-                },
-            }
-        }
-        return true;
-    }
-
-    pub fn getMaxConcurrentDecodes() usize {
-        const cpu_count = std.Thread.getCpuCount() catch 4;
-        if (cpu_count <= 2) return 2;
-        return @min(6, cpu_count - 1);
-    }
-
-    pub fn updateCache(self: *ViewerState) !void {
-        self.resetZoomPan();
-        self.updateCurrentRotation();
-
-        self.lockImageList();
-        const len = self.image_list.items.len;
-        self.unlockImageList();
-
-        if (len == 0) return;
-
-        const idx = self.current_index orelse return;
-        const gen = self.generation.load(.acquire);
-
-        const now = sdl.timer.getTicks();
-        const is_rapid_scrolling = (now - self.last_nav_time_ms < 150);
-        self.last_nav_time_ms = now;
-
-        // 1. Gather desired indices
-        var desired_count: usize = 0;
-        var desired: [5]usize = undefined;
-        desired[0] = idx;
-        desired_count = 1;
-
-        if (!is_rapid_scrolling) {
-            for ([_]usize{
-                (idx + 1) % len,
-                (idx + 2) % len,
-                (idx + len - 1) % len,
-                if (len >= 2) (idx + len - 2) % len else idx,
-            }) |d| {
-                var unique = true;
-                for (desired[0..desired_count]) |existing| {
-                    if (existing == d) {
-                        unique = false;
-                        break;
-                    }
-                }
-                if (unique) {
-                    desired[desired_count] = d;
-                    desired_count += 1;
-                }
-            }
-        }
-
-        var to_spawn_count: usize = 0;
-        var to_spawn_indices: [5]usize = undefined;
-        var hit = false;
-
-        {
-            self.lockCache();
-            defer self.unlockCache();
-
-            // 2. Evict cache entries that are no longer wanted
-            var i: usize = 0;
-            while (i < self.cache.entries.items.len) {
-                const entry = &self.cache.entries.items[i];
-                var wanted = false;
-                for (desired[0..desired_count]) |d| {
-                    if (entry.index == d) {
-                        wanted = true;
-                        break;
-                    }
-                }
-                if (!wanted) {
-                    // Evict
-                    self.cache.removeAndDeinit(i, self.gpu_device);
-                } else {
-                    i += 1;
-                }
-            }
-
-            // 3. Mark wanted entries that are not in the cache yet as .decoding
-            for (desired[0..desired_count]) |d| {
-                var needs_thread = false;
-                if (self.cache.get(d)) |entry| {
-                    if (d == idx and (entry.status == .loaded_cpu or entry.status == .loaded_gpu)) {
-                        hit = true;
-                    }
-                    if (entry.status == .decoding and !entry.status.decoding.has_thread) {
-                        needs_thread = true;
-                    }
-                } else {
-                    const new_entry = CacheEntry{
-                        .index = d,
-                        .generation = gen,
-                        .status = .{ .decoding = .{ .has_thread = false } },
-                        .full_w = 0.0,
-                        .full_h = 0.0,
-                    };
-                    try self.cache.append(self.allocator, new_entry);
-                    needs_thread = true;
-                }
-                if (needs_thread) {
-                    to_spawn_indices[to_spawn_count] = d;
-                    to_spawn_count += 1;
-                }
-            }
-            self.current_image_cache_hit = hit;
-        }
-
-        // 4. Batch-fetch file paths under a single image_list_mutex lock
-        var to_spawn_paths: [5]?[:0]const u8 = undefined;
-        {
-            self.lockImageList();
-            defer self.unlockImageList();
-            for (to_spawn_indices[0..to_spawn_count], 0..) |d, s_idx| {
-                if (d < self.image_list.items.len) {
-                    to_spawn_paths[s_idx] = self.allocator.dupeZ(u8, self.image_list.items[d]) catch |err| blk: {
-                        std.log.err("updateCache: dupeZ failed for image index {d}: {}", .{ d, err });
-                        break :blk null;
-                    };
-                } else {
-                    to_spawn_paths[s_idx] = null;
-                }
-            }
-        }
-
-        // 5. Spawn worker threads outside cache_mutex lock
-        const max_decodes = getMaxConcurrentDecodes();
-        for (to_spawn_indices[0..to_spawn_count], 0..) |d, s_idx| {
-            const path_opt = to_spawn_paths[s_idx];
-            if (path_opt == null or self.active_decode_threads.load(.acquire) >= max_decodes) {
-                if (path_opt) |p| self.allocator.free(p);
-                if (d != idx) {
-                    self.lockCache();
-                    var k: usize = 0;
-                    while (k < self.cache.entries.items.len) : (k += 1) {
-                        if (self.cache.entries.items[k].index == d) {
-                            self.cache.removeAndDeinit(k, self.gpu_device);
-                            break;
-                        }
-                    }
-                    self.unlockCache();
-                }
-                continue;
-            }
-
-            const dup_path = path_opt.?;
-
-            const args = self.allocator.create(DecodeArgs) catch |err| {
-                self.allocator.free(dup_path);
-                for (to_spawn_paths[s_idx + 1 .. to_spawn_count]) |rem_path_opt| {
-                    if (rem_path_opt) |rp| self.allocator.free(rp);
-                }
-                self.lockCache();
-                var k: usize = 0;
-                while (k < self.cache.entries.items.len) : (k += 1) {
-                    if (self.cache.entries.items[k].index == d) {
-                        self.cache.removeAndDeinit(k, self.gpu_device);
-                        break;
-                    }
-                }
-                self.unlockCache();
-                return err;
-            };
-
-            self.lockCache();
-            if (self.cache.get(d)) |entry| {
-                if (entry.status == .decoding) {
-                    entry.status.decoding.has_thread = true;
-                }
-            }
-            self.unlockCache();
-
-            args.* = DecodeArgs{
-                .state = self,
-                .index = d,
-                .generation = gen,
-                .path = dup_path,
-            };
-
-            _ = self.active_decode_threads.fetchAdd(1, .monotonic);
-            _ = self.active_threads.fetchAdd(1, .monotonic);
-            if (std.Thread.spawn(.{}, image.decodeWorker, .{args})) |t| {
-                t.detach();
-            } else |err| {
-                std.log.err("std.Thread.spawn failed: {}", .{err});
-                _ = self.active_decode_threads.fetchSub(1, .release);
-                _ = self.active_threads.fetchSub(1, .release);
-                self.allocator.free(dup_path);
-                self.allocator.destroy(args);
-            }
-        }
-    }
-
-    pub fn next(self: *ViewerState) !void {
-        self.slideshow_timer_ms = 0.0;
-        const len = blk: {
-            self.lockImageList();
-            defer self.unlockImageList();
-            break :blk self.image_list.items.len;
-        };
-
-        if (len == 0) return;
-        if (self.current_index) |idx| {
-            self.current_index = (idx + 1) % len;
-        } else {
-            self.current_index = 0;
-        }
-        try self.updateCache();
-    }
-
-    pub fn prev(self: *ViewerState) !void {
-        self.slideshow_timer_ms = 0.0;
-        const len = blk: {
-            self.lockImageList();
-            defer self.unlockImageList();
-            break :blk self.image_list.items.len;
-        };
-
-        if (len == 0) return;
-        if (self.current_index) |idx| {
-            if (idx == 0) {
-                self.current_index = len - 1;
-            } else {
-                self.current_index = idx - 1;
-            }
-        } else {
-            self.current_index = 0;
-        }
-        try self.updateCache();
-    }
-
-    pub fn handlePathSelection(self: *ViewerState, path: []const u8) !void {
+    pub fn handlePathSelection(self: *AppState, path: []const u8) !void {
         var stat: std.Io.File.Stat = undefined;
         var has_stat = true;
         if (std.Io.Dir.statFile(std.Io.Dir.cwd(), self.io, path, .{})) |s| {
@@ -1020,34 +501,24 @@ pub const ViewerState = struct {
         else
             std.fs.path.dirname(path) orelse ".";
 
-        self.last_scanned_dir.clearRetainingCapacity();
-        try self.last_scanned_dir.appendSlice(self.allocator, dir_target);
+        self.viewer.navigation.last_scanned_dir.clearRetainingCapacity();
+        try self.viewer.navigation.last_scanned_dir.appendSlice(self.allocator, dir_target);
 
-        {
-            self.lockImageList();
-            defer self.unlockImageList();
-            // Clear existing cache and rotation map before resetting directory_arena
-            _ = self.generation.fetchAdd(1, .release);
-            self.clearCache();
-            self.rotation_map.clearRetainingCapacity();
-            self.image_list.clearRetainingCapacity();
-            _ = self.directory_arena.reset(.retain_capacity);
-            self.current_index = null;
-        }
+        // Clear existing cache and rotation map before resetting directory_arena
+        _ = self.cache.advanceGeneration();
+        self.clearCache();
+        self.clearRotationMap();
+        self.viewer.navigation.image_list.clearRetainingCapacity();
+        _ = self.viewer.navigation.directory_arena.reset(.retain_capacity);
+        self.viewer.navigation.current_index = null;
 
         if (has_stat) {
             if (stat.kind == .directory) {
                 try fs.startAsyncPathScan(self, path, true);
             } else {
-                {
-                    self.lockImageList();
-                    defer self.unlockImageList();
-                    const dup = try self.directory_arena.allocator().dupe(u8, path);
-                    try self.image_list.append(self.allocator, dup);
-                    self.current_index = 0;
-                }
-
-                try self.updateCache();
+                const dup = try self.viewer.navigation.directory_arena.allocator().dupe(u8, path);
+                try self.viewer.navigation.image_list.append(self.allocator, dup);
+                self.viewer.navigation.current_index = 0;
 
                 try fs.startAsyncPathScan(self, path, false);
             }
@@ -1055,302 +526,51 @@ pub const ViewerState = struct {
         try self.rebuildPaletteMatches();
     }
 
-    pub fn startAsyncPathScan(self: *ViewerState, path: []const u8, is_dir: bool) !void {
+    pub fn startAsyncPathScan(self: *AppState, path: []const u8, is_dir: bool) !void {
         _ = is_dir;
         try self.handlePathSelection(path);
     }
 
-    pub fn processPaletteInput(self: *ViewerState, input: FrameInput) !bool {
-        if (input.text_input) |text| {
-            if (self.palette.mode != .inactive) {
-                try self.palette.query.appendSlice(self.allocator, text);
-                self.palette.selected_idx = 0;
-                self.palette.selection_dirty = true;
-                switch (self.palette.mode) {
-                    .files => try self.rebuildPaletteMatches(),
-                    .actions => try self.rebuildActionMatches(),
-                    .directory_navigator => try self.palette.rebuildDirectoryMatches(),
-                    else => {},
-                }
-            }
-        }
-
-        var palette_closed_this_frame = false;
-        if (input.mouse_left_clicked and self.palette.mode != .inactive) {
-            const is_in_debug_panel = self.isPointerInDebugPanel(input);
-            const element_id = switch (self.palette.mode) {
-                .files => "CommandPalette",
-                .actions => "ActionPalette",
-                .set_brightness => "BrightnessPalette",
-                .set_contrast => "ContrastPalette",
-                .go_to_image => "GoToImagePalette",
-                .directory_navigator => "DirectoryNavigatorPalette",
-                .set_slideshow_interval => "SlideshowPalette",
-                .inactive => unreachable,
-            };
-            if (!clay.pointerOver(clay.getElementId(element_id)) and !is_in_debug_panel) {
-                self.palette.mode = .inactive;
-                stopTextInput(self.window);
-                palette_closed_this_frame = true;
-            }
-        }
-        return palette_closed_this_frame;
-    }
-
-    pub fn processDragState(self: *ViewerState, input: FrameInput, palette_closed_this_frame: bool) void {
-        var next_drag_state = self.drag_state;
-        switch (next_drag_state) {
-            .none => {},
-            .info => |info| {
-                if (input.mouse_left_down) {
-                    self.info_offset_x = input.mouse_x - info.start_x;
-                    self.info_offset_y = input.mouse_y - info.start_y;
+    pub fn handleScreenshotPostRender(self: *AppState, render_err: ?anyerror) void {
+        switch (self.viewer.ui.screenshot_mode) {
+            .idle => {},
+            .capturing => |*s| {
+                if (render_err) |err| {
+                    s.respondErr(self.io, self.allocator, err);
                 } else {
-                    next_drag_state = .none;
+                    s.respondOk(self.io, self.allocator);
                 }
-            },
-            .stats => |stats| {
-                if (input.mouse_left_down) {
-                    self.stats_offset_x = input.mouse_x - stats.start_x;
-                    self.stats_offset_y = input.mouse_y - stats.start_y;
-                } else {
-                    next_drag_state = .none;
-                }
-            },
-            .viewport => |*vp| {
-                if (input.mouse_left_down) {
-                    const pix_x = input.pixMouseX();
-                    const pix_y = input.pixMouseY();
-                    self.pan_x += pix_x - vp.last_x;
-                    self.pan_y += pix_y - vp.last_y;
-                    vp.last_x = pix_x;
-                    vp.last_y = pix_y;
-                } else {
-                    next_drag_state = .none;
-                }
+                self.viewer.ui.screenshot_mode = .idle;
             },
         }
-        self.drag_state = next_drag_state;
-
-        if (input.mouse_left_clicked) {
-            const is_in_debug_panel = self.isPointerInDebugPanel(input);
-            if (!is_in_debug_panel) {
-                if (self.show_info_overlay and
-                    clay.pointerOver(clay.getElementId("InfoPanel")) and
-                    !clay.pointerOver(clay.getElementId("InfoCloseBtn")))
-                {
-                    self.drag_state = .{
-                        .info = .{
-                            .start_x = input.mouse_x - self.info_offset_x,
-                            .start_y = input.mouse_y - self.info_offset_y,
-                        },
-                    };
-                } else if (self.show_stats_overlay and
-                    clay.pointerOver(clay.getElementId("StatsPanel")) and
-                    !clay.pointerOver(clay.getElementId("StatsCloseBtn")))
-                {
-                    self.drag_state = .{
-                        .stats = .{
-                            .start_x = input.mouse_x - self.stats_offset_x,
-                            .start_y = input.mouse_y - self.stats_offset_y,
-                        },
-                    };
-                } else if (self.palette.mode == .inactive and !palette_closed_this_frame and clay.pointerOver(clay.getElementId("Viewport"))) {
-                    self.drag_state = .{
-                        .viewport = .{
-                            .last_x = input.pixMouseX(),
-                            .last_y = input.pixMouseY(),
-                        },
-                    };
-                }
-            }
-        }
     }
 
-    pub fn processZoomAtCursor(self: *ViewerState, input: FrameInput) void {
-        if (input.scroll_delta_y != 0) {
-            if (self.palette.mode == .inactive and !self.isPointerInDebugPanel(input) and clay.pointerOver(clay.getElementId("Viewport"))) {
-                const old_zoom = self.zoom_factor;
-                self.zoom_factor = self.clampZoomFactor(self.zoom_factor + input.scroll_delta_y * 0.1);
-
-                const available_width = if (clay.isDebugModeEnabled()) @max(input.win_w - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0) else input.win_w;
-                const cx = available_width / 2.0;
-                var title_bar_h: f32 = 60.0;
-                if (self.is_fullscreen) {
-                    title_bar_h = 0;
-                }
-                const cy = title_bar_h + ((input.win_h - title_bar_h) / 2.0);
-
-                const rel_x = (input.mouse_x - cx) * input.scale_x;
-                const rel_y = (input.mouse_y - cy) * input.scale_y;
-
-                self.pan_x = rel_x - (rel_x - self.pan_x) * (self.zoom_factor / old_zoom);
-                self.pan_y = rel_y - (rel_y - self.pan_y) * (self.zoom_factor / old_zoom);
-            }
-        }
+    pub fn setZoom(self: *AppState, factor: f32) void {
+        self.viewer.viewport.zoom_factor = self.clampZoomFactor(factor);
     }
 
-    pub fn update(self: *ViewerState, input: FrameInput) !void {
-        self.updateCurrentRotation();
-
-        // 0. Slideshow timer update
-        if (self.slideshow_active and self.slideshow_interval_s > 0.0) {
-            self.slideshow_timer_ms += input.delta_time_ms;
-            if (self.slideshow_timer_ms >= self.slideshow_interval_s * 1000.0) {
-                self.slideshow_timer_ms = 0.0;
-                try self.next();
-            }
-        }
-
-        // 1. Text input & palette dismissal updates
-        const palette_closed_this_frame = try self.processPaletteInput(input);
-
-        // 2. Drop file/directory updates
-        if (input.dropped_path) |path| {
-            try self.handlePathSelection(path);
-        }
-
-        // 3. Mouse dragging updates
-        self.processDragState(input, palette_closed_this_frame);
-
-        // 4. Mouse Wheel Zoom updates
-        self.processZoomAtCursor(input);
-
-        // 5. Keyboard updates
-        for (input.keys_pressed.items) |key| {
-            try app_input.handleKeyDown(self, key, input.key_modifiers, input.scale_x, input.scale_y);
-        }
+    pub fn setPan(self: *AppState, px: f32, py: f32) void {
+        self.viewer.viewport.pan_x = px;
+        self.viewer.viewport.pan_y = py;
     }
 
-    pub fn processIpcCommands(self: *ViewerState, ipc_server: ?*ipc.IpcServer) void {
-        for (self.pending_ipc_commands.items) |cmd_data| {
-            var it = std.mem.tokenizeAny(u8, cmd_data.command, " \t\r\n");
-            const cmd = it.next() orelse "";
-            if (std.mem.eql(u8, cmd, "screenshot")) {
-                if (it.next()) |filepath| {
-                    if (filepath.len > 512) {
-                        var write_buf: [128]u8 = undefined;
-                        var writer = cmd_data.client_stream.writer(self.io, &write_buf);
-                        writer.interface.writeAll("ERR PathTooLong\n") catch |err| std.log.warn("IPC screenshot response failed: {}", .{err});
-                        writer.interface.flush() catch |err| std.log.warn("IPC flush failed: {}", .{err});
-                        cmd_data.client_stream.close(self.io);
-                    } else if (self.active_screenshot) |_| {
-                        var write_buf: [128]u8 = undefined;
-                        var writer = cmd_data.client_stream.writer(self.io, &write_buf);
-                        writer.interface.writeAll("ERR Busy\n") catch |err| std.log.warn("IPC screenshot response failed: {}", .{err});
-                        writer.interface.flush() catch |err| std.log.warn("IPC flush failed: {}", .{err});
-                        cmd_data.client_stream.close(self.io);
-                    } else {
-                        const dup_path = self.allocator.dupeZ(u8, filepath) catch {
-                            var write_buf: [128]u8 = undefined;
-                            var writer = cmd_data.client_stream.writer(self.io, &write_buf);
-                            writer.interface.writeAll("ERR OutOfMemory\n") catch |err| std.log.warn("IPC screenshot response failed: {}", .{err});
-                            writer.interface.flush() catch |err| std.log.warn("IPC flush failed: {}", .{err});
-                            cmd_data.client_stream.close(self.io);
-                            self.allocator.free(cmd_data.command);
-                            self.allocator.destroy(cmd_data);
-                            continue;
-                        };
-                        self.active_screenshot = screenshot.ActiveScreenshot{
-                            .path = dup_path,
-                            .stream = cmd_data.client_stream,
-                        };
-                    }
-                } else {
-                    var write_buf: [128]u8 = undefined;
-                    var writer = cmd_data.client_stream.writer(self.io, &write_buf);
-                    writer.interface.writeAll("ERR MissingArgument\n") catch |err| std.log.warn("IPC screenshot response failed: {}", .{err});
-                    writer.interface.flush() catch |err| std.log.warn("IPC flush failed: {}", .{err});
-                    cmd_data.client_stream.close(self.io);
-                }
-            } else {
-                if (ipc_server) |srv| {
-                    srv.executeCommand(self, cmd_data.command, cmd_data.client_stream) catch |err| {
-                        var response_buf: [128]u8 = undefined;
-                        const response = std.fmt.bufPrint(&response_buf, "ERR {s}\n", .{@errorName(err)}) catch "ERR ExecutionFailed\n";
-                        var write_buf: [128]u8 = undefined;
-                        var writer = cmd_data.client_stream.writer(self.io, &write_buf);
-                        writer.interface.writeAll(response) catch |err2| std.log.warn("IPC error response failed: {}", .{err2});
-                        writer.interface.flush() catch |err2| std.log.warn("IPC flush failed: {}", .{err2});
-                        cmd_data.client_stream.close(self.io);
-                    };
-                }
-            }
-            self.allocator.free(cmd_data.command);
-            self.allocator.destroy(cmd_data);
-        }
-        self.pending_ipc_commands.clearRetainingCapacity();
+    pub fn setAdjustments(self: *AppState, br: f32, co: f32) void {
+        self.viewer.viewport.brightness = std.math.clamp(br, -1.0, 1.0);
+        self.viewer.viewport.contrast = std.math.clamp(co, 0.0, 5.0);
     }
 
-    pub fn handleScreenshotPostRender(self: *ViewerState, render_err: ?anyerror) void {
-        if (self.active_screenshot) |*s| {
-            if (render_err) |err| {
-                s.respondErr(self.io, self.allocator, err);
-            } else {
-                s.respondOk(self.io, self.allocator);
-            }
-            self.active_screenshot = null;
-        }
+    pub fn setTextureScaleMode(self: *AppState, mode: TextureScaleMode) void {
+        self.viewer.viewport.texture_scale_mode = mode;
     }
 
-    pub fn setZoom(self: *ViewerState, factor: f32) void {
-        self.zoom_factor = self.clampZoomFactor(factor);
+    pub fn setPaletteMode(self: *AppState, mode: PaletteMode) void {
+        self.viewer.ui.palette.mode = mode;
     }
 
-    pub fn setPan(self: *ViewerState, px: f32, py: f32) void {
-        self.pan_x = px;
-        self.pan_y = py;
-    }
-
-    pub fn setAdjustments(self: *ViewerState, br: f32, co: f32) void {
-        self.brightness = std.math.clamp(br, -1.0, 1.0);
-        self.contrast = std.math.clamp(co, 0.0, 5.0);
-        self.adjustments_dirty = true;
-    }
-
-    pub fn setTextureScaleMode(self: *ViewerState, mode: TextureScaleMode) void {
-        self.texture_scale_mode = mode;
-        self.applyTextureScaleMode();
-    }
-
-    pub fn setPaletteMode(self: *ViewerState, mode: PaletteMode) void {
-        self.palette.mode = mode;
-    }
-
-    pub fn requestQuit(self: *ViewerState) void {
-        self.running = false;
+    pub fn requestQuit(self: *AppState) void {
+        self.viewer.running = false;
     }
 };
-
-test "CacheSlotMap.updateStatus" {
-    const allocator = std.testing.allocator;
-    var cache = CacheSlotMap{};
-    defer cache.deinit(allocator, null);
-
-    try cache.append(allocator, .{
-        .index = 10,
-        .generation = 1,
-        .status = .{ .decoding = .{} },
-    });
-    try cache.append(allocator, .{
-        .index = 20,
-        .generation = 1,
-        .status = .{ .decoding = .{} },
-    });
-
-    // Test successful update
-    const updated = cache.updateStatus(20, 1, .failed);
-    try std.testing.expect(updated);
-    try std.testing.expectEqual(CacheStatus.failed, cache.entries.items[1].status);
-
-    // Test updating non-existent index
-    const updated_missing = cache.updateStatus(30, 1, .failed);
-    try std.testing.expect(!updated_missing);
-
-    // Test updating matching index but mismatching generation
-    const updated_gen_mismatch = cache.updateStatus(10, 2, .failed);
-    try std.testing.expect(!updated_gen_mismatch);
-}
 
 test "matchesQueryLower bounds check" {
     // Normal matches
@@ -1365,35 +585,20 @@ test "matchesQueryLower bounds check" {
 
 var test_clay_memory: [1024 * 1024]u8 = undefined;
 
-test "ViewerState.clampZoomFactor bounds based on image dimensions" {
+test "AppState.clampZoomFactor bounds based on image dimensions" {
     _ = clay.initialize(clay.Arena.init(&test_clay_memory), .{ .w = 1024, .h = 768 }, .{});
 
-    var state = ViewerState{
-        .directory_arena = std.heap.ArenaAllocator.init(std.testing.allocator),
-        .image_list = std.ArrayList([]const u8).empty,
-        .image_list_mutex = .init,
-        .cache = .{},
-        .cache_mutex = .init,
-        .allocator = std.testing.allocator,
-        .io = std.Io.Threaded.global_single_threaded.io(),
-        .palette = PaletteState.init(std.testing.allocator),
-        .rotation_map = std.StringHashMap(f32).init(std.testing.allocator),
-        .scale_mode = .none,
-        .window = null,
-        .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
-    };
+    var state = try AppState.initHeadless(std.testing.allocator, std.Io.Threaded.global_single_threaded.io());
     defer state.deinit();
 
     // Default base_scale without loaded image is 1.0
     try std.testing.expectEqual(@as(f32, 1.0), state.getBaseScale());
-    try std.testing.expectEqual(@as(f32, 10.0), state.clampZoomFactor(15.0));
-    try std.testing.expectEqual(@as(f32, 0.1), state.clampZoomFactor(0.05));
+    try std.testing.expectEqual(@as(f32, 10.0), state.clampZoomFactor(15.0).get());
+    try std.testing.expectEqual(@as(f32, 0.1), state.clampZoomFactor(0.05).get());
 
     // Test with loaded CPU image entry
     const surf = sdl.Surface.create(4000, 3000, sdl.PixelFormat.rgba32) orelse unreachable;
-    try state.cache.append(std.testing.allocator, .{
-        .index = 0,
-        .generation = 0,
+    try state.cache.appendWithKey(std.testing.allocator, .{ .index = 0, .generation = 0 }, .{
         .status = .{
             .loaded_cpu = .{
                 .surface = surf,
@@ -1406,71 +611,57 @@ test "ViewerState.clampZoomFactor bounds based on image dimensions" {
             },
         },
     });
-    state.current_index = 0;
+    state.viewer.navigation.current_index = 0;
 
     // In .none mode on 4000x3000 image, base_scale is 1.0
-    state.scale_mode = .none;
+    state.viewer.viewport.fit_mode = .none;
     const base_none = state.getBaseScale();
     try std.testing.expectEqual(@as(f32, 1.0), base_none);
     const clamped_max_none = state.clampZoomFactor(15.0);
-    try std.testing.expectEqual(@as(f32, 10.0), base_none * clamped_max_none);
+    try std.testing.expectEqual(@as(f32, 10.0), base_none * clamped_max_none.get());
 
     // In .full mode in default 1024x708 viewport
-    state.scale_mode = .full;
+    state.viewer.viewport.fit_mode = .full;
     const base_full = state.getBaseScale();
     try std.testing.expect(base_full < 1.0);
     const clamped_max_full = state.clampZoomFactor(100.0);
     // Effective max zoom level (base_scale * zoom_factor) must be 10.0x of actual image size
-    try std.testing.expectApproxEqAbs(@as(f32, 10.0), base_full * clamped_max_full, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 10.0), base_full * clamped_max_full.get(), 0.001);
     const clamped_min_full = state.clampZoomFactor(0.001);
     // Effective min zoom level (base_scale * zoom_factor) must be 0.1x of actual image size
-    try std.testing.expectApproxEqAbs(@as(f32, 0.1), base_full * clamped_min_full, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.1), base_full * clamped_min_full.get(), 0.001);
 }
 
-test "ViewerState.updateCurrentRotation syncs EXIF orientation" {
-    var state = ViewerState{
-        .directory_arena = std.heap.ArenaAllocator.init(std.testing.allocator),
-        .image_list = std.ArrayList([]const u8).empty,
-        .image_list_mutex = .init,
-        .cache = .{},
-        .cache_mutex = .init,
-        .allocator = std.testing.allocator,
-        .io = std.Io.Threaded.global_single_threaded.io(),
-        .palette = PaletteState.init(std.testing.allocator),
-        .rotation_map = std.StringHashMap(f32).init(std.testing.allocator),
-        .window = null,
-        .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
-    };
+test "AppState.updateCurrentRotation syncs EXIF orientation" {
+    var state = try AppState.initHeadless(std.testing.allocator, std.Io.Threaded.global_single_threaded.io());
     defer state.deinit();
 
-    try state.image_list.append(std.testing.allocator, "test_photo_1.jpg");
-    state.current_index = 0;
+    try state.viewer.navigation.image_list.append(std.testing.allocator, "test_photo_1.jpg");
+    state.viewer.navigation.current_index = 0;
 
     // Initially uncached -> rotation_angle should be 0.0
     state.updateCurrentRotation();
-    try std.testing.expectEqual(@as(f32, 0.0), state.rotation_angle);
+    try std.testing.expectEqual(@as(f32, 0.0), state.viewer.viewport.rotation_angle);
 
     // Simulate worker thread caching EXIF orientation of 90.0
-    try state.cache.append(std.testing.allocator, .{
-        .index = 0,
-        .generation = 0,
+    try state.cache.appendWithKey(std.testing.allocator, .{ .index = 0, .generation = 0 }, .{
         .status = .{ .decoding = .{} },
         .exif_orientation = 90.0,
     });
 
     // Calling updateCurrentRotation updates rotation_angle from entry
     state.updateCurrentRotation();
-    try std.testing.expectEqual(@as(f32, 90.0), state.rotation_angle);
+    try std.testing.expectEqual(@as(f32, 90.0), state.viewer.viewport.rotation_angle);
 
     // Test out of bounds index
-    state.current_index = 99;
+    state.viewer.navigation.current_index = 99;
     state.updateCurrentRotation();
-    try std.testing.expectEqual(@as(f32, 0.0), state.rotation_angle);
+    try std.testing.expectEqual(@as(f32, 0.0), state.viewer.viewport.rotation_angle);
 
     // Test null index
-    state.current_index = null;
+    state.viewer.navigation.current_index = null;
     state.updateCurrentRotation();
-    try std.testing.expectEqual(@as(f32, 0.0), state.rotation_angle);
+    try std.testing.expectEqual(@as(f32, 0.0), state.viewer.viewport.rotation_angle);
 }
 
 test "ElementTag.fromInt" {
@@ -1480,7 +671,7 @@ test "ElementTag.fromInt" {
     try std.testing.expectEqual(ElementTag.none, ElementTag.fromInt(0x7fffffffd000));
 }
 
-test "ViewerState.openPalette directory_navigator starting directory rules" {
+test "AppState.openPalette directory_navigator starting directory rules" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     const cwd = std.Io.Dir.cwd();
@@ -1491,48 +682,36 @@ test "ViewerState.openPalette directory_navigator starting directory rules" {
         std.Io.Dir.deleteTree(cwd, io, tmp_dir) catch {};
     }
 
-    var state = ViewerState{
-        .directory_arena = std.heap.ArenaAllocator.init(allocator),
-        .image_list = std.ArrayList([]const u8).empty,
-        .image_list_mutex = .init,
-        .cache = .{},
-        .cache_mutex = .init,
-        .allocator = allocator,
-        .io = io,
-        .palette = PaletteState.init(allocator),
-        .rotation_map = std.StringHashMap(f32).init(allocator),
-        .window = null,
-        .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
-    };
+    var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
     // Rule 1: current_index is valid -> starting directory is dirname of current image
     const sample_path = tmp_dir ++ "/image1.jpg";
-    try state.image_list.append(allocator, sample_path);
-    state.current_index = 0;
+    try state.viewer.navigation.image_list.append(allocator, sample_path);
+    state.viewer.navigation.current_index = 0;
 
     try state.openPalette(.directory_navigator);
-    try std.testing.expectEqual(PaletteMode.directory_navigator, state.palette.mode);
-    try std.testing.expectEqualStrings(tmp_dir, state.palette.current_nav_dir.items);
+    try std.testing.expectEqual(PaletteMode.directory_navigator, state.viewer.ui.palette.mode);
+    try std.testing.expectEqualStrings(tmp_dir, state.viewer.ui.palette.current_nav_dir.items);
 
     // Rule 2: current_index is null -> starting directory remembers last_nav_dir
-    state.current_index = null;
+    state.viewer.navigation.current_index = null;
     try state.openPalette(.directory_navigator);
-    try std.testing.expectEqualStrings(tmp_dir, state.palette.current_nav_dir.items);
+    try std.testing.expectEqualStrings(tmp_dir, state.viewer.ui.palette.current_nav_dir.items);
 
     // Rule 3: current_index is null and last_nav_dir is empty -> starting directory falls back to "."
-    state.palette.last_nav_dir.clearRetainingCapacity();
+    state.viewer.ui.palette.last_nav_dir.clearRetainingCapacity();
     try state.openPalette(.directory_navigator);
-    try std.testing.expectEqualStrings(".", state.palette.current_nav_dir.items);
+    try std.testing.expectEqualStrings(".", state.viewer.ui.palette.current_nav_dir.items);
 
     // Rule 4: current_index out of bounds and last_nav_dir is empty -> starting directory falls back to "."
-    state.current_index = 999;
-    state.palette.last_nav_dir.clearRetainingCapacity();
+    state.viewer.navigation.current_index = 999;
+    state.viewer.ui.palette.last_nav_dir.clearRetainingCapacity();
     try state.openPalette(.directory_navigator);
-    try std.testing.expectEqualStrings(".", state.palette.current_nav_dir.items);
+    try std.testing.expectEqualStrings(".", state.viewer.ui.palette.current_nav_dir.items);
 }
 
-test "ViewerState.openPalette directory_navigator steps up if 0 subdirectories" {
+test "AppState.openPalette directory_navigator steps up if 0 subdirectories" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     const cwd = std.Io.Dir.cwd();
@@ -1544,41 +723,29 @@ test "ViewerState.openPalette directory_navigator steps up if 0 subdirectories" 
         std.Io.Dir.deleteTree(cwd, io, tmp_dir) catch {};
     }
 
-    var state = ViewerState{
-        .directory_arena = std.heap.ArenaAllocator.init(allocator),
-        .image_list = std.ArrayList([]const u8).empty,
-        .image_list_mutex = .init,
-        .cache = .{},
-        .cache_mutex = .init,
-        .allocator = allocator,
-        .io = io,
-        .palette = PaletteState.init(allocator),
-        .rotation_map = std.StringHashMap(f32).init(allocator),
-        .window = null,
-        .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
-    };
+    var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
     // Image in child_leaf (which has 0 subdirectories itself)
     const img_path = sub_leaf ++ "/photo.png";
-    try state.image_list.append(allocator, img_path);
-    state.current_index = 0;
+    try state.viewer.navigation.image_list.append(allocator, img_path);
+    state.viewer.navigation.current_index = 0;
 
     // openPalette should see sub_leaf has 0 subdirectories, so it steps up to tmp_dir and pre-selects child_leaf
     try state.openPalette(.directory_navigator);
-    try std.testing.expectEqualStrings(tmp_dir, state.palette.current_nav_dir.items);
+    try std.testing.expectEqualStrings(tmp_dir, state.viewer.ui.palette.current_nav_dir.items);
 
     // Verify child_leaf is selected
     var found_leaf_selected = false;
-    if (state.palette.selected_idx < state.palette.dir_items.items.len) {
-        if (std.mem.eql(u8, state.palette.dir_items.items[state.palette.selected_idx].name, "child_leaf")) {
+    if (state.viewer.ui.palette.selected_idx < state.viewer.ui.palette.dir_items.items.len) {
+        if (std.mem.eql(u8, state.viewer.ui.palette.dir_items.items[state.viewer.ui.palette.selected_idx].getName(), "child_leaf")) {
             found_leaf_selected = true;
         }
     }
     try std.testing.expect(found_leaf_selected);
 }
 
-test "ViewerState.openPalette steps up from top-level relative leaf dir without slashes to dot" {
+test "AppState.openPalette steps up from top-level relative leaf dir without slashes to dot" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     const cwd = std.Io.Dir.cwd();
@@ -1589,40 +756,28 @@ test "ViewerState.openPalette steps up from top-level relative leaf dir without 
         std.Io.Dir.deleteTree(cwd, io, top_leaf) catch {};
     }
 
-    var state = ViewerState{
-        .directory_arena = std.heap.ArenaAllocator.init(allocator),
-        .image_list = std.ArrayList([]const u8).empty,
-        .image_list_mutex = .init,
-        .cache = .{},
-        .cache_mutex = .init,
-        .allocator = allocator,
-        .io = io,
-        .palette = PaletteState.init(allocator),
-        .rotation_map = std.StringHashMap(f32).init(allocator),
-        .window = null,
-        .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
-    };
+    var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
     const img_path = top_leaf ++ "/photo.png";
-    try state.image_list.append(allocator, img_path);
-    state.current_index = 0;
+    try state.viewer.navigation.image_list.append(allocator, img_path);
+    state.viewer.navigation.current_index = 0;
 
     try state.openPalette(.directory_navigator);
     // Should step up to "." because top_leaf has 0 subdirectories
-    try std.testing.expectEqualStrings(".", state.palette.current_nav_dir.items);
+    try std.testing.expectEqualStrings(".", state.viewer.ui.palette.current_nav_dir.items);
 
     // Verify top_leaf is pre-selected in "."
     var found_leaf_selected = false;
-    if (state.palette.selected_idx < state.palette.dir_items.items.len) {
-        if (std.mem.eql(u8, state.palette.dir_items.items[state.palette.selected_idx].name, top_leaf)) {
+    if (state.viewer.ui.palette.selected_idx < state.viewer.ui.palette.dir_items.items.len) {
+        if (std.mem.eql(u8, state.viewer.ui.palette.dir_items.items[state.viewer.ui.palette.selected_idx].getName(), top_leaf)) {
             found_leaf_selected = true;
         }
     }
     try std.testing.expect(found_leaf_selected);
 }
 
-test "ViewerState.isPointerInDebugPanel and click localization" {
+test "AppState.isPointerInDebugPanel and click localization" {
     _ = clay.initialize(clay.Arena.init(&test_clay_memory), .{ .w = 1000, .h = 800 }, .{});
 
     clay.setDebugModeEnabled(true);
@@ -1631,19 +786,7 @@ test "ViewerState.isPointerInDebugPanel and click localization" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
 
-    var state = ViewerState{
-        .directory_arena = std.heap.ArenaAllocator.init(allocator),
-        .image_list = std.ArrayList([]const u8).empty,
-        .image_list_mutex = .init,
-        .cache = .{},
-        .cache_mutex = .init,
-        .allocator = allocator,
-        .io = io,
-        .palette = PaletteState.init(allocator),
-        .rotation_map = std.StringHashMap(f32).init(allocator),
-        .window = null,
-        .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
-    };
+    var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
     const debug_w = @as(f32, @floatFromInt(clay.Clay__debugViewWidth));
@@ -1666,7 +809,7 @@ test "ViewerState.isPointerInDebugPanel and click localization" {
         .quit_requested = false,
         .scroll_delta_x = 0,
         .scroll_delta_y = 0,
-        .keys_pressed = std.ArrayList(types.Key).empty,
+        .keys_pressed = .empty,
         .key_modifiers = .{},
         .text_input = null,
         .dropped_path = null,
@@ -1691,7 +834,7 @@ test "ViewerState.isPointerInDebugPanel and click localization" {
         .quit_requested = false,
         .scroll_delta_x = 0,
         .scroll_delta_y = 0,
-        .keys_pressed = std.ArrayList(types.Key).empty,
+        .keys_pressed = .empty,
         .key_modifiers = .{},
         .text_input = null,
         .dropped_path = null,
@@ -1700,35 +843,22 @@ test "ViewerState.isPointerInDebugPanel and click localization" {
     };
     try std.testing.expect(!state.isPointerInDebugPanel(input_outside));
 
-    state.palette.mode = .actions;
-    try state.update(input_inside);
-    try std.testing.expect(state.palette.mode == .actions);
+    state.viewer.ui.palette.mode = .actions;
+    _ = try systems.sysProcessPaletteInput(.{ .state = &state, .frame_allocator = allocator, .input = input_inside });
+    try std.testing.expect(state.viewer.ui.palette.mode == .actions);
 }
 
-test "ViewerState slideshow timer auto-advances slide" {
+test "AppState slideshow timer auto-advances slide" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
 
-    var state = ViewerState{
-        .directory_arena = std.heap.ArenaAllocator.init(allocator),
-        .image_list = std.ArrayList([]const u8).empty,
-        .image_list_mutex = .init,
-        .cache = .{},
-        .cache_mutex = .init,
-        .allocator = allocator,
-        .io = io,
-        .palette = PaletteState.init(allocator),
-        .rotation_map = std.StringHashMap(f32).init(allocator),
-        .window = null,
-        .event_queue = events.MpscQueue(events.BackgroundEvent).init(),
-    };
+    var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    try state.image_list.append(allocator, "img1.jpg");
-    try state.image_list.append(allocator, "img2.jpg");
-    state.current_index = 0;
-    state.slideshow_active = true;
-    state.slideshow_interval_s = 2.0;
+    try state.viewer.navigation.image_list.append(allocator, "img1.jpg");
+    try state.viewer.navigation.image_list.append(allocator, "img2.jpg");
+    state.viewer.navigation.current_index = 0;
+    state.viewer.navigation.slideshow = .{ .active = .{ .interval_s = 2.0 } };
 
     const frame_input_1s = types.FrameInput{
         .win_w = 100,
@@ -1746,7 +876,7 @@ test "ViewerState slideshow timer auto-advances slide" {
         .quit_requested = false,
         .scroll_delta_x = 0,
         .scroll_delta_y = 0,
-        .keys_pressed = std.ArrayList(types.Key).empty,
+        .keys_pressed = .empty,
         .key_modifiers = .{},
         .text_input = null,
         .dropped_path = null,
@@ -1754,16 +884,16 @@ test "ViewerState slideshow timer auto-advances slide" {
         .delta_time_ms = 1000.0,
     };
 
-    try state.update(frame_input_1s);
-    try std.testing.expectEqual(@as(usize, 0), state.current_index.?);
+    try systems.sysUpdateSlideshow(.{ .state = &state, .frame_allocator = allocator, .input = frame_input_1s, .delta_time_ms = 1000.0 });
+    try std.testing.expectEqual(@as(usize, 0), state.viewer.navigation.current_index.?);
 
     // Pass another second (total 2000ms >= 2.0s interval) -> advances to index 1
-    try state.update(frame_input_1s);
-    try std.testing.expectEqual(@as(usize, 1), state.current_index.?);
+    try systems.sysUpdateSlideshow(.{ .state = &state, .frame_allocator = allocator, .input = frame_input_1s, .delta_time_ms = 1000.0 });
+    try std.testing.expectEqual(@as(usize, 1), state.viewer.navigation.current_index.?);
 }
 
 test "RollingStats mean and stdev" {
-    var stats = RollingStats{};
+    var stats = state_pkg.ui_state.RollingStats{};
     try std.testing.expectEqual(@as(f64, 0.0), stats.getMeanAndStdev().mean);
     try std.testing.expectEqual(@as(f64, 0.0), stats.getMeanAndStdev().stdev);
 

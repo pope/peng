@@ -30,6 +30,9 @@ pub const event_type = struct {
     pub const drop_file = c.SDL_EVENT_DROP_FILE;
     pub const mouse_wheel = c.SDL_EVENT_MOUSE_WHEEL;
     pub const mouse_button_down = c.SDL_EVENT_MOUSE_BUTTON_DOWN;
+    pub const window_pixel_size_changed = c.SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED;
+    pub const window_resized = c.SDL_EVENT_WINDOW_RESIZED;
+    pub const window_exposed = c.SDL_EVENT_WINDOW_EXPOSED;
 };
 
 pub const hint = struct {
