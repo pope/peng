@@ -53,7 +53,7 @@
   - `drainWorkerEvents`: Drains worker thread event queues (`state.workers.event_queue`).
   - `sysExecuteIpcCommands`: Parses and dispatches socket commands (`state.pending_ipc_commands`).
   - `sysProcessInput`: Maps keyboard input to intents (`state.pending_intents`).
-  - `sysExecuteIntents`: Drains queued `AppIntent` payloads (`state.pending_intents`).
+  - `sysExecuteIntents`: Drains queued `AppIntent` payloads (`state.pending_intents`, executed twice per frame tick: after keyboard input and after palette/slideshow updates).
   - `sysProcessPaletteInput`: Manages command palette query text, list navigation, and click-outside dismissal.
   - `sysUpdateViewport`: Handles mouse drag deltas and mouse-wheel zoom-at-cursor calculations.
   - `sysUpdateSlideshow`: Manages slideshow timer ticks.

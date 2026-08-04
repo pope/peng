@@ -4,6 +4,13 @@ const intents = @import("intents");
 const palette_state = @import("palette_state.zig");
 const clay = @import("zclay");
 
+pub const UvRect = struct {
+    u_min: f32 = 0.0,
+    v_min: f32 = 0.0,
+    u_max: f32 = 1.0,
+    v_max: f32 = 1.0,
+};
+
 pub const Key = enum {
     unknown,
     escape,

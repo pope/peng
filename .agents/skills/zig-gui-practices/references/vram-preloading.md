@@ -8,8 +8,8 @@
 - **Neighbor Slot Protection**:
   In VRAM cache eviction routines (`enforceVramBudget`), protect the current image and its immediate neighbors ($\\pm 2$ slots) from eviction to prevent constant re-decoding during user navigation.
 
-- **Mutex Lifecycle & Standard Library Synchronization**:
-  Clean up lock primitives (`std.Io.Mutex`) in exactly one owner lifecycle method (e.g. `AppState.deinit()`).
+- **Worker Concurrency & Lifecycle Synchronization**:
+  Quiesce and clean up background worker tasks and queues (`state.workers.deinit(io)`) in the top-level owner lifecycle method (`AppState.deinit()`).
 
 - **HashMap String Key Lifetimes**:
   Always iterate `keyIterator()` to free dynamically allocated string keys before calling `clearRetainingCapacity()` or `deinit()` on hash maps:

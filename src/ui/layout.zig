@@ -127,6 +127,7 @@ pub fn renderFrame(
             draw_w,
             draw_h,
             total_images,
+            frame_allocator,
         );
     });
 
@@ -437,6 +438,7 @@ pub fn renderViewport(
     draw_w: f32,
     draw_h: f32,
     total_images: usize,
+    frame_allocator: std.mem.Allocator,
 ) void {
     clay.UI()(.{
         .id = clay.getElementId("Viewport"),
@@ -453,6 +455,19 @@ pub fn renderViewport(
                     if (ui_model.debug_show_thumb or entry.status != .loaded_gpu) {
                         drew_thumb = true;
                         const thumb_tex = thumb.texture;
+                        const uv_crop = state.computeThumbnailUvCrop(
+                            entry.full_w,
+                            entry.full_h,
+                            thumb.info.w,
+                            thumb.info.h,
+                        );
+                        const uv_ptr = frame_allocator.create(state.UvRect) catch |err| blk: {
+                            std.log.warn("Failed to allocate thumbnail UvRect: {any}", .{err});
+                            break :blk null;
+                        };
+                        if (uv_ptr) |ptr| {
+                            ptr.* = uv_crop;
+                        }
                         clay.UI()(.{
                             .id = clay.getElementId("ImageCanvas"),
                             .layout = .{
@@ -464,6 +479,7 @@ pub fn renderViewport(
                             .image = .{
                                 .image_data = thumb_tex.asOpaque(),
                             },
+                            .user_data = if (uv_ptr) |ptr| @ptrCast(ptr) else null,
                         })({});
                     }
                 },

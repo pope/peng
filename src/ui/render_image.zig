@@ -40,6 +40,7 @@ pub fn appendImageCommand(
     f_win_w: f32,
     f_win_h: f32,
     scissor: ?sdl.Rect,
+    uv_rect: state.UvRect,
 ) !void {
     const texture: ?sdl.gpu.Texture = if (image_data) |ptr| sdl.gpu.Texture{ .ptr = @ptrCast(@alignCast(ptr)) } else null;
     const tex = texture orelse return;
@@ -95,14 +96,19 @@ pub fn appendImageCommand(
     const p3 = geometry.toNdc(world_x3, world_y3, f_win_w, f_win_h);
     const p4 = geometry.toNdc(world_x4, world_y4, f_win_w, f_win_h);
 
+    const u_min = uv_rect.u_min;
+    const v_min = uv_rect.v_min;
+    const u_max = uv_rect.u_max;
+    const v_max = uv_rect.v_max;
+
     const start = @as(u32, @intCast(vertices.items.len));
     const white_color = packRgba(255, 255, 255, 255);
-    try vertices.append(allocator, .{ .x = p1.x, .y = p1.y, .u = 0.0, .v = 0.0, .color = white_color });
-    try vertices.append(allocator, .{ .x = p2.x, .y = p2.y, .u = 1.0, .v = 0.0, .color = white_color });
-    try vertices.append(allocator, .{ .x = p4.x, .y = p4.y, .u = 0.0, .v = 1.0, .color = white_color });
-    try vertices.append(allocator, .{ .x = p2.x, .y = p2.y, .u = 1.0, .v = 0.0, .color = white_color });
-    try vertices.append(allocator, .{ .x = p3.x, .y = p3.y, .u = 1.0, .v = 1.0, .color = white_color });
-    try vertices.append(allocator, .{ .x = p4.x, .y = p4.y, .u = 0.0, .v = 1.0, .color = white_color });
+    try vertices.append(allocator, .{ .x = p1.x, .y = p1.y, .u = u_min, .v = v_min, .color = white_color });
+    try vertices.append(allocator, .{ .x = p2.x, .y = p2.y, .u = u_max, .v = v_min, .color = white_color });
+    try vertices.append(allocator, .{ .x = p4.x, .y = p4.y, .u = u_min, .v = v_max, .color = white_color });
+    try vertices.append(allocator, .{ .x = p2.x, .y = p2.y, .u = u_max, .v = v_min, .color = white_color });
+    try vertices.append(allocator, .{ .x = p3.x, .y = p3.y, .u = u_max, .v = v_max, .color = white_color });
+    try vertices.append(allocator, .{ .x = p4.x, .y = p4.y, .u = u_min, .v = v_max, .color = white_color });
 
     try addBatchFn(batches, allocator, start, 6, tex, .image_viewer, scissor);
 }

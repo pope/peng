@@ -510,6 +510,11 @@ fn buildGeometryFromCommands(
             },
             .image => {
                 prev_text_bb = null;
+                const uv_rect = if (rcmd.user_data) |ptr|
+                    @as(*const state.UvRect, @ptrCast(@alignCast(ptr))).*
+                else
+                    state.UvRect{};
+
                 try render_image.appendImageCommand(
                     vertices,
                     batches,
@@ -521,6 +526,7 @@ fn buildGeometryFromCommands(
                     f_win_w,
                     f_win_h,
                     current_scissor,
+                    uv_rect,
                 );
             },
             else => {
