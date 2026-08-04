@@ -40,7 +40,7 @@ ______________________________________________________________________
 - **Throttling During Fast Navigation**:
   During rapid scrolling (< 150ms step interval), constrain preload queues strictly to the active image `idx`. Suppress neighbor preloading (+1, -1, +2, -2) to prevent thread/VRAM contention and avoid driver queue submission exhaustion (`VK_ERROR_DEVICE_LOST`).
 - **Settled Preload Trigger**:
-  In the main frame loop, check if navigation has settled (> 150ms idle time). When idle, invoke `checkIdlePreload()` once to populate neighboring images into VRAM during idle time.
+  In the main frame loop, check if navigation has settled (> 150ms idle time). When idle, `sysUpdateCache(ctx)` automatically triggers idle preloading to populate neighboring images into VRAM.
 
 ______________________________________________________________________
 
@@ -49,7 +49,7 @@ ______________________________________________________________________
 - **`std.Io.Group` Task Spawning**:
   Spawn background decode tasks using `std.Io.Group` via `WorkerManager` (`state.workers.group.async(io, decodeTask, args)`). Tasks in a `Group` automatically release their task allocation upon return.
 - **Native Cancellation & Epoch Validation**:
-  Cancel active background tasks via `state.workers.drainAndQuiesce(io)` or `state.workers.group.cancel(state.io)`. In worker functions, check `io.isCanceled()` before queuing event payloads. On the main thread, validate incoming event payloads against the active `state.viewer.generation` epoch before mutating cache entries.
+  Cancel active background tasks via `state.workers.drainAndQuiesce(io)` or `state.workers.group.cancel(state.io)`. In worker functions, check `io.isCanceled()` before queuing event payloads. On the main thread, validate incoming event payloads against the active `state.cache.getGeneration()` epoch before mutating cache entries.
 - **Dynamic CPU Core Worker Scaling**:
   Scale max concurrent decode tasks dynamically at runtime based on hardware CPU count (`std.Thread.getCpuCount() catch 4`), e.g. `@max(2, @min(6, cpu_count - 1))`. This ensures high-throughput background decoding on multi-core systems while leaving 1 core dedicated to main-thread rendering.
 

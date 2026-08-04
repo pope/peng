@@ -23,7 +23,6 @@ pub const ViewerState = struct {
     drag_state: DragState = .none,
 
     running: bool = true,
-    generation: usize = 0,
 
     pub fn initHeadless(allocator: std.mem.Allocator) ViewerState {
         return .{

@@ -12,6 +12,6 @@ pub const sysExecuteIpcCommands = systems.sysExecuteIpcCommands;
 pub const sysProcessInput = systems.sysProcessInput;
 pub const sysProcessPaletteInput = systems.sysProcessPaletteInput;
 
-test "systems facade exports" {
-    @import("std").testing.refAllDecls(@This());
+test {
+    _ = systems;
 }

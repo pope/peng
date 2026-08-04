@@ -225,17 +225,17 @@ test "drainWorkerEvents - exif_orientation_parsed & decode_failed" {
 
     try state.cache.appendWithKey(allocator, .{
         .index = 0,
-        .generation = state.viewer.generation,
+        .generation = state.cache.getGeneration(),
     }, .{
         .status = .{ .decoding = .{ .has_thread = true } },
     });
 
-    try state.workers.event_queue.push(allocator, io, .{ .exif_orientation_parsed = .{ .key = state.activeKey(0), .orientation = 90.0 } });
+    try state.workers.event_queue.push(allocator, io, .{ .exif_orientation_parsed = .{ .key = state.cache.activeKey(0), .orientation = 90.0 } });
     const processed1 = drainWorkerEvents(&state);
     try std.testing.expect(processed1);
     try std.testing.expectEqual(@as(f32, 90.0), state.cache.entries.items[0].exif_orientation);
 
-    try state.workers.event_queue.push(allocator, io, .{ .decode_failed = .{ .key = state.activeKey(0) } });
+    try state.workers.event_queue.push(allocator, io, .{ .decode_failed = .{ .key = state.cache.activeKey(0) } });
     const processed2 = drainWorkerEvents(&state);
     try std.testing.expect(processed2);
     try std.testing.expectEqual(@as(@TypeOf(state.cache.entries.items[0].status), .failed), state.cache.entries.items[0].status);

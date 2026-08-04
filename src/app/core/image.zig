@@ -26,8 +26,13 @@ pub const CacheSlotMap = struct {
     entries: std.ArrayList(CacheEntry) = .empty,
     generation: usize = 0,
 
-    pub fn setGeneration(self: *CacheSlotMap, generation: usize) void {
-        self.generation = generation;
+    pub fn advanceGeneration(self: *CacheSlotMap) usize {
+        self.generation +%= 1;
+        return self.generation;
+    }
+
+    pub fn getGeneration(self: *const CacheSlotMap) usize {
+        return self.generation;
     }
 
     pub fn activeKey(self: *const CacheSlotMap, index: usize) CacheKey {

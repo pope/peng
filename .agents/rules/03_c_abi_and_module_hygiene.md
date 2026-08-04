@@ -65,7 +65,7 @@
   - `src/intents/`: Pure `AppIntent` variants and payload structs.
   - `src/input/`: Pure `FrameInput` event polling and keybind mapping.
   - `src/ipc/`: Pure `IpcCommand` parsing, `IpcServer` handle, and socket response helpers.
-  - `src/state/`: Pure visual/UI data models (`ViewerState`, `UiState`, `CacheSlotMap`).
+  - `src/state/`: Pure visual/UI data models (`ViewerState`, `UiState`).
 - **App-Private Core Subdirectory (`src/app/core/`)**: App-internal, state-free utility types, file system helpers, EXIF parsers, image slot maps, palette matching logic, and event constructs MUST live inside `src/app/core/`:
   - `src/app/core/events.zig`: Background event payloads and thread-safe `MpscQueue(T)`.
   - `src/app/core/fs.zig`: Pure file system inspection & path manipulation helpers.

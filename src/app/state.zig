@@ -452,7 +452,6 @@ pub const AppState = struct {
     }
 
     pub fn clearCache(self: *AppState) void {
-        self.cache.setGeneration(self.viewer.generation);
         const dev_opt = self.gpu_device;
         self.cache.clear(dev_opt);
     }
@@ -506,7 +505,7 @@ pub const AppState = struct {
         try self.viewer.navigation.last_scanned_dir.appendSlice(self.allocator, dir_target);
 
         // Clear existing cache and rotation map before resetting directory_arena
-        self.viewer.generation += 1;
+        _ = self.cache.advanceGeneration();
         self.clearCache();
         self.clearRotationMap();
         self.viewer.navigation.image_list.clearRetainingCapacity();

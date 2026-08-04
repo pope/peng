@@ -185,7 +185,7 @@ test "sysUpdateCache - populates prefetch window and evicts unwanted entries" {
     // Add an out-of-window entry at index 99
     try state.cache.appendWithKey(allocator, .{
         .index = 99,
-        .generation = state.viewer.generation,
+        .generation = state.cache.getGeneration(),
     }, .{
         .status = .{ .failed = {} },
     });
@@ -195,6 +195,6 @@ test "sysUpdateCache - populates prefetch window and evicts unwanted entries" {
     try sysUpdateCache(ctx);
 
     // Index 99 should have been evicted, and current index 0 should be present
-    try std.testing.expect(state.cache.get(state.activeKey(99)) == null);
-    try std.testing.expect(state.cache.get(state.activeKey(0)) != null);
+    try std.testing.expect(state.cache.get(state.cache.activeKey(99)) == null);
+    try std.testing.expect(state.cache.get(state.cache.activeKey(0)) != null);
 }

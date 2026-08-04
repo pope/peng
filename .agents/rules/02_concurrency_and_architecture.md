@@ -2,8 +2,8 @@
 
 ## 1. AppState vs. ViewerState Structural Split
 
-- **`AppState` (Outer Engine & Hardware Container)**: Top-level application context defined in `src/app/state.zig` (exported as `app.state.AppState`). Owns hardware contexts (`gpu_device`, `unpack_compute_pipeline`), memory allocators (`allocator`), async I/O (`io`), texture slot cache map (`cache: CacheSlotMap`), worker task manager (`workers: WorkerManager`), pending IPC commands (`pending_ipc_commands`), intent queue (`pending_intents`), event batch (`event_batch`), and embeds `viewer: ViewerState`. Deinitialized via `state.deinit()`. All system pass functions in `src/app/systems/` accept `*AppState`.
-- **`ViewerState` (Pure Visual & UI Data Model)**: Defined in `src/state/viewer_state.zig` (exported as `state.ViewerState`) and embedded within `AppState.viewer`. Lives 100% on the main application thread. Contains pure visual/UI data (`viewport`, `navigation`, `ui`, `stats`, `rotation_map`, `display`, `drag_state`, `running`, `dirty`, `generation`). Deinitialized via `viewer.deinit(allocator, io)`, which cleans up `navigation`, `ui`, `display` (`DisplayState.deinit(allocator)`), and `rotation_map` string keys.
+- **`AppState` (Outer Engine & Hardware Container)**: Top-level application context defined in `src/app/state.zig` (exported as `app.state.AppState`). Owns hardware contexts (`gpu_device`, `unpack_compute_pipeline`), memory allocators (`allocator`), async I/O (`io`), texture slot cache map (`cache: CacheSlotMap`), worker task manager (`workers: WorkerManager`), pending IPC commands (`pending_ipc_commands`), intent queue (`pending_intents`), event batch (`event_batch`), and embeds `viewer: ViewerState`. Deinitialized via `state.deinit()`. All system pass functions in `src/app/systems/` accept `ctx: FrameContext` (which wraps `state: *AppState`, `frame_allocator`, `input`, `delta_time_ms`).
+- **`ViewerState` (Pure Visual & UI Data Model)**: Defined in `src/state/viewer_state.zig` (exported as `state.ViewerState`) and embedded within `AppState.viewer`. Lives 100% on the main application thread. Contains pure visual/UI data (`viewport`, `navigation`, `ui`, `stats`, `rotation_map`, `display`, `drag_state`, `running`, `dirty`). Deinitialized via `viewer.deinit(allocator, io)`, which cleans up `navigation`, `ui`, `display` (`DisplayState.deinit(allocator)`), and `rotation_map` string keys.
 - **Data Invariant**: `ViewerState` MUST contain **ZERO** hardware device pointers (`gpu_device`), **ZERO** task groups or thread pools (`workers`), **ZERO** memory allocators (`allocator`), **ZERO** I/O contexts (`io`), and **ZERO** concurrency primitives (`std.Io.Mutex`) or queues (`MpscQueue`). It is safe for layout calculation, UI rendering passes, and headless unit testing without concurrency overhead.
 
 ## 2. Main-Thread GPU Resource Restrictions
@@ -49,34 +49,40 @@
 
 ## 9. Pure System Passes & Top-Level Linear Engine Pipeline (`src/app/systems/`)
 
-- Procedural tick logic, socket command handling, input sampling, slideshow timers, asset uploads, and telemetry MUST be extracted into pure system pass functions taking `*AppState` in `src/app/systems/`, while worker event queue draining is handled by `app.drainWorkerEvents` in `src/app/events.zig`:
+- Procedural tick logic, socket command handling, input sampling, slideshow timers, asset uploads, and telemetry MUST be extracted into pure system pass functions accepting `ctx: FrameContext` in `src/app/systems/`, while worker event queue draining is handled by `app.drainWorkerEvents` in `src/app/events.zig`:
   - `drainWorkerEvents`: Drains worker thread event queues (`state.workers.event_queue`).
   - `sysExecuteIpcCommands`: Parses and dispatches socket commands (`state.pending_ipc_commands`).
+  - `sysProcessInput`: Maps keyboard input to intents (`state.pending_intents`).
   - `sysExecuteIntents`: Drains queued `AppIntent` payloads (`state.pending_intents`).
-  - `sysUpdateSlideshow`: Manages slideshow timer ticks.
   - `sysProcessPaletteInput`: Manages command palette query text, list navigation, and click-outside dismissal.
   - `sysUpdateViewport`: Handles mouse drag deltas and mouse-wheel zoom-at-cursor calculations.
-  - `sysProcessInput`: Translates active keyboard shortcuts into `AppIntent` objects.
+  - `sysUpdateSlideshow`: Manages slideshow timer ticks.
   - `sysProcessAssetUploads`: Handles EXIF orientation and CPU-to-GPU texture uploads.
-  - `sysUpdateCache`: Manages cache slot eviction and spawns decode workers.
-  - `sysCheckIdlePreload`: Prefetches neighbor slots when engine tick is idle.
+  - `sysUpdateCache`: Manages cache slot eviction, spawns decode workers, and performs idle neighbor preloading.
   - `sysSyncMetrics`: Copies atomic worker counters (`state.workers`), active image GPU telemetry, and cache status into `ViewerStats` (`state.viewer.stats`) once per frame tick.
 - Systems MUST NOT invoke other systems nested inside them.
-- The main frame update in `src/viewer.zig` (`updateFrame`) MUST follow the strict top-level unnested engine pipeline:
-  1. Worker & Socket Event Ingestion (`drainWorkerEvents`, `sysExecuteIpcCommands`)
-  2. Input Sampling (`pollFrameInput`)
-  3. Palette & Input System Passes (`sysProcessPaletteInput`, `sysProcessInput`)
-  4. Logic & Intent Systems (`sysExecuteIntents`, `sysUpdateSlideshow`, `sysUpdateViewport`)
-  5. Asset Upload & Cache Systems (`sysProcessAssetUploads`, `sysUpdateCache`, `sysCheckIdlePreload`)
-  6. System Metric Synchronization (`sysSyncMetrics`) & Clay UI Pointer / Layout State Updates
-  7. GPU Execution Pass & Screenshot Post-Processing
+- The main frame update in `src/viewer.zig` (`updateFrame` / `runUpdatePhase`) MUST follow the strict top-level unnested engine pipeline:
+  1. Worker Event Ingestion (`drainWorkerEvents` in `updateFrame`)
+  2. Input Polling (`pollFrameInput` in `updateFrame`)
+  3. `runUpdatePhase` Systems Pipeline:
+     a. `sysExecuteIpcCommands(ctx)`
+     b. `sysProcessInput(ctx)`
+     c. `sysExecuteIntents(ctx)`
+     d. `sysProcessPaletteInput(ctx)`
+     e. `sysUpdateViewport(ctx, palette_closed_this_frame)` & `sysUpdateSlideshow(ctx)`
+     f. `sysExecuteIntents(ctx)` (drains palette/slideshow intents)
+     g. `sysProcessAssetUploads(ctx)`
+     h. `sysUpdateCache(ctx)`
+     i. `sysSyncMetrics(ctx)`
+  4. Clay UI Layout & Pointer Updates
+  5. GPU Execution Pass & Frame Presentation
 
 ## 10. Worker Thread Isolation, Telemetry (`ViewerStats`), & Cache Epochs
 
 - **Worker Thread Isolation**: Background worker tasks (`decodeWorker`, `pathScanWorker`, `stdinWorker`, `ipcServerWorkerTask`) MUST NOT import or receive `*AppState` or `*ViewerState`. They accept explicit parameter structs (`DecodeArgs`, `PathScanArgs`, `StdinArgs`, `IpcServerArgs`) containing `workers: *WorkerManager`, `allocator: std.mem.Allocator`, and `io: std.Io`.
 - **Explicit Argument Initialization**: Instantiation of argument structs on the caller side MUST populate explicit field values directly. Avoid setting struct fields to `= undefined` placeholders before passing them into spawner functions.
 - **Telemetry Consolidation (`ViewerStats`)**: Separate UI/Stats telemetry from core business logic. Keep atomic counters (`active_threads`, `active_decode_threads`, `exiting`) in `WorkerManager` for control flow throttling (`canSpawnDecode()`, `isBusy()`). Once per frame, `sysSyncMetrics` snapshots live atomics and active image metrics into plain `usize`/`bool` fields on `state.viewer.stats` (`ViewerStats`) for UI rendering ("Stats for Nerds") without reading atomics during layout evaluation.
-- **Cache Epoch Versioning**: Use a plain main-thread `usize` epoch counter (`state.viewer.generation`) incremented on navigation/directory resets (`resetNavigation`) to validate that incoming background event payloads match the active image list epoch before modifying `CacheSlotMap` entries.
+- **Cache Epoch Versioning**: `CacheSlotMap` (`state.cache`) owns the epoch generation counter (`generation: usize`), incremented via `state.cache.advanceGeneration()` on navigation/directory resets (`resetNavigation`). Incoming worker background event payloads validate against `state.cache.getGeneration()` before modifying `CacheSlotMap` entries.
 
 ## 11. Single-Pass I/O Header & Metadata Consolidation in Workers
 
