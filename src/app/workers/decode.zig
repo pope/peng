@@ -47,29 +47,41 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         return;
     };
     const size_bytes = s.size;
+    if (size_bytes == 0) {
+        failDecodeWorker(workers, alloc, io, key, path, "decodeWorker: 0-byte file '{s}'", .{path});
+        return;
+    }
 
-    var header_buf: [65536]u8 = undefined;
-    var exif_rot: f32 = 0.0;
-    var mime_type: []const u8 = "unknown";
+    const file_bytes = alloc.alloc(u8, size_bytes) catch |err| {
+        failDecodeWorker(workers, alloc, io, key, path, "decodeWorker: failed to allocate {d} bytes for '{s}': {}", .{ size_bytes, path, err });
+        return;
+    };
+    defer alloc.free(file_bytes);
 
+    const start_read = sdl.timer.getTicksNs();
     var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, path, .{}) catch |err| {
         failDecodeWorker(workers, alloc, io, key, path, "decodeWorker: openFile failed for '{s}': {}", .{ path, err });
         return;
     };
     defer file.close(io);
 
-    var slices = [_][]u8{&header_buf};
-    const n = file.readPositional(io, &slices, 0) catch |err| {
-        failDecodeWorker(workers, alloc, io, key, path, "decodeWorker: initial readPositional failed for '{s}': {}", .{ path, err });
+    var slices = [_][]u8{file_bytes};
+    const read_n = file.readPositional(io, &slices, 0) catch |err| {
+        failDecodeWorker(workers, alloc, io, key, path, "decodeWorker: readPositional failed for '{s}': {}", .{ path, err });
         return;
     };
+    const end_read = sdl.timer.getTicksNs();
+    const read_time_ms = @as(f64, @floatFromInt(end_read - start_read)) / 1_000_000.0;
 
-    if (n == 0) {
-        failDecodeWorker(workers, alloc, io, key, path, "decodeWorker: empty file or 0-byte header read for '{s}'", .{path});
+    if (read_n == 0) {
+        failDecodeWorker(workers, alloc, io, key, path, "decodeWorker: empty file or 0-byte read for '{s}'", .{path});
         return;
     }
 
-    exif_rot = exif.parseExifOrientation(header_buf[0..n]) orelse 0.0;
+    const header_n = @min(read_n, 65536);
+    const header_buf = file_bytes[0..header_n];
+
+    const exif_rot = exif.parseExifOrientation(header_buf) orelse 0.0;
     if (exif_rot != 0.0) {
         workers.event_queue.push(alloc, io, .{
             .exif_orientation_parsed = .{
@@ -80,40 +92,24 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         context.wakeUpMainThread();
     }
 
-    mime_type = image.detectMimeType(header_buf[0..n], path);
+    const mime_type = image.detectMimeType(header_buf, path);
 
     // Attempt fast EXIF thumbnail decoding for instant placeholder preview
     if (std.mem.eql(u8, mime_type, "image/jpeg") and args.has_gpu_device) {
-        const full_dims = exif.readJpegDimensions(header_buf[0..n]);
-        var thumb_bytes_opt: ?[]const u8 = exif.extractJpegThumbnail(header_buf[0..n]);
-        var heap_thumb_buf: ?[]u8 = null;
-        defer if (heap_thumb_buf) |b| alloc.free(b);
+        const full_dims = exif.readJpegDimensions(header_buf);
+        var thumb_bytes_opt: ?[]const u8 = exif.extractJpegThumbnail(header_buf);
 
         if (thumb_bytes_opt != null) {
             _ = workers.thumb_header_hits.fetchAdd(1, .monotonic);
-        } else if (exif.extractJpegThumbnailLocation(header_buf[0..n])) |loc| {
+        } else if (exif.extractJpegThumbnailLocation(header_buf)) |loc| {
             const max_thumb_size_bytes = 512 * 1024; // 512 KiB sanity limit for EXIF thumbnails
-            const within_file_bounds = (size_bytes == 0 or (loc.file_offset + loc.length <= size_bytes));
+            const within_file_bounds = (loc.file_offset + loc.length <= read_n);
 
             if (loc.length > 0 and loc.length <= max_thumb_size_bytes and within_file_bounds) {
-                if (alloc.alloc(u8, loc.length)) |t_buf| {
-                    heap_thumb_buf = t_buf;
-                    var t_slices = [_][]u8{t_buf};
-                    const read_n = file.readPositional(io, &t_slices, loc.file_offset) catch |err| blk: {
-                        std.log.warn("decodeWorker: readPositional for thumbnail failed at offset {d} (len {d}): {}", .{ loc.file_offset, loc.length, err });
-                        break :blk 0;
-                    };
-                    if (read_n == loc.length) {
-                        thumb_bytes_opt = t_buf;
-                        _ = workers.thumb_positional_hits.fetchAdd(1, .monotonic);
-                    } else {
-                        std.log.warn("decodeWorker: incomplete thumbnail read at offset {d}: expected {d} bytes, got {d}", .{ loc.file_offset, loc.length, read_n });
-                        _ = workers.thumb_misses.fetchAdd(1, .monotonic);
-                    }
-                } else |err| {
-                    std.log.warn("decodeWorker: failed to allocate {d} bytes for thumbnail: {}", .{ loc.length, err });
-                    _ = workers.thumb_misses.fetchAdd(1, .monotonic);
-                }
+                const off = @as(usize, loc.file_offset);
+                const len = @as(usize, loc.length);
+                thumb_bytes_opt = file_bytes[off .. off + len];
+                _ = workers.thumb_positional_hits.fetchAdd(1, .monotonic);
             } else {
                 _ = workers.thumb_misses.fetchAdd(1, .monotonic);
             }
@@ -152,7 +148,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     if (workers.exiting.load(.acquire)) return;
 
     const start_decode = sdl.timer.getTicksNs();
-    const surface = sdl.Surface.loadFilePtr(path.ptr);
+    const surface = sdl.Surface.loadConstMemOpt(file_bytes[0..read_n]);
     const end_decode = sdl.timer.getTicksNs();
 
     const decode_time_ms = @as(f64, @floatFromInt(end_decode - start_decode)) / 1_000_000.0;
@@ -226,6 +222,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                 .h = orig_h,
                 .mime_type = mime_type,
                 .size_bytes = size_bytes,
+                .read_time_ms = read_time_ms,
                 .decode_time_ms = decode_time_ms,
                 .conversion_time_ms = conversion_time_ms,
                 .exif_orientation = exif_rot,

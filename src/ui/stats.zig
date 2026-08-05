@@ -243,6 +243,7 @@ pub fn renderStatsOverlay(
     const current_entry = ui_model.current_entry;
 
     var mem_size_str: []const u8 = "N/A";
+    var read_str: []const u8 = "N/A";
     var decode_str: []const u8 = "N/A";
     var convert_str: []const u8 = "N/A";
     var upload_str: []const u8 = "N/A";
@@ -250,23 +251,27 @@ pub fn renderStatsOverlay(
     if (current_entry) |entry| {
         switch (entry.status) {
             .loaded_cpu => |cpu| {
+                read_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{cpu.read_time_ms});
                 decode_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{cpu.decode_time_ms});
                 convert_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{cpu.conversion_time_ms});
             },
             .loaded_gpu => |gpu| {
                 mem_size_str = try formatSize(frame_allocator, gpu.memory_size_bytes);
+                read_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{gpu.read_time_ms});
                 decode_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{gpu.decode_time_ms});
                 convert_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{gpu.conversion_time_ms});
                 upload_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{gpu.upload_time_ms});
             },
             .decoding => {
                 mem_size_str = "Loading...";
+                read_str = "Loading...";
                 decode_str = "Loading...";
                 convert_str = "Loading...";
                 upload_str = "Loading...";
             },
             .failed => {
                 mem_size_str = "Failed";
+                read_str = "Failed";
                 decode_str = "Failed";
                 convert_str = "Failed";
                 upload_str = "Failed";
@@ -348,6 +353,7 @@ pub fn renderStatsOverlay(
         const total_vram_str = try std.fmt.allocPrint(frame_allocator, "{s} / 1024 MB ({d} slots)", .{ formatted_total_vram, s.cached_slot_count });
         try renderStatRow("Total Cache VRAM", total_vram_str);
 
+        try renderStatRow("Disk Read Time", read_str);
         try renderStatRow("Decode Time", decode_str);
         try renderStatRow("Convert Time", convert_str);
         try renderStatRow("GPU Upload", upload_str);

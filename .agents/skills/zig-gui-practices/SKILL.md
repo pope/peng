@@ -39,8 +39,8 @@ ______________________________________________________________________
 - **[VRAM Budgeting & EXIF Parsing Recipes](references/vram-preloading.md)**
 
   - VRAM cache memory footprint math (+33% mipmap overhead).
-  - Main-thread synchronous EXIF header dimension parsing (< 0.1 ms) & `APP1` (`0xE1`) segment skipping rules.
-  - Navigation throttling (< 150ms), thumbnail-only fast decoding, and settled preloading triggers (`sysUpdateCache(ctx)`).
+  - Main-thread synchronous EXIF header dimension parsing (< 0.1 ms) & single-pass Zig `std.Io` in-memory decoding.
+  - Navigation throttling (< 150ms), thumbnail-only fast decoding, telemetry metric split (Disk Read vs Decode), and settled preloading triggers (`sysUpdateCache(ctx)`).
 
 - **[GPU Shader Optimization Recipes](references/shader-optimization.md)**
 

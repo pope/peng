@@ -367,6 +367,7 @@ pub const CpuSurfaceComponent = struct {
     h: f32,
     size_bytes: u64,
     mime_type: []const u8 = "",
+    read_time_ms: f64 = 0.0,
     decode_time_ms: f64 = 0.0,
     conversion_time_ms: f64 = 0.0,
 };
@@ -377,6 +378,7 @@ pub const GpuTextureComponent = struct {
     h: f32,
     size_bytes: u64,
     mime_type: []const u8 = "",
+    read_time_ms: f64 = 0.0,
     decode_time_ms: f64 = 0.0,
     conversion_time_ms: f64 = 0.0,
     upload_time_ms: f64 = 0.0,
@@ -492,6 +494,7 @@ pub const ActiveImageStats = struct {
     num_mip_levels: u32 = 1,
     mipmap_time_ms: f64 = 0.0,
     gpu_upload_time_ms: f64 = 0.0,
+    read_time_ms: f64 = 0.0,
     decode_time_ms: f64 = 0.0,
     conversion_time_ms: f64 = 0.0,
     fallback_time_ms: f64 = 0.0,

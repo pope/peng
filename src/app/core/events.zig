@@ -27,6 +27,7 @@ pub const ImageDecodedPayload = struct {
     h: f32,
     mime_type: []const u8,
     size_bytes: u64,
+    read_time_ms: f64,
     decode_time_ms: f64,
     conversion_time_ms: f64,
     exif_orientation: f32,

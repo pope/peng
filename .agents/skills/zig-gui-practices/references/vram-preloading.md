@@ -26,6 +26,8 @@ ______________________________________________________________________
 
 ## 2. Synchronous Header Dimension Parsing & EXIF Rules
 
+- **Single-Pass File Read & In-Memory Decoding**:
+  `decodeWorker` performs a single file open and read via Zig `std.Io` (`statFile` + `openFile` + `readPositional`) into a task-scoped heap buffer. Header parsing, EXIF thumbnail slicing (`file_bytes[off..off+len]`), and full surface decoding (`sdl.Surface.loadConstMemOpt`) operate entirely in RAM, eliminating double-open file descriptor overhead and respecting `io.isCanceled()` during disk I/O.
 - **Frame-1 Target Aspect Layout**:
   Parse full image dimensions (`full_w`, `full_h`) directly from file headers synchronously on the main thread (< 0.1 ms I/O) before spawning decode worker threads. This allows layout math (`getBaseScale`, aspect ratio fitting) to set exact canvas dimensions on Frame 1, eliminating layout jumps and window jitter.
 - **EXIF APP1 Segment Skipping Rule**:
@@ -35,10 +37,12 @@ ______________________________________________________________________
 
 ______________________________________________________________________
 
-## 3. Throttled Navigation & Settled Preloading
+## 3. Throttled Navigation, Telemetry & Settled Preloading
 
 - **Throttling & Thumbnail-Only Fast Decoding**:
-  During rapid scrolling (< 150ms step interval), constrain preload queues strictly to the active image `idx` and set `thumb_only = true` on `DecodeArgs`. Background `decodeWorker` tasks extract and emit the embedded EXIF thumbnail (~0.5ms) via `.thumb_decoded` and exit early (`if (args.thumb_only) return;`), bypassing full software decoding (`sdl.Surface.loadFilePtr`). This eliminates CPU/disk thrashing and prevents driver queue submission exhaustion (`VK_ERROR_DEVICE_LOST`).
+  During rapid scrolling (< 150ms step interval), constrain preload queues strictly to the active image `idx` and set `thumb_only = true` on `DecodeArgs`. Background `decodeWorker` tasks extract and emit the embedded EXIF thumbnail (~0.5ms) via `.thumb_decoded` and exit early (`if (args.thumb_only) return;`), bypassing full software decoding. This eliminates CPU/disk thrashing and prevents driver queue submission exhaustion (`VK_ERROR_DEVICE_LOST`).
+- **Telemetry Metric Split ("Stats for Nerds")**:
+  High-resolution nanosecond timers (`sdl.timer.getTicksNs()`) isolate disk I/O (`readPositional`) as `read_time_ms` ("Disk Read Time") separately from CPU software image decompression (`decode_time_ms`). Both metrics are transferred via `ImageDecodedPayload` to the UI overlay.
 - **Settled Preload & Resolution Upgrade Trigger**:
   When navigation settles (> 150ms idle time), `sysUpdateCache(ctx)` automatically triggers full-resolution image decoding (`thumb_only = false`) for active and neighboring images ($\\pm 1, \\pm 2$ slots) to upgrade thumbnail placeholders to full high-res GPU textures seamlessly.
 
