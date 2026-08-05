@@ -37,10 +37,10 @@ ______________________________________________________________________
 
 ## 3. Throttled Navigation & Settled Preloading
 
-- **Throttling During Fast Navigation**:
-  During rapid scrolling (< 150ms step interval), constrain preload queues strictly to the active image `idx`. Suppress neighbor preloading (+1, -1, +2, -2) to prevent thread/VRAM contention and avoid driver queue submission exhaustion (`VK_ERROR_DEVICE_LOST`).
-- **Settled Preload Trigger**:
-  In the main frame loop, check if navigation has settled (> 150ms idle time). When idle, `sysUpdateCache(ctx)` automatically triggers idle preloading to populate neighboring images into VRAM.
+- **Throttling & Thumbnail-Only Fast Decoding**:
+  During rapid scrolling (< 150ms step interval), constrain preload queues strictly to the active image `idx` and set `thumb_only = true` on `DecodeArgs`. Background `decodeWorker` tasks extract and emit the embedded EXIF thumbnail (~0.5ms) via `.thumb_decoded` and exit early (`if (args.thumb_only) return;`), bypassing full software decoding (`sdl.Surface.loadFilePtr`). This eliminates CPU/disk thrashing and prevents driver queue submission exhaustion (`VK_ERROR_DEVICE_LOST`).
+- **Settled Preload & Resolution Upgrade Trigger**:
+  When navigation settles (> 150ms idle time), `sysUpdateCache(ctx)` automatically triggers full-resolution image decoding (`thumb_only = false`) for active and neighboring images ($\\pm 1, \\pm 2$ slots) to upgrade thumbnail placeholders to full high-res GPU textures seamlessly.
 
 ______________________________________________________________________
 

@@ -17,6 +17,7 @@ pub const ThumbDecodedPayload = struct {
     full_w: f32,
     full_h: f32,
     exif_orientation: f32,
+    thumb_only: bool = false,
 };
 
 pub const ImageDecodedPayload = struct {

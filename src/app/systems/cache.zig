@@ -9,7 +9,7 @@ const workers_mod = @import("../workers/root.zig");
 const DecodeArgs = workers_mod.DecodeArgs;
 const sdl = @import("sdl");
 
-fn spawnCacheDecodeSlot(state: *AppState, index: usize, dup_path: [:0]const u8) !void {
+fn spawnCacheDecodeSlot(state: *AppState, index: usize, dup_path: [:0]const u8, thumb_only: bool) !void {
     errdefer state.allocator.free(dup_path);
 
     const args = try state.allocator.create(DecodeArgs);
@@ -39,6 +39,7 @@ fn spawnCacheDecodeSlot(state: *AppState, index: usize, dup_path: [:0]const u8) 
         .path = dup_path,
         .has_gpu_device = state.gpu_device != null,
         .pixel_format = state.viewer.display.getPixelFormat(),
+        .thumb_only = thumb_only,
     };
 
     try workers_mod.spawnDecode(args);
@@ -152,7 +153,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
         }
 
         const dup_path = path_opt.?;
-        spawnCacheDecodeSlot(state, d, dup_path) catch |err| {
+        spawnCacheDecodeSlot(state, d, dup_path, is_fast_scrolling) catch |err| {
             std.log.err("Failed to spawn decode worker for index {}: {}", .{ d, err });
         };
     }

@@ -17,6 +17,7 @@ pub const DecodeArgs = struct {
     path: [:0]const u8,
     has_gpu_device: bool,
     pixel_format: u32,
+    thumb_only: bool = false,
 };
 
 fn failDecodeWorker(workers: *WorkerManager, alloc: std.mem.Allocator, io: std.Io, key: CacheKey, path: []const u8, comptime fmt: []const u8, fmt_args: anytype) void {
@@ -133,12 +134,17 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                         .full_w = full_w,
                         .full_h = full_h,
                         .exif_orientation = exif_rot,
+                        .thumb_only = args.thumb_only,
                     },
                 }) catch |err| {
                     std.log.err("Failed to push thumbnail decode event: {}", .{err});
                     t_surf.destroy();
                 };
                 context.wakeUpMainThread();
+
+                if (args.thumb_only) {
+                    return;
+                }
             }
         }
     }

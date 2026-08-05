@@ -40,7 +40,7 @@ ______________________________________________________________________
 
   - VRAM cache memory footprint math (+33% mipmap overhead).
   - Main-thread synchronous EXIF header dimension parsing (< 0.1 ms) & `APP1` (`0xE1`) segment skipping rules.
-  - Navigation throttling (< 150ms) and settled preloading triggers (`checkIdlePreload()`).
+  - Navigation throttling (< 150ms), thumbnail-only fast decoding, and settled preloading triggers (`sysUpdateCache(ctx)`).
 
 - **[GPU Shader Optimization Recipes](references/shader-optimization.md)**
 

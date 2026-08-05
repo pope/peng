@@ -67,6 +67,12 @@ fn handleExifThumbnailEvent(state: *AppState, thumb_data: events.ThumbDecodedPay
                         },
                     },
                 };
+                if (thumb_data.thumb_only) {
+                    switch (entry.status) {
+                        .decoding => |*dec| dec.has_thread = false,
+                        else => {},
+                    }
+                }
             } else {
                 gpu_dev.releaseTexture(upload_res.gpu_texture);
             }
