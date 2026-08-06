@@ -26,6 +26,7 @@ ______________________________________________________________________
   - Systems must use `ctx.frame_allocator` for transient frame-bound allocations (such as string duping for enqueued intents). Memory allocated with `frame_allocator` automatically resets at frame boundaries.
   - **Dynamic Array Pre-allocation**: State constructors returning error unions (`NavigationState.init`, `PaletteState.init`, `AppState.ensureInitialCapacities`) use `try self.xxx.ensureTotalCapacity(allocator, N)` to reserve capacity upfront during initialization with explicit rationale comments explaining chosen capacities.
   - **Capacity Retention**: Interactive reset methods (`clearIntents()`, `PaletteState.reset()`, `clearDirItems()`) must use `clearRetainingCapacity()` to prevent runtime heap reallocation churn during UI update passes.
+  - **Fuzzy Match Filtering & Buffer Pre-allocation**: Rebuild methods (`rebuildActionMatches`, `rebuildDirectoryMatches`, `rebuildFileMatches`) short-circuit on empty queries (`query.items.len == 0`) by populating `matches` 1-to-1 without searcher allocation or fuzzy scoring, and call `ensureTotalCapacity` on match buffers before scoring loops to allow zero-reallocation `appendAssumeCapacity` insertions during search.
 
 ______________________________________________________________________
 

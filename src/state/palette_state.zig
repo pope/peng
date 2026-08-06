@@ -211,12 +211,19 @@ pub const PaletteState = struct {
         }
     }
 
+    /// Rebuilds fuzzy match results for action palette items.
+    ///
+    /// Optimizations:
+    /// - Short-circuits when query is empty, populating `matches` directly without searcher allocation or fuzzy scoring.
+    /// - Pre-allocates `scored_matches` and `matches` capacities to allow `appendAssumeCapacity` writes during scoring.
     pub fn rebuildActionMatches(self: *PaletteState) !void {
         self.matches.clearRetainingCapacity();
+        self.scored_matches.clearRetainingCapacity();
         const query_str = self.query.items;
         if (query_str.len == 0) {
+            try self.matches.ensureTotalCapacity(self.allocator, types.palette_action_items.len);
             for (types.palette_action_items, 0..) |_, idx| {
-                try self.matches.append(self.allocator, idx);
+                self.matches.appendAssumeCapacity(idx);
             }
             return;
         }
@@ -228,11 +235,11 @@ pub const PaletteState = struct {
 
         const searcher_ptr = try self.getSearcher(max_h, query_str.len);
 
-        self.scored_matches.clearRetainingCapacity();
+        try self.scored_matches.ensureTotalCapacity(self.allocator, types.palette_action_items.len);
 
         for (types.palette_action_items, 0..) |item, idx| {
             if (searcher_ptr.score(item.name, query_str)) |score| {
-                try self.scored_matches.append(self.allocator, .{ .index = idx, .score = score });
+                self.scored_matches.appendAssumeCapacity(.{ .index = idx, .score = score });
             }
         }
 
@@ -242,11 +249,17 @@ pub const PaletteState = struct {
             }
         }.lessThan);
 
+        try self.matches.ensureTotalCapacity(self.allocator, self.scored_matches.items.len);
         for (self.scored_matches.items) |item| {
-            try self.matches.append(self.allocator, item.index);
+            self.matches.appendAssumeCapacity(item.index);
         }
     }
 
+    /// Rebuilds fuzzy match results for directory navigator items.
+    ///
+    /// Optimizations:
+    /// - Short-circuits when query is empty, populating `matches` directly without searcher allocation or fuzzy scoring.
+    /// - Pre-allocates `scored_matches` and `matches` capacities to allow `appendAssumeCapacity` writes during scoring.
     pub fn rebuildDirectoryMatches(self: *PaletteState) !void {
         self.matches.clearRetainingCapacity();
         self.scored_matches.clearRetainingCapacity();
@@ -254,8 +267,9 @@ pub const PaletteState = struct {
         const query_str = self.query.items;
 
         if (query_str.len == 0) {
+            try self.matches.ensureTotalCapacity(self.allocator, self.dir_items.items.len);
             for (self.dir_items.items, 0..) |_, idx| {
-                try self.matches.append(self.allocator, idx);
+                self.matches.appendAssumeCapacity(idx);
             }
             if (self.last_child_dir.items.len > 0) {
                 for (self.dir_items.items, 0..) |entry, match_idx| {
@@ -276,9 +290,11 @@ pub const PaletteState = struct {
 
         const searcher_ptr = try self.getSearcher(max_h, query_str.len);
 
+        try self.scored_matches.ensureTotalCapacity(self.allocator, self.dir_items.items.len);
+
         for (self.dir_items.items, 0..) |entry, idx| {
             if (searcher_ptr.score(entry.getName(), query_str)) |score| {
-                try self.scored_matches.append(self.allocator, .{ .index = idx, .score = score });
+                self.scored_matches.appendAssumeCapacity(.{ .index = idx, .score = score });
             }
         }
 
@@ -288,17 +304,25 @@ pub const PaletteState = struct {
             }
         }.lessThan);
 
+        try self.matches.ensureTotalCapacity(self.allocator, self.scored_matches.items.len);
         for (self.scored_matches.items) |item| {
-            try self.matches.append(self.allocator, item.index);
+            self.matches.appendAssumeCapacity(item.index);
         }
     }
 
+    /// Rebuilds fuzzy match results for image file list items.
+    ///
+    /// Optimizations:
+    /// - Short-circuits when query is empty, populating `matches` directly without searcher allocation or fuzzy scoring.
+    /// - Pre-allocates `scored_matches` and `matches` capacities to allow `appendAssumeCapacity` writes during scoring.
     pub fn rebuildFileMatches(self: *PaletteState, image_list: []const []const u8) !void {
         self.matches.clearRetainingCapacity();
+        self.scored_matches.clearRetainingCapacity();
         const query_str = self.query.items;
         if (query_str.len == 0) {
+            try self.matches.ensureTotalCapacity(self.allocator, image_list.len);
             for (image_list, 0..) |_, real_idx| {
-                try self.matches.append(self.allocator, real_idx);
+                self.matches.appendAssumeCapacity(real_idx);
             }
             return;
         }
@@ -313,7 +337,7 @@ pub const PaletteState = struct {
 
         const searcher_ptr = try self.getSearcher(max_h, query_str.len);
 
-        self.scored_matches.clearRetainingCapacity();
+        try self.scored_matches.ensureTotalCapacity(self.allocator, image_list.len);
 
         const has_slash = std.mem.indexOfScalar(u8, query_str, '/') != null or std.mem.indexOfScalar(u8, query_str, '\\') != null;
 
@@ -332,7 +356,7 @@ pub const PaletteState = struct {
             }
 
             if (best_score) |score| {
-                try self.scored_matches.append(self.allocator, .{ .index = real_idx, .score = score });
+                self.scored_matches.appendAssumeCapacity(.{ .index = real_idx, .score = score });
             }
         }
 
@@ -342,8 +366,9 @@ pub const PaletteState = struct {
             }
         }.lessThan);
 
+        try self.matches.ensureTotalCapacity(self.allocator, self.scored_matches.items.len);
         for (self.scored_matches.items) |item| {
-            try self.matches.append(self.allocator, item.index);
+            self.matches.appendAssumeCapacity(item.index);
         }
     }
 };
