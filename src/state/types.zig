@@ -162,6 +162,24 @@ pub const ViewportParams = struct {
         self.rotation_angle = val;
     }
 
+    /// Zooms viewport to a new zoom factor while anchoring pan offsets relative to a focus point (e.g. mouse cursor).
+    pub fn zoomAtPoint(
+        self: *ViewportParams,
+        new_zoom: ZoomFactor,
+        mouse_x: f32,
+        mouse_y: f32,
+        center_x: f32,
+        center_y: f32,
+    ) void {
+        const old_zoom = self.zoom_factor;
+        self.zoom_factor = new_zoom;
+        const ratio = old_zoom.ratioTo(new_zoom);
+        const rel_x = mouse_x - center_x;
+        const rel_y = mouse_y - center_y;
+        self.pan_x = rel_x - (rel_x - self.pan_x) * ratio;
+        self.pan_y = rel_y - (rel_y - self.pan_y) * ratio;
+    }
+
     pub fn getShaderScaleModeInt(self: ViewportParams) i32 {
         const f = if (self.scale_filter != .linear) self.scale_filter else self.texture_scale_mode;
         return switch (f) {
@@ -708,4 +726,17 @@ pub fn stopTextInput(display: DisplayState) void {
             }
         },
     }
+}
+
+test "ViewportParams.zoomAtPoint anchors zoom relative to focus point" {
+    var vp = ViewportParams{};
+    try std.testing.expectEqual(@as(f32, 1.0), vp.zoom_factor.get());
+    try std.testing.expectEqual(@as(f32, 0.0), vp.pan_x);
+    try std.testing.expectEqual(@as(f32, 0.0), vp.pan_y);
+
+    // Zoom in 2x focused at (100, 100) relative to viewport center (500, 400) -> rel = (-400, -300)
+    vp.zoomAtPoint(ZoomFactor.init(2.0), 100.0, 100.0, 500.0, 400.0);
+    try std.testing.expectEqual(@as(f32, 2.0), vp.zoom_factor.get());
+    try std.testing.expectEqual(@as(f32, 400.0), vp.pan_x);
+    try std.testing.expectEqual(@as(f32, 300.0), vp.pan_y);
 }

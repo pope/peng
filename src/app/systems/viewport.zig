@@ -61,8 +61,7 @@ pub fn sysUpdateViewport(ctx: FrameContext, palette_closed_this_frame: bool) voi
     if (input.scroll_delta_y != 0) {
         if (state.viewer.ui.palette.mode == .inactive and !input.isPointerInDebugPanel() and clay.pointerOver(clay.getElementId("Viewport"))) {
             const old_zoom = state.viewer.viewport.zoom_factor;
-            state.viewer.viewport.zoom_factor = state.clampZoomFactor(old_zoom.get() + input.scroll_delta_y * 0.1);
-            const ratio = old_zoom.ratioTo(state.viewer.viewport.zoom_factor);
+            const new_zoom = state.clampZoomFactor(old_zoom.get() + input.scroll_delta_y * 0.1);
 
             const available_width = if (clay.isDebugModeEnabled()) @max(input.win_w - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0) else input.win_w;
             const cx = available_width / 2.0;
@@ -72,11 +71,7 @@ pub fn sysUpdateViewport(ctx: FrameContext, palette_closed_this_frame: bool) voi
             }
             const cy = title_bar_h + ((input.win_h - title_bar_h) / 2.0);
 
-            const rel_x = input.mouse_x - cx;
-            const rel_y = input.mouse_y - cy;
-
-            state.viewer.viewport.pan_x = rel_x - (rel_x - state.viewer.viewport.pan_x) * ratio;
-            state.viewer.viewport.pan_y = rel_y - (rel_y - state.viewer.viewport.pan_y) * ratio;
+            state.viewer.viewport.zoomAtPoint(new_zoom, input.mouse_x, input.mouse_y, cx, cy);
         }
     }
 }

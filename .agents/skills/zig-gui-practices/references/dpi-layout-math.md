@@ -16,3 +16,17 @@ ______________________________________________________________________
   $$\\text{y} = \\text{center_y} + \\text{radius} \\times \\cos(\\theta)$$
 
 - For inner/outer rounded borders (annular quad vertices), maintain separate inner and outer radii using single-precision floats (`f32`) to prevent vertex overlapping and anti-aliasing artifacts.
+
+______________________________________________________________________
+
+## Zoom-to-Cursor Anchor Panning Math
+
+- **Cursor Zoom Anchor Formula**:
+  When zooming into a viewport relative to a focus point (e.g. mouse cursor $(x\_{\\text{mouse}}, y\_{\\text{mouse}})$), compute relative offset relative to viewport center $(x\_{\\text{center}}, y\_{\\text{center}})$:
+  $$r_x = x\_{\\text{mouse}} - x\_{\\text{center}}, \\quad r_y = y\_{\\text{mouse}} - y\_{\\text{center}}$$
+  $$\\text{ratio} = \\frac{Z\_{\\text{new}}}{Z\_{\\text{old}}}$$
+  $$\\text{pan}\_x = r_x - (r_x - \\text{pan}\_x) \\times \\text{ratio}$$
+  $$\\text{pan}\_y = r_y - (r_y - \\text{pan}\_y) \\times \\text{ratio}$$
+
+- **Domain Encapsulation**:
+  Use `ViewportParams.zoomAtPoint(new_zoom, mouse_x, mouse_y, center_x, center_y)` to update viewport zoom factor and anchor pan offsets in a single domain call.
