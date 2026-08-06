@@ -38,22 +38,10 @@ pub fn loadDirectoryEntries(self: *PaletteState, io: std.Io, dir_path: []const u
 
     self.current_dir_image_count = core_fs.countFolderImages(io, dir_path_copy);
 
-    clearDirItems(self);
+    self.clearDirItems();
     core_fs.scanDirectoryEntries(self.allocator, io, dir_path_copy, &self.dir_items) catch |err| {
         std.log.warn("Failed to scan directory '{s}': {}", .{ dir_path_copy, err });
     };
-    try rebuildDirectoryMatches(self);
-    self.selection_dirty = true;
-}
-
-fn clearDirItems(self: *PaletteState) void {
-    self.clearDirItems();
-}
-
-pub inline fn rebuildDirectoryMatches(self: *PaletteState) !void {
     try self.rebuildDirectoryMatches();
-}
-
-pub inline fn rebuildFileMatches(self: *PaletteState, image_list: []const []const u8) !void {
-    try self.rebuildFileMatches(image_list);
+    self.selection_dirty = true;
 }

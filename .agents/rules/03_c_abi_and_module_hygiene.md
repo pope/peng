@@ -71,7 +71,7 @@
   - `src/app/core/fs.zig`: Pure file system inspection & path manipulation helpers.
   - `src/app/core/exif.zig`: EXIF header parsing & orientation detection.
   - `src/app/core/image.zig`: Image MIME detection, `CacheSlotMap`, and GPU surface upload helpers.
-  - `src/app/core/palette.zig`: Palette directory loading & fuzzy match search index rebuilding.
+  - `src/app/core/palette.zig`: Palette directory loading.
   - **Core Isolation Invariant**: Code inside `src/app/core/` MUST NOT depend on ANY code in `src/app/` outside of `src/app/core/` (zero imports of `AppState`, system passes, worker tasks, or app actions).
 - **Prohibition of Proxy Re-Exports**:
   - `src/app/root.zig` MUST NOT proxy re-export top-level packages (e.g. `pub const ipc = @import("ipc");`) or `src/app/core/` sub-modules directly at the top level of `app`.
