@@ -10,6 +10,7 @@ const FrameInput = state_pkg.FrameInput;
 const AppState = app_state.AppState;
 const stopTextInput = app_state.stopTextInput;
 
+/// Processes Return key confirmation for 1-based image index input palette mode (`.go_to_image`).
 fn handlePaletteReturnGoToImage(self: *AppState, raw_str: []const u8) !void {
     if (raw_str.len > 0) {
         if (std.fmt.parseInt(usize, raw_str, 10)) |v| {
@@ -24,6 +25,7 @@ fn handlePaletteReturnGoToImage(self: *AppState, raw_str: []const u8) !void {
     }
 }
 
+/// Processes Return key confirmation for slideshow interval input palette mode (`.set_slideshow_interval`).
 fn handlePaletteReturnSlideshow(self: *AppState, raw_str: []const u8) !void {
     if (raw_str.len > 0) {
         if (std.fmt.parseFloat(f32, raw_str)) |val| {
@@ -43,6 +45,8 @@ fn handlePaletteReturnSlideshow(self: *AppState, raw_str: []const u8) !void {
     }
 }
 
+/// Processes Return key selection for directory navigator palette mode (`.directory_navigator`).
+/// Shift+Return scans the current folder; Return scans the currently highlighted subfolder entry.
 fn handlePaletteReturnDirectory(self: *AppState, mod: KeyModifiers) !void {
     const palette = &self.viewer.ui.palette;
     if (mod.shift) {
@@ -62,6 +66,10 @@ fn handlePaletteReturnDirectory(self: *AppState, mod: KeyModifiers) !void {
     }
 }
 
+/// Handles keyboard shortcut navigation keys (Escape, Up/Down, Left/Right, PageUp/PageDown, Return, Backspace)
+/// while a command palette overlay is active.
+///
+/// Returns `true` if the key was consumed by palette navigation; `false` otherwise.
 pub fn handlePaletteKeys(
     self: *AppState,
     key: Key,
@@ -205,7 +213,13 @@ pub fn handlePaletteKeys(
 const core_fs = @import("../core/fs.zig");
 
 /// System Pass: Process active Command Palette text typing, list navigation, and click-outside dismissal.
-/// Returns true if a open palette was dismissed on this frame.
+///
+/// Responsibilities:
+/// 1. Ingests text typing input characters and updates search query buffer.
+/// 2. Triggers fuzzy match filter rebuilds for active palette mode (`.files`, `.actions`, `.directory_navigator`).
+/// 3. Detects mouse left-click outside palette bounds and deactivates open command palette overlay.
+///
+/// Returns `true` if an active command palette was dismissed on this frame; `false` otherwise.
 pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
     const self = ctx.state;
     const input = ctx.input orelse return false;

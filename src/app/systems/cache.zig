@@ -9,6 +9,16 @@ const workers_mod = @import("../workers/root.zig");
 const DecodeArgs = workers_mod.DecodeArgs;
 const sdl = @import("sdl");
 
+/// Spawns an asynchronous worker task to decode an image file from disk into RAM.
+///
+/// Pre-conditions: `dup_path` must be a valid null-terminated heap string owned by the caller.
+/// On failure, `dup_path` is freed via `errdefer`.
+///
+/// Parameters:
+/// - `state`: Pointer to global application state.
+/// - `index`: Image list index being decoded.
+/// - `dup_path`: Null-terminated file path string.
+/// - `thumb_only`: If true, restricts decoding to low-resolution thumbnail for rapid scrolling.
 fn spawnCacheDecodeSlot(state: *AppState, index: usize, dup_path: [:0]const u8, thumb_only: bool) !void {
     errdefer state.allocator.free(dup_path);
 
@@ -47,8 +57,15 @@ fn spawnCacheDecodeSlot(state: *AppState, index: usize, dup_path: [:0]const u8, 
 
 const FrameContext = @import("root.zig").FrameContext;
 
-/// System function that manages RAM/GPU cache slot eviction, calculates prefetch windows
-/// (accounting for rapid navigation throttling), and spawns background image decode workers.
+/// System Pass: Update image RAM/GPU texture cache and background preloading window.
+///
+/// Responsibilities:
+/// 1. Updates EXIF orientation for active image.
+/// 2. Calculates a 5-slot prefetch window (`[idx, idx+1, idx+2, idx-1, idx-2]`).
+/// 3. Evicts slots outside prefetch window from RAM/GPU memory (`removeAndDeinit`).
+/// 4. Throttles preloading when rapid navigation (< 150ms per item) is detected.
+/// 5. Spawns background decode worker tasks for missing prefetch window entries.
+/// 6. Synchronizes `viewer.stats.current_image_cache_hit` telemetry flag.
 pub fn sysUpdateCache(ctx: FrameContext) !void {
     const state = ctx.state;
     state.updateCurrentRotation();

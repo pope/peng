@@ -44,3 +44,12 @@ ______________________________________________________________________
   - Generation state (`generation: usize`) is owned exclusively by `CacheSlotMap`.
   - Navigation/directory resets advance the generation via `_ = state.cache.advanceGeneration()`.
   - Incoming background event payloads validate their `CacheKey` generation against `state.cache.getGeneration()`. Mismatched generations are ignored to prevent stale decodes from populating active slots.
+
+______________________________________________________________________
+
+## Standardized System Docstrings
+
+- **Rule 5 — Standardized Function & System Pass Documentation (`///`)**:
+  - Every system pass entry point (`sysXxx`) must feature a standardized Zig docstring (`/// System Pass: ...`).
+  - System pass docstrings must detail numbered `Responsibilities:` (e.g. 1. Ingest input, 2. Filter matches, 3. Rebuild overlays).
+  - Internal helper functions must document `Pre-conditions:`, `Parameters:`, return value contracts, and memory ownership / `errdefer` cleanup rules.
