@@ -7,16 +7,15 @@ All system functions under `src/app/systems/` in `peng-sys` must strictly comply
 - **Rule 1 — Update Phase Execution (`runUpdatePhase`)**:
   - Systems run exclusively during Phase 2 (`runUpdatePhase`) of the 3-phase frame loop tick in `src/viewer.zig` (`Worker Ingestion` -> `Update Phase (runUpdatePhase)` -> `Render Phase`).
   - Never add out-of-band system calls inside state mutation methods (`AppState`) or input event handlers.
-  - The 9 system passes execute sequentially in deterministic order:
-    1. `sysExecuteIpcCommands(ctx)`: Ingests & dispatches IPC commands.
-    2. `sysProcessInput(ctx)`: Maps keyboard input to intents.
-    3. `sysExecuteIntents(ctx)`: Drains IPC & keyboard intents.
-    4. `sysProcessPaletteInput(ctx)`: Handles command palette query & selection.
-    5. `sysUpdateViewport(ctx, palette_closed)` & `sysUpdateSlideshow(ctx)`: Updates motion/timers.
-    6. `sysExecuteIntents(ctx)`: Drains remaining palette & slideshow intents.
-    7. `sysProcessAssetUploads(ctx)`: Performs EXIF orientation & GPU texture uploads.
-    8. `sysUpdateCache(ctx)`: Manages slot eviction, decodes & performs idle neighbor preloading.
-    9. `sysSyncMetrics(ctx)`: Synchronizes telemetry & stats for Nerds overlay.
+  - The system passes execute sequentially in deterministic order:
+    1. `sysExecuteIpcCommands(ctx)`: Ingests & dispatches IPC socket commands -> `pending_intents`.
+    2. `sysProcessInput(ctx)`: Maps keyboard input -> `pending_intents`.
+    3. `sysProcessPaletteInput(ctx)`: Handles command palette query & selection -> `pending_intents`.
+    4. `sysUpdateViewport(ctx, palette_closed)` & `sysUpdateSlideshow(ctx)`: Updates motion/timers -> `pending_intents`.
+    5. `sysExecuteIntents(ctx)`: Single-pass execution of all enqueued discrete intents.
+    6. `sysProcessAssetUploads(ctx)`: Performs EXIF orientation & GPU texture uploads.
+    7. `sysUpdateCache(ctx)`: Manages slot eviction, decodes & performs idle neighbor preloading.
+    8. `sysSyncMetrics(ctx)`: Synchronizes telemetry & stats for Nerds overlay.
 
 ______________________________________________________________________
 

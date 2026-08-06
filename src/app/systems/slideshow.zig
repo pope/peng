@@ -7,6 +7,6 @@ const FrameContext = @import("root.zig").FrameContext;
 pub fn sysUpdateSlideshow(ctx: FrameContext) !void {
     const state = ctx.state;
     if (state.viewer.navigation.slideshow.tick(@floatCast(ctx.delta_time_ms))) {
-        try state.next();
+        try state.pushIntent(.next_image);
     }
 }

@@ -34,7 +34,7 @@
 - UI buttons, menu items, keyboard shortcuts, and IPC socket commands MUST map directly to high-level `intents.AppIntent` payloads from the standalone `intents` module (`src/intents/root.zig`).
 - UI inputs MUST NOT execute state mutations inline; they push `AppIntent` values into `AppState.pending_intents` via `state.pushIntent(intent)`.
 - `pending_intents` is an allocation-free `std.ArrayList(AppIntent)` cleared frame-over-frame using `.clearRetainingCapacity()`.
-- Intent execution logic is co-located inside `src/app/actions.zig` (`executeIntent`), operating directly against `*AppState` without needing an isolated top-level `commands` package.
+- Intent execution logic is co-located inside `src/app/systems/intents.zig` (`executeIntent`), operating directly against domain sub-states (`vp`, `nav`, `ui`) without needing forwarding wrappers on `AppState`.
 
 ## 7. Decoupled Data-Driven Input & System Passes
 

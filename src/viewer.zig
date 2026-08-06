@@ -29,32 +29,29 @@ pub fn runUpdatePhase(
         .delta_time_ms = input.delta_time_ms,
     };
 
-    // 1. Socket Command Ingestion System (parses IPC commands -> pending_intents)
+    // Socket Command Ingestion System (parses IPC commands -> pending_intents)
     app.systems.sysExecuteIpcCommands(ctx);
 
-    // 2. Keyboard Input System (maps keypresses -> pending_intents)
+    // Keyboard Input System (maps keypresses -> pending_intents)
     try app.systems.sysProcessInput(ctx);
 
-    // 3. Execute Ingested Intents (IPC + Keyboard intents)
-    try app.systems.sysExecuteIntents(ctx);
-
-    // 4. Command Palette Input System (typing query updates, selection, click-outside)
+    // Command Palette Input System (typing query updates, selection, click-outside)
     const palette_closed_this_frame = try app.systems.sysProcessPaletteInput(ctx);
 
-    // 5. Viewport & Motion Systems (mouse drag/zoom & slideshow timer)
+    // Viewport & Motion Systems (mouse drag/zoom & slideshow timer)
     app.systems.sysUpdateViewport(ctx, palette_closed_this_frame);
     try app.systems.sysUpdateSlideshow(ctx);
 
-    // 6. Execute Remaining Intents (Palette & Slideshow intents)
+    // Execute All Ingested & Generated Intents (IPC, Keyboard, Palette & Slideshow intents)
     try app.systems.sysExecuteIntents(ctx);
 
-    // 7. Asset Upload & Texture Pipeline System
+    // Asset Upload & Texture Pipeline System
     app.systems.sysProcessAssetUploads(ctx);
 
-    // 8. Cache Slot Management System (evicts slots & spawns prefetch workers)
+    // Cache Slot Management System (evicts slots & spawns prefetch workers)
     app.systems.sysUpdateCache(ctx) catch |err| std.log.err("Failed to update cache: {}", .{err});
 
-    // 9. Metrics & Telemetry System
+    // Metrics & Telemetry System
     app.systems.sysSyncMetrics(ctx);
 }
 
