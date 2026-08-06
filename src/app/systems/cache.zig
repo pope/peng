@@ -151,7 +151,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
                     if (!dec.has_thread) {
                         if (to_spawn_count < 5) {
                             to_spawn_indices[to_spawn_count] = d;
-                            to_spawn_paths[to_spawn_count] = try state.allocator.dupeZ(u8, state.viewer.navigation.image_list.items[d]);
+                            to_spawn_paths[to_spawn_count] = try ctx.frame_allocator.dupeZ(u8, state.viewer.navigation.image_list.items[d]);
                             to_spawn_count += 1;
                         }
                     }
@@ -165,12 +165,13 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
     // 4. Spawn worker threads
     for (to_spawn_indices[0..to_spawn_count], 0..) |d, s_idx| {
         const path_opt = to_spawn_paths[s_idx];
-        if (path_opt == null or !state.workers.canSpawnDecode()) {
-            if (path_opt) |p| state.allocator.free(p);
-            continue;
-        }
+        if (path_opt == null or !state.workers.canSpawnDecode()) continue;
 
-        const dup_path = path_opt.?;
+        const path = path_opt.?;
+        const dup_path = state.allocator.dupeZ(u8, path) catch |err| {
+            std.log.err("Failed to dupe path for decode worker: {}", .{err});
+            continue;
+        };
         spawnCacheDecodeSlot(state, d, dup_path, is_fast_scrolling) catch |err| {
             std.log.err("Failed to spawn decode worker for index {}: {}", .{ d, err });
         };
