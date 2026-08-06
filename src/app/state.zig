@@ -353,15 +353,6 @@ pub const AppState = struct {
         };
         self.viewer.ui.palette.selection_dirty = true;
 
-        const max_capacity = switch (active_type) {
-            .files => self.viewer.navigation.image_list.items.len,
-            .actions => types.palette_action_items.len,
-            else => 0,
-        };
-        if (max_capacity > 0) {
-            try self.viewer.ui.palette.matches.ensureTotalCapacity(self.allocator, max_capacity);
-        }
-
         switch (active_type) {
             .files => try self.rebuildPaletteMatches(),
             .actions => try self.rebuildActionMatches(),
