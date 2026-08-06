@@ -2,20 +2,12 @@ const std = @import("std");
 const state_pkg = @import("state");
 const DirectoryEntry = state_pkg.DirectoryEntry;
 
-pub fn eqlIgnoreCase(a: []const u8, b: []const u8) bool {
-    if (a.len != b.len) return false;
-    for (a, 0..) |char_a, index| {
-        if (std.ascii.toLower(char_a) != std.ascii.toLower(b[index])) return false;
-    }
-    return true;
-}
-
 pub fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
     if (needle.len == 0) return true;
     if (haystack.len < needle.len) return false;
     var i: usize = 0;
     while (i <= haystack.len - needle.len) : (i += 1) {
-        if (eqlIgnoreCase(haystack[i .. i + needle.len], needle)) return true;
+        if (std.ascii.eqlIgnoreCase(haystack[i .. i + needle.len], needle)) return true;
     }
     return false;
 }
@@ -28,7 +20,7 @@ pub fn isAppleDouble(filename: []const u8) bool {
 pub fn isImageExtension(ext: []const u8) bool {
     const extensions = [_][]const u8{ ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tga", ".webp" };
     for (extensions) |e| {
-        if (eqlIgnoreCase(ext, e)) return true;
+        if (std.ascii.eqlIgnoreCase(ext, e)) return true;
     }
     return false;
 }
@@ -139,6 +131,9 @@ pub fn scanDirectoryEntries(gpa: std.mem.Allocator, io: std.Io, dir_path: []cons
         }
         entries.shrinkRetainingCapacity(start_len);
     }
+
+    // Reserve initial unused capacity for up to 32 subfolder entries to avoid heap reallocation churn during directory scanning.
+    try entries.ensureUnusedCapacity(gpa, 32);
 
     var dir = try std.Io.Dir.openDir(std.Io.Dir.cwd(), io, dir_path, .{ .iterate = true });
     defer dir.close(io);

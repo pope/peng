@@ -1,6 +1,5 @@
 const std = @import("std");
 const sdl = @import("sdl");
-const core_fs = @import("fs.zig");
 const state_pkg = @import("state");
 const exif = @import("exif.zig");
 
@@ -190,12 +189,12 @@ pub fn detectMimeType(header: []const u8, path: []const u8) []const u8 {
     }
 
     const ext = std.fs.path.extension(path);
-    if (core_fs.eqlIgnoreCase(ext, ".png")) return "image/png";
-    if (core_fs.eqlIgnoreCase(ext, ".jpg") or core_fs.eqlIgnoreCase(ext, ".jpeg")) return "image/jpeg";
-    if (core_fs.eqlIgnoreCase(ext, ".gif")) return "image/gif";
-    if (core_fs.eqlIgnoreCase(ext, ".bmp")) return "image/bmp";
-    if (core_fs.eqlIgnoreCase(ext, ".webp")) return "image/webp";
-    if (core_fs.eqlIgnoreCase(ext, ".tga")) return "image/x-tga";
+    if (std.ascii.eqlIgnoreCase(ext, ".png")) return "image/png";
+    if (std.ascii.eqlIgnoreCase(ext, ".jpg") or std.ascii.eqlIgnoreCase(ext, ".jpeg")) return "image/jpeg";
+    if (std.ascii.eqlIgnoreCase(ext, ".gif")) return "image/gif";
+    if (std.ascii.eqlIgnoreCase(ext, ".bmp")) return "image/bmp";
+    if (std.ascii.eqlIgnoreCase(ext, ".webp")) return "image/webp";
+    if (std.ascii.eqlIgnoreCase(ext, ".tga")) return "image/x-tga";
 
     return "unknown";
 }
