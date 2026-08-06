@@ -11,120 +11,116 @@ const KeyModifiers = state.KeyModifiers;
 const AppState = app_state.AppState;
 const startTextInput = app_state.startTextInput;
 
-/// Central intent dispatcher. Maps an AppIntent variant to application state mutations
-/// and marks the application state dirty for re-rendering.
+/// Central intent dispatcher. Maps an AppIntent variant to domain state mutations.
 fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
+    const vp = &self.viewer.viewport;
+    const nav = &self.viewer.navigation;
+    const ui = &self.viewer.ui;
+
     switch (intent) {
-        .set_zoom => |factor| self.setZoom(factor),
+        .set_zoom => |factor| vp.zoom_factor = self.clampZoomFactor(factor),
         .zoom_in => {
-            const old_zoom = self.viewer.viewport.zoom_factor;
-            self.viewer.viewport.zoom_factor = self.clampZoomFactor(old_zoom.get() + 0.5);
-            const ratio = old_zoom.ratioTo(self.viewer.viewport.zoom_factor);
-            self.viewer.viewport.pan_x *= ratio;
-            self.viewer.viewport.pan_y *= ratio;
+            const old_zoom = vp.zoom_factor;
+            vp.zoom_factor = self.clampZoomFactor(old_zoom.get() + 0.5);
+            const ratio = old_zoom.ratioTo(vp.zoom_factor);
+            vp.pan_x *= ratio;
+            vp.pan_y *= ratio;
         },
         .zoom_out => {
-            const old_zoom = self.viewer.viewport.zoom_factor;
-            self.viewer.viewport.zoom_factor = self.clampZoomFactor(old_zoom.get() - 0.5);
-            const ratio = old_zoom.ratioTo(self.viewer.viewport.zoom_factor);
-            self.viewer.viewport.pan_x *= ratio;
-            self.viewer.viewport.pan_y *= ratio;
+            const old_zoom = vp.zoom_factor;
+            vp.zoom_factor = self.clampZoomFactor(old_zoom.get() - 0.5);
+            const ratio = old_zoom.ratioTo(vp.zoom_factor);
+            vp.pan_x *= ratio;
+            vp.pan_y *= ratio;
         },
-        .set_pan => |p| self.setPan(p.x, p.y),
-        .pan_by => |p| {
-            self.viewer.viewport.pan_x += p.dx;
-            self.viewer.viewport.pan_y += p.dy;
-        },
-        .reset_zoom => self.resetZoomPan(),
+        .set_pan => |p| vp.setPan(p.x, p.y),
+        .pan_by => |p| vp.panBy(p.dx, p.dy),
+        .reset_zoom => vp.reset(),
         .set_scale => |mode| {
-            self.viewer.viewport.fit_mode = mode;
-            self.resetZoomPan();
+            vp.fit_mode = mode;
+            vp.reset();
         },
-        .set_filter => |mode| self.viewer.viewport.scale_filter = mode,
-        .set_brightness => |val| self.setAdjustments(val, self.viewer.viewport.contrast),
-        .increase_brightness => self.viewer.viewport.brightness = std.math.clamp(self.viewer.viewport.brightness + 0.1, -1.0, 1.0),
-        .decrease_brightness => self.viewer.viewport.brightness = std.math.clamp(self.viewer.viewport.brightness - 0.1, -1.0, 1.0),
-        .set_contrast => |val| self.setAdjustments(self.viewer.viewport.brightness, val),
-        .increase_contrast => self.viewer.viewport.contrast = std.math.clamp(self.viewer.viewport.contrast + 0.1, 0.0, 5.0),
-        .decrease_contrast => self.viewer.viewport.contrast = std.math.clamp(self.viewer.viewport.contrast - 0.1, 0.0, 5.0),
-        .reset_adjustments => self.setAdjustments(0.0, 1.0),
+        .set_filter => |mode| vp.scale_filter = mode,
+        .set_brightness => |val| vp.setAdjustments(val, vp.contrast),
+        .increase_brightness => vp.adjustBrightness(0.1),
+        .decrease_brightness => vp.adjustBrightness(-0.1),
+        .set_contrast => |val| vp.setAdjustments(vp.brightness, val),
+        .increase_contrast => vp.adjustContrast(0.1),
+        .decrease_contrast => vp.adjustContrast(-0.1),
+        .reset_adjustments => vp.setAdjustments(0.0, 1.0),
         .rotate_cw => {
-            var val = self.viewer.viewport.rotation_angle + 90.0;
-            if (val >= 360.0) val -= 360.0;
-            self.viewer.viewport.rotation_angle = val;
-            if (self.viewer.navigation.getCurrentImagePath()) |path| {
-                try self.putRotation(path, self.viewer.viewport.rotation_angle);
+            vp.rotateCw();
+            if (nav.getCurrentImagePath()) |path| {
+                try self.putRotation(path, vp.rotation_angle);
             }
         },
         .rotate_ccw => {
-            var val = self.viewer.viewport.rotation_angle - 90.0;
-            if (val < 0.0) val += 360.0;
-            self.viewer.viewport.rotation_angle = val;
-            if (self.viewer.navigation.getCurrentImagePath()) |path| {
-                try self.putRotation(path, self.viewer.viewport.rotation_angle);
+            vp.rotateCcw();
+            if (nav.getCurrentImagePath()) |path| {
+                try self.putRotation(path, vp.rotation_angle);
             }
         },
         .reset_rotation => {
-            if (self.viewer.navigation.getCurrentImagePath()) |path| {
+            if (nav.getCurrentImagePath()) |path| {
                 const exif_rot = self.readJpegExifOrientation(path) orelse 0.0;
-                self.viewer.viewport.rotation_angle = exif_rot;
-                try self.putRotation(path, self.viewer.viewport.rotation_angle);
+                vp.rotation_angle = exif_rot;
+                try self.putRotation(path, vp.rotation_angle);
             } else {
-                self.viewer.viewport.rotation_angle = 0.0;
+                vp.rotation_angle = 0.0;
             }
         },
 
         .next_image => {
-            self.resetZoomPan();
-            try self.next();
+            vp.reset();
+            _ = nav.nextIndex();
         },
         .prev_image => {
-            self.resetZoomPan();
-            try self.prev();
+            vp.reset();
+            _ = nav.prevIndex();
         },
         .first_image => {
-            if (self.viewer.navigation.goToIndex(0) != null) {
-                self.resetZoomPan();
+            if (nav.goToIndex(0) != null) {
+                vp.reset();
             }
         },
         .last_image => {
-            if (self.viewer.navigation.image_list.items.len > 0) {
-                _ = self.viewer.navigation.goToIndex(self.viewer.navigation.image_list.items.len - 1);
-                self.resetZoomPan();
+            if (nav.image_list.items.len > 0) {
+                _ = nav.goToIndex(nav.image_list.items.len - 1);
+                vp.reset();
             }
         },
         .go_to_image => |idx| {
-            if (self.viewer.navigation.goToIndex(idx) != null) {
-                self.resetZoomPan();
+            if (nav.goToIndex(idx) != null) {
+                vp.reset();
             }
         },
         .set_palette => |p| {
             if (p.mode == .inactive) {
-                self.setPaletteMode(.inactive);
+                ui.palette.mode = .inactive;
             } else {
                 if (p.mode == .directory_navigator and p.query != null) {
-                    try palette_module.loadDirectoryEntries(&self.viewer.ui.palette, self.io, p.query.?);
-                    self.setPaletteMode(.directory_navigator);
+                    try palette_module.loadDirectoryEntries(&ui.palette, self.io, p.query.?);
+                    ui.palette.mode = .directory_navigator;
                 } else {
                     try self.openPalette(p.mode);
                     if (p.query) |q| {
-                        self.viewer.ui.palette.query.clearRetainingCapacity();
-                        try self.viewer.ui.palette.query.appendSlice(self.allocator, q);
-                        self.viewer.ui.palette.selected_idx = 0;
-                        self.viewer.ui.palette.selection_dirty = true;
-                        if (self.viewer.ui.palette.mode == .actions) {
+                        ui.palette.query.clearRetainingCapacity();
+                        try ui.palette.query.appendSlice(self.allocator, q);
+                        ui.palette.selected_idx = 0;
+                        ui.palette.selection_dirty = true;
+                        if (ui.palette.mode == .actions) {
                             try self.rebuildActionMatches();
-                        } else if (self.viewer.ui.palette.mode == .files) {
+                        } else if (ui.palette.mode == .files) {
                             try self.rebuildPaletteMatches();
                         }
                     }
                 }
             }
         },
-        .toggle_info => self.viewer.ui.overlays.show_info = !self.viewer.ui.overlays.show_info,
-        .set_info => |val| self.viewer.ui.overlays.show_info = val,
-        .toggle_stats => self.viewer.ui.overlays.show_stats = !self.viewer.ui.overlays.show_stats,
-        .set_stats => |val| self.viewer.ui.overlays.show_stats = val,
+        .toggle_info => ui.overlays.show_info = !ui.overlays.show_info,
+        .set_info => |val| ui.overlays.show_info = val,
+        .toggle_stats => ui.overlays.show_stats = !ui.overlays.show_stats,
+        .set_stats => |val| ui.overlays.show_stats = val,
         .toggle_fullscreen => {
             switch (self.viewer.display) {
                 .headless => {},
@@ -145,11 +141,11 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
         },
         .toggle_debug_mode => clay.setDebugModeEnabled(!clay.isDebugModeEnabled()),
         .set_debug_mode => |val| clay.setDebugModeEnabled(val),
-        .toggle_debug_thumb => try self.setDebugShowThumb(!self.viewer.ui.overlays.debug_show_thumb),
+        .toggle_debug_thumb => try self.setDebugShowThumb(!ui.overlays.debug_show_thumb),
         .set_debug_thumb => |val| try self.setDebugShowThumb(val),
         .start_slideshow => try self.openPalette(.set_slideshow_interval),
-        .stop_slideshow => self.viewer.navigation.slideshow = .inactive,
-        .quit => self.requestQuit(),
+        .stop_slideshow => nav.slideshow = .inactive,
+        .quit => self.viewer.running = false,
     }
 }
 

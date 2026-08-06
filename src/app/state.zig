@@ -543,32 +543,6 @@ pub const AppState = struct {
             },
         }
     }
-
-    pub fn setZoom(self: *AppState, factor: f32) void {
-        self.viewer.viewport.zoom_factor = self.clampZoomFactor(factor);
-    }
-
-    pub fn setPan(self: *AppState, px: f32, py: f32) void {
-        self.viewer.viewport.pan_x = px;
-        self.viewer.viewport.pan_y = py;
-    }
-
-    pub fn setAdjustments(self: *AppState, br: f32, co: f32) void {
-        self.viewer.viewport.brightness = std.math.clamp(br, -1.0, 1.0);
-        self.viewer.viewport.contrast = std.math.clamp(co, 0.0, 5.0);
-    }
-
-    pub fn setTextureScaleMode(self: *AppState, mode: TextureScaleMode) void {
-        self.viewer.viewport.texture_scale_mode = mode;
-    }
-
-    pub fn setPaletteMode(self: *AppState, mode: PaletteMode) void {
-        self.viewer.ui.palette.mode = mode;
-    }
-
-    pub fn requestQuit(self: *AppState) void {
-        self.viewer.running = false;
-    }
 };
 
 test "matchesQueryLower bounds check" {

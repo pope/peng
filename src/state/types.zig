@@ -127,6 +127,41 @@ pub const ViewportParams = struct {
         self.pan_y = 0.0;
     }
 
+    pub fn setPan(self: *ViewportParams, px: f32, py: f32) void {
+        self.pan_x = px;
+        self.pan_y = py;
+    }
+
+    pub fn panBy(self: *ViewportParams, dx: f32, dy: f32) void {
+        self.pan_x += dx;
+        self.pan_y += dy;
+    }
+
+    pub fn setAdjustments(self: *ViewportParams, br: f32, co: f32) void {
+        self.brightness = std.math.clamp(br, -1.0, 1.0);
+        self.contrast = std.math.clamp(co, 0.0, 5.0);
+    }
+
+    pub fn adjustBrightness(self: *ViewportParams, delta: f32) void {
+        self.brightness = std.math.clamp(self.brightness + delta, -1.0, 1.0);
+    }
+
+    pub fn adjustContrast(self: *ViewportParams, delta: f32) void {
+        self.contrast = std.math.clamp(self.contrast + delta, 0.0, 5.0);
+    }
+
+    pub fn rotateCw(self: *ViewportParams) void {
+        var val = self.rotation_angle + 90.0;
+        if (val >= 360.0) val -= 360.0;
+        self.rotation_angle = val;
+    }
+
+    pub fn rotateCcw(self: *ViewportParams) void {
+        var val = self.rotation_angle - 90.0;
+        if (val < 0.0) val += 360.0;
+        self.rotation_angle = val;
+    }
+
     pub fn getShaderScaleModeInt(self: ViewportParams) i32 {
         const f = if (self.scale_filter != .linear) self.scale_filter else self.texture_scale_mode;
         return switch (f) {
