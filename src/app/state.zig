@@ -212,9 +212,6 @@ pub const AppState = struct {
     pub fn deinit(self: *AppState) void {
         self.workers.drainAndQuiesce(self.io);
 
-        const dev_opt = self.gpu_device;
-        self.cache.clear(dev_opt);
-
         if (self.gpu_device) |dev| {
             switch (self.viewer.display) {
                 .headless => {},
@@ -397,7 +394,9 @@ pub const AppState = struct {
             cpu: @TypeOf(@as(CacheStatus, undefined).loaded_cpu),
         } = null;
 
-        for (self.cache.entries.items, self.cache.keys.items) |*entry, key| {
+        const entries = self.cache.slots.items(.entry);
+        const keys = self.cache.slots.items(.key);
+        for (entries, keys) |*entry, key| {
             if (entry.status == .loaded_gpu and !self.viewer.ui.overlays.debug_show_thumb) {
                 switch (entry.thumbnail) {
                     .loaded => |thumb| {

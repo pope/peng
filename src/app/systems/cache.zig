@@ -87,8 +87,9 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
 
     // 2. Evict cache entries that are no longer wanted
     var i: usize = 0;
-    while (i < state.cache.entries.items.len) {
-        const key = state.cache.keys.items[i];
+    while (i < state.cache.count()) {
+        const keys = state.cache.slots.items(.key);
+        const key = keys[i];
         var wanted = false;
         for (desired[0..desired_count]) |d| {
             if (key.index == d) {
@@ -166,7 +167,7 @@ test "sysUpdateCache - empty image list" {
 
     const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
     try sysUpdateCache(ctx);
-    try std.testing.expectEqual(@as(usize, 0), state.cache.entries.items.len);
+    try std.testing.expectEqual(@as(usize, 0), state.cache.count());
 }
 
 test "sysUpdateCache - populates prefetch window and evicts unwanted entries" {
@@ -190,7 +191,7 @@ test "sysUpdateCache - populates prefetch window and evicts unwanted entries" {
     }, .{
         .status = .{ .failed = {} },
     });
-    try std.testing.expectEqual(@as(usize, 1), state.cache.entries.items.len);
+    try std.testing.expectEqual(@as(usize, 1), state.cache.count());
 
     const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
     try sysUpdateCache(ctx);

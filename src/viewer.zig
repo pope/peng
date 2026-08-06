@@ -86,7 +86,7 @@ pub fn updateFrame(
     const has_unpopulated_cache = blk: {
         const len = app_state.viewer.navigation.image_list.items.len;
         if (len <= 1) break :blk false;
-        break :blk (app_state.cache.entries.items.len < @min(5, len));
+        break :blk (app_state.cache.count() < @min(5, len));
     };
     const cur_win_size = window.getSize();
     const cur_win_w = @as(f32, @floatFromInt(cur_win_size.w));

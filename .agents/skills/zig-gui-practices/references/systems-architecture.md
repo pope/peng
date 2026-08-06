@@ -38,7 +38,8 @@ ______________________________________________________________________
 
 ## CacheSlotMap & Generation Ownership
 
-- **Rule 4 — Cache Slot Generation Ownership**:
-  - Generation state (`generation: usize`) is owned exclusively by `CacheSlotMap` (`state.cache` in `src/app/core/image.zig`).
+- **Rule 4 — Cache Slot Generation Ownership & Structure**:
+  - `CacheSlotMap` (`state.cache` in `src/app/core/image.zig`) uses Zig's `std.MultiArrayList(CacheSlot)` for Structure-of-Arrays (SoA) memory layout, allowing key scanning without cache-line pollution while mutating key and entry slices atomically.
+  - Generation state (`generation: usize`) is owned exclusively by `CacheSlotMap`.
   - Navigation/directory resets advance the generation via `_ = state.cache.advanceGeneration()`.
   - Incoming background event payloads validate their `CacheKey` generation against `state.cache.getGeneration()`. Mismatched generations are ignored to prevent stale decodes from populating active slots.

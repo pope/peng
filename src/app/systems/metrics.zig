@@ -10,7 +10,7 @@ pub fn sysSyncMetrics(ctx: FrameContext) void {
     state.viewer.stats.thumb_misses = state.workers.thumb_misses.load(.acquire);
     state.viewer.stats.active_worker_threads = state.workers.active_threads.load(.acquire);
     state.viewer.stats.active_decode_threads = state.workers.active_decode_threads.load(.acquire);
-    state.viewer.stats.cached_slot_count = state.cache.entries.items.len;
+    state.viewer.stats.cached_slot_count = state.cache.count();
     state.viewer.stats.total_vram_bytes = state.cache.getTotalVramBytes();
 
     if (state.getCurrentEntry()) |entry| {

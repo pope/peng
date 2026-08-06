@@ -21,9 +21,13 @@ pub const CacheKey = struct {
 };
 pub const TextureHandle = CacheKey;
 
+pub const CacheSlot = struct {
+    key: CacheKey,
+    entry: CacheEntry,
+};
+
 pub const CacheSlotMap = struct {
-    keys: std.ArrayList(CacheKey) = .empty,
-    entries: std.ArrayList(CacheEntry) = .empty,
+    slots: std.MultiArrayList(CacheSlot) = .{},
     generation: usize = 0,
 
     pub fn advanceGeneration(self: *CacheSlotMap) usize {
@@ -39,36 +43,40 @@ pub const CacheSlotMap = struct {
         return .{ .index = index, .generation = self.generation };
     }
 
+    pub fn count(self: *const CacheSlotMap) usize {
+        return self.slots.len;
+    }
+
     pub fn deinit(self: *CacheSlotMap, allocator: std.mem.Allocator, gpu_device: ?sdl.gpu.Device) void {
-        for (self.entries.items) |*entry| {
+        const entries = self.slots.items(.entry);
+        for (entries) |*entry| {
             entry.deinit(gpu_device);
         }
-        self.keys.deinit(allocator);
-        self.entries.deinit(allocator);
+        self.slots.deinit(allocator);
     }
 
     pub fn clear(self: *CacheSlotMap, gpu_device: ?sdl.gpu.Device) void {
-        for (self.entries.items) |*entry| {
+        const entries = self.slots.items(.entry);
+        for (entries) |*entry| {
             entry.deinit(gpu_device);
         }
-        self.keys.clearRetainingCapacity();
-        self.entries.clearRetainingCapacity();
+        self.slots.clearRetainingCapacity();
     }
 
     pub fn clearRetainingCapacity(self: *CacheSlotMap) void {
-        self.keys.clearRetainingCapacity();
-        self.entries.clearRetainingCapacity();
+        self.slots.clearRetainingCapacity();
     }
 
     pub fn getIndex(self: *const CacheSlotMap, key: CacheKey) ?usize {
-        for (self.keys.items, 0..) |k, i| {
+        const keys = self.slots.items(.key);
+        for (keys, 0..) |k, i| {
             if (k.index == key.index and k.generation == key.generation) return i;
         }
         return null;
     }
 
     pub fn get(self: *CacheSlotMap, key: CacheKey) ?*CacheEntry {
-        if (self.getIndex(key)) |i| return &self.entries.items[i];
+        if (self.getIndex(key)) |i| return &self.slots.items(.entry)[i];
         return null;
     }
 
@@ -102,21 +110,17 @@ pub const CacheSlotMap = struct {
 
     pub fn appendSlot(self: *CacheSlotMap, allocator: std.mem.Allocator, index: usize, status: CacheStatus) !CacheKey {
         const key = CacheKey{ .index = index, .generation = self.generation };
-        try self.keys.append(allocator, key);
-        errdefer _ = self.keys.pop();
-        try self.entries.append(allocator, .{ .status = status });
+        try self.slots.append(allocator, .{ .key = key, .entry = .{ .status = status } });
         return key;
     }
 
     pub fn appendWithKey(self: *CacheSlotMap, allocator: std.mem.Allocator, key: CacheKey, entry: CacheEntry) !void {
-        try self.keys.append(allocator, key);
-        errdefer _ = self.keys.pop();
-        try self.entries.append(allocator, entry);
+        try self.slots.append(allocator, .{ .key = key, .entry = entry });
     }
 
     pub fn removeAndDeinit(self: *CacheSlotMap, index_in_list: usize, gpu_device: ?sdl.gpu.Device) void {
-        _ = self.keys.orderedRemove(index_in_list);
-        var entry = self.entries.orderedRemove(index_in_list);
+        var entry = self.slots.items(.entry)[index_in_list];
+        self.slots.swapRemove(index_in_list);
         entry.deinit(gpu_device);
     }
 
@@ -124,7 +128,8 @@ pub const CacheSlotMap = struct {
 
     pub fn getTotalVramBytes(self: *const CacheSlotMap) usize {
         var total: usize = 0;
-        for (self.entries.items) |entry| {
+        const entries = self.slots.items(.entry);
+        for (entries) |entry| {
             switch (entry.status) {
                 .loaded_gpu => |gpu| total += gpu.memory_size_bytes,
                 else => {},
@@ -135,17 +140,18 @@ pub const CacheSlotMap = struct {
 
     pub fn enforceVramBudget(self: *CacheSlotMap, gpu_device: ?sdl.gpu.Device, current_index: ?usize, max_bytes: usize) void {
         while (self.getTotalVramBytes() > max_bytes) {
+            const entries = self.slots.items(.entry);
+            const keys = self.slots.items(.key);
             var max_dist: usize = 0;
             var victim_idx: ?usize = null;
 
-            for (self.entries.items, 0..) |entry, i| {
+            for (entries, keys, 0..) |entry, key, i| {
                 if (entry.status == .loaded_gpu) {
-                    const key = self.keys.items[i];
                     if (current_index) |cur| {
                         if (key.index == cur) continue;
                         const dist = if (key.index > cur) key.index - cur else cur - key.index;
                         // Protect immediate neighbors (dist <= 2) if possible
-                        if (dist <= 2 and self.entries.items.len <= 5) continue;
+                        if (dist <= 2 and self.slots.len <= 5) continue;
                         if (dist >= max_dist) {
                             max_dist = dist;
                             victim_idx = i;
@@ -209,7 +215,7 @@ test "CacheSlotMap.updateStatus" {
     // Test successful update
     const updated = cache.updateStatus(.{ .index = 20, .generation = 1 }, .failed);
     try std.testing.expect(updated);
-    try std.testing.expectEqual(CacheStatus.failed, cache.entries.items[1].status);
+    try std.testing.expectEqual(CacheStatus.failed, cache.slots.items(.entry)[1].status);
 
     // Test updating non-existent index
     const updated_missing = cache.updateStatus(.{ .index = 30, .generation = 1 }, .failed);
