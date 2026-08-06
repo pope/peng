@@ -12,10 +12,15 @@ pub const NavigationState = struct {
     last_scanned_dir: std.ArrayList(u8) = .empty,
     directory_arena: std.heap.ArenaAllocator,
 
-    pub fn init(allocator: std.mem.Allocator) NavigationState {
-        return .{
+    pub fn init(allocator: std.mem.Allocator) !NavigationState {
+        var self = NavigationState{
             .directory_arena = std.heap.ArenaAllocator.init(allocator),
         };
+        // 32 image path pointers: avoids reallocations when loading CLI args or medium-sized directory lists
+        try self.image_list.ensureTotalCapacity(allocator, 32);
+        // 128 bytes: accommodates standard file directory path strings (most paths are < 128 bytes)
+        try self.last_scanned_dir.ensureTotalCapacity(allocator, 128);
+        return self;
     }
 
     pub fn deinit(self: *NavigationState, allocator: std.mem.Allocator) void {

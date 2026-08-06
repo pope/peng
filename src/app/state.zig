@@ -136,12 +136,23 @@ pub const AppState = struct {
     pending_intents: std.ArrayList(AppIntent) = .empty,
 
     pub fn initHeadless(allocator: std.mem.Allocator, io: std.Io) !AppState {
-        return AppState{
-            .viewer = ViewerState.initHeadless(allocator),
+        var state = AppState{
+            .viewer = try ViewerState.initHeadless(allocator),
             .cache = .{},
             .allocator = allocator,
             .io = io,
         };
+        try state.ensureInitialCapacities();
+        return state;
+    }
+
+    pub fn ensureInitialCapacities(self: *AppState) !void {
+        // 16 intents: accommodates worst-case enqueued IPC, keyboard, palette, and slideshow intents in a single tick
+        try self.pending_intents.ensureTotalCapacity(self.allocator, 16);
+        // 16 events: accommodates concurrent worker background events (decodes, EXIF, path scans) processed per tick
+        try self.event_batch.ensureTotalCapacity(self.allocator, 16);
+        // 8 commands: accommodates queued socket IPC command buffers
+        try self.pending_ipc_commands.ensureTotalCapacity(self.allocator, 8);
     }
 
     pub fn pushIntent(self: *AppState, intent: AppIntent) !void {

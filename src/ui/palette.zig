@@ -918,7 +918,7 @@ test "renderHighlightedText whitespace boundary handling" {
 }
 
 test "partitionHighlightedText filterh query on Set Scaling Filter: Bilinear (Smooth)" {
-    var palette = PaletteState.init(std.testing.allocator);
+    var palette = try PaletteState.init(std.testing.allocator);
     defer palette.deinit();
 
     const searcher = try palette.getSearcher(64, 16);
@@ -1013,7 +1013,7 @@ test "partitionHighlightedText edge cases" {
 }
 
 test "PaletteState directory_navigator mode configuration and item matching" {
-    var palette = PaletteState.init(std.testing.allocator);
+    var palette = try PaletteState.init(std.testing.allocator);
     defer palette.deinit();
 
     palette.mode = .directory_navigator;

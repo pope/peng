@@ -21,9 +21,11 @@ ______________________________________________________________________
 
 ## Frame Context & Memory Lifetimes
 
-- **Rule 2 — Frame Arena Lifetimes (`FrameContext`)**:
+- **Rule 2 — Frame Arena Lifetimes & Capacity Pre-allocation (`FrameContext`)**:
   - Every system function signature accepts `ctx: FrameContext` containing `state: *AppState`, `frame_allocator: Allocator`, `input: FrameInput`, and `delta_time_ms: f32`.
   - Systems must use `ctx.frame_allocator` for transient frame-bound allocations (such as string duping for enqueued intents). Memory allocated with `frame_allocator` automatically resets at frame boundaries.
+  - **Dynamic Array Pre-allocation**: State constructors returning error unions (`NavigationState.init`, `PaletteState.init`, `AppState.ensureInitialCapacities`) use `try self.xxx.ensureTotalCapacity(allocator, N)` to reserve capacity upfront during initialization with explicit rationale comments explaining chosen capacities.
+  - **Capacity Retention**: Interactive reset methods (`clearIntents()`, `PaletteState.reset()`, `clearDirItems()`) must use `clearRetainingCapacity()` to prevent runtime heap reallocation churn during UI update passes.
 
 ______________________________________________________________________
 

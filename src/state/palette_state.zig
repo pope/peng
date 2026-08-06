@@ -128,8 +128,8 @@ pub const PaletteState = struct {
         };
     }
 
-    pub fn init(allocator: std.mem.Allocator) PaletteState {
-        return .{
+    pub fn init(allocator: std.mem.Allocator) !PaletteState {
+        var self = PaletteState{
             .query = .empty,
             .matches = .empty,
             .scored_matches = .empty,
@@ -142,6 +142,21 @@ pub const PaletteState = struct {
             .searcher = null,
             .max_haystack_len = 64,
         };
+        // 64 bytes: accommodates user search query input strings (typical search queries are < 64 chars)
+        try self.query.ensureTotalCapacity(allocator, 64);
+        // 64 items: initial filtered match index capacity before dynamic resizing
+        try self.matches.ensureTotalCapacity(allocator, 64);
+        // 64 items: initial fuzzy search score entry capacity
+        try self.scored_matches.ensureTotalCapacity(allocator, 64);
+        // 128 bytes: accommodates active directory path strings (most paths are < 128 bytes)
+        try self.current_nav_dir.ensureTotalCapacity(allocator, 128);
+        // 128 bytes: accommodates last visited directory path strings
+        try self.last_nav_dir.ensureTotalCapacity(allocator, 128);
+        // 64 bytes: accommodates directory basename strings
+        try self.last_child_dir.ensureTotalCapacity(allocator, 64);
+        // 64 items: initial directory item entry capacity before directory scan
+        try self.dir_items.ensureTotalCapacity(allocator, 64);
+        return self;
     }
 
     pub fn deinit(self: *PaletteState) void {

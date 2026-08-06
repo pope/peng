@@ -187,8 +187,8 @@ pub fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
     // 4. State Initialization
     var state = app.state.AppState{
         .viewer = .{
-            .navigation = state_pkg.NavigationState.init(gpa),
-            .ui = state_pkg.UiState.init(gpa),
+            .navigation = try state_pkg.NavigationState.init(gpa),
+            .ui = try state_pkg.UiState.init(gpa),
             .display = if (parsed.headless) .headless else .{
                 .windowed = .{
                     .handle = setup.window,
@@ -207,6 +207,7 @@ pub fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
         .allocator = gpa,
         .io = init.io,
     };
+    try state.ensureInitialCapacities();
     own_gpu_resources = false;
     errdefer state.deinit();
 

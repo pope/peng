@@ -66,9 +66,9 @@ pub const UiState = struct {
     metrics: UiRenderMetrics = .{},
     screenshot_mode: ScreenshotMode = .idle,
 
-    pub fn init(allocator: std.mem.Allocator) UiState {
+    pub fn init(allocator: std.mem.Allocator) !UiState {
         return .{
-            .palette = palette_state.PaletteState.init(allocator),
+            .palette = try palette_state.PaletteState.init(allocator),
         };
     }
 

@@ -24,10 +24,10 @@ pub const ViewerState = struct {
 
     running: bool = true,
 
-    pub fn initHeadless(allocator: std.mem.Allocator) ViewerState {
+    pub fn initHeadless(allocator: std.mem.Allocator) !ViewerState {
         return .{
-            .navigation = NavigationState.init(allocator),
-            .ui = UiState.init(allocator),
+            .navigation = try NavigationState.init(allocator),
+            .ui = try UiState.init(allocator),
             .rotation_map = .init(allocator),
             .display = .headless,
         };
