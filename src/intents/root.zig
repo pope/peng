@@ -123,6 +123,10 @@ pub const AppIntent = union(enum) {
     start_slideshow,
     stop_slideshow,
 
+    // Manga mode controls
+    toggle_manga_mode,
+    set_manga_mode: bool,
+
     // Application lifecycle
     quit,
 };

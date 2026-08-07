@@ -220,6 +220,8 @@ pub fn renderInfoOverlay(
             .crop => "Fill screen (Aspect Fill)",
         };
         try renderStatRow("Scale Mode", scale_mode_str);
+        const reading_dir_str = if (ui_model.manga_mode) "Right-to-Left (Manga)" else "Left-to-Right (Standard)";
+        try renderStatRow("Reading Order", reading_dir_str);
         try renderStatRow("Zoom Level", zoom_str);
         try renderStatRow("Pan Offset", pan_str);
         try renderStatRow("Rotation", rot_str);

@@ -73,11 +73,19 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
 
         .next_image => {
             vp.reset();
-            _ = nav.nextIndex();
+            if (nav.manga_mode) {
+                _ = nav.prevIndex();
+            } else {
+                _ = nav.nextIndex();
+            }
         },
         .prev_image => {
             vp.reset();
-            _ = nav.prevIndex();
+            if (nav.manga_mode) {
+                _ = nav.nextIndex();
+            } else {
+                _ = nav.prevIndex();
+            }
         },
         .first_image => {
             if (nav.goToIndex(0) != null) {
@@ -146,6 +154,8 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
         .set_debug_thumb => |val| try self.setDebugShowThumb(val),
         .start_slideshow => try self.openPalette(.set_slideshow_interval),
         .stop_slideshow => nav.slideshow = .inactive,
+        .toggle_manga_mode => nav.manga_mode = !nav.manga_mode,
+        .set_manga_mode => |val| nav.manga_mode = val,
         .quit => self.viewer.running = false,
     }
 }
@@ -160,8 +170,37 @@ pub fn sysExecuteIntents(ctx: FrameContext) !void {
     self.clearIntents();
 }
 
+test "Manga Mode toggles Right-to-Left image navigation" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    try app_st.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "page1.png" } });
+    try app_st.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "page2.png" } });
+    try app_st.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "page3.png" } });
+    app_st.viewer.navigation.current_index = 0;
+
+    // Normal mode: next_image moves 0 -> 1
+    try executeIntent(&app_st, .next_image);
+    try std.testing.expectEqual(@as(usize, 1), app_st.viewer.navigation.current_index.?);
+
+    // Toggle Manga Mode
+    try executeIntent(&app_st, .toggle_manga_mode);
+    try std.testing.expect(app_st.viewer.navigation.manga_mode);
+
+    // Manga mode (RTL): next_image moves 1 -> 0
+    try executeIntent(&app_st, .next_image);
+    try std.testing.expectEqual(@as(usize, 0), app_st.viewer.navigation.current_index.?);
+
+    // Manga mode (RTL): prev_image moves 0 -> 1
+    try executeIntent(&app_st, .prev_image);
+    try std.testing.expectEqual(@as(usize, 1), app_st.viewer.navigation.current_index.?);
+}
+
 test "palette_action_items metadata" {
-    const nav_item = state.palette_action_items[6];
+    const nav_item = state.palette_action_items[7];
     try std.testing.expectEqualStrings("Navigate Directories...", nav_item.name);
     try std.testing.expectEqualStrings("Ctrl+O", nav_item.shortcut_text);
     try std.testing.expect(nav_item.show_in_palette);

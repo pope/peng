@@ -168,6 +168,7 @@ pub fn updateFrame(
         .current_entry = app_state.getCurrentEntry(),
         .is_loading_files = app_state.viewer.navigation.is_loading_files.load(.acquire),
         .slideshow = app_state.viewer.navigation.slideshow,
+        .manga_mode = app_state.viewer.navigation.manga_mode,
         .overlays = app_state.viewer.ui.overlays,
         .metrics = &app_state.viewer.ui.metrics,
         .viewport = app_state.viewer.viewport,

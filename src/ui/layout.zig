@@ -358,6 +358,7 @@ pub fn renderHeaderBar(
             },
             .direction = .left_to_right,
             .child_alignment = .{ .x = .left, .y = .center },
+            .child_gap = 12,
             .padding = .{
                 .left = 20,
                 .right = 20,
@@ -376,6 +377,27 @@ pub fn renderHeaderBar(
         });
 
         clay.UI()(.{ .layout = .{ .sizing = .{ .w = .grow, .h = .grow } } })({});
+
+        if (ui_model.manga_mode) {
+            clay.UI()(.{
+                .layout = .{
+                    .sizing = .{ .w = .fit, .h = .fit },
+                    .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
+                },
+                .background_color = theme.crust,
+                .corner_radius = .all(4),
+                .border = .{
+                    .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                    .color = theme.peach,
+                },
+            })({
+                clay.text("RTL", .{
+                    .color = theme.peach,
+                    .font_size = 11,
+                    .font_id = 0,
+                });
+            });
+        }
 
         if (count_str) |cstr| {
             clay.text(cstr, .{

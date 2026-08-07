@@ -7,8 +7,9 @@ ______________________________________________________________________
 ## Features
 
 - **GPU Acceleration:** Uses the modern SDL3 GPU API with Vulkan and Metal backends.
+- **CBZ & Manga Mode Support:** Instant $O(1)$ page seeking inside `.cbz` comic archives with toggleable Right-to-Left (RTL) Manga reading mode (`M` key).
 - **Advanced Filtering & Resampling:** Features high-quality resampling shaders including Bilinear, Mitchell-Netravali, and Lanczos3 filters.
-- **Command Palette:** Built-in searchable palettes for commands (`F1` or `Ctrl+Shift+P`) and file navigation (`Ctrl+P`).
+- **Command Palette:** Built-in searchable palettes for commands (`F1` or `Ctrl+Shift+P`), file search (`Ctrl+P`), and directory navigator (`Ctrl+O`).
 - **Interactive Stats Overlay:** Toggleable sidebar (`I` key) displaying CPU/GPU decoding times, active resampling shader, rendering metrics, and image attributes.
 - **Non-Blocking Headless Mode:** Runs offscreen without X11 or Wayland (ideal for CI and servers) with `--headless`.
 - **Scriptable IPC Control:** External client controls the viewer's zoom, pan, filters, and takes screenshots in real-time.
@@ -21,9 +22,11 @@ ______________________________________________________________________
 | :-------------------- | :----------------------------------- |
 | `F1` / `Ctrl+Shift+P` | Open Command Palette (Actions)       |
 | `Ctrl+P`              | Open File Search Palette             |
+| `Ctrl+O`              | Open Directory Navigator Palette     |
 | `I`                   | Toggle Stats Overlay                 |
+| `M`                   | Toggle Manga Mode (Right-to-Left)    |
 | `F` / `F11`           | Toggle Fullscreen                    |
-| `Space` / `Right`     | Next Image                           |
+| `Space` / `Right`     | Next Image (Prepares Next Page)      |
 | `Backspace` / `Left`  | Previous Image                       |
 | `Home` / `End`        | Jump to First / Last Image           |
 | `=` / `-`             | Zoom In / Out                        |

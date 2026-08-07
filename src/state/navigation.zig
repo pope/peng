@@ -9,6 +9,7 @@ pub const NavigationState = struct {
     image_list: std.ArrayList(MediaEntry) = .empty,
     current_index: ?usize = null,
     slideshow: SlideshowMode = .inactive,
+    manga_mode: bool = false,
     is_loading_files: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     last_nav_time_ms: u64 = 0,
     last_scanned_dir: std.ArrayList(u8) = .empty,
