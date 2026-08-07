@@ -16,6 +16,7 @@
 - new strategies for pre-fetching, different from caching
   - if the user went forward, likely to go forward again
 - manga mode
+- [x] CBZ comic book reading support
 - [x] make an AppState, and move out some things from ViewerState into that.
   - [x] probably need a metrics type on state to share
 - [x] use more systems

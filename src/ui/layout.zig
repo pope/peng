@@ -266,8 +266,7 @@ pub fn updateWindowTitle(
     if (total_images > 0) {
         if (ui_model.current_index) |idx| {
             if (idx < ui_model.image_list.len) {
-                const path = ui_model.image_list[idx];
-                raw_title = std.fs.path.basename(path);
+                raw_title = ui_model.image_list[idx].getBasename();
             }
         }
     }

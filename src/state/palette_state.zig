@@ -20,6 +20,11 @@ pub const FolderScanState = union(enum) {
     },
 };
 
+pub const ArchiveType = enum {
+    cbz,
+    zip,
+};
+
 pub const DirectoryEntry = union(enum) {
     parent: struct {
         name: []const u8,
@@ -30,6 +35,12 @@ pub const DirectoryEntry = union(enum) {
         full_path: []const u8 = "",
         scan: FolderScanState = .unscanned,
     },
+    archive_file: struct {
+        name: []const u8,
+        full_path: []const u8 = "",
+        image_count: usize = 0,
+        archive_type: ArchiveType = .cbz,
+    },
     image_file: struct {
         name: []const u8,
         full_path: []const u8 = "",
@@ -39,6 +50,7 @@ pub const DirectoryEntry = union(enum) {
         return switch (self) {
             .parent => |p| p.name,
             .directory => |d| d.name,
+            .archive_file => |a| a.name,
             .image_file => |f| f.name,
         };
     }
@@ -47,6 +59,7 @@ pub const DirectoryEntry = union(enum) {
         return switch (self) {
             .parent => |p| p.full_path,
             .directory => |d| d.full_path,
+            .archive_file => |a| a.full_path,
             .image_file => |f| f.full_path,
         };
     }
@@ -55,12 +68,17 @@ pub const DirectoryEntry = union(enum) {
         return self == .directory or self == .parent;
     }
 
+    pub fn isArchive(self: DirectoryEntry) bool {
+        return self == .archive_file;
+    }
+
     pub fn getImageCount(self: DirectoryEntry) ?usize {
         return switch (self) {
             .directory => |d| switch (d.scan) {
                 .scanned => |s| s.image_count,
                 else => null,
             },
+            .archive_file => |a| a.image_count,
             else => null,
         };
     }
@@ -310,12 +328,14 @@ pub const PaletteState = struct {
         }
     }
 
+    const MediaEntry = @import("types.zig").MediaEntry;
+
     /// Rebuilds fuzzy match results for image file list items.
     ///
     /// Optimizations:
     /// - Short-circuits when query is empty, populating `matches` directly without searcher allocation or fuzzy scoring.
     /// - Pre-allocates `scored_matches` and `matches` capacities to allow `appendAssumeCapacity` writes during scoring.
-    pub fn rebuildFileMatches(self: *PaletteState, image_list: []const []const u8) !void {
+    pub fn rebuildFileMatches(self: *PaletteState, image_list: []const MediaEntry) !void {
         self.matches.clearRetainingCapacity();
         self.scored_matches.clearRetainingCapacity();
         const query_str = self.query.items;
@@ -328,10 +348,9 @@ pub const PaletteState = struct {
         }
 
         var max_h: usize = self.max_haystack_len;
-        for (image_list) |item_path| {
-            const basename = std.fs.path.basename(item_path);
+        for (image_list) |item| {
+            const basename = item.getBasename();
             max_h = @max(max_h, basename.len);
-            max_h = @max(max_h, item_path.len);
         }
         self.max_haystack_len = max_h;
 
@@ -339,23 +358,9 @@ pub const PaletteState = struct {
 
         try self.scored_matches.ensureTotalCapacity(self.allocator, image_list.len);
 
-        const has_slash = std.mem.indexOfScalar(u8, query_str, '/') != null or std.mem.indexOfScalar(u8, query_str, '\\') != null;
-
-        for (image_list, 0..) |item_path, real_idx| {
-            const basename = std.fs.path.basename(item_path);
-            var best_score: ?i32 = null;
-
-            if (searcher_ptr.score(basename, query_str)) |s| {
-                best_score = s;
-            }
-
-            if (has_slash or best_score == null) {
-                if (searcher_ptr.score(item_path, query_str)) |s| {
-                    best_score = if (best_score) |prev| @max(prev, s) else s;
-                }
-            }
-
-            if (best_score) |score| {
+        for (image_list, 0..) |item, real_idx| {
+            const basename = item.getBasename();
+            if (searcher_ptr.score(basename, query_str)) |score| {
                 self.scored_matches.appendAssumeCapacity(.{ .index = real_idx, .score = score });
             }
         }

@@ -58,7 +58,10 @@ fn handlePaletteReturnDirectory(self: *AppState, mod: KeyModifiers) !void {
             const match_idx = palette.matches.items[palette.selected_idx];
             if (match_idx < palette.dir_items.items.len) {
                 const entry = palette.dir_items.items[match_idx];
-                try self.startAsyncPathScan(entry.getFullPath(), true);
+                switch (entry) {
+                    .archive_file => |a| try self.handlePathSelection(a.full_path),
+                    else => try self.startAsyncPathScan(entry.getFullPath(), true),
+                }
                 self.viewer.ui.palette.reset();
                 stopTextInput(self.viewer.display);
             }

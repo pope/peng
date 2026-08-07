@@ -31,20 +31,24 @@ pub const ImageDecodedPayload = struct {
     decode_time_ms: f64,
     conversion_time_ms: f64,
     exif_orientation: f32,
+    cbz_decompress_time_ms: f64 = 0.0,
+    compressed_size_bytes: usize = 0,
 };
 
 pub const DecodeFailedPayload = struct {
     key: CacheKey,
 };
 
+const MediaEntry = @import("state").MediaEntry;
+
 pub const PathDiscoveredPayload = struct {
-    path: []const u8,
+    entry: MediaEntry,
 };
 
 pub const DirectoryScanResultPayload = struct {
     target_path: []const u8,
     is_dir: bool,
-    paths: [][]const u8,
+    paths: []MediaEntry,
 };
 
 pub const DirectoryScanCompletePayload = struct {
@@ -69,10 +73,10 @@ pub const BackgroundEvent = union(enum) {
             .image_decoded => |d| {
                 if (d.surface) |surf| surf.destroy();
             },
-            .path_discovered => |p| allocator.free(p.path),
+            .path_discovered => |p| p.entry.deinit(allocator),
             .directory_scan_result => |res| {
                 allocator.free(res.target_path);
-                for (res.paths) |p| allocator.free(p);
+                for (res.paths) |e| e.deinit(allocator);
                 allocator.free(res.paths);
             },
             else => {},

@@ -21,7 +21,7 @@ pub fn appendPathThreadSafe(workers: *WorkerManager, gpa: std.mem.Allocator, io:
     };
     workers.event_queue.push(gpa, io, .{
         .path_discovered = .{
-            .path = dup,
+            .entry = .{ .filesystem = .{ .path = dup } },
         },
     }) catch |err| {
         std.log.err("Failed to push path_discovered event for '{s}': {}", .{ path, err });
@@ -80,7 +80,7 @@ pub fn scanDirectoryThreadSafe(workers: *WorkerManager, gpa: std.mem.Allocator, 
         };
         workers.event_queue.push(gpa, io, .{
             .path_discovered = .{
-                .path = full_path,
+                .entry = .{ .filesystem = .{ .path = full_path } },
             },
         }) catch |err| {
             std.log.err("Failed to push path_discovered event for '{s}': {}", .{ full_path, err });
@@ -105,50 +105,58 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
         _ = workers.active_threads.fetchSub(1, .release);
     }
 
-    const dir_path = if (is_dir) target_path else (std.fs.path.dirname(target_path) orelse ".");
-
-    var dir = std.Io.Dir.openDir(std.Io.Dir.cwd(), io, dir_path, .{ .iterate = true }) catch |err| {
-        std.log.err("Failed to open dir '{s}': {}", .{ dir_path, err });
-        return;
-    };
-    defer dir.close(io);
-
-    var it = dir.iterate();
-    var dir_entries: std.ArrayList([]const u8) = .empty;
+    const MediaEntry = @import("state").MediaEntry;
+    var dir_entries: std.ArrayList(MediaEntry) = .empty;
     defer {
-        for (dir_entries.items) |item| gpa.free(item);
+        for (dir_entries.items) |item| item.deinit(gpa);
         dir_entries.deinit(gpa);
     }
 
-    while (!workers.exiting.load(.acquire)) {
-        const entry = (it.next(io) catch |err| switch (err) {
-            error.Canceled => break,
-            else => {
-                std.log.warn("pathScanWorker iterate failed for '{s}': {}", .{ dir_path, err });
-                break;
-            },
-        }) orelse break;
-        if (entry.kind == .file) {
-            if (core_fs.isImageFile(entry.name)) {
-                const full_path = std.fs.path.join(gpa, &.{ dir_path, entry.name }) catch |err| {
-                    std.log.err("Failed to join path for '{s}': {}", .{ entry.name, err });
-                    continue;
-                };
-                dir_entries.append(gpa, full_path) catch |err| {
-                    std.log.err("Failed to append path '{s}': {}", .{ full_path, err });
-                    gpa.free(full_path);
-                    continue;
-                };
+    if (!is_dir and core_fs.isCbzFile(target_path)) {
+        core_fs.scanCbzImageEntries(gpa, io, target_path, &dir_entries) catch |err| {
+            std.log.err("Failed to scan CBZ image entries for '{s}': {}", .{ target_path, err });
+        };
+    } else {
+        const dir_path = if (is_dir) target_path else (std.fs.path.dirname(target_path) orelse ".");
+
+        var dir = std.Io.Dir.openDir(std.Io.Dir.cwd(), io, dir_path, .{ .iterate = true }) catch |err| {
+            std.log.err("Failed to open dir '{s}': {}", .{ dir_path, err });
+            return;
+        };
+        defer dir.close(io);
+
+        var it = dir.iterate();
+
+        while (!workers.exiting.load(.acquire)) {
+            const entry = (it.next(io) catch |err| switch (err) {
+                error.Canceled => break,
+                else => {
+                    std.log.warn("pathScanWorker iterate failed for '{s}': {}", .{ dir_path, err });
+                    break;
+                },
+            }) orelse break;
+            if (entry.kind == .file) {
+                if (core_fs.isImageFile(entry.name)) {
+                    const full_path = std.fs.path.join(gpa, &.{ dir_path, entry.name }) catch |err| {
+                        std.log.err("Failed to join path for '{s}': {}", .{ entry.name, err });
+                        continue;
+                    };
+                    dir_entries.append(gpa, .{ .filesystem = .{ .path = full_path } }) catch |err| {
+                        std.log.err("Failed to append path '{s}': {}", .{ full_path, err });
+                        gpa.free(full_path);
+                        continue;
+                    };
+                }
             }
         }
     }
 
     if (workers.exiting.load(.acquire)) return;
 
-    // Sort entries alphabetically
-    std.mem.sort([]const u8, dir_entries.items, {}, struct {
-        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-            return std.ascii.lessThanIgnoreCase(a, b);
+    // Sort entries alphabetically by basename
+    std.mem.sort(MediaEntry, dir_entries.items, {}, struct {
+        fn lessThan(_: void, a: MediaEntry, b: MediaEntry) bool {
+            return std.ascii.lessThanIgnoreCase(a.getBasename(), b.getBasename());
         }
     }.lessThan);
 
@@ -169,7 +177,7 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
     }) catch |err| {
         std.log.err("Failed to push directory_scan_result event: {}", .{err});
         gpa.free(dup_target);
-        for (paths_slice) |item| gpa.free(item);
+        for (paths_slice) |item| item.deinit(gpa);
         gpa.free(paths_slice);
     };
     context.wakeUpMainThread();

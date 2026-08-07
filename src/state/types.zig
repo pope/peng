@@ -11,6 +11,79 @@ pub const UvRect = struct {
     v_max: f32 = 1.0,
 };
 
+pub const ArchiveMediaEntry = struct {
+    archive_path: []const u8,
+    entry_name: []const u8,
+    /// Pre-discovered byte offsets in archive for O(1) instant seeking
+    header_zip_offset: ?u64 = null,
+    file_offset: ?u64 = null,
+    uncompressed_size: ?u64 = null,
+    compression_method: ?u16 = null,
+};
+
+pub const MediaEntry = union(enum) {
+    /// Standard file on local filesystem
+    filesystem: struct {
+        path: []const u8,
+    },
+
+    /// Virtual file entry inside an archive (CBZ, CBR, ZIP)
+    archive_entry: ArchiveMediaEntry,
+
+    pub fn getBasename(self: MediaEntry) []const u8 {
+        return switch (self) {
+            .filesystem => |f| std.fs.path.basename(f.path),
+            .archive_entry => |a| std.fs.path.basename(a.entry_name),
+        };
+    }
+
+    pub fn getContainerName(self: MediaEntry) []const u8 {
+        return switch (self) {
+            .filesystem => |f| std.fs.path.dirname(f.path) orelse ".",
+            .archive_entry => |a| std.fs.path.dirname(a.archive_path) orelse ".",
+        };
+    }
+
+    pub fn getPath(self: MediaEntry) []const u8 {
+        return switch (self) {
+            .filesystem => |f| f.path,
+            .archive_entry => |a| a.entry_name,
+        };
+    }
+
+    pub fn isArchive(self: MediaEntry) bool {
+        return self == .archive_entry;
+    }
+
+    pub fn dupe(self: MediaEntry, allocator: std.mem.Allocator) !MediaEntry {
+        return switch (self) {
+            .filesystem => |f| .{
+                .filesystem = .{ .path = try allocator.dupe(u8, f.path) },
+            },
+            .archive_entry => |a| .{
+                .archive_entry = .{
+                    .archive_path = try allocator.dupe(u8, a.archive_path),
+                    .entry_name = try allocator.dupe(u8, a.entry_name),
+                    .header_zip_offset = a.header_zip_offset,
+                    .file_offset = a.file_offset,
+                    .uncompressed_size = a.uncompressed_size,
+                    .compression_method = a.compression_method,
+                },
+            },
+        };
+    }
+
+    pub fn deinit(self: MediaEntry, allocator: std.mem.Allocator) void {
+        switch (self) {
+            .filesystem => |f| allocator.free(f.path),
+            .archive_entry => |a| {
+                allocator.free(a.archive_path);
+                allocator.free(a.entry_name);
+            },
+        }
+    }
+};
+
 pub const Key = enum {
     unknown,
     escape,
@@ -423,6 +496,8 @@ pub const CpuSurfaceComponent = struct {
     read_time_ms: f64 = 0.0,
     decode_time_ms: f64 = 0.0,
     conversion_time_ms: f64 = 0.0,
+    cbz_decompress_time_ms: f64 = 0.0,
+    compressed_size_bytes: usize = 0,
 };
 
 pub const GpuTextureComponent = struct {
@@ -440,6 +515,8 @@ pub const GpuTextureComponent = struct {
     mipmap_time_ms: f64 = 0.0,
     was_fallback: bool = false,
     fallback_time_ms: f64 = 0.0,
+    cbz_decompress_time_ms: f64 = 0.0,
+    compressed_size_bytes: usize = 0,
 };
 
 pub const ThumbComponent = struct {
@@ -554,6 +631,8 @@ pub const ActiveImageStats = struct {
     was_fallback: bool = false,
     has_thumb: bool = false,
     thumb_upload_time_ms: f64 = 0.0,
+    cbz_decompress_time_ms: f64 = 0.0,
+    compressed_size_bytes: usize = 0,
 };
 
 /// Snapshot of application telemetry and diagnostic counters copied once per frame
@@ -580,9 +659,9 @@ pub const ViewerStats = struct {
 pub const UiViewModel = struct {
     is_fullscreen: bool,
     total_images: usize,
-    image_list: []const []const u8 = &.{},
+    image_list: []const MediaEntry = &.{},
     current_index: ?usize,
-    current_image_path: ?[]const u8,
+    current_image_entry: ?MediaEntry = null,
     current_entry: ?CacheEntry = null,
     is_loading_files: bool,
     slideshow: SlideshowMode = .inactive,

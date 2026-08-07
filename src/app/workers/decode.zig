@@ -1,6 +1,7 @@
 const std = @import("std");
 const sdl = @import("sdl");
 const fs = @import("../fs.zig");
+const core_fs = @import("../core/fs.zig");
 const image = @import("../core/image.zig");
 const exif = @import("../core/exif.zig");
 const context = @import("context.zig");
@@ -9,23 +10,121 @@ const WorkerManager = root.WorkerManager;
 
 const CacheKey = image.CacheKey;
 
+const MediaEntry = @import("state").MediaEntry;
+
 pub const DecodeArgs = struct {
     workers: *WorkerManager,
     allocator: std.mem.Allocator,
     io: std.Io,
     key: CacheKey,
-    path: [:0]const u8,
+    entry: MediaEntry,
     has_gpu_device: bool,
     pixel_format: u32,
     thumb_only: bool = false,
 };
 
-fn failDecodeWorker(workers: *WorkerManager, alloc: std.mem.Allocator, io: std.Io, key: CacheKey, path: []const u8, comptime fmt: []const u8, fmt_args: anytype) void {
+fn failDecodeWorker(workers: *WorkerManager, alloc: std.mem.Allocator, io: std.Io, key: CacheKey, comptime fmt: []const u8, fmt_args: anytype) void {
     std.log.err(fmt, fmt_args);
     workers.event_queue.push(alloc, io, .{
         .decode_failed = .{ .key = key },
-    }) catch |e| std.log.err("Failed to push decode_failed event for '{s}': {}", .{ path, e });
+    }) catch |e| std.log.err("Failed to push decode_failed event: {}", .{e});
     context.wakeUpMainThread();
+}
+
+const DecompressCbzResult = struct {
+    bytes: []u8,
+    read_time_ms: f64,
+    decompress_time_ms: f64,
+    compressed_size: u64,
+};
+
+const ArchiveMediaEntry = @import("state").ArchiveMediaEntry;
+
+fn decompressCbzMediaEntry(
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    entry: ArchiveMediaEntry,
+) !DecompressCbzResult {
+    const start_read = sdl.timer.getTicksNs();
+    var file = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, entry.archive_path, .{});
+    defer file.close(io);
+
+    var reader_buf: [4096]u8 = undefined;
+    var f_reader = file.reader(io, &reader_buf);
+
+    var data_offset: u64 = undefined;
+    var uncompressed_size: u64 = undefined;
+    var comp_method_enum: std.zip.CompressionMethod = undefined;
+
+    if (entry.file_offset) |offset| {
+        try f_reader.seekTo(offset);
+        const local_header = try f_reader.interface.takeStruct(std.zip.LocalFileHeader, .little);
+        if (!std.mem.eql(u8, &local_header.signature, &std.zip.local_file_header_sig))
+            return error.ZipBadFileOffset;
+
+        data_offset = offset + @sizeOf(std.zip.LocalFileHeader) + local_header.filename_len + local_header.extra_len;
+        uncompressed_size = entry.uncompressed_size orelse local_header.uncompressed_size;
+        comp_method_enum = if (entry.compression_method) |cm| @enumFromInt(cm) else local_header.compression_method;
+        try f_reader.seekTo(data_offset);
+    } else {
+        var iterator = try std.zip.Iterator.init(&f_reader);
+        var arena = std.heap.ArenaAllocator.init(alloc);
+        defer arena.deinit();
+
+        var found = false;
+        while (try iterator.next()) |zip_entry| {
+            if (zip_entry.filename_len == 0) continue;
+            _ = arena.reset(.retain_capacity);
+            const temp_alloc = arena.allocator();
+
+            try f_reader.seekTo(zip_entry.header_zip_offset + @sizeOf(std.zip.CentralDirectoryFileHeader));
+            const name = try temp_alloc.alloc(u8, zip_entry.filename_len);
+            try f_reader.interface.readSliceAll(name);
+
+            if (!std.mem.eql(u8, name, entry.entry_name)) continue;
+
+            try f_reader.seekTo(zip_entry.file_offset);
+            const local_header = try f_reader.interface.takeStruct(std.zip.LocalFileHeader, .little);
+            if (!std.mem.eql(u8, &local_header.signature, &std.zip.local_file_header_sig))
+                return error.ZipBadFileOffset;
+
+            data_offset = zip_entry.file_offset + @sizeOf(std.zip.LocalFileHeader) + local_header.filename_len + local_header.extra_len;
+            uncompressed_size = zip_entry.uncompressed_size;
+            comp_method_enum = zip_entry.compression_method;
+            try f_reader.seekTo(data_offset);
+            found = true;
+            break;
+        }
+        if (!found) return error.FileNotFound;
+    }
+
+    const end_read = sdl.timer.getTicksNs();
+    const read_time_ms = @as(f64, @floatFromInt(end_read - start_read)) / 1_000_000.0;
+
+    const out_buf = try alloc.alloc(u8, @intCast(uncompressed_size));
+    errdefer alloc.free(out_buf);
+
+    const start_dec = sdl.timer.getTicksNs();
+    switch (comp_method_enum) {
+        .store => {
+            try f_reader.interface.readSliceAll(out_buf);
+        },
+        .deflate => {
+            var flate_buf: [std.compress.flate.max_window_len]u8 = undefined;
+            var decompress: std.compress.flate.Decompress = .init(&f_reader.interface, .raw, &flate_buf);
+            try decompress.reader.readSliceAll(out_buf);
+        },
+        else => return error.UnsupportedCompressionMethod,
+    }
+
+    const end_dec = sdl.timer.getTicksNs();
+    const decompress_time_ms = @as(f64, @floatFromInt(end_dec - start_dec)) / 1_000_000.0;
+    return .{
+        .bytes = out_buf,
+        .read_time_ms = read_time_ms,
+        .decompress_time_ms = decompress_time_ms,
+        .compressed_size = uncompressed_size,
+    };
 }
 
 pub fn decodeWorker(args: *DecodeArgs) void {
@@ -33,50 +132,70 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     const alloc = args.allocator;
     const io = args.io;
     const key = args.key;
-    const path = args.path;
+    const media_entry = args.entry;
     defer {
-        alloc.free(path);
+        media_entry.deinit(alloc);
         alloc.destroy(args);
         _ = workers.active_decode_threads.fetchSub(1, .release);
         _ = workers.active_threads.fetchSub(1, .release);
         context.wakeUpMainThread();
     }
 
-    const s = std.Io.Dir.statFile(std.Io.Dir.cwd(), io, path, .{}) catch |err| {
-        failDecodeWorker(workers, alloc, io, key, path, "decodeWorker: statFile failed for '{s}': {}", .{ path, err });
-        return;
-    };
-    const size_bytes = s.size;
-    if (size_bytes == 0) {
-        failDecodeWorker(workers, alloc, io, key, path, "decodeWorker: 0-byte file '{s}'", .{path});
-        return;
+    var file_bytes: []u8 = undefined;
+    var is_allocated = false;
+    var size_bytes: u64 = 0;
+    var read_time_ms: f64 = 0.0;
+    var cbz_decompress_time_ms: f64 = 0.0;
+    var compressed_size_bytes: usize = 0;
+
+    switch (media_entry) {
+        .archive_entry => |arch| {
+            const dec_res = decompressCbzMediaEntry(alloc, io, arch) catch |err| {
+                failDecodeWorker(workers, alloc, io, key, "decodeWorker: failed to decompress CBZ entry '{s}' from '{s}': {}", .{ arch.entry_name, arch.archive_path, err });
+                return;
+            };
+            file_bytes = dec_res.bytes;
+            is_allocated = true;
+            size_bytes = dec_res.bytes.len;
+            read_time_ms = dec_res.read_time_ms;
+            cbz_decompress_time_ms = dec_res.decompress_time_ms;
+            compressed_size_bytes = @intCast(dec_res.compressed_size);
+        },
+        .filesystem => |file_item| {
+            const s = std.Io.Dir.statFile(std.Io.Dir.cwd(), io, file_item.path, .{}) catch |err| {
+                failDecodeWorker(workers, alloc, io, key, "decodeWorker: statFile failed for '{s}': {}", .{ file_item.path, err });
+                return;
+            };
+            size_bytes = s.size;
+
+            const start_read = sdl.timer.getTicksNs();
+            var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, file_item.path, .{}) catch |err| {
+                failDecodeWorker(workers, alloc, io, key, "decodeWorker: openFile failed for '{s}': {}", .{ file_item.path, err });
+                return;
+            };
+            defer file.close(io);
+
+            const file_size: usize = @intCast(s.size);
+            file_bytes = alloc.alloc(u8, file_size) catch |err| {
+                failDecodeWorker(workers, alloc, io, key, "decodeWorker: alloc failed for '{s}': {}", .{ file_item.path, err });
+                return;
+            };
+            is_allocated = true;
+
+            var r_buf: [4096]u8 = undefined;
+            var reader = file.reader(io, &r_buf);
+            reader.interface.readSliceAll(file_bytes) catch |err| {
+                alloc.free(file_bytes);
+                failDecodeWorker(workers, alloc, io, key, "decodeWorker: readSliceAll failed for '{s}': {}", .{ file_item.path, err });
+                return;
+            };
+            const end_read = sdl.timer.getTicksNs();
+            read_time_ms = @as(f64, @floatFromInt(end_read - start_read)) / 1_000_000.0;
+        },
     }
+    defer if (is_allocated) alloc.free(file_bytes);
 
-    const file_bytes = alloc.alloc(u8, size_bytes) catch |err| {
-        failDecodeWorker(workers, alloc, io, key, path, "decodeWorker: failed to allocate {d} bytes for '{s}': {}", .{ size_bytes, path, err });
-        return;
-    };
-    defer alloc.free(file_bytes);
-
-    const start_read = sdl.timer.getTicksNs();
-    var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, path, .{}) catch |err| {
-        failDecodeWorker(workers, alloc, io, key, path, "decodeWorker: openFile failed for '{s}': {}", .{ path, err });
-        return;
-    };
-    defer file.close(io);
-
-    var slices = [_][]u8{file_bytes};
-    const read_n = file.readPositional(io, &slices, 0) catch |err| {
-        failDecodeWorker(workers, alloc, io, key, path, "decodeWorker: readPositional failed for '{s}': {}", .{ path, err });
-        return;
-    };
-    const end_read = sdl.timer.getTicksNs();
-    const read_time_ms = @as(f64, @floatFromInt(end_read - start_read)) / 1_000_000.0;
-
-    if (read_n == 0) {
-        failDecodeWorker(workers, alloc, io, key, path, "decodeWorker: empty file or 0-byte read for '{s}'", .{path});
-        return;
-    }
+    const read_n = file_bytes.len;
 
     const header_n = @min(read_n, 65536);
     const header_buf = file_bytes[0..header_n];
@@ -92,6 +211,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         context.wakeUpMainThread();
     }
 
+    const path = media_entry.getPath();
     const mime_type = image.detectMimeType(header_buf, path);
 
     // Attempt fast EXIF thumbnail decoding for instant placeholder preview
@@ -154,7 +274,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     const decode_time_ms = @as(f64, @floatFromInt(end_decode - start_decode)) / 1_000_000.0;
 
     if (surface == null) {
-        failDecodeWorker(workers, alloc, io, key, path, "decodeWorker: failed to load image '{s}': {s}", .{ path, sdl.getError() });
+        failDecodeWorker(workers, alloc, io, key, "decodeWorker: failed to load image '{s}': {s}", .{ path, sdl.getError() });
         return;
     }
 
@@ -226,6 +346,8 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                 .decode_time_ms = decode_time_ms,
                 .conversion_time_ms = conversion_time_ms,
                 .exif_orientation = exif_rot,
+                .cbz_decompress_time_ms = cbz_decompress_time_ms,
+                .compressed_size_bytes = compressed_size_bytes,
             },
         }) catch |err| {
             std.log.err("Failed to push image decode event: {}", .{err});

@@ -33,6 +33,8 @@ pub fn sysSyncMetrics(ctx: FrameContext) void {
                     .was_fallback = gpu.was_fallback,
                     .has_thumb = has_thumb,
                     .thumb_upload_time_ms = thumb_upload_time_ms,
+                    .cbz_decompress_time_ms = gpu.cbz_decompress_time_ms,
+                    .compressed_size_bytes = gpu.compressed_size_bytes,
                 };
             },
             .loaded_cpu => |cpu| {
@@ -47,6 +49,8 @@ pub fn sysSyncMetrics(ctx: FrameContext) void {
                     .was_fallback = false,
                     .has_thumb = has_thumb,
                     .thumb_upload_time_ms = thumb_upload_time_ms,
+                    .cbz_decompress_time_ms = cpu.cbz_decompress_time_ms,
+                    .compressed_size_bytes = cpu.compressed_size_bytes,
                 };
             },
             else => {

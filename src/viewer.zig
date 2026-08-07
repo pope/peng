@@ -161,7 +161,7 @@ pub fn updateFrame(
         .total_images = app_state.viewer.navigation.image_list.items.len,
         .image_list = app_state.viewer.navigation.image_list.items,
         .current_index = app_state.viewer.navigation.current_index,
-        .current_image_path = if (app_state.viewer.navigation.current_index) |idx|
+        .current_image_entry = if (app_state.viewer.navigation.current_index) |idx|
             if (idx < app_state.viewer.navigation.image_list.items.len) app_state.viewer.navigation.image_list.items[idx] else null
         else
             null,

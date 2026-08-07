@@ -205,8 +205,8 @@ pub fn renderTextInputDialog(
                 } else {
                     if (std.fmt.parseInt(usize, raw_str, 10)) |val| {
                         if (val >= 1 and val <= total_count) {
-                            const target_path = if (val - 1 < total_count and ui_model.current_image_path != null and val - 1 == (ui_model.current_index orelse 0)) ui_model.current_image_path.? else "";
-                            const raw_basename = std.fs.path.basename(target_path);
+                            const target_entry = if (val - 1 < total_count and ui_model.current_image_entry != null and val - 1 == (ui_model.current_index orelse 0)) ui_model.current_image_entry.? else null;
+                            const raw_basename = if (target_entry) |e| e.getBasename() else "";
                             const display_filename = truncateFilename(frame_allocator, raw_basename, 492.0, 12, measure_data);
                             const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to go to {}: {s}", .{ val, display_filename });
                             clay.text(success_str, .{
@@ -428,9 +428,9 @@ pub fn renderSelectionList(
             })({
                 switch (palette.mode) {
                     .files => {
-                        const path = if (real_idx < ui_model.image_list.len) ui_model.image_list[real_idx] else "";
-                        const basename = std.fs.path.basename(path);
-                        const dirname = std.fs.path.dirname(path) orelse ".";
+                        const media_opt = if (real_idx < ui_model.image_list.len) ui_model.image_list[real_idx] else null;
+                        const basename = if (media_opt) |m| m.getBasename() else "";
+                        const dirname = if (media_opt) |m| m.getContainerName() else ".";
                         const query_str = palette.query.items;
 
                         var basename_matches = try std.ArrayList(usize).initCapacity(frame_allocator, 16);
@@ -438,42 +438,17 @@ pub fn renderSelectionList(
                         var dirname_matches = try std.ArrayList(usize).initCapacity(frame_allocator, 16);
                         defer dirname_matches.deinit(frame_allocator);
 
-                        if (query_str.len > 0 and path.len > 0) {
-                            const searcher_opt = palette.getSearcher(@max(path.len, 64), query_str.len) catch |err| blk: {
+                        if (query_str.len > 0 and basename.len > 0) {
+                            const searcher_opt = palette.getSearcher(@max(basename.len, 64), query_str.len) catch |err| blk: {
                                 std.log.err("getSearcher failed: {}", .{err});
                                 break :blk null;
                             };
                             if (searcher_opt) |searcher_ptr| {
-                                const has_slash = std.mem.indexOfScalar(u8, query_str, '/') != null or std.mem.indexOfScalar(u8, query_str, '\\') != null;
-                                var matched_base = false;
-                                if (!has_slash) {
-                                    const base_res = searcher_ptr.scoreMatches(basename, query_str);
-                                    if (base_res.score != null) {
-                                        basename_matches.appendSlice(frame_allocator, base_res.matches) catch |err| {
-                                            std.log.err("appendSlice failed: {}", .{err});
-                                        };
-                                        matched_base = true;
-                                    }
-                                }
-                                if (!matched_base) {
-                                    const full_res = searcher_ptr.scoreMatches(path, query_str);
-                                    if (full_res.score != null) {
-                                        const basename_offset = path.len - basename.len;
-                                        for (full_res.matches) |m_idx| {
-                                            if (m_idx >= basename_offset) {
-                                                const b_idx = m_idx - basename_offset;
-                                                if (b_idx < basename.len) {
-                                                    basename_matches.append(frame_allocator, b_idx) catch |err| {
-                                                        std.log.err("append failed: {}", .{err});
-                                                    };
-                                                }
-                                            } else if (m_idx < dirname.len) {
-                                                dirname_matches.append(frame_allocator, m_idx) catch |err| {
-                                                    std.log.err("append failed: {}", .{err});
-                                                };
-                                            }
-                                        }
-                                    }
+                                const base_res = searcher_ptr.scoreMatches(basename, query_str);
+                                if (base_res.score != null) {
+                                    basename_matches.appendSlice(frame_allocator, base_res.matches) catch |err| {
+                                        std.log.err("appendSlice failed: {}", .{err});
+                                    };
                                 }
                             }
                         }
@@ -634,6 +609,16 @@ pub fn renderSelectionList(
                                     .child_gap = 8,
                                 },
                             })({
+                                const badge_text, const badge_color = switch (entry) {
+                                    .parent => .{ "UP", theme.subtext0 },
+                                    .directory => .{ "DIR", theme.blue },
+                                    .archive_file => |a| switch (a.archive_type) {
+                                        .cbz => .{ "CBZ", theme.peach },
+                                        .zip => .{ "ZIP", theme.peach },
+                                    },
+                                    .image_file => .{ "IMG", theme.green },
+                                };
+
                                 clay.UI()(.{
                                     .layout = .{
                                         .sizing = .{ .w = .fit, .h = .fit },
@@ -643,11 +628,11 @@ pub fn renderSelectionList(
                                     .corner_radius = .all(4),
                                     .border = .{
                                         .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-                                        .color = theme.blue,
+                                        .color = badge_color,
                                     },
                                 })({
-                                    clay.text("DIR", .{
-                                        .color = theme.blue,
+                                    clay.text(badge_text, .{
+                                        .color = badge_color,
                                         .font_size = 11,
                                         .font_id = 0,
                                     });
@@ -667,59 +652,92 @@ pub fn renderSelectionList(
                                 );
                             });
 
-                            const image_count = entry.getImageCount() orelse 0;
-                            const subdir_count = entry.getSubdirCount() orelse 0;
-                            const count_str = try std.fmt.allocPrint(frame_allocator, "{} image{s}", .{ image_count, if (image_count == 1) "" else "s" });
-                            const count_color = if (image_count == 0) theme.subtext1 else theme.green;
-
-                            const sub_str = try std.fmt.allocPrint(frame_allocator, "{} subfolder{s}", .{ subdir_count, if (subdir_count == 1) "" else "s" });
-                            const sub_color = if (subdir_count == 0) theme.subtext1 else theme.blue;
-
-                            clay.UI()(.{
-                                .layout = .{
-                                    .sizing = .{ .w = .fit, .h = .fit },
-                                    .direction = .left_to_right,
-                                    .child_gap = 6,
-                                },
-                            })({
-                                clay.UI()(.{
-                                    .layout = .{
-                                        .sizing = .{ .w = .fit, .h = .fit },
-                                        .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
-                                    },
-                                    .background_color = theme.crust,
-                                    .corner_radius = .all(4),
-                                    .border = .{
-                                        .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-                                        .color = if (image_count == 0) theme.surface0 else theme.green,
-                                    },
-                                })({
-                                    clay.text(count_str, .{
-                                        .color = count_color,
-                                        .font_size = 11,
-                                        .font_id = 0,
-                                    });
-                                });
+                            if (entry == .archive_file) {
+                                const image_count = entry.getImageCount() orelse 0;
+                                const count_str = try std.fmt.allocPrint(frame_allocator, "{} page{s}", .{ image_count, if (image_count == 1) "" else "s" });
+                                const count_color = if (image_count == 0) theme.subtext1 else theme.green;
 
                                 clay.UI()(.{
                                     .layout = .{
                                         .sizing = .{ .w = .fit, .h = .fit },
-                                        .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
-                                    },
-                                    .background_color = theme.crust,
-                                    .corner_radius = .all(4),
-                                    .border = .{
-                                        .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-                                        .color = if (subdir_count == 0) theme.surface0 else theme.blue,
+                                        .direction = .left_to_right,
+                                        .child_gap = 6,
                                     },
                                 })({
-                                    clay.text(sub_str, .{
-                                        .color = sub_color,
-                                        .font_size = 11,
-                                        .font_id = 0,
+                                    clay.UI()(.{
+                                        .layout = .{
+                                            .sizing = .{ .w = .fit, .h = .fit },
+                                            .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
+                                        },
+                                        .background_color = theme.crust,
+                                        .corner_radius = .all(4),
+                                        .border = .{
+                                            .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                                            .color = if (image_count == 0) theme.surface0 else theme.green,
+                                        },
+                                    })({
+                                        clay.text(count_str, .{
+                                            .color = count_color,
+                                            .font_size = 11,
+                                            .font_id = 0,
+                                        });
                                     });
                                 });
-                            });
+                            } else {
+                                const image_count = entry.getImageCount() orelse 0;
+                                const subdir_count = entry.getSubdirCount() orelse 0;
+                                const count_str = try std.fmt.allocPrint(frame_allocator, "{} image{s}", .{ image_count, if (image_count == 1) "" else "s" });
+                                const count_color = if (image_count == 0) theme.subtext1 else theme.green;
+
+                                const sub_str = try std.fmt.allocPrint(frame_allocator, "{} subfolder{s}", .{ subdir_count, if (subdir_count == 1) "" else "s" });
+                                const sub_color = if (subdir_count == 0) theme.subtext1 else theme.blue;
+
+                                clay.UI()(.{
+                                    .layout = .{
+                                        .sizing = .{ .w = .fit, .h = .fit },
+                                        .direction = .left_to_right,
+                                        .child_gap = 6,
+                                    },
+                                })({
+                                    clay.UI()(.{
+                                        .layout = .{
+                                            .sizing = .{ .w = .fit, .h = .fit },
+                                            .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
+                                        },
+                                        .background_color = theme.crust,
+                                        .corner_radius = .all(4),
+                                        .border = .{
+                                            .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                                            .color = if (image_count == 0) theme.surface0 else theme.green,
+                                        },
+                                    })({
+                                        clay.text(count_str, .{
+                                            .color = count_color,
+                                            .font_size = 11,
+                                            .font_id = 0,
+                                        });
+                                    });
+
+                                    clay.UI()(.{
+                                        .layout = .{
+                                            .sizing = .{ .w = .fit, .h = .fit },
+                                            .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
+                                        },
+                                        .background_color = theme.crust,
+                                        .corner_radius = .all(4),
+                                        .border = .{
+                                            .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                                            .color = if (subdir_count == 0) theme.surface0 else theme.blue,
+                                        },
+                                    })({
+                                        clay.text(sub_str, .{
+                                            .color = sub_color,
+                                            .font_size = 11,
+                                            .font_id = 0,
+                                        });
+                                    });
+                                });
+                            }
                         }
                     },
                     else => {},

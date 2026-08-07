@@ -50,18 +50,19 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
         .reset_adjustments => vp.setAdjustments(0.0, 1.0),
         .rotate_cw => {
             vp.rotateCw();
-            if (nav.getCurrentImagePath()) |path| {
-                try self.putRotation(path, vp.rotation_angle);
+            if (nav.getCurrentImageEntry()) |entry| {
+                try self.putRotation(entry.getPath(), vp.rotation_angle);
             }
         },
         .rotate_ccw => {
             vp.rotateCcw();
-            if (nav.getCurrentImagePath()) |path| {
-                try self.putRotation(path, vp.rotation_angle);
+            if (nav.getCurrentImageEntry()) |entry| {
+                try self.putRotation(entry.getPath(), vp.rotation_angle);
             }
         },
         .reset_rotation => {
-            if (nav.getCurrentImagePath()) |path| {
+            if (nav.getCurrentImageEntry()) |entry| {
+                const path = entry.getPath();
                 const exif_rot = self.readJpegExifOrientation(path) orelse 0.0;
                 vp.rotation_angle = exif_rot;
                 try self.putRotation(path, vp.rotation_angle);

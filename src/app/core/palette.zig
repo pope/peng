@@ -6,9 +6,14 @@ const PaletteState = state_pkg.PaletteState;
 const PaletteModeData = state_pkg.PaletteModeData;
 const ScoredMatch = state_pkg.ScoredMatch;
 const DirectoryEntry = state_pkg.DirectoryEntry;
-
 pub fn loadDirectoryEntries(self: *PaletteState, io: std.Io, dir_path: []const u8) !void {
-    const dir_path_copy = try self.allocator.dupe(u8, std.mem.trimEnd(u8, dir_path, "/\\"));
+    const raw_target = std.mem.trimEnd(u8, dir_path, "/\\");
+    const target = if (core_fs.isCbzFile(raw_target))
+        (std.fs.path.dirname(raw_target) orelse ".")
+    else
+        raw_target;
+
+    const dir_path_copy = try self.allocator.dupe(u8, target);
     defer self.allocator.free(dir_path_copy);
 
     var navigated_up = false;
@@ -26,7 +31,7 @@ pub fn loadDirectoryEntries(self: *PaletteState, io: std.Io, dir_path: []const u
         const child_base = core_fs.getChildBasename(io, self.current_nav_dir.items, &buf);
         self.last_child_dir.clearRetainingCapacity();
         try self.last_child_dir.appendSlice(self.allocator, child_base);
-    } else {
+    } else if (self.current_nav_dir.items.len > 0) {
         self.last_child_dir.clearRetainingCapacity();
     }
 

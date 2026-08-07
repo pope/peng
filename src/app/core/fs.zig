@@ -25,9 +25,97 @@ pub fn isImageExtension(ext: []const u8) bool {
     return false;
 }
 
+pub fn isCbzExtension(ext: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(ext, ".cbz");
+}
+
+pub fn isCbzFile(filename: []const u8) bool {
+    if (isAppleDouble(filename)) return false;
+    return isCbzExtension(std.fs.path.extension(filename));
+}
+
 pub fn isImageFile(filename: []const u8) bool {
     if (isAppleDouble(filename)) return false;
     return isImageExtension(std.fs.path.extension(filename));
+}
+
+pub fn isSupportedFile(filename: []const u8) bool {
+    if (isAppleDouble(filename)) return false;
+    return isImageFile(filename) or isCbzFile(filename);
+}
+
+pub const ArchiveEntryPath = struct {
+    archive_path: []const u8,
+    entry_name: []const u8,
+};
+
+pub fn parseArchiveEntryPath(path: []const u8) ?ArchiveEntryPath {
+    if (std.mem.indexOf(u8, path, "::")) |sep_idx| {
+        return .{
+            .archive_path = path[0..sep_idx],
+            .entry_name = path[sep_idx + 2 ..],
+        };
+    }
+    return null;
+}
+
+const MediaEntry = @import("state").MediaEntry;
+
+pub fn scanCbzImageEntries(gpa: std.mem.Allocator, io: std.Io, cbz_path: []const u8, list: *std.ArrayList(MediaEntry)) !void {
+    var file = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, cbz_path, .{});
+    defer file.close(io);
+
+    var reader_buf: [4096]u8 = undefined;
+    var f_reader = file.reader(io, &reader_buf);
+
+    var iterator = try std.zip.Iterator.init(&f_reader);
+
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+
+    var entries: std.ArrayList(MediaEntry) = .empty;
+    errdefer {
+        for (entries.items) |item| item.deinit(gpa);
+        entries.deinit(gpa);
+    }
+
+    while (try iterator.next()) |entry| {
+        if (entry.filename_len == 0) continue;
+        _ = arena.reset(.retain_capacity);
+        const temp_alloc = arena.allocator();
+
+        try f_reader.seekTo(entry.header_zip_offset + @sizeOf(std.zip.CentralDirectoryFileHeader));
+        const entry_name = try temp_alloc.alloc(u8, entry.filename_len);
+        try f_reader.interface.readSliceAll(entry_name);
+
+        if (!isImageFile(entry_name)) continue;
+
+        const arch_path_dup = try gpa.dupe(u8, cbz_path);
+        errdefer gpa.free(arch_path_dup);
+
+        const entry_name_dup = try gpa.dupe(u8, entry_name);
+        errdefer gpa.free(entry_name_dup);
+
+        try entries.append(gpa, .{
+            .archive_entry = .{
+                .archive_path = arch_path_dup,
+                .entry_name = entry_name_dup,
+                .header_zip_offset = entry.header_zip_offset,
+                .file_offset = entry.file_offset,
+                .uncompressed_size = entry.uncompressed_size,
+                .compression_method = @intFromEnum(entry.compression_method),
+            },
+        });
+    }
+
+    std.mem.sort(MediaEntry, entries.items, {}, struct {
+        fn lessThan(_: void, a: MediaEntry, b: MediaEntry) bool {
+            return std.ascii.lessThanIgnoreCase(a.getBasename(), b.getBasename());
+        }
+    }.lessThan);
+
+    try list.appendSlice(gpa, entries.items);
+    entries.deinit(gpa);
 }
 
 fn isAllDotDots(path: []const u8) bool {
@@ -89,6 +177,32 @@ pub const FolderCounts = struct {
 };
 
 pub fn countFolderContents(io: std.Io, folder_path: []const u8) FolderCounts {
+    if (isCbzFile(folder_path)) {
+        var counts: FolderCounts = .{};
+        var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, folder_path, .{}) catch return counts;
+        defer file.close(io);
+
+        var reader_buf: [4096]u8 = undefined;
+        var f_reader = file.reader(io, &reader_buf);
+        var iterator = std.zip.Iterator.init(&f_reader) catch return counts;
+
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+
+        while (iterator.next() catch null) |entry| {
+            if (entry.filename_len == 0) continue;
+            _ = arena.reset(.retain_capacity);
+            const temp_alloc = arena.allocator();
+            f_reader.seekTo(entry.header_zip_offset + @sizeOf(std.zip.CentralDirectoryFileHeader)) catch continue;
+            const entry_name = temp_alloc.alloc(u8, entry.filename_len) catch continue;
+            f_reader.interface.readSliceAll(entry_name) catch continue;
+            if (isImageFile(entry_name)) {
+                counts.image_count += 1;
+            }
+        }
+        return counts;
+    }
+
     var dir = std.Io.Dir.openDir(std.Io.Dir.cwd(), io, folder_path, .{ .iterate = true }) catch |err| {
         std.log.debug("countFolderContents openDir failed for '{s}': {}", .{ folder_path, err });
         return .{};
@@ -102,7 +216,7 @@ pub fn countFolderContents(io: std.Io, folder_path: []const u8) FolderCounts {
         return counts;
     })) |entry| {
         if (entry.kind == .file) {
-            if (isImageFile(entry.name)) {
+            if (isImageFile(entry.name) or isCbzFile(entry.name)) {
                 counts.image_count += 1;
             }
         } else if (entry.kind == .directory) {
@@ -140,7 +254,10 @@ pub fn scanDirectoryEntries(gpa: std.mem.Allocator, io: std.Io, dir_path: []cons
 
     var it = dir.iterate();
     while (try it.next(io)) |entry| {
-        if (entry.kind == .directory) {
+        const is_dir_entry = (entry.kind == .directory);
+        const is_cbz_entry = (entry.kind == .file and isCbzFile(entry.name));
+
+        if (is_dir_entry or is_cbz_entry) {
             if (std.mem.startsWith(u8, entry.name, ".")) continue;
 
             const full_path = try std.fs.path.join(gpa, &.{ dir_path, entry.name });
@@ -149,18 +266,29 @@ pub fn scanDirectoryEntries(gpa: std.mem.Allocator, io: std.Io, dir_path: []cons
             errdefer gpa.free(name);
 
             const counts = countFolderContents(io, full_path);
-            try entries.append(gpa, .{
-                .directory = .{
-                    .name = name,
-                    .full_path = full_path,
-                    .scan = .{
-                        .scanned = .{
-                            .image_count = counts.image_count,
-                            .subdir_count = counts.subdir_count,
+            if (is_cbz_entry) {
+                try entries.append(gpa, .{
+                    .archive_file = .{
+                        .name = name,
+                        .full_path = full_path,
+                        .image_count = counts.image_count,
+                        .archive_type = .cbz,
+                    },
+                });
+            } else {
+                try entries.append(gpa, .{
+                    .directory = .{
+                        .name = name,
+                        .full_path = full_path,
+                        .scan = .{
+                            .scanned = .{
+                                .image_count = counts.image_count,
+                                .subdir_count = counts.subdir_count,
+                            },
                         },
                     },
-                },
-            });
+                });
+            }
         }
     }
 
@@ -212,4 +340,61 @@ test "getChildBasename" {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const b = getChildBasename(io, ".", &buf);
     try std.testing.expectEqualStrings("peng", b);
+}
+
+test "CBZ file functions and archive path parsing" {
+    try std.testing.expect(isCbzFile("comic.cbz"));
+    try std.testing.expect(isCbzFile("path/to/manga.CBZ"));
+    try std.testing.expect(!isCbzFile("image.png"));
+    try std.testing.expect(isSupportedFile("comic.cbz"));
+
+    const parsed = parseArchiveEntryPath("comic.cbz::pages/page01.jpg");
+    try std.testing.expect(parsed != null);
+    try std.testing.expectEqualStrings("comic.cbz", parsed.?.archive_path);
+    try std.testing.expectEqualStrings("pages/page01.jpg", parsed.?.entry_name);
+
+    try std.testing.expectEqual(null, parseArchiveEntryPath("regular_path.jpg"));
+}
+
+test "scanCbzImageEntries on sample archive" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var entries: std.ArrayList(MediaEntry) = .empty;
+    defer {
+        for (entries.items) |e| e.deinit(allocator);
+        entries.deinit(allocator);
+    }
+
+    try scanCbzImageEntries(allocator, io, "5 Centimeters per Second.cbz", &entries);
+    try std.testing.expect(entries.items.len > 0);
+    try std.testing.expectEqualStrings("5 Centimeters per Second/page000.jpeg", entries.items[0].archive_entry.entry_name);
+    try std.testing.expect(entries.items[0].archive_entry.file_offset != null);
+}
+
+test "scanDirectoryEntries includes CBZ files and countFolderContents counts CBZ images" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    const counts = countFolderContents(io, "5 Centimeters per Second.cbz");
+    try std.testing.expect(counts.image_count > 0);
+
+    var dir_entries: std.ArrayList(DirectoryEntry) = .empty;
+    defer {
+        for (dir_entries.items) |e| {
+            allocator.free(e.getName());
+            if (e.getFullPath().len > 0) allocator.free(e.getFullPath());
+        }
+        dir_entries.deinit(allocator);
+    }
+
+    try scanDirectoryEntries(allocator, io, ".", &dir_entries);
+    var found_cbz = false;
+    for (dir_entries.items) |e| {
+        if (std.mem.eql(u8, e.getName(), "5 Centimeters per Second.cbz")) {
+            found_cbz = true;
+            break;
+        }
+    }
+    try std.testing.expect(found_cbz);
 }

@@ -108,6 +108,8 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
                         .mipmap_time_ms = full_res.mipmap_time_ms,
                         .was_fallback = full_res.was_fallback,
                         .fallback_time_ms = full_res.fallback_time_ms,
+                        .cbz_decompress_time_ms = decoded_data.cbz_decompress_time_ms,
+                        .compressed_size_bytes = decoded_data.compressed_size_bytes,
                     },
                 };
                 state.cache.enforceVramBudget(gpu_dev, state.viewer.navigation.current_index, image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
@@ -133,6 +135,8 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
                     .read_time_ms = decoded_data.read_time_ms,
                     .decode_time_ms = decoded_data.decode_time_ms,
                     .conversion_time_ms = decoded_data.conversion_time_ms,
+                    .cbz_decompress_time_ms = decoded_data.cbz_decompress_time_ms,
+                    .compressed_size_bytes = decoded_data.compressed_size_bytes,
                 },
             };
             decoded_data.surface = null;
@@ -142,8 +146,8 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
 }
 
 fn handleDirScannedEvent(state: *AppState, scanned_data: events.PathDiscoveredPayload) void {
-    const dup = state.viewer.navigation.directory_arena.allocator().dupe(u8, scanned_data.path) catch |err| {
-        std.log.err("Failed to duplicate path '{s}' in directory arena: {}", .{ scanned_data.path, err });
+    const dup = scanned_data.entry.dupe(state.viewer.navigation.directory_arena.allocator()) catch |err| {
+        std.log.err("Failed to duplicate path in directory arena: {}", .{err});
         return;
     };
     state.viewer.navigation.image_list.append(state.allocator, dup) catch |err| std.log.err("Failed to append discovered path to image_list: {}", .{err});
@@ -153,14 +157,15 @@ fn handleDirScannedEvent(state: *AppState, scanned_data: events.PathDiscoveredPa
 }
 
 fn handleDirectoryScanResultEvent(state: *AppState, result_data: events.DirectoryScanResultPayload) void {
+    const arena_alloc = state.viewer.navigation.directory_arena.allocator();
     if (result_data.is_dir) {
         for (result_data.paths) |item| {
-            const dup = state.viewer.navigation.directory_arena.allocator().dupe(u8, item) catch |err| {
-                std.log.err("Failed to duplicate directory item '{s}': {}", .{ item, err });
+            const dup = item.dupe(arena_alloc) catch |err| {
+                std.log.err("Failed to duplicate directory item: {}", .{err});
                 continue;
             };
             state.viewer.navigation.image_list.append(state.allocator, dup) catch |err| {
-                std.log.err("Failed to append image '{s}' to list: {}", .{ dup, err });
+                std.log.err("Failed to append image to list: {}", .{err});
             };
         }
         if (state.viewer.navigation.current_index == null and state.viewer.navigation.image_list.items.len > 0) {
@@ -169,23 +174,28 @@ fn handleDirectoryScanResultEvent(state: *AppState, result_data: events.Director
     } else {
         var target_idx_in_dir: ?usize = null;
         for (result_data.paths, 0..) |item, i| {
-            if (std.mem.eql(u8, item, result_data.target_path)) {
-                target_idx_in_dir = i;
-                break;
+            switch (item) {
+                .filesystem => |f| {
+                    if (std.mem.eql(u8, f.path, result_data.target_path)) {
+                        target_idx_in_dir = i;
+                        break;
+                    }
+                },
+                else => {},
             }
         }
 
         _ = state.viewer.navigation.directory_arena.reset(.retain_capacity);
         state.viewer.navigation.image_list.clearRetainingCapacity();
         for (result_data.paths, 0..) |item, i| {
-            const dup = state.viewer.navigation.directory_arena.allocator().dupe(u8, item) catch |err| {
-                std.log.err("Failed to duplicate directory item '{s}': {}", .{ item, err });
+            const dup = item.dupe(arena_alloc) catch |err| {
+                std.log.err("Failed to duplicate directory item: {}", .{err});
                 continue;
             };
             state.viewer.navigation.image_list.append(state.allocator, dup) catch |err| {
-                std.log.err("Failed to append image '{s}' to list: {}", .{ dup, err });
+                std.log.err("Failed to append image to list: {}", .{err});
             };
-            if (target_idx_in_dir == null and std.mem.eql(u8, item, result_data.target_path)) {
+            if (target_idx_in_dir == null and item == .filesystem and std.mem.eql(u8, item.filesystem.path, result_data.target_path)) {
                 target_idx_in_dir = i;
             }
         }

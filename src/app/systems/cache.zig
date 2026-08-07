@@ -19,8 +19,14 @@ const sdl = @import("sdl");
 /// - `index`: Image list index being decoded.
 /// - `dup_path`: Null-terminated file path string.
 /// - `thumb_only`: If true, restricts decoding to low-resolution thumbnail for rapid scrolling.
-fn spawnCacheDecodeSlot(state: *AppState, index: usize, dup_path: [:0]const u8, thumb_only: bool) !void {
-    errdefer state.allocator.free(dup_path);
+const MediaEntry = state_pkg.MediaEntry;
+
+fn spawnCacheDecodeSlot(state: *AppState, index: usize, entry_item: MediaEntry, thumb_only: bool) !void {
+    const dup_entry = entry_item.dupe(state.allocator) catch |err| {
+        std.log.err("Failed to dupe MediaEntry for decode worker: {}", .{err});
+        return err;
+    };
+    errdefer dup_entry.deinit(state.allocator);
 
     const args = try state.allocator.create(DecodeArgs);
     errdefer state.allocator.destroy(args);
@@ -46,7 +52,7 @@ fn spawnCacheDecodeSlot(state: *AppState, index: usize, dup_path: [:0]const u8, 
         .allocator = state.allocator,
         .io = state.io,
         .key = key,
-        .path = dup_path,
+        .entry = dup_entry,
         .has_gpu_device = state.gpu_device != null,
         .pixel_format = state.viewer.display.getPixelFormat(),
         .thumb_only = thumb_only,
@@ -58,14 +64,6 @@ fn spawnCacheDecodeSlot(state: *AppState, index: usize, dup_path: [:0]const u8, 
 const FrameContext = @import("root.zig").FrameContext;
 
 /// System Pass: Update image RAM/GPU texture cache and background preloading window.
-///
-/// Responsibilities:
-/// 1. Updates EXIF orientation for active image.
-/// 2. Calculates a 5-slot prefetch window (`[idx, idx+1, idx+2, idx-1, idx-2]`).
-/// 3. Evicts slots outside prefetch window from RAM/GPU memory (`removeAndDeinit`).
-/// 4. Throttles preloading when rapid navigation (< 150ms per item) is detected.
-/// 5. Spawns background decode worker tasks for missing prefetch window entries.
-/// 6. Synchronizes `viewer.stats.current_image_cache_hit` telemetry flag.
 pub fn sysUpdateCache(ctx: FrameContext) !void {
     const state = ctx.state;
     state.updateCurrentRotation();
@@ -127,7 +125,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
 
     // 3. Mark missing slots as decoding in cache map
     var to_spawn_indices: [5]usize = undefined;
-    var to_spawn_paths: [5]?[:0]const u8 = [1]?[:0]const u8{null} ** 5;
+    var to_spawn_entries: [5]?MediaEntry = [1]?MediaEntry{null} ** 5;
     var to_spawn_count: usize = 0;
     var hit = false;
 
@@ -151,7 +149,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
                     if (!dec.has_thread) {
                         if (to_spawn_count < 5) {
                             to_spawn_indices[to_spawn_count] = d;
-                            to_spawn_paths[to_spawn_count] = try ctx.frame_allocator.dupeZ(u8, state.viewer.navigation.image_list.items[d]);
+                            to_spawn_entries[to_spawn_count] = state.viewer.navigation.image_list.items[d];
                             to_spawn_count += 1;
                         }
                     }
@@ -164,15 +162,10 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
 
     // 4. Spawn worker threads
     for (to_spawn_indices[0..to_spawn_count], 0..) |d, s_idx| {
-        const path_opt = to_spawn_paths[s_idx];
-        if (path_opt == null or !state.workers.canSpawnDecode()) continue;
+        const entry_opt = to_spawn_entries[s_idx];
+        if (entry_opt == null or !state.workers.canSpawnDecode()) continue;
 
-        const path = path_opt.?;
-        const dup_path = state.allocator.dupeZ(u8, path) catch |err| {
-            std.log.err("Failed to dupe path for decode worker: {}", .{err});
-            continue;
-        };
-        spawnCacheDecodeSlot(state, d, dup_path, is_fast_scrolling) catch |err| {
+        spawnCacheDecodeSlot(state, d, entry_opt.?, is_fast_scrolling) catch |err| {
             std.log.err("Failed to spawn decode worker for index {}: {}", .{ d, err });
         };
     }
@@ -198,7 +191,7 @@ test "sysUpdateCache - populates prefetch window and evicts unwanted entries" {
     const paths = [_][]const u8{ "img0.png", "img1.png", "img2.png", "img3.png", "img4.png" };
     for (paths) |p| {
         const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, p);
-        try state.viewer.navigation.image_list.append(allocator, dup);
+        try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = dup } });
     }
     state.viewer.navigation.current_index = 0;
 

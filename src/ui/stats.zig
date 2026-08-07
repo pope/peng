@@ -49,10 +49,20 @@ pub fn renderInfoOverlay(
 
     if (ui_model.current_index) |idx| {
         if (idx < ui_model.image_list.len) {
-            const path = ui_model.image_list[idx];
-            filename = std.fs.path.basename(path);
-            const dirname = std.fs.path.dirname(path) orelse ".";
-            display_dir = if (dirname.len > 35) try std.fmt.allocPrint(frame_allocator, "...{s}", .{dirname[dirname.len - 32 ..]}) else dirname;
+            const media = ui_model.image_list[idx];
+            switch (media) {
+                .archive_entry => |a| {
+                    const page_basename = std.fs.path.basename(a.entry_name);
+                    const arch_basename = std.fs.path.basename(a.archive_path);
+                    filename = try std.fmt.allocPrint(frame_allocator, "{s} (Page {d}/{d})", .{ page_basename, idx + 1, ui_model.image_list.len });
+                    display_dir = try std.fmt.allocPrint(frame_allocator, "Archive: {s}", .{arch_basename});
+                },
+                .filesystem => |f| {
+                    filename = std.fs.path.basename(f.path);
+                    const dirname = std.fs.path.dirname(f.path) orelse ".";
+                    display_dir = if (dirname.len > 35) try std.fmt.allocPrint(frame_allocator, "...{s}", .{dirname[dirname.len - 32 ..]}) else dirname;
+                },
+            }
         }
     }
 
@@ -115,7 +125,7 @@ pub fn renderInfoOverlay(
         var is_jpeg = std.mem.eql(u8, mime_type, "image/jpeg");
         if (ui_model.current_index) |idx| {
             if (idx < ui_model.image_list.len) {
-                const ext = std.fs.path.extension(ui_model.image_list[idx]);
+                const ext = std.fs.path.extension(ui_model.image_list[idx].getBasename());
                 if (std.ascii.eqlIgnoreCase(ext, ".jpg") or std.ascii.eqlIgnoreCase(ext, ".jpeg")) {
                     is_jpeg = true;
                 }
@@ -354,6 +364,14 @@ pub fn renderStatsOverlay(
         try renderStatRow("Total Cache VRAM", total_vram_str);
 
         try renderStatRow("Disk Read Time", read_str);
+        if (img.cbz_decompress_time_ms > 0.0) {
+            const cbz_time_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{img.cbz_decompress_time_ms});
+            try renderStatRow("CBZ Extract Time", cbz_time_str);
+        }
+        if (img.compressed_size_bytes > 0) {
+            const comp_size_str = try formatSize(frame_allocator, img.compressed_size_bytes);
+            try renderStatRow("Compressed Size", comp_size_str);
+        }
         try renderStatRow("Decode Time", decode_str);
         try renderStatRow("Convert Time", convert_str);
         try renderStatRow("GPU Upload", upload_str);

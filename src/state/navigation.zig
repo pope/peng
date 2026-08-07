@@ -3,8 +3,10 @@ const sdl = @import("sdl");
 const types = @import("types.zig");
 const SlideshowMode = types.SlideshowMode;
 
+const MediaEntry = types.MediaEntry;
+
 pub const NavigationState = struct {
-    image_list: std.ArrayList([]const u8) = .empty,
+    image_list: std.ArrayList(MediaEntry) = .empty,
     current_index: ?usize = null,
     slideshow: SlideshowMode = .inactive,
     is_loading_files: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
@@ -37,7 +39,7 @@ pub const NavigationState = struct {
         return self.image_list.items.len;
     }
 
-    pub fn getCurrentImagePath(self: *const NavigationState) ?[]const u8 {
+    pub fn getCurrentImageEntry(self: *const NavigationState) ?MediaEntry {
         const idx = self.current_index orelse return null;
         if (idx < self.image_list.items.len) {
             return self.image_list.items[idx];

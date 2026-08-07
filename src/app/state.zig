@@ -181,7 +181,9 @@ pub const AppState = struct {
         const idx = self.viewer.navigation.current_index orelse return;
         if (idx >= self.viewer.navigation.image_list.items.len) return;
 
-        const path = self.viewer.navigation.image_list.items[idx];
+        const media = self.viewer.navigation.image_list.items[idx];
+        if (media != .filesystem) return;
+        const path = media.filesystem.path;
         var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), self.io, path, .{}) catch return;
         defer file.close(self.io);
 
@@ -357,10 +359,26 @@ pub const AppState = struct {
             .files => try self.rebuildPaletteMatches(),
             .actions => try self.rebuildActionMatches(),
             .directory_navigator => {
+                var preselect_child: ?[]const u8 = null;
                 const start_dir = blk: {
                     if (self.viewer.navigation.current_index) |idx| {
                         if (idx < self.viewer.navigation.image_list.items.len) {
-                            break :blk std.fs.path.dirname(self.viewer.navigation.image_list.items[idx]) orelse ".";
+                            const media = self.viewer.navigation.image_list.items[idx];
+                            switch (media) {
+                                .archive_entry => |a| {
+                                    preselect_child = std.fs.path.basename(a.archive_path);
+                                    break :blk std.fs.path.dirname(a.archive_path) orelse ".";
+                                },
+                                .filesystem => |f| {
+                                    if (std.fs.path.dirname(f.path)) |parent| {
+                                        preselect_child = std.fs.path.basename(f.path);
+                                        break :blk parent;
+                                    } else {
+                                        preselect_child = f.path;
+                                        break :blk ".";
+                                    }
+                                },
+                            }
                         }
                     }
                     if (self.viewer.navigation.last_scanned_dir.items.len > 0) {
@@ -371,6 +389,10 @@ pub const AppState = struct {
                     }
                     break :blk ".";
                 };
+                if (preselect_child) |child| {
+                    self.viewer.ui.palette.last_child_dir.clearRetainingCapacity();
+                    try self.viewer.ui.palette.last_child_dir.appendSlice(self.allocator, child);
+                }
                 try palette_module.loadDirectoryEntries(&self.viewer.ui.palette, self.io, start_dir);
                 while (self.viewer.ui.palette.dir_items.items.len == 0) {
                     const curr = self.viewer.ui.palette.current_nav_dir.items;
@@ -458,19 +480,19 @@ pub const AppState = struct {
     }
 
     pub fn updateCurrentRotation(self: *AppState) void {
-        const path_opt = blk: {
+        const media_opt = blk: {
             const len = self.viewer.navigation.image_list.items.len;
             const current_idx = self.viewer.navigation.current_index orelse break :blk null;
             if (current_idx >= len) break :blk null;
             break :blk self.viewer.navigation.image_list.items[current_idx];
         };
 
-        const path = path_opt orelse {
+        const media = media_opt orelse {
             self.viewer.viewport.rotation_angle = 0.0;
             return;
         };
 
-        if (self.viewer.rotation_map.get(path)) |user_rot| {
+        if (self.viewer.rotation_map.get(media.getPath())) |user_rot| {
             self.viewer.viewport.rotation_angle = user_rot;
         } else if (self.getCurrentEntry()) |entry| {
             self.viewer.viewport.rotation_angle = entry.exif_orientation;
@@ -516,9 +538,12 @@ pub const AppState = struct {
         if (has_stat) {
             if (stat.kind == .directory) {
                 try fs.startAsyncPathScan(self, path, true);
+            } else if (core_fs.isCbzFile(path)) {
+                self.viewer.navigation.is_loading_files.store(true, .release);
+                try fs.startAsyncPathScan(self, path, false);
             } else {
                 const dup = try self.viewer.navigation.directory_arena.allocator().dupe(u8, path);
-                try self.viewer.navigation.image_list.append(self.allocator, dup);
+                try self.viewer.navigation.image_list.append(self.allocator, .{ .filesystem = .{ .path = dup } });
                 self.viewer.navigation.current_index = 0;
 
                 try fs.startAsyncPathScan(self, path, false);
@@ -611,7 +636,7 @@ test "AppState.updateCurrentRotation syncs EXIF orientation" {
     var state = try AppState.initHeadless(std.testing.allocator, std.Io.Threaded.global_single_threaded.io());
     defer state.deinit();
 
-    try state.viewer.navigation.image_list.append(std.testing.allocator, "test_photo_1.jpg");
+    try state.viewer.navigation.image_list.append(std.testing.allocator, .{ .filesystem = .{ .path = "test_photo_1.jpg" } });
     state.viewer.navigation.current_index = 0;
 
     // Initially uncached -> rotation_angle should be 0.0
@@ -662,7 +687,7 @@ test "AppState.openPalette directory_navigator starting directory rules" {
 
     // Rule 1: current_index is valid -> starting directory is dirname of current image
     const sample_path = tmp_dir ++ "/image1.jpg";
-    try state.viewer.navigation.image_list.append(allocator, sample_path);
+    try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = sample_path } });
     state.viewer.navigation.current_index = 0;
 
     try state.openPalette(.directory_navigator);
@@ -703,7 +728,7 @@ test "AppState.openPalette directory_navigator steps up if 0 subdirectories" {
 
     // Image in child_leaf (which has 0 subdirectories itself)
     const img_path = sub_leaf ++ "/photo.png";
-    try state.viewer.navigation.image_list.append(allocator, img_path);
+    try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = img_path } });
     state.viewer.navigation.current_index = 0;
 
     // openPalette should see sub_leaf has 0 subdirectories, so it steps up to tmp_dir and pre-selects child_leaf
@@ -735,7 +760,7 @@ test "AppState.openPalette steps up from top-level relative leaf dir without sla
     defer state.deinit();
 
     const img_path = top_leaf ++ "/photo.png";
-    try state.viewer.navigation.image_list.append(allocator, img_path);
+    try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = img_path } });
     state.viewer.navigation.current_index = 0;
 
     try state.openPalette(.directory_navigator);
@@ -830,8 +855,8 @@ test "AppState slideshow timer auto-advances slide" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    try state.viewer.navigation.image_list.append(allocator, "img1.jpg");
-    try state.viewer.navigation.image_list.append(allocator, "img2.jpg");
+    try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "img1.jpg" } });
+    try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "img2.jpg" } });
     state.viewer.navigation.current_index = 0;
     state.viewer.navigation.slideshow = .{ .active = .{ .interval_s = 2.0 } };
 
