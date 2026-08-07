@@ -71,7 +71,7 @@ pub fn sysUpdateViewport(ctx: FrameContext, palette_closed_this_frame: bool) voi
             }
             const cy = title_bar_h + ((input.win_h - title_bar_h) / 2.0);
 
-            state.viewer.viewport.zoomAtPoint(new_zoom, input.mouse_x, input.mouse_y, cx, cy);
+            state.viewer.viewport.zoomAtPoint(new_zoom, input.pixMouseX(), input.pixMouseY(), cx * input.scale_x, cy * input.scale_y);
         }
     }
 }
