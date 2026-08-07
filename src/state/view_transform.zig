@@ -76,6 +76,14 @@ pub fn computeViewDims(raw_w: f32, raw_h: f32, rotation_angle: f32, view_w: f32,
                 draw_h = view_h / r_img;
             }
         },
+        .fit_width => {
+            draw_w = view_w;
+            draw_h = view_w / r_img;
+        },
+        .fit_height => {
+            draw_h = view_h;
+            draw_w = view_h * r_img;
+        },
     }
 
     return .{
@@ -139,6 +147,17 @@ test "computeThumbnailUvCrop pillarboxing (3:4 portrait in 4:3 thumb)" {
     try std.testing.expectEqual(@as(f32, 1.0), crop.v_max);
     try std.testing.expectApproxEqAbs(@as(f32, 0.21875), crop.u_min, 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.78125), crop.u_max, 0.001);
+}
+
+test "computeViewDims fit_width and fit_height" {
+    // 800x1600 image (1:2 aspect ratio) in 1000x1000 viewport
+    const fw = computeViewDims(800.0, 1600.0, 0.0, 1000.0, 1000.0, .fit_width);
+    try std.testing.expectEqual(@as(f32, 1000.0), fw.draw_w);
+    try std.testing.expectEqual(@as(f32, 2000.0), fw.draw_h);
+
+    const fh = computeViewDims(800.0, 1600.0, 0.0, 1000.0, 1000.0, .fit_height);
+    try std.testing.expectEqual(@as(f32, 500.0), fh.draw_w);
+    try std.testing.expectEqual(@as(f32, 1000.0), fh.draw_h);
 }
 
 test "computeThumbnailUvCrop matching aspect ratios" {

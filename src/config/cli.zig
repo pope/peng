@@ -45,7 +45,7 @@ pub fn parseCommandLineArgs(init: std.process.Init, gpa: std.mem.Allocator) !Par
                 if (std.meta.stringToEnum(ScaleMode, val)) |mode| {
                     default_scale = mode;
                 } else {
-                    std.log.err("Unknown scale mode: {s}. Valid modes are: none, shrink, full, crop.", .{val});
+                    std.log.err("Unknown scale mode: {s}. Valid modes are: none, shrink, full, crop, fit_width, fit_height.", .{val});
                 }
             } else {
                 std.log.err("Missing value for --scale flag.", .{});

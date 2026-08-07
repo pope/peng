@@ -218,6 +218,8 @@ pub fn renderInfoOverlay(
             .shrink => "Fit if larger",
             .full => "Fit to screen (Aspect Fit)",
             .crop => "Fill screen (Aspect Fill)",
+            .fit_width => "Fit to width",
+            .fit_height => "Fit to height",
         };
         try renderStatRow("Scale Mode", scale_mode_str);
         const reading_dir_str = if (ui_model.manga_mode) "Right-to-Left (Manga)" else "Left-to-Right (Standard)";

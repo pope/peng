@@ -77,6 +77,8 @@ pub const IpcCommand = union(enum) {
     pan: struct { x: f32, y: f32 },
     adjust: struct { brightness: f32, contrast: f32 },
     filter: TextureScaleMode,
+    scale: intents.ScaleMode,
+    manga: bool,
     palette: PaletteTarget,
     thumb: ThumbAction,
     debug: bool,
@@ -92,6 +94,8 @@ pub const IpcCommand = union(enum) {
             .pan => |p| return .{ .set_pan = .{ .x = p.x, .y = p.y } },
             .adjust => return null,
             .filter => |mode| return .{ .set_filter = mode },
+            .scale => |mode| return .{ .set_scale = mode },
+            .manga => |val| return .{ .set_manga_mode = val },
             .palette => |target| {
                 const mode: intents.PaletteMode = switch (target.kind) {
                     .actions => .actions,
@@ -148,6 +152,25 @@ pub const IpcCommand = union(enum) {
                 return .{ .filter = mode };
             }
             return error.UnknownFilter;
+        } else if (std.mem.eql(u8, cmd, "scale")) {
+            const val = it.next() orelse return error.MissingArgument;
+            if (std.mem.eql(u8, val, "fit_width") or std.mem.eql(u8, val, "width")) {
+                return .{ .scale = .fit_width };
+            } else if (std.mem.eql(u8, val, "fit_height") or std.mem.eql(u8, val, "height")) {
+                return .{ .scale = .fit_height };
+            } else if (std.meta.stringToEnum(intents.ScaleMode, val)) |mode| {
+                return .{ .scale = mode };
+            }
+            return error.UnknownScale;
+        } else if (std.mem.eql(u8, cmd, "manga")) {
+            const val = it.next() orelse return error.MissingArgument;
+            if (std.mem.eql(u8, val, "true")) {
+                return .{ .manga = true };
+            } else if (std.mem.eql(u8, val, "false")) {
+                return .{ .manga = false };
+            } else {
+                return error.InvalidArgument;
+            }
         } else if (std.mem.eql(u8, cmd, "palette")) {
             const pal_name = it.next() orelse return error.MissingArgument;
             var kind: PaletteKind = undefined;

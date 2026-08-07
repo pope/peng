@@ -9,6 +9,8 @@ pub const ScaleMode = enum {
     shrink,
     full,
     crop,
+    fit_width,
+    fit_height,
 };
 
 /// High-quality GPU texture resampling and reconstruction filter algorithms.
