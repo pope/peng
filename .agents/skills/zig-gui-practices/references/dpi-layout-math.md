@@ -38,6 +38,19 @@ ______________________________________________________________________
 - **Physical Pixel Basis**:
   `ViewportParams.pan_x` and `pan_y` store offsets in **physical framebuffer pixels** to match GPU rasterization space in `appendImageCommand`.
 
+- **HiDPI Mouse Drag Differential**:
+  Physical mouse drag deltas update viewport pan offsets in framebuffer pixels:
+  $$\\Delta x\_{\\text{phys}} = \\text{FrameInput.pixMouseX}() - v.\\text{last_x}$$
+  $$\\Delta y\_{\\text{phys}} = \\text{FrameInput.pixMouseY}() - v.\\text{last_y}$$
+  $$\\text{pan_x} \\mathrel{+}= \\Delta x\_{\\text{phys}}, \\quad \\text{pan_y} \\mathrel{+}= \\Delta y\_{\\text{phys}}$$
+
+- **Scroll Wheel & 2-Finger Touchpad Panning**:
+  Scroll events accumulate into `scroll_delta_x/y` in `polling.zig`:
+  $$\\text{scroll_delta} = \\text{event.wheel.x} \\times \\text{multiplier} \\times \\text{MOUSE_WHEEL_SCROLL_MULTIPLIER} \\quad (\\text{multiplier} = 6.0)$$
+  Viewport panning converts scroll deltas to physical framebuffer pixels:
+  $$\\Delta \\text{pan_x} = \\text{scroll_delta_x} \\times \\text{scale_x} \\times 5.0$$
+  $$\\Delta \\text{pan_y} = \\text{scroll_delta_y} \\times \\text{scale_y} \\times 5.0$$
+
 - **Mouse Input Scaling (`pixMouseX()` / `pixMouseY()`)**:
   SDL mouse state and Clay pointer events are in **logical points**. Convert mouse positions to physical pixels before performing viewport pan/zoom operations using `FrameInput` helper methods:
   $$\\text{mouse_x}_{\\text{phys}} = \\text{FrameInput.pixMouseX}() = \\text{mouse_x} \\times \\text{scale_x}$$
@@ -48,3 +61,24 @@ ______________________________________________________________________
 
 - **Logical UI Overlays vs Physical Viewport**:
   UI overlay elements (`InfoCard`, `StatsCard`) store drag offsets in **logical points** (`input.mouse_x`), whereas Viewport pan and zoom-at-cursor operations operate strictly in **physical pixels** (`input.pixMouseX()`, `input.pixMouseY()`).
+
+______________________________________________________________________
+
+## Pinch-to-Zoom: Wayland Touchpad vs Multi-Touch Gestures
+
+- **Wayland / macOS Trackpad Pinch (`SDL_EVENT_PINCH_*`)**:
+
+  - Pinch delta accumulation: $\\text{pinch_delta} \\mathrel{+}= (\\text{event.pinch.scale} - 1.0)$ on `SDL_EVENT_PINCH_UPDATE` (ignoring uninitialized scale on `SDL_EVENT_PINCH_BEGIN`).
+  - Focus anchor: Mouse cursor physical location $(x\_{\\text{mouse}} \\times \\text{scale_x}, y\_{\\text{mouse}} \\times \\text{scale_y})$.
+
+- **Touchscreen Multi-Finger Gestures (`SDL_EVENT_FINGER_*`)**:
+
+  - Inter-finger distance: $\\text{dist} = \\sqrt{((x_2 - x_1) \\times \\text{win_w})^2 + ((y_2 - y_1) \\times \\text{win_h})^2}$
+  - Pinch delta accumulation: $\\text{pinch_delta} \\mathrel{+}= \\frac{\\text{dist} - \\text{last_dist}}{\\text{last_dist}}$
+  - Focus anchor: Touch midpoint physical location $(\\text{midpoint_x} \\times \\text{scale_x}, \\text{midpoint_y} \\times \\text{scale_y})$.
+
+- **Zoom Application (`viewport.zig`)**:
+
+  - $\\text{zoom_delta} = \\text{pinch_delta} \\times 0.5$ (or $\\text{scroll_delta_y} \\times 0.1$ for Ctrl+Scroll)
+  - Clamped target zoom: $\\text{new_zoom} = \\text{clamp}(Z\_{\\text{old}} + \\text{zoom_delta})$
+  - Viewport anchor call: `ViewportParams.zoomAtPoint(new_zoom, focus_x, focus_y, center_x, center_y)`
