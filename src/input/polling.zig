@@ -77,6 +77,16 @@ pub fn mapModFromSdl(mod: u16) KeyModifiers {
     };
 }
 
+pub const TouchFinger = struct {
+    finger_id: u64,
+    x: f32,
+    y: f32,
+};
+
+var active_fingers: [8]TouchFinger = undefined;
+var active_finger_count: usize = 0;
+var last_touch_dist: f32 = 0.0;
+
 pub const FrameInputState = struct {
     frame_allocator: std.mem.Allocator,
     keys_pressed: std.ArrayList(Key),
@@ -84,10 +94,15 @@ pub const FrameInputState = struct {
     dropped_path_opt: ?[]const u8 = null,
     scroll_delta_x: f32 = 0,
     scroll_delta_y: f32 = 0,
+    pinch_delta: f32 = 0,
+    pinch_center_x: f32 = 0,
+    pinch_center_y: f32 = 0,
     mouse_left_clicked: bool = false,
     mouse_inside: bool = false,
     quit_requested: bool = false,
     window_resized: bool = false,
+    win_w: f32 = 0,
+    win_h: f32 = 0,
 };
 
 pub fn processSDLEvent(event: sdl.Event, frame_input: *FrameInputState) !void {
@@ -125,9 +140,92 @@ pub fn processSDLEvent(event: sdl.Event, frame_input: *FrameInputState) !void {
             }
         },
         sdl.event_type.mouse_wheel => {
-            const multiplier: f32 = if (event.wheel.direction == sdl.mouse.wheel_flipped) -1.0 else 1.0;
-            frame_input.scroll_delta_x += event.wheel.x * multiplier * MOUSE_WHEEL_SCROLL_MULTIPLIER;
-            frame_input.scroll_delta_y += event.wheel.y * multiplier * MOUSE_WHEEL_SCROLL_MULTIPLIER;
+            const is_flipped = (event.wheel.direction == sdl.mouse.wheel_flipped);
+            if (is_flipped) {
+                // Flipped / Natural scrolling (Touchpads with Natural Scroll): swiping UP moves content UP
+                frame_input.scroll_delta_x -= event.wheel.x * MOUSE_WHEEL_SCROLL_MULTIPLIER;
+                frame_input.scroll_delta_y -= event.wheel.y * MOUSE_WHEEL_SCROLL_MULTIPLIER;
+            } else {
+                // Normal / Traditional scrolling (Physical Mouse Wheels): rolling DOWN scrolls view DOWN
+                frame_input.scroll_delta_x += event.wheel.x * MOUSE_WHEEL_SCROLL_MULTIPLIER;
+                frame_input.scroll_delta_y += event.wheel.y * MOUSE_WHEEL_SCROLL_MULTIPLIER;
+            }
+        },
+        sdl.event_type.finger_down => {
+            if (active_finger_count < 8) {
+                var found = false;
+                for (0..active_finger_count) |i| {
+                    if (active_fingers[i].finger_id == event.tfinger.fingerID) {
+                        active_fingers[i].x = event.tfinger.x;
+                        active_fingers[i].y = event.tfinger.y;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    active_fingers[active_finger_count] = .{
+                        .finger_id = event.tfinger.fingerID,
+                        .x = event.tfinger.x,
+                        .y = event.tfinger.y,
+                    };
+                    active_finger_count += 1;
+                    last_touch_dist = 0.0;
+                }
+            }
+        },
+        sdl.event_type.finger_up => {
+            var i: usize = 0;
+            while (i < active_finger_count) {
+                if (active_fingers[i].finger_id == event.tfinger.fingerID) {
+                    active_fingers[i] = active_fingers[active_finger_count - 1];
+                    active_finger_count -= 1;
+                    break;
+                }
+                i += 1;
+            }
+            if (active_finger_count < 2) {
+                last_touch_dist = 0.0;
+            }
+        },
+        sdl.event_type.finger_motion => {
+            for (0..active_finger_count) |i| {
+                if (active_fingers[i].finger_id == event.tfinger.fingerID) {
+                    active_fingers[i].x = event.tfinger.x;
+                    active_fingers[i].y = event.tfinger.y;
+                    break;
+                }
+            }
+            if (active_finger_count >= 2) {
+                const win_w = frame_input.win_w;
+                const win_h = frame_input.win_h;
+                const dx = (active_fingers[1].x - active_fingers[0].x) * win_w;
+                const dy = (active_fingers[1].y - active_fingers[0].y) * win_h;
+                const dist = @sqrt(dx * dx + dy * dy);
+                if (last_touch_dist > 0.0 and dist > 0.0) {
+                    const delta = (dist - last_touch_dist) / last_touch_dist;
+                    frame_input.pinch_delta += delta;
+                    frame_input.pinch_center_x = (active_fingers[0].x + active_fingers[1].x) * 0.5 * win_w;
+                    frame_input.pinch_center_y = (active_fingers[0].y + active_fingers[1].y) * 0.5 * win_h;
+                }
+                last_touch_dist = dist;
+            }
+        },
+        sdl.event_type.pinch_begin => {
+            var mx: f32 = 0;
+            var my: f32 = 0;
+            _ = sdl.mouse.getState(&mx, &my);
+            frame_input.pinch_center_x = mx;
+            frame_input.pinch_center_y = my;
+        },
+        sdl.event_type.pinch_update => {
+            if (event.pinch.scale > 0.0) {
+                frame_input.pinch_delta += (event.pinch.scale - 1.0);
+            }
+            var mx: f32 = 0;
+            var my: f32 = 0;
+            _ = sdl.mouse.getState(&mx, &my);
+            frame_input.pinch_center_x = mx;
+            frame_input.pinch_center_y = my;
         },
         else => {},
     }
@@ -160,6 +258,8 @@ pub fn pollFrameInput(
         .frame_allocator = frame_allocator,
         .keys_pressed = .empty,
         .mouse_inside = prev_mouse_inside,
+        .win_w = @as(f32, @floatFromInt(win_size.w)),
+        .win_h = @as(f32, @floatFromInt(win_size.h)),
     };
     errdefer frame_input_state.keys_pressed.deinit(frame_allocator);
 
@@ -202,6 +302,9 @@ pub fn pollFrameInput(
         .quit_requested = frame_input_state.quit_requested,
         .scroll_delta_x = frame_input_state.scroll_delta_x,
         .scroll_delta_y = frame_input_state.scroll_delta_y,
+        .pinch_delta = frame_input_state.pinch_delta,
+        .pinch_center_x = frame_input_state.pinch_center_x,
+        .pinch_center_y = frame_input_state.pinch_center_y,
         .keys_pressed = frame_input_state.keys_pressed,
         .key_modifiers = mapModFromSdl(sdl.keys.getModState()),
         .text_input = frame_input_state.text_input_opt,

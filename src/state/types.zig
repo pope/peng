@@ -302,6 +302,9 @@ pub const FrameInput = struct {
     quit_requested: bool,
     scroll_delta_x: f32,
     scroll_delta_y: f32,
+    pinch_delta: f32 = 0.0,
+    pinch_center_x: f32 = 0.0,
+    pinch_center_y: f32 = 0.0,
     keys_pressed: std.ArrayList(Key),
     key_modifiers: KeyModifiers,
     text_input: ?[]const u8,
@@ -311,11 +314,11 @@ pub const FrameInput = struct {
     window_resized: bool = false,
 
     pub fn pixMouseX(self: FrameInput) f32 {
-        return self.mouse_x;
+        return self.mouse_x * self.scale_x;
     }
 
     pub fn pixMouseY(self: FrameInput) f32 {
-        return self.mouse_y;
+        return self.mouse_y * self.scale_y;
     }
 
     pub fn isPointerInDebugPanel(self: FrameInput) bool {
@@ -822,4 +825,32 @@ test "ViewportParams.zoomAtPoint anchors zoom relative to focus point" {
     try std.testing.expectEqual(@as(f32, 2.0), vp.zoom_factor.get());
     try std.testing.expectEqual(@as(f32, 400.0), vp.pan_x);
     try std.testing.expectEqual(@as(f32, 300.0), vp.pan_y);
+}
+
+test "FrameInput.pixMouseX and pixMouseY scale mouse position by display scale factor" {
+    const input = FrameInput{
+        .win_w = 1000.0,
+        .win_h = 800.0,
+        .pix_w = 2000.0,
+        .pix_h = 1600.0,
+        .scale_x = 2.0,
+        .scale_y = 2.0,
+        .dpi_scale = 2.0,
+        .mouse_x = 150.0,
+        .mouse_y = 250.0,
+        .mouse_left_down = false,
+        .mouse_left_clicked = false,
+        .mouse_inside = true,
+        .quit_requested = false,
+        .scroll_delta_x = 0.0,
+        .scroll_delta_y = 0.0,
+        .keys_pressed = undefined,
+        .key_modifiers = .{},
+        .text_input = null,
+        .dropped_path = null,
+        .ticks = 0,
+        .delta_time_ms = 16.0,
+    };
+    try std.testing.expectEqual(@as(f32, 300.0), input.pixMouseX());
+    try std.testing.expectEqual(@as(f32, 500.0), input.pixMouseY());
 }

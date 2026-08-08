@@ -57,11 +57,34 @@ pub fn sysUpdateViewport(ctx: FrameContext, palette_closed_this_frame: bool) voi
     }
     state.viewer.drag_state = next_drag_state;
 
-    // 2. Mouse Wheel Zoom at cursor
-    if (input.scroll_delta_y != 0) {
+    // 2. Mouse Wheel & Touchpad Scroll Panning
+    const has_scroll_x = input.scroll_delta_x != 0.0;
+    const has_scroll_y = input.scroll_delta_y != 0.0;
+    const is_ctrl_down = input.key_modifiers.ctrl;
+
+    if ((has_scroll_x or has_scroll_y) and !is_ctrl_down) {
+        if (state.viewer.ui.palette.mode == .inactive and !input.isPointerInDebugPanel() and clay.pointerOver(clay.getElementId("Viewport"))) {
+            state.viewer.viewport.pan_x += input.scroll_delta_x * input.scale_x * 5.0;
+            state.viewer.viewport.pan_y += input.scroll_delta_y * input.scale_y * 5.0;
+        }
+    }
+
+    // 3. Touch Pinch & Ctrl+Scroll Zoom at cursor / touch midpoint
+    const has_pinch = input.pinch_delta != 0.0;
+    const is_ctrl_scroll = is_ctrl_down and has_scroll_y;
+    if (has_pinch or is_ctrl_scroll) {
         if (state.viewer.ui.palette.mode == .inactive and !input.isPointerInDebugPanel() and clay.pointerOver(clay.getElementId("Viewport"))) {
             const old_zoom = state.viewer.viewport.zoom_factor;
-            const new_zoom = state.clampZoomFactor(old_zoom.get() + input.scroll_delta_y * 0.1);
+
+            const zoom_delta = if (has_pinch)
+                input.pinch_delta * 0.5
+            else
+                input.scroll_delta_y * 0.1;
+
+            const new_zoom = state.clampZoomFactor(old_zoom.get() + zoom_delta);
+
+            const focus_x = if (has_pinch) input.pinch_center_x * input.scale_x else input.pixMouseX();
+            const focus_y = if (has_pinch) input.pinch_center_y * input.scale_y else input.pixMouseY();
 
             const available_width = if (clay.isDebugModeEnabled()) @max(input.win_w - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0) else input.win_w;
             const cx = available_width / 2.0;
@@ -71,7 +94,7 @@ pub fn sysUpdateViewport(ctx: FrameContext, palette_closed_this_frame: bool) voi
             }
             const cy = title_bar_h + ((input.win_h - title_bar_h) / 2.0);
 
-            state.viewer.viewport.zoomAtPoint(new_zoom, input.mouse_x, input.mouse_y, cx, cy);
+            state.viewer.viewport.zoomAtPoint(new_zoom, focus_x, focus_y, cx * input.scale_x, cy * input.scale_y);
         }
     }
 }
