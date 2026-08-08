@@ -140,9 +140,16 @@ pub fn processSDLEvent(event: sdl.Event, frame_input: *FrameInputState) !void {
             }
         },
         sdl.event_type.mouse_wheel => {
-            const multiplier: f32 = if (event.wheel.direction == sdl.mouse.wheel_flipped) -1.0 else 1.0;
-            frame_input.scroll_delta_x += event.wheel.x * multiplier * MOUSE_WHEEL_SCROLL_MULTIPLIER;
-            frame_input.scroll_delta_y += event.wheel.y * multiplier * MOUSE_WHEEL_SCROLL_MULTIPLIER;
+            const is_flipped = (event.wheel.direction == sdl.mouse.wheel_flipped);
+            if (is_flipped) {
+                // Flipped / Natural scrolling (Touchpads with Natural Scroll): swiping UP moves content UP
+                frame_input.scroll_delta_x -= event.wheel.x * MOUSE_WHEEL_SCROLL_MULTIPLIER;
+                frame_input.scroll_delta_y -= event.wheel.y * MOUSE_WHEEL_SCROLL_MULTIPLIER;
+            } else {
+                // Normal / Traditional scrolling (Physical Mouse Wheels): rolling DOWN scrolls view DOWN
+                frame_input.scroll_delta_x += event.wheel.x * MOUSE_WHEEL_SCROLL_MULTIPLIER;
+                frame_input.scroll_delta_y += event.wheel.y * MOUSE_WHEEL_SCROLL_MULTIPLIER;
+            }
         },
         sdl.event_type.finger_down => {
             if (active_finger_count < 8) {
