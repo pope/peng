@@ -187,7 +187,11 @@ pub fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
     // 4. State Initialization
     var state = app.state.AppState{
         .viewer = .{
-            .navigation = try state_pkg.NavigationState.init(gpa),
+            .navigation = blk: {
+                var nav = try state_pkg.NavigationState.init(gpa);
+                if (parsed.comics) nav.view_mode = .comics_strip;
+                break :blk nav;
+            },
             .ui = try state_pkg.UiState.init(gpa),
             .display = if (parsed.headless) .headless else .{
                 .windowed = .{
@@ -201,6 +205,7 @@ pub fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
             .rotation_map = .init(gpa),
             .running = true,
         },
+
         .gpu_device = setup.gpu_device,
         .unpack_compute_pipeline = resources.unpack_compute_pipeline,
         .cache = .{},

@@ -4,6 +4,44 @@ const intents = @import("intents");
 const palette_state = @import("palette_state.zig");
 const clay = @import("zclay");
 
+pub const ViewLayoutMode = intents.ViewLayoutMode;
+
+pub const StripOrientation = enum {
+    vertical, // Top-to-bottom column (fit_width)
+    horizontal, // Left-to-right / Right-to-left row (fit_height)
+};
+
+pub const AspectSource = enum {
+    default_fallback,
+    exif_header,
+    decoded_gpu,
+};
+
+pub const ImageSpan = struct {
+    start_offset: f32 = 0.0,
+    primary_size: f32 = 0.0,
+    cross_size: f32 = 0.0,
+    aspect_ratio: f32 = 0.707,
+    aspect_source: AspectSource = .default_fallback,
+
+    pub inline fn endOffset(self: ImageSpan) f32 {
+        return self.start_offset + self.primary_size;
+    }
+};
+
+pub const VisibleFrustum = struct {
+    first_index: usize = 0,
+    last_index: usize = 0,
+    total_strip_length: f32 = 0.0,
+    viewport_min: f32 = 0.0,
+    viewport_max: f32 = 0.0,
+};
+
+pub const StripSpanUserData = struct {
+    start_offset: f32 = 0.0,
+    uv_rect: UvRect = .{},
+};
+
 pub const UvRect = struct {
     u_min: f32 = 0.0,
     v_min: f32 = 0.0,
@@ -17,6 +55,7 @@ pub const ArchiveMediaEntry = struct {
     /// Pre-discovered byte offsets in archive for O(1) instant seeking
     header_zip_offset: ?u64 = null,
     file_offset: ?u64 = null,
+    compressed_size: ?u64 = null,
     uncompressed_size: ?u64 = null,
     compression_method: ?u16 = null,
 };
@@ -193,6 +232,7 @@ pub const ViewportParams = struct {
     rotation_angle: f32 = 0.0,
     brightness: f32 = 0.0,
     contrast: f32 = 1.0,
+    view_mode: ViewLayoutMode = .single_page,
 
     pub fn reset(self: *ViewportParams) void {
         self.zoom_factor = .{};
@@ -346,6 +386,7 @@ pub const palette_action_items = [_]ActionMetadata{
     .{ .name = "Previous Image", .shortcut_text = "Backspace / Left Arrow", .show_in_palette = true, .shortcuts = &.{ .{ .key = .backspace }, .{ .key = .left } }, .intent = .prev_image },
     .{ .name = "Toggle Image Info", .shortcut_text = "I", .show_in_palette = true, .shortcuts = &.{.{ .key = .char_i }}, .intent = .toggle_info },
     .{ .name = "Toggle Manga Mode (RTL)", .shortcut_text = "M", .show_in_palette = true, .shortcuts = &.{.{ .key = .char_m }}, .intent = .toggle_manga_mode },
+    .{ .name = "Toggle Continuous Comics View", .shortcut_text = "C", .show_in_palette = true, .shortcuts = &.{.{ .key = .char_c }}, .intent = .toggle_comics_mode },
     .{ .name = "Toggle Performance Overlay", .shortcut_text = "Shift+I", .show_in_palette = true, .shortcuts = &.{.{ .key = .char_i, .mod = .{ .shift = true } }}, .intent = .toggle_stats },
     .{ .name = "Toggle Fullscreen", .shortcut_text = "F / F11", .show_in_palette = true, .shortcuts = &.{ .{ .key = .char_f }, .{ .key = .f11 } }, .intent = .toggle_fullscreen },
     .{ .name = "Open File Finder...", .shortcut_text = "Ctrl+P", .show_in_palette = true, .shortcuts = &.{.{ .key = .char_p, .mod = .{ .ctrl = true } }}, .intent = .{ .set_palette = .{ .mode = .files } } },
@@ -672,7 +713,11 @@ pub const UiViewModel = struct {
     is_loading_files: bool,
     slideshow: SlideshowMode = .inactive,
     manga_mode: bool = false,
+    view_mode: ViewLayoutMode = .single_page,
+    strip_spans: []const ImageSpan = &.{},
+    visible_frustum: VisibleFrustum = .{},
     overlays: OverlayState,
+
     metrics: *UiRenderMetrics,
     viewport: ViewportParams,
     palette: *palette_state.PaletteState,
@@ -686,6 +731,18 @@ pub const UiViewModel = struct {
     pending_intents: *std.ArrayList(intents.AppIntent),
     debug_show_thumb: bool,
     stats: ViewerStats = .{},
+
+    get_entry_fn: ?*const fn (ctx: *anyopaque, idx: usize) ?CacheEntry = null,
+    cache_context: ?*anyopaque = null,
+
+    pub fn getEntryForIndex(self: UiViewModel, idx: usize) ?CacheEntry {
+        if (self.get_entry_fn) |f| {
+            if (self.cache_context) |ctx| {
+                return f(ctx, idx);
+            }
+        }
+        return null;
+    }
 };
 
 pub const MeasureTextUserData = struct {

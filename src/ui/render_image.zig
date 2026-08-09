@@ -13,6 +13,7 @@ pub const MaterialType = enum {
     image_viewer,
 };
 
+/// Shader uniforms passed to GPU fragment pipeline for brightness, contrast, and color modes.
 pub const Uniforms = extern struct {
     brightness: f32,
     contrast: f32,
@@ -20,6 +21,7 @@ pub const Uniforms = extern struct {
     scale_mode: i32,
 };
 
+/// Represents a single instanced GPU render batch with vertex offset, count, texture, and scissor rect.
 pub const BatchItem = struct {
     vertex_start: u32,
     vertex_count: u32,
@@ -41,6 +43,7 @@ pub fn appendImageCommand(
     f_win_h: f32,
     scissor: ?sdl.Rect,
     uv_rect: state.UvRect,
+    start_offset: f32,
 ) !void {
     const texture: ?sdl.gpu.Texture = if (image_data) |ptr| sdl.gpu.Texture{ .ptr = @ptrCast(@alignCast(ptr)) } else null;
     const tex = texture orelse return;
@@ -56,10 +59,24 @@ pub fn appendImageCommand(
     var dst_rect = rect;
     dst_rect.w = dst_w * view_params.zoom_factor.get();
     dst_rect.h = dst_h * view_params.zoom_factor.get();
-    const center_x = rect.x + rect.w / 2.0;
-    const center_y = rect.y + rect.h / 2.0;
-    dst_rect.x = center_x - (dst_rect.w / 2.0) + view_params.pan_x;
-    dst_rect.y = center_y - (dst_rect.h / 2.0) + view_params.pan_y;
+
+    if (view_params.view_mode == .comics_strip) {
+        const is_horizontal = (view_params.fit_mode == .fit_height);
+        const title_bar_h: f32 = 60.0;
+
+        if (is_horizontal) {
+            dst_rect.x = start_offset - view_params.pan_x;
+            dst_rect.y = rect.y + view_params.pan_y;
+        } else {
+            dst_rect.x = rect.x + view_params.pan_x;
+            dst_rect.y = title_bar_h + start_offset - view_params.pan_y;
+        }
+    } else {
+        const center_x = rect.x + rect.w / 2.0;
+        const center_y = rect.y + rect.h / 2.0;
+        dst_rect.x = center_x - (dst_rect.w / 2.0) + view_params.pan_x;
+        dst_rect.y = center_y - (dst_rect.h / 2.0) + view_params.pan_y;
+    }
 
     const rad = angle * (std.math.pi / 180.0);
     const cos_val = @cos(rad);

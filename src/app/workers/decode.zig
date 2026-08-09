@@ -12,6 +12,7 @@ const CacheKey = image.CacheKey;
 
 const MediaEntry = @import("state").MediaEntry;
 
+/// Arguments passed to the background image decode worker thread.
 pub const DecodeArgs = struct {
     workers: *WorkerManager,
     allocator: std.mem.Allocator,
@@ -54,6 +55,7 @@ fn decompressCbzMediaEntry(
 
     var data_offset: u64 = undefined;
     var uncompressed_size: u64 = undefined;
+    var compressed_size: u64 = undefined;
     var comp_method_enum: std.zip.CompressionMethod = undefined;
 
     if (entry.file_offset) |offset| {
@@ -64,8 +66,13 @@ fn decompressCbzMediaEntry(
 
         data_offset = offset + @sizeOf(std.zip.LocalFileHeader) + local_header.filename_len + local_header.extra_len;
         uncompressed_size = entry.uncompressed_size orelse local_header.uncompressed_size;
+        compressed_size = entry.compressed_size orelse local_header.compressed_size;
         comp_method_enum = if (entry.compression_method) |cm| @enumFromInt(cm) else local_header.compression_method;
-        try f_reader.seekTo(data_offset);
+
+        const skip_bytes = local_header.filename_len + local_header.extra_len;
+        if (skip_bytes > 0) {
+            _ = try f_reader.interface.discard(@enumFromInt(@as(usize, skip_bytes)));
+        }
     } else {
         var iterator = try std.zip.Iterator.init(&f_reader);
         var arena = std.heap.ArenaAllocator.init(alloc);
@@ -88,10 +95,15 @@ fn decompressCbzMediaEntry(
             if (!std.mem.eql(u8, &local_header.signature, &std.zip.local_file_header_sig))
                 return error.ZipBadFileOffset;
 
-            data_offset = zip_entry.file_offset + @sizeOf(std.zip.LocalFileHeader) + local_header.filename_len + local_header.extra_len;
             uncompressed_size = zip_entry.uncompressed_size;
+            compressed_size = zip_entry.compressed_size;
             comp_method_enum = zip_entry.compression_method;
-            try f_reader.seekTo(data_offset);
+
+            const skip_bytes = local_header.filename_len + local_header.extra_len;
+            if (skip_bytes > 0) {
+                _ = try f_reader.interface.discard(@enumFromInt(@as(usize, skip_bytes)));
+            }
+
             found = true;
             break;
         }
@@ -105,15 +117,19 @@ fn decompressCbzMediaEntry(
     errdefer alloc.free(out_buf);
 
     const start_dec = sdl.timer.getTicksNs();
+    var lim_buf: [4096]u8 = undefined;
+    const lim_enum: std.Io.Limit = @enumFromInt(@as(usize, compressed_size));
+    var limited = f_reader.interface.limited(lim_enum, &lim_buf);
     switch (comp_method_enum) {
         .store => {
-            try f_reader.interface.readSliceAll(out_buf);
+            try limited.interface.readSliceAll(out_buf);
         },
         .deflate => {
             var flate_buf: [std.compress.flate.max_window_len]u8 = undefined;
-            var decompress: std.compress.flate.Decompress = .init(&f_reader.interface, .raw, &flate_buf);
+            var decompress: std.compress.flate.Decompress = .init(&limited.interface, .raw, &flate_buf);
             try decompress.reader.readSliceAll(out_buf);
         },
+
         else => return error.UnsupportedCompressionMethod,
     }
 
@@ -127,6 +143,7 @@ fn decompressCbzMediaEntry(
     };
 }
 
+/// Entry point for background image decoding threads. Decodes filesystem files or CBZ archive entries.
 pub fn decodeWorker(args: *DecodeArgs) void {
     const workers = args.workers;
     const alloc = args.allocator;

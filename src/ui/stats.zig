@@ -222,8 +222,14 @@ pub fn renderInfoOverlay(
             .fit_height => "Fit to height",
         };
         try renderStatRow("Scale Mode", scale_mode_str);
+        const view_mode_str = switch (ui_model.view_mode) {
+            .single_page => "Single Page",
+            .comics_strip => "Continuous Comics Strip",
+        };
+        try renderStatRow("View Mode", view_mode_str);
         const reading_dir_str = if (ui_model.manga_mode) "Right-to-Left (Manga)" else "Left-to-Right (Standard)";
         try renderStatRow("Reading Order", reading_dir_str);
+
         try renderStatRow("Zoom Level", zoom_str);
         try renderStatRow("Pan Offset", pan_str);
         try renderStatRow("Rotation", rot_str);

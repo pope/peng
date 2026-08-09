@@ -71,33 +71,71 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
     const len = state.viewer.navigation.image_list.items.len;
     if (len == 0) return;
 
-    const idx = state.viewer.navigation.current_index orelse return;
+    const idx = state.viewer.navigation.current_index orelse 0;
 
-    // 1. Gather desired indices (5-slot window: idx, +1, +2, -1, -2)
-    var desired_count: usize = 0;
-    var desired: [5]usize = undefined;
-    desired[0] = idx;
-    desired_count = 1;
+    // 1. Gather desired indices dynamically using frame_allocator
+    var desired_list: std.ArrayList(usize) = .empty;
+    defer desired_list.deinit(ctx.frame_allocator);
 
-    for ([_]usize{
-        (idx + 1) % len,
-        (idx + 2) % len,
-        (idx + len - 1) % len,
-        if (len >= 2) (idx + len - 2) % len else idx,
-    }) |d| {
-        var unique = true;
-        for (desired[0..desired_count]) |existing| {
-            if (existing == d) {
-                unique = false;
-                break;
-            }
+    const nav = &state.viewer.navigation;
+    if (nav.view_mode == .comics_strip) {
+        const frustum = nav.visible_frustum;
+        const first = frustum.first_index;
+        const last = frustum.last_index;
+
+        // Tier 1: Visible frustum [first..last]
+        var d = first;
+        while (d <= last and d < len) : (d += 1) {
+            try desired_list.append(ctx.frame_allocator, d);
         }
-        if (unique) {
-            desired[desired_count] = d;
-            desired_count += 1;
+
+        // Tier 2 & 3: Buffer ring (3 before first, 6 after last)
+        var b_behind: usize = 1;
+        while (b_behind <= 3 and first >= b_behind) : (b_behind += 1) {
+            try desired_list.append(ctx.frame_allocator, first - b_behind);
+        }
+        var b_ahead: usize = 1;
+        while (b_ahead <= 6 and last + b_ahead < len) : (b_ahead += 1) {
+            try desired_list.append(ctx.frame_allocator, last + b_ahead);
+        }
+
+        // Deduplicate
+        var clean_list: std.ArrayList(usize) = .empty;
+        defer clean_list.deinit(ctx.frame_allocator);
+        for (desired_list.items) |item| {
+            var found = false;
+            for (clean_list.items) |u| {
+                if (u == item) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) try clean_list.append(ctx.frame_allocator, item);
+        }
+        desired_list.clearRetainingCapacity();
+        try desired_list.appendSlice(ctx.frame_allocator, clean_list.items);
+    } else {
+        try desired_list.append(ctx.frame_allocator, idx);
+        for ([_]usize{
+            (idx + 1) % len,
+            (idx + 2) % len,
+            (idx + len - 1) % len,
+            if (len >= 2) (idx + len - 2) % len else idx,
+        }) |d| {
+            var unique = true;
+            for (desired_list.items) |existing| {
+                if (existing == d) {
+                    unique = false;
+                    break;
+                }
+            }
+            if (unique) {
+                try desired_list.append(ctx.frame_allocator, d);
+            }
         }
     }
 
+    const desired = desired_list.items;
     const dev_opt = state.gpu_device;
 
     // 2. Evict cache entries that are no longer wanted
@@ -106,7 +144,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
         const keys = state.cache.slots.items(.key);
         const key = keys[i];
         var wanted = false;
-        for (desired[0..desired_count]) |d| {
+        for (desired) |d| {
             if (key.index == d) {
                 wanted = true;
                 break;
@@ -124,48 +162,46 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
     const is_fast_scrolling = (now - state.viewer.navigation.last_nav_time_ms < 150);
 
     // 3. Mark missing slots as decoding in cache map
-    var to_spawn_indices: [5]usize = undefined;
-    var to_spawn_entries: [5]?MediaEntry = [1]?MediaEntry{null} ** 5;
-    var to_spawn_count: usize = 0;
+    var to_spawn_indices: std.ArrayList(usize) = .empty;
+    defer to_spawn_indices.deinit(ctx.frame_allocator);
+    var to_spawn_entries: std.ArrayList(MediaEntry) = .empty;
+    defer to_spawn_entries.deinit(ctx.frame_allocator);
+
     var hit = false;
 
-    for (desired[0..desired_count]) |d| {
+    for (desired) |d| {
         if (d >= state.viewer.navigation.image_list.items.len) continue;
 
-        if (is_fast_scrolling and d != idx) continue;
+        if (is_fast_scrolling and d != idx and nav.view_mode != .comics_strip) continue;
 
         const key = state.cache.activeKey(d);
         if (state.cache.get(key)) |entry| {
             if (d == idx and (entry.status == .loaded_cpu or entry.status == .loaded_gpu)) {
                 hit = true;
             }
-        } else {
-            _ = try state.cache.appendSlot(state.allocator, d, .{ .decoding = .{} });
-        }
-
-        if (state.cache.get(key)) |entry| {
             switch (entry.status) {
                 .decoding => |dec| {
                     if (!dec.has_thread) {
-                        if (to_spawn_count < 5) {
-                            to_spawn_indices[to_spawn_count] = d;
-                            to_spawn_entries[to_spawn_count] = state.viewer.navigation.image_list.items[d];
-                            to_spawn_count += 1;
-                        }
+                        try to_spawn_indices.append(ctx.frame_allocator, d);
+                        try to_spawn_entries.append(ctx.frame_allocator, state.viewer.navigation.image_list.items[d]);
                     }
                 },
                 else => {},
             }
+        } else {
+            _ = try state.cache.appendSlot(state.allocator, d, .{ .decoding = .{} });
+            try to_spawn_indices.append(ctx.frame_allocator, d);
+            try to_spawn_entries.append(ctx.frame_allocator, state.viewer.navigation.image_list.items[d]);
         }
     }
     state.viewer.stats.current_image_cache_hit = hit;
 
     // 4. Spawn worker threads
-    for (to_spawn_indices[0..to_spawn_count], 0..) |d, s_idx| {
-        const entry_opt = to_spawn_entries[s_idx];
-        if (entry_opt == null or !state.workers.canSpawnDecode()) continue;
+    for (to_spawn_indices.items, 0..) |d, s_idx| {
+        const item = to_spawn_entries.items[s_idx];
+        if (!state.workers.canSpawnDecode()) break;
 
-        spawnCacheDecodeSlot(state, d, entry_opt.?, is_fast_scrolling) catch |err| {
+        spawnCacheDecodeSlot(state, d, item, is_fast_scrolling) catch |err| {
             std.log.err("Failed to spawn decode worker for index {}: {}", .{ d, err });
         };
     }

@@ -346,6 +346,13 @@ pub const AppState = struct {
         return null;
     }
 
+    pub fn getEntryForIndex(self: *AppState, idx: usize) ?CacheEntry {
+        if (self.cache.get(self.cache.activeKey(idx))) |entry| {
+            return entry.*;
+        }
+        return null;
+    }
+
     pub fn openPalette(self: *AppState, active_type: PaletteMode) !void {
         self.viewer.ui.palette.reset();
         self.viewer.ui.palette.mode = active_type;

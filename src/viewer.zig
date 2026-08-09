@@ -15,6 +15,11 @@ pub fn loadAssets() !void {
 /// Entry point for unloading dynamic UI resources / assets upon library reload.
 pub fn unloadAssets() void {}
 
+fn viewerCacheLookup(ctx: *anyopaque, idx: usize) ?state_pkg.CacheEntry {
+    const app_st: *app.state.AppState = @ptrCast(@alignCast(ctx));
+    return app_st.getEntryForIndex(idx);
+}
+
 /// Sequential execution of all systems during the Update Phase of the event loop.
 /// Guaranteed: All systems run in deterministic order, use frame_allocator, and do NOT call each other.
 pub fn runUpdatePhase(
@@ -169,7 +174,11 @@ pub fn updateFrame(
         .is_loading_files = app_state.viewer.navigation.is_loading_files.load(.acquire),
         .slideshow = app_state.viewer.navigation.slideshow,
         .manga_mode = app_state.viewer.navigation.manga_mode,
+        .view_mode = app_state.viewer.navigation.view_mode,
+        .strip_spans = app_state.viewer.navigation.strip_spans.items,
+        .visible_frustum = app_state.viewer.navigation.visible_frustum,
         .overlays = app_state.viewer.ui.overlays,
+
         .metrics = &app_state.viewer.ui.metrics,
         .viewport = app_state.viewer.viewport,
         .palette = &app_state.viewer.ui.palette,
@@ -183,9 +192,12 @@ pub fn updateFrame(
         .pending_intents = &app_state.pending_intents,
         .debug_show_thumb = app_state.viewer.ui.overlays.debug_show_thumb,
         .stats = app_state.viewer.stats,
+        .get_entry_fn = viewerCacheLookup,
+        .cache_context = app_state,
     };
 
     // Draw / Render
+
     const capture_filename = switch (app_state.viewer.ui.screenshot_mode) {
         .idle => null,
         .capturing => |s| s.path,

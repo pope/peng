@@ -5,6 +5,7 @@ const sdl = @import("sdl");
 const state = @import("state");
 const TextCacheKey = @import("text_cache.zig").TextCacheKey;
 
+/// Snapshot parameters for viewport zoom factor, pan coordinates, and rotation angle.
 pub const ZoomPan = struct {
     zoom_factor: f32 = 1.0,
     pan_x: f32 = 0.0,
@@ -220,6 +221,7 @@ fn getOrRenderCachedText(
     if (text_slice.len == 0) return null;
 
     const target_font_size = @as(f32, @floatFromInt(text_data.font_size)) * scale_x;
+    if (target_font_size < 1.0) return null;
     const target_font_size_u16 = @as(u16, @intFromFloat(@round(target_font_size)));
 
     // 1. Check/Lookup cache
@@ -248,17 +250,17 @@ fn getOrRenderCachedText(
 
     const frame_idx = gpu_res.frame_index % 2;
 
-    _ = font.setFontSize(target_font_size);
+    _ = font.setFontSize(@max(1.0, target_font_size));
 
     const surf = font.renderTextBlended(frame_allocator, text_slice, .{
         .r = @intFromFloat(text_data.text_color[0]),
         .g = @intFromFloat(text_data.text_color[1]),
         .b = @intFromFloat(text_data.text_color[2]),
         .a = @intFromFloat(text_data.text_color[3]),
-    }) catch |err| {
-        std.log.warn("font.renderTextBlended failed for '{s}': {}", .{ text_slice, err });
+    }) catch {
         return null;
     };
+
     defer surf.destroy();
 
     const converted = surf.convert(sdl.PixelFormat.rgba32) orelse return null;
@@ -510,10 +512,14 @@ fn buildGeometryFromCommands(
             },
             .image => {
                 prev_text_bb = null;
-                const uv_rect = if (rcmd.user_data) |ptr|
-                    @as(*const state.UvRect, @ptrCast(@alignCast(ptr))).*
-                else
-                    state.UvRect{};
+                var uv_rect = state.UvRect{};
+                var start_offset: f32 = rect.y;
+
+                if (rcmd.user_data) |ptr| {
+                    const ud_ptr = @as(*const state.types.StripSpanUserData, @ptrCast(@alignCast(ptr)));
+                    start_offset = ud_ptr.start_offset;
+                    uv_rect = ud_ptr.uv_rect;
+                }
 
                 try render_image.appendImageCommand(
                     vertices,
@@ -527,8 +533,10 @@ fn buildGeometryFromCommands(
                     f_win_h,
                     current_scissor,
                     uv_rect,
+                    start_offset,
                 );
             },
+
             else => {
                 std.log.warn("Skipping unhandled render command type: {}", .{rcmd.command_type});
             },

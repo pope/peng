@@ -11,6 +11,27 @@ const KeyModifiers = state.KeyModifiers;
 const AppState = app_state.AppState;
 const startTextInput = app_state.startTextInput;
 
+fn syncViewportForNav(vp: *state.ViewportParams, nav: *state.NavigationState) void {
+    if (nav.view_mode == .comics_strip) {
+        vp.zoom_factor = state.ZoomFactor.init(1.0);
+        if (nav.current_index) |idx| {
+            if (idx < nav.strip_spans.items.len) {
+                const span = nav.strip_spans.items[idx];
+                if (vp.fit_mode == .fit_height) {
+                    vp.pan_x = span.start_offset;
+                    vp.pan_y = 0.0;
+                } else {
+                    vp.pan_x = 0.0;
+                    vp.pan_y = span.start_offset;
+                }
+                return;
+            }
+        }
+    } else {
+        vp.reset();
+    }
+}
+
 /// Central intent dispatcher. Maps an AppIntent variant to domain state mutations.
 fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
     const vp = &self.viewer.viewport;
@@ -72,37 +93,38 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
         },
 
         .next_image => {
-            vp.reset();
             if (nav.manga_mode) {
                 _ = nav.prevIndex();
             } else {
                 _ = nav.nextIndex();
             }
+            syncViewportForNav(vp, nav);
         },
         .prev_image => {
-            vp.reset();
             if (nav.manga_mode) {
                 _ = nav.nextIndex();
             } else {
                 _ = nav.prevIndex();
             }
+            syncViewportForNav(vp, nav);
         },
         .first_image => {
             if (nav.goToIndex(0) != null) {
-                vp.reset();
+                syncViewportForNav(vp, nav);
             }
         },
         .last_image => {
             if (nav.image_list.items.len > 0) {
                 _ = nav.goToIndex(nav.image_list.items.len - 1);
-                vp.reset();
+                syncViewportForNav(vp, nav);
             }
         },
         .go_to_image => |idx| {
             if (nav.goToIndex(idx) != null) {
-                vp.reset();
+                syncViewportForNav(vp, nav);
             }
         },
+
         .set_palette => |p| {
             if (p.mode == .inactive) {
                 ui.palette.mode = .inactive;
@@ -156,6 +178,14 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
         .stop_slideshow => nav.slideshow = .inactive,
         .toggle_manga_mode => nav.manga_mode = !nav.manga_mode,
         .set_manga_mode => |val| nav.manga_mode = val,
+        .toggle_comics_mode => {
+            nav.view_mode = if (nav.view_mode == .single_page) .comics_strip else .single_page;
+            vp.reset();
+        },
+        .set_view_mode => |mode| {
+            nav.view_mode = mode;
+            vp.reset();
+        },
         .quit => self.viewer.running = false,
     }
 }
@@ -199,8 +229,24 @@ test "Manga Mode toggles Right-to-Left image navigation" {
     try std.testing.expectEqual(@as(usize, 1), app_st.viewer.navigation.current_index.?);
 }
 
+test "Comics Mode toggles continuous strip view" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    try std.testing.expectEqual(state.types.ViewLayoutMode.single_page, app_st.viewer.navigation.view_mode);
+
+    try executeIntent(&app_st, .toggle_comics_mode);
+    try std.testing.expectEqual(state.types.ViewLayoutMode.comics_strip, app_st.viewer.navigation.view_mode);
+
+    try executeIntent(&app_st, .{ .set_view_mode = .single_page });
+    try std.testing.expectEqual(state.types.ViewLayoutMode.single_page, app_st.viewer.navigation.view_mode);
+}
+
 test "palette_action_items metadata" {
-    const nav_item = state.palette_action_items[7];
+    const nav_item = state.palette_action_items[8];
     try std.testing.expectEqualStrings("Navigate Directories...", nav_item.name);
     try std.testing.expectEqualStrings("Ctrl+O", nav_item.shortcut_text);
     try std.testing.expect(nav_item.show_in_palette);

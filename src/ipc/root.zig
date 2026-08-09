@@ -79,6 +79,7 @@ pub const IpcCommand = union(enum) {
     filter: TextureScaleMode,
     scale: intents.ScaleMode,
     manga: bool,
+    view_mode: intents.ViewLayoutMode,
     palette: PaletteTarget,
     thumb: ThumbAction,
     debug: bool,
@@ -96,6 +97,8 @@ pub const IpcCommand = union(enum) {
             .filter => |mode| return .{ .set_filter = mode },
             .scale => |mode| return .{ .set_scale = mode },
             .manga => |val| return .{ .set_manga_mode = val },
+            .view_mode => |mode| return .{ .set_view_mode = mode },
+
             .palette => |target| {
                 const mode: intents.PaletteMode = switch (target.kind) {
                     .actions => .actions,
@@ -168,6 +171,15 @@ pub const IpcCommand = union(enum) {
                 return .{ .manga = true };
             } else if (std.mem.eql(u8, val, "false")) {
                 return .{ .manga = false };
+            } else {
+                return error.InvalidArgument;
+            }
+        } else if (std.mem.eql(u8, cmd, "comics") or std.mem.eql(u8, cmd, "view_mode")) {
+            const val = it.next() orelse return error.MissingArgument;
+            if (std.mem.eql(u8, val, "true") or std.mem.eql(u8, val, "comics") or std.mem.eql(u8, val, "strip")) {
+                return .{ .view_mode = .comics_strip };
+            } else if (std.mem.eql(u8, val, "false") or std.mem.eql(u8, val, "single") or std.mem.eql(u8, val, "page")) {
+                return .{ .view_mode = .single_page };
             } else {
                 return error.InvalidArgument;
             }

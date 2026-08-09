@@ -18,6 +18,7 @@ const truncateFilename = @import("text_utils.zig").truncateFilename;
 const sdl3MeasureText = @import("graphics.zig").sdl3MeasureText;
 const RenderResources = @import("graphics.zig").RenderResources;
 
+/// Main UI layout entry point. Builds Clay UI DOM hierarchy for header bar, viewport, overlays, and command palette.
 pub fn renderFrame(
     view_params: ViewParams,
     ui_model: UiViewModel,
@@ -378,6 +379,27 @@ pub fn renderHeaderBar(
 
         clay.UI()(.{ .layout = .{ .sizing = .{ .w = .grow, .h = .grow } } })({});
 
+        if (ui_model.view_mode == .comics_strip) {
+            clay.UI()(.{
+                .layout = .{
+                    .sizing = .{ .w = .fit, .h = .fit },
+                    .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
+                },
+                .background_color = theme.crust,
+                .corner_radius = .all(4),
+                .border = .{
+                    .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                    .color = theme.blue,
+                },
+            })({
+                clay.text("STRIP", .{
+                    .color = theme.blue,
+                    .font_size = 11,
+                    .font_id = 0,
+                });
+            });
+        }
+
         if (ui_model.manga_mode) {
             clay.UI()(.{
                 .layout = .{
@@ -453,6 +475,103 @@ pub fn renderEmptyState() void {
     });
 }
 
+/// Renders the Continuous Comics Mode viewport DOM elements culled by visible frustum bounds.
+pub fn renderComicsStripViewport(
+    ui_model: UiViewModel,
+    frame_allocator: std.mem.Allocator,
+) void {
+    const is_horizontal = (ui_model.viewport.fit_mode == .fit_height);
+
+    const frustum = ui_model.visible_frustum;
+
+    clay.UI()(.{
+        .id = clay.getElementId("Viewport"),
+        .layout = .{
+            .sizing = .{ .w = .grow, .h = .grow },
+            .direction = if (is_horizontal) .left_to_right else .top_to_bottom,
+            .child_alignment = .{ .x = .center, .y = .center },
+            .child_gap = 0,
+        },
+        .clip = .{ .horizontal = true, .vertical = true },
+    })({
+        if (ui_model.strip_spans.len > 0) {
+            const first = frustum.first_index;
+            const last = @min(frustum.last_index, ui_model.strip_spans.len - 1);
+
+            var idx = first;
+            while (idx <= last) : (idx += 1) {
+                const span = ui_model.strip_spans[idx];
+                const draw_w = if (is_horizontal) span.primary_size else span.cross_size;
+                const draw_h = if (is_horizontal) span.cross_size else span.primary_size;
+
+                var id_buf: [32]u8 = undefined;
+                const canvas_id = if (std.fmt.bufPrint(&id_buf, "ImageCanvas_{}", .{idx})) |str|
+                    clay.getElementId(str)
+                else |_|
+                    clay.getElementId("ImageCanvas");
+
+                const ud_ptr = frame_allocator.create(types.StripSpanUserData) catch null;
+                if (ud_ptr) |ptr| {
+                    ptr.* = .{ .start_offset = span.start_offset };
+                }
+
+                var drew_quad = false;
+                if (ui_model.getEntryForIndex(idx)) |entry| {
+                    switch (entry.status) {
+                        .loaded_gpu => |gpu| {
+                            drew_quad = true;
+                            clay.UI()(.{
+                                .id = canvas_id,
+                                .layout = .{
+                                    .sizing = .{
+                                        .w = .fixed(draw_w),
+                                        .h = .fixed(draw_h),
+                                    },
+                                },
+                                .image = .{
+                                    .image_data = gpu.gpu_texture.asOpaque(),
+                                },
+                                .user_data = if (ud_ptr) |ptr| @ptrCast(ptr) else null,
+                            })({});
+                        },
+                        else => {},
+                    }
+                }
+
+                if (!drew_quad) {
+                    clay.UI()(.{
+                        .id = canvas_id,
+                        .layout = .{
+                            .sizing = .{
+                                .w = .fixed(draw_w),
+                                .h = .fixed(draw_h),
+                            },
+                            .direction = .top_to_bottom,
+                            .child_alignment = .{ .x = .center, .y = .center },
+                        },
+
+                        .background_color = theme.mantle,
+                        .border = .{
+                            .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                            .color = theme.surface0,
+                        },
+                    })({
+                        var buf: [64]u8 = undefined;
+                        if (std.fmt.bufPrint(&buf, "Page {} (Loading...)", .{idx + 1})) |str| {
+                            clay.text(str, .{
+                                .color = theme.subtext0,
+                                .font_size = 14,
+                                .font_id = 0,
+                            });
+                        } else |_| {}
+                    });
+                }
+            }
+        }
+    });
+}
+
+/// Renders the central image viewport container for Single Page mode or delegates to Comic Strip mode.
 pub fn renderViewport(
     ui_model: UiViewModel,
     current_entry: anytype,
@@ -461,6 +580,11 @@ pub fn renderViewport(
     total_images: usize,
     frame_allocator: std.mem.Allocator,
 ) void {
+    if (ui_model.view_mode == .comics_strip) {
+        renderComicsStripViewport(ui_model, frame_allocator);
+        return;
+    }
+
     clay.UI()(.{
         .id = clay.getElementId("Viewport"),
         .layout = .{

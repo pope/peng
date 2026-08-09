@@ -74,13 +74,14 @@ Start the image viewer by passing a file or directory path:
 
 ### CLI Flags
 
-| Flag                 | Argument                                                   | Description                                             |
-| :------------------- | :--------------------------------------------------------- | :------------------------------------------------------ |
+| Flag                 | Argument                                                    | Description                                             |
+| :------------------- | :---------------------------------------------------------- | :------------------------------------------------------ |
 | `--scale`            | `none`, `shrink`, `full`, `crop`, `fit_width`, `fit_height` | Sets the default image scaling/fitting mode.            |
-| `--headless`         | None                                                       | Runs without opening an OS display window.              |
-| `--test-mode`        | None                                                       | Puts the window and event loop into test configuration. |
-| `--update-baselines` | None                                                       | Overwrites baseline golden screenshots.                 |
-| `--ipc`              | None                                                       | Enables the IPC UNIX Domain Socket server.              |
+| `--comics`           | None                                                        | Enables continuous comic strip viewing mode.            |
+| `--headless`         | None                                                        | Runs without opening an OS display window.              |
+| `--test-mode`        | None                                                        | Puts the window and event loop into test configuration. |
+| `--update-baselines` | None                                                        | Overwrites baseline golden screenshots.                 |
+| `--ipc`              | None                                                        | Enables the IPC UNIX Domain Socket server.              |
 
 ______________________________________________________________________
 
@@ -107,6 +108,9 @@ You can send commands to a running instance using the `peng-msg` utility:
 
 # Set Manga Mode (true, false)
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock manga true
+
+# Set Continuous Comics Mode (true, false)
+./zig-out/bin/peng-msg /tmp/peng-1234.sock comics true
 
 # Adjust brightness and contrast
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock adjust 0.2 -0.1

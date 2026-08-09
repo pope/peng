@@ -10,6 +10,10 @@ pub const NavigationState = struct {
     current_index: ?usize = null,
     slideshow: SlideshowMode = .inactive,
     manga_mode: bool = false,
+    view_mode: types.ViewLayoutMode = .single_page,
+    strip_spans: std.ArrayList(types.ImageSpan) = .empty,
+    visible_frustum: types.VisibleFrustum = .{},
+    known_aspect_ratios: std.ArrayList(f32) = .empty,
     is_loading_files: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     last_nav_time_ms: u64 = 0,
     last_scanned_dir: std.ArrayList(u8) = .empty,
@@ -28,8 +32,27 @@ pub const NavigationState = struct {
 
     pub fn deinit(self: *NavigationState, allocator: std.mem.Allocator) void {
         self.image_list.deinit(allocator);
+        self.strip_spans.deinit(allocator);
+        self.known_aspect_ratios.deinit(allocator);
         self.last_scanned_dir.deinit(allocator);
         self.directory_arena.deinit();
+    }
+
+    /// Sets or updates the persistent measured aspect ratio (W / H) for image at `idx`.
+    pub fn setKnownAspectRatio(self: *NavigationState, allocator: std.mem.Allocator, idx: usize, ratio: f32) void {
+        if (ratio <= 0.0) return;
+        if (idx >= self.known_aspect_ratios.items.len) {
+            self.known_aspect_ratios.appendNTimes(allocator, 0.0, (idx + 1) - self.known_aspect_ratios.items.len) catch return;
+        }
+        self.known_aspect_ratios.items[idx] = ratio;
+    }
+
+    /// Returns the persistent measured aspect ratio for image at `idx`, or 0.0 if not yet measured.
+    pub fn getKnownAspectRatio(self: *const NavigationState, idx: usize) f32 {
+        if (idx < self.known_aspect_ratios.items.len) {
+            return self.known_aspect_ratios.items[idx];
+        }
+        return 0.0;
     }
 
     pub inline fn isSlideshowActive(self: *const NavigationState) bool {
@@ -87,3 +110,21 @@ pub const NavigationState = struct {
         return self.current_index;
     }
 };
+
+test "NavigationState setKnownAspectRatio and getKnownAspectRatio" {
+    const allocator = std.testing.allocator;
+    var nav = try NavigationState.init(allocator);
+    defer nav.deinit(allocator);
+
+    try std.testing.expectEqual(@as(f32, 0.0), nav.getKnownAspectRatio(0));
+    try std.testing.expectEqual(@as(f32, 0.0), nav.getKnownAspectRatio(5));
+
+    nav.setKnownAspectRatio(allocator, 2, 1.777);
+    try std.testing.expectEqual(@as(f32, 0.0), nav.getKnownAspectRatio(0));
+    try std.testing.expectEqual(@as(f32, 0.0), nav.getKnownAspectRatio(1));
+    try std.testing.expectApproxEqAbs(@as(f32, 1.777), nav.getKnownAspectRatio(2), 0.001);
+
+    // Overwriting index 2
+    nav.setKnownAspectRatio(allocator, 2, 1.333);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.333), nav.getKnownAspectRatio(2), 0.001);
+}

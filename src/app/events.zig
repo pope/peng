@@ -52,6 +52,9 @@ fn handleExifThumbnailEvent(state: *AppState, thumb_data: events.ThumbDecodedPay
                 if (thumb_data.full_w > 0 and thumb_data.full_h > 0) {
                     entry.full_w = thumb_data.full_w;
                     entry.full_h = thumb_data.full_h;
+                    state.viewer.navigation.setKnownAspectRatio(state.allocator, thumb_data.key.index, thumb_data.full_w / thumb_data.full_h);
+                } else if (upload_res.w > 0 and upload_res.h > 0) {
+                    state.viewer.navigation.setKnownAspectRatio(state.allocator, thumb_data.key.index, upload_res.w / upload_res.h);
                 }
                 switch (entry.thumbnail) {
                     .loaded => |old_thumb| gpu_dev.releaseTexture(old_thumb.texture),
@@ -83,6 +86,10 @@ fn handleExifThumbnailEvent(state: *AppState, thumb_data: events.ThumbDecodedPay
 
 fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedPayload) void {
     const surf = decoded_data.surface orelse return;
+    if (decoded_data.w > 0 and decoded_data.h > 0) {
+        state.viewer.navigation.setKnownAspectRatio(state.allocator, decoded_data.key.index, decoded_data.w / decoded_data.h);
+    }
+
     if (state.gpu_device) |gpu_dev| {
         if (image.uploadSurfaceToGpu(gpu_dev, surf, state.unpack_compute_pipeline)) |full_res| {
             if (state.cache.get(decoded_data.key)) |entry| {

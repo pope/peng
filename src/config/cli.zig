@@ -4,6 +4,7 @@ const ScaleMode = @import("intents").ScaleMode;
 pub const ParsedArgs = struct {
     arg_path: ?[]const u8,
     default_scale: ScaleMode,
+    comics: bool = false,
     test_mode: bool,
     update_baselines: bool,
     headless: bool,
@@ -26,6 +27,7 @@ pub fn parseCommandLineArgs(init: std.process.Init, gpa: std.mem.Allocator) !Par
 
     var arg_path: ?[]const u8 = null;
     var default_scale: ScaleMode = .full;
+    var comics = false;
     var test_mode = false;
     var update_baselines = false;
     var headless = false;
@@ -36,6 +38,8 @@ pub fn parseCommandLineArgs(init: std.process.Init, gpa: std.mem.Allocator) !Par
             test_mode = true;
         } else if (std.mem.eql(u8, arg, "--headless")) {
             headless = true;
+        } else if (std.mem.eql(u8, arg, "--comics") or std.mem.eql(u8, arg, "--strip")) {
+            comics = true;
         } else if (std.mem.eql(u8, arg, "--update-baselines")) {
             update_baselines = true;
         } else if (std.mem.eql(u8, arg, "--ipc") or std.mem.eql(u8, arg, "--enable-ipc")) {
@@ -61,6 +65,7 @@ pub fn parseCommandLineArgs(init: std.process.Init, gpa: std.mem.Allocator) !Par
     return ParsedArgs{
         .arg_path = arg_path,
         .default_scale = default_scale,
+        .comics = comics,
         .test_mode = test_mode,
         .update_baselines = update_baselines,
         .headless = headless,

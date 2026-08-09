@@ -18,8 +18,22 @@ pub fn sysUpdateViewport(ctx: FrameContext, palette_closed_this_frame: bool) voi
             if (input.mouse_left_down) {
                 const dx = input.pixMouseX() - v.last_x;
                 const dy = input.pixMouseY() - v.last_y;
-                state.viewer.viewport.pan_x += dx;
-                state.viewer.viewport.pan_y += dy;
+                switch (state.viewer.navigation.view_mode) {
+                    .comics_strip => switch (state.viewer.viewport.fit_mode) {
+                        .fit_height => {
+                            state.viewer.viewport.pan_x += if (state.viewer.navigation.manga_mode) dx else -dx;
+                            state.viewer.viewport.pan_y += dy;
+                        },
+                        else => {
+                            state.viewer.viewport.pan_x += dx;
+                            state.viewer.viewport.pan_y -= dy;
+                        },
+                    },
+                    else => {
+                        state.viewer.viewport.pan_x += dx;
+                        state.viewer.viewport.pan_y += dy;
+                    },
+                }
                 next_drag_state = .{ .viewport = .{ .last_x = input.pixMouseX(), .last_y = input.pixMouseY() } };
             } else {
                 next_drag_state = .none;
@@ -64,8 +78,26 @@ pub fn sysUpdateViewport(ctx: FrameContext, palette_closed_this_frame: bool) voi
 
     if ((has_scroll_x or has_scroll_y) and !is_ctrl_down) {
         if (state.viewer.ui.palette.mode == .inactive and !input.isPointerInDebugPanel() and clay.pointerOver(clay.getElementId("Viewport"))) {
-            state.viewer.viewport.pan_x += input.scroll_delta_x * input.scale_x * 5.0;
-            state.viewer.viewport.pan_y += input.scroll_delta_y * input.scale_y * 5.0;
+            switch (state.viewer.navigation.view_mode) {
+                .comics_strip => {
+                    const speed: f32 = 15.0;
+                    switch (state.viewer.viewport.fit_mode) {
+                        .fit_height => {
+                            const scroll_dist = input.scroll_delta_y * input.scale_x * speed;
+                            state.viewer.viewport.pan_x += if (state.viewer.navigation.manga_mode) scroll_dist else -scroll_dist;
+                            state.viewer.viewport.pan_y += input.scroll_delta_x * input.scale_y * speed;
+                        },
+                        else => {
+                            state.viewer.viewport.pan_y -= input.scroll_delta_y * input.scale_y * speed;
+                            state.viewer.viewport.pan_x += input.scroll_delta_x * input.scale_x * speed;
+                        },
+                    }
+                },
+                else => {
+                    state.viewer.viewport.pan_x += input.scroll_delta_x * input.scale_x * 5.0;
+                    state.viewer.viewport.pan_y += input.scroll_delta_y * input.scale_y * 5.0;
+                },
+            }
         }
     }
 
@@ -97,4 +129,68 @@ pub fn sysUpdateViewport(ctx: FrameContext, palette_closed_this_frame: bool) voi
             state.viewer.viewport.zoomAtPoint(new_zoom, focus_x, focus_y, cx * input.scale_x, cy * input.scale_y);
         }
     }
+
+    // 4. Continuous Comics Mode layout recalculation & boundary clamping
+    const nav = &state.viewer.navigation;
+    state.viewer.viewport.view_mode = nav.view_mode;
+    if (nav.view_mode == .comics_strip) {
+        state_pkg.view_transform.recalculateStripSpans(
+            &nav.strip_spans,
+            nav.image_list.items.len,
+            appStateCacheLookup,
+            state,
+            nav.known_aspect_ratios.items,
+            input.win_w,
+            input.win_h,
+            state.viewer.viewport.fit_mode,
+            state.allocator,
+        ) catch |err| std.log.err("Failed to recalculate strip spans: {}", .{err});
+
+        const total_len = if (nav.strip_spans.items.len > 0)
+            nav.strip_spans.items[nav.strip_spans.items.len - 1].endOffset()
+        else
+            0.0;
+
+        var title_bar_h: f32 = 60.0;
+        if (state.viewer.isFullscreen()) {
+            title_bar_h = 0.0;
+        }
+
+        const is_horizontal = (state.viewer.viewport.fit_mode == .fit_height);
+        const content_h = input.win_h - (if (is_horizontal) 0.0 else title_bar_h);
+
+        state_pkg.view_transform.clampComicsViewportPan(
+            &state.viewer.viewport.pan_x,
+            &state.viewer.viewport.pan_y,
+            input.win_w,
+            content_h,
+            total_len,
+            state.viewer.viewport.fit_mode,
+            state.viewer.viewport.zoom_factor.get(),
+        );
+
+        const view_min = if (is_horizontal) state.viewer.viewport.pan_x else state.viewer.viewport.pan_y;
+        const view_max = view_min + (if (is_horizontal) input.win_w else content_h);
+
+        nav.visible_frustum = state_pkg.view_transform.findVisibleFrustum(nav.strip_spans.items, view_min, view_max);
+
+        // Synchronize current_index to the image dominating the viewport center
+        if (nav.strip_spans.items.len > 0) {
+            const center = view_min + (view_max - view_min) / 2.0;
+            for (nav.strip_spans.items, 0..) |span, idx| {
+                if (span.start_offset <= center and center < span.endOffset()) {
+                    nav.current_index = idx;
+                    break;
+                }
+            }
+        }
+    }
+}
+
+fn appStateCacheLookup(ctx: ?*const anyopaque, idx: usize) ?state_pkg.CacheEntry {
+    if (ctx) |ptr| {
+        const state: *AppState = @ptrCast(@alignCast(@constCast(ptr)));
+        return state.getEntryForIndex(idx);
+    }
+    return null;
 }

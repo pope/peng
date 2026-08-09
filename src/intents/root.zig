@@ -129,6 +129,16 @@ pub const AppIntent = union(enum) {
     toggle_manga_mode,
     set_manga_mode: bool,
 
+    // Continuous Comics mode controls
+    toggle_comics_mode,
+    set_view_mode: ViewLayoutMode,
+
     // Application lifecycle
     quit,
+};
+
+/// Viewport layout mode.
+pub const ViewLayoutMode = enum {
+    single_page,
+    comics_strip,
 };
