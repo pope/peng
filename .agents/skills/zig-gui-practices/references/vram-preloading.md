@@ -43,8 +43,8 @@ ______________________________________________________________________
   During rapid scrolling (< 150ms step interval), constrain preload queues strictly to the active image `idx` and set `thumb_only = true` on `DecodeArgs`. Background `decodeWorker` tasks extract and emit the embedded EXIF thumbnail (~0.5ms) via `.thumb_decoded` and exit early (`if (args.thumb_only) return;`), bypassing full software decoding. This eliminates CPU/disk thrashing and prevents driver queue submission exhaustion (`VK_ERROR_DEVICE_LOST`).
 - **Telemetry Metric Split ("Stats for Nerds")**:
   High-resolution nanosecond timers (`sdl.timer.getTicksNs()`) isolate disk I/O (`readPositional`) as `read_time_ms` ("Disk Read Time") separately from CPU software image decompression (`decode_time_ms`). Both metrics are transferred via `ImageDecodedPayload` to the UI overlay.
-- **Settled Preload & Resolution Upgrade Trigger**:
-  When navigation settles (> 150ms idle time), `sysUpdateCache(ctx)` automatically triggers full-resolution image decoding (`thumb_only = false`) for active and neighboring images ($\\pm 1, \\pm 2$ slots) to upgrade thumbnail placeholders to full high-res GPU textures seamlessly.
+- **Demand-First Settled Preload & GPU Upload Gating**:
+  When navigation settles (> 150ms idle time), `sysUpdateCache(ctx)` MUST verify `is_current_ready` before spawning neighbor decodes ($\\pm 1, \\pm 2$ slots). If the active image is still decoding, neighbor tasks are withheld to prevent CPU/memory bandwidth contention. Similarly, `handleImageDecodedEvent` stores completed neighbor surfaces as `.loaded_cpu` in host RAM if the active image is not yet on the GPU, allowing `prepareCacheTextures` to trickle neighbor textures to VRAM at a paced rate of 1 texture per frame once the active image is visible.
 
 ______________________________________________________________________
 

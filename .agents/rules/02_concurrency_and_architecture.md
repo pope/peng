@@ -99,3 +99,23 @@ Worker tasks performing file inspection and decoding MUST consolidate file I/O o
 - **Immutable Frame Snapshot**: At the end of Phase 2 (`runUpdatePhase`), construct an immutable, read-only snapshot struct `UiViewModel` (`src/state/types.zig`).
 - **No Mutable State in View Model**: `UiViewModel` MUST NOT contain mutable pointers to `AppState`, `ViewerState`, `metrics`, `display`, or `pending_intents`. All metrics must be snapshotted (`UiRenderMetrics.toSnapshot()`), strings pre-computed (`window_title`), and state references typed as `*const`.
 - **Pure Phase 3 Presentation**: Phase 3 (`renderFrame`) operates strictly as a read-only presentation pass. Layout evaluation (Clay) and vertex extraction MUST NOT mutate application state, dispatch OS/window title changes, or enqueue intents inline. All interactive widget clicks (such as close buttons and palette item selection) are detected and mapped to `AppIntent` payloads during Phase 2 systems passes before layout drawing.
+
+## 13. Demand-First Priority Gating for Cache & GPU Uploads
+
+To guarantee minimum Time-to-First-Frame (TTFF) and eliminate main-thread stutter when viewing high-resolution images:
+
+1. **Decode Worker Gating (`sysUpdateCache`)**:
+
+   - Never dispatch background decode workers for neighbor prefetch slots ($\\pm 1, \\pm 2$) while the active image (`idx`) is still decoding or uploading.
+   - Dedicate 100% of available background worker threads, CPU L3 cache, memory bus bandwidth, and file I/O to the active navigation target.
+   - Only initiate neighbor prefetch passes once the active image has reached `.loaded_gpu` (or `.loaded_cpu` in headless mode, or `.failed`).
+
+2. **GPU Upload Prioritization (`handleImageDecodedEvent`)**:
+
+   - Never issue direct GPU texture uploads (`uploadSurfaceToGpu`) or trigger hardware mipmap generation for neighbor slots while the active image is still in flight.
+   - If a neighbor finishes decoding while the active image is still loading, save the neighbor as `.loaded_cpu` in host RAM and retain the CPU surface.
+
+3. **Paced Deferred Uploads (`prepareCacheTextures`)**:
+
+   - If the active image is `.loaded_cpu`, prioritize uploading it first before any neighbors.
+   - Once the active image is securely resident on the GPU, trickle queued `.loaded_cpu` neighbor surfaces into VRAM at a maximum rate of **1 texture per frame** to eliminate multi-image frame hitching.
