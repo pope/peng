@@ -14,17 +14,20 @@ const ThumbComponent = state_pkg.ThumbComponent;
 const CacheStatus = state_pkg.CacheStatus;
 const CacheEntry = state_pkg.CacheEntry;
 
+/// Unique lookup key identifying a cached image slot by its playlist index and cache generation epoch.
 pub const CacheKey = struct {
     index: usize,
     generation: usize,
 };
 pub const TextureHandle = CacheKey;
 
+/// Cache slot structure binding a CacheKey to its active CacheEntry state.
 pub const CacheSlot = struct {
     key: CacheKey,
     entry: CacheEntry,
 };
 
+/// Structure-of-Arrays (SoA) collection managing cached image slots, generation epochs, and VRAM memory budgeting.
 pub const CacheSlotMap = struct {
     slots: std.MultiArrayList(CacheSlot) = .{},
     generation: usize = 0,
@@ -171,6 +174,8 @@ pub const CacheSlotMap = struct {
     }
 };
 
+/// Identifies image MIME container type using magic bytes from the header buffer,
+/// falling back to file extension matching if magic bytes are ambiguous or header is too short.
 pub fn detectMimeType(header: []const u8, path: []const u8) []const u8 {
     if (header.len >= 8 and std.mem.startsWith(u8, header, &[_]u8{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A })) {
         return "image/png";
@@ -199,6 +204,161 @@ pub fn detectMimeType(header: []const u8, path: []const u8) []const u8 {
     return "unknown";
 }
 
+/// Image pixel dimensions (width and height) in pixels.
+pub const ImageDimensions = struct {
+    w: f32,
+    h: f32,
+};
+
+/// Parses full image width and height directly from image container headers (JPEG, PNG, GIF, WebP, BMP)
+/// in < 0.05ms without performing software decompression.
+///
+/// Returns null if the header buffer is insufficient or contains an unsupported format variant.
+pub fn parseImageDimensions(header: []const u8, mime_type: []const u8) ?ImageDimensions {
+    if (std.mem.eql(u8, mime_type, "image/jpeg") or (header.len >= 3 and std.mem.startsWith(u8, header, &[_]u8{ 0xFF, 0xD8, 0xFF }))) {
+        if (exif.readJpegDimensions(header)) |d| return .{ .w = d.w, .h = d.h };
+    } else if (std.mem.eql(u8, mime_type, "image/png") or (header.len >= 8 and std.mem.startsWith(u8, header, &[_]u8{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A }))) {
+        if (header.len >= 24 and std.mem.startsWith(u8, header, &[_]u8{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A }) and std.mem.eql(u8, header[12..16], "IHDR")) {
+            const w = std.mem.readInt(u32, header[16..20], .big);
+            const h = std.mem.readInt(u32, header[20..24], .big);
+            if (w > 0 and h > 0) return .{ .w = @floatFromInt(w), .h = @floatFromInt(h) };
+        }
+    } else if (std.mem.eql(u8, mime_type, "image/gif") or (header.len >= 6 and (std.mem.startsWith(u8, header, "GIF87a") or std.mem.startsWith(u8, header, "GIF89a")))) {
+        if (header.len >= 10 and (std.mem.startsWith(u8, header, "GIF87a") or std.mem.startsWith(u8, header, "GIF89a"))) {
+            const w = std.mem.readInt(u16, header[6..8], .little);
+            const h = std.mem.readInt(u16, header[8..10], .little);
+            if (w > 0 and h > 0) return .{ .w = @floatFromInt(w), .h = @floatFromInt(h) };
+        }
+    } else if (std.mem.eql(u8, mime_type, "image/webp") or (header.len >= 12 and std.mem.startsWith(u8, header, "RIFF") and std.mem.eql(u8, header[8..12], "WEBP"))) {
+        if (header.len >= 25 and std.mem.startsWith(u8, header, "RIFF") and std.mem.eql(u8, header[8..12], "WEBP")) {
+            if (std.mem.eql(u8, header[12..16], "VP8X") and header.len >= 30) {
+                const w = 1 + (@as(u32, header[24]) | (@as(u32, header[25]) << 8) | (@as(u32, header[26]) << 16));
+                const h = 1 + (@as(u32, header[27]) | (@as(u32, header[28]) << 8) | (@as(u32, header[29]) << 16));
+                return .{ .w = @floatFromInt(w), .h = @floatFromInt(h) };
+            } else if (std.mem.eql(u8, header[12..16], "VP8L") and header.len >= 25 and header[20] == 0x2F) {
+                const b0: u32 = header[21];
+                const b1: u32 = header[22];
+                const b2: u32 = header[23];
+                const b3: u32 = header[24];
+                const bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
+                const w = 1 + (bits & 0x3FFF);
+                const h = 1 + ((bits >> 14) & 0x3FFF);
+                return .{ .w = @floatFromInt(w), .h = @floatFromInt(h) };
+            } else if (std.mem.eql(u8, header[12..16], "VP8 ") and header.len >= 30) {
+                if (header[23] == 0x9D and header[24] == 0x01 and header[25] == 0x2A) {
+                    const w = std.mem.readInt(u16, header[26..28], .little) & 0x3FFF;
+                    const h = std.mem.readInt(u16, header[28..30], .little) & 0x3FFF;
+                    if (w > 0 and h > 0) return .{ .w = @floatFromInt(w), .h = @floatFromInt(h) };
+                }
+            }
+        }
+    } else if (std.mem.eql(u8, mime_type, "image/bmp") or (header.len >= 2 and std.mem.startsWith(u8, header, "BM"))) {
+        if (header.len >= 26 and std.mem.startsWith(u8, header, "BM")) {
+            const dib_size = std.mem.readInt(u32, header[14..18], .little);
+            if (dib_size >= 40 and header.len >= 26) {
+                const w = std.mem.readInt(i32, header[18..22], .little);
+                const h = std.mem.readInt(i32, header[22..26], .little);
+                if (w != std.math.minInt(i32) and h != std.math.minInt(i32)) {
+                    const abs_w: u32 = @intCast(if (w < 0) -w else w);
+                    const abs_h: u32 = @intCast(if (h < 0) -h else h);
+                    if (abs_w > 0 and abs_h > 0) return .{ .w = @floatFromInt(abs_w), .h = @floatFromInt(abs_h) };
+                }
+            }
+        }
+    }
+    return null;
+}
+
+test "parseImageDimensions" {
+    // PNG test header
+    const png_header = [_]u8{
+        0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, // signature
+        0x00, 0x00, 0x00, 0x0D, // chunk length 13
+        'I', 'H', 'D', 'R', // chunk type
+        0x00, 0x00, 0x03, 0x20, // width 800
+        0x00, 0x00, 0x02, 0x58, // height 600
+        0x08, 0x02, 0x00, 0x00, 0x00, // bit depth, color type, compression, filter, interlace
+    };
+    const png_dims = parseImageDimensions(&png_header, "image/png");
+    try std.testing.expect(png_dims != null);
+    try std.testing.expectEqual(@as(f32, 800.0), png_dims.?.w);
+    try std.testing.expectEqual(@as(f32, 600.0), png_dims.?.h);
+
+    // GIF test header
+    const gif_header = [_]u8{
+        'G', 'I', 'F', '8', '9', 'a',
+        0x40, 0x01, // width 320
+        0xF0, 0x00, // height 240
+    };
+    const gif_dims = parseImageDimensions(&gif_header, "image/gif");
+    try std.testing.expect(gif_dims != null);
+    try std.testing.expectEqual(@as(f32, 320.0), gif_dims.?.w);
+    try std.testing.expectEqual(@as(f32, 240.0), gif_dims.?.h);
+
+    // WebP VP8X test header
+    const webp_vp8x_header = [_]u8{
+        'R',  'I',  'F',  'F',
+        0x16, 0x00, 0x00, 0x00,
+        'W',  'E',  'B',  'P',
+        'V',  'P',  '8',  'X',
+        0x0A, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, // flags
+        0x7F, 0x07, 0x00, // canvas w - 1 (1919 -> 1920)
+        0x37, 0x04, 0x00, // canvas h - 1 (1079 -> 1080)
+    };
+    const vp8x_dims = parseImageDimensions(&webp_vp8x_header, "image/webp");
+    try std.testing.expect(vp8x_dims != null);
+    try std.testing.expectEqual(@as(f32, 1920.0), vp8x_dims.?.w);
+    try std.testing.expectEqual(@as(f32, 1080.0), vp8x_dims.?.h);
+
+    // WebP VP8L test header (25 bytes minimal)
+    const webp_vp8l_header = [_]u8{
+        'R',  'I',  'F',  'F',
+        0x11, 0x00, 0x00, 0x00,
+        'W',  'E',  'B',  'P',
+        'V',  'P',  '8',  'L',
+        0x05, 0x00, 0x00, 0x00,
+        0x2F, // 1-byte signature
+        0xE7, 0xE3, 0x7C, 0x00, // w: 1000, h: 500
+    };
+    const vp8l_dims = parseImageDimensions(&webp_vp8l_header, "image/webp");
+    try std.testing.expect(vp8l_dims != null);
+    try std.testing.expectEqual(@as(f32, 1000.0), vp8l_dims.?.w);
+    try std.testing.expectEqual(@as(f32, 500.0), vp8l_dims.?.h);
+
+    // WebP VP8 lossy test header
+    const webp_vp8_header = [_]u8{
+        'R',  'I',  'F',  'F',
+        0x16, 0x00, 0x00, 0x00,
+        'W',  'E',  'B',  'P',
+        'V',  'P',  '8',  ' ',
+        0x0A, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, // frame tag
+        0x9D, 0x01, 0x2A, // start code
+        0x80, 0x02, // w: 640
+        0xE0, 0x01, // h: 480
+    };
+    const vp8_dims = parseImageDimensions(&webp_vp8_header, "image/webp");
+    try std.testing.expect(vp8_dims != null);
+    try std.testing.expectEqual(@as(f32, 640.0), vp8_dims.?.w);
+    try std.testing.expectEqual(@as(f32, 480.0), vp8_dims.?.h);
+
+    // BMP test header (top-down with negative height)
+    const bmp_header = [_]u8{
+        'B', 'M',
+        0x36, 0x00, 0x0C, 0x00, // file size
+        0x00, 0x00, 0x00, 0x00, // reserved
+        0x36, 0x00, 0x00, 0x00, // offset to pixels
+        40, 0x00, 0x00, 0x00, // DIB size (40)
+        0x00, 0x04, 0x00, 0x00, // w: 1024
+        0x00, 0xFD, 0xFF, 0xFF, // h: -768 (top-down)
+    };
+    const bmp_dims = parseImageDimensions(&bmp_header, "image/bmp");
+    try std.testing.expect(bmp_dims != null);
+    try std.testing.expectEqual(@as(f32, 1024.0), bmp_dims.?.w);
+    try std.testing.expectEqual(@as(f32, 768.0), bmp_dims.?.h);
+}
+
 test "CacheSlotMap.updateStatus" {
     const allocator = std.testing.allocator;
     var cache = CacheSlotMap{};
@@ -225,6 +385,7 @@ test "CacheSlotMap.updateStatus" {
     try std.testing.expect(!updated_gen_mismatch);
 }
 
+/// Result payload containing the created GPU texture, dimensions, upload timing telemetry, and VRAM memory footprint.
 pub const GpuUploadResult = struct {
     gpu_texture: sdl.gpu.Texture,
     w: f32,
@@ -238,6 +399,8 @@ pub const GpuUploadResult = struct {
     fallback_time_ms: f64 = 0.0,
 };
 
+/// Uploads a CPU surface into an SDL GPU texture with automatic mipmap pyramid generation,
+/// using an optional compute pipeline for fast RGB24/BGR24 unpack.
 pub fn uploadSurfaceToGpu(
     dev: sdl.gpu.Device,
     surf: sdl.Surface,

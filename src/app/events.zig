@@ -45,15 +45,27 @@ pub fn drainWorkerEvents(state: *AppState) bool {
 }
 
 fn handleExifThumbnailEvent(state: *AppState, thumb_data: events.ThumbDecodedPayload) void {
+    if (state.cache.get(thumb_data.key)) |entry| {
+        if (thumb_data.exif_orientation != 0.0) {
+            entry.exif_orientation = thumb_data.exif_orientation;
+        }
+        if (thumb_data.full_w > 0 and thumb_data.full_h > 0) {
+            entry.full_w = thumb_data.full_w;
+            entry.full_h = thumb_data.full_h;
+        }
+        if (thumb_data.thumb_only) {
+            switch (entry.status) {
+                .decoding => |*dec| dec.has_thread = false,
+                else => {},
+            }
+        }
+    }
+    state.updateCurrentRotation();
+
     const surf = thumb_data.surface orelse return;
     if (state.gpu_device) |gpu_dev| {
         if (image.uploadSurfaceToGpu(gpu_dev, surf, state.unpack_compute_pipeline)) |upload_res| {
             if (state.cache.get(thumb_data.key)) |entry| {
-                entry.exif_orientation = thumb_data.exif_orientation;
-                if (thumb_data.full_w > 0 and thumb_data.full_h > 0) {
-                    entry.full_w = thumb_data.full_w;
-                    entry.full_h = thumb_data.full_h;
-                }
                 switch (entry.thumbnail) {
                     .loaded => |old_thumb| gpu_dev.releaseTexture(old_thumb.texture),
                     else => {},
@@ -68,12 +80,6 @@ fn handleExifThumbnailEvent(state: *AppState, thumb_data: events.ThumbDecodedPay
                         },
                     },
                 };
-                if (thumb_data.thumb_only) {
-                    switch (entry.status) {
-                        .decoding => |*dec| dec.has_thread = false,
-                        else => {},
-                    }
-                }
             } else {
                 gpu_dev.releaseTexture(upload_res.gpu_texture);
             }
@@ -368,4 +374,42 @@ test "drainWorkerEvents - neighbor image_decoded stays loaded_cpu while current 
     // Slot 1 should be .loaded_cpu (not uploaded or destroyed) because current slot 0 was not yet loaded
     const entry1 = state.cache.get(state.cache.activeKey(1)).?;
     try std.testing.expect(entry1.status == .loaded_cpu);
+}
+
+test "drainWorkerEvents - thumb_decoded without surface sets dimensions and clears has_thread" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    try state.cache.appendWithKey(allocator, .{
+        .index = 0,
+        .generation = state.cache.getGeneration(),
+    }, .{
+        .status = .{ .decoding = .{ .has_thread = true } },
+    });
+
+    try state.workers.event_queue.push(allocator, io, .{
+        .thumb_decoded = .{
+            .key = state.cache.activeKey(0),
+            .surface = null,
+            .w = 1920.0,
+            .h = 1080.0,
+            .full_w = 1920.0,
+            .full_h = 1080.0,
+            .exif_orientation = 0.0,
+            .thumb_only = true,
+        },
+    });
+
+    const processed = drainWorkerEvents(&state);
+    try std.testing.expect(processed);
+
+    const entry = state.cache.get(state.cache.activeKey(0)).?;
+    try std.testing.expectEqual(@as(f32, 1920.0), entry.full_w);
+    try std.testing.expectEqual(@as(f32, 1080.0), entry.full_h);
+    switch (entry.status) {
+        .decoding => |dec| try std.testing.expect(!dec.has_thread),
+        else => try std.testing.expect(false),
+    }
 }

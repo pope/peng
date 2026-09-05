@@ -11,6 +11,7 @@ const CacheKey = image.CacheKey;
 
 const MediaEntry = @import("state").MediaEntry;
 
+/// Contextual arguments and configuration passed to background image decoding worker threads.
 pub const DecodeArgs = struct {
     workers: *WorkerManager,
     allocator: std.mem.Allocator,
@@ -126,6 +127,8 @@ fn decompressCbzMediaEntry(
     };
 }
 
+/// Background worker task that reads image files from disk or CBZ archives, parses metadata,
+/// extracts EXIF thumbnails, and decompresses image surfaces into CPU memory.
 pub fn decodeWorker(args: *DecodeArgs) void {
     const workers = args.workers;
     const alloc = args.allocator;
@@ -142,6 +145,9 @@ pub fn decodeWorker(args: *DecodeArgs) void {
 
     var file_bytes: []u8 = undefined;
     var is_allocated = false;
+    defer if (is_allocated) alloc.free(file_bytes);
+
+    var read_n: usize = 0;
     var size_bytes: u64 = 0;
     var read_time_ms: f64 = 0.0;
     var cbz_decompress_time_ms: f64 = 0.0;
@@ -155,6 +161,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
             };
             file_bytes = dec_res.bytes;
             is_allocated = true;
+            read_n = dec_res.bytes.len;
             size_bytes = dec_res.bytes.len;
             read_time_ms = dec_res.read_time_ms;
             cbz_decompress_time_ms = dec_res.decompress_time_ms;
@@ -175,7 +182,9 @@ pub fn decodeWorker(args: *DecodeArgs) void {
             defer file.close(io);
 
             const file_size: usize = @intCast(s.size);
-            file_bytes = alloc.alloc(u8, file_size) catch |err| {
+            const target_read_size: usize = if (args.thumb_only) @min(file_size, 128 * 1024) else file_size;
+
+            file_bytes = alloc.alloc(u8, target_read_size) catch |err| {
                 failDecodeWorker(workers, alloc, io, key, "decodeWorker: alloc failed for '{s}': {}", .{ file_item.path, err });
                 return;
             };
@@ -184,20 +193,18 @@ pub fn decodeWorker(args: *DecodeArgs) void {
             var r_buf: [4096]u8 = undefined;
             var reader = file.reader(io, &r_buf);
             reader.interface.readSliceAll(file_bytes) catch |err| {
-                alloc.free(file_bytes);
                 if (err == error.Canceled or workers.exiting.load(.acquire)) return;
                 failDecodeWorker(workers, alloc, io, key, "decodeWorker: readSliceAll failed for '{s}': {}", .{ file_item.path, err });
                 return;
             };
+            read_n = file_bytes.len;
+
             const end_read = sdl.timer.getTicksNs();
             read_time_ms = @as(f64, @floatFromInt(end_read - start_read)) / 1_000_000.0;
         },
     }
-    defer if (is_allocated) alloc.free(file_bytes);
 
-    const read_n = file_bytes.len;
-
-    const header_n = @min(read_n, 65536);
+    const header_n = @min(read_n, 128 * 1024);
     const header_buf = file_bytes[0..header_n];
 
     const exif_rot = exif.parseExifOrientation(header_buf) orelse 0.0;
@@ -213,10 +220,10 @@ pub fn decodeWorker(args: *DecodeArgs) void {
 
     const path = media_entry.getPath();
     const mime_type = image.detectMimeType(header_buf, path);
+    const full_dims = image.parseImageDimensions(header_buf, mime_type);
 
     // Attempt fast EXIF thumbnail decoding for instant placeholder preview
     if (std.mem.eql(u8, mime_type, "image/jpeg") and args.has_gpu_device) {
-        const full_dims = exif.readJpegDimensions(header_buf);
         var thumb_bytes_opt: ?[]const u8 = exif.extractJpegThumbnail(header_buf);
 
         if (thumb_bytes_opt != null) {
@@ -263,6 +270,27 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                 }
             }
         }
+    }
+
+    if (args.thumb_only) {
+        const full_w: f32 = if (full_dims) |d| d.w else 0.0;
+        const full_h: f32 = if (full_dims) |d| d.h else 0.0;
+        workers.event_queue.push(alloc, io, .{
+            .thumb_decoded = .{
+                .key = key,
+                .surface = null,
+                .w = full_w,
+                .h = full_h,
+                .full_w = full_w,
+                .full_h = full_h,
+                .exif_orientation = exif_rot,
+                .thumb_only = true,
+            },
+        }) catch |err| {
+            std.log.err("Failed to push thumbnail decode event: {}", .{err});
+        };
+        context.wakeUpMainThread();
+        return;
     }
 
     if (workers.exiting.load(.acquire)) return;
@@ -362,4 +390,106 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         }) catch |err| std.log.err("Failed to push image decode event: {}", .{err});
         context.wakeUpMainThread();
     }
+}
+
+test "decodeWorker - thumb_only does not do full decompression on JPEG" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var workers = WorkerManager{};
+    defer workers.group.wait(io);
+
+    const path = try allocator.dupe(u8, "testfiles/images/000_0_1024x682.jpg");
+    const entry = MediaEntry{ .filesystem = .{ .path = path } };
+
+    const args = try allocator.create(DecodeArgs);
+    args.* = .{
+        .workers = &workers,
+        .allocator = allocator,
+        .io = io,
+        .key = .{ .index = 0, .generation = 1 },
+        .entry = entry,
+        .has_gpu_device = false,
+        .pixel_format = sdl.PixelFormat.rgba32,
+        .thumb_only = true,
+    };
+
+    _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
+    _ = workers.active_threads.fetchAdd(1, .monotonic);
+
+    decodeWorker(args);
+
+    var thumb_decoded_seen = false;
+    var image_decoded_seen = false;
+
+    while (workers.event_queue.pop()) |*ev| {
+        defer ev.deinit(allocator);
+        switch (ev.*) {
+            .thumb_decoded => |t| {
+                thumb_decoded_seen = true;
+                try std.testing.expect(t.thumb_only);
+                try std.testing.expectEqual(@as(f32, 1024.0), t.full_w);
+                try std.testing.expectEqual(@as(f32, 682.0), t.full_h);
+                try std.testing.expect(t.surface == null);
+            },
+            .image_decoded => {
+                image_decoded_seen = true;
+            },
+            else => {},
+        }
+    }
+
+    try std.testing.expect(thumb_decoded_seen);
+    try std.testing.expect(!image_decoded_seen);
+}
+
+test "decodeWorker - thumb_only does not do full decompression on PNG" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var workers = WorkerManager{};
+    defer workers.group.wait(io);
+
+    const path = try allocator.dupe(u8, "testfiles/golden-screenshots/test_0_init.png");
+    const entry = MediaEntry{ .filesystem = .{ .path = path } };
+
+    const args = try allocator.create(DecodeArgs);
+    args.* = .{
+        .workers = &workers,
+        .allocator = allocator,
+        .io = io,
+        .key = .{ .index = 0, .generation = 1 },
+        .entry = entry,
+        .has_gpu_device = true,
+        .pixel_format = sdl.PixelFormat.rgba32,
+        .thumb_only = true,
+    };
+
+    _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
+    _ = workers.active_threads.fetchAdd(1, .monotonic);
+
+    decodeWorker(args);
+
+    var thumb_decoded_seen = false;
+    var image_decoded_seen = false;
+
+    while (workers.event_queue.pop()) |*ev| {
+        defer ev.deinit(allocator);
+        switch (ev.*) {
+            .thumb_decoded => |t| {
+                thumb_decoded_seen = true;
+                try std.testing.expect(t.thumb_only);
+                try std.testing.expect(t.full_w > 0.0);
+                try std.testing.expect(t.full_h > 0.0);
+                try std.testing.expect(t.surface == null);
+            },
+            .image_decoded => {
+                image_decoded_seen = true;
+            },
+            else => {},
+        }
+    }
+
+    try std.testing.expect(thumb_decoded_seen);
+    try std.testing.expect(!image_decoded_seen);
 }

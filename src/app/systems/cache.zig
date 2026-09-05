@@ -119,9 +119,9 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
         }
     }
 
-    // Fast-scrolling check
+    // Fast-scrolling check: only active if navigation has actually occurred
     const now = sdl.timer.getTicks();
-    const is_fast_scrolling = (now - state.viewer.navigation.last_nav_time_ms < 150);
+    const is_fast_scrolling = state.viewer.navigation.last_nav_time_ms > 0 and (now - state.viewer.navigation.last_nav_time_ms < 150);
 
     // Resource protection: check whether the current image is fully ready or failed.
     // When false, background decode workers are restricted strictly to the active image `idx`.

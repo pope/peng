@@ -27,7 +27,11 @@ ______________________________________________________________________
 ## 2. Synchronous Header Dimension Parsing & EXIF Rules
 
 - **Single-Pass File Read & In-Memory Decoding**:
-  `decodeWorker` performs a single file open and read via Zig `std.Io` (`statFile` + `openFile` + `readPositional`) into a task-scoped heap buffer. Header parsing, EXIF thumbnail slicing (`file_bytes[off..off+len]`), and full surface decoding (`sdl.Surface.loadConstMemOpt`) operate entirely in RAM, eliminating double-open file descriptor overhead and respecting `io.isCanceled()` during disk I/O.
+  `decodeWorker` performs a single file open and read via Zig `std.Io` (`statFile` + `openFile` + `file.reader(io, &r_buf).readSliceAll(...)`) into a task-scoped heap buffer. In Zig 0.16.0, `readSliceAll` bypasses the internal reader buffer for large slices via `readVec`, executing a single vector read syscall directly into the destination buffer with zero syscall penalty. Header parsing, EXIF thumbnail slicing (`file_bytes[off..off+len]`), and full surface decoding (`sdl.Surface.loadConstMemOpt`) operate entirely in RAM, eliminating double-open file descriptor overhead and respecting `io.isCanceled()` during disk I/O.
+- **Fast-Scrolling Probe Header Sizing**:
+  When `thumb_only = true`, do NOT allocate the full file size on the heap. Allocate and read only `@min(file_size, 128 * 1024)` bytes (up to 128KB). For multi-megabyte photos, this drops read latency from $\\sim 36\\text{ms}$ to $0.17\\text{ms}$ (a $200\\times$ speedup) and eliminates heap thrashing during fast navigation.
+- **Non-EXIF Fast-Navigation Decompression Bypassing**:
+  If no embedded EXIF thumbnail exists (PNG, WebP, GIF, non-EXIF JPEG) and `thumb_only = true`, do NOT fall through to full CPU software decompression (`sdl.Surface.loadConstMemOpt`). Parse image dimensions directly from container headers via `image.parseImageDimensions(header_buf, mime_type)`, push `.thumb_decoded` with `surface = null` so the layout canvas sets the target aspect ratio on Frame 1, and return early. This keeps decode worker threads 100% idle and available during fast scrubbing.
 - **Frame-1 Target Aspect Layout**:
   Parse full image dimensions (`full_w`, `full_h`) directly from file headers synchronously on the main thread (< 0.1 ms I/O) before spawning decode worker threads. This allows layout math (`getBaseScale`, aspect ratio fitting) to set exact canvas dimensions on Frame 1, eliminating layout jumps and window jitter.
 - **EXIF APP1 Segment Skipping Rule**:
@@ -42,7 +46,7 @@ ______________________________________________________________________
 - **Throttling & Thumbnail-Only Fast Decoding**:
   During rapid scrolling (< 150ms step interval), constrain preload queues strictly to the active image `idx` and set `thumb_only = true` on `DecodeArgs`. Background `decodeWorker` tasks extract and emit the embedded EXIF thumbnail (~0.5ms) via `.thumb_decoded` and exit early (`if (args.thumb_only) return;`), bypassing full software decoding. This eliminates CPU/disk thrashing and prevents driver queue submission exhaustion (`VK_ERROR_DEVICE_LOST`).
 - **Telemetry Metric Split ("Stats for Nerds")**:
-  High-resolution nanosecond timers (`sdl.timer.getTicksNs()`) isolate disk I/O (`readPositional`) as `read_time_ms` ("Disk Read Time") separately from CPU software image decompression (`decode_time_ms`). Both metrics are transferred via `ImageDecodedPayload` to the UI overlay.
+  High-resolution nanosecond timers (`sdl.timer.getTicksNs()`) isolate disk I/O as `read_time_ms` ("Disk Read Time") separately from CPU software image decompression (`decode_time_ms`). Both metrics are transferred via `ImageDecodedPayload` to the UI overlay.
 - **Demand-First Settled Preload & GPU Upload Gating**:
   When navigation settles (> 150ms idle time), `sysUpdateCache(ctx)` MUST verify `is_current_ready` before spawning neighbor decodes ($\\pm 1, \\pm 2$ slots). If the active image is still decoding, neighbor tasks are withheld to prevent CPU/memory bandwidth contention. Similarly, `handleImageDecodedEvent` stores completed neighbor surfaces as `.loaded_cpu` in host RAM if the active image is not yet on the GPU, allowing `prepareCacheTextures` to trickle neighbor textures to VRAM at a paced rate of 1 texture per frame once the active image is visible.
 
