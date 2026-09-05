@@ -419,7 +419,8 @@ pub const AppState = struct {
 
         const entries = self.cache.slots.items(.entry);
         const keys = self.cache.slots.items(.key);
-        for (entries, keys) |*entry, key| {
+
+        for (entries) |*entry| {
             if (entry.status == .loaded_gpu and !self.viewer.ui.overlays.debug_show_thumb) {
                 switch (entry.thumbnail) {
                     .loaded => |thumb| {
@@ -431,16 +432,49 @@ pub const AppState = struct {
                     else => {},
                 }
             }
-            switch (entry.status) {
+        }
+
+        // Priority gating:
+        // - If current image is .loaded_cpu, prioritize uploading it first.
+        // - If current image is .decoding or .uploading, withhold neighbor uploads to protect GPU resources.
+        // - If current image is .loaded_gpu (or failed, or not present), upload neighbor .loaded_cpu slots (1 per frame).
+        const cur_idx_opt = self.viewer.navigation.current_index;
+        const cur_key_opt = if (cur_idx_opt) |ci| self.cache.activeKey(ci) else null;
+        const cur_entry_opt = if (cur_key_opt) |ck| self.cache.get(ck) else null;
+
+        var can_upload_neighbors = true;
+        if (cur_entry_opt) |cur_entry| {
+            switch (cur_entry.status) {
+                .loaded_gpu, .failed => {
+                    can_upload_neighbors = true;
+                },
                 .loaded_cpu => |cpu| {
-                    entry.status = .uploading;
+                    cur_entry.status = .uploading;
                     upload_target = .{
-                        .key = key,
+                        .key = cur_key_opt.?,
                         .cpu = cpu,
                     };
-                    break;
+                    can_upload_neighbors = false;
                 },
-                else => {},
+                .decoding, .uploading => {
+                    can_upload_neighbors = false;
+                },
+            }
+        }
+
+        if (upload_target == null and can_upload_neighbors) {
+            for (entries, keys) |*entry, key| {
+                switch (entry.status) {
+                    .loaded_cpu => |cpu| {
+                        entry.status = .uploading;
+                        upload_target = .{
+                            .key = key,
+                            .cpu = cpu,
+                        };
+                        break;
+                    },
+                    else => {},
+                }
             }
         }
 
@@ -455,16 +489,25 @@ pub const AppState = struct {
                             .h = target.cpu.h,
                             .size_bytes = target.cpu.size_bytes,
                             .mime_type = target.cpu.mime_type,
+                            .read_time_ms = target.cpu.read_time_ms,
                             .decode_time_ms = target.cpu.decode_time_ms,
-                            .conversion_time_ms = target.cpu.conversion_time_ms,
+                            .conversion_time_ms = res.conversion_time_ms,
                             .upload_time_ms = res.upload_time_ms,
                             .memory_size_bytes = res.memory_size_bytes,
+                            .num_mip_levels = res.num_mip_levels,
+                            .mipmap_time_ms = res.mipmap_time_ms,
+                            .was_fallback = res.was_fallback,
+                            .fallback_time_ms = res.fallback_time_ms,
+                            .cbz_decompress_time_ms = target.cpu.cbz_decompress_time_ms,
+                            .compressed_size_bytes = target.cpu.compressed_size_bytes,
                         },
                     };
                     const updated = self.cache.updateStatus(target.key, loaded_gpu_status);
 
                     if (!updated) {
                         gpu_dev.releaseTexture(res.gpu_texture);
+                    } else {
+                        self.cache.enforceVramBudget(gpu_dev, self.viewer.navigation.current_index, image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
                     }
                 } else {
                     _ = self.cache.updateStatus(target.key, .failed);

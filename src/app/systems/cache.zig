@@ -123,6 +123,21 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
     const now = sdl.timer.getTicks();
     const is_fast_scrolling = (now - state.viewer.navigation.last_nav_time_ms < 150);
 
+    // Resource protection: check whether the current image is fully ready or failed.
+    // When false, background decode workers are restricted strictly to the active image `idx`.
+    // In headless/mock mode (no GPU device), .loaded_cpu is terminal ready; with GPU, .loaded_gpu is required.
+    const is_current_ready = blk: {
+        const cur_key = state.cache.activeKey(idx);
+        if (state.cache.get(cur_key)) |cur_entry| {
+            break :blk switch (cur_entry.status) {
+                .loaded_gpu, .failed => true,
+                .loaded_cpu => state.gpu_device == null,
+                .decoding, .uploading => false,
+            };
+        }
+        break :blk false;
+    };
+
     // 3. Mark missing slots as decoding in cache map
     var to_spawn_indices: [5]usize = undefined;
     var to_spawn_entries: [5]?MediaEntry = [1]?MediaEntry{null} ** 5;
@@ -133,6 +148,10 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
         if (d >= state.viewer.navigation.image_list.items.len) continue;
 
         if (is_fast_scrolling and d != idx) continue;
+
+        // Demand-first gating: Do not spawn background decodes for neighbor slots
+        // until the active image is loaded on GPU (or failed).
+        if (!is_current_ready and d != idx) continue;
 
         const key = state.cache.activeKey(d);
         if (state.cache.get(key)) |entry| {
@@ -210,4 +229,20 @@ test "sysUpdateCache - populates prefetch window and evicts unwanted entries" {
     // Index 99 should have been evicted, and current index 0 should be present
     try std.testing.expect(state.cache.get(state.cache.activeKey(99)) == null);
     try std.testing.expect(state.cache.get(state.cache.activeKey(0)) != null);
+    // While index 0 is decoding, neighbor index 1 should NOT be populated yet
+    try std.testing.expect(state.cache.get(state.cache.activeKey(1)) == null);
+
+    // Simulate index 0 finishing decode (loaded in headless state)
+    _ = state.cache.updateStatus(state.cache.activeKey(0), .{
+        .loaded_cpu = .{
+            .surface = undefined,
+            .w = 100,
+            .h = 100,
+            .size_bytes = 1000,
+        },
+    });
+
+    // Run sysUpdateCache again: now that index 0 is ready, neighbors should populate
+    try sysUpdateCache(ctx);
+    try std.testing.expect(state.cache.get(state.cache.activeKey(1)) != null);
 }

@@ -4,6 +4,7 @@ const AppState = app_state.AppState;
 const events = @import("core/events.zig");
 const image = @import("core/image.zig");
 const ipc = @import("ipc");
+const sdl = @import("sdl");
 
 /// Drains background thread events (`image_decoded`, `path_scanned`, `ipc_command`)
 /// from `workers.event_queue` and updates cache slots, navigation list, and pending IPC lists.
@@ -83,7 +84,33 @@ fn handleExifThumbnailEvent(state: *AppState, thumb_data: events.ThumbDecodedPay
 
 fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedPayload) void {
     const surf = decoded_data.surface orelse return;
-    if (state.gpu_device) |gpu_dev| {
+
+    const is_current = if (state.viewer.navigation.current_index) |cur|
+        decoded_data.key.index == cur
+    else
+        true;
+
+    // Check if the current image is already loaded on GPU (or failed)
+    const is_current_ready = blk: {
+        const cur_idx = state.viewer.navigation.current_index orelse break :blk true;
+        const cur_key = state.cache.activeKey(cur_idx);
+        if (state.cache.get(cur_key)) |cur_entry| {
+            break :blk switch (cur_entry.status) {
+                .loaded_gpu, .failed => true,
+                else => false,
+            };
+        }
+        break :blk false;
+    };
+
+    // Demand-first GPU upload gating:
+    // Only upload immediately to the GPU if this IS the active image, OR if the active image is already on the GPU.
+    // If a neighbor decode finishes while the active image is still decoding or uploading, keep the neighbor in
+    // RAM (.loaded_cpu) to preserve 100% of PCIe bus bandwidth and GPU mipmap downsampling for the active image.
+    const should_upload_gpu = (state.gpu_device != null) and (is_current or is_current_ready);
+
+    if (should_upload_gpu) {
+        const gpu_dev = state.gpu_device.?;
         if (image.uploadSurfaceToGpu(gpu_dev, surf, state.unpack_compute_pipeline)) |full_res| {
             if (state.cache.get(decoded_data.key)) |entry| {
                 switch (entry.status) {
@@ -290,4 +317,55 @@ test "drainWorkerEvents - directory_scan_result and ipc_command" {
     try std.testing.expectEqual(@as(usize, 2), state.viewer.navigation.image_list.items.len);
     try std.testing.expectEqual(@as(?usize, 1), state.viewer.navigation.current_index);
     try std.testing.expectEqual(@as(usize, 1), state.pending_ipc_commands.items.len);
+}
+
+test "drainWorkerEvents - neighbor image_decoded stays loaded_cpu while current is decoding" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    // Set up navigation with current_index = 0
+    state.viewer.navigation.current_index = 0;
+
+    // Slot 0 is decoding
+    try state.cache.appendWithKey(allocator, .{
+        .index = 0,
+        .generation = state.cache.getGeneration(),
+    }, .{
+        .status = .{ .decoding = .{ .has_thread = true } },
+    });
+
+    // Slot 1 is decoding
+    try state.cache.appendWithKey(allocator, .{
+        .index = 1,
+        .generation = state.cache.getGeneration(),
+    }, .{
+        .status = .{ .decoding = .{ .has_thread = true } },
+    });
+
+    const surf = sdl.Surface.create(10, 10, sdl.PixelFormat.rgba32) orelse return error.SurfaceFailed;
+
+    // Neighbor index 1 finishes decoding before index 0
+    try state.workers.event_queue.push(allocator, io, .{
+        .image_decoded = .{
+            .key = state.cache.activeKey(1),
+            .surface = surf,
+            .w = 10,
+            .h = 10,
+            .mime_type = "image/png",
+            .size_bytes = 100,
+            .read_time_ms = 1.0,
+            .decode_time_ms = 2.0,
+            .conversion_time_ms = 0.0,
+            .exif_orientation = 0.0,
+        },
+    });
+
+    const processed = drainWorkerEvents(&state);
+    try std.testing.expect(processed);
+
+    // Slot 1 should be .loaded_cpu (not uploaded or destroyed) because current slot 0 was not yet loaded
+    const entry1 = state.cache.get(state.cache.activeKey(1)).?;
+    try std.testing.expect(entry1.status == .loaded_cpu);
 }
