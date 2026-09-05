@@ -88,7 +88,12 @@ pub fn renderInfoOverlay(
             .decoding => {
                 disk_size_str = "Loading...";
                 mime_type = "Loading...";
-                res_str = "Loading...";
+                if (entry.full_w > 0 and entry.full_h > 0) {
+                    const megapixels = (entry.full_w * entry.full_h) / 1_000_000.0;
+                    res_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} ({d:.2} MP)", .{ entry.full_w, entry.full_h, megapixels });
+                } else {
+                    res_str = "Loading...";
+                }
             },
             .failed => {
                 disk_size_str = "Failed";

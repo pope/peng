@@ -489,20 +489,41 @@ pub fn renderViewport(
                     })({});
                 },
                 .decoding => {
-                    clay.UI()(.{
-                        .layout = .{
-                            .sizing = .{ .w = .grow, .h = .grow },
-                            .direction = .top_to_bottom,
-                            .child_alignment = .{ .x = .center, .y = .center },
-                            .child_gap = 10,
-                        },
-                    })({
-                        clay.text("Loading image...", .{
-                            .color = theme.pink,
-                            .font_size = 22,
-                            .font_id = 0,
+                    if (draw_w > 0 and draw_h > 0) {
+                        clay.UI()(.{
+                            .id = clay.getElementId("ImageCanvas"),
+                            .layout = .{
+                                .sizing = .{
+                                    .w = .fixed(draw_w),
+                                    .h = .fixed(draw_h),
+                                },
+                                .direction = .top_to_bottom,
+                                .child_alignment = .{ .x = .center, .y = .center },
+                                .child_gap = 10,
+                            },
+                        })({
+                            clay.text("Loading image...", .{
+                                .color = theme.pink,
+                                .font_size = 22,
+                                .font_id = 0,
+                            });
                         });
-                    });
+                    } else {
+                        clay.UI()(.{
+                            .layout = .{
+                                .sizing = .{ .w = .grow, .h = .grow },
+                                .direction = .top_to_bottom,
+                                .child_alignment = .{ .x = .center, .y = .center },
+                                .child_gap = 10,
+                            },
+                        })({
+                            clay.text("Loading image...", .{
+                                .color = theme.pink,
+                                .font_size = 22,
+                                .font_id = 0,
+                            });
+                        });
+                    }
                 },
                 else => {
                     clay.UI()(.{

@@ -175,6 +175,17 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
         }
 
         if (state.cache.get(key)) |entry| {
+            const is_active_slot = (d == idx);
+            const needs_dimensions = (entry.full_w <= 0.0 or entry.full_h <= 0.0);
+            if (is_active_slot and needs_dimensions) {
+                if (image.probeMediaMetadata(state.io, state.viewer.navigation.image_list.items[idx])) |meta| {
+                    entry.full_w = meta.dims.w;
+                    entry.full_h = meta.dims.h;
+                    entry.exif_orientation = meta.orientation_degrees;
+                    state.updateCurrentRotation();
+                }
+            }
+
             switch (entry.status) {
                 .decoding => |dec| {
                     if (!dec.has_thread) {

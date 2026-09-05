@@ -13,6 +13,7 @@ const GpuTextureComponent = state_pkg.GpuTextureComponent;
 const ThumbComponent = state_pkg.ThumbComponent;
 const CacheStatus = state_pkg.CacheStatus;
 const CacheEntry = state_pkg.CacheEntry;
+pub const MediaEntry = state_pkg.MediaEntry;
 
 /// Unique lookup key identifying a cached image slot by its playlist index and cache generation epoch.
 pub const CacheKey = struct {
@@ -348,6 +349,79 @@ pub fn parseImageDimensions(header: []const u8, mime_type: []const u8) ?ImageDim
         }
     }
     return null;
+}
+
+pub const ProbedImageMetadata = struct {
+    dims: ImageDimensions,
+    /// EXIF rotation in degrees (0.0, 90.0, 180.0, 270.0) directly matching ViewportParams.rotation_angle.
+    orientation_degrees: f32 = 0.0,
+};
+
+/// Synchronously probes container headers for image dimensions and EXIF rotation in < 0.1ms
+/// before spawning background decode workers, eliminating Frame-1 layout jumps.
+pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
+    switch (media) {
+        .filesystem => |f| {
+            var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, f.path, .{}) catch |err| {
+                std.log.warn("probeMediaMetadata: openFile failed for '{s}': {any}", .{ f.path, err });
+                return null;
+            };
+            defer file.close(io);
+
+            var header_buf: [65536]u8 = undefined;
+            var slices = [_][]u8{&header_buf};
+            const n = file.readPositional(io, &slices, 0) catch |err| {
+                std.log.warn("probeMediaMetadata: readPositional failed for '{s}': {any}", .{ f.path, err });
+                return null;
+            };
+            if (n == 0) return null;
+
+            const mime_type = detectMimeType(header_buf[0..n], f.path);
+            const dims = parseImageDimensions(header_buf[0..n], mime_type) orelse return null;
+            const rot = exif.parseExifOrientation(header_buf[0..n]) orelse 0.0;
+            return ProbedImageMetadata{
+                .dims = dims,
+                .orientation_degrees = rot,
+            };
+        },
+        .archive_entry => |a| {
+            if (a.compression_method) |cm| {
+                if (cm == 0 and a.file_offset != null) {
+                    var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, a.archive_path, .{}) catch |err| {
+                        std.log.warn("probeMediaMetadata: openFile failed for archive '{s}': {any}", .{ a.archive_path, err });
+                        return null;
+                    };
+                    defer file.close(io);
+
+                    var header_buf: [65536]u8 = undefined;
+                    var slices = [_][]u8{&header_buf};
+                    const n = file.readPositional(io, &slices, a.file_offset.?) catch |err| {
+                        std.log.warn("probeMediaMetadata: readPositional failed for archive '{s}': {any}", .{ a.archive_path, err });
+                        return null;
+                    };
+                    if (n == 0) return null;
+
+                    var data_offset: usize = 0;
+                    if (n >= @sizeOf(std.zip.LocalFileHeader) and std.mem.eql(u8, header_buf[0..4], &std.zip.local_file_header_sig)) {
+                        const filename_len = std.mem.readInt(u16, header_buf[26..28], .little);
+                        const extra_len = std.mem.readInt(u16, header_buf[28..30], .little);
+                        data_offset = @sizeOf(std.zip.LocalFileHeader) + @as(usize, filename_len) + @as(usize, extra_len);
+                    }
+                    if (n <= data_offset) return null;
+
+                    const image_slice = header_buf[data_offset..n];
+                    const mime_type = detectMimeType(image_slice, a.entry_name);
+                    const dims = parseImageDimensions(image_slice, mime_type) orelse return null;
+                    const rot = exif.parseExifOrientation(image_slice) orelse 0.0;
+                    return ProbedImageMetadata{
+                        .dims = dims,
+                        .orientation_degrees = rot,
+                    };
+                }
+            }
+            return null;
+        },
+    }
 }
 
 /// Reusable GPU staging buffers for texture uploads, eliminating allocation and deallocation
@@ -1102,4 +1176,68 @@ test "uploadSurfaceToGpu - staging buffer reuse across consecutive uploads" {
     }
 
     try std.testing.expectEqual(cap1, staging.transfer_capacity);
+}
+
+test "probeMediaMetadata - filesystem JPEG" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const media = MediaEntry{
+        .filesystem = .{ .path = "testfiles/images/000_0_1024x682.jpg" },
+    };
+    const meta = probeMediaMetadata(io, media);
+    try std.testing.expect(meta != null);
+    if (meta) |m| {
+        try std.testing.expectEqual(@as(f32, 1024.0), m.dims.w);
+        try std.testing.expectEqual(@as(f32, 682.0), m.dims.h);
+        try std.testing.expectEqual(@as(f32, 0.0), m.orientation_degrees);
+    }
+}
+
+test "probeMediaMetadata - nonexistent file returns null" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const media = MediaEntry{
+        .filesystem = .{ .path = "testfiles/nonexistent.jpg" },
+    };
+    try std.testing.expectEqual(@as(?ProbedImageMetadata, null), probeMediaMetadata(io, media));
+}
+
+test "probeMediaMetadata - archive entry handling" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    // Compressed ZIP entry returns null
+    const media_comp = MediaEntry{
+        .archive_entry = .{
+            .archive_path = "testfiles/images/000_0_1024x682.jpg",
+            .entry_name = "test.jpg",
+            .compression_method = 8,
+            .file_offset = 0,
+        },
+    };
+    try std.testing.expectEqual(@as(?ProbedImageMetadata, null), probeMediaMetadata(io, media_comp));
+
+    // Missing file_offset returns null
+    const media_no_offset = MediaEntry{
+        .archive_entry = .{
+            .archive_path = "testfiles/images/000_0_1024x682.jpg",
+            .entry_name = "test.jpg",
+            .compression_method = 0,
+            .file_offset = null,
+        },
+    };
+    try std.testing.expectEqual(@as(?ProbedImageMetadata, null), probeMediaMetadata(io, media_no_offset));
+
+    // Uncompressed entry with valid offset
+    const media_stored = MediaEntry{
+        .archive_entry = .{
+            .archive_path = "testfiles/images/000_0_1024x682.jpg",
+            .entry_name = "test.jpg",
+            .compression_method = 0,
+            .file_offset = 0,
+        },
+    };
+    const meta = probeMediaMetadata(io, media_stored);
+    try std.testing.expect(meta != null);
+    if (meta) |m| {
+        try std.testing.expectEqual(@as(f32, 1024.0), m.dims.w);
+        try std.testing.expectEqual(@as(f32, 682.0), m.dims.h);
+    }
 }

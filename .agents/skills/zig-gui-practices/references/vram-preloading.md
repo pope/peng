@@ -32,8 +32,10 @@ ______________________________________________________________________
   When `thumb_only = true`, do NOT allocate the full file size on the heap. Allocate and read only `@min(file_size, 128 * 1024)` bytes (up to 128KB). For multi-megabyte photos, this drops read latency from $\\sim 36\\text{ms}$ to $0.17\\text{ms}$ (a $200\\times$ speedup) and eliminates heap thrashing during fast navigation.
 - **Non-EXIF Fast-Navigation Decompression Bypassing**:
   If no embedded EXIF thumbnail exists (PNG, WebP, GIF, non-EXIF JPEG) and `thumb_only = true`, do NOT fall through to full CPU software decompression (`sdl.Surface.loadConstMemOpt`). Parse image dimensions directly from container headers via `image.parseImageDimensions(header_buf, mime_type)`, push `.thumb_decoded` with `surface = null` so the layout canvas sets the target aspect ratio on Frame 1, and return early. This keeps decode worker threads 100% idle and available during fast scrubbing.
-- **Frame-1 Target Aspect Layout**:
-  Parse full image dimensions (`full_w`, `full_h`) directly from file headers synchronously on the main thread (< 0.1 ms I/O) before spawning decode worker threads. This allows layout math (`getBaseScale`, aspect ratio fitting) to set exact canvas dimensions on Frame 1, eliminating layout jumps and window jitter.
+- **Frame-1 Target Aspect Layout & Synchronous Probing**:
+  Parse full image dimensions (`full_w`, `full_h`) and EXIF orientation directly from file container headers synchronously on the main thread via `image.probeMediaMetadata` (< 0.1 ms positional read up to 64KB, supporting filesystem files and uncompressed CBZ entries) before spawning background decode worker threads. This allows layout math (`getBaseScale`, aspect ratio fitting) to set exact canvas dimensions on Frame 1.
+- **ImageCanvas Placeholder Layout**:
+  When `entry.status == .decoding` and no thumbnail is ready, if target dimensions are known (`draw_w > 0 and draw_h > 0`), `renderViewport` renders `ImageCanvas` with `.fixed(draw_w)` and `.fixed(draw_h)` containing a centered `"Loading image..."` indicator. This guarantees that layout geometry and child alignment remain completely stable from the very first frame, eliminating layout jumps and window jitter.
 - **EXIF APP1 Segment Skipping Rule**:
   Camera JPEGs embed EXIF thumbnails inside the `APP1` (`0xFF, 0xE1`) segment. When scanning for main image `SOF0`/`SOF2` frame headers, `APP1` segment payloads MUST be explicitly skipped (`idx += seg_len`) to prevent matching the embedded thumbnail's frame header.
 - **EXIF Tag Priority**:
