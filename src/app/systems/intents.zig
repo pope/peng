@@ -3,7 +3,6 @@ const sdl = @import("sdl");
 const clay = @import("zclay");
 const state = @import("state");
 const app_state = @import("../state.zig");
-const palette_module = @import("../core/palette.zig");
 const intents = @import("intents");
 const FrameContext = @import("root.zig").FrameContext;
 const Key = state.Key;
@@ -108,7 +107,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 ui.palette.mode = .inactive;
             } else {
                 if (p.mode == .directory_navigator and p.query != null) {
-                    try palette_module.loadDirectoryEntries(&ui.palette, self.io, p.query.?);
+                    try self.loadPaletteDirectory(p.query.?);
                     ui.palette.mode = .directory_navigator;
                 } else {
                     try self.openPalette(p.mode);
@@ -160,7 +159,8 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
     }
 }
 
-/// System Pass: Execute queued discrete intents
+/// System Pass: Dispatches all queued application intents in FIFO order to update domain and visual state,
+/// clearing the intent buffer once execution completes.
 pub fn sysExecuteIntents(ctx: FrameContext) !void {
     const self = ctx.state;
     if (self.pending_intents.items.len == 0) return;

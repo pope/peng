@@ -13,6 +13,7 @@ pub const decode = @import("decode.zig");
 pub const path_scan = @import("path_scan.zig");
 pub const stdin = @import("stdin.zig");
 pub const ipc_server = @import("ipc_server.zig");
+pub const palette_scan = @import("palette_scan.zig");
 
 const events = @import("../core/events.zig");
 
@@ -20,6 +21,7 @@ pub const WorkerContext = context.WorkerContext;
 pub const DecodeArgs = decode.DecodeArgs;
 pub const PathScanArgs = path_scan.PathScanArgs;
 pub const StdinArgs = stdin.StdinArgs;
+pub const PaletteScanArgs = palette_scan.PaletteScanArgs;
 
 /// WorkerManager manages background thread lifecycle, active thread counts,
 /// concurrency limits, worker cancellation, and event transport.
@@ -71,6 +73,60 @@ pub const WorkerManager = struct {
         return @max(1, cpu_count / 2);
     }
 
+    /// Initializes a new WorkerManager with zero active threads and default event queues.
+    pub fn init() WorkerManager {
+        return .{};
+    }
+
+    /// Signals worker shutdown and waits for running tasks to finish.
+    pub fn deinit(self: *WorkerManager, io: std.Io) void {
+        self.drainAndQuiesce(io);
+    }
+
+    /// Sets the worker shutdown flag to notify worker loops that exit has been requested.
+    pub fn requestExit(self: *WorkerManager) void {
+        self.exiting.store(true, .release);
+    }
+
+    /// Checks whether worker cancellation / app exit has been signaled.
+    pub fn isExiting(self: *const WorkerManager) bool {
+        return self.exiting.load(.acquire);
+    }
+
+    /// Returns the number of background worker tasks currently executing.
+    pub fn getActiveThreads(self: *const WorkerManager) usize {
+        return self.active_threads.load(.acquire);
+    }
+
+    /// Cancels and joins all active tasks in the worker group.
+    pub fn joinAll(self: *WorkerManager, io: std.Io) void {
+        self.drainAndQuiesce(io);
+    }
+
+    /// Spawns an image decoding task using this worker manager.
+    pub fn spawnDecode(self: *WorkerManager, args: *DecodeArgs) !void {
+        _ = self;
+        try @This().spawnDecode(args);
+    }
+
+    /// Spawns a path scanning task using this worker manager.
+    pub fn spawnPathScan(self: *WorkerManager, args: *PathScanArgs) !void {
+        _ = self;
+        try @This().spawnPathScan(args);
+    }
+
+    /// Spawns a stdin reader task using this worker manager.
+    pub fn spawnStdinReader(self: *WorkerManager, args: *StdinArgs) !void {
+        _ = self;
+        try @This().spawnStdin(args);
+    }
+
+    /// Spawns a palette directory scanning task using this worker manager.
+    pub fn spawnPaletteScan(self: *WorkerManager, args: *PaletteScanArgs) !void {
+        _ = self;
+        try @This().spawnPaletteScan(args);
+    }
+
     /// Cancels all background tasks in the worker group and blocks until all running worker
     /// threads have exited cleanly. Called on application shutdown (`ViewerState.deinit`).
     pub fn drainAndQuiesce(self: *WorkerManager, io: std.Io) void {
@@ -79,6 +135,9 @@ pub const WorkerManager = struct {
     }
 };
 
+/// Alias for the underlying async task group (`std.Io.Group`).
+pub const WorkerGroup = std.Io.Group;
+
 /// Spawns a background `decodeWorker` task for image file decoding and EXIF thumbnail extraction,
 /// tracking active decode thread and active worker thread counts.
 pub fn spawnDecode(args: *DecodeArgs) !void {
@@ -86,6 +145,15 @@ pub fn spawnDecode(args: *DecodeArgs) !void {
     _ = args.workers.active_threads.fetchAdd(1, .monotonic);
     args.workers.group.async(args.io, decode.decodeWorker, .{args});
 }
+
+/// Spawns a background `paletteScanWorker` task to count directory images and subfolders.
+pub fn spawnPaletteScan(args: *PaletteScanArgs) !void {
+    _ = args.workers.active_threads.fetchAdd(1, .monotonic);
+    args.workers.group.async(args.io, palette_scan.paletteScanWorker, .{args});
+}
+
+/// Extracts unscanned directory items and dispatches an asynchronous background palette scan task.
+pub const spawnPaletteScanForItems = palette_scan.spawnPaletteScanForItems;
 
 /// Spawns a background `pathScanWorker` task to recursively scan directories or validate file paths,
 /// setting the navigation file loading state.
@@ -114,6 +182,10 @@ pub fn spawnIpcServer(state: *app_state.AppState) !void {
     state.workers.group.async(state.io, ipc_server.ipcServerWorkerTask, .{args});
 }
 
+/// Alias for `spawnStdin`.
+pub const spawnStdinReader = spawnStdin;
+
+/// Inspects whether standard input is piped (non-TTY) and spawns an asynchronous stdin reader task.
 pub fn readPipedStdin(state: *app_state.AppState, io: std.Io, gpa: std.mem.Allocator) !void {
     const is_stdin_piped = !(std.Io.File.stdin().isTty(io) catch false);
     if (is_stdin_piped) {
@@ -133,6 +205,7 @@ pub fn readPipedStdin(state: *app_state.AppState, io: std.Io, gpa: std.mem.Alloc
     }
 }
 
+/// Clones `path`, allocates scan parameters, and dispatches an asynchronous background directory or path scan task.
 pub fn startAsyncPathScan(state: *app_state.AppState, path: []const u8, is_dir: bool) !void {
     const dup_path = try state.allocator.dupe(u8, path);
     errdefer state.allocator.free(dup_path);
@@ -160,4 +233,5 @@ test {
     _ = path_scan;
     _ = stdin;
     _ = ipc_server;
+    _ = palette_scan;
 }

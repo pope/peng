@@ -162,6 +162,8 @@ fn renderSearchInput(palette: *const PaletteState, placeholder: []const u8) void
     });
 }
 
+/// Renders the centered single-line modal dialog used for scalar numeric and text inputs
+/// (brightness, contrast, jump-to-image index, and slideshow timer intervals).
 pub fn renderTextInputDialog(
     ui_model: UiViewModel,
     frame_allocator: std.mem.Allocator,
@@ -646,91 +648,242 @@ pub fn renderSelectionList(
                                 );
                             });
 
-                            if (entry == .archive_file) {
-                                const image_count = entry.getImageCount() orelse 0;
-                                const count_str = try std.fmt.allocPrint(frame_allocator, "{} page{s}", .{ image_count, if (image_count == 1) "" else "s" });
-                                const count_color = if (image_count == 0) theme.subtext1 else theme.green;
-
-                                clay.UI()(.{
-                                    .layout = .{
-                                        .sizing = .{ .w = .fit, .h = .fit },
-                                        .direction = .left_to_right,
-                                        .child_gap = 6,
+                            if (entry.getScanState()) |scan| {
+                                switch (scan) {
+                                    .unscanned => {
+                                        clay.UI()(.{
+                                            .layout = .{
+                                                .sizing = .{ .w = .fit, .h = .fit },
+                                                .direction = .left_to_right,
+                                                .child_gap = 6,
+                                            },
+                                        })({
+                                            clay.UI()(.{
+                                                .layout = .{
+                                                    .sizing = .{ .w = .fit, .h = .fit },
+                                                    .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
+                                                },
+                                                .background_color = theme.crust,
+                                                .corner_radius = .all(4),
+                                                .border = .{
+                                                    .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                                                    .color = theme.surface0,
+                                                },
+                                            })({
+                                                clay.text("...", .{
+                                                    .color = theme.subtext1,
+                                                    .font_size = 11,
+                                                    .font_id = 0,
+                                                });
+                                            });
+                                        });
                                     },
-                                })({
-                                    clay.UI()(.{
-                                        .layout = .{
-                                            .sizing = .{ .w = .fit, .h = .fit },
-                                            .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
-                                        },
-                                        .background_color = theme.crust,
-                                        .corner_radius = .all(4),
-                                        .border = .{
-                                            .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-                                            .color = if (image_count == 0) theme.surface0 else theme.green,
-                                        },
-                                    })({
-                                        clay.text(count_str, .{
-                                            .color = count_color,
-                                            .font_size = 11,
-                                            .font_id = 0,
+                                    .partial_counted => |p| {
+                                        clay.UI()(.{
+                                            .layout = .{
+                                                .sizing = .{ .w = .fit, .h = .fit },
+                                                .direction = .left_to_right,
+                                                .child_gap = 6,
+                                            },
+                                        })({
+                                            if (entry == .archive_file) {
+                                                const count_str = try std.fmt.allocPrint(frame_allocator, "{}+ pages", .{p.image_count});
+                                                clay.UI()(.{
+                                                    .layout = .{
+                                                        .sizing = .{ .w = .fit, .h = .fit },
+                                                        .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
+                                                    },
+                                                    .background_color = theme.crust,
+                                                    .corner_radius = .all(4),
+                                                    .border = .{
+                                                        .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                                                        .color = theme.yellow,
+                                                    },
+                                                })({
+                                                    clay.text(count_str, .{
+                                                        .color = theme.yellow,
+                                                        .font_size = 11,
+                                                        .font_id = 0,
+                                                    });
+                                                });
+                                            } else {
+                                                const count_str = try std.fmt.allocPrint(frame_allocator, "{}+ images", .{p.image_count});
+                                                const sub_str = try std.fmt.allocPrint(frame_allocator, "{}+ subfolders", .{p.subdir_count});
+
+                                                clay.UI()(.{
+                                                    .layout = .{
+                                                        .sizing = .{ .w = .fit, .h = .fit },
+                                                        .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
+                                                    },
+                                                    .background_color = theme.crust,
+                                                    .corner_radius = .all(4),
+                                                    .border = .{
+                                                        .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                                                        .color = theme.yellow,
+                                                    },
+                                                })({
+                                                    clay.text(count_str, .{
+                                                        .color = theme.yellow,
+                                                        .font_size = 11,
+                                                        .font_id = 0,
+                                                    });
+                                                });
+
+                                                clay.UI()(.{
+                                                    .layout = .{
+                                                        .sizing = .{ .w = .fit, .h = .fit },
+                                                        .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
+                                                    },
+                                                    .background_color = theme.crust,
+                                                    .corner_radius = .all(4),
+                                                    .border = .{
+                                                        .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                                                        .color = theme.yellow,
+                                                    },
+                                                })({
+                                                    clay.text(sub_str, .{
+                                                        .color = theme.yellow,
+                                                        .font_size = 11,
+                                                        .font_id = 0,
+                                                    });
+                                                });
+                                            }
                                         });
-                                    });
-                                });
-                            } else {
-                                const image_count = entry.getImageCount() orelse 0;
-                                const subdir_count = entry.getSubdirCount() orelse 0;
-                                const count_str = try std.fmt.allocPrint(frame_allocator, "{} image{s}", .{ image_count, if (image_count == 1) "" else "s" });
-                                const count_color = if (image_count == 0) theme.subtext1 else theme.green;
-
-                                const sub_str = try std.fmt.allocPrint(frame_allocator, "{} subfolder{s}", .{ subdir_count, if (subdir_count == 1) "" else "s" });
-                                const sub_color = if (subdir_count == 0) theme.subtext1 else theme.blue;
-
-                                clay.UI()(.{
-                                    .layout = .{
-                                        .sizing = .{ .w = .fit, .h = .fit },
-                                        .direction = .left_to_right,
-                                        .child_gap = 6,
                                     },
-                                })({
-                                    clay.UI()(.{
-                                        .layout = .{
-                                            .sizing = .{ .w = .fit, .h = .fit },
-                                            .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
-                                        },
-                                        .background_color = theme.crust,
-                                        .corner_radius = .all(4),
-                                        .border = .{
-                                            .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-                                            .color = if (image_count == 0) theme.surface0 else theme.green,
-                                        },
-                                    })({
-                                        clay.text(count_str, .{
-                                            .color = count_color,
-                                            .font_size = 11,
-                                            .font_id = 0,
-                                        });
-                                    });
+                                    .scanned, .cached => |s| {
+                                        clay.UI()(.{
+                                            .layout = .{
+                                                .sizing = .{ .w = .fit, .h = .fit },
+                                                .direction = .left_to_right,
+                                                .child_gap = 6,
+                                            },
+                                        })({
+                                            if (entry == .archive_file) {
+                                                const count_str = try std.fmt.allocPrint(frame_allocator, "{} page{s}", .{ s.image_count, if (s.image_count == 1) "" else "s" });
+                                                const count_color = if (s.image_count == 0) theme.subtext1 else theme.green;
 
-                                    clay.UI()(.{
-                                        .layout = .{
-                                            .sizing = .{ .w = .fit, .h = .fit },
-                                            .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
-                                        },
-                                        .background_color = theme.crust,
-                                        .corner_radius = .all(4),
-                                        .border = .{
-                                            .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-                                            .color = if (subdir_count == 0) theme.surface0 else theme.blue,
-                                        },
-                                    })({
-                                        clay.text(sub_str, .{
-                                            .color = sub_color,
-                                            .font_size = 11,
-                                            .font_id = 0,
+                                                clay.UI()(.{
+                                                    .layout = .{
+                                                        .sizing = .{ .w = .fit, .h = .fit },
+                                                        .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
+                                                    },
+                                                    .background_color = theme.crust,
+                                                    .corner_radius = .all(4),
+                                                    .border = .{
+                                                        .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                                                        .color = if (s.image_count == 0) theme.surface0 else theme.green,
+                                                    },
+                                                })({
+                                                    clay.text(count_str, .{
+                                                        .color = count_color,
+                                                        .font_size = 11,
+                                                        .font_id = 0,
+                                                    });
+                                                });
+                                            } else {
+                                                const count_str = try std.fmt.allocPrint(frame_allocator, "{} image{s}", .{ s.image_count, if (s.image_count == 1) "" else "s" });
+                                                const count_color = if (s.image_count == 0) theme.subtext1 else theme.green;
+
+                                                const sub_str = try std.fmt.allocPrint(frame_allocator, "{} subfolder{s}", .{ s.subdir_count, if (s.subdir_count == 1) "" else "s" });
+                                                const sub_color = if (s.subdir_count == 0) theme.subtext1 else theme.blue;
+
+                                                clay.UI()(.{
+                                                    .layout = .{
+                                                        .sizing = .{ .w = .fit, .h = .fit },
+                                                        .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
+                                                    },
+                                                    .background_color = theme.crust,
+                                                    .corner_radius = .all(4),
+                                                    .border = .{
+                                                        .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                                                        .color = if (s.image_count == 0) theme.surface0 else theme.green,
+                                                    },
+                                                })({
+                                                    clay.text(count_str, .{
+                                                        .color = count_color,
+                                                        .font_size = 11,
+                                                        .font_id = 0,
+                                                    });
+                                                });
+
+                                                clay.UI()(.{
+                                                    .layout = .{
+                                                        .sizing = .{ .w = .fit, .h = .fit },
+                                                        .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
+                                                    },
+                                                    .background_color = theme.crust,
+                                                    .corner_radius = .all(4),
+                                                    .border = .{
+                                                        .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                                                        .color = if (s.subdir_count == 0) theme.surface0 else theme.blue,
+                                                    },
+                                                })({
+                                                    clay.text(sub_str, .{
+                                                        .color = sub_color,
+                                                        .font_size = 11,
+                                                        .font_id = 0,
+                                                    });
+                                                });
+                                            }
                                         });
-                                    });
-                                });
+                                    },
+                                    .failed => {
+                                        clay.UI()(.{
+                                            .layout = .{
+                                                .sizing = .{ .w = .fit, .h = .fit },
+                                                .direction = .left_to_right,
+                                                .child_gap = 6,
+                                            },
+                                        })({
+                                            clay.UI()(.{
+                                                .layout = .{
+                                                    .sizing = .{ .w = .fit, .h = .fit },
+                                                    .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
+                                                },
+                                                .background_color = theme.crust,
+                                                .corner_radius = .all(4),
+                                                .border = .{
+                                                    .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                                                    .color = theme.red,
+                                                },
+                                            })({
+                                                clay.text("Error", .{
+                                                    .color = theme.red,
+                                                    .font_size = 11,
+                                                    .font_id = 0,
+                                                });
+                                            });
+                                        });
+                                    },
+                                    .permission_denied => {
+                                        clay.UI()(.{
+                                            .layout = .{
+                                                .sizing = .{ .w = .fit, .h = .fit },
+                                                .direction = .left_to_right,
+                                                .child_gap = 6,
+                                            },
+                                        })({
+                                            clay.UI()(.{
+                                                .layout = .{
+                                                    .sizing = .{ .w = .fit, .h = .fit },
+                                                    .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
+                                                },
+                                                .background_color = theme.crust,
+                                                .corner_radius = .all(4),
+                                                .border = .{
+                                                    .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                                                    .color = theme.red,
+                                                },
+                                            })({
+                                                clay.text("Locked", .{
+                                                    .color = theme.red,
+                                                    .font_size = 11,
+                                                    .font_id = 0,
+                                                });
+                                            });
+                                        });
+                                    },
+                                }
                             }
                         }
                     },
@@ -831,6 +984,8 @@ fn renderDirectoryLegend() void {
     });
 }
 
+/// Renders the complete Command Palette floating modal overlay (search input box, header title,
+/// match counter, and virtualized scrollable result list) corresponding to the active palette mode.
 pub fn renderPalette(
     ui_model: UiViewModel,
     frame_allocator: std.mem.Allocator,

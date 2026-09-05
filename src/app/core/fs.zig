@@ -2,6 +2,7 @@ const std = @import("std");
 const state_pkg = @import("state");
 const DirectoryEntry = state_pkg.DirectoryEntry;
 
+/// Performs case-insensitive ASCII substring search, returning `true` if `needle` is found within `haystack`.
 pub fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
     if (needle.len == 0) return true;
     if (haystack.len < needle.len) return false;
@@ -12,11 +13,13 @@ pub fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
     return false;
 }
 
+/// Returns `true` if filename is an AppleDouble metadata file starting with `._`.
 pub fn isAppleDouble(filename: []const u8) bool {
     const basename = std.fs.path.basename(filename);
     return std.mem.startsWith(u8, basename, "._");
 }
 
+/// Returns `true` if the file extension matches a supported image format (`.png`, `.jpg`, `.jpeg`, `.bmp`, `.gif`, `.tga`, `.webp`).
 pub fn isImageExtension(ext: []const u8) bool {
     const extensions = [_][]const u8{ ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tga", ".webp" };
     for (extensions) |e| {
@@ -25,30 +28,36 @@ pub fn isImageExtension(ext: []const u8) bool {
     return false;
 }
 
+/// Returns `true` if the file extension is `.cbz` (case-insensitive).
 pub fn isCbzExtension(ext: []const u8) bool {
     return std.ascii.eqlIgnoreCase(ext, ".cbz");
 }
 
+/// Returns `true` if the path points to a valid comic archive (`.cbz`) file and is not AppleDouble metadata.
 pub fn isCbzFile(filename: []const u8) bool {
     if (isAppleDouble(filename)) return false;
     return isCbzExtension(std.fs.path.extension(filename));
 }
 
+/// Returns `true` if the path points to a supported image file and is not AppleDouble metadata.
 pub fn isImageFile(filename: []const u8) bool {
     if (isAppleDouble(filename)) return false;
     return isImageExtension(std.fs.path.extension(filename));
 }
 
+/// Returns `true` if the path points to any supported image or CBZ archive file and is not AppleDouble metadata.
 pub fn isSupportedFile(filename: []const u8) bool {
     if (isAppleDouble(filename)) return false;
     return isImageFile(filename) or isCbzFile(filename);
 }
 
+/// Holds parsed components of an archive entry virtual path (e.g. `path/to/archive.cbz::entry.jpg`).
 pub const ArchiveEntryPath = struct {
     archive_path: []const u8,
     entry_name: []const u8,
 };
 
+/// Splits a compound path of the form `archive_path::entry_name` into an `ArchiveEntryPath` struct, or returns `null`.
 pub fn parseArchiveEntryPath(path: []const u8) ?ArchiveEntryPath {
     if (std.mem.indexOf(u8, path, "::")) |sep_idx| {
         return .{
@@ -61,6 +70,7 @@ pub fn parseArchiveEntryPath(path: []const u8) ?ArchiveEntryPath {
 
 const MediaEntry = @import("state").MediaEntry;
 
+/// Scans central directory headers in a CBZ ZIP archive, appending all discovered image entries to `list`.
 pub fn scanCbzImageEntries(gpa: std.mem.Allocator, io: std.Io, cbz_path: []const u8, list: *std.ArrayList(MediaEntry)) !void {
     var file = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, cbz_path, .{});
     defer file.close(io);
@@ -128,6 +138,8 @@ fn isAllDotDots(path: []const u8) bool {
     return count > 0;
 }
 
+/// Computes the parent directory path of `dir` and writes it into `buf`, handling root paths,
+/// relative `..` path chains, and forward/backward slash separators. Returns `null` if at filesystem root.
 pub fn getParentDirBuf(dir: []const u8, buf: []u8) ?[]const u8 {
     const trimmed = std.mem.trimEnd(u8, dir, "/\\");
     if (trimmed.len == 0) return null;
@@ -171,11 +183,14 @@ pub fn getParentDirBuf(dir: []const u8, buf: []u8) ?[]const u8 {
     return ".";
 }
 
+/// Aggregated count of image files and child subdirectories inside a directory or CBZ container.
 pub const FolderCounts = struct {
     image_count: usize = 0,
     subdir_count: usize = 0,
 };
 
+/// Counts supported image files and non-hidden subdirectories inside `folder_path`.
+/// Inspects CBZ central directory tables directly if `folder_path` points to a comic archive.
 pub fn countFolderContents(io: std.Io, folder_path: []const u8) FolderCounts {
     if (isCbzFile(folder_path)) {
         var counts: FolderCounts = .{};
@@ -228,15 +243,20 @@ pub fn countFolderContents(io: std.Io, folder_path: []const u8) FolderCounts {
     return counts;
 }
 
+/// Convenience function returning the count of supported image files within `folder_path`.
 pub fn countFolderImages(io: std.Io, folder_path: []const u8) usize {
     return countFolderContents(io, folder_path).image_count;
 }
 
+/// Convenience function returning the count of non-hidden subdirectories within `folder_path`.
 pub fn countFolderSubdirs(io: std.Io, folder_path: []const u8) usize {
     return countFolderContents(io, folder_path).subdir_count;
 }
 
-pub fn scanDirectoryEntries(gpa: std.mem.Allocator, io: std.Io, dir_path: []const u8, entries: *std.ArrayList(DirectoryEntry)) !void {
+/// Scans immediate non-hidden child subdirectories and CBZ archives within `dir_path`,
+/// populates `entries` with initialized `.unscanned` DirectoryEntry records,
+/// and returns the count of image files directly present in `dir_path`.
+pub fn scanDirectoryEntries(gpa: std.mem.Allocator, io: std.Io, dir_path: []const u8, entries: *std.ArrayList(DirectoryEntry)) !usize {
     const start_len = entries.items.len;
     errdefer {
         for (entries.items[start_len..]) |entry| {
@@ -252,8 +272,13 @@ pub fn scanDirectoryEntries(gpa: std.mem.Allocator, io: std.Io, dir_path: []cons
     var dir = try std.Io.Dir.openDir(std.Io.Dir.cwd(), io, dir_path, .{ .iterate = true });
     defer dir.close(io);
 
+    var current_dir_images: usize = 0;
     var it = dir.iterate();
     while (try it.next(io)) |entry| {
+        if (entry.kind == .file and (isImageFile(entry.name) or isCbzFile(entry.name))) {
+            current_dir_images += 1;
+        }
+
         const is_dir_entry = (entry.kind == .directory);
         const is_cbz_entry = (entry.kind == .file and isCbzFile(entry.name));
 
@@ -265,13 +290,13 @@ pub fn scanDirectoryEntries(gpa: std.mem.Allocator, io: std.Io, dir_path: []cons
             const name = try gpa.dupe(u8, entry.name);
             errdefer gpa.free(name);
 
-            const counts = countFolderContents(io, full_path);
+            // TODO: Option 3 - Implement an in-memory path-to-count cache (LRU / hash map) to restore folder counts instantly on back/forth navigation.
             if (is_cbz_entry) {
                 try entries.append(gpa, .{
                     .archive_file = .{
                         .name = name,
                         .full_path = full_path,
-                        .image_count = counts.image_count,
+                        .scan = .unscanned,
                         .archive_type = .cbz,
                     },
                 });
@@ -280,12 +305,7 @@ pub fn scanDirectoryEntries(gpa: std.mem.Allocator, io: std.Io, dir_path: []cons
                     .directory = .{
                         .name = name,
                         .full_path = full_path,
-                        .scan = .{
-                            .scanned = .{
-                                .image_count = counts.image_count,
-                                .subdir_count = counts.subdir_count,
-                            },
-                        },
+                        .scan = .unscanned,
                     },
                 });
             }
@@ -297,8 +317,12 @@ pub fn scanDirectoryEntries(gpa: std.mem.Allocator, io: std.Io, dir_path: []cons
             return std.ascii.lessThanIgnoreCase(a.getName(), b.getName());
         }
     }.lessThan);
+
+    return current_dir_images;
 }
 
+/// Resolves and returns the leaf basename of `path`. If `path` ends in `.` or `..`, resolves the real
+/// filesystem path into `buf` to return the actual directory name.
 pub fn getChildBasename(io: std.Io, path: []const u8, buf: []u8) []const u8 {
     const trimmed = std.mem.trimEnd(u8, path, "/\\");
     const base = blk: {
@@ -388,11 +412,13 @@ test "scanDirectoryEntries includes CBZ files and countFolderContents counts CBZ
         dir_entries.deinit(allocator);
     }
 
-    try scanDirectoryEntries(allocator, io, ".", &dir_entries);
+    _ = try scanDirectoryEntries(allocator, io, ".", &dir_entries);
     var found_cbz = false;
     for (dir_entries.items) |e| {
         if (std.mem.eql(u8, e.getName(), "5 Centimeters per Second.cbz")) {
             found_cbz = true;
+            try std.testing.expect(e.getImageCount() == null);
+            try std.testing.expectEqual(state_pkg.EntryScanState.unscanned, e.getScanState().?);
             break;
         }
     }
@@ -440,22 +466,29 @@ test "scanDirectoryEntries - nested directory hierarchy" {
         entries.deinit(allocator);
     }
 
-    try scanDirectoryEntries(allocator, io, tmp_dir_path, &entries);
+    const img_count = try scanDirectoryEntries(allocator, io, tmp_dir_path, &entries);
 
+    try std.testing.expectEqual(@as(usize, 1), img_count);
     try std.testing.expectEqual(@as(usize, 3), entries.items.len);
 
     // Index 0: sub_a
     try std.testing.expectEqualStrings("sub_a", entries.items[0].getName());
     try std.testing.expectEqualStrings(tmp_dir_path ++ "/sub_a", entries.items[0].getFullPath());
-    try std.testing.expectEqual(@as(usize, 1), entries.items[0].getImageCount().?);
+    try std.testing.expectEqual(state_pkg.FolderScanState.unscanned, entries.items[0].directory.scan);
+    try std.testing.expect(entries.items[0].getImageCount() == null);
+    try std.testing.expectEqual(@as(usize, 1), countFolderContents(io, entries.items[0].getFullPath()).image_count);
 
     // Index 1: sub_b
     try std.testing.expectEqualStrings("sub_b", entries.items[1].getName());
     try std.testing.expectEqualStrings(tmp_dir_path ++ "/sub_b", entries.items[1].getFullPath());
-    try std.testing.expectEqual(@as(usize, 2), entries.items[1].getImageCount().?);
+    try std.testing.expectEqual(state_pkg.FolderScanState.unscanned, entries.items[1].directory.scan);
+    try std.testing.expect(entries.items[1].getImageCount() == null);
+    try std.testing.expectEqual(@as(usize, 2), countFolderContents(io, entries.items[1].getFullPath()).image_count);
 
     // Index 2: sub_empty
     try std.testing.expectEqualStrings("sub_empty", entries.items[2].getName());
     try std.testing.expectEqualStrings(tmp_dir_path ++ "/sub_empty", entries.items[2].getFullPath());
-    try std.testing.expectEqual(@as(usize, 0), entries.items[2].getImageCount().?);
+    try std.testing.expectEqual(state_pkg.FolderScanState.unscanned, entries.items[2].directory.scan);
+    try std.testing.expect(entries.items[2].getImageCount() == null);
+    try std.testing.expectEqual(@as(usize, 0), countFolderContents(io, entries.items[2].getFullPath()).image_count);
 }

@@ -6,25 +6,43 @@ const types = @import("types.zig");
 pub const TextInputBounds = intents.TextInputBounds;
 pub const PaletteMode = intents.PaletteMode;
 
+/// Represents a search result item paired with its fuzzy matching score.
 pub const ScoredMatch = struct {
     index: usize,
     score: i32,
 };
 
-pub const FolderScanState = union(enum) {
-    unscanned,
-    permission_denied,
-    scanned: struct {
-        image_count: usize = 0,
-        subdir_count: usize = 0,
-    },
+/// Container holding image and subdirectory counts for a directory or archive entry.
+pub const EntryScanCounts = struct {
+    image_count: usize = 0,
+    subdir_count: usize = 0,
 };
 
+/// Scan status and discovery metrics for a directory or archive entry.
+pub const EntryScanState = union(enum) {
+    /// Entry has not yet been scanned.
+    unscanned,
+    /// Partial count available during incremental background scanning.
+    partial_counted: EntryScanCounts,
+    /// Background scan finished with complete image and subdirectory counts.
+    scanned: EntryScanCounts,
+    /// Counts retrieved from in-memory or on-disk metadata cache.
+    cached: EntryScanCounts,
+    /// Background scan failed due to I/O or decode error.
+    failed,
+    /// Background scan failed due to filesystem permissions.
+    permission_denied,
+};
+/// Backwards-compatibility alias for `EntryScanState`.
+pub const FolderScanState = EntryScanState;
+
+/// Supported comic / compressed container formats for directory navigation.
 pub const ArchiveType = enum {
     cbz,
     zip,
 };
 
+/// Tagged union representing a single item in directory navigator listings.
 pub const DirectoryEntry = union(enum) {
     parent: struct {
         name: []const u8,
@@ -33,12 +51,12 @@ pub const DirectoryEntry = union(enum) {
     directory: struct {
         name: []const u8,
         full_path: []const u8 = "",
-        scan: FolderScanState = .unscanned,
+        scan: EntryScanState = .unscanned,
     },
     archive_file: struct {
         name: []const u8,
         full_path: []const u8 = "",
-        image_count: usize = 0,
+        scan: EntryScanState = .unscanned,
         archive_type: ArchiveType = .cbz,
     },
     image_file: struct {
@@ -46,6 +64,7 @@ pub const DirectoryEntry = union(enum) {
         full_path: []const u8 = "",
     },
 
+    /// Returns the display basename of this directory item.
     pub fn getName(self: DirectoryEntry) []const u8 {
         return switch (self) {
             .parent => |p| p.name,
@@ -55,6 +74,7 @@ pub const DirectoryEntry = union(enum) {
         };
     }
 
+    /// Returns the full filesystem path of this directory item.
     pub fn getFullPath(self: DirectoryEntry) []const u8 {
         return switch (self) {
             .parent => |p| p.full_path,
@@ -64,36 +84,47 @@ pub const DirectoryEntry = union(enum) {
         };
     }
 
+    /// Returns `true` if this entry represents a directory or `..` parent link.
     pub fn isDirectory(self: DirectoryEntry) bool {
         return self == .directory or self == .parent;
     }
 
+    /// Returns `true` if this entry represents an archive file (e.g. CBZ/ZIP).
     pub fn isArchive(self: DirectoryEntry) bool {
         return self == .archive_file;
     }
 
-    pub fn getImageCount(self: DirectoryEntry) ?usize {
+    /// Returns the active `EntryScanState` if this entry is a directory or archive; otherwise `null`.
+    pub fn getScanState(self: DirectoryEntry) ?EntryScanState {
         return switch (self) {
-            .directory => |d| switch (d.scan) {
-                .scanned => |s| s.image_count,
-                else => null,
-            },
-            .archive_file => |a| a.image_count,
+            .directory => |d| d.scan,
+            .archive_file => |a| a.scan,
             else => null,
         };
     }
 
+    /// Returns the image count if this entry has completed scanning or has cached counts; otherwise `null`.
+    pub fn getImageCount(self: DirectoryEntry) ?usize {
+        const scan = self.getScanState() orelse return null;
+        return switch (scan) {
+            .scanned, .cached => |s| s.image_count,
+            .partial_counted => |p| p.image_count,
+            else => null,
+        };
+    }
+
+    /// Returns the subdirectory count if this entry has completed scanning or has cached counts; otherwise `null`.
     pub fn getSubdirCount(self: DirectoryEntry) ?usize {
-        return switch (self) {
-            .directory => |d| switch (d.scan) {
-                .scanned => |s| s.subdir_count,
-                else => null,
-            },
+        const scan = self.getScanState() orelse return null;
+        return switch (scan) {
+            .scanned, .cached => |s| s.subdir_count,
+            .partial_counted => |p| p.subdir_count,
             else => null,
         };
     }
 };
 
+/// View model data sliced for Clay layout rendering based on current palette mode.
 pub const PaletteModeData = union(enum) {
     inactive,
     files: struct {
@@ -111,6 +142,7 @@ pub const PaletteModeData = union(enum) {
     },
 };
 
+/// Main state model for command palette modals, directory navigation, and fuzzy searching.
 pub const PaletteState = struct {
     mode: PaletteMode = .inactive,
     query: std.ArrayList(u8),
@@ -123,10 +155,12 @@ pub const PaletteState = struct {
     last_child_dir: std.ArrayList(u8),
     dir_items: std.ArrayList(DirectoryEntry),
     current_dir_image_count: usize = 0,
+    dir_scan_generation: usize = 0,
     allocator: std.mem.Allocator,
     searcher: ?fuzzig.Ascii = null,
     max_haystack_len: usize = 64,
 
+    /// Constructs the appropriate `PaletteModeData` view model for the current palette mode.
     pub fn getModeData(self: *const PaletteState) PaletteModeData {
         return switch (self.mode) {
             .inactive => .inactive,
@@ -146,6 +180,7 @@ pub const PaletteState = struct {
         };
     }
 
+    /// Initializes a new `PaletteState` instance, reserving initial capacities for queries, matches, and paths.
     pub fn init(allocator: std.mem.Allocator) !PaletteState {
         var self = PaletteState{
             .query = .empty,
@@ -156,6 +191,7 @@ pub const PaletteState = struct {
             .last_child_dir = .empty,
             .dir_items = .empty,
             .current_dir_image_count = 0,
+            .dir_scan_generation = 0,
             .allocator = allocator,
             .searcher = null,
             .max_haystack_len = 64,
@@ -177,6 +213,7 @@ pub const PaletteState = struct {
         return self;
     }
 
+    /// Frees all dynamically allocated memory, string arrays, searcher state, and directory items.
     pub fn deinit(self: *PaletteState) void {
         if (self.searcher) |*s| {
             s.deinit();
@@ -191,6 +228,7 @@ pub const PaletteState = struct {
         self.dir_items.deinit(self.allocator);
     }
 
+    /// Releases heap strings owned by directory items and clears the list while retaining capacity.
     pub fn clearDirItems(self: *PaletteState) void {
         for (self.dir_items.items) |entry| {
             self.allocator.free(entry.getName());
@@ -199,6 +237,7 @@ pub const PaletteState = struct {
         self.dir_items.clearRetainingCapacity();
     }
 
+    /// Clears search query, matched indexes, navigation directory, and restores palette to inactive mode.
     pub fn reset(self: *PaletteState) void {
         self.query.clearRetainingCapacity();
         self.matches.clearRetainingCapacity();
@@ -211,6 +250,7 @@ pub const PaletteState = struct {
         self.selection_dirty = true;
     }
 
+    /// Returns a lazily initialized or resized ASCII fuzzy searcher matching the requested haystack and needle lengths.
     pub fn getSearcher(self: *PaletteState, max_haystack: usize, max_needle: usize) !*fuzzig.Ascii {
         const req_haystack = @max(max_haystack, 64);
         const req_needle = @max(max_needle, 16);

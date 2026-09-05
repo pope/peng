@@ -1,13 +1,16 @@
 const std = @import("std");
 const app_state = @import("state.zig");
 const AppState = app_state.AppState;
+const state_pkg = @import("state");
 const events = @import("core/events.zig");
 const image = @import("core/image.zig");
 const ipc = @import("ipc");
 const sdl = @import("sdl");
 
-/// Drains background thread events (`image_decoded`, `path_scanned`, `ipc_command`)
-/// from `workers.event_queue` and updates cache slots, navigation list, and pending IPC lists.
+/// Drains all background thread events (e.g. image decodes, thumbnail extractions, directory scans,
+/// folder count updates, and IPC commands) from `workers.event_queue`.
+/// Dispatches each event to update texture cache entries, image lists, rotation maps, and Command Palette state.
+/// Returns `true` if at least one event was drained and processed; otherwise `false`.
 pub fn drainWorkerEvents(state: *AppState) bool {
     state.event_batch.clearRetainingCapacity();
     state.workers.event_queue.drain(state.allocator, state.io, &state.event_batch) catch return false;
@@ -31,6 +34,35 @@ pub fn drainWorkerEvents(state: *AppState) bool {
             .path_discovered => |p| handleDirScannedEvent(state, p),
             .directory_scan_result => |res| handleDirectoryScanResultEvent(state, res),
             .directory_scan_complete => {},
+            .palette_folder_count => |cnt| {
+                if (cnt.generation == state.viewer.ui.palette.dir_scan_generation) {
+                    for (state.viewer.ui.palette.dir_items.items) |*item| {
+                        if (std.mem.eql(u8, item.getFullPath(), cnt.path)) {
+                            switch (item.*) {
+                                .directory => |*d| {
+                                    d.scan = .{
+                                        .scanned = .{
+                                            .image_count = cnt.image_count,
+                                            .subdir_count = cnt.subdir_count,
+                                        },
+                                    };
+                                },
+                                .archive_file => |*a| {
+                                    a.scan = .{
+                                        .scanned = .{
+                                            .image_count = cnt.image_count,
+                                            .subdir_count = cnt.subdir_count,
+                                        },
+                                    };
+                                },
+                                else => {},
+                            }
+                            state.viewer.ui.palette.selection_dirty = true;
+                            break;
+                        }
+                    }
+                }
+            },
             .ipc_command => |cmd_data| {
                 state.pending_ipc_commands.append(state.allocator, cmd_data) catch |err| {
                     std.log.err("Failed to append IPC command to pending list: {}", .{err});
@@ -412,4 +444,84 @@ test "drainWorkerEvents - thumb_decoded without surface sets dimensions and clea
         .decoding => |dec| try std.testing.expect(!dec.has_thread),
         else => try std.testing.expect(false),
     }
+}
+
+test "drainWorkerEvents - palette_folder_count updates directory and archive entries" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    state.viewer.ui.palette.dir_scan_generation = 1;
+
+    const dir_name = try allocator.dupe(u8, "folder_a");
+    const dir_path = try allocator.dupe(u8, "/path/to/folder_a");
+    try state.viewer.ui.palette.dir_items.append(allocator, .{
+        .directory = .{
+            .name = dir_name,
+            .full_path = dir_path,
+            .scan = .unscanned,
+        },
+    });
+
+    const cbz_name = try allocator.dupe(u8, "comic.cbz");
+    const cbz_path = try allocator.dupe(u8, "/path/to/comic.cbz");
+    try state.viewer.ui.palette.dir_items.append(allocator, .{
+        .archive_file = .{
+            .name = cbz_name,
+            .full_path = cbz_path,
+            .scan = .unscanned,
+        },
+    });
+
+    defer {
+        for (state.viewer.ui.palette.dir_items.items) |item| {
+            allocator.free(item.getName());
+            allocator.free(item.getFullPath());
+        }
+        state.viewer.ui.palette.dir_items.deinit(allocator);
+    }
+
+    // Push event with mismatched generation (should be ignored)
+    const stale_path = try allocator.dupe(u8, "/path/to/folder_a");
+    try state.workers.event_queue.push(allocator, io, .{
+        .palette_folder_count = .{
+            .generation = 0,
+            .path = stale_path,
+            .image_count = 999,
+            .subdir_count = 999,
+        },
+    });
+
+    _ = drainWorkerEvents(&state);
+    try std.testing.expectEqual(state_pkg.FolderScanState.unscanned, state.viewer.ui.palette.dir_items.items[0].directory.scan);
+
+    // Push matching events for directory and archive
+    const evt_dir_path = try allocator.dupe(u8, "/path/to/folder_a");
+    try state.workers.event_queue.push(allocator, io, .{
+        .palette_folder_count = .{
+            .generation = 1,
+            .path = evt_dir_path,
+            .image_count = 12,
+            .subdir_count = 3,
+        },
+    });
+
+    const evt_cbz_path = try allocator.dupe(u8, "/path/to/comic.cbz");
+    try state.workers.event_queue.push(allocator, io, .{
+        .palette_folder_count = .{
+            .generation = 1,
+            .path = evt_cbz_path,
+            .image_count = 45,
+            .subdir_count = 0,
+        },
+    });
+
+    _ = drainWorkerEvents(&state);
+
+    try std.testing.expect(state.viewer.ui.palette.selection_dirty);
+    try std.testing.expectEqual(@as(?usize, 12), state.viewer.ui.palette.dir_items.items[0].getImageCount());
+    try std.testing.expectEqual(@as(?usize, 3), state.viewer.ui.palette.dir_items.items[0].getSubdirCount());
+    try std.testing.expectEqual(@as(?usize, 45), state.viewer.ui.palette.dir_items.items[1].getImageCount());
+    try std.testing.expectEqual(state_pkg.EntryScanState{ .scanned = .{ .image_count = 45, .subdir_count = 0 } }, state.viewer.ui.palette.dir_items.items[1].archive_file.scan);
 }

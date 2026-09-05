@@ -68,6 +68,7 @@ pub fn stopTextInput(display: DisplayState) void {
     }
 }
 
+/// Performs case-insensitive matching between `path` and an already lowercased query string.
 pub fn matchesQueryLower(path: []const u8, query_lower: []const u8) bool {
     if (query_lower.len == 0) return true;
     if (path.len < query_lower.len) return false;
@@ -135,6 +136,7 @@ pub const AppState = struct {
     pending_ipc_commands: std.ArrayList(*ipc.IpcCommandData) = .empty,
     pending_intents: std.ArrayList(AppIntent) = .empty,
 
+    /// Initializes top-level `AppState` in headless mode without creating an SDL window, suitable for tests.
     pub fn initHeadless(allocator: std.mem.Allocator, io: std.Io) !AppState {
         var state = AppState{
             .viewer = try ViewerState.initHeadless(allocator),
@@ -146,6 +148,7 @@ pub const AppState = struct {
         return state;
     }
 
+    /// Pre-allocates initial buffer capacities for intent, event, and IPC command queues.
     pub fn ensureInitialCapacities(self: *AppState) !void {
         // 16 intents: accommodates worst-case enqueued IPC, keyboard, palette, and slideshow intents in a single tick
         try self.pending_intents.ensureTotalCapacity(self.allocator, 16);
@@ -155,22 +158,27 @@ pub const AppState = struct {
         try self.pending_ipc_commands.ensureTotalCapacity(self.allocator, 8);
     }
 
+    /// Enqueues an application intent to be dispatched and executed during the next frame pass.
     pub fn pushIntent(self: *AppState, intent: AppIntent) !void {
         try self.pending_intents.append(self.allocator, intent);
     }
 
+    /// Clears all queued application intents while retaining array capacity.
     pub fn clearIntents(self: *AppState) void {
         self.pending_intents.clearRetainingCapacity();
     }
 
+    /// Returns `true` if files are currently loading, background workers are active, or slideshow is running.
     pub inline fn isBusy(self: *const AppState) bool {
         return self.viewer.navigation.is_loading_files.load(.acquire) or self.workers.isBusy() or self.viewer.isSlideshowActive();
     }
 
+    /// Reads EXIF orientation degrees from a JPEG file header on disk, returning `null` if unparseable.
     pub fn readJpegExifOrientation(self: *const AppState, path: []const u8) ?f32 {
         return exif.readJpegExifOrientation(self.io, path);
     }
 
+    /// Enables or disables the debug thumbnail overlay preview, extracting and uploading JPEG thumbnail if needed.
     pub fn setDebugShowThumb(self: *AppState, enable: bool) !void {
         self.viewer.ui.overlays.debug_show_thumb = enable;
         if (!enable) return;
@@ -222,6 +230,7 @@ pub const AppState = struct {
         };
     }
 
+    /// Releases all engine resources, cancels background worker tasks, and frees GPU textures and queues.
     pub fn deinit(self: *AppState) void {
         self.workers.drainAndQuiesce(self.io);
 
@@ -254,18 +263,22 @@ pub const AppState = struct {
         self.workers.event_queue.deinit(self.allocator, self.io);
     }
 
+    /// Stores a user-overridden rotation angle for the given media path in the persistent rotation map.
     pub fn putRotation(self: *AppState, path: []const u8, angle: f32) !void {
         try self.viewer.putRotation(self.allocator, path, angle);
     }
 
+    /// Clears all user rotation overrides and frees associated path memory.
     pub fn clearRotationMap(self: *AppState) void {
         self.viewer.clearRotationMap(self.allocator);
     }
 
+    /// Resets current viewport zoom and pan offsets to default fit values.
     pub fn resetZoomPan(self: *AppState) void {
         self.viewer.resetZoomPan();
     }
 
+    /// Computes the unzoomed base scale factor fitting the current image to the viewport according to fit_mode.
     pub fn getBaseScale(self: *AppState) f32 {
         const entry = self.getCurrentEntry() orelse return 1.0;
         const raw_w: f32 = switch (entry.status) {
@@ -314,33 +327,40 @@ pub const AppState = struct {
         return dims.base_scale;
     }
 
+    /// Returns true if the pointer position in input is currently within the Clay debug UI hierarchy panel.
     pub fn isPointerInDebugPanel(self: *const AppState, input: FrameInput) bool {
         _ = self;
         return input.isPointerInDebugPanel();
     }
 
+    /// Clamps a requested zoom factor to the safe min/max bounds determined by base scale.
     pub fn clampZoomFactor(self: *AppState, new_factor: f32) types.ZoomFactor {
         const base_scale = self.getBaseScale();
         return view_transform.clampZoomFactor(base_scale, new_factor);
     }
 
+    /// Retrieves an SDL GPU texture reference associated with handle from the texture cache.
     pub fn getTextureByHandle(self: *AppState, handle: TextureHandle) ?sdl.gpu.Texture {
         return self.cache.getTexture(handle);
     }
 
+    /// Rebuilds fuzzy search matches for the command palette image file list.
     pub fn rebuildPaletteMatches(self: *AppState) !void {
         try self.viewer.ui.palette.rebuildFileMatches(self.viewer.navigation.image_list.items);
     }
 
+    /// Rebuilds fuzzy search matches for command palette action items.
     pub fn rebuildActionMatches(self: *AppState) !void {
         try self.viewer.ui.palette.rebuildActionMatches();
     }
 
+    /// Returns a mutable pointer to the CacheEntry corresponding to the currently active image, or null.
     pub fn getCurrentEntryPtr(self: *AppState) ?*CacheEntry {
         const idx = self.viewer.navigation.current_index orelse return null;
         return self.cache.get(self.cache.activeKey(idx));
     }
 
+    /// Returns a copy of the CacheEntry corresponding to the currently active image, or null.
     pub fn getCurrentEntry(self: *AppState) ?CacheEntry {
         if (self.getCurrentEntryPtr()) |entry| {
             return entry.*;
@@ -348,6 +368,7 @@ pub const AppState = struct {
         return null;
     }
 
+    /// Activates the command palette in the specified PaletteMode, resetting queries and starting text input.
     pub fn openPalette(self: *AppState, active_type: PaletteMode) !void {
         self.viewer.ui.palette.reset();
         self.viewer.ui.palette.mode = active_type;
@@ -395,13 +416,13 @@ pub const AppState = struct {
                     self.viewer.ui.palette.last_child_dir.clearRetainingCapacity();
                     try self.viewer.ui.palette.last_child_dir.appendSlice(self.allocator, child);
                 }
-                try palette_module.loadDirectoryEntries(&self.viewer.ui.palette, self.io, start_dir);
+                try self.loadPaletteDirectory(start_dir);
                 while (self.viewer.ui.palette.dir_items.items.len == 0) {
                     const curr = self.viewer.ui.palette.current_nav_dir.items;
                     var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
                     if (core_fs.getParentDirBuf(curr, &parent_buf)) |parent_dir| {
                         if (!std.mem.eql(u8, parent_dir, curr)) {
-                            try palette_module.loadDirectoryEntries(&self.viewer.ui.palette, self.io, parent_dir);
+                            try self.loadPaletteDirectory(parent_dir);
                             continue;
                         }
                     }
@@ -414,6 +435,20 @@ pub const AppState = struct {
         startTextInput(self.viewer.display);
     }
 
+    /// Loads directory items into the command palette directory navigator and spawns
+    /// a background worker task to asynchronously count images and subdirectories.
+    pub fn loadPaletteDirectory(self: *AppState, dir_path: []const u8) !void {
+        try palette_module.loadDirectoryEntries(&self.viewer.ui.palette, self.io, dir_path);
+        try workers_mod.spawnPaletteScanForItems(
+            &self.workers,
+            self.allocator,
+            self.io,
+            self.viewer.ui.palette.dir_scan_generation,
+            self.viewer.ui.palette.dir_items.items,
+        );
+    }
+
+    /// Scans cache slots around the current navigation index, evicting distant textures and uploading ready surfaces to the GPU.
     pub fn prepareCacheTextures(self: *AppState) void {
         var upload_target: ?struct {
             key: CacheKey,
@@ -540,11 +575,13 @@ pub const AppState = struct {
         }
     }
 
+    /// Releases all GPU textures and resets status across all cache slots.
     pub fn clearCache(self: *AppState) void {
         const dev_opt = self.gpu_device;
         self.cache.clear(dev_opt);
     }
 
+    /// Synchronizes viewport rotation angle with active user rotation override, parsed EXIF orientation, or zero.
     pub fn updateCurrentRotation(self: *AppState) void {
         const media_opt = blk: {
             const len = self.viewer.navigation.image_list.items.len;
@@ -567,14 +604,17 @@ pub const AppState = struct {
         }
     }
 
+    /// Advances navigation index to the next image in the active image sequence.
     pub fn next(self: *AppState) !void {
         _ = self.viewer.navigation.nextIndex();
     }
 
+    /// Moves navigation index to the previous image in the active image sequence.
     pub fn prev(self: *AppState) !void {
         _ = self.viewer.navigation.prevIndex();
     }
 
+    /// Selects a file or directory path, clearing prior caches and launching asynchronous path scanning.
     pub fn handlePathSelection(self: *AppState, path: []const u8) !void {
         var stat: std.Io.File.Stat = undefined;
         var has_stat = true;
@@ -618,11 +658,13 @@ pub const AppState = struct {
         try self.rebuildPaletteMatches();
     }
 
+    /// Initiates an asynchronous background directory or archive path scan.
     pub fn startAsyncPathScan(self: *AppState, path: []const u8, is_dir: bool) !void {
         _ = is_dir;
         try self.handlePathSelection(path);
     }
 
+    /// Completes a pending IPC screenshot capture request after frame rendering, sending reply to client.
     pub fn handleScreenshotPostRender(self: *AppState, render_err: ?anyerror) void {
         switch (self.viewer.ui.screenshot_mode) {
             .idle => {},

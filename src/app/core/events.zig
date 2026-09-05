@@ -4,11 +4,13 @@ const ipc = @import("ipc");
 const image = @import("image.zig");
 const CacheKey = image.CacheKey;
 
+/// Payload carrying parsed EXIF orientation metadata for a cached image.
 pub const ExifParsedPayload = struct {
     key: CacheKey,
     orientation: f32,
 };
 
+/// Payload carrying a decoded embedded EXIF or fast-scroll preview thumbnail surface and dimension metadata.
 pub const ThumbDecodedPayload = struct {
     key: CacheKey,
     surface: ?sdl.Surface,
@@ -20,6 +22,7 @@ pub const ThumbDecodedPayload = struct {
     thumb_only: bool = false,
 };
 
+/// Payload carrying a fully decoded main image surface, performance metrics, and image dimensions.
 pub const ImageDecodedPayload = struct {
     key: CacheKey,
     surface: ?sdl.Surface,
@@ -35,26 +38,39 @@ pub const ImageDecodedPayload = struct {
     compressed_size_bytes: usize = 0,
 };
 
+/// Payload indicating image file decode failure or unrecoverable read error for a cache key.
 pub const DecodeFailedPayload = struct {
     key: CacheKey,
 };
 
 const MediaEntry = @import("state").MediaEntry;
 
+/// Payload emitted when a valid image file path is discovered during stream or recursive scans.
 pub const PathDiscoveredPayload = struct {
     entry: MediaEntry,
 };
 
+/// Payload delivering the complete batch of discovered media entries from an asynchronous directory scan.
 pub const DirectoryScanResultPayload = struct {
     target_path: []const u8,
     is_dir: bool,
     paths: []MediaEntry,
 };
 
+/// Payload signaling completion of an asynchronous directory scan along with total discovered items.
 pub const DirectoryScanCompletePayload = struct {
     total_count: usize,
 };
 
+/// Payload delivering image and subdirectory counts for a directory item in the Command Palette.
+pub const PaletteFolderCountPayload = struct {
+    generation: usize,
+    path: []const u8,
+    image_count: usize,
+    subdir_count: usize,
+};
+
+/// Tagged union of all event messages sent from background worker threads to the main engine thread.
 pub const BackgroundEvent = union(enum) {
     exif_orientation_parsed: ExifParsedPayload,
     thumb_decoded: ThumbDecodedPayload,
@@ -63,8 +79,10 @@ pub const BackgroundEvent = union(enum) {
     path_discovered: PathDiscoveredPayload,
     directory_scan_result: DirectoryScanResultPayload,
     directory_scan_complete: DirectoryScanCompletePayload,
+    palette_folder_count: PaletteFolderCountPayload,
     ipc_command: *ipc.IpcCommandData,
 
+    /// Releases heap memory or SDL surfaces owned by this background event payload.
     pub fn deinit(self: *BackgroundEvent, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .thumb_decoded => |t| {
@@ -79,10 +97,14 @@ pub const BackgroundEvent = union(enum) {
                 for (res.paths) |e| e.deinit(allocator);
                 allocator.free(res.paths);
             },
+            .palette_folder_count => |cnt| {
+                allocator.free(cnt.path);
+            },
             else => {},
         }
     }
 
+    /// Cleans up event resources when draining or tearing down the MPSC event queue.
     pub fn deinitQueueItem(self: *BackgroundEvent, allocator: std.mem.Allocator, io: std.Io) void {
         switch (self.*) {
             .ipc_command => |cmd| {
@@ -95,6 +117,7 @@ pub const BackgroundEvent = union(enum) {
     }
 };
 
+/// Thread-safe Multi-Producer Single-Consumer queue backed by an internal mutex and ArrayList.
 pub fn MpscQueue(comptime T: type) type {
     return struct {
         mutex: std.Io.Mutex = .init,

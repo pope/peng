@@ -2,7 +2,6 @@ const std = @import("std");
 const clay = @import("zclay");
 const state_pkg = @import("state");
 const app_state = @import("../state.zig");
-const app_palette = @import("../core/palette.zig");
 const FrameContext = @import("root.zig").FrameContext;
 const Key = state_pkg.Key;
 const KeyModifiers = state_pkg.KeyModifiers;
@@ -110,7 +109,7 @@ pub fn handlePaletteKeys(
                         const path_copy = try self.allocator.dupe(u8, entry.getFullPath());
                         defer self.allocator.free(path_copy);
                         palette.query.clearRetainingCapacity();
-                        try app_palette.loadDirectoryEntries(palette, self.io, path_copy);
+                        try self.loadPaletteDirectory(path_copy);
                     }
                 }
                 return true;
@@ -121,7 +120,7 @@ pub fn handlePaletteKeys(
                 var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
                 if (core_fs.getParentDirBuf(palette.current_nav_dir.items, &parent_buf)) |parent_dir| {
                     palette.query.clearRetainingCapacity();
-                    try app_palette.loadDirectoryEntries(palette, self.io, parent_dir);
+                    try self.loadPaletteDirectory(parent_dir);
                 }
                 return true;
             }
@@ -203,7 +202,7 @@ pub fn handlePaletteKeys(
                 var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
                 if (core_fs.getParentDirBuf(palette.current_nav_dir.items, &parent_buf)) |parent_dir| {
                     palette.query.clearRetainingCapacity();
-                    try app_palette.loadDirectoryEntries(palette, self.io, parent_dir);
+                    try self.loadPaletteDirectory(parent_dir);
                 }
             }
             return true;
@@ -346,7 +345,7 @@ test "handlePaletteKeys directory_navigator key interactions" {
     defer state.deinit();
 
     // 1. Open directory navigator at tmp_dir
-    try app_palette.loadDirectoryEntries(&state.viewer.ui.palette, io, tmp_dir);
+    try state.loadPaletteDirectory(tmp_dir);
     state.viewer.ui.palette.mode = .directory_navigator;
 
     // Locate index of sub_no_images
@@ -377,7 +376,7 @@ test "handlePaletteKeys directory_navigator key interactions" {
     try std.testing.expectEqual(state_pkg.PaletteMode.inactive, state.viewer.ui.palette.mode);
 
     // Re-open palette
-    try app_palette.loadDirectoryEntries(&state.viewer.ui.palette, io, tmp_dir);
+    try state.loadPaletteDirectory(tmp_dir);
     state.viewer.ui.palette.mode = .directory_navigator;
 
     // Test Shift+Enter key on current directory -> starts async path scan and closes palette
@@ -392,7 +391,7 @@ test "handlePaletteKeys stepping up from dot to parent directory preselects work
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    try app_palette.loadDirectoryEntries(&state.viewer.ui.palette, io, ".");
+    try state.loadPaletteDirectory(".");
     state.viewer.ui.palette.mode = .directory_navigator;
     try std.testing.expectEqualStrings(".", state.viewer.ui.palette.current_nav_dir.items);
 
