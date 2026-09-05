@@ -350,6 +350,456 @@ pub fn parseImageDimensions(header: []const u8, mime_type: []const u8) ?ImageDim
     return null;
 }
 
+/// Reusable GPU staging buffers for texture uploads, eliminating allocation and deallocation
+/// churn on every frame by retaining and geometrically growing transfer and storage buffers.
+///
+/// TODO: Add heuristics to periodically evaluate and shrink retained staging buffers after a duration/inactivity
+/// threshold (or high-water decay) so memory is reclaimed if a single exceptionally large image temporarily expanded capacity.
+pub const UploadStagingBuffer = struct {
+    transfer_buffer: ?sdl.gpu.TransferBuffer = null,
+    storage_buffer: ?sdl.gpu.Buffer = null,
+    transfer_capacity: usize = 0,
+    storage_capacity: usize = 0,
+
+    /// Releases retained GPU transfer and compute storage buffers.
+    pub fn deinit(self: *UploadStagingBuffer, dev: sdl.gpu.Device) void {
+        if (self.transfer_buffer) |tb| {
+            dev.releaseTransferBuffer(tb);
+            self.transfer_buffer = null;
+        }
+        if (self.storage_buffer) |sb| {
+            dev.releaseBuffer(sb);
+            self.storage_buffer = null;
+        }
+        self.transfer_capacity = 0;
+        self.storage_capacity = 0;
+    }
+
+    /// Obtains a transfer buffer with at least `required_size` capacity, reusing the existing buffer
+    /// or reallocating with geometric growth when capacity is insufficient.
+    pub fn getOrCreateTransferBuffer(self: *UploadStagingBuffer, dev: sdl.gpu.Device, required_size: usize) ?sdl.gpu.TransferBuffer {
+        if (self.transfer_buffer != null and self.transfer_capacity >= required_size) {
+            return self.transfer_buffer;
+        }
+        const next_cap = @max(required_size, if (self.transfer_capacity > 0) self.transfer_capacity * 2 else 4 * 1024 * 1024);
+        const aligned_cap = std.mem.alignForward(usize, next_cap, 4096);
+        if (self.transfer_buffer) |tb| {
+            dev.releaseTransferBuffer(tb);
+            self.transfer_buffer = null;
+        }
+        self.transfer_capacity = 0;
+
+        const tb = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
+            .usage = .upload,
+            .size = @intCast(aligned_cap),
+            .props = 0,
+        }) orelse return null;
+        self.transfer_buffer = tb;
+        self.transfer_capacity = aligned_cap;
+        return tb;
+    }
+
+    /// Obtains a compute storage buffer with at least `required_size` capacity, reusing the existing buffer
+    /// or reallocating with geometric growth when capacity is insufficient.
+    pub fn getOrCreateStorageBuffer(self: *UploadStagingBuffer, dev: sdl.gpu.Device, required_size: usize) ?sdl.gpu.Buffer {
+        if (self.storage_buffer != null and self.storage_capacity >= required_size) {
+            return self.storage_buffer;
+        }
+        const next_cap = @max(required_size, if (self.storage_capacity > 0) self.storage_capacity * 2 else 4 * 1024 * 1024);
+        const aligned_cap = std.mem.alignForward(usize, next_cap, 4096);
+        if (self.storage_buffer) |sb| {
+            dev.releaseBuffer(sb);
+            self.storage_buffer = null;
+        }
+        self.storage_capacity = 0;
+
+        const sb = dev.createBuffer(&sdl.gpu.BufferCreateInfo{
+            .usage = sdl.gpu.BufferUsage.compute_storage_read,
+            .size = @intCast(aligned_cap),
+            .props = 0,
+        }) orelse return null;
+        self.storage_buffer = sb;
+        self.storage_capacity = aligned_cap;
+        return sb;
+    }
+};
+
+/// Result payload containing the created GPU texture, dimensions, upload timing telemetry, and VRAM memory footprint.
+pub const GpuUploadResult = struct {
+    gpu_texture: sdl.gpu.Texture,
+    w: f32,
+    h: f32,
+    upload_time_ms: f64,
+    memory_size_bytes: usize,
+    num_mip_levels: u32,
+    mipmap_time_ms: f64 = 0.0,
+    conversion_time_ms: f64 = 0.0,
+    was_fallback: bool = false,
+    fallback_time_ms: f64 = 0.0,
+};
+
+/// Uploads a CPU surface into an SDL GPU texture with automatic mipmap pyramid generation,
+/// using an optional compute pipeline for fast RGB24/BGR24 unpack and optional staging buffer reuse.
+pub fn uploadSurfaceToGpu(
+    dev: sdl.gpu.Device,
+    surf: sdl.Surface,
+    comp_pipeline: ?sdl.gpu.ComputePipeline,
+    staging: ?*UploadStagingBuffer,
+) ?GpuUploadResult {
+    const start_upload = sdl.timer.getTicksNs();
+    var current_surf = surf;
+
+    const src_fmt = current_surf.format();
+    const gpu_format: sdl.gpu.TextureFormat = switch (src_fmt) {
+        sdl.PixelFormat.bgra32, sdl.PixelFormat.xrgb8888, sdl.PixelFormat.bgrx8888 => .bgra8_unorm,
+        sdl.PixelFormat.rgba32, sdl.PixelFormat.xbgr8888, sdl.PixelFormat.rgbx8888 => .rgba8_unorm,
+        else => .rgba8_unorm,
+    };
+
+    var scaled_surf: ?sdl.Surface = null;
+    defer if (scaled_surf) |s| s.destroy();
+
+    var img_w = current_surf.w();
+    var img_h = current_surf.h();
+    var tex: ?sdl.gpu.Texture = null;
+    const max_dim_u: u32 = @intCast(@max(img_w, img_h));
+    const num_levels: u32 = if (max_dim_u > 1) @intCast(std.math.log2(max_dim_u) + 1) else 1;
+    var was_fallback: bool = false;
+    var fallback_time_ms: f64 = 0.0;
+
+    const u_w: usize = @intCast(img_w);
+    const u_h: usize = @intCast(img_h);
+    const cur_fmt = current_surf.format();
+    const comp_pipeline_opt: ?sdl.gpu.ComputePipeline = if (cur_fmt == sdl.PixelFormat.rgb24 or cur_fmt == sdl.PixelFormat.bgr24) comp_pipeline else null;
+
+    var tex_usage = sdl.gpu.TextureUsage.sampler | sdl.gpu.TextureUsage.color_target;
+    if (comp_pipeline_opt != null) {
+        tex_usage |= sdl.gpu.TextureUsage.compute_storage_write;
+    }
+
+    var img_tex_info = sdl.gpu.TextureCreateInfo{
+        .type = .type_2d,
+        .format = gpu_format,
+        .usage = tex_usage,
+        .width = @intCast(img_w),
+        .height = @intCast(img_h),
+        .layer_count_or_depth = 1,
+        .num_levels = num_levels,
+        .sample_count = .count_1,
+        .props = 0,
+    };
+    tex = dev.createTexture(&img_tex_info);
+
+    if (tex == null) {
+        const start_fb = sdl.timer.getTicksNs();
+        was_fallback = true;
+        var try_max_dim: i32 = 8192;
+        while (try_max_dim >= 2048) : (try_max_dim = @divTrunc(try_max_dim, 2)) {
+            if (img_w > try_max_dim or img_h > try_max_dim) {
+                var new_w = img_w;
+                var new_h = img_h;
+                if (img_w > img_h) {
+                    new_w = try_max_dim;
+                    new_h = @divTrunc(img_h * try_max_dim, img_w);
+                } else {
+                    new_h = try_max_dim;
+                    new_w = @divTrunc(img_w * try_max_dim, img_h);
+                }
+                new_w = @max(1, new_w);
+                new_h = @max(1, new_h);
+
+                const new_scale = current_surf.scale(new_w, new_h, .linear);
+                if (new_scale) |ns| {
+                    if (scaled_surf) |s| s.destroy();
+                    scaled_surf = ns;
+                    current_surf = ns;
+                    img_w = new_w;
+                    img_h = new_h;
+
+                    const fb_max_dim: u32 = @intCast(@max(img_w, img_h));
+                    const fb_levels: u32 = if (fb_max_dim > 1) @intCast(std.math.log2(fb_max_dim) + 1) else 1;
+                    img_tex_info.width = @intCast(img_w);
+                    img_tex_info.height = @intCast(img_h);
+                    img_tex_info.num_levels = fb_levels;
+                    tex = dev.createTexture(&img_tex_info);
+                    if (tex != null) break;
+                } else {
+                    std.log.err("uploadSurfaceToGpu: SDL_ScaleSurface fallback failed: {s}", .{sdl.getError()});
+                    break;
+                }
+            }
+        }
+        const end_fb = sdl.timer.getTicksNs();
+        fallback_time_ms = @as(f64, @floatFromInt(end_fb - start_fb)) / 1_000_000.0;
+    }
+
+    const gpu_tex = tex orelse return null;
+
+    if (comp_pipeline_opt) |pipeline_handle| {
+        const src_pitch: usize = @intCast(current_surf.pitch());
+        const pixels: [*]const u8 = current_surf.pixels();
+        const raw_bytes_len = src_pitch * u_h;
+        const storage_buf_size = std.mem.alignForward(usize, raw_bytes_len, 4);
+
+        const is_staged = (staging != null);
+        const transfer_buf = if (staging) |st|
+            st.getOrCreateTransferBuffer(dev, raw_bytes_len) orelse {
+                dev.releaseTexture(gpu_tex);
+                return null;
+            }
+        else
+            dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
+                .usage = .upload,
+                .size = @intCast(raw_bytes_len),
+                .props = 0,
+            }) orelse {
+                dev.releaseTexture(gpu_tex);
+                return null;
+            };
+        defer if (!is_staged) dev.releaseTransferBuffer(transfer_buf);
+
+        const mapped = dev.mapTransferBuffer(transfer_buf, is_staged) orelse {
+            dev.releaseTexture(gpu_tex);
+            return null;
+        };
+        @memcpy(mapped[0..raw_bytes_len], pixels[0..raw_bytes_len]);
+        dev.unmapTransferBuffer(transfer_buf);
+
+        const storage_buf = if (staging) |st|
+            st.getOrCreateStorageBuffer(dev, storage_buf_size) orelse {
+                dev.releaseTexture(gpu_tex);
+                return null;
+            }
+        else
+            dev.createBuffer(&sdl.gpu.BufferCreateInfo{
+                .usage = sdl.gpu.BufferUsage.compute_storage_read,
+                .size = @intCast(storage_buf_size),
+                .props = 0,
+            }) orelse {
+                dev.releaseTexture(gpu_tex);
+                return null;
+            };
+        defer if (!is_staged) dev.releaseBuffer(storage_buf);
+
+        const cmd_wrapper = dev.acquireCommandBuffer() orelse {
+            dev.releaseTexture(gpu_tex);
+            return null;
+        };
+
+        const copy_pass = cmd_wrapper.beginCopyPass() orelse {
+            _ = cmd_wrapper.cancel();
+            dev.releaseTexture(gpu_tex);
+            return null;
+        };
+        copy_pass.uploadToBuffer(&sdl.gpu.TransferBufferLocation{
+            .transfer_buffer = transfer_buf,
+            .offset = 0,
+        }, &sdl.gpu.BufferRegion{
+            .buffer = storage_buf,
+            .offset = 0,
+            .size = @intCast(raw_bytes_len),
+        }, false);
+        copy_pass.end();
+
+        const compute_pass = cmd_wrapper.beginComputePass(
+            &[_]sdl.gpu.StorageTextureReadWriteBinding{.{ .texture = gpu_tex, .mip_level = 0, .layer = 0, .cycle = false }},
+            null,
+        ) orelse {
+            _ = cmd_wrapper.cancel();
+            dev.releaseTexture(gpu_tex);
+            return null;
+        };
+
+        const Params = extern struct {
+            width: u32,
+            height: u32,
+            is_bgr: u32,
+            src_pitch: u32,
+        };
+        const params = Params{
+            .width = @intCast(img_w),
+            .height = @intCast(img_h),
+            .is_bgr = if (cur_fmt == sdl.PixelFormat.bgr24) 1 else 0,
+            .src_pitch = @intCast(src_pitch),
+        };
+        cmd_wrapper.pushComputeUniform(0, std.mem.asBytes(&params));
+
+        compute_pass.bindPipeline(pipeline_handle);
+        compute_pass.bindStorageBuffers(0, &[_]sdl.gpu.Buffer{storage_buf});
+        const group_x: u32 = @intCast((u_w + 15) / 16);
+        const group_y: u32 = @intCast((u_h + 15) / 16);
+        compute_pass.dispatch(group_x, group_y, 1);
+        compute_pass.end();
+
+        var mipmap_time_ms: f64 = 0.0;
+        if (num_levels > 1) {
+            const start_mip = sdl.timer.getTicksNs();
+            cmd_wrapper.generateMipmaps(gpu_tex);
+            const end_mip = sdl.timer.getTicksNs();
+            mipmap_time_ms = @as(f64, @floatFromInt(end_mip - start_mip)) / 1_000_000.0;
+        }
+
+        _ = cmd_wrapper.submit();
+
+        const end_upload = sdl.timer.getTicksNs();
+        const upload_time_ms = @as(f64, @floatFromInt(end_upload - start_upload)) / 1_000_000.0;
+
+        var memory_size_bytes: usize = raw_bytes_len;
+        if (num_levels > 1) {
+            memory_size_bytes = (memory_size_bytes * 4) / 3;
+        }
+
+        return .{
+            .gpu_texture = gpu_tex,
+            .w = @floatFromInt(img_w),
+            .h = @floatFromInt(img_h),
+            .upload_time_ms = upload_time_ms,
+            .memory_size_bytes = memory_size_bytes,
+            .num_mip_levels = num_levels,
+            .mipmap_time_ms = mipmap_time_ms,
+            .conversion_time_ms = 0.0,
+            .was_fallback = was_fallback,
+            .fallback_time_ms = fallback_time_ms,
+        };
+    }
+
+    const cmd_wrapper = dev.acquireCommandBuffer() orelse {
+        dev.releaseTexture(gpu_tex);
+        return null;
+    };
+
+    const dst_pitch: usize = u_w * 4;
+    const size = dst_pitch * u_h;
+
+    const is_staged = (staging != null);
+    const transfer_buf = if (staging) |st|
+        st.getOrCreateTransferBuffer(dev, size) orelse {
+            _ = cmd_wrapper.cancel();
+            dev.releaseTexture(gpu_tex);
+            return null;
+        }
+    else
+        dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
+            .usage = .upload,
+            .size = @intCast(size),
+            .props = 0,
+        }) orelse {
+            _ = cmd_wrapper.cancel();
+            dev.releaseTexture(gpu_tex);
+            return null;
+        };
+    defer if (!is_staged) dev.releaseTransferBuffer(transfer_buf);
+
+    const mapped = dev.mapTransferBuffer(transfer_buf, is_staged) orelse {
+        _ = cmd_wrapper.cancel();
+        dev.releaseTexture(gpu_tex);
+        return null;
+    };
+
+    const src_pixels: [*]const u8 = current_surf.pixels();
+    const src_pitch: usize = @intCast(current_surf.pitch());
+    var conversion_time_ms: f64 = 0.0;
+    const is_32bit_fmt = switch (cur_fmt) {
+        sdl.PixelFormat.rgba32, sdl.PixelFormat.bgra32, sdl.PixelFormat.xrgb8888, sdl.PixelFormat.xbgr8888, sdl.PixelFormat.rgbx8888, sdl.PixelFormat.bgrx8888 => true,
+        else => false,
+    };
+    if (is_32bit_fmt) {
+        if (src_pitch == dst_pitch) {
+            @memcpy(mapped[0..size], src_pixels[0..size]);
+        } else {
+            var y: usize = 0;
+            while (y < u_h) : (y += 1) {
+                @memcpy(mapped[y * dst_pitch .. y * dst_pitch + u_w * 4], src_pixels[y * src_pitch .. y * src_pitch + u_w * 4]);
+            }
+        }
+    } else if (cur_fmt == sdl.PixelFormat.rgb24) {
+        const start_conv = sdl.timer.getTicksNs();
+        sdl.surface.convertRgb24ToRgba32Simd(src_pixels[0 .. src_pitch * u_h], mapped[0..size], u_w, u_h, src_pitch, dst_pitch);
+        const end_conv = sdl.timer.getTicksNs();
+        conversion_time_ms = @as(f64, @floatFromInt(end_conv - start_conv)) / 1_000_000.0;
+    } else if (cur_fmt == sdl.PixelFormat.bgr24) {
+        const start_conv = sdl.timer.getTicksNs();
+        sdl.surface.convertBgr24ToRgba32Simd(src_pixels[0 .. src_pitch * u_h], mapped[0..size], u_w, u_h, src_pitch, dst_pitch);
+        const end_conv = sdl.timer.getTicksNs();
+        conversion_time_ms = @as(f64, @floatFromInt(end_conv - start_conv)) / 1_000_000.0;
+    } else {
+        const start_conv = sdl.timer.getTicksNs();
+        const tmp_surf = current_surf.convert(sdl.PixelFormat.rgba32);
+        if (tmp_surf) |ts| {
+            defer ts.destroy();
+            const ts_pixels = ts.pixels();
+            const ts_pitch: usize = @intCast(ts.pitch());
+            if (ts_pitch == dst_pitch) {
+                @memcpy(mapped[0..size], ts_pixels[0..size]);
+            } else {
+                var y: usize = 0;
+                while (y < u_h) : (y += 1) {
+                    @memcpy(mapped[y * dst_pitch .. y * dst_pitch + u_w * 4], ts_pixels[y * ts_pitch .. y * ts_pitch + u_w * 4]);
+                }
+            }
+            const end_conv = sdl.timer.getTicksNs();
+            conversion_time_ms = @as(f64, @floatFromInt(end_conv - start_conv)) / 1_000_000.0;
+        } else {
+            dev.unmapTransferBuffer(transfer_buf);
+            _ = cmd_wrapper.cancel();
+            dev.releaseTexture(gpu_tex);
+            return null;
+        }
+    }
+
+    dev.unmapTransferBuffer(transfer_buf);
+
+    const copy_pass = cmd_wrapper.beginCopyPass() orelse {
+        _ = cmd_wrapper.cancel();
+        dev.releaseTexture(gpu_tex);
+        return null;
+    };
+
+    copy_pass.uploadToTexture(&sdl.gpu.TextureTransferInfo{
+        .transfer_buffer = transfer_buf,
+        .offset = 0,
+        .pixels_per_row = @intCast(u_w),
+        .rows_per_layer = @intCast(u_h),
+    }, &sdl.gpu.TextureRegion{
+        .texture = gpu_tex,
+        .w = @intCast(img_w),
+        .h = @intCast(img_h),
+        .d = 1,
+    }, false);
+    copy_pass.end();
+
+    var mipmap_time_ms: f64 = 0.0;
+    if (num_levels > 1) {
+        const start_mip = sdl.timer.getTicksNs();
+        cmd_wrapper.generateMipmaps(gpu_tex);
+        const end_mip = sdl.timer.getTicksNs();
+        mipmap_time_ms = @as(f64, @floatFromInt(end_mip - start_mip)) / 1_000_000.0;
+    }
+
+    _ = cmd_wrapper.submit();
+
+    const end_upload = sdl.timer.getTicksNs();
+    const upload_time_ms = @as(f64, @floatFromInt(end_upload - start_upload)) / 1_000_000.0;
+
+    var memory_size_bytes: usize = u_w * u_h * 4;
+    if (num_levels > 1) {
+        memory_size_bytes = (memory_size_bytes * 4) / 3;
+    }
+
+    return .{
+        .gpu_texture = gpu_tex,
+        .w = @floatFromInt(img_w),
+        .h = @floatFromInt(img_h),
+        .upload_time_ms = upload_time_ms,
+        .memory_size_bytes = memory_size_bytes,
+        .num_mip_levels = num_levels,
+        .mipmap_time_ms = mipmap_time_ms,
+        .conversion_time_ms = conversion_time_ms,
+        .was_fallback = was_fallback,
+        .fallback_time_ms = fallback_time_ms,
+    };
+}
+
 test "parseImageDimensions" {
     // PNG test header
     const png_header = [_]u8{
@@ -577,355 +1027,79 @@ test "CacheSlotMap.updateStatus" {
     try std.testing.expect(!updated_gen_mismatch);
 }
 
-/// Result payload containing the created GPU texture, dimensions, upload timing telemetry, and VRAM memory footprint.
-pub const GpuUploadResult = struct {
-    gpu_texture: sdl.gpu.Texture,
-    w: f32,
-    h: f32,
-    upload_time_ms: f64,
-    memory_size_bytes: usize,
-    num_mip_levels: u32,
-    mipmap_time_ms: f64 = 0.0,
-    conversion_time_ms: f64 = 0.0,
-    was_fallback: bool = false,
-    fallback_time_ms: f64 = 0.0,
-};
+test "UploadStagingBuffer - capacity growth and clean deinit" {
+    var staging = UploadStagingBuffer{};
+    try std.testing.expect(staging.transfer_buffer == null);
+    try std.testing.expect(staging.storage_buffer == null);
+    try std.testing.expectEqual(@as(usize, 0), staging.transfer_capacity);
+    try std.testing.expectEqual(@as(usize, 0), staging.storage_capacity);
 
-/// Uploads a CPU surface into an SDL GPU texture with automatic mipmap pyramid generation,
-/// using an optional compute pipeline for fast RGB24/BGR24 unpack.
-pub fn uploadSurfaceToGpu(
-    dev: sdl.gpu.Device,
-    surf: sdl.Surface,
-    comp_pipeline: ?sdl.gpu.ComputePipeline,
-) ?GpuUploadResult {
-    const start_upload = sdl.timer.getTicksNs();
-    var current_surf = surf;
+    const dev_opt = sdl.gpu.Device.create(sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl, true);
+    const dev = dev_opt orelse return;
+    defer dev.destroy();
 
-    const src_fmt = current_surf.format();
-    const gpu_format: sdl.gpu.TextureFormat = switch (src_fmt) {
-        sdl.PixelFormat.bgra32, sdl.PixelFormat.xrgb8888, sdl.PixelFormat.bgrx8888 => .bgra8_unorm,
-        sdl.PixelFormat.rgba32, sdl.PixelFormat.xbgr8888, sdl.PixelFormat.rgbx8888 => .rgba8_unorm,
-        else => .rgba8_unorm,
-    };
+    // Initial allocation should be at least 4MB aligned to 4KB
+    const tb1 = staging.getOrCreateTransferBuffer(dev, 1024);
+    try std.testing.expect(tb1 != null);
+    try std.testing.expectEqual(@as(usize, 4 * 1024 * 1024), staging.transfer_capacity);
 
-    var scaled_surf: ?sdl.Surface = null;
-    defer if (scaled_surf) |s| s.destroy();
+    // Reuse existing buffer when required_size <= transfer_capacity
+    const tb2 = staging.getOrCreateTransferBuffer(dev, 2 * 1024 * 1024);
+    try std.testing.expect(tb2 != null);
+    try std.testing.expectEqual(@as(usize, 4 * 1024 * 1024), staging.transfer_capacity);
 
-    var img_w = current_surf.w();
-    var img_h = current_surf.h();
-    var tex: ?sdl.gpu.Texture = null;
-    const max_dim_u: u32 = @intCast(@max(img_w, img_h));
-    const num_levels: u32 = if (max_dim_u > 1) @intCast(std.math.log2(max_dim_u) + 1) else 1;
-    var was_fallback: bool = false;
-    var fallback_time_ms: f64 = 0.0;
+    // Reallocation with geometric growth (4MB -> 8MB) when required exceeds capacity
+    const tb3 = staging.getOrCreateTransferBuffer(dev, 5 * 1024 * 1024);
+    try std.testing.expect(tb3 != null);
+    try std.testing.expectEqual(@as(usize, 8 * 1024 * 1024), staging.transfer_capacity);
 
-    const u_w: usize = @intCast(img_w);
-    const u_h: usize = @intCast(img_h);
-    const cur_fmt = current_surf.format();
-    const comp_pipeline_opt: ?sdl.gpu.ComputePipeline = if (cur_fmt == sdl.PixelFormat.rgb24 or cur_fmt == sdl.PixelFormat.bgr24) comp_pipeline else null;
+    // Storage buffer test
+    const sb1 = staging.getOrCreateStorageBuffer(dev, 1024);
+    try std.testing.expect(sb1 != null);
+    try std.testing.expectEqual(@as(usize, 4 * 1024 * 1024), staging.storage_capacity);
 
-    var tex_usage = sdl.gpu.TextureUsage.sampler | sdl.gpu.TextureUsage.color_target;
-    if (comp_pipeline_opt != null) {
-        tex_usage |= sdl.gpu.TextureUsage.compute_storage_write;
+    // Deinit releases all buffers and resets capacities
+    staging.deinit(dev);
+    try std.testing.expect(staging.transfer_buffer == null);
+    try std.testing.expect(staging.storage_buffer == null);
+    try std.testing.expectEqual(@as(usize, 0), staging.transfer_capacity);
+    try std.testing.expectEqual(@as(usize, 0), staging.storage_capacity);
+}
+
+test "uploadSurfaceToGpu - staging buffer reuse across consecutive uploads" {
+    const dev_opt = sdl.gpu.Device.create(sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl, true);
+    const dev = dev_opt orelse return;
+    defer dev.destroy();
+
+    var staging = UploadStagingBuffer{};
+    defer staging.deinit(dev);
+
+    const surf1 = sdl.Surface.create(64, 64, sdl.PixelFormat.rgba32) orelse return;
+    defer surf1.destroy();
+
+    const res1 = uploadSurfaceToGpu(dev, surf1, null, &staging);
+    try std.testing.expect(res1 != null);
+    if (res1) |r| {
+        dev.releaseTexture(r.gpu_texture);
+        try std.testing.expectEqual(@as(f32, 64.0), r.w);
+        try std.testing.expectEqual(@as(f32, 64.0), r.h);
     }
 
-    var img_tex_info = sdl.gpu.TextureCreateInfo{
-        .type = .type_2d,
-        .format = gpu_format,
-        .usage = tex_usage,
-        .width = @intCast(img_w),
-        .height = @intCast(img_h),
-        .layer_count_or_depth = 1,
-        .num_levels = num_levels,
-        .sample_count = .count_1,
-        .props = 0,
-    };
-    tex = dev.createTexture(&img_tex_info);
+    try std.testing.expect(staging.transfer_buffer != null);
+    const cap1 = staging.transfer_capacity;
+    try std.testing.expect(cap1 >= 64 * 64 * 4);
 
-    if (tex == null) {
-        const start_fb = sdl.timer.getTicksNs();
-        was_fallback = true;
-        var try_max_dim: i32 = 8192;
-        while (try_max_dim >= 2048) : (try_max_dim = @divTrunc(try_max_dim, 2)) {
-            if (img_w > try_max_dim or img_h > try_max_dim) {
-                var new_w = img_w;
-                var new_h = img_h;
-                if (img_w > img_h) {
-                    new_w = try_max_dim;
-                    new_h = @divTrunc(img_h * try_max_dim, img_w);
-                } else {
-                    new_h = try_max_dim;
-                    new_w = @divTrunc(img_w * try_max_dim, img_h);
-                }
-                new_w = @max(1, new_w);
-                new_h = @max(1, new_h);
+    // Second upload should reuse staging transfer buffer without reallocating
+    const surf2 = sdl.Surface.create(32, 32, sdl.PixelFormat.rgba32) orelse return;
+    defer surf2.destroy();
 
-                const new_scale = current_surf.scale(new_w, new_h, .linear);
-                if (new_scale) |ns| {
-                    if (scaled_surf) |s| s.destroy();
-                    scaled_surf = ns;
-                    current_surf = ns;
-                    img_w = new_w;
-                    img_h = new_h;
-
-                    const fb_max_dim: u32 = @intCast(@max(img_w, img_h));
-                    const fb_levels: u32 = if (fb_max_dim > 1) @intCast(std.math.log2(fb_max_dim) + 1) else 1;
-                    img_tex_info.width = @intCast(img_w);
-                    img_tex_info.height = @intCast(img_h);
-                    img_tex_info.num_levels = fb_levels;
-                    tex = dev.createTexture(&img_tex_info);
-                    if (tex != null) break;
-                } else {
-                    std.log.err("uploadSurfaceToGpu: SDL_ScaleSurface fallback failed: {s}", .{sdl.getError()});
-                    break;
-                }
-            }
-        }
-        const end_fb = sdl.timer.getTicksNs();
-        fallback_time_ms = @as(f64, @floatFromInt(end_fb - start_fb)) / 1_000_000.0;
+    const res2 = uploadSurfaceToGpu(dev, surf2, null, &staging);
+    try std.testing.expect(res2 != null);
+    if (res2) |r| {
+        dev.releaseTexture(r.gpu_texture);
+        try std.testing.expectEqual(@as(f32, 32.0), r.w);
+        try std.testing.expectEqual(@as(f32, 32.0), r.h);
     }
 
-    const gpu_tex = tex orelse return null;
-
-    if (comp_pipeline_opt) |pipeline_handle| {
-        const src_pitch: usize = @intCast(current_surf.pitch());
-        const pixels: [*]const u8 = current_surf.pixels();
-        const raw_bytes_len = src_pitch * u_h;
-
-        const transfer_buf = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
-            .usage = .upload,
-            .size = @intCast(raw_bytes_len),
-            .props = 0,
-        }) orelse {
-            dev.releaseTexture(gpu_tex);
-            return null;
-        };
-        defer dev.releaseTransferBuffer(transfer_buf);
-
-        const mapped = dev.mapTransferBuffer(transfer_buf, false) orelse {
-            dev.releaseTexture(gpu_tex);
-            return null;
-        };
-        @memcpy(mapped[0..raw_bytes_len], pixels[0..raw_bytes_len]);
-        dev.unmapTransferBuffer(transfer_buf);
-
-        const storage_buf_size = std.mem.alignForward(usize, raw_bytes_len, 4);
-        const storage_buf = dev.createBuffer(&sdl.gpu.BufferCreateInfo{
-            .usage = sdl.gpu.BufferUsage.compute_storage_read,
-            .size = @intCast(storage_buf_size),
-            .props = 0,
-        }) orelse {
-            dev.releaseTexture(gpu_tex);
-            return null;
-        };
-        defer dev.releaseBuffer(storage_buf);
-
-        const cmd_wrapper = dev.acquireCommandBuffer() orelse {
-            dev.releaseTexture(gpu_tex);
-            return null;
-        };
-
-        const copy_pass = cmd_wrapper.beginCopyPass() orelse {
-            _ = cmd_wrapper.cancel();
-            dev.releaseTexture(gpu_tex);
-            return null;
-        };
-        copy_pass.uploadToBuffer(&sdl.gpu.TransferBufferLocation{
-            .transfer_buffer = transfer_buf,
-            .offset = 0,
-        }, &sdl.gpu.BufferRegion{
-            .buffer = storage_buf,
-            .offset = 0,
-            .size = @intCast(raw_bytes_len),
-        }, false);
-        copy_pass.end();
-
-        const compute_pass = cmd_wrapper.beginComputePass(
-            &[_]sdl.gpu.StorageTextureReadWriteBinding{.{ .texture = gpu_tex, .mip_level = 0, .layer = 0, .cycle = false }},
-            null,
-        ) orelse {
-            _ = cmd_wrapper.cancel();
-            dev.releaseTexture(gpu_tex);
-            return null;
-        };
-
-        const Params = extern struct {
-            width: u32,
-            height: u32,
-            is_bgr: u32,
-            src_pitch: u32,
-        };
-        const params = Params{
-            .width = @intCast(img_w),
-            .height = @intCast(img_h),
-            .is_bgr = if (cur_fmt == sdl.PixelFormat.bgr24) 1 else 0,
-            .src_pitch = @intCast(src_pitch),
-        };
-        cmd_wrapper.pushComputeUniform(0, std.mem.asBytes(&params));
-
-        compute_pass.bindPipeline(pipeline_handle);
-        compute_pass.bindStorageBuffers(0, &[_]sdl.gpu.Buffer{storage_buf});
-        const group_x: u32 = @intCast((u_w + 15) / 16);
-        const group_y: u32 = @intCast((u_h + 15) / 16);
-        compute_pass.dispatch(group_x, group_y, 1);
-        compute_pass.end();
-
-        var mipmap_time_ms: f64 = 0.0;
-        if (num_levels > 1) {
-            const start_mip = sdl.timer.getTicksNs();
-            cmd_wrapper.generateMipmaps(gpu_tex);
-            const end_mip = sdl.timer.getTicksNs();
-            mipmap_time_ms = @as(f64, @floatFromInt(end_mip - start_mip)) / 1_000_000.0;
-        }
-
-        _ = cmd_wrapper.submit();
-
-        const end_upload = sdl.timer.getTicksNs();
-        const upload_time_ms = @as(f64, @floatFromInt(end_upload - start_upload)) / 1_000_000.0;
-
-        var memory_size_bytes: usize = raw_bytes_len;
-        if (num_levels > 1) {
-            memory_size_bytes = (memory_size_bytes * 4) / 3;
-        }
-
-        return .{
-            .gpu_texture = gpu_tex,
-            .w = @floatFromInt(img_w),
-            .h = @floatFromInt(img_h),
-            .upload_time_ms = upload_time_ms,
-            .memory_size_bytes = memory_size_bytes,
-            .num_mip_levels = num_levels,
-            .mipmap_time_ms = mipmap_time_ms,
-            .conversion_time_ms = 0.0,
-            .was_fallback = was_fallback,
-            .fallback_time_ms = fallback_time_ms,
-        };
-    }
-
-    const cmd_wrapper = dev.acquireCommandBuffer() orelse {
-        dev.releaseTexture(gpu_tex);
-        return null;
-    };
-
-    const dst_pitch: usize = u_w * 4;
-    const size = dst_pitch * u_h;
-
-    const transfer_buf = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
-        .usage = .upload,
-        .size = @intCast(size),
-        .props = 0,
-    }) orelse {
-        _ = cmd_wrapper.cancel();
-        dev.releaseTexture(gpu_tex);
-        return null;
-    };
-    defer dev.releaseTransferBuffer(transfer_buf);
-
-    const mapped = dev.mapTransferBuffer(transfer_buf, false) orelse {
-        _ = cmd_wrapper.cancel();
-        dev.releaseTexture(gpu_tex);
-        return null;
-    };
-
-    const src_pixels: [*]const u8 = current_surf.pixels();
-    const src_pitch: usize = @intCast(current_surf.pitch());
-    var conversion_time_ms: f64 = 0.0;
-    const is_32bit_fmt = switch (cur_fmt) {
-        sdl.PixelFormat.rgba32, sdl.PixelFormat.bgra32, sdl.PixelFormat.xrgb8888, sdl.PixelFormat.xbgr8888, sdl.PixelFormat.rgbx8888, sdl.PixelFormat.bgrx8888 => true,
-        else => false,
-    };
-    if (is_32bit_fmt) {
-        if (src_pitch == dst_pitch) {
-            @memcpy(mapped[0..size], src_pixels[0..size]);
-        } else {
-            var y: usize = 0;
-            while (y < u_h) : (y += 1) {
-                @memcpy(mapped[y * dst_pitch .. y * dst_pitch + u_w * 4], src_pixels[y * src_pitch .. y * src_pitch + u_w * 4]);
-            }
-        }
-    } else if (cur_fmt == sdl.PixelFormat.rgb24) {
-        const start_conv = sdl.timer.getTicksNs();
-        sdl.surface.convertRgb24ToRgba32Simd(src_pixels[0 .. src_pitch * u_h], mapped[0..size], u_w, u_h, src_pitch, dst_pitch);
-        const end_conv = sdl.timer.getTicksNs();
-        conversion_time_ms = @as(f64, @floatFromInt(end_conv - start_conv)) / 1_000_000.0;
-    } else if (cur_fmt == sdl.PixelFormat.bgr24) {
-        const start_conv = sdl.timer.getTicksNs();
-        sdl.surface.convertBgr24ToRgba32Simd(src_pixels[0 .. src_pitch * u_h], mapped[0..size], u_w, u_h, src_pitch, dst_pitch);
-        const end_conv = sdl.timer.getTicksNs();
-        conversion_time_ms = @as(f64, @floatFromInt(end_conv - start_conv)) / 1_000_000.0;
-    } else {
-        const start_conv = sdl.timer.getTicksNs();
-        const tmp_surf = current_surf.convert(sdl.PixelFormat.rgba32);
-        if (tmp_surf) |ts| {
-            defer ts.destroy();
-            const ts_pixels = ts.pixels();
-            const ts_pitch: usize = @intCast(ts.pitch());
-            if (ts_pitch == dst_pitch) {
-                @memcpy(mapped[0..size], ts_pixels[0..size]);
-            } else {
-                var y: usize = 0;
-                while (y < u_h) : (y += 1) {
-                    @memcpy(mapped[y * dst_pitch .. y * dst_pitch + u_w * 4], ts_pixels[y * ts_pitch .. y * ts_pitch + u_w * 4]);
-                }
-            }
-            const end_conv = sdl.timer.getTicksNs();
-            conversion_time_ms = @as(f64, @floatFromInt(end_conv - start_conv)) / 1_000_000.0;
-        } else {
-            _ = cmd_wrapper.cancel();
-            dev.releaseTexture(gpu_tex);
-            return null;
-        }
-    }
-
-    dev.unmapTransferBuffer(transfer_buf);
-
-    const copy_pass = cmd_wrapper.beginCopyPass() orelse {
-        _ = cmd_wrapper.cancel();
-        dev.releaseTexture(gpu_tex);
-        return null;
-    };
-
-    copy_pass.uploadToTexture(&sdl.gpu.TextureTransferInfo{
-        .transfer_buffer = transfer_buf,
-        .offset = 0,
-        .pixels_per_row = @intCast(u_w),
-        .rows_per_layer = @intCast(u_h),
-    }, &sdl.gpu.TextureRegion{
-        .texture = gpu_tex,
-        .w = @intCast(img_w),
-        .h = @intCast(img_h),
-        .d = 1,
-    }, false);
-    copy_pass.end();
-
-    var mipmap_time_ms: f64 = 0.0;
-    if (num_levels > 1) {
-        const start_mip = sdl.timer.getTicksNs();
-        cmd_wrapper.generateMipmaps(gpu_tex);
-        const end_mip = sdl.timer.getTicksNs();
-        mipmap_time_ms = @as(f64, @floatFromInt(end_mip - start_mip)) / 1_000_000.0;
-    }
-
-    _ = cmd_wrapper.submit();
-
-    const end_upload = sdl.timer.getTicksNs();
-    const upload_time_ms = @as(f64, @floatFromInt(end_upload - start_upload)) / 1_000_000.0;
-
-    var memory_size_bytes: usize = u_w * u_h * 4;
-    if (num_levels > 1) {
-        memory_size_bytes = (memory_size_bytes * 4) / 3;
-    }
-
-    return .{
-        .gpu_texture = gpu_tex,
-        .w = @floatFromInt(img_w),
-        .h = @floatFromInt(img_h),
-        .upload_time_ms = upload_time_ms,
-        .memory_size_bytes = memory_size_bytes,
-        .num_mip_levels = num_levels,
-        .mipmap_time_ms = mipmap_time_ms,
-        .conversion_time_ms = conversion_time_ms,
-        .was_fallback = was_fallback,
-        .fallback_time_ms = fallback_time_ms,
-    };
+    try std.testing.expectEqual(cap1, staging.transfer_capacity);
 }

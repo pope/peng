@@ -64,7 +64,7 @@ fn handleExifThumbnailEvent(state: *AppState, thumb_data: events.ThumbDecodedPay
 
     const surf = thumb_data.surface orelse return;
     if (state.gpu_device) |gpu_dev| {
-        if (image.uploadSurfaceToGpu(gpu_dev, surf, state.unpack_compute_pipeline)) |upload_res| {
+        if (image.uploadSurfaceToGpu(gpu_dev, surf, state.unpack_compute_pipeline, &state.upload_staging)) |upload_res| {
             if (state.cache.get(thumb_data.key)) |entry| {
                 switch (entry.thumbnail) {
                     .loaded => |old_thumb| gpu_dev.releaseTexture(old_thumb.texture),
@@ -117,7 +117,7 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
 
     if (should_upload_gpu) {
         const gpu_dev = state.gpu_device.?;
-        if (image.uploadSurfaceToGpu(gpu_dev, surf, state.unpack_compute_pipeline)) |full_res| {
+        if (image.uploadSurfaceToGpu(gpu_dev, surf, state.unpack_compute_pipeline, &state.upload_staging)) |full_res| {
             if (state.cache.get(decoded_data.key)) |entry| {
                 switch (entry.status) {
                     .loaded_cpu => |cpu| cpu.surface.destroy(),

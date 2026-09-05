@@ -128,6 +128,7 @@ pub const AppState = struct {
     /// Subsystems
     cache: CacheSlotMap,
     workers: workers_mod.WorkerManager = .{},
+    upload_staging: image.UploadStagingBuffer = .{},
 
     /// Queues
     event_batch: std.ArrayList(events.BackgroundEvent) = .empty,
@@ -197,7 +198,7 @@ pub const AppState = struct {
         defer thumb_surf.destroy();
 
         const dev = self.gpu_device orelse return;
-        const upload_res = uploadSurfaceToGpu(dev, thumb_surf, self.unpack_compute_pipeline) orelse return;
+        const upload_res = uploadSurfaceToGpu(dev, thumb_surf, self.unpack_compute_pipeline, &self.upload_staging) orelse return;
 
         switch (e.thumbnail) {
             .loaded => |thumb| dev.releaseTexture(thumb.texture),
@@ -225,6 +226,8 @@ pub const AppState = struct {
         self.workers.drainAndQuiesce(self.io);
 
         if (self.gpu_device) |dev| {
+            self.upload_staging.deinit(dev);
+
             switch (self.viewer.display) {
                 .headless => {},
                 .windowed => |*w| {
@@ -502,7 +505,7 @@ pub const AppState = struct {
         if (upload_target) |target| {
             defer target.cpu.surface.destroy();
             if (self.gpu_device) |gpu_dev| {
-                if (uploadSurfaceToGpu(gpu_dev, target.cpu.surface, self.unpack_compute_pipeline)) |res| {
+                if (uploadSurfaceToGpu(gpu_dev, target.cpu.surface, self.unpack_compute_pipeline, &self.upload_staging)) |res| {
                     const loaded_gpu_status = CacheStatus{
                         .loaded_gpu = .{
                             .gpu_texture = res.gpu_texture,
