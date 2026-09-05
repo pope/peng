@@ -463,15 +463,36 @@ pub const AppState = struct {
         }
 
         if (upload_target == null and can_upload_neighbors) {
-            for (entries, keys) |*entry, key| {
+            const total_items = self.viewer.navigation.image_list.items.len;
+            var best_idx: ?usize = null;
+            var min_dist: usize = std.math.maxInt(usize);
+
+            for (entries, keys, 0..) |entry, key, i| {
+                switch (entry.status) {
+                    .loaded_cpu => {
+                        const dist = if (cur_idx_opt) |cur| blk: {
+                            const linear_dist = if (key.index > cur) key.index - cur else cur - key.index;
+                            break :blk if (total_items > 0 and linear_dist <= total_items) @min(linear_dist, total_items - linear_dist) else linear_dist;
+                        } else i;
+
+                        if (dist < min_dist) {
+                            min_dist = dist;
+                            best_idx = i;
+                        }
+                    },
+                    else => {},
+                }
+            }
+
+            if (best_idx) |bi| {
+                const entry = &entries[bi];
                 switch (entry.status) {
                     .loaded_cpu => |cpu| {
                         entry.status = .uploading;
                         upload_target = .{
-                            .key = key,
+                            .key = keys[bi],
                             .cpu = cpu,
                         };
-                        break;
                     },
                     else => {},
                 }
@@ -507,7 +528,7 @@ pub const AppState = struct {
                     if (!updated) {
                         gpu_dev.releaseTexture(res.gpu_texture);
                     } else {
-                        self.cache.enforceVramBudget(gpu_dev, self.viewer.navigation.current_index, image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
+                        self.cache.enforceVramBudget(gpu_dev, self.viewer.navigation.current_index, self.viewer.navigation.image_list.items.len, image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
                     }
                 } else {
                     _ = self.cache.updateStatus(target.key, .failed);

@@ -89,7 +89,8 @@ pub fn updateFrame(
     const has_unpopulated_cache = blk: {
         const len = app_state.viewer.navigation.image_list.items.len;
         if (len <= 1) break :blk false;
-        break :blk (app_state.cache.count() < @min(5, len));
+        const cur_idx = app_state.viewer.navigation.current_index orelse break :blk false;
+        break :blk app_state.cache.hasUnreadyPrefetchSlots(cur_idx, len, app_state.gpu_device != null);
     };
     const cur_win_size = window.getSize();
     const cur_win_w = @as(f32, @floatFromInt(cur_win_size.w));

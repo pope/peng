@@ -100,24 +100,36 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
 
     const dev_opt = state.gpu_device;
 
-    // 2. Evict cache entries that are no longer wanted
+    // 2. Evict cache entries that are no longer wanted, decoupling prefetch from retention
     var i: usize = 0;
     while (i < state.cache.count()) {
         const keys = state.cache.slots.items(.key);
+        const entries = state.cache.slots.items(.entry);
         const key = keys[i];
-        var wanted = false;
+        const entry = entries[i];
+
+        var in_desired = false;
         for (desired[0..desired_count]) |d| {
             if (key.index == d) {
-                wanted = true;
+                in_desired = true;
                 break;
             }
         }
-        if (!wanted) {
-            state.cache.removeAndDeinit(i, dev_opt);
-        } else {
+
+        if (in_desired) {
             i += 1;
+        } else if (entry.status == .loaded_gpu) {
+            // Retain loaded GPU textures beyond ±2 window until VRAM budget requires eviction
+            i += 1;
+        } else if (dev_opt == null and entry.status == .loaded_cpu) {
+            // Retain loaded CPU surfaces in headless mode
+            i += 1;
+        } else {
+            state.cache.removeAndDeinit(i, dev_opt);
         }
     }
+
+    state.cache.enforceVramBudget(dev_opt, idx, len, image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
 
     // Fast-scrolling check: only active if navigation has actually occurred
     const now = sdl.timer.getTicks();
@@ -245,4 +257,66 @@ test "sysUpdateCache - populates prefetch window and evicts unwanted entries" {
     // Run sysUpdateCache again: now that index 0 is ready, neighbors should populate
     try sysUpdateCache(ctx);
     try std.testing.expect(state.cache.get(state.cache.activeKey(1)) != null);
+}
+
+test "sysUpdateCache - retains loaded entries outside prefetch window until budget exceeded" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    // 10 images in list
+    for (0..10) |idx| {
+        const name = try std.fmt.allocPrint(allocator, "img{}.png", .{idx});
+        defer allocator.free(name);
+        const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, name);
+        try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = dup } });
+    }
+    state.viewer.navigation.current_index = 0;
+
+    // Add slot 0 (current) as loaded_cpu so neighbors can populate
+    _ = try state.cache.appendSlot(allocator, 0, .{
+        .loaded_cpu = .{
+            .surface = undefined,
+            .w = 100,
+            .h = 100,
+            .size_bytes = 1000,
+        },
+    });
+
+    // Add slot 6 (outside desired 0, 1, 2, 9, 8 window) as loaded_gpu
+    try state.cache.appendWithKey(allocator, state.cache.activeKey(6), .{
+        .status = .{
+            .loaded_gpu = .{
+                .gpu_texture = undefined,
+                .w = 100,
+                .h = 100,
+                .size_bytes = 1000,
+                .memory_size_bytes = 500 * 1024 * 1024,
+            },
+        },
+    });
+
+    // Also add slot 7 as failed (outside window)
+    try state.cache.appendWithKey(allocator, state.cache.activeKey(7), .{
+        .status = .failed,
+    });
+
+    const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
+    try sysUpdateCache(ctx);
+
+    // Slot 7 (.failed outside window) should be evicted
+    try std.testing.expect(state.cache.get(state.cache.activeKey(7)) == null);
+
+    // Slot 6 (.loaded_gpu outside window) should be RETAINED under default budget!
+    try std.testing.expect(state.cache.get(state.cache.activeKey(6)) != null);
+
+    // Now enforce a small VRAM budget (less than slot 6's 500MB)
+    state.cache.enforceVramBudget(state.gpu_device, 0, 10, 100);
+
+    // Slot 6 should now be pruned by enforceVramBudget
+    try std.testing.expect(state.cache.get(state.cache.activeKey(6)) == null);
+
+    // Reset slot 0 to .failed to prevent calling destroy() on mock undefined surface during defer state.deinit()
+    _ = state.cache.updateStatus(state.cache.activeKey(0), .failed);
 }

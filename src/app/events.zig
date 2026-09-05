@@ -145,7 +145,7 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
                         .compressed_size_bytes = decoded_data.compressed_size_bytes,
                     },
                 };
-                state.cache.enforceVramBudget(gpu_dev, state.viewer.navigation.current_index, image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
+                state.cache.enforceVramBudget(gpu_dev, state.viewer.navigation.current_index, state.viewer.navigation.image_list.items.len, image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
             } else {
                 gpu_dev.releaseTexture(full_res.gpu_texture);
             }

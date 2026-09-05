@@ -140,37 +140,118 @@ pub const CacheSlotMap = struct {
         return total;
     }
 
-    pub fn enforceVramBudget(self: *CacheSlotMap, gpu_device: ?sdl.gpu.Device, current_index: ?usize, max_bytes: usize) void {
+    /// Enforces the maximum VRAM budget by evicting `.loaded_gpu` textures from the cache map.
+    ///
+    /// Eviction ordering uses circular distance relative to `current_index`:
+    /// 1. Distant entries (circular distance > 2) are evicted first, furthest distance first.
+    /// 2. If VRAM budget is still exceeded and only immediate neighbors (distance <= 2) remain,
+    ///    they are evicted furthest first (distance 2 before distance 1).
+    /// The currently active image (`key.index == current_index`) is strictly protected from eviction.
+    pub fn enforceVramBudget(
+        self: *CacheSlotMap,
+        gpu_device: ?sdl.gpu.Device,
+        current_index: ?usize,
+        total_items: usize,
+        max_bytes: usize,
+    ) void {
         while (self.getTotalVramBytes() > max_bytes) {
             const entries = self.slots.items(.entry);
             const keys = self.slots.items(.key);
-            var max_dist: usize = 0;
-            var victim_idx: ?usize = null;
+
+            var max_distant_dist: usize = 0;
+            var distant_victim: ?usize = null;
+
+            var max_neighbor_dist: usize = 0;
+            var neighbor_victim: ?usize = null;
 
             for (entries, keys, 0..) |entry, key, i| {
                 if (entry.status == .loaded_gpu) {
                     if (current_index) |cur| {
                         if (key.index == cur) continue;
-                        const dist = if (key.index > cur) key.index - cur else cur - key.index;
-                        // Protect immediate neighbors (dist <= 2) if possible
-                        if (dist <= 2 and self.slots.len <= 5) continue;
-                        if (dist >= max_dist) {
-                            max_dist = dist;
-                            victim_idx = i;
+                        const linear_dist = if (key.index > cur) key.index - cur else cur - key.index;
+                        const dist = if (total_items > 0 and linear_dist <= total_items) @min(linear_dist, total_items - linear_dist) else linear_dist;
+
+                        if (dist > 2) {
+                            if (distant_victim == null or dist > max_distant_dist) {
+                                max_distant_dist = dist;
+                                distant_victim = i;
+                            }
+                        } else {
+                            if (neighbor_victim == null or dist > max_neighbor_dist) {
+                                max_neighbor_dist = dist;
+                                neighbor_victim = i;
+                            }
                         }
                     } else {
-                        victim_idx = i;
+                        distant_victim = i;
                         break;
                     }
                 }
             }
 
+            const victim_idx = distant_victim orelse neighbor_victim;
             if (victim_idx) |v_i| {
                 self.removeAndDeinit(v_i, gpu_device);
             } else {
                 break;
             }
         }
+    }
+
+    /// Checks whether any of the desired 5 prefetch slots (current, ±1, ±2 circularly)
+    /// are missing from the cache or not in a terminal/ready status.
+    ///
+    /// A slot is considered unready if it is missing, decoding, uploading, or loaded on CPU
+    /// when a GPU device is present.
+    pub fn hasUnreadyPrefetchSlots(
+        self: *const CacheSlotMap,
+        current_index: usize,
+        total_items: usize,
+        has_gpu: bool,
+    ) bool {
+        if (total_items == 0) return false;
+        const len = total_items;
+        const idx = current_index;
+
+        var desired: [5]usize = undefined;
+        desired[0] = idx;
+        var desired_count: usize = 1;
+
+        for ([_]usize{
+            (idx + 1) % len,
+            (idx + 2) % len,
+            (idx + len - 1) % len,
+            if (len >= 2) (idx + len - 2) % len else idx,
+        }) |d| {
+            var unique = true;
+            for (desired[0..desired_count]) |existing| {
+                if (existing == d) {
+                    unique = false;
+                    break;
+                }
+            }
+            if (unique) {
+                desired[desired_count] = d;
+                desired_count += 1;
+            }
+        }
+
+        for (desired[0..desired_count]) |d| {
+            const key = self.activeKey(d);
+            if (self.getIndex(key)) |i| {
+                const entry = self.slots.items(.entry)[i];
+                switch (entry.status) {
+                    .loaded_gpu, .failed => {},
+                    .loaded_cpu => {
+                        if (has_gpu) return true;
+                    },
+                    .decoding, .uploading => return true,
+                }
+            } else {
+                return true;
+            }
+        }
+        return false;
     }
 };
 
@@ -357,6 +438,117 @@ test "parseImageDimensions" {
     try std.testing.expect(bmp_dims != null);
     try std.testing.expectEqual(@as(f32, 1024.0), bmp_dims.?.w);
     try std.testing.expectEqual(@as(f32, 768.0), bmp_dims.?.h);
+}
+
+test "enforceVramBudget - distant eviction, circular distance, and neighbor protection" {
+    const allocator = std.testing.allocator;
+    var cache = CacheSlotMap{};
+    defer cache.deinit(allocator, null);
+
+    const makeGpu = struct {
+        fn create(size: usize) CacheEntry {
+            return .{
+                .status = .{
+                    .loaded_gpu = .{
+                        .gpu_texture = undefined,
+                        .w = 100,
+                        .h = 100,
+                        .size_bytes = size,
+                        .memory_size_bytes = size,
+                    },
+                },
+            };
+        }
+    }.create;
+
+    // total_items = 10, current = 0
+    // Slots: 0 (dist 0), 1 (dist 1), 2 (dist 2), 5 (dist 5), 9 (dist 1 wrap-around)
+    try cache.appendWithKey(allocator, .{ .index = 0, .generation = 0 }, makeGpu(100));
+    try cache.appendWithKey(allocator, .{ .index = 1, .generation = 0 }, makeGpu(100));
+    try cache.appendWithKey(allocator, .{ .index = 2, .generation = 0 }, makeGpu(100));
+    try cache.appendWithKey(allocator, .{ .index = 5, .generation = 0 }, makeGpu(100));
+    try cache.appendWithKey(allocator, .{ .index = 9, .generation = 0 }, makeGpu(100));
+    // Total VRAM = 500 bytes
+
+    try std.testing.expectEqual(@as(usize, 500), cache.getTotalVramBytes());
+
+    // 1. Evict down to 400: slot 5 (dist 5) is distant (dist > 2) and must be evicted first
+    cache.enforceVramBudget(null, 0, 10, 400);
+    try std.testing.expectEqual(@as(usize, 400), cache.getTotalVramBytes());
+    try std.testing.expect(cache.getIndex(.{ .index = 5, .generation = 0 }) == null);
+    try std.testing.expect(cache.getIndex(.{ .index = 0, .generation = 0 }) != null);
+    try std.testing.expect(cache.getIndex(.{ .index = 1, .generation = 0 }) != null);
+    try std.testing.expect(cache.getIndex(.{ .index = 2, .generation = 0 }) != null);
+    try std.testing.expect(cache.getIndex(.{ .index = 9, .generation = 0 }) != null);
+
+    // 2. Evict down to 300: Remaining are 0, 1, 2, 9 (dists: 0, 1, 2, 1).
+    // All remaining non-cur have dist <= 2. Neighbor protection should evict dist 2 (slot 2) before dist 1 (slot 1 or 9).
+    cache.enforceVramBudget(null, 0, 10, 300);
+    try std.testing.expectEqual(@as(usize, 300), cache.getTotalVramBytes());
+    try std.testing.expect(cache.getIndex(.{ .index = 2, .generation = 0 }) == null);
+    try std.testing.expect(cache.getIndex(.{ .index = 0, .generation = 0 }) != null);
+
+    // 3. Evict down to 50: Current slot 0 (100 bytes) should NEVER be evicted even if exceeding budget
+    cache.enforceVramBudget(null, 0, 10, 50);
+    try std.testing.expectEqual(@as(usize, 100), cache.getTotalVramBytes());
+    try std.testing.expect(cache.getIndex(.{ .index = 0, .generation = 0 }) != null);
+    try std.testing.expect(cache.getIndex(.{ .index = 1, .generation = 0 }) == null);
+    try std.testing.expect(cache.getIndex(.{ .index = 9, .generation = 0 }) == null);
+
+    // 4. Test robustness against linear_dist > total_items (e.g. slot 99 with total_items = 5)
+    try cache.appendWithKey(allocator, .{ .index = 99, .generation = 0 }, makeGpu(100));
+    try std.testing.expectEqual(@as(usize, 200), cache.getTotalVramBytes());
+    cache.enforceVramBudget(null, 0, 5, 100);
+    try std.testing.expectEqual(@as(usize, 100), cache.getTotalVramBytes());
+    try std.testing.expect(cache.getIndex(.{ .index = 99, .generation = 0 }) == null);
+    try std.testing.expect(cache.getIndex(.{ .index = 0, .generation = 0 }) != null);
+}
+
+test "hasUnreadyPrefetchSlots" {
+    const allocator = std.testing.allocator;
+    var cache = CacheSlotMap{};
+    defer cache.deinit(allocator, null);
+
+    // Total 5 items, current 0 -> desired: 0, 1, 2, 4, 3
+    // Empty cache -> unready
+    try std.testing.expect(cache.hasUnreadyPrefetchSlots(0, 5, true));
+
+    const makeGpu = CacheEntry{
+        .status = .{
+            .loaded_gpu = .{
+                .gpu_texture = undefined,
+                .w = 100,
+                .h = 100,
+                .size_bytes = 100,
+                .memory_size_bytes = 100,
+            },
+        },
+    };
+
+    // Add 0, 1, 2, 3, 4 as loaded_gpu
+    for (0..5) |idx| {
+        try cache.appendWithKey(allocator, .{ .index = idx, .generation = 0 }, makeGpu);
+    }
+    try std.testing.expect(!cache.hasUnreadyPrefetchSlots(0, 5, true));
+
+    // One slot is decoding -> unready
+    _ = cache.updateStatus(.{ .index = 2, .generation = 0 }, .{ .decoding = .{} });
+    try std.testing.expect(cache.hasUnreadyPrefetchSlots(0, 5, true));
+
+    // One slot is loaded_cpu: unready if has_gpu = true, ready if has_gpu = false
+    _ = cache.updateStatus(.{ .index = 2, .generation = 0 }, .{
+        .loaded_cpu = .{
+            .surface = undefined,
+            .w = 100,
+            .h = 100,
+            .size_bytes = 100,
+        },
+    });
+    try std.testing.expect(cache.hasUnreadyPrefetchSlots(0, 5, true));
+    try std.testing.expect(!cache.hasUnreadyPrefetchSlots(0, 5, false));
+
+    // Reset status to .failed to prevent calling SDL_DestroySurface on undefined mock surface during defer deinit
+    _ = cache.updateStatus(.{ .index = 2, .generation = 0 }, .failed);
 }
 
 test "CacheSlotMap.updateStatus" {
