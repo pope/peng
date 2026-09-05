@@ -328,6 +328,28 @@ pub fn decodeWorker(args: *DecodeArgs) void {
             } else {
                 std.log.err("SDL_ConvertSurface failed: {s}", .{sdl.getError()});
             }
+        } else if (args.has_gpu_device) {
+            // For GPU rendering:
+            // - 24-bit RGB/BGR surfaces are left as-is so the GPU compute unpack shader (`unpack_rgb.comp.glsl`)
+            //   can unpack them directly into RGBA32 in VRAM with zero CPU overhead.
+            // - Exotic formats (e.g. paletted 8-bit, grayscale) are converted here on the background worker thread
+            //   to prevent main-thread CPU format conversion stalls during `uploadSurfaceToGpu`.
+            const cur_fmt = surf.format();
+            const is_32bit = switch (cur_fmt) {
+                sdl.PixelFormat.rgba32, sdl.PixelFormat.bgra32, sdl.PixelFormat.xrgb8888, sdl.PixelFormat.xbgr8888, sdl.PixelFormat.rgbx8888, sdl.PixelFormat.bgrx8888 => true,
+                else => false,
+            };
+            if (!is_32bit and cur_fmt != sdl.PixelFormat.rgb24 and cur_fmt != sdl.PixelFormat.bgr24) {
+                const start_convert = sdl.timer.getTicksNs();
+                if (surf.convert(sdl.PixelFormat.rgba32)) |conv| {
+                    const end_convert = sdl.timer.getTicksNs();
+                    conversion_time_ms = @as(f64, @floatFromInt(end_convert - start_convert)) / 1_000_000.0;
+                    surf.destroy();
+                    final_surface = conv;
+                } else {
+                    std.log.err("SDL_ConvertSurface failed: {s}", .{sdl.getError()});
+                }
+            }
         }
 
         if (final_surface) |f_surf| {

@@ -785,6 +785,9 @@ pub fn uploadSurfaceToGpu(
                 @memcpy(mapped[y * dst_pitch .. y * dst_pitch + u_w * 4], src_pixels[y * src_pitch .. y * src_pitch + u_w * 4]);
             }
         }
+        // TODO: If compute unpack pipeline is unavailable (comp_pipeline == null), RGB24/BGR24 falls back to main-thread SIMD conversion.
+        // If running on non-compute GPU hardware becomes a priority, plumbing `has_compute_unpack: bool` through DecodeArgs
+        // would allow offloading this conversion to background decode workers as well.
     } else if (cur_fmt == sdl.PixelFormat.rgb24) {
         const start_conv = sdl.timer.getTicksNs();
         sdl.surface.convertRgb24ToRgba32Simd(src_pixels[0 .. src_pitch * u_h], mapped[0..size], u_w, u_h, src_pitch, dst_pitch);
