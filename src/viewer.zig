@@ -32,15 +32,21 @@ pub fn runUpdatePhase(
     // Socket Command Ingestion System (parses IPC commands -> pending_intents)
     app.systems.sysExecuteIpcCommands(ctx);
 
-    // Keyboard Input System (maps keypresses -> pending_intents)
+    // Command Palette Input System (typing query updates, selection, click-outside, item clicks)
+    const palette_closed_this_frame = try app.systems.sysProcessPaletteInput(ctx);
+
+    // Keyboard & File Drop Input System (maps keypresses -> pending_intents)
     try app.systems.sysProcessInput(ctx);
 
-    // Command Palette Input System (typing query updates, selection, click-outside)
-    const palette_closed_this_frame = try app.systems.sysProcessPaletteInput(ctx);
+    // UI Discrete Interactions (overlay close buttons)
+    app.systems.sysProcessUiInteractions(ctx);
 
     // Viewport & Motion Systems (mouse drag/zoom & slideshow timer)
     app.systems.sysUpdateViewport(ctx, palette_closed_this_frame);
     try app.systems.sysUpdateSlideshow(ctx);
+
+    // Window Management System (synchronizes window title and display properties)
+    app.systems.sysSyncWindow(ctx);
 
     // Execute All Ingested & Generated Intents (IPC, Keyboard, Palette & Slideshow intents)
     try app.systems.sysExecuteIntents(ctx);
@@ -101,9 +107,6 @@ pub fn updateFrame(
         is_busy,
     );
 
-    if (input.quit_requested) {
-        app_state.viewer.running = false;
-    }
     app_state.viewer.ui.overlays.mouse_inside = input.mouse_inside;
 
     // Clay Pointer & Scroll State Updates
@@ -131,15 +134,6 @@ pub fn updateFrame(
 
     app_state.viewer.ui.overlays.last_mouse_x = input.mouse_x;
     app_state.viewer.ui.overlays.last_mouse_y = input.mouse_y;
-
-    if (input.mouse_left_clicked) {
-        if (app_state.viewer.ui.overlays.show_info and !input.isPointerInDebugPanel() and clay.pointerOver(clay.getElementId("InfoCloseBtn"))) {
-            app_state.viewer.ui.overlays.show_info = false;
-        }
-        if (app_state.viewer.ui.overlays.show_stats and !input.isPointerInDebugPanel() and clay.pointerOver(clay.getElementId("StatsCloseBtn"))) {
-            app_state.viewer.ui.overlays.show_stats = false;
-        }
-    }
 
     // Phase 2: Update Phase — Run all systems sequentially
     try runUpdatePhase(app_state, input, frame_allocator);
@@ -170,19 +164,19 @@ pub fn updateFrame(
         .slideshow = app_state.viewer.navigation.slideshow,
         .manga_mode = app_state.viewer.navigation.manga_mode,
         .overlays = app_state.viewer.ui.overlays,
-        .metrics = &app_state.viewer.ui.metrics,
+        .window_title = blk: {
+            if (app_state.viewer.navigation.current_index) |idx| {
+                if (idx < app_state.viewer.navigation.image_list.items.len) {
+                    break :blk app_state.viewer.navigation.image_list.items[idx].getBasename();
+                }
+            }
+            break :blk "Peng Image Viewer";
+        },
         .viewport = app_state.viewer.viewport,
         .palette = &app_state.viewer.ui.palette,
-        .display = &app_state.viewer.display,
-        .total_vram_bytes = app_state.viewer.stats.total_vram_bytes,
-        .cached_slot_count = app_state.viewer.stats.cached_slot_count,
-        .gpa_allocator = app_state.allocator,
-        .io = app_state.io,
-        .cache_slot_map = &app_state.cache,
-        .navigation = &app_state.viewer.navigation,
-        .pending_intents = &app_state.pending_intents,
         .debug_show_thumb = app_state.viewer.ui.overlays.debug_show_thumb,
         .stats = app_state.viewer.stats,
+        .render_metrics = app_state.viewer.ui.metrics.toSnapshot(),
     };
 
     // Draw / Render
@@ -190,7 +184,20 @@ pub fn updateFrame(
         .idle => null,
         .capturing => |s| s.path,
     };
-    ui.layout.renderFrame(view_params, ui_model, resources, input, frame_allocator, resources.fonts[0..], measure_data, capture_filename) catch |err| {
+    const target_window = if (app_state.viewer.display.isClaimed()) window else null;
+    ui.layout.renderFrame(
+        view_params,
+        ui_model,
+        resources,
+        input,
+        app_state.allocator,
+        frame_allocator,
+        resources.fonts[0..],
+        measure_data,
+        target_window,
+        &app_state.viewer.ui.metrics,
+        capture_filename,
+    ) catch |err| {
         app_state.handleScreenshotPostRender(err);
         return err;
     };

@@ -66,14 +66,15 @@
   2. Input Polling (`pollFrameInput` in `updateFrame`)
   3. `runUpdatePhase` Systems Pipeline:
      a. `sysExecuteIpcCommands(ctx)`
-     b. `sysProcessInput(ctx)`
-     c. `sysExecuteIntents(ctx)`
-     d. `sysProcessPaletteInput(ctx)`
+     b. `sysProcessPaletteInput(ctx)` (typing, item selection, outside clicks -> intents)
+     c. `sysProcessInput(ctx)` (keyboard shortcuts, file drops -> intents)
+     d. `sysProcessUiInteractions(ctx)` (UI close buttons -> intents)
      e. `sysUpdateViewport(ctx, palette_closed_this_frame)` & `sysUpdateSlideshow(ctx)`
-     f. `sysExecuteIntents(ctx)` (drains palette/slideshow intents)
-     g. `sysProcessAssetUploads(ctx)`
-     h. `sysUpdateCache(ctx)`
-     i. `sysSyncMetrics(ctx)`
+     f. `sysSyncWindow(ctx)` (window title & display sync)
+     g. `sysExecuteIntents(ctx)` (single-pass execution of all enqueued intents)
+     h. `sysProcessAssetUploads(ctx)`
+     i. `sysUpdateCache(ctx)`
+     j. `sysSyncMetrics(ctx)`
   4. Clay UI Layout & Pointer Updates
   5. GPU Execution Pass & Frame Presentation
 
@@ -92,3 +93,9 @@ Worker tasks performing file inspection and decoding MUST consolidate file I/O o
 2. **Single File Open**: Open `std.Io.Dir.openFile` once for the duration of the worker task pass.
 3. **Single Header Read**: Issue `file.readPositional(io, &slices, 0)` once to populate a 64KB stack buffer (`header_buf`).
 4. **In-Memory Zero-Copy Operations**: Pass `header_buf[0..n]` in-memory to all metadata parsers (`exif.parseExifOrientation`, `image.detectMimeType`, `exif.readJpegDimensions`, `exif.extractJpegThumbnail`). Never open or read the file multiple times per worker pass.
+
+## 12. Read-Only View Model Snapshot (`UiViewModel`) & Pure Render Invariant
+
+- **Immutable Frame Snapshot**: At the end of Phase 2 (`runUpdatePhase`), construct an immutable, read-only snapshot struct `UiViewModel` (`src/state/types.zig`).
+- **No Mutable State in View Model**: `UiViewModel` MUST NOT contain mutable pointers to `AppState`, `ViewerState`, `metrics`, `display`, or `pending_intents`. All metrics must be snapshotted (`UiRenderMetrics.toSnapshot()`), strings pre-computed (`window_title`), and state references typed as `*const`.
+- **Pure Phase 3 Presentation**: Phase 3 (`renderFrame`) operates strictly as a read-only presentation pass. Layout evaluation (Clay) and vertex extraction MUST NOT mutate application state, dispatch OS/window title changes, or enqueue intents inline. All interactive widget clicks (such as close buttons and palette item selection) are detected and mapped to `AppIntent` payloads during Phase 2 systems passes before layout drawing.

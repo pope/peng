@@ -259,7 +259,7 @@ pub fn runMainLoop(ctx: *AppGraphicsAndState) !void {
     if (ctx.parsed.arg_path) |path| {
         try ctx.state.handlePathSelection(path);
     }
-    try app.fs.readPipedStdin(&ctx.state, ctx.io, ctx.gpa);
+    try app.workers.readPipedStdin(&ctx.state, ctx.io, ctx.gpa);
 
     // Per-frame arena allocator
     var frame_arena = std.heap.ArenaAllocator.init(ctx.gpa);

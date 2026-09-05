@@ -46,9 +46,9 @@ pub fn sysUpdateViewport(ctx: FrameContext, palette_closed_this_frame: bool) voi
     if (next_drag_state == .none and input.mouse_left_clicked and !palette_closed_this_frame) {
         if (state.viewer.ui.palette.mode == .inactive) {
             const is_in_debug_panel = input.isPointerInDebugPanel();
-            if (state.viewer.ui.overlays.show_info and !is_in_debug_panel and clay.pointerOver(clay.getElementId("InfoCard"))) {
+            if (state.viewer.ui.overlays.show_info and !is_in_debug_panel and clay.pointerOver(clay.getElementId("InfoOverlayCard"))) {
                 next_drag_state = .{ .info = .{ .start_x = input.mouse_x - state.viewer.ui.overlays.info_offset_x, .start_y = input.mouse_y - state.viewer.ui.overlays.info_offset_y } };
-            } else if (state.viewer.ui.overlays.show_stats and !is_in_debug_panel and clay.pointerOver(clay.getElementId("StatsCard"))) {
+            } else if (state.viewer.ui.overlays.show_stats and !is_in_debug_panel and clay.pointerOver(clay.getElementId("StatsPanel"))) {
                 next_drag_state = .{ .stats = .{ .start_x = input.mouse_x - state.viewer.ui.overlays.stats_offset_x, .start_y = input.mouse_y - state.viewer.ui.overlays.stats_offset_y } };
             } else if (!is_in_debug_panel and clay.pointerOver(clay.getElementId("Viewport"))) {
                 next_drag_state = .{ .viewport = .{ .last_x = input.pixMouseX(), .last_y = input.pixMouseY() } };

@@ -11,8 +11,7 @@ const truncateDirectory = text_utils.truncateDirectory;
 const theme = @import("theme.zig");
 const palette_items = @import("palette_items.zig");
 const renderFuzzyMatchText = palette_items.renderFuzzyMatchText;
-const palette_layout = @import("palette_layout.zig");
-const PaletteConfig = palette_layout.PaletteConfig;
+const PaletteConfig = state.PaletteConfig;
 
 /// Virtualized window computation for large palette item lists.
 /// Calculates the visible index range and spacer element heights to restrict Clay UI tree allocations

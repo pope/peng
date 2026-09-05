@@ -522,6 +522,8 @@ pub fn uploadSurfaceToGpu(
         }
     }
 
+    dev.unmapTransferBuffer(transfer_buf);
+
     const copy_pass = cmd_wrapper.beginCopyPass() orelse {
         _ = cmd_wrapper.cancel();
         dev.releaseTexture(gpu_tex);

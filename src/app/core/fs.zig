@@ -398,3 +398,64 @@ test "scanDirectoryEntries includes CBZ files and countFolderContents counts CBZ
     }
     try std.testing.expect(found_cbz);
 }
+
+test "scanDirectoryEntries - nested directory hierarchy" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const cwd = std.Io.Dir.cwd();
+
+    const tmp_dir_path = "testfiles/tmp_scan_nav_test";
+
+    // Setup directory structure
+    std.Io.Dir.createDirPath(cwd, io, tmp_dir_path ++ "/sub_b") catch {};
+    std.Io.Dir.createDirPath(cwd, io, tmp_dir_path ++ "/sub_a") catch {};
+    std.Io.Dir.createDirPath(cwd, io, tmp_dir_path ++ "/sub_empty") catch {};
+
+    defer {
+        std.Io.Dir.deleteTree(cwd, io, tmp_dir_path) catch {};
+    }
+
+    // Create test files
+    {
+        var f0 = try std.Io.Dir.createFile(cwd, io, tmp_dir_path ++ "/root.png", .{});
+        f0.close(io);
+
+        var f1 = try std.Io.Dir.createFile(cwd, io, tmp_dir_path ++ "/sub_b/img1.png", .{});
+        f1.close(io);
+        var f2 = try std.Io.Dir.createFile(cwd, io, tmp_dir_path ++ "/sub_b/img2.jpg", .{});
+        f2.close(io);
+        var f3 = try std.Io.Dir.createFile(cwd, io, tmp_dir_path ++ "/sub_b/txt1.txt", .{});
+        f3.close(io);
+
+        var f4 = try std.Io.Dir.createFile(cwd, io, tmp_dir_path ++ "/sub_a/pic.webp", .{});
+        f4.close(io);
+    }
+
+    var entries: std.ArrayList(DirectoryEntry) = .empty;
+    defer {
+        for (entries.items) |e| {
+            allocator.free(e.getName());
+            if (e.getFullPath().len > 0) allocator.free(e.getFullPath());
+        }
+        entries.deinit(allocator);
+    }
+
+    try scanDirectoryEntries(allocator, io, tmp_dir_path, &entries);
+
+    try std.testing.expectEqual(@as(usize, 3), entries.items.len);
+
+    // Index 0: sub_a
+    try std.testing.expectEqualStrings("sub_a", entries.items[0].getName());
+    try std.testing.expectEqualStrings(tmp_dir_path ++ "/sub_a", entries.items[0].getFullPath());
+    try std.testing.expectEqual(@as(usize, 1), entries.items[0].getImageCount().?);
+
+    // Index 1: sub_b
+    try std.testing.expectEqualStrings("sub_b", entries.items[1].getName());
+    try std.testing.expectEqualStrings(tmp_dir_path ++ "/sub_b", entries.items[1].getFullPath());
+    try std.testing.expectEqual(@as(usize, 2), entries.items[1].getImageCount().?);
+
+    // Index 2: sub_empty
+    try std.testing.expectEqualStrings("sub_empty", entries.items[2].getName());
+    try std.testing.expectEqualStrings(tmp_dir_path ++ "/sub_empty", entries.items[2].getFullPath());
+    try std.testing.expectEqual(@as(usize, 0), entries.items[2].getImageCount().?);
+}

@@ -30,9 +30,8 @@ pub const renderHighlightedText = palette_items.renderHighlightedText;
 pub const palette_scroll = @import("palette_scroll.zig");
 pub const VirtualWindow = palette_scroll.VirtualWindow;
 
-pub const palette_layout = @import("palette_layout.zig");
-pub const PaletteConfig = palette_layout.PaletteConfig;
-pub const getPaletteConfig = palette_layout.getPaletteConfig;
+pub const PaletteConfig = state.PaletteConfig;
+pub const getPaletteConfig = state.getPaletteConfig;
 
 fn renderHeader(mode: PaletteMode, title: []const u8) void {
     clay.UI()(.{
@@ -341,7 +340,6 @@ pub fn renderTextInputDialog(
 pub fn renderSelectionList(
     ui_model: UiViewModel,
     cfg: PaletteConfig,
-    mouse_clicked: bool,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
 ) !void {
@@ -365,7 +363,6 @@ pub fn renderSelectionList(
             scroll_data.scroll_position.y = -(item_bottom - viewport_height);
             scroll_offset.y = -(item_bottom - viewport_height);
         }
-        palette.selection_dirty = false;
     }
 
     const matching_indices = &palette.matches;
@@ -439,11 +436,10 @@ pub fn renderSelectionList(
                         defer dirname_matches.deinit(frame_allocator);
 
                         if (query_str.len > 0 and basename.len > 0) {
-                            const searcher_opt = palette.getSearcher(@max(basename.len, 64), query_str.len) catch |err| blk: {
-                                std.log.err("getSearcher failed: {}", .{err});
-                                break :blk null;
-                            };
-                            if (searcher_opt) |searcher_ptr| {
+                            var searcher = state.fuzzig.Ascii.init(frame_allocator, @max(basename.len, 64), query_str.len, .{
+                                .case_sensitive = false,
+                            }) catch null;
+                            if (searcher) |*searcher_ptr| {
                                 const base_res = searcher_ptr.scoreMatches(basename, query_str);
                                 if (base_res.score != null) {
                                     basename_matches.appendSlice(frame_allocator, base_res.matches) catch |err| {
@@ -532,11 +528,10 @@ pub fn renderSelectionList(
 
                         var action_matches: []const usize = &.{};
                         if (query_str.len > 0) {
-                            const searcher_opt = palette.getSearcher(meta.name.len, query_str.len) catch |err| blk: {
-                                std.log.err("getSearcher failed: {}", .{err});
-                                break :blk null;
-                            };
-                            if (searcher_opt) |searcher_ptr| {
+                            var searcher = state.fuzzig.Ascii.init(frame_allocator, @max(meta.name.len, 64), query_str.len, .{
+                                .case_sensitive = false,
+                            }) catch null;
+                            if (searcher) |*searcher_ptr| {
                                 const res = searcher_ptr.scoreMatches(meta.name, query_str);
                                 if (res.score != null) {
                                     action_matches = res.matches;
@@ -587,11 +582,10 @@ pub fn renderSelectionList(
                             const query_str = palette.query.items;
 
                             if (query_str.len > 0 and entry.getName().len > 0) {
-                                const searcher_opt = palette.getSearcher(entry.getName().len, query_str.len) catch |err| blk: {
-                                    std.log.err("getSearcher failed: {}", .{err});
-                                    break :blk null;
-                                };
-                                if (searcher_opt) |searcher_ptr| {
+                                var searcher = state.fuzzig.Ascii.init(frame_allocator, @max(entry.getName().len, 64), query_str.len, .{
+                                    .case_sensitive = false,
+                                }) catch null;
+                                if (searcher) |*searcher_ptr| {
                                     const res = searcher_ptr.scoreMatches(entry.getName(), query_str);
                                     if (res.score != null) {
                                         dir_matches.appendSlice(frame_allocator, res.matches) catch |err| {
@@ -744,39 +738,6 @@ pub fn renderSelectionList(
                 }
             });
 
-            if (mouse_clicked and item_hovered) {
-                const old_type = palette.mode;
-                switch (palette.mode) {
-                    .files => {
-                        ui_model.pending_intents.append(ui_model.gpa_allocator, .{ .go_to_image = real_idx }) catch |err| {
-                            std.log.err("Failed to push go_to_image intent: {}", .{err});
-                        };
-                        palette.mode = .inactive;
-                        stopTextInput(ui_model.display.*);
-                    },
-                    .actions => {
-                        const item = types.palette_action_items[real_idx];
-                        ui_model.pending_intents.append(ui_model.gpa_allocator, item.intent) catch |err| {
-                            std.log.err("Failed to push action intent: {}", .{err});
-                        };
-                        if (palette.mode == old_type) {
-                            palette.mode = .inactive;
-                            stopTextInput(ui_model.display.*);
-                        }
-                    },
-                    .directory_navigator => {
-                        if (real_idx < palette.dir_items.items.len) {
-                            const entry = palette.dir_items.items[real_idx];
-                            const path_copy = try frame_allocator.dupe(u8, entry.getFullPath());
-                            try ui_model.pending_intents.append(ui_model.gpa_allocator, .{
-                                .set_palette = .{ .mode = .directory_navigator, .query = path_copy },
-                            });
-                        }
-                    },
-                    else => {},
-                }
-            }
-
             match_count += 1;
         }
 
@@ -872,7 +833,6 @@ fn renderDirectoryLegend() void {
 
 pub fn renderPalette(
     ui_model: UiViewModel,
-    mouse_clicked: bool,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
 ) !void {
@@ -919,7 +879,7 @@ pub fn renderPalette(
         if (palette.mode.isTextInputDialog()) {
             try renderTextInputDialog(ui_model, frame_allocator, measure_data);
         } else {
-            try renderSelectionList(ui_model, cfg, mouse_clicked, frame_allocator, measure_data);
+            try renderSelectionList(ui_model, cfg, frame_allocator, measure_data);
         }
 
         // Footer Legend for Directory Navigator

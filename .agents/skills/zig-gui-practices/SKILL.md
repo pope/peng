@@ -21,6 +21,7 @@ ______________________________________________________________________
 - **[Systems Architecture & Execution Rules](references/systems-architecture.md)**
 
   - 3-Phase frame loop: Ingestion (1) -> Systems Update Phase (2) -> Render (3).
+  - Read-only `UiViewModel` snapshot barrier between Phase 2 and Phase 3 with zero state mutations in render.
   - System lifetime bound to single frame iteration via `FrameContext` (`frame_allocator`).
   - Strict prohibition of direct inter-system calls (intent-driven communication).
 

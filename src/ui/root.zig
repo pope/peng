@@ -9,7 +9,6 @@ pub const layout = @import("layout.zig");
 pub const palette = @import("palette.zig");
 pub const palette_items = @import("palette_items.zig");
 pub const palette_scroll = @import("palette_scroll.zig");
-pub const palette_layout = @import("palette_layout.zig");
 pub const stats = @import("stats.zig");
 pub const graphics = @import("graphics.zig");
 pub const units = @import("units.zig");
@@ -26,7 +25,6 @@ test {
     _ = palette;
     _ = palette_items;
     _ = palette_scroll;
-    _ = palette_layout;
     _ = stats;
     _ = graphics;
     _ = units;

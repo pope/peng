@@ -18,6 +18,8 @@ pub const cache = @import("cache.zig");
 pub const ipc = @import("ipc.zig");
 pub const input = @import("input.zig");
 pub const palette_input = @import("palette_input.zig");
+pub const window = @import("window.zig");
+pub const ui_interactions = @import("ui_interactions.zig");
 
 pub const sysExecuteIntents = intents.sysExecuteIntents;
 pub const sysUpdateSlideshow = slideshow.sysUpdateSlideshow;
@@ -28,6 +30,8 @@ pub const sysUpdateCache = cache.sysUpdateCache;
 pub const sysExecuteIpcCommands = ipc.sysExecuteIpcCommands;
 pub const sysProcessInput = input.sysProcessInput;
 pub const sysProcessPaletteInput = palette_input.sysProcessPaletteInput;
+pub const sysSyncWindow = window.sysSyncWindow;
+pub const sysProcessUiInteractions = ui_interactions.sysProcessUiInteractions;
 
 test {
     _ = intents;
@@ -39,4 +43,6 @@ test {
     _ = ipc;
     _ = input;
     _ = palette_input;
+    _ = window;
+    _ = ui_interactions;
 }

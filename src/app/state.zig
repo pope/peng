@@ -7,12 +7,11 @@ const types = state_pkg.types;
 const FrameInput = types.FrameInput;
 const app_input = @import("input");
 const image = @import("core/image.zig");
-const fs = @import("fs.zig");
 const core_fs = @import("core/fs.zig");
 const events = @import("core/events.zig");
 const ipc = @import("ipc");
 const exif = @import("core/exif.zig");
-const systems = @import("systems.zig");
+const systems = @import("systems/root.zig");
 const workers_mod = @import("workers/root.zig");
 
 const view_transform = state_pkg.view_transform;
@@ -537,16 +536,16 @@ pub const AppState = struct {
 
         if (has_stat) {
             if (stat.kind == .directory) {
-                try fs.startAsyncPathScan(self, path, true);
+                try workers_mod.startAsyncPathScan(self, path, true);
             } else if (core_fs.isCbzFile(path)) {
                 self.viewer.navigation.is_loading_files.store(true, .release);
-                try fs.startAsyncPathScan(self, path, false);
+                try workers_mod.startAsyncPathScan(self, path, false);
             } else {
                 const dup = try self.viewer.navigation.directory_arena.allocator().dupe(u8, path);
                 try self.viewer.navigation.image_list.append(self.allocator, .{ .filesystem = .{ .path = dup } });
                 self.viewer.navigation.current_index = 0;
 
-                try fs.startAsyncPathScan(self, path, false);
+                try workers_mod.startAsyncPathScan(self, path, false);
             }
         }
         try self.rebuildPaletteMatches();

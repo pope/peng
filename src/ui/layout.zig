@@ -23,9 +23,12 @@ pub fn renderFrame(
     ui_model: UiViewModel,
     gpu_res: *RenderResources,
     input: FrameInput,
+    gpa_allocator: std.mem.Allocator,
     frame_allocator: std.mem.Allocator,
     fonts: []const ?sdl.Font,
     measure_data: *MeasureTextUserData,
+    target_window: ?sdl.Window,
+    render_metrics: ?*types.UiRenderMetrics,
     capture_filename: ?[:0]const u8,
 ) !void {
     const width = input.win_w;
@@ -101,7 +104,6 @@ pub fn renderFrame(
     })({
         try renderPalette(
             ui_model,
-            input.mouse_left_clicked,
             frame_allocator,
             measure_data,
         );
@@ -153,7 +155,7 @@ pub fn renderFrame(
         }
     }
 
-    const use_headless = !ui_model.display.isClaimed();
+    const use_headless = (target_window == null);
 
     var target_tex: ?sdl.gpu.Texture = null;
     var target_w: u32 = 0;
@@ -183,16 +185,12 @@ pub fn renderFrame(
     } else {
         var swap_w: u32 = 0;
         var swap_h: u32 = 0;
-        switch (ui_model.display.*) {
-            .headless => {},
-            .windowed => |win| {
-                if (win.handle.waitAndAcquireSwapchainTexture(cmd_wrapper, &swap_w, &swap_h)) |swap_tex| {
-                    target_tex = swap_tex;
-                    target_w = swap_w;
-                    target_h = swap_h;
-                    target_format = dev.getSwapchainTextureFormat(win.handle);
-                }
-            },
+        const win = target_window.?;
+        if (win.waitAndAcquireSwapchainTexture(cmd_wrapper, &swap_w, &swap_h)) |swap_tex| {
+            target_tex = swap_tex;
+            target_w = swap_w;
+            target_h = swap_h;
+            target_format = dev.getSwapchainTextureFormat(win);
         }
     }
 
@@ -218,14 +216,14 @@ pub fn renderFrame(
             tex,
             fonts,
             render_commands,
-            ui_model.gpa_allocator,
+            gpa_allocator,
             frame_allocator,
             &temp_buffers,
             @intCast(target_w),
             @intCast(target_h),
             scale_x,
             scale_y,
-            ui_model.metrics,
+            render_metrics,
         );
         if (capture_filename) |filename| {
             cmd_buf_submitted = true;
@@ -257,49 +255,6 @@ pub fn renderFrame(
     }
 }
 
-pub fn updateWindowTitle(
-    ui_model: UiViewModel,
-    frame_allocator: std.mem.Allocator,
-) []const u8 {
-    var raw_title: []const u8 = "Peng Image Viewer";
-    const total_images = ui_model.total_images;
-    if (total_images > 0) {
-        if (ui_model.current_index) |idx| {
-            if (idx < ui_model.image_list.len) {
-                raw_title = ui_model.image_list[idx].getBasename();
-            }
-        }
-    }
-
-    switch (ui_model.display.*) {
-        .windowed => |*win| {
-            const title_changed = if (win.cached_title) |cached|
-                !std.mem.eql(u8, cached, raw_title)
-            else
-                true;
-
-            if (title_changed) {
-                if (frame_allocator.dupeZ(u8, raw_title)) |tz| {
-                    win.handle.setTitle(tz);
-                } else |err| {
-                    std.log.err("Failed to allocate window title string: {}", .{err});
-                }
-
-                if (win.cached_title) |cached| {
-                    ui_model.gpa_allocator.free(cached);
-                }
-                win.cached_title = ui_model.gpa_allocator.dupe(u8, raw_title) catch |err| blk: {
-                    std.log.err("Failed to update cached window title: {}", .{err});
-                    break :blk null;
-                };
-            }
-        },
-        else => {},
-    }
-
-    return raw_title;
-}
-
 pub fn renderHeaderBar(
     ui_model: UiViewModel,
     available_width: f32,
@@ -309,7 +264,7 @@ pub fn renderHeaderBar(
 ) !void {
     if (ui_model.is_fullscreen) return;
 
-    const raw_title = updateWindowTitle(ui_model, frame_allocator);
+    const raw_title = ui_model.window_title;
 
     const is_loading = ui_model.is_loading_files;
     const total_images = ui_model.total_images;

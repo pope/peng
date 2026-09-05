@@ -486,11 +486,28 @@ pub const RenderStats = struct {
     }
 };
 
+pub const UiRenderMetricsSnapshot = struct {
+    mean_render_time_ms: f64 = 0.0,
+    stdev_render_time_ms: f64 = 0.0,
+    last_ui_vertex_count: usize = 0,
+    last_ui_batch_count: usize = 0,
+};
+
 pub const UiRenderMetrics = struct {
     last_ui_render_time_ms: f64 = 0.0,
     ui_render_stats: RenderStats = .{},
     last_ui_vertex_count: usize = 0,
     last_ui_batch_count: usize = 0,
+
+    pub fn toSnapshot(self: UiRenderMetrics) UiRenderMetricsSnapshot {
+        const stats = self.ui_render_stats.getMeanAndStdev();
+        return .{
+            .mean_render_time_ms = stats.mean,
+            .stdev_render_time_ms = stats.stdev,
+            .last_ui_vertex_count = self.last_ui_vertex_count,
+            .last_ui_batch_count = self.last_ui_batch_count,
+        };
+    }
 };
 
 pub const CpuSurfaceComponent = struct {
@@ -673,19 +690,12 @@ pub const UiViewModel = struct {
     slideshow: SlideshowMode = .inactive,
     manga_mode: bool = false,
     overlays: OverlayState,
-    metrics: *UiRenderMetrics,
+    window_title: []const u8 = "Peng Image Viewer",
     viewport: ViewportParams,
-    palette: *palette_state.PaletteState,
-    display: *DisplayState,
-    total_vram_bytes: usize = 0,
-    cached_slot_count: usize = 0,
-    gpa_allocator: std.mem.Allocator,
-    io: std.Io,
-    cache_slot_map: *anyopaque,
-    navigation: *anyopaque,
-    pending_intents: *std.ArrayList(intents.AppIntent),
+    palette: *const palette_state.PaletteState,
     debug_show_thumb: bool,
     stats: ViewerStats = .{},
+    render_metrics: UiRenderMetricsSnapshot = .{},
 };
 
 pub const MeasureTextUserData = struct {

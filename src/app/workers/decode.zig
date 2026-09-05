@@ -1,6 +1,5 @@
 const std = @import("std");
 const sdl = @import("sdl");
-const fs = @import("../fs.zig");
 const core_fs = @import("../core/fs.zig");
 const image = @import("../core/image.zig");
 const exif = @import("../core/exif.zig");
@@ -186,6 +185,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
             var reader = file.reader(io, &r_buf);
             reader.interface.readSliceAll(file_bytes) catch |err| {
                 alloc.free(file_bytes);
+                if (err == error.Canceled or workers.exiting.load(.acquire)) return;
                 failDecodeWorker(workers, alloc, io, key, "decodeWorker: readSliceAll failed for '{s}': {}", .{ file_item.path, err });
                 return;
             };

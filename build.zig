@@ -149,7 +149,6 @@ pub fn build(b: *std.Build) void {
     ui_module.addImport("state", state_module);
     ui_module.addImport("ipc", ipc_module);
 
-    config_module.addImport("app", app_module);
     config_module.addImport("intents", intents_module);
 
     const viewer_lib = b.addLibrary(.{

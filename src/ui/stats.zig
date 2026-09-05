@@ -406,10 +406,10 @@ pub fn renderStatsOverlay(
         try renderStatRow("Mipmap Status", mipmap_status_str);
         try renderStatRow("Mipmap Gen", mipmap_time_str);
 
-        const render_stats = ui_model.metrics.ui_render_stats.getMeanAndStdev();
-        const ui_render_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ± {d:.2} ms", .{ render_stats.mean, render_stats.stdev });
-        const ui_batches_str = try std.fmt.allocPrint(frame_allocator, "{d}", .{ui_model.metrics.last_ui_batch_count});
-        const ui_verts_str = try std.fmt.allocPrint(frame_allocator, "{d}", .{ui_model.metrics.last_ui_vertex_count});
+        const rm = ui_model.render_metrics;
+        const ui_render_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ± {d:.2} ms", .{ rm.mean_render_time_ms, rm.stdev_render_time_ms });
+        const ui_batches_str = try std.fmt.allocPrint(frame_allocator, "{d}", .{rm.last_ui_batch_count});
+        const ui_verts_str = try std.fmt.allocPrint(frame_allocator, "{d}", .{rm.last_ui_vertex_count});
         try renderStatRow("UI Render Pass", ui_render_str);
         try renderStatRow("UI Batches", ui_batches_str);
         try renderStatRow("UI Vertices", ui_verts_str);

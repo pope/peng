@@ -74,13 +74,13 @@ Start the image viewer by passing a file or directory path:
 
 ### CLI Flags
 
-| Flag                 | Argument                                                   | Description                                             |
-| :------------------- | :--------------------------------------------------------- | :------------------------------------------------------ |
+| Flag                 | Argument                                                    | Description                                             |
+| :------------------- | :---------------------------------------------------------- | :------------------------------------------------------ |
 | `--scale`            | `none`, `shrink`, `full`, `crop`, `fit_width`, `fit_height` | Sets the default image scaling/fitting mode.            |
-| `--headless`         | None                                                       | Runs without opening an OS display window.              |
-| `--test-mode`        | None                                                       | Puts the window and event loop into test configuration. |
-| `--update-baselines` | None                                                       | Overwrites baseline golden screenshots.                 |
-| `--ipc`              | None                                                       | Enables the IPC UNIX Domain Socket server.              |
+| `--headless`         | None                                                        | Runs without opening an OS display window.              |
+| `--test-mode`        | None                                                        | Puts the window and event loop into test configuration. |
+| `--update-baselines` | None                                                        | Overwrites baseline golden screenshots.                 |
+| `--ipc`              | None                                                        | Enables the IPC UNIX Domain Socket server.              |
 
 ______________________________________________________________________
 

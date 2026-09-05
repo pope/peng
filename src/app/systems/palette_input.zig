@@ -229,7 +229,13 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
 
     if (self.viewer.ui.palette.mode == .inactive) return false;
 
-    // 1. Text Typing Query Updates
+    // 1. Keyboard Navigation Keys
+    for (input.keys_pressed.items) |key| {
+        _ = try handlePaletteKeys(self, key, input.key_modifiers);
+    }
+    if (self.viewer.ui.palette.mode == .inactive) return true;
+
+    // 2. Text Typing Query Updates
     if (input.text_input) |text| {
         try self.viewer.ui.palette.query.appendSlice(self.allocator, text);
         self.viewer.ui.palette.selected_idx = 0;
@@ -242,24 +248,74 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
         }
     }
 
-    // 2. Click-Outside Dismissal
+    // 3. Selection Scrolling Synchronization
+    if (self.viewer.ui.palette.selection_dirty) {
+        const cfg = state_pkg.getPaletteConfig(self.viewer.ui.palette.mode);
+        const scroll_data = clay.cdefs.Clay_GetScrollContainerData(clay.getElementId(cfg.list_id));
+        if (scroll_data.found) {
+            const item_height = cfg.base_item_height;
+            const viewport_height = 320.0;
+            const item_top = @as(f32, @floatFromInt(self.viewer.ui.palette.selected_idx)) * item_height;
+            const item_bottom = item_top + item_height;
+            const visible_top = -scroll_data.scroll_position.y;
+            const visible_bottom = visible_top + viewport_height;
+
+            if (item_top < visible_top) {
+                scroll_data.scroll_position.y = -item_top;
+            } else if (item_bottom > visible_bottom) {
+                scroll_data.scroll_position.y = -(item_bottom - viewport_height);
+            }
+            self.viewer.ui.palette.selection_dirty = false;
+        }
+    }
+
+    // 4. Mouse Pointer & Click Processing
     var palette_closed_this_frame = false;
     if (input.mouse_left_clicked) {
         const is_in_debug_panel = input.isPointerInDebugPanel();
-        const element_id = switch (self.viewer.ui.palette.mode) {
-            .files => "CommandPalette",
-            .actions => "ActionPalette",
-            .set_brightness => "BrightnessPalette",
-            .set_contrast => "ContrastPalette",
-            .go_to_image => "GoToImagePalette",
-            .directory_navigator => "DirectoryNavigatorPalette",
-            .set_slideshow_interval => "SlideshowPalette",
-            .inactive => unreachable,
-        };
-        if (!clay.pointerOver(clay.getElementId(element_id)) and !is_in_debug_panel) {
+        const cfg = state_pkg.getPaletteConfig(self.viewer.ui.palette.mode);
+
+        if (!clay.pointerOver(clay.getElementId(cfg.element_id)) and !is_in_debug_panel) {
             self.viewer.ui.palette.mode = .inactive;
             stopTextInput(self.viewer.display);
             palette_closed_this_frame = true;
+        } else if (!is_in_debug_panel) {
+            // Check if a list item was clicked
+            for (self.viewer.ui.palette.matches.items) |real_idx| {
+                var item_id_buf: [64]u8 = undefined;
+                const item_id_str = std.fmt.bufPrint(&item_id_buf, "{s}{}", .{ cfg.item_prefix, real_idx }) catch cfg.item_prefix;
+                if (clay.pointerOver(clay.getElementId(item_id_str))) {
+                    const old_type = self.viewer.ui.palette.mode;
+                    switch (self.viewer.ui.palette.mode) {
+                        .files => {
+                            try self.pushIntent(.{ .go_to_image = real_idx });
+                            self.viewer.ui.palette.mode = .inactive;
+                            stopTextInput(self.viewer.display);
+                            palette_closed_this_frame = true;
+                        },
+                        .actions => {
+                            const item = state_pkg.palette_action_items[real_idx];
+                            try self.pushIntent(item.intent);
+                            if (self.viewer.ui.palette.mode == old_type) {
+                                self.viewer.ui.palette.mode = .inactive;
+                                stopTextInput(self.viewer.display);
+                                palette_closed_this_frame = true;
+                            }
+                        },
+                        .directory_navigator => {
+                            if (real_idx < self.viewer.ui.palette.dir_items.items.len) {
+                                const entry = self.viewer.ui.palette.dir_items.items[real_idx];
+                                const path_copy = try ctx.frame_allocator.dupe(u8, entry.getFullPath());
+                                try self.pushIntent(.{
+                                    .set_palette = .{ .mode = .directory_navigator, .query = path_copy },
+                                });
+                            }
+                        },
+                        else => {},
+                    }
+                    break;
+                }
+            }
         }
     }
 

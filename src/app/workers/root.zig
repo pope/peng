@@ -114,6 +114,46 @@ pub fn spawnIpcServer(state: *app_state.AppState) !void {
     state.workers.group.async(state.io, ipc_server.ipcServerWorkerTask, .{args});
 }
 
+pub fn readPipedStdin(state: *app_state.AppState, io: std.Io, gpa: std.mem.Allocator) !void {
+    const is_stdin_piped = !(std.Io.File.stdin().isTty(io) catch false);
+    if (is_stdin_piped) {
+        const args = try gpa.create(StdinArgs);
+        errdefer gpa.destroy(args);
+
+        args.* = .{
+            .workers = &state.workers,
+            .allocator = gpa,
+            .io = io,
+            .is_loading_files = &state.viewer.navigation.is_loading_files,
+        };
+
+        errdefer state.viewer.navigation.is_loading_files.store(false, .release);
+
+        try spawnStdin(args);
+    }
+}
+
+pub fn startAsyncPathScan(state: *app_state.AppState, path: []const u8, is_dir: bool) !void {
+    const dup_path = try state.allocator.dupe(u8, path);
+    errdefer state.allocator.free(dup_path);
+
+    const args = try state.allocator.create(PathScanArgs);
+    errdefer state.allocator.destroy(args);
+
+    args.* = .{
+        .workers = &state.workers,
+        .allocator = state.allocator,
+        .io = state.io,
+        .target_path = dup_path,
+        .is_dir = is_dir,
+        .is_loading_files = &state.viewer.navigation.is_loading_files,
+    };
+
+    errdefer state.viewer.navigation.is_loading_files.store(false, .release);
+
+    try spawnPathScan(args);
+}
+
 test {
     _ = context;
     _ = decode;

@@ -8,14 +8,16 @@ All system functions under `src/app/systems/` in `peng-sys` must strictly comply
   - Systems run exclusively during Phase 2 (`runUpdatePhase`) of the 3-phase frame loop tick in `src/viewer.zig` (`Worker Ingestion` -> `Update Phase (runUpdatePhase)` -> `Render Phase`).
   - Never add out-of-band system calls inside state mutation methods (`AppState`) or input event handlers.
   - The system passes execute sequentially in deterministic order:
-    1. `sysExecuteIpcCommands(ctx)`: Ingests & dispatches IPC socket commands -> `pending_intents`.
-    2. `sysProcessInput(ctx)`: Maps keyboard input -> `pending_intents`.
-    3. `sysProcessPaletteInput(ctx)`: Handles command palette query & selection -> `pending_intents`.
-    4. `sysUpdateViewport(ctx, palette_closed)` & `sysUpdateSlideshow(ctx)`: Updates motion/timers -> `pending_intents`.
-    5. `sysExecuteIntents(ctx)`: Single-pass execution of all enqueued discrete intents.
-    6. `sysProcessAssetUploads(ctx)`: Performs EXIF orientation & GPU texture uploads.
-    7. `sysUpdateCache(ctx)`: Manages slot eviction, decodes & performs idle neighbor preloading.
-    8. `sysSyncMetrics(ctx)`: Synchronizes telemetry & stats for Nerds overlay.
+    01. `sysExecuteIpcCommands(ctx)`: Ingests & dispatches IPC socket commands -> `pending_intents`.
+    02. `sysProcessPaletteInput(ctx)`: Handles command palette query, item selection & click-outside -> `pending_intents`.
+    03. `sysProcessInput(ctx)`: Maps keyboard input & file drop events -> `pending_intents`.
+    04. `sysProcessUiInteractions(ctx)`: Resolves pointer hover/click interactions for UI close buttons -> `pending_intents`.
+    05. `sysUpdateViewport(ctx, palette_closed)` & `sysUpdateSlideshow(ctx)`: Updates motion deltas & slideshow timers -> `pending_intents`.
+    06. `sysSyncWindow(ctx)`: Synchronizes OS window title and display fullscreen/state.
+    07. `sysExecuteIntents(ctx)`: Single-pass execution of all enqueued discrete intents.
+    08. `sysProcessAssetUploads(ctx)`: Performs EXIF orientation & GPU texture uploads.
+    09. `sysUpdateCache(ctx)`: Manages slot eviction, decodes & performs idle neighbor preloading.
+    10. `sysSyncMetrics(ctx)`: Synchronizes telemetry & stats for Nerds overlay.
 
 ______________________________________________________________________
 
@@ -54,3 +56,13 @@ ______________________________________________________________________
   - Every system pass entry point (`sysXxx`) must feature a standardized Zig docstring (`/// System Pass: ...`).
   - System pass docstrings must detail numbered `Responsibilities:` (e.g. 1. Ingest input, 2. Filter matches, 3. Rebuild overlays).
   - Internal helper functions must document `Pre-conditions:`, `Parameters:`, return value contracts, and memory ownership / `errdefer` cleanup rules.
+
+______________________________________________________________________
+
+## Pure Presentation & Read-Only View Snapshots
+
+- **Rule 6 — Game-Engine View Model Snapshot Invariant**:
+  - The frame lifecycle enforces a strict barrier between simulation/systems (Phase 2) and rendering (Phase 3).
+  - Prior to calling `ui.layout.renderFrame`, construct `UiViewModel` as a fully immutable snapshot struct containing const pointers and value types.
+  - UI layout evaluation and vertex generation MUST NOT mutate `AppState` or push intents.
+  - Any interactive element (e.g. palette search clicks, overlay close buttons) must have its hit testing and intent dispatch evaluated during Phase 2 system passes (`sysProcessPaletteInput`, `sysProcessUiInteractions`).
