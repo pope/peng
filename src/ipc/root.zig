@@ -247,6 +247,12 @@ test "IpcCommand parsing" {
     const cmd_filter = try IpcCommand.parse("filter mitchell");
     try std.testing.expectEqual(TextureScaleMode.mitchell, cmd_filter.filter);
 
+    const cmd_lanczos3 = try IpcCommand.parse("filter lanczos3");
+    try std.testing.expectEqual(TextureScaleMode.lanczos3, cmd_lanczos3.filter);
+
+    const cmd_lanczos3_spline = try IpcCommand.parse("filter lanczos3_spline");
+    try std.testing.expectEqual(TextureScaleMode.lanczos3_spline, cmd_lanczos3_spline.filter);
+
     const cmd_next = try IpcCommand.parse("next");
     try std.testing.expectEqual(IpcCommand.next, cmd_next);
 

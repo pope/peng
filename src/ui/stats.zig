@@ -238,6 +238,7 @@ pub fn renderInfoOverlay(
             .pixel_art => "Pixel Art Scaling",
             .mitchell => "Mitchell-Netravali",
             .lanczos3 => "Lanczos3 Resampler",
+            .lanczos3_spline => "Lanczos3 Spline Resampler",
         };
         try renderStatRow("Scaling Filter", filter_str);
 

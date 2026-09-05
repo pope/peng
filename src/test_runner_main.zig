@@ -383,6 +383,8 @@ pub fn main(init: std.process.Init) !void {
 
     // 4. Action Palette
     {
+        try sendCommand(socket_path, "filter lanczos3");
+        try sendCommand(socket_path, "filter lanczos3_spline");
         try sendCommand(socket_path, "filter linear");
         try sendCommand(socket_path, "palette action");
         const capture_path = try std.fmt.allocPrint(gpa, "{s}/test_4_action_palette.png", .{if (update_baselines) base_dir else run_dir});

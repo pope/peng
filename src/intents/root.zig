@@ -3,6 +3,8 @@
 //! Defines high-level application intents, scaling modes, palette modes,
 //! and command payloads without depending on UI, hardware, or state structs.
 
+const std = @import("std");
+
 /// Image viewport scaling and fitting modes.
 pub const ScaleMode = enum {
     none,
@@ -20,6 +22,7 @@ pub const TextureScaleMode = enum {
     pixel_art,
     mitchell,
     lanczos3,
+    lanczos3_spline,
 
     /// Maps the enum variant to the integer sampler index expected by fragment shaders.
     pub fn toScaleModeInt(self: TextureScaleMode) i32 {
@@ -29,6 +32,7 @@ pub const TextureScaleMode = enum {
             .pixel_art => 2,
             .mitchell => 3,
             .lanczos3 => 4,
+            .lanczos3_spline => 5,
         };
     }
 };
@@ -132,3 +136,12 @@ pub const AppIntent = union(enum) {
     // Application lifecycle
     quit,
 };
+
+test "TextureScaleMode - toScaleModeInt mapping" {
+    try std.testing.expectEqual(@as(i32, 0), TextureScaleMode.nearest.toScaleModeInt());
+    try std.testing.expectEqual(@as(i32, 1), TextureScaleMode.linear.toScaleModeInt());
+    try std.testing.expectEqual(@as(i32, 2), TextureScaleMode.pixel_art.toScaleModeInt());
+    try std.testing.expectEqual(@as(i32, 3), TextureScaleMode.mitchell.toScaleModeInt());
+    try std.testing.expectEqual(@as(i32, 4), TextureScaleMode.lanczos3.toScaleModeInt());
+    try std.testing.expectEqual(@as(i32, 5), TextureScaleMode.lanczos3_spline.toScaleModeInt());
+}

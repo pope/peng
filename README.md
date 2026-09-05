@@ -111,9 +111,10 @@ You can send commands to a running instance using the `peng-msg` utility:
 # Adjust brightness and contrast
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock adjust 0.2 -0.1
 
-# Apply Resampling Filter (mitchell, lanczos3, linear, pixel_art)
+# Apply Resampling Filter (mitchell, lanczos3, lanczos3_spline, linear, pixel_art)
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock filter mitchell
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock filter lanczos3
+./zig-out/bin/peng-msg /tmp/peng-1234.sock filter lanczos3_spline
 
 # Navigation
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock next

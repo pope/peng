@@ -261,6 +261,7 @@ pub const ViewportParams = struct {
             .pixel_art => 2,
             .mitchell => 3,
             .lanczos3 => 4,
+            .lanczos3_spline => 5,
         };
     }
 };
@@ -372,6 +373,7 @@ pub const palette_action_items = [_]ActionMetadata{
     .{ .name = "Set Scaling Filter: Pixel Art (Crisp)", .shortcut_text = "", .show_in_palette = true, .shortcuts = &.{}, .intent = .{ .set_filter = .pixel_art } },
     .{ .name = "Set Scaling Filter: Mitchell-Netravali (HQ Bicubic)", .shortcut_text = "", .show_in_palette = true, .shortcuts = &.{}, .intent = .{ .set_filter = .mitchell } },
     .{ .name = "Set Scaling Filter: Lanczos3 (Ultra HQ Resampler)", .shortcut_text = "", .show_in_palette = true, .shortcuts = &.{}, .intent = .{ .set_filter = .lanczos3 } },
+    .{ .name = "Set Scaling Filter: Lanczos3 Spline (Fast FMA Resampler)", .shortcut_text = "", .show_in_palette = true, .shortcuts = &.{}, .intent = .{ .set_filter = .lanczos3_spline } },
     .{ .name = "Increase Brightness (+10%)", .shortcut_text = "P", .show_in_palette = true, .shortcuts = &.{.{ .key = .char_p }}, .intent = .increase_brightness },
     .{ .name = "Decrease Brightness (-10%)", .shortcut_text = "O", .show_in_palette = true, .shortcuts = &.{.{ .key = .char_o }}, .intent = .decrease_brightness },
     .{ .name = "Increase Contrast (+10%)", .shortcut_text = "L", .show_in_palette = true, .shortcuts = &.{.{ .key = .char_l }}, .intent = .increase_contrast },
@@ -863,4 +865,16 @@ test "FrameInput.pixMouseX and pixMouseY scale mouse position by display scale f
     };
     try std.testing.expectEqual(@as(f32, 300.0), input.pixMouseX());
     try std.testing.expectEqual(@as(f32, 500.0), input.pixMouseY());
+}
+
+test "ViewportParams.getShaderScaleModeInt maps filters including lanczos3 and lanczos3_spline" {
+    var params = ViewportParams{};
+    params.texture_scale_mode = .lanczos3;
+    try std.testing.expectEqual(@as(i32, 4), params.getShaderScaleModeInt());
+
+    params.texture_scale_mode = .lanczos3_spline;
+    try std.testing.expectEqual(@as(i32, 5), params.getShaderScaleModeInt());
+
+    params.scale_filter = .mitchell;
+    try std.testing.expectEqual(@as(i32, 3), params.getShaderScaleModeInt());
 }
