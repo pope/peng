@@ -56,6 +56,7 @@ fn spawnCacheDecodeSlot(state: *AppState, index: usize, entry_item: MediaEntry, 
         .has_gpu_device = state.gpu_device != null,
         .pixel_format = state.viewer.display.getPixelFormat(),
         .thumb_only = thumb_only,
+        .current_generation = &state.cache.generation,
     };
 
     try workers_mod.spawnDecode(args);

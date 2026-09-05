@@ -443,7 +443,7 @@ pub const AppState = struct {
             &self.workers,
             self.allocator,
             self.io,
-            self.viewer.ui.palette.dir_scan_generation,
+            &self.viewer.ui.palette.dir_scan_generation,
             self.viewer.ui.palette.dir_items.items,
         );
     }

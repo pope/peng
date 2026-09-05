@@ -45,7 +45,7 @@ pub fn loadDirectoryEntries(self: *PaletteState, io: std.Io, dir_path: []const u
     self.last_nav_dir.clearRetainingCapacity();
     try self.last_nav_dir.appendSlice(self.allocator, dir_path_copy);
 
-    self.dir_scan_generation +%= 1;
+    _ = self.dir_scan_generation.fetchAdd(1, .release);
 
     self.clearDirItems();
     self.current_dir_image_count = core_fs.scanDirectoryEntries(self.allocator, io, dir_path_copy, &self.dir_items) catch |err| blk: {

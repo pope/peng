@@ -35,7 +35,7 @@ pub fn drainWorkerEvents(state: *AppState) bool {
             .directory_scan_result => |res| handleDirectoryScanResultEvent(state, res),
             .directory_scan_complete => {},
             .palette_folder_count => |cnt| {
-                if (cnt.generation == state.viewer.ui.palette.dir_scan_generation) {
+                if (cnt.generation == state.viewer.ui.palette.dir_scan_generation.load(.acquire)) {
                     for (state.viewer.ui.palette.dir_items.items) |*item| {
                         if (std.mem.eql(u8, item.getFullPath(), cnt.path)) {
                             switch (item.*) {
@@ -452,7 +452,7 @@ test "drainWorkerEvents - palette_folder_count updates directory and archive ent
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    state.viewer.ui.palette.dir_scan_generation = 1;
+    state.viewer.ui.palette.dir_scan_generation.store(1, .release);
 
     const dir_name = try allocator.dupe(u8, "folder_a");
     const dir_path = try allocator.dupe(u8, "/path/to/folder_a");

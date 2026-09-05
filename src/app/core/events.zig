@@ -165,6 +165,12 @@ pub fn MpscQueue(comptime T: type) type {
             try out_list.appendSlice(allocator, self.items.items);
             self.items.clearRetainingCapacity();
         }
+
+        /// Pops the last queued item from the queue without thread synchronization. Intended for single-threaded testing.
+        pub fn pop(self: *Self) ?T {
+            if (self.items.items.len == 0) return null;
+            return self.items.pop();
+        }
     };
 }
 

@@ -12,6 +12,7 @@ pub const PaletteScanArgs = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     generation: usize,
+    current_generation: *const std.atomic.Value(usize),
     paths: [][]const u8,
 };
 
@@ -33,11 +34,11 @@ pub fn paletteScanWorker(args: *PaletteScanArgs) void {
     }
 
     for (args.paths) |path| {
-        if (workers.exiting.load(.acquire)) return;
+        if (workers.exiting.load(.acquire) or args.current_generation.load(.acquire) != args.generation) return;
 
         const counts = core_fs.countFolderContents(io, path);
 
-        if (workers.exiting.load(.acquire)) return;
+        if (workers.exiting.load(.acquire) or args.current_generation.load(.acquire) != args.generation) return;
 
         const path_dup = gpa.dupe(u8, path) catch |err| {
             std.log.err("Failed to duplicate path for palette_folder_count '{s}': {}", .{ path, err });
@@ -59,13 +60,15 @@ pub fn paletteScanWorker(args: *PaletteScanArgs) void {
     }
 }
 
+const events = @import("../core/events.zig");
+
 /// Filters unscanned directory and archive items, duplicates their full paths, allocates task arguments,
 /// and dispatches the asynchronous background palette scan task.
 pub fn spawnPaletteScanForItems(
     workers: *WorkerManager,
     gpa: std.mem.Allocator,
     io: std.Io,
-    generation: usize,
+    current_generation: *const std.atomic.Value(usize),
     items: []const DirectoryEntry,
 ) !void {
     if (items.len == 0) return;
@@ -106,7 +109,8 @@ pub fn spawnPaletteScanForItems(
         .workers = workers,
         .allocator = gpa,
         .io = io,
-        .generation = generation,
+        .generation = current_generation.load(.acquire),
+        .current_generation = current_generation,
         .paths = paths,
     };
 
@@ -126,22 +130,30 @@ test "paletteScanWorker - counts directory contents and pushes events" {
     const paths = try allocator.alloc([]const u8, 1);
     paths[0] = dir_path;
 
+    var current_gen: std.atomic.Value(usize) = .init(42);
     const args = try allocator.create(PaletteScanArgs);
     args.* = .{
         .workers = &workers,
         .allocator = allocator,
         .io = io,
         .generation = 42,
+        .current_generation = &current_gen,
         .paths = paths,
     };
 
     _ = workers.active_threads.fetchAdd(1, .monotonic);
     paletteScanWorker(args);
 
+    var batch: std.ArrayList(events.BackgroundEvent) = .empty;
+    defer {
+        for (batch.items) |*ev| ev.deinit(allocator);
+        batch.deinit(allocator);
+    }
+    try workers.event_queue.drain(allocator, io, &batch);
+
     var event_seen = false;
-    while (workers.event_queue.pop()) |*ev| {
-        defer ev.deinit(allocator);
-        switch (ev.*) {
+    for (batch.items) |ev| {
+        switch (ev) {
             .palette_folder_count => |cnt| {
                 event_seen = true;
                 try std.testing.expectEqual(@as(usize, 42), cnt.generation);
@@ -152,4 +164,41 @@ test "paletteScanWorker - counts directory contents and pushes events" {
         }
     }
     try std.testing.expect(event_seen);
+}
+
+test "paletteScanWorker - prunes early when current_generation increments" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var workers = WorkerManager{};
+    defer workers.group.wait(io);
+
+    const test_dir = "testfiles/images";
+    const dir_path = try allocator.dupe(u8, test_dir);
+
+    const paths = try allocator.alloc([]const u8, 1);
+    paths[0] = dir_path;
+
+    var current_gen: std.atomic.Value(usize) = .init(43);
+    const args = try allocator.create(PaletteScanArgs);
+    args.* = .{
+        .workers = &workers,
+        .allocator = allocator,
+        .io = io,
+        .generation = 42,
+        .current_generation = &current_gen,
+        .paths = paths,
+    };
+
+    _ = workers.active_threads.fetchAdd(1, .monotonic);
+    paletteScanWorker(args);
+
+    var batch: std.ArrayList(events.BackgroundEvent) = .empty;
+    defer {
+        for (batch.items) |*ev| ev.deinit(allocator);
+        batch.deinit(allocator);
+    }
+    try workers.event_queue.drain(allocator, io, &batch);
+
+    try std.testing.expectEqual(@as(usize, 0), batch.items.len);
 }

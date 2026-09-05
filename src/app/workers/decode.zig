@@ -21,6 +21,7 @@ pub const DecodeArgs = struct {
     has_gpu_device: bool,
     pixel_format: u32,
     thumb_only: bool = false,
+    current_generation: *const std.atomic.Value(usize),
 };
 
 fn failDecodeWorker(workers: *WorkerManager, alloc: std.mem.Allocator, io: std.Io, key: CacheKey, comptime fmt: []const u8, fmt_args: anytype) void {
@@ -152,6 +153,8 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     var read_time_ms: f64 = 0.0;
     var cbz_decompress_time_ms: f64 = 0.0;
     var compressed_size_bytes: usize = 0;
+
+    if (workers.exiting.load(.acquire) or args.current_generation.load(.acquire) != key.generation) return;
 
     switch (media_entry) {
         .archive_entry => |arch| {
@@ -293,7 +296,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         return;
     }
 
-    if (workers.exiting.load(.acquire)) return;
+    if (workers.exiting.load(.acquire) or args.current_generation.load(.acquire) != key.generation) return;
 
     const start_decode = sdl.timer.getTicksNs();
     const surface = sdl.Surface.loadConstMemOpt(file_bytes[0..read_n]);
@@ -306,7 +309,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         return;
     }
 
-    if (workers.exiting.load(.acquire)) {
+    if (workers.exiting.load(.acquire) or args.current_generation.load(.acquire) != key.generation) {
         if (surface) |surf| surf.destroy();
         return;
     }
@@ -402,12 +405,14 @@ test "decodeWorker - thumb_only does not do full decompression on JPEG" {
     const path = try allocator.dupe(u8, "testfiles/images/000_0_1024x682.jpg");
     const entry = MediaEntry{ .filesystem = .{ .path = path } };
 
+    var current_gen: std.atomic.Value(usize) = .init(1);
     const args = try allocator.create(DecodeArgs);
     args.* = .{
         .workers = &workers,
         .allocator = allocator,
         .io = io,
         .key = .{ .index = 0, .generation = 1 },
+        .current_generation = &current_gen,
         .entry = entry,
         .has_gpu_device = false,
         .pixel_format = sdl.PixelFormat.rgba32,
@@ -453,12 +458,14 @@ test "decodeWorker - thumb_only does not do full decompression on PNG" {
     const path = try allocator.dupe(u8, "testfiles/golden-screenshots/test_0_init.png");
     const entry = MediaEntry{ .filesystem = .{ .path = path } };
 
+    var current_gen: std.atomic.Value(usize) = .init(1);
     const args = try allocator.create(DecodeArgs);
     args.* = .{
         .workers = &workers,
         .allocator = allocator,
         .io = io,
         .key = .{ .index = 0, .generation = 1 },
+        .current_generation = &current_gen,
         .entry = entry,
         .has_gpu_device = true,
         .pixel_format = sdl.PixelFormat.rgba32,
@@ -492,4 +499,42 @@ test "decodeWorker - thumb_only does not do full decompression on PNG" {
 
     try std.testing.expect(thumb_decoded_seen);
     try std.testing.expect(!image_decoded_seen);
+}
+
+test "decodeWorker - prunes early when current_generation does not match key.generation" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var workers = WorkerManager{};
+    defer workers.group.wait(io);
+
+    const path = try allocator.dupe(u8, "testfiles/golden-screenshots/test_0_init.png");
+    const entry = MediaEntry{ .filesystem = .{ .path = path } };
+
+    var current_gen: std.atomic.Value(usize) = .init(2);
+    const args = try allocator.create(DecodeArgs);
+    args.* = .{
+        .workers = &workers,
+        .allocator = allocator,
+        .io = io,
+        .key = .{ .index = 0, .generation = 1 },
+        .entry = entry,
+        .has_gpu_device = true,
+        .pixel_format = sdl.PixelFormat.rgba32,
+        .thumb_only = false,
+        .current_generation = &current_gen,
+    };
+
+    _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
+    _ = workers.active_threads.fetchAdd(1, .monotonic);
+
+    decodeWorker(args);
+
+    var event_seen = false;
+    while (workers.event_queue.pop()) |*ev| {
+        defer ev.deinit(allocator);
+        event_seen = true;
+    }
+
+    try std.testing.expect(!event_seen);
 }

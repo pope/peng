@@ -63,5 +63,44 @@ ______________________________________________________________________
 - **Dynamic CPU Core Worker Scaling**:
   Scale max concurrent decode tasks dynamically at runtime based on hardware CPU count (`std.Thread.getCpuCount() catch 4`), e.g. `@max(2, @min(6, cpu_count - 1))`. This ensures high-throughput background decoding on multi-core systems while leaving 1 core dedicated to main-thread rendering.
 
+______________________________________________________________________
+
+## 5. Cooperative Worker Pruning Pattern
+
+- **Non-Blocking Main-Thread Contract**:
+  In Zig 0.16.0, calling `std.Io.Group.cancel(io)` is synchronous and blocks the caller (`futexWait`) until all in-flight workers complete their current step. Calling `cancel()` on the main render thread causes frame stutters and input lag. Instead, the main thread increments an atomic generation counter (`state.cache.generation.fetchAdd(1, .release)` or `palette.dir_scan_generation.fetchAdd(1, .release)`), allowing the UI loop to continue rendering immediately at 60/120+ FPS.
+
+- **Atomic Generation Pointer Injection**:
+  Worker argument structs take a read-only pointer to the live generation atomic:
+
+  ```zig
+  pub const DecodeArgs = struct {
+      workers: *WorkerManager,
+      allocator: std.mem.Allocator,
+      slot_index: usize,
+      entry_id: usize,
+      assigned_generation: usize,
+      current_generation: *const std.atomic.Value(usize),
+      // ...
+  };
+  ```
+
+- **Cooperative Worker Checkpoints**:
+  Workers check generation validity at coarse phase transitions before performing expensive operations:
+
+  ```zig
+  // At worker task entry
+  if (args.current_generation.load(.acquire) != args.assigned_generation) return;
+
+  // Between directory scanning / archive traversal steps
+  if (args.current_generation.load(.acquire) != args.assigned_generation) return;
+
+  // Before expensive CPU surface decompression
+  if (args.current_generation.load(.acquire) != args.assigned_generation) return;
+  ```
+
+- **Clean Resource Unwinding with `defer`**:
+  All local resources (open file handles, allocated memory buffers, worker argument allocations, surface allocations, active thread counter decrements) MUST be unwound safely via `defer` so an early return never leaks memory or leaves active thread counters mismatched.
+
 > [!NOTE]
 > For strict main-thread GPU texture release invariants and std.Io task group details, refer to [02_concurrency_and_architecture.md](../../../rules/02_concurrency_and_architecture.md).

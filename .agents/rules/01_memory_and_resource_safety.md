@@ -85,3 +85,9 @@ Every struct owning heap memory, GPU handles, socket connections, or child sub-s
 - **Immediate `errdefer` Placement**: In fallible functions returning `!T` or `!void`, every heap allocation (`allocator.create`, `allocator.dupe`) and transient state flag modification MUST be paired with an `errdefer` statement placed on the line immediately following the allocation/mutation.
 - **Prohibition of Manual `catch` Teardown Blocks**: Do NOT handle allocation or worker thread spawning failures with manual `catch |err| { allocator.free(...); allocator.destroy(...); }` blocks. Propagate errors via `try` and rely on `errdefer` stack unwinding.
 - **Atomic Flag Reversal**: If setting an atomic flag prior to a fallible task (e.g. `is_loading_files.store(true, .release)`), use `errdefer is_loading_files.store(false, .release)` to guarantee state consistency upon failure.
+
+## 13. Prohibition of Meaningless Optionality & Null Checks
+
+- Do NOT make struct fields or function parameters optional (`?T = null`) defensively if the dependency or state is always present and required for correct runtime execution.
+- Optional types (`?T`) MUST represent genuine, valid domain absence (e.g. `current_index: ?usize = null` when a playlist is empty, or `surface: ?sdl.Surface` when a thumbnail is unavailable).
+- Wrapping non-optional dependencies in optionals introduces dead branches (`if (args.dep) |dep|`), obscures API contracts, and forces callers to handle impossible `null` scenarios. Require the dependency directly (`dep: T`).

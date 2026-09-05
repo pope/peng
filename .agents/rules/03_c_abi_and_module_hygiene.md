@@ -37,7 +37,17 @@
 
 ## 7. Result Location Initialization Style (`.empty`, `.init(...)`)
 
-- Use leading-dot result location type inference for array lists, optionals, and struct initializations (`.empty`, `.init(allocator)`, `.{ .field = val }`).
+- Use leading-dot result location type inference for array lists, optionals, atomic values, and struct initializations where the type is explicitly specified on the LHS (`.empty`, `.init(allocator)`, `.{ .field = val }`):
+  ```zig
+  // GOOD: Clean, idiomatic inference
+  generation: std.atomic.Value(usize) = .init(0),
+  active_threads: std.atomic.Value(usize) = .init(0),
+  var current_gen: std.atomic.Value(usize) = .init(2);
+
+  // AVOID: Redundant type repetition
+  generation: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+  var current_gen = std.atomic.Value(usize).init(2);
+  ```
 
 ## 8. Feature-Complete Canonical Implementations
 

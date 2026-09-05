@@ -83,7 +83,7 @@
 - **Worker Thread Isolation**: Background worker tasks (`decodeWorker`, `pathScanWorker`, `stdinWorker`, `ipcServerWorkerTask`) MUST NOT import or receive `*AppState` or `*ViewerState`. They accept explicit parameter structs (`DecodeArgs`, `PathScanArgs`, `StdinArgs`, `IpcServerArgs`) containing `workers: *WorkerManager`, `allocator: std.mem.Allocator`, and `io: std.Io`.
 - **Explicit Argument Initialization**: Instantiation of argument structs on the caller side MUST populate explicit field values directly. Avoid setting struct fields to `= undefined` placeholders before passing them into spawner functions.
 - **Telemetry Consolidation (`ViewerStats`)**: Separate UI/Stats telemetry from core business logic. Keep atomic counters (`active_threads`, `active_decode_threads`, `exiting`) in `WorkerManager` for control flow throttling (`canSpawnDecode()`, `isBusy()`). Once per frame, `sysSyncMetrics` snapshots live atomics and active image metrics into plain `usize`/`bool` fields on `state.viewer.stats` (`ViewerStats`) for UI rendering ("Stats for Nerds") without reading atomics during layout evaluation.
-- **Cache Epoch Versioning**: `CacheSlotMap` (`state.cache`) owns the epoch generation counter (`generation: usize`), incremented via `state.cache.advanceGeneration()` on navigation/directory resets (`resetNavigation`). Incoming worker background event payloads validate against `state.cache.getGeneration()` before modifying `CacheSlotMap` entries.
+- **Atomic Epoch Versioning**: Subsystems with evolving state invalidation (`CacheSlotMap.generation` and `PaletteState.dir_scan_generation`) own thread-safe atomic generation counters (`std.atomic.Value(usize) = .init(0)`). Main thread updates use `.release` ordering (`fetchAdd(1, .release)`). Worker threads observe generation counters via `*const std.atomic.Value(usize)` with `.acquire` ordering to filter stale events and prune dead work.
 
 ## 11. Single-Pass I/O Header & Metadata Consolidation in Workers
 
@@ -119,3 +119,14 @@ To guarantee minimum Time-to-First-Frame (TTFF) and eliminate main-thread stutte
 
    - If the active image is `.loaded_cpu`, prioritize uploading it first before any neighbors.
    - Once the active image is securely resident on the GPU, trickle queued `.loaded_cpu` neighbor surfaces into VRAM at a maximum rate of **1 texture per frame** to eliminate multi-image frame hitching.
+
+## 14. Cooperative Worker Pruning via Atomic Generation Observability
+
+- **Orphaned Task Prevention**: When user navigation, playlist resets, or cache eviction advances state generations on the main thread, background worker threads (`paletteScanWorker`, `decodeWorker`) must not continue performing expensive disk I/O, archive decompression, or CPU surface decompression for results destined to be discarded.
+- **Atomic Pointer Parameter**: Background task argument structs accept a read-only pointer to the live generational counter: `current_generation: *const std.atomic.Value(usize)`.
+- **Cooperative Checkpoints**: Workers poll `args.current_generation.load(.acquire) != assigned_generation` at coarse task boundaries:
+  - At worker start (before opening files / decompressing CBZ archives).
+  - Between directory/subfolder iteration steps.
+  - Before full CPU image surface decompression (`Surface.loadConstMemOpt`).
+  - Before CPU surface pixel format conversion.
+- **Early Abort & Safe Unwinding**: Upon detecting a generation mismatch, workers abort immediately via `return`. Leading `defer` blocks guarantee all allocated buffers, file handles, argument structs, active thread counters, and allocated surfaces are cleanly released without leaking resources or blocking the main thread.

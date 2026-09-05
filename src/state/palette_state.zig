@@ -155,10 +155,15 @@ pub const PaletteState = struct {
     last_child_dir: std.ArrayList(u8),
     dir_items: std.ArrayList(DirectoryEntry),
     current_dir_image_count: usize = 0,
-    dir_scan_generation: usize = 0,
+    dir_scan_generation: std.atomic.Value(usize) = .init(0),
     allocator: std.mem.Allocator,
     searcher: ?fuzzig.Ascii = null,
     max_haystack_len: usize = 64,
+
+    /// Returns the current directory scan generation counter with acquire ordering.
+    pub fn getDirScanGeneration(self: *const PaletteState) usize {
+        return self.dir_scan_generation.load(.acquire);
+    }
 
     /// Constructs the appropriate `PaletteModeData` view model for the current palette mode.
     pub fn getModeData(self: *const PaletteState) PaletteModeData {
@@ -191,7 +196,7 @@ pub const PaletteState = struct {
             .last_child_dir = .empty,
             .dir_items = .empty,
             .current_dir_image_count = 0,
-            .dir_scan_generation = 0,
+            .dir_scan_generation = .init(0),
             .allocator = allocator,
             .searcher = null,
             .max_haystack_len = 64,
@@ -245,6 +250,7 @@ pub const PaletteState = struct {
         self.current_nav_dir.clearRetainingCapacity();
         self.last_child_dir.clearRetainingCapacity();
         self.clearDirItems();
+        self.dir_scan_generation.store(0, .release);
         self.mode = .inactive;
         self.selected_idx = 0;
         self.selection_dirty = true;

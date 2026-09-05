@@ -31,19 +31,18 @@ pub const CacheSlot = struct {
 /// Structure-of-Arrays (SoA) collection managing cached image slots, generation epochs, and VRAM memory budgeting.
 pub const CacheSlotMap = struct {
     slots: std.MultiArrayList(CacheSlot) = .{},
-    generation: usize = 0,
+    generation: std.atomic.Value(usize) = .init(0),
 
     pub fn advanceGeneration(self: *CacheSlotMap) usize {
-        self.generation +%= 1;
-        return self.generation;
+        return self.generation.fetchAdd(1, .release) +% 1;
     }
 
     pub fn getGeneration(self: *const CacheSlotMap) usize {
-        return self.generation;
+        return self.generation.load(.acquire);
     }
 
     pub fn activeKey(self: *const CacheSlotMap, index: usize) CacheKey {
-        return .{ .index = index, .generation = self.generation };
+        return .{ .index = index, .generation = self.generation.load(.acquire) };
     }
 
     pub fn count(self: *const CacheSlotMap) usize {
@@ -112,7 +111,7 @@ pub const CacheSlotMap = struct {
     }
 
     pub fn appendSlot(self: *CacheSlotMap, allocator: std.mem.Allocator, index: usize, status: CacheStatus) !CacheKey {
-        const key = CacheKey{ .index = index, .generation = self.generation };
+        const key = CacheKey{ .index = index, .generation = self.generation.load(.acquire) };
         try self.slots.append(allocator, .{ .key = key, .entry = .{ .status = status } });
         return key;
     }
@@ -1240,4 +1239,15 @@ test "probeMediaMetadata - archive entry handling" {
         try std.testing.expectEqual(@as(f32, 1024.0), m.dims.w);
         try std.testing.expectEqual(@as(f32, 682.0), m.dims.h);
     }
+}
+
+test "CacheSlotMap - atomic generation advance and activeKey" {
+    var cache = CacheSlotMap{};
+    try std.testing.expectEqual(@as(usize, 0), cache.getGeneration());
+    const next_gen = cache.advanceGeneration();
+    try std.testing.expectEqual(@as(usize, 1), next_gen);
+    try std.testing.expectEqual(@as(usize, 1), cache.getGeneration());
+    const key = cache.activeKey(5);
+    try std.testing.expectEqual(@as(usize, 5), key.index);
+    try std.testing.expectEqual(@as(usize, 1), key.generation);
 }
