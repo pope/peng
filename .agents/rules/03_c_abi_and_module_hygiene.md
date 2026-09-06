@@ -119,3 +119,39 @@ const MediaEntry = state_pkg.MediaEntry;
   - `src/app/root.zig` MUST NOT proxy re-export top-level packages (e.g. `pub const ipc = @import("ipc");`) or `src/app/core/` sub-modules directly at the top level of `app`.
   - Consuming code MUST import top-level packages directly (`@import("ipc")`, `@import("input")`) or access core modules via `app.core` (`@import("core/fs.zig")`, `@import("core/image.zig")`, `@import("core/palette.zig")`, `@import("core/events.zig")`, `@import("core/exif.zig")`).
 - **Acyclic Dependency Invariants**: Pure domain modules (`intents`, `input`, `ipc`, `state`, `core`) MUST NOT import `AppState`, application system passes, worker tasks, or app actions.
+
+## 11. Minimal Declaration Visibility & Public API Scoping Invariants
+
+In Zig, declaration visibility is lexically scoped to the declaring file or container struct. Symbols MUST follow the principle of least privilege: default to private (`fn`, `const`, `var`), and only declare `pub` when crossing an architectural boundary.
+
+### 1. Never Default to `pub`
+- All functions, structs, enums, unions, and constants MUST be private unless required by external callers outside the file.
+- If a helper is only called within the file it is defined in, it MUST NOT be `pub`.
+
+### 2. Subsystem Passes & Component Rendering
+- **System Passes (`src/app/systems/`)**:
+  - ONLY the primary system entry point (`sysProcessInput`, `sysUpdateCache`, `sysProcessPaletteInput`) may be `pub fn`.
+  - Sub-routines, key mappings, and internal handlers (e.g. `handleKeyDown`, `handlePaletteKeys`) MUST be private `fn`.
+- **UI Rendering Components (`src/ui/`)**:
+  - ONLY the top-level render orchestrators (`renderFrame`, `renderPalette`, `renderStatsOverlay`, `renderClayCommands`) may be `pub fn`.
+  - Intermediate layout builders and widget sub-trees (e.g. `renderHeaderBar`, `renderEmptyState`, `renderViewport`, `renderTextInputDialog`, `renderSelectionList`, `renderStatRow`, `renderInfoOverlay`) MUST be private `fn`.
+- **Render Pipelines & Geometry**:
+  - Internal staging packets and multi-pass stages (e.g. `RenderPacket`, `buildRenderPacket`, `executeRenderPacket`, `appendCornerArc`) MUST be private to their pipeline file.
+
+### 3. Application Drivers & Executables
+- In executable roots (`main.zig`, `test_runner_main.zig`, `msg_main.zig`), ONLY `pub fn main` (or `build` in `build.zig`) is public.
+- Setup contexts (`AppGraphicsAndState`), initialization routines (`initAppGraphicsAndState`), and execution loops (`runMainLoop`, `runUpdatePhase`) MUST be private.
+
+### 4. Same-File Unit Test Access
+- In Zig, unit test blocks (`test "..."`) have full access to private (`fn`, `const`) declarations in the same file.
+- NEVER mark a symbol `pub` merely to test it if the test resides within the same file.
+
+### 5. Generic Reflection (`@hasDecl`) Exception
+- Zig's `@hasDecl(T, "name")` reflection strictly tests for public declarations. Any method intended to be detected or invoked polymorphically by a generic container (such as `deinitQueueItem` in `MpscQueue(T)`) MUST be declared `pub fn`.
+
+### 6. Signature Types & Type Inference
+- Types that appear in public function signatures (as parameters or return types) MUST be `pub`, even if callers use type inference (`const pt = geometry.toNdc(...)`) or anonymous struct literals (`initGraphicsAndWindow(..., .{ .headless = true })`).
+
+### 7. Proactive Dead Code Pruning
+- Do NOT leave orphaned functions, methods, or structs in the codebase with `pub`. If a declaration has zero callers across production and test code, eliminate it immediately.
+
