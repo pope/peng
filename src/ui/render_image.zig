@@ -11,14 +11,23 @@ pub const ViewportParams = state.ViewportParams;
 pub const MaterialType = enum {
     ui_element,
     image_viewer,
+    blurred_surface,
 };
 
-/// Fragment shader push uniform block specifying brightness, contrast, text render flags, and filter algorithms.
-pub const Uniforms = extern struct {
+/// Fragment shader push uniform block for image viewer photo adjustments and filter algorithms.
+pub const ImageUniforms = extern struct {
     brightness: f32,
     contrast: f32,
-    is_text_or_color: i32,
     scale_mode: i32,
+    padding: f32 = 0.0,
+};
+
+/// Fragment shader push uniform block for UI shapes, text, and frosted glass panels.
+pub const UiUniforms = extern struct {
+    is_blurred_surface: i32,
+    padding1: f32 = 0.0,
+    padding2: f32 = 0.0,
+    padding3: f32 = 0.0,
 };
 
 /// Draw call batch grouping vertex offset/count, texture binding, material type, and scissor rectangle.

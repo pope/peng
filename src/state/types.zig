@@ -405,6 +405,7 @@ pub const palette_action_items = [_]ActionMetadata{
     .{ .name = "Search Actions (Command Palette)", .shortcut_text = "F1 / Ctrl+Shift+P", .show_in_palette = true, .shortcuts = &.{ .{ .key = .f1 }, .{ .key = .char_p, .mod = .{ .ctrl = true, .shift = true } } }, .intent = .{ .set_palette = .{ .mode = .actions } } },
     .{ .name = "Start Slide Show...", .shortcut_text = "", .show_in_palette = true, .shortcuts = &.{}, .intent = .{ .set_palette = .{ .mode = .set_slideshow_interval } } },
     .{ .name = "Stop Slide Show", .shortcut_text = "", .show_in_palette = true, .shortcuts = &.{}, .intent = .stop_slideshow },
+    .{ .name = "Toggle Background Blur", .shortcut_text = "", .show_in_palette = true, .shortcuts = &.{}, .intent = .toggle_blur },
 };
 
 /// Flattened keyboard shortcut entry mapping a specific key and modifier combination directly to an AppIntent.
@@ -439,6 +440,7 @@ pub const ElementTag = enum(usize) {
     none = 0,
     image_viewer = 1,
     drop_zone_box = 2,
+    blurred_surface = 3,
 
     /// Converts element tag enum to raw integer index.
     pub fn toInt(self: ElementTag) usize {
@@ -450,6 +452,7 @@ pub const ElementTag = enum(usize) {
         return switch (val) {
             1 => .image_viewer,
             2 => .drop_zone_box,
+            3 => .blurred_surface,
             else => .none,
         };
     }
@@ -460,6 +463,7 @@ pub const OverlayState = struct {
     show_info: bool = false,
     show_stats: bool = false,
     debug_show_thumb: bool = false,
+    enable_blur: bool = true,
     info_offset_x: f32 = 20.0,
     info_offset_y: f32 = 20.0,
     stats_offset_x: f32 = -20.0,

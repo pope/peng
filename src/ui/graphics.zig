@@ -22,13 +22,35 @@ pub const GraphicsOptions = struct {
 const builtin = @import("builtin");
 const TextCache = @import("text_cache.zig").TextCache;
 
+/// Immediate uniform parameters for Dual Kawase downsample and upsample passes.
+pub const BlurUniforms = extern struct {
+    texel_size_x: f32,
+    texel_size_y: f32,
+    radius: f32,
+    padding: f32 = 0.0,
+};
+
 /// Cohesive GPU context and render resources initialized for GPU-accelerated rendering.
 pub const RenderResources = struct {
     device: sdl.gpu.Device,
-    pipeline: sdl.gpu.Pipeline,
+    image_pipeline: sdl.gpu.Pipeline,
+    ui_pipeline: sdl.gpu.Pipeline,
+    blur_down_pipeline: sdl.gpu.Pipeline,
+    blur_up_pipeline: sdl.gpu.Pipeline,
+    fullscreen_vertex_buffer: sdl.gpu.Buffer,
     unpack_compute_pipeline: ?sdl.gpu.ComputePipeline = null,
     sampler: sdl.gpu.Sampler,
     white_texture: sdl.gpu.Texture,
+
+    // Offscreen blur textures
+    scene_texture: ?sdl.gpu.Texture = null,
+    blur_down_texture: ?sdl.gpu.Texture = null,
+    blur_texture: ?sdl.gpu.Texture = null,
+    blur_target_w: u32 = 0,
+    blur_target_h: u32 = 0,
+    blur_target_format: sdl.gpu.TextureFormat = .invalid,
+    blur_down_w: u32 = 0,
+    blur_down_h: u32 = 0,
 
     // Persistent double-buffered vertex and transfer staging buffers
     vertex_buffers: [2]?sdl.gpu.Buffer = .{ null, null },
@@ -40,6 +62,82 @@ pub const RenderResources = struct {
     // Font text texture cache & fonts
     text_cache: TextCache = .{},
     fonts: [2]?sdl.Font = .{ null, null },
+
+    /// Manages offscreen textures for the 2-pass Dual Kawase backdrop blur pipeline.
+    /// Reallocates textures dynamically when window dimensions change.
+    pub fn ensureBlurTextures(self: *RenderResources, win_w: u32, win_h: u32, target_format: sdl.gpu.TextureFormat) !void {
+        if (win_w == 0 or win_h == 0) return;
+        if (self.blur_target_w == win_w and self.blur_target_h == win_h and self.blur_target_format == target_format and self.scene_texture != null) return;
+
+        // Invalidate and nullify before releasing old handles
+        if (self.scene_texture) |t| {
+            self.device.releaseTexture(t);
+            self.scene_texture = null;
+        }
+        if (self.blur_down_texture) |t| {
+            self.device.releaseTexture(t);
+            self.blur_down_texture = null;
+        }
+        if (self.blur_texture) |t| {
+            self.device.releaseTexture(t);
+            self.blur_texture = null;
+        }
+        self.blur_target_w = 0;
+        self.blur_target_h = 0;
+        self.blur_down_w = 0;
+        self.blur_down_h = 0;
+        self.blur_target_format = .invalid;
+
+        const scene_tex = self.device.createTexture(&sdl.gpu.TextureCreateInfo{
+            .type = .type_2d,
+            .format = target_format,
+            .usage = sdl.gpu.TextureUsage.color_target | sdl.gpu.TextureUsage.sampler,
+            .width = win_w,
+            .height = win_h,
+            .layer_count_or_depth = 1,
+            .num_levels = 1,
+            .sample_count = .count_1,
+            .props = 0,
+        }) orelse return error.SceneTextureCreationFailed;
+        errdefer self.device.releaseTexture(scene_tex);
+
+        const down_w = @max(1, (win_w + 3) / 4);
+        const down_h = @max(1, (win_h + 3) / 4);
+
+        const blur_down_tex = self.device.createTexture(&sdl.gpu.TextureCreateInfo{
+            .type = .type_2d,
+            .format = .rgba8_unorm,
+            .usage = sdl.gpu.TextureUsage.color_target | sdl.gpu.TextureUsage.sampler,
+            .width = down_w,
+            .height = down_h,
+            .layer_count_or_depth = 1,
+            .num_levels = 1,
+            .sample_count = .count_1,
+            .props = 0,
+        }) orelse return error.BlurTextureCreationFailed;
+        errdefer self.device.releaseTexture(blur_down_tex);
+
+        const blur_tex = self.device.createTexture(&sdl.gpu.TextureCreateInfo{
+            .type = .type_2d,
+            .format = .rgba8_unorm,
+            .usage = sdl.gpu.TextureUsage.color_target | sdl.gpu.TextureUsage.sampler,
+            .width = down_w,
+            .height = down_h,
+            .layer_count_or_depth = 1,
+            .num_levels = 1,
+            .sample_count = .count_1,
+            .props = 0,
+        }) orelse return error.BlurTextureCreationFailed;
+
+        self.scene_texture = scene_tex;
+        self.blur_down_texture = blur_down_tex;
+        self.blur_texture = blur_tex;
+        self.blur_target_w = win_w;
+        self.blur_target_h = win_h;
+        self.blur_down_w = down_w;
+        self.blur_down_h = down_h;
+        self.blur_target_format = target_format;
+    }
 
     /// Releases GPU pipelines, samplers, fallback textures, staging buffers, text cache, and fonts on application teardown.
     pub fn deinit(self: *RenderResources, allocator: std.mem.Allocator) void {
@@ -53,7 +151,14 @@ pub const RenderResources = struct {
         for (self.transfer_buffers) |tb| {
             if (tb) |b| self.device.releaseTransferBuffer(b);
         }
-        self.device.releasePipeline(self.pipeline);
+        if (self.scene_texture) |t| self.device.releaseTexture(t);
+        if (self.blur_down_texture) |t| self.device.releaseTexture(t);
+        if (self.blur_texture) |t| self.device.releaseTexture(t);
+        self.device.releaseBuffer(self.fullscreen_vertex_buffer);
+        self.device.releasePipeline(self.blur_down_pipeline);
+        self.device.releasePipeline(self.blur_up_pipeline);
+        self.device.releasePipeline(self.image_pipeline);
+        self.device.releasePipeline(self.ui_pipeline);
         if (self.unpack_compute_pipeline) |pipe| {
             self.device.releaseComputePipeline(pipe);
         }
@@ -188,9 +293,16 @@ pub fn initGpuResources(dev: sdl.gpu.Device, window: sdl.Window, initial_dpi_sca
 
     // Compile Shaders
     const vert_code_spv = @embedFile("shaders/vert.spv");
-    const frag_code_spv = @embedFile("shaders/frag.spv");
+    const image_frag_code_spv = @embedFile("shaders/image.frag.spv");
     const vert_code_msl = @embedFile("shaders/vert.msl");
-    const frag_code_msl = @embedFile("shaders/frag.msl");
+    const image_frag_code_msl = @embedFile("shaders/image.frag.msl");
+    const ui_frag_code_spv = @embedFile("shaders/ui.frag.spv");
+    const ui_frag_code_msl = @embedFile("shaders/ui.frag.msl");
+
+    const blur_down_code_spv = @embedFile("shaders/blur_down.spv");
+    const blur_down_code_msl = @embedFile("shaders/blur_down.msl");
+    const blur_up_code_spv = @embedFile("shaders/blur_up.spv");
+    const blur_up_code_msl = @embedFile("shaders/blur_up.msl");
 
     const shader_formats = dev.getShaderFormats();
 
@@ -198,8 +310,17 @@ pub fn initGpuResources(dev: sdl.gpu.Device, window: sdl.Window, initial_dpi_sca
     const vert_shader = try createShaderFromFormat(dev, shader_formats, .vertex, vert_code_spv, vert_code_msl, 0, 0);
     defer dev.releaseShader(vert_shader);
 
-    const frag_shader = try createShaderFromFormat(dev, shader_formats, .fragment, frag_code_spv, frag_code_msl, 1, 1);
-    defer dev.releaseShader(frag_shader);
+    const image_frag_shader = try createShaderFromFormat(dev, shader_formats, .fragment, image_frag_code_spv, image_frag_code_msl, 1, 1);
+    defer dev.releaseShader(image_frag_shader);
+
+    const ui_frag_shader = try createShaderFromFormat(dev, shader_formats, .fragment, ui_frag_code_spv, ui_frag_code_msl, 1, 1);
+    defer dev.releaseShader(ui_frag_shader);
+
+    const blur_down_frag_shader = try createShaderFromFormat(dev, shader_formats, .fragment, blur_down_code_spv, blur_down_code_msl, 1, 1);
+    defer dev.releaseShader(blur_down_frag_shader);
+
+    const blur_up_frag_shader = try createShaderFromFormat(dev, shader_formats, .fragment, blur_up_code_spv, blur_up_code_msl, 1, 1);
+    defer dev.releaseShader(blur_up_frag_shader);
 
     // Create sampler
     const sampler_info = sdl.gpu.SamplerCreateInfo{
@@ -294,7 +415,7 @@ pub fn initGpuResources(dev: sdl.gpu.Device, window: sdl.Window, initial_dpi_sca
 
     var pipeline_info = sdl.gpu.GraphicsPipelineCreateInfo{
         .vertex_shader = vert_shader,
-        .fragment_shader = frag_shader,
+        .fragment_shader = image_frag_shader,
         .vertex_input_state = .{
             .num_vertex_attributes = vertex_attribs.len,
             .vertex_attributes = &vertex_attribs,
@@ -334,10 +455,107 @@ pub fn initGpuResources(dev: sdl.gpu.Device, window: sdl.Window, initial_dpi_sca
         },
         .props = 0,
     };
-    const pipeline = dev.createPipeline(&pipeline_info) orelse {
-        std.log.err("Failed to create graphics pipeline: {s}", .{sdl.getError()});
+    const image_pipeline = dev.createPipeline(&pipeline_info) orelse {
+        std.log.err("Failed to create image graphics pipeline: {s}", .{sdl.getError()});
         return error.PipelineCreationFailed;
     };
+    errdefer dev.releasePipeline(image_pipeline);
+
+    var ui_pipeline_info = pipeline_info;
+    ui_pipeline_info.fragment_shader = ui_frag_shader;
+    const ui_pipeline = dev.createPipeline(&ui_pipeline_info) orelse {
+        std.log.err("Failed to create UI graphics pipeline: {s}", .{sdl.getError()});
+        return error.PipelineCreationFailed;
+    };
+    errdefer dev.releasePipeline(ui_pipeline);
+
+    // Create 2-pass Dual Kawase blur pipelines targeting RGBA8 textures without blending
+    var blur_down_pipeline_info = pipeline_info;
+    blur_down_pipeline_info.fragment_shader = blur_down_frag_shader;
+    blur_down_pipeline_info.target_info = .{
+        .num_color_targets = 1,
+        .color_target_descriptions = &[_]sdl.gpu.ColorTargetDescription{.{
+            .format = .rgba8_unorm,
+            .blend_state = .{
+                .src_color_blendfactor = .one,
+                .dst_color_blendfactor = .zero,
+                .color_blend_op = .add,
+                .src_alpha_blendfactor = .one,
+                .dst_alpha_blendfactor = .zero,
+                .alpha_blend_op = .add,
+                .color_write_mask = sdl.gpu.ColorComponent.r | sdl.gpu.ColorComponent.g | sdl.gpu.ColorComponent.b | sdl.gpu.ColorComponent.a,
+                .enable_blend = false,
+                .enable_color_write_mask = true,
+            },
+        }},
+        .has_depth_stencil_target = false,
+        .depth_stencil_format = .d16_unorm,
+    };
+    const blur_down_pipeline = dev.createPipeline(&blur_down_pipeline_info) orelse {
+        std.log.err("Failed to create blur down pipeline: {s}", .{sdl.getError()});
+        return error.PipelineCreationFailed;
+    };
+    errdefer dev.releasePipeline(blur_down_pipeline);
+
+    var blur_up_pipeline_info = blur_down_pipeline_info;
+    blur_up_pipeline_info.fragment_shader = blur_up_frag_shader;
+    const blur_up_pipeline = dev.createPipeline(&blur_up_pipeline_info) orelse {
+        std.log.err("Failed to create blur up pipeline: {s}", .{sdl.getError()});
+        return error.PipelineCreationFailed;
+    };
+    errdefer dev.releasePipeline(blur_up_pipeline);
+
+    // Create static 6-vertex buffer for fullscreen passes
+    const fullscreen_verts = [_]renderer.Vertex{
+        .{ .x = -1.0, .y = 1.0, .u = 0.0, .v = 0.0, .color = 0xFFFFFFFF },
+        .{ .x = -1.0, .y = -1.0, .u = 0.0, .v = 1.0, .color = 0xFFFFFFFF },
+        .{ .x = 1.0, .y = 1.0, .u = 1.0, .v = 0.0, .color = 0xFFFFFFFF },
+        .{ .x = 1.0, .y = 1.0, .u = 1.0, .v = 0.0, .color = 0xFFFFFFFF },
+        .{ .x = -1.0, .y = -1.0, .u = 0.0, .v = 1.0, .color = 0xFFFFFFFF },
+        .{ .x = 1.0, .y = -1.0, .u = 1.0, .v = 1.0, .color = 0xFFFFFFFF },
+    };
+    const fs_buf_size = @sizeOf(@TypeOf(fullscreen_verts));
+    const fullscreen_vertex_buffer = dev.createBuffer(&sdl.gpu.BufferCreateInfo{
+        .usage = sdl.gpu.BufferUsage.vertex,
+        .size = @intCast(fs_buf_size),
+        .props = 0,
+    }) orelse return error.GPUVertexBufferCreationFailed;
+    errdefer dev.releaseBuffer(fullscreen_vertex_buffer);
+
+    {
+        const cmd_buf_wrapper = dev.acquireCommandBuffer() orelse return error.CommandBufferAcquisitionFailed;
+        const transfer_buf = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
+            .usage = .upload,
+            .size = @intCast(fs_buf_size),
+            .props = 0,
+        }) orelse {
+            _ = cmd_buf_wrapper.submit();
+            return error.TransferBufferCreationFailed;
+        };
+        defer dev.releaseTransferBuffer(transfer_buf);
+
+        const mapped: [*]renderer.Vertex = @ptrCast(@alignCast(dev.mapTransferBuffer(transfer_buf, false) orelse {
+            _ = cmd_buf_wrapper.submit();
+            return error.MapFailed;
+        }));
+        @memcpy(mapped[0..fullscreen_verts.len], &fullscreen_verts);
+        dev.unmapTransferBuffer(transfer_buf);
+
+        const copy_pass = cmd_buf_wrapper.beginCopyPass() orelse {
+            _ = cmd_buf_wrapper.submit();
+            return error.CopyPassCreationFailed;
+        };
+        copy_pass.uploadToBuffer(&sdl.gpu.TransferBufferLocation{
+            .transfer_buffer = transfer_buf,
+            .offset = 0,
+        }, &sdl.gpu.BufferRegion{
+            .buffer = fullscreen_vertex_buffer,
+            .offset = 0,
+            .size = @intCast(fs_buf_size),
+        }, false);
+        copy_pass.end();
+        _ = cmd_buf_wrapper.submit();
+    }
 
     // Compute Shader for RGB/BGR Unpack
     const comp_code_spv = @embedFile("shaders/unpack_rgb.spv");
@@ -367,7 +585,11 @@ pub fn initGpuResources(dev: sdl.gpu.Device, window: sdl.Window, initial_dpi_sca
 
     return GpuResources{
         .device = dev,
-        .pipeline = pipeline,
+        .image_pipeline = image_pipeline,
+        .ui_pipeline = ui_pipeline,
+        .blur_down_pipeline = blur_down_pipeline,
+        .blur_up_pipeline = blur_up_pipeline,
+        .fullscreen_vertex_buffer = fullscreen_vertex_buffer,
         .unpack_compute_pipeline = unpack_compute_pipeline,
         .sampler = sampler,
         .white_texture = white_texture,

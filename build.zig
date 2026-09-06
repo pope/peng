@@ -229,15 +229,45 @@ pub fn build(b: *std.Build) void {
         "-o",
         "src/ui/shaders/vert.spv",
     });
-    const frag_cmd = b.addSystemCommand(&.{
+    const image_frag_cmd = b.addSystemCommand(&.{
         "glslangValidator",
         "-V",
         "-Os",
         "-S",
         "frag",
-        "src/ui/shaders/frag.glsl",
+        "src/ui/shaders/image.frag.glsl",
         "-o",
-        "src/ui/shaders/frag.spv",
+        "src/ui/shaders/image.frag.spv",
+    });
+    const ui_frag_cmd = b.addSystemCommand(&.{
+        "glslangValidator",
+        "-V",
+        "-Os",
+        "-S",
+        "frag",
+        "src/ui/shaders/ui.frag.glsl",
+        "-o",
+        "src/ui/shaders/ui.frag.spv",
+    });
+    const blur_down_cmd = b.addSystemCommand(&.{
+        "glslangValidator",
+        "-V",
+        "-Os",
+        "-S",
+        "frag",
+        "src/ui/shaders/blur_down.frag.glsl",
+        "-o",
+        "src/ui/shaders/blur_down.spv",
+    });
+    const blur_up_cmd = b.addSystemCommand(&.{
+        "glslangValidator",
+        "-V",
+        "-Os",
+        "-S",
+        "frag",
+        "src/ui/shaders/blur_up.frag.glsl",
+        "-o",
+        "src/ui/shaders/blur_up.spv",
     });
     const comp_cmd = b.addSystemCommand(&.{
         "glslangValidator",
@@ -250,7 +280,10 @@ pub fn build(b: *std.Build) void {
         "src/ui/shaders/unpack_rgb.spv",
     });
     compile_shaders.dependOn(&vert_cmd.step);
-    compile_shaders.dependOn(&frag_cmd.step);
+    compile_shaders.dependOn(&image_frag_cmd.step);
+    compile_shaders.dependOn(&ui_frag_cmd.step);
+    compile_shaders.dependOn(&blur_down_cmd.step);
+    compile_shaders.dependOn(&blur_up_cmd.step);
     compile_shaders.dependOn(&comp_cmd.step);
 
     const vert_msl_cmd = b.addSystemCommand(&.{
@@ -261,14 +294,38 @@ pub fn build(b: *std.Build) void {
         "src/ui/shaders/vert.msl",
     });
     vert_msl_cmd.step.dependOn(&vert_cmd.step);
-    const frag_msl_cmd = b.addSystemCommand(&.{
+    const image_frag_msl_cmd = b.addSystemCommand(&.{
         "spirv-cross",
-        "src/ui/shaders/frag.spv",
+        "src/ui/shaders/image.frag.spv",
         "--msl",
         "--output",
-        "src/ui/shaders/frag.msl",
+        "src/ui/shaders/image.frag.msl",
     });
-    frag_msl_cmd.step.dependOn(&frag_cmd.step);
+    image_frag_msl_cmd.step.dependOn(&image_frag_cmd.step);
+    const ui_frag_msl_cmd = b.addSystemCommand(&.{
+        "spirv-cross",
+        "src/ui/shaders/ui.frag.spv",
+        "--msl",
+        "--output",
+        "src/ui/shaders/ui.frag.msl",
+    });
+    ui_frag_msl_cmd.step.dependOn(&ui_frag_cmd.step);
+    const blur_down_msl_cmd = b.addSystemCommand(&.{
+        "spirv-cross",
+        "src/ui/shaders/blur_down.spv",
+        "--msl",
+        "--output",
+        "src/ui/shaders/blur_down.msl",
+    });
+    blur_down_msl_cmd.step.dependOn(&blur_down_cmd.step);
+    const blur_up_msl_cmd = b.addSystemCommand(&.{
+        "spirv-cross",
+        "src/ui/shaders/blur_up.spv",
+        "--msl",
+        "--output",
+        "src/ui/shaders/blur_up.msl",
+    });
+    blur_up_msl_cmd.step.dependOn(&blur_up_cmd.step);
     const comp_msl_cmd = b.addSystemCommand(&.{
         "spirv-cross",
         "src/ui/shaders/unpack_rgb.spv",
@@ -279,10 +336,14 @@ pub fn build(b: *std.Build) void {
     comp_msl_cmd.step.dependOn(&comp_cmd.step);
 
     compile_shaders.dependOn(&vert_msl_cmd.step);
-    compile_shaders.dependOn(&frag_msl_cmd.step);
+    compile_shaders.dependOn(&image_frag_msl_cmd.step);
+    compile_shaders.dependOn(&ui_frag_msl_cmd.step);
+    compile_shaders.dependOn(&blur_down_msl_cmd.step);
+    compile_shaders.dependOn(&blur_up_msl_cmd.step);
     compile_shaders.dependOn(&comp_msl_cmd.step);
 
     exe.step.dependOn(compile_shaders);
+    viewer_lib.step.dependOn(compile_shaders);
 
     const run_step = b.step("run", "Run the app");
     const run_cmd = b.addRunArtifact(exe);

@@ -11,6 +11,7 @@ pub const ParsedArgs = struct {
     update_baselines: bool,
     headless: bool,
     ipc_enabled: bool,
+    enable_blur: bool = true,
 
     /// Frees allocated memory associated with parsed command-line arguments.
     pub fn deinit(self: *ParsedArgs, gpa: std.mem.Allocator) void {
@@ -35,6 +36,7 @@ pub fn parseCommandLineArgs(init: std.process.Init, gpa: std.mem.Allocator) !Par
     var update_baselines = false;
     var headless = false;
     var ipc_enabled = false;
+    var enable_blur = true;
 
     while (args_it.next()) |arg| {
         if (std.mem.eql(u8, arg, "--test-mode")) {
@@ -45,6 +47,10 @@ pub fn parseCommandLineArgs(init: std.process.Init, gpa: std.mem.Allocator) !Par
             update_baselines = true;
         } else if (std.mem.eql(u8, arg, "--ipc") or std.mem.eql(u8, arg, "--enable-ipc")) {
             ipc_enabled = true;
+        } else if (std.mem.eql(u8, arg, "--blur") or std.mem.eql(u8, arg, "--enable-blur")) {
+            enable_blur = true;
+        } else if (std.mem.eql(u8, arg, "--no-blur") or std.mem.eql(u8, arg, "--disable-blur")) {
+            enable_blur = false;
         } else if (std.mem.eql(u8, arg, "--scale")) {
             if (args_it.next()) |val| {
                 if (std.meta.stringToEnum(ScaleMode, val)) |mode| {
@@ -70,5 +76,33 @@ pub fn parseCommandLineArgs(init: std.process.Init, gpa: std.mem.Allocator) !Par
         .update_baselines = update_baselines,
         .headless = headless,
         .ipc_enabled = ipc_enabled,
+        .enable_blur = enable_blur,
     };
+}
+
+test "parseCommandLineArgs handles blur flags" {
+    const testing = std.testing;
+
+    // Default enable_blur is true
+    const parsed_default = ParsedArgs{
+        .arg_path = null,
+        .default_scale = .full,
+        .test_mode = false,
+        .update_baselines = false,
+        .headless = false,
+        .ipc_enabled = false,
+        .enable_blur = true,
+    };
+    try testing.expect(parsed_default.enable_blur);
+
+    const parsed_disabled = ParsedArgs{
+        .arg_path = null,
+        .default_scale = .full,
+        .test_mode = false,
+        .update_baselines = false,
+        .headless = false,
+        .ipc_enabled = false,
+        .enable_blur = false,
+    };
+    try testing.expect(!parsed_disabled.enable_blur);
 }

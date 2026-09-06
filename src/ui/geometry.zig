@@ -56,18 +56,24 @@ pub fn appendRectQuad(
     clay_color: clay.Color,
     win_w: f32,
     win_h: f32,
+    screen_uv: bool,
 ) !void {
     const p1 = toNdc(rect.x, rect.y, win_w, win_h);
     const p2 = toNdc(rect.x + rect.w, rect.y + rect.h, win_w, win_h);
 
     const color = packRgbaClay(clay_color);
 
-    try vertices.append(allocator, .{ .x = p1.x, .y = p1.y, .u = 0.0, .v = 0.0, .color = color });
-    try vertices.append(allocator, .{ .x = p2.x, .y = p1.y, .u = 1.0, .v = 0.0, .color = color });
-    try vertices.append(allocator, .{ .x = p1.x, .y = p2.y, .u = 0.0, .v = 1.0, .color = color });
-    try vertices.append(allocator, .{ .x = p2.x, .y = p1.y, .u = 1.0, .v = 0.0, .color = color });
-    try vertices.append(allocator, .{ .x = p2.x, .y = p2.y, .u = 1.0, .v = 1.0, .color = color });
-    try vertices.append(allocator, .{ .x = p1.x, .y = p2.y, .u = 0.0, .v = 1.0, .color = color });
+    const uv_u1: f32 = if (screen_uv) rect.x / win_w else 0.0;
+    const uv_v1: f32 = if (screen_uv) rect.y / win_h else 0.0;
+    const uv_u2: f32 = if (screen_uv) (rect.x + rect.w) / win_w else 1.0;
+    const uv_v2: f32 = if (screen_uv) (rect.y + rect.h) / win_h else 1.0;
+
+    try vertices.append(allocator, .{ .x = p1.x, .y = p1.y, .u = uv_u1, .v = uv_v1, .color = color });
+    try vertices.append(allocator, .{ .x = p2.x, .y = p1.y, .u = uv_u2, .v = uv_v1, .color = color });
+    try vertices.append(allocator, .{ .x = p1.x, .y = p2.y, .u = uv_u1, .v = uv_v2, .color = color });
+    try vertices.append(allocator, .{ .x = p2.x, .y = p1.y, .u = uv_u2, .v = uv_v1, .color = color });
+    try vertices.append(allocator, .{ .x = p2.x, .y = p2.y, .u = uv_u2, .v = uv_v2, .color = color });
+    try vertices.append(allocator, .{ .x = p1.x, .y = p2.y, .u = uv_u1, .v = uv_v2, .color = color });
 }
 
 fn appendCornerArc(
@@ -136,6 +142,7 @@ pub fn renderFillRoundedRect(
     clay_color: clay.Color,
     win_w: f32,
     win_h: f32,
+    screen_uv: bool,
 ) !void {
     const color = sdl.FColor{
         .r = clay_color[0] / 255.0,
@@ -148,7 +155,7 @@ pub fn renderFillRoundedRect(
     const clamped_radius = @min(corner_radius, min_radius);
 
     if (clamped_radius <= 0.001) {
-        return appendRectQuad(vertices, allocator, rect, clay_color, win_w, win_h);
+        return appendRectQuad(vertices, allocator, rect, clay_color, win_w, win_h, screen_uv);
     }
 
     const num_circle_segments = @max(@as(usize, 8), @as(usize, @intFromFloat(clamped_radius * 0.75)));
@@ -278,12 +285,14 @@ pub fn renderFillRoundedRect(
     for (indices[0..index_count]) |idx| {
         const v = vertices_src[@intCast(idx)];
         const pt = toNdc(v.position.x, v.position.y, win_w, win_h);
+        const u = if (screen_uv) v.position.x / win_w else v.tex_coord.x;
+        const v_coord = if (screen_uv) v.position.y / win_h else v.tex_coord.y;
 
         try vertices.append(allocator, .{
             .x = pt.x,
             .y = pt.y,
-            .u = v.tex_coord.x,
-            .v = v.tex_coord.y,
+            .u = u,
+            .v = v_coord,
             .color = packRgbaF(v.color.r, v.color.g, v.color.b, v.color.a),
         });
     }
@@ -295,7 +304,7 @@ pub fn drawDashedLineH(vertices: *std.ArrayList(Vertex), allocator: std.mem.Allo
     while (x < x2) {
         const draw_w = @min(dash_len, x2 - x);
         const rect = sdl.FRect{ .x = x, .y = y, .w = draw_w, .h = thickness };
-        try appendRectQuad(vertices, allocator, rect, color, win_w, win_h);
+        try appendRectQuad(vertices, allocator, rect, color, win_w, win_h, false);
         x += dash_len + gap_len;
     }
 }
@@ -306,7 +315,7 @@ pub fn drawDashedLineV(vertices: *std.ArrayList(Vertex), allocator: std.mem.Allo
     while (y < y2) {
         const draw_h = @min(dash_len, y2 - y);
         const rect = sdl.FRect{ .x = x, .y = y, .w = thickness, .h = draw_h };
-        try appendRectQuad(vertices, allocator, rect, color, win_w, win_h);
+        try appendRectQuad(vertices, allocator, rect, color, win_w, win_h, false);
         y += dash_len + gap_len;
     }
 }

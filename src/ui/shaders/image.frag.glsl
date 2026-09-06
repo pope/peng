@@ -7,12 +7,12 @@ layout(location = 0) out vec4 outColor;
 
 layout(set = 2, binding = 0) uniform sampler2D texSampler;
 
-layout(std140, set = 3, binding = 0) uniform UBO {
+layout(std140, set = 3, binding = 0) uniform ImageUBO {
     float brightness;
     float contrast;
-    int is_text_or_color;
     int scale_mode; // 0 = nearest, 1 = linear, 2 = pixel_art, 3 = mitchell, 4 =
                     // lanczos3, 5 = lanczos3_spline
+    float padding;
 }
 ubo;
 
@@ -239,10 +239,6 @@ void main() {
     }
 
     vec4 color = texColor * inColor;
-
-    vec3 adjColor = (color.rgb - 0.5) * ubo.contrast + 0.5 + ubo.brightness;
-    float isImg = step(float(ubo.is_text_or_color), 0.5);
-    color.rgb = mix(color.rgb, adjColor, isImg);
-
+    color.rgb = (color.rgb - 0.5) * ubo.contrast + 0.5 + ubo.brightness;
     outColor = color;
 }

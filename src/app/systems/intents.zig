@@ -131,6 +131,8 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
         .set_info => |val| ui.overlays.show_info = val,
         .toggle_stats => ui.overlays.show_stats = !ui.overlays.show_stats,
         .set_stats => |val| ui.overlays.show_stats = val,
+        .toggle_blur => ui.overlays.enable_blur = !ui.overlays.enable_blur,
+        .set_blur => |val| ui.overlays.enable_blur = val,
         .toggle_fullscreen => {
             switch (self.viewer.display) {
                 .headless => {},
@@ -206,4 +208,32 @@ test "palette_action_items metadata" {
     try std.testing.expectEqualStrings("Navigate Directories...", nav_item.name);
     try std.testing.expectEqualStrings("Ctrl+O", nav_item.shortcut_text);
     try std.testing.expect(nav_item.show_in_palette);
+}
+
+test "toggle_blur and set_blur intents" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    var threaded = std.Threaded{};
+    const io = threaded.io();
+
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    // Default enable_blur should be true
+    try testing.expect(app_st.viewer.ui.overlays.enable_blur);
+
+    // Toggle blur off
+    try executeIntent(&app_st, .toggle_blur);
+    try testing.expect(!app_st.viewer.ui.overlays.enable_blur);
+
+    // Toggle blur on
+    try executeIntent(&app_st, .toggle_blur);
+    try testing.expect(app_st.viewer.ui.overlays.enable_blur);
+
+    // Explicit set_blur
+    try executeIntent(&app_st, .{ .set_blur = false });
+    try testing.expect(!app_st.viewer.ui.overlays.enable_blur);
+
+    try executeIntent(&app_st, .{ .set_blur = true });
+    try testing.expect(app_st.viewer.ui.overlays.enable_blur);
 }

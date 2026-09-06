@@ -224,6 +224,7 @@ pub fn renderFrame(
             @intCast(target_h),
             scale_x,
             scale_y,
+            target_format,
             render_metrics,
         );
         if (capture_filename) |filename| {

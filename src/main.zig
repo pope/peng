@@ -170,20 +170,8 @@ fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
     }
 
     // 3. GPU Pipeline and Resources Setup
-    const resources = try ui.graphics.initGpuResources(setup.gpu_device, setup.window, setup.initial_dpi_scale, parsed.headless);
-    var own_gpu_resources = true;
-    errdefer {
-        if (own_gpu_resources) {
-            const dev = setup.gpu_device;
-            dev.releasePipeline(resources.pipeline);
-            if (resources.unpack_compute_pipeline) |pipe| dev.releaseComputePipeline(pipe);
-            dev.releaseSampler(resources.sampler);
-            dev.releaseTexture(resources.white_texture);
-        }
-        for (resources.fonts) |f| {
-            if (f) |font| font.close();
-        }
-    }
+    var resources = try ui.graphics.initGpuResources(setup.gpu_device, setup.window, setup.initial_dpi_scale, parsed.headless);
+    errdefer resources.deinit(gpa);
 
     // 4. State Initialization
     var state = app.state.AppState{
@@ -209,9 +197,9 @@ fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
         .allocator = gpa,
         .io = init.io,
     };
-    try state.ensureInitialCapacities();
-    own_gpu_resources = false;
+    state.viewer.ui.overlays.enable_blur = parsed.enable_blur;
     errdefer state.deinit();
+    try state.ensureInitialCapacities();
 
     // 5. Initialize Clay UI Layout Engine
     const clay_memory_size = clay.minMemorySize();

@@ -3,6 +3,7 @@ const clay = @import("zclay");
 const theme = @import("theme.zig");
 const state = @import("state");
 const types = state.types;
+const ElementTag = types.ElementTag;
 const UiViewModel = types.UiViewModel;
 const formatSize = @import("text_utils.zig").formatSize;
 const MeasureTextUserData = types.MeasureTextUserData;
@@ -160,6 +161,7 @@ fn renderInfoOverlay(
         },
         .background_color = theme.base_translucent,
         .corner_radius = .all(10),
+        .user_data = if (ui_model.overlays.enable_blur) @ptrFromInt(ElementTag.blurred_surface.toInt()) else null,
         .border = .{
             .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
             .color = theme.surface0,
@@ -311,6 +313,7 @@ pub fn renderStatsOverlay(
         },
         .background_color = theme.base_overlay,
         .corner_radius = .all(10),
+        .user_data = if (ui_model.overlays.enable_blur) @ptrFromInt(ElementTag.blurred_surface.toInt()) else null,
         .border = .{
             .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
             .color = theme.surface0,

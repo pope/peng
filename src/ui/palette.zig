@@ -3,6 +3,7 @@ const clay = @import("zclay");
 const sdl = @import("sdl");
 const state = @import("state");
 const types = state.types;
+const ElementTag = types.ElementTag;
 const UiViewModel = types.UiViewModel;
 const PaletteState = state.PaletteState;
 const stopTextInput = state.stopTextInput;
@@ -1005,6 +1006,7 @@ pub fn renderPalette(
         },
         .background_color = theme.base_translucent, // Catppuccin Base with opacity
         .corner_radius = .all(10),
+        .user_data = if (ui_model.overlays.enable_blur) @ptrFromInt(ElementTag.blurred_surface.toInt()) else null,
         .border = .{
             .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
             .color = theme.overlay0,

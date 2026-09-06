@@ -1,23 +1,25 @@
-const std = @import("std");
 const clay = @import("zclay");
-const theme = @import("theme.zig");
+const geometry = @import("geometry.zig");
+const graphics = @import("graphics.zig");
+const render_image = @import("render_image.zig");
 const sdl = @import("sdl");
 const state = @import("state");
-const TextCacheKey = @import("text_cache.zig").TextCacheKey;
+const std = @import("std");
+const text_cache = @import("text_cache.zig");
+const theme = @import("theme.zig");
 
-const geometry = @import("geometry.zig");
+const BatchItem = render_image.BatchItem;
+const ElementTag = state.types.ElementTag;
+const ImageUniforms = render_image.ImageUniforms;
+const MaterialType = render_image.MaterialType;
+const RenderResources = graphics.RenderResources;
+const TextCacheKey = text_cache.TextCacheKey;
+const UiUniforms = render_image.UiUniforms;
 pub const Vertex = geometry.Vertex;
-pub const packRgba = geometry.packRgba;
-pub const packRgbaClay = geometry.packRgbaClay;
-pub const packRgbaF = geometry.packRgbaF;
-pub const ViewportParams = state.ViewportParams;
-pub const RenderResources = @import("graphics.zig").RenderResources;
-pub const ElementTag = state.types.ElementTag;
-pub const render_image = @import("render_image.zig");
-
-pub const Uniforms = render_image.Uniforms;
-pub const MaterialType = render_image.MaterialType;
-pub const BatchItem = render_image.BatchItem;
+const ViewportParams = state.ViewportParams;
+const packRgba = geometry.packRgba;
+const packRgbaClay = geometry.packRgbaClay;
+const packRgbaF = geometry.packRgbaF;
 
 fn scissorEqual(a: ?sdl.Rect, b: ?sdl.Rect) bool {
     if (a) |sa| {
@@ -66,24 +68,31 @@ fn appendRectangleCommand(
     allocator: std.mem.Allocator,
     rect: sdl.FRect,
     config: clay.RectangleRenderData,
+    user_data: ?*anyopaque,
     scale_x: f32,
     f_win_w: f32,
     f_win_h: f32,
     white_texture: sdl.gpu.Texture,
+    blur_texture: ?sdl.gpu.Texture,
     scissor: ?sdl.Rect,
 ) !void {
+    const tag = if (user_data) |ptr| ElementTag.fromInt(@intFromPtr(ptr)) else .none;
+    const is_blurred = (tag == .blurred_surface) and (blur_texture != null);
+
     const start = @as(u32, @intCast(vertices.items.len));
 
     const corner_radius = config.corner_radius.top_left * scale_x;
     if (corner_radius > 0) {
-        try geometry.renderFillRoundedRect(vertices, allocator, rect, corner_radius, config.background_color, f_win_w, f_win_h);
+        try geometry.renderFillRoundedRect(vertices, allocator, rect, corner_radius, config.background_color, f_win_w, f_win_h, is_blurred);
     } else {
-        try geometry.appendRectQuad(vertices, allocator, rect, config.background_color, f_win_w, f_win_h);
+        try geometry.appendRectQuad(vertices, allocator, rect, config.background_color, f_win_w, f_win_h, is_blurred);
     }
 
     const count = @as(u32, @intCast(vertices.items.len)) - start;
     if (count > 0) {
-        try addBatch(batches, allocator, start, count, white_texture, .ui_element, scissor);
+        const tex = if (is_blurred) blur_texture.? else white_texture;
+        const mat: MaterialType = if (is_blurred) .blurred_surface else .ui_element;
+        try addBatch(batches, allocator, start, count, tex, mat, scissor);
     }
 }
 
@@ -135,7 +144,7 @@ fn appendBorderCommand(
             try geometry.drawDashedLineV(vertices, allocator, rect.x, starting_y, starting_y + length, border_left, config.color, 8.0 * scale_x, 6.0 * scale_x, f_win_w, f_win_h);
         } else {
             const line = sdl.FRect{ .x = rect.x, .y = starting_y, .w = border_left, .h = length };
-            try geometry.appendRectQuad(vertices, allocator, line, config.color, f_win_w, f_win_h);
+            try geometry.appendRectQuad(vertices, allocator, line, config.color, f_win_w, f_win_h, false);
         }
     }
     if (border_right > 0) {
@@ -146,7 +155,7 @@ fn appendBorderCommand(
             try geometry.drawDashedLineV(vertices, allocator, starting_x, starting_y, starting_y + length, border_right, config.color, 8.0 * scale_x, 6.0 * scale_x, f_win_w, f_win_h);
         } else {
             const line = sdl.FRect{ .x = starting_x, .y = starting_y, .w = border_right, .h = length };
-            try geometry.appendRectQuad(vertices, allocator, line, config.color, f_win_w, f_win_h);
+            try geometry.appendRectQuad(vertices, allocator, line, config.color, f_win_w, f_win_h, false);
         }
     }
     if (border_top > 0) {
@@ -156,7 +165,7 @@ fn appendBorderCommand(
             try geometry.drawDashedLineH(vertices, allocator, starting_x, starting_x + length, rect.y, border_top, config.color, 8.0 * scale_x, 6.0 * scale_x, f_win_w, f_win_h);
         } else {
             const line = sdl.FRect{ .x = starting_x, .y = rect.y, .w = length, .h = border_top };
-            try geometry.appendRectQuad(vertices, allocator, line, config.color, f_win_w, f_win_h);
+            try geometry.appendRectQuad(vertices, allocator, line, config.color, f_win_w, f_win_h, false);
         }
     }
     if (border_bottom > 0) {
@@ -167,7 +176,7 @@ fn appendBorderCommand(
             try geometry.drawDashedLineH(vertices, allocator, starting_x, starting_x + length, starting_y, border_bottom, config.color, 8.0 * scale_x, 6.0 * scale_x, f_win_w, f_win_h);
         } else {
             const line = sdl.FRect{ .x = starting_x, .y = starting_y, .w = length, .h = border_bottom };
-            try geometry.appendRectQuad(vertices, allocator, line, config.color, f_win_w, f_win_h);
+            try geometry.appendRectQuad(vertices, allocator, line, config.color, f_win_w, f_win_h, false);
         }
     }
 
@@ -429,10 +438,12 @@ fn buildGeometryFromCommands(
                     frame_allocator,
                     rect,
                     rcmd.render_data.rectangle,
+                    rcmd.user_data,
                     scale_x,
                     f_win_w,
                     f_win_h,
                     gpu.white_texture,
+                    gpu.blur_texture,
                     current_scissor,
                 );
             },
@@ -598,6 +609,65 @@ fn uploadVertexData(
     return vb;
 }
 
+fn drawBatches(
+    view_params: ViewportParams,
+    gpu: *const RenderResources,
+    render_pass: sdl.gpu.RenderPass,
+    cmd_buf: sdl.gpu.CommandBuffer,
+    batches: []const BatchItem,
+    win_w: i32,
+    win_h: i32,
+) void {
+    var last_pipeline: ?sdl.gpu.Pipeline = null;
+    var last_material: ?MaterialType = null;
+
+    for (batches) |batch| {
+        if (batch.scissor) |sc| {
+            var safe_sc = sc;
+            safe_sc.x = @max(0, sc.x);
+            safe_sc.y = @max(0, sc.y);
+            safe_sc.w = @max(0, sc.w - (safe_sc.x - sc.x));
+            safe_sc.h = @max(0, sc.h - (safe_sc.y - sc.y));
+            if (safe_sc.w <= 0 or safe_sc.h <= 0 or safe_sc.x >= win_w or safe_sc.y >= win_h) continue;
+            safe_sc.w = @min(safe_sc.w, win_w - safe_sc.x);
+            safe_sc.h = @min(safe_sc.h, win_h - safe_sc.y);
+            render_pass.setScissor(&safe_sc);
+        } else {
+            const full_sc = sdl.Rect{ .x = 0, .y = 0, .w = win_w, .h = win_h };
+            render_pass.setScissor(&full_sc);
+        }
+
+        const is_image = (batch.material == .image_viewer);
+        const pipeline = if (is_image) gpu.image_pipeline else gpu.ui_pipeline;
+
+        if (last_pipeline == null or last_pipeline.?.ptr != pipeline.ptr) {
+            render_pass.bindPipeline(pipeline);
+            last_pipeline = pipeline;
+        }
+
+        if (last_material == null or last_material.? != batch.material) {
+            if (is_image) {
+                const img_ubo = ImageUniforms{
+                    .brightness = view_params.brightness,
+                    .contrast = view_params.contrast,
+                    .scale_mode = view_params.getShaderScaleModeInt(),
+                };
+                cmd_buf.pushFragmentUniform(0, std.mem.asBytes(&img_ubo));
+            } else {
+                const is_blur = (batch.material == .blurred_surface);
+                const ui_ubo = UiUniforms{
+                    .is_blurred_surface = if (is_blur) 1 else 0,
+                };
+                cmd_buf.pushFragmentUniform(0, std.mem.asBytes(&ui_ubo));
+            }
+            last_material = batch.material;
+        }
+
+        render_pass.bindFragmentSamplers(0, &[_]sdl.gpu.TextureSamplerBinding{.{ .texture = batch.texture, .sampler = gpu.sampler }});
+        render_pass.drawPrimitives(batch.vertex_count, 1, batch.vertex_start, 0);
+    }
+}
+
 fn executeRenderPass(
     view_params: ViewportParams,
     gpu: *const RenderResources,
@@ -608,57 +678,151 @@ fn executeRenderPass(
     win_w: i32,
     win_h: i32,
 ) void {
-    const color_target = sdl.gpu.ColorTargetAttachment{
-        .texture = swap_tex,
-        .clear_color = .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 },
-        .load_op = .clear,
-        .store_op = .store,
-        .cycle = false,
-    };
+    var first_blur_idx: ?usize = null;
+    for (batches, 0..) |batch, i| {
+        if (batch.material == .blurred_surface) {
+            first_blur_idx = i;
+            break;
+        }
+    }
 
-    const render_pass = cmd_buf.beginRenderPass(&color_target) orelse {
-        std.log.err("SDL GPU beginRenderPass failed in renderClayCommands: {s}", .{sdl.getError()});
+    if (first_blur_idx == null or gpu.scene_texture == null or gpu.blur_down_texture == null or gpu.blur_texture == null) {
+        const color_target = sdl.gpu.ColorTargetAttachment{
+            .texture = swap_tex,
+            .clear_color = .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 },
+            .load_op = .clear,
+            .store_op = .store,
+            .cycle = false,
+        };
+
+        const render_pass = cmd_buf.beginRenderPass(&color_target) orelse {
+            std.log.err("SDL GPU beginRenderPass failed in renderClayCommands: {s}", .{sdl.getError()});
+            return;
+        };
+        defer render_pass.end();
+
+        if (vert_buf) |vb| {
+            render_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{.{ .buffer = vb, .offset = 0 }});
+            drawBatches(view_params, gpu, render_pass, cmd_buf, batches, win_w, win_h);
+        }
         return;
-    };
-    defer render_pass.end();
+    }
 
-    render_pass.bindPipeline(gpu.pipeline);
+    const idx = first_blur_idx.?;
 
-    if (vert_buf) |vb| {
-        const vert_binding = sdl.gpu.BufferBinding{ .buffer = vb, .offset = 0 };
-        render_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{vert_binding});
+    // Pass 1: Render base scene batches (underneath the blurred surface) into gpu.scene_texture
+    {
+        const scene_target = sdl.gpu.ColorTargetAttachment{
+            .texture = gpu.scene_texture.?,
+            .clear_color = .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 },
+            .load_op = .clear,
+            .store_op = .store,
+            .cycle = false,
+        };
+        const scene_pass = cmd_buf.beginRenderPass(&scene_target) orelse {
+            std.log.err("SDL GPU beginRenderPass failed for scene_texture: {s}", .{sdl.getError()});
+            return;
+        };
+        if (vert_buf) |vb| {
+            scene_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{.{ .buffer = vb, .offset = 0 }});
+            drawBatches(view_params, gpu, scene_pass, cmd_buf, batches[0..idx], win_w, win_h);
+        }
+        scene_pass.end();
+    }
 
-        var last_material: ?MaterialType = null;
-        for (batches) |batch| {
-            if (batch.scissor) |sc| {
-                var safe_sc = sc;
-                safe_sc.x = @max(0, sc.x);
-                safe_sc.y = @max(0, sc.y);
-                safe_sc.w = @max(0, sc.w - (safe_sc.x - sc.x));
-                safe_sc.h = @max(0, sc.h - (safe_sc.y - sc.y));
-                if (safe_sc.w <= 0 or safe_sc.h <= 0 or safe_sc.x >= win_w or safe_sc.y >= win_h) continue;
-                safe_sc.w = @min(safe_sc.w, win_w - safe_sc.x);
-                safe_sc.h = @min(safe_sc.h, win_h - safe_sc.y);
-                render_pass.setScissor(&safe_sc);
-            } else {
-                const full_sc = sdl.Rect{ .x = 0, .y = 0, .w = win_w, .h = win_h };
-                render_pass.setScissor(&full_sc);
-            }
+    // Pass 2: Downsample scene_texture into blur_down_texture (Dual Kawase pass 1)
+    {
+        const down_target = sdl.gpu.ColorTargetAttachment{
+            .texture = gpu.blur_down_texture.?,
+            .clear_color = .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 },
+            .load_op = .clear,
+            .store_op = .store,
+            .cycle = false,
+        };
+        const down_pass = cmd_buf.beginRenderPass(&down_target) orelse {
+            std.log.err("SDL GPU beginRenderPass failed for blur_down_texture: {s}", .{sdl.getError()});
+            return;
+        };
+        down_pass.bindPipeline(gpu.blur_down_pipeline);
+        down_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{.{ .buffer = gpu.fullscreen_vertex_buffer, .offset = 0 }});
 
-            if (last_material == null or last_material.? != batch.material) {
-                const is_image = batch.material == .image_viewer;
-                const ubo = Uniforms{
-                    .brightness = if (is_image) view_params.brightness else 0.0,
-                    .contrast = if (is_image) view_params.contrast else 1.0,
-                    .is_text_or_color = if (is_image) 0 else 1,
-                    .scale_mode = if (is_image) view_params.getShaderScaleModeInt() else 1,
-                };
-                cmd_buf.pushFragmentUniform(0, std.mem.asBytes(&ubo));
-                last_material = batch.material;
-            }
+        const down_ubo = graphics.BlurUniforms{
+            .texel_size_x = 1.0 / @as(f32, @floatFromInt(win_w)),
+            .texel_size_y = 1.0 / @as(f32, @floatFromInt(win_h)),
+            .radius = 2.0,
+            .padding = 0.0,
+        };
+        cmd_buf.pushFragmentUniform(0, std.mem.asBytes(&down_ubo));
+        down_pass.bindFragmentSamplers(0, &[_]sdl.gpu.TextureSamplerBinding{.{ .texture = gpu.scene_texture.?, .sampler = gpu.sampler }});
 
-            render_pass.bindFragmentSamplers(0, &[_]sdl.gpu.TextureSamplerBinding{.{ .texture = batch.texture, .sampler = gpu.sampler }});
-            render_pass.drawPrimitives(batch.vertex_count, 1, batch.vertex_start, 0);
+        const down_sc = sdl.Rect{ .x = 0, .y = 0, .w = @intCast(gpu.blur_down_w), .h = @intCast(gpu.blur_down_h) };
+        down_pass.setScissor(&down_sc);
+        down_pass.drawPrimitives(6, 1, 0, 0);
+        down_pass.end();
+    }
+
+    // Pass 3: Upsample blur_down_texture into blur_texture (Dual Kawase pass 2)
+    {
+        const up_target = sdl.gpu.ColorTargetAttachment{
+            .texture = gpu.blur_texture.?,
+            .clear_color = .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 },
+            .load_op = .clear,
+            .store_op = .store,
+            .cycle = false,
+        };
+        const up_pass = cmd_buf.beginRenderPass(&up_target) orelse {
+            std.log.err("SDL GPU beginRenderPass failed for blur_texture: {s}", .{sdl.getError()});
+            return;
+        };
+        up_pass.bindPipeline(gpu.blur_up_pipeline);
+        up_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{.{ .buffer = gpu.fullscreen_vertex_buffer, .offset = 0 }});
+
+        const up_ubo = graphics.BlurUniforms{
+            .texel_size_x = 1.0 / @as(f32, @floatFromInt(gpu.blur_down_w)),
+            .texel_size_y = 1.0 / @as(f32, @floatFromInt(gpu.blur_down_h)),
+            .radius = 2.5,
+            .padding = 0.0,
+        };
+        cmd_buf.pushFragmentUniform(0, std.mem.asBytes(&up_ubo));
+        up_pass.bindFragmentSamplers(0, &[_]sdl.gpu.TextureSamplerBinding{.{ .texture = gpu.blur_down_texture.?, .sampler = gpu.sampler }});
+
+        const up_sc = sdl.Rect{ .x = 0, .y = 0, .w = @intCast(gpu.blur_down_w), .h = @intCast(gpu.blur_down_h) };
+        up_pass.setScissor(&up_sc);
+        up_pass.drawPrimitives(6, 1, 0, 0);
+        up_pass.end();
+    }
+
+    // Pass 4: Composite onto swapchain (blit sharp base scene quad + draw remaining overlay batches on top)
+    {
+        const final_target = sdl.gpu.ColorTargetAttachment{
+            .texture = swap_tex,
+            .clear_color = .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 },
+            .load_op = .dont_care,
+            .store_op = .store,
+            .cycle = false,
+        };
+        const final_pass = cmd_buf.beginRenderPass(&final_target) orelse {
+            std.log.err("SDL GPU beginRenderPass failed for swapchain composite: {s}", .{sdl.getError()});
+            return;
+        };
+        defer final_pass.end();
+
+        // 4a. Blit sharp base scene
+        final_pass.bindPipeline(gpu.ui_pipeline);
+        final_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{.{ .buffer = gpu.fullscreen_vertex_buffer, .offset = 0 }});
+        const fs_ubo = UiUniforms{
+            .is_blurred_surface = 0,
+        };
+        cmd_buf.pushFragmentUniform(0, std.mem.asBytes(&fs_ubo));
+        final_pass.bindFragmentSamplers(0, &[_]sdl.gpu.TextureSamplerBinding{.{ .texture = gpu.scene_texture.?, .sampler = gpu.sampler }});
+        const full_sc = sdl.Rect{ .x = 0, .y = 0, .w = win_w, .h = win_h };
+        final_pass.setScissor(&full_sc);
+        final_pass.drawPrimitives(6, 1, 0, 0);
+
+        // 4b. Draw remaining batches (blurred surfaces, borders, text, controls)
+        if (vert_buf) |vb| {
+            final_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{.{ .buffer = vb, .offset = 0 }});
+            drawBatches(view_params, gpu, final_pass, cmd_buf, batches[idx..], win_w, win_h);
         }
     }
 }
@@ -757,6 +921,7 @@ fn executeRenderPacket(
 }
 
 /// Orchestrates 2-pass UI and image rendering from Clay layout commands using decoupled ViewportParams.
+/// Allocates or resizes backdrop blur textures to match the swapchain `target_format` and dimensions when active.
 pub fn renderClayCommands(
     view_params: ViewportParams,
     gpu_res: *RenderResources,
@@ -771,10 +936,26 @@ pub fn renderClayCommands(
     win_h: i32,
     scale_x: f32,
     scale_y: f32,
+    target_format: sdl.gpu.TextureFormat,
     metrics: ?*state.types.UiRenderMetrics,
 ) !void {
     const start_render = sdl.timer.getTicksNs();
     const dev = gpu_res.device;
+
+    var has_blur = false;
+    for (r_commands) |rcmd| {
+        if (rcmd.command_type == .rectangle) {
+            if (rcmd.user_data) |ptr| {
+                if (ElementTag.fromInt(@intFromPtr(ptr)) == .blurred_surface) {
+                    has_blur = true;
+                    break;
+                }
+            }
+        }
+    }
+    if (has_blur) {
+        try gpu_res.ensureBlurTextures(@intCast(win_w), @intCast(win_h), target_format);
+    }
 
     const copy_pass = cmd_buf.beginCopyPass() orelse {
         std.log.err("SDL GPU beginCopyPass failed in renderClayCommands: {s}", .{sdl.getError()});
