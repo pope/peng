@@ -416,10 +416,12 @@ fn renderSelectionList(
                     .child_alignment = .{ .x = .left, .y = .center },
                     .padding = .{ .left = 12, .right = 12 },
                 },
-                .background_color = if (is_selected)
-                    theme.surface0
+                .background_color = if (is_selected and item_hovered)
+                    theme.row_selected_hover
+                else if (is_selected)
+                    theme.row_selected
                 else if (item_hovered)
-                    theme.base
+                    theme.row_hover
                 else
                     clay.Color{ 0, 0, 0, 0 },
                 .corner_radius = .all(6),
