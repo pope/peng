@@ -87,7 +87,10 @@ Start the image viewer by passing a file or directory path:
 
 | Flag                 | Argument                                                    | Description                                             |
 | :------------------- | :---------------------------------------------------------- | :------------------------------------------------------ |
+| `-h`, `--help`       | None                                                        | Displays the help message and available options.        |
 | `--scale`            | `none`, `shrink`, `full`, `crop`, `fit_width`, `fit_height` | Sets the default image scaling/fitting mode.            |
+| `--blur`             | None                                                        | Enables background glassmorphism blur effect (default). |
+| `--no-blur`          | None                                                        | Disables background glassmorphism blur effect.          |
 | `--headless`         | None                                                        | Runs without opening an OS display window.              |
 | `--test-mode`        | None                                                        | Puts the window and event loop into test configuration. |
 | `--update-baselines` | None                                                        | Overwrites baseline golden screenshots.                 |

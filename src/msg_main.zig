@@ -1,3 +1,4 @@
+const app_config = @import("config");
 const std = @import("std");
 
 /// CLI entry point for sending IPC commands to a running Peng instance via Unix domain socket.
@@ -11,10 +12,19 @@ pub fn main(init: std.process.Init) !void {
     // Skip executable name
     _ = args_it.next();
 
-    const socket_path = args_it.next() orelse {
-        std.log.err("Usage: peng-msg <socket_path> <command_words...>", .{});
+    const first_arg = args_it.next() orelse {
+        app_config.cli.printIpcHelp(io);
         std.process.exit(1);
     };
+
+    if (app_config.cli.findOptionFor(first_arg, .ipc)) |opt| {
+        if (opt.id == .help) {
+            app_config.cli.printIpcHelp(io);
+            return;
+        }
+    }
+
+    const socket_path = first_arg;
 
     // Join the rest of the arguments with space
     var command_buf: std.ArrayList(u8) = .empty;

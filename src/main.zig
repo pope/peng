@@ -150,12 +150,18 @@ const AppGraphicsAndState = struct {
 };
 
 /// Phase 1: Initializes CLI options, SDL graphics, GPU resources, viewer state, Clay layout engine, and IPC server.
-fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
+fn initAppGraphicsAndState(init: std.process.Init) !?AppGraphicsAndState {
     const gpa = init.gpa;
 
     // 1. Parse command line arguments
-    const parsed = try app_config.cli.parseCommandLineArgs(init, gpa);
-    errdefer if (parsed.arg_path) |p| gpa.free(p);
+    var parsed = try app_config.cli.parseCommandLineArgs(init, gpa);
+    errdefer parsed.deinit(gpa);
+
+    if (parsed.help) {
+        parsed.deinit(gpa);
+        app_config.cli.printHelp(init.io);
+        return null;
+    }
 
     // 2. Graphics and Window Setup
     const setup = try ui.graphics.initGraphicsAndWindow("Peng Image Viewer", .{
@@ -305,7 +311,7 @@ fn runMainLoop(ctx: *AppGraphicsAndState) !void {
 
 /// Application entry point: initializes state and graphics, enters the primary event loop, and cleans up on exit.
 pub fn main(init: std.process.Init) !void {
-    var app_ctx = try initAppGraphicsAndState(init);
+    var app_ctx = (try initAppGraphicsAndState(init)) orelse return;
     defer app_ctx.deinit();
 
     try runMainLoop(&app_ctx);
@@ -313,6 +319,7 @@ pub fn main(init: std.process.Init) !void {
 
 test {
     std.testing.refAllDecls(app.core.exif);
+    std.testing.refAllDecls(app_config.cli);
     _ = app;
     _ = ui;
     _ = state_pkg;

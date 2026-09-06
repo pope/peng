@@ -240,6 +240,7 @@ pub fn build(b: *std.Build) void {
             .link_libc = true,
         }),
     });
+    msg_exe.root_module.addImport("config", config_module);
     b.installArtifact(msg_exe);
 
     const test_runner_exe = b.addExecutable(.{
@@ -273,14 +274,22 @@ pub fn build(b: *std.Build) void {
     const run_sdl_tests = b.addRunArtifact(sdl_tests);
     run_sdl_tests.step.dependOn(b.getInstallStep());
 
+    const config_tests = b.addTest(.{
+        .root_module = config_module,
+    });
+    const run_config_tests = b.addRunArtifact(config_tests);
+    run_config_tests.step.dependOn(b.getInstallStep());
+
     if (target.result.os.tag == .windows) {
         run_exe_tests.addPathDir(b.getInstallPath(.bin, ""));
         run_sdl_tests.addPathDir(b.getInstallPath(.bin, ""));
+        run_config_tests.addPathDir(b.getInstallPath(.bin, ""));
         run_integration_tests.addPathDir(b.getInstallPath(.bin, ""));
     }
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_sdl_tests.step);
+    test_step.dependOn(&run_config_tests.step);
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_integration_tests.step);
 }
