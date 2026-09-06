@@ -218,130 +218,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(exe);
 
     // Shader compilation
-    const compile_shaders = b.step("shaders", "Compile shaders");
-    const vert_cmd = b.addSystemCommand(&.{
-        "glslangValidator",
-        "-V",
-        "-Os",
-        "-S",
-        "vert",
-        "src/ui/shaders/vert.glsl",
-        "-o",
-        "src/ui/shaders/vert.spv",
-    });
-    const image_frag_cmd = b.addSystemCommand(&.{
-        "glslangValidator",
-        "-V",
-        "-Os",
-        "-S",
-        "frag",
-        "src/ui/shaders/image.frag.glsl",
-        "-o",
-        "src/ui/shaders/image.frag.spv",
-    });
-    const ui_frag_cmd = b.addSystemCommand(&.{
-        "glslangValidator",
-        "-V",
-        "-Os",
-        "-S",
-        "frag",
-        "src/ui/shaders/ui.frag.glsl",
-        "-o",
-        "src/ui/shaders/ui.frag.spv",
-    });
-    const blur_down_cmd = b.addSystemCommand(&.{
-        "glslangValidator",
-        "-V",
-        "-Os",
-        "-S",
-        "frag",
-        "src/ui/shaders/blur_down.frag.glsl",
-        "-o",
-        "src/ui/shaders/blur_down.spv",
-    });
-    const blur_up_cmd = b.addSystemCommand(&.{
-        "glslangValidator",
-        "-V",
-        "-Os",
-        "-S",
-        "frag",
-        "src/ui/shaders/blur_up.frag.glsl",
-        "-o",
-        "src/ui/shaders/blur_up.spv",
-    });
-    const comp_cmd = b.addSystemCommand(&.{
-        "glslangValidator",
-        "-V",
-        "-Os",
-        "-S",
-        "comp",
-        "src/ui/shaders/unpack_rgb.comp.glsl",
-        "-o",
-        "src/ui/shaders/unpack_rgb.spv",
-    });
-    compile_shaders.dependOn(&vert_cmd.step);
-    compile_shaders.dependOn(&image_frag_cmd.step);
-    compile_shaders.dependOn(&ui_frag_cmd.step);
-    compile_shaders.dependOn(&blur_down_cmd.step);
-    compile_shaders.dependOn(&blur_up_cmd.step);
-    compile_shaders.dependOn(&comp_cmd.step);
-
-    const vert_msl_cmd = b.addSystemCommand(&.{
-        "spirv-cross",
-        "src/ui/shaders/vert.spv",
-        "--msl",
-        "--output",
-        "src/ui/shaders/vert.msl",
-    });
-    vert_msl_cmd.step.dependOn(&vert_cmd.step);
-    const image_frag_msl_cmd = b.addSystemCommand(&.{
-        "spirv-cross",
-        "src/ui/shaders/image.frag.spv",
-        "--msl",
-        "--output",
-        "src/ui/shaders/image.frag.msl",
-    });
-    image_frag_msl_cmd.step.dependOn(&image_frag_cmd.step);
-    const ui_frag_msl_cmd = b.addSystemCommand(&.{
-        "spirv-cross",
-        "src/ui/shaders/ui.frag.spv",
-        "--msl",
-        "--output",
-        "src/ui/shaders/ui.frag.msl",
-    });
-    ui_frag_msl_cmd.step.dependOn(&ui_frag_cmd.step);
-    const blur_down_msl_cmd = b.addSystemCommand(&.{
-        "spirv-cross",
-        "src/ui/shaders/blur_down.spv",
-        "--msl",
-        "--output",
-        "src/ui/shaders/blur_down.msl",
-    });
-    blur_down_msl_cmd.step.dependOn(&blur_down_cmd.step);
-    const blur_up_msl_cmd = b.addSystemCommand(&.{
-        "spirv-cross",
-        "src/ui/shaders/blur_up.spv",
-        "--msl",
-        "--output",
-        "src/ui/shaders/blur_up.msl",
-    });
-    blur_up_msl_cmd.step.dependOn(&blur_up_cmd.step);
-    const comp_msl_cmd = b.addSystemCommand(&.{
-        "spirv-cross",
-        "src/ui/shaders/unpack_rgb.spv",
-        "--msl",
-        "--output",
-        "src/ui/shaders/unpack_rgb.msl",
-    });
-    comp_msl_cmd.step.dependOn(&comp_cmd.step);
-
-    compile_shaders.dependOn(&vert_msl_cmd.step);
-    compile_shaders.dependOn(&image_frag_msl_cmd.step);
-    compile_shaders.dependOn(&ui_frag_msl_cmd.step);
-    compile_shaders.dependOn(&blur_down_msl_cmd.step);
-    compile_shaders.dependOn(&blur_up_msl_cmd.step);
-    compile_shaders.dependOn(&comp_msl_cmd.step);
-
+    const compile_shaders = setupShaderCompilation(b);
     exe.step.dependOn(compile_shaders);
     viewer_lib.step.dependOn(compile_shaders);
 
@@ -406,4 +283,78 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_sdl_tests.step);
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_integration_tests.step);
+}
+
+/// Configures GLSL to SPIR-V and SPIR-V to MSL compilation for all shader stages in src/ui/shaders.
+fn setupShaderCompilation(b: *std.Build) *std.Build.Step {
+    const compile_shaders = b.step("shaders", "Compile shaders");
+
+    const ShaderDef = struct {
+        stage: []const u8,
+        src_name: []const u8,
+        out_name: []const u8,
+    };
+
+    const shader_defs = [_]ShaderDef{
+        .{
+            .stage = "vert",
+            .src_name = "vert.glsl",
+            .out_name = "vert",
+        },
+        .{
+            .stage = "frag",
+            .src_name = "image.frag.glsl",
+            .out_name = "image.frag",
+        },
+        .{
+            .stage = "frag",
+            .src_name = "ui.frag.glsl",
+            .out_name = "ui.frag",
+        },
+        .{
+            .stage = "frag",
+            .src_name = "blur_down.frag.glsl",
+            .out_name = "blur_down",
+        },
+        .{
+            .stage = "frag",
+            .src_name = "blur_up.frag.glsl",
+            .out_name = "blur_up",
+        },
+        .{
+            .stage = "comp",
+            .src_name = "unpack_rgb.comp.glsl",
+            .out_name = "unpack_rgb",
+        },
+    };
+
+    for (shader_defs) |def| {
+        const src_path = b.fmt("src/ui/shaders/{s}", .{def.src_name});
+        const spv_path = b.fmt("src/ui/shaders/{s}.spv", .{def.out_name});
+        const msl_path = b.fmt("src/ui/shaders/{s}.msl", .{def.out_name});
+
+        const spv_cmd = b.addSystemCommand(&.{
+            "glslangValidator",
+            "-V",
+            "-Os",
+            "-S",
+            def.stage,
+            src_path,
+            "-o",
+            spv_path,
+        });
+
+        const msl_cmd = b.addSystemCommand(&.{
+            "spirv-cross",
+            spv_path,
+            "--msl",
+            "--output",
+            msl_path,
+        });
+        msl_cmd.step.dependOn(&spv_cmd.step);
+
+        compile_shaders.dependOn(&msl_cmd.step);
+    }
+
+    return compile_shaders;
 }
