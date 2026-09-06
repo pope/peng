@@ -1,20 +1,45 @@
 {
   "nodes": {
+    "agy-nix": {
+      "inputs": {
+        "flake-utils": "flake-utils",
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1788592425,
+        "narHash": "sha256-N6tHHlKKL0ErBZN0FRN47bFRGe7jzd5n/s0iv5codi8=",
+        "owner": "jacopone",
+        "repo": "antigravity-nix",
+        "rev": "6310713b4f3e0c1d6ac28b30c2fdd66bfcec9275",
+        "type": "github"
+      },
+      "original": {
+        "owner": "jacopone",
+        "repo": "antigravity-nix",
+        "type": "github"
+      }
+    },
     "bun2nix": {
       "inputs": {
         "flake-parts": [
+          "jailed-agents",
           "llm-agents",
           "flake-parts"
         ],
         "nixpkgs": [
+          "jailed-agents",
           "llm-agents",
           "nixpkgs"
         ],
         "systems": [
+          "jailed-agents",
           "llm-agents",
           "systems"
         ],
         "treefmt-nix": [
+          "jailed-agents",
           "llm-agents",
           "treefmt-nix"
         ]
@@ -37,6 +62,7 @@
     "flake-parts": {
       "inputs": {
         "nixpkgs-lib": [
+          "jailed-agents",
           "llm-agents",
           "nixpkgs"
         ]
@@ -73,6 +99,24 @@
         "type": "github"
       }
     },
+    "flake-utils_2": {
+      "inputs": {
+        "systems": "systems_2"
+      },
+      "locked": {
+        "lastModified": 1731533236,
+        "narHash": "sha256-l0KFg5HjrsfsO/JpG+r7fRrqm12kzFHyUHqHCVpMMbI=",
+        "owner": "numtide",
+        "repo": "flake-utils",
+        "rev": "11707dc2f618dd54ca8739b309ec4fc024de578b",
+        "type": "github"
+      },
+      "original": {
+        "owner": "numtide",
+        "repo": "flake-utils",
+        "type": "github"
+      }
+    },
     "jail-nix": {
       "locked": {
         "lastModified": 1772137954,
@@ -90,11 +134,9 @@
     },
     "jailed-agents": {
       "inputs": {
-        "flake-utils": "flake-utils",
+        "flake-utils": "flake-utils_2",
         "jail-nix": "jail-nix",
-        "llm-agents": [
-          "llm-agents"
-        ],
+        "llm-agents": "llm-agents",
         "nixpkgs": [
           "nixpkgs"
         ]
@@ -117,10 +159,8 @@
       "inputs": {
         "bun2nix": "bun2nix",
         "flake-parts": "flake-parts",
-        "nixpkgs": [
-          "nixpkgs"
-        ],
-        "systems": "systems_2",
+        "nixpkgs": "nixpkgs",
+        "systems": "systems_3",
         "treefmt-nix": "treefmt-nix"
       },
       "locked": {
@@ -139,6 +179,22 @@
     },
     "nixpkgs": {
       "locked": {
+        "lastModified": 1788400875,
+        "narHash": "sha256-JIHQ6xNAN53cdo6zZ72LRcQ9lpvnABCnNE4hldJ5uZU=",
+        "owner": "NixOS",
+        "repo": "nixpkgs",
+        "rev": "5545adfad2e98de106a5544ca7067e03010410bd",
+        "type": "github"
+      },
+      "original": {
+        "owner": "NixOS",
+        "ref": "nixpkgs-unstable",
+        "repo": "nixpkgs",
+        "type": "github"
+      }
+    },
+    "nixpkgs_2": {
+      "locked": {
         "lastModified": 1788431191,
         "narHash": "sha256-MFClkboDeW56feBCAeAV3Z3J2quGSZFlAOXQ4JjIlIA=",
         "owner": "NixOS",
@@ -155,9 +211,9 @@
     },
     "root": {
       "inputs": {
+        "agy-nix": "agy-nix",
         "jailed-agents": "jailed-agents",
-        "llm-agents": "llm-agents",
-        "nixpkgs": "nixpkgs",
+        "nixpkgs": "nixpkgs_2",
         "treefmt-nix": "treefmt-nix_2"
       }
     },
@@ -191,9 +247,25 @@
         "type": "github"
       }
     },
+    "systems_3": {
+      "locked": {
+        "lastModified": 1681028828,
+        "narHash": "sha256-Vy1rq5AaRuLzOxct8nz4T6wlgyUR7zLU309k9mBC768=",
+        "owner": "nix-systems",
+        "repo": "default",
+        "rev": "da67096a3b9bf56a91d16901293e51ba5b49a27e",
+        "type": "github"
+      },
+      "original": {
+        "owner": "nix-systems",
+        "repo": "default",
+        "type": "github"
+      }
+    },
     "treefmt-nix": {
       "inputs": {
         "nixpkgs": [
+          "jailed-agents",
           "llm-agents",
           "nixpkgs"
         ]

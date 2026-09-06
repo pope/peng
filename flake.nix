@@ -3,16 +3,13 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
-    llm-agents = {
-      url = "github:numtide/llm-agents.nix";
+    agy-nix = {
+      url = "github:jacopone/antigravity-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     jailed-agents = {
       url = "github:andersonjoseph/jailed-agents";
-      inputs = {
-        nixpkgs.follows = "nixpkgs";
-        llm-agents.follows = "llm-agents";
-      };
+      inputs.nixpkgs.follows = "nixpkgs";
     };
     treefmt-nix = {
       url = "github:numtide/treefmt-nix";
@@ -22,9 +19,9 @@
 
   outputs =
     {
+      agy-nix,
       jailed-agents,
       nixpkgs,
-      llm-agents,
       self,
       treefmt-nix,
       ...
@@ -102,7 +99,7 @@
                 poop
                 (jailed-agents.lib.${system}.makeJailedAgent {
                   name = "agy";
-                  pkg = llm-agents.packages.${system}.antigravity-cli;
+                  pkg = agy-nix.packages.${system}.default;
                   baseJailOptions = with jail.combinators; [
                     (fwd-env "LD_LIBRARY_PATH")
                     (fwd-env "PATH")
@@ -112,7 +109,7 @@
                     network
                     no-new-session
                     time-zone
-                    wayland
+                    unsafe-dbus
                   ];
                   configPaths = [
                     "~/.antigravity"
