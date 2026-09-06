@@ -3,25 +3,23 @@
 //! Encapsulates all off-main-thread background tasks (image decoding, directory scanning,
 //! stdin reading, and IPC server socket listening) and provides clean worker lifecycle management.
 
-const std = @import("std");
 const app_state = @import("../state.zig");
-const ViewerState = app_state.ViewerState;
-const sdl = @import("sdl");
-
 pub const context = @import("context.zig");
 pub const decode = @import("decode.zig");
-pub const path_scan = @import("path_scan.zig");
-pub const stdin = @import("stdin.zig");
+const events = @import("../core/events.zig");
 pub const ipc_server = @import("ipc_server.zig");
 pub const palette_scan = @import("palette_scan.zig");
+pub const path_scan = @import("path_scan.zig");
+const sdl = @import("sdl");
+const std = @import("std");
+pub const stdin = @import("stdin.zig");
 
-const events = @import("../core/events.zig");
-
-pub const WorkerContext = context.WorkerContext;
 pub const DecodeArgs = decode.DecodeArgs;
+pub const PaletteScanArgs = palette_scan.PaletteScanArgs;
 pub const PathScanArgs = path_scan.PathScanArgs;
 pub const StdinArgs = stdin.StdinArgs;
-pub const PaletteScanArgs = palette_scan.PaletteScanArgs;
+const ViewerState = app_state.ViewerState;
+pub const WorkerContext = context.WorkerContext;
 
 /// WorkerManager manages background thread lifecycle, active thread counts,
 /// concurrency limits, worker cancellation, and event transport.

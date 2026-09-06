@@ -1,6 +1,8 @@
-const std = @import("std");
 const state_pkg = @import("state");
+const std = @import("std");
+
 const DirectoryEntry = state_pkg.DirectoryEntry;
+const MediaEntry = state_pkg.MediaEntry;
 
 /// Performs case-insensitive ASCII substring search, returning `true` if `needle` is found within `haystack`.
 pub fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
@@ -67,8 +69,6 @@ pub fn parseArchiveEntryPath(path: []const u8) ?ArchiveEntryPath {
     }
     return null;
 }
-
-const MediaEntry = @import("state").MediaEntry;
 
 /// Scans central directory headers in a CBZ ZIP archive, appending all discovered image entries to `list`.
 pub fn scanCbzImageEntries(gpa: std.mem.Allocator, io: std.Io, cbz_path: []const u8, list: *std.ArrayList(MediaEntry)) !void {

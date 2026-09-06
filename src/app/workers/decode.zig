@@ -1,15 +1,16 @@
-const std = @import("std");
-const sdl = @import("sdl");
-const core_fs = @import("../core/fs.zig");
-const image = @import("../core/image.zig");
-const exif = @import("../core/exif.zig");
 const context = @import("context.zig");
+const core_fs = @import("../core/fs.zig");
+const exif = @import("../core/exif.zig");
+const image = @import("../core/image.zig");
 const root = @import("root.zig");
-const WorkerManager = root.WorkerManager;
+const sdl = @import("sdl");
+const state_pkg = @import("state");
+const std = @import("std");
 
+const ArchiveMediaEntry = state_pkg.ArchiveMediaEntry;
 const CacheKey = image.CacheKey;
-
-const MediaEntry = @import("state").MediaEntry;
+const MediaEntry = state_pkg.MediaEntry;
+const WorkerManager = root.WorkerManager;
 
 /// Contextual arguments and configuration passed to background image decoding worker threads.
 pub const DecodeArgs = struct {
@@ -38,8 +39,6 @@ const DecompressCbzResult = struct {
     decompress_time_ms: f64,
     compressed_size: u64,
 };
-
-const ArchiveMediaEntry = @import("state").ArchiveMediaEntry;
 
 fn decompressCbzMediaEntry(
     alloc: std.mem.Allocator,
@@ -223,12 +222,12 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     const header_n = @min(read_n, 128 * 1024);
     const header_buf = file_bytes[0..header_n];
 
-    const exif_rot = exif.parseExifOrientation(header_buf) orelse 0.0;
-    if (exif_rot != 0.0) {
+    const orientation = exif.parseExifOrientation(header_buf) orelse .normal;
+    if (orientation != .normal) {
         workers.event_queue.push(alloc, io, .{
             .exif_orientation_parsed = .{
                 .key = key,
-                .orientation = exif_rot,
+                .orientation = orientation,
             },
         }) catch |err| std.log.err("Failed to push EXIF orientation event: {}", .{err});
         context.wakeUpMainThread();
@@ -272,7 +271,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                         .h = @floatFromInt(t_surf.h()),
                         .full_w = full_w,
                         .full_h = full_h,
-                        .exif_orientation = exif_rot,
+                        .orientation = orientation,
                         .thumb_only = args.thumb_only,
                     },
                 }) catch |err| {
@@ -299,7 +298,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                 .h = full_h,
                 .full_w = full_w,
                 .full_h = full_h,
-                .exif_orientation = exif_rot,
+                .orientation = orientation,
                 .thumb_only = true,
             },
         }) catch |err| {
@@ -411,7 +410,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                 .read_time_ms = read_time_ms,
                 .decode_time_ms = decode_time_ms,
                 .conversion_time_ms = conversion_time_ms,
-                .exif_orientation = exif_rot,
+                .orientation = orientation,
                 .cbz_decompress_time_ms = cbz_decompress_time_ms,
                 .compressed_size_bytes = compressed_size_bytes,
             },

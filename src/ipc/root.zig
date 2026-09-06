@@ -1,7 +1,8 @@
-const std = @import("std");
 const builtin = @import("builtin");
-const sdl = @import("sdl");
 const intents = @import("intents");
+const sdl = @import("sdl");
+const std = @import("std");
+
 const TextureScaleMode = intents.TextureScaleMode;
 
 extern "kernel32" fn GetCurrentProcessId() callconv(std.builtin.CallingConvention.winapi) u32;

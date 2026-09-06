@@ -1,13 +1,15 @@
-const std = @import("std");
-const sdl = @import("sdl");
-const clay = @import("zclay");
-const state = @import("state");
 const app_state = @import("../state.zig");
+const clay = @import("zclay");
 const intents = @import("intents");
-const FrameContext = @import("root.zig").FrameContext;
+const root = @import("root.zig");
+const sdl = @import("sdl");
+const state = @import("state");
+const std = @import("std");
+
+const AppState = app_state.AppState;
+const FrameContext = root.FrameContext;
 const Key = state.Key;
 const KeyModifiers = state.KeyModifiers;
-const AppState = app_state.AppState;
 const startTextInput = app_state.startTextInput;
 
 /// Central intent dispatcher. Maps an AppIntent variant to domain state mutations.
@@ -62,8 +64,8 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
         .reset_rotation => {
             if (nav.getCurrentImageEntry()) |entry| {
                 const path = entry.getPath();
-                const exif_rot = self.readJpegExifOrientation(path) orelse 0.0;
-                vp.rotation_angle = exif_rot;
+                const exif_rot = self.readJpegExifOrientation(path) orelse .normal;
+                vp.rotation_angle = exif_rot.toDegrees();
                 try self.putRotation(path, vp.rotation_angle);
             } else {
                 vp.rotation_angle = 0.0;

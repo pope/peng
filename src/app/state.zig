@@ -1,45 +1,41 @@
-const std = @import("std");
-const fuzzig = @import("fuzzig");
-const sdl = @import("sdl");
-const clay = @import("zclay");
-const state_pkg = @import("state");
-const types = state_pkg.types;
-const FrameInput = types.FrameInput;
 const app_input = @import("input");
-const image = @import("core/image.zig");
+const clay = @import("zclay");
 const core_fs = @import("core/fs.zig");
 const events = @import("core/events.zig");
-const ipc = @import("ipc");
 const exif = @import("core/exif.zig");
+const fuzzig = @import("fuzzig");
+const image = @import("core/image.zig");
+const intents = @import("intents");
+const ipc = @import("ipc");
+const palette_module = @import("core/palette.zig");
+const sdl = @import("sdl");
+const state_pkg = @import("state");
+const std = @import("std");
 const systems = @import("systems/root.zig");
 const workers_mod = @import("workers/root.zig");
 
-const view_transform = state_pkg.view_transform;
-
-const uploadSurfaceToGpu = image.uploadSurfaceToGpu;
-const CacheStatus = state_pkg.CacheStatus;
-const CacheEntry = state_pkg.CacheEntry;
-const CacheSlotMap = image.CacheSlotMap;
-const CacheKey = image.CacheKey;
-const TextureHandle = image.TextureHandle;
-const DecodeArgs = workers_mod.DecodeArgs;
-
-const intents = @import("intents");
-const ScaleMode = intents.ScaleMode;
-const TextureScaleMode = intents.TextureScaleMode;
-const PaletteMode = intents.PaletteMode;
+const ActiveWindow = state_pkg.ActiveWindow;
 const AppIntent = intents.AppIntent;
-
-const SlideshowMode = state_pkg.SlideshowMode;
-const OverlayState = state_pkg.OverlayState;
-const UiRenderMetrics = state_pkg.UiRenderMetrics;
-
-pub const ElementTag = state_pkg.ElementTag;
-
-const palette_module = @import("core/palette.zig");
-const PaletteState = state_pkg.PaletteState;
-
+const CacheEntry = state_pkg.CacheEntry;
+const CacheKey = image.CacheKey;
+const CacheSlotMap = image.CacheSlotMap;
+const CacheStatus = state_pkg.CacheStatus;
+const DecodeArgs = workers_mod.DecodeArgs;
+const DisplayState = state_pkg.DisplayState;
 const DragState = state_pkg.DragState;
+pub const ElementTag = state_pkg.ElementTag;
+const FrameInput = types.FrameInput;
+const OverlayState = state_pkg.OverlayState;
+const PaletteMode = intents.PaletteMode;
+const PaletteState = state_pkg.PaletteState;
+const ScaleMode = intents.ScaleMode;
+const SlideshowMode = state_pkg.SlideshowMode;
+const TextureHandle = image.TextureHandle;
+const TextureScaleMode = intents.TextureScaleMode;
+const types = state_pkg.types;
+const UiRenderMetrics = state_pkg.UiRenderMetrics;
+const uploadSurfaceToGpu = image.uploadSurfaceToGpu;
+const view_transform = state_pkg.view_transform;
 const ViewerState = state_pkg.ViewerState;
 
 /// Enables SDL text input events if the current display mode is windowed GUI.
@@ -88,17 +84,6 @@ pub fn matchesQueryLower(path: []const u8, query_lower: []const u8) bool {
     }
     return false;
 }
-
-/// Encapsulates resources and state specific to an active windowed GUI session.
-///
-/// Fields:
-/// - `handle`: The underlying SDL window handle for OS window operations.
-/// - `pixel_format`: Swapchain GPU texture format associated with the window.
-/// - `cached_title`: Heap-allocated buffer of the active window title to prevent redundant SDL title updates.
-/// - `is_fullscreen`: Boolean tracking whether the window is currently expanded to fullscreen.
-/// - `claimed`: True if the window has claimed focus and rendering output (false during headless tests).
-const ActiveWindow = state_pkg.ActiveWindow;
-const DisplayState = state_pkg.DisplayState;
 
 /// Cohesive GPU context and render resources initialized for GPU-accelerated rendering.
 /// Main Application State Architecture
@@ -173,8 +158,8 @@ pub const AppState = struct {
         return self.viewer.navigation.is_loading_files.load(.acquire) or self.workers.isBusy() or self.viewer.isSlideshowActive();
     }
 
-    /// Reads EXIF orientation degrees from a JPEG file header on disk, returning `null` if unparseable.
-    pub fn readJpegExifOrientation(self: *const AppState, path: []const u8) ?f32 {
+    /// Reads EXIF orientation from a JPEG file header on disk, returning `null` if unparseable.
+    pub fn readJpegExifOrientation(self: *const AppState, path: []const u8) ?state_pkg.Orientation {
         return exif.readJpegExifOrientation(self.io, path);
     }
 
@@ -598,7 +583,7 @@ pub const AppState = struct {
         if (self.viewer.rotation_map.get(media.getPath())) |user_rot| {
             self.viewer.viewport.rotation_angle = user_rot;
         } else if (self.getCurrentEntry()) |entry| {
-            self.viewer.viewport.rotation_angle = entry.exif_orientation;
+            self.viewer.viewport.rotation_angle = entry.orientation.toDegrees();
         } else {
             self.viewer.viewport.rotation_angle = 0.0;
         }
@@ -754,7 +739,7 @@ test "AppState.updateCurrentRotation syncs EXIF orientation" {
     // Simulate worker thread caching EXIF orientation of 90.0
     try state.cache.appendWithKey(std.testing.allocator, .{ .index = 0, .generation = 0 }, .{
         .status = .{ .decoding = .{} },
-        .exif_orientation = 90.0,
+        .orientation = .rotate_90,
     });
 
     // Calling updateCurrentRotation updates rotation_angle from entry

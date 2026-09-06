@@ -18,22 +18,54 @@
 
 - Pass C-string parameters using null-terminated slice types (`[:0]const u8`) rather than raw `[*c]const u8` pointers.
 
-## 5. Single Top-Level Module Import Standard
+## 5. Top-of-File Alphabetical Import Sorting & Alias Block Separation
 
-- Import external/internal project modules ONCE at the top of the file:
-  ```zig
-  const app = @import("app");
-  const app_state = app.state;
-  const types = app.types;
-  const CacheEntry = app.image.CacheEntry;
-  ```
-- Declare all type aliases as top-level `const` variables at the very top of the file. NEVER write inline `@import(...)` expressions inside function bodies, local blocks, or mid-file declarations.
+Every Zig source file MUST organize its module imports and symbol aliases into two distinct, alphabetically sorted header blocks separated by an empty line before any structs, functions, or logic:
 
-## 6. No Proxy Re-Exports
+1. **Block 1: Module Imports (`@import`)**
 
-- Do NOT re-export types from unrelated sub-modules (`pub const CacheEntry = image.CacheEntry` inside `state.zig`).
-- Do NOT add temporary or backward-compatibility type/function re-exports (e.g. `pub const StdinArgs = workers.StdinArgs;`) when refactoring code. Instead, update all call sites, usage, and tests across the codebase to reference the new authoritative home module directly.
-- Keep symbol declarations strictly in their home module so import paths remain authoritative and unit tests stay isolated.
+   - Every external package and internal source module MUST be imported ONCE at the very top of the file.
+   - Declarations MUST be sorted alphabetically by identifier name (`const app = @import("app"); ... const std = @import("std");`).
+   - NEVER mix symbol aliases (`const Symbol = mod.Symbol;`) into this block.
+
+2. **Block 2: Symbol Aliases & Destructuring**
+
+   - Placed immediately following the import block, separated by a single empty line.
+   - All extracted types, constants, and helper functions aliased from imported modules (`const AppState = app_state.AppState;`).
+   - Declarations MUST be sorted alphabetically by symbol name.
+
+3. **Strict Invariants**:
+
+   - **NO Inline `@import` Expressions**: NEVER write `@import(...)` inside function bodies, struct fields, or mid-file declarations (e.g., `const MediaEntry = @import("state").MediaEntry;` placed mid-file is forbidden).
+   - **Clean Scoping**: If a symbol is needed across multiple functions or struct scopes, alias it once in Block 2.
+
+```zig
+// GOOD: Canonical two-block header structure
+const app_state = @import("../state.zig");
+const image = @import("../core/image.zig");
+const root = @import("root.zig");
+const sdl = @import("sdl");
+const state_pkg = @import("state");
+const std = @import("std");
+const workers_mod = @import("../workers/root.zig");
+
+const AppState = app_state.AppState;
+const CacheEntry = state_pkg.CacheEntry;
+const CacheSlotMap = image.CacheSlotMap;
+const DecodeArgs = workers_mod.DecodeArgs;
+const FrameContext = root.FrameContext;
+const MediaEntry = state_pkg.MediaEntry;
+
+// Structs and function definitions begin here...
+```
+
+## 6. No Proxy Re-Exports or In-Flight Backward-Compatibility Aliases
+
+- **No Proxy Re-Exports**: Do NOT re-export types from unrelated sub-modules (e.g. `pub const CacheEntry = image.CacheEntry` inside `state.zig`). Keep symbol declarations strictly in their canonical home module so import paths remain authoritative and unit tests stay isolated.
+- **No In-Flight Backward-Compatibility Aliases**: When introducing, renaming, or refactoring symbols in an active change list or working branch, NEVER introduce backward-compatibility type/function aliases (e.g., `pub const OldName = NewName;`).
+  - Active CLs have zero backward-compatibility obligations.
+  - Update all call sites, event payloads, tests, and documentation directly to use the new canonical symbol.
+  - Delete superseded names completely so the public API remains minimal, unambiguous, and authoritative.
 
 ## 7. Result Location Initialization Style (`.empty`, `.init(...)`)
 

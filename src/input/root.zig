@@ -1,24 +1,22 @@
-const std = @import("std");
 const intents = @import("intents");
-const sdl = @import("sdl");
-
-pub const polling = @import("polling.zig");
 pub const key_mapping = @import("key_mapping.zig");
+pub const polling = @import("polling.zig");
+const sdl = @import("sdl");
+const std = @import("std");
+
+pub const FrameInputState = polling.FrameInputState;
+pub const KeyContext = key_mapping.KeyContext;
+pub const mapKeyToAction = key_mapping.mapKeyToAction;
+pub const mapKeyFromSdl = polling.mapKeyFromSdl;
+pub const mapModFromSdl = polling.mapModFromSdl;
+pub const MOUSE_WHEEL_SCROLL_MULTIPLIER = polling.MOUSE_WHEEL_SCROLL_MULTIPLIER;
+pub const pollFrameInput = polling.pollFrameInput;
+pub const processSDLEvent = polling.processSDLEvent;
 
 test {
     _ = key_mapping;
     _ = polling;
 }
-
-pub const mapKeyFromSdl = polling.mapKeyFromSdl;
-pub const mapModFromSdl = polling.mapModFromSdl;
-pub const FrameInputState = polling.FrameInputState;
-pub const processSDLEvent = polling.processSDLEvent;
-pub const pollFrameInput = polling.pollFrameInput;
-pub const MOUSE_WHEEL_SCROLL_MULTIPLIER = polling.MOUSE_WHEEL_SCROLL_MULTIPLIER;
-
-pub const KeyContext = key_mapping.KeyContext;
-pub const mapKeyToAction = key_mapping.mapKeyToAction;
 
 test "mapKeyToAction mapping" {
     const pan_left = mapKeyToAction(.left, .{}, .viewer_zoomed);

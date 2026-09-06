@@ -1,25 +1,26 @@
-const std = @import("std");
+const exif = @import("exif.zig");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
-const exif = @import("exif.zig");
+const std = @import("std");
 
-const JpegDimensions = exif.JpegDimensions;
-const parseExifDimensions = exif.parseExifDimensions;
-const parseExifOrientation = exif.parseExifOrientation;
-
-/// CPU surface component holding decoded image pixel buffer, dimensions, and decode timing.
+const CacheEntry = state_pkg.CacheEntry;
+const CacheStatus = state_pkg.CacheStatus;
 const CpuSurfaceComponent = state_pkg.CpuSurfaceComponent;
 const GpuTextureComponent = state_pkg.GpuTextureComponent;
-const ThumbComponent = state_pkg.ThumbComponent;
-const CacheStatus = state_pkg.CacheStatus;
-const CacheEntry = state_pkg.CacheEntry;
+const JpegDimensions = exif.JpegDimensions;
 pub const MediaEntry = state_pkg.MediaEntry;
+pub const Orientation = state_pkg.Orientation;
+const parseExifDimensions = exif.parseExifDimensions;
+const parseExifOrientation = exif.parseExifOrientation;
+const ThumbComponent = state_pkg.ThumbComponent;
 
 /// Unique lookup key identifying a cached image slot by its playlist index and cache generation epoch.
 pub const CacheKey = struct {
     index: usize,
     generation: usize,
 };
+
+/// Type alias identifying a GPU texture cached slot by its CacheKey.
 pub const TextureHandle = CacheKey;
 
 /// Cache slot structure binding a CacheKey to its active CacheEntry state.
@@ -350,10 +351,11 @@ pub fn parseImageDimensions(header: []const u8, mime_type: []const u8) ?ImageDim
     return null;
 }
 
+/// Container metadata discovered synchronously by probing file headers on the main thread (< 0.1ms).
 pub const ProbedImageMetadata = struct {
     dims: ImageDimensions,
-    /// EXIF rotation in degrees (0.0, 90.0, 180.0, 270.0) directly matching ViewportParams.rotation_angle.
-    orientation_degrees: f32 = 0.0,
+    /// Image orientation metadata.
+    orientation: Orientation = .normal,
 };
 
 /// Synchronously probes container headers for image dimensions and EXIF rotation in < 0.1ms
@@ -377,10 +379,10 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
 
             const mime_type = detectMimeType(header_buf[0..n], f.path);
             const dims = parseImageDimensions(header_buf[0..n], mime_type) orelse return null;
-            const rot = exif.parseExifOrientation(header_buf[0..n]) orelse 0.0;
+            const rot = exif.parseExifOrientation(header_buf[0..n]) orelse .normal;
             return ProbedImageMetadata{
                 .dims = dims,
-                .orientation_degrees = rot,
+                .orientation = rot,
             };
         },
         .archive_entry => |a| {
@@ -411,10 +413,10 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
                     const image_slice = header_buf[data_offset..n];
                     const mime_type = detectMimeType(image_slice, a.entry_name);
                     const dims = parseImageDimensions(image_slice, mime_type) orelse return null;
-                    const rot = exif.parseExifOrientation(image_slice) orelse 0.0;
+                    const rot = exif.parseExifOrientation(image_slice) orelse .normal;
                     return ProbedImageMetadata{
                         .dims = dims,
-                        .orientation_degrees = rot,
+                        .orientation = rot,
                     };
                 }
             }
@@ -1190,7 +1192,7 @@ test "probeMediaMetadata - filesystem JPEG" {
     if (meta) |m| {
         try std.testing.expectEqual(@as(f32, 1024.0), m.dims.w);
         try std.testing.expectEqual(@as(f32, 682.0), m.dims.h);
-        try std.testing.expectEqual(@as(f32, 0.0), m.orientation_degrees);
+        try std.testing.expectEqual(Orientation.normal, m.orientation);
     }
 }
 

@@ -1,5 +1,7 @@
+const intents = @import("intents");
 const std = @import("std");
-const ScaleMode = @import("intents").ScaleMode;
+
+const ScaleMode = intents.ScaleMode;
 
 pub const ParsedArgs = struct {
     arg_path: ?[]const u8,

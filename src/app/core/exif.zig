@@ -1,7 +1,12 @@
+const state_pkg = @import("state");
 const std = @import("std");
 
+const Orientation = state_pkg.Orientation;
+
+/// Floating-point dimensions (width and height) of a JPEG image in pixels.
 pub const JpegDimensions = struct { w: f32, h: f32 };
 
+/// Parsed TIFF payload header located within an APP1 EXIF segment.
 pub const TiffHeader = struct {
     tiff: []const u8,
     is_le: bool,
@@ -158,7 +163,7 @@ pub fn readJpegDimensions(data: []const u8) ?JpegDimensions {
     return null;
 }
 
-pub fn parseExifOrientation(data: []const u8) ?f32 {
+pub fn parseExifOrientation(data: []const u8) ?Orientation {
     const header = findTiffPayload(data) orelse return null;
     const tiff = header.tiff;
     const is_le = header.is_le;
@@ -176,22 +181,13 @@ pub fn parseExifOrientation(data: []const u8) ?f32 {
         const tag = if (is_le) std.mem.readInt(u16, entry[0..2][0..2], .little) else std.mem.readInt(u16, entry[0..2][0..2], .big);
         if (tag == 0x0112) {
             const val = if (is_le) std.mem.readInt(u16, entry[8..10][0..2], .little) else std.mem.readInt(u16, entry[8..10][0..2], .big);
-            return switch (val) {
-                1 => 0.0,
-                3 => 180.0,
-                6 => 90.0,
-                8 => 270.0,
-                5 => 270.0,
-                7 => 90.0,
-                4 => 180.0,
-                else => 0.0,
-            };
+            return Orientation.fromTiff(val);
         }
     }
     return null;
 }
 
-pub fn readJpegExifOrientation(io: std.Io, path: []const u8) ?f32 {
+pub fn readJpegExifOrientation(io: std.Io, path: []const u8) ?Orientation {
     const ext = std.fs.path.extension(path);
     if (!std.ascii.eqlIgnoreCase(ext, ".jpg") and !std.ascii.eqlIgnoreCase(ext, ".jpeg")) return null;
 
@@ -210,6 +206,7 @@ pub fn readJpegExifOrientation(io: std.Io, path: []const u8) ?f32 {
     return parseExifOrientation(buf[0..n]);
 }
 
+/// Byte offset and length of an embedded JPEG thumbnail inside an image file.
 pub const ThumbnailLocation = struct {
     file_offset: u64,
     length: u32,
@@ -303,7 +300,7 @@ pub fn extractJpegThumbnail(data: []const u8) ?[]const u8 {
 
 test "parseExifOrientation" {
     // 1. Invalid JPEG header -> null
-    try std.testing.expectEqual(@as(?f32, null), parseExifOrientation("not a jpeg file"));
+    try std.testing.expectEqual(@as(?Orientation, null), parseExifOrientation("not a jpeg file"));
 
     // 2. Little Endian EXIF with Orientation 6 (90 degrees)
     const le_exif = [_]u8{
@@ -321,7 +318,7 @@ test "parseExifOrientation" {
         0x06, 0x00, 0x00, 0x00, // Value 6 (90 degrees)
         0x00, 0x00, 0x00, 0x00, // Next IFD
     };
-    try std.testing.expectEqual(@as(?f32, 90.0), parseExifOrientation(&le_exif));
+    try std.testing.expectEqual(@as(?Orientation, .rotate_90), parseExifOrientation(&le_exif));
 
     // 3. Big Endian EXIF with Orientation 8 (270 degrees)
     const be_exif = [_]u8{
@@ -339,7 +336,7 @@ test "parseExifOrientation" {
         0x00, 0x08, 0x00, 0x00, // Value 8 (270 degrees)
         0x00, 0x00, 0x00, 0x00, // Next IFD
     };
-    try std.testing.expectEqual(@as(?f32, 270.0), parseExifOrientation(&be_exif));
+    try std.testing.expectEqual(@as(?Orientation, .rotate_270), parseExifOrientation(&be_exif));
 
     // 4. Big Endian EXIF with Orientation 3 (180 degrees)
     const be_exif_180 = [_]u8{
@@ -357,7 +354,7 @@ test "parseExifOrientation" {
         0x00, 0x03, 0x00, 0x00, // Value 3 (180 degrees)
         0x00, 0x00, 0x00, 0x00, // Next IFD
     };
-    try std.testing.expectEqual(@as(?f32, 180.0), parseExifOrientation(&be_exif_180));
+    try std.testing.expectEqual(@as(?Orientation, .rotate_180), parseExifOrientation(&be_exif_180));
 }
 
 test "readJpegExifOrientation on non-jpeg file" {
@@ -366,7 +363,7 @@ test "readJpegExifOrientation on non-jpeg file" {
     const io = io_threaded.io();
 
     const rot = readJpegExifOrientation(io, "src/main.zig");
-    try std.testing.expectEqual(@as(?f32, null), rot);
+    try std.testing.expectEqual(@as(?Orientation, null), rot);
 }
 
 test "extractJpegThumbnail" {

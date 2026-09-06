@@ -1,15 +1,15 @@
-const builtin = @import("builtin");
-const std = @import("std");
-const clay = @import("zclay");
-const ui = @import("ui");
-const app_config = @import("config");
 const app = @import("app");
-const ipc = @import("ipc");
+const app_config = @import("config");
+const build_options = @import("build_options");
+const builtin = @import("builtin");
+const clay = @import("zclay");
 const input = @import("input");
 const intents = @import("intents");
+const ipc = @import("ipc");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
-const build_options = @import("build_options");
+const std = @import("std");
+const ui = @import("ui");
 const viewer = @import("viewer");
 
 const LibViewer = struct {

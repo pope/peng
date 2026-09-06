@@ -1,11 +1,11 @@
-const std = @import("std");
-const state_pkg = @import("state");
 const core_fs = @import("fs.zig");
+const state_pkg = @import("state");
+const std = @import("std");
 
-const PaletteState = state_pkg.PaletteState;
-const PaletteModeData = state_pkg.PaletteModeData;
-const ScoredMatch = state_pkg.ScoredMatch;
 const DirectoryEntry = state_pkg.DirectoryEntry;
+const PaletteModeData = state_pkg.PaletteModeData;
+const PaletteState = state_pkg.PaletteState;
+const ScoredMatch = state_pkg.ScoredMatch;
 
 /// Populates directory entries for `dir_path` into `PaletteState`, tracks directory navigation history
 /// (including last-child directory tracking for upward navigation), increments scan generation,

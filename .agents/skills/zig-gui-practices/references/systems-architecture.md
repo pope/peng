@@ -66,3 +66,43 @@ ______________________________________________________________________
   - Prior to calling `ui.layout.renderFrame`, construct `UiViewModel` as a fully immutable snapshot struct containing const pointers and value types.
   - UI layout evaluation and vertex generation MUST NOT mutate `AppState` or push intents.
   - Any interactive element (e.g. palette search clicks, overlay close buttons) must have its hit testing and intent dispatch evaluated during Phase 2 system passes (`sysProcessPaletteInput`, `sysProcessUiInteractions`).
+
+______________________________________________________________________
+
+## Branchless Orthogonal Orientation & Compact Enum Math
+
+- **Rule 7 — Low-Bit Bounded Enum Transformations (`enum(u2)`)**:
+  - When handling multi-state spatial container metadata (such as TIFF 6.0 / EXIF 2.32 orientation tags 1..8):
+    1. **Collapse to 4 Orthogonal States**: A 2D viewer typically performs orthogonal 90° rotations. Collapse the 8 TIFF states down to a 4-state bounded enum:
+       ```zig
+       pub const Orientation = enum(u2) {
+           normal = 0,
+           rotate_90 = 1,
+           rotate_180 = 2,
+           rotate_270 = 3,
+
+           pub fn fromTiff(val: u16) Orientation {
+               return switch (val) {
+                   6, 7 => .rotate_90,
+                   3, 4 => .rotate_180,
+                   8, 5 => .rotate_270,
+                   else => .normal,
+               };
+           }
+
+           /// Branchless arithmetic conversion to floating-point degrees: index * 90.0.
+           pub inline fn toDegrees(self: Orientation) f32 {
+               return @as(f32, @floatFromInt(@intFromEnum(self))) * 90.0;
+           }
+
+           /// Branchless bitwise check: odd indices (1 and 3) swap width and height.
+           pub inline fn isDimensionSwapped(self: Orientation) bool {
+               return (@intFromEnum(self) & 1) != 0;
+           }
+       };
+       ```
+    2. **Architectural Benefits**:
+       - **Zero Branch Mispredictions**: `toDegrees()` executes as direct arithmetic (`val * 90.0`) without conditional jumps or branch prediction penalties.
+       - **Single Bit Test**: `isDimensionSwapped()` executes as a single bitwise AND (`test reg, 1`).
+       - **Cache Line Efficiency**: Shrinks orientation fields in cache slots from 4 bytes (`f32`) to 1 byte (`enum(u2)`).
+       - **Type Safety**: Replaces floating-point inequality checks (`rot != 0.0`) with compile-time verified enum comparisons (`orientation != .normal`).

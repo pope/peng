@@ -1,13 +1,17 @@
-const std = @import("std");
 const app_state = @import("../state.zig");
-const AppState = app_state.AppState;
-const state_pkg = @import("state");
-const CacheEntry = state_pkg.CacheEntry;
 const image = @import("../core/image.zig");
-const CacheSlotMap = image.CacheSlotMap;
-const workers_mod = @import("../workers/root.zig");
-const DecodeArgs = workers_mod.DecodeArgs;
+const root = @import("root.zig");
 const sdl = @import("sdl");
+const state_pkg = @import("state");
+const std = @import("std");
+const workers_mod = @import("../workers/root.zig");
+
+const AppState = app_state.AppState;
+const CacheEntry = state_pkg.CacheEntry;
+const CacheSlotMap = image.CacheSlotMap;
+const DecodeArgs = workers_mod.DecodeArgs;
+const FrameContext = root.FrameContext;
+const MediaEntry = state_pkg.MediaEntry;
 
 /// Spawns an asynchronous worker task to decode an image file from disk into RAM.
 ///
@@ -19,8 +23,6 @@ const sdl = @import("sdl");
 /// - `index`: Image list index being decoded.
 /// - `dup_path`: Null-terminated file path string.
 /// - `thumb_only`: If true, restricts decoding to low-resolution thumbnail for rapid scrolling.
-const MediaEntry = state_pkg.MediaEntry;
-
 fn spawnCacheDecodeSlot(state: *AppState, index: usize, entry_item: MediaEntry, thumb_only: bool) !void {
     const dup_entry = entry_item.dupe(state.allocator) catch |err| {
         std.log.err("Failed to dupe MediaEntry for decode worker: {}", .{err});
@@ -61,8 +63,6 @@ fn spawnCacheDecodeSlot(state: *AppState, index: usize, entry_item: MediaEntry, 
 
     try workers_mod.spawnDecode(args);
 }
-
-const FrameContext = @import("root.zig").FrameContext;
 
 /// System Pass: Update image RAM/GPU texture cache and background preloading window.
 pub fn sysUpdateCache(ctx: FrameContext) !void {
@@ -182,7 +182,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
                 if (image.probeMediaMetadata(state.io, state.viewer.navigation.image_list.items[idx])) |meta| {
                     entry.full_w = meta.dims.w;
                     entry.full_h = meta.dims.h;
-                    entry.exif_orientation = meta.orientation_degrees;
+                    entry.orientation = meta.orientation;
                     state.updateCurrentRotation();
                 }
             }

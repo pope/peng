@@ -7,8 +7,8 @@
 //! outside of `src/app/core/` (zero imports of `AppState`, systems, workers, or app actions).
 
 pub const events = @import("events.zig");
-pub const fs = @import("fs.zig");
 pub const exif = @import("exif.zig");
+pub const fs = @import("fs.zig");
 pub const image = @import("image.zig");
 pub const palette = @import("palette.zig");
 

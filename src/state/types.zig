@@ -1,9 +1,10 @@
-const std = @import("std");
-const sdl = @import("sdl");
+const clay = @import("zclay");
 const intents = @import("intents");
 const palette_state = @import("palette_state.zig");
-const clay = @import("zclay");
+const sdl = @import("sdl");
+const std = @import("std");
 
+/// Normalized texture UV coordinates defining a sub-rectangle for rendering and cropping.
 pub const UvRect = struct {
     u_min: f32 = 0.0,
     v_min: f32 = 0.0,
@@ -11,6 +12,7 @@ pub const UvRect = struct {
     v_max: f32 = 1.0,
 };
 
+/// Media entry descriptor for an image stored inside a compressed or uncompressed archive (CBZ, CBR, ZIP).
 pub const ArchiveMediaEntry = struct {
     archive_path: []const u8,
     entry_name: []const u8,
@@ -21,6 +23,7 @@ pub const ArchiveMediaEntry = struct {
     compression_method: ?u16 = null,
 };
 
+/// Discriminated union representing either a filesystem path or a virtual entry inside an archive.
 pub const MediaEntry = union(enum) {
     /// Standard file on local filesystem
     filesystem: struct {
@@ -84,6 +87,7 @@ pub const MediaEntry = union(enum) {
     }
 };
 
+/// Normalized keyboard key enumeration covering standard navigation, function, and alphanumeric keys.
 pub const Key = enum {
     unknown,
     escape,
@@ -143,6 +147,7 @@ pub const Key = enum {
     char_z,
 };
 
+/// Active keyboard modifier key state mask (Ctrl, Shift, Alt, GUI/Cmd).
 pub const KeyModifiers = struct {
     ctrl: bool = false,
     shift: bool = false,
@@ -183,6 +188,7 @@ pub const ZoomFactor = struct {
     }
 };
 
+/// Dynamic viewport display, scaling, pan offset, and color adjustment parameters.
 pub const ViewportParams = struct {
     fit_mode: intents.ScaleMode = .full,
     scale_filter: intents.TextureScaleMode = .linear,
@@ -266,6 +272,7 @@ pub const ViewportParams = struct {
     }
 };
 
+/// Render-time snapshot binding ViewportParams with physical window dimensions and high-DPI scaling factors.
 pub const ViewParams = struct {
     viewport: ViewportParams,
     win_w: f32,
@@ -287,6 +294,7 @@ pub const ViewParams = struct {
     }
 };
 
+/// Aggregated input events, mouse coordinates, keyboard actions, and window metrics for a single frame iteration.
 pub const FrameInput = struct {
     win_w: f32,
     win_h: f32,
@@ -329,11 +337,13 @@ pub const FrameInput = struct {
     }
 };
 
+/// Single keyboard key and modifier combination bound to an application action.
 pub const KeyboardShortcut = struct {
     key: Key,
     mod: KeyModifiers = .{},
 };
 
+/// Metadata describing an action executable from the Command Palette, including its shortcut and intent.
 pub const ActionMetadata = struct {
     name: []const u8,
     shortcut_text: []const u8,
@@ -387,6 +397,7 @@ pub const palette_action_items = [_]ActionMetadata{
     .{ .name = "Stop Slide Show", .shortcut_text = "", .show_in_palette = true, .shortcuts = &.{}, .intent = .stop_slideshow },
 };
 
+/// Flattened keyboard shortcut entry mapping a specific key and modifier combination directly to an AppIntent.
 pub const FlatShortcut = struct {
     key: Key,
     mod: KeyModifiers,
@@ -413,6 +424,7 @@ pub const flat_shortcuts = blk: {
     break :blk list;
 };
 
+/// Unique identification tags for interactive Clay UI layout elements.
 pub const ElementTag = enum(usize) {
     none = 0,
     image_viewer = 1,
@@ -431,6 +443,7 @@ pub const ElementTag = enum(usize) {
     }
 };
 
+/// Visibility flags and floating panel positions for on-screen HUD overlays (info, stats, debug).
 pub const OverlayState = struct {
     show_info: bool = false,
     show_stats: bool = false,
@@ -446,6 +459,7 @@ pub const OverlayState = struct {
     last_win_h: f32 = 0.0,
 };
 
+/// Rolling window of recent frame render duration samples computing mean and standard deviation.
 pub const RenderStats = struct {
     samples: [60]f64 = [_]f64{0.0} ** 60,
     head: usize = 0,
@@ -488,6 +502,7 @@ pub const RenderStats = struct {
     }
 };
 
+/// Snapshot of UI rendering timing statistics, batch counts, and vertex counts for on-screen telemetry.
 pub const UiRenderMetricsSnapshot = struct {
     mean_render_time_ms: f64 = 0.0,
     stdev_render_time_ms: f64 = 0.0,
@@ -495,6 +510,7 @@ pub const UiRenderMetricsSnapshot = struct {
     last_ui_batch_count: usize = 0,
 };
 
+/// UI frame rendering performance metrics, vertex counts, batch counts, and rolling duration history.
 pub const UiRenderMetrics = struct {
     last_ui_render_time_ms: f64 = 0.0,
     ui_render_stats: RenderStats = .{},
@@ -512,6 +528,7 @@ pub const UiRenderMetrics = struct {
     }
 };
 
+/// Decoded CPU software surface stored in host RAM along with image dimensions and decompression timing.
 pub const CpuSurfaceComponent = struct {
     surface: sdl.Surface,
     w: f32,
@@ -525,6 +542,7 @@ pub const CpuSurfaceComponent = struct {
     compressed_size_bytes: usize = 0,
 };
 
+/// Resident GPU texture allocation and VRAM memory footprint metadata uploaded to the graphics device.
 pub const GpuTextureComponent = struct {
     gpu_texture: sdl.gpu.Texture,
     w: f32,
@@ -544,6 +562,7 @@ pub const GpuTextureComponent = struct {
     compressed_size_bytes: usize = 0,
 };
 
+/// Decoded thumbnail GPU texture handle and pixel dimensions.
 pub const ThumbComponent = struct {
     texture: sdl.gpu.Texture,
     w: f32,
@@ -551,6 +570,7 @@ pub const ThumbComponent = struct {
     upload_time_ms: f64,
 };
 
+/// State lifecycle of an image in the cache (decoding, loaded in RAM, resident in VRAM, uploading, failed).
 pub const CacheStatus = union(enum) {
     decoding: struct {
         has_thread: bool = false,
@@ -561,12 +581,14 @@ pub const CacheStatus = union(enum) {
     failed: void,
 };
 
+/// Lightweight thumbnail dimension and GPU upload latency metadata.
 pub const ThumbnailInfo = struct {
     w: f32 = 0.0,
     h: f32 = 0.0,
     upload_time_ms: f64 = 0.0,
 };
 
+/// State of a cached image's preview thumbnail (none, unloaded dimensions, or uploaded GPU texture).
 pub const ThumbnailState = union(enum) {
     none,
     unloaded: ThumbnailInfo,
@@ -584,12 +606,44 @@ pub const ThumbnailState = union(enum) {
     }
 };
 
+/// 4-state orthogonal image orientation enum (0°, 90°, 180°, 270°).
+///
+/// Collapses TIFF EXIF tags 1..8 into the 4 orthogonal rotation states supported by the viewer.
+/// Provides branchless scalar degree conversion and dimension swap checks.
+pub const Orientation = enum(u2) {
+    normal = 0,
+    rotate_90 = 1,
+    rotate_180 = 2,
+    rotate_270 = 3,
+
+    /// Maps TIFF 6.0 / EXIF 2.32 orientation tag values (1..8) to the 4 orthogonal rotation states.
+    pub fn fromTiff(val: u16) Orientation {
+        return switch (val) {
+            6, 7 => .rotate_90,
+            3, 4 => .rotate_180,
+            8, 5 => .rotate_270,
+            else => .normal,
+        };
+    }
+
+    /// Direct branchless arithmetic conversion to floating-point degrees: index * 90.0.
+    pub inline fn toDegrees(self: Orientation) f32 {
+        return @as(f32, @floatFromInt(@intFromEnum(self))) * 90.0;
+    }
+
+    /// Branchless bitwise check: odd indices (1 and 3) swap width and height.
+    pub inline fn isDimensionSwapped(self: Orientation) bool {
+        return (@intFromEnum(self) & 1) != 0;
+    }
+};
+
+/// Cache slot structure storing image decode status, thumbnail texture, full dimensions, and orientation.
 pub const CacheEntry = struct {
     status: CacheStatus,
     thumbnail: ThumbnailState = .none,
     full_w: f32 = 0.0,
     full_h: f32 = 0.0,
-    exif_orientation: f32 = 0.0,
+    orientation: Orientation = .normal,
 
     pub fn deinit(self: *CacheEntry, gpu_device: ?sdl.gpu.Device) void {
         switch (self.thumbnail) {
@@ -614,6 +668,7 @@ pub const CacheEntry = struct {
     }
 };
 
+/// Automatic slideshow playback mode, advance interval, and accumulated frame timer.
 pub const SlideshowMode = union(enum) {
     inactive,
     active: struct {
@@ -681,6 +736,7 @@ pub const ViewerStats = struct {
     active_image: ActiveImageStats = .{},
 };
 
+/// Complete read-only UI frame snapshot separating the application update phase from the render phase.
 pub const UiViewModel = struct {
     is_fullscreen: bool,
     total_images: usize,
@@ -700,12 +756,14 @@ pub const UiViewModel = struct {
     render_metrics: UiRenderMetricsSnapshot = .{},
 };
 
+/// User data context passed to Clay text measurement callbacks containing font handles and debug flags.
 pub const MeasureTextUserData = struct {
     fonts: []const ?sdl.Font,
     is_debug_measuring: bool = false,
     allocator: std.mem.Allocator = undefined,
 };
 
+/// Claimed SDL window handle, pixel format, fullscreen state, and title string cache.
 pub const ActiveWindow = struct {
     handle: sdl.Window,
     pixel_format: u32 = sdl.PixelFormat.unknown,
@@ -720,6 +778,7 @@ pub const ActiveWindow = struct {
     }
 };
 
+/// Display mode representing either a windowed SDL environment or a headless test harness.
 pub const DisplayState = union(enum) {
     headless,
     windowed: ActiveWindow,
@@ -765,6 +824,7 @@ pub const DisplayState = union(enum) {
     }
 };
 
+/// Pending asynchronous screenshot request with target destination path and IPC stream.
 pub const ActiveScreenshot = struct {
     path: [:0]const u8,
     stream: std.Io.net.Stream,
@@ -799,6 +859,7 @@ pub const ActiveScreenshot = struct {
     }
 };
 
+/// Represents current active mouse drag interaction state across the viewer UI.
 pub const DragState = union(enum) {
     none,
     viewport: struct {
@@ -815,6 +876,7 @@ pub const DragState = union(enum) {
     },
 };
 
+/// Stops SDL text input processing if a windowed display is active.
 pub fn stopTextInput(display: DisplayState) void {
     switch (display) {
         .headless => {},
@@ -877,4 +939,34 @@ test "ViewportParams.getShaderScaleModeInt maps filters including lanczos3 and l
 
     params.scale_filter = .mitchell;
     try std.testing.expectEqual(@as(i32, 3), params.getShaderScaleModeInt());
+}
+
+test "Orientation.fromTiff and branchless math" {
+    // Tag 1 (normal) and 2 (flip horizontal) -> normal (0°)
+    try std.testing.expectEqual(Orientation.normal, Orientation.fromTiff(1));
+    try std.testing.expectEqual(Orientation.normal, Orientation.fromTiff(2));
+    try std.testing.expectEqual(@as(f32, 0.0), Orientation.normal.toDegrees());
+    try std.testing.expect(!Orientation.normal.isDimensionSwapped());
+
+    // Tag 6 (rotate 90 CW) and 7 (transverse) -> rotate_90 (90°)
+    try std.testing.expectEqual(Orientation.rotate_90, Orientation.fromTiff(6));
+    try std.testing.expectEqual(Orientation.rotate_90, Orientation.fromTiff(7));
+    try std.testing.expectEqual(@as(f32, 90.0), Orientation.rotate_90.toDegrees());
+    try std.testing.expect(Orientation.rotate_90.isDimensionSwapped());
+
+    // Tag 3 (rotate 180) and 4 (flip vertical) -> rotate_180 (180°)
+    try std.testing.expectEqual(Orientation.rotate_180, Orientation.fromTiff(3));
+    try std.testing.expectEqual(Orientation.rotate_180, Orientation.fromTiff(4));
+    try std.testing.expectEqual(@as(f32, 180.0), Orientation.rotate_180.toDegrees());
+    try std.testing.expect(!Orientation.rotate_180.isDimensionSwapped());
+
+    // Tag 8 (rotate 270 CW) and 5 (transpose) -> rotate_270 (270°)
+    try std.testing.expectEqual(Orientation.rotate_270, Orientation.fromTiff(8));
+    try std.testing.expectEqual(Orientation.rotate_270, Orientation.fromTiff(5));
+    try std.testing.expectEqual(@as(f32, 270.0), Orientation.rotate_270.toDegrees());
+    try std.testing.expect(Orientation.rotate_270.isDimensionSwapped());
+
+    // Out of range / unknown tag values default to normal (0°)
+    try std.testing.expectEqual(Orientation.normal, Orientation.fromTiff(0));
+    try std.testing.expectEqual(Orientation.normal, Orientation.fromTiff(99));
 }

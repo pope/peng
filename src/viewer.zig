@@ -1,11 +1,11 @@
-const std = @import("std");
-const clay = @import("zclay");
-const state_pkg = @import("state");
-const ui = @import("ui");
 const app = @import("app");
-const ipc = @import("ipc");
+const clay = @import("zclay");
 const input_pkg = @import("input");
+const ipc = @import("ipc");
 const sdl = @import("sdl");
+const state_pkg = @import("state");
+const std = @import("std");
+const ui = @import("ui");
 
 /// Entry point for loading dynamic UI resources / assets.
 pub fn loadAssets() !void {

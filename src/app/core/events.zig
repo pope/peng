@@ -1,16 +1,20 @@
-const std = @import("std");
-const sdl = @import("sdl");
-const ipc = @import("ipc");
 const image = @import("image.zig");
-const CacheKey = image.CacheKey;
+const ipc = @import("ipc");
+const sdl = @import("sdl");
+const state_pkg = @import("state");
+const std = @import("std");
 
-/// Payload carrying parsed EXIF orientation metadata for a cached image.
+const CacheKey = image.CacheKey;
+const MediaEntry = state_pkg.MediaEntry;
+const Orientation = state_pkg.Orientation;
+
+/// Payload carrying parsed orientation metadata for a cached image.
 pub const ExifParsedPayload = struct {
     key: CacheKey,
-    orientation: f32,
+    orientation: Orientation,
 };
 
-/// Payload carrying a decoded embedded EXIF or fast-scroll preview thumbnail surface and dimension metadata.
+/// Payload carrying a decoded embedded thumbnail or fast-scroll preview surface and dimension metadata.
 pub const ThumbDecodedPayload = struct {
     key: CacheKey,
     surface: ?sdl.Surface,
@@ -18,7 +22,7 @@ pub const ThumbDecodedPayload = struct {
     h: f32,
     full_w: f32,
     full_h: f32,
-    exif_orientation: f32,
+    orientation: Orientation,
     thumb_only: bool = false,
 };
 
@@ -33,7 +37,7 @@ pub const ImageDecodedPayload = struct {
     read_time_ms: f64,
     decode_time_ms: f64,
     conversion_time_ms: f64,
-    exif_orientation: f32,
+    orientation: Orientation,
     cbz_decompress_time_ms: f64 = 0.0,
     compressed_size_bytes: usize = 0,
 };
@@ -42,8 +46,6 @@ pub const ImageDecodedPayload = struct {
 pub const DecodeFailedPayload = struct {
     key: CacheKey,
 };
-
-const MediaEntry = @import("state").MediaEntry;
 
 /// Payload emitted when a valid image file path is discovered during stream or recursive scans.
 pub const PathDiscoveredPayload = struct {

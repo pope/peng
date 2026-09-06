@@ -1,11 +1,13 @@
-const std = @import("std");
 const app_state = @import("state.zig");
-const AppState = app_state.AppState;
-const state_pkg = @import("state");
 const events = @import("core/events.zig");
 const image = @import("core/image.zig");
 const ipc = @import("ipc");
 const sdl = @import("sdl");
+const state_pkg = @import("state");
+const std = @import("std");
+
+const AppState = app_state.AppState;
+const Orientation = state_pkg.Orientation;
 
 /// Drains all background thread events (e.g. image decodes, thumbnail extractions, directory scans,
 /// folder count updates, and IPC commands) from `workers.event_queue`.
@@ -22,7 +24,7 @@ pub fn drainWorkerEvents(state: *AppState) bool {
         switch (evt.*) {
             .exif_orientation_parsed => |e| {
                 if (state.cache.get(e.key)) |entry| {
-                    entry.exif_orientation = e.orientation;
+                    entry.orientation = e.orientation;
                 }
                 state.updateCurrentRotation();
             },
@@ -78,8 +80,8 @@ pub fn drainWorkerEvents(state: *AppState) bool {
 
 fn handleExifThumbnailEvent(state: *AppState, thumb_data: events.ThumbDecodedPayload) void {
     if (state.cache.get(thumb_data.key)) |entry| {
-        if (thumb_data.exif_orientation != 0.0) {
-            entry.exif_orientation = thumb_data.exif_orientation;
+        if (thumb_data.orientation != .normal) {
+            entry.orientation = thumb_data.orientation;
         }
         if (thumb_data.full_w > 0 and thumb_data.full_h > 0) {
             entry.full_w = thumb_data.full_w;
@@ -156,7 +158,7 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
                     .loaded_gpu => |gpu| gpu_dev.releaseTexture(gpu.gpu_texture),
                     else => {},
                 }
-                entry.exif_orientation = decoded_data.exif_orientation;
+                entry.orientation = decoded_data.orientation;
                 entry.status = .{
                     .loaded_gpu = .{
                         .gpu_texture = full_res.gpu_texture,
@@ -189,7 +191,7 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
                 .loaded_cpu => |cpu| cpu.surface.destroy(),
                 else => {},
             }
-            entry.exif_orientation = decoded_data.exif_orientation;
+            entry.orientation = decoded_data.orientation;
             entry.status = .{
                 .loaded_cpu = .{
                     .surface = decoded_data.surface.?,
@@ -313,10 +315,10 @@ test "drainWorkerEvents - exif_orientation_parsed & decode_failed" {
         .status = .{ .decoding = .{ .has_thread = true } },
     });
 
-    try state.workers.event_queue.push(allocator, io, .{ .exif_orientation_parsed = .{ .key = state.cache.activeKey(0), .orientation = 90.0 } });
+    try state.workers.event_queue.push(allocator, io, .{ .exif_orientation_parsed = .{ .key = state.cache.activeKey(0), .orientation = .rotate_90 } });
     const processed1 = drainWorkerEvents(&state);
     try std.testing.expect(processed1);
-    try std.testing.expectEqual(@as(f32, 90.0), state.cache.slots.items(.entry)[0].exif_orientation);
+    try std.testing.expectEqual(Orientation.rotate_90, state.cache.slots.items(.entry)[0].orientation);
 
     try state.workers.event_queue.push(allocator, io, .{ .decode_failed = .{ .key = state.cache.activeKey(0) } });
     const processed2 = drainWorkerEvents(&state);
@@ -396,7 +398,7 @@ test "drainWorkerEvents - neighbor image_decoded stays loaded_cpu while current 
             .read_time_ms = 1.0,
             .decode_time_ms = 2.0,
             .conversion_time_ms = 0.0,
-            .exif_orientation = 0.0,
+            .orientation = .normal,
         },
     });
 
@@ -429,7 +431,7 @@ test "drainWorkerEvents - thumb_decoded without surface sets dimensions and clea
             .h = 1080.0,
             .full_w = 1920.0,
             .full_h = 1080.0,
-            .exif_orientation = 0.0,
+            .orientation = .normal,
             .thumb_only = true,
         },
     });
