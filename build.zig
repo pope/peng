@@ -286,8 +286,10 @@ pub fn build(b: *std.Build) void {
 }
 
 /// Configures GLSL to SPIR-V and SPIR-V to MSL compilation for all shader stages in src/ui/shaders.
+/// Uses content-addressed caching with declared inputs and outputs so unmodified shaders are not recompiled.
 fn setupShaderCompilation(b: *std.Build) *std.Build.Step {
     const compile_shaders = b.step("shaders", "Compile shaders");
+    const update_shaders = b.addUpdateSourceFiles();
 
     const ShaderDef = struct {
         stage: []const u8,
@@ -329,9 +331,9 @@ fn setupShaderCompilation(b: *std.Build) *std.Build.Step {
     };
 
     for (shader_defs) |def| {
-        const src_path = b.fmt("src/ui/shaders/{s}", .{def.src_name});
-        const spv_path = b.fmt("src/ui/shaders/{s}.spv", .{def.out_name});
-        const msl_path = b.fmt("src/ui/shaders/{s}.msl", .{def.out_name});
+        const src_rel = b.fmt("src/ui/shaders/{s}", .{def.src_name});
+        const spv_rel = b.fmt("src/ui/shaders/{s}.spv", .{def.out_name});
+        const msl_rel = b.fmt("src/ui/shaders/{s}.msl", .{def.out_name});
 
         const spv_cmd = b.addSystemCommand(&.{
             "glslangValidator",
@@ -339,22 +341,22 @@ fn setupShaderCompilation(b: *std.Build) *std.Build.Step {
             "-Os",
             "-S",
             def.stage,
-            src_path,
-            "-o",
-            spv_path,
         });
+        spv_cmd.addFileArg(b.path(src_rel));
+        spv_cmd.addArg("-o");
+        const spv_out = spv_cmd.addOutputFileArg(b.fmt("{s}.spv", .{def.out_name}));
 
         const msl_cmd = b.addSystemCommand(&.{
             "spirv-cross",
-            spv_path,
-            "--msl",
-            "--output",
-            msl_path,
         });
-        msl_cmd.step.dependOn(&spv_cmd.step);
+        msl_cmd.addFileArg(spv_out);
+        msl_cmd.addArgs(&.{ "--msl", "--output" });
+        const msl_out = msl_cmd.addOutputFileArg(b.fmt("{s}.msl", .{def.out_name}));
 
-        compile_shaders.dependOn(&msl_cmd.step);
+        update_shaders.addCopyFileToSource(spv_out, spv_rel);
+        update_shaders.addCopyFileToSource(msl_out, msl_rel);
     }
 
+    compile_shaders.dependOn(&update_shaders.step);
     return compile_shaders;
 }
