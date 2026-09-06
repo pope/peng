@@ -7,10 +7,7 @@
       url = "github:jacopone/antigravity-nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    jailed-agents = {
-      url = "github:andersonjoseph/jailed-agents";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
+    jail-nix.url = "sourcehut:~alexdavid/jail.nix";
     treefmt-nix = {
       url = "github:numtide/treefmt-nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -20,7 +17,7 @@
   outputs =
     {
       agy-nix,
-      jailed-agents,
+      jail-nix,
       nixpkgs,
       self,
       treefmt-nix,
@@ -62,7 +59,7 @@
           });
           sdl3-image = pkgs.sdl3-image.override { enableSTB = false; };
           peng = pkgs.callPackage ./nix/peng.nix { inherit sdl3-image; };
-          jail = jailed-agents.lib.${system}.internals.jail;
+          jail = jail-nix.lib.init pkgs;
           updateNixDeps = pkgs.writeShellApplication {
             name = "update-nix-deps";
             runtimeInputs = with pkgs; [
@@ -97,10 +94,9 @@
               ++ lib.optionals stdenv.hostPlatform.isLinux [
                 perf
                 poop
-                (jailed-agents.lib.${system}.makeJailedAgent {
-                  name = "agy";
-                  pkg = agy-nix.packages.${system}.default;
-                  baseJailOptions = with jail.combinators; [
+                (jail "agy" agy-nix.packages.${system}.default (
+                  with jail.combinators;
+                  [
                     (fwd-env "LD_LIBRARY_PATH")
                     (fwd-env "PATH")
                     (fwd-env "PKG_CONFIG_PATH")
@@ -110,13 +106,33 @@
                     no-new-session
                     time-zone
                     unsafe-dbus
-                  ];
-                  configPaths = [
-                    "~/.antigravity"
-                    "~/.gemini"
-                  ];
-                  extraReadonlyDirs = [ "/nix/store" ];
-                })
+                    mount-cwd
+                    (readwrite (noescape "~/.antigravity"))
+                    (readwrite (noescape "~/.gemini"))
+                    (readonly (noescape "/nix/store"))
+                    (add-pkg-deps (
+                      with pkgs;
+                      [
+                        bashInteractive
+                        curl
+                        diffutils
+                        findutils
+                        gawkInteractive
+                        git
+                        gnugrep
+                        gnused
+                        gnutar
+                        gzip
+                        jq
+                        ps
+                        ripgrep
+                        unzip
+                        wget
+                        which
+                      ]
+                    ))
+                  ]
+                ))
               ];
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
               pkgs.lib.optionals pkgs.stdenv.hostPlatform.isLinux [
