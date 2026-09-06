@@ -36,7 +36,7 @@ fn runUpdatePhase(
     const palette_closed_this_frame = try app.systems.sysProcessPaletteInput(ctx);
 
     // Keyboard & File Drop Input System (maps keypresses -> pending_intents)
-    try app.systems.sysProcessInput(ctx);
+    try app.systems.sysProcessInput(ctx, palette_closed_this_frame);
 
     // UI Discrete Interactions (overlay close buttons)
     app.systems.sysProcessUiInteractions(ctx);

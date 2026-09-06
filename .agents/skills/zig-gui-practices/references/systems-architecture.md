@@ -10,7 +10,7 @@ All system functions under `src/app/systems/` in `peng-sys` must strictly comply
   - The system passes execute sequentially in deterministic order:
     01. `sysExecuteIpcCommands(ctx)`: Ingests & dispatches IPC socket commands -> `pending_intents`.
     02. `sysProcessPaletteInput(ctx)`: Handles command palette query, item selection & click-outside -> `pending_intents`.
-    03. `sysProcessInput(ctx)`: Maps keyboard input & file drop events -> `pending_intents`.
+    03. `sysProcessInput(ctx, palette_closed)`: Maps keyboard input & file drop events -> `pending_intents`.
     04. `sysProcessUiInteractions(ctx)`: Resolves pointer hover/click interactions for UI close buttons -> `pending_intents`.
     05. `sysUpdateViewport(ctx, palette_closed)` & `sysUpdateSlideshow(ctx)`: Updates motion deltas & slideshow timers -> `pending_intents`.
     06. `sysSyncWindow(ctx)`: Synchronizes OS window title and display fullscreen/state.
