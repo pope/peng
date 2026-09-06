@@ -93,6 +93,7 @@
                 poop
                 (jailed-antigravity.lib.${system}.makeJailedAntigravity (
                   { agy, ... }: {
+                    inherit pkgs;
                     package = agy.google-antigravity;
                     codePaths = [
                       "~/Code/jailed-antigravity"
