@@ -1,9 +1,10 @@
 {
   "nodes": {
-    "agy-nix": {
+    "antigravity-nix": {
       "inputs": {
         "flake-utils": "flake-utils",
         "nixpkgs": [
+          "jailed-antigravity",
           "nixpkgs"
         ]
       },
@@ -54,13 +55,32 @@
         "type": "sourcehut"
       }
     },
+    "jailed-antigravity": {
+      "inputs": {
+        "antigravity-nix": "antigravity-nix",
+        "jail-nix": "jail-nix",
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1788714970,
+        "narHash": "sha256-9QTQp4PiGfJ4rGDK7m+sfxGqpFcM9nXpcVGyAizr6uw=",
+        "path": "/home/pope/Code/jailed-antigravity",
+        "type": "path"
+      },
+      "original": {
+        "path": "/home/pope/Code/jailed-antigravity",
+        "type": "path"
+      }
+    },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1788431191,
-        "narHash": "sha256-MFClkboDeW56feBCAeAV3Z3J2quGSZFlAOXQ4JjIlIA=",
+        "lastModified": 1788549839,
+        "narHash": "sha256-kOrCcSIA6w9J1hX5DqHy2k9pDTJymExTsbV74U9UtCA=",
         "owner": "NixOS",
         "repo": "nixpkgs",
-        "rev": "9b9402b959a2276982ddd5ad3652a38b97f7c40b",
+        "rev": "17de0b976395537756f30a3e78f2f06e5cec89ed",
         "type": "github"
       },
       "original": {
@@ -72,8 +92,7 @@
     },
     "root": {
       "inputs": {
-        "agy-nix": "agy-nix",
-        "jail-nix": "jail-nix",
+        "jailed-antigravity": "jailed-antigravity",
         "nixpkgs": "nixpkgs",
         "treefmt-nix": "treefmt-nix"
       }

@@ -3,11 +3,10 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
-    agy-nix = {
-      url = "github:jacopone/antigravity-nix";
+    jailed-antigravity = {
+      url = "path:/home/pope/Code/jailed-antigravity";
       inputs.nixpkgs.follows = "nixpkgs";
     };
-    jail-nix.url = "sourcehut:~alexdavid/jail.nix";
     treefmt-nix = {
       url = "github:numtide/treefmt-nix";
       inputs.nixpkgs.follows = "nixpkgs";
@@ -16,8 +15,7 @@
 
   outputs =
     {
-      agy-nix,
-      jail-nix,
+      jailed-antigravity,
       nixpkgs,
       self,
       treefmt-nix,
@@ -59,7 +57,6 @@
           });
           sdl3-image = pkgs.sdl3-image.override { enableSTB = false; };
           peng = pkgs.callPackage ./nix/peng.nix { inherit sdl3-image; };
-          jail = jail-nix.lib.init pkgs;
           updateNixDeps = pkgs.writeShellApplication {
             name = "update-nix-deps";
             runtimeInputs = with pkgs; [
@@ -94,44 +91,18 @@
               ++ lib.optionals stdenv.hostPlatform.isLinux [
                 perf
                 poop
-                (jail "agy" agy-nix.packages.${system}.default (
-                  with jail.combinators;
-                  [
-                    (fwd-env "LD_LIBRARY_PATH")
-                    (fwd-env "PATH")
-                    (fwd-env "PKG_CONFIG_PATH")
-                    gpu
-                    gui
-                    network
-                    no-new-session
-                    time-zone
-                    unsafe-dbus
-                    mount-cwd
-                    (readwrite (noescape "~/.antigravity"))
-                    (readwrite (noescape "~/.gemini"))
-                    (readonly (noescape "/nix/store"))
-                    (add-pkg-deps (
-                      with pkgs;
-                      [
-                        bashInteractive
-                        curl
-                        diffutils
-                        findutils
-                        gawkInteractive
-                        git
-                        gnugrep
-                        gnused
-                        gnutar
-                        gzip
-                        jq
-                        ps
-                        ripgrep
-                        unzip
-                        wget
-                        which
-                      ]
-                    ))
-                  ]
+                (jailed-antigravity.lib.${system}.makeJailedAntigravity (
+                  { agy, ... }: {
+                    package = agy.google-antigravity;
+                    codePaths = [
+                      "~/Code/jailed-antigravity"
+                    ];
+                    fwdEnv = [
+                      "LD_LIBRARY_PATH"
+                      "PATH"
+                      "PKG_CONFIG_PATH"
+                    ];
+                  }
                 ))
               ];
             LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath (
