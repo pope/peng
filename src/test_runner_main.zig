@@ -1,7 +1,7 @@
 const sdl = @import("sdl");
 const std = @import("std");
 
-pub const CompareResult = struct {
+const CompareResult = struct {
     mismatched_pixels: u32,
     pct: f64,
 };

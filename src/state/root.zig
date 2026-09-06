@@ -40,7 +40,6 @@ pub const Orientation = types.Orientation;
 pub const OverlayState = types.OverlayState;
 pub const palette_action_items = types.palette_action_items;
 pub const PaletteConfig = palette_state.PaletteConfig;
-pub const PaletteModeData = palette_state.PaletteModeData;
 pub const PaletteState = palette_state.PaletteState;
 pub const ScoredMatch = palette_state.ScoredMatch;
 pub const SlideshowMode = types.SlideshowMode;

@@ -9,8 +9,6 @@ const stopTextInput = state.stopTextInput;
 
 const MeasureTextUserData = types.MeasureTextUserData;
 const sdl3MeasureText = @import("graphics.zig").sdl3MeasureText;
-const layout_helpers = @import("layout_helpers.zig");
-const DpiScale = @import("units.zig").DpiScale;
 const text_utils = @import("text_utils.zig");
 const truncateFilename = text_utils.truncateFilename;
 const truncateFilenameMiddle = text_utils.truncateFilenameMiddle;
@@ -164,7 +162,7 @@ fn renderSearchInput(palette: *const PaletteState, placeholder: []const u8) void
 
 /// Renders the centered single-line modal dialog used for scalar numeric and text inputs
 /// (brightness, contrast, jump-to-image index, and slideshow timer intervals).
-pub fn renderTextInputDialog(
+fn renderTextInputDialog(
     ui_model: UiViewModel,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
@@ -339,7 +337,7 @@ pub fn renderTextInputDialog(
 ///    The 1-item overscan serves as a guard band for sub-pixel `child_gap`
 ///    offsets, border widths, and viewport edge hit-testing
 ///    (`clay.pointerOver`).
-pub fn renderSelectionList(
+fn renderSelectionList(
     ui_model: UiViewModel,
     cfg: PaletteConfig,
     frame_allocator: std.mem.Allocator,

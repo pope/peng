@@ -7,13 +7,13 @@ const Orientation = state_pkg.Orientation;
 pub const JpegDimensions = struct { w: f32, h: f32 };
 
 /// Parsed TIFF payload header located within an APP1 EXIF segment.
-pub const TiffHeader = struct {
+const TiffHeader = struct {
     tiff: []const u8,
     is_le: bool,
     ifd0_off: u32,
 };
 
-pub fn findTiffPayload(data: []const u8) ?TiffHeader {
+fn findTiffPayload(data: []const u8) ?TiffHeader {
     if (data.len < 14) return null;
     if (data[0] != 0xFF or data[1] != 0xD8) return null;
 

@@ -8,7 +8,7 @@ const KeyModifiers = state_pkg.KeyModifiers;
 const input_pkg = @import("input");
 const key_mapping = input_pkg.key_mapping;
 /// Resolves active key context and pushes mapped AppIntents
-pub fn handleKeyDown(
+fn handleKeyDown(
     self: *AppState,
     key: Key,
     mod: KeyModifiers,

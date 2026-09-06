@@ -6,7 +6,6 @@
 pub const geometry = @import("geometry.zig");
 pub const graphics = @import("graphics.zig");
 pub const layout = @import("layout.zig");
-pub const layout_helpers = @import("layout_helpers.zig");
 pub const palette = @import("palette.zig");
 pub const palette_items = @import("palette_items.zig");
 pub const palette_scroll = @import("palette_scroll.zig");
@@ -16,7 +15,6 @@ pub const stats = @import("stats.zig");
 pub const text_cache = @import("text_cache.zig");
 pub const text_utils = @import("text_utils.zig");
 pub const theme = @import("theme.zig");
-pub const units = @import("units.zig");
 
 test {
     _ = renderer;
@@ -27,8 +25,6 @@ test {
     _ = palette_scroll;
     _ = stats;
     _ = graphics;
-    _ = units;
-    _ = layout_helpers;
     _ = text_utils;
     _ = theme;
     _ = geometry;

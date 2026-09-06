@@ -65,14 +65,4 @@ pub const TextCache = struct {
             }
         }
     }
-
-    pub fn clearAll(self: *TextCache, allocator: std.mem.Allocator, dev_opt: ?sdl.gpu.Device) void {
-        if (dev_opt) |dev| {
-            var iter = self.map.iterator();
-            while (iter.next()) |entry| {
-                dev.releaseTexture(entry.value_ptr.texture);
-            }
-        }
-        self.map.clearAndFree(allocator);
-    }
 };

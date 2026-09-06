@@ -17,7 +17,7 @@ pub fn unloadAssets() void {}
 
 /// Sequential execution of all systems during the Update Phase of the event loop.
 /// Guaranteed: All systems run in deterministic order, use frame_allocator, and do NOT call each other.
-pub fn runUpdatePhase(
+fn runUpdatePhase(
     app_state: *app.state.AppState,
     input: state_pkg.FrameInput,
     frame_allocator: std.mem.Allocator,

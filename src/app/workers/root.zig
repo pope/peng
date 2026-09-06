@@ -94,50 +94,6 @@ pub const WorkerManager = struct {
         self.drainAndQuiesce(io);
     }
 
-    /// Sets the worker shutdown flag to notify worker loops that exit has been requested.
-    pub fn requestExit(self: *WorkerManager) void {
-        self.exiting.store(true, .release);
-    }
-
-    /// Checks whether worker cancellation / app exit has been signaled.
-    pub fn isExiting(self: *const WorkerManager) bool {
-        return self.exiting.load(.acquire);
-    }
-
-    /// Returns the number of background worker tasks currently executing.
-    pub fn getActiveThreads(self: *const WorkerManager) usize {
-        return self.active_threads.load(.acquire);
-    }
-
-    /// Cancels and joins all active tasks in the worker group.
-    pub fn joinAll(self: *WorkerManager, io: std.Io) void {
-        self.drainAndQuiesce(io);
-    }
-
-    /// Spawns an image decoding task using this worker manager.
-    pub fn spawnDecode(self: *WorkerManager, args: *DecodeArgs) !void {
-        _ = self;
-        try @This().spawnDecode(args);
-    }
-
-    /// Spawns a path scanning task using this worker manager.
-    pub fn spawnPathScan(self: *WorkerManager, args: *PathScanArgs) !void {
-        _ = self;
-        try @This().spawnPathScan(args);
-    }
-
-    /// Spawns a stdin reader task using this worker manager.
-    pub fn spawnStdinReader(self: *WorkerManager, args: *StdinArgs) !void {
-        _ = self;
-        try @This().spawnStdin(args);
-    }
-
-    /// Spawns a palette directory scanning task using this worker manager.
-    pub fn spawnPaletteScan(self: *WorkerManager, args: *PaletteScanArgs) !void {
-        _ = self;
-        try @This().spawnPaletteScan(args);
-    }
-
     /// Cancels all background tasks in the worker group and blocks until all running worker
     /// threads have exited cleanly. Called on application shutdown (`ViewerState.deinit`).
     pub fn drainAndQuiesce(self: *WorkerManager, io: std.Io) void {
@@ -145,9 +101,6 @@ pub const WorkerManager = struct {
         self.group.cancel(io);
     }
 };
-
-/// Alias for the underlying async task group (`std.Io.Group`).
-pub const WorkerGroup = std.Io.Group;
 
 /// Spawns a background `decodeWorker` task for image file decoding and EXIF thumbnail extraction,
 /// tracking active decode thread and active worker thread counts.

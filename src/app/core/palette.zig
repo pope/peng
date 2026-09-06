@@ -3,7 +3,6 @@ const state_pkg = @import("state");
 const std = @import("std");
 
 const DirectoryEntry = state_pkg.DirectoryEntry;
-const PaletteModeData = state_pkg.PaletteModeData;
 const PaletteState = state_pkg.PaletteState;
 const ScoredMatch = state_pkg.ScoredMatch;
 

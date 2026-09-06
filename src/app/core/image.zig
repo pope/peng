@@ -93,16 +93,6 @@ pub const CacheSlotMap = struct {
         return null;
     }
 
-    pub fn getSurface(self: *CacheSlotMap, key: CacheKey) ?sdl.Surface {
-        if (self.get(key)) |entry| {
-            switch (entry.status) {
-                .loaded_cpu => |cpu| return cpu.surface,
-                else => {},
-            }
-        }
-        return null;
-    }
-
     pub fn updateStatus(self: *CacheSlotMap, key: CacheKey, status: CacheStatus) bool {
         if (self.get(key)) |entry| {
             entry.status = status;
@@ -452,7 +442,7 @@ pub const UploadStagingBuffer = struct {
 
     /// Obtains a transfer buffer with at least `required_size` capacity, reusing the existing buffer
     /// or reallocating with geometric growth when capacity is insufficient.
-    pub fn getOrCreateTransferBuffer(self: *UploadStagingBuffer, dev: sdl.gpu.Device, required_size: usize) ?sdl.gpu.TransferBuffer {
+    fn getOrCreateTransferBuffer(self: *UploadStagingBuffer, dev: sdl.gpu.Device, required_size: usize) ?sdl.gpu.TransferBuffer {
         if (self.transfer_buffer != null and self.transfer_capacity >= required_size) {
             return self.transfer_buffer;
         }
@@ -476,7 +466,7 @@ pub const UploadStagingBuffer = struct {
 
     /// Obtains a compute storage buffer with at least `required_size` capacity, reusing the existing buffer
     /// or reallocating with geometric growth when capacity is insufficient.
-    pub fn getOrCreateStorageBuffer(self: *UploadStagingBuffer, dev: sdl.gpu.Device, required_size: usize) ?sdl.gpu.Buffer {
+    fn getOrCreateStorageBuffer(self: *UploadStagingBuffer, dev: sdl.gpu.Device, required_size: usize) ?sdl.gpu.Buffer {
         if (self.storage_buffer != null and self.storage_capacity >= required_size) {
             return self.storage_buffer;
         }

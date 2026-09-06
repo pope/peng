@@ -123,7 +123,7 @@ const LibViewer = struct {
 };
 
 /// Application context encapsulating initialized graphics, state, resources, and IPC server.
-pub const AppGraphicsAndState = struct {
+const AppGraphicsAndState = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
     parsed: app_config.cli.ParsedArgs,
@@ -149,7 +149,7 @@ pub const AppGraphicsAndState = struct {
 };
 
 /// Phase 1: Initializes CLI options, SDL graphics, GPU resources, viewer state, Clay layout engine, and IPC server.
-pub fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
+fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
     const gpa = init.gpa;
 
     // 1. Parse command line arguments
@@ -238,7 +238,7 @@ pub fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
 }
 
 /// Phase 2: Runs the main application event processing, state updating, and rendering loop.
-pub fn runMainLoop(ctx: *AppGraphicsAndState) !void {
+fn runMainLoop(ctx: *AppGraphicsAndState) !void {
     // Configure Clay measure text function with a stable pointer to measure_data
     ctx.measure_data = state_pkg.types.MeasureTextUserData{
         .fonts = ctx.resources.fonts[0..],

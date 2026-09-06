@@ -7,7 +7,7 @@ const UiViewModel = types.UiViewModel;
 const formatSize = @import("text_utils.zig").formatSize;
 const MeasureTextUserData = types.MeasureTextUserData;
 
-pub fn renderStatRow(label: []const u8, value: []const u8) !void {
+fn renderStatRow(label: []const u8, value: []const u8) !void {
     clay.UI()(.{
         .layout = .{
             .sizing = .{ .w = .grow, .h = .fixed(20) },
@@ -35,7 +35,7 @@ pub fn renderStatRow(label: []const u8, value: []const u8) !void {
     });
 }
 
-pub fn renderInfoOverlay(
+fn renderInfoOverlay(
     ui_model: UiViewModel,
     draw_w: f32,
     draw_h: f32,

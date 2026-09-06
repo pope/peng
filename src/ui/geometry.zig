@@ -63,44 +63,7 @@ pub fn appendRectQuad(
     try vertices.append(allocator, .{ .x = p1.x, .y = p2.y, .u = 0.0, .v = 1.0, .color = color });
 }
 
-pub fn appendLineQuad(
-    vertices: *std.ArrayList(Vertex),
-    allocator: std.mem.Allocator,
-    p1: sdl.FPoint,
-    p2: sdl.FPoint,
-    thickness: f32,
-    r: f32,
-    g: f32,
-    b: f32,
-    a: f32,
-    win_w: f32,
-    win_h: f32,
-) !void {
-    const dx = p2.x - p1.x;
-    const dy = p2.y - p1.y;
-    const len = @sqrt(dx * dx + dy * dy);
-    if (len == 0.0) return;
-
-    const ox = (-dy / len) * thickness * 0.5;
-    const oy = (dx / len) * thickness * 0.5;
-
-    const packed_color = packRgbaF(r, g, b, a);
-
-    const np1 = toNdc(p1.x - ox, p1.y - oy, win_w, win_h);
-    const np2 = toNdc(p1.x + ox, p1.y + oy, win_w, win_h);
-    const np3 = toNdc(p2.x + ox, p2.y + oy, win_w, win_h);
-    const np4 = toNdc(p2.x - ox, p2.y - oy, win_w, win_h);
-
-    try vertices.append(allocator, .{ .x = np1.x, .y = np1.y, .u = 0.0, .v = 0.0, .color = packed_color });
-    try vertices.append(allocator, .{ .x = np2.x, .y = np2.y, .u = 1.0, .v = 0.0, .color = packed_color });
-    try vertices.append(allocator, .{ .x = np3.x, .y = np3.y, .u = 1.0, .v = 1.0, .color = packed_color });
-
-    try vertices.append(allocator, .{ .x = np1.x, .y = np1.y, .u = 0.0, .v = 0.0, .color = packed_color });
-    try vertices.append(allocator, .{ .x = np3.x, .y = np3.y, .u = 1.0, .v = 1.0, .color = packed_color });
-    try vertices.append(allocator, .{ .x = np4.x, .y = np4.y, .u = 0.0, .v = 1.0, .color = packed_color });
-}
-
-pub fn appendCornerArc(
+fn appendCornerArc(
     vertices_src: []sdl.Vertex,
     indices: []c_int,
     vertex_count: *usize,

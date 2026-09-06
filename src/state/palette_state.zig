@@ -84,11 +84,6 @@ pub const DirectoryEntry = union(enum) {
         };
     }
 
-    /// Returns `true` if this entry represents a directory or `..` parent link.
-    pub fn isDirectory(self: DirectoryEntry) bool {
-        return self == .directory or self == .parent;
-    }
-
     /// Returns `true` if this entry represents an archive file (e.g. CBZ/ZIP).
     pub fn isArchive(self: DirectoryEntry) bool {
         return self == .archive_file;
@@ -124,24 +119,6 @@ pub const DirectoryEntry = union(enum) {
     }
 };
 
-/// View model data sliced for Clay layout rendering based on current palette mode.
-pub const PaletteModeData = union(enum) {
-    inactive,
-    files: struct {
-        matches: []const usize,
-    },
-    actions: struct {
-        scored_matches: []const ScoredMatch,
-    },
-    directory_navigator: struct {
-        current_dir: []const u8,
-        dir_items: []const DirectoryEntry,
-    },
-    text_input: struct {
-        bounds: ?TextInputBounds,
-    },
-};
-
 /// Main state model for command palette modals, directory navigation, and fuzzy searching.
 pub const PaletteState = struct {
     mode: PaletteMode = .inactive,
@@ -159,31 +136,6 @@ pub const PaletteState = struct {
     allocator: std.mem.Allocator,
     searcher: ?fuzzig.Ascii = null,
     max_haystack_len: usize = 64,
-
-    /// Returns the current directory scan generation counter with acquire ordering.
-    pub fn getDirScanGeneration(self: *const PaletteState) usize {
-        return self.dir_scan_generation.load(.acquire);
-    }
-
-    /// Constructs the appropriate `PaletteModeData` view model for the current palette mode.
-    pub fn getModeData(self: *const PaletteState) PaletteModeData {
-        return switch (self.mode) {
-            .inactive => .inactive,
-            .files => .{ .files = .{ .matches = self.matches.items } },
-            .actions => .{ .actions = .{ .scored_matches = self.scored_matches.items } },
-            .directory_navigator => .{
-                .directory_navigator = .{
-                    .current_dir = self.current_nav_dir.items,
-                    .dir_items = self.dir_items.items,
-                },
-            },
-            .set_brightness, .set_contrast, .go_to_image, .set_slideshow_interval => .{
-                .text_input = .{
-                    .bounds = self.mode.getTextInputBounds(),
-                },
-            },
-        };
-    }
 
     /// Initializes a new `PaletteState` instance, reserving initial capacities for queries, matches, and paths.
     pub fn init(allocator: std.mem.Allocator) !PaletteState {

@@ -4,25 +4,14 @@ const std = @import("std");
 const DirectoryEntry = state_pkg.DirectoryEntry;
 const MediaEntry = state_pkg.MediaEntry;
 
-/// Performs case-insensitive ASCII substring search, returning `true` if `needle` is found within `haystack`.
-pub fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
-    if (needle.len == 0) return true;
-    if (haystack.len < needle.len) return false;
-    var i: usize = 0;
-    while (i <= haystack.len - needle.len) : (i += 1) {
-        if (std.ascii.eqlIgnoreCase(haystack[i .. i + needle.len], needle)) return true;
-    }
-    return false;
-}
-
 /// Returns `true` if filename is an AppleDouble metadata file starting with `._`.
-pub fn isAppleDouble(filename: []const u8) bool {
+fn isAppleDouble(filename: []const u8) bool {
     const basename = std.fs.path.basename(filename);
     return std.mem.startsWith(u8, basename, "._");
 }
 
 /// Returns `true` if the file extension matches a supported image format (`.png`, `.jpg`, `.jpeg`, `.bmp`, `.gif`, `.tga`, `.webp`).
-pub fn isImageExtension(ext: []const u8) bool {
+fn isImageExtension(ext: []const u8) bool {
     const extensions = [_][]const u8{ ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tga", ".webp" };
     for (extensions) |e| {
         if (std.ascii.eqlIgnoreCase(ext, e)) return true;
@@ -31,7 +20,7 @@ pub fn isImageExtension(ext: []const u8) bool {
 }
 
 /// Returns `true` if the file extension is `.cbz` (case-insensitive).
-pub fn isCbzExtension(ext: []const u8) bool {
+fn isCbzExtension(ext: []const u8) bool {
     return std.ascii.eqlIgnoreCase(ext, ".cbz");
 }
 
@@ -48,19 +37,19 @@ pub fn isImageFile(filename: []const u8) bool {
 }
 
 /// Returns `true` if the path points to any supported image or CBZ archive file and is not AppleDouble metadata.
-pub fn isSupportedFile(filename: []const u8) bool {
+fn isSupportedFile(filename: []const u8) bool {
     if (isAppleDouble(filename)) return false;
     return isImageFile(filename) or isCbzFile(filename);
 }
 
 /// Holds parsed components of an archive entry virtual path (e.g. `path/to/archive.cbz::entry.jpg`).
-pub const ArchiveEntryPath = struct {
+const ArchiveEntryPath = struct {
     archive_path: []const u8,
     entry_name: []const u8,
 };
 
 /// Splits a compound path of the form `archive_path::entry_name` into an `ArchiveEntryPath` struct, or returns `null`.
-pub fn parseArchiveEntryPath(path: []const u8) ?ArchiveEntryPath {
+fn parseArchiveEntryPath(path: []const u8) ?ArchiveEntryPath {
     if (std.mem.indexOf(u8, path, "::")) |sep_idx| {
         return .{
             .archive_path = path[0..sep_idx],
@@ -246,16 +235,6 @@ pub fn countFolderContents(io: std.Io, folder_path: []const u8) FolderCounts {
         }
     }
     return counts;
-}
-
-/// Convenience function returning the count of supported image files within `folder_path`.
-pub fn countFolderImages(io: std.Io, folder_path: []const u8) usize {
-    return countFolderContents(io, folder_path).image_count;
-}
-
-/// Convenience function returning the count of non-hidden subdirectories within `folder_path`.
-pub fn countFolderSubdirs(io: std.Io, folder_path: []const u8) usize {
-    return countFolderContents(io, folder_path).subdir_count;
 }
 
 /// Scans immediate non-hidden child subdirectories and CBZ archives within `dir_path`,

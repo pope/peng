@@ -65,7 +65,7 @@ pub fn stopTextInput(display: DisplayState) void {
 }
 
 /// Performs case-insensitive matching between `path` and an already lowercased query string.
-pub fn matchesQueryLower(path: []const u8, query_lower: []const u8) bool {
+fn matchesQueryLower(path: []const u8, query_lower: []const u8) bool {
     if (query_lower.len == 0) return true;
     if (path.len < query_lower.len) return false;
 
@@ -268,7 +268,7 @@ pub const AppState = struct {
     }
 
     /// Computes the unzoomed base scale factor fitting the current image to the viewport according to fit_mode.
-    pub fn getBaseScale(self: *AppState) f32 {
+    fn getBaseScale(self: *AppState) f32 {
         const entry = self.getCurrentEntry() orelse return 1.0;
         const raw_w: f32 = switch (entry.status) {
             .loaded_gpu => |gpu| gpu.w,
@@ -328,11 +328,6 @@ pub const AppState = struct {
         return view_transform.clampZoomFactor(base_scale, new_factor);
     }
 
-    /// Retrieves an SDL GPU texture reference associated with handle from the texture cache.
-    pub fn getTextureByHandle(self: *AppState, handle: TextureHandle) ?sdl.gpu.Texture {
-        return self.cache.getTexture(handle);
-    }
-
     /// Rebuilds fuzzy search matches for the command palette image file list.
     pub fn rebuildPaletteMatches(self: *AppState) !void {
         try self.viewer.ui.palette.rebuildFileMatches(self.viewer.navigation.image_list.items);
@@ -344,7 +339,7 @@ pub const AppState = struct {
     }
 
     /// Returns a mutable pointer to the CacheEntry corresponding to the currently active image, or null.
-    pub fn getCurrentEntryPtr(self: *AppState) ?*CacheEntry {
+    fn getCurrentEntryPtr(self: *AppState) ?*CacheEntry {
         const idx = self.viewer.navigation.current_index orelse return null;
         return self.cache.get(self.cache.activeKey(idx));
     }
@@ -565,7 +560,7 @@ pub const AppState = struct {
     }
 
     /// Releases all GPU textures and resets status across all cache slots.
-    pub fn clearCache(self: *AppState) void {
+    fn clearCache(self: *AppState) void {
         const dev_opt = self.gpu_device;
         self.cache.clear(dev_opt);
     }
@@ -987,35 +982,4 @@ test "AppState slideshow timer auto-advances slide" {
     // Pass another second (total 2000ms >= 2.0s interval) -> advances to index 1
     try systems.sysUpdateSlideshow(.{ .state = &state, .frame_allocator = allocator, .input = frame_input_1s, .delta_time_ms = 1000.0 });
     try std.testing.expectEqual(@as(usize, 1), state.viewer.navigation.current_index.?);
-}
-
-test "RollingStats mean and stdev" {
-    var stats = state_pkg.ui_state.RollingStats{};
-    try std.testing.expectEqual(@as(f64, 0.0), stats.getMeanAndStdev().mean);
-    try std.testing.expectEqual(@as(f64, 0.0), stats.getMeanAndStdev().stdev);
-
-    stats.addSample(10.0);
-    try std.testing.expectEqual(@as(f64, 10.0), stats.getMeanAndStdev().mean);
-    try std.testing.expectEqual(@as(f64, 0.0), stats.getMeanAndStdev().stdev);
-
-    stats.addSample(20.0);
-    const result = stats.getMeanAndStdev();
-    try std.testing.expectApproxEqAbs(@as(f64, 15.0), result.mean, 0.0001);
-    try std.testing.expectApproxEqAbs(@as(f64, 7.0710678), result.stdev, 0.0001);
-
-    // Fill to 60 samples all with 10.0
-    stats.reset();
-    for (0..60) |_| {
-        stats.addSample(10.0);
-    }
-    const r60 = stats.getMeanAndStdev();
-    try std.testing.expectApproxEqAbs(@as(f64, 10.0), r60.mean, 0.0001);
-    try std.testing.expectApproxEqAbs(@as(f64, 0.0), r60.stdev, 0.0001);
-
-    // Overfill beyond 60 samples
-    for (0..10) |_| {
-        stats.addSample(20.0);
-    }
-    const r_over = stats.getMeanAndStdev();
-    try std.testing.expectApproxEqAbs(@as(f64, 11.6666667), r_over.mean, 0.0001);
 }

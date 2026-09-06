@@ -77,7 +77,7 @@ pub fn mapModFromSdl(mod: u16) KeyModifiers {
     };
 }
 
-pub const TouchFinger = struct {
+const TouchFinger = struct {
     finger_id: u64,
     x: f32,
     y: f32,

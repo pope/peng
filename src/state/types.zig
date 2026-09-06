@@ -280,18 +280,6 @@ pub const ViewParams = struct {
     scale_x: f32,
     scale_y: f32,
     is_fullscreen: bool,
-
-    pub fn getDpiScale(self: ViewParams) f32 {
-        return self.scale_x;
-    }
-
-    pub fn getLogicalWidth(self: ViewParams) f32 {
-        return if (self.scale_x > 0.0) self.win_w / self.scale_x else self.win_w;
-    }
-
-    pub fn getLogicalHeight(self: ViewParams) f32 {
-        return if (self.scale_y > 0.0) self.win_h / self.scale_y else self.win_h;
-    }
 };
 
 /// Aggregated input events, mouse coordinates, keyboard actions, and window metrics for a single frame iteration.
@@ -469,16 +457,6 @@ pub const RenderStats = struct {
         self.samples[self.head] = sample_ms;
         self.head = (self.head + 1) % 60;
         if (self.count < 60) self.count += 1;
-    }
-
-    pub fn getAverageMs(self: RenderStats) f64 {
-        if (self.count == 0) return 0.0;
-        var sum: f64 = 0.0;
-        var i: usize = 0;
-        while (i < self.count) : (i += 1) {
-            sum += self.samples[i];
-        }
-        return sum / @as(f64, @floatFromInt(self.count));
     }
 
     pub fn getMeanAndStdev(self: RenderStats) struct { mean: f64, stdev: f64 } {

@@ -255,7 +255,7 @@ pub fn renderFrame(
     }
 }
 
-pub fn renderHeaderBar(
+fn renderHeaderBar(
     ui_model: UiViewModel,
     available_width: f32,
     title_bar_h: f32,
@@ -364,7 +364,7 @@ pub fn renderHeaderBar(
     });
 }
 
-pub fn renderEmptyState() void {
+fn renderEmptyState() void {
     clay.UI()(.{
         .layout = .{
             .sizing = .{ .w = .grow, .h = .grow },
@@ -408,7 +408,7 @@ pub fn renderEmptyState() void {
     });
 }
 
-pub fn renderViewport(
+fn renderViewport(
     ui_model: UiViewModel,
     current_entry: anytype,
     draw_w: f32,

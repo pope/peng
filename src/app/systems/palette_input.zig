@@ -72,7 +72,7 @@ fn handlePaletteReturnDirectory(self: *AppState, mod: KeyModifiers) !void {
 /// while a command palette overlay is active.
 ///
 /// Returns `true` if the key was consumed by palette navigation; `false` otherwise.
-pub fn handlePaletteKeys(
+fn handlePaletteKeys(
     self: *AppState,
     key: Key,
     mod: KeyModifiers,

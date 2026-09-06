@@ -5,13 +5,6 @@ const sdl = @import("sdl");
 const state = @import("state");
 const TextCacheKey = @import("text_cache.zig").TextCacheKey;
 
-pub const ZoomPan = struct {
-    zoom_factor: f32 = 1.0,
-    pan_x: f32 = 0.0,
-    pan_y: f32 = 0.0,
-    rotation_angle: f32 = 0.0,
-};
-
 const geometry = @import("geometry.zig");
 pub const Vertex = geometry.Vertex;
 pub const packRgba = geometry.packRgba;
@@ -671,7 +664,7 @@ fn executeRenderPass(
 
 /// Data-driven render packet holding geometry vertices, texture batch draw calls,
 /// and transfer buffer offsets for 2-pass UI frame rendering.
-pub const RenderPacket = struct {
+const RenderPacket = struct {
     vertices: std.ArrayList(Vertex) = .empty,
     batches: std.ArrayList(BatchItem) = .empty,
     tb_offset: usize = 0,
@@ -685,7 +678,7 @@ pub const RenderPacket = struct {
 
 /// Pass 1 of 2-pass rendering: Traverses layout tree and builds geometry vertices
 /// and texture draw command batches into a RenderPacket without submitting GPU render passes.
-pub fn buildRenderPacket(
+fn buildRenderPacket(
     view_params: ViewportParams,
     gpu_res: *RenderResources,
     copy_pass: sdl.gpu.CopyPass,
@@ -724,7 +717,7 @@ pub fn buildRenderPacket(
 
 /// Pass 2 of 2-pass rendering: Uploads vertex data to GPU memory and executes
 /// batched GPU render pass draw calls for the extracted RenderPacket.
-pub fn executeRenderPacket(
+fn executeRenderPacket(
     view_params: ViewportParams,
     gpu_res: *RenderResources,
     cmd_buf: sdl.gpu.CommandBuffer,
