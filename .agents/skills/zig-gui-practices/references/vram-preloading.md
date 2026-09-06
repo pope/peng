@@ -40,6 +40,13 @@ ______________________________________________________________________
   Camera JPEGs embed EXIF thumbnails inside the `APP1` (`0xFF, 0xE1`) segment. When scanning for main image `SOF0`/`SOF2` frame headers, `APP1` segment payloads MUST be explicitly skipped (`idx += seg_len`) to prevent matching the embedded thumbnail's frame header.
 - **EXIF Tag Priority**:
   Check EXIF TIFF tags `0x0100` (`ImageWidth`), `0x0101` (`ImageLength`), `0xA002` (`PixelXDimension`), and `0xA003` (`PixelYDimension`) in IFD0 and ExifIFD first, as they reside in the initial 1 KB of the file.
+- **Camera RAW Zero-Copy Streaming & Embedded Preview Extraction**:
+  - Camera RAW files (`.arw`, `.raf`, `.cr2`, `.nef`, `.dng`, `.orf`, `.rw2`, `.pef`) range from 50MB to 150MB+ per file. They MUST NEVER be read entirely into memory.
+  - **Synchronous Header Probing**: Main-thread probing reads only the first 128KB into a fixed stack buffer (`probeMediaMetadata`). It extracts raw sensor dimensions, preview JPEG locations, and EXIF orientation with 0 heap allocations in $< 0.1\\text{ms}$.
+  - **Range-Limited Positional Preview Extraction**: Background workers read only the embedded preview JPEG slice (typically 2–4MB) via positional file I/O (`file.readPositional(io, &slices, prev_loc.file_offset)`), decompressing it via `sdl.Surface.loadConstMemOpt` without touching the multi-megabyte raw sensor bayer pattern payload.
+  - **Instant Thumbnail Fast-Scrubbing**: Embedded thumbnails (e.g. Fuji RAF IFD1 `0x0201`/`0x0202` at byte offset 4,192, or TIFF IFD1 thumbnail) reside completely inside the initial 128KB header buffer. During fast navigation (`thumb_only = true`), decode the 9.4KB–20KB thumbnail directly from the header slice with zero additional I/O and return early.
+  - **Truncated APP1 Segment Tolerance**: Preview JPEG headers may have large APP1 segments (e.g. 60KB) that span past the initial 128KB slice. Never discard APP1 segments purely because `payload.len < seg_len`; inspect available bytes `data[idx + 2 .. idx + @min(seg_len, data.len - idx)]` for `"Exif\0\0"` and valid TIFF IFD0 headers.
+  - **Saturating Bounds Checking**: Offsets and lengths parsed from untrusted headers must always be checked using saturating subtraction: `loc.file_offset <= file_size -| loc.length`.
 
 ______________________________________________________________________
 

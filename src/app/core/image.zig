@@ -1,3 +1,4 @@
+const core_fs = @import("fs.zig");
 const exif = @import("exif.zig");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
@@ -12,6 +13,7 @@ pub const MediaEntry = state_pkg.MediaEntry;
 pub const Orientation = state_pkg.Orientation;
 const parseExifDimensions = exif.parseExifDimensions;
 const parseExifOrientation = exif.parseExifOrientation;
+const RawMetadata = state_pkg.RawMetadata;
 const ThumbComponent = state_pkg.ThumbComponent;
 
 /// Unique lookup key identifying a cached image slot by its playlist index and cache generation epoch.
@@ -279,6 +281,22 @@ pub fn detectMimeType(header: []const u8, path: []const u8) []const u8 {
     if (header.len >= 12 and std.mem.startsWith(u8, header, "RIFF") and std.mem.eql(u8, header[8..12], "WEBP")) {
         return "image/webp";
     }
+    if (header.len >= 8 and std.mem.startsWith(u8, header, "FUJIFILM")) {
+        return "image/x-fuji-raf";
+    }
+    if (header.len >= 4 and ((header[0] == 0x49 and header[1] == 0x49 and header[2] == 0x2A and header[3] == 0x00) or
+        (header[0] == 0x4D and header[1] == 0x4D and header[2] == 0x00 and header[3] == 0x2A)))
+    {
+        const ext = std.fs.path.extension(path);
+        if (std.ascii.eqlIgnoreCase(ext, ".arw")) return "image/x-sony-arw";
+        if (std.ascii.eqlIgnoreCase(ext, ".cr2")) return "image/x-canon-cr2";
+        if (std.ascii.eqlIgnoreCase(ext, ".nef")) return "image/x-nikon-nef";
+        if (std.ascii.eqlIgnoreCase(ext, ".dng")) return "image/x-adobe-dng";
+        if (std.ascii.eqlIgnoreCase(ext, ".orf")) return "image/x-olympus-orf";
+        if (std.ascii.eqlIgnoreCase(ext, ".rw2")) return "image/x-panasonic-rw2";
+        if (std.ascii.eqlIgnoreCase(ext, ".pef")) return "image/x-pentax-pef";
+        return "image/tiff";
+    }
 
     const ext = std.fs.path.extension(path);
     if (std.ascii.eqlIgnoreCase(ext, ".png")) return "image/png";
@@ -287,6 +305,14 @@ pub fn detectMimeType(header: []const u8, path: []const u8) []const u8 {
     if (std.ascii.eqlIgnoreCase(ext, ".bmp")) return "image/bmp";
     if (std.ascii.eqlIgnoreCase(ext, ".webp")) return "image/webp";
     if (std.ascii.eqlIgnoreCase(ext, ".tga")) return "image/x-tga";
+    if (std.ascii.eqlIgnoreCase(ext, ".raf")) return "image/x-fuji-raf";
+    if (std.ascii.eqlIgnoreCase(ext, ".arw")) return "image/x-sony-arw";
+    if (std.ascii.eqlIgnoreCase(ext, ".cr2")) return "image/x-canon-cr2";
+    if (std.ascii.eqlIgnoreCase(ext, ".nef")) return "image/x-nikon-nef";
+    if (std.ascii.eqlIgnoreCase(ext, ".dng")) return "image/x-adobe-dng";
+    if (std.ascii.eqlIgnoreCase(ext, ".orf")) return "image/x-olympus-orf";
+    if (std.ascii.eqlIgnoreCase(ext, ".rw2")) return "image/x-panasonic-rw2";
+    if (std.ascii.eqlIgnoreCase(ext, ".pef")) return "image/x-pentax-pef";
 
     return "unknown";
 }
@@ -297,12 +323,32 @@ pub const ImageDimensions = struct {
     h: f32,
 };
 
-/// Parses full image width and height directly from image container headers (JPEG, PNG, GIF, WebP, BMP)
+/// Parses full image width and height directly from image container headers (JPEG, PNG, GIF, WebP, BMP, TIFF, RAW)
 /// in < 0.05ms without performing software decompression.
 ///
 /// Returns null if the header buffer is insufficient or contains an unsupported format variant.
 pub fn parseImageDimensions(header: []const u8, mime_type: []const u8) ?ImageDimensions {
-    if (std.mem.eql(u8, mime_type, "image/jpeg") or (header.len >= 3 and std.mem.startsWith(u8, header, &[_]u8{ 0xFF, 0xD8, 0xFF }))) {
+    if (std.mem.eql(u8, mime_type, "image/x-fuji-raf") or (header.len >= 8 and std.mem.startsWith(u8, header, "FUJIFILM"))) {
+        if (exif.extractFujiRafMetadataLocation(header)) |meta_loc| {
+            const end = meta_loc.file_offset + meta_loc.length;
+            if (end <= header.len) {
+                const off: usize = @intCast(meta_loc.file_offset);
+                const len: usize = @intCast(meta_loc.length);
+                if (exif.parseFujiRafDimensions(header[off .. off + len])) |d| return .{ .w = d.w, .h = d.h };
+            }
+        }
+        if (exif.extractFujiRafPreviewLocation(header)) |prev_loc| {
+            const off: usize = @intCast(prev_loc.file_offset);
+            if (off + 32 <= header.len) {
+                if (exif.readJpegDimensions(header[off..])) |d| return .{ .w = d.w, .h = d.h };
+            }
+        }
+    } else if (std.mem.startsWith(u8, mime_type, "image/x-") or std.mem.eql(u8, mime_type, "image/tiff") or
+        (header.len >= 4 and ((header[0] == 0x49 and header[1] == 0x49 and header[2] == 0x2A and header[3] == 0x00) or
+            (header[0] == 0x4D and header[1] == 0x4D and header[2] == 0x00 and header[3] == 0x2A))))
+    {
+        if (exif.parseExifDimensions(header)) |d| return .{ .w = d.w, .h = d.h };
+    } else if (std.mem.eql(u8, mime_type, "image/jpeg") or (header.len >= 3 and std.mem.startsWith(u8, header, &[_]u8{ 0xFF, 0xD8, 0xFF }))) {
         if (exif.readJpegDimensions(header)) |d| return .{ .w = d.w, .h = d.h };
     } else if (std.mem.eql(u8, mime_type, "image/png") or (header.len >= 8 and std.mem.startsWith(u8, header, &[_]u8{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A }))) {
         if (header.len >= 24 and std.mem.startsWith(u8, header, &[_]u8{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A }) and std.mem.eql(u8, header[12..16], "IHDR")) {
@@ -361,6 +407,7 @@ pub const ProbedImageMetadata = struct {
     dims: ImageDimensions,
     /// Image orientation metadata.
     orientation: Orientation = .normal,
+    raw_metadata: RawMetadata = .none,
 };
 
 /// Synchronously probes container headers for image dimensions and EXIF rotation in < 0.1ms
@@ -383,11 +430,55 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
             if (n == 0) return null;
 
             const mime_type = detectMimeType(header_buf[0..n], f.path);
-            const dims = parseImageDimensions(header_buf[0..n], mime_type) orelse return null;
-            const rot = exif.parseExifOrientation(header_buf[0..n]) orelse .normal;
+            var dims = parseImageDimensions(header_buf[0..n], mime_type);
+            var rot: Orientation = .normal;
+
+            if (std.mem.eql(u8, mime_type, "image/x-fuji-raf") or (n >= 8 and std.mem.startsWith(u8, header_buf[0..n], "FUJIFILM"))) {
+                // If dimensions not yet found in first 64KB, perform small positional read for metadata block
+                if (dims == null) {
+                    if (exif.extractFujiRafMetadataLocation(header_buf[0..n])) |meta_loc| {
+                        var meta_tmp: [4096]u8 = undefined;
+                        const to_read: usize = @min(@as(usize, meta_loc.length), meta_tmp.len);
+                        var m_slices = [_][]u8{meta_tmp[0..to_read]};
+                        const mn = file.readPositional(io, &m_slices, meta_loc.file_offset) catch 0;
+                        if (mn >= 4) {
+                            if (exif.parseFujiRafDimensions(meta_tmp[0..mn])) |fd| {
+                                dims = .{ .w = fd.w, .h = fd.h };
+                            }
+                        }
+                    }
+                }
+                // Sourced from embedded preview JPEG's EXIF header and fallback dimensions
+                if (exif.extractFujiRafPreviewLocation(header_buf[0..n])) |prev_loc| {
+                    const off: usize = @intCast(prev_loc.file_offset);
+                    if (off + 4096 <= n) {
+                        rot = exif.parseExifOrientation(header_buf[off..n]) orelse .normal;
+                        if (dims == null) {
+                            dims = parseImageDimensions(header_buf[off..n], "image/jpeg");
+                        }
+                    } else {
+                        var p_buf: [8192]u8 = undefined;
+                        var p_slices = [_][]u8{&p_buf};
+                        const pn = file.readPositional(io, &p_slices, prev_loc.file_offset) catch 0;
+                        if (pn > 0) {
+                            rot = exif.parseExifOrientation(p_buf[0..pn]) orelse .normal;
+                            if (dims == null) {
+                                dims = parseImageDimensions(p_buf[0..pn], "image/jpeg");
+                            }
+                        }
+                    }
+                }
+            } else {
+                rot = exif.parseExifOrientation(header_buf[0..n]) orelse .normal;
+            }
+
+            const final_dims = dims orelse return null;
+            const is_raw = core_fs.isRawFile(f.path) or std.mem.startsWith(u8, mime_type, "image/x-");
+
             return ProbedImageMetadata{
-                .dims = dims,
+                .dims = final_dims,
                 .orientation = rot,
+                .raw_metadata = if (is_raw) RawMetadata.init(final_dims.w, final_dims.h) else .none,
             };
         },
         .archive_entry => |a| {
@@ -419,9 +510,11 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
                     const mime_type = detectMimeType(image_slice, a.entry_name);
                     const dims = parseImageDimensions(image_slice, mime_type) orelse return null;
                     const rot = exif.parseExifOrientation(image_slice) orelse .normal;
+                    const is_raw = core_fs.isRawFile(a.entry_name) or std.mem.startsWith(u8, mime_type, "image/x-");
                     return ProbedImageMetadata{
                         .dims = dims,
                         .orientation = rot,
+                        .raw_metadata = if (is_raw) RawMetadata.init(dims.w, dims.h) else .none,
                     };
                 }
             }

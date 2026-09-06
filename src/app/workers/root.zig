@@ -241,3 +241,11 @@ test "WorkerManager.getCpuCount caching and fallback" {
     try std.testing.expect(mgr_cached.cached_cpu_count >= 1);
     try std.testing.expectEqual(mgr_cached.cached_cpu_count, mgr_cached.getCpuCount());
 }
+
+test {
+    _ = decode;
+    _ = ipc_server;
+    _ = palette_scan;
+    _ = path_scan;
+    _ = stdin;
+}

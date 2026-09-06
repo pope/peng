@@ -36,6 +36,18 @@ fn renderStatRow(label: []const u8, value: []const u8) !void {
     });
 }
 
+fn getRawContainerName(mime_type: []const u8, filename: []const u8) []const u8 {
+    if (std.mem.eql(u8, mime_type, "image/x-fuji-raf") or std.mem.endsWith(u8, filename, ".raf") or std.mem.endsWith(u8, filename, ".RAF")) return "RAW (Fujifilm RAF)";
+    if (std.mem.eql(u8, mime_type, "image/x-sony-arw") or std.mem.endsWith(u8, filename, ".arw") or std.mem.endsWith(u8, filename, ".ARW")) return "RAW (Sony ARW)";
+    if (std.mem.eql(u8, mime_type, "image/x-canon-cr2") or std.mem.endsWith(u8, filename, ".cr2") or std.mem.endsWith(u8, filename, ".CR2")) return "RAW (Canon CR2)";
+    if (std.mem.eql(u8, mime_type, "image/x-nikon-nef") or std.mem.endsWith(u8, filename, ".nef") or std.mem.endsWith(u8, filename, ".NEF")) return "RAW (Nikon NEF)";
+    if (std.mem.eql(u8, mime_type, "image/x-adobe-dng") or std.mem.endsWith(u8, filename, ".dng") or std.mem.endsWith(u8, filename, ".DNG")) return "RAW (Adobe DNG)";
+    if (std.mem.eql(u8, mime_type, "image/x-olympus-orf") or std.mem.endsWith(u8, filename, ".orf") or std.mem.endsWith(u8, filename, ".ORF")) return "RAW (Olympus ORF)";
+    if (std.mem.eql(u8, mime_type, "image/x-panasonic-rw2") or std.mem.endsWith(u8, filename, ".rw2") or std.mem.endsWith(u8, filename, ".RW2")) return "RAW (Panasonic RW2)";
+    if (std.mem.eql(u8, mime_type, "image/x-pentax-pef") or std.mem.endsWith(u8, filename, ".pef") or std.mem.endsWith(u8, filename, ".PEF")) return "RAW (Pentax PEF)";
+    return "Camera RAW";
+}
+
 fn renderInfoOverlay(
     ui_model: UiViewModel,
     draw_w: f32,
@@ -70,26 +82,45 @@ fn renderInfoOverlay(
     var disk_size_str: []const u8 = "N/A";
     var mime_type: []const u8 = "N/A";
     var res_str: []const u8 = "N/A";
+    var raw_res_str: ?[]const u8 = null;
+    var is_raw_image = false;
     const screen_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} px", .{ draw_w, draw_h });
 
     if (current_entry) |entry| {
+        is_raw_image = entry.raw_metadata.isRaw();
+        if (entry.raw_metadata.getSensorDims()) |s_dims| {
+            if (s_dims.w > 0 and s_dims.h > 0) {
+                const raw_mp = (s_dims.w * s_dims.h) / 1_000_000.0;
+                raw_res_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} ({d:.2} MP)", .{ s_dims.w, s_dims.h, raw_mp });
+            }
+        }
         switch (entry.status) {
             .loaded_cpu => |cpu| {
                 mime_type = cpu.mime_type;
                 disk_size_str = try formatSize(frame_allocator, cpu.size_bytes);
                 const megapixels = (cpu.w * cpu.h) / 1_000_000.0;
-                res_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} ({d:.2} MP)", .{ cpu.w, cpu.h, megapixels });
+                if (entry.raw_metadata.isRaw()) {
+                    res_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} ({d:.2} MP) [PREVIEW]", .{ cpu.w, cpu.h, megapixels });
+                } else {
+                    res_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} ({d:.2} MP)", .{ cpu.w, cpu.h, megapixels });
+                }
             },
             .loaded_gpu => |gpu| {
                 mime_type = gpu.mime_type;
                 disk_size_str = try formatSize(frame_allocator, gpu.size_bytes);
                 const megapixels = (gpu.w * gpu.h) / 1_000_000.0;
-                res_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} ({d:.2} MP)", .{ gpu.w, gpu.h, megapixels });
+                if (entry.raw_metadata.isRaw()) {
+                    res_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} ({d:.2} MP) [PREVIEW]", .{ gpu.w, gpu.h, megapixels });
+                } else {
+                    res_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} ({d:.2} MP)", .{ gpu.w, gpu.h, megapixels });
+                }
             },
             .decoding => {
                 disk_size_str = "Loading...";
                 mime_type = "Loading...";
-                if (entry.full_w > 0 and entry.full_h > 0) {
+                if (entry.raw_metadata.isRaw()) {
+                    res_str = "Loading preview...";
+                } else if (entry.full_w > 0 and entry.full_h > 0) {
                     const megapixels = (entry.full_w * entry.full_h) / 1_000_000.0;
                     res_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} ({d:.2} MP)", .{ entry.full_w, entry.full_h, megapixels });
                 } else {
@@ -144,6 +175,8 @@ fn renderInfoOverlay(
 
         if (has_thumb) {
             thumb_info_str = try std.fmt.allocPrint(frame_allocator, "Embedded ({d:.0}x{d:.0} px)", .{ t_w, t_h });
+        } else if (entry.raw_metadata.isRaw()) {
+            thumb_info_str = "None (Preview JPEG used)";
         } else if (is_jpeg) {
             thumb_info_str = "None (Full decode used)";
         } else {
@@ -216,8 +249,17 @@ fn renderInfoOverlay(
         // Info details
         try renderStatRow("File Name", filename);
         try renderStatRow("Directory", display_dir);
-        try renderStatRow("MIME Type", mime_type);
-        try renderStatRow("Resolution", res_str);
+        if (is_raw_image) {
+            try renderStatRow("Container", getRawContainerName(mime_type, filename));
+            try renderStatRow("Preview MIME", "image/jpeg");
+            try renderStatRow("Resolution", res_str);
+            if (raw_res_str) |raw_str| {
+                try renderStatRow("RAW Sensor", raw_str);
+            }
+        } else {
+            try renderStatRow("MIME Type", mime_type);
+            try renderStatRow("Resolution", res_str);
+        }
         try renderStatRow("Size on Disk", disk_size_str);
         try renderStatRow("Viewport Size", screen_str);
         const scale_mode_str = switch (ui_model.viewport.fit_mode) {
@@ -368,6 +410,19 @@ pub fn renderStatsOverlay(
         // Stats details
         const s = ui_model.stats;
         const img = s.active_image;
+
+        if (current_entry) |entry| {
+            if (entry.raw_metadata.isRaw()) {
+                try renderStatRow("Source Mode", "RAW Embedded Preview");
+                if (entry.raw_metadata.getSensorDims()) |s_dims| {
+                    if (s_dims.w > 0 and s_dims.h > 0) {
+                        const raw_mp = (s_dims.w * s_dims.h) / 1_000_000.0;
+                        const r_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} ({d:.2} MP)", .{ s_dims.w, s_dims.h, raw_mp });
+                        try renderStatRow("RAW Sensor", r_str);
+                    }
+                }
+            }
+        }
 
         const hit_str = if (s.current_image_cache_hit) "Yes" else "No";
         try renderStatRow("Cache Hit", hit_str);

@@ -10,13 +10,34 @@ fn isAppleDouble(filename: []const u8) bool {
     return std.mem.startsWith(u8, basename, "._");
 }
 
-/// Returns `true` if the file extension matches a supported image format (`.png`, `.jpg`, `.jpeg`, `.bmp`, `.gif`, `.tga`, `.webp`).
+/// Returns `true` if the file extension matches a supported image format.
 fn isImageExtension(ext: []const u8) bool {
-    const extensions = [_][]const u8{ ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tga", ".webp" };
+    const extensions = [_][]const u8{
+        ".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tga", ".webp",
+        ".arw", ".raf", ".cr2",  ".nef", ".dng", ".orf", ".rw2",
+        ".pef",
+    };
     for (extensions) |e| {
         if (std.ascii.eqlIgnoreCase(ext, e)) return true;
     }
     return false;
+}
+
+/// Returns `true` if the file extension matches a supported Camera RAW format.
+pub fn isRawExtension(ext: []const u8) bool {
+    const raw_extensions = [_][]const u8{
+        ".arw", ".raf", ".cr2", ".nef", ".dng", ".orf", ".rw2", ".pef",
+    };
+    for (raw_extensions) |e| {
+        if (std.ascii.eqlIgnoreCase(ext, e)) return true;
+    }
+    return false;
+}
+
+/// Returns `true` if the path points to a supported Camera RAW file and is not AppleDouble metadata.
+pub fn isRawFile(filename: []const u8) bool {
+    if (isAppleDouble(filename)) return false;
+    return isRawExtension(std.fs.path.extension(filename));
 }
 
 /// Returns `true` if the file extension is `.cbz` (case-insensitive).
@@ -362,6 +383,28 @@ test "CBZ file functions and archive path parsing" {
     try std.testing.expectEqualStrings("pages/page01.jpg", parsed.?.entry_name);
 
     try std.testing.expectEqual(null, parseArchiveEntryPath("regular_path.jpg"));
+}
+
+test "isRawFile and isImageExtension recognition" {
+    try std.testing.expect(isRawFile("photo.arw"));
+    try std.testing.expect(isRawFile("photo.ARW"));
+    try std.testing.expect(isRawFile("photo.raf"));
+    try std.testing.expect(isRawFile("photo.RAF"));
+    try std.testing.expect(isRawFile("photo.cr2"));
+    try std.testing.expect(isRawFile("photo.nef"));
+    try std.testing.expect(isRawFile("photo.dng"));
+    try std.testing.expect(isRawFile("photo.orf"));
+    try std.testing.expect(isRawFile("photo.rw2"));
+    try std.testing.expect(isRawFile("photo.pef"));
+
+    try std.testing.expect(!isRawFile("photo.jpg"));
+    try std.testing.expect(!isRawFile("photo.png"));
+    try std.testing.expect(!isRawFile("._photo.arw")); // AppleDouble ignored
+
+    try std.testing.expect(isImageFile("photo.arw"));
+    try std.testing.expect(isImageFile("photo.raf"));
+    try std.testing.expect(isSupportedFile("photo.arw"));
+    try std.testing.expect(isSupportedFile("photo.raf"));
 }
 
 test "scanCbzImageEntries on sample archive" {

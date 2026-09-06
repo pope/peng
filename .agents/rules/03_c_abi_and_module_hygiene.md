@@ -85,21 +85,35 @@ const MediaEntry = state_pkg.MediaEntry;
 
 - When deduplicating utility functions or consolidating symbols into their canonical home module, verify that the retained canonical implementation is the robust, feature-complete version—not a simplified or legacy variant.
 
-## 9. Submodule Test Exposure Pattern (`test { _ = submodule; }`) for Zig 0.16
+## 9. Zig 0.16 Lazy Test Discovery & Module Test Exposure (`std.testing.refAllDecls` & `_ = @import(...)`)
 
-- **Zig 0.16 Lazy Test Discovery Invariant**: In Zig 0.16, the compiler lazily analyzes test declarations. Unit tests declared inside child submodules or files are **ONLY** compiled and executed during `zig build test` if explicitly referenced inside an active test container block in the parent/root module (`root.zig` or `main.zig`).
-- **Standard Module Root Pattern**: Every package entrypoint or module root (`src/main.zig`, `src/state/root.zig`, `src/app/root.zig`, `src/ui/root.zig`, `src/app/systems/root.zig`) MUST include a top-level `test` block referencing all imported child modules:
-  ```zig
-  test {
-      _ = types;
-      _ = view_transform;
-      _ = palette_state;
-      _ = viewer_state;
-      _ = navigation;
-      _ = ui_state;
-  }
-  ```
-- **Rule**: Omitting `_ = child_module;` inside top-level `test` blocks will cause Zig to silently skip all unit tests inside those submodules. Always maintain complete submodule test exposure across module root files.
+- **Zig 0.16 Lazy Semantic Analysis Invariant**: Zig's compiler lazily analyzes declarations and test blocks. Unit tests declared in submodules or child files are **ONLY** compiled and executed during `zig build test` if the test container is explicitly referenced during semantic analysis.
+- **Why `_ = child_module;` Does NOT Run Tests**: Discarding an imported namespace or struct symbol (`_ = submodule;`) is merely an expression discard of a type value. It does **not** force Zig to walk child declarations or compile nested `test` blocks.
+- **The Canonical Test Discovery Patterns**:
+  1. **Same-Module File Test Exposure (`_ = @import(...)`)**:
+     Within the same package or module (e.g. inside `src/state/root.zig` or `src/app/root.zig`), trigger child file tests by importing them inside a top-level `test` block:
+     ```zig
+     test {
+         _ = @import("types.zig");
+         _ = @import("view_transform.zig");
+         _ = @import("palette_state.zig");
+         _ = @import("viewer_state.zig");
+     }
+     ```
+  2. **Cross-Module & Container Struct Test Exposure (`std.testing.refAllDecls`)**:
+     When triggering tests across module boundaries or for container structs exported by imported packages (e.g. testing `app.core.exif` from `src/main.zig`), use `std.testing.refAllDecls` or `std.testing.refAllDeclsRecursive`:
+     ```zig
+     test {
+         std.testing.refAllDecls(app.core.exif);
+         std.testing.refAllDecls(app.core.image);
+         std.testing.refAllDecls(app.systems.intents);
+     }
+     ```
+     This forces the compiler to eagerly analyze all declarations inside the target container, compiling and executing all associated `test` blocks.
+  3. **Module Boundary Invariant in `build.zig`**:
+     `b.addTest(.{ .root_module = exe.root_module })` only runs tests reachable from the root module. Child modules added via `addImport(...)` are treated as separate compilation units. If an imported module's tests are not referenced via `refAllDecls`, they will not run unless a dedicated `b.addTest(.{ .root_module = imported_mod })` step is wired into the build runner.
+  4. **Prohibition of Cross-Module File Path Imports**:
+     NEVER cross module boundaries using relative file paths (e.g. `@import("app/core/exif.zig")` from `src/main.zig`). This causes `error: file exists in modules 'root' and 'app'`. Always access declarations through their canonical module namespace (e.g. `app.core.exif`).
 
 ## 10. Standalone Package Hierarchy & App-Private Core (`src/app/core/`) Architecture
 

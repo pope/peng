@@ -7,6 +7,7 @@ const std = @import("std");
 const CacheKey = image.CacheKey;
 const MediaEntry = state_pkg.MediaEntry;
 const Orientation = state_pkg.Orientation;
+const RawMetadata = state_pkg.RawMetadata;
 
 /// Payload carrying parsed orientation metadata for a cached image.
 pub const ExifParsedPayload = struct {
@@ -24,6 +25,7 @@ pub const ThumbDecodedPayload = struct {
     full_h: f32,
     orientation: Orientation,
     thumb_only: bool = false,
+    raw_metadata: RawMetadata = .none,
 };
 
 /// Payload carrying a fully decoded main image surface, performance metrics, and image dimensions.
@@ -38,6 +40,7 @@ pub const ImageDecodedPayload = struct {
     decode_time_ms: f64,
     conversion_time_ms: f64,
     orientation: Orientation,
+    raw_metadata: RawMetadata = .none,
     cbz_decompress_time_ms: f64 = 0.0,
     compressed_size_bytes: usize = 0,
 };

@@ -188,7 +188,12 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
                 if (image.probeMediaMetadata(state.io, state.viewer.navigation.image_list.items[idx])) |meta| {
                     entry.full_w = meta.dims.w;
                     entry.full_h = meta.dims.h;
-                    entry.orientation = meta.orientation;
+                    if (meta.orientation != .normal or entry.orientation == .normal) {
+                        entry.orientation = meta.orientation;
+                    }
+                    if (meta.raw_metadata.isRaw()) {
+                        entry.raw_metadata = meta.raw_metadata;
+                    }
                     state.updateCurrentRotation();
                 }
             }

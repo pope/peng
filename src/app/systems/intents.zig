@@ -64,7 +64,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
         .reset_rotation => {
             if (nav.getCurrentImageEntry()) |entry| {
                 const path = entry.getPath();
-                const exif_rot = self.readJpegExifOrientation(path) orelse .normal;
+                const exif_rot = if (self.getCurrentEntry()) |e| e.orientation else (self.readJpegExifOrientation(path) orelse .normal);
                 vp.rotation_angle = exif_rot.toDegrees();
                 try self.putRotation(path, vp.rotation_angle);
             } else {
@@ -236,4 +236,38 @@ test "toggle_blur and set_blur intents" {
 
     try executeIntent(&app_st, .{ .set_blur = true });
     try testing.expect(app_st.viewer.ui.overlays.enable_blur);
+}
+
+test "rotate_cw, rotate_ccw, and reset_rotation intents" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    var threaded = std.Threaded{};
+    const io = threaded.io();
+
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    const media_item = state.MediaItem{
+        .filesystem = .{ .path = "Capture/20191103-Emiray Natural Light-0002.RAF" },
+    };
+    try app_st.viewer.navigation.image_list.append(allocator, media_item);
+    app_st.viewer.navigation.current_index = 0;
+
+    const key = app_st.cache.activeKey(0);
+    try app_st.cache.appendWithKey(allocator, key, .{
+        .status = .idle,
+        .orientation = .rotate_270,
+    });
+
+    // Rotate CW
+    try executeIntent(&app_st, .rotate_cw);
+    try testing.expectEqual(@as(f32, 90.0), app_st.viewer.viewport.rotation_angle);
+
+    // Rotate CCW
+    try executeIntent(&app_st, .rotate_ccw);
+    try testing.expectEqual(@as(f32, 0.0), app_st.viewer.viewport.rotation_angle);
+
+    // Reset rotation should restore entry orientation (270 degrees)
+    try executeIntent(&app_st, .reset_rotation);
+    try testing.expectEqual(@as(f32, 270.0), app_st.viewer.viewport.rotation_angle);
 }

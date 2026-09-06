@@ -79,19 +79,22 @@ pub fn drainWorkerEvents(state: *AppState) bool {
 }
 
 fn handleExifThumbnailEvent(state: *AppState, thumb_data: events.ThumbDecodedPayload) void {
-    if (state.cache.get(thumb_data.key)) |entry| {
-        if (thumb_data.orientation != .normal) {
-            entry.orientation = thumb_data.orientation;
-        }
-        if (thumb_data.full_w > 0 and thumb_data.full_h > 0) {
-            entry.full_w = thumb_data.full_w;
-            entry.full_h = thumb_data.full_h;
-        }
-        if (thumb_data.thumb_only) {
-            switch (entry.status) {
-                .decoding => |*dec| dec.has_thread = false,
-                else => {},
-            }
+    const entry = state.cache.get(thumb_data.key) orelse return;
+
+    if (thumb_data.orientation != .normal) {
+        entry.orientation = thumb_data.orientation;
+    }
+    if (thumb_data.full_w > 0 and thumb_data.full_h > 0) {
+        entry.full_w = thumb_data.full_w;
+        entry.full_h = thumb_data.full_h;
+    }
+    if (thumb_data.raw_metadata.isRaw()) {
+        entry.raw_metadata = thumb_data.raw_metadata;
+    }
+    if (thumb_data.thumb_only) {
+        switch (entry.status) {
+            .decoding => |*dec| dec.has_thread = false,
+            else => {},
         }
     }
     state.updateCurrentRotation();
@@ -99,12 +102,12 @@ fn handleExifThumbnailEvent(state: *AppState, thumb_data: events.ThumbDecodedPay
     const surf = thumb_data.surface orelse return;
     if (state.gpu_device) |gpu_dev| {
         if (image.uploadSurfaceToGpu(gpu_dev, surf, state.unpack_compute_pipeline, &state.upload_staging)) |upload_res| {
-            if (state.cache.get(thumb_data.key)) |entry| {
-                switch (entry.thumbnail) {
+            if (state.cache.get(thumb_data.key)) |current_entry| {
+                switch (current_entry.thumbnail) {
                     .loaded => |old_thumb| gpu_dev.releaseTexture(old_thumb.texture),
                     else => {},
                 }
-                entry.thumbnail = .{
+                current_entry.thumbnail = .{
                     .loaded = .{
                         .texture = upload_res.gpu_texture,
                         .info = .{
@@ -158,7 +161,17 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
                     .loaded_gpu => |gpu| gpu_dev.releaseTexture(gpu.gpu_texture),
                     else => {},
                 }
+                entry.raw_metadata = decoded_data.raw_metadata;
                 entry.orientation = decoded_data.orientation;
+                if (entry.full_w <= 0.0 or entry.full_h <= 0.0) {
+                    if (decoded_data.raw_metadata.getSensorDims()) |s_dims| {
+                        entry.full_w = s_dims.w;
+                        entry.full_h = s_dims.h;
+                    } else {
+                        entry.full_w = decoded_data.w;
+                        entry.full_h = decoded_data.h;
+                    }
+                }
                 entry.status = .{
                     .loaded_gpu = .{
                         .gpu_texture = full_res.gpu_texture,
@@ -166,6 +179,7 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
                         .h = decoded_data.h,
                         .size_bytes = decoded_data.size_bytes,
                         .mime_type = decoded_data.mime_type,
+                        .raw_metadata = decoded_data.raw_metadata,
                         .read_time_ms = decoded_data.read_time_ms,
                         .decode_time_ms = decoded_data.decode_time_ms,
                         .conversion_time_ms = full_res.conversion_time_ms,
@@ -184,6 +198,9 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
                 gpu_dev.releaseTexture(full_res.gpu_texture);
             }
             state.updateCurrentRotation();
+        } else {
+            std.log.err("handleImageDecodedEvent: failed to upload surface to GPU for key {any}", .{decoded_data.key});
+            _ = state.cache.updateStatus(decoded_data.key, .failed);
         }
     } else {
         if (state.cache.get(decoded_data.key)) |entry| {
@@ -191,7 +208,17 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
                 .loaded_cpu => |cpu| cpu.surface.destroy(),
                 else => {},
             }
+            entry.raw_metadata = decoded_data.raw_metadata;
             entry.orientation = decoded_data.orientation;
+            if (entry.full_w <= 0.0 or entry.full_h <= 0.0) {
+                if (decoded_data.raw_metadata.getSensorDims()) |s_dims| {
+                    entry.full_w = s_dims.w;
+                    entry.full_h = s_dims.h;
+                } else {
+                    entry.full_w = decoded_data.w;
+                    entry.full_h = decoded_data.h;
+                }
+            }
             entry.status = .{
                 .loaded_cpu = .{
                     .surface = decoded_data.surface.?,
@@ -199,6 +226,7 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
                     .h = decoded_data.h,
                     .size_bytes = decoded_data.size_bytes,
                     .mime_type = decoded_data.mime_type,
+                    .raw_metadata = decoded_data.raw_metadata,
                     .read_time_ms = decoded_data.read_time_ms,
                     .decode_time_ms = decoded_data.decode_time_ms,
                     .conversion_time_ms = decoded_data.conversion_time_ms,

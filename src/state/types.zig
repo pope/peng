@@ -537,6 +537,36 @@ pub const UiRenderMetrics = struct {
     }
 };
 
+/// RAW camera sensor metadata variant eliminating impossible states (e.g. RAW flag without valid dimensions).
+pub const RawMetadata = union(enum) {
+    none,
+    raw: struct {
+        sensor_w: f32,
+        sensor_h: f32,
+    },
+
+    /// Safely constructs a RawMetadata variant, guaranteeing strictly positive non-NaN dimensions.
+    pub fn init(sensor_w: f32, sensor_h: f32) RawMetadata {
+        if (sensor_w > 0.0 and sensor_h > 0.0 and !std.math.isNan(sensor_w) and !std.math.isNan(sensor_h)) {
+            return .{ .raw = .{ .sensor_w = sensor_w, .sensor_h = sensor_h } };
+        }
+        return .none;
+    }
+
+    /// Returns `true` if this media entry is a Camera RAW file with valid embedded preview.
+    pub inline fn isRaw(self: RawMetadata) bool {
+        return self == .raw;
+    }
+
+    /// Returns true sensor dimensions if RAW, or `null` if standard media format.
+    pub inline fn getSensorDims(self: RawMetadata) ?struct { w: f32, h: f32 } {
+        return switch (self) {
+            .raw => |r| if (r.sensor_w > 0.0 and r.sensor_h > 0.0) .{ .w = r.sensor_w, .h = r.sensor_h } else null,
+            .none => null,
+        };
+    }
+};
+
 /// Decoded CPU software surface stored in host RAM along with image dimensions and decompression timing.
 pub const CpuSurfaceComponent = struct {
     surface: sdl.Surface,
@@ -544,6 +574,7 @@ pub const CpuSurfaceComponent = struct {
     h: f32,
     size_bytes: u64,
     mime_type: []const u8 = "",
+    raw_metadata: RawMetadata = .none,
     read_time_ms: f64 = 0.0,
     decode_time_ms: f64 = 0.0,
     conversion_time_ms: f64 = 0.0,
@@ -558,6 +589,7 @@ pub const GpuTextureComponent = struct {
     h: f32,
     size_bytes: u64,
     mime_type: []const u8 = "",
+    raw_metadata: RawMetadata = .none,
     read_time_ms: f64 = 0.0,
     decode_time_ms: f64 = 0.0,
     conversion_time_ms: f64 = 0.0,
@@ -654,6 +686,7 @@ pub const CacheEntry = struct {
     full_w: f32 = 0.0,
     full_h: f32 = 0.0,
     orientation: Orientation = .normal,
+    raw_metadata: RawMetadata = .none,
 
     /// Deinitializes thumbnail texture and releases any loaded CPU surface or GPU texture.
     pub fn deinit(self: *CacheEntry, gpu_device: ?sdl.gpu.Device) void {
@@ -992,4 +1025,24 @@ test "Orientation.fromTiff and branchless math" {
     // Out of range / unknown tag values default to normal (0°)
     try std.testing.expectEqual(Orientation.normal, Orientation.fromTiff(0));
     try std.testing.expectEqual(Orientation.normal, Orientation.fromTiff(99));
+}
+
+test "RawMetadata tagged union invariants and constructor" {
+    // Valid dimensions
+    const valid = RawMetadata.init(6000.0, 4000.0);
+    try std.testing.expect(valid.isRaw());
+    const dims = valid.getSensorDims().?;
+    try std.testing.expectEqual(@as(f32, 6000.0), dims.w);
+    try std.testing.expectEqual(@as(f32, 4000.0), dims.h);
+
+    // Invalid zero or negative dimensions return .none
+    try std.testing.expectEqual(RawMetadata.none, RawMetadata.init(0.0, 0.0));
+    try std.testing.expectEqual(RawMetadata.none, RawMetadata.init(-100.0, 4000.0));
+    try std.testing.expectEqual(RawMetadata.none, RawMetadata.init(6000.0, 0.0));
+    try std.testing.expectEqual(RawMetadata.none, RawMetadata.init(std.math.nan(f32), 4000.0));
+
+    // .none variant returns false and null
+    const none_meta = RawMetadata.none;
+    try std.testing.expect(!none_meta.isRaw());
+    try std.testing.expectEqual(@as(?struct { w: f32, h: f32 }, null), none_meta.getSensorDims());
 }

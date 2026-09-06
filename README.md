@@ -7,12 +7,23 @@ ______________________________________________________________________
 ## Features
 
 - **GPU Acceleration:** Uses the modern SDL3 GPU API with Vulkan and Metal backends.
+- **Camera RAW Zero-Copy Streaming:** High-performance viewing of Camera RAW images (`.arw`, `.raf`, `.cr2`, `.nef`, `.dng`, `.orf`, `.rw2`, `.pef`) with zero full-file allocations in RAM. Streams 128KB stack headers for sub-0.1ms metadata probing, range-limited positional reads for preview JPEGs, and instant embedded thumbnail rendering during fast navigation.
 - **CBZ & Manga Mode Support:** Instant $O(1)$ page seeking inside `.cbz` comic archives with toggleable Right-to-Left (RTL) Manga reading mode (`M` key).
 - **Advanced Filtering & Resampling:** Features high-quality resampling shaders including Bilinear, Mitchell-Netravali, and Lanczos3 filters.
 - **Command Palette:** Built-in searchable palettes for commands (`F1` or `Ctrl+Shift+P`), file search (`Ctrl+P`), and directory navigator (`Ctrl+O`).
-- **Interactive Stats Overlay:** Toggleable sidebar (`I` key) displaying CPU/GPU decoding times, active resampling shader, rendering metrics, and image attributes.
+- **Interactive Info & Stats Overlays:** Toggleable draggable panels (`I` key) displaying camera sensor metadata, preview resolutions, CPU/GPU decoding times, active resampling shader, and rendering metrics.
 - **Non-Blocking Headless Mode:** Runs offscreen without X11 or Wayland (ideal for CI and servers) with `--headless`.
 - **Scriptable IPC Control:** External client controls the viewer's zoom, pan, filters, and takes screenshots in real-time.
+
+______________________________________________________________________
+
+## Supported Formats
+
+| Category            | Formats / Extensions                                                      | Highlights                                                                                                                                                                      |
+| :------------------ | :------------------------------------------------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Standard Raster** | `.png`, `.jpg`, `.jpeg`, `.webp`, `.avif`, `.bmp`, `.tga`, `.svg`, `.gif` | High-DPI mipmapped GPU rendering, SIMD color conversions                                                                                                                        |
+| **Comic Archives**  | `.cbz`                                                                    | Central Directory parsing with $O(1)$ page seeking and RTL Manga mode                                                                                                           |
+| **Camera RAW**      | `.arw`, `.raf`, `.cr2`, `.nef`, `.dng`, `.orf`, `.rw2`, `.pef`            | Zero full-file allocations, sub-0.1ms probe, range-limited embedded previews, instant thumbnail scrubbing, EXIF orientation auto-correction, and raw sensor dimension reporting |
 
 ______________________________________________________________________
 

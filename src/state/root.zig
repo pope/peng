@@ -41,6 +41,7 @@ pub const OverlayState = types.OverlayState;
 pub const palette_action_items = types.palette_action_items;
 pub const PaletteConfig = palette_state.PaletteConfig;
 pub const PaletteState = palette_state.PaletteState;
+pub const RawMetadata = types.RawMetadata;
 pub const ScoredMatch = palette_state.ScoredMatch;
 pub const SlideshowMode = types.SlideshowMode;
 pub const stopTextInput = types.stopTextInput;

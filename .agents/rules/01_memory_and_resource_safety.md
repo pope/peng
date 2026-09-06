@@ -91,3 +91,37 @@ Every struct owning heap memory, GPU handles, socket connections, or child sub-s
 - Do NOT make struct fields or function parameters optional (`?T = null`) defensively if the dependency or state is always present and required for correct runtime execution.
 - Optional types (`?T`) MUST represent genuine, valid domain absence (e.g. `current_index: ?usize = null` when a playlist is empty, or `surface: ?sdl.Surface` when a thumbnail is unavailable).
 - Wrapping non-optional dependencies in optionals introduces dead branches (`if (args.dep) |dep|`), obscures API contracts, and forces callers to handle impossible `null` scenarios. Require the dependency directly (`dep: T`).
+
+## 14. Zero Full-File Allocation Constraint for Large Media Formats
+
+- Large media files (e.g. Camera RAW, uncompressed archives, video containers) range from 50MB to 500MB+. Reading full files into RAM causes severe memory spikes, heap fragmentation, and out-of-memory crashes.
+- Workers and probes MUST use fixed-size stack buffers (e.g. `[128 * 1024]u8`) for header inspections and metadata extraction.
+- Data extraction (e.g. embedded preview JPEGs, sub-streams) MUST be performed via range-limited positional file reads (`file.readPositional(io, &slices, offset)`) into precisely-sized allocations matching the exact payload length.
+
+## 15. Saturating Arithmetic on Untrusted File Offsets & Lengths
+
+- In file parsing routines (TIFF, EXIF, RAF, ZIP), offsets and lengths extracted from untrusted binary headers MUST be validated against buffer and file sizes before slicing or allocation.
+- NEVER use simple addition `offset + length <= file_size`, which risks integer overflow panics in Zig Debug and ReleaseSafe modes when parsing corrupt or malicious files with near-max values.
+- ALWAYS use saturating subtraction: `offset <= file_size -| length` or `offset <= buffer_len -| length`.
+
+## 16. Strict Domain Invariant Enforcement via Tagged Unions
+
+- When domain metadata contains mutually exclusive states or conditional properties (e.g. Camera RAW sensor dimensions), NEVER use loose booleans with optional or uninitialized fields (e.g. `is_raw: bool, sensor_w: f32`).
+- Model the domain state explicitly using a tagged union (`union(enum)`) with an invariant validation constructor (`init(...)`):
+  ```zig
+  pub const RawMetadata = union(enum) {
+      none,
+      raw: struct {
+          sensor_w: f32,
+          sensor_h: f32,
+      },
+
+      pub fn init(is_raw: bool, w: f32, h: f32) RawMetadata {
+          if (is_raw and w > 0.0 and h > 0.0) {
+              return .{ .raw = .{ .sensor_w = w, .sensor_h = h } };
+          }
+          return .none;
+      }
+  };
+  ```
+- This eliminates illegal states at compile time and makes invalid combinations impossible to construct.

@@ -312,6 +312,7 @@ pub fn main(init: std.process.Init) !void {
 }
 
 test {
+    std.testing.refAllDecls(app.core.exif);
     _ = app;
     _ = ui;
     _ = state_pkg;
