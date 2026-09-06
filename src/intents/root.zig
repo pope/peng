@@ -5,6 +5,11 @@
 
 const std = @import("std");
 
+pub const keys = @import("keys.zig");
+pub const Key = keys.Key;
+pub const KeyModifiers = keys.KeyModifiers;
+pub const KeyboardShortcut = keys.KeyboardShortcut;
+
 /// Image viewport scaling and fitting modes.
 pub const ScaleMode = enum {
     none,
@@ -35,6 +40,26 @@ pub const TextureScaleMode = enum {
             .lanczos3_spline => 5,
         };
     }
+};
+
+/// Comptime-generated comma-separated list of all valid ScaleMode names via reflection.
+pub const scale_modes_string: []const u8 = blk: {
+    var str: []const u8 = "";
+    const fields = @typeInfo(ScaleMode).@"enum".fields;
+    for (fields, 0..) |field, i| {
+        str = if (i > 0) str ++ ", " ++ field.name else field.name;
+    }
+    break :blk str;
+};
+
+/// Comptime-generated comma-separated list of all valid TextureScaleMode names via reflection.
+pub const filter_modes_string: []const u8 = blk: {
+    var str: []const u8 = "";
+    const fields = @typeInfo(TextureScaleMode).@"enum".fields;
+    for (fields, 0..) |field, i| {
+        str = if (i > 0) str ++ ", " ++ field.name else field.name;
+    }
+    break :blk str;
 };
 
 /// Min and max numeric bounds for validated text input dialogs.
@@ -146,4 +171,15 @@ test "TextureScaleMode - toScaleModeInt mapping" {
     try std.testing.expectEqual(@as(i32, 3), TextureScaleMode.mitchell.toScaleModeInt());
     try std.testing.expectEqual(@as(i32, 4), TextureScaleMode.lanczos3.toScaleModeInt());
     try std.testing.expectEqual(@as(i32, 5), TextureScaleMode.lanczos3_spline.toScaleModeInt());
+}
+
+pub const actions = @import("actions.zig");
+pub const CliTarget = actions.CliTarget;
+pub const OptionId = actions.OptionId;
+pub const CliOption = actions.CliOption;
+pub const IpcCommandDesc = actions.IpcCommandDesc;
+
+test {
+    _ = keys;
+    _ = actions;
 }

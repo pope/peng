@@ -2,105 +2,15 @@ const intents = @import("intents");
 const std = @import("std");
 
 const ScaleMode = intents.ScaleMode;
-const TextureScaleMode = intents.TextureScaleMode;
 
-/// Target application scope for a command-line option or command.
-pub const CliTarget = enum {
-    main,
-    ipc,
-    both,
-
-    /// Returns true if this target applies to the given scope.
-    pub fn appliesTo(self: CliTarget, scope: CliTarget) bool {
-        if (self == .both or scope == .both) return true;
-        return self == scope;
-    }
-};
-
-/// Enumeration of distinct command-line option identifiers.
-pub const OptionId = enum {
-    help,
-    scale,
-    blur,
-    no_blur,
-    ipc,
-    headless,
-    test_mode,
-    update_baselines,
-};
-
-/// Declarative schema describing a command-line option, its target app, aliases, placeholder, and description.
-pub const CliOption = struct {
-    id: OptionId,
-    target: CliTarget = .both,
-    short: ?[]const u8 = null,
-    long: []const u8,
-    aliases: []const []const u8 = &.{},
-    arg_name: ?[]const u8 = null,
-    description: []const u8,
-
-    /// Returns true if the given argument matches this option's short flag, long flag, or any alias.
-    pub fn matches(self: CliOption, arg: []const u8) bool {
-        if (self.short) |s| {
-            if (std.mem.eql(u8, arg, s)) return true;
-        }
-        if (std.mem.eql(u8, arg, self.long)) return true;
-        for (self.aliases) |alias| {
-            if (std.mem.eql(u8, arg, alias)) return true;
-        }
-        return false;
-    }
-};
-
-/// Comptime-generated comma-separated list of all valid ScaleMode names via reflection.
-pub const scale_modes_string: []const u8 = blk: {
-    var str: []const u8 = "";
-    const fields = @typeInfo(ScaleMode).@"enum".fields;
-    for (fields, 0..) |field, i| {
-        str = if (i > 0) str ++ ", " ++ field.name else field.name;
-    }
-    break :blk str;
-};
-
-/// Comptime-generated comma-separated list of all valid TextureScaleMode names via reflection.
-pub const filter_modes_string: []const u8 = blk: {
-    var str: []const u8 = "";
-    const fields = @typeInfo(TextureScaleMode).@"enum".fields;
-    for (fields, 0..) |field, i| {
-        str = if (i > 0) str ++ ", " ++ field.name else field.name;
-    }
-    break :blk str;
-};
-
-/// Centralized declarative registry of all supported command-line options.
-pub const options = [_]CliOption{
+/// Startup process flags that configure runtime initialization (not runtime actions).
+pub const process_flags = [_]intents.CliOption{
     .{
         .id = .help,
         .target = .both,
         .short = "-h",
         .long = "--help",
         .description = "Show this help message and exit",
-    },
-    .{
-        .id = .scale,
-        .target = .main,
-        .long = "--scale",
-        .arg_name = "<mode>",
-        .description = "Default image scaling mode (default: full)\n                             Modes: " ++ scale_modes_string,
-    },
-    .{
-        .id = .blur,
-        .target = .main,
-        .long = "--blur",
-        .aliases = &.{"--enable-blur"},
-        .description = "Enable glassmorphism background blur behind overlays (default)",
-    },
-    .{
-        .id = .no_blur,
-        .target = .main,
-        .long = "--no-blur",
-        .aliases = &.{"--disable-blur"},
-        .description = "Disable glassmorphism background blur behind overlays",
     },
     .{
         .id = .ipc,
@@ -129,31 +39,30 @@ pub const options = [_]CliOption{
     },
 };
 
-/// Declarative schema describing an IPC message command word and its usage.
-pub const IpcCommandDesc = struct {
-    name: []const u8,
-    args: ?[]const u8 = null,
-    description: []const u8,
+/// Centralized declarative registry of all supported command-line options.
+/// Merges process lifecycle flags with capabilities declared in the unified action registry.
+pub const options = blk: {
+    const act_opts = intents.actions.action_cli_options;
+    var list: [process_flags.len + act_opts.len]intents.CliOption = undefined;
+    list[0] = process_flags[0]; // -h, --help
+    var idx: usize = 1;
+    for (act_opts) |opt| {
+        list[idx] = opt;
+        idx += 1;
+    }
+    for (process_flags[1..]) |opt| {
+        list[idx] = opt;
+        idx += 1;
+    }
+    break :blk list;
 };
 
 /// Centralized declarative registry of common IPC control commands.
-pub const ipc_commands = [_]IpcCommandDesc{
-    .{ .name = "zoom", .args = "<factor>", .description = "Set zoom factor (0.1 - 10.0)" },
-    .{ .name = "pan", .args = "<x> <y>", .description = "Set pan offset in pixels" },
-    .{ .name = "scale", .args = "<mode>", .description = "Set fit mode (" ++ scale_modes_string ++ ")" },
-    .{ .name = "manga", .args = "<true|false>", .description = "Toggle RTL manga reading mode" },
-    .{ .name = "adjust", .args = "<bright> <contrast>", .description = "Adjust brightness and contrast" },
-    .{ .name = "filter", .args = "<name>", .description = "Apply resampling shader (" ++ filter_modes_string ++ ")" },
-    .{ .name = "next / prev", .description = "Navigate images" },
-    .{ .name = "palette", .args = "<action|files|none>", .description = "Toggle command/file palette" },
-    .{ .name = "thumb", .args = "<toggle|true|false>", .description = "Toggle embedded thumbnail preview" },
-    .{ .name = "debug", .args = "<true|false>", .description = "Toggle Clay UI layout debug borders" },
-    .{ .name = "wait_load", .description = "Wait for image decoding to complete" },
-    .{ .name = "quit", .description = "Quit the viewer" },
-};
+/// Projected directly from the unified action registry.
+pub const ipc_commands = intents.actions.ipc_commands;
 
 /// Finds a registered CliOption matching the provided argument string across all targets.
-pub fn findOption(arg: []const u8) ?CliOption {
+pub fn findOption(arg: []const u8) ?intents.CliOption {
     for (options) |opt| {
         if (opt.matches(arg)) return opt;
     }
@@ -161,7 +70,7 @@ pub fn findOption(arg: []const u8) ?CliOption {
 }
 
 /// Finds a registered CliOption matching the provided argument string for a specific target scope.
-pub fn findOptionFor(arg: []const u8, scope: CliTarget) ?CliOption {
+pub fn findOptionFor(arg: []const u8, scope: intents.CliTarget) ?intents.CliOption {
     for (options) |opt| {
         if (opt.target.appliesTo(scope) and opt.matches(arg)) return opt;
     }
@@ -178,7 +87,7 @@ pub fn padRight(comptime str: []const u8, comptime width: usize) []const u8 {
 }
 
 /// Formats an option's flag presentation (short flag, long flag, aliases, and argument name).
-pub fn formatOptionFlags(comptime opt: CliOption) []const u8 {
+pub fn formatOptionFlags(comptime opt: intents.CliOption) []const u8 {
     var col: []const u8 = "  ";
     if (opt.short) |s| {
         col = col ++ s ++ ", " ++ opt.long;
@@ -197,7 +106,7 @@ pub fn formatOptionFlags(comptime opt: CliOption) []const u8 {
 }
 
 /// Formats the options section for the specified target application.
-pub fn formatOptionsFor(comptime target: CliTarget, comptime col_width: usize) []const u8 {
+pub fn formatOptionsFor(comptime target: intents.CliTarget, comptime col_width: usize) []const u8 {
     var text: []const u8 = "";
     for (options) |opt| {
         if (!opt.target.appliesTo(target)) continue;
@@ -225,7 +134,7 @@ pub const HelpSpec = struct {
     title: []const u8,
     usage: []const u8,
     arguments: ?[]const u8 = null,
-    target: CliTarget,
+    target: intents.CliTarget,
     options_col_width: usize = 29,
     extra_sections: ?[]const u8 = null,
 };
@@ -354,7 +263,7 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
                         if (std.meta.stringToEnum(ScaleMode, val)) |mode| {
                             default_scale = mode;
                         } else {
-                            std.log.err("Unknown scale mode: {s}. Valid modes are: {s}.", .{ val, scale_modes_string });
+                            std.log.err("Unknown scale mode: {s}. Valid modes are: {s}.", .{ val, intents.scale_modes_string });
                         }
                     } else {
                         std.log.err("Missing value for --scale flag.", .{});
@@ -394,25 +303,25 @@ pub fn parseCommandLineArgs(init: std.process.Init, gpa: std.mem.Allocator) !Par
 
 test "CliTarget appliesTo works correctly" {
     const testing = std.testing;
-    try testing.expect(CliTarget.both.appliesTo(.main));
-    try testing.expect(CliTarget.both.appliesTo(.ipc));
-    try testing.expect(CliTarget.both.appliesTo(.both));
+    try testing.expect(intents.CliTarget.both.appliesTo(.main));
+    try testing.expect(intents.CliTarget.both.appliesTo(.ipc));
+    try testing.expect(intents.CliTarget.both.appliesTo(.both));
 
-    try testing.expect(CliTarget.main.appliesTo(.main));
-    try testing.expect(!CliTarget.main.appliesTo(.ipc));
-    try testing.expect(CliTarget.main.appliesTo(.both));
+    try testing.expect(intents.CliTarget.main.appliesTo(.main));
+    try testing.expect(!intents.CliTarget.main.appliesTo(.ipc));
+    try testing.expect(intents.CliTarget.main.appliesTo(.both));
 
-    try testing.expect(!CliTarget.ipc.appliesTo(.main));
-    try testing.expect(CliTarget.ipc.appliesTo(.ipc));
-    try testing.expect(CliTarget.ipc.appliesTo(.both));
+    try testing.expect(!intents.CliTarget.ipc.appliesTo(.main));
+    try testing.expect(intents.CliTarget.ipc.appliesTo(.ipc));
+    try testing.expect(intents.CliTarget.ipc.appliesTo(.both));
 }
 
 test "scale_modes_string and filter_modes_string contain enum variants" {
     const testing = std.testing;
-    try testing.expect(std.mem.indexOf(u8, scale_modes_string, "full") != null);
-    try testing.expect(std.mem.indexOf(u8, scale_modes_string, "fit_width") != null);
-    try testing.expect(std.mem.indexOf(u8, filter_modes_string, "mitchell") != null);
-    try testing.expect(std.mem.indexOf(u8, filter_modes_string, "lanczos3") != null);
+    try testing.expect(std.mem.indexOf(u8, intents.scale_modes_string, "full") != null);
+    try testing.expect(std.mem.indexOf(u8, intents.scale_modes_string, "fit_width") != null);
+    try testing.expect(std.mem.indexOf(u8, intents.filter_modes_string, "mitchell") != null);
+    try testing.expect(std.mem.indexOf(u8, intents.filter_modes_string, "lanczos3") != null);
 }
 
 test "help_text and ipc_help_text contain registered options" {
@@ -440,14 +349,14 @@ test "help_text and ipc_help_text contain registered options" {
 test "findOption and findOptionFor respect target filtering" {
     const testing = std.testing;
 
-    try testing.expectEqual(OptionId.help, findOption("-h").?.id);
-    try testing.expectEqual(OptionId.help, findOptionFor("-h", .main).?.id);
-    try testing.expectEqual(OptionId.help, findOptionFor("-h", .ipc).?.id);
+    try testing.expectEqual(intents.OptionId.help, findOption("-h").?.id);
+    try testing.expectEqual(intents.OptionId.help, findOptionFor("-h", .main).?.id);
+    try testing.expectEqual(intents.OptionId.help, findOptionFor("-h", .ipc).?.id);
 
-    try testing.expectEqual(OptionId.scale, findOptionFor("--scale", .main).?.id);
+    try testing.expectEqual(intents.OptionId.scale, findOptionFor("--scale", .main).?.id);
     try testing.expect(findOptionFor("--scale", .ipc) == null);
 
-    try testing.expectEqual(OptionId.ipc, findOptionFor("--ipc", .main).?.id);
+    try testing.expectEqual(intents.OptionId.ipc, findOptionFor("--ipc", .main).?.id);
     try testing.expect(findOptionFor("--ipc", .ipc) == null);
 
     try testing.expect(findOption("--unknown") == null);

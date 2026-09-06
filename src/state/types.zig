@@ -93,81 +93,10 @@ pub const MediaEntry = union(enum) {
     }
 };
 
-/// Normalized keyboard key enumeration covering standard navigation, function, and alphanumeric keys.
-pub const Key = enum {
-    unknown,
-    escape,
-    return_key,
-    backspace,
-    tab,
-    space,
-    left,
-    right,
-    up,
-    down,
-    equals,
-    minus,
-    left_bracket,
-    right_bracket,
-    home,
-    end,
-    page_up,
-    page_down,
-    f1,
-    f11,
-    char_0,
-    char_1,
-    char_2,
-    char_3,
-    char_4,
-    char_5,
-    char_6,
-    char_7,
-    char_8,
-    char_9,
-    char_a,
-    char_b,
-    char_c,
-    char_d,
-    char_e,
-    char_f,
-    char_g,
-    char_h,
-    char_i,
-    char_j,
-    char_k,
-    char_l,
-    char_m,
-    char_n,
-    char_o,
-    char_p,
-    char_q,
-    char_r,
-    char_s,
-    char_t,
-    char_u,
-    char_v,
-    char_w,
-    char_x,
-    char_y,
-    char_z,
-};
-
-/// Active keyboard modifier key state mask (Ctrl, Shift, Alt, GUI/Cmd).
-pub const KeyModifiers = struct {
-    ctrl: bool = false,
-    shift: bool = false,
-    alt: bool = false,
-    gui: bool = false,
-
-    /// Checks two modifier sets for identical flag settings.
-    pub fn eql(self: KeyModifiers, other: KeyModifiers) bool {
-        return self.ctrl == other.ctrl and
-            self.shift == other.shift and
-            self.alt == other.alt and
-            self.gui == other.gui;
-    }
-};
+/// Re-export normalized keyboard definitions from intents module.
+pub const Key = intents.Key;
+pub const KeyModifiers = intents.KeyModifiers;
+pub const KeyboardShortcut = intents.KeyboardShortcut;
 
 /// Type-safe zoom factor wrapper protecting against zero-initialization, division-by-zero, and NaN.
 pub const ZoomFactor = struct {
@@ -347,93 +276,17 @@ pub const FrameInput = struct {
     }
 };
 
-/// Single keyboard key and modifier combination bound to an application action.
-pub const KeyboardShortcut = struct {
-    key: Key,
-    mod: KeyModifiers = .{},
-};
-
 /// Metadata describing an action executable from the Command Palette, including its shortcut and intent.
-pub const ActionMetadata = struct {
-    name: []const u8,
-    shortcut_text: []const u8,
-    show_in_palette: bool,
-    shortcuts: []const KeyboardShortcut,
-    intent: intents.AppIntent,
-};
+pub const ActionMetadata = intents.actions.ActionMetadata;
 
-pub const palette_action_items = [_]ActionMetadata{
-    .{ .name = "Next Image", .shortcut_text = "Space / Right Arrow", .show_in_palette = true, .shortcuts = &.{ .{ .key = .space }, .{ .key = .right } }, .intent = .next_image },
-    .{ .name = "Previous Image", .shortcut_text = "Backspace / Left Arrow", .show_in_palette = true, .shortcuts = &.{ .{ .key = .backspace }, .{ .key = .left } }, .intent = .prev_image },
-    .{ .name = "Toggle Image Info", .shortcut_text = "I", .show_in_palette = true, .shortcuts = &.{.{ .key = .char_i }}, .intent = .toggle_info },
-    .{ .name = "Toggle Manga Mode (RTL)", .shortcut_text = "M", .show_in_palette = true, .shortcuts = &.{.{ .key = .char_m }}, .intent = .toggle_manga_mode },
-    .{ .name = "Toggle Performance Overlay", .shortcut_text = "Shift+I", .show_in_palette = true, .shortcuts = &.{.{ .key = .char_i, .mod = .{ .shift = true } }}, .intent = .toggle_stats },
-    .{ .name = "Toggle Fullscreen", .shortcut_text = "F / F11", .show_in_palette = true, .shortcuts = &.{ .{ .key = .char_f }, .{ .key = .f11 } }, .intent = .toggle_fullscreen },
-    .{ .name = "Open File Finder...", .shortcut_text = "Ctrl+P", .show_in_palette = true, .shortcuts = &.{.{ .key = .char_p, .mod = .{ .ctrl = true } }}, .intent = .{ .set_palette = .{ .mode = .files } } },
-    .{ .name = "Navigate Directories...", .shortcut_text = "Ctrl+O", .show_in_palette = true, .shortcuts = &.{.{ .key = .char_o, .mod = .{ .ctrl = true } }}, .intent = .{ .set_palette = .{ .mode = .directory_navigator } } },
-    .{ .name = "Toggle Clay Debug Mode", .shortcut_text = "Ctrl+D", .show_in_palette = true, .shortcuts = &.{.{ .key = .char_d, .mod = .{ .ctrl = true } }}, .intent = .toggle_debug_mode },
-    .{ .name = "Toggle Debug Thumbnail Overlay", .shortcut_text = "Ctrl+T", .show_in_palette = true, .shortcuts = &.{.{ .key = .char_t, .mod = .{ .ctrl = true } }}, .intent = .toggle_debug_thumb },
-    .{ .name = "Quit", .shortcut_text = "Q / Esc", .show_in_palette = true, .shortcuts = &.{ .{ .key = .char_q }, .{ .key = .escape } }, .intent = .quit },
-    .{ .name = "First Image", .shortcut_text = "Home", .show_in_palette = true, .shortcuts = &.{.{ .key = .home }}, .intent = .first_image },
-    .{ .name = "Last Image", .shortcut_text = "End", .show_in_palette = true, .shortcuts = &.{.{ .key = .end }}, .intent = .last_image },
-    .{ .name = "Zoom In", .shortcut_text = "= / +", .show_in_palette = true, .shortcuts = &.{.{ .key = .equals }}, .intent = .zoom_in },
-    .{ .name = "Zoom Out", .shortcut_text = "-", .show_in_palette = true, .shortcuts = &.{.{ .key = .minus }}, .intent = .zoom_out },
-    .{ .name = "Reset Zoom & Pan", .shortcut_text = "R / 0", .show_in_palette = true, .shortcuts = &.{ .{ .key = .char_r }, .{ .key = .char_0 } }, .intent = .reset_zoom },
-    .{ .name = "Set Scale Mode: 100% (Actual Size)", .shortcut_text = "", .show_in_palette = true, .shortcuts = &.{}, .intent = .{ .set_scale = .none } },
-    .{ .name = "Set Scale Mode: Fit if Larger (Shrink)", .shortcut_text = "", .show_in_palette = true, .shortcuts = &.{}, .intent = .{ .set_scale = .shrink } },
-    .{ .name = "Set Scale Mode: Fit Window (Full)", .shortcut_text = "", .show_in_palette = true, .shortcuts = &.{}, .intent = .{ .set_scale = .full } },
-    .{ .name = "Set Scale Mode: Fill Window (Crop)", .shortcut_text = "", .show_in_palette = true, .shortcuts = &.{}, .intent = .{ .set_scale = .crop } },
-    .{ .name = "Set Scale Mode: Fit Width", .shortcut_text = "", .show_in_palette = true, .shortcuts = &.{}, .intent = .{ .set_scale = .fit_width } },
-    .{ .name = "Set Scale Mode: Fit Height", .shortcut_text = "", .show_in_palette = true, .shortcuts = &.{}, .intent = .{ .set_scale = .fit_height } },
-    .{ .name = "Rotate Clockwise (90°)", .shortcut_text = "]", .show_in_palette = true, .shortcuts = &.{.{ .key = .right_bracket }}, .intent = .rotate_cw },
-    .{ .name = "Rotate Counter-Clockwise (90°)", .shortcut_text = "[", .show_in_palette = true, .shortcuts = &.{.{ .key = .left_bracket }}, .intent = .rotate_ccw },
-    .{ .name = "Reset Rotation", .shortcut_text = "", .show_in_palette = true, .shortcuts = &.{}, .intent = .reset_rotation },
-    .{ .name = "Set Scaling Filter: Nearest Neighbor", .shortcut_text = "", .show_in_palette = true, .shortcuts = &.{}, .intent = .{ .set_filter = .nearest } },
-    .{ .name = "Set Scaling Filter: Bilinear (Smooth)", .shortcut_text = "", .show_in_palette = true, .shortcuts = &.{}, .intent = .{ .set_filter = .linear } },
-    .{ .name = "Set Scaling Filter: Pixel Art (Crisp)", .shortcut_text = "", .show_in_palette = true, .shortcuts = &.{}, .intent = .{ .set_filter = .pixel_art } },
-    .{ .name = "Set Scaling Filter: Mitchell-Netravali (HQ Bicubic)", .shortcut_text = "", .show_in_palette = true, .shortcuts = &.{}, .intent = .{ .set_filter = .mitchell } },
-    .{ .name = "Set Scaling Filter: Lanczos3 (Ultra HQ Resampler)", .shortcut_text = "", .show_in_palette = true, .shortcuts = &.{}, .intent = .{ .set_filter = .lanczos3 } },
-    .{ .name = "Set Scaling Filter: Lanczos3 Spline (Fast FMA Resampler)", .shortcut_text = "", .show_in_palette = true, .shortcuts = &.{}, .intent = .{ .set_filter = .lanczos3_spline } },
-    .{ .name = "Increase Brightness (+10%)", .shortcut_text = "P", .show_in_palette = true, .shortcuts = &.{.{ .key = .char_p }}, .intent = .increase_brightness },
-    .{ .name = "Decrease Brightness (-10%)", .shortcut_text = "O", .show_in_palette = true, .shortcuts = &.{.{ .key = .char_o }}, .intent = .decrease_brightness },
-    .{ .name = "Increase Contrast (+10%)", .shortcut_text = "L", .show_in_palette = true, .shortcuts = &.{.{ .key = .char_l }}, .intent = .increase_contrast },
-    .{ .name = "Decrease Contrast (-10%)", .shortcut_text = "K", .show_in_palette = true, .shortcuts = &.{.{ .key = .char_k }}, .intent = .decrease_contrast },
-    .{ .name = "Reset Brightness & Contrast", .shortcut_text = "Shift+R", .show_in_palette = true, .shortcuts = &.{.{ .key = .char_r, .mod = .{ .shift = true } }}, .intent = .reset_adjustments },
-    .{ .name = "Set Brightness (Type Value)...", .shortcut_text = "Shift+B", .show_in_palette = true, .shortcuts = &.{.{ .key = .char_b, .mod = .{ .shift = true } }}, .intent = .{ .set_palette = .{ .mode = .set_brightness } } },
-    .{ .name = "Set Contrast (Type Value)...", .shortcut_text = "Shift+C", .show_in_palette = true, .shortcuts = &.{.{ .key = .char_c, .mod = .{ .shift = true } }}, .intent = .{ .set_palette = .{ .mode = .set_contrast } } },
-    .{ .name = "Go to Image...", .shortcut_text = "Shift+G", .show_in_palette = true, .shortcuts = &.{.{ .key = .char_g, .mod = .{ .shift = true } }}, .intent = .{ .set_palette = .{ .mode = .go_to_image } } },
-    .{ .name = "Search Actions (Command Palette)", .shortcut_text = "F1 / Ctrl+Shift+P", .show_in_palette = true, .shortcuts = &.{ .{ .key = .f1 }, .{ .key = .char_p, .mod = .{ .ctrl = true, .shift = true } } }, .intent = .{ .set_palette = .{ .mode = .actions } } },
-    .{ .name = "Start Slide Show...", .shortcut_text = "", .show_in_palette = true, .shortcuts = &.{}, .intent = .{ .set_palette = .{ .mode = .set_slideshow_interval } } },
-    .{ .name = "Stop Slide Show", .shortcut_text = "", .show_in_palette = true, .shortcuts = &.{}, .intent = .stop_slideshow },
-    .{ .name = "Toggle Background Blur", .shortcut_text = "", .show_in_palette = true, .shortcuts = &.{}, .intent = .toggle_blur },
-};
+/// Command Palette items projected from the unified action registry.
+pub const palette_action_items = intents.actions.palette_action_items;
 
 /// Flattened keyboard shortcut entry mapping a specific key and modifier combination directly to an AppIntent.
-pub const FlatShortcut = struct {
-    key: Key,
-    mod: KeyModifiers,
-    intent: intents.AppIntent,
-};
+pub const FlatShortcut = intents.actions.FlatShortcut;
 
-pub const flat_shortcuts = blk: {
-    var count: usize = 0;
-    for (palette_action_items) |item| {
-        count += item.shortcuts.len;
-    }
-    var list: [count]FlatShortcut = undefined;
-    var idx: usize = 0;
-    for (palette_action_items) |item| {
-        for (item.shortcuts) |sc| {
-            list[idx] = .{
-                .key = sc.key,
-                .mod = sc.mod,
-                .intent = item.intent,
-            };
-            idx += 1;
-        }
-    }
-    break :blk list;
-};
+/// Flattened keyboard shortcuts projected from the unified action registry.
+pub const flat_shortcuts = intents.actions.flat_shortcuts;
 
 /// Unique identification tags for interactive Clay UI layout elements.
 pub const ElementTag = enum(usize) {
