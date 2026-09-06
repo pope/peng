@@ -204,6 +204,7 @@ pub fn initAppGraphicsAndState(init: std.process.Init) !AppGraphicsAndState {
         .gpu_device = setup.gpu_device,
         .unpack_compute_pipeline = resources.unpack_compute_pipeline,
         .cache = .{},
+        .workers = .init(),
         .allocator = gpa,
         .io = init.io,
     };

@@ -731,6 +731,7 @@ pub const ViewerStats = struct {
     // Worker telemetry (frame snapshot)
     active_worker_threads: usize = 0,
     active_decode_threads: usize = 0,
+    max_decode_threads: usize = 0,
 
     // Active image GPU & decoder stats
     active_image: ActiveImageStats = .{},

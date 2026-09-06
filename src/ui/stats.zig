@@ -373,6 +373,9 @@ pub fn renderStatsOverlay(
         const total_vram_str = try std.fmt.allocPrint(frame_allocator, "{s} / 1024 MB ({d} slots)", .{ formatted_total_vram, s.cached_slot_count });
         try renderStatRow("Total Cache VRAM", total_vram_str);
 
+        const workers_str = try std.fmt.allocPrint(frame_allocator, "{d} / {d}", .{ s.active_decode_threads, s.max_decode_threads });
+        try renderStatRow("Decode Workers", workers_str);
+
         try renderStatRow("Disk Read Time", read_str);
         if (img.cbz_decompress_time_ms > 0.0) {
             const cbz_time_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{img.cbz_decompress_time_ms});

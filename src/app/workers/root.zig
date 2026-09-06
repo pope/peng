@@ -24,6 +24,10 @@ pub const WorkerContext = context.WorkerContext;
 /// WorkerManager manages background thread lifecycle, active thread counts,
 /// concurrency limits, worker cancellation, and event transport.
 pub const WorkerManager = struct {
+    /// Cached hardware logical CPU core count queried once at startup to eliminate
+    /// per-frame `sysconf` or `/proc/cpuinfo` read syscalls.
+    cached_cpu_count: usize = 0,
+
     /// Atomic counter tracking total actively executing background worker tasks
     /// (image decodes, directory path scans, stdin reading, and IPC server socket listener).
     /// Needed by the main engine loop (`state.isBusy()`) to differentiate between active
@@ -56,24 +60,33 @@ pub const WorkerManager = struct {
         return self.active_threads.load(.acquire) > 0;
     }
 
+    /// Returns the cached hardware CPU count, or queries system CPU count as fallback.
+    pub fn getCpuCount(self: *const WorkerManager) usize {
+        if (self.cached_cpu_count > 0) return self.cached_cpu_count;
+        return std.Thread.getCpuCount() catch 4;
+    }
+
+    /// Calculates the maximum allowed concurrent `decodeWorker` tasks based on system CPU cores.
+    /// Dynamically scales concurrency to `@max(1, @min(8, cpu_count -| 1))`, reserving 1 dedicated
+    /// logical core for the 60/120 FPS main render loop while saturating background cores (up to 8).
+    pub fn getMaxConcurrentDecodes(self: *const WorkerManager) usize {
+        const cpus = self.getCpuCount();
+        return @max(1, @min(8, cpus -| 1));
+    }
+
     /// Returns `true` if the number of actively running `decodeWorker` tasks is strictly less
     /// than `getMaxConcurrentDecodes()`. Used by cache updating and prefetching to throttle
     /// image decoding and prevent CPU/IO thrashing.
     pub fn canSpawnDecode(self: *const WorkerManager) bool {
-        return self.active_decode_threads.load(.acquire) < getMaxConcurrentDecodes();
+        return self.active_decode_threads.load(.acquire) < self.getMaxConcurrentDecodes();
     }
 
-    /// Calculates the maximum allowed concurrent `decodeWorker` tasks based on system CPU cores.
-    /// Dynamically tunes parallel worker capacity to half of available hardware logical cores
-    /// (e.g. max 6 parallel decodes on 12 cores, minimum 1).
-    pub fn getMaxConcurrentDecodes() usize {
-        const cpu_count = std.Thread.getCpuCount() catch 4;
-        return @max(1, cpu_count / 2);
-    }
-
-    /// Initializes a new WorkerManager with zero active threads and default event queues.
+    /// Initializes a new WorkerManager with zero active threads, default event queues,
+    /// and pre-cached system CPU core count.
     pub fn init() WorkerManager {
-        return .{};
+        return .{
+            .cached_cpu_count = std.Thread.getCpuCount() catch 4,
+        };
     }
 
     /// Signals worker shutdown and waits for running tasks to finish.
@@ -232,4 +245,46 @@ test {
     _ = stdin;
     _ = ipc_server;
     _ = palette_scan;
+}
+
+test "WorkerManager.getMaxConcurrentDecodes scaling bounds" {
+    var mgr = WorkerManager{ .cached_cpu_count = 1 };
+    try std.testing.expectEqual(@as(usize, 1), mgr.getMaxConcurrentDecodes());
+
+    mgr.cached_cpu_count = 2;
+    try std.testing.expectEqual(@as(usize, 1), mgr.getMaxConcurrentDecodes());
+
+    mgr.cached_cpu_count = 4;
+    try std.testing.expectEqual(@as(usize, 3), mgr.getMaxConcurrentDecodes());
+
+    mgr.cached_cpu_count = 6;
+    try std.testing.expectEqual(@as(usize, 5), mgr.getMaxConcurrentDecodes());
+
+    mgr.cached_cpu_count = 8;
+    try std.testing.expectEqual(@as(usize, 7), mgr.getMaxConcurrentDecodes());
+
+    mgr.cached_cpu_count = 16;
+    try std.testing.expectEqual(@as(usize, 8), mgr.getMaxConcurrentDecodes());
+
+    mgr.cached_cpu_count = 64;
+    try std.testing.expectEqual(@as(usize, 8), mgr.getMaxConcurrentDecodes());
+}
+
+test "WorkerManager.canSpawnDecode gating" {
+    var mgr = WorkerManager{ .cached_cpu_count = 4 };
+    // Max is 3 (4 - 1):
+    try std.testing.expect(mgr.canSpawnDecode());
+    mgr.active_decode_threads.store(2, .release);
+    try std.testing.expect(mgr.canSpawnDecode());
+    mgr.active_decode_threads.store(3, .release);
+    try std.testing.expect(!mgr.canSpawnDecode());
+}
+
+test "WorkerManager.getCpuCount caching and fallback" {
+    const mgr_zero = WorkerManager{ .cached_cpu_count = 0 };
+    try std.testing.expect(mgr_zero.getCpuCount() >= 1);
+
+    const mgr_cached = WorkerManager.init();
+    try std.testing.expect(mgr_cached.cached_cpu_count >= 1);
+    try std.testing.expectEqual(mgr_cached.cached_cpu_count, mgr_cached.getCpuCount());
 }

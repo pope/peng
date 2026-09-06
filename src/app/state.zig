@@ -126,6 +126,7 @@ pub const AppState = struct {
         var state = AppState{
             .viewer = try ViewerState.initHeadless(allocator),
             .cache = .{},
+            .workers = .init(),
             .allocator = allocator,
             .io = io,
         };
@@ -135,6 +136,9 @@ pub const AppState = struct {
 
     /// Pre-allocates initial buffer capacities for intent, event, and IPC command queues.
     pub fn ensureInitialCapacities(self: *AppState) !void {
+        if (self.workers.cached_cpu_count == 0) {
+            self.workers.cached_cpu_count = std.Thread.getCpuCount() catch 4;
+        }
         // 16 intents: accommodates worst-case enqueued IPC, keyboard, palette, and slideshow intents in a single tick
         try self.pending_intents.ensureTotalCapacity(self.allocator, 16);
         // 16 events: accommodates concurrent worker background events (decodes, EXIF, path scans) processed per tick

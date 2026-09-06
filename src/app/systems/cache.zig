@@ -13,6 +13,10 @@ const DecodeArgs = workers_mod.DecodeArgs;
 const FrameContext = root.FrameContext;
 const MediaEntry = state_pkg.MediaEntry;
 
+/// Fast-scrolling threshold: when navigation events occur faster than this interval,
+/// worker spawning is throttled exclusively to the active slot `idx`.
+pub const FAST_SCROLL_THRESHOLD_MS: u64 = 150;
+
 /// Spawns an asynchronous worker task to decode an image file from disk into RAM.
 ///
 /// Pre-conditions: `dup_path` must be a valid null-terminated heap string owned by the caller.
@@ -74,7 +78,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
 
     const idx = state.viewer.navigation.current_index orelse return;
 
-    // 1. Gather desired indices (5-slot window: idx, +1, +2, -1, -2)
+    // 1. Gather desired indices (5-slot window: idx, +1, -1, +2, -2)
     var desired_count: usize = 0;
     var desired: [5]usize = undefined;
     desired[0] = idx;
@@ -82,8 +86,8 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
 
     for ([_]usize{
         (idx + 1) % len,
-        (idx + 2) % len,
         (idx + len - 1) % len,
+        (idx + 2) % len,
         if (len >= 2) (idx + len - 2) % len else idx,
     }) |d| {
         var unique = true;
@@ -134,7 +138,9 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
 
     // Fast-scrolling check: only active if navigation has actually occurred
     const now = sdl.timer.getTicks();
-    const is_fast_scrolling = state.viewer.navigation.last_nav_time_ms > 0 and (now - state.viewer.navigation.last_nav_time_ms < 150);
+    const is_fast_scrolling = state.viewer.navigation.last_nav_time_ms > 0 and (now - state.viewer.navigation.last_nav_time_ms < FAST_SCROLL_THRESHOLD_MS);
+
+    state.viewer.stats.max_decode_threads = state.workers.getMaxConcurrentDecodes();
 
     // Resource protection: check whether the current image is fully ready or failed.
     // When false, background decode workers are restricted strictly to the active image `idx`.
@@ -331,4 +337,20 @@ test "sysUpdateCache - retains loaded entries outside prefetch window until budg
 
     // Reset slot 0 to .failed to prevent calling destroy() on mock undefined surface during defer state.deinit()
     _ = state.cache.updateStatus(state.cache.activeKey(0), .failed);
+}
+
+test "sysUpdateCache max decode threads telemetry" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, "img0.png");
+    try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = dup } });
+    state.viewer.navigation.current_index = 0;
+
+    const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
+    try sysUpdateCache(ctx);
+    try std.testing.expectEqual(state.workers.getMaxConcurrentDecodes(), state.viewer.stats.max_decode_threads);
+    try std.testing.expect(state.viewer.stats.max_decode_threads >= 1);
 }
