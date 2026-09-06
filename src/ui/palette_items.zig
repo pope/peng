@@ -96,6 +96,7 @@ pub fn partitionHighlightedText(
     return try list.toOwnedSlice(allocator);
 }
 
+/// Emits Clay text elements partitioning characters into alternating normal and highlighted segments based on fuzzy match indices.
 pub fn renderFuzzyMatchText(
     allocator: std.mem.Allocator,
     text: []const u8,

@@ -34,22 +34,27 @@ pub const CacheSlotMap = struct {
     slots: std.MultiArrayList(CacheSlot) = .{},
     generation: std.atomic.Value(usize) = .init(0),
 
+    /// Atomically increments the cache generation epoch to invalidate in-flight asynchronous decode tasks.
     pub fn advanceGeneration(self: *CacheSlotMap) usize {
         return self.generation.fetchAdd(1, .release) +% 1;
     }
 
+    /// Returns the current atomic generation epoch.
     pub fn getGeneration(self: *const CacheSlotMap) usize {
         return self.generation.load(.acquire);
     }
 
+    /// Generates a `CacheKey` combining the specified media index and current generation epoch.
     pub fn activeKey(self: *const CacheSlotMap, index: usize) CacheKey {
         return .{ .index = index, .generation = self.generation.load(.acquire) };
     }
 
+    /// Returns the count of allocated cache slots.
     pub fn count(self: *const CacheSlotMap) usize {
         return self.slots.len;
     }
 
+    /// Deinitializes all cached GPU textures and releases the multi-array storage memory.
     pub fn deinit(self: *CacheSlotMap, allocator: std.mem.Allocator, gpu_device: ?sdl.gpu.Device) void {
         const entries = self.slots.items(.entry);
         for (entries) |*entry| {
@@ -58,6 +63,7 @@ pub const CacheSlotMap = struct {
         self.slots.deinit(allocator);
     }
 
+    /// Deinitializes all slot resources and clears the map while retaining capacity.
     pub fn clear(self: *CacheSlotMap, gpu_device: ?sdl.gpu.Device) void {
         const entries = self.slots.items(.entry);
         for (entries) |*entry| {
@@ -66,10 +72,12 @@ pub const CacheSlotMap = struct {
         self.slots.clearRetainingCapacity();
     }
 
+    /// Clears all slots without releasing underlying capacity.
     pub fn clearRetainingCapacity(self: *CacheSlotMap) void {
         self.slots.clearRetainingCapacity();
     }
 
+    /// Finds the dense array index of the slot matching `key`, or null if not found.
     pub fn getIndex(self: *const CacheSlotMap, key: CacheKey) ?usize {
         const keys = self.slots.items(.key);
         for (keys, 0..) |k, i| {
@@ -78,11 +86,13 @@ pub const CacheSlotMap = struct {
         return null;
     }
 
+    /// Returns a pointer to the `CacheEntry` corresponding to `key`, or null if not present.
     pub fn get(self: *CacheSlotMap, key: CacheKey) ?*CacheEntry {
         if (self.getIndex(key)) |i| return &self.slots.items(.entry)[i];
         return null;
     }
 
+    /// Returns the GPU texture handle if the entry at `key` is in `.loaded_gpu` state, or null.
     pub fn getTexture(self: *CacheSlotMap, key: CacheKey) ?sdl.gpu.Texture {
         if (self.get(key)) |entry| {
             switch (entry.status) {
@@ -93,6 +103,7 @@ pub const CacheSlotMap = struct {
         return null;
     }
 
+    /// Updates the cache status for the slot matching `key`. Returns true if the key was found.
     pub fn updateStatus(self: *CacheSlotMap, key: CacheKey, status: CacheStatus) bool {
         if (self.get(key)) |entry| {
             entry.status = status;
@@ -101,16 +112,19 @@ pub const CacheSlotMap = struct {
         return false;
     }
 
+    /// Appends a new slot for media `index` at current generation, returning its unique `CacheKey`.
     pub fn appendSlot(self: *CacheSlotMap, allocator: std.mem.Allocator, index: usize, status: CacheStatus) !CacheKey {
         const key = CacheKey{ .index = index, .generation = self.generation.load(.acquire) };
         try self.slots.append(allocator, .{ .key = key, .entry = .{ .status = status } });
         return key;
     }
 
+    /// Appends an explicit key-entry pair into the slot map.
     pub fn appendWithKey(self: *CacheSlotMap, allocator: std.mem.Allocator, key: CacheKey, entry: CacheEntry) !void {
         try self.slots.append(allocator, .{ .key = key, .entry = entry });
     }
 
+    /// Removes a slot at `index_in_list` via swap-remove and releases its GPU texture.
     pub fn removeAndDeinit(self: *CacheSlotMap, index_in_list: usize, gpu_device: ?sdl.gpu.Device) void {
         var entry = self.slots.items(.entry)[index_in_list];
         self.slots.swapRemove(index_in_list);
@@ -119,6 +133,7 @@ pub const CacheSlotMap = struct {
 
     pub const DEFAULT_MAX_VRAM_BYTES: usize = 1024 * 1024 * 1024;
 
+    /// Computes the total VRAM consumption in bytes across all `.loaded_gpu` textures in the cache.
     pub fn getTotalVramBytes(self: *const CacheSlotMap) usize {
         var total: usize = 0;
         const entries = self.slots.items(.entry);

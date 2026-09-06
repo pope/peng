@@ -251,6 +251,7 @@ fn renderInfoOverlay(
     });
 }
 
+/// Emits Clay UI layout elements for the image metadata panel, performance overlay ("Stats for Nerds"), and preview thumbnail.
 pub fn renderStatsOverlay(
     ui_model: UiViewModel,
     draw_w: f32,

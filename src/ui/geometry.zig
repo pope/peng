@@ -2,6 +2,7 @@ const std = @import("std");
 const clay = @import("zclay");
 const sdl = @import("sdl");
 
+/// 2D textured colored vertex layout matching GPU pipeline vertex buffer layout.
 pub const Vertex = extern struct {
     x: f32,
     y: f32,
@@ -10,10 +11,12 @@ pub const Vertex = extern struct {
     color: u32,
 };
 
+/// Packs 8-bit integer RGBA channels into a 32-bit color word.
 pub inline fn packRgba(r: u8, g: u8, b: u8, a: u8) u32 {
     return @as(u32, r) | (@as(u32, g) << 8) | (@as(u32, b) << 16) | (@as(u32, a) << 24);
 }
 
+/// Clamps and packs Clay float RGBA channels (0.0–255.0) into a 32-bit color word.
 pub inline fn packRgbaClay(clay_color: clay.Color) u32 {
     const ur: u32 = @intFromFloat(@round(std.math.clamp(clay_color[0], 0.0, 255.0)));
     const ug: u32 = @intFromFloat(@round(std.math.clamp(clay_color[1], 0.0, 255.0)));
@@ -22,6 +25,7 @@ pub inline fn packRgbaClay(clay_color: clay.Color) u32 {
     return ur | (ug << 8) | (ub << 16) | (ua << 24);
 }
 
+/// Clamps and packs normalized float RGBA channels (0.0–1.0) into a 32-bit color word.
 pub inline fn packRgbaF(r: f32, g: f32, b: f32, a: f32) u32 {
     const ur: u32 = @intFromFloat(@round(std.math.clamp(r * 255.0, 0.0, 255.0)));
     const ug: u32 = @intFromFloat(@round(std.math.clamp(g * 255.0, 0.0, 255.0)));
@@ -30,11 +34,13 @@ pub inline fn packRgbaF(r: f32, g: f32, b: f32, a: f32) u32 {
     return ur | (ug << 8) | (ub << 16) | (ua << 24);
 }
 
+/// 2D point expressed in Normalized Device Coordinates [-1.0, 1.0].
 pub const NdcPoint = struct {
     x: f32,
     y: f32,
 };
 
+/// Converts screen pixel coordinates into Normalized Device Coordinates [-1.0, 1.0].
 pub inline fn toNdc(x: f32, y: f32, win_w: f32, win_h: f32) NdcPoint {
     return .{
         .x = (x / win_w) * 2.0 - 1.0,
@@ -42,6 +48,7 @@ pub inline fn toNdc(x: f32, y: f32, win_w: f32, win_h: f32) NdcPoint {
     };
 }
 
+/// Appends a solid axis-aligned rectangle quad (6 vertices / 2 triangles) to the vertex list.
 pub fn appendRectQuad(
     vertices: *std.ArrayList(Vertex),
     allocator: std.mem.Allocator,
@@ -120,6 +127,7 @@ fn appendCornerArc(
     }
 }
 
+/// Tessellates a filled rounded rectangle with corner arcs into triangle fans and appends vertices.
 pub fn renderFillRoundedRect(
     vertices: *std.ArrayList(Vertex),
     allocator: std.mem.Allocator,
@@ -281,6 +289,7 @@ pub fn renderFillRoundedRect(
     }
 }
 
+/// Emits geometry for a horizontal dashed line segment between `x1` and `x2`.
 pub fn drawDashedLineH(vertices: *std.ArrayList(Vertex), allocator: std.mem.Allocator, x1: f32, x2: f32, y: f32, thickness: f32, color: clay.Color, dash_len: f32, gap_len: f32, win_w: f32, win_h: f32) !void {
     var x = x1;
     while (x < x2) {
@@ -291,6 +300,7 @@ pub fn drawDashedLineH(vertices: *std.ArrayList(Vertex), allocator: std.mem.Allo
     }
 }
 
+/// Emits geometry for a vertical dashed line segment between `y1` and `y2`.
 pub fn drawDashedLineV(vertices: *std.ArrayList(Vertex), allocator: std.mem.Allocator, x: f32, y1: f32, y2: f32, thickness: f32, color: clay.Color, dash_len: f32, gap_len: f32, win_w: f32, win_h: f32) !void {
     var y = y1;
     while (y < y2) {
@@ -301,6 +311,7 @@ pub fn drawDashedLineV(vertices: *std.ArrayList(Vertex), allocator: std.mem.Allo
     }
 }
 
+/// Emits geometry for a circular arc or ring sector with custom thickness and RGBA color.
 pub fn renderArc(
     vertices: *std.ArrayList(Vertex),
     center: sdl.FPoint,

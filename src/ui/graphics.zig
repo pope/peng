@@ -6,12 +6,14 @@ const theme = @import("theme.zig");
 const state = @import("state");
 const MeasureTextUserData = state.types.MeasureTextUserData;
 
+/// Initialized window handle, SDL GPU device, and DPI scale factor.
 pub const GraphicsSetup = struct {
     window: sdl.Window,
     gpu_device: sdl.gpu.Device,
     initial_dpi_scale: f32,
 };
 
+/// Configuration options for graphics and window creation (headless mode and high-DPI scaling).
 pub const GraphicsOptions = struct {
     headless: bool = false,
     high_dpi: bool = true,
@@ -60,6 +62,7 @@ pub const RenderResources = struct {
     }
 };
 
+/// Initializes SDL3 subsystems, TTF engine, creates the main window, and claims the GPU graphics device.
 pub fn initGraphicsAndWindow(window_title: [:0]const u8, options: GraphicsOptions) !GraphicsSetup {
     if (options.headless and builtin.os.tag != .macos and builtin.os.tag != .windows) {
         _ = sdl.hint.set("SDL_VIDEO_DRIVER", "offscreen");
@@ -159,6 +162,7 @@ fn createShaderFromFormat(
     };
 }
 
+/// Creates graphics shaders, pipelines, samplers, font texture caches, and double-buffered staging buffers.
 pub fn initGpuResources(dev: sdl.gpu.Device, window: sdl.Window, initial_dpi_scale: f32, headless: bool) !GpuResources {
     const target_format = if (headless)
         sdl.gpu.TextureFormat.rgba8_unorm
@@ -380,6 +384,7 @@ fn getTextureFormatElementSize(format: sdl.gpu.TextureFormat) u32 {
     };
 }
 
+/// Downloads pixel data from a GPU texture via transfer buffer and saves it as a PNG image file.
 pub fn saveTextureToPng(
     dev: sdl.gpu.Device,
     cmd: sdl.gpu.CommandBuffer,
@@ -456,6 +461,7 @@ pub fn saveTextureToPng(
     }
 }
 
+/// Measures text pixel width and height via SDL_ttf for Clay layout element sizing.
 pub fn sdl3MeasureText(text: []const u8, config: *clay.TextElementConfig, data: *const MeasureTextUserData) clay.Dimensions {
     const clean_text = if (std.mem.indexOfScalar(u8, text, 0)) |idx| text[0..idx] else text;
     if (clean_text.len == 0) return .{ .w = 0, .h = 0 };
@@ -475,6 +481,7 @@ pub fn sdl3MeasureText(text: []const u8, config: *clay.TextElementConfig, data: 
     return .{ .w = @floatFromInt(size.w), .h = @floatFromInt(size.h) };
 }
 
+/// Metadata and texture handle resulting from uploading an SDL CPU surface to the GPU.
 pub const GpuUploadResult = struct {
     gpu_texture: sdl.gpu.Texture,
     w: f32,
@@ -488,6 +495,7 @@ pub const GpuUploadResult = struct {
     fallback_time_ms: f64 = 0.0,
 };
 
+/// Uploads an SDL surface to a GPU texture, handling format conversion, transfer buffers, and mipmap generation.
 pub fn uploadSurfaceToGpu(
     dev: sdl.gpu.Device,
     surf: sdl.Surface,

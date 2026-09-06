@@ -13,6 +13,7 @@ pub const MaterialType = enum {
     image_viewer,
 };
 
+/// Fragment shader push uniform block specifying brightness, contrast, text render flags, and filter algorithms.
 pub const Uniforms = extern struct {
     brightness: f32,
     contrast: f32,
@@ -20,6 +21,7 @@ pub const Uniforms = extern struct {
     scale_mode: i32,
 };
 
+/// Draw call batch grouping vertex offset/count, texture binding, material type, and scissor rectangle.
 pub const BatchItem = struct {
     vertex_start: u32,
     vertex_count: u32,

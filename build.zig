@@ -1,5 +1,6 @@
 const std = @import("std");
 
+/// Configures the build pipeline, targets, dependencies, shader compilation, and test runner for Peng.
 pub fn build(b: *std.Build) void {
     const hot_reload = b.option(
         bool,

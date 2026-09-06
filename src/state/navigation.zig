@@ -5,6 +5,7 @@ const SlideshowMode = types.SlideshowMode;
 
 const MediaEntry = types.MediaEntry;
 
+/// Tracks the active media list, current image index, slideshow progression, and directory cache.
 pub const NavigationState = struct {
     image_list: std.ArrayList(MediaEntry) = .empty,
     current_index: ?usize = null,
@@ -15,6 +16,7 @@ pub const NavigationState = struct {
     last_scanned_dir: std.ArrayList(u8) = .empty,
     directory_arena: std.heap.ArenaAllocator,
 
+    /// Initializes navigation state with pre-allocated buffer capacities.
     pub fn init(allocator: std.mem.Allocator) !NavigationState {
         var self = NavigationState{
             .directory_arena = std.heap.ArenaAllocator.init(allocator),
@@ -26,20 +28,24 @@ pub const NavigationState = struct {
         return self;
     }
 
+    /// Releases the media list, directory string buffer, and directory arena allocator.
     pub fn deinit(self: *NavigationState, allocator: std.mem.Allocator) void {
         self.image_list.deinit(allocator);
         self.last_scanned_dir.deinit(allocator);
         self.directory_arena.deinit();
     }
 
+    /// Returns `true` if slideshow playback mode is active.
     pub inline fn isSlideshowActive(self: *const NavigationState) bool {
         return self.slideshow == .active;
     }
 
+    /// Returns the total count of discovered images in the current media list.
     pub fn count(self: *const NavigationState) usize {
         return self.image_list.items.len;
     }
 
+    /// Retrieves the `MediaEntry` at `current_index`, or `null` if empty or invalid.
     pub fn getCurrentImageEntry(self: *const NavigationState) ?MediaEntry {
         const idx = self.current_index orelse return null;
         if (idx < self.image_list.items.len) {
@@ -48,6 +54,7 @@ pub const NavigationState = struct {
         return null;
     }
 
+    /// Advances the selection to the next image with circular wraparound.
     pub fn nextIndex(self: *NavigationState) ?usize {
         self.slideshow.resetTimer();
         self.last_nav_time_ms = sdl.timer.getTicks();
@@ -61,6 +68,7 @@ pub const NavigationState = struct {
         return self.current_index;
     }
 
+    /// Moves the selection to the previous image with circular wraparound.
     pub fn prevIndex(self: *NavigationState) ?usize {
         self.slideshow.resetTimer();
         self.last_nav_time_ms = sdl.timer.getTicks();
@@ -78,6 +86,7 @@ pub const NavigationState = struct {
         return self.current_index;
     }
 
+    /// Directly sets the image selection to `idx`, clamped to valid bounds.
     pub fn goToIndex(self: *NavigationState, idx: usize) ?usize {
         self.slideshow.resetTimer();
         self.last_nav_time_ms = sdl.timer.getTicks();

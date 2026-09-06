@@ -180,6 +180,7 @@ fn expectCommandFailure(socket_path: []const u8, command: []const u8) !void {
     }
 }
 
+/// Visual regression and integration test harness runner that executes automated IPC test sequences and compares screenshots against goldens.
 pub fn main(init: std.process.Init) !void {
     global_io = init.io;
     const gpa = init.gpa;

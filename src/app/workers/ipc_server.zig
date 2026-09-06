@@ -15,12 +15,14 @@ fn getProcessId() u32 {
     }
 }
 
+/// Thread arguments for spawning the background IPC server.
 pub const IpcServerArgs = struct {
     workers: *WorkerManager,
     allocator: std.mem.Allocator,
     io: std.Io,
 };
 
+/// Entry point executed on a background thread to listen for incoming IPC socket connections.
 pub fn ipcServerWorkerTask(args: *IpcServerArgs) void {
     const workers = args.workers;
     const gpa = args.allocator;

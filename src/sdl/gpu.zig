@@ -15,6 +15,7 @@ pub const TextureFormat = enum(c_int) {
     _,
 };
 
+/// Bitflag constants indicating supported GPU shader bytecode or shading language formats.
 pub const ShaderFormat = struct {
     pub const spirv: u32 = c.SDL_GPU_SHADERFORMAT_SPIRV;
     pub const msl: u32 = c.SDL_GPU_SHADERFORMAT_MSL;
@@ -29,6 +30,7 @@ pub const TextureType = enum(c_int) {
     type_2d = c.SDL_GPU_TEXTURETYPE_2D,
 };
 
+/// Bitflag constants defining intended GPU texture usages and binding targets.
 pub const TextureUsage = struct {
     pub const sampler: u32 = c.SDL_GPU_TEXTUREUSAGE_SAMPLER;
     pub const color_target: u32 = c.SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
@@ -36,6 +38,7 @@ pub const TextureUsage = struct {
     pub const compute_storage_simultaneous_read_write: u32 = c.SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_SIMULTANEOUS_READ_WRITE;
 };
 
+/// Bitflag constants specifying GPU buffer bindings and capabilities.
 pub const BufferUsage = struct {
     pub const vertex: u32 = c.SDL_GPU_BUFFERUSAGE_VERTEX;
     pub const index: u32 = c.SDL_GPU_BUFFERUSAGE_INDEX;
@@ -158,6 +161,7 @@ pub const VertexInputRate = enum(c_int) {
     instance = c.SDL_GPU_VERTEXINPUTRATE_INSTANCE,
 };
 
+/// Bitflag mask constants for color channel writes in pipeline blend states.
 pub const ColorComponent = struct {
     pub const r: u8 = c.SDL_GPU_COLORCOMPONENT_R;
     pub const g: u8 = c.SDL_GPU_COLORCOMPONENT_G;
@@ -165,46 +169,57 @@ pub const ColorComponent = struct {
     pub const a: u8 = c.SDL_GPU_COLORCOMPONENT_A;
 };
 
+/// Opaque handle representing a GPU texture resource.
 pub const Texture = struct {
     ptr: *c.SDL_GPUTexture,
 
+    /// Compares two texture handles for pointer equality.
     pub fn eql(self: Texture, other: Texture) bool {
         return self.ptr == other.ptr;
     }
 
+    /// Returns the underlying raw texture pointer as a type-erased opaque pointer.
     pub fn asOpaque(self: Texture) *anyopaque {
         return @ptrCast(self.ptr);
     }
 };
 
+/// Opaque handle representing a GPU data buffer.
 pub const Buffer = struct {
     ptr: *c.SDL_GPUBuffer,
 };
 
+/// Opaque handle representing a GPU texture sampler configuration.
 pub const Sampler = struct {
     ptr: *c.SDL_GPUSampler,
 };
 
+/// Opaque handle representing a compiled GPU vertex or fragment shader.
 pub const Shader = struct {
     ptr: *c.SDL_GPUShader,
 };
 
+/// Opaque handle representing a compiled GPU graphics pipeline state object.
 pub const Pipeline = struct {
     ptr: *c.SDL_GPUGraphicsPipeline,
 };
 
+/// Opaque handle representing a compiled GPU compute pipeline state object.
 pub const ComputePipeline = struct {
     ptr: *c.SDL_GPUComputePipeline,
 };
 
+/// Opaque handle representing host-accessible staging memory for GPU transfers.
 pub const TransferBuffer = struct {
     ptr: *c.SDL_GPUTransferBuffer,
 };
 
+/// Opaque handle representing a GPU execution synchronization fence.
 pub const Fence = struct {
     ptr: *c.SDL_GPUFence,
 };
 
+/// Parameters configuring GPU texture dimension, format, and usage during creation.
 pub const TextureCreateInfo = struct {
     type: TextureType = .type_2d,
     format: TextureFormat = .rgba8_unorm,
@@ -217,6 +232,7 @@ pub const TextureCreateInfo = struct {
     props: u32 = 0,
 };
 
+/// Parameters configuring texture filtering, addressing modes, and LOD sampling.
 pub const SamplerCreateInfo = struct {
     min_filter: Filter = .linear,
     mag_filter: Filter = .linear,
@@ -232,6 +248,7 @@ pub const SamplerCreateInfo = struct {
     props: u32 = 0,
 };
 
+/// Parameters and bytecode payload for compiling a GPU shader stage.
 pub const ShaderCreateInfo = struct {
     code_size: usize,
     code: [*]const u8,
@@ -245,6 +262,7 @@ pub const ShaderCreateInfo = struct {
     props: u32 = 0,
 };
 
+/// Parameters, shader code, and resource bindings for creating a compute pipeline.
 pub const ComputePipelineCreateInfo = struct {
     code_size: usize,
     code: [*]const u8,
@@ -262,6 +280,7 @@ pub const ComputePipelineCreateInfo = struct {
     props: u32 = 0,
 };
 
+/// Binding descriptor for a read-write storage texture in compute passes.
 pub const StorageTextureReadWriteBinding = struct {
     texture: Texture,
     mip_level: u32 = 0,
@@ -269,23 +288,27 @@ pub const StorageTextureReadWriteBinding = struct {
     cycle: bool = false,
 };
 
+/// Binding descriptor for a read-write storage buffer in compute passes.
 pub const StorageBufferReadWriteBinding = struct {
     buffer: Buffer,
     cycle: bool = false,
 };
 
+/// Parameters configuring transfer buffer allocation size and direction (upload/download).
 pub const TransferBufferCreateInfo = struct {
     usage: TransferBufferUsage,
     size: u32,
     props: u32 = 0,
 };
 
+/// Parameters configuring GPU buffer capacity and usage flags.
 pub const BufferCreateInfo = struct {
     usage: u32,
     size: u32,
     props: u32 = 0,
 };
 
+/// Staging transfer buffer layout information for texture copy operations.
 pub const TextureTransferInfo = struct {
     transfer_buffer: TransferBuffer,
     offset: u32 = 0,
@@ -293,6 +316,7 @@ pub const TextureTransferInfo = struct {
     rows_per_layer: u32 = 0,
 };
 
+/// Sub-region coordinates and dimensions of a GPU texture slice.
 pub const TextureRegion = struct {
     texture: Texture,
     x: u32 = 0,
@@ -305,6 +329,7 @@ pub const TextureRegion = struct {
     layer: u32 = 0,
 };
 
+/// Vertex buffer layout slot, pitch stride, and input stepping rate.
 pub const VertexBufferDescription = struct {
     slot: u32,
     pitch: u32,
@@ -312,6 +337,7 @@ pub const VertexBufferDescription = struct {
     instance_step_rate: u32 = 0,
 };
 
+/// Per-vertex attribute location, buffer binding slot, and data format.
 pub const VertexAttribute = struct {
     location: u32,
     buffer_slot: u32,
@@ -319,6 +345,7 @@ pub const VertexAttribute = struct {
     offset: u32,
 };
 
+/// Color target format and blending configurations for graphics pipeline creation.
 pub const ColorTargetDescription = struct {
     format: TextureFormat,
     blend_state: struct {
@@ -334,6 +361,7 @@ pub const ColorTargetDescription = struct {
     },
 };
 
+/// Comprehensive descriptor defining shaders, vertex layout, rasterization, depth/stencil, and blend states for a graphics pipeline.
 pub const GraphicsPipelineCreateInfo = struct {
     vertex_shader: Shader,
     fragment_shader: Shader,
@@ -389,6 +417,7 @@ pub const GraphicsPipelineCreateInfo = struct {
     props: u32 = 0,
 };
 
+/// Render target texture attachment, clear color, and load/store operations for a render pass.
 pub const ColorTargetAttachment = struct {
     texture: Texture,
     clear_color: root.FColor = .{ .r = 0, .g = 0, .b = 0, .a = 1 },
@@ -397,34 +426,41 @@ pub const ColorTargetAttachment = struct {
     cycle: bool = false,
 };
 
+/// Binding configuration associating a GPU buffer with an offset.
 pub const BufferBinding = struct {
     buffer: Buffer,
     offset: u32 = 0,
 };
 
+/// Sub-region span of a GPU buffer defined by offset and byte length.
 pub const BufferRegion = struct {
     buffer: Buffer,
     offset: u32 = 0,
     size: u32,
 };
 
+/// Location offset within a staging transfer buffer.
 pub const TransferBufferLocation = struct {
     transfer_buffer: TransferBuffer,
     offset: u32 = 0,
 };
 
+/// Paired texture and sampler binding for shader fragment sampling.
 pub const TextureSamplerBinding = struct {
     texture: Texture,
     sampler: Sampler,
 };
 
+/// Command recording context for graphics rendering and rasterization passes.
 pub const RenderPass = struct {
     ptr: *c.SDL_GPURenderPass,
 
+    /// Binds a compiled graphics pipeline for subsequent draw calls in this render pass.
     pub fn bindPipeline(self: RenderPass, pipeline: Pipeline) void {
         c.SDL_BindGPUGraphicsPipeline(self.ptr, pipeline.ptr);
     }
 
+    /// Binds an array of vertex buffers starting at the specified input slot.
     pub fn bindVertexBuffers(self: RenderPass, first_slot: u32, bindings: []const BufferBinding) void {
         std.debug.assert(bindings.len <= 16);
         var c_bindings: [16]c.SDL_GPUBufferBinding = undefined;
@@ -434,10 +470,12 @@ pub const RenderPass = struct {
         c.SDL_BindGPUVertexBuffers(self.ptr, first_slot, &c_bindings, @intCast(bindings.len));
     }
 
+    /// Sets the scissor clipping rectangle for rasterization in this render pass.
     pub fn setScissor(self: RenderPass, rect: *const root.Rect) void {
         c.SDL_SetGPUScissor(self.ptr, rect);
     }
 
+    /// Binds texture-sampler pairs to fragment shader binding slots.
     pub fn bindFragmentSamplers(self: RenderPass, first_slot: u32, bindings: []const TextureSamplerBinding) void {
         std.debug.assert(bindings.len <= 16);
         var c_bindings: [16]c.SDL_GPUTextureSamplerBinding = undefined;
@@ -447,18 +485,22 @@ pub const RenderPass = struct {
         c.SDL_BindGPUFragmentSamplers(self.ptr, first_slot, &c_bindings, @intCast(bindings.len));
     }
 
+    /// Records a non-indexed primitive drawing command.
     pub fn drawPrimitives(self: RenderPass, num_vertices: u32, num_instances: u32, first_vertex: u32, first_instance: u32) void {
         c.SDL_DrawGPUPrimitives(self.ptr, num_vertices, num_instances, first_vertex, first_instance);
     }
 
+    /// Concludes recording commands for this render pass.
     pub fn end(self: RenderPass) void {
         c.SDL_EndGPURenderPass(self.ptr);
     }
 };
 
+/// Command recording context for buffer and texture transfer copy operations.
 pub const CopyPass = struct {
     ptr: *c.SDL_GPUCopyPass,
 
+    /// Copies pixel data from a transfer buffer to a destination texture region.
     pub fn uploadToTexture(self: CopyPass, source: *const TextureTransferInfo, destination: *const TextureRegion, cycle: bool) void {
         const c_src = c.SDL_GPUTextureTransferInfo{
             .transfer_buffer = source.transfer_buffer.ptr,
@@ -480,6 +522,7 @@ pub const CopyPass = struct {
         c.SDL_UploadToGPUTexture(self.ptr, &c_src, &c_dst, cycle);
     }
 
+    /// Copies data from a transfer buffer to a destination GPU buffer region.
     pub fn uploadToBuffer(self: CopyPass, source: *const TransferBufferLocation, destination: *const BufferRegion, cycle: bool) void {
         const c_src = c.SDL_GPUTransferBufferLocation{
             .transfer_buffer = source.transfer_buffer.ptr,
@@ -493,6 +536,7 @@ pub const CopyPass = struct {
         c.SDL_UploadToGPUBuffer(self.ptr, &c_src, &c_dst, cycle);
     }
 
+    /// Copies pixel data from a texture region into a destination transfer buffer.
     pub fn downloadFromTexture(self: CopyPass, source: *const TextureRegion, destination: *const TextureTransferInfo) void {
         const c_src = c.SDL_GPUTextureRegion{
             .texture = source.texture.ptr,
@@ -514,18 +558,22 @@ pub const CopyPass = struct {
         c.SDL_DownloadFromGPUTexture(self.ptr, &c_src, &c_dst);
     }
 
+    /// Concludes recording commands for this copy pass.
     pub fn end(self: CopyPass) void {
         c.SDL_EndGPUCopyPass(self.ptr);
     }
 };
 
+/// Command recording context for GPU compute shader dispatches.
 pub const ComputePass = struct {
     ptr: *c.SDL_GPUComputePass,
 
+    /// Binds a compiled compute pipeline for subsequent dispatch commands.
     pub fn bindPipeline(self: ComputePass, pipeline: ComputePipeline) void {
         c.SDL_BindGPUComputePipeline(self.ptr, pipeline.ptr);
     }
 
+    /// Binds read-only storage buffers starting at the specified binding slot.
     pub fn bindStorageBuffers(self: ComputePass, first_slot: u32, buffers: []const Buffer) void {
         var c_bufs: [4]*c.SDL_GPUBuffer = undefined;
         const count = @min(buffers.len, 4);
@@ -535,6 +583,7 @@ pub const ComputePass = struct {
         c.SDL_BindGPUComputeStorageBuffers(self.ptr, first_slot, &c_bufs, @intCast(count));
     }
 
+    /// Binds read-only storage textures starting at the specified binding slot.
     pub fn bindStorageTextures(self: ComputePass, first_slot: u32, textures: []const Texture) void {
         var c_texs: [4]*c.SDL_GPUTexture = undefined;
         const count = @min(textures.len, 4);
@@ -544,39 +593,48 @@ pub const ComputePass = struct {
         c.SDL_BindGPUComputeStorageTextures(self.ptr, first_slot, &c_texs, @intCast(count));
     }
 
+    /// Dispatches compute workgroups along 3D workgroup dimensions.
     pub fn dispatch(self: ComputePass, group_count_x: u32, group_count_y: u32, group_count_z: u32) void {
         c.SDL_DispatchGPUCompute(self.ptr, group_count_x, group_count_y, group_count_z);
     }
 
+    /// Concludes recording commands for this compute pass.
     pub fn end(self: ComputePass) void {
         c.SDL_EndGPUComputePass(self.ptr);
     }
 };
 
+/// Queue submission context for recording and executing GPU passes and uniform updates.
 pub const CommandBuffer = struct {
     ptr: *c.SDL_GPUCommandBuffer,
 
+    /// Submits the recorded command buffer to the GPU command queue for execution.
     pub fn submit(self: CommandBuffer) bool {
         return c.SDL_SubmitGPUCommandBuffer(self.ptr);
     }
 
+    /// Submits the command buffer and acquires a synchronization fence signaled upon GPU completion.
     pub fn submitAndAcquireFence(self: CommandBuffer) ?Fence {
         const raw = c.SDL_SubmitGPUCommandBufferAndAcquireFence(self.ptr);
         return if (raw) |r| .{ .ptr = r } else null;
     }
 
+    /// Cancels command buffer recording and discards all pending commands.
     pub fn cancel(self: CommandBuffer) bool {
         return c.SDL_CancelGPUCommandBuffer(self.ptr);
     }
 
+    /// Pushes immediate uniform data to vertex shader uniform slot.
     pub fn pushVertexUniform(self: CommandBuffer, slot: u32, data: []const u8) void {
         c.SDL_PushGPUVertexUniformData(self.ptr, slot, data.ptr, @intCast(data.len));
     }
 
+    /// Pushes immediate uniform data to fragment shader uniform slot.
     pub fn pushFragmentUniform(self: CommandBuffer, slot: u32, data: []const u8) void {
         c.SDL_PushGPUFragmentUniformData(self.ptr, slot, data.ptr, @intCast(data.len));
     }
 
+    /// Begins recording commands for a graphics render pass targeting a color attachment.
     pub fn beginRenderPass(self: CommandBuffer, target: *const ColorTargetAttachment) ?RenderPass {
         const c_info = c.SDL_GPUColorTargetInfo{
             .texture = target.texture.ptr,
@@ -595,15 +653,18 @@ pub const CommandBuffer = struct {
         return if (raw) |r| .{ .ptr = r } else null;
     }
 
+    /// Begins recording commands for a buffer or texture transfer copy pass.
     pub fn beginCopyPass(self: CommandBuffer) ?CopyPass {
         const raw = c.SDL_BeginGPUCopyPass(self.ptr);
         return if (raw) |r| .{ .ptr = r } else null;
     }
 
+    /// Pushes immediate uniform data to compute shader uniform slot.
     pub fn pushComputeUniform(self: CommandBuffer, slot: u32, data: []const u8) void {
         c.SDL_PushGPUComputeUniformData(self.ptr, slot, data.ptr, @intCast(data.len));
     }
 
+    /// Begins recording commands for a compute pass with optional read-write storage bindings.
     pub fn beginComputePass(
         self: CommandBuffer,
         storage_textures: ?[]const StorageTextureReadWriteBinding,
@@ -654,36 +715,44 @@ pub const CommandBuffer = struct {
         return if (raw) |r| .{ .ptr = r } else null;
     }
 
+    /// Records commands to generate mipmaps for a GPU texture.
     pub fn generateMipmaps(self: CommandBuffer, texture: Texture) void {
         c.SDL_GenerateMipmapsForGPUTexture(self.ptr, texture.ptr);
     }
 };
 
+/// Primary interface for GPU device resource creation, management, and command execution.
 pub const Device = struct {
     ptr: *c.SDL_GPUDevice,
 
+    /// Creates a new GPU device supporting the requested shader formats, optionally enabling debug validation.
     pub fn create(format_flags: u32, debug_mode: bool) ?Device {
         const raw = c.SDL_CreateGPUDevice(format_flags, debug_mode, null);
         return if (raw) |r| .{ .ptr = r } else null;
     }
 
+    /// Destroys the GPU device and frees associated backend resources.
     pub fn destroy(self: Device) void {
         c.SDL_DestroyGPUDevice(self.ptr);
     }
 
+    /// Queries a bitmask of shader bytecode formats supported by this GPU backend.
     pub fn getShaderFormats(self: Device) u32 {
         return c.SDL_GetGPUShaderFormats(self.ptr);
     }
 
+    /// Queries the preferred texture format for a window swapchain on this device.
     pub fn getSwapchainTextureFormat(self: Device, window: Window) TextureFormat {
         return @enumFromInt(c.SDL_GetGPUSwapchainTextureFormat(self.ptr, @ptrCast(window.ptr)));
     }
 
+    /// Acquires a command buffer for recording GPU commands.
     pub fn acquireCommandBuffer(self: Device) ?CommandBuffer {
         const raw = c.SDL_AcquireGPUCommandBuffer(self.ptr);
         return if (raw) |r| .{ .ptr = r } else null;
     }
 
+    /// Allocates a GPU data buffer according to the provided descriptor.
     pub fn createBuffer(self: Device, info: *const BufferCreateInfo) ?Buffer {
         const c_info = c.SDL_GPUBufferCreateInfo{
             .usage = info.usage,
@@ -694,10 +763,12 @@ pub const Device = struct {
         return if (raw) |r| .{ .ptr = r } else null;
     }
 
+    /// Frees an allocated GPU buffer.
     pub fn releaseBuffer(self: Device, buffer: Buffer) void {
         c.SDL_ReleaseGPUBuffer(self.ptr, buffer.ptr);
     }
 
+    /// Creates a GPU texture according to the provided configuration.
     pub fn createTexture(self: Device, info: *const TextureCreateInfo) ?Texture {
         const c_info = c.SDL_GPUTextureCreateInfo{
             .type = @intCast(@intFromEnum(info.type)),
@@ -714,10 +785,12 @@ pub const Device = struct {
         return if (raw) |r| .{ .ptr = r } else null;
     }
 
+    /// Frees an allocated GPU texture.
     pub fn releaseTexture(self: Device, texture: Texture) void {
         c.SDL_ReleaseGPUTexture(self.ptr, texture.ptr);
     }
 
+    /// Creates a GPU texture sampler according to the provided configuration.
     pub fn createSampler(self: Device, info: *const SamplerCreateInfo) ?Sampler {
         const c_info = c.SDL_GPUSamplerCreateInfo{
             .min_filter = @intCast(@intFromEnum(info.min_filter)),
@@ -737,10 +810,12 @@ pub const Device = struct {
         return if (raw) |r| .{ .ptr = r } else null;
     }
 
+    /// Frees an allocated GPU sampler.
     pub fn releaseSampler(self: Device, sampler: Sampler) void {
         c.SDL_ReleaseGPUSampler(self.ptr, sampler.ptr);
     }
 
+    /// Compiles and creates a GPU shader stage from bytecode.
     pub fn createShader(self: Device, info: *const ShaderCreateInfo) ?Shader {
         const c_info = c.SDL_GPUShaderCreateInfo{
             .code_size = info.code_size,
@@ -758,10 +833,12 @@ pub const Device = struct {
         return if (raw) |r| .{ .ptr = r } else null;
     }
 
+    /// Frees a compiled GPU shader.
     pub fn releaseShader(self: Device, shader: Shader) void {
         c.SDL_ReleaseGPUShader(self.ptr, shader.ptr);
     }
 
+    /// Creates a compute pipeline state object from shader bytecode and thread dimensions.
     pub fn createComputePipeline(self: Device, info: *const ComputePipelineCreateInfo) ?ComputePipeline {
         const c_info = c.SDL_GPUComputePipelineCreateInfo{
             .code_size = info.code_size,
@@ -783,10 +860,12 @@ pub const Device = struct {
         return if (raw) |r| .{ .ptr = r } else null;
     }
 
+    /// Frees a compiled compute pipeline.
     pub fn releaseComputePipeline(self: Device, pipeline: ComputePipeline) void {
         c.SDL_ReleaseGPUComputePipeline(self.ptr, pipeline.ptr);
     }
 
+    /// Compiles and creates a complete graphics pipeline state object.
     pub fn createPipeline(self: Device, info: *const GraphicsPipelineCreateInfo) ?Pipeline {
         var c_attributes: [16]c.SDL_GPUVertexAttribute = undefined;
         var c_attrib_count: u32 = 0;
@@ -913,10 +992,12 @@ pub const Device = struct {
         return if (raw) |r| .{ .ptr = r } else null;
     }
 
+    /// Frees a compiled graphics pipeline.
     pub fn releasePipeline(self: Device, pipeline: Pipeline) void {
         c.SDL_ReleaseGPUGraphicsPipeline(self.ptr, pipeline.ptr);
     }
 
+    /// Allocates a host-accessible staging transfer buffer.
     pub fn createTransferBuffer(self: Device, info: *const TransferBufferCreateInfo) ?TransferBuffer {
         const c_info = c.SDL_GPUTransferBufferCreateInfo{
             .usage = @intCast(@intFromEnum(info.usage)),
@@ -927,23 +1008,28 @@ pub const Device = struct {
         return if (raw) |r| .{ .ptr = r } else null;
     }
 
+    /// Frees an allocated transfer buffer.
     pub fn releaseTransferBuffer(self: Device, buffer: TransferBuffer) void {
         c.SDL_ReleaseGPUTransferBuffer(self.ptr, buffer.ptr);
     }
 
+    /// Maps host-accessible transfer buffer memory into CPU address space.
     pub fn mapTransferBuffer(self: Device, buffer: TransferBuffer, cycle: bool) ?[*]u8 {
         const raw = c.SDL_MapGPUTransferBuffer(self.ptr, buffer.ptr, cycle);
         return if (raw) |r| @ptrCast(r) else null;
     }
 
+    /// Unmaps transfer buffer memory from CPU address space.
     pub fn unmapTransferBuffer(self: Device, buffer: TransferBuffer) void {
         c.SDL_UnmapGPUTransferBuffer(self.ptr, buffer.ptr);
     }
 
+    /// Frees a GPU synchronization fence.
     pub fn releaseFence(self: Device, fence: Fence) void {
         c.SDL_ReleaseGPUFence(self.ptr, fence.ptr);
     }
 
+    /// Blocks CPU execution until the specified GPU fence has been signaled.
     pub fn waitForFence(self: Device, fence: Fence) bool {
         var f_arr = [1]?*c.SDL_GPUFence{fence.ptr};
         return c.SDL_WaitForGPUFences(self.ptr, true, &f_arr, 1);

@@ -5,6 +5,7 @@ const context = @import("context.zig");
 const root = @import("root.zig");
 const WorkerManager = root.WorkerManager;
 
+/// Arguments for spawning the background standard input reader thread.
 pub const StdinArgs = struct {
     workers: *WorkerManager,
     allocator: std.mem.Allocator,
@@ -12,6 +13,7 @@ pub const StdinArgs = struct {
     is_loading_files: ?*std.atomic.Value(bool) = null,
 };
 
+/// Background thread function reading newline-delimited image paths piped via standard input.
 pub fn stdinWorker(args: *StdinArgs) void {
     const workers = args.workers;
     const io = args.io;

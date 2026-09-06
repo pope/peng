@@ -5,12 +5,14 @@ const types = @import("state").types;
 const MeasureTextUserData = types.MeasureTextUserData;
 const sdl3MeasureText = @import("graphics.zig").sdl3MeasureText;
 
+/// Result of middle-truncating a filename, containing the display string and index boundaries for fuzzy match remapping.
 pub const TruncatedFilename = struct {
     display: []const u8,
     head_len: usize,
     tail_start_idx: usize,
 };
 
+/// Truncates a filename in the middle with an ellipsis ("...") so that rendered text does not exceed `max_w` pixels.
 pub fn truncateFilenameMiddle(allocator: std.mem.Allocator, text: []const u8, max_w: f32, font_size: u16, data: *const MeasureTextUserData) TruncatedFilename {
     const font = data.fonts[0] orelse return .{ .display = text, .head_len = text.len, .tail_start_idx = text.len };
     const target_size = @as(f32, @floatFromInt(font_size));
@@ -79,10 +81,12 @@ pub fn truncateFilenameMiddle(allocator: std.mem.Allocator, text: []const u8, ma
     };
 }
 
+/// Truncates a filename in the middle with an ellipsis ("...") returning only the display string.
 pub fn truncateFilename(allocator: std.mem.Allocator, text: []const u8, max_w: f32, font_size: u16, data: *const MeasureTextUserData) []const u8 {
     return truncateFilenameMiddle(allocator, text, max_w, font_size, data).display;
 }
 
+/// Remaps matched search character byte indices from the original filename to the middle-truncated display string.
 pub fn remapMiddleTruncatedMatches(
     allocator: std.mem.Allocator,
     matches: []const usize,
@@ -105,6 +109,7 @@ pub fn remapMiddleTruncatedMatches(
     return list.toOwnedSlice(allocator);
 }
 
+/// Truncates a directory path from the left with leading "..." so that rendered text fits within `max_w` pixels.
 pub fn truncateDirectory(allocator: std.mem.Allocator, text: []const u8, max_w: f32, font_size: u16, data: *const MeasureTextUserData) []const u8 {
     var text_config = clay.TextElementConfig{
         .font_id = 0,
@@ -145,6 +150,7 @@ pub fn truncateDirectory(allocator: std.mem.Allocator, text: []const u8, max_w: 
     return std.fmt.allocPrint(allocator, "...{s}", .{text[text.len - best_len ..]}) catch text;
 }
 
+/// Formats a byte size as a fractional megabyte string (e.g. "1.5 MB").
 pub fn formatSize(allocator: std.mem.Allocator, bytes: u64) ![]const u8 {
     const kb = @as(f64, @floatFromInt(bytes)) / 1024.0;
     const mb = kb / 1024.0;

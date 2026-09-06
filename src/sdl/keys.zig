@@ -73,6 +73,7 @@ pub const key_x: Keycode = c.SDLK_X;
 pub const key_y: Keycode = c.SDLK_Y;
 pub const key_z: Keycode = c.SDLK_Z;
 
+/// Bitmask constants representing keyboard modifier keys (Ctrl, Shift, Alt, GUI).
 pub const mod = struct {
     pub const ctrl: u16 = c.SDL_KMOD_CTRL;
     pub const shift: u16 = c.SDL_KMOD_SHIFT;
@@ -80,6 +81,7 @@ pub const mod = struct {
     pub const gui: u16 = c.SDL_KMOD_GUI;
 };
 
+/// Queries the current keyboard modifier key state mask from SDL.
 pub fn getModState() u16 {
     return c.SDL_GetModState();
 }

@@ -357,6 +357,7 @@ fn getOrRenderCachedText(
     };
 }
 
+/// Returns `true` if the scissor clipping box has non-positive area or falls completely outside the window bounds.
 pub inline fn isScissorInvisible(sc: ?sdl.Rect, win_w: i32, win_h: i32) bool {
     if (sc) |s| {
         if (s.w <= 0 or s.h <= 0) return true;

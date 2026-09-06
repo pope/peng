@@ -4,6 +4,7 @@ const context = @import("context.zig");
 const root = @import("root.zig");
 const WorkerManager = root.WorkerManager;
 
+/// Arguments for spawning a background file path or directory scanner worker thread.
 pub const PathScanArgs = struct {
     workers: *WorkerManager,
     allocator: std.mem.Allocator,
@@ -13,6 +14,7 @@ pub const PathScanArgs = struct {
     is_loading_files: ?*std.atomic.Value(bool) = null,
 };
 
+/// Thread-safely duplicates a path string and pushes a `.path_discovered` event onto the worker event queue.
 pub fn appendPathThreadSafe(workers: *WorkerManager, gpa: std.mem.Allocator, io: std.Io, path: []const u8) void {
     if (workers.exiting.load(.acquire)) return;
     const dup = gpa.dupe(u8, path) catch |err| {
@@ -31,6 +33,7 @@ pub fn appendPathThreadSafe(workers: *WorkerManager, gpa: std.mem.Allocator, io:
     context.wakeUpMainThread();
 }
 
+/// Scans image files within `dir_path`, sorts them alphabetically (case-insensitive), and pushes discovery events.
 pub fn scanDirectoryThreadSafe(workers: *WorkerManager, gpa: std.mem.Allocator, io: std.Io, dir_path: []const u8) void {
     var dir = std.Io.Dir.openDir(std.Io.Dir.cwd(), io, dir_path, .{ .iterate = true }) catch |err| {
         std.log.warn("scanDirectoryThreadSafe: openDir failed for '{s}': {any}", .{ dir_path, err });
@@ -90,6 +93,7 @@ pub fn scanDirectoryThreadSafe(workers: *WorkerManager, gpa: std.mem.Allocator, 
     }
 }
 
+/// Background thread entry point executing full path scan (directory or archive) and notifying completion.
 pub fn pathScanWorker(args: *PathScanArgs) void {
     const workers = args.workers;
     const io = args.io;

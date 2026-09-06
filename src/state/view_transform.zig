@@ -4,12 +4,14 @@ const types = @import("types.zig");
 const ZoomFactor = types.ZoomFactor;
 const UvRect = types.UvRect;
 
+/// Returns `true` if the normalized rotation angle is approximately 90 or 270 degrees (swapping width and height).
 pub fn isAngle90or270(angle: f32) bool {
     const norm = @mod(@mod(angle, 360.0) + 360.0, 360.0);
     return std.math.approxEqAbs(f32, norm, 90.0, 0.1) or
         std.math.approxEqAbs(f32, norm, 270.0, 0.1);
 }
 
+/// Computed visual dimensions of an image, its destination layout bounds, and its base scale factor.
 pub const ViewDims = struct {
     img_w: f32,
     img_h: f32,
@@ -18,6 +20,7 @@ pub const ViewDims = struct {
     base_scale: f32,
 };
 
+/// Calculates rotated image dimensions, fitted screen rectangle bounds, and base scale according to `ScaleMode`.
 pub fn computeViewDims(raw_w: f32, raw_h: f32, rotation_angle: f32, view_w: f32, view_h: f32, scale_mode: ScaleMode) ViewDims {
     if (raw_w <= 0.0 or raw_h <= 0.0) {
         return .{
@@ -95,12 +98,14 @@ pub fn computeViewDims(raw_w: f32, raw_h: f32, rotation_angle: f32, view_w: f32,
     };
 }
 
+/// Restricts zoom factor within safe bounds derived from `base_scale` to avoid excessive under- or over-magnification.
 pub fn clampZoomFactor(base_scale: f32, factor: f32) ZoomFactor {
     const min_factor = if (base_scale > 0.0) 0.1 / base_scale else 0.1;
     const max_factor = if (base_scale > 0.0) 10.0 / base_scale else 10.0;
     return ZoomFactor.init(std.math.clamp(factor, min_factor, max_factor));
 }
 
+/// Computes normalized UV crop boundaries to remove letterbox/pillarbox padding in embedded thumbnails.
 pub fn computeThumbnailUvCrop(
     full_w: f32,
     full_h: f32,

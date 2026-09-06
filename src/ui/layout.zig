@@ -18,6 +18,7 @@ const truncateFilename = @import("text_utils.zig").truncateFilename;
 const sdl3MeasureText = @import("graphics.zig").sdl3MeasureText;
 const RenderResources = @import("graphics.zig").RenderResources;
 
+/// Builds the complete UI layout hierarchy via Clay, tessellates geometry, and records draw commands for the frame.
 pub fn renderFrame(
     view_params: ViewParams,
     ui_model: UiViewModel,

@@ -62,6 +62,7 @@ fn findTiffPayload(data: []const u8) ?TiffHeader {
     return null;
 }
 
+/// Parses image pixel dimensions from EXIF TIFF metadata tags (IFD0 or SubIFD).
 pub fn parseExifDimensions(data: []const u8) ?JpegDimensions {
     const header = findTiffPayload(data) orelse return null;
     const tiff = header.tiff;
@@ -116,6 +117,7 @@ pub fn parseExifDimensions(data: []const u8) ?JpegDimensions {
     return null;
 }
 
+/// Reads image dimensions from EXIF metadata or scans JPEG Start-of-Frame (SOF) markers.
 pub fn readJpegDimensions(data: []const u8) ?JpegDimensions {
     if (parseExifDimensions(data)) |dims| return dims;
     if (data.len < 4) return null;
@@ -163,6 +165,7 @@ pub fn readJpegDimensions(data: []const u8) ?JpegDimensions {
     return null;
 }
 
+/// Extracts the TIFF orientation tag (0x0112) from an EXIF payload.
 pub fn parseExifOrientation(data: []const u8) ?Orientation {
     const header = findTiffPayload(data) orelse return null;
     const tiff = header.tiff;
@@ -187,6 +190,7 @@ pub fn parseExifOrientation(data: []const u8) ?Orientation {
     return null;
 }
 
+/// Reads the EXIF orientation tag by reading the header of a JPEG file on disk.
 pub fn readJpegExifOrientation(io: std.Io, path: []const u8) ?Orientation {
     const ext = std.fs.path.extension(path);
     if (!std.ascii.eqlIgnoreCase(ext, ".jpg") and !std.ascii.eqlIgnoreCase(ext, ".jpeg")) return null;
@@ -212,6 +216,7 @@ pub const ThumbnailLocation = struct {
     length: u32,
 };
 
+/// Locates the byte offset and length of an embedded JPEG thumbnail in IFD1 without allocating memory.
 pub fn extractJpegThumbnailLocation(data: []const u8) ?ThumbnailLocation {
     const header = findTiffPayload(data) orelse return null;
     const tiff = header.tiff;
@@ -255,6 +260,7 @@ pub fn extractJpegThumbnailLocation(data: []const u8) ?ThumbnailLocation {
     return null;
 }
 
+/// Returns a slice containing the embedded JPEG thumbnail payload if present in the EXIF data.
 pub fn extractJpegThumbnail(data: []const u8) ?[]const u8 {
     const header = findTiffPayload(data) orelse return null;
     const tiff = header.tiff;

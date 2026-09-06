@@ -26,6 +26,7 @@ pub const TextCacheValue = struct {
 pub const TextCache = struct {
     map: std.AutoHashMapUnmanaged(TextCacheKey, TextCacheValue) = .empty,
 
+    /// Releases all cached glyph GPU textures and frees hash map allocations.
     pub fn deinit(self: *TextCache, allocator: std.mem.Allocator, dev_opt: ?sdl.gpu.Device) void {
         if (dev_opt) |dev| {
             var iter = self.map.iterator();
@@ -36,14 +37,17 @@ pub const TextCache = struct {
         self.map.deinit(allocator);
     }
 
+    /// Looks up a cached text texture entry matching `key`.
     pub fn getEntry(self: *TextCache, key: TextCacheKey) ?std.AutoHashMapUnmanaged(TextCacheKey, TextCacheValue).Entry {
         return self.map.getEntry(key);
     }
 
+    /// Stores a new rendered text texture and dimension record in the cache.
     pub fn put(self: *TextCache, allocator: std.mem.Allocator, key: TextCacheKey, value: TextCacheValue) !void {
         try self.map.put(allocator, key, value);
     }
 
+    /// Evicts and destroys cached text textures not referenced within `max_unused_frames`.
     pub fn evictUnused(self: *TextCache, allocator: std.mem.Allocator, dev: sdl.gpu.Device, current_frame: usize, max_unused_frames: usize) void {
         var to_evict: std.ArrayList(TextCacheKey) = .empty;
         defer to_evict.deinit(allocator);

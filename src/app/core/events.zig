@@ -127,10 +127,12 @@ pub fn MpscQueue(comptime T: type) type {
 
         const Self = @This();
 
+        /// Initializes a new empty MpscQueue instance.
         pub fn init() Self {
             return .{};
         }
 
+        /// Locks the queue, invokes deinit on remaining items if supported, and releases allocated buffer memory.
         pub fn deinit(self: *Self, allocator: std.mem.Allocator, io: std.Io) void {
             self.mutex.lockUncancelable(io);
             defer self.mutex.unlock(io);
@@ -154,12 +156,14 @@ pub fn MpscQueue(comptime T: type) type {
             self.items.deinit(allocator);
         }
 
+        /// Locks the queue and appends a new item.
         pub fn push(self: *Self, allocator: std.mem.Allocator, io: std.Io, item: T) !void {
             self.mutex.lockUncancelable(io);
             defer self.mutex.unlock(io);
             try self.items.append(allocator, item);
         }
 
+        /// Atomically transfers all currently queued items into `out_list` and clears the internal queue buffer.
         pub fn drain(self: *Self, allocator: std.mem.Allocator, io: std.Io, out_list: *std.ArrayList(T)) !void {
             self.mutex.lockUncancelable(io);
             defer self.mutex.unlock(io);

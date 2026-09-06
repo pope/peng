@@ -15,14 +15,17 @@ fn getProcessId() u32 {
     }
 }
 
+/// Command string payload received from an IPC client together with its open communication stream.
 pub const IpcCommandData = struct {
     command: []const u8,
     client_stream: std.Io.net.Stream,
 };
 
+/// Context managing the background Unix domain socket IPC server listener and client connections.
 pub const IpcServer = struct {
     allocator: std.mem.Allocator,
 
+    /// Allocates and initializes an `IpcServer` instance.
     pub fn init(allocator: std.mem.Allocator) !*IpcServer {
         const self = try allocator.create(IpcServer);
         self.* = .{
@@ -31,6 +34,7 @@ pub const IpcServer = struct {
         return self;
     }
 
+    /// Connects a dummy socket to wake the listener thread, removes socket file, and destroys the server.
     pub fn deinit(self: *IpcServer, io: std.Io) void {
         if (builtin.os.tag != .windows) {
             const pid = getProcessId();
@@ -62,6 +66,7 @@ pub const PaletteKind = enum {
     none,
 };
 
+/// Specifies the target palette mode and optional initial search filter query.
 pub const PaletteTarget = struct {
     kind: PaletteKind,
     query: ?[]const u8 = null,
@@ -89,6 +94,7 @@ pub const IpcCommand = union(enum) {
     quit,
     screenshot: []const u8,
 
+    /// Converts an IPC command variant into an `AppIntent`, or returns `null` for internal commands.
     pub fn toIntent(self: IpcCommand) ?intents.AppIntent {
         switch (self) {
             .zoom => |factor| return .{ .set_zoom = factor },
@@ -121,6 +127,7 @@ pub const IpcCommand = union(enum) {
         }
     }
 
+    /// Parses a raw IPC command line string into a strongly-typed `IpcCommand` enum.
     pub fn parse(command: []const u8) !IpcCommand {
         var it = std.mem.tokenizeAny(u8, command, " \t\r\n");
         const cmd = it.next() orelse return error.UnknownCommand;
@@ -229,6 +236,7 @@ pub const IpcCommand = union(enum) {
     }
 };
 
+/// Sends an "OK\n" acknowledgment response over `stream` and terminates the client socket.
 pub fn respondOk(io: std.Io, stream: std.Io.net.Stream) !void {
     var write_buf: [64]u8 = undefined;
     var writer = stream.writer(io, &write_buf);

@@ -26,6 +26,7 @@ pub const sysUpdateCache = cache.sysUpdateCache;
 pub const sysUpdateSlideshow = slideshow.sysUpdateSlideshow;
 pub const sysUpdateViewport = viewport.sysUpdateViewport;
 
+/// Contextual state, temporary frame allocator, input events, and delta time passed to every update system.
 pub const FrameContext = struct {
     state: *AppState,
     frame_allocator: std.mem.Allocator,

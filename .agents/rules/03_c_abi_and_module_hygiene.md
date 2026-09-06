@@ -125,10 +125,12 @@ const MediaEntry = state_pkg.MediaEntry;
 In Zig, declaration visibility is lexically scoped to the declaring file or container struct. Symbols MUST follow the principle of least privilege: default to private (`fn`, `const`, `var`), and only declare `pub` when crossing an architectural boundary.
 
 ### 1. Never Default to `pub`
+
 - All functions, structs, enums, unions, and constants MUST be private unless required by external callers outside the file.
 - If a helper is only called within the file it is defined in, it MUST NOT be `pub`.
 
 ### 2. Subsystem Passes & Component Rendering
+
 - **System Passes (`src/app/systems/`)**:
   - ONLY the primary system entry point (`sysProcessInput`, `sysUpdateCache`, `sysProcessPaletteInput`) may be `pub fn`.
   - Sub-routines, key mappings, and internal handlers (e.g. `handleKeyDown`, `handlePaletteKeys`) MUST be private `fn`.
@@ -139,19 +141,49 @@ In Zig, declaration visibility is lexically scoped to the declaring file or cont
   - Internal staging packets and multi-pass stages (e.g. `RenderPacket`, `buildRenderPacket`, `executeRenderPacket`, `appendCornerArc`) MUST be private to their pipeline file.
 
 ### 3. Application Drivers & Executables
+
 - In executable roots (`main.zig`, `test_runner_main.zig`, `msg_main.zig`), ONLY `pub fn main` (or `build` in `build.zig`) is public.
 - Setup contexts (`AppGraphicsAndState`), initialization routines (`initAppGraphicsAndState`), and execution loops (`runMainLoop`, `runUpdatePhase`) MUST be private.
 
 ### 4. Same-File Unit Test Access
+
 - In Zig, unit test blocks (`test "..."`) have full access to private (`fn`, `const`) declarations in the same file.
 - NEVER mark a symbol `pub` merely to test it if the test resides within the same file.
 
 ### 5. Generic Reflection (`@hasDecl`) Exception
+
 - Zig's `@hasDecl(T, "name")` reflection strictly tests for public declarations. Any method intended to be detected or invoked polymorphically by a generic container (such as `deinitQueueItem` in `MpscQueue(T)`) MUST be declared `pub fn`.
 
 ### 6. Signature Types & Type Inference
+
 - Types that appear in public function signatures (as parameters or return types) MUST be `pub`, even if callers use type inference (`const pt = geometry.toNdc(...)`) or anonymous struct literals (`initGraphicsAndWindow(..., .{ .headless = true })`).
 
 ### 7. Proactive Dead Code Pruning
+
 - Do NOT leave orphaned functions, methods, or structs in the codebase with `pub`. If a declaration has zero callers across production and test code, eliminate it immediately.
 
+## 12. Mandatory Documentation Invariant for Public Structs and Functions (`///`)
+
+Every public struct and public function across the codebase MUST be documented using idiomatic Zig doc comments (`///`):
+
+### 1. Scope of the Invariant
+
+- **Public Structs**: Any declaration matching `pub const <Name> = struct` (including handle wrappers, configuration descriptors, data packet structs, and internal state containers) MUST have a doc comment preceding it.
+- **Public Functions**: Any `pub fn <name>` (including standalone package functions, system pass entry points, and public methods declared inside structs or unions) MUST have a doc comment preceding it.
+- **Strict Adjacency**: Doc comments MUST use `///` on every line and be placed immediately above the declaration with NO blank lines or regular comments (`//`) separating the doc comment from the declaration.
+
+### 2. Documentation Content Standards
+
+- **Functions**:
+  - State clearly and concisely what the function accomplishes.
+  - Detail any non-obvious parameter semantics, units (e.g. milliseconds, nanoseconds, bytes), or coordinate systems (e.g. NDC `[-1, 1]` vs logical pixels vs physical framebuffer pixels).
+  - Explicitly document preconditions, error conditions, and resource lifecycle expectations (e.g. whether the caller assumes ownership or must call `.deinit()`).
+- **Structs**:
+  - Explain the purpose and role of the struct within the subsystem.
+  - Note lifetime or lifecycle semantics (e.g. frame-bounded arena vs GPA allocator owned vs opaque GPU handle).
+  - Distinguish clearly between configuration descriptors (passed to factory functions), active state models, and type-safe wrappers around backend handles.
+
+### 3. Verification & Enforcement
+
+- Agents and automated reviewers MUST verify that any introduced or modified public struct or public function includes complete, idiomatic doc comments.
+- Code submissions with undocumented public structs or functions will fail hygiene review.

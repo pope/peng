@@ -1,6 +1,7 @@
 const std = @import("std");
 const c = @import("c.zig").c;
 
+/// SDL pixel format enumeration constants.
 pub const PixelFormat = struct {
     pub const rgba32: u32 = c.SDL_PIXELFORMAT_RGBA32;
     pub const bgra32: u32 = c.SDL_PIXELFORMAT_BGRA32;
@@ -21,45 +22,54 @@ pub const ScaleMode = enum(c_int) {
     pixel_art = c.SDL_SCALEMODE_PIXELART,
 };
 
+/// Safe typed wrapper handle around an underlying `SDL_Surface` CPU pixel buffer.
 pub const Surface = struct {
     ptr: *c.SDL_Surface,
 
+    /// Creates a newly allocated CPU pixel surface with specified dimensions and pixel format.
     pub fn create(width: i32, height: i32, format_id: u32) ?Surface {
         const raw = c.SDL_CreateSurface(width, height, format_id);
         return if (raw) |r| .{ .ptr = r } else null;
     }
 
+    /// Wraps an existing external pixel memory buffer in an SDL surface structure.
     pub fn createFrom(width: i32, height: i32, format_id: u32, data_ptr: ?*anyopaque, pitch_bytes: i32) ?Surface {
         const raw = c.SDL_CreateSurfaceFrom(width, height, format_id, data_ptr, pitch_bytes);
         return if (raw) |r| .{ .ptr = r } else null;
     }
 
+    /// Loads and decodes an image file from the filesystem using SDL_image.
     pub fn loadFile(path: [:0]const u8) !Surface {
         const raw = c.IMG_Load(path.ptr) orelse return error.SdlSurfaceLoadFailed;
         return .{ .ptr = raw };
     }
 
+    /// Encodes and writes the surface pixel data out to a PNG file.
     pub fn savePng(self: Surface, path: [:0]const u8) bool {
         return c.IMG_SavePNG(self.ptr, path.ptr);
     }
 
+    /// Loads and decodes an image from a null-terminated path pointer.
     pub fn loadFilePtr(ptr: [*:0]const u8) ?Surface {
         const raw = c.IMG_Load(ptr);
         return if (raw) |r| .{ .ptr = r } else null;
     }
 
+    /// Decodes an image from an in-memory byte slice using SDL_image IO streams.
     pub fn loadConstMem(bytes: []const u8) !Surface {
         const io = c.SDL_IOFromConstMem(bytes.ptr, bytes.len) orelse return error.SdlIoFailed;
         const raw = c.IMG_LoadIO(io, true) orelse return error.SdlSurfaceLoadFailed;
         return .{ .ptr = raw };
     }
 
+    /// Decodes an image from an in-memory byte slice, returning `null` on failure.
     pub fn loadConstMemOpt(bytes: []const u8) ?Surface {
         const io = c.SDL_IOFromConstMem(bytes.ptr, bytes.len) orelse return null;
         const raw = c.IMG_Load_IO(io, true);
         return if (raw) |r| .{ .ptr = r } else null;
     }
 
+    /// Converts this surface to `target_format`, utilizing SIMD-optimized conversion paths when available.
     pub fn convert(self: Surface, target_format: u32) ?Surface {
         const src_fmt = self.format();
         const w_val = self.w();
@@ -94,31 +104,38 @@ pub const Surface = struct {
         return if (raw) |r| .{ .ptr = r } else null;
     }
 
+    /// Scales this surface to new pixel dimensions using the chosen scaling filter mode.
     pub fn scale(self: Surface, width: i32, height: i32, mode: ScaleMode) ?Surface {
         const raw = c.SDL_ScaleSurface(self.ptr, width, height, @intFromEnum(mode));
         return if (raw) |r| .{ .ptr = r } else null;
     }
 
+    /// Destroys and frees the underlying `SDL_Surface`.
     pub fn destroy(self: Surface) void {
         c.SDL_DestroySurface(self.ptr);
     }
 
+    /// Returns the surface pixel width.
     pub fn w(self: Surface) i32 {
         return self.ptr.w;
     }
 
+    /// Returns the surface pixel height.
     pub fn h(self: Surface) i32 {
         return self.ptr.h;
     }
 
+    /// Returns a pointer to the raw pixel buffer memory.
     pub fn pixels(self: Surface) [*]u8 {
         return @ptrCast(self.ptr.pixels);
     }
 
+    /// Returns the row byte stride (pitch) of the surface.
     pub fn pitch(self: Surface) i32 {
         return self.ptr.pitch;
     }
 
+    /// Returns the SDL pixel format ID of the surface.
     pub fn format(self: Surface) u32 {
         return self.ptr.format;
     }

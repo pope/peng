@@ -33,6 +33,7 @@ pub const MediaEntry = union(enum) {
     /// Virtual file entry inside an archive (CBZ, CBR, ZIP)
     archive_entry: ArchiveMediaEntry,
 
+    /// Returns the leaf filename of the media entry (file basename or archive entry basename).
     pub fn getBasename(self: MediaEntry) []const u8 {
         return switch (self) {
             .filesystem => |f| std.fs.path.basename(f.path),
@@ -40,6 +41,7 @@ pub const MediaEntry = union(enum) {
         };
     }
 
+    /// Returns the directory containing this media file or archive container.
     pub fn getContainerName(self: MediaEntry) []const u8 {
         return switch (self) {
             .filesystem => |f| std.fs.path.dirname(f.path) orelse ".",
@@ -47,6 +49,7 @@ pub const MediaEntry = union(enum) {
         };
     }
 
+    /// Returns the file path or archive internal member path string.
     pub fn getPath(self: MediaEntry) []const u8 {
         return switch (self) {
             .filesystem => |f| f.path,
@@ -54,10 +57,12 @@ pub const MediaEntry = union(enum) {
         };
     }
 
+    /// Returns `true` if this media item resides inside an archive container (e.g. CBZ).
     pub fn isArchive(self: MediaEntry) bool {
         return self == .archive_entry;
     }
 
+    /// Deeply duplicates string paths belonging to this media entry using `allocator`.
     pub fn dupe(self: MediaEntry, allocator: std.mem.Allocator) !MediaEntry {
         return switch (self) {
             .filesystem => |f| .{
@@ -76,6 +81,7 @@ pub const MediaEntry = union(enum) {
         };
     }
 
+    /// Frees allocated path strings for this media entry.
     pub fn deinit(self: MediaEntry, allocator: std.mem.Allocator) void {
         switch (self) {
             .filesystem => |f| allocator.free(f.path),
@@ -154,6 +160,7 @@ pub const KeyModifiers = struct {
     alt: bool = false,
     gui: bool = false,
 
+    /// Checks two modifier sets for identical flag settings.
     pub fn eql(self: KeyModifiers, other: KeyModifiers) bool {
         return self.ctrl == other.ctrl and
             self.shift == other.shift and
@@ -169,6 +176,7 @@ pub const ZoomFactor = struct {
     pub const MIN: f32 = 0.01;
     pub const MAX: f32 = 500.0;
 
+    /// Initializes a sanitized zoom factor clamped to [MIN, MAX], defaulting to 1.0 on invalid or non-positive input.
     pub fn init(raw: f32) ZoomFactor {
         if (std.math.isNan(raw) or raw <= 0.0) {
             return .{ .value = 1.0 };
@@ -176,6 +184,7 @@ pub const ZoomFactor = struct {
         return .{ .value = std.math.clamp(raw, MIN, MAX) };
     }
 
+    /// Returns the active zoom scalar, guaranteed to be positive and non-NaN.
     pub fn get(self: ZoomFactor) f32 {
         if (self.value <= 0.0 or std.math.isNan(self.value)) {
             return 1.0;
@@ -183,6 +192,7 @@ pub const ZoomFactor = struct {
         return self.value;
     }
 
+    /// Computes the ratio of `new_zoom` relative to `self`.
     pub fn ratioTo(self: ZoomFactor, new_zoom: ZoomFactor) f32 {
         return new_zoom.get() / self.get();
     }
@@ -200,41 +210,49 @@ pub const ViewportParams = struct {
     brightness: f32 = 0.0,
     contrast: f32 = 1.0,
 
+    /// Resets zoom factor and pan offsets back to default center positioning.
     pub fn reset(self: *ViewportParams) void {
         self.zoom_factor = .{};
         self.pan_x = 0.0;
         self.pan_y = 0.0;
     }
 
+    /// Explicitly assigns the pan offset coordinates.
     pub fn setPan(self: *ViewportParams, px: f32, py: f32) void {
         self.pan_x = px;
         self.pan_y = py;
     }
 
+    /// Displaces current pan offsets by relative delta increments (`dx`, `dy`).
     pub fn panBy(self: *ViewportParams, dx: f32, dy: f32) void {
         self.pan_x += dx;
         self.pan_y += dy;
     }
 
+    /// Sets brightness in [-1.0, 1.0] and contrast in [0.0, 5.0].
     pub fn setAdjustments(self: *ViewportParams, br: f32, co: f32) void {
         self.brightness = std.math.clamp(br, -1.0, 1.0);
         self.contrast = std.math.clamp(co, 0.0, 5.0);
     }
 
+    /// Adjusts brightness by adding `delta`, clamped to [-1.0, 1.0].
     pub fn adjustBrightness(self: *ViewportParams, delta: f32) void {
         self.brightness = std.math.clamp(self.brightness + delta, -1.0, 1.0);
     }
 
+    /// Adjusts contrast by adding `delta`, clamped to [0.0, 5.0].
     pub fn adjustContrast(self: *ViewportParams, delta: f32) void {
         self.contrast = std.math.clamp(self.contrast + delta, 0.0, 5.0);
     }
 
+    /// Rotates the viewport clockwise by 90 degrees with 360-degree normalization.
     pub fn rotateCw(self: *ViewportParams) void {
         var val = self.rotation_angle + 90.0;
         if (val >= 360.0) val -= 360.0;
         self.rotation_angle = val;
     }
 
+    /// Rotates the viewport counter-clockwise by 90 degrees with 360-degree normalization.
     pub fn rotateCcw(self: *ViewportParams) void {
         var val = self.rotation_angle - 90.0;
         if (val < 0.0) val += 360.0;
@@ -259,6 +277,7 @@ pub const ViewportParams = struct {
         self.pan_y = rel_y - (rel_y - self.pan_y) * ratio;
     }
 
+    /// Returns the integer uniform constant representing the active resampler filter for shader pipelines.
     pub fn getShaderScaleModeInt(self: ViewportParams) i32 {
         const f = if (self.scale_filter != .linear) self.scale_filter else self.texture_scale_mode;
         return switch (f) {
@@ -310,14 +329,17 @@ pub const FrameInput = struct {
     delta_time_ms: f32,
     window_resized: bool = false,
 
+    /// Returns the mouse X coordinate scaled to physical framebuffer pixels.
     pub fn pixMouseX(self: FrameInput) f32 {
         return self.mouse_x * self.scale_x;
     }
 
+    /// Returns the mouse Y coordinate scaled to physical framebuffer pixels.
     pub fn pixMouseY(self: FrameInput) f32 {
         return self.mouse_y * self.scale_y;
     }
 
+    /// Returns `true` if the cursor is positioned within Clay's debug sidebar panel.
     pub fn isPointerInDebugPanel(self: FrameInput) bool {
         if (!clay.isDebugModeEnabled()) return false;
         const debug_w: f32 = @floatFromInt(clay.Clay__debugViewWidth);
@@ -418,10 +440,12 @@ pub const ElementTag = enum(usize) {
     image_viewer = 1,
     drop_zone_box = 2,
 
+    /// Converts element tag enum to raw integer index.
     pub fn toInt(self: ElementTag) usize {
         return @intFromEnum(self);
     }
 
+    /// Converts raw integer index to corresponding `ElementTag` enum variant.
     pub fn fromInt(val: usize) ElementTag {
         return switch (val) {
             1 => .image_viewer,
@@ -453,12 +477,14 @@ pub const RenderStats = struct {
     head: usize = 0,
     count: usize = 0,
 
+    /// Records a new duration sample in milliseconds into the 60-slot rolling ring buffer.
     pub fn addSample(self: *RenderStats, sample_ms: f64) void {
         self.samples[self.head] = sample_ms;
         self.head = (self.head + 1) % 60;
         if (self.count < 60) self.count += 1;
     }
 
+    /// Computes the arithmetic mean and sample standard deviation across all recorded duration samples.
     pub fn getMeanAndStdev(self: RenderStats) struct { mean: f64, stdev: f64 } {
         if (self.count == 0) return .{ .mean = 0.0, .stdev = 0.0 };
         var sum: f64 = 0.0;
@@ -495,6 +521,7 @@ pub const UiRenderMetrics = struct {
     last_ui_vertex_count: usize = 0,
     last_ui_batch_count: usize = 0,
 
+    /// Creates an immutable performance snapshot containing calculated mean/stdev and element counts.
     pub fn toSnapshot(self: UiRenderMetrics) UiRenderMetricsSnapshot {
         const stats = self.ui_render_stats.getMeanAndStdev();
         return .{
@@ -575,6 +602,7 @@ pub const ThumbnailState = union(enum) {
         info: ThumbnailInfo,
     },
 
+    /// Extracts the thumbnail dimension and upload duration information if present.
     pub fn getInfo(self: ThumbnailState) ?ThumbnailInfo {
         return switch (self) {
             .none => null,
@@ -623,6 +651,7 @@ pub const CacheEntry = struct {
     full_h: f32 = 0.0,
     orientation: Orientation = .normal,
 
+    /// Deinitializes thumbnail texture and releases any loaded CPU surface or GPU texture.
     pub fn deinit(self: *CacheEntry, gpu_device: ?sdl.gpu.Device) void {
         switch (self.thumbnail) {
             .loaded => |thumb| {
@@ -654,6 +683,7 @@ pub const SlideshowMode = union(enum) {
         timer_ms: f64,
     },
 
+    /// Advances the internal slideshow timer by `delta_ms`; returns `true` if the interval has elapsed.
     pub fn tick(self: *SlideshowMode, delta_ms: f32) bool {
         switch (self.*) {
             .inactive => return false,
@@ -669,6 +699,7 @@ pub const SlideshowMode = union(enum) {
         }
     }
 
+    /// Resets the slideshow timer accumulator to zero without changing the interval.
     pub fn resetTimer(self: *SlideshowMode) void {
         switch (self.*) {
             .inactive => {},
@@ -750,6 +781,7 @@ pub const ActiveWindow = struct {
     is_fullscreen: bool = false,
     claimed: bool = false,
 
+    /// Frees the cached window title string allocation if present.
     pub fn deinit(self: *ActiveWindow, gpa: std.mem.Allocator) void {
         if (self.cached_title) |t| {
             gpa.free(t);
@@ -762,6 +794,7 @@ pub const DisplayState = union(enum) {
     headless,
     windowed: ActiveWindow,
 
+    /// Returns the cached window title string, or `null` in headless mode.
     pub inline fn getTitle(self: DisplayState) ?[]const u8 {
         return switch (self) {
             .headless => null,
@@ -769,6 +802,7 @@ pub const DisplayState = union(enum) {
         };
     }
 
+    /// Returns `true` if the display is currently running in fullscreen mode.
     pub inline fn isFullscreen(self: DisplayState) bool {
         return switch (self) {
             .headless => false,
@@ -776,6 +810,7 @@ pub const DisplayState = union(enum) {
         };
     }
 
+    /// Returns `true` if the SDL window has been claimed by the GPU graphics device.
     pub inline fn isClaimed(self: DisplayState) bool {
         return switch (self) {
             .headless => false,
@@ -783,6 +818,7 @@ pub const DisplayState = union(enum) {
         };
     }
 
+    /// Returns the swapchain texture pixel format of the display window.
     pub inline fn getPixelFormat(self: DisplayState) u32 {
         return switch (self) {
             .headless => sdl.PixelFormat.unknown,
@@ -790,6 +826,7 @@ pub const DisplayState = union(enum) {
         };
     }
 
+    /// Releases any memory allocations held by the display state (such as window title strings).
     pub fn deinit(self: *DisplayState, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .headless => {},
@@ -808,6 +845,7 @@ pub const ActiveScreenshot = struct {
     path: [:0]const u8,
     stream: std.Io.net.Stream,
 
+    /// Writes an "OK\n" success confirmation back to the client IPC stream and frees request resources.
     pub fn respondOk(self: *ActiveScreenshot, io: std.Io, gpa: std.mem.Allocator) void {
         var write_buf: [128]u8 = undefined;
         var writer = self.stream.writer(io, &write_buf);
@@ -817,6 +855,7 @@ pub const ActiveScreenshot = struct {
         gpa.free(self.path);
     }
 
+    /// Writes an "ERR <name>\n" error response back to the client IPC stream and frees request resources.
     pub fn respondErr(self: *ActiveScreenshot, io: std.Io, gpa: std.mem.Allocator, err: anyerror) void {
         var response_buf: [128]u8 = undefined;
         const response = std.fmt.bufPrint(&response_buf, "ERR {s}\n", .{@errorName(err)}) catch "ERR SaveFailed\n";
@@ -828,6 +867,7 @@ pub const ActiveScreenshot = struct {
         gpa.free(self.path);
     }
 
+    /// Sends an emergency "ERR quit\n" error response to the client IPC stream when exiting unexpectedly.
     pub fn respondQuit(self: *ActiveScreenshot, io: std.Io, gpa: std.mem.Allocator) void {
         var write_buf: [64]u8 = undefined;
         var writer = self.stream.writer(io, &write_buf);

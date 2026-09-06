@@ -1,5 +1,6 @@
 const std = @import("std");
 
+/// CLI entry point for sending IPC commands to a running Peng instance via Unix domain socket.
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;

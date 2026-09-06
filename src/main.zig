@@ -135,6 +135,7 @@ const AppGraphicsAndState = struct {
     measure_data: state_pkg.types.MeasureTextUserData,
     ipc_server: ?*ipc.IpcServer,
 
+    /// Releases all application resources, closes IPC server, tears down SDL/GPU graphics, and frees state memory.
     pub fn deinit(self: *AppGraphicsAndState) void {
         self.parsed.deinit(self.gpa);
         if (self.ipc_server) |srv| srv.deinit(self.io);
@@ -314,6 +315,7 @@ fn runMainLoop(ctx: *AppGraphicsAndState) !void {
     }
 }
 
+/// Application entry point: initializes state and graphics, enters the primary event loop, and cleans up on exit.
 pub fn main(init: std.process.Init) !void {
     var app_ctx = try initAppGraphicsAndState(init);
     defer app_ctx.deinit();

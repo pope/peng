@@ -7,6 +7,7 @@ const FrameInput = state.FrameInput;
 
 pub const MOUSE_WHEEL_SCROLL_MULTIPLIER: f32 = 6.0;
 
+/// Translates an SDL3 keycode into the application's pure `Key` enum variant.
 pub fn mapKeyFromSdl(key: sdl.keys.Keycode) Key {
     return switch (key) {
         sdl.keys.escape => .escape,
@@ -68,6 +69,7 @@ pub fn mapKeyFromSdl(key: sdl.keys.Keycode) Key {
     };
 }
 
+/// Maps an SDL keyboard modifier bitmask into a `KeyModifiers` record.
 pub fn mapModFromSdl(mod: u16) KeyModifiers {
     return .{
         .ctrl = (mod & sdl.keys.mod.ctrl) != 0,
@@ -87,6 +89,7 @@ var active_fingers: [8]TouchFinger = undefined;
 var active_finger_count: usize = 0;
 var last_touch_dist: f32 = 0.0;
 
+/// Temporary accumulator aggregating events drained during a single frame's SDL polling pass.
 pub const FrameInputState = struct {
     frame_allocator: std.mem.Allocator,
     keys_pressed: std.ArrayList(Key),
@@ -105,6 +108,7 @@ pub const FrameInputState = struct {
     win_h: f32 = 0,
 };
 
+/// Processes a single SDL event and updates the frame input accumulator state.
 pub fn processSDLEvent(event: sdl.Event, frame_input: *FrameInputState) !void {
     switch (event.type) {
         sdl.event_type.quit => frame_input.quit_requested = true,
@@ -231,6 +235,7 @@ pub fn processSDLEvent(event: sdl.Event, frame_input: *FrameInputState) !void {
     }
 }
 
+/// Pumps pending SDL events, queries cursor and keyboard states, and constructs a new `FrameInput` snapshot.
 pub fn pollFrameInput(
     window: sdl.Window,
     frame_allocator: std.mem.Allocator,

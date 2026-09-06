@@ -3,6 +3,7 @@ const std = @import("std");
 
 const ScaleMode = intents.ScaleMode;
 
+/// Parsed command-line configuration options controlling launch behavior and rendering modes.
 pub const ParsedArgs = struct {
     arg_path: ?[]const u8,
     default_scale: ScaleMode,
@@ -11,6 +12,7 @@ pub const ParsedArgs = struct {
     headless: bool,
     ipc_enabled: bool,
 
+    /// Frees allocated memory associated with parsed command-line arguments.
     pub fn deinit(self: *ParsedArgs, gpa: std.mem.Allocator) void {
         if (self.arg_path) |p| {
             gpa.free(p);
@@ -19,6 +21,7 @@ pub const ParsedArgs = struct {
     }
 };
 
+/// Parses command-line flags and positional target paths from the process invocation.
 pub fn parseCommandLineArgs(init: std.process.Init, gpa: std.mem.Allocator) !ParsedArgs {
     var args_it = try std.process.Args.Iterator.initAllocator(init.minimal.args, gpa);
     defer args_it.deinit();

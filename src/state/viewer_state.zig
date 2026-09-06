@@ -24,6 +24,7 @@ pub const ViewerState = struct {
 
     running: bool = true,
 
+    /// Initializes a headless `ViewerState` instance for CLI, testing, and batch processing.
     pub fn initHeadless(allocator: std.mem.Allocator) !ViewerState {
         return .{
             .navigation = try NavigationState.init(allocator),
@@ -33,6 +34,7 @@ pub const ViewerState = struct {
         };
     }
 
+    /// Releases navigation, UI, display, and rotation map resources.
     pub fn deinit(self: *ViewerState, allocator: std.mem.Allocator, io: std.Io) void {
         self.navigation.deinit(allocator);
         self.ui.deinit(io, allocator);
@@ -41,18 +43,22 @@ pub const ViewerState = struct {
         self.rotation_map.deinit();
     }
 
+    /// Returns `true` if the window display is currently in fullscreen mode.
     pub inline fn isFullscreen(self: *const ViewerState) bool {
         return self.display.isFullscreen();
     }
 
+    /// Returns `true` if slideshow mode is active and advancing images on a timer.
     pub inline fn isSlideshowActive(self: *const ViewerState) bool {
         return self.navigation.isSlideshowActive();
     }
 
+    /// Resets pan offsets and zoom level to default viewport framing.
     pub fn resetZoomPan(self: *ViewerState) void {
         self.viewport.reset();
     }
 
+    /// Associates an override rotation angle with an image file path in the rotation map.
     pub fn putRotation(self: *ViewerState, allocator: std.mem.Allocator, path: []const u8, angle: f32) !void {
         const duped_key = try allocator.dupe(u8, path);
         errdefer allocator.free(duped_key);
@@ -64,6 +70,7 @@ pub const ViewerState = struct {
         gop.value_ptr.* = angle;
     }
 
+    /// Frees all duplicated path keys stored in the rotation map and clears its table.
     pub fn clearRotationMap(self: *ViewerState, allocator: std.mem.Allocator) void {
         var it = self.rotation_map.keyIterator();
         while (it.next()) |key_ptr| {
