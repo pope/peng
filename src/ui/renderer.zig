@@ -224,16 +224,15 @@ fn getOrRenderCachedText(
     const target_font_size = @as(f32, @floatFromInt(text_data.font_size)) * scale_x;
     const target_font_size_u16 = @as(u16, @intFromFloat(@round(target_font_size)));
 
-    // 1. Check/Lookup cache
-    const color_u32 = @as(u32, @intFromFloat(text_data.text_color[0])) |
+    // 1. Check/Lookup cache (RGB only; alpha is modulated dynamically via GPU vertex color)
+    const color_rgb_u32 = @as(u32, @intFromFloat(text_data.text_color[0])) |
         (@as(u32, @intFromFloat(text_data.text_color[1])) << 8) |
-        (@as(u32, @intFromFloat(text_data.text_color[2])) << 16) |
-        (@as(u32, @intFromFloat(text_data.text_color[3])) << 24);
+        (@as(u32, @intFromFloat(text_data.text_color[2])) << 16);
 
     const key = TextCacheKey{
         .font_id = text_data.font_id,
         .font_size = target_font_size_u16,
-        .color = color_u32,
+        .color = color_rgb_u32,
         .hash = std.hash.Wyhash.hash(0, text_slice),
     };
 
@@ -256,7 +255,7 @@ fn getOrRenderCachedText(
         .r = @intFromFloat(text_data.text_color[0]),
         .g = @intFromFloat(text_data.text_color[1]),
         .b = @intFromFloat(text_data.text_color[2]),
-        .a = @intFromFloat(text_data.text_color[3]),
+        .a = 255,
     }) catch |err| {
         std.log.warn("font.renderTextBlended failed for '{s}': {}", .{ text_slice, err });
         return null;
@@ -486,13 +485,14 @@ fn buildGeometryFromCommands(
                     const p2 = geometry.toNdc(world_x + cached.w, world_y + cached.h, f_win_w, f_win_h);
 
                     const start = @as(u32, @intCast(vertices.items.len));
-                    const white_color = packRgba(255, 255, 255, 255);
-                    try vertices.append(frame_allocator, .{ .x = p1.x, .y = p1.y, .u = 0.0, .v = 0.0, .color = white_color });
-                    try vertices.append(frame_allocator, .{ .x = p2.x, .y = p1.y, .u = 1.0, .v = 0.0, .color = white_color });
-                    try vertices.append(frame_allocator, .{ .x = p1.x, .y = p2.y, .u = 0.0, .v = 1.0, .color = white_color });
-                    try vertices.append(frame_allocator, .{ .x = p2.x, .y = p1.y, .u = 1.0, .v = 0.0, .color = white_color });
-                    try vertices.append(frame_allocator, .{ .x = p2.x, .y = p2.y, .u = 1.0, .v = 1.0, .color = white_color });
-                    try vertices.append(frame_allocator, .{ .x = p1.x, .y = p2.y, .u = 0.0, .v = 1.0, .color = white_color });
+                    const text_alpha_u8 = @as(u8, @intFromFloat(std.math.clamp(text_data.text_color[3], 0.0, 255.0)));
+                    const vert_color = packRgba(255, 255, 255, text_alpha_u8);
+                    try vertices.append(frame_allocator, .{ .x = p1.x, .y = p1.y, .u = 0.0, .v = 0.0, .color = vert_color });
+                    try vertices.append(frame_allocator, .{ .x = p2.x, .y = p1.y, .u = 1.0, .v = 0.0, .color = vert_color });
+                    try vertices.append(frame_allocator, .{ .x = p1.x, .y = p2.y, .u = 0.0, .v = 1.0, .color = vert_color });
+                    try vertices.append(frame_allocator, .{ .x = p2.x, .y = p1.y, .u = 1.0, .v = 0.0, .color = vert_color });
+                    try vertices.append(frame_allocator, .{ .x = p2.x, .y = p2.y, .u = 1.0, .v = 1.0, .color = vert_color });
+                    try vertices.append(frame_allocator, .{ .x = p1.x, .y = p2.y, .u = 0.0, .v = 1.0, .color = vert_color });
 
                     try addBatch(batches, frame_allocator, start, 6, cached.texture, .ui_element, current_scissor);
                 }
@@ -995,8 +995,8 @@ pub fn renderClayCommands(
         win_h,
     );
 
-    // Cache eviction for text textures (unused for >120 frames)
-    gpu_res.text_cache.evictUnused(gpa_allocator, dev, gpu_res.frame_index, 120);
+    // Cache eviction for text textures (unused for >600 frames, ~5-10 seconds)
+    gpu_res.text_cache.evictUnused(frame_allocator, dev, gpu_res.frame_index, 600);
 
     const end_render = sdl.timer.getTicksNs();
     const render_time_ms = @as(f64, @floatFromInt(end_render - start_render)) / 1_000_000.0;

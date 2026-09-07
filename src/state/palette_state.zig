@@ -122,6 +122,7 @@ pub const DirectoryEntry = union(enum) {
 /// Main state model for command palette modals, directory navigation, and fuzzy searching.
 pub const PaletteState = struct {
     mode: PaletteMode = .inactive,
+    is_closing: bool = false,
     query: std.ArrayList(u8),
     selected_idx: usize = 0,
     selection_dirty: bool = false,
@@ -204,8 +205,14 @@ pub const PaletteState = struct {
         self.clearDirItems();
         self.dir_scan_generation.store(0, .release);
         self.mode = .inactive;
+        self.is_closing = false;
         self.selected_idx = 0;
         self.selection_dirty = true;
+    }
+
+    /// Returns whether the palette is currently active and accepting user input (not closing).
+    pub inline fn isAcceptingInput(self: *const PaletteState) bool {
+        return self.mode != .inactive and !self.is_closing;
     }
 
     /// Returns a lazily initialized or resized ASCII fuzzy searcher matching the requested haystack and needle lengths.
@@ -224,6 +231,24 @@ pub const PaletteState = struct {
                 .case_sensitive = false,
             });
             return &self.searcher.?;
+        }
+    }
+
+    /// Rebuilds fuzzy match results for action palette items.
+    ///
+    /// Optimizations:
+    /// - Short-circuits when query is empty, populating `matches` directly without searcher allocation or fuzzy scoring.
+    /// - Pre-allocates `scored_matches` and `matches` capacities to allow `appendAssumeCapacity` writes during scoring.
+    fn sortAndExtractMatches(self: *PaletteState) !void {
+        std.mem.sort(ScoredMatch, self.scored_matches.items, {}, struct {
+            fn lessThan(_: void, a: ScoredMatch, b: ScoredMatch) bool {
+                return a.score > b.score;
+            }
+        }.lessThan);
+
+        try self.matches.ensureTotalCapacity(self.allocator, self.scored_matches.items.len);
+        for (self.scored_matches.items) |item| {
+            self.matches.appendAssumeCapacity(item.index);
         }
     }
 
@@ -259,16 +284,7 @@ pub const PaletteState = struct {
             }
         }
 
-        std.mem.sort(ScoredMatch, self.scored_matches.items, {}, struct {
-            fn lessThan(_: void, a: ScoredMatch, b: ScoredMatch) bool {
-                return a.score > b.score;
-            }
-        }.lessThan);
-
-        try self.matches.ensureTotalCapacity(self.allocator, self.scored_matches.items.len);
-        for (self.scored_matches.items) |item| {
-            self.matches.appendAssumeCapacity(item.index);
-        }
+        try self.sortAndExtractMatches();
     }
 
     /// Rebuilds fuzzy match results for directory navigator items.
@@ -314,16 +330,7 @@ pub const PaletteState = struct {
             }
         }
 
-        std.mem.sort(ScoredMatch, self.scored_matches.items, {}, struct {
-            fn lessThan(_: void, a: ScoredMatch, b: ScoredMatch) bool {
-                return a.score > b.score;
-            }
-        }.lessThan);
-
-        try self.matches.ensureTotalCapacity(self.allocator, self.scored_matches.items.len);
-        for (self.scored_matches.items) |item| {
-            self.matches.appendAssumeCapacity(item.index);
-        }
+        try self.sortAndExtractMatches();
     }
 
     const MediaEntry = @import("types.zig").MediaEntry;
@@ -363,16 +370,7 @@ pub const PaletteState = struct {
             }
         }
 
-        std.mem.sort(ScoredMatch, self.scored_matches.items, {}, struct {
-            fn lessThan(_: void, a: ScoredMatch, b: ScoredMatch) bool {
-                return a.score > b.score;
-            }
-        }.lessThan);
-
-        try self.matches.ensureTotalCapacity(self.allocator, self.scored_matches.items.len);
-        for (self.scored_matches.items) |item| {
-            self.matches.appendAssumeCapacity(item.index);
-        }
+        try self.sortAndExtractMatches();
     }
 };
 

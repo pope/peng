@@ -44,7 +44,7 @@ pub fn sysUpdateViewport(ctx: FrameContext, palette_closed_this_frame: bool) voi
     }
 
     if (next_drag_state == .none and input.mouse_left_clicked and !palette_closed_this_frame) {
-        if (state.viewer.ui.palette.mode == .inactive) {
+        if (!state.viewer.ui.palette.isAcceptingInput()) {
             const is_in_debug_panel = input.isPointerInDebugPanel();
             if (state.viewer.ui.overlays.show_info and !is_in_debug_panel and clay.pointerOver(clay.getElementId("InfoOverlayCard"))) {
                 next_drag_state = .{ .info = .{ .start_x = input.mouse_x - state.viewer.ui.overlays.info_offset_x, .start_y = input.mouse_y - state.viewer.ui.overlays.info_offset_y } };
@@ -63,7 +63,7 @@ pub fn sysUpdateViewport(ctx: FrameContext, palette_closed_this_frame: bool) voi
     const is_ctrl_down = input.key_modifiers.ctrl;
 
     if ((has_scroll_x or has_scroll_y) and !is_ctrl_down) {
-        if (state.viewer.ui.palette.mode == .inactive and !input.isPointerInDebugPanel() and clay.pointerOver(clay.getElementId("Viewport"))) {
+        if (!state.viewer.ui.palette.isAcceptingInput() and !input.isPointerInDebugPanel() and clay.pointerOver(clay.getElementId("Viewport"))) {
             state.viewer.viewport.pan_x += input.scroll_delta_x * input.scale_x * 5.0;
             state.viewer.viewport.pan_y += input.scroll_delta_y * input.scale_y * 5.0;
         }
@@ -73,7 +73,7 @@ pub fn sysUpdateViewport(ctx: FrameContext, palette_closed_this_frame: bool) voi
     const has_pinch = input.pinch_delta != 0.0;
     const is_ctrl_scroll = is_ctrl_down and has_scroll_y;
     if (has_pinch or is_ctrl_scroll) {
-        if (state.viewer.ui.palette.mode == .inactive and !input.isPointerInDebugPanel() and clay.pointerOver(clay.getElementId("Viewport"))) {
+        if (!state.viewer.ui.palette.isAcceptingInput() and !input.isPointerInDebugPanel() and clay.pointerOver(clay.getElementId("Viewport"))) {
             const old_zoom = state.viewer.viewport.zoom_factor;
 
             const zoom_delta = if (has_pinch)

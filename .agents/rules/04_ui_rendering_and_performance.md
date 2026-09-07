@@ -29,3 +29,15 @@
 
 - When using blocking event polling (`waitEvent`) for power optimization, the `is_busy` calculation MUST include window dimension changes (`cur_win_w != last_win_w` or `window_resized`).
 - This guarantees the event loop unblocks immediately for layout recalculation (Clay `setLayoutDimensions`) and GPU frame presentation upon window resizing or fullscreen toggling without requiring mouse movement.
+
+## 7. GPU Text Texture Alpha Decoupling
+
+- `TextCacheKey` MUST index strictly by `font_id`, `font_size`, `hash`, and RGB color channels (`color_u32 & 0x00FFFFFF`). Text glyph surfaces MUST always be rasterized at solid opacity (`a = 255`).
+- Opacity modulation during UI animations MUST occur dynamically via the quad vertex color attribute (`inColor.a`).
+- Never include alpha in the text cache key; doing so causes catastrophic cache thrashing and font re-rasterization during fade animations.
+
+## 8. Modal Dismissal Input Decoupling
+
+- Overlay containers with animated dismissal transitions (such as the command palette) MUST decouple input focus from visual dissolution.
+- Provide and check `isAcceptingInput()` (`mode != .inactive and !is_closing`).
+- Keyboard shortcuts and viewport interactions (zooming, panning, navigation) MUST NOT be blocked while a dismissal animation is in-flight.

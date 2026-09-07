@@ -235,6 +235,18 @@ pub fn processSDLEvent(event: sdl.Event, frame_input: *FrameInputState) !void {
     }
 }
 
+/// Computes delta time in milliseconds from ticks, clamping to a standard frame slice (<= 33.33ms)
+/// to prevent animation and simulation leaps when waking from blocking event wait (idle sleep) or OS stalls.
+pub inline fn computeClampedDeltaTime(current_ticks: u64, last_time: *u64) f32 {
+    const raw_delta = if (current_ticks >= last_time.*)
+        @as(f32, @floatFromInt(current_ticks - last_time.*))
+    else
+        0.0;
+    const delta_time_ms = @min(raw_delta, 33.333);
+    last_time.* = current_ticks;
+    return delta_time_ms;
+}
+
 /// Pumps pending SDL events, queries cursor and keyboard states, and constructs a new `FrameInput` snapshot.
 pub fn pollFrameInput(
     window: sdl.Window,
@@ -245,10 +257,6 @@ pub fn pollFrameInput(
     non_blocking: bool,
     is_busy: bool,
 ) !FrameInput {
-    const current_ticks = sdl.timer.getTicks();
-    const delta_time_ms = @as(f32, @floatFromInt(current_ticks - last_time.*));
-    last_time.* = current_ticks;
-
     // Get window sizes and scale
     const win_size = window.getSize();
     const pix_size = window.getSizeInPixels();
@@ -286,6 +294,9 @@ pub fn pollFrameInput(
         has_event = sdl.events.pollEvent(&event);
     }
 
+    const current_ticks = sdl.timer.getTicks();
+    const delta_time_ms = computeClampedDeltaTime(current_ticks, last_time);
+
     var mouse_x_raw: f32 = 0;
     var mouse_y_raw: f32 = 0;
     const mouse_buttons = sdl.mouse.getState(&mouse_x_raw, &mouse_y_raw);
@@ -318,4 +329,34 @@ pub fn pollFrameInput(
         .delta_time_ms = delta_time_ms,
         .window_resized = frame_input_state.window_resized,
     };
+}
+
+test "computeClampedDeltaTime normal frame tick and idle wake clamp" {
+    var last_time: u64 = 1000;
+
+    // 1. Normal active frame tick (~8ms)
+    const dt1 = computeClampedDeltaTime(1008, &last_time);
+    try std.testing.expectApproxEqAbs(@as(f32, 8.0), dt1, 0.001);
+    try std.testing.expectEqual(@as(u64, 1008), last_time);
+
+    // 2. Normal 60fps frame tick (~16.6ms)
+    const dt2 = computeClampedDeltaTime(1024, &last_time);
+    try std.testing.expectApproxEqAbs(@as(f32, 16.0), dt2, 0.001);
+    try std.testing.expectEqual(@as(u64, 1024), last_time);
+
+    // 3. Waking from idle waitEvent after 5 seconds of sleep (5000ms)
+    // Must be clamped to <= 33.333ms, and last_time updated to wake tick
+    const dt3 = computeClampedDeltaTime(6024, &last_time);
+    try std.testing.expectApproxEqAbs(@as(f32, 33.333), dt3, 0.001);
+    try std.testing.expectEqual(@as(u64, 6024), last_time);
+
+    // 4. Very next frame after wake is 8ms later
+    const dt4 = computeClampedDeltaTime(6032, &last_time);
+    try std.testing.expectApproxEqAbs(@as(f32, 8.0), dt4, 0.001);
+    try std.testing.expectEqual(@as(u64, 6032), last_time);
+
+    // 5. Clock rollback guard
+    const dt5 = computeClampedDeltaTime(6000, &last_time);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), dt5, 0.001);
+    try std.testing.expectEqual(@as(u64, 6000), last_time);
 }

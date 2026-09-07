@@ -130,6 +130,7 @@ pub const AppState = struct {
             .allocator = allocator,
             .io = io,
         };
+        errdefer state.viewer.deinit(allocator, io);
         try state.ensureInitialCapacities();
         return state;
     }
@@ -157,9 +158,9 @@ pub const AppState = struct {
         self.pending_intents.clearRetainingCapacity();
     }
 
-    /// Returns `true` if files are currently loading, background workers are active, or slideshow is running.
+    /// Returns `true` if files are currently loading, background workers are active, slideshow is running, or animations are active.
     pub inline fn isBusy(self: *const AppState) bool {
-        return self.viewer.navigation.is_loading_files.load(.acquire) or self.workers.isBusy() or self.viewer.isSlideshowActive();
+        return self.viewer.hasActiveAnimation() or self.viewer.navigation.is_loading_files.load(.acquire) or self.workers.isBusy() or self.viewer.isSlideshowActive();
     }
 
     /// Reads EXIF orientation from a JPEG file header on disk, returning `null` if unparseable.
@@ -352,10 +353,27 @@ pub const AppState = struct {
         return null;
     }
 
+    /// Initiates animated closing of the command palette, stopping text input.
+    pub fn closePalette(self: *AppState) void {
+        stopTextInput(self.viewer.display);
+        self.viewer.ui.palette.is_closing = true;
+        const progress = self.viewer.animations.get(.palette_reveal);
+        const duration = @max(state_pkg.DURATION_PALETTE_CLOSE_MS * progress, 30.0);
+        self.viewer.animations.start(.palette_reveal, 0.0, duration, .ease_out_quad);
+    }
+
+    /// Immediately closes and resets the command palette without animation.
+    pub fn closePaletteImmediately(self: *AppState) void {
+        stopTextInput(self.viewer.display);
+        self.viewer.ui.palette.reset();
+        self.viewer.animations.setImmediate(.palette_reveal, 0.0);
+    }
+
     /// Activates the command palette in the specified PaletteMode, resetting queries and starting text input.
     pub fn openPalette(self: *AppState, active_type: PaletteMode) !void {
         self.viewer.ui.palette.reset();
         self.viewer.ui.palette.mode = active_type;
+        self.viewer.animations.start(.palette_reveal, 1.0, state_pkg.DURATION_PALETTE_OPEN_MS, .ease_out_cubic);
         self.viewer.ui.palette.selected_idx = switch (active_type) {
             .files => self.viewer.navigation.current_index orelse 0,
             else => 0,
@@ -442,8 +460,10 @@ pub const AppState = struct {
         const entries = self.cache.slots.items(.entry);
         const keys = self.cache.slots.items(.key);
 
-        for (entries) |*entry| {
-            if (entry.status == .loaded_gpu and !self.viewer.ui.overlays.debug_show_thumb) {
+        for (entries, keys) |*entry, key| {
+            const is_crossfading = self.viewer.animations.isActive(.thumb_crossfade) and
+                (if (self.viewer.navigation.current_index) |cur| self.cache.activeKey(cur).index == key.index else false);
+            if (!is_crossfading and entry.status == .loaded_gpu and !self.viewer.ui.overlays.debug_show_thumb) {
                 switch (entry.thumbnail) {
                     .loaded => |thumb| {
                         if (self.gpu_device) |gpu_dev| {
@@ -551,6 +571,16 @@ pub const AppState = struct {
                         gpu_dev.releaseTexture(res.gpu_texture);
                     } else {
                         self.cache.enforceVramBudget(gpu_dev, self.viewer.navigation.current_index, self.viewer.navigation.image_list.items.len, image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
+                        if (self.viewer.navigation.current_index) |cur_idx| {
+                            if (self.cache.activeKey(cur_idx).index == target.key.index) {
+                                if (self.cache.get(target.key)) |entry| {
+                                    if (entry.thumbnail == .loaded and !self.viewer.ui.overlays.debug_show_thumb) {
+                                        self.viewer.animations.setImmediate(.thumb_crossfade, 0.0);
+                                        self.viewer.animations.start(.thumb_crossfade, 1.0, state_pkg.DURATION_THUMB_CROSSFADE_MS, .ease_out_quad);
+                                    }
+                                }
+                            }
+                        }
                     }
                 } else {
                     _ = self.cache.updateStatus(target.key, .failed);
@@ -586,16 +616,6 @@ pub const AppState = struct {
         } else {
             self.viewer.viewport.rotation_angle = 0.0;
         }
-    }
-
-    /// Advances navigation index to the next image in the active image sequence.
-    pub fn next(self: *AppState) !void {
-        _ = self.viewer.navigation.nextIndex();
-    }
-
-    /// Moves navigation index to the previous image in the active image sequence.
-    pub fn prev(self: *AppState) !void {
-        _ = self.viewer.navigation.prevIndex();
     }
 
     /// Selects a file or directory path, clearing prior caches and launching asynchronous path scanning.
@@ -982,4 +1002,53 @@ test "AppState slideshow timer auto-advances slide" {
     // Pass another second (total 2000ms >= 2.0s interval) -> advances to index 1
     try systems.sysUpdateSlideshow(.{ .state = &state, .frame_allocator = allocator, .input = frame_input_1s, .delta_time_ms = 1000.0 });
     try std.testing.expectEqual(@as(usize, 1), state.viewer.navigation.current_index.?);
+}
+
+test "prepareCacheTextures guards thumbnail eviction during active thumb_crossfade" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "img1.jpg" } });
+    state.viewer.navigation.current_index = 0;
+
+    // Simulate entry with loaded thumbnail and loaded GPU texture
+    try state.cache.appendWithKey(allocator, .{ .index = 0, .generation = 0 }, .{
+        .status = .{ .loaded_gpu = .{
+            .gpu_texture = .{ .ptr = @ptrFromInt(0x1234) },
+            .w = 800,
+            .h = 600,
+            .size_bytes = 800 * 600 * 4,
+            .mime_type = .jpeg,
+            .read_time_ms = 1,
+            .decode_time_ms = 1,
+            .conversion_time_ms = 1,
+            .upload_time_ms = 1,
+            .memory_size_bytes = 800 * 600 * 4,
+            .num_mip_levels = 1,
+            .mipmap_time_ms = 1,
+            .was_fallback = false,
+            .fallback_time_ms = 0,
+            .cbz_decompress_time_ms = 0,
+            .compressed_size_bytes = 0,
+        } },
+        .thumbnail = .{ .loaded = .{
+            .texture = .{ .ptr = @ptrFromInt(0x5678) },
+            .info = .{ .w = 160, .h = 120, .upload_time_ms = 1 },
+        } },
+    });
+
+    // Case 1: thumb_crossfade is active -> prepareCacheTextures MUST NOT evict thumbnail
+    state.viewer.animations.start(.thumb_crossfade, 1.0, 120.0, .ease_out_quad);
+    state.prepareCacheTextures();
+    var entry = state.cache.get(state.cache.activeKey(0)).?;
+    try std.testing.expect(entry.thumbnail == .loaded);
+
+    // Case 2: thumb_crossfade settles -> prepareCacheTextures evicts thumbnail
+    state.viewer.animations.settle(.thumb_crossfade);
+    state.prepareCacheTextures();
+    entry = state.cache.get(state.cache.activeKey(0)).?;
+    try std.testing.expect(entry.thumbnail == .unloaded);
 }

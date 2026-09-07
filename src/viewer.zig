@@ -21,6 +21,7 @@ fn runUpdatePhase(
     app_state: *app.state.AppState,
     input: state_pkg.FrameInput,
     frame_allocator: std.mem.Allocator,
+    parsed_test_mode: bool,
 ) !void {
     const ctx = app.systems.FrameContext{
         .state = app_state,
@@ -28,6 +29,9 @@ fn runUpdatePhase(
         .input = input,
         .delta_time_ms = input.delta_time_ms,
     };
+
+    // Data-Oriented Animation System (ticks active SoA animation channels from previous frame)
+    app.systems.sysUpdateAnimations(ctx);
 
     // Socket Command Ingestion System (parses IPC commands -> pending_intents)
     app.systems.sysExecuteIpcCommands(ctx);
@@ -59,6 +63,10 @@ fn runUpdatePhase(
 
     // Metrics & Telemetry System
     app.systems.sysSyncMetrics(ctx);
+
+    if (parsed_test_mode) {
+        app_state.viewer.animations.settleAll();
+    }
 }
 
 /// Main frame update function encapsulated within the hot-reloadable viewer library.
@@ -78,6 +86,9 @@ pub fn updateFrame(
     clay.setMeasureTextFunction(*const state_pkg.MeasureTextUserData, measure_data, ui.graphics.sdl3MeasureText);
 
     // Phase 1: Background Event & Input Ingestion
+    if (parsed_test_mode or parsed_headless) {
+        app_state.viewer.animations.settleAll();
+    }
     const bg_events_processed = app.drainWorkerEvents(app_state);
 
     const is_current_loading = blk: {
@@ -137,7 +148,7 @@ pub fn updateFrame(
     app_state.viewer.ui.overlays.last_mouse_y = input.mouse_y;
 
     // Phase 2: Update Phase — Run all systems sequentially
-    try runUpdatePhase(app_state, input, frame_allocator);
+    try runUpdatePhase(app_state, input, frame_allocator, parsed_test_mode or parsed_headless);
 
     // Phase 3: Render Phase
     const view_params = state_pkg.ViewParams{
@@ -175,6 +186,8 @@ pub fn updateFrame(
         },
         .viewport = app_state.viewer.viewport,
         .palette = &app_state.viewer.ui.palette,
+        .palette_reveal = app_state.viewer.animations.get(.palette_reveal),
+        .thumb_crossfade = app_state.viewer.animations.get(.thumb_crossfade),
         .debug_show_thumb = app_state.viewer.ui.overlays.debug_show_thumb,
         .stats = app_state.viewer.stats,
         .render_metrics = app_state.viewer.ui.metrics.toSnapshot(),

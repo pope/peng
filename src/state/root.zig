@@ -4,6 +4,8 @@
 //! type wrappers, input data structures, and view transform calculations.
 //! Has zero dependencies on UI rendering or app logic.
 
+pub const animation_state = @import("animation_state.zig");
+pub const easing = @import("easing.zig");
 pub const fuzzig = @import("fuzzig");
 pub const navigation = @import("navigation.zig");
 pub const palette_state = @import("palette_state.zig");
@@ -56,6 +58,14 @@ pub const ViewParams = types.ViewParams;
 pub const ViewportParams = types.ViewportParams;
 pub const ZoomFactor = types.ZoomFactor;
 
+pub const AnimationChannel = animation_state.AnimationChannel;
+pub const AnimationSlot = animation_state.AnimationSlot;
+pub const AnimationState = animation_state.AnimationState;
+pub const DURATION_PALETTE_OPEN_MS = animation_state.DURATION_PALETTE_OPEN_MS;
+pub const DURATION_PALETTE_CLOSE_MS = animation_state.DURATION_PALETTE_CLOSE_MS;
+pub const DURATION_THUMB_CROSSFADE_MS = animation_state.DURATION_THUMB_CROSSFADE_MS;
+pub const EasingType = easing.EasingType;
+
 test {
     _ = types;
     _ = view_transform;
@@ -63,4 +73,6 @@ test {
     _ = viewer_state;
     _ = navigation;
     _ = ui_state;
+    _ = animation_state;
+    _ = easing;
 }

@@ -1,4 +1,5 @@
 const app_state = @import("../state.zig");
+pub const animation = @import("animation.zig");
 pub const asset_upload = @import("asset_upload.zig");
 pub const cache = @import("cache.zig");
 pub const input = @import("input.zig");
@@ -22,6 +23,7 @@ pub const sysProcessPaletteInput = palette_input.sysProcessPaletteInput;
 pub const sysProcessUiInteractions = ui_interactions.sysProcessUiInteractions;
 pub const sysSyncMetrics = metrics.sysSyncMetrics;
 pub const sysSyncWindow = window.sysSyncWindow;
+pub const sysUpdateAnimations = animation.sysUpdateAnimations;
 pub const sysUpdateCache = cache.sysUpdateCache;
 pub const sysUpdateSlideshow = slideshow.sysUpdateSlideshow;
 pub const sysUpdateViewport = viewport.sysUpdateViewport;
@@ -38,6 +40,7 @@ test {
     _ = intents;
     _ = slideshow;
     _ = viewport;
+    _ = animation;
     _ = asset_upload;
     _ = metrics;
     _ = cache;

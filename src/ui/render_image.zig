@@ -58,7 +58,7 @@ pub fn appendImageCommand(
 
     var dst_w = rect.w;
     var dst_h = rect.h;
-    const angle = view_params.rotation_angle;
+    const angle = uv_rect.rotation_angle orelse view_params.rotation_angle;
     const is_90_or_270 = state.view_transform.isAngle90or270(angle);
     if (is_90_or_270) {
         dst_w = rect.h;
@@ -113,13 +113,14 @@ pub fn appendImageCommand(
     const v_max = uv_rect.v_max;
 
     const start = @as(u32, @intCast(vertices.items.len));
-    const white_color = packRgba(255, 255, 255, 255);
-    try vertices.append(allocator, .{ .x = p1.x, .y = p1.y, .u = u_min, .v = v_min, .color = white_color });
-    try vertices.append(allocator, .{ .x = p2.x, .y = p2.y, .u = u_max, .v = v_min, .color = white_color });
-    try vertices.append(allocator, .{ .x = p4.x, .y = p4.y, .u = u_min, .v = v_max, .color = white_color });
-    try vertices.append(allocator, .{ .x = p2.x, .y = p2.y, .u = u_max, .v = v_min, .color = white_color });
-    try vertices.append(allocator, .{ .x = p3.x, .y = p3.y, .u = u_max, .v = v_max, .color = white_color });
-    try vertices.append(allocator, .{ .x = p4.x, .y = p4.y, .u = u_min, .v = v_max, .color = white_color });
+    const alpha_u8 = @as(u8, @intFromFloat(std.math.clamp(uv_rect.alpha, 0.0, 1.0) * 255.0));
+    const vert_color = packRgba(255, 255, 255, alpha_u8);
+    try vertices.append(allocator, .{ .x = p1.x, .y = p1.y, .u = u_min, .v = v_min, .color = vert_color });
+    try vertices.append(allocator, .{ .x = p2.x, .y = p2.y, .u = u_max, .v = v_min, .color = vert_color });
+    try vertices.append(allocator, .{ .x = p4.x, .y = p4.y, .u = u_min, .v = v_max, .color = vert_color });
+    try vertices.append(allocator, .{ .x = p2.x, .y = p2.y, .u = u_max, .v = v_min, .color = vert_color });
+    try vertices.append(allocator, .{ .x = p3.x, .y = p3.y, .u = u_max, .v = v_max, .color = vert_color });
+    try vertices.append(allocator, .{ .x = p4.x, .y = p4.y, .u = u_min, .v = v_max, .color = vert_color });
 
     try addBatchFn(batches, allocator, start, 6, tex, .image_viewer, scissor);
 }

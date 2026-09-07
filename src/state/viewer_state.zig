@@ -7,6 +7,7 @@ const ViewportParams = types.ViewportParams;
 const ViewerStats = types.ViewerStats;
 const NavigationState = @import("navigation.zig").NavigationState;
 const UiState = @import("ui_state.zig").UiState;
+const AnimationState = @import("animation_state.zig").AnimationState;
 
 /// Pure Visual & UI Data Container for UI Layout & Rendering Passes.
 ///
@@ -16,6 +17,7 @@ pub const ViewerState = struct {
     viewport: ViewportParams = .{},
     navigation: NavigationState,
     ui: UiState,
+    animations: AnimationState,
     stats: ViewerStats = .{},
     rotation_map: std.StringHashMap(f32),
 
@@ -26,18 +28,29 @@ pub const ViewerState = struct {
 
     /// Initializes a headless `ViewerState` instance for CLI, testing, and batch processing.
     pub fn initHeadless(allocator: std.mem.Allocator) !ViewerState {
+        var nav = try NavigationState.init(allocator);
+        errdefer nav.deinit(allocator);
+
+        var ui = try UiState.init(allocator);
+        errdefer ui.palette.deinit();
+
+        var anim = try AnimationState.init(allocator);
+        errdefer anim.deinit(allocator);
+
         return .{
-            .navigation = try NavigationState.init(allocator),
-            .ui = try UiState.init(allocator),
+            .navigation = nav,
+            .ui = ui,
+            .animations = anim,
             .rotation_map = .init(allocator),
             .display = .headless,
         };
     }
 
-    /// Releases navigation, UI, display, and rotation map resources.
+    /// Releases navigation, UI, animations, display, and rotation map resources.
     pub fn deinit(self: *ViewerState, allocator: std.mem.Allocator, io: std.Io) void {
         self.navigation.deinit(allocator);
         self.ui.deinit(io, allocator);
+        self.animations.deinit(allocator);
         self.display.deinit(allocator);
         self.clearRotationMap(allocator);
         self.rotation_map.deinit();
@@ -51,6 +64,11 @@ pub const ViewerState = struct {
     /// Returns `true` if slideshow mode is active and advancing images on a timer.
     pub inline fn isSlideshowActive(self: *const ViewerState) bool {
         return self.navigation.isSlideshowActive();
+    }
+
+    /// Returns `true` if any animation channel is currently in progress.
+    pub inline fn hasActiveAnimation(self: *const ViewerState) bool {
+        return self.animations.hasActiveAnimations();
     }
 
     /// Resets pan offsets and zoom level to default viewport framing.

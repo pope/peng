@@ -32,7 +32,12 @@ pub const VirtualWindow = palette_scroll.VirtualWindow;
 pub const PaletteConfig = state.PaletteConfig;
 pub const getPaletteConfig = state.getPaletteConfig;
 
-fn renderHeader(mode: PaletteMode, title: []const u8) void {
+/// Scales the alpha of a theme color by the modal animation progress (0.0 .. 1.0).
+inline fn a(color: clay.Color, progress: f32) clay.Color {
+    return theme.withAlpha(color, progress);
+}
+
+fn renderHeader(mode: PaletteMode, title: []const u8, progress: f32) void {
     clay.UI()(.{
         .layout = .{
             .sizing = .{ .w = .grow, .h = .fit },
@@ -41,7 +46,7 @@ fn renderHeader(mode: PaletteMode, title: []const u8) void {
         },
     })({
         clay.text(title, .{
-            .color = switch (mode) {
+            .color = a(switch (mode) {
                 .files => theme.pink,
                 .actions => theme.blue,
                 .set_brightness, .set_contrast => theme.peach,
@@ -49,7 +54,7 @@ fn renderHeader(mode: PaletteMode, title: []const u8) void {
                 .directory_navigator => theme.mauve,
                 .set_slideshow_interval => theme.yellow,
                 .inactive => theme.text,
-            },
+            }, progress),
             .font_size = 13,
             .font_id = 0,
         });
@@ -60,6 +65,7 @@ fn renderDirectoryBreadcrumbs(
     palette: *const PaletteState,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
+    progress: f32,
 ) !void {
     const display_dir = truncateDirectory(frame_allocator, palette.current_nav_dir.items, 320.0, 12, measure_data);
     const curr_img_count = palette.current_dir_image_count;
@@ -74,11 +80,11 @@ fn renderDirectoryBreadcrumbs(
             .padding = .{ .top = 4, .bottom = 4, .left = 8, .right = 8 },
             .child_gap = 8,
         },
-        .background_color = theme.crust,
+        .background_color = a(theme.crust, progress),
         .corner_radius = .all(6),
         .border = .{
             .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-            .color = theme.surface0,
+            .color = a(theme.surface0, progress),
         },
     })({
         clay.UI()(.{
@@ -94,22 +100,22 @@ fn renderDirectoryBreadcrumbs(
                     .sizing = .{ .w = .fit, .h = .fit },
                     .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
                 },
-                .background_color = theme.crust,
+                .background_color = a(theme.crust, progress),
                 .corner_radius = .all(4),
                 .border = .{
                     .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-                    .color = theme.mauve,
+                    .color = a(theme.mauve, progress),
                 },
             })({
                 clay.text("DIR", .{
-                    .color = theme.mauve,
+                    .color = a(theme.mauve, progress),
                     .font_size = 11,
                     .font_id = 0,
                 });
             });
 
             clay.text(display_dir, .{
-                .color = theme.mauve,
+                .color = a(theme.mauve, progress),
                 .font_size = 12,
                 .font_id = 0,
             });
@@ -120,15 +126,15 @@ fn renderDirectoryBreadcrumbs(
                 .sizing = .{ .w = .fit, .h = .fit },
                 .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
             },
-            .background_color = theme.crust,
+            .background_color = a(theme.crust, progress),
             .corner_radius = .all(4),
             .border = .{
                 .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-                .color = if (curr_img_count == 0) theme.surface0 else theme.green,
+                .color = a(if (curr_img_count == 0) theme.surface0 else theme.green, progress),
             },
         })({
             clay.text(count_str, .{
-                .color = count_color,
+                .color = a(count_color, progress),
                 .font_size = 11,
                 .font_id = 0,
             });
@@ -136,7 +142,7 @@ fn renderDirectoryBreadcrumbs(
     });
 }
 
-fn renderSearchInput(palette: *const PaletteState, placeholder: []const u8) void {
+fn renderSearchInput(palette: *const PaletteState, placeholder: []const u8, progress: f32) void {
     clay.UI()(.{
         .layout = .{
             .sizing = .{ .w = .grow, .h = .fixed(38) },
@@ -144,17 +150,17 @@ fn renderSearchInput(palette: *const PaletteState, placeholder: []const u8) void
             .child_alignment = .{ .x = .left, .y = .center },
             .padding = .{ .left = 12, .right = 12 },
         },
-        .background_color = theme.crust,
+        .background_color = a(theme.crust, progress),
         .corner_radius = .all(6),
         .border = .{
             .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-            .color = theme.blue,
+            .color = a(theme.blue, progress),
         },
     })({
         const query_str = if (palette.query.items.len > 0) palette.query.items else placeholder;
         const query_color = if (palette.query.items.len > 0) theme.text else theme.subtext1;
         clay.text(query_str, .{
-            .color = query_color,
+            .color = a(query_color, progress),
             .font_size = 14,
             .font_id = 0,
         });
@@ -167,6 +173,7 @@ fn renderTextInputDialog(
     ui_model: UiViewModel,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
+    progress: f32,
 ) !void {
     const palette = ui_model.palette;
     clay.UI()(.{
@@ -177,7 +184,7 @@ fn renderTextInputDialog(
             .padding = .{ .left = 12, .right = 12, .top = 10, .bottom = 10 },
             .child_gap = 6,
         },
-        .background_color = theme.crust,
+        .background_color = a(theme.crust, progress),
         .corner_radius = .all(6),
     })({
         const raw_str = palette.query.items;
@@ -186,19 +193,19 @@ fn renderTextInputDialog(
             .go_to_image => {
                 if (total_count == 0) {
                     clay.text("No images loaded.", .{
-                        .color = theme.red,
+                        .color = a(theme.red, progress),
                         .font_size = 13,
                         .font_id = 0,
                     });
                 } else if (raw_str.len == 0) {
                     clay.text("Enter image number, then press Enter to apply.", .{
-                        .color = theme.subtext0,
+                        .color = a(theme.subtext0, progress),
                         .font_size = 13,
                         .font_id = 0,
                     });
                     const range_str = try std.fmt.allocPrint(frame_allocator, "Allowed range: 1 to {} (current: {})", .{ total_count, (ui_model.current_index orelse 0) + 1 });
                     clay.text(range_str, .{
-                        .color = theme.subtext1,
+                        .color = a(theme.subtext1, progress),
                         .font_size = 11,
                         .font_id = 0,
                     });
@@ -210,14 +217,14 @@ fn renderTextInputDialog(
                             const display_filename = truncateFilename(frame_allocator, raw_basename, 492.0, 12, measure_data);
                             const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to go to {}: {s}", .{ val, display_filename });
                             clay.text(success_str, .{
-                                .color = theme.green,
+                                .color = a(theme.green, progress),
                                 .font_size = 13,
                                 .font_id = 0,
                             });
                         } else {
                             const err_str = try std.fmt.allocPrint(frame_allocator, "Out of bounds: must be between 1 and {}", .{total_count});
                             clay.text(err_str, .{
-                                .color = theme.red,
+                                .color = a(theme.red, progress),
                                 .font_size = 13,
                                 .font_id = 0,
                             });
@@ -225,7 +232,7 @@ fn renderTextInputDialog(
                     } else |err| {
                         std.log.debug("Failed to parse integer in palette input '{s}': {}", .{ raw_str, err });
                         clay.text("Invalid number format. Enter a positive integer.", .{
-                            .color = theme.red,
+                            .color = a(theme.red, progress),
                             .font_size = 13,
                             .font_id = 0,
                         });
@@ -235,12 +242,12 @@ fn renderTextInputDialog(
             .set_slideshow_interval => {
                 if (raw_str.len == 0) {
                     clay.text("Enter delay in seconds, then press Enter to start.", .{
-                        .color = theme.subtext0,
+                        .color = a(theme.subtext0, progress),
                         .font_size = 13,
                         .font_id = 0,
                     });
                     clay.text("Example: 3 for 3 seconds per slide", .{
-                        .color = theme.subtext1,
+                        .color = a(theme.subtext1, progress),
                         .font_size = 11,
                         .font_id = 0,
                     });
@@ -251,7 +258,7 @@ fn renderTextInputDialog(
                             is_valid = true;
                             const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to start slide show ({d:.1}s per slide)", .{val});
                             clay.text(success_str, .{
-                                .color = theme.green,
+                                .color = a(theme.green, progress),
                                 .font_size = 13,
                                 .font_id = 0,
                             });
@@ -261,7 +268,7 @@ fn renderTextInputDialog(
                     }
                     if (!is_valid) {
                         clay.text("Invalid duration. Must be greater than 0 seconds.", .{
-                            .color = theme.red,
+                            .color = a(theme.red, progress),
                             .font_size = 13,
                             .font_id = 0,
                         });
@@ -271,13 +278,13 @@ fn renderTextInputDialog(
             .set_brightness, .set_contrast => {
                 if (raw_str.len == 0) {
                     clay.text("Enter a number, then press Enter to apply.", .{
-                        .color = theme.subtext0,
+                        .color = a(theme.subtext0, progress),
                         .font_size = 13,
                         .font_id = 0,
                     });
                     const range_str = if (palette.mode == .set_brightness) "Allowed range: -1.0 to 1.0 (default: 0.0)" else "Allowed range: 0.0 to 5.0 (default: 1.0)";
                     clay.text(range_str, .{
-                        .color = theme.subtext1,
+                        .color = a(theme.subtext1, progress),
                         .font_size = 11,
                         .font_id = 0,
                     });
@@ -292,14 +299,14 @@ fn renderTextInputDialog(
                             if (val >= min_val and val <= max_val) {
                                 const success_str = try std.fmt.allocPrint(frame_allocator, "Press Enter to set value to: {d:.2}", .{val});
                                 clay.text(success_str, .{
-                                    .color = theme.green,
+                                    .color = a(theme.green, progress),
                                     .font_size = 13,
                                     .font_id = 0,
                                 });
                             } else {
                                 const err_str = try std.fmt.allocPrint(frame_allocator, "Out of bounds: must be between {d:.1} and {d:.1}", .{ min_val, max_val });
                                 clay.text(err_str, .{
-                                    .color = theme.red,
+                                    .color = a(theme.red, progress),
                                     .font_size = 13,
                                     .font_id = 0,
                                 });
@@ -310,7 +317,7 @@ fn renderTextInputDialog(
                     }
                     if (!is_valid_float) {
                         clay.text("Invalid float format. Enter a number.", .{
-                            .color = theme.red,
+                            .color = a(theme.red, progress),
                             .font_size = 13,
                             .font_id = 0,
                         });
@@ -343,6 +350,7 @@ fn renderSelectionList(
     cfg: PaletteConfig,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
+    progress: f32,
 ) !void {
     const palette = ui_model.palette;
     const scroll_data = clay.cdefs.Clay_GetScrollContainerData(clay.getElementId(cfg.list_id));
@@ -417,11 +425,11 @@ fn renderSelectionList(
                     .padding = .{ .left = 12, .right = 12 },
                 },
                 .background_color = if (is_selected and item_hovered)
-                    theme.row_selected_hover
+                    a(theme.row_selected_hover, progress)
                 else if (is_selected)
-                    theme.row_selected
+                    a(theme.row_selected, progress)
                 else if (item_hovered)
-                    theme.row_hover
+                    a(theme.row_hover, progress)
                 else
                     clay.Color{ 0, 0, 0, 0 },
                 .corner_radius = .all(6),
@@ -493,7 +501,7 @@ fn renderSelectionList(
                                     .layout = .{
                                         .sizing = .{ .w = .fixed(4), .h = .fixed(12) },
                                     },
-                                    .background_color = if (is_selected) theme.blue else theme.subtext1,
+                                    .background_color = if (is_selected) a(theme.blue, progress) else a(theme.subtext1, progress),
                                     .corner_radius = .all(3),
                                 })({});
 
@@ -502,8 +510,8 @@ fn renderSelectionList(
                                     display_filename,
                                     final_basename_matches,
                                     13,
-                                    if (is_selected) theme.blue else theme.text,
-                                    theme.yellow,
+                                    if (is_selected) a(theme.blue, progress) else a(theme.text, progress),
+                                    a(theme.yellow, progress),
                                 );
                             });
 
@@ -519,8 +527,8 @@ fn renderSelectionList(
                                     display_dir,
                                     final_dir_matches.items,
                                     11,
-                                    theme.subtext0,
-                                    theme.yellow,
+                                    a(theme.subtext0, progress),
+                                    a(theme.yellow, progress),
                                 );
                             });
                         });
@@ -554,8 +562,8 @@ fn renderSelectionList(
                                 meta.name,
                                 action_matches,
                                 13,
-                                if (is_selected) theme.blue else theme.text,
-                                theme.yellow,
+                                if (is_selected) a(theme.blue, progress) else a(theme.text, progress),
+                                a(theme.yellow, progress),
                             );
                         });
 
@@ -565,12 +573,12 @@ fn renderSelectionList(
                                     .sizing = .{ .w = .fit, .h = .fit },
                                     .padding = .{ .left = 8, .right = 8, .top = 3, .bottom = 3 },
                                 },
-                                .background_color = theme.crust,
+                                .background_color = a(theme.crust, progress),
                                 .corner_radius = .all(4),
-                                .border = .{ .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 }, .color = theme.surface0 },
+                                .border = .{ .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 }, .color = a(theme.surface0, progress) },
                             })({
                                 clay.text(meta.shortcut_text, .{
-                                    .color = theme.subtext0,
+                                    .color = a(theme.subtext0, progress),
                                     .font_size = 11,
                                     .font_id = 0,
                                 });
@@ -606,22 +614,23 @@ fn renderSelectionList(
                                     .child_gap = 8,
                                 },
                             })({
-                                const badge_text, const badge_color = switch (entry) {
+                                const badge_text, const raw_badge_color = switch (entry) {
                                     .parent => .{ "UP", theme.subtext0 },
                                     .directory => .{ "DIR", theme.blue },
-                                    .archive_file => |a| switch (a.archive_type) {
+                                    .archive_file => |arch| switch (arch.archive_type) {
                                         .cbz => .{ "CBZ", theme.peach },
                                         .zip => .{ "ZIP", theme.peach },
                                     },
                                     .image_file => .{ "IMG", theme.green },
                                 };
+                                const badge_color = a(raw_badge_color, progress);
 
                                 clay.UI()(.{
                                     .layout = .{
                                         .sizing = .{ .w = .fit, .h = .fit },
                                         .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
                                     },
-                                    .background_color = theme.crust,
+                                    .background_color = a(theme.crust, progress),
                                     .corner_radius = .all(4),
                                     .border = .{
                                         .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
@@ -644,8 +653,8 @@ fn renderSelectionList(
                                     display_foldername,
                                     final_folder_matches,
                                     13,
-                                    if (is_selected) theme.blue else theme.text,
-                                    theme.yellow,
+                                    if (is_selected) a(theme.blue, progress) else a(theme.text, progress),
+                                    a(theme.yellow, progress),
                                 );
                             });
 
@@ -664,15 +673,15 @@ fn renderSelectionList(
                                                     .sizing = .{ .w = .fit, .h = .fit },
                                                     .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
                                                 },
-                                                .background_color = theme.crust,
+                                                .background_color = a(theme.crust, progress),
                                                 .corner_radius = .all(4),
                                                 .border = .{
                                                     .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-                                                    .color = theme.surface0,
+                                                    .color = a(theme.surface0, progress),
                                                 },
                                             })({
                                                 clay.text("...", .{
-                                                    .color = theme.subtext1,
+                                                    .color = a(theme.subtext1, progress),
                                                     .font_size = 11,
                                                     .font_id = 0,
                                                 });
@@ -694,15 +703,15 @@ fn renderSelectionList(
                                                         .sizing = .{ .w = .fit, .h = .fit },
                                                         .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
                                                     },
-                                                    .background_color = theme.crust,
+                                                    .background_color = a(theme.crust, progress),
                                                     .corner_radius = .all(4),
                                                     .border = .{
                                                         .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-                                                        .color = theme.yellow,
+                                                        .color = a(theme.yellow, progress),
                                                     },
                                                 })({
                                                     clay.text(count_str, .{
-                                                        .color = theme.yellow,
+                                                        .color = a(theme.yellow, progress),
                                                         .font_size = 11,
                                                         .font_id = 0,
                                                     });
@@ -716,15 +725,15 @@ fn renderSelectionList(
                                                         .sizing = .{ .w = .fit, .h = .fit },
                                                         .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
                                                     },
-                                                    .background_color = theme.crust,
+                                                    .background_color = a(theme.crust, progress),
                                                     .corner_radius = .all(4),
                                                     .border = .{
                                                         .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-                                                        .color = theme.yellow,
+                                                        .color = a(theme.yellow, progress),
                                                     },
                                                 })({
                                                     clay.text(count_str, .{
-                                                        .color = theme.yellow,
+                                                        .color = a(theme.yellow, progress),
                                                         .font_size = 11,
                                                         .font_id = 0,
                                                     });
@@ -735,15 +744,15 @@ fn renderSelectionList(
                                                         .sizing = .{ .w = .fit, .h = .fit },
                                                         .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
                                                     },
-                                                    .background_color = theme.crust,
+                                                    .background_color = a(theme.crust, progress),
                                                     .corner_radius = .all(4),
                                                     .border = .{
                                                         .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-                                                        .color = theme.yellow,
+                                                        .color = a(theme.yellow, progress),
                                                     },
                                                 })({
                                                     clay.text(sub_str, .{
-                                                        .color = theme.yellow,
+                                                        .color = a(theme.yellow, progress),
                                                         .font_size = 11,
                                                         .font_id = 0,
                                                     });
@@ -768,15 +777,15 @@ fn renderSelectionList(
                                                         .sizing = .{ .w = .fit, .h = .fit },
                                                         .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
                                                     },
-                                                    .background_color = theme.crust,
+                                                    .background_color = a(theme.crust, progress),
                                                     .corner_radius = .all(4),
                                                     .border = .{
                                                         .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-                                                        .color = if (s.image_count == 0) theme.surface0 else theme.green,
+                                                        .color = a(if (s.image_count == 0) theme.surface0 else theme.green, progress),
                                                     },
                                                 })({
                                                     clay.text(count_str, .{
-                                                        .color = count_color,
+                                                        .color = a(count_color, progress),
                                                         .font_size = 11,
                                                         .font_id = 0,
                                                     });
@@ -793,15 +802,15 @@ fn renderSelectionList(
                                                         .sizing = .{ .w = .fit, .h = .fit },
                                                         .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
                                                     },
-                                                    .background_color = theme.crust,
+                                                    .background_color = a(theme.crust, progress),
                                                     .corner_radius = .all(4),
                                                     .border = .{
                                                         .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-                                                        .color = if (s.image_count == 0) theme.surface0 else theme.green,
+                                                        .color = a(if (s.image_count == 0) theme.surface0 else theme.green, progress),
                                                     },
                                                 })({
                                                     clay.text(count_str, .{
-                                                        .color = count_color,
+                                                        .color = a(count_color, progress),
                                                         .font_size = 11,
                                                         .font_id = 0,
                                                     });
@@ -812,15 +821,15 @@ fn renderSelectionList(
                                                         .sizing = .{ .w = .fit, .h = .fit },
                                                         .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
                                                     },
-                                                    .background_color = theme.crust,
+                                                    .background_color = a(theme.crust, progress),
                                                     .corner_radius = .all(4),
                                                     .border = .{
                                                         .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-                                                        .color = if (s.subdir_count == 0) theme.surface0 else theme.blue,
+                                                        .color = a(if (s.subdir_count == 0) theme.surface0 else theme.blue, progress),
                                                     },
                                                 })({
                                                     clay.text(sub_str, .{
-                                                        .color = sub_color,
+                                                        .color = a(sub_color, progress),
                                                         .font_size = 11,
                                                         .font_id = 0,
                                                     });
@@ -841,15 +850,15 @@ fn renderSelectionList(
                                                     .sizing = .{ .w = .fit, .h = .fit },
                                                     .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
                                                 },
-                                                .background_color = theme.crust,
+                                                .background_color = a(theme.crust, progress),
                                                 .corner_radius = .all(4),
                                                 .border = .{
                                                     .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-                                                    .color = theme.red,
+                                                    .color = a(theme.red, progress),
                                                 },
                                             })({
                                                 clay.text("Error", .{
-                                                    .color = theme.red,
+                                                    .color = a(theme.red, progress),
                                                     .font_size = 11,
                                                     .font_id = 0,
                                                 });
@@ -869,15 +878,15 @@ fn renderSelectionList(
                                                     .sizing = .{ .w = .fit, .h = .fit },
                                                     .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
                                                 },
-                                                .background_color = theme.crust,
+                                                .background_color = a(theme.crust, progress),
                                                 .corner_radius = .all(4),
                                                 .border = .{
                                                     .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-                                                    .color = theme.red,
+                                                    .color = a(theme.red, progress),
                                                 },
                                             })({
                                                 clay.text("Locked", .{
-                                                    .color = theme.red,
+                                                    .color = a(theme.red, progress),
                                                     .font_size = 11,
                                                     .font_id = 0,
                                                 });
@@ -916,7 +925,7 @@ fn renderSelectionList(
                     else => "",
                 };
                 clay.text(no_match_msg, .{
-                    .color = theme.subtext1,
+                    .color = a(theme.subtext1, progress),
                     .font_size = 13,
                     .font_id = 0,
                 });
@@ -925,7 +934,7 @@ fn renderSelectionList(
     });
 }
 
-fn renderDirectoryLegend() void {
+fn renderDirectoryLegend(progress: f32) void {
     const LegendItem = struct { key: []const u8, label: []const u8 };
     const legend_items = [_]LegendItem{
         .{ .key = "Right", .label = "Open" },
@@ -953,11 +962,11 @@ fn renderDirectoryLegend() void {
                     .padding = .{ .left = 5, .right = 7, .top = 3, .bottom = 3 },
                     .child_gap = 5,
                 },
-                .background_color = theme.crust,
+                .background_color = a(theme.crust, progress),
                 .corner_radius = .all(4),
                 .border = .{
                     .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-                    .color = theme.surface0,
+                    .color = a(theme.surface0, progress),
                 },
             })({
                 clay.UI()(.{
@@ -965,18 +974,18 @@ fn renderDirectoryLegend() void {
                         .sizing = .{ .w = .fit, .h = .fit },
                         .padding = .{ .left = 4, .right = 4, .top = 1, .bottom = 1 },
                     },
-                    .background_color = theme.surface0,
+                    .background_color = a(theme.surface0, progress),
                     .corner_radius = .all(3),
                 })({
                     clay.text(item.key, .{
-                        .color = theme.mauve,
+                        .color = a(theme.mauve, progress),
                         .font_size = 10,
                         .font_id = 0,
                     });
                 });
 
                 clay.text(item.label, .{
-                    .color = theme.subtext0,
+                    .color = a(theme.subtext0, progress),
                     .font_size = 11,
                     .font_id = 0,
                 });
@@ -993,9 +1002,12 @@ pub fn renderPalette(
     measure_data: *const MeasureTextUserData,
 ) !void {
     const palette = ui_model.palette;
-    if (palette.mode == .inactive) return;
+    if (palette.mode == .inactive and !palette.is_closing) return;
+    const progress = std.math.clamp(ui_model.palette_reveal, 0.0, 1.0);
+    if (progress <= 0.001) return;
 
     const cfg = getPaletteConfig(palette.mode);
+    const y_offset: f32 = (1.0 - progress) * -18.0;
 
     // Render Floating Card container
     clay.UI()(.{
@@ -1006,12 +1018,12 @@ pub fn renderPalette(
             .padding = .{ .top = 12, .bottom = 12, .left = 12, .right = 12 },
             .child_gap = 10,
         },
-        .background_color = theme.base_translucent, // Catppuccin Base with opacity
+        .background_color = theme.withAlpha(theme.base_translucent, progress),
         .corner_radius = .all(10),
         .user_data = if (ui_model.overlays.enable_blur) @ptrFromInt(ElementTag.blurred_surface.toInt()) else null,
         .border = .{
             .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-            .color = theme.overlay0,
+            .color = theme.withAlpha(theme.overlay0, progress),
         },
         .floating = .{
             .attach_to = .to_parent,
@@ -1019,29 +1031,33 @@ pub fn renderPalette(
                 .element = .center_center,
                 .parent = .center_center,
             },
+            .offset = .{
+                .x = 0.0,
+                .y = y_offset,
+            },
             .z_index = 200,
         },
     })({
         // Title / Header
-        renderHeader(palette.mode, cfg.title);
+        renderHeader(palette.mode, cfg.title, progress);
 
         // Breadcrumb box for directory_navigator
         if (palette.mode == .directory_navigator) {
-            try renderDirectoryBreadcrumbs(palette, frame_allocator, measure_data);
+            try renderDirectoryBreadcrumbs(palette, frame_allocator, measure_data, progress);
         }
 
         // Search Input Box
-        renderSearchInput(palette, cfg.placeholder);
+        renderSearchInput(palette, cfg.placeholder, progress);
 
         if (palette.mode.isTextInputDialog()) {
-            try renderTextInputDialog(ui_model, frame_allocator, measure_data);
+            try renderTextInputDialog(ui_model, frame_allocator, measure_data, progress);
         } else {
-            try renderSelectionList(ui_model, cfg, frame_allocator, measure_data);
+            try renderSelectionList(ui_model, cfg, frame_allocator, measure_data, progress);
         }
 
         // Footer Legend for Directory Navigator
         if (palette.mode == .directory_navigator) {
-            renderDirectoryLegend();
+            renderDirectoryLegend(progress);
         }
     });
 }

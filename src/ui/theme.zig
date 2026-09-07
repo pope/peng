@@ -1,4 +1,16 @@
 const clay = @import("zclay");
+const std = @import("std");
+
+/// Returns a copy of the input color with its alpha channel multiplied by the factor (0.0 .. 1.0).
+pub inline fn withAlpha(color: clay.Color, factor: f32) clay.Color {
+    const clamped = std.math.clamp(factor, 0.0, 1.0);
+    return .{
+        color[0],
+        color[1],
+        color[2],
+        color[3] * clamped,
+    };
+}
 
 pub const mantle = clay.Color{ 24, 24, 37, 255 };
 pub const crust = clay.Color{ 17, 17, 27, 255 };

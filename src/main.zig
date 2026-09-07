@@ -184,6 +184,7 @@ fn initAppGraphicsAndState(init: std.process.Init) !?AppGraphicsAndState {
         .viewer = .{
             .navigation = try state_pkg.NavigationState.init(gpa),
             .ui = try state_pkg.UiState.init(gpa),
+            .animations = try state_pkg.AnimationState.init(gpa),
             .display = if (parsed.headless) .headless else .{
                 .windowed = .{
                     .handle = setup.window,

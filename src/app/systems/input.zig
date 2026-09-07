@@ -13,7 +13,7 @@ fn handleKeyDown(
     key: Key,
     mod: KeyModifiers,
 ) !void {
-    if (self.viewer.ui.palette.mode != .inactive) return;
+    if (self.viewer.ui.palette.isAcceptingInput()) return;
 
     const ctx: key_mapping.KeyContext = if (self.viewer.viewport.zoom_factor.get() > 1.0) .viewer_zoomed else .viewer_normal;
     if (key_mapping.mapKeyToAction(key, mod, ctx)) |intent| {
@@ -28,7 +28,7 @@ const FrameContext = @import("root.zig").FrameContext;
 /// Responsibilities:
 /// 1. Enqueues quit intent on OS window quit request.
 /// 2. Dispatches dropped filesystem path selection.
-/// 3. Maps active keyboard shortcuts to AppIntents if command palette is inactive and wasn't dismissed this frame.
+/// 3. Maps active keyboard shortcuts to AppIntents if command palette is not accepting input and wasn't dismissed this frame.
 pub fn sysProcessInput(ctx: FrameContext, palette_closed_this_frame: bool) !void {
     const state = ctx.state;
     const input = ctx.input orelse return;
@@ -43,7 +43,7 @@ pub fn sysProcessInput(ctx: FrameContext, palette_closed_this_frame: bool) !void
         };
     }
 
-    if (state.viewer.ui.palette.mode != .inactive or palette_closed_this_frame) return;
+    if (state.viewer.ui.palette.isAcceptingInput() or palette_closed_this_frame) return;
 
     for (input.keys_pressed.items) |key| {
         try handleKeyDown(state, key, input.key_modifiers);
@@ -213,4 +213,54 @@ test "Escape key closes active palette without triggering quit in sysProcessInpu
     try sysProcessInput(ctx, palette_closed_next);
     try std.testing.expectEqual(@as(usize, 1), state.pending_intents.items.len);
     try std.testing.expectEqual(state_pkg.AppIntent.quit, state.pending_intents.items[0]);
+}
+
+test "sysProcessInput accepts shortcuts when palette is dissolving (is_closing == true)" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    state.viewer.ui.palette.mode = .actions;
+    state.viewer.ui.palette.is_closing = true;
+
+    var keys = std.ArrayList(Key).empty;
+    defer keys.deinit(allocator);
+    try keys.append(allocator, .right);
+
+    const frame_input = FrameInput{
+        .win_w = 800,
+        .win_h = 600,
+        .pix_w = 800,
+        .pix_h = 600,
+        .scale_x = 1.0,
+        .scale_y = 1.0,
+        .dpi_scale = 1.0,
+        .mouse_x = 0,
+        .mouse_y = 0,
+        .mouse_left_down = false,
+        .mouse_left_clicked = false,
+        .mouse_inside = true,
+        .quit_requested = false,
+        .scroll_delta_x = 0,
+        .scroll_delta_y = 0,
+        .keys_pressed = keys,
+        .key_modifiers = .{},
+        .text_input = null,
+        .dropped_path = null,
+        .ticks = 0,
+        .delta_time_ms = 16.0,
+    };
+
+    const ctx = FrameContext{
+        .state = &state,
+        .frame_allocator = allocator,
+        .input = frame_input,
+        .delta_time_ms = 16.0,
+    };
+
+    try sysProcessInput(ctx, false);
+    try std.testing.expectEqual(@as(usize, 1), state.pending_intents.items.len);
+    try std.testing.expectEqual(state_pkg.AppIntent.next_image, state.pending_intents.items[0]);
 }

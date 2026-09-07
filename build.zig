@@ -286,9 +286,16 @@ pub fn build(b: *std.Build) void {
     const run_config_tests = b.addRunArtifact(config_tests);
     run_config_tests.step.dependOn(b.getInstallStep());
 
+    const state_tests = b.addTest(.{
+        .root_module = state_module,
+    });
+    const run_state_tests = b.addRunArtifact(state_tests);
+    run_state_tests.step.dependOn(b.getInstallStep());
+
     if (target.result.os.tag == .windows) {
         run_exe_tests.addPathDir(b.getInstallPath(.bin, ""));
         run_sdl_tests.addPathDir(b.getInstallPath(.bin, ""));
+        run_state_tests.addPathDir(b.getInstallPath(.bin, ""));
         run_intents_tests.addPathDir(b.getInstallPath(.bin, ""));
         run_config_tests.addPathDir(b.getInstallPath(.bin, ""));
         run_integration_tests.addPathDir(b.getInstallPath(.bin, ""));
@@ -296,6 +303,7 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_sdl_tests.step);
+    test_step.dependOn(&run_state_tests.step);
     test_step.dependOn(&run_intents_tests.step);
     test_step.dependOn(&run_config_tests.step);
     test_step.dependOn(&run_exe_tests.step);

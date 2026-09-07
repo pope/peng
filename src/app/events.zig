@@ -194,6 +194,10 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
                     },
                 };
                 state.cache.enforceVramBudget(gpu_dev, state.viewer.navigation.current_index, state.viewer.navigation.image_list.items.len, image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
+                if (is_current and entry.thumbnail == .loaded and !state.viewer.ui.overlays.debug_show_thumb) {
+                    state.viewer.animations.setImmediate(.thumb_crossfade, 0.0);
+                    state.viewer.animations.start(.thumb_crossfade, 1.0, state_pkg.DURATION_THUMB_CROSSFADE_MS, .ease_out_quad);
+                }
             } else {
                 gpu_dev.releaseTexture(full_res.gpu_texture);
             }

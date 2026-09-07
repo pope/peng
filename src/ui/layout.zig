@@ -16,7 +16,48 @@ const ElementTag = types.ElementTag;
 const view_transform = state.view_transform;
 const truncateFilename = @import("text_utils.zig").truncateFilename;
 const sdl3MeasureText = @import("graphics.zig").sdl3MeasureText;
+const intents = @import("intents");
 const RenderResources = @import("graphics.zig").RenderResources;
+
+/// Computes fitted layout dimensions for an image cache entry within available viewport bounds.
+pub fn computeDrawDims(
+    entry_opt: ?state.CacheEntry,
+    available_width: f32,
+    available_height: f32,
+    rotation_angle: f32,
+    fit_mode: intents.ScaleMode,
+) struct { w: f32, h: f32 } {
+    const entry = entry_opt orelse return .{ .w = 0, .h = 0 };
+    var src_w: f32 = 0;
+    var src_h: f32 = 0;
+    switch (entry.status) {
+        .loaded_gpu => |gpu| {
+            src_w = gpu.w;
+            src_h = gpu.h;
+        },
+        .loaded_cpu => |cpu| {
+            src_w = cpu.w;
+            src_h = cpu.h;
+        },
+        else => {
+            if (entry.full_w > 0 and entry.full_h > 0) {
+                src_w = entry.full_w;
+                src_h = entry.full_h;
+            } else if (entry.thumbnail.getInfo()) |info| {
+                src_w = info.w;
+                src_h = info.h;
+            }
+        },
+    }
+
+    if (src_w > 0 and src_h > 0) {
+        const view_w = @max(available_width, 1.0);
+        const view_h = @max(available_height, 1.0);
+        const dims = view_transform.computeViewDims(src_w, src_h, rotation_angle, view_w, view_h, fit_mode);
+        return .{ .w = dims.draw_w, .h = dims.draw_h };
+    }
+    return .{ .w = 0, .h = 0 };
+}
 
 /// Builds the complete UI layout hierarchy via Clay, tessellates geometry, and records draw commands for the frame.
 pub fn renderFrame(
@@ -52,42 +93,13 @@ pub fn renderFrame(
         available_width = @max(width - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0);
     }
 
-    var draw_w: f32 = 0;
-    var draw_h: f32 = 0;
+    const padding: f32 = 0.0;
+    const view_w = @max(available_width - padding * 2.0, 1.0);
+    const view_h = @max(height - (title_bar_h + nav_bar_h) - padding * 2.0, 1.0);
 
-    if (current_entry) |entry| {
-        var src_w: f32 = 0;
-        var src_h: f32 = 0;
-        switch (entry.status) {
-            .loaded_gpu => |gpu| {
-                src_w = gpu.w;
-                src_h = gpu.h;
-            },
-            .loaded_cpu => |cpu| {
-                src_w = cpu.w;
-                src_h = cpu.h;
-            },
-            else => {
-                if (entry.full_w > 0 and entry.full_h > 0) {
-                    src_w = entry.full_w;
-                    src_h = entry.full_h;
-                } else if (entry.thumbnail.getInfo()) |info| {
-                    src_w = info.w;
-                    src_h = info.h;
-                }
-            },
-        }
-
-        if (src_w > 0 and src_h > 0) {
-            const padding: f32 = 0.0;
-            const view_w = @max(available_width - padding * 2.0, 1.0);
-            const view_h = @max(height - (title_bar_h + nav_bar_h) - padding * 2.0, 1.0);
-
-            const dims = view_transform.computeViewDims(src_w, src_h, view_params.viewport.rotation_angle, view_w, view_h, view_params.viewport.fit_mode);
-            draw_w = dims.draw_w;
-            draw_h = dims.draw_h;
-        }
-    }
+    const dims = computeDrawDims(current_entry, view_w, view_h, view_params.viewport.rotation_angle, view_params.viewport.fit_mode);
+    const draw_w = dims.w;
+    const draw_h = dims.h;
 
     clay.beginLayout();
 
@@ -410,6 +422,194 @@ fn renderEmptyState() void {
     });
 }
 
+fn renderImageCanvas(
+    ui_model: UiViewModel,
+    entry: state.CacheEntry,
+    draw_w: f32,
+    draw_h: f32,
+    rotation_angle: f32,
+    frame_allocator: std.mem.Allocator,
+) void {
+    const is_thumb_crossfade = (entry.status == .loaded_gpu) and
+        (entry.thumbnail == .loaded) and
+        !ui_model.debug_show_thumb and
+        (ui_model.thumb_crossfade < 0.999);
+
+    if (is_thumb_crossfade) {
+        const thumb = entry.thumbnail.loaded;
+        const thumb_tex = thumb.texture;
+        var thumb_uv = state.computeThumbnailUvCrop(
+            entry.full_w,
+            entry.full_h,
+            thumb.info.w,
+            thumb.info.h,
+        );
+        thumb_uv.alpha = 1.0; // Solid underlay, full-res texture dissolves in on top
+        thumb_uv.rotation_angle = rotation_angle;
+        const thumb_uv_ptr = frame_allocator.create(state.UvRect) catch null;
+        if (thumb_uv_ptr) |ptr| {
+            ptr.* = thumb_uv;
+        }
+        clay.UI()(.{
+            .id = clay.getElementId("ThumbCrossfadeUnderlay"),
+            .layout = .{
+                .sizing = .{
+                    .w = .fixed(draw_w),
+                    .h = .fixed(draw_h),
+                },
+            },
+            .floating = .{
+                .attach_to = .to_parent,
+                .attach_points = .{ .element = .center_center, .parent = .center_center },
+                .offset = .{ .x = 0.0, .y = 0.0 },
+                .z_index = 0,
+            },
+            .image = .{
+                .image_data = thumb_tex.asOpaque(),
+            },
+            .user_data = if (thumb_uv_ptr) |ptr| @ptrCast(ptr) else null,
+        })({});
+    }
+
+    var drew_thumb = false;
+    switch (entry.thumbnail) {
+        .loaded => |thumb| {
+            if (ui_model.debug_show_thumb or (entry.status != .loaded_gpu and !is_thumb_crossfade)) {
+                drew_thumb = true;
+                const thumb_tex = thumb.texture;
+                var uv_crop = state.computeThumbnailUvCrop(
+                    entry.full_w,
+                    entry.full_h,
+                    thumb.info.w,
+                    thumb.info.h,
+                );
+                uv_crop.alpha = 1.0;
+                uv_crop.rotation_angle = rotation_angle;
+                const uv_ptr = frame_allocator.create(state.UvRect) catch |err| blk: {
+                    std.log.warn("Failed to allocate thumbnail UvRect: {any}", .{err});
+                    break :blk null;
+                };
+                if (uv_ptr) |ptr| {
+                    ptr.* = uv_crop;
+                }
+                clay.UI()(.{
+                    .id = clay.getElementId("ImageCanvas"),
+                    .layout = .{
+                        .sizing = .{
+                            .w = .fixed(draw_w),
+                            .h = .fixed(draw_h),
+                        },
+                    },
+                    .image = .{
+                        .image_data = thumb_tex.asOpaque(),
+                    },
+                    .user_data = if (uv_ptr) |ptr| @ptrCast(ptr) else null,
+                })({});
+            }
+        },
+        else => {},
+    }
+    if (!drew_thumb) switch (entry.status) {
+        .loaded_gpu => |gpu| {
+            const tex = gpu.gpu_texture;
+            const full_alpha = if (is_thumb_crossfade) ui_model.thumb_crossfade else 1.0;
+            const uv_ptr = frame_allocator.create(state.UvRect) catch |err| blk: {
+                std.log.warn("Failed to allocate UvRect: {any}", .{err});
+                break :blk null;
+            };
+            if (uv_ptr) |ptr| {
+                ptr.* = .{
+                    .alpha = full_alpha,
+                    .rotation_angle = rotation_angle,
+                };
+            }
+            clay.UI()(.{
+                .id = clay.getElementId("ImageCanvas"),
+                .layout = .{
+                    .sizing = .{
+                        .w = .fixed(draw_w),
+                        .h = .fixed(draw_h),
+                    },
+                },
+                .floating = if (is_thumb_crossfade) .{
+                    .attach_to = .to_parent,
+                    .attach_points = .{ .element = .center_center, .parent = .center_center },
+                    .offset = .{ .x = 0.0, .y = 0.0 },
+                    .z_index = 1,
+                } else .{},
+                .image = .{
+                    .image_data = tex.asOpaque(),
+                },
+                .user_data = if (uv_ptr) |ptr| @ptrCast(ptr) else null,
+            })({});
+        },
+        .loaded_cpu => {
+            clay.UI()(.{
+                .id = clay.getElementId("ImageCanvas"),
+                .layout = .{
+                    .sizing = .{
+                        .w = .fixed(draw_w),
+                        .h = .fixed(draw_h),
+                    },
+                },
+            })({});
+        },
+        .decoding => {
+            if (draw_w > 0 and draw_h > 0) {
+                clay.UI()(.{
+                    .id = clay.getElementId("ImageCanvas"),
+                    .layout = .{
+                        .sizing = .{
+                            .w = .fixed(draw_w),
+                            .h = .fixed(draw_h),
+                        },
+                        .direction = .top_to_bottom,
+                        .child_alignment = .{ .x = .center, .y = .center },
+                        .child_gap = 10,
+                    },
+                })({
+                    clay.text("Loading image...", .{
+                        .color = theme.pink,
+                        .font_size = 22,
+                        .font_id = 0,
+                    });
+                });
+            } else {
+                clay.UI()(.{
+                    .layout = .{
+                        .sizing = .{ .w = .grow, .h = .grow },
+                        .direction = .top_to_bottom,
+                        .child_alignment = .{ .x = .center, .y = .center },
+                        .child_gap = 10,
+                    },
+                })({
+                    clay.text("Loading image...", .{
+                        .color = theme.pink,
+                        .font_size = 22,
+                        .font_id = 0,
+                    });
+                });
+            }
+        },
+        else => {
+            clay.UI()(.{
+                .layout = .{
+                    .sizing = .{ .w = .grow, .h = .grow },
+                    .direction = .top_to_bottom,
+                    .child_alignment = .{ .x = .center, .y = .center },
+                    .child_gap = 10,
+                },
+            })({
+                clay.text("Failed to Load Image", .{
+                    .color = theme.red,
+                    .font_size = 22,
+                    .font_id = 0,
+                });
+            });
+        },
+    };
+}
+
 fn renderViewport(
     ui_model: UiViewModel,
     current_entry: anytype,
@@ -427,123 +627,14 @@ fn renderViewport(
         .clip = .{ .horizontal = true, .vertical = true },
     })({
         if (current_entry) |entry| {
-            var drew_thumb = false;
-            switch (entry.thumbnail) {
-                .loaded => |thumb| {
-                    if (ui_model.debug_show_thumb or entry.status != .loaded_gpu) {
-                        drew_thumb = true;
-                        const thumb_tex = thumb.texture;
-                        const uv_crop = state.computeThumbnailUvCrop(
-                            entry.full_w,
-                            entry.full_h,
-                            thumb.info.w,
-                            thumb.info.h,
-                        );
-                        const uv_ptr = frame_allocator.create(state.UvRect) catch |err| blk: {
-                            std.log.warn("Failed to allocate thumbnail UvRect: {any}", .{err});
-                            break :blk null;
-                        };
-                        if (uv_ptr) |ptr| {
-                            ptr.* = uv_crop;
-                        }
-                        clay.UI()(.{
-                            .id = clay.getElementId("ImageCanvas"),
-                            .layout = .{
-                                .sizing = .{
-                                    .w = .fixed(draw_w),
-                                    .h = .fixed(draw_h),
-                                },
-                            },
-                            .image = .{
-                                .image_data = thumb_tex.asOpaque(),
-                            },
-                            .user_data = if (uv_ptr) |ptr| @ptrCast(ptr) else null,
-                        })({});
-                    }
-                },
-                else => {},
-            }
-            if (!drew_thumb) switch (entry.status) {
-                .loaded_gpu => |gpu| {
-                    const tex = gpu.gpu_texture;
-                    clay.UI()(.{
-                        .id = clay.getElementId("ImageCanvas"),
-                        .layout = .{
-                            .sizing = .{
-                                .w = .fixed(draw_w),
-                                .h = .fixed(draw_h),
-                            },
-                        },
-                        .image = .{
-                            .image_data = tex.asOpaque(),
-                        },
-                    })({});
-                },
-                .loaded_cpu => {
-                    clay.UI()(.{
-                        .id = clay.getElementId("ImageCanvas"),
-                        .layout = .{
-                            .sizing = .{
-                                .w = .fixed(draw_w),
-                                .h = .fixed(draw_h),
-                            },
-                        },
-                    })({});
-                },
-                .decoding => {
-                    if (draw_w > 0 and draw_h > 0) {
-                        clay.UI()(.{
-                            .id = clay.getElementId("ImageCanvas"),
-                            .layout = .{
-                                .sizing = .{
-                                    .w = .fixed(draw_w),
-                                    .h = .fixed(draw_h),
-                                },
-                                .direction = .top_to_bottom,
-                                .child_alignment = .{ .x = .center, .y = .center },
-                                .child_gap = 10,
-                            },
-                        })({
-                            clay.text("Loading image...", .{
-                                .color = theme.pink,
-                                .font_size = 22,
-                                .font_id = 0,
-                            });
-                        });
-                    } else {
-                        clay.UI()(.{
-                            .layout = .{
-                                .sizing = .{ .w = .grow, .h = .grow },
-                                .direction = .top_to_bottom,
-                                .child_alignment = .{ .x = .center, .y = .center },
-                                .child_gap = 10,
-                            },
-                        })({
-                            clay.text("Loading image...", .{
-                                .color = theme.pink,
-                                .font_size = 22,
-                                .font_id = 0,
-                            });
-                        });
-                    }
-                },
-                else => {
-                    clay.UI()(.{
-                        .layout = .{
-                            .sizing = .{ .w = .grow, .h = .grow },
-                            .direction = .top_to_bottom,
-                            .child_alignment = .{ .x = .center, .y = .center },
-                            .child_gap = 10,
-                        },
-                    })({
-                        clay.text("Failed to Load Image", .{
-                            .color = theme.red,
-                            .font_size = 22,
-                            .font_id = 0,
-                        });
-                    });
-                },
-            };
+            renderImageCanvas(
+                ui_model,
+                entry,
+                draw_w,
+                draw_h,
+                ui_model.viewport.rotation_angle,
+                frame_allocator,
+            );
         } else if (ui_model.is_loading_files or total_images > 0) {
             // Centered viewport loading screen while file discovery is active
             clay.UI()(.{

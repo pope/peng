@@ -16,13 +16,14 @@ ______________________________________________________________________
   Single canonical `@cImport` file (`src/sdl/c.zig`), C-handle encapsulation, complete enum mapping invariant, single top-level `@import` standard, prohibition of proxy re-exports, `.empty` / `.init(...)` initialization style, Zig 0.16 lazy test discovery mechanics (`std.testing.refAllDecls` across module boundaries and `_ = @import(...)` within modules), standalone package hierarchy & app-private core (`src/app/core/`) architecture, and mandatory doc comments (`///`) on all public structs and functions.
 
 - **[`04_ui_rendering_and_performance.md`](rules/04_ui_rendering_and_performance.md)**:
-  2-Pass UI Render Packet architecture (`RenderPacket`), allocation-free execution pass, logical vs physical DPI coordinate scaling, zero-area scissor skipping, SIMD zero-copy bounds safety, and case-insensitive sorting (`lessThanIgnoreCase`).
+  2-Pass UI Render Packet architecture (`RenderPacket`), allocation-free execution pass, logical vs physical DPI coordinate scaling, zero-area scissor skipping, SIMD zero-copy bounds safety, case-insensitive sorting (`lessThanIgnoreCase`), event loop dimension tracking, GPU text texture alpha decoupling (RGB cache keys + vertex alpha modulation), and modal dismissal input decoupling (`isAcceptingInput`).
 
 ______________________________________________________________________
 
 ## Skills (`.agents/skills/`)
 
 - **[`zig-gui-practices`](skills/zig-gui-practices/SKILL.md)**: Best practices for Zig GUI development with Clay, SDL3 GPU rendering, EXIF image decoding, shader optimization, DPI layout math, and SIMD vector reference recipes.
+- **[`zig-gui-animations`](skills/zig-gui-animations/SKILL.md)**: Architectural patterns and procedural recipes for zero-allocation Data-Oriented animation state, numerical easing safety, GPU text vertex alpha blitting, and Clay immediate-mode modal alpha scaling.
 
 ______________________________________________________________________
 

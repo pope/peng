@@ -10,6 +10,8 @@ pub const UvRect = struct {
     v_min: f32 = 0.0,
     u_max: f32 = 1.0,
     v_max: f32 = 1.0,
+    alpha: f32 = 1.0,
+    rotation_angle: ?f32 = null,
 };
 
 /// Media entry descriptor for an image stored inside a compressed or uncompressed archive (CBZ, CBR, ZIP).
@@ -651,6 +653,8 @@ pub const UiViewModel = struct {
     window_title: []const u8 = "Peng Image Viewer",
     viewport: ViewportParams,
     palette: *const palette_state.PaletteState,
+    palette_reveal: f32 = 1.0,
+    thumb_crossfade: f32 = 1.0,
     debug_show_thumb: bool,
     stats: ViewerStats = .{},
     render_metrics: UiRenderMetricsSnapshot = .{},
@@ -895,7 +899,7 @@ test "RawMetadata tagged union invariants and constructor" {
     try std.testing.expectEqual(RawMetadata.none, RawMetadata.init(std.math.nan(f32), 4000.0));
 
     // .none variant returns false and null
-    const none_meta = RawMetadata.none;
+    const none_meta: RawMetadata = .none;
     try std.testing.expect(!none_meta.isRaw());
-    try std.testing.expectEqual(@as(?struct { w: f32, h: f32 }, null), none_meta.getSensorDims());
+    try std.testing.expect(none_meta.getSensorDims() == null);
 }

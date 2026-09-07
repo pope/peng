@@ -72,41 +72,21 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
             }
         },
 
-        .next_image => {
+        .next_image, .prev_image, .first_image, .last_image, .go_to_image => {
             vp.reset();
-            if (nav.manga_mode) {
-                _ = nav.prevIndex();
-            } else {
-                _ = nav.nextIndex();
-            }
-        },
-        .prev_image => {
-            vp.reset();
-            if (nav.manga_mode) {
-                _ = nav.nextIndex();
-            } else {
-                _ = nav.prevIndex();
-            }
-        },
-        .first_image => {
-            if (nav.goToIndex(0) != null) {
-                vp.reset();
-            }
-        },
-        .last_image => {
-            if (nav.image_list.items.len > 0) {
-                _ = nav.goToIndex(nav.image_list.items.len - 1);
-                vp.reset();
-            }
-        },
-        .go_to_image => |idx| {
-            if (nav.goToIndex(idx) != null) {
-                vp.reset();
-            }
+            _ = switch (intent) {
+                .next_image => if (nav.manga_mode) nav.prevIndex() else nav.nextIndex(),
+                .prev_image => if (nav.manga_mode) nav.nextIndex() else nav.prevIndex(),
+                .first_image => nav.goToIndex(0),
+                .last_image => nav.goToIndex(if (nav.image_list.items.len > 0) nav.image_list.items.len - 1 else 0),
+                .go_to_image => |idx| nav.goToIndex(idx),
+                else => unreachable,
+            };
+            self.viewer.animations.setImmediate(.thumb_crossfade, 1.0);
         },
         .set_palette => |p| {
             if (p.mode == .inactive) {
-                ui.palette.mode = .inactive;
+                self.closePaletteImmediately();
             } else {
                 if (p.mode == .directory_navigator and p.query != null) {
                     try self.loadPaletteDirectory(p.query.?);
@@ -203,6 +183,28 @@ test "Manga Mode toggles Right-to-Left image navigation" {
     try std.testing.expectEqual(@as(usize, 1), app_st.viewer.navigation.current_index.?);
 }
 
+test "Navigation intents cleanly advance image index" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    try app_st.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "img1.png" } });
+    try app_st.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "img2.png" } });
+    try app_st.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "img3.png" } });
+    app_st.viewer.navigation.current_index = 0;
+
+    try executeIntent(&app_st, .next_image);
+    try std.testing.expectEqual(@as(usize, 1), app_st.viewer.navigation.current_index.?);
+
+    try executeIntent(&app_st, .next_image);
+    try std.testing.expectEqual(@as(usize, 2), app_st.viewer.navigation.current_index.?);
+
+    try executeIntent(&app_st, .prev_image);
+    try std.testing.expectEqual(@as(usize, 1), app_st.viewer.navigation.current_index.?);
+}
+
 test "palette_action_items metadata" {
     const nav_item = state.palette_action_items[7];
     try std.testing.expectEqualStrings("Navigate Directories...", nav_item.name);
@@ -247,7 +249,7 @@ test "rotate_cw, rotate_ccw, and reset_rotation intents" {
     var app_st = try AppState.initHeadless(allocator, io);
     defer app_st.deinit();
 
-    const media_item = state.MediaItem{
+    const media_item = state.MediaEntry{
         .filesystem = .{ .path = "Capture/20191103-Emiray Natural Light-0002.RAF" },
     };
     try app_st.viewer.navigation.image_list.append(allocator, media_item);
@@ -255,7 +257,7 @@ test "rotate_cw, rotate_ccw, and reset_rotation intents" {
 
     const key = app_st.cache.activeKey(0);
     try app_st.cache.appendWithKey(allocator, key, .{
-        .status = .idle,
+        .status = .{ .decoding = .{} },
         .orientation = .rotate_270,
     });
 

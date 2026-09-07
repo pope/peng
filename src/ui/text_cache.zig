@@ -10,7 +10,7 @@ const sdl = @import("sdl");
 pub const TextCacheKey = struct {
     font_id: usize,
     font_size: u16,
-    color: u32,
+    color: u32, // RGB color packed as 0x00RRGGBB (alpha is modulated dynamically via GPU vertex color)
     hash: u64,
 };
 

@@ -15,8 +15,7 @@ fn handlePaletteReturnGoToImage(self: *AppState, raw_str: []const u8) !void {
         if (std.fmt.parseInt(usize, raw_str, 10)) |v| {
             if (v >= 1 and v <= self.viewer.navigation.image_list.items.len) {
                 self.viewer.navigation.current_index = v - 1;
-                self.viewer.ui.palette.mode = .inactive;
-                stopTextInput(self.viewer.display);
+                self.closePalette();
             }
         } else |err| {
             std.log.debug("Failed to parse go-to-image index '{s}': {}", .{ raw_str, err });
@@ -35,8 +34,7 @@ fn handlePaletteReturnSlideshow(self: *AppState, raw_str: []const u8) !void {
                         .timer_ms = 0.0,
                     },
                 };
-                self.viewer.ui.palette.mode = .inactive;
-                stopTextInput(self.viewer.display);
+                self.closePalette();
             }
         } else |err| {
             std.log.debug("Failed to parse slideshow interval '{s}': {}", .{ raw_str, err });
@@ -50,8 +48,7 @@ fn handlePaletteReturnDirectory(self: *AppState, mod: KeyModifiers) !void {
     const palette = &self.viewer.ui.palette;
     if (mod.shift) {
         try self.startAsyncPathScan(palette.current_nav_dir.items, true);
-        self.viewer.ui.palette.reset();
-        stopTextInput(self.viewer.display);
+        self.closePalette();
     } else {
         if (palette.selected_idx < palette.matches.items.len) {
             const match_idx = palette.matches.items[palette.selected_idx];
@@ -61,8 +58,7 @@ fn handlePaletteReturnDirectory(self: *AppState, mod: KeyModifiers) !void {
                     .archive_file => |a| try self.handlePathSelection(a.full_path),
                     else => try self.startAsyncPathScan(entry.getFullPath(), true),
                 }
-                self.viewer.ui.palette.reset();
-                stopTextInput(self.viewer.display);
+                self.closePalette();
             }
         }
     }
@@ -81,8 +77,7 @@ fn handlePaletteKeys(
 
     switch (key) {
         .escape => {
-            palette.mode = .inactive;
-            stopTextInput(self.viewer.display);
+            self.closePalette();
             return true;
         },
         .up => {
@@ -159,8 +154,7 @@ fn handlePaletteKeys(
                                     } else {
                                         try self.pushIntent(.{ .set_contrast = val });
                                     }
-                                    palette.mode = .inactive;
-                                    stopTextInput(self.viewer.display);
+                                    self.closePalette();
                                 }
                             }
                         } else |err| {
@@ -179,8 +173,7 @@ fn handlePaletteKeys(
                             try self.pushIntent(item.intent);
                         }
                     }
-                    palette.mode = .inactive;
-                    stopTextInput(self.viewer.display);
+                    self.closePalette();
                 },
                 .inactive => return false,
             }
@@ -226,13 +219,13 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
     const self = ctx.state;
     const input = ctx.input orelse return false;
 
-    if (self.viewer.ui.palette.mode == .inactive) return false;
+    if (!self.viewer.ui.palette.isAcceptingInput()) return false;
 
     // 1. Keyboard Navigation Keys
     for (input.keys_pressed.items) |key| {
         _ = try handlePaletteKeys(self, key, input.key_modifiers);
     }
-    if (self.viewer.ui.palette.mode == .inactive) return true;
+    if (!self.viewer.ui.palette.isAcceptingInput()) return true;
 
     // 2. Text Typing Query Updates
     if (input.text_input) |text| {
@@ -275,8 +268,7 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
         const cfg = state_pkg.getPaletteConfig(self.viewer.ui.palette.mode);
 
         if (!clay.pointerOver(clay.getElementId(cfg.element_id)) and !is_in_debug_panel) {
-            self.viewer.ui.palette.mode = .inactive;
-            stopTextInput(self.viewer.display);
+            self.closePalette();
             palette_closed_this_frame = true;
         } else if (!is_in_debug_panel) {
             // Check if a list item was clicked
@@ -288,16 +280,14 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
                     switch (self.viewer.ui.palette.mode) {
                         .files => {
                             try self.pushIntent(.{ .go_to_image = real_idx });
-                            self.viewer.ui.palette.mode = .inactive;
-                            stopTextInput(self.viewer.display);
+                            self.closePalette();
                             palette_closed_this_frame = true;
                         },
                         .actions => {
                             const item = state_pkg.palette_action_items[real_idx];
                             try self.pushIntent(item.intent);
                             if (self.viewer.ui.palette.mode == old_type) {
-                                self.viewer.ui.palette.mode = .inactive;
-                                stopTextInput(self.viewer.display);
+                                self.closePalette();
                                 palette_closed_this_frame = true;
                             }
                         },
