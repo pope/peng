@@ -659,19 +659,20 @@ pub fn decodeWorker(args: *DecodeArgs) void {
 
     // Attempt fast EXIF thumbnail decoding for instant placeholder preview
     if (std.mem.eql(u8, mime_type, "image/jpeg") and args.has_gpu_device) {
-        var thumb_bytes_opt: ?[]const u8 = exif.extractJpegThumbnail(header_buf);
-
-        if (thumb_bytes_opt != null) {
-            _ = workers.thumb_header_hits.fetchAdd(1, .monotonic);
-        } else if (exif.extractJpegThumbnailLocation(header_buf)) |loc| {
+        var thumb_bytes_opt: ?[]const u8 = null;
+        if (exif.extractJpegThumbnailLocation(header_buf)) |loc| {
             const max_thumb_size_bytes = 512 * 1024; // 512 KiB sanity limit for EXIF thumbnails
-            const within_file_bounds = (loc.file_offset <= read_n -| loc.length);
+            const off = @as(usize, loc.file_offset);
+            const len = @as(usize, loc.length);
+            const within_file_bounds = (len > 0 and len <= max_thumb_size_bytes and len <= read_n and off <= read_n - len);
 
-            if (loc.length > 0 and loc.length <= max_thumb_size_bytes and within_file_bounds) {
-                const off = @as(usize, loc.file_offset);
-                const len = @as(usize, loc.length);
+            if (within_file_bounds) {
                 thumb_bytes_opt = file_bytes[off .. off + len];
-                _ = workers.thumb_positional_hits.fetchAdd(1, .monotonic);
+                if (off + len <= header_buf.len) {
+                    _ = workers.thumb_header_hits.fetchAdd(1, .monotonic);
+                } else {
+                    _ = workers.thumb_positional_hits.fetchAdd(1, .monotonic);
+                }
             } else {
                 _ = workers.thumb_misses.fetchAdd(1, .monotonic);
             }

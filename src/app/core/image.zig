@@ -523,6 +523,226 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
     }
 }
 
+/// Extracted thumbnail surface along with orientation, full-resolution dimensions, and RAW metadata.
+pub const ExtractedThumbnail = struct {
+    surface: sdl.Surface,
+    orientation: Orientation = .normal,
+    full_w: f32 = 0.0,
+    full_h: f32 = 0.0,
+    raw_metadata: RawMetadata = .none,
+};
+
+/// Extracts the embedded preview thumbnail surface and orientation metadata for a media entry.
+/// Supports Camera RAW formats (.arw, .raf, .cr2, .nef, .dng, .orf, .rw2, .pef), standard JPEGs, and CBZ entries.
+pub fn loadThumbnailSurface(io: std.Io, alloc: std.mem.Allocator, media: MediaEntry) ?ExtractedThumbnail {
+    switch (media) {
+        .filesystem => |f| {
+            var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, f.path, .{}) catch |err| {
+                std.log.warn("loadThumbnailSurface: openFile failed for '{s}': {any}", .{ f.path, err });
+                return null;
+            };
+            defer file.close(io);
+
+            const file_size = file.length(io) catch 0;
+            var header_buf: [128 * 1024]u8 = undefined;
+            var slices = [_][]u8{&header_buf};
+            const header_n = file.readPositional(io, &slices, 0) catch |err| {
+                std.log.warn("loadThumbnailSurface: readPositional failed for '{s}': {any}", .{ f.path, err });
+                return null;
+            };
+            if (header_n == 0) return null;
+            const header_slice = header_buf[0..header_n];
+
+            const mime_type = detectMimeType(header_slice, f.path);
+            const is_raw = core_fs.isRawFile(f.path) or std.mem.startsWith(u8, mime_type, "image/x-");
+            const is_fuji = std.mem.eql(u8, mime_type, "image/x-fuji-raf") or (header_n >= 8 and std.mem.startsWith(u8, header_slice, "FUJIFILM"));
+
+            var thumb_surf: ?sdl.Surface = null;
+            var orientation: Orientation = .normal;
+            var raw_w: f32 = 0.0;
+            var raw_h: f32 = 0.0;
+            const max_thumb_size_bytes = 512 * 1024;
+
+            if (is_fuji) {
+                const prev_loc_opt = exif.extractFujiRafPreviewLocation(header_slice);
+                if (exif.extractFujiRafMetadataLocation(header_slice)) |meta_loc| {
+                    if (meta_loc.length <= header_n and meta_loc.file_offset <= header_n - meta_loc.length) {
+                        const end = meta_loc.file_offset + meta_loc.length;
+                        if (exif.parseFujiRafDimensions(header_slice[@intCast(meta_loc.file_offset)..@intCast(end)])) |fd| {
+                            raw_w = fd.w;
+                            raw_h = fd.h;
+                        }
+                    } else if (meta_loc.length > 0 and meta_loc.length <= 64 * 1024 and meta_loc.length <= file_size and meta_loc.file_offset <= file_size - meta_loc.length) {
+                        var m_buf: [64 * 1024]u8 = undefined;
+                        var m_slices = [_][]u8{m_buf[0..meta_loc.length]};
+                        const mn = file.readPositional(io, &m_slices, meta_loc.file_offset) catch 0;
+                        if (mn >= meta_loc.length) {
+                            if (exif.parseFujiRafDimensions(m_buf[0..meta_loc.length])) |fd| {
+                                raw_w = fd.w;
+                                raw_h = fd.h;
+                            }
+                        }
+                    }
+                }
+
+                var thumb_loc_opt: ?exif.ThumbnailLocation = null;
+                if (prev_loc_opt) |prev_loc| {
+                    const off: usize = @intCast(prev_loc.file_offset);
+                    if (off + 4096 <= header_n) {
+                        orientation = exif.parseExifOrientation(header_slice[off..header_n]) orelse .normal;
+                        if (exif.extractJpegThumbnailLocation(header_slice[off..header_n])) |j_thumb| {
+                            thumb_loc_opt = .{
+                                .file_offset = prev_loc.file_offset + j_thumb.file_offset,
+                                .length = j_thumb.length,
+                            };
+                        }
+                    } else {
+                        var p_hdr: [8192]u8 = undefined;
+                        var p_slices = [_][]u8{&p_hdr};
+                        const pn = file.readPositional(io, &p_slices, prev_loc.file_offset) catch 0;
+                        if (pn > 0) {
+                            orientation = exif.parseExifOrientation(p_hdr[0..pn]) orelse .normal;
+                            if (exif.extractJpegThumbnailLocation(p_hdr[0..pn])) |j_thumb| {
+                                thumb_loc_opt = .{
+                                    .file_offset = prev_loc.file_offset + j_thumb.file_offset,
+                                    .length = j_thumb.length,
+                                };
+                            }
+                        }
+                    }
+                }
+
+                if (thumb_loc_opt) |tloc| {
+                    if (tloc.length > 0 and tloc.length <= max_thumb_size_bytes and tloc.length <= file_size and tloc.file_offset <= file_size - tloc.length) {
+                        const t_off: usize = @intCast(tloc.file_offset);
+                        const t_len: usize = @intCast(tloc.length);
+                        if (t_off + t_len <= header_n) {
+                            thumb_surf = sdl.Surface.loadConstMemOpt(header_slice[t_off .. t_off + t_len]);
+                        } else {
+                            const t_buf = alloc.alloc(u8, t_len) catch null;
+                            if (t_buf) |tb| {
+                                defer alloc.free(tb);
+                                var ts_slices = [_][]u8{tb};
+                                const tn = file.readPositional(io, &ts_slices, tloc.file_offset) catch 0;
+                                if (tn == t_len) {
+                                    thumb_surf = sdl.Surface.loadConstMemOpt(tb);
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if (is_raw) {
+                const raw_cands = exif.extractTiffRawPreviews(header_slice);
+                if (exif.parseExifDimensions(header_slice)) |dims| {
+                    raw_w = dims.w;
+                    raw_h = dims.h;
+                }
+                orientation = exif.parseExifOrientation(header_slice) orelse .normal;
+                if (raw_cands.thumbnail) |tloc| {
+                    if (tloc.length > 0 and tloc.length <= max_thumb_size_bytes and tloc.length <= file_size and tloc.file_offset <= file_size - tloc.length) {
+                        const t_off: usize = @intCast(tloc.file_offset);
+                        const t_len: usize = @intCast(tloc.length);
+                        if (t_off + t_len <= header_n) {
+                            thumb_surf = sdl.Surface.loadConstMemOpt(header_slice[t_off .. t_off + t_len]);
+                        } else {
+                            const t_buf = alloc.alloc(u8, t_len) catch null;
+                            if (t_buf) |tb| {
+                                defer alloc.free(tb);
+                                var ts_slices = [_][]u8{tb};
+                                const tn = file.readPositional(io, &ts_slices, tloc.file_offset) catch 0;
+                                if (tn == t_len) {
+                                    thumb_surf = sdl.Surface.loadConstMemOpt(tb);
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if (std.mem.eql(u8, mime_type, "image/jpeg")) {
+                orientation = exif.parseExifOrientation(header_slice) orelse .normal;
+                if (parseImageDimensions(header_slice, mime_type)) |dims| {
+                    raw_w = dims.w;
+                    raw_h = dims.h;
+                }
+                if (exif.extractJpegThumbnailLocation(header_slice)) |loc| {
+                    if (loc.length > 0 and loc.length <= max_thumb_size_bytes and loc.length <= file_size and loc.file_offset <= file_size - loc.length) {
+                        const off: usize = @intCast(loc.file_offset);
+                        const len: usize = @intCast(loc.length);
+                        if (off + len <= header_n) {
+                            thumb_surf = sdl.Surface.loadConstMemOpt(header_slice[off .. off + len]);
+                        } else {
+                            const t_buf = alloc.alloc(u8, len) catch null;
+                            if (t_buf) |tb| {
+                                defer alloc.free(tb);
+                                var ts_slices = [_][]u8{tb};
+                                const tn = file.readPositional(io, &ts_slices, loc.file_offset) catch 0;
+                                if (tn == len) {
+                                    thumb_surf = sdl.Surface.loadConstMemOpt(tb);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            const surf = thumb_surf orelse return null;
+            const full_w: f32 = if (raw_w > 0.0) raw_w else @floatFromInt(surf.w());
+            const full_h: f32 = if (raw_h > 0.0) raw_h else @floatFromInt(surf.h());
+            return ExtractedThumbnail{
+                .surface = surf,
+                .orientation = orientation,
+                .full_w = full_w,
+                .full_h = full_h,
+                .raw_metadata = if (is_raw) RawMetadata.init(raw_w, raw_h) else .none,
+            };
+        },
+        .archive_entry => |a| {
+            if (a.compression_method) |cm| {
+                if (cm == 0 and a.file_offset != null) {
+                    var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, a.archive_path, .{}) catch return null;
+                    defer file.close(io);
+
+                    var header_buf: [128 * 1024]u8 = undefined;
+                    var slices = [_][]u8{&header_buf};
+                    const n = file.readPositional(io, &slices, a.file_offset.?) catch return null;
+                    if (n == 0) return null;
+
+                    var data_offset: usize = 0;
+                    if (n >= @sizeOf(std.zip.LocalFileHeader) and std.mem.eql(u8, header_buf[0..4], &std.zip.local_file_header_sig)) {
+                        const filename_len = std.mem.readInt(u16, header_buf[26..28], .little);
+                        const extra_len = std.mem.readInt(u16, header_buf[28..30], .little);
+                        data_offset = @sizeOf(std.zip.LocalFileHeader) + @as(usize, filename_len) + @as(usize, extra_len);
+                    }
+                    if (n <= data_offset) return null;
+                    const image_slice = header_buf[data_offset..n];
+                    const mime_type = detectMimeType(image_slice, a.entry_name);
+                    if (std.mem.eql(u8, mime_type, "image/jpeg")) {
+                        const orientation = exif.parseExifOrientation(image_slice) orelse .normal;
+                        const dims = parseImageDimensions(image_slice, mime_type);
+                        if (exif.extractJpegThumbnailLocation(image_slice)) |loc| {
+                            const off: usize = @intCast(loc.file_offset);
+                            const len: usize = @intCast(loc.length);
+                            if (off + len <= image_slice.len) {
+                                if (sdl.Surface.loadConstMemOpt(image_slice[off .. off + len])) |surf| {
+                                    const full_w: f32 = if (dims) |d| d.w else @floatFromInt(surf.w());
+                                    const full_h: f32 = if (dims) |d| d.h else @floatFromInt(surf.h());
+                                    return ExtractedThumbnail{
+                                        .surface = surf,
+                                        .orientation = orientation,
+                                        .full_w = full_w,
+                                        .full_h = full_h,
+                                        .raw_metadata = .none,
+                                    };
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return null;
+        },
+    }
+}
+
 /// Reusable GPU staging buffers for texture uploads, eliminating allocation and deallocation
 /// churn on every frame by retaining and geometrically growing transfer and storage buffers.
 ///
@@ -1353,4 +1573,36 @@ test "CacheSlotMap - atomic generation advance and activeKey" {
     const key = cache.activeKey(5);
     try std.testing.expectEqual(@as(usize, 5), key.index);
     try std.testing.expectEqual(@as(usize, 1), key.generation);
+}
+
+test "loadThumbnailSurface - filesystem Fujifilm RAF" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const media = MediaEntry{
+        .filesystem = .{
+            .path = "Capture/20191103-Emiray Natural Light-0001.RAF",
+        },
+    };
+    var f = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, media.filesystem.path, .{}) catch return;
+    f.close(io);
+
+    const thumb = loadThumbnailSurface(io, std.testing.allocator, media);
+    try std.testing.expect(thumb != null);
+    if (thumb) |t| {
+        defer t.surface.destroy();
+        try std.testing.expect(t.surface.w() > 0);
+        try std.testing.expect(t.surface.h() > 0);
+        try std.testing.expectEqual(Orientation.normal, t.orientation);
+        try std.testing.expect(t.raw_metadata.isRaw());
+    }
+}
+
+test "loadThumbnailSurface - filesystem non-existent file returns null" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const media = MediaEntry{
+        .filesystem = .{
+            .path = "testfiles/images/non_existent_file.raf",
+        },
+    };
+    const thumb = loadThumbnailSurface(io, std.testing.allocator, media);
+    try std.testing.expectEqual(@as(?ExtractedThumbnail, null), thumb);
 }

@@ -487,6 +487,7 @@ pub const ThumbnailInfo = struct {
 /// State of a cached image's preview thumbnail (none, unloaded dimensions, or uploaded GPU texture).
 pub const ThumbnailState = union(enum) {
     none,
+    not_available,
     unloaded: ThumbnailInfo,
     loaded: struct {
         texture: sdl.gpu.Texture,
@@ -496,7 +497,7 @@ pub const ThumbnailState = union(enum) {
     /// Extracts the thumbnail dimension and upload duration information if present.
     pub fn getInfo(self: ThumbnailState) ?ThumbnailInfo {
         return switch (self) {
-            .none => null,
+            .none, .not_available => null,
             .unloaded => |info| info,
             .loaded => |l| l.info,
         };

@@ -12,9 +12,9 @@ pub const workers = @import("workers/root.zig");
 pub const drainWorkerEvents = events.drainWorkerEvents;
 
 test {
-    _ = state;
-    _ = core;
-    _ = events;
-    _ = systems;
-    _ = workers;
+    _ = @import("state.zig");
+    _ = @import("core/root.zig");
+    _ = @import("events.zig");
+    _ = @import("systems/root.zig");
+    _ = @import("workers/root.zig");
 }

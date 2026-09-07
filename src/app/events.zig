@@ -99,7 +99,12 @@ fn handleExifThumbnailEvent(state: *AppState, thumb_data: events.ThumbDecodedPay
     }
     state.updateCurrentRotation();
 
-    const surf = thumb_data.surface orelse return;
+    const surf = thumb_data.surface orelse {
+        if (entry.thumbnail == .none) {
+            entry.thumbnail = .not_available;
+        }
+        return;
+    };
     if (state.gpu_device) |gpu_dev| {
         if (image.uploadSurfaceToGpu(gpu_dev, surf, state.unpack_compute_pipeline, &state.upload_staging)) |upload_res| {
             if (state.cache.get(thumb_data.key)) |current_entry| {

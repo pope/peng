@@ -352,51 +352,6 @@ pub fn extractJpegThumbnailLocation(data: []const u8) ?ThumbnailLocation {
     return null;
 }
 
-/// Returns a slice containing the embedded JPEG thumbnail payload if present in the EXIF data.
-pub fn extractJpegThumbnail(data: []const u8) ?[]const u8 {
-    const header = findTiffPayload(data) orelse return null;
-    const tiff = header.tiff;
-    const is_le = header.is_le;
-    const ifd0_off = header.ifd0_off;
-
-    const num_ifd0_entries = if (is_le) std.mem.readInt(u16, tiff[ifd0_off..][0..2], .little) else std.mem.readInt(u16, tiff[ifd0_off..][0..2], .big);
-    const ifd1_ptr_off = @as(usize, ifd0_off) + 2 + @as(usize, num_ifd0_entries) * 12;
-    if (ifd1_ptr_off + 4 > tiff.len) return null;
-
-    const ifd1_off = if (is_le) std.mem.readInt(u32, tiff[ifd1_ptr_off..][0..4], .little) else std.mem.readInt(u32, tiff[ifd1_ptr_off..][0..4], .big);
-    const ifd1_usize: usize = ifd1_off;
-    if (ifd1_usize == 0 or ifd1_usize + 2 > tiff.len) return null;
-
-    const num_ifd1_entries = if (is_le) std.mem.readInt(u16, tiff[ifd1_usize..][0..2], .little) else std.mem.readInt(u16, tiff[ifd1_usize..][0..2], .big);
-    var entry_off = ifd1_usize + 2;
-
-    var thumb_off: ?u32 = null;
-    var thumb_len: ?u32 = null;
-
-    var i: usize = 0;
-    while (i < num_ifd1_entries) : (i += 1) {
-        if (entry_off + 12 > tiff.len) break;
-        const entry = tiff[entry_off .. entry_off + 12];
-        entry_off += 12;
-
-        const tag = if (is_le) std.mem.readInt(u16, entry[0..2][0..2], .little) else std.mem.readInt(u16, entry[0..2][0..2], .big);
-        if (tag == 0x0201) {
-            thumb_off = if (is_le) std.mem.readInt(u32, entry[8..12][0..4], .little) else std.mem.readInt(u32, entry[8..12][0..4], .big);
-        } else if (tag == 0x0202) {
-            thumb_len = if (is_le) std.mem.readInt(u32, entry[8..12][0..4], .little) else std.mem.readInt(u32, entry[8..12][0..4], .big);
-        }
-    }
-
-    if (thumb_off != null and thumb_len != null) {
-        const off = @as(usize, thumb_off.?);
-        const len = @as(usize, thumb_len.?);
-        if (off < tiff.len and off + len <= tiff.len) {
-            return tiff[off .. off + len];
-        }
-    }
-    return null;
-}
-
 /// Pair of extracted preview and thumbnail locations from a RAW image container.
 pub const RawPreviewCandidates = struct {
     preview: ?ThumbnailLocation = null,
@@ -660,8 +615,8 @@ test "readJpegExifOrientation on non-jpeg file" {
     try std.testing.expectEqual(@as(?Orientation, null), rot);
 }
 
-test "extractJpegThumbnail" {
-    try std.testing.expectEqual(@as(?[]const u8, null), extractJpegThumbnail("invalid data"));
+test "extractJpegThumbnailLocation" {
+    try std.testing.expectEqual(@as(?ThumbnailLocation, null), extractJpegThumbnailLocation("invalid data"));
 
     const dummy_jpeg = [_]u8{ 0xFF, 0xD8, 0xFF, 0xD9 };
     const exif_data = [_]u8{
@@ -682,9 +637,13 @@ test "extractJpegThumbnail" {
         0xFF, 0xD8, 0xFF, 0xD9, // Thumb payload at offset 56 in TIFF (68 in full buffer)
     };
 
-    const thumb = extractJpegThumbnail(&exif_data);
-    try std.testing.expect(thumb != null);
-    try std.testing.expectEqualSlices(u8, &dummy_jpeg, thumb.?);
+    const loc = extractJpegThumbnailLocation(&exif_data);
+    try std.testing.expect(loc != null);
+    try std.testing.expectEqual(@as(u64, 68), loc.?.file_offset);
+    try std.testing.expectEqual(@as(u32, 4), loc.?.length);
+    const off = @as(usize, @intCast(loc.?.file_offset));
+    const len = @as(usize, @intCast(loc.?.length));
+    try std.testing.expectEqualSlices(u8, &dummy_jpeg, exif_data[off .. off + len]);
 }
 
 test "readJpegDimensions" {

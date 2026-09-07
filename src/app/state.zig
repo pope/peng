@@ -168,44 +168,41 @@ pub const AppState = struct {
         return exif.readJpegExifOrientation(self.io, path);
     }
 
-    /// Enables or disables the debug thumbnail overlay preview, extracting and uploading JPEG thumbnail if needed.
-    pub fn setDebugShowThumb(self: *AppState, enable: bool) !void {
-        self.viewer.ui.overlays.debug_show_thumb = enable;
-        if (!enable) return;
-
+    /// Ensures that the thumbnail GPU texture is loaded for the current entry.
+    pub fn ensureCurrentThumbnailLoaded(self: *AppState) void {
         const e = self.getCurrentEntryPtr() orelse return;
-        if (e.thumbnail == .loaded) return;
+        if (e.thumbnail == .loaded or e.thumbnail == .not_available) return;
 
         const idx = self.viewer.navigation.current_index orelse return;
         if (idx >= self.viewer.navigation.image_list.items.len) return;
 
         const media = self.viewer.navigation.image_list.items[idx];
-        if (media != .filesystem) return;
-        const path = media.filesystem.path;
-        var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), self.io, path, .{}) catch return;
-        defer file.close(self.io);
-
-        var header_buf: [65536]u8 = undefined;
-        var slices = [_][]u8{&header_buf};
-        const n = file.readPositional(self.io, &slices, 0) catch return;
-        if (n == 0) return;
-
-        const full_dims = exif.readJpegDimensions(header_buf[0..n]);
-        const thumb_bytes = exif.extractJpegThumbnail(header_buf[0..n]) orelse return;
-        const thumb_surf = sdl.Surface.loadConstMemOpt(thumb_bytes) orelse return;
-        defer thumb_surf.destroy();
+        const extracted = image.loadThumbnailSurface(self.io, self.allocator, media) orelse {
+            e.thumbnail = .not_available;
+            return;
+        };
+        defer extracted.surface.destroy();
 
         const dev = self.gpu_device orelse return;
-        const upload_res = uploadSurfaceToGpu(dev, thumb_surf, self.unpack_compute_pipeline, &self.upload_staging) orelse return;
+        const upload_res = uploadSurfaceToGpu(dev, extracted.surface, self.unpack_compute_pipeline, &self.upload_staging) orelse {
+            e.thumbnail = .not_available;
+            return;
+        };
 
         switch (e.thumbnail) {
             .loaded => |thumb| dev.releaseTexture(thumb.texture),
             else => {},
         }
 
-        if (full_dims) |dims| {
-            e.full_w = dims.w;
-            e.full_h = dims.h;
+        if (extracted.orientation != .normal or e.orientation == .normal) {
+            e.orientation = extracted.orientation;
+        }
+        if (extracted.full_w > 0 and extracted.full_h > 0 and (e.full_w <= 0 or e.full_h <= 0)) {
+            e.full_w = extracted.full_w;
+            e.full_h = extracted.full_h;
+        }
+        if (extracted.raw_metadata.isRaw()) {
+            e.raw_metadata = extracted.raw_metadata;
         }
 
         e.thumbnail = .{
@@ -218,6 +215,14 @@ pub const AppState = struct {
                 },
             },
         };
+        self.updateCurrentRotation();
+    }
+
+    /// Enables or disables the debug thumbnail overlay preview, extracting and uploading the thumbnail if needed.
+    pub fn setDebugShowThumb(self: *AppState, enable: bool) !void {
+        self.viewer.ui.overlays.debug_show_thumb = enable;
+        if (!enable) return;
+        self.ensureCurrentThumbnailLoaded();
     }
 
     /// Releases all engine resources, cancels background worker tasks, and frees GPU textures and queues.
@@ -472,6 +477,14 @@ pub const AppState = struct {
                         entry.thumbnail = .{ .unloaded = thumb.info };
                     },
                     else => {},
+                }
+            }
+        }
+
+        if (self.viewer.ui.overlays.debug_show_thumb) {
+            if (self.getCurrentEntryPtr()) |cur_e| {
+                if (cur_e.thumbnail != .loaded and cur_e.thumbnail != .not_available) {
+                    self.ensureCurrentThumbnailLoaded();
                 }
             }
         }
@@ -1021,7 +1034,7 @@ test "prepareCacheTextures guards thumbnail eviction during active thumb_crossfa
             .w = 800,
             .h = 600,
             .size_bytes = 800 * 600 * 4,
-            .mime_type = .jpeg,
+            .mime_type = "image/jpeg",
             .read_time_ms = 1,
             .decode_time_ms = 1,
             .conversion_time_ms = 1,
