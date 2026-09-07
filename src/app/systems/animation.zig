@@ -116,8 +116,7 @@ test "sysUpdateAnimations thumb_crossfade lifecycle" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    state.viewer.animations.setImmediate(.thumb_crossfade, 0.0);
-    state.viewer.animations.start(.thumb_crossfade, 1.0, app_state.state_pkg.DURATION_THUMB_CROSSFADE_MS, .ease_out_quad);
+    state.viewer.animations.startFrom(.thumb_crossfade, 0.0, 1.0, app_state.state_pkg.DURATION_THUMB_CROSSFADE_MS, .ease_out_quad);
 
     try std.testing.expect(state.viewer.hasActiveAnimation());
     try std.testing.expect(state.viewer.animations.isActive(.thumb_crossfade));

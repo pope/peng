@@ -588,8 +588,7 @@ pub const AppState = struct {
                             if (self.cache.activeKey(cur_idx).index == target.key.index) {
                                 if (self.cache.get(target.key)) |entry| {
                                     if (entry.thumbnail == .loaded and !self.viewer.ui.overlays.debug_show_thumb) {
-                                        self.viewer.animations.setImmediate(.thumb_crossfade, 0.0);
-                                        self.viewer.animations.start(.thumb_crossfade, 1.0, state_pkg.DURATION_THUMB_CROSSFADE_MS, .ease_out_quad);
+                                        self.viewer.animations.startFrom(.thumb_crossfade, 0.0, 1.0, state_pkg.DURATION_THUMB_CROSSFADE_MS, .ease_out_quad);
                                     }
                                 }
                             }

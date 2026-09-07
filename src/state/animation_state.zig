@@ -17,14 +17,12 @@ pub const DURATION_THUMB_CROSSFADE_MS: f32 = 120.0;
 
 /// Structure representing the parameters of an individual animation slot in the MultiArrayList.
 pub const AnimationSlot = struct {
-    channel: AnimationChannel,
     value: f32,
     start_val: f32,
     target_val: f32,
     elapsed_ms: f32,
     duration_ms: f32,
     easing: EasingType,
-    active: bool,
 };
 
 /// Data-Oriented animation manager using Structure-of-Arrays (SoA) layout via `std.MultiArrayList`.
@@ -47,14 +45,12 @@ pub const AnimationState = struct {
         inline for (std.meta.tags(AnimationChannel)) |ch| {
             const default_val: f32 = if (ch == .thumb_crossfade) 1.0 else 0.0;
             self.slots.appendAssumeCapacity(.{
-                .channel = ch,
                 .value = default_val,
                 .start_val = default_val,
                 .target_val = default_val,
                 .elapsed_ms = 0.0,
                 .duration_ms = 0.0,
                 .easing = .linear,
-                .active = false,
             });
         }
         return self;
@@ -90,20 +86,41 @@ pub const AnimationState = struct {
         easing_type: EasingType,
     ) void {
         const idx = @intFromEnum(channel);
-        const values = self.slots.items(.value);
-        const starts = self.slots.items(.start_val);
-        const targets = self.slots.items(.target_val);
-        const elapsed = self.slots.items(.elapsed_ms);
-        const durations = self.slots.items(.duration_ms);
-        const easings = self.slots.items(.easing);
-        const active = self.slots.items(.active);
+        const current_val = self.slots.items(.value)[idx];
+        if (duration_ms <= 0.0 or current_val == target) {
+            self.setImmediate(channel, target);
+            return;
+        }
 
-        starts[idx] = values[idx];
-        targets[idx] = target;
-        elapsed[idx] = 0.0;
-        durations[idx] = @max(duration_ms, 0.001);
-        easings[idx] = easing_type;
-        active[idx] = true;
+        self.slots.items(.start_val)[idx] = current_val;
+        self.slots.items(.target_val)[idx] = target;
+        self.slots.items(.elapsed_ms)[idx] = 0.0;
+        self.slots.items(.duration_ms)[idx] = duration_ms;
+        self.slots.items(.easing)[idx] = easing_type;
+        self.active_mask |= (@as(u32, 1) << @intCast(idx));
+    }
+
+    /// Starts an animation on `channel` with an explicit starting baseline, overriding previous value.
+    pub fn startFrom(
+        self: *AnimationState,
+        channel: AnimationChannel,
+        from_val: f32,
+        target: f32,
+        duration_ms: f32,
+        easing_type: EasingType,
+    ) void {
+        const idx = @intFromEnum(channel);
+        if (duration_ms <= 0.0 or from_val == target) {
+            self.setImmediate(channel, target);
+            return;
+        }
+
+        self.slots.items(.value)[idx] = from_val;
+        self.slots.items(.start_val)[idx] = from_val;
+        self.slots.items(.target_val)[idx] = target;
+        self.slots.items(.elapsed_ms)[idx] = 0.0;
+        self.slots.items(.duration_ms)[idx] = duration_ms;
+        self.slots.items(.easing)[idx] = easing_type;
         self.active_mask |= (@as(u32, 1) << @intCast(idx));
     }
 
@@ -113,7 +130,6 @@ pub const AnimationState = struct {
         self.slots.items(.value)[idx] = val;
         self.slots.items(.start_val)[idx] = val;
         self.slots.items(.target_val)[idx] = val;
-        self.slots.items(.active)[idx] = false;
         self.active_mask &= ~(@as(u32, 1) << @intCast(idx));
     }
 
@@ -121,19 +137,19 @@ pub const AnimationState = struct {
     pub fn settle(self: *AnimationState, channel: AnimationChannel) void {
         const idx = @intFromEnum(channel);
         self.slots.items(.value)[idx] = self.slots.items(.target_val)[idx];
-        self.slots.items(.active)[idx] = false;
         self.active_mask &= ~(@as(u32, 1) << @intCast(idx));
     }
 
-    /// Immediately snaps all channels to their target values and marks all inactive.
+    /// Immediately snaps all active channels to their target values and marks all inactive.
     pub fn settleAll(self: *AnimationState) void {
-        const count = self.slots.len;
+        if (self.active_mask == 0) return;
         const values = self.slots.items(.value);
         const targets = self.slots.items(.target_val);
-        const active = self.slots.items(.active);
-        for (0..count) |i| {
-            values[i] = targets[i];
-            active[i] = false;
+        var mask = self.active_mask;
+        while (mask != 0) {
+            const idx = @ctz(mask);
+            values[idx] = targets[idx];
+            mask &= mask - 1;
         }
         self.active_mask = 0;
     }
@@ -142,29 +158,29 @@ pub const AnimationState = struct {
     pub fn tick(self: *AnimationState, delta_ms: f32) void {
         if (self.active_mask == 0) return;
 
-        const count = self.slots.len;
         const values = self.slots.items(.value);
         const starts = self.slots.items(.start_val);
         const targets = self.slots.items(.target_val);
         const elapsed = self.slots.items(.elapsed_ms);
         const durations = self.slots.items(.duration_ms);
         const easings = self.slots.items(.easing);
-        const active = self.slots.items(.active);
 
         const safe_delta = @max(delta_ms, 0.0);
-        for (0..count) |i| {
-            if (!active[i]) continue;
+        var mask = self.active_mask;
+        while (mask != 0) {
+            const idx = @ctz(mask);
+            const bit = @as(u32, 1) << @intCast(idx);
+            mask &= ~bit;
 
-            elapsed[i] += safe_delta;
-            const dur = durations[i];
-            if (elapsed[i] >= dur) {
-                values[i] = targets[i];
-                active[i] = false;
-                self.active_mask &= ~(@as(u32, 1) << @intCast(i));
+            elapsed[idx] += safe_delta;
+            const dur = durations[idx];
+            if (elapsed[idx] >= dur) {
+                values[idx] = targets[idx];
+                self.active_mask &= ~bit;
             } else {
-                const t = elapsed[i] / dur;
-                const factor = easings[i].eval(t);
-                values[i] = starts[i] + (targets[i] - starts[i]) * factor;
+                const t = elapsed[idx] / dur;
+                const factor = easings[idx].eval(t);
+                values[idx] = starts[idx] + (targets[idx] - starts[idx]) * factor;
             }
         }
     }
@@ -230,4 +246,77 @@ test "AnimationState settleAll" {
     try std.testing.expect(!anim.hasActiveAnimations());
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), anim.get(.palette_reveal), 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.8), anim.get(.thumb_crossfade), 0.001);
+}
+
+test "AnimationState startFrom explicit baseline" {
+    const allocator = std.testing.allocator;
+    var anim = try AnimationState.init(allocator);
+    defer anim.deinit(allocator);
+
+    // Set initial value to 0.7
+    anim.setImmediate(.palette_reveal, 0.7);
+    try std.testing.expectEqual(@as(f32, 0.7), anim.get(.palette_reveal));
+    try std.testing.expect(!anim.isActive(.palette_reveal));
+
+    // startFrom should explicitly reset to 0.0 and animate to 1.0
+    anim.startFrom(.palette_reveal, 0.0, 1.0, 100.0, .linear);
+    try std.testing.expect(anim.isActive(.palette_reveal));
+    try std.testing.expectEqual(@as(f32, 0.0), anim.get(.palette_reveal));
+
+    // Tick 50ms (halfway)
+    anim.tick(50.0);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), anim.get(.palette_reveal), 0.001);
+
+    // Tick remaining 50ms (settles)
+    anim.tick(50.0);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), anim.get(.palette_reveal), 0.001);
+    try std.testing.expect(!anim.isActive(.palette_reveal));
+}
+
+test "AnimationState zero duration snapping and target equal" {
+    const allocator = std.testing.allocator;
+    var anim = try AnimationState.init(allocator);
+    defer anim.deinit(allocator);
+
+    // Duration <= 0.0 snaps immediately without activating channel
+    anim.start(.palette_reveal, 0.9, 0.0, .linear);
+    try std.testing.expect(!anim.hasActiveAnimations());
+    try std.testing.expectEqual(@as(f32, 0.9), anim.get(.palette_reveal));
+
+    // Start with current == target also snaps without activating channel
+    anim.start(.palette_reveal, 0.9, 100.0, .linear);
+    try std.testing.expect(!anim.hasActiveAnimations());
+    try std.testing.expectEqual(@as(f32, 0.9), anim.get(.palette_reveal));
+
+    // startFrom with from == target snaps without activating
+    anim.startFrom(.palette_reveal, 0.4, 0.4, 100.0, .linear);
+    try std.testing.expect(!anim.hasActiveAnimations());
+    try std.testing.expectEqual(@as(f32, 0.4), anim.get(.palette_reveal));
+}
+
+test "AnimationState settle single channel while other remains active" {
+    const allocator = std.testing.allocator;
+    var anim = try AnimationState.init(allocator);
+    defer anim.deinit(allocator);
+
+    anim.start(.palette_reveal, 1.0, 200.0, .linear);
+    anim.start(.thumb_crossfade, 0.5, 200.0, .linear);
+    try std.testing.expect(anim.isActive(.palette_reveal));
+    try std.testing.expect(anim.isActive(.thumb_crossfade));
+
+    // Settle only palette_reveal
+    anim.settle(.palette_reveal);
+    try std.testing.expect(!anim.isActive(.palette_reveal));
+    try std.testing.expect(anim.isActive(.thumb_crossfade));
+    try std.testing.expect(anim.hasActiveAnimations());
+    try std.testing.expectEqual(@as(f32, 1.0), anim.get(.palette_reveal));
+
+    // Advance thumb_crossfade
+    anim.tick(100.0);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.75), anim.get(.thumb_crossfade), 0.001); // 1.0 -> 0.5 halfway is 0.75
+    try std.testing.expect(anim.isActive(.thumb_crossfade));
+
+    anim.tick(100.0);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), anim.get(.thumb_crossfade), 0.001);
+    try std.testing.expect(!anim.hasActiveAnimations());
 }
