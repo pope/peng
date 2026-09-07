@@ -114,6 +114,19 @@ const MediaEntry = state_pkg.MediaEntry;
      `b.addTest(.{ .root_module = exe.root_module })` only runs tests reachable from the root module. Child modules added via `addImport(...)` are treated as separate compilation units. If an imported module's tests are not referenced via `refAllDecls`, they will not run unless a dedicated `b.addTest(.{ .root_module = imported_mod })` step is wired into the build runner.
   4. **Prohibition of Cross-Module File Path Imports**:
      NEVER cross module boundaries using relative file paths (e.g. `@import("app/core/exif.zig")` from `src/main.zig`). This causes `error: file exists in modules 'root' and 'app'`. Always access declarations through their canonical module namespace (e.g. `app.core.exif`).
+  5. **Platform Wrapper Module Roots (`src/sdl/root.zig`)**:
+     Platform abstraction packages MUST explicitly pull in all child submodules inside a top-level `test` block to ensure child unit tests compile and run:
+     ```zig
+     test {
+         _ = surface;
+         _ = events;
+         _ = font;
+         _ = gpu;
+         _ = keys;
+         _ = timer;
+         _ = @import("window.zig");
+     }
+     ```
 
 ## 10. Standalone Package Hierarchy & App-Private Core (`src/app/core/`) Architecture
 

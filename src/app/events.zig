@@ -119,6 +119,7 @@ fn handleExifThumbnailEvent(state: *AppState, thumb_data: events.ThumbDecodedPay
                             .w = upload_res.w,
                             .h = upload_res.h,
                             .upload_time_ms = upload_res.upload_time_ms,
+                            .dct_snapped = thumb_data.dct_snapped,
                         },
                     },
                 };

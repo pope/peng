@@ -139,6 +139,119 @@ pub const Surface = struct {
     pub fn format(self: Surface) u32 {
         return self.ptr.format;
     }
+
+    /// Checks whether all pixels in row `y` have color components (R, G, B) <= `threshold`.
+    /// Accelerated with Zig @Vector SIMD operations across 16-byte chunks.
+    /// Handles 24-bit RGB/BGR and 32-bit pixel formats; tolerant to JPEG chroma subsampling / ringing.
+    pub fn isRowBlack(self: Surface, y: i32, threshold: u8) bool {
+        const height = self.h();
+        const width = self.w();
+        if (y < 0 or y >= height or width <= 0) return false;
+
+        const details = c.SDL_GetPixelFormatDetails(self.ptr.format) orelse return false;
+        const bpp = details.*.bytes_per_pixel;
+        if (bpp != 3 and bpp != 4) return false;
+
+        const pitch_val = self.pitch();
+        if (pitch_val <= 0) return false;
+        const surf_pitch: usize = @intCast(pitch_val);
+
+        const px_base = self.pixels();
+        const row = px_base + @as(usize, @intCast(y)) * surf_pitch;
+        const w_u: usize = @intCast(width);
+        const Vec16 = @Vector(16, u8);
+        const thresh_vec: Vec16 = @splat(threshold);
+
+        if (bpp == 3) {
+            const total_bytes = w_u * 3;
+            var idx: usize = 0;
+            while (idx + 16 <= total_bytes) : (idx += 16) {
+                const chunk = @as(*align(1) const Vec16, @ptrCast(&row[idx])).*;
+                if (@reduce(.Or, chunk > thresh_vec)) {
+                    return false;
+                }
+            }
+            while (idx < total_bytes) : (idx += 1) {
+                if (row[idx] > threshold) return false;
+            }
+            return true;
+        } else if (bpp == 4) {
+            const color_mask_u32 = details.*.Rmask | details.*.Gmask | details.*.Bmask;
+            const color_mask_4: [4]u8 = @bitCast(color_mask_u32);
+            const color_mask_16: Vec16 = color_mask_4 ** 4;
+
+            const total_bytes = w_u * 4;
+            var idx: usize = 0;
+            while (idx + 16 <= total_bytes) : (idx += 16) {
+                const chunk = @as(*align(1) const Vec16, @ptrCast(&row[idx])).*;
+                const masked = chunk & color_mask_16;
+                if (@reduce(.Or, masked > thresh_vec)) {
+                    return false;
+                }
+            }
+            while (idx < total_bytes) : (idx += 4) {
+                const px = @as(*align(1) const [4]u8, @ptrCast(row + idx)).*;
+                if ((px[0] & color_mask_4[0]) > threshold or
+                    (px[1] & color_mask_4[1]) > threshold or
+                    (px[2] & color_mask_4[2]) > threshold or
+                    (px[3] & color_mask_4[3]) > threshold)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+        return false;
+    }
+
+    /// Checks whether all pixels in column `x` have color components (R, G, B) <= `threshold`.
+    /// Evaluates row-by-row with immediate early-exit on non-black pixels to minimize cache-line striding.
+    /// Handles 24-bit RGB/BGR and 32-bit pixel formats; tolerant to JPEG chroma subsampling / ringing.
+    pub fn isColBlack(self: Surface, x: i32, threshold: u8) bool {
+        const height = self.h();
+        const width = self.w();
+        if (x < 0 or x >= width or height <= 0) return false;
+
+        const details = c.SDL_GetPixelFormatDetails(self.ptr.format) orelse return false;
+        const bpp = details.*.bytes_per_pixel;
+        if (bpp != 3 and bpp != 4) return false;
+
+        const pitch_val = self.pitch();
+        if (pitch_val <= 0) return false;
+        const surf_pitch: usize = @intCast(pitch_val);
+
+        const px_base = self.pixels();
+        const x_u: usize = @intCast(x);
+        const h_u: usize = @intCast(height);
+
+        if (bpp == 3) {
+            var y: usize = 0;
+            while (y < h_u) : (y += 1) {
+                const px = px_base + y * surf_pitch + x_u * 3;
+                if (px[0] > threshold or px[1] > threshold or px[2] > threshold) {
+                    return false;
+                }
+            }
+            return true;
+        } else if (bpp == 4) {
+            const color_mask_u32 = details.*.Rmask | details.*.Gmask | details.*.Bmask;
+            const color_mask_4: [4]u8 = @bitCast(color_mask_u32);
+            const Vec4 = @Vector(4, u8);
+            const thresh_vec: Vec4 = @splat(threshold);
+            const mask_vec: Vec4 = color_mask_4;
+
+            var y: usize = 0;
+            while (y < h_u) : (y += 1) {
+                const px = @as(*align(1) const Vec4, @ptrCast(px_base + y * surf_pitch + x_u * 4)).*;
+                const masked = px & mask_vec;
+                if (@reduce(.Or, masked > thresh_vec)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+        return false;
+    }
 };
 
 /// High-performance SIMD-accelerated 24-bit RGB to 32-bit RGBA pixel conversion using Zig @Vector and @shuffle.
@@ -242,4 +355,132 @@ test "convertBgr24ToRgba32Simd correctness" {
     try std.testing.expectEqual(@as(u8, 170), dst[21]);
     try std.testing.expectEqual(@as(u8, 180), dst[22]);
     try std.testing.expectEqual(@as(u8, 255), dst[23]);
+}
+
+test "Surface.isRowBlack and isColBlack - RGB24" {
+    const surf = Surface.create(20, 20, PixelFormat.rgb24) orelse return;
+    defer surf.destroy();
+
+    const pitch: usize = @intCast(surf.pitch());
+    const px = surf.pixels();
+    // Zero out entire surface
+    var y: usize = 0;
+    while (y < 20) : (y += 1) {
+        @memset(px[y * pitch .. y * pitch + 20 * 3], 0);
+    }
+
+    // Fully black row and col return true
+    try std.testing.expect(surf.isRowBlack(0, 16));
+    try std.testing.expect(surf.isRowBlack(10, 16));
+    try std.testing.expect(surf.isColBlack(0, 16));
+    try std.testing.expect(surf.isColBlack(10, 16));
+
+    // Threshold boundary test (16 is black, 17 is not)
+    px[0 * pitch + 5 * 3] = 16;
+    try std.testing.expect(surf.isRowBlack(0, 16));
+    px[0 * pitch + 5 * 3] = 17;
+    try std.testing.expect(!surf.isRowBlack(0, 16));
+    px[0 * pitch + 5 * 3] = 0; // reset
+
+    // Non-black pixel in first SIMD chunk of row
+    px[3 * pitch + 2 * 3] = 100;
+    try std.testing.expect(!surf.isRowBlack(3, 16));
+    // Other rows unaffected
+    try std.testing.expect(surf.isRowBlack(4, 16));
+    px[3 * pitch + 2 * 3] = 0; // reset
+
+    // Non-black pixel in tail of row (x = 19)
+    px[3 * pitch + 19 * 3 + 2] = 200;
+    try std.testing.expect(!surf.isRowBlack(3, 16));
+    px[3 * pitch + 19 * 3 + 2] = 0; // reset
+
+    // Non-black pixel in column
+    px[12 * pitch + 7 * 3 + 1] = 50;
+    try std.testing.expect(!surf.isColBlack(7, 16));
+    try std.testing.expect(surf.isColBlack(8, 16));
+    px[12 * pitch + 7 * 3 + 1] = 0; // reset
+
+    // Out-of-bounds checks
+    try std.testing.expect(!surf.isRowBlack(-1, 16));
+    try std.testing.expect(!surf.isRowBlack(20, 16));
+    try std.testing.expect(!surf.isColBlack(-1, 16));
+    try std.testing.expect(!surf.isColBlack(20, 16));
+}
+
+test "Surface.isRowBlack and isColBlack - RGBA32 ignores alpha channel" {
+    const surf = Surface.create(16, 16, PixelFormat.rgba32) orelse return;
+    defer surf.destroy();
+
+    const pitch: usize = @intCast(surf.pitch());
+    const px = surf.pixels();
+
+    // Fill with black RGB but 100% opaque alpha (255)
+    var y: usize = 0;
+    while (y < 16) : (y += 1) {
+        var x: usize = 0;
+        while (x < 16) : (x += 1) {
+            const p = px + y * pitch + x * 4;
+            p[0] = 0; // R
+            p[1] = 0; // G
+            p[2] = 0; // B
+            p[3] = 255; // Alpha
+        }
+    }
+
+    // Alpha = 255 must NOT trigger false non-black detection
+    try std.testing.expect(surf.isRowBlack(0, 16));
+    try std.testing.expect(surf.isRowBlack(15, 16));
+    try std.testing.expect(surf.isColBlack(0, 16));
+    try std.testing.expect(surf.isColBlack(15, 16));
+
+    // Non-black color component in RGBA32
+    px[5 * pitch + 4 * 4 + 1] = 80; // Green channel > 16
+    try std.testing.expect(!surf.isRowBlack(5, 16));
+    try std.testing.expect(!surf.isColBlack(4, 16));
+    // Other rows/cols unaffected
+    try std.testing.expect(surf.isRowBlack(6, 16));
+    try std.testing.expect(surf.isColBlack(5, 16));
+}
+
+test "Surface.isRowBlack and isColBlack - XRGB8888 ignores unused padding byte" {
+    const surf = Surface.create(16, 16, PixelFormat.xrgb8888) orelse return;
+    defer surf.destroy();
+
+    const pitch: usize = @intCast(surf.pitch());
+    const px = surf.pixels();
+
+    // Fill all bytes including padding byte with 0xFF
+    var y: usize = 0;
+    while (y < 16) : (y += 1) {
+        @memset(px[y * pitch .. y * pitch + 16 * 4], 0xFF);
+    }
+
+    // Now clear only the color components (using SDL_MapRGB or bitwise mask)
+    const details = c.SDL_GetPixelFormatDetails(surf.ptr.format) orelse return;
+    const color_mask_u32 = details.*.Rmask | details.*.Gmask | details.*.Bmask;
+    const color_mask_4: [4]u8 = @bitCast(color_mask_u32);
+
+    y = 0;
+    while (y < 16) : (y += 1) {
+        var x: usize = 0;
+        while (x < 16) : (x += 1) {
+            const p = px + y * pitch + x * 4;
+            // Clear color bytes, preserve padding byte as 0xFF
+            p[0] &= ~color_mask_4[0];
+            p[1] &= ~color_mask_4[1];
+            p[2] &= ~color_mask_4[2];
+            p[3] &= ~color_mask_4[3];
+        }
+    }
+
+    // All color bytes are 0, but padding byte is 0xFF. Must return true!
+    try std.testing.expect(surf.isRowBlack(0, 16));
+    try std.testing.expect(surf.isRowBlack(15, 16));
+    try std.testing.expect(surf.isColBlack(0, 16));
+    try std.testing.expect(surf.isColBlack(15, 16));
+
+    // Turn one color component on
+    px[8 * pitch + 8 * 4] |= color_mask_4[0];
+    try std.testing.expect(!surf.isRowBlack(8, 16));
+    try std.testing.expect(!surf.isColBlack(8, 16));
 }

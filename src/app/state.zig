@@ -212,6 +212,7 @@ pub const AppState = struct {
                     .w = upload_res.w,
                     .h = upload_res.h,
                     .upload_time_ms = upload_res.upload_time_ms,
+                    .dct_snapped = extracted.dct_snapped,
                 },
             },
         };

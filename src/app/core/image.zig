@@ -523,14 +523,108 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
     }
 }
 
-/// Extracted thumbnail surface along with orientation, full-resolution dimensions, and RAW metadata.
+/// Extracted thumbnail surface along with orientation, full-resolution dimensions, RAW metadata, and DCT block snapping detection.
 pub const ExtractedThumbnail = struct {
     surface: sdl.Surface,
     orientation: Orientation = .normal,
     full_w: f32 = 0.0,
     full_h: f32 = 0.0,
     raw_metadata: RawMetadata = .none,
+    dct_snapped: bool = false,
 };
+
+/// Inspects the decoded thumbnail CPU surface to detect whether letterbox (or pillarbox) black bars
+/// have been padded and snapped to 8-pixel DCT block boundaries by in-camera preview encoders
+/// (e.g. Fujifilm RAF, Ricoh GR IIIx JPEG).
+/// Requires candidate DCT boundary lines to be black AND active image content to begin at the 8px boundary.
+/// If candidate boundary lines contain image data (e.g. Sony ARW, standard JPEGs) OR if the scene itself
+/// is an extended solid black background (e.g. astrophotography), returns false to use theoretical aspect-ratio padding.
+pub fn detectThumbnailDctPadding(surf: sdl.Surface, full_w: f32, full_h: f32) bool {
+    const sw = surf.w();
+    const sh = surf.h();
+    if (!std.math.isFinite(full_w) or !std.math.isFinite(full_h) or full_w <= 0.0 or full_h <= 0.0 or sw <= 0 or sh <= 0) return false;
+
+    const thumb_w: f32 = @floatFromInt(sw);
+    const thumb_h: f32 = @floatFromInt(sh);
+    const ar_full = full_w / full_h;
+    const ar_thumb = thumb_w / thumb_h;
+
+    // Matching aspect ratio within epsilon -> no letterboxing or pillarboxing
+    if (@abs(ar_full - ar_thumb) <= 0.01) return false;
+
+    const threshold: u8 = 16; // Tolerant to lossy JPEG compression ringing / chroma subsampling near boundaries
+
+    if (ar_full > ar_thumb) {
+        // Letterboxing: full image is wider than container -> black bars on top and bottom
+        const raw_pad_px = (thumb_h - (thumb_w / ar_full)) / 2.0;
+        const nearest_block_px = @round(raw_pad_px / 8.0) * 8.0;
+
+        if (nearest_block_px > 0.0 and nearest_block_px * 2.0 < thumb_h and @abs(raw_pad_px - nearest_block_px) <= 2.0) {
+            const test_row_top: i32 = @intFromFloat(nearest_block_px - 1.0);
+            const test_row_bot: i32 = sh - @as(i32, @intFromFloat(nearest_block_px));
+
+            // Candidate DCT padding rows must both be black
+            if (surf.isRowBlack(test_row_top, threshold) and surf.isRowBlack(test_row_bot, threshold)) {
+                // Verify that active image content begins at the DCT block boundary (step-transition).
+                // If both row 8 and row 111 are ALSO black, the photo has an extended black background;
+                // treating continuous black backgrounds as theoretical padding prevents false-positive distortion.
+                const first_image_row_top: i32 = @intFromFloat(nearest_block_px);
+                const last_image_row_bot: i32 = sh - @as(i32, @intFromFloat(nearest_block_px)) - 1;
+
+                if (!surf.isRowBlack(first_image_row_top, threshold) or !surf.isRowBlack(last_image_row_bot, threshold)) {
+                    return true;
+                }
+            }
+        }
+    } else {
+        // Pillarboxing: full image is taller than container -> black bars on left and right
+        const raw_pad_px = (thumb_w - (thumb_h * ar_full)) / 2.0;
+        const nearest_block_px = @round(raw_pad_px / 8.0) * 8.0;
+
+        if (nearest_block_px > 0.0 and nearest_block_px * 2.0 < thumb_w and @abs(raw_pad_px - nearest_block_px) <= 2.0) {
+            const test_col_left: i32 = @intFromFloat(nearest_block_px - 1.0);
+            const test_col_right: i32 = sw - @as(i32, @intFromFloat(nearest_block_px));
+
+            if (surf.isColBlack(test_col_left, threshold) and surf.isColBlack(test_col_right, threshold)) {
+                const first_image_col_left: i32 = @intFromFloat(nearest_block_px);
+                const last_image_col_right: i32 = sw - @as(i32, @intFromFloat(nearest_block_px)) - 1;
+
+                if (!surf.isColBlack(first_image_col_left, threshold) or !surf.isColBlack(last_image_col_right, threshold)) {
+                    return true;
+                }
+            }
+        }
+    }
+
+    return false;
+}
+
+fn loadThumbnailFromLocation(
+    io: std.Io,
+    alloc: std.mem.Allocator,
+    file: *std.Io.File,
+    file_size: u64,
+    header_slice: []const u8,
+    loc: exif.ThumbnailLocation,
+) ?sdl.Surface {
+    const max_thumb_size_bytes = 512 * 1024;
+    if (loc.length == 0 or loc.length > max_thumb_size_bytes or loc.length > file_size or loc.file_offset > file_size - loc.length) {
+        return null;
+    }
+    const t_off: usize = @intCast(loc.file_offset);
+    const t_len: usize = @intCast(loc.length);
+    if (t_off + t_len <= header_slice.len) {
+        return sdl.Surface.loadConstMemOpt(header_slice[t_off .. t_off + t_len]);
+    }
+    const t_buf = alloc.alloc(u8, t_len) catch return null;
+    defer alloc.free(t_buf);
+    var ts_slices = [_][]u8{t_buf};
+    const tn = file.readPositional(io, &ts_slices, loc.file_offset) catch return null;
+    if (tn == t_len) {
+        return sdl.Surface.loadConstMemOpt(t_buf);
+    }
+    return null;
+}
 
 /// Extracts the embedded preview thumbnail surface and orientation metadata for a media entry.
 /// Supports Camera RAW formats (.arw, .raf, .cr2, .nef, .dng, .orf, .rw2, .pef), standard JPEGs, and CBZ entries.
@@ -561,7 +655,6 @@ pub fn loadThumbnailSurface(io: std.Io, alloc: std.mem.Allocator, media: MediaEn
             var orientation: Orientation = .normal;
             var raw_w: f32 = 0.0;
             var raw_h: f32 = 0.0;
-            const max_thumb_size_bytes = 512 * 1024;
 
             if (is_fuji) {
                 const prev_loc_opt = exif.extractFujiRafPreviewLocation(header_slice);
@@ -613,23 +706,7 @@ pub fn loadThumbnailSurface(io: std.Io, alloc: std.mem.Allocator, media: MediaEn
                 }
 
                 if (thumb_loc_opt) |tloc| {
-                    if (tloc.length > 0 and tloc.length <= max_thumb_size_bytes and tloc.length <= file_size and tloc.file_offset <= file_size - tloc.length) {
-                        const t_off: usize = @intCast(tloc.file_offset);
-                        const t_len: usize = @intCast(tloc.length);
-                        if (t_off + t_len <= header_n) {
-                            thumb_surf = sdl.Surface.loadConstMemOpt(header_slice[t_off .. t_off + t_len]);
-                        } else {
-                            const t_buf = alloc.alloc(u8, t_len) catch null;
-                            if (t_buf) |tb| {
-                                defer alloc.free(tb);
-                                var ts_slices = [_][]u8{tb};
-                                const tn = file.readPositional(io, &ts_slices, tloc.file_offset) catch 0;
-                                if (tn == t_len) {
-                                    thumb_surf = sdl.Surface.loadConstMemOpt(tb);
-                                }
-                            }
-                        }
-                    }
+                    thumb_surf = loadThumbnailFromLocation(io, alloc, &file, file_size, header_slice, tloc);
                 }
             } else if (is_raw) {
                 const raw_cands = exif.extractTiffRawPreviews(header_slice);
@@ -639,23 +716,7 @@ pub fn loadThumbnailSurface(io: std.Io, alloc: std.mem.Allocator, media: MediaEn
                 }
                 orientation = exif.parseExifOrientation(header_slice) orelse .normal;
                 if (raw_cands.thumbnail) |tloc| {
-                    if (tloc.length > 0 and tloc.length <= max_thumb_size_bytes and tloc.length <= file_size and tloc.file_offset <= file_size - tloc.length) {
-                        const t_off: usize = @intCast(tloc.file_offset);
-                        const t_len: usize = @intCast(tloc.length);
-                        if (t_off + t_len <= header_n) {
-                            thumb_surf = sdl.Surface.loadConstMemOpt(header_slice[t_off .. t_off + t_len]);
-                        } else {
-                            const t_buf = alloc.alloc(u8, t_len) catch null;
-                            if (t_buf) |tb| {
-                                defer alloc.free(tb);
-                                var ts_slices = [_][]u8{tb};
-                                const tn = file.readPositional(io, &ts_slices, tloc.file_offset) catch 0;
-                                if (tn == t_len) {
-                                    thumb_surf = sdl.Surface.loadConstMemOpt(tb);
-                                }
-                            }
-                        }
-                    }
+                    thumb_surf = loadThumbnailFromLocation(io, alloc, &file, file_size, header_slice, tloc);
                 }
             } else if (std.mem.eql(u8, mime_type, "image/jpeg")) {
                 orientation = exif.parseExifOrientation(header_slice) orelse .normal;
@@ -664,35 +725,21 @@ pub fn loadThumbnailSurface(io: std.Io, alloc: std.mem.Allocator, media: MediaEn
                     raw_h = dims.h;
                 }
                 if (exif.extractJpegThumbnailLocation(header_slice)) |loc| {
-                    if (loc.length > 0 and loc.length <= max_thumb_size_bytes and loc.length <= file_size and loc.file_offset <= file_size - loc.length) {
-                        const off: usize = @intCast(loc.file_offset);
-                        const len: usize = @intCast(loc.length);
-                        if (off + len <= header_n) {
-                            thumb_surf = sdl.Surface.loadConstMemOpt(header_slice[off .. off + len]);
-                        } else {
-                            const t_buf = alloc.alloc(u8, len) catch null;
-                            if (t_buf) |tb| {
-                                defer alloc.free(tb);
-                                var ts_slices = [_][]u8{tb};
-                                const tn = file.readPositional(io, &ts_slices, loc.file_offset) catch 0;
-                                if (tn == len) {
-                                    thumb_surf = sdl.Surface.loadConstMemOpt(tb);
-                                }
-                            }
-                        }
-                    }
+                    thumb_surf = loadThumbnailFromLocation(io, alloc, &file, file_size, header_slice, loc);
                 }
             }
 
             const surf = thumb_surf orelse return null;
             const full_w: f32 = if (raw_w > 0.0) raw_w else @floatFromInt(surf.w());
             const full_h: f32 = if (raw_h > 0.0) raw_h else @floatFromInt(surf.h());
+            const dct_snapped = detectThumbnailDctPadding(surf, full_w, full_h);
             return ExtractedThumbnail{
                 .surface = surf,
                 .orientation = orientation,
                 .full_w = full_w,
                 .full_h = full_h,
                 .raw_metadata = if (is_raw) RawMetadata.init(raw_w, raw_h) else .none,
+                .dct_snapped = dct_snapped,
             };
         },
         .archive_entry => |a| {
@@ -725,12 +772,14 @@ pub fn loadThumbnailSurface(io: std.Io, alloc: std.mem.Allocator, media: MediaEn
                                 if (sdl.Surface.loadConstMemOpt(image_slice[off .. off + len])) |surf| {
                                     const full_w: f32 = if (dims) |d| d.w else @floatFromInt(surf.w());
                                     const full_h: f32 = if (dims) |d| d.h else @floatFromInt(surf.h());
+                                    const dct_snapped = detectThumbnailDctPadding(surf, full_w, full_h);
                                     return ExtractedThumbnail{
                                         .surface = surf,
                                         .orientation = orientation,
                                         .full_w = full_w,
                                         .full_h = full_h,
                                         .raw_metadata = .none,
+                                        .dct_snapped = dct_snapped,
                                     };
                                 }
                             }
@@ -1593,6 +1642,79 @@ test "loadThumbnailSurface - filesystem Fujifilm RAF" {
         try std.testing.expect(t.surface.h() > 0);
         try std.testing.expectEqual(Orientation.normal, t.orientation);
         try std.testing.expect(t.raw_metadata.isRaw());
+        try std.testing.expect(t.dct_snapped);
+    }
+}
+
+test "loadThumbnailSurface - filesystem Sony ARW (theoretical padding, dct_snapped = false)" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const media = MediaEntry{
+        .filesystem = .{
+            .path = "ThumbTest/20170816-KayJay-0001.ARW",
+        },
+    };
+    var f = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, media.filesystem.path, .{}) catch return;
+    f.close(io);
+
+    const thumb = loadThumbnailSurface(io, std.testing.allocator, media);
+    try std.testing.expect(thumb != null);
+    if (thumb) |t| {
+        defer t.surface.destroy();
+        try std.testing.expect(!t.dct_snapped);
+    }
+}
+
+test "loadThumbnailSurface - filesystem Ricoh GR IIIx JPG (8px DCT block snapping, dct_snapped = true)" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const media = MediaEntry{
+        .filesystem = .{
+            .path = "ThumbTest/2026-02-15-R0001964.JPG",
+        },
+    };
+    var f = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, media.filesystem.path, .{}) catch return;
+    f.close(io);
+
+    const thumb = loadThumbnailSurface(io, std.testing.allocator, media);
+    try std.testing.expect(thumb != null);
+    if (thumb) |t| {
+        defer t.surface.destroy();
+        try std.testing.expect(t.dct_snapped);
+    }
+}
+
+test "loadThumbnailSurface - filesystem Fujifilm JPG (theoretical padding, dct_snapped = false)" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const media = MediaEntry{
+        .filesystem = .{
+            .path = "ThumbTest/2026-01-24-DSCF0474.JPG",
+        },
+    };
+    var f = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, media.filesystem.path, .{}) catch return;
+    f.close(io);
+
+    const thumb = loadThumbnailSurface(io, std.testing.allocator, media);
+    try std.testing.expect(thumb != null);
+    if (thumb) |t| {
+        defer t.surface.destroy();
+        try std.testing.expect(!t.dct_snapped);
+    }
+}
+
+test "loadThumbnailSurface - filesystem Fujifilm X-E5 RAF (8px DCT block snapping, dct_snapped = true)" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const media = MediaEntry{
+        .filesystem = .{
+            .path = "ThumbTest/2026-01-24-DSCF0474.RAF",
+        },
+    };
+    var f = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, media.filesystem.path, .{}) catch return;
+    f.close(io);
+
+    const thumb = loadThumbnailSurface(io, std.testing.allocator, media);
+    try std.testing.expect(thumb != null);
+    if (thumb) |t| {
+        defer t.surface.destroy();
+        try std.testing.expect(t.dct_snapped);
     }
 }
 
@@ -1605,4 +1727,72 @@ test "loadThumbnailSurface - filesystem non-existent file returns null" {
     };
     const thumb = loadThumbnailSurface(io, std.testing.allocator, media);
     try std.testing.expectEqual(@as(?ExtractedThumbnail, null), thumb);
+}
+
+test "detectThumbnailDctPadding - matching aspect ratio returns false" {
+    const surf = sdl.Surface.create(160, 120, sdl.PixelFormat.rgb24) orelse return;
+    defer surf.destroy();
+    try std.testing.expect(!detectThumbnailDctPadding(surf, 1600.0, 1200.0));
+}
+
+test "detectThumbnailDctPadding - invalid dimensions return false" {
+    const surf = sdl.Surface.create(160, 120, sdl.PixelFormat.rgb24) orelse return;
+    defer surf.destroy();
+    try std.testing.expect(!detectThumbnailDctPadding(surf, 0.0, 1200.0));
+    try std.testing.expect(!detectThumbnailDctPadding(surf, 1600.0, 0.0));
+}
+
+test "detectThumbnailDctPadding - detects 8px DCT block snapping when boundary rows are black and step transition occurs" {
+    const surf = sdl.Surface.create(160, 120, sdl.PixelFormat.rgb24) orelse return;
+    defer surf.destroy();
+
+    // Fill rows 0..7 and 112..119 with black (0), rows 8..111 with bright pixels (200)
+    const pitch: usize = @intCast(surf.pitch());
+    const px = surf.pixels();
+    var y: usize = 0;
+    while (y < 120) : (y += 1) {
+        const val: u8 = if (y < 8 or y >= 112) 0 else 200;
+        const row = px + y * pitch;
+        @memset(row[0 .. 160 * 3], val);
+    }
+
+    // 3:2 full image (6000x4000) in 4:3 thumb (160x120): theoretical pad is 6.67px
+    // Snaps to 8px DCT block; candidate row 7 and row 112 are black, and row 8 has image pixels -> returns true
+    try std.testing.expect(detectThumbnailDctPadding(surf, 6000.0, 4000.0));
+}
+
+test "detectThumbnailDctPadding - returns false when row 7 contains active image pixels" {
+    const surf = sdl.Surface.create(160, 120, sdl.PixelFormat.rgb24) orelse return;
+    defer surf.destroy();
+
+    // Active image begins at row 7 (e.g. theoretical 6.67px padding in Sony ARW / Fuji JPG)
+    const pitch: usize = @intCast(surf.pitch());
+    const px = surf.pixels();
+    var y: usize = 0;
+    while (y < 120) : (y += 1) {
+        const val: u8 = if (y < 7 or y >= 113) 0 else 200;
+        const row = px + y * pitch;
+        @memset(row[0 .. 160 * 3], val);
+    }
+
+    // Row 7 has bright pixels (200 > 16) -> not snapped to 8px DCT block boundary
+    try std.testing.expect(!detectThumbnailDctPadding(surf, 6000.0, 4000.0));
+}
+
+test "detectThumbnailDctPadding - solid black background returns false (no false positive)" {
+    const surf = sdl.Surface.create(160, 120, sdl.PixelFormat.rgb24) orelse return;
+    defer surf.destroy();
+
+    // Entire surface is pure black (e.g. astrophotography or seamless black background)
+    const pitch: usize = @intCast(surf.pitch());
+    const px = surf.pixels();
+    var y: usize = 0;
+    while (y < 120) : (y += 1) {
+        const row = px + y * pitch;
+        @memset(row[0 .. 160 * 3], 0);
+    }
+
+    // Because rows 8 and 111 are also black (no step-transition to image content at row 8),
+    // it correctly avoids a false-positive DCT snapping detection.
+    try std.testing.expect(!detectThumbnailDctPadding(surf, 6000.0, 4000.0));
 }

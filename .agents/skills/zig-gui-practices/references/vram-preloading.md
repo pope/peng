@@ -109,5 +109,27 @@ ______________________________________________________________________
 - **Clean Resource Unwinding with `defer`**:
   All local resources (open file handles, allocated memory buffers, worker argument allocations, surface allocations, active thread counter decrements) MUST be unwound safely via `defer` so an early return never leaks memory or leaves active thread counters mismatched.
 
+______________________________________________________________________
+
+## 4. Content-Adaptive Embedded Thumbnail Crop Detection & SIMD Analysis
+
+- **Camera Hardware DCT Variance**: In-camera preview JPEG encoders vary by camera model and firmware:
+  - *8px DCT Block Snapped*: Fujifilm RAF, Ricoh GR IIIx JPEG pad container letterbox/pillarbox margins to 8-pixel DCT block boundaries.
+  - *Theoretical Aspect Ratio*: Sony ARW, standard Fujifilm JPEGs scale active images continuously with exact fractional padding.
+  - Container file extensions (`.jpg` vs `.raw`) are NOT predictive. Crop math MUST be content-adaptive.
+- **Candidate Boundary Formula**:
+  - For letterboxing: `raw_pad_px = (thumb_h - (thumb_w / ar_full)) / 2.0`.
+  - For pillarboxing: `raw_pad_px = (thumb_w - (thumb_h * ar_full)) / 2.0`.
+  - Compute `nearest_block_px = @round(raw_pad_px / 8.0) * 8.0`.
+  - Guard: `nearest_block_px > 0.0 and nearest_block_px * 2.0 < thumb_dim and @abs(raw_pad_px - nearest_block_px) <= 2.0`.
+- **Step-Transition Verification & Black Background Immunity**:
+  - Test candidate padding rows/cols: `test_bound - 1` and `dim - test_bound` must both be black ($\\le 16$).
+  - Test active scene content at the boundary: `!isBlack(test_bound)` or `!isBlack(dim - test_bound - 1)`.
+  - If boundary rows are black but active content does NOT begin at `nearest_block_px`, the scene has an extended black background (e.g. astrophotography, studio backdrop). Return `false` to preserve theoretical aspect-ratio padding with zero subject distortion.
+- **SIMD Surface Inspection & Memory Layout**:
+  - Horizontal rows are contiguous in memory: use `@Vector(16, u8)` with `@reduce(.Or, ...)` for an ~8.6× speedup and linear hardware prefetching.
+  - Vertical columns stride across cache lines: use scalar or single 4-byte vector reads with early-exit per row. Cross-cache-line SIMD gathering wastes bandwidth and inhibits early exits.
+  - Endian- & Format-Agnostic 32-bit Masking: Derive color mask directly from `details.*.Rmask | details.*.Gmask | details.*.Bmask` via `@as([4]u8, @bitCast(...))` instead of `details.*.Ashift / 8`, correctly handling RGBA, BGRA, ARGB, ABGR, XRGB, and RGBX across all platforms.
+
 > [!NOTE]
 > For strict main-thread GPU texture release invariants and std.Io task group details, refer to [02_concurrency_and_architecture.md](../../../rules/02_concurrency_and_architecture.md).

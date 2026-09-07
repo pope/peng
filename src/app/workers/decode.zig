@@ -358,6 +358,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
             }
             const full_w: f32 = if (raw_w > 0.0) raw_w else @floatFromInt(t_surf.w());
             const full_h: f32 = if (raw_h > 0.0) raw_h else @floatFromInt(t_surf.h());
+            const dct_snapped = image.detectThumbnailDctPadding(t_surf, full_w, full_h);
             workers.event_queue.push(alloc, io, .{
                 .thumb_decoded = .{
                     .key = key,
@@ -369,6 +370,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
                     .orientation = orientation,
                     .thumb_only = args.thumb_only,
                     .raw_metadata = RawMetadata.init(raw_w, raw_h),
+                    .dct_snapped = dct_snapped,
                 },
             }) catch |err| {
                 std.log.err("Failed to push thumbnail decode event: {}", .{err});
@@ -681,9 +683,17 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         }
 
         if (thumb_bytes_opt) |thumb_bytes| {
+            if (workers.exiting.load(.acquire) or args.current_generation.load(.acquire) != key.generation) {
+                return;
+            }
             if (sdl.Surface.loadConstMemOpt(thumb_bytes)) |t_surf| {
+                if (workers.exiting.load(.acquire) or args.current_generation.load(.acquire) != key.generation) {
+                    t_surf.destroy();
+                    return;
+                }
                 const full_w: f32 = if (full_dims) |d| d.w else 0.0;
                 const full_h: f32 = if (full_dims) |d| d.h else 0.0;
+                const dct_snapped = image.detectThumbnailDctPadding(t_surf, full_w, full_h);
                 workers.event_queue.push(alloc, io, .{
                     .thumb_decoded = .{
                         .key = key,
@@ -694,6 +704,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                         .full_h = full_h,
                         .orientation = orientation,
                         .thumb_only = args.thumb_only,
+                        .dct_snapped = dct_snapped,
                     },
                 }) catch |err| {
                     std.log.err("Failed to push thumbnail decode event: {}", .{err});

@@ -67,3 +67,13 @@ test "sdl enum mapping and boundary sanity checks" {
     try std.testing.expect(t1.eql(t2));
     try std.testing.expectEqual(@as(*anyopaque, @ptrCast(dummy_ptr)), t1.asOpaque());
 }
+
+test {
+    _ = surface;
+    _ = events;
+    _ = @import("font.zig");
+    _ = gpu;
+    _ = keys;
+    _ = timer;
+    _ = @import("window.zig");
+}

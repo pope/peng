@@ -443,6 +443,7 @@ fn renderImageCanvas(
             entry.full_h,
             thumb.info.w,
             thumb.info.h,
+            thumb.info.dct_snapped,
         );
         thumb_uv.alpha = 1.0; // Solid underlay, full-res texture dissolves in on top
         thumb_uv.rotation_angle = rotation_angle;
@@ -482,6 +483,7 @@ fn renderImageCanvas(
                     entry.full_h,
                     thumb.info.w,
                     thumb.info.h,
+                    thumb.info.dct_snapped,
                 );
                 uv_crop.alpha = 1.0;
                 uv_crop.rotation_angle = rotation_angle;

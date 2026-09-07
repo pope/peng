@@ -26,6 +26,7 @@ pub const ThumbDecodedPayload = struct {
     orientation: Orientation,
     thumb_only: bool = false,
     raw_metadata: RawMetadata = .none,
+    dct_snapped: bool = false,
 };
 
 /// Payload carrying a fully decoded main image surface, performance metrics, and image dimensions.

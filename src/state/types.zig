@@ -477,11 +477,12 @@ pub const CacheStatus = union(enum) {
     failed: void,
 };
 
-/// Lightweight thumbnail dimension and GPU upload latency metadata.
+/// Lightweight thumbnail dimension, GPU upload latency, and DCT block snapping metadata.
 pub const ThumbnailInfo = struct {
     w: f32 = 0.0,
     h: f32 = 0.0,
     upload_time_ms: f64 = 0.0,
+    dct_snapped: bool = false,
 };
 
 /// State of a cached image's preview thumbnail (none, unloaded dimensions, or uploaded GPU texture).
