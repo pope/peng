@@ -421,8 +421,10 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
             };
             defer file.close(io);
 
-            var header_buf: [65536]u8 = undefined;
-            var slices = [_][]u8{&header_buf};
+            const is_raw_ext = core_fs.isRawFile(f.path);
+            var header_buf: [256 * 1024]u8 = undefined;
+            const target_read = if (is_raw_ext) header_buf.len else 128 * 1024;
+            var slices = [_][]u8{header_buf[0..target_read]};
             const n = file.readPositional(io, &slices, 0) catch |err| {
                 std.log.warn("probeMediaMetadata: readPositional failed for '{s}': {any}", .{ f.path, err });
                 return null;
@@ -638,8 +640,10 @@ pub fn loadThumbnailSurface(io: std.Io, alloc: std.mem.Allocator, media: MediaEn
             defer file.close(io);
 
             const file_size = file.length(io) catch 0;
-            var header_buf: [128 * 1024]u8 = undefined;
-            var slices = [_][]u8{&header_buf};
+            const is_raw_ext = core_fs.isRawFile(f.path);
+            var header_buf: [256 * 1024]u8 = undefined;
+            const target_read = if (is_raw_ext) header_buf.len else 128 * 1024;
+            var slices = [_][]u8{header_buf[0..target_read]};
             const header_n = file.readPositional(io, &slices, 0) catch |err| {
                 std.log.warn("loadThumbnailSurface: readPositional failed for '{s}': {any}", .{ f.path, err });
                 return null;
@@ -1295,7 +1299,7 @@ test "parseImageDimensions" {
         'V',  'P',  '8',  'L',
         0x05, 0x00, 0x00, 0x00,
         0x2F, // 1-byte signature
-        0xE7, 0xE3, 0x7C, 0x00, // w: 1000, h: 500
+        0xE7, 0xC3, 0x7C, 0x00, // w: 1000, h: 500
     };
     const vp8l_dims = parseImageDimensions(&webp_vp8l_header, "image/webp");
     try std.testing.expect(vp8l_dims != null);
@@ -1564,6 +1568,10 @@ test "probeMediaMetadata - filesystem JPEG" {
 }
 
 test "probeMediaMetadata - nonexistent file returns null" {
+    const prev_level = std.testing.log_level;
+    std.testing.log_level = .err;
+    defer std.testing.log_level = prev_level;
+
     const io = std.Io.Threaded.global_single_threaded.io();
     const media = MediaEntry{
         .filesystem = .{ .path = "testfiles/nonexistent.jpg" },
@@ -1719,6 +1727,10 @@ test "loadThumbnailSurface - filesystem Fujifilm X-E5 RAF (8px DCT block snappin
 }
 
 test "loadThumbnailSurface - filesystem non-existent file returns null" {
+    const prev_level = std.testing.log_level;
+    std.testing.log_level = .err;
+    defer std.testing.log_level = prev_level;
+
     const io = std.Io.Threaded.global_single_threaded.io();
     const media = MediaEntry{
         .filesystem = .{

@@ -239,9 +239,9 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
     };
     defer file.close(io);
 
-    // Read initial 128KB header via readPositional without allocating full file
-    const header_target: usize = @intCast(@min(file_size, 128 * 1024));
-    var header_buf: [128 * 1024]u8 = undefined;
+    // Read initial 256KB header via readPositional without allocating full file
+    const header_target: usize = @intCast(@min(file_size, 256 * 1024));
+    var header_buf: [256 * 1024]u8 = undefined;
     var h_slices = [_][]u8{header_buf[0..header_target]};
     const start_hdr_read = sdl.timer.getTicksNs();
     const header_n = file.readPositional(io, &h_slices, 0) catch |err| {

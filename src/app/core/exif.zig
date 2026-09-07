@@ -160,7 +160,7 @@ pub fn parseExifDimensions(data: []const u8) ?JpegDimensions {
                         if (val > 0) try sub_ifds.?.append(val);
                     } else if (count > 1 and (type_id == 4 or type_id == 13)) {
                         if (count > 8) return error.TooManySubIfds;
-                        if (val < t.len) {
+                        if (@as(usize, val) < t.len) {
                             var s_idx: usize = 0;
                             while (s_idx < count) : (s_idx += 1) {
                                 const read_pos = @as(usize, val) + s_idx * 4;
@@ -385,6 +385,10 @@ pub fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
             var i: usize = 0;
             var j_off: ?u32 = null;
             var j_len: ?u32 = null;
+            var compression: ?u16 = null;
+            var photometric: ?u16 = null;
+            var strip_off: ?u32 = null;
+            var strip_len: ?u32 = null;
 
             while (i < num) : (i += 1) {
                 if (entry_off + 12 > t.len) break;
@@ -395,10 +399,47 @@ pub fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
                 const type_id = if (le) std.mem.readInt(u16, entry[2..4][0..2], .little) else std.mem.readInt(u16, entry[2..4][0..2], .big);
                 const val_count = if (le) std.mem.readInt(u32, entry[4..8][0..4], .little) else std.mem.readInt(u32, entry[4..8][0..4], .big);
 
-                if (tag == 0x0201) {
+                if (tag == 0x0103) {
+                    compression = if (le) std.mem.readInt(u16, entry[8..10][0..2], .little) else std.mem.readInt(u16, entry[8..10][0..2], .big);
+                } else if (tag == 0x0106) {
+                    photometric = if (le) std.mem.readInt(u16, entry[8..10][0..2], .little) else std.mem.readInt(u16, entry[8..10][0..2], .big);
+                } else if (tag == 0x0111) { // StripOffsets
+                    // Per DNG Spec / TIFF-EP, embedded JPEG previews must be a single contiguous bitstream
+                    if (val_count == 1) {
+                        strip_off = if (type_id == 3)
+                            (if (le) std.mem.readInt(u16, entry[8..10][0..2], .little) else std.mem.readInt(u16, entry[8..10][0..2], .big))
+                        else
+                            (if (le) std.mem.readInt(u32, entry[8..12][0..4], .little) else std.mem.readInt(u32, entry[8..12][0..4], .big));
+                    }
+                } else if (tag == 0x0117) { // StripByteCounts
+                    if (val_count == 1) {
+                        strip_len = if (type_id == 3)
+                            (if (le) std.mem.readInt(u16, entry[8..10][0..2], .little) else std.mem.readInt(u16, entry[8..10][0..2], .big))
+                        else
+                            (if (le) std.mem.readInt(u32, entry[8..12][0..4], .little) else std.mem.readInt(u32, entry[8..12][0..4], .big));
+                    }
+                } else if (tag == 0x0201) {
                     j_off = if (le) std.mem.readInt(u32, entry[8..12][0..4], .little) else std.mem.readInt(u32, entry[8..12][0..4], .big);
                 } else if (tag == 0x0202) {
                     j_len = if (le) std.mem.readInt(u32, entry[8..12][0..4], .little) else std.mem.readInt(u32, entry[8..12][0..4], .big);
+                } else if (tag == 0xC634) { // DNGPrivateData (Ricoh / Pentax MakerNote embedded thumbnail)
+                    const val_or_off = if (le) std.mem.readInt(u32, entry[8..12][0..4], .little) else std.mem.readInt(u32, entry[8..12][0..4], .big);
+                    if (val_count >= 70 and @as(usize, val_or_off) + 70 <= t.len) {
+                        const p_slice = t[val_or_off..];
+                        if (std.mem.startsWith(u8, p_slice, "RICOH\x00II") or std.mem.startsWith(u8, p_slice, "PENTAX\x00II")) {
+                            // MakerNote explicitly asserts "II" (Little Endian)
+                            const p_len = std.mem.readInt(u32, p_slice[54..58][0..4], .little);
+                            const p_rel_off = std.mem.readInt(u32, p_slice[66..70][0..4], .little);
+                            if (p_len > 0 and p_len < 512 * 1024 and @as(u64, p_rel_off) + p_len <= val_count) {
+                                if (std.math.add(u32, val_or_off, p_rel_off)) |mn_jpeg_off| {
+                                    if (count.* < cands.len) {
+                                        cands[count.*] = .{ .off = mn_jpeg_off, .len = p_len };
+                                        count.* += 1;
+                                    }
+                                } else |_| {}
+                            }
+                        }
+                    }
                 } else if (tag == 0x014A and sub_ifds != null) {
                     if (val_count == 1) {
                         const s_off = if (le) std.mem.readInt(u32, entry[8..12][0..4], .little) else std.mem.readInt(u32, entry[8..12][0..4], .big);
@@ -406,7 +447,7 @@ pub fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
                     } else if (val_count > 1 and (type_id == 4 or type_id == 13)) {
                         if (val_count > 8) return error.TooManySubIfds;
                         const ptr_off = if (le) std.mem.readInt(u32, entry[8..12][0..4], .little) else std.mem.readInt(u32, entry[8..12][0..4], .big);
-                        if (ptr_off < t.len) {
+                        if (@as(usize, ptr_off) < t.len) {
                             var s_idx: usize = 0;
                             while (s_idx < val_count) : (s_idx += 1) {
                                 const read_pos = @as(usize, ptr_off) + s_idx * 4;
@@ -420,10 +461,22 @@ pub fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
                 }
             }
 
-            if (j_off != null and j_len != null and j_len.? > 0) {
+            if (j_off != null and j_len != null and j_off.? > 0 and j_len.? > 0) {
                 if (count.* < cands.len) {
                     cands[count.*] = .{ .off = j_off.?, .len = j_len.? };
                     count.* += 1;
+                }
+            } else if (strip_off != null and strip_len != null and strip_off.? > 0 and strip_len.? > 0) {
+                // Support standard TIFF JPEG compression (6 = OJPEG, 7 = JPEG)
+                const is_jpeg_comp = (compression != null and (compression.? == 6 or compression.? == 7));
+                // Standard JPEG preview photometrics (6 = YCbCr, 2 = RGB, 1 = BlackIsZero).
+                // Specifically excludes 32803 (CFA Bayer) and 34892 (LinearRaw).
+                const is_jpeg_color = (photometric != null and (photometric.? == 6 or photometric.? == 2 or photometric.? == 1));
+                if (is_jpeg_comp and is_jpeg_color) {
+                    if (count.* < cands.len) {
+                        cands[count.*] = .{ .off = strip_off.?, .len = strip_len.? };
+                        count.* += 1;
+                    }
                 }
             }
         }
@@ -474,10 +527,10 @@ pub fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
             .file_offset = tiff_start_off + @as(u64, prev_c.off),
             .length = prev_c.len,
         },
-        .thumbnail = .{
+        .thumbnail = if (thumb_c.len <= 512 * 1024) .{
             .file_offset = tiff_start_off + @as(u64, thumb_c.off),
             .length = thumb_c.len,
-        },
+        } else null,
     };
 }
 
@@ -856,4 +909,122 @@ test "parseExifOrientation with truncated APP1 segment" {
     const orient = parseExifOrientation(&buf);
     try std.testing.expect(orient != null);
     try std.testing.expectEqual(@as(Orientation, .rotate_270), orient.?);
+}
+
+test "DNG container with SubIFD JPEG preview strips" {
+    // Mock DNG container:
+    // TIFF header (8 bytes): "II", sig 42, IFD0 at offset 8
+    // IFD0 at offset 8: 2 entries:
+    //  - 0x00FE (NewSubfileType) = 1
+    //  - 0x014A (SubIFDs) = 40 (points to SubIFD at 40)
+    // Next IFD = 0
+    // SubIFD at offset 40: 6 entries:
+    //  - 0x0100 (ImageWidth) = 6000
+    //  - 0x0101 (ImageLength) = 4000
+    //  - 0x0103 (Compression) = 7 (JPEG)
+    //  - 0x0106 (PhotometricInterpretation) = 6 (YCbCr)
+    //  - 0x0111 (StripOffsets) = 500000
+    //  - 0x0117 (StripByteCounts) = 2500000
+    var buf = [_]u8{0} ** 256;
+    buf[0] = 'I';
+    buf[1] = 'I';
+    std.mem.writeInt(u16, buf[2..4], 0x002A, .little);
+    std.mem.writeInt(u32, buf[4..8], 8, .little);
+
+    // IFD0: 2 entries
+    std.mem.writeInt(u16, buf[8..10], 2, .little);
+    // Entry 0: 0x00FE NewSubfileType = 1
+    std.mem.writeInt(u16, buf[10..12], 0x00FE, .little);
+    std.mem.writeInt(u16, buf[12..14], 4, .little);
+    std.mem.writeInt(u32, buf[14..18], 1, .little);
+    std.mem.writeInt(u32, buf[18..22], 1, .little);
+    // Entry 1: 0x014A SubIFD = 40
+    std.mem.writeInt(u16, buf[22..24], 0x014A, .little);
+    std.mem.writeInt(u16, buf[24..26], 4, .little);
+    std.mem.writeInt(u32, buf[26..30], 1, .little);
+    std.mem.writeInt(u32, buf[30..34], 40, .little);
+    // Next IFD = 0
+    std.mem.writeInt(u32, buf[34..38], 0, .little);
+
+    // SubIFD at offset 40: 6 entries
+    std.mem.writeInt(u16, buf[40..42], 6, .little);
+    var p: usize = 42;
+
+    // SubEntry 0: 0x0100 ImageWidth = 6000
+    std.mem.writeInt(u16, buf[p .. p + 2][0..2], 0x0100, .little);
+    std.mem.writeInt(u16, buf[p + 2 .. p + 4][0..2], 4, .little);
+    std.mem.writeInt(u32, buf[p + 4 .. p + 8][0..4], 1, .little);
+    std.mem.writeInt(u32, buf[p + 8 .. p + 12][0..4], 6000, .little);
+    p += 12;
+
+    // SubEntry 1: 0x0101 ImageLength = 4000
+    std.mem.writeInt(u16, buf[p .. p + 2][0..2], 0x0101, .little);
+    std.mem.writeInt(u16, buf[p + 2 .. p + 4][0..2], 4, .little);
+    std.mem.writeInt(u32, buf[p + 4 .. p + 8][0..4], 1, .little);
+    std.mem.writeInt(u32, buf[p + 8 .. p + 12][0..4], 4000, .little);
+    p += 12;
+
+    // SubEntry 2: 0x0103 Compression = 7 (JPEG)
+    std.mem.writeInt(u16, buf[p .. p + 2][0..2], 0x0103, .little);
+    std.mem.writeInt(u16, buf[p + 2 .. p + 4][0..2], 3, .little);
+    std.mem.writeInt(u32, buf[p + 4 .. p + 8][0..4], 1, .little);
+    std.mem.writeInt(u16, buf[p + 8 .. p + 10][0..2], 7, .little);
+    p += 12;
+
+    // SubEntry 3: 0x0106 Photometric = 6 (YCbCr)
+    std.mem.writeInt(u16, buf[p .. p + 2][0..2], 0x0106, .little);
+    std.mem.writeInt(u16, buf[p + 2 .. p + 4][0..2], 3, .little);
+    std.mem.writeInt(u32, buf[p + 4 .. p + 8][0..4], 1, .little);
+    std.mem.writeInt(u16, buf[p + 8 .. p + 10][0..2], 6, .little);
+    p += 12;
+
+    // SubEntry 4: 0x0111 StripOffsets = 500000
+    std.mem.writeInt(u16, buf[p .. p + 2][0..2], 0x0111, .little);
+    std.mem.writeInt(u16, buf[p + 2 .. p + 4][0..2], 4, .little);
+    std.mem.writeInt(u32, buf[p + 4 .. p + 8][0..4], 1, .little);
+    std.mem.writeInt(u32, buf[p + 8 .. p + 12][0..4], 500000, .little);
+    p += 12;
+
+    // SubEntry 5: 0x0117 StripByteCounts = 2500000
+    std.mem.writeInt(u16, buf[p .. p + 2][0..2], 0x0117, .little);
+    std.mem.writeInt(u16, buf[p + 2 .. p + 4][0..2], 4, .little);
+    std.mem.writeInt(u32, buf[p + 4 .. p + 8][0..4], 1, .little);
+    std.mem.writeInt(u32, buf[p + 8 .. p + 12][0..4], 2500000, .little);
+    p += 12;
+
+    const raw_cands = extractTiffRawPreviews(&buf);
+    try std.testing.expect(raw_cands.preview != null);
+    try std.testing.expectEqual(@as(u64, 500000), raw_cands.preview.?.file_offset);
+    try std.testing.expectEqual(@as(u32, 2500000), raw_cands.preview.?.length);
+    try std.testing.expect(raw_cands.thumbnail == null);
+
+    const dims = parseExifDimensions(&buf);
+    try std.testing.expect(dims != null);
+    try std.testing.expectEqual(@as(f32, 6000.0), dims.?.w);
+    try std.testing.expectEqual(@as(f32, 4000.0), dims.?.h);
+}
+
+test "Ricoh GR III DNG preview and thumbnail extraction on real file" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, "2026-02-15-R0001964.DNG", .{}) catch return;
+    defer file.close(io);
+
+    var hdr: [256 * 1024]u8 = undefined;
+    var slices = [_][]u8{&hdr};
+    const n = try file.readPositional(io, &slices, 0);
+    try std.testing.expect(n >= 163000);
+
+    const cands = extractTiffRawPreviews(hdr[0..n]);
+    try std.testing.expect(cands.preview != null);
+    try std.testing.expectEqual(@as(u64, 28990784), cands.preview.?.file_offset);
+    try std.testing.expectEqual(@as(u32, 2832282), cands.preview.?.length);
+
+    try std.testing.expect(cands.thumbnail != null);
+    try std.testing.expectEqual(@as(u64, 97248), cands.thumbnail.?.file_offset);
+    try std.testing.expectEqual(@as(u32, 55698), cands.thumbnail.?.length);
+
+    const dims = parseExifDimensions(hdr[0..n]);
+    try std.testing.expect(dims != null);
+    try std.testing.expectEqual(@as(f32, 6112.0), dims.?.w);
+    try std.testing.expectEqual(@as(f32, 4064.0), dims.?.h);
 }
