@@ -23,7 +23,16 @@ pub const end: Keycode = c.SDLK_END;
 pub const page_up: Keycode = c.SDLK_PAGEUP;
 pub const page_down: Keycode = c.SDLK_PAGEDOWN;
 pub const f1: Keycode = c.SDLK_F1;
+pub const f5: Keycode = c.SDLK_F5;
 pub const f11: Keycode = c.SDLK_F11;
+pub const colon: Keycode = c.SDLK_COLON;
+pub const semicolon: Keycode = c.SDLK_SEMICOLON;
+pub const slash: Keycode = c.SDLK_SLASH;
+pub const question: Keycode = c.SDLK_QUESTION;
+pub const period: Keycode = c.SDLK_PERIOD;
+pub const comma: Keycode = c.SDLK_COMMA;
+pub const less: Keycode = c.SDLK_LESS;
+pub const greater: Keycode = c.SDLK_GREATER;
 
 pub const char_0: Keycode = c.SDLK_0;
 pub const kp_0: Keycode = c.SDLK_KP_0;

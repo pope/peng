@@ -1,8 +1,8 @@
 - [x] Let's add a blur shader
 - [x] IPC off by default
 - [x] Font sizes on the Clay debug panel
-- Compare commands structure in imv-tui to this
-- Compare features and keyboard shortcuts with IMV and IMV TUI
+- [x] Compare commands structure in imv-tui to this
+- [x] Compare features and keyboard shortcuts with IMV and IMV TUI
 - [x] Split Stats for Nerds up into Info and Stats for Nerds
 - [x] Document all functions and structs
 - Audit calls like `std.ArrayList(usize).empty` to see if we can supply an initial capacity

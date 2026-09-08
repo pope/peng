@@ -106,7 +106,9 @@ pub const AppIntent = union(enum) {
 
     // Image scaling modes & GPU filters
     set_scale: ScaleMode,
+    cycle_scale_mode,
     set_filter: TextureScaleMode,
+    cycle_filter,
 
     // Color adjustments
     set_brightness: f32,
@@ -129,6 +131,7 @@ pub const AppIntent = union(enum) {
     first_image,
     last_image,
     go_to_image: usize,
+    refresh_directory,
 
     // Palettes & Overlays
     set_palette: struct {

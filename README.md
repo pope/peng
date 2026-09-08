@@ -29,24 +29,48 @@ ______________________________________________________________________
 
 ## Keyboard Shortcuts
 
-| Shortcut              | Action                               |
-| :-------------------- | :----------------------------------- |
-| `F1` / `Ctrl+Shift+P` | Open Command Palette (Actions)       |
-| `Ctrl+P`              | Open File Search Palette             |
-| `Ctrl+O`              | Open Directory Navigator Palette     |
-| `I`                   | Toggle Stats Overlay                 |
-| `M`                   | Toggle Manga Mode (Right-to-Left)    |
-| `F` / `F11`           | Toggle Fullscreen                    |
-| `Space` / `Right`     | Next Image (Prepares Next Page)      |
-| `Backspace` / `Left`  | Previous Image                       |
-| `Home` / `End`        | Jump to First / Last Image           |
-| `=` / `-`             | Zoom In / Out                        |
-| `R` / `0`             | Reset Zoom & Pan                     |
-| `[` / `]`             | Rotate Counter-Clockwise / Clockwise |
-| `P` / `O`             | Increase / Decrease Brightness       |
-| `L` / `K`             | Increase / Decrease Contrast         |
-| `Shift+R`             | Reset Brightness & Contrast          |
-| `Esc`                 | Close Palette / Exit Application     |
+| Shortcut                                | Action                                                   |
+| :-------------------------------------- | :------------------------------------------------------- |
+| `n` / `]` / `Space` / `Right`           | Next Image                                               |
+| `p` / `[` / `Backspace` / `Left`        | Previous Image                                           |
+| `Home` / `End`                          | Jump to First / Last Image                               |
+| `i` / `+` / `=`                         | Zoom In                                                  |
+| `o` / `-`                               | Zoom Out                                                 |
+| `a`                                     | Actual Size (1:1 / 100% Zoom)                            |
+| `r` / `0`                               | Reset Zoom & Pan                                         |
+| `h` / `j` / `k` / `l`                   | Pan Left / Down / Up / Right (when zoomed)               |
+| `e` / `>`                               | Rotate Clockwise (90°)                                   |
+| `E` / `<`                               | Rotate Counter-Clockwise (90°)                           |
+| `s`                                     | Cycle Scale Mode (Shrink, Full, Crop, Actual, Fit W/H)   |
+| `S` (Shift+s)                           | Cycle Resampling Filter (Nearest, Linear, Mitchell, etc) |
+| `b` / `B` (Shift+b)                     | Increase / Decrease Brightness                           |
+| `c` / `C` (Shift+c)                     | Increase / Decrease Contrast                             |
+| `Shift+R`                               | Reset Brightness & Contrast                              |
+| `d`                                     | Toggle Image Info Overlay                                |
+| `Shift+D`                               | Toggle Performance / Stats Overlay                       |
+| `t`                                     | Toggle Title Bar Overlay                                 |
+| `m`                                     | Toggle Manga Mode (Right-to-Left)                        |
+| `f` / `F11`                             | Toggle Borderless Fullscreen                             |
+| `F5` / `Ctrl+R`                         | Refresh / Rescan Directory                               |
+| `:` / `?` / `/` / `F1` / `Ctrl+Shift+P` | Open Command Palette (Actions)                           |
+| `Ctrl+P`                                | Open File Search Palette                                 |
+| `Ctrl+O`                                | Open Directory Navigator Palette                         |
+| `q` / `Esc`                             | Close Palette / Exit Application                         |
+
+### Command Palette & Line Editor Navigation
+
+When search or input palettes are active:
+
+- `Down` / `Ctrl+N` / `Ctrl+J`: Select next candidate
+- `Up` / `Ctrl+P`: Select previous candidate
+- `PageDown` / `Ctrl+V`: Page list down
+- `PageUp` / `Alt+V`: Page list up
+- `Tab` / `Right`: In Directory Navigator, enter selected folder
+- `Shift+Tab` / `Left` / `Backspace`: In Directory Navigator, step out to parent folder
+- `Ctrl+W` / `Alt+Backspace`: Delete word backward
+- `Ctrl+U`: Clear entire search query
+- `Enter`: Confirm selection
+- `Esc` / `Ctrl+G`: Dismiss palette
 
 ______________________________________________________________________
 

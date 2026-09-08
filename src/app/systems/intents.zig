@@ -39,7 +39,28 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
             vp.fit_mode = mode;
             vp.reset();
         },
+        .cycle_scale_mode => {
+            vp.fit_mode = switch (vp.fit_mode) {
+                .shrink => .full,
+                .full => .crop,
+                .crop => .none,
+                .none => .fit_width,
+                .fit_width => .fit_height,
+                .fit_height => .shrink,
+            };
+            vp.reset();
+        },
         .set_filter => |mode| vp.scale_filter = mode,
+        .cycle_filter => {
+            vp.scale_filter = switch (vp.scale_filter) {
+                .nearest => .linear,
+                .linear => .mitchell,
+                .mitchell => .lanczos3,
+                .lanczos3 => .lanczos3_spline,
+                .lanczos3_spline => .pixel_art,
+                .pixel_art => .nearest,
+            };
+        },
         .set_brightness => |val| vp.setAdjustments(val, vp.contrast),
         .increase_brightness => vp.adjustBrightness(0.1),
         .decrease_brightness => vp.adjustBrightness(-0.1),
@@ -99,6 +120,13 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 else => unreachable,
             };
             self.viewer.animations.setImmediate(.thumb_crossfade, 1.0);
+        },
+        .refresh_directory => {
+            if (nav.getCurrentImageEntry()) |entry| {
+                try self.openPath(entry.getPath());
+            } else if (nav.last_scanned_dir.items.len > 0) {
+                try self.openPath(nav.last_scanned_dir.items);
+            }
         },
         .set_palette => |p| {
             if (p.mode == .inactive) {

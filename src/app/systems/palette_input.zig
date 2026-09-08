@@ -82,35 +82,110 @@ fn handlePaletteKeys(
     const self = ctx.state;
     const palette = &self.viewer.ui.palette;
 
+    // Cancel / Close palette: Escape or Ctrl+G
+    if (key == .escape or (key == .char_g and mod.ctrl)) {
+        self.closePalette();
+        return true;
+    }
+
+    // List Navigation Up: Up Arrow or Ctrl+P
+    if (key == .up or (key == .char_p and mod.ctrl)) {
+        if (palette.selected_idx > 0) {
+            palette.selected_idx -= 1;
+            palette.selection_dirty = true;
+        }
+        return true;
+    }
+
+    // List Navigation Down: Down Arrow or Ctrl+N or Ctrl+J
+    if (key == .down or ((key == .char_n or key == .char_j) and mod.ctrl)) {
+        const max_count = palette.matches.items.len;
+        if (max_count > 0 and palette.selected_idx + 1 < max_count) {
+            palette.selected_idx += 1;
+            palette.selection_dirty = true;
+        }
+        return true;
+    }
+
+    // Page Up: PageUp or Alt+V
+    if (key == .page_up or (key == .char_v and mod.alt)) {
+        if (palette.selected_idx >= 5) {
+            palette.selected_idx -= 5;
+        } else {
+            palette.selected_idx = 0;
+        }
+        palette.selection_dirty = true;
+        return true;
+    }
+
+    // Page Down: PageDown or Ctrl+V
+    if (key == .page_down or (key == .char_v and mod.ctrl)) {
+        const max_count = palette.matches.items.len;
+        if (max_count > 0) {
+            palette.selected_idx = @min(palette.selected_idx + 5, max_count - 1);
+            palette.selection_dirty = true;
+        }
+        return true;
+    }
+
+    // Delete Word Backward: Ctrl+W or Alt+Backspace
+    if ((key == .char_w and mod.ctrl) or (key == .backspace and mod.alt)) {
+        if (palette.query.items.len > 0) {
+            var q = palette.query.items;
+            while (q.len > 0 and (q[q.len - 1] == ' ' or q[q.len - 1] == '\t')) {
+                _ = palette.query.pop();
+                q = palette.query.items;
+            }
+            while (q.len > 0 and q[q.len - 1] != ' ' and q[q.len - 1] != '\t' and q[q.len - 1] != '/' and q[q.len - 1] != '\\') {
+                _ = palette.query.pop();
+                q = palette.query.items;
+            }
+            palette.selected_idx = 0;
+            palette.selection_dirty = true;
+            switch (palette.mode) {
+                .files => try self.rebuildPaletteMatches(),
+                .actions => try self.rebuildActionMatches(),
+                .directory_navigator => try palette.rebuildDirectoryMatches(),
+                .set_brightness, .set_contrast, .go_to_image, .set_slideshow_interval, .inactive => {},
+            }
+        }
+        return true;
+    }
+
+    // Clear Line: Ctrl+U
+    if (key == .char_u and mod.ctrl) {
+        if (palette.query.items.len > 0) {
+            palette.query.clearRetainingCapacity();
+            palette.selected_idx = 0;
+            palette.selection_dirty = true;
+            switch (palette.mode) {
+                .files => try self.rebuildPaletteMatches(),
+                .actions => try self.rebuildActionMatches(),
+                .directory_navigator => try palette.rebuildDirectoryMatches(),
+                .set_brightness, .set_contrast, .go_to_image, .set_slideshow_interval, .inactive => {},
+            }
+        }
+        return true;
+    }
+
     switch (key) {
-        .escape => {
-            self.closePalette();
-            return true;
-        },
-        .up => {
-            if (palette.selected_idx > 0) {
-                palette.selected_idx -= 1;
-                palette.selection_dirty = true;
-            }
-            return true;
-        },
-        .down => {
-            const max_count = palette.matches.items.len;
-            if (max_count > 0 and palette.selected_idx + 1 < max_count) {
-                palette.selected_idx += 1;
-                palette.selection_dirty = true;
-            }
-            return true;
-        },
-        .right => {
+        .right, .tab => {
             if (palette.mode == .directory_navigator) {
-                if (palette.selected_idx < palette.matches.items.len) {
-                    const match_idx = palette.matches.items[palette.selected_idx];
-                    if (match_idx < palette.dir_items.items.len) {
-                        const entry = palette.dir_items.items[match_idx];
-                        const path_copy = try ctx.frame_allocator.dupe(u8, entry.getFullPath());
+                if (key == .tab and mod.shift) {
+                    var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
+                    if (core_fs.getParentDirBuf(palette.current_nav_dir.items, &parent_buf)) |parent_dir| {
                         palette.query.clearRetainingCapacity();
-                        try self.loadPaletteDirectory(path_copy);
+                        try self.loadPaletteDirectory(parent_dir);
+                    }
+                } else {
+                    if (palette.selected_idx < palette.matches.items.len) {
+                        const match_idx = palette.matches.items[palette.selected_idx];
+                        if (match_idx < palette.dir_items.items.len) {
+                            const entry = palette.dir_items.items[match_idx];
+                            const path_copy = try ctx.frame_allocator.dupe(u8, entry.getFullPath());
+                            palette.query.clearRetainingCapacity();
+                            try self.loadPaletteDirectory(path_copy);
+                        }
                     }
                 }
                 return true;
@@ -125,23 +200,6 @@ fn handlePaletteKeys(
                 }
                 return true;
             }
-        },
-        .page_up => {
-            if (palette.selected_idx >= 5) {
-                palette.selected_idx -= 5;
-            } else {
-                palette.selected_idx = 0;
-            }
-            palette.selection_dirty = true;
-            return true;
-        },
-        .page_down => {
-            const max_count = palette.matches.items.len;
-            if (max_count > 0) {
-                palette.selected_idx = @min(palette.selected_idx + 5, max_count - 1);
-                palette.selection_dirty = true;
-            }
-            return true;
         },
         .return_key => {
             const raw_str = palette.query.items;
@@ -226,21 +284,34 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
     if (!self.viewer.ui.palette.isAcceptingInput()) return false;
 
     // 1. Keyboard Navigation Keys
+    var key_consumed = false;
     for (input.keys_pressed.items) |key| {
-        _ = try handlePaletteKeys(ctx, key, input.key_modifiers);
+        if (try handlePaletteKeys(ctx, key, input.key_modifiers)) {
+            key_consumed = true;
+        }
     }
     if (!self.viewer.ui.palette.isAcceptingInput()) return true;
 
     // 2. Text Typing Query Updates
     if (input.text_input) |text| {
-        try self.viewer.ui.palette.query.appendSlice(self.allocator, text);
-        self.viewer.ui.palette.selected_idx = 0;
-        self.viewer.ui.palette.selection_dirty = true;
-        switch (self.viewer.ui.palette.mode) {
-            .files => try self.rebuildPaletteMatches(),
-            .actions => try self.rebuildActionMatches(),
-            .directory_navigator => try self.viewer.ui.palette.rebuildDirectoryMatches(),
-            else => {},
+        if (!key_consumed) {
+            var any_appended = false;
+            for (text) |ch| {
+                if (ch >= 32 and ch != 127) {
+                    try self.viewer.ui.palette.query.append(self.allocator, ch);
+                    any_appended = true;
+                }
+            }
+            if (any_appended) {
+                self.viewer.ui.palette.selected_idx = 0;
+                self.viewer.ui.palette.selection_dirty = true;
+                switch (self.viewer.ui.palette.mode) {
+                    .files => try self.rebuildPaletteMatches(),
+                    .actions => try self.rebuildActionMatches(),
+                    .directory_navigator => try self.viewer.ui.palette.rebuildDirectoryMatches(),
+                    else => {},
+                }
+            }
         }
     }
 
@@ -365,6 +436,18 @@ test "handlePaletteKeys directory_navigator key interactions" {
     try std.testing.expectEqual(PaletteMode.directory_navigator, state.viewer.ui.palette.mode);
     try std.testing.expectEqualStrings(tmp_dir, state.viewer.ui.palette.current_nav_dir.items);
     try std.testing.expectEqual(match_idx_no_img, state.viewer.ui.palette.selected_idx);
+
+    // Test Tab key on sub_no_images -> navigate into folder
+    state.viewer.ui.palette.selected_idx = match_idx_no_img;
+    _ = try handlePaletteKeys(ctx, .tab, .{});
+    try std.testing.expectEqual(PaletteMode.directory_navigator, state.viewer.ui.palette.mode);
+    try std.testing.expectEqualStrings(sub_no_img, state.viewer.ui.palette.current_nav_dir.items);
+    try std.testing.expectEqual(@as(usize, 0), state.viewer.ui.palette.query.items.len);
+
+    // Test Shift+Tab key -> step up to parent directory
+    _ = try handlePaletteKeys(ctx, .tab, .{ .shift = true });
+    try std.testing.expectEqual(PaletteMode.directory_navigator, state.viewer.ui.palette.mode);
+    try std.testing.expectEqualStrings(tmp_dir, state.viewer.ui.palette.current_nav_dir.items);
 
     // Test Enter key on sub_no_images -> starts async path scan for sub_no_images and closes palette
     state.viewer.ui.palette.selected_idx = match_idx_no_img;

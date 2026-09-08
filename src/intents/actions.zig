@@ -97,6 +97,7 @@ pub const ActionId = enum {
     first_image,
     last_image,
     go_to_image_dialog,
+    refresh_directory,
 
     // Overlays & UI
     toggle_info,
@@ -122,6 +123,7 @@ pub const ActionId = enum {
     reset_rotation,
 
     // Scaling Modes (individual palette items)
+    cycle_scale_mode,
     scale_none,
     scale_shrink,
     scale_full,
@@ -130,6 +132,7 @@ pub const ActionId = enum {
     scale_fit_height,
 
     // Resampling Filters (individual palette items)
+    cycle_filter,
     filter_nearest,
     filter_linear,
     filter_pixel_art,
@@ -178,29 +181,39 @@ pub const actions = [_]ActionDef{
     .{
         .id = .next_image,
         .title = "Next Image",
-        .shortcut_text = "Space / Right Arrow",
+        .shortcut_text = "Space / n / ] / Right",
         .description = "Advance to the next image in the active queue",
         .show_in_palette = true,
-        .shortcuts = &.{ .{ .key = .space }, .{ .key = .right } },
+        .shortcuts = &.{
+            .{ .key = .space },
+            .{ .key = .right },
+            .{ .key = .char_n },
+            .{ .key = .right_bracket },
+        },
         .intent = .next_image,
         .ipc = .{ .name = "next / prev", .description = "Navigate images" },
     },
     .{
         .id = .prev_image,
         .title = "Previous Image",
-        .shortcut_text = "Backspace / Left Arrow",
+        .shortcut_text = "Backspace / p / [ / Left",
         .description = "Return to the previous image in the active queue",
         .show_in_palette = true,
-        .shortcuts = &.{ .{ .key = .backspace }, .{ .key = .left } },
+        .shortcuts = &.{
+            .{ .key = .backspace },
+            .{ .key = .left },
+            .{ .key = .char_p },
+            .{ .key = .left_bracket },
+        },
         .intent = .prev_image,
     },
     .{
         .id = .toggle_info,
         .title = "Toggle Image Info",
-        .shortcut_text = "I",
+        .shortcut_text = "D",
         .description = "Toggle image metadata and file info overlay",
         .show_in_palette = true,
-        .shortcuts = &.{.{ .key = .char_i }},
+        .shortcuts = &.{.{ .key = .char_d }},
         .intent = .toggle_info,
     },
     .{
@@ -216,10 +229,10 @@ pub const actions = [_]ActionDef{
     .{
         .id = .toggle_stats,
         .title = "Toggle Performance Overlay",
-        .shortcut_text = "Shift+I",
+        .shortcut_text = "Shift+D",
         .description = "Toggle rendering FPS and frame timing statistics",
         .show_in_palette = true,
-        .shortcuts = &.{.{ .key = .char_i, .mod = .{ .shift = true } }},
+        .shortcuts = &.{.{ .key = .char_d, .mod = .{ .shift = true } }},
         .intent = .toggle_stats,
     },
     .{
@@ -300,19 +313,19 @@ pub const actions = [_]ActionDef{
     .{
         .id = .zoom_in,
         .title = "Zoom In",
-        .shortcut_text = "= / +",
+        .shortcut_text = "I / = / +",
         .description = "Zoom in by scaling viewport",
         .show_in_palette = true,
-        .shortcuts = &.{.{ .key = .equals }},
+        .shortcuts = &.{ .{ .key = .char_i }, .{ .key = .equals } },
         .intent = .zoom_in,
     },
     .{
         .id = .zoom_out,
         .title = "Zoom Out",
-        .shortcut_text = "-",
+        .shortcut_text = "O / -",
         .description = "Zoom out by scaling viewport",
         .show_in_palette = true,
-        .shortcuts = &.{.{ .key = .minus }},
+        .shortcuts = &.{ .{ .key = .char_o }, .{ .key = .minus } },
         .intent = .zoom_out,
     },
     .{
@@ -327,9 +340,10 @@ pub const actions = [_]ActionDef{
     .{
         .id = .scale_none,
         .title = "Set Scale Mode: 100% (Actual Size)",
+        .shortcut_text = "A",
         .description = "Display image at native 1:1 pixel resolution",
         .show_in_palette = true,
-        .shortcuts = &.{},
+        .shortcuts = &.{.{ .key = .char_a }},
         .intent = .{ .set_scale = .none },
     },
     .{
@@ -375,19 +389,27 @@ pub const actions = [_]ActionDef{
     .{
         .id = .rotate_cw,
         .title = "Rotate Clockwise (90°)",
-        .shortcut_text = "]",
+        .shortcut_text = "E / >",
         .description = "Rotate viewport clockwise by 90 degrees",
         .show_in_palette = true,
-        .shortcuts = &.{.{ .key = .right_bracket }},
+        .shortcuts = &.{
+            .{ .key = .char_e },
+            .{ .key = .greater },
+            .{ .key = .period, .mod = .{ .shift = true } },
+        },
         .intent = .rotate_cw,
     },
     .{
         .id = .rotate_ccw,
         .title = "Rotate Counter-Clockwise (90°)",
-        .shortcut_text = "[",
+        .shortcut_text = "Shift+E / <",
         .description = "Rotate viewport counter-clockwise by 90 degrees",
         .show_in_palette = true,
-        .shortcuts = &.{.{ .key = .left_bracket }},
+        .shortcuts = &.{
+            .{ .key = .char_e, .mod = .{ .shift = true } },
+            .{ .key = .less },
+            .{ .key = .comma, .mod = .{ .shift = true } },
+        },
         .intent = .rotate_ccw,
     },
     .{
@@ -449,37 +471,37 @@ pub const actions = [_]ActionDef{
     .{
         .id = .increase_brightness,
         .title = "Increase Brightness (+10%)",
-        .shortcut_text = "P",
+        .shortcut_text = "B",
         .description = "Brighten image exposure by 10%",
         .show_in_palette = true,
-        .shortcuts = &.{.{ .key = .char_p }},
+        .shortcuts = &.{.{ .key = .char_b }},
         .intent = .increase_brightness,
     },
     .{
         .id = .decrease_brightness,
         .title = "Decrease Brightness (-10%)",
-        .shortcut_text = "O",
+        .shortcut_text = "Shift+B",
         .description = "Darken image exposure by 10%",
         .show_in_palette = true,
-        .shortcuts = &.{.{ .key = .char_o }},
+        .shortcuts = &.{.{ .key = .char_b, .mod = .{ .shift = true } }},
         .intent = .decrease_brightness,
     },
     .{
         .id = .increase_contrast,
         .title = "Increase Contrast (+10%)",
-        .shortcut_text = "L",
+        .shortcut_text = "C",
         .description = "Increase dynamic contrast by 10%",
         .show_in_palette = true,
-        .shortcuts = &.{.{ .key = .char_l }},
+        .shortcuts = &.{.{ .key = .char_c }},
         .intent = .increase_contrast,
     },
     .{
         .id = .decrease_contrast,
         .title = "Decrease Contrast (-10%)",
-        .shortcut_text = "K",
+        .shortcut_text = "Shift+C",
         .description = "Decrease dynamic contrast by 10%",
         .show_in_palette = true,
-        .shortcuts = &.{.{ .key = .char_k }},
+        .shortcuts = &.{.{ .key = .char_c, .mod = .{ .shift = true } }},
         .intent = .decrease_contrast,
     },
     .{
@@ -494,19 +516,19 @@ pub const actions = [_]ActionDef{
     .{
         .id = .set_brightness_dialog,
         .title = "Set Brightness (Type Value)...",
-        .shortcut_text = "Shift+B",
+        .shortcut_text = "",
         .description = "Open numeric input dialog to set exact brightness value (-1.0 to 1.0)",
         .show_in_palette = true,
-        .shortcuts = &.{.{ .key = .char_b, .mod = .{ .shift = true } }},
+        .shortcuts = &.{},
         .intent = .{ .set_palette = .{ .mode = .set_brightness } },
     },
     .{
         .id = .set_contrast_dialog,
         .title = "Set Contrast (Type Value)...",
-        .shortcut_text = "Shift+C",
+        .shortcut_text = "",
         .description = "Open numeric input dialog to set exact contrast value (0.0 to 5.0)",
         .show_in_palette = true,
-        .shortcuts = &.{.{ .key = .char_c, .mod = .{ .shift = true } }},
+        .shortcuts = &.{},
         .intent = .{ .set_palette = .{ .mode = .set_contrast } },
     },
     .{
@@ -521,10 +543,18 @@ pub const actions = [_]ActionDef{
     .{
         .id = .command_palette,
         .title = "Search Actions (Command Palette)",
-        .shortcut_text = "F1 / Ctrl+Shift+P",
+        .shortcut_text = ": / ? / F1 / Ctrl+Shift+P",
         .description = "Open interactive searchable command palette",
         .show_in_palette = true,
-        .shortcuts = &.{ .{ .key = .f1 }, .{ .key = .char_p, .mod = .{ .ctrl = true, .shift = true } } },
+        .shortcuts = &.{
+            .{ .key = .f1 },
+            .{ .key = .char_p, .mod = .{ .ctrl = true, .shift = true } },
+            .{ .key = .colon },
+            .{ .key = .semicolon, .mod = .{ .shift = true } },
+            .{ .key = .slash },
+            .{ .key = .question },
+            .{ .key = .slash, .mod = .{ .shift = true } },
+        },
         .intent = .{ .set_palette = .{ .mode = .actions } },
     },
     .{
@@ -589,6 +619,36 @@ pub const actions = [_]ActionDef{
             .args = "<toggle|true|false>",
             .description = "Toggle or set floating title bar overlay",
         },
+    },
+    .{
+        .id = .cycle_scale_mode,
+        .title = "Cycle Scale Mode",
+        .shortcut_text = "S",
+        .description = "Cycle through image scaling modes (Shrink, Full, Crop, Actual, Fit Width/Height)",
+        .show_in_palette = true,
+        .shortcuts = &.{.{ .key = .char_s }},
+        .intent = .cycle_scale_mode,
+    },
+    .{
+        .id = .cycle_filter,
+        .title = "Cycle Resampling Filter",
+        .shortcut_text = "Shift+S",
+        .description = "Cycle through GPU resampling shaders (Nearest, Linear, Mitchell, Lanczos3, etc.)",
+        .show_in_palette = true,
+        .shortcuts = &.{.{ .key = .char_s, .mod = .{ .shift = true } }},
+        .intent = .cycle_filter,
+    },
+    .{
+        .id = .refresh_directory,
+        .title = "Refresh Directory",
+        .shortcut_text = "F5 / Ctrl+R",
+        .description = "Re-scan the current directory or archive to pick up added/removed files",
+        .show_in_palette = true,
+        .shortcuts = &.{
+            .{ .key = .f5 },
+            .{ .key = .char_r, .mod = .{ .ctrl = true } },
+        },
+        .intent = .refresh_directory,
     },
 
     // --- Non-Palette Capabilities (CLI flags and IPC verbs) ---
@@ -766,8 +826,8 @@ pub const ipc_commands = blk: {
 test "actions registry projections" {
     const testing = std.testing;
 
-    // Palette count matches original 43 items + 1 new toggle_title = 44 items
-    try testing.expectEqual(@as(usize, 44), palette_action_items.len);
+    // Palette count: 44 previous items + 3 new items (cycle_scale_mode, cycle_filter, refresh_directory) = 47
+    try testing.expectEqual(@as(usize, 47), palette_action_items.len);
 
     // Exact index preservation
     try testing.expectEqualStrings("Navigate Directories...", palette_action_items[7].name);
