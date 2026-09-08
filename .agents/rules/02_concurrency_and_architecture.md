@@ -30,12 +30,21 @@
 - Producers MUST invoke `context.wakeUpMainThread()` after pushing events into the queue.
 - Disown or null pointer payloads inside `BackgroundEvent` prior to `defer evt.deinit()` execution.
 
-## 6. Zero-Dependency Intent Queue (`AppIntent`) & Co-Located Actions
+## 6. Zero-Dependency Intent Queue (`AppIntent`) & Unified Capabilities Registry
 
 - UI buttons, menu items, keyboard shortcuts, and IPC socket commands MUST map directly to high-level `intents.AppIntent` payloads from the standalone `intents` module (`src/intents/root.zig`).
 - UI inputs MUST NOT execute state mutations inline; they push `AppIntent` values into `AppState.pending_intents` via `state.pushIntent(intent)`.
 - `pending_intents` is an allocation-free `std.ArrayList(AppIntent)` cleared frame-over-frame using `.clearRetainingCapacity()`.
 - Intent execution logic is co-located inside `src/app/systems/intents.zig` (`executeIntent`), operating directly against domain sub-states (`vp`, `nav`, `ui`) without needing forwarding wrappers on `AppState`.
+- **Unified Capabilities Declarative Registry**:
+  - All user-facing features, keyboard shortcuts, Command Palette items, CLI flags, and IPC verbs MUST be declared centrally in `src/intents/actions.zig` (`actions: [_]ActionDef`).
+  - Compile-time projections (`palette_action_items`, `flat_shortcuts`, `action_cli_options`, `ipc_commands`) derive directly from `actions`. Modifying capabilities requires updating and verifying the exact projection counts in `test "actions registry projections"`.
+- **Contextual & Modal Input Isolation**:
+  - Modal inputs (e.g. Command Palette query editing) and spatial navigation (e.g. Vim panning `h`/`j`/`k`/`l`) MUST be guarded by active context checks (`ctx == .viewer_zoomed` or active `PaletteMode`).
+  - Text inputs must sanitize raw character events to reject ASCII control characters (`< 32` and `127`).
+  - Command Palette text entry must support standard Readline/Emacs navigation (`Ctrl+N`/`P`/`J`/`V`/`U`/`W`/`G`) and directory stepping (`Tab` / `Shift+Tab`).
+- **CLI & IPC Help Column Overflow Wrapping**:
+  - In `src/config/cli.zig`, help text formatters (`formatOptionsFor`, `formatIpcCommands`) must wrap flag descriptions onto a newline indented by `col_width` when flag strings or aliases exceed column width, preventing glued text without spacing.
 
 ## 7. Decoupled Data-Driven Input & System Passes
 

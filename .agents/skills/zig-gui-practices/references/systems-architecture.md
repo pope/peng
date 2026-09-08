@@ -107,3 +107,16 @@ ______________________________________________________________________
        - **Single Bit Test**: `isDimensionSwapped()` executes as a single bitwise AND (`test reg, 1`).
        - **Cache Line Efficiency**: Shrinks orientation fields in cache slots from 4 bytes (`f32`) to 1 byte (`enum(u2)`).
        - **Type Safety**: Replaces floating-point inequality checks (`rot != 0.0`) with compile-time verified enum comparisons (`orientation != .normal`).
+
+______________________________________________________________________
+
+## Declarative Capabilities & Input Isolation
+
+- **Rule 8 — Unified Declarative Action Registry & 4-Way Projection Invariant**:
+  - Capabilities are defined exclusively in `src/intents/actions.zig` via `ActionDef`:
+    - `palette_action_items`: Projected for Command Palette rendering and scoring.
+    - `flat_shortcuts`: Flattened mapping of `(Key, Modifiers) -> AppIntent`.
+    - `action_cli_options`: CLI flags and aliases merged into `app_config.cli.options`.
+    - `ipc_commands`: UDS IPC control commands projected for `peng-msg`.
+  - **Contextual Isolation**: High-frequency single-key shortcuts (e.g. `s` scale mode cycling, `Shift+S` filter cycling, `h`/`j`/`k`/`l` panning) must be context-isolated to avoid collisions during palette search or default viewing.
+  - **Display State Decoupling**: Runtime window toggles (`setFullscreen`, `setBordered`) operate exclusively through `DisplayState.windowed`. The headless harness (`DisplayState.headless`) must remain a no-op to guarantee deterministic offscreen CI test execution.
