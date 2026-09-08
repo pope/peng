@@ -127,7 +127,7 @@ pub fn renderFrame(
             frame_allocator,
         );
 
-        try renderTitleOverlay(
+        try renderBottomOverlayBar(
             ui_model,
             available_width,
             frame_allocator,
@@ -269,15 +269,14 @@ pub fn renderFrame(
     }
 }
 
-fn renderTitleOverlay(
+fn renderTitlePill(
     ui_model: UiViewModel,
     available_width: f32,
+    snackbar_reservation: f32,
+    progress: f32,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
 ) !void {
-    const progress = ui_model.anim(.title_overlay);
-    if (progress <= 0.001) return;
-
     const raw_title = ui_model.window_title;
 
     const is_loading = ui_model.is_loading_files;
@@ -320,7 +319,7 @@ fn renderTitleOverlay(
     }
 
     const pill_padding_w: f32 = 36.0; // 18 left + 18 right
-    const max_capsule_w = @max(available_width - 40.0, 100.0);
+    const max_capsule_w = @max(available_width - 40.0 - snackbar_reservation, 100.0);
     const title_budget = max_capsule_w - pill_padding_w - extra_w;
     const max_title_w = if (title_budget > 30.0) title_budget else 30.0;
 
@@ -350,19 +349,6 @@ fn renderTitleOverlay(
         .border = .{
             .width = .all(1),
             .color = theme.withAlpha(theme.surface0, 0.7 * progress),
-        },
-        .floating = .{
-            .attach_to = .to_parent,
-            .attach_points = .{
-                .element = .center_bottom,
-                .parent = .center_bottom,
-            },
-            .offset = .{
-                .x = 0,
-                .y = -14,
-            },
-            .z_index = 50,
-            .pointer_capture_mode = .passthrough,
         },
     })({
         clay.text(title_display, .{
@@ -405,6 +391,113 @@ fn renderTitleOverlay(
                 .font_size = 12,
                 .font_id = 0,
             });
+        }
+    });
+}
+
+fn renderSnackbarPill(
+    message: []const u8,
+    progress: f32,
+    enable_blur: bool,
+) void {
+    clay.UI()(.{
+        .id = clay.getElementId("SnackbarOverlay"),
+        .layout = .{
+            .sizing = .{
+                .w = .fit,
+                .h = .fit,
+            },
+            .direction = .left_to_right,
+            .child_alignment = .{ .x = .center, .y = .center },
+            .child_gap = 8,
+            .padding = .{
+                .left = 18,
+                .right = 18,
+                .top = 8,
+                .bottom = 8,
+            },
+        },
+        .background_color = theme.withAlpha(theme.mantle, 0.75 * progress),
+        .corner_radius = .all(10),
+        .user_data = if (enable_blur) @ptrFromInt(ElementTag.blurred_surface.toInt()) else null,
+        .border = .{
+            .width = .all(1),
+            .color = theme.withAlpha(theme.surface0, 0.7 * progress),
+        },
+    })({
+        clay.text(message, .{
+            .color = theme.withAlpha(theme.text, progress),
+            .font_size = 14,
+            .font_id = 0,
+            .wrap_mode = .none,
+        });
+    });
+}
+
+fn renderBottomOverlayBar(
+    ui_model: UiViewModel,
+    available_width: f32,
+    frame_allocator: std.mem.Allocator,
+    measure_data: *const MeasureTextUserData,
+) !void {
+    const title_progress = ui_model.anim(.title_overlay);
+    const has_title = title_progress > 0.001;
+    const snackbar_active = ui_model.snackbar.getActive();
+
+    if (!has_title and snackbar_active == null) return;
+
+    var snackbar_reservation: f32 = 0.0;
+    if (snackbar_active) |snack| {
+        var snack_cfg = clay.TextElementConfig{
+            .font_id = 0,
+            .font_size = 14,
+        };
+        const text_w = sdl3MeasureText(snack.message, &snack_cfg, measure_data).w;
+        snackbar_reservation = text_w + 36.0 + 12.0; // pill padding (36) + child_gap (12)
+    }
+
+    clay.UI()(.{
+        .id = clay.getElementId("BottomOverlayBar"),
+        .layout = .{
+            .sizing = .{
+                .w = .fit,
+                .h = .fit,
+            },
+            .direction = .left_to_right,
+            .child_alignment = .{ .x = .center, .y = .center },
+            .child_gap = 12,
+        },
+        .floating = .{
+            .attach_to = .to_parent,
+            .attach_points = .{
+                .element = .center_bottom,
+                .parent = .center_bottom,
+            },
+            .offset = .{
+                .x = 0,
+                .y = -14,
+            },
+            .z_index = 50,
+            .pointer_capture_mode = .passthrough,
+        },
+    })({
+        if (has_title) {
+            try renderTitlePill(
+                ui_model,
+                available_width,
+                snackbar_reservation,
+                title_progress,
+                frame_allocator,
+                measure_data,
+            );
+        }
+
+        if (snackbar_active) |snack| {
+            renderSnackbarPill(
+                snack.message,
+                snack.reveal,
+                ui_model.overlays.enable_blur,
+            );
         }
     });
 }

@@ -7,6 +7,7 @@ pub const AnimationChannel = enum(u8) {
     palette_reveal = 0,
     thumb_crossfade = 1,
     title_overlay = 2,
+    snackbar = 3,
 };
 
 pub const CHANNEL_COUNT: usize = @typeInfo(AnimationChannel).@"enum".fields.len;
@@ -18,6 +19,8 @@ pub const DURATION_PALETTE_CLOSE_MS: f32 = 100.0;
 pub const DURATION_THUMB_CROSSFADE_MS: f32 = 120.0;
 pub const DURATION_TITLE_OVERLAY_OPEN_MS: f32 = 140.0;
 pub const DURATION_TITLE_OVERLAY_CLOSE_MS: f32 = 200.0;
+pub const DURATION_SNACKBAR_OPEN_MS: f32 = 140.0;
+pub const DURATION_SNACKBAR_CLOSE_MS: f32 = 200.0;
 
 /// Metadata describing default durations, easings, and base values for an animation channel.
 pub const ChannelDescriptor = struct {
@@ -52,6 +55,13 @@ pub fn getDescriptor(channel: AnimationChannel) ChannelDescriptor {
             .close_easing = .ease_out_quad,
             .default_value = 0.0,
         },
+        .snackbar => .{
+            .default_open_duration_ms = DURATION_SNACKBAR_OPEN_MS,
+            .default_close_duration_ms = DURATION_SNACKBAR_CLOSE_MS,
+            .open_easing = .ease_out_quad,
+            .close_easing = .ease_out_quad,
+            .default_value = 0.0,
+        },
     };
 }
 
@@ -60,6 +70,7 @@ pub const CHANNEL_DESCRIPTORS = [CHANNEL_COUNT]ChannelDescriptor{
     getDescriptor(.palette_reveal),
     getDescriptor(.thumb_crossfade),
     getDescriptor(.title_overlay),
+    getDescriptor(.snackbar),
 };
 
 /// Backward-compatibility alias for legacy slot struct.

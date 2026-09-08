@@ -84,6 +84,12 @@ pub const TitleAction = enum {
     toggle,
 };
 
+pub const SnackbarAction = enum {
+    enable,
+    disable,
+    toggle,
+};
+
 pub const WindowlessAction = enum {
     enable,
     disable,
@@ -98,6 +104,7 @@ pub const IpcCommand = union(enum) {
     scale: intents.ScaleMode,
     manga: bool,
     title: TitleAction,
+    snackbar: SnackbarAction,
     windowless: WindowlessAction,
     palette: PaletteTarget,
     thumb: ThumbAction,
@@ -125,6 +132,11 @@ pub const IpcCommand = union(enum) {
                 .enable => return .{ .set_title = true },
                 .disable => return .{ .set_title = false },
                 .toggle => return .toggle_title,
+            },
+            .snackbar => |action| switch (action) {
+                .enable => return .{ .set_snackbar = true },
+                .disable => return .{ .set_snackbar = false },
+                .toggle => return .toggle_snackbar,
             },
             .windowless => |action| switch (action) {
                 .enable => return .{ .set_windowless = true },
@@ -220,6 +232,20 @@ pub const IpcCommand = union(enum) {
                 }
             } else {
                 return .{ .title = .toggle };
+            }
+        } else if (std.mem.eql(u8, cmd, "snackbar")) {
+            if (it.next()) |val| {
+                if (std.mem.eql(u8, val, "true") or std.mem.eql(u8, val, "enable") or std.mem.eql(u8, val, "on")) {
+                    return .{ .snackbar = .enable };
+                } else if (std.mem.eql(u8, val, "false") or std.mem.eql(u8, val, "disable") or std.mem.eql(u8, val, "off")) {
+                    return .{ .snackbar = .disable };
+                } else if (std.mem.eql(u8, val, "toggle")) {
+                    return .{ .snackbar = .toggle };
+                } else {
+                    return error.InvalidArgument;
+                }
+            } else {
+                return .{ .snackbar = .toggle };
             }
         } else if (std.mem.eql(u8, cmd, "windowless") or std.mem.eql(u8, cmd, "borderless")) {
             if (it.next()) |val| {
@@ -375,6 +401,18 @@ test "IpcCommand parsing" {
     const cmd_title_toggle_word = try IpcCommand.parse("title toggle");
     try std.testing.expectEqual(TitleAction.toggle, cmd_title_toggle_word.title);
     try std.testing.expectEqual(intents.AppIntent.toggle_title, cmd_title_toggle_word.toIntent().?);
+
+    const cmd_snackbar = try IpcCommand.parse("snackbar true");
+    try std.testing.expectEqual(SnackbarAction.enable, cmd_snackbar.snackbar);
+    try std.testing.expectEqual(intents.AppIntent{ .set_snackbar = true }, cmd_snackbar.toIntent().?);
+
+    const cmd_snackbar_toggle = try IpcCommand.parse("snackbar");
+    try std.testing.expectEqual(SnackbarAction.toggle, cmd_snackbar_toggle.snackbar);
+    try std.testing.expectEqual(intents.AppIntent.toggle_snackbar, cmd_snackbar_toggle.toIntent().?);
+
+    const cmd_snackbar_disable = try IpcCommand.parse("snackbar off");
+    try std.testing.expectEqual(SnackbarAction.disable, cmd_snackbar_disable.snackbar);
+    try std.testing.expectEqual(intents.AppIntent{ .set_snackbar = false }, cmd_snackbar_disable.toIntent().?);
 
     const cmd_wl_true = try IpcCommand.parse("windowless true");
     try std.testing.expectEqual(WindowlessAction.enable, cmd_wl_true.windowless);

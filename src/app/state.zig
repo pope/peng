@@ -127,10 +127,17 @@ pub const AppState = struct {
         return self.viewer.hasActiveAnimation() or self.viewer.navigation.is_loading_files.load(.acquire) or self.workers.isBusy() or self.viewer.isSlideshowActive();
     }
 
-    /// Returns the remaining millisecond deadline for transient holding timers (e.g. title auto-hide), or null if none active.
+    /// Returns the remaining millisecond deadline for transient holding timers (e.g. title auto-hide, snackbar), or null if none active.
     pub fn getWaitTimeoutMs(self: *const AppState, now: u64) ?i32 {
+        var min_rem: ?u64 = null;
         if (!self.viewer.ui.overlays.show_title and self.viewer.ui.title_auto_hide_timeout_ms > 0) {
-            const rem = self.viewer.ui.title_auto_hide_timeout_ms -| now;
+            min_rem = self.viewer.ui.title_auto_hide_timeout_ms -| now;
+        }
+        if (self.viewer.ui.snackbar.timeout_ms > 0) {
+            const rem = self.viewer.ui.snackbar.timeout_ms -| now;
+            min_rem = if (min_rem) |cur| @min(cur, rem) else rem;
+        }
+        if (min_rem) |rem| {
             return @intCast(@min(rem, 2000));
         }
         return null;

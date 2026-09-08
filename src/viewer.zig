@@ -197,6 +197,17 @@ pub fn updateFrame(
         .palette_reveal = app_state.viewer.animations.get(.palette_reveal),
         .thumb_crossfade = app_state.viewer.animations.get(.thumb_crossfade),
         .title_overlay_reveal = app_state.viewer.animations.get(.title_overlay),
+        .snackbar = blk: {
+            const reveal = app_state.viewer.animations.get(.snackbar);
+            const msg = app_state.viewer.ui.snackbar.getMessage();
+            if (reveal > 0.001 and msg.len > 0) {
+                break :blk .{ .active = .{
+                    .reveal = reveal,
+                    .message = msg,
+                } };
+            }
+            break :blk .none;
+        },
         .anim_values = app_state.viewer.animations.values,
         .debug_show_thumb = app_state.viewer.ui.overlays.debug_show_thumb,
         .is_thumb_crossfading = blk: {

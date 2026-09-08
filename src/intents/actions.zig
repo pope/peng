@@ -105,6 +105,7 @@ pub const ActionId = enum {
     toggle_manga_mode,
     toggle_stats,
     toggle_title,
+    toggle_snackbar,
     toggle_fullscreen,
     toggle_windowless,
     file_finder,
@@ -623,6 +624,20 @@ pub const actions = [_]ActionDef{
         },
     },
     .{
+        .id = .toggle_snackbar,
+        .title = "Toggle Snackbar Notifications",
+        .shortcut_text = "",
+        .description = "Toggle visual notification confirmations for app actions",
+        .show_in_palette = true,
+        .shortcuts = &.{},
+        .intent = .toggle_snackbar,
+        .ipc = .{
+            .name = "snackbar",
+            .args = "<toggle|true|false>",
+            .description = "Toggle or set visual snackbar notifications",
+        },
+    },
+    .{
         .id = .cycle_scale_mode,
         .title = "Cycle Scale Mode",
         .shortcut_text = "S",
@@ -845,8 +860,8 @@ pub const ipc_commands = blk: {
 test "actions registry projections" {
     const testing = std.testing;
 
-    // Palette count: 47 previous items + 1 new item (toggle_windowless) = 48
-    try testing.expectEqual(@as(usize, 48), palette_action_items.len);
+    // Palette count: 48 previous items + 1 new item (toggle_snackbar) = 49
+    try testing.expectEqual(@as(usize, 49), palette_action_items.len);
 
     // Exact index preservation
     try testing.expectEqualStrings("Navigate Directories...", palette_action_items[7].name);
@@ -868,7 +883,7 @@ test "actions registry projections" {
     try testing.expectEqual(OptionId.scale, action_cli_options[4].id);
 
     // IPC commands projection
-    try testing.expectEqual(@as(usize, 14), ipc_commands.len);
+    try testing.expectEqual(@as(usize, 15), ipc_commands.len);
 }
 
 test "actions registry invariants and consistency" {

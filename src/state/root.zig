@@ -9,6 +9,7 @@ pub const easing = @import("easing.zig");
 pub const fuzzig = @import("fuzzig");
 pub const navigation = @import("navigation.zig");
 pub const palette_state = @import("palette_state.zig");
+pub const snackbar = @import("snackbar.zig");
 pub const types = @import("types.zig");
 pub const ui_state = @import("ui_state.zig");
 pub const view_model = @import("view_model.zig");
@@ -68,7 +69,14 @@ pub const DURATION_PALETTE_CLOSE_MS = animation_state.DURATION_PALETTE_CLOSE_MS;
 pub const DURATION_THUMB_CROSSFADE_MS = animation_state.DURATION_THUMB_CROSSFADE_MS;
 pub const DURATION_TITLE_OVERLAY_OPEN_MS = animation_state.DURATION_TITLE_OVERLAY_OPEN_MS;
 pub const DURATION_TITLE_OVERLAY_CLOSE_MS = animation_state.DURATION_TITLE_OVERLAY_CLOSE_MS;
+pub const DURATION_SNACKBAR_OPEN_MS = animation_state.DURATION_SNACKBAR_OPEN_MS;
+pub const DURATION_SNACKBAR_CLOSE_MS = animation_state.DURATION_SNACKBAR_CLOSE_MS;
 pub const EasingType = easing.EasingType;
+pub const SnackbarState = snackbar.SnackbarState;
+pub const SnackbarRule = snackbar.SnackbarRule;
+pub const SnackbarTrigger = snackbar.SnackbarTrigger;
+pub const SnackbarDisplay = types.SnackbarDisplay;
+pub const ActiveSnackbar = types.ActiveSnackbar;
 
 test {
     _ = types;
@@ -80,4 +88,5 @@ test {
     _ = animation_state;
     _ = easing;
     _ = view_model;
+    _ = snackbar;
 }

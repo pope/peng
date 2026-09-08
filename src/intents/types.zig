@@ -144,6 +144,8 @@ pub const AppIntent = union(enum) {
     set_stats: bool,
     toggle_title,
     set_title: bool,
+    toggle_snackbar,
+    set_snackbar: bool,
     toggle_blur,
     set_blur: bool,
     toggle_fullscreen,

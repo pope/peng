@@ -1,6 +1,7 @@
 const std = @import("std");
 const types = @import("types.zig");
 const palette_state = @import("palette_state.zig");
+const snackbar = @import("snackbar.zig");
 
 const UiRenderMetrics = types.UiRenderMetrics;
 const OverlayState = types.OverlayState;
@@ -15,6 +16,7 @@ pub const UiState = struct {
     palette: palette_state.PaletteState,
     overlays: OverlayState = .{},
     title_auto_hide_timeout_ms: u64 = 0,
+    snackbar: snackbar.SnackbarState = .{},
     metrics: UiRenderMetrics = .{},
     screenshot_mode: ScreenshotMode = .idle,
 

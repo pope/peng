@@ -33,6 +33,22 @@ pub fn sysUpdateAnimations(ctx: FrameContext) void {
         }
     }
 
+    // Check if transient snackbar auto-hide timeout has expired
+    if (state.viewer.ui.snackbar.timeout_ms > 0) {
+        const now = sdl.timer.getTicks();
+        if (now >= state.viewer.ui.snackbar.timeout_ms) {
+            state.viewer.ui.snackbar.timeout_ms = 0;
+            const progress = anim.get(.snackbar);
+            const dur = @max(state_pkg.DURATION_SNACKBAR_CLOSE_MS * progress, 30.0);
+            anim.start(.snackbar, 0.0, dur, .ease_out_quad);
+        }
+    }
+
+    // Clear snackbar message buffer once fade-out has completely settled
+    if (!anim.isActive(.snackbar) and anim.get(.snackbar) <= 0.001 and state.viewer.ui.snackbar.timeout_ms == 0 and state.viewer.ui.snackbar.message_len > 0) {
+        state.viewer.ui.snackbar.clear();
+    }
+
     // Check if palette close animation has finished settling to 0.0 (even if already settled)
     if (state.viewer.ui.palette.is_closing) {
         if (!anim.isActive(.palette_reveal) or anim.get(.palette_reveal) <= 0.001) {
@@ -188,4 +204,39 @@ test "sysUpdateAnimations title_overlay auto-hide timeout and fade-out" {
     });
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), state.viewer.animations.get(.title_overlay), 0.001);
     try std.testing.expect(!state.viewer.hasActiveAnimation());
+}
+
+test "sysUpdateAnimations snackbar auto-hide timeout and fade-out" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    const now = sdl.timer.getTicks();
+
+    // Start snackbar animation with message and auto-hide timeout in the past
+    state.viewer.ui.snackbar.setMessage("Filter: Lanczos3");
+    state.viewer.animations.start(.snackbar, 1.0, state_pkg.DURATION_SNACKBAR_OPEN_MS, .ease_out_quad);
+    state.viewer.animations.settleAll();
+    state.viewer.ui.snackbar.timeout_ms = now -| 10;
+
+    sysUpdateAnimations(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+    });
+
+    try std.testing.expectEqual(@as(u64, 0), state.viewer.ui.snackbar.timeout_ms);
+    try std.testing.expect(state.viewer.animations.isActive(.snackbar));
+
+    // Tick through close duration
+    sysUpdateAnimations(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .delta_time_ms = state_pkg.DURATION_SNACKBAR_CLOSE_MS,
+    });
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), state.viewer.animations.get(.snackbar), 0.001);
+    try std.testing.expect(!state.viewer.hasActiveAnimation());
+    // Buffer cleared after settled
+    try std.testing.expectEqual(@as(usize, 0), state.viewer.ui.snackbar.getMessage().len);
 }

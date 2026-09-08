@@ -315,6 +315,7 @@ pub const OverlayState = struct {
     show_info: bool = false,
     show_stats: bool = false,
     show_title: bool = false,
+    show_snackbar: bool = true,
     debug_show_thumb: bool = false,
     enable_blur: bool = true,
     info_offset_x: f32 = 20.0,
@@ -599,6 +600,26 @@ pub const SlideshowMode = union(enum) {
             .inactive => {},
             .active => |*a| a.timer_ms = 0.0,
         }
+    }
+};
+
+/// Active payload for the action confirmation snackbar.
+pub const ActiveSnackbar = struct {
+    reveal: f32,
+    message: []const u8,
+};
+
+/// Presentation state of the action confirmation snackbar in the UI view model.
+pub const SnackbarDisplay = union(enum) {
+    none,
+    active: ActiveSnackbar,
+
+    /// Returns the active payload if the snackbar is currently active, or null if none.
+    pub inline fn getActive(self: SnackbarDisplay) ?ActiveSnackbar {
+        return switch (self) {
+            .none => null,
+            .active => |a| a,
+        };
     }
 };
 
@@ -903,3 +924,14 @@ test "ElementTag.fromInt" {
     try std.testing.expectEqual(ElementTag.none, ElementTag.fromInt(9999));
     try std.testing.expectEqual(ElementTag.none, ElementTag.fromInt(0x7fffffffd000));
 }
+
+test "SnackbarDisplay getActive" {
+    const none_display: SnackbarDisplay = .none;
+    try std.testing.expect(none_display.getActive() == null);
+
+    const active_display: SnackbarDisplay = .{ .active = .{ .reveal = 0.85, .message = "Filter: Lanczos3" } };
+    const payload = active_display.getActive().?;
+    try std.testing.expectEqual(@as(f32, 0.85), payload.reveal);
+    try std.testing.expectEqualStrings("Filter: Lanczos3", payload.message);
+}
+

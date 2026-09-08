@@ -177,6 +177,24 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 @max(state.DURATION_TITLE_OVERLAY_CLOSE_MS * progress, 30.0);
             self.viewer.animations.start(.title_overlay, target, dur, .ease_out_quad);
         },
+        .toggle_snackbar => {
+            ui.overlays.show_snackbar = !ui.overlays.show_snackbar;
+            if (!ui.overlays.show_snackbar) {
+                ui.snackbar.clear();
+                const progress = self.viewer.animations.get(.snackbar);
+                const dur = @max(state.DURATION_SNACKBAR_CLOSE_MS * progress, 30.0);
+                self.viewer.animations.start(.snackbar, 0.0, dur, .ease_out_quad);
+            }
+        },
+        .set_snackbar => |val| {
+            ui.overlays.show_snackbar = val;
+            if (!val) {
+                ui.snackbar.clear();
+                const progress = self.viewer.animations.get(.snackbar);
+                const dur = @max(state.DURATION_SNACKBAR_CLOSE_MS * progress, 30.0);
+                self.viewer.animations.start(.snackbar, 0.0, dur, .ease_out_quad);
+            }
+        },
         .toggle_blur => ui.overlays.enable_blur = !ui.overlays.enable_blur,
         .set_blur => |val| ui.overlays.enable_blur = val,
         .toggle_fullscreen => {
@@ -231,6 +249,28 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
     }
 }
 
+/// Dispatches declarative notification trigger matching for an executed intent.
+fn triggerSnackbarForIntent(self: *AppState, intent: intents.AppIntent) void {
+    if (!self.viewer.ui.overlays.show_snackbar) return;
+    const rule = state.snackbar.findRule(intent) orelse return;
+    if (!self.viewer.ui.snackbar.isTriggerEnabled(rule.trigger)) return;
+
+    var buf: [state.snackbar.MAX_SNACKBAR_LEN]u8 = undefined;
+    const msg = rule.format_fn(.{
+        .viewport = &self.viewer.viewport,
+        .manga_mode = self.viewer.navigation.manga_mode,
+    }, &buf);
+
+    if (msg.len > 0) {
+        self.viewer.ui.snackbar.setMessage(msg);
+        const now = sdl.timer.getTicks();
+        self.viewer.ui.snackbar.timeout_ms = now + rule.duration_ms;
+        const progress = self.viewer.animations.get(.snackbar);
+        const dur = @max(state.DURATION_SNACKBAR_OPEN_MS * (1.0 - progress), 30.0);
+        self.viewer.animations.start(.snackbar, 1.0, dur, .ease_out_quad);
+    }
+}
+
 /// System Pass: Dispatches all queued application intents in FIFO order to update domain and visual state,
 /// clearing the intent buffer once execution completes.
 pub fn sysExecuteIntents(ctx: FrameContext) !void {
@@ -238,6 +278,7 @@ pub fn sysExecuteIntents(ctx: FrameContext) !void {
     if (self.pending_intents.items.len == 0) return;
     for (self.pending_intents.items) |intent| {
         try executeIntent(self, intent);
+        triggerSnackbarForIntent(self, intent);
     }
     self.clearIntents();
 }
@@ -426,4 +467,48 @@ test "fast scrubbing triggers title overlay auto-hide" {
     // Should have triggered title auto-hide timeout and started animation
     try testing.expect(app_st.viewer.ui.title_auto_hide_timeout_ms >= now + 1400);
     try testing.expect(app_st.viewer.animations.isActive(.title_overlay));
+}
+
+test "sysExecuteIntents triggers snackbar on filter and scale changes" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    var threaded = std.Threaded{};
+    const io = threaded.io();
+
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    app_st.viewer.ui.overlays.show_snackbar = true;
+
+    // Push filter intent
+    try app_st.pushIntent(.{ .set_filter = .mitchell });
+    try sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+    });
+
+    try testing.expectEqualStrings("Filter: Mitchell-Netravali", app_st.viewer.ui.snackbar.getMessage());
+    try testing.expect(app_st.viewer.animations.isActive(.snackbar));
+    try testing.expect(app_st.viewer.ui.snackbar.timeout_ms > 0);
+
+    // Push scale intent
+    try app_st.pushIntent(.{ .set_scale = .crop });
+    try sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+    });
+
+    try testing.expectEqualStrings("Scale: Fill Window (Crop)", app_st.viewer.ui.snackbar.getMessage());
+
+    // Toggle snackbar off disables notifications
+    try app_st.pushIntent(.toggle_snackbar);
+    try sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+    });
+    try testing.expect(!app_st.viewer.ui.overlays.show_snackbar);
+    try testing.expectEqual(@as(usize, 0), app_st.viewer.ui.snackbar.getMessage().len);
 }

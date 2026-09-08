@@ -478,6 +478,32 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
+    // Snackbar Overlay Tests
+    {
+        // 1. Explicitly enable snackbar notifications in test mode
+        try sendCommand(socket_path, "snackbar true");
+
+        // 2. Trigger snackbar with title hidden -> Centered Test
+        try sendCommand(socket_path, "filter mitchell");
+        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "snackbar_centered.png", "snackbar_centered.png", update_baselines, max_tolerance_pct)) {
+            steps_with_discrepancies += 1;
+        }
+
+        // 3. Turn title ON -> Side-by-side Test (Title on left, Snackbar on right, group centered)
+        try sendCommand(socket_path, "title true");
+        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "snackbar_with_title.png", "snackbar_with_title.png", update_baselines, max_tolerance_pct)) {
+            steps_with_discrepancies += 1;
+        }
+
+        // 4. Dismissal & Settlement Test
+        try sendCommand(socket_path, "snackbar false");
+        try sendCommand(socket_path, "title false");
+        try sendCommand(socket_path, "filter linear");
+        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "snackbar_dismissed.png", "title_overlay_off.png", update_baselines, max_tolerance_pct)) {
+            steps_with_discrepancies += 1;
+        }
+    }
+
     // Windowless / Borderless IPC Tests
     {
         try sendCommand(socket_path, "windowless true");
@@ -497,6 +523,7 @@ pub fn main(init: std.process.Init) !void {
         try expectCommandFailure(socket_path, "pan 1.0 inf");
         try expectCommandFailure(socket_path, "adjust nan 1.0");
         try expectCommandFailure(socket_path, "title invalid");
+        try expectCommandFailure(socket_path, "snackbar invalid");
         try expectCommandFailure(socket_path, "windowless invalid");
         try expectCommandFailure(socket_path, "borderless invalid");
         try expectCommandFailure(socket_path, "filter invalid");

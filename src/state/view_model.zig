@@ -11,6 +11,7 @@ const OverlayState = types.OverlayState;
 const ViewportParams = types.ViewportParams;
 const ViewerStats = types.ViewerStats;
 const UiRenderMetricsSnapshot = types.UiRenderMetricsSnapshot;
+const SnackbarDisplay = types.SnackbarDisplay;
 const AnimationChannel = animation_state.AnimationChannel;
 
 /// Complete read-only UI frame snapshot separating the application update phase from the render phase.
@@ -31,6 +32,7 @@ pub const UiViewModel = struct {
     palette_reveal: f32 = 1.0,
     thumb_crossfade: f32 = 1.0,
     title_overlay_reveal: f32 = 0.0,
+    snackbar: SnackbarDisplay = .none,
     anim_values: [32]f32 = [_]f32{0.0} ** 32,
     debug_show_thumb: bool,
     is_thumb_crossfading: bool = false,
@@ -66,4 +68,5 @@ test "UiViewModel current_time_ms and default values" {
     };
     try std.testing.expectEqual(@as(u64, 0), model.current_time_ms);
     try std.testing.expectEqual(@as(f32, 0.0), model.anim(.palette_reveal));
+    try std.testing.expect(model.snackbar == .none);
 }
