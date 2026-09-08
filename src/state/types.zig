@@ -2,6 +2,9 @@ const intents = @import("intents");
 const sdl = @import("sdl");
 const std = @import("std");
 
+const Key = intents.Key;
+const KeyModifiers = intents.KeyModifiers;
+
 /// Normalized texture UV coordinates defining a sub-rectangle for rendering and cropping.
 pub const UvRect = struct {
     u_min: f32 = 0.0,
@@ -92,11 +95,6 @@ pub const MediaEntry = union(enum) {
         }
     }
 };
-
-/// Re-export normalized keyboard definitions from intents module.
-pub const Key = intents.Key;
-pub const KeyModifiers = intents.KeyModifiers;
-pub const KeyboardShortcut = intents.KeyboardShortcut;
 
 /// Type-safe zoom factor wrapper protecting against zero-initialization, division-by-zero, and NaN.
 pub const ZoomFactor = struct {
@@ -315,6 +313,7 @@ pub const OverlayState = struct {
     show_info: bool = false,
     show_stats: bool = false,
     show_title: bool = false,
+    auto_title: bool = true,
     show_snackbar: bool = true,
     debug_show_thumb: bool = false,
     enable_blur: bool = true,
@@ -570,20 +569,33 @@ pub const CacheEntry = struct {
     }
 };
 
-/// Automatic slideshow playback mode, advance interval, and accumulated frame timer.
+/// Automatic slideshow playback mode, advance interval, accumulated frame timer, and pause state.
 pub const SlideshowMode = union(enum) {
     inactive,
     active: struct {
         interval_s: f32,
-        timer_ms: f64,
+        timer_ms: f64 = 0.0,
+        is_paused: bool = false,
     },
 
+    pub const MIN_INTERVAL_S: f32 = 0.1;
+    pub const MAX_INTERVAL_S: f32 = 3600.0;
+
+    /// Sanitizes and clamps raw interval value into valid positive non-NaN bounds [0.1s, 3600.0s].
+    pub fn sanitizeInterval(raw: f32) f32 {
+        if (std.math.isNan(raw) or std.math.isInf(raw) or raw <= 0.0) {
+            return 3.0;
+        }
+        return std.math.clamp(raw, MIN_INTERVAL_S, MAX_INTERVAL_S);
+    }
+
     /// Advances the internal slideshow timer by `delta_ms`; returns `true` if the interval has elapsed.
+    /// Does NOT advance when paused or inactive.
     pub fn tick(self: *SlideshowMode, delta_ms: f32) bool {
         switch (self.*) {
             .inactive => return false,
             .active => |*data| {
-                if (data.interval_s <= 0.0) return false;
+                if (data.is_paused or data.interval_s <= 0.0) return false;
                 data.timer_ms += delta_ms;
                 if (data.timer_ms >= data.interval_s * 1000.0) {
                     data.timer_ms = 0.0;
@@ -594,12 +606,67 @@ pub const SlideshowMode = union(enum) {
         }
     }
 
-    /// Resets the slideshow timer accumulator to zero without changing the interval.
+    /// Resets the slideshow timer accumulator to zero without changing the interval or pause state.
     pub fn resetTimer(self: *SlideshowMode) void {
         switch (self.*) {
             .inactive => {},
             .active => |*a| a.timer_ms = 0.0,
         }
+    }
+
+    /// Returns `true` if slideshow is active and currently paused.
+    pub inline fn isPaused(self: *const SlideshowMode) bool {
+        return switch (self.*) {
+            .inactive => false,
+            .active => |a| a.is_paused,
+        };
+    }
+
+    /// Pauses timer accumulation without changing interval or resetting elapsed progress.
+    pub fn pause(self: *SlideshowMode) void {
+        switch (self.*) {
+            .inactive => {},
+            .active => |*a| a.is_paused = true,
+        }
+    }
+
+    /// Resumes timer accumulation from its current elapsed millisecond position.
+    pub fn unpause(self: *SlideshowMode) void {
+        switch (self.*) {
+            .inactive => {},
+            .active => |*a| a.is_paused = false,
+        }
+    }
+
+    /// Alias for unpause
+    pub const resumePlayback = unpause;
+
+    /// Toggles the paused state if active.
+    pub fn togglePause(self: *SlideshowMode) void {
+        switch (self.*) {
+            .inactive => {},
+            .active => |*a| a.is_paused = !a.is_paused,
+        }
+    }
+};
+
+/// Active slideshow transition payload tracking the outgoing slide during a dissolve animation.
+pub const ActiveSlideshowTransition = struct {
+    prev_index: usize,
+    prev_rotation: f32,
+};
+
+/// Active slideshow transition state tracking the outgoing slide during a dissolve animation.
+pub const SlideshowTransition = union(enum) {
+    none,
+    active: ActiveSlideshowTransition,
+
+    /// Returns the protected previous slide index if a crossfade transition is active.
+    pub inline fn getPrevIndex(self: SlideshowTransition) ?usize {
+        return switch (self) {
+            .none => null,
+            .active => |t| t.prev_index,
+        };
     }
 };
 
@@ -759,7 +826,10 @@ pub const ActiveScreenshot = struct {
     /// Writes an "ERR <name>\n" error response back to the client IPC stream and frees request resources.
     pub fn respondErr(self: *ActiveScreenshot, io: std.Io, gpa: std.mem.Allocator, err: anyerror) void {
         var response_buf: [128]u8 = undefined;
-        const response = std.fmt.bufPrint(&response_buf, "ERR {s}\n", .{@errorName(err)}) catch "ERR SaveFailed\n";
+        const response = std.fmt.bufPrint(&response_buf, "ERR {s}\n", .{@errorName(err)}) catch |print_err| blk: {
+            std.log.warn("Failed to format IPC error response: {}", .{print_err});
+            break :blk "ERR SaveFailed\n";
+        };
         var write_buf: [128]u8 = undefined;
         var writer = self.stream.writer(io, &write_buf);
         writer.interface.writeAll(response) catch |werr| std.log.warn("Screenshot response failed: {}", .{werr});
@@ -934,4 +1004,58 @@ test "SnackbarDisplay getActive" {
     try std.testing.expectEqual(@as(f32, 0.85), payload.reveal);
     try std.testing.expectEqualStrings("Filter: Lanczos3", payload.message);
 }
+
+test "SlideshowMode lifecycle, pause, resume, and sanitize" {
+    // Sanitize tests
+    try std.testing.expectEqual(@as(f32, 3.0), SlideshowMode.sanitizeInterval(0.0));
+    try std.testing.expectEqual(@as(f32, 3.0), SlideshowMode.sanitizeInterval(-5.0));
+    try std.testing.expectEqual(@as(f32, 3.0), SlideshowMode.sanitizeInterval(std.math.nan(f32)));
+    try std.testing.expectEqual(@as(f32, 0.1), SlideshowMode.sanitizeInterval(0.01));
+    try std.testing.expectEqual(@as(f32, 3600.0), SlideshowMode.sanitizeInterval(99999.0));
+    try std.testing.expectEqual(@as(f32, 2.5), SlideshowMode.sanitizeInterval(2.5));
+
+    // Inactive mode does not tick
+    var mode: SlideshowMode = .inactive;
+    try std.testing.expect(!mode.isPaused());
+    try std.testing.expect(!mode.tick(1000.0));
+
+    // Active mode ticking
+    mode = .{ .active = .{ .interval_s = 2.0 } };
+    try std.testing.expect(!mode.isPaused());
+
+    // Advance 1s (halfway) -> returns false
+    try std.testing.expect(!mode.tick(1000.0));
+    try std.testing.expectEqual(@as(f64, 1000.0), mode.active.timer_ms);
+
+    // Pause slideshow -> tick returns false and timer DOES NOT advance
+    mode.pause();
+    try std.testing.expect(mode.isPaused());
+    try std.testing.expect(!mode.tick(1000.0));
+    try std.testing.expectEqual(@as(f64, 1000.0), mode.active.timer_ms);
+
+    // Resume -> timer continues from 1000ms
+    mode.unpause();
+    try std.testing.expect(!mode.isPaused());
+    try std.testing.expect(mode.tick(1000.0)); // 1000 + 1000 = 2000ms >= 2.0s -> fires and resets
+    try std.testing.expectEqual(@as(f64, 0.0), mode.active.timer_ms);
+
+    // Toggle pause
+    mode.togglePause();
+    try std.testing.expect(mode.isPaused());
+    mode.togglePause();
+    try std.testing.expect(!mode.isPaused());
+}
+
+test "SlideshowTransition getPrevIndex and variants" {
+    var trans: SlideshowTransition = .none;
+    try std.testing.expectEqual(@as(?usize, null), trans.getPrevIndex());
+
+    trans = .{ .active = .{ .prev_index = 42, .prev_rotation = 180.0 } };
+    try std.testing.expectEqual(@as(?usize, 42), trans.getPrevIndex());
+    try std.testing.expectEqual(@as(f32, 180.0), trans.active.prev_rotation);
+
+    trans = .none;
+    try std.testing.expectEqual(@as(?usize, null), trans.getPrevIndex());
+}
+
 

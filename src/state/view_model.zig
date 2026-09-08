@@ -14,6 +14,18 @@ const UiRenderMetricsSnapshot = types.UiRenderMetricsSnapshot;
 const SnackbarDisplay = types.SnackbarDisplay;
 const AnimationChannel = animation_state.AnimationChannel;
 
+/// Active dissolve payload for slideshow transitions between frames.
+pub const ActiveSlideshowDissolve = struct {
+    prev_entry: CacheEntry,
+    prev_rotation: f32,
+};
+
+/// Active dissolve state for slideshow transitions between frames.
+pub const SlideshowDissolve = union(enum) {
+    none,
+    active: ActiveSlideshowDissolve,
+};
+
 /// Complete read-only UI frame snapshot separating the application update phase from the render phase.
 pub const UiViewModel = struct {
     is_fullscreen: bool,
@@ -36,6 +48,7 @@ pub const UiViewModel = struct {
     anim_values: [32]f32 = [_]f32{0.0} ** 32,
     debug_show_thumb: bool,
     is_thumb_crossfading: bool = false,
+    slideshow_dissolve: SlideshowDissolve = .none,
     current_time_ms: u64 = 0,
     stats: ViewerStats = .{},
     render_metrics: UiRenderMetricsSnapshot = .{},

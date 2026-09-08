@@ -17,7 +17,7 @@ pub const NavigationState = struct {
     current_index: ?usize = null,
     slideshow: SlideshowMode = .inactive,
     manga_mode: bool = false,
-    is_loading_files: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    is_loading_files: std.atomic.Value(bool) = .init(false),
     last_nav_time_ms: u64 = 0,
     direction: NavDirection = .forward,
     last_scanned_dir: std.ArrayList(u8) = .empty,
@@ -28,6 +28,7 @@ pub const NavigationState = struct {
         var self = NavigationState{
             .directory_arena = std.heap.ArenaAllocator.init(allocator),
         };
+        errdefer self.deinit(allocator);
         // 32 image path pointers: avoids reallocations when loading CLI args or medium-sized directory lists
         try self.image_list.ensureTotalCapacity(allocator, 32);
         // 128 bytes: accommodates standard file directory path strings (most paths are < 128 bytes)

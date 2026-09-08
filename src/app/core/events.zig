@@ -89,7 +89,7 @@ pub const BackgroundEvent = union(enum) {
     ipc_command: *ipc.IpcCommandData,
 
     /// Releases heap memory or SDL surfaces owned by this background event payload.
-    pub fn deinit(self: *BackgroundEvent, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *const BackgroundEvent, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .thumb_decoded => |t| {
                 if (t.surface) |surf| surf.destroy();
@@ -110,8 +110,8 @@ pub const BackgroundEvent = union(enum) {
         }
     }
 
-    /// Cleans up event resources when draining or tearing down the MPSC event queue.
-    pub fn deinitQueueItem(self: *BackgroundEvent, allocator: std.mem.Allocator, io: std.Io) void {
+    /// Cleans up event resources when draining or tearing down the Mpsc event queue.
+    pub fn deinitQueueItem(self: *const BackgroundEvent, allocator: std.mem.Allocator, io: std.Io) void {
         switch (self.*) {
             .ipc_command => |cmd| {
                 cmd.client_stream.close(io);

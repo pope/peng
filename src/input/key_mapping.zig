@@ -1,8 +1,10 @@
-const std = @import("std");
-const state = @import("state");
 const intents = @import("intents");
-const Key = state.Key;
-const KeyModifiers = state.KeyModifiers;
+const state = @import("state");
+const std = @import("std");
+
+const AppIntent = intents.AppIntent;
+const Key = intents.Key;
+const KeyModifiers = intents.KeyModifiers;
 
 pub const KeyContext = enum {
     global,

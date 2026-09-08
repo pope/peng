@@ -10,8 +10,8 @@ const AppIntent = intents.AppIntent;
 const AppState = app_state.AppState;
 const FrameContext = context.FrameContext;
 const FrameInput = state_pkg.FrameInput;
-const Key = state_pkg.Key;
-const KeyModifiers = state_pkg.KeyModifiers;
+const Key = intents.Key;
+const KeyModifiers = intents.KeyModifiers;
 const PaletteMode = intents.PaletteMode;
 const key_mapping = input_pkg.key_mapping;
 

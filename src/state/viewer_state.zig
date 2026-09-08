@@ -9,6 +9,7 @@ const AnimationState = animation_state.AnimationState;
 const DisplayState = types.DisplayState;
 const DragState = types.DragState;
 const NavigationState = navigation.NavigationState;
+const SlideshowTransition = types.SlideshowTransition;
 const UiState = ui_state.UiState;
 const ViewerStats = types.ViewerStats;
 const ViewportParams = types.ViewportParams;
@@ -28,7 +29,14 @@ pub const ViewerState = struct {
     display: DisplayState = .headless,
     drag_state: DragState = .none,
 
+    slideshow_transition: SlideshowTransition = .none,
+
     running: bool = true,
+
+    /// Returns the protected previous slide index if a slideshow dissolve transition is active.
+    pub inline fn getSlideshowPrevIndex(self: *const ViewerState) ?usize {
+        return self.slideshow_transition.getPrevIndex();
+    }
 
     /// Initializes a headless `ViewerState` instance for CLI, testing, and batch processing.
     pub fn initHeadless(allocator: std.mem.Allocator) !ViewerState {

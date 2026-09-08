@@ -102,12 +102,17 @@ pub const AppState = struct {
     /// Pre-allocates initial buffer capacities for intent, event, and IPC command queues.
     pub fn ensureInitialCapacities(self: *AppState) !void {
         if (self.workers.cached_cpu_count == 0) {
-            self.workers.cached_cpu_count = std.Thread.getCpuCount() catch 4;
+            self.workers.cached_cpu_count = std.Thread.getCpuCount() catch |err| blk: {
+                std.log.warn("Failed to query CPU core count: {}, defaulting to 4", .{err});
+                break :blk 4;
+            };
         }
         // 16 intents: accommodates worst-case enqueued IPC, keyboard, palette, and slideshow intents in a single tick
         try self.pending_intents.ensureTotalCapacity(self.allocator, 16);
+        errdefer self.pending_intents.deinit(self.allocator);
         // 16 events: accommodates concurrent worker background events (decodes, EXIF, path scans) processed per tick
         try self.event_batch.ensureTotalCapacity(self.allocator, 16);
+        errdefer self.event_batch.deinit(self.allocator);
         // 8 commands: accommodates queued socket IPC command buffers
         try self.pending_ipc_commands.ensureTotalCapacity(self.allocator, 8);
     }
@@ -122,9 +127,47 @@ pub const AppState = struct {
         self.pending_intents.clearRetainingCapacity();
     }
 
-    /// Returns `true` if files are currently loading, background workers are active, slideshow is running, or animations are active.
+    /// Returns `true` if files are currently loading, background workers are active, active unpaused slideshow is running, or animations are active.
     pub inline fn isBusy(self: *const AppState) bool {
-        return self.viewer.hasActiveAnimation() or self.viewer.navigation.is_loading_files.load(.acquire) or self.workers.isBusy() or self.viewer.isSlideshowActive();
+        return self.viewer.hasActiveAnimation() or
+            self.viewer.navigation.is_loading_files.load(.acquire) or
+            self.workers.isBusy() or
+            (self.viewer.isSlideshowActive() and !self.isSlideshowPaused());
+    }
+
+    /// Returns `true` if the currently active slide is still decoding or awaiting GPU texture upload.
+    /// Note: Terminal states (.failed and headless .loaded_cpu) return false to avoid deadlock.
+    pub fn isCurrentSlideLoading(self: *const AppState) bool {
+        const cur_idx = self.viewer.navigation.current_index orelse return false;
+        const entry = self.cache.getEntry(self.cache.activeKey(cur_idx)) orelse return false;
+        return switch (entry.status) {
+            .decoding, .uploading => true,
+            .loaded_cpu => self.gpu_device != null,
+            .loaded_gpu, .failed => false,
+        };
+    }
+
+    /// Returns `true` if slideshow mode is active but paused due to explicit pause, active modal, user dragging, or slide loading.
+    pub fn isSlideshowPaused(self: *const AppState) bool {
+        if (!self.viewer.isSlideshowActive()) return false;
+        return self.viewer.navigation.slideshow.isPaused() or
+            self.viewer.ui.palette.isOpen() or
+            self.viewer.drag_state != .none or
+            self.isCurrentSlideLoading();
+    }
+
+    /// Returns the CacheEntry corresponding to the previous slide in an active slideshow crossfade, if available.
+    pub fn getSlideshowPrevEntry(self: *const AppState) ?CacheEntry {
+        const prev_idx = self.viewer.getSlideshowPrevIndex() orelse return null;
+        return self.cache.getEntry(self.cache.activeKey(prev_idx));
+    }
+
+    /// Returns the override or EXIF rotation in degrees for the previous slide in an active slideshow crossfade.
+    pub fn getSlideshowPrevRotation(self: *const AppState) f32 {
+        return switch (self.viewer.slideshow_transition) {
+            .none => 0.0,
+            .active => |t| t.prev_rotation,
+        };
     }
 
     /// Returns the remaining millisecond deadline for transient holding timers (e.g. title auto-hide, snackbar), or null if none active.
@@ -420,7 +463,10 @@ pub const AppState = struct {
                     .active => |s| s.interval_s,
                     .inactive => 3.0,
                 };
-                const formatted = std.fmt.bufPrint(&buf, "{d:.1}", .{dur_secs}) catch "3.0";
+                const formatted = std.fmt.bufPrint(&buf, "{d:.1}", .{dur_secs}) catch |err| blk: {
+                    std.log.warn("Failed to format slideshow interval string: {}, defaulting to 3.0", .{err});
+                    break :blk "3.0";
+                };
                 try self.viewer.ui.palette.query.appendSlice(self.allocator, formatted);
             },
             .set_brightness, .set_contrast, .go_to_image, .inactive => {},
@@ -454,6 +500,8 @@ pub const AppState = struct {
         self.viewer.navigation.image_list.clearRetainingCapacity();
         _ = self.viewer.navigation.directory_arena.reset(.retain_capacity);
         self.viewer.navigation.current_index = null;
+        self.viewer.slideshow_transition = .none;
+        self.viewer.animations.setImmediate(.slideshow_crossfade, 1.0);
 
         if (has_stat) {
             if (stat.kind == .directory) {
@@ -650,12 +698,23 @@ pub const AppState = struct {
                     if (!updated) {
                         gpu_dev.releaseTexture(res.gpu_texture);
                     } else {
-                        self.cache.enforceVramBudget(gpu_dev, self.viewer.navigation.current_index, self.viewer.navigation.image_list.items.len, image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
+                        self.cache.enforceVramBudget(gpu_dev, self.viewer.navigation.current_index, self.viewer.getSlideshowPrevIndex(), self.viewer.navigation.image_list.items.len, image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
                         if (self.viewer.navigation.current_index) |cur_idx| {
                             if (self.cache.activeKey(cur_idx).index == target.key.index) {
                                 if (self.cache.get(target.key)) |entry| {
-                                    if (entry.thumbnail == .loaded and !self.viewer.ui.overlays.debug_show_thumb) {
+                                    if (entry.thumbnail == .loaded and !self.viewer.ui.overlays.debug_show_thumb and !self.viewer.isSlideshowActive()) {
                                         self.viewer.animations.startFrom(.thumb_crossfade, 0.0, 1.0, state_pkg.DURATION_THUMB_CROSSFADE_MS, .ease_out_quad);
+                                    }
+                                    if (self.viewer.isSlideshowActive() and self.viewer.slideshow_transition != .none) {
+                                        if (self.viewer.animations.get(.slideshow_crossfade) < 0.001) {
+                                            self.viewer.animations.startFrom(
+                                                .slideshow_crossfade,
+                                                0.0,
+                                                1.0,
+                                                state_pkg.DURATION_SLIDESHOW_DISSOLVE_MS,
+                                                .ease_in_out_cubic,
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -663,6 +722,12 @@ pub const AppState = struct {
                     }
                 } else {
                     _ = self.cache.updateStatus(target.key, .failed);
+                    if (self.viewer.navigation.current_index) |cur_idx| {
+                        if (self.cache.activeKey(cur_idx).index == target.key.index) {
+                            self.viewer.slideshow_transition = .none;
+                            self.viewer.animations.setImmediate(.slideshow_crossfade, 1.0);
+                        }
+                    }
                 }
             }
         }

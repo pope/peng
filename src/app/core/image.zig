@@ -94,6 +94,18 @@ pub const CacheSlotMap = struct {
         return null;
     }
 
+    /// Returns a const pointer to the `CacheEntry` corresponding to `key`, or null if not present.
+    pub fn getConst(self: *const CacheSlotMap, key: CacheKey) ?*const CacheEntry {
+        if (self.getIndex(key)) |i| return &self.slots.items(.entry)[i];
+        return null;
+    }
+
+    /// Returns a copy of the `CacheEntry` corresponding to `key`, or null if not present.
+    pub fn getEntry(self: *const CacheSlotMap, key: CacheKey) ?CacheEntry {
+        if (self.getIndex(key)) |i| return self.slots.items(.entry)[i];
+        return null;
+    }
+
     /// Returns the GPU texture handle if the entry at `key` is in `.loaded_gpu` state, or null.
     pub fn getTexture(self: *CacheSlotMap, key: CacheKey) ?sdl.gpu.Texture {
         if (self.get(key)) |entry| {
@@ -154,11 +166,12 @@ pub const CacheSlotMap = struct {
     /// 1. Distant entries (circular distance > 2) are evicted first, furthest distance first.
     /// 2. If VRAM budget is still exceeded and only immediate neighbors (distance <= 2) remain,
     ///    they are evicted furthest first (distance 2 before distance 1).
-    /// The currently active image (`key.index == current_index`) is strictly protected from eviction.
+    /// The currently active image (`key.index == current_index`) and any active outgoing slideshow transition image (`key.index == protected_prev_index`) are strictly protected from eviction.
     pub fn enforceVramBudget(
         self: *CacheSlotMap,
         gpu_device: ?sdl.gpu.Device,
         current_index: ?usize,
+        protected_prev_index: ?usize,
         total_items: usize,
         max_bytes: usize,
     ) void {
@@ -176,6 +189,9 @@ pub const CacheSlotMap = struct {
                 if (entry.status == .loaded_gpu) {
                     if (current_index) |cur| {
                         if (key.index == cur) continue;
+                        if (protected_prev_index) |prev| {
+                            if (key.index == prev) continue;
+                        }
                         const linear_dist = if (key.index > cur) key.index - cur else cur - key.index;
                         const dist = if (total_items > 0 and linear_dist <= total_items) @min(linear_dist, total_items - linear_dist) else linear_dist;
 
@@ -445,7 +461,10 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
                         var meta_tmp: [4096]u8 = undefined;
                         const to_read: usize = @min(@as(usize, meta_loc.length), meta_tmp.len);
                         var m_slices = [_][]u8{meta_tmp[0..to_read]};
-                        const mn = file.readPositional(io, &m_slices, meta_loc.file_offset) catch 0;
+                        const mn = file.readPositional(io, &m_slices, meta_loc.file_offset) catch |err| blk: {
+                            std.log.warn("probeMediaMetadata: Fuji RAF metadata readPositional failed for '{s}': {any}", .{ f.path, err });
+                            break :blk 0;
+                        };
                         if (mn >= 4) {
                             if (exif.parseFujiRafDimensions(meta_tmp[0..mn])) |fd| {
                                 dims = .{ .w = fd.w, .h = fd.h };
@@ -465,7 +484,10 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
                     } else {
                         var p_buf: [8192]u8 = undefined;
                         var p_slices = [_][]u8{&p_buf};
-                        const pn = file.readPositional(io, &p_slices, prev_loc.file_offset) catch 0;
+                        const pn = file.readPositional(io, &p_slices, prev_loc.file_offset) catch |err| blk: {
+                            std.log.warn("probeMediaMetadata: Fuji RAF preview readPositional failed for '{s}': {any}", .{ f.path, err });
+                            break :blk 0;
+                        };
                         if (pn > 0) {
                             rot = exif.parseExifOrientation(p_buf[0..pn]) orelse .normal;
                             if (dims == null) {
@@ -641,10 +663,16 @@ fn loadThumbnailFromLocation(
     if (t_off + t_len <= header_slice.len) {
         return sdl.Surface.loadConstMemOpt(header_slice[t_off .. t_off + t_len]);
     }
-    const t_buf = alloc.alloc(u8, t_len) catch return null;
+    const t_buf = alloc.alloc(u8, t_len) catch |err| {
+        std.log.warn("loadThumbnailFromLocation: alloc failed ({d} bytes): {any}", .{ t_len, err });
+        return null;
+    };
     defer alloc.free(t_buf);
     var ts_slices = [_][]u8{t_buf};
-    const tn = file.readPositional(io, &ts_slices, loc.file_offset) catch return null;
+    const tn = file.readPositional(io, &ts_slices, loc.file_offset) catch |err| {
+        std.log.warn("loadThumbnailFromLocation: readPositional failed: {any}", .{err});
+        return null;
+    };
     if (tn == t_len) {
         return sdl.Surface.loadConstMemOpt(t_buf);
     }
@@ -662,7 +690,10 @@ pub fn loadThumbnailSurface(io: std.Io, alloc: std.mem.Allocator, media: MediaEn
             };
             defer file.close(io);
 
-            const file_size = file.length(io) catch 0;
+            const file_size = file.length(io) catch |err| blk: {
+                std.log.warn("loadThumbnailSurface: file.length failed for '{s}': {any}", .{ f.path, err });
+                break :blk 0;
+            };
             const is_raw_ext = core_fs.isRawFile(f.path);
             var header_buf: [256 * 1024]u8 = undefined;
             const target_read = if (is_raw_ext) header_buf.len else 128 * 1024;
@@ -695,7 +726,10 @@ pub fn loadThumbnailSurface(io: std.Io, alloc: std.mem.Allocator, media: MediaEn
                     } else if (meta_loc.length > 0 and meta_loc.length <= 64 * 1024 and meta_loc.length <= file_size and meta_loc.file_offset <= file_size - meta_loc.length) {
                         var m_buf: [64 * 1024]u8 = undefined;
                         var m_slices = [_][]u8{m_buf[0..meta_loc.length]};
-                        const mn = file.readPositional(io, &m_slices, meta_loc.file_offset) catch 0;
+                        const mn = file.readPositional(io, &m_slices, meta_loc.file_offset) catch |err| blk: {
+                            std.log.warn("loadThumbnailSurface: Fuji RAF metadata readPositional failed for '{s}': {any}", .{ f.path, err });
+                            break :blk 0;
+                        };
                         if (mn >= meta_loc.length) {
                             if (exif.parseFujiRafDimensions(m_buf[0..meta_loc.length])) |fd| {
                                 raw_w = fd.w;
@@ -719,7 +753,10 @@ pub fn loadThumbnailSurface(io: std.Io, alloc: std.mem.Allocator, media: MediaEn
                     } else {
                         var p_hdr: [8192]u8 = undefined;
                         var p_slices = [_][]u8{&p_hdr};
-                        const pn = file.readPositional(io, &p_slices, prev_loc.file_offset) catch 0;
+                        const pn = file.readPositional(io, &p_slices, prev_loc.file_offset) catch |err| blk: {
+                            std.log.warn("loadThumbnailSurface: Fuji RAF preview readPositional failed for '{s}': {any}", .{ f.path, err });
+                            break :blk 0;
+                        };
                         if (pn > 0) {
                             orientation = exif.parseExifOrientation(p_hdr[0..pn]) orelse .normal;
                             if (exif.extractJpegThumbnailLocation(p_hdr[0..pn])) |j_thumb| {
@@ -772,12 +809,18 @@ pub fn loadThumbnailSurface(io: std.Io, alloc: std.mem.Allocator, media: MediaEn
         .archive_entry => |a| {
             if (a.compression_method) |cm| {
                 if (cm == 0 and a.file_offset != null) {
-                    var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, a.archive_path, .{}) catch return null;
+                    var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, a.archive_path, .{}) catch |err| {
+                        std.log.warn("loadThumbnailSurface: openFile failed for archive '{s}': {any}", .{ a.archive_path, err });
+                        return null;
+                    };
                     defer file.close(io);
 
                     var header_buf: [128 * 1024]u8 = undefined;
                     var slices = [_][]u8{&header_buf};
-                    const n = file.readPositional(io, &slices, a.file_offset.?) catch return null;
+                    const n = file.readPositional(io, &slices, a.file_offset.?) catch |err| {
+                        std.log.warn("loadThumbnailSurface: readPositional failed for archive '{s}': {any}", .{ a.archive_path, err });
+                        return null;
+                    };
                     if (n == 0) return null;
 
                     var data_offset: usize = 0;
@@ -1395,7 +1438,7 @@ test "enforceVramBudget - distant eviction, circular distance, and neighbor prot
     try std.testing.expectEqual(@as(usize, 500), cache.getTotalVramBytes());
 
     // 1. Evict down to 400: slot 5 (dist 5) is distant (dist > 2) and must be evicted first
-    cache.enforceVramBudget(null, 0, 10, 400);
+    cache.enforceVramBudget(null, 0, null, 10, 400);
     try std.testing.expectEqual(@as(usize, 400), cache.getTotalVramBytes());
     try std.testing.expect(cache.getIndex(.{ .index = 5, .generation = 0 }) == null);
     try std.testing.expect(cache.getIndex(.{ .index = 0, .generation = 0 }) != null);
@@ -1405,13 +1448,13 @@ test "enforceVramBudget - distant eviction, circular distance, and neighbor prot
 
     // 2. Evict down to 300: Remaining are 0, 1, 2, 9 (dists: 0, 1, 2, 1).
     // All remaining non-cur have dist <= 2. Neighbor protection should evict dist 2 (slot 2) before dist 1 (slot 1 or 9).
-    cache.enforceVramBudget(null, 0, 10, 300);
+    cache.enforceVramBudget(null, 0, null, 10, 300);
     try std.testing.expectEqual(@as(usize, 300), cache.getTotalVramBytes());
     try std.testing.expect(cache.getIndex(.{ .index = 2, .generation = 0 }) == null);
     try std.testing.expect(cache.getIndex(.{ .index = 0, .generation = 0 }) != null);
 
     // 3. Evict down to 50: Current slot 0 (100 bytes) should NEVER be evicted even if exceeding budget
-    cache.enforceVramBudget(null, 0, 10, 50);
+    cache.enforceVramBudget(null, 0, null, 10, 50);
     try std.testing.expectEqual(@as(usize, 100), cache.getTotalVramBytes());
     try std.testing.expect(cache.getIndex(.{ .index = 0, .generation = 0 }) != null);
     try std.testing.expect(cache.getIndex(.{ .index = 1, .generation = 0 }) == null);
@@ -1420,10 +1463,21 @@ test "enforceVramBudget - distant eviction, circular distance, and neighbor prot
     // 4. Test robustness against linear_dist > total_items (e.g. slot 99 with total_items = 5)
     try cache.appendWithKey(allocator, .{ .index = 99, .generation = 0 }, makeGpu(100));
     try std.testing.expectEqual(@as(usize, 200), cache.getTotalVramBytes());
-    cache.enforceVramBudget(null, 0, 5, 100);
+    cache.enforceVramBudget(null, 0, null, 5, 100);
     try std.testing.expectEqual(@as(usize, 100), cache.getTotalVramBytes());
     try std.testing.expect(cache.getIndex(.{ .index = 99, .generation = 0 }) == null);
     try std.testing.expect(cache.getIndex(.{ .index = 0, .generation = 0 }) != null);
+
+    // 5. Slideshow protected_prev_index guard: both current (slot 0) and protected prev (slot 3) must be retained
+    try cache.appendWithKey(allocator, .{ .index = 3, .generation = 0 }, makeGpu(100));
+    try cache.appendWithKey(allocator, .{ .index = 4, .generation = 0 }, makeGpu(100));
+    try std.testing.expectEqual(@as(usize, 300), cache.getTotalVramBytes());
+    // Evict down to 50 bytes with slot 3 protected as previous slide: slot 4 evicted, slots 0 and 3 protected
+    cache.enforceVramBudget(null, 0, 3, 10, 50);
+    try std.testing.expectEqual(@as(usize, 200), cache.getTotalVramBytes());
+    try std.testing.expect(cache.getIndex(.{ .index = 0, .generation = 0 }) != null);
+    try std.testing.expect(cache.getIndex(.{ .index = 3, .generation = 0 }) != null);
+    try std.testing.expect(cache.getIndex(.{ .index = 4, .generation = 0 }) == null);
 }
 
 test "hasUnreadyPrefetchSlots" {

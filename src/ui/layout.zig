@@ -140,6 +140,7 @@ pub fn renderFrame(
             draw_w,
             draw_h,
             view_w,
+            view_h,
             total_images,
             frame_allocator,
             measure_data,
@@ -639,7 +640,10 @@ fn renderImageCanvas(
         );
         thumb_uv.alpha = 1.0; // Solid underlay, full-res texture dissolves in on top
         thumb_uv.rotation_angle = rotation_angle;
-        const thumb_uv_ptr = frame_allocator.create(state.UvRect) catch null;
+        const thumb_uv_ptr = frame_allocator.create(state.UvRect) catch |err| blk: {
+            std.log.warn("Failed to allocate UvRect for thumbnail underlay: {any}", .{err});
+            break :blk null;
+        };
         if (thumb_uv_ptr) |ptr| {
             ptr.* = thumb_uv;
         }
@@ -706,7 +710,13 @@ fn renderImageCanvas(
     if (!drew_thumb) switch (entry.status) {
         .loaded_gpu => |gpu| {
             const tex = gpu.gpu_texture;
-            const full_alpha = if (is_thumb_crossfade) ui_model.anim(.thumb_crossfade) else 1.0;
+            const is_slideshow_dissolve = ui_model.slideshow_dissolve == .active;
+            const full_alpha = if (is_slideshow_dissolve)
+                std.math.clamp(ui_model.anim(.slideshow_crossfade), 0.0, 1.0)
+            else if (is_thumb_crossfade)
+                ui_model.anim(.thumb_crossfade)
+            else
+                1.0;
             const uv_ptr = frame_allocator.create(state.UvRect) catch |err| blk: {
                 std.log.warn("Failed to allocate UvRect: {any}", .{err});
                 break :blk null;
@@ -725,7 +735,7 @@ fn renderImageCanvas(
                         .h = .fixed(draw_h),
                     },
                 },
-                .floating = if (is_thumb_crossfade) .{
+                .floating = if (is_slideshow_dissolve or is_thumb_crossfade) .{
                     .attach_to = .to_parent,
                     .attach_points = .{ .element = .center_center, .parent = .center_center },
                     .offset = .{ .x = 0.0, .y = 0.0 },
@@ -834,6 +844,7 @@ fn renderViewport(
     draw_w: f32,
     draw_h: f32,
     view_w: f32,
+    view_h: f32,
     total_images: usize,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
@@ -846,6 +857,58 @@ fn renderViewport(
         },
         .clip = .{ .horizontal = true, .vertical = true },
     })({
+        switch (ui_model.slideshow_dissolve) {
+            .none => {},
+            .active => |dissolve| {
+                const prev_entry = dissolve.prev_entry;
+                switch (prev_entry.status) {
+                    .loaded_gpu => |gpu| {
+                        const prev_dims = computeDrawDims(
+                            prev_entry,
+                            view_w,
+                            view_h,
+                            dissolve.prev_rotation,
+                            ui_model.viewport.fit_mode,
+                        );
+                        const progress = std.math.clamp(ui_model.anim(.slideshow_crossfade), 0.0, 1.0);
+                        const prev_alpha = 1.0 - (progress * progress);
+
+                        const prev_tex = gpu.gpu_texture;
+                        const prev_uv_ptr = frame_allocator.create(state.UvRect) catch |err| blk: {
+                            std.log.warn("Failed to allocate UvRect for slideshow dissolve: {any}", .{err});
+                            break :blk null;
+                        };
+                        if (prev_uv_ptr) |ptr| {
+                            ptr.* = .{
+                                .alpha = prev_alpha,
+                                .rotation_angle = dissolve.prev_rotation,
+                            };
+                        }
+                        clay.UI()(.{
+                            .id = clay.getElementId("SlideshowPrevImage"),
+                            .layout = .{
+                                .sizing = .{
+                                    .w = .fixed(prev_dims.w),
+                                    .h = .fixed(prev_dims.h),
+                                },
+                            },
+                            .floating = .{
+                                .attach_to = .to_parent,
+                                .attach_points = .{ .element = .center_center, .parent = .center_center },
+                                .offset = .{ .x = 0.0, .y = 0.0 },
+                                .z_index = 0,
+                            },
+                            .image = .{
+                                .image_data = prev_tex.asOpaque(),
+                            },
+                            .user_data = if (prev_uv_ptr) |ptr| @ptrCast(ptr) else null,
+                        })({});
+                    },
+                    else => {},
+                }
+            },
+        }
+
         if (current_entry) |entry| {
             renderImageCanvas(
                 ui_model,

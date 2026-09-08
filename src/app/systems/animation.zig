@@ -1,6 +1,5 @@
 const app_state = @import("../state.zig");
 const context = @import("context.zig");
-const palette_input = @import("palette_input.zig");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
@@ -13,6 +12,7 @@ const FrameContext = context.FrameContext;
 /// Responsibilities:
 /// 1. Advances all active animation channels using `ctx.delta_time_ms`.
 /// 2. If the command palette was in the closing phase and the reveal channel completed, resets the palette state.
+/// 3. If a slideshow crossfade animation completes, releases the previous slide index and resets crossfade state.
 pub fn sysUpdateAnimations(ctx: FrameContext) void {
     const state = ctx.state;
     const anim = &state.viewer.animations;
@@ -55,6 +55,13 @@ pub fn sysUpdateAnimations(ctx: FrameContext) void {
             state.viewer.ui.palette.reset();
         }
     }
+
+    // If slideshow crossfade has settled to 1.0 (or is no longer active), release protected outgoing slide
+    if (state.viewer.slideshow_transition != .none) {
+        if (!anim.isActive(.slideshow_crossfade) and anim.get(.slideshow_crossfade) >= 0.999) {
+            state.viewer.slideshow_transition = .none;
+        }
+    }
 }
 
 test "sysUpdateAnimations palette reveal and close transition lifecycle" {
@@ -63,11 +70,11 @@ test "sysUpdateAnimations palette reveal and close transition lifecycle" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    const open_half = app_state.state_pkg.DURATION_PALETTE_OPEN_MS / 2.0;
-    const close_half = app_state.state_pkg.DURATION_PALETTE_CLOSE_MS / 2.0;
+    const open_half = state_pkg.DURATION_PALETTE_OPEN_MS / 2.0;
+    const close_half = state_pkg.DURATION_PALETTE_CLOSE_MS / 2.0;
 
     // 1. Open palette: starts animation to 1.0
-    try palette_input.openPalette(&state, .actions);
+    try state.openPalette(.actions);
     try std.testing.expect(state.viewer.ui.palette.mode == .actions);
     try std.testing.expect(!state.viewer.ui.palette.is_closing);
     try std.testing.expect(state.viewer.hasActiveAnimation());
@@ -92,7 +99,7 @@ test "sysUpdateAnimations palette reveal and close transition lifecycle" {
     try std.testing.expect(!state.viewer.hasActiveAnimation());
 
     // 4. Close palette: begins fade-out
-    palette_input.closePalette(&state);
+    state.closePalette();
     try std.testing.expect(state.viewer.ui.palette.is_closing);
     try std.testing.expect(state.viewer.ui.palette.mode == .actions);
     try std.testing.expect(state.viewer.hasActiveAnimation());
@@ -124,8 +131,8 @@ test "sysUpdateAnimations palette reset when settleAll is called mid-close" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    try palette_input.openPalette(&state, .actions);
-    palette_input.closePalette(&state);
+    try state.openPalette(.actions);
+    state.closePalette();
     try std.testing.expect(state.viewer.ui.palette.is_closing);
 
     // Simulate headless/test-mode settleAll
@@ -148,13 +155,13 @@ test "sysUpdateAnimations thumb_crossfade lifecycle" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    state.viewer.animations.startFrom(.thumb_crossfade, 0.0, 1.0, app_state.state_pkg.DURATION_THUMB_CROSSFADE_MS, .ease_out_quad);
+    state.viewer.animations.startFrom(.thumb_crossfade, 0.0, 1.0, state_pkg.DURATION_THUMB_CROSSFADE_MS, .ease_out_quad);
 
     try std.testing.expect(state.viewer.hasActiveAnimation());
     try std.testing.expect(state.viewer.animations.isActive(.thumb_crossfade));
 
     // Tick halfway
-    const half = app_state.state_pkg.DURATION_THUMB_CROSSFADE_MS / 2.0;
+    const half = state_pkg.DURATION_THUMB_CROSSFADE_MS / 2.0;
     sysUpdateAnimations(.{
         .state = &state,
         .frame_allocator = allocator,
@@ -239,4 +246,37 @@ test "sysUpdateAnimations snackbar auto-hide timeout and fade-out" {
     try std.testing.expect(!state.viewer.hasActiveAnimation());
     // Buffer cleared after settled
     try std.testing.expectEqual(@as(usize, 0), state.viewer.ui.snackbar.getMessage().len);
+}
+
+test "sysUpdateAnimations slideshow_crossfade settling clears slideshow_transition" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    state.viewer.slideshow_transition = .{ .active = .{ .prev_index = 3, .prev_rotation = 90.0 } };
+    state.viewer.animations.startFrom(.slideshow_crossfade, 0.0, 1.0, state_pkg.DURATION_SLIDESHOW_DISSOLVE_MS, .ease_in_out_cubic);
+
+    try std.testing.expect(state.viewer.hasActiveAnimation());
+    try std.testing.expect(state.viewer.slideshow_transition != .none);
+
+    // Tick halfway
+    sysUpdateAnimations(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .delta_time_ms = state_pkg.DURATION_SLIDESHOW_DISSOLVE_MS / 2.0,
+    });
+    try std.testing.expect(state.viewer.slideshow_transition != .none);
+    try std.testing.expect(state.viewer.animations.get(.slideshow_crossfade) > 0.3);
+    try std.testing.expect(state.viewer.animations.get(.slideshow_crossfade) < 0.7);
+
+    // Tick remaining duration: settles at 1.0 and clears slideshow_transition
+    sysUpdateAnimations(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .delta_time_ms = state_pkg.DURATION_SLIDESHOW_DISSOLVE_MS,
+    });
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), state.viewer.animations.get(.slideshow_crossfade), 0.001);
+    try std.testing.expect(!state.viewer.hasActiveAnimation());
+    try std.testing.expectEqual(state_pkg.types.SlideshowTransition.none, state.viewer.slideshow_transition);
 }

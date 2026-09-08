@@ -1,9 +1,11 @@
-const std = @import("std");
+const intents = @import("intents");
 const sdl = @import("sdl");
 const state = @import("state");
-const Key = state.Key;
-const KeyModifiers = state.KeyModifiers;
+const std = @import("std");
+
 const FrameInput = state.FrameInput;
+const Key = intents.Key;
+const KeyModifiers = intents.KeyModifiers;
 
 pub const MOUSE_WHEEL_SCROLL_MULTIPLIER: f32 = 6.0;
 

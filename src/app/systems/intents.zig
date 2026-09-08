@@ -94,7 +94,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
         .next_image, .prev_image, .first_image, .last_image, .go_to_image => {
             const now = sdl.timer.getTicks();
             const elapsed = now -| nav.last_nav_time_ms;
-            if (nav.image_list.items.len > 0 and nav.last_nav_time_ms > 0 and elapsed < 200) {
+            if (ui.overlays.auto_title and nav.image_list.items.len > 0 and nav.last_nav_time_ms > 0 and elapsed < 200) {
                 if (!ui.overlays.show_title) {
                     ui.title_auto_hide_timeout_ms = now + 1500;
                     const progress = self.viewer.animations.get(.title_overlay);
@@ -102,6 +102,10 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                     self.viewer.animations.start(.title_overlay, 1.0, dur, .ease_out_quad);
                 }
             }
+            const is_slideshow = nav.isSlideshowActive();
+            const old_index = nav.current_index;
+            const old_rot = self.viewer.viewport.rotation_angle;
+
             vp.reset();
             _ = switch (intent) {
                 .next_image => if (nav.manga_mode) nav.prevIndex() else nav.nextIndex(),
@@ -119,6 +123,42 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 .go_to_image => |idx| nav.goToIndex(idx),
                 else => unreachable,
             };
+
+            if (is_slideshow and old_index != null and nav.current_index != null and old_index.? != nav.current_index.?) {
+                switch (nav.slideshow) {
+                    .active => |s| {
+                        if (s.interval_s >= state.MIN_SLIDESHOW_DISSOLVE_INTERVAL_S) {
+                            self.viewer.slideshow_transition = .{ .active = .{
+                                .prev_index = old_index.?,
+                                .prev_rotation = old_rot,
+                            } };
+                            const is_ready = if (self.getCurrentEntry()) |e| e.status == .loaded_gpu else false;
+                            if (is_ready) {
+                                self.viewer.animations.startFrom(
+                                    .slideshow_crossfade,
+                                    0.0,
+                                    1.0,
+                                    state.DURATION_SLIDESHOW_DISSOLVE_MS,
+                                    .ease_in_out_cubic,
+                                );
+                            } else {
+                                self.viewer.animations.setImmediate(.slideshow_crossfade, 0.0);
+                            }
+                        } else {
+                            self.viewer.slideshow_transition = .none;
+                            self.viewer.animations.setImmediate(.slideshow_crossfade, 1.0);
+                        }
+                    },
+                    .inactive => {
+                        self.viewer.slideshow_transition = .none;
+                        self.viewer.animations.setImmediate(.slideshow_crossfade, 1.0);
+                    },
+                }
+            } else if (!is_slideshow) {
+                self.viewer.slideshow_transition = .none;
+                self.viewer.animations.setImmediate(.slideshow_crossfade, 1.0);
+            }
+
             self.viewer.animations.setImmediate(.thumb_crossfade, 1.0);
         },
         .refresh_directory => {
@@ -242,7 +282,11 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
             ui.overlays.debug_show_thumb = val;
         },
         .start_slideshow => try self.openPalette(.set_slideshow_interval),
-        .stop_slideshow => nav.slideshow = .inactive,
+        .stop_slideshow => {
+            nav.slideshow = .inactive;
+            self.viewer.slideshow_transition = .none;
+            self.viewer.animations.setImmediate(.slideshow_crossfade, 1.0);
+        },
         .toggle_manga_mode => nav.manga_mode = !nav.manga_mode,
         .set_manga_mode => |val| nav.manga_mode = val,
         .quit => self.viewer.running = false,
@@ -344,8 +388,7 @@ test "palette_action_items metadata" {
 test "toggle_blur and set_blur intents" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    var threaded = std.Threaded{};
-    const io = threaded.io();
+    const io = std.Io.Threaded.global_single_threaded.io();
 
     var app_st = try AppState.initHeadless(allocator, io);
     defer app_st.deinit();
@@ -372,8 +415,7 @@ test "toggle_blur and set_blur intents" {
 test "rotate_cw, rotate_ccw, and reset_rotation intents" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    var threaded = std.Threaded{};
-    const io = threaded.io();
+    const io = std.Io.Threaded.global_single_threaded.io();
 
     var app_st = try AppState.initHeadless(allocator, io);
     defer app_st.deinit();
@@ -406,8 +448,7 @@ test "rotate_cw, rotate_ccw, and reset_rotation intents" {
 test "toggle_title and set_title intents" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    var threaded = std.Threaded{};
-    const io = threaded.io();
+    const io = std.Io.Threaded.global_single_threaded.io();
 
     var app_st = try AppState.initHeadless(allocator, io);
     defer app_st.deinit();
@@ -445,8 +486,7 @@ test "toggle_title and set_title intents" {
 test "fast scrubbing triggers title overlay auto-hide" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    var threaded = std.Threaded{};
-    const io = threaded.io();
+    const io = std.Io.Threaded.global_single_threaded.io();
 
     var app_st = try AppState.initHeadless(allocator, io);
     defer app_st.deinit();
@@ -472,8 +512,7 @@ test "fast scrubbing triggers title overlay auto-hide" {
 test "sysExecuteIntents triggers snackbar on filter and scale changes" {
     const testing = std.testing;
     const allocator = testing.allocator;
-    var threaded = std.Threaded{};
-    const io = threaded.io();
+    const io = std.Io.Threaded.global_single_threaded.io();
 
     var app_st = try AppState.initHeadless(allocator, io);
     defer app_st.deinit();
@@ -511,4 +550,56 @@ test "sysExecuteIntents triggers snackbar on filter and scale changes" {
     });
     try testing.expect(!app_st.viewer.ui.overlays.show_snackbar);
     try testing.expectEqual(@as(usize, 0), app_st.viewer.ui.snackbar.getMessage().len);
+}
+
+test "sysExecuteIntents slideshow dissolve transitions and interval threshold" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    try app_st.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "s1.jpg" } });
+    try app_st.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "s2.jpg" } });
+    try app_st.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "s3.jpg" } });
+    app_st.viewer.navigation.current_index = 0;
+
+    // 1. Slideshow with normal interval (>= 0.5s): triggers crossfade
+    app_st.viewer.navigation.slideshow = .{ .active = .{ .interval_s = 2.0 } };
+    try app_st.pushIntent(.next_image);
+    try sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+    });
+
+    try testing.expectEqual(@as(usize, 1), app_st.viewer.navigation.current_index.?);
+    try testing.expectEqual(@as(?usize, 0), app_st.viewer.getSlideshowPrevIndex());
+    // In headless test without loaded_gpu status, it holds at 0.0 ready to start once loaded
+    try testing.expectEqual(@as(f32, 0.0), app_st.viewer.animations.get(.slideshow_crossfade));
+
+    // 2. Slideshow with tiny interval (< 0.5s): immediate cut, no crossfade
+    app_st.viewer.navigation.slideshow = .{ .active = .{ .interval_s = 0.2 } };
+    try app_st.pushIntent(.next_image);
+    try sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+    });
+
+    try testing.expectEqual(@as(usize, 2), app_st.viewer.navigation.current_index.?);
+    try testing.expectEqual(state.SlideshowTransition.none, app_st.viewer.slideshow_transition);
+    try testing.expectEqual(@as(f32, 1.0), app_st.viewer.animations.get(.slideshow_crossfade));
+
+    // 3. Stop slideshow: clears previous slide and settles crossfade
+    app_st.viewer.slideshow_transition = .{ .active = .{ .prev_index = 1, .prev_rotation = 0.0 } };
+    try app_st.pushIntent(.stop_slideshow);
+    try sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+    });
+    try testing.expectEqual(state.SlideshowTransition.none, app_st.viewer.slideshow_transition);
+    try testing.expectEqual(@as(f32, 1.0), app_st.viewer.animations.get(.slideshow_crossfade));
 }

@@ -153,6 +153,7 @@ pub const PaletteState = struct {
             .searcher = null,
             .max_haystack_len = 64,
         };
+        errdefer self.deinit();
         // 64 bytes: accommodates user search query input strings (typical search queries are < 64 chars)
         try self.query.ensureTotalCapacity(allocator, 64);
         // 64 items: initial filtered match index capacity before dynamic resizing
@@ -168,6 +169,11 @@ pub const PaletteState = struct {
         // 64 items: initial directory item entry capacity before directory scan
         try self.dir_items.ensureTotalCapacity(allocator, 64);
         return self;
+    }
+
+    /// Returns `true` if the palette is open in any active mode.
+    pub inline fn isOpen(self: *const PaletteState) bool {
+        return self.mode != .inactive;
     }
 
     /// Frees all dynamically allocated memory, string arrays, searcher state, and directory items.

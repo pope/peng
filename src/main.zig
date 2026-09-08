@@ -81,7 +81,9 @@ const LibViewer = struct {
     fn deinit(self: *LibViewer, io: std.Io) !void {
         const cwd = std.Io.Dir.cwd();
         self.handle.close();
-        cwd.deleteFile(io, lib_temp_name) catch {};
+        cwd.deleteFile(io, lib_temp_name) catch |err| {
+            std.log.warn("Failed to delete temp library {s}: {}", .{ lib_temp_name, err });
+        };
     }
 
     fn check_outdated(self: *LibViewer, io: std.Io) !bool {
@@ -208,6 +210,7 @@ fn initAppGraphicsAndState(init: std.process.Init) !?AppGraphicsAndState {
     };
     state.viewer.ui.overlays.enable_blur = parsed.enable_blur;
     state.viewer.ui.overlays.show_title = parsed.show_title;
+    state.viewer.ui.overlays.auto_title = !parsed.test_mode;
     state.viewer.ui.overlays.show_snackbar = !parsed.test_mode;
     if (parsed.show_title) {
         state.viewer.animations.setImmediate(.title_overlay, 1.0);
@@ -273,7 +276,9 @@ fn runMainLoop(ctx: *AppGraphicsAndState) !void {
 
     if (build_options.hot_reload) {
         var lib_viewer: LibViewer = try .init(ctx.io);
-        defer lib_viewer.deinit(ctx.io) catch {};
+        defer lib_viewer.deinit(ctx.io) catch |err| {
+            std.log.warn("Failed to deinit lib_viewer: {}", .{err});
+        };
 
         lib_viewer.load_assets();
         defer lib_viewer.unload_assets();

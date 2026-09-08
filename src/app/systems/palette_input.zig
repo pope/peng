@@ -9,8 +9,8 @@ const std = @import("std");
 const AppState = app_state.AppState;
 const FrameContext = context.FrameContext;
 const FrameInput = state_pkg.FrameInput;
-const Key = state_pkg.Key;
-const KeyModifiers = state_pkg.KeyModifiers;
+const Key = intents.Key;
+const KeyModifiers = intents.KeyModifiers;
 const PaletteMode = intents.PaletteMode;
 
 /// Processes Return key confirmation for 1-based image index input palette mode (`.go_to_image`).
@@ -349,7 +349,10 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
             // Check if a list item was clicked
             for (self.viewer.ui.palette.matches.items) |real_idx| {
                 var item_id_buf: [64]u8 = undefined;
-                const item_id_str = std.fmt.bufPrint(&item_id_buf, "{s}{}", .{ cfg.item_prefix, real_idx }) catch cfg.item_prefix;
+                const item_id_str = std.fmt.bufPrint(&item_id_buf, "{s}{}", .{ cfg.item_prefix, real_idx }) catch |err| blk: {
+                    std.log.warn("Failed to format palette item ID: {}", .{err});
+                    break :blk cfg.item_prefix;
+                };
                 if (clay.pointerOver(clay.getElementId(item_id_str))) {
                     const old_type = self.viewer.ui.palette.mode;
                     switch (self.viewer.ui.palette.mode) {
@@ -497,11 +500,7 @@ test "sysProcessPaletteInput retains palette when clicking inside debug panel" {
     const win_w: f32 = 800.0;
     const win_h: f32 = 600.0;
     const debug_w: f32 = 280.0;
-    state.viewer.display.window_width = @intFromFloat(win_w);
-    state.viewer.display.window_height = @intFromFloat(win_h);
-    state.viewer.ui.debug_tools_visible = true;
-
-    const input_inside = state_pkg.FrameInput{
+    var input_inside = state_pkg.FrameInput{
         .win_w = win_w,
         .win_h = win_h,
         .pix_w = win_w,
@@ -524,6 +523,7 @@ test "sysProcessPaletteInput retains palette when clicking inside debug panel" {
         .ticks = 0,
         .delta_time_ms = 16.0,
     };
+    input_inside.is_pointer_in_debug_panel = true;
 
     state.viewer.ui.palette.mode = .actions;
     _ = try sysProcessPaletteInput(.{ .state = &state, .frame_allocator = allocator, .input = input_inside });

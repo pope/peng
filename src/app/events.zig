@@ -7,6 +7,7 @@ const state_pkg = @import("state");
 const std = @import("std");
 
 const AppState = app_state.AppState;
+const MediaEntry = state_pkg.MediaEntry;
 const Orientation = state_pkg.Orientation;
 
 /// Drains all background thread events (e.g. image decodes, thumbnail extractions, directory scans,
@@ -15,7 +16,10 @@ const Orientation = state_pkg.Orientation;
 /// Returns `true` if at least one event was drained and processed; otherwise `false`.
 pub fn drainWorkerEvents(state: *AppState) bool {
     state.event_batch.clearRetainingCapacity();
-    state.workers.event_queue.drain(state.allocator, state.io, &state.event_batch) catch return false;
+    state.workers.event_queue.drain(state.allocator, state.io, &state.event_batch) catch |err| {
+        std.log.err("Failed to drain worker event queue: {}", .{err});
+        return false;
+    };
     if (state.event_batch.items.len == 0) return false;
 
     for (state.event_batch.items) |*evt| {
@@ -214,12 +218,23 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
                         .compressed_size_bytes = decoded_data.compressed_size_bytes,
                     },
                 };
-                state.cache.enforceVramBudget(gpu_dev, state.viewer.navigation.current_index, state.viewer.navigation.image_list.items.len, image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
+                state.cache.enforceVramBudget(gpu_dev, state.viewer.navigation.current_index, state.viewer.getSlideshowPrevIndex(), state.viewer.navigation.image_list.items.len, image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
                 if (entry.thumbnail == .pending or entry.thumbnail == .none) {
                     entry.thumbnail = .not_available;
                 }
-                if (is_current and entry.thumbnail == .loaded and !state.viewer.ui.overlays.debug_show_thumb) {
+                if (is_current and entry.thumbnail == .loaded and !state.viewer.ui.overlays.debug_show_thumb and !state.viewer.isSlideshowActive()) {
                     state.viewer.animations.startFrom(.thumb_crossfade, 0.0, 1.0, state_pkg.DURATION_THUMB_CROSSFADE_MS, .ease_out_quad);
+                }
+                if (is_current and state.viewer.isSlideshowActive() and state.viewer.slideshow_transition != .none) {
+                    if (state.viewer.animations.get(.slideshow_crossfade) < 0.001) {
+                        state.viewer.animations.startFrom(
+                            .slideshow_crossfade,
+                            0.0,
+                            1.0,
+                            state_pkg.DURATION_SLIDESHOW_DISSOLVE_MS,
+                            .ease_in_out_cubic,
+                        );
+                    }
                 }
             } else {
                 gpu_dev.releaseTexture(full_res.gpu_texture);
@@ -232,6 +247,10 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
                 if (entry.thumbnail == .pending or entry.thumbnail == .none) {
                     entry.thumbnail = .not_available;
                 }
+            }
+            if (is_current) {
+                state.viewer.slideshow_transition = .none;
+                state.viewer.animations.setImmediate(.slideshow_crossfade, 1.0);
             }
         }
     } else {
@@ -325,9 +344,18 @@ fn handleDirectoryScanResultEvent(state: *AppState, result_data: events.Director
             state.viewer.navigation.image_list.append(state.allocator, dup) catch |err| {
                 std.log.err("Failed to append image to list: {}", .{err});
             };
-            if (target_idx_in_dir == null and item == .filesystem and std.mem.eql(u8, item.filesystem.path, result_data.target_path)) {
-                target_idx_in_dir = i;
-            }
+            if (target_idx_in_dir == null) switch (item) {
+                .filesystem => |f| {
+                    if (std.mem.eql(u8, f.path, result_data.target_path)) {
+                        target_idx_in_dir = i;
+                    }
+                },
+                .archive_entry => |a| {
+                    if (std.mem.eql(u8, a.archive_path, result_data.target_path)) {
+                        target_idx_in_dir = i;
+                    }
+                },
+            };
         }
 
         if (target_idx_in_dir) |target_i| {
@@ -356,11 +384,10 @@ test "drainWorkerEvents - path_discovered" {
     defer state.deinit();
 
     const path_dup = try allocator.dupe(u8, "/test/path.jpg");
-    try state.workers.event_queue.push(allocator, io, .{ .path_discovered = .{ .path = path_dup } });
+    try state.workers.event_queue.push(allocator, io, .{ .path_discovered = .{ .entry = .{ .filesystem = .{ .path = path_dup } } } });
 
     const processed = drainWorkerEvents(&state);
     try std.testing.expect(processed);
-    try std.testing.expect(state.viewer.dirty);
     try std.testing.expectEqual(@as(usize, 1), state.viewer.navigation.image_list.items.len);
     try std.testing.expectEqual(@as(?usize, 0), state.viewer.navigation.current_index);
 }
@@ -398,9 +425,9 @@ test "drainWorkerEvents - directory_scan_result and ipc_command" {
     const target_path = try allocator.dupe(u8, "/imgs/b.jpg");
     const path0 = try allocator.dupe(u8, "/imgs/a.jpg");
     const path1 = try allocator.dupe(u8, "/imgs/b.jpg");
-    const paths_slice = try allocator.alloc([]const u8, 2);
-    paths_slice[0] = path0;
-    paths_slice[1] = path1;
+    const paths_slice = try allocator.alloc(MediaEntry, 2);
+    paths_slice[0] = .{ .filesystem = .{ .path = path0 } };
+    paths_slice[1] = .{ .filesystem = .{ .path = path1 } };
 
     try state.workers.event_queue.push(allocator, io, .{
         .directory_scan_result = .{

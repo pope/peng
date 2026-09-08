@@ -1,10 +1,10 @@
 const app_state = @import("../state.zig");
-const image = @import("../core/image.zig");
 const context = @import("context.zig");
+const decode_mod = @import("../workers/decode.zig");
+const image = @import("../core/image.zig");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
-const decode_mod = @import("../workers/decode.zig");
 
 const AppState = app_state.AppState;
 const CacheEntry = state_pkg.CacheEntry;
@@ -15,17 +15,17 @@ const MediaEntry = state_pkg.MediaEntry;
 
 /// Fast-scrolling threshold: when navigation events occur faster than this interval,
 /// worker spawning is throttled exclusively to the active slot `idx`.
-pub const FAST_SCROLL_THRESHOLD_MS: u64 = state_pkg.LOADING_GRACE_PERIOD_MS;
+const FAST_SCROLL_THRESHOLD_MS: u64 = state_pkg.LOADING_GRACE_PERIOD_MS;
 
 /// Spawns an asynchronous worker task to decode an image file from disk into RAM.
 ///
-/// Pre-conditions: `dup_path` must be a valid null-terminated heap string owned by the caller.
-/// On failure, `dup_path` is freed via `errdefer`.
+/// Pre-conditions: `entry_item` is cloned into a duplicated heap instance owned by the decode task.
+/// On failure, resources are freed via `errdefer`.
 ///
 /// Parameters:
 /// - `state`: Pointer to global application state.
 /// - `index`: Image list index being decoded.
-/// - `dup_path`: Null-terminated file path string.
+/// - `entry_item`: Media entry being decoded.
 /// - `thumb_only`: If true, restricts decoding to low-resolution thumbnail for rapid scrolling.
 fn spawnCacheDecodeSlot(state: *AppState, index: usize, entry_item: MediaEntry, thumb_only: bool) !void {
     const dup_entry = entry_item.dupe(state.allocator) catch |err| {
@@ -139,7 +139,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
         }
     }
 
-    state.cache.enforceVramBudget(dev_opt, idx, len, image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
+    state.cache.enforceVramBudget(dev_opt, idx, state.viewer.getSlideshowPrevIndex(), len, image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
 
     // Fast-scrolling check: only active if navigation has actually occurred
     const now = sdl.timer.getTicks();
@@ -381,7 +381,7 @@ test "sysUpdateCache - retains loaded entries outside prefetch window until budg
     try std.testing.expect(state.cache.get(state.cache.activeKey(6)) != null);
 
     // Now enforce a small VRAM budget (less than slot 6's 500MB)
-    state.cache.enforceVramBudget(state.gpu_device, 0, 10, 100);
+    state.cache.enforceVramBudget(state.gpu_device, 0, null, 10, 100);
 
     // Slot 6 should now be pruned by enforceVramBudget
     try std.testing.expect(state.cache.get(state.cache.activeKey(6)) == null);
