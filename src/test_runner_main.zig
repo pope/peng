@@ -237,8 +237,6 @@ pub fn main(init: std.process.Init) !void {
     defer {
         if (child.id != null) {
             child.kill(init.io);
-            _ = child.wait(init.io) catch |err| std.log.warn("Failed to wait for child process exit: {}", .{err});
-            child.id = null;
         }
     }
 

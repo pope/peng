@@ -1,9 +1,11 @@
-const std = @import("std");
 const clay = @import("zclay");
+const graphics = @import("graphics.zig");
 const sdl = @import("sdl");
-const types = @import("state").types;
-const MeasureTextUserData = types.MeasureTextUserData;
-const sdl3MeasureText = @import("graphics.zig").sdl3MeasureText;
+const state = @import("state");
+const std = @import("std");
+
+const MeasureTextUserData = state.MeasureTextUserData;
+const sdl3MeasureText = graphics.sdl3MeasureText;
 
 /// Result of middle-truncating a filename, containing the display string and index boundaries for fuzzy match remapping.
 pub const TruncatedFilename = struct {

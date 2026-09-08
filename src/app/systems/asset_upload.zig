@@ -1,7 +1,10 @@
-const std = @import("std");
 const app_state = @import("../state.zig");
+const context = @import("context.zig");
+const state_pkg = @import("state");
+const std = @import("std");
+
 const AppState = app_state.AppState;
-const FrameContext = @import("root.zig").FrameContext;
+const FrameContext = context.FrameContext;
 
 /// System Pass: Uploads decoded CPU surfaces in cache slots to GPU textures.
 pub fn sysProcessAssetUploads(ctx: FrameContext) void {
@@ -18,4 +21,53 @@ test "sysProcessAssetUploads - safe execution on headless state" {
 
     const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
     sysProcessAssetUploads(ctx);
+}
+
+test "prepareCacheTextures guards thumbnail eviction during active thumb_crossfade" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "img1.jpg" } });
+    state.viewer.navigation.current_index = 0;
+
+    // Simulate entry with loaded thumbnail and loaded GPU texture
+    try state.cache.appendWithKey(allocator, .{ .index = 0, .generation = 0 }, .{
+        .status = .{ .loaded_gpu = .{
+            .gpu_texture = .{ .ptr = @ptrFromInt(0x1234) },
+            .w = 800,
+            .h = 600,
+            .size_bytes = 800 * 600 * 4,
+            .mime_type = "image/jpeg",
+            .read_time_ms = 1,
+            .decode_time_ms = 1,
+            .conversion_time_ms = 1,
+            .upload_time_ms = 1,
+            .memory_size_bytes = 800 * 600 * 4,
+            .num_mip_levels = 1,
+            .mipmap_time_ms = 1,
+            .was_fallback = false,
+            .fallback_time_ms = 0,
+            .cbz_decompress_time_ms = 0,
+            .compressed_size_bytes = 0,
+        } },
+        .thumbnail = .{ .loaded = .{
+            .texture = .{ .ptr = @ptrFromInt(0x5678) },
+            .info = .{ .w = 160, .h = 120, .upload_time_ms = 1 },
+        } },
+    });
+
+    // Case 1: thumb_crossfade is active -> prepareCacheTextures MUST NOT evict thumbnail
+    state.viewer.animations.start(.thumb_crossfade, 1.0, 120.0, .ease_out_quad);
+    state.prepareCacheTextures();
+    var entry = state.cache.get(state.cache.activeKey(0)).?;
+    try std.testing.expect(entry.thumbnail == .loaded);
+
+    // Case 2: thumb_crossfade settles -> prepareCacheTextures evicts thumbnail
+    state.viewer.animations.settle(.thumb_crossfade);
+    state.prepareCacheTextures();
+    entry = state.cache.get(state.cache.activeKey(0)).?;
+    try std.testing.expect(entry.thumbnail == .unloaded);
 }

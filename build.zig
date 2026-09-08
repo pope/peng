@@ -117,7 +117,6 @@ pub fn build(b: *std.Build) void {
     state_module.addImport("intents", intents_module);
     state_module.addImport("sdl", sdl_module);
     state_module.addImport("fuzzig", fuzzig_dep.module("fuzzig"));
-    state_module.addImport("zclay", zclay_dep.module("zclay"));
 
     const input_module = b.createModule(.{
         .root_source_file = b.path("src/input/root.zig"),

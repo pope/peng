@@ -1,23 +1,28 @@
-const std = @import("std");
 const clay = @import("zclay");
-const sdl = @import("sdl");
-const theme = @import("theme.zig");
-const state = @import("state");
-const types = state.types;
-const ViewParams = types.ViewParams;
-const UiViewModel = types.UiViewModel;
-const FrameInput = types.FrameInput;
-const MeasureTextUserData = types.MeasureTextUserData;
-const renderPalette = @import("palette.zig").renderPalette;
-const renderStatsOverlay = @import("stats.zig").renderStatsOverlay;
-const renderer = @import("renderer.zig");
-const saveTextureToPng = @import("graphics.zig").saveTextureToPng;
-const ElementTag = types.ElementTag;
-const view_transform = state.view_transform;
-const truncateFilename = @import("text_utils.zig").truncateFilename;
-const sdl3MeasureText = @import("graphics.zig").sdl3MeasureText;
+const graphics = @import("graphics.zig");
 const intents = @import("intents");
-const RenderResources = @import("graphics.zig").RenderResources;
+const palette = @import("palette.zig");
+const renderer = @import("renderer.zig");
+const sdl = @import("sdl");
+const state = @import("state");
+const stats = @import("stats.zig");
+const std = @import("std");
+const text_utils = @import("text_utils.zig");
+const theme = @import("theme.zig");
+
+const ElementTag = types.ElementTag;
+const FrameInput = types.FrameInput;
+const MeasureTextUserData = state.MeasureTextUserData;
+const RenderResources = graphics.RenderResources;
+const UiViewModel = state.UiViewModel;
+const ViewParams = types.ViewParams;
+const renderPalette = palette.renderPalette;
+const renderStatsOverlay = stats.renderStatsOverlay;
+const saveTextureToPng = graphics.saveTextureToPng;
+const sdl3MeasureText = graphics.sdl3MeasureText;
+const truncateFilename = text_utils.truncateFilename;
+const types = state.types;
+const view_transform = state.view_transform;
 
 /// Computes fitted layout dimensions for an image cache entry within available viewport bounds.
 pub fn computeDrawDims(
@@ -270,7 +275,7 @@ fn renderTitleOverlay(
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
 ) !void {
-    const progress = ui_model.title_overlay_reveal;
+    const progress = ui_model.anim(.title_overlay);
     if (progress <= 0.001) return;
 
     const raw_title = ui_model.window_title;
@@ -527,10 +532,7 @@ fn renderImageCanvas(
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
 ) void {
-    const is_thumb_crossfade = (entry.status == .loaded_gpu) and
-        (entry.thumbnail == .loaded) and
-        !ui_model.debug_show_thumb and
-        (ui_model.thumb_crossfade < 0.999);
+    const is_thumb_crossfade = ui_model.is_thumb_crossfading;
 
     if (is_thumb_crossfade) {
         const thumb = entry.thumbnail.loaded;
@@ -611,7 +613,7 @@ fn renderImageCanvas(
     if (!drew_thumb) switch (entry.status) {
         .loaded_gpu => |gpu| {
             const tex = gpu.gpu_texture;
-            const full_alpha = if (is_thumb_crossfade) ui_model.thumb_crossfade else 1.0;
+            const full_alpha = if (is_thumb_crossfade) ui_model.anim(.thumb_crossfade) else 1.0;
             const uv_ptr = frame_allocator.create(state.UvRect) catch |err| blk: {
                 std.log.warn("Failed to allocate UvRect: {any}", .{err});
                 break :blk null;

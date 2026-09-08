@@ -1,6 +1,4 @@
-const clay = @import("zclay");
 const intents = @import("intents");
-const palette_state = @import("palette_state.zig");
 const sdl = @import("sdl");
 const std = @import("std");
 
@@ -259,6 +257,7 @@ pub const FrameInput = struct {
     ticks: u64,
     delta_time_ms: f32,
     window_resized: bool = false,
+    is_pointer_in_debug_panel: bool = false,
 
     /// Returns the mouse X coordinate scaled to physical framebuffer pixels.
     pub fn pixMouseX(self: FrameInput) f32 {
@@ -272,9 +271,7 @@ pub const FrameInput = struct {
 
     /// Returns `true` if the cursor is positioned within Clay's debug sidebar panel.
     pub fn isPointerInDebugPanel(self: FrameInput) bool {
-        if (!clay.isDebugModeEnabled()) return false;
-        const debug_w: f32 = @floatFromInt(clay.Clay__debugViewWidth);
-        return self.mouse_x >= (self.win_w - debug_w);
+        return self.is_pointer_in_debug_panel;
     }
 };
 
@@ -647,37 +644,6 @@ pub const ViewerStats = struct {
 /// Prevents text flickering when scrubbing through thumbnails or fast-decoding formats (~2 frames at 60Hz).
 pub const LOADING_GRACE_PERIOD_MS: u64 = 35;
 
-/// Complete read-only UI frame snapshot separating the application update phase from the render phase.
-pub const UiViewModel = struct {
-    is_fullscreen: bool,
-    total_images: usize,
-    image_list: []const MediaEntry = &.{},
-    current_index: ?usize,
-    current_image_entry: ?MediaEntry = null,
-    current_entry: ?CacheEntry = null,
-    is_loading_files: bool,
-    slideshow: SlideshowMode = .inactive,
-    manga_mode: bool = false,
-    overlays: OverlayState,
-    window_title: []const u8 = "Peng Image Viewer",
-    viewport: ViewportParams,
-    palette: *const palette_state.PaletteState,
-    palette_reveal: f32 = 1.0,
-    thumb_crossfade: f32 = 1.0,
-    title_overlay_reveal: f32 = 0.0,
-    debug_show_thumb: bool,
-    current_time_ms: u64 = 0,
-    stats: ViewerStats = .{},
-    render_metrics: UiRenderMetricsSnapshot = .{},
-};
-
-/// User data context passed to Clay text measurement callbacks containing font handles and debug flags.
-pub const MeasureTextUserData = struct {
-    fonts: []const ?sdl.Font,
-    is_debug_measuring: bool = false,
-    allocator: std.mem.Allocator = undefined,
-};
-
 /// Claimed SDL window handle, pixel format, fullscreen state, and title string cache.
 pub const ActiveWindow = struct {
     handle: sdl.Window,
@@ -915,22 +881,16 @@ test "RawMetadata tagged union invariants and constructor" {
     try std.testing.expect(none_meta.getSensorDims() == null);
 }
 
-test "UiViewModel current_time_ms and CacheStatus.decoding defaults" {
-    var palette = try palette_state.PaletteState.init(std.testing.allocator);
-    defer palette.deinit();
-    const model = UiViewModel{
-        .is_fullscreen = false,
-        .total_images = 0,
-        .current_index = null,
-        .is_loading_files = false,
-        .overlays = .{},
-        .viewport = .{},
-        .palette = &palette,
-        .debug_show_thumb = false,
-    };
-    try std.testing.expectEqual(@as(u64, 0), model.current_time_ms);
-
+test "CacheStatus.decoding defaults" {
     const dec_status: CacheStatus = .{ .decoding = .{} };
     try std.testing.expectEqual(@as(u64, 0), dec_status.decoding.start_time_ms);
     try std.testing.expect(!dec_status.decoding.has_thread);
+}
+
+test "ElementTag.fromInt" {
+    try std.testing.expectEqual(ElementTag.none, ElementTag.fromInt(0));
+    try std.testing.expectEqual(ElementTag.drop_zone_box, ElementTag.fromInt(2));
+    try std.testing.expectEqual(ElementTag.none, ElementTag.fromInt(1337));
+    try std.testing.expectEqual(ElementTag.none, ElementTag.fromInt(9999));
+    try std.testing.expectEqual(ElementTag.none, ElementTag.fromInt(0x7fffffffd000));
 }

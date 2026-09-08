@@ -19,8 +19,9 @@
 ## 4. `std.Io.Group` Task Spawning & Native Cancellation
 
 - **Avoid Orphaned `io.async` Future Leaks**: Never discard the return value of `io.async` (`_ = io.async(...)`). `io.async` allocates a `Future` on the heap that leaks if not explicitly awaited or canceled.
-- **Use `std.Io.Group`**: Spawn background tasks via `WorkerManager` (`state.workers.group.async(io, func, args)`). Tasks in a `Group` automatically release their task memory when they return.
-- **Native Task Cancellation**: Use `state.workers.drainAndQuiesce(io)` or `state.workers.group.cancel(io)` to cancel active background tasks instead of polling manual atomic generation counters.
+- **Use `std.Io.Group` for Cancellable Batch Workers**: Spawn transient batch background tasks (image decodes, directory scans, stdin streaming) via `WorkerManager` (`state.workers.group.async(io, func, args)`).
+- **Daemon Tasks Must Run on Independent Threads**: Long-lived background services (such as the IPC server socket listener) MUST NOT be attached to a cancellable `WorkerManager.group`. Spawn daemon services on dedicated detached threads (`std.Thread.spawn`) so runtime task group cancellations do not kill server listeners.
+- **Shutdown Signals vs. Runtime Cancellation**: `state.workers.drainAndQuiesce(io)` sets `workers.exiting = true` and MUST ONLY be called during application shutdown (`AppState.deinit()`). NEVER call `drainAndQuiesce` or signal `exiting = true` during runtime workflows (e.g. `openPath`), as this permanently halts all future worker tasks.
 - **`error.Canceled` & C-Call Checks**: Handle `error.Canceled` from `std.Io` calls (`openDir`, `iterate`, `readPositional`, `takeDelimiter`). After non-cancellable external C calls (e.g. SDL image loading), check `io.isCanceled()` before pushing results to event queues.
 
 ## 5. MpscQueue Transport & Event Loop Wakeup

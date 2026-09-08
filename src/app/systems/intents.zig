@@ -1,16 +1,13 @@
 const app_state = @import("../state.zig");
 const clay = @import("zclay");
+const context = @import("context.zig");
 const intents = @import("intents");
-const root = @import("root.zig");
 const sdl = @import("sdl");
 const state = @import("state");
 const std = @import("std");
 
 const AppState = app_state.AppState;
-const FrameContext = root.FrameContext;
-const Key = state.Key;
-const KeyModifiers = state.KeyModifiers;
-const startTextInput = app_state.startTextInput;
+const FrameContext = context.FrameContext;
 
 /// Central intent dispatcher. Maps an AppIntent variant to domain state mutations.
 fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
@@ -19,6 +16,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
     const ui = &self.viewer.ui;
 
     switch (intent) {
+        .open_path => |p| try self.openPath(p),
         .set_zoom => |factor| vp.zoom_factor = self.clampZoomFactor(factor),
         .zoom_in => {
             const old_zoom = vp.zoom_factor;
@@ -173,8 +171,12 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
         },
         .toggle_debug_mode => clay.setDebugModeEnabled(!clay.isDebugModeEnabled()),
         .set_debug_mode => |val| clay.setDebugModeEnabled(val),
-        .toggle_debug_thumb => try self.setDebugShowThumb(!ui.overlays.debug_show_thumb),
-        .set_debug_thumb => |val| try self.setDebugShowThumb(val),
+        .toggle_debug_thumb => {
+            ui.overlays.debug_show_thumb = !ui.overlays.debug_show_thumb;
+        },
+        .set_debug_thumb => |val| {
+            ui.overlays.debug_show_thumb = val;
+        },
         .start_slideshow => try self.openPalette(.set_slideshow_interval),
         .stop_slideshow => nav.slideshow = .inactive,
         .toggle_manga_mode => nav.manga_mode = !nav.manga_mode,
@@ -379,4 +381,3 @@ test "fast scrubbing triggers title overlay auto-hide" {
     try testing.expect(app_st.viewer.ui.title_auto_hide_timeout_ms >= now + 1400);
     try testing.expect(app_st.viewer.animations.isActive(.title_overlay));
 }
-

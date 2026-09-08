@@ -1,9 +1,7 @@
-const app_input = @import("input");
 const clay = @import("zclay");
 const core_fs = @import("core/fs.zig");
 const events = @import("core/events.zig");
 const exif = @import("core/exif.zig");
-const fuzzig = @import("fuzzig");
 const image = @import("core/image.zig");
 const intents = @import("intents");
 const ipc = @import("ipc");
@@ -11,30 +9,17 @@ const palette_module = @import("core/palette.zig");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
-const systems = @import("systems/root.zig");
 const workers_mod = @import("workers/root.zig");
 
-const ActiveWindow = state_pkg.ActiveWindow;
 const AppIntent = intents.AppIntent;
 const CacheEntry = state_pkg.CacheEntry;
 const CacheKey = image.CacheKey;
 const CacheSlotMap = image.CacheSlotMap;
 const CacheStatus = state_pkg.CacheStatus;
-const DecodeArgs = workers_mod.DecodeArgs;
 const DisplayState = state_pkg.DisplayState;
-const DragState = state_pkg.DragState;
-pub const ElementTag = state_pkg.ElementTag;
 const FrameInput = types.FrameInput;
-const OverlayState = state_pkg.OverlayState;
 const PaletteMode = intents.PaletteMode;
-const PaletteState = state_pkg.PaletteState;
-const ScaleMode = intents.ScaleMode;
-const SlideshowMode = state_pkg.SlideshowMode;
-const TextureHandle = image.TextureHandle;
-const TextureScaleMode = intents.TextureScaleMode;
 const types = state_pkg.types;
-const UiRenderMetrics = state_pkg.UiRenderMetrics;
-const uploadSurfaceToGpu = image.uploadSurfaceToGpu;
 const view_transform = state_pkg.view_transform;
 const ViewerState = state_pkg.ViewerState;
 
@@ -62,27 +47,6 @@ pub fn stopTextInput(display: DisplayState) void {
             }
         },
     }
-}
-
-/// Performs case-insensitive matching between `path` and an already lowercased query string.
-fn matchesQueryLower(path: []const u8, query_lower: []const u8) bool {
-    if (query_lower.len == 0) return true;
-    if (path.len < query_lower.len) return false;
-
-    var i: usize = 0;
-    const end = path.len - query_lower.len;
-    while (i <= end) : (i += 1) {
-        var match = true;
-        for (query_lower, 0..) |q_char, j| {
-            const pc = std.ascii.toLower(path[i + j]);
-            if (q_char != pc) {
-                match = false;
-                break;
-            }
-        }
-        if (match) return true;
-    }
-    return false;
 }
 
 /// Cohesive GPU context and render resources initialized for GPU-accelerated rendering.
@@ -175,64 +139,6 @@ pub const AppState = struct {
     /// Reads EXIF orientation from a JPEG file header on disk, returning `null` if unparseable.
     pub fn readJpegExifOrientation(self: *const AppState, path: []const u8) ?state_pkg.Orientation {
         return exif.readJpegExifOrientation(self.io, path);
-    }
-
-    /// Ensures that the thumbnail GPU texture is loaded for the current entry.
-    pub fn ensureCurrentThumbnailLoaded(self: *AppState) void {
-        const e = self.getCurrentEntryPtr() orelse return;
-        if (e.thumbnail == .loaded or e.thumbnail == .not_available) return;
-
-        const idx = self.viewer.navigation.current_index orelse return;
-        if (idx >= self.viewer.navigation.image_list.items.len) return;
-
-        const media = self.viewer.navigation.image_list.items[idx];
-        const extracted = image.loadThumbnailSurface(self.io, self.allocator, media) orelse {
-            e.thumbnail = .not_available;
-            return;
-        };
-        defer extracted.surface.destroy();
-
-        const dev = self.gpu_device orelse return;
-        const upload_res = uploadSurfaceToGpu(dev, extracted.surface, self.unpack_compute_pipeline, &self.upload_staging) orelse {
-            e.thumbnail = .not_available;
-            return;
-        };
-
-        switch (e.thumbnail) {
-            .loaded => |thumb| dev.releaseTexture(thumb.texture),
-            else => {},
-        }
-
-        if (extracted.orientation != .normal or e.orientation == .normal) {
-            e.orientation = extracted.orientation;
-        }
-        if (extracted.full_w > 0 and extracted.full_h > 0 and (e.full_w <= 0 or e.full_h <= 0)) {
-            e.full_w = extracted.full_w;
-            e.full_h = extracted.full_h;
-        }
-        if (extracted.raw_metadata.isRaw()) {
-            e.raw_metadata = extracted.raw_metadata;
-        }
-
-        e.thumbnail = .{
-            .loaded = .{
-                .texture = upload_res.gpu_texture,
-                .info = .{
-                    .w = upload_res.w,
-                    .h = upload_res.h,
-                    .upload_time_ms = upload_res.upload_time_ms,
-                    .dct_snapped = extracted.dct_snapped,
-                },
-            },
-        };
-        self.updateCurrentRotation();
-    }
-
-    /// Enables or disables the debug thumbnail overlay preview, extracting and uploading the thumbnail if needed.
-    pub fn setDebugShowThumb(self: *AppState, enable: bool) !void {
-        self.viewer.ui.overlays.debug_show_thumb = enable;
-        if (!enable) return;
-        self.ensureCurrentThumbnailLoaded();
     }
 
     /// Releases all engine resources, cancels background worker tasks, and frees GPU textures and queues.
@@ -353,7 +259,7 @@ pub const AppState = struct {
     }
 
     /// Returns a mutable pointer to the CacheEntry corresponding to the currently active image, or null.
-    fn getCurrentEntryPtr(self: *AppState) ?*CacheEntry {
+    pub fn getCurrentEntryPtr(self: *AppState) ?*CacheEntry {
         const idx = self.viewer.navigation.current_index orelse return null;
         return self.cache.get(self.cache.activeKey(idx));
     }
@@ -364,6 +270,50 @@ pub const AppState = struct {
             return entry.*;
         }
         return null;
+    }
+
+    /// Releases all GPU textures and resets status across all cache slots.
+    pub fn clearCache(self: *AppState) void {
+        const dev_opt = self.gpu_device;
+        self.cache.clear(dev_opt);
+    }
+
+    /// Synchronizes viewport rotation angle with active user rotation override, parsed EXIF orientation, or zero.
+    pub fn updateCurrentRotation(self: *AppState) void {
+        const media_opt = blk: {
+            const len = self.viewer.navigation.image_list.items.len;
+            const current_idx = self.viewer.navigation.current_index orelse break :blk null;
+            if (current_idx >= len) break :blk null;
+            break :blk self.viewer.navigation.image_list.items[current_idx];
+        };
+
+        const media = media_opt orelse {
+            self.viewer.viewport.rotation_angle = 0.0;
+            return;
+        };
+
+        if (self.viewer.rotation_map.get(media.getPath())) |user_rot| {
+            self.viewer.viewport.rotation_angle = user_rot;
+        } else if (self.getCurrentEntry()) |entry| {
+            self.viewer.viewport.rotation_angle = entry.orientation.toDegrees();
+        } else {
+            self.viewer.viewport.rotation_angle = 0.0;
+        }
+    }
+
+    /// Completes a pending IPC screenshot capture request after frame rendering, sending reply to client.
+    pub fn handleScreenshotPostRender(self: *AppState, render_err: ?anyerror) void {
+        switch (self.viewer.ui.screenshot_mode) {
+            .idle => {},
+            .capturing => |*s| {
+                if (render_err) |err| {
+                    s.respondErr(self.io, self.allocator, err);
+                } else {
+                    s.respondOk(self.io, self.allocator);
+                }
+                self.viewer.ui.screenshot_mode = .idle;
+            },
+        }
     }
 
     /// Initiates animated closing of the command palette, stopping text input.
@@ -380,6 +330,19 @@ pub const AppState = struct {
         stopTextInput(self.viewer.display);
         self.viewer.ui.palette.reset();
         self.viewer.animations.setImmediate(.palette_reveal, 0.0);
+    }
+
+    /// Loads directory items into the command palette directory navigator and spawns
+    /// a background worker task to asynchronously count images and subdirectories.
+    pub fn loadPaletteDirectory(self: *AppState, dir_path: []const u8) !void {
+        try palette_module.loadDirectoryEntries(&self.viewer.ui.palette, self.io, dir_path);
+        try workers_mod.spawnPaletteScanForItems(
+            &self.workers,
+            self.allocator,
+            self.io,
+            &self.viewer.ui.palette.dir_scan_generation,
+            self.viewer.ui.palette.dir_items.items,
+        );
     }
 
     /// Activates the command palette in the specified PaletteMode, resetting queries and starting text input.
@@ -444,27 +407,120 @@ pub const AppState = struct {
                     break;
                 }
             },
-            else => {},
+            .set_slideshow_interval => {
+                var buf: [32]u8 = undefined;
+                const dur_secs = switch (self.viewer.navigation.slideshow) {
+                    .active => |s| s.interval_s,
+                    .inactive => 3.0,
+                };
+                const formatted = std.fmt.bufPrint(&buf, "{d:.1}", .{dur_secs}) catch "3.0";
+                try self.viewer.ui.palette.query.appendSlice(self.allocator, formatted);
+            },
+            .set_brightness, .set_contrast, .go_to_image, .inactive => {},
         }
-
         startTextInput(self.viewer.display);
     }
 
-    /// Loads directory items into the command palette directory navigator and spawns
-    /// a background worker task to asynchronously count images and subdirectories.
-    pub fn loadPaletteDirectory(self: *AppState, dir_path: []const u8) !void {
-        try palette_module.loadDirectoryEntries(&self.viewer.ui.palette, self.io, dir_path);
-        try workers_mod.spawnPaletteScanForItems(
-            &self.workers,
-            self.allocator,
-            self.io,
-            &self.viewer.ui.palette.dir_scan_generation,
-            self.viewer.ui.palette.dir_items.items,
-        );
+    /// Initiates loading a new target path (file or directory). Cancels in-flight tasks,
+    /// clears cache, resets navigation, and starts background discovery workers.
+    pub fn openPath(self: *AppState, path: []const u8) !void {
+        var stat: std.Io.File.Stat = undefined;
+        var has_stat = true;
+        if (std.Io.Dir.statFile(std.Io.Dir.cwd(), self.io, path, .{})) |s| {
+            stat = s;
+        } else |err| {
+            std.log.err("Failed to access path '{s}': {}", .{ path, err });
+            has_stat = false;
+        }
+
+        const dir_target = if (has_stat and stat.kind == .directory)
+            path
+        else
+            std.fs.path.dirname(path) orelse ".";
+
+        self.viewer.navigation.last_scanned_dir.clearRetainingCapacity();
+        try self.viewer.navigation.last_scanned_dir.appendSlice(self.allocator, dir_target);
+
+        _ = self.cache.advanceGeneration();
+        self.clearCache();
+        self.clearRotationMap();
+        self.viewer.navigation.image_list.clearRetainingCapacity();
+        _ = self.viewer.navigation.directory_arena.reset(.retain_capacity);
+        self.viewer.navigation.current_index = null;
+
+        if (has_stat) {
+            if (stat.kind == .directory) {
+                try workers_mod.startAsyncPathScan(&self.workers, &self.viewer.navigation.is_loading_files, self.allocator, self.io, path, true);
+            } else if (core_fs.isCbzFile(path)) {
+                self.viewer.navigation.is_loading_files.store(true, .release);
+                errdefer self.viewer.navigation.is_loading_files.store(false, .release);
+                try workers_mod.startAsyncPathScan(&self.workers, &self.viewer.navigation.is_loading_files, self.allocator, self.io, path, false);
+            } else {
+                const dup = try self.viewer.navigation.directory_arena.allocator().dupe(u8, path);
+                try self.viewer.navigation.image_list.append(self.allocator, .{ .filesystem = .{ .path = dup } });
+                self.viewer.navigation.current_index = 0;
+
+                try workers_mod.startAsyncPathScan(&self.workers, &self.viewer.navigation.is_loading_files, self.allocator, self.io, path, false);
+            }
+        }
+        try self.rebuildPaletteMatches();
+    }
+
+    /// Ensures that the thumbnail GPU texture is loaded for the current entry.
+    pub fn ensureCurrentThumbnailLoaded(self: *AppState) void {
+        const e = self.getCurrentEntryPtr() orelse return;
+        if (e.thumbnail == .loaded or e.thumbnail == .not_available) return;
+
+        const idx = self.viewer.navigation.current_index orelse return;
+        if (idx >= self.viewer.navigation.image_list.items.len) return;
+
+        const media = self.viewer.navigation.image_list.items[idx];
+        const extracted = image.loadThumbnailSurface(self.io, self.allocator, media) orelse {
+            e.thumbnail = .not_available;
+            return;
+        };
+        defer extracted.surface.destroy();
+
+        const dev = self.gpu_device orelse return;
+        const upload_res = image.uploadSurfaceToGpu(dev, extracted.surface, self.unpack_compute_pipeline, &self.upload_staging) orelse {
+            e.thumbnail = .not_available;
+            return;
+        };
+
+        switch (e.thumbnail) {
+            .loaded => |thumb| dev.releaseTexture(thumb.texture),
+            else => {},
+        }
+
+        if (extracted.orientation != .normal or e.orientation == .normal) {
+            e.orientation = extracted.orientation;
+        }
+        if (extracted.full_w > 0 and extracted.full_h > 0 and (e.full_w <= 0 or e.full_h <= 0)) {
+            e.full_w = extracted.full_w;
+            e.full_h = extracted.full_h;
+        }
+        if (extracted.raw_metadata.isRaw()) {
+            e.raw_metadata = extracted.raw_metadata;
+        }
+
+        e.thumbnail = .{
+            .loaded = .{
+                .texture = upload_res.gpu_texture,
+                .info = .{
+                    .w = upload_res.w,
+                    .h = upload_res.h,
+                    .upload_time_ms = upload_res.upload_time_ms,
+                    .dct_snapped = extracted.dct_snapped,
+                },
+            },
+        };
+        self.updateCurrentRotation();
     }
 
     /// Scans cache slots around the current navigation index, evicting distant textures and uploading ready surfaces to the GPU.
     pub fn prepareCacheTextures(self: *AppState) void {
+        if (self.gpu_device == null) return;
+
         var upload_target: ?struct {
             key: CacheKey,
             cpu: @TypeOf(@as(CacheStatus, undefined).loaded_cpu),
@@ -497,10 +553,6 @@ pub const AppState = struct {
             }
         }
 
-        // Priority gating:
-        // - If current image is .loaded_cpu, prioritize uploading it first.
-        // - If current image is .decoding or .uploading, withhold neighbor uploads to protect GPU resources.
-        // - If current image is .loaded_gpu (or failed, or not present), upload neighbor .loaded_cpu slots (1 per frame).
         const cur_idx_opt = self.viewer.navigation.current_index;
         const cur_key_opt = if (cur_idx_opt) |ci| self.cache.activeKey(ci) else null;
         const cur_entry_opt = if (cur_key_opt) |ck| self.cache.get(ck) else null;
@@ -565,7 +617,7 @@ pub const AppState = struct {
         if (upload_target) |target| {
             defer target.cpu.surface.destroy();
             if (self.gpu_device) |gpu_dev| {
-                if (uploadSurfaceToGpu(gpu_dev, target.cpu.surface, self.unpack_compute_pipeline, &self.upload_staging)) |res| {
+                if (image.uploadSurfaceToGpu(gpu_dev, target.cpu.surface, self.unpack_compute_pipeline, &self.upload_staging)) |res| {
                     const loaded_gpu_status = CacheStatus{
                         .loaded_gpu = .{
                             .gpu_texture = res.gpu_texture,
@@ -608,112 +660,7 @@ pub const AppState = struct {
             }
         }
     }
-
-    /// Releases all GPU textures and resets status across all cache slots.
-    fn clearCache(self: *AppState) void {
-        const dev_opt = self.gpu_device;
-        self.cache.clear(dev_opt);
-    }
-
-    /// Synchronizes viewport rotation angle with active user rotation override, parsed EXIF orientation, or zero.
-    pub fn updateCurrentRotation(self: *AppState) void {
-        const media_opt = blk: {
-            const len = self.viewer.navigation.image_list.items.len;
-            const current_idx = self.viewer.navigation.current_index orelse break :blk null;
-            if (current_idx >= len) break :blk null;
-            break :blk self.viewer.navigation.image_list.items[current_idx];
-        };
-
-        const media = media_opt orelse {
-            self.viewer.viewport.rotation_angle = 0.0;
-            return;
-        };
-
-        if (self.viewer.rotation_map.get(media.getPath())) |user_rot| {
-            self.viewer.viewport.rotation_angle = user_rot;
-        } else if (self.getCurrentEntry()) |entry| {
-            self.viewer.viewport.rotation_angle = entry.orientation.toDegrees();
-        } else {
-            self.viewer.viewport.rotation_angle = 0.0;
-        }
-    }
-
-    /// Selects a file or directory path, clearing prior caches and launching asynchronous path scanning.
-    pub fn handlePathSelection(self: *AppState, path: []const u8) !void {
-        var stat: std.Io.File.Stat = undefined;
-        var has_stat = true;
-        if (std.Io.Dir.statFile(std.Io.Dir.cwd(), self.io, path, .{})) |s| {
-            stat = s;
-        } else |err| {
-            std.log.err("Failed to access path '{s}': {}", .{ path, err });
-            has_stat = false;
-        }
-
-        const dir_target = if (has_stat and stat.kind == .directory)
-            path
-        else
-            std.fs.path.dirname(path) orelse ".";
-
-        self.viewer.navigation.last_scanned_dir.clearRetainingCapacity();
-        try self.viewer.navigation.last_scanned_dir.appendSlice(self.allocator, dir_target);
-
-        // Clear existing cache and rotation map before resetting directory_arena
-        _ = self.cache.advanceGeneration();
-        self.clearCache();
-        self.clearRotationMap();
-        self.viewer.navigation.image_list.clearRetainingCapacity();
-        _ = self.viewer.navigation.directory_arena.reset(.retain_capacity);
-        self.viewer.navigation.current_index = null;
-
-        if (has_stat) {
-            if (stat.kind == .directory) {
-                try workers_mod.startAsyncPathScan(self, path, true);
-            } else if (core_fs.isCbzFile(path)) {
-                self.viewer.navigation.is_loading_files.store(true, .release);
-                try workers_mod.startAsyncPathScan(self, path, false);
-            } else {
-                const dup = try self.viewer.navigation.directory_arena.allocator().dupe(u8, path);
-                try self.viewer.navigation.image_list.append(self.allocator, .{ .filesystem = .{ .path = dup } });
-                self.viewer.navigation.current_index = 0;
-
-                try workers_mod.startAsyncPathScan(self, path, false);
-            }
-        }
-        try self.rebuildPaletteMatches();
-    }
-
-    /// Initiates an asynchronous background directory or archive path scan.
-    pub fn startAsyncPathScan(self: *AppState, path: []const u8, is_dir: bool) !void {
-        _ = is_dir;
-        try self.handlePathSelection(path);
-    }
-
-    /// Completes a pending IPC screenshot capture request after frame rendering, sending reply to client.
-    pub fn handleScreenshotPostRender(self: *AppState, render_err: ?anyerror) void {
-        switch (self.viewer.ui.screenshot_mode) {
-            .idle => {},
-            .capturing => |*s| {
-                if (render_err) |err| {
-                    s.respondErr(self.io, self.allocator, err);
-                } else {
-                    s.respondOk(self.io, self.allocator);
-                }
-                self.viewer.ui.screenshot_mode = .idle;
-            },
-        }
-    }
 };
-
-test "matchesQueryLower bounds check" {
-    // Normal matches
-    try std.testing.expect(matchesQueryLower("hello", "ell"));
-    try std.testing.expect(matchesQueryLower("HELLO", "ell"));
-    try std.testing.expect(!matchesQueryLower("hello", "world"));
-
-    // Query longer than path (should not overflow/panic)
-    try std.testing.expect(!matchesQueryLower("short", "longerquery"));
-    try std.testing.expect(matchesQueryLower("short", ""));
-}
 
 var test_clay_memory: [1024 * 1024]u8 = undefined;
 
@@ -796,119 +743,6 @@ test "AppState.updateCurrentRotation syncs EXIF orientation" {
     try std.testing.expectEqual(@as(f32, 0.0), state.viewer.viewport.rotation_angle);
 }
 
-test "ElementTag.fromInt" {
-    try std.testing.expectEqual(ElementTag.none, ElementTag.fromInt(0));
-    try std.testing.expectEqual(ElementTag.drop_zone_box, ElementTag.fromInt(1337));
-    try std.testing.expectEqual(ElementTag.none, ElementTag.fromInt(9999));
-    try std.testing.expectEqual(ElementTag.none, ElementTag.fromInt(0x7fffffffd000));
-}
-
-test "AppState.openPalette directory_navigator starting directory rules" {
-    const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
-    const cwd = std.Io.Dir.cwd();
-
-    const tmp_dir = "testfiles/tmp_palette_open_dir_test";
-    std.Io.Dir.createDirPath(cwd, io, tmp_dir ++ "/sub1") catch {};
-    defer {
-        std.Io.Dir.deleteTree(cwd, io, tmp_dir) catch {};
-    }
-
-    var state = try AppState.initHeadless(allocator, io);
-    defer state.deinit();
-
-    // Rule 1: current_index is valid -> starting directory is dirname of current image
-    const sample_path = tmp_dir ++ "/image1.jpg";
-    try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = sample_path } });
-    state.viewer.navigation.current_index = 0;
-
-    try state.openPalette(.directory_navigator);
-    try std.testing.expectEqual(PaletteMode.directory_navigator, state.viewer.ui.palette.mode);
-    try std.testing.expectEqualStrings(tmp_dir, state.viewer.ui.palette.current_nav_dir.items);
-
-    // Rule 2: current_index is null -> starting directory remembers last_nav_dir
-    state.viewer.navigation.current_index = null;
-    try state.openPalette(.directory_navigator);
-    try std.testing.expectEqualStrings(tmp_dir, state.viewer.ui.palette.current_nav_dir.items);
-
-    // Rule 3: current_index is null and last_nav_dir is empty -> starting directory falls back to "."
-    state.viewer.ui.palette.last_nav_dir.clearRetainingCapacity();
-    try state.openPalette(.directory_navigator);
-    try std.testing.expectEqualStrings(".", state.viewer.ui.palette.current_nav_dir.items);
-
-    // Rule 4: current_index out of bounds and last_nav_dir is empty -> starting directory falls back to "."
-    state.viewer.navigation.current_index = 999;
-    state.viewer.ui.palette.last_nav_dir.clearRetainingCapacity();
-    try state.openPalette(.directory_navigator);
-    try std.testing.expectEqualStrings(".", state.viewer.ui.palette.current_nav_dir.items);
-}
-
-test "AppState.openPalette directory_navigator steps up if 0 subdirectories" {
-    const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
-    const cwd = std.Io.Dir.cwd();
-
-    const tmp_dir = "testfiles/tmp_palette_step_up_test";
-    const sub_leaf = tmp_dir ++ "/child_leaf";
-    std.Io.Dir.createDirPath(cwd, io, sub_leaf) catch {};
-    defer {
-        std.Io.Dir.deleteTree(cwd, io, tmp_dir) catch {};
-    }
-
-    var state = try AppState.initHeadless(allocator, io);
-    defer state.deinit();
-
-    // Image in child_leaf (which has 0 subdirectories itself)
-    const img_path = sub_leaf ++ "/photo.png";
-    try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = img_path } });
-    state.viewer.navigation.current_index = 0;
-
-    // openPalette should see sub_leaf has 0 subdirectories, so it steps up to tmp_dir and pre-selects child_leaf
-    try state.openPalette(.directory_navigator);
-    try std.testing.expectEqualStrings(tmp_dir, state.viewer.ui.palette.current_nav_dir.items);
-
-    // Verify child_leaf is selected
-    var found_leaf_selected = false;
-    if (state.viewer.ui.palette.selected_idx < state.viewer.ui.palette.dir_items.items.len) {
-        if (std.mem.eql(u8, state.viewer.ui.palette.dir_items.items[state.viewer.ui.palette.selected_idx].getName(), "child_leaf")) {
-            found_leaf_selected = true;
-        }
-    }
-    try std.testing.expect(found_leaf_selected);
-}
-
-test "AppState.openPalette steps up from top-level relative leaf dir without slashes to dot" {
-    const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
-    const cwd = std.Io.Dir.cwd();
-
-    const top_leaf = "tmp_top_level_leaf_test";
-    std.Io.Dir.createDirPath(cwd, io, top_leaf) catch {};
-    defer {
-        std.Io.Dir.deleteTree(cwd, io, top_leaf) catch {};
-    }
-
-    var state = try AppState.initHeadless(allocator, io);
-    defer state.deinit();
-
-    const img_path = top_leaf ++ "/photo.png";
-    try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = img_path } });
-    state.viewer.navigation.current_index = 0;
-
-    try state.openPalette(.directory_navigator);
-    // Should step up to "." because top_leaf has 0 subdirectories
-    try std.testing.expectEqualStrings(".", state.viewer.ui.palette.current_nav_dir.items);
-
-    // Verify top_leaf is pre-selected in "."
-    var found_leaf_selected = false;
-    if (state.viewer.ui.palette.selected_idx < state.viewer.ui.palette.dir_items.items.len) {
-        if (std.mem.eql(u8, state.viewer.ui.palette.dir_items.items[state.viewer.ui.palette.selected_idx].getName(), top_leaf)) {
-            found_leaf_selected = true;
-        }
-    }
-    try std.testing.expect(found_leaf_selected);
-}
-
 test "AppState.isPointerInDebugPanel and click localization" {
     _ = clay.initialize(clay.Arena.init(&test_clay_memory), .{ .w = 1000, .h = 800 }, .{});
 
@@ -947,6 +781,7 @@ test "AppState.isPointerInDebugPanel and click localization" {
         .dropped_path = null,
         .ticks = 0,
         .delta_time_ms = 16.0,
+        .is_pointer_in_debug_panel = true,
     };
     try std.testing.expect(state.isPointerInDebugPanel(input_inside));
 
@@ -974,101 +809,4 @@ test "AppState.isPointerInDebugPanel and click localization" {
         .delta_time_ms = 16.0,
     };
     try std.testing.expect(!state.isPointerInDebugPanel(input_outside));
-
-    state.viewer.ui.palette.mode = .actions;
-    _ = try systems.sysProcessPaletteInput(.{ .state = &state, .frame_allocator = allocator, .input = input_inside });
-    try std.testing.expect(state.viewer.ui.palette.mode == .actions);
-}
-
-test "AppState slideshow timer auto-advances slide" {
-    const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
-
-    var state = try AppState.initHeadless(allocator, io);
-    defer state.deinit();
-
-    try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "img1.jpg" } });
-    try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "img2.jpg" } });
-    state.viewer.navigation.current_index = 0;
-    state.viewer.navigation.slideshow = .{ .active = .{ .interval_s = 2.0 } };
-
-    const frame_input_1s = types.FrameInput{
-        .win_w = 100,
-        .win_h = 100,
-        .pix_w = 100,
-        .pix_h = 100,
-        .scale_x = 1,
-        .scale_y = 1,
-        .dpi_scale = 1,
-        .mouse_x = 0,
-        .mouse_y = 0,
-        .mouse_left_down = false,
-        .mouse_left_clicked = false,
-        .mouse_inside = true,
-        .quit_requested = false,
-        .scroll_delta_x = 0,
-        .scroll_delta_y = 0,
-        .keys_pressed = .empty,
-        .key_modifiers = .{},
-        .text_input = null,
-        .dropped_path = null,
-        .ticks = 0,
-        .delta_time_ms = 1000.0,
-    };
-
-    try systems.sysUpdateSlideshow(.{ .state = &state, .frame_allocator = allocator, .input = frame_input_1s, .delta_time_ms = 1000.0 });
-    try std.testing.expectEqual(@as(usize, 0), state.viewer.navigation.current_index.?);
-
-    // Pass another second (total 2000ms >= 2.0s interval) -> advances to index 1
-    try systems.sysUpdateSlideshow(.{ .state = &state, .frame_allocator = allocator, .input = frame_input_1s, .delta_time_ms = 1000.0 });
-    try std.testing.expectEqual(@as(usize, 1), state.viewer.navigation.current_index.?);
-}
-
-test "prepareCacheTextures guards thumbnail eviction during active thumb_crossfade" {
-    const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
-
-    var state = try AppState.initHeadless(allocator, io);
-    defer state.deinit();
-
-    try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "img1.jpg" } });
-    state.viewer.navigation.current_index = 0;
-
-    // Simulate entry with loaded thumbnail and loaded GPU texture
-    try state.cache.appendWithKey(allocator, .{ .index = 0, .generation = 0 }, .{
-        .status = .{ .loaded_gpu = .{
-            .gpu_texture = .{ .ptr = @ptrFromInt(0x1234) },
-            .w = 800,
-            .h = 600,
-            .size_bytes = 800 * 600 * 4,
-            .mime_type = "image/jpeg",
-            .read_time_ms = 1,
-            .decode_time_ms = 1,
-            .conversion_time_ms = 1,
-            .upload_time_ms = 1,
-            .memory_size_bytes = 800 * 600 * 4,
-            .num_mip_levels = 1,
-            .mipmap_time_ms = 1,
-            .was_fallback = false,
-            .fallback_time_ms = 0,
-            .cbz_decompress_time_ms = 0,
-            .compressed_size_bytes = 0,
-        } },
-        .thumbnail = .{ .loaded = .{
-            .texture = .{ .ptr = @ptrFromInt(0x5678) },
-            .info = .{ .w = 160, .h = 120, .upload_time_ms = 1 },
-        } },
-    });
-
-    // Case 1: thumb_crossfade is active -> prepareCacheTextures MUST NOT evict thumbnail
-    state.viewer.animations.start(.thumb_crossfade, 1.0, 120.0, .ease_out_quad);
-    state.prepareCacheTextures();
-    var entry = state.cache.get(state.cache.activeKey(0)).?;
-    try std.testing.expect(entry.thumbnail == .loaded);
-
-    // Case 2: thumb_crossfade settles -> prepareCacheTextures evicts thumbnail
-    state.viewer.animations.settle(.thumb_crossfade);
-    state.prepareCacheTextures();
-    entry = state.cache.get(state.cache.activeKey(0)).?;
-    try std.testing.expect(entry.thumbnail == .unloaded);
 }

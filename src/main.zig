@@ -10,7 +10,7 @@ const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
 const ui = @import("ui");
-const viewer = @import("viewer");
+const viewer = if (!build_options.hot_reload) @import("viewer") else struct {};
 
 const LibViewer = struct {
     const lib_name = switch (builtin.target.os.tag) {
@@ -32,14 +32,14 @@ const LibViewer = struct {
     update: *const fn (
         app_state: *app.state.AppState,
         window: sdl.Window,
-        resources: *ui.graphics.GpuResources,
-        measure_data: *state_pkg.types.MeasureTextUserData,
+        resources: *ui.graphics.RenderResources,
+        measure_data: *state_pkg.MeasureTextUserData,
         ipc_server: ?*ipc.IpcServer,
         parsed_headless: bool,
         parsed_test_mode: bool,
         frame_arena: *std.heap.ArenaAllocator,
         last_time: *u64,
-    ) anyerror!void,
+    ) callconv(.c) void,
 
     fn init(io: std.Io) !LibViewer {
         const cwd = std.Io.Dir.cwd();
@@ -128,11 +128,11 @@ const AppGraphicsAndState = struct {
     io: std.Io,
     parsed: app_config.cli.ParsedArgs,
     setup: ui.graphics.GraphicsSetup,
-    resources: ui.graphics.GpuResources,
+    resources: ui.graphics.RenderResources,
     state: app.state.AppState,
     clay_memory: []u8,
     clay_context: *clay.Context,
-    measure_data: state_pkg.types.MeasureTextUserData,
+    measure_data: state_pkg.MeasureTextUserData,
     ipc_server: ?*ipc.IpcServer,
 
     /// Releases all application resources, closes IPC server, tears down SDL/GPU graphics, and frees state memory.
@@ -184,7 +184,7 @@ fn initAppGraphicsAndState(init: std.process.Init) !?AppGraphicsAndState {
         .viewer = .{
             .navigation = try state_pkg.NavigationState.init(gpa),
             .ui = try state_pkg.UiState.init(gpa),
-            .animations = try state_pkg.AnimationState.init(gpa),
+            .animations = .{},
             .display = if (parsed.headless) .headless else .{
                 .windowed = .{
                     .handle = setup.window,
@@ -240,11 +240,11 @@ fn initAppGraphicsAndState(init: std.process.Init) !?AppGraphicsAndState {
 /// Phase 2: Runs the main application event processing, state updating, and rendering loop.
 fn runMainLoop(ctx: *AppGraphicsAndState) !void {
     // Configure Clay measure text function with a stable pointer to measure_data
-    ctx.measure_data = state_pkg.types.MeasureTextUserData{
+    ctx.measure_data = state_pkg.MeasureTextUserData{
         .fonts = ctx.resources.fonts[0..],
         .allocator = ctx.gpa,
     };
-    clay.setMeasureTextFunction(*const state_pkg.types.MeasureTextUserData, &ctx.measure_data, ui.graphics.sdl3MeasureText);
+    clay.setMeasureTextFunction(*const state_pkg.MeasureTextUserData, &ctx.measure_data, ui.graphics.sdl3MeasureText);
 
     // Initialize IPC server and spawn IPC worker task
     if (ctx.parsed.ipc_enabled) {
@@ -253,14 +253,14 @@ fn runMainLoop(ctx: *AppGraphicsAndState) !void {
             ctx.ipc_server.?.deinit(ctx.io);
             ctx.ipc_server = null;
         }
-        try app.workers.spawnIpcServer(&ctx.state);
+        try app.workers.spawnIpcServer(&ctx.state.workers, ctx.gpa, ctx.io);
     }
 
     // Populate initial image list from arguments and piped stdin using stable pointer to state
     if (ctx.parsed.arg_path) |path| {
-        try ctx.state.handlePathSelection(path);
+        try ctx.state.openPath(path);
     }
-    try app.workers.readPipedStdin(&ctx.state, ctx.io, ctx.gpa);
+    try app.workers.readPipedStdin(&ctx.state.workers, &ctx.state.viewer.navigation.is_loading_files, ctx.io, ctx.gpa);
 
     // Per-frame arena allocator
     var frame_arena = std.heap.ArenaAllocator.init(ctx.gpa);
@@ -280,7 +280,7 @@ fn runMainLoop(ctx: *AppGraphicsAndState) !void {
             clay.setCurrentContext(ctx.clay_context);
             lib_viewer.safeReload(ctx.io, &ctx.state);
             if (lib_viewer.is_valid) {
-                try lib_viewer.update(
+                lib_viewer.update(
                     &ctx.state,
                     ctx.setup.window,
                     &ctx.resources,
@@ -323,14 +323,15 @@ pub fn main(init: std.process.Init) !void {
 }
 
 test {
-    std.testing.refAllDecls(app.core.exif);
+    std.testing.refAllDecls(app);
     std.testing.refAllDecls(app_config.cli);
+    std.testing.refAllDecls(input);
+    std.testing.refAllDecls(intents);
     std.testing.refAllDecls(ipc);
-    _ = app;
-    _ = ui;
-    _ = state_pkg;
-    _ = sdl;
-    _ = viewer;
-    _ = input;
-    _ = intents;
+    std.testing.refAllDecls(sdl);
+    std.testing.refAllDecls(state_pkg);
+    std.testing.refAllDecls(ui);
+    if (!build_options.hot_reload) {
+        std.testing.refAllDecls(viewer);
+    }
 }

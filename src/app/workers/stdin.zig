@@ -2,8 +2,8 @@ const std = @import("std");
 const core_fs = @import("../core/fs.zig");
 const path_scan = @import("path_scan.zig");
 const context = @import("context.zig");
-const root = @import("root.zig");
-const WorkerManager = root.WorkerManager;
+const manager = @import("manager.zig");
+const WorkerManager = manager.WorkerManager;
 
 /// Arguments for spawning the background standard input reader thread.
 pub const StdinArgs = struct {

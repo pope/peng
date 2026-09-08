@@ -1,7 +1,5 @@
 const std = @import("std");
 const c = @import("c.zig").c;
-const Window = @import("window.zig").Window;
-const root = @import("root.zig");
 
 pub const TextureFormat = enum(c_int) {
     rgba8_unorm = c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
@@ -420,7 +418,7 @@ pub const GraphicsPipelineCreateInfo = struct {
 /// Render target texture attachment, clear color, and load/store operations for a render pass.
 pub const ColorTargetAttachment = struct {
     texture: Texture,
-    clear_color: root.FColor = .{ .r = 0, .g = 0, .b = 0, .a = 1 },
+    clear_color: c.SDL_FColor = .{ .r = 0, .g = 0, .b = 0, .a = 1 },
     load_op: LoadOp = .clear,
     store_op: StoreOp = .store,
     cycle: bool = false,
@@ -471,7 +469,7 @@ pub const RenderPass = struct {
     }
 
     /// Sets the scissor clipping rectangle for rasterization in this render pass.
-    pub fn setScissor(self: RenderPass, rect: *const root.Rect) void {
+    pub fn setScissor(self: RenderPass, rect: *const c.SDL_Rect) void {
         c.SDL_SetGPUScissor(self.ptr, rect);
     }
 
@@ -742,7 +740,7 @@ pub const Device = struct {
     }
 
     /// Queries the preferred texture format for a window swapchain on this device.
-    pub fn getSwapchainTextureFormat(self: Device, window: Window) TextureFormat {
+    pub fn getSwapchainTextureFormat(self: Device, window: anytype) TextureFormat {
         return @enumFromInt(c.SDL_GetGPUSwapchainTextureFormat(self.ptr, @ptrCast(window.ptr)));
     }
 

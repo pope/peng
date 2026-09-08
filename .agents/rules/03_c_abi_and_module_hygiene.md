@@ -26,6 +26,7 @@ Every Zig source file MUST organize its module imports and symbol aliases into t
 
    - Every external package and internal source module MUST be imported ONCE at the very top of the file.
    - Declarations MUST be sorted alphabetically by identifier name (`const app = @import("app"); ... const std = @import("std");`).
+   - NEVER combine `@import` with field destructuring on the same line (e.g., `const X = @import("foo.zig").X;` is strictly forbidden). Block 1 is exclusively for pure module imports.
    - NEVER mix symbol aliases (`const Symbol = mod.Symbol;`) into this block.
 
 2. **Block 2: Symbol Aliases & Destructuring**
@@ -36,7 +37,7 @@ Every Zig source file MUST organize its module imports and symbol aliases into t
 
 3. **Strict Invariants**:
 
-   - **NO Inline `@import` Expressions**: NEVER write `@import(...)` inside function bodies, struct fields, or mid-file declarations (e.g., `const MediaEntry = @import("state").MediaEntry;` placed mid-file is forbidden).
+   - **NO Inline `@import` Expressions**: NEVER write `@import(...)` inside function bodies, struct fields, or mid-file declarations. All `@import` calls must reside exclusively in Block 1.
    - **Clean Scoping**: If a symbol is needed across multiple functions or struct scopes, alias it once in Block 2.
 
 ```zig
@@ -214,3 +215,8 @@ Every public struct and public function across the codebase MUST be documented u
 
 - Agents and automated reviewers MUST verify that any introduced or modified public struct or public function includes complete, idiomatic doc comments.
 - Code submissions with undocumented public structs or functions will fail hygiene review.
+
+## 13. C-ABI Dynamic Library Boundary Typing & Handle Wrapper Invariant
+
+- **C-ABI Handle Wrappers Must Be `extern struct`**: Any Zig wrapper struct representing a C handle passed by value across `callconv(.c)` boundaries MUST be declared as `extern struct` (e.g., `pub const Window = extern struct { ptr: *c.SDL_Window };`). Regular Zig `struct` types have undefined in-memory layout and trigger compiler errors in C calling conventions.
+- **Strong Typing Across Dynamic Library Boundaries**: Do NOT degrade known subsystem pointers to `*anyopaque` at dynamic library / hot-reloading boundaries (`viewer_update`). Single-item pointers (`*T`, `?*T`) share identical representation with C pointers (`void*`). Retain concrete typed pointers (`*AppState`, `Window`, `*RenderResources`, `*MeasureTextUserData`, `?*IpcServer`) to preserve compile-time type safety across host and shared library modules.

@@ -1,10 +1,11 @@
-const std = @import("std");
 const fuzzig = @import("fuzzig");
 const intents = @import("intents");
+const std = @import("std");
 const types = @import("types.zig");
 
-pub const TextInputBounds = intents.TextInputBounds;
-pub const PaletteMode = intents.PaletteMode;
+const MediaEntry = types.MediaEntry;
+const PaletteMode = intents.PaletteMode;
+const TextInputBounds = intents.TextInputBounds;
 
 /// Represents a search result item paired with its fuzzy matching score.
 pub const ScoredMatch = struct {
@@ -33,8 +34,6 @@ pub const EntryScanState = union(enum) {
     /// Background scan failed due to filesystem permissions.
     permission_denied,
 };
-/// Backwards-compatibility alias for `EntryScanState`.
-pub const FolderScanState = EntryScanState;
 
 /// Supported comic / compressed container formats for directory navigation.
 pub const ArchiveType = enum {
@@ -332,8 +331,6 @@ pub const PaletteState = struct {
 
         try self.sortAndExtractMatches();
     }
-
-    const MediaEntry = @import("types.zig").MediaEntry;
 
     /// Rebuilds fuzzy match results for image file list items.
     ///

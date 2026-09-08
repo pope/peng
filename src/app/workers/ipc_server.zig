@@ -1,10 +1,10 @@
 const builtin = @import("builtin");
 const context = @import("context.zig");
 const ipc = @import("ipc");
-const root = @import("root.zig");
+const manager = @import("manager.zig");
 const std = @import("std");
 
-const WorkerManager = root.WorkerManager;
+const WorkerManager = manager.WorkerManager;
 
 extern "kernel32" fn GetCurrentProcessId() callconv(std.builtin.CallingConvention.winapi) u32;
 
@@ -133,4 +133,3 @@ fn runIpcServer(workers: *WorkerManager, gpa: std.mem.Allocator, io: std.Io) !vo
         context.wakeUpMainThread();
     }
 }
-

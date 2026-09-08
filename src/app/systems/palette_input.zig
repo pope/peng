@@ -1,21 +1,25 @@
-const std = @import("std");
-const clay = @import("zclay");
-const state_pkg = @import("state");
 const app_state = @import("../state.zig");
-const FrameContext = @import("root.zig").FrameContext;
+const clay = @import("zclay");
+const context = @import("context.zig");
+const core_fs = @import("../core/fs.zig");
+const intents = @import("intents");
+const state_pkg = @import("state");
+const std = @import("std");
+
+const AppState = app_state.AppState;
+const FrameContext = context.FrameContext;
+const FrameInput = state_pkg.FrameInput;
 const Key = state_pkg.Key;
 const KeyModifiers = state_pkg.KeyModifiers;
-const FrameInput = state_pkg.FrameInput;
-const AppState = app_state.AppState;
-const stopTextInput = app_state.stopTextInput;
+const PaletteMode = intents.PaletteMode;
 
 /// Processes Return key confirmation for 1-based image index input palette mode (`.go_to_image`).
-fn handlePaletteReturnGoToImage(self: *AppState, raw_str: []const u8) !void {
+fn handlePaletteReturnGoToImage(ctx: FrameContext, raw_str: []const u8) !void {
     if (raw_str.len > 0) {
         if (std.fmt.parseInt(usize, raw_str, 10)) |v| {
-            if (v >= 1 and v <= self.viewer.navigation.image_list.items.len) {
-                _ = self.viewer.navigation.goToIndex(v - 1);
-                self.closePalette();
+            if (v >= 1 and v <= ctx.state.viewer.navigation.image_list.items.len) {
+                try ctx.state.pushIntent(.{ .go_to_image = v - 1 });
+                ctx.state.closePalette();
             }
         } else |err| {
             std.log.debug("Failed to parse go-to-image index '{s}': {}", .{ raw_str, err });
@@ -24,17 +28,17 @@ fn handlePaletteReturnGoToImage(self: *AppState, raw_str: []const u8) !void {
 }
 
 /// Processes Return key confirmation for slideshow interval input palette mode (`.set_slideshow_interval`).
-fn handlePaletteReturnSlideshow(self: *AppState, raw_str: []const u8) !void {
+fn handlePaletteReturnSlideshow(ctx: FrameContext, raw_str: []const u8) !void {
     if (raw_str.len > 0) {
         if (std.fmt.parseFloat(f32, raw_str)) |val| {
             if (!std.math.isNan(val) and !std.math.isInf(val) and val > 0.0) {
-                self.viewer.navigation.slideshow = .{
+                ctx.state.viewer.navigation.slideshow = .{
                     .active = .{
                         .interval_s = val,
                         .timer_ms = 0.0,
                     },
                 };
-                self.closePalette();
+                ctx.state.closePalette();
             }
         } else |err| {
             std.log.debug("Failed to parse slideshow interval '{s}': {}", .{ raw_str, err });
@@ -44,21 +48,23 @@ fn handlePaletteReturnSlideshow(self: *AppState, raw_str: []const u8) !void {
 
 /// Processes Return key selection for directory navigator palette mode (`.directory_navigator`).
 /// Shift+Return scans the current folder; Return scans the currently highlighted subfolder entry.
-fn handlePaletteReturnDirectory(self: *AppState, mod: KeyModifiers) !void {
-    const palette = &self.viewer.ui.palette;
+fn handlePaletteReturnDirectory(ctx: FrameContext, mod: KeyModifiers) !void {
+    const palette = &ctx.state.viewer.ui.palette;
     if (mod.shift) {
-        try self.startAsyncPathScan(palette.current_nav_dir.items, true);
-        self.closePalette();
+        const p = try ctx.frame_allocator.dupe(u8, palette.current_nav_dir.items);
+        try ctx.state.pushIntent(.{ .open_path = p });
+        ctx.state.closePalette();
     } else {
         if (palette.selected_idx < palette.matches.items.len) {
             const match_idx = palette.matches.items[palette.selected_idx];
             if (match_idx < palette.dir_items.items.len) {
                 const entry = palette.dir_items.items[match_idx];
-                switch (entry) {
-                    .archive_file => |a| try self.handlePathSelection(a.full_path),
-                    else => try self.startAsyncPathScan(entry.getFullPath(), true),
+                const full_path = entry.getFullPath();
+                if (full_path.len > 0) {
+                    const p = try ctx.frame_allocator.dupe(u8, full_path);
+                    try ctx.state.pushIntent(.{ .open_path = p });
+                    ctx.state.closePalette();
                 }
-                self.closePalette();
             }
         }
     }
@@ -69,10 +75,11 @@ fn handlePaletteReturnDirectory(self: *AppState, mod: KeyModifiers) !void {
 ///
 /// Returns `true` if the key was consumed by palette navigation; `false` otherwise.
 fn handlePaletteKeys(
-    self: *AppState,
+    ctx: FrameContext,
     key: Key,
     mod: KeyModifiers,
 ) !bool {
+    const self = ctx.state;
     const palette = &self.viewer.ui.palette;
 
     switch (key) {
@@ -88,7 +95,7 @@ fn handlePaletteKeys(
             return true;
         },
         .down => {
-            const max_count = if (palette.mode == .directory_navigator) palette.dir_items.items.len else palette.matches.items.len;
+            const max_count = palette.matches.items.len;
             if (max_count > 0 and palette.selected_idx + 1 < max_count) {
                 palette.selected_idx += 1;
                 palette.selection_dirty = true;
@@ -101,8 +108,7 @@ fn handlePaletteKeys(
                     const match_idx = palette.matches.items[palette.selected_idx];
                     if (match_idx < palette.dir_items.items.len) {
                         const entry = palette.dir_items.items[match_idx];
-                        const path_copy = try self.allocator.dupe(u8, entry.getFullPath());
-                        defer self.allocator.free(path_copy);
+                        const path_copy = try ctx.frame_allocator.dupe(u8, entry.getFullPath());
                         palette.query.clearRetainingCapacity();
                         try self.loadPaletteDirectory(path_copy);
                     }
@@ -130,7 +136,7 @@ fn handlePaletteKeys(
             return true;
         },
         .page_down => {
-            const max_count = if (palette.mode == .directory_navigator) palette.dir_items.items.len else palette.matches.items.len;
+            const max_count = palette.matches.items.len;
             if (max_count > 0) {
                 palette.selected_idx = @min(palette.selected_idx + 5, max_count - 1);
                 palette.selection_dirty = true;
@@ -140,8 +146,8 @@ fn handlePaletteKeys(
         .return_key => {
             const raw_str = palette.query.items;
             switch (palette.mode) {
-                .go_to_image => try handlePaletteReturnGoToImage(self, raw_str),
-                .set_slideshow_interval => try handlePaletteReturnSlideshow(self, raw_str),
+                .go_to_image => try handlePaletteReturnGoToImage(ctx, raw_str),
+                .set_slideshow_interval => try handlePaletteReturnSlideshow(ctx, raw_str),
                 .set_brightness, .set_contrast => {
                     if (raw_str.len > 0) {
                         if (std.fmt.parseFloat(f32, raw_str)) |val| {
@@ -162,7 +168,7 @@ fn handlePaletteKeys(
                         }
                     }
                 },
-                .directory_navigator => try handlePaletteReturnDirectory(self, mod),
+                .directory_navigator => try handlePaletteReturnDirectory(ctx, mod),
                 .files, .actions => {
                     if (palette.selected_idx < palette.matches.items.len) {
                         const target_idx = palette.matches.items[palette.selected_idx];
@@ -205,8 +211,6 @@ fn handlePaletteKeys(
     return false;
 }
 
-const core_fs = @import("../core/fs.zig");
-
 /// System Pass: Process active Command Palette text typing, list navigation, and click-outside dismissal.
 ///
 /// Responsibilities:
@@ -223,7 +227,7 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
 
     // 1. Keyboard Navigation Keys
     for (input.keys_pressed.items) |key| {
-        _ = try handlePaletteKeys(self, key, input.key_modifiers);
+        _ = try handlePaletteKeys(ctx, key, input.key_modifiers);
     }
     if (!self.viewer.ui.palette.isAcceptingInput()) return true;
 
@@ -347,31 +351,33 @@ test "handlePaletteKeys directory_navigator key interactions" {
         }
     }
 
+    const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
+
     // Test Right key on sub_no_images -> navigate into folder
     state.viewer.ui.palette.selected_idx = match_idx_no_img;
-    _ = try handlePaletteKeys(&state, .right, .{});
-    try std.testing.expectEqual(state_pkg.PaletteMode.directory_navigator, state.viewer.ui.palette.mode);
+    _ = try handlePaletteKeys(ctx, .right, .{});
+    try std.testing.expectEqual(PaletteMode.directory_navigator, state.viewer.ui.palette.mode);
     try std.testing.expectEqualStrings(sub_no_img, state.viewer.ui.palette.current_nav_dir.items);
     try std.testing.expectEqual(@as(usize, 0), state.viewer.ui.palette.query.items.len);
 
     // Test Left key -> step up to parent directory, remembering sub_no_images
-    _ = try handlePaletteKeys(&state, .left, .{});
-    try std.testing.expectEqual(state_pkg.PaletteMode.directory_navigator, state.viewer.ui.palette.mode);
+    _ = try handlePaletteKeys(ctx, .left, .{});
+    try std.testing.expectEqual(PaletteMode.directory_navigator, state.viewer.ui.palette.mode);
     try std.testing.expectEqualStrings(tmp_dir, state.viewer.ui.palette.current_nav_dir.items);
     try std.testing.expectEqual(match_idx_no_img, state.viewer.ui.palette.selected_idx);
 
     // Test Enter key on sub_no_images -> starts async path scan for sub_no_images and closes palette
     state.viewer.ui.palette.selected_idx = match_idx_no_img;
-    _ = try handlePaletteKeys(&state, .return_key, .{});
-    try std.testing.expectEqual(state_pkg.PaletteMode.inactive, state.viewer.ui.palette.mode);
+    _ = try handlePaletteKeys(ctx, .return_key, .{});
+    try std.testing.expectEqual(PaletteMode.inactive, state.viewer.ui.palette.mode);
 
     // Re-open palette
     try state.loadPaletteDirectory(tmp_dir);
     state.viewer.ui.palette.mode = .directory_navigator;
 
     // Test Shift+Enter key on current directory -> starts async path scan and closes palette
-    _ = try handlePaletteKeys(&state, .return_key, .{ .shift = true });
-    try std.testing.expectEqual(state_pkg.PaletteMode.inactive, state.viewer.ui.palette.mode);
+    _ = try handlePaletteKeys(ctx, .return_key, .{ .shift = true });
+    try std.testing.expectEqual(PaletteMode.inactive, state.viewer.ui.palette.mode);
 }
 
 test "handlePaletteKeys stepping up from dot to parent directory preselects working dir" {
@@ -385,7 +391,8 @@ test "handlePaletteKeys stepping up from dot to parent directory preselects work
     state.viewer.ui.palette.mode = .directory_navigator;
     try std.testing.expectEqualStrings(".", state.viewer.ui.palette.current_nav_dir.items);
 
-    _ = try handlePaletteKeys(&state, .left, .{});
+    const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
+    _ = try handlePaletteKeys(ctx, .left, .{});
     try std.testing.expectEqualStrings("..", state.viewer.ui.palette.current_nav_dir.items);
 
     var found_cwd_selected = false;
@@ -395,4 +402,153 @@ test "handlePaletteKeys stepping up from dot to parent directory preselects work
         }
     }
     try std.testing.expect(found_cwd_selected);
+}
+
+test "sysProcessPaletteInput retains palette when clicking inside debug panel" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    const win_w: f32 = 800.0;
+    const win_h: f32 = 600.0;
+    const debug_w: f32 = 280.0;
+    state.viewer.display.window_width = @intFromFloat(win_w);
+    state.viewer.display.window_height = @intFromFloat(win_h);
+    state.viewer.ui.debug_tools_visible = true;
+
+    const input_inside = state_pkg.FrameInput{
+        .win_w = win_w,
+        .win_h = win_h,
+        .pix_w = win_w,
+        .pix_h = win_h,
+        .scale_x = 1.0,
+        .scale_y = 1.0,
+        .dpi_scale = 1.0,
+        .mouse_x = win_w - debug_w + 10.0,
+        .mouse_y = 100.0,
+        .mouse_left_down = false,
+        .mouse_left_clicked = true,
+        .mouse_inside = true,
+        .quit_requested = false,
+        .scroll_delta_x = 0,
+        .scroll_delta_y = 0,
+        .keys_pressed = .empty,
+        .key_modifiers = .{},
+        .text_input = null,
+        .dropped_path = null,
+        .ticks = 0,
+        .delta_time_ms = 16.0,
+    };
+
+    state.viewer.ui.palette.mode = .actions;
+    _ = try sysProcessPaletteInput(.{ .state = &state, .frame_allocator = allocator, .input = input_inside });
+    try std.testing.expect(state.viewer.ui.palette.mode == .actions);
+}
+
+test "openPalette directory_navigator starting directory rules" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const cwd = std.Io.Dir.cwd();
+
+    const tmp_dir = "testfiles/tmp_palette_open_dir_test";
+    std.Io.Dir.createDirPath(cwd, io, tmp_dir ++ "/sub1") catch {};
+    defer {
+        std.Io.Dir.deleteTree(cwd, io, tmp_dir) catch {};
+    }
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    // Rule 1: current_index is valid -> starting directory is dirname of current image
+    const sample_path = tmp_dir ++ "/image1.jpg";
+    try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = sample_path } });
+    state.viewer.navigation.current_index = 0;
+
+    try state.openPalette(.directory_navigator);
+    try std.testing.expectEqual(PaletteMode.directory_navigator, state.viewer.ui.palette.mode);
+    try std.testing.expectEqualStrings(tmp_dir, state.viewer.ui.palette.current_nav_dir.items);
+
+    // Rule 2: current_index is null -> starting directory remembers last_nav_dir
+    state.viewer.navigation.current_index = null;
+    try state.openPalette(.directory_navigator);
+    try std.testing.expectEqualStrings(tmp_dir, state.viewer.ui.palette.current_nav_dir.items);
+
+    // Rule 3: current_index is null and last_nav_dir is empty -> starting directory falls back to "."
+    state.viewer.ui.palette.last_nav_dir.clearRetainingCapacity();
+    try state.openPalette(.directory_navigator);
+    try std.testing.expectEqualStrings(".", state.viewer.ui.palette.current_nav_dir.items);
+
+    // Rule 4: current_index out of bounds and last_nav_dir is empty -> starting directory falls back to "."
+    state.viewer.navigation.current_index = 999;
+    state.viewer.ui.palette.last_nav_dir.clearRetainingCapacity();
+    try state.openPalette(.directory_navigator);
+    try std.testing.expectEqualStrings(".", state.viewer.ui.palette.current_nav_dir.items);
+}
+
+test "openPalette directory_navigator steps up if 0 subdirectories" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const cwd = std.Io.Dir.cwd();
+
+    const tmp_dir = "testfiles/tmp_palette_step_up_test";
+    const sub_leaf = tmp_dir ++ "/child_leaf";
+    std.Io.Dir.createDirPath(cwd, io, sub_leaf) catch {};
+    defer {
+        std.Io.Dir.deleteTree(cwd, io, tmp_dir) catch {};
+    }
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    // Image in child_leaf (which has 0 subdirectories itself)
+    const img_path = sub_leaf ++ "/photo.png";
+    try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = img_path } });
+    state.viewer.navigation.current_index = 0;
+
+    // openPalette should see sub_leaf has 0 subdirectories, so it steps up to tmp_dir and pre-selects child_leaf
+    try state.openPalette(.directory_navigator);
+    try std.testing.expectEqualStrings(tmp_dir, state.viewer.ui.palette.current_nav_dir.items);
+
+    // Verify child_leaf is selected
+    var found_leaf_selected = false;
+    if (state.viewer.ui.palette.selected_idx < state.viewer.ui.palette.dir_items.items.len) {
+        if (std.mem.eql(u8, state.viewer.ui.palette.dir_items.items[state.viewer.ui.palette.selected_idx].getName(), "child_leaf")) {
+            found_leaf_selected = true;
+        }
+    }
+    try std.testing.expect(found_leaf_selected);
+}
+
+test "openPalette steps up from top-level relative leaf dir without slashes to dot" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const cwd = std.Io.Dir.cwd();
+
+    const top_leaf = "tmp_top_level_leaf_test";
+    std.Io.Dir.createDirPath(cwd, io, top_leaf) catch {};
+    defer {
+        std.Io.Dir.deleteTree(cwd, io, top_leaf) catch {};
+    }
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    const img_path = top_leaf ++ "/photo.png";
+    try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = img_path } });
+    state.viewer.navigation.current_index = 0;
+
+    try state.openPalette(.directory_navigator);
+    // Should step up to "." because top_leaf has 0 subdirectories
+    try std.testing.expectEqualStrings(".", state.viewer.ui.palette.current_nav_dir.items);
+
+    // Verify top_leaf is pre-selected in "."
+    var found_leaf_selected = false;
+    if (state.viewer.ui.palette.selected_idx < state.viewer.ui.palette.dir_items.items.len) {
+        if (std.mem.eql(u8, state.viewer.ui.palette.dir_items.items[state.viewer.ui.palette.selected_idx].getName(), top_leaf)) {
+            found_leaf_selected = true;
+        }
+    }
+    try std.testing.expect(found_leaf_selected);
 }

@@ -1,6 +1,6 @@
 const std = @import("std");
 const clay = @import("zclay");
-const FrameContext = @import("root.zig").FrameContext;
+const FrameContext = @import("context.zig").FrameContext;
 
 /// System Pass: Process discrete UI component pointer interactions (close buttons, controls).
 ///

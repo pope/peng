@@ -10,6 +10,7 @@ pub const AnimationChannel = enum(u8) {
 };
 
 pub const CHANNEL_COUNT: usize = @typeInfo(AnimationChannel).@"enum".fields.len;
+pub const MAX_CHANNELS: usize = 32;
 
 /// Standard animation duration constants.
 pub const DURATION_PALETTE_OPEN_MS: f32 = 140.0;
@@ -18,51 +19,80 @@ pub const DURATION_THUMB_CROSSFADE_MS: f32 = 120.0;
 pub const DURATION_TITLE_OVERLAY_OPEN_MS: f32 = 140.0;
 pub const DURATION_TITLE_OVERLAY_CLOSE_MS: f32 = 200.0;
 
-/// Structure representing the parameters of an individual animation slot in the MultiArrayList.
-pub const AnimationSlot = struct {
-    value: f32,
-    start_val: f32,
-    target_val: f32,
-    elapsed_ms: f32,
-    duration_ms: f32,
-    easing: EasingType,
+/// Metadata describing default durations, easings, and base values for an animation channel.
+pub const ChannelDescriptor = struct {
+    default_open_duration_ms: f32,
+    default_close_duration_ms: f32,
+    open_easing: EasingType,
+    close_easing: EasingType,
+    default_value: f32 = 0.0,
 };
 
-/// Data-Oriented animation manager using Structure-of-Arrays (SoA) layout via `std.MultiArrayList`.
-/// Contiguous parallel arrays ensure cache-line friendliness, zero pointer chasing, and vectorizable updates.
+/// Returns the configuration descriptor for the specified animation channel.
+pub fn getDescriptor(channel: AnimationChannel) ChannelDescriptor {
+    return switch (channel) {
+        .palette_reveal => .{
+            .default_open_duration_ms = DURATION_PALETTE_OPEN_MS,
+            .default_close_duration_ms = DURATION_PALETTE_CLOSE_MS,
+            .open_easing = .ease_out_cubic,
+            .close_easing = .ease_out_quad,
+            .default_value = 0.0,
+        },
+        .thumb_crossfade => .{
+            .default_open_duration_ms = DURATION_THUMB_CROSSFADE_MS,
+            .default_close_duration_ms = DURATION_THUMB_CROSSFADE_MS,
+            .open_easing = .ease_out_quad,
+            .close_easing = .ease_out_quad,
+            .default_value = 1.0,
+        },
+        .title_overlay => .{
+            .default_open_duration_ms = DURATION_TITLE_OVERLAY_OPEN_MS,
+            .default_close_duration_ms = DURATION_TITLE_OVERLAY_CLOSE_MS,
+            .open_easing = .ease_out_quad,
+            .close_easing = .ease_out_quad,
+            .default_value = 0.0,
+        },
+    };
+}
+
+/// Static descriptor table indexed by channel.
+pub const CHANNEL_DESCRIPTORS = [CHANNEL_COUNT]ChannelDescriptor{
+    getDescriptor(.palette_reveal),
+    getDescriptor(.thumb_crossfade),
+    getDescriptor(.title_overlay),
+};
+
+/// Backward-compatibility alias for legacy slot struct.
+pub const AnimationSlot = struct {
+    value: f32 = 0.0,
+    start_val: f32 = 0.0,
+    target_val: f32 = 0.0,
+    elapsed_ms: f32 = 0.0,
+    duration_ms: f32 = 0.0,
+    easing: EasingType = .linear,
+};
+
+/// Data-Oriented animation manager using flat static Structure-of-Arrays (SoA) layout.
+/// Zero heap allocations, cache-friendly contiguous parallel arrays, vectorizable ticks.
 pub const AnimationState = struct {
     comptime {
-        std.debug.assert(CHANNEL_COUNT <= 32);
+        std.debug.assert(CHANNEL_COUNT <= MAX_CHANNELS);
     }
 
-    slots: std.MultiArrayList(AnimationSlot) = .{},
+    values: [MAX_CHANNELS]f32 = initValues(),
+    start_vals: [MAX_CHANNELS]f32 = initValues(),
+    target_vals: [MAX_CHANNELS]f32 = initValues(),
+    elapsed_ms: [MAX_CHANNELS]f32 = [_]f32{0.0} ** MAX_CHANNELS,
+    durations_ms: [MAX_CHANNELS]f32 = [_]f32{0.0} ** MAX_CHANNELS,
+    easings: [MAX_CHANNELS]EasingType = [_]EasingType{.linear} ** MAX_CHANNELS,
     active_mask: u32 = 0,
 
-    /// Initializes AnimationState, pre-allocating slots 1-to-1 with AnimationChannel variants.
-    pub fn init(allocator: std.mem.Allocator) !AnimationState {
-        var self = AnimationState{
-            .slots = .{},
-            .active_mask = 0,
-        };
-        try self.slots.ensureTotalCapacity(allocator, CHANNEL_COUNT);
+    fn initValues() [MAX_CHANNELS]f32 {
+        var vals = [_]f32{0.0} ** MAX_CHANNELS;
         inline for (std.meta.tags(AnimationChannel)) |ch| {
-            const default_val: f32 = if (ch == .thumb_crossfade) 1.0 else 0.0;
-            self.slots.appendAssumeCapacity(.{
-                .value = default_val,
-                .start_val = default_val,
-                .target_val = default_val,
-                .elapsed_ms = 0.0,
-                .duration_ms = 0.0,
-                .easing = .linear,
-            });
+            vals[@intFromEnum(ch)] = getDescriptor(ch).default_value;
         }
-        return self;
-    }
-
-    /// Releases MultiArrayList storage.
-    pub fn deinit(self: *AnimationState, allocator: std.mem.Allocator) void {
-        self.slots.deinit(allocator);
-        self.active_mask = 0;
+        return vals;
     }
 
     /// Instant zero-branch check for AppState.isBusy() to determine if the event loop should tick.
@@ -72,12 +102,41 @@ pub const AnimationState = struct {
 
     /// Direct O(1) indexed lookup of the current animated value for `channel`.
     pub inline fn get(self: *const AnimationState, channel: AnimationChannel) f32 {
-        return self.slots.items(.value)[@intFromEnum(channel)];
+        return self.values[@intFromEnum(channel)];
     }
 
     /// Returns true if the specified channel is currently animating.
     pub inline fn isActive(self: *const AnimationState, channel: AnimationChannel) bool {
         return (self.active_mask & (@as(u32, 1) << @intCast(@intFromEnum(channel)))) != 0;
+    }
+
+    /// Opens/reveals the channel toward 1.0, smoothly interpolating from current value with proportional duration.
+    pub fn open(self: *AnimationState, channel: AnimationChannel) void {
+        const desc = getDescriptor(channel);
+        const cur = self.get(channel);
+        if (cur >= 1.0) return;
+        const dur = desc.default_open_duration_ms * (1.0 - cur);
+        self.start(channel, 1.0, dur, desc.open_easing);
+    }
+
+    /// Closes/hides the channel toward 0.0, smoothly interpolating from current value with proportional duration.
+    pub fn close(self: *AnimationState, channel: AnimationChannel) void {
+        const desc = getDescriptor(channel);
+        const cur = self.get(channel);
+        if (cur <= 0.0) return;
+        const dur = desc.default_close_duration_ms * cur;
+        self.start(channel, 0.0, dur, desc.close_easing);
+    }
+
+    /// Triggers an animation on `channel` with explicit target, duration, and easing.
+    pub fn trigger(
+        self: *AnimationState,
+        channel: AnimationChannel,
+        target: f32,
+        duration_ms: f32,
+        easing_type: EasingType,
+    ) void {
+        self.start(channel, target, duration_ms, easing_type);
     }
 
     /// Starts an animation on `channel`, smoothly continuing from its current value.
@@ -89,17 +148,17 @@ pub const AnimationState = struct {
         easing_type: EasingType,
     ) void {
         const idx = @intFromEnum(channel);
-        const current_val = self.slots.items(.value)[idx];
+        const current_val = self.values[idx];
         if (duration_ms <= 0.0 or current_val == target) {
             self.setImmediate(channel, target);
             return;
         }
 
-        self.slots.items(.start_val)[idx] = current_val;
-        self.slots.items(.target_val)[idx] = target;
-        self.slots.items(.elapsed_ms)[idx] = 0.0;
-        self.slots.items(.duration_ms)[idx] = duration_ms;
-        self.slots.items(.easing)[idx] = easing_type;
+        self.start_vals[idx] = current_val;
+        self.target_vals[idx] = target;
+        self.elapsed_ms[idx] = 0.0;
+        self.durations_ms[idx] = duration_ms;
+        self.easings[idx] = easing_type;
         self.active_mask |= (@as(u32, 1) << @intCast(idx));
     }
 
@@ -118,40 +177,38 @@ pub const AnimationState = struct {
             return;
         }
 
-        self.slots.items(.value)[idx] = from_val;
-        self.slots.items(.start_val)[idx] = from_val;
-        self.slots.items(.target_val)[idx] = target;
-        self.slots.items(.elapsed_ms)[idx] = 0.0;
-        self.slots.items(.duration_ms)[idx] = duration_ms;
-        self.slots.items(.easing)[idx] = easing_type;
+        self.values[idx] = from_val;
+        self.start_vals[idx] = from_val;
+        self.target_vals[idx] = target;
+        self.elapsed_ms[idx] = 0.0;
+        self.durations_ms[idx] = duration_ms;
+        self.easings[idx] = easing_type;
         self.active_mask |= (@as(u32, 1) << @intCast(idx));
     }
 
     /// Sets the value directly without animating, deactivating the channel.
     pub fn setImmediate(self: *AnimationState, channel: AnimationChannel, val: f32) void {
         const idx = @intFromEnum(channel);
-        self.slots.items(.value)[idx] = val;
-        self.slots.items(.start_val)[idx] = val;
-        self.slots.items(.target_val)[idx] = val;
+        self.values[idx] = val;
+        self.start_vals[idx] = val;
+        self.target_vals[idx] = val;
         self.active_mask &= ~(@as(u32, 1) << @intCast(idx));
     }
 
     /// Immediately snaps `channel` to its target value and marks it inactive.
     pub fn settle(self: *AnimationState, channel: AnimationChannel) void {
         const idx = @intFromEnum(channel);
-        self.slots.items(.value)[idx] = self.slots.items(.target_val)[idx];
+        self.values[idx] = self.target_vals[idx];
         self.active_mask &= ~(@as(u32, 1) << @intCast(idx));
     }
 
     /// Immediately snaps all active channels to their target values and marks all inactive.
     pub fn settleAll(self: *AnimationState) void {
         if (self.active_mask == 0) return;
-        const values = self.slots.items(.value);
-        const targets = self.slots.items(.target_val);
         var mask = self.active_mask;
         while (mask != 0) {
             const idx = @ctz(mask);
-            values[idx] = targets[idx];
+            self.values[idx] = self.target_vals[idx];
             mask &= mask - 1;
         }
         self.active_mask = 0;
@@ -161,13 +218,6 @@ pub const AnimationState = struct {
     pub fn tick(self: *AnimationState, delta_ms: f32) void {
         if (self.active_mask == 0) return;
 
-        const values = self.slots.items(.value);
-        const starts = self.slots.items(.start_val);
-        const targets = self.slots.items(.target_val);
-        const elapsed = self.slots.items(.elapsed_ms);
-        const durations = self.slots.items(.duration_ms);
-        const easings = self.slots.items(.easing);
-
         const safe_delta = @max(delta_ms, 0.0);
         var mask = self.active_mask;
         while (mask != 0) {
@@ -175,26 +225,24 @@ pub const AnimationState = struct {
             const bit = @as(u32, 1) << @intCast(idx);
             mask &= ~bit;
 
-            elapsed[idx] += safe_delta;
-            const dur = durations[idx];
-            if (elapsed[idx] >= dur) {
-                values[idx] = targets[idx];
+            self.elapsed_ms[idx] += safe_delta;
+            const dur = self.durations_ms[idx];
+            if (self.elapsed_ms[idx] >= dur) {
+                self.values[idx] = self.target_vals[idx];
                 self.active_mask &= ~bit;
             } else {
-                const t = elapsed[idx] / dur;
-                const factor = easings[idx].eval(t);
-                values[idx] = starts[idx] + (targets[idx] - starts[idx]) * factor;
+                const t = self.elapsed_ms[idx] / dur;
+                const factor = self.easings[idx].eval(t);
+                self.values[idx] = self.start_vals[idx] + (self.target_vals[idx] - self.start_vals[idx]) * factor;
             }
         }
     }
 };
 
-test "AnimationState lifecycle and MultiArrayList SoA layout" {
-    const allocator = std.testing.allocator;
-    var anim = try AnimationState.init(allocator);
-    defer anim.deinit(allocator);
+test "AnimationState lifecycle and static SoA layout" {
+    var anim = AnimationState{};
 
-    try std.testing.expectEqual(@as(usize, CHANNEL_COUNT), anim.slots.len);
+    try std.testing.expectEqual(@as(usize, MAX_CHANNELS), anim.values.len);
     try std.testing.expect(!anim.hasActiveAnimations());
     try std.testing.expectEqual(@as(f32, 0.0), anim.get(.palette_reveal));
 
@@ -215,10 +263,27 @@ test "AnimationState lifecycle and MultiArrayList SoA layout" {
     try std.testing.expect(!anim.isActive(.palette_reveal));
 }
 
+test "AnimationState open and close proportional duration" {
+    var anim = AnimationState{};
+
+    // Open palette
+    anim.open(.palette_reveal);
+    try std.testing.expect(anim.isActive(.palette_reveal));
+
+    // Advance 50%
+    anim.tick(DURATION_PALETTE_OPEN_MS / 2.0);
+    try std.testing.expect(anim.get(.palette_reveal) > 0.4);
+
+    // Close palette mid-flight - should interpolate back to 0.0 proportionally
+    anim.close(.palette_reveal);
+    try std.testing.expect(anim.isActive(.palette_reveal));
+    anim.tick(DURATION_PALETTE_CLOSE_MS);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), anim.get(.palette_reveal), 0.001);
+    try std.testing.expect(!anim.isActive(.palette_reveal));
+}
+
 test "AnimationState smooth interruption" {
-    const allocator = std.testing.allocator;
-    var anim = try AnimationState.init(allocator);
-    defer anim.deinit(allocator);
+    var anim = AnimationState{};
 
     // Start 0.0 -> 1.0 over 100ms
     anim.start(.palette_reveal, 1.0, 100.0, .linear);
@@ -229,7 +294,7 @@ test "AnimationState smooth interruption" {
     // Reverse mid-flight towards 0.0 over 100ms
     anim.start(.palette_reveal, 0.0, 100.0, .linear);
     // Starts array should hold 0.4
-    try std.testing.expectApproxEqAbs(@as(f32, 0.4), anim.slots.items(.start_val)[@intFromEnum(AnimationChannel.palette_reveal)], 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.4), anim.start_vals[@intFromEnum(AnimationChannel.palette_reveal)], 0.001);
 
     // Advance 50ms: halfway from 0.4 down to 0.0 is 0.2
     anim.tick(50.0);
@@ -237,9 +302,7 @@ test "AnimationState smooth interruption" {
 }
 
 test "AnimationState settleAll" {
-    const allocator = std.testing.allocator;
-    var anim = try AnimationState.init(allocator);
-    defer anim.deinit(allocator);
+    var anim = AnimationState{};
 
     anim.start(.palette_reveal, 1.0, 500.0, .ease_out_cubic);
     anim.start(.thumb_crossfade, 0.8, 300.0, .linear);
@@ -252,9 +315,7 @@ test "AnimationState settleAll" {
 }
 
 test "AnimationState startFrom explicit baseline" {
-    const allocator = std.testing.allocator;
-    var anim = try AnimationState.init(allocator);
-    defer anim.deinit(allocator);
+    var anim = AnimationState{};
 
     // Set initial value to 0.7
     anim.setImmediate(.palette_reveal, 0.7);
@@ -277,9 +338,7 @@ test "AnimationState startFrom explicit baseline" {
 }
 
 test "AnimationState zero duration snapping and target equal" {
-    const allocator = std.testing.allocator;
-    var anim = try AnimationState.init(allocator);
-    defer anim.deinit(allocator);
+    var anim = AnimationState{};
 
     // Duration <= 0.0 snaps immediately without activating channel
     anim.start(.palette_reveal, 0.9, 0.0, .linear);
@@ -298,9 +357,7 @@ test "AnimationState zero duration snapping and target equal" {
 }
 
 test "AnimationState settle single channel while other remains active" {
-    const allocator = std.testing.allocator;
-    var anim = try AnimationState.init(allocator);
-    defer anim.deinit(allocator);
+    var anim = AnimationState{};
 
     anim.start(.palette_reveal, 1.0, 200.0, .linear);
     anim.start(.thumb_crossfade, 0.5, 200.0, .linear);
@@ -325,9 +382,7 @@ test "AnimationState settle single channel while other remains active" {
 }
 
 test "AnimationState title_overlay channel transitions" {
-    const allocator = std.testing.allocator;
-    var anim = try AnimationState.init(allocator);
-    defer anim.deinit(allocator);
+    var anim = AnimationState{};
 
     // Initial default value is 0.0 (hidden)
     try std.testing.expectEqual(@as(f32, 0.0), anim.get(.title_overlay));

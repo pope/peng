@@ -264,11 +264,11 @@ pub const IpcCommand = union(enum) {
 
 /// Sends an "OK\n" acknowledgment response over `stream` and terminates the client socket.
 pub fn respondOk(io: std.Io, stream: std.Io.net.Stream) !void {
+    defer stream.close(io);
     var write_buf: [64]u8 = undefined;
     var writer = stream.writer(io, &write_buf);
     try writer.interface.writeAll("OK\n");
     try writer.interface.flush();
-    stream.close(io);
 }
 
 /// Reads bytes from `socket` with a timeout until '\n' is encountered or the buffer fills.

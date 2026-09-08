@@ -10,7 +10,7 @@ pub const window_flags = struct {
 };
 
 /// Safe typed wrapper handle around an underlying `SDL_Window`.
-pub const Window = struct {
+pub const Window = extern struct {
     ptr: *c.SDL_Window,
 
     /// Creates a new SDL window with null-terminated title, logical dimensions, and configuration flags.

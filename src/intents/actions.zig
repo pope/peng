@@ -4,17 +4,18 @@
 //! UI Command Palette entries, command-line flags, and remote IPC verbs.
 
 const std = @import("std");
-const root = @import("root.zig");
+const keys = @import("keys.zig");
+const types = @import("types.zig");
 
-const AppIntent = root.AppIntent;
-const Key = root.Key;
-const KeyModifiers = root.KeyModifiers;
-const KeyboardShortcut = root.KeyboardShortcut;
-const PaletteMode = root.PaletteMode;
-const ScaleMode = root.ScaleMode;
-const TextureScaleMode = root.TextureScaleMode;
-const scale_modes_string = root.scale_modes_string;
-const filter_modes_string = root.filter_modes_string;
+const AppIntent = types.AppIntent;
+const Key = keys.Key;
+const KeyModifiers = keys.KeyModifiers;
+const KeyboardShortcut = keys.KeyboardShortcut;
+const PaletteMode = types.PaletteMode;
+const ScaleMode = types.ScaleMode;
+const TextureScaleMode = types.TextureScaleMode;
+const scale_modes_string = types.scale_modes_string;
+const filter_modes_string = types.filter_modes_string;
 
 /// Target application scope for a command-line option or command.
 pub const CliTarget = enum {

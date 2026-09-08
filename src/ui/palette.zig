@@ -1,36 +1,31 @@
-const std = @import("std");
 const clay = @import("zclay");
+const graphics = @import("graphics.zig");
+const intents = @import("intents");
+const palette_items = @import("palette_items.zig");
+const palette_scroll = @import("palette_scroll.zig");
 const sdl = @import("sdl");
 const state = @import("state");
-const types = state.types;
-const ElementTag = types.ElementTag;
-const UiViewModel = types.UiViewModel;
-const PaletteState = state.PaletteState;
-const stopTextInput = state.stopTextInput;
-
-const MeasureTextUserData = types.MeasureTextUserData;
-const sdl3MeasureText = @import("graphics.zig").sdl3MeasureText;
+const std = @import("std");
 const text_utils = @import("text_utils.zig");
-const truncateFilename = text_utils.truncateFilename;
-const truncateFilenameMiddle = text_utils.truncateFilenameMiddle;
-const remapMiddleTruncatedMatches = text_utils.remapMiddleTruncatedMatches;
-const truncateDirectory = text_utils.truncateDirectory;
-const formatSize = text_utils.formatSize;
 const theme = @import("theme.zig");
 
-const intents = @import("intents");
+const ElementTag = types.ElementTag;
+const getPaletteConfig = state.getPaletteConfig;
+const MeasureTextUserData = state.MeasureTextUserData;
+const PaletteConfig = state.PaletteConfig;
 const PaletteMode = intents.PaletteMode;
-
-pub const palette_items = @import("palette_items.zig");
-pub const TextChunk = palette_items.TextChunk;
-pub const partitionHighlightedText = palette_items.partitionHighlightedText;
-pub const renderFuzzyMatchText = palette_items.renderFuzzyMatchText;
-pub const renderHighlightedText = palette_items.renderHighlightedText;
-pub const palette_scroll = @import("palette_scroll.zig");
-pub const VirtualWindow = palette_scroll.VirtualWindow;
-
-pub const PaletteConfig = state.PaletteConfig;
-pub const getPaletteConfig = state.getPaletteConfig;
+const PaletteState = state.PaletteState;
+const partitionHighlightedText = palette_items.partitionHighlightedText;
+const remapMiddleTruncatedMatches = text_utils.remapMiddleTruncatedMatches;
+const renderFuzzyMatchText = palette_items.renderFuzzyMatchText;
+const renderHighlightedText = palette_items.renderHighlightedText;
+const TextChunk = palette_items.TextChunk;
+const truncateDirectory = text_utils.truncateDirectory;
+const truncateFilename = text_utils.truncateFilename;
+const truncateFilenameMiddle = text_utils.truncateFilenameMiddle;
+const types = state.types;
+const UiViewModel = state.UiViewModel;
+const VirtualWindow = palette_scroll.VirtualWindow;
 
 /// Scales the alpha of a theme color by the modal animation progress (0.0 .. 1.0).
 inline fn a(color: clay.Color, progress: f32) clay.Color {
@@ -1003,7 +998,7 @@ pub fn renderPalette(
 ) !void {
     const palette = ui_model.palette;
     if (palette.mode == .inactive and !palette.is_closing) return;
-    const progress = std.math.clamp(ui_model.palette_reveal, 0.0, 1.0);
+    const progress = std.math.clamp(ui_model.anim(.palette_reveal), 0.0, 1.0);
     if (progress <= 0.001) return;
 
     const cfg = getPaletteConfig(palette.mode);

@@ -2,7 +2,7 @@ const context = @import("context.zig");
 const core_fs = @import("../core/fs.zig");
 const exif = @import("../core/exif.zig");
 const image = @import("../core/image.zig");
-const root = @import("root.zig");
+const manager = @import("manager.zig");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
@@ -11,7 +11,7 @@ const ArchiveMediaEntry = state_pkg.ArchiveMediaEntry;
 const CacheKey = image.CacheKey;
 const MediaEntry = state_pkg.MediaEntry;
 const RawMetadata = state_pkg.RawMetadata;
-const WorkerManager = root.WorkerManager;
+const WorkerManager = manager.WorkerManager;
 
 /// Contextual arguments and configuration passed to background image decoding worker threads.
 pub const DecodeArgs = struct {
@@ -25,6 +25,14 @@ pub const DecodeArgs = struct {
     thumb_only: bool = false,
     current_generation: *const std.atomic.Value(usize),
 };
+
+/// Spawns a background `decodeWorker` task for image file decoding and EXIF thumbnail extraction,
+/// tracking active decode thread and active worker thread counts.
+pub fn spawnDecode(args: *DecodeArgs) !void {
+    _ = args.workers.active_decode_threads.fetchAdd(1, .monotonic);
+    _ = args.workers.active_threads.fetchAdd(1, .monotonic);
+    args.workers.group.async(args.io, decodeWorker, .{args});
+}
 
 fn failDecodeWorker(workers: *WorkerManager, alloc: std.mem.Allocator, io: std.Io, key: CacheKey, comptime fmt: []const u8, fmt_args: anytype) void {
     std.log.err(fmt, fmt_args);

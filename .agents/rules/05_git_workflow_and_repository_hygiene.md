@@ -5,6 +5,7 @@
 - The AI assistant **MUST NEVER** execute `git add`, `git rm`, or any command that modifies the Git staging area / index.
 - **Staging changes is strictly reserved for the human user.**
 - All code modifications, bug fixes, refactorings, or documentation updates made by the assistant must remain in the working tree as unstaged changes.
+- **Never Unstage User Changes**: The assistant **MUST NEVER** run `git restore --staged`, `git reset`, or any command that unstages files staged by the user. If `git status` reports staged changes, the assistant must leave them completely undisturbed in the index.
 
 ## 2. Explicit Commit Sign-Off Invariant
 

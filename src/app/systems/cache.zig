@@ -1,16 +1,16 @@
 const app_state = @import("../state.zig");
 const image = @import("../core/image.zig");
-const root = @import("root.zig");
+const context = @import("context.zig");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
-const workers_mod = @import("../workers/root.zig");
+const decode_mod = @import("../workers/decode.zig");
 
 const AppState = app_state.AppState;
 const CacheEntry = state_pkg.CacheEntry;
 const CacheSlotMap = image.CacheSlotMap;
-const DecodeArgs = workers_mod.DecodeArgs;
-const FrameContext = root.FrameContext;
+const DecodeArgs = decode_mod.DecodeArgs;
+const FrameContext = context.FrameContext;
 const MediaEntry = state_pkg.MediaEntry;
 
 /// Fast-scrolling threshold: when navigation events occur faster than this interval,
@@ -65,7 +65,7 @@ fn spawnCacheDecodeSlot(state: *AppState, index: usize, entry_item: MediaEntry, 
         .current_generation = &state.cache.generation,
     };
 
-    try workers_mod.spawnDecode(args);
+    try decode_mod.spawnDecode(args);
 }
 
 /// System Pass: Update image RAM/GPU texture cache and background preloading window.
@@ -460,7 +460,7 @@ test "sysUpdateCache - synchronous presence probe sets thumbnail state" {
     defer state.deinit();
 
     // Add a real PNG (no embedded thumbnail) to navigation list
-    const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, "testfiles/current-run/test_0_init.png");
+    const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, "testfiles/golden-screenshots/test_0_init.png");
     try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = dup } });
     state.viewer.navigation.current_index = 0;
 
@@ -480,7 +480,7 @@ test "sysUpdateCache - active image without thumbnail spawns full decode during 
     defer state.deinit();
 
     // Add image with no thumbnail
-    const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, "testfiles/current-run/test_0_init.png");
+    const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, "testfiles/golden-screenshots/test_0_init.png");
     try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = dup } });
     state.viewer.navigation.current_index = 0;
     // Fast scrolling is active

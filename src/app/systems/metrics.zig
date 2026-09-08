@@ -1,4 +1,4 @@
-const FrameContext = @import("root.zig").FrameContext;
+const FrameContext = @import("context.zig").FrameContext;
 
 /// System function that copies real-time atomic worker counters, active image GPU telemetry,
 /// and cache status into `state.viewer.stats` once per frame tick for UI layout rendering ("Stats for Nerds").

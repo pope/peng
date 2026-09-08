@@ -1,9 +1,11 @@
-const std = @import("std");
-const clay = @import("zclay");
-const state_pkg = @import("state");
 const app_state = @import("../state.zig");
+const clay = @import("zclay");
+const context = @import("context.zig");
+const state_pkg = @import("state");
+const std = @import("std");
+
 const AppState = app_state.AppState;
-const FrameContext = @import("root.zig").FrameContext;
+const FrameContext = context.FrameContext;
 
 /// System Pass: Viewport input processing (Mouse Drag & Scroll-Zoom at Cursor)
 pub fn sysUpdateViewport(ctx: FrameContext, palette_closed_this_frame: bool) void {

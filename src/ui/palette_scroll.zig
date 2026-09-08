@@ -1,17 +1,18 @@
-const std = @import("std");
 const clay = @import("zclay");
+const palette_items = @import("palette_items.zig");
 const state = @import("state");
-const types = state.types;
-const MeasureTextUserData = types.MeasureTextUserData;
+const std = @import("std");
 const text_utils = @import("text_utils.zig");
+const theme = @import("theme.zig");
+
+const MeasureTextUserData = state.MeasureTextUserData;
+const PaletteConfig = state.PaletteConfig;
+const remapMiddleTruncatedMatches = text_utils.remapMiddleTruncatedMatches;
+const renderFuzzyMatchText = palette_items.renderFuzzyMatchText;
+const truncateDirectory = text_utils.truncateDirectory;
 const truncateFilename = text_utils.truncateFilename;
 const truncateFilenameMiddle = text_utils.truncateFilenameMiddle;
-const remapMiddleTruncatedMatches = text_utils.remapMiddleTruncatedMatches;
-const truncateDirectory = text_utils.truncateDirectory;
-const theme = @import("theme.zig");
-const palette_items = @import("palette_items.zig");
-const renderFuzzyMatchText = palette_items.renderFuzzyMatchText;
-const PaletteConfig = state.PaletteConfig;
+const types = state.types;
 
 /// Virtualized window computation for large palette item lists.
 /// Calculates the visible index range and spacer element heights to restrict Clay UI tree allocations

@@ -501,21 +501,21 @@ test "scanDirectoryEntries - nested directory hierarchy" {
     // Index 0: sub_a
     try std.testing.expectEqualStrings("sub_a", entries.items[0].getName());
     try std.testing.expectEqualStrings(tmp_dir_path ++ "/sub_a", entries.items[0].getFullPath());
-    try std.testing.expectEqual(state_pkg.FolderScanState.unscanned, entries.items[0].directory.scan);
+    try std.testing.expectEqual(state_pkg.EntryScanState.unscanned, entries.items[0].directory.scan);
     try std.testing.expect(entries.items[0].getImageCount() == null);
     try std.testing.expectEqual(@as(usize, 1), countFolderContents(io, entries.items[0].getFullPath()).image_count);
 
     // Index 1: sub_b
     try std.testing.expectEqualStrings("sub_b", entries.items[1].getName());
     try std.testing.expectEqualStrings(tmp_dir_path ++ "/sub_b", entries.items[1].getFullPath());
-    try std.testing.expectEqual(state_pkg.FolderScanState.unscanned, entries.items[1].directory.scan);
+    try std.testing.expectEqual(state_pkg.EntryScanState.unscanned, entries.items[1].directory.scan);
     try std.testing.expect(entries.items[1].getImageCount() == null);
     try std.testing.expectEqual(@as(usize, 2), countFolderContents(io, entries.items[1].getFullPath()).image_count);
 
     // Index 2: sub_empty
     try std.testing.expectEqualStrings("sub_empty", entries.items[2].getName());
     try std.testing.expectEqualStrings(tmp_dir_path ++ "/sub_empty", entries.items[2].getFullPath());
-    try std.testing.expectEqual(state_pkg.FolderScanState.unscanned, entries.items[2].directory.scan);
+    try std.testing.expectEqual(state_pkg.EntryScanState.unscanned, entries.items[2].directory.scan);
     try std.testing.expect(entries.items[2].getImageCount() == null);
     try std.testing.expectEqual(@as(usize, 0), countFolderContents(io, entries.items[2].getFullPath()).image_count);
 }

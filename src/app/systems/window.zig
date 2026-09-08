@@ -1,5 +1,5 @@
 const std = @import("std");
-const FrameContext = @import("root.zig").FrameContext;
+const FrameContext = @import("context.zig").FrameContext;
 
 /// System Pass: Synchronizes OS window properties (title, fullscreen state) with AppState.
 ///

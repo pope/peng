@@ -1,13 +1,17 @@
+const animation_state = @import("animation_state.zig");
+const navigation = @import("navigation.zig");
+const palette_state = @import("palette_state.zig");
 const std = @import("std");
 const types = @import("types.zig");
-const palette_state = @import("palette_state.zig");
+const ui_state = @import("ui_state.zig");
+
+const AnimationState = animation_state.AnimationState;
 const DisplayState = types.DisplayState;
 const DragState = types.DragState;
-const ViewportParams = types.ViewportParams;
+const NavigationState = navigation.NavigationState;
+const UiState = ui_state.UiState;
 const ViewerStats = types.ViewerStats;
-const NavigationState = @import("navigation.zig").NavigationState;
-const UiState = @import("ui_state.zig").UiState;
-const AnimationState = @import("animation_state.zig").AnimationState;
+const ViewportParams = types.ViewportParams;
 
 /// Pure Visual & UI Data Container for UI Layout & Rendering Passes.
 ///
@@ -34,13 +38,10 @@ pub const ViewerState = struct {
         var ui = try UiState.init(allocator);
         errdefer ui.palette.deinit();
 
-        var anim = try AnimationState.init(allocator);
-        errdefer anim.deinit(allocator);
-
         return .{
             .navigation = nav,
             .ui = ui,
-            .animations = anim,
+            .animations = .{},
             .rotation_map = .init(allocator),
             .display = .headless,
         };
@@ -50,7 +51,6 @@ pub const ViewerState = struct {
     pub fn deinit(self: *ViewerState, allocator: std.mem.Allocator, io: std.Io) void {
         self.navigation.deinit(allocator);
         self.ui.deinit(io, allocator);
-        self.animations.deinit(allocator);
         self.display.deinit(allocator);
         self.clearRotationMap(allocator);
         self.rotation_map.deinit();

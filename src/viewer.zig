@@ -73,7 +73,7 @@ fn runUpdatePhase(
 pub fn updateFrame(
     app_state: *app.state.AppState,
     window: sdl.Window,
-    resources: *ui.graphics.GpuResources,
+    resources: *ui.graphics.RenderResources,
     measure_data: *state_pkg.MeasureTextUserData,
     ipc_server: ?*ipc.IpcServer,
     parsed_headless: bool,
@@ -149,8 +149,14 @@ pub fn updateFrame(
     app_state.viewer.ui.overlays.last_mouse_x = input.mouse_x;
     app_state.viewer.ui.overlays.last_mouse_y = input.mouse_y;
 
+    var update_input = input;
+    if (clay.isDebugModeEnabled()) {
+        const debug_w: f32 = @floatFromInt(clay.Clay__debugViewWidth);
+        update_input.is_pointer_in_debug_panel = input.mouse_x >= (input.win_w - debug_w);
+    }
+
     // Phase 2: Update Phase — Run all systems sequentially
-    try runUpdatePhase(app_state, input, frame_allocator, parsed_test_mode or parsed_headless);
+    try runUpdatePhase(app_state, update_input, frame_allocator, parsed_test_mode or parsed_headless);
 
     // Phase 3: Render Phase
     const view_params = state_pkg.ViewParams{
@@ -191,7 +197,15 @@ pub fn updateFrame(
         .palette_reveal = app_state.viewer.animations.get(.palette_reveal),
         .thumb_crossfade = app_state.viewer.animations.get(.thumb_crossfade),
         .title_overlay_reveal = app_state.viewer.animations.get(.title_overlay),
+        .anim_values = app_state.viewer.animations.values,
         .debug_show_thumb = app_state.viewer.ui.overlays.debug_show_thumb,
+        .is_thumb_crossfading = blk: {
+            const cur_entry = app_state.getCurrentEntry() orelse break :blk false;
+            break :blk (cur_entry.status == .loaded_gpu) and
+                (cur_entry.thumbnail == .loaded) and
+                !app_state.viewer.ui.overlays.debug_show_thumb and
+                (app_state.viewer.animations.get(.thumb_crossfade) < 0.999);
+        },
         .current_time_ms = sdl.timer.getTicks(),
         .stats = app_state.viewer.stats,
         .render_metrics = app_state.viewer.ui.metrics.toSnapshot(),
@@ -237,21 +251,15 @@ export fn viewer_unload_assets() callconv(.c) void {
 
 export fn viewer_update(
     app_state: *app.state.AppState,
-    window_ptr: *anyopaque,
-    resources_ptr: *anyopaque,
-    measure_data_ptr: *anyopaque,
-    ipc_server_ptr: ?*anyopaque,
+    window: sdl.Window,
+    resources: *ui.graphics.RenderResources,
+    measure_data: *state_pkg.MeasureTextUserData,
+    ipc_server: ?*ipc.IpcServer,
     parsed_headless: bool,
     parsed_test_mode: bool,
-    frame_arena_ptr: *anyopaque,
-    last_time_ptr: *u64,
+    frame_arena: *std.heap.ArenaAllocator,
+    last_time: *u64,
 ) callconv(.c) void {
-    const window: sdl.Window = .{ .ptr = @ptrCast(@alignCast(window_ptr)) };
-    const resources: *ui.graphics.GpuResources = @ptrCast(@alignCast(resources_ptr));
-    const measure_data: *state_pkg.MeasureTextUserData = @ptrCast(@alignCast(measure_data_ptr));
-    const ipc_server: ?*ipc.IpcServer = if (ipc_server_ptr) |ptr| @ptrCast(@alignCast(ptr)) else null;
-    const frame_arena: *std.heap.ArenaAllocator = @ptrCast(@alignCast(frame_arena_ptr));
-
     updateFrame(
         app_state,
         window,
@@ -261,7 +269,7 @@ export fn viewer_update(
         parsed_headless,
         parsed_test_mode,
         frame_arena,
-        last_time_ptr,
+        last_time,
     ) catch |err| {
         std.log.err("Viewer update frame error: {}", .{err});
     };

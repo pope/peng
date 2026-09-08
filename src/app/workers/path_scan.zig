@@ -1,8 +1,11 @@
-const std = @import("std");
-const core_fs = @import("../core/fs.zig");
 const context = @import("context.zig");
-const root = @import("root.zig");
-const WorkerManager = root.WorkerManager;
+const core_fs = @import("../core/fs.zig");
+const manager = @import("manager.zig");
+const state_pkg = @import("state");
+const std = @import("std");
+
+const MediaEntry = state_pkg.MediaEntry;
+const WorkerManager = manager.WorkerManager;
 
 /// Arguments for spawning a background file path or directory scanner worker thread.
 pub const PathScanArgs = struct {
@@ -11,7 +14,7 @@ pub const PathScanArgs = struct {
     io: std.Io,
     target_path: []const u8,
     is_dir: bool,
-    is_loading_files: ?*std.atomic.Value(bool) = null,
+    is_loading_files: *std.atomic.Value(bool),
 };
 
 /// Thread-safely duplicates a path string and pushes a `.path_discovered` event onto the worker event queue.
@@ -102,14 +105,13 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
     const is_dir = args.is_dir;
 
     defer {
-        if (args.is_loading_files) |flag| flag.store(false, .release);
+        args.is_loading_files.store(false, .release);
         context.wakeUpMainThread();
         gpa.free(target_path);
         gpa.destroy(args);
         _ = workers.active_threads.fetchSub(1, .release);
     }
 
-    const MediaEntry = @import("state").MediaEntry;
     var dir_entries: std.ArrayList(MediaEntry) = .empty;
     defer {
         for (dir_entries.items) |item| item.deinit(gpa);

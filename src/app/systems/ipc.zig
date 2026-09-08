@@ -1,13 +1,14 @@
-const std = @import("std");
+const app_events = @import("../events.zig");
 const app_state = @import("../state.zig");
-const AppState = app_state.AppState;
+const context = @import("context.zig");
+const intents = @import("intents");
+const intents_system = @import("intents.zig");
 const ipc = @import("ipc");
 const state_pkg = @import("state");
-const intents = @import("intents");
+const std = @import("std");
 
-const FrameContext = @import("root.zig").FrameContext;
-const intents_system = @import("intents.zig");
-const app_events = @import("../events.zig");
+const AppState = app_state.AppState;
+const FrameContext = context.FrameContext;
 
 /// System function that drains queued socket commands from `state.pending_ipc_commands`,
 /// parses commands (`zoom`, `pan`, `next`, `filter`), and pushes corresponding intents into `pending_intents`.
@@ -22,13 +23,17 @@ pub fn sysExecuteIpcCommands(ctx: FrameContext) void {
         }
 
         const parsed = ipc.IpcCommand.parse(cmd_data.command) catch |err| {
-            var response_buf: [128]u8 = undefined;
-            if (std.fmt.bufPrint(&response_buf, "ERR {s}\n", .{@errorName(err)})) |response| {
-                var write_buf: [128]u8 = undefined;
-                var writer = cmd_data.client_stream.writer(state.io, &write_buf);
-                writer.interface.writeAll(response) catch {};
-                writer.interface.flush() catch {};
-            } else |_| {}
+            var msg_buf: [128]u8 = undefined;
+            const err_msg = std.fmt.bufPrint(&msg_buf, "ERR {s}\n", .{@errorName(err)}) catch "ERR ParseError\n";
+            var buf: [512]u8 = undefined;
+            var writer = cmd_data.client_stream.writer(state.io, &buf);
+            if (writer.interface.writeAll(err_msg)) {
+                writer.interface.flush() catch |flush_err| {
+                    std.log.warn("Failed to flush IPC parse error response: {}", .{flush_err});
+                };
+            } else |write_err| {
+                std.log.warn("Failed to write IPC parse error response: {}", .{write_err});
+            }
             cmd_data.client_stream.close(state.io);
             continue;
         };
@@ -42,7 +47,9 @@ pub fn sysExecuteIpcCommands(ctx: FrameContext) void {
                     if (state.getCurrentEntry()) |entry| {
                         if (entry.status != .decoding) break;
                     }
-                    std.Io.sleep(state.io, std.Io.Duration.fromMilliseconds(10), .awake) catch {};
+                    std.Io.sleep(state.io, std.Io.Duration.fromMilliseconds(10), .awake) catch |sleep_err| {
+                        std.log.warn("wait_load sleep interrupted: {}", .{sleep_err});
+                    };
                 }
                 ipc.respondOk(state.io, cmd_data.client_stream) catch |err| {
                     std.log.err("Failed to respond OK for wait_load command: {}", .{err});
@@ -93,7 +100,9 @@ pub fn sysExecuteIpcCommands(ctx: FrameContext) void {
                             if (p.query) |q| {
                                 if (ctx.frame_allocator.dupe(u8, q)) |dup_q| {
                                     final_intent = .{ .set_palette = .{ .mode = p.mode, .query = dup_q } };
-                                } else |_| {}
+                                } else |err| {
+                                    std.log.warn("Failed to dupe query for set_palette intent: {}", .{err});
+                                }
                             }
                         },
                         else => {},

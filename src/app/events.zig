@@ -559,7 +559,7 @@ test "drainWorkerEvents - palette_folder_count updates directory and archive ent
     });
 
     _ = drainWorkerEvents(&state);
-    try std.testing.expectEqual(state_pkg.FolderScanState.unscanned, state.viewer.ui.palette.dir_items.items[0].directory.scan);
+    try std.testing.expectEqual(state_pkg.EntryScanState.unscanned, state.viewer.ui.palette.dir_items.items[0].directory.scan);
 
     // Push matching events for directory and archive
     const evt_dir_path = try allocator.dupe(u8, "/path/to/folder_a");

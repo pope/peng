@@ -1,12 +1,20 @@
-const std = @import("std");
 const app_state = @import("../state.zig");
-const AppState = app_state.AppState;
+const context = @import("context.zig");
+const input_pkg = @import("input");
+const intents = @import("intents");
+const palette_input = @import("palette_input.zig");
 const state_pkg = @import("state");
+const std = @import("std");
+
+const AppIntent = intents.AppIntent;
+const AppState = app_state.AppState;
+const FrameContext = context.FrameContext;
 const FrameInput = state_pkg.FrameInput;
 const Key = state_pkg.Key;
 const KeyModifiers = state_pkg.KeyModifiers;
-const input_pkg = @import("input");
+const PaletteMode = intents.PaletteMode;
 const key_mapping = input_pkg.key_mapping;
+
 /// Resolves active key context and pushes mapped AppIntents
 fn handleKeyDown(
     self: *AppState,
@@ -20,8 +28,6 @@ fn handleKeyDown(
         try self.pushIntent(intent);
     }
 }
-
-const FrameContext = @import("root.zig").FrameContext;
 
 /// System Pass: Process FrameInput snapshot and map keypresses/shortcuts to AppIntents
 ///
@@ -38,8 +44,8 @@ pub fn sysProcessInput(ctx: FrameContext, palette_closed_this_frame: bool) !void
     }
 
     if (input.dropped_path) |path| {
-        state.handlePathSelection(path) catch |err| {
-            std.log.err("Failed to handle dropped path '{s}': {}", .{ path, err });
+        state.pushIntent(.{ .open_path = try ctx.frame_allocator.dupe(u8, path) }) catch |err| {
+            std.log.err("Failed to push open_path intent for dropped path '{s}': {}", .{ path, err });
         };
     }
 
@@ -99,7 +105,7 @@ test "sysProcessInput does not process escape or shortcuts if palette was closed
     // When palette is at the top level and was NOT closed this frame, Escape DOES trigger quit
     try sysProcessInput(ctx, false);
     try std.testing.expectEqual(@as(usize, 1), state.pending_intents.items.len);
-    try std.testing.expectEqual(state_pkg.AppIntent.quit, state.pending_intents.items[0]);
+    try std.testing.expectEqual(AppIntent.quit, state.pending_intents.items[0]);
 }
 
 test "sysProcessInput ignores key shortcuts while palette mode is active" {
@@ -159,7 +165,7 @@ test "Escape key closes active palette without triggering quit in sysProcessInpu
 
     // 1. Open the Actions command palette
     try state.openPalette(.actions);
-    try std.testing.expectEqual(state_pkg.PaletteMode.actions, state.viewer.ui.palette.mode);
+    try std.testing.expectEqual(PaletteMode.actions, state.viewer.ui.palette.mode);
 
     // 2. User presses Escape to dismiss the palette
     var keys = std.ArrayList(Key).empty;
@@ -197,10 +203,9 @@ test "Escape key closes active palette without triggering quit in sysProcessInpu
         .delta_time_ms = 16.0,
     };
 
-    const palette_input = @import("palette_input.zig");
     const palette_closed = try palette_input.sysProcessPaletteInput(ctx);
     try std.testing.expect(palette_closed);
-    try std.testing.expectEqual(state_pkg.PaletteMode.inactive, state.viewer.ui.palette.mode);
+    try std.testing.expectEqual(PaletteMode.inactive, state.viewer.ui.palette.mode);
 
     // sysProcessInput must NOT register a quit intent because palette was closed this frame
     try sysProcessInput(ctx, palette_closed);
@@ -212,7 +217,7 @@ test "Escape key closes active palette without triggering quit in sysProcessInpu
 
     try sysProcessInput(ctx, palette_closed_next);
     try std.testing.expectEqual(@as(usize, 1), state.pending_intents.items.len);
-    try std.testing.expectEqual(state_pkg.AppIntent.quit, state.pending_intents.items[0]);
+    try std.testing.expectEqual(AppIntent.quit, state.pending_intents.items[0]);
 }
 
 test "sysProcessInput accepts shortcuts when palette is dissolving (is_closing == true)" {
@@ -262,5 +267,5 @@ test "sysProcessInput accepts shortcuts when palette is dissolving (is_closing =
 
     try sysProcessInput(ctx, false);
     try std.testing.expectEqual(@as(usize, 1), state.pending_intents.items.len);
-    try std.testing.expectEqual(state_pkg.AppIntent.next_image, state.pending_intents.items[0]);
+    try std.testing.expectEqual(AppIntent.next_image, state.pending_intents.items[0]);
 }

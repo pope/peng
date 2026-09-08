@@ -1,10 +1,18 @@
-const std = @import("std");
-const state_pkg = @import("state");
-const DirectoryEntry = state_pkg.DirectoryEntry;
-const core_fs = @import("../core/fs.zig");
 const context = @import("context.zig");
-const root = @import("root.zig");
-const WorkerManager = root.WorkerManager;
+const core_fs = @import("../core/fs.zig");
+const events = @import("../core/events.zig");
+const manager = @import("manager.zig");
+const state_pkg = @import("state");
+const std = @import("std");
+
+const DirectoryEntry = state_pkg.DirectoryEntry;
+const WorkerManager = manager.WorkerManager;
+
+/// Spawns a background paletteScanWorker task to count directory images and subfolders.
+pub fn spawnPaletteScan(args: *PaletteScanArgs) !void {
+    _ = args.workers.active_threads.fetchAdd(1, .monotonic);
+    args.workers.group.async(args.io, paletteScanWorker, .{args});
+}
 
 /// Arguments passed to the background palette directory scan worker thread.
 pub const PaletteScanArgs = struct {
@@ -60,8 +68,6 @@ pub fn paletteScanWorker(args: *PaletteScanArgs) void {
     }
 }
 
-const events = @import("../core/events.zig");
-
 /// Filters unscanned directory and archive items, duplicates their full paths, allocates task arguments,
 /// and dispatches the asynchronous background palette scan task.
 pub fn spawnPaletteScanForItems(
@@ -99,11 +105,7 @@ pub fn spawnPaletteScanForItems(
     }
 
     const args = try gpa.create(PaletteScanArgs);
-    errdefer {
-        for (paths) |p| gpa.free(p);
-        gpa.free(paths);
-        gpa.destroy(args);
-    }
+    errdefer gpa.destroy(args);
 
     args.* = .{
         .workers = workers,
@@ -114,7 +116,7 @@ pub fn spawnPaletteScanForItems(
         .paths = paths,
     };
 
-    try root.spawnPaletteScan(args);
+    try spawnPaletteScan(args);
 }
 
 test "paletteScanWorker - counts directory contents and pushes events" {

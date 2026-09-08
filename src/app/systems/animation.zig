@@ -1,11 +1,12 @@
 const app_state = @import("../state.zig");
-const root = @import("root.zig");
+const context = @import("context.zig");
+const palette_input = @import("palette_input.zig");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
 
 const AppState = app_state.AppState;
-const FrameContext = root.FrameContext;
+const FrameContext = context.FrameContext;
 
 /// System Pass: Update animation channels and resolve settled transitions.
 ///
@@ -50,7 +51,7 @@ test "sysUpdateAnimations palette reveal and close transition lifecycle" {
     const close_half = app_state.state_pkg.DURATION_PALETTE_CLOSE_MS / 2.0;
 
     // 1. Open palette: starts animation to 1.0
-    try state.openPalette(.actions);
+    try palette_input.openPalette(&state, .actions);
     try std.testing.expect(state.viewer.ui.palette.mode == .actions);
     try std.testing.expect(!state.viewer.ui.palette.is_closing);
     try std.testing.expect(state.viewer.hasActiveAnimation());
@@ -75,7 +76,7 @@ test "sysUpdateAnimations palette reveal and close transition lifecycle" {
     try std.testing.expect(!state.viewer.hasActiveAnimation());
 
     // 4. Close palette: begins fade-out
-    state.closePalette();
+    palette_input.closePalette(&state);
     try std.testing.expect(state.viewer.ui.palette.is_closing);
     try std.testing.expect(state.viewer.ui.palette.mode == .actions);
     try std.testing.expect(state.viewer.hasActiveAnimation());
@@ -107,8 +108,8 @@ test "sysUpdateAnimations palette reset when settleAll is called mid-close" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    try state.openPalette(.actions);
-    state.closePalette();
+    try palette_input.openPalette(&state, .actions);
+    palette_input.closePalette(&state);
     try std.testing.expect(state.viewer.ui.palette.is_closing);
 
     // Simulate headless/test-mode settleAll
@@ -188,4 +189,3 @@ test "sysUpdateAnimations title_overlay auto-hide timeout and fade-out" {
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), state.viewer.animations.get(.title_overlay), 0.001);
     try std.testing.expect(!state.viewer.hasActiveAnimation());
 }
-
