@@ -459,3 +459,53 @@ pub fn getPaletteConfig(mode: PaletteMode) PaletteConfig {
         .inactive => getPaletteConfig(.files),
     };
 }
+
+test "PaletteState - lifecycle, action matching, and reset" {
+    const allocator = std.testing.allocator;
+    var state = try PaletteState.init(allocator);
+    defer state.deinit();
+
+    state.mode = .actions;
+    try state.rebuildActionMatches();
+    const all_count = state.matches.items.len;
+    try std.testing.expect(all_count > 0);
+
+    // Query search "zoom"
+    try state.query.appendSlice(allocator, "zoom");
+    try state.rebuildActionMatches();
+    try std.testing.expect(state.matches.items.len > 0);
+    try std.testing.expect(state.matches.items.len < all_count);
+
+    // Reset clears state
+    state.reset();
+    try std.testing.expectEqual(PaletteMode.inactive, state.mode);
+    try std.testing.expectEqual(@as(usize, 0), state.query.items.len);
+    try std.testing.expectEqual(@as(usize, 0), state.matches.items.len);
+    try std.testing.expectEqual(@as(usize, 0), state.selected_idx);
+}
+
+test "DirectoryEntry accessors and scan state" {
+    const p = DirectoryEntry{ .parent = .{ .name = "..", .full_path = "/home/pope" } };
+    try std.testing.expectEqualStrings("..", p.getName());
+    try std.testing.expectEqualStrings("/home/pope", p.getFullPath());
+    try std.testing.expect(!p.isArchive());
+    try std.testing.expect(p.getScanState() == null);
+    try std.testing.expect(p.getImageCount() == null);
+
+    const d = DirectoryEntry{ .directory = .{ .name = "photos", .full_path = "/photos", .scan = .{ .scanned = .{ .image_count = 42, .subdir_count = 3 } } } };
+    try std.testing.expectEqualStrings("photos", d.getName());
+    try std.testing.expectEqualStrings("/photos", d.getFullPath());
+    try std.testing.expect(!d.isArchive());
+    try std.testing.expect(d.getScanState() != null);
+    try std.testing.expectEqual(@as(usize, 42), d.getImageCount().?);
+
+    const a = DirectoryEntry{ .archive_file = .{ .name = "comic.cbz", .full_path = "/comic.cbz", .scan = .unscanned } };
+    try std.testing.expectEqualStrings("comic.cbz", a.getName());
+    try std.testing.expect(a.isArchive());
+    try std.testing.expectEqual(EntryScanState.unscanned, a.getScanState().?);
+
+    const f = DirectoryEntry{ .image_file = .{ .name = "img.png", .full_path = "/img.png" } };
+    try std.testing.expectEqualStrings("img.png", f.getName());
+    try std.testing.expect(!f.isArchive());
+    try std.testing.expect(f.getScanState() == null);
+}

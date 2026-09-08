@@ -485,3 +485,31 @@ pub fn renderStatsOverlay(
         try renderStatRow("UI Vertices", ui_verts_str);
     });
 }
+
+test "getRawContainerName - format detection" {
+    // MIME type matches
+    try std.testing.expectEqualStrings("RAW (Fujifilm RAF)", getRawContainerName("image/x-fuji-raf", "sample"));
+    try std.testing.expectEqualStrings("RAW (Sony ARW)", getRawContainerName("image/x-sony-arw", "sample"));
+    try std.testing.expectEqualStrings("RAW (Canon CR2)", getRawContainerName("image/x-canon-cr2", "sample"));
+    try std.testing.expectEqualStrings("RAW (Nikon NEF)", getRawContainerName("image/x-nikon-nef", "sample"));
+    try std.testing.expectEqualStrings("RAW (Adobe DNG)", getRawContainerName("image/x-adobe-dng", "sample"));
+    try std.testing.expectEqualStrings("RAW (Olympus ORF)", getRawContainerName("image/x-olympus-orf", "sample"));
+    try std.testing.expectEqualStrings("RAW (Panasonic RW2)", getRawContainerName("image/x-panasonic-rw2", "sample"));
+    try std.testing.expectEqualStrings("RAW (Pentax PEF)", getRawContainerName("image/x-pentax-pef", "sample"));
+
+    // Filename extension matches (lowercase and uppercase)
+    try std.testing.expectEqualStrings("RAW (Fujifilm RAF)", getRawContainerName("", "photo.raf"));
+    try std.testing.expectEqualStrings("RAW (Fujifilm RAF)", getRawContainerName("", "PHOTO.RAF"));
+    try std.testing.expectEqualStrings("RAW (Sony ARW)", getRawContainerName("", "photo.arw"));
+    try std.testing.expectEqualStrings("RAW (Sony ARW)", getRawContainerName("", "PHOTO.ARW"));
+    try std.testing.expectEqualStrings("RAW (Canon CR2)", getRawContainerName("", "photo.cr2"));
+    try std.testing.expectEqualStrings("RAW (Nikon NEF)", getRawContainerName("", "photo.nef"));
+    try std.testing.expectEqualStrings("RAW (Adobe DNG)", getRawContainerName("", "photo.dng"));
+    try std.testing.expectEqualStrings("RAW (Olympus ORF)", getRawContainerName("", "photo.orf"));
+    try std.testing.expectEqualStrings("RAW (Panasonic RW2)", getRawContainerName("", "photo.rw2"));
+    try std.testing.expectEqualStrings("RAW (Pentax PEF)", getRawContainerName("", "photo.pef"));
+
+    // Fallback
+    try std.testing.expectEqualStrings("Camera RAW", getRawContainerName("", "photo.xyz"));
+    try std.testing.expectEqualStrings("Camera RAW", getRawContainerName("image/jpeg", "photo.jpg"));
+}

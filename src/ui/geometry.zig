@@ -389,3 +389,41 @@ pub fn renderArc(
         try vertices.append(allocator, .{ .x = in1.x, .y = in1.y, .u = 0.0, .v = 1.0, .color = color });
     }
 }
+
+test "packRgba and packRgbaF packing and clamping" {
+    // Exact byte packing
+    const c1 = packRgba(0x12, 0x34, 0x56, 0x78);
+    try std.testing.expectEqual(@as(u32, 0x78563412), c1);
+
+    // Float packing (0.0 - 1.0)
+    const c2 = packRgbaF(1.0, 0.0, 0.5, 1.0);
+    try std.testing.expectEqual(@as(u32, 0xFF8000FF), c2);
+
+    // Clamping behavior (< 0.0 clamped to 0, > 1.0 clamped to 255)
+    const c_clamped = packRgbaF(-0.5, 2.0, 0.0, 1.0);
+    try std.testing.expectEqual(@as(u32, 0xFF00FF00), c_clamped);
+
+    // Clay color packing (0.0 - 255.0)
+    const c_clay = packRgbaClay(.{ 255.0, 128.0, 64.0, 255.0 });
+    try std.testing.expectEqual(@as(u32, 0xFF4080FF), c_clay);
+}
+
+test "toNdc - coordinate conversion" {
+    const win_w: f32 = 800.0;
+    const win_h: f32 = 600.0;
+
+    // Top-left (0, 0) maps to (-1.0, 1.0)
+    const p_tl = toNdc(0.0, 0.0, win_w, win_h);
+    try std.testing.expectApproxEqAbs(@as(f32, -1.0), p_tl.x, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), p_tl.y, 0.0001);
+
+    // Bottom-right (800, 600) maps to (1.0, -1.0)
+    const p_br = toNdc(800.0, 600.0, win_w, win_h);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), p_br.x, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, -1.0), p_br.y, 0.0001);
+
+    // Center (400, 300) maps to (0.0, 0.0)
+    const p_c = toNdc(400.0, 300.0, win_w, win_h);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), p_c.x, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), p_c.y, 0.0001);
+}

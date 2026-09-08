@@ -1,5 +1,6 @@
 const context = @import("context.zig");
 const core_fs = @import("../core/fs.zig");
+const events = @import("../core/events.zig");
 const manager = @import("manager.zig");
 const state_pkg = @import("state");
 const std = @import("std");
@@ -187,4 +188,75 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
         gpa.free(paths_slice);
     };
     context.wakeUpMainThread();
+}
+
+test "scanDirectoryThreadSafe - discovers and sorts images, ignores non-images" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var workers = WorkerManager{};
+    defer workers.drainAndQuiesce(io);
+
+    scanDirectoryThreadSafe(&workers, allocator, io, "testfiles/images");
+
+    var batch: std.ArrayList(events.BackgroundEvent) = .empty;
+    defer {
+        for (batch.items) |*ev| ev.deinit(allocator);
+        batch.deinit(allocator);
+    }
+    try workers.event_queue.drain(allocator, io, &batch);
+
+    try std.testing.expect(batch.items.len > 0);
+    // Verify first event is 000_0_1024x682.jpg
+    const first_path = batch.items[0].path_discovered.entry.filesystem.path;
+    try std.testing.expect(std.mem.endsWith(u8, first_path, "000_0_1024x682.jpg"));
+
+    // Verify non-image files like CREDITS.txt are never pushed
+    for (batch.items) |ev| {
+        const p = ev.path_discovered.entry.filesystem.path;
+        try std.testing.expect(!std.mem.endsWith(u8, p, "CREDITS.txt"));
+    }
+}
+
+test "pathScanWorker - directory scan result event generation" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var workers = WorkerManager{};
+    defer workers.drainAndQuiesce(io);
+
+    var is_loading = std.atomic.Value(bool).init(true);
+    const target = try allocator.dupe(u8, "testfiles/images");
+    const args = try allocator.create(PathScanArgs);
+    args.* = .{
+        .workers = &workers,
+        .allocator = allocator,
+        .io = io,
+        .target_path = target,
+        .is_dir = true,
+        .is_loading_files = &is_loading,
+    };
+
+    _ = workers.active_threads.fetchAdd(1, .monotonic);
+    pathScanWorker(args);
+
+    try std.testing.expect(!is_loading.load(.acquire));
+
+    var batch: std.ArrayList(events.BackgroundEvent) = .empty;
+    defer {
+        for (batch.items) |*ev| ev.deinit(allocator);
+        batch.deinit(allocator);
+    }
+    try workers.event_queue.drain(allocator, io, &batch);
+
+    try std.testing.expectEqual(@as(usize, 1), batch.items.len);
+    switch (batch.items[0]) {
+        .directory_scan_result => |res| {
+            try std.testing.expect(res.is_dir);
+            try std.testing.expectEqualStrings("testfiles/images", res.target_path);
+            try std.testing.expect(res.paths.len > 0);
+            try std.testing.expectEqualStrings("000_0_1024x682.jpg", res.paths[0].getBasename());
+        },
+        else => return error.ExpectedDirectoryScanResult,
+    }
 }

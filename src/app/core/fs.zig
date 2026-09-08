@@ -538,3 +538,32 @@ test "scanCbzImageEntries - scans archive entries using 64KB reader buffer" {
     try std.testing.expectEqual(@as(usize, 2), entries.items.len);
     try std.testing.expectEqualStrings("000_0_1024x682.jpg", entries.items[0].archive_entry.entry_name);
 }
+
+test "getParentDirBuf - path variations and edge cases" {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+
+    // Relative nested path
+    try std.testing.expectEqualStrings("a", getParentDirBuf("a/b", &buf).?);
+    try std.testing.expectEqualStrings("a/b", getParentDirBuf("a/b/c", &buf).?);
+
+    // Trailing slashes
+    try std.testing.expectEqualStrings("a", getParentDirBuf("a/b/", &buf).?);
+    try std.testing.expectEqualStrings("a/b", getParentDirBuf("a/b/c/", &buf).?);
+
+    // Single-component relative path steps up to "."
+    try std.testing.expectEqualStrings(".", getParentDirBuf("photos", &buf).?);
+
+    // Current directory "." steps up to ".."
+    try std.testing.expectEqualStrings("..", getParentDirBuf(".", &buf).?);
+
+    // Parent directory ".." steps up to "../.."
+    try std.testing.expectEqualStrings("../..", getParentDirBuf("..", &buf).?);
+    try std.testing.expectEqualStrings("../../..", getParentDirBuf("../..", &buf).?);
+
+    // Root directory returns null
+    try std.testing.expect(getParentDirBuf("/", &buf) == null);
+    try std.testing.expect(getParentDirBuf("///", &buf) == null);
+
+    // Empty path returns null
+    try std.testing.expect(getParentDirBuf("", &buf) == null);
+}

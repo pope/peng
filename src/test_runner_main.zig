@@ -386,6 +386,19 @@ pub fn main(init: std.process.Init) !void {
         try sendCommand(socket_path, "filter linear");
     }
 
+    // Scale / Fit Modes
+    {
+        try sendCommand(socket_path, "scale crop");
+        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "scale_crop.png", "scale_crop.png", update_baselines, max_tolerance_pct)) {
+            steps_with_discrepancies += 1;
+        }
+        try sendCommand(socket_path, "scale none");
+        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "scale_original.png", "scale_original.png", update_baselines, max_tolerance_pct)) {
+            steps_with_discrepancies += 1;
+        }
+        try sendCommand(socket_path, "scale full");
+    }
+
     // Action Palette
     {
         try sendCommand(socket_path, "palette action");
@@ -410,7 +423,15 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    // Next Image
+    // Slideshow Palette
+    {
+        try sendCommand(socket_path, "palette slideshow");
+        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "palette_slideshow.png", "palette_slideshow.png", update_baselines, max_tolerance_pct)) {
+            steps_with_discrepancies += 1;
+        }
+    }
+
+    // Navigation (Next & Prev)
     {
         try sendCommand(socket_path, "palette none");
         try sendCommand(socket_path, "next");
@@ -418,6 +439,13 @@ pub fn main(init: std.process.Init) !void {
         if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "next_image.png", "next_image.png", update_baselines, max_tolerance_pct)) {
             steps_with_discrepancies += 1;
         }
+        try sendCommand(socket_path, "prev");
+        try sendCommand(socket_path, "wait_load");
+        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "prev_image.png", "init.png", update_baselines, max_tolerance_pct)) {
+            steps_with_discrepancies += 1;
+        }
+        try sendCommand(socket_path, "next");
+        try sendCommand(socket_path, "wait_load");
     }
 
     // Debug Tools
@@ -459,6 +487,11 @@ pub fn main(init: std.process.Init) !void {
         try expectCommandFailure(socket_path, "pan 1.0 inf");
         try expectCommandFailure(socket_path, "adjust nan 1.0");
         try expectCommandFailure(socket_path, "title invalid");
+        try expectCommandFailure(socket_path, "filter invalid");
+        try expectCommandFailure(socket_path, "scale invalid");
+        try expectCommandFailure(socket_path, "manga invalid");
+        try expectCommandFailure(socket_path, "palette invalid");
+        try expectCommandFailure(socket_path, "thumb invalid");
 
         // Generate a 513-character screenshot path
         var long_path_buf: [520]u8 = undefined;
