@@ -478,6 +478,16 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
+    // Windowless / Borderless IPC Tests
+    {
+        try sendCommand(socket_path, "windowless true");
+        try sendCommand(socket_path, "windowless false");
+        try sendCommand(socket_path, "windowless");
+        try sendCommand(socket_path, "borderless toggle");
+        try sendCommand(socket_path, "borderless on");
+        try sendCommand(socket_path, "borderless off");
+    }
+
     // Safety Validation Tests
     {
         try expectCommandFailure(socket_path, "zoom nan");
@@ -487,6 +497,8 @@ pub fn main(init: std.process.Init) !void {
         try expectCommandFailure(socket_path, "pan 1.0 inf");
         try expectCommandFailure(socket_path, "adjust nan 1.0");
         try expectCommandFailure(socket_path, "title invalid");
+        try expectCommandFailure(socket_path, "windowless invalid");
+        try expectCommandFailure(socket_path, "borderless invalid");
         try expectCommandFailure(socket_path, "filter invalid");
         try expectCommandFailure(socket_path, "scale invalid");
         try expectCommandFailure(socket_path, "manga invalid");

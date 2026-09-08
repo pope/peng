@@ -167,6 +167,7 @@ fn initAppGraphicsAndState(init: std.process.Init) !?AppGraphicsAndState {
     const setup = try ui.graphics.initGraphicsAndWindow("Peng Image Viewer", .{
         .headless = parsed.headless,
         .high_dpi = !parsed.test_mode,
+        .borderless = parsed.windowless,
     });
     errdefer {
         sdl.quitTtf();
@@ -190,6 +191,7 @@ fn initAppGraphicsAndState(init: std.process.Init) !?AppGraphicsAndState {
                     .handle = setup.window,
                     .pixel_format = sdl.PixelFormat.rgba32,
                     .is_fullscreen = false,
+                    .is_borderless = parsed.windowless,
                     .claimed = true,
                 },
             },

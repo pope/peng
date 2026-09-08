@@ -148,6 +148,8 @@ pub const AppIntent = union(enum) {
     set_blur: bool,
     toggle_fullscreen,
     set_fullscreen: bool,
+    toggle_windowless,
+    set_windowless: bool,
     toggle_debug_mode,
     set_debug_mode: bool,
     toggle_debug_thumb,

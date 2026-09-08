@@ -110,8 +110,13 @@ pub fn formatOptionsFor(comptime target: intents.CliTarget, comptime col_width: 
     var text: []const u8 = "";
     for (options) |opt| {
         if (!opt.target.appliesTo(target)) continue;
-        const col = padRight(formatOptionFlags(opt), col_width);
-        text = text ++ col ++ opt.description ++ "\n";
+        const flags_str = formatOptionFlags(opt);
+        if (flags_str.len < col_width) {
+            const col = padRight(flags_str, col_width);
+            text = text ++ col ++ opt.description ++ "\n";
+        } else {
+            text = text ++ flags_str ++ "\n" ++ padRight("", col_width) ++ opt.description ++ "\n";
+        }
     }
     return text;
 }
@@ -124,7 +129,11 @@ pub fn formatIpcCommands(comptime col_width: usize) []const u8 {
         if (cmd.args) |arg| {
             col = col ++ " " ++ arg;
         }
-        text = text ++ padRight(col, col_width) ++ cmd.description ++ "\n";
+        if (col.len < col_width) {
+            text = text ++ padRight(col, col_width) ++ cmd.description ++ "\n";
+        } else {
+            text = text ++ col ++ "\n" ++ padRight("", col_width) ++ cmd.description ++ "\n";
+        }
     }
     return text;
 }
@@ -210,6 +219,7 @@ pub const ParsedArgs = struct {
     ipc_enabled: bool = false,
     enable_blur: bool = true,
     show_title: bool = false,
+    windowless: bool = false,
     help: bool = false,
 
     /// Frees allocated memory associated with parsed command-line arguments.
@@ -248,6 +258,7 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
     var ipc_enabled = false;
     var enable_blur = true;
     var show_title = false;
+    var windowless = false;
     var help = false;
 
     while (args_it.next()) |arg| {
@@ -261,6 +272,7 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
                 .blur => enable_blur = true,
                 .no_blur => enable_blur = false,
                 .title => show_title = true,
+                .windowless => windowless = true,
                 .scale => {
                     if (args_it.next()) |val| {
                         if (std.meta.stringToEnum(ScaleMode, val)) |mode| {
@@ -290,6 +302,7 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
         .ipc_enabled = ipc_enabled,
         .enable_blur = enable_blur,
         .show_title = show_title,
+        .windowless = windowless,
         .help = help,
     };
 }
@@ -431,5 +444,41 @@ test "parseArgsIterator handles blur and other flags" {
         defer parsed.deinit(testing.allocator);
         try testing.expect(parsed.enable_blur);
         try testing.expect(!parsed.show_title);
+    }
+}
+
+test "parseArgsIterator handles windowless flags" {
+    const testing = std.testing;
+
+    // Test -W short flag
+    {
+        var it = SliceIterator{ .slice = &[_][]const u8{"-W"} };
+        var parsed = try parseArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expect(parsed.windowless);
+    }
+
+    // Test --windowless long flag
+    {
+        var it = SliceIterator{ .slice = &[_][]const u8{"--windowless"} };
+        var parsed = try parseArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expect(parsed.windowless);
+    }
+
+    // Test --borderless alias
+    {
+        var it = SliceIterator{ .slice = &[_][]const u8{"--borderless"} };
+        var parsed = try parseArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expect(parsed.windowless);
+    }
+
+    // Test --undecorated alias
+    {
+        var it = SliceIterator{ .slice = &[_][]const u8{"--undecorated"} };
+        var parsed = try parseArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expect(parsed.windowless);
     }
 }

@@ -2,11 +2,12 @@ const std = @import("std");
 const c = @import("c.zig").c;
 const gpu = @import("gpu.zig");
 
-/// Bitflags controlling window creation and behavior (hidden, resizable, high-DPI).
+/// Bitflags controlling window creation and behavior (hidden, resizable, high-DPI, borderless).
 pub const window_flags = struct {
     pub const hidden: u64 = c.SDL_WINDOW_HIDDEN;
     pub const resizable: u64 = c.SDL_WINDOW_RESIZABLE;
     pub const high_pixel_density: u64 = c.SDL_WINDOW_HIGH_PIXEL_DENSITY;
+    pub const borderless: u64 = c.SDL_WINDOW_BORDERLESS;
 };
 
 /// Safe typed wrapper handle around an underlying `SDL_Window`.
@@ -45,6 +46,16 @@ pub const Window = extern struct {
     /// Sets the window caption title string.
     pub fn setTitle(self: Window, title: [:0]const u8) void {
         _ = c.SDL_SetWindowTitle(self.ptr, title.ptr);
+    }
+
+    /// Sets whether the window has OS border decorations or is borderless.
+    pub fn setBordered(self: Window, bordered: bool) bool {
+        return c.SDL_SetWindowBordered(self.ptr, bordered);
+    }
+
+    /// Returns true if the window currently has the borderless flag set.
+    pub fn isBorderless(self: Window) bool {
+        return (c.SDL_GetWindowFlags(self.ptr) & c.SDL_WINDOW_BORDERLESS) != 0;
     }
 
     /// Claims this window for rendering with the specified SDL GPU device.

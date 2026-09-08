@@ -197,6 +197,24 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 },
             }
         },
+        .toggle_windowless => {
+            switch (self.viewer.display) {
+                .headless => {},
+                .windowed => |*win| {
+                    win.is_borderless = !win.is_borderless;
+                    _ = win.handle.setBordered(!win.is_borderless);
+                },
+            }
+        },
+        .set_windowless => |val| {
+            switch (self.viewer.display) {
+                .headless => {},
+                .windowed => |*win| {
+                    win.is_borderless = val;
+                    _ = win.handle.setBordered(!win.is_borderless);
+                },
+            }
+        },
         .toggle_debug_mode => clay.setDebugModeEnabled(!clay.isDebugModeEnabled()),
         .set_debug_mode => |val| clay.setDebugModeEnabled(val),
         .toggle_debug_thumb => {

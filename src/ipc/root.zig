@@ -84,6 +84,12 @@ pub const TitleAction = enum {
     toggle,
 };
 
+pub const WindowlessAction = enum {
+    enable,
+    disable,
+    toggle,
+};
+
 pub const IpcCommand = union(enum) {
     zoom: f32,
     pan: struct { x: f32, y: f32 },
@@ -92,6 +98,7 @@ pub const IpcCommand = union(enum) {
     scale: intents.ScaleMode,
     manga: bool,
     title: TitleAction,
+    windowless: WindowlessAction,
     palette: PaletteTarget,
     thumb: ThumbAction,
     debug: bool,
@@ -118,6 +125,11 @@ pub const IpcCommand = union(enum) {
                 .enable => return .{ .set_title = true },
                 .disable => return .{ .set_title = false },
                 .toggle => return .toggle_title,
+            },
+            .windowless => |action| switch (action) {
+                .enable => return .{ .set_windowless = true },
+                .disable => return .{ .set_windowless = false },
+                .toggle => return .toggle_windowless,
             },
             .palette => |target| {
                 const mode: intents.PaletteMode = switch (target.kind) {
@@ -208,6 +220,20 @@ pub const IpcCommand = union(enum) {
                 }
             } else {
                 return .{ .title = .toggle };
+            }
+        } else if (std.mem.eql(u8, cmd, "windowless") or std.mem.eql(u8, cmd, "borderless")) {
+            if (it.next()) |val| {
+                if (std.mem.eql(u8, val, "true") or std.mem.eql(u8, val, "enable") or std.mem.eql(u8, val, "on")) {
+                    return .{ .windowless = .enable };
+                } else if (std.mem.eql(u8, val, "false") or std.mem.eql(u8, val, "disable") or std.mem.eql(u8, val, "off")) {
+                    return .{ .windowless = .disable };
+                } else if (std.mem.eql(u8, val, "toggle")) {
+                    return .{ .windowless = .toggle };
+                } else {
+                    return error.InvalidArgument;
+                }
+            } else {
+                return .{ .windowless = .toggle };
             }
         } else if (std.mem.eql(u8, cmd, "palette")) {
             const pal_name = it.next() orelse return error.MissingArgument;
@@ -349,6 +375,26 @@ test "IpcCommand parsing" {
     const cmd_title_toggle_word = try IpcCommand.parse("title toggle");
     try std.testing.expectEqual(TitleAction.toggle, cmd_title_toggle_word.title);
     try std.testing.expectEqual(intents.AppIntent.toggle_title, cmd_title_toggle_word.toIntent().?);
+
+    const cmd_wl_true = try IpcCommand.parse("windowless true");
+    try std.testing.expectEqual(WindowlessAction.enable, cmd_wl_true.windowless);
+    try std.testing.expectEqual(intents.AppIntent{ .set_windowless = true }, cmd_wl_true.toIntent().?);
+
+    const cmd_wl_false = try IpcCommand.parse("windowless false");
+    try std.testing.expectEqual(WindowlessAction.disable, cmd_wl_false.windowless);
+    try std.testing.expectEqual(intents.AppIntent{ .set_windowless = false }, cmd_wl_false.toIntent().?);
+
+    const cmd_wl_toggle = try IpcCommand.parse("windowless");
+    try std.testing.expectEqual(WindowlessAction.toggle, cmd_wl_toggle.windowless);
+    try std.testing.expectEqual(intents.AppIntent.toggle_windowless, cmd_wl_toggle.toIntent().?);
+
+    const cmd_bl_toggle_word = try IpcCommand.parse("borderless toggle");
+    try std.testing.expectEqual(WindowlessAction.toggle, cmd_bl_toggle_word.windowless);
+    try std.testing.expectEqual(intents.AppIntent.toggle_windowless, cmd_bl_toggle_word.toIntent().?);
+
+    const cmd_bl_on = try IpcCommand.parse("borderless on");
+    try std.testing.expectEqual(WindowlessAction.enable, cmd_bl_on.windowless);
+    try std.testing.expectEqual(intents.AppIntent{ .set_windowless = true }, cmd_bl_on.toIntent().?);
 
     try std.testing.expectError(error.UnknownCommand, IpcCommand.parse("invalid_command"));
 }

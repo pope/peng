@@ -109,16 +109,22 @@ Start the image viewer by passing a file or directory path:
 
 ### CLI Flags
 
-| Flag                 | Argument                                                    | Description                                             |
-| :------------------- | :---------------------------------------------------------- | :------------------------------------------------------ |
-| `-h`, `--help`       | None                                                        | Displays the help message and available options.        |
-| `--scale`            | `none`, `shrink`, `full`, `crop`, `fit_width`, `fit_height` | Sets the default image scaling/fitting mode.            |
-| `--blur`             | None                                                        | Enables background glassmorphism blur effect (default). |
-| `--no-blur`          | None                                                        | Disables background glassmorphism blur effect.          |
-| `--headless`         | None                                                        | Runs without opening an OS display window.              |
-| `--test-mode`        | None                                                        | Puts the window and event loop into test configuration. |
-| `--update-baselines` | None                                                        | Overwrites baseline golden screenshots.                 |
-| `--ipc`              | None                                                        | Enables the IPC UNIX Domain Socket server.              |
+| Flag                 | Argument                                                    | Description                                              |
+| :------------------- | :---------------------------------------------------------- | :------------------------------------------------------- |
+| `-h`, `--help`       | None                                                        | Displays the help message and available options.         |
+| `-W`, `--windowless` | None                                                        | Runs in borderless/windowless mode (no titlebar chrome). |
+| `--scale`            | `none`, `shrink`, `full`, `crop`, `fit_width`, `fit_height` | Sets the default image scaling/fitting mode.             |
+| `--blur`             | None                                                        | Enables background glassmorphism blur effect (default).  |
+| `--no-blur`          | None                                                        | Disables background glassmorphism blur effect.           |
+| `--title`            | None                                                        | Shows floating title bar overlay on startup.             |
+| `--headless`         | None                                                        | Runs without opening an OS display window.               |
+| `--test-mode`        | None                                                        | Puts the window and event loop into test configuration.  |
+| `--update-baselines` | None                                                        | Overwrites baseline golden screenshots.                  |
+| `--ipc`              | None                                                        | Enables the IPC UNIX Domain Socket server.               |
+
+Aliases:
+
+- `--windowless` can also be specified as `--borderless` or `--undecorated`.
 
 ______________________________________________________________________
 
@@ -145,6 +151,13 @@ You can send commands to a running instance using the `peng-msg` utility:
 
 # Set Manga Mode (true, false)
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock manga true
+
+# Toggle Windowless / Borderless Mode (toggle, true, false, on, off)
+./zig-out/bin/peng-msg /tmp/peng-1234.sock windowless toggle
+./zig-out/bin/peng-msg /tmp/peng-1234.sock borderless true
+
+# Toggle Floating Title Bar Overlay (toggle, true, false)
+./zig-out/bin/peng-msg /tmp/peng-1234.sock title toggle
 
 # Adjust brightness and contrast
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock adjust 0.2 -0.1

@@ -17,10 +17,11 @@ pub const GraphicsSetup = struct {
     initial_dpi_scale: f32,
 };
 
-/// Configuration options for graphics and window creation (headless mode and high-DPI scaling).
+/// Configuration options for graphics and window creation (headless mode, high-DPI scaling, and borderless mode).
 pub const GraphicsOptions = struct {
     headless: bool = false,
     high_dpi: bool = true,
+    borderless: bool = false,
 };
 
 /// Immediate uniform parameters for Dual Kawase downsample and upsample passes.
@@ -187,12 +188,15 @@ pub fn initGraphicsAndWindow(window_title: [:0]const u8, options: GraphicsOption
     errdefer sdl.quitTtf();
 
     // Create window
-    const win_flags = if (options.headless)
+    var win_flags = if (options.headless)
         sdl.window_flags.hidden
     else if (options.high_dpi)
         sdl.window_flags.resizable | sdl.window_flags.high_pixel_density
     else
         sdl.window_flags.resizable;
+    if (options.borderless and !options.headless) {
+        win_flags |= sdl.window_flags.borderless;
+    }
     const window = sdl.Window.createZ(window_title, 1024, 768, win_flags) orelse {
         std.log.err("SDL_CreateWindow Error: {s}", .{sdl.getError()});
         return error.WindowCreationFailed;

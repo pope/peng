@@ -41,6 +41,7 @@ pub const OptionId = enum {
     headless,
     test_mode,
     update_baselines,
+    windowless,
 };
 
 /// Declarative schema describing a command-line option, its target app, aliases, placeholder, and description.
@@ -105,6 +106,7 @@ pub const ActionId = enum {
     toggle_stats,
     toggle_title,
     toggle_fullscreen,
+    toggle_windowless,
     file_finder,
     directory_navigator,
     toggle_debug_mode,
@@ -650,6 +652,23 @@ pub const actions = [_]ActionDef{
         },
         .intent = .refresh_directory,
     },
+    .{
+        .id = .toggle_windowless,
+        .title = "Toggle Windowless Mode (Borderless)",
+        .description = "Toggle window borders and decorations",
+        .show_in_palette = true,
+        .shortcuts = &.{},
+        .intent = .toggle_windowless,
+        .cli = &.{.{
+            .id = .windowless,
+            .target = .main,
+            .short = "-W",
+            .long = "--windowless",
+            .aliases = &.{ "--borderless", "--undecorated" },
+            .description = "Start in borderless/windowless mode (no titlebar chrome)",
+        }},
+        .ipc = .{ .name = "windowless / borderless", .args = "<toggle|true|false>", .description = "Toggle windowless/borderless mode" },
+    },
 
     // --- Non-Palette Capabilities (CLI flags and IPC verbs) ---
     .{
@@ -826,8 +845,8 @@ pub const ipc_commands = blk: {
 test "actions registry projections" {
     const testing = std.testing;
 
-    // Palette count: 44 previous items + 3 new items (cycle_scale_mode, cycle_filter, refresh_directory) = 47
-    try testing.expectEqual(@as(usize, 47), palette_action_items.len);
+    // Palette count: 47 previous items + 1 new item (toggle_windowless) = 48
+    try testing.expectEqual(@as(usize, 48), palette_action_items.len);
 
     // Exact index preservation
     try testing.expectEqualStrings("Navigate Directories...", palette_action_items[7].name);
@@ -841,14 +860,15 @@ test "actions registry projections" {
     try testing.expectEqual(total_sc, flat_shortcuts.len);
 
     // CLI options projection
-    try testing.expectEqual(@as(usize, 4), action_cli_options.len);
+    try testing.expectEqual(@as(usize, 5), action_cli_options.len);
     try testing.expectEqual(OptionId.blur, action_cli_options[0].id);
     try testing.expectEqual(OptionId.no_blur, action_cli_options[1].id);
     try testing.expectEqual(OptionId.title, action_cli_options[2].id);
-    try testing.expectEqual(OptionId.scale, action_cli_options[3].id);
+    try testing.expectEqual(OptionId.windowless, action_cli_options[3].id);
+    try testing.expectEqual(OptionId.scale, action_cli_options[4].id);
 
     // IPC commands projection
-    try testing.expectEqual(@as(usize, 13), ipc_commands.len);
+    try testing.expectEqual(@as(usize, 14), ipc_commands.len);
 }
 
 test "actions registry invariants and consistency" {

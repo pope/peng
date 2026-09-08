@@ -644,12 +644,13 @@ pub const ViewerStats = struct {
 /// Prevents text flickering when scrubbing through thumbnails or fast-decoding formats (~2 frames at 60Hz).
 pub const LOADING_GRACE_PERIOD_MS: u64 = 35;
 
-/// Claimed SDL window handle, pixel format, fullscreen state, and title string cache.
+/// Claimed SDL window handle, pixel format, fullscreen state, borderless state, and title string cache.
 pub const ActiveWindow = struct {
     handle: sdl.Window,
     pixel_format: u32 = sdl.PixelFormat.unknown,
     cached_title: ?[]const u8 = null,
     is_fullscreen: bool = false,
+    is_borderless: bool = false,
     claimed: bool = false,
 
     /// Frees the cached window title string allocation if present.
@@ -678,6 +679,14 @@ pub const DisplayState = union(enum) {
         return switch (self) {
             .headless => false,
             .windowed => |w| w.is_fullscreen,
+        };
+    }
+
+    /// Returns `true` if the display window is currently borderless/undecorated.
+    pub inline fn isBorderless(self: DisplayState) bool {
+        return switch (self) {
+            .headless => false,
+            .windowed => |w| w.is_borderless,
         };
     }
 
