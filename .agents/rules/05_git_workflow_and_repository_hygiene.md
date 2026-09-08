@@ -26,3 +26,9 @@
   - `git diff` (inspect working tree modifications)
   - `git log` (inspect recent commit conventions and history)
 - The assistant must never modify Git configuration, hooks, or repository history (`git reset`, `git rebase`, `git push`, `git checkout .`, `git restore .` without user instruction).
+
+## 5. Test Fixture Resource Isolation (`testfiles/` Only)
+
+- Unit and integration tests **MUST ONLY** reference test files and fixtures located within the committed `testfiles/` hierarchy (e.g. `testfiles/images/`, `testfiles/golden-screenshots/`, `testfiles/sample.cbz`), or temporary test files explicitly created and cleaned up in `testfiles/current-run/` or via test scratch allocators.
+- Tests **MUST NEVER** reference uncommitted files, personal directory paths (`Capture/`, `ThumbTest/`), untracked archives in the project root, or external absolute paths.
+- Directory scans in tests must target isolated fixture subdirectories (e.g. `testfiles/` or isolated temporary directories), **NEVER** scanning the project root (`"."`), to prevent non-deterministic test failures caused by untracked or local user files.

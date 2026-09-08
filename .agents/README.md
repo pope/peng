@@ -19,7 +19,7 @@ ______________________________________________________________________
   2-Pass UI `RenderPacket` pipeline (extraction vs allocation-free execution), logical vs physical DPI scaling, zero-area scissor skipping, SIMD bounds safety, case-insensitive sorting (`lessThanIgnoreCase`), event loop dimension tracking (`is_busy`), GPU text texture alpha decoupling (RGB cache keys + vertex alpha modulation), and modal dismissal input decoupling (`isAcceptingInput`).
 
 - **[`05_git_workflow_and_repository_hygiene.md`](rules/05_git_workflow_and_repository_hygiene.md)**:
-  User-only staging invariant (strictly NO `git add`/`git rm`), never unstage user changes (`git reset`/`git restore --staged`), explicit human commit sign-off invariant, commit message review workflow, and permitted read-only Git operations (`git status`, `git diff`, `git log`).
+  User-only staging invariant (strictly NO `git add`/`git rm`), never unstage user changes (`git reset`/`git restore --staged`), explicit human commit sign-off invariant, commit message review workflow, permitted read-only Git operations (`git status`, `git diff`, `git log`), and test fixture resource isolation (`testfiles/` only).
 
 ______________________________________________________________________
 

@@ -417,9 +417,9 @@ test "scanCbzImageEntries on sample archive" {
         entries.deinit(allocator);
     }
 
-    try scanCbzImageEntries(allocator, io, "5 Centimeters per Second.cbz", &entries);
-    try std.testing.expect(entries.items.len > 0);
-    try std.testing.expectEqualStrings("5 Centimeters per Second/page000.jpeg", entries.items[0].archive_entry.entry_name);
+    try scanCbzImageEntries(allocator, io, "testfiles/sample.cbz", &entries);
+    try std.testing.expectEqual(@as(usize, 2), entries.items.len);
+    try std.testing.expectEqualStrings("000_0_1024x682.jpg", entries.items[0].archive_entry.entry_name);
     try std.testing.expect(entries.items[0].archive_entry.file_offset != null);
 }
 
@@ -427,8 +427,8 @@ test "scanDirectoryEntries includes CBZ files and countFolderContents counts CBZ
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
 
-    const counts = countFolderContents(io, "5 Centimeters per Second.cbz");
-    try std.testing.expect(counts.image_count > 0);
+    const counts = countFolderContents(io, "testfiles/sample.cbz");
+    try std.testing.expectEqual(@as(usize, 2), counts.image_count);
 
     var dir_entries: std.ArrayList(DirectoryEntry) = .empty;
     defer {
@@ -439,10 +439,10 @@ test "scanDirectoryEntries includes CBZ files and countFolderContents counts CBZ
         dir_entries.deinit(allocator);
     }
 
-    _ = try scanDirectoryEntries(allocator, io, ".", &dir_entries);
+    _ = try scanDirectoryEntries(allocator, io, "testfiles", &dir_entries);
     var found_cbz = false;
     for (dir_entries.items) |e| {
-        if (std.mem.eql(u8, e.getName(), "5 Centimeters per Second.cbz")) {
+        if (std.mem.eql(u8, e.getName(), "sample.cbz")) {
             found_cbz = true;
             try std.testing.expect(e.getImageCount() == null);
             try std.testing.expectEqual(state_pkg.EntryScanState.unscanned, e.getScanState().?);
@@ -524,8 +524,8 @@ test "scanCbzImageEntries - scans archive entries using 64KB reader buffer" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
 
-    const cbz_path = "5 Centimeters per Second.cbz";
-    var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, cbz_path, .{}) catch return;
+    const cbz_path = "testfiles/sample.cbz";
+    var file = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, cbz_path, .{});
     file.close(io);
 
     var entries: std.ArrayList(MediaEntry) = .empty;
@@ -535,6 +535,6 @@ test "scanCbzImageEntries - scans archive entries using 64KB reader buffer" {
     }
 
     try scanCbzImageEntries(allocator, io, cbz_path, &entries);
-    try std.testing.expect(entries.items.len > 0);
-    try std.testing.expectEqualStrings("5 Centimeters per Second/page000.jpeg", entries.items[0].archive_entry.entry_name);
+    try std.testing.expectEqual(@as(usize, 2), entries.items.len);
+    try std.testing.expectEqualStrings("000_0_1024x682.jpg", entries.items[0].archive_entry.entry_name);
 }

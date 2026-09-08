@@ -961,20 +961,20 @@ test "decompressCbzMediaEntry - decompresses zip deflate entry with 128KB buffer
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
 
-    const cbz_path = "5 Centimeters per Second.cbz";
-    var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, cbz_path, .{}) catch return;
+    const cbz_path = "testfiles/sample.cbz";
+    var file = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, cbz_path, .{});
     file.close(io);
 
     const entry = ArchiveMediaEntry{
         .archive_path = cbz_path,
-        .entry_name = "5 Centimeters per Second/page000.jpeg",
+        .entry_name = "000_0_1024x682.jpg",
     };
 
     const res = try decompressCbzMediaEntry(allocator, io, entry);
     defer allocator.free(res.bytes);
 
-    try std.testing.expect(res.bytes.len == 230405);
-    try std.testing.expect(res.compressed_size == 228667);
+    try std.testing.expectEqual(@as(usize, 58713), res.bytes.len);
+    try std.testing.expectEqual(@as(u64, 57867), res.compressed_size);
     try std.testing.expect(res.compressed_size != res.bytes.len);
     try std.testing.expect(res.decompress_time_ms >= 0.0);
 }
