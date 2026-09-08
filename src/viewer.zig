@@ -189,6 +189,7 @@ pub fn updateFrame(
         .palette_reveal = app_state.viewer.animations.get(.palette_reveal),
         .thumb_crossfade = app_state.viewer.animations.get(.thumb_crossfade),
         .debug_show_thumb = app_state.viewer.ui.overlays.debug_show_thumb,
+        .current_time_ms = sdl.timer.getTicks(),
         .stats = app_state.viewer.stats,
         .render_metrics = app_state.viewer.ui.metrics.toSnapshot(),
     };

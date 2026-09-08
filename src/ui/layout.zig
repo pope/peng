@@ -556,7 +556,9 @@ fn renderImageCanvas(
                 },
             })({});
         },
-        .decoding => {
+        .decoding => |dec| {
+            const elapsed = ui_model.current_time_ms -| dec.start_time_ms;
+            const show_loading = elapsed > state.LOADING_GRACE_PERIOD_MS;
             if (draw_w > 0 and draw_h > 0) {
                 clay.UI()(.{
                     .id = clay.getElementId("ImageCanvas"),
@@ -570,14 +572,17 @@ fn renderImageCanvas(
                         .child_gap = 10,
                     },
                 })({
-                    clay.text("Loading image...", .{
-                        .color = theme.pink,
-                        .font_size = 22,
-                        .font_id = 0,
-                    });
+                    if (show_loading) {
+                        clay.text("Loading image...", .{
+                            .color = theme.pink,
+                            .font_size = 22,
+                            .font_id = 0,
+                        });
+                    }
                 });
             } else {
                 clay.UI()(.{
+                    .id = clay.getElementId("ImageCanvas"),
                     .layout = .{
                         .sizing = .{ .w = .grow, .h = .grow },
                         .direction = .top_to_bottom,
@@ -585,11 +590,13 @@ fn renderImageCanvas(
                         .child_gap = 10,
                     },
                 })({
-                    clay.text("Loading image...", .{
-                        .color = theme.pink,
-                        .font_size = 22,
-                        .font_id = 0,
-                    });
+                    if (show_loading) {
+                        clay.text("Loading image...", .{
+                            .color = theme.pink,
+                            .font_size = 22,
+                            .font_id = 0,
+                        });
+                    }
                 });
             }
         },

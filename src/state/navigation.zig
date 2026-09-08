@@ -5,6 +5,12 @@ const SlideshowMode = types.SlideshowMode;
 
 const MediaEntry = types.MediaEntry;
 
+/// Direction of user navigation travel across the image list.
+pub const NavDirection = enum {
+    forward,
+    backward,
+};
+
 /// Tracks the active media list, current image index, slideshow progression, and directory cache.
 pub const NavigationState = struct {
     image_list: std.ArrayList(MediaEntry) = .empty,
@@ -13,6 +19,7 @@ pub const NavigationState = struct {
     manga_mode: bool = false,
     is_loading_files: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     last_nav_time_ms: u64 = 0,
+    direction: NavDirection = .forward,
     last_scanned_dir: std.ArrayList(u8) = .empty,
     directory_arena: std.heap.ArenaAllocator,
 
@@ -58,6 +65,7 @@ pub const NavigationState = struct {
     pub fn nextIndex(self: *NavigationState) ?usize {
         self.slideshow.resetTimer();
         self.last_nav_time_ms = sdl.timer.getTicks();
+        self.direction = .forward;
         const len = self.image_list.items.len;
         if (len == 0) return null;
         if (self.current_index) |idx| {
@@ -72,6 +80,7 @@ pub const NavigationState = struct {
     pub fn prevIndex(self: *NavigationState) ?usize {
         self.slideshow.resetTimer();
         self.last_nav_time_ms = sdl.timer.getTicks();
+        self.direction = .backward;
         const len = self.image_list.items.len;
         if (len == 0) return null;
         if (self.current_index) |idx| {
@@ -88,11 +97,50 @@ pub const NavigationState = struct {
 
     /// Directly sets the image selection to `idx`, clamped to valid bounds.
     pub fn goToIndex(self: *NavigationState, idx: usize) ?usize {
-        self.slideshow.resetTimer();
-        self.last_nav_time_ms = sdl.timer.getTicks();
         const len = self.image_list.items.len;
         if (len == 0) return null;
-        self.current_index = @min(idx, len - 1);
+        const target = @min(idx, len - 1);
+        if (self.current_index) |cur| {
+            if (target == cur) return self.current_index;
+            if (target > cur) {
+                self.direction = .forward;
+            } else if (target < cur) {
+                self.direction = .backward;
+            }
+        }
+        self.slideshow.resetTimer();
+        self.last_nav_time_ms = sdl.timer.getTicks();
+        self.current_index = target;
         return self.current_index;
     }
 };
+
+test "NavigationState - direction tracking" {
+    const allocator = std.testing.allocator;
+    var nav = try NavigationState.init(allocator);
+    defer nav.deinit(allocator);
+
+    try std.testing.expectEqual(NavDirection.forward, nav.direction);
+
+    // Populate mock image list with 3 entries
+    try nav.image_list.append(allocator, .{ .filesystem = .{ .path = "a.jpg" } });
+    try nav.image_list.append(allocator, .{ .filesystem = .{ .path = "b.jpg" } });
+    try nav.image_list.append(allocator, .{ .filesystem = .{ .path = "c.jpg" } });
+    nav.current_index = 0;
+
+    _ = nav.nextIndex();
+    try std.testing.expectEqual(@as(?usize, 1), nav.current_index);
+    try std.testing.expectEqual(NavDirection.forward, nav.direction);
+
+    _ = nav.prevIndex();
+    try std.testing.expectEqual(@as(?usize, 0), nav.current_index);
+    try std.testing.expectEqual(NavDirection.backward, nav.direction);
+
+    _ = nav.goToIndex(2);
+    try std.testing.expectEqual(@as(?usize, 2), nav.current_index);
+    try std.testing.expectEqual(NavDirection.forward, nav.direction);
+
+    _ = nav.goToIndex(0);
+    try std.testing.expectEqual(@as(?usize, 0), nav.current_index);
+    try std.testing.expectEqual(NavDirection.backward, nav.direction);
+}

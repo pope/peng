@@ -32,6 +32,11 @@ pub fn drainWorkerEvents(state: *AppState) bool {
             .image_decoded => |*d| handleImageDecodedEvent(state, d),
             .decode_failed => |f| {
                 _ = state.cache.updateStatus(f.key, .failed);
+                if (state.cache.get(f.key)) |entry| {
+                    if (entry.thumbnail == .pending or entry.thumbnail == .none) {
+                        entry.thumbnail = .not_available;
+                    }
+                }
             },
             .path_discovered => |p| handleDirScannedEvent(state, p),
             .directory_scan_result => |res| handleDirectoryScanResultEvent(state, res),
@@ -100,7 +105,7 @@ fn handleExifThumbnailEvent(state: *AppState, thumb_data: events.ThumbDecodedPay
     state.updateCurrentRotation();
 
     const surf = thumb_data.surface orelse {
-        if (entry.thumbnail == .none) {
+        if (entry.thumbnail == .none or entry.thumbnail == .pending) {
             entry.thumbnail = .not_available;
         }
         return;
@@ -127,6 +132,16 @@ fn handleExifThumbnailEvent(state: *AppState, thumb_data: events.ThumbDecodedPay
                 gpu_dev.releaseTexture(upload_res.gpu_texture);
             }
             state.updateCurrentRotation();
+        } else {
+            if (state.cache.get(thumb_data.key)) |current_entry| {
+                if (current_entry.thumbnail == .none or current_entry.thumbnail == .pending) {
+                    current_entry.thumbnail = .not_available;
+                }
+            }
+        }
+    } else {
+        if (entry.thumbnail == .none or entry.thumbnail == .pending) {
+            entry.thumbnail = .not_available;
         }
     }
 }
@@ -200,6 +215,9 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
                     },
                 };
                 state.cache.enforceVramBudget(gpu_dev, state.viewer.navigation.current_index, state.viewer.navigation.image_list.items.len, image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
+                if (entry.thumbnail == .pending or entry.thumbnail == .none) {
+                    entry.thumbnail = .not_available;
+                }
                 if (is_current and entry.thumbnail == .loaded and !state.viewer.ui.overlays.debug_show_thumb) {
                     state.viewer.animations.startFrom(.thumb_crossfade, 0.0, 1.0, state_pkg.DURATION_THUMB_CROSSFADE_MS, .ease_out_quad);
                 }
@@ -210,6 +228,11 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
         } else {
             std.log.err("handleImageDecodedEvent: failed to upload surface to GPU for key {any}", .{decoded_data.key});
             _ = state.cache.updateStatus(decoded_data.key, .failed);
+            if (state.cache.get(decoded_data.key)) |entry| {
+                if (entry.thumbnail == .pending or entry.thumbnail == .none) {
+                    entry.thumbnail = .not_available;
+                }
+            }
         }
     } else {
         if (state.cache.get(decoded_data.key)) |entry| {
@@ -227,6 +250,9 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
                     entry.full_w = decoded_data.w;
                     entry.full_h = decoded_data.h;
                 }
+            }
+            if (entry.thumbnail == .pending or entry.thumbnail == .none) {
+                entry.thumbnail = .not_available;
             }
             entry.status = .{
                 .loaded_cpu = .{

@@ -14,7 +14,7 @@ fn handlePaletteReturnGoToImage(self: *AppState, raw_str: []const u8) !void {
     if (raw_str.len > 0) {
         if (std.fmt.parseInt(usize, raw_str, 10)) |v| {
             if (v >= 1 and v <= self.viewer.navigation.image_list.items.len) {
-                self.viewer.navigation.current_index = v - 1;
+                _ = self.viewer.navigation.goToIndex(v - 1);
                 self.closePalette();
             }
         } else |err| {

@@ -77,8 +77,16 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
             _ = switch (intent) {
                 .next_image => if (nav.manga_mode) nav.prevIndex() else nav.nextIndex(),
                 .prev_image => if (nav.manga_mode) nav.nextIndex() else nav.prevIndex(),
-                .first_image => nav.goToIndex(0),
-                .last_image => nav.goToIndex(if (nav.image_list.items.len > 0) nav.image_list.items.len - 1 else 0),
+                .first_image => blk: {
+                    const res = nav.goToIndex(0);
+                    nav.direction = .forward;
+                    break :blk res;
+                },
+                .last_image => blk: {
+                    const res = nav.goToIndex(if (nav.image_list.items.len > 0) nav.image_list.items.len - 1 else 0);
+                    nav.direction = .backward;
+                    break :blk res;
+                },
                 .go_to_image => |idx| nav.goToIndex(idx),
                 else => unreachable,
             };

@@ -15,7 +15,7 @@ const MediaEntry = state_pkg.MediaEntry;
 
 /// Fast-scrolling threshold: when navigation events occur faster than this interval,
 /// worker spawning is throttled exclusively to the active slot `idx`.
-pub const FAST_SCROLL_THRESHOLD_MS: u64 = 150;
+pub const FAST_SCROLL_THRESHOLD_MS: u64 = state_pkg.LOADING_GRACE_PERIOD_MS;
 
 /// Spawns an asynchronous worker task to decode an image file from disk into RAM.
 ///
@@ -78,18 +78,23 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
 
     const idx = state.viewer.navigation.current_index orelse return;
 
-    // 1. Gather desired indices (5-slot window: idx, +1, -1, +2, -2)
+    // 1. Gather desired indices (5-slot window: idx, prioritized along travel direction)
     var desired_count: usize = 0;
     var desired: [5]usize = undefined;
     desired[0] = idx;
     desired_count = 1;
 
-    for ([_]usize{
-        (idx + 1) % len,
-        (idx + len - 1) % len,
-        (idx + 2) % len,
-        if (len >= 2) (idx + len - 2) % len else idx,
-    }) |d| {
+    const next_idx = (idx + 1) % len;
+    const prev_idx = (idx + len - 1) % len;
+    const next_2 = (idx + 2) % len;
+    const prev_2 = if (len >= 2) (idx + len - 2) % len else idx;
+
+    const candidates = if (state.viewer.navigation.direction == .backward)
+        [_]usize{ prev_idx, next_idx, prev_2, next_2 }
+    else
+        [_]usize{ next_idx, prev_idx, next_2, prev_2 };
+
+    for (candidates) |d| {
         var unique = true;
         for (desired[0..desired_count]) |existing| {
             if (existing == d) {
@@ -138,7 +143,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
 
     // Fast-scrolling check: only active if navigation has actually occurred
     const now = sdl.timer.getTicks();
-    const is_fast_scrolling = state.viewer.navigation.last_nav_time_ms > 0 and (now - state.viewer.navigation.last_nav_time_ms < FAST_SCROLL_THRESHOLD_MS);
+    const is_fast_scrolling = state.viewer.navigation.last_nav_time_ms > 0 and (now -| state.viewer.navigation.last_nav_time_ms < FAST_SCROLL_THRESHOLD_MS);
 
     state.viewer.stats.max_decode_threads = state.workers.getMaxConcurrentDecodes();
 
@@ -157,6 +162,24 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
         break :blk false;
     };
 
+    // Fast-scrolling thumbnail readiness: check whether active image has thumbnail or full texture ready.
+    // Speculative thumbnail preloading for next image only runs if active image thumbnail is already ready.
+    const is_active_thumb_ready = blk: {
+        const cur_key = state.cache.activeKey(idx);
+        if (state.cache.get(cur_key)) |cur_entry| {
+            break :blk switch (cur_entry.thumbnail) {
+                .loaded, .not_available => true,
+                .none, .pending, .unloaded => is_current_ready,
+            };
+        }
+        break :blk false;
+    };
+
+    const speculative_idx = if (state.viewer.navigation.direction == .backward)
+        prev_idx
+    else
+        next_idx;
+
     // 3. Mark missing slots as decoding in cache map
     var to_spawn_indices: [5]usize = undefined;
     var to_spawn_entries: [5]?MediaEntry = [1]?MediaEntry{null} ** 5;
@@ -166,11 +189,13 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
     for (desired[0..desired_count]) |d| {
         if (d >= state.viewer.navigation.image_list.items.len) continue;
 
-        if (is_fast_scrolling and d != idx) continue;
-
-        // Demand-first gating: Do not spawn background decodes for neighbor slots
-        // until the active image is loaded on GPU (or failed).
-        if (!is_current_ready and d != idx) continue;
+        if (d != idx) {
+            if (is_fast_scrolling) {
+                if (d != speculative_idx or !is_active_thumb_ready) continue;
+            } else {
+                if (!is_current_ready) continue;
+            }
+        }
 
         const key = state.cache.activeKey(d);
         if (state.cache.get(key)) |entry| {
@@ -178,7 +203,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
                 hit = true;
             }
         } else {
-            _ = try state.cache.appendSlot(state.allocator, d, .{ .decoding = .{} });
+            _ = try state.cache.appendSlot(state.allocator, d, .{ .decoding = .{ .start_time_ms = now } });
         }
 
         if (state.cache.get(key)) |entry| {
@@ -194,6 +219,9 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
                     if (meta.raw_metadata.isRaw()) {
                         entry.raw_metadata = meta.raw_metadata;
                     }
+                    if (entry.thumbnail == .none) {
+                        entry.thumbnail = if (meta.has_embedded_thumbnail) .pending else .not_available;
+                    }
                     state.updateCurrentRotation();
                 }
             }
@@ -201,10 +229,20 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
             switch (entry.status) {
                 .decoding => |dec| {
                     if (!dec.has_thread) {
-                        if (to_spawn_count < 5) {
-                            to_spawn_indices[to_spawn_count] = d;
-                            to_spawn_entries[to_spawn_count] = state.viewer.navigation.image_list.items[d];
-                            to_spawn_count += 1;
+                        // During fast scrolling we prioritize thumbnails:
+                        // 1. For neighbor slots (d != idx), skip if no thumbnail is available or already loaded.
+                        // 2. For the active slot (d == idx), skip full decode only if its thumbnail is already loaded
+                        //    and rendering on screen. If no thumbnail is available, immediately decode the full image!
+                        if (d != idx and is_fast_scrolling and (entry.thumbnail == .not_available or entry.thumbnail == .loaded)) {
+                            // Wait until user settles to trigger full decode of background slots.
+                        } else if (d == idx and is_fast_scrolling and entry.thumbnail == .loaded) {
+                            // Active thumbnail is already on screen, wait until user settles to trigger full decode.
+                        } else {
+                            if (to_spawn_count < 5) {
+                                to_spawn_indices[to_spawn_count] = d;
+                                to_spawn_entries[to_spawn_count] = state.viewer.navigation.image_list.items[d];
+                                to_spawn_count += 1;
+                            }
                         }
                     }
                 },
@@ -219,7 +257,15 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
         const entry_opt = to_spawn_entries[s_idx];
         if (entry_opt == null or !state.workers.canSpawnDecode()) continue;
 
-        spawnCacheDecodeSlot(state, d, entry_opt.?, is_fast_scrolling) catch |err| {
+        const key = state.cache.activeKey(d);
+        const thumb_only = is_fast_scrolling and blk: {
+            if (state.cache.get(key)) |entry| {
+                if (entry.thumbnail == .not_available) break :blk false;
+            }
+            break :blk true;
+        };
+
+        spawnCacheDecodeSlot(state, d, entry_opt.?, thumb_only) catch |err| {
             std.log.err("Failed to spawn decode worker for index {}: {}", .{ d, err });
         };
     }
@@ -358,4 +404,97 @@ test "sysUpdateCache max decode threads telemetry" {
     try sysUpdateCache(ctx);
     try std.testing.expectEqual(state.workers.getMaxConcurrentDecodes(), state.viewer.stats.max_decode_threads);
     try std.testing.expect(state.viewer.stats.max_decode_threads >= 1);
+}
+
+test "sysUpdateCache - directional speculative preloading during fast scrolling" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    // Populate mock image list with 5 images
+    const paths = [_][]const u8{ "img0.png", "img1.png", "img2.png", "img3.png", "img4.png" };
+    for (paths) |p| {
+        const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, p);
+        try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = dup } });
+    }
+    state.viewer.navigation.current_index = 0;
+    state.viewer.navigation.direction = .forward;
+    // Set last_nav_time_ms to now so is_fast_scrolling is true
+    state.viewer.navigation.last_nav_time_ms = sdl.timer.getTicks();
+
+    const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
+
+    // Case 1: Active slot 0 is decoding without thumbnail yet.
+    // In this state, is_active_thumb_ready is false, so NO neighbor should be preloaded.
+    try sysUpdateCache(ctx);
+    try std.testing.expect(state.cache.get(state.cache.activeKey(0)) != null);
+    try std.testing.expect(state.cache.get(state.cache.activeKey(1)) == null);
+    try std.testing.expect(state.cache.get(state.cache.activeKey(4)) == null);
+
+    // Case 2: Active slot 0 receives thumbnail.
+    // In headless mode (no GPU device), .not_available simulates thumbnail phase completion.
+    var cur = state.cache.get(state.cache.activeKey(0)).?;
+    cur.thumbnail = .not_available;
+
+    // Run sysUpdateCache: because direction is .forward, speculative_idx is 1.
+    // Slot 1 should be populated for speculative preloading, but slot 4 (backward neighbor) should NOT!
+    try sysUpdateCache(ctx);
+    try std.testing.expect(state.cache.get(state.cache.activeKey(1)) != null);
+    try std.testing.expect(state.cache.get(state.cache.activeKey(4)) == null);
+
+    // Case 3: Reverse direction to .backward.
+    state.viewer.navigation.direction = .backward;
+    state.viewer.navigation.last_nav_time_ms = sdl.timer.getTicks();
+
+    // Run sysUpdateCache: speculative_idx is now 4 (wrap around from 0).
+    // Slot 4 should be populated for speculative preloading!
+    try sysUpdateCache(ctx);
+    try std.testing.expect(state.cache.get(state.cache.activeKey(4)) != null);
+}
+
+test "sysUpdateCache - synchronous presence probe sets thumbnail state" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    // Add a real PNG (no embedded thumbnail) to navigation list
+    const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, "testfiles/current-run/test_0_init.png");
+    try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = dup } });
+    state.viewer.navigation.current_index = 0;
+
+    const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
+    try sysUpdateCache(ctx);
+
+    const entry = state.cache.get(state.cache.activeKey(0));
+    try std.testing.expect(entry != null);
+    // Because test_0_init.png has no embedded thumbnail, synchronous probe on Frame 1 sets .not_available!
+    try std.testing.expectEqual(state_pkg.ThumbnailState.not_available, entry.?.thumbnail);
+}
+
+test "sysUpdateCache - active image without thumbnail spawns full decode during fast scrolling" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    // Add image with no thumbnail
+    const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, "testfiles/current-run/test_0_init.png");
+    try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = dup } });
+    state.viewer.navigation.current_index = 0;
+    // Fast scrolling is active
+    state.viewer.navigation.last_nav_time_ms = sdl.timer.getTicks();
+
+    const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
+    try sysUpdateCache(ctx);
+
+    const entry = state.cache.get(state.cache.activeKey(0));
+    try std.testing.expect(entry != null);
+    try std.testing.expectEqual(state_pkg.ThumbnailState.not_available, entry.?.thumbnail);
+    // Active slot 0 should have has_thread = true (decode worker was spawned, not skipped!)
+    switch (entry.?.status) {
+        .decoding => |dec| try std.testing.expect(dec.has_thread),
+        else => unreachable,
+    }
 }

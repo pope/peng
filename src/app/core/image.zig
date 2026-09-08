@@ -408,10 +408,12 @@ pub const ProbedImageMetadata = struct {
     /// Image orientation metadata.
     orientation: Orientation = .normal,
     raw_metadata: RawMetadata = .none,
+    /// True if an embedded preview thumbnail was discovered in container headers.
+    has_embedded_thumbnail: bool = false,
 };
 
-/// Synchronously probes container headers for image dimensions and EXIF rotation in < 0.1ms
-/// before spawning background decode workers, eliminating Frame-1 layout jumps.
+/// Synchronously probes container headers for image dimensions, EXIF rotation, and embedded thumbnail presence
+/// in < 0.1ms before spawning background decode workers, eliminating Frame-1 layout jumps and UI flicker.
 pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
     switch (media) {
         .filesystem => |f| {
@@ -434,6 +436,7 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
             const mime_type = detectMimeType(header_buf[0..n], f.path);
             var dims = parseImageDimensions(header_buf[0..n], mime_type);
             var rot: Orientation = .normal;
+            var has_thumb = false;
 
             if (std.mem.eql(u8, mime_type, "image/x-fuji-raf") or (n >= 8 and std.mem.startsWith(u8, header_buf[0..n], "FUJIFILM"))) {
                 // If dimensions not yet found in first 64KB, perform small positional read for metadata block
@@ -452,6 +455,7 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
                 }
                 // Sourced from embedded preview JPEG's EXIF header and fallback dimensions
                 if (exif.extractFujiRafPreviewLocation(header_buf[0..n])) |prev_loc| {
+                    has_thumb = true;
                     const off: usize = @intCast(prev_loc.file_offset);
                     if (off + 4096 <= n) {
                         rot = exif.parseExifOrientation(header_buf[off..n]) orelse .normal;
@@ -470,17 +474,29 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
                         }
                     }
                 }
+            } else if (is_raw_ext or std.mem.startsWith(u8, mime_type, "image/x-")) {
+                rot = exif.parseExifOrientation(header_buf[0..n]) orelse .normal;
+                const raw_cands = exif.extractTiffRawPreviews(header_buf[0..n]);
+                if (raw_cands.thumbnail != null) {
+                    has_thumb = true;
+                }
+            } else if (std.mem.eql(u8, mime_type, "image/jpeg")) {
+                rot = exif.parseExifOrientation(header_buf[0..n]) orelse .normal;
+                if (exif.extractJpegThumbnailLocation(header_buf[0..n])) |_| {
+                    has_thumb = true;
+                }
             } else {
                 rot = exif.parseExifOrientation(header_buf[0..n]) orelse .normal;
             }
 
             const final_dims = dims orelse return null;
-            const is_raw = core_fs.isRawFile(f.path) or std.mem.startsWith(u8, mime_type, "image/x-");
+            const is_raw = is_raw_ext or std.mem.startsWith(u8, mime_type, "image/x-");
 
             return ProbedImageMetadata{
                 .dims = final_dims,
                 .orientation = rot,
                 .raw_metadata = if (is_raw) RawMetadata.init(final_dims.w, final_dims.h) else .none,
+                .has_embedded_thumbnail = has_thumb,
             };
         },
         .archive_entry => |a| {
@@ -513,10 +529,17 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
                     const dims = parseImageDimensions(image_slice, mime_type) orelse return null;
                     const rot = exif.parseExifOrientation(image_slice) orelse .normal;
                     const is_raw = core_fs.isRawFile(a.entry_name) or std.mem.startsWith(u8, mime_type, "image/x-");
+                    var has_thumb = false;
+                    if (std.mem.eql(u8, mime_type, "image/jpeg")) {
+                        if (exif.extractJpegThumbnailLocation(image_slice)) |_| {
+                            has_thumb = true;
+                        }
+                    }
                     return ProbedImageMetadata{
                         .dims = dims,
                         .orientation = rot,
                         .raw_metadata = if (is_raw) RawMetadata.init(dims.w, dims.h) else .none,
+                        .has_embedded_thumbnail = has_thumb,
                     };
                 }
             }
@@ -1807,4 +1830,32 @@ test "detectThumbnailDctPadding - solid black background returns false (no false
     // Because rows 8 and 111 are also black (no step-transition to image content at row 8),
     // it correctly avoids a false-positive DCT snapping detection.
     try std.testing.expect(!detectThumbnailDctPadding(surf, 6000.0, 4000.0));
+}
+
+test "probeMediaMetadata - detects embedded thumbnail presence on RAF" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const media = MediaEntry{
+        .filesystem = .{
+            .path = "Capture/20191103-Emiray Natural Light-0001.RAF",
+        },
+    };
+    if (probeMediaMetadata(io, media)) |meta| {
+        try std.testing.expect(meta.has_embedded_thumbnail);
+        try std.testing.expect(meta.dims.w > 0);
+        try std.testing.expect(meta.dims.h > 0);
+    }
+}
+
+test "probeMediaMetadata - non-thumbnail formats return has_embedded_thumbnail = false" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const media = MediaEntry{
+        .filesystem = .{
+            .path = "testfiles/current-run/test_0_init.png",
+        },
+    };
+    if (probeMediaMetadata(io, media)) |meta| {
+        try std.testing.expect(!meta.has_embedded_thumbnail);
+        try std.testing.expect(meta.dims.w > 0);
+        try std.testing.expect(meta.dims.h > 0);
+    }
 }

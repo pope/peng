@@ -470,6 +470,7 @@ pub const ThumbComponent = struct {
 pub const CacheStatus = union(enum) {
     decoding: struct {
         has_thread: bool = false,
+        start_time_ms: u64 = 0,
     },
     loaded_cpu: CpuSurfaceComponent,
     loaded_gpu: GpuTextureComponent,
@@ -485,9 +486,10 @@ pub const ThumbnailInfo = struct {
     dct_snapped: bool = false,
 };
 
-/// State of a cached image's preview thumbnail (none, unloaded dimensions, or uploaded GPU texture).
+/// State of a cached image's preview thumbnail (none, pending, not available, unloaded dimensions, or uploaded GPU texture).
 pub const ThumbnailState = union(enum) {
     none,
+    pending,
     not_available,
     unloaded: ThumbnailInfo,
     loaded: struct {
@@ -498,7 +500,7 @@ pub const ThumbnailState = union(enum) {
     /// Extracts the thumbnail dimension and upload duration information if present.
     pub fn getInfo(self: ThumbnailState) ?ThumbnailInfo {
         return switch (self) {
-            .none, .not_available => null,
+            .none, .pending, .not_available => null,
             .unloaded => |info| info,
             .loaded => |l| l.info,
         };
@@ -640,6 +642,10 @@ pub const ViewerStats = struct {
     active_image: ActiveImageStats = .{},
 };
 
+/// Grace period threshold in milliseconds before displaying "Loading image..." in the UI.
+/// Prevents text flickering when scrubbing through thumbnails or fast-decoding formats (~2 frames at 60Hz).
+pub const LOADING_GRACE_PERIOD_MS: u64 = 35;
+
 /// Complete read-only UI frame snapshot separating the application update phase from the render phase.
 pub const UiViewModel = struct {
     is_fullscreen: bool,
@@ -658,6 +664,7 @@ pub const UiViewModel = struct {
     palette_reveal: f32 = 1.0,
     thumb_crossfade: f32 = 1.0,
     debug_show_thumb: bool,
+    current_time_ms: u64 = 0,
     stats: ViewerStats = .{},
     render_metrics: UiRenderMetricsSnapshot = .{},
 };
@@ -904,4 +911,24 @@ test "RawMetadata tagged union invariants and constructor" {
     const none_meta: RawMetadata = .none;
     try std.testing.expect(!none_meta.isRaw());
     try std.testing.expect(none_meta.getSensorDims() == null);
+}
+
+test "UiViewModel current_time_ms and CacheStatus.decoding defaults" {
+    var palette = try palette_state.PaletteState.init(std.testing.allocator);
+    defer palette.deinit();
+    const model = UiViewModel{
+        .is_fullscreen = false,
+        .total_images = 0,
+        .current_index = null,
+        .is_loading_files = false,
+        .overlays = .{},
+        .viewport = .{},
+        .palette = &palette,
+        .debug_show_thumb = false,
+    };
+    try std.testing.expectEqual(@as(u64, 0), model.current_time_ms);
+
+    const dec_status: CacheStatus = .{ .decoding = .{} };
+    try std.testing.expectEqual(@as(u64, 0), dec_status.decoding.start_time_ms);
+    try std.testing.expect(!dec_status.decoding.has_thread);
 }
