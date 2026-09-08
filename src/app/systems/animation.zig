@@ -1,7 +1,11 @@
-const std = @import("std");
 const app_state = @import("../state.zig");
+const root = @import("root.zig");
+const sdl = @import("sdl");
+const state_pkg = @import("state");
+const std = @import("std");
+
 const AppState = app_state.AppState;
-const FrameContext = @import("root.zig").FrameContext;
+const FrameContext = root.FrameContext;
 
 /// System Pass: Update animation channels and resolve settled transitions.
 ///
@@ -15,6 +19,17 @@ pub fn sysUpdateAnimations(ctx: FrameContext) void {
     if (anim.hasActiveAnimations()) {
         const delta = @max(@as(f32, @floatCast(ctx.delta_time_ms)), 0.0);
         anim.tick(delta);
+    }
+
+    // Check if transient title overlay auto-hide timeout has expired
+    if (!state.viewer.ui.overlays.show_title and state.viewer.ui.title_auto_hide_timeout_ms > 0) {
+        const now = sdl.timer.getTicks();
+        if (now >= state.viewer.ui.title_auto_hide_timeout_ms) {
+            state.viewer.ui.title_auto_hide_timeout_ms = 0;
+            const progress = anim.get(.title_overlay);
+            const dur = @max(state_pkg.DURATION_TITLE_OVERLAY_CLOSE_MS * progress, 30.0);
+            anim.start(.title_overlay, 0.0, dur, .ease_out_quad);
+        }
     }
 
     // Check if palette close animation has finished settling to 0.0 (even if already settled)
@@ -141,3 +156,36 @@ test "sysUpdateAnimations thumb_crossfade lifecycle" {
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), state.viewer.animations.get(.thumb_crossfade), 0.001);
     try std.testing.expect(!state.viewer.animations.isActive(.thumb_crossfade));
 }
+
+test "sysUpdateAnimations title_overlay auto-hide timeout and fade-out" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    const now = sdl.timer.getTicks();
+
+    // Start open animation and set auto-hide timeout in the past
+    state.viewer.animations.start(.title_overlay, 1.0, state_pkg.DURATION_TITLE_OVERLAY_OPEN_MS, .ease_out_quad);
+    state.viewer.animations.settleAll();
+    state.viewer.ui.title_auto_hide_timeout_ms = now -| 10;
+
+    sysUpdateAnimations(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+    });
+
+    try std.testing.expectEqual(@as(u64, 0), state.viewer.ui.title_auto_hide_timeout_ms);
+    try std.testing.expect(state.viewer.animations.isActive(.title_overlay));
+
+    // Tick through close duration
+    sysUpdateAnimations(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .delta_time_ms = state_pkg.DURATION_TITLE_OVERLAY_CLOSE_MS,
+    });
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), state.viewer.animations.get(.title_overlay), 0.001);
+    try std.testing.expect(!state.viewer.hasActiveAnimation());
+}
+

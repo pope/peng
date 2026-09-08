@@ -78,6 +78,12 @@ pub const ThumbAction = enum {
     toggle,
 };
 
+pub const TitleAction = enum {
+    enable,
+    disable,
+    toggle,
+};
+
 pub const IpcCommand = union(enum) {
     zoom: f32,
     pan: struct { x: f32, y: f32 },
@@ -85,6 +91,7 @@ pub const IpcCommand = union(enum) {
     filter: TextureScaleMode,
     scale: intents.ScaleMode,
     manga: bool,
+    title: TitleAction,
     palette: PaletteTarget,
     thumb: ThumbAction,
     debug: bool,
@@ -103,6 +110,11 @@ pub const IpcCommand = union(enum) {
             .filter => |mode| return .{ .set_filter = mode },
             .scale => |mode| return .{ .set_scale = mode },
             .manga => |val| return .{ .set_manga_mode = val },
+            .title => |action| switch (action) {
+                .enable => return .{ .set_title = true },
+                .disable => return .{ .set_title = false },
+                .toggle => return .toggle_title,
+            },
             .palette => |target| {
                 const mode: intents.PaletteMode = switch (target.kind) {
                     .actions => .actions,
@@ -179,6 +191,20 @@ pub const IpcCommand = union(enum) {
             } else {
                 return error.InvalidArgument;
             }
+        } else if (std.mem.eql(u8, cmd, "title")) {
+            if (it.next()) |val| {
+                if (std.mem.eql(u8, val, "true") or std.mem.eql(u8, val, "enable") or std.mem.eql(u8, val, "on")) {
+                    return .{ .title = .enable };
+                } else if (std.mem.eql(u8, val, "false") or std.mem.eql(u8, val, "disable") or std.mem.eql(u8, val, "off")) {
+                    return .{ .title = .disable };
+                } else if (std.mem.eql(u8, val, "toggle")) {
+                    return .{ .title = .toggle };
+                } else {
+                    return error.InvalidArgument;
+                }
+            } else {
+                return .{ .title = .toggle };
+            }
         } else if (std.mem.eql(u8, cmd, "palette")) {
             const pal_name = it.next() orelse return error.MissingArgument;
             var kind: PaletteKind = undefined;
@@ -245,6 +271,33 @@ pub fn respondOk(io: std.Io, stream: std.Io.net.Stream) !void {
     stream.close(io);
 }
 
+/// Reads bytes from `socket` with a timeout until '\n' is encountered or the buffer fills.
+/// Returns the slice up to '\n', or error.Timeout / error.BufferOverflow.
+pub fn readLineTimeout(
+    socket: *const std.Io.net.Socket,
+    io: std.Io,
+    buf: []u8,
+    timeout_duration: std.Io.Clock.Duration,
+) !?[]const u8 {
+    var len: usize = 0;
+    while (len < buf.len) {
+        const msg = socket.receiveTimeout(io, buf[len..], .{ .duration = timeout_duration }) catch |err| switch (err) {
+            error.Timeout => return error.Timeout,
+            else => return err,
+        };
+        if (msg.data.len == 0) {
+            if (len == 0) return null;
+            return buf[0..len];
+        }
+        if (std.mem.indexOfScalar(u8, msg.data, '\n')) |newline_offset| {
+            const line_len = len + newline_offset;
+            return buf[0..line_len];
+        }
+        len += msg.data.len;
+    }
+    return error.BufferOverflow;
+}
+
 test "IpcCommand parsing" {
     const cmd_zoom = try IpcCommand.parse("zoom 2.5");
     try std.testing.expectEqual(@as(f32, 2.5), cmd_zoom.zoom);
@@ -265,5 +318,57 @@ test "IpcCommand parsing" {
     const cmd_next = try IpcCommand.parse("next");
     try std.testing.expectEqual(IpcCommand.next, cmd_next);
 
+    const cmd_title = try IpcCommand.parse("title true");
+    try std.testing.expectEqual(TitleAction.enable, cmd_title.title);
+    try std.testing.expectEqual(intents.AppIntent{ .set_title = true }, cmd_title.toIntent().?);
+
+    const cmd_title_toggle = try IpcCommand.parse("title");
+    try std.testing.expectEqual(TitleAction.toggle, cmd_title_toggle.title);
+    try std.testing.expectEqual(intents.AppIntent.toggle_title, cmd_title_toggle.toIntent().?);
+
+    const cmd_title_toggle_word = try IpcCommand.parse("title toggle");
+    try std.testing.expectEqual(TitleAction.toggle, cmd_title_toggle_word.title);
+    try std.testing.expectEqual(intents.AppIntent.toggle_title, cmd_title_toggle_word.toIntent().?);
+
     try std.testing.expectError(error.UnknownCommand, IpcCommand.parse("invalid_command"));
+}
+
+test "readLineTimeout - success and timeout" {
+    if (builtin.os.tag == .windows) return;
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const socket_path = "/tmp/peng_test_ipc_timeout.sock";
+    std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, socket_path) catch {};
+    defer std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, socket_path) catch {};
+
+    const addr = try std.Io.net.UnixAddress.init(socket_path);
+    var server = try addr.listen(io, .{});
+    defer server.deinit(io);
+
+    const client = try addr.connect(io);
+    defer client.close(io);
+
+    var accepted = try server.accept(io);
+    defer accepted.close(io);
+
+    // Test timeout when no data is sent
+    var buf: [128]u8 = undefined;
+    const short_dur: std.Io.Clock.Duration = .{
+        .raw = std.Io.Duration.fromMilliseconds(20),
+        .clock = .awake,
+    };
+    try std.testing.expectError(error.Timeout, readLineTimeout(&client.socket, io, &buf, short_dur));
+
+    // Test successful read
+    var write_buf: [64]u8 = undefined;
+    var writer = accepted.writer(io, &write_buf);
+    try writer.interface.writeAll("zoom 2.0\n");
+    try writer.interface.flush();
+
+    const long_dur: std.Io.Clock.Duration = .{
+        .raw = std.Io.Duration.fromSeconds(2),
+        .clock = .awake,
+    };
+    const line = (try readLineTimeout(&client.socket, io, &buf, long_dur)) orelse unreachable;
+    try std.testing.expectEqualStrings("zoom 2.0", line);
 }

@@ -205,6 +205,10 @@ fn initAppGraphicsAndState(init: std.process.Init) !?AppGraphicsAndState {
         .io = init.io,
     };
     state.viewer.ui.overlays.enable_blur = parsed.enable_blur;
+    state.viewer.ui.overlays.show_title = parsed.show_title;
+    if (parsed.show_title) {
+        state.viewer.animations.setImmediate(.title_overlay, 1.0);
+    }
     errdefer state.deinit();
     try state.ensureInitialCapacities();
 
@@ -321,12 +325,12 @@ pub fn main(init: std.process.Init) !void {
 test {
     std.testing.refAllDecls(app.core.exif);
     std.testing.refAllDecls(app_config.cli);
+    std.testing.refAllDecls(ipc);
     _ = app;
     _ = ui;
     _ = state_pkg;
     _ = sdl;
     _ = viewer;
-    _ = ipc;
     _ = input;
     _ = intents;
 }

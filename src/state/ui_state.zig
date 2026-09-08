@@ -14,6 +14,7 @@ pub const ScreenshotMode = union(enum) {
 pub const UiState = struct {
     palette: palette_state.PaletteState,
     overlays: OverlayState = .{},
+    title_auto_hide_timeout_ms: u64 = 0,
     metrics: UiRenderMetrics = .{},
     screenshot_mode: ScreenshotMode = .idle,
 

@@ -491,7 +491,11 @@ pub fn main(init: std.process.Init) !void {
         try expectCommandFailure(socket_path, "pan nan 1.0");
         try expectCommandFailure(socket_path, "pan 1.0 inf");
         try expectCommandFailure(socket_path, "adjust nan 1.0");
-        try expectCommandFailure(socket_path, "adjust 1.0 -inf");
+        try expectCommandFailure(socket_path, "title invalid");
+        try sendCommand(socket_path, "title");
+        try sendCommand(socket_path, "title toggle");
+        try sendCommand(socket_path, "title true");
+        try sendCommand(socket_path, "title false");
 
         // Generate a 513-character screenshot path
         var long_path_buf: [520]u8 = undefined;

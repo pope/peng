@@ -209,6 +209,7 @@ pub const ParsedArgs = struct {
     headless: bool = false,
     ipc_enabled: bool = false,
     enable_blur: bool = true,
+    show_title: bool = false,
     help: bool = false,
 
     /// Frees allocated memory associated with parsed command-line arguments.
@@ -246,6 +247,7 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
     var headless = false;
     var ipc_enabled = false;
     var enable_blur = true;
+    var show_title = false;
     var help = false;
 
     while (args_it.next()) |arg| {
@@ -258,6 +260,7 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
                 .ipc => ipc_enabled = true,
                 .blur => enable_blur = true,
                 .no_blur => enable_blur = false,
+                .title => show_title = true,
                 .scale => {
                     if (args_it.next()) |val| {
                         if (std.meta.stringToEnum(ScaleMode, val)) |mode| {
@@ -286,6 +289,7 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
         .headless = headless,
         .ipc_enabled = ipc_enabled,
         .enable_blur = enable_blur,
+        .show_title = show_title,
         .help = help,
     };
 }
@@ -401,22 +405,24 @@ test "parseArgsIterator handles blur and other flags" {
     const testing = std.testing;
 
     {
-        var it = SliceIterator{ .slice = &[_][]const u8{ "--no-blur", "--ipc", "--headless", "--test-mode" } };
+        var it = SliceIterator{ .slice = &[_][]const u8{ "--no-blur", "--ipc", "--headless", "--test-mode", "--title" } };
         var parsed = try parseArgsIterator(&it, testing.allocator);
         defer parsed.deinit(testing.allocator);
         try testing.expect(!parsed.enable_blur);
         try testing.expect(parsed.ipc_enabled);
         try testing.expect(parsed.headless);
         try testing.expect(parsed.test_mode);
+        try testing.expect(parsed.show_title);
         try testing.expect(!parsed.help);
     }
 
     {
-        var it = SliceIterator{ .slice = &[_][]const u8{ "--disable-blur", "--enable-ipc" } };
+        var it = SliceIterator{ .slice = &[_][]const u8{ "--disable-blur", "--enable-ipc", "--title-overlay" } };
         var parsed = try parseArgsIterator(&it, testing.allocator);
         defer parsed.deinit(testing.allocator);
         try testing.expect(!parsed.enable_blur);
         try testing.expect(parsed.ipc_enabled);
+        try testing.expect(parsed.show_title);
     }
 
     {
@@ -424,5 +430,6 @@ test "parseArgsIterator handles blur and other flags" {
         var parsed = try parseArgsIterator(&it, testing.allocator);
         defer parsed.deinit(testing.allocator);
         try testing.expect(parsed.enable_blur);
+        try testing.expect(!parsed.show_title);
     }
 }

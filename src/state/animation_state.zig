@@ -6,6 +6,7 @@ pub const EasingType = easing.EasingType;
 pub const AnimationChannel = enum(u8) {
     palette_reveal = 0,
     thumb_crossfade = 1,
+    title_overlay = 2,
 };
 
 pub const CHANNEL_COUNT: usize = @typeInfo(AnimationChannel).@"enum".fields.len;
@@ -14,6 +15,8 @@ pub const CHANNEL_COUNT: usize = @typeInfo(AnimationChannel).@"enum".fields.len;
 pub const DURATION_PALETTE_OPEN_MS: f32 = 140.0;
 pub const DURATION_PALETTE_CLOSE_MS: f32 = 100.0;
 pub const DURATION_THUMB_CROSSFADE_MS: f32 = 120.0;
+pub const DURATION_TITLE_OVERLAY_OPEN_MS: f32 = 140.0;
+pub const DURATION_TITLE_OVERLAY_CLOSE_MS: f32 = 200.0;
 
 /// Structure representing the parameters of an individual animation slot in the MultiArrayList.
 pub const AnimationSlot = struct {
@@ -318,5 +321,36 @@ test "AnimationState settle single channel while other remains active" {
 
     anim.tick(100.0);
     try std.testing.expectApproxEqAbs(@as(f32, 0.5), anim.get(.thumb_crossfade), 0.001);
+    try std.testing.expect(!anim.hasActiveAnimations());
+}
+
+test "AnimationState title_overlay channel transitions" {
+    const allocator = std.testing.allocator;
+    var anim = try AnimationState.init(allocator);
+    defer anim.deinit(allocator);
+
+    // Initial default value is 0.0 (hidden)
+    try std.testing.expectEqual(@as(f32, 0.0), anim.get(.title_overlay));
+    try std.testing.expect(!anim.isActive(.title_overlay));
+
+    // Open transition (0.0 -> 1.0)
+    anim.start(.title_overlay, 1.0, DURATION_TITLE_OVERLAY_OPEN_MS, .ease_out_quad);
+    try std.testing.expect(anim.isActive(.title_overlay));
+    try std.testing.expect(anim.hasActiveAnimations());
+
+    // Advance 50%
+    anim.tick(DURATION_TITLE_OVERLAY_OPEN_MS / 2.0);
+    try std.testing.expect(anim.get(.title_overlay) > 0.4);
+    try std.testing.expect(anim.get(.title_overlay) < 1.0);
+
+    // Settle open
+    anim.tick(DURATION_TITLE_OVERLAY_OPEN_MS / 2.0);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), anim.get(.title_overlay), 0.001);
+    try std.testing.expect(!anim.isActive(.title_overlay));
+
+    // Close transition (1.0 -> 0.0)
+    anim.start(.title_overlay, 0.0, DURATION_TITLE_OVERLAY_CLOSE_MS, .ease_out_quad);
+    anim.tick(DURATION_TITLE_OVERLAY_CLOSE_MS);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), anim.get(.title_overlay), 0.001);
     try std.testing.expect(!anim.hasActiveAnimations());
 }

@@ -256,6 +256,7 @@ pub fn pollFrameInput(
     palette_show: bool,
     non_blocking: bool,
     is_busy: bool,
+    wait_timeout_ms: ?i32,
 ) !FrameInput {
     // Get window sizes and scale
     const win_size = window.getSize();
@@ -281,6 +282,8 @@ pub fn pollFrameInput(
         sdl.events.pollEvent(&event)
     else if (palette_show or is_busy)
         sdl.events.waitEventTimeout(&event, 8)
+    else if (wait_timeout_ms) |timeout|
+        sdl.events.waitEventTimeout(&event, @max(timeout, 1))
     else
         sdl.events.waitEvent(&event);
 

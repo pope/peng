@@ -73,6 +73,16 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
         },
 
         .next_image, .prev_image, .first_image, .last_image, .go_to_image => {
+            const now = sdl.timer.getTicks();
+            const elapsed = now -| nav.last_nav_time_ms;
+            if (nav.image_list.items.len > 0 and nav.last_nav_time_ms > 0 and elapsed < 200) {
+                if (!ui.overlays.show_title) {
+                    ui.title_auto_hide_timeout_ms = now + 1500;
+                    const progress = self.viewer.animations.get(.title_overlay);
+                    const dur = @max(state.DURATION_TITLE_OVERLAY_OPEN_MS * (1.0 - progress), 30.0);
+                    self.viewer.animations.start(.title_overlay, 1.0, dur, .ease_out_quad);
+                }
+            }
             vp.reset();
             _ = switch (intent) {
                 .next_image => if (nav.manga_mode) nav.prevIndex() else nav.nextIndex(),
@@ -119,6 +129,28 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
         .set_info => |val| ui.overlays.show_info = val,
         .toggle_stats => ui.overlays.show_stats = !ui.overlays.show_stats,
         .set_stats => |val| ui.overlays.show_stats = val,
+        .toggle_title => {
+            ui.overlays.show_title = !ui.overlays.show_title;
+            ui.title_auto_hide_timeout_ms = 0;
+            const target: f32 = if (ui.overlays.show_title) 1.0 else 0.0;
+            const progress = self.viewer.animations.get(.title_overlay);
+            const dur: f32 = if (ui.overlays.show_title)
+                @max(state.DURATION_TITLE_OVERLAY_OPEN_MS * (1.0 - progress), 30.0)
+            else
+                @max(state.DURATION_TITLE_OVERLAY_CLOSE_MS * progress, 30.0);
+            self.viewer.animations.start(.title_overlay, target, dur, .ease_out_quad);
+        },
+        .set_title => |val| {
+            ui.overlays.show_title = val;
+            ui.title_auto_hide_timeout_ms = 0;
+            const target: f32 = if (val) 1.0 else 0.0;
+            const progress = self.viewer.animations.get(.title_overlay);
+            const dur: f32 = if (val)
+                @max(state.DURATION_TITLE_OVERLAY_OPEN_MS * (1.0 - progress), 30.0)
+            else
+                @max(state.DURATION_TITLE_OVERLAY_CLOSE_MS * progress, 30.0);
+            self.viewer.animations.start(.title_overlay, target, dur, .ease_out_quad);
+        },
         .toggle_blur => ui.overlays.enable_blur = !ui.overlays.enable_blur,
         .set_blur => |val| ui.overlays.enable_blur = val,
         .toggle_fullscreen => {
@@ -281,3 +313,70 @@ test "rotate_cw, rotate_ccw, and reset_rotation intents" {
     try executeIntent(&app_st, .reset_rotation);
     try testing.expectEqual(@as(f32, 270.0), app_st.viewer.viewport.rotation_angle);
 }
+
+test "toggle_title and set_title intents" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    var threaded = std.Threaded{};
+    const io = threaded.io();
+
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    // Default show_title should be false
+    try testing.expect(!app_st.viewer.ui.overlays.show_title);
+    try testing.expectEqual(@as(f32, 0.0), app_st.viewer.animations.get(.title_overlay));
+
+    // Toggle title on
+    try executeIntent(&app_st, .toggle_title);
+    try testing.expect(app_st.viewer.ui.overlays.show_title);
+    try testing.expect(app_st.viewer.animations.isActive(.title_overlay));
+    app_st.viewer.animations.settleAll();
+    try testing.expectApproxEqAbs(@as(f32, 1.0), app_st.viewer.animations.get(.title_overlay), 0.001);
+
+    // Toggle title off
+    try executeIntent(&app_st, .toggle_title);
+    try testing.expect(!app_st.viewer.ui.overlays.show_title);
+    try testing.expect(app_st.viewer.animations.isActive(.title_overlay));
+    app_st.viewer.animations.settleAll();
+    try testing.expectApproxEqAbs(@as(f32, 0.0), app_st.viewer.animations.get(.title_overlay), 0.001);
+
+    // Explicit set_title
+    try executeIntent(&app_st, .{ .set_title = true });
+    try testing.expect(app_st.viewer.ui.overlays.show_title);
+    app_st.viewer.animations.settleAll();
+    try testing.expectApproxEqAbs(@as(f32, 1.0), app_st.viewer.animations.get(.title_overlay), 0.001);
+
+    try executeIntent(&app_st, .{ .set_title = false });
+    try testing.expect(!app_st.viewer.ui.overlays.show_title);
+    app_st.viewer.animations.settleAll();
+    try testing.expectApproxEqAbs(@as(f32, 0.0), app_st.viewer.animations.get(.title_overlay), 0.001);
+}
+
+test "fast scrubbing triggers title overlay auto-hide" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    var threaded = std.Threaded{};
+    const io = threaded.io();
+
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    const media_item = state.MediaEntry{
+        .filesystem = .{ .path = "test.jpg" },
+    };
+    try app_st.viewer.navigation.image_list.append(allocator, media_item);
+    try app_st.viewer.navigation.image_list.append(allocator, media_item);
+    app_st.viewer.navigation.current_index = 0;
+
+    // Simulate recent navigation within 200ms
+    const now = sdl.timer.getTicks();
+    app_st.viewer.navigation.last_nav_time_ms = now -| 50;
+
+    try executeIntent(&app_st, .next_image);
+
+    // Should have triggered title auto-hide timeout and started animation
+    try testing.expect(app_st.viewer.ui.title_auto_hide_timeout_ms >= now + 1400);
+    try testing.expect(app_st.viewer.animations.isActive(.title_overlay));
+}
+

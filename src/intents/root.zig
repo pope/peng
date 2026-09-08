@@ -143,6 +143,8 @@ pub const AppIntent = union(enum) {
     set_info: bool,
     toggle_stats,
     set_stats: bool,
+    toggle_title,
+    set_title: bool,
     toggle_blur,
     set_blur: bool,
     toggle_fullscreen,

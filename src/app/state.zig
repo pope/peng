@@ -163,6 +163,15 @@ pub const AppState = struct {
         return self.viewer.hasActiveAnimation() or self.viewer.navigation.is_loading_files.load(.acquire) or self.workers.isBusy() or self.viewer.isSlideshowActive();
     }
 
+    /// Returns the remaining millisecond deadline for transient holding timers (e.g. title auto-hide), or null if none active.
+    pub fn getWaitTimeoutMs(self: *const AppState, now: u64) ?i32 {
+        if (!self.viewer.ui.overlays.show_title and self.viewer.ui.title_auto_hide_timeout_ms > 0) {
+            const rem = self.viewer.ui.title_auto_hide_timeout_ms -| now;
+            return @intCast(@min(rem, 2000));
+        }
+        return null;
+    }
+
     /// Reads EXIF orientation from a JPEG file header on disk, returning `null` if unparseable.
     pub fn readJpegExifOrientation(self: *const AppState, path: []const u8) ?state_pkg.Orientation {
         return exif.readJpegExifOrientation(self.io, path);
@@ -310,14 +319,12 @@ pub const AppState = struct {
             },
         }
 
-        const title_bar_h: f32 = if (self.viewer.isFullscreen()) 0.0 else 60.0;
-
         var available_width = win_w;
         if (clay.isDebugModeEnabled()) {
             available_width = @max(available_width - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0);
         }
         const view_w = @max(available_width, 1.0);
-        const view_h = @max(win_h - title_bar_h, 1.0);
+        const view_h = @max(win_h, 1.0);
 
         const dims = view_transform.computeViewDims(raw_w, raw_h, self.viewer.viewport.rotation_angle, view_w, view_h, self.viewer.viewport.fit_mode);
         return dims.base_scale;

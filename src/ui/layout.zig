@@ -82,12 +82,6 @@ pub fn renderFrame(
     const total_images = ui_model.total_images;
 
     // Calculate Image Fitting Layout Boundaries
-    var title_bar_h: f32 = 60.0;
-    const nav_bar_h: f32 = 0.0;
-    if (view_params.is_fullscreen) {
-        title_bar_h = 0;
-    }
-
     var available_width = width;
     if (clay.isDebugModeEnabled()) {
         available_width = @max(width - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0);
@@ -95,7 +89,7 @@ pub fn renderFrame(
 
     const padding: f32 = 0.0;
     const view_w = @max(available_width - padding * 2.0, 1.0);
-    const view_h = @max(height - (title_bar_h + nav_bar_h) - padding * 2.0, 1.0);
+    const view_h = @max(height - padding * 2.0, 1.0);
 
     const dims = computeDrawDims(current_entry, view_w, view_h, view_params.viewport.rotation_angle, view_params.viewport.fit_mode);
     const draw_w = dims.w;
@@ -128,10 +122,9 @@ pub fn renderFrame(
             frame_allocator,
         );
 
-        try renderHeaderBar(
+        try renderTitleOverlay(
             ui_model,
             available_width,
-            title_bar_h,
             frame_allocator,
             measure_data,
         );
@@ -271,14 +264,14 @@ pub fn renderFrame(
     }
 }
 
-fn renderHeaderBar(
+fn renderTitleOverlay(
     ui_model: UiViewModel,
     available_width: f32,
-    title_bar_h: f32,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
 ) !void {
-    if (ui_model.is_fullscreen) return;
+    const progress = ui_model.title_overlay_reveal;
+    if (progress <= 0.001) return;
 
     const raw_title = ui_model.window_title;
 
@@ -304,50 +297,74 @@ fn renderHeaderBar(
         count_str = "Loading images...";
     }
 
-    var right_text_w: f32 = 0.0;
+    var count_w: f32 = 0.0;
     if (count_str) |cstr| {
         var count_cfg = clay.TextElementConfig{
             .font_id = 0,
             .font_size = 12,
         };
-        right_text_w = sdl3MeasureText(cstr, &count_cfg, measure_data).w;
+        count_w = sdl3MeasureText(cstr, &count_cfg, measure_data).w;
     }
 
-    const padding_w = 40.0;
-    const gap_w = 20.0;
-    const max_title_w = @max(available_width - padding_w - right_text_w - gap_w, 40.0);
+    var extra_w: f32 = 0.0;
+    if (ui_model.manga_mode) {
+        extra_w += 48.0; // RTL badge width (padding 12 + border 2 + text ~20) + gap 14
+    }
+    if (count_str != null) {
+        extra_w += count_w + 29.0; // count text + 1px divider + 2x 14px gaps
+    }
 
-    const font_size_u16: u16 = 16;
+    const pill_padding_w: f32 = 36.0; // 18 left + 18 right
+    const max_capsule_w = @max(available_width - 40.0, 100.0);
+    const title_budget = max_capsule_w - pill_padding_w - extra_w;
+    const max_title_w = if (title_budget > 30.0) title_budget else 30.0;
+
+    const font_size_u16: u16 = 15;
     const title_display = truncateFilename(frame_allocator, raw_title, max_title_w, font_size_u16, measure_data);
 
     clay.UI()(.{
-        .id = clay.getElementId("TitleBar"),
+        .id = clay.getElementId("TitleOverlay"),
         .layout = .{
             .sizing = .{
-                .w = .grow,
-                .h = .fixed(title_bar_h),
+                .w = .fit,
+                .h = .fit,
             },
             .direction = .left_to_right,
-            .child_alignment = .{ .x = .left, .y = .center },
-            .child_gap = 12,
+            .child_alignment = .{ .x = .center, .y = .center },
+            .child_gap = 14,
             .padding = .{
-                .left = 20,
-                .right = 20,
+                .left = 18,
+                .right = 18,
+                .top = 8,
+                .bottom = 8,
             },
         },
-        .background_color = theme.crust,
+        .background_color = theme.withAlpha(theme.mantle, 0.75 * progress),
+        .corner_radius = .all(10),
+        .user_data = if (ui_model.overlays.enable_blur) @ptrFromInt(ElementTag.blurred_surface.toInt()) else null,
         .border = .{
-            .width = .{ .bottom = 1 },
-            .color = theme.surface0,
+            .width = .all(1),
+            .color = theme.withAlpha(theme.surface0, 0.7 * progress),
+        },
+        .floating = .{
+            .attach_to = .to_parent,
+            .attach_points = .{
+                .element = .center_bottom,
+                .parent = .center_bottom,
+            },
+            .offset = .{
+                .x = 0,
+                .y = -14,
+            },
+            .z_index = 50,
+            .pointer_capture_mode = .passthrough,
         },
     })({
         clay.text(title_display, .{
-            .color = theme.text,
+            .color = theme.withAlpha(theme.text, progress),
             .font_size = font_size_u16,
             .font_id = 0,
         });
-
-        clay.UI()(.{ .layout = .{ .sizing = .{ .w = .grow, .h = .grow } } })({});
 
         if (ui_model.manga_mode) {
             clay.UI()(.{
@@ -355,15 +372,15 @@ fn renderHeaderBar(
                     .sizing = .{ .w = .fit, .h = .fit },
                     .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
                 },
-                .background_color = theme.crust,
+                .background_color = theme.withAlpha(theme.crust, progress),
                 .corner_radius = .all(4),
                 .border = .{
                     .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-                    .color = theme.peach,
+                    .color = theme.withAlpha(theme.peach, progress),
                 },
             })({
                 clay.text("RTL", .{
-                    .color = theme.peach,
+                    .color = theme.withAlpha(theme.peach, progress),
                     .font_size = 11,
                     .font_id = 0,
                 });
@@ -371,8 +388,15 @@ fn renderHeaderBar(
         }
 
         if (count_str) |cstr| {
+            clay.UI()(.{
+                .layout = .{
+                    .sizing = .{ .w = .fixed(1), .h = .fixed(14) },
+                },
+                .background_color = theme.withAlpha(theme.surface0, progress),
+            })({});
+
             clay.text(cstr, .{
-                .color = theme.subtext0,
+                .color = theme.withAlpha(theme.subtext0, progress),
                 .font_size = 12,
                 .font_id = 0,
             });

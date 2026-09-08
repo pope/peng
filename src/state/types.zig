@@ -317,6 +317,7 @@ pub const ElementTag = enum(usize) {
 pub const OverlayState = struct {
     show_info: bool = false,
     show_stats: bool = false,
+    show_title: bool = false,
     debug_show_thumb: bool = false,
     enable_blur: bool = true,
     info_offset_x: f32 = 20.0,
@@ -663,6 +664,7 @@ pub const UiViewModel = struct {
     palette: *const palette_state.PaletteState,
     palette_reveal: f32 = 1.0,
     thumb_crossfade: f32 = 1.0,
+    title_overlay_reveal: f32 = 0.0,
     debug_show_thumb: bool,
     current_time_ms: u64 = 0,
     stats: ViewerStats = .{},

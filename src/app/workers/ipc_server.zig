@@ -1,8 +1,9 @@
-const std = @import("std");
 const builtin = @import("builtin");
-const ipc = @import("ipc");
 const context = @import("context.zig");
+const ipc = @import("ipc");
 const root = @import("root.zig");
+const std = @import("std");
+
 const WorkerManager = root.WorkerManager;
 
 extern "kernel32" fn GetCurrentProcessId() callconv(std.builtin.CallingConvention.winapi) u32;
@@ -81,9 +82,16 @@ fn runIpcServer(workers: *WorkerManager, gpa: std.mem.Allocator, io: std.Io) !vo
         errdefer client_stream.close(io);
 
         var read_buf: [1024]u8 = undefined;
-        var reader = client_stream.reader(io, &read_buf);
-        const line_opt = reader.interface.takeDelimiter('\n') catch |err| {
-            std.log.err("IPC server read failed: {any}", .{err});
+        const read_timeout: std.Io.Clock.Duration = .{
+            .raw = std.Io.Duration.fromSeconds(2),
+            .clock = .awake,
+        };
+        const line_opt = ipc.readLineTimeout(&client_stream.socket, io, &read_buf, read_timeout) catch |err| {
+            if (err == error.Timeout) {
+                std.log.warn("IPC server client read timed out", .{});
+            } else {
+                std.log.err("IPC server read failed: {any}", .{err});
+            }
             client_stream.close(io);
             continue;
         };
@@ -125,3 +133,4 @@ fn runIpcServer(workers: *WorkerManager, gpa: std.mem.Allocator, io: std.Io) !vo
         context.wakeUpMainThread();
     }
 }
+

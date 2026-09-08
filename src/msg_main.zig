@@ -1,4 +1,5 @@
 const app_config = @import("config");
+const ipc = @import("ipc");
 const std = @import("std");
 
 /// CLI entry point for sending IPC commands to a running Peng instance via Unix domain socket.
@@ -46,8 +47,29 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(1);
     };
 
-    const stream = address.connect(io) catch |err| {
-        std.log.err("Failed to connect to socket {s}: {any}", .{ socket_path, err });
+    const max_connect_attempts = 25; // 25 * 40ms = 1.0s max wait for server socket creation
+    var attempt: usize = 0;
+    const stream = while (attempt < max_connect_attempts) : (attempt += 1) {
+        if (address.connect(io)) |s| {
+            break s;
+        } else |err| switch (err) {
+            error.FileNotFound, error.WouldBlock => {
+                if (attempt + 1 < max_connect_attempts) {
+                    std.Io.sleep(io, std.Io.Duration.fromMilliseconds(40), .awake) catch |sleep_err| {
+                        std.log.debug("Connect retry sleep interrupted: {any}", .{sleep_err});
+                    };
+                    continue;
+                }
+                std.log.err("Failed to connect to socket {s}: {any}", .{ socket_path, err });
+                std.process.exit(1);
+            },
+            else => {
+                std.log.err("Failed to connect to socket {s}: {any}", .{ socket_path, err });
+                std.process.exit(1);
+            },
+        }
+    } else {
+        std.log.err("Failed to connect to socket {s}: Connection timed out", .{socket_path});
         std.process.exit(1);
     };
     defer stream.close(io);
@@ -63,15 +85,23 @@ pub fn main(init: std.process.Init) !void {
     };
 
     var read_buf: [1024]u8 = undefined;
-    var reader = stream.reader(io, &read_buf);
-    const response_opt = reader.interface.takeDelimiter('\n') catch |err| {
-        std.log.err("Failed to read response: {any}", .{err});
+    const timeout_dur: std.Io.Clock.Duration = .{
+        .raw = std.Io.Duration.fromSeconds(15),
+        .clock = .awake,
+    };
+    const response_opt = ipc.readLineTimeout(&stream.socket, io, &read_buf, timeout_dur) catch |err| {
+        if (err == error.Timeout) {
+            std.log.err("Timed out waiting for response from peng ({s})", .{socket_path});
+        } else {
+            std.log.err("Failed to read response: {any}", .{err});
+        }
         std.process.exit(1);
     };
 
     if (response_opt) |response| {
-        std.log.info("{s}", .{response});
-        if (std.mem.startsWith(u8, response, "ERR")) {
+        const trimmed = std.mem.trim(u8, response, " \t\r");
+        std.log.info("{s}", .{trimmed});
+        if (std.mem.startsWith(u8, trimmed, "ERR")) {
             std.process.exit(1);
         }
     } else {
@@ -79,3 +109,4 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(1);
     }
 }
+

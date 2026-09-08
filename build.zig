@@ -241,6 +241,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     msg_exe.root_module.addImport("config", config_module);
+    msg_exe.root_module.addImport("ipc", ipc_module);
     b.installArtifact(msg_exe);
 
     const test_runner_exe = b.addExecutable(.{

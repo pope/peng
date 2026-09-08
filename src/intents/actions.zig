@@ -35,6 +35,7 @@ pub const OptionId = enum {
     scale,
     blur,
     no_blur,
+    title,
     ipc,
     headless,
     test_mode,
@@ -100,6 +101,7 @@ pub const ActionId = enum {
     toggle_info,
     toggle_manga_mode,
     toggle_stats,
+    toggle_title,
     toggle_fullscreen,
     file_finder,
     directory_navigator,
@@ -564,6 +566,29 @@ pub const actions = [_]ActionDef{
             },
         },
     },
+    .{
+        .id = .toggle_title,
+        .title = "Toggle Title Bar Overlay",
+        .shortcut_text = "T",
+        .description = "Toggle floating blurred title bar overlay on top of image",
+        .show_in_palette = true,
+        .shortcuts = &.{.{ .key = .char_t }},
+        .intent = .toggle_title,
+        .cli = &.{
+            .{
+                .id = .title,
+                .target = .main,
+                .long = "--title",
+                .aliases = &.{"--title-overlay"},
+                .description = "Show floating title bar overlay on startup",
+            },
+        },
+        .ipc = .{
+            .name = "title",
+            .args = "<toggle|true|false>",
+            .description = "Toggle or set floating title bar overlay",
+        },
+    },
 
     // --- Non-Palette Capabilities (CLI flags and IPC verbs) ---
     .{
@@ -740,8 +765,8 @@ pub const ipc_commands = blk: {
 test "actions registry projections" {
     const testing = std.testing;
 
-    // Palette count matches original 43 items
-    try testing.expectEqual(@as(usize, 43), palette_action_items.len);
+    // Palette count matches original 43 items + 1 new toggle_title = 44 items
+    try testing.expectEqual(@as(usize, 44), palette_action_items.len);
 
     // Exact index preservation
     try testing.expectEqualStrings("Navigate Directories...", palette_action_items[7].name);
@@ -755,13 +780,14 @@ test "actions registry projections" {
     try testing.expectEqual(total_sc, flat_shortcuts.len);
 
     // CLI options projection
-    try testing.expectEqual(@as(usize, 3), action_cli_options.len);
+    try testing.expectEqual(@as(usize, 4), action_cli_options.len);
     try testing.expectEqual(OptionId.blur, action_cli_options[0].id);
     try testing.expectEqual(OptionId.no_blur, action_cli_options[1].id);
-    try testing.expectEqual(OptionId.scale, action_cli_options[2].id);
+    try testing.expectEqual(OptionId.title, action_cli_options[2].id);
+    try testing.expectEqual(OptionId.scale, action_cli_options[3].id);
 
     // IPC commands projection
-    try testing.expectEqual(@as(usize, 12), ipc_commands.len);
+    try testing.expectEqual(@as(usize, 13), ipc_commands.len);
 }
 
 test "actions registry invariants and consistency" {

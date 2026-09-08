@@ -108,6 +108,7 @@ pub fn updateFrame(
     const cur_win_h = @as(f32, @floatFromInt(cur_win_size.h));
     const window_resized = (app_state.viewer.ui.overlays.last_win_w != 0 and (app_state.viewer.ui.overlays.last_win_w != cur_win_w or app_state.viewer.ui.overlays.last_win_h != cur_win_h));
     const is_busy = app_state.isBusy() or is_current_loading or bg_events_processed or (app_state.viewer.drag_state != .none) or has_unpopulated_cache or window_resized;
+    const wait_timeout_ms = if (!is_busy) app_state.getWaitTimeoutMs(sdl.timer.getTicks()) else null;
     const frame_allocator = frame_arena.allocator();
     const input = try input_pkg.pollFrameInput(
         window,
@@ -117,6 +118,7 @@ pub fn updateFrame(
         app_state.viewer.ui.palette.mode != .inactive,
         parsed_test_mode or parsed_headless,
         is_busy,
+        wait_timeout_ms,
     );
 
     app_state.viewer.ui.overlays.mouse_inside = input.mouse_inside;
@@ -188,6 +190,7 @@ pub fn updateFrame(
         .palette = &app_state.viewer.ui.palette,
         .palette_reveal = app_state.viewer.animations.get(.palette_reveal),
         .thumb_crossfade = app_state.viewer.animations.get(.thumb_crossfade),
+        .title_overlay_reveal = app_state.viewer.animations.get(.title_overlay),
         .debug_show_thumb = app_state.viewer.ui.overlays.debug_show_thumb,
         .current_time_ms = sdl.timer.getTicks(),
         .stats = app_state.viewer.stats,

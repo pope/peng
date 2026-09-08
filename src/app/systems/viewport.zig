@@ -88,11 +88,7 @@ pub fn sysUpdateViewport(ctx: FrameContext, palette_closed_this_frame: bool) voi
 
             const available_width = if (clay.isDebugModeEnabled()) @max(input.win_w - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0) else input.win_w;
             const cx = available_width / 2.0;
-            var title_bar_h: f32 = 60.0;
-            if (state.viewer.isFullscreen()) {
-                title_bar_h = 0;
-            }
-            const cy = title_bar_h + ((input.win_h - title_bar_h) / 2.0);
+            const cy = input.win_h / 2.0;
 
             state.viewer.viewport.zoomAtPoint(new_zoom, focus_x, focus_y, cx * input.scale_x, cy * input.scale_y);
         }

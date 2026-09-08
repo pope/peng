@@ -66,6 +66,8 @@ pub const AnimationState = animation_state.AnimationState;
 pub const DURATION_PALETTE_OPEN_MS = animation_state.DURATION_PALETTE_OPEN_MS;
 pub const DURATION_PALETTE_CLOSE_MS = animation_state.DURATION_PALETTE_CLOSE_MS;
 pub const DURATION_THUMB_CROSSFADE_MS = animation_state.DURATION_THUMB_CROSSFADE_MS;
+pub const DURATION_TITLE_OVERLAY_OPEN_MS = animation_state.DURATION_TITLE_OVERLAY_OPEN_MS;
+pub const DURATION_TITLE_OVERLAY_CLOSE_MS = animation_state.DURATION_TITLE_OVERLAY_CLOSE_MS;
 pub const EasingType = easing.EasingType;
 
 test {
