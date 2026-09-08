@@ -50,34 +50,26 @@
 
 ## 9. Pure System Passes & Top-Level Linear Engine Pipeline (`src/app/systems/`)
 
-- Procedural tick logic, socket command handling, input sampling, slideshow timers, asset uploads, and telemetry MUST be extracted into pure system pass functions accepting `ctx: FrameContext` in `src/app/systems/`, while worker event queue draining is handled by `app.drainWorkerEvents` in `src/app/events.zig`:
-  - `drainWorkerEvents`: Drains worker thread event queues (`state.workers.event_queue`).
-  - `sysExecuteIpcCommands`: Parses and dispatches socket commands (`state.pending_ipc_commands`).
-  - `sysProcessInput`: Maps keyboard input to intents (`state.pending_intents`).
-  - `sysExecuteIntents`: Drains queued `AppIntent` payloads (`state.pending_intents`, executed twice per frame tick: after keyboard input and after palette/slideshow updates).
-  - `sysProcessPaletteInput`: Manages command palette query text, list navigation, and click-outside dismissal.
-  - `sysUpdateViewport`: Handles mouse drag deltas and mouse-wheel zoom-at-cursor calculations.
-  - `sysUpdateSlideshow`: Manages slideshow timer ticks.
-  - `sysProcessAssetUploads`: Handles EXIF orientation and CPU-to-GPU texture uploads.
-  - `sysUpdateCache`: Manages cache slot eviction, spawns decode workers, and performs idle neighbor preloading.
-  - `sysSyncMetrics`: Copies atomic worker counters (`state.workers`), active image GPU telemetry, and cache status into `ViewerStats` (`state.viewer.stats`) once per frame tick.
-- Systems MUST NOT invoke other systems nested inside them.
-- The main frame update in `src/viewer.zig` (`updateFrame` / `runUpdatePhase`) MUST follow the strict top-level unnested engine pipeline:
-  1. Worker Event Ingestion (`drainWorkerEvents` in `updateFrame`)
-  2. Input Polling (`pollFrameInput` in `updateFrame`)
-  3. `runUpdatePhase` Systems Pipeline:
-     a. `sysExecuteIpcCommands(ctx)`
-     b. `sysProcessPaletteInput(ctx)` (typing, item selection, outside clicks -> intents)
-     c. `sysProcessInput(ctx)` (keyboard shortcuts, file drops -> intents)
-     d. `sysProcessUiInteractions(ctx)` (UI close buttons -> intents)
-     e. `sysUpdateViewport(ctx, palette_closed_this_frame)` & `sysUpdateSlideshow(ctx)`
-     f. `sysSyncWindow(ctx)` (window title & display sync)
-     g. `sysExecuteIntents(ctx)` (single-pass execution of all enqueued intents)
-     h. `sysProcessAssetUploads(ctx)`
-     i. `sysUpdateCache(ctx)`
-     j. `sysSyncMetrics(ctx)`
-  4. Clay UI Layout & Pointer Updates
-  5. GPU Execution Pass & Frame Presentation
+- **System Pass Encapsulation**: Procedural tick logic, socket command handling, input sampling, slideshow timers, asset uploads, and telemetry MUST be extracted into pure system pass functions accepting `ctx: FrameContext` in `src/app/systems/`. Worker event queue draining is handled by `app.drainWorkerEvents` in `src/app/events.zig`.
+- **Zero Inter-System Calls**: Systems MUST NOT invoke other systems nested inside them. Communication between systems occurs exclusively via `AppState` data fields or discrete `AppIntent` payloads pushed to `state.pending_intents`.
+- **Single-Pass Intent Execution**: All discrete user interactions and socket commands across the entire frame tick (IPC commands, palette actions, keyboard shortcuts, overlay close buttons, and slideshow ticks) accumulate into `state.pending_intents`. They are drained and dispatched in a single batch pass via `sysExecuteIntents(ctx)` immediately following window synchronization and before asset uploads.
+- **Authoritative Frame Update Pipeline**: The frame update in `src/viewer.zig` (`updateFrame` / `runUpdatePhase`) MUST follow the strict top-level unnested engine pipeline:
+  1. **Worker Event Ingestion** (`drainWorkerEvents` in `updateFrame`)
+  2. **Input Polling** (`pollFrameInput` in `updateFrame`)
+  3. **`runUpdatePhase` Sequential Systems Pipeline**:
+     a. `sysUpdateAnimations(ctx)`: Ticks active SoA animation channels forward by `delta_time_ms`.
+     b. `sysExecuteIpcCommands(ctx)`: Parses and dispatches IPC socket commands into `pending_intents`.
+     c. `sysProcessPaletteInput(ctx)`: Handles command palette text typing, list selection, and click-outside dismissal -> `pending_intents`.
+     d. `sysProcessInput(ctx, palette_closed_this_frame)`: Maps keyboard shortcuts and file drop events into `pending_intents`.
+     e. `sysProcessUiInteractions(ctx)`: Resolves pointer hover and click events for overlay close buttons -> `pending_intents`.
+     f. `sysUpdateViewport(ctx, palette_closed_this_frame)` & `sysUpdateSlideshow(ctx)`: Handles mouse pan/zoom deltas and slideshow timers.
+     g. `sysSyncWindow(ctx)`: Synchronizes OS window title and display mode/state.
+     h. `sysExecuteIntents(ctx)`: Single-pass batch execution of all enqueued `AppIntent` payloads.
+     i. `sysProcessAssetUploads(ctx)`: Handles EXIF orientation transformations and CPU-to-GPU texture uploads.
+     j. `sysUpdateCache(ctx)`: Manages cache slot eviction, spawns decode workers, and performs idle neighbor preloading.
+     k. `sysSyncMetrics(ctx)`: Snapshots atomic worker counters, active image GPU telemetry, and cache status into `ViewerStats` (`state.viewer.stats`).
+  4. **Clay UI Layout & Pointer Updates**
+  5. **GPU Execution Pass & Frame Presentation**
 
 ## 10. Worker Thread Isolation, Telemetry (`ViewerStats`), & Cache Epochs
 

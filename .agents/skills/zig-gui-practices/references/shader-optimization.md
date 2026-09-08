@@ -41,11 +41,18 @@ ______________________________________________________________________
 
 - **`#pragma unroll` Directives**:
   Annotate GLSL spatial loops with `#pragma unroll` to instruct `glslangValidator` to inline loop iterations into SPIR-V bytecodes, keeping filter weights in GPU scalar registers without stack memory spilling.
-- **Compiler Optimization Flags**:
-  Compile shaders in `build.zig` with `glslangValidator -V -Os` to enable SPIR-V size, dead-code elimination, and instruction folding passes:
+- **Compiler Optimization Flags & Cross-Compilation**:
+  Compile shaders in `build.zig` using `glslangValidator -V -Os` for SPIR-V optimization, followed by `spirv-cross --msl` to generate Metal Shading Language (`.msl`) bytecode for Apple Silicon/macOS targets. Shaders reside under `src/ui/shaders/`:
   ```zig
-  const vert_cmd = b.addSystemCommand(&.{ "glslangValidator", "-V", "-Os", "-S", "vert", "src/shaders/vert.glsl", "-o", "src/shaders/vert.spv" });
-  const frag_cmd = b.addSystemCommand(&.{ "glslangValidator", "-V", "-Os", "-S", "frag", "src/shaders/frag.glsl", "-o", "src/shaders/frag.spv" });
+  const spv_cmd = b.addSystemCommand(&.{ "glslangValidator", "-V", "-Os", "-S", def.stage });
+  spv_cmd.addFileArg(b.path(b.fmt("src/ui/shaders/{s}", .{def.src_name})));
+  spv_cmd.addArg("-o");
+  const spv_out = spv_cmd.addOutputFileArg(b.fmt("{s}.spv", .{def.out_name}));
+
+  const msl_cmd = b.addSystemCommand(&.{ "spirv-cross" });
+  msl_cmd.addFileArg(spv_out);
+  msl_cmd.addArgs(&.{ "--msl", "--output" });
+  const msl_out = msl_cmd.addOutputFileArg(b.fmt("{s}.msl", .{def.out_name}));
   ```
 
 ______________________________________________________________________
@@ -64,7 +71,7 @@ ______________________________________________________________________
 
 ## 5. Dual Lanczos3 Filter Formulations: Exact Trig vs. Horner Spline
 
-To balance absolute mathematical precision and maximum GPU ALU throughput, `src/ui/shaders/frag.glsl` provides two 36-tap ($6 \\times 6$) Lanczos3 implementations:
+To balance absolute mathematical precision and maximum GPU ALU throughput, `src/ui/shaders/image.frag.glsl` provides two 36-tap ($6 \\times 6$) Lanczos3 implementations:
 
 ### 1. Analytical Single-Sine Reduction (`lanczos3`, scale mode 4)
 

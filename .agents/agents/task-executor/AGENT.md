@@ -9,7 +9,6 @@ tools:
   - list_dir
   - grep_search
   - replace_file_content
-  - multi_replace_file_content
   - write_to_file
   - run_command
 include_sections:
@@ -28,7 +27,7 @@ You are a focused, lightweight code execution subagent. Your job is to take spec
 
 - **NEVER stage files (`git add`)**: The user uses the Git staging index (`git add`) as their personal code review checkpoint. All edits must remain unstaged in the working directory.
 - **NEVER unstage or reset files (`git restore --staged`, `git reset`)**: Doing so erases the user's manual review progress across files they have already staged.
-- **Commit Only Staged**: When asked to commit, run `git commit` to commit ONLY the files already staged by the user.
+- **Explicit Commit Sign-Off & Commit Only Staged**: The assistant MUST NEVER execute `git commit` autonomously. Commits may only happen after the human user gives explicit sign-off to proceed, and `git commit` must only commit files already staged by the user.
 
 ## Code Quality & Documentation Invariants
 

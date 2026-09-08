@@ -3,7 +3,7 @@ name: zig-gui-animations
 description: >-
   Architectural patterns and implementation recipes for high-performance GUI animations in Zig, Clay UI, and SDL3 GPU.
   Trigger immediately for:
-  - DOD Animation State: MultiArrayList SoA layout, channel slots, bitmask tracking, zero-allocation frame ticks.
+  - DOD Animation State: flat static SoA arrays, ChannelDescriptor table, bitmask tracking, zero-allocation lifecycle.
   - Easing & Curves: normalized time evaluation, NaN guards, proportional retargeting/interruption duration math.
   - GPU Text Alpha Blitting: RGB-only text texture caching, vertex color alpha modulation, zero font re-rasterization.
   - Clay UI Transitions: hierarchical alpha scaling, modal dissolve animations, and input decoupling during dismissal.
@@ -19,38 +19,43 @@ ______________________________________________________________________
 
 ## 1. Data-Oriented Animation Engine (DOD)
 
-### MultiArrayList Structure-of-Arrays (SoA) Layout
+### Flat Static Structure-of-Arrays (SoA) Layout
 
-Store animation parameters in contiguous parallel arrays rather than an Array of Structures (AoS). This packs simulation fields (`value`, `start_val`, `target_val`, `elapsed_ms`, `duration_ms`, `easing`) into CPU cache lines.
+Store animation parameters in contiguous parallel static arrays rather than an Array of Structures (AoS) or dynamic list. This packs simulation fields (`values`, `start_vals`, `target_vals`, `elapsed_ms`, `durations_ms`, `easings`) into cache lines without any heap allocations.
 
 ```zig
-pub const AnimationSlot = struct {
-    value: f32,
-    start_val: f32,
-    target_val: f32,
-    elapsed_ms: f32,
-    duration_ms: f32,
-    easing: EasingType,
+pub const MAX_CHANNELS: usize = 32;
+
+pub const ChannelDescriptor = struct {
+    default_open_duration_ms: f32,
+    default_close_duration_ms: f32,
+    open_easing: EasingType,
+    close_easing: EasingType,
+    default_value: f32 = 0.0,
 };
 
 pub const AnimationState = struct {
-    slots: std.MultiArrayList(AnimationSlot),
+    values: [MAX_CHANNELS]f32 = initValues(),
+    start_vals: [MAX_CHANNELS]f32 = initValues(),
+    target_vals: [MAX_CHANNELS]f32 = initValues(),
+    elapsed_ms: [MAX_CHANNELS]f32 = [_]f32{0.0} ** MAX_CHANNELS,
+    durations_ms: [MAX_CHANNELS]f32 = [_]f32{0.0} ** MAX_CHANNELS,
+    easings: [MAX_CHANNELS]EasingType = [_]EasingType{.linear} ** MAX_CHANNELS,
     active_mask: u32 = 0,
-    allocator: std.mem.Allocator,
     // ...
 };
 ```
 
 ### Key DOD Rules:
 
-1. **Contiguous Parallel Slices**: Access columns via `self.slots.items(.value)[idx]`.
+1. **Zero Runtime Allocations**: Pre-sized flat arrays total 676 bytes. Initialization and per-frame methods (`tick`, `get`, `open`, `close`, `trigger`, `settleAll`) require **zero heap allocations**.
 2. **Bitmask Active Tracking**: Use a single integer bitmask (`active_mask: u32`) where bit $i$ indicates whether channel $i$ is actively animating. This enables $O(1)$ zero-branch checks for event loop wakeups:
    ```zig
    pub inline fn hasActiveAnimations(self: *const AnimationState) bool {
        return self.active_mask != 0;
    }
    ```
-3. **Zero Runtime Allocations**: Pre-allocate all channel slots during `init()` (`slots.ensureTotalCapacity(allocator, CHANNEL_COUNT)`). Per-frame methods (`tick`, `get`, `start`, `settle`) MUST NEVER allocate heap memory.
+3. **Compile-Time Channel Descriptors**: Static descriptor table `CHANNEL_DESCRIPTORS` maps each `AnimationChannel` to default open/close durations, easings, and base values.
 4. **Adaptive Event Loop Sleeping**: Integrate `hasActiveAnimations()` into `AppState.isBusy()`. When animations run, the loop ticks at 120Hz; when settled, it drops to 0% CPU blocking wait (`waitEvent`).
 
 ______________________________________________________________________
@@ -76,12 +81,17 @@ pub inline fn eval(self: EasingType, t: f32) f32 {
 
 ### Proportional Interruption Scaling
 
-When reversing or interrupting an animation mid-flight, scale the duration by remaining progress so short travels don't feel sluggish:
+When reversing or interrupting an animation mid-flight, scale the duration by remaining progress so short travels don't feel sluggish. The built-in `open` and `close` methods handle this automatically:
 
 ```zig
-const progress = animations.get(.palette_reveal);
-const duration = @max(DURATION_PALETTE_CLOSE_MS * progress, 30.0);
-animations.start(.palette_reveal, 0.0, duration, .ease_out_quad);
+// In AnimationState:
+pub fn close(self: *AnimationState, channel: AnimationChannel) void {
+    const desc = getDescriptor(channel);
+    const cur = self.get(channel);
+    if (cur <= 0.0) return;
+    const dur = desc.default_close_duration_ms * cur;
+    self.start(channel, 0.0, dur, desc.close_easing);
+}
 ```
 
 ______________________________________________________________________

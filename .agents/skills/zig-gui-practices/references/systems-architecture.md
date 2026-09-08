@@ -8,16 +8,17 @@ All system functions under `src/app/systems/` in `peng-sys` must strictly comply
   - Systems run exclusively during Phase 2 (`runUpdatePhase`) of the 3-phase frame loop tick in `src/viewer.zig` (`Worker Ingestion` -> `Update Phase (runUpdatePhase)` -> `Render Phase`).
   - Never add out-of-band system calls inside state mutation methods (`AppState`) or input event handlers.
   - The system passes execute sequentially in deterministic order:
-    01. `sysExecuteIpcCommands(ctx)`: Ingests & dispatches IPC socket commands -> `pending_intents`.
-    02. `sysProcessPaletteInput(ctx)`: Handles command palette query, item selection & click-outside -> `pending_intents`.
-    03. `sysProcessInput(ctx, palette_closed)`: Maps keyboard input & file drop events -> `pending_intents`.
-    04. `sysProcessUiInteractions(ctx)`: Resolves pointer hover/click interactions for UI close buttons -> `pending_intents`.
-    05. `sysUpdateViewport(ctx, palette_closed)` & `sysUpdateSlideshow(ctx)`: Updates motion deltas & slideshow timers -> `pending_intents`.
-    06. `sysSyncWindow(ctx)`: Synchronizes OS window title and display fullscreen/state.
-    07. `sysExecuteIntents(ctx)`: Single-pass execution of all enqueued discrete intents.
-    08. `sysProcessAssetUploads(ctx)`: Performs EXIF orientation & GPU texture uploads.
-    09. `sysUpdateCache(ctx)`: Manages slot eviction, decodes & performs idle neighbor preloading.
-    10. `sysSyncMetrics(ctx)`: Synchronizes telemetry & stats for Nerds overlay.
+    01. `sysUpdateAnimations(ctx)`: Ticks active SoA animation channels forward by `delta_time_ms`.
+    02. `sysExecuteIpcCommands(ctx)`: Ingests & dispatches IPC socket commands -> `pending_intents`.
+    03. `sysProcessPaletteInput(ctx)`: Handles command palette query, item selection & click-outside -> `pending_intents`.
+    04. `sysProcessInput(ctx, palette_closed)`: Maps keyboard input & file drop events -> `pending_intents`.
+    05. `sysProcessUiInteractions(ctx)`: Resolves pointer hover/click interactions for UI close buttons -> `pending_intents`.
+    06. `sysUpdateViewport(ctx, palette_closed)` & `sysUpdateSlideshow(ctx)`: Updates motion deltas & slideshow timers -> `pending_intents`.
+    07. `sysSyncWindow(ctx)`: Synchronizes OS window title and display fullscreen/state.
+    08. `sysExecuteIntents(ctx)`: Single-pass execution of all enqueued discrete intents.
+    09. `sysProcessAssetUploads(ctx)`: Performs EXIF orientation & GPU texture uploads.
+    10. `sysUpdateCache(ctx)`: Manages slot eviction, decodes & performs idle neighbor preloading.
+    11. `sysSyncMetrics(ctx)`: Synchronizes telemetry & stats for Nerds overlay.
 
 ______________________________________________________________________
 

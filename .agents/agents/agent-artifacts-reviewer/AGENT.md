@@ -11,7 +11,6 @@ tools:
   - read_url_content
   - search_web
   - replace_file_content
-  - multi_replace_file_content
   - write_to_file
   - run_command
   - manage_task

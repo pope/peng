@@ -121,7 +121,7 @@ ______________________________________________________________________
 
 ______________________________________________________________________
 
-## 4. Content-Adaptive Embedded Thumbnail Crop Detection & SIMD Analysis
+## 6. Content-Adaptive Embedded Thumbnail Crop Detection & SIMD Analysis
 
 - **Camera Hardware DCT Variance**: In-camera preview JPEG encoders vary by camera model and firmware:
   - *8px DCT Block Snapped*: Fujifilm RAF, Ricoh GR IIIx JPEG pad container letterbox/pillarbox margins to 8-pixel DCT block boundaries.
