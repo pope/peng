@@ -460,7 +460,7 @@ test "sysUpdateCache - synchronous presence probe sets thumbnail state" {
     defer state.deinit();
 
     // Add a real PNG (no embedded thumbnail) to navigation list
-    const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, "testfiles/golden-screenshots/test_0_init.png");
+    const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, "testfiles/golden-screenshots/init.png");
     try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = dup } });
     state.viewer.navigation.current_index = 0;
 
@@ -480,7 +480,7 @@ test "sysUpdateCache - active image without thumbnail spawns full decode during 
     defer state.deinit();
 
     // Add image with no thumbnail
-    const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, "testfiles/golden-screenshots/test_0_init.png");
+    const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, "testfiles/golden-screenshots/init.png");
     try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = dup } });
     state.viewer.navigation.current_index = 0;
     // Fast scrolling is active

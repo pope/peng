@@ -180,6 +180,48 @@ fn expectCommandFailure(socket_path: []const u8, command: []const u8) !void {
     }
 }
 
+fn captureAndVerify(
+    gpa: std.mem.Allocator,
+    socket_path: []const u8,
+    base_dir: []const u8,
+    run_dir: []const u8,
+    run_name: []const u8,
+    baseline_name: []const u8,
+    update_baselines: bool,
+    max_tolerance_pct: f64,
+) !bool {
+    if (update_baselines) {
+        const base_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ base_dir, baseline_name });
+        defer gpa.free(base_path);
+        const cmd = try std.fmt.allocPrint(gpa, "screenshot {s}", .{base_path});
+        defer gpa.free(cmd);
+        try sendCommand(socket_path, cmd);
+        return false;
+    }
+
+    const run_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ run_dir, run_name });
+    defer gpa.free(run_path);
+    const cmd = try std.fmt.allocPrint(gpa, "screenshot {s}", .{run_path});
+    defer gpa.free(cmd);
+    try sendCommand(socket_path, cmd);
+
+    const base_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ base_dir, baseline_name });
+    defer gpa.free(base_path);
+    const base_path_z = try gpa.dupeZ(u8, base_path);
+    defer gpa.free(base_path_z);
+
+    const run_path_z = try gpa.dupeZ(u8, run_path);
+    defer gpa.free(run_path_z);
+
+    const diff_path = try std.fmt.allocPrint(gpa, "{s}/diff_{s}", .{ run_dir, run_name });
+    defer gpa.free(diff_path);
+    const diff_path_z = try gpa.dupeZ(u8, diff_path);
+    defer gpa.free(diff_path_z);
+
+    const res = try compareScreenshots(base_path_z, run_path_z, diff_path_z, max_tolerance_pct);
+    return res.pct > max_tolerance_pct;
+}
+
 /// Visual regression and integration test harness runner that executes automated IPC test sequences and compares screenshots against goldens.
 pub fn main(init: std.process.Init) !void {
     global_io = init.io;
@@ -300,188 +342,115 @@ pub fn main(init: std.process.Init) !void {
 
     var steps_with_discrepancies: usize = 0;
 
-    // 0. Initial Render
+    // Initial Render
     {
         try sendCommand(socket_path, "wait_load");
-        const capture_path = try std.fmt.allocPrint(gpa, "{s}/test_0_init.png", .{if (update_baselines) base_dir else run_dir});
-        defer gpa.free(capture_path);
-        const cmd = try std.fmt.allocPrint(gpa, "screenshot {s}", .{capture_path});
-        defer gpa.free(cmd);
-        try sendCommand(socket_path, cmd);
-        if (!update_baselines) {
-            const res = try compareScreenshots(
-                base_dir ++ "/test_0_init.png",
-                run_dir ++ "/test_0_init.png",
-                run_dir ++ "/diff_test_0_init.png",
-                max_tolerance_pct,
-            );
-            if (res.pct > max_tolerance_pct) steps_with_discrepancies += 1;
+        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "init.png", "init.png", update_baselines, max_tolerance_pct)) {
+            steps_with_discrepancies += 1;
         }
     }
 
-    // 1. Zoom
+    // Zoom & Pan
     {
         try sendCommand(socket_path, "zoom 2.0");
         try sendCommand(socket_path, "pan 50 -30");
-        const capture_path = try std.fmt.allocPrint(gpa, "{s}/test_1_zoom.png", .{if (update_baselines) base_dir else run_dir});
-        defer gpa.free(capture_path);
-        const cmd = try std.fmt.allocPrint(gpa, "screenshot {s}", .{capture_path});
-        defer gpa.free(cmd);
-        try sendCommand(socket_path, cmd);
-        if (!update_baselines) {
-            const res = try compareScreenshots(
-                base_dir ++ "/test_1_zoom.png",
-                run_dir ++ "/test_1_zoom.png",
-                run_dir ++ "/diff_test_1_zoom.png",
-                max_tolerance_pct,
-            );
-            if (res.pct > max_tolerance_pct) steps_with_discrepancies += 1;
+        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "zoom_pan.png", "zoom_pan.png", update_baselines, max_tolerance_pct)) {
+            steps_with_discrepancies += 1;
         }
     }
 
-    // 2. Adjust
+    // Adjustments
     {
-        try sendCommand(socket_path, "zoom 1.0");
-        try sendCommand(socket_path, "pan 0 0");
+        try sendCommand(socket_path, "reset_view");
         try sendCommand(socket_path, "adjust 0.3 1.4");
-        const capture_path = try std.fmt.allocPrint(gpa, "{s}/test_2_adjust.png", .{if (update_baselines) base_dir else run_dir});
-        defer gpa.free(capture_path);
-        const cmd = try std.fmt.allocPrint(gpa, "screenshot {s}", .{capture_path});
-        defer gpa.free(cmd);
-        try sendCommand(socket_path, cmd);
-        if (!update_baselines) {
-            const res = try compareScreenshots(
-                base_dir ++ "/test_2_adjust.png",
-                run_dir ++ "/test_2_adjust.png",
-                run_dir ++ "/diff_test_2_adjust.png",
-                max_tolerance_pct,
-            );
-            if (res.pct > max_tolerance_pct) steps_with_discrepancies += 1;
+        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "adjust.png", "adjust.png", update_baselines, max_tolerance_pct)) {
+            steps_with_discrepancies += 1;
         }
     }
 
-    // 3. Filter
+    // Scaling Filters
     {
-        try sendCommand(socket_path, "adjust 0 1");
+        try sendCommand(socket_path, "reset_adjustments");
         try sendCommand(socket_path, "filter mitchell");
-        const capture_path = try std.fmt.allocPrint(gpa, "{s}/test_3_filter.png", .{if (update_baselines) base_dir else run_dir});
-        defer gpa.free(capture_path);
-        const cmd = try std.fmt.allocPrint(gpa, "screenshot {s}", .{capture_path});
-        defer gpa.free(cmd);
-        try sendCommand(socket_path, cmd);
-        if (!update_baselines) {
-            const res = try compareScreenshots(
-                base_dir ++ "/test_3_filter.png",
-                run_dir ++ "/test_3_filter.png",
-                run_dir ++ "/diff_test_3_filter.png",
-                max_tolerance_pct,
-            );
-            if (res.pct > max_tolerance_pct) steps_with_discrepancies += 1;
+        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "filter_mitchell.png", "filter_mitchell.png", update_baselines, max_tolerance_pct)) {
+            steps_with_discrepancies += 1;
         }
-    }
-
-    // 4. Action Palette
-    {
         try sendCommand(socket_path, "filter lanczos3");
+        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "filter_lanczos3.png", "filter_lanczos3.png", update_baselines, max_tolerance_pct)) {
+            steps_with_discrepancies += 1;
+        }
         try sendCommand(socket_path, "filter lanczos3_spline");
+        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "filter_lanczos3_spline.png", "filter_lanczos3_spline.png", update_baselines, max_tolerance_pct)) {
+            steps_with_discrepancies += 1;
+        }
         try sendCommand(socket_path, "filter linear");
+    }
+
+    // Action Palette
+    {
         try sendCommand(socket_path, "palette action");
-        const capture_path = try std.fmt.allocPrint(gpa, "{s}/test_4_action_palette.png", .{if (update_baselines) base_dir else run_dir});
-        defer gpa.free(capture_path);
-        const cmd = try std.fmt.allocPrint(gpa, "screenshot {s}", .{capture_path});
-        defer gpa.free(cmd);
-        try sendCommand(socket_path, cmd);
-        if (!update_baselines) {
-            const res = try compareScreenshots(
-                base_dir ++ "/test_4_action_palette.png",
-                run_dir ++ "/test_4_action_palette.png",
-                run_dir ++ "/diff_test_4_action_palette.png",
-                max_tolerance_pct,
-            );
-            if (res.pct > max_tolerance_pct) steps_with_discrepancies += 1;
+        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "palette_action.png", "palette_action.png", update_baselines, max_tolerance_pct)) {
+            steps_with_discrepancies += 1;
         }
     }
 
-    // 4b. Action Palette Search ("filterh")
+    // Action Palette Search ("filterh")
     {
         try sendCommand(socket_path, "palette action filterh");
-        const capture_path = try std.fmt.allocPrint(gpa, "{s}/test_4b_action_palette_search.png", .{if (update_baselines) base_dir else run_dir});
-        defer gpa.free(capture_path);
-        const cmd = try std.fmt.allocPrint(gpa, "screenshot {s}", .{capture_path});
-        defer gpa.free(cmd);
-        try sendCommand(socket_path, cmd);
-        if (!update_baselines) {
-            const res = try compareScreenshots(
-                base_dir ++ "/test_4b_action_palette_search.png",
-                run_dir ++ "/test_4b_action_palette_search.png",
-                run_dir ++ "/diff_test_4b_action_palette_search.png",
-                max_tolerance_pct,
-            );
-            if (res.pct > max_tolerance_pct) steps_with_discrepancies += 1;
+        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "palette_action_search.png", "palette_action_search.png", update_baselines, max_tolerance_pct)) {
+            steps_with_discrepancies += 1;
         }
     }
 
-    // 5. Files Palette
+    // Files Palette
     {
         try sendCommand(socket_path, "palette files");
-        const capture_path = try std.fmt.allocPrint(gpa, "{s}/test_5_files_palette.png", .{if (update_baselines) base_dir else run_dir});
-        defer gpa.free(capture_path);
-        const cmd = try std.fmt.allocPrint(gpa, "screenshot {s}", .{capture_path});
-        defer gpa.free(cmd);
-        try sendCommand(socket_path, cmd);
-        if (!update_baselines) {
-            const res = try compareScreenshots(
-                base_dir ++ "/test_5_files_palette.png",
-                run_dir ++ "/test_5_files_palette.png",
-                run_dir ++ "/diff_test_5_files_palette.png",
-                max_tolerance_pct,
-            );
-            if (res.pct > max_tolerance_pct) steps_with_discrepancies += 1;
+        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "palette_files.png", "palette_files.png", update_baselines, max_tolerance_pct)) {
+            steps_with_discrepancies += 1;
         }
     }
 
-    // 6. Next Image
+    // Next Image
     {
         try sendCommand(socket_path, "palette none");
         try sendCommand(socket_path, "next");
         try sendCommand(socket_path, "wait_load");
-        const capture_path = try std.fmt.allocPrint(gpa, "{s}/test_6_next_image.png", .{if (update_baselines) base_dir else run_dir});
-        defer gpa.free(capture_path);
-        const cmd = try std.fmt.allocPrint(gpa, "screenshot {s}", .{capture_path});
-        defer gpa.free(cmd);
-        try sendCommand(socket_path, cmd);
-        if (!update_baselines) {
-            const res = try compareScreenshots(
-                base_dir ++ "/test_6_next_image.png",
-                run_dir ++ "/test_6_next_image.png",
-                run_dir ++ "/diff_test_6_next_image.png",
-                max_tolerance_pct,
-            );
-            if (res.pct > max_tolerance_pct) steps_with_discrepancies += 1;
+        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "next_image.png", "next_image.png", update_baselines, max_tolerance_pct)) {
+            steps_with_discrepancies += 1;
         }
     }
 
-    // 7. Debug Tools
+    // Debug Tools
     {
         try sendCommand(socket_path, "palette none");
         try sendCommand(socket_path, "debug true");
-        const capture_path = try std.fmt.allocPrint(gpa, "{s}/test_7_debug_tools.png", .{if (update_baselines) base_dir else run_dir});
-        defer gpa.free(capture_path);
-        const cmd = try std.fmt.allocPrint(gpa, "screenshot {s}", .{capture_path});
-        defer gpa.free(cmd);
-        try sendCommand(socket_path, cmd);
-        if (!update_baselines) {
-            const res = try compareScreenshots(
-                base_dir ++ "/test_7_debug_tools.png",
-                run_dir ++ "/test_7_debug_tools.png",
-                run_dir ++ "/diff_test_7_debug_tools.png",
-                max_tolerance_pct,
-            );
-            if (res.pct > max_tolerance_pct) steps_with_discrepancies += 1;
+        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "debug_tools.png", "debug_tools.png", update_baselines, max_tolerance_pct)) {
+            steps_with_discrepancies += 1;
+        }
+        try sendCommand(socket_path, "debug false");
+    }
+
+    // Title Overlay
+    {
+        try sendCommand(socket_path, "title");
+        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "title_toggle_on.png", "title_overlay_on.png", update_baselines, max_tolerance_pct)) {
+            steps_with_discrepancies += 1;
+        }
+        try sendCommand(socket_path, "title toggle");
+        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "title_toggle_off.png", "title_overlay_off.png", update_baselines, max_tolerance_pct)) {
+            steps_with_discrepancies += 1;
+        }
+        try sendCommand(socket_path, "title true");
+        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "title_explicit_on.png", "title_overlay_on.png", update_baselines, max_tolerance_pct)) {
+            steps_with_discrepancies += 1;
+        }
+        try sendCommand(socket_path, "title false");
+        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "title_explicit_off.png", "title_overlay_off.png", update_baselines, max_tolerance_pct)) {
+            steps_with_discrepancies += 1;
         }
     }
 
-    // 8. Safety Validation Tests
+    // Safety Validation Tests
     {
         try expectCommandFailure(socket_path, "zoom nan");
         try expectCommandFailure(socket_path, "zoom inf");
@@ -490,10 +459,6 @@ pub fn main(init: std.process.Init) !void {
         try expectCommandFailure(socket_path, "pan 1.0 inf");
         try expectCommandFailure(socket_path, "adjust nan 1.0");
         try expectCommandFailure(socket_path, "title invalid");
-        try sendCommand(socket_path, "title");
-        try sendCommand(socket_path, "title toggle");
-        try sendCommand(socket_path, "title true");
-        try sendCommand(socket_path, "title false");
 
         // Generate a 513-character screenshot path
         var long_path_buf: [520]u8 = undefined;

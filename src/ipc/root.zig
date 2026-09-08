@@ -96,6 +96,8 @@ pub const IpcCommand = union(enum) {
     thumb: ThumbAction,
     debug: bool,
     wait_load,
+    reset_view,
+    reset_adjustments,
     next,
     prev,
     quit,
@@ -107,6 +109,8 @@ pub const IpcCommand = union(enum) {
             .zoom => |factor| return .{ .set_zoom = factor },
             .pan => |p| return .{ .set_pan = .{ .x = p.x, .y = p.y } },
             .adjust => return null,
+            .reset_view => return .reset_zoom,
+            .reset_adjustments => return .reset_adjustments,
             .filter => |mode| return .{ .set_filter = mode },
             .scale => |mode| return .{ .set_scale = mode },
             .manga => |val| return .{ .set_manga_mode = val },
@@ -246,6 +250,10 @@ pub const IpcCommand = union(enum) {
             }
         } else if (std.mem.eql(u8, cmd, "wait_load")) {
             return .wait_load;
+        } else if (std.mem.eql(u8, cmd, "reset_view") or std.mem.eql(u8, cmd, "reset")) {
+            return .reset_view;
+        } else if (std.mem.eql(u8, cmd, "reset_adjustments")) {
+            return .reset_adjustments;
         } else if (std.mem.eql(u8, cmd, "next")) {
             return .next;
         } else if (std.mem.eql(u8, cmd, "prev")) {
@@ -317,6 +325,18 @@ test "IpcCommand parsing" {
 
     const cmd_next = try IpcCommand.parse("next");
     try std.testing.expectEqual(IpcCommand.next, cmd_next);
+
+    const cmd_reset_view = try IpcCommand.parse("reset_view");
+    try std.testing.expectEqual(IpcCommand.reset_view, cmd_reset_view);
+    try std.testing.expectEqual(intents.AppIntent.reset_zoom, cmd_reset_view.toIntent().?);
+
+    const cmd_reset = try IpcCommand.parse("reset");
+    try std.testing.expectEqual(IpcCommand.reset_view, cmd_reset);
+    try std.testing.expectEqual(intents.AppIntent.reset_zoom, cmd_reset.toIntent().?);
+
+    const cmd_reset_adjustments = try IpcCommand.parse("reset_adjustments");
+    try std.testing.expectEqual(IpcCommand.reset_adjustments, cmd_reset_adjustments);
+    try std.testing.expectEqual(intents.AppIntent.reset_adjustments, cmd_reset_adjustments.toIntent().?);
 
     const cmd_title = try IpcCommand.parse("title true");
     try std.testing.expectEqual(TitleAction.enable, cmd_title.title);

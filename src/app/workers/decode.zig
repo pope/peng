@@ -873,7 +873,7 @@ test "decodeWorker - thumb_only does not do full decompression on PNG" {
     var workers = WorkerManager{};
     defer workers.drainAndQuiesce(io);
 
-    const path = try allocator.dupe(u8, "testfiles/golden-screenshots/test_0_init.png");
+    const path = try allocator.dupe(u8, "testfiles/golden-screenshots/init.png");
     const entry = MediaEntry{ .filesystem = .{ .path = path } };
 
     var current_gen: std.atomic.Value(usize) = .init(1);
@@ -926,7 +926,7 @@ test "decodeWorker - prunes early when current_generation does not match key.gen
     var workers = WorkerManager{};
     defer workers.drainAndQuiesce(io);
 
-    const path = try allocator.dupe(u8, "testfiles/golden-screenshots/test_0_init.png");
+    const path = try allocator.dupe(u8, "testfiles/golden-screenshots/init.png");
     const entry = MediaEntry{ .filesystem = .{ .path = path } };
 
     var current_gen: std.atomic.Value(usize) = .init(2);

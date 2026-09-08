@@ -1895,7 +1895,7 @@ test "probeMediaMetadata - non-thumbnail formats return has_embedded_thumbnail =
     const io = std.Io.Threaded.global_single_threaded.io();
     const media = MediaEntry{
         .filesystem = .{
-            .path = "testfiles/golden-screenshots/test_0_init.png",
+            .path = "testfiles/golden-screenshots/init.png",
         },
     };
     const meta = probeMediaMetadata(io, media);
