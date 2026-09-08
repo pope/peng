@@ -292,7 +292,7 @@ test "rotate_cw, rotate_ccw, and reset_rotation intents" {
     defer app_st.deinit();
 
     const media_item = state.MediaEntry{
-        .filesystem = .{ .path = "Capture/20191103-Emiray Natural Light-0002.RAF" },
+        .filesystem = .{ .path = "test_image.raf" },
     };
     try app_st.viewer.navigation.image_list.append(allocator, media_item);
     app_st.viewer.navigation.current_index = 0;

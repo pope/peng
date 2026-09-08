@@ -1004,27 +1004,36 @@ test "DNG container with SubIFD JPEG preview strips" {
     try std.testing.expectEqual(@as(f32, 4000.0), dims.?.h);
 }
 
-test "Ricoh GR III DNG preview and thumbnail extraction on real file" {
-    const io = std.Io.Threaded.global_single_threaded.io();
-    var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, "2026-02-15-R0001964.DNG", .{}) catch return;
-    defer file.close(io);
+test "Ricoh GR III DNG MakerNote thumbnail extraction (tag 0xC634)" {
+    var buf = [_]u8{0} ** 512;
+    // TIFF header
+    buf[0] = 'I';
+    buf[1] = 'I';
+    std.mem.writeInt(u16, buf[2..4], 0x002A, .little);
+    std.mem.writeInt(u32, buf[4..8], 8, .little);
 
-    var hdr: [256 * 1024]u8 = undefined;
-    var slices = [_][]u8{&hdr};
-    const n = try file.readPositional(io, &slices, 0);
-    try std.testing.expect(n >= 163000);
+    // IFD0: 1 entry
+    std.mem.writeInt(u16, buf[8..10], 1, .little);
+    // Entry 0: tag 0xC634 (DNGPrivateData), type 7, val_count = 10000, val_or_off = 30
+    std.mem.writeInt(u16, buf[10..12], 0xC634, .little);
+    std.mem.writeInt(u16, buf[12..14], 7, .little);
+    std.mem.writeInt(u32, buf[14..18], 10000, .little);
+    std.mem.writeInt(u32, buf[18..22], 30, .little);
+    // Next IFD = 0
+    std.mem.writeInt(u32, buf[22..26], 0, .little);
 
-    const cands = extractTiffRawPreviews(hdr[0..n]);
-    try std.testing.expect(cands.preview != null);
-    try std.testing.expectEqual(@as(u64, 28990784), cands.preview.?.file_offset);
-    try std.testing.expectEqual(@as(u32, 2832282), cands.preview.?.length);
+    // MakerNote at offset 30
+    @memcpy(buf[30..38], "RICOH\x00II");
+    // p_len at offset 30 + 54 = 84: 5000 bytes
+    std.mem.writeInt(u32, buf[84..88], 5000, .little);
+    // p_rel_off at offset 30 + 66 = 96: 100 bytes
+    std.mem.writeInt(u32, buf[96..100], 100, .little);
 
+    const cands = extractTiffRawPreviews(&buf);
     try std.testing.expect(cands.thumbnail != null);
-    try std.testing.expectEqual(@as(u64, 97248), cands.thumbnail.?.file_offset);
-    try std.testing.expectEqual(@as(u32, 55698), cands.thumbnail.?.length);
-
-    const dims = parseExifDimensions(hdr[0..n]);
-    try std.testing.expect(dims != null);
-    try std.testing.expectEqual(@as(f32, 6112.0), dims.?.w);
-    try std.testing.expectEqual(@as(f32, 4064.0), dims.?.h);
+    try std.testing.expectEqual(@as(u64, 130), cands.thumbnail.?.file_offset);
+    try std.testing.expectEqual(@as(u32, 5000), cands.thumbnail.?.length);
+    try std.testing.expect(cands.preview != null);
+    try std.testing.expectEqual(@as(u64, 130), cands.preview.?.file_offset);
+    try std.testing.expectEqual(@as(u32, 5000), cands.preview.?.length);
 }

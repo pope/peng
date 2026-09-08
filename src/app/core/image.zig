@@ -1655,97 +1655,104 @@ test "CacheSlotMap - atomic generation advance and activeKey" {
     try std.testing.expectEqual(@as(usize, 1), key.generation);
 }
 
-test "loadThumbnailSurface - filesystem Fujifilm RAF" {
+test "loadThumbnailSurface - filesystem TIFF RAW mock" {
+    const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const media = MediaEntry{
-        .filesystem = .{
-            .path = "Capture/20191103-Emiray Natural Light-0001.RAF",
-        },
-    };
-    var f = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, media.filesystem.path, .{}) catch return;
-    f.close(io);
 
-    const thumb = loadThumbnailSurface(io, std.testing.allocator, media);
+    // Read real JPEG from committed fixtures
+    var real_jpg = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, "testfiles/images/000_0_1024x682.jpg", .{});
+    defer real_jpg.close(io);
+    const jpg_stat = try std.Io.Dir.statFile(std.Io.Dir.cwd(), io, "testfiles/images/000_0_1024x682.jpg", .{});
+    const jpg_bytes = try allocator.alloc(u8, @intCast(jpg_stat.size));
+    defer allocator.free(jpg_bytes);
+    var j_slices = [_][]u8{jpg_bytes};
+    _ = try real_jpg.readPositional(io, &j_slices, 0);
+
+    // Construct mock TIFF ARW
+    var tiff_buf = try allocator.alloc(u8, 100 + jpg_bytes.len);
+    defer allocator.free(tiff_buf);
+    @memset(tiff_buf, 0);
+
+    // TIFF Header
+    tiff_buf[0] = 'I';
+    tiff_buf[1] = 'I';
+    tiff_buf[2] = 0x2A;
+    tiff_buf[3] = 0x00;
+    std.mem.writeInt(u32, tiff_buf[4..8], 8, .little);
+
+    // IFD0 (num = 4)
+    std.mem.writeInt(u16, tiff_buf[8..10], 4, .little);
+    var off: usize = 10;
+    // 1. 0x0100 (ImageWidth) = 6000
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0100, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], 6000, .little);
+    off += 12;
+
+    // 2. 0x0101 (ImageLength) = 4000
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0101, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], 4000, .little);
+    off += 12;
+
+    // 3. 0x0112 (Orientation) = 6 (rotate 90)
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0112, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 3, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 8 ..][0..2], 6, .little);
+    off += 12;
+
+    // 4. 0x014A (SubIFD) pointing to offset 60
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x014A, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], 60, .little);
+    off += 12;
+    std.mem.writeInt(u32, tiff_buf[off..][0..4], 0, .little); // next IFD = 0
+
+    // SubIFD at 60 (num = 2)
+    off = 60;
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 2, .little);
+    off += 2;
+    // 1. 0x0201 (JPEGInterchangeFormat) pointing to 100
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0201, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], 100, .little);
+    off += 12;
+
+    // 2. 0x0202 (JPEGInterchangeFormatLength) = jpg_bytes.len
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0202, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], @intCast(jpg_bytes.len), .little);
+    off += 12;
+    std.mem.writeInt(u32, tiff_buf[off..][0..4], 0, .little);
+
+    // Copy JPEG at 100
+    @memcpy(tiff_buf[100 .. 100 + jpg_bytes.len], jpg_bytes);
+
+    // Write mock file
+    const mock_path = "testfiles/current-run/mock_thumb_test.arw";
+    var mock_file = try std.Io.Dir.createFile(std.Io.Dir.cwd(), io, mock_path, .{});
+    var wr_slices = [_][]const u8{tiff_buf};
+    _ = try mock_file.writePositional(io, &wr_slices, 0);
+    mock_file.close(io);
+    defer std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, mock_path) catch {};
+
+    const media = MediaEntry{ .filesystem = .{ .path = mock_path } };
+    const thumb = loadThumbnailSurface(io, allocator, media);
     try std.testing.expect(thumb != null);
     if (thumb) |t| {
         defer t.surface.destroy();
         try std.testing.expect(t.surface.w() > 0);
         try std.testing.expect(t.surface.h() > 0);
-        try std.testing.expectEqual(Orientation.normal, t.orientation);
+        try std.testing.expectEqual(Orientation.rotate_90, t.orientation);
         try std.testing.expect(t.raw_metadata.isRaw());
-        try std.testing.expect(t.dct_snapped);
-    }
-}
-
-test "loadThumbnailSurface - filesystem Sony ARW (theoretical padding, dct_snapped = false)" {
-    const io = std.Io.Threaded.global_single_threaded.io();
-    const media = MediaEntry{
-        .filesystem = .{
-            .path = "ThumbTest/20170816-KayJay-0001.ARW",
-        },
-    };
-    var f = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, media.filesystem.path, .{}) catch return;
-    f.close(io);
-
-    const thumb = loadThumbnailSurface(io, std.testing.allocator, media);
-    try std.testing.expect(thumb != null);
-    if (thumb) |t| {
-        defer t.surface.destroy();
-        try std.testing.expect(!t.dct_snapped);
-    }
-}
-
-test "loadThumbnailSurface - filesystem Ricoh GR IIIx JPG (8px DCT block snapping, dct_snapped = true)" {
-    const io = std.Io.Threaded.global_single_threaded.io();
-    const media = MediaEntry{
-        .filesystem = .{
-            .path = "ThumbTest/2026-02-15-R0001964.JPG",
-        },
-    };
-    var f = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, media.filesystem.path, .{}) catch return;
-    f.close(io);
-
-    const thumb = loadThumbnailSurface(io, std.testing.allocator, media);
-    try std.testing.expect(thumb != null);
-    if (thumb) |t| {
-        defer t.surface.destroy();
-        try std.testing.expect(t.dct_snapped);
-    }
-}
-
-test "loadThumbnailSurface - filesystem Fujifilm JPG (theoretical padding, dct_snapped = false)" {
-    const io = std.Io.Threaded.global_single_threaded.io();
-    const media = MediaEntry{
-        .filesystem = .{
-            .path = "ThumbTest/2026-01-24-DSCF0474.JPG",
-        },
-    };
-    var f = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, media.filesystem.path, .{}) catch return;
-    f.close(io);
-
-    const thumb = loadThumbnailSurface(io, std.testing.allocator, media);
-    try std.testing.expect(thumb != null);
-    if (thumb) |t| {
-        defer t.surface.destroy();
-        try std.testing.expect(!t.dct_snapped);
-    }
-}
-
-test "loadThumbnailSurface - filesystem Fujifilm X-E5 RAF (8px DCT block snapping, dct_snapped = true)" {
-    const io = std.Io.Threaded.global_single_threaded.io();
-    const media = MediaEntry{
-        .filesystem = .{
-            .path = "ThumbTest/2026-01-24-DSCF0474.RAF",
-        },
-    };
-    var f = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, media.filesystem.path, .{}) catch return;
-    f.close(io);
-
-    const thumb = loadThumbnailSurface(io, std.testing.allocator, media);
-    try std.testing.expect(thumb != null);
-    if (thumb) |t| {
-        defer t.surface.destroy();
-        try std.testing.expect(t.dct_snapped);
+        try std.testing.expectEqual(@as(f32, 6000.0), t.full_w);
+        try std.testing.expectEqual(@as(f32, 4000.0), t.full_h);
     }
 }
 
@@ -1832,17 +1839,55 @@ test "detectThumbnailDctPadding - solid black background returns false (no false
     try std.testing.expect(!detectThumbnailDctPadding(surf, 6000.0, 4000.0));
 }
 
-test "probeMediaMetadata - detects embedded thumbnail presence on RAF" {
+test "probeMediaMetadata - detects embedded thumbnail and dimensions on mock RAF" {
+    const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const media = MediaEntry{
-        .filesystem = .{
-            .path = "Capture/20191103-Emiray Natural Light-0001.RAF",
-        },
-    };
-    if (probeMediaMetadata(io, media)) |meta| {
-        try std.testing.expect(meta.has_embedded_thumbnail);
-        try std.testing.expect(meta.dims.w > 0);
-        try std.testing.expect(meta.dims.h > 0);
+
+    // Read real JPEG to embed as preview
+    var real_jpg = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, "testfiles/images/000_0_1024x682.jpg", .{});
+    defer real_jpg.close(io);
+    const jpg_stat = try std.Io.Dir.statFile(std.Io.Dir.cwd(), io, "testfiles/images/000_0_1024x682.jpg", .{});
+    const jpg_bytes = try allocator.alloc(u8, @intCast(jpg_stat.size));
+    defer allocator.free(jpg_bytes);
+    var j_slices = [_][]u8{jpg_bytes};
+    _ = try real_jpg.readPositional(io, &j_slices, 0);
+
+    // Construct mock Fujifilm RAF
+    var raf_buf = try allocator.alloc(u8, 200 + jpg_bytes.len);
+    defer allocator.free(raf_buf);
+    @memset(raf_buf, 0);
+
+    @memcpy(raf_buf[0..8], "FUJIFILM");
+    std.mem.writeInt(u32, raf_buf[84..88], 200, .big);
+    std.mem.writeInt(u32, raf_buf[88..92], @intCast(jpg_bytes.len), .big);
+    std.mem.writeInt(u32, raf_buf[92..96], 120, .big);
+    std.mem.writeInt(u32, raf_buf[96..100], 12, .big);
+
+    // Metadata block at 120:
+    std.mem.writeInt(u32, raf_buf[120..124], 1, .big);
+    std.mem.writeInt(u16, raf_buf[124..126], 0x0111, .big);
+    std.mem.writeInt(u16, raf_buf[126..128], 4, .big);
+    std.mem.writeInt(u16, raf_buf[128..130], 4160, .big);
+    std.mem.writeInt(u16, raf_buf[130..132], 6240, .big);
+
+    // Copy preview JPEG at 200
+    @memcpy(raf_buf[200 .. 200 + jpg_bytes.len], jpg_bytes);
+
+    const mock_path = "testfiles/current-run/mock_probe_test.raf";
+    var mock_file = try std.Io.Dir.createFile(std.Io.Dir.cwd(), io, mock_path, .{});
+    var wr_slices = [_][]const u8{raf_buf};
+    _ = try mock_file.writePositional(io, &wr_slices, 0);
+    mock_file.close(io);
+    defer std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, mock_path) catch {};
+
+    const media = MediaEntry{ .filesystem = .{ .path = mock_path } };
+    const meta = probeMediaMetadata(io, media);
+    try std.testing.expect(meta != null);
+    if (meta) |m| {
+        try std.testing.expect(m.has_embedded_thumbnail);
+        try std.testing.expectEqual(@as(f32, 6240.0), m.dims.w);
+        try std.testing.expectEqual(@as(f32, 4160.0), m.dims.h);
+        try std.testing.expect(m.raw_metadata.isRaw());
     }
 }
 
@@ -1853,9 +1898,11 @@ test "probeMediaMetadata - non-thumbnail formats return has_embedded_thumbnail =
             .path = "testfiles/golden-screenshots/test_0_init.png",
         },
     };
-    if (probeMediaMetadata(io, media)) |meta| {
-        try std.testing.expect(!meta.has_embedded_thumbnail);
-        try std.testing.expect(meta.dims.w > 0);
-        try std.testing.expect(meta.dims.h > 0);
+    const meta = probeMediaMetadata(io, media);
+    try std.testing.expect(meta != null);
+    if (meta) |m| {
+        try std.testing.expect(!m.has_embedded_thumbnail);
+        try std.testing.expect(m.dims.w > 0);
+        try std.testing.expect(m.dims.h > 0);
     }
 }
