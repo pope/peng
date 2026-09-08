@@ -165,6 +165,10 @@ pub const AppIntent = union(enum) {
     toggle_manga_mode,
     set_manga_mode: bool,
 
+    // Image transition controls
+    toggle_crossfade,
+    set_crossfade: bool,
+
     // Application lifecycle
     quit,
 };

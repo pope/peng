@@ -1,29 +1,29 @@
-const std = @import("std");
-const sdl = @import("sdl");
-const types = @import("types.zig");
-const palette_state = @import("palette_state.zig");
 const animation_state = @import("animation_state.zig");
+const palette_state = @import("palette_state.zig");
+const sdl = @import("sdl");
+const std = @import("std");
+const types = @import("types.zig");
 
-const MediaEntry = types.MediaEntry;
-const CacheEntry = types.CacheEntry;
-const SlideshowMode = types.SlideshowMode;
-const OverlayState = types.OverlayState;
-const ViewportParams = types.ViewportParams;
-const ViewerStats = types.ViewerStats;
-const UiRenderMetricsSnapshot = types.UiRenderMetricsSnapshot;
-const SnackbarDisplay = types.SnackbarDisplay;
 const AnimationChannel = animation_state.AnimationChannel;
+const CacheEntry = types.CacheEntry;
+const MediaEntry = types.MediaEntry;
+const OverlayState = types.OverlayState;
+const SlideshowMode = types.SlideshowMode;
+const SnackbarDisplay = types.SnackbarDisplay;
+const UiRenderMetricsSnapshot = types.UiRenderMetricsSnapshot;
+const ViewerStats = types.ViewerStats;
+const ViewportParams = types.ViewportParams;
 
-/// Active dissolve payload for slideshow transitions between frames.
-pub const ActiveSlideshowDissolve = struct {
+/// Active dissolve payload for image transitions between frames.
+pub const ActiveImageDissolve = struct {
     prev_entry: CacheEntry,
     prev_rotation: f32,
 };
 
-/// Active dissolve state for slideshow transitions between frames.
-pub const SlideshowDissolve = union(enum) {
+/// Active dissolve state for image transitions between frames.
+pub const ImageDissolve = union(enum) {
     none,
-    active: ActiveSlideshowDissolve,
+    active: ActiveImageDissolve,
 };
 
 /// Complete read-only UI frame snapshot separating the application update phase from the render phase.
@@ -48,7 +48,7 @@ pub const UiViewModel = struct {
     anim_values: [32]f32 = [_]f32{0.0} ** 32,
     debug_show_thumb: bool,
     is_thumb_crossfading: bool = false,
-    slideshow_dissolve: SlideshowDissolve = .none,
+    image_dissolve: ImageDissolve = .none,
     current_time_ms: u64 = 0,
     stats: ViewerStats = .{},
     render_metrics: UiRenderMetricsSnapshot = .{},

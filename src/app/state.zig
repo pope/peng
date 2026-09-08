@@ -156,15 +156,15 @@ pub const AppState = struct {
             self.isCurrentSlideLoading();
     }
 
-    /// Returns the CacheEntry corresponding to the previous slide in an active slideshow crossfade, if available.
-    pub fn getSlideshowPrevEntry(self: *const AppState) ?CacheEntry {
-        const prev_idx = self.viewer.getSlideshowPrevIndex() orelse return null;
+    /// Returns the CacheEntry corresponding to the previous slide in an active crossfade, if available.
+    pub fn getTransitionPrevEntry(self: *const AppState) ?CacheEntry {
+        const prev_idx = self.viewer.getTransitionPrevIndex() orelse return null;
         return self.cache.getEntry(self.cache.activeKey(prev_idx));
     }
 
-    /// Returns the override or EXIF rotation in degrees for the previous slide in an active slideshow crossfade.
-    pub fn getSlideshowPrevRotation(self: *const AppState) f32 {
-        return switch (self.viewer.slideshow_transition) {
+    /// Returns the override or EXIF rotation in degrees for the previous slide in an active crossfade.
+    pub fn getTransitionPrevRotation(self: *const AppState) f32 {
+        return switch (self.viewer.image_transition) {
             .none => 0.0,
             .active => |t| t.prev_rotation,
         };
@@ -500,8 +500,8 @@ pub const AppState = struct {
         self.viewer.navigation.image_list.clearRetainingCapacity();
         _ = self.viewer.navigation.directory_arena.reset(.retain_capacity);
         self.viewer.navigation.current_index = null;
-        self.viewer.slideshow_transition = .none;
-        self.viewer.animations.setImmediate(.slideshow_crossfade, 1.0);
+        self.viewer.image_transition = .none;
+        self.viewer.animations.setImmediate(.image_crossfade, 1.0);
 
         if (has_stat) {
             if (stat.kind == .directory) {
@@ -698,20 +698,20 @@ pub const AppState = struct {
                     if (!updated) {
                         gpu_dev.releaseTexture(res.gpu_texture);
                     } else {
-                        self.cache.enforceVramBudget(gpu_dev, self.viewer.navigation.current_index, self.viewer.getSlideshowPrevIndex(), self.viewer.navigation.image_list.items.len, image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
+                        self.cache.enforceVramBudget(gpu_dev, self.viewer.navigation.current_index, self.viewer.getTransitionPrevIndex(), self.viewer.navigation.image_list.items.len, image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
                         if (self.viewer.navigation.current_index) |cur_idx| {
                             if (self.cache.activeKey(cur_idx).index == target.key.index) {
                                 if (self.cache.get(target.key)) |entry| {
-                                    if (entry.thumbnail == .loaded and !self.viewer.ui.overlays.debug_show_thumb and !self.viewer.isSlideshowActive()) {
+                                    if (entry.thumbnail == .loaded and !self.viewer.ui.overlays.debug_show_thumb and !self.viewer.isSlideshowActive() and self.viewer.image_transition == .none) {
                                         self.viewer.animations.startFrom(.thumb_crossfade, 0.0, 1.0, state_pkg.DURATION_THUMB_CROSSFADE_MS, .ease_out_quad);
                                     }
-                                    if (self.viewer.isSlideshowActive() and self.viewer.slideshow_transition != .none) {
-                                        if (self.viewer.animations.get(.slideshow_crossfade) < 0.001) {
+                                    if (self.viewer.image_transition != .none) {
+                                        if (self.viewer.animations.get(.image_crossfade) < 0.001) {
                                             self.viewer.animations.startFrom(
-                                                .slideshow_crossfade,
+                                                .image_crossfade,
                                                 0.0,
                                                 1.0,
-                                                state_pkg.DURATION_SLIDESHOW_DISSOLVE_MS,
+                                                state_pkg.DURATION_IMAGE_DISSOLVE_MS,
                                                 .ease_in_out_cubic,
                                             );
                                         }
@@ -724,8 +724,8 @@ pub const AppState = struct {
                     _ = self.cache.updateStatus(target.key, .failed);
                     if (self.viewer.navigation.current_index) |cur_idx| {
                         if (self.cache.activeKey(cur_idx).index == target.key.index) {
-                            self.viewer.slideshow_transition = .none;
-                            self.viewer.animations.setImmediate(.slideshow_crossfade, 1.0);
+                            self.viewer.image_transition = .none;
+                            self.viewer.animations.setImmediate(.image_crossfade, 1.0);
                         }
                     }
                 }

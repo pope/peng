@@ -22,6 +22,12 @@
 
 - Never swallow errors silently with empty `catch {}` or `else |_| {}` blocks.
 - Always log caught errors via `std.log.err` or `std.log.warn` with contextual details before returning fallbacks or `null`.
+- **No Discarded C-ABI / External Return Status**: Do NOT discard boolean or error code returns from external library or C-ABI functions (e.g. `_ = win.handle.setBordered(...)` or `_ = sdl.c.SDL_StartTextInput(...)`). Always verify success and log failures with descriptive context and library error strings (e.g. `sdl.getError()`):
+  ```zig
+  if (!win.handle.setBordered(!win.is_borderless)) {
+      std.log.err("SDL_SetWindowBordered failed: {s}", .{sdl.getError()});
+  }
+  ```
 
 ```zig
 // BAD: Silent error swallowing
@@ -125,3 +131,23 @@ Every struct owning heap memory, GPU handles, socket connections, or child sub-s
   };
   ```
 - This eliminates illegal states at compile time and makes invalid combinations impossible to construct.
+- **Top-Level Named Structs for Cross-Module Payloads**: When tagged union payloads are passed between modules (e.g. between domain state, view models, and UI rendering), define top-level named structs (`Active<Name>`) rather than inline anonymous structs.
+- **Inline Accessors**: Provide inline convenience methods on the union (e.g. `getPrevIndex(self) ?usize`) to allow read access to active payload values without requiring nested pattern-matching blocks at every call site:
+  ```zig
+  pub const ActiveImageTransition = struct {
+      prev_index: usize,
+      prev_rotation: f32,
+  };
+
+  pub const ImageTransition = union(enum) {
+      none,
+      active: ActiveImageTransition,
+
+      pub inline fn getPrevIndex(self: ImageTransition) ?usize {
+          return switch (self) {
+              .none => null,
+              .active => |a| a.prev_index,
+          };
+      }
+  };
+  ```

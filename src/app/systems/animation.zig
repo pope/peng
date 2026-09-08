@@ -12,7 +12,7 @@ const FrameContext = context.FrameContext;
 /// Responsibilities:
 /// 1. Advances all active animation channels using `ctx.delta_time_ms`.
 /// 2. If the command palette was in the closing phase and the reveal channel completed, resets the palette state.
-/// 3. If a slideshow crossfade animation completes, releases the previous slide index and resets crossfade state.
+/// 3. If an image crossfade animation completes, releases the previous slide index and resets crossfade state.
 pub fn sysUpdateAnimations(ctx: FrameContext) void {
     const state = ctx.state;
     const anim = &state.viewer.animations;
@@ -56,10 +56,10 @@ pub fn sysUpdateAnimations(ctx: FrameContext) void {
         }
     }
 
-    // If slideshow crossfade has settled to 1.0 (or is no longer active), release protected outgoing slide
-    if (state.viewer.slideshow_transition != .none) {
-        if (!anim.isActive(.slideshow_crossfade) and anim.get(.slideshow_crossfade) >= 0.999) {
-            state.viewer.slideshow_transition = .none;
+    // If image crossfade has settled to 1.0 (or is no longer active), release protected outgoing slide
+    if (state.viewer.image_transition != .none) {
+        if (!anim.isActive(.image_crossfade) and anim.get(.image_crossfade) >= 0.999) {
+            state.viewer.image_transition = .none;
         }
     }
 }
@@ -248,35 +248,35 @@ test "sysUpdateAnimations snackbar auto-hide timeout and fade-out" {
     try std.testing.expectEqual(@as(usize, 0), state.viewer.ui.snackbar.getMessage().len);
 }
 
-test "sysUpdateAnimations slideshow_crossfade settling clears slideshow_transition" {
+test "sysUpdateAnimations image_crossfade settling clears image_transition" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    state.viewer.slideshow_transition = .{ .active = .{ .prev_index = 3, .prev_rotation = 90.0 } };
-    state.viewer.animations.startFrom(.slideshow_crossfade, 0.0, 1.0, state_pkg.DURATION_SLIDESHOW_DISSOLVE_MS, .ease_in_out_cubic);
+    state.viewer.image_transition = .{ .active = .{ .prev_index = 3, .prev_rotation = 90.0 } };
+    state.viewer.animations.startFrom(.image_crossfade, 0.0, 1.0, state_pkg.DURATION_IMAGE_DISSOLVE_MS, .ease_in_out_cubic);
 
     try std.testing.expect(state.viewer.hasActiveAnimation());
-    try std.testing.expect(state.viewer.slideshow_transition != .none);
+    try std.testing.expect(state.viewer.image_transition != .none);
 
     // Tick halfway
     sysUpdateAnimations(.{
         .state = &state,
         .frame_allocator = allocator,
-        .delta_time_ms = state_pkg.DURATION_SLIDESHOW_DISSOLVE_MS / 2.0,
+        .delta_time_ms = state_pkg.DURATION_IMAGE_DISSOLVE_MS / 2.0,
     });
-    try std.testing.expect(state.viewer.slideshow_transition != .none);
-    try std.testing.expect(state.viewer.animations.get(.slideshow_crossfade) > 0.3);
-    try std.testing.expect(state.viewer.animations.get(.slideshow_crossfade) < 0.7);
+    try std.testing.expect(state.viewer.image_transition != .none);
+    try std.testing.expect(state.viewer.animations.get(.image_crossfade) > 0.3);
+    try std.testing.expect(state.viewer.animations.get(.image_crossfade) < 0.7);
 
-    // Tick remaining duration: settles at 1.0 and clears slideshow_transition
+    // Tick remaining duration: settles at 1.0 and clears image_transition
     sysUpdateAnimations(.{
         .state = &state,
         .frame_allocator = allocator,
-        .delta_time_ms = state_pkg.DURATION_SLIDESHOW_DISSOLVE_MS,
+        .delta_time_ms = state_pkg.DURATION_IMAGE_DISSOLVE_MS,
     });
-    try std.testing.expectApproxEqAbs(@as(f32, 1.0), state.viewer.animations.get(.slideshow_crossfade), 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), state.viewer.animations.get(.image_crossfade), 0.001);
     try std.testing.expect(!state.viewer.hasActiveAnimation());
-    try std.testing.expectEqual(state_pkg.types.SlideshowTransition.none, state.viewer.slideshow_transition);
+    try std.testing.expectEqual(state_pkg.types.ImageTransition.none, state.viewer.image_transition);
 }

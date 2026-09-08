@@ -124,39 +124,44 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 else => unreachable,
             };
 
-            if (is_slideshow and old_index != null and nav.current_index != null and old_index.? != nav.current_index.?) {
-                switch (nav.slideshow) {
-                    .active => |s| {
-                        if (s.interval_s >= state.MIN_SLIDESHOW_DISSOLVE_INTERVAL_S) {
-                            self.viewer.slideshow_transition = .{ .active = .{
-                                .prev_index = old_index.?,
-                                .prev_rotation = old_rot,
-                            } };
-                            const is_ready = if (self.getCurrentEntry()) |e| e.status == .loaded_gpu else false;
-                            if (is_ready) {
-                                self.viewer.animations.startFrom(
-                                    .slideshow_crossfade,
-                                    0.0,
-                                    1.0,
-                                    state.DURATION_SLIDESHOW_DISSOLVE_MS,
-                                    .ease_in_out_cubic,
-                                );
-                            } else {
-                                self.viewer.animations.setImmediate(.slideshow_crossfade, 0.0);
-                            }
-                        } else {
-                            self.viewer.slideshow_transition = .none;
-                            self.viewer.animations.setImmediate(.slideshow_crossfade, 1.0);
-                        }
-                    },
-                    .inactive => {
-                        self.viewer.slideshow_transition = .none;
-                        self.viewer.animations.setImmediate(.slideshow_crossfade, 1.0);
-                    },
+            if (old_index != null and nav.current_index != null and old_index.? != nav.current_index.?) {
+                const old_entry_loaded = if (self.cache.get(self.cache.activeKey(old_index.?))) |e|
+                    (e.status == .loaded_gpu or (self.gpu_device == null and e.status != .failed))
+                else
+                    self.gpu_device == null;
+                const is_animating = self.viewer.animations.isActive(.image_crossfade);
+                const should_crossfade = if (is_slideshow)
+                    switch (nav.slideshow) {
+                        .active => |s| s.interval_s >= state.MIN_SLIDESHOW_DISSOLVE_INTERVAL_S and old_entry_loaded,
+                        .inactive => false,
+                    }
+                else
+                    (nav.crossfade and elapsed >= 200 and !is_animating and old_entry_loaded);
+
+                if (should_crossfade) {
+                    self.viewer.image_transition = .{ .active = .{
+                        .prev_index = old_index.?,
+                        .prev_rotation = old_rot,
+                    } };
+                    const is_ready = if (self.getCurrentEntry()) |e| e.status == .loaded_gpu else false;
+                    if (is_ready) {
+                        self.viewer.animations.startFrom(
+                            .image_crossfade,
+                            0.0,
+                            1.0,
+                            state.DURATION_IMAGE_DISSOLVE_MS,
+                            .ease_in_out_cubic,
+                        );
+                    } else {
+                        self.viewer.animations.setImmediate(.image_crossfade, 0.0);
+                    }
+                } else {
+                    self.viewer.image_transition = .none;
+                    self.viewer.animations.setImmediate(.image_crossfade, 1.0);
                 }
-            } else if (!is_slideshow) {
-                self.viewer.slideshow_transition = .none;
-                self.viewer.animations.setImmediate(.slideshow_crossfade, 1.0);
+            } else {
+                self.viewer.image_transition = .none;
+                self.viewer.animations.setImmediate(.image_crossfade, 1.0);
             }
 
             self.viewer.animations.setImmediate(.thumb_crossfade, 1.0);
@@ -260,7 +265,9 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 .headless => {},
                 .windowed => |*win| {
                     win.is_borderless = !win.is_borderless;
-                    _ = win.handle.setBordered(!win.is_borderless);
+                    if (!win.handle.setBordered(!win.is_borderless)) {
+                        std.log.err("SDL_SetWindowBordered failed: {s}", .{sdl.getError()});
+                    }
                 },
             }
         },
@@ -269,7 +276,9 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 .headless => {},
                 .windowed => |*win| {
                     win.is_borderless = val;
-                    _ = win.handle.setBordered(!win.is_borderless);
+                    if (!win.handle.setBordered(!win.is_borderless)) {
+                        std.log.err("SDL_SetWindowBordered failed: {s}", .{sdl.getError()});
+                    }
                 },
             }
         },
@@ -284,9 +293,11 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
         .start_slideshow => try self.openPalette(.set_slideshow_interval),
         .stop_slideshow => {
             nav.slideshow = .inactive;
-            self.viewer.slideshow_transition = .none;
-            self.viewer.animations.setImmediate(.slideshow_crossfade, 1.0);
+            self.viewer.image_transition = .none;
+            self.viewer.animations.setImmediate(.image_crossfade, 1.0);
         },
+        .toggle_crossfade => nav.crossfade = !nav.crossfade,
+        .set_crossfade => |val| nav.crossfade = val,
         .toggle_manga_mode => nav.manga_mode = !nav.manga_mode,
         .set_manga_mode => |val| nav.manga_mode = val,
         .quit => self.viewer.running = false,
@@ -303,6 +314,7 @@ fn triggerSnackbarForIntent(self: *AppState, intent: intents.AppIntent) void {
     const msg = rule.format_fn(.{
         .viewport = &self.viewer.viewport,
         .manga_mode = self.viewer.navigation.manga_mode,
+        .crossfade = self.viewer.navigation.crossfade,
     }, &buf);
 
     if (msg.len > 0) {
@@ -575,9 +587,9 @@ test "sysExecuteIntents slideshow dissolve transitions and interval threshold" {
     });
 
     try testing.expectEqual(@as(usize, 1), app_st.viewer.navigation.current_index.?);
-    try testing.expectEqual(@as(?usize, 0), app_st.viewer.getSlideshowPrevIndex());
+    try testing.expectEqual(@as(?usize, 0), app_st.viewer.getTransitionPrevIndex());
     // In headless test without loaded_gpu status, it holds at 0.0 ready to start once loaded
-    try testing.expectEqual(@as(f32, 0.0), app_st.viewer.animations.get(.slideshow_crossfade));
+    try testing.expectEqual(@as(f32, 0.0), app_st.viewer.animations.get(.image_crossfade));
 
     // 2. Slideshow with tiny interval (< 0.5s): immediate cut, no crossfade
     app_st.viewer.navigation.slideshow = .{ .active = .{ .interval_s = 0.2 } };
@@ -589,17 +601,63 @@ test "sysExecuteIntents slideshow dissolve transitions and interval threshold" {
     });
 
     try testing.expectEqual(@as(usize, 2), app_st.viewer.navigation.current_index.?);
-    try testing.expectEqual(state.SlideshowTransition.none, app_st.viewer.slideshow_transition);
-    try testing.expectEqual(@as(f32, 1.0), app_st.viewer.animations.get(.slideshow_crossfade));
+    try testing.expectEqual(state.ImageTransition.none, app_st.viewer.image_transition);
+    try testing.expectEqual(@as(f32, 1.0), app_st.viewer.animations.get(.image_crossfade));
 
     // 3. Stop slideshow: clears previous slide and settles crossfade
-    app_st.viewer.slideshow_transition = .{ .active = .{ .prev_index = 1, .prev_rotation = 0.0 } };
+    app_st.viewer.image_transition = .{ .active = .{ .prev_index = 1, .prev_rotation = 0.0 } };
     try app_st.pushIntent(.stop_slideshow);
     try sysExecuteIntents(.{
         .state = &app_st,
         .frame_allocator = allocator,
         .delta_time_ms = 16.0,
     });
-    try testing.expectEqual(state.SlideshowTransition.none, app_st.viewer.slideshow_transition);
-    try testing.expectEqual(@as(f32, 1.0), app_st.viewer.animations.get(.slideshow_crossfade));
+    try testing.expectEqual(state.ImageTransition.none, app_st.viewer.image_transition);
+    try testing.expectEqual(@as(f32, 1.0), app_st.viewer.animations.get(.image_crossfade));
+}
+
+test "sysExecuteIntents - manual navigation crossfade and rapid navigation cut" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    try app_st.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "s1.jpg" } });
+    try app_st.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "s2.jpg" } });
+    try app_st.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "s3.jpg" } });
+    app_st.viewer.navigation.current_index = 0;
+    app_st.viewer.navigation.crossfade = true;
+    app_st.viewer.navigation.last_nav_time_ms = 0; // elapsed >= 200
+
+    // 1. Normal manual navigation with crossfade enabled
+    try app_st.pushIntent(.next_image);
+    try sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+    });
+    try testing.expectEqual(@as(usize, 1), app_st.viewer.navigation.current_index.?);
+    try testing.expectEqual(@as(?usize, 0), app_st.viewer.getTransitionPrevIndex());
+    try testing.expectEqual(@as(f32, 0.0), app_st.viewer.animations.get(.image_crossfade));
+
+    // 2. Rapid scrub (elapsed < 200ms or animation in flight): cuts immediately
+    try app_st.pushIntent(.next_image);
+    try sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+    });
+    try testing.expectEqual(@as(usize, 2), app_st.viewer.navigation.current_index.?);
+    try testing.expectEqual(state.ImageTransition.none, app_st.viewer.image_transition);
+    try testing.expectEqual(@as(f32, 1.0), app_st.viewer.animations.get(.image_crossfade));
+
+    // 3. Toggle crossfade intent
+    try app_st.pushIntent(.toggle_crossfade);
+    try sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+    });
+    try testing.expectEqual(false, app_st.viewer.navigation.crossfade);
 }

@@ -650,19 +650,19 @@ pub const SlideshowMode = union(enum) {
     }
 };
 
-/// Active slideshow transition payload tracking the outgoing slide during a dissolve animation.
-pub const ActiveSlideshowTransition = struct {
+/// Active image transition payload tracking the outgoing image during a dissolve animation.
+pub const ActiveImageTransition = struct {
     prev_index: usize,
     prev_rotation: f32,
 };
 
-/// Active slideshow transition state tracking the outgoing slide during a dissolve animation.
-pub const SlideshowTransition = union(enum) {
+/// Active image transition state tracking the outgoing image during a dissolve animation.
+pub const ImageTransition = union(enum) {
     none,
-    active: ActiveSlideshowTransition,
+    active: ActiveImageTransition,
 
-    /// Returns the protected previous slide index if a crossfade transition is active.
-    pub inline fn getPrevIndex(self: SlideshowTransition) ?usize {
+    /// Returns the protected previous image index if a crossfade transition is active.
+    pub inline fn getPrevIndex(self: ImageTransition) ?usize {
         return switch (self) {
             .none => null,
             .active => |t| t.prev_index,
@@ -1046,8 +1046,8 @@ test "SlideshowMode lifecycle, pause, resume, and sanitize" {
     try std.testing.expect(!mode.isPaused());
 }
 
-test "SlideshowTransition getPrevIndex and variants" {
-    var trans: SlideshowTransition = .none;
+test "ImageTransition getPrevIndex and variants" {
+    var trans: ImageTransition = .none;
     try std.testing.expectEqual(@as(?usize, null), trans.getPrevIndex());
 
     trans = .{ .active = .{ .prev_index = 42, .prev_rotation = 180.0 } };
@@ -1057,5 +1057,3 @@ test "SlideshowTransition getPrevIndex and variants" {
     trans = .none;
     try std.testing.expectEqual(@as(?usize, null), trans.getPrevIndex());
 }
-
-

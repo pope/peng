@@ -41,3 +41,21 @@
 - Overlay containers with animated dismissal transitions (such as the command palette) MUST decouple input focus from visual dissolution.
 - Provide and check `isAcceptingInput()` (`mode != .inactive and !is_closing`).
 - Keyboard shortcuts and viewport interactions (zooming, panning, navigation) MUST NOT be blocked while a dismissal animation is in-flight.
+
+## 9. Image Crossfade Transitions & Fast Navigation Scrubbing Invariants
+
+- **Snap-and-Cut Over Proportional Retargeting**: Proportional duration retargeting between two *distinct* GPU textures is an anti-pattern. If navigation is interrupted or rapidly scrubbed ($elapsed < 200\\text{ms}$), never attempt to retarget to a third texture; immediately snap the in-flight transition (`setImmediate(1.0)`, `transition = .none`) and cut directly to the target image to prevent sudden luminance pops, muddy 3-quad blending, and visual ghosting.
+- **Outgoing Slide GPU Validity Invariant**: Only initiate a crossfade transition if the outgoing image is resident on the GPU (`.loaded_gpu`). Navigating away from a slide that was still decoding or failed MUST cut immediately.
+- **Mutual Exclusion with Thumbnail Crossfade**: An image dissolve and a thumbnail crossfade underlay must never execute concurrently. Guard `is_thumb_crossfading` with `image_transition == .none` to prevent quad collisions at $z = 0$.
+- **VRAM Budget Eviction Protection**: During an active crossfade, both the incoming slide and the outgoing slide (`getTransitionPrevIndex()`) must be explicitly protected from eviction in `enforceVramBudget`.
+
+## 10. Headless Test Mode Animation & Overlay Isolation
+
+- Automated visual regression testing requires absolute frame-by-frame determinism.
+- All non-instant animations and transient auto-overlays (e.g., navigation crossfading, fast-scrub auto-title bar reveal) MUST be disabled when running under test mode (`--test-mode`):
+  ```zig
+  state.viewer.ui.overlays.auto_title = !parsed.test_mode;
+  state.viewer.ui.overlays.show_snackbar = !parsed.test_mode;
+  state.viewer.navigation.crossfade = !parsed.test_mode;
+  ```
+- This guarantees test suite commands execute immediate cuts, avoiding race conditions and golden screenshot pixel discrepancies.

@@ -218,20 +218,20 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
                         .compressed_size_bytes = decoded_data.compressed_size_bytes,
                     },
                 };
-                state.cache.enforceVramBudget(gpu_dev, state.viewer.navigation.current_index, state.viewer.getSlideshowPrevIndex(), state.viewer.navigation.image_list.items.len, image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
+                state.cache.enforceVramBudget(gpu_dev, state.viewer.navigation.current_index, state.viewer.getTransitionPrevIndex(), state.viewer.navigation.image_list.items.len, image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
                 if (entry.thumbnail == .pending or entry.thumbnail == .none) {
                     entry.thumbnail = .not_available;
                 }
-                if (is_current and entry.thumbnail == .loaded and !state.viewer.ui.overlays.debug_show_thumb and !state.viewer.isSlideshowActive()) {
+                if (is_current and entry.thumbnail == .loaded and !state.viewer.ui.overlays.debug_show_thumb and !state.viewer.isSlideshowActive() and state.viewer.image_transition == .none) {
                     state.viewer.animations.startFrom(.thumb_crossfade, 0.0, 1.0, state_pkg.DURATION_THUMB_CROSSFADE_MS, .ease_out_quad);
                 }
-                if (is_current and state.viewer.isSlideshowActive() and state.viewer.slideshow_transition != .none) {
-                    if (state.viewer.animations.get(.slideshow_crossfade) < 0.001) {
+                if (is_current and state.viewer.image_transition != .none) {
+                    if (state.viewer.animations.get(.image_crossfade) < 0.001) {
                         state.viewer.animations.startFrom(
-                            .slideshow_crossfade,
+                            .image_crossfade,
                             0.0,
                             1.0,
-                            state_pkg.DURATION_SLIDESHOW_DISSOLVE_MS,
+                            state_pkg.DURATION_IMAGE_DISSOLVE_MS,
                             .ease_in_out_cubic,
                         );
                     }
@@ -249,8 +249,8 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
                 }
             }
             if (is_current) {
-                state.viewer.slideshow_transition = .none;
-                state.viewer.animations.setImmediate(.slideshow_crossfade, 1.0);
+                state.viewer.image_transition = .none;
+                state.viewer.animations.setImmediate(.image_crossfade, 1.0);
             }
         }
     } else {

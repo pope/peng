@@ -710,9 +710,9 @@ fn renderImageCanvas(
     if (!drew_thumb) switch (entry.status) {
         .loaded_gpu => |gpu| {
             const tex = gpu.gpu_texture;
-            const is_slideshow_dissolve = ui_model.slideshow_dissolve == .active;
-            const full_alpha = if (is_slideshow_dissolve)
-                std.math.clamp(ui_model.anim(.slideshow_crossfade), 0.0, 1.0)
+            const is_image_dissolve = ui_model.image_dissolve == .active;
+            const full_alpha = if (is_image_dissolve)
+                std.math.clamp(ui_model.anim(.image_crossfade), 0.0, 1.0)
             else if (is_thumb_crossfade)
                 ui_model.anim(.thumb_crossfade)
             else
@@ -735,7 +735,7 @@ fn renderImageCanvas(
                         .h = .fixed(draw_h),
                     },
                 },
-                .floating = if (is_slideshow_dissolve or is_thumb_crossfade) .{
+                .floating = if (is_image_dissolve or is_thumb_crossfade) .{
                     .attach_to = .to_parent,
                     .attach_points = .{ .element = .center_center, .parent = .center_center },
                     .offset = .{ .x = 0.0, .y = 0.0 },
@@ -857,7 +857,7 @@ fn renderViewport(
         },
         .clip = .{ .horizontal = true, .vertical = true },
     })({
-        switch (ui_model.slideshow_dissolve) {
+        switch (ui_model.image_dissolve) {
             .none => {},
             .active => |dissolve| {
                 const prev_entry = dissolve.prev_entry;
@@ -870,12 +870,12 @@ fn renderViewport(
                             dissolve.prev_rotation,
                             ui_model.viewport.fit_mode,
                         );
-                        const progress = std.math.clamp(ui_model.anim(.slideshow_crossfade), 0.0, 1.0);
+                        const progress = std.math.clamp(ui_model.anim(.image_crossfade), 0.0, 1.0);
                         const prev_alpha = 1.0 - (progress * progress);
 
                         const prev_tex = gpu.gpu_texture;
                         const prev_uv_ptr = frame_allocator.create(state.UvRect) catch |err| blk: {
-                            std.log.warn("Failed to allocate UvRect for slideshow dissolve: {any}", .{err});
+                            std.log.warn("Failed to allocate UvRect for image dissolve: {any}", .{err});
                             break :blk null;
                         };
                         if (prev_uv_ptr) |ptr| {
@@ -885,7 +885,7 @@ fn renderViewport(
                             };
                         }
                         clay.UI()(.{
-                            .id = clay.getElementId("SlideshowPrevImage"),
+                            .id = clay.getElementId("ImageTransitionPrevQuad"),
                             .layout = .{
                                 .sizing = .{
                                     .w = .fixed(prev_dims.w),

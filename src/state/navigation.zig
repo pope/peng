@@ -17,6 +17,7 @@ pub const NavigationState = struct {
     current_index: ?usize = null,
     slideshow: SlideshowMode = .inactive,
     manga_mode: bool = false,
+    crossfade: bool = true,
     is_loading_files: std.atomic.Value(bool) = .init(false),
     last_nav_time_ms: u64 = 0,
     direction: NavDirection = .forward,

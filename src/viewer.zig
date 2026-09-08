@@ -216,19 +216,19 @@ pub fn updateFrame(
                 (cur_entry.thumbnail == .loaded) and
                 !app_state.viewer.ui.overlays.debug_show_thumb and
                 !app_state.viewer.isSlideshowActive() and
+                (app_state.viewer.image_transition == .none) and
                 (app_state.viewer.animations.get(.thumb_crossfade) < 0.999);
         },
-        .slideshow_dissolve = blk: {
-            if (!app_state.viewer.isSlideshowActive()) break :blk .none;
-            const progress = app_state.viewer.animations.get(.slideshow_crossfade);
+        .image_dissolve = blk: {
+            const progress = app_state.viewer.animations.get(.image_crossfade);
             if (progress >= 0.999) break :blk .none;
             const cur = app_state.getCurrentEntry() orelse break :blk .none;
             if (cur.status != .loaded_gpu) break :blk .none;
 
-            switch (app_state.viewer.slideshow_transition) {
+            switch (app_state.viewer.image_transition) {
                 .none => break :blk .none,
                 .active => |t| {
-                    const prev = app_state.getSlideshowPrevEntry() orelse break :blk .none;
+                    const prev = app_state.getTransitionPrevEntry() orelse break :blk .none;
                     if (prev.status != .loaded_gpu) break :blk .none;
                     break :blk .{ .active = .{
                         .prev_entry = prev,

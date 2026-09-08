@@ -139,7 +139,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
         }
     }
 
-    state.cache.enforceVramBudget(dev_opt, idx, state.viewer.getSlideshowPrevIndex(), len, image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
+    state.cache.enforceVramBudget(dev_opt, idx, state.viewer.getTransitionPrevIndex(), len, image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
 
     // Fast-scrolling check: only active if navigation has actually occurred
     const now = sdl.timer.getTicks();

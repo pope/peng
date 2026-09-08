@@ -7,6 +7,7 @@ description: >-
   - Easing & Curves: normalized time evaluation, NaN guards, proportional retargeting/interruption duration math.
   - GPU Text Alpha Blitting: RGB-only text texture caching, vertex color alpha modulation, zero font re-rasterization.
   - Clay UI Transitions: hierarchical alpha scaling, modal dissolve animations, and input decoupling during dismissal.
+  - Image Crossfade & Scrubbing: dual-quad viewport dissolves, quadratic alpha falloff, fast-navigation snap-and-cut bypasses.
   DO NOT trigger for:
   - Pure non-visual business logic, database queries, CLI arguments, or network I/O.
 ---
@@ -146,3 +147,29 @@ When a modal window or overlay begins its animated close sequence:
   }
   ```
 - Input systems (`sysProcessInput`, `sysUpdateViewport`) must check `isAcceptingInput()`, allowing keyboard shortcuts and viewport interactions to respond immediately while the dissolve completes in the background.
+
+______________________________________________________________________
+
+## 6. Image Crossfade Transitions & Fast Navigation Scrubbing
+
+### The Anti-Pattern: Proportional Retargeting for Distinct Textures
+
+While proportional duration retargeting is ideal for scalar UI elements (e.g. fading a single modal or button opacity from 0.4 back to 0.0), it is a **visual anti-pattern for image crossfades**:
+
+- In an image crossfade, Quad A is fading out while Quad B is fading in.
+- If the user quickly navigates to Image C mid-flight, attempting to retarget either leaves a muddy 3-quad composite or causes a sudden luminance pop (e.g. Quad B jumping from 40% to 100% opacity).
+
+### The Correct Pattern: Snap-and-Cut on Scrubbing or Interruption
+
+1. **Rapid Scrubbing Bypass**: If navigation occurs within 200ms of the previous navigation action ($elapsed < 200\\text{ms}$), bypass the animation entirely and cut immediately.
+2. **Interruption Snap-and-Cut**: If an animation is already in flight ($0.0 < p < 0.999$), immediately snap to the settled state:
+   ```zig
+   self.viewer.animations.setImmediate(.image_crossfade, 1.0);
+   self.viewer.image_transition = .none;
+   ```
+3. **Outgoing Slide GPU Invariant**: Only initiate crossfade if the outgoing slide is resident in VRAM (`old_entry.status == .loaded_gpu`). Navigating away from a slide that is still decoding or failed cuts immediately.
+4. **Dual-Quad Alpha & Layering Math**:
+   - Outgoing Quad (`ImageTransitionPrevQuad`): Floating at $z = 0$, centered in viewport, opacity $A\_{\\text{prev}} = 1.0 - p^2$ (quadratic falloff preserves perceived luminance).
+   - Incoming Quad (`ImageCanvas`): Floating at $z = 1$, centered in viewport, opacity $A\_{\\text{cur}} = p$.
+   - When settled ($p \\ge 0.999$): Transition resets to `.none`, rendering a single static quad at $A = 1.0$.
+5. **Mutual Exclusion**: Guard thumbnail crossfade underlays so they never execute while an image dissolve is active, preventing quad collisions at $z = 0$.

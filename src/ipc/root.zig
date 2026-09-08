@@ -96,6 +96,12 @@ pub const WindowlessAction = enum {
     toggle,
 };
 
+pub const CrossfadeAction = enum {
+    enable,
+    disable,
+    toggle,
+};
+
 pub const IpcCommand = union(enum) {
     zoom: f32,
     pan: struct { x: f32, y: f32 },
@@ -106,6 +112,7 @@ pub const IpcCommand = union(enum) {
     title: TitleAction,
     snackbar: SnackbarAction,
     windowless: WindowlessAction,
+    crossfade: CrossfadeAction,
     palette: PaletteTarget,
     thumb: ThumbAction,
     debug: bool,
@@ -142,6 +149,11 @@ pub const IpcCommand = union(enum) {
                 .enable => return .{ .set_windowless = true },
                 .disable => return .{ .set_windowless = false },
                 .toggle => return .toggle_windowless,
+            },
+            .crossfade => |action| switch (action) {
+                .enable => return .{ .set_crossfade = true },
+                .disable => return .{ .set_crossfade = false },
+                .toggle => return .toggle_crossfade,
             },
             .palette => |target| {
                 const mode: intents.PaletteMode = switch (target.kind) {
@@ -260,6 +272,20 @@ pub const IpcCommand = union(enum) {
                 }
             } else {
                 return .{ .windowless = .toggle };
+            }
+        } else if (std.mem.eql(u8, cmd, "crossfade")) {
+            if (it.next()) |val| {
+                if (std.mem.eql(u8, val, "true") or std.mem.eql(u8, val, "enable") or std.mem.eql(u8, val, "on")) {
+                    return .{ .crossfade = .enable };
+                } else if (std.mem.eql(u8, val, "false") or std.mem.eql(u8, val, "disable") or std.mem.eql(u8, val, "off")) {
+                    return .{ .crossfade = .disable };
+                } else if (std.mem.eql(u8, val, "toggle")) {
+                    return .{ .crossfade = .toggle };
+                } else {
+                    return error.InvalidArgument;
+                }
+            } else {
+                return .{ .crossfade = .toggle };
             }
         } else if (std.mem.eql(u8, cmd, "palette")) {
             const pal_name = it.next() orelse return error.MissingArgument;
@@ -433,6 +459,22 @@ test "IpcCommand parsing" {
     const cmd_bl_on = try IpcCommand.parse("borderless on");
     try std.testing.expectEqual(WindowlessAction.enable, cmd_bl_on.windowless);
     try std.testing.expectEqual(intents.AppIntent{ .set_windowless = true }, cmd_bl_on.toIntent().?);
+
+    const cmd_cf_true = try IpcCommand.parse("crossfade true");
+    try std.testing.expectEqual(CrossfadeAction.enable, cmd_cf_true.crossfade);
+    try std.testing.expectEqual(intents.AppIntent{ .set_crossfade = true }, cmd_cf_true.toIntent().?);
+
+    const cmd_cf_off = try IpcCommand.parse("crossfade off");
+    try std.testing.expectEqual(CrossfadeAction.disable, cmd_cf_off.crossfade);
+    try std.testing.expectEqual(intents.AppIntent{ .set_crossfade = false }, cmd_cf_off.toIntent().?);
+
+    const cmd_cf_toggle = try IpcCommand.parse("crossfade");
+    try std.testing.expectEqual(CrossfadeAction.toggle, cmd_cf_toggle.crossfade);
+    try std.testing.expectEqual(intents.AppIntent.toggle_crossfade, cmd_cf_toggle.toIntent().?);
+
+    const cmd_cf_toggle_word = try IpcCommand.parse("crossfade toggle");
+    try std.testing.expectEqual(CrossfadeAction.toggle, cmd_cf_toggle_word.crossfade);
+    try std.testing.expectEqual(intents.AppIntent.toggle_crossfade, cmd_cf_toggle_word.toIntent().?);
 
     try std.testing.expectError(error.UnknownCommand, IpcCommand.parse("invalid_command"));
 }

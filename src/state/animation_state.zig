@@ -8,7 +8,7 @@ pub const AnimationChannel = enum(u8) {
     thumb_crossfade = 1,
     title_overlay = 2,
     snackbar = 3,
-    slideshow_crossfade = 4,
+    image_crossfade = 4,
 };
 
 pub const CHANNEL_COUNT: usize = @typeInfo(AnimationChannel).@"enum".fields.len;
@@ -22,7 +22,7 @@ pub const DURATION_TITLE_OVERLAY_OPEN_MS: f32 = 140.0;
 pub const DURATION_TITLE_OVERLAY_CLOSE_MS: f32 = 200.0;
 pub const DURATION_SNACKBAR_OPEN_MS: f32 = 140.0;
 pub const DURATION_SNACKBAR_CLOSE_MS: f32 = 200.0;
-pub const DURATION_SLIDESHOW_DISSOLVE_MS: f32 = 200.0;
+pub const DURATION_IMAGE_DISSOLVE_MS: f32 = 200.0;
 pub const MIN_SLIDESHOW_DISSOLVE_INTERVAL_S: f32 = 0.5;
 
 /// Metadata describing default durations, easings, and base values for an animation channel.
@@ -65,9 +65,9 @@ pub fn getDescriptor(channel: AnimationChannel) ChannelDescriptor {
             .close_easing = .ease_out_quad,
             .default_value = 0.0,
         },
-        .slideshow_crossfade => .{
-            .default_open_duration_ms = DURATION_SLIDESHOW_DISSOLVE_MS,
-            .default_close_duration_ms = DURATION_SLIDESHOW_DISSOLVE_MS,
+        .image_crossfade => .{
+            .default_open_duration_ms = DURATION_IMAGE_DISSOLVE_MS,
+            .default_close_duration_ms = DURATION_IMAGE_DISSOLVE_MS,
             .open_easing = .ease_in_out_cubic,
             .close_easing = .ease_in_out_cubic,
             .default_value = 1.0,
@@ -81,7 +81,7 @@ pub const CHANNEL_DESCRIPTORS = [CHANNEL_COUNT]ChannelDescriptor{
     getDescriptor(.thumb_crossfade),
     getDescriptor(.title_overlay),
     getDescriptor(.snackbar),
-    getDescriptor(.slideshow_crossfade),
+    getDescriptor(.image_crossfade),
 };
 
 /// Data-Oriented animation manager using flat static Structure-of-Arrays (SoA) layout.
@@ -422,27 +422,27 @@ test "AnimationState title_overlay channel transitions" {
     try std.testing.expect(!anim.hasActiveAnimations());
 }
 
-test "AnimationState slideshow_crossfade channel transitions" {
+test "AnimationState image_crossfade channel transitions" {
     var anim = AnimationState{};
 
     // Initial default value is 1.0 (settled / visible)
-    try std.testing.expectEqual(@as(f32, 1.0), anim.get(.slideshow_crossfade));
-    try std.testing.expect(!anim.isActive(.slideshow_crossfade));
+    try std.testing.expectEqual(@as(f32, 1.0), anim.get(.image_crossfade));
+    try std.testing.expect(!anim.isActive(.image_crossfade));
 
-    // Start transition from 0.0 to 1.0 over DURATION_SLIDESHOW_DISSOLVE_MS with .ease_in_out_cubic
-    anim.startFrom(.slideshow_crossfade, 0.0, 1.0, DURATION_SLIDESHOW_DISSOLVE_MS, .ease_in_out_cubic);
-    try std.testing.expect(anim.isActive(.slideshow_crossfade));
+    // Start transition from 0.0 to 1.0 over DURATION_IMAGE_DISSOLVE_MS with .ease_in_out_cubic
+    anim.startFrom(.image_crossfade, 0.0, 1.0, DURATION_IMAGE_DISSOLVE_MS, .ease_in_out_cubic);
+    try std.testing.expect(anim.isActive(.image_crossfade));
     try std.testing.expect(anim.hasActiveAnimations());
-    try std.testing.expectEqual(@as(f32, 0.0), anim.get(.slideshow_crossfade));
+    try std.testing.expectEqual(@as(f32, 0.0), anim.get(.image_crossfade));
 
     // Advance 50%: with ease_in_out_cubic, 50% time evaluates to exactly 0.5
-    anim.tick(DURATION_SLIDESHOW_DISSOLVE_MS / 2.0);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.5), anim.get(.slideshow_crossfade), 0.001);
-    try std.testing.expect(anim.isActive(.slideshow_crossfade));
+    anim.tick(DURATION_IMAGE_DISSOLVE_MS / 2.0);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), anim.get(.image_crossfade), 0.001);
+    try std.testing.expect(anim.isActive(.image_crossfade));
 
     // Advance remaining 50%: settles at 1.0
-    anim.tick(DURATION_SLIDESHOW_DISSOLVE_MS / 2.0);
-    try std.testing.expectApproxEqAbs(@as(f32, 1.0), anim.get(.slideshow_crossfade), 0.001);
-    try std.testing.expect(!anim.isActive(.slideshow_crossfade));
+    anim.tick(DURATION_IMAGE_DISSOLVE_MS / 2.0);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), anim.get(.image_crossfade), 0.001);
+    try std.testing.expect(!anim.isActive(.image_crossfade));
     try std.testing.expect(!anim.hasActiveAnimations());
 }

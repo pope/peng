@@ -106,6 +106,7 @@ pub const ActionId = enum {
     toggle_stats,
     toggle_title,
     toggle_snackbar,
+    toggle_crossfade,
     toggle_fullscreen,
     toggle_windowless,
     file_finder,
@@ -638,6 +639,20 @@ pub const actions = [_]ActionDef{
         },
     },
     .{
+        .id = .toggle_crossfade,
+        .title = "Toggle Image Crossfade",
+        .shortcut_text = "",
+        .description = "Toggle smooth dissolve transitions during image navigation",
+        .show_in_palette = true,
+        .shortcuts = &.{},
+        .intent = .toggle_crossfade,
+        .ipc = .{
+            .name = "crossfade",
+            .args = "<on|off|toggle>",
+            .description = "Toggle image navigation crossfade dissolve transition",
+        },
+    },
+    .{
         .id = .cycle_scale_mode,
         .title = "Cycle Scale Mode",
         .shortcut_text = "S",
@@ -860,8 +875,8 @@ pub const ipc_commands = blk: {
 test "actions registry projections" {
     const testing = std.testing;
 
-    // Palette count: 48 previous items + 1 new item (toggle_snackbar) = 49
-    try testing.expectEqual(@as(usize, 49), palette_action_items.len);
+    // Palette count: 49 previous items + 1 new item (toggle_crossfade) = 50
+    try testing.expectEqual(@as(usize, 50), palette_action_items.len);
 
     // Exact index preservation
     try testing.expectEqualStrings("Navigate Directories...", palette_action_items[7].name);
@@ -883,7 +898,7 @@ test "actions registry projections" {
     try testing.expectEqual(OptionId.scale, action_cli_options[4].id);
 
     // IPC commands projection
-    try testing.expectEqual(@as(usize, 15), ipc_commands.len);
+    try testing.expectEqual(@as(usize, 16), ipc_commands.len);
 }
 
 test "actions registry invariants and consistency" {

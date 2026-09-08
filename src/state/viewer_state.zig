@@ -8,8 +8,8 @@ const ui_state = @import("ui_state.zig");
 const AnimationState = animation_state.AnimationState;
 const DisplayState = types.DisplayState;
 const DragState = types.DragState;
+const ImageTransition = types.ImageTransition;
 const NavigationState = navigation.NavigationState;
-const SlideshowTransition = types.SlideshowTransition;
 const UiState = ui_state.UiState;
 const ViewerStats = types.ViewerStats;
 const ViewportParams = types.ViewportParams;
@@ -29,13 +29,13 @@ pub const ViewerState = struct {
     display: DisplayState = .headless,
     drag_state: DragState = .none,
 
-    slideshow_transition: SlideshowTransition = .none,
+    image_transition: ImageTransition = .none,
 
     running: bool = true,
 
-    /// Returns the protected previous slide index if a slideshow dissolve transition is active.
-    pub inline fn getSlideshowPrevIndex(self: *const ViewerState) ?usize {
-        return self.slideshow_transition.getPrevIndex();
+    /// Returns the protected previous image index if an image dissolve transition is active.
+    pub inline fn getTransitionPrevIndex(self: *const ViewerState) ?usize {
+        return self.image_transition.getPrevIndex();
     }
 
     /// Initializes a headless `ViewerState` instance for CLI, testing, and batch processing.

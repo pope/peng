@@ -25,6 +25,7 @@ pub const SnackbarTrigger = enum(u8) {
     zoom = 5,
     rotation = 6,
     manga_mode = 7,
+    crossfade = 8,
 };
 
 pub const TRIGGER_COUNT: usize = @typeInfo(SnackbarTrigger).@"enum".fields.len;
@@ -33,6 +34,7 @@ pub const TRIGGER_COUNT: usize = @typeInfo(SnackbarTrigger).@"enum".fields.len;
 pub const SnackbarContext = struct {
     viewport: *const ViewportParams,
     manga_mode: bool = false,
+    crossfade: bool = true,
 };
 
 /// Signature for declarative notification message formatters.
@@ -105,6 +107,10 @@ fn formatMangaMode(ctx: SnackbarContext, _: []u8) []const u8 {
     return if (ctx.manga_mode) "Manga Mode: ON (RTL)" else "Manga Mode: OFF";
 }
 
+fn formatCrossfade(ctx: SnackbarContext, _: []u8) []const u8 {
+    return if (ctx.crossfade) "Crossfade: ON" else "Crossfade: OFF";
+}
+
 /// Master declarative table of snackbar notification rules.
 pub const DEFAULT_SNACKBAR_RULES = [_]SnackbarRule{
     .{
@@ -144,7 +150,7 @@ pub const DEFAULT_SNACKBAR_RULES = [_]SnackbarRule{
         .label = "Reset Adjustments",
         .enabled = true,
         .duration_ms = 1800,
-        .intents = &.{ .reset_adjustments },
+        .intents = &.{.reset_adjustments},
         .format_fn = formatResetAdjustments,
     },
     .{
@@ -170,6 +176,14 @@ pub const DEFAULT_SNACKBAR_RULES = [_]SnackbarRule{
         .duration_ms = 1800,
         .intents = &.{ .toggle_manga_mode, .set_manga_mode },
         .format_fn = formatMangaMode,
+    },
+    .{
+        .trigger = .crossfade,
+        .label = "Crossfade",
+        .enabled = true,
+        .duration_ms = 1800,
+        .intents = &.{ .toggle_crossfade, .set_crossfade },
+        .format_fn = formatCrossfade,
     },
 };
 
@@ -271,6 +285,12 @@ test "Snackbar formatters produce expected text" {
     try std.testing.expectEqualStrings("Manga Mode: ON (RTL)", manga_on);
     const manga_off = formatMangaMode(.{ .viewport = &vp, .manga_mode = false }, &buf);
     try std.testing.expectEqualStrings("Manga Mode: OFF", manga_off);
+
+    // Crossfade
+    const cf_on = formatCrossfade(.{ .viewport = &vp, .crossfade = true }, &buf);
+    try std.testing.expectEqualStrings("Crossfade: ON", cf_on);
+    const cf_off = formatCrossfade(.{ .viewport = &vp, .crossfade = false }, &buf);
+    try std.testing.expectEqualStrings("Crossfade: OFF", cf_off);
 }
 
 test "findRule maps intents to declarative rules" {
@@ -285,6 +305,10 @@ test "findRule maps intents to declarative rules" {
     const bright_rule = findRule(.increase_brightness);
     try std.testing.expect(bright_rule != null);
     try std.testing.expectEqual(SnackbarTrigger.brightness, bright_rule.?.trigger);
+
+    const crossfade_rule = findRule(.toggle_crossfade);
+    try std.testing.expect(crossfade_rule != null);
+    try std.testing.expectEqual(SnackbarTrigger.crossfade, crossfade_rule.?.trigger);
 
     const unmapped_rule = findRule(.next_image);
     try std.testing.expect(unmapped_rule == null);
