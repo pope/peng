@@ -141,8 +141,10 @@ pub fn renderFrame(
             current_entry,
             draw_w,
             draw_h,
+            view_w,
             total_images,
             frame_allocator,
+            measure_data,
         );
     });
 
@@ -422,13 +424,84 @@ fn renderEmptyState() void {
     });
 }
 
+/// Formats the loading indicator text with the filename, middle-truncating the filename if it exceeds available width.
+///
+/// Parameters:
+/// - `allocator`: Frame arena allocator used for temporary string construction.
+/// - `filename_opt`: Basename of the file being decoded, or null.
+/// - `max_w`: Maximum available width in logical pixels.
+/// - `font_size`: Point size of the font used for measurement and display.
+/// - `measure_data`: Active font and text measurement context.
+///
+/// Returns:
+/// A string slice valid for the current frame lifetime.
+fn formatLoadingText(
+    allocator: std.mem.Allocator,
+    filename_opt: ?[]const u8,
+    max_w: f32,
+    font_size: u16,
+    measure_data: *const MeasureTextUserData,
+) []const u8 {
+    const fallback = if (max_w < 140.0) "Loading..." else "Loading image...";
+
+    const fname = filename_opt orelse return fallback;
+    if (fname.len == 0) return fallback;
+
+    const font = measure_data.fonts[0] orelse {
+        // Fallback for headless test environments without loaded TTF fonts
+        return std.fmt.allocPrint(allocator, "Loading {s}...", .{fname}) catch |err| {
+            std.log.warn("Failed to format loading text fallback: {any}", .{err});
+            return fallback;
+        };
+    };
+
+    const target_size = @as(f32, @floatFromInt(font_size));
+    if (font.getFontSize() != target_size) {
+        _ = font.setFontSize(target_size);
+    }
+
+    // Measure the prefix "Loading "
+    const prefix = "Loading ";
+    const prefix_size = font.getStringSize(allocator, prefix) orelse sdl.Font.TextSize{ .w = 0, .h = 0 };
+    const prefix_w = @as(f32, @floatFromInt(prefix_size.w));
+
+    // If available width cannot comfortably fit prefix plus a minimal filename, fall back
+    if (max_w <= prefix_w + 30.0) {
+        return fallback;
+    }
+
+    const avail_fname_w = max_w - prefix_w;
+    const truncated_fname = truncateFilename(allocator, fname, avail_fname_w, font_size, measure_data);
+
+    // If truncation collapsed to just "...", avoid "Loading ......" by returning fallback
+    if (std.mem.eql(u8, truncated_fname, "...")) {
+        return fallback;
+    }
+
+    // If already middle-truncated ("..."), avoid double ellipsis at the end
+    const is_middle_truncated = std.mem.indexOf(u8, truncated_fname, "...") != null;
+    if (is_middle_truncated) {
+        return std.fmt.allocPrint(allocator, "Loading {s}", .{truncated_fname}) catch |err| {
+            std.log.warn("Failed to format loading text: {any}", .{err});
+            return fallback;
+        };
+    }
+
+    return std.fmt.allocPrint(allocator, "Loading {s}...", .{truncated_fname}) catch |err| {
+        std.log.warn("Failed to format loading text: {any}", .{err});
+        return fallback;
+    };
+}
+
 fn renderImageCanvas(
     ui_model: UiViewModel,
     entry: state.CacheEntry,
     draw_w: f32,
     draw_h: f32,
+    view_w: f32,
     rotation_angle: f32,
     frame_allocator: std.mem.Allocator,
+    measure_data: *const MeasureTextUserData,
 ) void {
     const is_thumb_crossfade = (entry.status == .loaded_gpu) and
         (entry.thumbnail == .loaded) and
@@ -559,6 +632,21 @@ fn renderImageCanvas(
         .decoding => |dec| {
             const elapsed = ui_model.current_time_ms -| dec.start_time_ms;
             const show_loading = elapsed > state.LOADING_GRACE_PERIOD_MS;
+            const font_size: u16 = 22;
+
+            const loading_text = if (show_loading) blk: {
+                const filename_opt: ?[]const u8 = if (ui_model.current_image_entry) |entry_item|
+                    entry_item.getBasename()
+                else if (ui_model.current_index) |idx|
+                    if (idx < ui_model.image_list.len) ui_model.image_list[idx].getBasename() else null
+                else
+                    null;
+
+                const container_w = if (draw_w > 0) @min(draw_w, view_w) else view_w;
+                const max_text_w = @max(container_w - 40.0, 0.0);
+                break :blk formatLoadingText(frame_allocator, filename_opt, max_text_w, font_size, measure_data);
+            } else "";
+
             if (draw_w > 0 and draw_h > 0) {
                 clay.UI()(.{
                     .id = clay.getElementId("ImageCanvas"),
@@ -573,10 +661,11 @@ fn renderImageCanvas(
                     },
                 })({
                     if (show_loading) {
-                        clay.text("Loading image...", .{
+                        clay.text(loading_text, .{
                             .color = theme.pink,
-                            .font_size = 22,
+                            .font_size = font_size,
                             .font_id = 0,
+                            .wrap_mode = .none,
                         });
                     }
                 });
@@ -591,10 +680,11 @@ fn renderImageCanvas(
                     },
                 })({
                     if (show_loading) {
-                        clay.text("Loading image...", .{
+                        clay.text(loading_text, .{
                             .color = theme.pink,
-                            .font_size = 22,
+                            .font_size = font_size,
                             .font_id = 0,
+                            .wrap_mode = .none,
                         });
                     }
                 });
@@ -624,8 +714,10 @@ fn renderViewport(
     current_entry: anytype,
     draw_w: f32,
     draw_h: f32,
+    view_w: f32,
     total_images: usize,
     frame_allocator: std.mem.Allocator,
+    measure_data: *const MeasureTextUserData,
 ) void {
     clay.UI()(.{
         .id = clay.getElementId("Viewport"),
@@ -641,8 +733,10 @@ fn renderViewport(
                 entry,
                 draw_w,
                 draw_h,
+                view_w,
                 ui_model.viewport.rotation_angle,
                 frame_allocator,
+                measure_data,
             );
         } else if (ui_model.is_loading_files or total_images > 0) {
             // Centered viewport loading screen while file discovery is active
@@ -670,4 +764,41 @@ fn renderViewport(
             renderEmptyState();
         }
     });
+}
+
+test "formatLoadingText - fallback when no filename" {
+    var data = MeasureTextUserData{
+        .allocator = std.testing.allocator,
+        .fonts = [_]?sdl.Font{null} ** 2,
+    };
+    const res = formatLoadingText(std.testing.allocator, null, 400.0, 22, &data);
+    try std.testing.expectEqualStrings("Loading image...", res);
+}
+
+test "formatLoadingText - with filename" {
+    var data = MeasureTextUserData{
+        .allocator = std.testing.allocator,
+        .fonts = [_]?sdl.Font{null} ** 2,
+    };
+    const res = formatLoadingText(std.testing.allocator, "photo.jpg", 400.0, 22, &data);
+    defer std.testing.allocator.free(res);
+    try std.testing.expectEqualStrings("Loading photo.jpg...", res);
+}
+
+test "formatLoadingText - fallback when empty filename" {
+    var data = MeasureTextUserData{
+        .allocator = std.testing.allocator,
+        .fonts = [_]?sdl.Font{null} ** 2,
+    };
+    const res = formatLoadingText(std.testing.allocator, "", 400.0, 22, &data);
+    try std.testing.expectEqualStrings("Loading image...", res);
+}
+
+test "formatLoadingText - narrow viewport fallback" {
+    var data = MeasureTextUserData{
+        .allocator = std.testing.allocator,
+        .fonts = [_]?sdl.Font{null} ** 2,
+    };
+    const res = formatLoadingText(std.testing.allocator, null, 100.0, 22, &data);
+    try std.testing.expectEqualStrings("Loading...", res);
 }
