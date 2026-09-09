@@ -64,14 +64,17 @@
         ]
       },
       "locked": {
-        "lastModified": 1788717002,
-        "narHash": "sha256-zeTfE+H053MQgDWvN9ThtWHOcgaZbOwytLFlKsPWDuI=",
-        "path": "/home/pope/Code/jailed-antigravity",
-        "type": "path"
+        "lastModified": 1788716927,
+        "narHash": "sha256-LIH84ax0xqhN/ypVi4F6afF/UJBO4uZJLE6h/Hq8pjo=",
+        "ref": "refs/heads/main",
+        "rev": "3dec00bbb1afb9f52d3ecd089a2817db62a1cc01",
+        "revCount": 8,
+        "type": "git",
+        "url": "https://p0.pe/my-git-repos/jailed-antigravity.git"
       },
       "original": {
-        "path": "/home/pope/Code/jailed-antigravity",
-        "type": "path"
+        "type": "git",
+        "url": "https://p0.pe/my-git-repos/jailed-antigravity.git"
       }
     },
     "nixpkgs": {

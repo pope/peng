@@ -4,7 +4,7 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     jailed-antigravity = {
-      url = "path:/home/pope/Code/jailed-antigravity";
+      url = "git+https://p0.pe/my-git-repos/jailed-antigravity.git";
       inputs.nixpkgs.follows = "nixpkgs";
     };
     treefmt-nix = {
@@ -95,9 +95,6 @@
                   { agy, ... }: {
                     inherit pkgs;
                     package = agy.google-antigravity;
-                    codePaths = [
-                      "~/Code/jailed-antigravity"
-                    ];
                     fwdEnv = [
                       "LD_LIBRARY_PATH"
                       "PATH"
