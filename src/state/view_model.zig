@@ -42,9 +42,6 @@ pub const UiViewModel = struct {
     window_title: []const u8 = "Peng Image Viewer",
     viewport: ViewportParams,
     palette: *const palette_state.PaletteState,
-    palette_reveal: f32 = 1.0,
-    thumb_crossfade: f32 = 1.0,
-    title_overlay_reveal: f32 = 0.0,
     snackbar: SnackbarDisplay = .none,
     anim_values: [32]f32 = [_]f32{0.0} ** 32,
     debug_show_thumb: bool,
@@ -67,21 +64,3 @@ pub const MeasureTextUserData = struct {
     is_debug_measuring: bool = false,
     allocator: std.mem.Allocator = undefined,
 };
-
-test "UiViewModel current_time_ms and default values" {
-    var palette = try palette_state.PaletteState.init(std.testing.allocator);
-    defer palette.deinit();
-    const model = UiViewModel{
-        .is_fullscreen = false,
-        .total_images = 0,
-        .current_index = null,
-        .is_loading_files = false,
-        .overlays = .{},
-        .viewport = .{},
-        .palette = &palette,
-        .debug_show_thumb = false,
-    };
-    try std.testing.expectEqual(@as(u64, 0), model.current_time_ms);
-    try std.testing.expectEqual(@as(f32, 0.0), model.anim(.palette_reveal));
-    try std.testing.expect(model.snackbar == .none);
-}

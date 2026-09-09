@@ -256,13 +256,6 @@ pub fn build(b: *std.Build) void {
     test_runner_exe.root_module.addImport("sdl", sdl_module);
     b.installArtifact(test_runner_exe);
 
-    const exe_tests = b.addTest(.{
-        .root_module = exe.root_module,
-    });
-
-    const run_exe_tests = b.addRunArtifact(exe_tests);
-    run_exe_tests.step.dependOn(b.getInstallStep());
-
     const run_integration_tests = b.addRunArtifact(test_runner_exe);
     run_integration_tests.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
@@ -293,6 +286,18 @@ pub fn build(b: *std.Build) void {
     const run_state_tests = b.addRunArtifact(state_tests);
     run_state_tests.step.dependOn(b.getInstallStep());
 
+    const input_tests = b.addTest(.{
+        .root_module = input_module,
+    });
+    const run_input_tests = b.addRunArtifact(input_tests);
+    run_input_tests.step.dependOn(b.getInstallStep());
+
+    const ipc_tests = b.addTest(.{
+        .root_module = ipc_module,
+    });
+    const run_ipc_tests = b.addRunArtifact(ipc_tests);
+    run_ipc_tests.step.dependOn(b.getInstallStep());
+
     const core_module = b.createModule(.{
         .root_source_file = b.path("src/app/core/root.zig"),
         .target = target,
@@ -308,12 +313,13 @@ pub fn build(b: *std.Build) void {
     run_core_tests.step.dependOn(b.getInstallStep());
 
     if (target.result.os.tag == .windows) {
-        run_exe_tests.addPathDir(b.getInstallPath(.bin, ""));
         run_sdl_tests.addPathDir(b.getInstallPath(.bin, ""));
         run_state_tests.addPathDir(b.getInstallPath(.bin, ""));
         run_core_tests.addPathDir(b.getInstallPath(.bin, ""));
         run_intents_tests.addPathDir(b.getInstallPath(.bin, ""));
         run_config_tests.addPathDir(b.getInstallPath(.bin, ""));
+        run_input_tests.addPathDir(b.getInstallPath(.bin, ""));
+        run_ipc_tests.addPathDir(b.getInstallPath(.bin, ""));
         run_integration_tests.addPathDir(b.getInstallPath(.bin, ""));
     }
 
@@ -323,7 +329,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_core_tests.step);
     test_step.dependOn(&run_intents_tests.step);
     test_step.dependOn(&run_config_tests.step);
-    test_step.dependOn(&run_exe_tests.step);
+    test_step.dependOn(&run_input_tests.step);
+    test_step.dependOn(&run_ipc_tests.step);
     test_step.dependOn(&run_integration_tests.step);
 }
 

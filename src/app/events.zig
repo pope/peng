@@ -238,7 +238,6 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
                         .h = decoded_data.h,
                         .size_bytes = decoded_data.size_bytes,
                         .mime_type = decoded_data.mime_type,
-                        .raw_metadata = decoded_data.raw_metadata,
                         .read_time_ms = decoded_data.read_time_ms,
                         .decode_time_ms = decoded_data.decode_time_ms,
                         .conversion_time_ms = full_res.conversion_time_ms,
@@ -334,7 +333,6 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
                     .h = decoded_data.h,
                     .size_bytes = decoded_data.size_bytes,
                     .mime_type = decoded_data.mime_type,
-                    .raw_metadata = decoded_data.raw_metadata,
                     .read_time_ms = decoded_data.read_time_ms,
                     .decode_time_ms = decoded_data.decode_time_ms,
                     .conversion_time_ms = decoded_data.conversion_time_ms,
@@ -465,11 +463,8 @@ test "drainWorkerEvents - exif_orientation_parsed & decode_failed" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    try state.cache.appendWithKey(allocator, .{
-        .index = 0,
-        .generation = state.cache.getGeneration(),
-    }, .{
-        .status = .{ .decoding = .{ .has_thread = true } },
+    _ = try state.cache.appendSlot(allocator, 0, .{
+        .decoding = .{ .has_thread = true },
     });
 
     try state.workers.event_queue.push(allocator, io, .{
@@ -537,19 +532,13 @@ test "drainWorkerEvents - neighbor image_decoded stays loaded_cpu while current 
     state.viewer.navigation.current_index = 0;
 
     // Slot 0 is decoding
-    try state.cache.appendWithKey(allocator, .{
-        .index = 0,
-        .generation = state.cache.getGeneration(),
-    }, .{
-        .status = .{ .decoding = .{ .has_thread = true } },
+    _ = try state.cache.appendSlot(allocator, 0, .{
+        .decoding = .{ .has_thread = true },
     });
 
     // Slot 1 is decoding
-    try state.cache.appendWithKey(allocator, .{
-        .index = 1,
-        .generation = state.cache.getGeneration(),
-    }, .{
-        .status = .{ .decoding = .{ .has_thread = true } },
+    _ = try state.cache.appendSlot(allocator, 1, .{
+        .decoding = .{ .has_thread = true },
     });
 
     const surf = sdl.Surface.create(
@@ -589,11 +578,8 @@ test "drainWorkerEvents - dimensions_probed sets dimensions and clears has_threa
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    try state.cache.appendWithKey(allocator, .{
-        .index = 0,
-        .generation = state.cache.getGeneration(),
-    }, .{
-        .status = .{ .decoding = .{ .has_thread = true } },
+    _ = try state.cache.appendSlot(allocator, 0, .{
+        .decoding = .{ .has_thread = true },
     });
 
     try state.workers.event_queue.push(allocator, io, .{
@@ -697,23 +683,18 @@ test "drainWorkerEvents - palette_folder_count updates directory and archive ent
     _ = drainWorkerEvents(&state);
 
     try std.testing.expect(state.viewer.ui.palette.selection_dirty);
+    const expected_dir_scan = state_pkg.EntryScanState{
+        .scanned = .{ .image_count = 12, .subdir_count = 3 },
+    };
     try std.testing.expectEqual(
-        @as(?usize, 12),
-        state.viewer.ui.palette.dir_items.items[0].getImageCount(),
+        expected_dir_scan,
+        state.viewer.ui.palette.dir_items.items[0].directory.scan,
     );
-    try std.testing.expectEqual(
-        @as(?usize, 3),
-        state.viewer.ui.palette.dir_items.items[0].getSubdirCount(),
-    );
-    try std.testing.expectEqual(
-        @as(?usize, 45),
-        state.viewer.ui.palette.dir_items.items[1].getImageCount(),
-    );
-    const expected_scan = state_pkg.EntryScanState{
+    const expected_archive_scan = state_pkg.EntryScanState{
         .scanned = .{ .image_count = 45, .subdir_count = 0 },
     };
     try std.testing.expectEqual(
-        expected_scan,
+        expected_archive_scan,
         state.viewer.ui.palette.dir_items.items[1].archive_file.scan,
     );
 }

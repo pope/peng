@@ -23,18 +23,6 @@ pub const TextureScaleMode = enum {
     mitchell,
     lanczos3,
     lanczos3_spline,
-
-    /// Maps the enum variant to the integer sampler index expected by fragment shaders.
-    pub fn toScaleModeInt(self: TextureScaleMode) i32 {
-        return switch (self) {
-            .nearest => 0,
-            .linear => 1,
-            .pixel_art => 2,
-            .mitchell => 3,
-            .lanczos3 => 4,
-            .lanczos3_spline => 5,
-        };
-    }
 };
 
 /// Comptime-generated comma-separated list of all valid ScaleMode names via reflection.
@@ -172,12 +160,3 @@ pub const AppIntent = union(enum) {
     // Application lifecycle
     quit,
 };
-
-test "TextureScaleMode - toScaleModeInt mapping" {
-    try std.testing.expectEqual(@as(i32, 0), TextureScaleMode.nearest.toScaleModeInt());
-    try std.testing.expectEqual(@as(i32, 1), TextureScaleMode.linear.toScaleModeInt());
-    try std.testing.expectEqual(@as(i32, 2), TextureScaleMode.pixel_art.toScaleModeInt());
-    try std.testing.expectEqual(@as(i32, 3), TextureScaleMode.mitchell.toScaleModeInt());
-    try std.testing.expectEqual(@as(i32, 4), TextureScaleMode.lanczos3.toScaleModeInt());
-    try std.testing.expectEqual(@as(i32, 5), TextureScaleMode.lanczos3_spline.toScaleModeInt());
-}

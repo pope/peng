@@ -15,8 +15,6 @@ pub fn isAngle90or270(angle: f32) bool {
 /// Computed visual dimensions of an image, its destination layout bounds,
 /// and its base scale factor.
 pub const ViewDims = struct {
-    img_w: f32,
-    img_h: f32,
     draw_w: f32,
     draw_h: f32,
     base_scale: f32,
@@ -34,8 +32,6 @@ pub fn computeViewDims(
 ) ViewDims {
     if (raw_w <= 0.0 or raw_h <= 0.0) {
         return .{
-            .img_w = 0.0,
-            .img_h = 0.0,
             .draw_w = 0.0,
             .draw_h = 0.0,
             .base_scale = 1.0,
@@ -100,8 +96,6 @@ pub fn computeViewDims(
     }
 
     return .{
-        .img_w = img_w,
-        .img_h = img_h,
         .draw_w = draw_w,
         .draw_h = draw_h,
         .base_scale = draw_w / img_w,

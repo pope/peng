@@ -54,11 +54,6 @@ pub const Window = extern struct {
         return c.SDL_SetWindowBordered(self.ptr, bordered);
     }
 
-    /// Returns true if the window currently has the borderless flag set.
-    pub fn isBorderless(self: Window) bool {
-        return (c.SDL_GetWindowFlags(self.ptr) & c.SDL_WINDOW_BORDERLESS) != 0;
-    }
-
     /// Claims this window for rendering with the specified SDL GPU device.
     pub fn claimForGpu(self: Window, device: gpu.Device) bool {
         return c.SDL_ClaimWindowForGPUDevice(device.ptr, @ptrCast(self.ptr));

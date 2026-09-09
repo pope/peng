@@ -97,28 +97,6 @@ pub const DirectoryEntry = union(enum) {
             else => null,
         };
     }
-
-    /// Returns the image count if this entry has completed scanning or has
-    /// cached counts; otherwise `null`.
-    pub fn getImageCount(self: DirectoryEntry) ?usize {
-        const scan = self.getScanState() orelse return null;
-        return switch (scan) {
-            .scanned, .cached => |s| s.image_count,
-            .partial_counted => |p| p.image_count,
-            else => null,
-        };
-    }
-
-    /// Returns the subdirectory count if this entry has completed scanning
-    /// or has cached counts; otherwise `null`.
-    pub fn getSubdirCount(self: DirectoryEntry) ?usize {
-        const scan = self.getScanState() orelse return null;
-        return switch (scan) {
-            .scanned, .cached => |s| s.subdir_count,
-            .partial_counted => |p| p.subdir_count,
-            else => null,
-        };
-    }
 };
 
 /// Main state model for command palette modals, directory navigation, and fuzzy searching.
@@ -129,7 +107,6 @@ pub const PaletteState = struct {
     selected_idx: usize = 0,
     matches: std.ArrayListUnmanaged(usize) = .empty,
     scored_matches: std.ArrayListUnmanaged(ScoredMatch) = .empty,
-    scroll_offset_y: f32 = 0.0,
     selection_dirty: bool = false,
     current_nav_dir: std.ArrayListUnmanaged(u8) = .empty,
     last_nav_dir: std.ArrayListUnmanaged(u8) = .empty,
@@ -513,7 +490,6 @@ test "DirectoryEntry accessors and scan state" {
     try std.testing.expectEqualStrings("/home/pope", p.getFullPath());
     try std.testing.expect(!p.isArchive());
     try std.testing.expect(p.getScanState() == null);
-    try std.testing.expect(p.getImageCount() == null);
 
     const d = DirectoryEntry{
         .directory = .{
@@ -526,7 +502,8 @@ test "DirectoryEntry accessors and scan state" {
     try std.testing.expectEqualStrings("/photos", d.getFullPath());
     try std.testing.expect(!d.isArchive());
     try std.testing.expect(d.getScanState() != null);
-    try std.testing.expectEqual(@as(usize, 42), d.getImageCount().?);
+    try std.testing.expectEqual(@as(usize, 42), d.getScanState().?.scanned.image_count);
+    try std.testing.expectEqual(@as(usize, 3), d.getScanState().?.scanned.subdir_count);
 
     const a = DirectoryEntry{
         .archive_file = .{

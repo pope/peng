@@ -15,7 +15,6 @@ const FrameInput = types.FrameInput;
 const MeasureTextUserData = state.MeasureTextUserData;
 const RenderResources = graphics.RenderResources;
 const UiViewModel = state.UiViewModel;
-const ViewParams = types.ViewParams;
 const renderPalette = palette.renderPalette;
 const renderStatsOverlay = stats.renderStatsOverlay;
 const saveTextureToPng = graphics.saveTextureToPng;
@@ -74,7 +73,6 @@ pub fn computeDrawDims(
 /// Builds the complete UI layout hierarchy via Clay, tessellates geometry,
 /// and records draw commands for the frame.
 pub fn renderFrame(
-    view_params: ViewParams,
     ui_model: UiViewModel,
     gpu_res: *RenderResources,
     input: FrameInput,
@@ -108,8 +106,8 @@ pub fn renderFrame(
         current_entry,
         view_w,
         view_h,
-        view_params.viewport.rotation_angle,
-        view_params.viewport.fit_mode,
+        ui_model.viewport.rotation_angle,
+        ui_model.viewport.fit_mode,
     );
     const draw_w = dims.w;
     const draw_h = dims.h;
@@ -239,7 +237,7 @@ pub fn renderFrame(
             return;
         }
         try renderer.renderClayCommands(
-            view_params.viewport,
+            ui_model.viewport,
             gpu_res,
             cmd_wrapper,
             tex,

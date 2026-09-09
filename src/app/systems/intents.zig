@@ -478,11 +478,8 @@ test "rotate_cw, rotate_ccw, and reset_rotation intents" {
     try app_st.viewer.navigation.image_list.append(allocator, media_item);
     app_st.viewer.navigation.current_index = 0;
 
-    const key = app_st.cache.activeKey(0);
-    try app_st.cache.appendWithKey(allocator, key, .{
-        .status = .{ .decoding = .{} },
-        .orientation = .rotate_270,
-    });
+    const key = try app_st.cache.appendSlot(allocator, 0, .{ .decoding = .{} });
+    app_st.cache.get(key).?.orientation = .rotate_270;
 
     // Rotate CW
     try executeIntent(&app_st, .rotate_cw);

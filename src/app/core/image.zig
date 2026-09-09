@@ -14,7 +14,6 @@ pub const Orientation = state_pkg.Orientation;
 const parseExifDimensions = exif.parseExifDimensions;
 const parseExifOrientation = exif.parseExifOrientation;
 const RawMetadata = state_pkg.RawMetadata;
-const ThumbComponent = state_pkg.ThumbComponent;
 
 /// Unique lookup key identifying a cached image slot by its playlist index
 /// and cache generation epoch.
@@ -42,11 +41,6 @@ pub const CacheSlotMap = struct {
     /// in-flight asynchronous decode tasks.
     pub fn advanceGeneration(self: *CacheSlotMap) usize {
         return self.generation.fetchAdd(1, .release) +% 1;
-    }
-
-    /// Returns the current atomic generation epoch.
-    pub fn getGeneration(self: *const CacheSlotMap) usize {
-        return self.generation.load(.acquire);
     }
 
     /// Generates a `CacheKey` combining the specified media index and current generation epoch.
@@ -101,26 +95,9 @@ pub const CacheSlotMap = struct {
         return null;
     }
 
-    /// Returns a const pointer to the `CacheEntry` corresponding to `key`, or null if not present.
-    pub fn getConst(self: *const CacheSlotMap, key: CacheKey) ?*const CacheEntry {
-        if (self.getIndex(key)) |i| return &self.slots.items(.entry)[i];
-        return null;
-    }
-
     /// Returns a copy of the `CacheEntry` corresponding to `key`, or null if not present.
     pub fn getEntry(self: *const CacheSlotMap, key: CacheKey) ?CacheEntry {
         if (self.getIndex(key)) |i| return self.slots.items(.entry)[i];
-        return null;
-    }
-
-    /// Returns the GPU texture handle if the entry at `key` is in `.loaded_gpu` state, or null.
-    pub fn getTexture(self: *CacheSlotMap, key: CacheKey) ?sdl.gpu.Texture {
-        if (self.get(key)) |entry| {
-            switch (entry.status) {
-                .loaded_gpu => |gpu| return gpu.gpu_texture,
-                else => {},
-            }
-        }
         return null;
     }
 
@@ -143,16 +120,6 @@ pub const CacheSlotMap = struct {
         const key = CacheKey{ .index = index, .generation = self.generation.load(.acquire) };
         try self.slots.append(allocator, .{ .key = key, .entry = .{ .status = status } });
         return key;
-    }
-
-    /// Appends an explicit key-entry pair into the slot map.
-    pub fn appendWithKey(
-        self: *CacheSlotMap,
-        allocator: std.mem.Allocator,
-        key: CacheKey,
-        entry: CacheEntry,
-    ) !void {
-        try self.slots.append(allocator, .{ .key = key, .entry = entry });
     }
 
     /// Removes a slot at `index_in_list` via swap-remove and releases its GPU texture.
@@ -1761,17 +1728,15 @@ test "enforceVramBudget - distant eviction, circular distance, and neighbor prot
     var cache = CacheSlotMap{};
     defer cache.deinit(allocator, null);
 
-    const makeGpu = struct {
-        fn create(size: usize) CacheEntry {
+    const makeGpuStatus = struct {
+        fn create(size: usize) CacheStatus {
             return .{
-                .status = .{
-                    .loaded_gpu = .{
-                        .gpu_texture = undefined,
-                        .w = 100,
-                        .h = 100,
-                        .size_bytes = size,
-                        .memory_size_bytes = size,
-                    },
+                .loaded_gpu = .{
+                    .gpu_texture = undefined,
+                    .w = 100,
+                    .h = 100,
+                    .size_bytes = size,
+                    .memory_size_bytes = size,
                 },
             };
         }
@@ -1779,11 +1744,11 @@ test "enforceVramBudget - distant eviction, circular distance, and neighbor prot
 
     // total_items = 10, current = 0
     // Slots: 0 (dist 0), 1 (dist 1), 2 (dist 2), 5 (dist 5), 9 (dist 1 wrap-around)
-    try cache.appendWithKey(allocator, .{ .index = 0, .generation = 0 }, makeGpu(100));
-    try cache.appendWithKey(allocator, .{ .index = 1, .generation = 0 }, makeGpu(100));
-    try cache.appendWithKey(allocator, .{ .index = 2, .generation = 0 }, makeGpu(100));
-    try cache.appendWithKey(allocator, .{ .index = 5, .generation = 0 }, makeGpu(100));
-    try cache.appendWithKey(allocator, .{ .index = 9, .generation = 0 }, makeGpu(100));
+    _ = try cache.appendSlot(allocator, 0, makeGpuStatus(100));
+    _ = try cache.appendSlot(allocator, 1, makeGpuStatus(100));
+    _ = try cache.appendSlot(allocator, 2, makeGpuStatus(100));
+    _ = try cache.appendSlot(allocator, 5, makeGpuStatus(100));
+    _ = try cache.appendSlot(allocator, 9, makeGpuStatus(100));
     // Total VRAM = 500 bytes
 
     try std.testing.expectEqual(@as(usize, 500), cache.getTotalVramBytes());
@@ -1814,7 +1779,7 @@ test "enforceVramBudget - distant eviction, circular distance, and neighbor prot
     try std.testing.expect(cache.getIndex(.{ .index = 9, .generation = 0 }) == null);
 
     // 4. Test robustness against linear_dist > total_items (e.g. slot 99 with total_items = 5)
-    try cache.appendWithKey(allocator, .{ .index = 99, .generation = 0 }, makeGpu(100));
+    _ = try cache.appendSlot(allocator, 99, makeGpuStatus(100));
     try std.testing.expectEqual(@as(usize, 200), cache.getTotalVramBytes());
     cache.enforceVramBudget(null, 0, null, 5, 100);
     try std.testing.expectEqual(@as(usize, 100), cache.getTotalVramBytes());
@@ -1823,8 +1788,8 @@ test "enforceVramBudget - distant eviction, circular distance, and neighbor prot
 
     // 5. Slideshow protected_prev_index guard: both current (slot 0) and
     // protected prev (slot 3) must be retained
-    try cache.appendWithKey(allocator, .{ .index = 3, .generation = 0 }, makeGpu(100));
-    try cache.appendWithKey(allocator, .{ .index = 4, .generation = 0 }, makeGpu(100));
+    _ = try cache.appendSlot(allocator, 3, makeGpuStatus(100));
+    _ = try cache.appendSlot(allocator, 4, makeGpuStatus(100));
     try std.testing.expectEqual(@as(usize, 300), cache.getTotalVramBytes());
     // Evict down to 50 bytes with slot 3 protected as previous slide:
     // slot 4 evicted, slots 0 and 3 protected
@@ -1844,21 +1809,19 @@ test "hasUnreadyPrefetchSlots" {
     // Empty cache -> unready
     try std.testing.expect(cache.hasUnreadyPrefetchSlots(0, 5, true));
 
-    const makeGpu = CacheEntry{
-        .status = .{
-            .loaded_gpu = .{
-                .gpu_texture = undefined,
-                .w = 100,
-                .h = 100,
-                .size_bytes = 100,
-                .memory_size_bytes = 100,
-            },
+    const makeGpuStatus = CacheStatus{
+        .loaded_gpu = .{
+            .gpu_texture = undefined,
+            .w = 100,
+            .h = 100,
+            .size_bytes = 100,
+            .memory_size_bytes = 100,
         },
     };
 
     // Add 0, 1, 2, 3, 4 as loaded_gpu
     for (0..5) |idx| {
-        try cache.appendWithKey(allocator, .{ .index = idx, .generation = 0 }, makeGpu);
+        _ = try cache.appendSlot(allocator, idx, makeGpuStatus);
     }
     try std.testing.expect(!cache.hasUnreadyPrefetchSlots(0, 5, true));
 
@@ -1888,12 +1851,9 @@ test "CacheSlotMap.updateStatus" {
     var cache = CacheSlotMap{};
     defer cache.deinit(allocator, null);
 
-    try cache.appendWithKey(allocator, .{ .index = 10, .generation = 1 }, .{
-        .status = .{ .decoding = .{} },
-    });
-    try cache.appendWithKey(allocator, .{ .index = 20, .generation = 1 }, .{
-        .status = .{ .decoding = .{} },
-    });
+    _ = cache.advanceGeneration();
+    _ = try cache.appendSlot(allocator, 10, .{ .decoding = .{} });
+    _ = try cache.appendSlot(allocator, 20, .{ .decoding = .{} });
 
     // Test successful update
     const updated = cache.updateStatus(.{ .index = 20, .generation = 1 }, .failed);
@@ -2082,10 +2042,10 @@ test "probeMediaMetadata - archive entry handling" {
 
 test "CacheSlotMap - atomic generation advance and activeKey" {
     var cache = CacheSlotMap{};
-    try std.testing.expectEqual(@as(usize, 0), cache.getGeneration());
+    try std.testing.expectEqual(@as(usize, 0), cache.activeKey(0).generation);
     const next_gen = cache.advanceGeneration();
     try std.testing.expectEqual(@as(usize, 1), next_gen);
-    try std.testing.expectEqual(@as(usize, 1), cache.getGeneration());
+    try std.testing.expectEqual(@as(usize, 1), cache.activeKey(0).generation);
     const key = cache.activeKey(5);
     try std.testing.expectEqual(@as(usize, 5), key.index);
     try std.testing.expectEqual(@as(usize, 1), key.generation);

@@ -3,8 +3,6 @@ const app_config = @import("config");
 const build_options = @import("build_options");
 const builtin = @import("builtin");
 const clay = @import("zclay");
-const input = @import("input");
-const intents = @import("intents");
 const ipc = @import("ipc");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
@@ -346,18 +344,4 @@ pub fn main(init: std.process.Init) !void {
     defer app_ctx.deinit();
 
     try runMainLoop(&app_ctx);
-}
-
-test {
-    std.testing.refAllDecls(app);
-    std.testing.refAllDecls(app_config.cli);
-    std.testing.refAllDecls(input);
-    std.testing.refAllDecls(intents);
-    std.testing.refAllDecls(ipc);
-    std.testing.refAllDecls(sdl);
-    std.testing.refAllDecls(state_pkg);
-    std.testing.refAllDecls(ui);
-    if (!build_options.hot_reload) {
-        std.testing.refAllDecls(viewer);
-    }
 }

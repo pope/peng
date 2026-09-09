@@ -44,11 +44,8 @@ test "AppState slideshow timer auto-advances slide" {
     const frame_input_1s = types.FrameInput{
         .win_w = 100,
         .win_h = 100,
-        .pix_w = 100,
-        .pix_h = 100,
         .scale_x = 1,
         .scale_y = 1,
-        .dpi_scale = 1,
         .mouse_x = 0,
         .mouse_y = 0,
         .mouse_left_down = false,
@@ -105,11 +102,8 @@ test "AppState slideshow pauses during command palette, dragging, or explicit pa
     const frame_input_1s = types.FrameInput{
         .win_w = 100,
         .win_h = 100,
-        .pix_w = 100,
-        .pix_h = 100,
         .scale_x = 1,
         .scale_y = 1,
-        .dpi_scale = 1,
         .mouse_x = 0,
         .mouse_y = 0,
         .mouse_left_down = false,

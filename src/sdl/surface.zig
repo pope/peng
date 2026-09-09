@@ -55,19 +55,6 @@ pub const Surface = struct {
         return c.IMG_SavePNG(self.ptr, path.ptr);
     }
 
-    /// Loads and decodes an image from a null-terminated path pointer.
-    pub fn loadFilePtr(ptr: [*:0]const u8) ?Surface {
-        const raw = c.IMG_Load(ptr);
-        return if (raw) |r| .{ .ptr = r } else null;
-    }
-
-    /// Decodes an image from an in-memory byte slice using SDL_image IO streams.
-    pub fn loadConstMem(bytes: []const u8) !Surface {
-        const io = c.SDL_IOFromConstMem(bytes.ptr, bytes.len) orelse return error.SdlIoFailed;
-        const raw = c.IMG_LoadIO(io, true) orelse return error.SdlSurfaceLoadFailed;
-        return .{ .ptr = raw };
-    }
-
     /// Decodes an image from an in-memory byte slice, returning `null` on failure.
     pub fn loadConstMemOpt(bytes: []const u8) ?Surface {
         const io = c.SDL_IOFromConstMem(bytes.ptr, bytes.len) orelse return null;

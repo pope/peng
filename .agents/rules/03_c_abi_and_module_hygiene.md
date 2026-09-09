@@ -86,48 +86,48 @@ const MediaEntry = state_pkg.MediaEntry;
 
 - When deduplicating utility functions or consolidating symbols into their canonical home module, verify that the retained canonical implementation is the robust, feature-complete version—not a simplified or legacy variant.
 
-## 9. Zig 0.16 Lazy Test Discovery & Module Test Exposure (`std.testing.refAllDecls` & `_ = @import(...)`)
+## 9. Zig 0.16 Test Architecture & Blanket Import Prohibition
 
-- **Zig 0.16 Lazy Semantic Analysis Invariant**: Zig's compiler lazily analyzes declarations and test blocks. Unit tests declared in submodules or child files are **ONLY** compiled and executed during `zig build test` if the test container is explicitly referenced during semantic analysis.
-- **Why `_ = child_module;` Does NOT Run Tests**: Discarding an imported namespace or struct symbol (`_ = submodule;`) is merely an expression discard of a type value. It does **not** force Zig to walk child declarations or compile nested `test` blocks.
-- **The Canonical Test Discovery Patterns**:
-  1. **Same-Module File Test Exposure (`_ = @import(...)`)**:
-     Within the same package or module (e.g. inside `src/state/root.zig` or `src/app/root.zig`), trigger child file tests by importing them inside a top-level `test` block:
-     ```zig
-     test {
-         _ = @import("types.zig");
-         _ = @import("view_transform.zig");
-         _ = @import("palette_state.zig");
-         _ = @import("viewer_state.zig");
-     }
-     ```
-  2. **Cross-Module & Container Struct Test Exposure (`std.testing.refAllDecls`)**:
-     When triggering tests across module boundaries or for container structs exported by imported packages (e.g. testing `app.core.exif` from `src/main.zig`), use `std.testing.refAllDecls` or `std.testing.refAllDeclsRecursive`:
-     ```zig
-     test {
-         std.testing.refAllDecls(app.core.exif);
-         std.testing.refAllDecls(app.core.image);
-         std.testing.refAllDecls(app.systems.intents);
-     }
-     ```
-     This forces the compiler to eagerly analyze all declarations inside the target container, compiling and executing all associated `test` blocks.
-  3. **Module Boundary Invariant in `build.zig`**:
-     `b.addTest(.{ .root_module = exe.root_module })` only runs tests reachable from the root module. Child modules added via `addImport(...)` are treated as separate compilation units. If an imported module's tests are not referenced via `refAllDecls`, they will not run unless a dedicated `b.addTest(.{ .root_module = imported_mod })` step is wired into the build runner.
-  4. **Prohibition of Cross-Module File Path Imports**:
-     NEVER cross module boundaries using relative file paths (e.g. `@import("app/core/exif.zig")` from `src/main.zig`). This causes `error: file exists in modules 'root' and 'app'`. Always access declarations through their canonical module namespace (e.g. `app.core.exif`).
-  5. **Platform Wrapper Module Roots (`src/sdl/root.zig`)**:
-     Platform abstraction packages MUST explicitly pull in all child submodules inside a top-level `test` block to ensure child unit tests compile and run:
-     ```zig
-     test {
-         _ = surface;
-         _ = events;
-         _ = font;
-         _ = gpu;
-         _ = keys;
-         _ = timer;
-         _ = @import("window.zig");
-     }
-     ```
+- **Zig 0.16 Lazy Semantic Analysis Invariant**: Zig's compiler lazily analyzes
+  declarations and test blocks. Declarations in application code are ONLY compiled
+  into the production binary if reachable from `main()`.
+- **Prohibition of `std.testing.refAllDecls` in Application Roots**:
+  - NEVER call `std.testing.refAllDecls` or `std.testing.refAllDeclsRecursive` in
+    application executable roots (`src/main.zig`, `src/msg_main.zig`, `src/viewer.zig`).
+  - `refAllDecls` is for standalone public libraries to guarantee uncalled generic
+    APIs compile; in an application, it transforms uncalled dead code into mandatory
+    compilation dependencies and creates test-locked zombies.
+  - The runtime entry point `main()` defines the authoritative reachability graph
+    for application code.
+- **Dedicated Module Test Artifacts in `build.zig`**:
+  - To test standalone packages (`src/sdl`, `src/intents`, `src/config`, `src/state`,
+    `src/app/core`), declare explicit test steps in `build.zig` via
+    `b.addTest(.{ .root_module = module })`.
+  - Do NOT cross-pollinate module tests into `exe.root_module`.
+  - Platform abstraction packages (`src/sdl/root.zig`) or core utilities
+    (`src/app/core/root.zig`) expose their own internal submodule tests within
+    their package boundary using `_ = @import("submodule.zig");` or `_ = submodule;`
+    in their module-level root `test` block.
+- **The 3-Tier Testing Architecture**:
+  1. **Tier 1: Pure Algorithm & Parser Tests (Inline `test "..."`)**: Co-locate unit
+     tests only for deterministic, stateless math, parsers, and pixel converters
+     (`exif.zig`, `easing.zig`, `surface.zig`, `fs.zig`).
+  2. **Tier 2: Subsystem & State Transition Tests**: Test state machines and intent
+     dispatchers via public inputs and resulting states, never via intermediate
+     struct getters or internal layouts.
+  3. **Tier 3: Black-Box Integration Tests (`test_runner_main.zig`)**: Verify
+     user-visible behaviors, IPC socket commands, and rendering determinism via
+     golden screenshots.
+- **Prohibition of Accessor & Data-Shape Unit Tests**:
+  - NEVER write unit tests solely verifying trivial getters, setters, or
+    intermediate enum/struct layout mappings (`toScaleModeInt()`, `getImageCount()`).
+  - If a data model is not consumed by a production system, do NOT write a test to
+    assert on it. Test the consuming subsystem instead.
+- **Prohibition of Cross-Module File Path Imports**:
+  - NEVER cross module boundaries using relative file paths (e.g.
+    `@import("app/core/exif.zig")` from `src/main.zig`). This causes
+    `error: file exists in modules 'root' and 'app'`. Always access declarations
+    through their canonical module namespace (e.g. `app.core.exif`).
 
 ## 10. Standalone Package Hierarchy & App-Private Core (`src/app/core/`) Architecture
 
@@ -186,9 +186,22 @@ In Zig, declaration visibility is lexically scoped to the declaring file or cont
 
 - Types that appear in public function signatures (as parameters or return types) MUST be `pub`, even if callers use type inference (`const pt = geometry.toNdc(...)`) or anonymous struct literals (`initGraphicsAndWindow(..., .{ .headless = true })`).
 
-### 7. Proactive Dead Code Pruning
+### 7. Proactive Dead Code & Zombie Property Pruning
 
-- Do NOT leave orphaned functions, methods, or structs in the codebase with `pub`. If a declaration has zero callers across production and test code, eliminate it immediately.
+- **Production Reachability Invariant**: A declaration is dead if it has zero
+  callers in runtime production code, even if unit tests call it. Tests MUST NOT
+  be the sole reason an application function, method, or struct exists.
+- **Verification via Build Isolation**: To verify whether code is dead, temporarily
+  remove or comment it out and run `zig build`. If `zig build` succeeds and only
+  `zig build test` fails, the symbol is a "test-locked zombie": delete both the
+  dead symbol and the obsolete test assertion.
+- **Prohibition of Write-Only Zombie Properties**:
+  - Struct fields MUST NOT exist solely to receive telemetry or cache data if no
+    downstream UI layout, shader, or decision-making logic reads them.
+  - If a field is assigned every frame in a system pass (e.g. `sysSyncMetrics`) or
+    initialized in struct literals, verify that at least one production read
+    (`val = obj.field`) exists. If unread, prune the field and its assignment
+    immediately.
 
 ## 12. Mandatory Documentation Invariant for Public Structs and Functions (`///`)
 

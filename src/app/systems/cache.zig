@@ -328,12 +328,7 @@ test "sysUpdateCache - populates prefetch window and evicts unwanted entries" {
     state.viewer.navigation.current_index = 0;
 
     // Add an out-of-window entry at index 99
-    try state.cache.appendWithKey(allocator, .{
-        .index = 99,
-        .generation = state.cache.getGeneration(),
-    }, .{
-        .status = .{ .failed = {} },
-    });
+    _ = try state.cache.appendSlot(allocator, 99, .{ .failed = {} });
     try std.testing.expectEqual(@as(usize, 1), state.cache.count());
 
     const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
@@ -389,22 +384,18 @@ test "sysUpdateCache - retains loaded entries outside prefetch window until budg
     });
 
     // Add slot 6 (outside desired 0, 1, 2, 9, 8 window) as loaded_gpu
-    try state.cache.appendWithKey(allocator, state.cache.activeKey(6), .{
-        .status = .{
-            .loaded_gpu = .{
-                .gpu_texture = undefined,
-                .w = 100,
-                .h = 100,
-                .size_bytes = 1000,
-                .memory_size_bytes = 500 * 1024 * 1024,
-            },
+    _ = try state.cache.appendSlot(allocator, 6, .{
+        .loaded_gpu = .{
+            .gpu_texture = undefined,
+            .w = 100,
+            .h = 100,
+            .size_bytes = 1000,
+            .memory_size_bytes = 500 * 1024 * 1024,
         },
     });
 
     // Also add slot 7 as failed (outside window)
-    try state.cache.appendWithKey(allocator, state.cache.activeKey(7), .{
-        .status = .failed,
-    });
+    _ = try state.cache.appendSlot(allocator, 7, .failed);
 
     const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
     try sysUpdateCache(ctx);

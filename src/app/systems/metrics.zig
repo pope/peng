@@ -9,7 +9,6 @@ pub fn sysSyncMetrics(ctx: FrameContext) void {
     state.viewer.stats.thumb_header_hits = state.workers.thumb_header_hits.load(.acquire);
     state.viewer.stats.thumb_positional_hits = state.workers.thumb_positional_hits.load(.acquire);
     state.viewer.stats.thumb_misses = state.workers.thumb_misses.load(.acquire);
-    state.viewer.stats.active_worker_threads = state.workers.active_threads.load(.acquire);
     state.viewer.stats.active_decode_threads = state.workers.active_decode_threads.load(.acquire);
     state.viewer.stats.max_decode_threads = state.workers.getMaxConcurrentDecodes();
     state.viewer.stats.cached_slot_count = state.cache.count();
@@ -27,10 +26,6 @@ pub fn sysSyncMetrics(ctx: FrameContext) void {
                 state.viewer.stats.active_image = .{
                     .num_mip_levels = gpu.num_mip_levels,
                     .mipmap_time_ms = gpu.mipmap_time_ms,
-                    .gpu_upload_time_ms = gpu.upload_time_ms,
-                    .read_time_ms = gpu.read_time_ms,
-                    .decode_time_ms = gpu.decode_time_ms,
-                    .conversion_time_ms = gpu.conversion_time_ms,
                     .fallback_time_ms = gpu.fallback_time_ms,
                     .was_fallback = gpu.was_fallback,
                     .has_thumb = has_thumb,
@@ -43,10 +38,6 @@ pub fn sysSyncMetrics(ctx: FrameContext) void {
                 state.viewer.stats.active_image = .{
                     .num_mip_levels = 1,
                     .mipmap_time_ms = 0.0,
-                    .gpu_upload_time_ms = 0.0,
-                    .read_time_ms = cpu.read_time_ms,
-                    .decode_time_ms = cpu.decode_time_ms,
-                    .conversion_time_ms = cpu.conversion_time_ms,
                     .fallback_time_ms = 0.0,
                     .was_fallback = false,
                     .has_thumb = has_thumb,

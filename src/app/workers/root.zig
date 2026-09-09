@@ -18,7 +18,6 @@ pub const DecodeArgs = decode.DecodeArgs;
 pub const PaletteScanArgs = palette_scan.PaletteScanArgs;
 pub const PathScanArgs = path_scan.PathScanArgs;
 pub const StdinArgs = stdin.StdinArgs;
-pub const WorkerContext = context.WorkerContext;
 pub const WorkerManager = manager.WorkerManager;
 
 pub const spawnDecode = decode.spawnDecode;
@@ -166,12 +165,4 @@ test "WorkerManager.getCpuCount caching and fallback" {
     const mgr_cached = WorkerManager.init();
     try std.testing.expect(mgr_cached.cached_cpu_count >= 1);
     try std.testing.expectEqual(mgr_cached.cached_cpu_count, mgr_cached.getCpuCount());
-}
-
-test {
-    _ = decode;
-    _ = ipc_server;
-    _ = palette_scan;
-    _ = path_scan;
-    _ = stdin;
 }

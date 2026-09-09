@@ -221,15 +221,6 @@ pub const SnackbarState = struct {
     notification: SnackbarNotification = .none,
     enabled_mask: u32 = 0xFFFF_FFFF,
 
-    /// Copies message string into static buffer with bounds safety and resets timeout to 0.
-    pub fn setMessage(self: *SnackbarState, text: []const u8) void {
-        var active = ActiveNotification{};
-        const copy_len = @min(text.len, MAX_SNACKBAR_LEN);
-        @memcpy(active.message_buf[0..copy_len], text[0..copy_len]);
-        active.message_len = @intCast(copy_len);
-        self.notification = .{ .active = active };
-    }
-
     /// Sets both message text and auto-hide deadline in a single call.
     pub fn show(self: *SnackbarState, text: []const u8, timeout_ms: u64) void {
         var active = ActiveNotification{ .timeout_ms = timeout_ms };
@@ -253,14 +244,6 @@ pub const SnackbarState = struct {
             .none => 0,
             .active => |a| a.timeout_ms,
         };
-    }
-
-    /// Sets the timeout deadline on an active notification.
-    pub fn setTimeoutMs(self: *SnackbarState, timeout_ms: u64) void {
-        switch (self.notification) {
-            .none => {},
-            .active => |*a| a.timeout_ms = timeout_ms,
-        }
     }
 
     /// Clears active message and resets notification to `.none`.
@@ -362,12 +345,10 @@ test "SnackbarState buffer operations and bitmask" {
     try std.testing.expect(state.notification == .none);
     try std.testing.expect(state.isTriggerEnabled(.filter));
 
-    state.setMessage("Test Notification");
+    state.show("Test Notification", 5000);
     try std.testing.expectEqualStrings("Test Notification", state.getMessage());
-    try std.testing.expect(state.notification == .active);
-
-    state.setTimeoutMs(5000);
     try std.testing.expectEqual(@as(u64, 5000), state.getTimeoutMs());
+    try std.testing.expect(state.notification == .active);
 
     state.setTriggerEnabled(.filter, false);
     try std.testing.expect(!state.isTriggerEnabled(.filter));

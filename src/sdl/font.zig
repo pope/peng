@@ -20,7 +20,7 @@ pub const Color = struct {
     a: u8 = 255,
 
     /// Converts to an `SDL_Color` C struct.
-    pub fn toSdlColor(self: Color) c.SDL_Color {
+    fn toSdlColor(self: Color) c.SDL_Color {
         return .{ .r = self.r, .g = self.g, .b = self.b, .a = self.a };
     }
 };

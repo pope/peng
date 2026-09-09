@@ -617,16 +617,6 @@ pub const ComputePass = struct {
         c.SDL_BindGPUComputeStorageBuffers(self.ptr, first_slot, &c_bufs, @intCast(count));
     }
 
-    /// Binds read-only storage textures starting at the specified binding slot.
-    pub fn bindStorageTextures(self: ComputePass, first_slot: u32, textures: []const Texture) void {
-        var c_texs: [4]*c.SDL_GPUTexture = undefined;
-        const count = @min(textures.len, 4);
-        for (0..count) |i| {
-            c_texs[i] = textures[i].ptr;
-        }
-        c.SDL_BindGPUComputeStorageTextures(self.ptr, first_slot, &c_texs, @intCast(count));
-    }
-
     /// Dispatches compute workgroups along 3D workgroup dimensions.
     pub fn dispatch(
         self: ComputePass,
@@ -662,11 +652,6 @@ pub const CommandBuffer = struct {
     /// Cancels command buffer recording and discards all pending commands.
     pub fn cancel(self: CommandBuffer) bool {
         return c.SDL_CancelGPUCommandBuffer(self.ptr);
-    }
-
-    /// Pushes immediate uniform data to vertex shader uniform slot.
-    pub fn pushVertexUniform(self: CommandBuffer, slot: u32, data: []const u8) void {
-        c.SDL_PushGPUVertexUniformData(self.ptr, slot, data.ptr, @intCast(data.len));
     }
 
     /// Pushes immediate uniform data to fragment shader uniform slot.

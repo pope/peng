@@ -270,7 +270,7 @@ test "sysUpdateAnimations snackbar auto-hide timeout and fade-out" {
     const now = sdl.timer.getTicks();
 
     // Start snackbar animation with message and auto-hide timeout in the past
-    state.viewer.ui.snackbar.setMessage("Filter: Lanczos3");
+    state.viewer.ui.snackbar.show("Filter: Lanczos3", now -| 10);
     state.viewer.animations.start(
         .snackbar,
         1.0,
@@ -278,7 +278,6 @@ test "sysUpdateAnimations snackbar auto-hide timeout and fade-out" {
         .ease_out_quad,
     );
     state.viewer.animations.settleAll();
-    state.viewer.ui.snackbar.setTimeoutMs(now -| 10);
 
     sysUpdateAnimations(.{
         .state = &state,

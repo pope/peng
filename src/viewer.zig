@@ -175,15 +175,6 @@ pub fn updateFrame(
     );
 
     // Phase 3: Render Phase
-    const view_params = state_pkg.ViewParams{
-        .viewport = app_state.viewer.viewport,
-        .win_w = input.win_w,
-        .win_h = input.win_h,
-        .scale_x = input.scale_x,
-        .scale_y = input.scale_y,
-        .is_fullscreen = app_state.viewer.isFullscreen(),
-    };
-
     if (app_state.gpu_device == null) return error.GpuNotInitialized;
 
     const nav_items = app_state.viewer.navigation.image_list.items;
@@ -211,9 +202,6 @@ pub fn updateFrame(
         },
         .viewport = app_state.viewer.viewport,
         .palette = &app_state.viewer.ui.palette,
-        .palette_reveal = app_state.viewer.animations.get(.palette_reveal),
-        .thumb_crossfade = app_state.viewer.animations.get(.thumb_crossfade),
-        .title_overlay_reveal = app_state.viewer.animations.get(.title_overlay),
         .snackbar = blk: {
             const reveal = app_state.viewer.animations.get(.snackbar);
             const msg = app_state.viewer.ui.snackbar.getMessage();
@@ -266,7 +254,6 @@ pub fn updateFrame(
     };
     const target_window = if (app_state.viewer.display.isClaimed()) window else null;
     ui.layout.renderFrame(
-        view_params,
         ui_model,
         resources,
         input,

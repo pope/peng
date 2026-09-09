@@ -36,11 +36,6 @@ pub const ArchiveMediaEntry = struct {
     archive_path: []const u8,
     entry_name: []const u8,
     seek_info: ArchiveSeekInfo = .unindexed,
-
-    /// Returns true if pre-discovered byte offsets are available for O(1) seeking.
-    pub fn isIndexed(self: ArchiveMediaEntry) bool {
-        return self.seek_info == .indexed;
-    }
 };
 
 /// Discriminated union representing either a filesystem path or a virtual entry inside an archive.
@@ -239,27 +234,13 @@ pub const ViewportParams = struct {
     }
 };
 
-/// Render-time snapshot binding ViewportParams with physical window dimensions
-/// and high-DPI scaling factors.
-pub const ViewParams = struct {
-    viewport: ViewportParams,
-    win_w: f32,
-    win_h: f32,
-    scale_x: f32,
-    scale_y: f32,
-    is_fullscreen: bool,
-};
-
 /// Aggregated input events, mouse coordinates, keyboard actions, and window
 /// metrics for a single frame iteration.
 pub const FrameInput = struct {
     win_w: f32,
     win_h: f32,
-    pix_w: f32,
-    pix_h: f32,
     scale_x: f32,
     scale_y: f32,
-    dpi_scale: f32,
     mouse_x: f32,
     mouse_y: f32,
     mouse_left_down: bool,
@@ -277,7 +258,6 @@ pub const FrameInput = struct {
     dropped_path: ?[]const u8,
     ticks: u64,
     delta_time_ms: f32,
-    window_resized: bool = false,
     is_pointer_in_debug_panel: bool = false,
 
     /// Returns the mouse X coordinate scaled to physical framebuffer pixels.
@@ -341,10 +321,6 @@ pub const TitleDisplay = union(enum) {
     transient: struct {
         timeout_ms: u64,
     },
-
-    pub fn isVisible(self: TitleDisplay) bool {
-        return self != .hidden;
-    }
 
     pub fn isPinned(self: TitleDisplay) bool {
         return self == .pinned;
@@ -416,7 +392,6 @@ pub const UiRenderMetricsSnapshot = struct {
 /// UI frame rendering performance metrics, vertex counts, batch counts, and
 /// rolling duration history.
 pub const UiRenderMetrics = struct {
-    last_ui_render_time_ms: f64 = 0.0,
     ui_render_stats: RenderStats = .{},
     last_ui_vertex_count: usize = 0,
     last_ui_batch_count: usize = 0,
@@ -478,7 +453,6 @@ pub const CpuSurfaceComponent = struct {
     h: f32,
     size_bytes: u64,
     mime_type: []const u8 = "",
-    raw_metadata: RawMetadata = .none,
     read_time_ms: f64 = 0.0,
     decode_time_ms: f64 = 0.0,
     conversion_time_ms: f64 = 0.0,
@@ -494,7 +468,6 @@ pub const GpuTextureComponent = struct {
     h: f32,
     size_bytes: u64,
     mime_type: []const u8 = "",
-    raw_metadata: RawMetadata = .none,
     read_time_ms: f64 = 0.0,
     decode_time_ms: f64 = 0.0,
     conversion_time_ms: f64 = 0.0,
@@ -506,14 +479,6 @@ pub const GpuTextureComponent = struct {
     fallback_time_ms: f64 = 0.0,
     cbz_decompress_time_ms: f64 = 0.0,
     compressed_size_bytes: usize = 0,
-};
-
-/// Decoded thumbnail GPU texture handle and pixel dimensions.
-pub const ThumbComponent = struct {
-    texture: sdl.gpu.Texture,
-    w: f32,
-    h: f32,
-    upload_time_ms: f64,
 };
 
 /// State lifecycle of an image in the cache (decoding, loaded in RAM,
@@ -636,14 +601,6 @@ pub const SlideshowMode = union(enum) {
     pub const MIN_INTERVAL_S: f32 = 0.1;
     pub const MAX_INTERVAL_S: f32 = 3600.0;
 
-    /// Sanitizes and clamps raw interval value into valid positive non-NaN bounds [0.1s, 3600.0s].
-    pub fn sanitizeInterval(raw: f32) f32 {
-        if (std.math.isNan(raw) or std.math.isInf(raw) or raw <= 0.0) {
-            return 3.0;
-        }
-        return std.math.clamp(raw, MIN_INTERVAL_S, MAX_INTERVAL_S);
-    }
-
     /// Advances the internal slideshow timer by `delta_ms`; returns `true`
     /// if the interval has elapsed. Does NOT advance when paused or inactive.
     pub fn tick(self: *SlideshowMode, delta_ms: f32) bool {
@@ -692,17 +649,6 @@ pub const SlideshowMode = union(enum) {
             .active => |*a| a.is_paused = false,
         }
     }
-
-    /// Alias for unpause
-    pub const resumePlayback = unpause;
-
-    /// Toggles the paused state if active.
-    pub fn togglePause(self: *SlideshowMode) void {
-        switch (self.*) {
-            .inactive => {},
-            .active => |*a| a.is_paused = !a.is_paused,
-        }
-    }
 };
 
 /// Active image transition payload tracking the outgoing image during a dissolve animation.
@@ -749,10 +695,6 @@ pub const SnackbarDisplay = union(enum) {
 pub const ActiveImageStats = struct {
     num_mip_levels: u32 = 1,
     mipmap_time_ms: f64 = 0.0,
-    gpu_upload_time_ms: f64 = 0.0,
-    read_time_ms: f64 = 0.0,
-    decode_time_ms: f64 = 0.0,
-    conversion_time_ms: f64 = 0.0,
     fallback_time_ms: f64 = 0.0,
     was_fallback: bool = false,
     has_thumb: bool = false,
@@ -775,7 +717,6 @@ pub const ViewerStats = struct {
     total_vram_bytes: usize = 0,
 
     // Worker telemetry (frame snapshot)
-    active_worker_threads: usize = 0,
     active_decode_threads: usize = 0,
     max_decode_threads: usize = 0,
 
@@ -811,27 +752,11 @@ pub const DisplayState = union(enum) {
     headless,
     windowed: ActiveWindow,
 
-    /// Returns the cached window title string, or `null` in headless mode.
-    pub inline fn getTitle(self: DisplayState) ?[]const u8 {
-        return switch (self) {
-            .headless => null,
-            .windowed => |w| w.cached_title,
-        };
-    }
-
     /// Returns `true` if the display is currently running in fullscreen mode.
     pub inline fn isFullscreen(self: DisplayState) bool {
         return switch (self) {
             .headless => false,
             .windowed => |w| w.is_fullscreen,
-        };
-    }
-
-    /// Returns `true` if the display window is currently borderless/undecorated.
-    pub inline fn isBorderless(self: DisplayState) bool {
-        return switch (self) {
-            .headless => false,
-            .windowed => |w| w.is_borderless,
         };
     }
 
@@ -976,11 +901,8 @@ test "FrameInput.pixMouseX and pixMouseY scale mouse position by display scale f
     const input = FrameInput{
         .win_w = 1000.0,
         .win_h = 800.0,
-        .pix_w = 2000.0,
-        .pix_h = 1600.0,
         .scale_x = 2.0,
         .scale_y = 2.0,
-        .dpi_scale = 2.0,
         .mouse_x = 150.0,
         .mouse_y = 250.0,
         .mouse_left_down = false,
@@ -1088,15 +1010,7 @@ test "SnackbarDisplay getActive" {
     try std.testing.expectEqualStrings("Filter: Lanczos3", payload.message);
 }
 
-test "SlideshowMode lifecycle, pause, resume, and sanitize" {
-    // Sanitize tests
-    try std.testing.expectEqual(@as(f32, 3.0), SlideshowMode.sanitizeInterval(0.0));
-    try std.testing.expectEqual(@as(f32, 3.0), SlideshowMode.sanitizeInterval(-5.0));
-    try std.testing.expectEqual(@as(f32, 3.0), SlideshowMode.sanitizeInterval(std.math.nan(f32)));
-    try std.testing.expectEqual(@as(f32, 0.1), SlideshowMode.sanitizeInterval(0.01));
-    try std.testing.expectEqual(@as(f32, 3600.0), SlideshowMode.sanitizeInterval(99999.0));
-    try std.testing.expectEqual(@as(f32, 2.5), SlideshowMode.sanitizeInterval(2.5));
-
+test "SlideshowMode lifecycle, pause, and unpause" {
     // Inactive mode does not tick
     var mode: SlideshowMode = .inactive;
     try std.testing.expect(!mode.isPaused());
@@ -1121,12 +1035,6 @@ test "SlideshowMode lifecycle, pause, resume, and sanitize" {
     try std.testing.expect(!mode.isPaused());
     try std.testing.expect(mode.tick(1000.0)); // 1000 + 1000 = 2000ms >= 2.0s -> fires and resets
     try std.testing.expectEqual(@as(f64, 0.0), mode.active.timer_ms);
-
-    // Toggle pause
-    mode.togglePause();
-    try std.testing.expect(mode.isPaused());
-    mode.togglePause();
-    try std.testing.expect(!mode.isPaused());
 }
 
 test "ImageTransition getPrevIndex and variants" {

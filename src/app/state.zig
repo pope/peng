@@ -170,15 +170,6 @@ pub const AppState = struct {
         return self.cache.getEntry(self.cache.activeKey(prev_idx));
     }
 
-    /// Returns the override or EXIF rotation in degrees for the previous slide
-    /// in an active crossfade.
-    pub fn getTransitionPrevRotation(self: *const AppState) f32 {
-        return switch (self.viewer.image_transition) {
-            .none => 0.0,
-            .active => |t| t.prev_rotation,
-        };
-    }
-
     /// Returns the remaining millisecond deadline for transient holding timers
     /// (e.g. title auto-hide, snackbar), or null if none active.
     pub fn getWaitTimeoutMs(self: *const AppState, now: u64) ?i32 {
@@ -868,17 +859,15 @@ test "AppState.clampZoomFactor bounds based on image dimensions" {
 
     // Test with loaded CPU image entry
     const surf = sdl.Surface.create(4000, 3000, sdl.PixelFormat.rgba32) orelse unreachable;
-    try state.cache.appendWithKey(std.testing.allocator, .{ .index = 0, .generation = 0 }, .{
-        .status = .{
-            .loaded_cpu = .{
-                .surface = surf,
-                .w = 4000.0,
-                .h = 3000.0,
-                .mime_type = "image/png",
-                .size_bytes = 1000,
-                .decode_time_ms = 0.0,
-                .conversion_time_ms = 0.0,
-            },
+    _ = try state.cache.appendSlot(std.testing.allocator, 0, .{
+        .loaded_cpu = .{
+            .surface = surf,
+            .w = 4000.0,
+            .h = 3000.0,
+            .mime_type = "image/png",
+            .size_bytes = 1000,
+            .decode_time_ms = 0.0,
+            .conversion_time_ms = 0.0,
         },
     });
     state.viewer.navigation.current_index = 0;
@@ -920,10 +909,8 @@ test "AppState.updateCurrentRotation syncs EXIF orientation" {
     try std.testing.expectEqual(@as(f32, 0.0), state.viewer.viewport.rotation_angle);
 
     // Simulate worker thread caching EXIF orientation of 90.0
-    try state.cache.appendWithKey(std.testing.allocator, .{ .index = 0, .generation = 0 }, .{
-        .status = .{ .decoding = .{} },
-        .orientation = .rotate_90,
-    });
+    const key = try state.cache.appendSlot(std.testing.allocator, 0, .{ .decoding = .{} });
+    state.cache.get(key).?.orientation = .rotate_90;
 
     // Calling updateCurrentRotation updates rotation_angle from entry
     state.updateCurrentRotation();
@@ -959,11 +946,8 @@ test "AppState.isPointerInDebugPanel and click localization" {
     const input_inside = types.FrameInput{
         .win_w = win_w,
         .win_h = win_h,
-        .pix_w = win_w,
-        .pix_h = win_h,
         .scale_x = 1.0,
         .scale_y = 1.0,
-        .dpi_scale = 1.0,
         .mouse_x = win_w - debug_w + 10.0,
         .mouse_y = 100.0,
         .mouse_left_down = false,
@@ -985,11 +969,8 @@ test "AppState.isPointerInDebugPanel and click localization" {
     const input_outside = types.FrameInput{
         .win_w = win_w,
         .win_h = win_h,
-        .pix_w = win_w,
-        .pix_h = win_h,
         .scale_x = 1.0,
         .scale_y = 1.0,
-        .dpi_scale = 1.0,
         .mouse_x = 100.0,
         .mouse_y = 100.0,
         .mouse_left_down = false,

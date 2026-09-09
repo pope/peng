@@ -114,7 +114,6 @@ pub const FrameInputState = struct {
     mouse_left_clicked: bool = false,
     mouse_inside: bool = false,
     quit_requested: bool = false,
-    window_resized: bool = false,
     win_w: f32 = 0,
     win_h: f32 = 0,
 };
@@ -123,12 +122,6 @@ pub const FrameInputState = struct {
 pub fn processSDLEvent(event: sdl.Event, frame_input: *FrameInputState) !void {
     switch (event.type) {
         sdl.event_type.quit => frame_input.quit_requested = true,
-        sdl.event_type.window_resized,
-        sdl.event_type.window_pixel_size_changed,
-        sdl.event_type.window_exposed,
-        => {
-            frame_input.window_resized = true;
-        },
         sdl.event_type.mouse_enter => {
             frame_input.mouse_inside = true;
         },
@@ -283,8 +276,6 @@ pub fn pollFrameInput(
     const win_size = window.getSize();
     const pix_size = window.getSizeInPixels();
 
-    const width = @as(f32, @floatFromInt(pix_size.w));
-    const height = @as(f32, @floatFromInt(pix_size.h));
     const scale_x = if (win_size.w > 0)
         @as(f32, @floatFromInt(pix_size.w)) / @as(f32, @floatFromInt(win_size.w))
     else
@@ -293,7 +284,6 @@ pub fn pollFrameInput(
         @as(f32, @floatFromInt(pix_size.h)) / @as(f32, @floatFromInt(win_size.h))
     else
         1.0;
-    const dpi_scale = scale_x;
 
     var frame_input_state = FrameInputState{
         .frame_allocator = frame_allocator,
@@ -335,11 +325,8 @@ pub fn pollFrameInput(
     return FrameInput{
         .win_w = @as(f32, @floatFromInt(win_size.w)),
         .win_h = @as(f32, @floatFromInt(win_size.h)),
-        .pix_w = width,
-        .pix_h = height,
         .scale_x = scale_x,
         .scale_y = scale_y,
-        .dpi_scale = dpi_scale,
         .mouse_x = mouse_x_raw,
         .mouse_y = mouse_y_raw,
         .mouse_left_down = mouse_left_down,
@@ -357,7 +344,6 @@ pub fn pollFrameInput(
         .dropped_path = frame_input_state.dropped_path_opt,
         .ticks = current_ticks,
         .delta_time_ms = delta_time_ms,
-        .window_resized = frame_input_state.window_resized,
     };
 }
 

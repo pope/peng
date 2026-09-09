@@ -122,26 +122,6 @@ pub const AnimationState = struct {
         return (self.active_mask & (@as(u32, 1) << @intCast(@intFromEnum(channel)))) != 0;
     }
 
-    /// Opens/reveals the channel toward 1.0, smoothly interpolating from
-    /// current value with proportional duration.
-    pub fn open(self: *AnimationState, channel: AnimationChannel) void {
-        const desc = getDescriptor(channel);
-        const cur = self.get(channel);
-        if (cur >= 1.0) return;
-        const dur = desc.default_open_duration_ms * (1.0 - cur);
-        self.start(channel, 1.0, dur, desc.open_easing);
-    }
-
-    /// Closes/hides the channel toward 0.0, smoothly interpolating from
-    /// current value with proportional duration.
-    pub fn close(self: *AnimationState, channel: AnimationChannel) void {
-        const desc = getDescriptor(channel);
-        const cur = self.get(channel);
-        if (cur <= 0.0) return;
-        const dur = desc.default_close_duration_ms * cur;
-        self.start(channel, 0.0, dur, desc.close_easing);
-    }
-
     /// Triggers an animation on `channel` with explicit target, duration, and easing.
     pub fn trigger(
         self: *AnimationState,
@@ -276,25 +256,6 @@ test "AnimationState lifecycle and static SoA layout" {
     anim.tick(50.0);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), anim.get(.palette_reveal), 0.001);
     try std.testing.expect(!anim.hasActiveAnimations());
-    try std.testing.expect(!anim.isActive(.palette_reveal));
-}
-
-test "AnimationState open and close proportional duration" {
-    var anim = AnimationState{};
-
-    // Open palette
-    anim.open(.palette_reveal);
-    try std.testing.expect(anim.isActive(.palette_reveal));
-
-    // Advance 50%
-    anim.tick(DURATION_PALETTE_OPEN_MS / 2.0);
-    try std.testing.expect(anim.get(.palette_reveal) > 0.4);
-
-    // Close palette mid-flight - should interpolate back to 0.0 proportionally
-    anim.close(.palette_reveal);
-    try std.testing.expect(anim.isActive(.palette_reveal));
-    anim.tick(DURATION_PALETTE_CLOSE_MS);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.0), anim.get(.palette_reveal), 0.001);
     try std.testing.expect(!anim.isActive(.palette_reveal));
 }
 

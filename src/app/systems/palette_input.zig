@@ -559,11 +559,8 @@ test "sysProcessPaletteInput retains palette when clicking inside debug panel" {
     var input_inside = state_pkg.FrameInput{
         .win_w = win_w,
         .win_h = win_h,
-        .pix_w = win_w,
-        .pix_h = win_h,
         .scale_x = 1.0,
         .scale_y = 1.0,
-        .dpi_scale = 1.0,
         .mouse_x = win_w - debug_w + 10.0,
         .mouse_y = 100.0,
         .mouse_left_down = false,

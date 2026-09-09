@@ -1322,7 +1322,6 @@ pub fn renderClayCommands(
     const end_render = sdl.timer.getTicksNs();
     const render_time_ms = @as(f64, @floatFromInt(end_render - start_render)) / 1_000_000.0;
     if (metrics) |m| {
-        m.last_ui_render_time_ms = render_time_ms;
         m.ui_render_stats.addSample(render_time_ms);
         m.last_ui_vertex_count = vertex_count;
         m.last_ui_batch_count = batch_count;

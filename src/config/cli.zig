@@ -61,14 +61,6 @@ pub const options = blk: {
 /// Projected directly from the unified action registry.
 pub const ipc_commands = intents.actions.ipc_commands;
 
-/// Finds a registered CliOption matching the provided argument string across all targets.
-pub fn findOption(arg: []const u8) ?intents.CliOption {
-    for (options) |opt| {
-        if (opt.matches(arg)) return opt;
-    }
-    return null;
-}
-
 /// Finds a registered CliOption matching the provided argument string for a specific target scope.
 pub fn findOptionFor(arg: []const u8, scope: intents.CliTarget) ?intents.CliOption {
     for (options) |opt| {
@@ -87,7 +79,7 @@ pub fn padRight(comptime str: []const u8, comptime width: usize) []const u8 {
 }
 
 /// Formats an option's flag presentation (short flag, long flag, aliases, and argument name).
-pub fn formatOptionFlags(comptime opt: intents.CliOption) []const u8 {
+fn formatOptionFlags(comptime opt: intents.CliOption) []const u8 {
     var col: []const u8 = "  ";
     if (opt.short) |s| {
         col = col ++ s ++ ", " ++ opt.long;
@@ -106,7 +98,7 @@ pub fn formatOptionFlags(comptime opt: intents.CliOption) []const u8 {
 }
 
 /// Formats the options section for the specified target application.
-pub fn formatOptionsFor(comptime target: intents.CliTarget, comptime col_width: usize) []const u8 {
+fn formatOptionsFor(comptime target: intents.CliTarget, comptime col_width: usize) []const u8 {
     var text: []const u8 = "";
     for (options) |opt| {
         if (!opt.target.appliesTo(target)) continue;
@@ -122,7 +114,7 @@ pub fn formatOptionsFor(comptime target: intents.CliTarget, comptime col_width: 
 }
 
 /// Formats the IPC command list with aligned descriptions.
-pub fn formatIpcCommands(comptime col_width: usize) []const u8 {
+fn formatIpcCommands(comptime col_width: usize) []const u8 {
     var text: []const u8 = "";
     for (ipc_commands) |cmd| {
         var col: []const u8 = "  " ++ cmd.name;
@@ -367,10 +359,9 @@ test "help_text and ipc_help_text contain registered options" {
     }
 }
 
-test "findOption and findOptionFor respect target filtering" {
+test "findOptionFor respects target filtering" {
     const testing = std.testing;
 
-    try testing.expectEqual(intents.OptionId.help, findOption("-h").?.id);
     try testing.expectEqual(intents.OptionId.help, findOptionFor("-h", .main).?.id);
     try testing.expectEqual(intents.OptionId.help, findOptionFor("-h", .ipc).?.id);
 
@@ -380,8 +371,8 @@ test "findOption and findOptionFor respect target filtering" {
     try testing.expectEqual(intents.OptionId.ipc, findOptionFor("--ipc", .main).?.id);
     try testing.expect(findOptionFor("--ipc", .ipc) == null);
 
-    try testing.expect(findOption("--unknown") == null);
-    try testing.expect(findOption("photo.jpg") == null);
+    try testing.expect(findOptionFor("--unknown", .main) == null);
+    try testing.expect(findOptionFor("photo.jpg", .main) == null);
 }
 
 test "parseArgsIterator handles help flags" {

@@ -456,7 +456,6 @@ test "scanCbzImageEntries on sample archive" {
         "000_0_1024x682.jpg",
         entries.items[0].archive_entry.entry_name,
     );
-    try std.testing.expect(entries.items[0].archive_entry.isIndexed());
     try std.testing.expect(entries.items[0].archive_entry.seek_info == .indexed);
 }
 
@@ -481,7 +480,6 @@ test "scanDirectoryEntries includes CBZ files and countFolderContents counts CBZ
     for (dir_entries.items) |e| {
         if (std.mem.eql(u8, e.getName(), "sample.cbz")) {
             found_cbz = true;
-            try std.testing.expect(e.getImageCount() == null);
             try std.testing.expectEqual(state_pkg.EntryScanState.unscanned, e.getScanState().?);
             break;
         }
@@ -542,7 +540,6 @@ test "scanDirectoryEntries - nested directory hierarchy" {
         state_pkg.EntryScanState.unscanned,
         entries.items[0].directory.scan,
     );
-    try std.testing.expect(entries.items[0].getImageCount() == null);
     try std.testing.expectEqual(
         @as(usize, 1),
         countFolderContents(io, entries.items[0].getFullPath()).image_count,
@@ -555,7 +552,6 @@ test "scanDirectoryEntries - nested directory hierarchy" {
         state_pkg.EntryScanState.unscanned,
         entries.items[1].directory.scan,
     );
-    try std.testing.expect(entries.items[1].getImageCount() == null);
     try std.testing.expectEqual(
         @as(usize, 2),
         countFolderContents(io, entries.items[1].getFullPath()).image_count,
@@ -571,7 +567,6 @@ test "scanDirectoryEntries - nested directory hierarchy" {
         state_pkg.EntryScanState.unscanned,
         entries.items[2].directory.scan,
     );
-    try std.testing.expect(entries.items[2].getImageCount() == null);
     try std.testing.expectEqual(
         @as(usize, 0),
         countFolderContents(io, entries.items[2].getFullPath()).image_count,
