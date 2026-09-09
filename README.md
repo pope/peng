@@ -11,7 +11,7 @@ ______________________________________________________________________
 - **CBZ & Manga Mode Support:** Instant $O(1)$ page seeking inside `.cbz` comic archives with toggleable Right-to-Left (RTL) Manga reading mode (`M` key).
 - **Advanced Filtering & Resampling:** Features high-quality resampling shaders including Bilinear, Mitchell-Netravali, and Lanczos3 filters.
 - **Command Palette:** Built-in searchable palettes for commands (`F1` or `Ctrl+Shift+P`), file search (`Ctrl+P`), and directory navigator (`Ctrl+O`).
-- **Interactive Info & Stats Overlays:** Toggleable draggable panels (`I` key) displaying camera sensor metadata, preview resolutions, CPU/GPU decoding times, active resampling shader, and rendering metrics.
+- **Interactive Info & Stats Overlays:** Toggleable draggable panels (`d` for Info, `Shift+D` / `Shift+I` for Stats) displaying camera sensor metadata, preview resolutions, CPU/GPU decoding times, active resampling shader, and rendering metrics.
 - **Non-Blocking Headless Mode:** Runs offscreen without X11 or Wayland (ideal for CI and servers) with `--headless`.
 - **Scriptable IPC Control:** External client controls the viewer's zoom, pan, filters, and takes screenshots in real-time.
 
@@ -47,7 +47,7 @@ ______________________________________________________________________
 | `c` / `C` (Shift+c)                     | Increase / Decrease Contrast                             |
 | `Shift+R`                               | Reset Brightness & Contrast                              |
 | `d`                                     | Toggle Image Info Overlay                                |
-| `Shift+D`                               | Toggle Performance / Stats Overlay                       |
+| `Shift+D` / `Shift+I`                   | Toggle Stats for Nerds / Performance Overlay             |
 | `t`                                     | Toggle Title Bar Overlay                                 |
 | `m`                                     | Toggle Manga Mode (Right-to-Left)                        |
 | `f` / `F11`                             | Toggle Borderless Fullscreen                             |

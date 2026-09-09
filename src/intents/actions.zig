@@ -240,11 +240,14 @@ pub const actions = [_]ActionDef{
     },
     .{
         .id = .toggle_stats,
-        .title = "Toggle Performance Overlay",
-        .shortcut_text = "Shift+D",
-        .description = "Toggle rendering FPS and frame timing statistics",
+        .title = "Toggle Stats for Nerds (Performance Overlay)",
+        .shortcut_text = "Shift+D / Shift+I",
+        .description = "Toggle rendering FPS, frame timing, and performance metrics",
         .show_in_palette = true,
-        .shortcuts = &.{.{ .key = .char_d, .mod = .{ .shift = true } }},
+        .shortcuts = &.{
+            .{ .key = .char_d, .mod = .{ .shift = true } },
+            .{ .key = .char_i, .mod = .{ .shift = true } },
+        },
         .intent = .toggle_stats,
     },
     .{
@@ -905,7 +908,8 @@ test "actions registry projections" {
     try testing.expectEqualStrings("Navigate Directories...", palette_action_items[7].name);
     try testing.expectEqualStrings("Ctrl+O", palette_action_items[7].shortcut_text);
 
-    // Shortcuts projection
+    // Shortcuts projection: 52 previous + 1 (Shift+I) = 53
+    try testing.expectEqual(@as(usize, 53), flat_shortcuts.len);
     var total_sc: usize = 0;
     for (palette_action_items) |item| {
         total_sc += item.shortcuts.len;
@@ -963,10 +967,24 @@ test "actions registry invariants and consistency" {
     // 5. Verify shortcut resolution for Ctrl+P (File Finder)
     var found_ctrl_p = false;
     for (flat_shortcuts) |sc| {
-        if (sc.key == .char_p and sc.mod.ctrl and !sc.mod.shift and !sc.mod.alt) {
+        if (sc.key == .char_p and sc.mod.eql(.{ .ctrl = true })) {
             found_ctrl_p = true;
             try testing.expectEqual(PaletteMode.files, sc.intent.set_palette.mode);
         }
     }
     try testing.expect(found_ctrl_p);
+
+    // 6. Verify shortcut resolution for Shift+D and Shift+I (Toggle Stats for Nerds)
+    var found_shift_d = false;
+    var found_shift_i = false;
+    for (flat_shortcuts) |sc| {
+        if (sc.key == .char_d and sc.mod.eql(.{ .shift = true })) {
+            if (sc.intent == .toggle_stats) found_shift_d = true;
+        }
+        if (sc.key == .char_i and sc.mod.eql(.{ .shift = true })) {
+            if (sc.intent == .toggle_stats) found_shift_i = true;
+        }
+    }
+    try testing.expect(found_shift_d);
+    try testing.expect(found_shift_i);
 }
