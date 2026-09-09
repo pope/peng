@@ -15,16 +15,32 @@ pub const UvRect = struct {
     rotation_angle: ?f32 = null,
 };
 
+/// Pre-discovered byte offsets and compression parameters for O(1) instant seeking
+/// in ZIP/CBZ archives.
+pub const ZipSeekOffsets = struct {
+    header_zip_offset: u64,
+    file_offset: u64,
+    uncompressed_size: u64,
+    compression_method: std.zip.CompressionMethod,
+};
+
+/// Tagged union representing indexing status of an archive media entry.
+pub const ArchiveSeekInfo = union(enum) {
+    unindexed,
+    indexed: ZipSeekOffsets,
+};
+
 /// Media entry descriptor for an image stored inside a compressed or uncompressed
 /// archive (CBZ, CBR, ZIP).
 pub const ArchiveMediaEntry = struct {
     archive_path: []const u8,
     entry_name: []const u8,
-    /// Pre-discovered byte offsets in archive for O(1) instant seeking
-    header_zip_offset: ?u64 = null,
-    file_offset: ?u64 = null,
-    uncompressed_size: ?u64 = null,
-    compression_method: ?u16 = null,
+    seek_info: ArchiveSeekInfo = .unindexed,
+
+    /// Returns true if pre-discovered byte offsets are available for O(1) seeking.
+    pub fn isIndexed(self: ArchiveMediaEntry) bool {
+        return self.seek_info == .indexed;
+    }
 };
 
 /// Discriminated union representing either a filesystem path or a virtual entry inside an archive.
@@ -76,10 +92,7 @@ pub const MediaEntry = union(enum) {
                 .archive_entry = .{
                     .archive_path = try allocator.dupe(u8, a.archive_path),
                     .entry_name = try allocator.dupe(u8, a.entry_name),
-                    .header_zip_offset = a.header_zip_offset,
-                    .file_offset = a.file_offset,
-                    .uncompressed_size = a.uncompressed_size,
-                    .compression_method = a.compression_method,
+                    .seek_info = a.seek_info,
                 },
             },
         };
@@ -321,24 +334,38 @@ pub const ElementTag = enum(usize) {
     }
 };
 
-/// Visibility flags and floating panel positions for on-screen HUD overlays (info, stats, debug).
+/// Title display visibility modes, unifying permanent pinned display and transient auto-hide timer.
+pub const TitleDisplay = union(enum) {
+    hidden,
+    pinned,
+    transient: struct {
+        timeout_ms: u64,
+    },
+
+    pub fn isVisible(self: TitleDisplay) bool {
+        return self != .hidden;
+    }
+
+    pub fn isPinned(self: TitleDisplay) bool {
+        return self == .pinned;
+    }
+};
+
+/// Floating HUD panel state managing visibility and user-dragged 2D offset coordinates.
+pub const FloatingPanel = struct {
+    visible: bool = false,
+    offset_x: f32 = 0.0,
+    offset_y: f32 = 0.0,
+};
+
+/// Visibility modes, floating panel positions, and rendering flags for HUD overlays.
 pub const OverlayState = struct {
-    show_info: bool = false,
-    show_stats: bool = false,
-    show_title: bool = false,
+    info_panel: FloatingPanel = .{ .visible = false, .offset_x = 20.0, .offset_y = 20.0 },
+    stats_panel: FloatingPanel = .{ .visible = false, .offset_x = -20.0, .offset_y = 20.0 },
+    title_display: TitleDisplay = .hidden,
     auto_title: bool = true,
-    show_snackbar: bool = true,
     debug_show_thumb: bool = false,
     enable_blur: bool = true,
-    info_offset_x: f32 = 20.0,
-    info_offset_y: f32 = 20.0,
-    stats_offset_x: f32 = -20.0,
-    stats_offset_y: f32 = 20.0,
-    mouse_inside: bool = true,
-    last_mouse_x: f32 = -1.0,
-    last_mouse_y: f32 = -1.0,
-    last_win_w: f32 = 0.0,
-    last_win_h: f32 = 0.0,
 };
 
 /// Rolling window of recent frame render duration samples computing mean and standard deviation.

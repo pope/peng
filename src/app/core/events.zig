@@ -15,11 +15,24 @@ pub const ExifParsedPayload = struct {
     orientation: Orientation,
 };
 
+/// Payload carrying dimension and metadata probed from file header when
+/// no embedded thumbnail exists.
+pub const DimensionsProbedPayload = struct {
+    key: CacheKey,
+    w: f32,
+    h: f32,
+    full_w: f32,
+    full_h: f32,
+    orientation: Orientation,
+    thumb_only: bool = true,
+    raw_metadata: RawMetadata = .none,
+};
+
 /// Payload carrying a decoded embedded thumbnail or fast-scroll preview surface
 /// and dimension metadata.
 pub const ThumbDecodedPayload = struct {
     key: CacheKey,
-    surface: ?sdl.Surface,
+    surface: sdl.Surface,
     w: f32,
     h: f32,
     full_w: f32,
@@ -83,6 +96,7 @@ pub const PaletteFolderCountPayload = struct {
 /// the main engine thread.
 pub const BackgroundEvent = union(enum) {
     exif_orientation_parsed: ExifParsedPayload,
+    dimensions_probed: DimensionsProbedPayload,
     thumb_decoded: ThumbDecodedPayload,
     image_decoded: ImageDecodedPayload,
     decode_failed: DecodeFailedPayload,
@@ -95,9 +109,8 @@ pub const BackgroundEvent = union(enum) {
     /// Releases heap memory or SDL surfaces owned by this background event payload.
     pub fn deinit(self: *const BackgroundEvent, allocator: std.mem.Allocator) void {
         switch (self.*) {
-            .thumb_decoded => |t| {
-                if (t.surface) |surf| surf.destroy();
-            },
+            .dimensions_probed => {},
+            .thumb_decoded => |t| t.surface.destroy(),
             .image_decoded => |d| {
                 if (d.surface) |surf| surf.destroy();
             },

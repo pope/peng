@@ -183,12 +183,20 @@ pub const AppState = struct {
     /// (e.g. title auto-hide, snackbar), or null if none active.
     pub fn getWaitTimeoutMs(self: *const AppState, now: u64) ?i32 {
         var min_rem: ?u64 = null;
-        if (!self.viewer.ui.overlays.show_title and self.viewer.ui.title_auto_hide_timeout_ms > 0) {
-            min_rem = self.viewer.ui.title_auto_hide_timeout_ms -| now;
+        switch (self.viewer.ui.overlays.title_display) {
+            .transient => |t| {
+                min_rem = t.timeout_ms -| now;
+            },
+            .hidden, .pinned => {},
         }
-        if (self.viewer.ui.snackbar.timeout_ms > 0) {
-            const rem = self.viewer.ui.snackbar.timeout_ms -| now;
-            min_rem = if (min_rem) |cur| @min(cur, rem) else rem;
+        switch (self.viewer.ui.snackbar.notification) {
+            .active => |active| {
+                if (active.timeout_ms > 0) {
+                    const rem = active.timeout_ms -| now;
+                    min_rem = if (min_rem) |cur| @min(cur, rem) else rem;
+                }
+            },
+            .none => {},
         }
         if (min_rem) |rem| {
             return @intCast(@min(rem, 2000));

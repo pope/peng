@@ -200,30 +200,72 @@ pub fn findRule(intent: AppIntent) ?SnackbarRule {
     return null;
 }
 
-/// Zero-heap-allocation snackbar state container managing message buffers, auto-hide deadlines,
-/// and per-trigger bitmasks.
-pub const SnackbarState = struct {
+/// Notification payload stored in the active variant of `SnackbarNotification`.
+pub const ActiveNotification = struct {
     message_buf: [MAX_SNACKBAR_LEN]u8 = [_]u8{0} ** MAX_SNACKBAR_LEN,
     message_len: u8 = 0,
     timeout_ms: u64 = 0,
+};
+
+/// Tagged union representing either no active notification or an in-flight
+/// visual confirmation message.
+pub const SnackbarNotification = union(enum) {
+    none,
+    active: ActiveNotification,
+};
+
+/// Zero-heap-allocation snackbar state container managing message buffers, auto-hide deadlines,
+/// and per-trigger bitmasks.
+pub const SnackbarState = struct {
+    enabled: bool = true,
+    notification: SnackbarNotification = .none,
     enabled_mask: u32 = 0xFFFF_FFFF,
 
-    /// Copies message string into static buffer with bounds safety.
+    /// Copies message string into static buffer with bounds safety and resets timeout to 0.
     pub fn setMessage(self: *SnackbarState, text: []const u8) void {
+        var active = ActiveNotification{};
         const copy_len = @min(text.len, MAX_SNACKBAR_LEN);
-        @memcpy(self.message_buf[0..copy_len], text[0..copy_len]);
-        self.message_len = @intCast(copy_len);
+        @memcpy(active.message_buf[0..copy_len], text[0..copy_len]);
+        active.message_len = @intCast(copy_len);
+        self.notification = .{ .active = active };
     }
 
-    /// Returns the active message slice.
+    /// Sets both message text and auto-hide deadline in a single call.
+    pub fn show(self: *SnackbarState, text: []const u8, timeout_ms: u64) void {
+        var active = ActiveNotification{ .timeout_ms = timeout_ms };
+        const copy_len = @min(text.len, MAX_SNACKBAR_LEN);
+        @memcpy(active.message_buf[0..copy_len], text[0..copy_len]);
+        active.message_len = @intCast(copy_len);
+        self.notification = .{ .active = active };
+    }
+
+    /// Returns the active message slice, or empty slice if none active.
     pub fn getMessage(self: *const SnackbarState) []const u8 {
-        return self.message_buf[0..self.message_len];
+        return switch (self.notification) {
+            .none => "",
+            .active => |*a| a.message_buf[0..a.message_len],
+        };
     }
 
-    /// Clears active message and resets timeout.
+    /// Returns the active auto-hide deadline timestamp, or 0 if none active.
+    pub fn getTimeoutMs(self: *const SnackbarState) u64 {
+        return switch (self.notification) {
+            .none => 0,
+            .active => |a| a.timeout_ms,
+        };
+    }
+
+    /// Sets the timeout deadline on an active notification.
+    pub fn setTimeoutMs(self: *SnackbarState, timeout_ms: u64) void {
+        switch (self.notification) {
+            .none => {},
+            .active => |*a| a.timeout_ms = timeout_ms,
+        }
+    }
+
+    /// Clears active message and resets notification to `.none`.
     pub fn clear(self: *SnackbarState) void {
-        self.message_len = 0;
-        self.timeout_ms = 0;
+        self.notification = .none;
     }
 
     /// Returns true if notifications for `trigger` are enabled in the bitmask.
@@ -317,10 +359,15 @@ test "findRule maps intents to declarative rules" {
 test "SnackbarState buffer operations and bitmask" {
     var state = SnackbarState{};
     try std.testing.expectEqual(@as(usize, 0), state.getMessage().len);
+    try std.testing.expect(state.notification == .none);
     try std.testing.expect(state.isTriggerEnabled(.filter));
 
     state.setMessage("Test Notification");
     try std.testing.expectEqualStrings("Test Notification", state.getMessage());
+    try std.testing.expect(state.notification == .active);
+
+    state.setTimeoutMs(5000);
+    try std.testing.expectEqual(@as(u64, 5000), state.getTimeoutMs());
 
     state.setTriggerEnabled(.filter, false);
     try std.testing.expect(!state.isTriggerEnabled(.filter));
@@ -328,5 +375,6 @@ test "SnackbarState buffer operations and bitmask" {
 
     state.clear();
     try std.testing.expectEqual(@as(usize, 0), state.getMessage().len);
-    try std.testing.expectEqual(@as(u64, 0), state.timeout_ms);
+    try std.testing.expectEqual(@as(u64, 0), state.getTimeoutMs());
+    try std.testing.expect(state.notification == .none);
 }

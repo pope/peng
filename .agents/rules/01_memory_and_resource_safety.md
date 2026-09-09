@@ -103,6 +103,11 @@ Every struct owning heap memory, GPU handles, socket connections, or child sub-s
 - Large media files (e.g. Camera RAW, uncompressed archives, video containers) range from 50MB to 500MB+. Reading full files into RAM causes severe memory spikes, heap fragmentation, and out-of-memory crashes.
 - Workers and probes MUST use fixed-size stack buffers (e.g. `[128 * 1024]u8`) for header inspections and metadata extraction.
 - Data extraction (e.g. embedded preview JPEGs, sub-streams) MUST be performed via range-limited positional file reads (`file.readPositional(io, &slices, offset)`) into precisely-sized allocations matching the exact payload length.
+- **Buffer Sizing Arithmetic Invariant (`<count> * <unit>`)**:
+  - Fixed-size stack and scratch buffers MUST use explicit compile-time arithmetic expressions
+    rather than magic byte literals (e.g. write `[64 * 1024]u8` instead of `[65536]u8`).
+  - Maintain canonical `<count> * <unit>` ordering (`64 * 1024`, `128 * 1024`, `256 * 1024`)
+    consistently across all modules for immediate readability in KiB/MiB.
 
 ## 15. Saturating Arithmetic on Untrusted File Offsets & Lengths
 
@@ -113,7 +118,9 @@ Every struct owning heap memory, GPU handles, socket connections, or child sub-s
 ## 16. Strict Domain Invariant Enforcement via Tagged Unions
 
 - When domain metadata contains mutually exclusive states or conditional properties (e.g. Camera RAW sensor dimensions), NEVER use loose booleans with optional or uninitialized fields (e.g. `is_raw: bool, sensor_w: f32`).
+
 - Model the domain state explicitly using a tagged union (`union(enum)`) with an invariant validation constructor (`init(...)`):
+
   ```zig
   pub const RawMetadata = union(enum) {
       none,
@@ -130,9 +137,13 @@ Every struct owning heap memory, GPU handles, socket connections, or child sub-s
       }
   };
   ```
+
 - This eliminates illegal states at compile time and makes invalid combinations impossible to construct.
+
 - **Top-Level Named Structs for Cross-Module Payloads**: When tagged union payloads are passed between modules (e.g. between domain state, view models, and UI rendering), define top-level named structs (`Active<Name>`) rather than inline anonymous structs.
+
 - **Inline Accessors**: Provide inline convenience methods on the union (e.g. `getPrevIndex(self) ?usize`) to allow read access to active payload values without requiring nested pattern-matching blocks at every call site:
+
   ```zig
   pub const ActiveImageTransition = struct {
       prev_index: usize,
@@ -151,3 +162,35 @@ Every struct owning heap memory, GPU handles, socket connections, or child sub-s
       }
   };
   ```
+
+- **Prohibition of Interdependent Optionals**:
+
+  - NEVER maintain clusters of interdependent optional fields
+    (e.g. `offset: ?u64, size: ?u64, method: ?u16`) in a state struct.
+  - If fields are semantically dependent, bundle them into a concrete payload struct and represent
+    the presence/absence via a tagged union (`union(enum) { unindexed, indexed: ZipSeekOffsets }`).
+
+- **Prohibition of Multiplexed Event Payloads**:
+
+  - NEVER overload an event payload with an optional resource handle (`surface: ?sdl.Surface`) to
+    represent two fundamentally different event outcomes (e.g. dimension metadata probing vs.
+    decoded thumbnail availability).
+  - Define distinct event union variants (`dimensions_probed: DimensionsProbedPayload` vs.
+    `thumb_decoded: ThumbDecodedPayload`).
+  - **Resource Ownership Invariant**: The variant owning the resource must hold a non-optional
+    handle (`surface: sdl.Surface`), enabling unconditional destruction in `BackgroundEvent.deinit`
+    without defensive null-checking.
+
+- **Enum Precision in Domain State**:
+
+  - Do NOT degrade standard library or domain enums (`std.zip.CompressionMethod`) to primitive
+    integers (`u16`, `u32`) or booleans in state structs or payloads.
+  - Retain the strongly-typed enum to preserve compile-time safety, eliminate `@intFromEnum` /
+    `@enumFromInt` conversions, and enable exhaustive `switch` dispatching.
+
+- **Explicit Enum Branching via `switch`**:
+
+  - When branching on enum values, prefer `switch (val)` over `if (val == .variant)`.
+  - If only a specific variant is handled, write explicit branches
+    (`switch (val) { .store => ..., else => {} }`) to document intentional fallbacks and facilitate
+    future variant expansion.

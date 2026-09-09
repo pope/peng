@@ -638,67 +638,83 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
             };
         },
         .archive_entry => |a| {
-            if (a.compression_method) |cm| {
-                if (cm == 0 and a.file_offset != null) {
-                    var file = std.Io.Dir.openFile(
-                        std.Io.Dir.cwd(),
-                        io,
-                        a.archive_path,
-                        .{},
-                    ) catch |err| {
-                        std.log.warn(
-                            "probeMediaMetadata: openFile failed for archive '{s}': {any}",
-                            .{ a.archive_path, err },
-                        );
-                        return null;
-                    };
-                    defer file.close(io);
+            switch (a.seek_info) {
+                .indexed => |seek| {
+                    switch (seek.compression_method) {
+                        .store => {
+                            // Uncompressed entry: image header bytes can be read
+                            // directly at file_offset
+                            var file = std.Io.Dir.openFile(
+                                std.Io.Dir.cwd(),
+                                io,
+                                a.archive_path,
+                                .{},
+                            ) catch |err| {
+                                std.log.warn(
+                                    "probeMediaMetadata: openFile failed for archive '{s}': {any}",
+                                    .{ a.archive_path, err },
+                                );
+                                return null;
+                            };
+                            defer file.close(io);
 
-                    var header_buf: [65536]u8 = undefined;
-                    var slices = [_][]u8{&header_buf};
-                    const n = file.readPositional(io, &slices, a.file_offset.?) catch |err| {
-                        std.log.warn(
-                            "probeMediaMetadata: readPositional failed for archive '{s}': {any}",
-                            .{ a.archive_path, err },
-                        );
-                        return null;
-                    };
-                    if (n == 0) return null;
+                            var header_buf: [64 * 1024]u8 = undefined;
+                            var slices = [_][]u8{&header_buf};
+                            const n = file.readPositional(
+                                io,
+                                &slices,
+                                seek.file_offset,
+                            ) catch |err| {
+                                std.log.warn(
+                                    "probeMediaMetadata: readPositional failed for '{s}': {any}",
+                                    .{ a.archive_path, err },
+                                );
+                                return null;
+                            };
+                            if (n == 0) return null;
 
-                    var data_offset: usize = 0;
-                    if (n >= @sizeOf(std.zip.LocalFileHeader) and
-                        std.mem.eql(u8, header_buf[0..4], &std.zip.local_file_header_sig))
-                    {
-                        const filename_len = std.mem.readInt(u16, header_buf[26..28], .little);
-                        const extra_len = std.mem.readInt(u16, header_buf[28..30], .little);
-                        data_offset = @sizeOf(std.zip.LocalFileHeader) +
-                            @as(usize, filename_len) +
-                            @as(usize, extra_len);
+                            var data_offset: usize = 0;
+                            if (n >= @sizeOf(std.zip.LocalFileHeader) and
+                                std.mem.eql(u8, header_buf[0..4], &std.zip.local_file_header_sig))
+                            {
+                                const filename_len =
+                                    std.mem.readInt(u16, header_buf[26..28], .little);
+                                const extra_len = std.mem.readInt(u16, header_buf[28..30], .little);
+                                data_offset = @sizeOf(std.zip.LocalFileHeader) +
+                                    @as(usize, filename_len) +
+                                    @as(usize, extra_len);
+                            }
+                            if (n <= data_offset) return null;
+
+                            const image_slice = header_buf[data_offset..n];
+                            const mime_type = detectMimeType(image_slice, a.entry_name);
+                            const dims =
+                                parseImageDimensions(image_slice, mime_type) orelse return null;
+                            const rot = exif.parseExifOrientation(image_slice) orelse .normal;
+                            const is_raw = core_fs.isRawFile(a.entry_name) or
+                                std.mem.startsWith(u8, mime_type, "image/x-");
+                            var has_thumb = false;
+                            if (std.mem.eql(u8, mime_type, "image/jpeg")) {
+                                if (exif.extractJpegThumbnailLocation(image_slice)) |_| {
+                                    has_thumb = true;
+                                }
+                            }
+                            return ProbedImageMetadata{
+                                .dims = dims,
+                                .orientation = rot,
+                                .raw_metadata = if (is_raw)
+                                    RawMetadata.init(dims.w, dims.h)
+                                else
+                                    .none,
+                                .has_embedded_thumbnail = has_thumb,
+                            };
+                        },
+                        // Compressed entries (deflate, etc.) cannot be probed via raw
+                        // positional reads
+                        else => {},
                     }
-                    if (n <= data_offset) return null;
-
-                    const image_slice = header_buf[data_offset..n];
-                    const mime_type = detectMimeType(image_slice, a.entry_name);
-                    const dims = parseImageDimensions(image_slice, mime_type) orelse return null;
-                    const rot = exif.parseExifOrientation(image_slice) orelse .normal;
-                    const is_raw = core_fs.isRawFile(a.entry_name) or
-                        std.mem.startsWith(u8, mime_type, "image/x-");
-                    var has_thumb = false;
-                    if (std.mem.eql(u8, mime_type, "image/jpeg")) {
-                        if (exif.extractJpegThumbnailLocation(image_slice)) |_| {
-                            has_thumb = true;
-                        }
-                    }
-                    return ProbedImageMetadata{
-                        .dims = dims,
-                        .orientation = rot,
-                        .raw_metadata = if (is_raw)
-                            RawMetadata.init(dims.w, dims.h)
-                        else
-                            .none,
-                        .has_embedded_thumbnail = has_thumb,
-                    };
-                }
+                },
+                .unindexed => {},
             }
             return null;
         },
@@ -1038,79 +1054,95 @@ pub fn loadThumbnailSurface(
             };
         },
         .archive_entry => |a| {
-            if (a.compression_method) |cm| {
-                if (cm == 0 and a.file_offset != null) {
-                    var file = std.Io.Dir.openFile(
-                        std.Io.Dir.cwd(),
-                        io,
-                        a.archive_path,
-                        .{},
-                    ) catch |err| {
-                        std.log.warn(
-                            "loadThumbnailSurface: openFile failed for archive '{s}': {any}",
-                            .{ a.archive_path, err },
-                        );
-                        return null;
-                    };
-                    defer file.close(io);
+            switch (a.seek_info) {
+                .indexed => |seek| {
+                    switch (seek.compression_method) {
+                        .store => {
+                            // Uncompressed entry: thumbnail can be extracted directly
+                            // from header on disk
+                            var file = std.Io.Dir.openFile(
+                                std.Io.Dir.cwd(),
+                                io,
+                                a.archive_path,
+                                .{},
+                            ) catch |err| {
+                                std.log.warn(
+                                    "loadThumbnailSurface: openFile failed for '{s}': {any}",
+                                    .{ a.archive_path, err },
+                                );
+                                return null;
+                            };
+                            defer file.close(io);
 
-                    var header_buf: [128 * 1024]u8 = undefined;
-                    var slices = [_][]u8{&header_buf};
-                    const n = file.readPositional(io, &slices, a.file_offset.?) catch |err| {
-                        std.log.warn(
-                            "loadThumbnailSurface: readPositional failed for archive '{s}': {any}",
-                            .{ a.archive_path, err },
-                        );
-                        return null;
-                    };
-                    if (n == 0) return null;
+                            var header_buf: [128 * 1024]u8 = undefined;
+                            var slices = [_][]u8{&header_buf};
+                            const n = file.readPositional(
+                                io,
+                                &slices,
+                                seek.file_offset,
+                            ) catch |err| {
+                                std.log.warn(
+                                    "loadThumbnailSurface: readPositional failed for '{s}': {any}",
+                                    .{ a.archive_path, err },
+                                );
+                                return null;
+                            };
+                            if (n == 0) return null;
 
-                    var data_offset: usize = 0;
-                    if (n >= @sizeOf(std.zip.LocalFileHeader) and
-                        std.mem.eql(u8, header_buf[0..4], &std.zip.local_file_header_sig))
-                    {
-                        const filename_len = std.mem.readInt(u16, header_buf[26..28], .little);
-                        const extra_len = std.mem.readInt(u16, header_buf[28..30], .little);
-                        data_offset = @sizeOf(std.zip.LocalFileHeader) +
-                            @as(usize, filename_len) +
-                            @as(usize, extra_len);
-                    }
-                    if (n <= data_offset) return null;
-                    const image_slice = header_buf[data_offset..n];
-                    const mime_type = detectMimeType(image_slice, a.entry_name);
-                    if (std.mem.eql(u8, mime_type, "image/jpeg")) {
-                        const orientation = exif.parseExifOrientation(image_slice) orelse .normal;
-                        const dims = parseImageDimensions(image_slice, mime_type);
-                        if (exif.extractJpegThumbnailLocation(image_slice)) |loc| {
-                            const off: usize = @intCast(loc.file_offset);
-                            const len: usize = @intCast(loc.length);
-                            if (off + len <= image_slice.len) {
-                                if (sdl.Surface.loadConstMemOpt(
-                                    image_slice[off .. off + len],
-                                )) |surf| {
-                                    const full_w: f32 = if (dims) |d|
-                                        d.w
-                                    else
-                                        @floatFromInt(surf.w());
-                                    const full_h: f32 = if (dims) |d|
-                                        d.h
-                                    else
-                                        @floatFromInt(surf.h());
-                                    const dct_snapped =
-                                        detectThumbnailDctPadding(surf, full_w, full_h);
-                                    return ExtractedThumbnail{
-                                        .surface = surf,
-                                        .orientation = orientation,
-                                        .full_w = full_w,
-                                        .full_h = full_h,
-                                        .raw_metadata = .none,
-                                        .dct_snapped = dct_snapped,
-                                    };
+                            var data_offset: usize = 0;
+                            if (n >= @sizeOf(std.zip.LocalFileHeader) and
+                                std.mem.eql(u8, header_buf[0..4], &std.zip.local_file_header_sig))
+                            {
+                                const filename_len =
+                                    std.mem.readInt(u16, header_buf[26..28], .little);
+                                const extra_len = std.mem.readInt(u16, header_buf[28..30], .little);
+                                data_offset = @sizeOf(std.zip.LocalFileHeader) +
+                                    @as(usize, filename_len) +
+                                    @as(usize, extra_len);
+                            }
+                            if (n <= data_offset) return null;
+                            const image_slice = header_buf[data_offset..n];
+                            const mime_type = detectMimeType(image_slice, a.entry_name);
+                            if (std.mem.eql(u8, mime_type, "image/jpeg")) {
+                                const orientation =
+                                    exif.parseExifOrientation(image_slice) orelse .normal;
+                                const dims = parseImageDimensions(image_slice, mime_type);
+                                if (exif.extractJpegThumbnailLocation(image_slice)) |loc| {
+                                    const off: usize = @intCast(loc.file_offset);
+                                    const len: usize = @intCast(loc.length);
+                                    if (off + len <= image_slice.len) {
+                                        if (sdl.Surface.loadConstMemOpt(
+                                            image_slice[off .. off + len],
+                                        )) |surf| {
+                                            const full_w: f32 = if (dims) |d|
+                                                d.w
+                                            else
+                                                @floatFromInt(surf.w());
+                                            const full_h: f32 = if (dims) |d|
+                                                d.h
+                                            else
+                                                @floatFromInt(surf.h());
+                                            const dct_snapped =
+                                                detectThumbnailDctPadding(surf, full_w, full_h);
+                                            return ExtractedThumbnail{
+                                                .surface = surf,
+                                                .orientation = orientation,
+                                                .full_w = full_w,
+                                                .full_h = full_h,
+                                                .raw_metadata = .none,
+                                                .dct_snapped = dct_snapped,
+                                            };
+                                        }
+                                    }
                                 }
                             }
-                        }
+                        },
+                        // Compressed entries cannot have thumbnails extracted via raw
+                        // positional reads
+                        else => {},
                     }
-                }
+                },
+                .unindexed => {},
             }
             return null;
         },
@@ -1997,8 +2029,14 @@ test "probeMediaMetadata - archive entry handling" {
         .archive_entry = .{
             .archive_path = "testfiles/images/000_0_1024x682.jpg",
             .entry_name = "test.jpg",
-            .compression_method = 8,
-            .file_offset = 0,
+            .seek_info = .{
+                .indexed = .{
+                    .header_zip_offset = 0,
+                    .file_offset = 0,
+                    .uncompressed_size = 1000,
+                    .compression_method = .deflate,
+                },
+            },
         },
     };
     try std.testing.expectEqual(
@@ -2006,18 +2044,17 @@ test "probeMediaMetadata - archive entry handling" {
         probeMediaMetadata(io, media_comp),
     );
 
-    // Missing file_offset returns null
-    const media_no_offset = MediaEntry{
+    // Unindexed entry returns null
+    const media_unindexed = MediaEntry{
         .archive_entry = .{
             .archive_path = "testfiles/images/000_0_1024x682.jpg",
             .entry_name = "test.jpg",
-            .compression_method = 0,
-            .file_offset = null,
+            .seek_info = .unindexed,
         },
     };
     try std.testing.expectEqual(
         @as(?ProbedImageMetadata, null),
-        probeMediaMetadata(io, media_no_offset),
+        probeMediaMetadata(io, media_unindexed),
     );
 
     // Uncompressed entry with valid offset
@@ -2025,8 +2062,14 @@ test "probeMediaMetadata - archive entry handling" {
         .archive_entry = .{
             .archive_path = "testfiles/images/000_0_1024x682.jpg",
             .entry_name = "test.jpg",
-            .compression_method = 0,
-            .file_offset = 0,
+            .seek_info = .{
+                .indexed = .{
+                    .header_zip_offset = 0,
+                    .file_offset = 0,
+                    .uncompressed_size = 1000,
+                    .compression_method = .store,
+                },
+            },
         },
     };
     const meta = probeMediaMetadata(io, media_stored);

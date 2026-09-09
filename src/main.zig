@@ -216,9 +216,9 @@ fn initAppGraphicsAndState(init: std.process.Init) !?AppGraphicsAndState {
         .io = init.io,
     };
     state.viewer.ui.overlays.enable_blur = parsed.enable_blur;
-    state.viewer.ui.overlays.show_title = parsed.show_title;
+    state.viewer.ui.overlays.title_display = if (parsed.show_title) .pinned else .hidden;
     state.viewer.ui.overlays.auto_title = !parsed.test_mode;
-    state.viewer.ui.overlays.show_snackbar = !parsed.test_mode;
+    state.viewer.ui.snackbar.enabled = !parsed.test_mode;
     state.viewer.navigation.crossfade = !parsed.test_mode;
     if (parsed.show_title) {
         state.viewer.animations.setImmediate(.title_overlay, 1.0);

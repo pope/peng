@@ -112,8 +112,8 @@ pub fn updateFrame(
     const cur_win_size = window.getSize();
     const cur_win_w = @as(f32, @floatFromInt(cur_win_size.w));
     const cur_win_h = @as(f32, @floatFromInt(cur_win_size.h));
-    const last_w = app_state.viewer.ui.overlays.last_win_w;
-    const last_h = app_state.viewer.ui.overlays.last_win_h;
+    const last_w = app_state.viewer.last_win_w;
+    const last_h = app_state.viewer.last_win_h;
     const window_resized = (last_w != 0 and (last_w != cur_win_w or last_h != cur_win_h));
     const is_busy = app_state.isBusy() or
         is_current_loading or
@@ -128,19 +128,19 @@ pub fn updateFrame(
         window,
         frame_allocator,
         last_time,
-        app_state.viewer.ui.overlays.mouse_inside,
+        app_state.viewer.mouse_inside,
         app_state.viewer.ui.palette.mode != .inactive,
         parsed_test_mode or parsed_headless,
         is_busy,
         wait_timeout_ms,
     );
 
-    app_state.viewer.ui.overlays.mouse_inside = input.mouse_inside;
+    app_state.viewer.mouse_inside = input.mouse_inside;
 
     // Clay Pointer & Scroll State Updates
     clay.setLayoutDimensions(.{ .w = input.win_w, .h = input.win_h });
-    app_state.viewer.ui.overlays.last_win_w = input.win_w;
-    app_state.viewer.ui.overlays.last_win_h = input.win_h;
+    app_state.viewer.last_win_w = input.win_w;
+    app_state.viewer.last_win_h = input.win_h;
 
     if (input.mouse_inside) {
         clay.setPointerState(
@@ -159,9 +159,6 @@ pub fn updateFrame(
         .{ .x = input.scroll_delta_x, .y = input.scroll_delta_y },
         input.delta_time_ms / 1000.0,
     );
-
-    app_state.viewer.ui.overlays.last_mouse_x = input.mouse_x;
-    app_state.viewer.ui.overlays.last_mouse_y = input.mouse_y;
 
     var update_input = input;
     if (clay.isDebugModeEnabled()) {

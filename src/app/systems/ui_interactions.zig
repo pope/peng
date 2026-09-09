@@ -12,15 +12,15 @@ pub fn sysProcessUiInteractions(ctx: FrameContext) void {
     const input = ctx.input orelse return;
 
     if (input.mouse_left_clicked and !input.isPointerInDebugPanel()) {
-        if (self.viewer.ui.overlays.show_info and
+        if (self.viewer.ui.overlays.info_panel.visible and
             clay.pointerOver(clay.getElementId("InfoCloseBtn")))
         {
-            self.viewer.ui.overlays.show_info = false;
+            self.viewer.ui.overlays.info_panel.visible = false;
         }
-        if (self.viewer.ui.overlays.show_stats and
+        if (self.viewer.ui.overlays.stats_panel.visible and
             clay.pointerOver(clay.getElementId("StatsCloseBtn")))
         {
-            self.viewer.ui.overlays.show_stats = false;
+            self.viewer.ui.overlays.stats_panel.visible = false;
         }
     }
 }

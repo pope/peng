@@ -31,6 +31,10 @@ pub const ViewerState = struct {
 
     image_transition: ImageTransition = .none,
 
+    mouse_inside: bool = true,
+    last_win_w: f32 = 0.0,
+    last_win_h: f32 = 0.0,
+
     running: bool = true,
 
     /// Returns the protected previous image index if an image dissolve transition is active.

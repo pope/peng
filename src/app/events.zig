@@ -33,6 +33,7 @@ pub fn drainWorkerEvents(state: *AppState) bool {
                 }
                 state.updateCurrentRotation();
             },
+            .dimensions_probed => |d| handleDimensionsProbedEvent(state, d),
             .thumb_decoded => |t| handleExifThumbnailEvent(state, t),
             .image_decoded => |*d| handleImageDecodedEvent(state, d),
             .decode_failed => |f| {
@@ -88,6 +89,32 @@ pub fn drainWorkerEvents(state: *AppState) bool {
     return true;
 }
 
+fn handleDimensionsProbedEvent(state: *AppState, probed: events.DimensionsProbedPayload) void {
+    const entry = state.cache.get(probed.key) orelse return;
+
+    if (probed.orientation != .normal) {
+        entry.orientation = probed.orientation;
+    }
+    if (probed.full_w > 0 and probed.full_h > 0) {
+        entry.full_w = probed.full_w;
+        entry.full_h = probed.full_h;
+    }
+    if (probed.raw_metadata.isRaw()) {
+        entry.raw_metadata = probed.raw_metadata;
+    }
+    if (probed.thumb_only) {
+        switch (entry.status) {
+            .decoding => |*dec| dec.has_thread = false,
+            else => {},
+        }
+    }
+    state.updateCurrentRotation();
+
+    if (entry.thumbnail == .none or entry.thumbnail == .pending) {
+        entry.thumbnail = .not_available;
+    }
+}
+
 fn handleExifThumbnailEvent(state: *AppState, thumb_data: events.ThumbDecodedPayload) void {
     const entry = state.cache.get(thumb_data.key) orelse return;
 
@@ -109,12 +136,7 @@ fn handleExifThumbnailEvent(state: *AppState, thumb_data: events.ThumbDecodedPay
     }
     state.updateCurrentRotation();
 
-    const surf = thumb_data.surface orelse {
-        if (entry.thumbnail == .none or entry.thumbnail == .pending) {
-            entry.thumbnail = .not_available;
-        }
-        return;
-    };
+    const surf = thumb_data.surface;
     if (state.gpu_device) |gpu_dev| {
         if (image.uploadSurfaceToGpu(
             gpu_dev,
@@ -561,7 +583,7 @@ test "drainWorkerEvents - neighbor image_decoded stays loaded_cpu while current 
     try std.testing.expect(entry1.status == .loaded_cpu);
 }
 
-test "drainWorkerEvents - thumb_decoded without surface sets dimensions and clears has_thread" {
+test "drainWorkerEvents - dimensions_probed sets dimensions and clears has_thread" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var state = try AppState.initHeadless(allocator, io);
@@ -575,9 +597,8 @@ test "drainWorkerEvents - thumb_decoded without surface sets dimensions and clea
     });
 
     try state.workers.event_queue.push(allocator, io, .{
-        .thumb_decoded = .{
+        .dimensions_probed = .{
             .key = state.cache.activeKey(0),
-            .surface = null,
             .w = 1920.0,
             .h = 1080.0,
             .full_w = 1920.0,

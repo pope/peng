@@ -70,7 +70,7 @@ fn renderInfoOverlay(
     draw_h: f32,
     frame_allocator: std.mem.Allocator,
 ) !void {
-    if (!ui_model.overlays.show_info) return;
+    if (!ui_model.overlays.info_panel.visible) return;
 
     var filename: []const u8 = "None";
     var display_dir: []const u8 = "N/A";
@@ -278,8 +278,8 @@ fn renderInfoOverlay(
             .attach_to = .to_parent,
             .attach_points = .{ .element = .left_top, .parent = .left_top },
             .offset = .{
-                .x = ui_model.overlays.info_offset_x,
-                .y = ui_model.overlays.info_offset_y,
+                .x = ui_model.overlays.info_panel.offset_x,
+                .y = ui_model.overlays.info_panel.offset_y,
             },
             .z_index = 100,
         },
@@ -390,7 +390,7 @@ pub fn renderStatsOverlay(
     frame_allocator: std.mem.Allocator,
 ) !void {
     try renderInfoOverlay(ui_model, draw_w, draw_h, frame_allocator);
-    if (!ui_model.overlays.show_stats) return;
+    if (!ui_model.overlays.stats_panel.visible) return;
 
     const current_entry = ui_model.current_entry;
 
@@ -482,8 +482,8 @@ pub fn renderStatsOverlay(
             .attach_to = .to_parent,
             .attach_points = .{ .element = .right_top, .parent = .right_top },
             .offset = .{
-                .x = ui_model.overlays.stats_offset_x,
-                .y = ui_model.overlays.stats_offset_y,
+                .x = ui_model.overlays.stats_panel.offset_x,
+                .y = ui_model.overlays.stats_panel.offset_y,
             },
             .z_index = 100,
         },

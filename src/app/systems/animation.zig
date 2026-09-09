@@ -25,34 +25,45 @@ pub fn sysUpdateAnimations(ctx: FrameContext) void {
     }
 
     // Check if transient title overlay auto-hide timeout has expired
-    if (!state.viewer.ui.overlays.show_title and state.viewer.ui.title_auto_hide_timeout_ms > 0) {
-        const now = sdl.timer.getTicks();
-        if (now >= state.viewer.ui.title_auto_hide_timeout_ms) {
-            state.viewer.ui.title_auto_hide_timeout_ms = 0;
-            const progress = anim.get(.title_overlay);
-            const dur = @max(state_pkg.DURATION_TITLE_OVERLAY_CLOSE_MS * progress, 30.0);
-            anim.start(.title_overlay, 0.0, dur, .ease_out_quad);
-        }
+    switch (state.viewer.ui.overlays.title_display) {
+        .transient => |t| {
+            const now = sdl.timer.getTicks();
+            if (now >= t.timeout_ms) {
+                state.viewer.ui.overlays.title_display = .hidden;
+                const progress = anim.get(.title_overlay);
+                const dur = @max(state_pkg.DURATION_TITLE_OVERLAY_CLOSE_MS * progress, 30.0);
+                anim.start(.title_overlay, 0.0, dur, .ease_out_quad);
+            }
+        },
+        .hidden, .pinned => {},
     }
 
     // Check if transient snackbar auto-hide timeout has expired
-    if (state.viewer.ui.snackbar.timeout_ms > 0) {
-        const now = sdl.timer.getTicks();
-        if (now >= state.viewer.ui.snackbar.timeout_ms) {
-            state.viewer.ui.snackbar.timeout_ms = 0;
-            const progress = anim.get(.snackbar);
-            const dur = @max(state_pkg.DURATION_SNACKBAR_CLOSE_MS * progress, 30.0);
-            anim.start(.snackbar, 0.0, dur, .ease_out_quad);
-        }
+    switch (state.viewer.ui.snackbar.notification) {
+        .active => |*active| {
+            if (active.timeout_ms > 0) {
+                const now = sdl.timer.getTicks();
+                if (now >= active.timeout_ms) {
+                    active.timeout_ms = 0;
+                    const progress = anim.get(.snackbar);
+                    const dur = @max(state_pkg.DURATION_SNACKBAR_CLOSE_MS * progress, 30.0);
+                    anim.start(.snackbar, 0.0, dur, .ease_out_quad);
+                }
+            }
+        },
+        .none => {},
     }
 
     // Clear snackbar message buffer once fade-out has completely settled
-    if (!anim.isActive(.snackbar) and
-        anim.get(.snackbar) <= 0.001 and
-        state.viewer.ui.snackbar.timeout_ms == 0 and
-        state.viewer.ui.snackbar.message_len > 0)
-    {
-        state.viewer.ui.snackbar.clear();
+    if (!anim.isActive(.snackbar) and anim.get(.snackbar) <= 0.001) {
+        switch (state.viewer.ui.snackbar.notification) {
+            .active => |active| {
+                if (active.timeout_ms == 0) {
+                    state.viewer.ui.snackbar.clear();
+                }
+            },
+            .none => {},
+        }
     }
 
     // Check if palette close animation has finished settling to 0.0 (even if already settled)
@@ -222,7 +233,7 @@ test "sysUpdateAnimations title_overlay auto-hide timeout and fade-out" {
         .ease_out_quad,
     );
     state.viewer.animations.settleAll();
-    state.viewer.ui.title_auto_hide_timeout_ms = now -| 10;
+    state.viewer.ui.overlays.title_display = .{ .transient = .{ .timeout_ms = now -| 10 } };
 
     sysUpdateAnimations(.{
         .state = &state,
@@ -230,7 +241,10 @@ test "sysUpdateAnimations title_overlay auto-hide timeout and fade-out" {
         .delta_time_ms = 16.0,
     });
 
-    try std.testing.expectEqual(@as(u64, 0), state.viewer.ui.title_auto_hide_timeout_ms);
+    try std.testing.expectEqual(
+        state_pkg.TitleDisplay.hidden,
+        state.viewer.ui.overlays.title_display,
+    );
     try std.testing.expect(state.viewer.animations.isActive(.title_overlay));
 
     // Tick through close duration
@@ -264,7 +278,7 @@ test "sysUpdateAnimations snackbar auto-hide timeout and fade-out" {
         .ease_out_quad,
     );
     state.viewer.animations.settleAll();
-    state.viewer.ui.snackbar.timeout_ms = now -| 10;
+    state.viewer.ui.snackbar.setTimeoutMs(now -| 10);
 
     sysUpdateAnimations(.{
         .state = &state,
@@ -272,7 +286,7 @@ test "sysUpdateAnimations snackbar auto-hide timeout and fade-out" {
         .delta_time_ms = 16.0,
     });
 
-    try std.testing.expectEqual(@as(u64, 0), state.viewer.ui.snackbar.timeout_ms);
+    try std.testing.expectEqual(@as(u64, 0), state.viewer.ui.snackbar.getTimeoutMs());
     try std.testing.expect(state.viewer.animations.isActive(.snackbar));
 
     // Tick through close duration

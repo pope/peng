@@ -100,7 +100,7 @@ pub fn scanCbzImageEntries(
     // Parsing central directory records involves repeated seek and struct reads.
     // A 64KB stack buffer caches adjacent directory headers, reducing positional pread
     // syscalls during archive indexing from 7 down to 3 on typical multi-hundred-page archives.
-    var reader_buf: [65536]u8 = undefined;
+    var reader_buf: [64 * 1024]u8 = undefined;
     var f_reader = file.reader(io, &reader_buf);
 
     var iterator = try std.zip.Iterator.init(&f_reader);
@@ -135,10 +135,14 @@ pub fn scanCbzImageEntries(
             .archive_entry = .{
                 .archive_path = arch_path_dup,
                 .entry_name = entry_name_dup,
-                .header_zip_offset = entry.header_zip_offset,
-                .file_offset = entry.file_offset,
-                .uncompressed_size = entry.uncompressed_size,
-                .compression_method = @intFromEnum(entry.compression_method),
+                .seek_info = .{
+                    .indexed = .{
+                        .header_zip_offset = entry.header_zip_offset,
+                        .file_offset = entry.file_offset,
+                        .uncompressed_size = entry.uncompressed_size,
+                        .compression_method = entry.compression_method,
+                    },
+                },
             },
         });
     }
@@ -228,7 +232,7 @@ pub fn countFolderContents(io: std.Io, folder_path: []const u8) FolderCounts {
 
         // Sized to 64KB to minimize positional pread syscalls during rapid central
         // directory traversal when counting archive pages.
-        var reader_buf: [65536]u8 = undefined;
+        var reader_buf: [64 * 1024]u8 = undefined;
         var f_reader = file.reader(io, &reader_buf);
         var iterator = std.zip.Iterator.init(&f_reader) catch return counts;
 
@@ -452,7 +456,8 @@ test "scanCbzImageEntries on sample archive" {
         "000_0_1024x682.jpg",
         entries.items[0].archive_entry.entry_name,
     );
-    try std.testing.expect(entries.items[0].archive_entry.file_offset != null);
+    try std.testing.expect(entries.items[0].archive_entry.isIndexed());
+    try std.testing.expect(entries.items[0].archive_entry.seek_info == .indexed);
 }
 
 test "scanDirectoryEntries includes CBZ files and countFolderContents counts CBZ images" {

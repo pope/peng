@@ -322,7 +322,7 @@ pub fn readJpegExifOrientation(io: std.Io, path: []const u8) ?Orientation {
     };
     defer file.close(io);
 
-    var buf: [65536]u8 = undefined;
+    var buf: [64 * 1024]u8 = undefined;
     var slices = [_][]u8{&buf};
     const n = file.readPositional(io, &slices, 0) catch |err| {
         std.log.debug(

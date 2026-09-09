@@ -34,16 +34,16 @@ pub fn sysUpdateViewport(ctx: FrameContext, palette_closed_this_frame: bool) voi
         },
         .info => |inf| {
             if (input.mouse_left_down) {
-                state.viewer.ui.overlays.info_offset_x = input.mouse_x - inf.start_x;
-                state.viewer.ui.overlays.info_offset_y = input.mouse_y - inf.start_y;
+                state.viewer.ui.overlays.info_panel.offset_x = input.mouse_x - inf.start_x;
+                state.viewer.ui.overlays.info_panel.offset_y = input.mouse_y - inf.start_y;
             } else {
                 next_drag_state = .none;
             }
         },
         .stats => |st| {
             if (input.mouse_left_down) {
-                state.viewer.ui.overlays.stats_offset_x = input.mouse_x - st.start_x;
-                state.viewer.ui.overlays.stats_offset_y = input.mouse_y - st.start_y;
+                state.viewer.ui.overlays.stats_panel.offset_x = input.mouse_x - st.start_x;
+                state.viewer.ui.overlays.stats_panel.offset_y = input.mouse_y - st.start_y;
             } else {
                 next_drag_state = .none;
             }
@@ -53,16 +53,16 @@ pub fn sysUpdateViewport(ctx: FrameContext, palette_closed_this_frame: bool) voi
     if (next_drag_state == .none and input.mouse_left_clicked and !palette_closed_this_frame) {
         if (!state.viewer.ui.palette.isAcceptingInput()) {
             const is_in_debug_panel = input.isPointerInDebugPanel();
-            const over_info = state.viewer.ui.overlays.show_info and
+            const over_info = state.viewer.ui.overlays.info_panel.visible and
                 !is_in_debug_panel and
                 clay.pointerOver(clay.getElementId("InfoOverlayCard"));
-            const over_stats = state.viewer.ui.overlays.show_stats and
+            const over_stats = state.viewer.ui.overlays.stats_panel.visible and
                 !is_in_debug_panel and
                 clay.pointerOver(clay.getElementId("StatsPanel"));
 
             if (over_info) {
-                const off_x = state.viewer.ui.overlays.info_offset_x;
-                const off_y = state.viewer.ui.overlays.info_offset_y;
+                const off_x = state.viewer.ui.overlays.info_panel.offset_x;
+                const off_y = state.viewer.ui.overlays.info_panel.offset_y;
                 next_drag_state = .{
                     .info = .{
                         .start_x = input.mouse_x - off_x,
@@ -70,8 +70,8 @@ pub fn sysUpdateViewport(ctx: FrameContext, palette_closed_this_frame: bool) voi
                     },
                 };
             } else if (over_stats) {
-                const off_x = state.viewer.ui.overlays.stats_offset_x;
-                const off_y = state.viewer.ui.overlays.stats_offset_y;
+                const off_x = state.viewer.ui.overlays.stats_panel.offset_x;
+                const off_y = state.viewer.ui.overlays.stats_panel.offset_y;
                 next_drag_state = .{
                     .stats = .{
                         .start_x = input.mouse_x - off_x,

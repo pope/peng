@@ -85,41 +85,9 @@ fn decompressCbzMediaEntry(
     var compressed_size: u64 = undefined;
     var comp_method_enum: std.zip.CompressionMethod = undefined;
 
-    if (entry.file_offset) |offset| {
-        try f_reader.seekTo(offset);
-        const local_header = try f_reader.interface.takeStruct(std.zip.LocalFileHeader, .little);
-        if (!std.mem.eql(u8, &local_header.signature, &std.zip.local_file_header_sig))
-            return error.ZipBadFileOffset;
-
-        data_offset = offset + @sizeOf(std.zip.LocalFileHeader) +
-            local_header.filename_len + local_header.extra_len;
-        uncompressed_size = entry.uncompressed_size orelse local_header.uncompressed_size;
-        compressed_size = local_header.compressed_size;
-        comp_method_enum = if (entry.compression_method) |cm|
-            @enumFromInt(cm)
-        else
-            local_header.compression_method;
-        try f_reader.seekTo(data_offset);
-    } else {
-        var iterator = try std.zip.Iterator.init(&f_reader);
-        var arena = std.heap.ArenaAllocator.init(alloc);
-        defer arena.deinit();
-
-        var found = false;
-        while (try iterator.next()) |zip_entry| {
-            if (zip_entry.filename_len == 0) continue;
-            _ = arena.reset(.retain_capacity);
-            const temp_alloc = arena.allocator();
-
-            try f_reader.seekTo(
-                zip_entry.header_zip_offset + @sizeOf(std.zip.CentralDirectoryFileHeader),
-            );
-            const name = try temp_alloc.alloc(u8, zip_entry.filename_len);
-            try f_reader.interface.readSliceAll(name);
-
-            if (!std.mem.eql(u8, name, entry.entry_name)) continue;
-
-            try f_reader.seekTo(zip_entry.file_offset);
+    switch (entry.seek_info) {
+        .indexed => |seek| {
+            try f_reader.seekTo(seek.file_offset);
             const local_header = try f_reader.interface.takeStruct(
                 std.zip.LocalFileHeader,
                 .little,
@@ -127,16 +95,51 @@ fn decompressCbzMediaEntry(
             if (!std.mem.eql(u8, &local_header.signature, &std.zip.local_file_header_sig))
                 return error.ZipBadFileOffset;
 
-            data_offset = zip_entry.file_offset + @sizeOf(std.zip.LocalFileHeader) +
+            data_offset = seek.file_offset + @sizeOf(std.zip.LocalFileHeader) +
                 local_header.filename_len + local_header.extra_len;
-            uncompressed_size = zip_entry.uncompressed_size;
-            compressed_size = zip_entry.compressed_size;
-            comp_method_enum = zip_entry.compression_method;
+            uncompressed_size = seek.uncompressed_size;
+            compressed_size = local_header.compressed_size;
+            comp_method_enum = seek.compression_method;
             try f_reader.seekTo(data_offset);
-            found = true;
-            break;
-        }
-        if (!found) return error.FileNotFound;
+        },
+        .unindexed => {
+            var iterator = try std.zip.Iterator.init(&f_reader);
+            var arena = std.heap.ArenaAllocator.init(alloc);
+            defer arena.deinit();
+
+            var found = false;
+            while (try iterator.next()) |zip_entry| {
+                if (zip_entry.filename_len == 0) continue;
+                _ = arena.reset(.retain_capacity);
+                const temp_alloc = arena.allocator();
+
+                try f_reader.seekTo(
+                    zip_entry.header_zip_offset + @sizeOf(std.zip.CentralDirectoryFileHeader),
+                );
+                const name = try temp_alloc.alloc(u8, zip_entry.filename_len);
+                try f_reader.interface.readSliceAll(name);
+
+                if (!std.mem.eql(u8, name, entry.entry_name)) continue;
+
+                try f_reader.seekTo(zip_entry.file_offset);
+                const local_header = try f_reader.interface.takeStruct(
+                    std.zip.LocalFileHeader,
+                    .little,
+                );
+                if (!std.mem.eql(u8, &local_header.signature, &std.zip.local_file_header_sig))
+                    return error.ZipBadFileOffset;
+
+                data_offset = zip_entry.file_offset + @sizeOf(std.zip.LocalFileHeader) +
+                    local_header.filename_len + local_header.extra_len;
+                uncompressed_size = zip_entry.uncompressed_size;
+                compressed_size = zip_entry.compressed_size;
+                comp_method_enum = zip_entry.compression_method;
+                try f_reader.seekTo(data_offset);
+                found = true;
+                break;
+            }
+            if (!found) return error.FileNotFound;
+        },
     }
 
     const end_read = sdl.timer.getTicksNs();
@@ -456,13 +459,12 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
                 return;
             }
         } else if (args.thumb_only) {
-            // If no small thumbnail available, emit surface = null
+            // If no small thumbnail available, emit dimensions_probed
             // to immediately establish canvas aspect ratio on Frame 1 without decoding pixels
             if (isStale(workers, args, key)) return;
             workers.event_queue.push(alloc, io, .{
-                .thumb_decoded = .{
+                .dimensions_probed = .{
                     .key = key,
-                    .surface = null,
                     .w = raw_w,
                     .h = raw_h,
                     .full_w = raw_w,
@@ -472,7 +474,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
                     .raw_metadata = RawMetadata.init(raw_w, raw_h),
                 },
             }) catch |err| {
-                std.log.err("Failed to push thumbnail decode event: {}", .{err});
+                std.log.err("Failed to push dimensions probed event: {}", .{err});
             };
             context.wakeUpMainThread();
             return;
@@ -889,9 +891,8 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         const full_w: f32 = if (full_dims) |d| d.w else 0.0;
         const full_h: f32 = if (full_dims) |d| d.h else 0.0;
         workers.event_queue.push(alloc, io, .{
-            .thumb_decoded = .{
+            .dimensions_probed = .{
                 .key = key,
-                .surface = null,
                 .w = full_w,
                 .h = full_h,
                 .full_w = full_w,
@@ -907,7 +908,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                     .none,
             },
         }) catch |err| {
-            std.log.err("Failed to push thumbnail decode event: {}", .{err});
+            std.log.err("Failed to push dimensions probed event: {}", .{err});
         };
         context.wakeUpMainThread();
         return;
@@ -1018,18 +1019,17 @@ test "decodeWorker - thumb_only does not do full decompression on JPEG" {
 
     decodeWorker(args);
 
-    var thumb_decoded_seen = false;
+    var dimensions_probed_seen = false;
     var image_decoded_seen = false;
 
     while (workers.event_queue.pop()) |*ev| {
         defer ev.deinit(allocator);
         switch (ev.*) {
-            .thumb_decoded => |t| {
-                thumb_decoded_seen = true;
-                try std.testing.expect(t.thumb_only);
-                try std.testing.expectEqual(@as(f32, 1024.0), t.full_w);
-                try std.testing.expectEqual(@as(f32, 682.0), t.full_h);
-                try std.testing.expect(t.surface == null);
+            .dimensions_probed => |d| {
+                dimensions_probed_seen = true;
+                try std.testing.expect(d.thumb_only);
+                try std.testing.expectEqual(@as(f32, 1024.0), d.full_w);
+                try std.testing.expectEqual(@as(f32, 682.0), d.full_h);
             },
             .image_decoded => {
                 image_decoded_seen = true;
@@ -1038,7 +1038,7 @@ test "decodeWorker - thumb_only does not do full decompression on JPEG" {
         }
     }
 
-    try std.testing.expect(thumb_decoded_seen);
+    try std.testing.expect(dimensions_probed_seen);
     try std.testing.expect(!image_decoded_seen);
 }
 
@@ -1071,18 +1071,17 @@ test "decodeWorker - thumb_only does not do full decompression on PNG" {
 
     decodeWorker(args);
 
-    var thumb_decoded_seen = false;
+    var dimensions_probed_seen = false;
     var image_decoded_seen = false;
 
     while (workers.event_queue.pop()) |*ev| {
         defer ev.deinit(allocator);
         switch (ev.*) {
-            .thumb_decoded => |t| {
-                thumb_decoded_seen = true;
-                try std.testing.expect(t.thumb_only);
-                try std.testing.expect(t.full_w > 0.0);
-                try std.testing.expect(t.full_h > 0.0);
-                try std.testing.expect(t.surface == null);
+            .dimensions_probed => |d| {
+                dimensions_probed_seen = true;
+                try std.testing.expect(d.thumb_only);
+                try std.testing.expect(d.full_w > 0.0);
+                try std.testing.expect(d.full_h > 0.0);
             },
             .image_decoded => {
                 image_decoded_seen = true;
@@ -1091,7 +1090,7 @@ test "decodeWorker - thumb_only does not do full decompression on PNG" {
         }
     }
 
-    try std.testing.expect(thumb_decoded_seen);
+    try std.testing.expect(dimensions_probed_seen);
     try std.testing.expect(!image_decoded_seen);
 }
 

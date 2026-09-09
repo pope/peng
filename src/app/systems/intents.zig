@@ -102,8 +102,8 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 nav.last_nav_time_ms > 0 and
                 elapsed < 200;
             if (should_show_auto_title) {
-                if (!ui.overlays.show_title) {
-                    ui.title_auto_hide_timeout_ms = now + 1500;
+                if (!ui.overlays.title_display.isPinned()) {
+                    ui.overlays.title_display = .{ .transient = .{ .timeout_ms = now + 1500 } };
                     const progress = self.viewer.animations.get(.title_overlay);
                     const dur = @max(state.DURATION_TITLE_OVERLAY_OPEN_MS * (1.0 - progress), 30.0);
                     self.viewer.animations.start(.title_overlay, 1.0, dur, .ease_out_quad);
@@ -215,24 +215,23 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 }
             }
         },
-        .toggle_info => ui.overlays.show_info = !ui.overlays.show_info,
-        .set_info => |val| ui.overlays.show_info = val,
-        .toggle_stats => ui.overlays.show_stats = !ui.overlays.show_stats,
-        .set_stats => |val| ui.overlays.show_stats = val,
+        .toggle_info => ui.overlays.info_panel.visible = !ui.overlays.info_panel.visible,
+        .set_info => |val| ui.overlays.info_panel.visible = val,
+        .toggle_stats => ui.overlays.stats_panel.visible = !ui.overlays.stats_panel.visible,
+        .set_stats => |val| ui.overlays.stats_panel.visible = val,
         .toggle_title => {
-            ui.overlays.show_title = !ui.overlays.show_title;
-            ui.title_auto_hide_timeout_ms = 0;
-            const target: f32 = if (ui.overlays.show_title) 1.0 else 0.0;
+            const new_pinned = !ui.overlays.title_display.isPinned();
+            ui.overlays.title_display = if (new_pinned) .pinned else .hidden;
+            const target: f32 = if (new_pinned) 1.0 else 0.0;
             const progress = self.viewer.animations.get(.title_overlay);
-            const dur: f32 = if (ui.overlays.show_title)
+            const dur: f32 = if (new_pinned)
                 @max(state.DURATION_TITLE_OVERLAY_OPEN_MS * (1.0 - progress), 30.0)
             else
                 @max(state.DURATION_TITLE_OVERLAY_CLOSE_MS * progress, 30.0);
             self.viewer.animations.start(.title_overlay, target, dur, .ease_out_quad);
         },
         .set_title => |val| {
-            ui.overlays.show_title = val;
-            ui.title_auto_hide_timeout_ms = 0;
+            ui.overlays.title_display = if (val) .pinned else .hidden;
             const target: f32 = if (val) 1.0 else 0.0;
             const progress = self.viewer.animations.get(.title_overlay);
             const dur: f32 = if (val)
@@ -242,8 +241,8 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
             self.viewer.animations.start(.title_overlay, target, dur, .ease_out_quad);
         },
         .toggle_snackbar => {
-            ui.overlays.show_snackbar = !ui.overlays.show_snackbar;
-            if (!ui.overlays.show_snackbar) {
+            ui.snackbar.enabled = !ui.snackbar.enabled;
+            if (!ui.snackbar.enabled) {
                 ui.snackbar.clear();
                 const progress = self.viewer.animations.get(.snackbar);
                 const dur = @max(state.DURATION_SNACKBAR_CLOSE_MS * progress, 30.0);
@@ -251,7 +250,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
             }
         },
         .set_snackbar => |val| {
-            ui.overlays.show_snackbar = val;
+            ui.snackbar.enabled = val;
             if (!val) {
                 ui.snackbar.clear();
                 const progress = self.viewer.animations.get(.snackbar);
@@ -329,7 +328,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
 
 /// Dispatches declarative notification trigger matching for an executed intent.
 fn triggerSnackbarForIntent(self: *AppState, intent: intents.AppIntent) void {
-    if (!self.viewer.ui.overlays.show_snackbar) return;
+    if (!self.viewer.ui.snackbar.enabled) return;
     const rule = state.snackbar.findRule(intent) orelse return;
     if (!self.viewer.ui.snackbar.isTriggerEnabled(rule.trigger)) return;
 
@@ -341,9 +340,8 @@ fn triggerSnackbarForIntent(self: *AppState, intent: intents.AppIntent) void {
     }, &buf);
 
     if (msg.len > 0) {
-        self.viewer.ui.snackbar.setMessage(msg);
         const now = sdl.timer.getTicks();
-        self.viewer.ui.snackbar.timeout_ms = now + rule.duration_ms;
+        self.viewer.ui.snackbar.show(msg, now + rule.duration_ms);
         const progress = self.viewer.animations.get(.snackbar);
         const dur = @max(state.DURATION_SNACKBAR_OPEN_MS * (1.0 - progress), 30.0);
         self.viewer.animations.start(.snackbar, 1.0, dur, .ease_out_quad);
@@ -507,13 +505,13 @@ test "toggle_title and set_title intents" {
     var app_st = try AppState.initHeadless(allocator, io);
     defer app_st.deinit();
 
-    // Default show_title should be false
-    try testing.expect(!app_st.viewer.ui.overlays.show_title);
+    // Default title_display should be .hidden
+    try testing.expectEqual(state.TitleDisplay.hidden, app_st.viewer.ui.overlays.title_display);
     try testing.expectEqual(@as(f32, 0.0), app_st.viewer.animations.get(.title_overlay));
 
     // Toggle title on
     try executeIntent(&app_st, .toggle_title);
-    try testing.expect(app_st.viewer.ui.overlays.show_title);
+    try testing.expectEqual(state.TitleDisplay.pinned, app_st.viewer.ui.overlays.title_display);
     try testing.expect(app_st.viewer.animations.isActive(.title_overlay));
     app_st.viewer.animations.settleAll();
     try testing.expectApproxEqAbs(
@@ -524,7 +522,7 @@ test "toggle_title and set_title intents" {
 
     // Toggle title off
     try executeIntent(&app_st, .toggle_title);
-    try testing.expect(!app_st.viewer.ui.overlays.show_title);
+    try testing.expectEqual(state.TitleDisplay.hidden, app_st.viewer.ui.overlays.title_display);
     try testing.expect(app_st.viewer.animations.isActive(.title_overlay));
     app_st.viewer.animations.settleAll();
     try testing.expectApproxEqAbs(
@@ -535,7 +533,7 @@ test "toggle_title and set_title intents" {
 
     // Explicit set_title
     try executeIntent(&app_st, .{ .set_title = true });
-    try testing.expect(app_st.viewer.ui.overlays.show_title);
+    try testing.expectEqual(state.TitleDisplay.pinned, app_st.viewer.ui.overlays.title_display);
     app_st.viewer.animations.settleAll();
     try testing.expectApproxEqAbs(
         @as(f32, 1.0),
@@ -544,7 +542,7 @@ test "toggle_title and set_title intents" {
     );
 
     try executeIntent(&app_st, .{ .set_title = false });
-    try testing.expect(!app_st.viewer.ui.overlays.show_title);
+    try testing.expectEqual(state.TitleDisplay.hidden, app_st.viewer.ui.overlays.title_display);
     app_st.viewer.animations.settleAll();
     try testing.expectApproxEqAbs(
         @as(f32, 0.0),
@@ -575,7 +573,10 @@ test "fast scrubbing triggers title overlay auto-hide" {
     try executeIntent(&app_st, .next_image);
 
     // Should have triggered title auto-hide timeout and started animation
-    try testing.expect(app_st.viewer.ui.title_auto_hide_timeout_ms >= now + 1400);
+    switch (app_st.viewer.ui.overlays.title_display) {
+        .transient => |t| try testing.expect(t.timeout_ms >= now + 1400),
+        else => try testing.expect(false),
+    }
     try testing.expect(app_st.viewer.animations.isActive(.title_overlay));
 }
 
@@ -587,7 +588,7 @@ test "sysExecuteIntents triggers snackbar on filter and scale changes" {
     var app_st = try AppState.initHeadless(allocator, io);
     defer app_st.deinit();
 
-    app_st.viewer.ui.overlays.show_snackbar = true;
+    app_st.viewer.ui.snackbar.enabled = true;
 
     // Push filter intent
     try app_st.pushIntent(.{ .set_filter = .mitchell });
@@ -602,7 +603,7 @@ test "sysExecuteIntents triggers snackbar on filter and scale changes" {
         app_st.viewer.ui.snackbar.getMessage(),
     );
     try testing.expect(app_st.viewer.animations.isActive(.snackbar));
-    try testing.expect(app_st.viewer.ui.snackbar.timeout_ms > 0);
+    try testing.expect(app_st.viewer.ui.snackbar.getTimeoutMs() > 0);
 
     // Push scale intent
     try app_st.pushIntent(.{ .set_scale = .crop });
@@ -624,7 +625,7 @@ test "sysExecuteIntents triggers snackbar on filter and scale changes" {
         .frame_allocator = allocator,
         .delta_time_ms = 16.0,
     });
-    try testing.expect(!app_st.viewer.ui.overlays.show_snackbar);
+    try testing.expect(!app_st.viewer.ui.snackbar.enabled);
     try testing.expectEqual(@as(usize, 0), app_st.viewer.ui.snackbar.getMessage().len);
 }
 
