@@ -13,14 +13,22 @@ const TiffHeader = struct {
     ifd0_off: u32,
 };
 
+inline fn readU16(bytes: *const [2]u8, is_le: bool) u16 {
+    return std.mem.readInt(u16, bytes, if (is_le) .little else .big);
+}
+
+inline fn readU32(bytes: *const [4]u8, is_le: bool) u32 {
+    return std.mem.readInt(u32, bytes, if (is_le) .little else .big);
+}
+
 fn findTiffPayload(data: []const u8) ?TiffHeader {
     // 1. Direct TIFF container (Sony ARW, DNG, CR2, NEF, ORF, RW2, PEF, etc.)
     if (data.len >= 8) {
         if (std.mem.eql(u8, data[0..2], "II") or std.mem.eql(u8, data[0..2], "MM")) {
             const is_le = (data[0] == 'I');
-            const sig = if (is_le) std.mem.readInt(u16, data[2..4][0..2], .little) else std.mem.readInt(u16, data[2..4][0..2], .big);
+            const sig = readU16(data[2..4][0..2], is_le);
             if (sig == 0x002A) {
-                const ifd0_off = if (is_le) std.mem.readInt(u32, data[4..8][0..4], .little) else std.mem.readInt(u32, data[4..8][0..4], .big);
+                const ifd0_off = readU32(data[4..8][0..4], is_le);
                 const off: usize = ifd0_off;
                 if (off + 2 <= data.len) {
                     return .{
@@ -61,11 +69,16 @@ fn findTiffPayload(data: []const u8) ?TiffHeader {
             if (payload.len >= 14 and std.mem.startsWith(u8, payload, "Exif\x00\x00")) {
                 const tiff = payload[6..];
                 if (tiff.len >= 8) {
-                    const is_le = if (std.mem.eql(u8, tiff[0..2], "II")) true else if (std.mem.eql(u8, tiff[0..2], "MM")) false else continue;
+                    const is_le = if (std.mem.eql(u8, tiff[0..2], "II"))
+                        true
+                    else if (std.mem.eql(u8, tiff[0..2], "MM"))
+                        false
+                    else
+                        continue;
 
-                    const sig = if (is_le) std.mem.readInt(u16, tiff[2..4][0..2], .little) else std.mem.readInt(u16, tiff[2..4][0..2], .big);
+                    const sig = readU16(tiff[2..4][0..2], is_le);
                     if (sig == 0x002A) {
-                        const ifd0_off = if (is_le) std.mem.readInt(u32, tiff[4..8][0..4], .little) else std.mem.readInt(u32, tiff[4..8][0..4], .big);
+                        const ifd0_off = readU32(tiff[4..8][0..4], is_le);
                         const off: usize = ifd0_off;
                         if (off + 2 <= tiff.len) {
                             return .{
@@ -127,7 +140,7 @@ pub fn parseExifDimensions(data: []const u8) ?JpegDimensions {
             sub_ifds: ?*SubIfdList,
         ) error{TooManySubIfds}!void {
             if (off >= t.len or off + 2 > t.len) return;
-            const num = if (le) std.mem.readInt(u16, t[off..][0..2], .little) else std.mem.readInt(u16, t[off..][0..2], .big);
+            const num = readU16(t[off..][0..2], le);
             var entry_off = off + 2;
             var i: usize = 0;
             var cur_w: ?u32 = null;
@@ -138,15 +151,15 @@ pub fn parseExifDimensions(data: []const u8) ?JpegDimensions {
                 const entry = t[entry_off .. entry_off + 12];
                 entry_off += 12;
 
-                const tag = if (le) std.mem.readInt(u16, entry[0..2][0..2], .little) else std.mem.readInt(u16, entry[0..2][0..2], .big);
-                const type_id = if (le) std.mem.readInt(u16, entry[2..4][0..2], .little) else std.mem.readInt(u16, entry[2..4][0..2], .big);
-                const count = if (le) std.mem.readInt(u32, entry[4..8][0..4], .little) else std.mem.readInt(u32, entry[4..8][0..4], .big);
+                const tag = readU16(entry[0..2][0..2], le);
+                const type_id = readU16(entry[2..4][0..2], le);
+                const count = readU32(entry[4..8][0..4], le);
 
                 var val: u32 = 0;
                 if (type_id == 3) {
-                    val = if (le) std.mem.readInt(u16, entry[8..10][0..2], .little) else std.mem.readInt(u16, entry[8..10][0..2], .big);
+                    val = readU16(entry[8..10][0..2], le);
                 } else if (type_id == 4) {
-                    val = if (le) std.mem.readInt(u32, entry[8..12][0..4], .little) else std.mem.readInt(u32, entry[8..12][0..4], .big);
+                    val = readU32(entry[8..12][0..4], le);
                 }
 
                 if (tag == 0x0100 or tag == 0xA002) {
@@ -165,7 +178,7 @@ pub fn parseExifDimensions(data: []const u8) ?JpegDimensions {
                             while (s_idx < count) : (s_idx += 1) {
                                 const read_pos = @as(usize, val) + s_idx * 4;
                                 if (read_pos + 4 <= t.len) {
-                                    const s_off = if (le) std.mem.readInt(u32, t[read_pos .. read_pos + 4][0..4], .little) else std.mem.readInt(u32, t[read_pos .. read_pos + 4][0..4], .big);
+                                    const s_off = readU32(t[read_pos..][0..4], le);
                                     if (s_off > 0) try sub_ifds.?.append(s_off);
                                 }
                             }
@@ -185,20 +198,35 @@ pub fn parseExifDimensions(data: []const u8) ?JpegDimensions {
         }
     }.run;
 
-    parseIfd(tiff, ifd0_off, is_le, &best_w, &best_h, &best_area, &exif_sub_ifd_off, &sub_ifd_list) catch |err| {
+    parseIfd(
+        tiff,
+        ifd0_off,
+        is_le,
+        &best_w,
+        &best_h,
+        &best_area,
+        &exif_sub_ifd_off,
+        &sub_ifd_list,
+    ) catch |err| {
         std.log.err("parseExifDimensions: failed to parse IFD0: {}", .{err});
         return null;
     };
 
     if (exif_sub_ifd_off) |sub_off| {
         parseIfd(tiff, sub_off, is_le, &best_w, &best_h, &best_area, null, null) catch |err| {
-            std.log.warn("parseExifDimensions: failed to parse ExifIFD at offset {d}: {}", .{ sub_off, err });
+            std.log.warn(
+                "parseExifDimensions: failed to parse ExifIFD at offset {d}: {}",
+                .{ sub_off, err },
+            );
         };
     }
 
     for (sub_ifd_list.slice()) |s_off| {
         parseIfd(tiff, s_off, is_le, &best_w, &best_h, &best_area, null, null) catch |err| {
-            std.log.warn("parseExifDimensions: failed to parse SubIFD at offset {d}: {}", .{ s_off, err });
+            std.log.warn(
+                "parseExifDimensions: failed to parse SubIFD at offset {d}: {}",
+                .{ s_off, err },
+            );
         };
     }
 
@@ -231,7 +259,8 @@ pub fn readJpegDimensions(data: []const u8) ?JpegDimensions {
         const seg_len = (@as(usize, data[idx]) << 8) | @as(usize, data[idx + 1]);
         if (seg_len < 2 or idx + seg_len > data.len) break;
 
-        // Skip APP1 (0xE1) segment so we don't match the embedded thumbnail's SOF marker inside EXIF payload
+        // Skip APP1 (0xE1) segment so we don't match the embedded thumbnail's
+        // SOF marker inside EXIF payload
         if (marker == 0xE1) {
             idx += seg_len;
             continue;
@@ -263,7 +292,7 @@ pub fn parseExifOrientation(data: []const u8) ?Orientation {
     const is_le = header.is_le;
     const ifd0_off = header.ifd0_off;
 
-    const num_entries = if (is_le) std.mem.readInt(u16, tiff[ifd0_off..][0..2], .little) else std.mem.readInt(u16, tiff[ifd0_off..][0..2], .big);
+    const num_entries = readU16(tiff[ifd0_off..][0..2], is_le);
     var entry_off = ifd0_off + 2;
 
     var i: usize = 0;
@@ -272,9 +301,9 @@ pub fn parseExifOrientation(data: []const u8) ?Orientation {
         const entry = tiff[entry_off .. entry_off + 12];
         entry_off += 12;
 
-        const tag = if (is_le) std.mem.readInt(u16, entry[0..2][0..2], .little) else std.mem.readInt(u16, entry[0..2][0..2], .big);
+        const tag = readU16(entry[0..2][0..2], is_le);
         if (tag == 0x0112) {
-            const val = if (is_le) std.mem.readInt(u16, entry[8..10][0..2], .little) else std.mem.readInt(u16, entry[8..10][0..2], .big);
+            const val = readU16(entry[8..10][0..2], is_le);
             return Orientation.fromTiff(val);
         }
     }
@@ -284,7 +313,8 @@ pub fn parseExifOrientation(data: []const u8) ?Orientation {
 /// Reads the EXIF orientation tag by reading the header of a JPEG file on disk.
 pub fn readJpegExifOrientation(io: std.Io, path: []const u8) ?Orientation {
     const ext = std.fs.path.extension(path);
-    if (!std.ascii.eqlIgnoreCase(ext, ".jpg") and !std.ascii.eqlIgnoreCase(ext, ".jpeg")) return null;
+    if (!std.ascii.eqlIgnoreCase(ext, ".jpg") and
+        !std.ascii.eqlIgnoreCase(ext, ".jpeg")) return null;
 
     var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, path, .{}) catch |err| {
         std.log.debug("readJpegExifOrientation: openFile failed for '{s}': {}", .{ path, err });
@@ -295,7 +325,10 @@ pub fn readJpegExifOrientation(io: std.Io, path: []const u8) ?Orientation {
     var buf: [65536]u8 = undefined;
     var slices = [_][]u8{&buf};
     const n = file.readPositional(io, &slices, 0) catch |err| {
-        std.log.debug("readJpegExifOrientation: readPositional failed for '{s}': {}", .{ path, err });
+        std.log.debug(
+            "readJpegExifOrientation: readPositional failed for '{s}': {}",
+            .{ path, err },
+        );
         return null;
     };
     return parseExifOrientation(buf[0..n]);
@@ -307,22 +340,23 @@ pub const ThumbnailLocation = struct {
     length: u32,
 };
 
-/// Locates the byte offset and length of an embedded JPEG thumbnail in IFD1 without allocating memory.
+/// Locates the byte offset and length of an embedded JPEG thumbnail in IFD1
+/// without allocating memory.
 pub fn extractJpegThumbnailLocation(data: []const u8) ?ThumbnailLocation {
     const header = findTiffPayload(data) orelse return null;
     const tiff = header.tiff;
     const is_le = header.is_le;
     const ifd0_off = header.ifd0_off;
 
-    const num_ifd0_entries = if (is_le) std.mem.readInt(u16, tiff[ifd0_off..][0..2], .little) else std.mem.readInt(u16, tiff[ifd0_off..][0..2], .big);
+    const num_ifd0_entries = readU16(tiff[ifd0_off..][0..2], is_le);
     const ifd1_ptr_off = @as(usize, ifd0_off) + 2 + @as(usize, num_ifd0_entries) * 12;
     if (ifd1_ptr_off + 4 > tiff.len) return null;
 
-    const ifd1_off = if (is_le) std.mem.readInt(u32, tiff[ifd1_ptr_off..][0..4], .little) else std.mem.readInt(u32, tiff[ifd1_ptr_off..][0..4], .big);
+    const ifd1_off = readU32(tiff[ifd1_ptr_off..][0..4], is_le);
     const ifd1_usize: usize = ifd1_off;
     if (ifd1_usize == 0 or ifd1_usize + 2 > tiff.len) return null;
 
-    const num_ifd1_entries = if (is_le) std.mem.readInt(u16, tiff[ifd1_usize..][0..2], .little) else std.mem.readInt(u16, tiff[ifd1_usize..][0..2], .big);
+    const num_ifd1_entries = readU16(tiff[ifd1_usize..][0..2], is_le);
     var entry_off = ifd1_usize + 2;
 
     var thumb_off: ?u32 = null;
@@ -334,11 +368,11 @@ pub fn extractJpegThumbnailLocation(data: []const u8) ?ThumbnailLocation {
         const entry = tiff[entry_off .. entry_off + 12];
         entry_off += 12;
 
-        const tag = if (is_le) std.mem.readInt(u16, entry[0..2][0..2], .little) else std.mem.readInt(u16, entry[0..2][0..2], .big);
+        const tag = readU16(entry[0..2][0..2], is_le);
         if (tag == 0x0201) {
-            thumb_off = if (is_le) std.mem.readInt(u32, entry[8..12][0..4], .little) else std.mem.readInt(u32, entry[8..12][0..4], .big);
+            thumb_off = readU32(entry[8..12][0..4], is_le);
         } else if (tag == 0x0202) {
-            thumb_len = if (is_le) std.mem.readInt(u32, entry[8..12][0..4], .little) else std.mem.readInt(u32, entry[8..12][0..4], .big);
+            thumb_len = readU32(entry[8..12][0..4], is_le);
         }
     }
 
@@ -358,7 +392,8 @@ pub const RawPreviewCandidates = struct {
     thumbnail: ?ThumbnailLocation = null,
 };
 
-/// Extracts the largest embedded JPEG preview location and smallest thumbnail location from a TIFF-based RAW container.
+/// Extracts the largest embedded JPEG preview location and smallest thumbnail
+/// location from a TIFF-based RAW container.
 pub fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
     const header = findTiffPayload(data) orelse return .{};
     const tiff = header.tiff;
@@ -380,7 +415,7 @@ pub fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
             sub_ifds: ?*SubIfdList,
         ) error{TooManySubIfds}!void {
             if (off >= t.len or off + 2 > t.len) return;
-            const num = if (le) std.mem.readInt(u16, t[off..][0..2], .little) else std.mem.readInt(u16, t[off..][0..2], .big);
+            const num = readU16(t[off..][0..2], le);
             var entry_off = off + 2;
             var i: usize = 0;
             var j_off: ?u32 = null;
@@ -395,42 +430,47 @@ pub fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
                 const entry = t[entry_off .. entry_off + 12];
                 entry_off += 12;
 
-                const tag = if (le) std.mem.readInt(u16, entry[0..2][0..2], .little) else std.mem.readInt(u16, entry[0..2][0..2], .big);
-                const type_id = if (le) std.mem.readInt(u16, entry[2..4][0..2], .little) else std.mem.readInt(u16, entry[2..4][0..2], .big);
-                const val_count = if (le) std.mem.readInt(u32, entry[4..8][0..4], .little) else std.mem.readInt(u32, entry[4..8][0..4], .big);
+                const tag = readU16(entry[0..2][0..2], le);
+                const type_id = readU16(entry[2..4][0..2], le);
+                const val_count = readU32(entry[4..8][0..4], le);
 
                 if (tag == 0x0103) {
-                    compression = if (le) std.mem.readInt(u16, entry[8..10][0..2], .little) else std.mem.readInt(u16, entry[8..10][0..2], .big);
+                    compression = readU16(entry[8..10][0..2], le);
                 } else if (tag == 0x0106) {
-                    photometric = if (le) std.mem.readInt(u16, entry[8..10][0..2], .little) else std.mem.readInt(u16, entry[8..10][0..2], .big);
+                    photometric = readU16(entry[8..10][0..2], le);
                 } else if (tag == 0x0111) { // StripOffsets
-                    // Per DNG Spec / TIFF-EP, embedded JPEG previews must be a single contiguous bitstream
+                    // Per DNG Spec / TIFF-EP, embedded JPEG previews must be a
+                    // single contiguous bitstream
                     if (val_count == 1) {
                         strip_off = if (type_id == 3)
-                            (if (le) std.mem.readInt(u16, entry[8..10][0..2], .little) else std.mem.readInt(u16, entry[8..10][0..2], .big))
+                            readU16(entry[8..10][0..2], le)
                         else
-                            (if (le) std.mem.readInt(u32, entry[8..12][0..4], .little) else std.mem.readInt(u32, entry[8..12][0..4], .big));
+                            readU32(entry[8..12][0..4], le);
                     }
                 } else if (tag == 0x0117) { // StripByteCounts
                     if (val_count == 1) {
                         strip_len = if (type_id == 3)
-                            (if (le) std.mem.readInt(u16, entry[8..10][0..2], .little) else std.mem.readInt(u16, entry[8..10][0..2], .big))
+                            readU16(entry[8..10][0..2], le)
                         else
-                            (if (le) std.mem.readInt(u32, entry[8..12][0..4], .little) else std.mem.readInt(u32, entry[8..12][0..4], .big));
+                            readU32(entry[8..12][0..4], le);
                     }
                 } else if (tag == 0x0201) {
-                    j_off = if (le) std.mem.readInt(u32, entry[8..12][0..4], .little) else std.mem.readInt(u32, entry[8..12][0..4], .big);
+                    j_off = readU32(entry[8..12][0..4], le);
                 } else if (tag == 0x0202) {
-                    j_len = if (le) std.mem.readInt(u32, entry[8..12][0..4], .little) else std.mem.readInt(u32, entry[8..12][0..4], .big);
-                } else if (tag == 0xC634) { // DNGPrivateData (Ricoh / Pentax MakerNote embedded thumbnail)
-                    const val_or_off = if (le) std.mem.readInt(u32, entry[8..12][0..4], .little) else std.mem.readInt(u32, entry[8..12][0..4], .big);
+                    j_len = readU32(entry[8..12][0..4], le);
+                } else if (tag == 0xC634) { // DNGPrivateData (Ricoh / Pentax MakerNote)
+                    const val_or_off = readU32(entry[8..12][0..4], le);
                     if (val_count >= 70 and @as(usize, val_or_off) + 70 <= t.len) {
                         const p_slice = t[val_or_off..];
-                        if (std.mem.startsWith(u8, p_slice, "RICOH\x00II") or std.mem.startsWith(u8, p_slice, "PENTAX\x00II")) {
+                        if (std.mem.startsWith(u8, p_slice, "RICOH\x00II") or
+                            std.mem.startsWith(u8, p_slice, "PENTAX\x00II"))
+                        {
                             // MakerNote explicitly asserts "II" (Little Endian)
                             const p_len = std.mem.readInt(u32, p_slice[54..58][0..4], .little);
                             const p_rel_off = std.mem.readInt(u32, p_slice[66..70][0..4], .little);
-                            if (p_len > 0 and p_len < 512 * 1024 and @as(u64, p_rel_off) + p_len <= val_count) {
+                            if (p_len > 0 and p_len < 512 * 1024 and
+                                @as(u64, p_rel_off) + p_len <= val_count)
+                            {
                                 if (std.math.add(u32, val_or_off, p_rel_off)) |mn_jpeg_off| {
                                     if (count.* < cands.len) {
                                         cands[count.*] = .{ .off = mn_jpeg_off, .len = p_len };
@@ -442,17 +482,17 @@ pub fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
                     }
                 } else if (tag == 0x014A and sub_ifds != null) {
                     if (val_count == 1) {
-                        const s_off = if (le) std.mem.readInt(u32, entry[8..12][0..4], .little) else std.mem.readInt(u32, entry[8..12][0..4], .big);
+                        const s_off = readU32(entry[8..12][0..4], le);
                         if (s_off > 0) try sub_ifds.?.append(s_off);
                     } else if (val_count > 1 and (type_id == 4 or type_id == 13)) {
                         if (val_count > 8) return error.TooManySubIfds;
-                        const ptr_off = if (le) std.mem.readInt(u32, entry[8..12][0..4], .little) else std.mem.readInt(u32, entry[8..12][0..4], .big);
+                        const ptr_off = readU32(entry[8..12][0..4], le);
                         if (@as(usize, ptr_off) < t.len) {
                             var s_idx: usize = 0;
                             while (s_idx < val_count) : (s_idx += 1) {
                                 const read_pos = @as(usize, ptr_off) + s_idx * 4;
                                 if (read_pos + 4 <= t.len) {
-                                    const s_off = if (le) std.mem.readInt(u32, t[read_pos .. read_pos + 4][0..4], .little) else std.mem.readInt(u32, t[read_pos .. read_pos + 4][0..4], .big);
+                                    const s_off = readU32(t[read_pos..][0..4], le);
                                     if (s_off > 0) try sub_ifds.?.append(s_off);
                                 }
                             }
@@ -466,12 +506,16 @@ pub fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
                     cands[count.*] = .{ .off = j_off.?, .len = j_len.? };
                     count.* += 1;
                 }
-            } else if (strip_off != null and strip_len != null and strip_off.? > 0 and strip_len.? > 0) {
+            } else if (strip_off != null and strip_len != null and
+                strip_off.? > 0 and strip_len.? > 0)
+            {
                 // Support standard TIFF JPEG compression (6 = OJPEG, 7 = JPEG)
-                const is_jpeg_comp = (compression != null and (compression.? == 6 or compression.? == 7));
+                const is_jpeg_comp = (compression != null and
+                    (compression.? == 6 or compression.? == 7));
                 // Standard JPEG preview photometrics (6 = YCbCr, 2 = RGB, 1 = BlackIsZero).
                 // Specifically excludes 32803 (CFA Bayer) and 34892 (LinearRaw).
-                const is_jpeg_color = (photometric != null and (photometric.? == 6 or photometric.? == 2 or photometric.? == 1));
+                const is_jpeg_color = (photometric != null and
+                    (photometric.? == 6 or photometric.? == 2 or photometric.? == 1));
                 if (is_jpeg_comp and is_jpeg_color) {
                     if (count.* < cands.len) {
                         cands[count.*] = .{ .off = strip_off.?, .len = strip_len.? };
@@ -493,18 +537,24 @@ pub fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
     // 2. Parse SubIFDs
     for (sub_ifd_list.slice()) |s_off| {
         parseIfdForJpegs(tiff, s_off, is_le, &candidates, &cand_count, null) catch |err| {
-            std.log.warn("extractTiffRawPreviews: failed to parse SubIFD at offset {d}: {}", .{ s_off, err });
+            std.log.warn(
+                "extractTiffRawPreviews: failed to parse SubIFD at offset {d}: {}",
+                .{ s_off, err },
+            );
         };
     }
 
     // 3. Parse IFD1
-    const num_ifd0_entries = if (is_le) std.mem.readInt(u16, tiff[ifd0_off..][0..2], .little) else std.mem.readInt(u16, tiff[ifd0_off..][0..2], .big);
+    const num_ifd0_entries = readU16(tiff[ifd0_off..][0..2], is_le);
     const ifd1_ptr_off = @as(usize, ifd0_off) + 2 + @as(usize, num_ifd0_entries) * 12;
     if (ifd1_ptr_off + 4 <= tiff.len) {
-        const ifd1_off = if (is_le) std.mem.readInt(u32, tiff[ifd1_ptr_off..][0..4], .little) else std.mem.readInt(u32, tiff[ifd1_ptr_off..][0..4], .big);
+        const ifd1_off = readU32(tiff[ifd1_ptr_off..][0..4], is_le);
         if (ifd1_off > 0 and ifd1_off < tiff.len) {
             parseIfdForJpegs(tiff, ifd1_off, is_le, &candidates, &cand_count, null) catch |err| {
-                std.log.warn("extractTiffRawPreviews: failed to parse IFD1 at offset {d}: {}", .{ ifd1_off, err });
+                std.log.warn(
+                    "extractTiffRawPreviews: failed to parse IFD1 at offset {d}: {}",
+                    .{ ifd1_off, err },
+                );
             };
         }
     }
@@ -669,7 +719,10 @@ test "readJpegExifOrientation on non-jpeg file" {
 }
 
 test "extractJpegThumbnailLocation" {
-    try std.testing.expectEqual(@as(?ThumbnailLocation, null), extractJpegThumbnailLocation("invalid data"));
+    try std.testing.expectEqual(
+        @as(?ThumbnailLocation, null),
+        extractJpegThumbnailLocation("invalid data"),
+    );
 
     const dummy_jpeg = [_]u8{ 0xFF, 0xD8, 0xFF, 0xD9 };
     const exif_data = [_]u8{
@@ -684,8 +737,20 @@ test "extractJpegThumbnailLocation" {
         0x12, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, // Orientation tag
         0x1A, 0x00, 0x00, 0x00, // IFD1 offset = 26 (relative to TIFF header start)
         0x02, 0x00, // IFD1 entries = 2
-        0x01, 0x02, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x38, 0x00, 0x00, 0x00, // Tag 0x0201: Thumb offset = 56
-        0x02, 0x02, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, // Tag 0x0202: Thumb len = 4
+        // Tag 0x0201: Thumb offset = 56
+        0x01, 0x02,
+        0x04, 0x00,
+        0x01, 0x00,
+        0x00, 0x00,
+        0x38, 0x00,
+        0x00, 0x00,
+        // Tag 0x0202: Thumb len = 4
+        0x02, 0x02,
+        0x04, 0x00,
+        0x01, 0x00,
+        0x00, 0x00,
+        0x04, 0x00,
+        0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, // Next IFD offset = 0
         0xFF, 0xD8, 0xFF, 0xD9, // Thumb payload at offset 56 in TIFF (68 in full buffer)
     };
@@ -892,7 +957,8 @@ test "parseExifOrientation with truncated APP1 segment" {
     buf[12] = 'I';
     buf[13] = 'I';
     std.mem.writeInt(u16, buf[14..16][0..2], 0x002A, .little);
-    std.mem.writeInt(u32, buf[16..20][0..4], 8, .little); // IFD0 at offset 8 (relative to TIFF start at 12 -> index 20)
+    // IFD0 at offset 8 (relative to TIFF start at 12 -> index 20)
+    std.mem.writeInt(u32, buf[16..20][0..4], 8, .little);
 
     // IFD0: 1 entry
     std.mem.writeInt(u16, buf[20..22][0..2], 1, .little);

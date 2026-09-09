@@ -16,7 +16,8 @@ pub fn loadAssets() !void {
 pub fn unloadAssets() void {}
 
 /// Sequential execution of all systems during the Update Phase of the event loop.
-/// Guaranteed: All systems run in deterministic order, use frame_allocator, and do NOT call each other.
+/// Guaranteed: All systems run in deterministic order, use frame_allocator, and
+/// do NOT call each other.
 fn runUpdatePhase(
     app_state: *app.state.AppState,
     input: state_pkg.FrameInput,
@@ -83,7 +84,11 @@ pub fn updateFrame(
 ) !void {
     _ = ipc_server;
     // Re-bind Clay measure text function pointer to the reloaded code address
-    clay.setMeasureTextFunction(*const state_pkg.MeasureTextUserData, measure_data, ui.graphics.sdl3MeasureText);
+    clay.setMeasureTextFunction(
+        *const state_pkg.MeasureTextUserData,
+        measure_data,
+        ui.graphics.sdl3MeasureText,
+    );
 
     // Phase 1: Background Event & Input Ingestion
     if (parsed_test_mode or parsed_headless) {
@@ -101,14 +106,23 @@ pub fn updateFrame(
         const len = app_state.viewer.navigation.image_list.items.len;
         if (len <= 1) break :blk false;
         const cur_idx = app_state.viewer.navigation.current_index orelse break :blk false;
-        break :blk app_state.cache.hasUnreadyPrefetchSlots(cur_idx, len, app_state.gpu_device != null);
+        const has_gpu = app_state.gpu_device != null;
+        break :blk app_state.cache.hasUnreadyPrefetchSlots(cur_idx, len, has_gpu);
     };
     const cur_win_size = window.getSize();
     const cur_win_w = @as(f32, @floatFromInt(cur_win_size.w));
     const cur_win_h = @as(f32, @floatFromInt(cur_win_size.h));
-    const window_resized = (app_state.viewer.ui.overlays.last_win_w != 0 and (app_state.viewer.ui.overlays.last_win_w != cur_win_w or app_state.viewer.ui.overlays.last_win_h != cur_win_h));
-    const is_busy = app_state.isBusy() or is_current_loading or bg_events_processed or (app_state.viewer.drag_state != .none) or has_unpopulated_cache or window_resized;
-    const wait_timeout_ms = if (!is_busy) app_state.getWaitTimeoutMs(sdl.timer.getTicks()) else null;
+    const last_w = app_state.viewer.ui.overlays.last_win_w;
+    const last_h = app_state.viewer.ui.overlays.last_win_h;
+    const window_resized = (last_w != 0 and (last_w != cur_win_w or last_h != cur_win_h));
+    const is_busy = app_state.isBusy() or
+        is_current_loading or
+        bg_events_processed or
+        (app_state.viewer.drag_state != .none) or
+        has_unpopulated_cache or
+        window_resized;
+    const wait_timeout_ms =
+        if (!is_busy) app_state.getWaitTimeoutMs(sdl.timer.getTicks()) else null;
     const frame_allocator = frame_arena.allocator();
     const input = try input_pkg.pollFrameInput(
         window,
@@ -156,7 +170,12 @@ pub fn updateFrame(
     }
 
     // Phase 2: Update Phase — Run all systems sequentially
-    try runUpdatePhase(app_state, update_input, frame_allocator, parsed_test_mode or parsed_headless);
+    try runUpdatePhase(
+        app_state,
+        update_input,
+        frame_allocator,
+        parsed_test_mode or parsed_headless,
+    );
 
     // Phase 3: Render Phase
     const view_params = state_pkg.ViewParams{
@@ -170,13 +189,14 @@ pub fn updateFrame(
 
     if (app_state.gpu_device == null) return error.GpuNotInitialized;
 
+    const nav_items = app_state.viewer.navigation.image_list.items;
     const ui_model = state_pkg.UiViewModel{
         .is_fullscreen = app_state.viewer.isFullscreen(),
-        .total_images = app_state.viewer.navigation.image_list.items.len,
-        .image_list = app_state.viewer.navigation.image_list.items,
+        .total_images = nav_items.len,
+        .image_list = nav_items,
         .current_index = app_state.viewer.navigation.current_index,
         .current_image_entry = if (app_state.viewer.navigation.current_index) |idx|
-            if (idx < app_state.viewer.navigation.image_list.items.len) app_state.viewer.navigation.image_list.items[idx] else null
+            if (idx < nav_items.len) nav_items[idx] else null
         else
             null,
         .current_entry = app_state.getCurrentEntry(),

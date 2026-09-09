@@ -39,14 +39,28 @@ fn renderStatRow(label: []const u8, value: []const u8) !void {
 }
 
 fn getRawContainerName(mime_type: []const u8, filename: []const u8) []const u8 {
-    if (std.mem.eql(u8, mime_type, "image/x-fuji-raf") or std.mem.endsWith(u8, filename, ".raf") or std.mem.endsWith(u8, filename, ".RAF")) return "RAW (Fujifilm RAF)";
-    if (std.mem.eql(u8, mime_type, "image/x-sony-arw") or std.mem.endsWith(u8, filename, ".arw") or std.mem.endsWith(u8, filename, ".ARW")) return "RAW (Sony ARW)";
-    if (std.mem.eql(u8, mime_type, "image/x-canon-cr2") or std.mem.endsWith(u8, filename, ".cr2") or std.mem.endsWith(u8, filename, ".CR2")) return "RAW (Canon CR2)";
-    if (std.mem.eql(u8, mime_type, "image/x-nikon-nef") or std.mem.endsWith(u8, filename, ".nef") or std.mem.endsWith(u8, filename, ".NEF")) return "RAW (Nikon NEF)";
-    if (std.mem.eql(u8, mime_type, "image/x-adobe-dng") or std.mem.endsWith(u8, filename, ".dng") or std.mem.endsWith(u8, filename, ".DNG")) return "RAW (Adobe DNG)";
-    if (std.mem.eql(u8, mime_type, "image/x-olympus-orf") or std.mem.endsWith(u8, filename, ".orf") or std.mem.endsWith(u8, filename, ".ORF")) return "RAW (Olympus ORF)";
-    if (std.mem.eql(u8, mime_type, "image/x-panasonic-rw2") or std.mem.endsWith(u8, filename, ".rw2") or std.mem.endsWith(u8, filename, ".RW2")) return "RAW (Panasonic RW2)";
-    if (std.mem.eql(u8, mime_type, "image/x-pentax-pef") or std.mem.endsWith(u8, filename, ".pef") or std.mem.endsWith(u8, filename, ".PEF")) return "RAW (Pentax PEF)";
+    const RawFormat = struct {
+        mime: []const u8,
+        ext: []const u8,
+        name: []const u8,
+    };
+    const formats = [_]RawFormat{
+        .{ .mime = "image/x-fuji-raf", .ext = ".raf", .name = "RAW (Fujifilm RAF)" },
+        .{ .mime = "image/x-sony-arw", .ext = ".arw", .name = "RAW (Sony ARW)" },
+        .{ .mime = "image/x-canon-cr2", .ext = ".cr2", .name = "RAW (Canon CR2)" },
+        .{ .mime = "image/x-nikon-nef", .ext = ".nef", .name = "RAW (Nikon NEF)" },
+        .{ .mime = "image/x-adobe-dng", .ext = ".dng", .name = "RAW (Adobe DNG)" },
+        .{ .mime = "image/x-olympus-orf", .ext = ".orf", .name = "RAW (Olympus ORF)" },
+        .{ .mime = "image/x-panasonic-rw2", .ext = ".rw2", .name = "RAW (Panasonic RW2)" },
+        .{ .mime = "image/x-pentax-pef", .ext = ".pef", .name = "RAW (Pentax PEF)" },
+    };
+    for (formats) |f| {
+        if (std.mem.eql(u8, mime_type, f.mime) or
+            std.ascii.endsWithIgnoreCase(filename, f.ext))
+        {
+            return f.name;
+        }
+    }
     return "Camera RAW";
 }
 
@@ -69,13 +83,26 @@ fn renderInfoOverlay(
                 .archive_entry => |a| {
                     const page_basename = std.fs.path.basename(a.entry_name);
                     const arch_basename = std.fs.path.basename(a.archive_path);
-                    filename = try std.fmt.allocPrint(frame_allocator, "{s} (Page {d}/{d})", .{ page_basename, idx + 1, ui_model.image_list.len });
-                    display_dir = try std.fmt.allocPrint(frame_allocator, "Archive: {s}", .{arch_basename});
+                    filename = try std.fmt.allocPrint(
+                        frame_allocator,
+                        "{s} (Page {d}/{d})",
+                        .{ page_basename, idx + 1, ui_model.image_list.len },
+                    );
+                    display_dir = try std.fmt.allocPrint(
+                        frame_allocator,
+                        "Archive: {s}",
+                        .{arch_basename},
+                    );
                 },
                 .filesystem => |f| {
                     filename = std.fs.path.basename(f.path);
                     const dirname = std.fs.path.dirname(f.path) orelse ".";
-                    display_dir = if (dirname.len > 35) try std.fmt.allocPrint(frame_allocator, "...{s}", .{dirname[dirname.len - 32 ..]}) else dirname;
+                    display_dir = if (dirname.len > 35)
+                        try std.fmt.allocPrint(frame_allocator, "...{s}", .{
+                            dirname[dirname.len - 32 ..],
+                        })
+                    else
+                        dirname;
                 },
             }
         }
@@ -86,14 +113,22 @@ fn renderInfoOverlay(
     var res_str: []const u8 = "N/A";
     var raw_res_str: ?[]const u8 = null;
     var is_raw_image = false;
-    const screen_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} px", .{ draw_w, draw_h });
+    const screen_str = try std.fmt.allocPrint(
+        frame_allocator,
+        "{d:.0}x{d:.0} px",
+        .{ draw_w, draw_h },
+    );
 
     if (current_entry) |entry| {
         is_raw_image = entry.raw_metadata.isRaw();
         if (entry.raw_metadata.getSensorDims()) |s_dims| {
             if (s_dims.w > 0 and s_dims.h > 0) {
                 const raw_mp = (s_dims.w * s_dims.h) / 1_000_000.0;
-                raw_res_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} ({d:.2} MP)", .{ s_dims.w, s_dims.h, raw_mp });
+                raw_res_str = try std.fmt.allocPrint(
+                    frame_allocator,
+                    "{d:.0}x{d:.0} ({d:.2} MP)",
+                    .{ s_dims.w, s_dims.h, raw_mp },
+                );
             }
         }
         switch (entry.status) {
@@ -101,21 +136,23 @@ fn renderInfoOverlay(
                 mime_type = cpu.mime_type;
                 disk_size_str = try formatSize(frame_allocator, cpu.size_bytes);
                 const megapixels = (cpu.w * cpu.h) / 1_000_000.0;
-                if (entry.raw_metadata.isRaw()) {
-                    res_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} ({d:.2} MP) [PREVIEW]", .{ cpu.w, cpu.h, megapixels });
-                } else {
-                    res_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} ({d:.2} MP)", .{ cpu.w, cpu.h, megapixels });
-                }
+                const prev_suffix = if (entry.raw_metadata.isRaw()) " [PREVIEW]" else "";
+                res_str = try std.fmt.allocPrint(
+                    frame_allocator,
+                    "{d:.0}x{d:.0} ({d:.2} MP){s}",
+                    .{ cpu.w, cpu.h, megapixels, prev_suffix },
+                );
             },
             .loaded_gpu => |gpu| {
                 mime_type = gpu.mime_type;
                 disk_size_str = try formatSize(frame_allocator, gpu.size_bytes);
                 const megapixels = (gpu.w * gpu.h) / 1_000_000.0;
-                if (entry.raw_metadata.isRaw()) {
-                    res_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} ({d:.2} MP) [PREVIEW]", .{ gpu.w, gpu.h, megapixels });
-                } else {
-                    res_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} ({d:.2} MP)", .{ gpu.w, gpu.h, megapixels });
-                }
+                const prev_suffix = if (entry.raw_metadata.isRaw()) " [PREVIEW]" else "";
+                res_str = try std.fmt.allocPrint(
+                    frame_allocator,
+                    "{d:.0}x{d:.0} ({d:.2} MP){s}",
+                    .{ gpu.w, gpu.h, megapixels, prev_suffix },
+                );
             },
             .decoding => {
                 disk_size_str = "Loading...";
@@ -124,7 +161,11 @@ fn renderInfoOverlay(
                     res_str = "Loading preview...";
                 } else if (entry.full_w > 0 and entry.full_h > 0) {
                     const megapixels = (entry.full_w * entry.full_h) / 1_000_000.0;
-                    res_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} ({d:.2} MP)", .{ entry.full_w, entry.full_h, megapixels });
+                    res_str = try std.fmt.allocPrint(
+                        frame_allocator,
+                        "{d:.0}x{d:.0} ({d:.2} MP)",
+                        .{ entry.full_w, entry.full_h, megapixels },
+                    );
                 } else {
                     res_str = "Loading...";
                 }
@@ -143,21 +184,46 @@ fn renderInfoOverlay(
         const entry_w = switch (entry.status) {
             .loaded_cpu => |cpu| cpu.w,
             .loaded_gpu => |gpu| gpu.w,
-            else => if (entry.full_w > 0) entry.full_w else if (entry.thumbnail.getInfo()) |info| info.w else 0.0,
+            else => if (entry.full_w > 0)
+                entry.full_w
+            else if (entry.thumbnail.getInfo()) |info|
+                info.w
+            else
+                0.0,
         };
         if (entry_w > 0) {
             const effective_zoom = (draw_w * ui_model.viewport.zoom_factor.get()) / entry_w;
             const pixel_zoom_pct = effective_zoom * 100.0;
-            zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x ({d:.0}%)", .{ effective_zoom, pixel_zoom_pct });
+            zoom_str = try std.fmt.allocPrint(
+                frame_allocator,
+                "{d:.1}x ({d:.0}%)",
+                .{ effective_zoom, pixel_zoom_pct },
+            );
         } else {
-            zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{ui_model.viewport.zoom_factor.get()});
+            zoom_str = try std.fmt.allocPrint(
+                frame_allocator,
+                "{d:.1}x",
+                .{ui_model.viewport.zoom_factor.get()},
+            );
         }
     } else {
-        zoom_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{ui_model.viewport.zoom_factor.get()});
+        zoom_str = try std.fmt.allocPrint(
+            frame_allocator,
+            "{d:.1}x",
+            .{ui_model.viewport.zoom_factor.get()},
+        );
     }
 
-    const pan_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}, {d:.0} px", .{ ui_model.viewport.pan_x, ui_model.viewport.pan_y });
-    const rot_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}°", .{ui_model.viewport.rotation_angle});
+    const pan_str = try std.fmt.allocPrint(
+        frame_allocator,
+        "{d:.0}, {d:.0} px",
+        .{ ui_model.viewport.pan_x, ui_model.viewport.pan_y },
+    );
+    const rot_str = try std.fmt.allocPrint(
+        frame_allocator,
+        "{d:.0}°",
+        .{ui_model.viewport.rotation_angle},
+    );
 
     var thumb_info_str: []const u8 = "N/A";
     if (current_entry) |entry| {
@@ -176,7 +242,11 @@ fn renderInfoOverlay(
             .{ false, 0.0, 0.0 };
 
         if (has_thumb) {
-            thumb_info_str = try std.fmt.allocPrint(frame_allocator, "Embedded ({d:.0}x{d:.0} px)", .{ t_w, t_h });
+            thumb_info_str = try std.fmt.allocPrint(
+                frame_allocator,
+                "Embedded ({d:.0}x{d:.0} px)",
+                .{ t_w, t_h },
+            );
         } else if (entry.raw_metadata.isRaw()) {
             thumb_info_str = "None (Preview JPEG used)";
         } else if (is_jpeg) {
@@ -196,7 +266,10 @@ fn renderInfoOverlay(
         },
         .background_color = theme.base_translucent,
         .corner_radius = .all(10),
-        .user_data = if (ui_model.overlays.enable_blur) @ptrFromInt(ElementTag.blurred_surface.toInt()) else null,
+        .user_data = if (ui_model.overlays.enable_blur)
+            @ptrFromInt(ElementTag.blurred_surface.toInt())
+        else
+            null,
         .border = .{
             .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
             .color = theme.surface0,
@@ -273,7 +346,10 @@ fn renderInfoOverlay(
             .fit_height => "Fit to height",
         };
         try renderStatRow("Scale Mode", scale_mode_str);
-        const reading_dir_str = if (ui_model.manga_mode) "Right-to-Left (Manga)" else "Left-to-Right (Standard)";
+        const reading_dir_str = if (ui_model.manga_mode)
+            "Right-to-Left (Manga)"
+        else
+            "Left-to-Right (Standard)";
         try renderStatRow("Reading Order", reading_dir_str);
         try renderStatRow("Zoom Level", zoom_str);
         try renderStatRow("Pan Offset", pan_str);
@@ -289,15 +365,24 @@ fn renderInfoOverlay(
         try renderStatRow("Scaling Filter", filter_str);
 
         const brightness_val = ui_model.viewport.brightness * 100.0;
-        const brightness_str = try std.fmt.allocPrint(frame_allocator, "{s}{d:.0}%", .{ if (brightness_val > 0) "+" else "", brightness_val });
-        const contrast_str = try std.fmt.allocPrint(frame_allocator, "{d:.1}x", .{ui_model.viewport.contrast});
+        const brightness_str = try std.fmt.allocPrint(
+            frame_allocator,
+            "{s}{d:.0}%",
+            .{ if (brightness_val > 0) "+" else "", brightness_val },
+        );
+        const contrast_str = try std.fmt.allocPrint(
+            frame_allocator,
+            "{d:.1}x",
+            .{ui_model.viewport.contrast},
+        );
         try renderStatRow("Brightness", brightness_str);
         try renderStatRow("Contrast", contrast_str);
         try renderStatRow("EXIF Thumbnail", thumb_info_str);
     });
 }
 
-/// Emits Clay UI layout elements for the image metadata panel, performance overlay ("Stats for Nerds"), and preview thumbnail.
+/// Emits Clay UI layout elements for the image metadata panel,
+/// performance overlay ("Stats for Nerds"), and preview thumbnail.
 pub fn renderStatsOverlay(
     ui_model: UiViewModel,
     draw_w: f32,
@@ -318,16 +403,44 @@ pub fn renderStatsOverlay(
     if (current_entry) |entry| {
         switch (entry.status) {
             .loaded_cpu => |cpu| {
-                read_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{cpu.read_time_ms});
-                decode_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{cpu.decode_time_ms});
-                convert_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{cpu.conversion_time_ms});
+                read_str = try std.fmt.allocPrint(
+                    frame_allocator,
+                    "{d:.2} ms",
+                    .{cpu.read_time_ms},
+                );
+                decode_str = try std.fmt.allocPrint(
+                    frame_allocator,
+                    "{d:.2} ms",
+                    .{cpu.decode_time_ms},
+                );
+                convert_str = try std.fmt.allocPrint(
+                    frame_allocator,
+                    "{d:.2} ms",
+                    .{cpu.conversion_time_ms},
+                );
             },
             .loaded_gpu => |gpu| {
                 mem_size_str = try formatSize(frame_allocator, gpu.memory_size_bytes);
-                read_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{gpu.read_time_ms});
-                decode_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{gpu.decode_time_ms});
-                convert_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{gpu.conversion_time_ms});
-                upload_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{gpu.upload_time_ms});
+                read_str = try std.fmt.allocPrint(
+                    frame_allocator,
+                    "{d:.2} ms",
+                    .{gpu.read_time_ms},
+                );
+                decode_str = try std.fmt.allocPrint(
+                    frame_allocator,
+                    "{d:.2} ms",
+                    .{gpu.decode_time_ms},
+                );
+                convert_str = try std.fmt.allocPrint(
+                    frame_allocator,
+                    "{d:.2} ms",
+                    .{gpu.conversion_time_ms},
+                );
+                upload_str = try std.fmt.allocPrint(
+                    frame_allocator,
+                    "{d:.2} ms",
+                    .{gpu.upload_time_ms},
+                );
             },
             .decoding => {
                 mem_size_str = "Loading...";
@@ -357,7 +470,10 @@ pub fn renderStatsOverlay(
         },
         .background_color = theme.base_overlay,
         .corner_radius = .all(10),
-        .user_data = if (ui_model.overlays.enable_blur) @ptrFromInt(ElementTag.blurred_surface.toInt()) else null,
+        .user_data = if (ui_model.overlays.enable_blur)
+            @ptrFromInt(ElementTag.blurred_surface.toInt())
+        else
+            null,
         .border = .{
             .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
             .color = theme.surface0,
@@ -419,7 +535,11 @@ pub fn renderStatsOverlay(
                 if (entry.raw_metadata.getSensorDims()) |s_dims| {
                     if (s_dims.w > 0 and s_dims.h > 0) {
                         const raw_mp = (s_dims.w * s_dims.h) / 1_000_000.0;
-                        const r_str = try std.fmt.allocPrint(frame_allocator, "{d:.0}x{d:.0} ({d:.2} MP)", .{ s_dims.w, s_dims.h, raw_mp });
+                        const r_str = try std.fmt.allocPrint(
+                            frame_allocator,
+                            "{d:.0}x{d:.0} ({d:.2} MP)",
+                            .{ s_dims.w, s_dims.h, raw_mp },
+                        );
                         try renderStatRow("RAW Sensor", r_str);
                     }
                 }
@@ -431,15 +551,27 @@ pub fn renderStatsOverlay(
         try renderStatRow("Memory Size", mem_size_str);
 
         const formatted_total_vram = try formatSize(frame_allocator, s.total_vram_bytes);
-        const total_vram_str = try std.fmt.allocPrint(frame_allocator, "{s} / 1024 MB ({d} slots)", .{ formatted_total_vram, s.cached_slot_count });
+        const total_vram_str = try std.fmt.allocPrint(
+            frame_allocator,
+            "{s} / 1024 MB ({d} slots)",
+            .{ formatted_total_vram, s.cached_slot_count },
+        );
         try renderStatRow("Total Cache VRAM", total_vram_str);
 
-        const workers_str = try std.fmt.allocPrint(frame_allocator, "{d} / {d}", .{ s.active_decode_threads, s.max_decode_threads });
+        const workers_str = try std.fmt.allocPrint(
+            frame_allocator,
+            "{d} / {d}",
+            .{ s.active_decode_threads, s.max_decode_threads },
+        );
         try renderStatRow("Decode Workers", workers_str);
 
         try renderStatRow("Disk Read Time", read_str);
         if (img.cbz_decompress_time_ms > 0.0) {
-            const cbz_time_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{img.cbz_decompress_time_ms});
+            const cbz_time_str = try std.fmt.allocPrint(
+                frame_allocator,
+                "{d:.2} ms",
+                .{img.cbz_decompress_time_ms},
+            );
             try renderStatRow("CBZ Extract Time", cbz_time_str);
         }
         if (img.compressed_size_bytes > 0) {
@@ -450,36 +582,74 @@ pub fn renderStatsOverlay(
         try renderStatRow("Convert Time", convert_str);
         try renderStatRow("GPU Upload", upload_str);
 
-        const upload_mode_str: []const u8 = if (current_entry == null) "N/A" else if (img.was_fallback) "CPU Downscale Fallback" else "Direct VRAM";
-        const fallback_time_str: []const u8 = if (img.was_fallback) try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{img.fallback_time_ms}) else "N/A";
+        const upload_mode_str: []const u8 = if (current_entry == null)
+            "N/A"
+        else if (img.was_fallback)
+            "CPU Downscale Fallback"
+        else
+            "Direct VRAM";
+        const fallback_time_str: []const u8 = if (img.was_fallback)
+            try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{img.fallback_time_ms})
+        else
+            "N/A";
         try renderStatRow("GPU Upload Mode", upload_mode_str);
         if (img.was_fallback) {
             try renderStatRow("CPU Fallback Time", fallback_time_str);
         }
 
-        const thumb_time_str: []const u8 = if (img.has_thumb) try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{img.thumb_upload_time_ms}) else "N/A";
+        const thumb_time_str: []const u8 = if (img.has_thumb)
+            try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{img.thumb_upload_time_ms})
+        else
+            "N/A";
         try renderStatRow("Thumb Load Time", thumb_time_str);
 
         const total_thumbs = s.thumb_header_hits + s.thumb_positional_hits + s.thumb_misses;
         const thumb_hits_str = if (total_thumbs > 0)
-            try std.fmt.allocPrint(frame_allocator, "{d} Header / {d} Pos / {d} Miss", .{ s.thumb_header_hits, s.thumb_positional_hits, s.thumb_misses })
+            try std.fmt.allocPrint(
+                frame_allocator,
+                "{d} Header / {d} Pos / {d} Miss",
+                .{ s.thumb_header_hits, s.thumb_positional_hits, s.thumb_misses },
+            )
         else
             "0 Header / 0 Pos / 0 Miss";
         try renderStatRow("Thumb Hit Ratio", thumb_hits_str);
 
-        var mipmap_status_str: []const u8 = if (current_entry != null) "Disabled (1 Level)" else "N/A";
+        var mipmap_status_str: []const u8 = if (current_entry != null)
+            "Disabled (1 Level)"
+        else
+            "N/A";
         var mipmap_time_str: []const u8 = if (current_entry != null) "0.00 ms" else "N/A";
         if (img.num_mip_levels > 1) {
-            mipmap_status_str = try std.fmt.allocPrint(frame_allocator, "Enabled ({d} Levels)", .{img.num_mip_levels});
-            mipmap_time_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{img.mipmap_time_ms});
+            mipmap_status_str = try std.fmt.allocPrint(
+                frame_allocator,
+                "Enabled ({d} Levels)",
+                .{img.num_mip_levels},
+            );
+            mipmap_time_str = try std.fmt.allocPrint(
+                frame_allocator,
+                "{d:.2} ms",
+                .{img.mipmap_time_ms},
+            );
         }
         try renderStatRow("Mipmap Status", mipmap_status_str);
         try renderStatRow("Mipmap Gen", mipmap_time_str);
 
         const rm = ui_model.render_metrics;
-        const ui_render_str = try std.fmt.allocPrint(frame_allocator, "{d:.2} ± {d:.2} ms", .{ rm.mean_render_time_ms, rm.stdev_render_time_ms });
-        const ui_batches_str = try std.fmt.allocPrint(frame_allocator, "{d}", .{rm.last_ui_batch_count});
-        const ui_verts_str = try std.fmt.allocPrint(frame_allocator, "{d}", .{rm.last_ui_vertex_count});
+        const ui_render_str = try std.fmt.allocPrint(
+            frame_allocator,
+            "{d:.2} ± {d:.2} ms",
+            .{ rm.mean_render_time_ms, rm.stdev_render_time_ms },
+        );
+        const ui_batches_str = try std.fmt.allocPrint(
+            frame_allocator,
+            "{d}",
+            .{rm.last_ui_batch_count},
+        );
+        const ui_verts_str = try std.fmt.allocPrint(
+            frame_allocator,
+            "{d}",
+            .{rm.last_ui_vertex_count},
+        );
         try renderStatRow("UI Render Pass", ui_render_str);
         try renderStatRow("UI Batches", ui_batches_str);
         try renderStatRow("UI Vertices", ui_verts_str);
@@ -488,14 +658,38 @@ pub fn renderStatsOverlay(
 
 test "getRawContainerName - format detection" {
     // MIME type matches
-    try std.testing.expectEqualStrings("RAW (Fujifilm RAF)", getRawContainerName("image/x-fuji-raf", "sample"));
-    try std.testing.expectEqualStrings("RAW (Sony ARW)", getRawContainerName("image/x-sony-arw", "sample"));
-    try std.testing.expectEqualStrings("RAW (Canon CR2)", getRawContainerName("image/x-canon-cr2", "sample"));
-    try std.testing.expectEqualStrings("RAW (Nikon NEF)", getRawContainerName("image/x-nikon-nef", "sample"));
-    try std.testing.expectEqualStrings("RAW (Adobe DNG)", getRawContainerName("image/x-adobe-dng", "sample"));
-    try std.testing.expectEqualStrings("RAW (Olympus ORF)", getRawContainerName("image/x-olympus-orf", "sample"));
-    try std.testing.expectEqualStrings("RAW (Panasonic RW2)", getRawContainerName("image/x-panasonic-rw2", "sample"));
-    try std.testing.expectEqualStrings("RAW (Pentax PEF)", getRawContainerName("image/x-pentax-pef", "sample"));
+    try std.testing.expectEqualStrings(
+        "RAW (Fujifilm RAF)",
+        getRawContainerName("image/x-fuji-raf", "sample"),
+    );
+    try std.testing.expectEqualStrings(
+        "RAW (Sony ARW)",
+        getRawContainerName("image/x-sony-arw", "sample"),
+    );
+    try std.testing.expectEqualStrings(
+        "RAW (Canon CR2)",
+        getRawContainerName("image/x-canon-cr2", "sample"),
+    );
+    try std.testing.expectEqualStrings(
+        "RAW (Nikon NEF)",
+        getRawContainerName("image/x-nikon-nef", "sample"),
+    );
+    try std.testing.expectEqualStrings(
+        "RAW (Adobe DNG)",
+        getRawContainerName("image/x-adobe-dng", "sample"),
+    );
+    try std.testing.expectEqualStrings(
+        "RAW (Olympus ORF)",
+        getRawContainerName("image/x-olympus-orf", "sample"),
+    );
+    try std.testing.expectEqualStrings(
+        "RAW (Panasonic RW2)",
+        getRawContainerName("image/x-panasonic-rw2", "sample"),
+    );
+    try std.testing.expectEqualStrings(
+        "RAW (Pentax PEF)",
+        getRawContainerName("image/x-pentax-pef", "sample"),
+    );
 
     // Filename extension matches (lowercase and uppercase)
     try std.testing.expectEqualStrings("RAW (Fujifilm RAF)", getRawContainerName("", "photo.raf"));
@@ -511,5 +705,8 @@ test "getRawContainerName - format detection" {
 
     // Fallback
     try std.testing.expectEqualStrings("Camera RAW", getRawContainerName("", "photo.xyz"));
-    try std.testing.expectEqualStrings("Camera RAW", getRawContainerName("image/jpeg", "photo.jpg"));
+    try std.testing.expectEqualStrings(
+        "Camera RAW",
+        getRawContainerName("image/jpeg", "photo.jpg"),
+    );
 }

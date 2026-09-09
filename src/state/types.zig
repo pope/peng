@@ -15,7 +15,8 @@ pub const UvRect = struct {
     rotation_angle: ?f32 = null,
 };
 
-/// Media entry descriptor for an image stored inside a compressed or uncompressed archive (CBZ, CBR, ZIP).
+/// Media entry descriptor for an image stored inside a compressed or uncompressed
+/// archive (CBZ, CBR, ZIP).
 pub const ArchiveMediaEntry = struct {
     archive_path: []const u8,
     entry_name: []const u8,
@@ -96,14 +97,16 @@ pub const MediaEntry = union(enum) {
     }
 };
 
-/// Type-safe zoom factor wrapper protecting against zero-initialization, division-by-zero, and NaN.
+/// Type-safe zoom factor wrapper protecting against zero-initialization,
+/// division-by-zero, and NaN.
 pub const ZoomFactor = struct {
     value: f32 = 1.0,
 
     pub const MIN: f32 = 0.01;
     pub const MAX: f32 = 500.0;
 
-    /// Initializes a sanitized zoom factor clamped to [MIN, MAX], defaulting to 1.0 on invalid or non-positive input.
+    /// Initializes a sanitized zoom factor clamped to [MIN, MAX], defaulting to
+    /// 1.0 on invalid or non-positive input.
     pub fn init(raw: f32) ZoomFactor {
         if (std.math.isNan(raw) or raw <= 0.0) {
             return .{ .value = 1.0 };
@@ -125,7 +128,8 @@ pub const ZoomFactor = struct {
     }
 };
 
-/// Dynamic viewport display, scaling, pan offset, and color adjustment parameters.
+/// Dynamic viewport display, scaling, pan offset, and color adjustment
+/// parameters.
 pub const ViewportParams = struct {
     fit_mode: intents.ScaleMode = .full,
     scale_filter: intents.TextureScaleMode = .linear,
@@ -172,21 +176,24 @@ pub const ViewportParams = struct {
         self.contrast = std.math.clamp(self.contrast + delta, 0.0, 5.0);
     }
 
-    /// Rotates the viewport clockwise by 90 degrees with 360-degree normalization.
+    /// Rotates the viewport clockwise by 90 degrees with 360-degree
+    /// normalization.
     pub fn rotateCw(self: *ViewportParams) void {
         var val = self.rotation_angle + 90.0;
         if (val >= 360.0) val -= 360.0;
         self.rotation_angle = val;
     }
 
-    /// Rotates the viewport counter-clockwise by 90 degrees with 360-degree normalization.
+    /// Rotates the viewport counter-clockwise by 90 degrees with 360-degree
+    /// normalization.
     pub fn rotateCcw(self: *ViewportParams) void {
         var val = self.rotation_angle - 90.0;
         if (val < 0.0) val += 360.0;
         self.rotation_angle = val;
     }
 
-    /// Zooms viewport to a new zoom factor while anchoring pan offsets relative to a focus point (e.g. mouse cursor).
+    /// Zooms viewport to a new zoom factor while anchoring pan offsets relative
+    /// to a focus point (e.g. mouse cursor).
     pub fn zoomAtPoint(
         self: *ViewportParams,
         new_zoom: ZoomFactor,
@@ -204,7 +211,8 @@ pub const ViewportParams = struct {
         self.pan_y = rel_y - (rel_y - self.pan_y) * ratio;
     }
 
-    /// Returns the integer uniform constant representing the active resampler filter for shader pipelines.
+    /// Returns the integer uniform constant representing the active resampler
+    /// filter for shader pipelines.
     pub fn getShaderScaleModeInt(self: ViewportParams) i32 {
         const f = if (self.scale_filter != .linear) self.scale_filter else self.texture_scale_mode;
         return switch (f) {
@@ -218,7 +226,8 @@ pub const ViewportParams = struct {
     }
 };
 
-/// Render-time snapshot binding ViewportParams with physical window dimensions and high-DPI scaling factors.
+/// Render-time snapshot binding ViewportParams with physical window dimensions
+/// and high-DPI scaling factors.
 pub const ViewParams = struct {
     viewport: ViewportParams,
     win_w: f32,
@@ -228,7 +237,8 @@ pub const ViewParams = struct {
     is_fullscreen: bool,
 };
 
-/// Aggregated input events, mouse coordinates, keyboard actions, and window metrics for a single frame iteration.
+/// Aggregated input events, mouse coordinates, keyboard actions, and window
+/// metrics for a single frame iteration.
 pub const FrameInput = struct {
     win_w: f32,
     win_h: f32,
@@ -267,19 +277,22 @@ pub const FrameInput = struct {
         return self.mouse_y * self.scale_y;
     }
 
-    /// Returns `true` if the cursor is positioned within Clay's debug sidebar panel.
+    /// Returns `true` if the cursor is positioned within Clay's debug sidebar
+    /// panel.
     pub fn isPointerInDebugPanel(self: FrameInput) bool {
         return self.is_pointer_in_debug_panel;
     }
 };
 
-/// Metadata describing an action executable from the Command Palette, including its shortcut and intent.
+/// Metadata describing an action executable from the Command Palette,
+/// including its shortcut and intent.
 pub const ActionMetadata = intents.actions.ActionMetadata;
 
 /// Command Palette items projected from the unified action registry.
 pub const palette_action_items = intents.actions.palette_action_items;
 
-/// Flattened keyboard shortcut entry mapping a specific key and modifier combination directly to an AppIntent.
+/// Flattened keyboard shortcut entry mapping a specific key and modifier
+/// combination directly to an AppIntent.
 pub const FlatShortcut = intents.actions.FlatShortcut;
 
 /// Flattened keyboard shortcuts projected from the unified action registry.
@@ -341,7 +354,8 @@ pub const RenderStats = struct {
         if (self.count < 60) self.count += 1;
     }
 
-    /// Computes the arithmetic mean and sample standard deviation across all recorded duration samples.
+    /// Computes the arithmetic mean and sample standard deviation across all
+    /// recorded duration samples.
     pub fn getMeanAndStdev(self: RenderStats) struct { mean: f64, stdev: f64 } {
         if (self.count == 0) return .{ .mean = 0.0, .stdev = 0.0 };
         var sum: f64 = 0.0;
@@ -363,7 +377,8 @@ pub const RenderStats = struct {
     }
 };
 
-/// Snapshot of UI rendering timing statistics, batch counts, and vertex counts for on-screen telemetry.
+/// Snapshot of UI rendering timing statistics, batch counts, and vertex counts
+/// for on-screen telemetry.
 pub const UiRenderMetricsSnapshot = struct {
     mean_render_time_ms: f64 = 0.0,
     stdev_render_time_ms: f64 = 0.0,
@@ -371,14 +386,16 @@ pub const UiRenderMetricsSnapshot = struct {
     last_ui_batch_count: usize = 0,
 };
 
-/// UI frame rendering performance metrics, vertex counts, batch counts, and rolling duration history.
+/// UI frame rendering performance metrics, vertex counts, batch counts, and
+/// rolling duration history.
 pub const UiRenderMetrics = struct {
     last_ui_render_time_ms: f64 = 0.0,
     ui_render_stats: RenderStats = .{},
     last_ui_vertex_count: usize = 0,
     last_ui_batch_count: usize = 0,
 
-    /// Creates an immutable performance snapshot containing calculated mean/stdev and element counts.
+    /// Creates an immutable performance snapshot containing calculated
+    /// mean/stdev and element counts.
     pub fn toSnapshot(self: UiRenderMetrics) UiRenderMetricsSnapshot {
         const stats = self.ui_render_stats.getMeanAndStdev();
         return .{
@@ -390,7 +407,8 @@ pub const UiRenderMetrics = struct {
     }
 };
 
-/// RAW camera sensor metadata variant eliminating impossible states (e.g. RAW flag without valid dimensions).
+/// RAW camera sensor metadata variant eliminating impossible states
+/// (e.g. RAW flag without valid dimensions).
 pub const RawMetadata = union(enum) {
     none,
     raw: struct {
@@ -400,7 +418,9 @@ pub const RawMetadata = union(enum) {
 
     /// Safely constructs a RawMetadata variant, guaranteeing strictly positive non-NaN dimensions.
     pub fn init(sensor_w: f32, sensor_h: f32) RawMetadata {
-        if (sensor_w > 0.0 and sensor_h > 0.0 and !std.math.isNan(sensor_w) and !std.math.isNan(sensor_h)) {
+        if (sensor_w > 0.0 and sensor_h > 0.0 and
+            !std.math.isNan(sensor_w) and !std.math.isNan(sensor_h))
+        {
             return .{ .raw = .{ .sensor_w = sensor_w, .sensor_h = sensor_h } };
         }
         return .none;
@@ -414,13 +434,17 @@ pub const RawMetadata = union(enum) {
     /// Returns true sensor dimensions if RAW, or `null` if standard media format.
     pub inline fn getSensorDims(self: RawMetadata) ?struct { w: f32, h: f32 } {
         return switch (self) {
-            .raw => |r| if (r.sensor_w > 0.0 and r.sensor_h > 0.0) .{ .w = r.sensor_w, .h = r.sensor_h } else null,
+            .raw => |r| if (r.sensor_w > 0.0 and r.sensor_h > 0.0)
+                .{ .w = r.sensor_w, .h = r.sensor_h }
+            else
+                null,
             .none => null,
         };
     }
 };
 
-/// Decoded CPU software surface stored in host RAM along with image dimensions and decompression timing.
+/// Decoded CPU software surface stored in host RAM along with image
+/// dimensions and decompression timing.
 pub const CpuSurfaceComponent = struct {
     surface: sdl.Surface,
     w: f32,
@@ -435,7 +459,8 @@ pub const CpuSurfaceComponent = struct {
     compressed_size_bytes: usize = 0,
 };
 
-/// Resident GPU texture allocation and VRAM memory footprint metadata uploaded to the graphics device.
+/// Resident GPU texture allocation and VRAM memory footprint metadata uploaded
+/// to the graphics device.
 pub const GpuTextureComponent = struct {
     gpu_texture: sdl.gpu.Texture,
     w: f32,
@@ -464,7 +489,8 @@ pub const ThumbComponent = struct {
     upload_time_ms: f64,
 };
 
-/// State lifecycle of an image in the cache (decoding, loaded in RAM, resident in VRAM, uploading, failed).
+/// State lifecycle of an image in the cache (decoding, loaded in RAM,
+/// resident in VRAM, uploading, failed).
 pub const CacheStatus = union(enum) {
     decoding: struct {
         has_thread: bool = false,
@@ -484,7 +510,8 @@ pub const ThumbnailInfo = struct {
     dct_snapped: bool = false,
 };
 
-/// State of a cached image's preview thumbnail (none, pending, not available, unloaded dimensions, or uploaded GPU texture).
+/// State of a cached image's preview thumbnail (none, pending, not available,
+/// unloaded dimensions, or uploaded GPU texture).
 pub const ThumbnailState = union(enum) {
     none,
     pending,
@@ -536,7 +563,8 @@ pub const Orientation = enum(u2) {
     }
 };
 
-/// Cache slot structure storing image decode status, thumbnail texture, full dimensions, and orientation.
+/// Cache slot structure storing image decode status, thumbnail texture,
+/// full dimensions, and orientation.
 pub const CacheEntry = struct {
     status: CacheStatus,
     thumbnail: ThumbnailState = .none,
@@ -589,8 +617,8 @@ pub const SlideshowMode = union(enum) {
         return std.math.clamp(raw, MIN_INTERVAL_S, MAX_INTERVAL_S);
     }
 
-    /// Advances the internal slideshow timer by `delta_ms`; returns `true` if the interval has elapsed.
-    /// Does NOT advance when paused or inactive.
+    /// Advances the internal slideshow timer by `delta_ms`; returns `true`
+    /// if the interval has elapsed. Does NOT advance when paused or inactive.
     pub fn tick(self: *SlideshowMode, delta_ms: f32) bool {
         switch (self.*) {
             .inactive => return false,
@@ -729,10 +757,12 @@ pub const ViewerStats = struct {
 };
 
 /// Grace period threshold in milliseconds before displaying "Loading image..." in the UI.
-/// Prevents text flickering when scrubbing through thumbnails or fast-decoding formats (~2 frames at 60Hz).
+/// Prevents text flickering when scrubbing through thumbnails or fast-decoding
+/// formats (~2 frames at 60Hz).
 pub const LOADING_GRACE_PERIOD_MS: u64 = 35;
 
-/// Claimed SDL window handle, pixel format, fullscreen state, borderless state, and title string cache.
+/// Claimed SDL window handle, pixel format, fullscreen state, borderless
+/// state, and title string cache.
 pub const ActiveWindow = struct {
     handle: sdl.Window,
     pixel_format: u32 = sdl.PixelFormat.unknown,
@@ -813,37 +843,61 @@ pub const ActiveScreenshot = struct {
     path: [:0]const u8,
     stream: std.Io.net.Stream,
 
-    /// Writes an "OK\n" success confirmation back to the client IPC stream and frees request resources.
+    /// Writes an "OK\n" success confirmation back to the client IPC stream and frees
+    /// request resources.
     pub fn respondOk(self: *ActiveScreenshot, io: std.Io, gpa: std.mem.Allocator) void {
         var write_buf: [128]u8 = undefined;
         var writer = self.stream.writer(io, &write_buf);
-        writer.interface.writeAll("OK\n") catch |werr| std.log.warn("Screenshot response failed: {}", .{werr});
-        writer.interface.flush() catch |ferr| std.log.warn("Screenshot response flush failed: {}", .{ferr});
+        writer.interface.writeAll("OK\n") catch |werr| {
+            std.log.warn("Screenshot response failed: {}", .{werr});
+        };
+        writer.interface.flush() catch |ferr| {
+            std.log.warn("Screenshot response flush failed: {}", .{ferr});
+        };
         self.stream.close(io);
         gpa.free(self.path);
     }
 
-    /// Writes an "ERR <name>\n" error response back to the client IPC stream and frees request resources.
-    pub fn respondErr(self: *ActiveScreenshot, io: std.Io, gpa: std.mem.Allocator, err: anyerror) void {
+    /// Writes an "ERR <name>\n" error response back to the client IPC stream and
+    /// frees request resources.
+    pub fn respondErr(
+        self: *ActiveScreenshot,
+        io: std.Io,
+        gpa: std.mem.Allocator,
+        err: anyerror,
+    ) void {
         var response_buf: [128]u8 = undefined;
-        const response = std.fmt.bufPrint(&response_buf, "ERR {s}\n", .{@errorName(err)}) catch |print_err| blk: {
+        const response = std.fmt.bufPrint(
+            &response_buf,
+            "ERR {s}\n",
+            .{@errorName(err)},
+        ) catch |print_err| blk: {
             std.log.warn("Failed to format IPC error response: {}", .{print_err});
             break :blk "ERR SaveFailed\n";
         };
         var write_buf: [128]u8 = undefined;
         var writer = self.stream.writer(io, &write_buf);
-        writer.interface.writeAll(response) catch |werr| std.log.warn("Screenshot response failed: {}", .{werr});
-        writer.interface.flush() catch |ferr| std.log.warn("Screenshot response flush failed: {}", .{ferr});
+        writer.interface.writeAll(response) catch |werr| {
+            std.log.warn("Screenshot response failed: {}", .{werr});
+        };
+        writer.interface.flush() catch |ferr| {
+            std.log.warn("Screenshot response flush failed: {}", .{ferr});
+        };
         self.stream.close(io);
         gpa.free(self.path);
     }
 
-    /// Sends an emergency "ERR quit\n" error response to the client IPC stream when exiting unexpectedly.
+    /// Sends an emergency "ERR quit\n" error response to the client IPC stream
+    /// when exiting unexpectedly.
     pub fn respondQuit(self: *ActiveScreenshot, io: std.Io, gpa: std.mem.Allocator) void {
         var write_buf: [64]u8 = undefined;
         var writer = self.stream.writer(io, &write_buf);
-        writer.interface.writeAll("ERR quit\n") catch |err| std.log.warn("Emergency screenshot response write failed: {}", .{err});
-        writer.interface.flush() catch |ferr| std.log.warn("Emergency screenshot response flush failed: {}", .{ferr});
+        writer.interface.writeAll("ERR quit\n") catch |err| {
+            std.log.warn("Emergency screenshot response write failed: {}", .{err});
+        };
+        writer.interface.flush() catch |ferr| {
+            std.log.warn("Emergency screenshot response flush failed: {}", .{ferr});
+        };
         self.stream.close(io);
         gpa.free(self.path);
     }
@@ -999,7 +1053,9 @@ test "SnackbarDisplay getActive" {
     const none_display: SnackbarDisplay = .none;
     try std.testing.expect(none_display.getActive() == null);
 
-    const active_display: SnackbarDisplay = .{ .active = .{ .reveal = 0.85, .message = "Filter: Lanczos3" } };
+    const active_display: SnackbarDisplay = .{
+        .active = .{ .reveal = 0.85, .message = "Filter: Lanczos3" },
+    };
     const payload = active_display.getActive().?;
     try std.testing.expectEqual(@as(f32, 0.85), payload.reveal);
     try std.testing.expectEqualStrings("Filter: Lanczos3", payload.message);

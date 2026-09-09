@@ -21,7 +21,10 @@ test {
 test "mapKeyToAction mapping" {
     const pan_left = mapKeyToAction(.left, .{}, .viewer_zoomed);
     try std.testing.expect(pan_left != null);
-    try std.testing.expectEqual(intents.AppIntent{ .pan_by = .{ .dx = 30.0, .dy = 0.0 } }, pan_left.?);
+    try std.testing.expectEqual(
+        intents.AppIntent{ .pan_by = .{ .dx = 30.0, .dy = 0.0 } },
+        pan_left.?,
+    );
 
     const pan_left_not_zoomed = mapKeyToAction(.left, .{}, .viewer_normal);
     try std.testing.expectEqual(intents.AppIntent.prev_image, pan_left_not_zoomed.?);

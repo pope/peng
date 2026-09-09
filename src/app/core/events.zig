@@ -15,7 +15,8 @@ pub const ExifParsedPayload = struct {
     orientation: Orientation,
 };
 
-/// Payload carrying a decoded embedded thumbnail or fast-scroll preview surface and dimension metadata.
+/// Payload carrying a decoded embedded thumbnail or fast-scroll preview surface
+/// and dimension metadata.
 pub const ThumbDecodedPayload = struct {
     key: CacheKey,
     surface: ?sdl.Surface,
@@ -56,14 +57,16 @@ pub const PathDiscoveredPayload = struct {
     entry: MediaEntry,
 };
 
-/// Payload delivering the complete batch of discovered media entries from an asynchronous directory scan.
+/// Payload delivering the complete batch of discovered media entries from an
+/// asynchronous directory scan.
 pub const DirectoryScanResultPayload = struct {
     target_path: []const u8,
     is_dir: bool,
     paths: []MediaEntry,
 };
 
-/// Payload signaling completion of an asynchronous directory scan along with total discovered items.
+/// Payload signaling completion of an asynchronous directory scan along with
+/// total discovered items.
 pub const DirectoryScanCompletePayload = struct {
     total_count: usize,
 };
@@ -76,7 +79,8 @@ pub const PaletteFolderCountPayload = struct {
     subdir_count: usize,
 };
 
-/// Tagged union of all event messages sent from background worker threads to the main engine thread.
+/// Tagged union of all event messages sent from background worker threads to
+/// the main engine thread.
 pub const BackgroundEvent = union(enum) {
     exif_orientation_parsed: ExifParsedPayload,
     thumb_decoded: ThumbDecodedPayload,
@@ -111,7 +115,11 @@ pub const BackgroundEvent = union(enum) {
     }
 
     /// Cleans up event resources when draining or tearing down the Mpsc event queue.
-    pub fn deinitQueueItem(self: *const BackgroundEvent, allocator: std.mem.Allocator, io: std.Io) void {
+    pub fn deinitQueueItem(
+        self: *const BackgroundEvent,
+        allocator: std.mem.Allocator,
+        io: std.Io,
+    ) void {
         switch (self.*) {
             .ipc_command => |cmd| {
                 cmd.client_stream.close(io);
@@ -136,7 +144,8 @@ pub fn MpscQueue(comptime T: type) type {
             return .{};
         }
 
-        /// Locks the queue, invokes deinit on remaining items if supported, and releases allocated buffer memory.
+        /// Locks the queue, invokes deinit on remaining items if supported, and
+        /// releases allocated buffer memory.
         pub fn deinit(self: *Self, allocator: std.mem.Allocator, io: std.Io) void {
             self.mutex.lockUncancelable(io);
             defer self.mutex.unlock(io);
@@ -167,8 +176,14 @@ pub fn MpscQueue(comptime T: type) type {
             try self.items.append(allocator, item);
         }
 
-        /// Atomically transfers all currently queued items into `out_list` and clears the internal queue buffer.
-        pub fn drain(self: *Self, allocator: std.mem.Allocator, io: std.Io, out_list: *std.ArrayList(T)) !void {
+        /// Atomically transfers all currently queued items into `out_list` and
+        /// clears the internal queue buffer.
+        pub fn drain(
+            self: *Self,
+            allocator: std.mem.Allocator,
+            io: std.Io,
+            out_list: *std.ArrayList(T),
+        ) !void {
             self.mutex.lockUncancelable(io);
             defer self.mutex.unlock(io);
             if (self.items.items.len == 0) return;
@@ -176,7 +191,8 @@ pub fn MpscQueue(comptime T: type) type {
             self.items.clearRetainingCapacity();
         }
 
-        /// Pops the last queued item from the queue without thread synchronization. Intended for single-threaded testing.
+        /// Pops the last queued item from the queue without thread
+        /// synchronization. Intended for single-threaded testing.
         pub fn pop(self: *Self) ?T {
             if (self.items.items.len == 0) return null;
             return self.items.pop();

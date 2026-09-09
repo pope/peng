@@ -7,7 +7,8 @@ pub const Vertex = geometry.Vertex;
 pub const packRgba = geometry.packRgba;
 pub const ViewportParams = state.ViewportParams;
 
-/// Defines batch rendering material pipelines, controlling whether image adjustment shader uniforms apply.
+/// Defines batch rendering material pipelines, controlling whether image
+/// adjustment shader uniforms apply.
 pub const MaterialType = enum {
     ui_element,
     image_viewer,
@@ -30,7 +31,8 @@ pub const UiUniforms = extern struct {
     padding3: f32 = 0.0,
 };
 
-/// Draw call batch grouping vertex offset/count, texture binding, material type, and scissor rectangle.
+/// Draw call batch grouping vertex offset/count, texture binding, material type,
+/// and scissor rectangle.
 pub const BatchItem = struct {
     vertex_start: u32,
     vertex_count: u32,
@@ -39,7 +41,8 @@ pub const BatchItem = struct {
     scissor: ?sdl.Rect,
 };
 
-/// Appends image viewer vertex geometry for the current image texture, applying pan, zoom factor, and rotation.
+/// Appends image viewer vertex geometry for the current image texture, applying
+/// pan, zoom factor, and rotation.
 pub fn appendImageCommand(
     vertices: *std.ArrayList(Vertex),
     batches: *std.ArrayList(BatchItem),
@@ -53,7 +56,10 @@ pub fn appendImageCommand(
     scissor: ?sdl.Rect,
     uv_rect: state.UvRect,
 ) !void {
-    const texture: ?sdl.gpu.Texture = if (image_data) |ptr| sdl.gpu.Texture{ .ptr = @ptrCast(@alignCast(ptr)) } else null;
+    const texture: ?sdl.gpu.Texture = if (image_data) |ptr|
+        sdl.gpu.Texture{ .ptr = @ptrCast(@alignCast(ptr)) }
+    else
+        null;
     const tex = texture orelse return;
 
     var dst_w = rect.w;
@@ -115,12 +121,14 @@ pub fn appendImageCommand(
     const start = @as(u32, @intCast(vertices.items.len));
     const alpha_u8 = @as(u8, @intFromFloat(std.math.clamp(uv_rect.alpha, 0.0, 1.0) * 255.0));
     const vert_color = packRgba(255, 255, 255, alpha_u8);
-    try vertices.append(allocator, .{ .x = p1.x, .y = p1.y, .u = u_min, .v = v_min, .color = vert_color });
-    try vertices.append(allocator, .{ .x = p2.x, .y = p2.y, .u = u_max, .v = v_min, .color = vert_color });
-    try vertices.append(allocator, .{ .x = p4.x, .y = p4.y, .u = u_min, .v = v_max, .color = vert_color });
-    try vertices.append(allocator, .{ .x = p2.x, .y = p2.y, .u = u_max, .v = v_min, .color = vert_color });
-    try vertices.append(allocator, .{ .x = p3.x, .y = p3.y, .u = u_max, .v = v_max, .color = vert_color });
-    try vertices.append(allocator, .{ .x = p4.x, .y = p4.y, .u = u_min, .v = v_max, .color = vert_color });
+    try vertices.appendSlice(allocator, &[_]Vertex{
+        .{ .x = p1.x, .y = p1.y, .u = u_min, .v = v_min, .color = vert_color },
+        .{ .x = p2.x, .y = p2.y, .u = u_max, .v = v_min, .color = vert_color },
+        .{ .x = p4.x, .y = p4.y, .u = u_min, .v = v_max, .color = vert_color },
+        .{ .x = p2.x, .y = p2.y, .u = u_max, .v = v_min, .color = vert_color },
+        .{ .x = p3.x, .y = p3.y, .u = u_max, .v = v_max, .color = vert_color },
+        .{ .x = p4.x, .y = p4.y, .u = u_min, .v = v_max, .color = vert_color },
+    });
 
     try addBatchFn(batches, allocator, start, 6, tex, .image_viewer, scissor);
 }

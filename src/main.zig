@@ -137,7 +137,8 @@ const AppGraphicsAndState = struct {
     measure_data: state_pkg.MeasureTextUserData,
     ipc_server: ?*ipc.IpcServer,
 
-    /// Releases all application resources, closes IPC server, tears down SDL/GPU graphics, and frees state memory.
+    /// Releases all application resources, closes IPC server, tears down
+    /// SDL/GPU graphics, and frees state memory.
     pub fn deinit(self: *AppGraphicsAndState) void {
         self.parsed.deinit(self.gpa);
         if (self.ipc_server) |srv| srv.deinit(self.io);
@@ -151,7 +152,8 @@ const AppGraphicsAndState = struct {
     }
 };
 
-/// Phase 1: Initializes CLI options, SDL graphics, GPU resources, viewer state, Clay layout engine, and IPC server.
+/// Phase 1: Initializes CLI options, SDL graphics, GPU resources, viewer
+/// state, Clay layout engine, and IPC server.
 fn initAppGraphicsAndState(init: std.process.Init) !?AppGraphicsAndState {
     const gpa = init.gpa;
 
@@ -179,7 +181,12 @@ fn initAppGraphicsAndState(init: std.process.Init) !?AppGraphicsAndState {
     }
 
     // 3. GPU Pipeline and Resources Setup
-    var resources = try ui.graphics.initGpuResources(setup.gpu_device, setup.window, setup.initial_dpi_scale, parsed.headless);
+    var resources = try ui.graphics.initGpuResources(
+        setup.gpu_device,
+        setup.window,
+        setup.initial_dpi_scale,
+        parsed.headless,
+    );
     errdefer resources.deinit(gpa);
 
     // 4. State Initialization
@@ -251,7 +258,11 @@ fn runMainLoop(ctx: *AppGraphicsAndState) !void {
         .fonts = ctx.resources.fonts[0..],
         .allocator = ctx.gpa,
     };
-    clay.setMeasureTextFunction(*const state_pkg.MeasureTextUserData, &ctx.measure_data, ui.graphics.sdl3MeasureText);
+    clay.setMeasureTextFunction(
+        *const state_pkg.MeasureTextUserData,
+        &ctx.measure_data,
+        ui.graphics.sdl3MeasureText,
+    );
 
     // Initialize IPC server and spawn IPC worker task
     if (ctx.parsed.ipc_enabled) {
@@ -267,7 +278,12 @@ fn runMainLoop(ctx: *AppGraphicsAndState) !void {
     if (ctx.parsed.arg_path) |path| {
         try ctx.state.openPath(path);
     }
-    try app.workers.readPipedStdin(&ctx.state.workers, &ctx.state.viewer.navigation.is_loading_files, ctx.io, ctx.gpa);
+    try app.workers.readPipedStdin(
+        &ctx.state.workers,
+        &ctx.state.viewer.navigation.is_loading_files,
+        ctx.io,
+        ctx.gpa,
+    );
 
     // Per-frame arena allocator
     var frame_arena = std.heap.ArenaAllocator.init(ctx.gpa);
@@ -323,7 +339,8 @@ fn runMainLoop(ctx: *AppGraphicsAndState) !void {
     }
 }
 
-/// Application entry point: initializes state and graphics, enters the primary event loop, and cleans up on exit.
+/// Application entry point: initializes state and graphics, enters the primary
+/// event loop, and cleans up on exit.
 pub fn main(init: std.process.Init) !void {
     var app_ctx = (try initAppGraphicsAndState(init)) orelse return;
     defer app_ctx.deinit();

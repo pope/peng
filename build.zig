@@ -1,6 +1,7 @@
 const std = @import("std");
 
-/// Configures the build pipeline, targets, dependencies, shader compilation, and test runner for Peng.
+/// Configures the build pipeline, targets, dependencies, shader compilation,
+/// and test runner for Peng.
 pub fn build(b: *std.Build) void {
     const hot_reload = b.option(
         bool,
@@ -327,7 +328,8 @@ pub fn build(b: *std.Build) void {
 }
 
 /// Configures GLSL to SPIR-V and SPIR-V to MSL compilation for all shader stages in src/ui/shaders.
-/// Uses content-addressed caching with declared inputs and outputs so unmodified shaders are not recompiled.
+/// Uses content-addressed caching with declared inputs and outputs so
+/// unmodified shaders are not recompiled.
 fn setupShaderCompilation(b: *std.Build) *std.Build.Step {
     const compile_shaders = b.step("shaders", "Compile shaders");
     const update_shaders = b.addUpdateSourceFiles();

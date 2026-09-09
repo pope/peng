@@ -27,7 +27,12 @@ const FAST_SCROLL_THRESHOLD_MS: u64 = state_pkg.LOADING_GRACE_PERIOD_MS;
 /// - `index`: Image list index being decoded.
 /// - `entry_item`: Media entry being decoded.
 /// - `thumb_only`: If true, restricts decoding to low-resolution thumbnail for rapid scrolling.
-fn spawnCacheDecodeSlot(state: *AppState, index: usize, entry_item: MediaEntry, thumb_only: bool) !void {
+fn spawnCacheDecodeSlot(
+    state: *AppState,
+    index: usize,
+    entry_item: MediaEntry,
+    thumb_only: bool,
+) !void {
     const dup_entry = entry_item.dupe(state.allocator) catch |err| {
         std.log.err("Failed to dupe MediaEntry for decode worker: {}", .{err});
         return err;
@@ -139,17 +144,25 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
         }
     }
 
-    state.cache.enforceVramBudget(dev_opt, idx, state.viewer.getTransitionPrevIndex(), len, image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
+    state.cache.enforceVramBudget(
+        dev_opt,
+        idx,
+        state.viewer.getTransitionPrevIndex(),
+        len,
+        image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES,
+    );
 
     // Fast-scrolling check: only active if navigation has actually occurred
     const now = sdl.timer.getTicks();
-    const is_fast_scrolling = state.viewer.navigation.last_nav_time_ms > 0 and (now -| state.viewer.navigation.last_nav_time_ms < FAST_SCROLL_THRESHOLD_MS);
+    const is_fast_scrolling = state.viewer.navigation.last_nav_time_ms > 0 and
+        (now -| state.viewer.navigation.last_nav_time_ms < FAST_SCROLL_THRESHOLD_MS);
 
     state.viewer.stats.max_decode_threads = state.workers.getMaxConcurrentDecodes();
 
     // Resource protection: check whether the current image is fully ready or failed.
     // When false, background decode workers are restricted strictly to the active image `idx`.
-    // In headless/mock mode (no GPU device), .loaded_cpu is terminal ready; with GPU, .loaded_gpu is required.
+    // In headless/mock mode (no GPU device), .loaded_cpu is terminal ready;
+    // with GPU, .loaded_gpu is required.
     const is_current_ready = blk: {
         const cur_key = state.cache.activeKey(idx);
         if (state.cache.get(cur_key)) |cur_entry| {
@@ -162,8 +175,9 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
         break :blk false;
     };
 
-    // Fast-scrolling thumbnail readiness: check whether active image has thumbnail or full texture ready.
-    // Speculative thumbnail preloading for next image only runs if active image thumbnail is already ready.
+    // Fast-scrolling thumbnail readiness: check whether active image has
+    // thumbnail or full texture ready. Speculative thumbnail preloading for
+    // next image only runs if active image thumbnail is already ready.
     const is_active_thumb_ready = blk: {
         const cur_key = state.cache.activeKey(idx);
         if (state.cache.get(cur_key)) |cur_entry| {
@@ -203,14 +217,19 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
                 hit = true;
             }
         } else {
-            _ = try state.cache.appendSlot(state.allocator, d, .{ .decoding = .{ .start_time_ms = now } });
+            _ = try state.cache.appendSlot(
+                state.allocator,
+                d,
+                .{ .decoding = .{ .start_time_ms = now } },
+            );
         }
 
         if (state.cache.get(key)) |entry| {
             const is_active_slot = (d == idx);
             const needs_dimensions = (entry.full_w <= 0.0 or entry.full_h <= 0.0);
             if (is_active_slot and needs_dimensions) {
-                if (image.probeMediaMetadata(state.io, state.viewer.navigation.image_list.items[idx])) |meta| {
+                const media_item = state.viewer.navigation.image_list.items[idx];
+                if (image.probeMediaMetadata(state.io, media_item)) |meta| {
                     entry.full_w = meta.dims.w;
                     entry.full_h = meta.dims.h;
                     if (meta.orientation != .normal or entry.orientation == .normal) {
@@ -220,7 +239,10 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
                         entry.raw_metadata = meta.raw_metadata;
                     }
                     if (entry.thumbnail == .none) {
-                        entry.thumbnail = if (meta.has_embedded_thumbnail) .pending else .not_available;
+                        entry.thumbnail = if (meta.has_embedded_thumbnail)
+                            .pending
+                        else
+                            .not_available;
                     }
                     state.updateCurrentRotation();
                 }
@@ -230,17 +252,24 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
                 .decoding => |dec| {
                     if (!dec.has_thread) {
                         // During fast scrolling we prioritize thumbnails:
-                        // 1. For neighbor slots (d != idx), skip if no thumbnail is available or already loaded.
-                        // 2. For the active slot (d == idx), skip full decode only if its thumbnail is already loaded
-                        //    and rendering on screen. If no thumbnail is available, immediately decode the full image!
-                        if (d != idx and is_fast_scrolling and (entry.thumbnail == .not_available or entry.thumbnail == .loaded)) {
+                        // 1. For neighbor slots (d != idx), skip if no thumbnail
+                        //    is available or already loaded.
+                        // 2. For active slot (d == idx), skip full decode only if
+                        //    its thumbnail is already loaded and rendering on screen.
+                        //    If no thumbnail is available, immediately decode the full image!
+                        const skip_neighbor = d != idx and is_fast_scrolling and
+                            (entry.thumbnail == .not_available or entry.thumbnail == .loaded);
+                        const skip_active = d == idx and is_fast_scrolling and
+                            entry.thumbnail == .loaded;
+                        if (skip_neighbor) {
                             // Wait until user settles to trigger full decode of background slots.
-                        } else if (d == idx and is_fast_scrolling and entry.thumbnail == .loaded) {
-                            // Active thumbnail is already on screen, wait until user settles to trigger full decode.
+                        } else if (skip_active) {
+                            // Active thumbnail is already on screen, wait until user settles.
                         } else {
                             if (to_spawn_count < 5) {
                                 to_spawn_indices[to_spawn_count] = d;
-                                to_spawn_entries[to_spawn_count] = state.viewer.navigation.image_list.items[d];
+                                to_spawn_entries[to_spawn_count] =
+                                    state.viewer.navigation.image_list.items[d];
                                 to_spawn_count += 1;
                             }
                         }
@@ -291,7 +320,10 @@ test "sysUpdateCache - populates prefetch window and evicts unwanted entries" {
     const paths = [_][]const u8{ "img0.png", "img1.png", "img2.png", "img3.png", "img4.png" };
     for (paths) |p| {
         const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, p);
-        try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = dup } });
+        try state.viewer.navigation.image_list.append(
+            allocator,
+            .{ .filesystem = .{ .path = dup } },
+        );
     }
     state.viewer.navigation.current_index = 0;
 
@@ -339,7 +371,10 @@ test "sysUpdateCache - retains loaded entries outside prefetch window until budg
         const name = try std.fmt.allocPrint(allocator, "img{}.png", .{idx});
         defer allocator.free(name);
         const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, name);
-        try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = dup } });
+        try state.viewer.navigation.image_list.append(
+            allocator,
+            .{ .filesystem = .{ .path = dup } },
+        );
     }
     state.viewer.navigation.current_index = 0;
 
@@ -386,7 +421,8 @@ test "sysUpdateCache - retains loaded entries outside prefetch window until budg
     // Slot 6 should now be pruned by enforceVramBudget
     try std.testing.expect(state.cache.get(state.cache.activeKey(6)) == null);
 
-    // Reset slot 0 to .failed to prevent calling destroy() on mock undefined surface during defer state.deinit()
+    // Reset slot 0 to .failed to prevent calling destroy() on mock undefined surface
+    // during defer state.deinit()
     _ = state.cache.updateStatus(state.cache.activeKey(0), .failed);
 }
 
@@ -402,7 +438,10 @@ test "sysUpdateCache max decode threads telemetry" {
 
     const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
     try sysUpdateCache(ctx);
-    try std.testing.expectEqual(state.workers.getMaxConcurrentDecodes(), state.viewer.stats.max_decode_threads);
+    try std.testing.expectEqual(
+        state.workers.getMaxConcurrentDecodes(),
+        state.viewer.stats.max_decode_threads,
+    );
     try std.testing.expect(state.viewer.stats.max_decode_threads >= 1);
 }
 
@@ -416,7 +455,10 @@ test "sysUpdateCache - directional speculative preloading during fast scrolling"
     const paths = [_][]const u8{ "img0.png", "img1.png", "img2.png", "img3.png", "img4.png" };
     for (paths) |p| {
         const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, p);
-        try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = dup } });
+        try state.viewer.navigation.image_list.append(
+            allocator,
+            .{ .filesystem = .{ .path = dup } },
+        );
     }
     state.viewer.navigation.current_index = 0;
     state.viewer.navigation.direction = .forward;
@@ -438,7 +480,8 @@ test "sysUpdateCache - directional speculative preloading during fast scrolling"
     cur.thumbnail = .not_available;
 
     // Run sysUpdateCache: because direction is .forward, speculative_idx is 1.
-    // Slot 1 should be populated for speculative preloading, but slot 4 (backward neighbor) should NOT!
+    // Slot 1 should be populated for speculative preloading,
+    // but slot 4 (backward neighbor) should NOT!
     try sysUpdateCache(ctx);
     try std.testing.expect(state.cache.get(state.cache.activeKey(1)) != null);
     try std.testing.expect(state.cache.get(state.cache.activeKey(4)) == null);
@@ -460,7 +503,10 @@ test "sysUpdateCache - synchronous presence probe sets thumbnail state" {
     defer state.deinit();
 
     // Add a real PNG (no embedded thumbnail) to navigation list
-    const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, "testfiles/golden-screenshots/init.png");
+    const dup = try state.viewer.navigation.directory_arena.allocator().dupe(
+        u8,
+        "testfiles/golden-screenshots/init.png",
+    );
     try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = dup } });
     state.viewer.navigation.current_index = 0;
 
@@ -469,7 +515,8 @@ test "sysUpdateCache - synchronous presence probe sets thumbnail state" {
 
     const entry = state.cache.get(state.cache.activeKey(0));
     try std.testing.expect(entry != null);
-    // Because test_0_init.png has no embedded thumbnail, synchronous probe on Frame 1 sets .not_available!
+    // Because test_0_init.png has no embedded thumbnail, synchronous probe
+    // on Frame 1 sets .not_available!
     try std.testing.expectEqual(state_pkg.ThumbnailState.not_available, entry.?.thumbnail);
 }
 
@@ -480,7 +527,10 @@ test "sysUpdateCache - active image without thumbnail spawns full decode during 
     defer state.deinit();
 
     // Add image with no thumbnail
-    const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, "testfiles/golden-screenshots/init.png");
+    const dup = try state.viewer.navigation.directory_arena.allocator().dupe(
+        u8,
+        "testfiles/golden-screenshots/init.png",
+    );
     try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = dup } });
     state.viewer.navigation.current_index = 0;
     // Fast scrolling is active

@@ -4,7 +4,8 @@ const state_pkg = @import("state");
 
 const AppState = app_state.AppState;
 
-/// Contextual state, temporary frame allocator, input events, and delta time passed to every update system.
+/// Contextual state, temporary frame allocator, input events, and delta time
+/// passed to every update system.
 pub const FrameContext = struct {
     state: *AppState,
     frame_allocator: std.mem.Allocator,

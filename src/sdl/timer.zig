@@ -10,7 +10,8 @@ pub fn getTicks() u64 {
     return c.SDL_GetTicks();
 }
 
-/// Returns the number of nanoseconds elapsed since the SDL library was initialized with high precision.
+/// Returns the number of nanoseconds elapsed since the SDL library was
+/// initialized with high precision.
 pub fn getTicksNs() u64 {
     return c.SDL_GetTicksNS();
 }

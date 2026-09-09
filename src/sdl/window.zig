@@ -14,7 +14,8 @@ pub const window_flags = struct {
 pub const Window = extern struct {
     ptr: *c.SDL_Window,
 
-    /// Creates a new SDL window with null-terminated title, logical dimensions, and configuration flags.
+    /// Creates a new SDL window with null-terminated title, logical
+    /// dimensions, and configuration flags.
     pub fn createZ(title: [:0]const u8, w: i32, h: i32, flags: u64) ?Window {
         const raw = c.SDL_CreateWindow(title.ptr, w, h, flags);
         return if (raw) |r| .{ .ptr = r } else null;
@@ -69,9 +70,20 @@ pub const Window = extern struct {
     }
 
     /// Waits for and acquires the next available swapchain texture for rendering.
-    pub fn waitAndAcquireSwapchainTexture(self: Window, cmd_buf: gpu.CommandBuffer, swap_w: *u32, swap_h: *u32) ?gpu.Texture {
+    pub fn waitAndAcquireSwapchainTexture(
+        self: Window,
+        cmd_buf: gpu.CommandBuffer,
+        swap_w: *u32,
+        swap_h: *u32,
+    ) ?gpu.Texture {
         var raw_tex: ?*c.SDL_GPUTexture = null;
-        if (c.SDL_WaitAndAcquireGPUSwapchainTexture(cmd_buf.ptr, self.ptr, &raw_tex, swap_w, swap_h)) {
+        if (c.SDL_WaitAndAcquireGPUSwapchainTexture(
+            cmd_buf.ptr,
+            self.ptr,
+            &raw_tex,
+            swap_w,
+            swap_h,
+        )) {
             return if (raw_tex) |t| .{ .ptr = t } else null;
         }
         return null;

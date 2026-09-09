@@ -165,7 +165,8 @@ pub fn generateHelp(comptime spec: HelpSpec) []const u8 {
     return text;
 }
 
-/// Formatted application help text dynamically generated for the primary `peng` viewer at compile-time.
+/// Formatted application help text dynamically generated for the primary
+/// `peng` viewer at compile-time.
 pub const main_help_text: []const u8 = generateHelp(.{
     .title = "Peng — High-Performance GPU-Accelerated Image Viewer",
     .usage = "peng [options] [path]",
@@ -278,7 +279,10 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
                         if (std.meta.stringToEnum(ScaleMode, val)) |mode| {
                             default_scale = mode;
                         } else {
-                            std.log.err("Unknown scale mode: {s}. Valid modes are: {s}.", .{ val, intents.scale_modes_string });
+                            std.log.err(
+                                "Unknown scale mode: {s}. Valid modes are: {s}.",
+                                .{ val, intents.scale_modes_string },
+                            );
                         }
                     } else {
                         std.log.err("Missing value for --scale flag.", .{});
@@ -418,7 +422,15 @@ test "parseArgsIterator handles blur and other flags" {
     const testing = std.testing;
 
     {
-        var it = SliceIterator{ .slice = &[_][]const u8{ "--no-blur", "--ipc", "--headless", "--test-mode", "--title" } };
+        var it = SliceIterator{
+            .slice = &[_][]const u8{
+                "--no-blur",
+                "--ipc",
+                "--headless",
+                "--test-mode",
+                "--title",
+            },
+        };
         var parsed = try parseArgsIterator(&it, testing.allocator);
         defer parsed.deinit(testing.allocator);
         try testing.expect(!parsed.enable_blur);
@@ -430,7 +442,13 @@ test "parseArgsIterator handles blur and other flags" {
     }
 
     {
-        var it = SliceIterator{ .slice = &[_][]const u8{ "--disable-blur", "--enable-ipc", "--title-overlay" } };
+        var it = SliceIterator{
+            .slice = &[_][]const u8{
+                "--disable-blur",
+                "--enable-ipc",
+                "--title-overlay",
+            },
+        };
         var parsed = try parseArgsIterator(&it, testing.allocator);
         defer parsed.deinit(testing.allocator);
         try testing.expect(!parsed.enable_blur);

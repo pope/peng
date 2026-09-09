@@ -18,8 +18,14 @@ pub const PathScanArgs = struct {
     is_loading_files: *std.atomic.Value(bool),
 };
 
-/// Thread-safely duplicates a path string and pushes a `.path_discovered` event onto the worker event queue.
-pub fn appendPathThreadSafe(workers: *WorkerManager, gpa: std.mem.Allocator, io: std.Io, path: []const u8) void {
+/// Thread-safely duplicates a path string and pushes a `.path_discovered`
+/// event onto the worker event queue.
+pub fn appendPathThreadSafe(
+    workers: *WorkerManager,
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    path: []const u8,
+) void {
     if (workers.exiting.load(.acquire)) return;
     const dup = gpa.dupe(u8, path) catch |err| {
         std.log.err("Failed to duplicate path '{s}': {}", .{ path, err });
@@ -37,10 +43,19 @@ pub fn appendPathThreadSafe(workers: *WorkerManager, gpa: std.mem.Allocator, io:
     context.wakeUpMainThread();
 }
 
-/// Scans image files within `dir_path`, sorts them alphabetically (case-insensitive), and pushes discovery events.
-pub fn scanDirectoryThreadSafe(workers: *WorkerManager, gpa: std.mem.Allocator, io: std.Io, dir_path: []const u8) void {
+/// Scans image files within `dir_path`, sorts them alphabetically
+/// (case-insensitive), and pushes discovery events.
+pub fn scanDirectoryThreadSafe(
+    workers: *WorkerManager,
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    dir_path: []const u8,
+) void {
     var dir = std.Io.Dir.openDir(std.Io.Dir.cwd(), io, dir_path, .{ .iterate = true }) catch |err| {
-        std.log.warn("scanDirectoryThreadSafe: openDir failed for '{s}': {any}", .{ dir_path, err });
+        std.log.warn(
+            "scanDirectoryThreadSafe: openDir failed for '{s}': {any}",
+            .{ dir_path, err },
+        );
         return;
     };
     defer dir.close(io);
@@ -53,7 +68,10 @@ pub fn scanDirectoryThreadSafe(workers: *WorkerManager, gpa: std.mem.Allocator, 
     }
 
     while (it.next(io) catch |err| blk: {
-        std.log.warn("scanDirectoryThreadSafe: iterate next failed for '{s}': {any}", .{ dir_path, err });
+        std.log.warn(
+            "scanDirectoryThreadSafe: iterate next failed for '{s}': {any}",
+            .{ dir_path, err },
+        );
         break :blk null;
     }) |entry| {
         if (workers.exiting.load(.acquire)) return;
@@ -97,7 +115,8 @@ pub fn scanDirectoryThreadSafe(workers: *WorkerManager, gpa: std.mem.Allocator, 
     }
 }
 
-/// Background thread entry point executing full path scan (directory or archive) and notifying completion.
+/// Background thread entry point executing full path scan (directory or archive)
+/// and notifying completion.
 pub fn pathScanWorker(args: *PathScanArgs) void {
     const workers = args.workers;
     const io = args.io;
@@ -124,9 +143,15 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
             std.log.err("Failed to scan CBZ image entries for '{s}': {}", .{ target_path, err });
         };
     } else {
-        const dir_path = if (is_dir) target_path else (std.fs.path.dirname(target_path) orelse ".");
+        const dir_path =
+            if (is_dir) target_path else (std.fs.path.dirname(target_path) orelse ".");
 
-        var dir = std.Io.Dir.openDir(std.Io.Dir.cwd(), io, dir_path, .{ .iterate = true }) catch |err| {
+        var dir = std.Io.Dir.openDir(
+            std.Io.Dir.cwd(),
+            io,
+            dir_path,
+            .{ .iterate = true },
+        ) catch |err| {
             std.log.err("Failed to open dir '{s}': {}", .{ dir_path, err });
             return;
         };
@@ -144,7 +169,10 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
             }) orelse break;
             if (entry.kind == .file) {
                 if (core_fs.isImageFile(entry.name)) {
-                    const full_path = std.fs.path.join(gpa, &.{ dir_path, entry.name }) catch |err| {
+                    const full_path = std.fs.path.join(
+                        gpa,
+                        &.{ dir_path, entry.name },
+                    ) catch |err| {
                         std.log.err("Failed to join path for '{s}': {}", .{ entry.name, err });
                         continue;
                     };

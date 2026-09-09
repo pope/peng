@@ -4,14 +4,16 @@ const types = @import("types.zig");
 const ZoomFactor = types.ZoomFactor;
 const UvRect = types.UvRect;
 
-/// Returns `true` if the normalized rotation angle is approximately 90 or 270 degrees (swapping width and height).
+/// Returns `true` if the normalized rotation angle is approximately 90 or
+/// 270 degrees (swapping width and height).
 pub fn isAngle90or270(angle: f32) bool {
     const norm = @mod(@mod(angle, 360.0) + 360.0, 360.0);
     return std.math.approxEqAbs(f32, norm, 90.0, 0.1) or
         std.math.approxEqAbs(f32, norm, 270.0, 0.1);
 }
 
-/// Computed visual dimensions of an image, its destination layout bounds, and its base scale factor.
+/// Computed visual dimensions of an image, its destination layout bounds,
+/// and its base scale factor.
 pub const ViewDims = struct {
     img_w: f32,
     img_h: f32,
@@ -20,8 +22,16 @@ pub const ViewDims = struct {
     base_scale: f32,
 };
 
-/// Calculates rotated image dimensions, fitted screen rectangle bounds, and base scale according to `ScaleMode`.
-pub fn computeViewDims(raw_w: f32, raw_h: f32, rotation_angle: f32, view_w: f32, view_h: f32, scale_mode: ScaleMode) ViewDims {
+/// Calculates rotated image dimensions, fitted screen rectangle bounds,
+/// and base scale according to `ScaleMode`.
+pub fn computeViewDims(
+    raw_w: f32,
+    raw_h: f32,
+    rotation_angle: f32,
+    view_w: f32,
+    view_h: f32,
+    scale_mode: ScaleMode,
+) ViewDims {
     if (raw_w <= 0.0 or raw_h <= 0.0) {
         return .{
             .img_w = 0.0,
@@ -98,18 +108,22 @@ pub fn computeViewDims(raw_w: f32, raw_h: f32, rotation_angle: f32, view_w: f32,
     };
 }
 
-/// Restricts zoom factor within safe bounds derived from `base_scale` to avoid excessive under- or over-magnification.
+/// Restricts zoom factor within safe bounds derived from `base_scale`
+/// to avoid excessive under- or over-magnification.
 pub fn clampZoomFactor(base_scale: f32, factor: f32) ZoomFactor {
     const min_factor = if (base_scale > 0.0) 0.1 / base_scale else 0.1;
     const max_factor = if (base_scale > 0.0) 10.0 / base_scale else 10.0;
     return ZoomFactor.init(std.math.clamp(factor, min_factor, max_factor));
 }
 
-/// Computes normalized UV crop boundaries to remove letterbox/pillarbox padding in embedded thumbnails.
-/// When `dct_snapped` is true, letterbox/pillarbox margins are aligned to 8-pixel DCT block boundaries
-/// as encoded by camera hardware preview generators (e.g. Fujifilm RAF, Ricoh GR IIIx JPEG).
-/// When `dct_snapped` is false (e.g. Sony ARW, standard Fujifilm JPEG), exact theoretical aspect-ratio
-/// padding is preserved to prevent over-cropping real image pixels and vertical stretch distortion.
+/// Computes normalized UV crop boundaries to remove letterbox/pillarbox padding
+/// in embedded thumbnails.
+/// When `dct_snapped` is true, letterbox/pillarbox margins are aligned to
+/// 8-pixel DCT block boundaries as encoded by camera hardware preview
+/// generators (e.g. Fujifilm RAF, Ricoh GR IIIx JPEG).
+/// When `dct_snapped` is false (e.g. Sony ARW, standard Fujifilm JPEG), exact
+/// theoretical aspect-ratio padding is preserved to prevent over-cropping real
+/// image pixels and vertical stretch distortion.
 pub fn computeThumbnailUvCrop(
     full_w: f32,
     full_h: f32,
@@ -117,7 +131,10 @@ pub fn computeThumbnailUvCrop(
     thumb_h: f32,
     dct_snapped: bool,
 ) UvRect {
-    if (!std.math.isFinite(full_w) or !std.math.isFinite(full_h) or !std.math.isFinite(thumb_w) or !std.math.isFinite(thumb_h) or
+    if (!std.math.isFinite(full_w) or
+        !std.math.isFinite(full_h) or
+        !std.math.isFinite(thumb_w) or
+        !std.math.isFinite(thumb_h) or
         full_w <= 0.0 or full_h <= 0.0 or thumb_w <= 0.0 or thumb_h <= 0.0)
     {
         return .{};
@@ -134,12 +151,13 @@ pub fn computeThumbnailUvCrop(
         // Full image is wider than thumbnail container -> Letterboxing (black bars top/bottom)
         const raw_pad_px = (thumb_h - (thumb_w / ar_full)) / 2.0;
         const pad_px = if (dct_snapped) blk: {
-            // Camera hardware RAW preview JPEG encoders align active image and padding to 8-pixel DCT block boundaries.
+            // Camera hardware RAW preview JPEG encoders align active image
+            // and padding to 8-pixel DCT block boundaries.
             const nearest_block_px = @round(raw_pad_px / 8.0) * 8.0;
-            break :blk if (nearest_block_px > 0.0 and nearest_block_px * 2.0 < thumb_h and @abs(raw_pad_px - nearest_block_px) <= 2.0)
-                nearest_block_px
-            else
-                raw_pad_px;
+            const can_snap = nearest_block_px > 0.0 and
+                nearest_block_px * 2.0 < thumb_h and
+                @abs(raw_pad_px - nearest_block_px) <= 2.0;
+            break :blk if (can_snap) nearest_block_px else raw_pad_px;
         } else raw_pad_px;
 
         const v_pad = pad_px / thumb_h;
@@ -150,10 +168,10 @@ pub fn computeThumbnailUvCrop(
         const raw_pad_px = (thumb_w - (thumb_h * ar_full)) / 2.0;
         const pad_px = if (dct_snapped) blk: {
             const nearest_block_px = @round(raw_pad_px / 8.0) * 8.0;
-            break :blk if (nearest_block_px > 0.0 and nearest_block_px * 2.0 < thumb_w and @abs(raw_pad_px - nearest_block_px) <= 2.0)
-                nearest_block_px
-            else
-                raw_pad_px;
+            const can_snap = nearest_block_px > 0.0 and
+                nearest_block_px * 2.0 < thumb_w and
+                @abs(raw_pad_px - nearest_block_px) <= 2.0;
+            break :blk if (can_snap) nearest_block_px else raw_pad_px;
         } else raw_pad_px;
 
         const u_pad = pad_px / thumb_w;
@@ -162,9 +180,10 @@ pub fn computeThumbnailUvCrop(
     }
 }
 
-test "computeThumbnailUvCrop letterboxing (3:2 in 4:3 thumb snaps to 8px DCT block when dct_snapped is true)" {
+test "computeThumbnailUvCrop letterboxing (3:2 in 4:3 thumb snaps to 8px DCT block)" {
     // 8192x5461 (3:2 = 1.50) in 160x120 (4:3 = 1.333)
-    // Theoretical padding is 6.67px; camera hardware preview encoder aligns to 8px DCT block boundary.
+    // Theoretical padding is 6.67px; camera hardware preview encoder aligns
+    // to 8px DCT block boundary.
     const crop = computeThumbnailUvCrop(8192.0, 5461.0, 160.0, 120.0, true);
     try std.testing.expectEqual(@as(f32, 0.0), crop.u_min);
     try std.testing.expectEqual(@as(f32, 1.0), crop.u_max);
@@ -172,9 +191,10 @@ test "computeThumbnailUvCrop letterboxing (3:2 in 4:3 thumb snaps to 8px DCT blo
     try std.testing.expectApproxEqAbs(@as(f32, 1.0 - (8.0 / 120.0)), crop.v_max, 0.001);
 }
 
-test "computeThumbnailUvCrop letterboxing (3:2 in 4:3 thumb uses theoretical padding when dct_snapped is false)" {
+test "computeThumbnailUvCrop letterboxing (3:2 in 4:3 thumb when dct_snapped is false)" {
     // 7728x5152 (3:2 = 1.50) in 160x120 (4:3 = 1.333)
-    // In-camera JPEGs or non-snapped RAW previews downscale directly to exact aspect ratio with 6.67px padding.
+    // In-camera JPEGs or non-snapped RAW previews downscale directly to exact
+    // aspect ratio with 6.67px padding.
     const crop = computeThumbnailUvCrop(7728.0, 5152.0, 160.0, 120.0, false);
     try std.testing.expectEqual(@as(f32, 0.0), crop.u_min);
     try std.testing.expectEqual(@as(f32, 1.0), crop.u_max);
@@ -182,9 +202,10 @@ test "computeThumbnailUvCrop letterboxing (3:2 in 4:3 thumb uses theoretical pad
     try std.testing.expectApproxEqAbs(@as(f32, 1.0 - (6.66667 / 120.0)), crop.v_max, 0.001);
 }
 
-test "computeThumbnailUvCrop letterboxing (16:9 in 4:3 thumb snaps to 16px DCT block when dct_snapped is true)" {
+test "computeThumbnailUvCrop letterboxing (16:9 in 4:3 thumb snaps to 16px DCT block)" {
     // 3840x2160 (16:9 = 1.7778) in 160x120 (4:3 = 1.333)
-    // Theoretical padding is 15.0px; snaps to nearest 16px DCT block boundary (88px active image).
+    // Theoretical padding is 15.0px; snaps to nearest 16px DCT block boundary
+    // (88px active image).
     const crop = computeThumbnailUvCrop(3840.0, 2160.0, 160.0, 120.0, true);
     try std.testing.expectEqual(@as(f32, 0.0), crop.u_min);
     try std.testing.expectEqual(@as(f32, 1.0), crop.u_max);

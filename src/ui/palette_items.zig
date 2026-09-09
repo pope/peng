@@ -8,7 +8,12 @@ pub const TextChunk = struct {
     is_matched: bool,
 };
 
-fn appendOrMergeChunk(list: *std.ArrayList(TextChunk), allocator: std.mem.Allocator, slice: []const u8, is_matched: bool) !void {
+fn appendOrMergeChunk(
+    list: *std.ArrayList(TextChunk),
+    allocator: std.mem.Allocator,
+    slice: []const u8,
+    is_matched: bool,
+) !void {
     if (slice.len == 0) return;
     if (list.items.len > 0 and list.items[list.items.len - 1].is_matched == is_matched) {
         const last = &list.items[list.items.len - 1];
@@ -22,7 +27,8 @@ fn appendOrMergeChunk(list: *std.ArrayList(TextChunk), allocator: std.mem.Alloca
     }
 }
 
-/// Partitions a string into contiguous matched and unmatched TextChunk slices for fuzzy search highlighting.
+/// Partitions a string into contiguous matched and unmatched TextChunk slices
+/// for fuzzy search highlighting.
 pub fn partitionHighlightedText(
     allocator: std.mem.Allocator,
     text: []const u8,
@@ -37,7 +43,10 @@ pub fn partitionHighlightedText(
 
     for (match_indices) |m_idx| {
         if (m_idx >= text.len) {
-            std.log.warn("Fuzzy highlight match index {} out of bounds for string '{s}' (length {})", .{ m_idx, text, text.len });
+            std.log.warn(
+                "Fuzzy highlight match index {} out of bounds for string '{s}' (length {})",
+                .{ m_idx, text, text.len },
+            );
         }
     }
 
@@ -61,7 +70,10 @@ pub fn partitionHighlightedText(
 
         if (is_matched) {
             match_ptr += 1;
-            while (idx < text.len and match_ptr < match_indices.len and match_indices[match_ptr] == idx) {
+            while (idx < text.len and
+                match_ptr < match_indices.len and
+                match_indices[match_ptr] == idx)
+            {
                 idx += 1;
                 while (idx < text.len and (text[idx] & 0xC0) == 0x80) {
                     idx += 1;
@@ -96,7 +108,8 @@ pub fn partitionHighlightedText(
     return try list.toOwnedSlice(allocator);
 }
 
-/// Emits Clay text elements partitioning characters into alternating normal and highlighted segments based on fuzzy match indices.
+/// Emits Clay text elements partitioning characters into alternating normal
+/// and highlighted segments based on fuzzy match indices.
 pub fn renderFuzzyMatchText(
     allocator: std.mem.Allocator,
     text: []const u8,
@@ -118,7 +131,12 @@ pub fn renderFuzzyMatchText(
 
     const chunks = partitionHighlightedText(allocator, text, match_indices) catch |err| {
         std.log.err("partitionHighlightedText failed for '{s}': {}", .{ text, err });
-        clay.text(text, .{ .color = normal_color, .font_size = font_size, .font_id = 0, .wrap_mode = .none });
+        clay.text(text, .{
+            .color = normal_color,
+            .font_size = font_size,
+            .font_id = 0,
+            .wrap_mode = .none,
+        });
         return;
     };
 

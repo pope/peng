@@ -33,7 +33,13 @@ pub const Surface = struct {
     }
 
     /// Wraps an existing external pixel memory buffer in an SDL surface structure.
-    pub fn createFrom(width: i32, height: i32, format_id: u32, data_ptr: ?*anyopaque, pitch_bytes: i32) ?Surface {
+    pub fn createFrom(
+        width: i32,
+        height: i32,
+        format_id: u32,
+        data_ptr: ?*anyopaque,
+        pitch_bytes: i32,
+    ) ?Surface {
         const raw = c.SDL_CreateSurfaceFrom(width, height, format_id, data_ptr, pitch_bytes);
         return if (raw) |r| .{ .ptr = r } else null;
     }
@@ -69,7 +75,8 @@ pub const Surface = struct {
         return if (raw) |r| .{ .ptr = r } else null;
     }
 
-    /// Converts this surface to `target_format`, utilizing SIMD-optimized conversion paths when available.
+    /// Converts this surface to `target_format`, utilizing SIMD-optimized
+    /// conversion paths when available.
     pub fn convert(self: Surface, target_format: u32) ?Surface {
         const src_fmt = self.format();
         const w_val = self.w();
@@ -84,7 +91,14 @@ pub const Surface = struct {
                 if (Surface.create(w_val, h_val, target_format)) |dst| {
                     const src_pixels = self.pixels()[0..@intCast(self.pitch() * h_val)];
                     const dst_pixels = dst.pixels()[0..@intCast(dst.pitch() * h_val)];
-                    convertRgb24ToRgba32Simd(src_pixels, dst_pixels, u_w, u_h, @intCast(self.pitch()), @intCast(dst.pitch()));
+                    convertRgb24ToRgba32Simd(
+                        src_pixels,
+                        dst_pixels,
+                        u_w,
+                        u_h,
+                        @intCast(self.pitch()),
+                        @intCast(dst.pitch()),
+                    );
                     return dst;
                 }
             }
@@ -94,7 +108,14 @@ pub const Surface = struct {
                 if (Surface.create(w_val, h_val, target_format)) |dst| {
                     const src_pixels = self.pixels()[0..@intCast(self.pitch() * h_val)];
                     const dst_pixels = dst.pixels()[0..@intCast(dst.pitch() * h_val)];
-                    convertBgr24ToRgba32Simd(src_pixels, dst_pixels, u_w, u_h, @intCast(self.pitch()), @intCast(dst.pitch()));
+                    convertBgr24ToRgba32Simd(
+                        src_pixels,
+                        dst_pixels,
+                        u_w,
+                        u_h,
+                        @intCast(self.pitch()),
+                        @intCast(dst.pitch()),
+                    );
                     return dst;
                 }
             }
@@ -142,7 +163,8 @@ pub const Surface = struct {
 
     /// Checks whether all pixels in row `y` have color components (R, G, B) <= `threshold`.
     /// Accelerated with Zig @Vector SIMD operations across 16-byte chunks.
-    /// Handles 24-bit RGB/BGR and 32-bit pixel formats; tolerant to JPEG chroma subsampling / ringing.
+    /// Handles 24-bit RGB/BGR and 32-bit pixel formats; tolerant to JPEG chroma
+    /// subsampling / ringing.
     pub fn isRowBlack(self: Surface, y: i32, threshold: u8) bool {
         const height = self.h();
         const width = self.w();
@@ -205,8 +227,10 @@ pub const Surface = struct {
     }
 
     /// Checks whether all pixels in column `x` have color components (R, G, B) <= `threshold`.
-    /// Evaluates row-by-row with immediate early-exit on non-black pixels to minimize cache-line striding.
-    /// Handles 24-bit RGB/BGR and 32-bit pixel formats; tolerant to JPEG chroma subsampling / ringing.
+    /// Evaluates row-by-row with immediate early-exit on non-black pixels to
+    /// minimize cache-line striding.
+    /// Handles 24-bit RGB/BGR and 32-bit pixel formats; tolerant to JPEG chroma
+    /// subsampling / ringing.
     pub fn isColBlack(self: Surface, x: i32, threshold: u8) bool {
         const height = self.h();
         const width = self.w();
@@ -242,7 +266,8 @@ pub const Surface = struct {
 
             var y: usize = 0;
             while (y < h_u) : (y += 1) {
-                const px = @as(*align(1) const Vec4, @ptrCast(px_base + y * surf_pitch + x_u * 4)).*;
+                const px_offset = y * surf_pitch + x_u * 4;
+                const px = @as(*align(1) const Vec4, @ptrCast(px_base + px_offset)).*;
                 const masked = px & mask_vec;
                 if (@reduce(.Or, masked > thresh_vec)) {
                     return false;
@@ -254,8 +279,16 @@ pub const Surface = struct {
     }
 };
 
-/// High-performance SIMD-accelerated 24-bit RGB to 32-bit RGBA pixel conversion using Zig @Vector and @shuffle.
-pub fn convertRgb24ToRgba32Simd(src: []const u8, dst: []u8, width: usize, height: usize, src_pitch: usize, dst_pitch: usize) void {
+/// High-performance SIMD-accelerated 24-bit RGB to 32-bit RGBA pixel conversion
+/// using Zig @Vector and @shuffle.
+pub fn convertRgb24ToRgba32Simd(
+    src: []const u8,
+    dst: []u8,
+    width: usize,
+    height: usize,
+    src_pitch: usize,
+    dst_pitch: usize,
+) void {
     const Vec16 = @Vector(16, u8);
     const alphas = @as(Vec16, @splat(255));
     const mask = @Vector(16, i32){ 0, 1, 2, -1, 3, 4, 5, -1, 6, 7, 8, -1, 9, 10, 11, -1 };
@@ -290,7 +323,14 @@ pub fn convertRgb24ToRgba32Simd(src: []const u8, dst: []u8, width: usize, height
 }
 
 /// High-performance SIMD-accelerated 24-bit BGR to 32-bit RGBA pixel conversion using Zig @Vector.
-pub fn convertBgr24ToRgba32Simd(src: []const u8, dst: []u8, width: usize, height: usize, src_pitch: usize, dst_pitch: usize) void {
+pub fn convertBgr24ToRgba32Simd(
+    src: []const u8,
+    dst: []u8,
+    width: usize,
+    height: usize,
+    src_pitch: usize,
+    dst_pitch: usize,
+) void {
     const Vec16 = @Vector(16, u8);
     const alphas = @as(Vec16, @splat(255));
     const bgr_mask = @Vector(16, i32){ 2, 1, 0, -1, 5, 4, 3, -1, 8, 7, 6, -1, 11, 10, 9, -1 };

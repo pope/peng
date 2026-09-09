@@ -40,7 +40,10 @@ pub fn stdinWorker(args: *StdinArgs) void {
                     path_scan.appendPathThreadSafe(workers, gpa, io, trimmed);
                 }
             } else |err| {
-                std.log.debug("statFile failed for '{s}': {any}, treating as file path", .{ trimmed, err });
+                std.log.debug(
+                    "statFile failed for '{s}': {any}, treating as file path",
+                    .{ trimmed, err },
+                );
                 path_scan.appendPathThreadSafe(workers, gpa, io, trimmed);
             }
         }

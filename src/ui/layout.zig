@@ -58,13 +58,21 @@ pub fn computeDrawDims(
     if (src_w > 0 and src_h > 0) {
         const view_w = @max(available_width, 1.0);
         const view_h = @max(available_height, 1.0);
-        const dims = view_transform.computeViewDims(src_w, src_h, rotation_angle, view_w, view_h, fit_mode);
+        const dims = view_transform.computeViewDims(
+            src_w,
+            src_h,
+            rotation_angle,
+            view_w,
+            view_h,
+            fit_mode,
+        );
         return .{ .w = dims.draw_w, .h = dims.draw_h };
     }
     return .{ .w = 0, .h = 0 };
 }
 
-/// Builds the complete UI layout hierarchy via Clay, tessellates geometry, and records draw commands for the frame.
+/// Builds the complete UI layout hierarchy via Clay, tessellates geometry,
+/// and records draw commands for the frame.
 pub fn renderFrame(
     view_params: ViewParams,
     ui_model: UiViewModel,
@@ -96,7 +104,13 @@ pub fn renderFrame(
     const view_w = @max(available_width - padding * 2.0, 1.0);
     const view_h = @max(height - padding * 2.0, 1.0);
 
-    const dims = computeDrawDims(current_entry, view_w, view_h, view_params.viewport.rotation_angle, view_params.viewport.fit_mode);
+    const dims = computeDrawDims(
+        current_entry,
+        view_w,
+        view_h,
+        view_params.viewport.rotation_angle,
+        view_params.viewport.fit_mode,
+    );
     const draw_w = dims.w;
     const draw_h = dims.h;
 
@@ -155,7 +169,8 @@ pub fn renderFrame(
 
     // Render Frame
     const dev = gpu_res.device;
-    const cmd_wrapper = dev.acquireCommandBuffer() orelse return error.CommandBufferAcquisitionFailed;
+    const cmd_wrapper = dev.acquireCommandBuffer() orelse
+        return error.CommandBufferAcquisitionFailed;
     var cmd_buf_submitted = false;
     errdefer if (!cmd_buf_submitted) {
         _ = cmd_wrapper.cancel();
@@ -242,7 +257,15 @@ pub fn renderFrame(
         );
         if (capture_filename) |filename| {
             cmd_buf_submitted = true;
-            try saveTextureToPng(dev, cmd_wrapper, tex, target_w, target_h, target_format, filename);
+            try saveTextureToPng(
+                dev,
+                cmd_wrapper,
+                tex,
+                target_w,
+                target_h,
+                target_format,
+                filename,
+            );
         } else if (use_headless) {
             cmd_buf_submitted = true;
             const fence_opt = cmd_wrapper.submitAndAcquireFence();
@@ -250,7 +273,10 @@ pub fn renderFrame(
                 _ = dev.waitForFence(fence);
                 dev.releaseFence(fence);
             } else {
-                std.log.err("Failed to acquire GPU fence for headless render: {s}", .{sdl.getError()});
+                std.log.err(
+                    "Failed to acquire GPU fence for headless render: {s}",
+                    .{sdl.getError()},
+                );
                 return error.FenceAcquisitionFailed;
             }
         } else {
@@ -288,13 +314,25 @@ fn renderTitlePill(
         const count_buf = try frame_allocator.alloc(u8, 128);
         switch (ui_model.slideshow) {
             .active => |s| {
-                count_str = try std.fmt.bufPrint(count_buf, "Image {} of {} [Slide Show {d:.1}s]", .{ idx, total_images, s.interval_s });
+                count_str = try std.fmt.bufPrint(
+                    count_buf,
+                    "Image {} of {} [Slide Show {d:.1}s]",
+                    .{ idx, total_images, s.interval_s },
+                );
             },
             .inactive => {
                 if (is_loading) {
-                    count_str = try std.fmt.bufPrint(count_buf, "Image {} of {}...", .{ idx, total_images });
+                    count_str = try std.fmt.bufPrint(
+                        count_buf,
+                        "Image {} of {}...",
+                        .{ idx, total_images },
+                    );
                 } else {
-                    count_str = try std.fmt.bufPrint(count_buf, "Image {} of {}", .{ idx, total_images });
+                    count_str = try std.fmt.bufPrint(
+                        count_buf,
+                        "Image {} of {}",
+                        .{ idx, total_images },
+                    );
                 }
             },
         }
@@ -325,7 +363,13 @@ fn renderTitlePill(
     const max_title_w = if (title_budget > 30.0) title_budget else 30.0;
 
     const font_size_u16: u16 = 15;
-    const title_display = truncateFilename(frame_allocator, raw_title, max_title_w, font_size_u16, measure_data);
+    const title_display = truncateFilename(
+        frame_allocator,
+        raw_title,
+        max_title_w,
+        font_size_u16,
+        measure_data,
+    );
 
     clay.UI()(.{
         .id = clay.getElementId("TitleOverlay"),
@@ -346,7 +390,10 @@ fn renderTitlePill(
         },
         .background_color = theme.withAlpha(theme.mantle, 0.75 * progress),
         .corner_radius = .all(10),
-        .user_data = if (ui_model.overlays.enable_blur) @ptrFromInt(ElementTag.blurred_surface.toInt()) else null,
+        .user_data = if (ui_model.overlays.enable_blur)
+            @ptrFromInt(ElementTag.blurred_surface.toInt())
+        else
+            null,
         .border = .{
             .width = .all(1),
             .color = theme.withAlpha(theme.surface0, 0.7 * progress),
@@ -547,7 +594,8 @@ fn renderEmptyState() void {
     });
 }
 
-/// Formats the loading indicator text with the filename, middle-truncating the filename if it exceeds available width.
+/// Formats the loading indicator text with the filename, middle-truncating
+/// the filename if it exceeds available width.
 ///
 /// Parameters:
 /// - `allocator`: Frame arena allocator used for temporary string construction.
@@ -585,7 +633,8 @@ fn formatLoadingText(
 
     // Measure the prefix "Loading "
     const prefix = "Loading ";
-    const prefix_size = font.getStringSize(allocator, prefix) orelse sdl.Font.TextSize{ .w = 0, .h = 0 };
+    const prefix_size = font.getStringSize(allocator, prefix) orelse
+        sdl.Font.TextSize{ .w = 0, .h = 0 };
     const prefix_w = @as(f32, @floatFromInt(prefix_size.w));
 
     // If available width cannot comfortably fit prefix plus a minimal filename, fall back
@@ -594,7 +643,13 @@ fn formatLoadingText(
     }
 
     const avail_fname_w = max_w - prefix_w;
-    const truncated_fname = truncateFilename(allocator, fname, avail_fname_w, font_size, measure_data);
+    const truncated_fname = truncateFilename(
+        allocator,
+        fname,
+        avail_fname_w,
+        font_size,
+        measure_data,
+    );
 
     // If truncation collapsed to just "...", avoid "Loading ......" by returning fallback
     if (std.mem.eql(u8, truncated_fname, "...")) {
@@ -671,7 +726,9 @@ fn renderImageCanvas(
     var drew_thumb = false;
     switch (entry.thumbnail) {
         .loaded => |thumb| {
-            if (ui_model.debug_show_thumb or (entry.status != .loaded_gpu and !is_thumb_crossfade)) {
+            const show_thumb = ui_model.debug_show_thumb or
+                (entry.status != .loaded_gpu and !is_thumb_crossfade);
+            if (show_thumb) {
                 drew_thumb = true;
                 const thumb_tex = thumb.texture;
                 var uv_crop = state.computeThumbnailUvCrop(
@@ -683,11 +740,11 @@ fn renderImageCanvas(
                 );
                 uv_crop.alpha = 1.0;
                 uv_crop.rotation_angle = rotation_angle;
-                const uv_ptr = frame_allocator.create(state.UvRect) catch |err| blk: {
-                    std.log.warn("Failed to allocate thumbnail UvRect: {any}", .{err});
+                const uv_crop_ptr = frame_allocator.create(state.UvRect) catch |err| blk: {
+                    std.log.warn("Failed to allocate UvRect for thumbnail: {any}", .{err});
                     break :blk null;
                 };
-                if (uv_ptr) |ptr| {
+                if (uv_crop_ptr) |ptr| {
                     ptr.* = uv_crop;
                 }
                 clay.UI()(.{
@@ -701,12 +758,13 @@ fn renderImageCanvas(
                     .image = .{
                         .image_data = thumb_tex.asOpaque(),
                     },
-                    .user_data = if (uv_ptr) |ptr| @ptrCast(ptr) else null,
+                    .user_data = if (uv_crop_ptr) |ptr| @ptrCast(ptr) else null,
                 })({});
             }
         },
         else => {},
     }
+
     if (!drew_thumb) switch (entry.status) {
         .loaded_gpu => |gpu| {
             const tex = gpu.gpu_texture;
@@ -767,13 +825,22 @@ fn renderImageCanvas(
                 const filename_opt: ?[]const u8 = if (ui_model.current_image_entry) |entry_item|
                     entry_item.getBasename()
                 else if (ui_model.current_index) |idx|
-                    if (idx < ui_model.image_list.len) ui_model.image_list[idx].getBasename() else null
+                    (if (idx < ui_model.image_list.len)
+                        ui_model.image_list[idx].getBasename()
+                    else
+                        null)
                 else
                     null;
 
                 const container_w = if (draw_w > 0) @min(draw_w, view_w) else view_w;
                 const max_text_w = @max(container_w - 40.0, 0.0);
-                break :blk formatLoadingText(frame_allocator, filename_opt, max_text_w, font_size, measure_data);
+                break :blk formatLoadingText(
+                    frame_allocator,
+                    filename_opt,
+                    max_text_w,
+                    font_size,
+                    measure_data,
+                );
             } else "";
 
             if (draw_w > 0 and draw_h > 0) {
@@ -875,7 +942,10 @@ fn renderViewport(
 
                         const prev_tex = gpu.gpu_texture;
                         const prev_uv_ptr = frame_allocator.create(state.UvRect) catch |err| blk: {
-                            std.log.warn("Failed to allocate UvRect for image dissolve: {any}", .{err});
+                            std.log.warn(
+                                "Failed to allocate UvRect for image dissolve: {any}",
+                                .{err},
+                            );
                             break :blk null;
                         };
                         if (prev_uv_ptr) |ptr| {
@@ -894,7 +964,10 @@ fn renderViewport(
                             },
                             .floating = .{
                                 .attach_to = .to_parent,
-                                .attach_points = .{ .element = .center_center, .parent = .center_center },
+                                .attach_points = .{
+                                    .element = .center_center,
+                                    .parent = .center_center,
+                                },
                                 .offset = .{ .x = 0.0, .y = 0.0 },
                                 .z_index = 0,
                             },

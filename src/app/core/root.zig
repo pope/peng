@@ -1,7 +1,8 @@
 //! Core Sub-module of App
 //!
 //! Houses pure, state-free utility types, file system helpers, EXIF parsers,
-//! image cache slot maps, palette helpers, and messaging constructs used internally by app system passes and worker threads.
+//! image cache slot maps, palette helpers, and messaging constructs used
+//! internally by app system passes and worker threads.
 //!
 //! INVARIANT: Code in `src/app/core/` MUST NOT depend on any code in `src/app/`
 //! outside of `src/app/core/` (zero imports of `AppState`, systems, workers, or app actions).

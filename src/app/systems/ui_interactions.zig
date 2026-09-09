@@ -12,10 +12,14 @@ pub fn sysProcessUiInteractions(ctx: FrameContext) void {
     const input = ctx.input orelse return;
 
     if (input.mouse_left_clicked and !input.isPointerInDebugPanel()) {
-        if (self.viewer.ui.overlays.show_info and clay.pointerOver(clay.getElementId("InfoCloseBtn"))) {
+        if (self.viewer.ui.overlays.show_info and
+            clay.pointerOver(clay.getElementId("InfoCloseBtn")))
+        {
             self.viewer.ui.overlays.show_info = false;
         }
-        if (self.viewer.ui.overlays.show_stats and clay.pointerOver(clay.getElementId("StatsCloseBtn"))) {
+        if (self.viewer.ui.overlays.show_stats and
+            clay.pointerOver(clay.getElementId("StatsCloseBtn")))
+        {
             self.viewer.ui.overlays.show_stats = false;
         }
     }

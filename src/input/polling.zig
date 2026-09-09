@@ -123,7 +123,10 @@ pub const FrameInputState = struct {
 pub fn processSDLEvent(event: sdl.Event, frame_input: *FrameInputState) !void {
     switch (event.type) {
         sdl.event_type.quit => frame_input.quit_requested = true,
-        sdl.event_type.window_resized, sdl.event_type.window_pixel_size_changed, sdl.event_type.window_exposed => {
+        sdl.event_type.window_resized,
+        sdl.event_type.window_pixel_size_changed,
+        sdl.event_type.window_exposed,
+        => {
             frame_input.window_resized = true;
         },
         sdl.event_type.mouse_enter => {
@@ -133,7 +136,8 @@ pub fn processSDLEvent(event: sdl.Event, frame_input: *FrameInputState) !void {
             frame_input.mouse_inside = false;
         },
         sdl.event_type.key_down => {
-            try frame_input.keys_pressed.append(frame_input.frame_allocator, mapKeyFromSdl(event.key.key));
+            const mapped_key = mapKeyFromSdl(event.key.key);
+            try frame_input.keys_pressed.append(frame_input.frame_allocator, mapped_key);
         },
         sdl.event_type.text_input => {
             if (event.text.text) |ptr| {
@@ -157,11 +161,13 @@ pub fn processSDLEvent(event: sdl.Event, frame_input: *FrameInputState) !void {
         sdl.event_type.mouse_wheel => {
             const is_flipped = (event.wheel.direction == sdl.mouse.wheel_flipped);
             if (is_flipped) {
-                // Flipped / Natural scrolling (Touchpads with Natural Scroll): swiping UP moves content UP
+                // Flipped / Natural scrolling (Touchpads with Natural Scroll):
+                // swiping UP moves content UP
                 frame_input.scroll_delta_x -= event.wheel.x * MOUSE_WHEEL_SCROLL_MULTIPLIER;
                 frame_input.scroll_delta_y -= event.wheel.y * MOUSE_WHEEL_SCROLL_MULTIPLIER;
             } else {
-                // Normal / Traditional scrolling (Physical Mouse Wheels): rolling DOWN scrolls view DOWN
+                // Normal / Traditional scrolling (Physical Mouse Wheels):
+                // rolling DOWN scrolls view DOWN
                 frame_input.scroll_delta_x += event.wheel.x * MOUSE_WHEEL_SCROLL_MULTIPLIER;
                 frame_input.scroll_delta_y += event.wheel.y * MOUSE_WHEEL_SCROLL_MULTIPLIER;
             }
@@ -219,8 +225,10 @@ pub fn processSDLEvent(event: sdl.Event, frame_input: *FrameInputState) !void {
                 if (last_touch_dist > 0.0 and dist > 0.0) {
                     const delta = (dist - last_touch_dist) / last_touch_dist;
                     frame_input.pinch_delta += delta;
-                    frame_input.pinch_center_x = (active_fingers[0].x + active_fingers[1].x) * 0.5 * win_w;
-                    frame_input.pinch_center_y = (active_fingers[0].y + active_fingers[1].y) * 0.5 * win_h;
+                    const mid_x = (active_fingers[0].x + active_fingers[1].x) * 0.5;
+                    const mid_y = (active_fingers[0].y + active_fingers[1].y) * 0.5;
+                    frame_input.pinch_center_x = mid_x * win_w;
+                    frame_input.pinch_center_y = mid_y * win_h;
                 }
                 last_touch_dist = dist;
             }
@@ -246,8 +254,9 @@ pub fn processSDLEvent(event: sdl.Event, frame_input: *FrameInputState) !void {
     }
 }
 
-/// Computes delta time in milliseconds from ticks, clamping to a standard frame slice (<= 33.33ms)
-/// to prevent animation and simulation leaps when waking from blocking event wait (idle sleep) or OS stalls.
+/// Computes delta time in milliseconds from ticks, clamping to a standard
+/// frame slice (<= 33.33ms) to prevent animation and simulation leaps when
+/// waking from blocking event wait (idle sleep) or OS stalls.
 pub inline fn computeClampedDeltaTime(current_ticks: u64, last_time: *u64) f32 {
     const raw_delta = if (current_ticks >= last_time.*)
         @as(f32, @floatFromInt(current_ticks - last_time.*))
@@ -258,7 +267,8 @@ pub inline fn computeClampedDeltaTime(current_ticks: u64, last_time: *u64) f32 {
     return delta_time_ms;
 }
 
-/// Pumps pending SDL events, queries cursor and keyboard states, and constructs a new `FrameInput` snapshot.
+/// Pumps pending SDL events, queries cursor and keyboard states, and
+/// constructs a new `FrameInput` snapshot.
 pub fn pollFrameInput(
     window: sdl.Window,
     frame_allocator: std.mem.Allocator,
@@ -275,8 +285,14 @@ pub fn pollFrameInput(
 
     const width = @as(f32, @floatFromInt(pix_size.w));
     const height = @as(f32, @floatFromInt(pix_size.h));
-    const scale_x = if (win_size.w > 0) @as(f32, @floatFromInt(pix_size.w)) / @as(f32, @floatFromInt(win_size.w)) else 1.0;
-    const scale_y = if (win_size.h > 0) @as(f32, @floatFromInt(pix_size.h)) / @as(f32, @floatFromInt(win_size.h)) else 1.0;
+    const scale_x = if (win_size.w > 0)
+        @as(f32, @floatFromInt(pix_size.w)) / @as(f32, @floatFromInt(win_size.w))
+    else
+        1.0;
+    const scale_y = if (win_size.h > 0)
+        @as(f32, @floatFromInt(pix_size.h)) / @as(f32, @floatFromInt(win_size.h))
+    else
+        1.0;
     const dpi_scale = scale_x;
 
     var frame_input_state = FrameInputState{

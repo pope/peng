@@ -34,7 +34,19 @@ pub fn spawnDecode(args: *DecodeArgs) !void {
     args.workers.group.async(args.io, decodeWorker, .{args});
 }
 
-fn failDecodeWorker(workers: *WorkerManager, alloc: std.mem.Allocator, io: std.Io, key: CacheKey, comptime fmt: []const u8, fmt_args: anytype) void {
+inline fn isStale(workers: *WorkerManager, args: *const DecodeArgs, key: CacheKey) bool {
+    return workers.exiting.load(.acquire) or
+        args.current_generation.load(.acquire) != key.generation;
+}
+
+fn failDecodeWorker(
+    workers: *WorkerManager,
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    key: CacheKey,
+    comptime fmt: []const u8,
+    fmt_args: anytype,
+) void {
     std.log.err(fmt, fmt_args);
     workers.event_queue.push(alloc, io, .{
         .decode_failed = .{ .key = key },
@@ -63,8 +75,8 @@ fn decompressCbzMediaEntry(
     //   A 4KB reader buffer forced ~188 `fileReadPositional` syscalls per 1.1MB compressed page.
     //   128KB drops syscalls to ~10 (19x reduction) and matches typical CPU L2 cache boundaries.
     // - Sized comfortably on the stack (< 192KB combined with `flate_buf`), using < 1.2% of the
-    //   worker thread's 16MB default stack (`std.Thread.SpawnConfig.default_stack_size`), completely
-    //   avoiding heap allocation, lock contention, and memory fragmentation across worker threads.
+    //   worker thread's 16MB default stack (`std.Thread.SpawnConfig.default_stack_size`),
+    //   completely avoiding heap allocation, lock contention, and memory fragmentation.
     var reader_buf: [128 * 1024]u8 = undefined;
     var f_reader = file.reader(io, &reader_buf);
 
@@ -79,10 +91,14 @@ fn decompressCbzMediaEntry(
         if (!std.mem.eql(u8, &local_header.signature, &std.zip.local_file_header_sig))
             return error.ZipBadFileOffset;
 
-        data_offset = offset + @sizeOf(std.zip.LocalFileHeader) + local_header.filename_len + local_header.extra_len;
+        data_offset = offset + @sizeOf(std.zip.LocalFileHeader) +
+            local_header.filename_len + local_header.extra_len;
         uncompressed_size = entry.uncompressed_size orelse local_header.uncompressed_size;
         compressed_size = local_header.compressed_size;
-        comp_method_enum = if (entry.compression_method) |cm| @enumFromInt(cm) else local_header.compression_method;
+        comp_method_enum = if (entry.compression_method) |cm|
+            @enumFromInt(cm)
+        else
+            local_header.compression_method;
         try f_reader.seekTo(data_offset);
     } else {
         var iterator = try std.zip.Iterator.init(&f_reader);
@@ -95,18 +111,24 @@ fn decompressCbzMediaEntry(
             _ = arena.reset(.retain_capacity);
             const temp_alloc = arena.allocator();
 
-            try f_reader.seekTo(zip_entry.header_zip_offset + @sizeOf(std.zip.CentralDirectoryFileHeader));
+            try f_reader.seekTo(
+                zip_entry.header_zip_offset + @sizeOf(std.zip.CentralDirectoryFileHeader),
+            );
             const name = try temp_alloc.alloc(u8, zip_entry.filename_len);
             try f_reader.interface.readSliceAll(name);
 
             if (!std.mem.eql(u8, name, entry.entry_name)) continue;
 
             try f_reader.seekTo(zip_entry.file_offset);
-            const local_header = try f_reader.interface.takeStruct(std.zip.LocalFileHeader, .little);
+            const local_header = try f_reader.interface.takeStruct(
+                std.zip.LocalFileHeader,
+                .little,
+            );
             if (!std.mem.eql(u8, &local_header.signature, &std.zip.local_file_header_sig))
                 return error.ZipBadFileOffset;
 
-            data_offset = zip_entry.file_offset + @sizeOf(std.zip.LocalFileHeader) + local_header.filename_len + local_header.extra_len;
+            data_offset = zip_entry.file_offset + @sizeOf(std.zip.LocalFileHeader) +
+                local_header.filename_len + local_header.extra_len;
             uncompressed_size = zip_entry.uncompressed_size;
             compressed_size = zip_entry.compressed_size;
             comp_method_enum = zip_entry.compression_method;
@@ -131,9 +153,13 @@ fn decompressCbzMediaEntry(
         .deflate => {
             // Sized to 64KB (`flate.max_window_len = history_len * 2` where `history_len = 32768`):
             // Implements RFC 1951 Deflate's double-buffered LZ77 sliding history window.
-            // Benchmarking confirmed that exceeding 64KB yields no additional syscall or latency gains.
+            // Benchmarking confirmed that exceeding 64KB yields no additional syscall gains.
             var flate_buf: [std.compress.flate.max_window_len]u8 = undefined;
-            var decompress: std.compress.flate.Decompress = .init(&f_reader.interface, .raw, &flate_buf);
+            var decompress: std.compress.flate.Decompress = .init(
+                &f_reader.interface,
+                .raw,
+                &flate_buf,
+            );
             try decompress.reader.readSliceAll(out_buf);
         },
         else => return error.UnsupportedCompressionMethod,
@@ -166,7 +192,8 @@ fn convertAndScaleSurface(
             const start_convert = sdl.timer.getTicksNs();
             if (surf.convert(pix_fmt)) |conv| {
                 const end_convert = sdl.timer.getTicksNs();
-                conversion_time_ms = @as(f64, @floatFromInt(end_convert - start_convert)) / 1_000_000.0;
+                conversion_time_ms =
+                    @as(f64, @floatFromInt(end_convert - start_convert)) / 1_000_000.0;
                 surf.destroy();
                 final_surface = conv;
             } else {
@@ -174,20 +201,30 @@ fn convertAndScaleSurface(
             }
         } else if (has_gpu_device) {
             // For GPU rendering:
-            // - 24-bit RGB/BGR surfaces are left as-is so the GPU compute unpack shader (`unpack_rgb.comp.glsl`)
-            //   can unpack them directly into RGBA32 in VRAM with zero CPU overhead.
-            // - Exotic formats (e.g. paletted 8-bit, grayscale) are converted here on the background worker thread
-            //   to prevent main-thread CPU format conversion stalls during `uploadSurfaceToGpu`.
+            // - 24-bit RGB/BGR surfaces are left as-is so the GPU compute unpack shader
+            //   (`unpack_rgb.comp.glsl`) can unpack them directly into RGBA32 in VRAM.
+            // - Exotic formats (e.g. paletted 8-bit, grayscale) are converted here on the
+            //   background worker thread to prevent main-thread format conversion stalls.
             const cur_fmt = surf.format();
             const is_32bit = switch (cur_fmt) {
-                sdl.PixelFormat.rgba32, sdl.PixelFormat.bgra32, sdl.PixelFormat.xrgb8888, sdl.PixelFormat.xbgr8888, sdl.PixelFormat.rgbx8888, sdl.PixelFormat.bgrx8888 => true,
+                sdl.PixelFormat.rgba32,
+                sdl.PixelFormat.bgra32,
+                sdl.PixelFormat.xrgb8888,
+                sdl.PixelFormat.xbgr8888,
+                sdl.PixelFormat.rgbx8888,
+                sdl.PixelFormat.bgrx8888,
+                => true,
                 else => false,
             };
-            if (!is_32bit and cur_fmt != sdl.PixelFormat.rgb24 and cur_fmt != sdl.PixelFormat.bgr24) {
+            if (!is_32bit and
+                cur_fmt != sdl.PixelFormat.rgb24 and
+                cur_fmt != sdl.PixelFormat.bgr24)
+            {
                 const start_convert = sdl.timer.getTicksNs();
                 if (surf.convert(sdl.PixelFormat.rgba32)) |conv| {
                     const end_convert = sdl.timer.getTicksNs();
-                    conversion_time_ms = @as(f64, @floatFromInt(end_convert - start_convert)) / 1_000_000.0;
+                    conversion_time_ms =
+                        @as(f64, @floatFromInt(end_convert - start_convert)) / 1_000_000.0;
                     surf.destroy();
                     final_surface = conv;
                 } else {
@@ -233,16 +270,30 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
     const io = args.io;
     const key = args.key;
 
-    if (workers.exiting.load(.acquire) or args.current_generation.load(.acquire) != key.generation) return;
+    if (isStale(workers, args, key)) return;
 
     const s = std.Io.Dir.statFile(std.Io.Dir.cwd(), io, path, .{}) catch |err| {
-        failDecodeWorker(workers, alloc, io, key, "decodeWorker: statFile failed for '{s}': {}", .{ path, err });
+        failDecodeWorker(
+            workers,
+            alloc,
+            io,
+            key,
+            "decodeWorker: statFile failed for '{s}': {}",
+            .{ path, err },
+        );
         return;
     };
     const file_size: u64 = s.size;
 
     var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, path, .{}) catch |err| {
-        failDecodeWorker(workers, alloc, io, key, "decodeWorker: openFile failed for '{s}': {}", .{ path, err });
+        failDecodeWorker(
+            workers,
+            alloc,
+            io,
+            key,
+            "decodeWorker: openFile failed for '{s}': {}",
+            .{ path, err },
+        );
         return;
     };
     defer file.close(io);
@@ -254,15 +305,24 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
     const start_hdr_read = sdl.timer.getTicksNs();
     const header_n = file.readPositional(io, &h_slices, 0) catch |err| {
         if (err == error.Canceled or workers.exiting.load(.acquire)) return;
-        failDecodeWorker(workers, alloc, io, key, "decodeWorker: readPositional failed for '{s}': {}", .{ path, err });
+        failDecodeWorker(
+            workers,
+            alloc,
+            io,
+            key,
+            "decodeWorker: readPositional failed for '{s}': {}",
+            .{ path, err },
+        );
         return;
     };
     const end_hdr_read = sdl.timer.getTicksNs();
-    const header_read_time_ms = @as(f64, @floatFromInt(end_hdr_read - start_hdr_read)) / 1_000_000.0;
+    const header_read_time_ms =
+        @as(f64, @floatFromInt(end_hdr_read - start_hdr_read)) / 1_000_000.0;
     const header_slice = header_buf[0..header_n];
 
     const mime_type = image.detectMimeType(header_slice, path);
-    const is_fuji = std.mem.eql(u8, mime_type, "image/x-fuji-raf") or (header_slice.len >= 8 and std.mem.startsWith(u8, header_slice, "FUJIFILM"));
+    const is_fuji = std.mem.eql(u8, mime_type, "image/x-fuji-raf") or
+        (header_slice.len >= 8 and std.mem.startsWith(u8, header_slice, "FUJIFILM"));
 
     var prev_loc_opt: ?exif.ThumbnailLocation = null;
     var thumb_loc_opt: ?exif.ThumbnailLocation = null;
@@ -274,8 +334,12 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
         if (exif.extractFujiRafMetadataLocation(header_slice)) |meta_loc| {
             if (meta_loc.file_offset <= header_n -| meta_loc.length) {
                 const end = meta_loc.file_offset + meta_loc.length;
-                raw_sensor_dims = exif.parseFujiRafDimensions(header_slice[@intCast(meta_loc.file_offset)..@intCast(end)]);
-            } else if (meta_loc.length > 0 and meta_loc.length <= 64 * 1024 and meta_loc.file_offset <= file_size -| meta_loc.length) {
+                raw_sensor_dims = exif.parseFujiRafDimensions(
+                    header_slice[@intCast(meta_loc.file_offset)..@intCast(end)],
+                );
+            } else if (meta_loc.length > 0 and meta_loc.length <= 64 * 1024 and
+                meta_loc.file_offset <= file_size -| meta_loc.length)
+            {
                 var m_buf: [64 * 1024]u8 = undefined;
                 var m_slices = [_][]u8{m_buf[0..meta_loc.length]};
                 const mn = file.readPositional(io, &m_slices, meta_loc.file_offset) catch 0;
@@ -336,7 +400,9 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
         const max_thumb_size_bytes = 512 * 1024;
 
         if (thumb_loc_opt) |tloc| {
-            if (tloc.length > 0 and tloc.length <= max_thumb_size_bytes and tloc.file_offset <= file_size -| tloc.length) {
+            if (tloc.length > 0 and tloc.length <= max_thumb_size_bytes and
+                tloc.file_offset <= file_size -| tloc.length)
+            {
                 const t_off: usize = @intCast(tloc.file_offset);
                 const t_len: usize = @intCast(tloc.length);
                 if (t_off + t_len <= header_n) {
@@ -360,7 +426,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
         }
 
         if (thumb_surf) |t_surf| {
-            if (workers.exiting.load(.acquire) or args.current_generation.load(.acquire) != key.generation) {
+            if (isStale(workers, args, key)) {
                 t_surf.destroy();
                 return;
             }
@@ -392,7 +458,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
         } else if (args.thumb_only) {
             // If no small thumbnail available, emit surface = null
             // to immediately establish canvas aspect ratio on Frame 1 without decoding pixels
-            if (workers.exiting.load(.acquire) or args.current_generation.load(.acquire) != key.generation) return;
+            if (isStale(workers, args, key)) return;
             workers.event_queue.push(alloc, io, .{
                 .thumb_decoded = .{
                     .key = key,
@@ -413,20 +479,41 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
         }
     }
 
-    if (workers.exiting.load(.acquire) or args.current_generation.load(.acquire) != key.generation) return;
+    if (isStale(workers, args, key)) return;
 
     const prev_loc = prev_loc_opt orelse {
-        failDecodeWorker(workers, alloc, io, key, "decodeWorker: no embedded preview found in RAW file '{s}'", .{path});
+        failDecodeWorker(
+            workers,
+            alloc,
+            io,
+            key,
+            "decodeWorker: no embedded preview found in RAW file '{s}'",
+            .{path},
+        );
         return;
     };
 
     if (prev_loc.length == 0 or prev_loc.file_offset > file_size -| prev_loc.length) {
-        failDecodeWorker(workers, alloc, io, key, "decodeWorker: invalid preview location in RAW file '{s}'", .{path});
+        failDecodeWorker(
+            workers,
+            alloc,
+            io,
+            key,
+            "decodeWorker: invalid preview location in RAW file '{s}'",
+            .{path},
+        );
         return;
     }
 
     const prev_bytes = alloc.alloc(u8, prev_loc.length) catch |err| {
-        failDecodeWorker(workers, alloc, io, key, "decodeWorker: alloc failed for preview in '{s}': {}", .{ path, err });
+        failDecodeWorker(
+            workers,
+            alloc,
+            io,
+            key,
+            "decodeWorker: alloc failed for preview in '{s}': {}",
+            .{ path, err },
+        );
         return;
     };
     defer alloc.free(prev_bytes);
@@ -435,9 +522,20 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
     var total_read: usize = 0;
     while (total_read < prev_bytes.len) {
         var p_slices = [_][]u8{prev_bytes[total_read..]};
-        const pn = file.readPositional(io, &p_slices, prev_loc.file_offset + total_read) catch |err| {
+        const pn = file.readPositional(
+            io,
+            &p_slices,
+            prev_loc.file_offset + total_read,
+        ) catch |err| {
             if (err == error.Canceled or workers.exiting.load(.acquire)) return;
-            failDecodeWorker(workers, alloc, io, key, "decodeWorker: readPositional failed for preview in '{s}': {}", .{ path, err });
+            failDecodeWorker(
+                workers,
+                alloc,
+                io,
+                key,
+                "decodeWorker: readPositional failed for preview in '{s}': {}",
+                .{ path, err },
+            );
             return;
         };
         if (pn == 0) break;
@@ -445,10 +543,18 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
     }
     const end_p_read = sdl.timer.getTicksNs();
     if (total_read < prev_bytes.len) {
-        failDecodeWorker(workers, alloc, io, key, "decodeWorker: incomplete preview read for '{s}'", .{path});
+        failDecodeWorker(
+            workers,
+            alloc,
+            io,
+            key,
+            "decodeWorker: incomplete preview read for '{s}'",
+            .{path},
+        );
         return;
     }
-    const read_time_ms = header_read_time_ms + (@as(f64, @floatFromInt(end_p_read - start_p_read)) / 1_000_000.0);
+    const read_time_ms = header_read_time_ms +
+        (@as(f64, @floatFromInt(end_p_read - start_p_read)) / 1_000_000.0);
 
     if (is_fuji and orientation == .normal) {
         if (exif.parseExifOrientation(prev_bytes)) |o| {
@@ -471,11 +577,18 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
     const decode_time_ms = @as(f64, @floatFromInt(end_dec - start_dec)) / 1_000_000.0;
 
     if (surface == null) {
-        failDecodeWorker(workers, alloc, io, key, "decodeWorker: failed to load RAW preview surface '{s}': {s}", .{ path, sdl.getError() });
+        failDecodeWorker(
+            workers,
+            alloc,
+            io,
+            key,
+            "decodeWorker: failed to load RAW preview surface '{s}': {s}",
+            .{ path, sdl.getError() },
+        );
         return;
     }
 
-    if (workers.exiting.load(.acquire) or args.current_generation.load(.acquire) != key.generation) {
+    if (isStale(workers, args, key)) {
         surface.?.destroy();
         return;
     }
@@ -484,7 +597,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
     const final_surface = conv_res.surface;
     const conversion_time_ms = conv_res.conversion_time_ms;
 
-    if (workers.exiting.load(.acquire) or args.current_generation.load(.acquire) != key.generation) {
+    if (isStale(workers, args, key)) {
         if (final_surface) |surf| surf.destroy();
         return;
     }
@@ -542,7 +655,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         context.wakeUpMainThread();
     }
 
-    if (workers.exiting.load(.acquire) or args.current_generation.load(.acquire) != key.generation) return;
+    if (isStale(workers, args, key)) return;
 
     var file_bytes: []u8 = undefined;
     var is_allocated = false;
@@ -557,7 +670,14 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     switch (media_entry) {
         .archive_entry => |arch| {
             const dec_res = decompressCbzMediaEntry(alloc, io, arch) catch |err| {
-                failDecodeWorker(workers, alloc, io, key, "decodeWorker: failed to decompress CBZ entry '{s}' from '{s}': {}", .{ arch.entry_name, arch.archive_path, err });
+                failDecodeWorker(
+                    workers,
+                    alloc,
+                    io,
+                    key,
+                    "decodeWorker: failed to decompress CBZ entry '{s}' from '{s}': {}",
+                    .{ arch.entry_name, arch.archive_path, err },
+                );
                 return;
             };
             file_bytes = dec_res.bytes;
@@ -575,23 +695,52 @@ pub fn decodeWorker(args: *DecodeArgs) void {
             }
 
             const s = std.Io.Dir.statFile(std.Io.Dir.cwd(), io, file_item.path, .{}) catch |err| {
-                failDecodeWorker(workers, alloc, io, key, "decodeWorker: statFile failed for '{s}': {}", .{ file_item.path, err });
+                failDecodeWorker(
+                    workers,
+                    alloc,
+                    io,
+                    key,
+                    "decodeWorker: statFile failed for '{s}': {}",
+                    .{ file_item.path, err },
+                );
                 return;
             };
             size_bytes = s.size;
 
             const start_read = sdl.timer.getTicksNs();
-            var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, file_item.path, .{}) catch |err| {
-                failDecodeWorker(workers, alloc, io, key, "decodeWorker: openFile failed for '{s}': {}", .{ file_item.path, err });
+            var file = std.Io.Dir.openFile(
+                std.Io.Dir.cwd(),
+                io,
+                file_item.path,
+                .{},
+            ) catch |err| {
+                failDecodeWorker(
+                    workers,
+                    alloc,
+                    io,
+                    key,
+                    "decodeWorker: openFile failed for '{s}': {}",
+                    .{ file_item.path, err },
+                );
                 return;
             };
             defer file.close(io);
 
             const file_size: usize = @intCast(s.size);
-            const target_read_size: usize = if (args.thumb_only) @min(file_size, 128 * 1024) else file_size;
+            const target_read_size: usize = if (args.thumb_only)
+                @min(file_size, 128 * 1024)
+            else
+                file_size;
 
             file_bytes = alloc.alloc(u8, target_read_size) catch |err| {
-                failDecodeWorker(workers, alloc, io, key, "decodeWorker: alloc failed for '{s}': {}", .{ file_item.path, err });
+                failDecodeWorker(
+                    workers,
+                    alloc,
+                    io,
+                    key,
+                    "decodeWorker: alloc failed for '{s}': {}",
+                    .{ file_item.path, err },
+                );
                 return;
             };
             is_allocated = true;
@@ -600,7 +749,14 @@ pub fn decodeWorker(args: *DecodeArgs) void {
             var reader = file.reader(io, &r_buf);
             reader.interface.readSliceAll(file_bytes) catch |err| {
                 if (err == error.Canceled or workers.exiting.load(.acquire)) return;
-                failDecodeWorker(workers, alloc, io, key, "decodeWorker: readSliceAll failed for '{s}': {}", .{ file_item.path, err });
+                failDecodeWorker(
+                    workers,
+                    alloc,
+                    io,
+                    key,
+                    "decodeWorker: readSliceAll failed for '{s}': {}",
+                    .{ file_item.path, err },
+                );
                 return;
             };
             read_n = file_bytes.len;
@@ -622,7 +778,8 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     var orientation: state_pkg.Orientation = .normal;
 
     if (is_raw_archive) {
-        const is_fuji = std.mem.eql(u8, mime_type, "image/x-fuji-raf") or (header_buf.len >= 8 and std.mem.startsWith(u8, header_buf, "FUJIFILM"));
+        const is_fuji = std.mem.eql(u8, mime_type, "image/x-fuji-raf") or
+            (header_buf.len >= 8 and std.mem.startsWith(u8, header_buf, "FUJIFILM"));
         if (is_fuji) {
             if (exif.extractFujiRafPreviewLocation(header_buf)) |ploc| {
                 const off: usize = @intCast(ploc.file_offset);
@@ -674,7 +831,8 @@ pub fn decodeWorker(args: *DecodeArgs) void {
             const max_thumb_size_bytes = 512 * 1024; // 512 KiB sanity limit for EXIF thumbnails
             const off = @as(usize, loc.file_offset);
             const len = @as(usize, loc.length);
-            const within_file_bounds = (len > 0 and len <= max_thumb_size_bytes and len <= read_n and off <= read_n - len);
+            const within_file_bounds = (len > 0 and len <= max_thumb_size_bytes and
+                len <= read_n and off <= read_n - len);
 
             if (within_file_bounds) {
                 thumb_bytes_opt = file_bytes[off .. off + len];
@@ -691,11 +849,11 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         }
 
         if (thumb_bytes_opt) |thumb_bytes| {
-            if (workers.exiting.load(.acquire) or args.current_generation.load(.acquire) != key.generation) {
+            if (isStale(workers, args, key)) {
                 return;
             }
             if (sdl.Surface.loadConstMemOpt(thumb_bytes)) |t_surf| {
-                if (workers.exiting.load(.acquire) or args.current_generation.load(.acquire) != key.generation) {
+                if (isStale(workers, args, key)) {
                     t_surf.destroy();
                     return;
                 }
@@ -740,7 +898,13 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                 .full_h = full_h,
                 .orientation = orientation,
                 .thumb_only = true,
-                .raw_metadata = if (is_raw_archive) (if (raw_sensor_dims) |d| RawMetadata.init(d.w, d.h) else RawMetadata.init(full_w, full_h)) else .none,
+                .raw_metadata = if (is_raw_archive)
+                    (if (raw_sensor_dims) |d|
+                        RawMetadata.init(d.w, d.h)
+                    else
+                        RawMetadata.init(full_w, full_h))
+                else
+                    .none,
             },
         }) catch |err| {
             std.log.err("Failed to push thumbnail decode event: {}", .{err});
@@ -749,7 +913,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         return;
     }
 
-    if (workers.exiting.load(.acquire) or args.current_generation.load(.acquire) != key.generation) return;
+    if (isStale(workers, args, key)) return;
 
     const bytes_to_decode = if (raw_preview_slice) |s| s else file_bytes[0..read_n];
     const start_decode = sdl.timer.getTicksNs();
@@ -759,11 +923,18 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     const decode_time_ms = @as(f64, @floatFromInt(end_decode - start_decode)) / 1_000_000.0;
 
     if (surface == null) {
-        failDecodeWorker(workers, alloc, io, key, "decodeWorker: failed to load image '{s}': {s}", .{ path, sdl.getError() });
+        failDecodeWorker(
+            workers,
+            alloc,
+            io,
+            key,
+            "decodeWorker: failed to load image '{s}': {s}",
+            .{ path, sdl.getError() },
+        );
         return;
     }
 
-    if (workers.exiting.load(.acquire) or args.current_generation.load(.acquire) != key.generation) {
+    if (isStale(workers, args, key)) {
         if (surface) |surf| surf.destroy();
         return;
     }
@@ -772,7 +943,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     const final_surface = conv_res.surface;
     const conversion_time_ms = conv_res.conversion_time_ms;
 
-    if (workers.exiting.load(.acquire) or args.current_generation.load(.acquire) != key.generation) {
+    if (isStale(workers, args, key)) {
         if (final_surface) |surf| surf.destroy();
         return;
     }
@@ -780,7 +951,13 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     if (final_surface) |f_surf| {
         const orig_w: f32 = @floatFromInt(f_surf.w());
         const orig_h: f32 = @floatFromInt(f_surf.h());
-        const raw_metadata: RawMetadata = if (is_raw_archive) (if (raw_sensor_dims) |d| RawMetadata.init(d.w, d.h) else RawMetadata.init(orig_w, orig_h)) else .none;
+        const raw_metadata: RawMetadata = if (is_raw_archive)
+            (if (raw_sensor_dims) |d|
+                RawMetadata.init(d.w, d.h)
+            else
+                RawMetadata.init(orig_w, orig_h))
+        else
+            .none;
 
         workers.event_queue.push(alloc, io, .{
             .image_decoded = .{
@@ -809,7 +986,6 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                 .key = key,
             },
         }) catch |err| std.log.err("Failed to push image decode event: {}", .{err});
-        context.wakeUpMainThread();
     }
 }
 
@@ -957,7 +1133,7 @@ test "decodeWorker - prunes early when current_generation does not match key.gen
     try std.testing.expect(!event_seen);
 }
 
-test "decompressCbzMediaEntry - decompresses zip deflate entry with 128KB buffer and valid compressed_size" {
+test "decompressCbzMediaEntry - deflate entry with 128KB buffer" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
 
@@ -984,9 +1160,10 @@ test "decodeWorker - Sony ARW range reading and preview extraction" {
     const io = std.Io.Threaded.global_single_threaded.io();
 
     // Read real JPEG to embed as preview
-    var real_jpg = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, "testfiles/images/000_0_1024x682.jpg", .{});
+    const sample_jpg_path = "testfiles/images/000_0_1024x682.jpg";
+    var real_jpg = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, sample_jpg_path, .{});
     defer real_jpg.close(io);
-    const jpg_stat = try std.Io.Dir.statFile(std.Io.Dir.cwd(), io, "testfiles/images/000_0_1024x682.jpg", .{});
+    const jpg_stat = try std.Io.Dir.statFile(std.Io.Dir.cwd(), io, sample_jpg_path, .{});
     const jpg_bytes = try allocator.alloc(u8, @intCast(jpg_stat.size));
     defer allocator.free(jpg_bytes);
     var j_slices = [_][]u8{jpg_bytes};
@@ -1102,7 +1279,10 @@ test "decodeWorker - Sony ARW range reading and preview extraction" {
                     const s_dims = img_payload.raw_metadata.getSensorDims().?;
                     try std.testing.expectEqual(@as(f32, 6000.0), s_dims.w);
                     try std.testing.expectEqual(@as(f32, 4000.0), s_dims.h);
-                    try std.testing.expectEqual(state_pkg.Orientation.rotate_90, img_payload.orientation);
+                    try std.testing.expectEqual(
+                        state_pkg.Orientation.rotate_90,
+                        img_payload.orientation,
+                    );
                     try std.testing.expect(img_payload.surface != null);
                     try std.testing.expectEqual(@as(f32, 1024.0), img_payload.w);
                     try std.testing.expectEqual(@as(f32, 682.0), img_payload.h);
@@ -1150,7 +1330,10 @@ test "decodeWorker - Sony ARW range reading and preview extraction" {
                     const ts_dims = t_payload.raw_metadata.getSensorDims().?;
                     try std.testing.expectEqual(@as(f32, 6000.0), ts_dims.w);
                     try std.testing.expectEqual(@as(f32, 4000.0), ts_dims.h);
-                    try std.testing.expectEqual(state_pkg.Orientation.rotate_90, t_payload.orientation);
+                    try std.testing.expectEqual(
+                        state_pkg.Orientation.rotate_90,
+                        t_payload.orientation,
+                    );
                 },
                 else => {},
             }
@@ -1164,9 +1347,10 @@ test "decodeWorker - Fujifilm RAF range reading and preview extraction" {
     const io = std.Io.Threaded.global_single_threaded.io();
 
     // Read real JPEG to embed as preview
-    var real_jpg = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, "testfiles/images/000_0_1024x682.jpg", .{});
+    const sample_jpg_path = "testfiles/images/000_0_1024x682.jpg";
+    var real_jpg = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, sample_jpg_path, .{});
     defer real_jpg.close(io);
-    const jpg_stat = try std.Io.Dir.statFile(std.Io.Dir.cwd(), io, "testfiles/images/000_0_1024x682.jpg", .{});
+    const jpg_stat = try std.Io.Dir.statFile(std.Io.Dir.cwd(), io, sample_jpg_path, .{});
     const jpg_bytes = try allocator.alloc(u8, @intCast(jpg_stat.size));
     defer allocator.free(jpg_bytes);
     var j_slices = [_][]u8{jpg_bytes};

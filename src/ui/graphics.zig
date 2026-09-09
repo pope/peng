@@ -17,7 +17,8 @@ pub const GraphicsSetup = struct {
     initial_dpi_scale: f32,
 };
 
-/// Configuration options for graphics and window creation (headless mode, high-DPI scaling, and borderless mode).
+/// Configuration options for graphics and window creation (headless mode,
+/// high-DPI scaling, and borderless mode).
 pub const GraphicsOptions = struct {
     headless: bool = false,
     high_dpi: bool = true,
@@ -67,9 +68,17 @@ pub const RenderResources = struct {
 
     /// Manages offscreen textures for the 2-pass Dual Kawase backdrop blur pipeline.
     /// Reallocates textures dynamically when window dimensions change.
-    pub fn ensureBlurTextures(self: *RenderResources, win_w: u32, win_h: u32, target_format: sdl.gpu.TextureFormat) !void {
+    pub fn ensureBlurTextures(
+        self: *RenderResources,
+        win_w: u32,
+        win_h: u32,
+        target_format: sdl.gpu.TextureFormat,
+    ) !void {
         if (win_w == 0 or win_h == 0) return;
-        if (self.blur_target_w == win_w and self.blur_target_h == win_h and self.blur_target_format == target_format and self.scene_texture != null) return;
+        if (self.blur_target_w == win_w and
+            self.blur_target_h == win_h and
+            self.blur_target_format == target_format and
+            self.scene_texture != null) return;
 
         // Invalidate and nullify before releasing old handles
         if (self.scene_texture) |t| {
@@ -141,7 +150,8 @@ pub const RenderResources = struct {
         self.blur_target_format = target_format;
     }
 
-    /// Releases GPU pipelines, samplers, fallback textures, staging buffers, text cache, and fonts on application teardown.
+    /// Releases GPU pipelines, samplers, fallback textures, staging buffers,
+    /// text cache, and fonts on application teardown.
     pub fn deinit(self: *RenderResources, allocator: std.mem.Allocator) void {
         self.text_cache.deinit(allocator, self.device);
         for (self.fonts) |f| {
@@ -169,7 +179,8 @@ pub const RenderResources = struct {
     }
 };
 
-/// Initializes SDL3 subsystems, TTF engine, creates the main window, and claims the GPU graphics device.
+/// Initializes SDL3 subsystems, TTF engine, creates the main window, and
+/// claims the GPU graphics device.
 pub fn initGraphicsAndWindow(window_title: [:0]const u8, options: GraphicsOptions) !GraphicsSetup {
     if (options.headless and builtin.os.tag != .macos and builtin.os.tag != .windows) {
         _ = sdl.hint.set("SDL_VIDEO_DRIVER", "offscreen");
@@ -206,10 +217,14 @@ pub fn initGraphicsAndWindow(window_title: [:0]const u8, options: GraphicsOption
     // Get scales
     const win_size = window.getSize();
     const pix_size = window.getSizeInPixels();
-    const initial_dpi_scale = if (win_size.w > 0) @as(f32, @floatFromInt(pix_size.w)) / @as(f32, @floatFromInt(win_size.w)) else 1.0;
+    const initial_dpi_scale = if (win_size.w > 0)
+        @as(f32, @floatFromInt(pix_size.w)) / @as(f32, @floatFromInt(win_size.w))
+    else
+        1.0;
 
     // Create GPU Device
-    const dev = sdl.gpu.Device.create(sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl, true) orelse {
+    const shader_flags = sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl;
+    const dev = sdl.gpu.Device.create(shader_flags, true) orelse {
         std.log.err("SDL_CreateGPUDevice Error: {s}", .{sdl.getError()});
         return error.DeviceCreationFailed;
     };
@@ -243,7 +258,10 @@ fn createShaderFromFormat(
     const is_msl = (shader_formats & sdl.gpu.ShaderFormat.msl) != 0;
 
     if (!is_spirv and !is_msl) {
-        std.log.err("No supported shader format for stage {} (formats mask: {X})", .{ stage, shader_formats });
+        std.log.err(
+            "No supported shader format for stage {} (formats mask: {X})",
+            .{ stage, shader_formats },
+        );
         return error.UnsupportedShaderFormat;
     }
 
@@ -270,8 +288,14 @@ fn createShaderFromFormat(
     };
 }
 
-/// Creates graphics shaders, pipelines, samplers, font texture caches, and double-buffered staging buffers.
-pub fn initGpuResources(dev: sdl.gpu.Device, window: sdl.Window, initial_dpi_scale: f32, headless: bool) !RenderResources {
+/// Creates graphics shaders, pipelines, samplers, font texture caches, and
+/// double-buffered staging buffers.
+pub fn initGpuResources(
+    dev: sdl.gpu.Device,
+    window: sdl.Window,
+    initial_dpi_scale: f32,
+    headless: bool,
+) !RenderResources {
     const target_format = if (headless)
         sdl.gpu.TextureFormat.rgba8_unorm
     else
@@ -310,19 +334,59 @@ pub fn initGpuResources(dev: sdl.gpu.Device, window: sdl.Window, initial_dpi_sca
     const shader_formats = dev.getShaderFormats();
 
     // Vertex & Fragment Shaders
-    const vert_shader = try createShaderFromFormat(dev, shader_formats, .vertex, vert_code_spv, vert_code_msl, 0, 0);
+    const vert_shader = try createShaderFromFormat(
+        dev,
+        shader_formats,
+        .vertex,
+        vert_code_spv,
+        vert_code_msl,
+        0,
+        0,
+    );
     defer dev.releaseShader(vert_shader);
 
-    const image_frag_shader = try createShaderFromFormat(dev, shader_formats, .fragment, image_frag_code_spv, image_frag_code_msl, 1, 1);
+    const image_frag_shader = try createShaderFromFormat(
+        dev,
+        shader_formats,
+        .fragment,
+        image_frag_code_spv,
+        image_frag_code_msl,
+        1,
+        1,
+    );
     defer dev.releaseShader(image_frag_shader);
 
-    const ui_frag_shader = try createShaderFromFormat(dev, shader_formats, .fragment, ui_frag_code_spv, ui_frag_code_msl, 1, 1);
+    const ui_frag_shader = try createShaderFromFormat(
+        dev,
+        shader_formats,
+        .fragment,
+        ui_frag_code_spv,
+        ui_frag_code_msl,
+        1,
+        1,
+    );
     defer dev.releaseShader(ui_frag_shader);
 
-    const blur_down_frag_shader = try createShaderFromFormat(dev, shader_formats, .fragment, blur_down_code_spv, blur_down_code_msl, 1, 1);
+    const blur_down_frag_shader = try createShaderFromFormat(
+        dev,
+        shader_formats,
+        .fragment,
+        blur_down_code_spv,
+        blur_down_code_msl,
+        1,
+        1,
+    );
     defer dev.releaseShader(blur_down_frag_shader);
 
-    const blur_up_frag_shader = try createShaderFromFormat(dev, shader_formats, .fragment, blur_up_code_spv, blur_up_code_msl, 1, 1);
+    const blur_up_frag_shader = try createShaderFromFormat(
+        dev,
+        shader_formats,
+        .fragment,
+        blur_up_code_spv,
+        blur_up_code_msl,
+        1,
+        1,
+    );
     defer dev.releaseShader(blur_up_frag_shader);
 
     // Create sampler
@@ -366,7 +430,8 @@ pub fn initGpuResources(dev: sdl.gpu.Device, window: sdl.Window, initial_dpi_sca
 
     // Upload white pixel
     {
-        const cmd_buf_wrapper = dev.acquireCommandBuffer() orelse return error.CommandBufferAcquisitionFailed;
+        const cmd_buf_wrapper = dev.acquireCommandBuffer() orelse
+            return error.CommandBufferAcquisitionFailed;
         const transfer_buf = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
             .usage = .upload,
             .size = 4,
@@ -408,12 +473,32 @@ pub fn initGpuResources(dev: sdl.gpu.Device, window: sdl.Window, initial_dpi_sca
 
     // Create Graphics Pipeline
     const vertex_attribs = [_]sdl.gpu.VertexAttribute{
-        .{ .location = 0, .buffer_slot = 0, .format = .float2, .offset = @offsetOf(geometry.Vertex, "x") },
-        .{ .location = 1, .buffer_slot = 0, .format = .float2, .offset = @offsetOf(geometry.Vertex, "u") },
-        .{ .location = 2, .buffer_slot = 0, .format = .ubyte4_norm, .offset = @offsetOf(geometry.Vertex, "color") },
+        .{
+            .location = 0,
+            .buffer_slot = 0,
+            .format = .float2,
+            .offset = @offsetOf(geometry.Vertex, "x"),
+        },
+        .{
+            .location = 1,
+            .buffer_slot = 0,
+            .format = .float2,
+            .offset = @offsetOf(geometry.Vertex, "u"),
+        },
+        .{
+            .location = 2,
+            .buffer_slot = 0,
+            .format = .ubyte4_norm,
+            .offset = @offsetOf(geometry.Vertex, "color"),
+        },
     };
     const vertex_buf_descs = [_]sdl.gpu.VertexBufferDescription{
-        .{ .slot = 0, .pitch = @sizeOf(geometry.Vertex), .input_rate = .vertex, .instance_step_rate = 0 },
+        .{
+            .slot = 0,
+            .pitch = @sizeOf(geometry.Vertex),
+            .input_rate = .vertex,
+            .instance_step_rate = 0,
+        },
     };
 
     var pipeline_info = sdl.gpu.GraphicsPipelineCreateInfo{
@@ -435,7 +520,7 @@ pub fn initGpuResources(dev: sdl.gpu.Device, window: sdl.Window, initial_dpi_sca
             .sample_count = .count_1,
         },
         .depth_stencil_state = .{
-            .compare_op = .always,
+            .compare_op = .never,
         },
         .target_info = .{
             .num_color_targets = 1,
@@ -448,7 +533,10 @@ pub fn initGpuResources(dev: sdl.gpu.Device, window: sdl.Window, initial_dpi_sca
                     .src_alpha_blendfactor = .one,
                     .dst_alpha_blendfactor = .one_minus_src_alpha,
                     .alpha_blend_op = .add,
-                    .color_write_mask = sdl.gpu.ColorComponent.r | sdl.gpu.ColorComponent.g | sdl.gpu.ColorComponent.b | sdl.gpu.ColorComponent.a,
+                    .color_write_mask = sdl.gpu.ColorComponent.r |
+                        sdl.gpu.ColorComponent.g |
+                        sdl.gpu.ColorComponent.b |
+                        sdl.gpu.ColorComponent.a,
                     .enable_blend = true,
                     .enable_color_write_mask = true,
                 },
@@ -486,7 +574,10 @@ pub fn initGpuResources(dev: sdl.gpu.Device, window: sdl.Window, initial_dpi_sca
                 .src_alpha_blendfactor = .one,
                 .dst_alpha_blendfactor = .zero,
                 .alpha_blend_op = .add,
-                .color_write_mask = sdl.gpu.ColorComponent.r | sdl.gpu.ColorComponent.g | sdl.gpu.ColorComponent.b | sdl.gpu.ColorComponent.a,
+                .color_write_mask = sdl.gpu.ColorComponent.r |
+                    sdl.gpu.ColorComponent.g |
+                    sdl.gpu.ColorComponent.b |
+                    sdl.gpu.ColorComponent.a,
                 .enable_blend = false,
                 .enable_color_write_mask = true,
             },
@@ -526,7 +617,8 @@ pub fn initGpuResources(dev: sdl.gpu.Device, window: sdl.Window, initial_dpi_sca
     errdefer dev.releaseBuffer(fullscreen_vertex_buffer);
 
     {
-        const cmd_buf_wrapper = dev.acquireCommandBuffer() orelse return error.CommandBufferAcquisitionFailed;
+        const cmd_buf_wrapper = dev.acquireCommandBuffer() orelse
+            return error.CommandBufferAcquisitionFailed;
         const transfer_buf = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
             .usage = .upload,
             .size = @intCast(fs_buf_size),
@@ -537,10 +629,12 @@ pub fn initGpuResources(dev: sdl.gpu.Device, window: sdl.Window, initial_dpi_sca
         };
         defer dev.releaseTransferBuffer(transfer_buf);
 
-        const mapped: [*]geometry.Vertex = @ptrCast(@alignCast(dev.mapTransferBuffer(transfer_buf, false) orelse {
-            _ = cmd_buf_wrapper.submit();
-            return error.MapFailed;
-        }));
+        const mapped: [*]geometry.Vertex = @ptrCast(@alignCast(
+            dev.mapTransferBuffer(transfer_buf, false) orelse {
+                _ = cmd_buf_wrapper.submit();
+                return error.MapFailed;
+            },
+        ));
         @memcpy(mapped[0..fullscreen_verts.len], &fullscreen_verts);
         dev.unmapTransferBuffer(transfer_buf);
 
@@ -583,7 +677,10 @@ pub fn initGpuResources(dev: sdl.gpu.Device, window: sdl.Window, initial_dpi_sca
     };
     const unpack_compute_pipeline = dev.createComputePipeline(&comp_pipeline_info);
     if (unpack_compute_pipeline == null) {
-        std.log.warn("Failed to create unpack compute pipeline (will fallback to SIMD): {s}", .{sdl.getError()});
+        std.log.warn(
+            "Failed to create unpack compute pipeline (will fallback to SIMD): {s}",
+            .{sdl.getError()},
+        );
     }
 
     return RenderResources{
@@ -674,7 +771,13 @@ pub fn saveTextureToPng(
         pixel_fmt = sdl.PixelFormat.bgra32;
     }
 
-    const surface = sdl.Surface.createFrom(@intCast(width), @intCast(height), pixel_fmt, data_ptr, @intCast(pitch)) orelse {
+    const surface = sdl.Surface.createFrom(
+        @intCast(width),
+        @intCast(height),
+        pixel_fmt,
+        data_ptr,
+        @intCast(pitch),
+    ) orelse {
         std.log.err("SDL_CreateSurfaceFrom failed: {s}", .{sdl.getError()});
         return error.SurfaceCreationFailed;
     };
@@ -687,7 +790,11 @@ pub fn saveTextureToPng(
 }
 
 /// Measures text pixel width and height via SDL_ttf for Clay layout element sizing.
-pub fn sdl3MeasureText(text: []const u8, config: *clay.TextElementConfig, data: *const MeasureTextUserData) clay.Dimensions {
+pub fn sdl3MeasureText(
+    text: []const u8,
+    config: *clay.TextElementConfig,
+    data: *const MeasureTextUserData,
+) clay.Dimensions {
     const clean_text = if (std.mem.indexOfScalar(u8, text, 0)) |idx| text[0..idx] else text;
     if (clean_text.len == 0) return .{ .w = 0, .h = 0 };
 

@@ -30,7 +30,9 @@ test "prepareCacheTextures guards thumbnail eviction during active thumb_crossfa
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "img1.jpg" } });
+    try state.viewer.navigation.image_list.append(allocator, .{
+        .filesystem = .{ .path = "img1.jpg" },
+    });
     state.viewer.navigation.current_index = 0;
 
     // Simulate entry with loaded thumbnail and loaded GPU texture

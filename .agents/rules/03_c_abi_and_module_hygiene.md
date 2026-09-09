@@ -220,3 +220,29 @@ Every public struct and public function across the codebase MUST be documented u
 
 - **C-ABI Handle Wrappers Must Be `extern struct`**: Any Zig wrapper struct representing a C handle passed by value across `callconv(.c)` boundaries MUST be declared as `extern struct` (e.g., `pub const Window = extern struct { ptr: *c.SDL_Window };`). Regular Zig `struct` types have undefined in-memory layout and trigger compiler errors in C calling conventions.
 - **Strong Typing Across Dynamic Library Boundaries**: Do NOT degrade known subsystem pointers to `*anyopaque` at dynamic library / hot-reloading boundaries (`viewer_update`). Single-item pointers (`*T`, `?*T`) share identical representation with C pointers (`void*`). Retain concrete typed pointers (`*AppState`, `Window`, `*RenderResources`, `*MeasureTextUserData`, `?*IpcServer`) to preserve compile-time type safety across host and shared library modules.
+
+## 14. Code Formatting & Line Length Invariants (80 Col Goal / 100 Col Hard Ceiling)
+
+Every Zig source file (`src/**/*.zig`, `build.zig`) MUST adhere strictly to the project's formatting and line-length constraints:
+
+### 1. Line Length Limits
+
+- **80 Columns**: The standard formatting goal for code expressions, function signatures, and comments.
+- **100 Columns**: The absolute hard ceiling. Under NO circumstances may any line exceed 100 characters (zero tolerance, except for unbreakable URLs/hyperlinks as specified in Subsection 14.2).
+
+### 2. Comment Wrapping & Preservation
+
+- Wrap inline comments and doc comments (`///`) cleanly to ~80 columns.
+- **Never Break URLs/Hyperlinks**: Lines containing hyperlinks or URLs (e.g. `https://...`) are an explicit exception to the 100-character ceiling and must NEVER be broken or split across lines, as splitting destroys clickability.
+- **Dedicated URL Lines**: Place long hyperlinks on their own dedicated comment line (e.g. `/// See:\n/// https://...`) so surrounding comment text wraps cleanly without unnecessary overflow.
+- **Preserve ASCII Art & Tables**: Preformatted ASCII art, diagrams, and markdown tables in comments must retain their visual structure and indentation. Authors should design diagrams to fit within 80–100 columns; existing structural diagrams are exempt from line-wrapping that would destroy visual alignment.
+
+### 3. Multi-Line Wrapping & Trailing Commas
+
+- Use Zig's canonical trailing comma syntax (`.{ foo, bar, }`, `fn foo(\n a: T,\n b: U,\n)`) to instruct `zig fmt` to expand arguments, struct initializers, and switch branches onto multiple lines.
+- When boolean conditions or arithmetic expressions push lines past 100 characters, extract pure subexpressions into local immutable `const` bindings (e.g., `const can_snap = ...;`, `const is_win_drive = ...;`).
+- **Short-Circuit Evaluation Caution**: When extracting boolean conditions into local `const` bindings, ensure you do not bypass short-circuit evaluation guards (e.g. pointer null checks `ptr != null` or slice bounds checks `idx < len`) that protect subsequent expressions from runtime panics or illegal memory access.
+
+### 4. Verification & Formatting Invariant
+
+- All code modifications MUST cleanly pass `zig fmt --check <file>` before completion.

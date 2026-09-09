@@ -55,7 +55,11 @@ pub fn main(init: std.process.Init) !void {
         } else |err| switch (err) {
             error.FileNotFound, error.WouldBlock => {
                 if (attempt + 1 < max_connect_attempts) {
-                    std.Io.sleep(io, std.Io.Duration.fromMilliseconds(40), .awake) catch |sleep_err| {
+                    std.Io.sleep(
+                        io,
+                        std.Io.Duration.fromMilliseconds(40),
+                        .awake,
+                    ) catch |sleep_err| {
                         std.log.debug("Connect retry sleep interrupted: {any}", .{sleep_err});
                     };
                     continue;
@@ -89,7 +93,12 @@ pub fn main(init: std.process.Init) !void {
         .raw = std.Io.Duration.fromSeconds(15),
         .clock = .awake,
     };
-    const response_opt = ipc.readLineTimeout(&stream.socket, io, &read_buf, timeout_dur) catch |err| {
+    const response_opt = ipc.readLineTimeout(
+        &stream.socket,
+        io,
+        &read_buf,
+        timeout_dur,
+    ) catch |err| {
         if (err == error.Timeout) {
             std.log.err("Timed out waiting for response from peng ({s})", .{socket_path});
         } else {

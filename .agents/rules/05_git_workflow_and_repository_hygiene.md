@@ -32,3 +32,8 @@
 - Unit and integration tests **MUST ONLY** reference test files and fixtures located within the committed `testfiles/` hierarchy (e.g. `testfiles/images/`, `testfiles/golden-screenshots/`, `testfiles/sample.cbz`), or temporary test files explicitly created and cleaned up in `testfiles/current-run/` or via test scratch allocators.
 - Tests **MUST NEVER** reference uncommitted files, personal directory paths (`Capture/`, `ThumbTest/`), untracked archives in the project root, or external absolute paths.
 - Directory scans in tests must target isolated fixture subdirectories (e.g. `testfiles/` or isolated temporary directories), **NEVER** scanning the project root (`"."`), to prevent non-deterministic test failures caused by untracked or local user files.
+
+## 6. No Extraneous Scratch or Audit Scripts in Version Control
+
+- The AI assistant **MUST NOT** commit temporary one-off audit scripts, scratch runners, or benchmark helpers (e.g. `scripts/check_line_length.sh`) into the repository unless explicitly requested by the human user.
+- Verification and audit checks should be performed via inline shell commands or kept in the conversation's scratch directory (`<appDataDir>/brain/<id>/scratch/`).

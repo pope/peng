@@ -6,9 +6,18 @@ const CompareResult = struct {
     pct: f64,
 };
 
-fn compareScreenshots(base_path: [:0]const u8, run_path: [:0]const u8, diff_path: [:0]const u8, max_tolerance_pct: f64) !CompareResult {
+fn compareScreenshots(
+    base_path: [:0]const u8,
+    run_path: [:0]const u8,
+    diff_path: [:0]const u8,
+    max_tolerance_pct: f64,
+) !CompareResult {
     const raw_base_surf = sdl.Surface.loadFile(base_path) catch {
-        std.log.err("Failed to load baseline screenshot: {s}. Run with --update-baselines to create it.", .{base_path});
+        std.log.err(
+            "Failed to load baseline screenshot: {s}. " ++
+                "Run with --update-baselines to create it.",
+            .{base_path},
+        );
         return error.BaselineMissing;
     };
     defer raw_base_surf.destroy();
@@ -20,7 +29,10 @@ fn compareScreenshots(base_path: [:0]const u8, run_path: [:0]const u8, diff_path
     defer raw_run_surf.destroy();
 
     if (raw_base_surf.w() != raw_run_surf.w() or raw_base_surf.h() != raw_run_surf.h()) {
-        std.log.err("Dimension mismatch: baseline is {d}x{d}, run is {d}x{d}", .{ raw_base_surf.w(), raw_base_surf.h(), raw_run_surf.w(), raw_run_surf.h() });
+        std.log.err(
+            "Dimension mismatch: baseline is {d}x{d}, run is {d}x{d}",
+            .{ raw_base_surf.w(), raw_base_surf.h(), raw_run_surf.w(), raw_run_surf.h() },
+        );
         return error.DimensionMismatch;
     }
 
@@ -39,7 +51,11 @@ fn compareScreenshots(base_path: [:0]const u8, run_path: [:0]const u8, diff_path
     };
     defer run_surf.destroy();
 
-    const diff_surf = sdl.Surface.create(@intCast(width), @intCast(height), sdl.PixelFormat.rgba32) orelse {
+    const diff_surf = sdl.Surface.create(
+        @intCast(width),
+        @intCast(height),
+        sdl.PixelFormat.rgba32,
+    ) orelse {
         std.log.err("Failed to create diff surface", .{});
         return error.DiffSurfaceCreationFailed;
     };
@@ -79,7 +95,8 @@ fn compareScreenshots(base_path: [:0]const u8, run_path: [:0]const u8, diff_path
                     }
                 }
             } else {
-                const rgb_dimmed = (v_base >> @as(Vec8u32, @splat(2))) & @as(Vec8u32, @splat(0x003F3F3F));
+                const rgb_dimmed = (v_base >> @as(Vec8u32, @splat(2))) &
+                    @as(Vec8u32, @splat(0x003F3F3F));
                 const alpha = v_base & @as(Vec8u32, @splat(0xFF000000));
                 const dimmed_vec = rgb_dimmed | alpha;
                 @as(*align(1) Vec8u32, @ptrCast(&pixels_diff[offset_diff])).* = dimmed_vec;
@@ -104,7 +121,8 @@ fn compareScreenshots(base_path: [:0]const u8, run_path: [:0]const u8, diff_path
 
     if (mismatched_pixels > 0) {
         const total_pixels = width * height;
-        const pct = (@as(f64, @floatFromInt(mismatched_pixels)) / @as(f64, @floatFromInt(total_pixels))) * 100.0;
+        const pct = (@as(f64, @floatFromInt(mismatched_pixels)) /
+            @as(f64, @floatFromInt(total_pixels))) * 100.0;
 
         if (!diff_surf.savePng(diff_path)) {
             std.log.err("Failed to save diff image", .{});
@@ -113,9 +131,17 @@ fn compareScreenshots(base_path: [:0]const u8, run_path: [:0]const u8, diff_path
         }
 
         if (pct > max_tolerance_pct) {
-            std.log.err("Major visual regression found: {d} pixels differ ({d:.3}% > max tolerance {d:.1}%)", .{ mismatched_pixels, pct, max_tolerance_pct });
+            std.log.err(
+                "Major visual regression found: {d} pixels differ " ++
+                    "({d:.3}% > max tolerance {d:.1}%)",
+                .{ mismatched_pixels, pct, max_tolerance_pct },
+            );
         } else {
-            std.log.warn("Visual discrepancy found: {d} pixels differ ({d:.3}% <= tolerance {d:.1}%)", .{ mismatched_pixels, pct, max_tolerance_pct });
+            std.log.warn(
+                "Visual discrepancy found: {d} pixels differ " ++
+                    "({d:.3}% <= tolerance {d:.1}%)",
+                .{ mismatched_pixels, pct, max_tolerance_pct },
+            );
         }
         return CompareResult{
             .mismatched_pixels = mismatched_pixels,
@@ -175,7 +201,10 @@ fn expectCommandFailure(socket_path: []const u8, command: []const u8) !void {
 
     const trimmed = std.mem.trim(u8, response, " \t\r");
     if (!std.mem.startsWith(u8, trimmed, "ERR")) {
-        std.log.err("IPC Command '{s}' was expected to fail, but succeeded with: {s}", .{ command, trimmed });
+        std.log.err(
+            "IPC Command '{s}' was expected to fail, but succeeded with: {s}",
+            .{ command, trimmed },
+        );
         return error.IpcCommandSucceededUnexpectedly;
     }
 }
@@ -222,7 +251,8 @@ fn captureAndVerify(
     return res.pct > max_tolerance_pct;
 }
 
-/// Visual regression and integration test harness runner that executes automated IPC test sequences and compares screenshots against goldens.
+/// Visual regression and integration test harness runner that executes automated
+/// IPC test sequences and compares screenshots against goldens.
 pub fn main(init: std.process.Init) !void {
     global_io = init.io;
     const gpa = init.gpa;
@@ -243,8 +273,8 @@ pub fn main(init: std.process.Init) !void {
                 \\
                 \\Options:
                 \\  -h, --help           Show this help message and exit
-                \\  --update-baselines   Update golden baseline screenshots with output from current run
-                \\  --tolerance <pct>    Set max allowed pixel difference percentage per step (default: 2.0%)
+                \\  --update-baselines   Update golden baseline screenshots
+                \\  --tolerance <pct>    Max allowed pixel diff pct (default: 2.0%)
                 \\  --max-diff-pct <pct> Alias for --tolerance
                 \\
             ;
@@ -257,7 +287,10 @@ pub fn main(init: std.process.Init) !void {
                 if (std.fmt.parseFloat(f64, val_str)) |val| {
                     max_tolerance_pct = val;
                 } else |err| {
-                    std.log.warn("Invalid float value '{s}' for --tolerance: {}", .{ val_str, err });
+                    std.log.warn(
+                        "Invalid float value '{s}' for --tolerance: {}",
+                        .{ val_str, err },
+                    );
                 }
             }
         }
@@ -340,12 +373,42 @@ pub fn main(init: std.process.Init) !void {
         std.log.err("Failed to create run dir '{s}': {}", .{ run_dir, err });
     };
 
+    const Harness = struct {
+        allocator: std.mem.Allocator,
+        sock: []const u8,
+        base: []const u8,
+        run: []const u8,
+        update: bool,
+        tolerance: f64,
+
+        fn verify(self: @This(), run_name: []const u8, baseline_name: []const u8) !bool {
+            return captureAndVerify(
+                self.allocator,
+                self.sock,
+                self.base,
+                self.run,
+                run_name,
+                baseline_name,
+                self.update,
+                self.tolerance,
+            );
+        }
+    };
+    const harness: Harness = .{
+        .allocator = gpa,
+        .sock = socket_path,
+        .base = base_dir,
+        .run = run_dir,
+        .update = update_baselines,
+        .tolerance = max_tolerance_pct,
+    };
+
     var steps_with_discrepancies: usize = 0;
 
     // Initial Render
     {
         try sendCommand(socket_path, "wait_load");
-        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "init.png", "init.png", update_baselines, max_tolerance_pct)) {
+        if (try harness.verify("init.png", "init.png")) {
             steps_with_discrepancies += 1;
         }
     }
@@ -354,7 +417,7 @@ pub fn main(init: std.process.Init) !void {
     {
         try sendCommand(socket_path, "zoom 2.0");
         try sendCommand(socket_path, "pan 50 -30");
-        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "zoom_pan.png", "zoom_pan.png", update_baselines, max_tolerance_pct)) {
+        if (try harness.verify("zoom_pan.png", "zoom_pan.png")) {
             steps_with_discrepancies += 1;
         }
     }
@@ -363,7 +426,7 @@ pub fn main(init: std.process.Init) !void {
     {
         try sendCommand(socket_path, "reset_view");
         try sendCommand(socket_path, "adjust 0.3 1.4");
-        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "adjust.png", "adjust.png", update_baselines, max_tolerance_pct)) {
+        if (try harness.verify("adjust.png", "adjust.png")) {
             steps_with_discrepancies += 1;
         }
     }
@@ -372,15 +435,15 @@ pub fn main(init: std.process.Init) !void {
     {
         try sendCommand(socket_path, "reset_adjustments");
         try sendCommand(socket_path, "filter mitchell");
-        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "filter_mitchell.png", "filter_mitchell.png", update_baselines, max_tolerance_pct)) {
+        if (try harness.verify("filter_mitchell.png", "filter_mitchell.png")) {
             steps_with_discrepancies += 1;
         }
         try sendCommand(socket_path, "filter lanczos3");
-        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "filter_lanczos3.png", "filter_lanczos3.png", update_baselines, max_tolerance_pct)) {
+        if (try harness.verify("filter_lanczos3.png", "filter_lanczos3.png")) {
             steps_with_discrepancies += 1;
         }
         try sendCommand(socket_path, "filter lanczos3_spline");
-        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "filter_lanczos3_spline.png", "filter_lanczos3_spline.png", update_baselines, max_tolerance_pct)) {
+        if (try harness.verify("filter_lanczos3_spline.png", "filter_lanczos3_spline.png")) {
             steps_with_discrepancies += 1;
         }
         try sendCommand(socket_path, "filter linear");
@@ -389,11 +452,11 @@ pub fn main(init: std.process.Init) !void {
     // Scale / Fit Modes
     {
         try sendCommand(socket_path, "scale crop");
-        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "scale_crop.png", "scale_crop.png", update_baselines, max_tolerance_pct)) {
+        if (try harness.verify("scale_crop.png", "scale_crop.png")) {
             steps_with_discrepancies += 1;
         }
         try sendCommand(socket_path, "scale none");
-        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "scale_original.png", "scale_original.png", update_baselines, max_tolerance_pct)) {
+        if (try harness.verify("scale_original.png", "scale_original.png")) {
             steps_with_discrepancies += 1;
         }
         try sendCommand(socket_path, "scale full");
@@ -402,7 +465,7 @@ pub fn main(init: std.process.Init) !void {
     // Action Palette
     {
         try sendCommand(socket_path, "palette action");
-        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "palette_action.png", "palette_action.png", update_baselines, max_tolerance_pct)) {
+        if (try harness.verify("palette_action.png", "palette_action.png")) {
             steps_with_discrepancies += 1;
         }
     }
@@ -410,7 +473,7 @@ pub fn main(init: std.process.Init) !void {
     // Action Palette Search ("filterh")
     {
         try sendCommand(socket_path, "palette action filterh");
-        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "palette_action_search.png", "palette_action_search.png", update_baselines, max_tolerance_pct)) {
+        if (try harness.verify("palette_action_search.png", "palette_action_search.png")) {
             steps_with_discrepancies += 1;
         }
     }
@@ -418,7 +481,7 @@ pub fn main(init: std.process.Init) !void {
     // Files Palette
     {
         try sendCommand(socket_path, "palette files");
-        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "palette_files.png", "palette_files.png", update_baselines, max_tolerance_pct)) {
+        if (try harness.verify("palette_files.png", "palette_files.png")) {
             steps_with_discrepancies += 1;
         }
     }
@@ -426,7 +489,7 @@ pub fn main(init: std.process.Init) !void {
     // Slideshow Palette
     {
         try sendCommand(socket_path, "palette slideshow");
-        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "palette_slideshow.png", "palette_slideshow.png", update_baselines, max_tolerance_pct)) {
+        if (try harness.verify("palette_slideshow.png", "palette_slideshow.png")) {
             steps_with_discrepancies += 1;
         }
     }
@@ -436,12 +499,12 @@ pub fn main(init: std.process.Init) !void {
         try sendCommand(socket_path, "palette none");
         try sendCommand(socket_path, "next");
         try sendCommand(socket_path, "wait_load");
-        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "next_image.png", "next_image.png", update_baselines, max_tolerance_pct)) {
+        if (try harness.verify("next_image.png", "next_image.png")) {
             steps_with_discrepancies += 1;
         }
         try sendCommand(socket_path, "prev");
         try sendCommand(socket_path, "wait_load");
-        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "prev_image.png", "init.png", update_baselines, max_tolerance_pct)) {
+        if (try harness.verify("prev_image.png", "init.png")) {
             steps_with_discrepancies += 1;
         }
         try sendCommand(socket_path, "next");
@@ -452,7 +515,7 @@ pub fn main(init: std.process.Init) !void {
     {
         try sendCommand(socket_path, "palette none");
         try sendCommand(socket_path, "debug true");
-        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "debug_tools.png", "debug_tools.png", update_baselines, max_tolerance_pct)) {
+        if (try harness.verify("debug_tools.png", "debug_tools.png")) {
             steps_with_discrepancies += 1;
         }
         try sendCommand(socket_path, "debug false");
@@ -461,19 +524,19 @@ pub fn main(init: std.process.Init) !void {
     // Title Overlay
     {
         try sendCommand(socket_path, "title");
-        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "title_toggle_on.png", "title_overlay_on.png", update_baselines, max_tolerance_pct)) {
+        if (try harness.verify("title_toggle_on.png", "title_overlay_on.png")) {
             steps_with_discrepancies += 1;
         }
         try sendCommand(socket_path, "title toggle");
-        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "title_toggle_off.png", "title_overlay_off.png", update_baselines, max_tolerance_pct)) {
+        if (try harness.verify("title_toggle_off.png", "title_overlay_off.png")) {
             steps_with_discrepancies += 1;
         }
         try sendCommand(socket_path, "title true");
-        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "title_explicit_on.png", "title_overlay_on.png", update_baselines, max_tolerance_pct)) {
+        if (try harness.verify("title_explicit_on.png", "title_overlay_on.png")) {
             steps_with_discrepancies += 1;
         }
         try sendCommand(socket_path, "title false");
-        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "title_explicit_off.png", "title_overlay_off.png", update_baselines, max_tolerance_pct)) {
+        if (try harness.verify("title_explicit_off.png", "title_overlay_off.png")) {
             steps_with_discrepancies += 1;
         }
     }
@@ -485,13 +548,13 @@ pub fn main(init: std.process.Init) !void {
 
         // 2. Trigger snackbar with title hidden -> Centered Test
         try sendCommand(socket_path, "filter mitchell");
-        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "snackbar_centered.png", "snackbar_centered.png", update_baselines, max_tolerance_pct)) {
+        if (try harness.verify("snackbar_centered.png", "snackbar_centered.png")) {
             steps_with_discrepancies += 1;
         }
 
         // 3. Turn title ON -> Side-by-side Test (Title on left, Snackbar on right, group centered)
         try sendCommand(socket_path, "title true");
-        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "snackbar_with_title.png", "snackbar_with_title.png", update_baselines, max_tolerance_pct)) {
+        if (try harness.verify("snackbar_with_title.png", "snackbar_with_title.png")) {
             steps_with_discrepancies += 1;
         }
 
@@ -499,7 +562,7 @@ pub fn main(init: std.process.Init) !void {
         try sendCommand(socket_path, "snackbar false");
         try sendCommand(socket_path, "title false");
         try sendCommand(socket_path, "filter linear");
-        if (try captureAndVerify(gpa, socket_path, base_dir, run_dir, "snackbar_dismissed.png", "title_overlay_off.png", update_baselines, max_tolerance_pct)) {
+        if (try harness.verify("snackbar_dismissed.png", "title_overlay_off.png")) {
             steps_with_discrepancies += 1;
         }
     }
@@ -547,7 +610,11 @@ pub fn main(init: std.process.Init) !void {
     child.id = null;
 
     if (steps_with_discrepancies > 0) {
-        std.log.err("Visual integration tests completed all steps with {d} step(s) containing visual discrepancies (diff PNGs saved to {s}).", .{ steps_with_discrepancies, run_dir });
+        std.log.err(
+            "Visual integration tests completed all steps with {d} step(s) " ++
+                "containing visual discrepancies (diff PNGs saved to {s}).",
+            .{ steps_with_discrepancies, run_dir },
+        );
         return error.VisualRegressionMismatch;
     }
 

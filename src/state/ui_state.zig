@@ -11,7 +11,8 @@ pub const ScreenshotMode = union(enum) {
     capturing: types.ActiveScreenshot,
 };
 
-/// State container managing command palettes, UI overlays, render metrics, and screenshot capture mode.
+/// State container managing command palettes, UI overlays, render metrics,
+/// and screenshot capture mode.
 pub const UiState = struct {
     palette: palette_state.PaletteState,
     overlays: OverlayState = .{},

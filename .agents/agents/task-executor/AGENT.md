@@ -32,3 +32,4 @@ You are a focused, lightweight code execution subagent. Your job is to take spec
 ## Code Quality & Documentation Invariants
 
 - **Mandatory Documentation (`///`)**: Every public struct (`pub const <Name> = struct`) and public function (`pub fn <name>`) introduced or modified MUST have an idiomatic Zig doc comment (`///`) placed immediately above it without blank lines.
+- **Formatting & Line Length Invariants (80-col goal / 100-col hard ceiling)**: Keep lines under 80 characters where natural, and strictly under 100 characters maximum (except unbreakable URLs in comments). Use trailing commas for multi-line formatting and verify with `zig fmt --check <file>`.

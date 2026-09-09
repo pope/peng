@@ -122,7 +122,8 @@ pub const AnimationState = struct {
         return (self.active_mask & (@as(u32, 1) << @intCast(@intFromEnum(channel)))) != 0;
     }
 
-    /// Opens/reveals the channel toward 1.0, smoothly interpolating from current value with proportional duration.
+    /// Opens/reveals the channel toward 1.0, smoothly interpolating from
+    /// current value with proportional duration.
     pub fn open(self: *AnimationState, channel: AnimationChannel) void {
         const desc = getDescriptor(channel);
         const cur = self.get(channel);
@@ -131,7 +132,8 @@ pub const AnimationState = struct {
         self.start(channel, 1.0, dur, desc.open_easing);
     }
 
-    /// Closes/hides the channel toward 0.0, smoothly interpolating from current value with proportional duration.
+    /// Closes/hides the channel toward 0.0, smoothly interpolating from
+    /// current value with proportional duration.
     pub fn close(self: *AnimationState, channel: AnimationChannel) void {
         const desc = getDescriptor(channel);
         const cur = self.get(channel);
@@ -174,7 +176,8 @@ pub const AnimationState = struct {
         self.active_mask |= (@as(u32, 1) << @intCast(idx));
     }
 
-    /// Starts an animation on `channel` with an explicit starting baseline, overriding previous value.
+    /// Starts an animation on `channel` with an explicit starting baseline,
+    /// overriding previous value.
     pub fn startFrom(
         self: *AnimationState,
         channel: AnimationChannel,
@@ -245,7 +248,8 @@ pub const AnimationState = struct {
             } else {
                 const t = self.elapsed_ms[idx] / dur;
                 const factor = self.easings[idx].eval(t);
-                self.values[idx] = self.start_vals[idx] + (self.target_vals[idx] - self.start_vals[idx]) * factor;
+                const delta = self.target_vals[idx] - self.start_vals[idx];
+                self.values[idx] = self.start_vals[idx] + delta * factor;
             }
         }
     }
@@ -305,8 +309,12 @@ test "AnimationState smooth interruption" {
 
     // Reverse mid-flight towards 0.0 over 100ms
     anim.start(.palette_reveal, 0.0, 100.0, .linear);
-    // Starts array should hold 0.4
-    try std.testing.expectApproxEqAbs(@as(f32, 0.4), anim.start_vals[@intFromEnum(AnimationChannel.palette_reveal)], 0.001);
+    const reveal_idx = @intFromEnum(AnimationChannel.palette_reveal);
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 0.4),
+        anim.start_vals[reveal_idx],
+        0.001,
+    );
 
     // Advance 50ms: halfway from 0.4 down to 0.0 is 0.2
     anim.tick(50.0);
@@ -385,7 +393,12 @@ test "AnimationState settle single channel while other remains active" {
 
     // Advance thumb_crossfade
     anim.tick(100.0);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.75), anim.get(.thumb_crossfade), 0.001); // 1.0 -> 0.5 halfway is 0.75
+    // 1.0 -> 0.5 halfway is 0.75
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 0.75),
+        anim.get(.thumb_crossfade),
+        0.001,
+    );
     try std.testing.expect(anim.isActive(.thumb_crossfade));
 
     anim.tick(100.0);

@@ -19,7 +19,8 @@ pub const mouse = struct {
         return @as(u32, 1) << @as(u5, @truncate(if (button > 0) button - 1 else 0));
     }
 
-    /// Queries the current mouse position in window coordinates and returns the pressed button bitmask.
+    /// Queries the current mouse position in window coordinates and returns
+    /// the pressed button bitmask.
     pub fn getState(x: *f32, y: *f32) u32 {
         return c.SDL_GetMouseState(x, y);
     }

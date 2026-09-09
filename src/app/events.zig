@@ -10,9 +10,10 @@ const AppState = app_state.AppState;
 const MediaEntry = state_pkg.MediaEntry;
 const Orientation = state_pkg.Orientation;
 
-/// Drains all background thread events (e.g. image decodes, thumbnail extractions, directory scans,
-/// folder count updates, and IPC commands) from `workers.event_queue`.
-/// Dispatches each event to update texture cache entries, image lists, rotation maps, and Command Palette state.
+/// Drains all background thread events (e.g. image decodes, thumbnail extractions,
+/// directory scans, folder count updates, and IPC commands) from `workers.event_queue`.
+/// Dispatches each event to update texture cache entries, image lists, rotation maps,
+/// and Command Palette state.
 /// Returns `true` if at least one event was drained and processed; otherwise `false`.
 pub fn drainWorkerEvents(state: *AppState) bool {
     state.event_batch.clearRetainingCapacity();
@@ -115,7 +116,12 @@ fn handleExifThumbnailEvent(state: *AppState, thumb_data: events.ThumbDecodedPay
         return;
     };
     if (state.gpu_device) |gpu_dev| {
-        if (image.uploadSurfaceToGpu(gpu_dev, surf, state.unpack_compute_pipeline, &state.upload_staging)) |upload_res| {
+        if (image.uploadSurfaceToGpu(
+            gpu_dev,
+            surf,
+            state.unpack_compute_pipeline,
+            &state.upload_staging,
+        )) |upload_res| {
             if (state.cache.get(thumb_data.key)) |current_entry| {
                 switch (current_entry.thumbnail) {
                     .loaded => |old_thumb| gpu_dev.releaseTexture(old_thumb.texture),
@@ -172,14 +178,20 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
     };
 
     // Demand-first GPU upload gating:
-    // Only upload immediately to the GPU if this IS the active image, OR if the active image is already on the GPU.
-    // If a neighbor decode finishes while the active image is still decoding or uploading, keep the neighbor in
-    // RAM (.loaded_cpu) to preserve 100% of PCIe bus bandwidth and GPU mipmap downsampling for the active image.
+    // Only upload immediately to the GPU if this IS the active image, OR if the active
+    // image is already on the GPU. If a neighbor decode finishes while the active image
+    // is still decoding or uploading, keep the neighbor in RAM (.loaded_cpu) to preserve
+    // 100% of PCIe bus bandwidth and GPU mipmap downsampling for the active image.
     const should_upload_gpu = (state.gpu_device != null) and (is_current or is_current_ready);
 
     if (should_upload_gpu) {
         const gpu_dev = state.gpu_device.?;
-        if (image.uploadSurfaceToGpu(gpu_dev, surf, state.unpack_compute_pipeline, &state.upload_staging)) |full_res| {
+        if (image.uploadSurfaceToGpu(
+            gpu_dev,
+            surf,
+            state.unpack_compute_pipeline,
+            &state.upload_staging,
+        )) |full_res| {
             if (state.cache.get(decoded_data.key)) |entry| {
                 switch (entry.status) {
                     .loaded_cpu => |cpu| cpu.surface.destroy(),
@@ -218,12 +230,29 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
                         .compressed_size_bytes = decoded_data.compressed_size_bytes,
                     },
                 };
-                state.cache.enforceVramBudget(gpu_dev, state.viewer.navigation.current_index, state.viewer.getTransitionPrevIndex(), state.viewer.navigation.image_list.items.len, image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
+                state.cache.enforceVramBudget(
+                    gpu_dev,
+                    state.viewer.navigation.current_index,
+                    state.viewer.getTransitionPrevIndex(),
+                    state.viewer.navigation.image_list.items.len,
+                    image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES,
+                );
                 if (entry.thumbnail == .pending or entry.thumbnail == .none) {
                     entry.thumbnail = .not_available;
                 }
-                if (is_current and entry.thumbnail == .loaded and !state.viewer.ui.overlays.debug_show_thumb and !state.viewer.isSlideshowActive() and state.viewer.image_transition == .none) {
-                    state.viewer.animations.startFrom(.thumb_crossfade, 0.0, 1.0, state_pkg.DURATION_THUMB_CROSSFADE_MS, .ease_out_quad);
+                const can_crossfade = is_current and
+                    entry.thumbnail == .loaded and
+                    !state.viewer.ui.overlays.debug_show_thumb and
+                    !state.viewer.isSlideshowActive() and
+                    state.viewer.image_transition == .none;
+                if (can_crossfade) {
+                    state.viewer.animations.startFrom(
+                        .thumb_crossfade,
+                        0.0,
+                        1.0,
+                        state_pkg.DURATION_THUMB_CROSSFADE_MS,
+                        .ease_out_quad,
+                    );
                 }
                 if (is_current and state.viewer.image_transition != .none) {
                     if (state.viewer.animations.get(.image_crossfade) < 0.001) {
@@ -241,7 +270,10 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
             }
             state.updateCurrentRotation();
         } else {
-            std.log.err("handleImageDecodedEvent: failed to upload surface to GPU for key {any}", .{decoded_data.key});
+            std.log.err(
+                "handleImageDecodedEvent: failed to upload surface to GPU for key {any}",
+                .{decoded_data.key},
+            );
             _ = state.cache.updateStatus(decoded_data.key, .failed);
             if (state.cache.get(decoded_data.key)) |entry| {
                 if (entry.thumbnail == .pending or entry.thumbnail == .none) {
@@ -295,17 +327,26 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
 }
 
 fn handleDirScannedEvent(state: *AppState, scanned_data: events.PathDiscoveredPayload) void {
-    const dup = scanned_data.entry.dupe(state.viewer.navigation.directory_arena.allocator()) catch |err| {
+    const dup = scanned_data.entry.dupe(
+        state.viewer.navigation.directory_arena.allocator(),
+    ) catch |err| {
         std.log.err("Failed to duplicate path in directory arena: {}", .{err});
         return;
     };
-    state.viewer.navigation.image_list.append(state.allocator, dup) catch |err| std.log.err("Failed to append discovered path to image_list: {}", .{err});
-    if (state.viewer.navigation.current_index == null and state.viewer.navigation.image_list.items.len > 0) {
+    state.viewer.navigation.image_list.append(state.allocator, dup) catch |err| {
+        std.log.err("Failed to append discovered path to image_list: {}", .{err});
+    };
+    if (state.viewer.navigation.current_index == null and
+        state.viewer.navigation.image_list.items.len > 0)
+    {
         state.viewer.navigation.current_index = 0;
     }
 }
 
-fn handleDirectoryScanResultEvent(state: *AppState, result_data: events.DirectoryScanResultPayload) void {
+fn handleDirectoryScanResultEvent(
+    state: *AppState,
+    result_data: events.DirectoryScanResultPayload,
+) void {
     const arena_alloc = state.viewer.navigation.directory_arena.allocator();
     if (result_data.is_dir) {
         for (result_data.paths) |item| {
@@ -317,7 +358,9 @@ fn handleDirectoryScanResultEvent(state: *AppState, result_data: events.Director
                 std.log.err("Failed to append image to list: {}", .{err});
             };
         }
-        if (state.viewer.navigation.current_index == null and state.viewer.navigation.image_list.items.len > 0) {
+        if (state.viewer.navigation.current_index == null and
+            state.viewer.navigation.image_list.items.len > 0)
+        {
             state.viewer.navigation.current_index = 0;
         }
     } else {
@@ -384,7 +427,9 @@ test "drainWorkerEvents - path_discovered" {
     defer state.deinit();
 
     const path_dup = try allocator.dupe(u8, "/test/path.jpg");
-    try state.workers.event_queue.push(allocator, io, .{ .path_discovered = .{ .entry = .{ .filesystem = .{ .path = path_dup } } } });
+    try state.workers.event_queue.push(allocator, io, .{
+        .path_discovered = .{ .entry = .{ .filesystem = .{ .path = path_dup } } },
+    });
 
     const processed = drainWorkerEvents(&state);
     try std.testing.expect(processed);
@@ -405,15 +450,26 @@ test "drainWorkerEvents - exif_orientation_parsed & decode_failed" {
         .status = .{ .decoding = .{ .has_thread = true } },
     });
 
-    try state.workers.event_queue.push(allocator, io, .{ .exif_orientation_parsed = .{ .key = state.cache.activeKey(0), .orientation = .rotate_90 } });
+    try state.workers.event_queue.push(allocator, io, .{
+        .exif_orientation_parsed = .{
+            .key = state.cache.activeKey(0),
+            .orientation = .rotate_90,
+        },
+    });
     const processed1 = drainWorkerEvents(&state);
     try std.testing.expect(processed1);
-    try std.testing.expectEqual(Orientation.rotate_90, state.cache.slots.items(.entry)[0].orientation);
+    try std.testing.expectEqual(
+        Orientation.rotate_90,
+        state.cache.slots.items(.entry)[0].orientation,
+    );
 
-    try state.workers.event_queue.push(allocator, io, .{ .decode_failed = .{ .key = state.cache.activeKey(0) } });
+    try state.workers.event_queue.push(allocator, io, .{
+        .decode_failed = .{ .key = state.cache.activeKey(0) },
+    });
     const processed2 = drainWorkerEvents(&state);
     try std.testing.expect(processed2);
-    try std.testing.expectEqual(@as(@TypeOf(state.cache.slots.items(.entry)[0].status), .failed), state.cache.slots.items(.entry)[0].status);
+    const fail_status = state.cache.slots.items(.entry)[0].status;
+    try std.testing.expectEqual(@as(@TypeOf(fail_status), .failed), fail_status);
 }
 
 test "drainWorkerEvents - directory_scan_result and ipc_command" {
@@ -474,7 +530,11 @@ test "drainWorkerEvents - neighbor image_decoded stays loaded_cpu while current 
         .status = .{ .decoding = .{ .has_thread = true } },
     });
 
-    const surf = sdl.Surface.create(10, 10, sdl.PixelFormat.rgba32) orelse return error.SurfaceFailed;
+    const surf = sdl.Surface.create(
+        10,
+        10,
+        sdl.PixelFormat.rgba32,
+    ) orelse return error.SurfaceFailed;
 
     // Neighbor index 1 finishes decoding before index 0
     try state.workers.event_queue.push(allocator, io, .{
@@ -495,7 +555,8 @@ test "drainWorkerEvents - neighbor image_decoded stays loaded_cpu while current 
     const processed = drainWorkerEvents(&state);
     try std.testing.expect(processed);
 
-    // Slot 1 should be .loaded_cpu (not uploaded or destroyed) because current slot 0 was not yet loaded
+    // Slot 1 should be .loaded_cpu (not uploaded or destroyed) because current
+    // slot 0 was not yet loaded
     const entry1 = state.cache.get(state.cache.activeKey(1)).?;
     try std.testing.expect(entry1.status == .loaded_cpu);
 }
@@ -586,7 +647,10 @@ test "drainWorkerEvents - palette_folder_count updates directory and archive ent
     });
 
     _ = drainWorkerEvents(&state);
-    try std.testing.expectEqual(state_pkg.EntryScanState.unscanned, state.viewer.ui.palette.dir_items.items[0].directory.scan);
+    try std.testing.expectEqual(
+        state_pkg.EntryScanState.unscanned,
+        state.viewer.ui.palette.dir_items.items[0].directory.scan,
+    );
 
     // Push matching events for directory and archive
     const evt_dir_path = try allocator.dupe(u8, "/path/to/folder_a");
@@ -612,8 +676,23 @@ test "drainWorkerEvents - palette_folder_count updates directory and archive ent
     _ = drainWorkerEvents(&state);
 
     try std.testing.expect(state.viewer.ui.palette.selection_dirty);
-    try std.testing.expectEqual(@as(?usize, 12), state.viewer.ui.palette.dir_items.items[0].getImageCount());
-    try std.testing.expectEqual(@as(?usize, 3), state.viewer.ui.palette.dir_items.items[0].getSubdirCount());
-    try std.testing.expectEqual(@as(?usize, 45), state.viewer.ui.palette.dir_items.items[1].getImageCount());
-    try std.testing.expectEqual(state_pkg.EntryScanState{ .scanned = .{ .image_count = 45, .subdir_count = 0 } }, state.viewer.ui.palette.dir_items.items[1].archive_file.scan);
+    try std.testing.expectEqual(
+        @as(?usize, 12),
+        state.viewer.ui.palette.dir_items.items[0].getImageCount(),
+    );
+    try std.testing.expectEqual(
+        @as(?usize, 3),
+        state.viewer.ui.palette.dir_items.items[0].getSubdirCount(),
+    );
+    try std.testing.expectEqual(
+        @as(?usize, 45),
+        state.viewer.ui.palette.dir_items.items[1].getImageCount(),
+    );
+    const expected_scan = state_pkg.EntryScanState{
+        .scanned = .{ .image_count = 45, .subdir_count = 0 },
+    };
+    try std.testing.expectEqual(
+        expected_scan,
+        state.viewer.ui.palette.dir_items.items[1].archive_file.scan,
+    );
 }

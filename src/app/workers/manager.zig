@@ -20,7 +20,8 @@ pub const WorkerManager = struct {
     /// Atomic counter tracking actively executing image `decodeWorker` tasks.
     active_decode_threads: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
 
-    /// Worker task cancellation signal used by C library boundaries and worker loops during shutdown.
+    /// Worker task cancellation signal used by C library boundaries and worker
+    /// loops during shutdown.
     exiting: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
 
     /// Real-time metrics for EXIF thumbnail extraction passes.
@@ -28,10 +29,12 @@ pub const WorkerManager = struct {
     thumb_positional_hits: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
     thumb_misses: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
 
-    /// Thread-safe multi-producer single-consumer queue for background-to-main-thread event transport.
+    /// Thread-safe multi-producer single-consumer queue for
+    /// background-to-main-thread event transport.
     event_queue: events.MpscQueue(events.BackgroundEvent) = .{},
 
-    /// Encapsulated task group managing all spawned background worker threads under Zig 0.16 `std.Io`.
+    /// Encapsulated task group managing all spawned background worker threads
+    /// under Zig 0.16 `std.Io`.
     group: std.Io.Group = .init,
 
     /// Returns `true` if any background worker tasks (decode, path scan, stdin, or IPC server)

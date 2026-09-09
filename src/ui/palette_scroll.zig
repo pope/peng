@@ -15,15 +15,17 @@ const truncateFilenameMiddle = text_utils.truncateFilenameMiddle;
 const types = state.types;
 
 /// Virtualized window computation for large palette item lists.
-/// Calculates the visible index range and spacer element heights to restrict Clay UI tree allocations
-/// to only items currently visible in the scroll viewport.
+/// Calculates the visible index range and spacer element heights to restrict
+/// Clay UI tree allocations to only items currently visible in the scroll
+/// viewport.
 pub const VirtualWindow = struct {
     start_idx: usize,
     end_idx: usize,
     top_spacer_h: f32,
     bottom_spacer_h: f32,
 
-    /// Computes visible start/end item indices and top/bottom spacer heights for virtualized scrolling.
+    /// Computes visible start/end item indices and top/bottom spacer heights
+    /// for virtualized scrolling.
     pub fn compute(
         total_items: usize,
         scroll_offset_y: f32,

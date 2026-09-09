@@ -23,7 +23,11 @@ fn handleKeyDown(
 ) !void {
     if (self.viewer.ui.palette.isAcceptingInput()) return;
 
-    const ctx: key_mapping.KeyContext = if (self.viewer.viewport.zoom_factor.get() > 1.0) .viewer_zoomed else .viewer_normal;
+    const ctx: key_mapping.KeyContext =
+        if (self.viewer.viewport.zoom_factor.get() > 1.0)
+            .viewer_zoomed
+        else
+            .viewer_normal;
     if (key_mapping.mapKeyToAction(key, mod, ctx)) |intent| {
         try self.pushIntent(intent);
     }
@@ -34,7 +38,8 @@ fn handleKeyDown(
 /// Responsibilities:
 /// 1. Enqueues quit intent on OS window quit request.
 /// 2. Dispatches dropped filesystem path selection.
-/// 3. Maps active keyboard shortcuts to AppIntents if command palette is not accepting input and wasn't dismissed this frame.
+/// 3. Maps active keyboard shortcuts to AppIntents if command palette is not
+///    accepting input and wasn't dismissed this frame.
 pub fn sysProcessInput(ctx: FrameContext, palette_closed_this_frame: bool) !void {
     const state = ctx.state;
     const input = ctx.input orelse return;
@@ -45,7 +50,10 @@ pub fn sysProcessInput(ctx: FrameContext, palette_closed_this_frame: bool) !void
 
     if (input.dropped_path) |path| {
         state.pushIntent(.{ .open_path = try ctx.frame_allocator.dupe(u8, path) }) catch |err| {
-            std.log.err("Failed to push open_path intent for dropped path '{s}': {}", .{ path, err });
+            std.log.err(
+                "Failed to push open_path intent for dropped path '{s}': {}",
+                .{ path, err },
+            );
         };
     }
 

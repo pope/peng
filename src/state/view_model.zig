@@ -26,7 +26,8 @@ pub const ImageDissolve = union(enum) {
     active: ActiveImageDissolve,
 };
 
-/// Complete read-only UI frame snapshot separating the application update phase from the render phase.
+/// Complete read-only UI frame snapshot separating the application update
+/// phase from the render phase.
 pub const UiViewModel = struct {
     is_fullscreen: bool,
     total_images: usize,
@@ -59,7 +60,8 @@ pub const UiViewModel = struct {
     }
 };
 
-/// User data context passed to Clay text measurement callbacks containing font handles and debug flags.
+/// User data context passed to Clay text measurement callbacks containing font
+/// handles and debug flags.
 pub const MeasureTextUserData = struct {
     fonts: []const ?sdl.Font,
     is_debug_measuring: bool = false,

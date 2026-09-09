@@ -85,7 +85,12 @@ pub const ViewerState = struct {
     }
 
     /// Associates an override rotation angle with an image file path in the rotation map.
-    pub fn putRotation(self: *ViewerState, allocator: std.mem.Allocator, path: []const u8, angle: f32) !void {
+    pub fn putRotation(
+        self: *ViewerState,
+        allocator: std.mem.Allocator,
+        path: []const u8,
+        angle: f32,
+    ) !void {
         const duped_key = try allocator.dupe(u8, path);
         errdefer allocator.free(duped_key);
 

@@ -24,8 +24,9 @@ pub const PaletteScanArgs = struct {
     paths: [][]const u8,
 };
 
-/// Background worker task that iterates through candidate directory and archive paths, counts their images
-/// and subdirectories, and posts `.palette_folder_count` events back to the main thread event queue.
+/// Background worker task that iterates through candidate directory and
+/// archive paths, counts their images and subdirectories, and posts
+/// `.palette_folder_count` events back to the main thread event queue.
 pub fn paletteScanWorker(args: *PaletteScanArgs) void {
     const workers = args.workers;
     const gpa = args.allocator;
@@ -42,14 +43,19 @@ pub fn paletteScanWorker(args: *PaletteScanArgs) void {
     }
 
     for (args.paths) |path| {
-        if (workers.exiting.load(.acquire) or args.current_generation.load(.acquire) != args.generation) return;
+        if (workers.exiting.load(.acquire) or
+            args.current_generation.load(.acquire) != args.generation) return;
 
         const counts = core_fs.countFolderContents(io, path);
 
-        if (workers.exiting.load(.acquire) or args.current_generation.load(.acquire) != args.generation) return;
+        if (workers.exiting.load(.acquire) or
+            args.current_generation.load(.acquire) != args.generation) return;
 
         const path_dup = gpa.dupe(u8, path) catch |err| {
-            std.log.err("Failed to duplicate path for palette_folder_count '{s}': {}", .{ path, err });
+            std.log.err(
+                "Failed to duplicate path for palette_folder_count '{s}': {}",
+                .{ path, err },
+            );
             continue;
         };
         workers.event_queue.push(gpa, io, .{
@@ -68,8 +74,9 @@ pub fn paletteScanWorker(args: *PaletteScanArgs) void {
     }
 }
 
-/// Filters unscanned directory and archive items, duplicates their full paths, allocates task arguments,
-/// and dispatches the asynchronous background palette scan task.
+/// Filters unscanned directory and archive items, duplicates their full
+/// paths, allocates task arguments, and dispatches the asynchronous
+/// background palette scan task.
 pub fn spawnPaletteScanForItems(
     workers: *WorkerManager,
     gpa: std.mem.Allocator,

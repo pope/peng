@@ -86,7 +86,12 @@ fn runIpcServer(workers: *WorkerManager, gpa: std.mem.Allocator, io: std.Io) !vo
             .raw = std.Io.Duration.fromSeconds(2),
             .clock = .awake,
         };
-        const line_opt = ipc.readLineTimeout(&client_stream.socket, io, &read_buf, read_timeout) catch |err| {
+        const line_opt = ipc.readLineTimeout(
+            &client_stream.socket,
+            io,
+            &read_buf,
+            read_timeout,
+        ) catch |err| {
             if (err == error.Timeout) {
                 std.log.warn("IPC server client read timed out", .{});
             } else {

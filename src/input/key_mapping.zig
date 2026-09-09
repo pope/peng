@@ -131,11 +131,23 @@ test "mapKeyToAction aligned with palette action items" {
 
     // Check Vim-style panning when zoomed
     const pan_h = mapKeyToAction(.char_h, .{}, .viewer_zoomed);
-    try std.testing.expectEqual(intents.AppIntent{ .pan_by = .{ .dx = 30.0, .dy = 0.0 } }, pan_h.?);
+    try std.testing.expectEqual(
+        intents.AppIntent{ .pan_by = .{ .dx = 30.0, .dy = 0.0 } },
+        pan_h.?,
+    );
     const pan_j = mapKeyToAction(.char_j, .{}, .viewer_zoomed);
-    try std.testing.expectEqual(intents.AppIntent{ .pan_by = .{ .dx = 0.0, .dy = -30.0 } }, pan_j.?);
+    try std.testing.expectEqual(
+        intents.AppIntent{ .pan_by = .{ .dx = 0.0, .dy = -30.0 } },
+        pan_j.?,
+    );
     const pan_k = mapKeyToAction(.char_k, .{}, .viewer_zoomed);
-    try std.testing.expectEqual(intents.AppIntent{ .pan_by = .{ .dx = 0.0, .dy = 30.0 } }, pan_k.?);
+    try std.testing.expectEqual(
+        intents.AppIntent{ .pan_by = .{ .dx = 0.0, .dy = 30.0 } },
+        pan_k.?,
+    );
     const pan_l = mapKeyToAction(.char_l, .{}, .viewer_zoomed);
-    try std.testing.expectEqual(intents.AppIntent{ .pan_by = .{ .dx = -30.0, .dy = 0.0 } }, pan_l.?);
+    try std.testing.expectEqual(
+        intents.AppIntent{ .pan_by = .{ .dx = -30.0, .dy = 0.0 } },
+        pan_l.?,
+    );
 }

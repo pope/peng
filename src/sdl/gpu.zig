@@ -33,7 +33,8 @@ pub const TextureUsage = struct {
     pub const sampler: u32 = c.SDL_GPU_TEXTUREUSAGE_SAMPLER;
     pub const color_target: u32 = c.SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
     pub const compute_storage_write: u32 = c.SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE;
-    pub const compute_storage_simultaneous_read_write: u32 = c.SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_SIMULTANEOUS_READ_WRITE;
+    pub const compute_storage_simultaneous_read_write: u32 =
+        c.SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_SIMULTANEOUS_READ_WRITE;
 };
 
 /// Bitflag constants specifying GPU buffer bindings and capabilities.
@@ -359,7 +360,8 @@ pub const ColorTargetDescription = struct {
     },
 };
 
-/// Comprehensive descriptor defining shaders, vertex layout, rasterization, depth/stencil, and blend states for a graphics pipeline.
+/// Comprehensive descriptor defining shaders, vertex layout, rasterization,
+/// depth/stencil, and blend states for a graphics pipeline.
 pub const GraphicsPipelineCreateInfo = struct {
     vertex_shader: Shader,
     fragment_shader: Shader,
@@ -459,7 +461,11 @@ pub const RenderPass = struct {
     }
 
     /// Binds an array of vertex buffers starting at the specified input slot.
-    pub fn bindVertexBuffers(self: RenderPass, first_slot: u32, bindings: []const BufferBinding) void {
+    pub fn bindVertexBuffers(
+        self: RenderPass,
+        first_slot: u32,
+        bindings: []const BufferBinding,
+    ) void {
         std.debug.assert(bindings.len <= 16);
         var c_bindings: [16]c.SDL_GPUBufferBinding = undefined;
         for (bindings, 0..) |b, i| {
@@ -474,7 +480,11 @@ pub const RenderPass = struct {
     }
 
     /// Binds texture-sampler pairs to fragment shader binding slots.
-    pub fn bindFragmentSamplers(self: RenderPass, first_slot: u32, bindings: []const TextureSamplerBinding) void {
+    pub fn bindFragmentSamplers(
+        self: RenderPass,
+        first_slot: u32,
+        bindings: []const TextureSamplerBinding,
+    ) void {
         std.debug.assert(bindings.len <= 16);
         var c_bindings: [16]c.SDL_GPUTextureSamplerBinding = undefined;
         for (bindings, 0..) |b, i| {
@@ -484,8 +494,20 @@ pub const RenderPass = struct {
     }
 
     /// Records a non-indexed primitive drawing command.
-    pub fn drawPrimitives(self: RenderPass, num_vertices: u32, num_instances: u32, first_vertex: u32, first_instance: u32) void {
-        c.SDL_DrawGPUPrimitives(self.ptr, num_vertices, num_instances, first_vertex, first_instance);
+    pub fn drawPrimitives(
+        self: RenderPass,
+        num_vertices: u32,
+        num_instances: u32,
+        first_vertex: u32,
+        first_instance: u32,
+    ) void {
+        c.SDL_DrawGPUPrimitives(
+            self.ptr,
+            num_vertices,
+            num_instances,
+            first_vertex,
+            first_instance,
+        );
     }
 
     /// Concludes recording commands for this render pass.
@@ -499,7 +521,12 @@ pub const CopyPass = struct {
     ptr: *c.SDL_GPUCopyPass,
 
     /// Copies pixel data from a transfer buffer to a destination texture region.
-    pub fn uploadToTexture(self: CopyPass, source: *const TextureTransferInfo, destination: *const TextureRegion, cycle: bool) void {
+    pub fn uploadToTexture(
+        self: CopyPass,
+        source: *const TextureTransferInfo,
+        destination: *const TextureRegion,
+        cycle: bool,
+    ) void {
         const c_src = c.SDL_GPUTextureTransferInfo{
             .transfer_buffer = source.transfer_buffer.ptr,
             .offset = source.offset,
@@ -521,7 +548,12 @@ pub const CopyPass = struct {
     }
 
     /// Copies data from a transfer buffer to a destination GPU buffer region.
-    pub fn uploadToBuffer(self: CopyPass, source: *const TransferBufferLocation, destination: *const BufferRegion, cycle: bool) void {
+    pub fn uploadToBuffer(
+        self: CopyPass,
+        source: *const TransferBufferLocation,
+        destination: *const BufferRegion,
+        cycle: bool,
+    ) void {
         const c_src = c.SDL_GPUTransferBufferLocation{
             .transfer_buffer = source.transfer_buffer.ptr,
             .offset = source.offset,
@@ -535,7 +567,11 @@ pub const CopyPass = struct {
     }
 
     /// Copies pixel data from a texture region into a destination transfer buffer.
-    pub fn downloadFromTexture(self: CopyPass, source: *const TextureRegion, destination: *const TextureTransferInfo) void {
+    pub fn downloadFromTexture(
+        self: CopyPass,
+        source: *const TextureRegion,
+        destination: *const TextureTransferInfo,
+    ) void {
         const c_src = c.SDL_GPUTextureRegion{
             .texture = source.texture.ptr,
             .x = source.x,
@@ -592,7 +628,12 @@ pub const ComputePass = struct {
     }
 
     /// Dispatches compute workgroups along 3D workgroup dimensions.
-    pub fn dispatch(self: ComputePass, group_count_x: u32, group_count_y: u32, group_count_z: u32) void {
+    pub fn dispatch(
+        self: ComputePass,
+        group_count_x: u32,
+        group_count_y: u32,
+        group_count_z: u32,
+    ) void {
         c.SDL_DispatchGPUCompute(self.ptr, group_count_x, group_count_y, group_count_z);
     }
 
@@ -611,7 +652,8 @@ pub const CommandBuffer = struct {
         return c.SDL_SubmitGPUCommandBuffer(self.ptr);
     }
 
-    /// Submits the command buffer and acquires a synchronization fence signaled upon GPU completion.
+    /// Submits the command buffer and acquires a synchronization fence signaled
+    /// upon GPU completion.
     pub fn submitAndAcquireFence(self: CommandBuffer) ?Fence {
         const raw = c.SDL_SubmitGPUCommandBufferAndAcquireFence(self.ptr);
         return if (raw) |r| .{ .ptr = r } else null;
@@ -723,7 +765,8 @@ pub const CommandBuffer = struct {
 pub const Device = struct {
     ptr: *c.SDL_GPUDevice,
 
-    /// Creates a new GPU device supporting the requested shader formats, optionally enabling debug validation.
+    /// Creates a new GPU device supporting the requested shader formats,
+    /// optionally enabling debug validation.
     pub fn create(format_flags: u32, debug_mode: bool) ?Device {
         const raw = c.SDL_CreateGPUDevice(format_flags, debug_mode, null);
         return if (raw) |r| .{ .ptr = r } else null;
@@ -837,7 +880,10 @@ pub const Device = struct {
     }
 
     /// Creates a compute pipeline state object from shader bytecode and thread dimensions.
-    pub fn createComputePipeline(self: Device, info: *const ComputePipelineCreateInfo) ?ComputePipeline {
+    pub fn createComputePipeline(
+        self: Device,
+        info: *const ComputePipelineCreateInfo,
+    ) ?ComputePipeline {
         const c_info = c.SDL_GPUComputePipelineCreateInfo{
             .code_size = info.code_size,
             .code = info.code,
@@ -904,24 +950,29 @@ pub const Device = struct {
             std.debug.assert(c_target_count <= 16);
             for (0..c_target_count) |i| {
                 const t = targets[i];
+                const bs = t.blend_state;
                 c_color_targets[i] = .{
                     .format = @intCast(@intFromEnum(t.format)),
                     .blend_state = .{
-                        .src_color_blendfactor = @intCast(@intFromEnum(t.blend_state.src_color_blendfactor)),
-                        .dst_color_blendfactor = @intCast(@intFromEnum(t.blend_state.dst_color_blendfactor)),
-                        .color_blend_op = @intCast(@intFromEnum(t.blend_state.color_blend_op)),
-                        .src_alpha_blendfactor = @intCast(@intFromEnum(t.blend_state.src_alpha_blendfactor)),
-                        .dst_alpha_blendfactor = @intCast(@intFromEnum(t.blend_state.dst_alpha_blendfactor)),
-                        .alpha_blend_op = @intCast(@intFromEnum(t.blend_state.alpha_blend_op)),
-                        .color_write_mask = t.blend_state.color_write_mask,
-                        .enable_blend = t.blend_state.enable_blend,
-                        .enable_color_write_mask = t.blend_state.enable_color_write_mask,
+                        .src_color_blendfactor = @intCast(@intFromEnum(bs.src_color_blendfactor)),
+                        .dst_color_blendfactor = @intCast(@intFromEnum(bs.dst_color_blendfactor)),
+                        .color_blend_op = @intCast(@intFromEnum(bs.color_blend_op)),
+                        .src_alpha_blendfactor = @intCast(@intFromEnum(bs.src_alpha_blendfactor)),
+                        .dst_alpha_blendfactor = @intCast(@intFromEnum(bs.dst_alpha_blendfactor)),
+                        .alpha_blend_op = @intCast(@intFromEnum(bs.alpha_blend_op)),
+                        .color_write_mask = bs.color_write_mask,
+                        .enable_blend = bs.enable_blend,
+                        .enable_color_write_mask = bs.enable_color_write_mask,
                         .padding1 = 0,
                         .padding2 = 0,
                     },
                 };
             }
         }
+
+        const dss = info.depth_stencil_state;
+        const back_st = dss.back_stencil_state;
+        const front_st = dss.front_stencil_state;
 
         const c_info = c.SDL_GPUGraphicsPipelineCreateInfo{
             .vertex_shader = info.vertex_shader.ptr,
@@ -954,24 +1005,24 @@ pub const Device = struct {
                 .padding3 = 0,
             },
             .depth_stencil_state = .{
-                .compare_op = @intCast(@intFromEnum(info.depth_stencil_state.compare_op)),
+                .compare_op = @intCast(@intFromEnum(dss.compare_op)),
                 .back_stencil_state = .{
-                    .compare_op = @intCast(@intFromEnum(info.depth_stencil_state.back_stencil_state.compare_op)),
-                    .fail_op = @intCast(@intFromEnum(info.depth_stencil_state.back_stencil_state.fail_op)),
-                    .pass_op = @intCast(@intFromEnum(info.depth_stencil_state.back_stencil_state.pass_op)),
-                    .depth_fail_op = @intCast(@intFromEnum(info.depth_stencil_state.back_stencil_state.depth_fail_op)),
+                    .compare_op = @intCast(@intFromEnum(back_st.compare_op)),
+                    .fail_op = @intCast(@intFromEnum(back_st.fail_op)),
+                    .pass_op = @intCast(@intFromEnum(back_st.pass_op)),
+                    .depth_fail_op = @intCast(@intFromEnum(back_st.depth_fail_op)),
                 },
                 .front_stencil_state = .{
-                    .compare_op = @intCast(@intFromEnum(info.depth_stencil_state.front_stencil_state.compare_op)),
-                    .fail_op = @intCast(@intFromEnum(info.depth_stencil_state.front_stencil_state.fail_op)),
-                    .pass_op = @intCast(@intFromEnum(info.depth_stencil_state.front_stencil_state.pass_op)),
-                    .depth_fail_op = @intCast(@intFromEnum(info.depth_stencil_state.front_stencil_state.depth_fail_op)),
+                    .compare_op = @intCast(@intFromEnum(front_st.compare_op)),
+                    .fail_op = @intCast(@intFromEnum(front_st.fail_op)),
+                    .pass_op = @intCast(@intFromEnum(front_st.pass_op)),
+                    .depth_fail_op = @intCast(@intFromEnum(front_st.depth_fail_op)),
                 },
-                .compare_mask = info.depth_stencil_state.compare_mask,
-                .write_mask = info.depth_stencil_state.write_mask,
-                .enable_depth_test = info.depth_stencil_state.enable_depth_test,
-                .enable_depth_write = info.depth_stencil_state.enable_depth_write,
-                .enable_stencil_test = info.depth_stencil_state.enable_stencil_test,
+                .compare_mask = dss.compare_mask,
+                .write_mask = dss.write_mask,
+                .enable_depth_test = dss.enable_depth_test,
+                .enable_depth_write = dss.enable_depth_write,
+                .enable_stencil_test = dss.enable_stencil_test,
                 .padding1 = 0,
                 .padding2 = 0,
                 .padding3 = 0,
@@ -980,7 +1031,9 @@ pub const Device = struct {
                 .num_color_targets = c_target_count,
                 .color_target_descriptions = if (c_target_count > 0) &c_color_targets else null,
                 .has_depth_stencil_target = info.target_info.has_depth_stencil_target,
-                .depth_stencil_format = @intCast(@intFromEnum(info.target_info.depth_stencil_format)),
+                .depth_stencil_format = @intCast(
+                    @intFromEnum(info.target_info.depth_stencil_format),
+                ),
                 .padding1 = 0,
                 .padding2 = 0,
             },
@@ -996,7 +1049,10 @@ pub const Device = struct {
     }
 
     /// Allocates a host-accessible staging transfer buffer.
-    pub fn createTransferBuffer(self: Device, info: *const TransferBufferCreateInfo) ?TransferBuffer {
+    pub fn createTransferBuffer(
+        self: Device,
+        info: *const TransferBufferCreateInfo,
+    ) ?TransferBuffer {
         const c_info = c.SDL_GPUTransferBufferCreateInfo{
             .usage = @intCast(@intFromEnum(info.usage)),
             .size = info.size,

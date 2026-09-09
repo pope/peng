@@ -27,7 +27,8 @@ fn handlePaletteReturnGoToImage(ctx: FrameContext, raw_str: []const u8) !void {
     }
 }
 
-/// Processes Return key confirmation for slideshow interval input palette mode (`.set_slideshow_interval`).
+/// Processes Return key confirmation for slideshow interval input palette mode
+/// (`.set_slideshow_interval`).
 fn handlePaletteReturnSlideshow(ctx: FrameContext, raw_str: []const u8) !void {
     if (raw_str.len > 0) {
         if (std.fmt.parseFloat(f32, raw_str)) |val| {
@@ -70,8 +71,8 @@ fn handlePaletteReturnDirectory(ctx: FrameContext, mod: KeyModifiers) !void {
     }
 }
 
-/// Handles keyboard shortcut navigation keys (Escape, Up/Down, Left/Right, PageUp/PageDown, Return, Backspace)
-/// while a command palette overlay is active.
+/// Handles keyboard shortcut navigation keys (Escape, Up/Down, Left/Right,
+/// PageUp/PageDown, Return, Backspace) while a command palette overlay is active.
 ///
 /// Returns `true` if the key was consumed by palette navigation; `false` otherwise.
 fn handlePaletteKeys(
@@ -136,7 +137,12 @@ fn handlePaletteKeys(
                 _ = palette.query.pop();
                 q = palette.query.items;
             }
-            while (q.len > 0 and q[q.len - 1] != ' ' and q[q.len - 1] != '\t' and q[q.len - 1] != '/' and q[q.len - 1] != '\\') {
+            while (q.len > 0 and
+                q[q.len - 1] != ' ' and
+                q[q.len - 1] != '\t' and
+                q[q.len - 1] != '/' and
+                q[q.len - 1] != '\\')
+            {
                 _ = palette.query.pop();
                 q = palette.query.items;
             }
@@ -146,7 +152,12 @@ fn handlePaletteKeys(
                 .files => try self.rebuildPaletteMatches(),
                 .actions => try self.rebuildActionMatches(),
                 .directory_navigator => try palette.rebuildDirectoryMatches(),
-                .set_brightness, .set_contrast, .go_to_image, .set_slideshow_interval, .inactive => {},
+                .set_brightness,
+                .set_contrast,
+                .go_to_image,
+                .set_slideshow_interval,
+                .inactive,
+                => {},
             }
         }
         return true;
@@ -162,7 +173,12 @@ fn handlePaletteKeys(
                 .files => try self.rebuildPaletteMatches(),
                 .actions => try self.rebuildActionMatches(),
                 .directory_navigator => try palette.rebuildDirectoryMatches(),
-                .set_brightness, .set_contrast, .go_to_image, .set_slideshow_interval, .inactive => {},
+                .set_brightness,
+                .set_contrast,
+                .go_to_image,
+                .set_slideshow_interval,
+                .inactive,
+                => {},
             }
         }
         return true;
@@ -173,7 +189,10 @@ fn handlePaletteKeys(
             if (palette.mode == .directory_navigator) {
                 if (key == .tab and mod.shift) {
                     var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
-                    if (core_fs.getParentDirBuf(palette.current_nav_dir.items, &parent_buf)) |parent_dir| {
+                    if (core_fs.getParentDirBuf(
+                        palette.current_nav_dir.items,
+                        &parent_buf,
+                    )) |parent_dir| {
                         palette.query.clearRetainingCapacity();
                         try self.loadPaletteDirectory(parent_dir);
                     }
@@ -194,7 +213,10 @@ fn handlePaletteKeys(
         .left => {
             if (palette.mode == .directory_navigator) {
                 var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
-                if (core_fs.getParentDirBuf(palette.current_nav_dir.items, &parent_buf)) |parent_dir| {
+                if (core_fs.getParentDirBuf(
+                    palette.current_nav_dir.items,
+                    &parent_buf,
+                )) |parent_dir| {
                     palette.query.clearRetainingCapacity();
                     try self.loadPaletteDirectory(parent_dir);
                 }
@@ -210,8 +232,14 @@ fn handlePaletteKeys(
                     if (raw_str.len > 0) {
                         if (std.fmt.parseFloat(f32, raw_str)) |val| {
                             if (!std.math.isNan(val) and !std.math.isInf(val)) {
-                                const min_val: f32 = if (palette.mode == .set_brightness) -1.0 else 0.0;
-                                const max_val: f32 = if (palette.mode == .set_brightness) 1.0 else 5.0;
+                                const min_val: f32 = if (palette.mode == .set_brightness)
+                                    -1.0
+                                else
+                                    0.0;
+                                const max_val: f32 = if (palette.mode == .set_brightness)
+                                    1.0
+                                else
+                                    5.0;
                                 if (val >= min_val and val <= max_val) {
                                     if (palette.mode == .set_brightness) {
                                         try self.pushIntent(.{ .set_brightness = val });
@@ -222,7 +250,10 @@ fn handlePaletteKeys(
                                 }
                             }
                         } else |err| {
-                            std.log.debug("Failed to parse brightness/contrast value '{s}': {}", .{ raw_str, err });
+                            std.log.debug(
+                                "Failed to parse brightness/contrast value '{s}': {}",
+                                .{ raw_str, err },
+                            );
                         }
                     }
                 },
@@ -253,11 +284,19 @@ fn handlePaletteKeys(
                     .files => try self.rebuildPaletteMatches(),
                     .actions => try self.rebuildActionMatches(),
                     .directory_navigator => try palette.rebuildDirectoryMatches(),
-                    .set_brightness, .set_contrast, .go_to_image, .set_slideshow_interval, .inactive => {},
+                    .set_brightness,
+                    .set_contrast,
+                    .go_to_image,
+                    .set_slideshow_interval,
+                    .inactive,
+                    => {},
                 }
             } else if (palette.mode == .directory_navigator) {
                 var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
-                if (core_fs.getParentDirBuf(palette.current_nav_dir.items, &parent_buf)) |parent_dir| {
+                if (core_fs.getParentDirBuf(
+                    palette.current_nav_dir.items,
+                    &parent_buf,
+                )) |parent_dir| {
                     palette.query.clearRetainingCapacity();
                     try self.loadPaletteDirectory(parent_dir);
                 }
@@ -269,11 +308,13 @@ fn handlePaletteKeys(
     return false;
 }
 
-/// System Pass: Process active Command Palette text typing, list navigation, and click-outside dismissal.
+/// System Pass: Process active Command Palette text typing, list navigation,
+/// and click-outside dismissal.
 ///
 /// Responsibilities:
 /// 1. Ingests text typing input characters and updates search query buffer.
-/// 2. Triggers fuzzy match filter rebuilds for active palette mode (`.files`, `.actions`, `.directory_navigator`).
+/// 2. Triggers fuzzy match filter rebuilds for active palette mode
+///    (`.files`, `.actions`, `.directory_navigator`).
 /// 3. Detects mouse left-click outside palette bounds and deactivates open command palette overlay.
 ///
 /// Returns `true` if an active command palette was dismissed on this frame; `false` otherwise.
@@ -322,7 +363,8 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
         if (scroll_data.found) {
             const item_height = cfg.base_item_height;
             const viewport_height = 320.0;
-            const item_top = @as(f32, @floatFromInt(self.viewer.ui.palette.selected_idx)) * item_height;
+            const sel_f = @as(f32, @floatFromInt(self.viewer.ui.palette.selected_idx));
+            const item_top = sel_f * item_height;
             const item_bottom = item_top + item_height;
             const visible_top = -scroll_data.scroll_position.y;
             const visible_bottom = visible_top + viewport_height;
@@ -349,7 +391,11 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
             // Check if a list item was clicked
             for (self.viewer.ui.palette.matches.items) |real_idx| {
                 var item_id_buf: [64]u8 = undefined;
-                const item_id_str = std.fmt.bufPrint(&item_id_buf, "{s}{}", .{ cfg.item_prefix, real_idx }) catch |err| blk: {
+                const item_id_str = std.fmt.bufPrint(
+                    &item_id_buf,
+                    "{s}{}",
+                    .{ cfg.item_prefix, real_idx },
+                ) catch |err| blk: {
                     std.log.warn("Failed to format palette item ID: {}", .{err});
                     break :blk cfg.item_prefix;
                 };
@@ -372,9 +418,15 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
                         .directory_navigator => {
                             if (real_idx < self.viewer.ui.palette.dir_items.items.len) {
                                 const entry = self.viewer.ui.palette.dir_items.items[real_idx];
-                                const path_copy = try ctx.frame_allocator.dupe(u8, entry.getFullPath());
+                                const path_copy = try ctx.frame_allocator.dupe(
+                                    u8,
+                                    entry.getFullPath(),
+                                );
                                 try self.pushIntent(.{
-                                    .set_palette = .{ .mode = .directory_navigator, .query = path_copy },
+                                    .set_palette = .{
+                                        .mode = .directory_navigator,
+                                        .query = path_copy,
+                                    },
                                 });
                             }
                         },
@@ -452,7 +504,8 @@ test "handlePaletteKeys directory_navigator key interactions" {
     try std.testing.expectEqual(PaletteMode.directory_navigator, state.viewer.ui.palette.mode);
     try std.testing.expectEqualStrings(tmp_dir, state.viewer.ui.palette.current_nav_dir.items);
 
-    // Test Enter key on sub_no_images -> starts async path scan for sub_no_images and closes palette
+    // Test Enter key on sub_no_images -> starts async path scan for
+    // sub_no_images and closes palette
     state.viewer.ui.palette.selected_idx = match_idx_no_img;
     _ = try handlePaletteKeys(ctx, .return_key, .{});
     try std.testing.expectEqual(PaletteMode.inactive, state.viewer.ui.palette.mode);
@@ -483,7 +536,10 @@ test "handlePaletteKeys stepping up from dot to parent directory preselects work
 
     var found_cwd_selected = false;
     if (state.viewer.ui.palette.selected_idx < state.viewer.ui.palette.dir_items.items.len) {
-        if (std.mem.eql(u8, state.viewer.ui.palette.dir_items.items[state.viewer.ui.palette.selected_idx].getName(), "peng")) {
+        const sel_name = state.viewer.ui.palette.dir_items.items[
+            state.viewer.ui.palette.selected_idx
+        ].getName();
+        if (std.mem.eql(u8, sel_name, "peng")) {
             found_cwd_selected = true;
         }
     }
@@ -526,7 +582,11 @@ test "sysProcessPaletteInput retains palette when clicking inside debug panel" {
     input_inside.is_pointer_in_debug_panel = true;
 
     state.viewer.ui.palette.mode = .actions;
-    _ = try sysProcessPaletteInput(.{ .state = &state, .frame_allocator = allocator, .input = input_inside });
+    _ = try sysProcessPaletteInput(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .input = input_inside,
+    });
     try std.testing.expect(state.viewer.ui.palette.mode == .actions);
 }
 
@@ -546,7 +606,10 @@ test "openPalette directory_navigator starting directory rules" {
 
     // Rule 1: current_index is valid -> starting directory is dirname of current image
     const sample_path = tmp_dir ++ "/image1.jpg";
-    try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = sample_path } });
+    try state.viewer.navigation.image_list.append(
+        allocator,
+        .{ .filesystem = .{ .path = sample_path } },
+    );
     state.viewer.navigation.current_index = 0;
 
     try state.openPalette(.directory_navigator);
@@ -558,12 +621,14 @@ test "openPalette directory_navigator starting directory rules" {
     try state.openPalette(.directory_navigator);
     try std.testing.expectEqualStrings(tmp_dir, state.viewer.ui.palette.current_nav_dir.items);
 
-    // Rule 3: current_index is null and last_nav_dir is empty -> starting directory falls back to "."
+    // Rule 3: current_index is null and last_nav_dir is empty -> starting directory
+    // falls back to "."
     state.viewer.ui.palette.last_nav_dir.clearRetainingCapacity();
     try state.openPalette(.directory_navigator);
     try std.testing.expectEqualStrings(".", state.viewer.ui.palette.current_nav_dir.items);
 
-    // Rule 4: current_index out of bounds and last_nav_dir is empty -> starting directory falls back to "."
+    // Rule 4: current_index out of bounds and last_nav_dir is empty -> starting
+    // directory falls back to "."
     state.viewer.navigation.current_index = 999;
     state.viewer.ui.palette.last_nav_dir.clearRetainingCapacity();
     try state.openPalette(.directory_navigator);
@@ -587,17 +652,24 @@ test "openPalette directory_navigator steps up if 0 subdirectories" {
 
     // Image in child_leaf (which has 0 subdirectories itself)
     const img_path = sub_leaf ++ "/photo.png";
-    try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = img_path } });
+    try state.viewer.navigation.image_list.append(
+        allocator,
+        .{ .filesystem = .{ .path = img_path } },
+    );
     state.viewer.navigation.current_index = 0;
 
-    // openPalette should see sub_leaf has 0 subdirectories, so it steps up to tmp_dir and pre-selects child_leaf
+    // openPalette should see sub_leaf has 0 subdirectories, so it steps up to
+    // tmp_dir and pre-selects child_leaf
     try state.openPalette(.directory_navigator);
     try std.testing.expectEqualStrings(tmp_dir, state.viewer.ui.palette.current_nav_dir.items);
 
     // Verify child_leaf is selected
     var found_leaf_selected = false;
     if (state.viewer.ui.palette.selected_idx < state.viewer.ui.palette.dir_items.items.len) {
-        if (std.mem.eql(u8, state.viewer.ui.palette.dir_items.items[state.viewer.ui.palette.selected_idx].getName(), "child_leaf")) {
+        const sel_name = state.viewer.ui.palette.dir_items.items[
+            state.viewer.ui.palette.selected_idx
+        ].getName();
+        if (std.mem.eql(u8, sel_name, "child_leaf")) {
             found_leaf_selected = true;
         }
     }
@@ -619,7 +691,10 @@ test "openPalette steps up from top-level relative leaf dir without slashes to d
     defer state.deinit();
 
     const img_path = top_leaf ++ "/photo.png";
-    try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = img_path } });
+    try state.viewer.navigation.image_list.append(
+        allocator,
+        .{ .filesystem = .{ .path = img_path } },
+    );
     state.viewer.navigation.current_index = 0;
 
     try state.openPalette(.directory_navigator);
@@ -629,7 +704,10 @@ test "openPalette steps up from top-level relative leaf dir without slashes to d
     // Verify top_leaf is pre-selected in "."
     var found_leaf_selected = false;
     if (state.viewer.ui.palette.selected_idx < state.viewer.ui.palette.dir_items.items.len) {
-        if (std.mem.eql(u8, state.viewer.ui.palette.dir_items.items[state.viewer.ui.palette.selected_idx].getName(), top_leaf)) {
+        const sel_name = state.viewer.ui.palette.dir_items.items[
+            state.viewer.ui.palette.selected_idx
+        ].getName();
+        if (std.mem.eql(u8, sel_name, top_leaf)) {
             found_leaf_selected = true;
         }
     }

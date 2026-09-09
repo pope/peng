@@ -30,7 +30,8 @@ pub const NavigationState = struct {
             .directory_arena = std.heap.ArenaAllocator.init(allocator),
         };
         errdefer self.deinit(allocator);
-        // 32 image path pointers: avoids reallocations when loading CLI args or medium-sized directory lists
+        // 32 image path pointers: avoids reallocations when loading CLI args
+        // or medium-sized directory lists
         try self.image_list.ensureTotalCapacity(allocator, 32);
         // 128 bytes: accommodates standard file directory path strings (most paths are < 128 bytes)
         try self.last_scanned_dir.ensureTotalCapacity(allocator, 128);

@@ -42,7 +42,10 @@ fn addBatch(
 ) !void {
     if (batches.items.len > 0) {
         var last = &batches.items[batches.items.len - 1];
-        if (last.texture.eql(texture) and last.material == material and scissorEqual(last.scissor, scissor)) {
+        if (last.texture.eql(texture) and
+            last.material == material and
+            scissorEqual(last.scissor, scissor))
+        {
             last.vertex_count += count;
             return;
         }
@@ -83,9 +86,26 @@ fn appendRectangleCommand(
 
     const corner_radius = config.corner_radius.top_left * scale_x;
     if (corner_radius > 0) {
-        try geometry.renderFillRoundedRect(vertices, allocator, rect, corner_radius, config.background_color, f_win_w, f_win_h, is_blurred);
+        try geometry.renderFillRoundedRect(
+            vertices,
+            allocator,
+            rect,
+            corner_radius,
+            config.background_color,
+            f_win_w,
+            f_win_h,
+            is_blurred,
+        );
     } else {
-        try geometry.appendRectQuad(vertices, allocator, rect, config.background_color, f_win_w, f_win_h, is_blurred);
+        try geometry.appendRectQuad(
+            vertices,
+            allocator,
+            rect,
+            config.background_color,
+            f_win_w,
+            f_win_h,
+            is_blurred,
+        );
     }
 
     const count = @as(u32, @intCast(vertices.items.len)) - start;
@@ -141,10 +161,35 @@ fn appendBorderCommand(
         const starting_y = rect.y + clamped_radii.top_left;
         const length = rect.h - clamped_radii.top_left - clamped_radii.bottom_left;
         if (is_dashed) {
-            try geometry.drawDashedLineV(vertices, allocator, rect.x, starting_y, starting_y + length, border_left, config.color, 8.0 * scale_x, 6.0 * scale_x, f_win_w, f_win_h);
+            try geometry.drawDashedLineV(
+                vertices,
+                allocator,
+                rect.x,
+                starting_y,
+                starting_y + length,
+                border_left,
+                config.color,
+                8.0 * scale_x,
+                6.0 * scale_x,
+                f_win_w,
+                f_win_h,
+            );
         } else {
-            const line = sdl.FRect{ .x = rect.x, .y = starting_y, .w = border_left, .h = length };
-            try geometry.appendRectQuad(vertices, allocator, line, config.color, f_win_w, f_win_h, false);
+            const line = sdl.FRect{
+                .x = rect.x,
+                .y = starting_y,
+                .w = border_left,
+                .h = length,
+            };
+            try geometry.appendRectQuad(
+                vertices,
+                allocator,
+                line,
+                config.color,
+                f_win_w,
+                f_win_h,
+                false,
+            );
         }
     }
     if (border_right > 0) {
@@ -152,20 +197,70 @@ fn appendBorderCommand(
         const starting_y = rect.y + clamped_radii.top_right;
         const length = rect.h - clamped_radii.top_right - clamped_radii.bottom_right;
         if (is_dashed) {
-            try geometry.drawDashedLineV(vertices, allocator, starting_x, starting_y, starting_y + length, border_right, config.color, 8.0 * scale_x, 6.0 * scale_x, f_win_w, f_win_h);
+            try geometry.drawDashedLineV(
+                vertices,
+                allocator,
+                starting_x,
+                starting_y,
+                starting_y + length,
+                border_right,
+                config.color,
+                8.0 * scale_x,
+                6.0 * scale_x,
+                f_win_w,
+                f_win_h,
+            );
         } else {
-            const line = sdl.FRect{ .x = starting_x, .y = starting_y, .w = border_right, .h = length };
-            try geometry.appendRectQuad(vertices, allocator, line, config.color, f_win_w, f_win_h, false);
+            const line = sdl.FRect{
+                .x = starting_x,
+                .y = starting_y,
+                .w = border_right,
+                .h = length,
+            };
+            try geometry.appendRectQuad(
+                vertices,
+                allocator,
+                line,
+                config.color,
+                f_win_w,
+                f_win_h,
+                false,
+            );
         }
     }
     if (border_top > 0) {
         const starting_x = rect.x + clamped_radii.top_left;
         const length = rect.w - clamped_radii.top_left - clamped_radii.top_right;
         if (is_dashed) {
-            try geometry.drawDashedLineH(vertices, allocator, starting_x, starting_x + length, rect.y, border_top, config.color, 8.0 * scale_x, 6.0 * scale_x, f_win_w, f_win_h);
+            try geometry.drawDashedLineH(
+                vertices,
+                allocator,
+                starting_x,
+                starting_x + length,
+                rect.y,
+                border_top,
+                config.color,
+                8.0 * scale_x,
+                6.0 * scale_x,
+                f_win_w,
+                f_win_h,
+            );
         } else {
-            const line = sdl.FRect{ .x = starting_x, .y = rect.y, .w = length, .h = border_top };
-            try geometry.appendRectQuad(vertices, allocator, line, config.color, f_win_w, f_win_h, false);
+            const line = sdl.FRect{
+                .x = starting_x,
+                .y = rect.y,
+                .w = length,
+                .h = border_top,
+            };
+            try geometry.appendRectQuad(
+                vertices,
+                allocator,
+                line,
+                config.color,
+                f_win_w,
+                f_win_h,
+                false,
+            );
         }
     }
     if (border_bottom > 0) {
@@ -173,24 +268,118 @@ fn appendBorderCommand(
         const starting_y = rect.y + rect.h - border_bottom;
         const length = rect.w - clamped_radii.bottom_left - clamped_radii.bottom_right;
         if (is_dashed) {
-            try geometry.drawDashedLineH(vertices, allocator, starting_x, starting_x + length, starting_y, border_bottom, config.color, 8.0 * scale_x, 6.0 * scale_x, f_win_w, f_win_h);
+            try geometry.drawDashedLineH(
+                vertices,
+                allocator,
+                starting_x,
+                starting_x + length,
+                starting_y,
+                border_bottom,
+                config.color,
+                8.0 * scale_x,
+                6.0 * scale_x,
+                f_win_w,
+                f_win_h,
+            );
         } else {
-            const line = sdl.FRect{ .x = starting_x, .y = starting_y, .w = length, .h = border_bottom };
-            try geometry.appendRectQuad(vertices, allocator, line, config.color, f_win_w, f_win_h, false);
+            const line = sdl.FRect{
+                .x = starting_x,
+                .y = starting_y,
+                .w = length,
+                .h = border_bottom,
+            };
+            try geometry.appendRectQuad(
+                vertices,
+                allocator,
+                line,
+                config.color,
+                f_win_w,
+                f_win_h,
+                false,
+            );
         }
     }
 
     if (clamped_radii.top_left > 0) {
-        try geometry.renderArc(vertices, .{ .x = rect.x + clamped_radii.top_left, .y = rect.y + clamped_radii.top_left }, clamped_radii.top_left, 180.0, 270.0, border_top, r, g, b, a, allocator, is_dashed, f_win_w, f_win_h);
+        try geometry.renderArc(
+            vertices,
+            .{ .x = rect.x + clamped_radii.top_left, .y = rect.y + clamped_radii.top_left },
+            clamped_radii.top_left,
+            180.0,
+            270.0,
+            border_top,
+            r,
+            g,
+            b,
+            a,
+            allocator,
+            is_dashed,
+            f_win_w,
+            f_win_h,
+        );
     }
     if (clamped_radii.top_right > 0) {
-        try geometry.renderArc(vertices, .{ .x = rect.x + rect.w - clamped_radii.top_right, .y = rect.y + clamped_radii.top_right }, clamped_radii.top_right, 270.0, 360.0, border_top, r, g, b, a, allocator, is_dashed, f_win_w, f_win_h);
+        try geometry.renderArc(
+            vertices,
+            .{
+                .x = rect.x + rect.w - clamped_radii.top_right,
+                .y = rect.y + clamped_radii.top_right,
+            },
+            clamped_radii.top_right,
+            270.0,
+            360.0,
+            border_top,
+            r,
+            g,
+            b,
+            a,
+            allocator,
+            is_dashed,
+            f_win_w,
+            f_win_h,
+        );
     }
     if (clamped_radii.bottom_left > 0) {
-        try geometry.renderArc(vertices, .{ .x = rect.x + clamped_radii.bottom_left, .y = rect.y + rect.h - clamped_radii.bottom_left }, clamped_radii.bottom_left, 90.0, 180.0, border_bottom, r, g, b, a, allocator, is_dashed, f_win_w, f_win_h);
+        try geometry.renderArc(
+            vertices,
+            .{
+                .x = rect.x + clamped_radii.bottom_left,
+                .y = rect.y + rect.h - clamped_radii.bottom_left,
+            },
+            clamped_radii.bottom_left,
+            90.0,
+            180.0,
+            border_bottom,
+            r,
+            g,
+            b,
+            a,
+            allocator,
+            is_dashed,
+            f_win_w,
+            f_win_h,
+        );
     }
     if (clamped_radii.bottom_right > 0) {
-        try geometry.renderArc(vertices, .{ .x = rect.x + rect.w - clamped_radii.bottom_right, .y = rect.y + rect.h - clamped_radii.bottom_right }, clamped_radii.bottom_right, 0.0, 90.0, border_bottom, r, g, b, a, allocator, is_dashed, f_win_w, f_win_h);
+        try geometry.renderArc(
+            vertices,
+            .{
+                .x = rect.x + rect.w - clamped_radii.bottom_right,
+                .y = rect.y + rect.h - clamped_radii.bottom_right,
+            },
+            clamped_radii.bottom_right,
+            0.0,
+            90.0,
+            border_bottom,
+            r,
+            g,
+            b,
+            a,
+            allocator,
+            is_dashed,
+            f_win_w,
+            f_win_h,
+        );
     }
 
     const count = @as(u32, @intCast(vertices.items.len)) - start_batch;
@@ -287,21 +476,25 @@ fn getOrRenderCachedText(
     const aligned_offset = std.mem.alignForward(usize, tb_offset.*, 512);
     const required_capacity = aligned_offset + size;
 
-    if (gpu_res.transfer_buffers[frame_idx] == null or gpu_res.buffer_capacities[frame_idx] < required_capacity) {
+    const needs_tb = gpu_res.transfer_buffers[frame_idx] == null or
+        gpu_res.buffer_capacities[frame_idx] < required_capacity;
+    if (needs_tb) {
         const new_tbcap = std.mem.alignForward(usize, @max(required_capacity * 2, 65536), 4096);
         if (gpu_res.transfer_buffers[frame_idx]) |old_tb| {
             // Catch OOM on the deferred cleanup list so a non-critical array append failure
-            // does not abort the entire frame's render pass. Release old_tb to prevent GPU memory leak.
+            // does not abort the entire frame's render pass. Release old_tb to prevent leak.
             temp_buffers.append(frame_allocator, old_tb) catch |err| {
                 std.log.err("Failed to append old transfer buffer to cleanup list: {}", .{err});
                 dev.releaseTransferBuffer(old_tb);
             };
         }
-        gpu_res.transfer_buffers[frame_idx] = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
-            .usage = .upload,
-            .size = @intCast(new_tbcap),
-            .props = 0,
-        });
+        gpu_res.transfer_buffers[frame_idx] = dev.createTransferBuffer(
+            &sdl.gpu.TransferBufferCreateInfo{
+                .usage = .upload,
+                .size = @intCast(new_tbcap),
+                .props = 0,
+            },
+        );
         if (gpu_res.transfer_buffers[frame_idx] == null) {
             gpu_res.buffer_capacities[frame_idx] = 0;
             dev.releaseTexture(tex);
@@ -325,7 +518,8 @@ fn getOrRenderCachedText(
     var row_y: usize = 0;
     while (row_y < surf_h) : (row_y += 1) {
         const src_row = converted.pixels()[row_y * pitch .. row_y * pitch + src_row_bytes];
-        const dst_row = mapped[row_y * dst_row_bytes + dst_start_byte .. row_y * dst_row_bytes + dst_start_byte + src_row_bytes];
+        const dst_offset = row_y * dst_row_bytes + dst_start_byte;
+        const dst_row = mapped[dst_offset..][0..src_row_bytes];
         @memcpy(dst_row, src_row);
     }
     dev.unmapTransferBuffer(transfer_buf);
@@ -365,7 +559,8 @@ fn getOrRenderCachedText(
     };
 }
 
-/// Returns `true` if the scissor clipping box has non-positive area or falls completely outside the window bounds.
+/// Returns `true` if the scissor clipping box has non-positive area or falls
+/// completely outside the window bounds.
 pub inline fn isScissorInvisible(sc: ?sdl.Rect, win_w: i32, win_h: i32) bool {
     if (sc) |s| {
         if (s.w <= 0 or s.h <= 0) return true;
@@ -427,7 +622,10 @@ fn buildGeometryFromCommands(
 
         switch (rcmd.command_type) {
             .scissor_start, .scissor_end => {
-                std.log.err("Unexpected scissor command in render switch: {}", .{rcmd.command_type});
+                std.log.err(
+                    "Unexpected scissor command in render switch: {}",
+                    .{rcmd.command_type},
+                );
             },
             .rectangle => {
                 prev_text_bb = null;
@@ -451,8 +649,9 @@ fn buildGeometryFromCommands(
                 const debug_w = @as(f32, @floatFromInt(clay.Clay__debugViewWidth));
                 const logical_win_w = f_win_w / scale_x;
                 if (clay.isDebugModeEnabled() and bb.x >= (logical_win_w - debug_w - 0.5)) {
-                    // Scale down hardcoded 16px Clay debug text to 12px (0.75x) for GPU text rendering
-                    const scaled_size = @as(f32, @floatFromInt(text_data.font_size)) * theme.debug_font_scale;
+                    // Scale down hardcoded 16px Clay debug text to 12px (0.75x) for GPU text
+                    const scaled_size = @as(f32, @floatFromInt(text_data.font_size)) *
+                        theme.debug_font_scale;
                     text_data.font_size = @intFromFloat(@round(scaled_size));
                 }
                 if (try getOrRenderCachedText(
@@ -482,19 +681,71 @@ fn buildGeometryFromCommands(
                     prev_text_end_x = world_x + cached.w;
 
                     const p1 = geometry.toNdc(world_x, world_y, f_win_w, f_win_h);
-                    const p2 = geometry.toNdc(world_x + cached.w, world_y + cached.h, f_win_w, f_win_h);
+                    const p2 = geometry.toNdc(
+                        world_x + cached.w,
+                        world_y + cached.h,
+                        f_win_w,
+                        f_win_h,
+                    );
 
                     const start = @as(u32, @intCast(vertices.items.len));
-                    const text_alpha_u8 = @as(u8, @intFromFloat(std.math.clamp(text_data.text_color[3], 0.0, 255.0)));
+                    const text_alpha_u8 = @as(
+                        u8,
+                        @intFromFloat(std.math.clamp(text_data.text_color[3], 0.0, 255.0)),
+                    );
                     const vert_color = packRgba(255, 255, 255, text_alpha_u8);
-                    try vertices.append(frame_allocator, .{ .x = p1.x, .y = p1.y, .u = 0.0, .v = 0.0, .color = vert_color });
-                    try vertices.append(frame_allocator, .{ .x = p2.x, .y = p1.y, .u = 1.0, .v = 0.0, .color = vert_color });
-                    try vertices.append(frame_allocator, .{ .x = p1.x, .y = p2.y, .u = 0.0, .v = 1.0, .color = vert_color });
-                    try vertices.append(frame_allocator, .{ .x = p2.x, .y = p1.y, .u = 1.0, .v = 0.0, .color = vert_color });
-                    try vertices.append(frame_allocator, .{ .x = p2.x, .y = p2.y, .u = 1.0, .v = 1.0, .color = vert_color });
-                    try vertices.append(frame_allocator, .{ .x = p1.x, .y = p2.y, .u = 0.0, .v = 1.0, .color = vert_color });
+                    try vertices.append(frame_allocator, .{
+                        .x = p1.x,
+                        .y = p1.y,
+                        .u = 0.0,
+                        .v = 0.0,
+                        .color = vert_color,
+                    });
+                    try vertices.append(frame_allocator, .{
+                        .x = p2.x,
+                        .y = p1.y,
+                        .u = 1.0,
+                        .v = 0.0,
+                        .color = vert_color,
+                    });
+                    try vertices.append(frame_allocator, .{
+                        .x = p1.x,
+                        .y = p2.y,
+                        .u = 0.0,
+                        .v = 1.0,
+                        .color = vert_color,
+                    });
+                    try vertices.append(frame_allocator, .{
+                        .x = p2.x,
+                        .y = p1.y,
+                        .u = 1.0,
+                        .v = 0.0,
+                        .color = vert_color,
+                    });
+                    try vertices.append(frame_allocator, .{
+                        .x = p2.x,
+                        .y = p2.y,
+                        .u = 1.0,
+                        .v = 1.0,
+                        .color = vert_color,
+                    });
+                    try vertices.append(frame_allocator, .{
+                        .x = p1.x,
+                        .y = p2.y,
+                        .u = 0.0,
+                        .v = 1.0,
+                        .color = vert_color,
+                    });
 
-                    try addBatch(batches, frame_allocator, start, 6, cached.texture, .ui_element, current_scissor);
+                    try addBatch(
+                        batches,
+                        frame_allocator,
+                        start,
+                        6,
+                        cached.texture,
+                        .ui_element,
+                        current_scissor,
+                    );
                 }
             },
             .border => {
@@ -554,7 +805,9 @@ fn uploadVertexData(
     const needed_size = vertex_items.len * @sizeOf(Vertex);
     if (needed_size == 0) return null;
 
-    if (gpu_res.vertex_buffers[frame_idx] == null or gpu_res.vertex_capacities[frame_idx] < needed_size) {
+    const needs_vb = gpu_res.vertex_buffers[frame_idx] == null or
+        gpu_res.vertex_capacities[frame_idx] < needed_size;
+    if (needs_vb) {
         if (gpu_res.vertex_buffers[frame_idx]) |vb| {
             dev.releaseBuffer(vb);
             gpu_res.vertex_buffers[frame_idx] = null;
@@ -571,21 +824,28 @@ fn uploadVertexData(
     const vert_offset = std.mem.alignForward(usize, tb_offset, 512);
     const total_tb_needed = vert_offset + needed_size;
 
-    if (gpu_res.transfer_buffers[frame_idx] == null or gpu_res.buffer_capacities[frame_idx] < total_tb_needed) {
+    const needs_tb = gpu_res.transfer_buffers[frame_idx] == null or
+        gpu_res.buffer_capacities[frame_idx] < total_tb_needed;
+    if (needs_tb) {
         if (gpu_res.transfer_buffers[frame_idx]) |old_tb| {
             // Catch OOM on the deferred cleanup list so a non-critical array append failure
-            // does not abort the entire frame's render pass. Release old_tb to prevent GPU memory leak.
+            // does not abort the entire frame's render pass. Release old_tb to prevent leak.
             temp_buffers.append(frame_allocator, old_tb) catch |err| {
-                std.log.err("Failed to append old transfer buffer to cleanup list in uploadVertexData: {}", .{err});
+                std.log.err(
+                    "Failed to append old transfer buffer to cleanup list in uploadVertexData: {}",
+                    .{err},
+                );
                 dev.releaseTransferBuffer(old_tb);
             };
         }
         const new_tbcap = std.mem.alignForward(usize, total_tb_needed * 2, 4096);
-        gpu_res.transfer_buffers[frame_idx] = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
-            .usage = .upload,
-            .size = @intCast(new_tbcap),
-            .props = 0,
-        }) orelse return error.GPUTransferBufferCreationFailed;
+        gpu_res.transfer_buffers[frame_idx] = dev.createTransferBuffer(
+            &sdl.gpu.TransferBufferCreateInfo{
+                .usage = .upload,
+                .size = @intCast(new_tbcap),
+                .props = 0,
+            },
+        ) orelse return error.GPUTransferBufferCreationFailed;
         gpu_res.buffer_capacities[frame_idx] = new_tbcap;
     }
 
@@ -628,7 +888,8 @@ fn drawBatches(
             safe_sc.y = @max(0, sc.y);
             safe_sc.w = @max(0, sc.w - (safe_sc.x - sc.x));
             safe_sc.h = @max(0, sc.h - (safe_sc.y - sc.y));
-            if (safe_sc.w <= 0 or safe_sc.h <= 0 or safe_sc.x >= win_w or safe_sc.y >= win_h) continue;
+            if (safe_sc.w <= 0 or safe_sc.h <= 0 or
+                safe_sc.x >= win_w or safe_sc.y >= win_h) continue;
             safe_sc.w = @min(safe_sc.w, win_w - safe_sc.x);
             safe_sc.h = @min(safe_sc.h, win_h - safe_sc.y);
             render_pass.setScissor(&safe_sc);
@@ -663,7 +924,10 @@ fn drawBatches(
             last_material = batch.material;
         }
 
-        render_pass.bindFragmentSamplers(0, &[_]sdl.gpu.TextureSamplerBinding{.{ .texture = batch.texture, .sampler = gpu.sampler }});
+        render_pass.bindFragmentSamplers(0, &[_]sdl.gpu.TextureSamplerBinding{.{
+            .texture = batch.texture,
+            .sampler = gpu.sampler,
+        }});
         render_pass.drawPrimitives(batch.vertex_count, 1, batch.vertex_start, 0);
     }
 }
@@ -686,7 +950,10 @@ fn executeRenderPass(
         }
     }
 
-    if (first_blur_idx == null or gpu.scene_texture == null or gpu.blur_down_texture == null or gpu.blur_texture == null) {
+    const has_blur_tex = gpu.scene_texture != null and
+        gpu.blur_down_texture != null and
+        gpu.blur_texture != null;
+    if (first_blur_idx == null or !has_blur_tex) {
         const color_target = sdl.gpu.ColorTargetAttachment{
             .texture = swap_tex,
             .clear_color = .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 },
@@ -696,13 +963,19 @@ fn executeRenderPass(
         };
 
         const render_pass = cmd_buf.beginRenderPass(&color_target) orelse {
-            std.log.err("SDL GPU beginRenderPass failed in renderClayCommands: {s}", .{sdl.getError()});
+            std.log.err(
+                "SDL GPU beginRenderPass failed in renderClayCommands: {s}",
+                .{sdl.getError()},
+            );
             return;
         };
         defer render_pass.end();
 
         if (vert_buf) |vb| {
-            render_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{.{ .buffer = vb, .offset = 0 }});
+            render_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{.{
+                .buffer = vb,
+                .offset = 0,
+            }});
             drawBatches(view_params, gpu, render_pass, cmd_buf, batches, win_w, win_h);
         }
         return;
@@ -720,11 +993,17 @@ fn executeRenderPass(
             .cycle = false,
         };
         const scene_pass = cmd_buf.beginRenderPass(&scene_target) orelse {
-            std.log.err("SDL GPU beginRenderPass failed for scene_texture: {s}", .{sdl.getError()});
+            std.log.err(
+                "SDL GPU beginRenderPass failed for scene_texture: {s}",
+                .{sdl.getError()},
+            );
             return;
         };
         if (vert_buf) |vb| {
-            scene_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{.{ .buffer = vb, .offset = 0 }});
+            scene_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{.{
+                .buffer = vb,
+                .offset = 0,
+            }});
             drawBatches(view_params, gpu, scene_pass, cmd_buf, batches[0..idx], win_w, win_h);
         }
         scene_pass.end();
@@ -740,11 +1019,17 @@ fn executeRenderPass(
             .cycle = false,
         };
         const down_pass = cmd_buf.beginRenderPass(&down_target) orelse {
-            std.log.err("SDL GPU beginRenderPass failed for blur_down_texture: {s}", .{sdl.getError()});
+            std.log.err(
+                "SDL GPU beginRenderPass failed for blur_down_texture: {s}",
+                .{sdl.getError()},
+            );
             return;
         };
         down_pass.bindPipeline(gpu.blur_down_pipeline);
-        down_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{.{ .buffer = gpu.fullscreen_vertex_buffer, .offset = 0 }});
+        down_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{.{
+            .buffer = gpu.fullscreen_vertex_buffer,
+            .offset = 0,
+        }});
 
         const down_ubo = graphics.BlurUniforms{
             .texel_size_x = 1.0 / @as(f32, @floatFromInt(win_w)),
@@ -753,9 +1038,17 @@ fn executeRenderPass(
             .padding = 0.0,
         };
         cmd_buf.pushFragmentUniform(0, std.mem.asBytes(&down_ubo));
-        down_pass.bindFragmentSamplers(0, &[_]sdl.gpu.TextureSamplerBinding{.{ .texture = gpu.scene_texture.?, .sampler = gpu.sampler }});
+        down_pass.bindFragmentSamplers(0, &[_]sdl.gpu.TextureSamplerBinding{.{
+            .texture = gpu.scene_texture.?,
+            .sampler = gpu.sampler,
+        }});
 
-        const down_sc = sdl.Rect{ .x = 0, .y = 0, .w = @intCast(gpu.blur_down_w), .h = @intCast(gpu.blur_down_h) };
+        const down_sc = sdl.Rect{
+            .x = 0,
+            .y = 0,
+            .w = @intCast(gpu.blur_down_w),
+            .h = @intCast(gpu.blur_down_h),
+        };
         down_pass.setScissor(&down_sc);
         down_pass.drawPrimitives(6, 1, 0, 0);
         down_pass.end();
@@ -771,11 +1064,17 @@ fn executeRenderPass(
             .cycle = false,
         };
         const up_pass = cmd_buf.beginRenderPass(&up_target) orelse {
-            std.log.err("SDL GPU beginRenderPass failed for blur_texture: {s}", .{sdl.getError()});
+            std.log.err(
+                "SDL GPU beginRenderPass failed for blur_texture: {s}",
+                .{sdl.getError()},
+            );
             return;
         };
         up_pass.bindPipeline(gpu.blur_up_pipeline);
-        up_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{.{ .buffer = gpu.fullscreen_vertex_buffer, .offset = 0 }});
+        up_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{.{
+            .buffer = gpu.fullscreen_vertex_buffer,
+            .offset = 0,
+        }});
 
         const up_ubo = graphics.BlurUniforms{
             .texel_size_x = 1.0 / @as(f32, @floatFromInt(gpu.blur_down_w)),
@@ -784,15 +1083,24 @@ fn executeRenderPass(
             .padding = 0.0,
         };
         cmd_buf.pushFragmentUniform(0, std.mem.asBytes(&up_ubo));
-        up_pass.bindFragmentSamplers(0, &[_]sdl.gpu.TextureSamplerBinding{.{ .texture = gpu.blur_down_texture.?, .sampler = gpu.sampler }});
+        up_pass.bindFragmentSamplers(0, &[_]sdl.gpu.TextureSamplerBinding{.{
+            .texture = gpu.blur_down_texture.?,
+            .sampler = gpu.sampler,
+        }});
 
-        const up_sc = sdl.Rect{ .x = 0, .y = 0, .w = @intCast(gpu.blur_down_w), .h = @intCast(gpu.blur_down_h) };
+        const up_sc = sdl.Rect{
+            .x = 0,
+            .y = 0,
+            .w = @intCast(gpu.blur_down_w),
+            .h = @intCast(gpu.blur_down_h),
+        };
         up_pass.setScissor(&up_sc);
         up_pass.drawPrimitives(6, 1, 0, 0);
         up_pass.end();
     }
 
-    // Pass 4: Composite onto swapchain (blit sharp base scene quad + draw remaining overlay batches on top)
+    // Pass 4: Composite onto swapchain (blit sharp base scene quad + draw
+    // remaining overlay batches on top)
     {
         const final_target = sdl.gpu.ColorTargetAttachment{
             .texture = swap_tex,
@@ -802,26 +1110,38 @@ fn executeRenderPass(
             .cycle = false,
         };
         const final_pass = cmd_buf.beginRenderPass(&final_target) orelse {
-            std.log.err("SDL GPU beginRenderPass failed for swapchain composite: {s}", .{sdl.getError()});
+            std.log.err(
+                "SDL GPU beginRenderPass failed for swapchain composite: {s}",
+                .{sdl.getError()},
+            );
             return;
         };
         defer final_pass.end();
 
         // 4a. Blit sharp base scene
         final_pass.bindPipeline(gpu.ui_pipeline);
-        final_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{.{ .buffer = gpu.fullscreen_vertex_buffer, .offset = 0 }});
+        final_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{.{
+            .buffer = gpu.fullscreen_vertex_buffer,
+            .offset = 0,
+        }});
         const fs_ubo = UiUniforms{
             .is_blurred_surface = 0,
         };
         cmd_buf.pushFragmentUniform(0, std.mem.asBytes(&fs_ubo));
-        final_pass.bindFragmentSamplers(0, &[_]sdl.gpu.TextureSamplerBinding{.{ .texture = gpu.scene_texture.?, .sampler = gpu.sampler }});
+        final_pass.bindFragmentSamplers(0, &[_]sdl.gpu.TextureSamplerBinding{.{
+            .texture = gpu.scene_texture.?,
+            .sampler = gpu.sampler,
+        }});
         const full_sc = sdl.Rect{ .x = 0, .y = 0, .w = win_w, .h = win_h };
         final_pass.setScissor(&full_sc);
         final_pass.drawPrimitives(6, 1, 0, 0);
 
         // 4b. Draw remaining batches (blurred surfaces, borders, text, controls)
         if (vert_buf) |vb| {
-            final_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{.{ .buffer = vb, .offset = 0 }});
+            final_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{.{
+                .buffer = vb,
+                .offset = 0,
+            }});
             drawBatches(view_params, gpu, final_pass, cmd_buf, batches[idx..], win_w, win_h);
         }
     }
@@ -920,8 +1240,9 @@ fn executeRenderPacket(
     );
 }
 
-/// Orchestrates 2-pass UI and image rendering from Clay layout commands using decoupled ViewportParams.
-/// Allocates or resizes backdrop blur textures to match the swapchain `target_format` and dimensions when active.
+/// Orchestrates 2-pass UI and image rendering from Clay layout commands using
+/// decoupled ViewportParams. Allocates or resizes backdrop blur textures to
+/// match the swapchain `target_format` and dimensions when active.
 pub fn renderClayCommands(
     view_params: ViewportParams,
     gpu_res: *RenderResources,

@@ -7,27 +7,44 @@ const std = @import("std");
 const MeasureTextUserData = state.MeasureTextUserData;
 const sdl3MeasureText = graphics.sdl3MeasureText;
 
-/// Result of middle-truncating a filename, containing the display string and index boundaries for fuzzy match remapping.
+/// Result of middle-truncating a filename, containing the display string and
+/// index boundaries for fuzzy match remapping.
 pub const TruncatedFilename = struct {
     display: []const u8,
     head_len: usize,
     tail_start_idx: usize,
 };
 
-/// Truncates a filename in the middle with an ellipsis ("...") so that rendered text does not exceed `max_w` pixels.
-pub fn truncateFilenameMiddle(allocator: std.mem.Allocator, text: []const u8, max_w: f32, font_size: u16, data: *const MeasureTextUserData) TruncatedFilename {
-    const font = data.fonts[0] orelse return .{ .display = text, .head_len = text.len, .tail_start_idx = text.len };
+/// Truncates a filename in the middle with an ellipsis ("...") so that
+/// rendered text does not exceed `max_w` pixels.
+pub fn truncateFilenameMiddle(
+    allocator: std.mem.Allocator,
+    text: []const u8,
+    max_w: f32,
+    font_size: u16,
+    data: *const MeasureTextUserData,
+) TruncatedFilename {
+    const font = data.fonts[0] orelse return .{
+        .display = text,
+        .head_len = text.len,
+        .tail_start_idx = text.len,
+    };
     const target_size = @as(f32, @floatFromInt(font_size));
     if (font.getFontSize() != target_size) {
         _ = font.setFontSize(target_size);
     }
 
-    const size = font.getStringSize(allocator, text) orelse return .{ .display = text, .head_len = text.len, .tail_start_idx = text.len };
+    const size = font.getStringSize(allocator, text) orelse return .{
+        .display = text,
+        .head_len = text.len,
+        .tail_start_idx = text.len,
+    };
     if (@as(f32, @floatFromInt(size.w)) <= max_w) {
         return .{ .display = text, .head_len = text.len, .tail_start_idx = text.len };
     }
 
-    const dots_size = font.getStringSize(allocator, "...") orelse sdl.Font.TextSize{ .w = 0, .h = 0 };
+    const dots_size = font.getStringSize(allocator, "...") orelse
+        sdl.Font.TextSize{ .w = 0, .h = 0 };
 
     const available_w = max_w - @as(f32, @floatFromInt(dots_size.w));
     if (available_w <= 0) return .{ .display = "...", .head_len = 0, .tail_start_idx = text.len };
@@ -59,7 +76,8 @@ pub fn truncateFilenameMiddle(allocator: std.mem.Allocator, text: []const u8, ma
         }
 
         const suffix = text[byte_start..];
-        const suf_size = font.getStringSize(allocator, suffix) orelse sdl.Font.TextSize{ .w = 0, .h = 0 };
+        const suf_size = font.getStringSize(allocator, suffix) orelse
+            sdl.Font.TextSize{ .w = 0, .h = 0 };
         if (@as(f32, @floatFromInt(suf_size.w)) <= tail_available_w) {
             tail_len = text.len - byte_start;
             low = mid + 1;
@@ -74,7 +92,11 @@ pub fn truncateFilenameMiddle(allocator: std.mem.Allocator, text: []const u8, ma
         tail_start_idx = head_len;
     }
 
-    const display = std.fmt.allocPrint(allocator, "{s}...{s}", .{ text[0..head_len], text[tail_start_idx..] }) catch text;
+    const display = std.fmt.allocPrint(
+        allocator,
+        "{s}...{s}",
+        .{ text[0..head_len], text[tail_start_idx..] },
+    ) catch text;
 
     return .{
         .display = display,
@@ -84,11 +106,18 @@ pub fn truncateFilenameMiddle(allocator: std.mem.Allocator, text: []const u8, ma
 }
 
 /// Truncates a filename in the middle with an ellipsis ("...") returning only the display string.
-pub fn truncateFilename(allocator: std.mem.Allocator, text: []const u8, max_w: f32, font_size: u16, data: *const MeasureTextUserData) []const u8 {
+pub fn truncateFilename(
+    allocator: std.mem.Allocator,
+    text: []const u8,
+    max_w: f32,
+    font_size: u16,
+    data: *const MeasureTextUserData,
+) []const u8 {
     return truncateFilenameMiddle(allocator, text, max_w, font_size, data).display;
 }
 
-/// Remaps matched search character byte indices from the original filename to the middle-truncated display string.
+/// Remaps matched search character byte indices from the original filename to
+/// the middle-truncated display string.
 pub fn remapMiddleTruncatedMatches(
     allocator: std.mem.Allocator,
     matches: []const usize,
@@ -111,8 +140,15 @@ pub fn remapMiddleTruncatedMatches(
     return list.toOwnedSlice(allocator);
 }
 
-/// Truncates a directory path from the left with leading "..." so that rendered text fits within `max_w` pixels.
-pub fn truncateDirectory(allocator: std.mem.Allocator, text: []const u8, max_w: f32, font_size: u16, data: *const MeasureTextUserData) []const u8 {
+/// Truncates a directory path from the left with leading "..." so that
+/// rendered text fits within `max_w` pixels.
+pub fn truncateDirectory(
+    allocator: std.mem.Allocator,
+    text: []const u8,
+    max_w: f32,
+    font_size: u16,
+    data: *const MeasureTextUserData,
+) []const u8 {
     var text_config = clay.TextElementConfig{
         .font_id = 0,
         .font_size = font_size,
@@ -179,7 +215,12 @@ test "remapMiddleTruncatedMatches head, tail, and truncated middle" {
     const head_len: usize = 10;
     const tail_start_idx: usize = 50;
 
-    const remapped = try remapMiddleTruncatedMatches(std.testing.allocator, &matches, head_len, tail_start_idx);
+    const remapped = try remapMiddleTruncatedMatches(
+        std.testing.allocator,
+        &matches,
+        head_len,
+        tail_start_idx,
+    );
     defer std.testing.allocator.free(remapped);
 
     // 2 < 10 -> 2
@@ -195,7 +236,12 @@ test "remapMiddleTruncatedMatches clamps overlapping tail_start_idx < head_len" 
     const head_len: usize = 10;
     const tail_start_idx: usize = 5; // tail_start_idx < head_len
 
-    const remapped = try remapMiddleTruncatedMatches(std.testing.allocator, &matches, head_len, tail_start_idx);
+    const remapped = try remapMiddleTruncatedMatches(
+        std.testing.allocator,
+        &matches,
+        head_len,
+        tail_start_idx,
+    );
     defer std.testing.allocator.free(remapped);
 
     // actual_tail_start becomes max(5, 10) = 10

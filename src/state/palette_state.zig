@@ -88,7 +88,8 @@ pub const DirectoryEntry = union(enum) {
         return self == .archive_file;
     }
 
-    /// Returns the active `EntryScanState` if this entry is a directory or archive; otherwise `null`.
+    /// Returns the active `EntryScanState` if this entry is a directory or
+    /// archive; otherwise `null`.
     pub fn getScanState(self: DirectoryEntry) ?EntryScanState {
         return switch (self) {
             .directory => |d| d.scan,
@@ -97,7 +98,8 @@ pub const DirectoryEntry = union(enum) {
         };
     }
 
-    /// Returns the image count if this entry has completed scanning or has cached counts; otherwise `null`.
+    /// Returns the image count if this entry has completed scanning or has
+    /// cached counts; otherwise `null`.
     pub fn getImageCount(self: DirectoryEntry) ?usize {
         const scan = self.getScanState() orelse return null;
         return switch (scan) {
@@ -107,7 +109,8 @@ pub const DirectoryEntry = union(enum) {
         };
     }
 
-    /// Returns the subdirectory count if this entry has completed scanning or has cached counts; otherwise `null`.
+    /// Returns the subdirectory count if this entry has completed scanning
+    /// or has cached counts; otherwise `null`.
     pub fn getSubdirCount(self: DirectoryEntry) ?usize {
         const scan = self.getScanState() orelse return null;
         return switch (scan) {
@@ -122,22 +125,24 @@ pub const DirectoryEntry = union(enum) {
 pub const PaletteState = struct {
     mode: PaletteMode = .inactive,
     is_closing: bool = false,
-    query: std.ArrayList(u8),
+    query: std.ArrayListUnmanaged(u8) = .empty,
     selected_idx: usize = 0,
+    matches: std.ArrayListUnmanaged(usize) = .empty,
+    scored_matches: std.ArrayListUnmanaged(ScoredMatch) = .empty,
+    scroll_offset_y: f32 = 0.0,
     selection_dirty: bool = false,
-    matches: std.ArrayList(usize),
-    scored_matches: std.ArrayList(ScoredMatch),
-    current_nav_dir: std.ArrayList(u8),
-    last_nav_dir: std.ArrayList(u8),
-    last_child_dir: std.ArrayList(u8),
-    dir_items: std.ArrayList(DirectoryEntry),
+    current_nav_dir: std.ArrayListUnmanaged(u8) = .empty,
+    last_nav_dir: std.ArrayListUnmanaged(u8) = .empty,
+    last_child_dir: std.ArrayListUnmanaged(u8) = .empty,
+    dir_items: std.ArrayListUnmanaged(DirectoryEntry) = .empty,
     current_dir_image_count: usize = 0,
     dir_scan_generation: std.atomic.Value(usize) = .init(0),
     allocator: std.mem.Allocator,
     searcher: ?fuzzig.Ascii = null,
     max_haystack_len: usize = 64,
 
-    /// Initializes a new `PaletteState` instance, reserving initial capacities for queries, matches, and paths.
+    /// Initializes a new `PaletteState` instance, reserving initial
+    /// capacities for queries, matches, and paths.
     pub fn init(allocator: std.mem.Allocator) !PaletteState {
         var self = PaletteState{
             .query = .empty,
@@ -154,7 +159,8 @@ pub const PaletteState = struct {
             .max_haystack_len = 64,
         };
         errdefer self.deinit();
-        // 64 bytes: accommodates user search query input strings (typical search queries are < 64 chars)
+        // 64 bytes: accommodates user search query input strings
+        // (typical search queries are < 64 chars)
         try self.query.ensureTotalCapacity(allocator, 64);
         // 64 items: initial filtered match index capacity before dynamic resizing
         try self.matches.ensureTotalCapacity(allocator, 64);
@@ -200,7 +206,8 @@ pub const PaletteState = struct {
         self.dir_items.clearRetainingCapacity();
     }
 
-    /// Clears search query, matched indexes, navigation directory, and restores palette to inactive mode.
+    /// Clears search query, matched indexes, navigation directory, and
+    /// restores palette to inactive mode.
     pub fn reset(self: *PaletteState) void {
         self.query.clearRetainingCapacity();
         self.matches.clearRetainingCapacity();
@@ -220,7 +227,8 @@ pub const PaletteState = struct {
         return self.mode != .inactive and !self.is_closing;
     }
 
-    /// Returns a lazily initialized or resized ASCII fuzzy searcher matching the requested haystack and needle lengths.
+    /// Returns a lazily initialized or resized ASCII fuzzy searcher matching
+    /// the requested haystack and needle lengths.
     pub fn getSearcher(self: *PaletteState, max_haystack: usize, max_needle: usize) !*fuzzig.Ascii {
         const req_haystack = @max(max_haystack, 64);
         const req_needle = @max(max_needle, 16);
@@ -242,8 +250,10 @@ pub const PaletteState = struct {
     /// Rebuilds fuzzy match results for action palette items.
     ///
     /// Optimizations:
-    /// - Short-circuits when query is empty, populating `matches` directly without searcher allocation or fuzzy scoring.
-    /// - Pre-allocates `scored_matches` and `matches` capacities to allow `appendAssumeCapacity` writes during scoring.
+    /// - Short-circuits when query is empty, populating `matches` directly
+    ///   without searcher allocation or fuzzy scoring.
+    /// - Pre-allocates `scored_matches` and `matches` capacities to allow
+    ///   `appendAssumeCapacity` writes during scoring.
     fn sortAndExtractMatches(self: *PaletteState) !void {
         std.mem.sort(ScoredMatch, self.scored_matches.items, {}, struct {
             fn lessThan(_: void, a: ScoredMatch, b: ScoredMatch) bool {
@@ -260,8 +270,10 @@ pub const PaletteState = struct {
     /// Rebuilds fuzzy match results for action palette items.
     ///
     /// Optimizations:
-    /// - Short-circuits when query is empty, populating `matches` directly without searcher allocation or fuzzy scoring.
-    /// - Pre-allocates `scored_matches` and `matches` capacities to allow `appendAssumeCapacity` writes during scoring.
+    /// - Short-circuits when query is empty, populating `matches` directly
+    ///   without searcher allocation or fuzzy scoring.
+    /// - Pre-allocates `scored_matches` and `matches` capacities to allow
+    ///   `appendAssumeCapacity` writes during scoring.
     pub fn rebuildActionMatches(self: *PaletteState) !void {
         self.matches.clearRetainingCapacity();
         self.scored_matches.clearRetainingCapacity();
@@ -295,8 +307,10 @@ pub const PaletteState = struct {
     /// Rebuilds fuzzy match results for directory navigator items.
     ///
     /// Optimizations:
-    /// - Short-circuits when query is empty, populating `matches` directly without searcher allocation or fuzzy scoring.
-    /// - Pre-allocates `scored_matches` and `matches` capacities to allow `appendAssumeCapacity` writes during scoring.
+    /// - Short-circuits when query is empty, populating `matches` directly
+    ///   without searcher allocation or fuzzy scoring.
+    /// - Pre-allocates `scored_matches` and `matches` capacities to allow
+    ///   `appendAssumeCapacity` writes during scoring.
     pub fn rebuildDirectoryMatches(self: *PaletteState) !void {
         self.matches.clearRetainingCapacity();
         self.scored_matches.clearRetainingCapacity();
@@ -341,8 +355,10 @@ pub const PaletteState = struct {
     /// Rebuilds fuzzy match results for image file list items.
     ///
     /// Optimizations:
-    /// - Short-circuits when query is empty, populating `matches` directly without searcher allocation or fuzzy scoring.
-    /// - Pre-allocates `scored_matches` and `matches` capacities to allow `appendAssumeCapacity` writes during scoring.
+    /// - Short-circuits when query is empty, populating `matches` directly
+    ///   without searcher allocation or fuzzy scoring.
+    /// - Pre-allocates `scored_matches` and `matches` capacities to allow
+    ///   `appendAssumeCapacity` writes during scoring.
     pub fn rebuildFileMatches(self: *PaletteState, image_list: []const MediaEntry) !void {
         self.matches.clearRetainingCapacity();
         self.scored_matches.clearRetainingCapacity();
@@ -377,7 +393,8 @@ pub const PaletteState = struct {
     }
 };
 
-/// Configuration metadata for palette modals (titles, placeholders, element IDs, spacer IDs, item heights).
+/// Configuration metadata for palette modals (titles, placeholders,
+/// element IDs, spacer IDs, item heights).
 pub const PaletteConfig = struct {
     title: []const u8,
     placeholder: []const u8,
@@ -498,14 +515,26 @@ test "DirectoryEntry accessors and scan state" {
     try std.testing.expect(p.getScanState() == null);
     try std.testing.expect(p.getImageCount() == null);
 
-    const d = DirectoryEntry{ .directory = .{ .name = "photos", .full_path = "/photos", .scan = .{ .scanned = .{ .image_count = 42, .subdir_count = 3 } } } };
+    const d = DirectoryEntry{
+        .directory = .{
+            .name = "photos",
+            .full_path = "/photos",
+            .scan = .{ .scanned = .{ .image_count = 42, .subdir_count = 3 } },
+        },
+    };
     try std.testing.expectEqualStrings("photos", d.getName());
     try std.testing.expectEqualStrings("/photos", d.getFullPath());
     try std.testing.expect(!d.isArchive());
     try std.testing.expect(d.getScanState() != null);
     try std.testing.expectEqual(@as(usize, 42), d.getImageCount().?);
 
-    const a = DirectoryEntry{ .archive_file = .{ .name = "comic.cbz", .full_path = "/comic.cbz", .scan = .unscanned } };
+    const a = DirectoryEntry{
+        .archive_file = .{
+            .name = "comic.cbz",
+            .full_path = "/comic.cbz",
+            .scan = .unscanned,
+        },
+    };
     try std.testing.expectEqualStrings("comic.cbz", a.getName());
     try std.testing.expect(a.isArchive());
     try std.testing.expectEqual(EntryScanState.unscanned, a.getScanState().?);

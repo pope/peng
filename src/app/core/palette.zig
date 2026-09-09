@@ -6,9 +6,10 @@ const DirectoryEntry = state_pkg.DirectoryEntry;
 const PaletteState = state_pkg.PaletteState;
 const ScoredMatch = state_pkg.ScoredMatch;
 
-/// Populates directory entries for `dir_path` into `PaletteState`, tracks directory navigation history
-/// (including last-child directory tracking for upward navigation), increments scan generation,
-/// and rebuilds fuzzy directory matches.
+/// Populates directory entries for `dir_path` into `PaletteState`, tracks
+/// directory navigation history (including last-child directory tracking for
+/// upward navigation), increments scan generation, and rebuilds fuzzy directory
+/// matches.
 pub fn loadDirectoryEntries(self: *PaletteState, io: std.Io, dir_path: []const u8) !void {
     const raw_target = std.mem.trimEnd(u8, dir_path, "/\\");
     const target = if (core_fs.isCbzFile(raw_target))
@@ -47,7 +48,12 @@ pub fn loadDirectoryEntries(self: *PaletteState, io: std.Io, dir_path: []const u
     _ = self.dir_scan_generation.fetchAdd(1, .release);
 
     self.clearDirItems();
-    self.current_dir_image_count = core_fs.scanDirectoryEntries(self.allocator, io, dir_path_copy, &self.dir_items) catch |err| blk: {
+    self.current_dir_image_count = core_fs.scanDirectoryEntries(
+        self.allocator,
+        io,
+        dir_path_copy,
+        &self.dir_items,
+    ) catch |err| blk: {
         std.log.warn("Failed to scan directory '{s}': {}", .{ dir_path_copy, err });
         break :blk 0;
     };

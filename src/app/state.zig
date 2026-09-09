@@ -57,7 +57,8 @@ pub fn stopTextInput(display: DisplayState) void {
 /// - Background workers (decode, scan, IPC) run as isolated tasks that receive plain
 ///   value copies of parameters (paths, generation counters) and touch zero shared state.
 /// - Workers communicate exclusively by pushing event messages into `event_queue` (MpscQueue).
-/// - The main thread consumes background events during frame updates and updates `ViewerState` safely.
+/// - The main thread consumes background events during frame updates and
+///   updates `ViewerState` safely.
 /// Main Top-Level Application State & Engine Container.
 ///
 /// Owns the visual model (`viewer: ViewerState`), hardware contexts (`gpu_device`),
@@ -85,7 +86,8 @@ pub const AppState = struct {
     pending_ipc_commands: std.ArrayList(*ipc.IpcCommandData) = .empty,
     pending_intents: std.ArrayList(AppIntent) = .empty,
 
-    /// Initializes top-level `AppState` in headless mode without creating an SDL window, suitable for tests.
+    /// Initializes top-level `AppState` in headless mode without creating an SDL
+    /// window, suitable for tests.
     pub fn initHeadless(allocator: std.mem.Allocator, io: std.Io) !AppState {
         var state = AppState{
             .viewer = try ViewerState.initHeadless(allocator),
@@ -107,10 +109,12 @@ pub const AppState = struct {
                 break :blk 4;
             };
         }
-        // 16 intents: accommodates worst-case enqueued IPC, keyboard, palette, and slideshow intents in a single tick
+        // 16 intents: accommodates worst-case enqueued IPC, keyboard, palette,
+        // and slideshow intents in a single tick
         try self.pending_intents.ensureTotalCapacity(self.allocator, 16);
         errdefer self.pending_intents.deinit(self.allocator);
-        // 16 events: accommodates concurrent worker background events (decodes, EXIF, path scans) processed per tick
+        // 16 events: accommodates concurrent worker background events
+        // (decodes, EXIF, path scans) processed per tick
         try self.event_batch.ensureTotalCapacity(self.allocator, 16);
         errdefer self.event_batch.deinit(self.allocator);
         // 8 commands: accommodates queued socket IPC command buffers
@@ -127,7 +131,8 @@ pub const AppState = struct {
         self.pending_intents.clearRetainingCapacity();
     }
 
-    /// Returns `true` if files are currently loading, background workers are active, active unpaused slideshow is running, or animations are active.
+    /// Returns `true` if files are currently loading, background workers are
+    /// active, active unpaused slideshow is running, or animations are active.
     pub inline fn isBusy(self: *const AppState) bool {
         return self.viewer.hasActiveAnimation() or
             self.viewer.navigation.is_loading_files.load(.acquire) or
@@ -135,7 +140,8 @@ pub const AppState = struct {
             (self.viewer.isSlideshowActive() and !self.isSlideshowPaused());
     }
 
-    /// Returns `true` if the currently active slide is still decoding or awaiting GPU texture upload.
+    /// Returns `true` if the currently active slide is still decoding or awaiting
+    /// GPU texture upload.
     /// Note: Terminal states (.failed and headless .loaded_cpu) return false to avoid deadlock.
     pub fn isCurrentSlideLoading(self: *const AppState) bool {
         const cur_idx = self.viewer.navigation.current_index orelse return false;
@@ -147,7 +153,8 @@ pub const AppState = struct {
         };
     }
 
-    /// Returns `true` if slideshow mode is active but paused due to explicit pause, active modal, user dragging, or slide loading.
+    /// Returns `true` if slideshow mode is active but paused due to explicit
+    /// pause, active modal, user dragging, or slide loading.
     pub fn isSlideshowPaused(self: *const AppState) bool {
         if (!self.viewer.isSlideshowActive()) return false;
         return self.viewer.navigation.slideshow.isPaused() or
@@ -156,13 +163,15 @@ pub const AppState = struct {
             self.isCurrentSlideLoading();
     }
 
-    /// Returns the CacheEntry corresponding to the previous slide in an active crossfade, if available.
+    /// Returns the CacheEntry corresponding to the previous slide in an active
+    /// crossfade, if available.
     pub fn getTransitionPrevEntry(self: *const AppState) ?CacheEntry {
         const prev_idx = self.viewer.getTransitionPrevIndex() orelse return null;
         return self.cache.getEntry(self.cache.activeKey(prev_idx));
     }
 
-    /// Returns the override or EXIF rotation in degrees for the previous slide in an active crossfade.
+    /// Returns the override or EXIF rotation in degrees for the previous slide
+    /// in an active crossfade.
     pub fn getTransitionPrevRotation(self: *const AppState) f32 {
         return switch (self.viewer.image_transition) {
             .none => 0.0,
@@ -170,7 +179,8 @@ pub const AppState = struct {
         };
     }
 
-    /// Returns the remaining millisecond deadline for transient holding timers (e.g. title auto-hide, snackbar), or null if none active.
+    /// Returns the remaining millisecond deadline for transient holding timers
+    /// (e.g. title auto-hide, snackbar), or null if none active.
     pub fn getWaitTimeoutMs(self: *const AppState, now: u64) ?i32 {
         var min_rem: ?u64 = null;
         if (!self.viewer.ui.overlays.show_title and self.viewer.ui.title_auto_hide_timeout_ms > 0) {
@@ -191,7 +201,8 @@ pub const AppState = struct {
         return exif.readJpegExifOrientation(self.io, path);
     }
 
-    /// Releases all engine resources, cancels background worker tasks, and frees GPU textures and queues.
+    /// Releases all engine resources, cancels background worker tasks, and
+    /// frees GPU textures and queues.
     pub fn deinit(self: *AppState) void {
         self.workers.drainAndQuiesce(self.io);
 
@@ -224,7 +235,8 @@ pub const AppState = struct {
         self.workers.event_queue.deinit(self.allocator, self.io);
     }
 
-    /// Stores a user-overridden rotation angle for the given media path in the persistent rotation map.
+    /// Stores a user-overridden rotation angle for the given media path in the
+    /// persistent rotation map.
     pub fn putRotation(self: *AppState, path: []const u8, angle: f32) !void {
         try self.viewer.putRotation(self.allocator, path, angle);
     }
@@ -239,18 +251,29 @@ pub const AppState = struct {
         self.viewer.resetZoomPan();
     }
 
-    /// Computes the unzoomed base scale factor fitting the current image to the viewport according to fit_mode.
+    /// Computes the unzoomed base scale factor fitting the current image to the
+    /// viewport according to fit_mode.
     fn getBaseScale(self: *AppState) f32 {
         const entry = self.getCurrentEntry() orelse return 1.0;
         const raw_w: f32 = switch (entry.status) {
             .loaded_gpu => |gpu| gpu.w,
             .loaded_cpu => |cpu| cpu.w,
-            else => if (entry.full_w > 0) entry.full_w else if (entry.thumbnail.getInfo()) |info| info.w else 0.0,
+            else => if (entry.full_w > 0)
+                entry.full_w
+            else if (entry.thumbnail.getInfo()) |info|
+                info.w
+            else
+                0.0,
         };
         const raw_h: f32 = switch (entry.status) {
             .loaded_gpu => |gpu| gpu.h,
             .loaded_cpu => |cpu| cpu.h,
-            else => if (entry.full_h > 0) entry.full_h else if (entry.thumbnail.getInfo()) |info| info.h else 0.0,
+            else => if (entry.full_h > 0)
+                entry.full_h
+            else if (entry.thumbnail.getInfo()) |info|
+                info.h
+            else
+                0.0,
         };
         if (raw_w <= 0.0 or raw_h <= 0.0) return 1.0;
 
@@ -277,16 +300,27 @@ pub const AppState = struct {
 
         var available_width = win_w;
         if (clay.isDebugModeEnabled()) {
-            available_width = @max(available_width - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0);
+            available_width = @max(
+                available_width - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)),
+                1.0,
+            );
         }
         const view_w = @max(available_width, 1.0);
         const view_h = @max(win_h, 1.0);
 
-        const dims = view_transform.computeViewDims(raw_w, raw_h, self.viewer.viewport.rotation_angle, view_w, view_h, self.viewer.viewport.fit_mode);
+        const dims = view_transform.computeViewDims(
+            raw_w,
+            raw_h,
+            self.viewer.viewport.rotation_angle,
+            view_w,
+            view_h,
+            self.viewer.viewport.fit_mode,
+        );
         return dims.base_scale;
     }
 
-    /// Returns true if the pointer position in input is currently within the Clay debug UI hierarchy panel.
+    /// Returns true if the pointer position in input is currently within the
+    /// Clay debug UI hierarchy panel.
     pub fn isPointerInDebugPanel(self: *const AppState, input: FrameInput) bool {
         _ = self;
         return input.isPointerInDebugPanel();
@@ -308,7 +342,8 @@ pub const AppState = struct {
         try self.viewer.ui.palette.rebuildActionMatches();
     }
 
-    /// Returns a mutable pointer to the CacheEntry corresponding to the currently active image, or null.
+    /// Returns a mutable pointer to the CacheEntry corresponding to the
+    /// currently active image, or null.
     pub fn getCurrentEntryPtr(self: *AppState) ?*CacheEntry {
         const idx = self.viewer.navigation.current_index orelse return null;
         return self.cache.get(self.cache.activeKey(idx));
@@ -328,7 +363,8 @@ pub const AppState = struct {
         self.cache.clear(dev_opt);
     }
 
-    /// Synchronizes viewport rotation angle with active user rotation override, parsed EXIF orientation, or zero.
+    /// Synchronizes viewport rotation angle with active user rotation override,
+    /// parsed EXIF orientation, or zero.
     pub fn updateCurrentRotation(self: *AppState) void {
         const media_opt = blk: {
             const len = self.viewer.navigation.image_list.items.len;
@@ -351,7 +387,8 @@ pub const AppState = struct {
         }
     }
 
-    /// Completes a pending IPC screenshot capture request after frame rendering, sending reply to client.
+    /// Completes a pending IPC screenshot capture request after frame
+    /// rendering, sending reply to client.
     pub fn handleScreenshotPostRender(self: *AppState, render_err: ?anyerror) void {
         switch (self.viewer.ui.screenshot_mode) {
             .idle => {},
@@ -395,11 +432,17 @@ pub const AppState = struct {
         );
     }
 
-    /// Activates the command palette in the specified PaletteMode, resetting queries and starting text input.
+    /// Activates the command palette in the specified PaletteMode, resetting
+    /// queries and starting text input.
     pub fn openPalette(self: *AppState, active_type: PaletteMode) !void {
         self.viewer.ui.palette.reset();
         self.viewer.ui.palette.mode = active_type;
-        self.viewer.animations.start(.palette_reveal, 1.0, state_pkg.DURATION_PALETTE_OPEN_MS, .ease_out_cubic);
+        self.viewer.animations.start(
+            .palette_reveal,
+            1.0,
+            state_pkg.DURATION_PALETTE_OPEN_MS,
+            .ease_out_cubic,
+        );
         self.viewer.ui.palette.selected_idx = switch (active_type) {
             .files => self.viewer.navigation.current_index orelse 0,
             else => 0,
@@ -464,7 +507,10 @@ pub const AppState = struct {
                     .inactive => 3.0,
                 };
                 const formatted = std.fmt.bufPrint(&buf, "{d:.1}", .{dur_secs}) catch |err| blk: {
-                    std.log.warn("Failed to format slideshow interval string: {}, defaulting to 3.0", .{err});
+                    std.log.warn(
+                        "Failed to format slideshow interval string: {}, defaulting to 3.0",
+                        .{err},
+                    );
                     break :blk "3.0";
                 };
                 try self.viewer.ui.palette.query.appendSlice(self.allocator, formatted);
@@ -505,17 +551,41 @@ pub const AppState = struct {
 
         if (has_stat) {
             if (stat.kind == .directory) {
-                try workers_mod.startAsyncPathScan(&self.workers, &self.viewer.navigation.is_loading_files, self.allocator, self.io, path, true);
+                try workers_mod.startAsyncPathScan(
+                    &self.workers,
+                    &self.viewer.navigation.is_loading_files,
+                    self.allocator,
+                    self.io,
+                    path,
+                    true,
+                );
             } else if (core_fs.isCbzFile(path)) {
                 self.viewer.navigation.is_loading_files.store(true, .release);
                 errdefer self.viewer.navigation.is_loading_files.store(false, .release);
-                try workers_mod.startAsyncPathScan(&self.workers, &self.viewer.navigation.is_loading_files, self.allocator, self.io, path, false);
+                try workers_mod.startAsyncPathScan(
+                    &self.workers,
+                    &self.viewer.navigation.is_loading_files,
+                    self.allocator,
+                    self.io,
+                    path,
+                    false,
+                );
             } else {
                 const dup = try self.viewer.navigation.directory_arena.allocator().dupe(u8, path);
-                try self.viewer.navigation.image_list.append(self.allocator, .{ .filesystem = .{ .path = dup } });
+                try self.viewer.navigation.image_list.append(
+                    self.allocator,
+                    .{ .filesystem = .{ .path = dup } },
+                );
                 self.viewer.navigation.current_index = 0;
 
-                try workers_mod.startAsyncPathScan(&self.workers, &self.viewer.navigation.is_loading_files, self.allocator, self.io, path, false);
+                try workers_mod.startAsyncPathScan(
+                    &self.workers,
+                    &self.viewer.navigation.is_loading_files,
+                    self.allocator,
+                    self.io,
+                    path,
+                    false,
+                );
             }
         }
         try self.rebuildPaletteMatches();
@@ -537,7 +607,12 @@ pub const AppState = struct {
         defer extracted.surface.destroy();
 
         const dev = self.gpu_device orelse return;
-        const upload_res = image.uploadSurfaceToGpu(dev, extracted.surface, self.unpack_compute_pipeline, &self.upload_staging) orelse {
+        const upload_res = image.uploadSurfaceToGpu(
+            dev,
+            extracted.surface,
+            self.unpack_compute_pipeline,
+            &self.upload_staging,
+        ) orelse {
             e.thumbnail = .not_available;
             return;
         };
@@ -572,7 +647,8 @@ pub const AppState = struct {
         self.updateCurrentRotation();
     }
 
-    /// Scans cache slots around the current navigation index, evicting distant textures and uploading ready surfaces to the GPU.
+    /// Scans cache slots around the current navigation index, evicting distant
+    /// textures and uploading ready surfaces to the GPU.
     pub fn prepareCacheTextures(self: *AppState) void {
         if (self.gpu_device == null) return;
 
@@ -585,9 +661,14 @@ pub const AppState = struct {
         const keys = self.cache.slots.items(.key);
 
         for (entries, keys) |*entry, key| {
-            const is_crossfading = self.viewer.animations.isActive(.thumb_crossfade) and
-                (if (self.viewer.navigation.current_index) |cur| self.cache.activeKey(cur).index == key.index else false);
-            if (!is_crossfading and entry.status == .loaded_gpu and !self.viewer.ui.overlays.debug_show_thumb) {
+            const is_cur = if (self.viewer.navigation.current_index) |cur|
+                self.cache.activeKey(cur).index == key.index
+            else
+                false;
+            const is_crossfading = self.viewer.animations.isActive(.thumb_crossfade) and is_cur;
+            if (!is_crossfading and entry.status == .loaded_gpu and
+                !self.viewer.ui.overlays.debug_show_thumb)
+            {
                 switch (entry.thumbnail) {
                     .loaded => |thumb| {
                         if (self.gpu_device) |gpu_dev| {
@@ -641,8 +722,14 @@ pub const AppState = struct {
                 switch (entry.status) {
                     .loaded_cpu => {
                         const dist = if (cur_idx_opt) |cur| blk: {
-                            const linear_dist = if (key.index > cur) key.index - cur else cur - key.index;
-                            break :blk if (total_items > 0 and linear_dist <= total_items) @min(linear_dist, total_items - linear_dist) else linear_dist;
+                            const linear_dist = if (key.index > cur)
+                                key.index - cur
+                            else
+                                cur - key.index;
+                            break :blk if (total_items > 0 and linear_dist <= total_items)
+                                @min(linear_dist, total_items - linear_dist)
+                            else
+                                linear_dist;
                         } else i;
 
                         if (dist < min_dist) {
@@ -672,7 +759,12 @@ pub const AppState = struct {
         if (upload_target) |target| {
             defer target.cpu.surface.destroy();
             if (self.gpu_device) |gpu_dev| {
-                if (image.uploadSurfaceToGpu(gpu_dev, target.cpu.surface, self.unpack_compute_pipeline, &self.upload_staging)) |res| {
+                if (image.uploadSurfaceToGpu(
+                    gpu_dev,
+                    target.cpu.surface,
+                    self.unpack_compute_pipeline,
+                    &self.upload_staging,
+                )) |res| {
                     const loaded_gpu_status = CacheStatus{
                         .loaded_gpu = .{
                             .gpu_texture = res.gpu_texture,
@@ -698,12 +790,28 @@ pub const AppState = struct {
                     if (!updated) {
                         gpu_dev.releaseTexture(res.gpu_texture);
                     } else {
-                        self.cache.enforceVramBudget(gpu_dev, self.viewer.navigation.current_index, self.viewer.getTransitionPrevIndex(), self.viewer.navigation.image_list.items.len, image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES);
+                        self.cache.enforceVramBudget(
+                            gpu_dev,
+                            self.viewer.navigation.current_index,
+                            self.viewer.getTransitionPrevIndex(),
+                            self.viewer.navigation.image_list.items.len,
+                            image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES,
+                        );
                         if (self.viewer.navigation.current_index) |cur_idx| {
                             if (self.cache.activeKey(cur_idx).index == target.key.index) {
                                 if (self.cache.get(target.key)) |entry| {
-                                    if (entry.thumbnail == .loaded and !self.viewer.ui.overlays.debug_show_thumb and !self.viewer.isSlideshowActive() and self.viewer.image_transition == .none) {
-                                        self.viewer.animations.startFrom(.thumb_crossfade, 0.0, 1.0, state_pkg.DURATION_THUMB_CROSSFADE_MS, .ease_out_quad);
+                                    const can_crossfade = entry.thumbnail == .loaded and
+                                        !self.viewer.ui.overlays.debug_show_thumb and
+                                        !self.viewer.isSlideshowActive() and
+                                        self.viewer.image_transition == .none;
+                                    if (can_crossfade) {
+                                        self.viewer.animations.startFrom(
+                                            .thumb_crossfade,
+                                            0.0,
+                                            1.0,
+                                            state_pkg.DURATION_THUMB_CROSSFADE_MS,
+                                            .ease_out_quad,
+                                        );
                                     }
                                     if (self.viewer.image_transition != .none) {
                                         if (self.viewer.animations.get(.image_crossfade) < 0.001) {
@@ -739,7 +847,10 @@ var test_clay_memory: [1024 * 1024]u8 = undefined;
 test "AppState.clampZoomFactor bounds based on image dimensions" {
     _ = clay.initialize(clay.Arena.init(&test_clay_memory), .{ .w = 1024, .h = 768 }, .{});
 
-    var state = try AppState.initHeadless(std.testing.allocator, std.Io.Threaded.global_single_threaded.io());
+    var state = try AppState.initHeadless(
+        std.testing.allocator,
+        std.Io.Threaded.global_single_threaded.io(),
+    );
     defer state.deinit();
 
     // Default base_scale without loaded image is 1.0
@@ -784,10 +895,16 @@ test "AppState.clampZoomFactor bounds based on image dimensions" {
 }
 
 test "AppState.updateCurrentRotation syncs EXIF orientation" {
-    var state = try AppState.initHeadless(std.testing.allocator, std.Io.Threaded.global_single_threaded.io());
+    var state = try AppState.initHeadless(
+        std.testing.allocator,
+        std.Io.Threaded.global_single_threaded.io(),
+    );
     defer state.deinit();
 
-    try state.viewer.navigation.image_list.append(std.testing.allocator, .{ .filesystem = .{ .path = "test_photo_1.jpg" } });
+    try state.viewer.navigation.image_list.append(
+        std.testing.allocator,
+        .{ .filesystem = .{ .path = "test_photo_1.jpg" } },
+    );
     state.viewer.navigation.current_index = 0;
 
     // Initially uncached -> rotation_angle should be 0.0

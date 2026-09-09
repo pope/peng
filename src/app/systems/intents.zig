@@ -83,7 +83,10 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
         .reset_rotation => {
             if (nav.getCurrentImageEntry()) |entry| {
                 const path = entry.getPath();
-                const exif_rot = if (self.getCurrentEntry()) |e| e.orientation else (self.readJpegExifOrientation(path) orelse .normal);
+                const exif_rot = if (self.getCurrentEntry()) |e|
+                    e.orientation
+                else
+                    (self.readJpegExifOrientation(path) orelse .normal);
                 vp.rotation_angle = exif_rot.toDegrees();
                 try self.putRotation(path, vp.rotation_angle);
             } else {
@@ -94,7 +97,11 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
         .next_image, .prev_image, .first_image, .last_image, .go_to_image => {
             const now = sdl.timer.getTicks();
             const elapsed = now -| nav.last_nav_time_ms;
-            if (ui.overlays.auto_title and nav.image_list.items.len > 0 and nav.last_nav_time_ms > 0 and elapsed < 200) {
+            const should_show_auto_title = ui.overlays.auto_title and
+                nav.image_list.items.len > 0 and
+                nav.last_nav_time_ms > 0 and
+                elapsed < 200;
+            if (should_show_auto_title) {
                 if (!ui.overlays.show_title) {
                     ui.title_auto_hide_timeout_ms = now + 1500;
                     const progress = self.viewer.animations.get(.title_overlay);
@@ -116,7 +123,11 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                     break :blk res;
                 },
                 .last_image => blk: {
-                    const res = nav.goToIndex(if (nav.image_list.items.len > 0) nav.image_list.items.len - 1 else 0);
+                    const last_idx = if (nav.image_list.items.len > 0)
+                        nav.image_list.items.len - 1
+                    else
+                        0;
+                    const res = nav.goToIndex(last_idx);
                     nav.direction = .backward;
                     break :blk res;
                 },
@@ -124,7 +135,10 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 else => unreachable,
             };
 
-            if (old_index != null and nav.current_index != null and old_index.? != nav.current_index.?) {
+            const changed_image = old_index != null and
+                nav.current_index != null and
+                old_index.? != nav.current_index.?;
+            if (changed_image) {
                 const old_entry_loaded = if (self.cache.get(self.cache.activeKey(old_index.?))) |e|
                     (e.status == .loaded_gpu or (self.gpu_device == null and e.status != .failed))
                 else
@@ -132,7 +146,9 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 const is_animating = self.viewer.animations.isActive(.image_crossfade);
                 const should_crossfade = if (is_slideshow)
                     switch (nav.slideshow) {
-                        .active => |s| s.interval_s >= state.MIN_SLIDESHOW_DISSOLVE_INTERVAL_S and old_entry_loaded,
+                        .active => |s| s.interval_s >=
+                            state.MIN_SLIDESHOW_DISSOLVE_INTERVAL_S and
+                            old_entry_loaded,
                         .inactive => false,
                     }
                 else
@@ -143,7 +159,10 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                         .prev_index = old_index.?,
                         .prev_rotation = old_rot,
                     } };
-                    const is_ready = if (self.getCurrentEntry()) |e| e.status == .loaded_gpu else false;
+                    const is_ready = if (self.getCurrentEntry()) |e|
+                        e.status == .loaded_gpu
+                    else
+                        false;
                     if (is_ready) {
                         self.viewer.animations.startFrom(
                             .image_crossfade,
@@ -247,7 +266,9 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 .headless => {},
                 .windowed => |*win| {
                     win.is_fullscreen = !win.is_fullscreen;
-                    win.handle.setFullscreen(win.is_fullscreen) catch |err| std.log.err("setFullscreen failed: {}", .{err});
+                    win.handle.setFullscreen(win.is_fullscreen) catch |err| {
+                        std.log.err("setFullscreen failed: {}", .{err});
+                    };
                 },
             }
         },
@@ -256,7 +277,9 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 .headless => {},
                 .windowed => |*win| {
                     win.is_fullscreen = val;
-                    win.handle.setFullscreen(val) catch |err| std.log.err("setFullscreen failed: {}", .{err});
+                    win.handle.setFullscreen(val) catch |err| {
+                        std.log.err("setFullscreen failed: {}", .{err});
+                    };
                 },
             }
         },
@@ -327,8 +350,9 @@ fn triggerSnackbarForIntent(self: *AppState, intent: intents.AppIntent) void {
     }
 }
 
-/// System Pass: Dispatches all queued application intents in FIFO order to update domain and visual state,
-/// clearing the intent buffer once execution completes.
+/// System Pass: Dispatches all queued application intents in FIFO order to
+/// update domain and visual state, clearing the intent buffer once execution
+/// completes.
 pub fn sysExecuteIntents(ctx: FrameContext) !void {
     const self = ctx.state;
     if (self.pending_intents.items.len == 0) return;
@@ -346,9 +370,18 @@ test "Manga Mode toggles Right-to-Left image navigation" {
     var app_st = try AppState.initHeadless(allocator, io);
     defer app_st.deinit();
 
-    try app_st.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "page1.png" } });
-    try app_st.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "page2.png" } });
-    try app_st.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "page3.png" } });
+    try app_st.viewer.navigation.image_list.append(
+        allocator,
+        .{ .filesystem = .{ .path = "page1.png" } },
+    );
+    try app_st.viewer.navigation.image_list.append(
+        allocator,
+        .{ .filesystem = .{ .path = "page2.png" } },
+    );
+    try app_st.viewer.navigation.image_list.append(
+        allocator,
+        .{ .filesystem = .{ .path = "page3.png" } },
+    );
     app_st.viewer.navigation.current_index = 0;
 
     // Normal mode: next_image moves 0 -> 1
@@ -375,9 +408,18 @@ test "Navigation intents cleanly advance image index" {
     var app_st = try AppState.initHeadless(allocator, io);
     defer app_st.deinit();
 
-    try app_st.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "img1.png" } });
-    try app_st.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "img2.png" } });
-    try app_st.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "img3.png" } });
+    try app_st.viewer.navigation.image_list.append(
+        allocator,
+        .{ .filesystem = .{ .path = "img1.png" } },
+    );
+    try app_st.viewer.navigation.image_list.append(
+        allocator,
+        .{ .filesystem = .{ .path = "img2.png" } },
+    );
+    try app_st.viewer.navigation.image_list.append(
+        allocator,
+        .{ .filesystem = .{ .path = "img3.png" } },
+    );
     app_st.viewer.navigation.current_index = 0;
 
     try executeIntent(&app_st, .next_image);
@@ -474,25 +516,41 @@ test "toggle_title and set_title intents" {
     try testing.expect(app_st.viewer.ui.overlays.show_title);
     try testing.expect(app_st.viewer.animations.isActive(.title_overlay));
     app_st.viewer.animations.settleAll();
-    try testing.expectApproxEqAbs(@as(f32, 1.0), app_st.viewer.animations.get(.title_overlay), 0.001);
+    try testing.expectApproxEqAbs(
+        @as(f32, 1.0),
+        app_st.viewer.animations.get(.title_overlay),
+        0.001,
+    );
 
     // Toggle title off
     try executeIntent(&app_st, .toggle_title);
     try testing.expect(!app_st.viewer.ui.overlays.show_title);
     try testing.expect(app_st.viewer.animations.isActive(.title_overlay));
     app_st.viewer.animations.settleAll();
-    try testing.expectApproxEqAbs(@as(f32, 0.0), app_st.viewer.animations.get(.title_overlay), 0.001);
+    try testing.expectApproxEqAbs(
+        @as(f32, 0.0),
+        app_st.viewer.animations.get(.title_overlay),
+        0.001,
+    );
 
     // Explicit set_title
     try executeIntent(&app_st, .{ .set_title = true });
     try testing.expect(app_st.viewer.ui.overlays.show_title);
     app_st.viewer.animations.settleAll();
-    try testing.expectApproxEqAbs(@as(f32, 1.0), app_st.viewer.animations.get(.title_overlay), 0.001);
+    try testing.expectApproxEqAbs(
+        @as(f32, 1.0),
+        app_st.viewer.animations.get(.title_overlay),
+        0.001,
+    );
 
     try executeIntent(&app_st, .{ .set_title = false });
     try testing.expect(!app_st.viewer.ui.overlays.show_title);
     app_st.viewer.animations.settleAll();
-    try testing.expectApproxEqAbs(@as(f32, 0.0), app_st.viewer.animations.get(.title_overlay), 0.001);
+    try testing.expectApproxEqAbs(
+        @as(f32, 0.0),
+        app_st.viewer.animations.get(.title_overlay),
+        0.001,
+    );
 }
 
 test "fast scrubbing triggers title overlay auto-hide" {
@@ -539,7 +597,10 @@ test "sysExecuteIntents triggers snackbar on filter and scale changes" {
         .delta_time_ms = 16.0,
     });
 
-    try testing.expectEqualStrings("Filter: Mitchell-Netravali", app_st.viewer.ui.snackbar.getMessage());
+    try testing.expectEqualStrings(
+        "Filter: Mitchell-Netravali",
+        app_st.viewer.ui.snackbar.getMessage(),
+    );
     try testing.expect(app_st.viewer.animations.isActive(.snackbar));
     try testing.expect(app_st.viewer.ui.snackbar.timeout_ms > 0);
 
@@ -551,7 +612,10 @@ test "sysExecuteIntents triggers snackbar on filter and scale changes" {
         .delta_time_ms = 16.0,
     });
 
-    try testing.expectEqualStrings("Scale: Fill Window (Crop)", app_st.viewer.ui.snackbar.getMessage());
+    try testing.expectEqualStrings(
+        "Scale: Fill Window (Crop)",
+        app_st.viewer.ui.snackbar.getMessage(),
+    );
 
     // Toggle snackbar off disables notifications
     try app_st.pushIntent(.toggle_snackbar);
@@ -572,9 +636,18 @@ test "sysExecuteIntents slideshow dissolve transitions and interval threshold" {
     var app_st = try AppState.initHeadless(allocator, io);
     defer app_st.deinit();
 
-    try app_st.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "s1.jpg" } });
-    try app_st.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "s2.jpg" } });
-    try app_st.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "s3.jpg" } });
+    try app_st.viewer.navigation.image_list.append(
+        allocator,
+        .{ .filesystem = .{ .path = "s1.jpg" } },
+    );
+    try app_st.viewer.navigation.image_list.append(
+        allocator,
+        .{ .filesystem = .{ .path = "s2.jpg" } },
+    );
+    try app_st.viewer.navigation.image_list.append(
+        allocator,
+        .{ .filesystem = .{ .path = "s3.jpg" } },
+    );
     app_st.viewer.navigation.current_index = 0;
 
     // 1. Slideshow with normal interval (>= 0.5s): triggers crossfade
@@ -623,9 +696,18 @@ test "sysExecuteIntents - manual navigation crossfade and rapid navigation cut" 
     var app_st = try AppState.initHeadless(allocator, io);
     defer app_st.deinit();
 
-    try app_st.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "s1.jpg" } });
-    try app_st.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "s2.jpg" } });
-    try app_st.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = "s3.jpg" } });
+    try app_st.viewer.navigation.image_list.append(
+        allocator,
+        .{ .filesystem = .{ .path = "s1.jpg" } },
+    );
+    try app_st.viewer.navigation.image_list.append(
+        allocator,
+        .{ .filesystem = .{ .path = "s2.jpg" } },
+    );
+    try app_st.viewer.navigation.image_list.append(
+        allocator,
+        .{ .filesystem = .{ .path = "s3.jpg" } },
+    );
     app_st.viewer.navigation.current_index = 0;
     app_st.viewer.navigation.crossfade = true;
     app_st.viewer.navigation.last_nav_time_ms = 0; // elapsed >= 200

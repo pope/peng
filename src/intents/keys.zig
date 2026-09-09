@@ -5,7 +5,8 @@
 
 const std = @import("std");
 
-/// Normalized keyboard key enumeration covering standard navigation, function, and alphanumeric keys.
+/// Normalized keyboard key enumeration covering standard navigation, function,
+/// and alphanumeric keys.
 pub const Key = enum {
     unknown,
     escape,

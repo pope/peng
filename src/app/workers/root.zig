@@ -25,8 +25,8 @@ pub const spawnDecode = decode.spawnDecode;
 pub const spawnPaletteScan = palette_scan.spawnPaletteScan;
 pub const spawnPaletteScanForItems = palette_scan.spawnPaletteScanForItems;
 
-/// Spawns a background `pathScanWorker` task to recursively scan directories or validate file paths,
-/// setting the navigation file loading state.
+/// Spawns a background `pathScanWorker` task to recursively scan directories
+/// or validate file paths, setting the navigation file loading state.
 pub fn spawnPathScan(args: *PathScanArgs) !void {
     _ = args.workers.active_threads.fetchAdd(1, .monotonic);
     args.is_loading_files.store(true, .release);
@@ -86,7 +86,8 @@ pub fn readPipedStdin(
     }
 }
 
-/// Clones `path`, allocates scan parameters, and dispatches an asynchronous background directory or path scan task.
+/// Clones `path`, allocates scan parameters, and dispatches an asynchronous
+/// background directory or path scan task.
 pub fn startAsyncPathScan(
     workers: *WorkerManager,
     is_loading_files: *std.atomic.Value(bool),

@@ -38,5 +38,6 @@ pub const mauve = clay.Color{ 203, 166, 247, 255 };
 /// Scale factor for text rendered inside the Clay debug inspector panel.
 /// Clay hardcodes .fontSize = 16 in clay.h for all internal debug UI text.
 /// Scaling by 0.75 reduces this text from 16px down to 12px to match our
-/// compact UI text scale (11–13px), preventing oversized labels and fit issues in the debug sidebar.
+/// compact UI text scale (11–13px), preventing oversized labels and fit
+/// issues in the debug sidebar.
 pub const debug_font_scale: f32 = 0.75;

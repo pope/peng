@@ -34,7 +34,8 @@ pub const IpcServer = struct {
         return self;
     }
 
-    /// Connects a dummy socket to wake the listener thread, removes socket file, and destroys the server.
+    /// Connects a dummy socket to wake the listener thread, removes socket file,
+    /// and destroys the server.
     pub fn deinit(self: *IpcServer, io: std.Io) void {
         if (builtin.os.tag != .windows) {
             const pid = getProcessId();
@@ -124,7 +125,8 @@ pub const IpcCommand = union(enum) {
     quit,
     screenshot: []const u8,
 
-    /// Converts an IPC command variant into an `AppIntent`, or returns `null` for internal commands.
+    /// Converts an IPC command variant into an `AppIntent`, or returns `null`
+    /// for internal commands.
     pub fn toIntent(self: IpcCommand) ?intents.AppIntent {
         switch (self) {
             .zoom => |factor| return .{ .set_zoom = factor },
@@ -196,7 +198,11 @@ pub const IpcCommand = union(enum) {
             if (px_str.len > 128 or py_str.len > 128) return error.InvalidArgument;
             const px = try std.fmt.parseFloat(f32, px_str);
             const py = try std.fmt.parseFloat(f32, py_str);
-            if (std.math.isNan(px) or std.math.isInf(px) or std.math.isNan(py) or std.math.isInf(py)) return error.InvalidArgument;
+            if (std.math.isNan(px) or std.math.isInf(px) or
+                std.math.isNan(py) or std.math.isInf(py))
+            {
+                return error.InvalidArgument;
+            }
             return .{ .pan = .{ .x = px, .y = py } };
         } else if (std.mem.eql(u8, cmd, "adjust")) {
             const br_str = it.next() orelse return error.MissingArgument;
@@ -204,7 +210,11 @@ pub const IpcCommand = union(enum) {
             if (br_str.len > 128 or co_str.len > 128) return error.InvalidArgument;
             const br = try std.fmt.parseFloat(f32, br_str);
             const co = try std.fmt.parseFloat(f32, co_str);
-            if (std.math.isNan(br) or std.math.isInf(br) or std.math.isNan(co) or std.math.isInf(co)) return error.InvalidArgument;
+            if (std.math.isNan(br) or std.math.isInf(br) or
+                std.math.isNan(co) or std.math.isInf(co))
+            {
+                return error.InvalidArgument;
+            }
             return .{ .adjust = .{ .brightness = br, .contrast = co } };
         } else if (std.mem.eql(u8, cmd, "filter")) {
             const val = it.next() orelse return error.MissingArgument;
@@ -233,9 +243,15 @@ pub const IpcCommand = union(enum) {
             }
         } else if (std.mem.eql(u8, cmd, "title")) {
             if (it.next()) |val| {
-                if (std.mem.eql(u8, val, "true") or std.mem.eql(u8, val, "enable") or std.mem.eql(u8, val, "on")) {
+                const is_on = std.mem.eql(u8, val, "true") or
+                    std.mem.eql(u8, val, "enable") or
+                    std.mem.eql(u8, val, "on");
+                const is_off = std.mem.eql(u8, val, "false") or
+                    std.mem.eql(u8, val, "disable") or
+                    std.mem.eql(u8, val, "off");
+                if (is_on) {
                     return .{ .title = .enable };
-                } else if (std.mem.eql(u8, val, "false") or std.mem.eql(u8, val, "disable") or std.mem.eql(u8, val, "off")) {
+                } else if (is_off) {
                     return .{ .title = .disable };
                 } else if (std.mem.eql(u8, val, "toggle")) {
                     return .{ .title = .toggle };
@@ -247,9 +263,15 @@ pub const IpcCommand = union(enum) {
             }
         } else if (std.mem.eql(u8, cmd, "snackbar")) {
             if (it.next()) |val| {
-                if (std.mem.eql(u8, val, "true") or std.mem.eql(u8, val, "enable") or std.mem.eql(u8, val, "on")) {
+                const is_on = std.mem.eql(u8, val, "true") or
+                    std.mem.eql(u8, val, "enable") or
+                    std.mem.eql(u8, val, "on");
+                const is_off = std.mem.eql(u8, val, "false") or
+                    std.mem.eql(u8, val, "disable") or
+                    std.mem.eql(u8, val, "off");
+                if (is_on) {
                     return .{ .snackbar = .enable };
-                } else if (std.mem.eql(u8, val, "false") or std.mem.eql(u8, val, "disable") or std.mem.eql(u8, val, "off")) {
+                } else if (is_off) {
                     return .{ .snackbar = .disable };
                 } else if (std.mem.eql(u8, val, "toggle")) {
                     return .{ .snackbar = .toggle };
@@ -261,9 +283,15 @@ pub const IpcCommand = union(enum) {
             }
         } else if (std.mem.eql(u8, cmd, "windowless") or std.mem.eql(u8, cmd, "borderless")) {
             if (it.next()) |val| {
-                if (std.mem.eql(u8, val, "true") or std.mem.eql(u8, val, "enable") or std.mem.eql(u8, val, "on")) {
+                const is_on = std.mem.eql(u8, val, "true") or
+                    std.mem.eql(u8, val, "enable") or
+                    std.mem.eql(u8, val, "on");
+                const is_off = std.mem.eql(u8, val, "false") or
+                    std.mem.eql(u8, val, "disable") or
+                    std.mem.eql(u8, val, "off");
+                if (is_on) {
                     return .{ .windowless = .enable };
-                } else if (std.mem.eql(u8, val, "false") or std.mem.eql(u8, val, "disable") or std.mem.eql(u8, val, "off")) {
+                } else if (is_off) {
                     return .{ .windowless = .disable };
                 } else if (std.mem.eql(u8, val, "toggle")) {
                     return .{ .windowless = .toggle };
@@ -275,9 +303,15 @@ pub const IpcCommand = union(enum) {
             }
         } else if (std.mem.eql(u8, cmd, "crossfade")) {
             if (it.next()) |val| {
-                if (std.mem.eql(u8, val, "true") or std.mem.eql(u8, val, "enable") or std.mem.eql(u8, val, "on")) {
+                const is_on = std.mem.eql(u8, val, "true") or
+                    std.mem.eql(u8, val, "enable") or
+                    std.mem.eql(u8, val, "on");
+                const is_off = std.mem.eql(u8, val, "false") or
+                    std.mem.eql(u8, val, "disable") or
+                    std.mem.eql(u8, val, "off");
+                if (is_on) {
                     return .{ .crossfade = .enable };
-                } else if (std.mem.eql(u8, val, "false") or std.mem.eql(u8, val, "disable") or std.mem.eql(u8, val, "off")) {
+                } else if (is_off) {
                     return .{ .crossfade = .disable };
                 } else if (std.mem.eql(u8, val, "toggle")) {
                     return .{ .crossfade = .toggle };
@@ -367,7 +401,11 @@ pub fn readLineTimeout(
 ) !?[]const u8 {
     var len: usize = 0;
     while (len < buf.len) {
-        const msg = socket.receiveTimeout(io, buf[len..], .{ .duration = timeout_duration }) catch |err| switch (err) {
+        const msg = socket.receiveTimeout(
+            io,
+            buf[len..],
+            .{ .duration = timeout_duration },
+        ) catch |err| switch (err) {
             error.Timeout => return error.Timeout,
             else => return err,
         };
@@ -414,7 +452,10 @@ test "IpcCommand parsing" {
 
     const cmd_reset_adjustments = try IpcCommand.parse("reset_adjustments");
     try std.testing.expectEqual(IpcCommand.reset_adjustments, cmd_reset_adjustments);
-    try std.testing.expectEqual(intents.AppIntent.reset_adjustments, cmd_reset_adjustments.toIntent().?);
+    try std.testing.expectEqual(
+        intents.AppIntent.reset_adjustments,
+        cmd_reset_adjustments.toIntent().?,
+    );
 
     const cmd_title = try IpcCommand.parse("title true");
     try std.testing.expectEqual(TitleAction.enable, cmd_title.title);
@@ -430,51 +471,87 @@ test "IpcCommand parsing" {
 
     const cmd_snackbar = try IpcCommand.parse("snackbar true");
     try std.testing.expectEqual(SnackbarAction.enable, cmd_snackbar.snackbar);
-    try std.testing.expectEqual(intents.AppIntent{ .set_snackbar = true }, cmd_snackbar.toIntent().?);
+    try std.testing.expectEqual(
+        intents.AppIntent{ .set_snackbar = true },
+        cmd_snackbar.toIntent().?,
+    );
 
     const cmd_snackbar_toggle = try IpcCommand.parse("snackbar");
     try std.testing.expectEqual(SnackbarAction.toggle, cmd_snackbar_toggle.snackbar);
-    try std.testing.expectEqual(intents.AppIntent.toggle_snackbar, cmd_snackbar_toggle.toIntent().?);
+    try std.testing.expectEqual(
+        intents.AppIntent.toggle_snackbar,
+        cmd_snackbar_toggle.toIntent().?,
+    );
 
     const cmd_snackbar_disable = try IpcCommand.parse("snackbar off");
     try std.testing.expectEqual(SnackbarAction.disable, cmd_snackbar_disable.snackbar);
-    try std.testing.expectEqual(intents.AppIntent{ .set_snackbar = false }, cmd_snackbar_disable.toIntent().?);
+    try std.testing.expectEqual(
+        intents.AppIntent{ .set_snackbar = false },
+        cmd_snackbar_disable.toIntent().?,
+    );
 
     const cmd_wl_true = try IpcCommand.parse("windowless true");
     try std.testing.expectEqual(WindowlessAction.enable, cmd_wl_true.windowless);
-    try std.testing.expectEqual(intents.AppIntent{ .set_windowless = true }, cmd_wl_true.toIntent().?);
+    try std.testing.expectEqual(
+        intents.AppIntent{ .set_windowless = true },
+        cmd_wl_true.toIntent().?,
+    );
 
     const cmd_wl_false = try IpcCommand.parse("windowless false");
     try std.testing.expectEqual(WindowlessAction.disable, cmd_wl_false.windowless);
-    try std.testing.expectEqual(intents.AppIntent{ .set_windowless = false }, cmd_wl_false.toIntent().?);
+    try std.testing.expectEqual(
+        intents.AppIntent{ .set_windowless = false },
+        cmd_wl_false.toIntent().?,
+    );
 
     const cmd_wl_toggle = try IpcCommand.parse("windowless");
     try std.testing.expectEqual(WindowlessAction.toggle, cmd_wl_toggle.windowless);
-    try std.testing.expectEqual(intents.AppIntent.toggle_windowless, cmd_wl_toggle.toIntent().?);
+    try std.testing.expectEqual(
+        intents.AppIntent.toggle_windowless,
+        cmd_wl_toggle.toIntent().?,
+    );
 
     const cmd_bl_toggle_word = try IpcCommand.parse("borderless toggle");
     try std.testing.expectEqual(WindowlessAction.toggle, cmd_bl_toggle_word.windowless);
-    try std.testing.expectEqual(intents.AppIntent.toggle_windowless, cmd_bl_toggle_word.toIntent().?);
+    try std.testing.expectEqual(
+        intents.AppIntent.toggle_windowless,
+        cmd_bl_toggle_word.toIntent().?,
+    );
 
     const cmd_bl_on = try IpcCommand.parse("borderless on");
     try std.testing.expectEqual(WindowlessAction.enable, cmd_bl_on.windowless);
-    try std.testing.expectEqual(intents.AppIntent{ .set_windowless = true }, cmd_bl_on.toIntent().?);
+    try std.testing.expectEqual(
+        intents.AppIntent{ .set_windowless = true },
+        cmd_bl_on.toIntent().?,
+    );
 
     const cmd_cf_true = try IpcCommand.parse("crossfade true");
     try std.testing.expectEqual(CrossfadeAction.enable, cmd_cf_true.crossfade);
-    try std.testing.expectEqual(intents.AppIntent{ .set_crossfade = true }, cmd_cf_true.toIntent().?);
+    try std.testing.expectEqual(
+        intents.AppIntent{ .set_crossfade = true },
+        cmd_cf_true.toIntent().?,
+    );
 
     const cmd_cf_off = try IpcCommand.parse("crossfade off");
     try std.testing.expectEqual(CrossfadeAction.disable, cmd_cf_off.crossfade);
-    try std.testing.expectEqual(intents.AppIntent{ .set_crossfade = false }, cmd_cf_off.toIntent().?);
+    try std.testing.expectEqual(
+        intents.AppIntent{ .set_crossfade = false },
+        cmd_cf_off.toIntent().?,
+    );
 
     const cmd_cf_toggle = try IpcCommand.parse("crossfade");
     try std.testing.expectEqual(CrossfadeAction.toggle, cmd_cf_toggle.crossfade);
-    try std.testing.expectEqual(intents.AppIntent.toggle_crossfade, cmd_cf_toggle.toIntent().?);
+    try std.testing.expectEqual(
+        intents.AppIntent.toggle_crossfade,
+        cmd_cf_toggle.toIntent().?,
+    );
 
     const cmd_cf_toggle_word = try IpcCommand.parse("crossfade toggle");
     try std.testing.expectEqual(CrossfadeAction.toggle, cmd_cf_toggle_word.crossfade);
-    try std.testing.expectEqual(intents.AppIntent.toggle_crossfade, cmd_cf_toggle_word.toIntent().?);
+    try std.testing.expectEqual(
+        intents.AppIntent.toggle_crossfade,
+        cmd_cf_toggle_word.toIntent().?,
+    );
 
     try std.testing.expectError(error.UnknownCommand, IpcCommand.parse("invalid_command"));
 }
@@ -503,7 +580,10 @@ test "readLineTimeout - success and timeout" {
         .raw = std.Io.Duration.fromMilliseconds(20),
         .clock = .awake,
     };
-    try std.testing.expectError(error.Timeout, readLineTimeout(&client.socket, io, &buf, short_dur));
+    try std.testing.expectError(
+        error.Timeout,
+        readLineTimeout(&client.socket, io, &buf, short_dur),
+    );
 
     // Test successful read
     var write_buf: [64]u8 = undefined;

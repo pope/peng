@@ -71,7 +71,12 @@ pub const Font = struct {
     }
 
     /// Measures how many UTF-8 characters fit within `max_w` pixels.
-    pub fn measureString(self: Font, allocator: std.mem.Allocator, text: []const u8, max_w: i32) ?struct { measured_w: usize, measured_len: usize } {
+    pub fn measureString(
+        self: Font,
+        allocator: std.mem.Allocator,
+        text: []const u8,
+        max_w: i32,
+    ) ?struct { measured_w: usize, measured_len: usize } {
         var measured_w: c_int = 0;
         var measured_len: usize = 0;
         const c_text = allocator.dupeZ(u8, text) catch |err| {
@@ -79,14 +84,26 @@ pub const Font = struct {
             return null;
         };
         defer allocator.free(c_text);
-        if (c.TTF_MeasureString(self.ptr, c_text.ptr, text.len, max_w, &measured_w, &measured_len)) {
+        if (c.TTF_MeasureString(
+            self.ptr,
+            c_text.ptr,
+            text.len,
+            max_w,
+            &measured_w,
+            &measured_len,
+        )) {
             return .{ .measured_w = @intCast(measured_w), .measured_len = measured_len };
         }
         return null;
     }
 
     /// Renders high-quality anti-aliased text into a newly allocated 32-bit software surface.
-    pub fn renderTextBlended(self: Font, allocator: std.mem.Allocator, text: []const u8, color: Color) !Surface {
+    pub fn renderTextBlended(
+        self: Font,
+        allocator: std.mem.Allocator,
+        text: []const u8,
+        color: Color,
+    ) !Surface {
         const clean_text = if (std.mem.indexOfScalar(u8, text, 0)) |idx| text[0..idx] else text;
         if (clean_text.len == 0) return error.TtfRenderFailed;
 
@@ -96,7 +113,12 @@ pub const Font = struct {
         };
         defer allocator.free(c_text);
 
-        const raw = c.TTF_RenderText_Blended(self.ptr, c_text.ptr, clean_text.len, color.toSdlColor()) orelse return error.TtfRenderFailed;
+        const raw = c.TTF_RenderText_Blended(
+            self.ptr,
+            c_text.ptr,
+            clean_text.len,
+            color.toSdlColor(),
+        ) orelse return error.TtfRenderFailed;
         return .{ .ptr = raw };
     }
 

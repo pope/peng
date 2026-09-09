@@ -44,7 +44,8 @@ pub const OptionId = enum {
     windowless,
 };
 
-/// Declarative schema describing a command-line option, its target app, aliases, placeholder, and description.
+/// Declarative schema describing a command-line option, its target app,
+/// aliases, placeholder, and description.
 pub const CliOption = struct {
     id: OptionId,
     target: CliTarget = .both,
@@ -54,7 +55,8 @@ pub const CliOption = struct {
     arg_name: ?[]const u8 = null,
     description: []const u8,
 
-    /// Returns true if the given argument matches this option's short flag, long flag, or any alias.
+    /// Returns true if the given argument matches this option's short flag,
+    /// long flag, or any alias.
     pub fn matches(self: CliOption, arg: []const u8) bool {
         if (self.short) |s| {
             if (std.mem.eql(u8, arg, s)) return true;
@@ -74,7 +76,8 @@ pub const IpcCommandDesc = struct {
     description: []const u8,
 };
 
-/// Metadata describing an action executable from the Command Palette, including its shortcut and intent.
+/// Metadata describing an action executable from the Command Palette,
+/// including its shortcut and intent.
 pub const ActionMetadata = struct {
     name: []const u8,
     shortcut_text: []const u8,
@@ -83,7 +86,8 @@ pub const ActionMetadata = struct {
     intent: AppIntent,
 };
 
-/// Flattened keyboard shortcut entry mapping a specific key and modifier combination directly to an AppIntent.
+/// Flattened keyboard shortcut entry mapping a specific key and modifier
+/// combination directly to an AppIntent.
 pub const FlatShortcut = struct {
     key: Key,
     mod: KeyModifiers,
@@ -228,7 +232,11 @@ pub const actions = [_]ActionDef{
         .show_in_palette = true,
         .shortcuts = &.{.{ .key = .char_m }},
         .intent = .toggle_manga_mode,
-        .ipc = .{ .name = "manga", .args = "<true|false>", .description = "Toggle RTL manga reading mode" },
+        .ipc = .{
+            .name = "manga",
+            .args = "<true|false>",
+            .description = "Toggle RTL manga reading mode",
+        },
     },
     .{
         .id = .toggle_stats,
@@ -274,7 +282,11 @@ pub const actions = [_]ActionDef{
         .show_in_palette = true,
         .shortcuts = &.{.{ .key = .char_d, .mod = .{ .ctrl = true } }},
         .intent = .toggle_debug_mode,
-        .ipc = .{ .name = "debug", .args = "<true|false>", .description = "Toggle Clay UI layout debug borders" },
+        .ipc = .{
+            .name = "debug",
+            .args = "<true|false>",
+            .description = "Toggle Clay UI layout debug borders",
+        },
     },
     .{
         .id = .toggle_debug_thumb,
@@ -284,7 +296,11 @@ pub const actions = [_]ActionDef{
         .show_in_palette = true,
         .shortcuts = &.{.{ .key = .char_t, .mod = .{ .ctrl = true } }},
         .intent = .toggle_debug_thumb,
-        .ipc = .{ .name = "thumb", .args = "<toggle|true|false>", .description = "Toggle embedded thumbnail preview" },
+        .ipc = .{
+            .name = "thumb",
+            .args = "<toggle|true|false>",
+            .description = "Toggle embedded thumbnail preview",
+        },
     },
     .{
         .id = .quit,
@@ -656,7 +672,8 @@ pub const actions = [_]ActionDef{
         .id = .cycle_scale_mode,
         .title = "Cycle Scale Mode",
         .shortcut_text = "S",
-        .description = "Cycle through image scaling modes (Shrink, Full, Crop, Actual, Fit Width/Height)",
+        .description = "Cycle through image scaling modes " ++
+            "(Shrink, Full, Crop, Actual, Fit Width/Height)",
         .show_in_palette = true,
         .shortcuts = &.{.{ .key = .char_s }},
         .intent = .cycle_scale_mode,
@@ -665,7 +682,8 @@ pub const actions = [_]ActionDef{
         .id = .cycle_filter,
         .title = "Cycle Resampling Filter",
         .shortcut_text = "Shift+S",
-        .description = "Cycle through GPU resampling shaders (Nearest, Linear, Mitchell, Lanczos3, etc.)",
+        .description = "Cycle through GPU resampling shaders " ++
+            "(Nearest, Linear, Mitchell, Lanczos3, etc.)",
         .show_in_palette = true,
         .shortcuts = &.{.{ .key = .char_s, .mod = .{ .shift = true } }},
         .intent = .cycle_filter,
@@ -697,7 +715,11 @@ pub const actions = [_]ActionDef{
             .aliases = &.{ "--borderless", "--undecorated" },
             .description = "Start in borderless/windowless mode (no titlebar chrome)",
         }},
-        .ipc = .{ .name = "windowless / borderless", .args = "<toggle|true|false>", .description = "Toggle windowless/borderless mode" },
+        .ipc = .{
+            .name = "windowless / borderless",
+            .args = "<toggle|true|false>",
+            .description = "Toggle windowless/borderless mode",
+        },
     },
 
     // --- Non-Palette Capabilities (CLI flags and IPC verbs) ---
@@ -712,7 +734,8 @@ pub const actions = [_]ActionDef{
                 .target = .main,
                 .long = "--scale",
                 .arg_name = "<mode>",
-                .description = "Default image scaling mode (default: full)\n                             Modes: " ++ scale_modes_string,
+                .description = "Default image scaling mode (default: full)\n" ++
+                    "                             Modes: " ++ scale_modes_string,
             },
         },
         .ipc = .{
@@ -924,7 +947,9 @@ test "actions registry invariants and consistency" {
             try testing.expect(std.mem.startsWith(u8, s, "-"));
         }
         for (opt.aliases) |alias| {
-            try testing.expect(std.mem.startsWith(u8, alias, "--") or std.mem.startsWith(u8, alias, "-"));
+            const has_prefix = std.mem.startsWith(u8, alias, "--") or
+                std.mem.startsWith(u8, alias, "-");
+            try testing.expect(has_prefix);
         }
         try testing.expect(opt.description.len > 0);
     }

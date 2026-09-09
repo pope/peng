@@ -16,7 +16,8 @@ const parseExifOrientation = exif.parseExifOrientation;
 const RawMetadata = state_pkg.RawMetadata;
 const ThumbComponent = state_pkg.ThumbComponent;
 
-/// Unique lookup key identifying a cached image slot by its playlist index and cache generation epoch.
+/// Unique lookup key identifying a cached image slot by its playlist index
+/// and cache generation epoch.
 pub const CacheKey = struct {
     index: usize,
     generation: usize,
@@ -31,12 +32,14 @@ pub const CacheSlot = struct {
     entry: CacheEntry,
 };
 
-/// Structure-of-Arrays (SoA) collection managing cached image slots, generation epochs, and VRAM memory budgeting.
+/// Structure-of-Arrays (SoA) collection managing cached image slots,
+/// generation epochs, and VRAM memory budgeting.
 pub const CacheSlotMap = struct {
     slots: std.MultiArrayList(CacheSlot) = .{},
     generation: std.atomic.Value(usize) = .init(0),
 
-    /// Atomically increments the cache generation epoch to invalidate in-flight asynchronous decode tasks.
+    /// Atomically increments the cache generation epoch to invalidate
+    /// in-flight asynchronous decode tasks.
     pub fn advanceGeneration(self: *CacheSlotMap) usize {
         return self.generation.fetchAdd(1, .release) +% 1;
     }
@@ -57,7 +60,11 @@ pub const CacheSlotMap = struct {
     }
 
     /// Deinitializes all cached GPU textures and releases the multi-array storage memory.
-    pub fn deinit(self: *CacheSlotMap, allocator: std.mem.Allocator, gpu_device: ?sdl.gpu.Device) void {
+    pub fn deinit(
+        self: *CacheSlotMap,
+        allocator: std.mem.Allocator,
+        gpu_device: ?sdl.gpu.Device,
+    ) void {
         const entries = self.slots.items(.entry);
         for (entries) |*entry| {
             entry.deinit(gpu_device);
@@ -127,19 +134,33 @@ pub const CacheSlotMap = struct {
     }
 
     /// Appends a new slot for media `index` at current generation, returning its unique `CacheKey`.
-    pub fn appendSlot(self: *CacheSlotMap, allocator: std.mem.Allocator, index: usize, status: CacheStatus) !CacheKey {
+    pub fn appendSlot(
+        self: *CacheSlotMap,
+        allocator: std.mem.Allocator,
+        index: usize,
+        status: CacheStatus,
+    ) !CacheKey {
         const key = CacheKey{ .index = index, .generation = self.generation.load(.acquire) };
         try self.slots.append(allocator, .{ .key = key, .entry = .{ .status = status } });
         return key;
     }
 
     /// Appends an explicit key-entry pair into the slot map.
-    pub fn appendWithKey(self: *CacheSlotMap, allocator: std.mem.Allocator, key: CacheKey, entry: CacheEntry) !void {
+    pub fn appendWithKey(
+        self: *CacheSlotMap,
+        allocator: std.mem.Allocator,
+        key: CacheKey,
+        entry: CacheEntry,
+    ) !void {
         try self.slots.append(allocator, .{ .key = key, .entry = entry });
     }
 
     /// Removes a slot at `index_in_list` via swap-remove and releases its GPU texture.
-    pub fn removeAndDeinit(self: *CacheSlotMap, index_in_list: usize, gpu_device: ?sdl.gpu.Device) void {
+    pub fn removeAndDeinit(
+        self: *CacheSlotMap,
+        index_in_list: usize,
+        gpu_device: ?sdl.gpu.Device,
+    ) void {
         var entry = self.slots.items(.entry)[index_in_list];
         self.slots.swapRemove(index_in_list);
         entry.deinit(gpu_device);
@@ -166,7 +187,8 @@ pub const CacheSlotMap = struct {
     /// 1. Distant entries (circular distance > 2) are evicted first, furthest distance first.
     /// 2. If VRAM budget is still exceeded and only immediate neighbors (distance <= 2) remain,
     ///    they are evicted furthest first (distance 2 before distance 1).
-    /// The currently active image (`key.index == current_index`) and any active outgoing slideshow transition image (`key.index == protected_prev_index`) are strictly protected from eviction.
+    /// The currently active image (`key.index == current_index`) and any active outgoing
+    /// slideshow transition image (`key.index == protected_prev_index`) are strictly protected.
     pub fn enforceVramBudget(
         self: *CacheSlotMap,
         gpu_device: ?sdl.gpu.Device,
@@ -192,8 +214,14 @@ pub const CacheSlotMap = struct {
                         if (protected_prev_index) |prev| {
                             if (key.index == prev) continue;
                         }
-                        const linear_dist = if (key.index > cur) key.index - cur else cur - key.index;
-                        const dist = if (total_items > 0 and linear_dist <= total_items) @min(linear_dist, total_items - linear_dist) else linear_dist;
+                        const linear_dist = if (key.index > cur)
+                            key.index - cur
+                        else
+                            cur - key.index;
+                        const dist = if (total_items > 0 and linear_dist <= total_items)
+                            @min(linear_dist, total_items - linear_dist)
+                        else
+                            linear_dist;
 
                         if (dist > 2) {
                             if (distant_victim == null or dist > max_distant_dist) {
@@ -282,27 +310,36 @@ pub const CacheSlotMap = struct {
 /// Identifies image MIME container type using magic bytes from the header buffer,
 /// falling back to file extension matching if magic bytes are ambiguous or header is too short.
 pub fn detectMimeType(header: []const u8, path: []const u8) []const u8 {
-    if (header.len >= 8 and std.mem.startsWith(u8, header, &[_]u8{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A })) {
+    const png_magic = [_]u8{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
+    if (header.len >= 8 and std.mem.startsWith(u8, header, &png_magic)) {
         return "image/png";
     }
     if (header.len >= 3 and std.mem.startsWith(u8, header, &[_]u8{ 0xFF, 0xD8, 0xFF })) {
         return "image/jpeg";
     }
-    if (header.len >= 6 and (std.mem.startsWith(u8, header, "GIF87a") or std.mem.startsWith(u8, header, "GIF89a"))) {
+    if (header.len >= 6 and
+        (std.mem.startsWith(u8, header, "GIF87a") or
+            std.mem.startsWith(u8, header, "GIF89a")))
+    {
         return "image/gif";
     }
     if (header.len >= 2 and std.mem.startsWith(u8, header, "BM")) {
         return "image/bmp";
     }
-    if (header.len >= 12 and std.mem.startsWith(u8, header, "RIFF") and std.mem.eql(u8, header[8..12], "WEBP")) {
+    if (header.len >= 12 and
+        std.mem.startsWith(u8, header, "RIFF") and
+        std.mem.eql(u8, header[8..12], "WEBP"))
+    {
         return "image/webp";
     }
     if (header.len >= 8 and std.mem.startsWith(u8, header, "FUJIFILM")) {
         return "image/x-fuji-raf";
     }
-    if (header.len >= 4 and ((header[0] == 0x49 and header[1] == 0x49 and header[2] == 0x2A and header[3] == 0x00) or
-        (header[0] == 0x4D and header[1] == 0x4D and header[2] == 0x00 and header[3] == 0x2A)))
-    {
+    const is_tiff_le = header[0] == 0x49 and header[1] == 0x49 and
+        header[2] == 0x2A and header[3] == 0x00;
+    const is_tiff_be = header[0] == 0x4D and header[1] == 0x4D and
+        header[2] == 0x00 and header[3] == 0x2A;
+    if (header.len >= 4 and (is_tiff_le or is_tiff_be)) {
         const ext = std.fs.path.extension(path);
         if (std.ascii.eqlIgnoreCase(ext, ".arw")) return "image/x-sony-arw";
         if (std.ascii.eqlIgnoreCase(ext, ".cr2")) return "image/x-canon-cr2";
@@ -316,7 +353,11 @@ pub fn detectMimeType(header: []const u8, path: []const u8) []const u8 {
 
     const ext = std.fs.path.extension(path);
     if (std.ascii.eqlIgnoreCase(ext, ".png")) return "image/png";
-    if (std.ascii.eqlIgnoreCase(ext, ".jpg") or std.ascii.eqlIgnoreCase(ext, ".jpeg")) return "image/jpeg";
+    if (std.ascii.eqlIgnoreCase(ext, ".jpg") or
+        std.ascii.eqlIgnoreCase(ext, ".jpeg"))
+    {
+        return "image/jpeg";
+    }
     if (std.ascii.eqlIgnoreCase(ext, ".gif")) return "image/gif";
     if (std.ascii.eqlIgnoreCase(ext, ".bmp")) return "image/bmp";
     if (std.ascii.eqlIgnoreCase(ext, ".webp")) return "image/webp";
@@ -339,18 +380,22 @@ pub const ImageDimensions = struct {
     h: f32,
 };
 
-/// Parses full image width and height directly from image container headers (JPEG, PNG, GIF, WebP, BMP, TIFF, RAW)
-/// in < 0.05ms without performing software decompression.
+/// Parses full image width and height directly from image container headers
+/// (JPEG, PNG, GIF, WebP, BMP, TIFF, RAW) in < 0.05ms without software decompression.
 ///
 /// Returns null if the header buffer is insufficient or contains an unsupported format variant.
 pub fn parseImageDimensions(header: []const u8, mime_type: []const u8) ?ImageDimensions {
-    if (std.mem.eql(u8, mime_type, "image/x-fuji-raf") or (header.len >= 8 and std.mem.startsWith(u8, header, "FUJIFILM"))) {
+    const is_fuji_mime = std.mem.eql(u8, mime_type, "image/x-fuji-raf");
+    const is_fuji_magic = header.len >= 8 and std.mem.startsWith(u8, header, "FUJIFILM");
+    if (is_fuji_mime or is_fuji_magic) {
         if (exif.extractFujiRafMetadataLocation(header)) |meta_loc| {
             const end = meta_loc.file_offset + meta_loc.length;
             if (end <= header.len) {
                 const off: usize = @intCast(meta_loc.file_offset);
                 const len: usize = @intCast(meta_loc.length);
-                if (exif.parseFujiRafDimensions(header[off .. off + len])) |d| return .{ .w = d.w, .h = d.h };
+                if (exif.parseFujiRafDimensions(header[off .. off + len])) |d| {
+                    return .{ .w = d.w, .h = d.h };
+                }
             }
         }
         if (exif.extractFujiRafPreviewLocation(header)) |prev_loc| {
@@ -359,32 +404,69 @@ pub fn parseImageDimensions(header: []const u8, mime_type: []const u8) ?ImageDim
                 if (exif.readJpegDimensions(header[off..])) |d| return .{ .w = d.w, .h = d.h };
             }
         }
-    } else if (std.mem.startsWith(u8, mime_type, "image/x-") or std.mem.eql(u8, mime_type, "image/tiff") or
-        (header.len >= 4 and ((header[0] == 0x49 and header[1] == 0x49 and header[2] == 0x2A and header[3] == 0x00) or
-            (header[0] == 0x4D and header[1] == 0x4D and header[2] == 0x00 and header[3] == 0x2A))))
+    } else if (std.mem.startsWith(u8, mime_type, "image/x-") or
+        std.mem.eql(u8, mime_type, "image/tiff") or
+        (header.len >= 4 and ((header[0] == 0x49 and header[1] == 0x49 and
+            header[2] == 0x2A and header[3] == 0x00) or
+            (header[0] == 0x4D and header[1] == 0x4D and
+                header[2] == 0x00 and header[3] == 0x2A))))
     {
         if (exif.parseExifDimensions(header)) |d| return .{ .w = d.w, .h = d.h };
-    } else if (std.mem.eql(u8, mime_type, "image/jpeg") or (header.len >= 3 and std.mem.startsWith(u8, header, &[_]u8{ 0xFF, 0xD8, 0xFF }))) {
+    } else if (std.mem.eql(u8, mime_type, "image/jpeg") or
+        (header.len >= 3 and
+            std.mem.startsWith(u8, header, &[_]u8{ 0xFF, 0xD8, 0xFF })))
+    {
         if (exif.readJpegDimensions(header)) |d| return .{ .w = d.w, .h = d.h };
-    } else if (std.mem.eql(u8, mime_type, "image/png") or (header.len >= 8 and std.mem.startsWith(u8, header, &[_]u8{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A }))) {
-        if (header.len >= 24 and std.mem.startsWith(u8, header, &[_]u8{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A }) and std.mem.eql(u8, header[12..16], "IHDR")) {
+    } else if (std.mem.eql(u8, mime_type, "image/png") or
+        (header.len >= 8 and
+            std.mem.startsWith(u8, header, &[_]u8{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A })))
+    {
+        const is_png = header.len >= 24 and
+            std.mem.startsWith(
+                u8,
+                header,
+                &[_]u8{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A },
+            ) and
+            std.mem.eql(u8, header[12..16], "IHDR");
+        if (is_png) {
             const w = std.mem.readInt(u32, header[16..20], .big);
             const h = std.mem.readInt(u32, header[20..24], .big);
             if (w > 0 and h > 0) return .{ .w = @floatFromInt(w), .h = @floatFromInt(h) };
         }
-    } else if (std.mem.eql(u8, mime_type, "image/gif") or (header.len >= 6 and (std.mem.startsWith(u8, header, "GIF87a") or std.mem.startsWith(u8, header, "GIF89a")))) {
-        if (header.len >= 10 and (std.mem.startsWith(u8, header, "GIF87a") or std.mem.startsWith(u8, header, "GIF89a"))) {
+    } else if (std.mem.eql(u8, mime_type, "image/gif") or
+        (header.len >= 6 and
+            (std.mem.startsWith(u8, header, "GIF87a") or
+                std.mem.startsWith(u8, header, "GIF89a"))))
+    {
+        const is_gif = header.len >= 10 and
+            (std.mem.startsWith(u8, header, "GIF87a") or
+                std.mem.startsWith(u8, header, "GIF89a"));
+        if (is_gif) {
             const w = std.mem.readInt(u16, header[6..8], .little);
             const h = std.mem.readInt(u16, header[8..10], .little);
             if (w > 0 and h > 0) return .{ .w = @floatFromInt(w), .h = @floatFromInt(h) };
         }
-    } else if (std.mem.eql(u8, mime_type, "image/webp") or (header.len >= 12 and std.mem.startsWith(u8, header, "RIFF") and std.mem.eql(u8, header[8..12], "WEBP"))) {
-        if (header.len >= 25 and std.mem.startsWith(u8, header, "RIFF") and std.mem.eql(u8, header[8..12], "WEBP")) {
+    } else if (std.mem.eql(u8, mime_type, "image/webp") or
+        (header.len >= 12 and
+            std.mem.startsWith(u8, header, "RIFF") and
+            std.mem.eql(u8, header[8..12], "WEBP")))
+    {
+        if (header.len >= 25 and
+            std.mem.startsWith(u8, header, "RIFF") and
+            std.mem.eql(u8, header[8..12], "WEBP"))
+        {
             if (std.mem.eql(u8, header[12..16], "VP8X") and header.len >= 30) {
-                const w = 1 + (@as(u32, header[24]) | (@as(u32, header[25]) << 8) | (@as(u32, header[26]) << 16));
-                const h = 1 + (@as(u32, header[27]) | (@as(u32, header[28]) << 8) | (@as(u32, header[29]) << 16));
+                const w = 1 + (@as(u32, header[24]) |
+                    (@as(u32, header[25]) << 8) |
+                    (@as(u32, header[26]) << 16));
+                const h = 1 + (@as(u32, header[27]) |
+                    (@as(u32, header[28]) << 8) |
+                    (@as(u32, header[29]) << 16));
                 return .{ .w = @floatFromInt(w), .h = @floatFromInt(h) };
-            } else if (std.mem.eql(u8, header[12..16], "VP8L") and header.len >= 25 and header[20] == 0x2F) {
+            } else if (std.mem.eql(u8, header[12..16], "VP8L") and
+                header.len >= 25 and
+                header[20] == 0x2F)
+            {
                 const b0: u32 = header[21];
                 const b1: u32 = header[22];
                 const b2: u32 = header[23];
@@ -401,7 +483,9 @@ pub fn parseImageDimensions(header: []const u8, mime_type: []const u8) ?ImageDim
                 }
             }
         }
-    } else if (std.mem.eql(u8, mime_type, "image/bmp") or (header.len >= 2 and std.mem.startsWith(u8, header, "BM"))) {
+    } else if (std.mem.eql(u8, mime_type, "image/bmp") or
+        (header.len >= 2 and std.mem.startsWith(u8, header, "BM")))
+    {
         if (header.len >= 26 and std.mem.startsWith(u8, header, "BM")) {
             const dib_size = std.mem.readInt(u32, header[14..18], .little);
             if (dib_size >= 40 and header.len >= 26) {
@@ -410,7 +494,9 @@ pub fn parseImageDimensions(header: []const u8, mime_type: []const u8) ?ImageDim
                 if (w != std.math.minInt(i32) and h != std.math.minInt(i32)) {
                     const abs_w: u32 = @intCast(if (w < 0) -w else w);
                     const abs_h: u32 = @intCast(if (h < 0) -h else h);
-                    if (abs_w > 0 and abs_h > 0) return .{ .w = @floatFromInt(abs_w), .h = @floatFromInt(abs_h) };
+                    if (abs_w > 0 and abs_h > 0) {
+                        return .{ .w = @floatFromInt(abs_w), .h = @floatFromInt(abs_h) };
+                    }
                 }
             }
         }
@@ -418,7 +504,8 @@ pub fn parseImageDimensions(header: []const u8, mime_type: []const u8) ?ImageDim
     return null;
 }
 
-/// Container metadata discovered synchronously by probing file headers on the main thread (< 0.1ms).
+/// Container metadata discovered synchronously by probing file headers
+/// on the main thread (< 0.1ms).
 pub const ProbedImageMetadata = struct {
     dims: ImageDimensions,
     /// Image orientation metadata.
@@ -428,13 +515,17 @@ pub const ProbedImageMetadata = struct {
     has_embedded_thumbnail: bool = false,
 };
 
-/// Synchronously probes container headers for image dimensions, EXIF rotation, and embedded thumbnail presence
-/// in < 0.1ms before spawning background decode workers, eliminating Frame-1 layout jumps and UI flicker.
+/// Synchronously probes container headers for image dimensions, EXIF rotation,
+/// and embedded thumbnail presence in < 0.1ms before spawning background decode
+/// workers, eliminating Frame-1 layout jumps and UI flicker.
 pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
     switch (media) {
         .filesystem => |f| {
             var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, f.path, .{}) catch |err| {
-                std.log.warn("probeMediaMetadata: openFile failed for '{s}': {any}", .{ f.path, err });
+                std.log.warn(
+                    "probeMediaMetadata: openFile failed for '{s}': {any}",
+                    .{ f.path, err },
+                );
                 return null;
             };
             defer file.close(io);
@@ -444,7 +535,10 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
             const target_read = if (is_raw_ext) header_buf.len else 128 * 1024;
             var slices = [_][]u8{header_buf[0..target_read]};
             const n = file.readPositional(io, &slices, 0) catch |err| {
-                std.log.warn("probeMediaMetadata: readPositional failed for '{s}': {any}", .{ f.path, err });
+                std.log.warn(
+                    "probeMediaMetadata: readPositional failed for '{s}': {any}",
+                    .{ f.path, err },
+                );
                 return null;
             };
             if (n == 0) return null;
@@ -454,15 +548,26 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
             var rot: Orientation = .normal;
             var has_thumb = false;
 
-            if (std.mem.eql(u8, mime_type, "image/x-fuji-raf") or (n >= 8 and std.mem.startsWith(u8, header_buf[0..n], "FUJIFILM"))) {
-                // If dimensions not yet found in first 64KB, perform small positional read for metadata block
+            const is_fuji_mime = std.mem.eql(u8, mime_type, "image/x-fuji-raf");
+            const is_fuji_magic = n >= 8 and std.mem.startsWith(u8, header_buf[0..n], "FUJIFILM");
+            if (is_fuji_mime or is_fuji_magic) {
+                // If dimensions not yet found in first 64KB, perform small positional read
+                // for metadata block
                 if (dims == null) {
                     if (exif.extractFujiRafMetadataLocation(header_buf[0..n])) |meta_loc| {
                         var meta_tmp: [4096]u8 = undefined;
                         const to_read: usize = @min(@as(usize, meta_loc.length), meta_tmp.len);
                         var m_slices = [_][]u8{meta_tmp[0..to_read]};
-                        const mn = file.readPositional(io, &m_slices, meta_loc.file_offset) catch |err| blk: {
-                            std.log.warn("probeMediaMetadata: Fuji RAF metadata readPositional failed for '{s}': {any}", .{ f.path, err });
+                        const mn = file.readPositional(
+                            io,
+                            &m_slices,
+                            meta_loc.file_offset,
+                        ) catch |err| blk: {
+                            std.log.warn(
+                                "probeMediaMetadata: Fuji RAF metadata readPositional failed " ++
+                                    "for '{s}': {any}",
+                                .{ f.path, err },
+                            );
                             break :blk 0;
                         };
                         if (mn >= 4) {
@@ -484,8 +589,16 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
                     } else {
                         var p_buf: [8192]u8 = undefined;
                         var p_slices = [_][]u8{&p_buf};
-                        const pn = file.readPositional(io, &p_slices, prev_loc.file_offset) catch |err| blk: {
-                            std.log.warn("probeMediaMetadata: Fuji RAF preview readPositional failed for '{s}': {any}", .{ f.path, err });
+                        const pn = file.readPositional(
+                            io,
+                            &p_slices,
+                            prev_loc.file_offset,
+                        ) catch |err| blk: {
+                            std.log.warn(
+                                "probeMediaMetadata: Fuji RAF preview readPositional failed " ++
+                                    "for '{s}': {any}",
+                                .{ f.path, err },
+                            );
                             break :blk 0;
                         };
                         if (pn > 0) {
@@ -517,15 +630,26 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
             return ProbedImageMetadata{
                 .dims = final_dims,
                 .orientation = rot,
-                .raw_metadata = if (is_raw) RawMetadata.init(final_dims.w, final_dims.h) else .none,
+                .raw_metadata = if (is_raw)
+                    RawMetadata.init(final_dims.w, final_dims.h)
+                else
+                    .none,
                 .has_embedded_thumbnail = has_thumb,
             };
         },
         .archive_entry => |a| {
             if (a.compression_method) |cm| {
                 if (cm == 0 and a.file_offset != null) {
-                    var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, a.archive_path, .{}) catch |err| {
-                        std.log.warn("probeMediaMetadata: openFile failed for archive '{s}': {any}", .{ a.archive_path, err });
+                    var file = std.Io.Dir.openFile(
+                        std.Io.Dir.cwd(),
+                        io,
+                        a.archive_path,
+                        .{},
+                    ) catch |err| {
+                        std.log.warn(
+                            "probeMediaMetadata: openFile failed for archive '{s}': {any}",
+                            .{ a.archive_path, err },
+                        );
                         return null;
                     };
                     defer file.close(io);
@@ -533,16 +657,23 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
                     var header_buf: [65536]u8 = undefined;
                     var slices = [_][]u8{&header_buf};
                     const n = file.readPositional(io, &slices, a.file_offset.?) catch |err| {
-                        std.log.warn("probeMediaMetadata: readPositional failed for archive '{s}': {any}", .{ a.archive_path, err });
+                        std.log.warn(
+                            "probeMediaMetadata: readPositional failed for archive '{s}': {any}",
+                            .{ a.archive_path, err },
+                        );
                         return null;
                     };
                     if (n == 0) return null;
 
                     var data_offset: usize = 0;
-                    if (n >= @sizeOf(std.zip.LocalFileHeader) and std.mem.eql(u8, header_buf[0..4], &std.zip.local_file_header_sig)) {
+                    if (n >= @sizeOf(std.zip.LocalFileHeader) and
+                        std.mem.eql(u8, header_buf[0..4], &std.zip.local_file_header_sig))
+                    {
                         const filename_len = std.mem.readInt(u16, header_buf[26..28], .little);
                         const extra_len = std.mem.readInt(u16, header_buf[28..30], .little);
-                        data_offset = @sizeOf(std.zip.LocalFileHeader) + @as(usize, filename_len) + @as(usize, extra_len);
+                        data_offset = @sizeOf(std.zip.LocalFileHeader) +
+                            @as(usize, filename_len) +
+                            @as(usize, extra_len);
                     }
                     if (n <= data_offset) return null;
 
@@ -550,7 +681,8 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
                     const mime_type = detectMimeType(image_slice, a.entry_name);
                     const dims = parseImageDimensions(image_slice, mime_type) orelse return null;
                     const rot = exif.parseExifOrientation(image_slice) orelse .normal;
-                    const is_raw = core_fs.isRawFile(a.entry_name) or std.mem.startsWith(u8, mime_type, "image/x-");
+                    const is_raw = core_fs.isRawFile(a.entry_name) or
+                        std.mem.startsWith(u8, mime_type, "image/x-");
                     var has_thumb = false;
                     if (std.mem.eql(u8, mime_type, "image/jpeg")) {
                         if (exif.extractJpegThumbnailLocation(image_slice)) |_| {
@@ -560,7 +692,10 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
                     return ProbedImageMetadata{
                         .dims = dims,
                         .orientation = rot,
-                        .raw_metadata = if (is_raw) RawMetadata.init(dims.w, dims.h) else .none,
+                        .raw_metadata = if (is_raw)
+                            RawMetadata.init(dims.w, dims.h)
+                        else
+                            .none,
                         .has_embedded_thumbnail = has_thumb,
                     };
                 }
@@ -570,7 +705,8 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
     }
 }
 
-/// Extracted thumbnail surface along with orientation, full-resolution dimensions, RAW metadata, and DCT block snapping detection.
+/// Extracted thumbnail surface along with orientation, full-resolution dimensions,
+/// RAW metadata, and DCT block snapping detection.
 pub const ExtractedThumbnail = struct {
     surface: sdl.Surface,
     orientation: Orientation = .normal,
@@ -583,13 +719,23 @@ pub const ExtractedThumbnail = struct {
 /// Inspects the decoded thumbnail CPU surface to detect whether letterbox (or pillarbox) black bars
 /// have been padded and snapped to 8-pixel DCT block boundaries by in-camera preview encoders
 /// (e.g. Fujifilm RAF, Ricoh GR IIIx JPEG).
-/// Requires candidate DCT boundary lines to be black AND active image content to begin at the 8px boundary.
-/// If candidate boundary lines contain image data (e.g. Sony ARW, standard JPEGs) OR if the scene itself
-/// is an extended solid black background (e.g. astrophotography), returns false to use theoretical aspect-ratio padding.
+/// Requires candidate DCT boundary lines to be black AND active image content to begin at
+/// the 8px boundary.
+/// If candidate boundary lines contain image data (e.g. Sony ARW, standard JPEGs) OR if the scene
+/// itself is an extended solid black background (e.g. astrophotography), returns false to use
+/// theoretical aspect-ratio padding.
 pub fn detectThumbnailDctPadding(surf: sdl.Surface, full_w: f32, full_h: f32) bool {
     const sw = surf.w();
     const sh = surf.h();
-    if (!std.math.isFinite(full_w) or !std.math.isFinite(full_h) or full_w <= 0.0 or full_h <= 0.0 or sw <= 0 or sh <= 0) return false;
+    if (!std.math.isFinite(full_w) or
+        !std.math.isFinite(full_h) or
+        full_w <= 0.0 or
+        full_h <= 0.0 or
+        sw <= 0 or
+        sh <= 0)
+    {
+        return false;
+    }
 
     const thumb_w: f32 = @floatFromInt(sw);
     const thumb_h: f32 = @floatFromInt(sh);
@@ -599,26 +745,35 @@ pub fn detectThumbnailDctPadding(surf: sdl.Surface, full_w: f32, full_h: f32) bo
     // Matching aspect ratio within epsilon -> no letterboxing or pillarboxing
     if (@abs(ar_full - ar_thumb) <= 0.01) return false;
 
-    const threshold: u8 = 16; // Tolerant to lossy JPEG compression ringing / chroma subsampling near boundaries
+    const threshold: u8 = 16; // Tolerant to lossy JPEG compression ringing / chroma near boundaries
 
     if (ar_full > ar_thumb) {
         // Letterboxing: full image is wider than container -> black bars on top and bottom
         const raw_pad_px = (thumb_h - (thumb_w / ar_full)) / 2.0;
         const nearest_block_px = @round(raw_pad_px / 8.0) * 8.0;
 
-        if (nearest_block_px > 0.0 and nearest_block_px * 2.0 < thumb_h and @abs(raw_pad_px - nearest_block_px) <= 2.0) {
+        if (nearest_block_px > 0.0 and
+            nearest_block_px * 2.0 < thumb_h and
+            @abs(raw_pad_px - nearest_block_px) <= 2.0)
+        {
             const test_row_top: i32 = @intFromFloat(nearest_block_px - 1.0);
             const test_row_bot: i32 = sh - @as(i32, @intFromFloat(nearest_block_px));
 
             // Candidate DCT padding rows must both be black
-            if (surf.isRowBlack(test_row_top, threshold) and surf.isRowBlack(test_row_bot, threshold)) {
-                // Verify that active image content begins at the DCT block boundary (step-transition).
-                // If both row 8 and row 111 are ALSO black, the photo has an extended black background;
-                // treating continuous black backgrounds as theoretical padding prevents false-positive distortion.
+            if (surf.isRowBlack(test_row_top, threshold) and
+                surf.isRowBlack(test_row_bot, threshold))
+            {
+                // Verify active image content begins at DCT block boundary (step-transition).
+                // If both row 8 and row 111 are ALSO black, the photo has an extended black
+                // background; treating continuous black backgrounds as theoretical padding
+                // prevents false-positive distortion.
                 const first_image_row_top: i32 = @intFromFloat(nearest_block_px);
-                const last_image_row_bot: i32 = sh - @as(i32, @intFromFloat(nearest_block_px)) - 1;
+                const last_image_row_bot: i32 =
+                    sh - @as(i32, @intFromFloat(nearest_block_px)) - 1;
 
-                if (!surf.isRowBlack(first_image_row_top, threshold) or !surf.isRowBlack(last_image_row_bot, threshold)) {
+                if (!surf.isRowBlack(first_image_row_top, threshold) or
+                    !surf.isRowBlack(last_image_row_bot, threshold))
+                {
                     return true;
                 }
             }
@@ -628,15 +783,23 @@ pub fn detectThumbnailDctPadding(surf: sdl.Surface, full_w: f32, full_h: f32) bo
         const raw_pad_px = (thumb_w - (thumb_h * ar_full)) / 2.0;
         const nearest_block_px = @round(raw_pad_px / 8.0) * 8.0;
 
-        if (nearest_block_px > 0.0 and nearest_block_px * 2.0 < thumb_w and @abs(raw_pad_px - nearest_block_px) <= 2.0) {
+        if (nearest_block_px > 0.0 and
+            nearest_block_px * 2.0 < thumb_w and
+            @abs(raw_pad_px - nearest_block_px) <= 2.0)
+        {
             const test_col_left: i32 = @intFromFloat(nearest_block_px - 1.0);
             const test_col_right: i32 = sw - @as(i32, @intFromFloat(nearest_block_px));
 
-            if (surf.isColBlack(test_col_left, threshold) and surf.isColBlack(test_col_right, threshold)) {
+            if (surf.isColBlack(test_col_left, threshold) and
+                surf.isColBlack(test_col_right, threshold))
+            {
                 const first_image_col_left: i32 = @intFromFloat(nearest_block_px);
-                const last_image_col_right: i32 = sw - @as(i32, @intFromFloat(nearest_block_px)) - 1;
+                const last_image_col_right: i32 =
+                    sw - @as(i32, @intFromFloat(nearest_block_px)) - 1;
 
-                if (!surf.isColBlack(first_image_col_left, threshold) or !surf.isColBlack(last_image_col_right, threshold)) {
+                if (!surf.isColBlack(first_image_col_left, threshold) or
+                    !surf.isColBlack(last_image_col_right, threshold))
+                {
                     return true;
                 }
             }
@@ -655,7 +818,11 @@ fn loadThumbnailFromLocation(
     loc: exif.ThumbnailLocation,
 ) ?sdl.Surface {
     const max_thumb_size_bytes = 512 * 1024;
-    if (loc.length == 0 or loc.length > max_thumb_size_bytes or loc.length > file_size or loc.file_offset > file_size - loc.length) {
+    if (loc.length == 0 or
+        loc.length > max_thumb_size_bytes or
+        loc.length > file_size or
+        loc.file_offset > file_size - loc.length)
+    {
         return null;
     }
     const t_off: usize = @intCast(loc.file_offset);
@@ -680,18 +847,29 @@ fn loadThumbnailFromLocation(
 }
 
 /// Extracts the embedded preview thumbnail surface and orientation metadata for a media entry.
-/// Supports Camera RAW formats (.arw, .raf, .cr2, .nef, .dng, .orf, .rw2, .pef), standard JPEGs, and CBZ entries.
-pub fn loadThumbnailSurface(io: std.Io, alloc: std.mem.Allocator, media: MediaEntry) ?ExtractedThumbnail {
+/// Supports Camera RAW formats (.arw, .raf, .cr2, .nef, .dng, .orf, .rw2, .pef), standard JPEGs,
+/// and CBZ entries.
+pub fn loadThumbnailSurface(
+    io: std.Io,
+    alloc: std.mem.Allocator,
+    media: MediaEntry,
+) ?ExtractedThumbnail {
     switch (media) {
         .filesystem => |f| {
             var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, f.path, .{}) catch |err| {
-                std.log.warn("loadThumbnailSurface: openFile failed for '{s}': {any}", .{ f.path, err });
+                std.log.warn(
+                    "loadThumbnailSurface: openFile failed for '{s}': {any}",
+                    .{ f.path, err },
+                );
                 return null;
             };
             defer file.close(io);
 
             const file_size = file.length(io) catch |err| blk: {
-                std.log.warn("loadThumbnailSurface: file.length failed for '{s}': {any}", .{ f.path, err });
+                std.log.warn(
+                    "loadThumbnailSurface: file.length failed for '{s}': {any}",
+                    .{ f.path, err },
+                );
                 break :blk 0;
             };
             const is_raw_ext = core_fs.isRawFile(f.path);
@@ -699,15 +877,20 @@ pub fn loadThumbnailSurface(io: std.Io, alloc: std.mem.Allocator, media: MediaEn
             const target_read = if (is_raw_ext) header_buf.len else 128 * 1024;
             var slices = [_][]u8{header_buf[0..target_read]};
             const header_n = file.readPositional(io, &slices, 0) catch |err| {
-                std.log.warn("loadThumbnailSurface: readPositional failed for '{s}': {any}", .{ f.path, err });
+                std.log.warn(
+                    "loadThumbnailSurface: readPositional failed for '{s}': {any}",
+                    .{ f.path, err },
+                );
                 return null;
             };
             if (header_n == 0) return null;
             const header_slice = header_buf[0..header_n];
 
             const mime_type = detectMimeType(header_slice, f.path);
-            const is_raw = core_fs.isRawFile(f.path) or std.mem.startsWith(u8, mime_type, "image/x-");
-            const is_fuji = std.mem.eql(u8, mime_type, "image/x-fuji-raf") or (header_n >= 8 and std.mem.startsWith(u8, header_slice, "FUJIFILM"));
+            const is_raw = core_fs.isRawFile(f.path) or
+                std.mem.startsWith(u8, mime_type, "image/x-");
+            const is_fuji = std.mem.eql(u8, mime_type, "image/x-fuji-raf") or
+                (header_n >= 8 and std.mem.startsWith(u8, header_slice, "FUJIFILM"));
 
             var thumb_surf: ?sdl.Surface = null;
             var orientation: Orientation = .normal;
@@ -717,17 +900,33 @@ pub fn loadThumbnailSurface(io: std.Io, alloc: std.mem.Allocator, media: MediaEn
             if (is_fuji) {
                 const prev_loc_opt = exif.extractFujiRafPreviewLocation(header_slice);
                 if (exif.extractFujiRafMetadataLocation(header_slice)) |meta_loc| {
-                    if (meta_loc.length <= header_n and meta_loc.file_offset <= header_n - meta_loc.length) {
+                    if (meta_loc.length <= header_n and
+                        meta_loc.file_offset <= header_n - meta_loc.length)
+                    {
                         const end = meta_loc.file_offset + meta_loc.length;
-                        if (exif.parseFujiRafDimensions(header_slice[@intCast(meta_loc.file_offset)..@intCast(end)])) |fd| {
+                        const meta_slice =
+                            header_slice[@intCast(meta_loc.file_offset)..@intCast(end)];
+                        if (exif.parseFujiRafDimensions(meta_slice)) |fd| {
                             raw_w = fd.w;
                             raw_h = fd.h;
                         }
-                    } else if (meta_loc.length > 0 and meta_loc.length <= 64 * 1024 and meta_loc.length <= file_size and meta_loc.file_offset <= file_size - meta_loc.length) {
+                    } else if (meta_loc.length > 0 and
+                        meta_loc.length <= 64 * 1024 and
+                        meta_loc.length <= file_size and
+                        meta_loc.file_offset <= file_size - meta_loc.length)
+                    {
                         var m_buf: [64 * 1024]u8 = undefined;
                         var m_slices = [_][]u8{m_buf[0..meta_loc.length]};
-                        const mn = file.readPositional(io, &m_slices, meta_loc.file_offset) catch |err| blk: {
-                            std.log.warn("loadThumbnailSurface: Fuji RAF metadata readPositional failed for '{s}': {any}", .{ f.path, err });
+                        const mn = file.readPositional(
+                            io,
+                            &m_slices,
+                            meta_loc.file_offset,
+                        ) catch |err| blk: {
+                            std.log.warn(
+                                "loadThumbnailSurface: Fuji RAF metadata readPositional failed " ++
+                                    "for '{s}': {any}",
+                                .{ f.path, err },
+                            );
                             break :blk 0;
                         };
                         if (mn >= meta_loc.length) {
@@ -743,8 +942,11 @@ pub fn loadThumbnailSurface(io: std.Io, alloc: std.mem.Allocator, media: MediaEn
                 if (prev_loc_opt) |prev_loc| {
                     const off: usize = @intCast(prev_loc.file_offset);
                     if (off + 4096 <= header_n) {
-                        orientation = exif.parseExifOrientation(header_slice[off..header_n]) orelse .normal;
-                        if (exif.extractJpegThumbnailLocation(header_slice[off..header_n])) |j_thumb| {
+                        orientation =
+                            exif.parseExifOrientation(header_slice[off..header_n]) orelse .normal;
+                        if (exif.extractJpegThumbnailLocation(
+                            header_slice[off..header_n],
+                        )) |j_thumb| {
                             thumb_loc_opt = .{
                                 .file_offset = prev_loc.file_offset + j_thumb.file_offset,
                                 .length = j_thumb.length,
@@ -753,8 +955,16 @@ pub fn loadThumbnailSurface(io: std.Io, alloc: std.mem.Allocator, media: MediaEn
                     } else {
                         var p_hdr: [8192]u8 = undefined;
                         var p_slices = [_][]u8{&p_hdr};
-                        const pn = file.readPositional(io, &p_slices, prev_loc.file_offset) catch |err| blk: {
-                            std.log.warn("loadThumbnailSurface: Fuji RAF preview readPositional failed for '{s}': {any}", .{ f.path, err });
+                        const pn = file.readPositional(
+                            io,
+                            &p_slices,
+                            prev_loc.file_offset,
+                        ) catch |err| blk: {
+                            std.log.warn(
+                                "loadThumbnailSurface: Fuji RAF preview readPositional failed " ++
+                                    "for '{s}': {any}",
+                                .{ f.path, err },
+                            );
                             break :blk 0;
                         };
                         if (pn > 0) {
@@ -770,7 +980,14 @@ pub fn loadThumbnailSurface(io: std.Io, alloc: std.mem.Allocator, media: MediaEn
                 }
 
                 if (thumb_loc_opt) |tloc| {
-                    thumb_surf = loadThumbnailFromLocation(io, alloc, &file, file_size, header_slice, tloc);
+                    thumb_surf = loadThumbnailFromLocation(
+                        io,
+                        alloc,
+                        &file,
+                        file_size,
+                        header_slice,
+                        tloc,
+                    );
                 }
             } else if (is_raw) {
                 const raw_cands = exif.extractTiffRawPreviews(header_slice);
@@ -780,7 +997,14 @@ pub fn loadThumbnailSurface(io: std.Io, alloc: std.mem.Allocator, media: MediaEn
                 }
                 orientation = exif.parseExifOrientation(header_slice) orelse .normal;
                 if (raw_cands.thumbnail) |tloc| {
-                    thumb_surf = loadThumbnailFromLocation(io, alloc, &file, file_size, header_slice, tloc);
+                    thumb_surf = loadThumbnailFromLocation(
+                        io,
+                        alloc,
+                        &file,
+                        file_size,
+                        header_slice,
+                        tloc,
+                    );
                 }
             } else if (std.mem.eql(u8, mime_type, "image/jpeg")) {
                 orientation = exif.parseExifOrientation(header_slice) orelse .normal;
@@ -789,7 +1013,14 @@ pub fn loadThumbnailSurface(io: std.Io, alloc: std.mem.Allocator, media: MediaEn
                     raw_h = dims.h;
                 }
                 if (exif.extractJpegThumbnailLocation(header_slice)) |loc| {
-                    thumb_surf = loadThumbnailFromLocation(io, alloc, &file, file_size, header_slice, loc);
+                    thumb_surf = loadThumbnailFromLocation(
+                        io,
+                        alloc,
+                        &file,
+                        file_size,
+                        header_slice,
+                        loc,
+                    );
                 }
             }
 
@@ -809,8 +1040,16 @@ pub fn loadThumbnailSurface(io: std.Io, alloc: std.mem.Allocator, media: MediaEn
         .archive_entry => |a| {
             if (a.compression_method) |cm| {
                 if (cm == 0 and a.file_offset != null) {
-                    var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, a.archive_path, .{}) catch |err| {
-                        std.log.warn("loadThumbnailSurface: openFile failed for archive '{s}': {any}", .{ a.archive_path, err });
+                    var file = std.Io.Dir.openFile(
+                        std.Io.Dir.cwd(),
+                        io,
+                        a.archive_path,
+                        .{},
+                    ) catch |err| {
+                        std.log.warn(
+                            "loadThumbnailSurface: openFile failed for archive '{s}': {any}",
+                            .{ a.archive_path, err },
+                        );
                         return null;
                     };
                     defer file.close(io);
@@ -818,16 +1057,23 @@ pub fn loadThumbnailSurface(io: std.Io, alloc: std.mem.Allocator, media: MediaEn
                     var header_buf: [128 * 1024]u8 = undefined;
                     var slices = [_][]u8{&header_buf};
                     const n = file.readPositional(io, &slices, a.file_offset.?) catch |err| {
-                        std.log.warn("loadThumbnailSurface: readPositional failed for archive '{s}': {any}", .{ a.archive_path, err });
+                        std.log.warn(
+                            "loadThumbnailSurface: readPositional failed for archive '{s}': {any}",
+                            .{ a.archive_path, err },
+                        );
                         return null;
                     };
                     if (n == 0) return null;
 
                     var data_offset: usize = 0;
-                    if (n >= @sizeOf(std.zip.LocalFileHeader) and std.mem.eql(u8, header_buf[0..4], &std.zip.local_file_header_sig)) {
+                    if (n >= @sizeOf(std.zip.LocalFileHeader) and
+                        std.mem.eql(u8, header_buf[0..4], &std.zip.local_file_header_sig))
+                    {
                         const filename_len = std.mem.readInt(u16, header_buf[26..28], .little);
                         const extra_len = std.mem.readInt(u16, header_buf[28..30], .little);
-                        data_offset = @sizeOf(std.zip.LocalFileHeader) + @as(usize, filename_len) + @as(usize, extra_len);
+                        data_offset = @sizeOf(std.zip.LocalFileHeader) +
+                            @as(usize, filename_len) +
+                            @as(usize, extra_len);
                     }
                     if (n <= data_offset) return null;
                     const image_slice = header_buf[data_offset..n];
@@ -839,10 +1085,19 @@ pub fn loadThumbnailSurface(io: std.Io, alloc: std.mem.Allocator, media: MediaEn
                             const off: usize = @intCast(loc.file_offset);
                             const len: usize = @intCast(loc.length);
                             if (off + len <= image_slice.len) {
-                                if (sdl.Surface.loadConstMemOpt(image_slice[off .. off + len])) |surf| {
-                                    const full_w: f32 = if (dims) |d| d.w else @floatFromInt(surf.w());
-                                    const full_h: f32 = if (dims) |d| d.h else @floatFromInt(surf.h());
-                                    const dct_snapped = detectThumbnailDctPadding(surf, full_w, full_h);
+                                if (sdl.Surface.loadConstMemOpt(
+                                    image_slice[off .. off + len],
+                                )) |surf| {
+                                    const full_w: f32 = if (dims) |d|
+                                        d.w
+                                    else
+                                        @floatFromInt(surf.w());
+                                    const full_h: f32 = if (dims) |d|
+                                        d.h
+                                    else
+                                        @floatFromInt(surf.h());
+                                    const dct_snapped =
+                                        detectThumbnailDctPadding(surf, full_w, full_h);
                                     return ExtractedThumbnail{
                                         .surface = surf,
                                         .orientation = orientation,
@@ -865,8 +1120,9 @@ pub fn loadThumbnailSurface(io: std.Io, alloc: std.mem.Allocator, media: MediaEn
 /// Reusable GPU staging buffers for texture uploads, eliminating allocation and deallocation
 /// churn on every frame by retaining and geometrically growing transfer and storage buffers.
 ///
-/// TODO: Add heuristics to periodically evaluate and shrink retained staging buffers after a duration/inactivity
-/// threshold (or high-water decay) so memory is reclaimed if a single exceptionally large image temporarily expanded capacity.
+/// TODO: Add heuristics to periodically evaluate and shrink retained staging buffers after
+/// a duration/inactivity threshold (or high-water decay) so memory is reclaimed if a single
+/// exceptionally large image temporarily expanded capacity.
 pub const UploadStagingBuffer = struct {
     transfer_buffer: ?sdl.gpu.TransferBuffer = null,
     storage_buffer: ?sdl.gpu.Buffer = null,
@@ -887,13 +1143,21 @@ pub const UploadStagingBuffer = struct {
         self.storage_capacity = 0;
     }
 
-    /// Obtains a transfer buffer with at least `required_size` capacity, reusing the existing buffer
-    /// or reallocating with geometric growth when capacity is insufficient.
-    fn getOrCreateTransferBuffer(self: *UploadStagingBuffer, dev: sdl.gpu.Device, required_size: usize) ?sdl.gpu.TransferBuffer {
+    /// Obtains a transfer buffer with at least `required_size` capacity, reusing the
+    /// existing buffer or reallocating with geometric growth when capacity is insufficient.
+    fn getOrCreateTransferBuffer(
+        self: *UploadStagingBuffer,
+        dev: sdl.gpu.Device,
+        required_size: usize,
+    ) ?sdl.gpu.TransferBuffer {
         if (self.transfer_buffer != null and self.transfer_capacity >= required_size) {
             return self.transfer_buffer;
         }
-        const next_cap = @max(required_size, if (self.transfer_capacity > 0) self.transfer_capacity * 2 else 4 * 1024 * 1024);
+        const growth_cap = if (self.transfer_capacity > 0)
+            self.transfer_capacity * 2
+        else
+            4 * 1024 * 1024;
+        const next_cap = @max(required_size, growth_cap);
         const aligned_cap = std.mem.alignForward(usize, next_cap, 4096);
         if (self.transfer_buffer) |tb| {
             dev.releaseTransferBuffer(tb);
@@ -911,13 +1175,21 @@ pub const UploadStagingBuffer = struct {
         return tb;
     }
 
-    /// Obtains a compute storage buffer with at least `required_size` capacity, reusing the existing buffer
-    /// or reallocating with geometric growth when capacity is insufficient.
-    fn getOrCreateStorageBuffer(self: *UploadStagingBuffer, dev: sdl.gpu.Device, required_size: usize) ?sdl.gpu.Buffer {
+    /// Obtains a compute storage buffer with at least `required_size` capacity, reusing the
+    /// existing buffer or reallocating with geometric growth when capacity is insufficient.
+    fn getOrCreateStorageBuffer(
+        self: *UploadStagingBuffer,
+        dev: sdl.gpu.Device,
+        required_size: usize,
+    ) ?sdl.gpu.Buffer {
         if (self.storage_buffer != null and self.storage_capacity >= required_size) {
             return self.storage_buffer;
         }
-        const next_cap = @max(required_size, if (self.storage_capacity > 0) self.storage_capacity * 2 else 4 * 1024 * 1024);
+        const growth_cap = if (self.storage_capacity > 0)
+            self.storage_capacity * 2
+        else
+            4 * 1024 * 1024;
+        const next_cap = @max(required_size, growth_cap);
         const aligned_cap = std.mem.alignForward(usize, next_cap, 4096);
         if (self.storage_buffer) |sb| {
             dev.releaseBuffer(sb);
@@ -936,7 +1208,8 @@ pub const UploadStagingBuffer = struct {
     }
 };
 
-/// Result payload containing the created GPU texture, dimensions, upload timing telemetry, and VRAM memory footprint.
+/// Result payload containing the created GPU texture, dimensions, upload timing telemetry,
+/// and VRAM memory footprint.
 pub const GpuUploadResult = struct {
     gpu_texture: sdl.gpu.Texture,
     w: f32,
@@ -951,7 +1224,8 @@ pub const GpuUploadResult = struct {
 };
 
 /// Uploads a CPU surface into an SDL GPU texture with automatic mipmap pyramid generation,
-/// using an optional compute pipeline for fast RGB24/BGR24 unpack and optional staging buffer reuse.
+/// using an optional compute pipeline for fast RGB24/BGR24 unpack and optional staging
+/// buffer reuse.
 pub fn uploadSurfaceToGpu(
     dev: sdl.gpu.Device,
     surf: sdl.Surface,
@@ -982,7 +1256,11 @@ pub fn uploadSurfaceToGpu(
     const u_w: usize = @intCast(img_w);
     const u_h: usize = @intCast(img_h);
     const cur_fmt = current_surf.format();
-    const comp_pipeline_opt: ?sdl.gpu.ComputePipeline = if (cur_fmt == sdl.PixelFormat.rgb24 or cur_fmt == sdl.PixelFormat.bgr24) comp_pipeline else null;
+    const comp_pipeline_opt: ?sdl.gpu.ComputePipeline =
+        if (cur_fmt == sdl.PixelFormat.rgb24 or cur_fmt == sdl.PixelFormat.bgr24)
+            comp_pipeline
+        else
+            null;
 
     var tex_usage = sdl.gpu.TextureUsage.sampler | sdl.gpu.TextureUsage.color_target;
     if (comp_pipeline_opt != null) {
@@ -1029,14 +1307,20 @@ pub fn uploadSurfaceToGpu(
                     img_h = new_h;
 
                     const fb_max_dim: u32 = @intCast(@max(img_w, img_h));
-                    const fb_levels: u32 = if (fb_max_dim > 1) @intCast(std.math.log2(fb_max_dim) + 1) else 1;
+                    const fb_levels: u32 = if (fb_max_dim > 1)
+                        @intCast(std.math.log2(fb_max_dim) + 1)
+                    else
+                        1;
                     img_tex_info.width = @intCast(img_w);
                     img_tex_info.height = @intCast(img_h);
                     img_tex_info.num_levels = fb_levels;
                     tex = dev.createTexture(&img_tex_info);
                     if (tex != null) break;
                 } else {
-                    std.log.err("uploadSurfaceToGpu: SDL_ScaleSurface fallback failed: {s}", .{sdl.getError()});
+                    std.log.err(
+                        "uploadSurfaceToGpu: SDL_ScaleSurface fallback failed: {s}",
+                        .{sdl.getError()},
+                    );
                     break;
                 }
             }
@@ -1114,7 +1398,12 @@ pub fn uploadSurfaceToGpu(
         copy_pass.end();
 
         const compute_pass = cmd_wrapper.beginComputePass(
-            &[_]sdl.gpu.StorageTextureReadWriteBinding{.{ .texture = gpu_tex, .mip_level = 0, .layer = 0, .cycle = false }},
+            &[_]sdl.gpu.StorageTextureReadWriteBinding{.{
+                .texture = gpu_tex,
+                .mip_level = 0,
+                .layer = 0,
+                .cycle = false,
+            }},
             null,
         ) orelse {
             _ = cmd_wrapper.cancel();
@@ -1212,7 +1501,13 @@ pub fn uploadSurfaceToGpu(
     const src_pitch: usize = @intCast(current_surf.pitch());
     var conversion_time_ms: f64 = 0.0;
     const is_32bit_fmt = switch (cur_fmt) {
-        sdl.PixelFormat.rgba32, sdl.PixelFormat.bgra32, sdl.PixelFormat.xrgb8888, sdl.PixelFormat.xbgr8888, sdl.PixelFormat.rgbx8888, sdl.PixelFormat.bgrx8888 => true,
+        sdl.PixelFormat.rgba32,
+        sdl.PixelFormat.bgra32,
+        sdl.PixelFormat.xrgb8888,
+        sdl.PixelFormat.xbgr8888,
+        sdl.PixelFormat.rgbx8888,
+        sdl.PixelFormat.bgrx8888,
+        => true,
         else => false,
     };
     if (is_32bit_fmt) {
@@ -1221,20 +1516,40 @@ pub fn uploadSurfaceToGpu(
         } else {
             var y: usize = 0;
             while (y < u_h) : (y += 1) {
-                @memcpy(mapped[y * dst_pitch .. y * dst_pitch + u_w * 4], src_pixels[y * src_pitch .. y * src_pitch + u_w * 4]);
+                const row_len = u_w * 4;
+                @memcpy(
+                    mapped[y * dst_pitch .. y * dst_pitch + row_len],
+                    src_pixels[y * src_pitch .. y * src_pitch + row_len],
+                );
             }
         }
-        // TODO: If compute unpack pipeline is unavailable (comp_pipeline == null), RGB24/BGR24 falls back to main-thread SIMD conversion.
-        // If running on non-compute GPU hardware becomes a priority, plumbing `has_compute_unpack: bool` through DecodeArgs
-        // would allow offloading this conversion to background decode workers as well.
+        // TODO: If compute unpack pipeline is unavailable (comp_pipeline == null),
+        // RGB24/BGR24 falls back to main-thread SIMD conversion.
+        // If running on non-compute GPU hardware becomes a priority, plumbing
+        // `has_compute_unpack: bool` through DecodeArgs would allow offloading
+        // this conversion to background decode workers as well.
     } else if (cur_fmt == sdl.PixelFormat.rgb24) {
         const start_conv = sdl.timer.getTicksNs();
-        sdl.surface.convertRgb24ToRgba32Simd(src_pixels[0 .. src_pitch * u_h], mapped[0..size], u_w, u_h, src_pitch, dst_pitch);
+        sdl.surface.convertRgb24ToRgba32Simd(
+            src_pixels[0 .. src_pitch * u_h],
+            mapped[0..size],
+            u_w,
+            u_h,
+            src_pitch,
+            dst_pitch,
+        );
         const end_conv = sdl.timer.getTicksNs();
         conversion_time_ms = @as(f64, @floatFromInt(end_conv - start_conv)) / 1_000_000.0;
     } else if (cur_fmt == sdl.PixelFormat.bgr24) {
         const start_conv = sdl.timer.getTicksNs();
-        sdl.surface.convertBgr24ToRgba32Simd(src_pixels[0 .. src_pitch * u_h], mapped[0..size], u_w, u_h, src_pitch, dst_pitch);
+        sdl.surface.convertBgr24ToRgba32Simd(
+            src_pixels[0 .. src_pitch * u_h],
+            mapped[0..size],
+            u_w,
+            u_h,
+            src_pitch,
+            dst_pitch,
+        );
         const end_conv = sdl.timer.getTicksNs();
         conversion_time_ms = @as(f64, @floatFromInt(end_conv - start_conv)) / 1_000_000.0;
     } else {
@@ -1249,7 +1564,11 @@ pub fn uploadSurfaceToGpu(
             } else {
                 var y: usize = 0;
                 while (y < u_h) : (y += 1) {
-                    @memcpy(mapped[y * dst_pitch .. y * dst_pitch + u_w * 4], ts_pixels[y * ts_pitch .. y * ts_pitch + u_w * 4]);
+                    const row_len = u_w * 4;
+                    @memcpy(
+                        mapped[y * dst_pitch .. y * dst_pitch + row_len],
+                        ts_pixels[y * ts_pitch .. y * ts_pitch + row_len],
+                    );
                 }
             }
             const end_conv = sdl.timer.getTicksNs();
@@ -1447,13 +1766,15 @@ test "enforceVramBudget - distant eviction, circular distance, and neighbor prot
     try std.testing.expect(cache.getIndex(.{ .index = 9, .generation = 0 }) != null);
 
     // 2. Evict down to 300: Remaining are 0, 1, 2, 9 (dists: 0, 1, 2, 1).
-    // All remaining non-cur have dist <= 2. Neighbor protection should evict dist 2 (slot 2) before dist 1 (slot 1 or 9).
+    // All remaining non-cur have dist <= 2. Neighbor protection should evict
+    // dist 2 (slot 2) before dist 1 (slot 1 or 9).
     cache.enforceVramBudget(null, 0, null, 10, 300);
     try std.testing.expectEqual(@as(usize, 300), cache.getTotalVramBytes());
     try std.testing.expect(cache.getIndex(.{ .index = 2, .generation = 0 }) == null);
     try std.testing.expect(cache.getIndex(.{ .index = 0, .generation = 0 }) != null);
 
-    // 3. Evict down to 50: Current slot 0 (100 bytes) should NEVER be evicted even if exceeding budget
+    // 3. Evict down to 50: Current slot 0 (100 bytes) should NEVER be evicted
+    // even if exceeding budget
     cache.enforceVramBudget(null, 0, null, 10, 50);
     try std.testing.expectEqual(@as(usize, 100), cache.getTotalVramBytes());
     try std.testing.expect(cache.getIndex(.{ .index = 0, .generation = 0 }) != null);
@@ -1468,11 +1789,13 @@ test "enforceVramBudget - distant eviction, circular distance, and neighbor prot
     try std.testing.expect(cache.getIndex(.{ .index = 99, .generation = 0 }) == null);
     try std.testing.expect(cache.getIndex(.{ .index = 0, .generation = 0 }) != null);
 
-    // 5. Slideshow protected_prev_index guard: both current (slot 0) and protected prev (slot 3) must be retained
+    // 5. Slideshow protected_prev_index guard: both current (slot 0) and
+    // protected prev (slot 3) must be retained
     try cache.appendWithKey(allocator, .{ .index = 3, .generation = 0 }, makeGpu(100));
     try cache.appendWithKey(allocator, .{ .index = 4, .generation = 0 }, makeGpu(100));
     try std.testing.expectEqual(@as(usize, 300), cache.getTotalVramBytes());
-    // Evict down to 50 bytes with slot 3 protected as previous slide: slot 4 evicted, slots 0 and 3 protected
+    // Evict down to 50 bytes with slot 3 protected as previous slide:
+    // slot 4 evicted, slots 0 and 3 protected
     cache.enforceVramBudget(null, 0, 3, 10, 50);
     try std.testing.expectEqual(@as(usize, 200), cache.getTotalVramBytes());
     try std.testing.expect(cache.getIndex(.{ .index = 0, .generation = 0 }) != null);
@@ -1523,7 +1846,8 @@ test "hasUnreadyPrefetchSlots" {
     try std.testing.expect(cache.hasUnreadyPrefetchSlots(0, 5, true));
     try std.testing.expect(!cache.hasUnreadyPrefetchSlots(0, 5, false));
 
-    // Reset status to .failed to prevent calling SDL_DestroySurface on undefined mock surface during defer deinit
+    // Reset status to .failed to prevent calling SDL_DestroySurface on
+    // undefined mock surface during defer deinit
     _ = cache.updateStatus(.{ .index = 2, .generation = 0 }, .failed);
 }
 
@@ -1560,7 +1884,10 @@ test "UploadStagingBuffer - capacity growth and clean deinit" {
     try std.testing.expectEqual(@as(usize, 0), staging.transfer_capacity);
     try std.testing.expectEqual(@as(usize, 0), staging.storage_capacity);
 
-    const dev_opt = sdl.gpu.Device.create(sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl, true);
+    const dev_opt = sdl.gpu.Device.create(
+        sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl,
+        true,
+    );
     const dev = dev_opt orelse return;
     defer dev.destroy();
 
@@ -1593,7 +1920,10 @@ test "UploadStagingBuffer - capacity growth and clean deinit" {
 }
 
 test "uploadSurfaceToGpu - staging buffer reuse across consecutive uploads" {
-    const dev_opt = sdl.gpu.Device.create(sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl, true);
+    const dev_opt = sdl.gpu.Device.create(
+        sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl,
+        true,
+    );
     const dev = dev_opt orelse return;
     defer dev.destroy();
 
@@ -1653,7 +1983,10 @@ test "probeMediaMetadata - nonexistent file returns null" {
     const media = MediaEntry{
         .filesystem = .{ .path = "testfiles/nonexistent.jpg" },
     };
-    try std.testing.expectEqual(@as(?ProbedImageMetadata, null), probeMediaMetadata(io, media));
+    try std.testing.expectEqual(
+        @as(?ProbedImageMetadata, null),
+        probeMediaMetadata(io, media),
+    );
 }
 
 test "probeMediaMetadata - archive entry handling" {
@@ -1668,7 +2001,10 @@ test "probeMediaMetadata - archive entry handling" {
             .file_offset = 0,
         },
     };
-    try std.testing.expectEqual(@as(?ProbedImageMetadata, null), probeMediaMetadata(io, media_comp));
+    try std.testing.expectEqual(
+        @as(?ProbedImageMetadata, null),
+        probeMediaMetadata(io, media_comp),
+    );
 
     // Missing file_offset returns null
     const media_no_offset = MediaEntry{
@@ -1679,7 +2015,10 @@ test "probeMediaMetadata - archive entry handling" {
             .file_offset = null,
         },
     };
-    try std.testing.expectEqual(@as(?ProbedImageMetadata, null), probeMediaMetadata(io, media_no_offset));
+    try std.testing.expectEqual(
+        @as(?ProbedImageMetadata, null),
+        probeMediaMetadata(io, media_no_offset),
+    );
 
     // Uncompressed entry with valid offset
     const media_stored = MediaEntry{
@@ -1714,9 +2053,10 @@ test "loadThumbnailSurface - filesystem TIFF RAW mock" {
     const io = std.Io.Threaded.global_single_threaded.io();
 
     // Read real JPEG from committed fixtures
-    var real_jpg = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, "testfiles/images/000_0_1024x682.jpg", .{});
+    const fixture_path = "testfiles/images/000_0_1024x682.jpg";
+    var real_jpg = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, fixture_path, .{});
     defer real_jpg.close(io);
-    const jpg_stat = try std.Io.Dir.statFile(std.Io.Dir.cwd(), io, "testfiles/images/000_0_1024x682.jpg", .{});
+    const jpg_stat = try std.Io.Dir.statFile(std.Io.Dir.cwd(), io, fixture_path, .{});
     const jpg_bytes = try allocator.alloc(u8, @intCast(jpg_stat.size));
     defer allocator.free(jpg_bytes);
     var j_slices = [_][]u8{jpg_bytes};
@@ -1838,7 +2178,7 @@ test "detectThumbnailDctPadding - invalid dimensions return false" {
     try std.testing.expect(!detectThumbnailDctPadding(surf, 1600.0, 0.0));
 }
 
-test "detectThumbnailDctPadding - detects 8px DCT block snapping when boundary rows are black and step transition occurs" {
+test "detectThumbnailDctPadding - detects 8px DCT block snapping" {
     const surf = sdl.Surface.create(160, 120, sdl.PixelFormat.rgb24) orelse return;
     defer surf.destroy();
 
@@ -1853,7 +2193,8 @@ test "detectThumbnailDctPadding - detects 8px DCT block snapping when boundary r
     }
 
     // 3:2 full image (6000x4000) in 4:3 thumb (160x120): theoretical pad is 6.67px
-    // Snaps to 8px DCT block; candidate row 7 and row 112 are black, and row 8 has image pixels -> returns true
+    // Snaps to 8px DCT block; candidate row 7 and row 112 are black, and row 8
+    // has image pixels -> returns true
     try std.testing.expect(detectThumbnailDctPadding(surf, 6000.0, 4000.0));
 }
 
@@ -1898,9 +2239,10 @@ test "probeMediaMetadata - detects embedded thumbnail and dimensions on mock RAF
     const io = std.Io.Threaded.global_single_threaded.io();
 
     // Read real JPEG to embed as preview
-    var real_jpg = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, "testfiles/images/000_0_1024x682.jpg", .{});
+    const fixture_path = "testfiles/images/000_0_1024x682.jpg";
+    var real_jpg = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, fixture_path, .{});
     defer real_jpg.close(io);
-    const jpg_stat = try std.Io.Dir.statFile(std.Io.Dir.cwd(), io, "testfiles/images/000_0_1024x682.jpg", .{});
+    const jpg_stat = try std.Io.Dir.statFile(std.Io.Dir.cwd(), io, fixture_path, .{});
     const jpg_bytes = try allocator.alloc(u8, @intCast(jpg_stat.size));
     defer allocator.free(jpg_bytes);
     var j_slices = [_][]u8{jpg_bytes};
