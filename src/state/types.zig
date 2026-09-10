@@ -229,7 +229,8 @@ pub const ViewportParams = struct {
             .pixel_art => 2,
             .mitchell => 3,
             .lanczos3 => 4,
-            .lanczos3_spline => 5,
+            .fsr => 5,
+            .tiny_cnn => 6,
         };
     }
 };
@@ -936,16 +937,19 @@ test "FrameInput.pixMouseX and pixMouseY scale mouse position by display scale f
     try std.testing.expectEqual(@as(f32, 500.0), input.pixMouseY());
 }
 
-test "ViewportParams.getShaderScaleModeInt maps filters including lanczos3 and lanczos3_spline" {
+test "ViewportParams.getShaderScaleModeInt maps filters including lanczos3" {
     var params = ViewportParams{};
     params.texture_scale_mode = .lanczos3;
     try std.testing.expectEqual(@as(i32, 4), params.getShaderScaleModeInt());
 
-    params.texture_scale_mode = .lanczos3_spline;
-    try std.testing.expectEqual(@as(i32, 5), params.getShaderScaleModeInt());
-
     params.scale_filter = .mitchell;
     try std.testing.expectEqual(@as(i32, 3), params.getShaderScaleModeInt());
+
+    params.scale_filter = .fsr;
+    try std.testing.expectEqual(@as(i32, 5), params.getShaderScaleModeInt());
+
+    params.scale_filter = .tiny_cnn;
+    try std.testing.expectEqual(@as(i32, 6), params.getShaderScaleModeInt());
 }
 
 test "Orientation.fromTiff and branchless math" {

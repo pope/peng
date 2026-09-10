@@ -26,6 +26,8 @@ pub const SnackbarTrigger = enum(u8) {
     rotation = 6,
     manga_mode = 7,
     crossfade = 8,
+    /// Synthetic trigger used for integration tests and visual overlay verification
+    testing = 9,
 };
 
 pub const TRIGGER_COUNT: usize = @typeInfo(SnackbarTrigger).@"enum".fields.len;
@@ -35,6 +37,7 @@ pub const SnackbarContext = struct {
     viewport: *const ViewportParams,
     manga_mode: bool = false,
     crossfade: bool = true,
+    snackbar_enabled: bool = true,
 };
 
 /// Signature for declarative notification message formatters.
@@ -57,7 +60,8 @@ fn formatFilter(ctx: SnackbarContext, buf: []u8) []const u8 {
         .pixel_art => "Pixel Art",
         .mitchell => "Mitchell-Netravali",
         .lanczos3 => "Lanczos3",
-        .lanczos3_spline => "Lanczos3 Spline",
+        .fsr => "AMD FSR 1.0 (EASU + RCAS)",
+        .tiny_cnn => "Tiny CNN (Neural SR)",
     };
     return std.fmt.bufPrint(buf, "Filter: {s}", .{filter_name}) catch filter_name;
 }
@@ -111,6 +115,10 @@ fn formatCrossfade(ctx: SnackbarContext, _: []u8) []const u8 {
     return if (ctx.crossfade) "Crossfade: ON" else "Crossfade: OFF";
 }
 
+fn formatTesting(ctx: SnackbarContext, _: []u8) []const u8 {
+    return if (ctx.snackbar_enabled) "Test Notification" else "";
+}
+
 /// Master declarative table of snackbar notification rules.
 pub const DEFAULT_SNACKBAR_RULES = [_]SnackbarRule{
     .{
@@ -118,7 +126,7 @@ pub const DEFAULT_SNACKBAR_RULES = [_]SnackbarRule{
         .label = "Filter",
         .enabled = true,
         .duration_ms = 1800,
-        .intents = &.{ .set_filter, .cycle_filter },
+        .intents = &.{ .set_filter, .cycle_filter, .cycle_filter_prev },
         .format_fn = formatFilter,
     },
     .{
@@ -184,6 +192,14 @@ pub const DEFAULT_SNACKBAR_RULES = [_]SnackbarRule{
         .duration_ms = 1800,
         .intents = &.{ .toggle_crossfade, .set_crossfade },
         .format_fn = formatCrossfade,
+    },
+    .{
+        .trigger = .testing,
+        .label = "Testing",
+        .enabled = true,
+        .duration_ms = 1800,
+        .intents = &.{ .toggle_snackbar, .set_snackbar },
+        .format_fn = formatTesting,
     },
 };
 
@@ -277,6 +293,14 @@ test "Snackbar formatters produce expected text" {
     const filter_str = formatFilter(.{ .viewport = &vp }, &buf);
     try std.testing.expectEqualStrings("Filter: Mitchell-Netravali", filter_str);
 
+    vp.scale_filter = .fsr;
+    const fsr_str = formatFilter(.{ .viewport = &vp }, &buf);
+    try std.testing.expectEqualStrings("Filter: AMD FSR 1.0 (EASU + RCAS)", fsr_str);
+
+    vp.scale_filter = .tiny_cnn;
+    const cnn_str = formatFilter(.{ .viewport = &vp }, &buf);
+    try std.testing.expectEqualStrings("Filter: Tiny CNN (Neural SR)", cnn_str);
+
     // Scale Mode
     vp.fit_mode = .crop;
     const scale_str = formatScaleMode(.{ .viewport = &vp }, &buf);
@@ -316,12 +340,22 @@ test "Snackbar formatters produce expected text" {
     try std.testing.expectEqualStrings("Crossfade: ON", cf_on);
     const cf_off = formatCrossfade(.{ .viewport = &vp, .crossfade = false }, &buf);
     try std.testing.expectEqualStrings("Crossfade: OFF", cf_off);
+
+    // Testing trigger
+    const sb_on = formatTesting(.{ .viewport = &vp, .snackbar_enabled = true }, &buf);
+    try std.testing.expectEqualStrings("Test Notification", sb_on);
+    const sb_off = formatTesting(.{ .viewport = &vp, .snackbar_enabled = false }, &buf);
+    try std.testing.expectEqualStrings("", sb_off);
 }
 
 test "findRule maps intents to declarative rules" {
     const filter_rule = findRule(.{ .set_filter = .lanczos3 });
     try std.testing.expect(filter_rule != null);
     try std.testing.expectEqual(SnackbarTrigger.filter, filter_rule.?.trigger);
+
+    const filter_prev_rule = findRule(.cycle_filter_prev);
+    try std.testing.expect(filter_prev_rule != null);
+    try std.testing.expectEqual(SnackbarTrigger.filter, filter_prev_rule.?.trigger);
 
     const scale_rule = findRule(.cycle_scale_mode);
     try std.testing.expect(scale_rule != null);
@@ -334,6 +368,10 @@ test "findRule maps intents to declarative rules" {
     const crossfade_rule = findRule(.toggle_crossfade);
     try std.testing.expect(crossfade_rule != null);
     try std.testing.expectEqual(SnackbarTrigger.crossfade, crossfade_rule.?.trigger);
+
+    const testing_rule = findRule(.{ .set_snackbar = true });
+    try std.testing.expect(testing_rule != null);
+    try std.testing.expectEqual(SnackbarTrigger.testing, testing_rule.?.trigger);
 
     const unmapped_rule = findRule(.next_image);
     try std.testing.expect(unmapped_rule == null);

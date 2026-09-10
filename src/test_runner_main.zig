@@ -431,7 +431,7 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    // Scaling Filters
+    // Scaling Filters (Standard / Fit-to-Window)
     {
         try sendCommand(socket_path, "reset_adjustments");
         try sendCommand(socket_path, "filter mitchell");
@@ -442,10 +442,36 @@ pub fn main(init: std.process.Init) !void {
         if (try harness.verify("filter_lanczos3.png", "filter_lanczos3.png")) {
             steps_with_discrepancies += 1;
         }
-        try sendCommand(socket_path, "filter lanczos3_spline");
-        if (try harness.verify("filter_lanczos3_spline.png", "filter_lanczos3_spline.png")) {
+        try sendCommand(socket_path, "filter linear");
+    }
+
+    // Magnified Resampling & Neural Upscaling Filters (> 100% Zoom)
+    // Exercises shaders gated behind is_magnified (FSR 1.0, Tiny CNN, Pixel Art, Lanczos3)
+    {
+        try sendCommand(socket_path, "zoom 2.5");
+        try sendCommand(socket_path, "pan 100 -50");
+
+        try sendCommand(socket_path, "filter lanczos3");
+        if (try harness.verify("filter_lanczos3_zoom.png", "filter_lanczos3_zoom.png")) {
             steps_with_discrepancies += 1;
         }
+
+        try sendCommand(socket_path, "filter fsr");
+        if (try harness.verify("filter_fsr_zoom.png", "filter_fsr_zoom.png")) {
+            steps_with_discrepancies += 1;
+        }
+
+        try sendCommand(socket_path, "filter tiny_cnn");
+        if (try harness.verify("filter_tiny_cnn_zoom.png", "filter_tiny_cnn_zoom.png")) {
+            steps_with_discrepancies += 1;
+        }
+
+        try sendCommand(socket_path, "filter pixel_art");
+        if (try harness.verify("filter_pixel_art_zoom.png", "filter_pixel_art_zoom.png")) {
+            steps_with_discrepancies += 1;
+        }
+
+        try sendCommand(socket_path, "reset_view");
         try sendCommand(socket_path, "filter linear");
     }
 
@@ -543,25 +569,21 @@ pub fn main(init: std.process.Init) !void {
 
     // Snackbar Overlay Tests
     {
-        // 1. Explicitly enable snackbar notifications in test mode
+        // 1. Explicitly enable snackbar notifications in test mode (triggers .testing rule -> "Test Notification")
         try sendCommand(socket_path, "snackbar true");
-
-        // 2. Trigger snackbar with title hidden -> Centered Test
-        try sendCommand(socket_path, "filter mitchell");
         if (try harness.verify("snackbar_centered.png", "snackbar_centered.png")) {
             steps_with_discrepancies += 1;
         }
 
-        // 3. Turn title ON -> Side-by-side Test (Title on left, Snackbar on right, group centered)
+        // 2. Turn title ON -> Side-by-side Test (Title on left, Snackbar on right, group centered)
         try sendCommand(socket_path, "title true");
         if (try harness.verify("snackbar_with_title.png", "snackbar_with_title.png")) {
             steps_with_discrepancies += 1;
         }
 
-        // 4. Dismissal & Settlement Test
+        // 3. Dismissal & Settlement Test
         try sendCommand(socket_path, "snackbar false");
         try sendCommand(socket_path, "title false");
-        try sendCommand(socket_path, "filter linear");
         if (try harness.verify("snackbar_dismissed.png", "title_overlay_off.png")) {
             steps_with_discrepancies += 1;
         }

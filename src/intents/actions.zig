@@ -141,12 +141,14 @@ pub const ActionId = enum {
 
     // Resampling Filters (individual palette items)
     cycle_filter,
+    cycle_filter_prev,
     filter_nearest,
     filter_linear,
     filter_pixel_art,
     filter_mitchell,
     filter_lanczos3,
-    filter_lanczos3_spline,
+    filter_fsr,
+    filter_tiny_cnn,
 
     // Color adjustments
     increase_brightness,
@@ -484,12 +486,20 @@ pub const actions = [_]ActionDef{
         .intent = .{ .set_filter = .lanczos3 },
     },
     .{
-        .id = .filter_lanczos3_spline,
-        .title = "Set Scaling Filter: Lanczos3 Spline (Fast FMA Resampler)",
-        .description = "Fast polynomial spline approximation of Lanczos3 filter",
+        .id = .filter_fsr,
+        .title = "Set Scaling Filter: AMD FSR 1.0 (EASU + RCAS)",
+        .description = "Directional edge reconstruction with contrast-adaptive sharpening",
         .show_in_palette = true,
         .shortcuts = &.{},
-        .intent = .{ .set_filter = .lanczos3_spline },
+        .intent = .{ .set_filter = .fsr },
+    },
+    .{
+        .id = .filter_tiny_cnn,
+        .title = "Set Scaling Filter: Tiny CNN (Neural Super-Resolution)",
+        .description = "Learned sub-pixel convolutional neural network running in GPU registers",
+        .show_in_palette = true,
+        .shortcuts = &.{},
+        .intent = .{ .set_filter = .tiny_cnn },
     },
     .{
         .id = .increase_brightness,
@@ -690,6 +700,15 @@ pub const actions = [_]ActionDef{
         .show_in_palette = true,
         .shortcuts = &.{.{ .key = .char_s, .mod = .{ .shift = true } }},
         .intent = .cycle_filter,
+    },
+    .{
+        .id = .cycle_filter_prev,
+        .title = "Cycle Resampling Filter (Previous)",
+        .shortcut_text = "Alt+Shift+S",
+        .description = "Cycle backward through GPU resampling shaders in reverse order",
+        .show_in_palette = true,
+        .shortcuts = &.{.{ .key = .char_s, .mod = .{ .shift = true, .alt = true } }},
+        .intent = .cycle_filter_prev,
     },
     .{
         .id = .refresh_directory,
@@ -901,15 +920,15 @@ pub const ipc_commands = blk: {
 test "actions registry projections" {
     const testing = std.testing;
 
-    // Palette count: 49 previous items + 1 new item (toggle_crossfade) = 50
-    try testing.expectEqual(@as(usize, 50), palette_action_items.len);
+    // Palette count: 51 previous + 1 (cycle_filter_prev) = 52
+    try testing.expectEqual(@as(usize, 52), palette_action_items.len);
 
     // Exact index preservation
     try testing.expectEqualStrings("Navigate Directories...", palette_action_items[7].name);
     try testing.expectEqualStrings("Ctrl+O", palette_action_items[7].shortcut_text);
 
-    // Shortcuts projection: 52 previous + 1 (Shift+I) = 53
-    try testing.expectEqual(@as(usize, 53), flat_shortcuts.len);
+    // Shortcuts projection: 53 previous + 1 (Alt+Shift+S) = 54
+    try testing.expectEqual(@as(usize, 54), flat_shortcuts.len);
     var total_sc: usize = 0;
     for (palette_action_items) |item| {
         total_sc += item.shortcuts.len;

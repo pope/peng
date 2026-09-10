@@ -69,30 +69,38 @@ ______________________________________________________________________
 
 ______________________________________________________________________
 
-## 5. Dual Lanczos3 Filter Formulations: Exact Trig vs. Horner Spline
+## 5. Modern 7-Filter Resampling Suite (`image.frag.glsl`)
 
-To balance absolute mathematical precision and maximum GPU ALU throughput, `src/ui/shaders/image.frag.glsl` provides two 36-tap ($6 \\times 6$) Lanczos3 implementations:
+Peng implements 7 GPU-accelerated texture reconstruction and upscaling shaders:
 
-### 1. Analytical Single-Sine Reduction (`lanczos3`, scale mode 4)
+| Mode  | Filter Name                | Mathematical Architecture                                            | Zoom Behavior                        |
+| :---: | :------------------------- | :------------------------------------------------------------------- | :----------------------------------- |
+| **0** | **Nearest Neighbor**       | Snapped texel center sampling `(floor(uv * N) + 0.5) / N`            | All zoom levels                      |
+| **1** | **Bilinear (Default)**     | Native GPU hardware linear sampling with trilinear mipmaps           | All zoom levels                      |
+| **2** | **Pixel Art (AA-Nearest)** | Inigo Quilez box filter with $-0.5$ texel centering                  | All zoom levels                      |
+| **3** | **Mitchell-Netravali**     | 16-tap bicubic ($B=1/3, C=1/3$) via Horner's polynomial form         | All zoom levels (text/manga clarity) |
+| **4** | **Lanczos3 (Analytical)**  | 36-tap single-sine trigonometric reduction with anti-ringing bounds  | All zoom levels (text/manga clarity) |
+| **5** | **AMD FSR 1.0**            | 12-tap EASU edge-adaptive rotation + single-pass integrated RCAS     | Magnification only (> 100%)          |
+| **6** | **Tiny CNN (ESPCN)**       | 2nd-order curvature synthesis, odd-symmetric soft-knee, 18% headroom | Magnification only (> 100%)          |
 
-- **Problem**: Naive `sinc(x) * sinc(x/3)` computes 24 `sin()` calls, 24 divisions, and 48 `mix`/`step` safety evaluations per fragment.
-- **Trigonometric Identities**:
-  - Periodicity: $\\sin(\\pi(x \\pm k)) = (-1)^k \\sin(\\pi f)$.
-  - Angle addition: $\\sin(\\frac{\\pi k}{3} \\pm \\theta)$ where $\\theta = \\frac{\\pi f}{3}$.
-  - Triple-angle: $\\sin(\\pi f) = \\sin(3\\theta) = \\sin\\theta (3 - 4\\sin^2\\theta)$.
-  - Pythagorean: $\\cos\\theta = \\sqrt{\\max(0, 1 - \\sin^2\\theta)}$.
-- **Execution**: Computes a single `sin(theta)` per dimension (2 `sin()` calls total per fragment, a **12x transcendental reduction**). Numerators are computed via 1-cycle FMAs and divided by squared distances with branchless division-by-zero guards (`f -> 0` and `f -> 1`).
-- **Precision**: 100% mathematically exact to reference Lanczos3 ($< 10^{-5}$ float error).
+### Analytical Lanczos3 Reduction (Mode 4)
 
-### 2. Horner's Form Polynomial Spline (`lanczos3_spline`, scale mode 5)
+- Uses trigonometric addition and triple-angle identities to compute all 36 tap weights with only 2 `sin()` evaluations per fragment (1 per axis), achieving a 12x reduction in transcendental ALU calls.
+- Numerators are normalized and clamped against the core $2 \\times 2$ bounding envelope $[min4, max4]$ to eliminate ringing artifacts.
 
-- **Zero-Transcendental Architecture**: Eliminates all trigonometric calls (`sin`, `cos`, `sqrt`) in favor of pure hardware FMA polynomial evaluation.
-- **Interval Normalization on $[0, 1]$**:
-  All 6 tap weights map directly to 3 functions on $t \\in [0, 1]$:
-  $$w_0 = P_2(f), \\quad w_1 = P_1(f), \\quad w_2 = P_0(f)$$
-  $$w_3 = P_0(1 - f), \\quad w_4 = P_1(1 - f), \\quad w_5 = P_2(1 - f)$$
-- **Degree-5 Horner Form**:
-  $$P_0(t) = ((((-0.5863178 t + 1.5360549) t - 0.1446258) t - 1.8036159) t - 0.0015766) t + 1.0000228$$
-  $$P_1(t) = ((((0.4109854 t - 1.1136012) t + 0.3772881) t + 1.1529428) t - 0.8275555) t + 0.0000243$$
-  $$P_2(t) = ((((-0.1947629 t + 0.4508454) t - 0.1122383) t - 0.3531353) t + 0.2092624) t - 0.0000649$$
-- **Precision**: Max error across the entire $[0, 1]$ range is $< 9.4 \\times 10^{-5}$ (visually indistinguishable from reference).
+### Single-Pass AMD FSR 1.0 (Mode 5)
+
+- Integrates Robust Contrast-Adaptive Sharpening (RCAS) directly within the register context of Edge-Adaptive Spatial Upsampling (EASU).
+- Eliminates the need for a secondary framebuffer ping-pong pass or intermediate texture allocation.
+
+### Zero-Drift Neural Super-Resolution (Mode 6)
+
+- **Even-Symmetric Curvature**: Uses 2nd-order spatial curvature ($f_0$ horizontal, $f_1$ vertical, $f_2$ diagonal, $f_3$ isotropic Laplacian).
+- **Taylor Translation Prevention**: Odd-symmetric first derivatives ($top - bottom$, $left - right$) must never be added to center luminance with fixed positive weights; doing so creates an edge spatial translation operator $I(x) + \\Delta \\nabla I$. Even-symmetric 2nd derivatives ensure zero spatial displacement.
+- **Dynamic Headroom Clamping**: Enforces an 18% aesthetic margin over the local neighborhood min/max to provide high-contrast punch while strictly clamping overshoots.
+- **Chroma Preservation**: Scales RGB channels by $(luma_target / l\_{11})$ to prevent white-halo desaturation.
+
+### Inigo Quilez AA-Nearest Centering Invariant (Mode 2)
+
+- Continuous coordinates MUST be shifted by $-0.5$ ($p = uv \\cdot \\text{size} - 0.5$) and sampled at $(i + f + 0.5) / \\text{size}$.
+- Ensures texel interiors evaluate to exact center points (100% solid color), with smooth 1-pixel linear anti-aliasing transitions strictly at boundaries.

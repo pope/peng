@@ -119,6 +119,10 @@ test "mapKeyToAction aligned with palette action items" {
     const cycle_filter = mapKeyToAction(.char_s, .{ .shift = true }, .viewer_normal);
     try std.testing.expectEqual(intents.AppIntent.cycle_filter, cycle_filter.?);
 
+    // Check cycle filter backward via Alt+Shift+S
+    const cycle_filter_prev = mapKeyToAction(.char_s, .{ .shift = true, .alt = true }, .viewer_normal);
+    try std.testing.expectEqual(intents.AppIntent.cycle_filter_prev, cycle_filter_prev.?);
+
     // Check refresh directory via F5 and Ctrl+R
     const refresh_f5 = mapKeyToAction(.f5, .{}, .viewer_normal);
     try std.testing.expectEqual(intents.AppIntent.refresh_directory, refresh_f5.?);

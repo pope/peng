@@ -56,9 +56,21 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 .nearest => .linear,
                 .linear => .mitchell,
                 .mitchell => .lanczos3,
-                .lanczos3 => .lanczos3_spline,
-                .lanczos3_spline => .pixel_art,
+                .lanczos3 => .fsr,
+                .fsr => .tiny_cnn,
+                .tiny_cnn => .pixel_art,
                 .pixel_art => .nearest,
+            };
+        },
+        .cycle_filter_prev => {
+            vp.scale_filter = switch (vp.scale_filter) {
+                .nearest => .pixel_art,
+                .pixel_art => .tiny_cnn,
+                .tiny_cnn => .fsr,
+                .fsr => .lanczos3,
+                .lanczos3 => .mitchell,
+                .mitchell => .linear,
+                .linear => .nearest,
             };
         },
         .set_brightness => |val| vp.setAdjustments(val, vp.contrast),
@@ -338,6 +350,7 @@ fn triggerSnackbarForIntent(self: *AppState, intent: intents.AppIntent) void {
         .viewport = &self.viewer.viewport,
         .manga_mode = self.viewer.navigation.manga_mode,
         .crossfade = self.viewer.navigation.crossfade,
+        .snackbar_enabled = self.viewer.ui.snackbar.enabled,
     }, &buf);
 
     if (msg.len > 0) {

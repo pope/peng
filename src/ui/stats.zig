@@ -354,13 +354,14 @@ fn renderInfoOverlay(
         try renderStatRow("Zoom Level", zoom_str);
         try renderStatRow("Pan Offset", pan_str);
         try renderStatRow("Rotation", rot_str);
-        const filter_str = switch (ui_model.viewport.texture_scale_mode) {
+        const filter_str = switch (ui_model.viewport.scale_filter) {
             .nearest => "Nearest Neighbor",
             .linear => "Bilinear Filter",
-            .pixel_art => "Pixel Art Scaling",
+            .pixel_art => "Pixel Art (AA-Nearest)",
             .mitchell => "Mitchell-Netravali",
             .lanczos3 => "Lanczos3 Resampler",
-            .lanczos3_spline => "Lanczos3 Spline Resampler",
+            .fsr => "AMD FSR 1.0 (EASU + RCAS)",
+            .tiny_cnn => "Tiny CNN (Neural Super-Res)",
         };
         try renderStatRow("Scaling Filter", filter_str);
 

@@ -59,3 +59,26 @@
   state.viewer.navigation.crossfade = !parsed.test_mode;
   ```
 - This guarantees test suite commands execute immediate cuts, avoiding race conditions and golden screenshot pixel discrepancies.
+
+## 11. UI Integration Test Trigger Decoupling
+
+- Automated tests for UI overlays (e.g. snackbars, modal dialogs, floating title bars) MUST NOT mutate the underlying viewport rendering state (such as switching resampling filters, zoom levels, or color adjustments) merely to trigger a notification toast.
+- Because UI overlays frequently feature semi-transparent glassmorphism or background blur, altering viewport rendering modifies the background pixels beneath the overlay, causing false-positive visual regression failures when shaders are refactored.
+- Use dedicated synthetic test triggers (such as `SnackbarTrigger.testing` generating static `"Test Notification"` text) that preserve the clean, neutral baseline rendering across overlay test steps.
+
+## 12. GLSL Fragment Filter Kernel Symmetry & Phase Alignment
+
+- In single-pass image resampling and sharpening fragment shaders:
+  - Odd-symmetric first derivatives ($f(-x) = -f(x)$, such as Sobel $top - bottom$ or $left - right$) must never be multiplied by static positive scalar weights and added to the center pixel. By Taylor series expansion ($I(x + \\Delta x) \\approx I(x) + \\Delta x \\frac{\\partial I}{\\partial x}$), adding a directional first derivative acts as a spatial translation operator, displacing edges and causing perceived pixel shifting when toggling filters.
+  - Always use even-symmetric second-order curvature operators (Laplacian, 2nd derivatives $2 c - l - r$) or phase-modulate first derivatives by sub-pixel offsets $(p - \\lfloor p \\rfloor - 0.5)$ so that high-frequency reconstruction remains strictly zero-phase and centered on the texel coordinate.
+
+## 13. Inigo Quilez AA-Nearest Texel Centering Invariant
+
+- When implementing anti-aliased nearest-neighbor filtering (`clamp((f - 0.5) / w + 0.5, 0.0, 1.0)`):
+  - Continuous texel space coordinate $p$ MUST be shifted by $-0.5$ ($p = uv \\times \\text{tex_size} - 0.5$) and sampled at $(i + f + 0.5) / \\text{tex_size}$.
+  - Failing to shift $p$ by $-0.5$ treats texel centers as edges and boundaries as flat regions, resulting in a 50% bilinear blur across ~90% of the pixel area instead of solid pixel centers with 1-pixel boundary transitions.
+
+## 14. Stats & ViewModel Canonical State Synchronization
+
+- Debug overlays and view models (e.g., "Stats for Nerds" in `stats.zig`) MUST bind directly to the canonical active domain state field (`scale_filter`), never to deprecated or un-synchronized auxiliary fields (`texture_scale_mode`).
+- Redundant fields that can cause state desynchronization must be eliminated or strictly aliased to maintain single-source-of-truth invariants.

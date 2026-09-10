@@ -29,33 +29,34 @@ ______________________________________________________________________
 
 ## Keyboard Shortcuts
 
-| Shortcut                                | Action                                                   |
-| :-------------------------------------- | :------------------------------------------------------- |
-| `n` / `]` / `Space` / `Right`           | Next Image                                               |
-| `p` / `[` / `Backspace` / `Left`        | Previous Image                                           |
-| `Home` / `End`                          | Jump to First / Last Image                               |
-| `i` / `+` / `=`                         | Zoom In                                                  |
-| `o` / `-`                               | Zoom Out                                                 |
-| `a`                                     | Actual Size (1:1 / 100% Zoom)                            |
-| `r` / `0`                               | Reset Zoom & Pan                                         |
-| `h` / `j` / `k` / `l`                   | Pan Left / Down / Up / Right (when zoomed)               |
-| `e` / `>`                               | Rotate Clockwise (90°)                                   |
-| `E` / `<`                               | Rotate Counter-Clockwise (90°)                           |
-| `s`                                     | Cycle Scale Mode (Shrink, Full, Crop, Actual, Fit W/H)   |
-| `S` (Shift+s)                           | Cycle Resampling Filter (Nearest, Linear, Mitchell, etc) |
-| `b` / `B` (Shift+b)                     | Increase / Decrease Brightness                           |
-| `c` / `C` (Shift+c)                     | Increase / Decrease Contrast                             |
-| `Shift+R`                               | Reset Brightness & Contrast                              |
-| `d`                                     | Toggle Image Info Overlay                                |
-| `Shift+D` / `Shift+I`                   | Toggle Stats for Nerds / Performance Overlay             |
-| `t`                                     | Toggle Title Bar Overlay                                 |
-| `m`                                     | Toggle Manga Mode (Right-to-Left)                        |
-| `f` / `F11`                             | Toggle Borderless Fullscreen                             |
-| `F5` / `Ctrl+R`                         | Refresh / Rescan Directory                               |
-| `:` / `?` / `/` / `F1` / `Ctrl+Shift+P` | Open Command Palette (Actions)                           |
-| `Ctrl+P`                                | Open File Search Palette                                 |
-| `Ctrl+O`                                | Open Directory Navigator Palette                         |
-| `q` / `Esc`                             | Close Palette / Dismiss Dialogs / Exit Application       |
+| Shortcut                                | Action                                                           |
+| :-------------------------------------- | :--------------------------------------------------------------- |
+| `n` / `]` / `Space` / `Right`           | Next Image                                                       |
+| `p` / `[` / `Backspace` / `Left`        | Previous Image                                                   |
+| `Home` / `End`                          | Jump to First / Last Image                                       |
+| `i` / `+` / `=`                         | Zoom In                                                          |
+| `o` / `-`                               | Zoom Out                                                         |
+| `a`                                     | Actual Size (1:1 / 100% Zoom)                                    |
+| `r` / `0`                               | Reset Zoom & Pan                                                 |
+| `h` / `j` / `k` / `l`                   | Pan Left / Down / Up / Right (when zoomed)                       |
+| `e` / `>`                               | Rotate Clockwise (90°)                                           |
+| `E` / `<`                               | Rotate Counter-Clockwise (90°)                                   |
+| `s`                                     | Cycle Scale Mode (Shrink, Full, Crop, Actual, Fit W/H)           |
+| `S` (Shift+s)                           | Cycle Resampling Filter Forward (Nearest, Linear, Mitchell, etc) |
+| `Alt+Shift+S`                           | Cycle Resampling Filter Backward                                 |
+| `b` / `B` (Shift+b)                     | Increase / Decrease Brightness                                   |
+| `c` / `C` (Shift+c)                     | Increase / Decrease Contrast                                     |
+| `Shift+R`                               | Reset Brightness & Contrast                                      |
+| `d`                                     | Toggle Image Info Overlay                                        |
+| `Shift+D` / `Shift+I`                   | Toggle Stats for Nerds / Performance Overlay                     |
+| `t`                                     | Toggle Title Bar Overlay                                         |
+| `m`                                     | Toggle Manga Mode (Right-to-Left)                                |
+| `f` / `F11`                             | Toggle Borderless Fullscreen                                     |
+| `F5` / `Ctrl+R`                         | Refresh / Rescan Directory                                       |
+| `:` / `?` / `/` / `F1` / `Ctrl+Shift+P` | Open Command Palette (Actions)                                   |
+| `Ctrl+P`                                | Open File Search Palette                                         |
+| `Ctrl+O`                                | Open Directory Navigator Palette                                 |
+| `q` / `Esc`                             | Close Palette / Dismiss Dialogs / Exit Application               |
 
 ### Command Palette & Line Editor Navigation
 
@@ -162,10 +163,11 @@ You can send commands to a running instance using the `peng-msg` utility:
 # Adjust brightness and contrast
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock adjust 0.2 -0.1
 
-# Apply Resampling Filter (mitchell, lanczos3, lanczos3_spline, linear, pixel_art)
+# Apply Resampling Filter (mitchell, lanczos3, fsr, tiny_cnn, linear, pixel_art)
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock filter mitchell
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock filter lanczos3
-./zig-out/bin/peng-msg /tmp/peng-1234.sock filter lanczos3_spline
+./zig-out/bin/peng-msg /tmp/peng-1234.sock filter fsr
+./zig-out/bin/peng-msg /tmp/peng-1234.sock filter tiny_cnn
 
 # Navigation
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock next

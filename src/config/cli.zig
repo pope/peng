@@ -335,6 +335,8 @@ test "scale_modes_string and filter_modes_string contain enum variants" {
     try testing.expect(std.mem.indexOf(u8, intents.scale_modes_string, "fit_width") != null);
     try testing.expect(std.mem.indexOf(u8, intents.filter_modes_string, "mitchell") != null);
     try testing.expect(std.mem.indexOf(u8, intents.filter_modes_string, "lanczos3") != null);
+    try testing.expect(std.mem.indexOf(u8, intents.filter_modes_string, "fsr") != null);
+    try testing.expect(std.mem.indexOf(u8, intents.filter_modes_string, "tiny_cnn") != null);
 }
 
 test "help_text and ipc_help_text contain registered options" {

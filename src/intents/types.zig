@@ -22,7 +22,8 @@ pub const TextureScaleMode = enum {
     pixel_art,
     mitchell,
     lanczos3,
-    lanczos3_spline,
+    fsr,
+    tiny_cnn,
 };
 
 /// Comptime-generated comma-separated list of all valid ScaleMode names via reflection.
@@ -97,6 +98,7 @@ pub const AppIntent = union(enum) {
     cycle_scale_mode,
     set_filter: TextureScaleMode,
     cycle_filter,
+    cycle_filter_prev,
 
     // Color adjustments
     set_brightness: f32,
