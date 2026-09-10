@@ -130,6 +130,7 @@ pub const AppIntent = union(enum) {
     set_info: bool,
     toggle_stats,
     set_stats: bool,
+    dismiss_overlays,
     toggle_title,
     set_title: bool,
     toggle_snackbar,

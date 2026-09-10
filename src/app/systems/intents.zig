@@ -219,6 +219,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
         .set_info => |val| ui.overlays.info_panel.visible = val,
         .toggle_stats => ui.overlays.stats_panel.visible = !ui.overlays.stats_panel.visible,
         .set_stats => |val| ui.overlays.stats_panel.visible = val,
+        .dismiss_overlays => _ = ui.overlays.dismissFloatingPanels(),
         .toggle_title => {
             const new_pinned = !ui.overlays.title_display.isPinned();
             ui.overlays.title_display = if (new_pinned) .pinned else .hidden;

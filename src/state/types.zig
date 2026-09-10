@@ -342,6 +342,20 @@ pub const OverlayState = struct {
     auto_title: bool = true,
     debug_show_thumb: bool = false,
     enable_blur: bool = true,
+
+    /// Returns true if any floating HUD dialogs (Info or Stats) are visible.
+    pub fn hasVisibleFloatingPanels(self: OverlayState) bool {
+        return self.info_panel.visible or self.stats_panel.visible;
+    }
+
+    /// Dismisses all visible floating HUD dialogs.
+    /// Returns true if at least one dialog was open; false otherwise.
+    pub fn dismissFloatingPanels(self: *OverlayState) bool {
+        const had_visible = self.hasVisibleFloatingPanels();
+        self.info_panel.visible = false;
+        self.stats_panel.visible = false;
+        return had_visible;
+    }
 };
 
 /// Rolling window of recent frame render duration samples computing mean and standard deviation.
@@ -1047,4 +1061,27 @@ test "ImageTransition getPrevIndex and variants" {
 
     trans = .none;
     try std.testing.expectEqual(@as(?usize, null), trans.getPrevIndex());
+}
+
+test "OverlayState floating panel dismissal" {
+    var overlays = OverlayState{};
+    try std.testing.expect(!overlays.hasVisibleFloatingPanels());
+    try std.testing.expect(!overlays.dismissFloatingPanels());
+
+    // Show info panel
+    overlays.info_panel.visible = true;
+    try std.testing.expect(overlays.hasVisibleFloatingPanels());
+
+    // Show stats panel as well
+    overlays.stats_panel.visible = true;
+    try std.testing.expect(overlays.hasVisibleFloatingPanels());
+
+    // Dismiss should close both and return true
+    try std.testing.expect(overlays.dismissFloatingPanels());
+    try std.testing.expect(!overlays.info_panel.visible);
+    try std.testing.expect(!overlays.stats_panel.visible);
+    try std.testing.expect(!overlays.hasVisibleFloatingPanels());
+
+    // Subsequent dismissal returns false
+    try std.testing.expect(!overlays.dismissFloatingPanels());
 }

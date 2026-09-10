@@ -55,7 +55,7 @@ ______________________________________________________________________
 | `:` / `?` / `/` / `F1` / `Ctrl+Shift+P` | Open Command Palette (Actions)                           |
 | `Ctrl+P`                                | Open File Search Palette                                 |
 | `Ctrl+O`                                | Open Directory Navigator Palette                         |
-| `q` / `Esc`                             | Close Palette / Exit Application                         |
+| `q` / `Esc`                             | Close Palette / Dismiss Dialogs / Exit Application       |
 
 ### Command Palette & Line Editor Navigation
 

@@ -23,6 +23,15 @@ fn handleKeyDown(
 ) !void {
     if (self.viewer.ui.palette.isAcceptingInput()) return;
 
+    // Intercept Escape key when floating dialogs (Stats for Nerds / Image Info)
+    // are visible before falling back to closing the application.
+    const is_escape = key == .escape and mod.eql(.{});
+    const has_dialogs = self.viewer.ui.overlays.hasVisibleFloatingPanels();
+    if (is_escape and has_dialogs) {
+        try self.pushIntent(.dismiss_overlays);
+        return;
+    }
+
     const ctx: key_mapping.KeyContext =
         if (self.viewer.viewport.zoom_factor.get() > 1.0)
             .viewer_zoomed
@@ -264,4 +273,168 @@ test "sysProcessInput accepts shortcuts when palette is dissolving (is_closing =
     try sysProcessInput(ctx, false);
     try std.testing.expectEqual(@as(usize, 1), state.pending_intents.items.len);
     try std.testing.expectEqual(AppIntent.next_image, state.pending_intents.items[0]);
+}
+
+test "Escape key dismisses floating overlays without triggering quit" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    // 1. Both Stats for Nerds and Image Info are open
+    state.viewer.ui.overlays.stats_panel.visible = true;
+    state.viewer.ui.overlays.info_panel.visible = true;
+
+    // 2. User presses Escape
+    var keys = std.ArrayList(Key).empty;
+    defer keys.deinit(allocator);
+    try keys.append(allocator, .escape);
+
+    const frame_input = FrameInput{
+        .win_w = 800,
+        .win_h = 600,
+        .scale_x = 1.0,
+        .scale_y = 1.0,
+        .mouse_x = 0,
+        .mouse_y = 0,
+        .mouse_left_down = false,
+        .mouse_left_clicked = false,
+        .mouse_inside = true,
+        .quit_requested = false,
+        .scroll_delta_x = 0,
+        .scroll_delta_y = 0,
+        .keys_pressed = keys,
+        .key_modifiers = .{},
+        .text_input = null,
+        .dropped_path = null,
+        .ticks = 0,
+        .delta_time_ms = 16.0,
+    };
+
+    const ctx = FrameContext{
+        .state = &state,
+        .frame_allocator = allocator,
+        .input = frame_input,
+        .delta_time_ms = 16.0,
+    };
+
+    // sysProcessInput must enqueue dismiss_overlays, NOT quit
+    try sysProcessInput(ctx, false);
+    try std.testing.expectEqual(@as(usize, 1), state.pending_intents.items.len);
+    try std.testing.expectEqual(AppIntent.dismiss_overlays, state.pending_intents.items[0]);
+
+    // Executing intents dismisses the overlays while keeping viewer running
+    const intents_sys = @import("intents.zig");
+    try intents_sys.sysExecuteIntents(ctx);
+    try std.testing.expect(!state.viewer.ui.overlays.stats_panel.visible);
+    try std.testing.expect(!state.viewer.ui.overlays.info_panel.visible);
+    try std.testing.expect(state.viewer.running);
+
+    // 3. Next frame, with overlays now closed, pressing Escape again triggers quit
+    try sysProcessInput(ctx, false);
+    try std.testing.expectEqual(@as(usize, 1), state.pending_intents.items.len);
+    try std.testing.expectEqual(AppIntent.quit, state.pending_intents.items[0]);
+}
+
+test "q key triggers quit even when floating overlays are visible" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    state.viewer.ui.overlays.stats_panel.visible = true;
+
+    var keys = std.ArrayList(Key).empty;
+    defer keys.deinit(allocator);
+    try keys.append(allocator, .char_q);
+
+    const frame_input = FrameInput{
+        .win_w = 800,
+        .win_h = 600,
+        .scale_x = 1.0,
+        .scale_y = 1.0,
+        .mouse_x = 0,
+        .mouse_y = 0,
+        .mouse_left_down = false,
+        .mouse_left_clicked = false,
+        .mouse_inside = true,
+        .quit_requested = false,
+        .scroll_delta_x = 0,
+        .scroll_delta_y = 0,
+        .keys_pressed = keys,
+        .key_modifiers = .{},
+        .text_input = null,
+        .dropped_path = null,
+        .ticks = 0,
+        .delta_time_ms = 16.0,
+    };
+
+    const ctx = FrameContext{
+        .state = &state,
+        .frame_allocator = allocator,
+        .input = frame_input,
+        .delta_time_ms = 16.0,
+    };
+
+    try sysProcessInput(ctx, false);
+    try std.testing.expectEqual(@as(usize, 1), state.pending_intents.items.len);
+    try std.testing.expectEqual(AppIntent.quit, state.pending_intents.items[0]);
+}
+
+test "duplicate Escape keys in single frame safely deduplicate without triggering quit" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    state.viewer.ui.overlays.stats_panel.visible = true;
+
+    // Simulate key bounce / rapid input with two Escape events in one frame
+    var keys = std.ArrayList(Key).empty;
+    defer keys.deinit(allocator);
+    try keys.append(allocator, .escape);
+    try keys.append(allocator, .escape);
+
+    const frame_input = FrameInput{
+        .win_w = 800,
+        .win_h = 600,
+        .scale_x = 1.0,
+        .scale_y = 1.0,
+        .mouse_x = 0,
+        .mouse_y = 0,
+        .mouse_left_down = false,
+        .mouse_left_clicked = false,
+        .mouse_inside = true,
+        .quit_requested = false,
+        .scroll_delta_x = 0,
+        .scroll_delta_y = 0,
+        .keys_pressed = keys,
+        .key_modifiers = .{},
+        .text_input = null,
+        .dropped_path = null,
+        .ticks = 0,
+        .delta_time_ms = 16.0,
+    };
+
+    const ctx = FrameContext{
+        .state = &state,
+        .frame_allocator = allocator,
+        .input = frame_input,
+        .delta_time_ms = 16.0,
+    };
+
+    try sysProcessInput(ctx, false);
+    // Overlays intercept Escape, 0 quit intents queued
+    for (state.pending_intents.items) |intent| {
+        try std.testing.expectEqual(AppIntent.dismiss_overlays, intent);
+    }
+    try std.testing.expect(state.pending_intents.items.len > 0);
+
+    const intents_sys = @import("intents.zig");
+    try intents_sys.sysExecuteIntents(ctx);
+    try std.testing.expect(!state.viewer.ui.overlays.stats_panel.visible);
+    try std.testing.expect(state.viewer.running);
 }
