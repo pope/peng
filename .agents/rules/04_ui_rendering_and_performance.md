@@ -82,3 +82,19 @@
 
 - Debug overlays and view models (e.g., "Stats for Nerds" in `stats.zig`) MUST bind directly to the canonical active domain state field (`scale_filter`), never to deprecated or un-synchronized auxiliary fields (`texture_scale_mode`).
 - Redundant fields that can cause state desynchronization must be eliminated or strictly aliased to maintain single-source-of-truth invariants.
+
+## 15. Photographic Color Pipeline, Dynamic Uniformity & Numerical Invariants
+
+- **Photometric Exposure & 18% Middle Gray Contrast**:
+  - Image brightness adjustments MUST operate as optical stop exposure gains ($2^{2 \\cdot \\text{EV}}$) in scene-referred linear photometric space (IEC 61966-2-1).
+  - Contrast MUST pivot around physical 18% middle gray (`0.18`) in linear space rather than arbitrary 0.5 display sRGB. In log2/EV space, this scales dynamic range symmetrically around middle gray.
+  - Highlights overshooting 1.0 MUST be smoothly rolled off into a $C^1$-continuous rational shoulder (`excess^2 / (excess + w)`) rather than hard clipped.
+- **Identity Bypass Invariant**:
+  - Shaders with color adjustments MUST check for neutral settings (`safe_contrast == 1.0 && brightness == 0.0`) and bypass the pipeline completely.
+  - Passing neutral colors through sRGB \<-> linear conversions introduces 32-bit floating-point transcendental rounding drift, breaking golden test image baselines.
+- **Dynamic Uniformity vs. Branchless Execution**:
+  - Conditional branches that depend strictly on uniform variables (such as `has_adjustments` or `overshoot > 0.0`) are **dynamically uniform** across the entire quad draw call.
+  - Because all lanes in a SIMD warp evaluate the identical branch condition, warp divergence is 0%. Dynamic uniform branches SHOULD be used to skip expensive transcendental math rather than unconditionally executing both paths via arithmetic `mix`/`step`.
+- **Negative-Lobe Filter NaN Guards**:
+  - Bicubic and windowed sinc filters (Mitchell-Netravali, Lanczos3) produce negative values in high-contrast ringing regions.
+  - Input colors MUST be clamped to `[0.0, 1.0]` before applying sRGB-to-linear conversion to prevent negative inputs to fractional powers (`pow(c, 2.4)`), which generate rendering `NaN`s.

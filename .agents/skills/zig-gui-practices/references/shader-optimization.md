@@ -19,13 +19,9 @@ ______________________________________________________________________
 ## 2. Branchless Shader Math (`step` & `mix`)
 
 - **Eliminating GPU SIMD Warp Divergence**:
-  Replace dynamic conditional branches (`if/else`) with branchless `step()` and `mix()` operations to ensure all execution lanes in a warp/wavefront execute identical instruction paths:
-  ```glsl
-  // Image vs UI adjustment branchless blend
-  vec3 adjColor = (color.rgb - 0.5) * ubo.contrast + 0.5 + ubo.brightness;
-  float isImg = step(float(ubo.is_text_or_color), 0.5);
-  color.rgb = mix(color.rgb, adjColor, isImg);
+  For per-pixel divergent conditions, replace dynamic conditional branches (`if/else`) with branchless vector operations to ensure all execution lanes in a warp/wavefront execute identical instruction paths:
 
+  ```glsl
   // Branchless safe sinc function
   float ax = abs(x);
   float is_zero = step(ax, 0.0001);
@@ -34,6 +30,9 @@ ______________________________________________________________________
   float s = sin(safe_pi_x) / safe_pi_x;
   return mix(s, 1.0, is_zero);
   ```
+
+- **Dynamically Uniform Branching**:
+  Do NOT replace branches with `step()` / `mix()` when the condition depends solely on uniform variables (e.g. `ubo.brightness != 0.0` or `overshoot > 0.0`). Uniform branches execute in lockstep across the entire quad with **zero SIMD divergence**, allowing the GPU to completely bypass costly transcendental ALU blocks.
 
 ______________________________________________________________________
 
@@ -104,3 +103,32 @@ Peng implements 7 GPU-accelerated texture reconstruction and upscaling shaders:
 
 - Continuous coordinates MUST be shifted by $-0.5$ ($p = uv \\cdot \\text{size} - 0.5$) and sampled at $(i + f + 0.5) / \\text{size}$.
 - Ensures texel interiors evaluate to exact center points (100% solid color), with smooth 1-pixel linear anti-aliasing transitions strictly at boundaries.
+
+______________________________________________________________________
+
+## 6. Photographic Exposure & Contrast Pipeline Recipes (`image.frag.glsl`)
+
+### Scene-Referred Photometric Math
+
+1. **Reciprocal FMAs (Zero Hardware Vector FDIV)**:
+   - GPU ALUs require multiple cycles for vector floating-point division. Replace `/ 12.92` and `/ 1.055` with reciprocal multiplications and fused multiply-add:
+   ```glsl
+   vec3 linear_low = c * (1.0 / 12.92);
+   // Guard against ringing NaNs from negative lobes in Lanczos3/Mitchell filters:
+   vec3 safe_c = max((c + vec3(0.055)) * (1.0 / 1.055), vec3(0.0));
+   vec3 linear_high = pow(safe_c, vec3(2.4));
+   return mix(linear_low, linear_high, greaterThan(c, vec3(0.04045)));
+   ```
+2. **Hardware OpSelect (`greaterThan` vs `step`)**:
+   - `mix(a, b, greaterThan(x, thresh))` directly generates hardware conditional selection opcodes (`v_cndmask_b32` on AMD GCN/RDNA, `ISEL` on Nvidia) instead of multi-step arithmetic subtraction.
+3. **Scalar Peak Helper**:
+   - When evaluating maximum luminance or uniform peak values, use a dedicated scalar helper `linear_to_srgb_scalar(float c)` rather than expanding a single float into `vec3` to call `linear_to_srgb(vec3)`. This avoids 4 unnecessary vector `pow` transcendentals per fragment.
+4. **Algebraic Contrast & Exposure Folding**:
+   - Unify linear contrast division around 18% middle gray and exposure gain into a single scalar multiplier:
+     $$\\text{exposed_linear} = \\text{linear}^c \\cdot \\left[ 0.18^{1-c} \\cdot 2^{2 \\cdot \\text{EV}} \\right] = \\text{linear}^c \\cdot \\text{peak_linear}$$
+   - Eliminates 6 vector multiplications and divisions per fragment.
+5. **Continuous Rational Soft-Knee**:
+   - Roll off overshooting highlights using a $C^1$-continuous shoulder:
+     $$\\text{excess} = \\max(\\text{srgb} - \\text{knee}, 0)$$
+     $$\\text{color} = \\text{srgb} - \\frac{\\text{excess}^2}{\\text{excess} + w}$$
+   - Preserves exact identity ($\\text{srgb} - 0 = \\text{srgb}$) for midtones and shadows below the knee.

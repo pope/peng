@@ -435,6 +435,33 @@ vec4 sample_tiny_cnn(sampler2D tex, vec2 uv) {
 }
 
 // =============================================================================
+// sRGB <-> Linear Photometric Color Space Conversions (IEC 61966-2-1)
+// Optimized: Reciprocal FMAs, hardware OpSelect (v_cndmask_b32), zero FDIV
+// =============================================================================
+vec3 srgb_to_linear(vec3 c) {
+    vec3 linear_low = c * (1.0 / 12.92);
+    // Guard against ringing NaNs from negative lobes in Lanczos3/Mitchell
+    // filters:
+    vec3 safe_c = max((c + vec3(0.055)) * (1.0 / 1.055), vec3(0.0));
+    vec3 linear_high = pow(safe_c, vec3(2.4));
+    return mix(linear_low, linear_high, greaterThan(c, vec3(0.04045)));
+}
+
+vec3 linear_to_srgb(vec3 c) {
+    vec3 srgb_low = c * 12.92;
+    vec3 srgb_high =
+        fma(vec3(1.055), pow(max(c, vec3(0.0)), vec3(1.0 / 2.4)), vec3(-0.055));
+    return mix(srgb_low, srgb_high, greaterThan(c, vec3(0.0031308)));
+}
+
+// Scalar helper to prevent 3-channel vector pow expansion during peak
+// calculations
+float linear_to_srgb_scalar(float c) {
+    return (c <= 0.0031308) ? (c * 12.92)
+                            : (1.055 * pow(max(c, 0.0), 1.0 / 2.4) - 0.055);
+}
+
+// =============================================================================
 // Main Fragment Entry Point
 // =============================================================================
 void main() {
@@ -477,6 +504,47 @@ void main() {
     }
 
     vec4 color = texColor * inColor;
-    color.rgb = (color.rgb - 0.5) * ubo.contrast + 0.5 + ubo.brightness;
+
+    // Photographic Exposure and Contrast Pipeline:
+    // When adjustments are neutral (contrast == 1.0 and brightness == 0.0),
+    // bypass to preserve 100% bit-exact unadjusted reproduction.
+    float safe_contrast = clamp(ubo.contrast, 0.0, 5.0);
+    bool has_adjustments =
+        (abs(safe_contrast - 1.0) > 1e-5 || abs(ubo.brightness) > 1e-5);
+
+    if (has_adjustments) {
+        // Guard against negative filter lobes (e.g. Mitchell bicubic ringing)
+        vec3 linear = srgb_to_linear(clamp(color.rgb, 0.0, 1.0));
+
+        // 1 & 2. Unified Linear Contrast & Photometric Exposure:
+        // Evaluates peak_linear scalar once, folding contrast division and
+        // exposure stop gain into a single multiplier: linear^contrast *
+        // (mid_gray^(1-c) * 2^(2*EV))
+        const float mid_gray = 0.18;
+        float peak_linear = mid_gray * pow(1.0 / mid_gray, safe_contrast) *
+                            exp2(ubo.brightness * 2.0);
+        vec3 exposed_linear =
+            pow(max(linear, vec3(1e-5)), vec3(safe_contrast)) * peak_linear;
+
+        // 3. Re-encode to display sRGB:
+        vec3 srgb = linear_to_srgb(exposed_linear);
+
+        // 4. Highlight protection soft-knee:
+        // Scalar peak evaluation (saves 4 vector transcendentals) + uniform
+        // branch bypass
+        float peak_srgb = linear_to_srgb_scalar(peak_linear);
+        float overshoot = max(peak_srgb - 1.0, 0.0);
+
+        if (overshoot > 0.0) {
+            float knee = mix(1.0, 0.75, min(overshoot * 0.75, 1.0));
+            float w = max(1.0 - knee, 1e-5);
+            vec3 excess = max(srgb - vec3(knee), vec3(0.0));
+            color.rgb =
+                clamp(srgb - (excess * excess) / (excess + vec3(w)), 0.0, 1.0);
+        } else {
+            color.rgb = clamp(srgb, 0.0, 1.0);
+        }
+    }
+
     outColor = color;
 }

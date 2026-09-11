@@ -430,4 +430,3 @@ test "processSDLEvent mouse_wheel normal and flipped directional axes" {
         0.001,
     );
 }
-

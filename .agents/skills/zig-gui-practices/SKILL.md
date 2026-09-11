@@ -46,5 +46,7 @@ ______________________________________________________________________
 - **[GPU Shader Optimization Recipes](references/shader-optimization.md)**
 
   - Horner's method for polynomial splines (chained hardware FMA execution).
-  - Branchless math operations (`step()` and `mix()`) for SIMD warp efficiency.
+  - Branchless math (`greaterThan()`, `step()`, `mix()`) vs dynamically uniform branches (`if (overshoot > 0.0)`).
+  - Photometric exposure ($2^{\\text{EV}}$), 18% middle gray contrast, and rational soft-knee highlight protection.
+  - Reciprocal FMAs, zero hardware vector FDIV, and scalar peak helpers.
   - `#pragma unroll` directives and `glslangValidator -V -Os` optimization flags.
