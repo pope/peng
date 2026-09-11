@@ -40,6 +40,7 @@ pub fn mapKeyFromSdl(key: sdl.keys.Keycode) Key {
         sdl.keys.comma => .comma,
         sdl.keys.less => .less,
         sdl.keys.greater => .greater,
+        sdl.keys.backslash => .backslash,
         sdl.keys.char_0, sdl.keys.kp_0 => .char_0,
         sdl.keys.char_1, sdl.keys.kp_1 => .char_1,
         sdl.keys.char_2, sdl.keys.kp_2 => .char_2,
@@ -429,4 +430,8 @@ test "processSDLEvent mouse_wheel normal and flipped directional axes" {
         fis.scroll_delta_y,
         0.001,
     );
+}
+
+test "mapKeyFromSdl maps backslash key" {
+    try std.testing.expectEqual(Key.backslash, mapKeyFromSdl(sdl.keys.backslash));
 }

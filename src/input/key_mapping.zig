@@ -81,6 +81,10 @@ test "mapKeyToAction aligned with palette action items" {
     const reset_adj = mapKeyToAction(.char_r, .{ .shift = true }, .viewer_normal);
     try std.testing.expectEqual(intents.AppIntent.reset_adjustments, reset_adj.?);
 
+    // Check toggle_compare via Backslash key
+    const toggle_cmp = mapKeyToAction(.backslash, .{}, .viewer_normal);
+    try std.testing.expectEqual(intents.AppIntent.toggle_compare, toggle_cmp.?);
+
     // Check rotate_cw via E key
     const rot_cw = mapKeyToAction(.char_e, .{}, .viewer_normal);
     try std.testing.expectEqual(intents.AppIntent.rotate_cw, rot_cw.?);

@@ -429,6 +429,16 @@ pub fn main(init: std.process.Init) !void {
         if (try harness.verify("adjust.png", "adjust.png")) {
             steps_with_discrepancies += 1;
         }
+        // Verify Before/After comparison: compare on matches unadjusted init.png baseline
+        try sendCommand(socket_path, "compare on");
+        if (try harness.verify("adjust_compare_before.png", "init.png")) {
+            steps_with_discrepancies += 1;
+        }
+        // Verify compare off restores adjusted rendering
+        try sendCommand(socket_path, "compare off");
+        if (try harness.verify("adjust_compare_after.png", "adjust.png")) {
+            steps_with_discrepancies += 1;
+        }
     }
 
     // Scaling Filters (Standard / Fit-to-Window)
@@ -616,6 +626,7 @@ pub fn main(init: std.process.Init) !void {
         try expectCommandFailure(socket_path, "manga invalid");
         try expectCommandFailure(socket_path, "palette invalid");
         try expectCommandFailure(socket_path, "thumb invalid");
+        try expectCommandFailure(socket_path, "compare invalid");
 
         // Generate a 513-character screenshot path
         var long_path_buf: [520]u8 = undefined;

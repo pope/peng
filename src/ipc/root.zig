@@ -103,10 +103,17 @@ pub const CrossfadeAction = enum {
     toggle,
 };
 
+pub const CompareAction = enum {
+    enable,
+    disable,
+    toggle,
+};
+
 pub const IpcCommand = union(enum) {
     zoom: f32,
     pan: struct { x: f32, y: f32 },
     adjust: struct { brightness: f32, contrast: f32 },
+    compare: CompareAction,
     filter: TextureScaleMode,
     scale: intents.ScaleMode,
     manga: bool,
@@ -132,6 +139,11 @@ pub const IpcCommand = union(enum) {
             .zoom => |factor| return .{ .set_zoom = factor },
             .pan => |p| return .{ .set_pan = .{ .x = p.x, .y = p.y } },
             .adjust => return null,
+            .compare => |action| switch (action) {
+                .enable => return .{ .set_compare = true },
+                .disable => return .{ .set_compare = false },
+                .toggle => return .toggle_compare,
+            },
             .reset_view => return .reset_zoom,
             .reset_adjustments => return .reset_adjustments,
             .filter => |mode| return .{ .set_filter = mode },
@@ -320,6 +332,26 @@ pub const IpcCommand = union(enum) {
                 }
             } else {
                 return .{ .crossfade = .toggle };
+            }
+        } else if (std.mem.eql(u8, cmd, "compare")) {
+            if (it.next()) |val| {
+                const is_on = std.mem.eql(u8, val, "true") or
+                    std.mem.eql(u8, val, "enable") or
+                    std.mem.eql(u8, val, "on");
+                const is_off = std.mem.eql(u8, val, "false") or
+                    std.mem.eql(u8, val, "disable") or
+                    std.mem.eql(u8, val, "off");
+                if (is_on) {
+                    return .{ .compare = .enable };
+                } else if (is_off) {
+                    return .{ .compare = .disable };
+                } else if (std.mem.eql(u8, val, "toggle")) {
+                    return .{ .compare = .toggle };
+                } else {
+                    return error.InvalidArgument;
+                }
+            } else {
+                return .{ .compare = .toggle };
             }
         } else if (std.mem.eql(u8, cmd, "palette")) {
             const pal_name = it.next() orelse return error.MissingArgument;
@@ -554,6 +586,34 @@ test "IpcCommand parsing" {
     try std.testing.expectEqual(
         intents.AppIntent.toggle_crossfade,
         cmd_cf_toggle_word.toIntent().?,
+    );
+
+    const cmd_cmp_true = try IpcCommand.parse("compare true");
+    try std.testing.expectEqual(CompareAction.enable, cmd_cmp_true.compare);
+    try std.testing.expectEqual(
+        intents.AppIntent{ .set_compare = true },
+        cmd_cmp_true.toIntent().?,
+    );
+
+    const cmd_cmp_off = try IpcCommand.parse("compare off");
+    try std.testing.expectEqual(CompareAction.disable, cmd_cmp_off.compare);
+    try std.testing.expectEqual(
+        intents.AppIntent{ .set_compare = false },
+        cmd_cmp_off.toIntent().?,
+    );
+
+    const cmd_cmp_toggle = try IpcCommand.parse("compare");
+    try std.testing.expectEqual(CompareAction.toggle, cmd_cmp_toggle.compare);
+    try std.testing.expectEqual(
+        intents.AppIntent.toggle_compare,
+        cmd_cmp_toggle.toIntent().?,
+    );
+
+    const cmd_cmp_toggle_word = try IpcCommand.parse("compare toggle");
+    try std.testing.expectEqual(CompareAction.toggle, cmd_cmp_toggle_word.compare);
+    try std.testing.expectEqual(
+        intents.AppIntent.toggle_compare,
+        cmd_cmp_toggle_word.toIntent().?,
     );
 
     try std.testing.expectError(error.UnknownCommand, IpcCommand.parse("invalid_command"));

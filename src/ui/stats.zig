@@ -378,6 +378,9 @@ fn renderInfoOverlay(
         );
         try renderStatRow("Brightness", brightness_str);
         try renderStatRow("Contrast", contrast_str);
+        if (ui_model.viewport.compare_original) {
+            try renderStatRow("Compare Mode", "Before (Original)");
+        }
         try renderStatRow("EXIF Thumbnail", thumb_info_str);
     });
 }

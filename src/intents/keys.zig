@@ -37,6 +37,7 @@ pub const Key = enum {
     comma,
     less,
     greater,
+    backslash,
     char_0,
     char_1,
     char_2,

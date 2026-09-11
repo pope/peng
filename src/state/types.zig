@@ -148,12 +148,14 @@ pub const ViewportParams = struct {
     rotation_angle: f32 = 0.0,
     brightness: f32 = 0.0,
     contrast: f32 = 1.0,
+    compare_original: bool = false,
 
-    /// Resets zoom factor and pan offsets back to default center positioning.
+    /// Resets zoom factor, pan offsets, and comparison mode back to default center positioning.
     pub fn reset(self: *ViewportParams) void {
         self.zoom_factor = .{};
         self.pan_x = 0.0;
         self.pan_y = 0.0;
+        self.compare_original = false;
     }
 
     /// Explicitly assigns the pan offset coordinates.
@@ -168,20 +170,38 @@ pub const ViewportParams = struct {
         self.pan_y += dy;
     }
 
+    /// Returns true if non-neutral photographic exposure or contrast adjustments are applied.
+    pub fn hasAdjustments(self: ViewportParams) bool {
+        return @abs(self.brightness) > 1e-5 or @abs(self.contrast - 1.0) > 1e-5;
+    }
+
+    /// Toggles Before/After comparison mode (original unadjusted image vs active adjustments).
+    /// If no adjustments are applied, comparison mode remains inactive.
+    pub fn toggleCompare(self: *ViewportParams) void {
+        if (!self.hasAdjustments()) {
+            self.compare_original = false;
+            return;
+        }
+        self.compare_original = !self.compare_original;
+    }
+
     /// Sets brightness in [-1.0, 1.0] and contrast in [0.0, 5.0].
     pub fn setAdjustments(self: *ViewportParams, br: f32, co: f32) void {
         self.brightness = std.math.clamp(br, -1.0, 1.0);
         self.contrast = std.math.clamp(co, 0.0, 5.0);
+        self.compare_original = false;
     }
 
     /// Adjusts brightness by adding `delta`, clamped to [-1.0, 1.0].
     pub fn adjustBrightness(self: *ViewportParams, delta: f32) void {
         self.brightness = std.math.clamp(self.brightness + delta, -1.0, 1.0);
+        self.compare_original = false;
     }
 
     /// Adjusts contrast by adding `delta`, clamped to [0.0, 5.0].
     pub fn adjustContrast(self: *ViewportParams, delta: f32) void {
         self.contrast = std.math.clamp(self.contrast + delta, 0.0, 5.0);
+        self.compare_original = false;
     }
 
     /// Rotates the viewport clockwise by 90 degrees with 360-degree
@@ -1088,4 +1108,53 @@ test "OverlayState floating panel dismissal" {
 
     // Subsequent dismissal returns false
     try std.testing.expect(!overlays.dismissFloatingPanels());
+}
+
+test "ViewportParams Before/After comparison lifecycle" {
+    var vp = ViewportParams{};
+    try std.testing.expect(!vp.hasAdjustments());
+    try std.testing.expect(!vp.compare_original);
+
+    // Toggling without adjustments remains false
+    vp.toggleCompare();
+    try std.testing.expect(!vp.compare_original);
+
+    // Apply adjustments
+    vp.adjustBrightness(0.2);
+    try std.testing.expect(vp.hasAdjustments());
+    try std.testing.expect(!vp.compare_original);
+
+    // Toggle on
+    vp.toggleCompare();
+    try std.testing.expect(vp.compare_original);
+
+    // Toggle off
+    vp.toggleCompare();
+    try std.testing.expect(!vp.compare_original);
+
+    // Toggle on then verify adjustBrightness resets compare_original
+    vp.toggleCompare();
+    try std.testing.expect(vp.compare_original);
+    vp.adjustBrightness(-0.1);
+    try std.testing.expect(!vp.compare_original);
+
+    // Toggle on then verify adjustContrast resets compare_original
+    vp.toggleCompare();
+    try std.testing.expect(vp.compare_original);
+    vp.adjustContrast(0.1);
+    try std.testing.expect(!vp.compare_original);
+
+    // Toggle on then verify setAdjustments resets compare_original
+    vp.toggleCompare();
+    try std.testing.expect(vp.compare_original);
+    vp.setAdjustments(0.0, 1.0);
+    try std.testing.expect(!vp.compare_original);
+    try std.testing.expect(!vp.hasAdjustments());
+
+    // Toggle on then verify reset() resets compare_original
+    vp.setAdjustments(0.1, 1.2);
+    vp.toggleCompare();
+    try std.testing.expect(vp.compare_original);
+    vp.reset();
+    try std.testing.expect(!vp.compare_original);
 }

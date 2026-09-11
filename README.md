@@ -46,6 +46,7 @@ ______________________________________________________________________
 | `Alt+Shift+S`                           | Cycle Resampling Filter Backward                                 |
 | `b` / `B` (Shift+b)                     | Increase / Decrease Brightness                                   |
 | `c` / `C` (Shift+c)                     | Increase / Decrease Contrast                                     |
+| `\`                                     | Toggle Before / After (Original vs Adjusted)                     |
 | `Shift+R`                               | Reset Brightness & Contrast                                      |
 | `d`                                     | Toggle Image Info Overlay                                        |
 | `Shift+D` / `Shift+I`                   | Toggle Stats for Nerds / Performance Overlay                     |
@@ -162,6 +163,10 @@ You can send commands to a running instance using the `peng-msg` utility:
 
 # Adjust brightness and contrast
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock adjust 0.2 -0.1
+
+# Toggle Before / After Comparison (toggle, on, off)
+./zig-out/bin/peng-msg /tmp/peng-1234.sock compare toggle
+
 
 # Apply Resampling Filter (mitchell, lanczos3, fsr, tiny_cnn, linear, pixel_art)
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock filter mitchell

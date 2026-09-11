@@ -908,9 +908,10 @@ fn drawBatches(
 
         if (last_material == null or last_material.? != batch.material) {
             if (is_image) {
+                const show_original = view_params.compare_original;
                 const img_ubo = ImageUniforms{
-                    .brightness = view_params.brightness,
-                    .contrast = view_params.contrast,
+                    .brightness = if (show_original) 0.0 else view_params.brightness,
+                    .contrast = if (show_original) 1.0 else view_params.contrast,
                     .scale_mode = view_params.getShaderScaleModeInt(),
                 };
                 cmd_buf.pushFragmentUniform(0, std.mem.asBytes(&img_ubo));

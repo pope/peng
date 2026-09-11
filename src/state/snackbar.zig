@@ -26,8 +26,9 @@ pub const SnackbarTrigger = enum(u8) {
     rotation = 6,
     manga_mode = 7,
     crossfade = 8,
+    compare = 9,
     /// Synthetic trigger used for integration tests and visual overlay verification
-    testing = 9,
+    testing = 10,
 };
 
 pub const TRIGGER_COUNT: usize = @typeInfo(SnackbarTrigger).@"enum".fields.len;
@@ -115,6 +116,13 @@ fn formatCrossfade(ctx: SnackbarContext, _: []u8) []const u8 {
     return if (ctx.crossfade) "Crossfade: ON" else "Crossfade: OFF";
 }
 
+fn formatCompare(ctx: SnackbarContext, _: []u8) []const u8 {
+    if (!ctx.viewport.hasAdjustments()) {
+        return "Before / After: No Adjustments";
+    }
+    return if (ctx.viewport.compare_original) "Before (Original)" else "After (Adjusted)";
+}
+
 fn formatTesting(ctx: SnackbarContext, _: []u8) []const u8 {
     return if (ctx.snackbar_enabled) "Test Notification" else "";
 }
@@ -192,6 +200,14 @@ pub const DEFAULT_SNACKBAR_RULES = [_]SnackbarRule{
         .duration_ms = 1800,
         .intents = &.{ .toggle_crossfade, .set_crossfade },
         .format_fn = formatCrossfade,
+    },
+    .{
+        .trigger = .compare,
+        .label = "Compare Adjustments",
+        .enabled = true,
+        .duration_ms = 1800,
+        .intents = &.{ .toggle_compare, .set_compare },
+        .format_fn = formatCompare,
     },
     .{
         .trigger = .testing,
@@ -324,6 +340,21 @@ test "Snackbar formatters produce expected text" {
     const reset_str = formatResetAdjustments(.{ .viewport = &vp }, &buf);
     try std.testing.expectEqualStrings("Adjustments: Reset", reset_str);
 
+    // Compare adjustments
+    vp.brightness = 0.0;
+    vp.contrast = 1.0;
+    const cmp_no_adj = formatCompare(.{ .viewport = &vp }, &buf);
+    try std.testing.expectEqualStrings("Before / After: No Adjustments", cmp_no_adj);
+    vp.brightness = 0.3;
+    vp.compare_original = true;
+    const cmp_before = formatCompare(.{ .viewport = &vp }, &buf);
+    try std.testing.expectEqualStrings("Before (Original)", cmp_before);
+    vp.compare_original = false;
+    const cmp_after = formatCompare(.{ .viewport = &vp }, &buf);
+    try std.testing.expectEqualStrings("After (Adjusted)", cmp_after);
+    vp.brightness = 0.0;
+    vp.contrast = 1.0;
+
     // Rotation
     vp.rotation_angle = 90.0;
     const rot_str = formatRotation(.{ .viewport = &vp }, &buf);
@@ -364,6 +395,14 @@ test "findRule maps intents to declarative rules" {
     const bright_rule = findRule(.increase_brightness);
     try std.testing.expect(bright_rule != null);
     try std.testing.expectEqual(SnackbarTrigger.brightness, bright_rule.?.trigger);
+
+    const compare_rule = findRule(.toggle_compare);
+    try std.testing.expect(compare_rule != null);
+    try std.testing.expectEqual(SnackbarTrigger.compare, compare_rule.?.trigger);
+
+    const compare_set_rule = findRule(.{ .set_compare = true });
+    try std.testing.expect(compare_set_rule != null);
+    try std.testing.expectEqual(SnackbarTrigger.compare, compare_set_rule.?.trigger);
 
     const crossfade_rule = findRule(.toggle_crossfade);
     try std.testing.expect(crossfade_rule != null);

@@ -80,6 +80,9 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
         .increase_contrast => vp.adjustContrast(0.1),
         .decrease_contrast => vp.adjustContrast(-0.1),
         .reset_adjustments => vp.setAdjustments(0.0, 1.0),
+        .toggle_compare => vp.toggleCompare(),
+        .set_compare => |val| vp.compare_original = val,
+
         .rotate_cw => {
             vp.rotateCw();
             if (nav.getCurrentImageEntry()) |entry| {
@@ -754,4 +757,75 @@ test "sysExecuteIntents - manual navigation crossfade and rapid navigation cut" 
         .delta_time_ms = 16.0,
     });
     try testing.expectEqual(false, app_st.viewer.navigation.crossfade);
+}
+
+test "Before/After comparison intents mutate viewport and trigger snackbar" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    // Enable snackbar to verify notification dispatch
+    app_st.viewer.ui.snackbar.enabled = true;
+
+    // 1. Toggling without adjustments remains false and shows no adjustments snackbar
+    try app_st.pushIntent(.toggle_compare);
+    try sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+    });
+    try testing.expectEqual(false, app_st.viewer.viewport.compare_original);
+    try testing.expectEqualStrings(
+        "Before / After: No Adjustments",
+        app_st.viewer.ui.snackbar.getMessage(),
+    );
+
+    // 2. Set adjustments then toggle compare on
+    try app_st.pushIntent(.increase_brightness);
+    try sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+    });
+    try testing.expect(app_st.viewer.viewport.hasAdjustments());
+
+    try app_st.pushIntent(.toggle_compare);
+    try sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+    });
+    try testing.expectEqual(true, app_st.viewer.viewport.compare_original);
+    try testing.expectEqualStrings(
+        "Before (Original)",
+        app_st.viewer.ui.snackbar.getMessage(),
+    );
+
+    // 3. Toggle compare off
+    try app_st.pushIntent(.toggle_compare);
+    try sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+    });
+    try testing.expectEqual(false, app_st.viewer.viewport.compare_original);
+    try testing.expectEqualStrings(
+        "After (Adjusted)",
+        app_st.viewer.ui.snackbar.getMessage(),
+    );
+
+    // 4. Test set_compare explicit intent
+    try app_st.pushIntent(.{ .set_compare = true });
+    try sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+    });
+    try testing.expectEqual(true, app_st.viewer.viewport.compare_original);
+    try testing.expectEqualStrings(
+        "Before (Original)",
+        app_st.viewer.ui.snackbar.getMessage(),
+    );
 }

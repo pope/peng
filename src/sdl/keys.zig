@@ -33,6 +33,7 @@ pub const period: Keycode = c.SDLK_PERIOD;
 pub const comma: Keycode = c.SDLK_COMMA;
 pub const less: Keycode = c.SDLK_LESS;
 pub const greater: Keycode = c.SDLK_GREATER;
+pub const backslash: Keycode = c.SDLK_BACKSLASH;
 
 pub const char_0: Keycode = c.SDLK_0;
 pub const kp_0: Keycode = c.SDLK_KP_0;

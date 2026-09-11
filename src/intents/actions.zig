@@ -156,6 +156,7 @@ pub const ActionId = enum {
     increase_contrast,
     decrease_contrast,
     reset_adjustments,
+    toggle_compare,
     set_brightness_dialog,
     set_contrast_dialog,
 
@@ -167,6 +168,7 @@ pub const ActionId = enum {
     zoom_config,
     pan_config,
     adjust_config,
+    compare_config,
     filter_config,
     palette_config,
     wait_load,
@@ -547,6 +549,15 @@ pub const actions = [_]ActionDef{
         .intent = .reset_adjustments,
     },
     .{
+        .id = .toggle_compare,
+        .title = "Toggle Before / After (Original vs Adjusted)",
+        .shortcut_text = "\\",
+        .description = "Compare original unadjusted image with current adjustments",
+        .show_in_palette = true,
+        .shortcuts = &.{.{ .key = .backslash }},
+        .intent = .toggle_compare,
+    },
+    .{
         .id = .set_brightness_dialog,
         .title = "Set Brightness (Type Value)...",
         .shortcut_text = "",
@@ -800,6 +811,17 @@ pub const actions = [_]ActionDef{
         },
     },
     .{
+        .id = .compare_config,
+        .title = "Compare Mode Configuration",
+        .description = "Toggle Before/After comparison mode",
+        .show_in_palette = false,
+        .ipc = .{
+            .name = "compare",
+            .args = "[on|off|toggle]",
+            .description = "Toggle Before/After comparison mode",
+        },
+    },
+    .{
         .id = .filter_config,
         .title = "Resampling Filter Configuration",
         .description = "Apply resampling shader (" ++ filter_modes_string ++ ")",
@@ -920,15 +942,15 @@ pub const ipc_commands = blk: {
 test "actions registry projections" {
     const testing = std.testing;
 
-    // Palette count: 51 previous + 1 (cycle_filter_prev) = 52
-    try testing.expectEqual(@as(usize, 52), palette_action_items.len);
+    // Palette count: 52 previous + 1 (toggle_compare) = 53
+    try testing.expectEqual(@as(usize, 53), palette_action_items.len);
 
     // Exact index preservation
     try testing.expectEqualStrings("Navigate Directories...", palette_action_items[7].name);
     try testing.expectEqualStrings("Ctrl+O", palette_action_items[7].shortcut_text);
 
-    // Shortcuts projection: 53 previous + 1 (Alt+Shift+S) = 54
-    try testing.expectEqual(@as(usize, 54), flat_shortcuts.len);
+    // Shortcuts projection: 54 previous + 1 (backslash) = 55
+    try testing.expectEqual(@as(usize, 55), flat_shortcuts.len);
     var total_sc: usize = 0;
     for (palette_action_items) |item| {
         total_sc += item.shortcuts.len;
@@ -944,7 +966,7 @@ test "actions registry projections" {
     try testing.expectEqual(OptionId.scale, action_cli_options[4].id);
 
     // IPC commands projection
-    try testing.expectEqual(@as(usize, 16), ipc_commands.len);
+    try testing.expectEqual(@as(usize, 17), ipc_commands.len);
 }
 
 test "actions registry invariants and consistency" {

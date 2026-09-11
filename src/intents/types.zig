@@ -108,6 +108,8 @@ pub const AppIntent = union(enum) {
     increase_contrast,
     decrease_contrast,
     reset_adjustments,
+    toggle_compare,
+    set_compare: bool,
 
     // Image orientation
     rotate_cw,
