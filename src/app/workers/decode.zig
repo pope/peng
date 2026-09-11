@@ -730,7 +730,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
 
             const file_size: usize = @intCast(s.size);
             const target_read_size: usize = if (args.thumb_only)
-                @min(file_size, 128 * 1024)
+                @min(file_size, 256 * 1024)
             else
                 file_size;
 
@@ -768,7 +768,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         },
     }
 
-    const header_n = @min(read_n, 128 * 1024);
+    const header_n = @min(read_n, 256 * 1024);
     const header_buf = file_bytes[0..header_n];
 
     const path = media_entry.getPath();
@@ -784,26 +784,32 @@ pub fn decodeWorker(args: *DecodeArgs) void {
             (header_buf.len >= 8 and std.mem.startsWith(u8, header_buf, "FUJIFILM"));
         if (is_fuji) {
             if (exif.extractFujiRafPreviewLocation(header_buf)) |ploc| {
-                const off: usize = @intCast(ploc.file_offset);
-                const len: usize = @intCast(ploc.length);
-                if (off + len <= file_bytes.len) {
+                if (ploc.length > 0 and ploc.length <= file_bytes.len and
+                    ploc.file_offset <= file_bytes.len - ploc.length)
+                {
+                    const off: usize = @intCast(ploc.file_offset);
+                    const len: usize = @intCast(ploc.length);
                     raw_preview_slice = file_bytes[off .. off + len];
                     orientation = exif.parseExifOrientation(raw_preview_slice.?) orelse .normal;
                 }
             }
             if (exif.extractFujiRafMetadataLocation(header_buf)) |mloc| {
-                const off: usize = @intCast(mloc.file_offset);
-                const len: usize = @intCast(mloc.length);
-                if (off + len <= file_bytes.len) {
+                if (mloc.length > 0 and mloc.length <= file_bytes.len and
+                    mloc.file_offset <= file_bytes.len - mloc.length)
+                {
+                    const off: usize = @intCast(mloc.file_offset);
+                    const len: usize = @intCast(mloc.length);
                     raw_sensor_dims = exif.parseFujiRafDimensions(file_bytes[off .. off + len]);
                 }
             }
         } else {
             const raw_cands = exif.extractTiffRawPreviews(header_buf);
             if (raw_cands.preview) |ploc| {
-                const off: usize = @intCast(ploc.file_offset);
-                const len: usize = @intCast(ploc.length);
-                if (off + len <= file_bytes.len) {
+                if (ploc.length > 0 and ploc.length <= file_bytes.len and
+                    ploc.file_offset <= file_bytes.len - ploc.length)
+                {
+                    const off: usize = @intCast(ploc.file_offset);
+                    const len: usize = @intCast(ploc.length);
                     raw_preview_slice = file_bytes[off .. off + len];
                 }
             }
