@@ -86,6 +86,180 @@ pub const Compression = enum(u16) {
     _,
 };
 
+/// Segmented TIFF source for zero-allocation parsing of files where the root IFD0
+/// directory is located at the tail of the file rather than the initial header.
+pub const TiffSource = struct {
+    header: []const u8,
+    tail_offset: u64 = 0,
+    tail: []const u8 = "",
+
+    pub inline fn init(header: []const u8) TiffSource {
+        return .{ .header = header };
+    }
+
+    pub inline fn initWithTail(
+        header: []const u8,
+        tail_offset: u64,
+        tail: []const u8,
+    ) TiffSource {
+        return .{
+            .header = header,
+            .tail_offset = tail_offset,
+            .tail = tail,
+        };
+    }
+
+    pub inline fn getSlice(self: TiffSource, off: usize, len: usize) ?[]const u8 {
+        if (std.math.add(usize, off, len)) |end| {
+            if (end <= self.header.len) {
+                return self.header[off..end];
+            }
+        } else |_| {}
+
+        if (self.tail.len > 0 and off >= self.tail_offset) {
+            const rel_u64 = off - self.tail_offset;
+            if (rel_u64 <= self.tail.len) {
+                const rel: usize = @intCast(rel_u64);
+                if (std.math.add(usize, rel, len)) |tail_end| {
+                    if (tail_end <= self.tail.len) {
+                        return self.tail[rel..tail_end];
+                    }
+                } else |_| {}
+            }
+        }
+        return null;
+    }
+};
+
+/// Probes the 8-byte TIFF container header to extract the root IFD0 offset
+/// without reading or parsing tags.
+pub fn probeTiffIfd0Offset(header: []const u8) ?u32 {
+    if (header.len < 8) return null;
+    const is_le = if (std.mem.eql(u8, header[0..2], "II"))
+        true
+    else if (std.mem.eql(u8, header[0..2], "MM"))
+        false
+    else
+        return null;
+    const sig = readU16(header[2..4][0..2], is_le);
+    if (sig != 0x002A) return null;
+    const ifd0_off = readU32(header[4..8][0..4], is_le);
+    if (ifd0_off < 8 or (ifd0_off & 1) != 0) return null;
+    return ifd0_off;
+}
+
+/// Probes and streams tail IFD0 into tail_buf when located beyond header_slice.
+/// Returns a TiffSource referencing either header alone or header + tail.
+pub fn readTiffSource(
+    io: std.Io,
+    file: *std.Io.File,
+    file_size: u64,
+    header_slice: []const u8,
+    tail_buf: []u8,
+) TiffSource {
+    if (probeTiffIfd0Offset(header_slice)) |ifd0_off| {
+        if (ifd0_off >= header_slice.len and ifd0_off < file_size) {
+            const tail_target: usize = @intCast(@min(file_size - ifd0_off, tail_buf.len));
+            if (tail_target > 0) {
+                var t_slices = [_][]u8{tail_buf[0..tail_target]};
+                const tn = file.readPositional(io, &t_slices, ifd0_off) catch 0;
+                if (tn > 0) {
+                    return TiffSource.initWithTail(header_slice, ifd0_off, tail_buf[0..tn]);
+                }
+            }
+        }
+    }
+    return TiffSource.init(header_slice);
+}
+
+const TiffHeaderSource = struct {
+    source: TiffSource,
+    is_le: bool,
+    ifd0_off: u32,
+    tiff_start_off: u64 = 0,
+};
+
+fn findTiffPayloadFromSource(source: TiffSource) ?TiffHeaderSource {
+    // 1. Direct TIFF container (Sony ARW, DNG, CR2, NEF, ORF, RW2, PEF, etc.)
+    if (source.getSlice(0, 8)) |h8| {
+        if (std.mem.eql(u8, h8[0..2], "II") or std.mem.eql(u8, h8[0..2], "MM")) {
+            const is_le = (h8[0] == 'I');
+            const sig = readU16(h8[2..4][0..2], is_le);
+            if (sig == 0x002A) {
+                const ifd0_off = readU32(h8[4..8][0..4], is_le);
+                const off: usize = ifd0_off;
+                if (off >= 8 and (off & 1) == 0 and source.getSlice(off, 2) != null) {
+                    return .{
+                        .source = source,
+                        .is_le = is_le,
+                        .ifd0_off = ifd0_off,
+                        .tiff_start_off = 0,
+                    };
+                }
+            }
+        }
+    }
+
+    // 2. JPEG APP1 EXIF segment
+    if (source.header.len < 14) return null;
+    if (source.header[0] != 0xFF or source.header[1] != 0xD8) return null;
+
+    var idx: usize = 2;
+    while (idx + 4 <= source.header.len) {
+        if (source.header[idx] != 0xFF) break;
+        var marker_offset = idx + 1;
+        while (marker_offset < source.header.len and source.header[marker_offset] == 0xFF) {
+            marker_offset += 1;
+        }
+        if (marker_offset >= source.header.len) break;
+        const marker = source.header[marker_offset];
+        idx = marker_offset + 1;
+
+        if (marker == 0xD9 or marker == 0xDA) break;
+
+        if (idx + 2 > source.header.len) break;
+        const seg_len = (@as(usize, source.header[idx]) << 8) | @as(usize, source.header[idx + 1]);
+        if (seg_len < 2) break;
+
+        const available_len = @min(seg_len, source.header.len - idx);
+        const payload = source.header[idx + 2 .. idx + available_len];
+
+        if (marker == 0xE1) {
+            if (payload.len >= 14 and std.mem.startsWith(u8, payload, "Exif\x00\x00")) {
+                const tiff = payload[6..];
+                if (tiff.len >= 8) {
+                    const is_le = if (std.mem.eql(u8, tiff[0..2], "II"))
+                        true
+                    else if (std.mem.eql(u8, tiff[0..2], "MM"))
+                        false
+                    else
+                        continue;
+
+                    const sig = readU16(tiff[2..4][0..2], is_le);
+                    if (sig == 0x002A) {
+                        const ifd0_off = readU32(tiff[4..8][0..4], is_le);
+                        const off: usize = ifd0_off;
+                        if (off >= 8 and (off & 1) == 0 and off + 2 <= tiff.len) {
+                            const tiff_start_off: u64 =
+                                @intFromPtr(tiff.ptr) - @intFromPtr(source.header.ptr);
+                            return .{
+                                .source = TiffSource.init(tiff),
+                                .is_le = is_le,
+                                .ifd0_off = ifd0_off,
+                                .tiff_start_off = tiff_start_off,
+                            };
+                        }
+                    }
+                }
+            }
+        }
+
+        if (idx + seg_len > source.header.len) break;
+        idx += seg_len;
+    }
+    return null;
+}
+
 fn findTiffPayload(data: []const u8) ?TiffHeader {
     // 1. Direct TIFF container (Sony ARW, DNG, CR2, NEF, ORF, RW2, PEF, etc.)
     if (data.len >= 8) {
@@ -181,10 +355,15 @@ const SubIfdList = struct {
 
 /// Parses image pixel dimensions from EXIF TIFF metadata tags (IFD0, ExifIFD, or SubIFD).
 pub fn parseExifDimensions(data: []const u8) ?JpegDimensions {
-    const header = findTiffPayload(data) orelse return null;
-    const tiff = header.tiff;
+    return parseExifDimensionsFromSource(TiffSource.init(data));
+}
+
+/// Parses image pixel dimensions from a segmented TiffSource.
+pub fn parseExifDimensionsFromSource(source: TiffSource) ?JpegDimensions {
+    const header = findTiffPayloadFromSource(source) orelse return null;
     const is_le = header.is_le;
     const ifd0_off = header.ifd0_off;
+    const src = header.source;
 
     var best_w: ?u32 = null;
     var best_h: ?u32 = null;
@@ -194,7 +373,7 @@ pub fn parseExifDimensions(data: []const u8) ?JpegDimensions {
 
     const parseIfd = struct {
         fn run(
-            t: []const u8,
+            s: TiffSource,
             off: usize,
             le: bool,
             b_w: *?u32,
@@ -203,8 +382,9 @@ pub fn parseExifDimensions(data: []const u8) ?JpegDimensions {
             sub_out: ?*?u32,
             sub_ifds: ?*SubIfdList,
         ) u32 {
-            if (off < 8 or (off & 1) != 0 or off >= t.len or off + 2 > t.len) return 0;
-            const num = readU16(t[off..][0..2], le);
+            if (off < 8 or (off & 1) != 0) return 0;
+            const num_bytes = s.getSlice(off, 2) orelse return 0;
+            const num = readU16(num_bytes[0..2], le);
             var entry_off = off + 2;
             var i: usize = 0;
             var cur_w: ?u32 = null;
@@ -213,8 +393,7 @@ pub fn parseExifDimensions(data: []const u8) ?JpegDimensions {
             var photometric: ?u16 = null;
 
             while (i < num) : (i += 1) {
-                if (entry_off + 12 > t.len) break;
-                const entry = t[entry_off .. entry_off + 12];
+                const entry = s.getSlice(entry_off, 12) orelse break;
                 entry_off += 12;
 
                 const tag = readU16(entry[0..2][0..2], le);
@@ -243,16 +422,14 @@ pub fn parseExifDimensions(data: []const u8) ?JpegDimensions {
                         if (val > 0) sub_ifds.?.append(val);
                     } else if (count > 1 and (type_id == 4 or type_id == 13)) {
                         const fetch_count = @min(count, 8);
-                        if (@as(usize, val) < t.len) {
-                            var s_idx: usize = 0;
-                            while (s_idx < fetch_count) : (s_idx += 1) {
-                                if (std.math.add(usize, @as(usize, val), s_idx * 4)) |read_pos| {
-                                    if (read_pos + 4 <= t.len) {
-                                        const s_off = readU32(t[read_pos..][0..4], le);
-                                        if (s_off > 0) sub_ifds.?.append(s_off);
-                                    }
-                                } else |_| break;
-                            }
+                        var s_idx: usize = 0;
+                        while (s_idx < fetch_count) : (s_idx += 1) {
+                            if (std.math.add(usize, @as(usize, val), s_idx * 4)) |read_pos| {
+                                if (s.getSlice(read_pos, 4)) |s_slice| {
+                                    const s_off = readU32(s_slice[0..4], le);
+                                    if (s_off > 0) sub_ifds.?.append(s_off);
+                                }
+                            } else |_| break;
                         }
                     }
                 }
@@ -278,8 +455,8 @@ pub fn parseExifDimensions(data: []const u8) ?JpegDimensions {
             }
 
             if (i < num) return 0;
-            if (entry_off + 4 <= t.len) {
-                return readU32(t[entry_off..][0..4], le);
+            if (s.getSlice(entry_off, 4)) |next_slice| {
+                return readU32(next_slice[0..4], le);
             }
             return 0;
         }
@@ -300,7 +477,7 @@ pub fn parseExifDimensions(data: []const u8) ?JpegDimensions {
         visited[ifd_depth] = cur_ifd_off;
 
         const next_off = parseIfd(
-            tiff,
+            src,
             cur_ifd_off,
             is_le,
             &best_w,
@@ -313,11 +490,11 @@ pub fn parseExifDimensions(data: []const u8) ?JpegDimensions {
     }
 
     if (exif_sub_ifd_off) |sub_off| {
-        _ = parseIfd(tiff, sub_off, is_le, &best_w, &best_h, &best_area, null, null);
+        _ = parseIfd(src, sub_off, is_le, &best_w, &best_h, &best_area, null, null);
     }
 
     for (sub_ifd_list.slice()) |s_off| {
-        _ = parseIfd(tiff, s_off, is_le, &best_w, &best_h, &best_area, null, null);
+        _ = parseIfd(src, s_off, is_le, &best_w, &best_h, &best_area, null, null);
     }
 
     if (best_w != null and best_h != null) {
@@ -377,18 +554,23 @@ pub fn readJpegDimensions(data: []const u8) ?JpegDimensions {
 
 /// Extracts the TIFF orientation tag (0x0112) from an EXIF payload.
 pub fn parseExifOrientation(data: []const u8) ?Orientation {
-    const header = findTiffPayload(data) orelse return null;
-    const tiff = header.tiff;
+    return parseExifOrientationFromSource(TiffSource.init(data));
+}
+
+/// Extracts the TIFF orientation tag (0x0112) from a segmented TiffSource.
+pub fn parseExifOrientationFromSource(source: TiffSource) ?Orientation {
+    const header = findTiffPayloadFromSource(source) orelse return null;
     const is_le = header.is_le;
     const ifd0_off = header.ifd0_off;
+    const src = header.source;
 
-    const num_entries = readU16(tiff[ifd0_off..][0..2], is_le);
+    const num_bytes = src.getSlice(ifd0_off, 2) orelse return null;
+    const num_entries = readU16(num_bytes[0..2], is_le);
     var entry_off = ifd0_off + 2;
 
     var i: usize = 0;
     while (i < num_entries) : (i += 1) {
-        if (entry_off + 12 > tiff.len) break;
-        const entry = tiff[entry_off .. entry_off + 12];
+        const entry = src.getSlice(entry_off, 12) orelse break;
         entry_off += 12;
 
         const tag = readU16(entry[0..2][0..2], is_le);
@@ -486,11 +668,17 @@ pub const RawPreviewCandidates = struct {
 /// Extracts the largest embedded JPEG preview location and smallest thumbnail
 /// location from a TIFF-based RAW container.
 pub fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
-    const header = findTiffPayload(data) orelse return .{};
-    const tiff = header.tiff;
+    return extractTiffRawPreviewsFromSource(TiffSource.init(data));
+}
+
+/// Extracts the largest embedded JPEG preview location and smallest thumbnail
+/// location from a segmented TiffSource.
+pub fn extractTiffRawPreviewsFromSource(source: TiffSource) RawPreviewCandidates {
+    const header = findTiffPayloadFromSource(source) orelse return .{};
     const is_le = header.is_le;
     const ifd0_off = header.ifd0_off;
-    const tiff_start_off = @intFromPtr(tiff.ptr) - @intFromPtr(data.ptr);
+    const tiff_start_off = header.tiff_start_off;
+    const src = header.source;
 
     const Candidate = struct { off: u32, len: u32 };
     var candidates: [16]Candidate = undefined;
@@ -498,15 +686,16 @@ pub fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
 
     const parseIfdForJpegs = struct {
         fn run(
-            t: []const u8,
+            s: TiffSource,
             off: usize,
             le: bool,
             cands: []Candidate,
             count: *usize,
             sub_ifds: ?*SubIfdList,
         ) u32 {
-            if (off < 8 or (off & 1) != 0 or off >= t.len or off + 2 > t.len) return 0;
-            const num = readU16(t[off..][0..2], le);
+            if (off < 8 or (off & 1) != 0) return 0;
+            const num_bytes = s.getSlice(off, 2) orelse return 0;
+            const num = readU16(num_bytes[0..2], le);
             var entry_off = off + 2;
             var i: usize = 0;
             var j_off: ?u32 = null;
@@ -518,8 +707,7 @@ pub fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
             var strip_len: ?u32 = null;
 
             while (i < num) : (i += 1) {
-                if (entry_off + 12 > t.len) break;
-                const entry = t[entry_off .. entry_off + 12];
+                const entry = s.getSlice(entry_off, 12) orelse break;
                 entry_off += 12;
 
                 const tag = readU16(entry[0..2][0..2], le);
@@ -557,23 +745,26 @@ pub fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
                     j_len = readU32(entry[8..12][0..4], le);
                 } else if (tag == @intFromEnum(TiffTag.dng_private_data)) {
                     const val_or_off = readU32(entry[8..12][0..4], le);
-                    if (val_count >= 70 and @as(usize, val_or_off) + 70 <= t.len) {
-                        const p_slice = t[val_or_off..];
-                        if (std.mem.startsWith(u8, p_slice, "RICOH\x00II") or
-                            std.mem.startsWith(u8, p_slice, "PENTAX\x00II"))
-                        {
-                            // MakerNote explicitly asserts "II" (Little Endian)
-                            const p_len = std.mem.readInt(u32, p_slice[54..58][0..4], .little);
-                            const p_rel_off = std.mem.readInt(u32, p_slice[66..70][0..4], .little);
-                            if (p_len > 0 and p_len < 512 * 1024 and
-                                @as(u64, p_rel_off) + p_len <= val_count)
+                    if (val_count >= 70) {
+                        if (s.getSlice(val_or_off, 70)) |p_slice| {
+                            if (std.mem.startsWith(u8, p_slice, "RICOH\x00II") or
+                                std.mem.startsWith(u8, p_slice, "PENTAX\x00II"))
                             {
-                                if (std.math.add(u32, val_or_off, p_rel_off)) |mn_jpeg_off| {
-                                    if (count.* < cands.len) {
-                                        cands[count.*] = .{ .off = mn_jpeg_off, .len = p_len };
-                                        count.* += 1;
-                                    }
-                                } else |_| {}
+                                // MakerNote explicitly asserts "II" (Little Endian)
+                                const p_len =
+                                    std.mem.readInt(u32, p_slice[54..58][0..4], .little);
+                                const p_rel_off =
+                                    std.mem.readInt(u32, p_slice[66..70][0..4], .little);
+                                if (p_len > 0 and p_len < 512 * 1024 and
+                                    @as(u64, p_rel_off) + p_len <= val_count)
+                                {
+                                    if (std.math.add(u32, val_or_off, p_rel_off)) |mn_jpeg_off| {
+                                        if (count.* < cands.len) {
+                                            cands[count.*] = .{ .off = mn_jpeg_off, .len = p_len };
+                                            count.* += 1;
+                                        }
+                                    } else |_| {}
+                                }
                             }
                         }
                     }
@@ -584,16 +775,14 @@ pub fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
                     } else if (val_count > 1 and (type_id == 4 or type_id == 13)) {
                         const fetch_count = @min(val_count, 8);
                         const ptr_off = readU32(entry[8..12][0..4], le);
-                        if (@as(usize, ptr_off) < t.len) {
-                            var s_idx: usize = 0;
-                            while (s_idx < fetch_count) : (s_idx += 1) {
-                                if (std.math.add(usize, @as(usize, ptr_off), s_idx * 4)) |read_pos| {
-                                    if (read_pos + 4 <= t.len) {
-                                        const s_off = readU32(t[read_pos..][0..4], le);
-                                        if (s_off > 0) sub_ifds.?.append(s_off);
-                                    }
-                                } else |_| break;
-                            }
+                        var s_idx: usize = 0;
+                        while (s_idx < fetch_count) : (s_idx += 1) {
+                            if (std.math.add(usize, @as(usize, ptr_off), s_idx * 4)) |read_pos| {
+                                if (s.getSlice(read_pos, 4)) |sub_bytes| {
+                                    const s_off = readU32(sub_bytes[0..4], le);
+                                    if (s_off > 0) sub_ifds.?.append(s_off);
+                                }
+                            } else |_| break;
                         }
                     }
                 }
@@ -623,9 +812,10 @@ pub fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
 
                 // Reject Lossless JPEG SOF3 (FF D8 FF C3) raw Bayer payloads if payload header is present
                 var is_lossless_raw = false;
-                if (strip_off.? < t.len and t.len - strip_off.? >= 4) {
-                    const s = t[strip_off.? .. strip_off.? + 4];
-                    if (s[0] == 0xFF and s[1] == 0xD8 and s[2] == 0xFF and s[3] == 0xC3) {
+                if (s.getSlice(strip_off.?, 4)) |magic| {
+                    if (magic[0] == 0xFF and magic[1] == 0xD8 and
+                        magic[2] == 0xFF and magic[3] == 0xC3)
+                    {
                         is_lossless_raw = true;
                     }
                 }
@@ -639,8 +829,8 @@ pub fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
             }
 
             if (i < num) return 0;
-            if (entry_off + 4 <= t.len) {
-                return readU32(t[entry_off..][0..4], le);
+            if (s.getSlice(entry_off, 4)) |next_bytes| {
+                return readU32(next_bytes[0..4], le);
             }
             return 0;
         }
@@ -664,7 +854,7 @@ pub fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
         visited[ifd_depth] = cur_ifd_off;
 
         const next_ifd_off = parseIfdForJpegs(
-            tiff,
+            src,
             cur_ifd_off,
             is_le,
             &candidates,
@@ -676,7 +866,7 @@ pub fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
 
     // 2. Parse SubIFDs discovered in IFD0
     for (sub_ifd_list.slice()) |s_off| {
-        _ = parseIfdForJpegs(tiff, s_off, is_le, &candidates, &cand_count, null);
+        _ = parseIfdForJpegs(src, s_off, is_le, &candidates, &cand_count, null);
     }
 
     if (cand_count == 0) return .{};
@@ -1445,4 +1635,245 @@ test "extractTiffRawPreviews - real DSC00941.ARW" {
     try std.testing.expectEqual(@as(f32, 1.0), crop.u_max);
     try std.testing.expectApproxEqAbs(@as(f32, 8.0 / 120.0), crop.v_min, 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0 - 8.0 / 120.0), crop.v_max, 0.0001);
+}
+
+test "extractTiffRawPreviews - real test.dng streaming tail IFD0" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, "test.dng", .{}) catch return;
+    defer file.close(io);
+
+    const stat = try file.stat(io);
+    const file_size: u64 = stat.size;
+
+    var header_buf: [256 * 1024]u8 = undefined;
+    var slices = [_][]u8{&header_buf};
+    const header_n = file.readPositional(io, &slices, 0) catch return;
+    if (header_n < 8) return;
+    const header_slice = header_buf[0..header_n];
+
+    const ifd0_off = probeTiffIfd0Offset(header_slice) orelse return;
+    try std.testing.expect(ifd0_off >= header_n); // Confirms tail IFD0 in test.dng
+
+    var tail_buf: [64 * 1024]u8 = undefined;
+    const tail_target: usize = @intCast(@min(file_size - ifd0_off, tail_buf.len));
+    var t_slices = [_][]u8{tail_buf[0..tail_target]};
+    const tn = try file.readPositional(io, &t_slices, ifd0_off);
+    try std.testing.expect(tn > 0);
+
+    const source = TiffSource.initWithTail(header_slice, ifd0_off, tail_buf[0..tn]);
+
+    // SubIFD[1] full preview: 6000x4000 JPEG at offset 27316832 len 2943618
+    const cands = extractTiffRawPreviewsFromSource(source);
+    try std.testing.expect(cands.preview != null);
+    try std.testing.expectEqual(@as(u64, 27316832), cands.preview.?.file_offset);
+    try std.testing.expectEqual(@as(u32, 2943618), cands.preview.?.length);
+
+    // DNGPrivateData MakerNote thumbnail: 720x480 JPEG at offset 97056 len 54247
+    try std.testing.expect(cands.thumbnail != null);
+    try std.testing.expectEqual(@as(u64, 97056), cands.thumbnail.?.file_offset);
+    try std.testing.expectEqual(@as(u32, 54247), cands.thumbnail.?.length);
+
+    // Dimensions: SubIFD[1] 6000x4000, rejecting raw CFA Bayer SubIFD[0] 6112x4064
+    const dims = parseExifDimensionsFromSource(source);
+    try std.testing.expect(dims != null);
+    try std.testing.expectEqual(@as(f32, 6000.0), dims.?.w);
+    try std.testing.expectEqual(@as(f32, 4000.0), dims.?.h);
+
+    // Orientation: tag 0x0112 in IFD0 at tail
+    const orientation = parseExifOrientationFromSource(source);
+    try std.testing.expect(orientation != null);
+    try std.testing.expectEqual(Orientation.normal, orientation.?);
+}
+
+test "probeTiffIfd0Offset - validation and bounds checks" {
+    // 1. Truncated header (< 8 bytes)
+    try std.testing.expectEqual(@as(?u32, null), probeTiffIfd0Offset(""));
+    try std.testing.expectEqual(@as(?u32, null), probeTiffIfd0Offset("II\x2A\x00"));
+    try std.testing.expectEqual(
+        @as(?u32, null),
+        probeTiffIfd0Offset("MM\x00\x2A\x00\x00\x00"),
+    );
+
+    // 2. Invalid magic (neither II nor MM)
+    try std.testing.expectEqual(
+        @as(?u32, null),
+        probeTiffIfd0Offset("XX\x2A\x00\x08\x00\x00\x00"),
+    );
+    try std.testing.expectEqual(
+        @as(?u32, null),
+        probeTiffIfd0Offset("\xFF\xD8\xFF\xE1\x00\x10\x45\x78"),
+    );
+
+    // 3. Invalid TIFF version (e.g. BigTIFF 43 instead of 42)
+    try std.testing.expectEqual(
+        @as(?u32, null),
+        probeTiffIfd0Offset("II\x2B\x00\x08\x00\x00\x00"),
+    );
+    try std.testing.expectEqual(
+        @as(?u32, null),
+        probeTiffIfd0Offset("MM\x00\x2B\x00\x00\x00\x08"),
+    );
+
+    // 4. Invalid IFD0 offset (< 8 or odd/unaligned)
+    // off = 4 < 8
+    try std.testing.expectEqual(
+        @as(?u32, null),
+        probeTiffIfd0Offset("II\x2A\x00\x04\x00\x00\x00"),
+    );
+    // off = 9 (odd)
+    try std.testing.expectEqual(
+        @as(?u32, null),
+        probeTiffIfd0Offset("II\x2A\x00\x09\x00\x00\x00"),
+    );
+
+    // 5. Valid Little-Endian (II) and Big-Endian (MM)
+    try std.testing.expectEqual(
+        @as(?u32, 8),
+        probeTiffIfd0Offset("II\x2A\x00\x08\x00\x00\x00"),
+    );
+    try std.testing.expectEqual(
+        @as(?u32, 8),
+        probeTiffIfd0Offset("MM\x00\x2A\x00\x00\x00\x08"),
+    );
+    try std.testing.expectEqual(
+        @as(?u32, 27317856),
+        probeTiffIfd0Offset("II\x2A\x00\x60\xD6\xA0\x01"),
+    );
+}
+
+test "TiffSource.getSlice - bounds, split reads, and overflow safety" {
+    const hdr = "0123456789ABCDEF"; // 16 bytes, offset 0..16
+    const tail = "UVWXYZ"; // 6 bytes, tail_offset = 100 (100..106)
+    const src = TiffSource.initWithTail(hdr, 100, tail);
+
+    // In-bounds header reads
+    try std.testing.expectEqualStrings("0123", src.getSlice(0, 4).?);
+    try std.testing.expectEqualStrings("CDEF", src.getSlice(12, 4).?);
+
+    // Split read across header boundary: starts in header, ends beyond header
+    try std.testing.expect(src.getSlice(12, 8) == null);
+
+    // Read in the gap between header and tail
+    try std.testing.expect(src.getSlice(16, 4) == null);
+    try std.testing.expect(src.getSlice(50, 4) == null);
+    try std.testing.expect(src.getSlice(98, 4) == null);
+
+    // In-bounds tail reads
+    try std.testing.expectEqualStrings("UV", src.getSlice(100, 2).?);
+    try std.testing.expectEqualStrings("YZ", src.getSlice(104, 2).?);
+
+    // Read extending past tail end
+    try std.testing.expect(src.getSlice(104, 4) == null);
+    try std.testing.expect(src.getSlice(106, 1) == null);
+
+    // Integer overflow protection on offset + length
+    try std.testing.expect(src.getSlice(std.math.maxInt(usize), 1) == null);
+    try std.testing.expect(src.getSlice(std.math.maxInt(usize) - 2, 10) == null);
+}
+
+test "synthetic streaming tail IFD0 - dimensions, orientation, and preview extraction" {
+    // Construct 8-byte TIFF container header pointing to tail IFD0 at offset 1000
+    var hdr: [8]u8 = undefined;
+    hdr[0] = 'I';
+    hdr[1] = 'I';
+    std.mem.writeInt(u16, hdr[2..4], 0x002A, .little);
+    std.mem.writeInt(u32, hdr[4..8], 1000, .little);
+
+    // Construct 128-byte tail buffer starting at offset 1000
+    var tail: [128]u8 = undefined;
+    @memset(&tail, 0);
+
+    // IFD0 at rel = 0 (file offset 1000): 5 entries
+    std.mem.writeInt(u16, tail[0..2], 5, .little);
+
+    // Entry 0: tag 0x0100 (ImageWidth), SHORT (3), count 1, val 4000
+    std.mem.writeInt(u16, tail[2..4], 0x0100, .little);
+    std.mem.writeInt(u16, tail[4..6], 3, .little);
+    std.mem.writeInt(u32, tail[6..10], 1, .little);
+    std.mem.writeInt(u16, tail[10..12], 4000, .little);
+
+    // Entry 1: tag 0x0101 (ImageLength), SHORT (3), count 1, val 3000
+    std.mem.writeInt(u16, tail[14..16], 0x0101, .little);
+    std.mem.writeInt(u16, tail[16..18], 3, .little);
+    std.mem.writeInt(u32, tail[18..22], 1, .little);
+    std.mem.writeInt(u16, tail[22..24], 3000, .little);
+
+    // Entry 2: tag 0x0112 (Orientation), SHORT (3), count 1, val 6 (.rotate_90)
+    std.mem.writeInt(u16, tail[26..28], 0x0112, .little);
+    std.mem.writeInt(u16, tail[28..30], 3, .little);
+    std.mem.writeInt(u32, tail[30..34], 1, .little);
+    std.mem.writeInt(u16, tail[34..36], 6, .little);
+
+    // Entry 3: tag 0x0201 (JpegIFOffset), LONG (4), count 1, val 50000
+    std.mem.writeInt(u16, tail[38..40], 0x0201, .little);
+    std.mem.writeInt(u16, tail[40..42], 4, .little);
+    std.mem.writeInt(u32, tail[42..46], 1, .little);
+    std.mem.writeInt(u32, tail[46..50], 50000, .little);
+
+    // Entry 4: tag 0x0202 (JpegIFByteCount), LONG (4), count 1, val 12000
+    std.mem.writeInt(u16, tail[50..52], 0x0202, .little);
+    std.mem.writeInt(u16, tail[52..54], 4, .little);
+    std.mem.writeInt(u32, tail[54..58], 1, .little);
+    std.mem.writeInt(u32, tail[58..62], 12000, .little);
+
+    // Next IFD pointer: 0 (end of chain)
+    std.mem.writeInt(u32, tail[62..66], 0, .little);
+
+    const ifd0_off = probeTiffIfd0Offset(&hdr).?;
+    try std.testing.expectEqual(@as(u32, 1000), ifd0_off);
+
+    const source = TiffSource.initWithTail(&hdr, ifd0_off, &tail);
+
+    // Test Orientation
+    const orient = parseExifOrientationFromSource(source);
+    try std.testing.expect(orient != null);
+    try std.testing.expectEqual(Orientation.rotate_90, orient.?);
+
+    // Test Dimensions
+    const dims = parseExifDimensionsFromSource(source);
+    try std.testing.expect(dims != null);
+    try std.testing.expectEqual(@as(f32, 4000.0), dims.?.w);
+    try std.testing.expectEqual(@as(f32, 3000.0), dims.?.h);
+
+    // Test Preview Candidates
+    const cands = extractTiffRawPreviewsFromSource(source);
+    try std.testing.expect(cands.preview != null);
+    try std.testing.expectEqual(@as(u64, 50000), cands.preview.?.file_offset);
+    try std.testing.expectEqual(@as(u32, 12000), cands.preview.?.length);
+}
+
+test "synthetic circular IFD chain in tail terminates cleanly" {
+    var hdr: [8]u8 = undefined;
+    hdr[0] = 'I';
+    hdr[1] = 'I';
+    std.mem.writeInt(u16, hdr[2..4], 0x002A, .little);
+    std.mem.writeInt(u32, hdr[4..8], 1000, .little);
+
+    // Tail buffer with 2 IFDs: IFD0 at 1000 points to IFD1 at 1030; IFD1 points back to 1000!
+    var tail: [128]u8 = undefined;
+    @memset(&tail, 0);
+
+    // IFD0 at offset 1000 (rel 0): 1 entry, next_ifd = 1030
+    std.mem.writeInt(u16, tail[0..2], 1, .little);
+    std.mem.writeInt(u16, tail[2..4], 0x0100, .little); // ImageWidth
+    std.mem.writeInt(u16, tail[4..6], 3, .little);
+    std.mem.writeInt(u32, tail[6..10], 1, .little);
+    std.mem.writeInt(u16, tail[10..12], 1920, .little);
+    std.mem.writeInt(u32, tail[14..18], 1030, .little); // Points to IFD1
+
+    // IFD1 at offset 1030 (rel 30): 1 entry, next_ifd = 1000 (CYCLE!)
+    std.mem.writeInt(u16, tail[30..32], 1, .little);
+    std.mem.writeInt(u16, tail[32..34], 0x0101, .little); // ImageLength
+    std.mem.writeInt(u16, tail[34..36], 3, .little);
+    std.mem.writeInt(u32, tail[36..40], 1, .little);
+    std.mem.writeInt(u16, tail[40..42], 1080, .little);
+    std.mem.writeInt(u32, tail[44..48], 1000, .little); // CYCLE back to 1000!
+
+    const source = TiffSource.initWithTail(&hdr, 1000, &tail);
+
+    // Must terminate cycle without infinite looping or stack overflow
+    const dims = parseExifDimensionsFromSource(source);
+    _ = dims;
+    const cands = extractTiffRawPreviewsFromSource(source);
+    _ = cands;
 }

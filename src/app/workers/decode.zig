@@ -378,13 +378,39 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
             }
         }
     } else {
-        const raw_cands = exif.extractTiffRawPreviews(header_slice);
+        var tail_buf: [16 * 1024]u8 = undefined;
+        var tail_slice: ?[]const u8 = null;
+        var tiff_tail_off: u32 = 0;
+        if (exif.probeTiffIfd0Offset(header_slice)) |ifd0_off| {
+            if (ifd0_off >= header_n and ifd0_off < file_size) {
+                const tail_target: usize = @intCast(@min(file_size - ifd0_off, tail_buf.len));
+                if (tail_target > 0) {
+                    var t_slices = [_][]u8{tail_buf[0..tail_target]};
+                    const tn = file.readPositional(io, &t_slices, ifd0_off) catch |err| blk: {
+                        if (err == error.Canceled or workers.exiting.load(.acquire)) return;
+                        break :blk 0;
+                    };
+                    if (tn > 0) {
+                        tail_slice = tail_buf[0..tn];
+                        tiff_tail_off = ifd0_off;
+                    }
+                }
+            }
+        }
+        const tiff_source = if (tail_slice) |ts|
+            exif.TiffSource.initWithTail(header_slice, tiff_tail_off, ts)
+        else
+            exif.TiffSource.init(header_slice);
+
+        const raw_cands = exif.extractTiffRawPreviewsFromSource(tiff_source);
         prev_loc_opt = raw_cands.preview;
         med_loc_opt = raw_cands.medium;
         thumb_loc_opt = raw_cands.thumbnail;
-        raw_sensor_dims = exif.parseExifDimensions(header_slice);
-        orientation = exif.parseExifOrientation(header_slice) orelse .normal;
+        raw_sensor_dims = exif.parseExifDimensionsFromSource(tiff_source);
+        orientation = exif.parseExifOrientationFromSource(tiff_source) orelse .normal;
     }
+
+    if (isStale(workers, args, key)) return;
 
     if (orientation != .normal) {
         workers.event_queue.push(alloc, io, .{
@@ -417,9 +443,9 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
             if (tloc.length > 0 and tloc.length <= max_placeholder_bytes and
                 tloc.file_offset <= file_size -| tloc.length)
             {
-                const t_off: usize = @intCast(tloc.file_offset);
                 const t_len: usize = @intCast(tloc.length);
-                if (t_off + t_len <= header_n) {
+                if (tloc.file_offset + tloc.length <= header_n) {
+                    const t_off: usize = @intCast(tloc.file_offset);
                     _ = workers.thumb_header_hits.fetchAdd(1, .monotonic);
                     thumb_surf = sdl.Surface.loadConstMemOpt(header_slice[t_off .. t_off + t_len]);
                 } else {
@@ -814,7 +840,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                 }
             }
         } else {
-            const raw_cands = exif.extractTiffRawPreviews(header_buf);
+            const raw_cands = exif.extractTiffRawPreviews(file_bytes);
             const target_prev = if (args.thumb_only)
                 (raw_cands.thumbnail orelse raw_cands.medium orelse raw_cands.preview)
             else
@@ -828,8 +854,8 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                     raw_preview_slice = file_bytes[off .. off + len];
                 }
             }
-            raw_sensor_dims = exif.parseExifDimensions(header_buf);
-            orientation = exif.parseExifOrientation(header_buf) orelse .normal;
+            raw_sensor_dims = exif.parseExifDimensions(file_bytes);
+            orientation = exif.parseExifOrientation(file_bytes) orelse .normal;
         }
     } else {
         orientation = exif.parseExifOrientation(header_buf) orelse .normal;

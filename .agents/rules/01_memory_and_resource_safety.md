@@ -194,3 +194,22 @@ Every struct owning heap memory, GPU handles, socket connections, or child sub-s
   - If only a specific variant is handled, write explicit branches
     (`switch (val) { .store => ..., else => {} }`) to document intentional fallbacks and facilitate
     future variant expansion.
+
+## 10. 32-Bit Platform Offset `@intCast` Bounds Safety
+
+- When inspecting variable-length binary containers where offsets are represented as `u64` (e.g. file offsets in large media containers > 4GB), NEVER cast `loc.file_offset` to `usize` before verifying bounds.
+- On 32-bit platforms where `usize == u32`, executing `@as(usize, @intCast(loc.file_offset))` on an offset $> 4\\text{GB}$ triggers a runtime safety panic (`integer cast truncated bits`) before the bounds check can execute.
+- Always perform the range check using `u64` arithmetic prior to casting:
+  ```zig
+  // BAD: Panics on 32-bit platforms if file_offset > 4GB
+  const t_off: usize = @intCast(loc.file_offset);
+  const t_len: usize = @intCast(loc.length);
+  if (t_off + t_len <= slice.len) { ... }
+
+  // GOOD: Safe on both 32-bit and 64-bit platforms
+  const t_len: usize = @intCast(loc.length);
+  if (loc.file_offset + loc.length <= slice.len) {
+      const t_off: usize = @intCast(loc.file_offset);
+      return slice[t_off .. t_off + t_len];
+  }
+  ```

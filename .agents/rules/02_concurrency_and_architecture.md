@@ -23,6 +23,15 @@
 - **Daemon Tasks Must Run on Independent Threads**: Long-lived background services (such as the IPC server socket listener) MUST NOT be attached to a cancellable `WorkerManager.group`. Spawn daemon services on dedicated detached threads (`std.Thread.spawn`) so runtime task group cancellations do not kill server listeners.
 - **Shutdown Signals vs. Runtime Cancellation**: `state.workers.drainAndQuiesce(io)` sets `workers.exiting = true` and MUST ONLY be called during application shutdown (`AppState.deinit()`). NEVER call `drainAndQuiesce` or signal `exiting = true` during runtime workflows (e.g. `openPath`), as this permanently halts all future worker tasks.
 - **`error.Canceled` & C-Call Checks**: Handle `error.Canceled` from `std.Io` calls (`openDir`, `iterate`, `readPositional`, `takeDelimiter`). After non-cancellable external C calls (e.g. SDL image loading), check `io.isCanceled()` before pushing results to event queues.
+- **No Silencing of Cancellation on Positional Reads**: Never use `catch 0` to silence errors on positional reads in worker threads (e.g. reading secondary metadata or tail buffers). Always handle `error.Canceled` or `workers.exiting` and exit early:
+  ```zig
+  const tn = file.readPositional(io, &slices, offset) catch |err| blk: {
+      if (err == error.Canceled or workers.exiting.load(.acquire)) return;
+      break :blk 0;
+  };
+  ```
+  Silencing `error.Canceled` with `catch 0` causes canceled workers to misinterpret aborted I/O as empty/invalid files and emit spurious `.decode_failed` events.
+- **Stale Check Prior to Intermediate Event Dispatch**: Always evaluate `if (isStale(workers, args, key)) return;` before pushing intermediate events (such as `exif_orientation_parsed` or `dimensions_probed`) to prevent waking the main thread for canceled tasks.
 
 ## 5. MpscQueue Transport & Event Loop Wakeup
 

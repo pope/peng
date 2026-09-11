@@ -577,10 +577,31 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
                     }
                 }
             } else if (is_raw_ext or std.mem.startsWith(u8, mime_type, "image/x-")) {
-                rot = exif.parseExifOrientation(header_buf[0..n]) orelse .normal;
-                const raw_cands = exif.extractTiffRawPreviews(header_buf[0..n]);
-                if (raw_cands.thumbnail != null or raw_cands.medium != null) {
+                var tail_buf: [16 * 1024]u8 = undefined;
+                const file_size: u64 = if (exif.probeTiffIfd0Offset(header_buf[0..n])) |ifd0_off|
+                    (if (ifd0_off >= n) file.length(io) catch 0 else 0)
+                else
+                    0;
+                const tiff_source = exif.readTiffSource(
+                    io,
+                    &file,
+                    file_size,
+                    header_buf[0..n],
+                    &tail_buf,
+                );
+
+                rot = exif.parseExifOrientationFromSource(tiff_source) orelse .normal;
+                const raw_cands = exif.extractTiffRawPreviewsFromSource(tiff_source);
+                if (raw_cands.thumbnail != null or
+                    raw_cands.medium != null or
+                    raw_cands.preview != null)
+                {
                     has_thumb = true;
+                }
+                if (dims == null) {
+                    if (exif.parseExifDimensionsFromSource(tiff_source)) |d| {
+                        dims = .{ .w = d.w, .h = d.h };
+                    }
                 }
             } else if (std.mem.eql(u8, mime_type, "image/jpeg")) {
                 rot = exif.parseExifOrientation(header_buf[0..n]) orelse .normal;
@@ -800,7 +821,7 @@ fn loadThumbnailFromLocation(
     header_slice: []const u8,
     loc: exif.ThumbnailLocation,
 ) ?sdl.Surface {
-    const max_thumb_size_bytes = 512 * 1024;
+    const max_thumb_size_bytes = 2 * 1024 * 1024;
     if (loc.length == 0 or
         loc.length > max_thumb_size_bytes or
         loc.length > file_size or
@@ -808,9 +829,9 @@ fn loadThumbnailFromLocation(
     {
         return null;
     }
-    const t_off: usize = @intCast(loc.file_offset);
     const t_len: usize = @intCast(loc.length);
-    if (t_off + t_len <= header_slice.len) {
+    if (loc.file_offset + loc.length <= header_slice.len) {
+        const t_off: usize = @intCast(loc.file_offset);
         return sdl.Surface.loadConstMemOpt(header_slice[t_off .. t_off + t_len]);
     }
     const t_buf = alloc.alloc(u8, t_len) catch |err| {
@@ -973,12 +994,21 @@ pub fn loadThumbnailSurface(
                     );
                 }
             } else if (is_raw) {
-                const raw_cands = exif.extractTiffRawPreviews(header_slice);
-                if (exif.parseExifDimensions(header_slice)) |dims| {
+                var tail_buf: [16 * 1024]u8 = undefined;
+                const tiff_source = exif.readTiffSource(
+                    io,
+                    &file,
+                    file_size,
+                    header_slice,
+                    &tail_buf,
+                );
+
+                const raw_cands = exif.extractTiffRawPreviewsFromSource(tiff_source);
+                if (exif.parseExifDimensionsFromSource(tiff_source)) |dims| {
                     raw_w = dims.w;
                     raw_h = dims.h;
                 }
-                orientation = exif.parseExifOrientation(header_slice) orelse .normal;
+                orientation = exif.parseExifOrientationFromSource(tiff_source) orelse .normal;
                 if (raw_cands.thumbnail orelse raw_cands.medium) |tloc| {
                     thumb_surf = loadThumbnailFromLocation(
                         io,
