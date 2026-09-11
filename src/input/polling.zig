@@ -155,13 +155,13 @@ pub fn processSDLEvent(event: sdl.Event, frame_input: *FrameInputState) !void {
             const is_flipped = (event.wheel.direction == sdl.mouse.wheel_flipped);
             if (is_flipped) {
                 // Flipped / Natural scrolling (Touchpads with Natural Scroll):
-                // swiping UP moves content UP
-                frame_input.scroll_delta_x -= event.wheel.x * MOUSE_WHEEL_SCROLL_MULTIPLIER;
+                // Swiping UP moves content UP; swiping LEFT moves content LEFT.
+                frame_input.scroll_delta_x += event.wheel.x * MOUSE_WHEEL_SCROLL_MULTIPLIER;
                 frame_input.scroll_delta_y -= event.wheel.y * MOUSE_WHEEL_SCROLL_MULTIPLIER;
             } else {
                 // Normal / Traditional scrolling (Physical Mouse Wheels):
-                // rolling DOWN scrolls view DOWN
-                frame_input.scroll_delta_x += event.wheel.x * MOUSE_WHEEL_SCROLL_MULTIPLIER;
+                // Rolling DOWN scrolls view DOWN; tilting RIGHT scrolls view RIGHT.
+                frame_input.scroll_delta_x -= event.wheel.x * MOUSE_WHEEL_SCROLL_MULTIPLIER;
                 frame_input.scroll_delta_y += event.wheel.y * MOUSE_WHEEL_SCROLL_MULTIPLIER;
             }
         },
@@ -376,3 +376,58 @@ test "computeClampedDeltaTime normal frame tick and idle wake clamp" {
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), dt5, 0.001);
     try std.testing.expectEqual(@as(u64, 6000), last_time);
 }
+
+test "processSDLEvent mouse_wheel normal and flipped directional axes" {
+    const allocator = std.testing.allocator;
+    var fis = FrameInputState{
+        .frame_allocator = allocator,
+        .keys_pressed = .empty,
+    };
+    defer fis.keys_pressed.deinit(allocator);
+
+    // 1. Normal/traditional mouse wheel:
+    // Rolling wheel DOWN (y = -1.0) -> scroll_delta_y negative (moves view down)
+    // Tilting wheel RIGHT (x = 1.0) -> scroll_delta_x negative (moves view right)
+    var evt_normal = std.mem.zeroes(sdl.Event);
+    evt_normal.type = sdl.event_type.mouse_wheel;
+    evt_normal.wheel.x = 1.0;
+    evt_normal.wheel.y = -1.0;
+    evt_normal.wheel.direction = 0;
+    try processSDLEvent(evt_normal, &fis);
+
+    try std.testing.expectApproxEqAbs(
+        -MOUSE_WHEEL_SCROLL_MULTIPLIER,
+        fis.scroll_delta_x,
+        0.001,
+    );
+    try std.testing.expectApproxEqAbs(
+        -MOUSE_WHEEL_SCROLL_MULTIPLIER,
+        fis.scroll_delta_y,
+        0.001,
+    );
+
+    // 2. Flipped/natural trackpad scroll:
+    // Swiping UP (y = -1.0 in SDL flipped) -> scroll_delta_y positive (moves content up)
+    // Swiping LEFT (x = 1.0 in SDL flipped) -> scroll_delta_x positive (moves content left)
+    fis.scroll_delta_x = 0.0;
+    fis.scroll_delta_y = 0.0;
+
+    var evt_flipped = std.mem.zeroes(sdl.Event);
+    evt_flipped.type = sdl.event_type.mouse_wheel;
+    evt_flipped.wheel.x = 1.0;
+    evt_flipped.wheel.y = -1.0;
+    evt_flipped.wheel.direction = sdl.mouse.wheel_flipped;
+    try processSDLEvent(evt_flipped, &fis);
+
+    try std.testing.expectApproxEqAbs(
+        MOUSE_WHEEL_SCROLL_MULTIPLIER,
+        fis.scroll_delta_x,
+        0.001,
+    );
+    try std.testing.expectApproxEqAbs(
+        MOUSE_WHEEL_SCROLL_MULTIPLIER,
+        fis.scroll_delta_y,
+        0.001,
+    );
+}
+
