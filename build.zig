@@ -257,6 +257,7 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(test_runner_exe);
 
     const run_integration_tests = b.addRunArtifact(test_runner_exe);
+    run_integration_tests.setCwd(b.path("."));
     run_integration_tests.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
         run_integration_tests.addArgs(args);
@@ -310,6 +311,7 @@ pub fn build(b: *std.Build) void {
         .root_module = core_module,
     });
     const run_core_tests = b.addRunArtifact(core_tests);
+    run_core_tests.setCwd(b.path("."));
     run_core_tests.step.dependOn(b.getInstallStep());
 
     if (target.result.os.tag == .windows) {

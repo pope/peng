@@ -98,3 +98,28 @@
 - **Negative-Lobe Filter NaN Guards**:
   - Bicubic and windowed sinc filters (Mitchell-Netravali, Lanczos3) produce negative values in high-contrast ringing regions.
   - Input colors MUST be clamped to `[0.0, 1.0]` before applying sRGB-to-linear conversion to prevent negative inputs to fractional powers (`pow(c, 2.4)`), which generate rendering `NaN`s.
+
+## 16. Aspect Ratio Invariance Across Progressive Previews (Raw Sensor vs. Active Photo)
+
+- **Raw Bayer Sensor Filtering**:
+  - In camera RAW containers (Sony ARW, Fujifilm RAF, Adobe DNG, TIFF-EP), header probing for target canvas dimensions (`full_w`, `full_h`) MUST filter out unprocessed Bayer CFA sensor streams (`PhotometricInterpretation == 32803 CFA` or `34892 LinearRaw` or primary `NewSubfileType == 0` SubIFDs).
+  - Sensor arrays contain masked optical black calibration pixels (e.g. 6656 × 4608) that do not match visible photograph dimensions (e.g. 6240 × 4160, exact 3:2).
+- **Consequences of Sensor Dimension Leakage**:
+  - Sizing the layout canvas to raw sensor dimensions corrupts aspect ratio fitting ($1.4444$ vs $1.5000$).
+  - Thumbnail 8px DCT block boundary snapping fails ($|\\text{raw_pad} - \\text{nearest}| > 2.0\\text{ px}$), leaving uncropped black letterbox bars.
+  - Medium previews are erroneously cropped (e.g. 28px cut off horizontally) due to false pillarboxing.
+  - Viewport quad abruptly pops/resizes (e.g. 60px canvas jump) upon swapping from placeholder to full resolution.
+- Probing MUST strictly return photographic visible dimensions so the canvas quad remains 100% stable across all loading tiers.
+
+## 17. Invariant Modeling via Tagged Unions vs. Composite Container Anti-Patterns
+
+- **Enforce Invariants via Tagged Unions**:
+  - Mathematical constraints that exhibit mutual exclusion MUST be modeled with Zig tagged unions (`union(enum)`).
+  - Use `ThumbnailPadding = union(enum) { none, letterbox: struct { v_min: f32, v_max: f32, pad_px: f32 }, pillarbox: struct { u_min: f32, u_max: f32, pad_px: f32 } }` to guarantee by construction that:
+    1. Letterboxing and pillarboxing are mutually exclusive.
+    2. Active image axes are centered symmetrically ($v\_\\text{max} = 1.0 - v\_\\text{min}$ and $u\_\\text{max} = 1.0 - u\_\\text{min}$).
+    3. Unpadded axis remains normalized to $[0.0, 1.0]$.
+  - Decouple geometric domain calculations from GPU rendering state (`alpha`, `rotation_angle`).
+- **Composite Container Anti-Pattern**:
+  - NEVER model an entire TIFF IFD as a mutually exclusive tagged union (`union(enum) { raw_sensor, preview, container, exif }`).
+  - In TIFF-EP and Sony ARW specifications, IFD0 is a composite entity: it is simultaneously a container (pointing to SubIFDs via tag `0x014A`), a preview provider (tags `0x0201`/`0x0202`), and an EXIF directory (tag `0x8769`). Forcing mutually exclusive roles on container directories breaks preview extraction. Tagged unions belong on payload/result types, not multi-role containers.

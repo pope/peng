@@ -49,8 +49,17 @@ ______________________________________________________________________
     - *Color Space Invariant*: Embedded previews must be validated against standard JPEG color spaces: `PhotometricInterpretation` (`0x0106`) MUST be `6` (YCbCr), `2` (RGB), or `1` (BlackIsZero). RAW sensor data compressed with Lossless JPEG (`Compression == 7`) with CFA Bayer (`32803`) or LinearRaw (`34892`) MUST be excluded to prevent passing non-JPEG sensor bitstreams to image decoders.
   - **Ricoh / Pentax MakerNote Instant Thumbnail Extraction**:
     - Ricoh and Pentax DNGs embed a 720x480 JPEG thumbnail inside `DNGPrivateData` (`Tag 0xC634`) at byte offset ~97KB (length ~55KB). Because this thumbnail sits completely within the 256KB header window, workers decode it directly from memory with zero additional disk I/O (`thumb_header_hits`).
-  - **Strict SubIFD Capacity & Early Error Exit**:
-    - Fixed-capacity lists (`SubIfdList`) enforce strict bounds (e.g. max 8 SubIFDs) and return `error.TooManySubIfds` upon overflow. This intentional error exit halts parsing early on malformed, unexpected, or excessively deep metadata and emits diagnostic logging so issues can be detected and investigated.
+  - **SubIFD Capacity Clamping & Loop Cycle Detection**:
+    - Fixed-capacity lists (`SubIfdList`) clamp parsed SubIFDs to buffer capacity (`@min(count, 8)`) instead of returning an error. Throwing an error upon encountering >8 SubIFDs abruptly aborts IFD0 parsing, dropping subsequent preview tags (e.g. `0x0201`/`0x0202`) and next-IFD links for complex multi-frame DNGs.
+    - IFD traversal loops maintain a fixed `visited: [8]u32` array to detect and break cyclic IFD links (e.g. IFD0 -> IFD1 -> IFD0), preventing candidate array corruption.
+  - **Progressive 3-Tier Preview Loading Pipeline**:
+    - **Tier 1 (Small Thumbnail, \<= 512KB)**: Optimized for 0.1ms decoding during rapid scrubbing (`thumb_only = true`).
+    - **Tier 2 (Medium Preview, \<= 2MB, e.g. 1616x1080)**: Decoded synchronously on Frame 1 during settled viewing (`thumb_only = false`) as an instant crisp placeholder.
+    - **Tier 3 (Full-Resolution Preview, e.g. 6240x4160)**: Decoded in background and uploaded to GPU to replace Tier 2 via a crossfade dissolve.
+    - *Single-Preview Duplication Prevention*: When a RAW container has only a single embedded preview (preview == thumbnail), skip decoding the placeholder in settled mode (`thumb_only = false`) to avoid decoding the identical byte range twice.
+  - **Main-Thread GPU Upload Stale Key Guard**:
+    - In `handleImageDecodedEvent`, check `if (state.cache.get(decoded_data.key) == null) return;` prior to invoking `uploadSurfaceToGpu`.
+    - When a user navigates past an image before its background decode completes, this early exit avoids multi-megabyte PCIe transfers and GPU mipmap downsampling for invalidated cache entries.
   - **Range-Limited Positional Preview Extraction**: Background workers read only the embedded preview JPEG slice (typically 2–4MB) via positional file I/O (`file.readPositional(io, &slices, prev_loc.file_offset)`), decompressing it via `sdl.Surface.loadConstMemOpt` without touching the multi-megabyte raw sensor bayer pattern payload.
   - **Instant Thumbnail Fast-Scrubbing**: Embedded thumbnails (e.g. Fuji RAF IFD1 `0x0201`/`0x0202` at byte offset 4,192, TIFF IFD1 thumbnail, or Ricoh MakerNote thumbnail) reside completely inside the initial 256KB header buffer. During fast navigation (`thumb_only = true`), decode the thumbnail directly from the header slice with zero additional I/O and return early.
   - **Truncated APP1 Segment Tolerance**: Preview JPEG headers may have large APP1 segments (e.g. 60KB) that span past the initial header slice. Never discard APP1 segments purely because `payload.len < seg_len`; inspect available bytes `data[idx + 2 .. idx + @min(seg_len, data.len - idx)]` for `"Exif\0\0"` and valid TIFF IFD0 headers.

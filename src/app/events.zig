@@ -180,6 +180,7 @@ fn handleExifThumbnailEvent(state: *AppState, thumb_data: events.ThumbDecodedPay
 
 fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedPayload) void {
     const surf = decoded_data.surface orelse return;
+    if (state.cache.get(decoded_data.key) == null) return;
 
     const is_current = if (state.viewer.navigation.current_index) |cur|
         decoded_data.key.index == cur

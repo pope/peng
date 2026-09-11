@@ -579,7 +579,7 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
             } else if (is_raw_ext or std.mem.startsWith(u8, mime_type, "image/x-")) {
                 rot = exif.parseExifOrientation(header_buf[0..n]) orelse .normal;
                 const raw_cands = exif.extractTiffRawPreviews(header_buf[0..n]);
-                if (raw_cands.thumbnail != null) {
+                if (raw_cands.thumbnail != null or raw_cands.medium != null) {
                     has_thumb = true;
                 }
             } else if (std.mem.eql(u8, mime_type, "image/jpeg")) {
@@ -979,7 +979,7 @@ pub fn loadThumbnailSurface(
                     raw_h = dims.h;
                 }
                 orientation = exif.parseExifOrientation(header_slice) orelse .normal;
-                if (raw_cands.thumbnail) |tloc| {
+                if (raw_cands.thumbnail orelse raw_cands.medium) |tloc| {
                     thumb_surf = loadThumbnailFromLocation(
                         io,
                         alloc,

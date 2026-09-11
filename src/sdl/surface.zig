@@ -156,6 +156,7 @@ pub const Surface = struct {
         const height = self.h();
         const width = self.w();
         if (y < 0 or y >= height or width <= 0) return false;
+        if (self.ptr.pixels == null) return false;
 
         const details = c.SDL_GetPixelFormatDetails(self.ptr.format) orelse return false;
         const bpp = details.*.bytes_per_pixel;
@@ -222,6 +223,7 @@ pub const Surface = struct {
         const height = self.h();
         const width = self.w();
         if (x < 0 or x >= width or height <= 0) return false;
+        if (self.ptr.pixels == null) return false;
 
         const details = c.SDL_GetPixelFormatDetails(self.ptr.format) orelse return false;
         const bpp = details.*.bytes_per_pixel;

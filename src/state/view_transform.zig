@@ -110,35 +110,76 @@ pub fn clampZoomFactor(base_scale: f32, factor: f32) ZoomFactor {
     return ZoomFactor.init(std.math.clamp(factor, min_factor, max_factor));
 }
 
-/// Computes normalized UV crop boundaries to remove letterbox/pillarbox padding
-/// in embedded thumbnails.
-/// When `dct_snapped` is true, letterbox/pillarbox margins are aligned to
-/// 8-pixel DCT block boundaries as encoded by camera hardware preview
-/// generators (e.g. Fujifilm RAF, Ricoh GR IIIx JPEG).
-/// When `dct_snapped` is false (e.g. Sony ARW, standard Fujifilm JPEG), exact
-/// theoretical aspect-ratio padding is preserved to prevent over-cropping real
-/// image pixels and vertical stretch distortion.
-pub fn computeThumbnailUvCrop(
+/// Mutually exclusive thumbnail letterbox or pillarbox padding result.
+/// Mathematically guarantees:
+/// 1. Letterbox and pillarbox padding are mutually exclusive.
+/// 2. Active image axes are centered symmetrically (e.g. v_max == 1.0 - v_min).
+/// 3. Unpadded axis stays normalized to full span [0.0, 1.0].
+pub const ThumbnailPadding = union(enum) {
+    none,
+    letterbox: struct {
+        v_min: f32,
+        v_max: f32,
+        pad_px: f32,
+    },
+    pillarbox: struct {
+        u_min: f32,
+        u_max: f32,
+        pad_px: f32,
+    },
+
+    /// Converts thumbnail padding boundaries into a normalized UvRect for GPU rendering.
+    pub fn toUvRect(self: ThumbnailPadding) UvRect {
+        return switch (self) {
+            .none => .{},
+            .letterbox => |lb| .{
+                .u_min = 0.0,
+                .v_min = lb.v_min,
+                .u_max = 1.0,
+                .v_max = lb.v_max,
+            },
+            .pillarbox => |pb| .{
+                .u_min = pb.u_min,
+                .v_min = 0.0,
+                .u_max = pb.u_max,
+                .v_max = 1.0,
+            },
+        };
+    }
+
+    /// Returns the pixel margin padding applied to container boundaries.
+    pub fn getPaddingPx(self: ThumbnailPadding) f32 {
+        return switch (self) {
+            .none => 0.0,
+            .letterbox => |lb| lb.pad_px,
+            .pillarbox => |pb| pb.pad_px,
+        };
+    }
+};
+
+/// Computes normalized thumbnail padding to remove letterbox/pillarbox margins
+/// in embedded camera thumbnails.
+pub fn computeThumbnailPadding(
     full_w: f32,
     full_h: f32,
     thumb_w: f32,
     thumb_h: f32,
     dct_snapped: bool,
-) UvRect {
+) ThumbnailPadding {
     if (!std.math.isFinite(full_w) or
         !std.math.isFinite(full_h) or
         !std.math.isFinite(thumb_w) or
         !std.math.isFinite(thumb_h) or
         full_w <= 0.0 or full_h <= 0.0 or thumb_w <= 0.0 or thumb_h <= 0.0)
     {
-        return .{};
+        return .none;
     }
 
     const ar_full = full_w / full_h;
     const ar_thumb = thumb_w / thumb_h;
 
     if (std.math.approxEqAbs(f32, ar_full, ar_thumb, 0.01)) {
-        return .{};
+        return .none;
     }
 
     if (ar_full > ar_thumb) {
@@ -156,7 +197,13 @@ pub fn computeThumbnailUvCrop(
 
         const v_pad = pad_px / thumb_h;
         const v_min = std.math.clamp(v_pad, 0.0, 0.49);
-        return .{ .u_min = 0.0, .v_min = v_min, .u_max = 1.0, .v_max = 1.0 - v_min };
+        return .{
+            .letterbox = .{
+                .v_min = v_min,
+                .v_max = 1.0 - v_min,
+                .pad_px = pad_px,
+            },
+        };
     } else {
         // Full image is taller than thumbnail container -> Pillarboxing (black bars left/right)
         const raw_pad_px = (thumb_w - (thumb_h * ar_full)) / 2.0;
@@ -170,8 +217,32 @@ pub fn computeThumbnailUvCrop(
 
         const u_pad = pad_px / thumb_w;
         const u_min = std.math.clamp(u_pad, 0.0, 0.49);
-        return .{ .u_min = u_min, .v_min = 0.0, .u_max = 1.0 - u_min, .v_max = 1.0 };
+        return .{
+            .pillarbox = .{
+                .u_min = u_min,
+                .u_max = 1.0 - u_min,
+                .pad_px = pad_px,
+            },
+        };
     }
+}
+
+/// Computes normalized UV crop boundaries to remove letterbox/pillarbox padding
+/// in embedded thumbnails.
+/// When `dct_snapped` is true, letterbox/pillarbox margins are aligned to
+/// 8-pixel DCT block boundaries as encoded by camera hardware preview
+/// generators (e.g. Fujifilm RAF, Ricoh GR IIIx JPEG).
+/// When `dct_snapped` is false (e.g. Sony ARW, standard Fujifilm JPEG), exact
+/// theoretical aspect-ratio padding is preserved to prevent over-cropping real
+/// image pixels and vertical stretch distortion.
+pub fn computeThumbnailUvCrop(
+    full_w: f32,
+    full_h: f32,
+    thumb_w: f32,
+    thumb_h: f32,
+    dct_snapped: bool,
+) UvRect {
+    return computeThumbnailPadding(full_w, full_h, thumb_w, thumb_h, dct_snapped).toUvRect();
 }
 
 test "computeThumbnailUvCrop letterboxing (3:2 in 4:3 thumb snaps to 8px DCT block)" {
@@ -233,4 +304,34 @@ test "computeThumbnailUvCrop matching aspect ratios" {
     try std.testing.expectEqual(@as(f32, 0.0), crop.v_min);
     try std.testing.expectEqual(@as(f32, 1.0), crop.u_max);
     try std.testing.expectEqual(@as(f32, 1.0), crop.v_max);
+}
+
+test "computeThumbnailPadding tagged union variants" {
+    // Letterbox test
+    const lb_pad = computeThumbnailPadding(8192.0, 5461.0, 160.0, 120.0, true);
+    switch (lb_pad) {
+        .letterbox => |lb| {
+            try std.testing.expectEqual(@as(f32, 8.0), lb.pad_px);
+            try std.testing.expectApproxEqAbs(@as(f32, 8.0 / 120.0), lb.v_min, 0.001);
+            try std.testing.expectApproxEqAbs(@as(f32, 1.0 - (8.0 / 120.0)), lb.v_max, 0.001);
+        },
+        else => unreachable,
+    }
+    try std.testing.expectEqual(@as(f32, 8.0), lb_pad.getPaddingPx());
+
+    // Pillarbox test
+    const pb_pad = computeThumbnailPadding(3000.0, 4000.0, 160.0, 120.0, false);
+    switch (pb_pad) {
+        .pillarbox => |pb| {
+            try std.testing.expectApproxEqAbs(@as(f32, 35.0), pb.pad_px, 0.01);
+            try std.testing.expectApproxEqAbs(@as(f32, 0.21875), pb.u_min, 0.001);
+            try std.testing.expectApproxEqAbs(@as(f32, 0.78125), pb.u_max, 0.001);
+        },
+        else => unreachable,
+    }
+
+    // None test
+    const none_pad = computeThumbnailPadding(1600.0, 1200.0, 160.0, 120.0, false);
+    try std.testing.expectEqual(ThumbnailPadding.none, none_pad);
+    try std.testing.expectEqual(@as(f32, 0.0), none_pad.getPaddingPx());
 }

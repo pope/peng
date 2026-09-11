@@ -328,6 +328,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
         (header_slice.len >= 8 and std.mem.startsWith(u8, header_slice, "FUJIFILM"));
 
     var prev_loc_opt: ?exif.ThumbnailLocation = null;
+    var med_loc_opt: ?exif.ThumbnailLocation = null;
     var thumb_loc_opt: ?exif.ThumbnailLocation = null;
     var raw_sensor_dims: ?exif.JpegDimensions = null;
     var orientation: state_pkg.Orientation = .normal;
@@ -379,6 +380,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
     } else {
         const raw_cands = exif.extractTiffRawPreviews(header_slice);
         prev_loc_opt = raw_cands.preview;
+        med_loc_opt = raw_cands.medium;
         thumb_loc_opt = raw_cands.thumbnail;
         raw_sensor_dims = exif.parseExifDimensions(header_slice);
         orientation = exif.parseExifOrientation(header_slice) orelse .normal;
@@ -400,10 +402,19 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
     // Fast scrubbing & instant placeholder thumbnail path
     if (args.has_gpu_device or args.thumb_only) {
         var thumb_surf: ?sdl.Surface = null;
-        const max_thumb_size_bytes = 512 * 1024;
+        // In thumb_only mode (rapid scrubbing), prioritize small thumbnail (<= 512KB) for 0.1ms decode.
+        // In settled viewing (!thumb_only), prioritize medium preview (<= 2MB) for instant 1080p Frame 1 crispness.
+        const target_loc_opt = if (args.thumb_only)
+            (thumb_loc_opt orelse med_loc_opt)
+        else
+            (med_loc_opt orelse thumb_loc_opt);
+        const max_placeholder_bytes: u32 = if (args.thumb_only)
+            512 * 1024
+        else
+            2 * 1024 * 1024;
 
-        if (thumb_loc_opt) |tloc| {
-            if (tloc.length > 0 and tloc.length <= max_thumb_size_bytes and
+        if (target_loc_opt) |tloc| {
+            if (tloc.length > 0 and tloc.length <= max_placeholder_bytes and
                 tloc.file_offset <= file_size -| tloc.length)
             {
                 const t_off: usize = @intCast(tloc.file_offset);
@@ -804,7 +815,11 @@ pub fn decodeWorker(args: *DecodeArgs) void {
             }
         } else {
             const raw_cands = exif.extractTiffRawPreviews(header_buf);
-            if (raw_cands.preview) |ploc| {
+            const target_prev = if (args.thumb_only)
+                (raw_cands.thumbnail orelse raw_cands.medium orelse raw_cands.preview)
+            else
+                raw_cands.preview;
+            if (target_prev) |ploc| {
                 if (ploc.length > 0 and ploc.length <= file_bytes.len and
                     ploc.file_offset <= file_bytes.len - ploc.length)
                 {
@@ -1432,4 +1447,100 @@ test "decodeWorker - Fujifilm RAF range reading and preview extraction" {
         }
     }
     try std.testing.expect(image_decoded_seen);
+}
+
+test "decodeWorker - progressive 3-tier loading for real DSC00941.ARW" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var test_file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, "DSC00941.ARW", .{}) catch return;
+    test_file.close(io);
+
+    var workers = WorkerManager{};
+    defer workers.drainAndQuiesce(io);
+
+    var current_gen: std.atomic.Value(usize) = .init(1);
+
+    // Case 1: Fast scrubbing (thumb_only = true) -> receives 160x120 thumbnail
+    {
+        const p = try allocator.dupe(u8, "DSC00941.ARW");
+        const entry = MediaEntry{ .filesystem = .{ .path = p } };
+        const args = try allocator.create(DecodeArgs);
+        args.* = .{
+            .workers = &workers,
+            .allocator = allocator,
+            .io = io,
+            .key = .{ .index = 0, .generation = 1 },
+            .current_generation = &current_gen,
+            .entry = entry,
+            .has_gpu_device = true,
+            .pixel_format = sdl.PixelFormat.rgba32,
+            .thumb_only = true,
+        };
+        _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
+        _ = workers.active_threads.fetchAdd(1, .monotonic);
+
+        decodeWorker(args);
+
+        var thumb_seen = false;
+        while (workers.event_queue.pop()) |*ev| {
+            defer ev.deinit(allocator);
+            switch (ev.*) {
+                .thumb_decoded => |t| {
+                    thumb_seen = true;
+                    try std.testing.expectEqual(@as(f32, 160.0), t.w);
+                    try std.testing.expectEqual(@as(f32, 120.0), t.h);
+                    try std.testing.expectEqual(@as(f32, 6240.0), t.full_w);
+                    try std.testing.expectEqual(@as(f32, 4160.0), t.full_h);
+                },
+                else => {},
+            }
+        }
+        try std.testing.expect(thumb_seen);
+    }
+
+    // Case 2: Settled viewing (thumb_only = false) -> receives 1616x1080 medium placeholder, then 6240x4160 full image
+    {
+        const p = try allocator.dupe(u8, "DSC00941.ARW");
+        const entry = MediaEntry{ .filesystem = .{ .path = p } };
+        const args = try allocator.create(DecodeArgs);
+        args.* = .{
+            .workers = &workers,
+            .allocator = allocator,
+            .io = io,
+            .key = .{ .index = 1, .generation = 1 },
+            .current_generation = &current_gen,
+            .entry = entry,
+            .has_gpu_device = true,
+            .pixel_format = sdl.PixelFormat.rgba32,
+            .thumb_only = false,
+        };
+        _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
+        _ = workers.active_threads.fetchAdd(1, .monotonic);
+
+        decodeWorker(args);
+
+        var med_thumb_seen = false;
+        var full_image_seen = false;
+        while (workers.event_queue.pop()) |*ev| {
+            defer ev.deinit(allocator);
+            switch (ev.*) {
+                .thumb_decoded => |t| {
+                    med_thumb_seen = true;
+                    try std.testing.expectEqual(@as(f32, 1616.0), t.w);
+                    try std.testing.expectEqual(@as(f32, 1080.0), t.h);
+                    try std.testing.expectEqual(@as(f32, 6240.0), t.full_w);
+                    try std.testing.expectEqual(@as(f32, 4160.0), t.full_h);
+                },
+                .image_decoded => |img| {
+                    full_image_seen = true;
+                    try std.testing.expectEqual(@as(f32, 6240.0), img.w);
+                    try std.testing.expectEqual(@as(f32, 4160.0), img.h);
+                },
+                else => {},
+            }
+        }
+        try std.testing.expect(med_thumb_seen);
+        try std.testing.expect(full_image_seen);
+    }
 }

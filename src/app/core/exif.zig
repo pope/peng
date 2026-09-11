@@ -21,6 +21,71 @@ inline fn readU32(bytes: *const [4]u8, is_le: bool) u32 {
     return std.mem.readInt(u32, bytes, if (is_le) .little else .big);
 }
 
+/// Canonical TIFF tag IDs per TIFF 6.0, TIFF-EP (ISO 12234-2), EXIF 2.32, and Adobe DNG specifications.
+pub const TiffTag = enum(u16) {
+    new_subfile_type = 0x00FE,
+    image_width = 0x0100,
+    image_length = 0x0101,
+    bits_per_sample = 0x0102,
+    compression = 0x0103,
+    photometric_interpretation = 0x0106,
+    strip_offsets = 0x0111,
+    orientation = 0x0112,
+    samples_per_pixel = 0x0115,
+    strip_byte_counts = 0x0117,
+    sub_ifds = 0x014A,
+    jpeg_interchange_format = 0x0201,
+    jpeg_interchange_format_length = 0x0202,
+    exif_ifd = 0x8769,
+    pixel_x_dimension = 0xA002,
+    pixel_y_dimension = 0xA003,
+    dng_private_data = 0xC634,
+    _,
+
+    pub inline fn fromInt(val: u16) TiffTag {
+        return @enumFromInt(val);
+    }
+};
+
+/// Bitflags for TIFF tag 0x00FE (`NewSubfileType`).
+/// Defined in TIFF 6.0 Section 6 (p. 36) and Adobe DNG Specification Section 2.
+pub const NewSubfileType = struct {
+    /// Primary full-resolution image (raw Bayer sensor CFA array in RAW containers).
+    pub const FULL_RESOLUTION: u32 = 0x00000000;
+    /// Reduced-resolution version of another image in this file (thumbnail or medium preview).
+    pub const REDUCED_IMAGE: u32 = 0x00000001;
+    /// Multi-page document page.
+    pub const PAGE: u32 = 0x00000002;
+    /// Transparency / alpha mask.
+    pub const MASK: u32 = 0x00000004;
+    /// Alternative processed preview image (Adobe DNG 1.2+).
+    pub const PREVIEW_IMAGE: u32 = 0x00010000;
+
+    /// Checks if this subfile represents a reduced-resolution preview or thumbnail.
+    pub inline fn isReducedImage(val: u32) bool {
+        return (val & REDUCED_IMAGE) != 0;
+    }
+};
+
+/// PhotometricInterpretation values per TIFF 6.0 and TIFF-EP.
+pub const Photometric = enum(u16) {
+    black_is_zero = 1,
+    rgb = 2,
+    ycbcr = 6,
+    cfa = 32803,
+    linear_raw = 34892,
+    _,
+};
+
+/// Compression values per TIFF 6.0 and TIFF-EP.
+pub const Compression = enum(u16) {
+    uncompressed = 1,
+    jpeg_old = 6,
+    jpeg = 7,
+    sony_arw = 32767,
+    _,
+};
+
 fn findTiffPayload(data: []const u8) ?TiffHeader {
     // 1. Direct TIFF container (Sony ARW, DNG, CR2, NEF, ORF, RW2, PEF, etc.)
     if (data.len >= 8) {
@@ -80,7 +145,7 @@ fn findTiffPayload(data: []const u8) ?TiffHeader {
                     if (sig == 0x002A) {
                         const ifd0_off = readU32(tiff[4..8][0..4], is_le);
                         const off: usize = ifd0_off;
-                        if (off + 2 <= tiff.len) {
+                        if (off >= 8 and (off & 1) == 0 and off + 2 <= tiff.len) {
                             return .{
                                 .tiff = tiff,
                                 .is_le = is_le,
@@ -102,12 +167,11 @@ const SubIfdList = struct {
     items: [8]u32 = undefined,
     len: usize = 0,
 
-    pub fn append(self: *SubIfdList, item: u32) error{TooManySubIfds}!void {
-        if (self.len >= self.items.len) {
-            return error.TooManySubIfds;
+    pub fn append(self: *SubIfdList, item: u32) void {
+        if (self.len < self.items.len) {
+            self.items[self.len] = item;
+            self.len += 1;
         }
-        self.items[self.len] = item;
-        self.len += 1;
     }
 
     pub fn slice(self: *const SubIfdList) []const u32 {
@@ -138,13 +202,15 @@ pub fn parseExifDimensions(data: []const u8) ?JpegDimensions {
             b_area: *u64,
             sub_out: ?*?u32,
             sub_ifds: ?*SubIfdList,
-        ) error{TooManySubIfds}!u32 {
+        ) u32 {
             if (off < 8 or (off & 1) != 0 or off >= t.len or off + 2 > t.len) return 0;
             const num = readU16(t[off..][0..2], le);
             var entry_off = off + 2;
             var i: usize = 0;
             var cur_w: ?u32 = null;
             var cur_h: ?u32 = null;
+            var subfile_type: ?u32 = null;
+            var photometric: ?u16 = null;
 
             while (i < num) : (i += 1) {
                 if (entry_off + 12 > t.len) break;
@@ -162,37 +228,52 @@ pub fn parseExifDimensions(data: []const u8) ?JpegDimensions {
                     val = readU32(entry[8..12][0..4], le);
                 }
 
-                if (tag == 0x0100 or tag == 0xA002) {
+                if (tag == @intFromEnum(TiffTag.new_subfile_type)) {
+                    subfile_type = val;
+                } else if (tag == @intFromEnum(TiffTag.photometric_interpretation)) {
+                    photometric = @intCast(val);
+                } else if (tag == @intFromEnum(TiffTag.image_width) or tag == @intFromEnum(TiffTag.pixel_x_dimension)) {
                     cur_w = val;
-                } else if (tag == 0x0101 or tag == 0xA003) {
+                } else if (tag == @intFromEnum(TiffTag.image_length) or tag == @intFromEnum(TiffTag.pixel_y_dimension)) {
                     cur_h = val;
-                } else if (tag == 0x8769 and sub_out != null) {
+                } else if (tag == @intFromEnum(TiffTag.exif_ifd) and sub_out != null) {
                     sub_out.?.* = val;
-                } else if (tag == 0x014A and sub_ifds != null) {
+                } else if (tag == @intFromEnum(TiffTag.sub_ifds) and sub_ifds != null) {
                     if (count == 1) {
-                        if (val > 0) try sub_ifds.?.append(val);
+                        if (val > 0) sub_ifds.?.append(val);
                     } else if (count > 1 and (type_id == 4 or type_id == 13)) {
-                        if (count > 8) return error.TooManySubIfds;
+                        const fetch_count = @min(count, 8);
                         if (@as(usize, val) < t.len) {
                             var s_idx: usize = 0;
-                            while (s_idx < count) : (s_idx += 1) {
-                                const read_pos = @as(usize, val) + s_idx * 4;
-                                if (read_pos + 4 <= t.len) {
-                                    const s_off = readU32(t[read_pos..][0..4], le);
-                                    if (s_off > 0) try sub_ifds.?.append(s_off);
-                                }
+                            while (s_idx < fetch_count) : (s_idx += 1) {
+                                if (std.math.add(usize, @as(usize, val), s_idx * 4)) |read_pos| {
+                                    if (read_pos + 4 <= t.len) {
+                                        const s_off = readU32(t[read_pos..][0..4], le);
+                                        if (s_off > 0) sub_ifds.?.append(s_off);
+                                    }
+                                } else |_| break;
                             }
                         }
                     }
                 }
             }
 
-            if (cur_w != null and cur_h != null) {
-                const area = @as(u64, cur_w.?) * @as(u64, cur_h.?);
-                if (area > b_area.*) {
-                    b_area.* = area;
-                    b_w.* = cur_w;
-                    b_h.* = cur_h;
+            // Reject full-resolution raw Bayer sensor streams:
+            // 1. CFA Bayer (32803) or LinearRaw (34892)
+            // 2. Primary raw sensor SubIFDs (!isReducedImage inside SubIFD)
+            const is_raw_cfa = (photometric != null and
+                (photometric.? == @intFromEnum(Photometric.cfa) or
+                    photometric.? == @intFromEnum(Photometric.linear_raw)));
+            const is_subifd_raw = (sub_ifds == null and subfile_type != null and
+                !NewSubfileType.isReducedImage(subfile_type.?));
+            if (!is_raw_cfa and !is_subifd_raw) {
+                if (cur_w != null and cur_h != null) {
+                    const area = @as(u64, cur_w.?) * @as(u64, cur_h.?);
+                    if (area > b_area.*) {
+                        b_area.* = area;
+                        b_w.* = cur_w;
+                        b_h.* = cur_h;
+                    }
                 }
             }
 
@@ -206,7 +287,18 @@ pub fn parseExifDimensions(data: []const u8) ?JpegDimensions {
 
     var cur_ifd_off: u32 = ifd0_off;
     var ifd_depth: usize = 0;
+    var visited: [8]u32 = undefined;
     while (cur_ifd_off > 0 and ifd_depth < 8) : (ifd_depth += 1) {
+        var is_cycle = false;
+        for (visited[0..ifd_depth]) |v| {
+            if (v == cur_ifd_off) {
+                is_cycle = true;
+                break;
+            }
+        }
+        if (is_cycle) break;
+        visited[ifd_depth] = cur_ifd_off;
+
         const next_off = parseIfd(
             tiff,
             cur_ifd_off,
@@ -216,29 +308,16 @@ pub fn parseExifDimensions(data: []const u8) ?JpegDimensions {
             &best_area,
             if (ifd_depth == 0) &exif_sub_ifd_off else null,
             if (ifd_depth == 0) &sub_ifd_list else null,
-        ) catch |err| {
-            std.log.warn("parseExifDimensions: failed to parse IFD at offset {d}: {}", .{ cur_ifd_off, err });
-            break;
-        };
+        );
         cur_ifd_off = next_off;
     }
 
     if (exif_sub_ifd_off) |sub_off| {
-        _ = parseIfd(tiff, sub_off, is_le, &best_w, &best_h, &best_area, null, null) catch |err| {
-            std.log.warn(
-                "parseExifDimensions: failed to parse ExifIFD at offset {d}: {}",
-                .{ sub_off, err },
-            );
-        };
+        _ = parseIfd(tiff, sub_off, is_le, &best_w, &best_h, &best_area, null, null);
     }
 
     for (sub_ifd_list.slice()) |s_off| {
-        _ = parseIfd(tiff, s_off, is_le, &best_w, &best_h, &best_area, null, null) catch |err| {
-            std.log.warn(
-                "parseExifDimensions: failed to parse SubIFD at offset {d}: {}",
-                .{ s_off, err },
-            );
-        };
+        _ = parseIfd(tiff, s_off, is_le, &best_w, &best_h, &best_area, null, null);
     }
 
     if (best_w != null and best_h != null) {
@@ -313,7 +392,7 @@ pub fn parseExifOrientation(data: []const u8) ?Orientation {
         entry_off += 12;
 
         const tag = readU16(entry[0..2][0..2], is_le);
-        if (tag == 0x0112) {
+        if (tag == @intFromEnum(TiffTag.orientation)) {
             const val = readU16(entry[8..10][0..2], is_le);
             return Orientation.fromTiff(val);
         }
@@ -380,14 +459,14 @@ pub fn extractJpegThumbnailLocation(data: []const u8) ?ThumbnailLocation {
         entry_off += 12;
 
         const tag = readU16(entry[0..2][0..2], is_le);
-        if (tag == 0x0201) {
+        if (tag == @intFromEnum(TiffTag.jpeg_interchange_format)) {
             thumb_off = readU32(entry[8..12][0..4], is_le);
-        } else if (tag == 0x0202) {
+        } else if (tag == @intFromEnum(TiffTag.jpeg_interchange_format_length)) {
             thumb_len = readU32(entry[8..12][0..4], is_le);
         }
     }
 
-    if (thumb_off != null and thumb_len != null) {
+    if (thumb_off != null and thumb_len != null and thumb_len.? > 0) {
         const tiff_start_off = @intFromPtr(tiff.ptr) - @intFromPtr(data.ptr);
         return .{
             .file_offset = tiff_start_off + @as(u64, thumb_off.?),
@@ -397,9 +476,10 @@ pub fn extractJpegThumbnailLocation(data: []const u8) ?ThumbnailLocation {
     return null;
 }
 
-/// Pair of extracted preview and thumbnail locations from a RAW image container.
+/// Set of extracted preview, medium-res preview, and thumbnail locations from a RAW container.
 pub const RawPreviewCandidates = struct {
     preview: ?ThumbnailLocation = null,
+    medium: ?ThumbnailLocation = null,
     thumbnail: ?ThumbnailLocation = null,
 };
 
@@ -424,7 +504,7 @@ pub fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
             cands: []Candidate,
             count: *usize,
             sub_ifds: ?*SubIfdList,
-        ) error{TooManySubIfds}!u32 {
+        ) u32 {
             if (off < 8 or (off & 1) != 0 or off >= t.len or off + 2 > t.len) return 0;
             const num = readU16(t[off..][0..2], le);
             var entry_off = off + 2;
@@ -446,16 +526,16 @@ pub fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
                 const type_id = readU16(entry[2..4][0..2], le);
                 const val_count = readU32(entry[4..8][0..4], le);
 
-                if (tag == 0x00FE) { // NewSubfileType
+                if (tag == @intFromEnum(TiffTag.new_subfile_type)) {
                     subfile_type = if (type_id == 3)
                         readU16(entry[8..10][0..2], le)
                     else
                         readU32(entry[8..12][0..4], le);
-                } else if (tag == 0x0103) {
+                } else if (tag == @intFromEnum(TiffTag.compression)) {
                     compression = readU16(entry[8..10][0..2], le);
-                } else if (tag == 0x0106) {
+                } else if (tag == @intFromEnum(TiffTag.photometric_interpretation)) {
                     photometric = readU16(entry[8..10][0..2], le);
-                } else if (tag == 0x0111) { // StripOffsets
+                } else if (tag == @intFromEnum(TiffTag.strip_offsets)) {
                     // Per DNG Spec / TIFF-EP, embedded JPEG previews must be a
                     // single contiguous bitstream
                     if (val_count == 1) {
@@ -464,18 +544,18 @@ pub fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
                         else
                             readU32(entry[8..12][0..4], le);
                     }
-                } else if (tag == 0x0117) { // StripByteCounts
+                } else if (tag == @intFromEnum(TiffTag.strip_byte_counts)) {
                     if (val_count == 1) {
                         strip_len = if (type_id == 3)
                             readU16(entry[8..10][0..2], le)
                         else
                             readU32(entry[8..12][0..4], le);
                     }
-                } else if (tag == 0x0201) {
+                } else if (tag == @intFromEnum(TiffTag.jpeg_interchange_format)) {
                     j_off = readU32(entry[8..12][0..4], le);
-                } else if (tag == 0x0202) {
+                } else if (tag == @intFromEnum(TiffTag.jpeg_interchange_format_length)) {
                     j_len = readU32(entry[8..12][0..4], le);
-                } else if (tag == 0xC634) { // DNGPrivateData (Ricoh / Pentax MakerNote)
+                } else if (tag == @intFromEnum(TiffTag.dng_private_data)) {
                     const val_or_off = readU32(entry[8..12][0..4], le);
                     if (val_count >= 70 and @as(usize, val_or_off) + 70 <= t.len) {
                         const p_slice = t[val_or_off..];
@@ -497,21 +577,22 @@ pub fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
                             }
                         }
                     }
-                } else if (tag == 0x014A and sub_ifds != null) {
+                } else if (tag == @intFromEnum(TiffTag.sub_ifds) and sub_ifds != null) {
                     if (val_count == 1) {
                         const s_off = readU32(entry[8..12][0..4], le);
-                        if (s_off > 0) try sub_ifds.?.append(s_off);
+                        if (s_off > 0) sub_ifds.?.append(s_off);
                     } else if (val_count > 1 and (type_id == 4 or type_id == 13)) {
-                        if (val_count > 8) return error.TooManySubIfds;
+                        const fetch_count = @min(val_count, 8);
                         const ptr_off = readU32(entry[8..12][0..4], le);
                         if (@as(usize, ptr_off) < t.len) {
                             var s_idx: usize = 0;
-                            while (s_idx < val_count) : (s_idx += 1) {
-                                const read_pos = @as(usize, ptr_off) + s_idx * 4;
-                                if (read_pos + 4 <= t.len) {
-                                    const s_off = readU32(t[read_pos..][0..4], le);
-                                    if (s_off > 0) try sub_ifds.?.append(s_off);
-                                }
+                            while (s_idx < fetch_count) : (s_idx += 1) {
+                                if (std.math.add(usize, @as(usize, ptr_off), s_idx * 4)) |read_pos| {
+                                    if (read_pos + 4 <= t.len) {
+                                        const s_off = readU32(t[read_pos..][0..4], le);
+                                        if (s_off > 0) sub_ifds.?.append(s_off);
+                                    }
+                                } else |_| break;
                             }
                         }
                     }
@@ -528,13 +609,17 @@ pub fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
             {
                 // Support standard TIFF JPEG compression (6 = OJPEG, 7 = JPEG)
                 const is_jpeg_comp = (compression != null and
-                    (compression.? == 6 or compression.? == 7));
+                    (compression.? == @intFromEnum(Compression.jpeg_old) or
+                        compression.? == @intFromEnum(Compression.jpeg)));
                 // Standard JPEG preview photometrics (6 = YCbCr, 2 = RGB, 1 = BlackIsZero).
                 // Specifically excludes 32803 (CFA Bayer) and 34892 (LinearRaw).
                 const is_jpeg_color = (photometric != null and
-                    (photometric.? == 6 or photometric.? == 2 or photometric.? == 1));
+                    (photometric.? == @intFromEnum(Photometric.ycbcr) or
+                        photometric.? == @intFromEnum(Photometric.rgb) or
+                        photometric.? == @intFromEnum(Photometric.black_is_zero)));
                 // Reject full-resolution primary raw sensor streams (NewSubfileType == 0)
-                const is_reduced_or_unspecified = (subfile_type == null or (subfile_type.? & 1) != 0);
+                const is_reduced_or_unspecified = (subfile_type == null or
+                    NewSubfileType.isReducedImage(subfile_type.?));
 
                 // Reject Lossless JPEG SOF3 (FF D8 FF C3) raw Bayer payloads if payload header is present
                 var is_lossless_raw = false;
@@ -566,7 +651,18 @@ pub fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
     // 1. Follow IFD chain: IFD0 -> IFD1 -> IFD2 -> ...
     var cur_ifd_off: u32 = ifd0_off;
     var ifd_depth: usize = 0;
+    var visited: [8]u32 = undefined;
     while (cur_ifd_off > 0 and ifd_depth < 8) : (ifd_depth += 1) {
+        var is_cycle = false;
+        for (visited[0..ifd_depth]) |v| {
+            if (v == cur_ifd_off) {
+                is_cycle = true;
+                break;
+            }
+        }
+        if (is_cycle) break;
+        visited[ifd_depth] = cur_ifd_off;
+
         const next_ifd_off = parseIfdForJpegs(
             tiff,
             cur_ifd_off,
@@ -574,21 +670,13 @@ pub fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
             &candidates,
             &cand_count,
             if (ifd_depth == 0) &sub_ifd_list else null,
-        ) catch |err| {
-            std.log.warn("extractTiffRawPreviews: failed to parse IFD at offset {d}: {}", .{ cur_ifd_off, err });
-            break;
-        };
+        );
         cur_ifd_off = next_ifd_off;
     }
 
     // 2. Parse SubIFDs discovered in IFD0
     for (sub_ifd_list.slice()) |s_off| {
-        _ = parseIfdForJpegs(tiff, s_off, is_le, &candidates, &cand_count, null) catch |err| {
-            std.log.warn(
-                "extractTiffRawPreviews: failed to parse SubIFD at offset {d}: {}",
-                .{ s_off, err },
-            );
-        };
+        _ = parseIfdForJpegs(tiff, s_off, is_le, &candidates, &cand_count, null);
     }
 
     if (cand_count == 0) return .{};
@@ -604,11 +692,29 @@ pub fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
     const prev_c = candidates[best_preview_idx];
     const thumb_c = candidates[best_thumb_idx];
 
+    var best_med_idx: ?usize = null;
+    if (prev_c.len > thumb_c.len) {
+        for (candidates[0..cand_count], 0..) |c, idx| {
+            if (idx == best_preview_idx or idx == best_thumb_idx) continue;
+            if (c.len > thumb_c.len and c.len < prev_c.len and c.len <= 2 * 1024 * 1024) {
+                if (best_med_idx) |m_idx| {
+                    if (c.len > candidates[m_idx].len) best_med_idx = idx;
+                } else {
+                    best_med_idx = idx;
+                }
+            }
+        }
+    }
+
     return .{
         .preview = .{
             .file_offset = tiff_start_off + @as(u64, prev_c.off),
             .length = prev_c.len,
         },
+        .medium = if (best_med_idx) |m_idx| .{
+            .file_offset = tiff_start_off + @as(u64, candidates[m_idx].off),
+            .length = candidates[m_idx].len,
+        } else null,
         .thumbnail = if (thumb_c.len <= 512 * 1024) .{
             .file_offset = tiff_start_off + @as(u64, thumb_c.off),
             .length = thumb_c.len,
@@ -953,17 +1059,18 @@ test "Fujifilm RAF header and metadata dimension parsing" {
     try std.testing.expectEqual(@as(f32, 4160.0), fuji_dims.?.h);
 }
 
-test "SubIfdList capacity and error on overflow" {
+test "SubIfdList capacity clamping on overflow" {
     var list = SubIfdList{};
     var i: u32 = 0;
     while (i < 8) : (i += 1) {
-        try list.append(100 + i);
+        list.append(100 + i);
     }
     try std.testing.expectEqual(@as(usize, 8), list.len);
     try std.testing.expectEqual(@as(usize, 8), list.slice().len);
 
-    // 9th element triggers error.TooManySubIfds to halt parsing corrupt metadata
-    try std.testing.expectError(error.TooManySubIfds, list.append(999));
+    // 9th element is safely ignored/clamped to buffer capacity
+    list.append(999);
+    try std.testing.expectEqual(@as(usize, 8), list.len);
 }
 
 test "parseExifOrientation with truncated APP1 segment" {
@@ -1174,9 +1281,9 @@ test "TIFF multi-IFD chained preview extraction and raw Bayer rejection" {
     // Next IFD = 150 (IFD1)
     std.mem.writeInt(u32, buf[p..][0..4], 150, .little);
 
-    // SubIFD0 at 60: 5 entries (Sony RAW Bayer stream)
+    // SubIFD0 at 60: 7 entries (Sony RAW Bayer stream)
     p = 60;
-    std.mem.writeInt(u16, buf[p..][0..2], 5, .little);
+    std.mem.writeInt(u16, buf[p..][0..2], 7, .little);
     p += 2;
     // Entry 0: 0x00FE NewSubfileType = 0 (Full resolution primary raw)
     std.mem.writeInt(u16, buf[p..][0..2], 0x00FE, .little);
@@ -1208,6 +1315,20 @@ test "TIFF multi-IFD chained preview extraction and raw Bayer rejection" {
     std.mem.writeInt(u32, buf[p + 4 ..][0..4], 1, .little);
     std.mem.writeInt(u32, buf[p + 8 ..][0..4], 30000000, .little);
     p += 12;
+    // Entry 5: 0x0100 ImageWidth = 8000 (raw sensor width)
+    std.mem.writeInt(u16, buf[p..][0..2], 0x0100, .little);
+    std.mem.writeInt(u16, buf[p + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, buf[p + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(u32, buf[p + 8 ..][0..4], 8000, .little);
+    p += 12;
+    // Entry 6: 0x0101 ImageLength = 6000 (raw sensor height)
+    std.mem.writeInt(u16, buf[p..][0..2], 0x0101, .little);
+    std.mem.writeInt(u16, buf[p + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, buf[p + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(u32, buf[p + 8 ..][0..4], 6000, .little);
+    p += 12;
+    // Next IFD = 0
+    std.mem.writeInt(u32, buf[p..][0..4], 0, .little);
 
     // IFD1 at 150: 2 entries (thumbnail)
     p = 150;
@@ -1228,9 +1349,9 @@ test "TIFF multi-IFD chained preview extraction and raw Bayer rejection" {
     // Next IFD = 200 (IFD2)
     std.mem.writeInt(u32, buf[p..][0..4], 200, .little);
 
-    // IFD2 at 200: 2 entries (full-size preview)
+    // IFD2 at 200: 4 entries (full-size preview)
     p = 200;
-    std.mem.writeInt(u16, buf[p..][0..2], 2, .little);
+    std.mem.writeInt(u16, buf[p..][0..2], 4, .little);
     p += 2;
     // Entry 0: 0x0201 JPEG offset = 3000
     std.mem.writeInt(u16, buf[p..][0..2], 0x0201, .little);
@@ -1243,6 +1364,18 @@ test "TIFF multi-IFD chained preview extraction and raw Bayer rejection" {
     std.mem.writeInt(u16, buf[p + 2 ..][0..2], 4, .little);
     std.mem.writeInt(u32, buf[p + 4 ..][0..4], 1, .little);
     std.mem.writeInt(u32, buf[p + 8 ..][0..4], 1000000, .little);
+    p += 12;
+    // Entry 2: 0x0100 ImageWidth = 6000 (visible photograph width)
+    std.mem.writeInt(u16, buf[p..][0..2], 0x0100, .little);
+    std.mem.writeInt(u16, buf[p + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, buf[p + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(u32, buf[p + 8 ..][0..4], 6000, .little);
+    p += 12;
+    // Entry 3: 0x0101 ImageLength = 4000 (visible photograph height)
+    std.mem.writeInt(u16, buf[p..][0..2], 0x0101, .little);
+    std.mem.writeInt(u16, buf[p + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, buf[p + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(u32, buf[p + 8 ..][0..4], 4000, .little);
     p += 12;
     // Next IFD = 0
     std.mem.writeInt(u32, buf[p..][0..4], 0, .little);
@@ -1258,6 +1391,18 @@ test "TIFF multi-IFD chained preview extraction and raw Bayer rejection" {
     try std.testing.expect(cands.thumbnail != null);
     try std.testing.expectEqual(@as(u64, 2000), cands.thumbnail.?.file_offset);
     try std.testing.expectEqual(@as(u32, 5000), cands.thumbnail.?.length);
+
+    // Verified: IFD0 (100KB) is selected as medium preview
+    try std.testing.expect(cands.medium != null);
+    try std.testing.expectEqual(@as(u64, 1000), cands.medium.?.file_offset);
+    try std.testing.expectEqual(@as(u32, 100000), cands.medium.?.length);
+
+    // Verified: parseExifDimensions rejects raw Bayer 8000x6000 SubIFD
+    // and correctly returns IFD2 visible photograph dimensions 6000x4000.
+    const dims = parseExifDimensions(&buf);
+    try std.testing.expect(dims != null);
+    try std.testing.expectEqual(@as(f32, 6000.0), dims.?.w);
+    try std.testing.expectEqual(@as(f32, 4000.0), dims.?.h);
 }
 
 test "extractTiffRawPreviews - real DSC00941.ARW" {
@@ -1276,8 +1421,28 @@ test "extractTiffRawPreviews - real DSC00941.ARW" {
     try std.testing.expectEqual(@as(u64, 303104), cands.preview.?.file_offset);
     try std.testing.expectEqual(@as(u32, 1067474), cands.preview.?.length);
 
+    // IFD0 medium preview: 1616x1080 JPEG at 196770 len 103242
+    try std.testing.expect(cands.medium != null);
+    try std.testing.expectEqual(@as(u64, 196770), cands.medium.?.file_offset);
+    try std.testing.expectEqual(@as(u32, 103242), cands.medium.?.length);
+
     // IFD1 thumbnail: 160x120 JPEG at 44032 len 5521
     try std.testing.expect(cands.thumbnail != null);
     try std.testing.expectEqual(@as(u64, 44032), cands.thumbnail.?.file_offset);
     try std.testing.expectEqual(@as(u32, 5521), cands.thumbnail.?.length);
+
+    const dims = parseExifDimensions(header_buf[0..n]);
+    try std.testing.expect(dims != null);
+    // Verifies visible photograph dimensions (6240 x 4160) are returned,
+    // rejecting the SubIFD raw Bayer sensor array (6656 x 4608).
+    try std.testing.expectEqual(@as(f32, 6240.0), dims.?.w);
+    try std.testing.expectEqual(@as(f32, 4160.0), dims.?.h);
+
+    // Verifies thumbnail letterbox padding detection eliminates black borders:
+    // With full_w = 6240 and full_h = 4160 (AR = 1.500000), 160x120 thumbnail snaps to 8px DCT block.
+    const crop = state_pkg.computeThumbnailUvCrop(dims.?.w, dims.?.h, 160.0, 120.0, true);
+    try std.testing.expectEqual(@as(f32, 0.0), crop.u_min);
+    try std.testing.expectEqual(@as(f32, 1.0), crop.u_max);
+    try std.testing.expectApproxEqAbs(@as(f32, 8.0 / 120.0), crop.v_min, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0 - 8.0 / 120.0), crop.v_max, 0.0001);
 }
