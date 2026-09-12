@@ -339,7 +339,7 @@ pub const AppState = struct {
 
     /// Rebuilds fuzzy search matches for the command palette image file list.
     pub fn rebuildPaletteMatches(self: *AppState) !void {
-        try self.viewer.ui.palette.rebuildFileMatches(self.viewer.navigation.image_list.items);
+        try self.viewer.ui.palette.rebuildFileMatches(self.viewer.navigation.getEntries());
     }
 
     /// Rebuilds fuzzy search matches for command palette action items.
@@ -371,14 +371,7 @@ pub const AppState = struct {
     /// Synchronizes viewport rotation angle with active user rotation override,
     /// parsed EXIF orientation, or zero.
     pub fn updateCurrentRotation(self: *AppState) void {
-        const media_opt = blk: {
-            const len = self.viewer.navigation.image_list.items.len;
-            const current_idx = self.viewer.navigation.current_index orelse break :blk null;
-            if (current_idx >= len) break :blk null;
-            break :blk self.viewer.navigation.image_list.items[current_idx];
-        };
-
-        const media = media_opt orelse {
+        const media = self.viewer.navigation.getCurrentImageEntry() orelse {
             self.viewer.viewport.rotation_angle = 0.0;
             return;
         };
@@ -460,24 +453,21 @@ pub const AppState = struct {
             .directory_navigator => {
                 var preselect_child: ?[]const u8 = null;
                 const start_dir = blk: {
-                    if (self.viewer.navigation.current_index) |idx| {
-                        if (idx < self.viewer.navigation.image_list.items.len) {
-                            const media = self.viewer.navigation.image_list.items[idx];
-                            switch (media) {
-                                .archive_entry => |a| {
-                                    preselect_child = std.fs.path.basename(a.archive_path);
-                                    break :blk std.fs.path.dirname(a.archive_path) orelse ".";
-                                },
-                                .filesystem => |f| {
-                                    if (std.fs.path.dirname(f.path)) |parent| {
-                                        preselect_child = std.fs.path.basename(f.path);
-                                        break :blk parent;
-                                    } else {
-                                        preselect_child = f.path;
-                                        break :blk ".";
-                                    }
-                                },
-                            }
+                    if (self.viewer.navigation.getCurrentImageEntry()) |media| {
+                        switch (media) {
+                            .archive_entry => |a| {
+                                preselect_child = std.fs.path.basename(a.archive_path);
+                                break :blk std.fs.path.dirname(a.archive_path) orelse ".";
+                            },
+                            .filesystem => |f| {
+                                if (std.fs.path.dirname(f.path)) |parent| {
+                                    preselect_child = std.fs.path.basename(f.path);
+                                    break :blk parent;
+                                } else {
+                                    preselect_child = f.path;
+                                    break :blk ".";
+                                }
+                            },
                         }
                     }
                     if (self.viewer.navigation.last_scanned_dir.items.len > 0) {
@@ -548,9 +538,8 @@ pub const AppState = struct {
         _ = self.cache.advanceGeneration();
         self.clearCache();
         self.clearRotationMap();
-        self.viewer.navigation.image_list.clearRetainingCapacity();
+        self.viewer.navigation.clearEntries();
         _ = self.viewer.navigation.directory_arena.reset(.retain_capacity);
-        self.viewer.navigation.current_index = null;
         self.viewer.image_transition = .none;
         self.viewer.animations.setImmediate(.image_crossfade, 1.0);
 
@@ -577,11 +566,11 @@ pub const AppState = struct {
                 );
             } else {
                 const dup = try self.viewer.navigation.directory_arena.allocator().dupe(u8, path);
-                try self.viewer.navigation.image_list.append(
+                try self.viewer.navigation.appendEntry(
                     self.allocator,
                     .{ .filesystem = .{ .path = dup } },
                 );
-                self.viewer.navigation.current_index = 0;
+                _ = self.viewer.navigation.adjustIndexForVisibility();
 
                 try workers_mod.startAsyncPathScan(
                     &self.workers,
@@ -601,10 +590,10 @@ pub const AppState = struct {
         const e = self.getCurrentEntryPtr() orelse return;
         if (e.thumbnail == .loaded or e.thumbnail == .not_available) return;
 
-        const idx = self.viewer.navigation.current_index orelse return;
-        if (idx >= self.viewer.navigation.image_list.items.len) return;
-
-        const media = self.viewer.navigation.image_list.items[idx];
+        const media = self.viewer.navigation.getCurrentImageEntry() orelse {
+            e.thumbnail = .not_available;
+            return;
+        };
         const extracted = image.loadThumbnailSurface(self.io, self.allocator, media) orelse {
             e.thumbnail = .not_available;
             return;
@@ -719,7 +708,7 @@ pub const AppState = struct {
         }
 
         if (upload_target == null and can_upload_neighbors) {
-            const total_items = self.viewer.navigation.image_list.items.len;
+            const total_items = self.viewer.navigation.count();
             var best_idx: ?usize = null;
             var min_dist: usize = std.math.maxInt(usize);
 
@@ -799,7 +788,7 @@ pub const AppState = struct {
                             gpu_dev,
                             self.viewer.navigation.current_index,
                             self.viewer.getTransitionPrevIndex(),
-                            self.viewer.navigation.image_list.items.len,
+                            self.viewer.navigation.count(),
                             image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES,
                         );
                         if (self.viewer.navigation.current_index) |cur_idx| {
@@ -904,7 +893,7 @@ test "AppState.updateCurrentRotation syncs EXIF orientation" {
     );
     defer state.deinit();
 
-    try state.viewer.navigation.image_list.append(
+    try state.viewer.navigation.appendEntry(
         std.testing.allocator,
         .{ .filesystem = .{ .path = "test_photo_1.jpg" } },
     );

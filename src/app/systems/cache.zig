@@ -78,7 +78,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
     const state = ctx.state;
     state.updateCurrentRotation();
 
-    const len = state.viewer.navigation.image_list.items.len;
+    const len = state.viewer.navigation.count();
     if (len == 0) return;
 
     const idx = state.viewer.navigation.current_index orelse return;
@@ -201,7 +201,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
     var hit = false;
 
     for (desired[0..desired_count]) |d| {
-        if (d >= state.viewer.navigation.image_list.items.len) continue;
+        if (d >= state.viewer.navigation.count()) continue;
 
         if (d != idx) {
             if (is_fast_scrolling) {
@@ -228,7 +228,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
             const is_active_slot = (d == idx);
             const needs_dimensions = (entry.full_w <= 0.0 or entry.full_h <= 0.0);
             if (is_active_slot and needs_dimensions) {
-                const media_item = state.viewer.navigation.image_list.items[idx];
+                const media_item = state.viewer.navigation.getMediaEntry(idx).?;
                 if (image.probeMediaMetadata(state.io, media_item)) |meta| {
                     entry.full_w = meta.dims.w;
                     entry.full_h = meta.dims.h;
@@ -269,7 +269,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
                             if (to_spawn_count < 5) {
                                 to_spawn_indices[to_spawn_count] = d;
                                 to_spawn_entries[to_spawn_count] =
-                                    state.viewer.navigation.image_list.items[d];
+                                    state.viewer.navigation.getMediaEntry(d).?;
                                 to_spawn_count += 1;
                             }
                         }
@@ -320,7 +320,7 @@ test "sysUpdateCache - populates prefetch window and evicts unwanted entries" {
     const paths = [_][]const u8{ "img0.png", "img1.png", "img2.png", "img3.png", "img4.png" };
     for (paths) |p| {
         const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, p);
-        try state.viewer.navigation.image_list.append(
+        try state.viewer.navigation.appendEntry(
             allocator,
             .{ .filesystem = .{ .path = dup } },
         );
@@ -366,7 +366,7 @@ test "sysUpdateCache - retains loaded entries outside prefetch window until budg
         const name = try std.fmt.allocPrint(allocator, "img{}.png", .{idx});
         defer allocator.free(name);
         const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, name);
-        try state.viewer.navigation.image_list.append(
+        try state.viewer.navigation.appendEntry(
             allocator,
             .{ .filesystem = .{ .path = dup } },
         );
@@ -424,7 +424,7 @@ test "sysUpdateCache max decode threads telemetry" {
     defer state.deinit();
 
     const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, "img0.png");
-    try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = dup } });
+    try state.viewer.navigation.appendEntry(allocator, .{ .filesystem = .{ .path = dup } });
     state.viewer.navigation.current_index = 0;
 
     const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
@@ -446,7 +446,7 @@ test "sysUpdateCache - directional speculative preloading during fast scrolling"
     const paths = [_][]const u8{ "img0.png", "img1.png", "img2.png", "img3.png", "img4.png" };
     for (paths) |p| {
         const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, p);
-        try state.viewer.navigation.image_list.append(
+        try state.viewer.navigation.appendEntry(
             allocator,
             .{ .filesystem = .{ .path = dup } },
         );
@@ -498,7 +498,7 @@ test "sysUpdateCache - synchronous presence probe sets thumbnail state" {
         u8,
         "testfiles/golden-screenshots/init.png",
     );
-    try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = dup } });
+    try state.viewer.navigation.appendEntry(allocator, .{ .filesystem = .{ .path = dup } });
     state.viewer.navigation.current_index = 0;
 
     const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
@@ -522,7 +522,7 @@ test "sysUpdateCache - active image without thumbnail spawns full decode during 
         u8,
         "testfiles/golden-screenshots/init.png",
     );
-    try state.viewer.navigation.image_list.append(allocator, .{ .filesystem = .{ .path = dup } });
+    try state.viewer.navigation.appendEntry(allocator, .{ .filesystem = .{ .path = dup } });
     state.viewer.navigation.current_index = 0;
     // Fast scrolling is active
     state.viewer.navigation.last_nav_time_ms = sdl.timer.getTicks();

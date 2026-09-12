@@ -113,7 +113,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
             const now = sdl.timer.getTicks();
             const elapsed = now -| nav.last_nav_time_ms;
             const should_show_auto_title = ui.overlays.auto_title and
-                nav.image_list.items.len > 0 and
+                nav.count() > 0 and
                 nav.last_nav_time_ms > 0 and
                 elapsed < 200;
             if (should_show_auto_title) {
@@ -138,8 +138,8 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                     break :blk res;
                 },
                 .last_image => blk: {
-                    const last_idx = if (nav.image_list.items.len > 0)
-                        nav.image_list.items.len - 1
+                    const last_idx = if (nav.count() > 0)
+                        nav.count() - 1
                     else
                         0;
                     const res = nav.goToIndex(last_idx);
@@ -205,6 +205,54 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 try self.openPath(entry.getPath());
             } else if (nav.last_scanned_dir.items.len > 0) {
                 try self.openPath(nav.last_scanned_dir.items);
+            }
+        },
+        .mark_pick => {
+            const old_idx = nav.current_index;
+            _ = try nav.markCurrentPick(self.allocator);
+            _ = nav.adjustIndexForVisibility();
+            if (old_idx != nav.current_index) {
+                vp.reset();
+                self.viewer.image_transition = .none;
+                self.viewer.animations.setImmediate(.image_crossfade, 1.0);
+            }
+        },
+        .mark_reject => {
+            const old_idx = nav.current_index;
+            _ = try nav.markCurrentReject(self.allocator);
+            _ = nav.adjustIndexForVisibility();
+            if (old_idx != nav.current_index) {
+                vp.reset();
+                self.viewer.image_transition = .none;
+                self.viewer.animations.setImmediate(.image_crossfade, 1.0);
+            }
+        },
+        .unflag => {
+            const old_idx = nav.current_index;
+            _ = try nav.unflagCurrent(self.allocator);
+            _ = nav.adjustIndexForVisibility();
+            if (old_idx != nav.current_index) {
+                vp.reset();
+                self.viewer.image_transition = .none;
+                self.viewer.animations.setImmediate(.image_crossfade, 1.0);
+            }
+        },
+        .cycle_view_mode => {
+            const old_idx = nav.current_index;
+            _ = nav.cycleViewMode();
+            if (old_idx != nav.current_index) {
+                vp.reset();
+                self.viewer.image_transition = .none;
+                self.viewer.animations.setImmediate(.image_crossfade, 1.0);
+            }
+        },
+        .set_view_mode => |mode| {
+            const old_idx = nav.current_index;
+            _ = nav.setViewMode(mode);
+            if (old_idx != nav.current_index) {
+                vp.reset();
+                self.viewer.image_transition = .none;
+                self.viewer.animations.setImmediate(.image_crossfade, 1.0);
             }
         },
         .set_palette => |p| {
@@ -388,10 +436,22 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
 }
 
 /// Dispatches declarative notification trigger matching for an executed intent.
-fn triggerSnackbarForIntent(self: *AppState, intent: intents.AppIntent) void {
+fn triggerSnackbarForIntent(
+    self: *AppState,
+    intent: intents.AppIntent,
+    advanced: bool,
+    has_target: bool,
+) void {
     if (!self.viewer.ui.snackbar.enabled) return;
     const rule = state.snackbar.findRule(intent) orelse return;
     if (!self.viewer.ui.snackbar.isTriggerEnabled(rule.trigger)) return;
+
+    const target_class: state.Classification = switch (intent) {
+        .mark_pick => .pick,
+        .mark_reject => .reject,
+        .unflag => .unflagged,
+        else => self.viewer.navigation.getCurrentClassification(),
+    };
 
     var buf: [state.snackbar.MAX_SNACKBAR_LEN]u8 = undefined;
     const msg = rule.format_fn(.{
@@ -399,6 +459,10 @@ fn triggerSnackbarForIntent(self: *AppState, intent: intents.AppIntent) void {
         .manga_mode = self.viewer.navigation.manga_mode,
         .crossfade = self.viewer.navigation.crossfade,
         .snackbar_enabled = self.viewer.ui.snackbar.enabled,
+        .classification = target_class,
+        .classification_advanced = advanced,
+        .has_target_image = has_target,
+        .view_mode = self.viewer.navigation.view_mode,
     }, &buf);
 
     if (msg.len > 0) {
@@ -417,8 +481,10 @@ pub fn sysExecuteIntents(ctx: FrameContext) !void {
     const self = ctx.state;
     if (self.pending_intents.items.len == 0) return;
     for (self.pending_intents.items) |intent| {
+        const old_idx = self.viewer.navigation.current_index;
         try executeIntent(self, intent);
-        triggerSnackbarForIntent(self, intent);
+        const advanced = (old_idx != null and self.viewer.navigation.current_index != old_idx);
+        triggerSnackbarForIntent(self, intent, advanced, old_idx != null);
     }
     self.clearIntents();
 }
@@ -430,15 +496,15 @@ test "Manga Mode toggles Right-to-Left image navigation" {
     var app_st = try AppState.initHeadless(allocator, io);
     defer app_st.deinit();
 
-    try app_st.viewer.navigation.image_list.append(
+    try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "page1.png" } },
     );
-    try app_st.viewer.navigation.image_list.append(
+    try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "page2.png" } },
     );
-    try app_st.viewer.navigation.image_list.append(
+    try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "page3.png" } },
     );
@@ -468,15 +534,15 @@ test "Navigation intents cleanly advance image index" {
     var app_st = try AppState.initHeadless(allocator, io);
     defer app_st.deinit();
 
-    try app_st.viewer.navigation.image_list.append(
+    try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "img1.png" } },
     );
-    try app_st.viewer.navigation.image_list.append(
+    try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "img2.png" } },
     );
-    try app_st.viewer.navigation.image_list.append(
+    try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "img3.png" } },
     );
@@ -537,7 +603,7 @@ test "rotate_cw, rotate_ccw, and reset_rotation intents" {
     const media_item = state.MediaEntry{
         .filesystem = .{ .path = "test_image.raf" },
     };
-    try app_st.viewer.navigation.image_list.append(allocator, media_item);
+    try app_st.viewer.navigation.appendEntry(allocator, media_item);
     app_st.viewer.navigation.current_index = 0;
 
     const key = try app_st.cache.appendSlot(allocator, 0, .{ .decoding = .{} });
@@ -621,8 +687,8 @@ test "fast scrubbing triggers title overlay auto-hide" {
     const media_item = state.MediaEntry{
         .filesystem = .{ .path = "test.jpg" },
     };
-    try app_st.viewer.navigation.image_list.append(allocator, media_item);
-    try app_st.viewer.navigation.image_list.append(allocator, media_item);
+    try app_st.viewer.navigation.appendEntry(allocator, media_item);
+    try app_st.viewer.navigation.appendEntry(allocator, media_item);
     app_st.viewer.navigation.current_index = 0;
 
     // Simulate recent navigation within 200ms
@@ -696,15 +762,15 @@ test "sysExecuteIntents slideshow dissolve transitions and interval threshold" {
     var app_st = try AppState.initHeadless(allocator, io);
     defer app_st.deinit();
 
-    try app_st.viewer.navigation.image_list.append(
+    try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "s1.jpg" } },
     );
-    try app_st.viewer.navigation.image_list.append(
+    try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "s2.jpg" } },
     );
-    try app_st.viewer.navigation.image_list.append(
+    try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "s3.jpg" } },
     );
@@ -756,15 +822,15 @@ test "sysExecuteIntents - manual navigation crossfade and rapid navigation cut" 
     var app_st = try AppState.initHeadless(allocator, io);
     defer app_st.deinit();
 
-    try app_st.viewer.navigation.image_list.append(
+    try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "s1.jpg" } },
     );
-    try app_st.viewer.navigation.image_list.append(
+    try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "s2.jpg" } },
     );
-    try app_st.viewer.navigation.image_list.append(
+    try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "s3.jpg" } },
     );
@@ -871,6 +937,88 @@ test "Before/After comparison intents mutate viewport and trigger snackbar" {
     try testing.expectEqual(true, app_st.viewer.viewport.compare_original);
     try testing.expectEqualStrings(
         "Before (Original)",
+        app_st.viewer.ui.snackbar.getMessage(),
+    );
+}
+
+test "sysExecuteIntents classification snackbar confirms action and advance" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    app_st.viewer.ui.snackbar.enabled = true;
+
+    try app_st.viewer.navigation.appendEntry(allocator, .{ .filesystem = .{ .path = "img1.jpg" } });
+    try app_st.viewer.navigation.appendEntry(allocator, .{ .filesystem = .{ .path = "img2.jpg" } });
+    app_st.viewer.navigation.current_index = 0;
+
+    // 1. In default view, mark Pick: image remains visible, does not advance
+    try app_st.pushIntent(.mark_pick);
+    try sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+    });
+    try testing.expectEqualStrings(
+        "Flagged as Pick",
+        app_st.viewer.ui.snackbar.getMessage(),
+    );
+    try testing.expectEqual(@as(?usize, 0), app_st.viewer.navigation.current_index);
+
+    // 2. In default view, mark Reject: image is hidden, advances to next visible image
+    try app_st.pushIntent(.mark_reject);
+    try sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+    });
+    try testing.expectEqualStrings(
+        "Previous image flagged as rejected",
+        app_st.viewer.ui.snackbar.getMessage(),
+    );
+    try testing.expectEqual(@as(?usize, 1), app_st.viewer.navigation.current_index);
+
+    // 3. In all view, mark Reject: image remains visible, does not advance
+    app_st.viewer.navigation.view_mode = .all;
+    try app_st.pushIntent(.mark_reject);
+    try sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+    });
+    try testing.expectEqualStrings(
+        "Flagged as Reject",
+        app_st.viewer.ui.snackbar.getMessage(),
+    );
+    try testing.expectEqual(@as(?usize, 1), app_st.viewer.navigation.current_index);
+
+    // 4. In picks view where 0 images match, try marking pick or reject: confirms "No image to classify"
+    app_st.viewer.navigation.view_mode = .picks;
+    _ = app_st.viewer.navigation.adjustIndexForVisibility();
+    try testing.expectEqual(@as(?usize, null), app_st.viewer.navigation.current_index);
+
+    try app_st.pushIntent(.mark_pick);
+    try sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+    });
+    try testing.expectEqualStrings(
+        "No image to classify",
+        app_st.viewer.ui.snackbar.getMessage(),
+    );
+
+    try app_st.pushIntent(.mark_reject);
+    try sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+    });
+    try testing.expectEqualStrings(
+        "No image to classify",
         app_st.viewer.ui.snackbar.getMessage(),
     );
 }

@@ -59,10 +59,10 @@ fn runIpcServer(workers: *WorkerManager, gpa: std.mem.Allocator, io: std.Io) !vo
         };
     }
 
-    const msg = try std.fmt.allocPrint(gpa, "IPC socket: {s}\n", .{socket_path});
-    defer gpa.free(msg);
+    var msg_buf: [256]u8 = undefined;
+    const msg = std.fmt.bufPrint(&msg_buf, "IPC socket: {s}\n", .{socket_path}) catch "IPC socket ready\n";
     var stdout_write_buf: [256]u8 = undefined;
-    var stdout_writer = std.Io.File.Writer.init(std.Io.File.stdout(), io, &stdout_write_buf);
+    var stdout_writer = std.Io.File.Writer.initStreaming(std.Io.File.stdout(), io, &stdout_write_buf);
     stdout_writer.interface.writeAll(msg) catch |err| {
         std.log.debug("IPC writeAll to stdout failed: {any}", .{err});
     };

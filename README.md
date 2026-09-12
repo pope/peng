@@ -13,6 +13,8 @@ ______________________________________________________________________
 - **Command Palette:** Built-in searchable palettes for commands (`F1` or `Ctrl+Shift+P`), file search (`Ctrl+P`), and directory navigator (`Ctrl+O`).
 - **Interactive Info & Stats Overlays:** Toggleable draggable panels (`d` for Info, `Shift+D` / `Shift+I` for Stats) displaying camera sensor metadata, preview resolutions, CPU/GPU decoding times, active resampling shader, and rendering metrics.
 - **Docked Image Adjustments Panel:** Interactive side panel (`e` key) for non-destructive brightness and contrast tuning with live slider dragging, reset shortcuts (`Shift+R`), and instant before/after comparison (`\` key).
+- **Lightroom-Style Image Triage & SIMD Filtering:** Instant photo triage with Pick (`z`), Reject (`x`), and Unflag (`u`) shortcuts. Filtered view modes (`v` / `Shift+V`) cycle between Default (hides rejected images), Picks Only, Rejects Only, Unflagged Only, and All Images. Filtering and visible count calculations are accelerated via 256-bit SIMD vector instructions (`@Vector(32, u8)`) and hardware popcounting (`POPCNT`), enabling sub-microsecond filtering across collections of 10,000+ photos.
+- **UNIX Pipeline Integration & Triage Export:** On application exit, classifications are streamed cleanly to standard output as tab-separated rows (`PICK\t/path/to/image.jpg` or `REJECT\t/path/to/image.jpg`), allowing direct integration with shell tools (`awk`, `xargs`, `cp`, `mv`).
 - **Non-Blocking Headless Mode:** Runs offscreen without X11 or Wayland (ideal for CI and servers) with `--headless`.
 - **Scriptable IPC Control:** External client controls the viewer's zoom, pan, filters, and takes screenshots in real-time.
 
@@ -30,36 +32,41 @@ ______________________________________________________________________
 
 ## Keyboard Shortcuts
 
-| Shortcut                                | Action                                                           |
-| :-------------------------------------- | :--------------------------------------------------------------- |
-| `n` / `]` / `Space` / `Right`           | Next Image                                                       |
-| `p` / `[` / `Backspace` / `Left`        | Previous Image                                                   |
-| `Home` / `End`                          | Jump to First / Last Image                                       |
-| `i` / `+` / `=`                         | Zoom In                                                          |
-| `o` / `-`                               | Zoom Out                                                         |
-| `a`                                     | Actual Size (1:1 / 100% Zoom)                                    |
-| `r` / `0`                               | Reset Zoom & Pan                                                 |
-| `h` / `j` / `k` / `l`                   | Pan Left / Down / Up / Right (when zoomed)                       |
-| `>`                                     | Rotate Clockwise (90°)                                           |
-| `<`                                     | Rotate Counter-Clockwise (90°)                                   |
-| `e`                                     | Toggle Edit Side Panel (Image Adjustments)                       |
-| `s`                                     | Cycle Scale Mode (Shrink, Full, Crop, Actual, Fit W/H)           |
-| `S` (Shift+s)                           | Cycle Resampling Filter Forward (Nearest, Linear, Mitchell, etc) |
-| `Alt+Shift+S`                           | Cycle Resampling Filter Backward                                 |
-| `b` / `B` (Shift+b)                     | Increase / Decrease Brightness                                   |
-| `c` / `C` (Shift+c)                     | Increase / Decrease Contrast                                     |
-| `\`                                     | Toggle Before / After (Original vs Adjusted)                     |
-| `Shift+R`                               | Reset Brightness & Contrast                                      |
-| `d`                                     | Toggle Image Info Overlay                                        |
-| `Shift+D` / `Shift+I`                   | Toggle Stats for Nerds / Performance Overlay                     |
-| `t`                                     | Toggle Title Bar Overlay                                         |
-| `m`                                     | Toggle Manga Mode (Right-to-Left)                                |
-| `f` / `F11`                             | Toggle Borderless Fullscreen                                     |
-| `F5` / `Ctrl+R`                         | Refresh / Rescan Directory                                       |
-| `:` / `?` / `/` / `F1` / `Ctrl+Shift+P` | Open Command Palette (Actions)                                   |
-| `Ctrl+P`                                | Open File Search Palette                                         |
-| `Ctrl+O`                                | Open Directory Navigator Palette                                 |
-| `q` / `Esc`                             | Close Palette / Dismiss Dialogs / Exit Application               |
+| Shortcut                                | Action                                                            |
+| :-------------------------------------- | :---------------------------------------------------------------- |
+| `n` / `]` / `Space` / `Right`           | Next Image                                                        |
+| `p` / `[` / `Backspace` / `Left`        | Previous Image                                                    |
+| `Home` / `End`                          | Jump to First / Last Image                                        |
+| `i` / `+` / `=`                         | Zoom In                                                           |
+| `o` / `-`                               | Zoom Out                                                          |
+| `a`                                     | Actual Size (1:1 / 100% Zoom)                                     |
+| `r` / `0`                               | Reset Zoom & Pan                                                  |
+| `h` / `j` / `k` / `l`                   | Pan Left / Down / Up / Right (when zoomed)                        |
+| `>`                                     | Rotate Clockwise (90°)                                            |
+| `<`                                     | Rotate Counter-Clockwise (90°)                                    |
+| `e`                                     | Toggle Edit Side Panel (Image Adjustments)                        |
+| `s`                                     | Cycle Scale Mode (Shrink, Full, Crop, Actual, Fit W/H)            |
+| `S` (Shift+s)                           | Cycle Resampling Filter Forward (Nearest, Linear, Mitchell, etc)  |
+| `Alt+Shift+S`                           | Cycle Resampling Filter Backward                                  |
+| `b` / `B` (Shift+b)                     | Increase / Decrease Brightness                                    |
+| `c` / `C` (Shift+c)                     | Increase / Decrease Contrast                                      |
+| `\`                                     | Toggle Before / After (Original vs Adjusted)                      |
+| `Shift+R`                               | Reset Brightness & Contrast                                       |
+| `d`                                     | Toggle Image Info Overlay                                         |
+| `Shift+D` / `Shift+I`                   | Toggle Stats for Nerds / Performance Overlay                      |
+| `t`                                     | Toggle Title Bar Overlay                                          |
+| `m`                                     | Toggle Manga Mode (Right-to-Left)                                 |
+| `f` / `F11`                             | Toggle Borderless Fullscreen                                      |
+| `F5` / `Ctrl+R`                         | Refresh / Rescan Directory                                        |
+| `z`                                     | Flag Current Image as Pick                                        |
+| `x`                                     | Flag Current Image as Reject                                      |
+| `u`                                     | Unflag Classification on Current Image                            |
+| `v`                                     | Cycle View Mode Forward (Default, Unflagged, Picks, Rejects, All) |
+| `Shift+V`                               | Cycle View Mode Backward                                          |
+| `:` / `?` / `/` / `F1` / `Ctrl+Shift+P` | Open Command Palette (Actions)                                    |
+| `Ctrl+P`                                | Open File Search Palette                                          |
+| `Ctrl+O`                                | Open Directory Navigator Palette                                  |
+| `q` / `Esc`                             | Close Palette / Dismiss Dialogs / Exit Application                |
 
 ### Command Palette & Line Editor Navigation
 
@@ -184,6 +191,16 @@ You can send commands to a running instance using the `peng-msg` utility:
 # Navigation
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock next
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock prev
+
+# Image Classification (pick, reject, unflag)
+./zig-out/bin/peng-msg /tmp/peng-1234.sock pick
+./zig-out/bin/peng-msg /tmp/peng-1234.sock reject
+./zig-out/bin/peng-msg /tmp/peng-1234.sock unflag
+
+# Set Active View Mode (default, unflagged, picks, rejects, all)
+./zig-out/bin/peng-msg /tmp/peng-1234.sock view picks
+./zig-out/bin/peng-msg /tmp/peng-1234.sock view rejects
+./zig-out/bin/peng-msg /tmp/peng-1234.sock view default
 
 # Toggle UI Palettes (action, files, none)
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock palette action

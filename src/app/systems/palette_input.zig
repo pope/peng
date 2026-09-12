@@ -17,7 +17,7 @@ const PaletteMode = intents.PaletteMode;
 fn handlePaletteReturnGoToImage(ctx: FrameContext, raw_str: []const u8) !void {
     if (raw_str.len > 0) {
         if (std.fmt.parseInt(usize, raw_str, 10)) |v| {
-            if (v >= 1 and v <= ctx.state.viewer.navigation.image_list.items.len) {
+            if (v >= 1 and v <= ctx.state.viewer.navigation.count()) {
                 try ctx.state.pushIntent(.{ .go_to_image = v - 1 });
                 ctx.state.closePalette();
             }
@@ -603,7 +603,7 @@ test "openPalette directory_navigator starting directory rules" {
 
     // Rule 1: current_index is valid -> starting directory is dirname of current image
     const sample_path = tmp_dir ++ "/image1.jpg";
-    try state.viewer.navigation.image_list.append(
+    try state.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = sample_path } },
     );
@@ -649,7 +649,7 @@ test "openPalette directory_navigator steps up if 0 subdirectories" {
 
     // Image in child_leaf (which has 0 subdirectories itself)
     const img_path = sub_leaf ++ "/photo.png";
-    try state.viewer.navigation.image_list.append(
+    try state.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = img_path } },
     );
@@ -688,7 +688,7 @@ test "openPalette steps up from top-level relative leaf dir without slashes to d
     defer state.deinit();
 
     const img_path = top_leaf ++ "/photo.png";
-    try state.viewer.navigation.image_list.append(
+    try state.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = img_path } },
     );

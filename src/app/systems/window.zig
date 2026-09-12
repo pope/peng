@@ -10,12 +10,10 @@ const FrameContext = @import("context.zig").FrameContext;
 pub fn sysSyncWindow(ctx: FrameContext) void {
     const state = ctx.state;
     var raw_title: []const u8 = "Peng Image Viewer";
-    const total_images = state.viewer.navigation.image_list.items.len;
+    const total_images = state.viewer.navigation.count();
     if (total_images > 0) {
-        if (state.viewer.navigation.current_index) |idx| {
-            if (idx < state.viewer.navigation.image_list.items.len) {
-                raw_title = state.viewer.navigation.image_list.items[idx].getBasename();
-            }
+        if (state.viewer.navigation.getCurrentImageEntry()) |media| {
+            raw_title = media.getBasename();
         }
     }
 

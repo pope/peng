@@ -103,7 +103,7 @@ pub fn updateFrame(
         break :blk (app_state.viewer.navigation.current_index != null);
     };
     const has_unpopulated_cache = blk: {
-        const len = app_state.viewer.navigation.image_list.items.len;
+        const len = app_state.viewer.navigation.count();
         if (len <= 1) break :blk false;
         const cur_idx = app_state.viewer.navigation.current_index orelse break :blk false;
         const has_gpu = app_state.gpu_device != null;
@@ -179,26 +179,50 @@ pub fn updateFrame(
     // Phase 3: Render Phase
     if (app_state.gpu_device == null) return error.GpuNotInitialized;
 
-    const nav_items = app_state.viewer.navigation.image_list.items;
+    const nav = &app_state.viewer.navigation;
+    const nav_slice = nav.items.slice();
+    const visible_cnt = nav.getVisibleCount();
+    const visible_pos = nav.getVisiblePosition();
+    const visible_st: state_pkg.VisibleState = blk: {
+        if (nav_slice.len == 0) {
+            break :blk .empty_directory;
+        } else if (visible_cnt == 0) {
+            break :blk .{ .filtered_empty = .{
+                .mode = nav.view_mode,
+                .total_count = nav_slice.len,
+            } };
+        } else if (nav.current_index) |idx| {
+            break :blk .{ .selected = .{
+                .raw_index = idx,
+                .visible_index = visible_pos orelse 1,
+                .visible_count = visible_cnt,
+                .total_count = nav_slice.len,
+                .classification = nav.getCurrentClassification(),
+            } };
+        } else {
+            break :blk .empty_directory;
+        }
+    };
+
     const ui_model = state_pkg.UiViewModel{
         .is_fullscreen = app_state.viewer.isFullscreen(),
-        .total_images = nav_items.len,
-        .image_list = nav_items,
-        .current_index = app_state.viewer.navigation.current_index,
-        .current_image_entry = if (app_state.viewer.navigation.current_index) |idx|
-            if (idx < nav_items.len) nav_items[idx] else null
-        else
-            null,
+        .total_images = nav_slice.len,
+        .items = nav_slice,
+        .current_index = nav.current_index,
+        .current_image_entry = nav.getCurrentImageEntry(),
         .current_entry = app_state.getCurrentEntry(),
-        .is_loading_files = app_state.viewer.navigation.is_loading_files.load(.acquire),
+        .current_classification = nav.getCurrentClassification(),
+        .view_mode = nav.view_mode,
+        .visible_state = visible_st,
+        .visible_count = visible_cnt,
+        .visible_position = visible_pos,
+        .is_loading_files = nav.is_loading_files.load(.acquire),
         .slideshow = app_state.viewer.navigation.slideshow,
         .manga_mode = app_state.viewer.navigation.manga_mode,
         .overlays = app_state.viewer.ui.overlays,
         .window_title = blk: {
-            if (app_state.viewer.navigation.current_index) |idx| {
-                if (idx < app_state.viewer.navigation.image_list.items.len) {
-                    break :blk app_state.viewer.navigation.image_list.items[idx].getBasename();
-                }
+            if (nav.getCurrentImageEntry()) |media| {
+                break :blk media.getBasename();
             }
             break :blk "Peng Image Viewer";
         },

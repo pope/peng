@@ -137,6 +137,10 @@ pub const IpcCommand = union(enum) {
     reset_adjustments,
     next,
     prev,
+    pick,
+    reject,
+    unflag,
+    view: intents.ViewMode,
     quit,
     screenshot: []const u8,
 
@@ -202,6 +206,10 @@ pub const IpcCommand = union(enum) {
             .debug => |enabled| return .{ .set_debug_mode = enabled },
             .next => return .next_image,
             .prev => return .prev_image,
+            .pick => return .mark_pick,
+            .reject => return .mark_reject,
+            .unflag => return .unflag,
+            .view => |mode| return .{ .set_view_mode = mode },
             .quit => return .quit,
             .wait_load, .screenshot => return null,
         }
@@ -438,6 +446,18 @@ pub const IpcCommand = union(enum) {
             return .next;
         } else if (std.mem.eql(u8, cmd, "prev")) {
             return .prev;
+        } else if (std.mem.eql(u8, cmd, "pick")) {
+            return .pick;
+        } else if (std.mem.eql(u8, cmd, "reject")) {
+            return .reject;
+        } else if (std.mem.eql(u8, cmd, "unflag")) {
+            return .unflag;
+        } else if (std.mem.eql(u8, cmd, "view")) {
+            const val = it.next() orelse return error.MissingArgument;
+            if (std.meta.stringToEnum(intents.ViewMode, val)) |mode| {
+                return .{ .view = mode };
+            }
+            return error.UnknownViewMode;
         } else if (std.mem.eql(u8, cmd, "screenshot")) {
             const filepath = it.next() orelse return error.MissingArgument;
             if (filepath.len > 512) return error.PathTooLong;
@@ -512,6 +532,22 @@ test "IpcCommand parsing" {
 
     const cmd_next = try IpcCommand.parse("next");
     try std.testing.expectEqual(IpcCommand.next, cmd_next);
+
+    const cmd_pick = try IpcCommand.parse("pick");
+    try std.testing.expectEqual(IpcCommand.pick, cmd_pick);
+    try std.testing.expectEqual(intents.AppIntent.mark_pick, cmd_pick.toIntent().?);
+
+    const cmd_reject = try IpcCommand.parse("reject");
+    try std.testing.expectEqual(IpcCommand.reject, cmd_reject);
+    try std.testing.expectEqual(intents.AppIntent.mark_reject, cmd_reject.toIntent().?);
+
+    const cmd_unflag = try IpcCommand.parse("unflag");
+    try std.testing.expectEqual(IpcCommand.unflag, cmd_unflag);
+    try std.testing.expectEqual(intents.AppIntent.unflag, cmd_unflag.toIntent().?);
+
+    const cmd_view_picks = try IpcCommand.parse("view picks");
+    try std.testing.expectEqual(intents.ViewMode.picks, cmd_view_picks.view);
+    try std.testing.expectEqual(intents.AppIntent{ .set_view_mode = .picks }, cmd_view_picks.toIntent().?);
 
     const cmd_reset_view = try IpcCommand.parse("reset_view");
     try std.testing.expectEqual(IpcCommand.reset_view, cmd_reset_view);

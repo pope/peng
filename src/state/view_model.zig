@@ -1,4 +1,5 @@
 const animation_state = @import("animation_state.zig");
+const navigation = @import("navigation.zig");
 const palette_state = @import("palette_state.zig");
 const sdl = @import("sdl");
 const std = @import("std");
@@ -6,13 +7,17 @@ const types = @import("types.zig");
 
 const AnimationChannel = animation_state.AnimationChannel;
 const CacheEntry = types.CacheEntry;
+const Classification = types.Classification;
 const MediaEntry = types.MediaEntry;
+const MediaItemSlice = navigation.MediaItemSlice;
 const OverlayState = types.OverlayState;
 const SlideshowMode = types.SlideshowMode;
 const SnackbarDisplay = types.SnackbarDisplay;
 const UiRenderMetricsSnapshot = types.UiRenderMetricsSnapshot;
 const ViewerStats = types.ViewerStats;
+const ViewMode = types.ViewMode;
 const ViewportParams = types.ViewportParams;
+const VisibleState = types.VisibleState;
 
 /// Active dissolve payload for image transitions between frames.
 pub const ActiveImageDissolve = struct {
@@ -31,10 +36,15 @@ pub const ImageDissolve = union(enum) {
 pub const UiViewModel = struct {
     is_fullscreen: bool,
     total_images: usize,
-    image_list: []const MediaEntry = &.{},
+    items: MediaItemSlice = .empty,
     current_index: ?usize,
     current_image_entry: ?MediaEntry = null,
     current_entry: ?CacheEntry = null,
+    current_classification: Classification = .unflagged,
+    view_mode: ViewMode = .default,
+    visible_state: VisibleState = .empty_directory,
+    visible_count: usize = 0,
+    visible_position: ?usize = null,
     is_loading_files: bool,
     slideshow: SlideshowMode = .inactive,
     manga_mode: bool = false,
@@ -54,6 +64,22 @@ pub const UiViewModel = struct {
     /// Returns the animated scalar value for the specified channel.
     pub inline fn anim(self: UiViewModel, channel: AnimationChannel) f32 {
         return self.anim_values[@intFromEnum(channel)];
+    }
+
+    /// Safely retrieves the media entry at `idx` if within bounds.
+    pub inline fn getMediaEntry(self: UiViewModel, idx: usize) ?MediaEntry {
+        if (idx < self.items.len) {
+            return self.items.items(.entry)[idx];
+        }
+        return null;
+    }
+
+    /// Safely retrieves the classification at `idx`, defaulting to `.unflagged` if out of bounds.
+    pub inline fn getClassification(self: UiViewModel, idx: usize) Classification {
+        if (idx < self.items.len) {
+            return self.items.items(.classification)[idx];
+        }
+        return .unflagged;
     }
 };
 

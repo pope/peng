@@ -202,12 +202,18 @@ fn renderTextInputDialog(
                         .font_size = 13,
                         .font_id = 0,
                     });
-                    const cur_pos = (ui_model.current_index orelse 0) + 1;
-                    const range_str = try std.fmt.allocPrint(
-                        frame_allocator,
-                        "Allowed range: 1 to {} (current: {})",
-                        .{ total_count, cur_pos },
-                    );
+                    const range_str = if (ui_model.current_index) |idx|
+                        try std.fmt.allocPrint(
+                            frame_allocator,
+                            "Allowed range: 1 to {} (current: {})",
+                            .{ total_count, idx + 1 },
+                        )
+                    else
+                        try std.fmt.allocPrint(
+                            frame_allocator,
+                            "Allowed range: 1 to {} (current: none)",
+                            .{total_count},
+                        );
                     clay.text(range_str, .{
                         .color = a(theme.subtext1, progress),
                         .font_size = 11,
@@ -485,6 +491,10 @@ fn renderSelectionList(
                     .direction = .left_to_right,
                     .child_alignment = .{ .x = .left, .y = .center },
                     .padding = .{ .left = 12, .right = 12 },
+                    .child_gap = switch (palette.mode) {
+                        .files => 8,
+                        else => 0,
+                    },
                 },
                 .background_color = if (is_selected and item_hovered)
                     a(theme.row_selected_hover, progress)
@@ -498,10 +508,7 @@ fn renderSelectionList(
             })({
                 switch (palette.mode) {
                     .files => {
-                        const media_opt = if (real_idx < ui_model.image_list.len)
-                            ui_model.image_list[real_idx]
-                        else
-                            null;
+                        const media_opt = ui_model.getMediaEntry(real_idx);
                         const basename = if (media_opt) |m| m.getBasename() else "";
                         const dirname = if (media_opt) |m| m.getContainerName() else ".";
                         const query_str = palette.query.items;
@@ -533,10 +540,14 @@ fn renderSelectionList(
                             }
                         }
 
+                        const classification = ui_model.getClassification(real_idx);
+                        const max_fn_w: f32 = if (classification != .unflagged) 428.0 else 492.0;
+                        const max_dir_w: f32 = if (classification != .unflagged) 424.0 else 488.0;
+
                         const trunc_filename = truncateFilenameMiddle(
                             frame_allocator,
                             basename,
-                            492.0,
+                            max_fn_w,
                             13,
                             measure_data,
                         );
@@ -551,7 +562,7 @@ fn renderSelectionList(
                         const display_dir = truncateDirectory(
                             frame_allocator,
                             dirname,
-                            488.0,
+                            max_dir_w,
                             11,
                             measure_data,
                         );
@@ -638,6 +649,50 @@ fn renderSelectionList(
                                 );
                             });
                         });
+
+                        switch (classification) {
+                            .pick => {
+                                clay.UI()(.{
+                                    .layout = .{
+                                        .sizing = .{ .w = .fit, .h = .fit },
+                                        .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
+                                    },
+                                    .background_color = theme.withAlpha(theme.green, 0.25 * progress),
+                                    .border = .{
+                                        .color = a(theme.green, progress),
+                                        .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                                    },
+                                    .corner_radius = .all(4),
+                                })({
+                                    clay.text("PICK", .{
+                                        .color = a(theme.green, progress),
+                                        .font_size = 11,
+                                        .font_id = 0,
+                                    });
+                                });
+                            },
+                            .reject => {
+                                clay.UI()(.{
+                                    .layout = .{
+                                        .sizing = .{ .w = .fit, .h = .fit },
+                                        .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
+                                    },
+                                    .background_color = theme.withAlpha(theme.red, 0.25 * progress),
+                                    .border = .{
+                                        .color = a(theme.red, progress),
+                                        .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                                    },
+                                    .corner_radius = .all(4),
+                                })({
+                                    clay.text("REJECT", .{
+                                        .color = a(theme.red, progress),
+                                        .font_size = 11,
+                                        .font_id = 0,
+                                    });
+                                });
+                            },
+                            .unflagged => {},
+                        }
                     },
                     .actions => {
                         const meta = types.palette_action_items[real_idx];

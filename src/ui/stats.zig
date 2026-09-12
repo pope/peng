@@ -77,8 +77,7 @@ fn renderInfoOverlay(
     const current_entry = ui_model.current_entry;
 
     if (ui_model.current_index) |idx| {
-        if (idx < ui_model.image_list.len) {
-            const media = ui_model.image_list[idx];
+        if (ui_model.getMediaEntry(idx)) |media| {
             switch (media) {
                 .archive_entry => |a| {
                     const page_basename = std.fs.path.basename(a.entry_name);
@@ -86,7 +85,7 @@ fn renderInfoOverlay(
                     filename = try std.fmt.allocPrint(
                         frame_allocator,
                         "{s} (Page {d}/{d})",
-                        .{ page_basename, idx + 1, ui_model.image_list.len },
+                        .{ page_basename, idx + 1, ui_model.total_images },
                     );
                     display_dir = try std.fmt.allocPrint(
                         frame_allocator,
@@ -229,8 +228,8 @@ fn renderInfoOverlay(
     if (current_entry) |entry| {
         var is_jpeg = std.mem.eql(u8, mime_type, "image/jpeg");
         if (ui_model.current_index) |idx| {
-            if (idx < ui_model.image_list.len) {
-                const ext = std.fs.path.extension(ui_model.image_list[idx].getBasename());
+            if (ui_model.getMediaEntry(idx)) |media| {
+                const ext = std.fs.path.extension(media.getBasename());
                 if (std.ascii.eqlIgnoreCase(ext, ".jpg") or std.ascii.eqlIgnoreCase(ext, ".jpeg")) {
                     is_jpeg = true;
                 }
@@ -382,6 +381,8 @@ fn renderInfoOverlay(
             try renderStatRow("Compare Mode", "Before (Original)");
         }
         try renderStatRow("EXIF Thumbnail", thumb_info_str);
+        try renderStatRow("Classification", ui_model.current_classification.label());
+        try renderStatRow("View Filter", ui_model.view_mode.label());
     });
 }
 

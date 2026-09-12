@@ -8,8 +8,10 @@ const std = @import("std");
 const types = @import("types.zig");
 
 const AppIntent = intents.AppIntent;
+const Classification = types.Classification;
 const ScaleMode = intents.ScaleMode;
 const TextureScaleMode = intents.TextureScaleMode;
+const ViewMode = types.ViewMode;
 const ViewportParams = types.ViewportParams;
 
 /// Maximum length of a snackbar notification message in bytes.
@@ -29,6 +31,8 @@ pub const SnackbarTrigger = enum(u8) {
     compare = 9,
     /// Synthetic trigger used for integration tests and visual overlay verification
     testing = 10,
+    classification = 11,
+    view_mode = 12,
 };
 
 pub const TRIGGER_COUNT: usize = @typeInfo(SnackbarTrigger).@"enum".fields.len;
@@ -39,6 +43,10 @@ pub const SnackbarContext = struct {
     manga_mode: bool = false,
     crossfade: bool = true,
     snackbar_enabled: bool = true,
+    classification: Classification = .unflagged,
+    classification_advanced: bool = false,
+    has_target_image: bool = true,
+    view_mode: ViewMode = .default,
 };
 
 /// Signature for declarative notification message formatters.
@@ -125,6 +133,29 @@ fn formatCompare(ctx: SnackbarContext, _: []u8) []const u8 {
 
 fn formatTesting(ctx: SnackbarContext, _: []u8) []const u8 {
     return if (ctx.snackbar_enabled) "Test Notification" else "";
+}
+
+fn formatClassification(ctx: SnackbarContext, buf: []u8) []const u8 {
+    if (!ctx.has_target_image) {
+        return std.fmt.bufPrint(buf, "No image to classify", .{}) catch "No image to classify";
+    }
+    if (ctx.classification_advanced) {
+        return switch (ctx.classification) {
+            .reject => std.fmt.bufPrint(buf, "Previous image flagged as rejected", .{}) catch "Previous image flagged as rejected",
+            .pick => std.fmt.bufPrint(buf, "Previous image flagged as picked", .{}) catch "Previous image flagged as picked",
+            .unflagged => std.fmt.bufPrint(buf, "Previous image unflagged", .{}) catch "Previous image unflagged",
+        };
+    }
+    return switch (ctx.classification) {
+        .pick => std.fmt.bufPrint(buf, "Flagged as Pick", .{}) catch "Flagged as Pick",
+        .reject => std.fmt.bufPrint(buf, "Flagged as Reject", .{}) catch "Flagged as Reject",
+        .unflagged => std.fmt.bufPrint(buf, "Unflagged", .{}) catch "Unflagged",
+    };
+}
+
+fn formatViewMode(ctx: SnackbarContext, buf: []u8) []const u8 {
+    const lbl = ctx.view_mode.label();
+    return std.fmt.bufPrint(buf, "Filter: {s}", .{lbl}) catch lbl;
 }
 
 /// Master declarative table of snackbar notification rules.
@@ -216,6 +247,22 @@ pub const DEFAULT_SNACKBAR_RULES = [_]SnackbarRule{
         .duration_ms = 1800,
         .intents = &.{ .toggle_snackbar, .set_snackbar },
         .format_fn = formatTesting,
+    },
+    .{
+        .trigger = .classification,
+        .label = "Classification",
+        .enabled = true,
+        .duration_ms = 1800,
+        .intents = &.{ .mark_pick, .mark_reject, .unflag },
+        .format_fn = formatClassification,
+    },
+    .{
+        .trigger = .view_mode,
+        .label = "View Filter",
+        .enabled = true,
+        .duration_ms = 1800,
+        .intents = &.{ .cycle_view_mode, .set_view_mode },
+        .format_fn = formatViewMode,
     },
 };
 
@@ -412,6 +459,14 @@ test "findRule maps intents to declarative rules" {
     try std.testing.expect(testing_rule != null);
     try std.testing.expectEqual(SnackbarTrigger.testing, testing_rule.?.trigger);
 
+    const pick_rule = findRule(.mark_pick);
+    try std.testing.expect(pick_rule != null);
+    try std.testing.expectEqual(SnackbarTrigger.classification, pick_rule.?.trigger);
+
+    const view_rule = findRule(.cycle_view_mode);
+    try std.testing.expect(view_rule != null);
+    try std.testing.expectEqual(SnackbarTrigger.view_mode, view_rule.?.trigger);
+
     const unmapped_rule = findRule(.next_image);
     try std.testing.expect(unmapped_rule == null);
 }
@@ -435,4 +490,55 @@ test "SnackbarState buffer operations and bitmask" {
     try std.testing.expectEqual(@as(usize, 0), state.getMessage().len);
     try std.testing.expectEqual(@as(u64, 0), state.getTimeoutMs());
     try std.testing.expect(state.notification == .none);
+}
+
+test "formatClassification without and with advance" {
+    var vp = ViewportParams{};
+    var buf: [64]u8 = undefined;
+
+    // Normal (non-advancing) formatting
+    try std.testing.expectEqualStrings("Flagged as Pick", formatClassification(.{
+        .viewport = &vp,
+        .classification = .pick,
+        .classification_advanced = false,
+    }, &buf));
+    try std.testing.expectEqualStrings("Flagged as Reject", formatClassification(.{
+        .viewport = &vp,
+        .classification = .reject,
+        .classification_advanced = false,
+    }, &buf));
+    try std.testing.expectEqualStrings("Unflagged", formatClassification(.{
+        .viewport = &vp,
+        .classification = .unflagged,
+        .classification_advanced = false,
+    }, &buf));
+
+    // Advancing (filtered out) formatting
+    try std.testing.expectEqualStrings("Previous image flagged as picked", formatClassification(.{
+        .viewport = &vp,
+        .classification = .pick,
+        .classification_advanced = true,
+    }, &buf));
+    try std.testing.expectEqualStrings("Previous image flagged as rejected", formatClassification(.{
+        .viewport = &vp,
+        .classification = .reject,
+        .classification_advanced = true,
+    }, &buf));
+    try std.testing.expectEqualStrings("Previous image unflagged", formatClassification(.{
+        .viewport = &vp,
+        .classification = .unflagged,
+        .classification_advanced = true,
+    }, &buf));
+
+    // Empty filter / no image selected
+    try std.testing.expectEqualStrings("No image to classify", formatClassification(.{
+        .viewport = &vp,
+        .classification = .pick,
+        .has_target_image = false,
+    }, &buf));
+    try std.testing.expectEqualStrings("No image to classify", formatClassification(.{
+        .viewport = &vp,
+        .classification = .reject,
+        .has_target_image = false,
+    }, &buf));
 }

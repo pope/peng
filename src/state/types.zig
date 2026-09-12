@@ -105,6 +105,29 @@ pub const MediaEntry = union(enum) {
     }
 };
 
+pub const Classification = intents.Classification;
+pub const ViewMode = intents.ViewMode;
+
+/// Tagged union representing the visibility state of the current view.
+/// Distinguishes empty directories, active filtered empty states, and valid image selections.
+pub const VisibleState = union(enum) {
+    /// No images discovered or loaded in the current directory.
+    empty_directory,
+    /// Filter mode active with zero matching images, preventing the stuck loading screen bug.
+    filtered_empty: struct {
+        mode: ViewMode,
+        total_count: usize,
+    },
+    /// A visible image is actively selected.
+    selected: struct {
+        raw_index: usize,
+        visible_index: usize,
+        visible_count: usize,
+        total_count: usize,
+        classification: Classification,
+    },
+};
+
 /// Type-safe zoom factor wrapper protecting against zero-initialization,
 /// division-by-zero, and NaN.
 pub const ZoomFactor = struct {

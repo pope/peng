@@ -333,31 +333,50 @@ fn renderTitlePill(
     const total_images = ui_model.total_images;
     var count_str: ?[]const u8 = null;
     if (total_images > 0) {
-        const idx = (ui_model.current_index orelse 0) + 1;
-        const count_buf = try frame_allocator.alloc(u8, 128);
-        switch (ui_model.slideshow) {
-            .active => |s| {
-                count_str = try std.fmt.bufPrint(
-                    count_buf,
-                    "Image {} of {} [Slide Show {d:.1}s]",
-                    .{ idx, total_images, s.interval_s },
-                );
-            },
-            .inactive => {
-                if (is_loading) {
-                    count_str = try std.fmt.bufPrint(
-                        count_buf,
-                        "Image {} of {}...",
-                        .{ idx, total_images },
-                    );
-                } else {
-                    count_str = try std.fmt.bufPrint(
-                        count_buf,
-                        "Image {} of {}",
-                        .{ idx, total_images },
-                    );
-                }
-            },
+        if (ui_model.current_index) |raw_idx| {
+            const count_buf = try frame_allocator.alloc(u8, 128);
+            const is_filtered = ui_model.view_mode != .all and ui_model.view_mode != .default;
+            const vis_pos = ui_model.visible_position orelse (raw_idx + 1);
+            const vis_cnt = ui_model.visible_count;
+
+            switch (ui_model.slideshow) {
+                .active => |s| {
+                    if (is_filtered) {
+                        count_str = try std.fmt.bufPrint(
+                            count_buf,
+                            "Image {} of {} ({} total) [Slide Show {d:.1}s]",
+                            .{ vis_pos, vis_cnt, total_images, s.interval_s },
+                        );
+                    } else {
+                        count_str = try std.fmt.bufPrint(
+                            count_buf,
+                            "Image {} of {} [Slide Show {d:.1}s]",
+                            .{ vis_pos, vis_cnt, s.interval_s },
+                        );
+                    }
+                },
+                .inactive => {
+                    if (is_filtered) {
+                        count_str = try std.fmt.bufPrint(
+                            count_buf,
+                            "Image {} of {} ({} total)",
+                            .{ vis_pos, vis_cnt, total_images },
+                        );
+                    } else if (is_loading) {
+                        count_str = try std.fmt.bufPrint(
+                            count_buf,
+                            "Image {} of {}...",
+                            .{ vis_pos, vis_cnt },
+                        );
+                    } else {
+                        count_str = try std.fmt.bufPrint(
+                            count_buf,
+                            "Image {} of {}",
+                            .{ vis_pos, vis_cnt },
+                        );
+                    }
+                },
+            }
         }
     } else if (is_loading) {
         count_str = "Loading images...";
@@ -375,6 +394,12 @@ fn renderTitlePill(
     var extra_w: f32 = 0.0;
     if (ui_model.manga_mode) {
         extra_w += 48.0; // RTL badge width (padding 12 + border 2 + text ~20) + gap 14
+    }
+    if (ui_model.current_classification != .unflagged) {
+        extra_w += 58.0; // Classification badge width + gap 14
+    }
+    if (ui_model.view_mode.badgeText() != null) {
+        extra_w += 84.0; // Filter mode badge width + gap 14
     }
     if (count_str != null) {
         extra_w += count_w + 29.0; // count text + 1px divider + 2x 14px gaps
@@ -427,6 +452,67 @@ fn renderTitlePill(
             .font_size = font_size_u16,
             .font_id = 0,
         });
+
+        if (ui_model.current_classification == .pick) {
+            clay.UI()(.{
+                .layout = .{
+                    .sizing = .{ .w = .fit, .h = .fit },
+                    .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
+                },
+                .background_color = theme.withAlpha(theme.green, 0.25 * progress),
+                .corner_radius = .all(4),
+                .border = .{
+                    .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                    .color = theme.withAlpha(theme.green, progress),
+                },
+            })({
+                clay.text("PICK", .{
+                    .color = theme.withAlpha(theme.green, progress),
+                    .font_size = 11,
+                    .font_id = 0,
+                });
+            });
+        } else if (ui_model.current_classification == .reject) {
+            clay.UI()(.{
+                .layout = .{
+                    .sizing = .{ .w = .fit, .h = .fit },
+                    .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
+                },
+                .background_color = theme.withAlpha(theme.red, 0.25 * progress),
+                .corner_radius = .all(4),
+                .border = .{
+                    .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                    .color = theme.withAlpha(theme.red, progress),
+                },
+            })({
+                clay.text("REJECT", .{
+                    .color = theme.withAlpha(theme.red, progress),
+                    .font_size = 11,
+                    .font_id = 0,
+                });
+            });
+        }
+
+        if (ui_model.view_mode.badgeText()) |mode_txt| {
+            clay.UI()(.{
+                .layout = .{
+                    .sizing = .{ .w = .fit, .h = .fit },
+                    .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
+                },
+                .background_color = theme.withAlpha(theme.crust, progress),
+                .corner_radius = .all(4),
+                .border = .{
+                    .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                    .color = theme.withAlpha(theme.blue, progress),
+                },
+            })({
+                clay.text(mode_txt, .{
+                    .color = theme.withAlpha(theme.blue, progress),
+                    .font_size = 11,
+                    .font_id = 0,
+                });
+            });
+        }
 
         if (ui_model.manga_mode) {
             clay.UI()(.{
@@ -849,8 +935,8 @@ fn renderImageCanvas(
                 const filename_opt: ?[]const u8 = if (ui_model.current_image_entry) |entry_item|
                     entry_item.getBasename()
                 else if (ui_model.current_index) |idx|
-                    (if (idx < ui_model.image_list.len)
-                        ui_model.image_list[idx].getBasename()
+                    (if (ui_model.getMediaEntry(idx)) |media|
+                        media.getBasename()
                     else
                         null)
                 else
@@ -1017,6 +1103,34 @@ fn renderViewport(
                 frame_allocator,
                 measure_data,
             );
+        } else if (ui_model.visible_state == .filtered_empty) {
+            // Informative empty filter canvas
+            const fe = ui_model.visible_state.filtered_empty;
+            const subtext = std.fmt.allocPrint(
+                frame_allocator,
+                "{s}: 0 of {} images match -- press 'v' to cycle filter",
+                .{ fe.mode.label(), fe.total_count },
+            ) catch "No images match current filter";
+
+            clay.UI()(.{
+                .layout = .{
+                    .sizing = .{ .w = .grow, .h = .grow },
+                    .direction = .top_to_bottom,
+                    .child_alignment = .{ .x = .center, .y = .center },
+                    .child_gap = 12,
+                },
+            })({
+                clay.text("No matching images in active filter", .{
+                    .color = theme.yellow,
+                    .font_size = 22,
+                    .font_id = 0,
+                });
+                clay.text(subtext, .{
+                    .color = theme.subtext0,
+                    .font_size = 14,
+                    .font_id = 0,
+                });
+            });
         } else if (ui_model.is_loading_files or total_images > 0) {
             // Centered viewport loading screen while file discovery is active
             clay.UI()(.{

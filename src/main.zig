@@ -337,6 +337,29 @@ fn runMainLoop(ctx: *AppGraphicsAndState) !void {
     }
 }
 
+/// Writes tab-separated image classifications (PICK / REJECT) to standard output on exit.
+fn exportClassificationsToStdout(nav: *const state_pkg.NavigationState, io: std.Io) void {
+    if (nav.pick_count == 0 and nav.reject_count == 0) return;
+
+    var stdout_write_buf: [4096]u8 = undefined;
+    var stdout_writer = std.Io.File.Writer.initStreaming(std.Io.File.stdout(), io, &stdout_write_buf);
+
+    const slice = nav.items.slice();
+    for (slice.items(.entry), slice.items(.classification)) |entry, c| {
+        const prefix = c.exportPrefix() orelse continue;
+
+        switch (entry) {
+            .filesystem => |f| {
+                _ = stdout_writer.interface.print("{s}\t{s}\n", .{ prefix, f.path }) catch return;
+            },
+            .archive_entry => |a| {
+                _ = stdout_writer.interface.print("{s}\t{s}#{s}\n", .{ prefix, a.archive_path, a.entry_name }) catch return;
+            },
+        }
+    }
+    _ = stdout_writer.interface.flush() catch {};
+}
+
 /// Application entry point: initializes state and graphics, enters the primary
 /// event loop, and cleans up on exit.
 pub fn main(init: std.process.Init) !void {
@@ -344,4 +367,8 @@ pub fn main(init: std.process.Init) !void {
     defer app_ctx.deinit();
 
     try runMainLoop(&app_ctx);
+
+    if (!app_ctx.parsed.test_mode) {
+        exportClassificationsToStdout(&app_ctx.state.viewer.navigation, app_ctx.io);
+    }
 }

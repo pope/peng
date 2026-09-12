@@ -256,7 +256,7 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
                     gpu_dev,
                     state.viewer.navigation.current_index,
                     state.viewer.getTransitionPrevIndex(),
-                    state.viewer.navigation.image_list.items.len,
+                    state.viewer.navigation.count(),
                     image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES,
                 );
                 if (entry.thumbnail == .pending or entry.thumbnail == .none) {
@@ -354,13 +354,13 @@ fn handleDirScannedEvent(state: *AppState, scanned_data: events.PathDiscoveredPa
         std.log.err("Failed to duplicate path in directory arena: {}", .{err});
         return;
     };
-    state.viewer.navigation.image_list.append(state.allocator, dup) catch |err| {
+    state.viewer.navigation.appendEntry(state.allocator, dup) catch |err| {
         std.log.err("Failed to append discovered path to image_list: {}", .{err});
     };
     if (state.viewer.navigation.current_index == null and
-        state.viewer.navigation.image_list.items.len > 0)
+        state.viewer.navigation.count() > 0)
     {
-        state.viewer.navigation.current_index = 0;
+        _ = state.viewer.navigation.adjustIndexForVisibility();
     }
 }
 
@@ -375,14 +375,14 @@ fn handleDirectoryScanResultEvent(
                 std.log.err("Failed to duplicate directory item: {}", .{err});
                 continue;
             };
-            state.viewer.navigation.image_list.append(state.allocator, dup) catch |err| {
+            state.viewer.navigation.appendEntry(state.allocator, dup) catch |err| {
                 std.log.err("Failed to append image to list: {}", .{err});
             };
         }
         if (state.viewer.navigation.current_index == null and
-            state.viewer.navigation.image_list.items.len > 0)
+            state.viewer.navigation.count() > 0)
         {
-            state.viewer.navigation.current_index = 0;
+            _ = state.viewer.navigation.adjustIndexForVisibility();
         }
     } else {
         var target_idx_in_dir: ?usize = null;
@@ -399,13 +399,13 @@ fn handleDirectoryScanResultEvent(
         }
 
         _ = state.viewer.navigation.directory_arena.reset(.retain_capacity);
-        state.viewer.navigation.image_list.clearRetainingCapacity();
+        state.viewer.navigation.clearEntries();
         for (result_data.paths, 0..) |item, i| {
             const dup = item.dupe(arena_alloc) catch |err| {
                 std.log.err("Failed to duplicate directory item: {}", .{err});
                 continue;
             };
-            state.viewer.navigation.image_list.append(state.allocator, dup) catch |err| {
+            state.viewer.navigation.appendEntry(state.allocator, dup) catch |err| {
                 std.log.err("Failed to append image to list: {}", .{err});
             };
             if (target_idx_in_dir == null) switch (item) {
@@ -423,11 +423,9 @@ fn handleDirectoryScanResultEvent(
         }
 
         if (target_idx_in_dir) |target_i| {
-            if (target_i < state.viewer.navigation.image_list.items.len) {
-                state.viewer.navigation.current_index = target_i;
-            }
+            _ = state.viewer.navigation.goToIndex(target_i);
         } else {
-            state.viewer.navigation.current_index = 0;
+            _ = state.viewer.navigation.adjustIndexForVisibility();
         }
     }
 }
@@ -454,7 +452,7 @@ test "drainWorkerEvents - path_discovered" {
 
     const processed = drainWorkerEvents(&state);
     try std.testing.expect(processed);
-    try std.testing.expectEqual(@as(usize, 1), state.viewer.navigation.image_list.items.len);
+    try std.testing.expectEqual(@as(usize, 1), state.viewer.navigation.count());
     try std.testing.expectEqual(@as(?usize, 0), state.viewer.navigation.current_index);
 }
 
@@ -518,7 +516,7 @@ test "drainWorkerEvents - directory_scan_result and ipc_command" {
 
     const processed = drainWorkerEvents(&state);
     try std.testing.expect(processed);
-    try std.testing.expectEqual(@as(usize, 2), state.viewer.navigation.image_list.items.len);
+    try std.testing.expectEqual(@as(usize, 2), state.viewer.navigation.count());
     try std.testing.expectEqual(@as(?usize, 1), state.viewer.navigation.current_index);
     try std.testing.expectEqual(@as(usize, 1), state.pending_ipc_commands.items.len);
 }

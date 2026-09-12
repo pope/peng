@@ -104,6 +104,12 @@ pub const ActionId = enum {
     go_to_image_dialog,
     refresh_directory,
 
+    // Image triage & classification
+    mark_pick,
+    mark_reject,
+    unflag,
+    cycle_view_mode,
+
     // Overlays & UI
     toggle_info,
     toggle_manga_mode,
@@ -172,6 +178,7 @@ pub const ActionId = enum {
     compare_config,
     filter_config,
     palette_config,
+    view_config,
     wait_load,
 };
 
@@ -767,6 +774,45 @@ pub const actions = [_]ActionDef{
             .description = "Toggle windowless/borderless mode",
         },
     },
+    .{
+        .id = .mark_pick,
+        .title = "Flag as Pick",
+        .shortcut_text = "z",
+        .description = "Flag current image as Pick",
+        .show_in_palette = true,
+        .shortcuts = &.{.{ .key = .char_z }},
+        .intent = .mark_pick,
+        .ipc = .{ .name = "pick", .description = "Flag current image as Pick" },
+    },
+    .{
+        .id = .mark_reject,
+        .title = "Flag as Reject",
+        .shortcut_text = "x",
+        .description = "Flag current image as Reject",
+        .show_in_palette = true,
+        .shortcuts = &.{.{ .key = .char_x }},
+        .intent = .mark_reject,
+        .ipc = .{ .name = "reject", .description = "Flag current image as Reject" },
+    },
+    .{
+        .id = .unflag,
+        .title = "Unflag Image",
+        .shortcut_text = "u",
+        .description = "Clear triage flag on current image",
+        .show_in_palette = true,
+        .shortcuts = &.{.{ .key = .char_u }},
+        .intent = .unflag,
+        .ipc = .{ .name = "unflag", .description = "Clear triage flag on current image" },
+    },
+    .{
+        .id = .cycle_view_mode,
+        .title = "Cycle View Filter",
+        .shortcut_text = "v",
+        .description = "Cycle active view filter (Default, Picks, Rejects, Unflagged, All)",
+        .show_in_palette = true,
+        .shortcuts = &.{.{ .key = .char_v }},
+        .intent = .cycle_view_mode,
+    },
 
     // --- Non-Palette Capabilities (CLI flags and IPC verbs) ---
     .{
@@ -854,6 +900,17 @@ pub const actions = [_]ActionDef{
             .name = "palette",
             .args = "<action|files|none>",
             .description = "Toggle command/file palette",
+        },
+    },
+    .{
+        .id = .view_config,
+        .title = "Set View Filter",
+        .description = "Set active view filter mode",
+        .show_in_palette = false,
+        .ipc = .{
+            .name = "view",
+            .args = "<default|unflagged|picks|rejects|all>",
+            .description = "Set active view filter mode",
         },
     },
     .{
@@ -955,15 +1012,15 @@ pub const ipc_commands = blk: {
 test "actions registry projections" {
     const testing = std.testing;
 
-    // Palette count: 53 previous + 1 (toggle_edit_panel) = 54
-    try testing.expectEqual(@as(usize, 54), palette_action_items.len);
+    // Palette count: 54 previous + 4 triage/filter = 58
+    try testing.expectEqual(@as(usize, 58), palette_action_items.len);
 
     // Exact index preservation
     try testing.expectEqualStrings("Navigate Directories...", palette_action_items[7].name);
     try testing.expectEqualStrings("Ctrl+O", palette_action_items[7].shortcut_text);
 
-    // Shortcuts: 55 previous - 2 (rotate E/Shift+E) + 1 (edit E) = 54
-    try testing.expectEqual(@as(usize, 54), flat_shortcuts.len);
+    // Shortcuts: 54 previous + 4 triage keys (z, x, u, v) = 58
+    try testing.expectEqual(@as(usize, 58), flat_shortcuts.len);
     var total_sc: usize = 0;
     for (palette_action_items) |item| {
         total_sc += item.shortcuts.len;
@@ -978,8 +1035,8 @@ test "actions registry projections" {
     try testing.expectEqual(OptionId.windowless, action_cli_options[3].id);
     try testing.expectEqual(OptionId.scale, action_cli_options[4].id);
 
-    // IPC commands projection: 17 previous + 1 (edit) = 18
-    try testing.expectEqual(@as(usize, 18), ipc_commands.len);
+    // IPC commands projection: 18 previous + 4 triage commands (pick, reject, unflag, view) = 22
+    try testing.expectEqual(@as(usize, 22), ipc_commands.len);
 }
 
 test "actions registry invariants and consistency" {

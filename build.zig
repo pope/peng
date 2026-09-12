@@ -328,6 +328,15 @@ pub fn build(b: *std.Build) void {
     const test_core_step = b.step("test-core", "Run core tests");
     test_core_step.dependOn(&run_core_tests.step);
 
+    const test_unit_step = b.step("test-unit", "Run all unit tests");
+    test_unit_step.dependOn(&run_sdl_tests.step);
+    test_unit_step.dependOn(&run_state_tests.step);
+    test_unit_step.dependOn(&run_core_tests.step);
+    test_unit_step.dependOn(&run_intents_tests.step);
+    test_unit_step.dependOn(&run_config_tests.step);
+    test_unit_step.dependOn(&run_input_tests.step);
+    test_unit_step.dependOn(&run_ipc_tests.step);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_sdl_tests.step);
     test_step.dependOn(&run_state_tests.step);

@@ -115,3 +115,37 @@ ______________________________________________________________________
   from the preceding Clay layout pass, interactive widgets maintain 100%
   hit-test accuracy even when containers are mid-flight in an opening/closing
   animation or dynamically pushed by neighboring UI elements.
+
+______________________________________________________________________
+
+## Compound Row Badge Alignment & Dynamic Truncation Budgeting
+
+- **Right On-Axis & Cross-Axis Centered Badge Alignment**:
+  When positioning status pills/badges (e.g. `[PICK]` or `[REJECT]`) in a multi-line list row (e.g. filename on line 1, directory path on line 2):
+  1. **Row Container**: Configure parent item row with horizontal layout:
+     ```zig
+     .layout = .{
+         .sizing = .{ .w = .grow, .h = .fixed(row_height) },
+         .direction = .left_to_right,
+         .child_alignment = .{ .x = .left, .y = .center },
+         .padding = .{ .left = 12, .right = 12 },
+         .child_gap = 8,
+     }
+     ```
+  2. **Text Column**: Wrap the multi-line text in a vertical child container with `.sizing = .{ .w = .grow, .h = .fit }`. Because width is `.grow`, it expands to consume all available horizontal space, naturally pushing the badge pill to the far right on the horizontal axis.
+  3. **Cross-Axis Centering**: The parent's `.child_alignment = .{ .x = .left, .y = .center }` automatically centers the badge vertically within the fixed row height, symmetrically balanced between the text lines.
+  4. **Dynamic Truncation Budgeting**:
+     When an item is classified, deduct the badge width and gap from the available width passed to string truncation helpers to eliminate text overlap:
+     ```zig
+     const max_fn_w: f32 = if (classification != .unflagged) base_fn_w - badge_budget else base_fn_w;
+     const max_dir_w: f32 = if (classification != .unflagged) base_dir_w - badge_budget else base_dir_w;
+     ```
+
+______________________________________________________________________
+
+## Normalized Theme Color Alpha Invariant (0.0 .. 1.0)
+
+- **Normalized Float Range**:
+  Utility functions modifying color alpha (such as `theme.withAlpha(color, alpha)`) strictly accept floating-point alpha in the normalized range `0.0..1.0`.
+- **Clamping Trap**:
+  Passing raw integer percentages (such as `40` instead of `0.40`) causes the function to clamp alpha to `1.0` (100% solid opacity). If text and badge background share the same theme color hue, 100% opacity renders text invisible against its background, appearing as an empty solid block. Always pass normalized floating-point factors (e.g. `theme.withAlpha(theme.green, 0.25 * progress)`).

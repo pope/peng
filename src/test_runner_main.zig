@@ -634,6 +634,53 @@ pub fn main(init: std.process.Init) !void {
         try sendCommand(socket_path, "edit off");
     }
 
+    // Classification & Filter View Tests
+    {
+        // Reset state
+        try sendCommand(socket_path, "reset_view");
+        try sendCommand(socket_path, "view default");
+        try sendCommand(socket_path, "title false");
+        try sendCommand(socket_path, "palette none");
+
+        // 1. Pick current image and verify title overlay with [ PICK ] badge
+        try sendCommand(socket_path, "pick");
+        try sendCommand(socket_path, "title true");
+        if (try harness.verify("title_overlay_pick.png", "title_overlay_pick.png")) {
+            steps_with_discrepancies += 1;
+        }
+
+        // 2. Switch to 'view picks' and verify title overlay with [ PICK ] and [ PICKS ONLY ] badges
+        try sendCommand(socket_path, "view picks");
+        if (try harness.verify("title_overlay_view_picks.png", "title_overlay_view_picks.png")) {
+            steps_with_discrepancies += 1;
+        }
+        try sendCommand(socket_path, "title false");
+
+        // 3. Switch to 'view rejects' (0 images match) -> verify informative empty filter canvas
+        try sendCommand(socket_path, "view rejects");
+        if (try harness.verify("empty_filter_rejects.png", "empty_filter_rejects.png")) {
+            steps_with_discrepancies += 1;
+        }
+
+        // 4. In All view, advance to next image and reject it, then open palette files to verify badges
+        try sendCommand(socket_path, "view all");
+        try sendCommand(socket_path, "next");
+        try sendCommand(socket_path, "wait_load");
+        try sendCommand(socket_path, "reject");
+        try sendCommand(socket_path, "palette files");
+        if (try harness.verify("palette_files_classified.png", "palette_files_classified.png")) {
+            steps_with_discrepancies += 1;
+        }
+        try sendCommand(socket_path, "palette none");
+
+        // 5. Clean up classifications and restore default view
+        try sendCommand(socket_path, "unflag");
+        try sendCommand(socket_path, "prev");
+        try sendCommand(socket_path, "wait_load");
+        try sendCommand(socket_path, "unflag");
+        try sendCommand(socket_path, "view default");
+    }
+
     // Safety Validation Tests
     {
         try expectCommandFailure(socket_path, "zoom nan");
@@ -648,6 +695,7 @@ pub fn main(init: std.process.Init) !void {
         try expectCommandFailure(socket_path, "borderless invalid");
         try expectCommandFailure(socket_path, "edit invalid");
         try expectCommandFailure(socket_path, "filter invalid");
+        try expectCommandFailure(socket_path, "view invalid");
         try expectCommandFailure(socket_path, "scale invalid");
         try expectCommandFailure(socket_path, "manga invalid");
         try expectCommandFailure(socket_path, "palette invalid");
