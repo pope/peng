@@ -3,6 +3,7 @@
 //! Provides Clay layout integration, geometry transformation passes,
 //! text caching, overlay panels, and SDL3 GPU rendering pipelines.
 
+pub const edit_panel = @import("edit_panel.zig");
 pub const geometry = @import("geometry.zig");
 pub const graphics = @import("graphics.zig");
 pub const layout = @import("layout.zig");
@@ -17,6 +18,7 @@ pub const text_utils = @import("text_utils.zig");
 pub const theme = @import("theme.zig");
 
 test {
+    _ = edit_panel;
     _ = renderer;
     _ = render_image;
     _ = layout;

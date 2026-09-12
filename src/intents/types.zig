@@ -134,6 +134,8 @@ pub const AppIntent = union(enum) {
     set_info: bool,
     toggle_stats,
     set_stats: bool,
+    toggle_edit_panel,
+    set_edit_panel: bool,
     dismiss_overlays,
     toggle_title,
     set_title: bool,

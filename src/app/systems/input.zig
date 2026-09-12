@@ -23,10 +23,11 @@ fn handleKeyDown(
 ) !void {
     if (self.viewer.ui.palette.isAcceptingInput()) return;
 
-    // Intercept Escape key when floating dialogs (Stats for Nerds / Image Info)
+    // Intercept Escape key when dialogs or panels (Stats / Info / Edit Panel)
     // are visible before falling back to closing the application.
     const is_escape = key == .escape and mod.eql(.{});
-    const has_dialogs = self.viewer.ui.overlays.hasVisibleFloatingPanels();
+    const has_dialogs = self.viewer.ui.overlays.hasVisibleFloatingPanels() or
+        self.viewer.ui.overlays.edit_panel.visible;
     if (is_escape and has_dialogs) {
         try self.pushIntent(.dismiss_overlays);
         return;

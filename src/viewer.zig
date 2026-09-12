@@ -44,7 +44,7 @@ fn runUpdatePhase(
     try app.systems.sysProcessInput(ctx, palette_closed_this_frame);
 
     // UI Discrete Interactions (overlay close buttons)
-    app.systems.sysProcessUiInteractions(ctx);
+    try app.systems.sysProcessUiInteractions(ctx);
 
     // Viewport & Motion Systems (mouse drag/zoom & slideshow timer)
     app.systems.sysUpdateViewport(ctx, palette_closed_this_frame);

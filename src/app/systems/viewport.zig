@@ -16,6 +16,7 @@ pub fn sysUpdateViewport(ctx: FrameContext, palette_closed_this_frame: bool) voi
     var next_drag_state = state.viewer.drag_state;
     switch (next_drag_state) {
         .none => {},
+        .slider => {},
         .viewport => |v| {
             if (input.mouse_left_down) {
                 const dx = input.pixMouseX() - v.last_x;
@@ -59,6 +60,10 @@ pub fn sysUpdateViewport(ctx: FrameContext, palette_closed_this_frame: bool) voi
             const over_stats = state.viewer.ui.overlays.stats_panel.visible and
                 !is_in_debug_panel and
                 clay.pointerOver(clay.getElementId("StatsPanel"));
+            const over_edit = (state.viewer.ui.overlays.edit_panel.visible or
+                state.viewer.animations.get(.edit_panel) > 0.001) and
+                !is_in_debug_panel and
+                clay.pointerOver(clay.getElementId("EditSidePanel"));
 
             if (over_info) {
                 const off_x = state.viewer.ui.overlays.info_panel.offset_x;
@@ -78,7 +83,10 @@ pub fn sysUpdateViewport(ctx: FrameContext, palette_closed_this_frame: bool) voi
                         .start_y = input.mouse_y - off_y,
                     },
                 };
-            } else if (!is_in_debug_panel and clay.pointerOver(clay.getElementId("Viewport"))) {
+            } else if (!is_in_debug_panel and
+                !over_edit and
+                clay.pointerOver(clay.getElementId("Viewport")))
+            {
                 next_drag_state = .{
                     .viewport = .{
                         .last_x = input.pixMouseX(),
@@ -128,11 +136,17 @@ pub fn sysUpdateViewport(ctx: FrameContext, palette_closed_this_frame: bool) voi
             else
                 input.pixMouseY();
 
-            const debug_w: f32 = @floatFromInt(clay.Clay__debugViewWidth);
-            const available_width = if (clay.isDebugModeEnabled())
-                @max(input.win_w - debug_w, 1.0)
+            const debug_w: f32 = if (clay.isDebugModeEnabled())
+                @as(f32, @floatFromInt(clay.Clay__debugViewWidth))
             else
-                input.win_w;
+                0.0;
+            const edit_progress = state.viewer.animations.get(.edit_panel);
+            const edit_open = state.viewer.ui.overlays.edit_panel.visible;
+            const docked_w: f32 = if (edit_open or edit_progress > 0.001)
+                state_pkg.EDIT_PANEL_WIDTH * edit_progress
+            else
+                0.0;
+            const available_width = @max(input.win_w - debug_w - docked_w, 1.0);
             const cx = available_width / 2.0;
             const cy = input.win_h / 2.0;
 

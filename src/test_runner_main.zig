@@ -609,6 +609,31 @@ pub fn main(init: std.process.Init) !void {
         try sendCommand(socket_path, "borderless off");
     }
 
+    // Edit Side Panel Tests
+    {
+        // 1. Open edit side panel and verify docked layout and typography
+        try sendCommand(socket_path, "edit on");
+        if (try harness.verify("edit_panel_open.png", "edit_panel_open.png")) {
+            steps_with_discrepancies += 1;
+        }
+
+        // 2. Open Clay debug mode alongside edit panel and verify co-existence
+        try sendCommand(socket_path, "debug true");
+        if (try harness.verify(
+            "edit_panel_and_debug.png",
+            "edit_panel_and_debug.png",
+        )) {
+            steps_with_discrepancies += 1;
+        }
+        try sendCommand(socket_path, "debug false");
+
+        // 3. Test toggling, resetting, and closing
+        try sendCommand(socket_path, "edit toggle");
+        try sendCommand(socket_path, "edit toggle");
+        try sendCommand(socket_path, "edit reset");
+        try sendCommand(socket_path, "edit off");
+    }
+
     // Safety Validation Tests
     {
         try expectCommandFailure(socket_path, "zoom nan");
@@ -621,6 +646,7 @@ pub fn main(init: std.process.Init) !void {
         try expectCommandFailure(socket_path, "snackbar invalid");
         try expectCommandFailure(socket_path, "windowless invalid");
         try expectCommandFailure(socket_path, "borderless invalid");
+        try expectCommandFailure(socket_path, "edit invalid");
         try expectCommandFailure(socket_path, "filter invalid");
         try expectCommandFailure(socket_path, "scale invalid");
         try expectCommandFailure(socket_path, "manga invalid");

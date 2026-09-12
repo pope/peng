@@ -9,6 +9,7 @@ pub const AnimationChannel = enum(u8) {
     title_overlay = 2,
     snackbar = 3,
     image_crossfade = 4,
+    edit_panel = 5,
 };
 
 pub const CHANNEL_COUNT: usize = @typeInfo(AnimationChannel).@"enum".fields.len;
@@ -23,6 +24,8 @@ pub const DURATION_TITLE_OVERLAY_CLOSE_MS: f32 = 200.0;
 pub const DURATION_SNACKBAR_OPEN_MS: f32 = 140.0;
 pub const DURATION_SNACKBAR_CLOSE_MS: f32 = 200.0;
 pub const DURATION_IMAGE_DISSOLVE_MS: f32 = 200.0;
+pub const DURATION_EDIT_PANEL_OPEN_MS: f32 = 180.0;
+pub const DURATION_EDIT_PANEL_CLOSE_MS: f32 = 140.0;
 pub const MIN_SLIDESHOW_DISSOLVE_INTERVAL_S: f32 = 0.5;
 
 /// Metadata describing default durations, easings, and base values for an animation channel.
@@ -72,6 +75,13 @@ pub fn getDescriptor(channel: AnimationChannel) ChannelDescriptor {
             .close_easing = .ease_in_out_cubic,
             .default_value = 1.0,
         },
+        .edit_panel => .{
+            .default_open_duration_ms = DURATION_EDIT_PANEL_OPEN_MS,
+            .default_close_duration_ms = DURATION_EDIT_PANEL_CLOSE_MS,
+            .open_easing = .ease_out_cubic,
+            .close_easing = .ease_out_quad,
+            .default_value = 0.0,
+        },
     };
 }
 
@@ -82,6 +92,7 @@ pub const CHANNEL_DESCRIPTORS = [CHANNEL_COUNT]ChannelDescriptor{
     getDescriptor(.title_overlay),
     getDescriptor(.snackbar),
     getDescriptor(.image_crossfade),
+    getDescriptor(.edit_panel),
 };
 
 /// Data-Oriented animation manager using flat static Structure-of-Arrays (SoA) layout.

@@ -234,7 +234,52 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
         .set_info => |val| ui.overlays.info_panel.visible = val,
         .toggle_stats => ui.overlays.stats_panel.visible = !ui.overlays.stats_panel.visible,
         .set_stats => |val| ui.overlays.stats_panel.visible = val,
-        .dismiss_overlays => _ = ui.overlays.dismissFloatingPanels(),
+        .toggle_edit_panel => {
+            const new_vis = !ui.overlays.edit_panel.visible;
+            ui.overlays.edit_panel.visible = new_vis;
+            const target: f32 = if (new_vis) 1.0 else 0.0;
+            const progress = self.viewer.animations.get(.edit_panel);
+            const dur: f32 = if (new_vis)
+                @max(state.DURATION_EDIT_PANEL_OPEN_MS * (1.0 - progress), 30.0)
+            else
+                @max(state.DURATION_EDIT_PANEL_CLOSE_MS * progress, 30.0);
+            self.viewer.animations.start(
+                .edit_panel,
+                target,
+                dur,
+                if (new_vis) .ease_out_cubic else .ease_out_quad,
+            );
+        },
+        .set_edit_panel => |val| {
+            ui.overlays.edit_panel.visible = val;
+            const target: f32 = if (val) 1.0 else 0.0;
+            const progress = self.viewer.animations.get(.edit_panel);
+            const dur: f32 = if (val)
+                @max(state.DURATION_EDIT_PANEL_OPEN_MS * (1.0 - progress), 30.0)
+            else
+                @max(state.DURATION_EDIT_PANEL_CLOSE_MS * progress, 30.0);
+            self.viewer.animations.start(
+                .edit_panel,
+                target,
+                dur,
+                if (val) .ease_out_cubic else .ease_out_quad,
+            );
+        },
+        .dismiss_overlays => {
+            _ = ui.overlays.dismissFloatingPanels();
+            if (ui.overlays.edit_panel.visible) {
+                ui.overlays.edit_panel.visible = false;
+                const progress = self.viewer.animations.get(.edit_panel);
+                const close_dur = state.DURATION_EDIT_PANEL_CLOSE_MS;
+                const dur = @max(close_dur * progress, 30.0);
+                self.viewer.animations.start(
+                    .edit_panel,
+                    0.0,
+                    dur,
+                    .ease_out_quad,
+                );
+            }
+        },
         .toggle_title => {
             const new_pinned = !ui.overlays.title_display.isPinned();
             ui.overlays.title_display = if (new_pinned) .pinned else .hidden;

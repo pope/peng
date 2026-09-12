@@ -85,12 +85,18 @@ test "mapKeyToAction aligned with palette action items" {
     const toggle_cmp = mapKeyToAction(.backslash, .{}, .viewer_normal);
     try std.testing.expectEqual(intents.AppIntent.toggle_compare, toggle_cmp.?);
 
-    // Check rotate_cw via E key
-    const rot_cw = mapKeyToAction(.char_e, .{}, .viewer_normal);
+    const edit_panel = mapKeyToAction(.char_e, .{}, .viewer_normal);
+    try std.testing.expectEqual(
+        intents.AppIntent.toggle_edit_panel,
+        edit_panel.?,
+    );
+
+    // Check rotate_cw via > (Shift+.)
+    const rot_cw = mapKeyToAction(.period, .{ .shift = true }, .viewer_normal);
     try std.testing.expectEqual(intents.AppIntent.rotate_cw, rot_cw.?);
 
-    // Check rotate_ccw via Shift+E key
-    const rot_ccw = mapKeyToAction(.char_e, .{ .shift = true }, .viewer_normal);
+    // Check rotate_ccw via < (Shift+,)
+    const rot_ccw = mapKeyToAction(.comma, .{ .shift = true }, .viewer_normal);
     try std.testing.expectEqual(intents.AppIntent.rotate_ccw, rot_ccw.?);
 
     // Check brightness adjustments via B / Shift+B

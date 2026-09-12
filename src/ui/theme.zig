@@ -18,6 +18,8 @@ pub const base = clay.Color{ 30, 30, 46, 255 };
 pub const base_translucent = clay.Color{ 30, 30, 46, 245 };
 pub const base_overlay = clay.Color{ 30, 30, 46, 220 };
 pub const surface0 = clay.Color{ 49, 50, 68, 255 };
+pub const surface1 = clay.Color{ 69, 71, 90, 255 };
+pub const surface2 = clay.Color{ 88, 91, 112, 255 };
 pub const overlay0 = clay.Color{ 79, 79, 97, 255 };
 
 /// Palette list row background colors with translucency to reveal frosted glass backdrops.

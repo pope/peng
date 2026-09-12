@@ -240,8 +240,8 @@ Every Zig source file (`src/**/*.zig`, `build.zig`) MUST adhere strictly to the 
 
 ### 1. Line Length Limits
 
-- **80 Columns**: The standard formatting goal for code expressions, function signatures, and comments.
-- **100 Columns**: The absolute hard ceiling. Under NO circumstances may any line exceed 100 characters (zero tolerance, except for unbreakable URLs/hyperlinks as specified in Subsection 14.2).
+- **~80 Columns Standard**: Every line of Zig code (including struct field definitions, function parameter lists, function call arguments, expressions, and assignments) should end around 80 characters where practical. Do not allow code to casually extend to 90–100 characters just because the compiler allows it.
+- **100 Columns Absolute Hard Ceiling**: Under NO circumstances may any line exceed 100 characters (zero tolerance, except for unbreakable URLs/hyperlinks as specified in Subsection 14.2).
 
 ### 2. Comment Wrapping & Preservation
 
@@ -252,10 +252,12 @@ Every Zig source file (`src/**/*.zig`, `build.zig`) MUST adhere strictly to the 
 
 ### 3. Multi-Line Wrapping & Trailing Commas
 
-- Use Zig's canonical trailing comma syntax (`.{ foo, bar, }`, `fn foo(\n a: T,\n b: U,\n)`) to instruct `zig fmt` to expand arguments, struct initializers, and switch branches onto multiple lines.
-- When boolean conditions or arithmetic expressions push lines past 100 characters, extract pure subexpressions into local immutable `const` bindings (e.g., `const can_snap = ...;`, `const is_win_drive = ...;`).
+- Use Zig's canonical trailing comma syntax (`.{ foo, bar, }`, `fn foo(\n a: T,\n b: U,\n)`) to instruct `zig fmt` to break arguments, struct initializers, and switch branches onto multiple lines so each line comfortably ends around 80 characters.
+- In struct declarations and anonymous struct literals, place fields on their own lines with trailing commas whenever a single line would approach or exceed 80 characters.
+- When boolean conditions or arithmetic expressions push lines past ~80 characters, extract pure subexpressions into local immutable `const` bindings (e.g., `const can_snap = ...;`, `const is_win_drive = ...;`).
 - **Short-Circuit Evaluation Caution**: When extracting boolean conditions into local `const` bindings, ensure you do not bypass short-circuit evaluation guards (e.g. pointer null checks `ptr != null` or slice bounds checks `idx < len`) that protect subsequent expressions from runtime panics or illegal memory access.
 
 ### 4. Verification & Formatting Invariant
 
 - All code modifications MUST cleanly pass `zig fmt --check <file>` before completion.
+- When reviewing or writing Zig code, proactively verify that lines end around 80 columns.

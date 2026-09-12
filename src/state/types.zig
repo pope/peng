@@ -348,6 +348,48 @@ pub const TitleDisplay = union(enum) {
     }
 };
 
+/// Target parameter identifier for image editing controls and sliders.
+pub const EditParam = enum(u8) {
+    brightness = 0,
+    contrast = 1,
+};
+
+/// Non-destructive photographic edit parameters.
+pub const ImageEdits = struct {
+    brightness: f32 = 0.0,
+    contrast: f32 = 1.0,
+
+    /// Resets all adjustments to neutral defaults.
+    pub fn reset(self: *ImageEdits) void {
+        self.brightness = 0.0;
+        self.contrast = 1.0;
+    }
+
+    /// Returns true if non-neutral adjustments are applied.
+    pub fn hasEdits(self: ImageEdits) bool {
+        return @abs(self.brightness) > 1e-5 or @abs(self.contrast - 1.0) > 1e-5;
+    }
+
+    /// Returns true if the specific parameter is at its neutral default value.
+    pub fn isParamDefault(self: ImageEdits, param: EditParam) bool {
+        return switch (param) {
+            .brightness => @abs(self.brightness) <= 1e-5,
+            .contrast => @abs(self.contrast - 1.0) <= 1e-5,
+        };
+    }
+};
+
+pub const EDIT_PANEL_WIDTH: f32 = 280.0;
+pub const EDIT_PANEL_PADDING: f32 = 16.0;
+
+/// Side panel state managing visibility and active slider interactions
+/// for image adjustments.
+pub const EditPanelState = struct {
+    visible: bool = false,
+    active_slider: ?EditParam = null,
+    width: f32 = EDIT_PANEL_WIDTH,
+};
+
 /// Floating HUD panel state managing visibility and user-dragged 2D offset coordinates.
 pub const FloatingPanel = struct {
     visible: bool = false,
@@ -359,6 +401,7 @@ pub const FloatingPanel = struct {
 pub const OverlayState = struct {
     info_panel: FloatingPanel = .{ .visible = false, .offset_x = 20.0, .offset_y = 20.0 },
     stats_panel: FloatingPanel = .{ .visible = false, .offset_x = -20.0, .offset_y = 20.0 },
+    edit_panel: EditPanelState = .{},
     title_display: TitleDisplay = .hidden,
     auto_title: bool = true,
     debug_show_thumb: bool = false,
@@ -904,6 +947,13 @@ pub const DragState = union(enum) {
     stats: struct {
         start_x: f32,
         start_y: f32,
+    },
+    slider: struct {
+        param: EditParam,
+        track_x: f32,
+        track_w: f32,
+        min_val: f32,
+        max_val: f32,
     },
 };
 

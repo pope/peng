@@ -12,6 +12,7 @@ ______________________________________________________________________
 - **Advanced Filtering & Resampling:** Features high-quality resampling shaders including Bilinear, Mitchell-Netravali, and Lanczos3 filters.
 - **Command Palette:** Built-in searchable palettes for commands (`F1` or `Ctrl+Shift+P`), file search (`Ctrl+P`), and directory navigator (`Ctrl+O`).
 - **Interactive Info & Stats Overlays:** Toggleable draggable panels (`d` for Info, `Shift+D` / `Shift+I` for Stats) displaying camera sensor metadata, preview resolutions, CPU/GPU decoding times, active resampling shader, and rendering metrics.
+- **Docked Image Adjustments Panel:** Interactive side panel (`e` key) for non-destructive brightness and contrast tuning with live slider dragging, reset shortcuts (`Shift+R`), and instant before/after comparison (`\` key).
 - **Non-Blocking Headless Mode:** Runs offscreen without X11 or Wayland (ideal for CI and servers) with `--headless`.
 - **Scriptable IPC Control:** External client controls the viewer's zoom, pan, filters, and takes screenshots in real-time.
 
@@ -39,8 +40,9 @@ ______________________________________________________________________
 | `a`                                     | Actual Size (1:1 / 100% Zoom)                                    |
 | `r` / `0`                               | Reset Zoom & Pan                                                 |
 | `h` / `j` / `k` / `l`                   | Pan Left / Down / Up / Right (when zoomed)                       |
-| `e` / `>`                               | Rotate Clockwise (90°)                                           |
-| `E` / `<`                               | Rotate Counter-Clockwise (90°)                                   |
+| `>`                                     | Rotate Clockwise (90°)                                           |
+| `<`                                     | Rotate Counter-Clockwise (90°)                                   |
+| `e`                                     | Toggle Edit Side Panel (Image Adjustments)                       |
 | `s`                                     | Cycle Scale Mode (Shrink, Full, Crop, Actual, Fit W/H)           |
 | `S` (Shift+s)                           | Cycle Resampling Filter Forward (Nearest, Linear, Mitchell, etc) |
 | `Alt+Shift+S`                           | Cycle Resampling Filter Backward                                 |
@@ -166,6 +168,11 @@ You can send commands to a running instance using the `peng-msg` utility:
 
 # Toggle Before / After Comparison (toggle, on, off)
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock compare toggle
+
+# Toggle or set Edit Side Panel visibility (toggle, on, off, reset)
+./zig-out/bin/peng-msg /tmp/peng-1234.sock edit toggle
+./zig-out/bin/peng-msg /tmp/peng-1234.sock edit on
+./zig-out/bin/peng-msg /tmp/peng-1234.sock edit reset
 
 
 # Apply Resampling Filter (mitchell, lanczos3, fsr, tiny_cnn, linear, pixel_art)

@@ -809,6 +809,7 @@ pub fn sdl3MeasureText(
         _ = font.setFontSize(target_size);
     }
 
-    const size = font.getStringSize(data.allocator, clean_text) orelse return .{ .w = 0, .h = 0 };
+    const size = font.getStringSize(clean_text) orelse
+        return .{ .w = 0, .h = 0 };
     return .{ .w = @floatFromInt(size.w), .h = @floatFromInt(size.h) };
 }

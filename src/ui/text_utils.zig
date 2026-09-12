@@ -34,7 +34,7 @@ pub fn truncateFilenameMiddle(
         _ = font.setFontSize(target_size);
     }
 
-    const size = font.getStringSize(allocator, text) orelse return .{
+    const size = font.getStringSize(text) orelse return .{
         .display = text,
         .head_len = text.len,
         .tail_start_idx = text.len,
@@ -43,7 +43,7 @@ pub fn truncateFilenameMiddle(
         return .{ .display = text, .head_len = text.len, .tail_start_idx = text.len };
     }
 
-    const dots_size = font.getStringSize(allocator, "...") orelse
+    const dots_size = font.getStringSize("...") orelse
         sdl.Font.TextSize{ .w = 0, .h = 0 };
 
     const available_w = max_w - @as(f32, @floatFromInt(dots_size.w));
@@ -53,7 +53,7 @@ pub fn truncateFilenameMiddle(
 
     var head_len: usize = 0;
     var head_w: f32 = 0.0;
-    if (font.measureString(allocator, text, @intFromFloat(half_w))) |m| {
+    if (font.measureString(text, @intFromFloat(half_w))) |m| {
         head_len = m.measured_len;
         head_w = @as(f32, @floatFromInt(m.measured_w));
         while (head_len > 0 and head_len < text.len and (text[head_len] & 0xC0) == 0x80) {
@@ -76,7 +76,7 @@ pub fn truncateFilenameMiddle(
         }
 
         const suffix = text[byte_start..];
-        const suf_size = font.getStringSize(allocator, suffix) orelse
+        const suf_size = font.getStringSize(suffix) orelse
             sdl.Font.TextSize{ .w = 0, .h = 0 };
         if (@as(f32, @floatFromInt(suf_size.w)) <= tail_available_w) {
             tail_len = text.len - byte_start;

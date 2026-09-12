@@ -56,15 +56,11 @@ pub const Font = struct {
     }
 
     /// Calculates pixel width and height dimensions of `text` when rendered with this font.
-    pub fn getStringSize(self: Font, allocator: std.mem.Allocator, text: []const u8) ?TextSize {
+    pub fn getStringSize(self: Font, text: []const u8) ?TextSize {
+        if (text.len == 0) return TextSize{ .w = 0, .h = 0 };
         var w: c_int = 0;
         var h: c_int = 0;
-        const c_text = allocator.dupeZ(u8, text) catch |err| {
-            std.log.err("dupeZ failed in getStringSize for '{s}': {}", .{ text, err });
-            return null;
-        };
-        defer allocator.free(c_text);
-        if (c.TTF_GetStringSize(self.ptr, c_text.ptr, text.len, &w, &h)) {
+        if (c.TTF_GetStringSize(self.ptr, text.ptr, text.len, &w, &h)) {
             return TextSize{ .w = w, .h = h };
         }
         return null;
@@ -73,20 +69,15 @@ pub const Font = struct {
     /// Measures how many UTF-8 characters fit within `max_w` pixels.
     pub fn measureString(
         self: Font,
-        allocator: std.mem.Allocator,
         text: []const u8,
         max_w: i32,
     ) ?struct { measured_w: usize, measured_len: usize } {
+        if (text.len == 0) return .{ .measured_w = 0, .measured_len = 0 };
         var measured_w: c_int = 0;
         var measured_len: usize = 0;
-        const c_text = allocator.dupeZ(u8, text) catch |err| {
-            std.log.err("dupeZ failed in measureString for '{s}': {}", .{ text, err });
-            return null;
-        };
-        defer allocator.free(c_text);
         if (c.TTF_MeasureString(
             self.ptr,
-            c_text.ptr,
+            text.ptr,
             text.len,
             max_w,
             &measured_w,

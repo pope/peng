@@ -304,6 +304,12 @@ pub const AppState = struct {
                 1.0,
             );
         }
+        const edit_progress = self.viewer.animations.get(.edit_panel);
+        const edit_open = self.viewer.ui.overlays.edit_panel.visible;
+        if (edit_open or edit_progress > 0.001) {
+            const docked_w = state_pkg.EDIT_PANEL_WIDTH * edit_progress;
+            available_width = @max(available_width - docked_w, 1.0);
+        }
         const view_w = @max(available_width, 1.0);
         const view_h = @max(win_h, 1.0);
 

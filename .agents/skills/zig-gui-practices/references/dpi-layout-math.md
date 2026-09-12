@@ -82,3 +82,36 @@ ______________________________________________________________________
   - $\\text{zoom_delta} = \\text{pinch_delta} \\times 0.5$ (or $\\text{scroll_delta_y} \\times 0.1$ for Ctrl+Scroll)
   - Clamped target zoom: $\\text{new_zoom} = \\text{clamp}(Z\_{\\text{old}} + \\text{zoom_delta})$
   - Viewport anchor call: `ViewportParams.zoomAtPoint(new_zoom, focus_x, focus_y, center_x, center_y)`
+
+______________________________________________________________________
+
+## Dynamic Clay Element Bounding Box Sampling & Interactive Hit-Testing
+
+- **Avoid Static Coordinate Assumptions**:
+  When building custom interactive widgets (e.g., sliders, scrubbers, toggle
+  switches, docked side panels, or resize splitters), never calculate click or
+  drag coordinates using fixed window dimensions or static offsets. Layout
+  dimensions change dynamically due to side panels, animations, or DPI changes.
+
+- **Sample Post-Layout Element Bounds via `clay.getElementData`**:
+  Query the actual layout bounding box for a given element ID at event time:
+
+  ```zig
+  const track_elem = clay.getElementData(clay.ElementId{ .id = track_id });
+  if (track_elem.found and track_elem.bounding_box.width > 0.0) {
+      const box = track_elem.bounding_box;
+      const norm = std.math.clamp(
+          (input.mouse_x - box.x) / box.width,
+          0.0,
+          1.0,
+      );
+      const val = min_val + norm * (max_val - min_val);
+      // dispatch intent with updated value
+  }
+  ```
+
+- **Invariance Across Active Slide Animations & Resizing**:
+  Because `clay.getElementData` queries the exact computed layout bounding box
+  from the preceding Clay layout pass, interactive widgets maintain 100%
+  hit-test accuracy even when containers are mid-flight in an opening/closing
+  animation or dynamically pushed by neighboring UI elements.

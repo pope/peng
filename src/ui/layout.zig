@@ -1,4 +1,5 @@
 const clay = @import("zclay");
+const edit_panel = @import("edit_panel.zig");
 const graphics = @import("graphics.zig");
 const intents = @import("intents");
 const palette = @import("palette.zig");
@@ -15,6 +16,7 @@ const FrameInput = types.FrameInput;
 const MeasureTextUserData = state.MeasureTextUserData;
 const RenderResources = graphics.RenderResources;
 const UiViewModel = state.UiViewModel;
+const renderEditPanel = edit_panel.renderEditPanel;
 const renderPalette = palette.renderPalette;
 const renderStatsOverlay = stats.renderStatsOverlay;
 const saveTextureToPng = graphics.saveTextureToPng;
@@ -93,10 +95,19 @@ pub fn renderFrame(
     const total_images = ui_model.total_images;
 
     // Calculate Image Fitting Layout Boundaries
-    var available_width = width;
-    if (clay.isDebugModeEnabled()) {
-        available_width = @max(width - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)), 1.0);
-    }
+    const edit_progress = ui_model.anim(.edit_panel);
+    const docked_w = edit_panel.PANEL_WIDTH * edit_progress;
+
+    const debug_w: f32 = if (clay.isDebugModeEnabled())
+        @as(f32, @floatFromInt(clay.Clay__debugViewWidth))
+    else
+        0.0;
+
+    // Main workspace width (window width minus Clay debug inspector)
+    const main_layout_w = @max(width - debug_w, 1.0);
+
+    // Viewport bounds for image scaling (workspace minus docked edit panel)
+    const available_width = @max(main_layout_w - docked_w, 1.0);
 
     const padding: f32 = 0.0;
     const view_w = @max(available_width - padding * 2.0, 1.0);
@@ -119,10 +130,13 @@ pub fn renderFrame(
         .id = clay.getElementId("MainLayout"),
         .layout = .{
             .sizing = .{
-                .w = if (clay.isDebugModeEnabled()) .fixed(available_width) else .grow,
+                .w = if (clay.isDebugModeEnabled())
+                    .fixed(main_layout_w)
+                else
+                    .grow,
                 .h = .grow,
             },
-            .direction = .top_to_bottom,
+            .direction = .left_to_right,
         },
         .background_color = theme.mantle,
     })({
@@ -142,6 +156,7 @@ pub fn renderFrame(
         try renderBottomOverlayBar(
             ui_model,
             available_width,
+            docked_w,
             frame_allocator,
             measure_data,
         );
@@ -157,6 +172,16 @@ pub fn renderFrame(
             frame_allocator,
             measure_data,
         );
+
+        if (edit_progress > 0.001) {
+            try renderEditPanel(
+                ui_model,
+                docked_w,
+                edit_progress,
+                frame_allocator,
+                measure_data,
+            );
+        }
     });
 
     // Clay's internal debug panel layout elements are generated inside clay.endLayout().
@@ -483,6 +508,7 @@ fn renderSnackbarPill(
 fn renderBottomOverlayBar(
     ui_model: UiViewModel,
     available_width: f32,
+    docked_w: f32,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
 ) !void {
@@ -520,7 +546,7 @@ fn renderBottomOverlayBar(
                 .parent = .center_bottom,
             },
             .offset = .{
-                .x = 0,
+                .x = -docked_w * 0.5,
                 .y = -14,
             },
             .z_index = 50,
@@ -631,7 +657,7 @@ fn formatLoadingText(
 
     // Measure the prefix "Loading "
     const prefix = "Loading ";
-    const prefix_size = font.getStringSize(allocator, prefix) orelse
+    const prefix_size = font.getStringSize(prefix) orelse
         sdl.Font.TextSize{ .w = 0, .h = 0 };
     const prefix_w = @as(f32, @floatFromInt(prefix_size.w));
 

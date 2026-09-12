@@ -26,3 +26,28 @@ pub inline fn loadVector4(slice: []const u8, offset: usize) ?@Vector(4, u8) {
 
 - **NixOS SDL3 Image Configuration**:
   On NixOS environments, dynamic codec loading requires explicitly enabling `libavif`, `libpng`, `libwebp`, and `libjpeg` flags in `build.zig`.
+
+______________________________________________________________________
+
+## Zero-Allocation Text Measurement (`TTF_GetStringSize` / `TTF_MeasureString`)
+
+- **Direct Slice Pointer and Length Passing**:
+  SDL3_ttf functions accept byte counts directly (`text.ptr` and `text.len`). Never allocate temporary null-terminated slices (`allocator.dupeZ`) or force text sizing signatures to accept an unneeded `allocator: std.mem.Allocator` parameter.
+
+- **Early Return for Empty Strings**:
+  Check for empty text slices (`text.len == 0`) before making C-ABI calls to avoid unnecessary FFI overhead:
+
+```zig
+pub fn getStringSize(self: Font, text: []const u8) ?TextSize {
+    if (text.len == 0) return TextSize{ .w = 0, .h = 0 };
+    var w: c_int = 0;
+    var h: c_int = 0;
+    if (!c.TTF_GetStringSize(self.ptr, text.ptr, text.len, &w, &h)) {
+        return null;
+    }
+    return TextSize{
+        .w = @intCast(@max(0, w)),
+        .h = @intCast(@max(0, h)),
+    };
+}
+```

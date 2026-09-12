@@ -24,18 +24,21 @@ ______________________________________________________________________
   - Read-only `UiViewModel` snapshot barrier between Phase 2 and Phase 3 with zero state mutations in render.
   - System lifetime bound to single frame iteration via `FrameContext` (`frame_allocator`).
   - Strict prohibition of direct inter-system calls (intent-driven communication).
+  - Frame-arena string lifetime invariants for retained Clay UI layout labels.
 
 - **[Layout, DPI Scaling & Centering Math](references/dpi-layout-math.md)**
 
   - Unified state & configuration structs (`PaletteState`, `PaletteConfig`).
   - High-DPI / Retina scale factors (`scale_x`, `scale_y`) for viewports and mouse inputs.
   - Zoom-to-mouse panning math and aspect ratio fitting (`full`, `crop`, `shrink`).
+  - Dynamic `clay.getElementData` bounding box sampling for interactive widgets and sliders.
 
 - **[SDL3 GPU Rendering Workflows](references/sdl3-gpu-rendering.md)**
 
   - Pixel-perfect quad alignment to prevent sub-pixel layout jitter.
   - High-quality SDL3_ttf GPU text rendering pipeline.
   - Hardware mipmap generation (`SDL_GenerateMipmapsForGPUTexture`) over CPU software scaling.
+  - Zero-allocation text measurement (`TTF_GetStringSize` / `TTF_MeasureString`) with slice length passing.
 
 - **[VRAM Budgeting & EXIF Parsing Recipes](references/vram-preloading.md)**
 

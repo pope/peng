@@ -109,11 +109,19 @@ pub const CompareAction = enum {
     toggle,
 };
 
+pub const EditAction = enum {
+    enable,
+    disable,
+    toggle,
+    reset,
+};
+
 pub const IpcCommand = union(enum) {
     zoom: f32,
     pan: struct { x: f32, y: f32 },
     adjust: struct { brightness: f32, contrast: f32 },
     compare: CompareAction,
+    edit: EditAction,
     filter: TextureScaleMode,
     scale: intents.ScaleMode,
     manga: bool,
@@ -143,6 +151,12 @@ pub const IpcCommand = union(enum) {
                 .enable => return .{ .set_compare = true },
                 .disable => return .{ .set_compare = false },
                 .toggle => return .toggle_compare,
+            },
+            .edit => |action| switch (action) {
+                .enable => return .{ .set_edit_panel = true },
+                .disable => return .{ .set_edit_panel = false },
+                .toggle => return .toggle_edit_panel,
+                .reset => return .reset_adjustments,
             },
             .reset_view => return .reset_zoom,
             .reset_adjustments => return .reset_adjustments,
@@ -252,6 +266,28 @@ pub const IpcCommand = union(enum) {
                 return .{ .manga = false };
             } else {
                 return error.InvalidArgument;
+            }
+        } else if (std.mem.eql(u8, cmd, "edit")) {
+            if (it.next()) |val| {
+                const is_on = std.mem.eql(u8, val, "true") or
+                    std.mem.eql(u8, val, "enable") or
+                    std.mem.eql(u8, val, "on");
+                const is_off = std.mem.eql(u8, val, "false") or
+                    std.mem.eql(u8, val, "disable") or
+                    std.mem.eql(u8, val, "off");
+                if (is_on) {
+                    return .{ .edit = .enable };
+                } else if (is_off) {
+                    return .{ .edit = .disable };
+                } else if (std.mem.eql(u8, val, "toggle")) {
+                    return .{ .edit = .toggle };
+                } else if (std.mem.eql(u8, val, "reset")) {
+                    return .{ .edit = .reset };
+                } else {
+                    return error.InvalidArgument;
+                }
+            } else {
+                return .{ .edit = .toggle };
             }
         } else if (std.mem.eql(u8, cmd, "title")) {
             if (it.next()) |val| {
@@ -614,6 +650,34 @@ test "IpcCommand parsing" {
     try std.testing.expectEqual(
         intents.AppIntent.toggle_compare,
         cmd_cmp_toggle_word.toIntent().?,
+    );
+
+    const cmd_edit_true = try IpcCommand.parse("edit on");
+    try std.testing.expectEqual(EditAction.enable, cmd_edit_true.edit);
+    try std.testing.expectEqual(
+        intents.AppIntent{ .set_edit_panel = true },
+        cmd_edit_true.toIntent().?,
+    );
+
+    const cmd_edit_off = try IpcCommand.parse("edit off");
+    try std.testing.expectEqual(EditAction.disable, cmd_edit_off.edit);
+    try std.testing.expectEqual(
+        intents.AppIntent{ .set_edit_panel = false },
+        cmd_edit_off.toIntent().?,
+    );
+
+    const cmd_edit_toggle = try IpcCommand.parse("edit");
+    try std.testing.expectEqual(EditAction.toggle, cmd_edit_toggle.edit);
+    try std.testing.expectEqual(
+        intents.AppIntent.toggle_edit_panel,
+        cmd_edit_toggle.toIntent().?,
+    );
+
+    const cmd_edit_reset = try IpcCommand.parse("edit reset");
+    try std.testing.expectEqual(EditAction.reset, cmd_edit_reset.edit);
+    try std.testing.expectEqual(
+        intents.AppIntent.reset_adjustments,
+        cmd_edit_reset.toIntent().?,
     );
 
     try std.testing.expectError(error.UnknownCommand, IpcCommand.parse("invalid_command"));

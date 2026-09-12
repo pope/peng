@@ -108,6 +108,7 @@ pub const ActionId = enum {
     toggle_info,
     toggle_manga_mode,
     toggle_stats,
+    toggle_edit_panel,
     toggle_title,
     toggle_snackbar,
     toggle_crossfade,
@@ -416,11 +417,10 @@ pub const actions = [_]ActionDef{
     .{
         .id = .rotate_cw,
         .title = "Rotate Clockwise (90°)",
-        .shortcut_text = "E / >",
+        .shortcut_text = ">",
         .description = "Rotate viewport clockwise by 90 degrees",
         .show_in_palette = true,
         .shortcuts = &.{
-            .{ .key = .char_e },
             .{ .key = .greater },
             .{ .key = .period, .mod = .{ .shift = true } },
         },
@@ -429,11 +429,10 @@ pub const actions = [_]ActionDef{
     .{
         .id = .rotate_ccw,
         .title = "Rotate Counter-Clockwise (90°)",
-        .shortcut_text = "Shift+E / <",
+        .shortcut_text = "<",
         .description = "Rotate viewport counter-clockwise by 90 degrees",
         .show_in_palette = true,
         .shortcuts = &.{
-            .{ .key = .char_e, .mod = .{ .shift = true } },
             .{ .key = .less },
             .{ .key = .comma, .mod = .{ .shift = true } },
         },
@@ -502,6 +501,20 @@ pub const actions = [_]ActionDef{
         .show_in_palette = true,
         .shortcuts = &.{},
         .intent = .{ .set_filter = .tiny_cnn },
+    },
+    .{
+        .id = .toggle_edit_panel,
+        .title = "Toggle Edit Panel",
+        .shortcut_text = "E",
+        .description = "Open or close image adjustments side panel",
+        .show_in_palette = true,
+        .shortcuts = &.{.{ .key = .char_e }},
+        .intent = .toggle_edit_panel,
+        .ipc = .{
+            .name = "edit",
+            .args = "<on|off|toggle|reset>",
+            .description = "Image adjustments side panel (on/off/toggle/reset)",
+        },
     },
     .{
         .id = .increase_brightness,
@@ -942,15 +955,15 @@ pub const ipc_commands = blk: {
 test "actions registry projections" {
     const testing = std.testing;
 
-    // Palette count: 52 previous + 1 (toggle_compare) = 53
-    try testing.expectEqual(@as(usize, 53), palette_action_items.len);
+    // Palette count: 53 previous + 1 (toggle_edit_panel) = 54
+    try testing.expectEqual(@as(usize, 54), palette_action_items.len);
 
     // Exact index preservation
     try testing.expectEqualStrings("Navigate Directories...", palette_action_items[7].name);
     try testing.expectEqualStrings("Ctrl+O", palette_action_items[7].shortcut_text);
 
-    // Shortcuts projection: 54 previous + 1 (backslash) = 55
-    try testing.expectEqual(@as(usize, 55), flat_shortcuts.len);
+    // Shortcuts: 55 previous - 2 (rotate E/Shift+E) + 1 (edit E) = 54
+    try testing.expectEqual(@as(usize, 54), flat_shortcuts.len);
     var total_sc: usize = 0;
     for (palette_action_items) |item| {
         total_sc += item.shortcuts.len;
@@ -965,8 +978,8 @@ test "actions registry projections" {
     try testing.expectEqual(OptionId.windowless, action_cli_options[3].id);
     try testing.expectEqual(OptionId.scale, action_cli_options[4].id);
 
-    // IPC commands projection
-    try testing.expectEqual(@as(usize, 17), ipc_commands.len);
+    // IPC commands projection: 17 previous + 1 (edit) = 18
+    try testing.expectEqual(@as(usize, 18), ipc_commands.len);
 }
 
 test "actions registry invariants and consistency" {
