@@ -325,6 +325,9 @@ pub fn build(b: *std.Build) void {
         run_integration_tests.addPathDir(b.getInstallPath(.bin, ""));
     }
 
+    const test_core_step = b.step("test-core", "Run core tests");
+    test_core_step.dependOn(&run_core_tests.step);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_sdl_tests.step);
     test_step.dependOn(&run_state_tests.step);

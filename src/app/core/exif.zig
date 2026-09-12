@@ -33,12 +33,17 @@ pub const TiffTag = enum(u16) {
     orientation = 0x0112,
     samples_per_pixel = 0x0115,
     strip_byte_counts = 0x0117,
+    planar_configuration = 0x011C,
     sub_ifds = 0x014A,
     jpeg_interchange_format = 0x0201,
     jpeg_interchange_format_length = 0x0202,
     exif_ifd = 0x8769,
     pixel_x_dimension = 0xA002,
     pixel_y_dimension = 0xA003,
+    cr2_slice = 0xC5D8,
+    cr2_raw_image_data = 0xC5D9,
+    cr2_sensor_info = 0xC5E0,
+    cr2_offsets = 0xC640,
     dng_private_data = 0xC634,
     _,
 
@@ -365,6 +370,13 @@ pub fn parseExifDimensionsFromSource(source: TiffSource) ?JpegDimensions {
     const ifd0_off = header.ifd0_off;
     const src = header.source;
 
+    // Detect Canon CR2 container signature at bytes 8..12 ("CR\x02\x00")
+    const is_cr2 = blk: {
+        const sig = src.getSlice(8, 4) orelse break :blk false;
+        break :blk sig[0] == 'C' and sig[1] == 'R' and
+            sig[2] == 0x02 and sig[3] == 0x00;
+    };
+
     var best_w: ?u32 = null;
     var best_h: ?u32 = null;
     var best_area: u64 = 0;
@@ -381,6 +393,8 @@ pub fn parseExifDimensionsFromSource(source: TiffSource) ?JpegDimensions {
             b_area: *u64,
             sub_out: ?*?u32,
             sub_ifds: ?*SubIfdList,
+            is_cr2_file: bool,
+            depth: usize,
         ) u32 {
             if (off < 8 or (off & 1) != 0) return 0;
             const num_bytes = s.getSlice(off, 2) orelse return 0;
@@ -411,9 +425,13 @@ pub fn parseExifDimensionsFromSource(source: TiffSource) ?JpegDimensions {
                     subfile_type = val;
                 } else if (tag == @intFromEnum(TiffTag.photometric_interpretation)) {
                     photometric = @intCast(val);
-                } else if (tag == @intFromEnum(TiffTag.image_width) or tag == @intFromEnum(TiffTag.pixel_x_dimension)) {
+                } else if (tag == @intFromEnum(TiffTag.image_width) or
+                    tag == @intFromEnum(TiffTag.pixel_x_dimension))
+                {
                     cur_w = val;
-                } else if (tag == @intFromEnum(TiffTag.image_length) or tag == @intFromEnum(TiffTag.pixel_y_dimension)) {
+                } else if (tag == @intFromEnum(TiffTag.image_length) or
+                    tag == @intFromEnum(TiffTag.pixel_y_dimension))
+                {
                     cur_h = val;
                 } else if (tag == @intFromEnum(TiffTag.exif_ifd) and sub_out != null) {
                     sub_out.?.* = val;
@@ -435,15 +453,17 @@ pub fn parseExifDimensionsFromSource(source: TiffSource) ?JpegDimensions {
                 }
             }
 
-            // Reject full-resolution raw Bayer sensor streams:
+            // Reject raw Bayer sensor streams:
             // 1. CFA Bayer (32803) or LinearRaw (34892)
             // 2. Primary raw sensor SubIFDs (!isReducedImage inside SubIFD)
+            // 3. Canon CR2 IFD2/IFD3 raw sensor slices
             const is_raw_cfa = (photometric != null and
                 (photometric.? == @intFromEnum(Photometric.cfa) or
                     photometric.? == @intFromEnum(Photometric.linear_raw)));
             const is_subifd_raw = (sub_ifds == null and subfile_type != null and
                 !NewSubfileType.isReducedImage(subfile_type.?));
-            if (!is_raw_cfa and !is_subifd_raw) {
+            const is_cr2_raw = (is_cr2_file and depth >= 2);
+            if (!is_raw_cfa and !is_subifd_raw and !is_cr2_raw) {
                 if (cur_w != null and cur_h != null) {
                     const area = @as(u64, cur_w.?) * @as(u64, cur_h.?);
                     if (area > b_area.*) {
@@ -485,16 +505,40 @@ pub fn parseExifDimensionsFromSource(source: TiffSource) ?JpegDimensions {
             &best_area,
             if (ifd_depth == 0) &exif_sub_ifd_off else null,
             if (ifd_depth == 0) &sub_ifd_list else null,
+            is_cr2,
+            ifd_depth,
         );
         cur_ifd_off = next_off;
     }
 
     if (exif_sub_ifd_off) |sub_off| {
-        _ = parseIfd(src, sub_off, is_le, &best_w, &best_h, &best_area, null, null);
+        _ = parseIfd(
+            src,
+            sub_off,
+            is_le,
+            &best_w,
+            &best_h,
+            &best_area,
+            null,
+            null,
+            is_cr2,
+            1,
+        );
     }
 
     for (sub_ifd_list.slice()) |s_off| {
-        _ = parseIfd(src, s_off, is_le, &best_w, &best_h, &best_area, null, null);
+        _ = parseIfd(
+            src,
+            s_off,
+            is_le,
+            &best_w,
+            &best_h,
+            &best_area,
+            null,
+            null,
+            is_cr2,
+            1,
+        );
     }
 
     if (best_w != null and best_h != null) {
@@ -550,6 +594,34 @@ pub fn readJpegDimensions(data: []const u8) ?JpegDimensions {
         idx += seg_len;
     }
     return null;
+}
+
+/// Inspects a JPEG bitstream header for Lossless Huffman (SOF3 / 0xC3) markers
+/// used for raw Bayer sensor data in camera RAW files (such as Canon CR2).
+pub fn isLosslessJpeg(data: []const u8) bool {
+    if (data.len < 4 or data[0] != 0xFF or data[1] != 0xD8) return false;
+    var idx: usize = 2;
+    while (idx + 1 < data.len) {
+        if (data[idx] != 0xFF) break;
+        var marker_offset = idx + 1;
+        while (marker_offset < data.len and data[marker_offset] == 0xFF) {
+            marker_offset += 1;
+        }
+        if (marker_offset >= data.len) break;
+        const marker = data[marker_offset];
+        idx = marker_offset + 1;
+
+        if (marker == 0x00 or marker == 0xD9 or marker == 0xDA) break;
+        if (marker == 0xC3) return true;
+        if (marker == 0xD8 or (marker >= 0xD0 and marker <= 0xD7)) continue;
+
+        if (idx + 2 > data.len) break;
+        const seg_len = (@as(usize, data[idx]) << 8) | @as(usize, data[idx + 1]);
+        if (seg_len < 2 or seg_len > data.len - idx) break;
+
+        idx += seg_len;
+    }
+    return false;
 }
 
 /// Extracts the TIFF orientation tag (0x0112) from an EXIF payload.
@@ -680,6 +752,13 @@ pub fn extractTiffRawPreviewsFromSource(source: TiffSource) RawPreviewCandidates
     const tiff_start_off = header.tiff_start_off;
     const src = header.source;
 
+    // Detect Canon CR2 container signature at bytes 8..12 ("CR\x02\x00")
+    const is_cr2 = blk: {
+        const sig = src.getSlice(8, 4) orelse break :blk false;
+        break :blk sig[0] == 'C' and sig[1] == 'R' and
+            sig[2] == 0x02 and sig[3] == 0x00;
+    };
+
     const Candidate = struct { off: u32, len: u32 };
     var candidates: [16]Candidate = undefined;
     var cand_count: usize = 0;
@@ -692,6 +771,8 @@ pub fn extractTiffRawPreviewsFromSource(source: TiffSource) RawPreviewCandidates
             cands: []Candidate,
             count: *usize,
             sub_ifds: ?*SubIfdList,
+            is_cr2_file: bool,
+            depth: usize,
         ) u32 {
             if (off < 8 or (off & 1) != 0) return 0;
             const num_bytes = s.getSlice(off, 2) orelse return 0;
@@ -705,6 +786,8 @@ pub fn extractTiffRawPreviewsFromSource(source: TiffSource) RawPreviewCandidates
             var subfile_type: ?u32 = null;
             var strip_off: ?u32 = null;
             var strip_len: ?u32 = null;
+            var planar_config: ?u16 = null;
+            var is_cr2_raw_ifd = false;
 
             while (i < num) : (i += 1) {
                 const entry = s.getSlice(entry_off, 12) orelse break;
@@ -723,6 +806,14 @@ pub fn extractTiffRawPreviewsFromSource(source: TiffSource) RawPreviewCandidates
                     compression = readU16(entry[8..10][0..2], le);
                 } else if (tag == @intFromEnum(TiffTag.photometric_interpretation)) {
                     photometric = readU16(entry[8..10][0..2], le);
+                } else if (tag == @intFromEnum(TiffTag.planar_configuration)) {
+                    planar_config = readU16(entry[8..10][0..2], le);
+                } else if (tag == @intFromEnum(TiffTag.cr2_slice) or
+                    tag == @intFromEnum(TiffTag.cr2_raw_image_data) or
+                    tag == @intFromEnum(TiffTag.cr2_sensor_info) or
+                    tag == @intFromEnum(TiffTag.cr2_offsets))
+                {
+                    is_cr2_raw_ifd = true;
                 } else if (tag == @intFromEnum(TiffTag.strip_offsets)) {
                     // Per DNG Spec / TIFF-EP, embedded JPEG previews must be a
                     // single contiguous bitstream
@@ -789,9 +880,11 @@ pub fn extractTiffRawPreviewsFromSource(source: TiffSource) RawPreviewCandidates
             }
 
             if (j_off != null and j_len != null and j_off.? > 0 and j_len.? > 0) {
-                if (count.* < cands.len) {
-                    cands[count.*] = .{ .off = j_off.?, .len = j_len.? };
-                    count.* += 1;
+                if (!is_cr2_file or depth < 2) {
+                    if (count.* < cands.len) {
+                        cands[count.*] = .{ .off = j_off.?, .len = j_len.? };
+                        count.* += 1;
+                    }
                 }
             } else if (strip_off != null and strip_len != null and
                 strip_off.? > 0 and strip_len.? > 0)
@@ -800,19 +893,43 @@ pub fn extractTiffRawPreviewsFromSource(source: TiffSource) RawPreviewCandidates
                 const is_jpeg_comp = (compression != null and
                     (compression.? == @intFromEnum(Compression.jpeg_old) or
                         compression.? == @intFromEnum(Compression.jpeg)));
-                // Standard JPEG preview photometrics (6 = YCbCr, 2 = RGB, 1 = BlackIsZero).
+                // Standard JPEG preview photometrics (6 = YCbCr, 2 = RGB,
+                // 1 = BlackIsZero, or null).
                 // Specifically excludes 32803 (CFA Bayer) and 34892 (LinearRaw).
-                const is_jpeg_color = (photometric != null and
-                    (photometric.? == @intFromEnum(Photometric.ycbcr) or
-                        photometric.? == @intFromEnum(Photometric.rgb) or
-                        photometric.? == @intFromEnum(Photometric.black_is_zero)));
+                const is_jpeg_color = (photometric == null or
+                    photometric.? == @intFromEnum(Photometric.ycbcr) or
+                    photometric.? == @intFromEnum(Photometric.rgb) or
+                    photometric.? == @intFromEnum(Photometric.black_is_zero));
+                const is_bayer_color = (photometric != null and
+                    (photometric.? == @intFromEnum(Photometric.cfa) or
+                        photometric.? == @intFromEnum(Photometric.linear_raw)));
                 // Reject full-resolution primary raw sensor streams (NewSubfileType == 0)
                 const is_reduced_or_unspecified = (subfile_type == null or
                     NewSubfileType.isReducedImage(subfile_type.?));
 
-                // Reject Lossless JPEG SOF3 (FF D8 FF C3) raw Bayer payloads if payload header is present
+                var is_not_jpeg = false;
                 var is_lossless_raw = false;
-                if (s.getSlice(strip_off.?, 4)) |magic| {
+
+                // In Canon CR2, IFD2 is uncompressed RGB and IFD3 is Bayer raw sensor stream
+                if (is_cr2_file and depth >= 2) is_not_jpeg = true;
+                if (is_cr2_raw_ifd) is_not_jpeg = true;
+                // Reject planar TIFFs (PlanarConfiguration == 2); JPEG strips are always chunky (1)
+                if (planar_config != null and planar_config.? == 2) is_not_jpeg = true;
+
+                // Validate SOI marker if strip payload header is accessible in source
+                if (s.getSlice(strip_off.?, 2)) |soi| {
+                    if (soi[0] != 0xFF or soi[1] != 0xD8) {
+                        is_not_jpeg = true;
+                    }
+                }
+
+                // Reject Lossless JPEG SOF3 (FF C3) raw Bayer sensor streams
+                const inspect_len = @min(@as(usize, strip_len.?), 1024);
+                if (s.getSlice(strip_off.?, inspect_len)) |p_hdr| {
+                    if (isLosslessJpeg(p_hdr)) {
+                        is_lossless_raw = true;
+                    }
+                } else if (s.getSlice(strip_off.?, 4)) |magic| {
                     if (magic[0] == 0xFF and magic[1] == 0xD8 and
                         magic[2] == 0xFF and magic[3] == 0xC3)
                     {
@@ -820,11 +937,15 @@ pub fn extractTiffRawPreviewsFromSource(source: TiffSource) RawPreviewCandidates
                     }
                 }
 
-                if (is_jpeg_comp and is_jpeg_color and is_reduced_or_unspecified and !is_lossless_raw) {
-                    if (count.* < cands.len) {
-                        cands[count.*] = .{ .off = strip_off.?, .len = strip_len.? };
-                        count.* += 1;
-                    }
+                if (is_jpeg_comp and is_jpeg_color and !is_bayer_color and
+                    is_reduced_or_unspecified and !is_not_jpeg and !is_lossless_raw)
+                {
+                    if (std.math.add(u32, strip_off.?, strip_len.?)) |_| {
+                        if (count.* < cands.len) {
+                            cands[count.*] = .{ .off = strip_off.?, .len = strip_len.? };
+                            count.* += 1;
+                        }
+                    } else |_| {}
                 }
             }
 
@@ -860,13 +981,24 @@ pub fn extractTiffRawPreviewsFromSource(source: TiffSource) RawPreviewCandidates
             &candidates,
             &cand_count,
             if (ifd_depth == 0) &sub_ifd_list else null,
+            is_cr2,
+            ifd_depth,
         );
         cur_ifd_off = next_ifd_off;
     }
 
     // 2. Parse SubIFDs discovered in IFD0
     for (sub_ifd_list.slice()) |s_off| {
-        _ = parseIfdForJpegs(src, s_off, is_le, &candidates, &cand_count, null);
+        _ = parseIfdForJpegs(
+            src,
+            s_off,
+            is_le,
+            &candidates,
+            &cand_count,
+            null,
+            is_cr2,
+            1,
+        );
     }
 
     if (cand_count == 0) return .{};
@@ -1876,4 +2008,409 @@ test "synthetic circular IFD chain in tail terminates cleanly" {
     _ = dims;
     const cands = extractTiffRawPreviewsFromSource(source);
     _ = cands;
+}
+
+test "isLosslessJpeg - marker scanning" {
+    // 1. Baseline JPEG (SOI + DHT + SOF0)
+    const baseline = [_]u8{
+        0xFF, 0xD8, 0xFF, 0xC4, 0x00, 0x04, 0x01, 0x02,
+        0xFF, 0xC0, 0x00, 0x0B, 0x08, 0x00, 0x64, 0x00,
+        0x64, 0x03,
+    };
+    try std.testing.expect(!isLosslessJpeg(&baseline));
+
+    // 2. Lossless JPEG (SOI + DHT + SOF3)
+    const lossless = [_]u8{
+        0xFF, 0xD8, 0xFF, 0xC4, 0x00, 0x04, 0x01, 0x02,
+        0xFF, 0xC3, 0x00, 0x0B, 0x10, 0x00, 0x64, 0x00,
+        0x64, 0x01,
+    };
+    try std.testing.expect(isLosslessJpeg(&lossless));
+
+    // 3. Immediate SOF3 (SOI + SOF3)
+    const immediate_sof3 = [_]u8{
+        0xFF, 0xD8, 0xFF, 0xC3, 0x00, 0x0B, 0x10, 0x00, 0x64, 0x00, 0x64, 0x01,
+    };
+    try std.testing.expect(isLosslessJpeg(&immediate_sof3));
+
+    // 4. Truncated / non-JPEG
+    try std.testing.expect(!isLosslessJpeg(""));
+    try std.testing.expect(!isLosslessJpeg("\xFF\xD8"));
+    try std.testing.expect(!isLosslessJpeg("\x0E\x20\x14\x0E"));
+
+    // 5. Short 4-byte slice with SOF3
+    try std.testing.expect(isLosslessJpeg("\xFF\xD8\xFF\xC3"));
+
+    // 6. Fill byte padding before SOF3
+    const fill_padding = [_]u8{
+        0xFF, 0xD8, 0xFF, 0xFF, 0xFF, 0xC3, 0x00, 0x0B,
+        0x10, 0x00, 0x64, 0x00, 0x64, 0x01,
+    };
+    try std.testing.expect(isLosslessJpeg(&fill_padding));
+
+    // 7. Restart marker (RST0 / 0xD0) followed by SOF3
+    const rst_marker = [_]u8{
+        0xFF, 0xD8, 0xFF, 0xD0, 0xFF, 0xC3, 0x00, 0x0B,
+        0x10, 0x00, 0x64, 0x00, 0x64, 0x01,
+    };
+    try std.testing.expect(isLosslessJpeg(&rst_marker));
+
+    // 8. Byte stuffing (0xFF 0x00) should abort scan and return false
+    const byte_stuffed = [_]u8{
+        0xFF, 0xD8, 0xFF, 0x00, 0xFF, 0xC3, 0x00, 0x0B,
+        0x10, 0x00, 0x64, 0x00, 0x64, 0x01,
+    };
+    try std.testing.expect(!isLosslessJpeg(&byte_stuffed));
+}
+
+test "extractTiffRawPreviews - synthetic Canon CR2 multi-IFD container" {
+    var buf: [512]u8 = undefined;
+    @memset(&buf, 0);
+
+    // TIFF Header: little-endian, IFD0 offset 16
+    buf[0] = 'I';
+    buf[1] = 'I';
+    std.mem.writeInt(u16, buf[2..4], 0x002A, .little);
+    std.mem.writeInt(u32, buf[4..8], 16, .little);
+
+    // Canon CR2 signature at bytes 8..12 ("CR\x02\x00")
+    buf[8] = 'C';
+    buf[9] = 'R';
+    buf[10] = 0x02;
+    buf[11] = 0x00;
+
+    // IFD0 at offset 16: 6 entries, next_ifd = 94
+    std.mem.writeInt(u16, buf[16..18], 6, .little);
+    // Entry 0: ImageWidth = 2496
+    std.mem.writeInt(u16, buf[18..20], 0x0100, .little);
+    std.mem.writeInt(u16, buf[20..22], 3, .little);
+    std.mem.writeInt(u32, buf[22..26], 1, .little);
+    std.mem.writeInt(u16, buf[26..28], 2496, .little);
+    // Entry 1: ImageLength = 1664
+    std.mem.writeInt(u16, buf[30..32], 0x0101, .little);
+    std.mem.writeInt(u16, buf[32..34], 3, .little);
+    std.mem.writeInt(u32, buf[34..38], 1, .little);
+    std.mem.writeInt(u16, buf[38..40], 1664, .little);
+    // Entry 2: Compression = 6 (jpeg_old)
+    std.mem.writeInt(u16, buf[42..44], 0x0103, .little);
+    std.mem.writeInt(u16, buf[44..46], 3, .little);
+    std.mem.writeInt(u32, buf[46..50], 1, .little);
+    std.mem.writeInt(u16, buf[50..52], 6, .little);
+    // Entry 3: StripOffsets = 300
+    std.mem.writeInt(u16, buf[54..56], 0x0111, .little);
+    std.mem.writeInt(u16, buf[56..58], 4, .little);
+    std.mem.writeInt(u32, buf[58..62], 1, .little);
+    std.mem.writeInt(u32, buf[62..66], 300, .little);
+    // Entry 4: StripByteCounts = 50
+    std.mem.writeInt(u16, buf[66..68], 0x0117, .little);
+    std.mem.writeInt(u16, buf[68..70], 4, .little);
+    std.mem.writeInt(u32, buf[70..74], 1, .little);
+    std.mem.writeInt(u32, buf[74..78], 50, .little);
+    // Entry 5: ExifIFD pointer = 260
+    std.mem.writeInt(u16, buf[78..80], 0x8769, .little);
+    std.mem.writeInt(u16, buf[80..82], 4, .little);
+    std.mem.writeInt(u32, buf[82..86], 1, .little);
+    std.mem.writeInt(u32, buf[86..90], 260, .little);
+    // Next IFD = 94 (IFD1)
+    std.mem.writeInt(u32, buf[90..94], 94, .little);
+
+    // IFD1 at offset 94: 4 entries, next_ifd = 148
+    std.mem.writeInt(u16, buf[94..96], 4, .little);
+    // Entry 0: ImageWidth = 160
+    std.mem.writeInt(u16, buf[96..98], 0x0100, .little);
+    std.mem.writeInt(u16, buf[98..100], 3, .little);
+    std.mem.writeInt(u32, buf[100..104], 1, .little);
+    std.mem.writeInt(u16, buf[104..106], 160, .little);
+    // Entry 1: ImageLength = 120
+    std.mem.writeInt(u16, buf[108..110], 0x0101, .little);
+    std.mem.writeInt(u16, buf[110..112], 3, .little);
+    std.mem.writeInt(u32, buf[112..116], 1, .little);
+    std.mem.writeInt(u16, buf[116..118], 120, .little);
+    // Entry 2: JpegInterchangeFormat = 360
+    std.mem.writeInt(u16, buf[120..122], 0x0201, .little);
+    std.mem.writeInt(u16, buf[122..124], 4, .little);
+    std.mem.writeInt(u32, buf[124..128], 1, .little);
+    std.mem.writeInt(u32, buf[128..132], 360, .little);
+    // Entry 3: JpegInterchangeFormatLength = 40
+    std.mem.writeInt(u16, buf[132..134], 0x0202, .little);
+    std.mem.writeInt(u16, buf[134..136], 4, .little);
+    std.mem.writeInt(u32, buf[136..140], 1, .little);
+    std.mem.writeInt(u32, buf[140..144], 40, .little);
+    // Next IFD = 148 (IFD2)
+    std.mem.writeInt(u32, buf[144..148], 148, .little);
+
+    // IFD2 at offset 148: 4 entries, next_ifd = 202
+    std.mem.writeInt(u16, buf[148..150], 4, .little);
+    // Entry 0: ImageWidth = 384
+    std.mem.writeInt(u16, buf[150..152], 0x0100, .little);
+    std.mem.writeInt(u16, buf[152..154], 3, .little);
+    std.mem.writeInt(u32, buf[154..158], 1, .little);
+    std.mem.writeInt(u16, buf[158..160], 384, .little);
+    // Entry 1: ImageLength = 256
+    std.mem.writeInt(u16, buf[162..164], 0x0101, .little);
+    std.mem.writeInt(u16, buf[164..166], 3, .little);
+    std.mem.writeInt(u32, buf[166..170], 1, .little);
+    std.mem.writeInt(u16, buf[170..172], 256, .little);
+    // Entry 2: StripOffsets = 410
+    std.mem.writeInt(u16, buf[174..176], 0x0111, .little);
+    std.mem.writeInt(u16, buf[176..178], 4, .little);
+    std.mem.writeInt(u32, buf[178..182], 1, .little);
+    std.mem.writeInt(u32, buf[182..186], 410, .little);
+    // Entry 3: StripByteCounts = 30
+    std.mem.writeInt(u16, buf[186..188], 0x0117, .little);
+    std.mem.writeInt(u16, buf[188..190], 4, .little);
+    std.mem.writeInt(u32, buf[190..194], 1, .little);
+    std.mem.writeInt(u32, buf[194..198], 30, .little);
+    // Next IFD = 202 (IFD3)
+    std.mem.writeInt(u32, buf[198..202], 202, .little);
+
+    // IFD3 at offset 202: 4 entries, next_ifd = 0
+    std.mem.writeInt(u16, buf[202..204], 4, .little);
+    // Entry 0: ImageWidth = 4476
+    std.mem.writeInt(u16, buf[204..206], 0x0100, .little);
+    std.mem.writeInt(u16, buf[206..208], 3, .little);
+    std.mem.writeInt(u32, buf[208..212], 1, .little);
+    std.mem.writeInt(u16, buf[212..214], 4476, .little);
+    // Entry 1: ImageLength = 2954
+    std.mem.writeInt(u16, buf[216..218], 0x0101, .little);
+    std.mem.writeInt(u16, buf[218..220], 3, .little);
+    std.mem.writeInt(u32, buf[220..224], 1, .little);
+    std.mem.writeInt(u16, buf[224..226], 2954, .little);
+    // Entry 2: StripOffsets = 450
+    std.mem.writeInt(u16, buf[228..230], 0x0111, .little);
+    std.mem.writeInt(u16, buf[230..232], 4, .little);
+    std.mem.writeInt(u32, buf[232..236], 1, .little);
+    std.mem.writeInt(u32, buf[236..240], 450, .little);
+    // Entry 3: StripByteCounts = 40
+    std.mem.writeInt(u16, buf[240..242], 0x0117, .little);
+    std.mem.writeInt(u16, buf[242..244], 4, .little);
+    std.mem.writeInt(u32, buf[244..248], 1, .little);
+    std.mem.writeInt(u32, buf[248..252], 40, .little);
+    // Next IFD = 0
+    std.mem.writeInt(u32, buf[252..256], 0, .little);
+
+    // ExifIFD at offset 260: 2 entries, next_ifd = 0
+    std.mem.writeInt(u16, buf[260..262], 2, .little);
+    // Entry 0: PixelXDimension = 4368
+    std.mem.writeInt(u16, buf[262..264], 0xA002, .little);
+    std.mem.writeInt(u16, buf[264..266], 4, .little);
+    std.mem.writeInt(u32, buf[266..270], 1, .little);
+    std.mem.writeInt(u32, buf[270..274], 4368, .little);
+    // Entry 1: PixelYDimension = 2912
+    std.mem.writeInt(u16, buf[274..276], 0xA003, .little);
+    std.mem.writeInt(u16, buf[276..278], 4, .little);
+    std.mem.writeInt(u32, buf[278..282], 1, .little);
+    std.mem.writeInt(u32, buf[282..286], 2912, .little);
+    std.mem.writeInt(u32, buf[286..290], 0, .little);
+
+    // Payloads:
+    // IFD0 preview: baseline JPEG at offset 300
+    buf[300] = 0xFF;
+    buf[301] = 0xD8;
+    buf[302] = 0xFF;
+    buf[303] = 0xC0;
+
+    // IFD1 thumbnail: JPEG at offset 360
+    buf[360] = 0xFF;
+    buf[361] = 0xD8;
+
+    // IFD2: uncompressed raw RGB at offset 410 (no SOI)
+    buf[410] = 0x0E;
+    buf[411] = 0x20;
+    buf[412] = 0x14;
+    buf[413] = 0x0E;
+
+    // IFD3: Lossless JPEG Bayer sensor stream at offset 450 (SOF3)
+    buf[450] = 0xFF;
+    buf[451] = 0xD8;
+    buf[452] = 0xFF;
+    buf[453] = 0xC3;
+
+    // 1. Candidate extraction must pick IFD0 and IFD1, rejecting IFD2 and IFD3
+    const cands = extractTiffRawPreviews(&buf);
+    try std.testing.expect(cands.preview != null);
+    try std.testing.expectEqual(@as(u64, 300), cands.preview.?.file_offset);
+    try std.testing.expectEqual(@as(u32, 50), cands.preview.?.length);
+
+    try std.testing.expect(cands.thumbnail != null);
+    try std.testing.expectEqual(@as(u64, 360), cands.thumbnail.?.file_offset);
+    try std.testing.expectEqual(@as(u32, 40), cands.thumbnail.?.length);
+
+    // 2. Exif dimensions must extract 4368x2912 from ExifIFD (ignoring IFD2/IFD3)
+    const dims = parseExifDimensions(&buf);
+    try std.testing.expect(dims != null);
+    try std.testing.expectEqual(@as(f32, 4368.0), dims.?.w);
+    try std.testing.expectEqual(@as(f32, 2912.0), dims.?.h);
+}
+
+test "extractTiffRawPreviews - real 20240523-Phoebe is mad-0076.CR2" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var file = std.Io.Dir.openFile(
+        std.Io.Dir.cwd(),
+        io,
+        "20240523-Phoebe is mad-0076.CR2",
+        .{},
+    ) catch return;
+    defer file.close(io);
+
+    var header_buf: [256 * 1024]u8 = undefined;
+    var slices = [_][]u8{&header_buf};
+    const n = file.readPositional(io, &slices, 0) catch return;
+    if (n < 8) return;
+
+    const cands = extractTiffRawPreviews(header_buf[0..n]);
+    // IFD0 full preview: 2496x1664 baseline JPEG at offset 87197 len 1426156
+    try std.testing.expect(cands.preview != null);
+    try std.testing.expectEqual(@as(u64, 87197), cands.preview.?.file_offset);
+    try std.testing.expectEqual(@as(u32, 1426156), cands.preview.?.length);
+
+    // IFD1 thumbnail: 160x120 JPEG at offset 76348 len 10849
+    try std.testing.expect(cands.thumbnail != null);
+    try std.testing.expectEqual(@as(u64, 76348), cands.thumbnail.?.file_offset);
+    try std.testing.expectEqual(@as(u32, 10849), cands.thumbnail.?.length);
+
+    // Dims from ExifIFD (PixelXDimension / PixelYDimension)
+    const dims = parseExifDimensions(header_buf[0..n]);
+    try std.testing.expect(dims != null);
+    try std.testing.expectEqual(@as(f32, 4368.0), dims.?.w);
+    try std.testing.expectEqual(@as(f32, 2912.0), dims.?.h);
+}
+
+test "extractTiffRawPreviews - synthetic JPEG strip with null photometric accepted" {
+    var buf: [256]u8 = undefined;
+    @memset(&buf, 0);
+
+    // TIFF header (little-endian, IFD0 at 8)
+    buf[0] = 'I';
+    buf[1] = 'I';
+    std.mem.writeInt(u16, buf[2..4], 0x002A, .little);
+    std.mem.writeInt(u32, buf[4..8], 8, .little);
+
+    // IFD0: 4 entries
+    std.mem.writeInt(u16, buf[8..10], 4, .little);
+    // Entry 0: ImageWidth = 640
+    std.mem.writeInt(u16, buf[10..12], 0x0100, .little);
+    std.mem.writeInt(u16, buf[12..14], 3, .little);
+    std.mem.writeInt(u32, buf[14..18], 1, .little);
+    std.mem.writeInt(u16, buf[18..20], 640, .little);
+    // Entry 1: Compression = 6 (jpeg_old)
+    std.mem.writeInt(u16, buf[22..24], 0x0103, .little);
+    std.mem.writeInt(u16, buf[24..26], 3, .little);
+    std.mem.writeInt(u32, buf[26..30], 1, .little);
+    std.mem.writeInt(u16, buf[30..32], 6, .little);
+    // Entry 2: StripOffsets = 100
+    std.mem.writeInt(u16, buf[34..36], 0x0111, .little);
+    std.mem.writeInt(u16, buf[36..38], 4, .little);
+    std.mem.writeInt(u32, buf[38..42], 1, .little);
+    std.mem.writeInt(u32, buf[42..46], 100, .little);
+    // Entry 3: StripByteCounts = 50
+    std.mem.writeInt(u16, buf[46..48], 0x0117, .little);
+    std.mem.writeInt(u16, buf[48..50], 4, .little);
+    std.mem.writeInt(u32, buf[50..54], 1, .little);
+    std.mem.writeInt(u32, buf[54..58], 50, .little);
+    // Next IFD = 0
+    std.mem.writeInt(u32, buf[58..62], 0, .little);
+
+    // Valid SOI at offset 100
+    buf[100] = 0xFF;
+    buf[101] = 0xD8;
+    buf[102] = 0xFF;
+    buf[103] = 0xC0;
+
+    const cands = extractTiffRawPreviews(&buf);
+    try std.testing.expect(cands.preview != null);
+    try std.testing.expectEqual(@as(u64, 100), cands.preview.?.file_offset);
+    try std.testing.expectEqual(@as(u32, 50), cands.preview.?.length);
+}
+
+test "extractTiffRawPreviews - synthetic uncompressed RGB strip rejected" {
+    var buf: [256]u8 = undefined;
+    @memset(&buf, 0);
+
+    // TIFF header
+    buf[0] = 'I';
+    buf[1] = 'I';
+    std.mem.writeInt(u16, buf[2..4], 0x002A, .little);
+    std.mem.writeInt(u32, buf[4..8], 8, .little);
+
+    // IFD0: 4 entries, compression 6, but payload bytes are not SOI
+    std.mem.writeInt(u16, buf[8..10], 4, .little);
+    std.mem.writeInt(u16, buf[10..12], 0x0100, .little);
+    std.mem.writeInt(u16, buf[12..14], 3, .little);
+    std.mem.writeInt(u32, buf[14..18], 1, .little);
+    std.mem.writeInt(u16, buf[18..20], 384, .little);
+
+    std.mem.writeInt(u16, buf[22..24], 0x0103, .little);
+    std.mem.writeInt(u16, buf[24..26], 3, .little);
+    std.mem.writeInt(u32, buf[26..30], 1, .little);
+    std.mem.writeInt(u16, buf[30..32], 6, .little);
+
+    std.mem.writeInt(u16, buf[34..36], 0x0111, .little);
+    std.mem.writeInt(u16, buf[36..38], 4, .little);
+    std.mem.writeInt(u32, buf[38..42], 1, .little);
+    std.mem.writeInt(u32, buf[42..46], 100, .little);
+
+    std.mem.writeInt(u16, buf[46..48], 0x0117, .little);
+    std.mem.writeInt(u16, buf[48..50], 4, .little);
+    std.mem.writeInt(u32, buf[50..54], 1, .little);
+    std.mem.writeInt(u32, buf[54..58], 50, .little);
+    std.mem.writeInt(u32, buf[58..62], 0, .little);
+
+    // Non-JPEG bytes at offset 100 (raw RGB: 0x0E, 0x20...)
+    buf[100] = 0x0E;
+    buf[101] = 0x20;
+    buf[102] = 0x14;
+    buf[103] = 0x0E;
+
+    const cands = extractTiffRawPreviews(&buf);
+    try std.testing.expect(cands.preview == null);
+}
+
+test "extractTiffRawPreviews - synthetic Lossless JPEG SOF3 strip rejected" {
+    var buf: [256]u8 = undefined;
+    @memset(&buf, 0);
+
+    // TIFF header
+    buf[0] = 'I';
+    buf[1] = 'I';
+    std.mem.writeInt(u16, buf[2..4], 0x002A, .little);
+    std.mem.writeInt(u32, buf[4..8], 8, .little);
+
+    // IFD0: 4 entries, compression 6, payload has DHT then SOF3
+    std.mem.writeInt(u16, buf[8..10], 4, .little);
+    std.mem.writeInt(u16, buf[10..12], 0x0100, .little);
+    std.mem.writeInt(u16, buf[12..14], 3, .little);
+    std.mem.writeInt(u32, buf[14..18], 1, .little);
+    std.mem.writeInt(u16, buf[18..20], 384, .little);
+
+    std.mem.writeInt(u16, buf[22..24], 0x0103, .little);
+    std.mem.writeInt(u16, buf[24..26], 3, .little);
+    std.mem.writeInt(u32, buf[26..30], 1, .little);
+    std.mem.writeInt(u16, buf[30..32], 6, .little);
+
+    std.mem.writeInt(u16, buf[34..36], 0x0111, .little);
+    std.mem.writeInt(u16, buf[36..38], 4, .little);
+    std.mem.writeInt(u32, buf[38..42], 1, .little);
+    std.mem.writeInt(u32, buf[42..46], 100, .little);
+
+    std.mem.writeInt(u16, buf[46..48], 0x0117, .little);
+    std.mem.writeInt(u16, buf[48..50], 4, .little);
+    std.mem.writeInt(u32, buf[50..54], 1, .little);
+    std.mem.writeInt(u32, buf[54..58], 50, .little);
+    std.mem.writeInt(u32, buf[58..62], 0, .little);
+
+    // SOI + DHT (length 4) + SOF3 (lossless)
+    buf[100] = 0xFF;
+    buf[101] = 0xD8;
+    buf[102] = 0xFF;
+    buf[103] = 0xC4;
+    buf[104] = 0x00;
+    buf[105] = 0x04;
+    buf[106] = 0x01;
+    buf[107] = 0x02;
+    buf[108] = 0xFF;
+    buf[109] = 0xC3;
+
+    const cands = extractTiffRawPreviews(&buf);
+    try std.testing.expect(cands.preview == null);
 }
