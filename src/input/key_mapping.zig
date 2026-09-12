@@ -13,17 +13,180 @@ pub const KeyContext = enum {
     palette,
 };
 
+pub const PanDelta = struct {
+    dx: f32,
+    dy: f32,
+
+    pub inline fn isZero(self: PanDelta) bool {
+        return self.dx == 0.0 and self.dy == 0.0;
+    }
+};
+
+pub const UnitVec2 = struct {
+    x: f32,
+    y: f32,
+};
+
+pub const DirectionMapping = struct {
+    key: Key,
+    direction: state.DirectionFlags,
+};
+
+pub const DIRECTION_KEY_MAP = [_]DirectionMapping{
+    .{ .key = .up, .direction = .{ .up = true } },
+    .{ .key = .char_k, .direction = .{ .up = true } },
+    .{ .key = .down, .direction = .{ .down = true } },
+    .{ .key = .char_j, .direction = .{ .down = true } },
+    .{ .key = .left, .direction = .{ .left = true } },
+    .{ .key = .char_h, .direction = .{ .left = true } },
+    .{ .key = .right, .direction = .{ .right = true } },
+    .{ .key = .char_l, .direction = .{ .right = true } },
+};
+
+/// 16-entry precomputed lookup table of normalized unit direction vectors.
+/// Diagonals are pre-normalized by 1 / sqrt(2) to guarantee uniform
+/// linear travel speed.
+pub const DIRECTION_UNIT_LUT: [16]UnitVec2 = blk: {
+    var lut: [16]UnitVec2 = undefined;
+    const inv_sqrt2: f32 = 0.70710678;
+    for (0..16) |i| {
+        const flags: state.DirectionFlags = @bitCast(@as(u4, @intCast(i)));
+        var x: f32 = 0.0;
+        var y: f32 = 0.0;
+        if (flags.left) x += 1.0;
+        if (flags.right) x -= 1.0;
+        if (flags.up) y += 1.0;
+        if (flags.down) y -= 1.0;
+        if (x != 0.0 and y != 0.0) {
+            x *= inv_sqrt2;
+            y *= inv_sqrt2;
+        }
+        lut[i] = .{ .x = x, .y = y };
+    }
+    break :blk lut;
+};
+
+comptime {
+    // Statically verify mappings and opposing cancellations
+    for (DIRECTION_KEY_MAP) |entry| {
+        std.debug.assert(@popCount(entry.direction.raw()) == 1);
+    }
+    const up_down = (state.DirectionFlags{ .up = true, .down = true }).raw();
+    std.debug.assert(DIRECTION_UNIT_LUT[up_down].y == 0.0);
+
+    const left_right = (state.DirectionFlags{
+        .left = true,
+        .right = true,
+    }).raw();
+    std.debug.assert(DIRECTION_UNIT_LUT[left_right].x == 0.0);
+
+    const up_left = (state.DirectionFlags{ .up = true, .left = true }).raw();
+    const inv_sqrt2: f32 = 0.70710678;
+    std.debug.assert(DIRECTION_UNIT_LUT[up_left].x == inv_sqrt2);
+    std.debug.assert(DIRECTION_UNIT_LUT[up_left].y == inv_sqrt2);
+
+    const down_right = (state.DirectionFlags{
+        .down = true,
+        .right = true,
+    }).raw();
+    std.debug.assert(DIRECTION_UNIT_LUT[down_right].x == -inv_sqrt2);
+    std.debug.assert(DIRECTION_UNIT_LUT[down_right].y == -inv_sqrt2);
+}
+
+pub inline fn getDirectionForMappedKey(key: Key) ?state.DirectionFlags {
+    inline for (DIRECTION_KEY_MAP) |entry| {
+        if (entry.key == key) return entry.direction;
+    }
+    return null;
+}
+
+pub inline fn isDirectionalKey(key: Key) bool {
+    return getDirectionForMappedKey(key) != null;
+}
+
+/// Resolves directional panning from physical key state and frame delta time.
+/// Provides consistent, smooth movement at GLIDE_SPEED for both taps and holds,
+/// eliminating discrete jumps and typematic repeat stalls.
+pub fn updateDirectionalPan(
+    ctrl: *state.PanController,
+    current_held: state.DirectionFlags,
+    keys_pressed: []const Key,
+    dt_ms: f32,
+) ?PanDelta {
+    // Numerical guard and delta clamping
+    if (std.math.isNan(dt_ms) or dt_ms <= 0.0) return null;
+    const dt_sec = @min(dt_ms, 50.0) / 1000.0;
+
+    // 1. Detect newly pressed keys this frame (hardware scancodes + SDL keys)
+    var newly_pressed_raw: u4 = current_held.raw() & ~ctrl.prev_held.raw();
+    for (keys_pressed) |key| {
+        if (getDirectionForMappedKey(key)) |dir| {
+            newly_pressed_raw |= dir.raw();
+        }
+    }
+    const newly_pressed = state.DirectionFlags.fromRaw(newly_pressed_raw);
+
+    // 2. If a new direction was pressed from rest, initiate smooth tap travel
+    if (newly_pressed.hasAny() and !ctrl.prev_held.hasAny()) {
+        ctrl.smooth_tap_remaining = state.PanController.TAP_DISTANCE;
+        ctrl.tap_direction = newly_pressed;
+    }
+
+    // 3. Determine active directions: physically held keys take precedence;
+    // if keys were released but smooth tap travel remains, use tap_direction.
+    var active_flags = current_held;
+    if (!active_flags.hasAny()) {
+        if (ctrl.smooth_tap_remaining > 0.001) {
+            active_flags = ctrl.tap_direction;
+        } else {
+            ctrl.reset();
+            return null;
+        }
+    }
+
+    // 4. Branchless unit vector lookup & cancellation check
+    const dir = DIRECTION_UNIT_LUT[active_flags.raw()];
+    if (dir.x == 0.0 and dir.y == 0.0) {
+        ctrl.reset();
+        return null;
+    }
+
+    // 5. Calculate continuous displacement at constant GLIDE_SPEED
+    var step_dist = state.PanController.GLIDE_SPEED * dt_sec;
+
+    // If completing a smooth tap after key release, clamp step to remaining
+    if (!current_held.hasAny()) {
+        step_dist = @min(step_dist, ctrl.smooth_tap_remaining);
+    }
+    ctrl.smooth_tap_remaining = @max(
+        0.0,
+        ctrl.smooth_tap_remaining - step_dist,
+    );
+
+    ctrl.prev_held = current_held;
+
+    const dx = dir.x * step_dist;
+    const dy = dir.y * step_dist;
+    if (dx == 0.0 and dy == 0.0) return null;
+
+    return PanDelta{ .dx = dx, .dy = dy };
+}
+
 /// Performs data-driven key lookup returning a pure AppIntent variant or null.
-pub fn mapKeyToAction(key: Key, mod: KeyModifiers, ctx: KeyContext) ?intents.AppIntent {
+pub fn mapKeyToAction(
+    key: Key,
+    mod: KeyModifiers,
+    ctx: KeyContext,
+) ?intents.AppIntent {
     // 1. Context-Sensitive Arrow Keys and Vim Keys when Viewport is Zoomed (Panning)
     if (ctx == .viewer_zoomed) {
         if (!mod.ctrl and !mod.shift and !mod.alt and !mod.gui) {
-            switch (key) {
-                .left, .char_h => return .{ .pan_by = .{ .dx = 30.0, .dy = 0.0 } },
-                .right, .char_l => return .{ .pan_by = .{ .dx = -30.0, .dy = 0.0 } },
-                .up, .char_k => return .{ .pan_by = .{ .dx = 0.0, .dy = 30.0 } },
-                .down, .char_j => return .{ .pan_by = .{ .dx = 0.0, .dy = -30.0 } },
-                else => {},
+            if (getDirectionForMappedKey(key)) |dir| {
+                const vec = DIRECTION_UNIT_LUT[dir.raw()];
+                return .{ .pan_by = .{
+                    .dx = vec.x * state.PanController.TAP_DISTANCE,
+                    .dy = vec.y * state.PanController.TAP_DISTANCE,
+                } };
             }
         }
     }
@@ -164,4 +327,242 @@ test "mapKeyToAction aligned with palette action items" {
         intents.AppIntent{ .pan_by = .{ .dx = -30.0, .dy = 0.0 } },
         pan_l.?,
     );
+}
+
+test "DIRECTION_UNIT_LUT precomputed resolutions" {
+    // 0: Neutral
+    try std.testing.expectEqual(
+        UnitVec2{ .x = 0.0, .y = 0.0 },
+        DIRECTION_UNIT_LUT[0],
+    );
+
+    // Cardinal directions
+    const up_flag = state.DirectionFlags{ .up = true };
+    try std.testing.expectEqual(
+        UnitVec2{ .x = 0.0, .y = 1.0 },
+        DIRECTION_UNIT_LUT[up_flag.raw()],
+    );
+    const down_flag = state.DirectionFlags{ .down = true };
+    try std.testing.expectEqual(
+        UnitVec2{ .x = 0.0, .y = -1.0 },
+        DIRECTION_UNIT_LUT[down_flag.raw()],
+    );
+    const left_flag = state.DirectionFlags{ .left = true };
+    try std.testing.expectEqual(
+        UnitVec2{ .x = 1.0, .y = 0.0 },
+        DIRECTION_UNIT_LUT[left_flag.raw()],
+    );
+    const right_flag = state.DirectionFlags{ .right = true };
+    try std.testing.expectEqual(
+        UnitVec2{ .x = -1.0, .y = 0.0 },
+        DIRECTION_UNIT_LUT[right_flag.raw()],
+    );
+
+    // Diagonal corner combinations
+    const inv_sqrt2: f32 = 0.70710678;
+    const up_left = state.DirectionFlags{ .up = true, .left = true };
+    try std.testing.expectEqual(
+        UnitVec2{ .x = inv_sqrt2, .y = inv_sqrt2 },
+        DIRECTION_UNIT_LUT[up_left.raw()],
+    );
+    const down_right = state.DirectionFlags{ .down = true, .right = true };
+    try std.testing.expectEqual(
+        UnitVec2{ .x = -inv_sqrt2, .y = -inv_sqrt2 },
+        DIRECTION_UNIT_LUT[down_right.raw()],
+    );
+    const up_right = state.DirectionFlags{ .up = true, .right = true };
+    try std.testing.expectEqual(
+        UnitVec2{ .x = -inv_sqrt2, .y = inv_sqrt2 },
+        DIRECTION_UNIT_LUT[up_right.raw()],
+    );
+    const down_left = state.DirectionFlags{ .down = true, .left = true };
+    try std.testing.expectEqual(
+        UnitVec2{ .x = inv_sqrt2, .y = -inv_sqrt2 },
+        DIRECTION_UNIT_LUT[down_left.raw()],
+    );
+
+    // Opposing cancellations
+    const up_down = state.DirectionFlags{ .up = true, .down = true };
+    try std.testing.expectEqual(
+        UnitVec2{ .x = 0.0, .y = 0.0 },
+        DIRECTION_UNIT_LUT[up_down.raw()],
+    );
+    const left_right = state.DirectionFlags{ .left = true, .right = true };
+    try std.testing.expectEqual(
+        UnitVec2{ .x = 0.0, .y = 0.0 },
+        DIRECTION_UNIT_LUT[left_right.raw()],
+    );
+    const all_four = state.DirectionFlags{
+        .up = true,
+        .down = true,
+        .left = true,
+        .right = true,
+    };
+    try std.testing.expectEqual(
+        UnitVec2{ .x = 0.0, .y = 0.0 },
+        DIRECTION_UNIT_LUT[all_four.raw()],
+    );
+}
+
+test "updateDirectionalPan constant speed cardinal and diagonal motion" {
+    var ctrl = state.PanController{};
+    const empty_keys = [_]Key{};
+
+    const inv_sqrt2: f32 = 0.70710678;
+    const exp_cardinal = state.PanController.GLIDE_SPEED * (16.0 / 1000.0);
+    const exp_diagonal = inv_sqrt2 * exp_cardinal;
+
+    // 1. Up and Left (Diagonal)
+    ctrl.reset();
+    const res_ul = updateDirectionalPan(
+        &ctrl,
+        .{ .up = true, .left = true },
+        &empty_keys,
+        16.0,
+    );
+    try std.testing.expect(res_ul != null);
+    try std.testing.expectApproxEqAbs(exp_diagonal, res_ul.?.dx, 0.01);
+    try std.testing.expectApproxEqAbs(exp_diagonal, res_ul.?.dy, 0.01);
+
+    // 2. Down and Right (Diagonal)
+    ctrl.reset();
+    const res_dr = updateDirectionalPan(
+        &ctrl,
+        .{ .down = true, .right = true },
+        &empty_keys,
+        16.0,
+    );
+    try std.testing.expect(res_dr != null);
+    try std.testing.expectApproxEqAbs(-exp_diagonal, res_dr.?.dx, 0.01);
+    try std.testing.expectApproxEqAbs(-exp_diagonal, res_dr.?.dy, 0.01);
+
+    // 3. Up Cardinal
+    ctrl.reset();
+    const res_up = updateDirectionalPan(
+        &ctrl,
+        .{ .up = true },
+        &empty_keys,
+        16.0,
+    );
+    try std.testing.expect(res_up != null);
+    try std.testing.expectEqual(@as(f32, 0.0), res_up.?.dx);
+    try std.testing.expectApproxEqAbs(exp_cardinal, res_up.?.dy, 0.01);
+
+    // 4. Opposing keys cancel out
+    ctrl.reset();
+    const res_opp = updateDirectionalPan(
+        &ctrl,
+        .{ .up = true, .down = true },
+        &empty_keys,
+        16.0,
+    );
+    try std.testing.expectEqual(@as(?PanDelta, null), res_opp);
+}
+
+test "updateDirectionalPan smooth tap completion after key release" {
+    var ctrl = state.PanController{};
+    const empty_keys = [_]Key{};
+
+    const exp_cardinal = state.PanController.GLIDE_SPEED * (16.0 / 1000.0);
+
+    // Frame 0: Key pressed for 1 frame
+    const f0 = updateDirectionalPan(
+        &ctrl,
+        .{ .up = true },
+        &empty_keys,
+        16.0,
+    );
+    try std.testing.expect(f0 != null);
+    try std.testing.expectApproxEqAbs(exp_cardinal, f0.?.dy, 0.01);
+    try std.testing.expect(ctrl.isBusy());
+
+    // Frame 1: Key released (current_held is empty), smooth tap continues
+    const f1 = updateDirectionalPan(&ctrl, .{}, &empty_keys, 16.0);
+    try std.testing.expect(f1 != null);
+    try std.testing.expectApproxEqAbs(exp_cardinal, f1.?.dy, 0.01);
+    try std.testing.expect(ctrl.isBusy());
+
+    // Frame 2: Final frame of smooth tap completes remaining 4.4px
+    const f2 = updateDirectionalPan(&ctrl, .{}, &empty_keys, 16.0);
+    try std.testing.expect(f2 != null);
+    const exp_rem = state.PanController.TAP_DISTANCE - (exp_cardinal * 2.0);
+    try std.testing.expectApproxEqAbs(exp_rem, f2.?.dy, 0.01);
+    try std.testing.expect(!ctrl.isBusy());
+
+    // Frame 3: Tap finished, motion stops
+    const f3 = updateDirectionalPan(&ctrl, .{}, &empty_keys, 16.0);
+    try std.testing.expectEqual(@as(?PanDelta, null), f3);
+
+    // Total distance is exactly TAP_DISTANCE
+    const total = f0.?.dy + f1.?.dy + f2.?.dy;
+    try std.testing.expectApproxEqAbs(
+        state.PanController.TAP_DISTANCE,
+        total,
+        0.01,
+    );
+}
+
+test "updateDirectionalPan continuous hold without pauses or jumps" {
+    var ctrl = state.PanController{};
+    const empty_keys = [_]Key{};
+    const exp_cardinal = state.PanController.GLIDE_SPEED * (16.0 / 1000.0);
+
+    // Every frame during hold moves at the exact same constant speed
+    var frame: usize = 0;
+    while (frame < 10) : (frame += 1) {
+        const step = updateDirectionalPan(
+            &ctrl,
+            .{ .up = true },
+            &empty_keys,
+            16.0,
+        );
+        try std.testing.expect(step != null);
+        try std.testing.expectApproxEqAbs(exp_cardinal, step.?.dy, 0.01);
+        try std.testing.expectEqual(@as(f32, 0.0), step.?.dx);
+    }
+}
+
+test "updateDirectionalPan seamless orthogonal transition without stutter" {
+    var ctrl = state.PanController{};
+    const empty_keys = [_]Key{};
+
+    const inv_sqrt2: f32 = 0.70710678;
+    const exp_cardinal = state.PanController.GLIDE_SPEED * (16.0 / 1000.0);
+    const exp_diagonal = inv_sqrt2 * exp_cardinal;
+
+    // 1. Moving Up
+    const f_up = updateDirectionalPan(
+        &ctrl,
+        .{ .up = true },
+        &empty_keys,
+        16.0,
+    );
+    try std.testing.expect(f_up != null);
+    try std.testing.expectApproxEqAbs(exp_cardinal, f_up.?.dy, 0.01);
+
+    // 2. Press Left while holding Up: immediately produces diagonal motion
+    const f_diag = updateDirectionalPan(
+        &ctrl,
+        .{ .up = true, .left = true },
+        &empty_keys,
+        16.0,
+    );
+    try std.testing.expect(f_diag != null);
+    try std.testing.expectApproxEqAbs(exp_diagonal, f_diag.?.dx, 0.01);
+    try std.testing.expectApproxEqAbs(exp_diagonal, f_diag.?.dy, 0.01);
+
+    // 3. Release Up while holding Left: continues smoothly moving Left
+    const f_left = updateDirectionalPan(
+        &ctrl,
+        .{ .left = true },
+        &empty_keys,
+        16.0,
+    );
+    try std.testing.expect(f_left != null);
+    try std.testing.expectApproxEqAbs(exp_cardinal, f_left.?.dx, 0.01);
+    try std.testing.expectEqual(@as(f32, 0.0), f_left.?.dy);
+
+    // 4. Release all keys: stops immediately
+    const f_stop = updateDirectionalPan(&ctrl, .{}, &empty_keys, 16.0);
+    try std.testing.expectEqual(@as(?PanDelta, null), f_stop);
 }

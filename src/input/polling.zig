@@ -261,6 +261,37 @@ pub inline fn computeClampedDeltaTime(current_ticks: u64, last_time: *u64) f32 {
     return delta_time_ms;
 }
 
+/// Declarative mapping between SDL scancodes and directional bitflags.
+pub const ScancodeDirection = struct {
+    scancode: c_uint,
+    direction: state.DirectionFlags,
+};
+
+pub const DIRECTION_SCANCODES = [_]ScancodeDirection{
+    .{ .scancode = sdl.keys.scancode.up, .direction = .{ .up = true } },
+    .{ .scancode = sdl.keys.scancode.k, .direction = .{ .up = true } },
+    .{ .scancode = sdl.keys.scancode.down, .direction = .{ .down = true } },
+    .{ .scancode = sdl.keys.scancode.j, .direction = .{ .down = true } },
+    .{ .scancode = sdl.keys.scancode.left, .direction = .{ .left = true } },
+    .{ .scancode = sdl.keys.scancode.h, .direction = .{ .left = true } },
+    .{ .scancode = sdl.keys.scancode.right, .direction = .{ .right = true } },
+    .{ .scancode = sdl.keys.scancode.l, .direction = .{ .right = true } },
+};
+
+pub fn sampleHeldDirections(
+    kb_state: [*]const bool,
+    num_keys: usize,
+) state.DirectionFlags {
+    var raw: u4 = 0;
+    inline for (DIRECTION_SCANCODES) |entry| {
+        const sc = @as(usize, @intCast(entry.scancode));
+        if (sc < num_keys and kb_state[sc]) {
+            raw |= entry.direction.raw();
+        }
+    }
+    return @bitCast(raw);
+}
+
 /// Pumps pending SDL events, queries cursor and keyboard states, and
 /// constructs a new `FrameInput` snapshot.
 pub fn pollFrameInput(
@@ -315,6 +346,15 @@ pub fn pollFrameInput(
         has_event = sdl.events.pollEvent(&event);
     }
 
+    var directional_held = state.DirectionFlags{};
+    var num_keys: c_int = 0;
+    if (sdl.keys.getKeyboardState(&num_keys)) |kb_state| {
+        if (num_keys > 0) {
+            const count = @as(usize, @intCast(num_keys));
+            directional_held = sampleHeldDirections(kb_state, count);
+        }
+    }
+
     const current_ticks = sdl.timer.getTicks();
     const delta_time_ms = computeClampedDeltaTime(current_ticks, last_time);
 
@@ -341,6 +381,7 @@ pub fn pollFrameInput(
         .pinch_center_y = frame_input_state.pinch_center_y,
         .keys_pressed = frame_input_state.keys_pressed,
         .key_modifiers = mapModFromSdl(sdl.keys.getModState()),
+        .directional_held = directional_held,
         .text_input = frame_input_state.text_input_opt,
         .dropped_path = frame_input_state.dropped_path_opt,
         .ticks = current_ticks,
@@ -434,4 +475,32 @@ test "processSDLEvent mouse_wheel normal and flipped directional axes" {
 
 test "mapKeyFromSdl maps backslash key" {
     try std.testing.expectEqual(Key.backslash, mapKeyFromSdl(sdl.keys.backslash));
+}
+
+test "sampleHeldDirections extracts arrow and vim directional flags" {
+    var mock_state = [_]bool{false} ** 512;
+
+    // Initially neutral
+    const neutral = sampleHeldDirections(&mock_state, mock_state.len);
+    try std.testing.expect(!neutral.hasAny());
+
+    // Up and Left held via arrow keys
+    mock_state[sdl.keys.scancode.up] = true;
+    mock_state[sdl.keys.scancode.left] = true;
+    const up_left = sampleHeldDirections(&mock_state, mock_state.len);
+    try std.testing.expect(up_left.up);
+    try std.testing.expect(up_left.left);
+    try std.testing.expect(!up_left.down);
+    try std.testing.expect(!up_left.right);
+
+    // Down and Right held via Vim keys (j + l)
+    mock_state[sdl.keys.scancode.up] = false;
+    mock_state[sdl.keys.scancode.left] = false;
+    mock_state[sdl.keys.scancode.j] = true;
+    mock_state[sdl.keys.scancode.l] = true;
+    const down_right = sampleHeldDirections(&mock_state, mock_state.len);
+    try std.testing.expect(down_right.down);
+    try std.testing.expect(down_right.right);
+    try std.testing.expect(!down_right.up);
+    try std.testing.expect(!down_right.left);
 }

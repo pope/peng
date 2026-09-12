@@ -119,6 +119,8 @@ pub fn updateFrame(
         is_current_loading or
         bg_events_processed or
         (app_state.viewer.drag_state != .none) or
+        (app_state.viewer.viewport.isZoomed() and
+            app_state.viewer.pan_controller.isBusy()) or
         has_unpopulated_cache or
         window_resized;
     const wait_timeout_ms =

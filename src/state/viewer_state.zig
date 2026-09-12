@@ -32,6 +32,7 @@ pub const ViewerState = struct {
     image_transition: ImageTransition = .none,
 
     mouse_inside: bool = true,
+    pan_controller: types.PanController = .{},
     last_win_w: f32 = 0.0,
     last_win_h: f32 = 0.0,
 

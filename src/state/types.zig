@@ -253,6 +253,58 @@ pub const ViewportParams = struct {
             .tiny_cnn => 6,
         };
     }
+
+    /// Returns true if viewport is zoomed beyond standard 1.0x magnification.
+    pub inline fn isZoomed(self: ViewportParams) bool {
+        return self.zoom_factor.get() > 1.0;
+    }
+};
+
+/// 4-bit directional bitmask for zero-allocation navigation tracking.
+pub const DirectionFlags = packed struct(u4) {
+    up: bool = false,
+    down: bool = false,
+    left: bool = false,
+    right: bool = false,
+
+    pub inline fn raw(self: DirectionFlags) u4 {
+        return @bitCast(self);
+    }
+
+    pub inline fn fromRaw(val: u4) DirectionFlags {
+        return @bitCast(val);
+    }
+
+    pub inline fn hasAny(self: DirectionFlags) bool {
+        return self.raw() != 0;
+    }
+
+    pub inline fn merge(
+        self: DirectionFlags,
+        other: DirectionFlags,
+    ) DirectionFlags {
+        return @bitCast(self.raw() | other.raw());
+    }
+};
+
+/// Dynamic state tracking for smooth directional keyboard viewport panning.
+pub const PanController = struct {
+    smooth_tap_remaining: f32 = 0.0,
+    tap_direction: DirectionFlags = .{},
+    prev_held: DirectionFlags = .{},
+
+    pub const TAP_DISTANCE: f32 = 30.0;
+    pub const GLIDE_SPEED: f32 = 800.0; // Physical pixels per second
+
+    pub inline fn reset(self: *PanController) void {
+        self.smooth_tap_remaining = 0.0;
+        self.tap_direction = .{};
+        self.prev_held = .{};
+    }
+
+    pub inline fn isBusy(self: PanController) bool {
+        return self.smooth_tap_remaining > 0.001 or self.prev_held.hasAny();
+    }
 };
 
 /// Aggregated input events, mouse coordinates, keyboard actions, and window
@@ -275,6 +327,7 @@ pub const FrameInput = struct {
     pinch_center_y: f32 = 0.0,
     keys_pressed: std.ArrayList(Key),
     key_modifiers: KeyModifiers,
+    directional_held: DirectionFlags = .{},
     text_input: ?[]const u8,
     dropped_path: ?[]const u8,
     ticks: u64,

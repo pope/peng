@@ -95,3 +95,20 @@ pub const mod = struct {
 pub fn getModState() u16 {
     return c.SDL_GetModState();
 }
+
+/// Scancode constants for directional navigation.
+pub const scancode = struct {
+    pub const up: c_uint = c.SDL_SCANCODE_UP;
+    pub const down: c_uint = c.SDL_SCANCODE_DOWN;
+    pub const left: c_uint = c.SDL_SCANCODE_LEFT;
+    pub const right: c_uint = c.SDL_SCANCODE_RIGHT;
+    pub const h: c_uint = c.SDL_SCANCODE_H;
+    pub const j: c_uint = c.SDL_SCANCODE_J;
+    pub const k: c_uint = c.SDL_SCANCODE_K;
+    pub const l: c_uint = c.SDL_SCANCODE_L;
+};
+
+/// Queries the snapshot array of physical keyboard key states from SDL.
+pub fn getKeyboardState(numkeys: ?*c_int) ?[*]const bool {
+    return c.SDL_GetKeyboardState(numkeys);
+}

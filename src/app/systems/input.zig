@@ -34,7 +34,7 @@ fn handleKeyDown(
     }
 
     const ctx: key_mapping.KeyContext =
-        if (self.viewer.viewport.zoom_factor.get() > 1.0)
+        if (self.viewer.viewport.isZoomed())
             .viewer_zoomed
         else
             .viewer_normal;
@@ -50,7 +50,12 @@ fn handleKeyDown(
 /// 2. Dispatches dropped filesystem path selection.
 /// 3. Maps active keyboard shortcuts to AppIntents if command palette is not
 ///    accepting input and wasn't dismissed this frame.
-pub fn sysProcessInput(ctx: FrameContext, palette_closed_this_frame: bool) !void {
+/// 4. Resolves simultaneous directional panning into unified 2D motion when
+///    zoomed.
+pub fn sysProcessInput(
+    ctx: FrameContext,
+    palette_closed_this_frame: bool,
+) !void {
     const state = ctx.state;
     const input = ctx.input orelse return;
 
@@ -69,7 +74,32 @@ pub fn sysProcessInput(ctx: FrameContext, palette_closed_this_frame: bool) !void
 
     if (state.viewer.ui.palette.isAcceptingInput() or palette_closed_this_frame) return;
 
+    const is_zoomed = state.viewer.viewport.isZoomed();
+    const no_mod = input.key_modifiers.eql(.{});
+
+    // 1. Coalesce simultaneous directional keys when zoomed
+    if (is_zoomed and no_mod) {
+        const dt_f32 = @as(f32, @floatCast(ctx.delta_time_ms));
+        const pan_opt = key_mapping.updateDirectionalPan(
+            &state.viewer.pan_controller,
+            input.directional_held,
+            input.keys_pressed.items,
+            dt_f32,
+        );
+        if (pan_opt) |pan| {
+            try state.pushIntent(.{
+                .pan_by = .{ .dx = pan.dx, .dy = pan.dy },
+            });
+        }
+    } else {
+        state.viewer.pan_controller.reset();
+    }
+
+    // 2. Dispatch non-directional keys and normal shortcuts
     for (input.keys_pressed.items) |key| {
+        if (is_zoomed and no_mod and key_mapping.isDirectionalKey(key)) {
+            continue; // Handled by unified directional resolver above
+        }
         try handleKeyDown(state, key, input.key_modifiers);
     }
 }
@@ -438,4 +468,287 @@ test "duplicate Escape keys in single frame safely deduplicate without triggerin
     try intents_sys.sysExecuteIntents(ctx);
     try std.testing.expect(!state.viewer.ui.overlays.stats_panel.visible);
     try std.testing.expect(state.viewer.running);
+}
+
+test "sysProcessInput simultaneous directional keys pan diagonally" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    // Zoom viewport beyond 1.0x to activate zoomed context
+    app_st.viewer.viewport.zoom_factor = app_st.clampZoomFactor(2.0);
+
+    // 1. Simultaneous Up and Left keys pressed in single frame
+    var keys_ul = std.ArrayList(Key).empty;
+    defer keys_ul.deinit(allocator);
+    try keys_ul.append(allocator, .up);
+    try keys_ul.append(allocator, .left);
+
+    const frame_input_ul = FrameInput{
+        .win_w = 800,
+        .win_h = 600,
+        .scale_x = 1.0,
+        .scale_y = 1.0,
+        .mouse_x = 0,
+        .mouse_y = 0,
+        .mouse_left_down = false,
+        .mouse_left_clicked = false,
+        .mouse_inside = true,
+        .quit_requested = false,
+        .scroll_delta_x = 0,
+        .scroll_delta_y = 0,
+        .keys_pressed = keys_ul,
+        .key_modifiers = .{},
+        .directional_held = .{},
+        .text_input = null,
+        .dropped_path = null,
+        .ticks = 0,
+        .delta_time_ms = 16.0,
+    };
+
+    try sysProcessInput(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = frame_input_ul,
+        .delta_time_ms = 16.0,
+    }, false);
+
+    const inv_sqrt2: f32 = 0.70710678;
+    const exp_diag = inv_sqrt2 * 800.0 * (16.0 / 1000.0);
+
+    // Exactly 1 intent enqueued: pan_by with smooth diagonal delta
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        app_st.pending_intents.items.len,
+    );
+    switch (app_st.pending_intents.items[0]) {
+        .pan_by => |p| {
+            try std.testing.expectApproxEqAbs(exp_diag, p.dx, 0.01);
+            try std.testing.expectApproxEqAbs(exp_diag, p.dy, 0.01);
+        },
+        else => return error.UnexpectedIntent,
+    }
+    app_st.clearIntents();
+
+    // 2. Simultaneous Down and Right keys pressed in single frame
+    var keys_dr = std.ArrayList(Key).empty;
+    defer keys_dr.deinit(allocator);
+    try keys_dr.append(allocator, .down);
+    try keys_dr.append(allocator, .right);
+
+    const frame_input_dr = FrameInput{
+        .win_w = 800,
+        .win_h = 600,
+        .scale_x = 1.0,
+        .scale_y = 1.0,
+        .mouse_x = 0,
+        .mouse_y = 0,
+        .mouse_left_down = false,
+        .mouse_left_clicked = false,
+        .mouse_inside = true,
+        .quit_requested = false,
+        .scroll_delta_x = 0,
+        .scroll_delta_y = 0,
+        .keys_pressed = keys_dr,
+        .key_modifiers = .{},
+        .directional_held = .{},
+        .text_input = null,
+        .dropped_path = null,
+        .ticks = 0,
+        .delta_time_ms = 16.0,
+    };
+
+    try sysProcessInput(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = frame_input_dr,
+        .delta_time_ms = 16.0,
+    }, false);
+
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        app_st.pending_intents.items.len,
+    );
+    switch (app_st.pending_intents.items[0]) {
+        .pan_by => |p| {
+            try std.testing.expectApproxEqAbs(-exp_diag, p.dx, 0.01);
+            try std.testing.expectApproxEqAbs(-exp_diag, p.dy, 0.01);
+        },
+        else => return error.UnexpectedIntent,
+    }
+    app_st.clearIntents();
+}
+
+test "sysProcessInput repeating key with held orthogonal key pans diagonally" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    app_st.viewer.viewport.zoom_factor = app_st.clampZoomFactor(2.0);
+
+    // Left key repeating while Up key is physically held
+    var keys_left = std.ArrayList(Key).empty;
+    defer keys_left.deinit(allocator);
+    try keys_left.append(allocator, .left);
+
+    const frame_input = FrameInput{
+        .win_w = 800,
+        .win_h = 600,
+        .scale_x = 1.0,
+        .scale_y = 1.0,
+        .mouse_x = 0,
+        .mouse_y = 0,
+        .mouse_left_down = false,
+        .mouse_left_clicked = false,
+        .mouse_inside = true,
+        .quit_requested = false,
+        .scroll_delta_x = 0,
+        .scroll_delta_y = 0,
+        .keys_pressed = keys_left,
+        .key_modifiers = .{},
+        .directional_held = .{ .up = true },
+        .text_input = null,
+        .dropped_path = null,
+        .ticks = 0,
+        .delta_time_ms = 16.0,
+    };
+
+    try sysProcessInput(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = frame_input,
+        .delta_time_ms = 16.0,
+    }, false);
+
+    const inv_sqrt2: f32 = 0.70710678;
+    const exp_diag = inv_sqrt2 * 800.0 * (16.0 / 1000.0);
+
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        app_st.pending_intents.items.len,
+    );
+    switch (app_st.pending_intents.items[0]) {
+        .pan_by => |p| {
+            try std.testing.expectApproxEqAbs(exp_diag, p.dx, 0.01);
+            try std.testing.expectApproxEqAbs(exp_diag, p.dy, 0.01);
+        },
+        else => return error.UnexpectedIntent,
+    }
+}
+
+test "sysProcessInput preserves image navigation when viewport is not zoomed" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    // Default zoom_factor is 1.0 (not zoomed)
+    try std.testing.expect(!app_st.viewer.viewport.isZoomed());
+
+    var keys_right = std.ArrayList(Key).empty;
+    defer keys_right.deinit(allocator);
+    try keys_right.append(allocator, .right);
+
+    const frame_input = FrameInput{
+        .win_w = 800,
+        .win_h = 600,
+        .scale_x = 1.0,
+        .scale_y = 1.0,
+        .mouse_x = 0,
+        .mouse_y = 0,
+        .mouse_left_down = false,
+        .mouse_left_clicked = false,
+        .mouse_inside = true,
+        .quit_requested = false,
+        .scroll_delta_x = 0,
+        .scroll_delta_y = 0,
+        .keys_pressed = keys_right,
+        .key_modifiers = .{},
+        .directional_held = .{ .up = true },
+        .text_input = null,
+        .dropped_path = null,
+        .ticks = 0,
+        .delta_time_ms = 16.0,
+    };
+
+    try sysProcessInput(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = frame_input,
+        .delta_time_ms = 16.0,
+    }, false);
+
+    // Unzoomed mode: Right arrow maps to next_image, never pan_by
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        app_st.pending_intents.items.len,
+    );
+    try std.testing.expectEqual(
+        AppIntent.next_image,
+        app_st.pending_intents.items[0],
+    );
+}
+
+test "sysProcessInput continuous gliding and seamless diagonal transition" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    app_st.viewer.viewport.zoom_factor = app_st.clampZoomFactor(2.0);
+
+    // Simulate already moving upward
+    app_st.viewer.pan_controller.prev_held = .{ .up = true };
+
+    const keys_empty = std.ArrayList(Key).empty;
+    const frame_input = FrameInput{
+        .win_w = 800,
+        .win_h = 600,
+        .scale_x = 1.0,
+        .scale_y = 1.0,
+        .mouse_x = 0,
+        .mouse_y = 0,
+        .mouse_left_down = false,
+        .mouse_left_clicked = false,
+        .mouse_inside = true,
+        .quit_requested = false,
+        .scroll_delta_x = 0,
+        .scroll_delta_y = 0,
+        .keys_pressed = keys_empty,
+        .key_modifiers = .{},
+        .directional_held = .{ .up = true, .left = true },
+        .text_input = null,
+        .dropped_path = null,
+        .ticks = 0,
+        .delta_time_ms = 16.0,
+    };
+
+    try sysProcessInput(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = frame_input,
+        .delta_time_ms = 16.0,
+    }, false);
+
+    // Immediately pushes diagonal glide intent with 0ms stutter
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        app_st.pending_intents.items.len,
+    );
+    const intent = app_st.pending_intents.items[0];
+    switch (intent) {
+        .pan_by => |p| {
+            const inv_sqrt2: f32 = 0.70710678;
+            const exp = inv_sqrt2 * 800.0 * (16.0 / 1000.0);
+            try std.testing.expectApproxEqAbs(exp, p.dx, 0.01);
+            try std.testing.expectApproxEqAbs(exp, p.dy, 0.01);
+        },
+        else => return error.UnexpectedIntent,
+    }
 }
