@@ -210,6 +210,21 @@ test "truncateFilename fallback without fonts" {
     try std.testing.expectEqualStrings("very_long_filename.png", res);
 }
 
+test "truncateDirectory fallback without fonts" {
+    const data = MeasureTextUserData{
+        .fonts = &.{null},
+        .allocator = std.testing.allocator,
+    };
+    const res = truncateDirectory(
+        std.testing.allocator,
+        "/long/path/to/folder",
+        100.0,
+        13,
+        &data,
+    );
+    try std.testing.expectEqualStrings("/long/path/to/folder", res);
+}
+
 test "remapMiddleTruncatedMatches head, tail, and truncated middle" {
     const matches = [_]usize{ 2, 5, 20, 25, 60, 61 };
     const head_len: usize = 10;

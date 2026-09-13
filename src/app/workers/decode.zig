@@ -1878,4 +1878,3 @@ test "decodeWorker - progressive pair loading with PairStreamTarget" {
         try std.testing.expect(raw_seen);
     }
 }
-

@@ -151,6 +151,7 @@ pub fn renderFrame(
             draw_w,
             draw_h,
             frame_allocator,
+            measure_data,
         );
 
         try renderBottomOverlayBar(

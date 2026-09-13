@@ -90,4 +90,3 @@ test "formatWindowTitle: appends [RAW+JPG] for pair entry" {
     defer allocator.free(title);
     try std.testing.expectEqualStrings("vacation.ARW [RAW+JPG]", title);
 }
-

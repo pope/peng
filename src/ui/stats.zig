@@ -8,6 +8,8 @@ const ElementTag = types.ElementTag;
 const MeasureTextUserData = state.MeasureTextUserData;
 const UiViewModel = state.UiViewModel;
 const formatSize = text_utils.formatSize;
+const truncateDirectory = text_utils.truncateDirectory;
+const truncateFilename = text_utils.truncateFilename;
 const types = state.types;
 
 fn renderStatRow(label: []const u8, value: []const u8) !void {
@@ -69,11 +71,13 @@ fn renderInfoOverlay(
     draw_w: f32,
     draw_h: f32,
     frame_allocator: std.mem.Allocator,
+    measure_data: *const MeasureTextUserData,
 ) !void {
     if (!ui_model.overlays.info_panel.visible) return;
 
     var filename: []const u8 = "None";
     var display_dir: []const u8 = "N/A";
+    var raw_container_candidate: []const u8 = "";
     const current_entry = ui_model.current_entry;
 
     if (ui_model.current_index) |idx| {
@@ -82,6 +86,7 @@ fn renderInfoOverlay(
                 .archive_entry => |a| {
                     const page_basename = std.fs.path.basename(a.entry_name);
                     const arch_basename = std.fs.path.basename(a.archive_path);
+                    raw_container_candidate = a.entry_name;
                     filename = try std.fmt.allocPrint(
                         frame_allocator,
                         "{s} (Page {d}/{d})",
@@ -94,33 +99,40 @@ fn renderInfoOverlay(
                     );
                 },
                 .filesystem => |f| {
+                    raw_container_candidate = f.path;
                     filename = std.fs.path.basename(f.path);
-                    const dirname = std.fs.path.dirname(f.path) orelse ".";
-                    display_dir = if (dirname.len > 35)
-                        try std.fmt.allocPrint(frame_allocator, "...{s}", .{
-                            dirname[dirname.len - 32 ..],
-                        })
-                    else
-                        dirname;
+                    display_dir = std.fs.path.dirname(f.path) orelse ".";
                 },
                 .pair => |p| {
+                    raw_container_candidate = p.raw_path;
                     const raw_base = std.fs.path.basename(p.raw_path);
                     filename = try std.fmt.allocPrint(
                         frame_allocator,
                         "{s} [RAW+JPG]",
                         .{raw_base},
                     );
-                    const dirname = std.fs.path.dirname(p.raw_path) orelse ".";
-                    display_dir = if (dirname.len > 35)
-                        try std.fmt.allocPrint(frame_allocator, "...{s}", .{
-                            dirname[dirname.len - 32 ..],
-                        })
-                    else
-                        dirname;
+                    display_dir = std.fs.path.dirname(p.raw_path) orelse ".";
                 },
             }
         }
     }
+
+    const max_value_w: f32 = 200.0;
+    const font_size_u16: u16 = 13;
+    filename = truncateFilename(
+        frame_allocator,
+        filename,
+        max_value_w,
+        font_size_u16,
+        measure_data,
+    );
+    display_dir = truncateDirectory(
+        frame_allocator,
+        display_dir,
+        max_value_w,
+        font_size_u16,
+        measure_data,
+    );
 
     var disk_size_str: []const u8 = "N/A";
     var mime_type: []const u8 = "N/A";
@@ -339,7 +351,14 @@ fn renderInfoOverlay(
         try renderStatRow("File Name", filename);
         try renderStatRow("Directory", display_dir);
         if (is_raw_image) {
-            try renderStatRow("Container", getRawContainerName(mime_type, filename));
+            const container_lookup = if (raw_container_candidate.len > 0)
+                raw_container_candidate
+            else
+                filename;
+            try renderStatRow(
+                "Container",
+                getRawContainerName(mime_type, container_lookup),
+            );
             try renderStatRow("Preview MIME", "image/jpeg");
             try renderStatRow("Resolution", res_str);
             if (raw_res_str) |raw_str| {
@@ -408,8 +427,15 @@ pub fn renderStatsOverlay(
     draw_w: f32,
     draw_h: f32,
     frame_allocator: std.mem.Allocator,
+    measure_data: *const MeasureTextUserData,
 ) !void {
-    try renderInfoOverlay(ui_model, draw_w, draw_h, frame_allocator);
+    try renderInfoOverlay(
+        ui_model,
+        draw_w,
+        draw_h,
+        frame_allocator,
+        measure_data,
+    );
     if (!ui_model.overlays.stats_panel.visible) return;
 
     const current_entry = ui_model.current_entry;
