@@ -175,6 +175,8 @@ pub const ActionId = enum {
     set_tint_dialog,
     set_vibrance_dialog,
     set_saturation_dialog,
+    set_clarity_dialog,
+    set_texture_dialog,
 
     // Lifecycle
     quit,
@@ -702,6 +704,24 @@ pub const actions = [_]ActionDef{
         .intent = .{ .set_palette = .{ .mode = .set_saturation } },
     },
     .{
+        .id = .set_clarity_dialog,
+        .title = "Set Clarity (Type Value)...",
+        .shortcut_text = "",
+        .description = "Open numeric input dialog to set clarity (-1.0 to 1.0)",
+        .show_in_palette = true,
+        .shortcuts = &.{},
+        .intent = .{ .set_palette = .{ .mode = .set_clarity } },
+    },
+    .{
+        .id = .set_texture_dialog,
+        .title = "Set Texture (Type Value)...",
+        .shortcut_text = "",
+        .description = "Open numeric input dialog to set texture (-1.0 to 1.0)",
+        .show_in_palette = true,
+        .shortcuts = &.{},
+        .intent = .{ .set_palette = .{ .mode = .set_texture } },
+    },
+    .{
         .id = .go_to_image_dialog,
         .title = "Go to Image...",
         .shortcut_text = "Shift+G",
@@ -1118,8 +1138,8 @@ pub const ipc_commands = blk: {
 test "actions registry projections" {
     const testing = std.testing;
 
-    // Palette count: 58 previous + 9 photo adjustment dialogs = 67
-    try testing.expectEqual(@as(usize, 67), palette_action_items.len);
+    // Palette count: 58 previous + 11 photo adjustment dialogs = 69
+    try testing.expectEqual(@as(usize, 69), palette_action_items.len);
 
     // Exact index preservation
     try testing.expectEqualStrings("Navigate Directories...", palette_action_items[7].name);

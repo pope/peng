@@ -959,6 +959,8 @@ fn drawBatches(
                         1.0,
                     .scale_mode = view_params.getShaderScaleModeInt(),
                     .has_adjustments = if (apply_adj) 1 else 0,
+                    .clarity = if (apply_adj) edits.get(.clarity) else 0.0,
+                    .texture = if (apply_adj) edits.get(.texture) else 0.0,
                 };
                 cmd_buf.pushFragmentUniform(0, std.mem.asBytes(&img_ubo));
             } else {

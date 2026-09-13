@@ -15,7 +15,8 @@ pub const MaterialType = enum {
     blurred_surface,
 };
 
-/// Fragment shader push uniform block for image viewer photo adjustments and filter algorithms.
+/// Fragment shader push uniform block for image viewer photo adjustments and
+/// filter algorithms.
 pub const ImageUniforms = extern struct {
     brightness: f32 = 0.0,
     contrast: f32 = 1.0,
@@ -33,9 +34,9 @@ pub const ImageUniforms = extern struct {
     scale_mode: i32 = 1,
 
     has_adjustments: i32 = 0,
+    clarity: f32 = 0.0,
+    texture: f32 = 0.0,
     pad1: i32 = 0,
-    pad2: i32 = 0,
-    pad3: i32 = 0,
 };
 
 comptime {
@@ -53,6 +54,9 @@ comptime {
     std.debug.assert(@offsetOf(ImageUniforms, "contrast_blend") == 40);
     std.debug.assert(@offsetOf(ImageUniforms, "scale_mode") == 44);
     std.debug.assert(@offsetOf(ImageUniforms, "has_adjustments") == 48);
+    std.debug.assert(@offsetOf(ImageUniforms, "clarity") == 52);
+    std.debug.assert(@offsetOf(ImageUniforms, "texture") == 56);
+    std.debug.assert(@offsetOf(ImageUniforms, "pad1") == 60);
 }
 
 /// Fragment shader push uniform block for UI shapes, text, and frosted glass panels.

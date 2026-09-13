@@ -427,9 +427,10 @@ pub const TitleDisplay = union(enum) {
 pub const EditParam = intents.EditParam;
 
 /// Logical grouping domain for photographic editing parameters.
-pub const EditDomain = enum(u1) {
+pub const EditDomain = enum(u2) {
     tone = 0,
     color = 1,
+    presence = 2,
 };
 
 /// Descriptor configuring metadata, bounds, stepping, and formatting for
@@ -601,7 +602,41 @@ pub const descriptors = [EditParam.count]ParamDescriptor{
         .snap_radius = 0.025,
         .display_kind = .percent,
     },
+    .{
+        .param = .clarity,
+        .domain = .presence,
+        .name = "clarity",
+        .label = "Clarity",
+        .min = -1.0,
+        .max = 1.0,
+        .default = 0.0,
+        .step = 0.05,
+        .snap_radius = 0.025,
+        .display_kind = .percent,
+    },
+    .{
+        .param = .texture,
+        .domain = .presence,
+        .name = "texture",
+        .label = "Texture",
+        .min = -1.0,
+        .max = 1.0,
+        .default = 0.0,
+        .step = 0.05,
+        .snap_radius = 0.025,
+        .display_kind = .percent,
+    },
 };
+
+comptime {
+    for (0..descriptors.len) |i| {
+        const p: EditParam = @enumFromInt(i);
+        std.debug.assert(descriptors[i].param == p);
+        std.debug.assert(descriptors[i].min < descriptors[i].max);
+        std.debug.assert(descriptors[i].default >= descriptors[i].min);
+        std.debug.assert(descriptors[i].default <= descriptors[i].max);
+    }
+}
 
 /// Returns the ParamDescriptor definition for the given EditParam.
 pub inline fn getDescriptor(param: EditParam) ParamDescriptor {
@@ -672,6 +707,16 @@ pub fn getSliderElementNames(param: EditParam) SliderElementNames {
             .track = "SliderTrack_Saturation",
             .reset = "SliderReset_Saturation",
             .knob = "SliderKnob_Saturation",
+        },
+        .clarity => .{
+            .track = "SliderTrack_Clarity",
+            .reset = "SliderReset_Clarity",
+            .knob = "SliderKnob_Clarity",
+        },
+        .texture => .{
+            .track = "SliderTrack_Texture",
+            .reset = "SliderReset_Texture",
+            .knob = "SliderKnob_Texture",
         },
     };
 }

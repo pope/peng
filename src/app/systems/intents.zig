@@ -99,6 +99,11 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 vp.edits.set(.saturation, bc.saturation);
                 vp.compare_original = false;
             },
+            .batch_presence => |bp| {
+                vp.edits.set(.clarity, bp.clarity);
+                vp.edits.set(.texture, bp.texture);
+                vp.compare_original = false;
+            },
             .reset_param => |p| {
                 vp.edits.resetParam(p);
                 vp.compare_original = false;

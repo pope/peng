@@ -565,6 +565,64 @@ pub fn renderEditPanel(
                 }
             });
 
+            // Divider
+            clay.UI()(.{
+                .layout = .{
+                    .sizing = .{
+                        .w = .fixed(CONTENT_WIDTH),
+                        .h = .fixed(1),
+                    },
+                },
+                .background_color = a(theme.surface0, progress),
+            })({});
+
+            // -----------------------------------------------------------------
+            // Section 3: Presence & Detail
+            // -----------------------------------------------------------------
+            clay.UI()(.{
+                .layout = .{
+                    .sizing = .{ .w = .fixed(CONTENT_WIDTH), .h = .fit },
+                    .direction = .top_to_bottom,
+                    .child_gap = 12,
+                },
+            })({
+                // Section Category Label
+                clay.UI()(.{
+                    .layout = .{
+                        .sizing = .{ .w = .grow, .h = .fit },
+                        .padding = .{ .top = 10, .bottom = 14 },
+                    },
+                })({
+                    clay.text("PRESENCE & DETAIL", .{
+                        .color = a(theme.subtext0, progress),
+                        .font_size = 11,
+                        .font_id = 0,
+                    });
+                });
+
+                const active_sl = ui_model.overlays.edit_panel.active_slider;
+
+                inline for (&[_]EditParam{
+                    .texture,
+                    .clarity,
+                }) |p| {
+                    const desc = state.getDescriptor(p);
+                    const str = try formatValue(
+                        frame_allocator,
+                        desc,
+                        vp.edits.get(p),
+                    );
+                    const is_active = !is_comparing and active_sl == p;
+                    renderSlider(
+                        p,
+                        vp.edits.get(p),
+                        str,
+                        progress,
+                        is_active,
+                    );
+                }
+            });
+
             // Bottom spacer for comfortable scroll padding
             clay.UI()(.{
                 .layout = .{
@@ -634,4 +692,17 @@ test "formatValue string lifetimes" {
     const cb75 = try formatValue(std.testing.allocator, cb_desc, 0.75);
     defer std.testing.allocator.free(cb75);
     try std.testing.expectEqualStrings("75%", cb75);
+
+    // Test clarity and texture formatting
+    const clar_desc = state.getDescriptor(.clarity);
+    const cl0 = try formatValue(std.testing.allocator, clar_desc, 0.0);
+    try std.testing.expectEqualStrings("0%", cl0);
+    const cl_pos = try formatValue(std.testing.allocator, clar_desc, 0.35);
+    defer std.testing.allocator.free(cl_pos);
+    try std.testing.expectEqualStrings("+35%", cl_pos);
+
+    const tex_desc = state.getDescriptor(.texture);
+    const tx_neg = try formatValue(std.testing.allocator, tex_desc, -0.25);
+    defer std.testing.allocator.free(tx_neg);
+    try std.testing.expectEqualStrings("-25%", tx_neg);
 }

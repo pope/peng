@@ -136,6 +136,12 @@ pub const IpcCommand = union(enum) {
         vibrance: f32,
         saturation: f32,
     },
+    presence: struct {
+        clarity: f32,
+        texture: f32,
+    },
+    clarity: f32,
+    texture: f32,
     compare: CompareAction,
     edit: EditAction,
     filter: TextureScaleMode,
@@ -178,6 +184,18 @@ pub const IpcCommand = union(enum) {
                 .tint = c.tint,
                 .vibrance = c.vibrance,
                 .saturation = c.saturation,
+            } } },
+            .presence => |p| return .{ .adjust = .{ .batch_presence = .{
+                .clarity = p.clarity,
+                .texture = p.texture,
+            } } },
+            .clarity => |val| return .{ .adjust = .{ .set = .{
+                .param = .clarity,
+                .value = val,
+            } } },
+            .texture => |val| return .{ .adjust = .{ .set = .{
+                .param = .texture,
+                .value = val,
             } } },
             .compare => |action| switch (action) {
                 .enable => return .{ .adjust = .{ .set_compare = true } },
@@ -356,6 +374,41 @@ pub const IpcCommand = union(enum) {
                     .saturation = sat,
                 },
             };
+        } else if (std.mem.eql(u8, cmd, "presence")) {
+            const clar_str = it.next() orelse return error.MissingArgument;
+            const tex_str = it.next() orelse return error.MissingArgument;
+            if (clar_str.len > 128 or tex_str.len > 128) {
+                return error.InvalidArgument;
+            }
+            const clar = try std.fmt.parseFloat(f32, clar_str);
+            const tex = try std.fmt.parseFloat(f32, tex_str);
+            if (std.math.isNan(clar) or std.math.isInf(clar) or
+                std.math.isNan(tex) or std.math.isInf(tex))
+            {
+                return error.InvalidArgument;
+            }
+            return .{
+                .presence = .{
+                    .clarity = clar,
+                    .texture = tex,
+                },
+            };
+        } else if (std.mem.eql(u8, cmd, "clarity")) {
+            const val_str = it.next() orelse return error.MissingArgument;
+            if (val_str.len > 128) return error.InvalidArgument;
+            const val = try std.fmt.parseFloat(f32, val_str);
+            if (std.math.isNan(val) or std.math.isInf(val)) {
+                return error.InvalidArgument;
+            }
+            return .{ .clarity = val };
+        } else if (std.mem.eql(u8, cmd, "texture")) {
+            const val_str = it.next() orelse return error.MissingArgument;
+            if (val_str.len > 128) return error.InvalidArgument;
+            const val = try std.fmt.parseFloat(f32, val_str);
+            if (std.math.isNan(val) or std.math.isInf(val)) {
+                return error.InvalidArgument;
+            }
+            return .{ .texture = val };
         } else if (std.mem.eql(u8, cmd, "filter")) {
             const val = it.next() orelse return error.MissingArgument;
             if (std.meta.stringToEnum(TextureScaleMode, val)) |mode| {
@@ -842,6 +895,33 @@ test "IpcCommand parsing" {
             .saturation = -0.35,
         } } },
         cmd_color.toIntent().?,
+    );
+
+    const cmd_presence = try IpcCommand.parse("presence 0.35 -0.2");
+    try std.testing.expectEqual(
+        intents.AppIntent{ .adjust = .{ .batch_presence = .{
+            .clarity = 0.35,
+            .texture = -0.2,
+        } } },
+        cmd_presence.toIntent().?,
+    );
+
+    const cmd_clarity = try IpcCommand.parse("clarity 0.45");
+    try std.testing.expectEqual(
+        intents.AppIntent{ .adjust = .{ .set = .{
+            .param = .clarity,
+            .value = 0.45,
+        } } },
+        cmd_clarity.toIntent().?,
+    );
+
+    const cmd_texture = try IpcCommand.parse("texture -0.5");
+    try std.testing.expectEqual(
+        intents.AppIntent{ .adjust = .{ .set = .{
+            .param = .texture,
+            .value = -0.5,
+        } } },
+        cmd_texture.toIntent().?,
     );
 
     const cmd_adj_2 = try IpcCommand.parse("adjust 0.2 1.5");

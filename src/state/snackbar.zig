@@ -418,7 +418,7 @@ pub fn findRule(intent: AppIntent) ?SnackbarRule {
                     .format_fn = formatAdjustParam,
                 };
             },
-            .batch_tone, .batch_color => return null,
+            .batch_tone, .batch_color, .batch_presence => return null,
         },
         else => {
             const intent_tag = std.meta.activeTag(intent);

@@ -24,9 +24,9 @@ layout(std140, set = 3, binding = 0) uniform ImageUBO {
     int scale_mode;
 
     int has_adjustments;
+    float clarity;
+    float texture_adj;
     int pad1;
-    int pad2;
-    int pad3;
 }
 ubo;
 
@@ -616,6 +616,115 @@ void main() {
 
             float Y_final = dot(c_safe, REC709_LUMA);
             linear = max(vec3(0.0), Y_final + (c_safe - Y_final) * sat_mult);
+        }
+
+        // 5.5. Presence & Detail: Edge-Aware Texture & Multi-Scale Clarity
+        if (abs(ubo.clarity) > 1e-5 || abs(ubo.texture_adj) > 1e-5) {
+            vec2 tex_size = vec2(textureSize(texSampler, 0));
+            vec2 inv_size = 1.0 / max(tex_size, vec2(1.0));
+            float rel_presence = 0.0;
+
+            // Texture: High-mid frequency micro-detail (4-16 px radius)
+            // Uses an 8-tap circular isotropic bilateral filter with center tap
+            if (abs(ubo.texture_adj) > 1e-5) {
+                // 8 equidistant taps at radius R = 2.0 (circular D8 symmetry)
+                const vec2 tex_offsets[8] = vec2[8](
+                    vec2(2.0, 0.0), vec2(-2.0, 0.0), vec2(0.0, 2.0),
+                    vec2(0.0, -2.0), vec2(1.414214, 1.414214),
+                    vec2(-1.414214, 1.414214), vec2(1.414214, -1.414214),
+                    vec2(-1.414214, -1.414214));
+
+                // Center tap initialization (w0 = 1.0 anchors edge stability)
+                float w_sum = 1.0;
+                float Y_accum = Y_in;
+
+                for (int i = 0; i < 8; ++i) {
+                    vec2 uv_samp = inTexCoord + tex_offsets[i] * inv_size;
+                    vec3 c_s = srgb_to_linear(
+                        clamp(texture(texSampler, uv_samp).rgb, 0.0, 1.0));
+                    float Y_s = dot(c_s, REC709_LUMA);
+                    float diff = Y_s - Y_in;
+
+                    // Bilateral edge-stopping weight (sigma_r = 0.06):
+                    // 1.0 / (2.0 * 0.06^2) = 1.0 / 0.0072 = 138.889
+                    float w = exp(-(diff * diff) * 138.889);
+                    w_sum += w;
+                    Y_accum += w * Y_s;
+                }
+
+                float Y_base_tex = Y_accum / w_sum;
+                float detail_tex = Y_in - Y_base_tex;
+
+                // Edge protection gate: strictly zero modulation on strong
+                // silhouette edges (lips, eyes, hair contours)
+                float edge_gate = 1.0 - smoothstep(0.04, 0.12, abs(detail_tex));
+
+                // Noise-floor coring for positive texture boost
+                float noise_core = smoothstep(0.002, 0.010, abs(detail_tex));
+
+                // Asymmetric detail weighting:
+                // Negative (smoothing): pure mix towards Y_base (no phase flip)
+                // Positive (detail): boosted with noise coring
+                float is_pos = step(0.0, ubo.texture_adj);
+                float tex_mod =
+                    mix(detail_tex, detail_tex * noise_core, is_pos);
+                tex_mod *= edge_gate;
+
+                // Perceptual Weber-Rose denominator (Y_in + 0.04) prevents
+                // shadow noise explosion
+                float rel_detail = tex_mod / (Y_in + 0.04);
+                rel_presence += ubo.texture_adj * rel_detail;
+            }
+
+            // Clarity: Mid-frequency local contrast (32-128 px radius)
+            // Uses a 5-tap (center + 4 diagonals) mipmap filter at Lod 3.0
+            if (abs(ubo.clarity) > 1e-5) {
+                const vec2 clar_offsets[4] =
+                    vec2[4](vec2(1.5, 1.5), vec2(-1.5, 1.5), vec2(1.5, -1.5),
+                            vec2(-1.5, -1.5));
+
+                // Center tap at Lod 3.0
+                vec3 c_c0 = srgb_to_linear(clamp(
+                    textureLod(texSampler, inTexCoord, 3.0).rgb, 0.0, 1.0));
+                float Y_c0 = dot(c_c0, REC709_LUMA);
+                float diff_c0 = Y_c0 - Y_in;
+                float w_c0 = exp(-(diff_c0 * diff_c0) * 25.0);
+                float w_sum_clar = max(w_c0, 0.25);
+                float Y_accum_clar = w_sum_clar * Y_c0;
+
+                for (int i = 0; i < 4; ++i) {
+                    vec2 uv_c = inTexCoord + clar_offsets[i] * inv_size * 8.0;
+                    vec3 c_c = srgb_to_linear(
+                        clamp(textureLod(texSampler, uv_c, 3.0).rgb, 0.0, 1.0));
+                    float Y_c = dot(c_c, REC709_LUMA);
+                    float diff_c = Y_c - Y_in;
+                    float w_c = exp(-(diff_c * diff_c) * 25.0);
+                    w_sum_clar += w_c;
+                    Y_accum_clar += w_c * Y_c;
+                }
+
+                float Y_base_clar = Y_accum_clar / w_sum_clar;
+                float raw_detail_c = Y_in - Y_base_clar;
+
+                // Anti-halo soft-clamping: compress large edge steps
+                const float max_clar_step = 0.15;
+                float s_c = sign(raw_detail_c);
+                float a_c = abs(raw_detail_c);
+                float clamped_c =
+                    s_c * (a_c * max_clar_step) / (a_c + max_clar_step);
+
+                // Midtone envelope: protect deep shadows and specular whites
+                float Y_curr = dot(linear, REC709_LUMA);
+                float midtone_env = smoothstep(0.04, 0.20, Y_curr) *
+                                    (1.0 - smoothstep(0.70, 0.95, Y_curr));
+
+                float rel_clarity = clamped_c / (Y_in + 0.05);
+                rel_presence += ubo.clarity * rel_clarity * midtone_env;
+            }
+
+            // Apply proportional luminance scale to preserve color hue
+            float scale = max(1.0 + rel_presence, 0.0);
+            linear *= scale;
         }
 
         // 6. Re-encode to display sRGB:

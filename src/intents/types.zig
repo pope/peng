@@ -159,6 +159,8 @@ pub const EditParam = enum(u8) {
     tint = 8,
     vibrance = 9,
     saturation = 10,
+    clarity = 11,
+    texture = 12,
 
     pub const count = std.enums.values(EditParam).len;
 };
@@ -196,6 +198,11 @@ pub const AdjustIntent = union(enum) {
         vibrance: f32,
         saturation: f32,
     },
+    /// Batch update for clarity & texture (presence & detail)
+    batch_presence: struct {
+        clarity: f32,
+        texture: f32,
+    },
     /// Reset a single parameter to its neutral default
     reset_param: EditParam,
     /// Reset all photographic adjustments
@@ -222,6 +229,8 @@ pub const PaletteMode = enum {
     set_tint,
     set_vibrance,
     set_saturation,
+    set_clarity,
+    set_texture,
     go_to_image,
     directory_navigator,
     set_slideshow_interval,
@@ -241,6 +250,8 @@ pub const PaletteMode = enum {
             .set_tint => .tint,
             .set_vibrance => .vibrance,
             .set_saturation => .saturation,
+            .set_clarity => .clarity,
+            .set_texture => .texture,
             .inactive,
             .files,
             .actions,
@@ -266,6 +277,8 @@ pub const PaletteMode = enum {
             .set_tint,
             .set_vibrance,
             .set_saturation,
+            .set_clarity,
+            .set_texture,
             .go_to_image,
             .set_slideshow_interval,
             => true,
@@ -286,6 +299,8 @@ pub const PaletteMode = enum {
             .set_tint,
             .set_vibrance,
             .set_saturation,
+            .set_clarity,
+            .set_texture,
             => .{ .min = -1.0, .max = 1.0 },
             .set_contrast => .{ .min = 0.0, .max = 3.0 },
             .set_contrast_blend => .{ .min = 0.0, .max = 1.0 },
