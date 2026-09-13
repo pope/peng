@@ -277,6 +277,25 @@ project's formatting and line-length constraints:
 - When reviewing or writing Zig, GLSL, or C code, proactively verify that all
   new and modified lines strictly obey the \<= 80 columns ceiling.
 
+### 5. Maximum Indentation Depth & Anti-Pyramid Guard Clauses
+
+- **Peak Indentation Ceiling (24–28 Columns / ~6 Levels)**: Functions MUST NOT
+  accumulate deeply nested control flow exceeding 24–28 leading whitespace
+  characters. Under an 80-column ceiling, deep indentation reduces available
+  horizontal space to unusable levels (< 40 characters), forcing awkward splits
+  and degrading readability.
+- **Flattening Techniques**:
+  - **Early-Return Guard Clauses**: Handle preconditions and error cases
+    immediately at the top of functions (`if (...) return;`) to eliminate
+    cascading `if/else` ladders.
+  - **Early Loop Continue/Break**: Filter non-qualifying iterations early in
+    `for` or `while` loops before executing the primary logic body.
+  - **Extracted Private Helper Functions**: Extract self-contained blocks (e.g.
+    specific IPC command handlers, palette item renderers, metadata probes) into
+    co-located private functions with clear, descriptive signatures.
+  - **Local Intermediate Variables**: Compute boolean flags or intermediate
+    state variables in flat scope rather than nesting conditional blocks.
+
 ## 15. Exhaustive Enum Pattern Matching & Anti-`else => {}` Invariant
 
 - **Exhaustive Matching on Architectural Enums**:
@@ -296,3 +315,12 @@ project's formatting and line-length constraints:
   - If multiple variants share a no-op or default behavior, enumerate them
     explicitly in a multi-case pattern (e.g.
     `.inactive, .files, .actions => {}`).
+- **`switch` Expressions Over `if/else if` on Enums**:
+  - When branching logic depends on an enumeration variant (e.g.
+    `PaletteMode`, `EditParam`, `AppIntent`, `ScaleMode`), ALWAYS use a
+    `switch` statement or expression.
+  - **Anti-Pattern**: NEVER write chained
+    `if (mode == .actions) ... else if (mode == .files) ...`. Chained
+    `if/else if` cascades bypass Zig's compile-time exhaustiveness guarantees,
+    accumulate unnecessary indentation, and risk silent omissions when new
+    variants are added.

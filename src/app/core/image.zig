@@ -14,6 +14,8 @@ pub const Orientation = state_pkg.Orientation;
 const parseExifDimensions = exif.parseExifDimensions;
 const parseExifOrientation = exif.parseExifOrientation;
 const RawMetadata = state_pkg.RawMetadata;
+const ArchiveMediaEntry = state_pkg.types.ArchiveMediaEntry;
+const ZipSeekOffsets = state_pkg.types.ZipSeekOffsets;
 
 /// Unique lookup key identifying a cached image slot by its playlist index
 /// and cache generation epoch.
@@ -30,6 +32,19 @@ pub const CacheSlot = struct {
     key: CacheKey,
     entry: CacheEntry,
 };
+
+/// Computes cyclic distance between two indices in an array of total_items.
+pub fn calcCyclicDistance(
+    idx: usize,
+    cur: usize,
+    total_items: usize,
+) usize {
+    const linear = if (idx > cur) idx - cur else cur - idx;
+    return if (total_items > 0 and linear <= total_items)
+        @min(linear, total_items - linear)
+    else
+        linear;
+}
 
 /// Structure-of-Arrays (SoA) collection managing cached image slots,
 /// generation epochs, and VRAM memory budgeting.
@@ -148,14 +163,14 @@ pub const CacheSlotMap = struct {
         return total;
     }
 
-    /// Enforces the maximum VRAM budget by evicting `.loaded_gpu` textures from the cache map.
+    /// Enforces maximum VRAM budget by evicting `.loaded_gpu` textures.
     ///
     /// Eviction ordering uses circular distance relative to `current_index`:
-    /// 1. Distant entries (circular distance > 2) are evicted first, furthest distance first.
-    /// 2. If VRAM budget is still exceeded and only immediate neighbors (distance <= 2) remain,
-    ///    they are evicted furthest first (distance 2 before distance 1).
-    /// The currently active image (`key.index == current_index`) and any active outgoing
-    /// slideshow transition image (`key.index == protected_prev_index`) are strictly protected.
+    /// 1. Distant entries (distance > 2) are evicted furthest first.
+    /// 2. If VRAM budget is still exceeded and only immediate neighbors
+    ///    (distance <= 2) remain, they are evicted furthest first.
+    /// The currently active image and any active outgoing slideshow transition
+    /// image (`protected_prev_index`) are strictly protected.
     pub fn enforceVramBudget(
         self: *CacheSlotMap,
         gpu_device: ?sdl.gpu.Device,
@@ -175,36 +190,26 @@ pub const CacheSlotMap = struct {
             var neighbor_victim: ?usize = null;
 
             for (entries, keys, 0..) |entry, key, i| {
-                if (entry.status == .loaded_gpu) {
-                    if (current_index) |cur| {
-                        if (key.index == cur) continue;
-                        if (protected_prev_index) |prev| {
-                            if (key.index == prev) continue;
-                        }
-                        const linear_dist = if (key.index > cur)
-                            key.index - cur
-                        else
-                            cur - key.index;
-                        const dist = if (total_items > 0 and linear_dist <= total_items)
-                            @min(linear_dist, total_items - linear_dist)
-                        else
-                            linear_dist;
-
-                        if (dist > 2) {
-                            if (distant_victim == null or dist > max_distant_dist) {
-                                max_distant_dist = dist;
-                                distant_victim = i;
-                            }
-                        } else {
-                            if (neighbor_victim == null or dist > max_neighbor_dist) {
-                                max_neighbor_dist = dist;
-                                neighbor_victim = i;
-                            }
-                        }
-                    } else {
+                if (entry.status != .loaded_gpu) continue;
+                const cur = current_index orelse {
+                    distant_victim = i;
+                    break;
+                };
+                if (key.index == cur) continue;
+                if (protected_prev_index) |prev| {
+                    if (key.index == prev) continue;
+                }
+                const dist = calcCyclicDistance(key.index, cur, total_items);
+                const is_neighbor_victim = neighbor_victim == null or
+                    dist > max_neighbor_dist;
+                if (dist > 2) {
+                    if (distant_victim == null or dist > max_distant_dist) {
+                        max_distant_dist = dist;
                         distant_victim = i;
-                        break;
                     }
+                } else if (is_neighbor_victim) {
+                    max_neighbor_dist = dist;
+                    neighbor_victim = i;
                 }
             }
 
@@ -482,6 +487,168 @@ pub const ProbedImageMetadata = struct {
     has_embedded_thumbnail: bool = false,
 };
 
+fn probeStoredZipMetadata(
+    io: std.Io,
+    a: ArchiveMediaEntry,
+    seek: ZipSeekOffsets,
+) ?ProbedImageMetadata {
+    if (seek.compression_method != .store) return null;
+
+    var file = std.Io.Dir.openFile(
+        std.Io.Dir.cwd(),
+        io,
+        a.archive_path,
+        .{},
+    ) catch |err| {
+        std.log.warn(
+            "probeMediaMetadata: openFile failed for archive '{s}': {any}",
+            .{ a.archive_path, err },
+        );
+        return null;
+    };
+    defer file.close(io);
+
+    var header_buf: [64 * 1024]u8 = undefined;
+    var slices = [_][]u8{&header_buf};
+    const n = file.readPositional(
+        io,
+        &slices,
+        seek.file_offset,
+    ) catch |err| {
+        std.log.warn(
+            "probeMediaMetadata: readPositional failed for '{s}': {any}",
+            .{ a.archive_path, err },
+        );
+        return null;
+    };
+    if (n == 0) return null;
+
+    var data_offset: usize = 0;
+    if (n >= @sizeOf(std.zip.LocalFileHeader) and
+        std.mem.eql(u8, header_buf[0..4], &std.zip.local_file_header_sig))
+    {
+        const filename_len = std.mem.readInt(u16, header_buf[26..28], .little);
+        const extra_len = std.mem.readInt(u16, header_buf[28..30], .little);
+        data_offset = @sizeOf(std.zip.LocalFileHeader) +
+            @as(usize, filename_len) +
+            @as(usize, extra_len);
+    }
+    if (n <= data_offset) return null;
+
+    const image_slice = header_buf[data_offset..n];
+    const mime_type = detectMimeType(image_slice, a.entry_name);
+    const dims = parseImageDimensions(image_slice, mime_type) orelse
+        return null;
+    const rot = exif.parseExifOrientation(image_slice) orelse .normal;
+    const is_raw = core_fs.isRawFile(a.entry_name) or
+        std.mem.startsWith(u8, mime_type, "image/x-");
+
+    var has_thumb = false;
+    if (std.mem.eql(u8, mime_type, "image/jpeg")) {
+        if (exif.extractJpegThumbnailLocation(image_slice)) |_| {
+            has_thumb = true;
+        }
+    }
+
+    return ProbedImageMetadata{
+        .dims = dims,
+        .orientation = rot,
+        .raw_metadata = if (is_raw) RawMetadata.init(dims.w, dims.h) else .none,
+        .has_embedded_thumbnail = has_thumb,
+    };
+}
+
+const FujiRafMetadataResult = struct {
+    dims: ?ImageDimensions,
+    rot: Orientation,
+    has_thumb: bool,
+};
+
+fn probeFujiRafMetadata(
+    file: *std.Io.File,
+    io: std.Io,
+    header: []const u8,
+    existing_dims: ?ImageDimensions,
+    path: []const u8,
+) FujiRafMetadataResult {
+    var dims = existing_dims;
+    var rot: Orientation = .normal;
+    var has_thumb = false;
+    const n = header.len;
+
+    if (dims == null) {
+        if (exif.extractFujiRafMetadataLocation(header)) |meta_loc| {
+            if (meta_loc.length <= n and
+                meta_loc.file_offset <= n -| meta_loc.length)
+            {
+                const start: usize = @intCast(meta_loc.file_offset);
+                const len: usize = @intCast(meta_loc.length);
+                const m_slice = header[start .. start + len];
+                if (exif.parseFujiRafDimensions(m_slice)) |fd| {
+                    dims = .{ .w = fd.w, .h = fd.h };
+                }
+            } else {
+                var meta_tmp: [4096]u8 = undefined;
+                const m_len: usize = @intCast(meta_loc.length);
+                const to_read: usize = @min(m_len, meta_tmp.len);
+                var m_slices = [_][]u8{meta_tmp[0..to_read]};
+                const mn = file.readPositional(
+                    io,
+                    &m_slices,
+                    meta_loc.file_offset,
+                ) catch |err| blk: {
+                    std.log.warn(
+                        "probeMediaMetadata: RAF metadata failed for '{s}': " ++
+                            "{any}",
+                        .{ path, err },
+                    );
+                    break :blk 0;
+                };
+                if (mn >= 4) {
+                    const m_sub = meta_tmp[0..mn];
+                    if (exif.parseFujiRafDimensions(m_sub)) |fd| {
+                        dims = .{ .w = fd.w, .h = fd.h };
+                    }
+                }
+            }
+        }
+    }
+
+    if (exif.extractFujiRafPreviewLocation(header)) |prev_loc| {
+        has_thumb = true;
+        const off: usize = @intCast(prev_loc.file_offset);
+        if (off + 4096 <= n) {
+            rot = exif.parseExifOrientation(header[off..n]) orelse .normal;
+            if (dims == null) {
+                dims = parseImageDimensions(header[off..n], "image/jpeg");
+            }
+        } else {
+            var p_buf: [8192]u8 = undefined;
+            var p_slices = [_][]u8{&p_buf};
+            const pn = file.readPositional(
+                io,
+                &p_slices,
+                prev_loc.file_offset,
+            ) catch |err| blk: {
+                std.log.warn(
+                    "probeMediaMetadata: Fuji RAF preview readPositional " ++
+                        "failed for '{s}': {any}",
+                    .{ path, err },
+                );
+                break :blk 0;
+            };
+            if (pn > 0) {
+                rot = exif.parseExifOrientation(p_buf[0..pn]) orelse .normal;
+                if (dims == null) {
+                    dims = parseImageDimensions(p_buf[0..pn], "image/jpeg");
+                }
+            }
+        }
+    }
+
+    return .{ .dims = dims, .rot = rot, .has_thumb = has_thumb };
+}
+
 /// Synchronously probes container headers for image dimensions, EXIF rotation,
 /// and embedded thumbnail presence in < 0.1ms before spawning background decode
 /// workers, eliminating Frame-1 layout jumps and UI flicker.
@@ -518,78 +685,16 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
             const is_fuji_mime = std.mem.eql(u8, mime_type, "image/x-fuji-raf");
             const is_fuji_magic = n >= 8 and std.mem.startsWith(u8, header_buf[0..n], "FUJIFILM");
             if (is_fuji_mime or is_fuji_magic) {
-                // If dimensions not yet found in first 64KB, perform small positional read
-                // for metadata block
-                if (dims == null) {
-                    if (exif.extractFujiRafMetadataLocation(header_buf[0..n])) |meta_loc| {
-                        if (meta_loc.length <= n and
-                            meta_loc.file_offset <= n -| meta_loc.length)
-                        {
-                            const start: usize = @intCast(meta_loc.file_offset);
-                            const len: usize = @intCast(meta_loc.length);
-                            const end: usize = start + len;
-                            const m_slice = header_buf[start..end];
-                            if (exif.parseFujiRafDimensions(m_slice)) |fd| {
-                                dims = .{ .w = fd.w, .h = fd.h };
-                            }
-                        } else {
-                            var meta_tmp: [4096]u8 = undefined;
-                            const m_len: usize = @intCast(meta_loc.length);
-                            const to_read: usize = @min(m_len, meta_tmp.len);
-                            var m_slices = [_][]u8{meta_tmp[0..to_read]};
-                            const mn = file.readPositional(
-                                io,
-                                &m_slices,
-                                meta_loc.file_offset,
-                            ) catch |err| blk: {
-                                std.log.warn(
-                                    "probeMediaMetadata: RAF metadata " ++
-                                        "failed for '{s}': {any}",
-                                    .{ f.path, err },
-                                );
-                                break :blk 0;
-                            };
-                            if (mn >= 4) {
-                                const m_sub = meta_tmp[0..mn];
-                                if (exif.parseFujiRafDimensions(m_sub)) |fd| {
-                                    dims = .{ .w = fd.w, .h = fd.h };
-                                }
-                            }
-                        }
-                    }
-                }
-                // Sourced from embedded preview JPEG's EXIF header and fallback dimensions
-                if (exif.extractFujiRafPreviewLocation(header_buf[0..n])) |prev_loc| {
-                    has_thumb = true;
-                    const off: usize = @intCast(prev_loc.file_offset);
-                    if (off + 4096 <= n) {
-                        rot = exif.parseExifOrientation(header_buf[off..n]) orelse .normal;
-                        if (dims == null) {
-                            dims = parseImageDimensions(header_buf[off..n], "image/jpeg");
-                        }
-                    } else {
-                        var p_buf: [8192]u8 = undefined;
-                        var p_slices = [_][]u8{&p_buf};
-                        const pn = file.readPositional(
-                            io,
-                            &p_slices,
-                            prev_loc.file_offset,
-                        ) catch |err| blk: {
-                            std.log.warn(
-                                "probeMediaMetadata: Fuji RAF preview readPositional failed " ++
-                                    "for '{s}': {any}",
-                                .{ f.path, err },
-                            );
-                            break :blk 0;
-                        };
-                        if (pn > 0) {
-                            rot = exif.parseExifOrientation(p_buf[0..pn]) orelse .normal;
-                            if (dims == null) {
-                                dims = parseImageDimensions(p_buf[0..pn], "image/jpeg");
-                            }
-                        }
-                    }
-                }
+                const raf_meta = probeFujiRafMetadata(
+                    &file,
+                    io,
+                    header_buf[0..n],
+                    dims,
+                    f.path,
+                );
+                dims = raf_meta.dims;
+                rot = raf_meta.rot;
+                has_thumb = raf_meta.has_thumb;
             } else if (is_raw_ext or std.mem.startsWith(u8, mime_type, "image/x-")) {
                 var tail_buf: [16 * 1024]u8 = undefined;
                 const file_size: u64 = if (exif.probeTiffIfd0Offset(header_buf[0..n])) |ifd0_off|
@@ -672,84 +777,9 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
         },
         .archive_entry => |a| {
             switch (a.seek_info) {
-                .indexed => |seek| {
-                    switch (seek.compression_method) {
-                        .store => {
-                            // Uncompressed entry: image header bytes can be read
-                            // directly at file_offset
-                            var file = std.Io.Dir.openFile(
-                                std.Io.Dir.cwd(),
-                                io,
-                                a.archive_path,
-                                .{},
-                            ) catch |err| {
-                                std.log.warn(
-                                    "probeMediaMetadata: openFile failed for archive '{s}': {any}",
-                                    .{ a.archive_path, err },
-                                );
-                                return null;
-                            };
-                            defer file.close(io);
-
-                            var header_buf: [64 * 1024]u8 = undefined;
-                            var slices = [_][]u8{&header_buf};
-                            const n = file.readPositional(
-                                io,
-                                &slices,
-                                seek.file_offset,
-                            ) catch |err| {
-                                std.log.warn(
-                                    "probeMediaMetadata: readPositional failed for '{s}': {any}",
-                                    .{ a.archive_path, err },
-                                );
-                                return null;
-                            };
-                            if (n == 0) return null;
-
-                            var data_offset: usize = 0;
-                            if (n >= @sizeOf(std.zip.LocalFileHeader) and
-                                std.mem.eql(u8, header_buf[0..4], &std.zip.local_file_header_sig))
-                            {
-                                const filename_len =
-                                    std.mem.readInt(u16, header_buf[26..28], .little);
-                                const extra_len = std.mem.readInt(u16, header_buf[28..30], .little);
-                                data_offset = @sizeOf(std.zip.LocalFileHeader) +
-                                    @as(usize, filename_len) +
-                                    @as(usize, extra_len);
-                            }
-                            if (n <= data_offset) return null;
-
-                            const image_slice = header_buf[data_offset..n];
-                            const mime_type = detectMimeType(image_slice, a.entry_name);
-                            const dims =
-                                parseImageDimensions(image_slice, mime_type) orelse return null;
-                            const rot = exif.parseExifOrientation(image_slice) orelse .normal;
-                            const is_raw = core_fs.isRawFile(a.entry_name) or
-                                std.mem.startsWith(u8, mime_type, "image/x-");
-                            var has_thumb = false;
-                            if (std.mem.eql(u8, mime_type, "image/jpeg")) {
-                                if (exif.extractJpegThumbnailLocation(image_slice)) |_| {
-                                    has_thumb = true;
-                                }
-                            }
-                            return ProbedImageMetadata{
-                                .dims = dims,
-                                .orientation = rot,
-                                .raw_metadata = if (is_raw)
-                                    RawMetadata.init(dims.w, dims.h)
-                                else
-                                    .none,
-                                .has_embedded_thumbnail = has_thumb,
-                            };
-                        },
-                        // Compressed entries (deflate, etc.) cannot be probed via raw
-                        // positional reads
-                        else => {},
-                    }
-                },
-                .unindexed => {},
+                .indexed => |seek| return probeStoredZipMetadata(io, a, seek),
+                .unindexed => return null,
             }
-            return null;
         },
     }
 }
@@ -895,6 +925,186 @@ fn loadThumbnailFromLocation(
     return null;
 }
 
+fn loadStoredZipThumbnail(
+    io: std.Io,
+    a: ArchiveMediaEntry,
+    seek: ZipSeekOffsets,
+) ?ExtractedThumbnail {
+    if (seek.compression_method != .store) return null;
+
+    var file = std.Io.Dir.openFile(
+        std.Io.Dir.cwd(),
+        io,
+        a.archive_path,
+        .{},
+    ) catch |err| {
+        std.log.warn(
+            "loadThumbnailSurface: openFile failed for '{s}': {any}",
+            .{ a.archive_path, err },
+        );
+        return null;
+    };
+    defer file.close(io);
+
+    var header_buf: [128 * 1024]u8 = undefined;
+    var slices = [_][]u8{&header_buf};
+    const n = file.readPositional(
+        io,
+        &slices,
+        seek.file_offset,
+    ) catch |err| {
+        std.log.warn(
+            "loadThumbnailSurface: readPositional failed for '{s}': {any}",
+            .{ a.archive_path, err },
+        );
+        return null;
+    };
+    if (n == 0) return null;
+
+    var data_offset: usize = 0;
+    if (n >= @sizeOf(std.zip.LocalFileHeader) and
+        std.mem.eql(u8, header_buf[0..4], &std.zip.local_file_header_sig))
+    {
+        const filename_len = std.mem.readInt(u16, header_buf[26..28], .little);
+        const extra_len = std.mem.readInt(u16, header_buf[28..30], .little);
+        data_offset = @sizeOf(std.zip.LocalFileHeader) +
+            @as(usize, filename_len) +
+            @as(usize, extra_len);
+    }
+    if (n <= data_offset) return null;
+
+    const image_slice = header_buf[data_offset..n];
+    const mime_type = detectMimeType(image_slice, a.entry_name);
+    if (!std.mem.eql(u8, mime_type, "image/jpeg")) return null;
+
+    const loc = exif.extractJpegThumbnailLocation(image_slice) orelse
+        return null;
+    const off: usize = @intCast(loc.file_offset);
+    const len: usize = @intCast(loc.length);
+    if (off + len > image_slice.len) return null;
+
+    const surf = sdl.Surface.loadConstMemOpt(
+        image_slice[off .. off + len],
+    ) orelse return null;
+
+    const orientation = exif.parseExifOrientation(image_slice) orelse .normal;
+    const dims = parseImageDimensions(image_slice, mime_type);
+    const full_w: f32 = if (dims) |d| d.w else @floatFromInt(surf.w());
+    const full_h: f32 = if (dims) |d| d.h else @floatFromInt(surf.h());
+    const dct_snapped = detectThumbnailDctPadding(surf, full_w, full_h);
+
+    return ExtractedThumbnail{
+        .surface = surf,
+        .orientation = orientation,
+        .full_w = full_w,
+        .full_h = full_h,
+        .raw_metadata = .none,
+        .dct_snapped = dct_snapped,
+    };
+}
+
+const FujiRafThumbnailInfo = struct {
+    raw_w: f32 = 0.0,
+    raw_h: f32 = 0.0,
+    orientation: Orientation = .normal,
+    thumb_loc: ?exif.ThumbnailLocation = null,
+};
+
+fn resolveFujiRafThumbnail(
+    file: *std.Io.File,
+    io: std.Io,
+    header_slice: []const u8,
+    file_size: u64,
+    path: []const u8,
+) FujiRafThumbnailInfo {
+    var info = FujiRafThumbnailInfo{};
+    const header_n = header_slice.len;
+    const prev_loc_opt = exif.extractFujiRafPreviewLocation(header_slice);
+
+    if (exif.extractFujiRafMetadataLocation(header_slice)) |meta_loc| {
+        if (meta_loc.length <= header_n and
+            meta_loc.file_offset <= header_n - meta_loc.length)
+        {
+            const end = meta_loc.file_offset + meta_loc.length;
+            const meta_slice =
+                header_slice[@intCast(meta_loc.file_offset)..@intCast(end)];
+            if (exif.parseFujiRafDimensions(meta_slice)) |fd| {
+                info.raw_w = fd.w;
+                info.raw_h = fd.h;
+            }
+        } else if (meta_loc.length > 0 and
+            meta_loc.length <= 64 * 1024 and
+            meta_loc.length <= file_size and
+            meta_loc.file_offset <= file_size - meta_loc.length)
+        {
+            var m_buf: [64 * 1024]u8 = undefined;
+            var m_slices = [_][]u8{m_buf[0..meta_loc.length]};
+            const mn = file.readPositional(
+                io,
+                &m_slices,
+                meta_loc.file_offset,
+            ) catch |err| blk: {
+                std.log.warn(
+                    "loadThumbnailSurface: Fuji RAF metadata readPositional " ++
+                        "failed for '{s}': {any}",
+                    .{ path, err },
+                );
+                break :blk 0;
+            };
+            if (mn >= meta_loc.length) {
+                const m_data = m_buf[0..meta_loc.length];
+                if (exif.parseFujiRafDimensions(m_data)) |fd| {
+                    info.raw_w = fd.w;
+                    info.raw_h = fd.h;
+                }
+            }
+        }
+    }
+
+    if (prev_loc_opt) |prev_loc| {
+        const off: usize = @intCast(prev_loc.file_offset);
+        if (off + 4096 <= header_n) {
+            const h_sub = header_slice[off..header_n];
+            info.orientation = exif.parseExifOrientation(h_sub) orelse .normal;
+            if (exif.extractJpegThumbnailLocation(h_sub)) |j_thumb| {
+                info.thumb_loc = .{
+                    .file_offset = prev_loc.file_offset +
+                        j_thumb.file_offset,
+                    .length = j_thumb.length,
+                };
+            }
+        } else {
+            var p_hdr: [8192]u8 = undefined;
+            var p_slices = [_][]u8{&p_hdr};
+            const pn = file.readPositional(
+                io,
+                &p_slices,
+                prev_loc.file_offset,
+            ) catch |err| blk: {
+                std.log.warn(
+                    "loadThumbnailSurface: Fuji RAF preview readPositional " ++
+                        "failed for '{s}': {any}",
+                    .{ path, err },
+                );
+                break :blk 0;
+            };
+            if (pn > 0) {
+                info.orientation =
+                    exif.parseExifOrientation(p_hdr[0..pn]) orelse .normal;
+                if (exif.extractJpegThumbnailLocation(p_hdr[0..pn])) |j_thumb| {
+                    info.thumb_loc = .{
+                        .file_offset = prev_loc.file_offset +
+                            j_thumb.file_offset,
+                        .length = j_thumb.length,
+                    };
+                }
+            }
+        }
+    }
+
+    return info;
+}
+
 /// Extracts the embedded preview thumbnail surface and orientation metadata for a media entry.
 /// Supports Camera RAW formats (.arw, .raf, .cr2, .nef, .dng, .orf, .rw2, .pef), standard JPEGs,
 /// and CBZ entries.
@@ -914,12 +1124,12 @@ pub fn loadThumbnailSurface(
             };
             defer file.close(io);
 
-            const file_size = file.length(io) catch |err| blk: {
+            const file_size = file.length(io) catch |err| {
                 std.log.warn(
-                    "loadThumbnailSurface: file.length failed for '{s}': {any}",
+                    "loadThumbnailSurface: length failed for '{s}': {any}",
                     .{ f.path, err },
                 );
-                break :blk 0;
+                return null;
             };
             const is_raw_ext = core_fs.isRawFile(f.path);
             var header_buf: [256 * 1024]u8 = undefined;
@@ -947,88 +1157,18 @@ pub fn loadThumbnailSurface(
             var raw_h: f32 = 0.0;
 
             if (is_fuji) {
-                const prev_loc_opt = exif.extractFujiRafPreviewLocation(header_slice);
-                if (exif.extractFujiRafMetadataLocation(header_slice)) |meta_loc| {
-                    if (meta_loc.length <= header_n and
-                        meta_loc.file_offset <= header_n - meta_loc.length)
-                    {
-                        const end = meta_loc.file_offset + meta_loc.length;
-                        const meta_slice =
-                            header_slice[@intCast(meta_loc.file_offset)..@intCast(end)];
-                        if (exif.parseFujiRafDimensions(meta_slice)) |fd| {
-                            raw_w = fd.w;
-                            raw_h = fd.h;
-                        }
-                    } else if (meta_loc.length > 0 and
-                        meta_loc.length <= 64 * 1024 and
-                        meta_loc.length <= file_size and
-                        meta_loc.file_offset <= file_size - meta_loc.length)
-                    {
-                        var m_buf: [64 * 1024]u8 = undefined;
-                        var m_slices = [_][]u8{m_buf[0..meta_loc.length]};
-                        const mn = file.readPositional(
-                            io,
-                            &m_slices,
-                            meta_loc.file_offset,
-                        ) catch |err| blk: {
-                            std.log.warn(
-                                "loadThumbnailSurface: Fuji RAF metadata readPositional failed " ++
-                                    "for '{s}': {any}",
-                                .{ f.path, err },
-                            );
-                            break :blk 0;
-                        };
-                        if (mn >= meta_loc.length) {
-                            if (exif.parseFujiRafDimensions(m_buf[0..meta_loc.length])) |fd| {
-                                raw_w = fd.w;
-                                raw_h = fd.h;
-                            }
-                        }
-                    }
-                }
+                const fuji_info = resolveFujiRafThumbnail(
+                    &file,
+                    io,
+                    header_slice,
+                    file_size,
+                    f.path,
+                );
+                raw_w = fuji_info.raw_w;
+                raw_h = fuji_info.raw_h;
+                orientation = fuji_info.orientation;
 
-                var thumb_loc_opt: ?exif.ThumbnailLocation = null;
-                if (prev_loc_opt) |prev_loc| {
-                    const off: usize = @intCast(prev_loc.file_offset);
-                    if (off + 4096 <= header_n) {
-                        orientation =
-                            exif.parseExifOrientation(header_slice[off..header_n]) orelse .normal;
-                        if (exif.extractJpegThumbnailLocation(
-                            header_slice[off..header_n],
-                        )) |j_thumb| {
-                            thumb_loc_opt = .{
-                                .file_offset = prev_loc.file_offset + j_thumb.file_offset,
-                                .length = j_thumb.length,
-                            };
-                        }
-                    } else {
-                        var p_hdr: [8192]u8 = undefined;
-                        var p_slices = [_][]u8{&p_hdr};
-                        const pn = file.readPositional(
-                            io,
-                            &p_slices,
-                            prev_loc.file_offset,
-                        ) catch |err| blk: {
-                            std.log.warn(
-                                "loadThumbnailSurface: Fuji RAF preview readPositional failed " ++
-                                    "for '{s}': {any}",
-                                .{ f.path, err },
-                            );
-                            break :blk 0;
-                        };
-                        if (pn > 0) {
-                            orientation = exif.parseExifOrientation(p_hdr[0..pn]) orelse .normal;
-                            if (exif.extractJpegThumbnailLocation(p_hdr[0..pn])) |j_thumb| {
-                                thumb_loc_opt = .{
-                                    .file_offset = prev_loc.file_offset + j_thumb.file_offset,
-                                    .length = j_thumb.length,
-                                };
-                            }
-                        }
-                    }
-                }
-
-                if (thumb_loc_opt) |tloc| {
+                if (fuji_info.thumb_loc) |tloc| {
                     thumb_surf = loadThumbnailFromLocation(
                         io,
                         alloc,
@@ -1097,96 +1237,9 @@ pub fn loadThumbnailSurface(
         },
         .archive_entry => |a| {
             switch (a.seek_info) {
-                .indexed => |seek| {
-                    switch (seek.compression_method) {
-                        .store => {
-                            // Uncompressed entry: thumbnail can be extracted directly
-                            // from header on disk
-                            var file = std.Io.Dir.openFile(
-                                std.Io.Dir.cwd(),
-                                io,
-                                a.archive_path,
-                                .{},
-                            ) catch |err| {
-                                std.log.warn(
-                                    "loadThumbnailSurface: openFile failed for '{s}': {any}",
-                                    .{ a.archive_path, err },
-                                );
-                                return null;
-                            };
-                            defer file.close(io);
-
-                            var header_buf: [128 * 1024]u8 = undefined;
-                            var slices = [_][]u8{&header_buf};
-                            const n = file.readPositional(
-                                io,
-                                &slices,
-                                seek.file_offset,
-                            ) catch |err| {
-                                std.log.warn(
-                                    "loadThumbnailSurface: readPositional failed for '{s}': {any}",
-                                    .{ a.archive_path, err },
-                                );
-                                return null;
-                            };
-                            if (n == 0) return null;
-
-                            var data_offset: usize = 0;
-                            if (n >= @sizeOf(std.zip.LocalFileHeader) and
-                                std.mem.eql(u8, header_buf[0..4], &std.zip.local_file_header_sig))
-                            {
-                                const filename_len =
-                                    std.mem.readInt(u16, header_buf[26..28], .little);
-                                const extra_len = std.mem.readInt(u16, header_buf[28..30], .little);
-                                data_offset = @sizeOf(std.zip.LocalFileHeader) +
-                                    @as(usize, filename_len) +
-                                    @as(usize, extra_len);
-                            }
-                            if (n <= data_offset) return null;
-                            const image_slice = header_buf[data_offset..n];
-                            const mime_type = detectMimeType(image_slice, a.entry_name);
-                            if (std.mem.eql(u8, mime_type, "image/jpeg")) {
-                                const orientation =
-                                    exif.parseExifOrientation(image_slice) orelse .normal;
-                                const dims = parseImageDimensions(image_slice, mime_type);
-                                if (exif.extractJpegThumbnailLocation(image_slice)) |loc| {
-                                    const off: usize = @intCast(loc.file_offset);
-                                    const len: usize = @intCast(loc.length);
-                                    if (off + len <= image_slice.len) {
-                                        if (sdl.Surface.loadConstMemOpt(
-                                            image_slice[off .. off + len],
-                                        )) |surf| {
-                                            const full_w: f32 = if (dims) |d|
-                                                d.w
-                                            else
-                                                @floatFromInt(surf.w());
-                                            const full_h: f32 = if (dims) |d|
-                                                d.h
-                                            else
-                                                @floatFromInt(surf.h());
-                                            const dct_snapped =
-                                                detectThumbnailDctPadding(surf, full_w, full_h);
-                                            return ExtractedThumbnail{
-                                                .surface = surf,
-                                                .orientation = orientation,
-                                                .full_w = full_w,
-                                                .full_h = full_h,
-                                                .raw_metadata = .none,
-                                                .dct_snapped = dct_snapped,
-                                            };
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        // Compressed entries cannot have thumbnails extracted via raw
-                        // positional reads
-                        else => {},
-                    }
-                },
-                .unindexed => {},
+                .indexed => |seek| return loadStoredZipThumbnail(io, a, seek),
+                .unindexed => return null,
             }
-            return null;
         },
         .pair => |p| {
             return loadThumbnailSurface(io, alloc, .{ .filesystem = .{ .path = p.raw_path } });

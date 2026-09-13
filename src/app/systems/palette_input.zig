@@ -55,20 +55,74 @@ fn handlePaletteReturnDirectory(ctx: FrameContext, mod: KeyModifiers) !void {
         const p = try ctx.frame_allocator.dupe(u8, palette.current_nav_dir.items);
         try ctx.state.pushIntent(.{ .open_path = p });
         ctx.state.closePalette();
-    } else {
-        if (palette.selected_idx < palette.matches.items.len) {
-            const match_idx = palette.matches.items[palette.selected_idx];
-            if (match_idx < palette.dir_items.items.len) {
-                const entry = palette.dir_items.items[match_idx];
-                const full_path = entry.getFullPath();
-                if (full_path.len > 0) {
-                    const p = try ctx.frame_allocator.dupe(u8, full_path);
-                    try ctx.state.pushIntent(.{ .open_path = p });
-                    ctx.state.closePalette();
-                }
-            }
-        }
+        return;
     }
+    if (palette.selected_idx >= palette.matches.items.len) return;
+    const match_idx = palette.matches.items[palette.selected_idx];
+    if (match_idx >= palette.dir_items.items.len) return;
+    const entry = palette.dir_items.items[match_idx];
+    const full_path = entry.getFullPath();
+    if (full_path.len == 0) return;
+
+    const p = try ctx.frame_allocator.dupe(u8, full_path);
+    try ctx.state.pushIntent(.{ .open_path = p });
+    ctx.state.closePalette();
+}
+
+fn handlePaletteReturnEditParam(ctx: FrameContext, raw_str: []const u8) !void {
+    const self = ctx.state;
+    const palette = &self.viewer.ui.palette;
+    const param = palette.mode.toEditParam() orelse return;
+    const desc = state_pkg.getDescriptor(param);
+    if (raw_str.len == 0) return;
+
+    const val = std.fmt.parseFloat(f32, raw_str) catch |err| {
+        std.log.debug(
+            "Failed to parse {s} value '{s}': {}",
+            .{ desc.name, raw_str, err },
+        );
+        return;
+    };
+    if (std.math.isNan(val) or std.math.isInf(val)) return;
+    if (val < desc.min or val > desc.max) return;
+
+    try self.pushIntent(.{
+        .adjust = .{
+            .set = .{
+                .param = param,
+                .value = val,
+            },
+        },
+    });
+    self.closePalette();
+}
+
+fn handlePaletteReturnMatchSelection(ctx: FrameContext) !void {
+    const self = ctx.state;
+    const palette = &self.viewer.ui.palette;
+    defer self.closePalette();
+
+    if (palette.selected_idx >= palette.matches.items.len) return;
+    const target_idx = palette.matches.items[palette.selected_idx];
+    if (palette.mode == .files) {
+        try self.pushIntent(.{ .go_to_image = target_idx });
+    } else if (palette.mode == .actions) {
+        const item = state_pkg.palette_action_items[target_idx];
+        try self.pushIntent(item.intent);
+    }
+}
+
+fn handlePaletteDirectoryDrillDown(ctx: FrameContext) !void {
+    const self = ctx.state;
+    const palette = &self.viewer.ui.palette;
+    if (palette.selected_idx >= palette.matches.items.len) return;
+    const match_idx = palette.matches.items[palette.selected_idx];
+    if (match_idx >= palette.dir_items.items.len) return;
+    const entry = palette.dir_items.items[match_idx];
+    const path_copy = try ctx.frame_allocator.dupe(u8, entry.getFullPath());
+    defer ctx.frame_allocator.free(path_copy);
+    palette.query.clearRetainingCapacity();
+    try self.loadPaletteDirectory(path_copy);
 }
 
 /// Handles keyboard shortcut navigation keys (Escape, Up/Down, Left/Right,
@@ -223,20 +277,7 @@ fn handlePaletteKeys(
                         try self.loadPaletteDirectory(parent_dir);
                     }
                 } else {
-                    if (palette.selected_idx < palette.matches.items.len) {
-                        const matches = palette.matches.items;
-                        const match_idx = matches[palette.selected_idx];
-                        if (match_idx < palette.dir_items.items.len) {
-                            const entry = palette.dir_items.items[match_idx];
-                            const path_copy = try ctx.frame_allocator.dupe(
-                                u8,
-                                entry.getFullPath(),
-                            );
-                            defer ctx.frame_allocator.free(path_copy);
-                            palette.query.clearRetainingCapacity();
-                            try self.loadPaletteDirectory(path_copy);
-                        }
-                    }
+                    try handlePaletteDirectoryDrillDown(ctx);
                 }
                 return true;
             }
@@ -261,9 +302,7 @@ fn handlePaletteKeys(
         .return_key => {
             const raw_str = palette.query.items;
             switch (palette.mode) {
-                .go_to_image => {
-                    try handlePaletteReturnGoToImage(ctx, raw_str);
-                },
+                .go_to_image => try handlePaletteReturnGoToImage(ctx, raw_str),
                 .set_slideshow_interval => {
                     try handlePaletteReturnSlideshow(ctx, raw_str);
                 },
@@ -280,54 +319,11 @@ fn handlePaletteKeys(
                 .set_saturation,
                 .set_clarity,
                 .set_texture,
-                => {
-                    if (palette.mode.toEditParam()) |param| {
-                        const desc = state_pkg.getDescriptor(param);
-                        if (raw_str.len > 0) {
-                            if (std.fmt.parseFloat(f32, raw_str)) |val| {
-                                if (!std.math.isNan(val) and
-                                    !std.math.isInf(val))
-                                {
-                                    if (val >= desc.min and val <= desc.max) {
-                                        try self.pushIntent(.{
-                                            .adjust = .{
-                                                .set = .{
-                                                    .param = param,
-                                                    .value = val,
-                                                },
-                                            },
-                                        });
-                                        self.closePalette();
-                                    }
-                                }
-                            } else |err| {
-                                std.log.debug(
-                                    "Failed to parse {s} value '{s}': {}",
-                                    .{ desc.name, raw_str, err },
-                                );
-                            }
-                        }
-                    }
-                },
+                => try handlePaletteReturnEditParam(ctx, raw_str),
                 .directory_navigator => {
                     try handlePaletteReturnDirectory(ctx, mod);
                 },
-                .files, .actions => {
-                    if (palette.selected_idx < palette.matches.items.len) {
-                        const target_idx = palette.matches.items[
-                            palette.selected_idx
-                        ];
-                        if (palette.mode == .files) {
-                            try self.pushIntent(.{ .go_to_image = target_idx });
-                        } else if (palette.mode == .actions) {
-                            const item = state_pkg.palette_action_items[
-                                target_idx
-                            ];
-                            try self.pushIntent(item.intent);
-                        }
-                    }
-                    self.closePalette();
-                },
+                .files, .actions => try handlePaletteReturnMatchSelection(ctx),
                 .inactive => return false,
             }
             return true;
@@ -379,6 +375,49 @@ fn handlePaletteKeys(
             return true;
         },
         else => return false,
+    }
+    return false;
+}
+
+/// System Pass: Process active Command Palette text typing, list navigation,
+/// and click-outside dismissal.
+fn processPaletteItemClick(
+    ctx: FrameContext,
+    real_idx: usize,
+    old_mode: PaletteMode,
+) !bool {
+    const self = ctx.state;
+    switch (self.viewer.ui.palette.mode) {
+        .files => {
+            try self.pushIntent(.{ .go_to_image = real_idx });
+            self.closePalette();
+            return true;
+        },
+        .actions => {
+            const item = state_pkg.palette_action_items[real_idx];
+            try self.pushIntent(item.intent);
+            if (self.viewer.ui.palette.mode == old_mode) {
+                self.closePalette();
+                return true;
+            }
+        },
+        .directory_navigator => {
+            const dir_items = self.viewer.ui.palette.dir_items.items;
+            if (real_idx < dir_items.len) {
+                const entry = dir_items[real_idx];
+                const path_copy = try ctx.frame_allocator.dupe(
+                    u8,
+                    entry.getFullPath(),
+                );
+                try self.pushIntent(.{
+                    .set_palette = .{
+                        .mode = .directory_navigator,
+                        .query = path_copy,
+                    },
+                });
+            }
+        },
+        else => {},
     }
     return false;
 }
@@ -501,62 +540,11 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
                     break :blk cfg.item_prefix;
                 };
                 if (clay.pointerOver(clay.getElementId(item_id_str))) {
-                    const old_type = self.viewer.ui.palette.mode;
-                    switch (self.viewer.ui.palette.mode) {
-                        .files => {
-                            try self.pushIntent(.{ .go_to_image = real_idx });
-                            self.closePalette();
-                            palette_closed_this_frame = true;
-                        },
-                        .actions => {
-                            const item = state_pkg.palette_action_items[
-                                real_idx
-                            ];
-                            try self.pushIntent(item.intent);
-                            if (self.viewer.ui.palette.mode == old_type) {
-                                self.closePalette();
-                                palette_closed_this_frame = true;
-                            }
-                        },
-                        .directory_navigator => {
-                            if (real_idx <
-                                self.viewer.ui.palette.dir_items.items.len)
-                            {
-                                const entry =
-                                    self.viewer.ui.palette.dir_items.items[
-                                        real_idx
-                                    ];
-                                const path_copy =
-                                    try ctx.frame_allocator.dupe(
-                                        u8,
-                                        entry.getFullPath(),
-                                    );
-                                try self.pushIntent(.{
-                                    .set_palette = .{
-                                        .mode = .directory_navigator,
-                                        .query = path_copy,
-                                    },
-                                });
-                            }
-                        },
-                        .set_brightness,
-                        .set_contrast,
-                        .set_contrast_blend,
-                        .set_highlights,
-                        .set_shadows,
-                        .set_whites,
-                        .set_blacks,
-                        .set_temperature,
-                        .set_tint,
-                        .set_vibrance,
-                        .set_saturation,
-                        .set_clarity,
-                        .set_texture,
-                        .go_to_image,
-                        .set_slideshow_interval,
-                        .inactive,
-                        => {},
-                    }
+                    palette_closed_this_frame = try processPaletteItemClick(
+                        ctx,
+                        real_idx,
+                        self.viewer.ui.palette.mode,
+                    );
                     break;
                 }
             }

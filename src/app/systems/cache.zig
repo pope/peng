@@ -76,6 +76,95 @@ fn spawnCacheDecodeSlot(
     try decode_mod.spawnDecode(args);
 }
 
+fn probeActiveSlotMetadata(
+    state: *AppState,
+    idx: usize,
+    entry: anytype,
+) void {
+    const media_item = state.viewer.navigation.getMediaEntry(idx) orelse return;
+    const meta = image.probeMediaMetadata(state.io, media_item) orelse return;
+    entry.full_w = meta.dims.w;
+    entry.full_h = meta.dims.h;
+    if (meta.orientation != .normal or entry.orientation == .normal) {
+        entry.orientation = meta.orientation;
+    }
+    if (meta.raw_metadata.isRaw()) {
+        entry.raw_metadata = meta.raw_metadata;
+    }
+    if (entry.thumbnail == .none) {
+        entry.thumbnail = if (meta.has_embedded_thumbnail)
+            .pending
+        else
+            .not_available;
+    }
+    state.updateCurrentRotation();
+}
+
+fn checkPairPromotion(
+    state: *AppState,
+    idx: usize,
+    entry: anytype,
+    now: u64,
+) void {
+    const media_item = state.viewer.navigation.getMediaEntry(idx) orelse return;
+    if (!media_item.isPair()) return;
+
+    if (entry.requested_target) |target| {
+        if (!state.workers.canSpawnDecode()) return;
+        entry.requested_target = null;
+        entry.is_promoting = true;
+        spawnCacheDecodeSlot(
+            state,
+            idx,
+            media_item,
+            false,
+            target,
+        ) catch |err| {
+            entry.is_promoting = false;
+            std.log.err("Failed to spawn requested pair decode: {}", .{err});
+        };
+        return;
+    }
+
+    if (entry.is_promoting or !entry.raw_metadata.isRaw()) return;
+
+    const loaded_w = entry.getLoadedWidth() orelse 0.0;
+    const loaded_h = entry.getLoadedHeight() orelse 0.0;
+    const auth = entry.getAuthoritativeDims();
+    if (loaded_w <= 0.0 or loaded_h <= 0.0) return;
+    if (auth.w <= 0.0 or auth.h <= 0.0) return;
+
+    const is_downscaled = (loaded_w < auth.w * 0.85) or
+        (loaded_h < auth.h * 0.85);
+    if (!is_downscaled) return;
+
+    const z = if (state.viewer.viewport.mode == .manual)
+        state.viewer.viewport.zoom_factor.get()
+    else
+        state.getBaseScale();
+    const tex_demand = z * @max(auth.w / loaded_w, auth.h / loaded_h);
+    const is_inspecting =
+        (state.viewer.viewport.mode != .fit or state.isImageOverflowing()) and
+        (tex_demand > 1.05);
+    const is_settled_fit = (state.viewer.viewport.mode == .fit) and
+        (now -| state.viewer.navigation.last_nav_time_ms > 250) and
+        (tex_demand > 1.15);
+
+    if ((is_inspecting or is_settled_fit) and state.workers.canSpawnDecode()) {
+        entry.is_promoting = true;
+        spawnCacheDecodeSlot(
+            state,
+            idx,
+            media_item,
+            false,
+            .standalone_jpeg,
+        ) catch |err| {
+            entry.is_promoting = false;
+            std.log.err("Failed to spawn zoom promotion decode: {}", .{err});
+        };
+    }
+}
+
 /// System Pass: Update image RAM/GPU texture cache and background preloading window.
 pub fn sysUpdateCache(ctx: FrameContext) !void {
     const state = ctx.state;
@@ -239,126 +328,30 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
             const is_active_slot = (d == idx);
             const needs_dimensions = (entry.full_w <= 0.0 or entry.full_h <= 0.0);
             if (is_active_slot and needs_dimensions) {
-                const media_item = state.viewer.navigation.getMediaEntry(idx).?;
-                if (image.probeMediaMetadata(state.io, media_item)) |meta| {
-                    entry.full_w = meta.dims.w;
-                    entry.full_h = meta.dims.h;
-                    if (meta.orientation != .normal or entry.orientation == .normal) {
-                        entry.orientation = meta.orientation;
+                probeActiveSlotMetadata(state, idx, entry);
+            }
+
+            const is_decoding = entry.status == .decoding and
+                !entry.status.decoding.has_thread;
+            if (is_decoding) {
+                const thumb_ready = entry.thumbnail == .not_available or
+                    entry.thumbnail == .loaded;
+                const skip_neighbor = d != idx and is_fast_scrolling and
+                    thumb_ready;
+                const skip_active = d == idx and is_fast_scrolling and
+                    entry.thumbnail == .loaded;
+                if (!skip_neighbor and !skip_active) {
+                    if (state.viewer.navigation.getMediaEntry(d)) |e| {
+                        to_spawn.appendAssumeCapacity(.{
+                            .index = d,
+                            .entry = e,
+                        });
                     }
-                    if (meta.raw_metadata.isRaw()) {
-                        entry.raw_metadata = meta.raw_metadata;
-                    }
-                    if (entry.thumbnail == .none) {
-                        entry.thumbnail = if (meta.has_embedded_thumbnail)
-                            .pending
-                        else
-                            .not_available;
-                    }
-                    state.updateCurrentRotation();
                 }
             }
 
-            switch (entry.status) {
-                .decoding => |dec| {
-                    if (!dec.has_thread) {
-                        // During fast scrolling we prioritize thumbnails:
-                        // 1. For neighbor slots (d != idx), skip if no thumbnail
-                        //    is available or already loaded.
-                        // 2. For active slot (d == idx), skip full decode only if
-                        //    its thumbnail is already loaded and rendering on screen.
-                        //    If no thumbnail is available, immediately decode the full image!
-                        const skip_neighbor = d != idx and is_fast_scrolling and
-                            (entry.thumbnail == .not_available or entry.thumbnail == .loaded);
-                        const skip_active = d == idx and is_fast_scrolling and
-                            entry.thumbnail == .loaded;
-                        if (skip_neighbor) {
-                            // Wait until user settles to trigger full decode of background slots.
-                        } else if (skip_active) {
-                            // Active thumbnail is already on screen, wait until user settles.
-                        } else {
-                            if (state.viewer.navigation.getMediaEntry(d)) |e| {
-                                to_spawn.appendAssumeCapacity(.{
-                                    .index = d,
-                                    .entry = e,
-                                });
-                            }
-                        }
-                    }
-                },
-                else => {},
-            }
-
-            // Check for explicitly requested stream target toggle
-            if (entry.requested_target) |target| {
-                if (state.viewer.navigation.getMediaEntry(idx)) |media_item| {
-                    if (media_item.isPair() and state.workers.canSpawnDecode()) {
-                        entry.requested_target = null;
-                        entry.is_promoting = true;
-                        spawnCacheDecodeSlot(
-                            state,
-                            idx,
-                            media_item,
-                            false,
-                            target,
-                        ) catch |err| {
-                            entry.is_promoting = false;
-                            std.log.err("Failed to spawn requested pair decode: {}", .{err});
-                        };
-                    }
-                }
-            } else if (is_active_slot and !entry.is_promoting) {
-                if (state.viewer.navigation.getMediaEntry(idx)) |media_item| {
-                    if (media_item.isPair() and entry.raw_metadata.isRaw()) {
-                        const loaded_w = entry.getLoadedWidth() orelse 0.0;
-                        const loaded_h = entry.getLoadedHeight() orelse 0.0;
-                        const auth = entry.getAuthoritativeDims();
-                        if (loaded_w > 0.0 and loaded_h > 0.0 and
-                            auth.w > 0.0 and auth.h > 0.0)
-                        {
-                            const is_downscaled = (loaded_w < auth.w * 0.85 or
-                                loaded_h < auth.h * 0.85);
-                            if (is_downscaled) {
-                                const z = if (state.viewer.viewport.mode ==
-                                    .manual)
-                                    state.viewer.viewport.zoom_factor.get()
-                                else
-                                    state.getBaseScale();
-                                const tex_demand = z *
-                                    @max(auth.w / loaded_w, auth.h / loaded_h);
-                                const is_inspecting =
-                                    (state.viewer.viewport.mode != .fit or
-                                        state.isImageOverflowing()) and
-                                    (tex_demand > 1.05);
-                                const is_settled_fit =
-                                    (state.viewer.viewport.mode == .fit) and
-                                    (now -| state.viewer.navigation
-                                        .last_nav_time_ms > 250) and
-                                    (tex_demand > 1.15);
-
-                                if ((is_inspecting or is_settled_fit) and
-                                    state.workers.canSpawnDecode())
-                                {
-                                    entry.is_promoting = true;
-                                    spawnCacheDecodeSlot(
-                                        state,
-                                        idx,
-                                        media_item,
-                                        false,
-                                        .standalone_jpeg,
-                                    ) catch |err| {
-                                        entry.is_promoting = false;
-                                        std.log.err(
-                                            "Failed to spawn zoom promotion " ++
-                                                "decode: {}",
-                                            .{err},
-                                        );
-                                    };
-                                }
-                            }
-                        }
-                    }
-                }
+            if (is_active_slot) {
+                checkPairPromotion(state, idx, entry, now);
             }
         }
     }

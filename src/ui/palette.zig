@@ -179,6 +179,156 @@ fn renderSearchInput(palette: *const PaletteState, placeholder: []const u8, prog
     });
 }
 
+fn renderGoToImageFeedback(
+    raw_str: []const u8,
+    total_count: usize,
+    ui_model: UiViewModel,
+    frame_allocator: std.mem.Allocator,
+    measure_data: *const MeasureTextUserData,
+    progress: f32,
+) !void {
+    const val = std.fmt.parseInt(usize, raw_str, 10) catch |err| {
+        std.log.debug(
+            "Failed to parse integer in palette input '{s}': {}",
+            .{ raw_str, err },
+        );
+        clay.text("Invalid number format. Enter a positive integer.", .{
+            .color = a(theme.red, progress),
+            .font_size = 13,
+            .font_id = 0,
+        });
+        return;
+    };
+
+    if (val < 1 or val > total_count) {
+        const err_str = try std.fmt.allocPrint(
+            frame_allocator,
+            "Out of bounds: must be between 1 and {}",
+            .{total_count},
+        );
+        clay.text(err_str, .{
+            .color = a(theme.red, progress),
+            .font_size = 13,
+            .font_id = 0,
+        });
+        return;
+    }
+
+    const cur_idx = ui_model.current_index orelse 0;
+    const is_cur = val - 1 < total_count and
+        ui_model.current_image_entry != null and
+        val - 1 == cur_idx;
+    const target_entry = if (is_cur) ui_model.current_image_entry.? else null;
+    const raw_basename = if (target_entry) |e| e.getBasename() else "";
+    const display_filename = truncateFilename(
+        frame_allocator,
+        raw_basename,
+        492.0,
+        12,
+        measure_data,
+    );
+    const success_str = try std.fmt.allocPrint(
+        frame_allocator,
+        "Press Enter to go to {}: {s}",
+        .{ val, display_filename },
+    );
+    clay.text(success_str, .{
+        .color = a(theme.green, progress),
+        .font_size = 13,
+        .font_id = 0,
+    });
+}
+
+fn renderSlideshowIntervalFeedback(
+    raw_str: []const u8,
+    frame_allocator: std.mem.Allocator,
+    progress: f32,
+) !void {
+    var is_valid = false;
+    if (std.fmt.parseFloat(f32, raw_str)) |val| {
+        if (!std.math.isNan(val) and !std.math.isInf(val) and val > 0.0) {
+            is_valid = true;
+            const success_str = try std.fmt.allocPrint(
+                frame_allocator,
+                "Press Enter to start slide show ({d:.1}s per slide)",
+                .{val},
+            );
+            clay.text(success_str, .{
+                .color = a(theme.green, progress),
+                .font_size = 13,
+                .font_id = 0,
+            });
+        }
+    } else |err| {
+        std.log.debug(
+            "Failed to parse slideshow float '{s}': {}",
+            .{ raw_str, err },
+        );
+    }
+    if (!is_valid) {
+        clay.text("Invalid duration. Must be greater than 0 seconds.", .{
+            .color = a(theme.red, progress),
+            .font_size = 13,
+            .font_id = 0,
+        });
+    }
+}
+
+fn renderFloatInputFeedback(
+    raw_str: []const u8,
+    mode: PaletteMode,
+    frame_allocator: std.mem.Allocator,
+    progress: f32,
+) !void {
+    const val = std.fmt.parseFloat(f32, raw_str) catch |err| {
+        std.log.debug(
+            "Failed to parse adjustment float '{s}': {}",
+            .{ raw_str, err },
+        );
+        clay.text("Invalid float format. Enter a number.", .{
+            .color = a(theme.red, progress),
+            .font_size = 13,
+            .font_id = 0,
+        });
+        return;
+    };
+
+    if (std.math.isNan(val) or std.math.isInf(val)) {
+        clay.text("Invalid float format. Enter a number.", .{
+            .color = a(theme.red, progress),
+            .font_size = 13,
+            .font_id = 0,
+        });
+        return;
+    }
+
+    const default_bounds = intents.TextInputBounds{ .min = 0.0, .max = 1.0 };
+    const bounds = mode.getTextInputBounds() orelse default_bounds;
+    if (val >= bounds.min and val <= bounds.max) {
+        const success_str = try std.fmt.allocPrint(
+            frame_allocator,
+            "Press Enter to set value to: {d:.2}",
+            .{val},
+        );
+        clay.text(success_str, .{
+            .color = a(theme.green, progress),
+            .font_size = 13,
+            .font_id = 0,
+        });
+    } else {
+        const err_str = try std.fmt.allocPrint(
+            frame_allocator,
+            "Out of bounds: must be between {d:.1} and {d:.1}",
+            .{ bounds.min, bounds.max },
+        );
+        clay.text(err_str, .{
+            .color = a(theme.red, progress),
+            .font_size = 13,
+            .font_id = 0,
+        });
+    }
+}
+
 /// Renders the centered single-line modal dialog used for scalar numeric and text inputs
 /// (brightness, contrast, jump-to-image index, and slideshow timer intervals).
 fn renderTextInputDialog(
@@ -233,57 +383,14 @@ fn renderTextInputDialog(
                         .font_id = 0,
                     });
                 } else {
-                    if (std.fmt.parseInt(usize, raw_str, 10)) |val| {
-                        if (val >= 1 and val <= total_count) {
-                            const cur_idx = ui_model.current_index orelse 0;
-                            const is_cur = val - 1 < total_count and
-                                ui_model.current_image_entry != null and
-                                val - 1 == cur_idx;
-                            const target_entry = if (is_cur)
-                                ui_model.current_image_entry.?
-                            else
-                                null;
-                            const raw_basename = if (target_entry) |e| e.getBasename() else "";
-                            const display_filename = truncateFilename(
-                                frame_allocator,
-                                raw_basename,
-                                492.0,
-                                12,
-                                measure_data,
-                            );
-                            const success_str = try std.fmt.allocPrint(
-                                frame_allocator,
-                                "Press Enter to go to {}: {s}",
-                                .{ val, display_filename },
-                            );
-                            clay.text(success_str, .{
-                                .color = a(theme.green, progress),
-                                .font_size = 13,
-                                .font_id = 0,
-                            });
-                        } else {
-                            const err_str = try std.fmt.allocPrint(
-                                frame_allocator,
-                                "Out of bounds: must be between 1 and {}",
-                                .{total_count},
-                            );
-                            clay.text(err_str, .{
-                                .color = a(theme.red, progress),
-                                .font_size = 13,
-                                .font_id = 0,
-                            });
-                        }
-                    } else |err| {
-                        std.log.debug(
-                            "Failed to parse integer in palette input '{s}': {}",
-                            .{ raw_str, err },
-                        );
-                        clay.text("Invalid number format. Enter a positive integer.", .{
-                            .color = a(theme.red, progress),
-                            .font_size = 13,
-                            .font_id = 0,
-                        });
-                    }
+                    try renderGoToImageFeedback(
+                        raw_str,
+                        total_count,
+                        ui_model,
+                        frame_allocator,
+                        measure_data,
+                        progress,
+                    );
                 }
             },
             .set_slideshow_interval => {
@@ -299,34 +406,11 @@ fn renderTextInputDialog(
                         .font_id = 0,
                     });
                 } else {
-                    var is_valid = false;
-                    if (std.fmt.parseFloat(f32, raw_str)) |val| {
-                        if (!std.math.isNan(val) and !std.math.isInf(val) and val > 0.0) {
-                            is_valid = true;
-                            const success_str = try std.fmt.allocPrint(
-                                frame_allocator,
-                                "Press Enter to start slide show ({d:.1}s per slide)",
-                                .{val},
-                            );
-                            clay.text(success_str, .{
-                                .color = a(theme.green, progress),
-                                .font_size = 13,
-                                .font_id = 0,
-                            });
-                        }
-                    } else |err| {
-                        std.log.debug(
-                            "Failed to parse slideshow float '{s}': {}",
-                            .{ raw_str, err },
-                        );
-                    }
-                    if (!is_valid) {
-                        clay.text("Invalid duration. Must be greater than 0 seconds.", .{
-                            .color = a(theme.red, progress),
-                            .font_size = 13,
-                            .font_id = 0,
-                        });
-                    }
+                    try renderSlideshowIntervalFeedback(
+                        raw_str,
+                        frame_allocator,
+                        progress,
+                    );
                 }
             },
             .set_brightness,
@@ -365,55 +449,12 @@ fn renderTextInputDialog(
                         .font_id = 0,
                     });
                 } else {
-                    var is_valid_float = false;
-                    if (std.fmt.parseFloat(f32, raw_str)) |val| {
-                        if (!std.math.isNan(val) and !std.math.isInf(val)) {
-                            is_valid_float = true;
-                            const default_bounds = intents.TextInputBounds{
-                                .min = 0.0,
-                                .max = 1.0,
-                            };
-                            const bounds = palette.mode.getTextInputBounds() orelse
-                                default_bounds;
-                            const min_val = bounds.min;
-                            const max_val = bounds.max;
-                            if (val >= min_val and val <= max_val) {
-                                const success_str = try std.fmt.allocPrint(
-                                    frame_allocator,
-                                    "Press Enter to set value to: {d:.2}",
-                                    .{val},
-                                );
-                                clay.text(success_str, .{
-                                    .color = a(theme.green, progress),
-                                    .font_size = 13,
-                                    .font_id = 0,
-                                });
-                            } else {
-                                const err_str = try std.fmt.allocPrint(
-                                    frame_allocator,
-                                    "Out of bounds: must be between {d:.1} and {d:.1}",
-                                    .{ min_val, max_val },
-                                );
-                                clay.text(err_str, .{
-                                    .color = a(theme.red, progress),
-                                    .font_size = 13,
-                                    .font_id = 0,
-                                });
-                            }
-                        }
-                    } else |err| {
-                        std.log.debug(
-                            "Failed to parse adjustment float '{s}': {}",
-                            .{ raw_str, err },
-                        );
-                    }
-                    if (!is_valid_float) {
-                        clay.text("Invalid float format. Enter a number.", .{
-                            .color = a(theme.red, progress),
-                            .font_size = 13,
-                            .font_id = 0,
-                        });
-                    }
+                    try renderFloatInputFeedback(
+                        raw_str,
+                        palette.mode,
+                        frame_allocator,
+                        progress,
+                    );
                 }
             },
             .files, .actions, .directory_navigator, .inactive => {},
@@ -437,6 +478,564 @@ fn renderTextInputDialog(
 ///    The 1-item overscan serves as a guard band for sub-pixel `child_gap`
 ///    offsets, border widths, and viewport edge hit-testing
 ///    (`clay.pointerOver`).
+fn renderDirectoryScanBadges(
+    entry: anytype,
+    scan: anytype,
+    frame_allocator: std.mem.Allocator,
+    progress: f32,
+) !void {
+    switch (scan) {
+        .unscanned => {
+            clay.UI()(.{
+                .layout = .{
+                    .sizing = .{ .w = .fit, .h = .fit },
+                    .direction = .left_to_right,
+                    .child_gap = 6,
+                },
+            })({
+                renderBadge("...", theme.subtext1, theme.surface0, progress);
+            });
+        },
+        .partial_counted => |p| {
+            clay.UI()(.{
+                .layout = .{
+                    .sizing = .{ .w = .fit, .h = .fit },
+                    .direction = .left_to_right,
+                    .child_gap = 6,
+                },
+            })({
+                if (entry == .archive_file) {
+                    const count_str = try std.fmt.allocPrint(
+                        frame_allocator,
+                        "{}+ pages",
+                        .{p.image_count},
+                    );
+                    renderBadge(
+                        count_str,
+                        theme.yellow,
+                        theme.yellow,
+                        progress,
+                    );
+                } else {
+                    const count_str = try std.fmt.allocPrint(
+                        frame_allocator,
+                        "{}+ images",
+                        .{p.image_count},
+                    );
+                    const sub_str = try std.fmt.allocPrint(
+                        frame_allocator,
+                        "{}+ subfolders",
+                        .{p.subdir_count},
+                    );
+                    renderBadge(
+                        count_str,
+                        theme.yellow,
+                        theme.yellow,
+                        progress,
+                    );
+                    renderBadge(
+                        sub_str,
+                        theme.yellow,
+                        theme.yellow,
+                        progress,
+                    );
+                }
+            });
+        },
+        .scanned, .cached => |s| {
+            clay.UI()(.{
+                .layout = .{
+                    .sizing = .{ .w = .fit, .h = .fit },
+                    .direction = .left_to_right,
+                    .child_gap = 6,
+                },
+            })({
+                if (entry == .archive_file) {
+                    const s_suffix = if (s.image_count == 1) "" else "s";
+                    const count_str = try std.fmt.allocPrint(
+                        frame_allocator,
+                        "{} page{s}",
+                        .{ s.image_count, s_suffix },
+                    );
+                    const count_color = if (s.image_count == 0)
+                        theme.subtext1
+                    else
+                        theme.green;
+                    const border_color = if (s.image_count == 0)
+                        theme.surface0
+                    else
+                        theme.green;
+                    renderBadge(
+                        count_str,
+                        count_color,
+                        border_color,
+                        progress,
+                    );
+                } else {
+                    const img_suffix = if (s.image_count == 1) "" else "s";
+                    const count_str = try std.fmt.allocPrint(
+                        frame_allocator,
+                        "{} image{s}",
+                        .{ s.image_count, img_suffix },
+                    );
+                    const count_color = if (s.image_count == 0)
+                        theme.subtext1
+                    else
+                        theme.green;
+                    const count_border = if (s.image_count == 0)
+                        theme.surface0
+                    else
+                        theme.green;
+
+                    const sub_suffix = if (s.subdir_count == 1) "" else "s";
+                    const sub_str = try std.fmt.allocPrint(
+                        frame_allocator,
+                        "{} subfolder{s}",
+                        .{ s.subdir_count, sub_suffix },
+                    );
+                    const sub_color = if (s.subdir_count == 0)
+                        theme.subtext1
+                    else
+                        theme.blue;
+                    const sub_border = if (s.subdir_count == 0)
+                        theme.surface0
+                    else
+                        theme.blue;
+
+                    renderBadge(
+                        count_str,
+                        count_color,
+                        count_border,
+                        progress,
+                    );
+                    renderBadge(
+                        sub_str,
+                        sub_color,
+                        sub_border,
+                        progress,
+                    );
+                }
+            });
+        },
+        .failed => {
+            clay.UI()(.{
+                .layout = .{
+                    .sizing = .{ .w = .fit, .h = .fit },
+                    .direction = .left_to_right,
+                    .child_gap = 6,
+                },
+            })({
+                renderBadge("Error", theme.red, theme.red, progress);
+            });
+        },
+        .permission_denied => {
+            clay.UI()(.{
+                .layout = .{
+                    .sizing = .{ .w = .fit, .h = .fit },
+                    .direction = .left_to_right,
+                    .child_gap = 6,
+                },
+            })({
+                renderBadge("Locked", theme.red, theme.red, progress);
+            });
+        },
+    }
+}
+
+fn renderDirectoryListItem(
+    palette: *const PaletteState,
+    real_idx: usize,
+    is_selected: bool,
+    frame_allocator: std.mem.Allocator,
+    measure_data: *const MeasureTextUserData,
+    progress: f32,
+) !void {
+    if (real_idx >= palette.dir_items.items.len) return;
+    const entry = palette.dir_items.items[real_idx];
+    var dir_matches = try std.ArrayList(usize).initCapacity(
+        frame_allocator,
+        16,
+    );
+    defer dir_matches.deinit(frame_allocator);
+    const query_str = palette.query.items;
+
+    if (query_str.len > 0 and entry.getName().len > 0) {
+        var searcher = state.fuzzig.Ascii.init(
+            frame_allocator,
+            @max(entry.getName().len, 64),
+            query_str.len,
+            .{ .case_sensitive = false },
+        ) catch null;
+        if (searcher) |*searcher_ptr| {
+            defer searcher_ptr.deinit();
+            const res = searcher_ptr.scoreMatches(entry.getName(), query_str);
+            if (res.score != null) {
+                dir_matches.appendSlice(
+                    frame_allocator,
+                    res.matches,
+                ) catch |err| {
+                    std.log.err("appendSlice failed: {}", .{err});
+                };
+            }
+        }
+    }
+
+    clay.UI()(.{
+        .layout = .{
+            .sizing = .{ .w = .grow, .h = .fit },
+            .direction = .left_to_right,
+            .child_alignment = .{ .x = .left, .y = .center },
+            .child_gap = 8,
+        },
+    })({
+        const badge_text, const badge_color = switch (entry) {
+            .parent => .{ "UP", theme.subtext0 },
+            .directory => .{ "DIR", theme.blue },
+            .archive_file => |arch| switch (arch.archive_type) {
+                .cbz => .{ "CBZ", theme.peach },
+                .zip => .{ "ZIP", theme.peach },
+            },
+            .image_file => .{ "IMG", theme.green },
+        };
+        renderBadge(badge_text, badge_color, badge_color, progress);
+
+        const trunc_folder = truncateFilenameMiddle(
+            frame_allocator,
+            entry.getName(),
+            350.0,
+            13,
+            measure_data,
+        );
+        const display_foldername = trunc_folder.display;
+        const final_folder_matches = remapMiddleTruncatedMatches(
+            frame_allocator,
+            dir_matches.items,
+            trunc_folder.head_len,
+            trunc_folder.tail_start_idx,
+        ) catch dir_matches.items;
+
+        const text_color = if (is_selected)
+            a(theme.blue, progress)
+        else
+            a(theme.text, progress);
+        renderFuzzyMatchText(
+            frame_allocator,
+            display_foldername,
+            final_folder_matches,
+            13,
+            text_color,
+            a(theme.yellow, progress),
+        );
+    });
+
+    if (entry.getScanState()) |scan| {
+        try renderDirectoryScanBadges(entry, scan, frame_allocator, progress);
+    }
+}
+
+fn renderActionListItem(
+    palette: *const PaletteState,
+    real_idx: usize,
+    is_selected: bool,
+    frame_allocator: std.mem.Allocator,
+    progress: f32,
+) !void {
+    const meta = types.palette_action_items[real_idx];
+    const query_str = palette.query.items;
+
+    var action_matches: []const usize = &.{};
+    var searcher = if (query_str.len > 0)
+        state.fuzzig.Ascii.init(
+            frame_allocator,
+            @max(meta.name.len, 64),
+            query_str.len,
+            .{ .case_sensitive = false },
+        ) catch null
+    else
+        null;
+    defer if (searcher) |*s| s.deinit();
+
+    if (searcher) |*s| {
+        const res = s.scoreMatches(meta.name, query_str);
+        if (res.score != null) {
+            action_matches = res.matches;
+        }
+    }
+
+    clay.UI()(.{
+        .layout = .{
+            .sizing = .{ .w = .grow, .h = .fit },
+            .direction = .left_to_right,
+            .child_alignment = .{ .x = .left, .y = .center },
+        },
+    })({
+        const text_color = if (is_selected)
+            a(theme.blue, progress)
+        else
+            a(theme.text, progress);
+        renderFuzzyMatchText(
+            frame_allocator,
+            meta.name,
+            action_matches,
+            13,
+            text_color,
+            a(theme.yellow, progress),
+        );
+    });
+
+    if (meta.shortcut_text.len > 0) {
+        clay.UI()(.{
+            .layout = .{
+                .sizing = .{ .w = .fit, .h = .fit },
+                .padding = .{ .left = 8, .right = 8, .top = 3, .bottom = 3 },
+            },
+            .background_color = a(theme.crust, progress),
+            .corner_radius = .all(4),
+            .border = .{
+                .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                .color = a(theme.surface0, progress),
+            },
+        })({
+            clay.text(meta.shortcut_text, .{
+                .color = a(theme.subtext0, progress),
+                .font_size = 11,
+                .font_id = 0,
+            });
+        });
+    }
+}
+
+fn renderClassificationBadge(
+    label: []const u8,
+    color: clay.Color,
+    progress: f32,
+) void {
+    clay.UI()(.{
+        .layout = .{
+            .sizing = .{ .w = .fit, .h = .fit },
+            .padding = .{
+                .left = 6,
+                .right = 6,
+                .top = 2,
+                .bottom = 2,
+            },
+        },
+        .background_color = theme.withAlpha(color, 0.25 * progress),
+        .border = .{
+            .color = a(color, progress),
+            .width = .{
+                .left = 1,
+                .right = 1,
+                .top = 1,
+                .bottom = 1,
+            },
+        },
+        .corner_radius = .all(4),
+    })({
+        clay.text(label, .{
+            .color = a(color, progress),
+            .font_size = 11,
+            .font_id = 0,
+        });
+    });
+}
+
+fn renderFileListItem(
+    ui_model: UiViewModel,
+    palette: *const PaletteState,
+    real_idx: usize,
+    is_selected: bool,
+    frame_allocator: std.mem.Allocator,
+    measure_data: *const MeasureTextUserData,
+    progress: f32,
+) !void {
+    const media_opt = ui_model.getMediaEntry(real_idx);
+    const basename = if (media_opt) |m| m.getBasename() else "";
+    const dirname = if (media_opt) |m| m.getContainerName() else ".";
+    const query_str = palette.query.items;
+
+    var basename_matches = try std.ArrayList(usize).initCapacity(
+        frame_allocator,
+        16,
+    );
+    defer basename_matches.deinit(frame_allocator);
+    var dirname_matches = try std.ArrayList(usize).initCapacity(
+        frame_allocator,
+        16,
+    );
+    defer dirname_matches.deinit(frame_allocator);
+
+    if (query_str.len > 0 and basename.len > 0) {
+        var searcher = state.fuzzig.Ascii.init(
+            frame_allocator,
+            @max(basename.len, 64),
+            query_str.len,
+            .{ .case_sensitive = false },
+        ) catch null;
+        if (searcher) |*searcher_ptr| {
+            defer searcher_ptr.deinit();
+            const base_res = searcher_ptr.scoreMatches(basename, query_str);
+            if (base_res.score != null) {
+                basename_matches.appendSlice(
+                    frame_allocator,
+                    base_res.matches,
+                ) catch |err| {
+                    std.log.err("appendSlice failed: {}", .{err});
+                };
+            }
+        }
+    }
+
+    const classification = ui_model.getClassification(real_idx);
+    const is_pair = if (media_opt) |m| m.isPair() else false;
+    var max_fn_w: f32 = 492.0;
+    var max_dir_w: f32 = 488.0;
+    if (classification != .unflagged) {
+        max_fn_w -= 64.0;
+        max_dir_w -= 64.0;
+    }
+    if (is_pair) {
+        max_fn_w -= 72.0;
+        max_dir_w -= 72.0;
+    }
+
+    const trunc_filename = truncateFilenameMiddle(
+        frame_allocator,
+        basename,
+        max_fn_w,
+        13,
+        measure_data,
+    );
+    const display_filename = trunc_filename.display;
+    const final_basename_matches = remapMiddleTruncatedMatches(
+        frame_allocator,
+        basename_matches.items,
+        trunc_filename.head_len,
+        trunc_filename.tail_start_idx,
+    ) catch basename_matches.items;
+
+    const display_dir = truncateDirectory(
+        frame_allocator,
+        dirname,
+        max_dir_w,
+        11,
+        measure_data,
+    );
+
+    var remapped_dir_matches: std.ArrayList(usize) = .empty;
+    defer remapped_dir_matches.deinit(frame_allocator);
+
+    var final_dir_matches: []const usize = dirname_matches.items;
+
+    if (display_dir.ptr != dirname.ptr and
+        display_dir.len > 0 and
+        std.mem.startsWith(u8, display_dir, "..."))
+    {
+        const kept_len = display_dir.len - 3;
+        const start_offset = if (dirname.len > kept_len)
+            dirname.len - kept_len
+        else
+            0;
+        try remapped_dir_matches.ensureTotalCapacity(
+            frame_allocator,
+            dirname_matches.items.len,
+        );
+        for (dirname_matches.items) |m_idx| {
+            if (m_idx >= start_offset) {
+                const remapped = (m_idx - start_offset) + 3;
+                remapped_dir_matches.appendAssumeCapacity(remapped);
+            }
+        }
+        final_dir_matches = remapped_dir_matches.items;
+    }
+
+    clay.UI()(.{
+        .layout = .{
+            .sizing = .{ .w = .grow, .h = .fit },
+            .direction = .top_to_bottom,
+            .child_gap = 2,
+        },
+    })({
+        clay.UI()(.{
+            .layout = .{
+                .sizing = .{ .w = .grow, .h = .fit },
+                .direction = .left_to_right,
+                .child_alignment = .{ .x = .left, .y = .center },
+                .child_gap = 6,
+            },
+        })({
+            clay.UI()(.{
+                .layout = .{
+                    .sizing = .{ .w = .fixed(4), .h = .fixed(12) },
+                },
+                .background_color = if (is_selected)
+                    a(theme.blue, progress)
+                else
+                    a(theme.subtext1, progress),
+                .corner_radius = .all(3),
+            })({});
+
+            const text_color = if (is_selected)
+                a(theme.blue, progress)
+            else
+                a(theme.text, progress);
+            renderFuzzyMatchText(
+                frame_allocator,
+                display_filename,
+                final_basename_matches,
+                13,
+                text_color,
+                a(theme.yellow, progress),
+            );
+        });
+
+        clay.UI()(.{
+            .layout = .{
+                .sizing = .{ .w = .grow, .h = .fit },
+                .direction = .left_to_right,
+                .padding = .{ .left = 14 },
+            },
+        })({
+            renderFuzzyMatchText(
+                frame_allocator,
+                display_dir,
+                final_dir_matches,
+                11,
+                a(theme.subtext0, progress),
+                a(theme.yellow, progress),
+            );
+        });
+    });
+
+    if (is_pair or classification != .unflagged) {
+        clay.UI()(.{
+            .layout = .{
+                .sizing = .{ .w = .fit, .h = .fit },
+                .direction = .left_to_right,
+                .child_alignment = .{ .x = .right, .y = .center },
+                .child_gap = 6,
+            },
+        })({
+            if (is_pair) {
+                renderBadge("RAW+JPG", theme.mauve, theme.mauve, progress);
+            }
+            switch (classification) {
+                .pick => renderClassificationBadge(
+                    "PICK",
+                    theme.green,
+                    progress,
+                ),
+                .reject => renderClassificationBadge(
+                    "REJECT",
+                    theme.red,
+                    progress,
+                ),
+                .unflagged => {},
+            }
+        });
+    }
+}
+
 fn renderSelectionList(
     ui_model: UiViewModel,
     cfg: PaletteConfig,
@@ -573,598 +1172,30 @@ fn renderSelectionList(
                 .corner_radius = .all(6),
             })({
                 switch (palette.mode) {
-                    .files => {
-                        const media_opt = ui_model.getMediaEntry(real_idx);
-                        const basename = if (media_opt) |m| m.getBasename() else "";
-                        const dirname = if (media_opt) |m| m.getContainerName() else ".";
-                        const query_str = palette.query.items;
-
-                        var basename_matches =
-                            try std.ArrayList(usize).initCapacity(frame_allocator, 16);
-                        defer basename_matches.deinit(frame_allocator);
-                        var dirname_matches =
-                            try std.ArrayList(usize).initCapacity(frame_allocator, 16);
-                        defer dirname_matches.deinit(frame_allocator);
-
-                        if (query_str.len > 0 and basename.len > 0) {
-                            var searcher = state.fuzzig.Ascii.init(
-                                frame_allocator,
-                                @max(basename.len, 64),
-                                query_str.len,
-                                .{ .case_sensitive = false },
-                            ) catch null;
-                            if (searcher) |*searcher_ptr| {
-                                defer searcher_ptr.deinit();
-                                const base_res = searcher_ptr.scoreMatches(
-                                    basename,
-                                    query_str,
-                                );
-                                if (base_res.score != null) {
-                                    basename_matches.appendSlice(
-                                        frame_allocator,
-                                        base_res.matches,
-                                    ) catch |err| {
-                                        std.log.err(
-                                            "appendSlice failed: {}",
-                                            .{err},
-                                        );
-                                    };
-                                }
-                            }
-                        }
-
-                        const classification = ui_model.getClassification(real_idx);
-                        const is_pair = if (media_opt) |m|
-                            m.isPair()
-                        else
-                            false;
-                        var max_fn_w: f32 = 492.0;
-                        var max_dir_w: f32 = 488.0;
-                        if (classification != .unflagged) {
-                            max_fn_w -= 64.0;
-                            max_dir_w -= 64.0;
-                        }
-                        if (is_pair) {
-                            max_fn_w -= 72.0;
-                            max_dir_w -= 72.0;
-                        }
-
-                        const trunc_filename = truncateFilenameMiddle(
-                            frame_allocator,
-                            basename,
-                            max_fn_w,
-                            13,
-                            measure_data,
-                        );
-                        const display_filename = trunc_filename.display;
-                        const final_basename_matches = remapMiddleTruncatedMatches(
-                            frame_allocator,
-                            basename_matches.items,
-                            trunc_filename.head_len,
-                            trunc_filename.tail_start_idx,
-                        ) catch basename_matches.items;
-
-                        const display_dir = truncateDirectory(
-                            frame_allocator,
-                            dirname,
-                            max_dir_w,
-                            11,
-                            measure_data,
-                        );
-
-                        var remapped_dir_matches: std.ArrayList(usize) = .empty;
-                        defer remapped_dir_matches.deinit(frame_allocator);
-
-                        var final_dir_matches: []const usize =
-                            dirname_matches.items;
-
-                        if (display_dir.ptr != dirname.ptr and
-                            display_dir.len > 0 and
-                            std.mem.startsWith(u8, display_dir, "..."))
-                        {
-                            const kept_len = display_dir.len - 3;
-                            const start_offset = if (dirname.len > kept_len)
-                                dirname.len - kept_len
-                            else
-                                0;
-                            try remapped_dir_matches.ensureTotalCapacity(
-                                frame_allocator,
-                                dirname_matches.items.len,
-                            );
-                            for (dirname_matches.items) |m_idx| {
-                                if (m_idx >= start_offset) {
-                                    remapped_dir_matches.appendAssumeCapacity(
-                                        (m_idx - start_offset) + 3,
-                                    );
-                                }
-                            }
-                            final_dir_matches = remapped_dir_matches.items;
-                        }
-
-                        clay.UI()(.{
-                            .layout = .{
-                                .sizing = .{ .w = .grow, .h = .fit },
-                                .direction = .top_to_bottom,
-                                .child_gap = 2,
-                            },
-                        })({
-                            clay.UI()(.{
-                                .layout = .{
-                                    .sizing = .{ .w = .grow, .h = .fit },
-                                    .direction = .left_to_right,
-                                    .child_alignment = .{ .x = .left, .y = .center },
-                                    .child_gap = 6,
-                                },
-                            })({
-                                clay.UI()(.{
-                                    .layout = .{
-                                        .sizing = .{ .w = .fixed(4), .h = .fixed(12) },
-                                    },
-                                    .background_color = if (is_selected)
-                                        a(theme.blue, progress)
-                                    else
-                                        a(theme.subtext1, progress),
-                                    .corner_radius = .all(3),
-                                })({});
-
-                                renderFuzzyMatchText(
-                                    frame_allocator,
-                                    display_filename,
-                                    final_basename_matches,
-                                    13,
-                                    if (is_selected)
-                                        a(theme.blue, progress)
-                                    else
-                                        a(theme.text, progress),
-                                    a(theme.yellow, progress),
-                                );
-                            });
-
-                            clay.UI()(.{
-                                .layout = .{
-                                    .sizing = .{ .w = .grow, .h = .fit },
-                                    .direction = .left_to_right,
-                                    .padding = .{ .left = 14 },
-                                },
-                            })({
-                                renderFuzzyMatchText(
-                                    frame_allocator,
-                                    display_dir,
-                                    final_dir_matches,
-                                    11,
-                                    a(theme.subtext0, progress),
-                                    a(theme.yellow, progress),
-                                );
-                            });
-                        });
-
-                        if (is_pair or classification != .unflagged) {
-                            clay.UI()(.{
-                                .layout = .{
-                                    .sizing = .{ .w = .fit, .h = .fit },
-                                    .direction = .left_to_right,
-                                    .child_alignment = .{
-                                        .x = .right,
-                                        .y = .center,
-                                    },
-                                    .child_gap = 6,
-                                },
-                            })({
-                                if (is_pair) {
-                                    renderBadge(
-                                        "RAW+JPG",
-                                        theme.mauve,
-                                        theme.mauve,
-                                        progress,
-                                    );
-                                }
-                                switch (classification) {
-                                    .pick => {
-                                        clay.UI()(.{
-                                            .layout = .{
-                                                .sizing = .{
-                                                    .w = .fit,
-                                                    .h = .fit,
-                                                },
-                                                .padding = .{
-                                                    .left = 6,
-                                                    .right = 6,
-                                                    .top = 2,
-                                                    .bottom = 2,
-                                                },
-                                            },
-                                            .background_color = theme.withAlpha(
-                                                theme.green,
-                                                0.25 * progress,
-                                            ),
-                                            .border = .{
-                                                .color = a(
-                                                    theme.green,
-                                                    progress,
-                                                ),
-                                                .width = .{
-                                                    .left = 1,
-                                                    .right = 1,
-                                                    .top = 1,
-                                                    .bottom = 1,
-                                                },
-                                            },
-                                            .corner_radius = .all(4),
-                                        })({
-                                            clay.text("PICK", .{
-                                                .color = a(
-                                                    theme.green,
-                                                    progress,
-                                                ),
-                                                .font_size = 11,
-                                                .font_id = 0,
-                                            });
-                                        });
-                                    },
-                                    .reject => {
-                                        clay.UI()(.{
-                                            .layout = .{
-                                                .sizing = .{
-                                                    .w = .fit,
-                                                    .h = .fit,
-                                                },
-                                                .padding = .{
-                                                    .left = 6,
-                                                    .right = 6,
-                                                    .top = 2,
-                                                    .bottom = 2,
-                                                },
-                                            },
-                                            .background_color = theme.withAlpha(
-                                                theme.red,
-                                                0.25 * progress,
-                                            ),
-                                            .border = .{
-                                                .color = a(
-                                                    theme.red,
-                                                    progress,
-                                                ),
-                                                .width = .{
-                                                    .left = 1,
-                                                    .right = 1,
-                                                    .top = 1,
-                                                    .bottom = 1,
-                                                },
-                                            },
-                                            .corner_radius = .all(4),
-                                        })({
-                                            clay.text("REJECT", .{
-                                                .color = a(
-                                                    theme.red,
-                                                    progress,
-                                                ),
-                                                .font_size = 11,
-                                                .font_id = 0,
-                                            });
-                                        });
-                                    },
-                                    .unflagged => {},
-                                }
-                            });
-                        }
-                    },
-                    .actions => {
-                        const meta = types.palette_action_items[real_idx];
-                        const query_str = palette.query.items;
-
-                        var action_matches: []const usize = &.{};
-                        if (query_str.len > 0) {
-                            // Note: searcher is retained across this block
-                            // because action_matches borrows res.matches
-                            // directly for renderFuzzyMatchText below.
-                            var searcher = state.fuzzig.Ascii.init(
-                                frame_allocator,
-                                @max(meta.name.len, 64),
-                                query_str.len,
-                                .{ .case_sensitive = false },
-                            ) catch null;
-                            if (searcher) |*searcher_ptr| {
-                                const res = searcher_ptr.scoreMatches(
-                                    meta.name,
-                                    query_str,
-                                );
-                                if (res.score != null) {
-                                    action_matches = res.matches;
-                                }
-                            }
-                        }
-
-                        clay.UI()(.{
-                            .layout = .{
-                                .sizing = .{ .w = .grow, .h = .fit },
-                                .direction = .left_to_right,
-                                .child_alignment = .{ .x = .left, .y = .center },
-                            },
-                        })({
-                            renderFuzzyMatchText(
-                                frame_allocator,
-                                meta.name,
-                                action_matches,
-                                13,
-                                if (is_selected)
-                                    a(theme.blue, progress)
-                                else
-                                    a(theme.text, progress),
-                                a(theme.yellow, progress),
-                            );
-                        });
-
-                        if (meta.shortcut_text.len > 0) {
-                            clay.UI()(.{
-                                .layout = .{
-                                    .sizing = .{ .w = .fit, .h = .fit },
-                                    .padding = .{ .left = 8, .right = 8, .top = 3, .bottom = 3 },
-                                },
-                                .background_color = a(theme.crust, progress),
-                                .corner_radius = .all(4),
-                                .border = .{
-                                    .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-                                    .color = a(theme.surface0, progress),
-                                },
-                            })({
-                                clay.text(meta.shortcut_text, .{
-                                    .color = a(theme.subtext0, progress),
-                                    .font_size = 11,
-                                    .font_id = 0,
-                                });
-                            });
-                        }
-                    },
-                    .directory_navigator => {
-                        if (real_idx < palette.dir_items.items.len) {
-                            const entry = palette.dir_items.items[real_idx];
-                            var dir_matches =
-                                try std.ArrayList(usize).initCapacity(frame_allocator, 16);
-                            defer dir_matches.deinit(frame_allocator);
-                            const query_str = palette.query.items;
-
-                            if (query_str.len > 0 and entry.getName().len > 0) {
-                                var searcher = state.fuzzig.Ascii.init(
-                                    frame_allocator,
-                                    @max(entry.getName().len, 64),
-                                    query_str.len,
-                                    .{ .case_sensitive = false },
-                                ) catch null;
-                                if (searcher) |*searcher_ptr| {
-                                    defer searcher_ptr.deinit();
-                                    const res = searcher_ptr.scoreMatches(
-                                        entry.getName(),
-                                        query_str,
-                                    );
-                                    if (res.score != null) {
-                                        dir_matches.appendSlice(
-                                            frame_allocator,
-                                            res.matches,
-                                        ) catch |err| {
-                                            std.log.err(
-                                                "appendSlice failed: {}",
-                                                .{err},
-                                            );
-                                        };
-                                    }
-                                }
-                            }
-
-                            clay.UI()(.{
-                                .layout = .{
-                                    .sizing = .{ .w = .grow, .h = .fit },
-                                    .direction = .left_to_right,
-                                    .child_alignment = .{ .x = .left, .y = .center },
-                                    .child_gap = 8,
-                                },
-                            })({
-                                const badge_text, const badge_color = switch (entry) {
-                                    .parent => .{ "UP", theme.subtext0 },
-                                    .directory => .{ "DIR", theme.blue },
-                                    .archive_file => |arch| switch (arch.archive_type) {
-                                        .cbz => .{ "CBZ", theme.peach },
-                                        .zip => .{ "ZIP", theme.peach },
-                                    },
-                                    .image_file => .{ "IMG", theme.green },
-                                };
-                                renderBadge(badge_text, badge_color, badge_color, progress);
-
-                                const trunc_folder = truncateFilenameMiddle(
-                                    frame_allocator,
-                                    entry.getName(),
-                                    350.0,
-                                    13,
-                                    measure_data,
-                                );
-                                const display_foldername = trunc_folder.display;
-                                const final_folder_matches = remapMiddleTruncatedMatches(
-                                    frame_allocator,
-                                    dir_matches.items,
-                                    trunc_folder.head_len,
-                                    trunc_folder.tail_start_idx,
-                                ) catch dir_matches.items;
-
-                                renderFuzzyMatchText(
-                                    frame_allocator,
-                                    display_foldername,
-                                    final_folder_matches,
-                                    13,
-                                    if (is_selected)
-                                        a(theme.blue, progress)
-                                    else
-                                        a(theme.text, progress),
-                                    a(theme.yellow, progress),
-                                );
-                            });
-
-                            if (entry.getScanState()) |scan| {
-                                switch (scan) {
-                                    .unscanned => {
-                                        clay.UI()(.{
-                                            .layout = .{
-                                                .sizing = .{ .w = .fit, .h = .fit },
-                                                .direction = .left_to_right,
-                                                .child_gap = 6,
-                                            },
-                                        })({
-                                            renderBadge(
-                                                "...",
-                                                theme.subtext1,
-                                                theme.surface0,
-                                                progress,
-                                            );
-                                        });
-                                    },
-                                    .partial_counted => |p| {
-                                        clay.UI()(.{
-                                            .layout = .{
-                                                .sizing = .{ .w = .fit, .h = .fit },
-                                                .direction = .left_to_right,
-                                                .child_gap = 6,
-                                            },
-                                        })({
-                                            if (entry == .archive_file) {
-                                                const count_str = try std.fmt.allocPrint(
-                                                    frame_allocator,
-                                                    "{}+ pages",
-                                                    .{p.image_count},
-                                                );
-                                                renderBadge(
-                                                    count_str,
-                                                    theme.yellow,
-                                                    theme.yellow,
-                                                    progress,
-                                                );
-                                            } else {
-                                                const count_str = try std.fmt.allocPrint(
-                                                    frame_allocator,
-                                                    "{}+ images",
-                                                    .{p.image_count},
-                                                );
-                                                const sub_str = try std.fmt.allocPrint(
-                                                    frame_allocator,
-                                                    "{}+ subfolders",
-                                                    .{p.subdir_count},
-                                                );
-                                                renderBadge(
-                                                    count_str,
-                                                    theme.yellow,
-                                                    theme.yellow,
-                                                    progress,
-                                                );
-                                                renderBadge(
-                                                    sub_str,
-                                                    theme.yellow,
-                                                    theme.yellow,
-                                                    progress,
-                                                );
-                                            }
-                                        });
-                                    },
-                                    .scanned, .cached => |s| {
-                                        clay.UI()(.{
-                                            .layout = .{
-                                                .sizing = .{ .w = .fit, .h = .fit },
-                                                .direction = .left_to_right,
-                                                .child_gap = 6,
-                                            },
-                                        })({
-                                            if (entry == .archive_file) {
-                                                const s_suffix =
-                                                    if (s.image_count == 1) "" else "s";
-                                                const count_str = try std.fmt.allocPrint(
-                                                    frame_allocator,
-                                                    "{} page{s}",
-                                                    .{ s.image_count, s_suffix },
-                                                );
-                                                const count_color = if (s.image_count == 0)
-                                                    theme.subtext1
-                                                else
-                                                    theme.green;
-                                                const border_color = if (s.image_count == 0)
-                                                    theme.surface0
-                                                else
-                                                    theme.green;
-                                                renderBadge(
-                                                    count_str,
-                                                    count_color,
-                                                    border_color,
-                                                    progress,
-                                                );
-                                            } else {
-                                                const img_suffix =
-                                                    if (s.image_count == 1) "" else "s";
-                                                const count_str = try std.fmt.allocPrint(
-                                                    frame_allocator,
-                                                    "{} image{s}",
-                                                    .{ s.image_count, img_suffix },
-                                                );
-                                                const count_color = if (s.image_count == 0)
-                                                    theme.subtext1
-                                                else
-                                                    theme.green;
-                                                const count_border = if (s.image_count == 0)
-                                                    theme.surface0
-                                                else
-                                                    theme.green;
-
-                                                const sub_suffix =
-                                                    if (s.subdir_count == 1) "" else "s";
-                                                const sub_str = try std.fmt.allocPrint(
-                                                    frame_allocator,
-                                                    "{} subfolder{s}",
-                                                    .{ s.subdir_count, sub_suffix },
-                                                );
-                                                const sub_color = if (s.subdir_count == 0)
-                                                    theme.subtext1
-                                                else
-                                                    theme.blue;
-                                                const sub_border = if (s.subdir_count == 0)
-                                                    theme.surface0
-                                                else
-                                                    theme.blue;
-
-                                                renderBadge(
-                                                    count_str,
-                                                    count_color,
-                                                    count_border,
-                                                    progress,
-                                                );
-                                                renderBadge(
-                                                    sub_str,
-                                                    sub_color,
-                                                    sub_border,
-                                                    progress,
-                                                );
-                                            }
-                                        });
-                                    },
-                                    .failed => {
-                                        clay.UI()(.{
-                                            .layout = .{
-                                                .sizing = .{ .w = .fit, .h = .fit },
-                                                .direction = .left_to_right,
-                                                .child_gap = 6,
-                                            },
-                                        })({
-                                            renderBadge("Error", theme.red, theme.red, progress);
-                                        });
-                                    },
-                                    .permission_denied => {
-                                        clay.UI()(.{
-                                            .layout = .{
-                                                .sizing = .{ .w = .fit, .h = .fit },
-                                                .direction = .left_to_right,
-                                                .child_gap = 6,
-                                            },
-                                        })({
-                                            renderBadge("Locked", theme.red, theme.red, progress);
-                                        });
-                                    },
-                                }
-                            }
-                        }
-                    },
+                    .files => try renderFileListItem(
+                        ui_model,
+                        palette,
+                        real_idx,
+                        is_selected,
+                        frame_allocator,
+                        measure_data,
+                        progress,
+                    ),
+                    .actions => try renderActionListItem(
+                        palette,
+                        real_idx,
+                        is_selected,
+                        frame_allocator,
+                        progress,
+                    ),
+                    .directory_navigator => try renderDirectoryListItem(
+                        palette,
+                        real_idx,
+                        is_selected,
+                        frame_allocator,
+                        measure_data,
+                        progress,
+                    ),
                     .set_brightness,
                     .set_contrast,
                     .set_contrast_blend,

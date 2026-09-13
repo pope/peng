@@ -36,62 +36,68 @@ pub fn drainWorkerEvents(state: *AppState) bool {
             .dimensions_probed => |d| handleDimensionsProbedEvent(state, d),
             .thumb_decoded => |t| handleExifThumbnailEvent(state, t),
             .image_decoded => |*d| handleImageDecodedEvent(state, d),
-            .decode_failed => |f| {
-                if (state.cache.get(f.key)) |entry| {
-                    entry.is_promoting = false;
-                    if (entry.status != .loaded_gpu and entry.status != .loaded_cpu) {
-                        entry.status = .failed;
-                    }
-                    if (entry.thumbnail == .pending or entry.thumbnail == .none) {
-                        entry.thumbnail = .not_available;
-                    }
-                } else {
-                    _ = state.cache.updateStatus(f.key, .failed);
-                }
-            },
+            .decode_failed => |f| handleDecodeFailedEvent(state, f),
             .path_discovered => |p| handleDirScannedEvent(state, p),
             .directory_scan_result => |res| handleDirectoryScanResultEvent(state, res),
             .directory_scan_complete => {},
             .palette_folder_count => |cnt| {
-                if (cnt.generation == state.viewer.ui.palette.dir_scan_generation.load(.acquire)) {
-                    for (state.viewer.ui.palette.dir_items.items) |*item| {
-                        if (std.mem.eql(u8, item.getFullPath(), cnt.path)) {
-                            switch (item.*) {
-                                .directory => |*d| {
-                                    d.scan = .{
-                                        .scanned = .{
-                                            .image_count = cnt.image_count,
-                                            .subdir_count = cnt.subdir_count,
-                                        },
-                                    };
-                                },
-                                .archive_file => |*a| {
-                                    a.scan = .{
-                                        .scanned = .{
-                                            .image_count = cnt.image_count,
-                                            .subdir_count = cnt.subdir_count,
-                                        },
-                                    };
-                                },
-                                else => {},
-                            }
-                            state.viewer.ui.palette.selection_dirty = true;
-                            break;
-                        }
-                    }
-                }
+                handlePaletteFolderCountEvent(state, cnt);
             },
-            .ipc_command => |cmd_data| {
-                state.pending_ipc_commands.append(state.allocator, cmd_data) catch |err| {
-                    std.log.err("Failed to append IPC command to pending list: {}", .{err});
-                    cmd_data.client_stream.close(state.io);
-                    state.allocator.free(cmd_data.command);
-                    state.allocator.destroy(cmd_data);
-                };
-            },
+            .ipc_command => |cmd_data| handleIpcCommandEvent(state, cmd_data),
         }
     }
     return true;
+}
+
+fn handleDecodeFailedEvent(
+    state: *AppState,
+    f: events.DecodeFailedPayload,
+) void {
+    const entry = state.cache.get(f.key) orelse {
+        _ = state.cache.updateStatus(f.key, .failed);
+        return;
+    };
+    entry.is_promoting = false;
+    if (entry.status != .loaded_gpu and entry.status != .loaded_cpu) {
+        entry.status = .failed;
+    }
+    if (entry.thumbnail == .pending or entry.thumbnail == .none) {
+        entry.thumbnail = .not_available;
+    }
+}
+
+fn handlePaletteFolderCountEvent(
+    state: *AppState,
+    cnt: events.PaletteFolderCountPayload,
+) void {
+    const palette = &state.viewer.ui.palette;
+    const active_gen = palette.dir_scan_generation.load(.acquire);
+    if (cnt.generation != active_gen) return;
+
+    for (state.viewer.ui.palette.dir_items.items) |*item| {
+        if (!std.mem.eql(u8, item.getFullPath(), cnt.path)) continue;
+
+        const counts = state_pkg.EntryScanCounts{
+            .image_count = cnt.image_count,
+            .subdir_count = cnt.subdir_count,
+        };
+        switch (item.*) {
+            .directory => |*d| d.scan = .{ .scanned = counts },
+            .archive_file => |*a| a.scan = .{ .scanned = counts },
+            else => {},
+        }
+        state.viewer.ui.palette.selection_dirty = true;
+        break;
+    }
+}
+
+fn handleIpcCommandEvent(state: *AppState, cmd_data: *ipc.IpcCommandData) void {
+    state.pending_ipc_commands.append(state.allocator, cmd_data) catch |err| {
+        std.log.err("Failed to append IPC command to pending list: {}", .{err});
+        cmd_data.client_stream.close(state.io);
+        state.allocator.free(cmd_data.command);
+        state.allocator.destroy(cmd_data);
+    };
 }
 
 fn handleDimensionsProbedEvent(state: *AppState, probed: events.DimensionsProbedPayload) void {
@@ -220,82 +226,13 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
             state.unpack_compute_pipeline,
             &state.upload_staging,
         )) |full_res| {
-            if (state.cache.get(decoded_data.key)) |entry| {
-                switch (entry.status) {
-                    .loaded_cpu => |cpu| cpu.surface.destroy(),
-                    .loaded_gpu => |gpu| gpu_dev.releaseTexture(gpu.gpu_texture),
-                    else => {},
-                }
-                entry.raw_metadata = decoded_data.raw_metadata;
-                entry.orientation = decoded_data.orientation;
-                entry.is_promoting = false;
-                if (entry.full_w <= 0.0 or entry.full_h <= 0.0) {
-                    if (decoded_data.raw_metadata.getSensorDims()) |s_dims| {
-                        entry.full_w = s_dims.w;
-                        entry.full_h = s_dims.h;
-                    } else {
-                        entry.full_w = decoded_data.w;
-                        entry.full_h = decoded_data.h;
-                    }
-                }
-                entry.status = .{
-                    .loaded_gpu = .{
-                        .gpu_texture = full_res.gpu_texture,
-                        .w = decoded_data.w,
-                        .h = decoded_data.h,
-                        .size_bytes = decoded_data.size_bytes,
-                        .mime_type = decoded_data.mime_type,
-                        .read_time_ms = decoded_data.read_time_ms,
-                        .decode_time_ms = decoded_data.decode_time_ms,
-                        .conversion_time_ms = full_res.conversion_time_ms,
-                        .upload_time_ms = full_res.upload_time_ms,
-                        .memory_size_bytes = full_res.memory_size_bytes,
-                        .num_mip_levels = full_res.num_mip_levels,
-                        .mipmap_time_ms = full_res.mipmap_time_ms,
-                        .was_fallback = full_res.was_fallback,
-                        .fallback_time_ms = full_res.fallback_time_ms,
-                        .cbz_decompress_time_ms = decoded_data.cbz_decompress_time_ms,
-                        .compressed_size_bytes = decoded_data.compressed_size_bytes,
-                    },
-                };
-                state.cache.enforceVramBudget(
-                    gpu_dev,
-                    state.viewer.navigation.current_index,
-                    state.viewer.getTransitionPrevIndex(),
-                    state.viewer.navigation.count(),
-                    image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES,
-                );
-                if (entry.thumbnail == .pending or entry.thumbnail == .none) {
-                    entry.thumbnail = .not_available;
-                }
-                const can_crossfade = is_current and
-                    entry.thumbnail == .loaded and
-                    !state.viewer.ui.overlays.debug_show_thumb and
-                    !state.viewer.isSlideshowActive() and
-                    state.viewer.image_transition == .none;
-                if (can_crossfade) {
-                    state.viewer.animations.startFrom(
-                        .thumb_crossfade,
-                        0.0,
-                        1.0,
-                        state_pkg.DURATION_THUMB_CROSSFADE_MS,
-                        .ease_out_quad,
-                    );
-                }
-                if (is_current and state.viewer.image_transition != .none) {
-                    if (state.viewer.animations.get(.image_crossfade) < 0.001) {
-                        state.viewer.animations.startFrom(
-                            .image_crossfade,
-                            0.0,
-                            1.0,
-                            state_pkg.DURATION_IMAGE_DISSOLVE_MS,
-                            .ease_in_out_cubic,
-                        );
-                    }
-                }
-            } else {
-                gpu_dev.releaseTexture(full_res.gpu_texture);
-            }
+            applyDecodedGpuTexture(
+                state,
+                decoded_data,
+                full_res,
+                is_current,
+                gpu_dev,
+            );
             state.updateCurrentRotation();
         } else {
             std.log.err(
@@ -352,6 +289,100 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
         }
         state.updateCurrentRotation();
     }
+}
+
+fn triggerDecodedGpuCrossfades(
+    state: *AppState,
+    is_current: bool,
+    entry: *state_pkg.CacheEntry,
+) void {
+    if (!is_current) return;
+
+    const can_crossfade = entry.thumbnail == .loaded and
+        !state.viewer.ui.overlays.debug_show_thumb and
+        !state.viewer.isSlideshowActive() and
+        state.viewer.image_transition == .none;
+    if (can_crossfade) {
+        state.viewer.animations.startFrom(
+            .thumb_crossfade,
+            0.0,
+            1.0,
+            state_pkg.DURATION_THUMB_CROSSFADE_MS,
+            .ease_out_quad,
+        );
+    }
+    if (state.viewer.image_transition != .none) {
+        if (state.viewer.animations.get(.image_crossfade) < 0.001) {
+            state.viewer.animations.startFrom(
+                .image_crossfade,
+                0.0,
+                1.0,
+                state_pkg.DURATION_IMAGE_DISSOLVE_MS,
+                .ease_in_out_cubic,
+            );
+        }
+    }
+}
+
+fn applyDecodedGpuTexture(
+    state: *AppState,
+    decoded_data: *events.ImageDecodedPayload,
+    full_res: image.GpuUploadResult,
+    is_current: bool,
+    gpu_dev: sdl.gpu.Device,
+) void {
+    const entry = state.cache.get(decoded_data.key) orelse {
+        gpu_dev.releaseTexture(full_res.gpu_texture);
+        return;
+    };
+    switch (entry.status) {
+        .loaded_cpu => |cpu| cpu.surface.destroy(),
+        .loaded_gpu => |gpu| gpu_dev.releaseTexture(gpu.gpu_texture),
+        else => {},
+    }
+    entry.raw_metadata = decoded_data.raw_metadata;
+    entry.orientation = decoded_data.orientation;
+    entry.is_promoting = false;
+    if (entry.full_w <= 0.0 or entry.full_h <= 0.0) {
+        if (decoded_data.raw_metadata.getSensorDims()) |s_dims| {
+            entry.full_w = s_dims.w;
+            entry.full_h = s_dims.h;
+        } else {
+            entry.full_w = decoded_data.w;
+            entry.full_h = decoded_data.h;
+        }
+    }
+    entry.status = .{
+        .loaded_gpu = .{
+            .gpu_texture = full_res.gpu_texture,
+            .w = decoded_data.w,
+            .h = decoded_data.h,
+            .size_bytes = decoded_data.size_bytes,
+            .mime_type = decoded_data.mime_type,
+            .read_time_ms = decoded_data.read_time_ms,
+            .decode_time_ms = decoded_data.decode_time_ms,
+            .conversion_time_ms = full_res.conversion_time_ms,
+            .upload_time_ms = full_res.upload_time_ms,
+            .memory_size_bytes = full_res.memory_size_bytes,
+            .num_mip_levels = full_res.num_mip_levels,
+            .mipmap_time_ms = full_res.mipmap_time_ms,
+            .was_fallback = full_res.was_fallback,
+            .fallback_time_ms = full_res.fallback_time_ms,
+            .cbz_decompress_time_ms = decoded_data.cbz_decompress_time_ms,
+            .compressed_size_bytes = decoded_data.compressed_size_bytes,
+        },
+    };
+    state.cache.enforceVramBudget(
+        gpu_dev,
+        state.viewer.navigation.current_index,
+        state.viewer.getTransitionPrevIndex(),
+        state.viewer.navigation.count(),
+        image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES,
+    );
+    if (entry.thumbnail == .pending or entry.thumbnail == .none) {
+        entry.thumbnail = .not_available;
+    }
+    triggerDecodedGpuCrossfades(state, is_current, entry);
 }
 
 fn handleDirScannedEvent(state: *AppState, scanned_data: events.PathDiscoveredPayload) void {

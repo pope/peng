@@ -44,6 +44,15 @@
 - UI buttons, menu items, keyboard shortcuts, and IPC socket commands MUST map directly to high-level `intents.AppIntent` payloads from the standalone `intents` module (`src/intents/root.zig`).
 - UI inputs MUST NOT execute state mutations inline; they push `AppIntent` values into `AppState.pending_intents` via `state.pushIntent(intent)`.
 - `pending_intents` is an allocation-free `std.ArrayList(AppIntent)` cleared frame-over-frame using `.clearRetainingCapacity()`.
+- **Intent Queue Drainage Safety Invariant (`defer clearIntents()`)**:
+  - When processing queued intent buffers (e.g. in `sysExecuteIntents`),
+    ALWAYS place `defer self.clearIntents();` immediately following the queue
+    emptiness guard (`if (self.pending_intents.items.len == 0) return;`).
+  - **Error Loop Prevention**: If an individual intent handler returns an error
+    during iteration, `defer` guarantees that pending intents are drained.
+    Without `defer`, an error aborts the loop before `clearIntents()` is
+    reached, leaving the problematic intent in the queue and triggering an
+    infinite error loop on subsequent frames.
 - Intent execution logic is co-located inside `src/app/systems/intents.zig` (`executeIntent`), operating directly against domain sub-states (`vp`, `nav`, `ui`) without needing forwarding wrappers on `AppState`.
 - **Unified Capabilities Declarative Registry**:
   - All user-facing features, keyboard shortcuts, Command Palette items, CLI flags, and IPC verbs MUST be declared centrally in `src/intents/actions.zig` (`actions: [_]ActionDef`).

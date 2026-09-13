@@ -240,6 +240,14 @@ pub const SliceIterator = struct {
     }
 };
 
+fn parseScaleMode(val: []const u8) ?ScaleMode {
+    if (std.mem.eql(u8, val, "fit")) return .full;
+    if (std.mem.eql(u8, val, "fill")) return .crop;
+    if (std.mem.eql(u8, val, "1:1") or
+        std.mem.eql(u8, val, "actual")) return .none;
+    return std.meta.stringToEnum(ScaleMode, val);
+}
+
 /// Parses flags and arguments from any iterator providing `next() ?[]const u8`.
 pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
     var arg_path: ?[]const u8 = null;
@@ -271,25 +279,17 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
                 .stack_raw_jpeg => stack_raw_jpeg = true,
                 .no_stack_raw_jpeg => stack_raw_jpeg = false,
                 .scale => {
-                    if (args_it.next()) |val| {
-                        if (std.mem.eql(u8, val, "fit")) {
-                            default_scale = .full;
-                        } else if (std.mem.eql(u8, val, "fill")) {
-                            default_scale = .crop;
-                        } else if (std.mem.eql(u8, val, "1:1") or
-                            std.mem.eql(u8, val, "actual"))
-                        {
-                            default_scale = .none;
-                        } else if (std.meta.stringToEnum(ScaleMode, val)) |mode| {
-                            default_scale = mode;
-                        } else {
-                            std.log.err(
-                                "Unknown scale mode: {s}. Valid modes are: {s}.",
-                                .{ val, intents.scale_modes_string },
-                            );
-                        }
-                    } else {
+                    const val = args_it.next() orelse {
                         std.log.err("Missing value for --scale flag.", .{});
+                        continue;
+                    };
+                    if (parseScaleMode(val)) |mode| {
+                        default_scale = mode;
+                    } else {
+                        std.log.err(
+                            "Unknown scale mode: {s}. Valid modes are: {s}.",
+                            .{ val, intents.scale_modes_string },
+                        );
                     }
                 },
             }

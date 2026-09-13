@@ -157,6 +157,26 @@ pub fn MpscQueue(comptime T: type) type {
             return .{};
         }
 
+        fn deinitQueueItemElement(
+            item: *T,
+            allocator: std.mem.Allocator,
+            io: std.Io,
+        ) void {
+            if (@hasDecl(T, "deinitQueueItem")) {
+                item.deinitQueueItem(allocator, io);
+                return;
+            }
+            if (!@hasDecl(T, "deinit")) return;
+            const deinit_info = @typeInfo(@TypeOf(T.deinit));
+            if (deinit_info != .@"fn") return;
+
+            if (deinit_info.@"fn".params.len == 2) {
+                item.deinit(allocator);
+            } else if (deinit_info.@"fn".params.len == 1) {
+                item.deinit();
+            }
+        }
+
         /// Locks the queue, invokes deinit on remaining items if supported, and
         /// releases allocated buffer memory.
         pub fn deinit(self: *Self, allocator: std.mem.Allocator, io: std.Io) void {
@@ -165,18 +185,7 @@ pub fn MpscQueue(comptime T: type) type {
             const info = @typeInfo(T);
             if (info == .@"struct" or info == .@"union") {
                 for (self.items.items) |*item| {
-                    if (@hasDecl(T, "deinitQueueItem")) {
-                        item.deinitQueueItem(allocator, io);
-                    } else if (@hasDecl(T, "deinit")) {
-                        const deinit_info = @typeInfo(@TypeOf(T.deinit));
-                        if (deinit_info == .@"fn") {
-                            if (deinit_info.@"fn".params.len == 2) {
-                                item.deinit(allocator);
-                            } else if (deinit_info.@"fn".params.len == 1) {
-                                item.deinit();
-                            }
-                        }
-                    }
+                    deinitQueueItemElement(item, allocator, io);
                 }
             }
             self.items.deinit(allocator);

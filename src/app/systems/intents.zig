@@ -18,6 +18,53 @@ fn showCustomSnackbar(self: *AppState, msg: []const u8) void {
     self.viewer.animations.start(.snackbar, 1.0, dur, .ease_out_quad);
 }
 
+fn togglePairStream(self: *AppState) void {
+    const nav = &self.viewer.navigation;
+    const cur_idx = nav.current_index orelse return;
+    const entry_item = nav.getCurrentImageEntry() orelse return;
+    if (!entry_item.isPair()) return;
+
+    const key = self.cache.activeKey(cur_idx);
+    const entry = self.cache.get(key) orelse return;
+    if (entry.is_promoting or !self.workers.canSpawnDecode()) return;
+
+    const target: state.PairStreamTarget = if (entry.raw_metadata.isRaw())
+        .standalone_jpeg
+    else
+        .raw_preview;
+    const msg = switch (target) {
+        .standalone_jpeg => "Stream: Standalone JPEG",
+        .raw_preview => "Stream: RAW Embedded Preview",
+        .adaptive => "Stream: Adaptive",
+    };
+    showCustomSnackbar(self, msg);
+    entry.requested_target = target;
+}
+
+fn handleSetPaletteIntent(self: *AppState, p: anytype) !void {
+    const ui = &self.viewer.ui;
+    if (p.mode == .inactive) {
+        self.closePaletteImmediately();
+        return;
+    }
+    if (p.mode == .directory_navigator and p.query != null) {
+        try self.loadPaletteDirectory(p.query.?);
+        ui.palette.mode = .directory_navigator;
+        return;
+    }
+    try self.openPalette(p.mode);
+    const q = p.query orelse return;
+    ui.palette.query.clearRetainingCapacity();
+    try ui.palette.query.appendSlice(self.allocator, q);
+    ui.palette.selected_idx = 0;
+    ui.palette.selection_dirty = true;
+    switch (ui.palette.mode) {
+        .actions => try self.rebuildActionMatches(),
+        .files => try self.rebuildPaletteMatches(),
+        else => {},
+    }
+}
+
 /// Central intent dispatcher. Maps an AppIntent variant to domain state mutations.
 fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
     const vp = &self.viewer.viewport;
@@ -358,54 +405,8 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 }
             }
         },
-        .toggle_pair_stream => {
-            if (nav.current_index) |cur_idx| {
-                if (nav.getCurrentImageEntry()) |entry_item| {
-                    if (entry_item.isPair()) {
-                        const key = self.cache.activeKey(cur_idx);
-                        if (self.cache.get(key)) |entry| {
-                            if (!entry.is_promoting and self.workers.canSpawnDecode()) {
-                                const target: state.PairStreamTarget =
-                                    if (entry.raw_metadata.isRaw())
-                                        .standalone_jpeg
-                                    else
-                                        .raw_preview;
-                                const msg = switch (target) {
-                                    .standalone_jpeg => "Stream: Standalone JPEG",
-                                    .raw_preview => "Stream: RAW Embedded Preview",
-                                    .adaptive => "Stream: Adaptive",
-                                };
-                                showCustomSnackbar(self, msg);
-                                entry.requested_target = target;
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        .set_palette => |p| {
-            if (p.mode == .inactive) {
-                self.closePaletteImmediately();
-            } else {
-                if (p.mode == .directory_navigator and p.query != null) {
-                    try self.loadPaletteDirectory(p.query.?);
-                    ui.palette.mode = .directory_navigator;
-                } else {
-                    try self.openPalette(p.mode);
-                    if (p.query) |q| {
-                        ui.palette.query.clearRetainingCapacity();
-                        try ui.palette.query.appendSlice(self.allocator, q);
-                        ui.palette.selected_idx = 0;
-                        ui.palette.selection_dirty = true;
-                        if (ui.palette.mode == .actions) {
-                            try self.rebuildActionMatches();
-                        } else if (ui.palette.mode == .files) {
-                            try self.rebuildPaletteMatches();
-                        }
-                    }
-                }
-            }
-        },
+        .toggle_pair_stream => togglePairStream(self),
+        .set_palette => |p| try handleSetPaletteIntent(self, p),
         .toggle_info => ui.overlays.info_panel.visible = !ui.overlays.info_panel.visible,
         .set_info => |val| ui.overlays.info_panel.visible = val,
         .toggle_stats => ui.overlays.stats_panel.visible = !ui.overlays.stats_panel.visible,
@@ -619,13 +620,14 @@ fn triggerSnackbarForIntent(
 pub fn sysExecuteIntents(ctx: FrameContext) !void {
     const self = ctx.state;
     if (self.pending_intents.items.len == 0) return;
+    defer self.clearIntents();
     for (self.pending_intents.items) |intent| {
         const old_idx = self.viewer.navigation.current_index;
         try executeIntent(self, intent);
-        const advanced = (old_idx != null and self.viewer.navigation.current_index != old_idx);
+        const advanced = (old_idx != null and
+            self.viewer.navigation.current_index != old_idx);
         triggerSnackbarForIntent(self, intent, advanced, old_idx != null);
     }
-    self.clearIntents();
 }
 
 test "Manga Mode toggles Right-to-Left image navigation" {

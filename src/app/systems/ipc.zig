@@ -24,167 +24,180 @@ pub fn sysExecuteIpcCommands(ctx: FrameContext) void {
         }
 
         const parsed = ipc.IpcCommand.parse(cmd_data.command) catch |err| {
-            var msg_buf: [128]u8 = undefined;
-            const err_msg = std.fmt.bufPrint(
-                &msg_buf,
-                "ERR {s}\n",
-                .{@errorName(err)},
-            ) catch "ERR ParseError\n";
-            var buf: [512]u8 = undefined;
-            var writer = cmd_data.client_stream.writer(state.io, &buf);
-            if (writer.interface.writeAll(err_msg)) {
-                writer.interface.flush() catch |flush_err| {
-                    std.log.warn("Failed to flush IPC parse error response: {}", .{flush_err});
-                };
-            } else |write_err| {
-                std.log.warn("Failed to write IPC parse error response: {}", .{write_err});
-            }
-            cmd_data.client_stream.close(state.io);
+            replyIpcParseError(state.io, cmd_data.client_stream, err);
             continue;
         };
 
         switch (parsed) {
-            .wait_load => {
-                var attempts: u32 = 0;
-                while (attempts < 1000) : (attempts += 1) {
-                    _ = app_events.drainWorkerEvents(state);
-                    state.prepareCacheTextures();
-                    if (state.getCurrentEntry()) |entry| {
-                        if (entry.status != .decoding) break;
-                    }
-                    std.Io.sleep(
-                        state.io,
-                        std.Io.Duration.fromMilliseconds(10),
-                        .awake,
-                    ) catch |sleep_err| {
-                        std.log.warn("wait_load sleep interrupted: {}", .{sleep_err});
-                    };
-                }
-                ipc.respondOk(state.io, cmd_data.client_stream) catch |err| {
-                    std.log.err("Failed to respond OK for wait_load command: {}", .{err});
-                };
-            },
+            .wait_load => handleWaitLoadCommand(state, cmd_data.client_stream),
             .adjust => |adj| {
-                state.pushIntent(.{
-                    .adjust = .{
-                        .set = .{
-                            .param = .brightness,
-                            .value = adj.brightness,
-                        },
-                    },
-                }) catch |err| {
-                    std.log.err("Failed to push brightness adjust: {}", .{err});
-                };
-                state.pushIntent(.{
-                    .adjust = .{
-                        .set = .{
-                            .param = .contrast,
-                            .value = adj.contrast,
-                        },
-                    },
-                }) catch |err| {
-                    std.log.err("Failed to push contrast adjust: {}", .{err});
-                };
-                if (adj.contrast_blend) |cb| {
-                    state.pushIntent(.{
-                        .adjust = .{
-                            .set = .{
-                                .param = .contrast_blend,
-                                .value = cb,
-                            },
-                        },
-                    }) catch |err| {
-                        std.log.err(
-                            "Failed to push contrast blend adjust: {}",
-                            .{err},
-                        );
-                    };
-                }
-                ipc.respondOk(state.io, cmd_data.client_stream) catch |err| {
-                    std.log.err(
-                        "Failed to respond OK for adjust command: {}",
-                        .{err},
-                    );
-                };
+                handleAdjustCommand(state, cmd_data.client_stream, adj);
             },
             .screenshot => |filepath| {
-                if (filepath.len > 512) {
-                    var write_buf: [128]u8 = undefined;
-                    var writer = cmd_data.client_stream.writer(state.io, &write_buf);
-                    writer.interface.writeAll("ERR PathTooLong\n") catch |err| {
-                        std.log.warn("IPC screenshot response failed: {}", .{err});
-                    };
-                    writer.interface.flush() catch |err| {
-                        std.log.warn("IPC flush failed: {}", .{err});
-                    };
-                    cmd_data.client_stream.close(state.io);
-                } else if (state.viewer.ui.screenshot_mode == .capturing) {
-                    var write_buf: [128]u8 = undefined;
-                    var writer = cmd_data.client_stream.writer(state.io, &write_buf);
-                    writer.interface.writeAll("ERR Busy\n") catch |err| {
-                        std.log.warn("IPC screenshot response failed: {}", .{err});
-                    };
-                    writer.interface.flush() catch |err| {
-                        std.log.warn("IPC flush failed: {}", .{err});
-                    };
-                    cmd_data.client_stream.close(state.io);
-                } else {
-                    const dup_path = state.allocator.dupeZ(u8, filepath) catch {
-                        var write_buf: [128]u8 = undefined;
-                        var writer = cmd_data.client_stream.writer(state.io, &write_buf);
-                        writer.interface.writeAll("ERR OutOfMemory\n") catch |err| {
-                            std.log.warn("IPC screenshot response failed: {}", .{err});
-                        };
-                        writer.interface.flush() catch |err| {
-                            std.log.warn("IPC flush failed: {}", .{err});
-                        };
-                        cmd_data.client_stream.close(state.io);
-                        continue;
-                    };
-                    state.viewer.ui.screenshot_mode = .{
-                        .capturing = state_pkg.types.ActiveScreenshot{
-                            .path = dup_path,
-                            .stream = cmd_data.client_stream,
-                        },
-                    };
-                }
+                handleScreenshotCommand(state, cmd_data, filepath);
             },
-            else => {
-                if (parsed.toIntent()) |intent| {
-                    var final_intent = intent;
-                    switch (intent) {
-                        .set_palette => |p| {
-                            if (p.query) |q| {
-                                if (ctx.frame_allocator.dupe(u8, q)) |dup_q| {
-                                    final_intent = .{
-                                        .set_palette = .{
-                                            .mode = p.mode,
-                                            .query = dup_q,
-                                        },
-                                    };
-                                } else |err| {
-                                    std.log.warn(
-                                        "Failed to dupe query for set_palette intent: {}",
-                                        .{err},
-                                    );
-                                }
-                            }
-                        },
-                        else => {},
-                    }
-                    state.pushIntent(final_intent) catch |err| {
-                        std.log.err("Failed to push intent from IPC command: {}", .{err});
-                    };
-                    ipc.respondOk(state.io, cmd_data.client_stream) catch |err| {
-                        std.log.err("Failed to respond OK to IPC client: {}", .{err});
-                    };
-                } else {
-                    cmd_data.client_stream.close(state.io);
-                }
-            },
+            else => handleIntentCommand(ctx, cmd_data, parsed),
         }
     }
     state.pending_ipc_commands.clearRetainingCapacity();
+}
+
+fn replyIpcError(
+    io: std.Io,
+    stream: std.Io.net.Stream,
+    err_msg: []const u8,
+) void {
+    var write_buf: [128]u8 = undefined;
+    var writer = stream.writer(io, &write_buf);
+    writer.interface.writeAll(err_msg) catch |err| {
+        std.log.warn("IPC error response failed: {}", .{err});
+    };
+    writer.interface.flush() catch |err| {
+        std.log.warn("IPC error flush failed: {}", .{err});
+    };
+    stream.close(io);
+}
+
+fn replyIpcParseError(
+    io: std.Io,
+    stream: std.Io.net.Stream,
+    err: anyerror,
+) void {
+    var msg_buf: [128]u8 = undefined;
+    const err_msg = std.fmt.bufPrint(
+        &msg_buf,
+        "ERR {s}\n",
+        .{@errorName(err)},
+    ) catch "ERR ParseError\n";
+    replyIpcError(io, stream, err_msg);
+}
+
+fn handleWaitLoadCommand(state: *AppState, stream: std.Io.net.Stream) void {
+    var attempts: u32 = 0;
+    while (attempts < 1000) : (attempts += 1) {
+        _ = app_events.drainWorkerEvents(state);
+        state.prepareCacheTextures();
+        if (state.getCurrentEntry()) |entry| {
+            if (entry.status != .decoding) break;
+        }
+        std.Io.sleep(
+            state.io,
+            std.Io.Duration.fromMilliseconds(10),
+            .awake,
+        ) catch |sleep_err| {
+            std.log.warn("wait_load sleep interrupted: {}", .{sleep_err});
+        };
+    }
+    ipc.respondOk(state.io, stream) catch |err| {
+        std.log.err("Failed to respond OK for wait_load command: {}", .{err});
+    };
+}
+
+fn handleAdjustCommand(
+    state: *AppState,
+    stream: std.Io.net.Stream,
+    adj: anytype,
+) void {
+    state.pushIntent(.{
+        .adjust = .{
+            .set = .{
+                .param = .brightness,
+                .value = adj.brightness,
+            },
+        },
+    }) catch |err| {
+        std.log.err("Failed to push brightness adjust: {}", .{err});
+    };
+    state.pushIntent(.{
+        .adjust = .{
+            .set = .{
+                .param = .contrast,
+                .value = adj.contrast,
+            },
+        },
+    }) catch |err| {
+        std.log.err("Failed to push contrast adjust: {}", .{err});
+    };
+    if (adj.contrast_blend) |cb| {
+        state.pushIntent(.{
+            .adjust = .{
+                .set = .{
+                    .param = .contrast_blend,
+                    .value = cb,
+                },
+            },
+        }) catch |err| {
+            std.log.err("Failed to push contrast blend adjust: {}", .{err});
+        };
+    }
+    ipc.respondOk(state.io, stream) catch |err| {
+        std.log.err("Failed to respond OK for adjust command: {}", .{err});
+    };
+}
+
+fn handleScreenshotCommand(
+    state: *AppState,
+    cmd_data: *ipc.IpcCommandData,
+    filepath: []const u8,
+) void {
+    if (filepath.len > 512) {
+        replyIpcError(state.io, cmd_data.client_stream, "ERR PathTooLong\n");
+        return;
+    }
+    if (state.viewer.ui.screenshot_mode == .capturing) {
+        replyIpcError(state.io, cmd_data.client_stream, "ERR Busy\n");
+        return;
+    }
+    const dup_path = state.allocator.dupeZ(u8, filepath) catch {
+        replyIpcError(state.io, cmd_data.client_stream, "ERR OutOfMemory\n");
+        return;
+    };
+    state.viewer.ui.screenshot_mode = .{
+        .capturing = state_pkg.types.ActiveScreenshot{
+            .path = dup_path,
+            .stream = cmd_data.client_stream,
+        },
+    };
+}
+
+fn handleIntentCommand(
+    ctx: FrameContext,
+    cmd_data: *ipc.IpcCommandData,
+    parsed: ipc.IpcCommand,
+) void {
+    const state = ctx.state;
+    const intent = parsed.toIntent() orelse {
+        cmd_data.client_stream.close(state.io);
+        return;
+    };
+
+    var final_intent = intent;
+    switch (intent) {
+        .set_palette => |p| {
+            if (p.query) |q| {
+                if (ctx.frame_allocator.dupe(u8, q)) |dup_q| {
+                    final_intent = .{
+                        .set_palette = .{
+                            .mode = p.mode,
+                            .query = dup_q,
+                        },
+                    };
+                } else |err| {
+                    std.log.warn(
+                        "Failed to dupe query for set_palette intent: {}",
+                        .{err},
+                    );
+                }
+            }
+        },
+        else => {},
+    }
+    state.pushIntent(final_intent) catch |err| {
+        std.log.err("Failed to push intent from IPC command: {}", .{err});
+    };
+    ipc.respondOk(state.io, cmd_data.client_stream) catch |err| {
+        std.log.err("Failed to respond OK to IPC client: {}", .{err});
+    };
 }
 
 test "sysExecuteIpcCommands - drains pending commands and mutates state" {

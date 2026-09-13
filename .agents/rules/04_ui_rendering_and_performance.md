@@ -217,3 +217,22 @@
     navigation and directional panning based strictly on physical viewport
     boundary overflow (`isImageOverflowing()`), never on `zoom > 1.0`. Small
     images magnified in "Fit" mode should never be trapped in panning mode.
+
+## 13. Clay UI Modularization & Visual Regression Invariants
+
+- **Component Decomposition**:
+  - Break down large, multi-screen Clay UI procedures (e.g. Command Palette
+    renderers, Inspector panels) into focused helper functions (e.g.
+    `renderDirectoryListItem`, `renderClassificationBadge`,
+    `renderSearchInput`).
+- **Strict Visual Parameter Preservation**:
+  - Extracted helper functions MUST retain exact layout dimensions and styling
+    properties:
+    - Sizing constraints (`.w = .grow`, `.h = .fixed(...)`).
+    - Inner and outer padding (`.top`, `.bottom`, `.left`, `.right`).
+    - Corner radius definitions.
+    - Background colors and dynamic alpha modulation (`progress` multiplier).
+    - Border colors, edge specifications, and widths.
+  - The headless IPC test runner (`peng-test-runner`) performs pixel-exact
+    comparisons against baseline PNG screenshots. Any altered padding or missing
+    alpha scale factor will fail visual integration tests.

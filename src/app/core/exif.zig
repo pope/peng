@@ -232,29 +232,29 @@ fn findTiffPayloadFromSource(source: TiffSource) ?TiffHeaderSource {
         if (marker == 0xE1) {
             if (payload.len >= 14 and std.mem.startsWith(u8, payload, "Exif\x00\x00")) {
                 const tiff = payload[6..];
-                if (tiff.len >= 8) {
-                    const is_le = if (std.mem.eql(u8, tiff[0..2], "II"))
-                        true
-                    else if (std.mem.eql(u8, tiff[0..2], "MM"))
-                        false
-                    else
-                        continue;
+                if (tiff.len < 8) continue;
 
-                    const sig = readU16(tiff[2..4][0..2], is_le);
-                    if (sig == 0x002A) {
-                        const ifd0_off = readU32(tiff[4..8][0..4], is_le);
-                        const off: usize = ifd0_off;
-                        if (off >= 8 and (off & 1) == 0 and off + 2 <= tiff.len) {
-                            const tiff_start_off: u64 =
-                                @intFromPtr(tiff.ptr) - @intFromPtr(source.header.ptr);
-                            return .{
-                                .source = TiffSource.init(tiff),
-                                .is_le = is_le,
-                                .ifd0_off = ifd0_off,
-                                .tiff_start_off = tiff_start_off,
-                            };
-                        }
-                    }
+                const is_le = if (std.mem.eql(u8, tiff[0..2], "II"))
+                    true
+                else if (std.mem.eql(u8, tiff[0..2], "MM"))
+                    false
+                else
+                    continue;
+
+                const sig = readU16(tiff[2..4][0..2], is_le);
+                if (sig != 0x002A) continue;
+
+                const ifd0_off = readU32(tiff[4..8][0..4], is_le);
+                const off: usize = ifd0_off;
+                if (off >= 8 and (off & 1) == 0 and off + 2 <= tiff.len) {
+                    const tiff_start_off: u64 =
+                        @intFromPtr(tiff.ptr) - @intFromPtr(source.header.ptr);
+                    return .{
+                        .source = TiffSource.init(tiff),
+                        .is_le = is_le,
+                        .ifd0_off = ifd0_off,
+                        .tiff_start_off = tiff_start_off,
+                    };
                 }
             }
         }
@@ -312,26 +312,26 @@ fn findTiffPayload(data: []const u8) ?TiffHeader {
         if (marker == 0xE1) {
             if (payload.len >= 14 and std.mem.startsWith(u8, payload, "Exif\x00\x00")) {
                 const tiff = payload[6..];
-                if (tiff.len >= 8) {
-                    const is_le = if (std.mem.eql(u8, tiff[0..2], "II"))
-                        true
-                    else if (std.mem.eql(u8, tiff[0..2], "MM"))
-                        false
-                    else
-                        continue;
+                if (tiff.len < 8) continue;
 
-                    const sig = readU16(tiff[2..4][0..2], is_le);
-                    if (sig == 0x002A) {
-                        const ifd0_off = readU32(tiff[4..8][0..4], is_le);
-                        const off: usize = ifd0_off;
-                        if (off >= 8 and (off & 1) == 0 and off + 2 <= tiff.len) {
-                            return .{
-                                .tiff = tiff,
-                                .is_le = is_le,
-                                .ifd0_off = ifd0_off,
-                            };
-                        }
-                    }
+                const is_le = if (std.mem.eql(u8, tiff[0..2], "II"))
+                    true
+                else if (std.mem.eql(u8, tiff[0..2], "MM"))
+                    false
+                else
+                    continue;
+
+                const sig = readU16(tiff[2..4][0..2], is_le);
+                if (sig != 0x002A) continue;
+
+                const ifd0_off = readU32(tiff[4..8][0..4], is_le);
+                const off: usize = ifd0_off;
+                if (off >= 8 and (off & 1) == 0 and off + 2 <= tiff.len) {
+                    return .{
+                        .tiff = tiff,
+                        .is_le = is_le,
+                        .ifd0_off = ifd0_off,
+                    };
                 }
             }
         }
@@ -357,6 +357,57 @@ const SubIfdList = struct {
         return self.items[0..self.len];
     }
 };
+
+fn collectSubIfdOffsets(
+    s: TiffSource,
+    val_or_ptr: u32,
+    count: usize,
+    type_id: u16,
+    le: bool,
+    sub_ifds: *SubIfdList,
+) void {
+    if (count == 1) {
+        if (val_or_ptr > 0) sub_ifds.append(val_or_ptr);
+    } else if (count > 1 and (type_id == 4 or type_id == 13)) {
+        const fetch_count = @min(count, 8);
+        var s_idx: usize = 0;
+        while (s_idx < fetch_count) : (s_idx += 1) {
+            const read_pos = std.math.add(
+                usize,
+                @as(usize, val_or_ptr),
+                s_idx * 4,
+            ) catch break;
+            const s_slice = s.getSlice(read_pos, 4) orelse continue;
+            const s_off = readU32(s_slice[0..4], le);
+            if (s_off > 0) sub_ifds.append(s_off);
+        }
+    }
+}
+
+const PreviewCandidate = struct { off: u32, len: u32 };
+
+fn extractDngPrivatePreview(
+    s: TiffSource,
+    val_or_off: u32,
+    val_count: usize,
+) ?PreviewCandidate {
+    if (val_count < 70) return null;
+    const p_slice = s.getSlice(val_or_off, 70) orelse return null;
+    if (!std.mem.startsWith(u8, p_slice, "RICOH\x00II") and
+        !std.mem.startsWith(u8, p_slice, "PENTAX\x00II"))
+    {
+        return null;
+    }
+    // MakerNote explicitly asserts "II" (Little Endian)
+    const p_len = std.mem.readInt(u32, p_slice[54..58][0..4], .little);
+    const p_rel_off = std.mem.readInt(u32, p_slice[66..70][0..4], .little);
+    const is_valid_len = p_len > 0 and p_len < 512 * 1024;
+    const is_in_bounds = @as(u64, p_rel_off) + p_len <= val_count;
+    if (!is_valid_len or !is_in_bounds) return null;
+    const mn_jpeg_off = std.math.add(u32, val_or_off, p_rel_off) catch
+        return null;
+    return .{ .off = mn_jpeg_off, .len = p_len };
+}
 
 /// Parses image pixel dimensions from EXIF TIFF metadata tags (IFD0, ExifIFD, or SubIFD).
 pub fn parseExifDimensions(data: []const u8) ?JpegDimensions {
@@ -433,23 +484,21 @@ pub fn parseExifDimensionsFromSource(source: TiffSource) ?JpegDimensions {
                     tag == @intFromEnum(TiffTag.pixel_y_dimension))
                 {
                     cur_h = val;
-                } else if (tag == @intFromEnum(TiffTag.exif_ifd) and sub_out != null) {
+                } else if (tag == @intFromEnum(TiffTag.exif_ifd) and
+                    sub_out != null)
+                {
                     sub_out.?.* = val;
-                } else if (tag == @intFromEnum(TiffTag.sub_ifds) and sub_ifds != null) {
-                    if (count == 1) {
-                        if (val > 0) sub_ifds.?.append(val);
-                    } else if (count > 1 and (type_id == 4 or type_id == 13)) {
-                        const fetch_count = @min(count, 8);
-                        var s_idx: usize = 0;
-                        while (s_idx < fetch_count) : (s_idx += 1) {
-                            if (std.math.add(usize, @as(usize, val), s_idx * 4)) |read_pos| {
-                                if (s.getSlice(read_pos, 4)) |s_slice| {
-                                    const s_off = readU32(s_slice[0..4], le);
-                                    if (s_off > 0) sub_ifds.?.append(s_off);
-                                }
-                            } else |_| break;
-                        }
-                    }
+                } else if (tag == @intFromEnum(TiffTag.sub_ifds) and
+                    sub_ifds != null)
+                {
+                    collectSubIfdOffsets(
+                        s,
+                        val,
+                        count,
+                        type_id,
+                        le,
+                        sub_ifds.?,
+                    );
                 }
             }
 
@@ -761,7 +810,7 @@ pub fn extractTiffRawPreviewsFromSource(source: TiffSource) RawPreviewCandidates
             sig[2] == 0x02 and sig[3] == 0x00;
     };
 
-    const Candidate = struct { off: u32, len: u32 };
+    const Candidate = PreviewCandidate;
     var candidates: [16]Candidate = undefined;
     var cand_count: usize = 0;
 
@@ -838,46 +887,28 @@ pub fn extractTiffRawPreviewsFromSource(source: TiffSource) RawPreviewCandidates
                     j_len = readU32(entry[8..12][0..4], le);
                 } else if (tag == @intFromEnum(TiffTag.dng_private_data)) {
                     const val_or_off = readU32(entry[8..12][0..4], le);
-                    if (val_count >= 70) {
-                        if (s.getSlice(val_or_off, 70)) |p_slice| {
-                            if (std.mem.startsWith(u8, p_slice, "RICOH\x00II") or
-                                std.mem.startsWith(u8, p_slice, "PENTAX\x00II"))
-                            {
-                                // MakerNote explicitly asserts "II" (Little Endian)
-                                const p_len =
-                                    std.mem.readInt(u32, p_slice[54..58][0..4], .little);
-                                const p_rel_off =
-                                    std.mem.readInt(u32, p_slice[66..70][0..4], .little);
-                                if (p_len > 0 and p_len < 512 * 1024 and
-                                    @as(u64, p_rel_off) + p_len <= val_count)
-                                {
-                                    if (std.math.add(u32, val_or_off, p_rel_off)) |mn_jpeg_off| {
-                                        if (count.* < cands.len) {
-                                            cands[count.*] = .{ .off = mn_jpeg_off, .len = p_len };
-                                            count.* += 1;
-                                        }
-                                    } else |_| {}
-                                }
-                            }
+                    if (extractDngPrivatePreview(
+                        s,
+                        val_or_off,
+                        val_count,
+                    )) |cand| {
+                        if (count.* < cands.len) {
+                            cands[count.*] = cand;
+                            count.* += 1;
                         }
                     }
-                } else if (tag == @intFromEnum(TiffTag.sub_ifds) and sub_ifds != null) {
-                    if (val_count == 1) {
-                        const s_off = readU32(entry[8..12][0..4], le);
-                        if (s_off > 0) sub_ifds.?.append(s_off);
-                    } else if (val_count > 1 and (type_id == 4 or type_id == 13)) {
-                        const fetch_count = @min(val_count, 8);
-                        const ptr_off = readU32(entry[8..12][0..4], le);
-                        var s_idx: usize = 0;
-                        while (s_idx < fetch_count) : (s_idx += 1) {
-                            if (std.math.add(usize, @as(usize, ptr_off), s_idx * 4)) |read_pos| {
-                                if (s.getSlice(read_pos, 4)) |sub_bytes| {
-                                    const s_off = readU32(sub_bytes[0..4], le);
-                                    if (s_off > 0) sub_ifds.?.append(s_off);
-                                }
-                            } else |_| break;
-                        }
-                    }
+                } else if (tag == @intFromEnum(TiffTag.sub_ifds) and
+                    sub_ifds != null)
+                {
+                    const val_or_ptr = readU32(entry[8..12][0..4], le);
+                    collectSubIfdOffsets(
+                        s,
+                        val_or_ptr,
+                        val_count,
+                        type_id,
+                        le,
+                        sub_ifds.?,
+                    );
                 }
             }
 

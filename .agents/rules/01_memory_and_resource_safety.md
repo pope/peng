@@ -27,10 +27,16 @@
     variable lists): NEVER use fixed stack arrays `[N]T` that risk silent
     truncation or panic. Use `std.ArrayList(T)` backed by `frame_allocator`
     with `defer list.deinit(frame_allocator)`.
-  - *Large Path Buffers* ($\\ge 4$ KB like `std.fs.max_path_bytes`): Do NOT
-    allocate 4 KB arrays on the stack during UI input or frame passes.
-    Allocate from `frame_allocator` with `defer frame_allocator.free(...)` or
-    use domain heap allocators.
+  - *Large Path Buffers* ($\\ge 4$ KB like `std.fs.max_path_bytes`):
+    - *Per-Frame Layout & Render Passes*: Do NOT allocate 4 KB arrays on the
+      stack inside per-frame loops or Clay render passes. Allocate from
+      `frame_allocator` with `defer frame_allocator.free(...)`.
+    - *One-Off Main-Thread State Transitions*: In discrete, non-recursive state
+      transition methods where `frame_allocator` is unavailable (e.g.
+      `openPalette` directory pre-traversal), a stack buffer
+      (`var parent_buf: [std.fs.max_path_bytes]u8 = undefined;`) is
+      preferred over heap allocation (`self.allocator.alloc`) to eliminate
+      unnecessary heap churn.
   - *Assert-Bounded Hardware/FFI Limits* (e.g. 16 vertex buffer slots in SDL3
     GPU, 8 IFD levels in EXIF): Keep on the stack and document the hardware/API
     bound and assert in comments to avoid per-draw allocator overhead.

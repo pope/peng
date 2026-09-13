@@ -419,6 +419,49 @@ pub const AppState = struct {
         );
     }
 
+    const NavigatorInitialPath = struct {
+        start_dir: []const u8,
+        preselect_child: ?[]const u8,
+    };
+
+    fn resolveNavigatorInitialPath(self: *const AppState) NavigatorInitialPath {
+        if (self.viewer.navigation.getCurrentImageEntry()) |media| {
+            const file_path = switch (media) {
+                .archive_entry => |a| a.archive_path,
+                .filesystem => |f| f.path,
+                .pair => |p| p.raw_path,
+            };
+            if (std.fs.path.dirname(file_path)) |parent| {
+                return .{
+                    .start_dir = parent,
+                    .preselect_child = std.fs.path.basename(file_path),
+                };
+            } else {
+                return .{
+                    .start_dir = ".",
+                    .preselect_child = file_path,
+                };
+            }
+        }
+
+        if (self.viewer.navigation.last_scanned_dir.items.len > 0) {
+            return .{
+                .start_dir = self.viewer.navigation.last_scanned_dir.items,
+                .preselect_child = null,
+            };
+        }
+        if (self.viewer.ui.palette.last_nav_dir.items.len > 0) {
+            return .{
+                .start_dir = self.viewer.ui.palette.last_nav_dir.items,
+                .preselect_child = null,
+            };
+        }
+        return .{
+            .start_dir = ".",
+            .preselect_child = null,
+        };
+    }
+
     /// Activates the command palette in the specified PaletteMode, resetting
     /// queries and starting text input.
     pub fn openPalette(self: *AppState, active_type: PaletteMode) !void {
@@ -440,66 +483,23 @@ pub const AppState = struct {
             .files => try self.rebuildPaletteMatches(),
             .actions => try self.rebuildActionMatches(),
             .directory_navigator => {
-                var preselect_child: ?[]const u8 = null;
-                const start_dir = blk: {
-                    if (self.viewer.navigation.getCurrentImageEntry()) |media| {
-                        switch (media) {
-                            .archive_entry => |a| {
-                                preselect_child = std.fs.path.basename(a.archive_path);
-                                break :blk std.fs.path.dirname(a.archive_path) orelse ".";
-                            },
-                            .filesystem => |f| {
-                                if (std.fs.path.dirname(f.path)) |parent| {
-                                    preselect_child = std.fs.path.basename(f.path);
-                                    break :blk parent;
-                                } else {
-                                    preselect_child = f.path;
-                                    break :blk ".";
-                                }
-                            },
-                            .pair => |p| {
-                                if (std.fs.path.dirname(p.raw_path)) |parent| {
-                                    preselect_child = std.fs.path.basename(p.raw_path);
-                                    break :blk parent;
-                                } else {
-                                    preselect_child = p.raw_path;
-                                    break :blk ".";
-                                }
-                            },
-                        }
-                    }
-                    if (self.viewer.navigation.last_scanned_dir.items.len > 0) {
-                        break :blk self.viewer.navigation.last_scanned_dir.items;
-                    }
-                    if (self.viewer.ui.palette.last_nav_dir.items.len > 0) {
-                        break :blk self.viewer.ui.palette.last_nav_dir.items;
-                    }
-                    break :blk ".";
-                };
-                if (preselect_child) |child| {
+                const nav_path = resolveNavigatorInitialPath(self);
+                if (nav_path.preselect_child) |child| {
                     self.viewer.ui.palette.last_child_dir.clearRetainingCapacity();
                     try self.viewer.ui.palette.last_child_dir.appendSlice(self.allocator, child);
                 }
-                try self.loadPaletteDirectory(start_dir);
+                try self.loadPaletteDirectory(nav_path.start_dir);
                 if (self.viewer.ui.palette.dir_items.items.len == 0) {
-                    const parent_buf = try self.allocator.alloc(
-                        u8,
-                        std.fs.max_path_bytes,
-                    );
-                    defer self.allocator.free(parent_buf);
+                    var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
                     while (self.viewer.ui.palette.dir_items.items.len == 0) {
-                        const nav = &self.viewer.ui.palette.current_nav_dir;
-                        const curr = nav.items;
-                        if (core_fs.getParentDirBuf(
+                        const curr =
+                            self.viewer.ui.palette.current_nav_dir.items;
+                        const parent = core_fs.getParentDirBuf(
                             curr,
-                            parent_buf,
-                        )) |parent_dir| {
-                            if (!std.mem.eql(u8, parent_dir, curr)) {
-                                try self.loadPaletteDirectory(parent_dir);
-                                continue;
-                            }
-                        }
-                        break;
+                            &parent_buf,
+                        ) orelse break;
+                        if (std.mem.eql(u8, parent, curr)) break;
+                        try self.loadPaletteDirectory(parent);
                     }
                 }
             },
@@ -725,25 +725,15 @@ pub const AppState = struct {
             var min_dist: usize = std.math.maxInt(usize);
 
             for (entries, keys, 0..) |entry, key, i| {
-                switch (entry.status) {
-                    .loaded_cpu => {
-                        const dist = if (cur_idx_opt) |cur| blk: {
-                            const linear_dist = if (key.index > cur)
-                                key.index - cur
-                            else
-                                cur - key.index;
-                            break :blk if (total_items > 0 and linear_dist <= total_items)
-                                @min(linear_dist, total_items - linear_dist)
-                            else
-                                linear_dist;
-                        } else i;
+                if (entry.status != .loaded_cpu) continue;
+                const dist = if (cur_idx_opt) |cur|
+                    image.calcCyclicDistance(key.index, cur, total_items)
+                else
+                    i;
 
-                        if (dist < min_dist) {
-                            min_dist = dist;
-                            best_idx = i;
-                        }
-                    },
-                    else => {},
+                if (dist < min_dist) {
+                    min_dist = dist;
+                    best_idx = i;
                 }
             }
 
@@ -803,47 +793,52 @@ pub const AppState = struct {
                             self.viewer.navigation.count(),
                             image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES,
                         );
-                        if (self.viewer.navigation.current_index) |cur_idx| {
-                            if (self.cache.activeKey(cur_idx).index == target.key.index) {
-                                if (self.cache.get(target.key)) |entry| {
-                                    const can_crossfade = entry.thumbnail == .loaded and
-                                        !self.viewer.ui.overlays.debug_show_thumb and
-                                        !self.viewer.isSlideshowActive() and
-                                        self.viewer.image_transition == .none;
-                                    if (can_crossfade) {
-                                        self.viewer.animations.startFrom(
-                                            .thumb_crossfade,
-                                            0.0,
-                                            1.0,
-                                            state_pkg.DURATION_THUMB_CROSSFADE_MS,
-                                            .ease_out_quad,
-                                        );
-                                    }
-                                    if (self.viewer.image_transition != .none) {
-                                        if (self.viewer.animations.get(.image_crossfade) < 0.001) {
-                                            self.viewer.animations.startFrom(
-                                                .image_crossfade,
-                                                0.0,
-                                                1.0,
-                                                state_pkg.DURATION_IMAGE_DISSOLVE_MS,
-                                                .ease_in_out_cubic,
-                                            );
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        checkLoadedGpuCrossfade(self, target.key);
                     }
                 } else {
-                    _ = self.cache.updateStatus(target.key, .failed);
-                    if (self.viewer.navigation.current_index) |cur_idx| {
-                        if (self.cache.activeKey(cur_idx).index == target.key.index) {
-                            self.viewer.image_transition = .none;
-                            self.viewer.animations.setImmediate(.image_crossfade, 1.0);
-                        }
-                    }
+                    handleGpuUploadFailure(self, target.key);
                 }
             }
+        }
+    }
+
+    fn checkLoadedGpuCrossfade(self: *AppState, target_key: CacheKey) void {
+        const cur_idx = self.viewer.navigation.current_index orelse return;
+        if (self.cache.activeKey(cur_idx).index != target_key.index) return;
+        const entry = self.cache.get(target_key) orelse return;
+
+        const can_crossfade = entry.thumbnail == .loaded and
+            !self.viewer.ui.overlays.debug_show_thumb and
+            !self.viewer.isSlideshowActive() and
+            self.viewer.image_transition == .none;
+        if (can_crossfade) {
+            self.viewer.animations.startFrom(
+                .thumb_crossfade,
+                0.0,
+                1.0,
+                state_pkg.DURATION_THUMB_CROSSFADE_MS,
+                .ease_out_quad,
+            );
+        }
+        if (self.viewer.image_transition != .none) {
+            if (self.viewer.animations.get(.image_crossfade) < 0.001) {
+                self.viewer.animations.startFrom(
+                    .image_crossfade,
+                    0.0,
+                    1.0,
+                    state_pkg.DURATION_IMAGE_DISSOLVE_MS,
+                    .ease_in_out_cubic,
+                );
+            }
+        }
+    }
+
+    fn handleGpuUploadFailure(self: *AppState, target_key: CacheKey) void {
+        _ = self.cache.updateStatus(target_key, .failed);
+        const cur_idx = self.viewer.navigation.current_index orelse return;
+        if (self.cache.activeKey(cur_idx).index == target_key.index) {
+            self.viewer.image_transition = .none;
+            self.viewer.animations.setImmediate(.image_crossfade, 1.0);
         }
     }
 };

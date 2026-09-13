@@ -1048,6 +1048,78 @@ fn renderImageCanvas(
     };
 }
 
+fn renderDissolvePrevQuad(
+    ui_model: UiViewModel,
+    frame_allocator: std.mem.Allocator,
+    view_w: f32,
+    view_h: f32,
+) void {
+    const dissolve = switch (ui_model.image_dissolve) {
+        .none => return,
+        .active => |d| d,
+    };
+    const prev_entry = dissolve.prev_entry;
+    const gpu = switch (prev_entry.status) {
+        .loaded_gpu => |g| g,
+        else => return,
+    };
+
+    const prev_auth = prev_entry.getAuthoritativeDims();
+    const prev_dims = computeDrawDims(
+        prev_entry,
+        view_w,
+        view_h,
+        dissolve.prev_rotation,
+        ui_model.viewport.fit_mode,
+    );
+    const progress = std.math.clamp(ui_model.anim(.image_crossfade), 0.0, 1.0);
+    const prev_alpha = 1.0 - (progress * progress);
+    const prev_tex = gpu.gpu_texture;
+
+    const prev_uv_ptr = frame_allocator.create(state.UvRect) catch |err| blk: {
+        std.log.warn(
+            "Failed to allocate UvRect for image dissolve: {any}",
+            .{err},
+        );
+        break :blk null;
+    };
+    if (prev_uv_ptr) |ptr| {
+        ptr.* = .{
+            .alpha = prev_alpha,
+            .rotation_angle = dissolve.prev_rotation,
+            .override_zoom = dissolve.prev_zoom,
+            .override_pan_x = dissolve.prev_pan_x,
+            .override_pan_y = dissolve.prev_pan_y,
+            .source_w = prev_auth.w,
+            .source_h = prev_auth.h,
+        };
+    }
+
+    clay.UI()(.{
+        .id = clay.getElementId("ImageTransitionPrevQuad"),
+        .layout = .{
+            .sizing = .{
+                .w = .fixed(prev_dims.w),
+                .h = .fixed(prev_dims.h),
+            },
+        },
+        .floating = .{
+            .attach_to = .to_parent,
+            .clip_to = .to_attached_parent,
+            .attach_points = .{
+                .element = .center_center,
+                .parent = .center_center,
+            },
+            .offset = .{ .x = 0.0, .y = 0.0 },
+            .z_index = 0,
+        },
+        .image = .{
+            .image_data = prev_tex.asOpaque(),
+        },
+        .user_data = if (prev_uv_ptr) |ptr| @ptrCast(ptr) else null,
+    })({});
+}
+
 fn renderViewport(
     ui_model: UiViewModel,
     current_entry: anytype,
@@ -1067,76 +1139,7 @@ fn renderViewport(
         },
         .clip = .{ .horizontal = true, .vertical = true },
     })({
-        switch (ui_model.image_dissolve) {
-            .none => {},
-            .active => |dissolve| {
-                const prev_entry = dissolve.prev_entry;
-                switch (prev_entry.status) {
-                    .loaded_gpu => |gpu| {
-                        const prev_auth = prev_entry.getAuthoritativeDims();
-                        const prev_dims = computeDrawDims(
-                            prev_entry,
-                            view_w,
-                            view_h,
-                            dissolve.prev_rotation,
-                            ui_model.viewport.fit_mode,
-                        );
-                        const progress = std.math.clamp(
-                            ui_model.anim(.image_crossfade),
-                            0.0,
-                            1.0,
-                        );
-                        const prev_alpha = 1.0 - (progress * progress);
-
-                        const prev_tex = gpu.gpu_texture;
-                        const prev_uv_ptr =
-                            frame_allocator.create(state.UvRect) catch |err|
-                                blk: {
-                                    std.log.warn(
-                                        "Failed to allocate UvRect for image dissolve: {any}",
-                                        .{err},
-                                    );
-                                    break :blk null;
-                                };
-                        if (prev_uv_ptr) |ptr| {
-                            ptr.* = .{
-                                .alpha = prev_alpha,
-                                .rotation_angle = dissolve.prev_rotation,
-                                .override_zoom = dissolve.prev_zoom,
-                                .override_pan_x = dissolve.prev_pan_x,
-                                .override_pan_y = dissolve.prev_pan_y,
-                                .source_w = prev_auth.w,
-                                .source_h = prev_auth.h,
-                            };
-                        }
-                        clay.UI()(.{
-                            .id = clay.getElementId("ImageTransitionPrevQuad"),
-                            .layout = .{
-                                .sizing = .{
-                                    .w = .fixed(prev_dims.w),
-                                    .h = .fixed(prev_dims.h),
-                                },
-                            },
-                            .floating = .{
-                                .attach_to = .to_parent,
-                                .clip_to = .to_attached_parent,
-                                .attach_points = .{
-                                    .element = .center_center,
-                                    .parent = .center_center,
-                                },
-                                .offset = .{ .x = 0.0, .y = 0.0 },
-                                .z_index = 0,
-                            },
-                            .image = .{
-                                .image_data = prev_tex.asOpaque(),
-                            },
-                            .user_data = if (prev_uv_ptr) |ptr| @ptrCast(ptr) else null,
-                        })({});
-                    },
-                    else => {},
-                }
-            },
-        }
+        renderDissolvePrevQuad(ui_model, frame_allocator, view_w, view_h);
 
         if (current_entry) |entry| {
             renderImageCanvas(
