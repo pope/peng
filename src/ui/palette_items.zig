@@ -2,7 +2,8 @@ const std = @import("std");
 const clay = @import("zclay");
 const theme = @import("theme.zig");
 
-/// Represents a slice of text tagged with whether it matched a fuzzy search query.
+/// Represents a slice of text tagged with whether it matched a fuzzy search
+/// query.
 pub const TextChunk = struct {
     slice: []const u8,
     is_matched: bool,
@@ -15,7 +16,9 @@ fn appendOrMergeChunk(
     is_matched: bool,
 ) !void {
     if (slice.len == 0) return;
-    if (list.items.len > 0 and list.items[list.items.len - 1].is_matched == is_matched) {
+    if (list.items.len > 0 and
+        list.items[list.items.len - 1].is_matched == is_matched)
+    {
         const last = &list.items[list.items.len - 1];
         const combined_len = last.slice.len + slice.len;
         last.slice = last.slice.ptr[0..combined_len];
@@ -44,7 +47,8 @@ pub fn partitionHighlightedText(
     for (match_indices) |m_idx| {
         if (m_idx >= text.len) {
             std.log.warn(
-                "Fuzzy highlight match index {} out of bounds for string '{s}' (length {})",
+                "Fuzzy highlight match index {} out of bounds for " ++
+                    "string '{s}' (length {})",
                 .{ m_idx, text, text.len },
             );
         }
@@ -57,10 +61,13 @@ pub fn partitionHighlightedText(
     var match_ptr: usize = 0;
 
     while (idx < text.len) {
-        while (match_ptr < match_indices.len and match_indices[match_ptr] < idx) {
+        while (match_ptr < match_indices.len and
+            match_indices[match_ptr] < idx)
+        {
             match_ptr += 1;
         }
-        const is_matched = (match_ptr < match_indices.len and match_indices[match_ptr] == idx);
+        const is_matched = (match_ptr < match_indices.len and
+            match_indices[match_ptr] == idx);
 
         const start = idx;
         idx += 1;
@@ -84,24 +91,48 @@ pub fn partitionHighlightedText(
             var match_start = start;
             var match_end = idx;
 
-            while (match_start < match_end and std.ascii.isWhitespace(text[match_start])) {
+            while (match_start < match_end and
+                std.ascii.isWhitespace(text[match_start]))
+            {
                 match_start += 1;
             }
-            while (match_end > match_start and std.ascii.isWhitespace(text[match_end - 1])) {
+            while (match_end > match_start and
+                std.ascii.isWhitespace(text[match_end - 1]))
+            {
                 match_end -= 1;
             }
 
             if (match_start > start) {
-                try appendOrMergeChunk(&list, allocator, text[start..match_start], false);
+                try appendOrMergeChunk(
+                    &list,
+                    allocator,
+                    text[start..match_start],
+                    false,
+                );
             }
             if (match_end > match_start) {
-                try appendOrMergeChunk(&list, allocator, text[match_start..match_end], true);
+                try appendOrMergeChunk(
+                    &list,
+                    allocator,
+                    text[match_start..match_end],
+                    true,
+                );
             }
             if (idx > match_end) {
-                try appendOrMergeChunk(&list, allocator, text[match_end..idx], false);
+                try appendOrMergeChunk(
+                    &list,
+                    allocator,
+                    text[match_end..idx],
+                    false,
+                );
             }
         } else {
-            try appendOrMergeChunk(&list, allocator, text[start..idx], false);
+            try appendOrMergeChunk(
+                &list,
+                allocator,
+                text[start..idx],
+                false,
+            );
         }
     }
 
@@ -129,8 +160,15 @@ pub fn renderFuzzyMatchText(
         return;
     }
 
-    const chunks = partitionHighlightedText(allocator, text, match_indices) catch |err| {
-        std.log.err("partitionHighlightedText failed for '{s}': {}", .{ text, err });
+    const chunks = partitionHighlightedText(
+        allocator,
+        text,
+        match_indices,
+    ) catch |err| {
+        std.log.err(
+            "partitionHighlightedText failed for '{s}': {}",
+            .{ text, err },
+        );
         clay.text(text, .{
             .color = normal_color,
             .font_size = font_size,
@@ -139,6 +177,7 @@ pub fn renderFuzzyMatchText(
         });
         return;
     };
+    defer allocator.free(chunks);
 
     clay.UI()(.{
         .layout = .{
@@ -148,8 +187,10 @@ pub fn renderFuzzyMatchText(
         },
     })({
         for (chunks) |chunk| {
+            const chunk_color =
+                if (chunk.is_matched) highlight_color else normal_color;
             clay.text(chunk.slice, .{
-                .color = if (chunk.is_matched) highlight_color else normal_color,
+                .color = chunk_color,
                 .font_size = font_size,
                 .font_id = 0,
                 .wrap_mode = .none,

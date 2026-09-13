@@ -23,11 +23,14 @@ fn formatWindowTitle(
     return media.getBasename();
 }
 
-/// System Pass: Synchronizes OS window properties (title, fullscreen state) with AppState.
+/// System Pass: Synchronizes OS window properties (title, fullscreen state)
+/// with AppState.
 ///
 /// Responsibilities:
-/// 1. Determines window title from active image or defaults to "Peng Image Viewer".
-/// 2. Updates window title via SDL window handle only when the title string actually changes.
+/// 1. Determines window title from active image or defaults to
+///    "Peng Image Viewer".
+/// 2. Updates window title via SDL window handle only when the title string
+///    actually changes.
 /// 3. Maintains cached_title on the window display state.
 pub fn sysSyncWindow(ctx: FrameContext) void {
     const state = ctx.state;
@@ -45,18 +48,26 @@ pub fn sysSyncWindow(ctx: FrameContext) void {
 
             if (title_changed) {
                 if (ctx.frame_allocator.dupeZ(u8, raw_title)) |tz| {
+                    defer ctx.frame_allocator.free(tz);
                     win.handle.setTitle(tz);
                 } else |err| {
-                    std.log.err("Failed to allocate window title string: {}", .{err});
+                    std.log.err(
+                        "Failed to allocate window title string: {}",
+                        .{err},
+                    );
                 }
 
                 if (win.cached_title) |cached| {
                     state.allocator.free(cached);
                 }
-                win.cached_title = state.allocator.dupe(u8, raw_title) catch |err| blk: {
-                    std.log.err("Failed to update cached window title: {}", .{err});
-                    break :blk null;
-                };
+                win.cached_title =
+                    state.allocator.dupe(u8, raw_title) catch |err| blk: {
+                        std.log.err(
+                            "Failed to update cached window title: {}",
+                            .{err},
+                        );
+                        break :blk null;
+                    };
             }
         },
         else => {},

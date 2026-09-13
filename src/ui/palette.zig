@@ -594,13 +594,20 @@ fn renderSelectionList(
                                 .{ .case_sensitive = false },
                             ) catch null;
                             if (searcher) |*searcher_ptr| {
-                                const base_res = searcher_ptr.scoreMatches(basename, query_str);
+                                defer searcher_ptr.deinit();
+                                const base_res = searcher_ptr.scoreMatches(
+                                    basename,
+                                    query_str,
+                                );
                                 if (base_res.score != null) {
                                     basename_matches.appendSlice(
                                         frame_allocator,
                                         base_res.matches,
                                     ) catch |err| {
-                                        std.log.err("appendSlice failed: {}", .{err});
+                                        std.log.err(
+                                            "appendSlice failed: {}",
+                                            .{err},
+                                        );
                                     };
                                 }
                             }
@@ -645,9 +652,12 @@ fn renderSelectionList(
                             measure_data,
                         );
 
-                        var final_dir_matches =
-                            try std.ArrayList(usize).initCapacity(frame_allocator, 16);
-                        defer final_dir_matches.deinit(frame_allocator);
+                        var remapped_dir_matches: std.ArrayList(usize) = .empty;
+                        defer remapped_dir_matches.deinit(frame_allocator);
+
+                        var final_dir_matches: []const usize =
+                            dirname_matches.items;
+
                         if (display_dir.ptr != dirname.ptr and
                             display_dir.len > 0 and
                             std.mem.startsWith(u8, display_dir, "..."))
@@ -657,18 +667,18 @@ fn renderSelectionList(
                                 dirname.len - kept_len
                             else
                                 0;
+                            try remapped_dir_matches.ensureTotalCapacity(
+                                frame_allocator,
+                                dirname_matches.items.len,
+                            );
                             for (dirname_matches.items) |m_idx| {
                                 if (m_idx >= start_offset) {
-                                    final_dir_matches.append(
-                                        frame_allocator,
+                                    remapped_dir_matches.appendAssumeCapacity(
                                         (m_idx - start_offset) + 3,
-                                    ) catch |err| {
-                                        std.log.err("append final_dir_matches failed: {}", .{err});
-                                    };
+                                    );
                                 }
                             }
-                        } else {
-                            final_dir_matches = dirname_matches;
+                            final_dir_matches = remapped_dir_matches.items;
                         }
 
                         clay.UI()(.{
@@ -720,7 +730,7 @@ fn renderSelectionList(
                                 renderFuzzyMatchText(
                                     frame_allocator,
                                     display_dir,
-                                    final_dir_matches.items,
+                                    final_dir_matches,
                                     11,
                                     a(theme.subtext0, progress),
                                     a(theme.yellow, progress),
@@ -844,6 +854,9 @@ fn renderSelectionList(
 
                         var action_matches: []const usize = &.{};
                         if (query_str.len > 0) {
+                            // Note: searcher is retained across this block
+                            // because action_matches borrows res.matches
+                            // directly for renderFuzzyMatchText below.
                             var searcher = state.fuzzig.Ascii.init(
                                 frame_allocator,
                                 @max(meta.name.len, 64),
@@ -851,7 +864,10 @@ fn renderSelectionList(
                                 .{ .case_sensitive = false },
                             ) catch null;
                             if (searcher) |*searcher_ptr| {
-                                const res = searcher_ptr.scoreMatches(meta.name, query_str);
+                                const res = searcher_ptr.scoreMatches(
+                                    meta.name,
+                                    query_str,
+                                );
                                 if (res.score != null) {
                                     action_matches = res.matches;
                                 }
@@ -915,6 +931,7 @@ fn renderSelectionList(
                                     .{ .case_sensitive = false },
                                 ) catch null;
                                 if (searcher) |*searcher_ptr| {
+                                    defer searcher_ptr.deinit();
                                     const res = searcher_ptr.scoreMatches(
                                         entry.getName(),
                                         query_str,
@@ -925,7 +942,7 @@ fn renderSelectionList(
                                             res.matches,
                                         ) catch |err| {
                                             std.log.err(
-                                                "appendSlice dir_matches failed: {}",
+                                                "appendSlice failed: {}",
                                                 .{err},
                                             );
                                         };
