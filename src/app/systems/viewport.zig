@@ -8,7 +8,10 @@ const AppState = app_state.AppState;
 const FrameContext = context.FrameContext;
 
 /// System Pass: Viewport input processing (Mouse Drag & Scroll-Zoom at Cursor)
-pub fn sysUpdateViewport(ctx: FrameContext, palette_closed_this_frame: bool) void {
+pub fn sysUpdateViewport(
+    ctx: FrameContext,
+    palette_closed_this_frame: bool,
+) void {
     const state = ctx.state;
     const input = ctx.input orelse return;
 
@@ -35,23 +38,29 @@ pub fn sysUpdateViewport(ctx: FrameContext, palette_closed_this_frame: bool) voi
         },
         .info => |inf| {
             if (input.mouse_left_down) {
-                state.viewer.ui.overlays.info_panel.offset_x = input.mouse_x - inf.start_x;
-                state.viewer.ui.overlays.info_panel.offset_y = input.mouse_y - inf.start_y;
+                state.viewer.ui.overlays.info_panel.offset_x =
+                    input.mouse_x - inf.start_x;
+                state.viewer.ui.overlays.info_panel.offset_y =
+                    input.mouse_y - inf.start_y;
             } else {
                 next_drag_state = .none;
             }
         },
         .stats => |st| {
             if (input.mouse_left_down) {
-                state.viewer.ui.overlays.stats_panel.offset_x = input.mouse_x - st.start_x;
-                state.viewer.ui.overlays.stats_panel.offset_y = input.mouse_y - st.start_y;
+                state.viewer.ui.overlays.stats_panel.offset_x =
+                    input.mouse_x - st.start_x;
+                state.viewer.ui.overlays.stats_panel.offset_y =
+                    input.mouse_y - st.start_y;
             } else {
                 next_drag_state = .none;
             }
         },
     }
 
-    if (next_drag_state == .none and input.mouse_left_clicked and !palette_closed_this_frame) {
+    if (next_drag_state == .none and input.mouse_left_clicked and
+        !palette_closed_this_frame)
+    {
         if (!state.viewer.ui.palette.isAcceptingInput()) {
             const is_in_debug_panel = input.isPointerInDebugPanel();
             const over_info = state.viewer.ui.overlays.info_panel.visible and
@@ -83,10 +92,9 @@ pub fn sysUpdateViewport(ctx: FrameContext, palette_closed_this_frame: bool) voi
                         .start_y = input.mouse_y - off_y,
                     },
                 };
-            } else if (!is_in_debug_panel and
-                !over_edit and
-                clay.pointerOver(clay.getElementId("Viewport")))
-            {
+            } else if (over_edit) {
+                // Handled in sysProcessUiInteractions
+            } else {
                 next_drag_state = .{
                     .viewport = .{
                         .last_x = input.pixMouseX(),
@@ -98,6 +106,13 @@ pub fn sysUpdateViewport(ctx: FrameContext, palette_closed_this_frame: bool) voi
     }
     state.viewer.drag_state = next_drag_state;
 
+    // Synchronize viewport zoom factor when tracking active preset
+    // (.fit / .fill)
+    if (state.viewer.viewport.mode != .manual) {
+        state.viewer.viewport.zoom_factor =
+            state_pkg.UniversalZoom.init(state.getBaseScale());
+    }
+
     // 2. Mouse Wheel & Touchpad Scroll Panning
     const has_scroll_x = input.scroll_delta_x != 0.0;
     const has_scroll_y = input.scroll_delta_y != 0.0;
@@ -108,8 +123,10 @@ pub fn sysUpdateViewport(ctx: FrameContext, palette_closed_this_frame: bool) voi
 
     if ((has_scroll_x or has_scroll_y) and !is_ctrl_down) {
         if (over_viewport) {
-            state.viewer.viewport.pan_x += input.scroll_delta_x * input.scale_x * 5.0;
-            state.viewer.viewport.pan_y += input.scroll_delta_y * input.scale_y * 5.0;
+            state.viewer.viewport.pan_x +=
+                input.scroll_delta_x * input.scale_x * 5.0;
+            state.viewer.viewport.pan_y +=
+                input.scroll_delta_y * input.scale_y * 5.0;
         }
     }
 
@@ -118,14 +135,18 @@ pub fn sysUpdateViewport(ctx: FrameContext, palette_closed_this_frame: bool) voi
     const is_ctrl_scroll = is_ctrl_down and has_scroll_y;
     if (has_pinch or is_ctrl_scroll) {
         if (over_viewport) {
-            const old_zoom = state.viewer.viewport.zoom_factor;
-
-            const zoom_delta = if (has_pinch)
-                input.pinch_delta * 0.5
+            const old_zoom = if (state.viewer.viewport.mode == .manual)
+                state.viewer.viewport.zoom_factor
             else
-                input.scroll_delta_y * 0.1;
+                state_pkg.clampZoomFactor(state.getBaseScale());
 
-            const new_zoom = state.clampZoomFactor(old_zoom.get() + zoom_delta);
+            const zoom_mult = if (has_pinch)
+                @max(0.01, 1.0 + input.pinch_delta * 0.5)
+            else
+                @exp(input.scroll_delta_y * 0.05);
+
+            const new_zoom =
+                state_pkg.clampZoomFactor(old_zoom.get() * zoom_mult);
 
             const focus_x = if (has_pinch)
                 input.pinch_center_x * input.scale_x
@@ -136,26 +157,37 @@ pub fn sysUpdateViewport(ctx: FrameContext, palette_closed_this_frame: bool) voi
             else
                 input.pixMouseY();
 
-            const debug_w: f32 = if (clay.isDebugModeEnabled())
-                @as(f32, @floatFromInt(clay.Clay__debugViewWidth))
+            const vp_data = clay.getElementData(clay.getElementId("Viewport"));
+            const center_x = if (vp_data.found)
+                (vp_data.bounding_box.x + vp_data.bounding_box.width * 0.5) *
+                    input.scale_x
+            else blk: {
+                const debug_w: f32 = if (clay.isDebugModeEnabled())
+                    @as(f32, @floatFromInt(clay.Clay__debugViewWidth))
+                else
+                    0.0;
+                const edit_progress = state.viewer.animations.get(.edit_panel);
+                const edit_open = state.viewer.ui.overlays.edit_panel.visible;
+                const docked_w: f32 = if (edit_open or edit_progress > 0.001)
+                    state_pkg.EDIT_PANEL_WIDTH * edit_progress
+                else
+                    0.0;
+                const available_width =
+                    @max(input.win_w - debug_w - docked_w, 1.0);
+                break :blk (available_width * 0.5) * input.scale_x;
+            };
+            const center_y = if (vp_data.found)
+                (vp_data.bounding_box.y + vp_data.bounding_box.height * 0.5) *
+                    input.scale_y
             else
-                0.0;
-            const edit_progress = state.viewer.animations.get(.edit_panel);
-            const edit_open = state.viewer.ui.overlays.edit_panel.visible;
-            const docked_w: f32 = if (edit_open or edit_progress > 0.001)
-                state_pkg.EDIT_PANEL_WIDTH * edit_progress
-            else
-                0.0;
-            const available_width = @max(input.win_w - debug_w - docked_w, 1.0);
-            const cx = available_width / 2.0;
-            const cy = input.win_h / 2.0;
+                (input.win_h * 0.5) * input.scale_y;
 
             state.viewer.viewport.zoomAtPoint(
                 new_zoom,
                 focus_x,
                 focus_y,
-                cx * input.scale_x,
-                cy * input.scale_y,
+                center_x,
+                center_y,
             );
         }
     }

@@ -79,9 +79,19 @@ ______________________________________________________________________
 
 - **Zoom Application (`viewport.zig`)**:
 
-  - $\\text{zoom_delta} = \\text{pinch_delta} \\times 0.5$ (or $\\text{scroll_delta_y} \\times 0.1$ for Ctrl+Scroll)
-  - Clamped target zoom: $\\text{new_zoom} = \\text{clamp}(Z\_{\\text{old}} + \\text{zoom_delta})$
-  - Viewport anchor call: `ViewportParams.zoomAtPoint(new_zoom, focus_x, focus_y, center_x, center_y)`
+  - **Exponential Wheel Zoom**:
+    $$Z\_{\\text{new}} = \\text{clamp}(Z\_{\\text{old}} \\cdot \\exp(\\text{scroll_delta_y} \\cdot 0.05))$$
+  - **Multiplicative Touchpad Pinch with Negative Safety Guard**:
+    $$Z\_{\\text{new}} = \\text{clamp}(Z\_{\\text{old}} \\cdot \\max(0.01, 1.0 + \\text{pinch_delta} \\cdot 0.5))$$
+  - **Preset Seeding**: When initiating a wheel or pinch gesture from `.fit` or
+    `.fill` mode, seed $Z\_{\\text{old}}$ from `state.getBaseScale()` rather than
+    an uninitialized or static multiplier.
+  - **Dynamic Viewport Center**: Focus coordinates must anchor relative to the
+    dynamic center queried from `clay.getElementData("Viewport")` rather than
+    assuming static window center, ensuring correct anchor positioning when
+    side panels are docked.
+  - **Viewport Anchor Call**:
+    `ViewportParams.zoomAtPoint(new_zoom, focus_x, focus_y, center_x, center_y)`
 
 ______________________________________________________________________
 

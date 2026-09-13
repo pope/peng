@@ -32,7 +32,6 @@ const LibViewer = struct {
         window: sdl.Window,
         resources: *ui.graphics.RenderResources,
         measure_data: *state_pkg.MeasureTextUserData,
-        ipc_server: ?*ipc.IpcServer,
         parsed_headless: bool,
         parsed_test_mode: bool,
         frame_arena: *std.heap.ArenaAllocator,
@@ -93,8 +92,7 @@ const LibViewer = struct {
         return stat.mtime.nanoseconds != self.last_mod_time.nanoseconds;
     }
 
-    fn updateLib(self: *LibViewer, io: std.Io, app_state: *app.state.AppState) !void {
-        _ = app_state;
+    fn updateLib(self: *LibViewer, io: std.Io) !void {
         if (self.is_valid) {
             self.unload_assets();
             self.handle.close();
@@ -106,14 +104,14 @@ const LibViewer = struct {
         self.load_assets();
     }
 
-    fn safeReload(self: *LibViewer, io: std.Io, app_state: *app.state.AppState) void {
+    fn safeReload(self: *LibViewer, io: std.Io) void {
         const is_outdated = self.check_outdated(io) catch |err| {
             std.log.err("Unable to check reload of viewer lib: {}", .{err});
             return;
         };
 
         if (is_outdated or !self.is_valid) {
-            if (self.updateLib(io, app_state)) {
+            if (self.updateLib(io)) {
                 std.log.info("Viewer dynamic library reloaded successfully!", .{});
             } else |err| {
                 std.log.err("Unable to reload viewer lib: {}", .{err});
@@ -202,7 +200,13 @@ fn initAppGraphicsAndState(init: std.process.Init) !?AppGraphicsAndState {
                     .claimed = true,
                 },
             },
-            .viewport = .{ .fit_mode = parsed.default_scale },
+            .viewport = blk: {
+                var vp = state_pkg.ViewportParams{
+                    .fit_mode = parsed.default_scale,
+                };
+                vp.reset();
+                break :blk vp;
+            },
             .rotation_map = .init(gpa),
             .running = true,
         },
@@ -302,14 +306,13 @@ fn runMainLoop(ctx: *AppGraphicsAndState) !void {
         while (ctx.state.viewer.running) {
             defer _ = frame_arena.reset(.retain_capacity);
             clay.setCurrentContext(ctx.clay_context);
-            lib_viewer.safeReload(ctx.io, &ctx.state);
+            lib_viewer.safeReload(ctx.io);
             if (lib_viewer.is_valid) {
                 lib_viewer.update(
                     &ctx.state,
                     ctx.setup.window,
                     &ctx.resources,
                     &ctx.measure_data,
-                    ctx.ipc_server,
                     ctx.parsed.headless,
                     ctx.parsed.test_mode,
                     &frame_arena,
@@ -328,7 +331,6 @@ fn runMainLoop(ctx: *AppGraphicsAndState) !void {
                 ctx.setup.window,
                 &ctx.resources,
                 &ctx.measure_data,
-                ctx.ipc_server,
                 ctx.parsed.headless,
                 ctx.parsed.test_mode,
                 &frame_arena,

@@ -139,10 +139,25 @@ fn renderInfoOverlay(
     var res_str: []const u8 = "N/A";
     var raw_res_str: ?[]const u8 = null;
     var is_raw_image = false;
+    const z_val = ui_model.viewport.zoom_factor.get();
+    var screen_w = draw_w;
+    var screen_h = draw_h;
+    if (current_entry) |entry| {
+        const auth = entry.getAuthoritativeDims();
+        if (auth.w > 0.0 and auth.h > 0.0) {
+            const is_swapped = state.view_transform.isAngle90or270(
+                ui_model.viewport.rotation_angle,
+            );
+            const w = if (is_swapped) auth.h else auth.w;
+            const h = if (is_swapped) auth.w else auth.h;
+            screen_w = w * z_val;
+            screen_h = h * z_val;
+        }
+    }
     const screen_str = try std.fmt.allocPrint(
         frame_allocator,
         "{d:.0}x{d:.0} px",
-        .{ draw_w, draw_h },
+        .{ screen_w, screen_h },
     );
 
     if (current_entry) |entry| {
@@ -205,40 +220,12 @@ fn renderInfoOverlay(
         }
     }
 
-    var zoom_str: []const u8 = "1.0x";
-    if (current_entry) |entry| {
-        const entry_w = switch (entry.status) {
-            .loaded_cpu => |cpu| cpu.w,
-            .loaded_gpu => |gpu| gpu.w,
-            else => if (entry.full_w > 0)
-                entry.full_w
-            else if (entry.thumbnail.getInfo()) |info|
-                info.w
-            else
-                0.0,
-        };
-        if (entry_w > 0) {
-            const effective_zoom = (draw_w * ui_model.viewport.zoom_factor.get()) / entry_w;
-            const pixel_zoom_pct = effective_zoom * 100.0;
-            zoom_str = try std.fmt.allocPrint(
-                frame_allocator,
-                "{d:.1}x ({d:.0}%)",
-                .{ effective_zoom, pixel_zoom_pct },
-            );
-        } else {
-            zoom_str = try std.fmt.allocPrint(
-                frame_allocator,
-                "{d:.1}x",
-                .{ui_model.viewport.zoom_factor.get()},
-            );
-        }
-    } else {
-        zoom_str = try std.fmt.allocPrint(
-            frame_allocator,
-            "{d:.1}x",
-            .{ui_model.viewport.zoom_factor.get()},
-        );
-    }
+    const pixel_zoom_pct = z_val * 100.0;
+    const zoom_str = try std.fmt.allocPrint(
+        frame_allocator,
+        "{d:.1}x ({d:.0}%)",
+        .{ z_val, pixel_zoom_pct },
+    );
 
     const pan_str = try std.fmt.allocPrint(
         frame_allocator,
@@ -369,7 +356,7 @@ fn renderInfoOverlay(
             try renderStatRow("Resolution", res_str);
         }
         try renderStatRow("Size on Disk", disk_size_str);
-        try renderStatRow("Viewport Size", screen_str);
+        try renderStatRow("Rendered Size", screen_str);
         const scale_mode_str = switch (ui_model.viewport.fit_mode) {
             .none => "Original size (100%)",
             .shrink => "Fit if larger",

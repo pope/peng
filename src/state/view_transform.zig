@@ -102,12 +102,39 @@ pub fn computeViewDims(
     };
 }
 
-/// Restricts zoom factor within safe bounds derived from `base_scale`
-/// to avoid excessive under- or over-magnification.
-pub fn clampZoomFactor(base_scale: f32, factor: f32) ZoomFactor {
-    const min_factor = if (base_scale > 0.0) 0.1 / base_scale else 0.1;
-    const max_factor = if (base_scale > 0.0) 10.0 / base_scale else 10.0;
-    return ZoomFactor.init(std.math.clamp(factor, min_factor, max_factor));
+/// Computes the universal pixel zoom factor Z for a target preset.
+pub fn computePresetZoom(
+    raw_w: f32,
+    raw_h: f32,
+    rotation_angle: f32,
+    view_w: f32,
+    view_h: f32,
+    preset: ScaleMode,
+) f32 {
+    if (raw_w <= 0.0 or raw_h <= 0.0 or view_w <= 0.0 or view_h <= 0.0) {
+        return 1.0;
+    }
+    const is_90_or_270 = isAngle90or270(rotation_angle);
+    const img_w = if (is_90_or_270) raw_h else raw_w;
+    const img_h = if (is_90_or_270) raw_w else raw_h;
+
+    return switch (preset) {
+        .none => 1.0,
+        .shrink => if (img_w <= view_w and img_h <= view_h)
+            1.0
+        else
+            @min(view_w / img_w, view_h / img_h),
+        .full => @min(view_w / img_w, view_h / img_h),
+        .crop => @max(view_w / img_w, view_h / img_h),
+        .fit_width => view_w / img_w,
+        .fit_height => view_h / img_h,
+    };
+}
+
+/// Restricts zoom factor within safe universal bounds [ZoomFactor.MIN,
+/// ZoomFactor.MAX] to avoid excessive under- or over-magnification.
+pub fn clampZoomFactor(factor: f32) ZoomFactor {
+    return ZoomFactor.init(factor);
 }
 
 /// Mutually exclusive thumbnail letterbox or pillarbox padding result.
@@ -334,4 +361,51 @@ test "computeThumbnailPadding tagged union variants" {
     const none_pad = computeThumbnailPadding(1600.0, 1200.0, 160.0, 120.0, false);
     try std.testing.expectEqual(ThumbnailPadding.none, none_pad);
     try std.testing.expectEqual(@as(f32, 0.0), none_pad.getPaddingPx());
+}
+
+test "computePresetZoom calculations" {
+    // 1024x682 image in 1024x768 viewport
+    const z_fit = computePresetZoom(1024.0, 682.0, 0.0, 1024.0, 768.0, .full);
+    try std.testing.expectEqual(@as(f32, 1.0), z_fit);
+
+    const z_crop = computePresetZoom(1024.0, 682.0, 0.0, 1024.0, 768.0, .crop);
+    try std.testing.expectApproxEqAbs(@as(f32, 768.0 / 682.0), z_crop, 0.0001);
+
+    const z_none = computePresetZoom(1024.0, 682.0, 0.0, 1024.0, 768.0, .none);
+    try std.testing.expectEqual(@as(f32, 1.0), z_none);
+
+    // Rotated 90 degrees (becomes 682x1024)
+    const z_fit_rot = computePresetZoom(
+        1024.0,
+        682.0,
+        90.0,
+        1024.0,
+        768.0,
+        .full,
+    );
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 768.0 / 1024.0),
+        z_fit_rot,
+        0.0001,
+    );
+
+    const z_crop_rot = computePresetZoom(
+        1024.0,
+        682.0,
+        90.0,
+        1024.0,
+        768.0,
+        .crop,
+    );
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 1024.0 / 682.0),
+        z_crop_rot,
+        0.0001,
+    );
+}
+
+test "clampZoomFactor bounds" {
+    try std.testing.expectEqual(@as(f32, 100.0), clampZoomFactor(150.0).get());
+    try std.testing.expectEqual(@as(f32, 0.001), clampZoomFactor(0.0001).get());
+    try std.testing.expectEqual(@as(f32, 1.5), clampZoomFactor(1.5).get());
 }

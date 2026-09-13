@@ -33,8 +33,14 @@ fn handleKeyDown(
         return;
     }
 
+    const is_zoomed = if (self.getCurrentEntry() != null)
+        self.isImageOverflowing() or
+            self.viewer.viewport.pan_x != 0.0 or
+            self.viewer.viewport.pan_y != 0.0
+    else
+        self.viewer.viewport.isZoomed();
     const ctx: key_mapping.KeyContext =
-        if (self.viewer.viewport.isZoomed())
+        if (is_zoomed)
             .viewer_zoomed
         else
             .viewer_normal;
@@ -72,9 +78,15 @@ pub fn sysProcessInput(
         };
     }
 
-    if (state.viewer.ui.palette.isAcceptingInput() or palette_closed_this_frame) return;
+    if (state.viewer.ui.palette.isAcceptingInput() or
+        palette_closed_this_frame) return;
 
-    const is_zoomed = state.viewer.viewport.isZoomed();
+    const is_zoomed = if (state.getCurrentEntry() != null)
+        state.isImageOverflowing() or
+            state.viewer.viewport.pan_x != 0.0 or
+            state.viewer.viewport.pan_y != 0.0
+    else
+        state.viewer.viewport.isZoomed();
     const no_mod = input.key_modifiers.eql(.{});
 
     // 1. Coalesce simultaneous directional keys when zoomed
@@ -478,7 +490,8 @@ test "sysProcessInput simultaneous directional keys pan diagonally" {
     defer app_st.deinit();
 
     // Zoom viewport beyond 1.0x to activate zoomed context
-    app_st.viewer.viewport.zoom_factor = app_st.clampZoomFactor(2.0);
+    app_st.viewer.viewport.mode = .manual;
+    app_st.viewer.viewport.zoom_factor = state_pkg.clampZoomFactor(2.0);
 
     // 1. Simultaneous Up and Left keys pressed in single frame
     var keys_ul = std.ArrayList(Key).empty;
@@ -588,7 +601,8 @@ test "sysProcessInput repeating key with held orthogonal key pans diagonally" {
     var app_st = try AppState.initHeadless(allocator, io);
     defer app_st.deinit();
 
-    app_st.viewer.viewport.zoom_factor = app_st.clampZoomFactor(2.0);
+    app_st.viewer.viewport.mode = .manual;
+    app_st.viewer.viewport.zoom_factor = state_pkg.clampZoomFactor(2.0);
 
     // Left key repeating while Up key is physically held
     var keys_left = std.ArrayList(Key).empty;
@@ -701,7 +715,8 @@ test "sysProcessInput continuous gliding and seamless diagonal transition" {
     var app_st = try AppState.initHeadless(allocator, io);
     defer app_st.deinit();
 
-    app_st.viewer.viewport.zoom_factor = app_st.clampZoomFactor(2.0);
+    app_st.viewer.viewport.mode = .manual;
+    app_st.viewer.viewport.zoom_factor = state_pkg.clampZoomFactor(2.0);
 
     // Simulate already moving upward
     app_st.viewer.pan_controller.prev_held = .{ .up = true };

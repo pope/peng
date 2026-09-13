@@ -28,6 +28,7 @@ pub const ArchiveSeekInfo = types.ArchiveSeekInfo;
 pub const CacheEntry = types.CacheEntry;
 pub const CacheStatus = types.CacheStatus;
 pub const Classification = types.Classification;
+pub const clampZoomFactor = view_transform.clampZoomFactor;
 pub const computeThumbnailUvCrop = view_transform.computeThumbnailUvCrop;
 pub const CpuSurfaceComponent = types.CpuSurfaceComponent;
 pub const DirectionFlags = types.DirectionFlags;
@@ -103,7 +104,10 @@ pub const ViewerState = viewer_state.ViewerState;
 pub const ViewMode = types.ViewMode;
 pub const ViewportParams = types.ViewportParams;
 pub const VisibleState = types.VisibleState;
+pub const UniversalZoom = types.UniversalZoom;
 pub const ZoomFactor = types.ZoomFactor;
+pub const ZoomMode = types.ZoomMode;
+pub const ZoomPreset = types.ZoomPreset;
 pub const ZipSeekOffsets = types.ZipSeekOffsets;
 
 test {

@@ -3,8 +3,12 @@ const sdl = @import("sdl");
 const geometry = @import("geometry.zig");
 const state = @import("state");
 
+/// 2D textured geometry vertex with screen NDC coordinates and packed RGBA
+/// color.
 pub const Vertex = geometry.Vertex;
+/// Packs four 8-bit color channels (R, G, B, A) into a 32-bit unsigned integer.
 pub const packRgba = geometry.packRgba;
+/// Viewport projection, transformation, zoom, and pan offset state.
 pub const ViewportParams = state.ViewportParams;
 
 /// Defines batch rendering material pipelines, controlling whether image
@@ -106,13 +110,21 @@ pub fn appendImageCommand(
         dst_w = rect.h;
         dst_h = rect.w;
     }
+
+    const zoom = uv_rect.override_zoom orelse (if (view_params.mode == .manual)
+        view_params.zoom_factor.get()
+    else
+        1.0);
+    const pan_x = uv_rect.override_pan_x orelse view_params.pan_x;
+    const pan_y = uv_rect.override_pan_y orelse view_params.pan_y;
+
     var dst_rect = rect;
-    dst_rect.w = dst_w * view_params.zoom_factor.get();
-    dst_rect.h = dst_h * view_params.zoom_factor.get();
-    const center_x = rect.x + rect.w / 2.0;
-    const center_y = rect.y + rect.h / 2.0;
-    dst_rect.x = center_x - (dst_rect.w / 2.0) + view_params.pan_x;
-    dst_rect.y = center_y - (dst_rect.h / 2.0) + view_params.pan_y;
+    dst_rect.w = dst_w * zoom;
+    dst_rect.h = dst_h * zoom;
+    const center_x = rect.x + rect.w * 0.5;
+    const center_y = rect.y + rect.h * 0.5;
+    dst_rect.x = center_x - (dst_rect.w * 0.5) + pan_x;
+    dst_rect.y = center_y - (dst_rect.h * 0.5) + pan_y;
 
     const rad = angle * (std.math.pi / 180.0);
     const cos_val = @cos(rad);
@@ -155,7 +167,8 @@ pub fn appendImageCommand(
     const v_max = uv_rect.v_max;
 
     const start = @as(u32, @intCast(vertices.items.len));
-    const alpha_u8 = @as(u8, @intFromFloat(std.math.clamp(uv_rect.alpha, 0.0, 1.0) * 255.0));
+    const clamped_alpha = std.math.clamp(uv_rect.alpha, 0.0, 1.0);
+    const alpha_u8 = @as(u8, @intFromFloat(clamped_alpha * 255.0));
     const vert_color = packRgba(255, 255, 255, alpha_u8);
     try vertices.appendSlice(allocator, &[_]Vertex{
         .{ .x = p1.x, .y = p1.y, .u = u_min, .v = v_min, .color = vert_color },

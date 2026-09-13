@@ -307,31 +307,55 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
                         };
                     }
                 }
-            } else if (is_active_slot and !entry.is_promoting and
-                state.viewer.viewport.zoom_factor.get() > 1.0)
-            {
+            } else if (is_active_slot and !entry.is_promoting) {
                 if (state.viewer.navigation.getMediaEntry(idx)) |media_item| {
                     if (media_item.isPair() and entry.raw_metadata.isRaw()) {
                         const loaded_w = entry.getLoadedWidth() orelse 0.0;
                         const loaded_h = entry.getLoadedHeight() orelse 0.0;
-                        const is_downscaled = if (entry.raw_metadata.getSensorDims()) |s_dims|
-                            (loaded_w < s_dims.w * 0.85 or loaded_h < s_dims.h * 0.85)
-                        else if (entry.full_w > 0.0 and entry.full_h > 0.0)
-                            (loaded_w < entry.full_w * 0.85 or loaded_h < entry.full_h * 0.85)
-                        else
-                            false;
-                        if (is_downscaled and state.workers.canSpawnDecode()) {
-                            entry.is_promoting = true;
-                            spawnCacheDecodeSlot(
-                                state,
-                                idx,
-                                media_item,
-                                false,
-                                .standalone_jpeg,
-                            ) catch |err| {
-                                entry.is_promoting = false;
-                                std.log.err("Failed to spawn zoom promotion decode: {}", .{err});
-                            };
+                        const auth = entry.getAuthoritativeDims();
+                        if (loaded_w > 0.0 and loaded_h > 0.0 and
+                            auth.w > 0.0 and auth.h > 0.0)
+                        {
+                            const is_downscaled = (loaded_w < auth.w * 0.85 or
+                                loaded_h < auth.h * 0.85);
+                            if (is_downscaled) {
+                                const z = if (state.viewer.viewport.mode ==
+                                    .manual)
+                                    state.viewer.viewport.zoom_factor.get()
+                                else
+                                    state.getBaseScale();
+                                const tex_demand = z *
+                                    @max(auth.w / loaded_w, auth.h / loaded_h);
+                                const is_inspecting =
+                                    (state.viewer.viewport.mode != .fit or
+                                        state.isImageOverflowing()) and
+                                    (tex_demand > 1.05);
+                                const is_settled_fit =
+                                    (state.viewer.viewport.mode == .fit) and
+                                    (now -| state.viewer.navigation
+                                        .last_nav_time_ms > 250) and
+                                    (tex_demand > 1.15);
+
+                                if ((is_inspecting or is_settled_fit) and
+                                    state.workers.canSpawnDecode())
+                                {
+                                    entry.is_promoting = true;
+                                    spawnCacheDecodeSlot(
+                                        state,
+                                        idx,
+                                        media_item,
+                                        false,
+                                        .standalone_jpeg,
+                                    ) catch |err| {
+                                        entry.is_promoting = false;
+                                        std.log.err(
+                                            "Failed to spawn zoom promotion " ++
+                                                "decode: {}",
+                                            .{err},
+                                        );
+                                    };
+                                }
+                            }
                         }
                     }
                 }
@@ -642,7 +666,8 @@ test "sysUpdateCache - zoom promotion on downscaled RAW preview" {
     try std.testing.expect(!state.cache.get(key).?.is_promoting);
 
     // When zoom > 1.0x, zoom promotion triggers is_promoting = true
-    state.viewer.viewport.zoom_factor = state.clampZoomFactor(2.0);
+    state.viewer.viewport.mode = .manual;
+    state.viewer.viewport.zoom_factor = state_pkg.clampZoomFactor(2.0);
     try sysUpdateCache(ctx);
     try std.testing.expect(state.cache.get(key).?.is_promoting);
 }

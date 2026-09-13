@@ -12,8 +12,9 @@ ______________________________________________________________________
   with identical stems (e.g. `DSC00941.ARW` + `DSC00941.JPG`) automatically
   collapse into a single logical photo entry. Employs a 4-tier loading pipeline:
   RAW header thumbnail during rapid scrubbing, crisp RAW embedded preview for
-  settled viewing (zoom \<= 1.0x), and zero-flash promotion to companion JPEG
-  upon zooming past 1.0x or pressing `j`.
+  settled viewing, and zero-flash promotion to companion JPEG lazily when
+  screen pixel demand exceeds preview resolution ($M\_{\\text{tex}} > 1.05$) or
+  upon pressing `j`.
 - **CBZ & Manga Mode Support:** Instant $O(1)$ page seeking inside `.cbz` comic archives with toggleable Right-to-Left (RTL) Manga reading mode (`M` key).
 - **Advanced Filtering & Resampling:** Features high-quality resampling shaders including Bilinear, Mitchell-Netravali, and Lanczos3 filters.
 - **Command Palette:** Built-in searchable palettes for commands (`F1` or `Ctrl+Shift+P`), file search (`Ctrl+P`), and directory navigator (`Ctrl+O`).
@@ -47,9 +48,9 @@ ______________________________________________________________________
 | `n` / `]` / `Space` / `Right`           | Next Image                                                        |
 | `p` / `[` / `Backspace` / `Left`        | Previous Image                                                    |
 | `Home` / `End`                          | Jump to First / Last Image                                        |
-| `i` / `+` / `=`                         | Zoom In                                                           |
-| `o` / `-`                               | Zoom Out                                                          |
-| `a`                                     | Actual Size (1:1 / 100% Zoom)                                     |
+| `i` / `+` / `=`                         | Zoom In (with 100% snap detent)                                   |
+| `o` / `-`                               | Zoom Out (with 100% snap detent)                                  |
+| `a`                                     | Actual Size (1:1 / 100% Universal Pixel Zoom)                     |
 | `r` / `0`                               | Reset Zoom & Pan                                                  |
 | `h` / `j` / `k` / `l`                   | Pan Left / Down / Up / Right (when zoomed)                        |
 | `>`                                     | Rotate Clockwise (90°)                                            |
@@ -136,7 +137,7 @@ Start the image viewer by passing a file or directory path:
 | :-------------------- | :---------------------------------------------------------- | :------------------------------------------------------- |
 | `-h`, `--help`        | None                                                        | Displays the help message and available options.         |
 | `-W`, `--windowless`  | None                                                        | Runs in borderless/windowless mode (no titlebar chrome). |
-| `--scale`             | `none`, `shrink`, `full`, `crop`, `fit_width`, `fit_height` | Sets the default image scaling/fitting mode.             |
+| `--scale`             | `none`, `shrink`, `full`, `crop`, `fit_width`, `fit_height` | Sets default image scaling / zoom preset.                |
 | `--blur`              | None                                                        | Enables background glassmorphism blur effect (default).  |
 | `--no-blur`           | None                                                        | Disables background glassmorphism blur effect.           |
 | `--title`             | None                                                        | Shows floating title bar overlay on startup.             |
@@ -150,6 +151,8 @@ Start the image viewer by passing a file or directory path:
 Aliases:
 
 - `--windowless` can also be specified as `--borderless` or `--undecorated`.
+- `--scale` supports preset aliases: `fit` (alias for `full`), `fill` (alias
+  for `crop`), `1:1` or `actual` (alias for `none`).
 
 ______________________________________________________________________
 
@@ -164,15 +167,16 @@ You can send commands to a running instance using the `peng-msg` utility:
 ./zig-out/bin/peng-msg <socket_path> <command_words...>
 
 # Examples:
-# Adjust zoom factor (min 0.1, max 10.0)
+# Adjust zoom factor (min 0.001, max 100.0)
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock zoom 2.5
 
 # Pan coordinates (x, y)
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock pan 100 -50
 
-# Set Scale Mode (none, shrink, full, crop, fit_width, fit_height)
-./zig-out/bin/peng-msg /tmp/peng-1234.sock scale fit_width
-./zig-out/bin/peng-msg /tmp/peng-1234.sock scale fit_height
+# Set Scale Mode / Preset (none, shrink, full, crop, fit, fill, 1:1, actual)
+./zig-out/bin/peng-msg /tmp/peng-1234.sock scale fit
+./zig-out/bin/peng-msg /tmp/peng-1234.sock scale fill
+./zig-out/bin/peng-msg /tmp/peng-1234.sock scale 1:1
 
 # Set Manga Mode (true, false)
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock manga true

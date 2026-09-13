@@ -167,3 +167,53 @@
     adjustments.
   - Hermite $C^1$ envelopes anchor deep blacks ($Y \\le 0.04$) and specular
     highlights ($Y \\ge 0.92$), preventing noise tinting and white casts.
+
+## 20. DPI Coordinate Alignment, Universal Zoom & Pre-Scaled Layout Invariants
+
+- **Framebuffer Pixels vs. Logical Window Points**:
+
+  - In High-DPI, Wayland, and Retina environments, window dimensions
+    (`win.handle.getSize()`) represent logical coordinate points, whereas GPU
+    framebuffers (`win.handle.getSizeInPixels()`) represent physical pixels.
+  - When computing the base scale $Z\_{\\text{base}}$ or evaluating physical
+    viewport overflow (`isImageOverflowing`), always query physical pixel
+    dimensions (`getSizeInPixels()`).
+  - Deductions for UI overlay panels (e.g. Clay debug inspector, docked edit
+    panel) must be multiplied by the display scale factor $S =
+    \\frac{\\text{pix_w}}{\\text{win_w}}$ before subtracting from physical
+    dimensions. Failing to do so causes scale mismatches and visual jumps when
+    switching from preset to manual zoom.
+
+- **Clay Layout Pre-Scaled Rectangles vs. Universal Zoom Quads**:
+
+  - Clay UI computes element bounding boxes (`rect.w`, `rect.h`) based on
+    preset fitting math (`computeDrawDims`). In preset modes (`.fit`, `.fill` /
+    `crop`), `rect.w` and `rect.h` are ALREADY the scaled screen dimensions.
+  - NEVER multiply `rect.w` by $Z\_{\\text{base}}$ in preset modes, as this
+    squares the scale factor ($W\_{\\text{auth}} \\cdot Z\_{\\text{base}}^2$) and
+    shrinks the image twice.
+  - Preset mode quad rendering must use an effective zoom multiplier of `1.0`
+    over Clay's layout rect, reserving $Z$ magnification strictly for manual
+    inspection mode (`mode == .manual`).
+
+- **Continuous Crossing Detent Logic for Stepped Inputs**:
+
+  - When implementing snap detents (e.g. snapping to 100% / $Z = 1.0$) for
+    stepped inputs (e.g. 25% jumps from keyboard shortcuts `"i"` and `"o"`),
+    never test an epsilon band around the target (`abs(target - 1.0) < 0.05`).
+    Because input steps ($0.25$) exceed the epsilon width ($0.05$), the detent
+    is easily bypassed.
+  - Always test for boundary crossing:
+    ```zig
+    // In zoom_in:
+    if (old_zoom.get() < 1.0 and target >= 1.0) target = 1.0;
+    // In zoom_out:
+    if (old_zoom.get() > 1.0 and target <= 1.0) target = 1.0;
+    ```
+
+- **Navigation Context Switching vs. Physical Overflow**:
+
+  - Arrow and Vim navigation keys (`h`/`j`/`k`/`l`) must switch between photo
+    navigation and directional panning based strictly on physical viewport
+    boundary overflow (`isImageOverflowing()`), never on `zoom > 1.0`. Small
+    images magnified in "Fit" mode should never be trapped in panning mode.

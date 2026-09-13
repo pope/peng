@@ -97,15 +97,26 @@ pub const ViewMode = enum(u8) {
     }
 };
 
-/// Image viewport scaling and fitting modes.
-pub const ScaleMode = enum {
+/// Target zoom presets for instant snapping and responsive tracking.
+pub const ZoomPreset = enum {
     none,
     shrink,
     full,
     crop,
     fit_width,
     fit_height,
+
+    pub inline fn isFit(self: ZoomPreset) bool {
+        return self == .full;
+    }
+
+    pub inline fn isFill(self: ZoomPreset) bool {
+        return self == .crop;
+    }
 };
+
+/// Backward-compatible alias for ZoomPreset.
+pub const ScaleMode = ZoomPreset;
 
 /// High-quality GPU texture resampling and reconstruction filter algorithms.
 pub const TextureScaleMode = enum {
@@ -128,6 +139,8 @@ pub const scale_modes_string: []const u8 = blk: {
     }
     break :blk str;
 };
+
+pub const zoom_presets_string = scale_modes_string;
 
 /// Comptime-generated comma-separated list of all valid TextureScaleMode names
 /// via reflection.

@@ -284,7 +284,9 @@ pub const IpcCommand = union(enum) {
             const factor_str = it.next() orelse return error.MissingArgument;
             if (factor_str.len > 128) return error.InvalidArgument;
             const factor = try std.fmt.parseFloat(f32, factor_str);
-            if (std.math.isNan(factor) or std.math.isInf(factor)) return error.InvalidArgument;
+            if (std.math.isNan(factor) or std.math.isInf(factor)) {
+                return error.InvalidArgument;
+            }
             return .{ .zoom = factor };
         } else if (std.mem.eql(u8, cmd, "pan")) {
             const px_str = it.next() orelse return error.MissingArgument;
@@ -431,9 +433,21 @@ pub const IpcCommand = union(enum) {
             return error.UnknownFilter;
         } else if (std.mem.eql(u8, cmd, "scale")) {
             const val = it.next() orelse return error.MissingArgument;
-            if (std.mem.eql(u8, val, "fit_width") or std.mem.eql(u8, val, "width")) {
+            if (std.mem.eql(u8, val, "fit")) {
+                return .{ .scale = .full };
+            } else if (std.mem.eql(u8, val, "fill")) {
+                return .{ .scale = .crop };
+            } else if (std.mem.eql(u8, val, "1:1") or
+                std.mem.eql(u8, val, "actual"))
+            {
+                return .{ .scale = .none };
+            } else if (std.mem.eql(u8, val, "fit_width") or
+                std.mem.eql(u8, val, "width"))
+            {
                 return .{ .scale = .fit_width };
-            } else if (std.mem.eql(u8, val, "fit_height") or std.mem.eql(u8, val, "height")) {
+            } else if (std.mem.eql(u8, val, "fit_height") or
+                std.mem.eql(u8, val, "height"))
+            {
                 return .{ .scale = .fit_height };
             } else if (std.meta.stringToEnum(intents.ScaleMode, val)) |mode| {
                 return .{ .scale = mode };

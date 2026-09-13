@@ -23,6 +23,9 @@ const VisibleState = types.VisibleState;
 pub const ActiveImageDissolve = struct {
     prev_entry: CacheEntry,
     prev_rotation: f32,
+    prev_zoom: f32 = 1.0,
+    prev_pan_x: f32 = 0.0,
+    prev_pan_y: f32 = 0.0,
 };
 
 /// Active dissolve state for image transitions between frames.

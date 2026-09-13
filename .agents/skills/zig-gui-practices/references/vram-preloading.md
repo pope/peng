@@ -62,8 +62,14 @@ ______________________________________________________________________
       background and uploaded to GPU to replace Tier 2 via a crossfade dissolve
       for settled 1.0x viewing.
     - **Tier 4 (Companion Full-Resolution JPEG)**: Defer companion JPEG decode
-      until zooming past 1.0x or pressing `j` (`toggle_stream`). Performs a
-      zero-flash texture swap once background decode completes.
+      until physical screen pixel demand exceeds the embedded preview
+      resolution:
+      $$M\_{\\text{tex}} = Z \\times \\max\\left(\\frac{W\_{\\text{auth}}}{W\_{\\text{loaded}}}, \\frac{H\_{\\text{auth}}}{H\_{\\text{loaded}}}\\right) > 1.05$$
+      (or $M\_{\\text{tex}} > 1.15$ when settled), or when the user explicitly
+      presses `j` (`toggle_stream`). In preset mode, evaluate
+      $Z = Z\_{\\text{base}}$ to avoid premature 200MB decodes while browsing in
+      Fit mode. Performs a zero-flash texture swap once background decode
+      completes.
     - *Single-Preview Duplication Prevention*: When a RAW container has only
       a single embedded preview (preview == thumbnail), skip decoding the
       placeholder in settled mode (`thumb_only = false`) to avoid decoding

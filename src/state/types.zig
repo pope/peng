@@ -5,7 +5,10 @@ const std = @import("std");
 const Key = intents.Key;
 const KeyModifiers = intents.KeyModifiers;
 
-/// Normalized texture UV coordinates defining a sub-rectangle for rendering and cropping.
+pub const ZoomPreset = intents.ZoomPreset;
+
+/// Complete per-quad render descriptor specifying UV sub-rectangles, alpha,
+/// rotation, and dynamic geometry overrides for rendering and transitions.
 pub const UvRect = struct {
     u_min: f32 = 0.0,
     v_min: f32 = 0.0,
@@ -13,6 +16,11 @@ pub const UvRect = struct {
     v_max: f32 = 1.0,
     alpha: f32 = 1.0,
     rotation_angle: ?f32 = null,
+    override_zoom: ?f32 = null,
+    override_pan_x: ?f32 = null,
+    override_pan_y: ?f32 = null,
+    source_w: ?f32 = null,
+    source_h: ?f32 = null,
 };
 
 /// Pre-discovered byte offsets and compression parameters for O(1) instant seeking
@@ -189,8 +197,8 @@ pub const VisibleState = union(enum) {
 pub const ZoomFactor = struct {
     value: f32 = 1.0,
 
-    pub const MIN: f32 = 0.01;
-    pub const MAX: f32 = 500.0;
+    pub const MIN: f32 = 0.001;
+    pub const MAX: f32 = 100.0;
 
     /// Initializes a sanitized zoom factor clamped to [MIN, MAX], defaulting to
     /// 1.0 on invalid or non-positive input.
@@ -215,12 +223,23 @@ pub const ZoomFactor = struct {
     }
 };
 
+/// Backward-compatible alias for UniversalZoom
+pub const UniversalZoom = ZoomFactor;
+
+/// Dynamic zoom policy controlling automatic window-fitting vs static manual
+/// inspection.
+pub const ZoomMode = enum {
+    fit, // Dynamic: Z tracks min(V_w / W_rot, V_h / H_rot)
+    fill, // Dynamic: Z tracks max(V_w / W_rot, V_h / H_rot)
+    manual, // Static:  Z is user-defined, pan is user-defined
+};
+
 /// Dynamic viewport display, scaling, pan offset, and color adjustment
 /// parameters.
 pub const ViewportParams = struct {
+    mode: ZoomMode = .fit,
     fit_mode: intents.ScaleMode = .full,
     scale_filter: intents.TextureScaleMode = .linear,
-    texture_scale_mode: intents.TextureScaleMode = .linear,
     zoom_factor: ZoomFactor = .{},
     pan_x: f32 = 0.0,
     pan_y: f32 = 0.0,
@@ -228,9 +247,16 @@ pub const ViewportParams = struct {
     edits: ImageEdits = .{},
     compare_original: bool = false,
 
-    /// Resets zoom factor, pan offsets, and comparison mode back to default center positioning.
+    /// Resets zoom factor, pan offsets, and comparison mode back to default
+    /// center positioning.
     pub fn reset(self: *ViewportParams) void {
-        self.zoom_factor = .{};
+        self.mode = if (self.fit_mode == .none)
+            .manual
+        else if (self.fit_mode.isFill())
+            .fill
+        else
+            .fit;
+        self.zoom_factor = .{ .value = 1.0 };
         self.pan_x = 0.0;
         self.pan_y = 0.0;
         self.compare_original = false;
@@ -248,13 +274,53 @@ pub const ViewportParams = struct {
         self.pan_y += dy;
     }
 
-    /// Returns true if non-neutral photographic exposure or contrast adjustments are applied.
+    /// Returns the effective physical zoom factor Z for the current frame.
+    pub fn effectiveZoom(
+        self: ViewportParams,
+        view_w: f32,
+        view_h: f32,
+        img_w: f32,
+        img_h: f32,
+    ) f32 {
+        if (img_w <= 0.0 or img_h <= 0.0 or view_w <= 0.0 or view_h <= 0.0) {
+            return self.zoom_factor.get();
+        }
+        return switch (self.mode) {
+            .fit => @min(view_w / img_w, view_h / img_h),
+            .fill => @max(view_w / img_w, view_h / img_h),
+            .manual => self.zoom_factor.get(),
+        };
+    }
+
+    /// Returns true if image content overflows the viewport bounds.
+    pub fn isOverflowing(
+        self: ViewportParams,
+        auth_w: f32,
+        auth_h: f32,
+        view_w: f32,
+        view_h: f32,
+    ) bool {
+        if (auth_w <= 0.0 or auth_h <= 0.0 or view_w <= 0.0 or view_h <= 0.0) {
+            return false;
+        }
+        const norm = @mod(@mod(self.rotation_angle, 360.0) + 360.0, 360.0);
+        const is_swapped = std.math.approxEqAbs(f32, norm, 90.0, 0.1) or
+            std.math.approxEqAbs(f32, norm, 270.0, 0.1);
+        const img_w = if (is_swapped) auth_h else auth_w;
+        const img_h = if (is_swapped) auth_w else auth_h;
+        const z = self.effectiveZoom(view_w, view_h, img_w, img_h);
+        return (img_w * z > view_w + 1.0) or (img_h * z > view_h + 1.0);
+    }
+
+    /// Returns true if non-neutral photographic exposure or contrast
+    /// adjustments are applied.
     pub fn hasAdjustments(self: ViewportParams) bool {
         return self.edits.hasEdits();
     }
 
-    /// Toggles Before/After comparison mode (original unadjusted image vs active adjustments).
-    /// If no adjustments are applied, comparison mode remains inactive.
+    /// Toggles Before/After comparison mode (original unadjusted image vs
+    /// active adjustments). If no adjustments are applied, comparison mode
+    /// remains inactive.
     pub fn toggleCompare(self: *ViewportParams) void {
         if (!self.hasAdjustments()) {
             self.compare_original = false;
@@ -308,6 +374,7 @@ pub const ViewportParams = struct {
         center_x: f32,
         center_y: f32,
     ) void {
+        self.mode = .manual;
         const old_zoom = self.zoom_factor;
         self.zoom_factor = new_zoom;
         const ratio = old_zoom.ratioTo(new_zoom);
@@ -320,8 +387,7 @@ pub const ViewportParams = struct {
     /// Returns the integer uniform constant representing the active resampler
     /// filter for shader pipelines.
     pub fn getShaderScaleModeInt(self: ViewportParams) i32 {
-        const f = if (self.scale_filter != .linear) self.scale_filter else self.texture_scale_mode;
-        return switch (f) {
+        return switch (self.scale_filter) {
             .nearest => 0,
             .linear => 1,
             .pixel_art => 2,
@@ -332,9 +398,10 @@ pub const ViewportParams = struct {
         };
     }
 
-    /// Returns true if viewport is zoomed beyond standard 1.0x magnification.
+    /// Returns true if viewport is zoomed or panned away from default
+    /// fit-to-window view.
     pub inline fn isZoomed(self: ViewportParams) bool {
-        return self.zoom_factor.get() > 1.0;
+        return self.mode != .fit or self.pan_x != 0.0 or self.pan_y != 0.0;
     }
 };
 
@@ -1117,6 +1184,37 @@ pub const CacheEntry = struct {
         };
     }
 
+    /// Returns the true physical pixel dimensions of the original image,
+    /// irrespective of what downscaled preview or thumbnail is currently
+    /// resident.
+    pub fn getAuthoritativeDims(self: CacheEntry) struct { w: f32, h: f32 } {
+        if (self.raw_metadata.getSensorDims()) |s| {
+            if (s.w > 0.0 and s.h > 0.0) return .{ .w = s.w, .h = s.h };
+        }
+        if (self.full_w > 0.0 and self.full_h > 0.0) {
+            return .{ .w = self.full_w, .h = self.full_h };
+        }
+        switch (self.status) {
+            .loaded_gpu => |gpu| {
+                if (gpu.w > 0.0 and gpu.h > 0.0) {
+                    return .{ .w = gpu.w, .h = gpu.h };
+                }
+            },
+            .loaded_cpu => |cpu| {
+                if (cpu.w > 0.0 and cpu.h > 0.0) {
+                    return .{ .w = cpu.w, .h = cpu.h };
+                }
+            },
+            else => {},
+        }
+        if (self.thumbnail.getInfo()) |info| {
+            if (info.w > 0.0 and info.h > 0.0) {
+                return .{ .w = info.w, .h = info.h };
+            }
+        }
+        return .{ .w = 0.0, .h = 0.0 };
+    }
+
     /// Deinitializes thumbnail texture and releases any loaded CPU surface or GPU texture.
     pub fn deinit(self: *CacheEntry, gpu_device: ?sdl.gpu.Device) void {
         switch (self.thumbnail) {
@@ -1207,6 +1305,9 @@ pub const SlideshowMode = union(enum) {
 pub const ActiveImageTransition = struct {
     prev_index: usize,
     prev_rotation: f32,
+    prev_zoom: f32 = 1.0,
+    prev_pan_x: f32 = 0.0,
+    prev_pan_y: f32 = 0.0,
 };
 
 /// Active image transition state tracking the outgoing image during a dissolve animation.
@@ -1454,6 +1555,25 @@ test "ViewportParams.zoomAtPoint anchors zoom relative to focus point" {
     try std.testing.expectEqual(@as(f32, 300.0), vp.pan_y);
 }
 
+test "ViewportParams isOverflowing and effectiveZoom" {
+    var vp = ViewportParams{};
+    // 1024x682 in 1024x768 with .fit mode does not overflow
+    try std.testing.expect(!vp.isOverflowing(1024.0, 682.0, 1024.0, 768.0));
+
+    // .fill mode (crop) causes overflow
+    vp.mode = .fill;
+    try std.testing.expect(vp.isOverflowing(1024.0, 682.0, 1024.0, 768.0));
+
+    // .manual mode at 2.0x causes overflow
+    vp.mode = .manual;
+    vp.zoom_factor = ZoomFactor.init(2.0);
+    try std.testing.expect(vp.isOverflowing(1024.0, 682.0, 1024.0, 768.0));
+
+    // .manual mode at 0.5x fits inside
+    vp.zoom_factor = ZoomFactor.init(0.5);
+    try std.testing.expect(!vp.isOverflowing(1024.0, 682.0, 1024.0, 768.0));
+}
+
 test "FrameInput.pixMouseX and pixMouseY scale mouse position by display scale factor" {
     const input = FrameInput{
         .win_w = 1000.0,
@@ -1481,7 +1601,7 @@ test "FrameInput.pixMouseX and pixMouseY scale mouse position by display scale f
 
 test "ViewportParams.getShaderScaleModeInt maps filters including lanczos3" {
     var params = ViewportParams{};
-    params.texture_scale_mode = .lanczos3;
+    params.scale_filter = .lanczos3;
     try std.testing.expectEqual(@as(i32, 4), params.getShaderScaleModeInt());
 
     params.scale_filter = .mitchell;

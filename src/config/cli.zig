@@ -272,7 +272,15 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
                 .no_stack_raw_jpeg => stack_raw_jpeg = false,
                 .scale => {
                     if (args_it.next()) |val| {
-                        if (std.meta.stringToEnum(ScaleMode, val)) |mode| {
+                        if (std.mem.eql(u8, val, "fit")) {
+                            default_scale = .full;
+                        } else if (std.mem.eql(u8, val, "fill")) {
+                            default_scale = .crop;
+                        } else if (std.mem.eql(u8, val, "1:1") or
+                            std.mem.eql(u8, val, "actual"))
+                        {
+                            default_scale = .none;
+                        } else if (std.meta.stringToEnum(ScaleMode, val)) |mode| {
                             default_scale = mode;
                         } else {
                             std.log.err(

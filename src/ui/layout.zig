@@ -25,7 +25,8 @@ const truncateFilename = text_utils.truncateFilename;
 const types = state.types;
 const view_transform = state.view_transform;
 
-/// Computes fitted layout dimensions for an image cache entry within available viewport bounds.
+/// Computes fitted layout dimensions for an image cache entry within
+/// available viewport bounds.
 pub fn computeDrawDims(
     entry_opt: ?state.CacheEntry,
     available_width: f32,
@@ -34,27 +35,9 @@ pub fn computeDrawDims(
     fit_mode: intents.ScaleMode,
 ) struct { w: f32, h: f32 } {
     const entry = entry_opt orelse return .{ .w = 0, .h = 0 };
-    var src_w: f32 = 0;
-    var src_h: f32 = 0;
-    switch (entry.status) {
-        .loaded_gpu => |gpu| {
-            src_w = gpu.w;
-            src_h = gpu.h;
-        },
-        .loaded_cpu => |cpu| {
-            src_w = cpu.w;
-            src_h = cpu.h;
-        },
-        else => {
-            if (entry.full_w > 0 and entry.full_h > 0) {
-                src_w = entry.full_w;
-                src_h = entry.full_h;
-            } else if (entry.thumbnail.getInfo()) |info| {
-                src_w = info.w;
-                src_h = info.h;
-            }
-        },
-    }
+    const auth = entry.getAuthoritativeDims();
+    const src_w = auth.w;
+    const src_h = auth.h;
 
     if (src_w > 0 and src_h > 0) {
         const view_w = @max(available_width, 1.0);
@@ -180,7 +163,6 @@ pub fn renderFrame(
                 docked_w,
                 edit_progress,
                 frame_allocator,
-                measure_data,
             );
         }
     });
@@ -819,6 +801,7 @@ fn renderImageCanvas(
     measure_data: *const MeasureTextUserData,
 ) void {
     const is_thumb_crossfade = ui_model.is_thumb_crossfading;
+    const auth = entry.getAuthoritativeDims();
 
     if (is_thumb_crossfade) {
         const thumb = entry.thumbnail.loaded;
@@ -830,12 +813,18 @@ fn renderImageCanvas(
             thumb.info.h,
             thumb.info.dct_snapped,
         );
-        thumb_uv.alpha = 1.0; // Solid underlay, full-res texture dissolves in on top
+        thumb_uv.alpha = 1.0;
         thumb_uv.rotation_angle = rotation_angle;
-        const thumb_uv_ptr = frame_allocator.create(state.UvRect) catch |err| blk: {
-            std.log.warn("Failed to allocate UvRect for thumbnail underlay: {any}", .{err});
-            break :blk null;
-        };
+        thumb_uv.source_w = auth.w;
+        thumb_uv.source_h = auth.h;
+        const thumb_uv_ptr = frame_allocator.create(state.UvRect) catch |err|
+            blk: {
+                std.log.warn(
+                    "Failed to allocate UvRect for thumbnail underlay: {any}",
+                    .{err},
+                );
+                break :blk null;
+            };
         if (thumb_uv_ptr) |ptr| {
             ptr.* = thumb_uv;
         }
@@ -850,7 +839,10 @@ fn renderImageCanvas(
             .floating = .{
                 .attach_to = .to_parent,
                 .clip_to = .to_attached_parent,
-                .attach_points = .{ .element = .center_center, .parent = .center_center },
+                .attach_points = .{
+                    .element = .center_center,
+                    .parent = .center_center,
+                },
                 .offset = .{ .x = 0.0, .y = 0.0 },
                 .z_index = 0,
             },
@@ -878,10 +870,16 @@ fn renderImageCanvas(
                 );
                 uv_crop.alpha = 1.0;
                 uv_crop.rotation_angle = rotation_angle;
-                const uv_crop_ptr = frame_allocator.create(state.UvRect) catch |err| blk: {
-                    std.log.warn("Failed to allocate UvRect for thumbnail: {any}", .{err});
-                    break :blk null;
-                };
+                uv_crop.source_w = auth.w;
+                uv_crop.source_h = auth.h;
+                const uv_crop_ptr = frame_allocator.create(state.UvRect) catch |err|
+                    blk: {
+                        std.log.warn(
+                            "Failed to allocate UvRect for thumbnail: {any}",
+                            .{err},
+                        );
+                        break :blk null;
+                    };
                 if (uv_crop_ptr) |ptr| {
                     ptr.* = uv_crop;
                 }
@@ -913,14 +911,17 @@ fn renderImageCanvas(
                 ui_model.anim(.thumb_crossfade)
             else
                 1.0;
-            const uv_ptr = frame_allocator.create(state.UvRect) catch |err| blk: {
-                std.log.warn("Failed to allocate UvRect: {any}", .{err});
-                break :blk null;
-            };
+            const uv_ptr = frame_allocator.create(state.UvRect) catch |err|
+                blk: {
+                    std.log.warn("Failed to allocate UvRect: {any}", .{err});
+                    break :blk null;
+                };
             if (uv_ptr) |ptr| {
                 ptr.* = .{
                     .alpha = full_alpha,
                     .rotation_angle = rotation_angle,
+                    .source_w = auth.w,
+                    .source_h = auth.h,
                 };
             }
             clay.UI()(.{
@@ -934,7 +935,10 @@ fn renderImageCanvas(
                 .floating = if (is_image_dissolve or is_thumb_crossfade) .{
                     .attach_to = .to_parent,
                     .clip_to = .to_attached_parent,
-                    .attach_points = .{ .element = .center_center, .parent = .center_center },
+                    .attach_points = .{
+                        .element = .center_center,
+                        .parent = .center_center,
+                    },
                     .offset = .{ .x = 0.0, .y = 0.0 },
                     .z_index = 1,
                 } else .{},
@@ -1069,6 +1073,7 @@ fn renderViewport(
                 const prev_entry = dissolve.prev_entry;
                 switch (prev_entry.status) {
                     .loaded_gpu => |gpu| {
+                        const prev_auth = prev_entry.getAuthoritativeDims();
                         const prev_dims = computeDrawDims(
                             prev_entry,
                             view_w,
@@ -1076,21 +1081,32 @@ fn renderViewport(
                             dissolve.prev_rotation,
                             ui_model.viewport.fit_mode,
                         );
-                        const progress = std.math.clamp(ui_model.anim(.image_crossfade), 0.0, 1.0);
+                        const progress = std.math.clamp(
+                            ui_model.anim(.image_crossfade),
+                            0.0,
+                            1.0,
+                        );
                         const prev_alpha = 1.0 - (progress * progress);
 
                         const prev_tex = gpu.gpu_texture;
-                        const prev_uv_ptr = frame_allocator.create(state.UvRect) catch |err| blk: {
-                            std.log.warn(
-                                "Failed to allocate UvRect for image dissolve: {any}",
-                                .{err},
-                            );
-                            break :blk null;
-                        };
+                        const prev_uv_ptr =
+                            frame_allocator.create(state.UvRect) catch |err|
+                                blk: {
+                                    std.log.warn(
+                                        "Failed to allocate UvRect for image dissolve: {any}",
+                                        .{err},
+                                    );
+                                    break :blk null;
+                                };
                         if (prev_uv_ptr) |ptr| {
                             ptr.* = .{
                                 .alpha = prev_alpha,
                                 .rotation_angle = dissolve.prev_rotation,
+                                .override_zoom = dissolve.prev_zoom,
+                                .override_pan_x = dissolve.prev_pan_x,
+                                .override_pan_y = dissolve.prev_pan_y,
+                                .source_w = prev_auth.w,
+                                .source_h = prev_auth.h,
                             };
                         }
                         clay.UI()(.{

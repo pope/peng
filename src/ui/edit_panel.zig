@@ -4,7 +4,6 @@ const std = @import("std");
 const theme = @import("theme.zig");
 
 const EditParam = state.EditParam;
-const MeasureTextUserData = state.MeasureTextUserData;
 const UiViewModel = state.UiViewModel;
 
 /// Scales a theme color by the animation progress alpha for smooth
@@ -301,9 +300,7 @@ pub fn renderEditPanel(
     docked_w: f32,
     progress: f32,
     frame_allocator: std.mem.Allocator,
-    measure_data: *const MeasureTextUserData,
 ) !void {
-    _ = measure_data;
     const vp = ui_model.viewport;
     const has_adjustments = vp.hasAdjustments();
     const is_comparing = vp.compare_original;

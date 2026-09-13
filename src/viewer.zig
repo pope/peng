@@ -1,7 +1,6 @@
 const app = @import("app");
 const clay = @import("zclay");
 const input_pkg = @import("input");
-const ipc = @import("ipc");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
@@ -76,13 +75,11 @@ pub fn updateFrame(
     window: sdl.Window,
     resources: *ui.graphics.RenderResources,
     measure_data: *state_pkg.MeasureTextUserData,
-    ipc_server: ?*ipc.IpcServer,
     parsed_headless: bool,
     parsed_test_mode: bool,
     frame_arena: *std.heap.ArenaAllocator,
     last_time: *u64,
 ) !void {
-    _ = ipc_server;
     // Re-bind Clay measure text function pointer to the reloaded code address
     clay.setMeasureTextFunction(
         *const state_pkg.MeasureTextUserData,
@@ -277,6 +274,9 @@ pub fn updateFrame(
                     break :blk .{ .active = .{
                         .prev_entry = prev,
                         .prev_rotation = t.prev_rotation,
+                        .prev_zoom = t.prev_zoom,
+                        .prev_pan_x = t.prev_pan_x,
+                        .prev_pan_y = t.prev_pan_y,
                     } };
                 },
             }
@@ -313,22 +313,25 @@ pub fn updateFrame(
 //////////////////////////////////////////////////////////////////////////////
 // C Exports for Hot Reloading Dynamic Library Boundary
 
+/// Loads font and texture assets across dynamic library boundaries.
 export fn viewer_load_assets() callconv(.c) void {
     loadAssets() catch |err| {
         std.log.err("Failed to load assets: {}", .{err});
     };
 }
 
+/// Unloads all font and texture assets upon module deinitialization.
 export fn viewer_unload_assets() callconv(.c) void {
     unloadAssets();
 }
 
+/// Core exported frame loop entrypoint called per tick by the hot-reloading
+/// host.
 export fn viewer_update(
     app_state: *app.state.AppState,
     window: sdl.Window,
     resources: *ui.graphics.RenderResources,
     measure_data: *state_pkg.MeasureTextUserData,
-    ipc_server: ?*ipc.IpcServer,
     parsed_headless: bool,
     parsed_test_mode: bool,
     frame_arena: *std.heap.ArenaAllocator,
@@ -339,7 +342,6 @@ export fn viewer_update(
         window,
         resources,
         measure_data,
-        ipc_server,
         parsed_headless,
         parsed_test_mode,
         frame_arena,

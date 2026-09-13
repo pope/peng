@@ -24,13 +24,15 @@ const packRgbaF = geometry.packRgbaF;
 fn scissorEqual(a: ?sdl.Rect, b: ?sdl.Rect) bool {
     if (a) |sa| {
         if (b) |sb| {
-            return sa.x == sb.x and sa.y == sb.y and sa.w == sb.w and sa.h == sb.h;
+            return sa.x == sb.x and sa.y == sb.y and
+                sa.w == sb.w and sa.h == sb.h;
         }
         return false;
     }
     return b == null;
 }
 
+/// Computes the rectangular intersection of two scissor clipping rectangles.
 pub fn intersectScissor(a: sdl.Rect, b: sdl.Rect) sdl.Rect {
     const x1 = @max(a.x, b.x);
     const y1 = @max(a.y, b.y);

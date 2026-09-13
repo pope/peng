@@ -250,91 +250,80 @@ pub const AppState = struct {
         self.viewer.resetZoomPan();
     }
 
-    /// Computes the unzoomed base scale factor fitting the current image to the
-    /// viewport according to fit_mode.
-    fn getBaseScale(self: *AppState) f32 {
-        const entry = self.getCurrentEntry() orelse return 1.0;
-        const raw_w: f32 = switch (entry.status) {
-            .loaded_gpu => |gpu| gpu.w,
-            .loaded_cpu => |cpu| cpu.w,
-            else => if (entry.full_w > 0)
-                entry.full_w
-            else if (entry.thumbnail.getInfo()) |info|
-                info.w
-            else
-                0.0,
-        };
-        const raw_h: f32 = switch (entry.status) {
-            .loaded_gpu => |gpu| gpu.h,
-            .loaded_cpu => |cpu| cpu.h,
-            else => if (entry.full_h > 0)
-                entry.full_h
-            else if (entry.thumbnail.getInfo()) |info|
-                info.h
-            else
-                0.0,
-        };
-        if (raw_w <= 0.0 or raw_h <= 0.0) return 1.0;
-
-        var pix_w: i32 = 1024;
-        var pix_h: i32 = 768;
+    /// Computes available viewport dimensions in physical framebuffer pixels,
+    /// scaling for display DPI, Clay debug view, and docked edit panel.
+    pub fn getViewportPixelDims(self: *AppState) struct { w: f32, h: f32 } {
         var win_w: f32 = 1024.0;
         var win_h: f32 = 768.0;
+        var scale_x: f32 = 1.0;
 
         switch (self.viewer.display) {
             .headless => {},
             .windowed => |win| {
+                const win_size = win.handle.getSize();
                 const pix_size = win.handle.getSizeInPixels();
                 if (pix_size.w > 0 and pix_size.h > 0) {
-                    pix_w = pix_size.w;
-                    pix_h = pix_size.h;
+                    win_w = @floatFromInt(pix_size.w);
+                    win_h = @floatFromInt(pix_size.h);
                 }
-                const win_size = win.handle.getSize();
                 if (win_size.w > 0 and win_size.h > 0) {
-                    win_w = @floatFromInt(win_size.w);
-                    win_h = @floatFromInt(win_size.h);
+                    scale_x = win_w / @as(f32, @floatFromInt(win_size.w));
                 }
             },
         }
 
         var available_width = win_w;
         if (clay.isDebugModeEnabled()) {
-            available_width = @max(
-                available_width - @as(f32, @floatFromInt(clay.Clay__debugViewWidth)),
-                1.0,
-            );
+            const dbg_w =
+                @as(f32, @floatFromInt(clay.Clay__debugViewWidth)) * scale_x;
+            available_width = @max(available_width - dbg_w, 1.0);
         }
         const edit_progress = self.viewer.animations.get(.edit_panel);
         const edit_open = self.viewer.ui.overlays.edit_panel.visible;
         if (edit_open or edit_progress > 0.001) {
-            const docked_w = state_pkg.EDIT_PANEL_WIDTH * edit_progress;
+            const docked_w =
+                state_pkg.EDIT_PANEL_WIDTH * edit_progress * scale_x;
             available_width = @max(available_width - docked_w, 1.0);
         }
         const view_w = @max(available_width, 1.0);
         const view_h = @max(win_h, 1.0);
 
-        const dims = view_transform.computeViewDims(
+        return .{ .w = view_w, .h = view_h };
+    }
+
+    /// Computes the unzoomed base scale factor fitting the current image to the
+    /// viewport in physical framebuffer pixels according to fit_mode.
+    pub fn getBaseScale(self: *AppState) f32 {
+        const entry = self.getCurrentEntry() orelse return 1.0;
+        const auth = entry.getAuthoritativeDims();
+        const raw_w = auth.w;
+        const raw_h = auth.h;
+        if (raw_w <= 0.0 or raw_h <= 0.0) return 1.0;
+
+        const dims = self.getViewportPixelDims();
+        return view_transform.computePresetZoom(
             raw_w,
             raw_h,
             self.viewer.viewport.rotation_angle,
-            view_w,
-            view_h,
+            dims.w,
+            dims.h,
             self.viewer.viewport.fit_mode,
         );
-        return dims.base_scale;
     }
 
-    /// Returns true if the pointer position in input is currently within the
-    /// Clay debug UI hierarchy panel.
-    pub fn isPointerInDebugPanel(self: *const AppState, input: FrameInput) bool {
-        _ = self;
-        return input.isPointerInDebugPanel();
-    }
+    /// Returns true if current image content overflows the viewport bounds.
+    pub fn isImageOverflowing(self: *AppState) bool {
+        const entry = self.getCurrentEntry() orelse return false;
+        const auth = entry.getAuthoritativeDims();
+        if (auth.w <= 0.0 or auth.h <= 0.0) return false;
 
-    /// Clamps a requested zoom factor to the safe min/max bounds determined by base scale.
-    pub fn clampZoomFactor(self: *AppState, new_factor: f32) types.ZoomFactor {
-        const base_scale = self.getBaseScale();
-        return view_transform.clampZoomFactor(base_scale, new_factor);
+        const dims = self.getViewportPixelDims();
+        return self.viewer.viewport.isOverflowing(
+            auth.w,
+            auth.h,
+            dims.w,
+            dims.h,
+        );
     }
 
     /// Rebuilds fuzzy search matches for the command palette image file list.
@@ -861,7 +850,7 @@ pub const AppState = struct {
 
 var test_clay_memory: [1024 * 1024]u8 = undefined;
 
-test "AppState.clampZoomFactor bounds based on image dimensions" {
+test "AppState.getBaseScale based on image dimensions" {
     _ = clay.initialize(clay.Arena.init(&test_clay_memory), .{ .w = 1024, .h = 768 }, .{});
 
     var state = try AppState.initHeadless(
@@ -872,8 +861,14 @@ test "AppState.clampZoomFactor bounds based on image dimensions" {
 
     // Default base_scale without loaded image is 1.0
     try std.testing.expectEqual(@as(f32, 1.0), state.getBaseScale());
-    try std.testing.expectEqual(@as(f32, 10.0), state.clampZoomFactor(15.0).get());
-    try std.testing.expectEqual(@as(f32, 0.1), state.clampZoomFactor(0.05).get());
+    try std.testing.expectEqual(
+        @as(f32, 100.0),
+        types.ZoomFactor.init(150.0).get(),
+    );
+    try std.testing.expectEqual(
+        @as(f32, 0.001),
+        types.ZoomFactor.init(0.0001).get(),
+    );
 
     // Test with loaded CPU image entry
     const surf = sdl.Surface.create(4000, 3000, sdl.PixelFormat.rgba32) orelse unreachable;
@@ -894,19 +889,64 @@ test "AppState.clampZoomFactor bounds based on image dimensions" {
     state.viewer.viewport.fit_mode = .none;
     const base_none = state.getBaseScale();
     try std.testing.expectEqual(@as(f32, 1.0), base_none);
-    const clamped_max_none = state.clampZoomFactor(15.0);
-    try std.testing.expectEqual(@as(f32, 10.0), base_none * clamped_max_none.get());
+    const clamped_max_none = types.ZoomFactor.init(15.0);
+    try std.testing.expectEqual(@as(f32, 15.0), clamped_max_none.get());
 
-    // In .full mode in default 1024x708 viewport
+    // In .full mode in default 1024x768 viewport (768 / 3000 = 0.256)
     state.viewer.viewport.fit_mode = .full;
     const base_full = state.getBaseScale();
     try std.testing.expect(base_full < 1.0);
-    const clamped_max_full = state.clampZoomFactor(100.0);
-    // Effective max zoom level (base_scale * zoom_factor) must be 10.0x of actual image size
-    try std.testing.expectApproxEqAbs(@as(f32, 10.0), base_full * clamped_max_full.get(), 0.001);
-    const clamped_min_full = state.clampZoomFactor(0.001);
-    // Effective min zoom level (base_scale * zoom_factor) must be 0.1x of actual image size
-    try std.testing.expectApproxEqAbs(@as(f32, 0.1), base_full * clamped_min_full.get(), 0.001);
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 768.0 / 3000.0),
+        base_full,
+        0.001,
+    );
+}
+
+test "AppState.getViewportPixelDims and isImageOverflowing" {
+    _ = clay.initialize(
+        clay.Arena.init(&test_clay_memory),
+        .{ .w = 1024, .h = 768 },
+        .{},
+    );
+
+    var state = try AppState.initHeadless(
+        std.testing.allocator,
+        std.Io.Threaded.global_single_threaded.io(),
+    );
+    defer state.deinit();
+
+    const dims = state.getViewportPixelDims();
+    try std.testing.expectEqual(@as(f32, 1024.0), dims.w);
+    try std.testing.expectEqual(@as(f32, 768.0), dims.h);
+
+    const surf = sdl.Surface.create(
+        4000,
+        3000,
+        sdl.PixelFormat.rgba32,
+    ) orelse unreachable;
+    _ = try state.cache.appendSlot(std.testing.allocator, 0, .{
+        .loaded_cpu = .{
+            .surface = surf,
+            .w = 4000.0,
+            .h = 3000.0,
+            .mime_type = "image/png",
+            .size_bytes = 1000,
+            .decode_time_ms = 0.0,
+            .conversion_time_ms = 0.0,
+        },
+    });
+    state.viewer.navigation.current_index = 0;
+
+    // In .full mode, 4000x3000 image fits within 1024x768 -> not overflowing
+    state.viewer.viewport.fit_mode = .full;
+    state.viewer.viewport.mode = .fit;
+    try std.testing.expect(!state.isImageOverflowing());
+
+    // In .manual mode with zoom 1.0 (4000x3000 > 1024x768) -> overflowing
+    state.viewer.viewport.mode = .manual;
+    state.viewer.viewport.zoom_factor = types.ZoomFactor.init(1.0);
+    try std.testing.expect(state.isImageOverflowing());
 }
 
 test "AppState.updateCurrentRotation syncs EXIF orientation" {
@@ -945,7 +985,7 @@ test "AppState.updateCurrentRotation syncs EXIF orientation" {
     try std.testing.expectEqual(@as(f32, 0.0), state.viewer.viewport.rotation_angle);
 }
 
-test "AppState.isPointerInDebugPanel and click localization" {
+test "FrameInput.isPointerInDebugPanel and click localization" {
     _ = clay.initialize(clay.Arena.init(&test_clay_memory), .{ .w = 1000, .h = 800 }, .{});
 
     clay.setDebugModeEnabled(true);
@@ -982,7 +1022,7 @@ test "AppState.isPointerInDebugPanel and click localization" {
         .delta_time_ms = 16.0,
         .is_pointer_in_debug_panel = true,
     };
-    try std.testing.expect(state.isPointerInDebugPanel(input_inside));
+    try std.testing.expect(input_inside.isPointerInDebugPanel());
 
     const input_outside = types.FrameInput{
         .win_w = win_w,
@@ -1004,5 +1044,5 @@ test "AppState.isPointerInDebugPanel and click localization" {
         .ticks = 0,
         .delta_time_ms = 16.0,
     };
-    try std.testing.expect(!state.isPointerInDebugPanel(input_outside));
+    try std.testing.expect(!input_outside.isPointerInDebugPanel());
 }

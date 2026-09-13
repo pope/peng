@@ -26,27 +26,45 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
 
     switch (intent) {
         .open_path => |p| try self.openPath(p),
-        .set_zoom => |factor| vp.zoom_factor = self.clampZoomFactor(factor),
+        .set_zoom => |factor| {
+            vp.mode = .manual;
+            vp.zoom_factor = state.clampZoomFactor(factor);
+        },
         .zoom_in => {
+            vp.mode = .manual;
             const old_zoom = vp.zoom_factor;
-            vp.zoom_factor = self.clampZoomFactor(old_zoom.get() + 0.5);
+            var target = old_zoom.get() * 1.25;
+            if (old_zoom.get() < 1.0 and target >= 1.0) {
+                target = 1.0;
+            }
+            vp.zoom_factor = state.clampZoomFactor(target);
             const ratio = old_zoom.ratioTo(vp.zoom_factor);
             vp.pan_x *= ratio;
             vp.pan_y *= ratio;
         },
         .zoom_out => {
+            vp.mode = .manual;
             const old_zoom = vp.zoom_factor;
-            vp.zoom_factor = self.clampZoomFactor(old_zoom.get() - 0.5);
+            var target = old_zoom.get() / 1.25;
+            if (old_zoom.get() > 1.0 and target <= 1.0) {
+                target = 1.0;
+            }
+            vp.zoom_factor = state.clampZoomFactor(target);
             const ratio = old_zoom.ratioTo(vp.zoom_factor);
             vp.pan_x *= ratio;
             vp.pan_y *= ratio;
         },
         .set_pan => |p| vp.setPan(p.x, p.y),
         .pan_by => |p| vp.panBy(p.dx, p.dy),
-        .reset_zoom => vp.reset(),
+        .reset_zoom => {
+            vp.fit_mode = .full;
+            vp.reset();
+            vp.zoom_factor = state.UniversalZoom.init(self.getBaseScale());
+        },
         .set_scale => |mode| {
             vp.fit_mode = mode;
             vp.reset();
+            vp.zoom_factor = state.UniversalZoom.init(self.getBaseScale());
         },
         .cycle_scale_mode => {
             vp.fit_mode = switch (vp.fit_mode) {
@@ -58,6 +76,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 .fit_height => .shrink,
             };
             vp.reset();
+            vp.zoom_factor = state.UniversalZoom.init(self.getBaseScale());
         },
         .set_filter => |mode| vp.scale_filter = mode,
         .cycle_filter => {
@@ -175,6 +194,9 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
             const is_slideshow = nav.isSlideshowActive();
             const old_index = nav.current_index;
             const old_rot = self.viewer.viewport.rotation_angle;
+            const old_zoom = vp.zoom_factor.get();
+            const old_pan_x = vp.pan_x;
+            const old_pan_y = vp.pan_y;
 
             vp.reset();
             _ = switch (intent) {
@@ -221,6 +243,9 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                     self.viewer.image_transition = .{ .active = .{
                         .prev_index = old_index.?,
                         .prev_rotation = old_rot,
+                        .prev_zoom = old_zoom,
+                        .prev_pan_x = old_pan_x,
+                        .prev_pan_y = old_pan_y,
                     } };
                     const is_ready = if (self.getCurrentEntry()) |e|
                         e.status == .loaded_gpu
