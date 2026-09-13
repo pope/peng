@@ -484,6 +484,8 @@ pub fn parseExifDimensionsFromSource(source: TiffSource) ?JpegDimensions {
 
     var cur_ifd_off: u32 = ifd0_off;
     var ifd_depth: usize = 0;
+    // Stack array avoids heap allocation; bounded by loop limit
+    // (ifd_depth < 8).
     var visited: [8]u32 = undefined;
     while (cur_ifd_off > 0 and ifd_depth < 8) : (ifd_depth += 1) {
         var is_cycle = false;
@@ -962,6 +964,8 @@ pub fn extractTiffRawPreviewsFromSource(source: TiffSource) RawPreviewCandidates
     // 1. Follow IFD chain: IFD0 -> IFD1 -> IFD2 -> ...
     var cur_ifd_off: u32 = ifd0_off;
     var ifd_depth: usize = 0;
+    // Stack array avoids heap allocation; bounded by loop limit
+    // (ifd_depth < 8).
     var visited: [8]u32 = undefined;
     while (cur_ifd_off > 0 and ifd_depth < 8) : (ifd_depth += 1) {
         var is_cycle = false;

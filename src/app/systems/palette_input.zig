@@ -210,20 +210,29 @@ fn handlePaletteKeys(
         .right, .tab => {
             if (palette.mode == .directory_navigator) {
                 if (key == .tab and mod.shift) {
-                    var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
+                    const parent_buf = try ctx.frame_allocator.alloc(
+                        u8,
+                        std.fs.max_path_bytes,
+                    );
+                    defer ctx.frame_allocator.free(parent_buf);
                     if (core_fs.getParentDirBuf(
                         palette.current_nav_dir.items,
-                        &parent_buf,
+                        parent_buf,
                     )) |parent_dir| {
                         palette.query.clearRetainingCapacity();
                         try self.loadPaletteDirectory(parent_dir);
                     }
                 } else {
                     if (palette.selected_idx < palette.matches.items.len) {
-                        const match_idx = palette.matches.items[palette.selected_idx];
+                        const matches = palette.matches.items;
+                        const match_idx = matches[palette.selected_idx];
                         if (match_idx < palette.dir_items.items.len) {
                             const entry = palette.dir_items.items[match_idx];
-                            const path_copy = try ctx.frame_allocator.dupe(u8, entry.getFullPath());
+                            const path_copy = try ctx.frame_allocator.dupe(
+                                u8,
+                                entry.getFullPath(),
+                            );
+                            defer ctx.frame_allocator.free(path_copy);
                             palette.query.clearRetainingCapacity();
                             try self.loadPaletteDirectory(path_copy);
                         }
@@ -234,10 +243,14 @@ fn handlePaletteKeys(
         },
         .left => {
             if (palette.mode == .directory_navigator) {
-                var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
+                const parent_buf = try ctx.frame_allocator.alloc(
+                    u8,
+                    std.fs.max_path_bytes,
+                );
+                defer ctx.frame_allocator.free(parent_buf);
                 if (core_fs.getParentDirBuf(
                     palette.current_nav_dir.items,
-                    &parent_buf,
+                    parent_buf,
                 )) |parent_dir| {
                     palette.query.clearRetainingCapacity();
                     try self.loadPaletteDirectory(parent_dir);
@@ -350,10 +363,14 @@ fn handlePaletteKeys(
                     => {},
                 }
             } else if (palette.mode == .directory_navigator) {
-                var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
+                const parent_buf = try ctx.frame_allocator.alloc(
+                    u8,
+                    std.fs.max_path_bytes,
+                );
+                defer ctx.frame_allocator.free(parent_buf);
                 if (core_fs.getParentDirBuf(
                     palette.current_nav_dir.items,
-                    &parent_buf,
+                    parent_buf,
                 )) |parent_dir| {
                     palette.query.clearRetainingCapacity();
                     try self.loadPaletteDirectory(parent_dir);

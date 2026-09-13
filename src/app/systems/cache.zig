@@ -86,12 +86,8 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
 
     const idx = state.viewer.navigation.current_index orelse return;
 
-    // 1. Gather desired indices (5-slot window: idx, prioritized along travel direction)
-    var desired_count: usize = 0;
-    var desired: [5]usize = undefined;
-    desired[0] = idx;
-    desired_count = 1;
-
+    // 1. Gather desired indices (prefetch window: idx, prioritized along
+    // travel direction)
     const next_idx = (idx + 1) % len;
     const prev_idx = (idx + len - 1) % len;
     const next_2 = (idx + 2) % len;
@@ -102,17 +98,23 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
     else
         [_]usize{ next_idx, prev_idx, next_2, prev_2 };
 
+    var desired = try std.ArrayList(usize).initCapacity(
+        ctx.frame_allocator,
+        1 + candidates.len,
+    );
+    defer desired.deinit(ctx.frame_allocator);
+    desired.appendAssumeCapacity(idx);
+
     for (candidates) |d| {
         var unique = true;
-        for (desired[0..desired_count]) |existing| {
+        for (desired.items) |existing| {
             if (existing == d) {
                 unique = false;
                 break;
             }
         }
         if (unique) {
-            desired[desired_count] = d;
-            desired_count += 1;
+            desired.appendAssumeCapacity(d);
         }
     }
 
@@ -127,7 +129,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
         const entry = entries[i];
 
         var in_desired = false;
-        for (desired[0..desired_count]) |d| {
+        for (desired.items) |d| {
             if (key.index == d) {
                 in_desired = true;
                 break;
@@ -198,12 +200,18 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
         next_idx;
 
     // 3. Mark missing slots as decoding in cache map
-    var to_spawn_indices: [5]usize = undefined;
-    var to_spawn_entries: [5]?MediaEntry = [1]?MediaEntry{null} ** 5;
-    var to_spawn_count: usize = 0;
+    const SpawnRequest = struct {
+        index: usize,
+        entry: MediaEntry,
+    };
+    var to_spawn = try std.ArrayList(SpawnRequest).initCapacity(
+        ctx.frame_allocator,
+        desired.items.len,
+    );
+    defer to_spawn.deinit(ctx.frame_allocator);
     var hit = false;
 
-    for (desired[0..desired_count]) |d| {
+    for (desired.items) |d| {
         if (d >= state.viewer.navigation.count()) continue;
 
         if (d != idx) {
@@ -269,11 +277,11 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
                         } else if (skip_active) {
                             // Active thumbnail is already on screen, wait until user settles.
                         } else {
-                            if (to_spawn_count < 5) {
-                                to_spawn_indices[to_spawn_count] = d;
-                                to_spawn_entries[to_spawn_count] =
-                                    state.viewer.navigation.getMediaEntry(d).?;
-                                to_spawn_count += 1;
+                            if (state.viewer.navigation.getMediaEntry(d)) |e| {
+                                to_spawn.appendAssumeCapacity(.{
+                                    .index = d,
+                                    .entry = e,
+                                });
                             }
                         }
                     }
@@ -333,11 +341,10 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
     state.viewer.stats.current_image_cache_hit = hit;
 
     // 4. Spawn worker threads
-    for (to_spawn_indices[0..to_spawn_count], 0..) |d, s_idx| {
-        const entry_opt = to_spawn_entries[s_idx];
-        if (entry_opt == null or !state.workers.canSpawnDecode()) continue;
+    for (to_spawn.items) |req| {
+        if (!state.workers.canSpawnDecode()) continue;
 
-        const key = state.cache.activeKey(d);
+        const key = state.cache.activeKey(req.index);
         const thumb_only = is_fast_scrolling and blk: {
             if (state.cache.get(key)) |entry| {
                 if (entry.thumbnail == .not_available) break :blk false;
@@ -345,8 +352,17 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
             break :blk true;
         };
 
-        spawnCacheDecodeSlot(state, d, entry_opt.?, thumb_only, .adaptive) catch |err| {
-            std.log.err("Failed to spawn decode worker for index {}: {}", .{ d, err });
+        spawnCacheDecodeSlot(
+            state,
+            req.index,
+            req.entry,
+            thumb_only,
+            .adaptive,
+        ) catch |err| {
+            std.log.err(
+                "Failed to spawn decode worker for index {}: {}",
+                .{ req.index, err },
+            );
         };
     }
 }

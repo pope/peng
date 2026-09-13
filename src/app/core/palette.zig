@@ -22,8 +22,15 @@ pub fn loadDirectoryEntries(self: *PaletteState, io: std.Io, dir_path: []const u
 
     var navigated_up = false;
     if (self.current_nav_dir.items.len > 0) {
-        var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
-        if (core_fs.getParentDirBuf(self.current_nav_dir.items, &parent_buf)) |parent_dir| {
+        const parent_buf = try self.allocator.alloc(
+            u8,
+            std.fs.max_path_bytes,
+        );
+        defer self.allocator.free(parent_buf);
+        if (core_fs.getParentDirBuf(
+            self.current_nav_dir.items,
+            parent_buf,
+        )) |parent_dir| {
             if (std.mem.eql(u8, dir_path_copy, parent_dir)) {
                 navigated_up = true;
             }
@@ -31,8 +38,16 @@ pub fn loadDirectoryEntries(self: *PaletteState, io: std.Io, dir_path: []const u
     }
 
     if (navigated_up) {
-        var buf: [std.fs.max_path_bytes]u8 = undefined;
-        const child_base = core_fs.getChildBasename(io, self.current_nav_dir.items, &buf);
+        const buf = try self.allocator.alloc(
+            u8,
+            std.fs.max_path_bytes,
+        );
+        defer self.allocator.free(buf);
+        const child_base = core_fs.getChildBasename(
+            io,
+            self.current_nav_dir.items,
+            buf,
+        );
         self.last_child_dir.clearRetainingCapacity();
         try self.last_child_dir.appendSlice(self.allocator, child_base);
     } else if (self.current_nav_dir.items.len > 0) {

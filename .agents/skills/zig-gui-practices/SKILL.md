@@ -24,6 +24,7 @@ ______________________________________________________________________
   - Read-only `UiViewModel` snapshot barrier between Phase 2 and Phase 3 with zero state mutations in render.
   - System lifetime bound to single frame iteration via `FrameContext` (`frame_allocator`).
   - Strict prohibition of direct inter-system calls (intent-driven communication).
+  - Intra-frame LIFO deallocation for `ArenaAllocator` bump rewinding.
   - Frame-arena string lifetime invariants for retained Clay UI layout labels.
 
 - **[Layout, DPI Scaling & Centering Math](references/dpi-layout-math.md)**

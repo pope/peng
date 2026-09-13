@@ -466,12 +466,19 @@ pub const RenderPass = struct {
         first_slot: u32,
         bindings: []const BufferBinding,
     ) void {
+        // Stack array avoids per-draw allocation; size matches the Vulkan/SDL3
+        // hardware vertex buffer limit (16 slots), asserted below.
         std.debug.assert(bindings.len <= 16);
         var c_bindings: [16]c.SDL_GPUBufferBinding = undefined;
         for (bindings, 0..) |b, i| {
             c_bindings[i] = .{ .buffer = b.buffer.ptr, .offset = b.offset };
         }
-        c.SDL_BindGPUVertexBuffers(self.ptr, first_slot, &c_bindings, @intCast(bindings.len));
+        c.SDL_BindGPUVertexBuffers(
+            self.ptr,
+            first_slot,
+            &c_bindings,
+            @intCast(bindings.len),
+        );
     }
 
     /// Sets the scissor clipping rectangle for rasterization in this render pass.
@@ -485,12 +492,19 @@ pub const RenderPass = struct {
         first_slot: u32,
         bindings: []const TextureSamplerBinding,
     ) void {
+        // Stack array avoids per-draw allocation; size matches the SDL3 GPU
+        // sampler binding limit (16 slots), asserted below.
         std.debug.assert(bindings.len <= 16);
         var c_bindings: [16]c.SDL_GPUTextureSamplerBinding = undefined;
         for (bindings, 0..) |b, i| {
             c_bindings[i] = .{ .texture = b.texture.ptr, .sampler = b.sampler.ptr };
         }
-        c.SDL_BindGPUFragmentSamplers(self.ptr, first_slot, &c_bindings, @intCast(bindings.len));
+        c.SDL_BindGPUFragmentSamplers(
+            self.ptr,
+            first_slot,
+            &c_bindings,
+            @intCast(bindings.len),
+        );
     }
 
     /// Records a non-indexed primitive drawing command.
@@ -609,12 +623,18 @@ pub const ComputePass = struct {
 
     /// Binds read-only storage buffers starting at the specified binding slot.
     pub fn bindStorageBuffers(self: ComputePass, first_slot: u32, buffers: []const Buffer) void {
+        // Stack array avoids per-dispatch allocation; clamped to max 4 slots.
         var c_bufs: [4]*c.SDL_GPUBuffer = undefined;
         const count = @min(buffers.len, 4);
         for (0..count) |i| {
             c_bufs[i] = buffers[i].ptr;
         }
-        c.SDL_BindGPUComputeStorageBuffers(self.ptr, first_slot, &c_bufs, @intCast(count));
+        c.SDL_BindGPUComputeStorageBuffers(
+            self.ptr,
+            first_slot,
+            &c_bufs,
+            @intCast(count),
+        );
     }
 
     /// Dispatches compute workgroups along 3D workgroup dimensions.
@@ -695,7 +715,10 @@ pub const CommandBuffer = struct {
         storage_textures: ?[]const StorageTextureReadWriteBinding,
         storage_buffers: ?[]const StorageBufferReadWriteBinding,
     ) ?ComputePass {
-        var c_storage_tex: [4]c.SDL_GPUStorageTextureReadWriteBinding = undefined;
+        // Stack arrays avoid per-pass allocation; size matches compute binding
+        // limits (4 slots each), asserted below.
+        var c_storage_tex: [4]c.SDL_GPUStorageTextureReadWriteBinding =
+            undefined;
         var tex_count: u32 = 0;
         if (storage_textures) |stexs| {
             tex_count = @intCast(stexs.len);
@@ -713,7 +736,8 @@ pub const CommandBuffer = struct {
             }
         }
 
-        var c_storage_buf: [4]c.SDL_GPUStorageBufferReadWriteBinding = undefined;
+        var c_storage_buf: [4]c.SDL_GPUStorageBufferReadWriteBinding =
+            undefined;
         var buf_count: u32 = 0;
         if (storage_buffers) |sbufs| {
             buf_count = @intCast(sbufs.len);
@@ -896,6 +920,9 @@ pub const Device = struct {
 
     /// Compiles and creates a complete graphics pipeline state object.
     pub fn createPipeline(self: Device, info: *const GraphicsPipelineCreateInfo) ?Pipeline {
+        // Stack arrays avoid dynamic allocation during pipeline creation;
+        // capacities match Vulkan/D3D12/Metal hardware limits (16 attrs, 16
+        // buffers, 16 color targets), enforced by asserts below.
         var c_attributes: [16]c.SDL_GPUVertexAttribute = undefined;
         var c_attrib_count: u32 = 0;
         if (info.vertex_input_state.vertex_attributes) |attrs| {

@@ -7,8 +7,38 @@
 
 ## 2. Per-Frame Arenas & Allocator Lifecycle
 
-- Reset per-frame arena allocators at frame boundaries via `arena.reset(.retain_capacity)`.
-- Never store references or pointers to arena-allocated data inside persistent state structs across frame boundaries.
+- Reset per-frame arena allocators at frame boundaries via
+  `arena.reset(.retain_capacity)`.
+- Never store references or pointers to arena-allocated data inside persistent
+  state structs across frame boundaries.
+- **ArenaAllocator LIFO Rewind Invariant**:
+  - Zig's `std.heap.ArenaAllocator.free` and `resize` check if the memory being
+    released is the most recent allocation in the current arena node buffer
+    (`buf_ptr + cur_end_index == memory.ptr + memory.len`).
+  - When memory is released in LIFO order, the arena actively rewinds its bump
+    pointer (`end_index`).
+  - Always make a best-effort attempt to pair `frame_allocator` scratch
+    allocations with `defer frame_allocator.free(...)` or
+    `defer list.deinit(frame_allocator)`. This reclaims scratch memory within
+    the same frame and prevents unnecessary arena growth between sequential
+    systems.
+- **Stack Allocation vs. Arena Decision Matrix**:
+  - *Dynamic / Unbounded Collections* (e.g. prefetch queues, scissor stacks,
+    variable lists): NEVER use fixed stack arrays `[N]T` that risk silent
+    truncation or panic. Use `std.ArrayList(T)` backed by `frame_allocator`
+    with `defer list.deinit(frame_allocator)`.
+  - *Large Path Buffers* ($\\ge 4$ KB like `std.fs.max_path_bytes`): Do NOT
+    allocate 4 KB arrays on the stack during UI input or frame passes.
+    Allocate from `frame_allocator` with `defer frame_allocator.free(...)` or
+    use domain heap allocators.
+  - *Assert-Bounded Hardware/FFI Limits* (e.g. 16 vertex buffer slots in SDL3
+    GPU, 8 IFD levels in EXIF): Keep on the stack and document the hardware/API
+    bound and assert in comments to avoid per-draw allocator overhead.
+  - *Short Formatting Scratchpads for Clay IDs* ($\\le 64$ bytes): Keep on the
+    stack using `std.fmt.bufPrint`. Clay immediately hashes strings into integer
+    IDs (`clay.getElementId`) and does not retain the string. Allocating from
+    `frame_allocator` for 500 items burns $32\\text{ KB/frame}$ of unnecessary
+    arena bump-pointer memory.
 
 ## 3. HashMap Key Lifecycle Cleanup
 

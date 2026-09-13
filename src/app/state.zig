@@ -492,16 +492,26 @@ pub const AppState = struct {
                     try self.viewer.ui.palette.last_child_dir.appendSlice(self.allocator, child);
                 }
                 try self.loadPaletteDirectory(start_dir);
-                while (self.viewer.ui.palette.dir_items.items.len == 0) {
-                    const curr = self.viewer.ui.palette.current_nav_dir.items;
-                    var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
-                    if (core_fs.getParentDirBuf(curr, &parent_buf)) |parent_dir| {
-                        if (!std.mem.eql(u8, parent_dir, curr)) {
-                            try self.loadPaletteDirectory(parent_dir);
-                            continue;
+                if (self.viewer.ui.palette.dir_items.items.len == 0) {
+                    const parent_buf = try self.allocator.alloc(
+                        u8,
+                        std.fs.max_path_bytes,
+                    );
+                    defer self.allocator.free(parent_buf);
+                    while (self.viewer.ui.palette.dir_items.items.len == 0) {
+                        const nav = &self.viewer.ui.palette.current_nav_dir;
+                        const curr = nav.items;
+                        if (core_fs.getParentDirBuf(
+                            curr,
+                            parent_buf,
+                        )) |parent_dir| {
+                            if (!std.mem.eql(u8, parent_dir, curr)) {
+                                try self.loadPaletteDirectory(parent_dir);
+                                continue;
+                            }
                         }
+                        break;
                     }
-                    break;
                 }
             },
             .set_slideshow_interval => {
