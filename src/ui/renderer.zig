@@ -31,6 +31,19 @@ fn scissorEqual(a: ?sdl.Rect, b: ?sdl.Rect) bool {
     return b == null;
 }
 
+pub fn intersectScissor(a: sdl.Rect, b: sdl.Rect) sdl.Rect {
+    const x1 = @max(a.x, b.x);
+    const y1 = @max(a.y, b.y);
+    const x2 = @min(a.x + a.w, b.x + b.w);
+    const y2 = @min(a.y + a.h, b.y + b.h);
+    return sdl.Rect{
+        .x = x1,
+        .y = y1,
+        .w = @max(0, x2 - x1),
+        .h = @max(0, y2 - y1),
+    };
+}
+
 fn addBatch(
     batches: *std.ArrayList(BatchItem),
     allocator: std.mem.Allocator,
@@ -562,6 +575,7 @@ fn getOrRenderCachedText(
 /// Returns `true` if the scissor clipping box has non-positive area or falls
 /// completely outside the window bounds.
 pub inline fn isScissorInvisible(sc: ?sdl.Rect, win_w: i32, win_h: i32) bool {
+    if (win_w <= 0 or win_h <= 0) return true;
     if (sc) |s| {
         if (s.w <= 0 or s.h <= 0) return true;
         if (s.x >= win_w or s.y >= win_h) return true;
@@ -591,6 +605,8 @@ fn buildGeometryFromCommands(
     const f_win_h = @as(f32, @floatFromInt(win_h));
 
     var current_scissor: ?sdl.Rect = null;
+    var scissor_stack: std.ArrayList(sdl.Rect) = .empty;
+    defer scissor_stack.deinit(frame_allocator);
     var prev_text_bb: ?clay.BoundingBox = null;
     var prev_text_end_x: f32 = 0.0;
 
@@ -605,16 +621,31 @@ fn buildGeometryFromCommands(
 
         if (rcmd.command_type == .scissor_start) {
             prev_text_bb = null;
-            current_scissor = sdl.Rect{
+            const raw_sc = sdl.Rect{
                 .x = @intFromFloat(@round(bb.x * scale_x)),
                 .y = @intFromFloat(@round(bb.y * scale_y)),
                 .w = @intFromFloat(@round(bb.width * scale_x)),
                 .h = @intFromFloat(@round(bb.height * scale_y)),
             };
+            const eff_sc = if (scissor_stack.items.len > 0) blk: {
+                const parent_sc =
+                    scissor_stack.items[scissor_stack.items.len - 1];
+                break :blk intersectScissor(parent_sc, raw_sc);
+            } else raw_sc;
+            try scissor_stack.append(frame_allocator, eff_sc);
+            current_scissor = eff_sc;
             continue;
         } else if (rcmd.command_type == .scissor_end) {
             prev_text_bb = null;
-            current_scissor = null;
+            if (scissor_stack.items.len > 0) {
+                _ = scissor_stack.pop();
+                current_scissor = if (scissor_stack.items.len > 0)
+                    scissor_stack.items[scissor_stack.items.len - 1]
+                else
+                    null;
+            } else {
+                current_scissor = null;
+            }
             continue;
         }
 
@@ -1395,4 +1426,101 @@ test "Clay debug text detection and scaling on HiDPI display" {
     // Element in main view at logical x = 400.0
     const main_element_x: f32 = 400.0;
     try std.testing.expect(!(main_element_x >= debug_panel_min_x));
+}
+
+test "intersectScissor computes correct overlapping rectangle" {
+    const a = sdl.Rect{ .x = 10, .y = 20, .w = 100, .h = 100 };
+    const b = sdl.Rect{ .x = 50, .y = 60, .w = 100, .h = 100 };
+    const res = intersectScissor(a, b);
+    try std.testing.expectEqual(@as(i32, 50), res.x);
+    try std.testing.expectEqual(@as(i32, 60), res.y);
+    try std.testing.expectEqual(@as(i32, 60), res.w);
+    try std.testing.expectEqual(@as(i32, 60), res.h);
+
+    // Disjoint rectangles
+    const c = sdl.Rect{ .x = 200, .y = 200, .w = 50, .h = 50 };
+    const disjoint = intersectScissor(a, c);
+    try std.testing.expectEqual(@as(i32, 0), disjoint.w);
+    try std.testing.expectEqual(@as(i32, 0), disjoint.h);
+
+    // Negative coordinates and partial overlap
+    const neg1 = sdl.Rect{ .x = -20, .y = -20, .w = 50, .h = 50 };
+    const neg2 = sdl.Rect{ .x = 0, .y = 0, .w = 50, .h = 50 };
+    const neg_res = intersectScissor(neg1, neg2);
+    try std.testing.expectEqual(@as(i32, 0), neg_res.x);
+    try std.testing.expectEqual(@as(i32, 0), neg_res.y);
+    try std.testing.expectEqual(@as(i32, 30), neg_res.w);
+    try std.testing.expectEqual(@as(i32, 30), neg_res.h);
+}
+
+test "scissorEqual compares rectangles correctly" {
+    const r1 = sdl.Rect{ .x = 10, .y = 20, .w = 30, .h = 40 };
+    const r2 = sdl.Rect{ .x = 10, .y = 20, .w = 30, .h = 40 };
+    const r3 = sdl.Rect{ .x = 11, .y = 20, .w = 30, .h = 40 };
+
+    try std.testing.expect(scissorEqual(null, null));
+    try std.testing.expect(!scissorEqual(null, r1));
+    try std.testing.expect(!scissorEqual(r1, null));
+    try std.testing.expect(scissorEqual(r1, r2));
+    try std.testing.expect(!scissorEqual(r1, r3));
+}
+
+test "isScissorInvisible detects non-visible scissor bounds" {
+    // Null scissor is visible (covers full window)
+    try std.testing.expect(!isScissorInvisible(null, 1000, 800));
+
+    // Zero or negative window dimensions
+    try std.testing.expect(isScissorInvisible(null, 0, 800));
+    try std.testing.expect(isScissorInvisible(null, 1000, -10));
+
+    // Normal visible scissor
+    const vis = sdl.Rect{ .x = 10, .y = 10, .w = 100, .h = 100 };
+    try std.testing.expect(!isScissorInvisible(vis, 1000, 800));
+
+    // Zero or negative area
+    const zero_w = sdl.Rect{ .x = 10, .y = 10, .w = 0, .h = 100 };
+    try std.testing.expect(isScissorInvisible(zero_w, 1000, 800));
+    const neg_h = sdl.Rect{ .x = 10, .y = 10, .w = 100, .h = -5 };
+    try std.testing.expect(isScissorInvisible(neg_h, 1000, 800));
+
+    // Off-screen to right/bottom
+    const off_r = sdl.Rect{ .x = 1000, .y = 10, .w = 100, .h = 100 };
+    try std.testing.expect(isScissorInvisible(off_r, 1000, 800));
+    const off_b = sdl.Rect{ .x = 10, .y = 800, .w = 100, .h = 100 };
+    try std.testing.expect(isScissorInvisible(off_b, 1000, 800));
+
+    // Off-screen to left/top
+    const off_l = sdl.Rect{ .x = -100, .y = 10, .w = 100, .h = 100 };
+    try std.testing.expect(isScissorInvisible(off_l, 1000, 800));
+    const off_t = sdl.Rect{ .x = 10, .y = -100, .w = 100, .h = 100 };
+    try std.testing.expect(isScissorInvisible(off_t, 1000, 800));
+}
+
+test "scissor stack dynamically grows beyond 16 levels with arena allocator" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+
+    var stack: std.ArrayList(sdl.Rect) = .empty;
+    defer stack.deinit(allocator);
+
+    // Push 32 nested scissor levels
+    var i: i32 = 0;
+    while (i < 32) : (i += 1) {
+        const sc = sdl.Rect{ .x = i, .y = i, .w = 500 - i, .h = 500 - i };
+        const eff = if (stack.items.len > 0)
+            intersectScissor(stack.items[stack.items.len - 1], sc)
+        else
+            sc;
+        try stack.append(allocator, eff);
+    }
+
+    try std.testing.expectEqual(@as(usize, 32), stack.items.len);
+    try std.testing.expectEqual(@as(i32, 31), stack.items[31].x);
+
+    // Pop all levels back down
+    while (stack.items.len > 0) {
+        _ = stack.pop();
+    }
+    try std.testing.expectEqual(@as(usize, 0), stack.items.len);
 }

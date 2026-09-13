@@ -849,6 +849,7 @@ fn renderImageCanvas(
             },
             .floating = .{
                 .attach_to = .to_parent,
+                .clip_to = .to_attached_parent,
                 .attach_points = .{ .element = .center_center, .parent = .center_center },
                 .offset = .{ .x = 0.0, .y = 0.0 },
                 .z_index = 0,
@@ -932,6 +933,7 @@ fn renderImageCanvas(
                 },
                 .floating = if (is_image_dissolve or is_thumb_crossfade) .{
                     .attach_to = .to_parent,
+                    .clip_to = .to_attached_parent,
                     .attach_points = .{ .element = .center_center, .parent = .center_center },
                     .offset = .{ .x = 0.0, .y = 0.0 },
                     .z_index = 1,
@@ -1101,6 +1103,7 @@ fn renderViewport(
                             },
                             .floating = .{
                                 .attach_to = .to_parent,
+                                .clip_to = .to_attached_parent,
                                 .attach_points = .{
                                     .element = .center_center,
                                     .parent = .center_center,

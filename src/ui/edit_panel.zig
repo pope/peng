@@ -230,6 +230,7 @@ pub fn renderSlider(
                 .corner_radius = .all(1),
                 .floating = .{
                     .attach_to = .to_parent,
+                    .clip_to = .to_attached_parent,
                     .attach_points = .{
                         .element = .left_center,
                         .parent = .left_center,
@@ -253,6 +254,7 @@ pub fn renderSlider(
                     .corner_radius = .all(2),
                     .floating = .{
                         .attach_to = .to_parent,
+                        .clip_to = .to_attached_parent,
                         .attach_points = .{
                             .element = .left_center,
                             .parent = .left_center,
@@ -278,6 +280,7 @@ pub fn renderSlider(
                 },
                 .floating = .{
                     .attach_to = .to_parent,
+                    .clip_to = .to_attached_parent,
                     .attach_points = .{
                         .element = .left_center,
                         .parent = .left_center,
@@ -705,4 +708,66 @@ test "formatValue string lifetimes" {
     const tx_neg = try formatValue(std.testing.allocator, tex_desc, -0.25);
     defer std.testing.allocator.free(tx_neg);
     try std.testing.expectEqualStrings("-25%", tx_neg);
+}
+
+var test_clay_mem: [1024 * 1024]u8 = undefined;
+
+test "floating slider knob commands are clipped by scroll container scissor" {
+    _ = clay.initialize(
+        clay.Arena.init(&test_clay_mem),
+        .{ .w = 1000, .h = 800 },
+        .{},
+    );
+    clay.beginLayout();
+
+    const scroll_id = clay.getElementId("TestScrollList");
+    clay.UI()(.{
+        .id = scroll_id,
+        .layout = .{
+            .sizing = .{ .w = .fixed(300), .h = .fixed(400) },
+            .direction = .top_to_bottom,
+        },
+        .clip = .{
+            .horizontal = false,
+            .vertical = true,
+            .child_offset = .{ .x = 0, .y = -100 },
+        },
+    })({
+        // Use non-default value (0.5) so notch, fill bar (fill_w > 0.5),
+        // and knob all render
+        renderSlider(.brightness, 0.5, "+50%", 1.0, false);
+    });
+
+    const commands = clay.endLayout();
+    const knob_names = getSliderElementNames(.brightness);
+    const knob_id = clay.getElementId(knob_names.knob).id;
+
+    var found_knob = false;
+    var current_scissor: ?clay.BoundingBox = null;
+    var scissor_start_count: u32 = 0;
+    var scissor_end_count: u32 = 0;
+
+    for (commands) |cmd| {
+        if (cmd.command_type == .scissor_start) {
+            current_scissor = cmd.bounding_box;
+            scissor_start_count += 1;
+        } else if (cmd.command_type == .scissor_end) {
+            current_scissor = null;
+            scissor_end_count += 1;
+        } else if (cmd.id == knob_id) {
+            found_knob = true;
+            // The knob MUST be enclosed within an active scissor
+            try std.testing.expect(current_scissor != null);
+            const sc = current_scissor.?;
+            try std.testing.expectEqual(@as(f32, 300), sc.width);
+            try std.testing.expectEqual(@as(f32, 400), sc.height);
+        }
+    }
+
+    try std.testing.expect(found_knob);
+    // Every scissor_start must be balanced with a scissor_end
+    try std.testing.expect(scissor_start_count > 0);
+    try std.testing.expectEqual(scissor_start_count, scissor_end_count);
+    // Scissor state must be cleanly closed by the end
+    try std.testing.expect(current_scissor == null);
 }
