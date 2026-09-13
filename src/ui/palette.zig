@@ -607,8 +607,20 @@ fn renderSelectionList(
                         }
 
                         const classification = ui_model.getClassification(real_idx);
-                        const max_fn_w: f32 = if (classification != .unflagged) 428.0 else 492.0;
-                        const max_dir_w: f32 = if (classification != .unflagged) 424.0 else 488.0;
+                        const is_pair = if (media_opt) |m|
+                            m.isPair()
+                        else
+                            false;
+                        var max_fn_w: f32 = 492.0;
+                        var max_dir_w: f32 = 488.0;
+                        if (classification != .unflagged) {
+                            max_fn_w -= 64.0;
+                            max_dir_w -= 64.0;
+                        }
+                        if (is_pair) {
+                            max_fn_w -= 72.0;
+                            max_dir_w -= 72.0;
+                        }
 
                         const trunc_filename = truncateFilenameMiddle(
                             frame_allocator,
@@ -716,48 +728,114 @@ fn renderSelectionList(
                             });
                         });
 
-                        switch (classification) {
-                            .pick => {
-                                clay.UI()(.{
-                                    .layout = .{
-                                        .sizing = .{ .w = .fit, .h = .fit },
-                                        .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
+                        if (is_pair or classification != .unflagged) {
+                            clay.UI()(.{
+                                .layout = .{
+                                    .sizing = .{ .w = .fit, .h = .fit },
+                                    .direction = .left_to_right,
+                                    .child_alignment = .{
+                                        .x = .right,
+                                        .y = .center,
                                     },
-                                    .background_color = theme.withAlpha(theme.green, 0.25 * progress),
-                                    .border = .{
-                                        .color = a(theme.green, progress),
-                                        .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                                    .child_gap = 6,
+                                },
+                            })({
+                                if (is_pair) {
+                                    renderBadge(
+                                        "RAW+JPG",
+                                        theme.mauve,
+                                        theme.mauve,
+                                        progress,
+                                    );
+                                }
+                                switch (classification) {
+                                    .pick => {
+                                        clay.UI()(.{
+                                            .layout = .{
+                                                .sizing = .{
+                                                    .w = .fit,
+                                                    .h = .fit,
+                                                },
+                                                .padding = .{
+                                                    .left = 6,
+                                                    .right = 6,
+                                                    .top = 2,
+                                                    .bottom = 2,
+                                                },
+                                            },
+                                            .background_color = theme.withAlpha(
+                                                theme.green,
+                                                0.25 * progress,
+                                            ),
+                                            .border = .{
+                                                .color = a(
+                                                    theme.green,
+                                                    progress,
+                                                ),
+                                                .width = .{
+                                                    .left = 1,
+                                                    .right = 1,
+                                                    .top = 1,
+                                                    .bottom = 1,
+                                                },
+                                            },
+                                            .corner_radius = .all(4),
+                                        })({
+                                            clay.text("PICK", .{
+                                                .color = a(
+                                                    theme.green,
+                                                    progress,
+                                                ),
+                                                .font_size = 11,
+                                                .font_id = 0,
+                                            });
+                                        });
                                     },
-                                    .corner_radius = .all(4),
-                                })({
-                                    clay.text("PICK", .{
-                                        .color = a(theme.green, progress),
-                                        .font_size = 11,
-                                        .font_id = 0,
-                                    });
-                                });
-                            },
-                            .reject => {
-                                clay.UI()(.{
-                                    .layout = .{
-                                        .sizing = .{ .w = .fit, .h = .fit },
-                                        .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
+                                    .reject => {
+                                        clay.UI()(.{
+                                            .layout = .{
+                                                .sizing = .{
+                                                    .w = .fit,
+                                                    .h = .fit,
+                                                },
+                                                .padding = .{
+                                                    .left = 6,
+                                                    .right = 6,
+                                                    .top = 2,
+                                                    .bottom = 2,
+                                                },
+                                            },
+                                            .background_color = theme.withAlpha(
+                                                theme.red,
+                                                0.25 * progress,
+                                            ),
+                                            .border = .{
+                                                .color = a(
+                                                    theme.red,
+                                                    progress,
+                                                ),
+                                                .width = .{
+                                                    .left = 1,
+                                                    .right = 1,
+                                                    .top = 1,
+                                                    .bottom = 1,
+                                                },
+                                            },
+                                            .corner_radius = .all(4),
+                                        })({
+                                            clay.text("REJECT", .{
+                                                .color = a(
+                                                    theme.red,
+                                                    progress,
+                                                ),
+                                                .font_size = 11,
+                                                .font_id = 0,
+                                            });
+                                        });
                                     },
-                                    .background_color = theme.withAlpha(theme.red, 0.25 * progress),
-                                    .border = .{
-                                        .color = a(theme.red, progress),
-                                        .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-                                    },
-                                    .corner_radius = .all(4),
-                                })({
-                                    clay.text("REJECT", .{
-                                        .color = a(theme.red, progress),
-                                        .font_size = 11,
-                                        .font_id = 0,
-                                    });
-                                });
-                            },
-                            .unflagged => {},
+                                    .unflagged => {},
+                                }
+                            });
                         }
                     },
                     .actions => {

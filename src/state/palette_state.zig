@@ -336,12 +336,18 @@ pub const PaletteState = struct {
     ///   without searcher allocation or fuzzy scoring.
     /// - Pre-allocates `scored_matches` and `matches` capacities to allow
     ///   `appendAssumeCapacity` writes during scoring.
-    pub fn rebuildFileMatches(self: *PaletteState, image_list: []const MediaEntry) !void {
+    pub fn rebuildFileMatches(
+        self: *PaletteState,
+        image_list: []const MediaEntry,
+    ) !void {
         self.matches.clearRetainingCapacity();
         self.scored_matches.clearRetainingCapacity();
         const query_str = self.query.items;
         if (query_str.len == 0) {
-            try self.matches.ensureTotalCapacity(self.allocator, image_list.len);
+            try self.matches.ensureTotalCapacity(
+                self.allocator,
+                image_list.len,
+            );
             for (image_list, 0..) |_, real_idx| {
                 self.matches.appendAssumeCapacity(real_idx);
             }
@@ -352,17 +358,48 @@ pub const PaletteState = struct {
         for (image_list) |item| {
             const basename = item.getBasename();
             max_h = @max(max_h, basename.len);
+            if (item.getJpegPath()) |jpeg_p| {
+                const jpeg_base = std.fs.path.basename(jpeg_p);
+                max_h = @max(max_h, jpeg_base.len);
+            }
         }
+        max_h = @max(max_h, "RAW+JPG".len);
         self.max_haystack_len = max_h;
 
         const searcher_ptr = try self.getSearcher(max_h, query_str.len);
 
-        try self.scored_matches.ensureTotalCapacity(self.allocator, image_list.len);
+        try self.scored_matches.ensureTotalCapacity(
+            self.allocator,
+            image_list.len,
+        );
 
         for (image_list, 0..) |item, real_idx| {
             const basename = item.getBasename();
-            if (searcher_ptr.score(basename, query_str)) |score| {
-                self.scored_matches.appendAssumeCapacity(.{ .index = real_idx, .score = score });
+            var best_score = searcher_ptr.score(basename, query_str);
+            if (item.getJpegPath()) |jpeg_p| {
+                const jpeg_base = std.fs.path.basename(jpeg_p);
+                if (searcher_ptr.score(jpeg_base, query_str)) |jpeg_score| {
+                    if (best_score) |s| {
+                        best_score = @max(s, jpeg_score);
+                    } else {
+                        best_score = jpeg_score;
+                    }
+                }
+            }
+            if (item.isPair()) {
+                if (searcher_ptr.score("RAW+JPG", query_str)) |tag_score| {
+                    if (best_score) |s| {
+                        best_score = @max(s, tag_score);
+                    } else {
+                        best_score = tag_score;
+                    }
+                }
+            }
+            if (best_score) |score| {
+                self.scored_matches.appendAssumeCapacity(.{
+                    .index = real_idx,
+                    .score = score,
+                });
             }
         }
 
@@ -630,4 +667,52 @@ test "DirectoryEntry accessors and scan state" {
     try std.testing.expectEqualStrings("img.png", f.getName());
     try std.testing.expect(!f.isArchive());
     try std.testing.expect(f.getScanState() == null);
+}
+
+test "PaletteState - rebuildFileMatches with RAW+JPEG pair" {
+    const allocator = std.testing.allocator;
+    var state = try PaletteState.init(allocator);
+    defer state.deinit();
+
+    state.mode = .files;
+    const entries = [_]MediaEntry{
+        .{ .filesystem = .{ .path = "/photos/forest.png" } },
+        .{
+            .pair = .{
+                .raw_path = "/photos/DSC00941.ARW",
+                .jpeg_path = "/photos/DSC00941.JPG",
+            },
+        },
+        .{ .filesystem = .{ .path = "/photos/beach.jpg" } },
+    };
+
+    // 1. Empty query matches all items
+    try state.rebuildFileMatches(&entries);
+    try std.testing.expectEqual(@as(usize, 3), state.matches.items.len);
+
+    // 2. Searching RAW extension matches pair
+    try state.query.appendSlice(allocator, "ARW");
+    try state.rebuildFileMatches(&entries);
+    try std.testing.expectEqual(@as(usize, 1), state.matches.items.len);
+    try std.testing.expectEqual(@as(usize, 1), state.matches.items[0]);
+
+    // 3. Searching companion JPEG extension matches both pair and beach.jpg
+    state.query.clearRetainingCapacity();
+    try state.query.appendSlice(allocator, "JPG");
+    try state.rebuildFileMatches(&entries);
+    try std.testing.expectEqual(@as(usize, 2), state.matches.items.len);
+
+    // 4. Searching RAW+JPG matches pair
+    state.query.clearRetainingCapacity();
+    try state.query.appendSlice(allocator, "RAW+JPG");
+    try state.rebuildFileMatches(&entries);
+    try std.testing.expectEqual(@as(usize, 1), state.matches.items.len);
+    try std.testing.expectEqual(@as(usize, 1), state.matches.items[0]);
+
+    // 5. Searching non-pair file matches only that file
+    state.query.clearRetainingCapacity();
+    try state.query.appendSlice(allocator, "forest");
+    try state.rebuildFileMatches(&entries);
+    try std.testing.expectEqual(@as(usize, 1), state.matches.items.len);
+    try std.testing.expectEqual(@as(usize, 0), state.matches.items[0]);
 }
