@@ -8,6 +8,12 @@ ______________________________________________________________________
 
 - **GPU Acceleration:** Uses the modern SDL3 GPU API with Vulkan and Metal backends.
 - **Camera RAW Zero-Copy Streaming:** High-performance viewing of Camera RAW images (`.arw`, `.raf`, `.cr2`, `.nef`, `.dng`, `.orf`, `.rw2`, `.pef`) with zero full-file allocations in RAM. Streams 128KB stack headers for sub-0.1ms metadata probing, range-limited positional reads for preview JPEGs, and instant embedded thumbnail rendering during fast navigation.
+- **RAW+JPEG Stacking & Progressive Streaming:** Sibling RAW and JPEG files
+  with identical stems (e.g. `DSC00941.ARW` + `DSC00941.JPG`) automatically
+  collapse into a single logical photo entry. Employs a 4-tier loading pipeline:
+  RAW header thumbnail during rapid scrubbing, crisp RAW embedded preview for
+  settled viewing (zoom \<= 1.0x), and zero-flash promotion to companion JPEG
+  upon zooming past 1.0x or pressing `j`.
 - **CBZ & Manga Mode Support:** Instant $O(1)$ page seeking inside `.cbz` comic archives with toggleable Right-to-Left (RTL) Manga reading mode (`M` key).
 - **Advanced Filtering & Resampling:** Features high-quality resampling shaders including Bilinear, Mitchell-Netravali, and Lanczos3 filters.
 - **Command Palette:** Built-in searchable palettes for commands (`F1` or `Ctrl+Shift+P`), file search (`Ctrl+P`), and directory navigator (`Ctrl+O`).
@@ -26,11 +32,11 @@ ______________________________________________________________________
 
 ## Supported Formats
 
-| Category            | Formats / Extensions                                                      | Highlights                                                                                                                                                                      |
-| :------------------ | :------------------------------------------------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **Standard Raster** | `.png`, `.jpg`, `.jpeg`, `.webp`, `.avif`, `.bmp`, `.tga`, `.svg`, `.gif` | High-DPI mipmapped GPU rendering, SIMD color conversions                                                                                                                        |
-| **Comic Archives**  | `.cbz`                                                                    | Central Directory parsing with $O(1)$ page seeking and RTL Manga mode                                                                                                           |
-| **Camera RAW**      | `.arw`, `.raf`, `.cr2`, `.nef`, `.dng`, `.orf`, `.rw2`, `.pef`            | Zero full-file allocations, sub-0.1ms probe, range-limited embedded previews, instant thumbnail scrubbing, EXIF orientation auto-correction, and raw sensor dimension reporting |
+| Category            | Formats / Extensions                                                      | Highlights                                                                                                                                                                |
+| :------------------ | :------------------------------------------------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Standard Raster** | `.png`, `.jpg`, `.jpeg`, `.webp`, `.avif`, `.bmp`, `.tga`, `.svg`, `.gif` | High-DPI mipmapped GPU rendering, SIMD color conversions                                                                                                                  |
+| **Comic Archives**  | `.cbz`                                                                    | Central Directory parsing with $O(1)$ page seeking and RTL Manga mode                                                                                                     |
+| **Camera RAW**      | `.arw`, `.raf`, `.cr2`, `.nef`, `.dng`, `.orf`, `.rw2`, `.pef`            | Zero full-file allocations, sub-0.1ms probe, range-limited embedded previews, instant thumbnail scrubbing, RAW+JPEG automatic pairing, and raw sensor dimension reporting |
 
 ______________________________________________________________________
 
@@ -49,6 +55,8 @@ ______________________________________________________________________
 | `>`                                     | Rotate Clockwise (90°)                                            |
 | `<`                                     | Rotate Counter-Clockwise (90°)                                    |
 | `e`                                     | Toggle Edit Side Panel (Image Adjustments)                        |
+| `Alt+J`                                 | Toggle RAW+JPEG Stacking (Group / Separate Files)                 |
+| `j`                                     | Toggle RAW / Companion JPEG Stream (when pair is active)          |
 | `s`                                     | Cycle Scale Mode (Shrink, Full, Crop, Actual, Fit W/H)            |
 | `S` (Shift+s)                           | Cycle Resampling Filter Forward (Nearest, Linear, Mitchell, etc)  |
 | `Alt+Shift+S`                           | Cycle Resampling Filter Backward                                  |
@@ -124,18 +132,20 @@ Start the image viewer by passing a file or directory path:
 
 ### CLI Flags
 
-| Flag                 | Argument                                                    | Description                                              |
-| :------------------- | :---------------------------------------------------------- | :------------------------------------------------------- |
-| `-h`, `--help`       | None                                                        | Displays the help message and available options.         |
-| `-W`, `--windowless` | None                                                        | Runs in borderless/windowless mode (no titlebar chrome). |
-| `--scale`            | `none`, `shrink`, `full`, `crop`, `fit_width`, `fit_height` | Sets the default image scaling/fitting mode.             |
-| `--blur`             | None                                                        | Enables background glassmorphism blur effect (default).  |
-| `--no-blur`          | None                                                        | Disables background glassmorphism blur effect.           |
-| `--title`            | None                                                        | Shows floating title bar overlay on startup.             |
-| `--headless`         | None                                                        | Runs without opening an OS display window.               |
-| `--test-mode`        | None                                                        | Puts the window and event loop into test configuration.  |
-| `--update-baselines` | None                                                        | Overwrites baseline golden screenshots.                  |
-| `--ipc`              | None                                                        | Enables the IPC UNIX Domain Socket server.               |
+| Flag                  | Argument                                                    | Description                                              |
+| :-------------------- | :---------------------------------------------------------- | :------------------------------------------------------- |
+| `-h`, `--help`        | None                                                        | Displays the help message and available options.         |
+| `-W`, `--windowless`  | None                                                        | Runs in borderless/windowless mode (no titlebar chrome). |
+| `--scale`             | `none`, `shrink`, `full`, `crop`, `fit_width`, `fit_height` | Sets the default image scaling/fitting mode.             |
+| `--blur`              | None                                                        | Enables background glassmorphism blur effect (default).  |
+| `--no-blur`           | None                                                        | Disables background glassmorphism blur effect.           |
+| `--title`             | None                                                        | Shows floating title bar overlay on startup.             |
+| `--headless`          | None                                                        | Runs without opening an OS display window.               |
+| `--test-mode`         | None                                                        | Puts the window and event loop into test configuration.  |
+| `--update-baselines`  | None                                                        | Overwrites baseline golden screenshots.                  |
+| `--stack-raw-jpeg`    | None                                                        | Group RAW and companion JPEG files into a single image.  |
+| `--no-stack-raw-jpeg` | None                                                        | Display RAW and companion JPEG files as separate images. |
+| `--ipc`               | None                                                        | Enables the IPC UNIX Domain Socket server.               |
 
 Aliases:
 
@@ -215,6 +225,10 @@ You can send commands to a running instance using the `peng-msg` utility:
 # Toggle UI Palettes (action, files, none)
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock palette action
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock palette none
+
+# RAW+JPEG Pairing Controls
+./zig-out/bin/peng-msg /tmp/peng-1234.sock stack_raw_jpeg toggle
+./zig-out/bin/peng-msg /tmp/peng-1234.sock toggle_stream
 
 # Toggle Thumbnail Preview (true, false, toggle)
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock thumb toggle

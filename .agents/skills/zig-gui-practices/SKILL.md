@@ -45,6 +45,8 @@ ______________________________________________________________________
   - VRAM cache memory footprint math (+33% mipmap overhead).
   - Main-thread synchronous EXIF header dimension parsing (< 0.1 ms) & single-pass Zig `std.Io` in-memory decoding.
   - Camera RAW preview extraction: Canon CR2 multi-IFD disambiguation (IFD0 preview vs IFD2 raw RGB vs IFD3 Lossless JPEG SOF3), Fujifilm RAF fixed 12MP preview budgeting, DNG SubIFDs, and Ricoh/Pentax MakerNotes.
+  - RAW+JPEG 4-tier progressive streaming, zero-copy resident preview
+    slicing, and companion JPEG bounded reads.
   - Navigation throttling (< 150ms), thumbnail-only fast decoding, telemetry metric split (Disk Read vs Decode), and settled preloading triggers (`sysUpdateCache(ctx)`).
 
 - **[GPU Shader Optimization Recipes](references/shader-optimization.md)**

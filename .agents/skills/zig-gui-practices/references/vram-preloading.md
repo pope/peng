@@ -52,11 +52,31 @@ ______________________________________________________________________
   - **SubIFD Capacity Clamping & Loop Cycle Detection**:
     - Fixed-capacity lists (`SubIfdList`) clamp parsed SubIFDs to buffer capacity (`@min(count, 8)`) instead of returning an error. Throwing an error upon encountering >8 SubIFDs abruptly aborts IFD0 parsing, dropping subsequent preview tags (e.g. `0x0201`/`0x0202`) and next-IFD links for complex multi-frame DNGs.
     - IFD traversal loops maintain a fixed `visited: [8]u32` array to detect and break cyclic IFD links (e.g. IFD0 -> IFD1 -> IFD0), preventing candidate array corruption.
-  - **Progressive 3-Tier Preview Loading Pipeline**:
-    - **Tier 1 (Small Thumbnail, \<= 512KB)**: Optimized for 0.1ms decoding during rapid scrubbing (`thumb_only = true`).
-    - **Tier 2 (Medium Preview, \<= 2MB, e.g. 1616x1080)**: Decoded synchronously on Frame 1 during settled viewing (`thumb_only = false`) as an instant crisp placeholder.
-    - **Tier 3 (Full-Resolution Preview, e.g. 6240x4160)**: Decoded in background and uploaded to GPU to replace Tier 2 via a crossfade dissolve.
-    - *Single-Preview Duplication Prevention*: When a RAW container has only a single embedded preview (preview == thumbnail), skip decoding the placeholder in settled mode (`thumb_only = false`) to avoid decoding the identical byte range twice.
+  - **Progressive 4-Tier Preview & RAW+JPEG Loading Pipeline**:
+    - **Tier 1 (Small Thumbnail, \<= 512KB)**: Optimized for 0.1ms decoding
+      during rapid scrubbing (`thumb_only = true`) directly from header slice.
+    - **Tier 2 (Medium Preview, \<= 2MB, e.g. 1616x1080)**: Decoded synchronously
+      on Frame 1 during settled viewing (`thumb_only = false`) as an instant
+      crisp placeholder.
+    - **Tier 3 (Full-Resolution RAW Preview, e.g. 6240x4160)**: Decoded in the
+      background and uploaded to GPU to replace Tier 2 via a crossfade dissolve
+      for settled 1.0x viewing.
+    - **Tier 4 (Companion Full-Resolution JPEG)**: Defer companion JPEG decode
+      until zooming past 1.0x or pressing `j` (`toggle_stream`). Performs a
+      zero-flash texture swap once background decode completes.
+    - *Single-Preview Duplication Prevention*: When a RAW container has only
+      a single embedded preview (preview == thumbnail), skip decoding the
+      placeholder in settled mode (`thumb_only = false`) to avoid decoding
+      the identical byte range twice.
+    - *Zero-Copy Resident Preview Slicing*: When the embedded preview offset
+      and length fit entirely within the initial 256KB header slice
+      (`prev_loc.file_offset + prev_loc.length <= header_slice.len`), decode
+      directly from `header_slice[prev_loc.file_offset..]` in RAM without
+      opening file descriptors or issuing secondary positional file reads.
+    - *Companion JPEG Fast-Navigation Bounded Read*: When decoding companion
+      JPEGs in `thumb_only` fallback mode during rapid scrubbing, clamp read
+      length to `@min(file_size, 256 * 1024)` bytes to eliminate multi-megabyte
+      disk I/O and heap thrashing.
   - **Main-Thread GPU Upload Stale Key Guard**:
     - In `handleImageDecodedEvent`, check `if (state.cache.get(decoded_data.key) == null) return;` prior to invoking `uploadSurfaceToGpu`.
     - When a user navigates past an image before its background decode completes, this early exit avoids multi-megabyte PCIe transfers and GPU mipmap downsampling for invalidated cache entries.

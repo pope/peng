@@ -234,14 +234,27 @@ Every public struct and public function across the codebase MUST be documented u
 - **C-ABI Handle Wrappers Must Be `extern struct`**: Any Zig wrapper struct representing a C handle passed by value across `callconv(.c)` boundaries MUST be declared as `extern struct` (e.g., `pub const Window = extern struct { ptr: *c.SDL_Window };`). Regular Zig `struct` types have undefined in-memory layout and trigger compiler errors in C calling conventions.
 - **Strong Typing Across Dynamic Library Boundaries**: Do NOT degrade known subsystem pointers to `*anyopaque` at dynamic library / hot-reloading boundaries (`viewer_update`). Single-item pointers (`*T`, `?*T`) share identical representation with C pointers (`void*`). Retain concrete typed pointers (`*AppState`, `Window`, `*RenderResources`, `*MeasureTextUserData`, `?*IpcServer`) to preserve compile-time type safety across host and shared library modules.
 
-## 14. Code Formatting & Line Length Invariants (80 Col Goal / 100 Col Hard Ceiling)
+## 14. Code Formatting & Line Length Invariants (Strict 80-Column Ceiling)
 
-Every Zig source file (`src/**/*.zig`, `build.zig`) MUST adhere strictly to the project's formatting and line-length constraints:
+Every Zig source file (`src/**/*.zig`, `build.zig`) MUST adhere strictly to the
+project's formatting and line-length constraints:
 
 ### 1. Line Length Limits
 
-- **~80 Columns Standard**: Every line of Zig code (including struct field definitions, function parameter lists, function call arguments, expressions, and assignments) should end around 80 characters where practical. Do not allow code to casually extend to 90–100 characters just because the compiler allows it.
-- **100 Columns Absolute Hard Ceiling**: Under NO circumstances may any line exceed 100 characters (zero tolerance, except for unbreakable URLs/hyperlinks as specified in Subsection 14.2).
+- **80 Columns Absolute Hard Ceiling**: Every line of Zig code (including
+  struct field definitions, function parameter lists, function call arguments,
+  expressions, and assignments) MUST NOT exceed 80 characters. Zero tolerance
+  for lines > 80 columns, except for unbreakable URLs/hyperlinks as specified in
+  Subsection 14.2.
+- **Proactive Pre-Commit Audit**: Prior to proposing any commit or completing
+  code modifications, run an automated line-length check:
+  ```bash
+  git diff HEAD~1 | awk '/^\+[^+]/ {
+    if (length($0) > 81) print length($0)-1, $0
+  }'
+  ```
+  Every reported line must be wrapped with Zig trailing commas or extracted into
+  local `const` bindings to satisfy the \<= 80 character limit.
 
 ### 2. Comment Wrapping & Preservation
 
@@ -262,7 +275,7 @@ Every Zig source file (`src/**/*.zig`, `build.zig`) MUST adhere strictly to the 
 - All code modifications MUST cleanly pass `zig fmt --check <file>` before
   completion.
 - When reviewing or writing Zig, GLSL, or C code, proactively verify that all
-  new and modified lines strictly obey the \<= 80 columns standard.
+  new and modified lines strictly obey the \<= 80 columns ceiling.
 
 ## 15. Exhaustive Enum Pattern Matching & Anti-`else => {}` Invariant
 
