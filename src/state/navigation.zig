@@ -186,6 +186,7 @@ pub const NavigationState = struct {
     slideshow: SlideshowMode = .inactive,
     manga_mode: bool = false,
     crossfade: bool = true,
+    stack_raw_jpeg: bool = true,
     is_loading_files: std.atomic.Value(bool) = .init(false),
     last_nav_time_ms: u64 = 0,
     direction: NavDirection = .forward,
@@ -219,8 +220,14 @@ pub const NavigationState = struct {
 
     /// Appends a media entry in lockstep with its classification in a single allocation.
     pub fn appendEntry(self: *NavigationState, gpa: std.mem.Allocator, entry: MediaEntry) !void {
-        const path = entry.getPath();
-        const initial_class = self.path_classifications.get(path) orelse .unflagged;
+        const initial_class = blk: {
+            const path = entry.getPath();
+            if (self.path_classifications.get(path)) |c| break :blk c;
+            if (entry.getJpegPath()) |jp| {
+                if (self.path_classifications.get(jp)) |c| break :blk c;
+            }
+            break :blk .unflagged;
+        };
         try self.items.append(gpa, .{
             .entry = entry,
             .classification = initial_class,
@@ -331,15 +338,27 @@ pub const NavigationState = struct {
         if (new_class == .pick) self.pick_count += 1;
         if (new_class == .reject) self.reject_count += 1;
 
-        const path = self.items.items(.entry)[idx].getPath();
+        const entry = self.items.items(.entry)[idx];
+        const path = entry.getPath();
         if (new_class == .unflagged) {
             _ = self.path_classifications.remove(path);
+            if (entry.getJpegPath()) |jp| {
+                _ = self.path_classifications.remove(jp);
+            }
         } else {
             if (self.path_classifications.getPtr(path)) |ptr| {
                 ptr.* = new_class;
             } else {
                 const owned_path = try self.classification_arena.allocator().dupe(u8, path);
                 try self.path_classifications.put(gpa, owned_path, new_class);
+            }
+            if (entry.getJpegPath()) |jp| {
+                if (self.path_classifications.getPtr(jp)) |ptr| {
+                    ptr.* = new_class;
+                } else {
+                    const owned_jp = try self.classification_arena.allocator().dupe(u8, jp);
+                    try self.path_classifications.put(gpa, owned_jp, new_class);
+                }
             }
         }
         return true;
@@ -654,4 +673,46 @@ test "NavigationState - SIMD skipping and popcount across large list" {
     try std.testing.expectEqual(@as(?usize, 45), nav.current_index);
     _ = nav.prevIndex();
     try std.testing.expectEqual(@as(?usize, 10), nav.current_index);
+}
+
+test "NavigationState - pair classification synchronization" {
+    const allocator = std.testing.allocator;
+    var nav = try NavigationState.init(allocator);
+    defer nav.deinit(allocator);
+
+    const raw_p = try allocator.dupe(u8, "photos/DSC00941.ARW");
+    errdefer allocator.free(raw_p);
+    const jpg_p = try allocator.dupe(u8, "photos/DSC00941.JPG");
+    errdefer allocator.free(jpg_p);
+
+    const pair_entry = MediaEntry{
+        .pair = .{
+            .raw_path = raw_p,
+            .jpeg_path = jpg_p,
+        },
+    };
+    defer pair_entry.deinit(allocator);
+
+    try nav.appendEntry(allocator, pair_entry);
+    nav.current_index = 0;
+
+    try std.testing.expectEqual(Classification.unflagged, nav.getCurrentClassification());
+    _ = try nav.markCurrentPick(allocator);
+    try std.testing.expectEqual(Classification.pick, nav.getCurrentClassification());
+
+    // Verify both raw_path and jpeg_path are registered in path_classifications table
+    try std.testing.expectEqual(
+        Classification.pick,
+        nav.path_classifications.get("photos/DSC00941.ARW").?,
+    );
+    try std.testing.expectEqual(
+        Classification.pick,
+        nav.path_classifications.get("photos/DSC00941.JPG").?,
+    );
+
+    // Unflagging clears both paths from table
+    _ = try nav.unflagCurrent(allocator);
+    try std.testing.expectEqual(Classification.unflagged, nav.getCurrentClassification());
+    try std.testing.expect(nav.path_classifications.get("photos/DSC00941.ARW") == null);
+    try std.testing.expect(nav.path_classifications.get("photos/DSC00941.JPG") == null);
 }

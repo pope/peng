@@ -103,6 +103,21 @@ fn renderInfoOverlay(
                     else
                         dirname;
                 },
+                .pair => |p| {
+                    const raw_base = std.fs.path.basename(p.raw_path);
+                    filename = try std.fmt.allocPrint(
+                        frame_allocator,
+                        "{s} [RAW+JPG]",
+                        .{raw_base},
+                    );
+                    const dirname = std.fs.path.dirname(p.raw_path) orelse ".";
+                    display_dir = if (dirname.len > 35)
+                        try std.fmt.allocPrint(frame_allocator, "...{s}", .{
+                            dirname[dirname.len - 32 ..],
+                        })
+                    else
+                        dirname;
+                },
             }
         }
     }

@@ -9,6 +9,15 @@ const std = @import("std");
 const AppState = app_state.AppState;
 const FrameContext = context.FrameContext;
 
+fn showCustomSnackbar(self: *AppState, msg: []const u8) void {
+    if (!self.viewer.ui.snackbar.enabled) return;
+    const now = sdl.timer.getTicks();
+    self.viewer.ui.snackbar.show(msg, now + 1500);
+    const progress = self.viewer.animations.get(.snackbar);
+    const dur = @max(state.DURATION_SNACKBAR_OPEN_MS * (1.0 - progress), 30.0);
+    self.viewer.animations.start(.snackbar, 1.0, dur, .ease_out_quad);
+}
+
 /// Central intent dispatcher. Maps an AppIntent variant to domain state mutations.
 fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
     const vp = &self.viewer.viewport;
@@ -292,6 +301,61 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 vp.reset();
                 self.viewer.image_transition = .none;
                 self.viewer.animations.setImmediate(.image_crossfade, 1.0);
+            }
+        },
+        .toggle_raw_jpeg_stacking => {
+            nav.stack_raw_jpeg = !nav.stack_raw_jpeg;
+            const msg = if (nav.stack_raw_jpeg)
+                "RAW+JPEG stacking enabled"
+            else
+                "RAW+JPEG stacking disabled";
+            showCustomSnackbar(self, msg);
+            _ = self.cache.advanceGeneration();
+            if (nav.getCurrentImageEntry()) |entry| {
+                try self.openPath(entry.getPath());
+            } else if (nav.last_scanned_dir.items.len > 0) {
+                try self.openPath(nav.last_scanned_dir.items);
+            }
+        },
+        .set_raw_jpeg_stacking => |enable| {
+            if (nav.stack_raw_jpeg != enable) {
+                nav.stack_raw_jpeg = enable;
+                const msg = if (enable)
+                    "RAW+JPEG stacking enabled"
+                else
+                    "RAW+JPEG stacking disabled";
+                showCustomSnackbar(self, msg);
+                _ = self.cache.advanceGeneration();
+                if (nav.getCurrentImageEntry()) |entry| {
+                    try self.openPath(entry.getPath());
+                } else if (nav.last_scanned_dir.items.len > 0) {
+                    try self.openPath(nav.last_scanned_dir.items);
+                }
+            }
+        },
+        .toggle_pair_stream => {
+            if (nav.current_index) |cur_idx| {
+                if (nav.getCurrentImageEntry()) |entry_item| {
+                    if (entry_item.isPair()) {
+                        const key = self.cache.activeKey(cur_idx);
+                        if (self.cache.get(key)) |entry| {
+                            if (!entry.is_promoting and self.workers.canSpawnDecode()) {
+                                const target: state.PairStreamTarget =
+                                    if (entry.raw_metadata.isRaw())
+                                        .standalone_jpeg
+                                    else
+                                        .raw_preview;
+                                const msg = switch (target) {
+                                    .standalone_jpeg => "Stream: Standalone JPEG",
+                                    .raw_preview => "Stream: RAW Embedded Preview",
+                                    .adaptive => "Stream: Adaptive",
+                                };
+                                showCustomSnackbar(self, msg);
+                                entry.requested_target = target;
+                            }
+                        }
+                    }
+                }
             }
         },
         .set_palette => |p| {
@@ -1071,4 +1135,82 @@ test "sysExecuteIntents classification snackbar confirms action and advance" {
         "No image to classify",
         app_st.viewer.ui.snackbar.getMessage(),
     );
+}
+
+test "sysExecuteIntents - raw jpeg stacking and stream toggle" {
+    const allocator = std.testing.allocator;
+    const testing = std.testing;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    app_st.viewer.ui.snackbar.enabled = true;
+
+    // 1. Initial stacking state is true
+    try testing.expect(app_st.viewer.navigation.stack_raw_jpeg);
+
+    // 2. Toggle stacking -> becomes false, snackbar says disabled
+    try app_st.pushIntent(.toggle_raw_jpeg_stacking);
+    try sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+    });
+    try testing.expect(!app_st.viewer.navigation.stack_raw_jpeg);
+    try testing.expectEqualStrings(
+        "RAW+JPEG stacking disabled",
+        app_st.viewer.ui.snackbar.getMessage(),
+    );
+
+    // 3. Set stacking true -> becomes true, snackbar says enabled
+    try app_st.pushIntent(.{ .set_raw_jpeg_stacking = true });
+    try sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+    });
+    try testing.expect(app_st.viewer.navigation.stack_raw_jpeg);
+    try testing.expectEqualStrings(
+        "RAW+JPEG stacking enabled",
+        app_st.viewer.ui.snackbar.getMessage(),
+    );
+
+    // 4. Toggle pair stream on a pair
+    const raw_p = try app_st.viewer.navigation.directory_arena.allocator().dupe(
+        u8,
+        "DSC00941.ARW",
+    );
+    const jpg_p = try app_st.viewer.navigation.directory_arena.allocator().dupe(
+        u8,
+        "DSC00941.JPG",
+    );
+    try app_st.viewer.navigation.appendEntry(
+        allocator,
+        .{ .pair = .{ .raw_path = raw_p, .jpeg_path = jpg_p } },
+    );
+    app_st.viewer.navigation.current_index = 0;
+
+    const key = try app_st.cache.appendSlot(allocator, 0, .{
+        .loaded_cpu = .{
+            .surface = undefined,
+            .w = 1616.0,
+            .h = 1080.0,
+            .size_bytes = 500_000,
+        },
+    });
+    if (app_st.cache.get(key)) |entry| {
+        entry.raw_metadata = state.RawMetadata.init(6000.0, 4000.0);
+    }
+
+    try app_st.pushIntent(.toggle_pair_stream);
+    try sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+    });
+    try testing.expectEqualStrings(
+        "Stream: Standalone JPEG",
+        app_st.viewer.ui.snackbar.getMessage(),
+    );
+    try testing.expect(app_st.cache.get(key).?.is_promoting);
 }

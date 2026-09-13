@@ -66,6 +66,97 @@ fn isSupportedFile(filename: []const u8) bool {
     return isImageFile(filename) or isCbzFile(filename);
 }
 
+/// Returns the stem of `path` (the leaf basename without its file extension).
+pub fn getPathStem(path: []const u8) []const u8 {
+    const base = std.fs.path.basename(path);
+    const ext = std.fs.path.extension(base);
+    return base[0 .. base.len - ext.len];
+}
+
+/// Returns `true` if the file extension matches a standard JPEG format.
+pub fn isJpegExtension(ext: []const u8) bool {
+    return std.ascii.eqlIgnoreCase(ext, ".jpg") or
+        std.ascii.eqlIgnoreCase(ext, ".jpeg");
+}
+
+/// Returns `true` if the path points to a standard JPEG file and is not AppleDouble metadata.
+pub fn isJpegFile(filename: []const u8) bool {
+    if (isAppleDouble(filename)) return false;
+    return isJpegExtension(std.fs.path.extension(filename));
+}
+
+/// Consolidates adjacent sorted RAW and companion JPEG entries sharing the same
+/// base filename stem into unified `.pair` entries when `stack_enabled` is true.
+/// Consolidates matching (RAW, JPEG) file pairs sharing the same stem into `.pair` MediaEntries.
+/// Inspects contiguous blocks of entries sharing identical stems, correctly handling
+/// interleaved non-JPEG/non-RAW formats (e.g. .ARW, .bmp, .JPG).
+pub fn consolidateRawJpegPairs(
+    entries: *std.ArrayList(MediaEntry),
+    stack_enabled: bool,
+) void {
+    if (!stack_enabled or entries.items.len < 2) return;
+
+    var i: usize = 0;
+    while (i < entries.items.len) {
+        const item = entries.items[i];
+        const p = switch (item) {
+            .filesystem => |f| f.path,
+            else => {
+                i += 1;
+                continue;
+            },
+        };
+        const stem = getPathStem(p);
+
+        // Find the extent of the contiguous block of entries sharing this stem
+        var end = i + 1;
+        while (end < entries.items.len) {
+            const next_item = entries.items[end];
+            const next_p = switch (next_item) {
+                .filesystem => |f| f.path,
+                else => break,
+            };
+            if (!std.ascii.eqlIgnoreCase(stem, getPathStem(next_p))) break;
+            end += 1;
+        }
+
+        // Within entries[i .. end], find a RAW file and a JPEG file
+        var raw_idx: ?usize = null;
+        var jpeg_idx: ?usize = null;
+        for (entries.items[i..end], i..) |cand_item, cand_idx| {
+            const cand_p = cand_item.filesystem.path;
+            if (raw_idx == null and isRawFile(cand_p)) {
+                raw_idx = cand_idx;
+            } else if (jpeg_idx == null and isJpegFile(cand_p)) {
+                jpeg_idx = cand_idx;
+            }
+        }
+
+        if (raw_idx != null and jpeg_idx != null) {
+            const r_idx = raw_idx.?;
+            const j_idx = jpeg_idx.?;
+            const raw_p = entries.items[r_idx].filesystem.path;
+            const jpeg_p = entries.items[j_idx].filesystem.path;
+
+            const primary_idx = @min(r_idx, j_idx);
+            const secondary_idx = @max(r_idx, j_idx);
+
+            entries.items[primary_idx] = .{
+                .pair = .{
+                    .raw_path = raw_p,
+                    .jpeg_path = jpeg_p,
+                },
+            };
+            _ = entries.orderedRemove(secondary_idx);
+            // Re-examine the same group in case multiple pairs share the stem
+            continue;
+        }
+
+        // No more pairs can be formed in this stem group; advance to next group
+        i = end;
+    }
+}
+
 /// Holds parsed components of an archive entry virtual path
 /// (e.g. `path/to/archive.cbz::entry.jpg`).
 const ArchiveEntryPath = struct {
@@ -622,4 +713,121 @@ test "getParentDirBuf - path variations and edge cases" {
 
     // Empty path returns null
     try std.testing.expect(getParentDirBuf("", &buf) == null);
+}
+
+test "getPathStem and isJpegFile" {
+    try std.testing.expectEqualStrings("photo", getPathStem("photo.jpg"));
+    try std.testing.expectEqualStrings("photo", getPathStem("photo.ARW"));
+    try std.testing.expectEqualStrings("photo", getPathStem("sub/dir/photo.nef"));
+    try std.testing.expectEqualStrings("test.archive", getPathStem("test.archive.jpeg"));
+
+    try std.testing.expect(isJpegFile("img.jpg"));
+    try std.testing.expect(isJpegFile("img.JPEG"));
+    try std.testing.expect(!isJpegFile("img.arw"));
+    try std.testing.expect(!isJpegFile("._img.jpg"));
+}
+
+test "consolidateRawJpegPairs - bidirectional pairing and unmatched isolation" {
+    const allocator = std.testing.allocator;
+
+    var list: std.ArrayList(MediaEntry) = .empty;
+    defer {
+        for (list.items) |item| item.deinit(allocator);
+        list.deinit(allocator);
+    }
+
+    // 1. Sony ARW (< .JPG in alphabetical order)
+    const arw1 = try allocator.dupe(u8, "DSC00941.ARW");
+    const jpg1 = try allocator.dupe(u8, "DSC00941.JPG");
+    try list.append(allocator, .{ .filesystem = .{ .path = arw1 } });
+    try list.append(allocator, .{ .filesystem = .{ .path = jpg1 } });
+
+    // 2. Nikon NEF (> .JPG in alphabetical order)
+    const jpg2 = try allocator.dupe(u8, "DSC_0002.JPG");
+    const nef2 = try allocator.dupe(u8, "DSC_0002.NEF");
+    try list.append(allocator, .{ .filesystem = .{ .path = jpg2 } });
+    try list.append(allocator, .{ .filesystem = .{ .path = nef2 } });
+
+    // 3. Unmatched standalone PNG
+    const png3 = try allocator.dupe(u8, "single.png");
+    try list.append(allocator, .{ .filesystem = .{ .path = png3 } });
+
+    // 4. Unmatched standalone RAW
+    const raw4 = try allocator.dupe(u8, "lone.raf");
+    try list.append(allocator, .{ .filesystem = .{ .path = raw4 } });
+
+    try std.testing.expectEqual(@as(usize, 6), list.items.len);
+
+    consolidateRawJpegPairs(&list, true);
+
+    // Should collapse 6 entries to 4 entries (2 pairs + 2 standalone)
+    try std.testing.expectEqual(@as(usize, 4), list.items.len);
+
+    // Pair 1: DSC00941 (ARW + JPG)
+    try std.testing.expect(list.items[0].isPair());
+    try std.testing.expectEqualStrings("DSC00941.ARW", list.items[0].getRawPath().?);
+    try std.testing.expectEqualStrings("DSC00941.JPG", list.items[0].getJpegPath().?);
+
+    // Pair 2: DSC_0002 (NEF + JPG)
+    try std.testing.expect(list.items[1].isPair());
+    try std.testing.expectEqualStrings("DSC_0002.NEF", list.items[1].getRawPath().?);
+    try std.testing.expectEqualStrings("DSC_0002.JPG", list.items[1].getJpegPath().?);
+
+    // Standalone 3: single.png
+    try std.testing.expect(!list.items[2].isPair());
+    try std.testing.expectEqualStrings("single.png", list.items[2].getPath());
+
+    // Standalone 4: lone.raf
+    try std.testing.expect(!list.items[3].isPair());
+    try std.testing.expectEqualStrings("lone.raf", list.items[3].getPath());
+}
+
+test "consolidateRawJpegPairs - interleaved formats with identical stem" {
+    const allocator = std.testing.allocator;
+
+    var list: std.ArrayList(MediaEntry) = .empty;
+    defer {
+        for (list.items) |item| item.deinit(allocator);
+        list.deinit(allocator);
+    }
+
+    // Alphabetical order: .ARW < .bmp < .JPG
+    const arw = try allocator.dupe(u8, "DSC001.ARW");
+    const bmp = try allocator.dupe(u8, "DSC001.bmp");
+    const jpg = try allocator.dupe(u8, "DSC001.JPG");
+    try list.append(allocator, .{ .filesystem = .{ .path = arw } });
+    try list.append(allocator, .{ .filesystem = .{ .path = bmp } });
+    try list.append(allocator, .{ .filesystem = .{ .path = jpg } });
+
+    consolidateRawJpegPairs(&list, true);
+
+    // Should collapse 3 entries to 2 (1 pair + 1 standalone bmp)
+    try std.testing.expectEqual(@as(usize, 2), list.items.len);
+    try std.testing.expect(list.items[0].isPair());
+    try std.testing.expectEqualStrings("DSC001.ARW", list.items[0].getRawPath().?);
+    try std.testing.expectEqualStrings("DSC001.JPG", list.items[0].getJpegPath().?);
+
+    try std.testing.expect(!list.items[1].isPair());
+    try std.testing.expectEqualStrings("DSC001.bmp", list.items[1].getPath());
+}
+
+test "consolidateRawJpegPairs - disabled stacking leaves entries unchanged" {
+    const allocator = std.testing.allocator;
+
+    var list: std.ArrayList(MediaEntry) = .empty;
+    defer {
+        for (list.items) |item| item.deinit(allocator);
+        list.deinit(allocator);
+    }
+
+    const arw = try allocator.dupe(u8, "DSC001.ARW");
+    const jpg = try allocator.dupe(u8, "DSC001.JPG");
+    try list.append(allocator, .{ .filesystem = .{ .path = arw } });
+    try list.append(allocator, .{ .filesystem = .{ .path = jpg } });
+
+    consolidateRawJpegPairs(&list, false);
+
+    try std.testing.expectEqual(@as(usize, 2), list.items.len);
+    try std.testing.expect(!list.items[0].isPair());
+    try std.testing.expect(!list.items[1].isPair());
 }

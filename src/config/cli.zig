@@ -213,6 +213,7 @@ pub const ParsedArgs = struct {
     enable_blur: bool = true,
     show_title: bool = false,
     windowless: bool = false,
+    stack_raw_jpeg: bool = true,
     help: bool = false,
 
     /// Frees allocated memory associated with parsed command-line arguments.
@@ -252,6 +253,7 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
     var enable_blur = true;
     var show_title = false;
     var windowless = false;
+    var stack_raw_jpeg = true;
     var help = false;
 
     while (args_it.next()) |arg| {
@@ -266,6 +268,8 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
                 .no_blur => enable_blur = false,
                 .title => show_title = true,
                 .windowless => windowless = true,
+                .stack_raw_jpeg => stack_raw_jpeg = true,
+                .no_stack_raw_jpeg => stack_raw_jpeg = false,
                 .scale => {
                     if (args_it.next()) |val| {
                         if (std.meta.stringToEnum(ScaleMode, val)) |mode| {
@@ -299,6 +303,7 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
         .enable_blur = enable_blur,
         .show_title = show_title,
         .windowless = windowless,
+        .stack_raw_jpeg = stack_raw_jpeg,
         .help = help,
     };
 }

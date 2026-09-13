@@ -94,6 +94,7 @@ pub fn startAsyncPathScan(
     io: std.Io,
     path: []const u8,
     is_dir: bool,
+    stack_raw_jpeg: bool,
 ) !void {
     const dup_path = try allocator.dupe(u8, path);
     errdefer allocator.free(dup_path);
@@ -108,6 +109,7 @@ pub fn startAsyncPathScan(
         .target_path = dup_path,
         .is_dir = is_dir,
         .is_loading_files = is_loading_files,
+        .stack_raw_jpeg = stack_raw_jpeg,
     };
 
     errdefer is_loading_files.store(false, .release);

@@ -522,24 +522,38 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
                 // for metadata block
                 if (dims == null) {
                     if (exif.extractFujiRafMetadataLocation(header_buf[0..n])) |meta_loc| {
-                        var meta_tmp: [4096]u8 = undefined;
-                        const to_read: usize = @min(@as(usize, meta_loc.length), meta_tmp.len);
-                        var m_slices = [_][]u8{meta_tmp[0..to_read]};
-                        const mn = file.readPositional(
-                            io,
-                            &m_slices,
-                            meta_loc.file_offset,
-                        ) catch |err| blk: {
-                            std.log.warn(
-                                "probeMediaMetadata: Fuji RAF metadata readPositional failed " ++
-                                    "for '{s}': {any}",
-                                .{ f.path, err },
-                            );
-                            break :blk 0;
-                        };
-                        if (mn >= 4) {
-                            if (exif.parseFujiRafDimensions(meta_tmp[0..mn])) |fd| {
+                        if (meta_loc.length <= n and
+                            meta_loc.file_offset <= n -| meta_loc.length)
+                        {
+                            const start: usize = @intCast(meta_loc.file_offset);
+                            const len: usize = @intCast(meta_loc.length);
+                            const end: usize = start + len;
+                            const m_slice = header_buf[start..end];
+                            if (exif.parseFujiRafDimensions(m_slice)) |fd| {
                                 dims = .{ .w = fd.w, .h = fd.h };
+                            }
+                        } else {
+                            var meta_tmp: [4096]u8 = undefined;
+                            const m_len: usize = @intCast(meta_loc.length);
+                            const to_read: usize = @min(m_len, meta_tmp.len);
+                            var m_slices = [_][]u8{meta_tmp[0..to_read]};
+                            const mn = file.readPositional(
+                                io,
+                                &m_slices,
+                                meta_loc.file_offset,
+                            ) catch |err| blk: {
+                                std.log.warn(
+                                    "probeMediaMetadata: RAF metadata " ++
+                                        "failed for '{s}': {any}",
+                                    .{ f.path, err },
+                                );
+                                break :blk 0;
+                            };
+                            if (mn >= 4) {
+                                const m_sub = meta_tmp[0..mn];
+                                if (exif.parseFujiRafDimensions(m_sub)) |fd| {
+                                    dims = .{ .w = fd.w, .h = fd.h };
+                                }
                             }
                         }
                     }
@@ -623,6 +637,37 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
                 else
                     .none,
                 .has_embedded_thumbnail = has_thumb,
+            };
+        },
+        .pair => |p| {
+            // Probe companion JPEG header (first 64KB) for visible photograph dimensions,
+            // avoiding raw optical black calibration borders.
+            var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, p.jpeg_path, .{}) catch |err| {
+                std.log.warn(
+                    "probeMediaMetadata: openFile failed for pair JPEG '{s}': {any}",
+                    .{ p.jpeg_path, err },
+                );
+                return probeMediaMetadata(io, .{ .filesystem = .{ .path = p.raw_path } });
+            };
+            defer file.close(io);
+
+            var header_buf: [64 * 1024]u8 = undefined;
+            var slices = [_][]u8{&header_buf};
+            const n = file.readPositional(io, &slices, 0) catch 0;
+            if (n < 4) {
+                return probeMediaMetadata(io, .{ .filesystem = .{ .path = p.raw_path } });
+            }
+
+            const rot = exif.parseExifOrientation(header_buf[0..n]) orelse .normal;
+            const dims = parseImageDimensions(header_buf[0..n], "image/jpeg") orelse {
+                return probeMediaMetadata(io, .{ .filesystem = .{ .path = p.raw_path } });
+            };
+
+            return ProbedImageMetadata{
+                .dims = dims,
+                .orientation = rot,
+                .raw_metadata = RawMetadata.init(dims.w, dims.h),
+                .has_embedded_thumbnail = true,
             };
         },
         .archive_entry => |a| {
@@ -1142,6 +1187,9 @@ pub fn loadThumbnailSurface(
                 .unindexed => {},
             }
             return null;
+        },
+        .pair => |p| {
+            return loadThumbnailSurface(io, alloc, .{ .filesystem = .{ .path = p.raw_path } });
         },
     }
 }

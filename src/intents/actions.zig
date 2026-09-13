@@ -42,6 +42,8 @@ pub const OptionId = enum {
     test_mode,
     update_baselines,
     windowless,
+    stack_raw_jpeg,
+    no_stack_raw_jpeg,
 };
 
 /// Declarative schema describing a command-line option, its target app,
@@ -109,6 +111,8 @@ pub const ActionId = enum {
     mark_reject,
     unflag,
     cycle_view_mode,
+    toggle_raw_jpeg_stacking,
+    toggle_pair_stream,
 
     // Overlays & UI
     toggle_info,
@@ -939,6 +943,47 @@ pub const actions = [_]ActionDef{
         .shortcuts = &.{.{ .key = .char_v }},
         .intent = .cycle_view_mode,
     },
+    .{
+        .id = .toggle_raw_jpeg_stacking,
+        .title = "Toggle RAW+JPEG Stacking",
+        .shortcut_text = "Alt+J",
+        .description = "Toggle grouping of RAW and companion JPEG files",
+        .show_in_palette = true,
+        .shortcuts = &.{.{ .key = .char_j, .mod = .{ .alt = true } }},
+        .intent = .toggle_raw_jpeg_stacking,
+        .cli = &.{
+            .{
+                .id = .stack_raw_jpeg,
+                .target = .main,
+                .long = "--stack-raw-jpeg",
+                .description = "Group RAW and companion JPEG files into a single image",
+            },
+            .{
+                .id = .no_stack_raw_jpeg,
+                .target = .main,
+                .long = "--no-stack-raw-jpeg",
+                .description = "Display RAW and companion JPEG files as separate images",
+            },
+        },
+        .ipc = .{
+            .name = "stack_raw_jpeg",
+            .args = "<true|false|toggle>",
+            .description = "Configure or toggle RAW+JPEG file stacking",
+        },
+    },
+    .{
+        .id = .toggle_pair_stream,
+        .title = "Toggle RAW/JPEG Stream",
+        .shortcut_text = "J",
+        .description = "Toggle active display stream between RAW preview and companion JPEG",
+        .show_in_palette = true,
+        .shortcuts = &.{.{ .key = .char_j }},
+        .intent = .toggle_pair_stream,
+        .ipc = .{
+            .name = "toggle_stream",
+            .description = "Toggle active stream between RAW preview and companion JPEG",
+        },
+    },
 
     // --- Non-Palette Capabilities (CLI flags and IPC verbs) ---
     .{
@@ -1138,31 +1183,33 @@ pub const ipc_commands = blk: {
 test "actions registry projections" {
     const testing = std.testing;
 
-    // Palette count: 58 previous + 11 photo adjustment dialogs = 69
-    try testing.expectEqual(@as(usize, 69), palette_action_items.len);
+    // Palette count: 69 previous + 2 raw/jpeg pair actions = 71
+    try testing.expectEqual(@as(usize, 71), palette_action_items.len);
 
     // Exact index preservation
     try testing.expectEqualStrings("Navigate Directories...", palette_action_items[7].name);
     try testing.expectEqualStrings("Ctrl+O", palette_action_items[7].shortcut_text);
 
-    // Shortcuts: 54 previous + 4 triage keys (z, x, u, v) = 58
-    try testing.expectEqual(@as(usize, 58), flat_shortcuts.len);
+    // Shortcuts: 58 previous + 2 raw/jpeg keys (Alt+J, J) = 60
+    try testing.expectEqual(@as(usize, 60), flat_shortcuts.len);
     var total_sc: usize = 0;
     for (palette_action_items) |item| {
         total_sc += item.shortcuts.len;
     }
     try testing.expectEqual(total_sc, flat_shortcuts.len);
 
-    // CLI options projection
-    try testing.expectEqual(@as(usize, 5), action_cli_options.len);
+    // CLI options projection: 5 previous + 2 raw/jpeg options = 7
+    try testing.expectEqual(@as(usize, 7), action_cli_options.len);
     try testing.expectEqual(OptionId.blur, action_cli_options[0].id);
     try testing.expectEqual(OptionId.no_blur, action_cli_options[1].id);
     try testing.expectEqual(OptionId.title, action_cli_options[2].id);
     try testing.expectEqual(OptionId.windowless, action_cli_options[3].id);
-    try testing.expectEqual(OptionId.scale, action_cli_options[4].id);
+    try testing.expectEqual(OptionId.stack_raw_jpeg, action_cli_options[4].id);
+    try testing.expectEqual(OptionId.no_stack_raw_jpeg, action_cli_options[5].id);
+    try testing.expectEqual(OptionId.scale, action_cli_options[6].id);
 
-    // IPC commands projection: 18 previous + 4 triage commands (pick, reject, unflag, view) = 22
-    try testing.expectEqual(@as(usize, 22), ipc_commands.len);
+    // IPC commands projection: 22 previous + 2 raw/jpeg commands = 24
+    try testing.expectEqual(@as(usize, 24), ipc_commands.len);
 }
 
 test "actions registry invariants and consistency" {

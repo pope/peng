@@ -116,6 +116,12 @@ pub const EditAction = enum {
     reset,
 };
 
+pub const StackingAction = enum {
+    enable,
+    disable,
+    toggle,
+};
+
 pub const IpcCommand = union(enum) {
     zoom: f32,
     pan: struct { x: f32, y: f32 },
@@ -151,6 +157,8 @@ pub const IpcCommand = union(enum) {
     snackbar: SnackbarAction,
     windowless: WindowlessAction,
     crossfade: CrossfadeAction,
+    stack_raw_jpeg: StackingAction,
+    toggle_stream,
     palette: PaletteTarget,
     thumb: ThumbAction,
     debug: bool,
@@ -233,6 +241,12 @@ pub const IpcCommand = union(enum) {
                 .disable => return .{ .set_crossfade = false },
                 .toggle => return .toggle_crossfade,
             },
+            .stack_raw_jpeg => |action| switch (action) {
+                .enable => return .{ .set_raw_jpeg_stacking = true },
+                .disable => return .{ .set_raw_jpeg_stacking = false },
+                .toggle => return .toggle_raw_jpeg_stacking,
+            },
+            .toggle_stream => return .toggle_pair_stream,
             .palette => |target| {
                 const mode: intents.PaletteMode = switch (target.kind) {
                     .actions => .actions,
@@ -536,6 +550,28 @@ pub const IpcCommand = union(enum) {
             } else {
                 return .{ .crossfade = .toggle };
             }
+        } else if (std.mem.eql(u8, cmd, "stack_raw_jpeg")) {
+            if (it.next()) |val| {
+                const is_on = std.mem.eql(u8, val, "true") or
+                    std.mem.eql(u8, val, "enable") or
+                    std.mem.eql(u8, val, "on");
+                const is_off = std.mem.eql(u8, val, "false") or
+                    std.mem.eql(u8, val, "disable") or
+                    std.mem.eql(u8, val, "off");
+                if (is_on) {
+                    return .{ .stack_raw_jpeg = .enable };
+                } else if (is_off) {
+                    return .{ .stack_raw_jpeg = .disable };
+                } else if (std.mem.eql(u8, val, "toggle")) {
+                    return .{ .stack_raw_jpeg = .toggle };
+                } else {
+                    return error.InvalidArgument;
+                }
+            } else {
+                return .{ .stack_raw_jpeg = .toggle };
+            }
+        } else if (std.mem.eql(u8, cmd, "toggle_stream") or std.mem.eql(u8, cmd, "stream")) {
+            return .toggle_stream;
         } else if (std.mem.eql(u8, cmd, "compare")) {
             if (it.next()) |val| {
                 const is_on = std.mem.eql(u8, val, "true") or
@@ -817,6 +853,34 @@ test "IpcCommand parsing" {
     try std.testing.expectEqual(
         intents.AppIntent.toggle_crossfade,
         cmd_cf_toggle_word.toIntent().?,
+    );
+
+    const cmd_stack_true = try IpcCommand.parse("stack_raw_jpeg true");
+    try std.testing.expectEqual(StackingAction.enable, cmd_stack_true.stack_raw_jpeg);
+    try std.testing.expectEqual(
+        intents.AppIntent{ .set_raw_jpeg_stacking = true },
+        cmd_stack_true.toIntent().?,
+    );
+
+    const cmd_stack_off = try IpcCommand.parse("stack_raw_jpeg off");
+    try std.testing.expectEqual(StackingAction.disable, cmd_stack_off.stack_raw_jpeg);
+    try std.testing.expectEqual(
+        intents.AppIntent{ .set_raw_jpeg_stacking = false },
+        cmd_stack_off.toIntent().?,
+    );
+
+    const cmd_stack_toggle = try IpcCommand.parse("stack_raw_jpeg");
+    try std.testing.expectEqual(StackingAction.toggle, cmd_stack_toggle.stack_raw_jpeg);
+    try std.testing.expectEqual(
+        intents.AppIntent.toggle_raw_jpeg_stacking,
+        cmd_stack_toggle.toIntent().?,
+    );
+
+    const cmd_stream = try IpcCommand.parse("stream");
+    try std.testing.expectEqual(IpcCommand.toggle_stream, cmd_stream);
+    try std.testing.expectEqual(
+        intents.AppIntent.toggle_pair_stream,
+        cmd_stream.toIntent().?,
     );
 
     const cmd_cmp_true = try IpcCommand.parse("compare true");

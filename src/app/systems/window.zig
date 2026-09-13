@@ -1,21 +1,40 @@
+const state_pkg = @import("state");
 const std = @import("std");
-const FrameContext = @import("context.zig").FrameContext;
+
+const context = @import("context.zig");
+
+const FrameContext = context.FrameContext;
+const MediaEntry = state_pkg.MediaEntry;
+
+/// Formats the OS window title for the given media entry.
+/// For pairs (RAW+JPEG), appends " [RAW+JPG]" to the RAW image basename.
+fn formatWindowTitle(
+    entry: ?MediaEntry,
+    allocator: std.mem.Allocator,
+) []const u8 {
+    const media = entry orelse return "Peng Image Viewer";
+    if (media.isPair()) {
+        return std.fmt.allocPrint(
+            allocator,
+            "{s} [RAW+JPG]",
+            .{media.getBasename()},
+        ) catch media.getBasename();
+    }
+    return media.getBasename();
+}
 
 /// System Pass: Synchronizes OS window properties (title, fullscreen state) with AppState.
 ///
 /// Responsibilities:
-/// 1. Determines window title from active image basename or defaults to "Peng Image Viewer".
+/// 1. Determines window title from active image or defaults to "Peng Image Viewer".
 /// 2. Updates window title via SDL window handle only when the title string actually changes.
 /// 3. Maintains cached_title on the window display state.
 pub fn sysSyncWindow(ctx: FrameContext) void {
     const state = ctx.state;
-    var raw_title: []const u8 = "Peng Image Viewer";
-    const total_images = state.viewer.navigation.count();
-    if (total_images > 0) {
-        if (state.viewer.navigation.getCurrentImageEntry()) |media| {
-            raw_title = media.getBasename();
-        }
-    }
+    const raw_title = formatWindowTitle(
+        state.viewer.navigation.getCurrentImageEntry(),
+        ctx.frame_allocator,
+    );
 
     switch (state.viewer.display) {
         .windowed => |*win| {
@@ -43,3 +62,32 @@ pub fn sysSyncWindow(ctx: FrameContext) void {
         else => {},
     }
 }
+
+test "formatWindowTitle: returns default title when entry is null" {
+    const allocator = std.testing.allocator;
+    const title = formatWindowTitle(null, allocator);
+    try std.testing.expectEqualStrings("Peng Image Viewer", title);
+}
+
+test "formatWindowTitle: returns basename for filesystem entry" {
+    const allocator = std.testing.allocator;
+    const entry = MediaEntry{
+        .filesystem = .{ .path = "/photos/summer/vacation.jpg" },
+    };
+    const title = formatWindowTitle(entry, allocator);
+    try std.testing.expectEqualStrings("vacation.jpg", title);
+}
+
+test "formatWindowTitle: appends [RAW+JPG] for pair entry" {
+    const allocator = std.testing.allocator;
+    const entry = MediaEntry{
+        .pair = .{
+            .raw_path = "/photos/summer/vacation.ARW",
+            .jpeg_path = "/photos/summer/vacation.JPG",
+        },
+    };
+    const title = formatWindowTitle(entry, allocator);
+    defer allocator.free(title);
+    try std.testing.expectEqualStrings("vacation.ARW [RAW+JPG]", title);
+}
+

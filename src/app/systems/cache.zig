@@ -27,11 +27,13 @@ const FAST_SCROLL_THRESHOLD_MS: u64 = state_pkg.LOADING_GRACE_PERIOD_MS;
 /// - `index`: Image list index being decoded.
 /// - `entry_item`: Media entry being decoded.
 /// - `thumb_only`: If true, restricts decoding to low-resolution thumbnail for rapid scrolling.
+/// - `pair_target`: Stream target for stacked RAW+JPEG pairs.
 fn spawnCacheDecodeSlot(
     state: *AppState,
     index: usize,
     entry_item: MediaEntry,
     thumb_only: bool,
+    pair_target: state_pkg.PairStreamTarget,
 ) !void {
     const dup_entry = entry_item.dupe(state.allocator) catch |err| {
         std.log.err("Failed to dupe MediaEntry for decode worker: {}", .{err});
@@ -67,6 +69,7 @@ fn spawnCacheDecodeSlot(
         .has_gpu_device = state.gpu_device != null,
         .pixel_format = state.viewer.display.getPixelFormat(),
         .thumb_only = thumb_only,
+        .pair_target = pair_target,
         .current_generation = &state.cache.generation,
     };
 
@@ -277,6 +280,54 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
                 },
                 else => {},
             }
+
+            // Check for explicitly requested stream target toggle
+            if (entry.requested_target) |target| {
+                if (state.viewer.navigation.getMediaEntry(idx)) |media_item| {
+                    if (media_item.isPair() and state.workers.canSpawnDecode()) {
+                        entry.requested_target = null;
+                        entry.is_promoting = true;
+                        spawnCacheDecodeSlot(
+                            state,
+                            idx,
+                            media_item,
+                            false,
+                            target,
+                        ) catch |err| {
+                            entry.is_promoting = false;
+                            std.log.err("Failed to spawn requested pair decode: {}", .{err});
+                        };
+                    }
+                }
+            } else if (is_active_slot and !entry.is_promoting and
+                state.viewer.viewport.zoom_factor.get() > 1.0)
+            {
+                if (state.viewer.navigation.getMediaEntry(idx)) |media_item| {
+                    if (media_item.isPair() and entry.raw_metadata.isRaw()) {
+                        const loaded_w = entry.getLoadedWidth() orelse 0.0;
+                        const loaded_h = entry.getLoadedHeight() orelse 0.0;
+                        const is_downscaled = if (entry.raw_metadata.getSensorDims()) |s_dims|
+                            (loaded_w < s_dims.w * 0.85 or loaded_h < s_dims.h * 0.85)
+                        else if (entry.full_w > 0.0 and entry.full_h > 0.0)
+                            (loaded_w < entry.full_w * 0.85 or loaded_h < entry.full_h * 0.85)
+                        else
+                            false;
+                        if (is_downscaled and state.workers.canSpawnDecode()) {
+                            entry.is_promoting = true;
+                            spawnCacheDecodeSlot(
+                                state,
+                                idx,
+                                media_item,
+                                false,
+                                .standalone_jpeg,
+                            ) catch |err| {
+                                entry.is_promoting = false;
+                                std.log.err("Failed to spawn zoom promotion decode: {}", .{err});
+                            };
+                        }
+                    }
+                }
+            }
         }
     }
     state.viewer.stats.current_image_cache_hit = hit;
@@ -294,7 +345,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
             break :blk true;
         };
 
-        spawnCacheDecodeSlot(state, d, entry_opt.?, thumb_only) catch |err| {
+        spawnCacheDecodeSlot(state, d, entry_opt.?, thumb_only, .adaptive) catch |err| {
             std.log.err("Failed to spawn decode worker for index {}: {}", .{ d, err });
         };
     }
@@ -538,4 +589,44 @@ test "sysUpdateCache - active image without thumbnail spawns full decode during 
         .decoding => |dec| try std.testing.expect(dec.has_thread),
         else => unreachable,
     }
+}
+
+test "sysUpdateCache - zoom promotion on downscaled RAW preview" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    const raw_p = try state.viewer.navigation.directory_arena.allocator().dupe(u8, "DSC00941.ARW");
+    const jpg_p = try state.viewer.navigation.directory_arena.allocator().dupe(u8, "DSC00941.JPG");
+    try state.viewer.navigation.appendEntry(
+        allocator,
+        .{ .pair = .{ .raw_path = raw_p, .jpeg_path = jpg_p } },
+    );
+    state.viewer.navigation.current_index = 0;
+
+    // Slot 0 is loaded with a downscaled preview (1616x1080) on a 6000x4000 sensor
+    const key = try state.cache.appendSlot(allocator, 0, .{
+        .loaded_cpu = .{
+            .surface = undefined,
+            .w = 1616.0,
+            .h = 1080.0,
+            .size_bytes = 500_000,
+        },
+    });
+    if (state.cache.get(key)) |entry| {
+        entry.full_w = 1616.0;
+        entry.full_h = 1080.0;
+        entry.raw_metadata = state_pkg.RawMetadata.init(6000.0, 4000.0);
+    }
+
+    // When zoom is 1.0x, is_promoting remains false
+    const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
+    try sysUpdateCache(ctx);
+    try std.testing.expect(!state.cache.get(key).?.is_promoting);
+
+    // When zoom > 1.0x, zoom promotion triggers is_promoting = true
+    state.viewer.viewport.zoom_factor = state.clampZoomFactor(2.0);
+    try sysUpdateCache(ctx);
+    try std.testing.expect(state.cache.get(key).?.is_promoting);
 }

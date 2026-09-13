@@ -10,6 +10,7 @@ const std = @import("std");
 const ArchiveMediaEntry = state_pkg.ArchiveMediaEntry;
 const CacheKey = image.CacheKey;
 const MediaEntry = state_pkg.MediaEntry;
+const PairStreamTarget = state_pkg.PairStreamTarget;
 const RawMetadata = state_pkg.RawMetadata;
 const WorkerManager = manager.WorkerManager;
 
@@ -23,6 +24,7 @@ pub const DecodeArgs = struct {
     has_gpu_device: bool,
     pixel_format: u32,
     thumb_only: bool = false,
+    pair_target: PairStreamTarget = .adaptive,
     current_generation: *const std.atomic.Value(usize),
 };
 
@@ -267,15 +269,16 @@ fn convertAndScaleSurface(
     };
 }
 
-fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
+fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
     const workers = args.workers;
     const alloc = args.allocator;
     const io = args.io;
     const key = args.key;
 
-    if (isStale(workers, args, key)) return;
+    if (isStale(workers, args, key)) return true;
 
     const s = std.Io.Dir.statFile(std.Io.Dir.cwd(), io, path, .{}) catch |err| {
+        if (is_pair) return false;
         failDecodeWorker(
             workers,
             alloc,
@@ -284,11 +287,12 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
             "decodeWorker: statFile failed for '{s}': {}",
             .{ path, err },
         );
-        return;
+        return true;
     };
     const file_size: u64 = s.size;
 
     var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, path, .{}) catch |err| {
+        if (is_pair) return false;
         failDecodeWorker(
             workers,
             alloc,
@@ -297,7 +301,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
             "decodeWorker: openFile failed for '{s}': {}",
             .{ path, err },
         );
-        return;
+        return true;
     };
     defer file.close(io);
 
@@ -307,7 +311,8 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
     var h_slices = [_][]u8{header_buf[0..header_target]};
     const start_hdr_read = sdl.timer.getTicksNs();
     const header_n = file.readPositional(io, &h_slices, 0) catch |err| {
-        if (err == error.Canceled or workers.exiting.load(.acquire)) return;
+        if (err == error.Canceled or workers.exiting.load(.acquire)) return true;
+        if (is_pair) return false;
         failDecodeWorker(
             workers,
             alloc,
@@ -316,7 +321,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
             "decodeWorker: readPositional failed for '{s}': {}",
             .{ path, err },
         );
-        return;
+        return true;
     };
     const end_hdr_read = sdl.timer.getTicksNs();
     const header_read_time_ms =
@@ -354,7 +359,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
         }
         if (prev_loc_opt) |prev_loc| {
             const off: usize = @intCast(prev_loc.file_offset);
-            if (off + 4096 <= header_n) {
+            if (off <= header_n -| 4096) {
                 orientation = exif.parseExifOrientation(header_slice[off..header_n]) orelse .normal;
                 if (exif.extractJpegThumbnailLocation(header_slice[off..header_n])) |j_thumb| {
                     thumb_loc_opt = .{
@@ -383,11 +388,11 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
         var tiff_tail_off: u32 = 0;
         if (exif.probeTiffIfd0Offset(header_slice)) |ifd0_off| {
             if (ifd0_off >= header_n and ifd0_off < file_size) {
-                const tail_target: usize = @intCast(@min(file_size - ifd0_off, tail_buf.len));
+                const tail_target: usize = @intCast(@min(file_size -| ifd0_off, tail_buf.len));
                 if (tail_target > 0) {
                     var t_slices = [_][]u8{tail_buf[0..tail_target]};
                     const tn = file.readPositional(io, &t_slices, ifd0_off) catch |err| blk: {
-                        if (err == error.Canceled or workers.exiting.load(.acquire)) return;
+                        if (err == error.Canceled or workers.exiting.load(.acquire)) return true;
                         break :blk 0;
                     };
                     if (tn > 0) {
@@ -410,7 +415,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
         orientation = exif.parseExifOrientationFromSource(tiff_source) orelse .normal;
     }
 
-    if (isStale(workers, args, key)) return;
+    if (isStale(workers, args, key)) return true;
 
     if (orientation != .normal) {
         workers.event_queue.push(alloc, io, .{
@@ -428,8 +433,6 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
     // Fast scrubbing & instant placeholder thumbnail path
     if (args.has_gpu_device or args.thumb_only) {
         var thumb_surf: ?sdl.Surface = null;
-        // In thumb_only mode (rapid scrubbing), prioritize small thumbnail (<= 512KB) for 0.1ms decode.
-        // In settled viewing (!thumb_only), prioritize medium preview (<= 2MB) for instant 1080p Frame 1 crispness.
         const target_loc_opt = if (args.thumb_only)
             (thumb_loc_opt orelse med_loc_opt)
         else
@@ -444,7 +447,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
                 tloc.file_offset <= file_size -| tloc.length)
             {
                 const t_len: usize = @intCast(tloc.length);
-                if (tloc.file_offset + tloc.length <= header_n) {
+                if (tloc.file_offset <= header_n -| tloc.length) {
                     const t_off: usize = @intCast(tloc.file_offset);
                     _ = workers.thumb_header_hits.fetchAdd(1, .monotonic);
                     thumb_surf = sdl.Surface.loadConstMemOpt(header_slice[t_off .. t_off + t_len]);
@@ -468,7 +471,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
         if (thumb_surf) |t_surf| {
             if (isStale(workers, args, key)) {
                 t_surf.destroy();
-                return;
+                return true;
             }
             const full_w: f32 = if (raw_w > 0.0) raw_w else @floatFromInt(t_surf.w());
             const full_h: f32 = if (raw_h > 0.0) raw_h else @floatFromInt(t_surf.h());
@@ -493,12 +496,13 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
             context.wakeUpMainThread();
 
             if (args.thumb_only) {
-                return;
+                return true;
             }
         } else if (args.thumb_only) {
+            if (is_pair) return false;
             // If no small thumbnail available, emit dimensions_probed
             // to immediately establish canvas aspect ratio on Frame 1 without decoding pixels
-            if (isStale(workers, args, key)) return;
+            if (isStale(workers, args, key)) return true;
             workers.event_queue.push(alloc, io, .{
                 .dimensions_probed = .{
                     .key = key,
@@ -514,13 +518,14 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
                 std.log.err("Failed to push dimensions probed event: {}", .{err});
             };
             context.wakeUpMainThread();
-            return;
+            return true;
         }
     }
 
-    if (isStale(workers, args, key)) return;
+    if (isStale(workers, args, key)) return true;
 
     const prev_loc = prev_loc_opt orelse {
+        if (is_pair) return false;
         failDecodeWorker(
             workers,
             alloc,
@@ -529,10 +534,11 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
             "decodeWorker: no embedded preview found in RAW file '{s}'",
             .{path},
         );
-        return;
+        return true;
     };
 
     if (prev_loc.length == 0 or prev_loc.file_offset > file_size -| prev_loc.length) {
+        if (is_pair) return false;
         failDecodeWorker(
             workers,
             alloc,
@@ -541,64 +547,83 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
             "decodeWorker: invalid preview location in RAW file '{s}'",
             .{path},
         );
-        return;
+        return true;
     }
 
-    const prev_bytes = alloc.alloc(u8, prev_loc.length) catch |err| {
-        failDecodeWorker(
-            workers,
-            alloc,
-            io,
-            key,
-            "decodeWorker: alloc failed for preview in '{s}': {}",
-            .{ path, err },
-        );
-        return;
-    };
-    defer alloc.free(prev_bytes);
+    var prev_bytes: []const u8 = undefined;
+    var prev_allocated_buf: ?[]u8 = null;
+    defer if (prev_allocated_buf) |b| alloc.free(b);
 
-    const start_p_read = sdl.timer.getTicksNs();
-    var total_read: usize = 0;
-    while (total_read < prev_bytes.len) {
-        var p_slices = [_][]u8{prev_bytes[total_read..]};
-        const pn = file.readPositional(
-            io,
-            &p_slices,
-            prev_loc.file_offset + total_read,
-        ) catch |err| {
-            if (err == error.Canceled or workers.exiting.load(.acquire)) return;
+    var read_time_ms = header_read_time_ms;
+
+    if (prev_loc.file_offset <= header_n -| prev_loc.length) {
+        const off: usize = @intCast(prev_loc.file_offset);
+        const len: usize = @intCast(prev_loc.length);
+        prev_bytes = header_slice[off .. off + len];
+    } else {
+        const p_buf = alloc.alloc(u8, prev_loc.length) catch |err| {
+            if (is_pair) return false;
             failDecodeWorker(
                 workers,
                 alloc,
                 io,
                 key,
-                "decodeWorker: readPositional failed for preview in '{s}': {}",
+                "decodeWorker: alloc failed for preview in '{s}': {}",
                 .{ path, err },
             );
-            return;
+            return true;
         };
-        if (pn == 0) break;
-        total_read += pn;
+        prev_allocated_buf = p_buf;
+
+        const start_p_read = sdl.timer.getTicksNs();
+        var total_read: usize = 0;
+        while (total_read < p_buf.len) {
+            var p_slices = [_][]u8{p_buf[total_read..]};
+            const pn = file.readPositional(
+                io,
+                &p_slices,
+                prev_loc.file_offset + total_read,
+            ) catch |err| {
+                if (err == error.Canceled or
+                    workers.exiting.load(.acquire)) return true;
+                if (is_pair) return false;
+                failDecodeWorker(
+                    workers,
+                    alloc,
+                    io,
+                    key,
+                    "decodeWorker: readPositional failed " ++
+                        "for preview in '{s}': {}",
+                    .{ path, err },
+                );
+                return true;
+            };
+            if (pn == 0) break;
+            total_read += pn;
+        }
+        const end_p_read = sdl.timer.getTicksNs();
+        if (total_read < p_buf.len) {
+            if (is_pair) return false;
+            failDecodeWorker(
+                workers,
+                alloc,
+                io,
+                key,
+                "decodeWorker: incomplete preview read for '{s}'",
+                .{path},
+            );
+            return true;
+        }
+        read_time_ms = header_read_time_ms +
+            (@as(f64, @floatFromInt(end_p_read - start_p_read)) / 1_000_000.0);
+        prev_bytes = p_buf;
     }
-    const end_p_read = sdl.timer.getTicksNs();
-    if (total_read < prev_bytes.len) {
-        failDecodeWorker(
-            workers,
-            alloc,
-            io,
-            key,
-            "decodeWorker: incomplete preview read for '{s}'",
-            .{path},
-        );
-        return;
-    }
-    const read_time_ms = header_read_time_ms +
-        (@as(f64, @floatFromInt(end_p_read - start_p_read)) / 1_000_000.0);
 
     if (is_fuji and orientation == .normal) {
         if (exif.parseExifOrientation(prev_bytes)) |o| {
             orientation = o;
             if (orientation != .normal) {
+                if (isStale(workers, args, key)) return true;
                 workers.event_queue.push(alloc, io, .{
                     .exif_orientation_parsed = .{
                         .key = key,
@@ -616,6 +641,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
     const decode_time_ms = @as(f64, @floatFromInt(end_dec - start_dec)) / 1_000_000.0;
 
     if (surface == null) {
+        if (is_pair) return false;
         failDecodeWorker(
             workers,
             alloc,
@@ -624,12 +650,12 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
             "decodeWorker: failed to load RAW preview surface '{s}': {s}",
             .{ path, sdl.getError() },
         );
-        return;
+        return true;
     }
 
     if (isStale(workers, args, key)) {
         surface.?.destroy();
-        return;
+        return true;
     }
 
     const conv_res = convertAndScaleSurface(surface, args.pixel_format, args.has_gpu_device);
@@ -638,7 +664,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
 
     if (isStale(workers, args, key)) {
         if (final_surface) |surf| surf.destroy();
-        return;
+        return true;
     }
 
     if (final_surface) |f_surf| {
@@ -668,13 +694,16 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8) void {
             f_surf.destroy();
         };
         context.wakeUpMainThread();
+        return true;
     } else {
+        if (is_pair) return false;
         workers.event_queue.push(alloc, io, .{
             .decode_failed = .{
                 .key = key,
             },
         }) catch |err| std.log.err("Failed to push image decode event: {}", .{err});
         context.wakeUpMainThread();
+        return true;
     }
 }
 
@@ -729,7 +758,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         },
         .filesystem => |file_item| {
             if (core_fs.isRawFile(file_item.path)) {
-                decodeRawFile(args, file_item.path);
+                _ = decodeRawFile(args, file_item.path, false);
                 return;
             }
 
@@ -803,12 +832,102 @@ pub fn decodeWorker(args: *DecodeArgs) void {
             const end_read = sdl.timer.getTicksNs();
             read_time_ms = @as(f64, @floatFromInt(end_read - start_read)) / 1_000_000.0;
         },
+        .pair => |pair| {
+            if (args.thumb_only) {
+                if (decodeRawFile(args, pair.raw_path, true)) {
+                    return;
+                }
+            } else if (args.pair_target != .standalone_jpeg) {
+                if (decodeRawFile(args, pair.raw_path, true)) {
+                    return;
+                }
+            }
+
+            const s = std.Io.Dir.statFile(
+                std.Io.Dir.cwd(),
+                io,
+                pair.jpeg_path,
+                .{},
+            ) catch |err| {
+                failDecodeWorker(
+                    workers,
+                    alloc,
+                    io,
+                    key,
+                    "decodeWorker: statFile failed for companion JPEG '{s}': {}",
+                    .{ pair.jpeg_path, err },
+                );
+                return;
+            };
+            size_bytes = s.size;
+
+            const start_read = sdl.timer.getTicksNs();
+            var file = std.Io.Dir.openFile(
+                std.Io.Dir.cwd(),
+                io,
+                pair.jpeg_path,
+                .{},
+            ) catch |err| {
+                failDecodeWorker(
+                    workers,
+                    alloc,
+                    io,
+                    key,
+                    "decodeWorker: openFile failed for companion JPEG '{s}': {}",
+                    .{ pair.jpeg_path, err },
+                );
+                return;
+            };
+            defer file.close(io);
+
+            const file_size: usize = @intCast(s.size);
+            const target_read_size: usize = if (args.thumb_only)
+                @min(file_size, 256 * 1024)
+            else
+                file_size;
+
+            file_bytes = alloc.alloc(u8, target_read_size) catch |err| {
+                failDecodeWorker(
+                    workers,
+                    alloc,
+                    io,
+                    key,
+                    "decodeWorker: alloc failed for companion JPEG '{s}': {}",
+                    .{ pair.jpeg_path, err },
+                );
+                return;
+            };
+            is_allocated = true;
+
+            var r_buf: [4096]u8 = undefined;
+            var reader = file.reader(io, &r_buf);
+            reader.interface.readSliceAll(file_bytes) catch |err| {
+                if (err == error.Canceled or workers.exiting.load(.acquire)) return;
+                failDecodeWorker(
+                    workers,
+                    alloc,
+                    io,
+                    key,
+                    "decodeWorker: readSliceAll failed for companion JPEG '{s}': {}",
+                    .{ pair.jpeg_path, err },
+                );
+                return;
+            };
+            read_n = file_bytes.len;
+
+            const end_read = sdl.timer.getTicksNs();
+            read_time_ms = @as(f64, @floatFromInt(end_read - start_read)) / 1_000_000.0;
+        },
     }
 
     const header_n = @min(read_n, 256 * 1024);
     const header_buf = file_bytes[0..header_n];
 
-    const path = media_entry.getPath();
+    const path = switch (media_entry) {
+        .filesystem => |f| f.path,
+        .archive_entry => |a| a.entry_name,
+        .pair => |p| p.jpeg_path,
+    };
     const mime_type = image.detectMimeType(header_buf, path);
     const is_raw_archive = core_fs.isRawFile(path) or std.mem.startsWith(u8, mime_type, "image/x-");
 
@@ -862,6 +981,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     }
 
     if (orientation != .normal) {
+        if (isStale(workers, args, key)) return;
         workers.event_queue.push(alloc, io, .{
             .exif_orientation_parsed = .{
                 .key = key,
@@ -935,6 +1055,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     }
 
     if (args.thumb_only) {
+        if (isStale(workers, args, key)) return;
         const full_w: f32 = if (full_dims) |d| d.w else 0.0;
         const full_h: f32 = if (full_dims) |d| d.h else 0.0;
         workers.event_queue.push(alloc, io, .{
@@ -1570,3 +1691,191 @@ test "decodeWorker - progressive 3-tier loading for real DSC00941.ARW" {
         try std.testing.expect(full_image_seen);
     }
 }
+
+test "decodeWorker - progressive pair loading with PairStreamTarget" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    const jpg_file = "testfiles/images/000_0_1024x682.jpg";
+    var real_jpg = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, jpg_file, .{});
+    defer real_jpg.close(io);
+    const s = try std.Io.Dir.statFile(std.Io.Dir.cwd(), io, jpg_file, .{});
+    const jpg_bytes = try allocator.alloc(u8, s.size);
+    defer allocator.free(jpg_bytes);
+    var j_slices = [_][]u8{jpg_bytes};
+    _ = try real_jpg.readPositional(io, &j_slices, 0);
+
+    var tiff_buf = try allocator.alloc(u8, 100 + jpg_bytes.len);
+    defer allocator.free(tiff_buf);
+    @memset(tiff_buf, 0);
+
+    tiff_buf[0] = 'I';
+    tiff_buf[1] = 'I';
+    tiff_buf[2] = 0x2A;
+    tiff_buf[3] = 0x00;
+    std.mem.writeInt(u32, tiff_buf[4..8], 8, .little);
+
+    std.mem.writeInt(u16, tiff_buf[8..10], 4, .little);
+    var off: usize = 10;
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0100, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], 6000, .little);
+    off += 12;
+
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0101, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], 4000, .little);
+    off += 12;
+
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0112, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 3, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 8 ..][0..2], 1, .little);
+    off += 12;
+
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x014A, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], 60, .little);
+    off += 12;
+    std.mem.writeInt(u32, tiff_buf[off..][0..4], 0, .little);
+
+    off = 60;
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 2, .little);
+    off += 2;
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0201, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], 100, .little);
+    off += 12;
+
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0202, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], @intCast(jpg_bytes.len), .little);
+    off += 12;
+    std.mem.writeInt(u32, tiff_buf[off..][0..4], 0, .little);
+
+    @memcpy(tiff_buf[100 .. 100 + jpg_bytes.len], jpg_bytes);
+
+    const raw_file = "testfiles/current-run/mock_pair.arw";
+    var mock_file = try std.Io.Dir.createFile(std.Io.Dir.cwd(), io, raw_file, .{});
+    var wr_slices = [_][]const u8{tiff_buf};
+    _ = try mock_file.writePositional(io, &wr_slices, 0);
+    mock_file.close(io);
+    defer std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, raw_file) catch {};
+
+    var workers = WorkerManager{};
+    defer workers.drainAndQuiesce(io);
+    var current_gen: std.atomic.Value(usize) = .init(1);
+
+    // 1. thumb_only decodes RAW thumbnail
+    {
+        const pair = state_pkg.FilePair{
+            .raw_path = try allocator.dupe(u8, raw_file),
+            .jpeg_path = try allocator.dupe(u8, jpg_file),
+        };
+        const entry = MediaEntry{ .pair = pair };
+        const args = try allocator.create(DecodeArgs);
+        args.* = .{
+            .workers = &workers,
+            .allocator = allocator,
+            .io = io,
+            .key = .{ .index = 0, .generation = 1 },
+            .current_generation = &current_gen,
+            .entry = entry,
+            .has_gpu_device = true,
+            .pixel_format = sdl.PixelFormat.rgba32,
+            .thumb_only = true,
+            .pair_target = .adaptive,
+        };
+        _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
+        _ = workers.active_threads.fetchAdd(1, .monotonic);
+        decodeWorker(args);
+
+        var thumb_seen = false;
+        while (workers.event_queue.pop()) |*ev| {
+            defer ev.deinit(allocator);
+            if (ev.* == .thumb_decoded) {
+                thumb_seen = true;
+                try std.testing.expect(ev.thumb_decoded.raw_metadata.isRaw());
+            }
+        }
+        try std.testing.expect(thumb_seen);
+    }
+
+    // 2. pair_target = .standalone_jpeg decodes companion JPEG
+    {
+        const pair = state_pkg.FilePair{
+            .raw_path = try allocator.dupe(u8, raw_file),
+            .jpeg_path = try allocator.dupe(u8, jpg_file),
+        };
+        const entry = MediaEntry{ .pair = pair };
+        const args = try allocator.create(DecodeArgs);
+        args.* = .{
+            .workers = &workers,
+            .allocator = allocator,
+            .io = io,
+            .key = .{ .index = 1, .generation = 1 },
+            .current_generation = &current_gen,
+            .entry = entry,
+            .has_gpu_device = true,
+            .pixel_format = sdl.PixelFormat.rgba32,
+            .thumb_only = false,
+            .pair_target = .standalone_jpeg,
+        };
+        _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
+        _ = workers.active_threads.fetchAdd(1, .monotonic);
+        decodeWorker(args);
+
+        var jpeg_seen = false;
+        while (workers.event_queue.pop()) |*ev| {
+            defer ev.deinit(allocator);
+            if (ev.* == .image_decoded) {
+                jpeg_seen = true;
+                try std.testing.expect(!ev.image_decoded.raw_metadata.isRaw());
+                try std.testing.expectEqual(@as(f32, 1024.0), ev.image_decoded.w);
+                try std.testing.expectEqual(@as(f32, 682.0), ev.image_decoded.h);
+            }
+        }
+        try std.testing.expect(jpeg_seen);
+    }
+
+    // 3. pair_target = .adaptive settled decodes RAW preview
+    {
+        const pair = state_pkg.FilePair{
+            .raw_path = try allocator.dupe(u8, raw_file),
+            .jpeg_path = try allocator.dupe(u8, jpg_file),
+        };
+        const entry = MediaEntry{ .pair = pair };
+        const args = try allocator.create(DecodeArgs);
+        args.* = .{
+            .workers = &workers,
+            .allocator = allocator,
+            .io = io,
+            .key = .{ .index = 2, .generation = 1 },
+            .current_generation = &current_gen,
+            .entry = entry,
+            .has_gpu_device = true,
+            .pixel_format = sdl.PixelFormat.rgba32,
+            .thumb_only = false,
+            .pair_target = .adaptive,
+        };
+        _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
+        _ = workers.active_threads.fetchAdd(1, .monotonic);
+        decodeWorker(args);
+
+        var raw_seen = false;
+        while (workers.event_queue.pop()) |*ev| {
+            defer ev.deinit(allocator);
+            if (ev.* == .image_decoded) {
+                raw_seen = true;
+                try std.testing.expect(ev.image_decoded.raw_metadata.isRaw());
+            }
+        }
+        try std.testing.expect(raw_seen);
+    }
+}
+

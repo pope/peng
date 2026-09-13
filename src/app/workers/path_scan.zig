@@ -16,6 +16,7 @@ pub const PathScanArgs = struct {
     target_path: []const u8,
     is_dir: bool,
     is_loading_files: *std.atomic.Value(bool),
+    stack_raw_jpeg: bool = true,
 };
 
 /// Thread-safely duplicates a path string and pushes a `.path_discovered`
@@ -50,6 +51,7 @@ pub fn scanDirectoryThreadSafe(
     gpa: std.mem.Allocator,
     io: std.Io,
     dir_path: []const u8,
+    stack_raw_jpeg: bool,
 ) void {
     var dir = std.Io.Dir.openDir(std.Io.Dir.cwd(), io, dir_path, .{ .iterate = true }) catch |err| {
         std.log.warn(
@@ -61,9 +63,9 @@ pub fn scanDirectoryThreadSafe(
     defer dir.close(io);
 
     var it = dir.iterate();
-    var dir_entries: std.ArrayList([]const u8) = .empty;
+    var dir_entries: std.ArrayList(MediaEntry) = .empty;
     defer {
-        for (dir_entries.items) |name| gpa.free(name);
+        for (dir_entries.items) |item| item.deinit(gpa);
         dir_entries.deinit(gpa);
     }
 
@@ -77,39 +79,40 @@ pub fn scanDirectoryThreadSafe(
         if (workers.exiting.load(.acquire)) return;
         if (entry.kind == .file) {
             if (core_fs.isImageFile(entry.name)) {
-                const name_dup = gpa.dupe(u8, entry.name) catch |err| {
-                    std.log.err("Failed to dupe entry name '{s}': {}", .{ entry.name, err });
+                const full_path = std.fs.path.join(gpa, &.{ dir_path, entry.name }) catch |err| {
+                    std.log.err("Failed to join path for '{s}': {}", .{ entry.name, err });
                     continue;
                 };
-                dir_entries.append(gpa, name_dup) catch |err| {
-                    std.log.err("Failed to append entry name '{s}': {}", .{ entry.name, err });
-                    gpa.free(name_dup);
+                dir_entries.append(gpa, .{ .filesystem = .{ .path = full_path } }) catch |err| {
+                    std.log.err("Failed to append path '{s}': {}", .{ full_path, err });
+                    gpa.free(full_path);
                     continue;
                 };
             }
         }
     }
 
-    std.mem.sort([]const u8, dir_entries.items, {}, struct {
-        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
-            return std.ascii.lessThanIgnoreCase(a, b);
+    std.mem.sort(MediaEntry, dir_entries.items, {}, struct {
+        fn lessThan(_: void, a: MediaEntry, b: MediaEntry) bool {
+            return std.ascii.lessThanIgnoreCase(a.getBasename(), b.getBasename());
         }
     }.lessThan);
 
+    core_fs.consolidateRawJpegPairs(&dir_entries, stack_raw_jpeg);
+
     if (workers.exiting.load(.acquire)) return;
 
-    for (dir_entries.items) |name| {
-        const full_path = std.fs.path.join(gpa, &.{ dir_path, name }) catch |err| {
-            std.log.err("Failed to join path for '{s}': {}", .{ name, err });
+    for (dir_entries.items) |item| {
+        if (workers.exiting.load(.acquire)) return;
+        const dup_entry = item.dupe(gpa) catch |err| {
+            std.log.err("Failed to duplicate item: {}", .{err});
             continue;
         };
         workers.event_queue.push(gpa, io, .{
-            .path_discovered = .{
-                .entry = .{ .filesystem = .{ .path = full_path } },
-            },
+            .path_discovered = .{ .entry = dup_entry },
         }) catch |err| {
-            std.log.err("Failed to push path_discovered event for '{s}': {}", .{ full_path, err });
-            gpa.free(full_path);
+            std.log.err("Failed to push path_discovered event: {}", .{err});
+            dup_entry.deinit(gpa);
         };
         context.wakeUpMainThread();
     }
@@ -138,9 +141,10 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
         dir_entries.deinit(gpa);
     }
 
-    if (!is_dir and core_fs.isCbzFile(target_path)) {
+    if (core_fs.isCbzFile(target_path)) {
         core_fs.scanCbzImageEntries(gpa, io, target_path, &dir_entries) catch |err| {
-            std.log.err("Failed to scan CBZ image entries for '{s}': {}", .{ target_path, err });
+            std.log.err("pathScanWorker: failed to scan CBZ '{s}': {}", .{ target_path, err });
+            return;
         };
     } else {
         const dir_path =
@@ -195,6 +199,9 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
         }
     }.lessThan);
 
+    // Consolidate RAW + JPEG pairs sharing the same stem into unified .pair entries
+    core_fs.consolidateRawJpegPairs(&dir_entries, args.stack_raw_jpeg);
+
     if (workers.exiting.load(.acquire)) return;
 
     const dup_target = gpa.dupe(u8, target_path) catch return;
@@ -225,7 +232,7 @@ test "scanDirectoryThreadSafe - discovers and sorts images, ignores non-images" 
     var workers = WorkerManager{};
     defer workers.drainAndQuiesce(io);
 
-    scanDirectoryThreadSafe(&workers, allocator, io, "testfiles/images");
+    scanDirectoryThreadSafe(&workers, allocator, io, "testfiles/images", true);
 
     var batch: std.ArrayList(events.BackgroundEvent) = .empty;
     defer {

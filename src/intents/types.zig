@@ -396,6 +396,11 @@ pub const AppIntent = union(enum) {
     toggle_crossfade,
     set_crossfade: bool,
 
+    // RAW + JPEG stacking controls
+    toggle_raw_jpeg_stacking,
+    set_raw_jpeg_stacking: bool,
+    toggle_pair_stream,
+
     // Application lifecycle
     quit,
 };

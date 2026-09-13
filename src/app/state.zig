@@ -468,6 +468,15 @@ pub const AppState = struct {
                                     break :blk ".";
                                 }
                             },
+                            .pair => |p| {
+                                if (std.fs.path.dirname(p.raw_path)) |parent| {
+                                    preselect_child = std.fs.path.basename(p.raw_path);
+                                    break :blk parent;
+                                } else {
+                                    preselect_child = p.raw_path;
+                                    break :blk ".";
+                                }
+                            },
                         }
                     }
                     if (self.viewer.navigation.last_scanned_dir.items.len > 0) {
@@ -544,6 +553,7 @@ pub const AppState = struct {
         self.viewer.animations.setImmediate(.image_crossfade, 1.0);
 
         if (has_stat) {
+            const stack_raw = self.viewer.navigation.stack_raw_jpeg;
             if (stat.kind == .directory) {
                 try workers_mod.startAsyncPathScan(
                     &self.workers,
@@ -552,6 +562,7 @@ pub const AppState = struct {
                     self.io,
                     path,
                     true,
+                    stack_raw,
                 );
             } else if (core_fs.isCbzFile(path)) {
                 self.viewer.navigation.is_loading_files.store(true, .release);
@@ -563,6 +574,7 @@ pub const AppState = struct {
                     self.io,
                     path,
                     false,
+                    stack_raw,
                 );
             } else {
                 const dup = try self.viewer.navigation.directory_arena.allocator().dupe(u8, path);
@@ -579,6 +591,7 @@ pub const AppState = struct {
                     self.io,
                     path,
                     false,
+                    stack_raw,
                 );
             }
         }

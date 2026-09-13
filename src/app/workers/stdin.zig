@@ -35,7 +35,7 @@ pub fn stdinWorker(args: *StdinArgs) void {
         if (trimmed.len > 0) {
             if (std.Io.Dir.statFile(std.Io.Dir.cwd(), io, trimmed, .{})) |s| {
                 if (s.kind == .directory) {
-                    path_scan.scanDirectoryThreadSafe(workers, gpa, io, trimmed);
+                    path_scan.scanDirectoryThreadSafe(workers, gpa, io, trimmed, true);
                 } else if (core_fs.isImageFile(trimmed)) {
                     path_scan.appendPathThreadSafe(workers, gpa, io, trimmed);
                 }

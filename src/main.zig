@@ -218,6 +218,7 @@ fn initAppGraphicsAndState(init: std.process.Init) !?AppGraphicsAndState {
     state.viewer.ui.overlays.auto_title = !parsed.test_mode;
     state.viewer.ui.snackbar.enabled = !parsed.test_mode;
     state.viewer.navigation.crossfade = !parsed.test_mode;
+    state.viewer.navigation.stack_raw_jpeg = parsed.stack_raw_jpeg;
     if (parsed.show_title) {
         state.viewer.animations.setImmediate(.title_overlay, 1.0);
     }
@@ -354,6 +355,16 @@ fn exportClassificationsToStdout(nav: *const state_pkg.NavigationState, io: std.
             },
             .archive_entry => |a| {
                 _ = stdout_writer.interface.print("{s}\t{s}#{s}\n", .{ prefix, a.archive_path, a.entry_name }) catch return;
+            },
+            .pair => |p| {
+                _ = stdout_writer.interface.print(
+                    "{s}\t{s}\n",
+                    .{ prefix, p.raw_path },
+                ) catch return;
+                _ = stdout_writer.interface.print(
+                    "{s}\t{s}\n",
+                    .{ prefix, p.jpeg_path },
+                ) catch return;
             },
         }
     }

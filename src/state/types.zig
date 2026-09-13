@@ -38,7 +38,21 @@ pub const ArchiveMediaEntry = struct {
     seek_info: ArchiveSeekInfo = .unindexed,
 };
 
-/// Discriminated union representing either a filesystem path or a virtual entry inside an archive.
+/// Target stream selection for stacked RAW+JPEG file pairs.
+pub const PairStreamTarget = enum {
+    adaptive,
+    raw_preview,
+    standalone_jpeg,
+};
+
+/// Holds paths to paired RAW and JPEG files sharing the same base stem.
+pub const FilePair = struct {
+    raw_path: []const u8,
+    jpeg_path: []const u8,
+};
+
+/// Discriminated union representing either a filesystem path, a virtual entry inside
+/// an archive, or a stacked RAW+JPEG file pair.
 pub const MediaEntry = union(enum) {
     /// Standard file on local filesystem
     filesystem: struct {
@@ -48,11 +62,15 @@ pub const MediaEntry = union(enum) {
     /// Virtual file entry inside an archive (CBZ, CBR, ZIP)
     archive_entry: ArchiveMediaEntry,
 
+    /// Stacked RAW and companion JPEG file pair
+    pair: FilePair,
+
     /// Returns the leaf filename of the media entry (file basename or archive entry basename).
     pub fn getBasename(self: MediaEntry) []const u8 {
         return switch (self) {
             .filesystem => |f| std.fs.path.basename(f.path),
             .archive_entry => |a| std.fs.path.basename(a.entry_name),
+            .pair => |p| std.fs.path.basename(p.raw_path),
         };
     }
 
@@ -61,6 +79,7 @@ pub const MediaEntry = union(enum) {
         return switch (self) {
             .filesystem => |f| std.fs.path.dirname(f.path) orelse ".",
             .archive_entry => |a| std.fs.path.dirname(a.archive_path) orelse ".",
+            .pair => |p| std.fs.path.dirname(p.raw_path) orelse ".",
         };
     }
 
@@ -69,12 +88,34 @@ pub const MediaEntry = union(enum) {
         return switch (self) {
             .filesystem => |f| f.path,
             .archive_entry => |a| a.entry_name,
+            .pair => |p| p.raw_path,
         };
     }
 
     /// Returns `true` if this media item resides inside an archive container (e.g. CBZ).
     pub fn isArchive(self: MediaEntry) bool {
         return self == .archive_entry;
+    }
+
+    /// Returns `true` if this media item is a stacked RAW + JPEG pair.
+    pub fn isPair(self: MediaEntry) bool {
+        return self == .pair;
+    }
+
+    /// Returns the raw file path if this is a pair, or null.
+    pub fn getRawPath(self: MediaEntry) ?[]const u8 {
+        return switch (self) {
+            .pair => |p| p.raw_path,
+            else => null,
+        };
+    }
+
+    /// Returns the companion JPEG file path if this is a pair, or null.
+    pub fn getJpegPath(self: MediaEntry) ?[]const u8 {
+        return switch (self) {
+            .pair => |p| p.jpeg_path,
+            else => null,
+        };
     }
 
     /// Deeply duplicates string paths belonging to this media entry using `allocator`.
@@ -90,6 +131,17 @@ pub const MediaEntry = union(enum) {
                     .seek_info = a.seek_info,
                 },
             },
+            .pair => |p| blk: {
+                const raw = try allocator.dupe(u8, p.raw_path);
+                errdefer allocator.free(raw);
+                const jpeg = try allocator.dupe(u8, p.jpeg_path);
+                break :blk .{
+                    .pair = .{
+                        .raw_path = raw,
+                        .jpeg_path = jpeg,
+                    },
+                };
+            },
         };
     }
 
@@ -100,6 +152,10 @@ pub const MediaEntry = union(enum) {
             .archive_entry => |a| {
                 allocator.free(a.archive_path);
                 allocator.free(a.entry_name);
+            },
+            .pair => |p| {
+                allocator.free(p.raw_path);
+                allocator.free(p.jpeg_path);
             },
         }
     }
@@ -1040,6 +1096,26 @@ pub const CacheEntry = struct {
     full_h: f32 = 0.0,
     orientation: Orientation = .normal,
     raw_metadata: RawMetadata = .none,
+    is_promoting: bool = false,
+    requested_target: ?PairStreamTarget = null,
+
+    /// Returns the pixel width of the currently loaded surface or texture, or null if not loaded.
+    pub fn getLoadedWidth(self: CacheEntry) ?f32 {
+        return switch (self.status) {
+            .loaded_gpu => |gpu| gpu.w,
+            .loaded_cpu => |cpu| @floatFromInt(cpu.surface.w()),
+            else => null,
+        };
+    }
+
+    /// Returns the pixel height of the currently loaded surface or texture, or null if not loaded.
+    pub fn getLoadedHeight(self: CacheEntry) ?f32 {
+        return switch (self.status) {
+            .loaded_gpu => |gpu| gpu.h,
+            .loaded_cpu => |cpu| @floatFromInt(cpu.surface.h()),
+            else => null,
+        };
+    }
 
     /// Deinitializes thumbnail texture and releases any loaded CPU surface or GPU texture.
     pub fn deinit(self: *CacheEntry, gpu_device: ?sdl.gpu.Device) void {
@@ -1634,4 +1710,35 @@ test "ImageEdits and ParamDescriptor exhaustive verification" {
     try std.testing.expect(edits.hasEdits());
     edits.reset();
     try std.testing.expect(!edits.hasEdits());
+}
+
+test "MediaEntry - pair dupe, deinit, and accessors" {
+    const allocator = std.testing.allocator;
+    const raw = try allocator.dupe(u8, "photos/DSC00941.ARW");
+    errdefer allocator.free(raw);
+    const jpg = try allocator.dupe(u8, "photos/DSC00941.JPG");
+    errdefer allocator.free(jpg);
+
+    const entry = MediaEntry{
+        .pair = .{
+            .raw_path = raw,
+            .jpeg_path = jpg,
+        },
+    };
+    defer entry.deinit(allocator);
+
+    try std.testing.expect(entry.isPair());
+    try std.testing.expect(!entry.isArchive());
+    try std.testing.expectEqualStrings("DSC00941.ARW", entry.getBasename());
+    try std.testing.expectEqualStrings("photos", entry.getContainerName());
+    try std.testing.expectEqualStrings("photos/DSC00941.ARW", entry.getPath());
+    try std.testing.expectEqualStrings("photos/DSC00941.ARW", entry.getRawPath().?);
+    try std.testing.expectEqualStrings("photos/DSC00941.JPG", entry.getJpegPath().?);
+
+    const duped = try entry.dupe(allocator);
+    defer duped.deinit(allocator);
+
+    try std.testing.expect(duped.isPair());
+    try std.testing.expectEqualStrings("photos/DSC00941.ARW", duped.getRawPath().?);
+    try std.testing.expectEqualStrings("photos/DSC00941.JPG", duped.getJpegPath().?);
 }

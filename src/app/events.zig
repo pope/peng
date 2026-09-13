@@ -37,11 +37,16 @@ pub fn drainWorkerEvents(state: *AppState) bool {
             .thumb_decoded => |t| handleExifThumbnailEvent(state, t),
             .image_decoded => |*d| handleImageDecodedEvent(state, d),
             .decode_failed => |f| {
-                _ = state.cache.updateStatus(f.key, .failed);
                 if (state.cache.get(f.key)) |entry| {
+                    entry.is_promoting = false;
+                    if (entry.status != .loaded_gpu and entry.status != .loaded_cpu) {
+                        entry.status = .failed;
+                    }
                     if (entry.thumbnail == .pending or entry.thumbnail == .none) {
                         entry.thumbnail = .not_available;
                     }
+                } else {
+                    _ = state.cache.updateStatus(f.key, .failed);
                 }
             },
             .path_discovered => |p| handleDirScannedEvent(state, p),
@@ -223,6 +228,7 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
                 }
                 entry.raw_metadata = decoded_data.raw_metadata;
                 entry.orientation = decoded_data.orientation;
+                entry.is_promoting = false;
                 if (entry.full_w <= 0.0 or entry.full_h <= 0.0) {
                     if (decoded_data.raw_metadata.getSensorDims()) |s_dims| {
                         entry.full_w = s_dims.w;
@@ -315,6 +321,7 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
             }
             entry.raw_metadata = decoded_data.raw_metadata;
             entry.orientation = decoded_data.orientation;
+            entry.is_promoting = false;
             if (entry.full_w <= 0.0 or entry.full_h <= 0.0) {
                 if (decoded_data.raw_metadata.getSensorDims()) |s_dims| {
                     entry.full_w = s_dims.w;
@@ -364,6 +371,22 @@ fn handleDirScannedEvent(state: *AppState, scanned_data: events.PathDiscoveredPa
     }
 }
 
+fn pathMatchesTarget(path: []const u8, target: []const u8) bool {
+    if (std.mem.eql(u8, path, target)) return true;
+    const p = if (std.mem.startsWith(u8, path, "./")) path[2..] else path;
+    const t = if (std.mem.startsWith(u8, target, "./")) target[2..] else target;
+    return std.mem.eql(u8, p, t);
+}
+
+fn entryMatchesTarget(item: MediaEntry, target: []const u8) bool {
+    return switch (item) {
+        .filesystem => |f| pathMatchesTarget(f.path, target),
+        .archive_entry => |a| pathMatchesTarget(a.archive_path, target),
+        .pair => |p| pathMatchesTarget(p.raw_path, target) or
+            pathMatchesTarget(p.jpeg_path, target),
+    };
+}
+
 fn handleDirectoryScanResultEvent(
     state: *AppState,
     result_data: events.DirectoryScanResultPayload,
@@ -387,14 +410,9 @@ fn handleDirectoryScanResultEvent(
     } else {
         var target_idx_in_dir: ?usize = null;
         for (result_data.paths, 0..) |item, i| {
-            switch (item) {
-                .filesystem => |f| {
-                    if (std.mem.eql(u8, f.path, result_data.target_path)) {
-                        target_idx_in_dir = i;
-                        break;
-                    }
-                },
-                else => {},
+            if (entryMatchesTarget(item, result_data.target_path)) {
+                target_idx_in_dir = i;
+                break;
             }
         }
 
@@ -408,18 +426,9 @@ fn handleDirectoryScanResultEvent(
             state.viewer.navigation.appendEntry(state.allocator, dup) catch |err| {
                 std.log.err("Failed to append image to list: {}", .{err});
             };
-            if (target_idx_in_dir == null) switch (item) {
-                .filesystem => |f| {
-                    if (std.mem.eql(u8, f.path, result_data.target_path)) {
-                        target_idx_in_dir = i;
-                    }
-                },
-                .archive_entry => |a| {
-                    if (std.mem.eql(u8, a.archive_path, result_data.target_path)) {
-                        target_idx_in_dir = i;
-                    }
-                },
-            };
+            if (target_idx_in_dir == null and entryMatchesTarget(item, result_data.target_path)) {
+                target_idx_in_dir = i;
+            }
         }
 
         if (target_idx_in_dir) |target_i| {

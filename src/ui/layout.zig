@@ -392,6 +392,11 @@ fn renderTitlePill(
     }
 
     var extra_w: f32 = 0.0;
+    const is_pair_item = (ui_model.current_image_entry != null and
+        ui_model.current_image_entry.?.isPair());
+    if (is_pair_item) {
+        extra_w += 78.0; // RAW+JPG badge width + gap 14
+    }
     if (ui_model.manga_mode) {
         extra_w += 48.0; // RTL badge width (padding 12 + border 2 + text ~20) + gap 14
     }
@@ -529,6 +534,27 @@ fn renderTitlePill(
             })({
                 clay.text("RTL", .{
                     .color = theme.withAlpha(theme.peach, progress),
+                    .font_size = 11,
+                    .font_id = 0,
+                });
+            });
+        }
+
+        if (is_pair_item) {
+            clay.UI()(.{
+                .layout = .{
+                    .sizing = .{ .w = .fit, .h = .fit },
+                    .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
+                },
+                .background_color = theme.withAlpha(theme.crust, progress),
+                .corner_radius = .all(4),
+                .border = .{
+                    .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+                    .color = theme.withAlpha(theme.mauve, progress),
+                },
+            })({
+                clay.text("RAW+JPG", .{
+                    .color = theme.withAlpha(theme.mauve, progress),
                     .font_size = 11,
                     .font_id = 0,
                 });
