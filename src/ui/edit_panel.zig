@@ -17,67 +17,115 @@ pub const PANEL_WIDTH: f32 = state.EDIT_PANEL_WIDTH;
 pub const PANEL_PADDING: f32 = state.EDIT_PANEL_PADDING;
 pub const CONTENT_WIDTH: f32 = PANEL_WIDTH - (PANEL_PADDING * 2.0);
 
-/// Formats brightness float value into a signed integer percentage string.
-pub fn formatBrightness(allocator: std.mem.Allocator, val: f32) ![]const u8 {
+/// Formats an edit parameter value into its display string.
+/// Uses static string literals for neutral defaults (zero-allocation)
+/// and allocates formatted strings in frame_allocator for active values.
+pub fn formatValue(
+    allocator: std.mem.Allocator,
+    desc: state.ParamDescriptor,
+    val: f32,
+) ![]const u8 {
     if (std.math.isNan(val) or std.math.isInf(val)) {
-        return "0%";
+        return switch (desc.display_kind) {
+            .percent => "0%",
+            .multiplier => "1.00x",
+            .temperature, .tint => "0",
+            .ratio_percent => "100%",
+        };
     }
-    const pct = @as(i32, @intFromFloat(@round(val * 100.0)));
-    if (pct > 0) {
-        return try std.fmt.allocPrint(allocator, "+{d}%", .{pct});
-    } else if (pct < 0) {
-        return try std.fmt.allocPrint(allocator, "{d}%", .{pct});
-    } else {
-        return "0%";
+
+    switch (desc.display_kind) {
+        .percent => {
+            const pct = @as(i32, @intFromFloat(@round(val * 100.0)));
+            if (pct == 0) return "0%";
+            if (pct > 0) {
+                return try std.fmt.allocPrint(allocator, "+{d}%", .{pct});
+            }
+            return try std.fmt.allocPrint(allocator, "{d}%", .{pct});
+        },
+        .multiplier => {
+            if (@abs(val - 1.0) < 1e-4) return "1.00x";
+            return try std.fmt.allocPrint(allocator, "{d:.2}x", .{val});
+        },
+        .ratio_percent => {
+            const pct = @as(i32, @intFromFloat(@round(val * 100.0)));
+            if (pct == 100) return "100%";
+            if (pct == 50) return "50%";
+            if (pct == 0) return "0%";
+            return try std.fmt.allocPrint(allocator, "{d}%", .{pct});
+        },
+        .temperature => {
+            const val_int = @as(i32, @intFromFloat(@round(val * 100.0)));
+            if (val_int == 0) return "0";
+            if (val_int > 0) {
+                return try std.fmt.allocPrint(
+                    allocator,
+                    "+{d} (Warm)",
+                    .{val_int},
+                );
+            }
+            return try std.fmt.allocPrint(
+                allocator,
+                "{d} (Cool)",
+                .{val_int},
+            );
+        },
+        .tint => {
+            const val_int = @as(i32, @intFromFloat(@round(val * 100.0)));
+            if (val_int == 0) return "0";
+            if (val_int > 0) {
+                return try std.fmt.allocPrint(
+                    allocator,
+                    "+{d} (Magenta)",
+                    .{val_int},
+                );
+            }
+            return try std.fmt.allocPrint(
+                allocator,
+                "{d} (Green)",
+                .{val_int},
+            );
+        },
     }
 }
 
-/// Formats contrast float value into a decimal multiplier string.
-pub fn formatContrast(allocator: std.mem.Allocator, val: f32) ![]const u8 {
-    if (std.math.isNan(val) or std.math.isInf(val)) {
-        return "1.00x";
-    }
-    if (@abs(val - 1.0) < 1e-4) {
-        return "1.00x";
-    }
-    return try std.fmt.allocPrint(allocator, "{d:.2}x", .{val});
+/// Convenience formatter for brightness parameter.
+pub fn formatBrightness(allocator: std.mem.Allocator, val: f32) ![]const u8 {
+    return formatValue(allocator, state.getDescriptor(.brightness), val);
 }
+
+/// Convenience formatter for contrast parameter.
+pub fn formatContrast(allocator: std.mem.Allocator, val: f32) ![]const u8 {
+    return formatValue(allocator, state.getDescriptor(.contrast), val);
+}
+
+pub const getSliderElementNames = state.getSliderElementNames;
 
 /// Renders an interactive slider row with parameter title, value readout,
 /// background groove, relative fill bar, landmark notch, and thumb knob.
 pub fn renderSlider(
     param: EditParam,
-    label: []const u8,
     current_val: f32,
-    min_val: f32,
-    max_val: f32,
-    neutral_val: f32,
     formatted_value: []const u8,
     progress: f32,
     is_active: bool,
 ) void {
-    const track_id_str = switch (param) {
-        .brightness => "SliderTrack_Brightness",
-        .contrast => "SliderTrack_Contrast",
-    };
-    const reset_id_str = switch (param) {
-        .brightness => "SliderReset_Brightness",
-        .contrast => "SliderReset_Contrast",
-    };
-    const track_id = clay.getElementId(track_id_str);
+    const desc = state.getDescriptor(param);
+    const names = getSliderElementNames(param);
+    const track_id = clay.getElementId(names.track);
     const is_hovered = clay.pointerOver(track_id);
-    const is_modified = @abs(current_val - neutral_val) > 1e-4;
+    const is_modified = @abs(current_val - desc.default) > 1e-4;
 
-    const span = max_val - min_val;
+    const span = desc.max - desc.min;
     const is_non_finite =
         std.math.isNan(current_val) or std.math.isInf(current_val);
-    const safe_val = if (is_non_finite) neutral_val else current_val;
+    const safe_val = if (is_non_finite) desc.default else current_val;
     const t = if (span > 0.0)
-        std.math.clamp((safe_val - min_val) / span, 0.0, 1.0)
+        std.math.clamp((safe_val - desc.min) / span, 0.0, 1.0)
     else
         0.0;
     const t_neutral = if (span > 0.0)
-        std.math.clamp((neutral_val - min_val) / span, 0.0, 1.0)
+        std.math.clamp((desc.default - desc.min) / span, 0.0, 1.0)
     else
         0.0;
 
@@ -113,7 +161,7 @@ pub fn renderSlider(
             })({
                 const lbl_color =
                     if (is_modified) theme.text else theme.subtext0;
-                clay.text(label, .{
+                clay.text(desc.label, .{
                     .color = a(lbl_color, progress),
                     .font_size = 13,
                     .font_id = 0,
@@ -121,7 +169,7 @@ pub fn renderSlider(
             });
 
             // Value / Reset button
-            const reset_elem_id = clay.getElementId(reset_id_str);
+            const reset_elem_id = clay.getElementId(names.reset);
             const reset_hovered = clay.pointerOver(reset_elem_id);
             clay.UI()(.{
                 .id = reset_elem_id,
@@ -161,31 +209,24 @@ pub fn renderSlider(
                 .child_alignment = .{ .x = .left, .y = .center },
             },
         })({
-            // 1. Background Groove Bar
+            // 1. Background Track Groove
             clay.UI()(.{
                 .layout = .{
                     .sizing = .{ .w = .fixed(track_w), .h = .fixed(4) },
                 },
                 .background_color = a(theme.surface0, progress),
                 .corner_radius = .all(2),
-                .floating = .{
-                    .attach_to = .to_parent,
-                    .attach_points = .{
-                        .element = .left_center,
-                        .parent = .left_center,
-                    },
-                    .z_index = 0,
-                    .pointer_capture_mode = .passthrough,
-                },
             })({});
 
-            // 2. Center Landmark Notch
-            const notch_x = neutral_center_x - 1.0;
+            // 2. Center/Neutral Landmark Notch
+            const notch_w: f32 = 2.0;
+            const notch_h: f32 = 8.0;
+            const notch_x = neutral_center_x - (notch_w * 0.5);
             clay.UI()(.{
                 .layout = .{
-                    .sizing = .{ .w = .fixed(2), .h = .fixed(8) },
+                    .sizing = .{ .w = .fixed(notch_w), .h = .fixed(notch_h) },
                 },
-                .background_color = a(theme.overlay0, progress),
+                .background_color = a(theme.surface1, progress),
                 .corner_radius = .all(1),
                 .floating = .{
                     .attach_to = .to_parent,
@@ -199,13 +240,16 @@ pub fn renderSlider(
                 },
             })({});
 
-            // 3. Colored Adjustment Fill Bar
+            // 3. Relative Fill Bar (neutral landmark to thumb center)
             if (fill_w > 0.5) {
                 clay.UI()(.{
                     .layout = .{
-                        .sizing = .{ .w = .fixed(fill_w), .h = .fixed(4) },
+                        .sizing = .{
+                            .w = .fixed(fill_w),
+                            .h = .fixed(4),
+                        },
                     },
-                    .background_color = a(theme.mauve, progress),
+                    .background_color = a(theme.mauve, progress * 0.7),
                     .corner_radius = .all(2),
                     .floating = .{
                         .attach_to = .to_parent,
@@ -222,10 +266,7 @@ pub fn renderSlider(
 
             // 4. Thumb Knob Handle
             clay.UI()(.{
-                .id = clay.getElementId(switch (param) {
-                    .brightness => "SliderKnob_Brightness",
-                    .contrast => "SliderKnob_Contrast",
-                }),
+                .id = clay.getElementId(names.knob),
                 .layout = .{
                     .sizing = .{ .w = .fixed(knob_d), .h = .fixed(knob_d) },
                 },
@@ -264,9 +305,6 @@ pub fn renderEditPanel(
     const has_adjustments = vp.hasAdjustments();
     const is_comparing = vp.compare_original;
 
-    const b_str = try formatBrightness(frame_allocator, vp.brightness);
-    const c_str = try formatContrast(frame_allocator, vp.contrast);
-
     clay.UI()(.{
         .id = clay.getElementId("EditSidePanel"),
         .layout = .{
@@ -281,9 +319,9 @@ pub fn renderEditPanel(
                 .top = 20,
                 .bottom = 20,
             },
-            .child_gap = 18,
+            .child_gap = 16,
         },
-        .clip = .{ .horizontal = true, .vertical = true },
+        .clip = .{ .horizontal = true, .vertical = false },
         .background_color = a(theme.mantle, progress),
         .border = .{
             .width = .{ .left = 1, .right = 0, .top = 0, .bottom = 0 },
@@ -408,56 +446,139 @@ pub fn renderEditPanel(
         })({});
 
         // =====================================================================
-        // Section: Light & Exposure
+        // Scrollable Adjustments List (Scrolls vertically when window is small)
         // =====================================================================
+        const scroll_id = clay.getElementId("EditPanelScrollList");
+        const scroll_data = clay.cdefs.Clay_GetScrollContainerData(scroll_id);
+        const scroll_offset = if (scroll_data.found)
+            scroll_data.scroll_position.*
+        else
+            clay.Vector2{ .x = 0, .y = 0 };
+
         clay.UI()(.{
+            .id = scroll_id,
             .layout = .{
-                .sizing = .{ .w = .fixed(CONTENT_WIDTH), .h = .fit },
+                .sizing = .{ .w = .fixed(CONTENT_WIDTH), .h = .grow },
                 .direction = .top_to_bottom,
-                .child_gap = 14,
+                .child_gap = 16,
+            },
+            .clip = .{
+                .horizontal = false,
+                .vertical = true,
+                .child_offset = scroll_offset,
             },
         })({
-            // Section Category Label
-            clay.text("LIGHT & EXPOSURE", .{
-                .color = a(theme.subtext0, progress),
-                .font_size = 11,
-                .font_id = 0,
+            // -----------------------------------------------------------------
+            // Section 1: Light & Tone
+            // -----------------------------------------------------------------
+            clay.UI()(.{
+                .layout = .{
+                    .sizing = .{ .w = .fixed(CONTENT_WIDTH), .h = .fit },
+                    .direction = .top_to_bottom,
+                    .child_gap = 12,
+                },
+            })({
+                // Section Category Label
+                clay.UI()(.{
+                    .layout = .{
+                        .sizing = .{ .w = .grow, .h = .fit },
+                        .padding = .{ .top = 10, .bottom = 14 },
+                    },
+                })({
+                    clay.text("LIGHT & TONE", .{
+                        .color = a(theme.subtext0, progress),
+                        .font_size = 11,
+                        .font_id = 0,
+                    });
+                });
+
+                const active_sl = ui_model.overlays.edit_panel.active_slider;
+
+                inline for (&[_]EditParam{
+                    .brightness,
+                    .contrast,
+                    .contrast_blend,
+                    .highlights,
+                    .shadows,
+                    .whites,
+                    .blacks,
+                }) |p| {
+                    const desc = state.getDescriptor(p);
+                    const str = try formatValue(
+                        frame_allocator,
+                        desc,
+                        vp.edits.get(p),
+                    );
+                    const is_active = !is_comparing and active_sl == p;
+                    renderSlider(p, vp.edits.get(p), str, progress, is_active);
+                }
             });
 
-            const active_sl = ui_model.overlays.edit_panel.active_slider;
-            const b_active = !vp.compare_original and active_sl == .brightness;
-            const c_active = !vp.compare_original and active_sl == .contrast;
+            // Divider
+            clay.UI()(.{
+                .layout = .{
+                    .sizing = .{ .w = .fixed(CONTENT_WIDTH), .h = .fixed(1) },
+                },
+                .background_color = a(theme.surface0, progress),
+            })({});
 
-            // Brightness Slider
-            renderSlider(
-                .brightness,
-                "Brightness",
-                vp.brightness,
-                -1.0,
-                1.0,
-                0.0,
-                b_str,
-                progress,
-                b_active,
-            );
+            // -----------------------------------------------------------------
+            // Section 2: Color & Balance
+            // -----------------------------------------------------------------
+            clay.UI()(.{
+                .layout = .{
+                    .sizing = .{ .w = .fixed(CONTENT_WIDTH), .h = .fit },
+                    .direction = .top_to_bottom,
+                    .child_gap = 12,
+                },
+            })({
+                // Section Category Label
+                clay.UI()(.{
+                    .layout = .{
+                        .sizing = .{ .w = .grow, .h = .fit },
+                        .padding = .{ .top = 10, .bottom = 14 },
+                    },
+                })({
+                    clay.text("COLOR & BALANCE", .{
+                        .color = a(theme.subtext0, progress),
+                        .font_size = 11,
+                        .font_id = 0,
+                    });
+                });
 
-            // Contrast Slider
-            renderSlider(
-                .contrast,
-                "Contrast",
-                vp.contrast,
-                0.0,
-                3.0,
-                1.0,
-                c_str,
-                progress,
-                c_active,
-            );
+                const active_sl = ui_model.overlays.edit_panel.active_slider;
+
+                inline for (&[_]EditParam{
+                    .temperature,
+                    .tint,
+                    .vibrance,
+                    .saturation,
+                }) |p| {
+                    const desc = state.getDescriptor(p);
+                    const str = try formatValue(
+                        frame_allocator,
+                        desc,
+                        vp.edits.get(p),
+                    );
+                    const is_active = !is_comparing and active_sl == p;
+                    renderSlider(p, vp.edits.get(p), str, progress, is_active);
+                }
+            });
+
+            // Bottom spacer for comfortable scroll padding
+            clay.UI()(.{
+                .layout = .{
+                    .sizing = .{
+                        .w = .fixed(CONTENT_WIDTH),
+                        .h = .fixed(16),
+                    },
+                },
+            })({});
         });
     });
 }
 
-test "formatBrightness and formatContrast string lifetimes" {
+test "formatValue string lifetimes" {
     const b0 = try formatBrightness(std.testing.allocator, 0.0);
     try std.testing.expectEqualStrings("0%", b0);
 
@@ -486,4 +607,31 @@ test "formatBrightness and formatContrast string lifetimes" {
 
     const c_inf = try formatContrast(std.testing.allocator, std.math.inf(f32));
     try std.testing.expectEqualStrings("1.00x", c_inf);
+
+    // Test temperature & tint formatting
+    const temp_desc = state.getDescriptor(.temperature);
+    const t0 = try formatValue(std.testing.allocator, temp_desc, 0.0);
+    try std.testing.expectEqualStrings("0", t0);
+    const tw = try formatValue(std.testing.allocator, temp_desc, 0.35);
+    defer std.testing.allocator.free(tw);
+    try std.testing.expectEqualStrings("+35 (Warm)", tw);
+
+    const tint_desc = state.getDescriptor(.tint);
+    const m0 = try formatValue(std.testing.allocator, tint_desc, 0.0);
+    try std.testing.expectEqualStrings("0", m0);
+    const mg = try formatValue(std.testing.allocator, tint_desc, -0.20);
+    defer std.testing.allocator.free(mg);
+    try std.testing.expectEqualStrings("-20 (Green)", mg);
+
+    // Test contrast_blend formatting
+    const cb_desc = state.getDescriptor(.contrast_blend);
+    const cb1 = try formatValue(std.testing.allocator, cb_desc, 1.0);
+    try std.testing.expectEqualStrings("100%", cb1);
+    const cb0 = try formatValue(std.testing.allocator, cb_desc, 0.0);
+    try std.testing.expectEqualStrings("0%", cb0);
+    const cb50 = try formatValue(std.testing.allocator, cb_desc, 0.5);
+    try std.testing.expectEqualStrings("50%", cb50);
+    const cb75 = try formatValue(std.testing.allocator, cb_desc, 0.75);
+    defer std.testing.allocator.free(cb75);
+    try std.testing.expectEqualStrings("75%", cb75);
 }

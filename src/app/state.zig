@@ -510,7 +510,7 @@ pub const AppState = struct {
                 };
                 try self.viewer.ui.palette.query.appendSlice(self.allocator, formatted);
             },
-            .set_brightness, .set_contrast, .go_to_image, .inactive => {},
+            else => {},
         }
         startTextInput(self.viewer.display);
     }

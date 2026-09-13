@@ -909,10 +909,56 @@ fn drawBatches(
         if (last_material == null or last_material.? != batch.material) {
             if (is_image) {
                 const show_original = view_params.compare_original;
+                const apply_adj =
+                    !show_original and view_params.edits.hasEdits();
+                const edits = view_params.edits;
                 const img_ubo = ImageUniforms{
-                    .brightness = if (show_original) 0.0 else view_params.brightness,
-                    .contrast = if (show_original) 1.0 else view_params.contrast,
+                    .brightness = if (apply_adj)
+                        edits.get(.brightness)
+                    else
+                        0.0,
+                    .contrast = if (apply_adj)
+                        edits.get(.contrast)
+                    else
+                        1.0,
+                    .temperature = if (apply_adj)
+                        edits.get(.temperature)
+                    else
+                        0.0,
+                    .tint = if (apply_adj)
+                        edits.get(.tint)
+                    else
+                        0.0,
+                    .highlights = if (apply_adj)
+                        edits.get(.highlights)
+                    else
+                        0.0,
+                    .shadows = if (apply_adj)
+                        edits.get(.shadows)
+                    else
+                        0.0,
+                    .whites = if (apply_adj)
+                        edits.get(.whites)
+                    else
+                        0.0,
+                    .blacks = if (apply_adj)
+                        edits.get(.blacks)
+                    else
+                        0.0,
+                    .saturation = if (apply_adj)
+                        edits.get(.saturation)
+                    else
+                        0.0,
+                    .vibrance = if (apply_adj)
+                        edits.get(.vibrance)
+                    else
+                        0.0,
+                    .contrast_blend = if (apply_adj)
+                        edits.get(.contrast_blend)
+                    else
+                        1.0,
                     .scale_mode = view_params.getShaderScaleModeInt(),
+                    .has_adjustments = if (apply_adj) 1 else 0,
                 };
                 cmd_buf.pushFragmentUniform(0, std.mem.asBytes(&img_ubo));
             } else {

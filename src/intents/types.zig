@@ -1,12 +1,13 @@
 //! Pure Intent Data Types & Enums
 //!
 //! Defines intent data structures, scaling modes, palette modes,
-//! bounds, and command payloads with zero dependencies on other codebase modules.
+//! bounds, and command payloads with zero dependencies on other modules.
 
 const std = @import("std");
 
 /// Tri-state classification for image triage (inspired by Adobe Lightroom).
-/// Uses enum(u2) for high-density flat array storage (fits in 1 byte per entry, 10 KB for 10k images).
+/// Uses enum(u2) for high-density flat array storage (fits in 1 byte per
+/// entry, 10 KB for 10k images).
 pub const Classification = enum(u2) {
     unflagged = 0,
     pick = 1,
@@ -21,7 +22,8 @@ pub const Classification = enum(u2) {
         };
     }
 
-    /// Tab-separated prefix used for stdout triage export, or null if unflagged.
+    /// Tab-separated prefix used for stdout triage export, or null if
+    /// unflagged.
     pub inline fn exportPrefix(self: Classification) ?[]const u8 {
         return switch (self) {
             .pick => "PICK",
@@ -44,7 +46,8 @@ pub const ViewMode = enum(u8) {
     /// Shows all images regardless of classification.
     all = 4,
 
-    /// Exhaustive evaluation determining whether an image with classification `c` is visible.
+    /// Exhaustive evaluation determining whether an image with
+    /// classification `c` is visible.
     pub inline fn matches(self: ViewMode, c: Classification) bool {
         return switch (self) {
             .default => switch (c) {
@@ -115,7 +118,8 @@ pub const TextureScaleMode = enum {
     tiny_cnn,
 };
 
-/// Comptime-generated comma-separated list of all valid ScaleMode names via reflection.
+/// Comptime-generated comma-separated list of all valid ScaleMode names
+/// via reflection.
 pub const scale_modes_string: []const u8 = blk: {
     var str: []const u8 = "";
     const fields = @typeInfo(ScaleMode).@"enum".fields;
@@ -125,7 +129,8 @@ pub const scale_modes_string: []const u8 = blk: {
     break :blk str;
 };
 
-/// Comptime-generated comma-separated list of all valid TextureScaleMode names via reflection.
+/// Comptime-generated comma-separated list of all valid TextureScaleMode names
+/// via reflection.
 pub const filter_modes_string: []const u8 = blk: {
     var str: []const u8 = "";
     const fields = @typeInfo(TextureScaleMode).@"enum".fields;
@@ -141,6 +146,66 @@ pub const TextInputBounds = struct {
     max: f32,
 };
 
+/// Target parameter identifier for image editing controls and sliders.
+pub const EditParam = enum(u8) {
+    brightness = 0,
+    contrast = 1,
+    contrast_blend = 2,
+    highlights = 3,
+    shadows = 4,
+    whites = 5,
+    blacks = 6,
+    temperature = 7,
+    tint = 8,
+    vibrance = 9,
+    saturation = 10,
+
+    pub const count = std.enums.values(EditParam).len;
+};
+
+/// Direction increment for stepped parameter adjustments.
+pub const StepDirection = enum(i8) {
+    up = 1,
+    down = -1,
+};
+
+/// Tagged union representing all photographic adjustment commands.
+pub const AdjustIntent = union(enum) {
+    /// Set a parameter to an absolute value (clamped to parameter descriptor
+    /// bounds).
+    set: struct {
+        param: EditParam,
+        value: f32,
+    },
+    /// Step a parameter by a relative increment (+step or -step)
+    step: struct {
+        param: EditParam,
+        direction: StepDirection,
+    },
+    /// Batch update for tone quad (atomic IPC / preset application)
+    batch_tone: struct {
+        highlights: f32,
+        shadows: f32,
+        whites: f32,
+        blacks: f32,
+    },
+    /// Batch update for color & white balance
+    batch_color: struct {
+        temperature: f32,
+        tint: f32,
+        vibrance: f32,
+        saturation: f32,
+    },
+    /// Reset a single parameter to its neutral default
+    reset_param: EditParam,
+    /// Reset all photographic adjustments
+    reset_all,
+    /// Toggle Before/After comparison
+    toggle_compare,
+    /// Explicitly set comparison mode
+    set_compare: bool,
+};
+
 /// Active modal command palette or interactive numeric dialog mode.
 pub const PaletteMode = enum {
     inactive,
@@ -148,31 +213,95 @@ pub const PaletteMode = enum {
     actions,
     set_brightness,
     set_contrast,
+    set_contrast_blend,
+    set_highlights,
+    set_shadows,
+    set_whites,
+    set_blacks,
+    set_temperature,
+    set_tint,
+    set_vibrance,
+    set_saturation,
     go_to_image,
     directory_navigator,
     set_slideshow_interval,
 
-    /// Returns true if this palette mode requires single-line text/numeric input validation.
+    /// Returns the associated EditParam if this mode adjusts a photographic
+    /// parameter, or null otherwise.
+    pub fn toEditParam(self: PaletteMode) ?EditParam {
+        return switch (self) {
+            .set_brightness => .brightness,
+            .set_contrast => .contrast,
+            .set_contrast_blend => .contrast_blend,
+            .set_highlights => .highlights,
+            .set_shadows => .shadows,
+            .set_whites => .whites,
+            .set_blacks => .blacks,
+            .set_temperature => .temperature,
+            .set_tint => .tint,
+            .set_vibrance => .vibrance,
+            .set_saturation => .saturation,
+            .inactive,
+            .files,
+            .actions,
+            .go_to_image,
+            .directory_navigator,
+            .set_slideshow_interval,
+            => null,
+        };
+    }
+
+    /// Returns true if this palette mode requires single-line text/numeric
+    /// input validation.
     pub fn isTextInputDialog(self: PaletteMode) bool {
         return switch (self) {
-            .set_brightness, .set_contrast, .go_to_image, .set_slideshow_interval => true,
+            .set_brightness,
+            .set_contrast,
+            .set_contrast_blend,
+            .set_highlights,
+            .set_shadows,
+            .set_whites,
+            .set_blacks,
+            .set_temperature,
+            .set_tint,
+            .set_vibrance,
+            .set_saturation,
+            .go_to_image,
+            .set_slideshow_interval,
+            => true,
             .inactive, .files, .actions, .directory_navigator => false,
         };
     }
 
-    /// Returns valid numeric bounds for input dialogs, or null if non-numeric/search palette.
+    /// Returns valid numeric bounds for input dialogs, or null if non-numeric
+    /// or search palette.
     pub fn getTextInputBounds(self: PaletteMode) ?TextInputBounds {
         return switch (self) {
-            .set_brightness => .{ .min = -1.0, .max = 1.0 },
-            .set_contrast => .{ .min = 0.0, .max = 5.0 },
+            .set_brightness,
+            .set_highlights,
+            .set_shadows,
+            .set_whites,
+            .set_blacks,
+            .set_temperature,
+            .set_tint,
+            .set_vibrance,
+            .set_saturation,
+            => .{ .min = -1.0, .max = 1.0 },
+            .set_contrast => .{ .min = 0.0, .max = 3.0 },
+            .set_contrast_blend => .{ .min = 0.0, .max = 1.0 },
             .set_slideshow_interval => .{ .min = 0.1, .max = 3600.0 },
-            .go_to_image, .inactive, .files, .actions, .directory_navigator => null,
+            .go_to_image,
+            .inactive,
+            .files,
+            .actions,
+            .directory_navigator,
+            => null,
         };
     }
 };
 
-/// Serialized intent union representing discrete user commands dispatched by keybindings,
-/// mouse clicks, command palettes, or remote IPC sockets.
+/// Serialized intent union representing discrete user commands dispatched
+/// by keybindings, mouse clicks, command palettes, or remote IPC sockets.
 pub const AppIntent = union(enum) {
     // Viewport spatial transforms & adjustments
     set_zoom: f32,
@@ -189,16 +318,8 @@ pub const AppIntent = union(enum) {
     cycle_filter,
     cycle_filter_prev,
 
-    // Color adjustments
-    set_brightness: f32,
-    increase_brightness,
-    decrease_brightness,
-    set_contrast: f32,
-    increase_contrast,
-    decrease_contrast,
-    reset_adjustments,
-    toggle_compare,
-    set_compare: bool,
+    // Photographic color & tonal adjustments (unified tagged union)
+    adjust: AdjustIntent,
 
     // Image orientation
     rotate_cw,

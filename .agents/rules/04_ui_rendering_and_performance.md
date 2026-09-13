@@ -123,3 +123,47 @@
 - **Composite Container Anti-Pattern**:
   - NEVER model an entire TIFF IFD as a mutually exclusive tagged union (`union(enum) { raw_sensor, preview, container, exif }`).
   - In TIFF-EP and Sony ARW specifications, IFD0 is a composite entity: it is simultaneously a container (pointing to SubIFDs via tag `0x014A`), a preview provider (tags `0x0201`/`0x0202`), and an EXIF directory (tag `0x8769`). Forcing mutually exclusive roles on container directories breaks preview extraction. Tagged unions belong on payload/result types, not multi-role containers.
+
+## 18. Clay Scroll Containers vs. Pointer-Driven Controls Decoupling
+
+- **Disable Drag-Scrolling for Desktop Pointer Containers**:
+  - In desktop UI environments, Clay scroll containers containing interactive
+    widgets (sliders, scrubbers, buttons) MUST specify
+    `enableDragScrolling = false` in `clay.updateScrollContainers(...)`.
+  - Passing `true` causes mouse button down events on child controls to initiate
+    container pan/scroll gestures instead of delivering slider drag events.
+- **Pointer Scroll Delta Zeroing During Active Manipulation**:
+  - While an interactive control is actively being manipulated
+    (`drag_state == .slider` or `active_slider != null`), mouse wheel and
+    trackpad scroll deltas (`scroll_delta`) MUST be zeroed before dispatching
+    to `updateScrollContainers`.
+  - This prevents accidental vertical container movement and layout jitter
+    while the user is fine-tuning slider values.
+
+## 19. Photographic Contrast Blending, Exposure Ordering & Monotonicity
+
+- **Classic Per-Channel Contrast & Dynamic Blending**:
+  - Contrast defaults to 100% classic RGB per-channel power-law contrast around
+    physical 18% middle gray (`0.18`), providing rich, filmic saturation.
+  - A dedicated `contrast_blend` parameter enables smooth linear interpolation
+    between pure luminance contrast (`0.0`) and classic RGB contrast (`1.0`).
+- **Post-Contrast Linear Exposure Ordering**:
+  - Photometric exposure gain $\\exp_2(\\text{brightness} \\times 2.0)$ MUST be
+    multiplied *after* contrast in scene-referred linear photometric space.
+  - Ordering exposure after contrast ensures that altering contrast does not
+    rescale exposure stop gains, matching physical camera exposure behavior.
+- **Monotonic Root-Space Tonal Quad**:
+  - Highlights, Shadows, Whites, and Blacks curves operate in perceptual
+    root-space ($u = \\sqrt{Y}$) with bounded EV weights ($0.5B, 1.0S, 1.0H,
+    0.5W$) satisfying $\\frac{d(\\Delta \\text{EV})}{d(\\log_2 Y)} \\ge -1.0$.
+  - This mathematically guarantees that tone inversions and solarization
+    contours cannot occur across any combination of slider values.
+  - Highlight weighting strictly tapers to 0 at $u = 0.98$ ($Y \\approx 0.96$),
+    protecting specular whites from chalkiness.
+- **Opponent White Balance & Neutral Anchors**:
+  - Opponent chromatic adaptation ($T$ Amber/Blue, $G$ Magenta/Green) normalizes
+    against Rec.709 perceived luminance ($Y = 0.212639R + 0.715169G +
+    0.072192B$) to preserve 100% perceived brightness across color temperature
+    adjustments.
+  - Hermite $C^1$ envelopes anchor deep blacks ($Y \\le 0.04$) and specular
+    highlights ($Y \\ge 0.92$), preventing noise tinting and white casts.

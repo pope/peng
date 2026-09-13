@@ -73,15 +73,49 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 .linear => .nearest,
             };
         },
-        .set_brightness => |val| vp.setAdjustments(val, vp.contrast),
-        .increase_brightness => vp.adjustBrightness(0.1),
-        .decrease_brightness => vp.adjustBrightness(-0.1),
-        .set_contrast => |val| vp.setAdjustments(vp.brightness, val),
-        .increase_contrast => vp.adjustContrast(0.1),
-        .decrease_contrast => vp.adjustContrast(-0.1),
-        .reset_adjustments => vp.setAdjustments(0.0, 1.0),
-        .toggle_compare => vp.toggleCompare(),
-        .set_compare => |val| vp.compare_original = val,
+        .adjust => |adj| switch (adj) {
+            .set => |s| {
+                vp.edits.set(s.param, s.value);
+                vp.compare_original = false;
+            },
+            .step => |s| {
+                const desc = state.getDescriptor(s.param);
+                const dir_f: f32 = @floatFromInt(@intFromEnum(s.direction));
+                const delta = desc.step * dir_f;
+                vp.edits.set(s.param, vp.edits.get(s.param) + delta);
+                vp.compare_original = false;
+            },
+            .batch_tone => |bt| {
+                vp.edits.set(.highlights, bt.highlights);
+                vp.edits.set(.shadows, bt.shadows);
+                vp.edits.set(.whites, bt.whites);
+                vp.edits.set(.blacks, bt.blacks);
+                vp.compare_original = false;
+            },
+            .batch_color => |bc| {
+                vp.edits.set(.temperature, bc.temperature);
+                vp.edits.set(.tint, bc.tint);
+                vp.edits.set(.vibrance, bc.vibrance);
+                vp.edits.set(.saturation, bc.saturation);
+                vp.compare_original = false;
+            },
+            .reset_param => |p| {
+                vp.edits.resetParam(p);
+                vp.compare_original = false;
+            },
+            .reset_all => {
+                vp.edits.reset();
+                vp.compare_original = false;
+            },
+            .toggle_compare => vp.toggleCompare(),
+            .set_compare => |val| {
+                if (vp.hasAdjustments()) {
+                    vp.compare_original = val;
+                } else {
+                    vp.compare_original = false;
+                }
+            },
+        },
 
         .rotate_cw => {
             vp.rotateCw();
@@ -453,6 +487,16 @@ fn triggerSnackbarForIntent(
         else => self.viewer.navigation.getCurrentClassification(),
     };
 
+    const last_param: ?state.EditParam = switch (intent) {
+        .adjust => |adj| switch (adj) {
+            .set => |s| s.param,
+            .step => |s| s.param,
+            .reset_param => |p| p,
+            else => null,
+        },
+        else => null,
+    };
+
     var buf: [state.snackbar.MAX_SNACKBAR_LEN]u8 = undefined;
     const msg = rule.format_fn(.{
         .viewport = &self.viewer.viewport,
@@ -463,6 +507,7 @@ fn triggerSnackbarForIntent(
         .classification_advanced = advanced,
         .has_target_image = has_target,
         .view_mode = self.viewer.navigation.view_mode,
+        .last_param = last_param,
     }, &buf);
 
     if (msg.len > 0) {

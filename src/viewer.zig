@@ -156,9 +156,22 @@ pub fn updateFrame(
         );
     }
 
+    // In desktop mouse mode, drag scrolling is disabled (enableDragScrolling =
+    // false) to prevent clicking or dragging interactive controls (such as
+    // sliders) from initiating unwanted container scroll. When a slider is
+    // actively dragged, scroll wheel events are also suppressed.
+    const is_slider_active =
+        (app_state.viewer.drag_state == .slider) or
+        (app_state.viewer.ui.overlays.edit_panel.active_slider != null);
+
+    const scroll_delta: clay.Vector2 = if (is_slider_active)
+        .{ .x = 0.0, .y = 0.0 }
+    else
+        .{ .x = input.scroll_delta_x, .y = input.scroll_delta_y };
+
     clay.updateScrollContainers(
-        true,
-        .{ .x = input.scroll_delta_x, .y = input.scroll_delta_y },
+        false,
+        scroll_delta,
         input.delta_time_ms / 1000.0,
     );
 

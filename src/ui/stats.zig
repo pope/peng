@@ -364,7 +364,7 @@ fn renderInfoOverlay(
         };
         try renderStatRow("Scaling Filter", filter_str);
 
-        const brightness_val = ui_model.viewport.brightness * 100.0;
+        const brightness_val = ui_model.viewport.edits.get(.brightness) * 100.0;
         const brightness_str = try std.fmt.allocPrint(
             frame_allocator,
             "{s}{d:.0}%",
@@ -373,7 +373,7 @@ fn renderInfoOverlay(
         const contrast_str = try std.fmt.allocPrint(
             frame_allocator,
             "{d:.1}x",
-            .{ui_model.viewport.contrast},
+            .{ui_model.viewport.edits.get(.contrast)},
         );
         try renderStatRow("Brightness", brightness_str);
         try renderStatRow("Contrast", contrast_str);

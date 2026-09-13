@@ -124,11 +124,70 @@ ______________________________________________________________________
 3. **Scalar Peak Helper**:
    - When evaluating maximum luminance or uniform peak values, use a dedicated scalar helper `linear_to_srgb_scalar(float c)` rather than expanding a single float into `vec3` to call `linear_to_srgb(vec3)`. This avoids 4 unnecessary vector `pow` transcendentals per fragment.
 4. **Algebraic Contrast & Exposure Folding**:
-   - Unify linear contrast division around 18% middle gray and exposure gain into a single scalar multiplier:
-     $$\\text{exposed_linear} = \\text{linear}^c \\cdot \\left[ 0.18^{1-c} \\cdot 2^{2 \\cdot \\text{EV}} \\right] = \\text{linear}^c \\cdot \\text{peak_linear}$$
+   - Unify linear contrast division around 18% middle gray and exposure gain
+     into a single scalar multiplier:
+     $$
+     \\text{exposed_linear} = \\text{linear}^c \\cdot \\left\[ 0.18^{1-c}
+     \\cdot 2^{2 \\cdot \\text{EV}} \\right\] = \\text{linear}^c \\cdot
+     \\text{peak_linear}
+     $$
    - Eliminates 6 vector multiplications and divisions per fragment.
 5. **Continuous Rational Soft-Knee**:
    - Roll off overshooting highlights using a $C^1$-continuous shoulder:
      $$\\text{excess} = \\max(\\text{srgb} - \\text{knee}, 0)$$
      $$\\text{color} = \\text{srgb} - \\frac{\\text{excess}^2}{\\text{excess} + w}$$
-   - Preserves exact identity ($\\text{srgb} - 0 = \\text{srgb}$) for midtones and shadows below the knee.
+   - Preserves exact identity ($\\text{srgb} - 0 = \\text{srgb}$) for
+     midtones and shadows below the knee.
+
+______________________________________________________________________
+
+## 7. Color Science Pipeline: Opponent WB, Tonal Quad & Skin Vibrance
+
+### Opponent Chromatic Adaptation (Temperature & Tint)
+
+- **Rec.709 Perceived Luminance Preservation**:
+  White balance adjustments must strictly preserve perceived luminance:
+  ```glsl
+  vec3 wb_linear = linear;
+  wb_linear.r *= 1.0 + ubo.temperature * 0.40;
+  wb_linear.b *= 1.0 - ubo.temperature * 0.40;
+  wb_linear.g *= 1.0 + ubo.tint * 0.30;
+  float Y_wb = dot(wb_linear, vec3(0.212639, 0.715169, 0.072192));
+  wb_linear *= (Y_in / max(Y_wb, 1e-5));
+  ```
+- **Hermite Anchor Protection**:
+  To protect sensor noise floor and prevent blown highlights from tinting:
+  ```glsl
+  float wb_anchor = smoothstep(0.0, 0.04, Y_in) *
+                    (1.0 - smoothstep(0.92, 1.0, Y_in));
+  linear = mix(linear, wb_linear, wb_anchor);
+  ```
+
+### Dual-Path Contrast Blending
+
+- **Filmic Per-Channel vs. Luminance Contrast**:
+  - Path B computes power-law contrast per RGB channel directly:
+    $$\\text{linear_rgb} = 0.18 \\times (\\max(\\text{linear}, 10^{-5}) / 0.18)^c$$
+  - Path A computes contrast on luminance and scales channels:
+    $$
+    \\text{linear_luma} = \\text{linear} \\times
+    \\frac{0.18 \\times (\\max(Y, 10^{-5}) / 0.18)^c}{\\max(Y, 10^{-5})}
+    $$
+  - Interpolated via:
+    `mix(linear_luma, linear_rgb, ubo.contrast_blend)`.
+
+### Branchless Skin-Tone Protected Vibrance
+
+- Human skin locus is isolated branchlessly via the opponent chromatic ratio:
+  ```glsl
+  float d_rg = max(c.r - c.g, 0.0);
+  float d_gb = max(c.g - c.b, 0.0);
+  float is_skin_hue = smoothstep(0.15, 0.0,
+      abs(d_rg / max(d_rg + d_gb, 1e-5) - 0.55));
+  float is_skin_sat = smoothstep(0.08, 0.15, S) *
+      (1.0 - smoothstep(0.80, 0.90, S));
+  float is_skin = is_skin_hue * is_skin_sat *
+      step(c.b, c.g) * step(c.g, c.r);
+  ```
+- Vibrance gain is damped by $(1.0 - 0.75 \\times \\text{is_skin})$, preserving
+  natural portrait skin tones while boosting unsaturated backgrounds.

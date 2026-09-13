@@ -241,12 +241,22 @@ test "mapKeyToAction aligned with palette action items" {
     try std.testing.expectEqual(intents.AppIntent.reset_zoom, reset_zoom.?);
 
     // Check reset_adjustments via Shift+R key
-    const reset_adj = mapKeyToAction(.char_r, .{ .shift = true }, .viewer_normal);
-    try std.testing.expectEqual(intents.AppIntent.reset_adjustments, reset_adj.?);
+    const reset_adj = mapKeyToAction(
+        .char_r,
+        .{ .shift = true },
+        .viewer_normal,
+    );
+    try std.testing.expectEqual(
+        intents.AppIntent{ .adjust = .reset_all },
+        reset_adj.?,
+    );
 
     // Check toggle_compare via Backslash key
     const toggle_cmp = mapKeyToAction(.backslash, .{}, .viewer_normal);
-    try std.testing.expectEqual(intents.AppIntent.toggle_compare, toggle_cmp.?);
+    try std.testing.expectEqual(
+        intents.AppIntent{ .adjust = .toggle_compare },
+        toggle_cmp.?,
+    );
 
     const edit_panel = mapKeyToAction(.char_e, .{}, .viewer_normal);
     try std.testing.expectEqual(
@@ -264,15 +274,51 @@ test "mapKeyToAction aligned with palette action items" {
 
     // Check brightness adjustments via B / Shift+B
     const bright_up = mapKeyToAction(.char_b, .{}, .viewer_normal);
-    try std.testing.expectEqual(intents.AppIntent.increase_brightness, bright_up.?);
-    const bright_down = mapKeyToAction(.char_b, .{ .shift = true }, .viewer_normal);
-    try std.testing.expectEqual(intents.AppIntent.decrease_brightness, bright_down.?);
+    try std.testing.expectEqual(
+        intents.AppIntent{
+            .adjust = .{
+                .step = .{ .param = .brightness, .direction = .up },
+            },
+        },
+        bright_up.?,
+    );
+    const bright_down = mapKeyToAction(
+        .char_b,
+        .{ .shift = true },
+        .viewer_normal,
+    );
+    try std.testing.expectEqual(
+        intents.AppIntent{
+            .adjust = .{
+                .step = .{ .param = .brightness, .direction = .down },
+            },
+        },
+        bright_down.?,
+    );
 
     // Check contrast adjustments via C / Shift+C
     const contrast_up = mapKeyToAction(.char_c, .{}, .viewer_normal);
-    try std.testing.expectEqual(intents.AppIntent.increase_contrast, contrast_up.?);
-    const contrast_down = mapKeyToAction(.char_c, .{ .shift = true }, .viewer_normal);
-    try std.testing.expectEqual(intents.AppIntent.decrease_contrast, contrast_down.?);
+    try std.testing.expectEqual(
+        intents.AppIntent{
+            .adjust = .{
+                .step = .{ .param = .contrast, .direction = .up },
+            },
+        },
+        contrast_up.?,
+    );
+    const contrast_down = mapKeyToAction(
+        .char_c,
+        .{ .shift = true },
+        .viewer_normal,
+    );
+    try std.testing.expectEqual(
+        intents.AppIntent{
+            .adjust = .{
+                .step = .{ .param = .contrast, .direction = .down },
+            },
+        },
+        contrast_down.?,
+    );
 
     // Check zoom via I / O
     const zoom_in = mapKeyToAction(.char_i, .{}, .viewer_normal);

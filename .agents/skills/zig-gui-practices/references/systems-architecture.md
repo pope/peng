@@ -167,3 +167,43 @@ ______________________________________________________________________
       - Advanced away: `"Previous image flagged as rejected"`
       - Remained on screen: `"Flagged as Pick"` / `"Flagged as Reject"`
       - Action in 0-item filter: `"No image to classify"`
+
+______________________________________________________________________
+
+## Tagged Union Variance Control & Comptime Parameter Descriptors
+
+- **Rule 12 — Tagged Union Hierarchy & Single Source of Truth Metadata**:
+  - When introducing multi-parameter adjustment suites (such as photographic
+    sliders or audio DSP filters), avoid polluting root `AppIntent` with flat
+    variants (`increase_brightness`, `decrease_brightness`, `set_highlights`).
+  - Consolidate domain operations into a nested tagged union (`AdjustIntent`):
+    ```zig
+    pub const AdjustIntent = union(enum) {
+        set: struct { param: EditParam, value: f32 },
+        step: struct { param: EditParam, direction: StepDirection },
+        batch_tone: struct {
+            highlights: f32,
+            shadows: f32,
+            whites: f32,
+            blacks: f32,
+        },
+        batch_color: struct {
+            temperature: f32,
+            tint: f32,
+            vibrance: f32,
+            saturation: f32,
+        },
+        reset_param: EditParam,
+        reset_all,
+        toggle_compare,
+        set_compare: bool,
+    };
+    ```
+  - **Single Source of Truth Descriptor Table**:
+    - Centralize parameter boundaries, defaults, step deltas, snap radii, and
+      formatting kinds into a static comptime array
+      (`descriptors: [EditParam.count]ParamDescriptor`).
+    - Eliminate duplicated bounds checking, slider hit-testing logic, and
+      formatting branches across IPC, UI layouts, and state stores.
+    - Let UI widgets and IPC parsers query `param.descriptor()` to clamp and
+      format values consistently.

@@ -169,8 +169,7 @@ pub const ViewportParams = struct {
     pan_x: f32 = 0.0,
     pan_y: f32 = 0.0,
     rotation_angle: f32 = 0.0,
-    brightness: f32 = 0.0,
-    contrast: f32 = 1.0,
+    edits: ImageEdits = .{},
     compare_original: bool = false,
 
     /// Resets zoom factor, pan offsets, and comparison mode back to default center positioning.
@@ -195,7 +194,7 @@ pub const ViewportParams = struct {
 
     /// Returns true if non-neutral photographic exposure or contrast adjustments are applied.
     pub fn hasAdjustments(self: ViewportParams) bool {
-        return @abs(self.brightness) > 1e-5 or @abs(self.contrast - 1.0) > 1e-5;
+        return self.edits.hasEdits();
     }
 
     /// Toggles Before/After comparison mode (original unadjusted image vs active adjustments).
@@ -208,22 +207,22 @@ pub const ViewportParams = struct {
         self.compare_original = !self.compare_original;
     }
 
-    /// Sets brightness in [-1.0, 1.0] and contrast in [0.0, 5.0].
+    /// Sets brightness in [-1.0, 1.0] and contrast in [0.0, 3.0].
     pub fn setAdjustments(self: *ViewportParams, br: f32, co: f32) void {
-        self.brightness = std.math.clamp(br, -1.0, 1.0);
-        self.contrast = std.math.clamp(co, 0.0, 5.0);
+        self.edits.set(.brightness, br);
+        self.edits.set(.contrast, co);
         self.compare_original = false;
     }
 
-    /// Adjusts brightness by adding `delta`, clamped to [-1.0, 1.0].
+    /// Adjusts brightness by adding `delta`.
     pub fn adjustBrightness(self: *ViewportParams, delta: f32) void {
-        self.brightness = std.math.clamp(self.brightness + delta, -1.0, 1.0);
+        self.edits.set(.brightness, self.edits.get(.brightness) + delta);
         self.compare_original = false;
     }
 
-    /// Adjusts contrast by adding `delta`, clamped to [0.0, 5.0].
+    /// Adjusts contrast by adding `delta`.
     pub fn adjustContrast(self: *ViewportParams, delta: f32) void {
-        self.contrast = std.math.clamp(self.contrast + delta, 0.0, 5.0);
+        self.edits.set(.contrast, self.edits.get(.contrast) + delta);
         self.compare_original = false;
     }
 
@@ -425,33 +424,311 @@ pub const TitleDisplay = union(enum) {
 };
 
 /// Target parameter identifier for image editing controls and sliders.
-pub const EditParam = enum(u8) {
-    brightness = 0,
-    contrast = 1,
+pub const EditParam = intents.EditParam;
+
+/// Logical grouping domain for photographic editing parameters.
+pub const EditDomain = enum(u1) {
+    tone = 0,
+    color = 1,
 };
+
+/// Descriptor configuring metadata, bounds, stepping, and formatting for
+/// an image adjustment parameter.
+pub const ParamDescriptor = struct {
+    param: EditParam,
+    domain: EditDomain,
+    name: []const u8,
+    label: []const u8,
+    min: f32,
+    max: f32,
+    default: f32,
+    step: f32,
+    snap_radius: f32,
+    display_kind: DisplayKind,
+
+    pub const DisplayKind = enum {
+        percent,
+        multiplier,
+        temperature,
+        tint,
+        ratio_percent,
+    };
+
+    pub fn clamp(self: ParamDescriptor, val: f32) f32 {
+        if (std.math.isNan(val) or std.math.isInf(val)) return self.default;
+        return std.math.clamp(val, self.min, self.max);
+    }
+
+    pub fn snap(self: ParamDescriptor, val: f32) f32 {
+        if (@abs(val - self.default) < self.snap_radius) {
+            return self.default;
+        }
+        return self.clamp(val);
+    }
+};
+
+/// Static compile-time table of descriptors for all photographic parameters.
+pub const descriptors = [EditParam.count]ParamDescriptor{
+    .{
+        .param = .brightness,
+        .domain = .tone,
+        .name = "brightness",
+        .label = "Exposure",
+        .min = -1.0,
+        .max = 1.0,
+        .default = 0.0,
+        .step = 0.05,
+        .snap_radius = 0.025,
+        .display_kind = .percent,
+    },
+    .{
+        .param = .contrast,
+        .domain = .tone,
+        .name = "contrast",
+        .label = "Contrast",
+        .min = 0.0,
+        .max = 3.0,
+        .default = 1.0,
+        .step = 0.05,
+        .snap_radius = 0.035,
+        .display_kind = .multiplier,
+    },
+    .{
+        .param = .contrast_blend,
+        .domain = .tone,
+        .name = "contrast_blend",
+        .label = "Contrast Blend",
+        .min = 0.0,
+        .max = 1.0,
+        .default = 1.0,
+        .step = 0.05,
+        .snap_radius = 0.025,
+        .display_kind = .ratio_percent,
+    },
+    .{
+        .param = .highlights,
+        .domain = .tone,
+        .name = "highlights",
+        .label = "Highlights",
+        .min = -1.0,
+        .max = 1.0,
+        .default = 0.0,
+        .step = 0.05,
+        .snap_radius = 0.025,
+        .display_kind = .percent,
+    },
+    .{
+        .param = .shadows,
+        .domain = .tone,
+        .name = "shadows",
+        .label = "Shadows",
+        .min = -1.0,
+        .max = 1.0,
+        .default = 0.0,
+        .step = 0.05,
+        .snap_radius = 0.025,
+        .display_kind = .percent,
+    },
+    .{
+        .param = .whites,
+        .domain = .tone,
+        .name = "whites",
+        .label = "Whites",
+        .min = -1.0,
+        .max = 1.0,
+        .default = 0.0,
+        .step = 0.05,
+        .snap_radius = 0.025,
+        .display_kind = .percent,
+    },
+    .{
+        .param = .blacks,
+        .domain = .tone,
+        .name = "blacks",
+        .label = "Blacks",
+        .min = -1.0,
+        .max = 1.0,
+        .default = 0.0,
+        .step = 0.05,
+        .snap_radius = 0.025,
+        .display_kind = .percent,
+    },
+    .{
+        .param = .temperature,
+        .domain = .color,
+        .name = "temperature",
+        .label = "Temperature",
+        .min = -1.0,
+        .max = 1.0,
+        .default = 0.0,
+        .step = 0.05,
+        .snap_radius = 0.025,
+        .display_kind = .temperature,
+    },
+    .{
+        .param = .tint,
+        .domain = .color,
+        .name = "tint",
+        .label = "Tint",
+        .min = -1.0,
+        .max = 1.0,
+        .default = 0.0,
+        .step = 0.05,
+        .snap_radius = 0.025,
+        .display_kind = .tint,
+    },
+    .{
+        .param = .vibrance,
+        .domain = .color,
+        .name = "vibrance",
+        .label = "Vibrance",
+        .min = -1.0,
+        .max = 1.0,
+        .default = 0.0,
+        .step = 0.05,
+        .snap_radius = 0.025,
+        .display_kind = .percent,
+    },
+    .{
+        .param = .saturation,
+        .domain = .color,
+        .name = "saturation",
+        .label = "Saturation",
+        .min = -1.0,
+        .max = 1.0,
+        .default = 0.0,
+        .step = 0.05,
+        .snap_radius = 0.025,
+        .display_kind = .percent,
+    },
+};
+
+/// Returns the ParamDescriptor definition for the given EditParam.
+pub inline fn getDescriptor(param: EditParam) ParamDescriptor {
+    return descriptors[@intFromEnum(param)];
+}
+
+/// Element identifiers for Clay layout slider elements.
+pub const SliderElementNames = struct {
+    track: []const u8,
+    reset: []const u8,
+    knob: []const u8,
+};
+
+/// Returns element ID strings for the slider track, reset button, and knob.
+pub fn getSliderElementNames(param: EditParam) SliderElementNames {
+    return switch (param) {
+        .brightness => .{
+            .track = "SliderTrack_Brightness",
+            .reset = "SliderReset_Brightness",
+            .knob = "SliderKnob_Brightness",
+        },
+        .contrast => .{
+            .track = "SliderTrack_Contrast",
+            .reset = "SliderReset_Contrast",
+            .knob = "SliderKnob_Contrast",
+        },
+        .contrast_blend => .{
+            .track = "SliderTrack_ContrastBlend",
+            .reset = "SliderReset_ContrastBlend",
+            .knob = "SliderKnob_ContrastBlend",
+        },
+        .highlights => .{
+            .track = "SliderTrack_Highlights",
+            .reset = "SliderReset_Highlights",
+            .knob = "SliderKnob_Highlights",
+        },
+        .shadows => .{
+            .track = "SliderTrack_Shadows",
+            .reset = "SliderReset_Shadows",
+            .knob = "SliderKnob_Shadows",
+        },
+        .whites => .{
+            .track = "SliderTrack_Whites",
+            .reset = "SliderReset_Whites",
+            .knob = "SliderKnob_Whites",
+        },
+        .blacks => .{
+            .track = "SliderTrack_Blacks",
+            .reset = "SliderReset_Blacks",
+            .knob = "SliderKnob_Blacks",
+        },
+        .temperature => .{
+            .track = "SliderTrack_Temperature",
+            .reset = "SliderReset_Temperature",
+            .knob = "SliderKnob_Temperature",
+        },
+        .tint => .{
+            .track = "SliderTrack_Tint",
+            .reset = "SliderReset_Tint",
+            .knob = "SliderKnob_Tint",
+        },
+        .vibrance => .{
+            .track = "SliderTrack_Vibrance",
+            .reset = "SliderReset_Vibrance",
+            .knob = "SliderKnob_Vibrance",
+        },
+        .saturation => .{
+            .track = "SliderTrack_Saturation",
+            .reset = "SliderReset_Saturation",
+            .knob = "SliderKnob_Saturation",
+        },
+    };
+}
 
 /// Non-destructive photographic edit parameters.
 pub const ImageEdits = struct {
-    brightness: f32 = 0.0,
-    contrast: f32 = 1.0,
+    values: [EditParam.count]f32 = initDefaults(),
+
+    fn initDefaults() [EditParam.count]f32 {
+        var initial: [EditParam.count]f32 = undefined;
+        for (std.enums.values(EditParam)) |p| {
+            initial[@intFromEnum(p)] = getDescriptor(p).default;
+        }
+        return initial;
+    }
+
+    /// Gets the current value for the specified parameter.
+    pub inline fn get(self: ImageEdits, param: EditParam) f32 {
+        return self.values[@intFromEnum(param)];
+    }
+
+    /// Clamps and sets the specified parameter value.
+    pub inline fn set(self: *ImageEdits, param: EditParam, val: f32) void {
+        self.values[@intFromEnum(param)] = getDescriptor(param).clamp(val);
+    }
+
+    /// Resets the specified parameter to its default value.
+    pub inline fn resetParam(self: *ImageEdits, param: EditParam) void {
+        self.values[@intFromEnum(param)] = getDescriptor(param).default;
+    }
 
     /// Resets all adjustments to neutral defaults.
     pub fn reset(self: *ImageEdits) void {
-        self.brightness = 0.0;
-        self.contrast = 1.0;
+        for (std.enums.values(EditParam)) |p| {
+            self.values[@intFromEnum(p)] = getDescriptor(p).default;
+        }
     }
 
     /// Returns true if non-neutral adjustments are applied.
     pub fn hasEdits(self: ImageEdits) bool {
-        return @abs(self.brightness) > 1e-5 or @abs(self.contrast - 1.0) > 1e-5;
+        for (std.enums.values(EditParam)) |p| {
+            if (p == .contrast_blend) {
+                // contrast_blend only has visual impact if contrast is
+                // non-neutral
+                const c_def = getDescriptor(.contrast).default;
+                if (@abs(self.get(.contrast) - c_def) <= 1e-5) continue;
+            }
+            const def = getDescriptor(p).default;
+            if (@abs(self.values[@intFromEnum(p)] - def) > 1e-5) return true;
+        }
+        return false;
     }
 
     /// Returns true if the specific parameter is at its neutral default value.
     pub fn isParamDefault(self: ImageEdits, param: EditParam) bool {
-        return switch (param) {
-            .brightness => @abs(self.brightness) <= 1e-5,
-            .contrast => @abs(self.contrast - 1.0) <= 1e-5,
-        };
+        const def = getDescriptor(param).default;
+        return @abs(self.values[@intFromEnum(param)] - def) <= 1e-5;
     }
 };
 
@@ -1028,8 +1305,6 @@ pub const DragState = union(enum) {
         param: EditParam,
         track_x: f32,
         track_w: f32,
-        min_val: f32,
-        max_val: f32,
     },
 };
 
@@ -1283,4 +1558,35 @@ test "ViewportParams Before/After comparison lifecycle" {
     try std.testing.expect(vp.compare_original);
     vp.reset();
     try std.testing.expect(!vp.compare_original);
+}
+
+test "ImageEdits and ParamDescriptor exhaustive verification" {
+    var edits = ImageEdits{};
+    try std.testing.expect(!edits.hasEdits());
+
+    for (std.enums.values(EditParam)) |param| {
+        try std.testing.expect(edits.isParamDefault(param));
+        const desc = getDescriptor(param);
+        try std.testing.expectEqual(desc.default, edits.get(param));
+
+        // Test clamping
+        edits.set(param, desc.min - 10.0);
+        try std.testing.expectEqual(desc.min, edits.get(param));
+        edits.set(param, desc.max + 10.0);
+        try std.testing.expectEqual(desc.max, edits.get(param));
+
+        // Test snapping
+        const snapped = desc.snap(desc.default + desc.snap_radius * 0.5);
+        try std.testing.expectEqual(desc.default, snapped);
+
+        // Test resetParam
+        edits.resetParam(param);
+        try std.testing.expect(edits.isParamDefault(param));
+    }
+
+    try std.testing.expect(!edits.hasEdits());
+    edits.set(.highlights, 0.4);
+    try std.testing.expect(edits.hasEdits());
+    edits.reset();
+    try std.testing.expect(!edits.hasEdits());
 }

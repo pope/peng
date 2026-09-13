@@ -65,14 +65,46 @@ pub fn sysExecuteIpcCommands(ctx: FrameContext) void {
                 };
             },
             .adjust => |adj| {
-                state.pushIntent(.{ .set_brightness = adj.brightness }) catch |err| {
-                    std.log.err("Failed to push brightness adjust intent: {}", .{err});
+                state.pushIntent(.{
+                    .adjust = .{
+                        .set = .{
+                            .param = .brightness,
+                            .value = adj.brightness,
+                        },
+                    },
+                }) catch |err| {
+                    std.log.err("Failed to push brightness adjust: {}", .{err});
                 };
-                state.pushIntent(.{ .set_contrast = adj.contrast }) catch |err| {
-                    std.log.err("Failed to push contrast adjust intent: {}", .{err});
+                state.pushIntent(.{
+                    .adjust = .{
+                        .set = .{
+                            .param = .contrast,
+                            .value = adj.contrast,
+                        },
+                    },
+                }) catch |err| {
+                    std.log.err("Failed to push contrast adjust: {}", .{err});
                 };
+                if (adj.contrast_blend) |cb| {
+                    state.pushIntent(.{
+                        .adjust = .{
+                            .set = .{
+                                .param = .contrast_blend,
+                                .value = cb,
+                            },
+                        },
+                    }) catch |err| {
+                        std.log.err(
+                            "Failed to push contrast blend adjust: {}",
+                            .{err},
+                        );
+                    };
+                }
                 ipc.respondOk(state.io, cmd_data.client_stream) catch |err| {
-                    std.log.err("Failed to respond OK for adjust command: {}", .{err});
+                    std.log.err(
+                        "Failed to respond OK for adjust command: {}",
+                        .{err},
+                    );
                 };
             },
             .screenshot => |filepath| {
@@ -193,7 +225,16 @@ test "sysExecuteIpcCommands - multiple queued commands and adjust command" {
     sysExecuteIpcCommands(ctx);
     try intents_system.sysExecuteIntents(ctx);
 
-    try std.testing.expectEqual(@as(usize, 0), state.pending_ipc_commands.items.len);
-    try std.testing.expectEqual(@as(f32, 0.5), state.viewer.viewport.brightness);
-    try std.testing.expectEqual(@as(f32, 2.0), state.viewer.viewport.contrast);
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        state.pending_ipc_commands.items.len,
+    );
+    try std.testing.expectEqual(
+        @as(f32, 0.5),
+        state.viewer.viewport.edits.get(.brightness),
+    );
+    try std.testing.expectEqual(
+        @as(f32, 2.0),
+        state.viewer.viewport.edits.get(.contrast),
+    );
 }

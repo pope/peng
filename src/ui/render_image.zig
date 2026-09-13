@@ -17,11 +17,43 @@ pub const MaterialType = enum {
 
 /// Fragment shader push uniform block for image viewer photo adjustments and filter algorithms.
 pub const ImageUniforms = extern struct {
-    brightness: f32,
-    contrast: f32,
-    scale_mode: i32,
-    padding: f32 = 0.0,
+    brightness: f32 = 0.0,
+    contrast: f32 = 1.0,
+    temperature: f32 = 0.0,
+    tint: f32 = 0.0,
+
+    highlights: f32 = 0.0,
+    shadows: f32 = 0.0,
+    whites: f32 = 0.0,
+    blacks: f32 = 0.0,
+
+    saturation: f32 = 0.0,
+    vibrance: f32 = 0.0,
+    contrast_blend: f32 = 1.0,
+    scale_mode: i32 = 1,
+
+    has_adjustments: i32 = 0,
+    pad1: i32 = 0,
+    pad2: i32 = 0,
+    pad3: i32 = 0,
 };
+
+comptime {
+    std.debug.assert(@sizeOf(ImageUniforms) == 64);
+    std.debug.assert(@offsetOf(ImageUniforms, "brightness") == 0);
+    std.debug.assert(@offsetOf(ImageUniforms, "contrast") == 4);
+    std.debug.assert(@offsetOf(ImageUniforms, "temperature") == 8);
+    std.debug.assert(@offsetOf(ImageUniforms, "tint") == 12);
+    std.debug.assert(@offsetOf(ImageUniforms, "highlights") == 16);
+    std.debug.assert(@offsetOf(ImageUniforms, "shadows") == 20);
+    std.debug.assert(@offsetOf(ImageUniforms, "whites") == 24);
+    std.debug.assert(@offsetOf(ImageUniforms, "blacks") == 28);
+    std.debug.assert(@offsetOf(ImageUniforms, "saturation") == 32);
+    std.debug.assert(@offsetOf(ImageUniforms, "vibrance") == 36);
+    std.debug.assert(@offsetOf(ImageUniforms, "contrast_blend") == 40);
+    std.debug.assert(@offsetOf(ImageUniforms, "scale_mode") == 44);
+    std.debug.assert(@offsetOf(ImageUniforms, "has_adjustments") == 48);
+}
 
 /// Fragment shader push uniform block for UI shapes, text, and frosted glass panels.
 pub const UiUniforms = extern struct {

@@ -44,7 +44,18 @@ fn renderHeader(mode: PaletteMode, title: []const u8, progress: f32) void {
             .color = a(switch (mode) {
                 .files => theme.pink,
                 .actions => theme.blue,
-                .set_brightness, .set_contrast => theme.peach,
+                .set_brightness,
+                .set_contrast,
+                .set_contrast_blend,
+                .set_highlights,
+                .set_shadows,
+                .set_whites,
+                .set_blacks,
+                .set_temperature,
+                .set_tint,
+                .set_vibrance,
+                .set_saturation,
+                => theme.peach,
                 .go_to_image => theme.green,
                 .directory_navigator => theme.mauve,
                 .set_slideshow_interval => theme.yellow,
@@ -316,17 +327,34 @@ fn renderTextInputDialog(
                     }
                 }
             },
-            .set_brightness, .set_contrast => {
+            .set_brightness,
+            .set_contrast,
+            .set_contrast_blend,
+            .set_highlights,
+            .set_shadows,
+            .set_whites,
+            .set_blacks,
+            .set_temperature,
+            .set_tint,
+            .set_vibrance,
+            .set_saturation,
+            => {
                 if (raw_str.len == 0) {
                     clay.text("Enter a number, then press Enter to apply.", .{
                         .color = a(theme.subtext0, progress),
                         .font_size = 13,
                         .font_id = 0,
                     });
-                    const range_str = if (palette.mode == .set_brightness)
-                        "Allowed range: -1.0 to 1.0 (default: 0.0)"
-                    else
-                        "Allowed range: 0.0 to 5.0 (default: 1.0)";
+                    const bounds = palette.mode.getTextInputBounds() orelse
+                        intents.TextInputBounds{
+                            .min = -1.0,
+                            .max = 1.0,
+                        };
+                    const range_str = try std.fmt.allocPrint(
+                        frame_allocator,
+                        "Allowed range: {d:.1} to {d:.1}",
+                        .{ bounds.min, bounds.max },
+                    );
                     clay.text(range_str, .{
                         .color = a(theme.subtext1, progress),
                         .font_size = 11,
@@ -384,7 +412,7 @@ fn renderTextInputDialog(
                     }
                 }
             },
-            else => {},
+            .files, .actions, .directory_navigator, .inactive => {},
         }
     });
 }
@@ -486,14 +514,44 @@ fn renderSelectionList(
                     .sizing = .{ .w = .grow, .h = .fixed(switch (palette.mode) {
                         .files => 54.0,
                         .actions, .directory_navigator => 46.0,
-                        else => 0.0,
+                        .set_brightness,
+                        .set_contrast,
+                        .set_contrast_blend,
+                        .set_highlights,
+                        .set_shadows,
+                        .set_whites,
+                        .set_blacks,
+                        .set_temperature,
+                        .set_tint,
+                        .set_vibrance,
+                        .set_saturation,
+                        .go_to_image,
+                        .set_slideshow_interval,
+                        .inactive,
+                        => 0.0,
                     }) },
                     .direction = .left_to_right,
                     .child_alignment = .{ .x = .left, .y = .center },
                     .padding = .{ .left = 12, .right = 12 },
                     .child_gap = switch (palette.mode) {
                         .files => 8,
-                        else => 0,
+                        .actions,
+                        .directory_navigator,
+                        .set_brightness,
+                        .set_contrast,
+                        .set_contrast_blend,
+                        .set_highlights,
+                        .set_shadows,
+                        .set_whites,
+                        .set_blacks,
+                        .set_temperature,
+                        .set_tint,
+                        .set_vibrance,
+                        .set_saturation,
+                        .go_to_image,
+                        .set_slideshow_interval,
+                        .inactive,
+                        => 0,
                     },
                 },
                 .background_color = if (is_selected and item_hovered)
@@ -1004,7 +1062,21 @@ fn renderSelectionList(
                             }
                         }
                     },
-                    else => {},
+                    .set_brightness,
+                    .set_contrast,
+                    .set_contrast_blend,
+                    .set_highlights,
+                    .set_shadows,
+                    .set_whites,
+                    .set_blacks,
+                    .set_temperature,
+                    .set_tint,
+                    .set_vibrance,
+                    .set_saturation,
+                    .go_to_image,
+                    .set_slideshow_interval,
+                    .inactive,
+                    => {},
                 }
             });
 
@@ -1032,7 +1104,21 @@ fn renderSelectionList(
                         "No matching subfolders found"
                     else
                         "0 subfolders found",
-                    else => "",
+                    .set_brightness,
+                    .set_contrast,
+                    .set_contrast_blend,
+                    .set_highlights,
+                    .set_shadows,
+                    .set_whites,
+                    .set_blacks,
+                    .set_temperature,
+                    .set_tint,
+                    .set_vibrance,
+                    .set_saturation,
+                    .go_to_image,
+                    .set_slideshow_interval,
+                    .inactive,
+                    => "",
                 };
                 clay.text(no_match_msg, .{
                     .color = a(theme.subtext1, progress),

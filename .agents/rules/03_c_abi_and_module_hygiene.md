@@ -259,5 +259,27 @@ Every Zig source file (`src/**/*.zig`, `build.zig`) MUST adhere strictly to the 
 
 ### 4. Verification & Formatting Invariant
 
-- All code modifications MUST cleanly pass `zig fmt --check <file>` before completion.
-- When reviewing or writing Zig code, proactively verify that lines end around 80 columns.
+- All code modifications MUST cleanly pass `zig fmt --check <file>` before
+  completion.
+- When reviewing or writing Zig, GLSL, or C code, proactively verify that all
+  new and modified lines strictly obey the \<= 80 columns standard.
+
+## 15. Exhaustive Enum Pattern Matching & Anti-`else => {}` Invariant
+
+- **Exhaustive Matching on Architectural Enums**:
+  - Switch statements evaluating core domain enums (`PaletteMode`, `EditParam`,
+    `AppIntent`, `ScaleMode`, `FilterKind`) MUST exhaustively list every
+    variant.
+  - Wildcard or catch-all branches (`else => {}` or `else => ...`) are strictly
+    forbidden for domain-critical enums.
+- **Compile-Time Regressions Guard**:
+  - When a new mode or parameter variant is added to an enum, the Zig compiler
+    must immediately trigger compile errors at all unhandled call sites across
+    the codebase.
+  - Fallback `else => {}` silences these errors, leading to insidious runtime
+    bugs where newly added features are silently ignored in event loops, input
+    handlers, or rendering systems.
+- **Handling Inactive or Non-Applicable Modes**:
+  - If multiple variants share a no-op or default behavior, enumerate them
+    explicitly in a multi-case pattern (e.g.
+    `.inactive, .files, .actions => {}`).

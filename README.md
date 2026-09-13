@@ -11,8 +11,12 @@ ______________________________________________________________________
 - **CBZ & Manga Mode Support:** Instant $O(1)$ page seeking inside `.cbz` comic archives with toggleable Right-to-Left (RTL) Manga reading mode (`M` key).
 - **Advanced Filtering & Resampling:** Features high-quality resampling shaders including Bilinear, Mitchell-Netravali, and Lanczos3 filters.
 - **Command Palette:** Built-in searchable palettes for commands (`F1` or `Ctrl+Shift+P`), file search (`Ctrl+P`), and directory navigator (`Ctrl+O`).
-- **Interactive Info & Stats Overlays:** Toggleable draggable panels (`d` for Info, `Shift+D` / `Shift+I` for Stats) displaying camera sensor metadata, preview resolutions, CPU/GPU decoding times, active resampling shader, and rendering metrics.
-- **Docked Image Adjustments Panel:** Interactive side panel (`e` key) for non-destructive brightness and contrast tuning with live slider dragging, reset shortcuts (`Shift+R`), and instant before/after comparison (`\` key).
+- **Docked Image Adjustments Panel:** Interactive side panel (`e` key)
+  featuring an 11-parameter photographic color pipeline across Light & Tone
+  (Exposure, Contrast, Contrast Blend, Highlights, Shadows, Whites, Blacks),
+  White Balance (Temperature, Tint), and Color (Vibrance, Saturation) with live
+  slider dragging, reset shortcuts (`Shift+R`), and instant before/after
+  comparison (`\` key).
 - **Lightroom-Style Image Triage & SIMD Filtering:** Instant photo triage with Pick (`z`), Reject (`x`), and Unflag (`u`) shortcuts. Filtered view modes (`v` / `Shift+V`) cycle between Default (hides rejected images), Picks Only, Rejects Only, Unflagged Only, and All Images. Filtering and visible count calculations are accelerated via 256-bit SIMD vector instructions (`@Vector(32, u8)`) and hardware popcounting (`POPCNT`), enabling sub-microsecond filtering across collections of 10,000+ photos.
 - **UNIX Pipeline Integration & Triage Export:** On application exit, classifications are streamed cleanly to standard output as tab-separated rows (`PICK\t/path/to/image.jpg` or `REJECT\t/path/to/image.jpg`), allowing direct integration with shell tools (`awk`, `xargs`, `cp`, `mv`).
 - **Non-Blocking Headless Mode:** Runs offscreen without X11 or Wayland (ideal for CI and servers) with `--headless`.
@@ -170,8 +174,14 @@ You can send commands to a running instance using the `peng-msg` utility:
 # Toggle Floating Title Bar Overlay (toggle, true, false)
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock title toggle
 
-# Adjust brightness and contrast
-./zig-out/bin/peng-msg /tmp/peng-1234.sock adjust 0.2 -0.1
+# Adjust brightness, contrast, and optional contrast blend (0.0 to 1.0)
+./zig-out/bin/peng-msg /tmp/peng-1234.sock adjust 0.2 1.4 1.0
+
+# Batch adjust tonal quad (highlights, shadows, whites, blacks)
+./zig-out/bin/peng-msg /tmp/peng-1234.sock tone 0.15 -0.10 0.05 -0.05
+
+# Batch adjust color (temperature, tint, vibrance, saturation)
+./zig-out/bin/peng-msg /tmp/peng-1234.sock color 0.10 0.00 0.25 0.10
 
 # Toggle Before / After Comparison (toggle, on, off)
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock compare toggle

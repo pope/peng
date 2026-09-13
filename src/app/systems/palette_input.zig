@@ -154,6 +154,15 @@ fn handlePaletteKeys(
                 .directory_navigator => try palette.rebuildDirectoryMatches(),
                 .set_brightness,
                 .set_contrast,
+                .set_contrast_blend,
+                .set_highlights,
+                .set_shadows,
+                .set_whites,
+                .set_blacks,
+                .set_temperature,
+                .set_tint,
+                .set_vibrance,
+                .set_saturation,
                 .go_to_image,
                 .set_slideshow_interval,
                 .inactive,
@@ -175,6 +184,15 @@ fn handlePaletteKeys(
                 .directory_navigator => try palette.rebuildDirectoryMatches(),
                 .set_brightness,
                 .set_contrast,
+                .set_contrast_blend,
+                .set_highlights,
+                .set_shadows,
+                .set_whites,
+                .set_blacks,
+                .set_temperature,
+                .set_tint,
+                .set_vibrance,
+                .set_saturation,
                 .go_to_image,
                 .set_slideshow_interval,
                 .inactive,
@@ -226,45 +244,66 @@ fn handlePaletteKeys(
         .return_key => {
             const raw_str = palette.query.items;
             switch (palette.mode) {
-                .go_to_image => try handlePaletteReturnGoToImage(ctx, raw_str),
-                .set_slideshow_interval => try handlePaletteReturnSlideshow(ctx, raw_str),
-                .set_brightness, .set_contrast => {
-                    if (raw_str.len > 0) {
-                        if (std.fmt.parseFloat(f32, raw_str)) |val| {
-                            if (!std.math.isNan(val) and !std.math.isInf(val)) {
-                                const min_val: f32 = if (palette.mode == .set_brightness)
-                                    -1.0
-                                else
-                                    0.0;
-                                const max_val: f32 = if (palette.mode == .set_brightness)
-                                    1.0
-                                else
-                                    5.0;
-                                if (val >= min_val and val <= max_val) {
-                                    if (palette.mode == .set_brightness) {
-                                        try self.pushIntent(.{ .set_brightness = val });
-                                    } else {
-                                        try self.pushIntent(.{ .set_contrast = val });
+                .go_to_image => {
+                    try handlePaletteReturnGoToImage(ctx, raw_str);
+                },
+                .set_slideshow_interval => {
+                    try handlePaletteReturnSlideshow(ctx, raw_str);
+                },
+                .set_brightness,
+                .set_contrast,
+                .set_contrast_blend,
+                .set_highlights,
+                .set_shadows,
+                .set_whites,
+                .set_blacks,
+                .set_temperature,
+                .set_tint,
+                .set_vibrance,
+                .set_saturation,
+                => {
+                    if (palette.mode.toEditParam()) |param| {
+                        const desc = state_pkg.getDescriptor(param);
+                        if (raw_str.len > 0) {
+                            if (std.fmt.parseFloat(f32, raw_str)) |val| {
+                                if (!std.math.isNan(val) and
+                                    !std.math.isInf(val))
+                                {
+                                    if (val >= desc.min and val <= desc.max) {
+                                        try self.pushIntent(.{
+                                            .adjust = .{
+                                                .set = .{
+                                                    .param = param,
+                                                    .value = val,
+                                                },
+                                            },
+                                        });
+                                        self.closePalette();
                                     }
-                                    self.closePalette();
                                 }
+                            } else |err| {
+                                std.log.debug(
+                                    "Failed to parse {s} value '{s}': {}",
+                                    .{ desc.name, raw_str, err },
+                                );
                             }
-                        } else |err| {
-                            std.log.debug(
-                                "Failed to parse brightness/contrast value '{s}': {}",
-                                .{ raw_str, err },
-                            );
                         }
                     }
                 },
-                .directory_navigator => try handlePaletteReturnDirectory(ctx, mod),
+                .directory_navigator => {
+                    try handlePaletteReturnDirectory(ctx, mod);
+                },
                 .files, .actions => {
                     if (palette.selected_idx < palette.matches.items.len) {
-                        const target_idx = palette.matches.items[palette.selected_idx];
+                        const target_idx = palette.matches.items[
+                            palette.selected_idx
+                        ];
                         if (palette.mode == .files) {
                             try self.pushIntent(.{ .go_to_image = target_idx });
                         } else if (palette.mode == .actions) {
-                            const item = state_pkg.palette_action_items[target_idx];
+                            const item = state_pkg.palette_action_items[
+                                target_idx
+                            ];
                             try self.pushIntent(item.intent);
                         }
                     }
@@ -283,9 +322,20 @@ fn handlePaletteKeys(
                 switch (palette.mode) {
                     .files => try self.rebuildPaletteMatches(),
                     .actions => try self.rebuildActionMatches(),
-                    .directory_navigator => try palette.rebuildDirectoryMatches(),
+                    .directory_navigator => {
+                        try palette.rebuildDirectoryMatches();
+                    },
                     .set_brightness,
                     .set_contrast,
+                    .set_contrast_blend,
+                    .set_highlights,
+                    .set_shadows,
+                    .set_whites,
+                    .set_blacks,
+                    .set_temperature,
+                    .set_tint,
+                    .set_vibrance,
+                    .set_saturation,
                     .go_to_image,
                     .set_slideshow_interval,
                     .inactive,
@@ -349,8 +399,24 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
                 switch (self.viewer.ui.palette.mode) {
                     .files => try self.rebuildPaletteMatches(),
                     .actions => try self.rebuildActionMatches(),
-                    .directory_navigator => try self.viewer.ui.palette.rebuildDirectoryMatches(),
-                    else => {},
+                    .directory_navigator => {
+                        try self.viewer.ui.palette.rebuildDirectoryMatches();
+                    },
+                    .set_brightness,
+                    .set_contrast,
+                    .set_contrast_blend,
+                    .set_highlights,
+                    .set_shadows,
+                    .set_whites,
+                    .set_blacks,
+                    .set_temperature,
+                    .set_tint,
+                    .set_vibrance,
+                    .set_saturation,
+                    .go_to_image,
+                    .set_slideshow_interval,
+                    .inactive,
+                    => {},
                 }
             }
         }
@@ -359,11 +425,16 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
     // 3. Selection Scrolling Synchronization
     if (self.viewer.ui.palette.selection_dirty) {
         const cfg = state_pkg.getPaletteConfig(self.viewer.ui.palette.mode);
-        const scroll_data = clay.cdefs.Clay_GetScrollContainerData(clay.getElementId(cfg.list_id));
+        const scroll_data = clay.cdefs.Clay_GetScrollContainerData(
+            clay.getElementId(cfg.list_id),
+        );
         if (scroll_data.found) {
             const item_height = cfg.base_item_height;
             const viewport_height = 320.0;
-            const sel_f = @as(f32, @floatFromInt(self.viewer.ui.palette.selected_idx));
+            const sel_f = @as(
+                f32,
+                @floatFromInt(self.viewer.ui.palette.selected_idx),
+            );
             const item_top = sel_f * item_height;
             const item_bottom = item_top + item_height;
             const visible_top = -scroll_data.scroll_position.y;
@@ -372,7 +443,8 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
             if (item_top < visible_top) {
                 scroll_data.scroll_position.y = -item_top;
             } else if (item_bottom > visible_bottom) {
-                scroll_data.scroll_position.y = -(item_bottom - viewport_height);
+                scroll_data.scroll_position.y =
+                    -(item_bottom - viewport_height);
             }
             self.viewer.ui.palette.selection_dirty = false;
         }
@@ -384,7 +456,9 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
         const is_in_debug_panel = input.isPointerInDebugPanel();
         const cfg = state_pkg.getPaletteConfig(self.viewer.ui.palette.mode);
 
-        if (!clay.pointerOver(clay.getElementId(cfg.element_id)) and !is_in_debug_panel) {
+        if (!clay.pointerOver(clay.getElementId(cfg.element_id)) and
+            !is_in_debug_panel)
+        {
             self.closePalette();
             palette_closed_this_frame = true;
         } else if (!is_in_debug_panel) {
@@ -408,7 +482,9 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
                             palette_closed_this_frame = true;
                         },
                         .actions => {
-                            const item = state_pkg.palette_action_items[real_idx];
+                            const item = state_pkg.palette_action_items[
+                                real_idx
+                            ];
                             try self.pushIntent(item.intent);
                             if (self.viewer.ui.palette.mode == old_type) {
                                 self.closePalette();
@@ -416,12 +492,18 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
                             }
                         },
                         .directory_navigator => {
-                            if (real_idx < self.viewer.ui.palette.dir_items.items.len) {
-                                const entry = self.viewer.ui.palette.dir_items.items[real_idx];
-                                const path_copy = try ctx.frame_allocator.dupe(
-                                    u8,
-                                    entry.getFullPath(),
-                                );
+                            if (real_idx <
+                                self.viewer.ui.palette.dir_items.items.len)
+                            {
+                                const entry =
+                                    self.viewer.ui.palette.dir_items.items[
+                                        real_idx
+                                    ];
+                                const path_copy =
+                                    try ctx.frame_allocator.dupe(
+                                        u8,
+                                        entry.getFullPath(),
+                                    );
                                 try self.pushIntent(.{
                                     .set_palette = .{
                                         .mode = .directory_navigator,
@@ -430,7 +512,21 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
                                 });
                             }
                         },
-                        else => {},
+                        .set_brightness,
+                        .set_contrast,
+                        .set_contrast_blend,
+                        .set_highlights,
+                        .set_shadows,
+                        .set_whites,
+                        .set_blacks,
+                        .set_temperature,
+                        .set_tint,
+                        .set_vibrance,
+                        .set_saturation,
+                        .go_to_image,
+                        .set_slideshow_interval,
+                        .inactive,
+                        => {},
                     }
                     break;
                 }

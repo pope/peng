@@ -10,9 +10,23 @@ layout(set = 2, binding = 0) uniform sampler2D texSampler;
 layout(std140, set = 3, binding = 0) uniform ImageUBO {
     float brightness;
     float contrast;
-    int scale_mode; // 0 = nearest, 1 = linear, 2 = pixel_art, 3 = mitchell,
-                    // 4 = lanczos3, 5 = fsr (EASU + RCAS), 6 = tiny_cnn
-    float padding;
+    float temperature;
+    float tint;
+
+    float highlights;
+    float shadows;
+    float whites;
+    float blacks;
+
+    float saturation;
+    float vibrance;
+    float contrast_blend;
+    int scale_mode;
+
+    int has_adjustments;
+    int pad1;
+    int pad2;
+    int pad3;
 }
 ubo;
 
@@ -505,33 +519,114 @@ void main() {
 
     vec4 color = texColor * inColor;
 
-    // Photographic Exposure and Contrast Pipeline:
-    // When adjustments are neutral (contrast == 1.0 and brightness == 0.0),
+    // Photographic Color & Tonal Editing Pipeline:
+    // When adjustments are neutral (has_adjustments == 0),
     // bypass to preserve 100% bit-exact unadjusted reproduction.
-    float safe_contrast = clamp(ubo.contrast, 0.0, 5.0);
-    bool has_adjustments =
-        (abs(safe_contrast - 1.0) > 1e-5 || abs(ubo.brightness) > 1e-5);
-
-    if (has_adjustments) {
+    if (ubo.has_adjustments != 0) {
         // Guard against negative filter lobes (e.g. Mitchell bicubic ringing)
         vec3 linear = srgb_to_linear(clamp(color.rgb, 0.0, 1.0));
 
-        // 1 & 2. Unified Linear Contrast & Photometric Exposure:
-        // Evaluates peak_linear scalar once, folding contrast division and
-        // exposure stop gain into a single multiplier: linear^contrast *
-        // (mid_gray^(1-c) * 2^(2*EV))
+        // 1. JPEG-Friendly White Balance (Opponent Linear Adaptation)
+        const vec3 REC709_LUMA = vec3(0.212639, 0.715169, 0.072192);
+        float Y_in = dot(linear, REC709_LUMA);
+
+        // Opponent shift coefficients (temperature: amber/blue,
+        // tint: magenta/green)
+        vec3 wb_gain = vec3(1.0 + ubo.temperature * 0.4 + ubo.tint * 0.2,
+                            1.0 - ubo.tint * 0.4,
+                            1.0 - ubo.temperature * 0.4 + ubo.tint * 0.2);
+        vec3 wb_linear = linear * max(wb_gain, vec3(0.0));
+
+        // Perceived luminance normalization (eliminates brightness drift)
+        float Y_wb = dot(wb_linear, REC709_LUMA);
+        wb_linear *= (Y_in / max(Y_wb, 1e-5));
+
+        // Anchor protection envelope: preserve pure blacks and specular whites
+        float wb_env =
+            smoothstep(0.0, 0.04, Y_in) * (1.0 - smoothstep(0.92, 1.0, Y_in));
+        linear = mix(linear, wb_linear, wb_env);
+
+        // 2. Linear Contrast (Dual Path: Per-Channel RGB vs Scalar Luminance)
         const float mid_gray = 0.18;
+        float safe_contrast = clamp(ubo.contrast, 0.0, 5.0);
+
+        // Path B: Classic Per-Channel RGB Contrast (18% mid-gray pivot)
+        vec3 linear_rgb =
+            mid_gray * pow(max(linear, vec3(1e-5)) * (1.0 / mid_gray),
+                           vec3(safe_contrast));
+
+        // Path A: Pure Luminance Contrast (scalar luma pivot)
+        float Y = dot(linear, REC709_LUMA);
+        float safe_Y = max(Y, 1e-5);
+        float Y_contrasted =
+            mid_gray * pow(safe_Y * (1.0 / mid_gray), safe_contrast);
+        vec3 linear_luma = linear * (Y_contrasted / safe_Y);
+
+        // Blend between Luminance (0.0) and Classic Per-Channel (1.0)
+        float blend = clamp(ubo.contrast_blend, 0.0, 1.0);
+        linear = mix(linear_luma, linear_rgb, blend);
+        linear = max(linear, vec3(0.0));
+
+        // 3. Monotonic Tonal Quad (Blacks, Shadows, Highlights, Whites)
+        float Y_post_contrast = dot(linear, REC709_LUMA);
+        float u = sqrt(clamp(Y_post_contrast, 0.0, 1.0));
+
+        float w_blacks = max(0.0, 1.0 - u / 0.35);
+        w_blacks *= w_blacks; // Quadratic toe falloff
+        float w_shadows =
+            smoothstep(0.0, 0.25, u) * (1.0 - smoothstep(0.25, 0.65, u));
+        float w_highlights =
+            smoothstep(0.35, 0.70, u) * (1.0 - smoothstep(0.70, 0.98, u));
+        float w_whites = smoothstep(0.65, 1.0, u);
+
+        float delta_ev =
+            ubo.blacks * 0.5 * w_blacks + ubo.shadows * 1.0 * w_shadows +
+            ubo.highlights * 1.0 * w_highlights + ubo.whites * 0.5 * w_whites;
+
+        float tone_gain = exp2(delta_ev);
+        linear *= tone_gain;
+
+        // 4. Photometric Exposure Multiplier (Linear Stop Gain after contrast)
+        float exp_gain = exp2(ubo.brightness * 2.0);
+        linear *= exp_gain;
+
+        // 5. Saturation & Vibrance with Skin-Tone Protection
+        if (abs(ubo.saturation) > 1e-5 || abs(ubo.vibrance) > 1e-5) {
+            vec3 c_safe = max(linear, vec3(0.0));
+            float c_max = max(max(c_safe.r, c_safe.g), c_safe.b);
+            float c_min = min(min(c_safe.r, c_safe.g), c_safe.b);
+            float S = (c_max - c_min) / max(c_max, 1e-5);
+
+            float is_warm =
+                step(0.0, c_safe.r - c_safe.g) * step(0.0, c_safe.g - c_safe.b);
+            float d_rg = c_safe.r - c_safe.g;
+            float d_gb = c_safe.g - c_safe.b;
+            float skin_ratio = d_rg / max(d_rg + d_gb, 1e-5);
+            float hue_match =
+                1.0 - smoothstep(0.08, 0.35, abs(skin_ratio - 0.55));
+            float sat_match =
+                smoothstep(0.12, 0.25, S) * (1.0 - smoothstep(0.55, 0.85, S));
+            float skin_factor = is_warm * hue_match * sat_match;
+
+            float vib_weight = mix(S, 1.0 - S, step(0.0, ubo.vibrance));
+            float skin_prot = 1.0 - 0.75 * skin_factor;
+            float sat_mult = clamp(1.0 + ubo.saturation +
+                                       ubo.vibrance * vib_weight * skin_prot,
+                                   0.0, 3.0);
+
+            float Y_final = dot(c_safe, REC709_LUMA);
+            linear = max(vec3(0.0), Y_final + (c_safe - Y_final) * sat_mult);
+        }
+
+        // 6. Re-encode to display sRGB:
+        vec3 srgb = linear_to_srgb(linear);
+
+        // 7. Highlight Protection Soft-Knee (Unified Global Shoulder Curve):
+        // Accounts for contrast expansion, exposure stop gain, and boosts
+        float white_tone_boost =
+            max(ubo.whites, 0.0) * 0.5 + max(ubo.highlights, 0.0) * 0.5;
         float peak_linear = mid_gray * pow(1.0 / mid_gray, safe_contrast) *
-                            exp2(ubo.brightness * 2.0);
-        vec3 exposed_linear =
-            pow(max(linear, vec3(1e-5)), vec3(safe_contrast)) * peak_linear;
-
-        // 3. Re-encode to display sRGB:
-        vec3 srgb = linear_to_srgb(exposed_linear);
-
-        // 4. Highlight protection soft-knee:
-        // Scalar peak evaluation (saves 4 vector transcendentals) + uniform
-        // branch bypass
+                            exp2(ubo.brightness * 2.0 + white_tone_boost);
         float peak_srgb = linear_to_srgb_scalar(peak_linear);
         float overshoot = max(peak_srgb - 1.0, 0.0);
 

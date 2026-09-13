@@ -21,6 +21,9 @@ pub const scale_modes_string = types.scale_modes_string;
 pub const filter_modes_string = types.filter_modes_string;
 pub const TextInputBounds = types.TextInputBounds;
 pub const PaletteMode = types.PaletteMode;
+pub const EditParam = types.EditParam;
+pub const StepDirection = types.StepDirection;
+pub const AdjustIntent = types.AdjustIntent;
 pub const AppIntent = types.AppIntent;
 
 pub const CliTarget = actions.CliTarget;

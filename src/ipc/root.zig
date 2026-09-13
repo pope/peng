@@ -119,7 +119,23 @@ pub const EditAction = enum {
 pub const IpcCommand = union(enum) {
     zoom: f32,
     pan: struct { x: f32, y: f32 },
-    adjust: struct { brightness: f32, contrast: f32 },
+    adjust: struct {
+        brightness: f32,
+        contrast: f32,
+        contrast_blend: ?f32 = null,
+    },
+    tone: struct {
+        highlights: f32,
+        shadows: f32,
+        whites: f32,
+        blacks: f32,
+    },
+    color: struct {
+        temperature: f32,
+        tint: f32,
+        vibrance: f32,
+        saturation: f32,
+    },
     compare: CompareAction,
     edit: EditAction,
     filter: TextureScaleMode,
@@ -151,19 +167,31 @@ pub const IpcCommand = union(enum) {
             .zoom => |factor| return .{ .set_zoom = factor },
             .pan => |p| return .{ .set_pan = .{ .x = p.x, .y = p.y } },
             .adjust => return null,
+            .tone => |t| return .{ .adjust = .{ .batch_tone = .{
+                .highlights = t.highlights,
+                .shadows = t.shadows,
+                .whites = t.whites,
+                .blacks = t.blacks,
+            } } },
+            .color => |c| return .{ .adjust = .{ .batch_color = .{
+                .temperature = c.temperature,
+                .tint = c.tint,
+                .vibrance = c.vibrance,
+                .saturation = c.saturation,
+            } } },
             .compare => |action| switch (action) {
-                .enable => return .{ .set_compare = true },
-                .disable => return .{ .set_compare = false },
-                .toggle => return .toggle_compare,
+                .enable => return .{ .adjust = .{ .set_compare = true } },
+                .disable => return .{ .adjust = .{ .set_compare = false } },
+                .toggle => return .{ .adjust = .toggle_compare },
             },
             .edit => |action| switch (action) {
                 .enable => return .{ .set_edit_panel = true },
                 .disable => return .{ .set_edit_panel = false },
                 .toggle => return .toggle_edit_panel,
-                .reset => return .reset_adjustments,
+                .reset => return .{ .adjust = .reset_all },
             },
             .reset_view => return .reset_zoom,
-            .reset_adjustments => return .reset_adjustments,
+            .reset_adjustments => return .{ .adjust = .reset_all },
             .filter => |mode| return .{ .set_filter = mode },
             .scale => |mode| return .{ .set_scale = mode },
             .manga => |val| return .{ .set_manga_mode = val },
@@ -241,15 +269,93 @@ pub const IpcCommand = union(enum) {
         } else if (std.mem.eql(u8, cmd, "adjust")) {
             const br_str = it.next() orelse return error.MissingArgument;
             const co_str = it.next() orelse return error.MissingArgument;
+            const blend_str = it.next();
             if (br_str.len > 128 or co_str.len > 128) return error.InvalidArgument;
             const br = try std.fmt.parseFloat(f32, br_str);
             const co = try std.fmt.parseFloat(f32, co_str);
+            var blend: ?f32 = null;
+            if (blend_str) |bs| {
+                if (bs.len > 128) return error.InvalidArgument;
+                const b_val = try std.fmt.parseFloat(f32, bs);
+                if (std.math.isNan(b_val) or std.math.isInf(b_val)) {
+                    return error.InvalidArgument;
+                }
+                blend = b_val;
+            }
             if (std.math.isNan(br) or std.math.isInf(br) or
                 std.math.isNan(co) or std.math.isInf(co))
             {
                 return error.InvalidArgument;
             }
-            return .{ .adjust = .{ .brightness = br, .contrast = co } };
+            return .{
+                .adjust = .{
+                    .brightness = br,
+                    .contrast = co,
+                    .contrast_blend = blend,
+                },
+            };
+        } else if (std.mem.eql(u8, cmd, "tone")) {
+            const hl_str = it.next() orelse return error.MissingArgument;
+            const sh_str = it.next() orelse return error.MissingArgument;
+            const wh_str = it.next() orelse return error.MissingArgument;
+            const bl_str = it.next() orelse return error.MissingArgument;
+            if (hl_str.len > 128 or
+                sh_str.len > 128 or
+                wh_str.len > 128 or
+                bl_str.len > 128)
+            {
+                return error.InvalidArgument;
+            }
+            const hl = try std.fmt.parseFloat(f32, hl_str);
+            const sh = try std.fmt.parseFloat(f32, sh_str);
+            const wh = try std.fmt.parseFloat(f32, wh_str);
+            const bl = try std.fmt.parseFloat(f32, bl_str);
+            if (std.math.isNan(hl) or std.math.isInf(hl) or
+                std.math.isNan(sh) or std.math.isInf(sh) or
+                std.math.isNan(wh) or std.math.isInf(wh) or
+                std.math.isNan(bl) or std.math.isInf(bl))
+            {
+                return error.InvalidArgument;
+            }
+            return .{
+                .tone = .{
+                    .highlights = hl,
+                    .shadows = sh,
+                    .whites = wh,
+                    .blacks = bl,
+                },
+            };
+        } else if (std.mem.eql(u8, cmd, "color")) {
+            const temp_str = it.next() orelse return error.MissingArgument;
+            const tint_str = it.next() orelse return error.MissingArgument;
+            const vib_str = it.next() orelse return error.MissingArgument;
+            const sat_str = it.next() orelse return error.MissingArgument;
+            if (temp_str.len > 128 or
+                tint_str.len > 128 or
+                vib_str.len > 128 or
+                sat_str.len > 128)
+            {
+                return error.InvalidArgument;
+            }
+            const temp = try std.fmt.parseFloat(f32, temp_str);
+            const tint = try std.fmt.parseFloat(f32, tint_str);
+            const vib = try std.fmt.parseFloat(f32, vib_str);
+            const sat = try std.fmt.parseFloat(f32, sat_str);
+            if (std.math.isNan(temp) or std.math.isInf(temp) or
+                std.math.isNan(tint) or std.math.isInf(tint) or
+                std.math.isNan(vib) or std.math.isInf(vib) or
+                std.math.isNan(sat) or std.math.isInf(sat))
+            {
+                return error.InvalidArgument;
+            }
+            return .{
+                .color = .{
+                    .temperature = temp,
+                    .tint = tint,
+                    .vibrance = vib,
+                    .saturation = sat,
+                },
+            };
         } else if (std.mem.eql(u8, cmd, "filter")) {
             const val = it.next() orelse return error.MissingArgument;
             if (std.meta.stringToEnum(TextureScaleMode, val)) |mode| {
@@ -560,7 +666,7 @@ test "IpcCommand parsing" {
     const cmd_reset_adjustments = try IpcCommand.parse("reset_adjustments");
     try std.testing.expectEqual(IpcCommand.reset_adjustments, cmd_reset_adjustments);
     try std.testing.expectEqual(
-        intents.AppIntent.reset_adjustments,
+        intents.AppIntent{ .adjust = .reset_all },
         cmd_reset_adjustments.toIntent().?,
     );
 
@@ -663,28 +769,28 @@ test "IpcCommand parsing" {
     const cmd_cmp_true = try IpcCommand.parse("compare true");
     try std.testing.expectEqual(CompareAction.enable, cmd_cmp_true.compare);
     try std.testing.expectEqual(
-        intents.AppIntent{ .set_compare = true },
+        intents.AppIntent{ .adjust = .{ .set_compare = true } },
         cmd_cmp_true.toIntent().?,
     );
 
     const cmd_cmp_off = try IpcCommand.parse("compare off");
     try std.testing.expectEqual(CompareAction.disable, cmd_cmp_off.compare);
     try std.testing.expectEqual(
-        intents.AppIntent{ .set_compare = false },
+        intents.AppIntent{ .adjust = .{ .set_compare = false } },
         cmd_cmp_off.toIntent().?,
     );
 
     const cmd_cmp_toggle = try IpcCommand.parse("compare");
     try std.testing.expectEqual(CompareAction.toggle, cmd_cmp_toggle.compare);
     try std.testing.expectEqual(
-        intents.AppIntent.toggle_compare,
+        intents.AppIntent{ .adjust = .toggle_compare },
         cmd_cmp_toggle.toIntent().?,
     );
 
     const cmd_cmp_toggle_word = try IpcCommand.parse("compare toggle");
     try std.testing.expectEqual(CompareAction.toggle, cmd_cmp_toggle_word.compare);
     try std.testing.expectEqual(
-        intents.AppIntent.toggle_compare,
+        intents.AppIntent{ .adjust = .toggle_compare },
         cmd_cmp_toggle_word.toIntent().?,
     );
 
@@ -712,8 +818,46 @@ test "IpcCommand parsing" {
     const cmd_edit_reset = try IpcCommand.parse("edit reset");
     try std.testing.expectEqual(EditAction.reset, cmd_edit_reset.edit);
     try std.testing.expectEqual(
-        intents.AppIntent.reset_adjustments,
+        intents.AppIntent{ .adjust = .reset_all },
         cmd_edit_reset.toIntent().?,
+    );
+
+    const cmd_tone = try IpcCommand.parse("tone 0.1 -0.2 0.3 -0.4");
+    try std.testing.expectEqual(
+        intents.AppIntent{ .adjust = .{ .batch_tone = .{
+            .highlights = 0.1,
+            .shadows = -0.2,
+            .whites = 0.3,
+            .blacks = -0.4,
+        } } },
+        cmd_tone.toIntent().?,
+    );
+
+    const cmd_color = try IpcCommand.parse("color 0.5 -0.1 0.25 -0.35");
+    try std.testing.expectEqual(
+        intents.AppIntent{ .adjust = .{ .batch_color = .{
+            .temperature = 0.5,
+            .tint = -0.1,
+            .vibrance = 0.25,
+            .saturation = -0.35,
+        } } },
+        cmd_color.toIntent().?,
+    );
+
+    const cmd_adj_2 = try IpcCommand.parse("adjust 0.2 1.5");
+    try std.testing.expectEqual(@as(f32, 0.2), cmd_adj_2.adjust.brightness);
+    try std.testing.expectEqual(@as(f32, 1.5), cmd_adj_2.adjust.contrast);
+    try std.testing.expectEqual(
+        @as(?f32, null),
+        cmd_adj_2.adjust.contrast_blend,
+    );
+
+    const cmd_adj_3 = try IpcCommand.parse("adjust 0.2 1.5 0.8");
+    try std.testing.expectEqual(@as(f32, 0.2), cmd_adj_3.adjust.brightness);
+    try std.testing.expectEqual(@as(f32, 1.5), cmd_adj_3.adjust.contrast);
+    try std.testing.expectEqual(
+        @as(?f32, 0.8),
+        cmd_adj_3.adjust.contrast_blend,
     );
 
     try std.testing.expectError(error.UnknownCommand, IpcCommand.parse("invalid_command"));

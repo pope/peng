@@ -33,6 +33,7 @@ pub const SnackbarTrigger = enum(u8) {
     testing = 10,
     classification = 11,
     view_mode = 12,
+    adjust = 13,
 };
 
 pub const TRIGGER_COUNT: usize = @typeInfo(SnackbarTrigger).@"enum".fields.len;
@@ -47,6 +48,7 @@ pub const SnackbarContext = struct {
     classification_advanced: bool = false,
     has_target_image: bool = true,
     view_mode: ViewMode = .default,
+    last_param: ?types.EditParam = null,
 };
 
 /// Signature for declarative notification message formatters.
@@ -88,7 +90,7 @@ fn formatScaleMode(ctx: SnackbarContext, buf: []u8) []const u8 {
 }
 
 fn formatBrightness(ctx: SnackbarContext, buf: []u8) []const u8 {
-    const b = ctx.viewport.brightness;
+    const b = ctx.viewport.edits.get(.brightness);
     const b_pct: i32 = @intFromFloat(@round(b * 100.0));
     if (b_pct > 0) {
         return std.fmt.bufPrint(buf, "Brightness: +{d}%", .{b_pct}) catch "Brightness";
@@ -98,8 +100,85 @@ fn formatBrightness(ctx: SnackbarContext, buf: []u8) []const u8 {
 }
 
 fn formatContrast(ctx: SnackbarContext, buf: []u8) []const u8 {
-    const c = ctx.viewport.contrast;
+    const c = ctx.viewport.edits.get(.contrast);
     return std.fmt.bufPrint(buf, "Contrast: {d:.2}x", .{c}) catch "Contrast";
+}
+
+fn formatAdjustParam(ctx: SnackbarContext, buf: []u8) []const u8 {
+    const param = ctx.last_param orelse return "";
+    const desc = types.getDescriptor(param);
+    const val = ctx.viewport.edits.get(param);
+    return switch (desc.display_kind) {
+        .percent => {
+            const pct: i32 = @intFromFloat(@round(val * 100.0));
+            if (pct > 0) {
+                return std.fmt.bufPrint(
+                    buf,
+                    "{s}: +{d}%",
+                    .{ desc.label, pct },
+                ) catch desc.label;
+            } else {
+                return std.fmt.bufPrint(
+                    buf,
+                    "{s}: {d}%",
+                    .{ desc.label, pct },
+                ) catch desc.label;
+            }
+        },
+        .multiplier => {
+            return std.fmt.bufPrint(
+                buf,
+                "{s}: {d:.2}x",
+                .{ desc.label, val },
+            ) catch desc.label;
+        },
+        .ratio_percent => {
+            const pct: i32 = @intFromFloat(@round(val * 100.0));
+            return std.fmt.bufPrint(
+                buf,
+                "{s}: {d}%",
+                .{ desc.label, pct },
+            ) catch desc.label;
+        },
+        .temperature => {
+            const deg: i32 = @intFromFloat(@round(val * 2000.0));
+            if (deg > 0) {
+                return std.fmt.bufPrint(
+                    buf,
+                    "{s}: +{d}K",
+                    .{ desc.label, deg },
+                ) catch desc.label;
+            } else {
+                return std.fmt.bufPrint(
+                    buf,
+                    "{s}: {d}K",
+                    .{ desc.label, deg },
+                ) catch desc.label;
+            }
+        },
+        .tint => {
+            const pct: i32 = @intFromFloat(@round(val * 100.0));
+            if (pct > 0) {
+                return std.fmt.bufPrint(
+                    buf,
+                    "{s}: +{d} (Magenta)",
+                    .{ desc.label, pct },
+                ) catch desc.label;
+            } else if (pct < 0) {
+                return std.fmt.bufPrint(
+                    buf,
+                    "{s}: {d} (Green)",
+                    .{ desc.label, pct },
+                ) catch desc.label;
+            } else {
+                return std.fmt.bufPrint(
+                    buf,
+                    "{s}: 0",
+                    .{desc.label},
+                ) catch desc.label;
+            }
+        },
+    };
 }
 
 fn formatResetAdjustments(_: SnackbarContext, _: []u8) []const u8 {
@@ -181,7 +260,7 @@ pub const DEFAULT_SNACKBAR_RULES = [_]SnackbarRule{
         .label = "Brightness",
         .enabled = true,
         .duration_ms = 1800,
-        .intents = &.{ .set_brightness, .increase_brightness, .decrease_brightness },
+        .intents = &.{},
         .format_fn = formatBrightness,
     },
     .{
@@ -189,7 +268,7 @@ pub const DEFAULT_SNACKBAR_RULES = [_]SnackbarRule{
         .label = "Contrast",
         .enabled = true,
         .duration_ms = 1800,
-        .intents = &.{ .set_contrast, .increase_contrast, .decrease_contrast },
+        .intents = &.{},
         .format_fn = formatContrast,
     },
     .{
@@ -197,7 +276,7 @@ pub const DEFAULT_SNACKBAR_RULES = [_]SnackbarRule{
         .label = "Reset Adjustments",
         .enabled = true,
         .duration_ms = 1800,
-        .intents = &.{.reset_adjustments},
+        .intents = &.{},
         .format_fn = formatResetAdjustments,
     },
     .{
@@ -237,7 +316,7 @@ pub const DEFAULT_SNACKBAR_RULES = [_]SnackbarRule{
         .label = "Compare Adjustments",
         .enabled = true,
         .duration_ms = 1800,
-        .intents = &.{ .toggle_compare, .set_compare },
+        .intents = &.{},
         .format_fn = formatCompare,
     },
     .{
@@ -264,19 +343,95 @@ pub const DEFAULT_SNACKBAR_RULES = [_]SnackbarRule{
         .intents = &.{ .cycle_view_mode, .set_view_mode },
         .format_fn = formatViewMode,
     },
+    .{
+        .trigger = .adjust,
+        .label = "Photo Adjustments",
+        .enabled = true,
+        .duration_ms = 1800,
+        .intents = &.{},
+        .format_fn = formatAdjustParam,
+    },
 };
 
 /// Looks up the matching declarative snackbar rule for an executed intent.
 pub fn findRule(intent: AppIntent) ?SnackbarRule {
-    const intent_tag = std.meta.activeTag(intent);
-    inline for (DEFAULT_SNACKBAR_RULES) |rule| {
-        if (rule.enabled) {
-            for (rule.intents) |tag| {
-                if (tag == intent_tag) return rule;
+    switch (intent) {
+        .adjust => |adj| switch (adj) {
+            .toggle_compare, .set_compare => return SnackbarRule{
+                .trigger = .compare,
+                .label = "Compare Adjustments",
+                .enabled = true,
+                .duration_ms = 1800,
+                .intents = &.{},
+                .format_fn = formatCompare,
+            },
+            .reset_all => return SnackbarRule{
+                .trigger = .reset_adjustments,
+                .label = "Reset Adjustments",
+                .enabled = true,
+                .duration_ms = 1800,
+                .intents = &.{},
+                .format_fn = formatResetAdjustments,
+            },
+            .step => |s| {
+                const trigger: SnackbarTrigger = switch (s.param) {
+                    .brightness => .brightness,
+                    .contrast => .contrast,
+                    else => .adjust,
+                };
+                return SnackbarRule{
+                    .trigger = trigger,
+                    .label = "Photo Adjustments",
+                    .enabled = true,
+                    .duration_ms = 1800,
+                    .intents = &.{},
+                    .format_fn = formatAdjustParam,
+                };
+            },
+            .set => |s| {
+                const trigger: SnackbarTrigger = switch (s.param) {
+                    .brightness => .brightness,
+                    .contrast => .contrast,
+                    else => .adjust,
+                };
+                return SnackbarRule{
+                    .trigger = trigger,
+                    .label = "Photo Adjustments",
+                    .enabled = true,
+                    .duration_ms = 1800,
+                    .intents = &.{},
+                    .format_fn = formatAdjustParam,
+                };
+            },
+            .reset_param => |p| {
+                const trigger: SnackbarTrigger = switch (p) {
+                    .brightness => .brightness,
+                    .contrast => .contrast,
+                    else => .adjust,
+                };
+                return SnackbarRule{
+                    .trigger = trigger,
+                    .label = "Photo Adjustments",
+                    .enabled = true,
+                    .duration_ms = 1800,
+                    .intents = &.{},
+                    .format_fn = formatAdjustParam,
+                };
+            },
+            .batch_tone, .batch_color => return null,
+        },
+        else => {
+            const intent_tag = std.meta.activeTag(intent);
+            inline for (DEFAULT_SNACKBAR_RULES) |rule| {
+                if (rule.enabled) {
+                    for (rule.intents) |tag| {
+                        if (tag == intent_tag) return rule;
+                    }
+                }
             }
-        }
+            return null;
+        },
     }
-    return null;
 }
 
 /// Notification payload stored in the active variant of `SnackbarNotification`.
@@ -370,37 +525,57 @@ test "Snackbar formatters produce expected text" {
     try std.testing.expectEqualStrings("Scale: Fill Window (Crop)", scale_str);
 
     // Brightness positive & negative
-    vp.brightness = 0.2;
+    vp.edits.set(.brightness, 0.2);
     const b_pos = formatBrightness(.{ .viewport = &vp }, &buf);
     try std.testing.expectEqualStrings("Brightness: +20%", b_pos);
 
-    vp.brightness = -0.1;
+    vp.edits.set(.brightness, -0.1);
     const b_neg = formatBrightness(.{ .viewport = &vp }, &buf);
     try std.testing.expectEqualStrings("Brightness: -10%", b_neg);
 
     // Contrast
-    vp.contrast = 1.25;
+    vp.edits.set(.contrast, 1.25);
     const c_str = formatContrast(.{ .viewport = &vp }, &buf);
     try std.testing.expectEqualStrings("Contrast: 1.25x", c_str);
+
+    // General parameter formatting
+    vp.edits.set(.contrast_blend, 0.75);
+    const blend_str = formatAdjustParam(
+        .{ .viewport = &vp, .last_param = .contrast_blend },
+        &buf,
+    );
+    try std.testing.expectEqualStrings("Contrast Blend: 75%", blend_str);
+
+    vp.edits.set(.highlights, -0.3);
+    const hl_str = formatAdjustParam(
+        .{ .viewport = &vp, .last_param = .highlights },
+        &buf,
+    );
+    try std.testing.expectEqualStrings("Highlights: -30%", hl_str);
+
+    vp.edits.set(.temperature, 0.5);
+    const temp_str = formatAdjustParam(
+        .{ .viewport = &vp, .last_param = .temperature },
+        &buf,
+    );
+    try std.testing.expectEqualStrings("Temperature: +1000K", temp_str);
 
     // Adjustments reset
     const reset_str = formatResetAdjustments(.{ .viewport = &vp }, &buf);
     try std.testing.expectEqualStrings("Adjustments: Reset", reset_str);
 
     // Compare adjustments
-    vp.brightness = 0.0;
-    vp.contrast = 1.0;
+    vp.edits.reset();
     const cmp_no_adj = formatCompare(.{ .viewport = &vp }, &buf);
     try std.testing.expectEqualStrings("Before / After: No Adjustments", cmp_no_adj);
-    vp.brightness = 0.3;
+    vp.edits.set(.brightness, 0.3);
     vp.compare_original = true;
     const cmp_before = formatCompare(.{ .viewport = &vp }, &buf);
     try std.testing.expectEqualStrings("Before (Original)", cmp_before);
     vp.compare_original = false;
     const cmp_after = formatCompare(.{ .viewport = &vp }, &buf);
     try std.testing.expectEqualStrings("After (Adjusted)", cmp_after);
-    vp.brightness = 0.0;
-    vp.contrast = 1.0;
+    vp.edits.reset();
 
     // Rotation
     vp.rotation_angle = 90.0;
@@ -439,17 +614,42 @@ test "findRule maps intents to declarative rules" {
     try std.testing.expect(scale_rule != null);
     try std.testing.expectEqual(SnackbarTrigger.scale_mode, scale_rule.?.trigger);
 
-    const bright_rule = findRule(.increase_brightness);
+    const bright_rule = findRule(.{
+        .adjust = .{
+            .step = .{ .param = .brightness, .direction = .up },
+        },
+    });
     try std.testing.expect(bright_rule != null);
-    try std.testing.expectEqual(SnackbarTrigger.brightness, bright_rule.?.trigger);
+    try std.testing.expectEqual(
+        SnackbarTrigger.brightness,
+        bright_rule.?.trigger,
+    );
 
-    const compare_rule = findRule(.toggle_compare);
+    const hl_rule = findRule(.{
+        .adjust = .{
+            .step = .{ .param = .highlights, .direction = .up },
+        },
+    });
+    try std.testing.expect(hl_rule != null);
+    try std.testing.expectEqual(SnackbarTrigger.adjust, hl_rule.?.trigger);
+
+    const compare_rule = findRule(.{ .adjust = .toggle_compare });
     try std.testing.expect(compare_rule != null);
     try std.testing.expectEqual(SnackbarTrigger.compare, compare_rule.?.trigger);
 
-    const compare_set_rule = findRule(.{ .set_compare = true });
+    const compare_set_rule = findRule(.{ .adjust = .{ .set_compare = true } });
     try std.testing.expect(compare_set_rule != null);
-    try std.testing.expectEqual(SnackbarTrigger.compare, compare_set_rule.?.trigger);
+    try std.testing.expectEqual(
+        SnackbarTrigger.compare,
+        compare_set_rule.?.trigger,
+    );
+
+    const reset_rule = findRule(.{ .adjust = .reset_all });
+    try std.testing.expect(reset_rule != null);
+    try std.testing.expectEqual(
+        SnackbarTrigger.reset_adjustments,
+        reset_rule.?.trigger,
+    );
 
     const crossfade_rule = findRule(.toggle_crossfade);
     try std.testing.expect(crossfade_rule != null);
