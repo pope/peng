@@ -67,6 +67,8 @@ fn handleSetPaletteIntent(self: *AppState, p: anytype) !void {
 
 fn syncNavIndexChange(self: *AppState, old_idx: ?usize) void {
     if (old_idx != self.viewer.navigation.current_index) {
+        self.viewer.pan_controller.reset();
+        self.viewer.zoom_controller.reset();
         self.viewer.viewport.reset();
         if (self.viewer.viewport.mode != .manual) {
             self.viewer.viewport.zoom_factor =
@@ -88,6 +90,16 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
         .set_zoom => |factor| {
             vp.mode = .manual;
             vp.zoom_factor = state.clampZoomFactor(factor);
+        },
+        .zoom_by => |zb| {
+            if (zb.ratio <= 0.0 or !std.math.isFinite(zb.ratio)) return;
+            vp.mode = .manual;
+            const old_zoom = vp.zoom_factor.get();
+            const new_zoom = state.clampZoomFactor(old_zoom * zb.ratio).get();
+            vp.zoom_factor = state.UniversalZoom.init(new_zoom);
+            const ratio = new_zoom / old_zoom;
+            vp.pan_x *= ratio;
+            vp.pan_y *= ratio;
         },
         .zoom_in => {
             vp.mode = .manual;
@@ -116,16 +128,22 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
         .set_pan => |p| vp.setPan(p.x, p.y),
         .pan_by => |p| vp.panBy(p.dx, p.dy),
         .reset_zoom => {
+            self.viewer.pan_controller.reset();
+            self.viewer.zoom_controller.reset();
             vp.fit_mode = .full;
             vp.reset();
             vp.zoom_factor = state.UniversalZoom.init(self.getBaseScale());
         },
         .set_scale => |mode| {
+            self.viewer.pan_controller.reset();
+            self.viewer.zoom_controller.reset();
             vp.fit_mode = mode;
             vp.reset();
             vp.zoom_factor = state.UniversalZoom.init(self.getBaseScale());
         },
         .cycle_scale_mode => {
+            self.viewer.pan_controller.reset();
+            self.viewer.zoom_controller.reset();
             vp.fit_mode = switch (vp.fit_mode) {
                 .shrink => .full,
                 .full => .crop,

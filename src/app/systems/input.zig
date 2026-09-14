@@ -107,10 +107,32 @@ pub fn sysProcessInput(
         state.viewer.pan_controller.reset();
     }
 
-    // 2. Dispatch non-directional keys and normal shortcuts
+    // 2. Coalesce zoom keys for smooth continuous and tap zooming
+    if (no_mod) {
+        const dt_f32 = @as(f32, @floatCast(ctx.delta_time_ms));
+        const zoom_opt = key_mapping.updateZoomMotion(
+            &state.viewer.zoom_controller,
+            input.zoom_held,
+            input.keys_pressed.items,
+            state.viewer.viewport.zoom_factor.get(),
+            dt_f32,
+        );
+        if (zoom_opt) |z_delta| {
+            try state.pushIntent(.{
+                .zoom_by = .{ .ratio = z_delta.ratio },
+            });
+        }
+    } else {
+        state.viewer.zoom_controller.reset();
+    }
+
+    // 3. Dispatch non-directional, non-zoom keys and normal shortcuts
     for (input.keys_pressed.items) |key| {
         if (is_zoomed and no_mod and key_mapping.isDirectionalKey(key)) {
             continue; // Handled by unified directional resolver above
+        }
+        if (no_mod and key_mapping.isZoomKey(key)) {
+            continue; // Handled by smooth zoom controller above
         }
         try handleKeyDown(state, key, input.key_modifiers);
     }

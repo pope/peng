@@ -333,6 +333,7 @@ pub const PaletteMode = enum {
 pub const AppIntent = union(enum) {
     // Viewport spatial transforms & adjustments
     set_zoom: f32,
+    zoom_by: struct { ratio: f32 },
     zoom_in,
     zoom_out,
     set_pan: struct { x: f32, y: f32 },

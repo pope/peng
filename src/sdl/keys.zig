@@ -106,6 +106,12 @@ pub const scancode = struct {
     pub const j: c_uint = c.SDL_SCANCODE_J;
     pub const k: c_uint = c.SDL_SCANCODE_K;
     pub const l: c_uint = c.SDL_SCANCODE_L;
+    pub const i: c_uint = c.SDL_SCANCODE_I;
+    pub const o: c_uint = c.SDL_SCANCODE_O;
+    pub const equals: c_uint = c.SDL_SCANCODE_EQUALS;
+    pub const minus: c_uint = c.SDL_SCANCODE_MINUS;
+    pub const kp_plus: c_uint = c.SDL_SCANCODE_KP_PLUS;
+    pub const kp_minus: c_uint = c.SDL_SCANCODE_KP_MINUS;
 };
 
 /// Queries the snapshot array of physical keyboard key states from SDL.

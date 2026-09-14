@@ -33,6 +33,7 @@ pub const ViewerState = struct {
 
     mouse_inside: bool = true,
     pan_controller: types.PanController = .{},
+    zoom_controller: types.ZoomController = .{},
     last_win_w: f32 = 0.0,
     last_win_h: f32 = 0.0,
 

@@ -452,6 +452,85 @@ pub const PanController = struct {
     }
 };
 
+/// Cardinal zoom direction for keyboard zooming.
+pub const ZoomDirection = enum(u2) {
+    none = 0,
+    in = 1,
+    out = 2,
+};
+
+/// 2-bit zoom direction bitmask for zero-allocation state tracking.
+pub const ZoomFlags = packed struct(u2) {
+    in: bool = false,
+    out: bool = false,
+
+    pub inline fn raw(self: ZoomFlags) u2 {
+        return @bitCast(self);
+    }
+
+    pub inline fn fromRaw(val: u2) ZoomFlags {
+        return @bitCast(val);
+    }
+
+    pub inline fn hasAny(self: ZoomFlags) bool {
+        return self.raw() != 0;
+    }
+
+    pub inline fn merge(self: ZoomFlags, other: ZoomFlags) ZoomFlags {
+        return @bitCast(self.raw() | other.raw());
+    }
+};
+
+/// Dynamic state tracking for smooth keyboard viewport zooming.
+pub const ZoomController = struct {
+    smooth_tap_remaining: f32 = 0.0,
+    tap_direction: ZoomDirection = .none,
+    prev_held: ZoomFlags = .{},
+    detent_pause_ms: f32 = 0.0,
+    detent_target: ?f32 = null,
+
+    pub const TAP_STEP_RATIO: f32 = 1.25;
+    pub const TAP_LOG_DISTANCE: f32 = 0.22314355; // @log(1.25)
+    pub const GLIDE_RATE: f32 = 1.5; // Log units/sec (~4.5x per sec on hold)
+    pub const DETENT_PAUSE_MS: f32 = 150.0; // 150ms detent pause at 1.0x
+
+    pub inline fn reset(self: *ZoomController) void {
+        self.smooth_tap_remaining = 0.0;
+        self.tap_direction = .none;
+        self.prev_held = .{};
+        self.detent_pause_ms = 0.0;
+        self.detent_target = null;
+    }
+
+    pub inline fn isBusy(self: ZoomController) bool {
+        return self.smooth_tap_remaining > 0.0001 or
+            self.prev_held.hasAny() or
+            self.detent_pause_ms > 0.001;
+    }
+
+    pub fn triggerTap(
+        self: *ZoomController,
+        dir: ZoomDirection,
+        current_zoom: f32,
+    ) void {
+        if (dir == .none) return;
+        self.tap_direction = dir;
+        self.smooth_tap_remaining = TAP_LOG_DISTANCE;
+        const factor: f32 = if (dir == .in)
+            TAP_STEP_RATIO
+        else
+            (1.0 / TAP_STEP_RATIO);
+        const projected = current_zoom * factor;
+        if (dir == .in and current_zoom < 1.0 and projected >= 1.0) {
+            self.detent_target = 1.0;
+        } else if (dir == .out and current_zoom > 1.0 and projected <= 1.0) {
+            self.detent_target = 1.0;
+        } else {
+            self.detent_target = null;
+        }
+    }
+};
+
 /// Aggregated input events, mouse coordinates, keyboard actions, and window
 /// metrics for a single frame iteration.
 pub const FrameInput = struct {
@@ -473,6 +552,7 @@ pub const FrameInput = struct {
     keys_pressed: std.ArrayList(Key),
     key_modifiers: KeyModifiers,
     directional_held: DirectionFlags = .{},
+    zoom_held: ZoomFlags = .{},
     text_input: ?[]const u8,
     dropped_path: ?[]const u8,
     ticks: u64,

@@ -292,6 +292,35 @@ pub fn sampleHeldDirections(
     return @bitCast(raw);
 }
 
+/// Declarative mapping between SDL scancodes and zoom direction flags.
+pub const ScancodeZoom = struct {
+    scancode: c_uint,
+    direction: state.ZoomFlags,
+};
+
+pub const ZOOM_SCANCODES = [_]ScancodeZoom{
+    .{ .scancode = sdl.keys.scancode.i, .direction = .{ .in = true } },
+    .{ .scancode = sdl.keys.scancode.equals, .direction = .{ .in = true } },
+    .{ .scancode = sdl.keys.scancode.kp_plus, .direction = .{ .in = true } },
+    .{ .scancode = sdl.keys.scancode.o, .direction = .{ .out = true } },
+    .{ .scancode = sdl.keys.scancode.minus, .direction = .{ .out = true } },
+    .{ .scancode = sdl.keys.scancode.kp_minus, .direction = .{ .out = true } },
+};
+
+pub fn sampleHeldZoom(
+    kb_state: [*]const bool,
+    num_keys: usize,
+) state.ZoomFlags {
+    var raw: u2 = 0;
+    inline for (ZOOM_SCANCODES) |entry| {
+        const sc = @as(usize, @intCast(entry.scancode));
+        if (sc < num_keys and kb_state[sc]) {
+            raw |= entry.direction.raw();
+        }
+    }
+    return @bitCast(raw);
+}
+
 /// Pumps pending SDL events, queries cursor and keyboard states, and
 /// constructs a new `FrameInput` snapshot.
 pub fn pollFrameInput(
@@ -347,11 +376,13 @@ pub fn pollFrameInput(
     }
 
     var directional_held = state.DirectionFlags{};
+    var zoom_held = state.ZoomFlags{};
     var num_keys: c_int = 0;
     if (sdl.keys.getKeyboardState(&num_keys)) |kb_state| {
         if (num_keys > 0) {
             const count = @as(usize, @intCast(num_keys));
             directional_held = sampleHeldDirections(kb_state, count);
+            zoom_held = sampleHeldZoom(kb_state, count);
         }
     }
 
@@ -382,6 +413,7 @@ pub fn pollFrameInput(
         .keys_pressed = frame_input_state.keys_pressed,
         .key_modifiers = mapModFromSdl(sdl.keys.getModState()),
         .directional_held = directional_held,
+        .zoom_held = zoom_held,
         .text_input = frame_input_state.text_input_opt,
         .dropped_path = frame_input_state.dropped_path_opt,
         .ticks = current_ticks,
@@ -503,4 +535,31 @@ test "sampleHeldDirections extracts arrow and vim directional flags" {
     try std.testing.expect(down_right.right);
     try std.testing.expect(!down_right.up);
     try std.testing.expect(!down_right.left);
+}
+
+test "sampleHeldZoom extracts zoom in and out flags" {
+    var mock_state = [_]bool{false} ** 512;
+
+    // Initially neutral
+    const neutral = sampleHeldZoom(&mock_state, mock_state.len);
+    try std.testing.expect(!neutral.hasAny());
+
+    // Zoom in via 'i' key
+    mock_state[sdl.keys.scancode.i] = true;
+    const zoom_in = sampleHeldZoom(&mock_state, mock_state.len);
+    try std.testing.expect(zoom_in.in);
+    try std.testing.expect(!zoom_in.out);
+
+    // Zoom out via '-' key
+    mock_state[sdl.keys.scancode.i] = false;
+    mock_state[sdl.keys.scancode.minus] = true;
+    const zoom_out = sampleHeldZoom(&mock_state, mock_state.len);
+    try std.testing.expect(!zoom_out.in);
+    try std.testing.expect(zoom_out.out);
+
+    // Both held simultaneously
+    mock_state[sdl.keys.scancode.equals] = true;
+    const both = sampleHeldZoom(&mock_state, mock_state.len);
+    try std.testing.expect(both.in);
+    try std.testing.expect(both.out);
 }

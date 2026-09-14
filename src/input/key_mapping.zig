@@ -22,6 +22,14 @@ pub const PanDelta = struct {
     }
 };
 
+pub const ZoomDelta = struct {
+    ratio: f32,
+
+    pub inline fn isIdentity(self: ZoomDelta) bool {
+        return self.ratio == 1.0;
+    }
+};
+
 pub const UnitVec2 = struct {
     x: f32,
     y: f32,
@@ -172,13 +180,175 @@ pub fn updateDirectionalPan(
     return PanDelta{ .dx = dx, .dy = dy };
 }
 
+pub inline fn isZoomKey(key: Key) bool {
+    return switch (key) {
+        .char_i, .char_o, .equals, .minus => true,
+        else => false,
+    };
+}
+
+pub inline fn getZoomDirectionForMappedKey(key: Key) ?state.ZoomDirection {
+    return switch (key) {
+        .char_i, .equals => .in,
+        .char_o, .minus => .out,
+        else => null,
+    };
+}
+
+/// Resolves smooth viewport zooming from physical key state and delta time.
+/// Operates in log space (ln Z) to provide uniform perceptual magnification
+/// velocity for both smooth taps and continuous holds, eliminating discrete
+/// jumps and typematic repeat stalls.
+pub fn updateZoomMotion(
+    ctrl: *state.ZoomController,
+    current_held: state.ZoomFlags,
+    keys_pressed: []const Key,
+    current_zoom: f32,
+    dt_ms: f32,
+) ?ZoomDelta {
+    // Numerical guard and delta clamping
+    if (std.math.isNan(dt_ms) or dt_ms <= 0.0) return null;
+    const dt_sec = @min(dt_ms, 50.0) / 1000.0;
+
+    // 1. If currently paused at the 1.0x detent during a continuous hold,
+    // countdown detent timer and hold zoom constant until it expires.
+    if (ctrl.detent_pause_ms > 0.0) {
+        ctrl.detent_pause_ms = @max(0.0, ctrl.detent_pause_ms - dt_ms);
+        ctrl.prev_held = current_held;
+        if (current_held.hasAny()) {
+            return null;
+        } else {
+            ctrl.reset();
+            return null;
+        }
+    }
+
+    // 2. Detect newly pressed keys from rest
+    var newly_pressed_in = current_held.in and !ctrl.prev_held.in;
+    var newly_pressed_out = current_held.out and !ctrl.prev_held.out;
+    if (!ctrl.prev_held.hasAny()) {
+        for (keys_pressed) |key| {
+            if (getZoomDirectionForMappedKey(key)) |dir| {
+                switch (dir) {
+                    .in => newly_pressed_in = true,
+                    .out => newly_pressed_out = true,
+                    .none => {},
+                }
+            }
+        }
+    }
+
+    if (!ctrl.prev_held.hasAny()) {
+        if (newly_pressed_in and !newly_pressed_out) {
+            ctrl.triggerTap(.in, current_zoom);
+        } else if (newly_pressed_out and !newly_pressed_in) {
+            ctrl.triggerTap(.out, current_zoom);
+        }
+    }
+
+    // 3. Opposing keys cancel out
+    if (current_held.in and current_held.out) {
+        ctrl.reset();
+        return null;
+    }
+
+    // 4. Determine active direction: physically held keys take precedence;
+    // if keys released but smooth tap travel remains, use tap_direction.
+    var active_dir: state.ZoomDirection = .none;
+    if (current_held.in) {
+        active_dir = .in;
+    } else if (current_held.out) {
+        active_dir = .out;
+    } else if (ctrl.smooth_tap_remaining > 0.0001) {
+        active_dir = ctrl.tap_direction;
+    } else {
+        ctrl.reset();
+        return null;
+    }
+
+    if (active_dir == .none) {
+        ctrl.reset();
+        return null;
+    }
+
+    // 5. Calculate log-space displacement at constant GLIDE_RATE
+    var step_log = state.ZoomController.GLIDE_RATE * dt_sec;
+
+    // If completing a smooth tap after key release, clamp step to remaining
+    if (!current_held.hasAny()) {
+        step_log = @min(step_log, ctrl.smooth_tap_remaining);
+    }
+    ctrl.smooth_tap_remaining = @max(
+        0.0,
+        ctrl.smooth_tap_remaining - step_log,
+    );
+
+    ctrl.prev_held = current_held;
+
+    if (step_log <= 0.0) return null;
+
+    // 6. Calculate scale ratio this frame
+    const sign: f32 = if (active_dir == .in) 1.0 else -1.0;
+    var ratio = @exp(sign * step_log);
+    var next_zoom = current_zoom * ratio;
+
+    // 7. Check 1.0x detent crossing
+    var hit_detent = false;
+    if (ctrl.detent_target) |dt| {
+        if (active_dir == .in and next_zoom >= dt) {
+            next_zoom = dt;
+            ratio = next_zoom / current_zoom;
+            ctrl.smooth_tap_remaining = 0.0;
+            ctrl.detent_target = null;
+            hit_detent = true;
+        } else if (active_dir == .out and next_zoom <= dt) {
+            next_zoom = dt;
+            ratio = next_zoom / current_zoom;
+            ctrl.smooth_tap_remaining = 0.0;
+            ctrl.detent_target = null;
+            hit_detent = true;
+        }
+    } else {
+        if (active_dir == .in and
+            current_zoom < 1.0 and
+            next_zoom >= 1.0)
+        {
+            next_zoom = 1.0;
+            ratio = next_zoom / current_zoom;
+            hit_detent = true;
+        } else if (active_dir == .out and
+            current_zoom > 1.0 and
+            next_zoom <= 1.0)
+        {
+            next_zoom = 1.0;
+            ratio = next_zoom / current_zoom;
+            hit_detent = true;
+        }
+    }
+
+    if (hit_detent and current_held.hasAny()) {
+        ctrl.detent_pause_ms = state.ZoomController.DETENT_PAUSE_MS;
+    }
+
+    // 8. Clamping bounds
+    const clamped_zoom = state.clampZoomFactor(next_zoom).get();
+    if (clamped_zoom == current_zoom) {
+        ctrl.reset();
+        return null;
+    }
+    ratio = clamped_zoom / current_zoom;
+
+    return ZoomDelta{ .ratio = ratio };
+}
+
 /// Performs data-driven key lookup returning a pure AppIntent variant or null.
 pub fn mapKeyToAction(
     key: Key,
     mod: KeyModifiers,
     ctx: KeyContext,
 ) ?intents.AppIntent {
-    // 1. Context-Sensitive Arrow Keys and Vim Keys when Viewport is Zoomed (Panning)
+    // 1. Context-Sensitive Arrow Keys and Vim Keys when Viewport is Zoomed
+    //    (Panning)
     if (ctx == .viewer_zoomed) {
         if (!mod.ctrl and !mod.shift and !mod.alt and !mod.gui) {
             if (getDirectionForMappedKey(key)) |dir| {
@@ -611,4 +781,192 @@ test "updateDirectionalPan seamless orthogonal transition without stutter" {
     // 4. Release all keys: stops immediately
     const f_stop = updateDirectionalPan(&ctrl, .{}, &empty_keys, 16.0);
     try std.testing.expectEqual(@as(?PanDelta, null), f_stop);
+}
+
+test "updateZoomMotion constant rate continuous hold" {
+    var ctrl = state.ZoomController{};
+    const empty_keys = [_]Key{};
+    const dt_ms = 16.0;
+    const exp_ratio = @exp(state.ZoomController.GLIDE_RATE * (dt_ms / 1000.0));
+
+    var frame: usize = 0;
+    var current_zoom: f32 = 2.0;
+    while (frame < 5) : (frame += 1) {
+        const step = updateZoomMotion(
+            &ctrl,
+            .{ .in = true },
+            &empty_keys,
+            current_zoom,
+            dt_ms,
+        );
+        try std.testing.expect(step != null);
+        try std.testing.expectApproxEqAbs(exp_ratio, step.?.ratio, 0.001);
+        current_zoom *= step.?.ratio;
+    }
+}
+
+test "updateZoomMotion smooth tap completion after key release" {
+    var ctrl = state.ZoomController{};
+    const empty_keys = [_]Key{};
+    const dt_ms = 16.0;
+
+    // Frame 0: Key pressed for 1 frame from 2.0x
+    var current_zoom: f32 = 2.0;
+    const start_zoom = current_zoom;
+    const f0 = updateZoomMotion(
+        &ctrl,
+        .{ .in = true },
+        &empty_keys,
+        current_zoom,
+        dt_ms,
+    );
+    try std.testing.expect(f0 != null);
+    current_zoom *= f0.?.ratio;
+    try std.testing.expect(ctrl.isBusy());
+
+    // Subsequent frames: key released, tap motion completes
+    while (ctrl.isBusy()) {
+        const step = updateZoomMotion(
+            &ctrl,
+            .{},
+            &empty_keys,
+            current_zoom,
+            dt_ms,
+        );
+        if (step) |s| {
+            current_zoom *= s.ratio;
+        }
+    }
+
+    // Total compound ratio equals TAP_STEP_RATIO (1.25x)
+    const total_ratio = current_zoom / start_zoom;
+    try std.testing.expectApproxEqAbs(
+        state.ZoomController.TAP_STEP_RATIO,
+        total_ratio,
+        0.01,
+    );
+
+    // Frame after completion: stopped
+    const f_end = updateZoomMotion(
+        &ctrl,
+        .{},
+        &empty_keys,
+        current_zoom,
+        dt_ms,
+    );
+    try std.testing.expectEqual(@as(?ZoomDelta, null), f_end);
+}
+
+test "updateZoomMotion opposing keys cancel out" {
+    var ctrl = state.ZoomController{};
+    const empty_keys = [_]Key{};
+
+    const res = updateZoomMotion(
+        &ctrl,
+        .{ .in = true, .out = true },
+        &empty_keys,
+        2.0,
+        16.0,
+    );
+    try std.testing.expectEqual(@as(?ZoomDelta, null), res);
+    try std.testing.expect(!ctrl.isBusy());
+}
+
+test "updateZoomMotion snap to 1.0 detent on tap" {
+    var ctrl = state.ZoomController{};
+    const empty_keys = [_]Key{};
+    const dt_ms = 16.0;
+
+    // 0.85 * 1.25 = 1.0625 >= 1.0 -> should snap to exactly 1.0
+    var current_zoom: f32 = 0.85;
+    const step0 = updateZoomMotion(
+        &ctrl,
+        .{ .in = true },
+        &empty_keys,
+        current_zoom,
+        dt_ms,
+    );
+    if (step0) |s| {
+        current_zoom *= s.ratio;
+    }
+
+    while (ctrl.isBusy()) {
+        const step = updateZoomMotion(
+            &ctrl,
+            .{},
+            &empty_keys,
+            current_zoom,
+            dt_ms,
+        );
+        if (step) |s| {
+            current_zoom *= s.ratio;
+        }
+    }
+
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), current_zoom, 0.0001);
+}
+
+test "updateZoomMotion detent pause on continuous hold" {
+    var ctrl = state.ZoomController{};
+    const empty_keys = [_]Key{};
+
+    // 0.999 approaching 1.0
+    var current_zoom: f32 = 0.999;
+    const step1 = updateZoomMotion(
+        &ctrl,
+        .{ .in = true },
+        &empty_keys,
+        current_zoom,
+        16.0,
+    );
+    try std.testing.expect(step1 != null);
+    current_zoom *= step1.?.ratio;
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), current_zoom, 0.0001);
+    try std.testing.expect(ctrl.detent_pause_ms > 0.0);
+
+    // While holding during pause, returns null (held at 1.0)
+    const step2 = updateZoomMotion(
+        &ctrl,
+        .{ .in = true },
+        &empty_keys,
+        current_zoom,
+        16.0,
+    );
+    try std.testing.expectEqual(@as(?ZoomDelta, null), step2);
+}
+
+test "updateZoomMotion key release stops immediately after hold" {
+    var ctrl = state.ZoomController{};
+    const repeat_keys = [_]Key{.char_i};
+    const empty_keys = [_]Key{};
+
+    var current_zoom: f32 = 2.0;
+    // Simulate holding 'i' for 20 frames (~320ms, well beyond tap duration)
+    // with repeated key events coming from the OS every frame
+    var frame: usize = 0;
+    while (frame < 20) : (frame += 1) {
+        const step = updateZoomMotion(
+            &ctrl,
+            .{ .in = true },
+            &repeat_keys,
+            current_zoom,
+            16.0,
+        );
+        try std.testing.expect(step != null);
+        current_zoom *= step.?.ratio;
+        try std.testing.expect(ctrl.isBusy());
+    }
+
+    // User takes finger off key (release)
+    const step_release = updateZoomMotion(
+        &ctrl,
+        .{},
+        &empty_keys,
+        current_zoom,
+        16.0,
+    );
+
+    // Must stop immediately with no queued travel!
+    try std.testing.expectEqual(@as(?ZoomDelta, null), step_release);
+    try std.testing.expect(!ctrl.isBusy());
 }

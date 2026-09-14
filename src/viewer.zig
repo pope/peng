@@ -66,6 +66,7 @@ fn runUpdatePhase(
 
     if (parsed_test_mode) {
         app_state.viewer.animations.settleAll();
+        app_state.viewer.zoom_controller.reset();
     }
 }
 
@@ -118,6 +119,7 @@ pub fn updateFrame(
         (app_state.viewer.drag_state != .none) or
         (app_state.viewer.viewport.isZoomed() and
             app_state.viewer.pan_controller.isBusy()) or
+        app_state.viewer.zoom_controller.isBusy() or
         has_unpopulated_cache or
         window_resized;
     const wait_timeout_ms =
