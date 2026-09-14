@@ -388,11 +388,20 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
         var tiff_tail_off: u32 = 0;
         if (exif.probeTiffIfd0Offset(header_slice)) |ifd0_off| {
             if (ifd0_off >= header_n and ifd0_off < file_size) {
-                const tail_target: usize = @intCast(@min(file_size -| ifd0_off, tail_buf.len));
+                const tail_target: usize =
+                    @intCast(@min(file_size -| ifd0_off, tail_buf.len));
                 if (tail_target > 0) {
                     var t_slices = [_][]u8{tail_buf[0..tail_target]};
-                    const tn = file.readPositional(io, &t_slices, ifd0_off) catch |err| blk: {
-                        if (err == error.Canceled or workers.exiting.load(.acquire)) return true;
+                    const tn = file.readPositional(
+                        io,
+                        &t_slices,
+                        ifd0_off,
+                    ) catch |err| blk: {
+                        if (err == error.Canceled or
+                            workers.exiting.load(.acquire))
+                        {
+                            return true;
+                        }
                         break :blk 0;
                     };
                     if (tn > 0) {
@@ -412,7 +421,16 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
         med_loc_opt = raw_cands.medium;
         thumb_loc_opt = raw_cands.thumbnail;
         raw_sensor_dims = exif.parseExifDimensionsFromSource(tiff_source);
-        orientation = exif.parseExifOrientationFromSource(tiff_source) orelse .normal;
+        if (raw_sensor_dims == null) {
+            if (image.parseImageDimensions(header_slice, mime_type)) |d| {
+                raw_sensor_dims = .{
+                    .w = d.w,
+                    .h = d.h,
+                };
+            }
+        }
+        orientation = exif.parseExifOrientationFromSource(tiff_source) orelse
+            .normal;
     }
 
     if (isStale(workers, args, key)) return true;
@@ -423,7 +441,12 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                 .key = key,
                 .orientation = orientation,
             },
-        }) catch |err| std.log.err("Failed to push EXIF orientation event: {}", .{err});
+        }) catch |err| {
+            std.log.err(
+                "Failed to push EXIF orientation event: {}",
+                .{err},
+            );
+        };
         context.wakeUpMainThread();
     }
 
@@ -450,15 +473,24 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                 if (tloc.file_offset <= header_n -| tloc.length) {
                     const t_off: usize = @intCast(tloc.file_offset);
                     _ = workers.thumb_header_hits.fetchAdd(1, .monotonic);
-                    thumb_surf = sdl.Surface.loadConstMemOpt(header_slice[t_off .. t_off + t_len]);
+                    thumb_surf = sdl.Surface.loadConstMemOpt(
+                        header_slice[t_off .. t_off + t_len],
+                    );
                 } else {
                     const t_buf = alloc.alloc(u8, t_len) catch null;
                     if (t_buf) |tb| {
                         defer alloc.free(tb);
                         var ts_slices = [_][]u8{tb};
-                        const tn = file.readPositional(io, &ts_slices, tloc.file_offset) catch 0;
+                        const tn = file.readPositional(
+                            io,
+                            &ts_slices,
+                            tloc.file_offset,
+                        ) catch 0;
                         if (tn == t_len) {
-                            _ = workers.thumb_positional_hits.fetchAdd(1, .monotonic);
+                            _ = workers.thumb_positional_hits.fetchAdd(
+                                1,
+                                .monotonic,
+                            );
                             thumb_surf = sdl.Surface.loadConstMemOpt(tb);
                         } else {
                             _ = workers.thumb_misses.fetchAdd(1, .monotonic);
@@ -473,9 +505,13 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                 t_surf.destroy();
                 return true;
             }
-            const full_w: f32 = if (raw_w > 0.0) raw_w else @floatFromInt(t_surf.w());
-            const full_h: f32 = if (raw_h > 0.0) raw_h else @floatFromInt(t_surf.h());
-            const dct_snapped = image.detectThumbnailDctPadding(t_surf, full_w, full_h);
+            const full_w: f32 = if (raw_w > 0.0) raw_w else 0.0;
+            const full_h: f32 = if (raw_h > 0.0) raw_h else 0.0;
+            const dct_snapped = image.detectThumbnailDctPadding(
+                t_surf,
+                full_w,
+                full_h,
+            );
             workers.event_queue.push(alloc, io, .{
                 .thumb_decoded = .{
                     .key = key,
@@ -490,7 +526,10 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                     .dct_snapped = dct_snapped,
                 },
             }) catch |err| {
-                std.log.err("Failed to push thumbnail decode event: {}", .{err});
+                std.log.err(
+                    "Failed to push thumbnail decode event: {}",
+                    .{err},
+                );
                 t_surf.destroy();
             };
             context.wakeUpMainThread();
@@ -501,7 +540,8 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
         } else if (args.thumb_only) {
             if (is_pair) return false;
             // If no small thumbnail available, emit dimensions_probed
-            // to immediately establish canvas aspect ratio on Frame 1 without decoding pixels
+            // to immediately establish canvas aspect ratio on Frame 1
+            // without decoding pixels
             if (isStale(workers, args, key)) return true;
             workers.event_queue.push(alloc, io, .{
                 .dimensions_probed = .{
@@ -515,7 +555,10 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                     .raw_metadata = RawMetadata.init(raw_w, raw_h),
                 },
             }) catch |err| {
-                std.log.err("Failed to push dimensions probed event: {}", .{err});
+                std.log.err(
+                    "Failed to push dimensions probed event: {}",
+                    .{err},
+                );
             };
             context.wakeUpMainThread();
             return true;

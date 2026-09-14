@@ -42,13 +42,23 @@ pub fn computeDrawDims(
     if (src_w > 0 and src_h > 0) {
         const view_w = @max(available_width, 1.0);
         const view_h = @max(available_height, 1.0);
+        const is_loading = entry.status != .loaded_gpu and
+            entry.status != .loaded_cpu;
+        const only_has_thumb = entry.full_w <= 0.0 and
+            entry.raw_metadata.getSensorDims() == null and
+            entry.thumbnail != .none;
+        const effective_fit_mode: intents.ScaleMode =
+            if (fit_mode == .shrink and is_loading and only_has_thumb)
+                .full
+            else
+                fit_mode;
         const dims = view_transform.computeViewDims(
             src_w,
             src_h,
             rotation_angle,
             view_w,
             view_h,
-            fit_mode,
+            effective_fit_mode,
         );
         return .{ .w = dims.draw_w, .h = dims.draw_h };
     }
@@ -872,8 +882,8 @@ fn renderImageCanvas(
                 uv_crop.rotation_angle = rotation_angle;
                 uv_crop.source_w = auth.w;
                 uv_crop.source_h = auth.h;
-                const uv_crop_ptr = frame_allocator.create(state.UvRect) catch |err|
-                    blk: {
+                const uv_crop_ptr =
+                    frame_allocator.create(state.UvRect) catch |err| blk: {
                         std.log.warn(
                             "Failed to allocate UvRect for thumbnail: {any}",
                             .{err},

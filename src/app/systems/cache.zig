@@ -82,7 +82,12 @@ fn probeActiveSlotMetadata(
     entry: anytype,
 ) void {
     const media_item = state.viewer.navigation.getMediaEntry(idx) orelse return;
-    const meta = image.probeMediaMetadata(state.io, media_item) orelse return;
+    const meta = image.probeMediaMetadata(state.io, media_item) orelse {
+        if (entry.thumbnail == .none) {
+            entry.thumbnail = .not_available;
+        }
+        return;
+    };
     entry.full_w = meta.dims.w;
     entry.full_h = meta.dims.h;
     if (meta.orientation != .normal or entry.orientation == .normal) {
@@ -97,7 +102,9 @@ fn probeActiveSlotMetadata(
         else
             .not_available;
     }
-    state.updateCurrentRotation();
+    if (idx == state.viewer.navigation.current_index) {
+        state.updateCurrentRotation();
+    }
 }
 
 fn checkPairPromotion(
@@ -326,9 +333,10 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
 
         if (state.cache.get(key)) |entry| {
             const is_active_slot = (d == idx);
-            const needs_dimensions = (entry.full_w <= 0.0 or entry.full_h <= 0.0);
-            if (is_active_slot and needs_dimensions) {
-                probeActiveSlotMetadata(state, idx, entry);
+            const needs_dimensions = (entry.full_w <= 0.0 or
+                entry.full_h <= 0.0) and entry.thumbnail == .none;
+            if (needs_dimensions) {
+                probeActiveSlotMetadata(state, d, entry);
             }
 
             const is_decoding = entry.status == .decoding and

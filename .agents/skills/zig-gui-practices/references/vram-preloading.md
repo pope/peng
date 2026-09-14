@@ -107,6 +107,22 @@ ______________________________________________________________________
   - **Fujifilm RAF Embedded Preview Budgeting**:
     - *Fixed 12 MP Preview Ceiling*: Fujifilm RAF files embed preview JPEGs capped at $\\sim 12\\text{ MP}$ ($4240 \\times 2832$ for 3:2, $4000 \\times 3000$ for 4:3) across all modern camera bodies (X-Pro3, X-E5, GFX 100S).
     - *Dimension Probing Priority*: Never infer sensor aspect ratio or full resolution from the embedded preview's SOF dimensions. Always probe visible sensor dimensions from the EXIF metadata directory (`PixelXDimension` `0xA002`, `PixelYDimension` `0xA003`) to maintain zero-resizing viewport stability.
+- **Main-Thread Header Probing Hot-Loop Guard**:
+  When performing synchronous main-thread metadata probing
+  (`probeActiveSlotMetadata`), if `image.probeMediaMetadata` fails or returns
+  `null` (due to an unhandled file format, corrupted header, or 0-byte file),
+  `entry.thumbnail` MUST be immediately marked as `.not_available`. The cache
+  system's probing condition `needs_dimensions` must strictly gate on
+  `entry.thumbnail == .none`. If `entry.thumbnail` is left as `.none` when
+  probing returns `null`, `needs_dimensions` remains `true`, causing the main
+  render thread to execute a synchronous 256KB disk read and parser pass on
+  every single frame at 60–144 FPS.
+- **DNG Fallback Dimension Parsing**:
+  When extracting metadata from RAW/DNG containers where TIFF SubIFD tag
+  traversal does not produce explicit sensor dimensions, decoders must fall back
+  to parsing the raw container stream headers (e.g.
+  `image.parseImageDimensions(header_slice, mime_type)`) before declaring
+  dimensions unknown.
 
 ______________________________________________________________________
 

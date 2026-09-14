@@ -218,7 +218,7 @@
     boundary overflow (`isImageOverflowing()`), never on `zoom > 1.0`. Small
     images magnified in "Fit" mode should never be trapped in panning mode.
 
-## 13. Clay UI Modularization & Visual Regression Invariants
+## 21. Clay UI Modularization & Visual Regression Invariants
 
 - **Component Decomposition**:
   - Break down large, multi-screen Clay UI procedures (e.g. Command Palette
@@ -236,3 +236,72 @@
   - The headless IPC test runner (`peng-test-runner`) performs pixel-exact
     comparisons against baseline PNG screenshots. Any altered padding or missing
     alpha scale factor will fail visual integration tests.
+
+## 22. Progressive Loading Invariance, Dimension Poisoning & Dissolve Sizing
+
+- **Prohibition of Worker Thumbnail Dimension Fallback**:
+
+  - Background decode workers (`decodeRawFile`, `decodeWorker`) MUST NEVER fall
+    back to low-resolution thumbnail surface dimensions (`t_surf.w()`,
+    `t_surf.h()`) when true full-resolution or raw sensor dimensions are
+    unknown.
+  - Workers must explicitly set `full_w = 0.0, full_h = 0.0`. Emitting thumbnail
+    dimensions as full image dimensions permanently poisons cache entries,
+    causing layout and zoom math to compute false aspect ratios or snap
+    erratically when full decompression completes.
+
+- **Monotonic Area Dimension Updates**:
+
+  - Dimension events (`handleDimensionsProbedEvent`, `handleExifThumbnailEvent`,
+    `handleImageDecodedEvent`) arrive asynchronously from worker threads and
+    main-thread header probes.
+  - Event handlers must guard dimension mutations using strict monotonic area
+    comparison:
+    ```zig
+    const cur_area = entry.full_w * entry.full_h;
+    const new_area = new_w * new_h;
+    if (cur_area <= 0.0 or new_area > cur_area) {
+        entry.full_w = new_w;
+        entry.full_h = new_h;
+    }
+    ```
+  - This prevents lower-resolution thumbnail events or unrotated previews from
+    downgrading already-probed authoritative sensor dimensions.
+
+- **Small-Image Viewport Fitting Heuristic (`only_has_thumb`)**:
+
+  - The viewport layout heuristic promoting `.shrink` mode to `.full` during
+    background decode (`computeDrawDims`) must be strictly guarded by
+    `only_has_thumb`:
+    ```zig
+    const only_has_thumb = entry.full_w <= 0.0 and
+        entry.raw_metadata.getSensorDims() == null and
+        entry.thumbnail != .none;
+    ```
+  - This allows thumbnails of large photos with yet-unknown dimensions to expand
+    to the viewport on Frame 1, while preventing genuinely small images (e.g.
+    64x64 icons or small badges whose dimensions are known) from temporarily
+    blowing up to fill the screen and snapping back down upon decode.
+
+- **Universal Zoom Dissolve Quad Sizing Invariance**:
+
+  - In crossfade transitions, outgoing dissolve quads
+    (`ImageTransitionPrevQuad`) and manual inspection quads must calculate
+    physical screen dimensions directly from native unrotated source
+    dimensions and zoom factor:
+    ```zig
+    const dst_w = sw * z;
+    const dst_h = sh * z;
+    ```
+  - NEVER multiply Clay's pre-fitted screen rect by $Z$, which causes $O(Z^2)$
+    double-scaling. Quad dimensions must include NaN/infinite guards
+    (`std.math.isFinite(z) and z > 0.0`) and early-out on degenerate rects
+    ($w \\le 0$ or $h \\le 0$).
+
+- **Immediate Zoom Factor Synchronization on Navigation**:
+
+  - Navigation actions (`navigateToIndex`, filter changes) must immediately
+    synchronize `vp.zoom_factor = UniversalZoom.init(self.getBaseScale())` and
+    reset pending pan/zoom offsets upon index transition. Deferring zoom factor
+    recalculation to subsequent frames leaves the viewport in a stale scale
+    state, causing Frame-1 thumbnail scale flickers.

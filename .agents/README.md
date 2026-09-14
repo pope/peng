@@ -15,10 +15,17 @@ ______________________________________________________________________
 - **[`03_c_abi_and_module_hygiene.md`](rules/03_c_abi_and_module_hygiene.md)**:
   Single canonical `@cImport` (`src/sdl/c.zig`), C-handle encapsulation, complete enum mapping invariant, null-terminated slice signatures, top-of-file alphabetical import & alias block separation, prohibition of proxy re-exports and in-flight backward-compatibility aliases, `.empty`/`.init` inference, Zig 0.16 test architecture (prohibition of `refAllDecls` in app roots, 3-tier testing, accessor test prohibition, and zombie property pruning), standalone package hierarchy & app-private core (`src/app/core/`), minimal declaration visibility (least privilege `pub`), mandatory doc comments (`///`), C-ABI `extern struct` handle wrappers, and code formatting & line-length invariants (80-col goal, 100-col hard ceiling, trailing commas, `zig fmt` compliance).
 
-- **[`04_ui_rendering_and_performance.md`](rules/04_ui_rendering_and_performance.md)**:
-  2-Pass UI `RenderPacket` pipeline (extraction vs allocation-free execution), logical vs physical DPI scaling, zero-area scissor skipping, SIMD bounds safety, case-insensitive sorting (`lessThanIgnoreCase`), event loop dimension tracking (`is_busy`), GPU text texture alpha decoupling (RGB cache keys + vertex alpha modulation), and modal dismissal input decoupling (`isAcceptingInput`).
+- **[`04_ui_rendering_and_performance.md`][rule-04]**:
+  2-Pass UI `RenderPacket` pipeline (extraction vs allocation-free execution),
+  logical vs physical DPI scaling, zero-area scissor skipping, SIMD bounds
+  safety, case-insensitive sorting (`lessThanIgnoreCase`), event loop dimension
+  tracking (`is_busy`), GPU text texture alpha decoupling, modal dismissal input
+  decoupling (`isAcceptingInput`), Universal Pixel Zoom & pre-scaled layout
+  invariants, Clay UI modularization, progressive loading dimension purity
+  (prohibition of worker thumbnail fallback), monotonic area updates, and
+  dissolve quad sizing invariance.
 
-- **[`05_git_workflow_and_repository_hygiene.md`](rules/05_git_workflow_and_repository_hygiene.md)**:
+* **[`05_git_workflow_and_repository_hygiene.md`](rules/05_git_workflow_and_repository_hygiene.md)**:
   User-only staging invariant (strictly NO `git add`/`git rm`), never unstage user changes (`git reset`/`git restore --staged`), explicit human commit sign-off invariant, commit message review workflow, permitted read-only Git operations (`git status`, `git diff`, `git log`), test fixture resource isolation (`testfiles/` only), and prohibition of extraneous scratch or audit scripts in version control.
 
 ______________________________________________________________________
@@ -35,3 +42,5 @@ ______________________________________________________________________
 - **`zig-reviewer`**: Audits Zig source code against all 5 core project rules.
 - **`task-executor`**: Fast-path execution subagent for straightforward code implementations.
 - **`agent-artifacts-reviewer`**: Audits `.agents/` rules, skills, agent definitions, and documentation for consistency, information density, and rule vs skill classification.
+
+[rule-04]: rules/04_ui_rendering_and_performance.md

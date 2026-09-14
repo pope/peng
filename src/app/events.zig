@@ -100,15 +100,22 @@ fn handleIpcCommandEvent(state: *AppState, cmd_data: *ipc.IpcCommandData) void {
     };
 }
 
-fn handleDimensionsProbedEvent(state: *AppState, probed: events.DimensionsProbedPayload) void {
+fn handleDimensionsProbedEvent(
+    state: *AppState,
+    probed: events.DimensionsProbedPayload,
+) void {
     const entry = state.cache.get(probed.key) orelse return;
 
     if (probed.orientation != .normal) {
         entry.orientation = probed.orientation;
     }
     if (probed.full_w > 0 and probed.full_h > 0) {
-        entry.full_w = probed.full_w;
-        entry.full_h = probed.full_h;
+        const cur_area = entry.full_w * entry.full_h;
+        const new_area = probed.full_w * probed.full_h;
+        if (cur_area <= 0.0 or new_area > cur_area) {
+            entry.full_w = probed.full_w;
+            entry.full_h = probed.full_h;
+        }
     }
     if (probed.raw_metadata.isRaw()) {
         entry.raw_metadata = probed.raw_metadata;
@@ -126,15 +133,22 @@ fn handleDimensionsProbedEvent(state: *AppState, probed: events.DimensionsProbed
     }
 }
 
-fn handleExifThumbnailEvent(state: *AppState, thumb_data: events.ThumbDecodedPayload) void {
+fn handleExifThumbnailEvent(
+    state: *AppState,
+    thumb_data: events.ThumbDecodedPayload,
+) void {
     const entry = state.cache.get(thumb_data.key) orelse return;
 
     if (thumb_data.orientation != .normal) {
         entry.orientation = thumb_data.orientation;
     }
     if (thumb_data.full_w > 0 and thumb_data.full_h > 0) {
-        entry.full_w = thumb_data.full_w;
-        entry.full_h = thumb_data.full_h;
+        const cur_area = entry.full_w * entry.full_h;
+        const new_area = thumb_data.full_w * thumb_data.full_h;
+        if (cur_area <= 0.0 or new_area > cur_area) {
+            entry.full_w = thumb_data.full_w;
+            entry.full_h = thumb_data.full_h;
+        }
     }
     if (thumb_data.raw_metadata.isRaw()) {
         entry.raw_metadata = thumb_data.raw_metadata;

@@ -63,7 +63,8 @@ comptime {
     std.debug.assert(@offsetOf(ImageUniforms, "pad1") == 60);
 }
 
-/// Fragment shader push uniform block for UI shapes, text, and frosted glass panels.
+/// Fragment shader push uniform block for UI shapes, text, and frosted glass
+/// panels.
 pub const UiUniforms = extern struct {
     is_blurred_surface: i32,
     padding1: f32 = 0.0,
@@ -71,8 +72,8 @@ pub const UiUniforms = extern struct {
     padding3: f32 = 0.0,
 };
 
-/// Draw call batch grouping vertex offset/count, texture binding, material type,
-/// and scissor rectangle.
+/// Draw call batch grouping vertex offset/count, texture binding, material
+/// type, and scissor rectangle.
 pub const BatchItem = struct {
     vertex_start: u32,
     vertex_count: u32,
@@ -102,38 +103,51 @@ pub fn appendImageCommand(
         null;
     const tex = texture orelse return;
 
-    var dst_w = rect.w;
-    var dst_h = rect.h;
     const angle = uv_rect.rotation_angle orelse view_params.rotation_angle;
     const is_90_or_270 = state.view_transform.isAngle90or270(angle);
-    if (is_90_or_270) {
-        dst_w = rect.h;
-        dst_h = rect.w;
-    }
 
-    const zoom = uv_rect.override_zoom orelse (if (view_params.mode == .manual)
-        view_params.zoom_factor.get()
-    else
-        1.0);
     const pan_x = uv_rect.override_pan_x orelse view_params.pan_x;
     const pan_y = uv_rect.override_pan_y orelse view_params.pan_y;
 
-    var dst_rect = rect;
-    dst_rect.w = dst_w * zoom;
-    dst_rect.h = dst_h * zoom;
     const center_x = rect.x + rect.w * 0.5;
     const center_y = rect.y + rect.h * 0.5;
-    dst_rect.x = center_x - (dst_rect.w * 0.5) + pan_x;
-    dst_rect.y = center_y - (dst_rect.h * 0.5) + pan_y;
+
+    const explicit_zoom: ?f32 = blk: {
+        if (uv_rect.override_zoom) |z| {
+            if (std.math.isFinite(z) and z > 0.0) break :blk z;
+        }
+        if (view_params.mode == .manual) {
+            const z = view_params.zoom_factor.get();
+            if (std.math.isFinite(z) and z > 0.0) break :blk z;
+        }
+        break :blk null;
+    };
+
+    const fallback_w = if (is_90_or_270) rect.h else rect.w;
+    const fallback_h = if (is_90_or_270) rect.w else rect.h;
+
+    const has_auth = uv_rect.source_w != null and uv_rect.source_h != null and
+        uv_rect.source_w.? > 0.0 and uv_rect.source_h.? > 0.0;
+    const base_w = if (has_auth) uv_rect.source_w.? else fallback_w;
+    const base_h = if (has_auth) uv_rect.source_h.? else fallback_h;
+
+    const dst_w: f32 = if (explicit_zoom) |z| base_w * z else fallback_w;
+    const dst_h: f32 = if (explicit_zoom) |z| base_h * z else fallback_h;
+
+    if (dst_w <= 0.0 or dst_h <= 0.0 or
+        !std.math.isFinite(dst_w) or !std.math.isFinite(dst_h))
+    {
+        return;
+    }
 
     const rad = angle * (std.math.pi / 180.0);
     const cos_val = @cos(rad);
     const sin_val = @sin(rad);
 
-    const half_w = dst_rect.w * 0.5;
-    const half_h = dst_rect.h * 0.5;
-    const c_x = dst_rect.x + half_w;
-    const c_y = dst_rect.y + half_h;
+    const half_w = dst_w * 0.5;
+    const half_h = dst_h * 0.5;
+    const c_x = center_x + pan_x;
+    const c_y = center_y + pan_y;
 
     const rx1 = -half_w * cos_val - (-half_h) * sin_val;
     const ry1 = -half_w * sin_val + (-half_h) * cos_val;

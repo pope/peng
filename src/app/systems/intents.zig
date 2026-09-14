@@ -65,6 +65,18 @@ fn handleSetPaletteIntent(self: *AppState, p: anytype) !void {
     }
 }
 
+fn syncNavIndexChange(self: *AppState, old_idx: ?usize) void {
+    if (old_idx != self.viewer.navigation.current_index) {
+        self.viewer.viewport.reset();
+        if (self.viewer.viewport.mode != .manual) {
+            self.viewer.viewport.zoom_factor =
+                state.UniversalZoom.init(self.getBaseScale());
+        }
+        self.viewer.image_transition = .none;
+        self.viewer.animations.setImmediate(.image_crossfade, 1.0);
+    }
+}
+
 /// Central intent dispatcher. Maps an AppIntent variant to domain state mutations.
 fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
     const vp = &self.viewer.viewport;
@@ -232,10 +244,20 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 elapsed < 200;
             if (should_show_auto_title) {
                 if (!ui.overlays.title_display.isPinned()) {
-                    ui.overlays.title_display = .{ .transient = .{ .timeout_ms = now + 1500 } };
+                    ui.overlays.title_display = .{
+                        .transient = .{ .timeout_ms = now + 1500 },
+                    };
                     const progress = self.viewer.animations.get(.title_overlay);
-                    const dur = @max(state.DURATION_TITLE_OVERLAY_OPEN_MS * (1.0 - progress), 30.0);
-                    self.viewer.animations.start(.title_overlay, 1.0, dur, .ease_out_quad);
+                    const dur = @max(
+                        state.DURATION_TITLE_OVERLAY_OPEN_MS * (1.0 - progress),
+                        30.0,
+                    );
+                    self.viewer.animations.start(
+                        .title_overlay,
+                        1.0,
+                        dur,
+                        .ease_out_quad,
+                    );
                 }
             }
             const is_slideshow = nav.isSlideshowActive();
@@ -247,8 +269,14 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
 
             vp.reset();
             _ = switch (intent) {
-                .next_image => if (nav.manga_mode) nav.prevIndex() else nav.nextIndex(),
-                .prev_image => if (nav.manga_mode) nav.nextIndex() else nav.prevIndex(),
+                .next_image => if (nav.manga_mode)
+                    nav.prevIndex()
+                else
+                    nav.nextIndex(),
+                .prev_image => if (nav.manga_mode)
+                    nav.nextIndex()
+                else
+                    nav.prevIndex(),
                 .first_image => blk: {
                     const res = nav.goToIndex(0);
                     nav.direction = .forward;
@@ -267,15 +295,22 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 else => unreachable,
             };
 
+            if (vp.mode != .manual) {
+                vp.zoom_factor = state.UniversalZoom.init(self.getBaseScale());
+            }
+
             const changed_image = old_index != null and
                 nav.current_index != null and
                 old_index.? != nav.current_index.?;
             if (changed_image) {
-                const old_entry_loaded = if (self.cache.get(self.cache.activeKey(old_index.?))) |e|
-                    (e.status == .loaded_gpu or (self.gpu_device == null and e.status != .failed))
+                const old_key = self.cache.activeKey(old_index.?);
+                const old_entry_loaded = if (self.cache.get(old_key)) |e|
+                    (e.status == .loaded_gpu or
+                        (self.gpu_device == null and e.status != .failed))
                 else
                     self.gpu_device == null;
-                const is_animating = self.viewer.animations.isActive(.image_crossfade);
+                const is_animating =
+                    self.viewer.animations.isActive(.image_crossfade);
                 const should_crossfade = if (is_slideshow)
                     switch (nav.slideshow) {
                         .active => |s| s.interval_s >=
@@ -284,7 +319,8 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                         .inactive => false,
                     }
                 else
-                    (nav.crossfade and elapsed >= 200 and !is_animating and old_entry_loaded);
+                    (nav.crossfade and elapsed >= 200 and
+                        !is_animating and old_entry_loaded);
 
                 if (should_crossfade) {
                     self.viewer.image_transition = .{ .active = .{
@@ -331,49 +367,29 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
             const old_idx = nav.current_index;
             _ = try nav.markCurrentPick(self.allocator);
             _ = nav.adjustIndexForVisibility();
-            if (old_idx != nav.current_index) {
-                vp.reset();
-                self.viewer.image_transition = .none;
-                self.viewer.animations.setImmediate(.image_crossfade, 1.0);
-            }
+            syncNavIndexChange(self, old_idx);
         },
         .mark_reject => {
             const old_idx = nav.current_index;
             _ = try nav.markCurrentReject(self.allocator);
             _ = nav.adjustIndexForVisibility();
-            if (old_idx != nav.current_index) {
-                vp.reset();
-                self.viewer.image_transition = .none;
-                self.viewer.animations.setImmediate(.image_crossfade, 1.0);
-            }
+            syncNavIndexChange(self, old_idx);
         },
         .unflag => {
             const old_idx = nav.current_index;
             _ = try nav.unflagCurrent(self.allocator);
             _ = nav.adjustIndexForVisibility();
-            if (old_idx != nav.current_index) {
-                vp.reset();
-                self.viewer.image_transition = .none;
-                self.viewer.animations.setImmediate(.image_crossfade, 1.0);
-            }
+            syncNavIndexChange(self, old_idx);
         },
         .cycle_view_mode => {
             const old_idx = nav.current_index;
             _ = nav.cycleViewMode();
-            if (old_idx != nav.current_index) {
-                vp.reset();
-                self.viewer.image_transition = .none;
-                self.viewer.animations.setImmediate(.image_crossfade, 1.0);
-            }
+            syncNavIndexChange(self, old_idx);
         },
         .set_view_mode => |mode| {
             const old_idx = nav.current_index;
             _ = nav.setViewMode(mode);
-            if (old_idx != nav.current_index) {
-                vp.reset();
-                self.viewer.image_transition = .none;
-                self.viewer.animations.setImmediate(.image_crossfade, 1.0);
-            }
+            syncNavIndexChange(self, old_idx);
         },
         .toggle_raw_jpeg_stacking => {
             nav.stack_raw_jpeg = !nav.stack_raw_jpeg;

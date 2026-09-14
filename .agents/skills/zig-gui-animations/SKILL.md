@@ -173,3 +173,20 @@ While proportional duration retargeting is ideal for scalar UI elements (e.g. fa
    - Incoming Quad (`ImageCanvas`): Floating at $z = 1$, centered in viewport, opacity $A\_{\\text{cur}} = p$.
    - When settled ($p \\ge 0.999$): Transition resets to `.none`, rendering a single static quad at $A = 1.0$.
 5. **Mutual Exclusion**: Guard thumbnail crossfade underlays so they never execute while an image dissolve is active, preventing quad collisions at $z = 0$.
+
+### Universal Zoom Quad Sizing & Frame-1 Aspect Invariance
+
+- **Dual-Quad Universal Sizing**: Outgoing dissolve quads
+  (`ImageTransitionPrevQuad`) must be sized from native unrotated source
+  texture dimensions scaled by the outgoing slide's universal zoom factor:
+  $$
+  \\text{dst_w} = sw \\times Z\_{\\text{prev}}, \\quad
+  \\text{dst_h} = sh \\times Z\_{\\text{prev}}
+  $$
+  Centering coordinates must align with viewport center plus pan offset,
+  ensuring that outgoing images dissolve smoothly even if they have different
+  native aspect ratios from the incoming image.
+- **Immediate Navigation Base Scale Seeding**: State systems must immediately
+  synchronize the new slide's `zoom_factor` to
+  `UniversalZoom.init(getBaseScale())` on navigation, guaranteeing that the
+  incoming slide's thumbnail matches its final loaded bounds from Frame 1.
