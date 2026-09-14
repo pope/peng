@@ -199,10 +199,10 @@
 - **Continuous Crossing Detent Logic for Stepped Inputs**:
 
   - When implementing snap detents (e.g. snapping to 100% / $Z = 1.0$) for
-    stepped inputs (e.g. 25% jumps from keyboard shortcuts `"i"` and `"o"`),
-    never test an epsilon band around the target (`abs(target - 1.0) < 0.05`).
-    Because input steps ($0.25$) exceed the epsilon width ($0.05$), the detent
-    is easily bypassed.
+    discrete inputs (e.g. multiplicative 1.25x jumps from shortcuts `"i"` and
+    `"o"`), never test an epsilon band around the target
+    (`abs(target - 1.0) < 0.05`). Because multiplicative steps jump across the
+    narrow epsilon band, the detent is easily bypassed.
   - Always test for boundary crossing:
     ```zig
     // In zoom_in:

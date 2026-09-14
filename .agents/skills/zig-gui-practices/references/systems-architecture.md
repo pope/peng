@@ -1,10 +1,10 @@
-# Systems Architecture & Execution Rules Reference
+# Systems Architecture & Execution Patterns Reference
 
-## Core System Execution Constraints
+## System Pass Pipeline Architecture
 
-All system functions under `src/app/systems/` in `peng-sys` must strictly comply with the following architectural rules:
+System passes under `src/app/systems/` follow a deterministic linear pipeline:
 
-- **Rule 1 — Update Phase Execution (`runUpdatePhase`)**:
+- **Pattern 1 — Update Phase Execution (`runUpdatePhase`)**:
   - Systems run exclusively during Phase 2 (`runUpdatePhase`) of the 3-phase frame loop tick in `src/viewer.zig` (`Worker Ingestion` -> `Update Phase (runUpdatePhase)` -> `Render Phase`).
   - Never add out-of-band system calls inside state mutation methods (`AppState`) or input event handlers.
   - The system passes execute sequentially in deterministic order:
@@ -24,7 +24,8 @@ ______________________________________________________________________
 
 ## Frame Context & Memory Lifetimes
 
-- **Rule 2 — Frame Arena Lifetimes & Capacity Pre-allocation (`FrameContext`)**:
+- **Pattern 2 — Frame Arena Lifetimes & Capacity Pre-allocation**
+  (`FrameContext`):
   - Every system function signature accepts `ctx: FrameContext` containing `state: *AppState`, `frame_allocator: Allocator`, `input: FrameInput`, and `delta_time_ms: f32`.
   - Systems must use `ctx.frame_allocator` for transient frame-bound allocations (such as string duping for enqueued intents). Memory allocated with `frame_allocator` automatically resets at frame boundaries.
   - **Dynamic Array Pre-allocation**: State constructors (`NavigationState.init`, `PaletteState.init`, `AppState.ensureInitialCapacities`) and filesystem directory scanners (`scanDirectoryEntries`) use `try entries.ensureTotalCapacity(allocator, N)` to reserve capacity upfront with explicit rationale comments explaining chosen capacities.
@@ -43,7 +44,7 @@ ______________________________________________________________________
 
 ## Decoupled Intent-Driven Systems
 
-- **Rule 3 — Zero Inter-System Calls**:
+- **Pattern 3 — Zero Inter-System Calls**:
   - Systems must never call other systems directly.
   - Systems communicate strictly by mutating `AppState` fields or pushing `AppIntent` variants to `state.pending_intents`.
 
@@ -51,7 +52,7 @@ ______________________________________________________________________
 
 ## CacheSlotMap & Generation Ownership
 
-- **Rule 4 — Cache Slot Generation Ownership & Structure**:
+- **Pattern 4 — Cache Slot Generation Ownership & Structure**:
   - `CacheSlotMap` (`state.cache` in `src/app/core/image.zig`) uses Zig's `std.MultiArrayList(CacheSlot)` for Structure-of-Arrays (SoA) memory layout, allowing key scanning without cache-line pollution while mutating key and entry slices atomically.
   - Generation state (`generation: usize`) is owned exclusively by `CacheSlotMap`.
   - Navigation/directory resets advance the generation via `_ = state.cache.advanceGeneration()`.
@@ -61,7 +62,7 @@ ______________________________________________________________________
 
 ## Standardized System Docstrings
 
-- **Rule 5 — Standardized Function & System Pass Documentation (`///`)**:
+- **Pattern 5 — Standardized Function & System Pass Documentation (`///`)**:
   - Every system pass entry point (`sysXxx`) must feature a standardized Zig docstring (`/// System Pass: ...`).
   - System pass docstrings must detail numbered `Responsibilities:` (e.g. 1. Ingest input, 2. Filter matches, 3. Rebuild overlays).
   - Internal helper functions must document `Pre-conditions:`, `Parameters:`, return value contracts, and memory ownership / `errdefer` cleanup rules.
@@ -70,7 +71,7 @@ ______________________________________________________________________
 
 ## Pure Presentation & Read-Only View Snapshots
 
-- **Rule 6 — Game-Engine View Model Snapshot Invariant**:
+- **Pattern 6 — Game-Engine View Model Snapshot Invariant**:
   - The frame lifecycle enforces a strict barrier between simulation/systems (Phase 2) and rendering (Phase 3).
   - Prior to calling `ui.layout.renderFrame`, construct `UiViewModel` as a fully immutable snapshot struct containing const pointers and value types.
   - UI layout evaluation and vertex generation MUST NOT mutate `AppState` or push intents.
@@ -80,7 +81,7 @@ ______________________________________________________________________
 
 ## Branchless Orthogonal Orientation & Compact Enum Math
 
-- **Rule 7 — Low-Bit Bounded Enum Transformations (`enum(u2)`)**:
+- **Pattern 7 — Low-Bit Bounded Enum Transformations (`enum(u2)`)**:
   - When handling multi-state spatial container metadata (such as TIFF 6.0 / EXIF 2.32 orientation tags 1..8):
     1. **Collapse to 4 Orthogonal States**: A 2D viewer typically performs orthogonal 90° rotations. Collapse the 8 TIFF states down to a 4-state bounded enum:
        ```zig
@@ -120,7 +121,7 @@ ______________________________________________________________________
 
 ## Declarative Capabilities & Input Isolation
 
-- **Rule 8 — Unified Declarative Action Registry & 4-Way Projection Invariant**:
+- **Pattern 8 — Unified Declarative Action Registry & 4-Way Projection**:
   - Capabilities are defined exclusively in `src/intents/actions.zig` via `ActionDef`:
     - `palette_action_items`: Projected for Command Palette rendering and scoring.
     - `flat_shortcuts`: Flattened mapping of `(Key, Modifiers) -> AppIntent`.
@@ -133,7 +134,7 @@ ______________________________________________________________________
 
 ## MultiArrayList SoA & Slice Snapshot Boundary
 
-- **Rule 9 — MultiArrayList Structure-of-Arrays (SoA) & View Model Snapshot Invariant**:
+- **Pattern 9 — MultiArrayList SoA & View Model Snapshot Boundary**:
   - When domain collections maintain parallel attributes (such as `MediaEntry` (~56 bytes) and `Classification` (1 byte)), avoid separate parallel `ArrayList` collections:
     ```zig
     pub const MediaItem = struct {
@@ -151,7 +152,7 @@ ______________________________________________________________________
 
 ## SIMD Vectorized Circular Navigation & Popcounting
 
-- **Rule 10 — 256-Bit SIMD Vectorized Circular Scanning & Boundary Guards**:
+- **Pattern 10 — 256-Bit SIMD Vectorized Circular Scanning & Boundary Guards**:
   - When scanning contiguous 1-byte arrays (`[]const Classification`) with portable `@Vector(32, u8)`:
     - **Forward Search (`findNextVisibleInRange`)**: Cast the vector comparison mask to `u32` (`@as(u32, @bitCast(matches))`) and call `@ctz(mask)` to find the lowest matching index in a single CPU cycle (`TZCNT`/`BSF`).
     - **Backward Search Underflow Guard (`findPrevVisibleInRange`)**:
@@ -167,7 +168,7 @@ ______________________________________________________________________
 
 ## State-Transition Feedback Invariants
 
-- **Rule 11 — Action-Aware & Advance-Aware Snackbar Feedback**:
+- **Pattern 11 — Action-Aware & Advance-Aware Snackbar Feedback**:
   - When user actions cause items to be filtered out and advance the cursor (e.g. marking Reject in Default view hides the image and moves to the next visible image):
     - Never derive snackbar text by inspecting the current image's classification after the mutation has already advanced the cursor.
     - Derive feedback directly from the executed intent and track cursor advancement:
@@ -179,7 +180,7 @@ ______________________________________________________________________
 
 ## Tagged Union Variance Control & Comptime Parameter Descriptors
 
-- **Rule 12 — Tagged Union Hierarchy & Single Source of Truth Metadata**:
+- **Pattern 12 — Tagged Union Hierarchy & Single Source of Truth Metadata**:
   - When introducing multi-parameter adjustment suites (such as photographic
     sliders or audio DSP filters), avoid polluting root `AppIntent` with flat
     variants (`increase_brightness`, `decrease_brightness`, `set_highlights`).
@@ -199,6 +200,10 @@ ______________________________________________________________________
             tint: f32,
             vibrance: f32,
             saturation: f32,
+        },
+        batch_presence: struct {
+            clarity: f32,
+            texture: f32,
         },
         reset_param: EditParam,
         reset_all,

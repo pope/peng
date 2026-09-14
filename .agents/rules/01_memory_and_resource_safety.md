@@ -226,15 +226,21 @@ Every struct owning heap memory, GPU handles, socket connections, or child sub-s
 
 - **Explicit Enum Branching via `switch`**:
 
-  - When branching on enum values, prefer `switch (val)` over `if (val == .variant)`.
+  - When branching on enum values, prefer `switch (val)` over
+    `if (val == .variant)`.
   - If only a specific variant is handled, write explicit branches
-    (`switch (val) { .store => ..., else => {} }`) to document intentional fallbacks and facilitate
-    future variant expansion.
+    (`switch (val) { .store => ..., else => {} }`) to document intentional
+    fallbacks and facilitate future variant expansion.
 
-## 10. 32-Bit Platform Offset `@intCast` Bounds Safety
+## 17. 32-Bit Platform Offset `@intCast` Bounds Safety
 
-- When inspecting variable-length binary containers where offsets are represented as `u64` (e.g. file offsets in large media containers > 4GB), NEVER cast `loc.file_offset` to `usize` before verifying bounds.
-- On 32-bit platforms where `usize == u32`, executing `@as(usize, @intCast(loc.file_offset))` on an offset $> 4\\text{GB}$ triggers a runtime safety panic (`integer cast truncated bits`) before the bounds check can execute.
+- When inspecting variable-length binary containers where offsets are
+  represented as `u64` (e.g. file offsets in large media containers > 4GB),
+  NEVER cast `loc.file_offset` to `usize` before verifying bounds.
+- On 32-bit platforms where `usize == u32`, executing
+  `@as(usize, @intCast(loc.file_offset))` on an offset $> 4\\text{GB}$ triggers
+  a runtime safety panic (`integer cast truncated bits`) before the bounds check
+  can execute.
 - Always perform the range check using `u64` arithmetic prior to casting:
   ```zig
   // BAD: Panics on 32-bit platforms if file_offset > 4GB

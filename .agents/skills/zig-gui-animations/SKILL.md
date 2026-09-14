@@ -99,9 +99,12 @@ ______________________________________________________________________
 
 ## 3. GPU Text Renderer Alpha Decoupling (Zero Cache Thrashing)
 
+*(See authoritative invariant: `04_ui_rendering_and_performance.md` §7)*
+
 ### The Anti-Pattern: Baking Alpha into Text Textures
 
-If alpha is part of `TextCacheKey`, an animating label generates 15–20 distinct textures across a 140ms fade, exhausting VRAM and thrashing font rasterization.
+If alpha is part of `TextCacheKey`, an animating label generates 15–20 distinct
+textures across a 140ms fade, exhausting VRAM and thrashing font rasterization.
 
 ### The Correct Pattern: Hardware Vertex Blitting
 
@@ -114,16 +117,22 @@ If alpha is part of `TextCacheKey`, an animating label generates 15–20 distinc
 2. **Rasterize Once at Solid Alpha (`a = 255`)**: Cache glyphs at full opacity.
 3. **Pack Requested Alpha into Vertex Color Quad**:
    ```zig
-   const text_alpha_u8 = @as(u8, @intFromFloat(std.math.clamp(text_data.text_color[3], 0.0, 255.0)));
+   const text_alpha_u8 = @as(
+       u8,
+       @intFromFloat(std.math.clamp(text_data.text_color[3], 0.0, 255.0)),
+   );
    const vert_color = packRgba(255, 255, 255, text_alpha_u8);
    ```
-4. **Shader Multiplication**: The fragment shader computes `outColor = texColor * inColor`, modulating opacity smoothly on GPU with **100% cache hits**.
+4. **Shader Multiplication**: The fragment shader computes
+   `outColor = texColor * inColor`, modulating opacity smoothly on GPU with
+   **100% cache hits**.
 
 ______________________________________________________________________
 
 ## 4. Clay Immediate-Mode Alpha Modulation
 
-Because Clay does not support CSS-like cascading container opacity, all child elements must explicitly scale their color alpha:
+Because Clay does not support CSS-like cascading container opacity, all child
+elements must explicitly scale their color alpha:
 
 ```zig
 inline fn a(color: clay.Color, progress: f32) clay.Color {
@@ -131,11 +140,15 @@ inline fn a(color: clay.Color, progress: f32) clay.Color {
 }
 ```
 
-Wrap every background, border, and text element in `a(color, progress)`. When steady state ($progress = 1.0$), `withAlpha(c, 1.0)` is a mathematical identity, guaranteeing 0-pixel differences on golden test screenshots.
+Wrap every background, border, and text element in `a(color, progress)`. When
+steady state ($progress = 1.0$), `withAlpha(c, 1.0)` is a mathematical identity,
+guaranteeing 0-pixel differences on golden test screenshots.
 
 ______________________________________________________________________
 
 ## 5. Modal Dismissal Input Decoupling
+
+*(See authoritative invariant: `04_ui_rendering_and_performance.md` §8)*
 
 When a modal window or overlay begins its animated close sequence:
 
@@ -146,33 +159,52 @@ When a modal window or overlay begins its animated close sequence:
       return self.mode != .inactive and !self.is_closing;
   }
   ```
-- Input systems (`sysProcessInput`, `sysUpdateViewport`) must check `isAcceptingInput()`, allowing keyboard shortcuts and viewport interactions to respond immediately while the dissolve completes in the background.
+- Input systems (`sysProcessInput`, `sysUpdateViewport`) must check
+  `isAcceptingInput()`, allowing keyboard shortcuts and viewport interactions to
+  respond immediately while the dissolve completes in the background.
 
 ______________________________________________________________________
 
 ## 6. Image Crossfade Transitions & Fast Navigation Scrubbing
 
+*(See authoritative invariants: `04_ui_rendering_and_performance.md` §9, §22)*
+
 ### The Anti-Pattern: Proportional Retargeting for Distinct Textures
 
-While proportional duration retargeting is ideal for scalar UI elements (e.g. fading a single modal or button opacity from 0.4 back to 0.0), it is a **visual anti-pattern for image crossfades**:
+While proportional duration retargeting is ideal for scalar UI elements (e.g.
+fading a single modal or button opacity from 0.4 back to 0.0), it is a
+**visual anti-pattern for image crossfades**:
 
 - In an image crossfade, Quad A is fading out while Quad B is fading in.
-- If the user quickly navigates to Image C mid-flight, attempting to retarget either leaves a muddy 3-quad composite or causes a sudden luminance pop (e.g. Quad B jumping from 40% to 100% opacity).
+- If the user quickly navigates to Image C mid-flight, attempting to retarget
+  either leaves a muddy 3-quad composite or causes a sudden luminance pop (e.g.
+  Quad B jumping from 40% to 100% opacity).
 
 ### The Correct Pattern: Snap-and-Cut on Scrubbing or Interruption
 
-1. **Rapid Scrubbing Bypass**: If navigation occurs within 200ms of the previous navigation action ($elapsed < 200\\text{ms}$), bypass the animation entirely and cut immediately.
-2. **Interruption Snap-and-Cut**: If an animation is already in flight ($0.0 < p < 0.999$), immediately snap to the settled state:
+1. **Rapid Scrubbing Bypass**: If navigation occurs within 200ms of the previous
+   navigation action ($elapsed < 200\\text{ms}$), bypass the animation entirely
+   and cut immediately.
+2. **Interruption Snap-and-Cut**: If an animation is already in flight
+   ($0.0 < p < 0.999$), immediately snap to the settled state:
    ```zig
    self.viewer.animations.setImmediate(.image_crossfade, 1.0);
    self.viewer.image_transition = .none;
    ```
-3. **Outgoing Slide GPU Invariant**: Only initiate crossfade if the outgoing slide is resident in VRAM (`old_entry.status == .loaded_gpu`). Navigating away from a slide that is still decoding or failed cuts immediately.
+3. **Outgoing Slide GPU Invariant**: Only initiate crossfade if the outgoing
+   slide is resident in VRAM (`old_entry.status == .loaded_gpu`). Navigating
+   away from a slide that is still decoding or failed cuts immediately.
 4. **Dual-Quad Alpha & Layering Math**:
-   - Outgoing Quad (`ImageTransitionPrevQuad`): Floating at $z = 0$, centered in viewport, opacity $A\_{\\text{prev}} = 1.0 - p^2$ (quadratic falloff preserves perceived luminance).
-   - Incoming Quad (`ImageCanvas`): Floating at $z = 1$, centered in viewport, opacity $A\_{\\text{cur}} = p$.
-   - When settled ($p \\ge 0.999$): Transition resets to `.none`, rendering a single static quad at $A = 1.0$.
-5. **Mutual Exclusion**: Guard thumbnail crossfade underlays so they never execute while an image dissolve is active, preventing quad collisions at $z = 0$.
+   - Outgoing Quad (`ImageTransitionPrevQuad`): Floating at $z = 0$,
+     centered in viewport, opacity $A\_{\\text{prev}} = 1.0 - p^2$ (quadratic
+     falloff preserves perceived luminance).
+   - Incoming Quad (`ImageCanvas`): Floating at $z = 1$, centered in viewport,
+     opacity $A\_{\\text{cur}} = p$.
+   - When settled ($p \\ge 0.999$): Transition resets to `.none`, rendering a
+     single static quad at $A = 1.0$.
+5. **Mutual Exclusion**: Guard thumbnail crossfade underlays so they never
+   execute while an image dissolve is active, preventing quad collisions at
+   $z = 0$.
 
 ### Universal Zoom Quad Sizing & Frame-1 Aspect Invariance
 

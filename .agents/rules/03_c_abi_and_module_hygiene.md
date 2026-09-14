@@ -120,7 +120,8 @@ const MediaEntry = state_pkg.MediaEntry;
      golden screenshots.
 - **Prohibition of Accessor & Data-Shape Unit Tests**:
   - NEVER write unit tests solely verifying trivial getters, setters, or
-    intermediate enum/struct layout mappings (`toScaleModeInt()`, `getImageCount()`).
+    intermediate enum/struct layout mappings (`getShaderScaleModeInt()`,
+    `getImageCount()`).
   - If a data model is not consumed by a production system, do NOT write a test to
     assert on it. Test the consuming subsystem instead.
 - **Prohibition of Cross-Module File Path Imports**:
@@ -259,16 +260,35 @@ project's formatting and line-length constraints:
 ### 2. Comment Wrapping & Preservation
 
 - Wrap inline comments and doc comments (`///`) cleanly to ~80 columns.
-- **Never Break URLs/Hyperlinks**: Lines containing hyperlinks or URLs (e.g. `https://...`) are an explicit exception to the 100-character ceiling and must NEVER be broken or split across lines, as splitting destroys clickability.
-- **Dedicated URL Lines**: Place long hyperlinks on their own dedicated comment line (e.g. `/// See:\n/// https://...`) so surrounding comment text wraps cleanly without unnecessary overflow.
-- **Preserve ASCII Art & Tables**: Preformatted ASCII art, diagrams, and markdown tables in comments must retain their visual structure and indentation. Authors should design diagrams to fit within 80–100 columns; existing structural diagrams are exempt from line-wrapping that would destroy visual alignment.
+- **Never Break URLs/Hyperlinks**: Lines containing hyperlinks or URLs (e.g.
+  `https://...`) are an explicit exception to the 80-column ceiling and must
+  NEVER be broken or split across lines, as splitting destroys clickability.
+- **Dedicated URL Lines**: Place long hyperlinks on their own dedicated comment
+  line (e.g. `/// See:\n/// https://...`) so surrounding comment text wraps
+  cleanly without unnecessary overflow.
+- **Preserve ASCII Art & Tables**: Preformatted ASCII art, diagrams, and
+  markdown tables in comments must retain their visual structure and
+  indentation. Authors should design diagrams to fit within 80 columns; existing
+  structural diagrams are exempt from line-wrapping that would destroy visual
+  alignment.
 
 ### 3. Multi-Line Wrapping & Trailing Commas
 
-- Use Zig's canonical trailing comma syntax (`.{ foo, bar, }`, `fn foo(\n a: T,\n b: U,\n)`) to instruct `zig fmt` to break arguments, struct initializers, and switch branches onto multiple lines so each line comfortably ends around 80 characters.
-- In struct declarations and anonymous struct literals, place fields on their own lines with trailing commas whenever a single line would approach or exceed 80 characters.
-- When boolean conditions or arithmetic expressions push lines past ~80 characters, extract pure subexpressions into local immutable `const` bindings (e.g., `const can_snap = ...;`, `const is_win_drive = ...;`).
-- **Short-Circuit Evaluation Caution**: When extracting boolean conditions into local `const` bindings, ensure you do not bypass short-circuit evaluation guards (e.g. pointer null checks `ptr != null` or slice bounds checks `idx < len`) that protect subsequent expressions from runtime panics or illegal memory access.
+- Use Zig's canonical trailing comma syntax (`.{ foo, bar, }`,
+  `fn foo(\n a: T,\n b: U,\n)`) to instruct `zig fmt` to break arguments, struct
+  initializers, and switch branches onto multiple lines so each line comfortably
+  ends around 80 characters.
+- In struct declarations and anonymous struct literals, place fields on their
+  own lines with trailing commas whenever a single line would approach or
+  exceed 80 characters.
+- When boolean conditions or arithmetic expressions push lines past ~80
+  characters, extract pure subexpressions into local immutable `const` bindings
+  (e.g., `const can_snap = ...;`, `const is_win_drive = ...;`).
+- **Short-Circuit Evaluation Caution**: When extracting boolean conditions into
+  local `const` bindings, ensure you do not bypass short-circuit evaluation
+  guards (e.g. pointer null checks `ptr != null` or slice bounds checks
+  `idx < len`) that protect subsequent expressions from runtime panics or
+  illegal memory access.
 
 ### 4. Verification & Formatting Invariant
 
@@ -300,8 +320,8 @@ project's formatting and line-length constraints:
 
 - **Exhaustive Matching on Architectural Enums**:
   - Switch statements evaluating core domain enums (`PaletteMode`, `EditParam`,
-    `AppIntent`, `ScaleMode`, `FilterKind`) MUST exhaustively list every
-    variant.
+    `AppIntent`, `ZoomPreset`, `TextureScaleMode`) MUST exhaustively list
+    every variant.
   - Wildcard or catch-all branches (`else => {}` or `else => ...`) are strictly
     forbidden for domain-critical enums.
 - **Compile-Time Regressions Guard**:
@@ -317,8 +337,8 @@ project's formatting and line-length constraints:
     `.inactive, .files, .actions => {}`).
 - **`switch` Expressions Over `if/else if` on Enums**:
   - When branching logic depends on an enumeration variant (e.g.
-    `PaletteMode`, `EditParam`, `AppIntent`, `ScaleMode`), ALWAYS use a
-    `switch` statement or expression.
+    `PaletteMode`, `EditParam`, `AppIntent`, `ZoomPreset`, `TextureScaleMode`),
+    ALWAYS use a `switch` statement or expression.
   - **Anti-Pattern**: NEVER write chained
     `if (mode == .actions) ... else if (mode == .files) ...`. Chained
     `if/else if` cascades bypass Zig's compile-time exhaustiveness guarantees,

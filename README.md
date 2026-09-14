@@ -19,11 +19,11 @@ ______________________________________________________________________
 - **Advanced Filtering & Resampling:** Features high-quality resampling shaders including Bilinear, Mitchell-Netravali, and Lanczos3 filters.
 - **Command Palette:** Built-in searchable palettes for commands (`F1` or `Ctrl+Shift+P`), file search (`Ctrl+P`), and directory navigator (`Ctrl+O`).
 - **Docked Image Adjustments Panel:** Interactive side panel (`e` key)
-  featuring an 11-parameter photographic color pipeline across Light & Tone
-  (Exposure, Contrast, Contrast Blend, Highlights, Shadows, Whites, Blacks),
-  White Balance (Temperature, Tint), and Color (Vibrance, Saturation) with live
-  slider dragging, reset shortcuts (`Shift+R`), and instant before/after
-  comparison (`\` key).
+  featuring a 13-parameter photographic color and presence pipeline across
+  Light & Tone (Exposure, Contrast, Contrast Blend, Highlights, Shadows, Whites,
+  Blacks), White Balance (Temperature, Tint), Color (Vibrance, Saturation),
+  and Presence (Clarity, Texture) with live slider dragging, reset shortcuts
+  (`Shift+R`), and instant before/after comparison (`\` key).
 - **Lightroom-Style Image Triage & SIMD Filtering:** Instant photo triage with Pick (`z`), Reject (`x`), and Unflag (`u`) shortcuts. Filtered view modes (`v` / `Shift+V`) cycle between Default (hides rejected images), Picks Only, Rejects Only, Unflagged Only, and All Images. Filtering and visible count calculations are accelerated via 256-bit SIMD vector instructions (`@Vector(32, u8)`) and hardware popcounting (`POPCNT`), enabling sub-microsecond filtering across collections of 10,000+ photos.
 - **UNIX Pipeline Integration & Triage Export:** On application exit, classifications are streamed cleanly to standard output as tab-separated rows (`PICK\t/path/to/image.jpg` or `REJECT\t/path/to/image.jpg`), allowing direct integration with shell tools (`awk`, `xargs`, `cp`, `mv`).
 - **Non-Blocking Headless Mode:** Runs offscreen without X11 or Wayland (ideal for CI and servers) with `--headless`.
@@ -48,6 +48,7 @@ ______________________________________________________________________
 | `n` / `]` / `Space` / `Right`           | Next Image                                                        |
 | `p` / `[` / `Backspace` / `Left`        | Previous Image                                                    |
 | `Home` / `End`                          | Jump to First / Last Image                                        |
+| `Shift+G`                               | Go to Image Dialog (Numeric Jump)                                 |
 | `i` / `+` / `=`                         | Zoom In (with 100% snap detent)                                   |
 | `o` / `-`                               | Zoom Out (with 100% snap detent)                                  |
 | `a`                                     | Actual Size (1:1 / 100% Universal Pixel Zoom)                     |
@@ -67,6 +68,8 @@ ______________________________________________________________________
 | `Shift+R`                               | Reset Brightness & Contrast                                       |
 | `d`                                     | Toggle Image Info Overlay                                         |
 | `Shift+D` / `Shift+I`                   | Toggle Stats for Nerds / Performance Overlay                      |
+| `Ctrl+D`                                | Toggle Clay UI Debug Mode (Layout Borders)                        |
+| `Ctrl+T`                                | Toggle Embedded Thumbnail Debug Overlay                           |
 | `t`                                     | Toggle Title Bar Overlay                                          |
 | `m`                                     | Toggle Manga Mode (Right-to-Left)                                 |
 | `f` / `F11`                             | Toggle Borderless Fullscreen                                      |
@@ -196,6 +199,26 @@ You can send commands to a running instance using the `peng-msg` utility:
 
 # Batch adjust color (temperature, tint, vibrance, saturation)
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock color 0.10 0.00 0.25 0.10
+
+# Batch adjust presence (clarity, texture)
+./zig-out/bin/peng-msg /tmp/peng-1234.sock presence 0.20 0.15
+
+# Single parameter adjustments (clarity, texture)
+./zig-out/bin/peng-msg /tmp/peng-1234.sock clarity 0.30
+./zig-out/bin/peng-msg /tmp/peng-1234.sock texture 0.10
+
+# Reset all image adjustments or reset viewport transform
+./zig-out/bin/peng-msg /tmp/peng-1234.sock reset_adjustments
+./zig-out/bin/peng-msg /tmp/peng-1234.sock reset_view
+
+# Toggle navigation crossfade transition (on, off, toggle)
+./zig-out/bin/peng-msg /tmp/peng-1234.sock crossfade on
+
+# Toggle status snackbar notification (true, false, toggle)
+./zig-out/bin/peng-msg /tmp/peng-1234.sock snackbar true
+
+# Capture high-resolution screenshot to file
+./zig-out/bin/peng-msg /tmp/peng-1234.sock screenshot /path/to/output.png
 
 # Toggle Before / After Comparison (toggle, on, off)
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock compare toggle
