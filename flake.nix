@@ -94,7 +94,7 @@
                 (jailed-antigravity.lib.${system}.makeJailedAntigravity (
                   { agy, ... }: {
                     inherit pkgs;
-                    package = agy.google-antigravity;
+                    package = agy.google-antigravity-cli;
                     fwdEnv = [
                       "LD_LIBRARY_PATH"
                       "PATH"
