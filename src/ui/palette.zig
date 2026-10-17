@@ -711,7 +711,7 @@ fn renderDirectoryListItem(
             dir_matches.items,
             trunc_folder.head_len,
             trunc_folder.tail_start_idx,
-        ) catch dir_matches.items;
+        ) catch &.{};
 
         const text_color = if (is_selected)
             a(theme.blue, progress)
@@ -858,11 +858,6 @@ fn renderFileListItem(
         16,
     );
     defer basename_matches.deinit(frame_allocator);
-    var dirname_matches = try std.ArrayList(usize).initCapacity(
-        frame_allocator,
-        16,
-    );
-    defer dirname_matches.deinit(frame_allocator);
 
     if (query_str.len > 0 and basename.len > 0) {
         var searcher = state.fuzzig.Ascii.init(
@@ -911,7 +906,7 @@ fn renderFileListItem(
         basename_matches.items,
         trunc_filename.head_len,
         trunc_filename.tail_start_idx,
-    ) catch basename_matches.items;
+    ) catch &.{};
 
     const display_dir = truncateDirectory(
         frame_allocator,
@@ -920,33 +915,6 @@ fn renderFileListItem(
         11,
         measure_data,
     );
-
-    var remapped_dir_matches: std.ArrayList(usize) = .empty;
-    defer remapped_dir_matches.deinit(frame_allocator);
-
-    var final_dir_matches: []const usize = dirname_matches.items;
-
-    if (display_dir.ptr != dirname.ptr and
-        display_dir.len > 0 and
-        std.mem.startsWith(u8, display_dir, "..."))
-    {
-        const kept_len = display_dir.len - 3;
-        const start_offset = if (dirname.len > kept_len)
-            dirname.len - kept_len
-        else
-            0;
-        try remapped_dir_matches.ensureTotalCapacity(
-            frame_allocator,
-            dirname_matches.items.len,
-        );
-        for (dirname_matches.items) |m_idx| {
-            if (m_idx >= start_offset) {
-                const remapped = (m_idx - start_offset) + 3;
-                remapped_dir_matches.appendAssumeCapacity(remapped);
-            }
-        }
-        final_dir_matches = remapped_dir_matches.items;
-    }
 
     clay.UI()(.{
         .layout = .{
@@ -995,14 +963,12 @@ fn renderFileListItem(
                 .padding = .{ .left = 14 },
             },
         })({
-            renderFuzzyMatchText(
-                frame_allocator,
-                display_dir,
-                final_dir_matches,
-                11,
-                a(theme.subtext0, progress),
-                a(theme.yellow, progress),
-            );
+            clay.text(display_dir, .{
+                .color = a(theme.subtext0, progress),
+                .font_size = 11,
+                .font_id = 0,
+                .wrap_mode = .none,
+            });
         });
     });
 
@@ -1454,11 +1420,16 @@ test "partitionHighlightedText edge cases" {
     try std.testing.expect(!no_match_chunks[0].is_matched);
 
     // Out-of-bounds matches (should be ignored gracefully)
-    const oob_chunks = try partitionHighlightedText(
-        std.testing.allocator,
-        "abc",
-        &[_]usize{ 0, 5, 10 },
-    );
+    const oob_chunks = blk: {
+        const prev_level = std.testing.log_level;
+        std.testing.log_level = .err;
+        defer std.testing.log_level = prev_level;
+        break :blk try partitionHighlightedText(
+            std.testing.allocator,
+            "abc",
+            &[_]usize{ 0, 5, 10 },
+        );
+    };
     defer std.testing.allocator.free(oob_chunks);
     try std.testing.expectEqual(@as(usize, 2), oob_chunks.len);
     try std.testing.expectEqualStrings("a", oob_chunks[0].slice);
@@ -1603,32 +1574,6 @@ test "partitionHighlightedText multi-byte UTF-8 character boundary safety" {
     try std.testing.expect(chunks[1].is_matched);
     try std.testing.expectEqualStrings("_au_lait.jpg", chunks[2].slice);
     try std.testing.expect(!chunks[2].is_matched);
-}
-
-test "untruncated directory starting with dots preserves matches" {
-    const dirname = ".../my_photos";
-    const display_dir = dirname; // untruncated (same pointer)
-    const dirname_matches = [_]usize{ 0, 1, 2, 4 }; // matches '...', 'm'
-
-    var final_dir_matches: std.ArrayList(usize) = .empty;
-    defer final_dir_matches.deinit(std.testing.allocator);
-
-    if (display_dir.ptr != dirname.ptr and
-        display_dir.len > 0 and
-        std.mem.startsWith(u8, display_dir, "..."))
-    {
-        const kept_len = display_dir.len - 3;
-        const start_offset = if (dirname.len > kept_len) dirname.len - kept_len else 0;
-        for (dirname_matches) |m_idx| {
-            if (m_idx >= start_offset) {
-                try final_dir_matches.append(std.testing.allocator, (m_idx - start_offset) + 3);
-            }
-        }
-    } else {
-        try final_dir_matches.appendSlice(std.testing.allocator, &dirname_matches);
-    }
-
-    try std.testing.expectEqualSlices(usize, &dirname_matches, final_dir_matches.items);
 }
 
 test "VirtualWindow compute calculations and edge cases" {

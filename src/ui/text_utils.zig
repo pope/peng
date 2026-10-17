@@ -96,7 +96,11 @@ pub fn truncateFilenameMiddle(
         allocator,
         "{s}...{s}",
         .{ text[0..head_len], text[tail_start_idx..] },
-    ) catch text;
+    ) catch return .{
+        .display = text,
+        .head_len = text.len,
+        .tail_start_idx = text.len,
+    };
 
     return .{
         .display = display,
