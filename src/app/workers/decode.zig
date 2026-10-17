@@ -1445,13 +1445,20 @@ test "decodeWorker - Sony ARW range reading and preview extraction" {
     // Copy JPEG at 100
     @memcpy(tiff_buf[100 .. 100 + jpg_bytes.len], jpg_bytes);
 
-    // Write mock file
-    const mock_path = "testfiles/current-run/mock_test.arw";
-    var mock_file = try std.Io.Dir.createFile(std.Io.Dir.cwd(), io, mock_path, .{});
+    // Write mock file in isolated temp directory
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var mock_file = try tmp.dir.createFile(io, "mock_test.arw", .{});
     var wr_slices = [_][]const u8{tiff_buf};
     _ = try mock_file.writePositional(io, &wr_slices, 0);
     mock_file.close(io);
-    defer std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, mock_path) catch {};
+
+    var path_buf: [128]u8 = undefined;
+    const mock_path = try std.fmt.bufPrint(
+        &path_buf,
+        ".zig-cache/tmp/{s}/mock_test.arw",
+        .{tmp.sub_path},
+    );
 
     // Test 1: Full decode (thumb_only = false)
     {
@@ -1587,12 +1594,19 @@ test "decodeWorker - Fujifilm RAF range reading and preview extraction" {
     // Copy preview JPEG at 200
     @memcpy(raf_buf[200 .. 200 + jpg_bytes.len], jpg_bytes);
 
-    const mock_path = "testfiles/current-run/mock_test.raf";
-    var mock_file = try std.Io.Dir.createFile(std.Io.Dir.cwd(), io, mock_path, .{});
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var mock_file = try tmp.dir.createFile(io, "mock_test.raf", .{});
     var wr_slices = [_][]const u8{raf_buf};
     _ = try mock_file.writePositional(io, &wr_slices, 0);
     mock_file.close(io);
-    defer std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, mock_path) catch {};
+
+    var path_buf: [128]u8 = undefined;
+    const mock_path = try std.fmt.bufPrint(
+        &path_buf,
+        ".zig-cache/tmp/{s}/mock_test.raf",
+        .{tmp.sub_path},
+    );
 
     // Test full decode
     var workers = WorkerManager{};
@@ -1803,12 +1817,19 @@ test "decodeWorker - progressive pair loading with PairStreamTarget" {
 
     @memcpy(tiff_buf[100 .. 100 + jpg_bytes.len], jpg_bytes);
 
-    const raw_file = "testfiles/current-run/mock_pair.arw";
-    var mock_file = try std.Io.Dir.createFile(std.Io.Dir.cwd(), io, raw_file, .{});
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var mock_file = try tmp.dir.createFile(io, "mock_pair.arw", .{});
     var wr_slices = [_][]const u8{tiff_buf};
     _ = try mock_file.writePositional(io, &wr_slices, 0);
     mock_file.close(io);
-    defer std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, raw_file) catch {};
+
+    var path_buf: [128]u8 = undefined;
+    const raw_file = try std.fmt.bufPrint(
+        &path_buf,
+        ".zig-cache/tmp/{s}/mock_pair.arw",
+        .{tmp.sub_path},
+    );
 
     var workers = WorkerManager{};
     defer workers.deinit(allocator, io);

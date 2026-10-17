@@ -2262,13 +2262,20 @@ test "loadThumbnailSurface - filesystem TIFF RAW mock" {
     // Copy JPEG at 100
     @memcpy(tiff_buf[100 .. 100 + jpg_bytes.len], jpg_bytes);
 
-    // Write mock file
-    const mock_path = "testfiles/current-run/mock_thumb_test.arw";
-    var mock_file = try std.Io.Dir.createFile(std.Io.Dir.cwd(), io, mock_path, .{});
+    // Write mock file in isolated temp directory
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var mock_file = try tmp.dir.createFile(io, "mock_thumb_test.arw", .{});
     var wr_slices = [_][]const u8{tiff_buf};
     _ = try mock_file.writePositional(io, &wr_slices, 0);
     mock_file.close(io);
-    defer std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, mock_path) catch {};
+
+    var path_buf: [128]u8 = undefined;
+    const mock_path = try std.fmt.bufPrint(
+        &path_buf,
+        ".zig-cache/tmp/{s}/mock_thumb_test.arw",
+        .{tmp.sub_path},
+    );
 
     const media = MediaEntry{ .filesystem = .{ .path = mock_path } };
     const thumb = loadThumbnailSurface(io, allocator, media);
@@ -2403,12 +2410,19 @@ test "probeMediaMetadata - detects embedded thumbnail and dimensions on mock RAF
     // Copy preview JPEG at 200
     @memcpy(raf_buf[200 .. 200 + jpg_bytes.len], jpg_bytes);
 
-    const mock_path = "testfiles/current-run/mock_probe_test.raf";
-    var mock_file = try std.Io.Dir.createFile(std.Io.Dir.cwd(), io, mock_path, .{});
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var mock_file = try tmp.dir.createFile(io, "mock_probe_test.raf", .{});
     var wr_slices = [_][]const u8{raf_buf};
     _ = try mock_file.writePositional(io, &wr_slices, 0);
     mock_file.close(io);
-    defer std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, mock_path) catch {};
+
+    var path_buf: [128]u8 = undefined;
+    const mock_path = try std.fmt.bufPrint(
+        &path_buf,
+        ".zig-cache/tmp/{s}/mock_probe_test.raf",
+        .{tmp.sub_path},
+    );
 
     const media = MediaEntry{ .filesystem = .{ .path = mock_path } };
     const meta = probeMediaMetadata(io, media);

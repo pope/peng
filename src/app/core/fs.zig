@@ -581,32 +581,35 @@ test "scanDirectoryEntries includes CBZ files and countFolderContents counts CBZ
 test "scanDirectoryEntries - nested directory hierarchy" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const cwd = std.Io.Dir.cwd();
 
-    const tmp_dir_path = "testfiles/tmp_scan_nav_test";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [128]u8 = undefined;
+    const tmp_dir_path = try std.fmt.bufPrint(
+        &path_buf,
+        ".zig-cache/tmp/{s}",
+        .{tmp.sub_path},
+    );
 
     // Setup directory structure
-    std.Io.Dir.createDirPath(cwd, io, tmp_dir_path ++ "/sub_b") catch {};
-    std.Io.Dir.createDirPath(cwd, io, tmp_dir_path ++ "/sub_a") catch {};
-    std.Io.Dir.createDirPath(cwd, io, tmp_dir_path ++ "/sub_empty") catch {};
-
-    defer {
-        std.Io.Dir.deleteTree(cwd, io, tmp_dir_path) catch {};
-    }
+    try tmp.dir.createDirPath(io, "sub_b");
+    try tmp.dir.createDirPath(io, "sub_a");
+    try tmp.dir.createDirPath(io, "sub_empty");
 
     // Create test files
     {
-        var f0 = try std.Io.Dir.createFile(cwd, io, tmp_dir_path ++ "/root.png", .{});
+        var f0 = try tmp.dir.createFile(io, "root.png", .{});
         f0.close(io);
 
-        var f1 = try std.Io.Dir.createFile(cwd, io, tmp_dir_path ++ "/sub_b/img1.png", .{});
+        var f1 = try tmp.dir.createFile(io, "sub_b/img1.png", .{});
         f1.close(io);
-        var f2 = try std.Io.Dir.createFile(cwd, io, tmp_dir_path ++ "/sub_b/img2.jpg", .{});
+        var f2 = try tmp.dir.createFile(io, "sub_b/img2.jpg", .{});
         f2.close(io);
-        var f3 = try std.Io.Dir.createFile(cwd, io, tmp_dir_path ++ "/sub_b/txt1.txt", .{});
+        var f3 = try tmp.dir.createFile(io, "sub_b/txt1.txt", .{});
         f3.close(io);
 
-        var f4 = try std.Io.Dir.createFile(cwd, io, tmp_dir_path ++ "/sub_a/pic.webp", .{});
+        var f4 = try tmp.dir.createFile(io, "sub_a/pic.webp", .{});
         f4.close(io);
     }
 
@@ -624,9 +627,14 @@ test "scanDirectoryEntries - nested directory hierarchy" {
     try std.testing.expectEqual(@as(usize, 1), img_count);
     try std.testing.expectEqual(@as(usize, 3), entries.items.len);
 
+    var exp_buf: [160]u8 = undefined;
+
     // Index 0: sub_a
     try std.testing.expectEqualStrings("sub_a", entries.items[0].getName());
-    try std.testing.expectEqualStrings(tmp_dir_path ++ "/sub_a", entries.items[0].getFullPath());
+    try std.testing.expectEqualStrings(
+        try std.fmt.bufPrint(&exp_buf, "{s}/sub_a", .{tmp_dir_path}),
+        entries.items[0].getFullPath(),
+    );
     try std.testing.expectEqual(
         state_pkg.EntryScanState.unscanned,
         entries.items[0].directory.scan,
@@ -638,7 +646,10 @@ test "scanDirectoryEntries - nested directory hierarchy" {
 
     // Index 1: sub_b
     try std.testing.expectEqualStrings("sub_b", entries.items[1].getName());
-    try std.testing.expectEqualStrings(tmp_dir_path ++ "/sub_b", entries.items[1].getFullPath());
+    try std.testing.expectEqualStrings(
+        try std.fmt.bufPrint(&exp_buf, "{s}/sub_b", .{tmp_dir_path}),
+        entries.items[1].getFullPath(),
+    );
     try std.testing.expectEqual(
         state_pkg.EntryScanState.unscanned,
         entries.items[1].directory.scan,
@@ -651,7 +662,7 @@ test "scanDirectoryEntries - nested directory hierarchy" {
     // Index 2: sub_empty
     try std.testing.expectEqualStrings("sub_empty", entries.items[2].getName());
     try std.testing.expectEqualStrings(
-        tmp_dir_path ++ "/sub_empty",
+        try std.fmt.bufPrint(&exp_buf, "{s}/sub_empty", .{tmp_dir_path}),
         entries.items[2].getFullPath(),
     );
     try std.testing.expectEqual(
