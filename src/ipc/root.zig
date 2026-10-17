@@ -21,9 +21,27 @@ pub const IpcCommandData = struct {
     client_stream: std.Io.net.Stream,
 };
 
+/// Connects a short-lived dummy client to `sock_path` to unblock a blocking
+/// `server.accept(io)` call during IPC server shutdown.
+pub fn wakeSocketListener(io: std.Io, sock_path: []const u8) void {
+    if (builtin.os.tag == .windows) return;
+    if (std.Io.net.UnixAddress.init(sock_path)) |addr| {
+        if (addr.connect(io)) |dummy| {
+            dummy.close(io);
+        } else |err| {
+            if (err != error.FileNotFound and err != error.ConnectionRefused) {
+                std.log.debug("IPC deinit dummy connect failed: {any}", .{err});
+            }
+        }
+    } else |err| {
+        std.log.debug("IPC deinit address init failed: {any}", .{err});
+    }
+}
+
 /// Context managing the background Unix domain socket IPC server listener and client connections.
 pub const IpcServer = struct {
     allocator: std.mem.Allocator,
+    thread: ?std.Thread = null,
 
     /// Allocates and initializes an `IpcServer` instance.
     pub fn init(allocator: std.mem.Allocator) !*IpcServer {
@@ -34,27 +52,28 @@ pub const IpcServer = struct {
         return self;
     }
 
-    /// Connects a dummy socket to wake the listener thread, removes socket file,
-    /// and destroys the server.
+    /// Connects a dummy socket to wake the listener thread, joins the listener
+    /// thread, and destroys the server.
     pub fn deinit(self: *IpcServer, io: std.Io) void {
-        if (builtin.os.tag != .windows) {
-            const pid = getProcessId();
-            var path_buf: [128]u8 = undefined;
-            if (std.fmt.bufPrint(&path_buf, "/tmp/peng-{d}.sock", .{pid})) |sock_path| {
-                if (std.Io.net.UnixAddress.init(sock_path)) |addr| {
-                    if (addr.connect(io)) |dummy| {
-                        dummy.close(io);
-                    } else |err| {
-                        if (err != error.FileNotFound and err != error.ConnectionRefused) {
-                            std.log.debug("IPC deinit dummy connect failed: {any}", .{err});
-                        }
-                    }
+        if (self.thread) |t| {
+            if (builtin.os.tag != .windows) {
+                const pid = getProcessId();
+                var path_buf: [128]u8 = undefined;
+                if (std.fmt.bufPrint(
+                    &path_buf,
+                    "/tmp/peng-{d}.sock",
+                    .{pid},
+                )) |sock_path| {
+                    wakeSocketListener(io, sock_path);
                 } else |err| {
-                    std.log.debug("IPC deinit address init failed: {any}", .{err});
+                    std.log.debug(
+                        "IPC deinit socket path format failed: {any}",
+                        .{err},
+                    );
                 }
-            } else |err| {
-                std.log.debug("IPC deinit socket path format failed: {any}", .{err});
             }
+            t.join();
+            self.thread = null;
         }
         self.allocator.destroy(self);
     }

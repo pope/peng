@@ -137,6 +137,7 @@ const AppGraphicsAndState = struct {
     /// SDL/GPU graphics, and frees state memory.
     pub fn deinit(self: *AppGraphicsAndState) void {
         self.parsed.deinit(self.gpa);
+        self.state.workers.exiting.store(true, .release);
         if (self.ipc_server) |srv| srv.deinit(self.io);
         self.gpa.free(self.clay_memory);
         self.state.deinit();
@@ -269,12 +270,18 @@ fn runMainLoop(ctx: *AppGraphicsAndState) !void {
 
     // Initialize IPC server and spawn IPC worker task
     if (ctx.parsed.ipc_enabled) {
-        ctx.ipc_server = try ipc.IpcServer.init(ctx.gpa);
+        const srv = try ipc.IpcServer.init(ctx.gpa);
+        ctx.ipc_server = srv;
         errdefer {
-            ctx.ipc_server.?.deinit(ctx.io);
+            ctx.state.workers.exiting.store(true, .release);
+            srv.deinit(ctx.io);
             ctx.ipc_server = null;
         }
-        try app.workers.spawnIpcServer(&ctx.state.workers, ctx.gpa, ctx.io);
+        srv.thread = try app.workers.spawnIpcServer(
+            &ctx.state.workers,
+            ctx.gpa,
+            ctx.io,
+        );
     }
 
     // Populate initial image list from arguments and piped stdin using stable pointer to state

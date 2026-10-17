@@ -39,8 +39,13 @@ pub fn spawnStdin(args: *StdinArgs) !void {
     args.workers.group.async(args.io, stdin.stdinWorker, .{args});
 }
 
-/// Spawns a background `ipcServerWorkerTask` listener to accept incoming IPC socket connections.
-pub fn spawnIpcServer(workers: *WorkerManager, allocator: std.mem.Allocator, io: std.Io) !void {
+/// Spawns a background `ipcServerWorkerTask` listener to accept incoming IPC
+/// socket connections and returns its joinable `std.Thread` handle.
+pub fn spawnIpcServer(
+    workers: *WorkerManager,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+) !std.Thread {
     const args = try allocator.create(ipc_server.IpcServerArgs);
     args.* = .{
         .workers = workers,
@@ -48,13 +53,15 @@ pub fn spawnIpcServer(workers: *WorkerManager, allocator: std.mem.Allocator, io:
         .io = io,
     };
     _ = workers.active_threads.fetchAdd(1, .monotonic);
-    if (std.Thread.spawn(.{}, ipc_server.ipcServerWorkerTask, .{args})) |t| {
-        t.detach();
-    } else |err| {
+    return std.Thread.spawn(
+        .{},
+        ipc_server.ipcServerWorkerTask,
+        .{args},
+    ) catch |err| {
         _ = workers.active_threads.fetchSub(1, .release);
         allocator.destroy(args);
         return err;
-    }
+    };
 }
 
 /// Inspects whether standard input is piped (non-TTY) and spawns an asynchronous stdin reader task.

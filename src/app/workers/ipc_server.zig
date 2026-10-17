@@ -1,9 +1,11 @@
 const builtin = @import("builtin");
 const context = @import("context.zig");
+const events = @import("../core/events.zig");
 const ipc = @import("ipc");
 const manager = @import("manager.zig");
 const std = @import("std");
 
+const BackgroundEvent = events.BackgroundEvent;
 const WorkerManager = manager.WorkerManager;
 
 extern "kernel32" fn GetCurrentProcessId() callconv(std.builtin.CallingConvention.winapi) u32;
@@ -70,6 +72,15 @@ fn runIpcServer(workers: *WorkerManager, gpa: std.mem.Allocator, io: std.Io) !vo
         std.log.debug("IPC flush to stdout failed: {any}", .{err});
     };
 
+    acceptIpcConnections(&server, workers, gpa, io);
+}
+
+fn acceptIpcConnections(
+    server: *std.Io.net.Server,
+    workers: *WorkerManager,
+    gpa: std.mem.Allocator,
+    io: std.Io,
+) void {
     while (!workers.exiting.load(.acquire)) {
         var client_stream = server.accept(io) catch |err| switch (err) {
             error.Canceled => break,
@@ -79,6 +90,10 @@ fn runIpcServer(workers: *WorkerManager, gpa: std.mem.Allocator, io: std.Io) !vo
                 continue;
             },
         };
+        if (workers.exiting.load(.acquire)) {
+            client_stream.close(io);
+            break;
+        }
         errdefer client_stream.close(io);
 
         var read_buf: [1024]u8 = undefined;
@@ -137,4 +152,78 @@ fn runIpcServer(workers: *WorkerManager, gpa: std.mem.Allocator, io: std.Io) !vo
         };
         context.wakeUpMainThread();
     }
+}
+
+test "acceptIpcConnections - accepts command and exits cleanly on wakeup" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var sock_buf: [128]u8 = undefined;
+    const sock_path = try std.fmt.bufPrint(
+        &sock_buf,
+        ".zig-cache/tmp/{s}/ipc_test.sock",
+        .{tmp.sub_path},
+    );
+
+    const address = try std.Io.net.UnixAddress.init(sock_path);
+    var server = try address.listen(io, .{});
+    defer {
+        server.deinit(io);
+        std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, sock_path) catch {};
+    }
+
+    var workers = WorkerManager.init();
+    defer workers.deinit(allocator, io);
+
+    const ListenerCtx = struct {
+        srv: *std.Io.net.Server,
+        wrk: *WorkerManager,
+        alloc: std.mem.Allocator,
+        io_ctx: std.Io,
+
+        fn run(ctx: @This()) void {
+            acceptIpcConnections(ctx.srv, ctx.wrk, ctx.alloc, ctx.io_ctx);
+        }
+    };
+
+    const thread = try std.Thread.spawn(.{}, ListenerCtx.run, .{ListenerCtx{
+        .srv = &server,
+        .wrk = &workers,
+        .alloc = allocator,
+        .io_ctx = io,
+    }});
+
+    // 1. Send a real command while exiting == false and wait for it to queue
+    var client = try address.connect(io);
+    defer client.close(io);
+    var wr_buf: [64]u8 = undefined;
+    var writer = client.writer(io, &wr_buf);
+    try writer.interface.writeAll("next\n");
+    try writer.interface.flush();
+
+    var batch: std.ArrayList(BackgroundEvent) = .empty;
+    defer {
+        for (batch.items) |*e| e.deinitQueueItem(allocator, io);
+        batch.deinit(allocator);
+    }
+    while (batch.items.len == 0) {
+        try workers.event_queue.drain(allocator, io, &batch);
+        if (batch.items.len == 0) std.Thread.yield() catch {};
+    }
+
+    // 2. Signal exiting = true and wake the blocking server.accept(io)
+    workers.exiting.store(true, .release);
+    ipc.wakeSocketListener(io, sock_path);
+    thread.join();
+
+    try std.testing.expectEqual(@as(usize, 1), batch.items.len);
+    try std.testing.expectEqualStrings(
+        "next",
+        batch.items[0].ipc_command.command,
+    );
 }
