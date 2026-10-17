@@ -369,8 +369,8 @@ fn applyDecodedGpuTexture(
     entry.status = .{
         .loaded_gpu = .{
             .gpu_texture = full_res.gpu_texture,
-            .w = decoded_data.w,
-            .h = decoded_data.h,
+            .w = full_res.w,
+            .h = full_res.h,
             .size_bytes = decoded_data.size_bytes,
             .mime_type = decoded_data.mime_type,
             .read_time_ms = decoded_data.read_time_ms,

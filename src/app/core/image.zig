@@ -1353,6 +1353,156 @@ pub const GpuUploadResult = struct {
     fallback_time_ms: f64 = 0.0,
 };
 
+/// Computes the mipmap pyramid level count for a 2D texture of size `w` x `h`.
+fn computeMipLevels(w: i32, h: i32) u32 {
+    const max_dim_u: u32 = @intCast(@max(1, @max(w, h)));
+    return if (max_dim_u > 1)
+        @intCast(std.math.log2(max_dim_u) + 1)
+    else
+        1;
+}
+
+/// Aspect-preserving dimensions and mipmap level count for fallback scaling.
+const FallbackScaleDims = struct {
+    w: i32,
+    h: i32,
+    num_levels: u32,
+};
+
+/// Computes aspect-preserving fallback dimensions and mipmap levels when a
+/// surface exceeds `try_max_dim`. Returns `null` if both dimensions fit.
+fn computeFallbackScaleDims(
+    img_w: i32,
+    img_h: i32,
+    try_max_dim: i32,
+) ?FallbackScaleDims {
+    if (img_w <= 0 or img_h <= 0 or try_max_dim <= 0) return null;
+    if (img_w <= try_max_dim and img_h <= try_max_dim) return null;
+    var new_w = img_w;
+    var new_h = img_h;
+    if (img_w > img_h) {
+        new_w = try_max_dim;
+        new_h = @intCast(@divTrunc(
+            @as(i64, img_h) * @as(i64, try_max_dim),
+            @as(i64, img_w),
+        ));
+    } else {
+        new_h = try_max_dim;
+        new_w = @intCast(@divTrunc(
+            @as(i64, img_w) * @as(i64, try_max_dim),
+            @as(i64, img_h),
+        ));
+    }
+    new_w = @max(1, new_w);
+    new_h = @max(1, new_h);
+    return .{
+        .w = new_w,
+        .h = new_h,
+        .num_levels = computeMipLevels(new_w, new_h),
+    };
+}
+
+/// Copies or converts `current_surf` into a tightly packed 32-bit `mapped`
+/// transfer buffer of size `dst_pitch * u_h`, returning conversion time in ms.
+fn stageSurfaceToRgba32(
+    current_surf: sdl.Surface,
+    mapped: []u8,
+    u_w: usize,
+    u_h: usize,
+    dst_pitch: usize,
+    cur_fmt: u32,
+) ?f64 {
+    const size = dst_pitch * u_h;
+    const src_pixels: [*]const u8 = current_surf.pixels();
+    const src_pitch: usize = @intCast(current_surf.pitch());
+    var conversion_time_ms: f64 = 0.0;
+    const is_32bit_fmt = switch (cur_fmt) {
+        sdl.PixelFormat.rgba32,
+        sdl.PixelFormat.bgra32,
+        sdl.PixelFormat.xrgb8888,
+        sdl.PixelFormat.xbgr8888,
+        sdl.PixelFormat.rgbx8888,
+        sdl.PixelFormat.bgrx8888,
+        => true,
+        else => false,
+    };
+    if (is_32bit_fmt) {
+        if (src_pitch == dst_pitch) {
+            @memcpy(mapped[0..size], src_pixels[0..size]);
+        } else {
+            var y: usize = 0;
+            while (y < u_h) : (y += 1) {
+                const row_len = u_w * 4;
+                @memcpy(
+                    mapped[y * dst_pitch .. y * dst_pitch + row_len],
+                    src_pixels[y * src_pitch .. y * src_pitch + row_len],
+                );
+            }
+        }
+    } else if (cur_fmt == sdl.PixelFormat.rgb24) {
+        // NOTE: If the GPU compute unpack pipeline is unavailable, RGB24/BGR24
+        // falls back to main-thread SIMD conversion here. Plumbing
+        // `has_compute_unpack: bool` through DecodeArgs can offload this to
+        // background decode workers if this log appears in practice.
+        const start_conv = sdl.timer.getTicksNs();
+        sdl.surface.convertRgb24ToRgba32Simd(
+            src_pixels[0 .. src_pitch * u_h],
+            mapped[0..size],
+            u_w,
+            u_h,
+            src_pitch,
+            dst_pitch,
+        );
+        const end_conv = sdl.timer.getTicksNs();
+        conversion_time_ms =
+            @as(f64, @floatFromInt(end_conv - start_conv)) / 1_000_000.0;
+        std.log.info(
+            "main-thread RGB24 conversion ({d}x{d}) took {d:.2}ms",
+            .{ u_w, u_h, conversion_time_ms },
+        );
+    } else if (cur_fmt == sdl.PixelFormat.bgr24) {
+        const start_conv = sdl.timer.getTicksNs();
+        sdl.surface.convertBgr24ToRgba32Simd(
+            src_pixels[0 .. src_pitch * u_h],
+            mapped[0..size],
+            u_w,
+            u_h,
+            src_pitch,
+            dst_pitch,
+        );
+        const end_conv = sdl.timer.getTicksNs();
+        conversion_time_ms =
+            @as(f64, @floatFromInt(end_conv - start_conv)) / 1_000_000.0;
+        std.log.info(
+            "main-thread BGR24 conversion ({d}x{d}) took {d:.2}ms",
+            .{ u_w, u_h, conversion_time_ms },
+        );
+    } else {
+        const start_conv = sdl.timer.getTicksNs();
+        const tmp_surf = current_surf.convert(sdl.PixelFormat.rgba32) orelse
+            return null;
+        defer tmp_surf.destroy();
+        const ts_pixels = tmp_surf.pixels();
+        const ts_pitch: usize = @intCast(tmp_surf.pitch());
+        if (ts_pitch == dst_pitch) {
+            @memcpy(mapped[0..size], ts_pixels[0..size]);
+        } else {
+            var y: usize = 0;
+            while (y < u_h) : (y += 1) {
+                const row_len = u_w * 4;
+                @memcpy(
+                    mapped[y * dst_pitch .. y * dst_pitch + row_len],
+                    ts_pixels[y * ts_pitch .. y * ts_pitch + row_len],
+                );
+            }
+        }
+        const end_conv = sdl.timer.getTicksNs();
+        conversion_time_ms =
+            @as(f64, @floatFromInt(end_conv - start_conv)) / 1_000_000.0;
+    }
+    return conversion_time_ms;
+}
+
 /// Uploads a CPU surface into an SDL GPU texture with automatic mipmap pyramid generation,
 /// using an optional compute pipeline for fast RGB24/BGR24 unpack and optional staging
 /// buffer reuse.
@@ -1367,8 +1517,14 @@ pub fn uploadSurfaceToGpu(
 
     const src_fmt = current_surf.format();
     const gpu_format: sdl.gpu.TextureFormat = switch (src_fmt) {
-        sdl.PixelFormat.bgra32, sdl.PixelFormat.xrgb8888, sdl.PixelFormat.bgrx8888 => .bgra8_unorm,
-        sdl.PixelFormat.rgba32, sdl.PixelFormat.xbgr8888, sdl.PixelFormat.rgbx8888 => .rgba8_unorm,
+        sdl.PixelFormat.bgra32,
+        sdl.PixelFormat.xrgb8888,
+        sdl.PixelFormat.bgrx8888,
+        => .bgra8_unorm,
+        sdl.PixelFormat.rgba32,
+        sdl.PixelFormat.xbgr8888,
+        sdl.PixelFormat.rgbx8888,
+        => .rgba8_unorm,
         else => .rgba8_unorm,
     };
 
@@ -1377,22 +1533,21 @@ pub fn uploadSurfaceToGpu(
 
     var img_w = current_surf.w();
     var img_h = current_surf.h();
+    if (img_w <= 0 or img_h <= 0) return null;
     var tex: ?sdl.gpu.Texture = null;
-    const max_dim_u: u32 = @intCast(@max(img_w, img_h));
-    const num_levels: u32 = if (max_dim_u > 1) @intCast(std.math.log2(max_dim_u) + 1) else 1;
+    var num_levels: u32 = computeMipLevels(img_w, img_h);
     var was_fallback: bool = false;
     var fallback_time_ms: f64 = 0.0;
 
-    const u_w: usize = @intCast(img_w);
-    const u_h: usize = @intCast(img_h);
-    const cur_fmt = current_surf.format();
     const comp_pipeline_opt: ?sdl.gpu.ComputePipeline =
-        if (cur_fmt == sdl.PixelFormat.rgb24 or cur_fmt == sdl.PixelFormat.bgr24)
+        if (src_fmt == sdl.PixelFormat.rgb24 or
+        src_fmt == sdl.PixelFormat.bgr24)
             comp_pipeline
         else
             null;
 
-    var tex_usage = sdl.gpu.TextureUsage.sampler | sdl.gpu.TextureUsage.color_target;
+    var tex_usage =
+        sdl.gpu.TextureUsage.sampler | sdl.gpu.TextureUsage.color_target;
     if (comp_pipeline_opt != null) {
         tex_usage |= sdl.gpu.TextureUsage.compute_storage_write;
     }
@@ -1415,40 +1570,24 @@ pub fn uploadSurfaceToGpu(
         was_fallback = true;
         var try_max_dim: i32 = 8192;
         while (try_max_dim >= 2048) : (try_max_dim = @divTrunc(try_max_dim, 2)) {
-            if (img_w > try_max_dim or img_h > try_max_dim) {
-                var new_w = img_w;
-                var new_h = img_h;
-                if (img_w > img_h) {
-                    new_w = try_max_dim;
-                    new_h = @divTrunc(img_h * try_max_dim, img_w);
-                } else {
-                    new_h = try_max_dim;
-                    new_w = @divTrunc(img_w * try_max_dim, img_h);
-                }
-                new_w = @max(1, new_w);
-                new_h = @max(1, new_h);
-
-                const new_scale = current_surf.scale(new_w, new_h, .linear);
+            if (computeFallbackScaleDims(img_w, img_h, try_max_dim)) |fb| {
+                const new_scale = current_surf.scale(fb.w, fb.h, .linear);
                 if (new_scale) |ns| {
                     if (scaled_surf) |s| s.destroy();
                     scaled_surf = ns;
                     current_surf = ns;
-                    img_w = new_w;
-                    img_h = new_h;
+                    img_w = fb.w;
+                    img_h = fb.h;
+                    num_levels = fb.num_levels;
 
-                    const fb_max_dim: u32 = @intCast(@max(img_w, img_h));
-                    const fb_levels: u32 = if (fb_max_dim > 1)
-                        @intCast(std.math.log2(fb_max_dim) + 1)
-                    else
-                        1;
                     img_tex_info.width = @intCast(img_w);
                     img_tex_info.height = @intCast(img_h);
-                    img_tex_info.num_levels = fb_levels;
+                    img_tex_info.num_levels = num_levels;
                     tex = dev.createTexture(&img_tex_info);
                     if (tex != null) break;
                 } else {
                     std.log.err(
-                        "uploadSurfaceToGpu: SDL_ScaleSurface fallback failed: {s}",
+                        "uploadSurfaceToGpu: SDL_ScaleSurface failed: {s}",
                         .{sdl.getError()},
                     );
                     break;
@@ -1456,10 +1595,14 @@ pub fn uploadSurfaceToGpu(
             }
         }
         const end_fb = sdl.timer.getTicksNs();
-        fallback_time_ms = @as(f64, @floatFromInt(end_fb - start_fb)) / 1_000_000.0;
+        fallback_time_ms =
+            @as(f64, @floatFromInt(end_fb - start_fb)) / 1_000_000.0;
     }
 
     const gpu_tex = tex orelse return null;
+    const u_w: usize = @intCast(img_w);
+    const u_h: usize = @intCast(img_h);
+    const cur_fmt = current_surf.format();
 
     if (comp_pipeline_opt) |pipeline_handle| {
         const src_pitch: usize = @intCast(current_surf.pitch());
@@ -1567,13 +1710,15 @@ pub fn uploadSurfaceToGpu(
             const start_mip = sdl.timer.getTicksNs();
             cmd_wrapper.generateMipmaps(gpu_tex);
             const end_mip = sdl.timer.getTicksNs();
-            mipmap_time_ms = @as(f64, @floatFromInt(end_mip - start_mip)) / 1_000_000.0;
+            mipmap_time_ms =
+                @as(f64, @floatFromInt(end_mip - start_mip)) / 1_000_000.0;
         }
 
         _ = cmd_wrapper.submit();
 
         const end_upload = sdl.timer.getTicksNs();
-        const upload_time_ms = @as(f64, @floatFromInt(end_upload - start_upload)) / 1_000_000.0;
+        const upload_time_ms =
+            @as(f64, @floatFromInt(end_upload - start_upload)) / 1_000_000.0;
 
         var memory_size_bytes: usize = raw_bytes_len;
         if (num_levels > 1) {
@@ -1627,89 +1772,19 @@ pub fn uploadSurfaceToGpu(
         return null;
     };
 
-    const src_pixels: [*]const u8 = current_surf.pixels();
-    const src_pitch: usize = @intCast(current_surf.pitch());
-    var conversion_time_ms: f64 = 0.0;
-    const is_32bit_fmt = switch (cur_fmt) {
-        sdl.PixelFormat.rgba32,
-        sdl.PixelFormat.bgra32,
-        sdl.PixelFormat.xrgb8888,
-        sdl.PixelFormat.xbgr8888,
-        sdl.PixelFormat.rgbx8888,
-        sdl.PixelFormat.bgrx8888,
-        => true,
-        else => false,
+    const conversion_time_ms = stageSurfaceToRgba32(
+        current_surf,
+        mapped[0..size],
+        u_w,
+        u_h,
+        dst_pitch,
+        cur_fmt,
+    ) orelse {
+        dev.unmapTransferBuffer(transfer_buf);
+        _ = cmd_wrapper.cancel();
+        dev.releaseTexture(gpu_tex);
+        return null;
     };
-    if (is_32bit_fmt) {
-        if (src_pitch == dst_pitch) {
-            @memcpy(mapped[0..size], src_pixels[0..size]);
-        } else {
-            var y: usize = 0;
-            while (y < u_h) : (y += 1) {
-                const row_len = u_w * 4;
-                @memcpy(
-                    mapped[y * dst_pitch .. y * dst_pitch + row_len],
-                    src_pixels[y * src_pitch .. y * src_pitch + row_len],
-                );
-            }
-        }
-        // TODO: If compute unpack pipeline is unavailable (comp_pipeline == null),
-        // RGB24/BGR24 falls back to main-thread SIMD conversion.
-        // If running on non-compute GPU hardware becomes a priority, plumbing
-        // `has_compute_unpack: bool` through DecodeArgs would allow offloading
-        // this conversion to background decode workers as well.
-    } else if (cur_fmt == sdl.PixelFormat.rgb24) {
-        const start_conv = sdl.timer.getTicksNs();
-        sdl.surface.convertRgb24ToRgba32Simd(
-            src_pixels[0 .. src_pitch * u_h],
-            mapped[0..size],
-            u_w,
-            u_h,
-            src_pitch,
-            dst_pitch,
-        );
-        const end_conv = sdl.timer.getTicksNs();
-        conversion_time_ms = @as(f64, @floatFromInt(end_conv - start_conv)) / 1_000_000.0;
-    } else if (cur_fmt == sdl.PixelFormat.bgr24) {
-        const start_conv = sdl.timer.getTicksNs();
-        sdl.surface.convertBgr24ToRgba32Simd(
-            src_pixels[0 .. src_pitch * u_h],
-            mapped[0..size],
-            u_w,
-            u_h,
-            src_pitch,
-            dst_pitch,
-        );
-        const end_conv = sdl.timer.getTicksNs();
-        conversion_time_ms = @as(f64, @floatFromInt(end_conv - start_conv)) / 1_000_000.0;
-    } else {
-        const start_conv = sdl.timer.getTicksNs();
-        const tmp_surf = current_surf.convert(sdl.PixelFormat.rgba32);
-        if (tmp_surf) |ts| {
-            defer ts.destroy();
-            const ts_pixels = ts.pixels();
-            const ts_pitch: usize = @intCast(ts.pitch());
-            if (ts_pitch == dst_pitch) {
-                @memcpy(mapped[0..size], ts_pixels[0..size]);
-            } else {
-                var y: usize = 0;
-                while (y < u_h) : (y += 1) {
-                    const row_len = u_w * 4;
-                    @memcpy(
-                        mapped[y * dst_pitch .. y * dst_pitch + row_len],
-                        ts_pixels[y * ts_pitch .. y * ts_pitch + row_len],
-                    );
-                }
-            }
-            const end_conv = sdl.timer.getTicksNs();
-            conversion_time_ms = @as(f64, @floatFromInt(end_conv - start_conv)) / 1_000_000.0;
-        } else {
-            dev.unmapTransferBuffer(transfer_buf);
-            _ = cmd_wrapper.cancel();
-            dev.releaseTexture(gpu_tex);
-            return null;
-        }
-    }
 
     dev.unmapTransferBuffer(transfer_buf);
 
@@ -2449,4 +2524,57 @@ test "probeMediaMetadata - non-thumbnail formats return has_embedded_thumbnail =
         try std.testing.expect(m.dims.w > 0);
         try std.testing.expect(m.dims.h > 0);
     }
+}
+
+test "computeFallbackScaleDims and stageSurfaceToRgba32 downscale safely" {
+    const allocator = std.testing.allocator;
+
+    // 1. Non-positive or already-fitting dimensions return null
+    try std.testing.expect(computeFallbackScaleDims(0, 10000, 8192) == null);
+    try std.testing.expect(computeFallbackScaleDims(10000, -1, 8192) == null);
+    try std.testing.expect(computeFallbackScaleDims(10000, 10000, 0) == null);
+    try std.testing.expect(computeFallbackScaleDims(4096, 2048, 8192) == null);
+
+    // 2. Landscape downscale updates width, height, and mip levels
+    const fb_land = computeFallbackScaleDims(16384, 8192, 8192).?;
+    try std.testing.expectEqual(@as(i32, 8192), fb_land.w);
+    try std.testing.expectEqual(@as(i32, 4096), fb_land.h);
+    try std.testing.expectEqual(@as(u32, 14), fb_land.num_levels);
+
+    // 3. Portrait and huge dimensions clamp to >= 1 without i32 overflow
+    const fb_port = computeFallbackScaleDims(10, 300_000, 8192).?;
+    try std.testing.expectEqual(@as(i32, 1), fb_port.w);
+    try std.testing.expectEqual(@as(i32, 8192), fb_port.h);
+    try std.testing.expectEqual(@as(u32, 14), fb_port.num_levels);
+
+    const fb_huge = computeFallbackScaleDims(300_000, 600_000, 8192).?;
+    try std.testing.expectEqual(@as(i32, 4096), fb_huge.w);
+    try std.testing.expectEqual(@as(i32, 8192), fb_huge.h);
+    try std.testing.expectEqual(@as(u32, 14), fb_huge.num_levels);
+
+    // 4. Downscaled RGB24 surface stages using updated dims without over-read
+    const orig_surf = sdl.Surface.create(128, 64, sdl.PixelFormat.rgb24).?;
+    defer orig_surf.destroy();
+    const fb = computeFallbackScaleDims(orig_surf.w(), orig_surf.h(), 64).?;
+    try std.testing.expectEqual(@as(i32, 64), fb.w);
+    try std.testing.expectEqual(@as(i32, 32), fb.h);
+
+    const scaled = orig_surf.scale(fb.w, fb.h, .linear).?;
+    defer scaled.destroy();
+
+    const u_w: usize = @intCast(scaled.w());
+    const u_h: usize = @intCast(scaled.h());
+    const dst_pitch: usize = u_w * 4;
+    const mapped = try allocator.alloc(u8, dst_pitch * u_h);
+    defer allocator.free(mapped);
+
+    const conv_ms = stageSurfaceToRgba32(
+        scaled,
+        mapped,
+        u_w,
+        u_h,
+        dst_pitch,
+        scaled.format(),
+    );
+    try std.testing.expect(conv_ms != null);
 }
