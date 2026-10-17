@@ -475,7 +475,7 @@ pub fn parseExifDimensionsFromSource(source: TiffSource) ?JpegDimensions {
                 if (tag == @intFromEnum(TiffTag.new_subfile_type)) {
                     subfile_type = val;
                 } else if (tag == @intFromEnum(TiffTag.photometric_interpretation)) {
-                    photometric = @intCast(val);
+                    photometric = std.math.cast(u16, val);
                 } else if (tag == @intFromEnum(TiffTag.image_width) or
                     tag == @intFromEnum(TiffTag.pixel_x_dimension))
                 {
@@ -2448,4 +2448,41 @@ test "extractTiffRawPreviews - synthetic Lossless JPEG SOF3 strip rejected" {
 
     const cands = extractTiffRawPreviews(&buf);
     try std.testing.expect(cands.preview == null);
+}
+
+test "parseExifDimensions - handles oversized LONG photometric without panic" {
+    var buf: [128]u8 = undefined;
+    @memset(&buf, 0);
+
+    // Little-endian TIFF header with IFD0 at offset 8
+    buf[0] = 'I';
+    buf[1] = 'I';
+    std.mem.writeInt(u16, buf[2..4], 0x002A, .little);
+    std.mem.writeInt(u32, buf[4..8], 8, .little);
+
+    // IFD0: 3 entries (ImageWidth, ImageLength, PhotometricInterpretation)
+    std.mem.writeInt(u16, buf[8..10], 3, .little);
+
+    // Entry 0: ImageWidth (0x0100), LONG (4), count 1, value 1920
+    std.mem.writeInt(u16, buf[10..12], 0x0100, .little);
+    std.mem.writeInt(u16, buf[12..14], 4, .little);
+    std.mem.writeInt(u32, buf[14..18], 1, .little);
+    std.mem.writeInt(u32, buf[18..22], 1920, .little);
+
+    // Entry 1: ImageLength (0x0101), LONG (4), count 1, value 1080
+    std.mem.writeInt(u16, buf[22..24], 0x0101, .little);
+    std.mem.writeInt(u16, buf[24..26], 4, .little);
+    std.mem.writeInt(u32, buf[26..30], 1, .little);
+    std.mem.writeInt(u32, buf[30..34], 1080, .little);
+
+    // Entry 2: Photometric (0x0106), LONG (4), count 1, value > u16
+    std.mem.writeInt(u16, buf[34..36], 0x0106, .little);
+    std.mem.writeInt(u16, buf[36..38], 4, .little);
+    std.mem.writeInt(u32, buf[38..42], 1, .little);
+    std.mem.writeInt(u32, buf[42..46], 0x0001_0002, .little);
+
+    const dims = parseExifDimensions(&buf);
+    try std.testing.expect(dims != null);
+    try std.testing.expectEqual(@as(f32, 1920.0), dims.?.w);
+    try std.testing.expectEqual(@as(f32, 1080.0), dims.?.h);
 }
