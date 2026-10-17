@@ -253,21 +253,17 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
                 "handleImageDecodedEvent: failed to upload surface to GPU for key {any}",
                 .{decoded_data.key},
             );
-            _ = state.cache.updateStatus(decoded_data.key, .failed);
-            if (state.cache.get(decoded_data.key)) |entry| {
-                if (entry.thumbnail == .pending or entry.thumbnail == .none) {
-                    entry.thumbnail = .not_available;
-                }
-            }
-            if (is_current) {
-                state.viewer.image_transition = .none;
-                state.viewer.animations.setImmediate(.image_crossfade, 1.0);
-            }
+            handleDecodedGpuUploadFailure(state, decoded_data.key, is_current);
         }
     } else {
         if (state.cache.get(decoded_data.key)) |entry| {
             switch (entry.status) {
                 .loaded_cpu => |cpu| cpu.surface.destroy(),
+                .loaded_gpu => |gpu| {
+                    if (state.gpu_device) |gpu_dev| {
+                        gpu_dev.releaseTexture(gpu.gpu_texture);
+                    }
+                },
                 else => {},
             }
             entry.raw_metadata = decoded_data.raw_metadata;
@@ -302,6 +298,25 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
             decoded_data.surface = null;
         }
         state.updateCurrentRotation();
+    }
+}
+
+fn handleDecodedGpuUploadFailure(
+    state: *AppState,
+    key: image.CacheKey,
+    is_current: bool,
+) void {
+    const entry = state.cache.get(key) orelse return;
+    entry.is_promoting = false;
+    if (entry.status != .loaded_gpu and entry.status != .loaded_cpu) {
+        entry.status = .failed;
+        if (is_current) {
+            state.viewer.image_transition = .none;
+            state.viewer.animations.setImmediate(.image_crossfade, 1.0);
+        }
+    }
+    if (entry.thumbnail == .pending or entry.thumbnail == .none) {
+        entry.thumbnail = .not_available;
     }
 }
 
@@ -746,4 +761,83 @@ test "drainWorkerEvents - palette_folder_count updates directory and archive ent
         expected_archive_scan,
         state.viewer.ui.palette.dir_items.items[1].archive_file.scan,
     );
+}
+
+test "drainWorkerEvents - pair promotion preserves VRAM and loaded status" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    state.viewer.navigation.current_index = 0;
+
+    // Slot 0 is currently decoding; slot 1 is already .loaded_gpu and promoting
+    _ = try state.cache.appendSlot(allocator, 0, .{
+        .decoding = .{ .has_thread = true },
+    });
+    const key1 = try state.cache.appendSlot(allocator, 1, .{
+        .loaded_gpu = .{
+            .gpu_texture = .{ .ptr = @ptrFromInt(0x1000) },
+            .w = 1600,
+            .h = 1200,
+            .size_bytes = 500_000,
+            .mime_type = "image/jpeg",
+            .read_time_ms = 1.0,
+            .decode_time_ms = 2.0,
+            .conversion_time_ms = 0.0,
+            .upload_time_ms = 0.5,
+            .memory_size_bytes = 8 * 1024 * 1024,
+            .num_mip_levels = 1,
+        },
+    });
+    const entry1 = state.cache.get(key1).?;
+    entry1.is_promoting = true;
+    try std.testing.expectEqual(
+        @as(usize, 8 * 1024 * 1024),
+        state.cache.getTotalVramBytes(),
+    );
+
+    // 1. If GPU upload of a promotion fails while .loaded_gpu, keep .loaded_gpu
+    // and clear is_promoting instead of clobbering with .failed.
+    handleDecodedGpuUploadFailure(&state, key1, true);
+    try std.testing.expect(!entry1.is_promoting);
+    try std.testing.expect(entry1.status == .loaded_gpu);
+    try std.testing.expectEqual(
+        @as(usize, 8 * 1024 * 1024),
+        state.cache.getTotalVramBytes(),
+    );
+
+    // 2. When a promotion finishes while should_upload_gpu is false, replacing
+    // .loaded_gpu with .loaded_cpu clears is_promoting and drops VRAM bytes.
+    entry1.is_promoting = true;
+    const promoted_surf = sdl.Surface.create(
+        32,
+        24,
+        sdl.PixelFormat.rgba32,
+    ) orelse return error.SurfaceFailed;
+
+    try state.workers.event_queue.push(allocator, io, .{
+        .image_decoded = .{
+            .key = key1,
+            .surface = promoted_surf,
+            .w = 32,
+            .h = 24,
+            .mime_type = "image/jpeg",
+            .size_bytes = 3072,
+            .read_time_ms = 1.0,
+            .decode_time_ms = 2.0,
+            .conversion_time_ms = 0.0,
+            .orientation = .normal,
+        },
+    });
+
+    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expect(!entry1.is_promoting);
+    try std.testing.expect(entry1.status == .loaded_cpu);
+    try std.testing.expectEqual(@as(usize, 0), state.cache.getTotalVramBytes());
+
+    // 3. Initial decode upload failure on slot 0 transitions to .failed
+    const key0 = state.cache.activeKey(0);
+    handleDecodedGpuUploadFailure(&state, key0, true);
+    try std.testing.expect(state.cache.get(key0).?.status == .failed);
 }
