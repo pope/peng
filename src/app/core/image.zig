@@ -1660,6 +1660,8 @@ pub fn uploadSurfaceToGpu(
             dev.releaseTexture(gpu_tex);
             return null;
         };
+        // Cycle `storage_buf` when shared across staged uploads (`is_staged`)
+        // to avoid GPU WAR/WAW hazards with in-flight compute unpack passes.
         copy_pass.uploadToBuffer(&sdl.gpu.TransferBufferLocation{
             .transfer_buffer = transfer_buf,
             .offset = 0,
@@ -1667,7 +1669,7 @@ pub fn uploadSurfaceToGpu(
             .buffer = storage_buf,
             .offset = 0,
             .size = @intCast(raw_bytes_len),
-        }, false);
+        }, is_staged);
         copy_pass.end();
 
         const compute_pass = cmd_wrapper.beginComputePass(
