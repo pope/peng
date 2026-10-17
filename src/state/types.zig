@@ -100,6 +100,16 @@ pub const MediaEntry = union(enum) {
         };
     }
 
+    /// Returns the filesystem source path (or containing archive path for
+    /// `.archive_entry`) suitable for reopening or refreshing on disk.
+    pub fn getSourcePath(self: MediaEntry) []const u8 {
+        return switch (self) {
+            .filesystem => |f| f.path,
+            .archive_entry => |a| a.archive_path,
+            .pair => |p| p.raw_path,
+        };
+    }
+
     /// Returns `true` if this media item resides inside an archive container (e.g. CBZ).
     pub fn isArchive(self: MediaEntry) bool {
         return self == .archive_entry;
@@ -1929,6 +1939,10 @@ test "MediaEntry - pair dupe, deinit, and accessors" {
     try std.testing.expectEqualStrings("DSC00941.ARW", entry.getBasename());
     try std.testing.expectEqualStrings("photos", entry.getContainerName());
     try std.testing.expectEqualStrings("photos/DSC00941.ARW", entry.getPath());
+    try std.testing.expectEqualStrings(
+        "photos/DSC00941.ARW",
+        entry.getSourcePath(),
+    );
     try std.testing.expectEqualStrings("photos/DSC00941.ARW", entry.getRawPath().?);
     try std.testing.expectEqualStrings("photos/DSC00941.JPG", entry.getJpegPath().?);
 
@@ -1938,4 +1952,17 @@ test "MediaEntry - pair dupe, deinit, and accessors" {
     try std.testing.expect(duped.isPair());
     try std.testing.expectEqualStrings("photos/DSC00941.ARW", duped.getRawPath().?);
     try std.testing.expectEqualStrings("photos/DSC00941.JPG", duped.getJpegPath().?);
+
+    const archive_item = MediaEntry{
+        .archive_entry = .{
+            .archive_path = "comics/issue1.cbz",
+            .entry_name = "pages/001.jpg",
+            .seek_info = .unindexed,
+        },
+    };
+    try std.testing.expectEqualStrings("pages/001.jpg", archive_item.getPath());
+    try std.testing.expectEqualStrings(
+        "comics/issue1.cbz",
+        archive_item.getSourcePath(),
+    );
 }

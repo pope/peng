@@ -378,7 +378,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
         },
         .refresh_directory => {
             if (nav.getCurrentImageEntry()) |entry| {
-                try self.openPath(entry.getPath());
+                try self.openPath(entry.getSourcePath());
             } else if (nav.last_scanned_dir.items.len > 0) {
                 try self.openPath(nav.last_scanned_dir.items);
             }
@@ -420,7 +420,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
             showCustomSnackbar(self, msg);
             _ = self.cache.advanceGeneration();
             if (nav.getCurrentImageEntry()) |entry| {
-                try self.openPath(entry.getPath());
+                try self.openPath(entry.getSourcePath());
             } else if (nav.last_scanned_dir.items.len > 0) {
                 try self.openPath(nav.last_scanned_dir.items);
             }
@@ -435,7 +435,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 showCustomSnackbar(self, msg);
                 _ = self.cache.advanceGeneration();
                 if (nav.getCurrentImageEntry()) |entry| {
-                    try self.openPath(entry.getPath());
+                    try self.openPath(entry.getSourcePath());
                 } else if (nav.last_scanned_dir.items.len > 0) {
                     try self.openPath(nav.last_scanned_dir.items);
                 }
@@ -1282,5 +1282,88 @@ test "sysExecuteIntents - raw jpeg stacking and stream toggle" {
     try testing.expectEqual(
         state.PairStreamTarget.standalone_jpeg,
         app_st.cache.get(key).?.requested_target.?,
+    );
+}
+
+test "sysExecuteIntents - refresh avoids aliasing and uses archive source" {
+    const allocator = std.testing.allocator;
+    const testing = std.testing;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "sub");
+    try tmp.dir.createDirPath(io, "comics");
+
+    const empty_zip = [_]u8{ 'P', 'K', 5, 6 } ++ ([_]u8{0} ** 18);
+    var cbz_file = try tmp.dir.createFile(io, "comics/vol1.cbz", .{});
+    var wr_slices = [_][]const u8{&empty_zip};
+    _ = try cbz_file.writePositional(io, &wr_slices, 0);
+    cbz_file.close(io);
+
+    var sub_buf: [128]u8 = undefined;
+    const sub_dir = try std.fmt.bufPrint(
+        &sub_buf,
+        ".zig-cache/tmp/{s}/sub",
+        .{tmp.sub_path},
+    );
+    var cbz_buf: [128]u8 = undefined;
+    const cbz_path = try std.fmt.bufPrint(
+        &cbz_buf,
+        ".zig-cache/tmp/{s}/comics/vol1.cbz",
+        .{tmp.sub_path},
+    );
+    var comics_buf: [128]u8 = undefined;
+    const comics_dir = try std.fmt.bufPrint(
+        &comics_buf,
+        ".zig-cache/tmp/{s}/comics",
+        .{tmp.sub_path},
+    );
+
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    // 1. Refresh when current_index is null and last_scanned_dir is populated
+    // must not trigger a self-aliasing @memcpy panic in openPath.
+    try app_st.viewer.navigation.last_scanned_dir.appendSlice(
+        allocator,
+        sub_dir,
+    );
+    try app_st.pushIntent(.refresh_directory);
+    try sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+    });
+    app_st.workers.group.await(io) catch {};
+    try testing.expectEqualStrings(
+        sub_dir,
+        app_st.viewer.navigation.last_scanned_dir.items,
+    );
+
+    // 2. Refresh on an .archive_entry allocated in directory_arena must use
+    // archive_path (not entry_name) and survive directory_arena.reset.
+    const arena_alloc = app_st.viewer.navigation.directory_arena.allocator();
+    const arch_p = try arena_alloc.dupe(u8, cbz_path);
+    const entry_n = try arena_alloc.dupe(u8, "inner_pages/page01.jpg");
+    try app_st.viewer.navigation.appendEntry(allocator, .{
+        .archive_entry = .{
+            .archive_path = arch_p,
+            .entry_name = entry_n,
+            .seek_info = .unindexed,
+        },
+    });
+    app_st.viewer.navigation.current_index = 0;
+
+    try app_st.pushIntent(.refresh_directory);
+    try sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+    });
+    app_st.workers.group.await(io) catch {};
+    try testing.expectEqualStrings(
+        comics_dir,
+        app_st.viewer.navigation.last_scanned_dir.items,
     );
 }

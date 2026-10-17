@@ -425,11 +425,7 @@ pub const AppState = struct {
 
     fn resolveNavigatorInitialPath(self: *const AppState) NavigatorInitialPath {
         if (self.viewer.navigation.getCurrentImageEntry()) |media| {
-            const file_path = switch (media) {
-                .archive_entry => |a| a.archive_path,
-                .filesystem => |f| f.path,
-                .pair => |p| p.raw_path,
-            };
+            const file_path = media.getSourcePath();
             if (std.fs.path.dirname(file_path)) |parent| {
                 return .{
                     .start_dir = parent,
@@ -525,22 +521,44 @@ pub const AppState = struct {
     /// Initiates loading a new target path (file or directory). Cancels in-flight tasks,
     /// clears cache, resets navigation, and starts background discovery workers.
     pub fn openPath(self: *AppState, path: []const u8) !void {
+        // Copy `path` upfront because callers may pass a slice backed by
+        // `directory_arena` (reset below) or `last_scanned_dir.items`
+        // (cleared and written below).
+        var path_sfa = std.heap.stackFallback(
+            std.fs.max_path_bytes,
+            self.allocator,
+        );
+        const path_alloc = path_sfa.get();
+        const owned_path = try path_alloc.dupe(u8, path);
+        defer path_alloc.free(owned_path);
+
         var stat: std.Io.File.Stat = undefined;
         var has_stat = true;
-        if (std.Io.Dir.statFile(std.Io.Dir.cwd(), self.io, path, .{})) |s| {
+        if (std.Io.Dir.statFile(
+            std.Io.Dir.cwd(),
+            self.io,
+            owned_path,
+            .{},
+        )) |s| {
             stat = s;
         } else |err| {
-            std.log.err("Failed to access path '{s}': {}", .{ path, err });
+            std.log.err(
+                "Failed to access path '{s}': {}",
+                .{ owned_path, err },
+            );
             has_stat = false;
         }
 
         const dir_target = if (has_stat and stat.kind == .directory)
-            path
+            owned_path
         else
-            std.fs.path.dirname(path) orelse ".";
+            std.fs.path.dirname(owned_path) orelse ".";
 
         self.viewer.navigation.last_scanned_dir.clearRetainingCapacity();
-        try self.viewer.navigation.last_scanned_dir.appendSlice(self.allocator, dir_target);
+        try self.viewer.navigation.last_scanned_dir.appendSlice(
+            self.allocator,
+            dir_target,
+        );
 
         _ = self.cache.advanceGeneration();
         self.clearCache();
@@ -558,24 +576,29 @@ pub const AppState = struct {
                     &self.viewer.navigation.is_loading_files,
                     self.allocator,
                     self.io,
-                    path,
+                    owned_path,
                     true,
                     stack_raw,
                 );
-            } else if (core_fs.isCbzFile(path)) {
+            } else if (core_fs.isCbzFile(owned_path)) {
                 self.viewer.navigation.is_loading_files.store(true, .release);
-                errdefer self.viewer.navigation.is_loading_files.store(false, .release);
+                errdefer self.viewer.navigation.is_loading_files.store(
+                    false,
+                    .release,
+                );
                 try workers_mod.startAsyncPathScan(
                     &self.workers,
                     &self.viewer.navigation.is_loading_files,
                     self.allocator,
                     self.io,
-                    path,
+                    owned_path,
                     false,
                     stack_raw,
                 );
             } else {
-                const dup = try self.viewer.navigation.directory_arena.allocator().dupe(u8, path);
+                const arena_alloc =
+                    self.viewer.navigation.directory_arena.allocator();
+                const dup = try arena_alloc.dupe(u8, owned_path);
                 try self.viewer.navigation.appendEntry(
                     self.allocator,
                     .{ .filesystem = .{ .path = dup } },
@@ -587,7 +610,7 @@ pub const AppState = struct {
                     &self.viewer.navigation.is_loading_files,
                     self.allocator,
                     self.io,
-                    path,
+                    owned_path,
                     false,
                     stack_raw,
                 );
