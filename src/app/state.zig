@@ -203,7 +203,7 @@ pub const AppState = struct {
     /// Releases all engine resources, cancels background worker tasks, and
     /// frees GPU textures and queues.
     pub fn deinit(self: *AppState) void {
-        self.workers.drainAndQuiesce(self.io);
+        self.workers.deinit(self.allocator, self.io);
 
         if (self.gpu_device) |dev| {
             self.upload_staging.deinit(dev);
@@ -231,7 +231,6 @@ pub const AppState = struct {
         self.pending_ipc_commands.deinit(self.allocator);
         self.pending_intents.deinit(self.allocator);
         self.event_batch.deinit(self.allocator);
-        self.workers.event_queue.deinit(self.allocator, self.io);
     }
 
     /// Stores a user-overridden rotation angle for the given media path in the
@@ -656,13 +655,6 @@ pub const AppState = struct {
     /// Scans cache slots around the current navigation index, evicting distant
     /// textures and uploading ready surfaces to the GPU.
     pub fn prepareCacheTextures(self: *AppState) void {
-        if (self.gpu_device == null) return;
-
-        var upload_target: ?struct {
-            key: CacheKey,
-            cpu: @TypeOf(@as(CacheStatus, undefined).loaded_cpu),
-        } = null;
-
         const entries = self.cache.slots.items(.entry);
         const keys = self.cache.slots.items(.key);
 
@@ -686,6 +678,13 @@ pub const AppState = struct {
                 }
             }
         }
+
+        if (self.gpu_device == null) return;
+
+        var upload_target: ?struct {
+            key: CacheKey,
+            cpu: @TypeOf(@as(CacheStatus, undefined).loaded_cpu),
+        } = null;
 
         if (self.viewer.ui.overlays.debug_show_thumb) {
             if (self.getCurrentEntryPtr()) |cur_e| {

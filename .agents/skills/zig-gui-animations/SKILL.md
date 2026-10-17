@@ -49,7 +49,7 @@ pub const AnimationState = struct {
 
 ### Key DOD Rules:
 
-1. **Zero Runtime Allocations**: Pre-sized flat arrays total 676 bytes. Initialization and per-frame methods (`tick`, `get`, `open`, `close`, `trigger`, `settleAll`) require **zero heap allocations**.
+1. **Zero Runtime Allocations**: Pre-sized flat arrays total 676 bytes. Initialization and per-frame methods (`tick`, `get`, `start`, `startFrom`, `trigger`, `setImmediate`, `settle`, `settleAll`) require **zero heap allocations**.
 2. **Bitmask Active Tracking**: Use a single integer bitmask (`active_mask: u32`) where bit $i$ indicates whether channel $i$ is actively animating. This enables $O(1)$ zero-branch checks for event loop wakeups:
    ```zig
    pub inline fn hasActiveAnimations(self: *const AnimationState) bool {
@@ -57,7 +57,7 @@ pub const AnimationState = struct {
    }
    ```
 3. **Compile-Time Channel Descriptors**: Static descriptor table `CHANNEL_DESCRIPTORS` maps each `AnimationChannel` to default open/close durations, easings, and base values.
-4. **Adaptive Event Loop Sleeping**: Integrate `hasActiveAnimations()` into `AppState.isBusy()`. When animations run, the loop ticks at 120Hz; when settled, it drops to 0% CPU blocking wait (`waitEvent`).
+4. **Adaptive Event Loop Sleeping**: Integrate `hasActiveAnimations()`, `pan_controller.isBusy()`, and `zoom_controller.isBusy()` into `is_busy` (`src/viewer.zig`). When animations or smooth controllers run, the loop ticks at display refresh rate; when settled, it drops to 0% CPU blocking wait (`waitEvent`).
 
 ______________________________________________________________________
 
@@ -82,24 +82,24 @@ pub inline fn eval(self: EasingType, t: f32) f32 {
 
 ### Proportional Interruption Scaling
 
-When reversing or interrupting an animation mid-flight, scale the duration by remaining progress so short travels don't feel sluggish. The built-in `open` and `close` methods handle this automatically:
+When reversing or interrupting a scalar UI animation mid-flight (such as closing a palette or floating overlay that hasn't finished opening), scale the close duration by the current progress `p` (with a 30ms floor) and invoke `animations.start(...)`:
 
 ```zig
-// In AnimationState:
-pub fn close(self: *AnimationState, channel: AnimationChannel) void {
-    const desc = getDescriptor(channel);
-    const cur = self.get(channel);
-    if (cur <= 0.0) return;
-    const dur = desc.default_close_duration_ms * cur;
-    self.start(channel, 0.0, dur, desc.close_easing);
-}
+const progress = self.viewer.animations.get(.palette_reveal);
+const close_dur = @max(DURATION_PALETTE_CLOSE_MS * progress, 30.0);
+self.viewer.animations.start(
+    .palette_reveal,
+    0.0,
+    close_dur,
+    .ease_out_quad,
+);
 ```
 
 ______________________________________________________________________
 
 ## 3. GPU Text Renderer Alpha Decoupling (Zero Cache Thrashing)
 
-*(See authoritative invariant: `04_ui_rendering_and_performance.md` §7)*
+*(See authoritative invariant: `04_ui_rendering_and_performance.md` §1)*
 
 ### The Anti-Pattern: Baking Alpha into Text Textures
 
@@ -148,7 +148,7 @@ ______________________________________________________________________
 
 ## 5. Modal Dismissal Input Decoupling
 
-*(See authoritative invariant: `04_ui_rendering_and_performance.md` §8)*
+*(See authoritative invariant: `04_ui_rendering_and_performance.md` §3)*
 
 When a modal window or overlay begins its animated close sequence:
 
@@ -167,7 +167,7 @@ ______________________________________________________________________
 
 ## 6. Image Crossfade Transitions & Fast Navigation Scrubbing
 
-*(See authoritative invariants: `04_ui_rendering_and_performance.md` §9, §22)*
+*(See authoritative invariants: `04_ui_rendering_and_performance.md` §2, §3)*
 
 ### The Anti-Pattern: Proportional Retargeting for Distinct Textures
 
@@ -220,5 +220,21 @@ fading a single modal or button opacity from 0.4 back to 0.0), it is a
   native aspect ratios from the incoming image.
 - **Immediate Navigation Base Scale Seeding**: State systems must immediately
   synchronize the new slide's `zoom_factor` to
-  `UniversalZoom.init(getBaseScale())` on navigation, guaranteeing that the
+  `ZoomFactor.init(self.getBaseScale())` on navigation, guaranteeing that the
   incoming slide's thumbnail matches its final loaded bounds from Frame 1.
+
+______________________________________________________________________
+
+## 7. Continuous Smooth Motion Controllers (`PanController`, `ZoomController`)
+
+To provide 120Hz-smooth keyboard panning and zooming without discrete OS key-repeat stutter, `ViewerState` embeds allocation-free motion controllers (`src/state/types.zig`, ticked via `src/input/key_mapping.zig`):
+
+1. **Packed Bitfields & Branchless 16-State Direction LUT**:
+   - `DirectionFlags = packed struct(u4)` (`left`, `right`, `up`, `down`) indexes directly into a 16-entry compile-time unit vector lookup table (`DIRECTION_UNIT_LUT[16]`) via `@as(u4, @bitCast(self))` with $\\frac{1}{\\sqrt{2}}$ diagonal normalization and opposite-key cancellation.
+   - `ZoomFlags = packed struct(u2)` (`in`, `out`) converts branchlessly to a scalar direction via `toDirection()` (`-1.0`, `0.0`, or `1.0`).
+2. **Constant Glide Speed & Smooth Tap Completion**:
+   - `PanController` (`smooth_tap_remaining: f32`, `tap_direction: DirectionFlags`, `prev_held: DirectionFlags`) glides at `GLIDE_SPEED = 800.0` px/sec while held and guarantees at least `TAP_DISTANCE = 30.0` px of smooth travel on a brief tap.
+   - `ZoomController` (`smooth_tap_remaining: f32`, `tap_direction: ZoomFlags`, `prev_held: ZoomFlags`, `detent_pause_ms: f32`, `detent_target: f32`) glides at logarithmic rate `GLIDE_RATE = 1.5` ($\\text{zoom} \\times e^{\\pm 1.5 \\cdot dt}$) and completes a `TAP_STEP_RATIO = 1.25` ($\\ln(1.25) \\approx 0.2231$) step on a quick tap.
+3. **100% ($1.0\\times$) Zoom Detent Pause & Event Loop Integration**:
+   - When continuous zooming crosses `detent_target` ($1.0\\times$), `ZoomController` snaps to `1.0` and sets `detent_pause_ms = 150.0` (`DETENT_PAUSE_MS`), pausing briefly at native 1:1 pixel scale before continuing if the key remains held.
+   - Both controllers expose `isBusy()` (`smooth_tap_remaining > 0.0` or `prev_held.isActive()`), which is included in `is_busy` in `src/viewer.zig`.

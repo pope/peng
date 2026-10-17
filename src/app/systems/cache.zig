@@ -408,10 +408,13 @@ test "sysUpdateCache - populates prefetch window and evicts unwanted entries" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    // Populate mock image list with 5 images
-    const paths = [_][]const u8{ "img0.png", "img1.png", "img2.png", "img3.png", "img4.png" };
-    for (paths) |p| {
-        const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, p);
+    // Populate image list with 5 valid image paths
+    const dir_alloc = state.viewer.navigation.directory_arena.allocator();
+    for (0..5) |_| {
+        const dup = try dir_alloc.dupe(
+            u8,
+            "testfiles/golden-screenshots/init.png",
+        );
         try state.viewer.navigation.appendEntry(
             allocator,
             .{ .filesystem = .{ .path = dup } },
@@ -432,10 +435,12 @@ test "sysUpdateCache - populates prefetch window and evicts unwanted entries" {
     // While index 0 is decoding, neighbor index 1 should NOT be populated yet
     try std.testing.expect(state.cache.get(state.cache.activeKey(1)) == null);
 
-    // Simulate index 0 finishing decode (loaded in headless state)
+    // Simulate index 0 finishing decode
+    const surf = sdl.Surface.create(10, 10, sdl.PixelFormat.rgba32) orelse
+        return error.SurfaceFailed;
     _ = state.cache.updateStatus(state.cache.activeKey(0), .{
         .loaded_cpu = .{
-            .surface = undefined,
+            .surface = surf,
             .w = 100,
             .h = 100,
             .size_bytes = 1000,
@@ -454,10 +459,12 @@ test "sysUpdateCache - retains loaded entries outside prefetch window until budg
     defer state.deinit();
 
     // 10 images in list
-    for (0..10) |idx| {
-        const name = try std.fmt.allocPrint(allocator, "img{}.png", .{idx});
-        defer allocator.free(name);
-        const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, name);
+    const dir_alloc = state.viewer.navigation.directory_arena.allocator();
+    for (0..10) |_| {
+        const dup = try dir_alloc.dupe(
+            u8,
+            "testfiles/golden-screenshots/init.png",
+        );
         try state.viewer.navigation.appendEntry(
             allocator,
             .{ .filesystem = .{ .path = dup } },
@@ -465,10 +472,12 @@ test "sysUpdateCache - retains loaded entries outside prefetch window until budg
     }
     state.viewer.navigation.current_index = 0;
 
+    const surf = sdl.Surface.create(10, 10, sdl.PixelFormat.rgba32) orelse
+        return error.SurfaceFailed;
     // Add slot 0 (current) as loaded_cpu so neighbors can populate
     _ = try state.cache.appendSlot(allocator, 0, .{
         .loaded_cpu = .{
-            .surface = undefined,
+            .surface = surf,
             .w = 100,
             .h = 100,
             .size_bytes = 1000,
@@ -503,10 +512,6 @@ test "sysUpdateCache - retains loaded entries outside prefetch window until budg
 
     // Slot 6 should now be pruned by enforceVramBudget
     try std.testing.expect(state.cache.get(state.cache.activeKey(6)) == null);
-
-    // Reset slot 0 to .failed to prevent calling destroy() on mock undefined surface
-    // during defer state.deinit()
-    _ = state.cache.updateStatus(state.cache.activeKey(0), .failed);
 }
 
 test "sysUpdateCache max decode threads telemetry" {
@@ -515,7 +520,10 @@ test "sysUpdateCache max decode threads telemetry" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, "img0.png");
+    const dup = try state.viewer.navigation.directory_arena.allocator().dupe(
+        u8,
+        "testfiles/golden-screenshots/init.png",
+    );
     try state.viewer.navigation.appendEntry(allocator, .{ .filesystem = .{ .path = dup } });
     state.viewer.navigation.current_index = 0;
 
@@ -534,10 +542,13 @@ test "sysUpdateCache - directional speculative preloading during fast scrolling"
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    // Populate mock image list with 5 images
-    const paths = [_][]const u8{ "img0.png", "img1.png", "img2.png", "img3.png", "img4.png" };
-    for (paths) |p| {
-        const dup = try state.viewer.navigation.directory_arena.allocator().dupe(u8, p);
+    // Populate image list with 5 valid image paths
+    const dir_alloc = state.viewer.navigation.directory_arena.allocator();
+    for (0..5) |_| {
+        const dup = try dir_alloc.dupe(
+            u8,
+            "testfiles/golden-screenshots/init.png",
+        );
         try state.viewer.navigation.appendEntry(
             allocator,
             .{ .filesystem = .{ .path = dup } },
@@ -545,8 +556,13 @@ test "sysUpdateCache - directional speculative preloading during fast scrolling"
     }
     state.viewer.navigation.current_index = 0;
     state.viewer.navigation.direction = .forward;
-    // Set last_nav_time_ms to now so is_fast_scrolling is true
-    state.viewer.navigation.last_nav_time_ms = sdl.timer.getTicks();
+    // Set last_nav_time_ms to non-zero recent timestamp for fast scrolling
+    state.viewer.navigation.last_nav_time_ms = @max(1, sdl.timer.getTicks());
+
+    // Pre-populate active slot 0 as decoding without thumbnail yet
+    _ = try state.cache.appendSlot(allocator, 0, .{
+        .decoding = .{ .has_thread = true },
+    });
 
     const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
 
@@ -559,7 +575,7 @@ test "sysUpdateCache - directional speculative preloading during fast scrolling"
 
     // Case 2: Active slot 0 receives thumbnail.
     // In headless mode (no GPU device), .not_available simulates thumbnail phase completion.
-    var cur = state.cache.get(state.cache.activeKey(0)).?;
+    const cur = state.cache.get(state.cache.activeKey(0)).?;
     cur.thumbnail = .not_available;
 
     // Run sysUpdateCache: because direction is .forward, speculative_idx is 1.
@@ -571,7 +587,7 @@ test "sysUpdateCache - directional speculative preloading during fast scrolling"
 
     // Case 3: Reverse direction to .backward.
     state.viewer.navigation.direction = .backward;
-    state.viewer.navigation.last_nav_time_ms = sdl.timer.getTicks();
+    state.viewer.navigation.last_nav_time_ms = @max(1, sdl.timer.getTicks());
 
     // Run sysUpdateCache: speculative_idx is now 4 (wrap around from 0).
     // Slot 4 should be populated for speculative preloading!
@@ -617,7 +633,7 @@ test "sysUpdateCache - active image without thumbnail spawns full decode during 
     try state.viewer.navigation.appendEntry(allocator, .{ .filesystem = .{ .path = dup } });
     state.viewer.navigation.current_index = 0;
     // Fast scrolling is active
-    state.viewer.navigation.last_nav_time_ms = sdl.timer.getTicks();
+    state.viewer.navigation.last_nav_time_ms = @max(1, sdl.timer.getTicks());
 
     const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
     try sysUpdateCache(ctx);
@@ -638,18 +654,26 @@ test "sysUpdateCache - zoom promotion on downscaled RAW preview" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    const raw_p = try state.viewer.navigation.directory_arena.allocator().dupe(u8, "DSC00941.ARW");
-    const jpg_p = try state.viewer.navigation.directory_arena.allocator().dupe(u8, "DSC00941.JPG");
+    const raw_p = try state.viewer.navigation.directory_arena.allocator().dupe(
+        u8,
+        "testfiles/golden-screenshots/init.png",
+    );
+    const jpg_p = try state.viewer.navigation.directory_arena.allocator().dupe(
+        u8,
+        "testfiles/golden-screenshots/init.png",
+    );
     try state.viewer.navigation.appendEntry(
         allocator,
         .{ .pair = .{ .raw_path = raw_p, .jpeg_path = jpg_p } },
     );
     state.viewer.navigation.current_index = 0;
 
+    const surf = sdl.Surface.create(1616, 1080, sdl.PixelFormat.rgba32) orelse
+        return error.SurfaceFailed;
     // Slot 0 is loaded with a downscaled preview (1616x1080) on a 6000x4000 sensor
     const key = try state.cache.appendSlot(allocator, 0, .{
         .loaded_cpu = .{
-            .surface = undefined,
+            .surface = surf,
             .w = 1616.0,
             .h = 1080.0,
             .size_bytes = 500_000,

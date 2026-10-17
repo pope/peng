@@ -1206,7 +1206,7 @@ test "decodeWorker - thumb_only does not do full decompression on JPEG" {
     const io = std.Io.Threaded.global_single_threaded.io();
 
     var workers = WorkerManager{};
-    defer workers.drainAndQuiesce(io);
+    defer workers.deinit(allocator, io);
 
     const path = try allocator.dupe(u8, "testfiles/images/000_0_1024x682.jpg");
     const entry = MediaEntry{ .filesystem = .{ .path = path } };
@@ -1258,7 +1258,7 @@ test "decodeWorker - thumb_only does not do full decompression on PNG" {
     const io = std.Io.Threaded.global_single_threaded.io();
 
     var workers = WorkerManager{};
-    defer workers.drainAndQuiesce(io);
+    defer workers.deinit(allocator, io);
 
     const path = try allocator.dupe(u8, "testfiles/golden-screenshots/init.png");
     const entry = MediaEntry{ .filesystem = .{ .path = path } };
@@ -1310,7 +1310,7 @@ test "decodeWorker - prunes early when current_generation does not match key.gen
     const io = std.Io.Threaded.global_single_threaded.io();
 
     var workers = WorkerManager{};
-    defer workers.drainAndQuiesce(io);
+    defer workers.deinit(allocator, io);
 
     const path = try allocator.dupe(u8, "testfiles/golden-screenshots/init.png");
     const entry = MediaEntry{ .filesystem = .{ .path = path } };
@@ -1456,7 +1456,7 @@ test "decodeWorker - Sony ARW range reading and preview extraction" {
     // Test 1: Full decode (thumb_only = false)
     {
         var workers = WorkerManager{};
-        defer workers.drainAndQuiesce(io);
+        defer workers.deinit(allocator, io);
 
         const p = try allocator.dupe(u8, mock_path);
         const entry = MediaEntry{ .filesystem = .{ .path = p } };
@@ -1506,7 +1506,7 @@ test "decodeWorker - Sony ARW range reading and preview extraction" {
     // Test 2: Thumb only decode (thumb_only = true)
     {
         var workers = WorkerManager{};
-        defer workers.drainAndQuiesce(io);
+        defer workers.deinit(allocator, io);
 
         const p = try allocator.dupe(u8, mock_path);
         const entry = MediaEntry{ .filesystem = .{ .path = p } };
@@ -1596,7 +1596,7 @@ test "decodeWorker - Fujifilm RAF range reading and preview extraction" {
 
     // Test full decode
     var workers = WorkerManager{};
-    defer workers.drainAndQuiesce(io);
+    defer workers.deinit(allocator, io);
 
     const p = try allocator.dupe(u8, mock_path);
     const entry = MediaEntry{ .filesystem = .{ .path = p } };
@@ -1647,7 +1647,7 @@ test "decodeWorker - progressive 3-tier loading for real DSC00941.ARW" {
     test_file.close(io);
 
     var workers = WorkerManager{};
-    defer workers.drainAndQuiesce(io);
+    defer workers.deinit(allocator, io);
 
     var current_gen: std.atomic.Value(usize) = .init(1);
 
@@ -1811,7 +1811,7 @@ test "decodeWorker - progressive pair loading with PairStreamTarget" {
     defer std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, raw_file) catch {};
 
     var workers = WorkerManager{};
-    defer workers.drainAndQuiesce(io);
+    defer workers.deinit(allocator, io);
     var current_gen: std.atomic.Value(usize) = .init(1);
 
     // 1. thumb_only decodes RAW thumbnail

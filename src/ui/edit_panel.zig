@@ -707,14 +707,25 @@ test "formatValue string lifetimes" {
     try std.testing.expectEqualStrings("-25%", tx_neg);
 }
 
-var test_clay_mem: [1024 * 1024]u8 = undefined;
-
 test "floating slider knob commands are clipped by scroll container scissor" {
+    const dummyMeasure = struct {
+        fn measure(
+            text: []const u8,
+            config: *clay.TextElementConfig,
+            _: void,
+        ) clay.Dimensions {
+            _ = config;
+            return .{ .w = @floatFromInt(text.len * 8), .h = 16.0 };
+        }
+    }.measure;
+    const clay_mem = try std.testing.allocator.alloc(u8, clay.minMemorySize());
+    defer std.testing.allocator.free(clay_mem);
     _ = clay.initialize(
-        clay.Arena.init(&test_clay_mem),
+        clay.Arena.init(clay_mem),
         .{ .w = 1000, .h = 800 },
         .{},
     );
+    clay.setMeasureTextFunction(void, {}, dummyMeasure);
     clay.beginLayout();
 
     const scroll_id = clay.getElementId("TestScrollList");

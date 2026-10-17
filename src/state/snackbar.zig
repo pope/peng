@@ -9,8 +9,6 @@ const types = @import("types.zig");
 
 const AppIntent = intents.AppIntent;
 const Classification = types.Classification;
-const ScaleMode = intents.ScaleMode;
-const TextureScaleMode = intents.TextureScaleMode;
 const ViewMode = types.ViewMode;
 const ViewportParams = types.ViewportParams;
 

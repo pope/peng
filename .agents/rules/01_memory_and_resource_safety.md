@@ -1,257 +1,186 @@
 # Memory & Resource Safety Rules
 
-## 1. Tagged Union Access (`switch (union)`)
+## 1. Allocators, Arenas & Ownership Lifecycles
 
-- Always access tagged union payloads using explicit pattern matching via `switch (union)`.
-- **Safety Invariant**: Do NOT use direct field access (`union.variant`) on tagged unions unless payload existence is guaranteed by an enclosing `switch`. Direct access bypasses safety checks in ReleaseFast/ReleaseSmall modes.
-
-## 2. Per-Frame Arenas & Allocator Lifecycle
-
-- Reset per-frame arena allocators at frame boundaries via
-  `arena.reset(.retain_capacity)`.
-- Never store references or pointers to arena-allocated data inside persistent
-  state structs across frame boundaries.
-- **ArenaAllocator LIFO Rewind Invariant**:
-  - Zig's `std.heap.ArenaAllocator.free` and `resize` check if the memory being
-    released is the most recent allocation in the current arena node buffer
-    (`buf_ptr + cur_end_index == memory.ptr + memory.len`).
-  - When memory is released in LIFO order, the arena actively rewinds its bump
-    pointer (`end_index`).
-  - Always make a best-effort attempt to pair `frame_allocator` scratch
-    allocations with `defer frame_allocator.free(...)` or
-    `defer list.deinit(frame_allocator)`. This reclaims scratch memory within
-    the same frame and prevents unnecessary arena growth between sequential
-    systems.
+- **Per-Frame Arenas & LIFO Rewind Invariant**:
+  - Reset per-frame arena allocators at frame boundaries via
+    `arena.reset(.retain_capacity)`.
+  - Never store references or pointers to arena-allocated data inside persistent
+    state structs across frame boundaries.
+  - Zig's `std.heap.ArenaAllocator.free` and `resize` rewind the bump pointer
+    (`end_index`) when releasing the most recent allocation in the active node.
+    Always pair `frame_allocator` scratch allocations with
+    `defer frame_allocator.free(...)` or `defer list.deinit(frame_allocator)` so
+    sequential systems reuse frame memory without arena growth.
 - **Stack Allocation vs. Arena Decision Matrix**:
-  - *Dynamic / Unbounded Collections* (e.g. prefetch queues, scissor stacks,
-    variable lists): NEVER use fixed stack arrays `[N]T` that risk silent
-    truncation or panic. Use `std.ArrayList(T)` backed by `frame_allocator`
-    with `defer list.deinit(frame_allocator)`.
-  - *Large Path Buffers* ($\\ge 4$ KB like `std.fs.max_path_bytes`):
-    - *Per-Frame Layout & Render Passes*: Do NOT allocate 4 KB arrays on the
-      stack inside per-frame loops or Clay render passes. Allocate from
-      `frame_allocator` with `defer frame_allocator.free(...)`.
+  - *Dynamic / Unbounded Collections* (prefetch queues, scissor stacks, match
+    lists): NEVER use fixed stack arrays `[N]T` that risk silent truncation or
+    panic. Use `std.ArrayList(T)` backed by `frame_allocator` with
+    `defer list.deinit(frame_allocator)`.
+  - *Large Path Buffers* ($\\ge 4\\text{ KB}$ like `std.fs.max_path_bytes`):
+    - *Per-Frame Layout & Render Passes*: Allocate from `frame_allocator` with
+      `defer frame_allocator.free(...)` rather than placing 4 KB arrays on the
+      stack inside per-frame loops.
     - *One-Off Main-Thread State Transitions*: In discrete, non-recursive state
-      transition methods where `frame_allocator` is unavailable (e.g.
-      `openPalette` directory pre-traversal), a stack buffer
-      (`var parent_buf: [std.fs.max_path_bytes]u8 = undefined;`) is
-      preferred over heap allocation (`self.allocator.alloc`) to eliminate
-      unnecessary heap churn.
+      transitions where `frame_allocator` is unavailable (e.g. `openPalette`), a
+      stack buffer (`var parent_buf: [std.fs.max_path_bytes]u8 = undefined;`) is
+      preferred over `self.allocator.alloc` to avoid heap churn.
   - *Assert-Bounded Hardware/FFI Limits* (e.g. 16 vertex buffer slots in SDL3
     GPU, 8 IFD levels in EXIF): Keep on the stack and document the hardware/API
-    bound and assert in comments to avoid per-draw allocator overhead.
+    bound in comments.
   - *Short Formatting Scratchpads for Clay IDs* ($\\le 64$ bytes): Keep on the
-    stack using `std.fmt.bufPrint`. Clay immediately hashes strings into integer
-    IDs (`clay.getElementId`) and does not retain the string. Allocating from
-    `frame_allocator` for 500 items burns $32\\text{ KB/frame}$ of unnecessary
-    arena bump-pointer memory.
+    stack using `std.fmt.bufPrint`. Clay hashes ID strings immediately into
+    integers (`clay.getElementId`) and does not retain the string.
+- **Caller-Provided Output Buffers & Slice Aliasing**:
+  - Functions generating variable-length data should accept caller-provided
+    output buffers or explicit allocators rather than returning unowned heap
+    memory.
+  - When modifying shared byte buffers, copy input slices via `@memcpy` into
+    target allocations before mutation to prevent buffer aliasing across
+    concurrent reader threads.
+- **Co-located Resource Cleanup (`errdefer` + `try` Invariant)**:
+  - In fallible functions returning `!T` or `!void`, every heap allocation
+    (`allocator.create`, `allocator.dupe`) and transient atomic flag mutation
+    MUST be paired with an `errdefer` on the immediately following line (e.g.
+    `errdefer is_loading_files.store(false, .release)`).
+  - Do NOT write manual `catch |err| { allocator.free(...); }` teardown blocks;
+    propagate errors via `try` and rely on `errdefer` stack unwinding.
+- **HashMap Key & Socket Stream Cleanup**:
+  - When managing `std.StringHashMap` or custom key-value maps, free owned keys
+    via `keyIterator()` prior to calling `clearRetainingCapacity()` or
+    `deinit()`.
+  - Always invoke `stream.close(io)` on `std.Io.net.Stream` socket handles
+    during queue item teardown (`deinitQueueItem`) and `AppState.deinit` to
+    prevent OS file/socket descriptor leaks.
+- **Reverse-Initialization Lifecycle Teardown**:
+  - Every struct owning heap memory, GPU handles, socket connections, or child
+    sub-states (`AppState`, `ViewerState`, `DisplayState`, `RenderResources`,
+    `ParsedArgs`) MUST provide an explicit `deinit` method.
+  - Top-level application teardown (`AppGraphicsAndState.deinit` in
+    `src/main.zig`) MUST execute in strict reverse-initialization order: free
+    CLI args and stop the IPC server, free Clay layout memory, quiesce workers
+    and deinitialize `AppState`/`ViewerState`, release GPU `RenderResources`,
+    and finally destroy the SDL GPU device, window, and SDL subsystems.
 
-## 3. HashMap Key Lifecycle Cleanup
+## 2. Tagged Unions, Enums & Domain Invariant Modeling
 
-- When managing `std.StringHashMap` or custom key-value maps, ensure key memory owned by the map is freed (or arena-managed) prior to calling `map.clearRetainingCapacity()` or `map.deinit()`.
+- **Explicit Tagged Union Access (`switch (union)`)**:
+  - Always access tagged union payloads via explicit `switch (union)` pattern
+    matching. Do NOT use direct field access (`union.variant`) unless guarded by
+    an enclosing `switch`; direct access bypasses safety checks in
+    ReleaseFast/ReleaseSmall builds.
+- **Strict Domain Invariants via Tagged Unions**:
+  - Model mutually exclusive domain states (`SlideshowMode`, `DisplayState`,
+    `CacheStatus`, `ThumbnailState`, `ThumbnailPadding`, `RawMetadata`,
+    `ImageTransition`) using `union(enum)` with validation constructors
+    (`init(...)`) rather than loose booleans or parallel optionals:
+    ```zig
+    pub const RawMetadata = union(enum) {
+        none,
+        raw: struct { sensor_w: f32, sensor_h: f32 },
 
-## 4. Strongly-Typed Worker Procedures
-
-- Background thread functions must accept strongly-typed struct parameter pointers. Avoid using raw `?*anyopaque` handles or untyped pointer downcasting.
-
-## 5. Non-Negotiable Structured Error Logging
-
-- Never swallow errors silently with empty `catch {}` or `else |_| {}` blocks.
-- Always log caught errors via `std.log.err` or `std.log.warn` with contextual details before returning fallbacks or `null`.
-- **No Discarded C-ABI / External Return Status**: Do NOT discard boolean or error code returns from external library or C-ABI functions (e.g. `_ = win.handle.setBordered(...)` or `_ = sdl.c.SDL_StartTextInput(...)`). Always verify success and log failures with descriptive context and library error strings (e.g. `sdl.getError()`):
-  ```zig
-  if (!win.handle.setBordered(!win.is_borderless)) {
-      std.log.err("SDL_SetWindowBordered failed: {s}", .{sdl.getError()});
-  }
-  ```
-
-```zig
-// BAD: Silent error swallowing
-const data = readBuffer() catch return null;
-
-// GOOD: Contextual structured logging
-const data = readBuffer() catch |err| {
-    std.log.err("Failed to read buffer for path '{s}': {any}", .{ path, err });
-    return null;
-};
-```
-
-## 6. Buffer Aliasing & Slice Copying
-
-- When modifying shared byte buffers, copy input slices via `@memcpy` into target allocations before mutation to prevent buffer aliasing bugs across concurrent reader threads.
-
-## 7. Caller-Provided Output Buffers
-
-- Functions generating variable-length data should accept caller-provided output buffers or explicit allocators rather than returning unowned heap memory.
-
-## 8. Surface Pixel Format Bounds & Conversion Safety
-
-- When processing raw pixel buffers or `sdl.Surface` memory, NEVER assume non-32bit formats are fixed 3-byte RGB24.
-- Indexed 8-bit (`index8`), grayscale (`L8`), or 16-bit surfaces have different bytes-per-pixel strides. Naive index calculation (`sp = col * 3`) causes `SIGSEGV` buffer overruns on 1-byte indexed buffers.
-- Always use explicit pixel format matching (`switch (cur_fmt)`):
-  - Direct `@memcpy` for RGBA32 / BGRA32 / XRGB8888.
-  - High-performance SIMD converters for RGB24 / BGR24.
-  - Safe fallback surface conversion (`current_surf.convert(PixelFormat.rgba32)`) for indexed 8-bit, grayscale, and arbitrary formats before GPU buffer upload.
-
-## 9. `std.Io.net.Stream` Socket Teardown Invariants
-
-- Always invoke `stream.close(io)` on `std.Io.net.Stream` socket handles during queue item teardown (`deinitQueueItem`) and state deallocation (`AppState.deinit`).
-- Dropping or freeing structs containing socket streams without calling `.close(io)` leaks OS file and socket descriptors on application shutdown or event cancellation.
-
-## 10. Worker Task Early-Exit & Fail-Fast Error Invariants
-
-When a worker task encounters a file I/O failure (`statFile`, `openFile`, initial `readPositional`) or decoder failure (e.g., `sdl.Surface.loadFilePtr` returning null):
-
-1. **Never swallow errors** with `catch null`, `catch 0`, or logging without state notification.
-2. **Always notify state**: Push a corresponding failure event (e.g., `.decode_failed`) to `context.workers.event_queue` and wake up the main thread (`context.wakeUpMainThread()`).
-3. **Exit early immediately**: Execute `return` right after logging and event dispatch.
-4. **Avoid redundant checks**: Once an early exit check handles `n == 0` or error cases, do not wrap subsequent code in redundant `if (n > 0)` checks.
-
-## 11. Lifecycle Teardown & Deinitialization Invariants
-
-Every struct owning heap memory, GPU handles, socket connections, or child sub-states MUST provide an explicit `deinit` method accepting appropriate allocator/context parameters:
-
-- **`RenderResources.deinit(allocator)`**: Must be invoked on main thread shutdown to release font text cache (`text_cache.deinit(allocator, device)`), font handles (`font.close()`), double-buffered vertex and transfer staging buffers (`releaseBuffer`, `releaseTransferBuffer`), graphics pipelines (`releasePipeline`), compute pipelines (`releaseComputePipeline`), samplers, and fallback textures.
-- **`DisplayState.deinit(allocator)`**: Must be invoked during `ViewerState.deinit` to clean up windowed mode heap allocations (`allocator.free(cached_title)`).
-- **`ParsedArgs.deinit(gpa)`**: Must be invoked during CLI configuration teardown to free heap-allocated argument path slices (`arg_path`).
-- **Canonical Top-Level Teardown Order (`AppGraphicsAndState.deinit`)**:
-  1. `parsed.deinit(gpa)` (CLI allocations)
-  2. `ipc_server.deinit(io)` (Socket handles & threads)
-  3. `gpa.free(clay_memory)` (UI layout buffer)
-  4. `state.deinit()` (Workers, cache, intents, and `viewer.deinit(gpa, io)`)
-  5. `resources.deinit(gpa)` (GPU staging buffers, fonts, pipelines)
-  6. `gpu_device.destroy()` & `window.destroy()` (SDL hardware context)
-
-## 12. Co-located Resource Cleanup (`errdefer` + `try` Invariant)
-
-- **Immediate `errdefer` Placement**: In fallible functions returning `!T` or `!void`, every heap allocation (`allocator.create`, `allocator.dupe`) and transient state flag modification MUST be paired with an `errdefer` statement placed on the line immediately following the allocation/mutation.
-- **Prohibition of Manual `catch` Teardown Blocks**: Do NOT handle allocation or worker thread spawning failures with manual `catch |err| { allocator.free(...); allocator.destroy(...); }` blocks. Propagate errors via `try` and rely on `errdefer` stack unwinding.
-- **Atomic Flag Reversal**: If setting an atomic flag prior to a fallible task (e.g. `is_loading_files.store(true, .release)`), use `errdefer is_loading_files.store(false, .release)` to guarantee state consistency upon failure.
-
-## 13. Prohibition of Meaningless Optionality & Null Checks
-
-- Do NOT make struct fields or function parameters optional (`?T = null`) defensively if the dependency or state is always present and required for correct runtime execution.
-- Optional types (`?T`) MUST represent genuine, valid domain absence (e.g. `current_index: ?usize = null` when a playlist is empty, or `surface: ?sdl.Surface` when a thumbnail is unavailable).
-- Wrapping non-optional dependencies in optionals introduces dead branches (`if (args.dep) |dep|`), obscures API contracts, and forces callers to handle impossible `null` scenarios. Require the dependency directly (`dep: T`).
-
-## 14. Zero Full-File Allocation Constraint for Large Media Formats
-
-- Large media files (e.g. Camera RAW, uncompressed archives, video containers) range from 50MB to 500MB+. Reading full files into RAM causes severe memory spikes, heap fragmentation, and out-of-memory crashes.
-- Workers and probes MUST use fixed-size stack buffers (e.g. `[128 * 1024]u8`) for header inspections and metadata extraction.
-- Data extraction (e.g. embedded preview JPEGs, sub-streams) MUST be performed via range-limited positional file reads (`file.readPositional(io, &slices, offset)`) into precisely-sized allocations matching the exact payload length.
-- **Buffer Sizing Arithmetic Invariant (`<count> * <unit>`)**:
-  - Fixed-size stack and scratch buffers MUST use explicit compile-time arithmetic expressions
-    rather than magic byte literals (e.g. write `[64 * 1024]u8` instead of `[65536]u8`).
-  - Maintain canonical `<count> * <unit>` ordering (`64 * 1024`, `128 * 1024`, `256 * 1024`)
-    consistently across all modules for immediate readability in KiB/MiB.
-
-## 15. Saturating Arithmetic on Untrusted File Offsets & Lengths
-
-- In file parsing routines (TIFF, EXIF, RAF, ZIP), offsets and lengths extracted from untrusted binary headers MUST be validated against buffer and file sizes before slicing or allocation.
-- NEVER use simple addition `offset + length <= file_size`, which risks integer overflow panics in Zig Debug and ReleaseSafe modes when parsing corrupt or malicious files with near-max values.
-- ALWAYS use saturating subtraction: `offset <= file_size -| length` or `offset <= buffer_len -| length`.
-
-## 16. Strict Domain Invariant Enforcement via Tagged Unions
-
-- When domain metadata contains mutually exclusive states or conditional properties (e.g. Camera RAW sensor dimensions), NEVER use loose booleans with optional or uninitialized fields (e.g. `is_raw: bool, sensor_w: f32`).
-
-- Model the domain state explicitly using a tagged union (`union(enum)`) with an invariant validation constructor (`init(...)`):
-
-  ```zig
-  pub const RawMetadata = union(enum) {
-      none,
-      raw: struct {
-          sensor_w: f32,
-          sensor_h: f32,
-      },
-
-      pub fn init(is_raw: bool, w: f32, h: f32) RawMetadata {
-          if (is_raw and w > 0.0 and h > 0.0) {
-              return .{ .raw = .{ .sensor_w = w, .sensor_h = h } };
-          }
-          return .none;
-      }
-  };
-  ```
-
-- This eliminates illegal states at compile time and makes invalid combinations impossible to construct.
-
-- **Top-Level Named Structs for Cross-Module Payloads**: When tagged union payloads are passed between modules (e.g. between domain state, view models, and UI rendering), define top-level named structs (`Active<Name>`) rather than inline anonymous structs.
-
-- **Inline Accessors**: Provide inline convenience methods on the union (e.g. `getPrevIndex(self) ?usize`) to allow read access to active payload values without requiring nested pattern-matching blocks at every call site:
-
-  ```zig
-  pub const ActiveImageTransition = struct {
-      prev_index: usize,
-      prev_rotation: f32,
-  };
-
-  pub const ImageTransition = union(enum) {
-      none,
-      active: ActiveImageTransition,
-
-      pub inline fn getPrevIndex(self: ImageTransition) ?usize {
-          return switch (self) {
-              .none => null,
-              .active => |a| a.prev_index,
-          };
-      }
-  };
-  ```
-
-- **Prohibition of Interdependent Optionals**:
-
-  - NEVER maintain clusters of interdependent optional fields
-    (e.g. `offset: ?u64, size: ?u64, method: ?u16`) in a state struct.
-  - If fields are semantically dependent, bundle them into a concrete payload struct and represent
-    the presence/absence via a tagged union (`union(enum) { unindexed, indexed: ZipSeekOffsets }`).
-
-- **Prohibition of Multiplexed Event Payloads**:
-
-  - NEVER overload an event payload with an optional resource handle (`surface: ?sdl.Surface`) to
-    represent two fundamentally different event outcomes (e.g. dimension metadata probing vs.
-    decoded thumbnail availability).
-  - Define distinct event union variants (`dimensions_probed: DimensionsProbedPayload` vs.
-    `thumb_decoded: ThumbDecodedPayload`).
-  - **Resource Ownership Invariant**: The variant owning the resource must hold a non-optional
-    handle (`surface: sdl.Surface`), enabling unconditional destruction in `BackgroundEvent.deinit`
-    without defensive null-checking.
-
+        pub fn init(sensor_w: f32, sensor_h: f32) RawMetadata {
+            if (sensor_w > 0.0 and sensor_h > 0.0 and
+                std.math.isFinite(sensor_w) and std.math.isFinite(sensor_h))
+            {
+                return .{
+                    .raw = .{ .sensor_w = sensor_w, .sensor_h = sensor_h },
+                };
+            }
+            return .none;
+        }
+    };
+    ```
+  - **Top-Level Named Payload Structs**: When union payloads cross module
+    boundaries (domain state -> view model -> UI), define top-level named
+    structs (`ActiveImageTransition`) and provide `inline` convenience accessors
+    on the union (`getPrevIndex(self) ?usize`).
+  - **No Interdependent Optionals or Multiplexed Event Payloads**: Bundle
+    semantically coupled optionals into a single tagged union variant
+    (`union(enum) { unindexed, indexed: ZipSeekOffsets }`). Never overload an
+    event payload with an optional handle (`surface: ?sdl.Surface`) to represent
+    different outcomes; define distinct union variants (`dimensions_probed` vs
+    `thumb_decoded`) with non-optional resource ownership.
+  - **Multi-Role Container Caveat**: Do not force mutually exclusive tagged
+    unions onto multi-role container descriptors (such as TIFF IFD0, which
+    simultaneously acts as a SubIFD container, preview provider, and EXIF
+    directory). Reserve tagged unions for genuinely mutually exclusive domain
+    states and results.
+- **Packed Bitfields & Component Composition**:
+  - Use explicit `packed struct` bitfields for orthogonal directional or state
+    flags (`DirectionFlags = packed struct(u4)`,
+    `ZoomFlags = packed struct(u2)`).
+  - Compose image cache slot state via explicit component structs and unions
+    (`CpuSurfaceComponent`, `GpuTextureComponent`, `ThumbnailState`).
+- **Prohibition of Meaningless Optionality (`?T`)**:
+  - Do NOT make struct fields or function parameters optional (`?T = null`)
+    defensively when the value is always required. Optional types MUST represent
+    genuine domain absence (e.g. `current_index: ?usize` on an empty playlist).
 - **Enum Precision in Domain State**:
+  - Retain strongly-typed standard library or domain enums
+    (`std.zip.CompressionMethod`, `Orientation`) in state structs and payloads
+    rather than degrading them to primitive integers (`u16`, `u32`) or booleans.
 
-  - Do NOT degrade standard library or domain enums (`std.zip.CompressionMethod`) to primitive
-    integers (`u16`, `u32`) or booleans in state structs or payloads.
-  - Retain the strongly-typed enum to preserve compile-time safety, eliminate `@intFromEnum` /
-    `@enumFromInt` conversions, and enable exhaustive `switch` dispatching.
+## 3. Binary Parsing, Large Media & Pixel Format Safety
 
-- **Explicit Enum Branching via `switch`**:
+- **Zero Full-File Allocation for Large Media Formats**:
+  - Camera RAW files, archives, and large containers (50MB–500MB+) MUST NEVER be
+    read entirely into RAM.
+  - Use fixed-size buffers for header inspection and range-limited positional
+    reads (`file.readPositional(io, &slices, offset)`) into exact-sized buffers
+    for embedded preview extraction.
+  - **Buffer Sizing Arithmetic Invariant (`<count> * <unit>`)**: Always write
+    fixed buffer sizes as compile-time `<count> * <unit>` expressions
+    (`[64 * 1024]u8`, `[128 * 1024]u8`, `[256 * 1024]u8`) rather than magic byte
+    literals (`[65536]u8`).
+- **Saturating Arithmetic on Untrusted Offsets & Lengths**:
+  - In binary parsers (TIFF, EXIF, RAF, ZIP), NEVER validate bounds with
+    `offset + length <= file_size`, which overflows on corrupt headers.
+  - ALWAYS use saturating subtraction: `offset <= file_size -| length` or
+    `offset <= buffer_len -| length`.
+- **32-Bit Platform Offset `@intCast` Bounds Safety**:
+  - When container offsets are `u64`, NEVER `@intCast` to `usize` before
+    checking bounds against `slice.len` (which panics on 32-bit targets if
+    offset > 4GB).
+  - Verify bounds in `u64` arithmetic first:
+    ```zig
+    const t_len: usize = @intCast(loc.length);
+    if (loc.file_offset <= slice.len -| loc.length) {
+        const t_off: usize = @intCast(loc.file_offset);
+        return slice[t_off .. t_off + t_len];
+    }
+    ```
+- **Surface Pixel Format Bounds & GPU/CPU Conversion Safety**:
+  - NEVER assume non-32-bit `sdl.Surface` buffers are 3-byte RGB24; indexed
+    8-bit (`index8`), grayscale (`L8`), and 16-bit surfaces have different
+    strides.
+  - Explicitly match on `cur_fmt`:
+    - Direct `@memcpy` for 32-bit `rgba32` / `bgra32` / `xrgb8888`.
+    - For 24-bit `rgb24` / `bgr24`: in GPU mode, keep the 3-byte surface intact
+      on the CPU and unpack to RGBA32 on the GPU via `unpack_rgb.comp.glsl` and
+      `UploadStagingBuffer`; in headless/CPU mode, use the SIMD 24-to-32-bit
+      converter (`src/sdl/surface.zig`).
+    - Safe fallback conversion (`current_surf.convert(PixelFormat.rgba32)`) for
+      indexed, grayscale, or arbitrary formats prior to upload.
 
-  - When branching on enum values, prefer `switch (val)` over
-    `if (val == .variant)`.
-  - If only a specific variant is handled, write explicit branches
-    (`switch (val) { .store => ..., else => {} }`) to document intentional
-    fallbacks and facilitate future variant expansion.
+## 4. Error Handling & Worker Fail-Fast Invariants
 
-## 17. 32-Bit Platform Offset `@intCast` Bounds Safety
-
-- When inspecting variable-length binary containers where offsets are
-  represented as `u64` (e.g. file offsets in large media containers > 4GB),
-  NEVER cast `loc.file_offset` to `usize` before verifying bounds.
-- On 32-bit platforms where `usize == u32`, executing
-  `@as(usize, @intCast(loc.file_offset))` on an offset $> 4\\text{GB}$ triggers
-  a runtime safety panic (`integer cast truncated bits`) before the bounds check
-  can execute.
-- Always perform the range check using `u64` arithmetic prior to casting:
-  ```zig
-  // BAD: Panics on 32-bit platforms if file_offset > 4GB
-  const t_off: usize = @intCast(loc.file_offset);
-  const t_len: usize = @intCast(loc.length);
-  if (t_off + t_len <= slice.len) { ... }
-
-  // GOOD: Safe on both 32-bit and 64-bit platforms
-  const t_len: usize = @intCast(loc.length);
-  if (loc.file_offset + loc.length <= slice.len) {
-      const t_off: usize = @intCast(loc.file_offset);
-      return slice[t_off .. t_off + t_len];
-  }
-  ```
+- **Non-Negotiable Structured Error Logging**:
+  - Never swallow errors silently with empty `catch {}` or `else |_| {}` blocks.
+    Log caught errors via `std.log.err` or `std.log.warn` with context before
+    returning fallbacks.
+  - Never discard boolean or error-code returns from C-ABI / SDL calls (e.g.
+    `_ = win.handle.setBordered(...)`). Always check the return status and log
+    `sdl.getError()` on failure.
+- **Strongly-Typed Worker Procedures**:
+  - Background thread functions must accept strongly-typed struct parameter
+    pointers (`DecodeArgs`, `PathScanArgs`, `StdinArgs`, `IpcServerArgs`). Never
+    use raw `?*anyopaque` handles or untyped pointer downcasting.
+- **Worker Task Early-Exit & Fail-Fast Invariants**:
+  - When a worker encounters a file I/O or decode failure (and the task was not
+    canceled):
+    1. Log the error with context.
+    2. Push the failure event (e.g. `.decode_failed`) to
+       `context.workers.event_queue` and call `context.wakeUpMainThread()`.
+    3. `return` immediately without wrapping subsequent code in redundant
+       nested `if` blocks.

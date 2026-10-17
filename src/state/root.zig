@@ -104,7 +104,6 @@ pub const ViewerState = viewer_state.ViewerState;
 pub const ViewMode = types.ViewMode;
 pub const ViewportParams = types.ViewportParams;
 pub const VisibleState = types.VisibleState;
-pub const UniversalZoom = types.UniversalZoom;
 pub const ZoomController = types.ZoomController;
 pub const ZoomDirection = types.ZoomDirection;
 pub const ZoomFactor = types.ZoomFactor;

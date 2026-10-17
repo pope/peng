@@ -151,7 +151,7 @@ pub const IpcCommand = union(enum) {
     compare: CompareAction,
     edit: EditAction,
     filter: TextureScaleMode,
-    scale: intents.ScaleMode,
+    scale: intents.ZoomPreset,
     manga: bool,
     title: TitleAction,
     snackbar: SnackbarAction,
@@ -449,7 +449,7 @@ pub const IpcCommand = union(enum) {
                 std.mem.eql(u8, val, "height"))
             {
                 return .{ .scale = .fit_height };
-            } else if (std.meta.stringToEnum(intents.ScaleMode, val)) |mode| {
+            } else if (std.meta.stringToEnum(intents.ZoomPreset, val)) |mode| {
                 return .{ .scale = mode };
             }
             return error.UnknownScale;

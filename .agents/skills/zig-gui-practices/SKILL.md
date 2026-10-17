@@ -21,39 +21,34 @@ ______________________________________________________________________
 - **[Systems Architecture & Execution Rules](references/systems-architecture.md)**
 
   - 3-Phase frame loop: Ingestion (1) -> Systems Update Phase (2) -> Render (3).
-  - Read-only `UiViewModel` snapshot barrier between Phase 2 and Phase 3 with zero state mutations in render.
-  - System lifetime bound to single frame iteration via `FrameContext` (`frame_allocator`).
-  - Strict prohibition of direct inter-system calls (intent-driven communication).
-  - Intra-frame LIFO deallocation for `ArenaAllocator` bump rewinding.
-  - Frame-arena string lifetime invariants for retained Clay UI layout labels.
+  - Read-only `UiViewModel` (`src/state/view_model.zig`) snapshot barrier between Phase 2 and Phase 3 with zero state mutations in render.
+  - System lifetime bound to single frame iteration via `FrameContext` (`frame_allocator`) with intra-frame LIFO deallocation.
+  - Frame-arena string lifetime invariants for retained Clay UI layout labels (`layout.zig`, `edit_panel.zig`, `palette.zig`).
+  - Declarative capabilities (`actions.zig`), zero-allocation `SnackbarState` (`src/state/snackbar.zig`), and `MultiArrayList` SoA SIMD navigation.
 
 - **[Layout, DPI Scaling & Centering Math](references/dpi-layout-math.md)**
 
-  - Unified state & configuration structs (`PaletteState`, `PaletteConfig`).
   - High-DPI / Retina scale factors (`scale_x`, `scale_y`) for viewports and mouse inputs.
   - Zoom-to-mouse panning math and aspect ratio fitting (`full`, `crop`, `shrink`).
   - Dynamic `clay.getElementData` bounding box sampling for interactive widgets and sliders.
+  - Compound row badge alignment and normalized `[0.0, 1.0]` theme alpha invariants.
 
 - **[SDL3 GPU Rendering Workflows](references/sdl3-gpu-rendering.md)**
 
-  - Pixel-perfect quad alignment to prevent sub-pixel layout jitter.
-  - High-quality SDL3_ttf GPU text rendering pipeline.
-  - Hardware mipmap generation (`SDL_GenerateMipmapsForGPUTexture`) over CPU software scaling.
-  - Zero-allocation text measurement (`TTF_GetStringSize` / `TTF_MeasureString`) with slice length passing.
+  - High-quality SDL3_ttf GPU text rendering and zero-allocation text measurement (`TTF_GetStringSize`).
+  - GPU compute RGB24/BGR24 unpack pipeline (`unpack_rgb.comp.glsl` & `UploadStagingBuffer`) with hardware mipmap generation.
+  - 4-pass Dual Kawase backdrop blur pipeline (`blur_down.frag.glsl`, `blur_up.frag.glsl`) for glassmorphic overlays.
 
 - **[VRAM Budgeting & EXIF Parsing Recipes](references/vram-preloading.md)**
 
-  - VRAM cache memory footprint math (+33% mipmap overhead).
-  - Main-thread synchronous EXIF header dimension parsing (< 0.1 ms) & single-pass Zig `std.Io` in-memory decoding.
-  - Camera RAW preview extraction: Canon CR2 multi-IFD disambiguation (IFD0 preview vs IFD2 raw RGB vs IFD3 Lossless JPEG SOF3), Fujifilm RAF fixed 12MP preview budgeting, DNG SubIFDs, and Ricoh/Pentax MakerNotes.
-  - RAW+JPEG 4-tier progressive streaming, zero-copy resident preview
-    slicing, and companion JPEG bounded reads.
-  - Navigation throttling (< 150ms), thumbnail-only fast decoding, telemetry metric split (Disk Read vs Decode), and settled preloading triggers (`sysUpdateCache(ctx)`).
+  - VRAM cache memory footprint math (+33% mipmap overhead) and active/transition/neighbor slot protection.
+  - Synchronous main-thread header probing (< 0.1ms, 256KB RAW / 128KB standard) & single-pass `std.Io` in-memory decoding.
+  - Camera RAW format quirks table (Adobe DNG / Ricoh GR III, Canon CR2 IFD0/2/3 disambiguation, Fujifilm RAF 12MP ceiling, Sony ARW Bayer CFA exclusion) and 4-tier RAW+JPEG progressive streaming.
+  - Navigation throttling (`35ms` fast-scroll `thumb_only`, `200ms` crossfade bypass, `250ms` settled Fit promotion), dynamic worker scaling (`@max(1, @min(8, cpus -| 1))`), and cooperative `CacheKey` epoch pruning.
 
 - **[GPU Shader Optimization Recipes](references/shader-optimization.md)**
 
-  - Horner's method for polynomial splines (chained hardware FMA execution).
-  - Branchless math (`greaterThan()`, `step()`, `mix()`) vs dynamically uniform branches (`if (overshoot > 0.0)`).
-  - Photometric exposure ($2^{\\text{EV}}$), 18% middle gray contrast, and rational soft-knee highlight protection.
-  - Reciprocal FMAs, zero hardware vector FDIV, and scalar peak helpers.
-  - `#pragma unroll` directives and `glslangValidator -V -Os` optimization flags.
+  - Horner's method for polynomial splines and `#pragma unroll` SPIR-V / Metal compilation (`zig build shaders`).
+  - Branchless per-pixel math (`greaterThan()`, `step()`, `mix()`) vs dynamically uniform branches (`if (ubo.has_adjustments != 0)`).
+  - 7-filter resampling suite (`Nearest`, `Bilinear`, `AA-Nearest`, `Mitchell-Netravali`, `Lanczos3`, `AMD FSR 1.0`, `Tiny CNN`).
+  - 13-parameter color & presence pipeline: opponent WB, dual-path 18% middle gray contrast, monotonic root-space tonal quad, post-contrast exposure ($2^{2\\cdot\\text{EV}}$), skin-protected vibrance, 8-tap $R=2\\text{px}$ bilateral Texture, 8-tap $R=12\\text{px}$ bilateral Clarity, and rational highlight soft-knee.

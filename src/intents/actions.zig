@@ -3,19 +3,17 @@
 //! Centralized single source of truth for application capabilities, keybindings,
 //! UI Command Palette entries, command-line flags, and remote IPC verbs.
 
-const std = @import("std");
 const keys = @import("keys.zig");
+const std = @import("std");
 const types = @import("types.zig");
 
 const AppIntent = types.AppIntent;
-const Key = keys.Key;
-const KeyModifiers = keys.KeyModifiers;
-const KeyboardShortcut = keys.KeyboardShortcut;
-const PaletteMode = types.PaletteMode;
-const ScaleMode = types.ScaleMode;
-const TextureScaleMode = types.TextureScaleMode;
-const scale_modes_string = types.scale_modes_string;
 const filter_modes_string = types.filter_modes_string;
+const Key = keys.Key;
+const KeyboardShortcut = keys.KeyboardShortcut;
+const KeyModifiers = keys.KeyModifiers;
+const PaletteMode = types.PaletteMode;
+const scale_modes_string = types.scale_modes_string;
 
 /// Target application scope for a command-line option or command.
 pub const CliTarget = enum {

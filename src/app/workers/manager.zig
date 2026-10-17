@@ -3,8 +3,8 @@
 //! Manages background thread lifecycle, active thread counts,
 //! concurrency limits, worker cancellation, and event transport.
 
-const std = @import("std");
 const events = @import("../core/events.zig");
+const std = @import("std");
 
 /// WorkerManager manages background thread lifecycle, active thread counts,
 /// concurrency limits, worker cancellation, and event transport.
@@ -15,19 +15,19 @@ pub const WorkerManager = struct {
 
     /// Atomic counter tracking total actively executing background worker tasks
     /// (image decodes, directory path scans, stdin reading, and IPC server socket listener).
-    active_threads: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    active_threads: std.atomic.Value(usize) = .init(0),
 
     /// Atomic counter tracking actively executing image `decodeWorker` tasks.
-    active_decode_threads: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    active_decode_threads: std.atomic.Value(usize) = .init(0),
 
     /// Worker task cancellation signal used by C library boundaries and worker
     /// loops during shutdown.
-    exiting: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
+    exiting: std.atomic.Value(bool) = .init(false),
 
     /// Real-time metrics for EXIF thumbnail extraction passes.
-    thumb_header_hits: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
-    thumb_positional_hits: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
-    thumb_misses: std.atomic.Value(usize) = std.atomic.Value(usize).init(0),
+    thumb_header_hits: std.atomic.Value(usize) = .init(0),
+    thumb_positional_hits: std.atomic.Value(usize) = .init(0),
+    thumb_misses: std.atomic.Value(usize) = .init(0),
 
     /// Thread-safe multi-producer single-consumer queue for
     /// background-to-main-thread event transport.
@@ -69,9 +69,15 @@ pub const WorkerManager = struct {
         };
     }
 
-    /// Signals worker shutdown and waits for running tasks to finish.
-    pub fn deinit(self: *WorkerManager, io: std.Io) void {
+    /// Signals worker shutdown, waits for running tasks to finish, and frees
+    /// the background event queue.
+    pub fn deinit(
+        self: *WorkerManager,
+        allocator: std.mem.Allocator,
+        io: std.Io,
+    ) void {
         self.drainAndQuiesce(io);
+        self.event_queue.deinit(allocator, io);
     }
 
     /// Cancels all background tasks in the worker group and blocks until all running worker
@@ -92,9 +98,37 @@ test "WorkerManager.getMaxConcurrentDecodes scaling bounds" {
     mgr.cached_cpu_count = 4;
     try std.testing.expectEqual(@as(usize, 3), mgr.getMaxConcurrentDecodes());
 
+    mgr.cached_cpu_count = 6;
+    try std.testing.expectEqual(@as(usize, 5), mgr.getMaxConcurrentDecodes());
+
     mgr.cached_cpu_count = 8;
     try std.testing.expectEqual(@as(usize, 7), mgr.getMaxConcurrentDecodes());
 
     mgr.cached_cpu_count = 16;
     try std.testing.expectEqual(@as(usize, 8), mgr.getMaxConcurrentDecodes());
+
+    mgr.cached_cpu_count = 64;
+    try std.testing.expectEqual(@as(usize, 8), mgr.getMaxConcurrentDecodes());
+}
+
+test "WorkerManager.canSpawnDecode gating" {
+    var mgr = WorkerManager{ .cached_cpu_count = 4 };
+    // Max is 3 (4 - 1):
+    try std.testing.expect(mgr.canSpawnDecode());
+    mgr.active_decode_threads.store(2, .release);
+    try std.testing.expect(mgr.canSpawnDecode());
+    mgr.active_decode_threads.store(3, .release);
+    try std.testing.expect(!mgr.canSpawnDecode());
+}
+
+test "WorkerManager.getCpuCount caching and fallback" {
+    const mgr_zero = WorkerManager{ .cached_cpu_count = 0 };
+    try std.testing.expect(mgr_zero.getCpuCount() >= 1);
+
+    const mgr_cached = WorkerManager.init();
+    try std.testing.expect(mgr_cached.cached_cpu_count >= 1);
+    try std.testing.expectEqual(
+        mgr_cached.cached_cpu_count,
+        mgr_cached.getCpuCount(),
+    );
 }

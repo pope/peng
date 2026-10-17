@@ -4,16 +4,12 @@
 
 - **VRAM Budget Calculation with Mipmap Overhead**:
   When computing VRAM memory footprints, account for the base RGBA32 texture size ($W \\times H \\times 4\\text{ bytes}$) plus the $+33%$ mipmap pyramid overhead ($\\frac{4}{3} \\times \\text{base size}$). Ensure budget caps (e.g. $1024\\text{ MB}$) can accommodate multiple high-resolution ($24\\text{MP}-50\\text{MP}$) images simultaneously.
-
-- **Neighbor Slot Protection**:
-  In VRAM cache eviction routines (`enforceVramBudget`), protect the current image and its immediate neighbors ($\\pm 2$ slots) from eviction to prevent constant re-decoding during user navigation.
-
+- **Neighbor & Transition Slot Protection**:
+  In VRAM cache eviction routines (`enforceVramBudget`), protect the current image, any active outgoing crossfade slide (`getTransitionPrevIndex()`), and immediate neighbors ($\\pm 2$ slots) from eviction.
 - **Worker Concurrency & Lifecycle Synchronization**:
   Quiesce and clean up background worker tasks and queues (`state.workers.deinit(io)`) in the top-level owner lifecycle method (`AppState.deinit()`).
-
 - **HashMap String Key Lifetimes**:
   Always iterate `keyIterator()` to free dynamically allocated string keys before calling `clearRetainingCapacity()` or `deinit()` on hash maps:
-
   ```zig
   var rot_iter = self.rotation_map.keyIterator();
   while (rot_iter.next()) |key| {
@@ -24,190 +20,113 @@
 
 ______________________________________________________________________
 
-## 2. Synchronous Header Dimension Parsing & EXIF Rules
+## 2. Synchronous Header Probing, Camera RAW Streaming & Progressive Loading
 
-- **Single-Pass File Read & In-Memory Decoding**:
-  `decodeWorker` performs a single file open and read via Zig `std.Io` (`statFile` + `openFile` + `file.reader(io, &r_buf).readSliceAll(...)`) into a task-scoped heap buffer. In Zig 0.16.0, `readSliceAll` bypasses the internal reader buffer for large slices via `readVec`, executing a single vector read syscall directly into the destination buffer with zero syscall penalty. Header parsing, EXIF thumbnail slicing (`file_bytes[off..off+len]`), and full surface decoding (`sdl.Surface.loadConstMemOpt`) operate entirely in RAM, eliminating double-open file descriptor overhead and respecting `io.isCanceled()` during disk I/O.
-- **Fast-Scrolling Probe Header Sizing**:
-  When `thumb_only = true`, do NOT allocate the full file size on the heap. Allocate and read only `@min(file_size, 128 * 1024)` bytes (up to 128KB). For multi-megabyte photos, this drops read latency from $\\sim 36\\text{ms}$ to $0.17\\text{ms}$ (a $200\\times$ speedup) and eliminates heap thrashing during fast navigation.
-- **Non-EXIF Fast-Navigation Decompression Bypassing & Synchronous Thumbnail Presence Probing**:
-  `probeMediaMetadata` synchronously checks for embedded thumbnail presence (`has_embedded_thumbnail: bool`) on Frame 1 (< 0.1ms) across Fujifilm RAF, camera RAW/TIFF, EXIF JPEGs, and uncompressed ZIP/CBZ archives. For containers without embedded thumbnails (PNG, WebP, GIF, SVG, BMP, non-EXIF JPEG), `entry.thumbnail` is immediately initialized to `.not_available` on Frame 1, bypassing wasteful `thumb_only` worker dispatches.
-- **Frame-1 Target Aspect Layout & Synchronous Probing**:
-  Parse full image dimensions (`full_w`, `full_h`) and EXIF orientation directly from file container headers synchronously on the main thread via `image.probeMediaMetadata` (< 0.1 ms positional read up to 64KB, supporting filesystem files and uncompressed CBZ entries) before spawning background decode worker threads. This allows layout math (`getBaseScale`, aspect ratio fitting) to set exact canvas dimensions on Frame 1.
-- **ImageCanvas Placeholder Layout & Presentation Grace Period**:
-  When `entry.status == .decoding` and no thumbnail is ready, if target dimensions are known (`draw_w > 0 and draw_h > 0`), `renderViewport` renders `ImageCanvas` with `.fixed(draw_w)` and `.fixed(draw_h)`. Rendering of the centered `"Loading image..."` indicator is guarded behind `LOADING_GRACE_PERIOD_MS = 35` (~2 frames at 60Hz / 4 frames at 120Hz). Because embedded thumbnails load in 0.17ms and instant decodes complete in < 16ms, `"Loading image..."` never flashes during fast navigation. If an uncached image requires non-trivial decompression (> 35ms), the indicator appears cleanly on frame 3, giving prompt visual feedback without UI blanking.
-- **EXIF APP1 Segment Skipping Rule**:
-  Camera JPEGs embed EXIF thumbnails inside the `APP1` (`0xFF, 0xE1`) segment. When scanning for main image `SOF0`/`SOF2` frame headers, `APP1` segment payloads MUST be explicitly skipped (`idx += seg_len`) to prevent matching the embedded thumbnail's frame header.
-- **EXIF Tag Priority**:
-  Check EXIF TIFF tags `0x0100` (`ImageWidth`), `0x0101` (`ImageLength`), `0xA002` (`PixelXDimension`), and `0xA003` (`PixelYDimension`) in IFD0 and ExifIFD first, as they reside in the initial 1 KB of the file.
-- **Camera RAW Zero-Copy Streaming & Embedded Preview Extraction**:
-  - Camera RAW files (`.arw`, `.raf`, `.cr2`, `.nef`, `.dng`, `.orf`, `.rw2`, `.pef`) range from 50MB to 150MB+ per file. They MUST NEVER be read entirely into memory.
-  - **Synchronous Header Probing & 256KB Buffer Sizing**: Main-thread probing reads up to 256KB into a fixed stack buffer for RAW files (`probeMediaMetadata`), while non-RAW images read 128KB. It extracts raw sensor dimensions, preview JPEG locations, and EXIF orientation with 0 heap allocations in $< 0.1\\text{ms}$.
-    - *Why 256KB for RAW*: In DNG files from manufacturers such as Ricoh (GR III, GR IIIx), Pentax, and Leica, extensive manufacturer maker notes (e.g. `DNGPrivateData` tag `0xC634`) are stored within IFD0 before the SubIFDs. A ~161KB maker note block pushes `SubIFD[0]` and `SubIFD[1]` (the full-resolution 6000x4000 embedded JPEG preview) to offsets around 162KB–163KB. A 128KB buffer truncates prior to SubIFD pointers, causing preview discovery to fail.
-  - **DNG SubIFD Strip Parsing & JPEG Photometric Validation**:
-    - DNG files store full-resolution previews in SubIFDs using standard TIFF JPEG tags (`Compression == 6` OJPEG or `Compression == 7` JPEG) with single-strip layouts (`StripOffsets` `0x0111`, `StripByteCounts` `0x0117` with `val_count == 1`).
-    - *Color Space Invariant*: Embedded previews must be validated against standard JPEG color spaces: `PhotometricInterpretation` (`0x0106`) MUST be `6` (YCbCr), `2` (RGB), or `1` (BlackIsZero). RAW sensor data compressed with Lossless JPEG (`Compression == 7`) with CFA Bayer (`32803`) or LinearRaw (`34892`) MUST be excluded to prevent passing non-JPEG sensor bitstreams to image decoders.
-  - **Ricoh / Pentax MakerNote Instant Thumbnail Extraction**:
-    - Ricoh and Pentax DNGs embed a 720x480 JPEG thumbnail inside `DNGPrivateData` (`Tag 0xC634`) at byte offset ~97KB (length ~55KB). Because this thumbnail sits completely within the 256KB header window, workers decode it directly from memory with zero additional disk I/O (`thumb_header_hits`).
-  - **SubIFD Capacity Clamping & Loop Cycle Detection**:
-    - Fixed-capacity lists (`SubIfdList`) clamp parsed SubIFDs to buffer capacity (`@min(count, 8)`) instead of returning an error. Throwing an error upon encountering >8 SubIFDs abruptly aborts IFD0 parsing, dropping subsequent preview tags (e.g. `0x0201`/`0x0202`) and next-IFD links for complex multi-frame DNGs.
-    - IFD traversal loops maintain a fixed `visited: [8]u32` array to detect and break cyclic IFD links (e.g. IFD0 -> IFD1 -> IFD0), preventing candidate array corruption.
-  - **Progressive 4-Tier Preview & RAW+JPEG Loading Pipeline**:
-    - **Tier 1 (Small Thumbnail, \<= 512KB)**: Optimized for 0.1ms decoding
-      during rapid scrubbing (`thumb_only = true`) directly from header slice.
-    - **Tier 2 (Medium Preview, \<= 2MB, e.g. 1616x1080)**: Decoded synchronously
-      on Frame 1 during settled viewing (`thumb_only = false`) as an instant
-      crisp placeholder.
-    - **Tier 3 (Full-Resolution RAW Preview, e.g. 6240x4160)**: Decoded in the
-      background and uploaded to GPU to replace Tier 2 via a crossfade dissolve
-      for settled 1.0x viewing.
-    - **Tier 4 (Companion Full-Resolution JPEG)**: Defer companion JPEG decode
-      until physical screen pixel demand exceeds the embedded preview
-      resolution:
-      $$M\_{\\text{tex}} = Z \\times \\max\\left(\\frac{W\_{\\text{auth}}}{W\_{\\text{loaded}}}, \\frac{H\_{\\text{auth}}}{H\_{\\text{loaded}}}\\right) > 1.05$$
-      (or $M\_{\\text{tex}} > 1.15$ when settled), or when the user explicitly
-      presses `j` (`toggle_stream`). In preset mode, evaluate
-      $Z = Z\_{\\text{base}}$ to avoid premature 200MB decodes while browsing in
-      Fit mode. Performs a zero-flash texture swap once background decode
-      completes.
-    - *Single-Preview Duplication Prevention*: When a RAW container has only
-      a single embedded preview (preview == thumbnail), skip decoding the
-      placeholder in settled mode (`thumb_only = false`) to avoid decoding
-      the identical byte range twice.
-    - *Zero-Copy Resident Preview Slicing*: When the embedded preview offset
-      and length fit entirely within the initial 256KB header slice
-      (`prev_loc.file_offset + prev_loc.length <= header_slice.len`), decode
-      directly from `header_slice[prev_loc.file_offset..]` in RAM without
-      opening file descriptors or issuing secondary positional file reads.
-    - *Companion JPEG Fast-Navigation Bounded Read*: When decoding companion
-      JPEGs in `thumb_only` fallback mode during rapid scrubbing, clamp read
-      length to `@min(file_size, 256 * 1024)` bytes to eliminate multi-megabyte
-      disk I/O and heap thrashing.
-  - **Main-Thread GPU Upload Stale Key Guard**:
-    - In `handleImageDecodedEvent`, check `if (state.cache.get(decoded_data.key) == null) return;` prior to invoking `uploadSurfaceToGpu`.
-    - When a user navigates past an image before its background decode completes, this early exit avoids multi-megabyte PCIe transfers and GPU mipmap downsampling for invalidated cache entries.
-  - **Range-Limited Positional Preview Extraction**: Background workers read only the embedded preview JPEG slice (typically 2–4MB) via positional file I/O (`file.readPositional(io, &slices, prev_loc.file_offset)`), decompressing it via `sdl.Surface.loadConstMemOpt` without touching the multi-megabyte raw sensor bayer pattern payload.
-  - **Instant Thumbnail Fast-Scrubbing**: Embedded thumbnails (e.g. Fuji RAF IFD1 `0x0201`/`0x0202` at byte offset 4,192, TIFF IFD1 thumbnail, or Ricoh MakerNote thumbnail) reside completely inside the initial 256KB header buffer. During fast navigation (`thumb_only = true`), decode the thumbnail directly from the header slice with zero additional I/O and return early.
-  - **Truncated APP1 Segment Tolerance**: Preview JPEG headers may have large APP1 segments (e.g. 60KB) that span past the initial header slice. Never discard APP1 segments purely because `payload.len < seg_len`; inspect available bytes `data[idx + 2 .. idx + @min(seg_len, data.len - idx)]` for `"Exif\0\0"` and valid TIFF IFD0 headers.
-  - **Segmented TIFF Virtual Addressing (`TiffSource`) & Tail IFD0 Streaming**:
-    - *Tail IFD0 Pattern*: Manufacturers such as Ricoh (GR III, GR IIIx) and Pentax place the root IFD0 directory at the very end of the file (e.g. byte offset 30MB+), while SubIFD descriptors and MakerNote thumbnails reside in the initial 256KB header.
-    - *Probe First*: Always probe the 4-byte IFD0 pointer from the initial 8-byte TIFF header (`exif.probeTiffIfd0Offset`) before deciding whether a secondary read is required.
-    - *Main-Thread I/O Zero-Regression Invariant*: In synchronous main-thread header probes (`probeMediaMetadata`), NEVER call `file.length(io)` or `file.stat(io)` unless `ifd0_off >= header_len` has already evaluated to `true`. For 99.9% of RAW files (Sony ARW, Canon CR2, Nikon NEF) and header-IFD DNGs, `ifd0_off` is within the initial header (e.g. offset 8), so `ifd0_off >= header_len` immediately evaluates to `false` in CPU registers, issuing zero additional syscalls during folder navigation.
-    - *Stack Budgeting for Tail Probing*: Size `tail_buf` to 16KB (`[16 * 1024]u8`). TIFF directory tables are compact (< 4KB); 16KB provides 4x headroom without ballooning the main UI thread's stack frame.
-    - *Inlined Virtual Slicing*: Mark `TiffSource.getSlice`, `init`, and `initWithTail` as `inline`. This eliminates 40-byte struct-passing ABI copies across tag lookup iterations and enables CPU branch predictors to predict in-header hits with near-100% accuracy.
-    - *Synthetic Binary Test Fixtures Invariant*: Tests for binary container decoders MUST NOT rely solely on external disk fixtures guarded with `catch return` (which silently no-ops on CI). Always provide synthetic, self-contained byte-array tests to exercise container parsing, split-read guards, overflow boundaries, and cyclic IFD loop termination in automated CI pipelines.
-  - **Saturating Bounds Checking**: Offsets and lengths parsed from untrusted headers must always be checked using saturating subtraction or widening: `loc.file_offset <= file_size -| loc.length` and `std.math.add(u32, off, len)`.
-  - **Canon CR2 Multi-IFD Disambiguation & Raw Stream Rejection**:
-    - *CR2 Header Signature*: Canon CR2 files identify via `"CR\x02\x00"` at byte offset 8 in the TIFF header.
-    - *IFD0 Null Photometric Invariant*: IFD0 contains the full-resolution preview JPEG (e.g. 2496x1664 on EOS 5D) with standard TIFF JPEG tags (`Compression == 6`, `StripOffsets`, `StripByteCounts`), but **Canon omits `PhotometricInterpretation` (`0x0106`)**. TIFF JPEG preview candidate extraction MUST permit `photometric == null` alongside standard color spaces (YCbCr, RGB, BlackIsZero), while strictly excluding CFA Bayer (`32803`) and LinearRaw (`34892`).
-    - *IFD2 Raw RGB Deception & SOI Magic Validation*: IFD2 describes a 384x256 uncompressed 24-bit raw RGB slice tagged with `Compression == 6` (OJPEG) and `Photometric == 2` (RGB). The payload bytes (`0x0E, 0x20...`) lack JPEG Start-of-Image (`\xFF\xD8`). If IFD0 is erroneously discarded, IFD2 is selected and fails during image decompression (`Unsupported image format`). All accessible strip candidates MUST be validated for `\xFF\xD8` SOI magic before acceptance.
-    - *IFD3 Lossless JPEG (SOF3) Bayer Rejection*: IFD3 contains full sensor raw Bayer data compressed using Lossless JPEG (`Compression == 6`, SOF3 / `0xC3`). The bitstream places DHT (`0xFF\xC4`) or DQT tables before SOF3, evading naive 4-byte checks. The parser MUST use a marker-walking loop (`while (idx + 1 < data.len)`) across the first 1024 bytes to inspect segment markers, skipping restart markers `RST0..RST7` (`0xD0..0xD7`), aborting on byte-stuffing (`0x00`), and rejecting streams with SOF3 markers.
-    - *CR2 IFD Disqualification*: For CR2 files (`is_cr2`), candidate selection and dimension parsing must explicitly disqualify IFD2 and IFD3 (`depth >= 2`) so raw slices never contaminate the preview candidate array or target canvas dimensions.
-    - *Planar TIFF Exclusion*: Reject `PlanarConfiguration` (`0x011C`) == 2 (planar); baseline JPEG previews in TIFF/DNG are strictly chunky (`PlanarConfiguration == 1` or null).
-  - **Fujifilm RAF Embedded Preview Budgeting**:
-    - *Fixed 12 MP Preview Ceiling*: Fujifilm RAF files embed preview JPEGs capped at $\\sim 12\\text{ MP}$ ($4240 \\times 2832$ for 3:2, $4000 \\times 3000$ for 4:3) across all modern camera bodies (X-Pro3, X-E5, GFX 100S).
-    - *Dimension Probing Priority*: Never infer sensor aspect ratio or full resolution from the embedded preview's SOF dimensions. Always probe visible sensor dimensions from the EXIF metadata directory (`PixelXDimension` `0xA002`, `PixelYDimension` `0xA003`) to maintain zero-resizing viewport stability.
-- **Main-Thread Header Probing Hot-Loop Guard**:
-  When performing synchronous main-thread metadata probing
-  (`probeActiveSlotMetadata`), if `image.probeMediaMetadata` fails or returns
-  `null` (due to an unhandled file format, corrupted header, or 0-byte file),
-  `entry.thumbnail` MUST be immediately marked as `.not_available`. The cache
-  system's probing condition `needs_dimensions` must strictly gate on
-  `entry.thumbnail == .none`. If `entry.thumbnail` is left as `.none` when
-  probing returns `null`, `needs_dimensions` remains `true`, causing the main
-  render thread to execute a synchronous 256KB disk read and parser pass on
-  every single frame at 60–144 FPS.
-- **DNG Fallback Dimension Parsing**:
-  When extracting metadata from RAW/DNG containers where TIFF SubIFD tag
-  traversal does not produce explicit sensor dimensions, decoders must fall back
-  to parsing the raw container stream headers (e.g.
-  `image.parseImageDimensions(header_slice, mime_type)`) before declaring
-  dimensions unknown.
+- **Single-Pass File Read & In-Memory Decoding (`decodeWorker`)**:
+  `decodeWorker` performs a single `statFile` + `openFile` + `file.reader(io, &r_buf).readSliceAll(...)` into a task-scoped buffer for settled standard raster images. In Zig 0.16.0, `readSliceAll` bypasses the internal reader buffer for large slices via `readVec`. Header parsing, EXIF thumbnail slicing (`file_bytes[off..off+len]`), and full surface decoding (`sdl.Surface.loadConstMemOpt`) operate in RAM while respecting `io.isCanceled()`.
+- **Fast-Scrolling Bounded Header Read (`thumb_only = true`)**:
+  When `thumb_only = true`, never allocate the full file size on the heap. Read at most `@min(file_size, 128 * 1024)` bytes (128KB) for standard formats (or `@min(file_size, 256 * 1024)` for RAW / companion JPEG fallbacks), dropping read latency from $\\sim 36\\text{ms}$ to $0.17\\text{ms}$.
+- **Main-Thread Synchronous Header Probing (`probeMediaMetadata`)**:
+  - Reads up to **256KB** into a stack buffer for Camera RAW files and **128KB** for non-RAW images (< 0.1ms, 0 heap allocations) before spawning background decode workers.
+  - Extracts target canvas dimensions (`full_w`, `full_h`), EXIF orientation, and `has_embedded_thumbnail: bool` on Frame 1 so `getBaseScale` and aspect ratio fitting size `ImageCanvas` immediately.
+  - For containers without embedded thumbnails (PNG, WebP, GIF, SVG, BMP, non-EXIF JPEG) or when probing fails/returns `null`, immediately set `entry.thumbnail = .not_available` so `needs_dimensions` (`entry.thumbnail == .none`) never re-triggers a hot-loop 256KB read on subsequent frames.
+- **Loading Grace Period (`LOADING_GRACE_PERIOD_MS = 35`)**:
+  When `entry.status == .decoding` and no thumbnail is ready, `renderViewport` sizes `ImageCanvas` to `.fixed(draw_w)` / `.fixed(draw_h)` and delays the `"Loading image..."` text until `elapsed >= 35ms` (~2 frames at 60Hz), preventing UI text flashes on fast decodes.
+- **EXIF APP1 & TIFF Rules**:
+  - **APP1 Skipping**: When scanning JPEG markers for main image `SOF0`/`SOF2` dimensions, explicitly skip `APP1` (`0xFF, 0xE1`) segments (`idx += seg_len`) so embedded thumbnail SOF headers are not mistaken for main image dimensions.
+  - **Truncated APP1 Tolerance**: Never discard an APP1 segment solely because `payload.len < seg_len`; inspect available bytes `data[idx + 2 .. idx + @min(seg_len, data.len - idx)]` for `"Exif\0\0"` and TIFF IFD0 headers.
+  - **Segmented TIFF Virtual Addressing (`TiffSource`)**: Probe the 4-byte IFD0 offset (`exif.probeTiffIfd0Offset`) from the initial 8-byte header first. Only call `file.length(io)` and read a 16KB stack `tail_buf` (`[16 * 1024]u8`) when `ifd0_off >= header_len` (e.g. Ricoh/Pentax tail IFD0 at 30MB+). Keep `TiffSource.getSlice`, `init`, and `initWithTail` marked `inline`.
+  - **SubIFD Clamping & Cycle Guard**: Clamp `SubIfdList` to `@min(count, 8)` without erroring, and track `visited: [8]u32` during IFD traversal to break cyclic IFD pointers.
+
+### Camera RAW Format Quirks & Disqualification Table
+
+Camera RAW files (`.arw`, `.raf`, `.cr2`, `.nef`, `.dng`, `.orf`, `.rw2`, `.pef`) must never be read into memory in full; workers extract embedded preview JPEGs via positional reads (`file.readPositional`).
+
+| Format / Camera                            | Header Window        | Preview & Thumbnail Layout                                                                                                                                                     | Parser Constraints & Disqualifications                                                                                                                                                                                                                                                          |
+| :----------------------------------------- | :------------------- | :----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Adobe DNG / Ricoh GR III / Pentax**      | `256 * 1024` (256KB) | ~161KB `DNGPrivateData` (`0xC634`) pushes `SubIFD[0..1]` to ~162KB; Ricoh embeds a 720x480 JPEG thumb inside `0xC634` at ~97KB (len ~55KB); IFD0 may sit at file tail (30MB+). | Require single-strip JPEG (`Compression == 6` or `7`, `val_count == 1`) with `PhotometricInterpretation` in `{1, 2, 6}` (or `null`) and `PlanarConfiguration == 1` (or `null`). Exclude CFA (`32803`) and LinearRaw (`34892`). Fall back to `parseImageDimensions` if SubIFDs lack sensor dims. |
+| **Canon CR2** (`"CR\x02\x00"` at offset 8) | `256 * 1024` (256KB) | IFD0 holds full-res JPEG preview (e.g. 2496x1664) but **omits** `PhotometricInterpretation` (`0x0106`). IFD1 holds thumbnail.                                                  | Explicitly disqualify **IFD2** (uncompressed 24-bit RGB tagged as `Compression == 6` lacking `\xFF\xD8` SOI) and **IFD3** (Lossless JPEG `SOF3` / `0xC3` raw Bayer sensor stream). Walk first 1024 bytes of candidate strips to verify `\xFF\xD8` and reject `SOF3` (`0xC3`).                   |
+| **Fujifilm RAF**                           | `256 * 1024` (256KB) | Embedded JPEG preview capped at ~12MP (4240x2832 or 4000x3000); IFD1 thumbnail at offset ~4,192 fits inside 256KB header.                                                      | Never infer full sensor resolution or aspect ratio from the 12MP preview SOF header; always read `PixelXDimension` (`0xA002`) / `PixelYDimension` (`0xA003`) from EXIF metadata.                                                                                                                |
+| **Sony ARW / Nikon NEF / TIFF-EP**         | `256 * 1024` (256KB) | IFD0 acts simultaneously as SubIFD container (`0x014A`), preview provider (`0x0201`/`0x0202`), and EXIF directory (`0x8769`).                                                  | Filter out raw Bayer sensor streams (`32803` CFA / `34892` LinearRaw / `NewSubfileType == 0` raw SubIFDs) whose optical-black margins (e.g. 6656x4608 vs 6240x4160) would corrupt aspect ratio fitting.                                                                                         |
+
+### Progressive 4-Tier RAW+JPEG Pipeline & Dimension Invariants
+
+1. **Tier 1 (Small Thumbnail, $\\le 512\\text{KB}$)**: Decoded in ~0.17ms directly from the resident 256KB header slice during rapid scrubbing (`thumb_only = true`).
+2. **Tier 2 (Medium Preview, $\\le 2\\text{MB}$, e.g. 1616x1080)**: Decoded as an instant placeholder during settled viewing (`thumb_only = false`). Skipped if the container has only a single preview (`preview == thumbnail`). If `prev_loc.file_offset + prev_loc.length <= header_slice.len`, sliced zero-copy from `header_slice`.
+3. **Tier 3 (Full-Resolution RAW Preview, e.g. 6240x4160)**: Decoded in the background via positional read and crossfaded over Tier 2.
+4. **Tier 4 (Companion Full-Resolution JPEG)**: Deferred until physical pixel demand exceeds the embedded preview resolution:
+   $$M\_{\\text{tex}} = Z \\times \\max\\left(\\frac{W\_{\\text{auth}}}{W\_{\\text{loaded}}}, \\frac{H\_{\\text{auth}}}{H\_{\\text{loaded}}}\\right) > 1.05$$
+   (or $M\_{\\text{tex}} > 1.15$ after `250ms` settled in Fit mode), or when the user presses `j` (`.toggle_pair_stream`).
+5. **Progressive Dimension Purity Invariants**:
+   - **No Worker Thumbnail Fallback**: Workers MUST set `full_w = 0.0, full_h = 0.0` when true full dimensions are unknown; never substitute `t_surf.w()` / `t_surf.h()`.
+   - **Monotonic Area Updates**: Event handlers (`handleDimensionsProbedEvent`, `handleExifThumbnailEvent`, `handleImageDecodedEvent`) only update `entry.full_w/h` when `cur_area <= 0.0 or new_area > cur_area`.
+   - **Small-Image Fitting Guard (`only_has_thumb`)**: In `computeDrawDims`, only promote `.shrink` to `.full` during background decode when `entry.full_w <= 0.0 and entry.raw_metadata.getSensorDims() == null and entry.thumbnail != .none`.
+   - **Main-Thread Stale Upload Guard**: In `handleImageDecodedEvent`, check `if (state.cache.get(decoded_data.key) == null) return;` before calling `uploadSurfaceToGpu`.
 
 ______________________________________________________________________
 
 ## 3. Throttled Navigation, Telemetry & Settled Preloading
 
-- **Throttling, Directional Speculative Preloading & Active Decode Priority**:
-  During rapid scrolling (< 150ms step interval), navigation direction (`.forward` / `.backward`) is tracked. `sysUpdateCache` prioritizes the 5-slot prefetch candidate window along the user's travel direction:
-  1. *Embedded Thumbnails Available*: For images with embedded thumbnails (Fuji RAF, camera RAWs, EXIF JPEGs), background workers extract and emit the thumbnail (~0.17ms) via `.thumb_decoded` (`thumb_only = true`), bypassing full software decoding. Once the active image's thumbnail is ready (`is_active_thumb_ready`), Peng speculatively preloads the single next thumbnail (`speculative_idx`) along the travel direction.
-  2. *Non-Thumbnail Formats*: If the active image lacks an embedded thumbnail (`entry.thumbnail == .not_available`, such as PNGs or standard JPEGs), `sysUpdateCache` immediately spawns a full decode worker (`thumb_only = false`) rather than stalling behind fast-scrolling throttling. Background neighbor slots (`d != idx`) continue to defer full decode until navigation settles (> 150ms idle time).
+- **Navigation Throttling Thresholds**:
+  - **`FAST_SCROLL_THRESHOLD_MS = 35` (`LOADING_GRACE_PERIOD_MS` in `src/app/systems/cache.zig`)**: When the interval since `last_nav_time_ms` is $< 35\\text{ms}$, `is_fast_scrolling` is true:
+    1. *Embedded Thumbnails Available*: Workers run with `thumb_only = true` (~0.17ms). Once the active thumbnail is ready (`is_active_thumb_ready`), `sysUpdateCache` speculatively preloads the next single thumbnail (`speculative_idx`) along `direction` (`NavDirection`: `.forward` / `.backward`).
+    2. *Non-Thumbnail Formats*: If `entry.thumbnail == .not_available` (e.g. PNG), `sysUpdateCache` spawns a full decode (`thumb_only = false`) for the active slot immediately while withholding neighbor decodes until navigation settles ($\\ge 35\\text{ms}$).
+  - **`200ms` Rapid Scrubbing Threshold (`src/app/systems/intents.zig`)**: Navigation steps within $< 200\\text{ms}$ bypass image crossfade animations (snapping immediately) and trigger the transient auto-title overlay.
+  - **`250ms` Settled Fit Promotion (`src/app/systems/cache.zig`)**: Companion JPEG Tier-4 promotion in Fit mode waits until $elapsed \\ge 250\\text{ms}$ to avoid 200MB decodes while stepping through a folder.
 - **Telemetry Metric Split ("Stats for Nerds")**:
-  High-resolution nanosecond timers (`sdl.timer.getTicksNs()`) isolate disk I/O as `read_time_ms` ("Disk Read Time") separately from CPU software image decompression (`decode_time_ms`). Both metrics are transferred via `ImageDecodedPayload` to the UI overlay.
+  High-resolution nanosecond timers (`sdl.timer.getTicksNs()`) measure disk I/O (`read_time_ms`) separately from CPU decompression (`decode_time_ms`) in `ImageDecodedPayload`.
 - **Demand-First Settled Preload & GPU Upload Gating**:
-  When navigation settles (> 150ms idle time), `sysUpdateCache(ctx)` MUST verify `is_current_ready` before spawning neighbor decodes ($\\pm 1, \\pm 2$ slots). If the active image is still decoding, neighbor tasks are withheld to prevent CPU/memory bandwidth contention. Similarly, `handleImageDecodedEvent` stores completed neighbor surfaces as `.loaded_cpu` in host RAM if the active image is not yet on the GPU, allowing `prepareCacheTextures` to trickle neighbor textures to VRAM at a paced rate of 1 texture per frame once the active image is visible.
+  Once navigation settles ($\\ge 35\\text{ms}$) AND the active slot is `.loaded_gpu` (or `.loaded_cpu` in headless mode, or `.failed`), `sysUpdateCache` dispatches neighbor prefetch workers ($\\pm 1, \\pm 2$). Completed neighbor surfaces are held as `.loaded_cpu` while the active image is in flight, then trickled to the GPU at 1 texture per frame in `prepareCacheTextures`.
 
 ______________________________________________________________________
 
 ## 4. Task Concurrency & Dynamic Core Scaling
 
 - **`std.Io.Group` Task Spawning**:
-  Spawn background decode tasks using `std.Io.Group` via `WorkerManager` (`state.workers.group.async(io, decodeTask, args)`). Tasks in a `Group` automatically release their task allocation upon return.
-- **Native Cancellation & Epoch Validation**:
-  Cancel active background tasks via `state.workers.drainAndQuiesce(io)` or `state.workers.group.cancel(state.io)`. In worker functions, check `io.isCanceled()` before queuing event payloads. On the main thread, validate incoming event payloads against the active `state.cache.getGeneration()` epoch before mutating cache entries.
-- **Dynamic CPU Core Worker Scaling**:
-  Scale max concurrent decode tasks dynamically at runtime based on hardware CPU count (`std.Thread.getCpuCount() catch 4`), e.g. `@max(2, @min(6, cpu_count - 1))`. This ensures high-throughput background decoding on multi-core systems while leaving 1 core dedicated to main-thread rendering.
+  Spawn background decode tasks using `std.Io.Group` via `WorkerManager` (`state.workers.group.async(io, decodeWorker, args)`).
+- **Dynamic CPU Core Worker Scaling (`WorkerManager.getMaxConcurrentDecodes`)**:
+  Scales max concurrent decode tasks dynamically based on hardware CPU count (`std.Thread.getCpuCount() catch 4`):
+  ```zig
+  return @max(1, @min(8, cpus -| 1));
+  ```
+  This leaves 1 core dedicated to main-thread rendering while capping concurrent decode memory pressure at 8 threads.
 
 ______________________________________________________________________
 
 ## 5. Cooperative Worker Pruning Pattern
 
 - **Non-Blocking Main-Thread Contract**:
-  In Zig 0.16.0, calling `std.Io.Group.cancel(io)` is synchronous and blocks the caller (`futexWait`) until all in-flight workers complete their current step. Calling `cancel()` on the main render thread causes frame stutters and input lag. Instead, the main thread increments an atomic generation counter (`state.cache.generation.fetchAdd(1, .release)` or `palette.dir_scan_generation.fetchAdd(1, .release)`), allowing the UI loop to continue rendering immediately at 60/120+ FPS.
-
-- **Atomic Generation Pointer Injection**:
-  Worker argument structs take a read-only pointer to the live generation atomic:
-
+  Calling `std.Io.Group.cancel(io)` blocks (`futexWait`) until in-flight workers finish. Instead, during runtime navigation, the main thread atomically increments `state.cache.generation.fetchAdd(1, .release)` (or `palette.dir_scan_generation.fetchAdd(1, .release)`).
+- **Atomic Generation Pointer Injection (`src/app/workers/decode.zig`)**:
+  `DecodeArgs` bundles the slot's `CacheKey` (`index` and assigned `generation`), `MediaEntry`, and a read-only pointer to the live atomic counter:
   ```zig
   pub const DecodeArgs = struct {
       workers: *WorkerManager,
       allocator: std.mem.Allocator,
-      slot_index: usize,
-      entry_id: usize,
-      assigned_generation: usize,
+      key: CacheKey,
+      entry: MediaEntry,
+      io: std.Io,
+      thumb_only: bool = false,
+      pair_target: PairStreamTarget = .adaptive,
       current_generation: *const std.atomic.Value(usize),
-      // ...
+      has_gpu_device: bool,
+      pixel_format: u32,
   };
   ```
-
-- **Cooperative Worker Checkpoints**:
-  Workers check generation validity at coarse phase transitions before performing expensive operations:
-
-  ```zig
-  // At worker task entry
-  if (args.current_generation.load(.acquire) != args.assigned_generation) return;
-
-  // Between directory scanning / archive traversal steps
-  if (args.current_generation.load(.acquire) != args.assigned_generation) return;
-
-  // Before expensive CPU surface decompression
-  if (args.current_generation.load(.acquire) != args.assigned_generation) return;
-  ```
-
-- **Clean Resource Unwinding with `defer`**:
-  All local resources (open file handles, allocated memory buffers, worker argument allocations, surface allocations, active thread counter decrements) MUST be unwound safely via `defer` so an early return never leaks memory or leaves active thread counters mismatched.
+- **Cooperative Checkpoints & `defer` Unwinding**:
+  Workers check `isStale(workers, args, key)` (`args.current_generation.load(.acquire) != key.generation` or `workers.exiting.load(.acquire)`) at task entry, between archive/directory steps, before `Surface.loadConstMemOpt`, and before pixel format conversion, returning early with all local resources unwound via `defer`.
 
 ______________________________________________________________________
 
 ## 6. Content-Adaptive Embedded Thumbnail Crop Detection & SIMD Analysis
 
-- **Camera Hardware DCT Variance**: In-camera preview JPEG encoders vary by camera model and firmware:
-  - *8px DCT Block Snapped*: Fujifilm RAF, Ricoh GR IIIx JPEG pad container letterbox/pillarbox margins to 8-pixel DCT block boundaries.
-  - *Theoretical Aspect Ratio*: Sony ARW, standard Fujifilm JPEGs scale active images continuously with exact fractional padding.
-  - Container file extensions (`.jpg` vs `.raw`) are NOT predictive. Crop math MUST be content-adaptive.
-- **Candidate Boundary Formula**:
-  - For letterboxing: `raw_pad_px = (thumb_h - (thumb_w / ar_full)) / 2.0`.
-  - For pillarboxing: `raw_pad_px = (thumb_w - (thumb_h * ar_full)) / 2.0`.
-  - Compute `nearest_block_px = @round(raw_pad_px / 8.0) * 8.0`.
+- **Camera Hardware DCT Variance**:
+  - *8px DCT Block Snapped*: Fujifilm RAF and Ricoh GR IIIx JPEG pad letterbox/pillarbox margins to 8-pixel DCT block boundaries.
+  - *Theoretical Aspect Ratio*: Sony ARW and standard JPEGs scale active images continuously with exact fractional padding.
+- **Candidate Boundary & Step-Transition Verification**:
+  - Compute `raw_pad_px` from full aspect ratio `ar_full` and `nearest_block_px = @round(raw_pad_px / 8.0) * 8.0`.
   - Guard: `nearest_block_px > 0.0 and nearest_block_px * 2.0 < thumb_dim and @abs(raw_pad_px - nearest_block_px) <= 2.0`.
-- **Step-Transition Verification & Black Background Immunity**:
-  - Test candidate padding rows/cols: `test_bound - 1` and `dim - test_bound` must both be black ($\\le 16$).
-  - Test active scene content at the boundary: `!isBlack(test_bound)` or `!isBlack(dim - test_bound - 1)`.
-  - If boundary rows are black but active content does NOT begin at `nearest_block_px`, the scene has an extended black background (e.g. astrophotography, studio backdrop). Return `false` to preserve theoretical aspect-ratio padding with zero subject distortion.
-- **SIMD Surface Inspection & Memory Layout**:
-  - Horizontal rows are contiguous in memory: use `@Vector(16, u8)` with `@reduce(.Or, ...)` for an ~8.6× speedup and linear hardware prefetching.
-  - Vertical columns stride across cache lines: use scalar or single 4-byte vector reads with early-exit per row. Cross-cache-line SIMD gathering wastes bandwidth and inhibits early exits.
-  - Endian- & Format-Agnostic 32-bit Masking: Derive color mask directly from `details.*.Rmask | details.*.Gmask | details.*.Bmask` via `@as([4]u8, @bitCast(...))` instead of `details.*.Ashift / 8`, correctly handling RGBA, BGRA, ARGB, ABGR, XRGB, and RGBX across all platforms.
-
-> [!NOTE]
-> For strict main-thread GPU texture release invariants and std.Io task group details, refer to [02_concurrency_and_architecture.md](../../../rules/02_concurrency_and_architecture.md).
+  - Verify padding rows/cols (`test_bound - 1` and `dim - test_bound`) are black ($\\le 16$) AND active content begins at `test_bound` or `dim - test_bound - 1` so dark scenes (astrophotography, studio backdrops) are never falsely cropped.
+- **SIMD Surface Inspection**:
+  - Scan contiguous horizontal rows with `@Vector(16, u8)` and `@reduce(.Or, ...)`; scan strided vertical columns with scalar/4-byte reads and early exit.
+  - Derive endian-agnostic RGB masks from `details.*.Rmask | details.*.Gmask | details.*.Bmask`.

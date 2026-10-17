@@ -223,9 +223,6 @@ pub const ZoomFactor = struct {
     }
 };
 
-/// Backward-compatible alias for UniversalZoom
-pub const UniversalZoom = ZoomFactor;
-
 /// Dynamic zoom policy controlling automatic window-fitting vs static manual
 /// inspection.
 pub const ZoomMode = enum {
@@ -238,7 +235,7 @@ pub const ZoomMode = enum {
 /// parameters.
 pub const ViewportParams = struct {
     mode: ZoomMode = .fit,
-    fit_mode: intents.ScaleMode = .full,
+    fit_mode: ZoomPreset = .full,
     scale_filter: intents.TextureScaleMode = .linear,
     zoom_factor: ZoomFactor = .{},
     pan_x: f32 = 0.0,

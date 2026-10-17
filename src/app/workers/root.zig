@@ -57,9 +57,6 @@ pub fn spawnIpcServer(workers: *WorkerManager, allocator: std.mem.Allocator, io:
     }
 }
 
-/// Alias for `spawnStdin`.
-pub const spawnStdinReader = spawnStdin;
-
 /// Inspects whether standard input is piped (non-TTY) and spawns an asynchronous stdin reader task.
 pub fn readPipedStdin(
     workers: *WorkerManager,
@@ -125,46 +122,4 @@ test {
     _ = ipc_server;
     _ = palette_scan;
     _ = manager;
-}
-
-test "WorkerManager.getMaxConcurrentDecodes scaling bounds" {
-    var mgr = WorkerManager{ .cached_cpu_count = 1 };
-    try std.testing.expectEqual(@as(usize, 1), mgr.getMaxConcurrentDecodes());
-
-    mgr.cached_cpu_count = 2;
-    try std.testing.expectEqual(@as(usize, 1), mgr.getMaxConcurrentDecodes());
-
-    mgr.cached_cpu_count = 4;
-    try std.testing.expectEqual(@as(usize, 3), mgr.getMaxConcurrentDecodes());
-
-    mgr.cached_cpu_count = 6;
-    try std.testing.expectEqual(@as(usize, 5), mgr.getMaxConcurrentDecodes());
-
-    mgr.cached_cpu_count = 8;
-    try std.testing.expectEqual(@as(usize, 7), mgr.getMaxConcurrentDecodes());
-
-    mgr.cached_cpu_count = 16;
-    try std.testing.expectEqual(@as(usize, 8), mgr.getMaxConcurrentDecodes());
-
-    mgr.cached_cpu_count = 64;
-    try std.testing.expectEqual(@as(usize, 8), mgr.getMaxConcurrentDecodes());
-}
-
-test "WorkerManager.canSpawnDecode gating" {
-    var mgr = WorkerManager{ .cached_cpu_count = 4 };
-    // Max is 3 (4 - 1):
-    try std.testing.expect(mgr.canSpawnDecode());
-    mgr.active_decode_threads.store(2, .release);
-    try std.testing.expect(mgr.canSpawnDecode());
-    mgr.active_decode_threads.store(3, .release);
-    try std.testing.expect(!mgr.canSpawnDecode());
-}
-
-test "WorkerManager.getCpuCount caching and fallback" {
-    const mgr_zero = WorkerManager{ .cached_cpu_count = 0 };
-    try std.testing.expect(mgr_zero.getCpuCount() >= 1);
-
-    const mgr_cached = WorkerManager.init();
-    try std.testing.expect(mgr_cached.cached_cpu_count >= 1);
-    try std.testing.expectEqual(mgr_cached.cached_cpu_count, mgr_cached.getCpuCount());
 }

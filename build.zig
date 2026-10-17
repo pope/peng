@@ -299,6 +299,19 @@ pub fn build(b: *std.Build) void {
     const run_ipc_tests = b.addRunArtifact(ipc_tests);
     run_ipc_tests.step.dependOn(b.getInstallStep());
 
+    const app_tests = b.addTest(.{
+        .root_module = app_module,
+    });
+    const run_app_tests = b.addRunArtifact(app_tests);
+    run_app_tests.setCwd(b.path("."));
+    run_app_tests.step.dependOn(b.getInstallStep());
+
+    const ui_tests = b.addTest(.{
+        .root_module = ui_module,
+    });
+    const run_ui_tests = b.addRunArtifact(ui_tests);
+    run_ui_tests.step.dependOn(b.getInstallStep());
+
     const core_module = b.createModule(.{
         .root_source_file = b.path("src/app/core/root.zig"),
         .target = target,
@@ -318,6 +331,8 @@ pub fn build(b: *std.Build) void {
         run_sdl_tests.addPathDir(b.getInstallPath(.bin, ""));
         run_state_tests.addPathDir(b.getInstallPath(.bin, ""));
         run_core_tests.addPathDir(b.getInstallPath(.bin, ""));
+        run_app_tests.addPathDir(b.getInstallPath(.bin, ""));
+        run_ui_tests.addPathDir(b.getInstallPath(.bin, ""));
         run_intents_tests.addPathDir(b.getInstallPath(.bin, ""));
         run_config_tests.addPathDir(b.getInstallPath(.bin, ""));
         run_input_tests.addPathDir(b.getInstallPath(.bin, ""));
@@ -332,6 +347,8 @@ pub fn build(b: *std.Build) void {
     test_unit_step.dependOn(&run_sdl_tests.step);
     test_unit_step.dependOn(&run_state_tests.step);
     test_unit_step.dependOn(&run_core_tests.step);
+    test_unit_step.dependOn(&run_app_tests.step);
+    test_unit_step.dependOn(&run_ui_tests.step);
     test_unit_step.dependOn(&run_intents_tests.step);
     test_unit_step.dependOn(&run_config_tests.step);
     test_unit_step.dependOn(&run_input_tests.step);
@@ -341,6 +358,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_sdl_tests.step);
     test_step.dependOn(&run_state_tests.step);
     test_step.dependOn(&run_core_tests.step);
+    test_step.dependOn(&run_app_tests.step);
+    test_step.dependOn(&run_ui_tests.step);
     test_step.dependOn(&run_intents_tests.step);
     test_step.dependOn(&run_config_tests.step);
     test_step.dependOn(&run_input_tests.step);

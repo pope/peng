@@ -573,6 +573,10 @@ test "drainWorkerEvents - directory_scan_result and ipc_command" {
     try std.testing.expectEqual(@as(usize, 2), state.viewer.navigation.count());
     try std.testing.expectEqual(@as(?usize, 1), state.viewer.navigation.current_index);
     try std.testing.expectEqual(@as(usize, 1), state.pending_ipc_commands.items.len);
+
+    const popped_cmd = state.pending_ipc_commands.pop().?;
+    allocator.free(popped_cmd.command);
+    allocator.destroy(popped_cmd);
 }
 
 test "drainWorkerEvents - neighbor image_decoded stays loaded_cpu while current is decoding" {
@@ -686,14 +690,6 @@ test "drainWorkerEvents - palette_folder_count updates directory and archive ent
             .scan = .unscanned,
         },
     });
-
-    defer {
-        for (state.viewer.ui.palette.dir_items.items) |item| {
-            allocator.free(item.getName());
-            allocator.free(item.getFullPath());
-        }
-        state.viewer.ui.palette.dir_items.deinit(allocator);
-    }
 
     // Push event with mismatched generation (should be ignored)
     const stale_path = try allocator.dupe(u8, "/path/to/folder_a");

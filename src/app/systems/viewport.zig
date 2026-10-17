@@ -110,7 +110,7 @@ pub fn sysUpdateViewport(
     // (.fit / .fill)
     if (state.viewer.viewport.mode != .manual) {
         state.viewer.viewport.zoom_factor =
-            state_pkg.UniversalZoom.init(state.getBaseScale());
+            state_pkg.ZoomFactor.init(state.getBaseScale());
     }
 
     // 2. Mouse Wheel & Touchpad Scroll Panning

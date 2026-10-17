@@ -230,7 +230,7 @@ test "scanDirectoryThreadSafe - discovers and sorts images, ignores non-images" 
     const io = std.Io.Threaded.global_single_threaded.io();
 
     var workers = WorkerManager{};
-    defer workers.drainAndQuiesce(io);
+    defer workers.deinit(allocator, io);
 
     scanDirectoryThreadSafe(&workers, allocator, io, "testfiles/images", true);
 
@@ -258,7 +258,7 @@ test "pathScanWorker - directory scan result event generation" {
     const io = std.Io.Threaded.global_single_threaded.io();
 
     var workers = WorkerManager{};
-    defer workers.drainAndQuiesce(io);
+    defer workers.deinit(allocator, io);
 
     var is_loading = std.atomic.Value(bool).init(true);
     const target = try allocator.dupe(u8, "testfiles/images");

@@ -1,8 +1,10 @@
+const intents = @import("intents");
 const std = @import("std");
-const ScaleMode = @import("intents").ScaleMode;
 const types = @import("types.zig");
-const ZoomFactor = types.ZoomFactor;
+
 const UvRect = types.UvRect;
+const ZoomFactor = types.ZoomFactor;
+const ZoomPreset = intents.ZoomPreset;
 
 /// Returns `true` if the normalized rotation angle is approximately 90 or
 /// 270 degrees (swapping width and height).
@@ -21,14 +23,14 @@ pub const ViewDims = struct {
 };
 
 /// Calculates rotated image dimensions, fitted screen rectangle bounds,
-/// and base scale according to `ScaleMode`.
+/// and base scale according to `ZoomPreset`.
 pub fn computeViewDims(
     raw_w: f32,
     raw_h: f32,
     rotation_angle: f32,
     view_w: f32,
     view_h: f32,
-    scale_mode: ScaleMode,
+    scale_mode: ZoomPreset,
 ) ViewDims {
     if (raw_w <= 0.0 or raw_h <= 0.0) {
         return .{
@@ -109,7 +111,7 @@ pub fn computePresetZoom(
     rotation_angle: f32,
     view_w: f32,
     view_h: f32,
-    preset: ScaleMode,
+    preset: ZoomPreset,
 ) f32 {
     if (raw_w <= 0.0 or raw_h <= 0.0 or view_w <= 0.0 or view_h <= 0.0) {
         return 1.0;

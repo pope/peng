@@ -38,7 +38,7 @@ ______________________________________________________________________
     rewinds its internal bump offset when the most recent allocation is freed,
     allowing subsequent systems in the same frame tick to reuse that memory
     without triggering arena block growth.
-  - **Frame-Arena String Lifetimes for Retained Clay UI Labels**: In Clay UI layout functions (`layout.zig`, `edit_panel.zig`, `command_palette.zig`), text elements take slice references (`clay.text(formatted_str, ...)`). Clay retains these slice pointers across the layout hierarchy and hands them directly to the render execution pass (`executeRenderPacket`). Dynamic text (such as numeric percentages, slider values, formatted labels, or stats strings) MUST NOT use local stack buffers (`var buf: [32]u8 = undefined`), which become invalid once the function returns. Dynamic labels MUST be formatted into `frame_allocator` (e.g. `try std.fmt.allocPrint(frame_allocator, ...)`), guaranteeing memory validity through the GPU text blitting pass.
+  - **Frame-Arena String Lifetimes for Retained Clay UI Labels**: In Clay UI layout functions (`layout.zig`, `edit_panel.zig`, `palette.zig`, `palette_items.zig`), text elements take slice references (`clay.text(formatted_str, ...)`). Clay retains these slice pointers across the layout hierarchy and hands them directly to the render execution pass (`executeRenderPacket`). Dynamic text (such as numeric percentages, slider values, formatted labels, or stats strings) MUST NOT use local stack buffers (`var buf: [32]u8 = undefined`), which become invalid once the function returns. Dynamic labels MUST be formatted into `frame_allocator` (e.g. `try std.fmt.allocPrint(frame_allocator, ...)`), guaranteeing memory validity through the GPU text blitting pass.
 
 ______________________________________________________________________
 
@@ -54,9 +54,9 @@ ______________________________________________________________________
 
 - **Pattern 4 — Cache Slot Generation Ownership & Structure**:
   - `CacheSlotMap` (`state.cache` in `src/app/core/image.zig`) uses Zig's `std.MultiArrayList(CacheSlot)` for Structure-of-Arrays (SoA) memory layout, allowing key scanning without cache-line pollution while mutating key and entry slices atomically.
-  - Generation state (`generation: usize`) is owned exclusively by `CacheSlotMap`.
+  - Generation state (`generation: std.atomic.Value(usize) = .init(0)`) is owned exclusively by `CacheSlotMap`.
   - Navigation/directory resets advance the generation via `_ = state.cache.advanceGeneration()`.
-  - Incoming background event payloads validate their `CacheKey` generation against `state.cache.getGeneration()`. Mismatched generations are ignored to prevent stale decodes from populating active slots.
+  - Incoming background event payloads validate their `CacheKey` (`state.cache.activeKey(idx)`) against `state.cache.generation.load(.acquire)`. Mismatched generations are ignored to prevent stale decodes from populating active slots.
 
 ______________________________________________________________________
 
@@ -73,7 +73,7 @@ ______________________________________________________________________
 
 - **Pattern 6 — Game-Engine View Model Snapshot Invariant**:
   - The frame lifecycle enforces a strict barrier between simulation/systems (Phase 2) and rendering (Phase 3).
-  - Prior to calling `ui.layout.renderFrame`, construct `UiViewModel` as a fully immutable snapshot struct containing const pointers and value types.
+  - Prior to calling `ui.layout.renderFrame`, construct `UiViewModel` (`src/state/view_model.zig`) as a fully immutable snapshot struct containing const pointers and value types.
   - UI layout evaluation and vertex generation MUST NOT mutate `AppState` or push intents.
   - Any interactive element (e.g. palette search clicks, overlay close buttons) must have its hit testing and intent dispatch evaluated during Phase 2 system passes (`sysProcessPaletteInput`, `sysProcessUiInteractions`).
 
@@ -125,9 +125,9 @@ ______________________________________________________________________
   - Capabilities are defined exclusively in `src/intents/actions.zig` via `ActionDef`:
     - `palette_action_items`: Projected for Command Palette rendering and scoring.
     - `flat_shortcuts`: Flattened mapping of `(Key, Modifiers) -> AppIntent`.
-    - `action_cli_options`: CLI flags and aliases merged into `app_config.cli.options`.
+    - `action_cli_options`: CLI flags and aliases merged into `app_config.cli.options` (with dynamic column-width wrapping in `src/config/cli.zig`).
     - `ipc_commands`: UDS IPC control commands projected for `peng-msg`.
-  - **Contextual Isolation**: High-frequency single-key shortcuts (e.g. `s` scale mode cycling, `Shift+S` filter cycling, `h`/`j`/`k`/`l` panning) must be context-isolated to avoid collisions during palette search or default viewing.
+  - **Contextual Isolation & Readline Navigation**: High-frequency single-key shortcuts (e.g. `s` scale mode cycling, `Shift+S` filter cycling, `h`/`j`/`k`/`l` panning) must be context-isolated to avoid collisions during palette search or default viewing. Command Palette text entry supports standard Readline/Emacs navigation (`Ctrl+N`/`P`/`J`/`V`/`U`/`W`/`G`) and directory stepping (`Tab` / `Shift+Tab`).
   - **Display State Decoupling**: Runtime window toggles (`setFullscreen`, `setBordered`) operate exclusively through `DisplayState.windowed`. The headless harness (`DisplayState.headless`) must remain a no-op to guarantee deterministic offscreen CI test execution.
 
 ______________________________________________________________________
@@ -146,7 +146,7 @@ ______________________________________________________________________
   - **Unified Allocation**: `MultiArrayList` manages both partitions in a single block allocation, preventing list length desynchronization and eliminating allocator fragmentation.
   - **L1 Cache Line Density**: Dense 1-byte arrays stream 64 items per 64-byte L1 cache line (a 64x density improvement over AoS structs), enabling sub-microsecond SIMD filtering across 10,000+ items.
   - **Read-Only Snapshot Slice**: Slicing via `nav.items.slice()` creates a zero-allocation `MediaItemSlice = std.MultiArrayList(MediaItem).Slice` passed into Phase 3 (Render) `UiViewModel`.
-  - **Encapsulation**: State mutations go through encapsulating methods (`appendEntry`, `clearEntries`), and UI view models access items via bounds-checked inline accessors (`getMediaEntry(idx)`, `getClassification(idx)`).
+  - **Encapsulation & Triage Export**: State mutations go through encapsulating methods (`appendEntry`, `clearEntries`), UI view models access items via bounds-checked inline accessors (`getMediaEntry(idx)`, `getClassification(idx)`), and picked file paths (`Classification.pick`) are exported to `stdout` on clean exit (`printPickedFilesToStdout`).
 
 ______________________________________________________________________
 
@@ -166,15 +166,16 @@ ______________________________________________________________________
 
 ______________________________________________________________________
 
-## State-Transition Feedback Invariants
+## Declarative Snackbar Feedback (`SnackbarState`)
 
-- **Pattern 11 — Action-Aware & Advance-Aware Snackbar Feedback**:
-  - When user actions cause items to be filtered out and advance the cursor (e.g. marking Reject in Default view hides the image and moves to the next visible image):
-    - Never derive snackbar text by inspecting the current image's classification after the mutation has already advanced the cursor.
-    - Derive feedback directly from the executed intent and track cursor advancement:
-      - Advanced away: `"Previous image flagged as rejected"`
-      - Remained on screen: `"Flagged as Pick"` / `"Flagged as Reject"`
-      - Action in 0-item filter: `"No image to classify"`
+- **Pattern 11 — Zero-Allocation Declarative Snackbar Rules (`src/state/snackbar.zig`)**:
+  - `SnackbarState` (`enabled: bool`, `notification: SnackbarNotification`, `enabled_mask: u32`) formats notification messages into `ActiveNotification.message_buf: [128]u8` (`message_len: usize`, `timeout_ms: ?f32`) with zero heap allocations and triggers `.snackbar` fade animations on `AnimationState`.
+  - `DEFAULT_SNACKBAR_RULES` declaratively maps `std.meta.Tag(AppIntent)` variants to `FormatFn` callbacks (`formatClassification`, `formatFilter`, `formatZoom`, `formatAdjustParam`, etc.).
+  - **Action-Aware & Advance-Aware Classification Feedback**:
+    When marking Reject in Default view filters out the active image and advances the cursor, never derive snackbar text by inspecting the new image's classification after the cursor has already advanced. Derive feedback directly from the executed intent and whether the cursor advanced:
+    - Advanced away: `"Previous image flagged as rejected"`
+    - Remained on screen: `"Flagged as Pick"` / `"Flagged as Reject"`
+    - Action in 0-item filter: `"No image to classify"`
 
 ______________________________________________________________________
 
@@ -217,5 +218,5 @@ ______________________________________________________________________
       (`descriptors: [EditParam.count]ParamDescriptor`).
     - Eliminate duplicated bounds checking, slider hit-testing logic, and
       formatting branches across IPC, UI layouts, and state stores.
-    - Let UI widgets and IPC parsers query `param.descriptor()` to clamp and
-      format values consistently.
+    - Let UI widgets and IPC parsers query `state.getDescriptor(param)` to
+      clamp and format values consistently.

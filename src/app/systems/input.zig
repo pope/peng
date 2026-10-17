@@ -278,7 +278,7 @@ test "Escape key closes active palette without triggering quit in sysProcessInpu
 
     const palette_closed = try palette_input.sysProcessPaletteInput(ctx);
     try std.testing.expect(palette_closed);
-    try std.testing.expectEqual(PaletteMode.inactive, state.viewer.ui.palette.mode);
+    try std.testing.expect(state.viewer.ui.palette.is_closing);
 
     // sysProcessInput must NOT register a quit intent because palette was closed this frame
     try sysProcessInput(ctx, palette_closed);
@@ -646,7 +646,7 @@ test "sysProcessInput repeating key with held orthogonal key pans diagonally" {
         .scroll_delta_y = 0,
         .keys_pressed = keys_left,
         .key_modifiers = .{},
-        .directional_held = .{ .up = true },
+        .directional_held = .{ .up = true, .left = true },
         .text_input = null,
         .dropped_path = null,
         .ticks = 0,

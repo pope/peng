@@ -255,11 +255,6 @@ pub const NavigationState = struct {
         return self.items.len;
     }
 
-    /// Alias for total count of images.
-    pub inline fn totalImages(self: *const NavigationState) usize {
-        return self.items.len;
-    }
-
     /// Returns a contiguous slice of all media entries.
     pub inline fn getEntries(self: *const NavigationState) []const MediaEntry {
         return self.items.items(.entry);
@@ -433,7 +428,7 @@ pub const NavigationState = struct {
     /// Advances the selection to the next visible image using circular SIMD scanning.
     pub fn nextIndex(self: *NavigationState) ?usize {
         self.slideshow.resetTimer();
-        self.last_nav_time_ms = sdl.timer.getTicks();
+        self.last_nav_time_ms = @max(1, sdl.timer.getTicks());
         self.direction = .forward;
         const len = self.items.len;
         if (len == 0 or self.getVisibleCount() == 0) return null;
@@ -464,7 +459,7 @@ pub const NavigationState = struct {
     /// Moves the selection to the previous visible image using circular SIMD scanning.
     pub fn prevIndex(self: *NavigationState) ?usize {
         self.slideshow.resetTimer();
-        self.last_nav_time_ms = sdl.timer.getTicks();
+        self.last_nav_time_ms = @max(1, sdl.timer.getTicks());
         self.direction = .backward;
         const len = self.items.len;
         if (len == 0 or self.getVisibleCount() == 0) return null;
@@ -506,7 +501,7 @@ pub const NavigationState = struct {
             }
         }
         self.slideshow.resetTimer();
-        self.last_nav_time_ms = sdl.timer.getTicks();
+        self.last_nav_time_ms = @max(1, sdl.timer.getTicks());
         self.current_index = target;
         self.anchor_index = target;
         return self.current_index;

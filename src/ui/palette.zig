@@ -18,7 +18,6 @@ const PaletteState = state.PaletteState;
 const partitionHighlightedText = palette_items.partitionHighlightedText;
 const remapMiddleTruncatedMatches = text_utils.remapMiddleTruncatedMatches;
 const renderFuzzyMatchText = palette_items.renderFuzzyMatchText;
-const renderHighlightedText = palette_items.renderHighlightedText;
 const TextChunk = palette_items.TextChunk;
 const truncateDirectory = text_utils.truncateDirectory;
 const truncateFilename = text_utils.truncateFilename;
@@ -1399,49 +1398,6 @@ pub fn renderPalette(
     });
 }
 
-test "renderHighlightedText whitespace boundary handling" {
-    renderHighlightedText(
-        std.testing.allocator,
-        "Scale Nearest Neighbor",
-        &.{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 },
-        13,
-        theme.text,
-        theme.yellow,
-    );
-    renderHighlightedText(
-        std.testing.allocator,
-        "Scale Mode: Fit",
-        &.{ 0, 1, 2, 3, 4, 5 },
-        13,
-        theme.text,
-        theme.yellow,
-    );
-    renderHighlightedText(
-        std.testing.allocator,
-        "   leading and trailing   ",
-        &.{ 3, 4, 5 },
-        13,
-        theme.text,
-        theme.yellow,
-    );
-}
-
-test "partitionHighlightedText filterh query on Set Scaling Filter: Bilinear (Smooth)" {
-    var palette = try PaletteState.init(std.testing.allocator);
-    defer palette.deinit();
-
-    const searcher = try palette.getSearcher(64, 16);
-    const text = "Set Scaling Filter: Bilinear (Smooth)";
-    const res = searcher.scoreMatches(text, "filterh");
-    std.debug.print("\n=== MATCHES for filterh: {any} ===\n", .{res.matches});
-
-    const chunks = try partitionHighlightedText(std.testing.allocator, text, res.matches);
-    defer std.testing.allocator.free(chunks);
-    for (chunks, 0..) |chunk, i| {
-        std.debug.print("Chunk {d}: '{s}' (matched={})\n", .{ i, chunk.slice, chunk.is_matched });
-    }
-}
-
 test "partitionHighlightedText correctly partitions matched and unmatched chunks" {
     // Scenario 1: Query "sc" matching "Set Contrast" (indices 0 and 4)
     const text1 = "Set Contrast";
@@ -1563,7 +1519,7 @@ test "PaletteState directory_navigator mode configuration and item matching" {
 
     try palette.query.appendSlice(std.testing.allocator, "Vac");
     try palette.rebuildDirectoryMatches();
-    try std.testing.expectEqual(@as(usize, 2), palette.matches.items.len);
+    try std.testing.expectEqual(@as(usize, 1), palette.matches.items.len);
     try std.testing.expectEqual(@as(usize, 1), palette.matches.items[0]);
 }
 

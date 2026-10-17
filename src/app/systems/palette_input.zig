@@ -518,16 +518,13 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
 
     // 4. Mouse Pointer & Click Processing
     var palette_closed_this_frame = false;
-    if (input.mouse_left_clicked) {
-        const is_in_debug_panel = input.isPointerInDebugPanel();
+    if (input.mouse_left_clicked and !input.isPointerInDebugPanel()) {
         const cfg = state_pkg.getPaletteConfig(self.viewer.ui.palette.mode);
 
-        if (!clay.pointerOver(clay.getElementId(cfg.element_id)) and
-            !is_in_debug_panel)
-        {
+        if (!clay.pointerOver(clay.getElementId(cfg.element_id))) {
             self.closePalette();
             palette_closed_this_frame = true;
-        } else if (!is_in_debug_panel) {
+        } else {
             // Check if a list item was clicked
             for (self.viewer.ui.palette.matches.items) |real_idx| {
                 var item_id_buf: [64]u8 = undefined;
@@ -577,6 +574,9 @@ test "handlePaletteKeys directory_navigator key interactions" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
+    var frame_arena = std.heap.ArenaAllocator.init(allocator);
+    defer frame_arena.deinit();
+
     // 1. Open directory navigator at tmp_dir
     try state.loadPaletteDirectory(tmp_dir);
     state.viewer.ui.palette.mode = .directory_navigator;
@@ -590,7 +590,10 @@ test "handlePaletteKeys directory_navigator key interactions" {
         }
     }
 
-    const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
+    const ctx = FrameContext{
+        .state = &state,
+        .frame_allocator = frame_arena.allocator(),
+    };
 
     // Test Right key on sub_no_images -> navigate into folder
     state.viewer.ui.palette.selected_idx = match_idx_no_img;
@@ -617,19 +620,21 @@ test "handlePaletteKeys directory_navigator key interactions" {
     try std.testing.expectEqual(PaletteMode.directory_navigator, state.viewer.ui.palette.mode);
     try std.testing.expectEqualStrings(tmp_dir, state.viewer.ui.palette.current_nav_dir.items);
 
-    // Test Enter key on sub_no_images -> starts async path scan for
-    // sub_no_images and closes palette
+    // Test Enter key on sub_no_images -> queues open_path intent for
+    // sub_no_images and initiates palette closing dissolve
     state.viewer.ui.palette.selected_idx = match_idx_no_img;
     _ = try handlePaletteKeys(ctx, .return_key, .{});
-    try std.testing.expectEqual(PaletteMode.inactive, state.viewer.ui.palette.mode);
+    try std.testing.expect(state.viewer.ui.palette.is_closing);
 
     // Re-open palette
+    state.viewer.ui.palette.is_closing = false;
     try state.loadPaletteDirectory(tmp_dir);
     state.viewer.ui.palette.mode = .directory_navigator;
 
-    // Test Shift+Enter key on current directory -> starts async path scan and closes palette
+    // Test Shift+Enter key on current directory -> queues open_path intent
+    // and initiates palette closing dissolve
     _ = try handlePaletteKeys(ctx, .return_key, .{ .shift = true });
-    try std.testing.expectEqual(PaletteMode.inactive, state.viewer.ui.palette.mode);
+    try std.testing.expect(state.viewer.ui.palette.is_closing);
 }
 
 test "handlePaletteKeys stepping up from dot to parent directory preselects working dir" {

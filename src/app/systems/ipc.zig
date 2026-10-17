@@ -201,17 +201,28 @@ fn handleIntentCommand(
 }
 
 test "sysExecuteIpcCommands - drains pending commands and mutates state" {
+    if (@import("builtin").os.tag == .windows) return;
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    // Create mock IPC command data
+    const sock_path = "/tmp/peng_test_sys_ipc1.sock";
+    std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, sock_path) catch {};
+    defer std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, sock_path) catch {};
+
+    const addr = try std.Io.net.UnixAddress.init(sock_path);
+    var server = try addr.listen(io, .{});
+    defer server.deinit(io);
+    const client = try addr.connect(io);
+    defer client.close(io);
+    const accepted = try server.accept(io);
+
     const cmd_str = try allocator.dupe(u8, "zoom 2.0");
     const cmd_data = try allocator.create(ipc.IpcCommandData);
     cmd_data.* = .{
         .command = cmd_str,
-        .client_stream = undefined,
+        .client_stream = accepted,
     };
 
     try state.pending_ipc_commands.append(allocator, cmd_data);
@@ -224,14 +235,26 @@ test "sysExecuteIpcCommands - drains pending commands and mutates state" {
 }
 
 test "sysExecuteIpcCommands - multiple queued commands and adjust command" {
+    if (@import("builtin").os.tag == .windows) return;
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
+    const sock_path = "/tmp/peng_test_sys_ipc2.sock";
+    std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, sock_path) catch {};
+    defer std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, sock_path) catch {};
+
+    const addr = try std.Io.net.UnixAddress.init(sock_path);
+    var server = try addr.listen(io, .{});
+    defer server.deinit(io);
+    const client = try addr.connect(io);
+    defer client.close(io);
+    const accepted = try server.accept(io);
+
     const cmd1_str = try allocator.dupe(u8, "adjust 0.5 2.0");
     const cmd1_data = try allocator.create(ipc.IpcCommandData);
-    cmd1_data.* = .{ .command = cmd1_str, .client_stream = undefined };
+    cmd1_data.* = .{ .command = cmd1_str, .client_stream = accepted };
     try state.pending_ipc_commands.append(allocator, cmd1_data);
 
     const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };

@@ -60,7 +60,13 @@ test "prepareCacheTextures guards thumbnail eviction during active thumb_crossfa
     } };
 
     // Case 1: thumb_crossfade is active -> prepareCacheTextures MUST NOT evict thumbnail
-    state.viewer.animations.start(.thumb_crossfade, 1.0, 120.0, .ease_out_quad);
+    state.viewer.animations.startFrom(
+        .thumb_crossfade,
+        0.0,
+        1.0,
+        120.0,
+        .ease_out_quad,
+    );
     state.prepareCacheTextures();
     var entry = state.cache.get(state.cache.activeKey(0)).?;
     try std.testing.expect(entry.thumbnail == .loaded);

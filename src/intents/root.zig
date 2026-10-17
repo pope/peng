@@ -15,7 +15,6 @@ pub const KeyboardShortcut = keys.KeyboardShortcut;
 
 pub const Classification = types.Classification;
 pub const ViewMode = types.ViewMode;
-pub const ScaleMode = types.ScaleMode;
 pub const ZoomPreset = types.ZoomPreset;
 pub const TextureScaleMode = types.TextureScaleMode;
 pub const scale_modes_string = types.scale_modes_string;

@@ -131,7 +131,7 @@ test "paletteScanWorker - counts directory contents and pushes events" {
     const io = std.Io.Threaded.global_single_threaded.io();
 
     var workers = WorkerManager{};
-    defer workers.drainAndQuiesce(io);
+    defer workers.deinit(allocator, io);
 
     const test_dir = "testfiles/images";
     const dir_path = try allocator.dupe(u8, test_dir);
@@ -180,7 +180,7 @@ test "paletteScanWorker - prunes early when current_generation increments" {
     const io = std.Io.Threaded.global_single_threaded.io();
 
     var workers = WorkerManager{};
-    defer workers.drainAndQuiesce(io);
+    defer workers.deinit(allocator, io);
 
     const test_dir = "testfiles/images";
     const dir_path = try allocator.dupe(u8, test_dir);

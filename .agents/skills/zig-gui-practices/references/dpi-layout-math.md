@@ -12,8 +12,8 @@ ______________________________________________________________________
 ## Continuous Arc & Annular Quad Geometry Formulas
 
 - When building circular or rounded UI layout boxes, compute quadrant vertices using continuous `@sin` and `@cos` floating-point math:
-  $$\\text{x} = \\text{center_x} + \\text{radius} \\times \\sin(\\theta)$$
-  $$\\text{y} = \\text{center_y} + \\text{radius} \\times \\cos(\\theta)$$
+  $$x = \\text{center_x} + \\text{radius} \\times \\sin(\\theta)$$
+  $$y = \\text{center_y} + \\text{radius} \\times \\cos(\\theta)$$
 
 - For inner/outer rounded borders (annular quad vertices), maintain separate inner and outer radii using single-precision floats (`f32`) to prevent vertex overlapping and anti-aliasing artifacts.
 

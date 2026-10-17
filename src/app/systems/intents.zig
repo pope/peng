@@ -72,7 +72,7 @@ fn syncNavIndexChange(self: *AppState, old_idx: ?usize) void {
         self.viewer.viewport.reset();
         if (self.viewer.viewport.mode != .manual) {
             self.viewer.viewport.zoom_factor =
-                state.UniversalZoom.init(self.getBaseScale());
+                state.ZoomFactor.init(self.getBaseScale());
         }
         self.viewer.image_transition = .none;
         self.viewer.animations.setImmediate(.image_crossfade, 1.0);
@@ -96,7 +96,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
             vp.mode = .manual;
             const old_zoom = vp.zoom_factor.get();
             const new_zoom = state.clampZoomFactor(old_zoom * zb.ratio).get();
-            vp.zoom_factor = state.UniversalZoom.init(new_zoom);
+            vp.zoom_factor = state.ZoomFactor.init(new_zoom);
             const ratio = new_zoom / old_zoom;
             vp.pan_x *= ratio;
             vp.pan_y *= ratio;
@@ -132,14 +132,14 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
             self.viewer.zoom_controller.reset();
             vp.fit_mode = .full;
             vp.reset();
-            vp.zoom_factor = state.UniversalZoom.init(self.getBaseScale());
+            vp.zoom_factor = state.ZoomFactor.init(self.getBaseScale());
         },
         .set_scale => |mode| {
             self.viewer.pan_controller.reset();
             self.viewer.zoom_controller.reset();
             vp.fit_mode = mode;
             vp.reset();
-            vp.zoom_factor = state.UniversalZoom.init(self.getBaseScale());
+            vp.zoom_factor = state.ZoomFactor.init(self.getBaseScale());
         },
         .cycle_scale_mode => {
             self.viewer.pan_controller.reset();
@@ -153,7 +153,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 .fit_height => .shrink,
             };
             vp.reset();
-            vp.zoom_factor = state.UniversalZoom.init(self.getBaseScale());
+            vp.zoom_factor = state.ZoomFactor.init(self.getBaseScale());
         },
         .set_filter => |mode| vp.scale_filter = mode,
         .cycle_filter => {
@@ -255,10 +255,11 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
 
         .next_image, .prev_image, .first_image, .last_image, .go_to_image => {
             const now = sdl.timer.getTicks();
-            const elapsed = now -| nav.last_nav_time_ms;
+            const prev_nav_time_ms = nav.last_nav_time_ms;
+            const elapsed = now -| prev_nav_time_ms;
             const should_show_auto_title = ui.overlays.auto_title and
                 nav.count() > 0 and
-                nav.last_nav_time_ms > 0 and
+                prev_nav_time_ms > 0 and
                 elapsed < 200;
             if (should_show_auto_title) {
                 if (!ui.overlays.title_display.isPinned()) {
@@ -314,7 +315,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
             };
 
             if (vp.mode != .manual) {
-                vp.zoom_factor = state.UniversalZoom.init(self.getBaseScale());
+                vp.zoom_factor = state.ZoomFactor.init(self.getBaseScale());
             }
 
             const changed_image = old_index != null and
@@ -337,7 +338,8 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                         .inactive => false,
                     }
                 else
-                    (nav.crossfade and elapsed >= 200 and
+                    (nav.crossfade and
+                        (prev_nav_time_ms == 0 or elapsed >= 200) and
                         !is_animating and old_entry_loaded);
 
                 if (should_crossfade) {
@@ -868,7 +870,7 @@ test "fast scrubbing triggers title overlay auto-hide" {
 
     // Simulate recent navigation within 200ms
     const now = sdl.timer.getTicks();
-    app_st.viewer.navigation.last_nav_time_ms = now -| 50;
+    app_st.viewer.navigation.last_nav_time_ms = @max(1, now -| 50);
 
     try executeIntent(&app_st, .next_image);
 
@@ -1056,7 +1058,7 @@ test "Before/After comparison intents mutate viewport and trigger snackbar" {
     app_st.viewer.ui.snackbar.enabled = true;
 
     // 1. Toggling without adjustments remains false and shows no adjustments snackbar
-    try app_st.pushIntent(.toggle_compare);
+    try app_st.pushIntent(.{ .adjust = .toggle_compare });
     try sysExecuteIntents(.{
         .state = &app_st,
         .frame_allocator = allocator,
@@ -1069,7 +1071,9 @@ test "Before/After comparison intents mutate viewport and trigger snackbar" {
     );
 
     // 2. Set adjustments then toggle compare on
-    try app_st.pushIntent(.increase_brightness);
+    try app_st.pushIntent(.{
+        .adjust = .{ .step = .{ .param = .brightness, .direction = .up } },
+    });
     try sysExecuteIntents(.{
         .state = &app_st,
         .frame_allocator = allocator,
@@ -1077,7 +1081,7 @@ test "Before/After comparison intents mutate viewport and trigger snackbar" {
     });
     try testing.expect(app_st.viewer.viewport.hasAdjustments());
 
-    try app_st.pushIntent(.toggle_compare);
+    try app_st.pushIntent(.{ .adjust = .toggle_compare });
     try sysExecuteIntents(.{
         .state = &app_st,
         .frame_allocator = allocator,
@@ -1090,7 +1094,7 @@ test "Before/After comparison intents mutate viewport and trigger snackbar" {
     );
 
     // 3. Toggle compare off
-    try app_st.pushIntent(.toggle_compare);
+    try app_st.pushIntent(.{ .adjust = .toggle_compare });
     try sysExecuteIntents(.{
         .state = &app_st,
         .frame_allocator = allocator,
@@ -1103,7 +1107,7 @@ test "Before/After comparison intents mutate viewport and trigger snackbar" {
     );
 
     // 4. Test set_compare explicit intent
-    try app_st.pushIntent(.{ .set_compare = true });
+    try app_st.pushIntent(.{ .adjust = .{ .set_compare = true } });
     try sysExecuteIntents(.{
         .state = &app_st,
         .frame_allocator = allocator,
@@ -1239,11 +1243,11 @@ test "sysExecuteIntents - raw jpeg stacking and stream toggle" {
     // 4. Toggle pair stream on a pair
     const raw_p = try app_st.viewer.navigation.directory_arena.allocator().dupe(
         u8,
-        "DSC00941.ARW",
+        "testfiles/golden-screenshots/init.png",
     );
     const jpg_p = try app_st.viewer.navigation.directory_arena.allocator().dupe(
         u8,
-        "DSC00941.JPG",
+        "testfiles/golden-screenshots/init.png",
     );
     try app_st.viewer.navigation.appendEntry(
         allocator,
@@ -1251,9 +1255,11 @@ test "sysExecuteIntents - raw jpeg stacking and stream toggle" {
     );
     app_st.viewer.navigation.current_index = 0;
 
+    const surf = sdl.Surface.create(10, 10, sdl.PixelFormat.rgba32) orelse
+        return error.SurfaceFailed;
     const key = try app_st.cache.appendSlot(allocator, 0, .{
         .loaded_cpu = .{
-            .surface = undefined,
+            .surface = surf,
             .w = 1616.0,
             .h = 1080.0,
             .size_bytes = 500_000,
@@ -1273,5 +1279,8 @@ test "sysExecuteIntents - raw jpeg stacking and stream toggle" {
         "Stream: Standalone JPEG",
         app_st.viewer.ui.snackbar.getMessage(),
     );
-    try testing.expect(app_st.cache.get(key).?.is_promoting);
+    try testing.expectEqual(
+        state.PairStreamTarget.standalone_jpeg,
+        app_st.cache.get(key).?.requested_target.?,
+    );
 }

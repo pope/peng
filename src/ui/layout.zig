@@ -32,7 +32,7 @@ pub fn computeDrawDims(
     available_width: f32,
     available_height: f32,
     rotation_angle: f32,
-    fit_mode: intents.ScaleMode,
+    fit_mode: intents.ZoomPreset,
 ) struct { w: f32, h: f32 } {
     const entry = entry_opt orelse return .{ .w = 0, .h = 0 };
     const auth = entry.getAuthoritativeDims();
@@ -47,7 +47,7 @@ pub fn computeDrawDims(
         const only_has_thumb = entry.full_w <= 0.0 and
             entry.raw_metadata.getSensorDims() == null and
             entry.thumbnail != .none;
-        const effective_fit_mode: intents.ScaleMode =
+        const effective_fit_mode: intents.ZoomPreset =
             if (fit_mode == .shrink and is_loading and only_has_thumb)
                 .full
             else
@@ -1221,7 +1221,7 @@ fn renderViewport(
 test "formatLoadingText - fallback when no filename" {
     var data = MeasureTextUserData{
         .allocator = std.testing.allocator,
-        .fonts = [_]?sdl.Font{null} ** 2,
+        .fonts = &([_]?sdl.Font{null} ** 2),
     };
     const res = formatLoadingText(std.testing.allocator, null, 400.0, 22, &data);
     try std.testing.expectEqualStrings("Loading image...", res);
@@ -1230,7 +1230,7 @@ test "formatLoadingText - fallback when no filename" {
 test "formatLoadingText - with filename" {
     var data = MeasureTextUserData{
         .allocator = std.testing.allocator,
-        .fonts = [_]?sdl.Font{null} ** 2,
+        .fonts = &([_]?sdl.Font{null} ** 2),
     };
     const res = formatLoadingText(std.testing.allocator, "photo.jpg", 400.0, 22, &data);
     defer std.testing.allocator.free(res);
@@ -1240,7 +1240,7 @@ test "formatLoadingText - with filename" {
 test "formatLoadingText - fallback when empty filename" {
     var data = MeasureTextUserData{
         .allocator = std.testing.allocator,
-        .fonts = [_]?sdl.Font{null} ** 2,
+        .fonts = &([_]?sdl.Font{null} ** 2),
     };
     const res = formatLoadingText(std.testing.allocator, "", 400.0, 22, &data);
     try std.testing.expectEqualStrings("Loading image...", res);
@@ -1249,7 +1249,7 @@ test "formatLoadingText - fallback when empty filename" {
 test "formatLoadingText - narrow viewport fallback" {
     var data = MeasureTextUserData{
         .allocator = std.testing.allocator,
-        .fonts = [_]?sdl.Font{null} ** 2,
+        .fonts = &([_]?sdl.Font{null} ** 2),
     };
     const res = formatLoadingText(std.testing.allocator, null, 100.0, 22, &data);
     try std.testing.expectEqualStrings("Loading...", res);

@@ -1,7 +1,7 @@
 const intents = @import("intents");
 const std = @import("std");
 
-const ScaleMode = intents.ScaleMode;
+const ZoomPreset = intents.ZoomPreset;
 
 /// Startup process flags that configure runtime initialization (not runtime actions).
 pub const process_flags = [_]intents.CliOption{
@@ -170,9 +170,6 @@ pub const main_help_text: []const u8 = generateHelp(.{
     .options_col_width = 29,
 });
 
-/// Backward-compatible alias for the main application help text.
-pub const help_text = main_help_text;
-
 /// Formatted help text dynamically generated for the `peng-msg` IPC utility at compile-time.
 pub const ipc_help_text: []const u8 = generateHelp(.{
     .title = "Peng IPC Message Client",
@@ -205,7 +202,7 @@ pub fn printIpcHelp(io: std.Io) void {
 /// Parsed command-line configuration options controlling launch behavior and rendering modes.
 pub const ParsedArgs = struct {
     arg_path: ?[]const u8 = null,
-    default_scale: ScaleMode = .full,
+    default_scale: ZoomPreset = .full,
     test_mode: bool = false,
     update_baselines: bool = false,
     headless: bool = false,
@@ -240,12 +237,12 @@ pub const SliceIterator = struct {
     }
 };
 
-fn parseScaleMode(val: []const u8) ?ScaleMode {
+fn parseZoomPreset(val: []const u8) ?ZoomPreset {
     if (std.mem.eql(u8, val, "fit")) return .full;
     if (std.mem.eql(u8, val, "fill")) return .crop;
     if (std.mem.eql(u8, val, "1:1") or
         std.mem.eql(u8, val, "actual")) return .none;
-    return std.meta.stringToEnum(ScaleMode, val);
+    return std.meta.stringToEnum(ZoomPreset, val);
 }
 
 /// Parses flags and arguments from any iterator providing `next() ?[]const u8`.
@@ -253,7 +250,7 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
     var arg_path: ?[]const u8 = null;
     errdefer if (arg_path) |p| gpa.free(p);
 
-    var default_scale: ScaleMode = .full;
+    var default_scale: ZoomPreset = .full;
     var test_mode = false;
     var update_baselines = false;
     var headless = false;
@@ -283,7 +280,7 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
                         std.log.err("Missing value for --scale flag.", .{});
                         continue;
                     };
-                    if (parseScaleMode(val)) |mode| {
+                    if (parseZoomPreset(val)) |mode| {
                         default_scale = mode;
                     } else {
                         std.log.err(
@@ -412,7 +409,7 @@ test "parseArgsIterator handles help flags" {
         var parsed = try parseArgsIterator(&it, testing.allocator);
         defer parsed.deinit(testing.allocator);
         try testing.expect(parsed.help);
-        try testing.expectEqual(ScaleMode.crop, parsed.default_scale);
+        try testing.expectEqual(ZoomPreset.crop, parsed.default_scale);
     }
 
     {

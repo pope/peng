@@ -198,5 +198,3 @@ pub fn renderFuzzyMatchText(
         }
     });
 }
-
-pub const renderHighlightedText = renderFuzzyMatchText;

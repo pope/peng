@@ -115,9 +115,6 @@ pub const ZoomPreset = enum {
     }
 };
 
-/// Backward-compatible alias for ZoomPreset.
-pub const ScaleMode = ZoomPreset;
-
 /// High-quality GPU texture resampling and reconstruction filter algorithms.
 pub const TextureScaleMode = enum {
     nearest,
@@ -129,18 +126,16 @@ pub const TextureScaleMode = enum {
     tiny_cnn,
 };
 
-/// Comptime-generated comma-separated list of all valid ScaleMode names
+/// Comptime-generated comma-separated list of all valid ZoomPreset names
 /// via reflection.
 pub const scale_modes_string: []const u8 = blk: {
     var str: []const u8 = "";
-    const fields = @typeInfo(ScaleMode).@"enum".fields;
+    const fields = @typeInfo(ZoomPreset).@"enum".fields;
     for (fields, 0..) |field, i| {
         str = if (i > 0) str ++ ", " ++ field.name else field.name;
     }
     break :blk str;
 };
-
-pub const zoom_presets_string = scale_modes_string;
 
 /// Comptime-generated comma-separated list of all valid TextureScaleMode names
 /// via reflection.
@@ -341,7 +336,7 @@ pub const AppIntent = union(enum) {
     reset_zoom,
 
     // Image scaling modes & GPU filters
-    set_scale: ScaleMode,
+    set_scale: ZoomPreset,
     cycle_scale_mode,
     set_filter: TextureScaleMode,
     cycle_filter,
