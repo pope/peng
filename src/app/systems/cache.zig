@@ -181,9 +181,20 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
     if (len == 0) return;
 
     const idx = state.viewer.navigation.current_index orelse return;
+    const dev_opt = state.gpu_device;
+
+    state.cache.enforceVramBudget(
+        dev_opt,
+        idx,
+        state.viewer.getTransitionPrevIndex(),
+        len,
+        image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES,
+    );
+
+    const max_dist = state.cache.getMaxPrefetchDist(idx);
 
     // 1. Gather desired indices (prefetch window: idx, prioritized along
-    // travel direction)
+    // travel direction within the active VRAM prefetch radius)
     const next_idx = (idx + 1) % len;
     const prev_idx = (idx + len - 1) % len;
     const next_2 = (idx + 2) % len;
@@ -202,6 +213,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
     desired.appendAssumeCapacity(idx);
 
     for (candidates) |d| {
+        if (image.calcCyclicDistance(d, idx, len) > max_dist) continue;
         var unique = true;
         for (desired.items) |existing| {
             if (existing == d) {
@@ -213,8 +225,6 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
             desired.appendAssumeCapacity(d);
         }
     }
-
-    const dev_opt = state.gpu_device;
 
     // 2. Evict cache entries that are no longer wanted, decoupling prefetch from retention
     var i: usize = 0;
@@ -244,14 +254,6 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
             state.cache.removeAndDeinit(i, dev_opt);
         }
     }
-
-    state.cache.enforceVramBudget(
-        dev_opt,
-        idx,
-        state.viewer.getTransitionPrevIndex(),
-        len,
-        image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES,
-    );
 
     // Fast-scrolling check: only active if navigation has actually occurred
     const now = sdl.timer.getTicks();
@@ -695,4 +697,62 @@ test "sysUpdateCache - zoom promotion on downscaled RAW preview" {
     state.viewer.viewport.zoom_factor = state_pkg.clampZoomFactor(2.0);
     try sysUpdateCache(ctx);
     try std.testing.expect(state.cache.get(key).?.is_promoting);
+}
+
+test "sysUpdateCache - caps prefetch radius when window exceeds VRAM budget" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    const dir_alloc = state.viewer.navigation.directory_arena.allocator();
+    for (0..5) |_| {
+        const dup = try dir_alloc.dupe(
+            u8,
+            "testfiles/golden-screenshots/init.png",
+        );
+        try state.viewer.navigation.appendEntry(
+            allocator,
+            .{ .filesystem = .{ .path = dup } },
+        );
+    }
+    state.viewer.navigation.current_index = 1;
+
+    // Populate all 5 slots with 300 MiB .loaded_gpu textures
+    // (total 1500 MiB > 1 GiB)
+    for (0..5) |idx| {
+        _ = try state.cache.appendSlot(allocator, idx, .{
+            .loaded_gpu = .{
+                .gpu_texture = undefined,
+                .w = 8000,
+                .h = 6000,
+                .size_bytes = 10_000_000,
+                .memory_size_bytes = 300 * 1024 * 1024,
+            },
+        });
+    }
+
+    const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
+    try sysUpdateCache(ctx);
+
+    // Distance 2 slots (indices 3 and 4 relative to 1) should be evicted,
+    // and NOT re-inserted as .decoding slots.
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        state.cache.getMaxPrefetchDist(1),
+    );
+    try std.testing.expect(state.cache.get(state.cache.activeKey(0)) != null);
+    try std.testing.expect(state.cache.get(state.cache.activeKey(1)) != null);
+    try std.testing.expect(state.cache.get(state.cache.activeKey(2)) != null);
+    try std.testing.expect(state.cache.get(state.cache.activeKey(3)) == null);
+    try std.testing.expect(state.cache.get(state.cache.activeKey(4)) == null);
+    try std.testing.expect(!state.cache.hasUnreadyPrefetchSlots(1, 5, true));
+
+    // Navigating to a new slide resets the prefetch distance cap for the new
+    // index
+    state.viewer.navigation.current_index = 2;
+    try std.testing.expectEqual(
+        @as(usize, 2),
+        state.cache.getMaxPrefetchDist(2),
+    );
 }

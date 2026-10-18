@@ -51,10 +51,16 @@ pub fn calcCyclicDistance(
 pub const CacheSlotMap = struct {
     slots: std.MultiArrayList(CacheSlot) = .{},
     generation: std.atomic.Value(usize) = .init(0),
+    vram_capped_index: ?usize = null,
+    vram_capped_prev_index: ?usize = null,
+    max_prefetch_dist: usize = 2,
 
     /// Atomically increments the cache generation epoch to invalidate
     /// in-flight asynchronous decode tasks.
     pub fn advanceGeneration(self: *CacheSlotMap) usize {
+        self.vram_capped_index = null;
+        self.vram_capped_prev_index = null;
+        self.max_prefetch_dist = 2;
         return self.generation.fetchAdd(1, .release) +% 1;
     }
 
@@ -88,11 +94,17 @@ pub const CacheSlotMap = struct {
             entry.deinit(gpu_device);
         }
         self.slots.clearRetainingCapacity();
+        self.vram_capped_index = null;
+        self.vram_capped_prev_index = null;
+        self.max_prefetch_dist = 2;
     }
 
     /// Clears all slots without releasing underlying capacity.
     pub fn clearRetainingCapacity(self: *CacheSlotMap) void {
         self.slots.clearRetainingCapacity();
+        self.vram_capped_index = null;
+        self.vram_capped_prev_index = null;
+        self.max_prefetch_dist = 2;
     }
 
     /// Finds the dense array index of the slot matching `key`, or null if not found.
@@ -163,12 +175,27 @@ pub const CacheSlotMap = struct {
         return total;
     }
 
+    /// Returns the maximum circular neighbor distance (`0..2`) to prefetch for
+    /// `current_index` without exceeding the VRAM budget.
+    pub fn getMaxPrefetchDist(
+        self: *const CacheSlotMap,
+        current_index: usize,
+    ) usize {
+        if (self.vram_capped_index) |capped_idx| {
+            if (capped_idx == current_index) {
+                return self.max_prefetch_dist;
+            }
+        }
+        return 2;
+    }
+
     /// Enforces maximum VRAM budget by evicting `.loaded_gpu` textures.
     ///
     /// Eviction ordering uses circular distance relative to `current_index`:
     /// 1. Distant entries (distance > 2) are evicted furthest first.
     /// 2. If VRAM budget is still exceeded and only immediate neighbors
-    ///    (distance <= 2) remain, they are evicted furthest first.
+    ///    (distance <= 2) remain, they are evicted furthest first and
+    ///    `max_prefetch_dist` is lowered to prevent re-decode thrashing.
     /// The currently active image and any active outgoing slideshow transition
     /// image (`protected_prev_index`) are strictly protected.
     pub fn enforceVramBudget(
@@ -179,6 +206,14 @@ pub const CacheSlotMap = struct {
         total_items: usize,
         max_bytes: usize,
     ) void {
+        if (current_index != self.vram_capped_index or
+            protected_prev_index != self.vram_capped_prev_index)
+        {
+            self.vram_capped_index = current_index;
+            self.vram_capped_prev_index = protected_prev_index;
+            self.max_prefetch_dist = 2;
+        }
+
         while (self.getTotalVramBytes() > max_bytes) {
             const entries = self.slots.items(.entry);
             const keys = self.slots.items(.key);
@@ -213,17 +248,24 @@ pub const CacheSlotMap = struct {
                 }
             }
 
-            const victim_idx = distant_victim orelse neighbor_victim;
-            if (victim_idx) |v_i| {
+            if (distant_victim) |v_i| {
+                self.removeAndDeinit(v_i, gpu_device);
+            } else if (neighbor_victim) |v_i| {
+                self.max_prefetch_dist = @min(
+                    self.max_prefetch_dist,
+                    max_neighbor_dist -| 1,
+                );
                 self.removeAndDeinit(v_i, gpu_device);
             } else {
+                self.max_prefetch_dist = 0;
                 break;
             }
         }
     }
 
-    /// Checks whether any of the desired 5 prefetch slots (current, ±1, ±2 circularly)
-    /// are missing from the cache or not in a terminal/ready status.
+    /// Checks whether any of the desired prefetch slots (current, ±1, ±2
+    /// circularly within the active VRAM prefetch radius) are missing from the
+    /// cache or not in a terminal/ready status.
     ///
     /// A slot is considered unready if it is missing, decoding, uploading, or loaded on CPU
     /// when a GPU device is present.
@@ -236,6 +278,7 @@ pub const CacheSlotMap = struct {
         if (total_items == 0) return false;
         const len = total_items;
         const idx = current_index;
+        const max_dist = self.getMaxPrefetchDist(idx);
 
         var desired: [5]usize = undefined;
         desired[0] = idx;
@@ -243,10 +286,11 @@ pub const CacheSlotMap = struct {
 
         for ([_]usize{
             (idx + 1) % len,
-            (idx + 2) % len,
             (idx + len - 1) % len,
+            (idx + 2) % len,
             if (len >= 2) (idx + len - 2) % len else idx,
         }) |d| {
+            if (calcCyclicDistance(d, idx, len) > max_dist) continue;
             var unique = true;
             for (desired[0..desired_count]) |existing| {
                 if (existing == d) {
