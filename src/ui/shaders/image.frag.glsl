@@ -36,7 +36,7 @@ ubo;
 vec4 sample_nearest(sampler2D tex, vec2 uv) {
     vec2 tex_size = vec2(textureSize(tex, 0));
     vec2 p = (floor(uv * tex_size) + 0.5) / tex_size;
-    return texture(tex, p);
+    return textureLod(tex, p, 0.0);
 }
 
 // =============================================================================
@@ -57,7 +57,7 @@ vec4 sample_pixel_art(sampler2D tex, vec2 uv) {
     vec2 f = fract(p);
     vec2 w = fwidth(p);
     f = clamp((f - 0.5) / max(w, vec2(1e-5)) + 0.5, 0.0, 1.0);
-    return texture(tex, (i + f + 0.5) / tex_size);
+    return textureGrad(tex, (i + f + 0.5) / tex_size, dFdx(uv), dFdy(uv));
 }
 
 // =============================================================================
