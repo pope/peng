@@ -284,16 +284,17 @@ fn runMainLoop(ctx: *AppGraphicsAndState) !void {
         );
     }
 
-    // Populate initial image list from arguments and piped stdin using stable pointer to state
+    // Populate initial image list from arguments or piped stdin
     if (ctx.parsed.arg_path) |path| {
         try ctx.state.openPath(path);
+    } else {
+        try app.workers.readPipedStdin(
+            &ctx.state.workers,
+            &ctx.state.viewer.navigation.active_file_scans,
+            ctx.io,
+            ctx.gpa,
+        );
     }
-    try app.workers.readPipedStdin(
-        &ctx.state.workers,
-        &ctx.state.viewer.navigation.is_loading_files,
-        ctx.io,
-        ctx.gpa,
-    );
 
     // Per-frame arena allocator
     var frame_arena = std.heap.ArenaAllocator.init(ctx.gpa);

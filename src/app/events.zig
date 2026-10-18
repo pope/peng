@@ -479,6 +479,8 @@ fn handleDirectoryScanResultEvent(
     state: *AppState,
     result_data: events.DirectoryScanResultPayload,
 ) void {
+    if (result_data.generation != state.cache.generation.load(.acquire)) return;
+
     const arena_alloc = state.viewer.navigation.directory_arena.allocator();
     if (result_data.is_dir) {
         for (result_data.paths) |item| {
@@ -1057,4 +1059,27 @@ test "drainWorkerEvents - single-file scan remaps or invalidates slot 0" {
         state.cache.generation.load(.acquire),
     );
     try std.testing.expectEqual(@as(usize, 0), state.cache.count());
+}
+
+test "drainWorkerEvents - discards stale directory_scan_result" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    const cur_gen = state.cache.advanceGeneration();
+    const stale_paths = try allocator.alloc(MediaEntry, 1);
+    stale_paths[0] = .{
+        .filesystem = .{ .path = try allocator.dupe(u8, "stale.jpg") },
+    };
+    try state.workers.event_queue.push(allocator, io, .{
+        .directory_scan_result = .{
+            .generation = cur_gen - 1,
+            .target_path = try allocator.dupe(u8, "."),
+            .is_dir = true,
+            .paths = stale_paths,
+        },
+    });
+    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expectEqual(@as(usize, 0), state.viewer.navigation.count());
 }

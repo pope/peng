@@ -135,7 +135,7 @@ pub const AppState = struct {
     /// active, active unpaused slideshow is running, or animations are active.
     pub inline fn isBusy(self: *const AppState) bool {
         return self.viewer.hasActiveAnimation() or
-            self.viewer.navigation.is_loading_files.load(.acquire) or
+            self.viewer.navigation.isLoadingFiles() or
             self.workers.isBusy() or
             (self.viewer.isSlideshowActive() and !self.isSlideshowPaused());
     }
@@ -573,7 +573,8 @@ pub const AppState = struct {
             if (stat.kind == .directory) {
                 try workers_mod.startAsyncPathScan(
                     &self.workers,
-                    &self.viewer.navigation.is_loading_files,
+                    &self.viewer.navigation.active_file_scans,
+                    &self.cache.generation,
                     self.allocator,
                     self.io,
                     owned_path,
@@ -581,14 +582,10 @@ pub const AppState = struct {
                     stack_raw,
                 );
             } else if (core_fs.isCbzFile(owned_path)) {
-                self.viewer.navigation.is_loading_files.store(true, .release);
-                errdefer self.viewer.navigation.is_loading_files.store(
-                    false,
-                    .release,
-                );
                 try workers_mod.startAsyncPathScan(
                     &self.workers,
-                    &self.viewer.navigation.is_loading_files,
+                    &self.viewer.navigation.active_file_scans,
+                    &self.cache.generation,
                     self.allocator,
                     self.io,
                     owned_path,
@@ -607,7 +604,8 @@ pub const AppState = struct {
 
                 try workers_mod.startAsyncPathScan(
                     &self.workers,
-                    &self.viewer.navigation.is_loading_files,
+                    &self.viewer.navigation.active_file_scans,
+                    &self.cache.generation,
                     self.allocator,
                     self.io,
                     owned_path,

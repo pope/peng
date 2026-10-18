@@ -99,7 +99,7 @@ fn handleWaitLoadCommand(ctx: FrameContext, stream: std.Io.net.Stream) void {
             if (entry.status != .decoding and entry.status != .uploading) {
                 break;
             }
-        } else if (!state.viewer.navigation.is_loading_files.load(.acquire) and
+        } else if (!state.viewer.navigation.isLoadingFiles() and
             state.viewer.navigation.current_index == null)
         {
             break;

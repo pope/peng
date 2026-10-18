@@ -40,9 +40,9 @@
     concurrent reader threads.
 - **Co-located Resource Cleanup (`errdefer` + `try` Invariant)**:
   - In fallible functions returning `!T` or `!void`, every heap allocation
-    (`allocator.create`, `allocator.dupe`) and transient atomic flag mutation
+    (`allocator.create`, `allocator.dupe`) and transient atomic counter mutation
     MUST be paired with an `errdefer` on the immediately following line (e.g.
-    `errdefer is_loading_files.store(false, .release)`).
+    `errdefer _ = active_threads.fetchSub(1, .release)`).
   - Do NOT write manual `catch |err| { allocator.free(...); }` teardown blocks;
     propagate errors via `try` and rely on `errdefer` stack unwinding.
 - **HashMap Key & Socket Stream Cleanup**:

@@ -15,9 +15,19 @@ pub const PathScanArgs = struct {
     io: std.Io,
     target_path: []const u8,
     is_dir: bool,
-    is_loading_files: *std.atomic.Value(bool),
+    active_file_scans: *std.atomic.Value(usize),
     stack_raw_jpeg: bool = true,
+    generation: usize = 0,
+    current_generation: ?*const std.atomic.Value(usize) = null,
 };
+
+fn isScanStale(args: *const PathScanArgs) bool {
+    if (args.workers.exiting.load(.acquire)) return true;
+    if (args.current_generation) |cur_gen| {
+        if (cur_gen.load(.acquire) != args.generation) return true;
+    }
+    return false;
+}
 
 /// Thread-safely duplicates a path string and pushes a `.path_discovered`
 /// event onto the worker event queue.
@@ -128,12 +138,14 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
     const is_dir = args.is_dir;
 
     defer {
-        args.is_loading_files.store(false, .release);
+        _ = args.active_file_scans.fetchSub(1, .release);
         context.wakeUpMainThread();
         gpa.free(target_path);
         gpa.destroy(args);
         _ = workers.active_threads.fetchSub(1, .release);
     }
+
+    if (isScanStale(args)) return;
 
     var dir_entries: std.ArrayList(MediaEntry) = .empty;
     defer {
@@ -163,7 +175,7 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
 
         var it = dir.iterate();
 
-        while (!workers.exiting.load(.acquire)) {
+        while (!isScanStale(args)) {
             const entry = (it.next(io) catch |err| switch (err) {
                 error.Canceled => break,
                 else => {
@@ -190,7 +202,7 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
         }
     }
 
-    if (workers.exiting.load(.acquire)) return;
+    if (isScanStale(args)) return;
 
     // Sort entries alphabetically by basename
     std.mem.sort(MediaEntry, dir_entries.items, {}, struct {
@@ -202,7 +214,7 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
     // Consolidate RAW + JPEG pairs sharing the same stem into unified .pair entries
     core_fs.consolidateRawJpegPairs(&dir_entries, args.stack_raw_jpeg);
 
-    if (workers.exiting.load(.acquire)) return;
+    if (isScanStale(args)) return;
 
     const dup_target = gpa.dupe(u8, target_path) catch return;
     const paths_slice = dir_entries.toOwnedSlice(gpa) catch {
@@ -212,6 +224,7 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
 
     workers.event_queue.push(gpa, io, .{
         .directory_scan_result = .{
+            .generation = args.generation,
             .target_path = dup_target,
             .is_dir = is_dir,
             .paths = paths_slice,
@@ -260,7 +273,8 @@ test "pathScanWorker - directory scan result event generation" {
     var workers = WorkerManager{};
     defer workers.deinit(allocator, io);
 
-    var is_loading = std.atomic.Value(bool).init(true);
+    var active_scans = std.atomic.Value(usize).init(1);
+    var cur_gen = std.atomic.Value(usize).init(7);
     const target = try allocator.dupe(u8, "testfiles/images");
     const args = try allocator.create(PathScanArgs);
     args.* = .{
@@ -269,13 +283,15 @@ test "pathScanWorker - directory scan result event generation" {
         .io = io,
         .target_path = target,
         .is_dir = true,
-        .is_loading_files = &is_loading,
+        .active_file_scans = &active_scans,
+        .generation = 7,
+        .current_generation = &cur_gen,
     };
 
     _ = workers.active_threads.fetchAdd(1, .monotonic);
     pathScanWorker(args);
 
-    try std.testing.expect(!is_loading.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 0), active_scans.load(.acquire));
 
     var batch: std.ArrayList(events.BackgroundEvent) = .empty;
     defer {
@@ -287,6 +303,7 @@ test "pathScanWorker - directory scan result event generation" {
     try std.testing.expectEqual(@as(usize, 1), batch.items.len);
     switch (batch.items[0]) {
         .directory_scan_result => |res| {
+            try std.testing.expectEqual(@as(usize, 7), res.generation);
             try std.testing.expect(res.is_dir);
             try std.testing.expectEqualStrings("testfiles/images", res.target_path);
             try std.testing.expect(res.paths.len > 0);
@@ -294,4 +311,27 @@ test "pathScanWorker - directory scan result event generation" {
         },
         else => return error.ExpectedDirectoryScanResult,
     }
+
+    // Stale generation scan aborts without pushing directory_scan_result
+    for (batch.items) |*ev| ev.deinit(allocator);
+    batch.clearRetainingCapacity();
+    active_scans.store(1, .release);
+    cur_gen.store(8, .release);
+    const stale_target = try allocator.dupe(u8, "testfiles/images");
+    const stale_args = try allocator.create(PathScanArgs);
+    stale_args.* = .{
+        .workers = &workers,
+        .allocator = allocator,
+        .io = io,
+        .target_path = stale_target,
+        .is_dir = true,
+        .active_file_scans = &active_scans,
+        .generation = 7,
+        .current_generation = &cur_gen,
+    };
+    _ = workers.active_threads.fetchAdd(1, .monotonic);
+    pathScanWorker(stale_args);
+    try std.testing.expectEqual(@as(usize, 0), active_scans.load(.acquire));
+    try workers.event_queue.drain(allocator, io, &batch);
+    try std.testing.expectEqual(@as(usize, 0), batch.items.len);
 }

@@ -73,6 +73,7 @@ pub const PathDiscoveredPayload = struct {
 /// Payload delivering the complete batch of discovered media entries from an
 /// asynchronous directory scan.
 pub const DirectoryScanResultPayload = struct {
+    generation: usize = 0,
     target_path: []const u8,
     is_dir: bool,
     paths: []MediaEntry,

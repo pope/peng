@@ -231,7 +231,7 @@ pub fn updateFrame(
         .visible_state = visible_st,
         .visible_count = visible_cnt,
         .visible_position = visible_pos,
-        .is_loading_files = nav.is_loading_files.load(.acquire),
+        .is_loading_files = nav.isLoadingFiles(),
         .slideshow = app_state.viewer.navigation.slideshow,
         .manga_mode = app_state.viewer.navigation.manga_mode,
         .overlays = app_state.viewer.ui.overlays,

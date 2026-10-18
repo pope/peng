@@ -25,17 +25,19 @@ pub const spawnPaletteScan = palette_scan.spawnPaletteScan;
 pub const spawnPaletteScanForItems = palette_scan.spawnPaletteScanForItems;
 
 /// Spawns a background `pathScanWorker` task to recursively scan directories
-/// or validate file paths, setting the navigation file loading state.
+/// or validate file paths, incrementing the active file scan counter.
 pub fn spawnPathScan(args: *PathScanArgs) !void {
     _ = args.workers.active_threads.fetchAdd(1, .monotonic);
-    args.is_loading_files.store(true, .release);
+    _ = args.active_file_scans.fetchAdd(1, .monotonic);
     args.workers.group.async(args.io, path_scan.pathScanWorker, .{args});
 }
 
 /// Spawns a background `stdinWorker` task to stream image file paths from standard input.
 pub fn spawnStdin(args: *StdinArgs) !void {
     _ = args.workers.active_threads.fetchAdd(1, .monotonic);
-    if (args.is_loading_files) |flag| flag.store(true, .release);
+    if (args.active_file_scans) |scans| {
+        _ = scans.fetchAdd(1, .monotonic);
+    }
     args.workers.group.async(args.io, stdin.stdinWorker, .{args});
 }
 
@@ -67,7 +69,7 @@ pub fn spawnIpcServer(
 /// Inspects whether standard input is piped (non-TTY) and spawns an asynchronous stdin reader task.
 pub fn readPipedStdin(
     workers: *WorkerManager,
-    is_loading_files: *std.atomic.Value(bool),
+    active_file_scans: *std.atomic.Value(usize),
     io: std.Io,
     gpa: std.mem.Allocator,
 ) !void {
@@ -80,10 +82,8 @@ pub fn readPipedStdin(
             .workers = workers,
             .allocator = gpa,
             .io = io,
-            .is_loading_files = is_loading_files,
+            .active_file_scans = active_file_scans,
         };
-
-        errdefer is_loading_files.store(false, .release);
 
         try spawnStdin(args);
     }
@@ -93,7 +93,8 @@ pub fn readPipedStdin(
 /// background directory or path scan task.
 pub fn startAsyncPathScan(
     workers: *WorkerManager,
-    is_loading_files: *std.atomic.Value(bool),
+    active_file_scans: *std.atomic.Value(usize),
+    current_generation: *const std.atomic.Value(usize),
     allocator: std.mem.Allocator,
     io: std.Io,
     path: []const u8,
@@ -112,11 +113,11 @@ pub fn startAsyncPathScan(
         .io = io,
         .target_path = dup_path,
         .is_dir = is_dir,
-        .is_loading_files = is_loading_files,
+        .active_file_scans = active_file_scans,
         .stack_raw_jpeg = stack_raw_jpeg,
+        .generation = current_generation.load(.acquire),
+        .current_generation = current_generation,
     };
-
-    errdefer is_loading_files.store(false, .release);
 
     try spawnPathScan(args);
 }

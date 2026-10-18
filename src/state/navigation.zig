@@ -187,7 +187,7 @@ pub const NavigationState = struct {
     manga_mode: bool = false,
     crossfade: bool = true,
     stack_raw_jpeg: bool = true,
-    is_loading_files: std.atomic.Value(bool) = .init(false),
+    active_file_scans: std.atomic.Value(usize) = .init(0),
     last_nav_time_ms: u64 = 0,
     direction: NavDirection = .forward,
     last_scanned_dir: std.ArrayList(u8) = .empty,
@@ -243,6 +243,11 @@ pub const NavigationState = struct {
         self.reject_count = 0;
         self.current_index = null;
         self.anchor_index = 0;
+    }
+
+    /// Returns `true` if any background directory or stdin file scan is active.
+    pub inline fn isLoadingFiles(self: *const NavigationState) bool {
+        return self.active_file_scans.load(.acquire) > 0;
     }
 
     /// Returns `true` if slideshow playback mode is active.

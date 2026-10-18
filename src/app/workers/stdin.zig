@@ -10,7 +10,7 @@ pub const StdinArgs = struct {
     workers: *WorkerManager,
     allocator: std.mem.Allocator,
     io: std.Io,
-    is_loading_files: ?*std.atomic.Value(bool) = null,
+    active_file_scans: ?*std.atomic.Value(usize) = null,
 };
 
 /// Background thread function reading newline-delimited image paths piped via standard input.
@@ -19,7 +19,9 @@ pub fn stdinWorker(args: *StdinArgs) void {
     const io = args.io;
     const gpa = args.allocator;
     defer {
-        if (args.is_loading_files) |flag| flag.store(false, .release);
+        if (args.active_file_scans) |scans| {
+            _ = scans.fetchSub(1, .release);
+        }
         context.wakeUpMainThread();
         gpa.destroy(args);
         _ = workers.active_threads.fetchSub(1, .release);
