@@ -428,6 +428,53 @@ fn entryMatchesTarget(item: MediaEntry, target: []const u8) bool {
     };
 }
 
+fn reconcileSingleFileScanCache(
+    state: *AppState,
+    had_single_fs: bool,
+    target_idx: ?usize,
+) void {
+    const active_decodes = state.workers.active_decode_threads.load(.acquire);
+    if (state.cache.count() == 0 and active_decodes == 0) return;
+
+    if (target_idx) |target_i| {
+        const target_entry = state.viewer.navigation.getMediaEntry(target_i);
+        const is_target_fs = if (target_entry) |e| e == .filesystem else false;
+        if (had_single_fs and is_target_fs) {
+            if (target_i == 0 and state.cache.count() <= 1) {
+                if (state.cache.count() == 0 or
+                    state.cache.slots.items(.key)[0].index == 0)
+                {
+                    return;
+                }
+            } else if (target_i != 0 and
+                state.cache.count() == 1 and
+                active_decodes == 0)
+            {
+                const key0 = state.cache.slots.items(.key)[0];
+                const entry0 = state.cache.slots.items(.entry)[0];
+                const cur_gen = state.cache.generation.load(.acquire);
+                const is_loaded = entry0.status == .loaded_gpu or
+                    entry0.status == .loaded_cpu;
+                if (key0.index == 0 and
+                    key0.generation == cur_gen and
+                    is_loaded and
+                    !entry0.is_promoting and
+                    entry0.thumbnail != .pending)
+                {
+                    state.cache.slots.items(.key)[0].index = target_i;
+                    state.cache.vram_capped_neighbors = null;
+                    state.cache.vram_capped_prev_index = null;
+                    state.cache.max_prefetch_dist = 2;
+                    return;
+                }
+            }
+        }
+    }
+
+    _ = state.cache.advanceGeneration();
+    state.clearCache();
+}
+
 fn handleDirectoryScanResultEvent(
     state: *AppState,
     result_data: events.DirectoryScanResultPayload,
@@ -449,28 +496,32 @@ fn handleDirectoryScanResultEvent(
             _ = state.viewer.navigation.adjustIndexForVisibility();
         }
     } else {
-        var target_idx_in_dir: ?usize = null;
-        for (result_data.paths, 0..) |item, i| {
-            if (entryMatchesTarget(item, result_data.target_path)) {
-                target_idx_in_dir = i;
-                break;
-            }
-        }
+        const had_single_fs = state.viewer.navigation.count() == 1 and
+            if (state.viewer.navigation.getMediaEntry(0)) |e|
+                e == .filesystem
+            else
+                false;
 
+        var target_idx_in_dir: ?usize = null;
         _ = state.viewer.navigation.directory_arena.reset(.retain_capacity);
         state.viewer.navigation.clearEntries();
-        for (result_data.paths, 0..) |item, i| {
+        for (result_data.paths) |item| {
             const dup = item.dupe(arena_alloc) catch |err| {
                 std.log.err("Failed to duplicate directory item: {}", .{err});
                 continue;
             };
             state.viewer.navigation.appendEntry(state.allocator, dup) catch |err| {
                 std.log.err("Failed to append image to list: {}", .{err});
+                continue;
             };
-            if (target_idx_in_dir == null and entryMatchesTarget(item, result_data.target_path)) {
-                target_idx_in_dir = i;
+            if (target_idx_in_dir == null and
+                entryMatchesTarget(item, result_data.target_path))
+            {
+                target_idx_in_dir = state.viewer.navigation.count() - 1;
             }
         }
+
+        reconcileSingleFileScanCache(state, had_single_fs, target_idx_in_dir);
 
         if (target_idx_in_dir) |target_i| {
             _ = state.viewer.navigation.goToIndex(target_i);
@@ -919,4 +970,91 @@ test "drainWorkerEvents - monotonic full_w and full_h on pair promotion" {
     const toggle_auth = entry0.getAuthoritativeDims();
     try std.testing.expectEqual(@as(f32, 6000), toggle_auth.w);
     try std.testing.expectEqual(@as(f32, 4000), toggle_auth.h);
+}
+
+test "drainWorkerEvents - single-file scan remaps or invalidates slot 0" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    // Case 1: Initial single-file entry at 0 is already loaded; scan places it
+    // at index 2 -> slot 0 is remapped in-place to index 2 without re-decoding.
+    const arena_alloc = state.viewer.navigation.directory_arena.allocator();
+    const init_p = try arena_alloc.dupe(u8, "c.jpg");
+    try state.viewer.navigation.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = init_p } },
+    );
+    state.viewer.navigation.current_index = 0;
+
+    const surf = sdl.Surface.create(16, 16, sdl.PixelFormat.rgba32) orelse
+        return error.SurfaceFailed;
+    _ = try state.cache.appendSlot(allocator, 0, .{
+        .loaded_cpu = .{
+            .surface = surf,
+            .w = 16,
+            .h = 16,
+            .size_bytes = 1024,
+        },
+    });
+    const gen_before = state.cache.generation.load(.acquire);
+
+    const paths1 = try allocator.alloc(MediaEntry, 3);
+    paths1[0] = .{ .filesystem = .{ .path = try allocator.dupe(u8, "a.jpg") } };
+    paths1[1] = .{ .filesystem = .{ .path = try allocator.dupe(u8, "b.jpg") } };
+    paths1[2] = .{ .filesystem = .{ .path = try allocator.dupe(u8, "c.jpg") } };
+    try state.workers.event_queue.push(allocator, io, .{
+        .directory_scan_result = .{
+            .target_path = try allocator.dupe(u8, "c.jpg"),
+            .is_dir = false,
+            .paths = paths1,
+        },
+    });
+    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expectEqual(
+        @as(?usize, 2),
+        state.viewer.navigation.current_index,
+    );
+    try std.testing.expectEqual(
+        gen_before,
+        state.cache.generation.load(.acquire),
+    );
+    try std.testing.expect(state.cache.get(state.cache.activeKey(0)) == null);
+    try std.testing.expect(state.cache.get(state.cache.activeKey(2)) != null);
+
+    // Case 2: Initial single-file entry at 0 is still .decoding in-flight when
+    // scan places it at index 1 -> cache generation advances and cache clears.
+    state.clearCache();
+    state.viewer.navigation.clearEntries();
+    const init_p2 = try arena_alloc.dupe(u8, "b.jpg");
+    try state.viewer.navigation.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = init_p2 } },
+    );
+    state.viewer.navigation.current_index = 0;
+    _ = try state.cache.appendSlot(allocator, 0, .{
+        .decoding = .{ .has_thread = true },
+    });
+
+    const paths2 = try allocator.alloc(MediaEntry, 2);
+    paths2[0] = .{ .filesystem = .{ .path = try allocator.dupe(u8, "a.jpg") } };
+    paths2[1] = .{ .filesystem = .{ .path = try allocator.dupe(u8, "b.jpg") } };
+    try state.workers.event_queue.push(allocator, io, .{
+        .directory_scan_result = .{
+            .target_path = try allocator.dupe(u8, "b.jpg"),
+            .is_dir = false,
+            .paths = paths2,
+        },
+    });
+    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expectEqual(
+        @as(?usize, 1),
+        state.viewer.navigation.current_index,
+    );
+    try std.testing.expectEqual(
+        gen_before + 1,
+        state.cache.generation.load(.acquire),
+    );
+    try std.testing.expectEqual(@as(usize, 0), state.cache.count());
 }
