@@ -355,7 +355,8 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 const target_failed =
                     if (cur_entry) |e| e.status == .failed else false;
                 const is_animating =
-                    self.viewer.animations.isActive(.image_crossfade);
+                    self.viewer.animations.isActive(.image_crossfade) or
+                    self.viewer.image_transition != .none;
                 const should_crossfade = !target_failed and if (is_slideshow)
                     switch (nav.slideshow) {
                         .active => |s| s.interval_s >=
@@ -1052,7 +1053,12 @@ test "sysExecuteIntents - manual navigation crossfade and rapid navigation cut" 
     try testing.expectEqual(@as(?usize, 0), app_st.viewer.getTransitionPrevIndex());
     try testing.expectEqual(@as(f32, 0.0), app_st.viewer.animations.get(.image_crossfade));
 
-    // 2. Rapid scrub (elapsed < 200ms or animation in flight): cuts immediately
+    // 2. Navigation while previous transition is still pending at 0.0
+    // (isActive(.image_crossfade) == false, image_transition != .none),
+    // even when elapsed >= 200ms: cuts immediately to .none / 1.0
+    app_st.viewer.navigation.last_nav_time_ms = 0;
+    try testing.expect(!app_st.viewer.animations.isActive(.image_crossfade));
+    try testing.expect(app_st.viewer.image_transition != .none);
     try app_st.pushIntent(.next_image);
     try sysExecuteIntents(.{
         .state = &app_st,
