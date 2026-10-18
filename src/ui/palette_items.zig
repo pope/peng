@@ -66,26 +66,35 @@ pub fn partitionHighlightedText(
         {
             match_ptr += 1;
         }
-        const is_matched = (match_ptr < match_indices.len and
-            match_indices[match_ptr] == idx);
 
         const start = idx;
         idx += 1;
         while (idx < text.len and (text[idx] & 0xC0) == 0x80) {
             idx += 1;
         }
+        const is_matched = (match_ptr < match_indices.len and
+            match_indices[match_ptr] < idx);
 
         if (is_matched) {
-            match_ptr += 1;
-            while (idx < text.len and
-                match_ptr < match_indices.len and
-                match_indices[match_ptr] == idx)
+            while (match_ptr < match_indices.len and
+                match_indices[match_ptr] < idx)
             {
-                idx += 1;
-                while (idx < text.len and (text[idx] & 0xC0) == 0x80) {
-                    idx += 1;
-                }
                 match_ptr += 1;
+            }
+            while (idx < text.len and match_ptr < match_indices.len) {
+                var next_end = idx + 1;
+                while (next_end < text.len and
+                    (text[next_end] & 0xC0) == 0x80)
+                {
+                    next_end += 1;
+                }
+                if (match_indices[match_ptr] >= next_end) break;
+                idx = next_end;
+                while (match_ptr < match_indices.len and
+                    match_indices[match_ptr] < idx)
+                {
+                    match_ptr += 1;
+                }
             }
 
             var match_start = start;

@@ -1642,6 +1642,24 @@ test "partitionHighlightedText multi-byte UTF-8 character boundary safety" {
     try std.testing.expect(chunks[1].is_matched);
     try std.testing.expectEqualStrings("_au_lait.jpg", chunks[2].slice);
     try std.testing.expect(!chunks[2].is_matched);
+
+    // Contiguous match across multi-byte 'é' (bytes 3, 4), space (5), and 'l'
+    // (6) in "café lait.jpg" should keep internal space inside matched span.
+    const spaced_utf8 = "café lait.jpg";
+    const span_matches = [_]usize{ 3, 4, 5, 6 };
+    const span_chunks = try partitionHighlightedText(
+        std.testing.allocator,
+        spaced_utf8,
+        &span_matches,
+    );
+    defer std.testing.allocator.free(span_chunks);
+    try std.testing.expectEqual(@as(usize, 3), span_chunks.len);
+    try std.testing.expectEqualStrings("caf", span_chunks[0].slice);
+    try std.testing.expect(!span_chunks[0].is_matched);
+    try std.testing.expectEqualStrings("é l", span_chunks[1].slice);
+    try std.testing.expect(span_chunks[1].is_matched);
+    try std.testing.expectEqualStrings("ait.jpg", span_chunks[2].slice);
+    try std.testing.expect(!span_chunks[2].is_matched);
 }
 
 test "VirtualWindow compute calculations and edge cases" {

@@ -331,7 +331,10 @@ fn handlePaletteKeys(
 
         .backspace => {
             if (palette.query.items.len > 0) {
-                _ = palette.query.pop();
+                while (palette.query.items.len > 0) {
+                    const b = palette.query.pop().?;
+                    if ((b & 0xC0) != 0x80) break;
+                }
                 palette.selected_idx = 0;
                 palette.selection_dirty = true;
                 switch (palette.mode) {
@@ -827,4 +830,46 @@ test "openPalette steps up from top-level relative leaf dir without slashes to d
         }
     }
     try std.testing.expect(found_leaf_selected);
+}
+
+test "handlePaletteKeys backspace removes full multi-byte UTF-8 codepoints" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    state.viewer.ui.palette.mode = .files;
+    // "a" (1B) + "é" (2B) + "日" (3B) + "🌅" (4B)
+    try state.viewer.ui.palette.query.appendSlice(allocator, "aé日🌅");
+
+    const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
+
+    // 1st Backspace removes 4-byte "🌅"
+    _ = try handlePaletteKeys(ctx, .backspace, .{});
+    try std.testing.expectEqualStrings(
+        "aé日",
+        state.viewer.ui.palette.query.items,
+    );
+
+    // 2nd Backspace removes 3-byte "日"
+    _ = try handlePaletteKeys(ctx, .backspace, .{});
+    try std.testing.expectEqualStrings(
+        "aé",
+        state.viewer.ui.palette.query.items,
+    );
+
+    // 3rd Backspace removes 2-byte "é"
+    _ = try handlePaletteKeys(ctx, .backspace, .{});
+    try std.testing.expectEqualStrings(
+        "a",
+        state.viewer.ui.palette.query.items,
+    );
+
+    // 4th Backspace removes 1-byte "a"
+    _ = try handlePaletteKeys(ctx, .backspace, .{});
+    try std.testing.expectEqualStrings(
+        "",
+        state.viewer.ui.palette.query.items,
+    );
 }
