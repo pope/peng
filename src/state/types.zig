@@ -1,6 +1,7 @@
 const intents = @import("intents");
 const sdl = @import("sdl");
 const std = @import("std");
+const view_transform = @import("view_transform.zig");
 
 const Key = intents.Key;
 const KeyModifiers = intents.KeyModifiers;
@@ -286,15 +287,29 @@ pub const ViewportParams = struct {
         self: ViewportParams,
         view_w: f32,
         view_h: f32,
-        img_w: f32,
-        img_h: f32,
+        raw_w: f32,
+        raw_h: f32,
     ) f32 {
-        if (img_w <= 0.0 or img_h <= 0.0 or view_w <= 0.0 or view_h <= 0.0) {
+        if (raw_w <= 0.0 or raw_h <= 0.0 or view_w <= 0.0 or view_h <= 0.0) {
             return self.zoom_factor.get();
         }
         return switch (self.mode) {
-            .fit => @min(view_w / img_w, view_h / img_h),
-            .fill => @max(view_w / img_w, view_h / img_h),
+            .fit => view_transform.computePresetZoom(
+                raw_w,
+                raw_h,
+                self.rotation_angle,
+                view_w,
+                view_h,
+                self.fit_mode,
+            ),
+            .fill => view_transform.computePresetZoom(
+                raw_w,
+                raw_h,
+                self.rotation_angle,
+                view_w,
+                view_h,
+                .crop,
+            ),
             .manual => self.zoom_factor.get(),
         };
     }
@@ -310,12 +325,10 @@ pub const ViewportParams = struct {
         if (auth_w <= 0.0 or auth_h <= 0.0 or view_w <= 0.0 or view_h <= 0.0) {
             return false;
         }
-        const norm = @mod(@mod(self.rotation_angle, 360.0) + 360.0, 360.0);
-        const is_swapped = std.math.approxEqAbs(f32, norm, 90.0, 0.1) or
-            std.math.approxEqAbs(f32, norm, 270.0, 0.1);
+        const is_swapped = view_transform.isAngle90or270(self.rotation_angle);
         const img_w = if (is_swapped) auth_h else auth_w;
         const img_h = if (is_swapped) auth_w else auth_h;
-        const z = self.effectiveZoom(view_w, view_h, img_w, img_h);
+        const z = self.effectiveZoom(view_w, view_h, auth_w, auth_h);
         return (img_w * z > view_w + 1.0) or (img_h * z > view_h + 1.0);
     }
 
@@ -1702,10 +1715,54 @@ test "ViewportParams.zoomAtPoint anchors zoom relative to focus point" {
 
 test "ViewportParams isOverflowing and effectiveZoom" {
     var vp = ViewportParams{};
-    // 1024x682 in 1024x768 with .fit mode does not overflow
+    // 1024x682 in 1024x768 with .fit (.full) mode does not overflow
     try std.testing.expect(!vp.isOverflowing(1024.0, 682.0, 1024.0, 768.0));
 
+    // .fit_width on a tall portrait image (800x1600 in 1000x800) overflows Y
+    vp.fit_mode = .fit_width;
+    vp.reset();
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 1.25),
+        vp.effectiveZoom(1000.0, 800.0, 800.0, 1600.0),
+        0.0001,
+    );
+    try std.testing.expect(vp.isOverflowing(800.0, 1600.0, 1000.0, 800.0));
+
+    // .fit_height on a wide landscape image (1600x800 in 1000x800) overflows X
+    vp.fit_mode = .fit_height;
+    vp.reset();
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 1.0),
+        vp.effectiveZoom(1000.0, 800.0, 1600.0, 800.0),
+        0.0001,
+    );
+    try std.testing.expect(vp.isOverflowing(1600.0, 800.0, 1000.0, 800.0));
+
+    // .shrink on a small image (400x300 in 1000x800) keeps 1.0x and does not
+    // overflow
+    vp.fit_mode = .shrink;
+    vp.reset();
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 1.0),
+        vp.effectiveZoom(1000.0, 800.0, 400.0, 300.0),
+        0.0001,
+    );
+    try std.testing.expect(!vp.isOverflowing(400.0, 300.0, 1000.0, 800.0));
+
+    // Rotated 90 degrees in .fit_width (1600x800 -> 800x1600 in 1000x800)
+    vp.fit_mode = .fit_width;
+    vp.rotation_angle = 90.0;
+    vp.reset();
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 1.25),
+        vp.effectiveZoom(1000.0, 800.0, 1600.0, 800.0),
+        0.0001,
+    );
+    try std.testing.expect(vp.isOverflowing(1600.0, 800.0, 1000.0, 800.0));
+    vp.rotation_angle = 0.0;
+
     // .fill mode (crop) causes overflow
+    vp.fit_mode = .crop;
     vp.mode = .fill;
     try std.testing.expect(vp.isOverflowing(1024.0, 682.0, 1024.0, 768.0));
 
