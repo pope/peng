@@ -55,6 +55,7 @@ const LibViewer = struct {
         );
 
         var handle = try std.DynLib.open(lib_temp_name);
+        errdefer handle.close();
 
         return .{
             .handle = handle,
@@ -75,11 +76,18 @@ const LibViewer = struct {
         };
     }
 
-    fn deinit(self: *LibViewer, io: std.Io) !void {
+    fn deinit(self: *LibViewer, io: std.Io) void {
         const cwd = std.Io.Dir.cwd();
-        self.handle.close();
+        if (self.is_valid) {
+            self.unload_assets();
+            self.handle.close();
+            self.is_valid = false;
+        }
         cwd.deleteFile(io, lib_temp_name) catch |err| {
-            std.log.warn("Failed to delete temp library {s}: {}", .{ lib_temp_name, err });
+            std.log.warn(
+                "Failed to delete temp library {s}: {}",
+                .{ lib_temp_name, err },
+            );
         };
     }
 
@@ -304,12 +312,9 @@ fn runMainLoop(ctx: *AppGraphicsAndState) !void {
 
     if (build_options.hot_reload) {
         var lib_viewer: LibViewer = try .init(ctx.io);
-        defer lib_viewer.deinit(ctx.io) catch |err| {
-            std.log.warn("Failed to deinit lib_viewer: {}", .{err});
-        };
+        defer lib_viewer.deinit(ctx.io);
 
         lib_viewer.load_assets();
-        defer lib_viewer.unload_assets();
 
         while (ctx.state.viewer.running) {
             defer _ = frame_arena.reset(.retain_capacity);
@@ -326,6 +331,18 @@ fn runMainLoop(ctx: *AppGraphicsAndState) !void {
                     &frame_arena,
                     &last_time,
                 );
+            } else {
+                var event: sdl.Event = undefined;
+                if (sdl.events.waitEventTimeout(&event, 100)) {
+                    if (event.type == sdl.event_type.quit) {
+                        ctx.state.viewer.running = false;
+                    }
+                    while (sdl.events.pollEvent(&event)) {
+                        if (event.type == sdl.event_type.quit) {
+                            ctx.state.viewer.running = false;
+                        }
+                    }
+                }
             }
         }
     } else {
