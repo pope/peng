@@ -309,6 +309,7 @@ pub fn build(b: *std.Build) void {
     const ui_tests = b.addTest(.{
         .root_module = ui_module,
     });
+    ui_tests.step.dependOn(compile_shaders);
     const run_ui_tests = b.addRunArtifact(ui_tests);
     run_ui_tests.step.dependOn(b.getInstallStep());
 
