@@ -72,12 +72,14 @@ fn syncNavIndexChange(self: *AppState, old_idx: ?usize) void {
         self.viewer.pan_controller.reset();
         self.viewer.zoom_controller.reset();
         self.viewer.viewport.reset();
+        self.updateCurrentRotation();
         if (self.viewer.viewport.mode != .manual) {
             self.viewer.viewport.zoom_factor =
                 state.ZoomFactor.init(self.getBaseScale());
         }
         self.viewer.image_transition = .none;
         self.viewer.animations.setImmediate(.image_crossfade, 1.0);
+        self.viewer.animations.setImmediate(.thumb_crossfade, 1.0);
     }
 }
 
@@ -91,7 +93,11 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
         .open_path => |p| try self.openPath(p),
         .set_zoom => |factor| {
             vp.mode = .manual;
+            const old_zoom = vp.zoom_factor;
             vp.zoom_factor = state.clampZoomFactor(factor);
+            const ratio = old_zoom.ratioTo(vp.zoom_factor);
+            vp.pan_x *= ratio;
+            vp.pan_y *= ratio;
         },
         .zoom_by => |zb| {
             if (zb.ratio <= 0.0 or !std.math.isFinite(zb.ratio)) return;
@@ -231,12 +237,18 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
 
         .rotate_cw => {
             vp.rotateCw();
+            if (vp.mode != .manual) {
+                vp.zoom_factor = state.ZoomFactor.init(self.getBaseScale());
+            }
             if (nav.getCurrentImageEntry()) |entry| {
                 try self.putRotation(entry.getPath(), vp.rotation_angle);
             }
         },
         .rotate_ccw => {
             vp.rotateCcw();
+            if (vp.mode != .manual) {
+                vp.zoom_factor = state.ZoomFactor.init(self.getBaseScale());
+            }
             if (nav.getCurrentImageEntry()) |entry| {
                 try self.putRotation(entry.getPath(), vp.rotation_angle);
             }
@@ -249,9 +261,15 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 else
                     (self.readJpegExifOrientation(path) orelse .normal);
                 vp.rotation_angle = exif_rot.toDegrees();
+                if (vp.mode != .manual) {
+                    vp.zoom_factor = state.ZoomFactor.init(self.getBaseScale());
+                }
                 try self.putRotation(path, vp.rotation_angle);
             } else {
                 vp.rotation_angle = 0.0;
+                if (vp.mode != .manual) {
+                    vp.zoom_factor = state.ZoomFactor.init(self.getBaseScale());
+                }
             }
         },
 
@@ -288,6 +306,8 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
             const old_pan_x = vp.pan_x;
             const old_pan_y = vp.pan_y;
 
+            self.viewer.pan_controller.reset();
+            self.viewer.zoom_controller.reset();
             vp.reset();
             _ = switch (intent) {
                 .next_image => if (nav.manga_mode)
@@ -315,6 +335,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 .go_to_image => |idx| nav.goToIndex(idx),
                 else => unreachable,
             };
+            self.updateCurrentRotation();
 
             if (vp.mode != .manual) {
                 vp.zoom_factor = state.ZoomFactor.init(self.getBaseScale());
@@ -1487,4 +1508,104 @@ test "executeIntent - set_palette directory_navigator clears previous query" {
         app_st.viewer.ui.palette.query.items.len,
     );
     try std.testing.expect(app_st.viewer.ui.palette.matches.items.len >= 2);
+}
+
+test "executeIntent - syncs rotation and zoom on nav, rotate, and set_zoom" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    const dir_alloc = app_st.viewer.navigation.directory_arena.allocator();
+    try app_st.viewer.navigation.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = try dir_alloc.dupe(u8, "slide0.jpg") } },
+    );
+    try app_st.viewer.navigation.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = try dir_alloc.dupe(u8, "slide1.jpg") } },
+    );
+    app_st.viewer.navigation.current_index = 0;
+
+    // Slide 0: 4000x2000 unrotated -> in 1024x768 headless viewport,
+    // base scale is 1024/4000 = 0.256
+    const key0 = try app_st.cache.appendSlot(allocator, 0, .{
+        .decoding = .{ .has_thread = false },
+    });
+    const entry0 = app_st.cache.get(key0).?;
+    entry0.full_w = 4000;
+    entry0.full_h = 2000;
+    entry0.orientation = .normal;
+
+    // Slide 1: 4000x2000 with EXIF 90 deg rotation -> rotated dims 2000x4000,
+    // base scale is 768/4000 = 0.192
+    const key1 = try app_st.cache.appendSlot(allocator, 1, .{
+        .decoding = .{ .has_thread = false },
+    });
+    const entry1 = app_st.cache.get(key1).?;
+    entry1.full_w = 4000;
+    entry1.full_h = 2000;
+    entry1.orientation = .rotate_90;
+
+    // 1. Navigating from slide 0 to slide 1 must update rotation_angle
+    // BEFORE getBaseScale()
+    app_st.viewer.pan_controller.smooth_tap_remaining = 15.0;
+    try executeIntent(&app_st, .next_image);
+    try std.testing.expectEqual(
+        @as(?usize, 1),
+        app_st.viewer.navigation.current_index,
+    );
+    try std.testing.expectEqual(
+        @as(f32, 90.0),
+        app_st.viewer.viewport.rotation_angle,
+    );
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 768.0 / 4000.0),
+        app_st.viewer.viewport.zoom_factor.get(),
+        0.0001,
+    );
+    try std.testing.expectEqual(
+        @as(f32, 0.0),
+        app_st.viewer.pan_controller.smooth_tap_remaining,
+    );
+
+    // 2. Rotating CW (90 -> 180) while in fit mode must resync zoom_factor
+    // to unswapped 1024/4000
+    try executeIntent(&app_st, .rotate_cw);
+    try std.testing.expectEqual(
+        @as(f32, 180.0),
+        app_st.viewer.viewport.rotation_angle,
+    );
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 1024.0 / 4000.0),
+        app_st.viewer.viewport.zoom_factor.get(),
+        0.0001,
+    );
+
+    // 3. Resetting rotation restores EXIF 90 deg and resyncs zoom_factor
+    try executeIntent(&app_st, .reset_rotation);
+    try std.testing.expectEqual(
+        @as(f32, 90.0),
+        app_st.viewer.viewport.rotation_angle,
+    );
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 768.0 / 4000.0),
+        app_st.viewer.viewport.zoom_factor.get(),
+        0.0001,
+    );
+
+    // 4. set_zoom scales pan_x and pan_y proportionally
+    try executeIntent(&app_st, .{ .set_zoom = 1.0 });
+    app_st.viewer.viewport.setPan(100.0, -40.0);
+    try executeIntent(&app_st, .{ .set_zoom = 2.5 });
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 250.0),
+        app_st.viewer.viewport.pan_x,
+        0.001,
+    );
+    try std.testing.expectApproxEqAbs(
+        @as(f32, -100.0),
+        app_st.viewer.viewport.pan_y,
+        0.001,
+    );
 }

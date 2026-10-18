@@ -617,6 +617,7 @@ pub const AppState = struct {
         _ = self.viewer.navigation.directory_arena.reset(.retain_capacity);
         self.viewer.image_transition = .none;
         self.viewer.animations.setImmediate(.image_crossfade, 1.0);
+        self.viewer.animations.setImmediate(.thumb_crossfade, 1.0);
 
         if (has_stat) {
             const stack_raw = self.viewer.navigation.stack_raw_jpeg;
