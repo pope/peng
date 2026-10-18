@@ -32,7 +32,7 @@ pub fn computeViewDims(
     view_h: f32,
     scale_mode: ZoomPreset,
 ) ViewDims {
-    if (raw_w <= 0.0 or raw_h <= 0.0) {
+    if (raw_w <= 0.0 or raw_h <= 0.0 or view_w <= 0.0 or view_h <= 0.0) {
         return .{
             .draw_w = 0.0,
             .draw_h = 0.0,
@@ -84,7 +84,7 @@ pub fn computeViewDims(
                 draw_w = view_h * r_img;
             } else {
                 draw_w = view_w;
-                draw_h = view_h / r_img;
+                draw_h = view_w / r_img;
             }
         },
         .fit_width => {
@@ -316,15 +316,43 @@ test "computeThumbnailUvCrop pillarboxing (3:4 portrait in 4:3 thumb)" {
     try std.testing.expectApproxEqAbs(@as(f32, 0.78125), crop.u_max, 0.001);
 }
 
-test "computeViewDims fit_width and fit_height" {
-    // 800x1600 image (1:2 aspect ratio) in 1000x1000 viewport
-    const fw = computeViewDims(800.0, 1600.0, 0.0, 1000.0, 1000.0, .fit_width);
+test "computeViewDims fit_width, fit_height, and crop" {
+    // 800x1600 portrait image (1:2 aspect ratio) in 1000x800 viewport
+    const fw = computeViewDims(800.0, 1600.0, 0.0, 1000.0, 800.0, .fit_width);
     try std.testing.expectEqual(@as(f32, 1000.0), fw.draw_w);
     try std.testing.expectEqual(@as(f32, 2000.0), fw.draw_h);
 
-    const fh = computeViewDims(800.0, 1600.0, 0.0, 1000.0, 1000.0, .fit_height);
-    try std.testing.expectEqual(@as(f32, 500.0), fh.draw_w);
-    try std.testing.expectEqual(@as(f32, 1000.0), fh.draw_h);
+    const fh = computeViewDims(800.0, 1600.0, 0.0, 1000.0, 800.0, .fit_height);
+    try std.testing.expectEqual(@as(f32, 400.0), fh.draw_w);
+    try std.testing.expectEqual(@as(f32, 800.0), fh.draw_h);
+
+    // Portrait image (r_img = 0.5 <= r_view = 1.25) in .crop mode fills width
+    // (draw_w = 1000) and preserves 1:2 aspect ratio (draw_h = 2000).
+    const crop_portrait = computeViewDims(
+        800.0,
+        1600.0,
+        0.0,
+        1000.0,
+        800.0,
+        .crop,
+    );
+    try std.testing.expectEqual(@as(f32, 1000.0), crop_portrait.draw_w);
+    try std.testing.expectEqual(@as(f32, 2000.0), crop_portrait.draw_h);
+    try std.testing.expectEqual(@as(f32, 1.25), crop_portrait.base_scale);
+
+    // Landscape image (1600x800, r_img = 2.0 > r_view = 1.25) in .crop mode
+    // fills height (draw_h = 800) and preserves 2:1 aspect (draw_w = 1600).
+    const crop_landscape = computeViewDims(
+        1600.0,
+        800.0,
+        0.0,
+        1000.0,
+        800.0,
+        .crop,
+    );
+    try std.testing.expectEqual(@as(f32, 1600.0), crop_landscape.draw_w);
+    try std.testing.expectEqual(@as(f32, 800.0), crop_landscape.draw_h);
+    try std.testing.expectEqual(@as(f32, 1.0), crop_landscape.base_scale);
 }
 
 test "computeThumbnailUvCrop matching aspect ratios" {
