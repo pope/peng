@@ -49,6 +49,7 @@ fn handleSetPaletteIntent(self: *AppState, p: anytype) !void {
         return;
     }
     if (p.mode == .directory_navigator and p.query != null) {
+        ui.palette.query.clearRetainingCapacity();
         try self.loadPaletteDirectory(p.query.?);
         ui.palette.mode = .directory_navigator;
         return;
@@ -1454,4 +1455,36 @@ test "executeIntent - navigating onto failed slide skips crossfade" {
         app_st.viewer.animations.get(.image_crossfade),
         0.001,
     );
+}
+
+test "executeIntent - set_palette directory_navigator clears previous query" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(io, "alpha_dir", .default_dir);
+    try tmp.dir.createDir(io, "beta_dir", .default_dir);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const len = try tmp.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..len];
+
+    app_st.viewer.ui.palette.mode = .directory_navigator;
+    try app_st.viewer.ui.palette.query.appendSlice(allocator, "nonmatching");
+
+    try executeIntent(&app_st, .{
+        .set_palette = .{
+            .mode = .directory_navigator,
+            .query = tmp_path,
+        },
+    });
+
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        app_st.viewer.ui.palette.query.items.len,
+    );
+    try std.testing.expect(app_st.viewer.ui.palette.matches.items.len >= 2);
 }
