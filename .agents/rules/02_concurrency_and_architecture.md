@@ -7,7 +7,7 @@
   - Owns hardware contexts (`gpu_device`, `unpack_compute_pipeline`,
     `upload_staging: image.UploadStagingBuffer`, `ipc_server: ?*IpcServer`),
     allocators (`allocator`), async I/O (`io`), texture slot cache
-    (`cache: CacheSlotMap`), worker manager (`workers: WorkerManager`), IPC
+    (`cache: ImageCache`), worker manager (`workers: WorkerManager`), IPC
     command queue (`pending_ipc_commands`), intent queue (`pending_intents`),
     event batch (`event_batch`), and embeds `viewer: ViewerState`.
   - All system pass functions in `src/app/systems/` accept `ctx: FrameContext`
@@ -128,7 +128,7 @@
   - Keep atomic counters (`active_threads`, `active_decode_threads`, `exiting`)
     in `WorkerManager` for scheduling (`canSpawnDecode()`, `isBusy()`), and
     snapshot them once per frame in `sysSyncMetrics` into `ViewerStats`.
-  - Subsystems with generational invalidation (`CacheSlotMap.generation`,
+  - Subsystems with generational invalidation (`ImageCache.generation`,
     `PaletteState.dir_scan_generation`) increment `std.atomic.Value(usize)` with
     `.release` ordering on the main thread. Workers observe
     `current_generation: *const std.atomic.Value(usize)` with `.acquire`

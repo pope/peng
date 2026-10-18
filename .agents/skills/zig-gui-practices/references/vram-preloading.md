@@ -98,12 +98,12 @@ ______________________________________________________________________
 - **Non-Blocking Main-Thread Contract**:
   Calling `std.Io.Group.cancel(io)` blocks (`futexWait`) until in-flight workers finish. Instead, during runtime navigation, the main thread atomically increments `state.cache.generation.fetchAdd(1, .release)` (or `palette.dir_scan_generation.fetchAdd(1, .release)`).
 - **Atomic Generation Pointer Injection (`src/app/workers/decode.zig`)**:
-  `DecodeArgs` bundles the slot's `CacheKey` (`index` and assigned `generation`), `MediaEntry`, and a read-only pointer to the live atomic counter:
+  `DecodeArgs` bundles the slot's `ImageCacheKey` (`index` and assigned `generation`), `MediaEntry`, and a read-only pointer to the live atomic counter:
   ```zig
   pub const DecodeArgs = struct {
       workers: *WorkerManager,
       allocator: std.mem.Allocator,
-      key: CacheKey,
+      key: ImageCacheKey,
       entry: MediaEntry,
       io: std.Io,
       thumb_only: bool = false,

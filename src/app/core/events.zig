@@ -4,7 +4,7 @@ const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
 
-const CacheKey = image.CacheKey;
+const ImageCacheKey = image.ImageCacheKey;
 const MediaEntry = state_pkg.MediaEntry;
 const Orientation = state_pkg.Orientation;
 const RawMetadata = state_pkg.RawMetadata;
@@ -50,24 +50,24 @@ pub fn Generational(comptime T: type) type {
     };
 }
 
-/// Envelope binding an event payload to a specific `CacheKey` slot.
-/// Callers must invoke `resolve()` against `CacheSlotMap` to obtain both the
+/// Envelope binding an event payload to a specific `ImageCacheKey` slot.
+/// Callers must invoke `resolve()` against `ImageCache` to obtain both the
 /// validated `*CacheEntry` and the payload together.
 pub fn SlotBound(comptime T: type) type {
     return struct {
-        key: CacheKey,
+        key: ImageCacheKey,
         unchecked_payload: T,
 
         const Self = @This();
 
         pub const Resolved = struct {
-            key: CacheKey,
+            key: ImageCacheKey,
             entry: *state_pkg.CacheEntry,
             payload: *T,
         };
 
         /// Binds `payload` to `key`.
-        pub inline fn init(key: CacheKey, payload: T) Self {
+        pub inline fn init(key: ImageCacheKey, payload: T) Self {
             return .{
                 .key = key,
                 .unchecked_payload = payload,
@@ -77,7 +77,7 @@ pub fn SlotBound(comptime T: type) type {
         /// Looks up `self.key` in `cache`, returning the live `*CacheEntry`
         /// and a mutable pointer to the payload only if `self.key` matches
         /// the active `cache.generation` and the slot still exists.
-        pub fn resolve(self: *Self, cache: *image.CacheSlotMap) ?Resolved {
+        pub fn resolve(self: *Self, cache: *image.ImageCache) ?Resolved {
             if (self.key.generation != cache.generation.load(.acquire)) {
                 return null;
             }
@@ -90,7 +90,7 @@ pub fn SlotBound(comptime T: type) type {
         }
 
         /// Returns the inner payload for unit tests inspecting raw queue output
-        /// without a `CacheSlotMap`.
+        /// without an `ImageCache`.
         pub fn unwrapForTest(self: Self) T {
             if (!@import("builtin").is_test) {
                 @compileError(
@@ -339,7 +339,7 @@ test "Generational.resolve validates generation counter" {
 
 test "SlotBound.resolve validates cache key and returns live entry" {
     const allocator = std.testing.allocator;
-    var cache = image.CacheSlotMap{};
+    var cache = image.ImageCache{};
     defer cache.deinit(allocator, null);
 
     const key = try cache.appendSlot(allocator, 3, .{

@@ -14,11 +14,11 @@ const workers_mod = @import("workers/root.zig");
 
 const AppIntent = intents.AppIntent;
 const CacheEntry = state_pkg.CacheEntry;
-const CacheKey = image.CacheKey;
-const CacheSlotMap = image.CacheSlotMap;
 const CacheStatus = state_pkg.CacheStatus;
 const DisplayState = state_pkg.DisplayState;
 const FrameInput = types.FrameInput;
+const ImageCache = image.ImageCache;
+const ImageCacheKey = image.ImageCacheKey;
 const PaletteMode = intents.PaletteMode;
 const types = state_pkg.types;
 const view_transform = state_pkg.view_transform;
@@ -78,7 +78,7 @@ pub const AppState = struct {
     io: std.Io,
 
     /// Subsystems
-    cache: CacheSlotMap,
+    cache: ImageCache,
     workers: workers_mod.WorkerManager = .{},
     upload_staging: image.UploadStagingBuffer = .{},
 
@@ -753,7 +753,7 @@ pub const AppState = struct {
         if (self.gpu_device == null) return;
 
         var upload_target: ?struct {
-            key: CacheKey,
+            key: ImageCacheKey,
             cpu: @TypeOf(@as(CacheStatus, undefined).loaded_cpu),
         } = null;
 
@@ -869,7 +869,7 @@ pub const AppState = struct {
                             self.viewer.navigation.getVisibleNeighbors(),
                             self.viewer.getTransitionPrevIndex(),
                             self.viewer.navigation.count(),
-                            image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES,
+                            image.ImageCache.DEFAULT_MAX_VRAM_BYTES,
                         );
                         checkLoadedGpuCrossfade(self, target.key);
                     }
@@ -880,7 +880,10 @@ pub const AppState = struct {
         }
     }
 
-    fn checkLoadedGpuCrossfade(self: *AppState, target_key: CacheKey) void {
+    fn checkLoadedGpuCrossfade(
+        self: *AppState,
+        target_key: ImageCacheKey,
+    ) void {
         const cur_idx = self.viewer.navigation.current_index orelse return;
         if (self.cache.activeKey(cur_idx).index != target_key.index) return;
         const entry = self.cache.get(target_key) orelse return;
@@ -911,7 +914,7 @@ pub const AppState = struct {
         }
     }
 
-    fn handleGpuUploadFailure(self: *AppState, target_key: CacheKey) void {
+    fn handleGpuUploadFailure(self: *AppState, target_key: ImageCacheKey) void {
         _ = self.cache.updateStatus(target_key, .failed);
         const cur_idx = self.viewer.navigation.current_index orelse return;
         if (self.cache.activeKey(cur_idx).index == target_key.index) {

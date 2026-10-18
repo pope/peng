@@ -197,7 +197,7 @@ fn handleExifThumbnailEvent(
 
 fn handleImageDecodedEvent(
     state: *AppState,
-    key: image.CacheKey,
+    key: image.ImageCacheKey,
     entry: *state_pkg.CacheEntry,
     decoded_data: *events.ImageDecodedPayload,
 ) void {
@@ -383,7 +383,7 @@ fn applyDecodedGpuTexture(
         state.viewer.navigation.getVisibleNeighbors(),
         state.viewer.getTransitionPrevIndex(),
         state.viewer.navigation.count(),
-        image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES,
+        image.ImageCache.DEFAULT_MAX_VRAM_BYTES,
     );
 }
 

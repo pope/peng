@@ -8,9 +8,9 @@ const std = @import("std");
 
 const AppState = app_state.AppState;
 const CacheEntry = state_pkg.CacheEntry;
-const CacheSlotMap = image.CacheSlotMap;
 const DecodeArgs = decode_mod.DecodeArgs;
 const FrameContext = context.FrameContext;
+const ImageCache = image.ImageCache;
 const MediaEntry = state_pkg.MediaEntry;
 
 /// Fast-scrolling threshold: when navigation events occur faster than this interval,
@@ -190,7 +190,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
         neighbors,
         state.viewer.getTransitionPrevIndex(),
         len,
-        image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES,
+        image.ImageCache.DEFAULT_MAX_VRAM_BYTES,
     );
 
     const max_dist = state.cache.getMaxPrefetchDist(neighbors);

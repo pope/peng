@@ -50,13 +50,13 @@ ______________________________________________________________________
 
 ______________________________________________________________________
 
-## CacheSlotMap & Generation Ownership
+## ImageCache & Generation Ownership
 
 - **Pattern 4 — Cache Slot Generation Ownership & Structure**:
-  - `CacheSlotMap` (`state.cache` in `src/app/core/image.zig`) uses Zig's `std.MultiArrayList(CacheSlot)` for Structure-of-Arrays (SoA) memory layout, allowing key scanning without cache-line pollution while mutating key and entry slices atomically.
-  - Generation state (`generation: std.atomic.Value(usize) = .init(0)`) is owned exclusively by `CacheSlotMap`.
+  - `ImageCache` (`state.cache` in `src/app/core/image.zig`) uses Zig's `std.MultiArrayList(CacheSlot)` for Structure-of-Arrays (SoA) memory layout, allowing key scanning without cache-line pollution while mutating key and entry slices atomically.
+  - Generation state (`generation: std.atomic.Value(usize) = .init(0)`) is owned exclusively by `ImageCache`.
   - Navigation/directory resets advance the generation via `_ = state.cache.advanceGeneration()`.
-  - Incoming background event payloads validate their `CacheKey` (`state.cache.activeKey(idx)`) against `state.cache.generation.load(.acquire)`. Mismatched generations are ignored to prevent stale decodes from populating active slots.
+  - Incoming background event payloads validate their `ImageCacheKey` (`state.cache.activeKey(idx)`) against `state.cache.generation.load(.acquire)`. Mismatched generations are ignored to prevent stale decodes from populating active slots.
 
 ______________________________________________________________________
 

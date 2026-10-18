@@ -8,7 +8,7 @@ const state_pkg = @import("state");
 const std = @import("std");
 
 const ArchiveMediaEntry = state_pkg.ArchiveMediaEntry;
-const CacheKey = image.CacheKey;
+const ImageCacheKey = image.ImageCacheKey;
 const MediaEntry = state_pkg.MediaEntry;
 const PairStreamTarget = state_pkg.PairStreamTarget;
 const RawMetadata = state_pkg.RawMetadata;
@@ -19,7 +19,7 @@ pub const DecodeArgs = struct {
     workers: *WorkerManager,
     allocator: std.mem.Allocator,
     io: std.Io,
-    key: CacheKey,
+    key: ImageCacheKey,
     entry: MediaEntry,
     has_gpu_device: bool,
     pixel_format: u32,
@@ -51,7 +51,7 @@ fn failDecodeWorker(
     workers: *WorkerManager,
     alloc: std.mem.Allocator,
     io: std.Io,
-    key: CacheKey,
+    key: ImageCacheKey,
     comptime fmt: []const u8,
     fmt_args: anytype,
 ) void {

@@ -19,17 +19,15 @@ const ZipSeekOffsets = state_pkg.types.ZipSeekOffsets;
 
 /// Unique lookup key identifying a cached image slot by its playlist index
 /// and cache generation epoch.
-pub const CacheKey = struct {
+pub const ImageCacheKey = struct {
     index: usize,
     generation: usize,
 };
 
-/// Type alias identifying a GPU texture cached slot by its CacheKey.
-pub const TextureHandle = CacheKey;
-
-/// Cache slot structure binding a CacheKey to its active CacheEntry state.
+/// Cache slot structure binding an `ImageCacheKey` to its active `CacheEntry`
+/// state.
 pub const CacheSlot = struct {
-    key: CacheKey,
+    key: ImageCacheKey,
     entry: CacheEntry,
 };
 
@@ -46,9 +44,9 @@ pub fn calcCyclicDistance(
         linear;
 }
 
-/// Structure-of-Arrays (SoA) collection managing cached image slots,
+/// Structure-of-Arrays (SoA) associative cache managing decoded image slots,
 /// generation epochs, and VRAM memory budgeting.
-pub const CacheSlotMap = struct {
+pub const ImageCache = struct {
     slots: std.MultiArrayList(CacheSlot) = .{},
     generation: std.atomic.Value(usize) = .init(0),
     vram_capped_neighbors: ?state_pkg.VisibleNeighbors = null,
@@ -57,26 +55,27 @@ pub const CacheSlotMap = struct {
 
     /// Atomically increments the cache generation epoch to invalidate
     /// in-flight asynchronous decode tasks.
-    pub fn advanceGeneration(self: *CacheSlotMap) usize {
+    pub fn advanceGeneration(self: *ImageCache) usize {
         self.vram_capped_neighbors = null;
         self.vram_capped_prev_index = null;
         self.max_prefetch_dist = 2;
         return self.generation.fetchAdd(1, .release) +% 1;
     }
 
-    /// Generates a `CacheKey` combining the specified media index and current generation epoch.
-    pub fn activeKey(self: *const CacheSlotMap, index: usize) CacheKey {
+    /// Generates an `ImageCacheKey` combining the specified media index and
+    /// current generation epoch.
+    pub fn activeKey(self: *const ImageCache, index: usize) ImageCacheKey {
         return .{ .index = index, .generation = self.generation.load(.acquire) };
     }
 
     /// Returns the count of allocated cache slots.
-    pub fn count(self: *const CacheSlotMap) usize {
+    pub fn count(self: *const ImageCache) usize {
         return self.slots.len;
     }
 
     /// Deinitializes all cached GPU textures and releases the multi-array storage memory.
     pub fn deinit(
-        self: *CacheSlotMap,
+        self: *ImageCache,
         allocator: std.mem.Allocator,
         gpu_device: ?sdl.gpu.Device,
     ) void {
@@ -87,8 +86,9 @@ pub const CacheSlotMap = struct {
         self.slots.deinit(allocator);
     }
 
-    /// Deinitializes all slot resources and clears the map while retaining capacity.
-    pub fn clear(self: *CacheSlotMap, gpu_device: ?sdl.gpu.Device) void {
+    /// Deinitializes all slot resources and clears the cache while retaining
+    /// capacity.
+    pub fn clear(self: *ImageCache, gpu_device: ?sdl.gpu.Device) void {
         const entries = self.slots.items(.entry);
         for (entries) |*entry| {
             entry.deinit(gpu_device);
@@ -100,7 +100,7 @@ pub const CacheSlotMap = struct {
     }
 
     /// Clears all slots without releasing underlying capacity.
-    pub fn clearRetainingCapacity(self: *CacheSlotMap) void {
+    pub fn clearRetainingCapacity(self: *ImageCache) void {
         self.slots.clearRetainingCapacity();
         self.vram_capped_neighbors = null;
         self.vram_capped_prev_index = null;
@@ -108,7 +108,7 @@ pub const CacheSlotMap = struct {
     }
 
     /// Finds the dense array index of the slot matching `key`, or null if not found.
-    pub fn getIndex(self: *const CacheSlotMap, key: CacheKey) ?usize {
+    pub fn getIndex(self: *const ImageCache, key: ImageCacheKey) ?usize {
         const keys = self.slots.items(.key);
         for (keys, 0..) |k, i| {
             if (k.index == key.index and k.generation == key.generation) return i;
@@ -117,19 +117,23 @@ pub const CacheSlotMap = struct {
     }
 
     /// Returns a pointer to the `CacheEntry` corresponding to `key`, or null if not present.
-    pub fn get(self: *CacheSlotMap, key: CacheKey) ?*CacheEntry {
+    pub fn get(self: *ImageCache, key: ImageCacheKey) ?*CacheEntry {
         if (self.getIndex(key)) |i| return &self.slots.items(.entry)[i];
         return null;
     }
 
     /// Returns a copy of the `CacheEntry` corresponding to `key`, or null if not present.
-    pub fn getEntry(self: *const CacheSlotMap, key: CacheKey) ?CacheEntry {
+    pub fn getEntry(self: *const ImageCache, key: ImageCacheKey) ?CacheEntry {
         if (self.getIndex(key)) |i| return self.slots.items(.entry)[i];
         return null;
     }
 
     /// Updates the cache status for the slot matching `key`. Returns true if the key was found.
-    pub fn updateStatus(self: *CacheSlotMap, key: CacheKey, status: CacheStatus) bool {
+    pub fn updateStatus(
+        self: *ImageCache,
+        key: ImageCacheKey,
+        status: CacheStatus,
+    ) bool {
         if (self.get(key)) |entry| {
             entry.status = status;
             return true;
@@ -137,21 +141,25 @@ pub const CacheSlotMap = struct {
         return false;
     }
 
-    /// Appends a new slot for media `index` at current generation, returning its unique `CacheKey`.
+    /// Appends a new slot for media `index` at current generation, returning
+    /// its unique `ImageCacheKey`.
     pub fn appendSlot(
-        self: *CacheSlotMap,
+        self: *ImageCache,
         allocator: std.mem.Allocator,
         index: usize,
         status: CacheStatus,
-    ) !CacheKey {
-        const key = CacheKey{ .index = index, .generation = self.generation.load(.acquire) };
+    ) !ImageCacheKey {
+        const key = ImageCacheKey{
+            .index = index,
+            .generation = self.generation.load(.acquire),
+        };
         try self.slots.append(allocator, .{ .key = key, .entry = .{ .status = status } });
         return key;
     }
 
     /// Removes a slot at `index_in_list` via swap-remove and releases its GPU texture.
     pub fn removeAndDeinit(
-        self: *CacheSlotMap,
+        self: *ImageCache,
         index_in_list: usize,
         gpu_device: ?sdl.gpu.Device,
     ) void {
@@ -163,7 +171,7 @@ pub const CacheSlotMap = struct {
     pub const DEFAULT_MAX_VRAM_BYTES: usize = 1024 * 1024 * 1024;
 
     /// Computes the total VRAM consumption in bytes across all `.loaded_gpu` textures in the cache.
-    pub fn getTotalVramBytes(self: *const CacheSlotMap) usize {
+    pub fn getTotalVramBytes(self: *const ImageCache) usize {
         var total: usize = 0;
         const entries = self.slots.items(.entry);
         for (entries) |entry| {
@@ -178,7 +186,7 @@ pub const CacheSlotMap = struct {
     /// Returns the maximum circular neighbor distance (`0..2`) to prefetch for
     /// `neighbors` without exceeding the VRAM budget.
     pub fn getMaxPrefetchDist(
-        self: *const CacheSlotMap,
+        self: *const ImageCache,
         neighbors: state_pkg.VisibleNeighbors,
     ) usize {
         if (self.vram_capped_neighbors) |capped| {
@@ -200,7 +208,7 @@ pub const CacheSlotMap = struct {
     /// The currently active image and any active outgoing slideshow transition
     /// image (`protected_prev_index`) are strictly protected.
     pub fn enforceVramBudget(
-        self: *CacheSlotMap,
+        self: *ImageCache,
         gpu_device: ?sdl.gpu.Device,
         neighbors_opt: ?state_pkg.VisibleNeighbors,
         protected_prev_index: ?usize,
@@ -277,7 +285,7 @@ pub const CacheSlotMap = struct {
     /// A slot is considered unready if it is missing, decoding, uploading, or loaded on CPU
     /// when a GPU device is present.
     pub fn hasUnreadyPrefetchSlots(
-        self: *const CacheSlotMap,
+        self: *const ImageCache,
         neighbors: state_pkg.VisibleNeighbors,
         has_gpu: bool,
     ) bool {
@@ -1957,7 +1965,7 @@ test "parseImageDimensions" {
 
 test "enforceVramBudget - distant eviction, circular distance, and neighbor protection" {
     const allocator = std.testing.allocator;
-    var cache = CacheSlotMap{};
+    var cache = ImageCache{};
     defer cache.deinit(allocator, null);
 
     const makeGpuStatus = struct {
@@ -2037,7 +2045,7 @@ test "enforceVramBudget - distant eviction, circular distance, and neighbor prot
 
 test "hasUnreadyPrefetchSlots" {
     const allocator = std.testing.allocator;
-    var cache = CacheSlotMap{};
+    var cache = ImageCache{};
     defer cache.deinit(allocator, null);
 
     const n5 = state_pkg.VisibleNeighbors.fromRawIndex(0, 5);
@@ -2083,9 +2091,9 @@ test "hasUnreadyPrefetchSlots" {
     _ = cache.updateStatus(.{ .index = 2, .generation = 0 }, .failed);
 }
 
-test "CacheSlotMap.updateStatus" {
+test "ImageCache.updateStatus" {
     const allocator = std.testing.allocator;
-    var cache = CacheSlotMap{};
+    var cache = ImageCache{};
     defer cache.deinit(allocator, null);
 
     _ = cache.advanceGeneration();
@@ -2277,8 +2285,8 @@ test "probeMediaMetadata - archive entry handling" {
     }
 }
 
-test "CacheSlotMap - atomic generation advance and activeKey" {
-    var cache = CacheSlotMap{};
+test "ImageCache - atomic generation advance and activeKey" {
+    var cache = ImageCache{};
     try std.testing.expectEqual(@as(usize, 0), cache.activeKey(0).generation);
     const next_gen = cache.advanceGeneration();
     try std.testing.expectEqual(@as(usize, 1), next_gen);
