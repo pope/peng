@@ -839,6 +839,87 @@ fn renderClassificationBadge(
     });
 }
 
+fn computeFileItemMatches(
+    frame_allocator: std.mem.Allocator,
+    basename: []const u8,
+    jpeg_path_opt: ?[]const u8,
+    is_pair: bool,
+    query_str: []const u8,
+) !std.ArrayList(usize) {
+    var basename_matches = try std.ArrayList(usize).initCapacity(
+        frame_allocator,
+        16,
+    );
+    errdefer basename_matches.deinit(frame_allocator);
+
+    if (query_str.len == 0 or basename.len == 0) return basename_matches;
+
+    const jpeg_base = if (jpeg_path_opt) |jp| std.fs.path.basename(jp) else "";
+    const max_h = @max(@max(basename.len, jpeg_base.len), "RAW+JPG".len);
+    var searcher = state.fuzzig.Ascii.init(
+        frame_allocator,
+        @max(max_h, 64),
+        query_str.len,
+        .{ .case_sensitive = false },
+    ) catch return basename_matches;
+    defer searcher.deinit();
+
+    var best_score: ?i32 = searcher.score(basename, query_str);
+    var best_source: enum { base, jpeg, tag } = .base;
+
+    if (jpeg_base.len > 0) {
+        if (searcher.score(jpeg_base, query_str)) |jpeg_score| {
+            if (best_score == null or jpeg_score > best_score.?) {
+                best_score = jpeg_score;
+                best_source = .jpeg;
+            }
+        }
+    }
+    if (is_pair) {
+        if (searcher.score("RAW+JPG", query_str)) |tag_score| {
+            if (best_score == null or tag_score > best_score.?) {
+                best_score = tag_score;
+                best_source = .tag;
+            }
+        }
+    }
+
+    if (best_score == null) return basename_matches;
+
+    switch (best_source) {
+        .base => {
+            const base_res = searcher.scoreMatches(basename, query_str);
+            if (base_res.score != null) {
+                try basename_matches.appendSlice(
+                    frame_allocator,
+                    base_res.matches,
+                );
+            }
+        },
+        .jpeg => {
+            const jpeg_res = searcher.scoreMatches(jpeg_base, query_str);
+            if (jpeg_res.score != null) {
+                var shared_len: usize = 0;
+                const min_len = @min(basename.len, jpeg_base.len);
+                while (shared_len < min_len and
+                    std.ascii.toLower(basename[shared_len]) ==
+                        std.ascii.toLower(jpeg_base[shared_len]))
+                {
+                    shared_len += 1;
+                }
+                for (jpeg_res.matches) |idx| {
+                    if (idx < shared_len) {
+                        try basename_matches.append(frame_allocator, idx);
+                    }
+                }
+            }
+        },
+        .tag => {},
+    }
+
+    return basename_matches;
+}
+
 fn renderFileListItem(
     ui_model: UiViewModel,
     palette: *const PaletteState,
@@ -851,37 +932,20 @@ fn renderFileListItem(
     const media_opt = ui_model.getMediaEntry(real_idx);
     const basename = if (media_opt) |m| m.getBasename() else "";
     const dirname = if (media_opt) |m| m.getContainerName() else ".";
+    const jpeg_path_opt = if (media_opt) |m| m.getJpegPath() else null;
+    const is_pair = if (media_opt) |m| m.isPair() else false;
     const query_str = palette.query.items;
 
-    var basename_matches = try std.ArrayList(usize).initCapacity(
+    var basename_matches = try computeFileItemMatches(
         frame_allocator,
-        16,
+        basename,
+        jpeg_path_opt,
+        is_pair,
+        query_str,
     );
     defer basename_matches.deinit(frame_allocator);
 
-    if (query_str.len > 0 and basename.len > 0) {
-        var searcher = state.fuzzig.Ascii.init(
-            frame_allocator,
-            @max(basename.len, 64),
-            query_str.len,
-            .{ .case_sensitive = false },
-        ) catch null;
-        if (searcher) |*searcher_ptr| {
-            defer searcher_ptr.deinit();
-            const base_res = searcher_ptr.scoreMatches(basename, query_str);
-            if (base_res.score != null) {
-                basename_matches.appendSlice(
-                    frame_allocator,
-                    base_res.matches,
-                ) catch |err| {
-                    std.log.err("appendSlice failed: {}", .{err});
-                };
-            }
-        }
-    }
-
     const classification = ui_model.getClassification(real_idx);
-    const is_pair = if (media_opt) |m| m.isPair() else false;
     var max_fn_w: f32 = 492.0;
     var max_dir_w: f32 = 488.0;
     if (classification != .unflagged) {
@@ -1704,4 +1768,47 @@ test "renderPalette - closing palette passes pointer through to parent" {
     _ = clay.endLayout();
     clay.setPointerState(.{ .x = 500, .y = 350 }, false);
     try std.testing.expect(clay.pointerOver(clay.getElementId("RootHost")));
+}
+
+test "computeFileItemMatches highlights stem on jpeg pair match and skips tag" {
+    const alloc = std.testing.allocator;
+
+    // 1. Direct basename match on "DSC0001.ARW"
+    var m1 = try computeFileItemMatches(
+        alloc,
+        "DSC0001.ARW",
+        "/photos/DSC0001.JPG",
+        true,
+        "DSC0001.ARW",
+    );
+    defer m1.deinit(alloc);
+    try std.testing.expectEqual(@as(usize, 11), m1.items.len);
+
+    // 2. JPEG sibling match ("DSC0001.JPG" query on "DSC0001.ARW" basename)
+    // Shared prefix is "DSC0001." (length 8); ".JPG" indices >= 8 are dropped
+    var m2 = try computeFileItemMatches(
+        alloc,
+        "DSC0001.ARW",
+        "/photos/DSC0001.JPG",
+        true,
+        "DSC0001.JPG",
+    );
+    defer m2.deinit(alloc);
+    try std.testing.expectEqualSlices(
+        usize,
+        &[_]usize{ 0, 1, 2, 3, 4, 5, 6, 7 },
+        m2.items,
+    );
+
+    // 3. Tag match ("RAW+JPG" query on "DSC0001.ARW" pair) -> no false-positive
+    // highlights on basename characters ('R', 'A', 'W')
+    var m3 = try computeFileItemMatches(
+        alloc,
+        "DSC0001.ARW",
+        "/photos/DSC0001.JPG",
+        true,
+        "RAW+JPG",
+    );
+    defer m3.deinit(alloc);
+    try std.testing.expectEqual(@as(usize, 0), m3.items.len);
 }
