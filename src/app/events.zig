@@ -106,20 +106,12 @@ fn handleDimensionsProbedEvent(
 ) void {
     const entry = state.cache.get(probed.key) orelse return;
 
-    if (probed.orientation != .normal) {
-        entry.orientation = probed.orientation;
-    }
-    if (probed.full_w > 0 and probed.full_h > 0) {
-        const cur_area = entry.full_w * entry.full_h;
-        const new_area = probed.full_w * probed.full_h;
-        if (cur_area <= 0.0 or new_area > cur_area) {
-            entry.full_w = probed.full_w;
-            entry.full_h = probed.full_h;
-        }
-    }
-    if (probed.raw_metadata.isRaw()) {
-        entry.raw_metadata = probed.raw_metadata;
-    }
+    entry.applyProbedMetadata(
+        probed.full_w,
+        probed.full_h,
+        probed.orientation,
+        probed.raw_metadata,
+    );
     if (probed.thumb_only) {
         switch (entry.status) {
             .decoding => |*dec| dec.has_thread = false,
@@ -139,20 +131,12 @@ fn handleExifThumbnailEvent(
 ) void {
     const entry = state.cache.get(thumb_data.key) orelse return;
 
-    if (thumb_data.orientation != .normal) {
-        entry.orientation = thumb_data.orientation;
-    }
-    if (thumb_data.full_w > 0 and thumb_data.full_h > 0) {
-        const cur_area = entry.full_w * entry.full_h;
-        const new_area = thumb_data.full_w * thumb_data.full_h;
-        if (cur_area <= 0.0 or new_area > cur_area) {
-            entry.full_w = thumb_data.full_w;
-            entry.full_h = thumb_data.full_h;
-        }
-    }
-    if (thumb_data.raw_metadata.isRaw()) {
-        entry.raw_metadata = thumb_data.raw_metadata;
-    }
+    entry.applyProbedMetadata(
+        thumb_data.full_w,
+        thumb_data.full_h,
+        thumb_data.orientation,
+        thumb_data.raw_metadata,
+    );
     if (thumb_data.thumb_only) {
         switch (entry.status) {
             .decoding => |*dec| dec.has_thread = false,
@@ -266,18 +250,7 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
                 },
                 else => {},
             }
-            entry.raw_metadata = decoded_data.raw_metadata;
-            entry.orientation = decoded_data.orientation;
-            entry.is_promoting = false;
-            if (entry.full_w <= 0.0 or entry.full_h <= 0.0) {
-                if (decoded_data.raw_metadata.getSensorDims()) |s_dims| {
-                    entry.full_w = s_dims.w;
-                    entry.full_h = s_dims.h;
-                } else {
-                    entry.full_w = decoded_data.w;
-                    entry.full_h = decoded_data.h;
-                }
-            }
+            applyDecodedMetadata(entry, decoded_data);
             if (entry.thumbnail == .pending or entry.thumbnail == .none) {
                 entry.thumbnail = .not_available;
             }
@@ -299,6 +272,25 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
         }
         state.updateCurrentRotation();
     }
+}
+
+fn applyDecodedMetadata(
+    entry: *state_pkg.CacheEntry,
+    decoded_data: *const events.ImageDecodedPayload,
+) void {
+    entry.orientation = decoded_data.orientation;
+    entry.is_promoting = false;
+    if (decoded_data.raw_metadata.getSensorDims()) |s_dims| {
+        entry.updateFullDims(s_dims.w, s_dims.h);
+    }
+    entry.updateFullDims(decoded_data.w, decoded_data.h);
+    entry.raw_metadata = if (decoded_data.raw_metadata.isRaw())
+        if (entry.full_w > 0.0 and entry.full_h > 0.0)
+            state_pkg.RawMetadata.init(entry.full_w, entry.full_h)
+        else
+            decoded_data.raw_metadata
+    else
+        .none;
 }
 
 fn handleDecodedGpuUploadFailure(
@@ -369,18 +361,7 @@ fn applyDecodedGpuTexture(
         .loaded_gpu => |gpu| gpu_dev.releaseTexture(gpu.gpu_texture),
         else => {},
     }
-    entry.raw_metadata = decoded_data.raw_metadata;
-    entry.orientation = decoded_data.orientation;
-    entry.is_promoting = false;
-    if (entry.full_w <= 0.0 or entry.full_h <= 0.0) {
-        if (decoded_data.raw_metadata.getSensorDims()) |s_dims| {
-            entry.full_w = s_dims.w;
-            entry.full_h = s_dims.h;
-        } else {
-            entry.full_w = decoded_data.w;
-            entry.full_h = decoded_data.h;
-        }
-    }
+    applyDecodedMetadata(entry, decoded_data);
     entry.status = .{
         .loaded_gpu = .{
             .gpu_texture = full_res.gpu_texture,
@@ -840,4 +821,102 @@ test "drainWorkerEvents - pair promotion preserves VRAM and loaded status" {
     const key0 = state.cache.activeKey(0);
     handleDecodedGpuUploadFailure(&state, key0, true);
     try std.testing.expect(state.cache.get(key0).?.status == .failed);
+}
+
+test "drainWorkerEvents - monotonic full_w and full_h on pair promotion" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    state.viewer.navigation.current_index = 0;
+    const key0 = try state.cache.appendSlot(allocator, 0, .{
+        .decoding = .{ .has_thread = true },
+    });
+    const entry0 = state.cache.get(key0).?;
+
+    // 1. Initial preview decode at 1616x1080 sets full_w/full_h to 1616x1080
+    const preview_surf = sdl.Surface.create(
+        16,
+        10,
+        sdl.PixelFormat.rgba32,
+    ) orelse return error.SurfaceFailed;
+    try state.workers.event_queue.push(allocator, io, .{
+        .image_decoded = .{
+            .key = key0,
+            .surface = preview_surf,
+            .w = 1616,
+            .h = 1080,
+            .mime_type = "image/jpeg",
+            .size_bytes = 500_000,
+            .read_time_ms = 1.0,
+            .decode_time_ms = 2.0,
+            .conversion_time_ms = 0.0,
+            .orientation = .normal,
+            .raw_metadata = state_pkg.RawMetadata.init(1616, 1080),
+        },
+    });
+    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expectEqual(@as(f32, 1616), entry0.full_w);
+    try std.testing.expectEqual(@as(f32, 1080), entry0.full_h);
+    try std.testing.expect(entry0.raw_metadata.isRaw());
+
+    // 2. Promotion to 6000x4000 standalone JPEG upgrades full_w/full_h
+    entry0.is_promoting = true;
+    const full_surf = sdl.Surface.create(
+        60,
+        40,
+        sdl.PixelFormat.rgba32,
+    ) orelse return error.SurfaceFailed;
+    try state.workers.event_queue.push(allocator, io, .{
+        .image_decoded = .{
+            .key = key0,
+            .surface = full_surf,
+            .w = 6000,
+            .h = 4000,
+            .mime_type = "image/jpeg",
+            .size_bytes = 4_000_000,
+            .read_time_ms = 2.0,
+            .decode_time_ms = 5.0,
+            .conversion_time_ms = 0.0,
+            .orientation = .normal,
+            .raw_metadata = .none,
+        },
+    });
+    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expectEqual(@as(f32, 6000), entry0.full_w);
+    try std.testing.expectEqual(@as(f32, 4000), entry0.full_h);
+    try std.testing.expect(!entry0.raw_metadata.isRaw());
+    const auth = entry0.getAuthoritativeDims();
+    try std.testing.expectEqual(@as(f32, 6000), auth.w);
+    try std.testing.expectEqual(@as(f32, 4000), auth.h);
+
+    // 3. Toggling back to 1616x1080 preview does not regress full_w/full_h
+    const toggle_surf = sdl.Surface.create(
+        16,
+        10,
+        sdl.PixelFormat.rgba32,
+    ) orelse return error.SurfaceFailed;
+    try state.workers.event_queue.push(allocator, io, .{
+        .image_decoded = .{
+            .key = key0,
+            .surface = toggle_surf,
+            .w = 1616,
+            .h = 1080,
+            .mime_type = "image/jpeg",
+            .size_bytes = 500_000,
+            .read_time_ms = 1.0,
+            .decode_time_ms = 2.0,
+            .conversion_time_ms = 0.0,
+            .orientation = .normal,
+            .raw_metadata = state_pkg.RawMetadata.init(1616, 1080),
+        },
+    });
+    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expectEqual(@as(f32, 6000), entry0.full_w);
+    try std.testing.expectEqual(@as(f32, 4000), entry0.full_h);
+    try std.testing.expect(entry0.raw_metadata.isRaw());
+    const toggle_auth = entry0.getAuthoritativeDims();
+    try std.testing.expectEqual(@as(f32, 6000), toggle_auth.w);
+    try std.testing.expectEqual(@as(f32, 4000), toggle_auth.h);
 }

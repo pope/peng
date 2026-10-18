@@ -88,14 +88,12 @@ fn probeActiveSlotMetadata(
         }
         return;
     };
-    entry.full_w = meta.dims.w;
-    entry.full_h = meta.dims.h;
-    if (meta.orientation != .normal or entry.orientation == .normal) {
-        entry.orientation = meta.orientation;
-    }
-    if (meta.raw_metadata.isRaw()) {
-        entry.raw_metadata = meta.raw_metadata;
-    }
+    entry.applyProbedMetadata(
+        meta.dims.w,
+        meta.dims.h,
+        meta.orientation,
+        meta.raw_metadata,
+    );
     if (entry.thumbnail == .none) {
         entry.thumbnail = if (meta.has_embedded_thumbnail)
             .pending

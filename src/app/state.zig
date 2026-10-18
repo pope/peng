@@ -650,16 +650,12 @@ pub const AppState = struct {
             else => {},
         }
 
-        if (extracted.orientation != .normal or e.orientation == .normal) {
-            e.orientation = extracted.orientation;
-        }
-        if (extracted.full_w > 0 and extracted.full_h > 0 and (e.full_w <= 0 or e.full_h <= 0)) {
-            e.full_w = extracted.full_w;
-            e.full_h = extracted.full_h;
-        }
-        if (extracted.raw_metadata.isRaw()) {
-            e.raw_metadata = extracted.raw_metadata;
-        }
+        e.applyProbedMetadata(
+            extracted.full_w,
+            extracted.full_h,
+            extracted.orientation,
+            extracted.raw_metadata,
+        );
 
         e.thumbnail = .{
             .loaded = .{

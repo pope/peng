@@ -1271,15 +1271,73 @@ pub const CacheEntry = struct {
         };
     }
 
+    /// Monotonically updates the authoritative full-resolution dimensions if
+    /// the candidate `(w, h)` has a larger positive finite pixel area.
+    pub fn updateFullDims(self: *CacheEntry, w: f32, h: f32) void {
+        if (w <= 0.0 or h <= 0.0 or
+            !std.math.isFinite(w) or !std.math.isFinite(h))
+        {
+            return;
+        }
+        const cur_area = if (self.full_w > 0.0 and self.full_h > 0.0)
+            @as(f64, self.full_w) * @as(f64, self.full_h)
+        else
+            0.0;
+        const cand_area = @as(f64, w) * @as(f64, h);
+        if (cand_area > cur_area) {
+            self.full_w = w;
+            self.full_h = h;
+        }
+    }
+
+    /// Applies probed or thumbnail metadata, monotonically upgrading
+    /// authoritative and RAW sensor dimensions without clearing existing RAW
+    /// state when `raw_metadata` is `.none`.
+    pub fn applyProbedMetadata(
+        self: *CacheEntry,
+        w: f32,
+        h: f32,
+        orientation: Orientation,
+        raw_metadata: RawMetadata,
+    ) void {
+        if (orientation != .normal or self.orientation == .normal) {
+            self.orientation = orientation;
+        }
+        if (raw_metadata.getSensorDims()) |s_dims| {
+            self.updateFullDims(s_dims.w, s_dims.h);
+        }
+        self.updateFullDims(w, h);
+        if (raw_metadata.isRaw() or self.raw_metadata.isRaw()) {
+            if (self.full_w > 0.0 and self.full_h > 0.0) {
+                self.raw_metadata = RawMetadata.init(self.full_w, self.full_h);
+            } else if (raw_metadata.isRaw()) {
+                self.raw_metadata = raw_metadata;
+            }
+        }
+    }
+
     /// Returns the true physical pixel dimensions of the original image,
     /// irrespective of what downscaled preview or thumbnail is currently
     /// resident.
     pub fn getAuthoritativeDims(self: CacheEntry) struct { w: f32, h: f32 } {
+        var best_w: f32 = 0.0;
+        var best_h: f32 = 0.0;
         if (self.raw_metadata.getSensorDims()) |s| {
-            if (s.w > 0.0 and s.h > 0.0) return .{ .w = s.w, .h = s.h };
+            if (s.w > 0.0 and s.h > 0.0) {
+                best_w = s.w;
+                best_h = s.h;
+            }
         }
         if (self.full_w > 0.0 and self.full_h > 0.0) {
-            return .{ .w = self.full_w, .h = self.full_h };
+            const cur_area = @as(f64, best_w) * @as(f64, best_h);
+            const full_area = @as(f64, self.full_w) * @as(f64, self.full_h);
+            if (full_area >= cur_area) {
+                best_w = self.full_w;
+                best_h = self.full_h;
+            }
+        }
+        if (best_w > 0.0 and best_h > 0.0) {
+            return .{ .w = best_w, .h = best_h };
         }
         switch (self.status) {
             .loaded_gpu => |gpu| {
