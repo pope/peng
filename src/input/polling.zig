@@ -321,6 +321,28 @@ pub fn sampleHeldZoom(
     return @bitCast(raw);
 }
 
+/// Strategy for pumping or waiting on the next SDL event at the start of a
+/// frame.
+pub const EventWaitStrategy = union(enum) {
+    poll,
+    wait_timeout_ms: i32,
+    wait_indefinite,
+};
+
+/// Selects the SDL event wait strategy for the current frame.
+pub fn selectEventWaitStrategy(
+    non_blocking: bool,
+    is_busy: bool,
+    wait_timeout_ms: ?i32,
+) EventWaitStrategy {
+    if (non_blocking) return .poll;
+    if (is_busy) return .{ .wait_timeout_ms = 8 };
+    if (wait_timeout_ms) |timeout| {
+        return .{ .wait_timeout_ms = @max(timeout, 1) };
+    }
+    return .wait_indefinite;
+}
+
 /// Pumps pending SDL events, queries cursor and keyboard states, and
 /// constructs a new `FrameInput` snapshot.
 pub fn pollFrameInput(
@@ -328,7 +350,6 @@ pub fn pollFrameInput(
     frame_allocator: std.mem.Allocator,
     last_time: *u64,
     prev_mouse_inside: bool,
-    palette_show: bool,
     non_blocking: bool,
     is_busy: bool,
     wait_timeout_ms: ?i32,
@@ -356,14 +377,15 @@ pub fn pollFrameInput(
     errdefer frame_input_state.keys_pressed.deinit(frame_allocator);
 
     var event: sdl.Event = undefined;
-    const wait_success = if (non_blocking)
-        sdl.events.pollEvent(&event)
-    else if (palette_show or is_busy)
-        sdl.events.waitEventTimeout(&event, 8)
-    else if (wait_timeout_ms) |timeout|
-        sdl.events.waitEventTimeout(&event, @max(timeout, 1))
-    else
-        sdl.events.waitEvent(&event);
+    const wait_success = switch (selectEventWaitStrategy(
+        non_blocking,
+        is_busy,
+        wait_timeout_ms,
+    )) {
+        .poll => sdl.events.pollEvent(&event),
+        .wait_timeout_ms => |ms| sdl.events.waitEventTimeout(&event, ms),
+        .wait_indefinite => sdl.events.waitEvent(&event),
+    };
 
     if (!wait_success) {
         event.type = 0;
@@ -562,4 +584,27 @@ test "sampleHeldZoom extracts zoom in and out flags" {
     const both = sampleHeldZoom(&mock_state, mock_state.len);
     try std.testing.expect(both.in);
     try std.testing.expect(both.out);
+}
+
+test "selectEventWaitStrategy sleeps indefinitely when idle" {
+    try std.testing.expectEqual(
+        EventWaitStrategy.poll,
+        selectEventWaitStrategy(true, false, null),
+    );
+    try std.testing.expectEqual(
+        EventWaitStrategy{ .wait_timeout_ms = 8 },
+        selectEventWaitStrategy(false, true, 500),
+    );
+    try std.testing.expectEqual(
+        EventWaitStrategy{ .wait_timeout_ms = 250 },
+        selectEventWaitStrategy(false, false, 250),
+    );
+    try std.testing.expectEqual(
+        EventWaitStrategy{ .wait_timeout_ms = 1 },
+        selectEventWaitStrategy(false, false, 0),
+    );
+    try std.testing.expectEqual(
+        EventWaitStrategy.wait_indefinite,
+        selectEventWaitStrategy(false, false, null),
+    );
 }

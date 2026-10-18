@@ -1065,3 +1065,21 @@ test "FrameInput.isPointerInDebugPanel and click localization" {
     };
     try std.testing.expect(!input_outside.isPointerInDebugPanel());
 }
+
+test "AppState.isBusy is false once open palette animation settles" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    try std.testing.expect(!state.isBusy());
+
+    try state.openPalette(.actions);
+    try std.testing.expect(state.viewer.ui.palette.isOpen());
+    try std.testing.expect(state.isBusy());
+
+    state.viewer.animations.settleAll();
+    try std.testing.expect(state.viewer.ui.palette.isOpen());
+    try std.testing.expect(!state.isBusy());
+}

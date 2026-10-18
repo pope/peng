@@ -133,7 +133,6 @@ pub fn updateFrame(
         frame_allocator,
         last_time,
         app_state.viewer.mouse_inside,
-        app_state.viewer.ui.palette.mode != .inactive,
         parsed_test_mode or parsed_headless,
         is_busy,
         wait_timeout_ms,
