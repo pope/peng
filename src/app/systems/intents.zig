@@ -329,9 +329,12 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                         (self.gpu_device == null and e.status != .failed))
                 else
                     self.gpu_device == null;
+                const cur_entry = self.getCurrentEntry();
+                const target_failed =
+                    if (cur_entry) |e| e.status == .failed else false;
                 const is_animating =
                     self.viewer.animations.isActive(.image_crossfade);
-                const should_crossfade = if (is_slideshow)
+                const should_crossfade = !target_failed and if (is_slideshow)
                     switch (nav.slideshow) {
                         .active => |s| s.interval_s >=
                             state.MIN_SLIDESHOW_DISSOLVE_INTERVAL_S and
@@ -351,7 +354,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                         .prev_pan_x = old_pan_x,
                         .prev_pan_y = old_pan_y,
                     } };
-                    const is_ready = if (self.getCurrentEntry()) |e|
+                    const is_ready = if (cur_entry) |e|
                         e.status == .loaded_gpu
                     else
                         false;
@@ -1411,5 +1414,44 @@ test "togglePairStream - requires loaded status before requesting target" {
     try std.testing.expectEqual(
         @as(?state.PairStreamTarget, .standalone_jpeg),
         entry0.requested_target,
+    );
+}
+
+test "executeIntent - navigating onto failed slide skips crossfade" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    const dir_alloc = app_st.viewer.navigation.directory_arena.allocator();
+    try app_st.viewer.navigation.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = try dir_alloc.dupe(u8, "a.jpg") } },
+    );
+    try app_st.viewer.navigation.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = try dir_alloc.dupe(u8, "b.jpg") } },
+    );
+    app_st.viewer.navigation.current_index = 0;
+    app_st.viewer.navigation.crossfade = true;
+
+    _ = try app_st.cache.appendSlot(allocator, 0, .{
+        .decoding = .{ .has_thread = false },
+    });
+    _ = try app_st.cache.appendSlot(allocator, 1, .failed);
+
+    try executeIntent(&app_st, .next_image);
+    try std.testing.expectEqual(
+        @as(?usize, 1),
+        app_st.viewer.navigation.current_index,
+    );
+    try std.testing.expectEqual(
+        state.ImageTransition.none,
+        app_st.viewer.image_transition,
+    );
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 1.0),
+        app_st.viewer.animations.get(.image_crossfade),
+        0.001,
     );
 }

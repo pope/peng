@@ -41,7 +41,9 @@ pub fn drainWorkerEvents(state: *AppState) bool {
                 handleImageDecodedEvent(state, r.key, r.entry, r.payload);
             },
             .decode_failed => |*f| if (f.resolve(&state.cache)) |r| {
-                handleDecodeFailedEvent(r.entry);
+                const is_current =
+                    state.viewer.navigation.current_index == r.key.index;
+                handleDecodeFailedEvent(state, r.entry, is_current);
             },
             .path_discovered => |p| handleDirScannedEvent(state, p),
             .directory_scan_result => |res| {
@@ -61,10 +63,18 @@ pub fn drainWorkerEvents(state: *AppState) bool {
     return true;
 }
 
-fn handleDecodeFailedEvent(entry: *state_pkg.CacheEntry) void {
+fn handleDecodeFailedEvent(
+    state: *AppState,
+    entry: *state_pkg.CacheEntry,
+    is_current: bool,
+) void {
     entry.is_promoting = false;
     if (entry.status != .loaded_gpu and entry.status != .loaded_cpu) {
         entry.status = .failed;
+        if (is_current) {
+            state.viewer.image_transition = .none;
+            state.viewer.animations.setImmediate(.image_crossfade, 1.0);
+        }
     }
     if (entry.thumbnail == .pending or entry.thumbnail == .none) {
         entry.thumbnail = .not_available;
@@ -237,7 +247,7 @@ fn handleImageDecodedEvent(
                 "handleImageDecodedEvent: failed to upload surface to GPU for key {any}",
                 .{key},
             );
-            handleDecodedGpuUploadFailure(state, entry, is_current);
+            handleDecodeFailedEvent(state, entry, is_current);
         }
     } else {
         switch (entry.status) {
@@ -289,24 +299,6 @@ fn applyDecodedMetadata(
             decoded_data.raw_metadata
     else
         .none;
-}
-
-fn handleDecodedGpuUploadFailure(
-    state: *AppState,
-    entry: *state_pkg.CacheEntry,
-    is_current: bool,
-) void {
-    entry.is_promoting = false;
-    if (entry.status != .loaded_gpu and entry.status != .loaded_cpu) {
-        entry.status = .failed;
-        if (is_current) {
-            state.viewer.image_transition = .none;
-            state.viewer.animations.setImmediate(.image_crossfade, 1.0);
-        }
-    }
-    if (entry.thumbnail == .pending or entry.thumbnail == .none) {
-        entry.thumbnail = .not_available;
-    }
 }
 
 fn triggerDecodedGpuCrossfades(
@@ -820,7 +812,7 @@ test "drainWorkerEvents - pair promotion preserves VRAM and loaded status" {
 
     // 1. If GPU upload of a promotion fails while .loaded_gpu, keep .loaded_gpu
     // and clear is_promoting instead of clobbering with .failed.
-    handleDecodedGpuUploadFailure(&state, entry1, true);
+    handleDecodeFailedEvent(&state, entry1, true);
     try std.testing.expect(!entry1.is_promoting);
     try std.testing.expect(entry1.status == .loaded_gpu);
     try std.testing.expectEqual(
@@ -859,7 +851,7 @@ test "drainWorkerEvents - pair promotion preserves VRAM and loaded status" {
     // 3. Initial decode upload failure on slot 0 transitions to .failed
     const key0 = state.cache.activeKey(0);
     const entry0 = state.cache.get(key0).?;
-    handleDecodedGpuUploadFailure(&state, entry0, true);
+    handleDecodeFailedEvent(&state, entry0, true);
     try std.testing.expect(entry0.status == .failed);
 }
 
@@ -1065,4 +1057,52 @@ test "drainWorkerEvents - discards stale directory_scan_result" {
     });
     try std.testing.expect(drainWorkerEvents(&state));
     try std.testing.expectEqual(@as(usize, 0), state.viewer.navigation.count());
+}
+
+test "drainWorkerEvents - decode_failed clears current image_transition" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    const dir_alloc = state.viewer.navigation.directory_arena.allocator();
+    try state.viewer.navigation.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = try dir_alloc.dupe(u8, "a.jpg") } },
+    );
+    try state.viewer.navigation.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = try dir_alloc.dupe(u8, "b.jpg") } },
+    );
+    state.viewer.navigation.current_index = 1;
+
+    const key1 = try state.cache.appendSlot(allocator, 1, .{
+        .decoding = .{ .has_thread = true },
+    });
+    state.viewer.image_transition = .{ .active = .{
+        .prev_index = 0,
+        .prev_rotation = 0.0,
+        .prev_zoom = 1.0,
+        .prev_pan_x = 0.0,
+        .prev_pan_y = 0.0,
+    } };
+    state.viewer.animations.setImmediate(.image_crossfade, 0.0);
+
+    try state.workers.event_queue.push(allocator, io, .{
+        .decode_failed = .init(key1, .{}),
+    });
+    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expectEqual(
+        state_pkg.CacheStatus.failed,
+        state.cache.get(key1).?.status,
+    );
+    try std.testing.expectEqual(
+        state_pkg.ImageTransition.none,
+        state.viewer.image_transition,
+    );
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 1.0),
+        state.viewer.animations.get(.image_crossfade),
+        0.001,
+    );
 }
