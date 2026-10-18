@@ -3,6 +3,7 @@ const core_fs = @import("core/fs.zig");
 const events = @import("core/events.zig");
 const exif = @import("core/exif.zig");
 const image = @import("core/image.zig");
+const input = @import("input");
 const intents = @import("intents");
 const ipc = @import("ipc");
 const palette_module = @import("core/palette.zig");
@@ -195,6 +196,56 @@ pub const AppState = struct {
         return null;
     }
 
+    /// Computes the event-loop wait strategy for `pollFrameInput`.
+    /// When `bg_events_processed` is true, returns `.poll` so events drained
+    /// before `pollFrameInput` are rendered immediately without an 8ms
+    /// `waitEventTimeout` delay.
+    pub fn computeFrameWaitStrategy(
+        self: *const AppState,
+        cur_win_w: f32,
+        cur_win_h: f32,
+        bg_events_processed: bool,
+        force_non_blocking: bool,
+        now_ticks: u64,
+    ) input.EventWaitStrategy {
+        if (force_non_blocking or bg_events_processed) {
+            return .poll;
+        }
+        const is_current_loading = blk: {
+            if (self.getCurrentEntry()) |entry| {
+                break :blk (entry.status == .decoding or
+                    entry.status == .uploading);
+            }
+            break :blk (self.viewer.navigation.current_index != null);
+        };
+        const has_unpopulated_cache = blk: {
+            if (self.viewer.navigation.getVisibleCount() <= 1) {
+                break :blk false;
+            }
+            const neighbors =
+                self.viewer.navigation.getVisibleNeighbors() orelse
+                break :blk false;
+            const has_gpu = self.gpu_device != null;
+            break :blk self.cache.hasUnreadyPrefetchSlots(neighbors, has_gpu);
+        };
+        const last_w = self.viewer.last_win_w;
+        const last_h = self.viewer.last_win_h;
+        const window_resized =
+            (last_w != 0 and (last_w != cur_win_w or last_h != cur_win_h));
+        const is_busy = self.isBusy() or
+            is_current_loading or
+            (self.viewer.drag_state != .none) or
+            (self.viewer.viewport.isZoomed() and
+                self.viewer.pan_controller.isBusy()) or
+            self.viewer.zoom_controller.isBusy() or
+            has_unpopulated_cache or
+            window_resized;
+        const wait_timeout_ms =
+            if (!is_busy) self.getWaitTimeoutMs(now_ticks) else null;
+
+        return input.selectEventWaitStrategy(false, is_busy, wait_timeout_ms);
+    }
+
     /// Reads EXIF orientation from a JPEG file header on disk, returning `null` if unparseable.
     pub fn readJpegExifOrientation(self: *const AppState, path: []const u8) ?state_pkg.Orientation {
         return exif.readJpegExifOrientation(self.io, path);
@@ -342,12 +393,11 @@ pub const AppState = struct {
         return self.cache.get(self.cache.activeKey(idx));
     }
 
-    /// Returns a copy of the CacheEntry corresponding to the currently active image, or null.
-    pub fn getCurrentEntry(self: *AppState) ?CacheEntry {
-        if (self.getCurrentEntryPtr()) |entry| {
-            return entry.*;
-        }
-        return null;
+    /// Returns a copy of the CacheEntry corresponding to the currently active
+    /// image, or null.
+    pub fn getCurrentEntry(self: *const AppState) ?CacheEntry {
+        const idx = self.viewer.navigation.current_index orelse return null;
+        return self.cache.getEntry(self.cache.activeKey(idx));
     }
 
     /// Releases all GPU textures and resets status across all cache slots.
@@ -1082,4 +1132,21 @@ test "AppState.isBusy is false once open palette animation settles" {
     state.viewer.animations.settleAll();
     try std.testing.expect(state.viewer.ui.palette.isOpen());
     try std.testing.expect(!state.isBusy());
+}
+
+test "AppState.computeFrameWaitStrategy returns poll when bg events drained" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    try std.testing.expectEqual(
+        input.EventWaitStrategy.wait_indefinite,
+        state.computeFrameWaitStrategy(1024.0, 768.0, false, false, 1000),
+    );
+    try std.testing.expectEqual(
+        input.EventWaitStrategy.poll,
+        state.computeFrameWaitStrategy(1024.0, 768.0, true, false, 1000),
+    );
 }

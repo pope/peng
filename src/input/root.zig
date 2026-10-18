@@ -4,6 +4,7 @@ pub const polling = @import("polling.zig");
 const sdl = @import("sdl");
 const std = @import("std");
 
+pub const EventWaitStrategy = polling.EventWaitStrategy;
 pub const FrameInputState = polling.FrameInputState;
 pub const KeyContext = key_mapping.KeyContext;
 pub const mapKeyToAction = key_mapping.mapKeyToAction;
@@ -12,6 +13,7 @@ pub const mapModFromSdl = polling.mapModFromSdl;
 pub const MOUSE_WHEEL_SCROLL_MULTIPLIER = polling.MOUSE_WHEEL_SCROLL_MULTIPLIER;
 pub const pollFrameInput = polling.pollFrameInput;
 pub const processSDLEvent = polling.processSDLEvent;
+pub const selectEventWaitStrategy = polling.selectEventWaitStrategy;
 
 test {
     _ = key_mapping;

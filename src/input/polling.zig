@@ -350,9 +350,7 @@ pub fn pollFrameInput(
     frame_allocator: std.mem.Allocator,
     last_time: *u64,
     prev_mouse_inside: bool,
-    non_blocking: bool,
-    is_busy: bool,
-    wait_timeout_ms: ?i32,
+    wait_strategy: EventWaitStrategy,
 ) !FrameInput {
     // Get window sizes and scale
     const win_size = window.getSize();
@@ -377,11 +375,7 @@ pub fn pollFrameInput(
     errdefer frame_input_state.keys_pressed.deinit(frame_allocator);
 
     var event: sdl.Event = undefined;
-    const wait_success = switch (selectEventWaitStrategy(
-        non_blocking,
-        is_busy,
-        wait_timeout_ms,
-    )) {
+    const wait_success = switch (wait_strategy) {
         .poll => sdl.events.pollEvent(&event),
         .wait_timeout_ms => |ms| sdl.events.waitEventTimeout(&event, ms),
         .wait_indefinite => sdl.events.waitEvent(&event),

@@ -89,54 +89,36 @@ pub fn updateFrame(
     );
 
     // Phase 1: Background Event & Input Ingestion
-    if (parsed_test_mode or parsed_headless) {
+    const skip_wait = parsed_test_mode or parsed_headless;
+    if (skip_wait) {
         app_state.viewer.animations.settleAll();
     }
     const bg_events_processed = app.drainWorkerEvents(app_state);
-
-    const is_current_loading = blk: {
-        if (app_state.getCurrentEntry()) |entry| {
-            break :blk (entry.status == .decoding or entry.status == .uploading);
-        }
-        break :blk (app_state.viewer.navigation.current_index != null);
-    };
-    const has_unpopulated_cache = blk: {
-        if (app_state.viewer.navigation.getVisibleCount() <= 1) {
-            break :blk false;
-        }
-        const neighbors =
-            app_state.viewer.navigation.getVisibleNeighbors() orelse
-            break :blk false;
-        const has_gpu = app_state.gpu_device != null;
-        break :blk app_state.cache.hasUnreadyPrefetchSlots(neighbors, has_gpu);
-    };
     const cur_win_size = window.getSize();
     const cur_win_w = @as(f32, @floatFromInt(cur_win_size.w));
     const cur_win_h = @as(f32, @floatFromInt(cur_win_size.h));
-    const last_w = app_state.viewer.last_win_w;
-    const last_h = app_state.viewer.last_win_h;
-    const window_resized = (last_w != 0 and (last_w != cur_win_w or last_h != cur_win_h));
-    const is_busy = app_state.isBusy() or
-        is_current_loading or
-        bg_events_processed or
-        (app_state.viewer.drag_state != .none) or
-        (app_state.viewer.viewport.isZoomed() and
-            app_state.viewer.pan_controller.isBusy()) or
-        app_state.viewer.zoom_controller.isBusy() or
-        has_unpopulated_cache or
-        window_resized;
-    const wait_timeout_ms =
-        if (!is_busy) app_state.getWaitTimeoutMs(sdl.timer.getTicks()) else null;
+    const wait_strategy = app_state.computeFrameWaitStrategy(
+        cur_win_w,
+        cur_win_h,
+        bg_events_processed,
+        skip_wait,
+        sdl.timer.getTicks(),
+    );
     const frame_allocator = frame_arena.allocator();
     const input = try input_pkg.pollFrameInput(
         window,
         frame_allocator,
         last_time,
         app_state.viewer.mouse_inside,
-        parsed_test_mode or parsed_headless,
-        is_busy,
-        wait_timeout_ms,
+        wait_strategy,
     );
+
+    // Drain any background worker or IPC events that arrived while waiting in
+    // pollFrameInput (including the event that triggered sdl.pushWakeEvent()).
+    const post_wait_events = app.drainWorkerEvents(app_state);
+    if ((bg_events_processed or post_wait_events) and skip_wait) {
+        app_state.viewer.animations.settleAll();
+    }
 
     app_state.viewer.mouse_inside = input.mouse_inside;
 
