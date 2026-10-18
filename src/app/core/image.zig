@@ -1535,6 +1535,11 @@ fn stageSurfaceToRgba32(
     return conversion_time_ms;
 }
 
+fn computeTextureVramBytes(u_w: usize, u_h: usize, num_levels: u32) usize {
+    const base_bytes: usize = u_w * u_h * 4;
+    return if (num_levels > 1) (base_bytes * 4) / 3 else base_bytes;
+}
+
 /// Uploads a CPU surface into an SDL GPU texture with automatic mipmap pyramid generation,
 /// using an optional compute pipeline for fast RGB24/BGR24 unpack and optional staging
 /// buffer reuse.
@@ -1754,10 +1759,11 @@ pub fn uploadSurfaceToGpu(
         const upload_time_ms =
             @as(f64, @floatFromInt(end_upload - start_upload)) / 1_000_000.0;
 
-        var memory_size_bytes: usize = raw_bytes_len;
-        if (num_levels > 1) {
-            memory_size_bytes = (memory_size_bytes * 4) / 3;
-        }
+        const memory_size_bytes = computeTextureVramBytes(
+            u_w,
+            u_h,
+            num_levels,
+        );
 
         return .{
             .gpu_texture = gpu_tex,
@@ -1854,10 +1860,11 @@ pub fn uploadSurfaceToGpu(
     const end_upload = sdl.timer.getTicksNs();
     const upload_time_ms = @as(f64, @floatFromInt(end_upload - start_upload)) / 1_000_000.0;
 
-    var memory_size_bytes: usize = u_w * u_h * 4;
-    if (num_levels > 1) {
-        memory_size_bytes = (memory_size_bytes * 4) / 3;
-    }
+    const memory_size_bytes = computeTextureVramBytes(
+        u_w,
+        u_h,
+        num_levels,
+    );
 
     return .{
         .gpu_texture = gpu_tex,
@@ -2643,5 +2650,16 @@ test "parseImageDimensions - rejects extreme Fuji RAF offsets" {
     );
     try std.testing.expect(
         parseImageDimensions(raf_hdr[0..16], "image/x-fuji-raf") == null,
+    );
+}
+
+test "computeTextureVramBytes - reports 4bpp RGBA8 footprint with mipmaps" {
+    try std.testing.expectEqual(
+        @as(usize, 100 * 50 * 4),
+        computeTextureVramBytes(100, 50, 1),
+    );
+    try std.testing.expectEqual(
+        @as(usize, (100 * 50 * 4 * 4) / 3),
+        computeTextureVramBytes(100, 50, 8),
     );
 }
