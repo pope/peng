@@ -136,8 +136,21 @@ pub fn processSDLEvent(event: sdl.Event, frame_input: *FrameInputState) !void {
         sdl.event_type.text_input => {
             if (event.text.text) |ptr| {
                 const len = std.mem.len(ptr);
-                const dup = try frame_input.frame_allocator.dupe(u8, ptr[0..len]);
-                frame_input.text_input_opt = dup;
+                if (len > 0) {
+                    const slice = ptr[0..len];
+                    if (frame_input.text_input_opt) |prev| {
+                        const combined = try frame_input.frame_allocator.alloc(
+                            u8,
+                            prev.len + slice.len,
+                        );
+                        @memcpy(combined[0..prev.len], prev);
+                        @memcpy(combined[prev.len..], slice);
+                        frame_input.text_input_opt = combined;
+                    } else {
+                        frame_input.text_input_opt =
+                            try frame_input.frame_allocator.dupe(u8, slice);
+                    }
+                }
             }
         },
         sdl.event_type.drop_file => {
@@ -601,4 +614,26 @@ test "selectEventWaitStrategy sleeps indefinitely when idle" {
         EventWaitStrategy.wait_indefinite,
         selectEventWaitStrategy(false, false, null),
     );
+}
+
+test "processSDLEvent concatenates multiple text_input events per frame" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var fis = FrameInputState{
+        .frame_allocator = arena.allocator(),
+        .keys_pressed = .empty,
+    };
+
+    var evt1 = std.mem.zeroes(sdl.Event);
+    evt1.type = sdl.event_type.text_input;
+    evt1.text.text = "ab";
+    try processSDLEvent(evt1, &fis);
+
+    var evt2 = std.mem.zeroes(sdl.Event);
+    evt2.type = sdl.event_type.text_input;
+    evt2.text.text = "cd";
+    try processSDLEvent(evt2, &fis);
+
+    try std.testing.expectEqualStrings("abcd", fis.text_input_opt.?);
 }

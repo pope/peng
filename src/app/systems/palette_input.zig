@@ -126,9 +126,11 @@ fn handlePaletteDirectoryDrillDown(ctx: FrameContext) !void {
 }
 
 /// Handles keyboard shortcut navigation keys (Escape, Up/Down, Left/Right,
-/// PageUp/PageDown, Return, Backspace) while a command palette overlay is active.
+/// PageUp/PageDown, Return, Backspace) while a command palette overlay is
+/// active.
 ///
-/// Returns `true` if the key was consumed by palette navigation; `false` otherwise.
+/// Returns `true` if `text_input` should be suppressed for the current frame
+/// (e.g. modifier shortcuts, modal dismissal, or directory drill-down/step-up).
 fn handlePaletteKeys(
     ctx: FrameContext,
     key: Key,
@@ -149,7 +151,7 @@ fn handlePaletteKeys(
             palette.selected_idx -= 1;
             palette.selection_dirty = true;
         }
-        return true;
+        return mod.ctrl;
     }
 
     // List Navigation Down: Down Arrow or Ctrl+N or Ctrl+J
@@ -159,7 +161,7 @@ fn handlePaletteKeys(
             palette.selected_idx += 1;
             palette.selection_dirty = true;
         }
-        return true;
+        return mod.ctrl;
     }
 
     // Page Up: PageUp or Alt+V
@@ -170,7 +172,7 @@ fn handlePaletteKeys(
             palette.selected_idx = 0;
         }
         palette.selection_dirty = true;
-        return true;
+        return mod.alt;
     }
 
     // Page Down: PageDown or Ctrl+V
@@ -180,7 +182,7 @@ fn handlePaletteKeys(
             palette.selected_idx = @min(palette.selected_idx + 5, max_count - 1);
             palette.selection_dirty = true;
         }
-        return true;
+        return mod.ctrl;
     }
 
     // Delete Word Backward: Ctrl+W or Alt+Backspace
@@ -361,6 +363,7 @@ fn handlePaletteKeys(
                     .inactive,
                     => {},
                 }
+                return false;
             } else if (palette.mode == .directory_navigator) {
                 const parent_buf = try ctx.frame_allocator.alloc(
                     u8,
@@ -374,8 +377,9 @@ fn handlePaletteKeys(
                     palette.query.clearRetainingCapacity();
                     try self.loadPaletteDirectory(parent_dir);
                 }
+                return true;
             }
-            return true;
+            return false;
         },
         else => return false,
     }
@@ -442,17 +446,20 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
     if (!self.viewer.ui.palette.isAcceptingInput()) return false;
 
     // 1. Keyboard Navigation Keys
-    var key_consumed = false;
+    var suppress_text_input = false;
     for (input.keys_pressed.items) |key| {
         if (try handlePaletteKeys(ctx, key, input.key_modifiers)) {
-            key_consumed = true;
+            suppress_text_input = true;
         }
     }
     if (!self.viewer.ui.palette.isAcceptingInput()) return true;
 
     // 2. Text Typing Query Updates
+    const has_cmd_mod = input.key_modifiers.ctrl or
+        input.key_modifiers.alt or
+        input.key_modifiers.gui;
     if (input.text_input) |text| {
-        if (!key_consumed) {
+        if (!suppress_text_input and !has_cmd_mod) {
             var any_appended = false;
             for (text) |ch| {
                 if (ch >= 32 and ch != 127) {
@@ -870,6 +877,86 @@ test "handlePaletteKeys backspace removes full multi-byte UTF-8 codepoints" {
     _ = try handlePaletteKeys(ctx, .backspace, .{});
     try std.testing.expectEqualStrings(
         "",
+        state.viewer.ui.palette.query.items,
+    );
+}
+
+test "sysProcessPaletteInput preserves text_input after backspace" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    try state.openPalette(.actions);
+    try state.viewer.ui.palette.query.appendSlice(allocator, "cat");
+
+    var keys = std.ArrayList(Key).empty;
+    defer keys.deinit(allocator);
+    try keys.append(allocator, .backspace);
+    try keys.append(allocator, .char_r);
+
+    // 1. Backspace + 'r' in the same frame pops 't' and appends 'r' -> "car"
+    _ = try sysProcessPaletteInput(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .input = FrameInput{
+            .win_w = 800,
+            .win_h = 600,
+            .scale_x = 1.0,
+            .scale_y = 1.0,
+            .mouse_x = 0,
+            .mouse_y = 0,
+            .mouse_left_down = false,
+            .mouse_left_clicked = false,
+            .mouse_inside = true,
+            .quit_requested = false,
+            .scroll_delta_x = 0,
+            .scroll_delta_y = 0,
+            .keys_pressed = keys,
+            .key_modifiers = .{},
+            .text_input = "r",
+            .dropped_path = null,
+            .ticks = 0,
+            .delta_time_ms = 16.0,
+        },
+        .delta_time_ms = 16.0,
+    });
+    try std.testing.expectEqualStrings(
+        "car",
+        state.viewer.ui.palette.query.items,
+    );
+
+    // 2. Modifier shortcuts (Alt+V) suppress text_input in the same frame
+    keys.clearRetainingCapacity();
+    try keys.append(allocator, .char_v);
+    _ = try sysProcessPaletteInput(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .input = FrameInput{
+            .win_w = 800,
+            .win_h = 600,
+            .scale_x = 1.0,
+            .scale_y = 1.0,
+            .mouse_x = 0,
+            .mouse_y = 0,
+            .mouse_left_down = false,
+            .mouse_left_clicked = false,
+            .mouse_inside = true,
+            .quit_requested = false,
+            .scroll_delta_x = 0,
+            .scroll_delta_y = 0,
+            .keys_pressed = keys,
+            .key_modifiers = .{ .alt = true },
+            .text_input = "v",
+            .dropped_path = null,
+            .ticks = 16,
+            .delta_time_ms = 16.0,
+        },
+        .delta_time_ms = 16.0,
+    });
+    try std.testing.expectEqualStrings(
+        "car",
         state.viewer.ui.palette.query.items,
     );
 }
