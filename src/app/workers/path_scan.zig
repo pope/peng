@@ -19,15 +19,18 @@ pub const PathScanArgs = struct {
     stack_raw_jpeg: bool = true,
     generation: usize = 0,
     current_generation: ?*const std.atomic.Value(usize) = null,
-};
 
-fn isScanStale(args: *const PathScanArgs) bool {
-    if (args.workers.exiting.load(.acquire)) return true;
-    if (args.current_generation) |cur_gen| {
-        if (cur_gen.load(.acquire) != args.generation) return true;
+    /// Builds a cooperative cancellation token for this path scan task.
+    pub inline fn cancelToken(
+        self: *const PathScanArgs,
+    ) context.CancellationToken {
+        return .{
+            .exiting = &self.workers.exiting,
+            .generation = self.generation,
+            .current_generation = self.current_generation,
+        };
     }
-    return false;
-}
+};
 
 /// Thread-safely duplicates a path string and pushes a `.path_discovered`
 /// event onto the worker event queue.
@@ -145,7 +148,8 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
         _ = workers.active_threads.fetchSub(1, .release);
     }
 
-    if (isScanStale(args)) return;
+    const cancel = args.cancelToken();
+    if (cancel.isCanceled()) return;
 
     var dir_entries: std.ArrayList(MediaEntry) = .empty;
     defer {
@@ -175,7 +179,7 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
 
         var it = dir.iterate();
 
-        while (!isScanStale(args)) {
+        while (!cancel.isCanceled()) {
             const entry = (it.next(io) catch |err| switch (err) {
                 error.Canceled => break,
                 else => {
@@ -202,7 +206,7 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
         }
     }
 
-    if (isScanStale(args)) return;
+    if (cancel.isCanceled()) return;
 
     // Sort entries alphabetically by basename
     std.mem.sort(MediaEntry, dir_entries.items, {}, struct {
@@ -214,7 +218,7 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
     // Consolidate RAW + JPEG pairs sharing the same stem into unified .pair entries
     core_fs.consolidateRawJpegPairs(&dir_entries, args.stack_raw_jpeg);
 
-    if (isScanStale(args)) return;
+    if (cancel.isCanceled()) return;
 
     const dup_target = gpa.dupe(u8, target_path) catch return;
     const paths_slice = dir_entries.toOwnedSlice(gpa) catch {
@@ -223,12 +227,11 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
     };
 
     workers.event_queue.push(gpa, io, .{
-        .directory_scan_result = .{
-            .generation = args.generation,
+        .directory_scan_result = cancel.wrap(events.DirectoryScanResultPayload{
             .target_path = dup_target,
             .is_dir = is_dir,
             .paths = paths_slice,
-        },
+        }),
     }) catch |err| {
         std.log.err("Failed to push directory_scan_result event: {}", .{err});
         gpa.free(dup_target);
@@ -304,10 +307,17 @@ test "pathScanWorker - directory scan result event generation" {
     switch (batch.items[0]) {
         .directory_scan_result => |res| {
             try std.testing.expectEqual(@as(usize, 7), res.generation);
-            try std.testing.expect(res.is_dir);
-            try std.testing.expectEqualStrings("testfiles/images", res.target_path);
-            try std.testing.expect(res.paths.len > 0);
-            try std.testing.expectEqualStrings("000_0_1024x682.jpg", res.paths[0].getBasename());
+            const payload = res.resolve(&cur_gen).?;
+            try std.testing.expect(payload.is_dir);
+            try std.testing.expectEqualStrings(
+                "testfiles/images",
+                payload.target_path,
+            );
+            try std.testing.expect(payload.paths.len > 0);
+            try std.testing.expectEqualStrings(
+                "000_0_1024x682.jpg",
+                payload.paths[0].getBasename(),
+            );
         },
         else => return error.ExpectedDirectoryScanResult,
     }

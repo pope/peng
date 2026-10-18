@@ -9,16 +9,107 @@ const MediaEntry = state_pkg.MediaEntry;
 const Orientation = state_pkg.Orientation;
 const RawMetadata = state_pkg.RawMetadata;
 
+/// Envelope wrapping an event payload with a generation token.
+/// Callers must invoke `resolve()` against the active atomic generation counter
+/// to access the inner payload, preventing unvalidated access to stale results.
+pub fn Generational(comptime T: type) type {
+    return struct {
+        generation: usize = 0,
+        unchecked_payload: T,
+
+        const Self = @This();
+
+        /// Wraps `payload` with `generation`.
+        pub inline fn init(generation: usize, payload: T) Self {
+            return .{
+                .generation = generation,
+                .unchecked_payload = payload,
+            };
+        }
+
+        /// Validates `self.generation` against `active_gen`, returning the
+        /// inner payload only when they match.
+        pub fn resolve(
+            self: Self,
+            active_gen: *const std.atomic.Value(usize),
+        ) ?T {
+            if (self.generation != active_gen.load(.acquire)) return null;
+            return self.unchecked_payload;
+        }
+
+        /// Returns the inner payload for unit tests inspecting raw queue
+        /// output.
+        pub fn unwrapForTest(self: Self) T {
+            if (!@import("builtin").is_test) {
+                @compileError(
+                    "unwrapForTest is only allowed in tests; use resolve()",
+                );
+            }
+            return self.unchecked_payload;
+        }
+    };
+}
+
+/// Envelope binding an event payload to a specific `CacheKey` slot.
+/// Callers must invoke `resolve()` against `CacheSlotMap` to obtain both the
+/// validated `*CacheEntry` and the payload together.
+pub fn SlotBound(comptime T: type) type {
+    return struct {
+        key: CacheKey,
+        unchecked_payload: T,
+
+        const Self = @This();
+
+        pub const Resolved = struct {
+            key: CacheKey,
+            entry: *state_pkg.CacheEntry,
+            payload: *T,
+        };
+
+        /// Binds `payload` to `key`.
+        pub inline fn init(key: CacheKey, payload: T) Self {
+            return .{
+                .key = key,
+                .unchecked_payload = payload,
+            };
+        }
+
+        /// Looks up `self.key` in `cache`, returning the live `*CacheEntry`
+        /// and a mutable pointer to the payload only if `self.key` matches
+        /// the active `cache.generation` and the slot still exists.
+        pub fn resolve(self: *Self, cache: *image.CacheSlotMap) ?Resolved {
+            if (self.key.generation != cache.generation.load(.acquire)) {
+                return null;
+            }
+            const entry = cache.get(self.key) orelse return null;
+            return .{
+                .key = self.key,
+                .entry = entry,
+                .payload = &self.unchecked_payload,
+            };
+        }
+
+        /// Returns the inner payload for unit tests inspecting raw queue output
+        /// without a `CacheSlotMap`.
+        pub fn unwrapForTest(self: Self) T {
+            if (!@import("builtin").is_test) {
+                @compileError(
+                    "unwrapForTest is only allowed in tests; use resolve()",
+                );
+            }
+            return self.unchecked_payload;
+        }
+    };
+}
+
 /// Payload carrying parsed orientation metadata for a cached image.
 pub const ExifParsedPayload = struct {
-    key: CacheKey,
     orientation: Orientation,
 };
 
 /// Payload carrying dimension and metadata probed from file header when
 /// no embedded thumbnail exists.
 pub const DimensionsProbedPayload = struct {
-    key: CacheKey,
     w: f32,
     h: f32,
     full_w: f32,
@@ -31,7 +122,6 @@ pub const DimensionsProbedPayload = struct {
 /// Payload carrying a decoded embedded thumbnail or fast-scroll preview surface
 /// and dimension metadata.
 pub const ThumbDecodedPayload = struct {
-    key: CacheKey,
     surface: sdl.Surface,
     w: f32,
     h: f32,
@@ -43,9 +133,9 @@ pub const ThumbDecodedPayload = struct {
     dct_snapped: bool = false,
 };
 
-/// Payload carrying a fully decoded main image surface, performance metrics, and image dimensions.
+/// Payload carrying a fully decoded main image surface, performance metrics,
+/// and image dimensions.
 pub const ImageDecodedPayload = struct {
-    key: CacheKey,
     surface: ?sdl.Surface,
     w: f32,
     h: f32,
@@ -60,12 +150,12 @@ pub const ImageDecodedPayload = struct {
     compressed_size_bytes: usize = 0,
 };
 
-/// Payload indicating image file decode failure or unrecoverable read error for a cache key.
-pub const DecodeFailedPayload = struct {
-    key: CacheKey,
-};
+/// Payload indicating image file decode failure or unrecoverable read error
+/// for a cache key.
+pub const DecodeFailedPayload = struct {};
 
-/// Payload emitted when a valid image file path is discovered during stream or recursive scans.
+/// Payload emitted when a valid image file path is discovered during stream or
+/// recursive scans.
 pub const PathDiscoveredPayload = struct {
     entry: MediaEntry,
 };
@@ -73,21 +163,14 @@ pub const PathDiscoveredPayload = struct {
 /// Payload delivering the complete batch of discovered media entries from an
 /// asynchronous directory scan.
 pub const DirectoryScanResultPayload = struct {
-    generation: usize = 0,
     target_path: []const u8,
     is_dir: bool,
     paths: []MediaEntry,
 };
 
-/// Payload signaling completion of an asynchronous directory scan along with
-/// total discovered items.
-pub const DirectoryScanCompletePayload = struct {
-    total_count: usize,
-};
-
-/// Payload delivering image and subdirectory counts for a directory item in the Command Palette.
+/// Payload delivering image and subdirectory counts for a directory item in
+/// the Command Palette.
 pub const PaletteFolderCountPayload = struct {
-    generation: usize,
     path: []const u8,
     image_count: usize,
     subdir_count: usize,
@@ -96,33 +179,33 @@ pub const PaletteFolderCountPayload = struct {
 /// Tagged union of all event messages sent from background worker threads to
 /// the main engine thread.
 pub const BackgroundEvent = union(enum) {
-    exif_orientation_parsed: ExifParsedPayload,
-    dimensions_probed: DimensionsProbedPayload,
-    thumb_decoded: ThumbDecodedPayload,
-    image_decoded: ImageDecodedPayload,
-    decode_failed: DecodeFailedPayload,
+    exif_orientation_parsed: SlotBound(ExifParsedPayload),
+    dimensions_probed: SlotBound(DimensionsProbedPayload),
+    thumb_decoded: SlotBound(ThumbDecodedPayload),
+    image_decoded: SlotBound(ImageDecodedPayload),
+    decode_failed: SlotBound(DecodeFailedPayload),
     path_discovered: PathDiscoveredPayload,
-    directory_scan_result: DirectoryScanResultPayload,
-    directory_scan_complete: DirectoryScanCompletePayload,
-    palette_folder_count: PaletteFolderCountPayload,
+    directory_scan_result: Generational(DirectoryScanResultPayload),
+    palette_folder_count: Generational(PaletteFolderCountPayload),
     ipc_command: *ipc.IpcCommandData,
 
-    /// Releases heap memory or SDL surfaces owned by this background event payload.
+    /// Releases heap memory or SDL surfaces owned by this background event
+    /// payload.
     pub fn deinit(self: *const BackgroundEvent, allocator: std.mem.Allocator) void {
         switch (self.*) {
             .dimensions_probed => {},
-            .thumb_decoded => |t| t.surface.destroy(),
+            .thumb_decoded => |t| t.unchecked_payload.surface.destroy(),
             .image_decoded => |d| {
-                if (d.surface) |surf| surf.destroy();
+                if (d.unchecked_payload.surface) |surf| surf.destroy();
             },
             .path_discovered => |p| p.entry.deinit(allocator),
             .directory_scan_result => |res| {
-                allocator.free(res.target_path);
-                for (res.paths) |e| e.deinit(allocator);
-                allocator.free(res.paths);
+                allocator.free(res.unchecked_payload.target_path);
+                for (res.unchecked_payload.paths) |e| e.deinit(allocator);
+                allocator.free(res.unchecked_payload.paths);
             },
             .palette_folder_count => |cnt| {
-                allocator.free(cnt.path);
+                allocator.free(cnt.unchecked_payload.path);
             },
             else => {},
         }
@@ -243,4 +326,42 @@ test "MpscQueue push and drain" {
     batch.clearRetainingCapacity();
     try queue.drain(allocator, io, &batch);
     try std.testing.expectEqual(@as(usize, 0), batch.items.len);
+}
+
+test "Generational.resolve validates generation counter" {
+    var active_gen = std.atomic.Value(usize).init(5);
+    const wrapped = Generational(u32).init(5, 42);
+    try std.testing.expectEqual(@as(?u32, 42), wrapped.resolve(&active_gen));
+
+    active_gen.store(6, .release);
+    try std.testing.expectEqual(@as(?u32, null), wrapped.resolve(&active_gen));
+}
+
+test "SlotBound.resolve validates cache key and returns live entry" {
+    const allocator = std.testing.allocator;
+    var cache = image.CacheSlotMap{};
+    defer cache.deinit(allocator, null);
+
+    const key = try cache.appendSlot(allocator, 3, .{
+        .decoding = .{ .has_thread = true },
+    });
+    var bound = SlotBound(ExifParsedPayload).init(
+        key,
+        .{ .orientation = .rotate_90 },
+    );
+
+    const resolved = bound.resolve(&cache).?;
+    try std.testing.expectEqual(key, resolved.key);
+    try std.testing.expectEqual(
+        Orientation.rotate_90,
+        resolved.payload.orientation,
+    );
+    resolved.entry.orientation = resolved.payload.orientation;
+    try std.testing.expectEqual(
+        Orientation.rotate_90,
+        cache.get(key).?.orientation,
+    );
+
+    _ = cache.advanceGeneration();
+    try std.testing.expect(bound.resolve(&cache) == null);
 }

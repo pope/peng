@@ -22,6 +22,17 @@ pub const PaletteScanArgs = struct {
     generation: usize,
     current_generation: *const std.atomic.Value(usize),
     paths: [][]const u8,
+
+    /// Builds a cooperative cancellation token for this palette scan task.
+    pub inline fn cancelToken(
+        self: *const PaletteScanArgs,
+    ) context.CancellationToken {
+        return .{
+            .exiting = &self.workers.exiting,
+            .generation = self.generation,
+            .current_generation = self.current_generation,
+        };
+    }
 };
 
 /// Background worker task that iterates through candidate directory and
@@ -31,6 +42,7 @@ pub fn paletteScanWorker(args: *PaletteScanArgs) void {
     const workers = args.workers;
     const gpa = args.allocator;
     const io = args.io;
+    const cancel = args.cancelToken();
 
     defer {
         for (args.paths) |p| {
@@ -43,13 +55,11 @@ pub fn paletteScanWorker(args: *PaletteScanArgs) void {
     }
 
     for (args.paths) |path| {
-        if (workers.exiting.load(.acquire) or
-            args.current_generation.load(.acquire) != args.generation) return;
+        if (cancel.isCanceled()) return;
 
         const counts = core_fs.countFolderContents(io, path);
 
-        if (workers.exiting.load(.acquire) or
-            args.current_generation.load(.acquire) != args.generation) return;
+        if (cancel.isCanceled()) return;
 
         const path_dup = gpa.dupe(u8, path) catch |err| {
             std.log.err(
@@ -59,14 +69,18 @@ pub fn paletteScanWorker(args: *PaletteScanArgs) void {
             continue;
         };
         workers.event_queue.push(gpa, io, .{
-            .palette_folder_count = .{
-                .generation = args.generation,
-                .path = path_dup,
-                .image_count = counts.image_count,
-                .subdir_count = counts.subdir_count,
-            },
+            .palette_folder_count = cancel.wrap(
+                events.PaletteFolderCountPayload{
+                    .path = path_dup,
+                    .image_count = counts.image_count,
+                    .subdir_count = counts.subdir_count,
+                },
+            ),
         }) catch |err| {
-            std.log.err("Failed to push palette_folder_count event for '{s}': {}", .{ path, err });
+            std.log.err(
+                "Failed to push palette_folder_count event for '{s}': {}",
+                .{ path, err },
+            );
             gpa.free(path_dup);
             continue;
         };
@@ -166,8 +180,9 @@ test "paletteScanWorker - counts directory contents and pushes events" {
             .palette_folder_count => |cnt| {
                 event_seen = true;
                 try std.testing.expectEqual(@as(usize, 42), cnt.generation);
-                try std.testing.expectEqualStrings(test_dir, cnt.path);
-                try std.testing.expect(cnt.image_count > 0);
+                const payload = cnt.resolve(&current_gen).?;
+                try std.testing.expectEqualStrings(test_dir, payload.path);
+                try std.testing.expect(payload.image_count > 0);
             },
             else => {},
         }

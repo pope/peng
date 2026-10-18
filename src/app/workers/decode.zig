@@ -26,6 +26,17 @@ pub const DecodeArgs = struct {
     thumb_only: bool = false,
     pair_target: PairStreamTarget = .adaptive,
     current_generation: *const std.atomic.Value(usize),
+
+    /// Builds a cooperative cancellation token for this decode task.
+    pub inline fn cancelToken(
+        self: *const DecodeArgs,
+    ) context.CancellationToken {
+        return .{
+            .exiting = &self.workers.exiting,
+            .generation = self.key.generation,
+            .current_generation = self.current_generation,
+        };
+    }
 };
 
 /// Spawns a background `decodeWorker` task for image file decoding and EXIF thumbnail extraction,
@@ -34,11 +45,6 @@ pub fn spawnDecode(args: *DecodeArgs) !void {
     _ = args.workers.active_decode_threads.fetchAdd(1, .monotonic);
     _ = args.workers.active_threads.fetchAdd(1, .monotonic);
     args.workers.group.async(args.io, decodeWorker, .{args});
-}
-
-inline fn isStale(workers: *WorkerManager, args: *const DecodeArgs, key: CacheKey) bool {
-    return workers.exiting.load(.acquire) or
-        args.current_generation.load(.acquire) != key.generation;
 }
 
 fn failDecodeWorker(
@@ -51,7 +57,7 @@ fn failDecodeWorker(
 ) void {
     std.log.err(fmt, fmt_args);
     workers.event_queue.push(alloc, io, .{
-        .decode_failed = .{ .key = key },
+        .decode_failed = .init(key, .{}),
     }) catch |e| std.log.err("Failed to push decode_failed event: {}", .{e});
     context.wakeUpMainThread();
 }
@@ -274,8 +280,9 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
     const alloc = args.allocator;
     const io = args.io;
     const key = args.key;
+    const cancel = args.cancelToken();
 
-    if (isStale(workers, args, key)) return true;
+    if (cancel.isCanceled()) return true;
 
     const s = std.Io.Dir.statFile(std.Io.Dir.cwd(), io, path, .{}) catch |err| {
         if (is_pair) return false;
@@ -311,7 +318,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
     var h_slices = [_][]u8{header_buf[0..header_target]};
     const start_hdr_read = sdl.timer.getTicksNs();
     const header_n = file.readPositional(io, &h_slices, 0) catch |err| {
-        if (err == error.Canceled or workers.exiting.load(.acquire)) return true;
+        if (err == error.Canceled or cancel.isCanceled()) return true;
         if (is_pair) return false;
         failDecodeWorker(
             workers,
@@ -397,9 +404,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                         &t_slices,
                         ifd0_off,
                     ) catch |err| blk: {
-                        if (err == error.Canceled or
-                            workers.exiting.load(.acquire))
-                        {
+                        if (err == error.Canceled or cancel.isCanceled()) {
                             return true;
                         }
                         break :blk 0;
@@ -433,14 +438,14 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
             .normal;
     }
 
-    if (isStale(workers, args, key)) return true;
+    if (cancel.isCanceled()) return true;
 
     if (orientation != .normal) {
         workers.event_queue.push(alloc, io, .{
-            .exif_orientation_parsed = .{
-                .key = key,
-                .orientation = orientation,
-            },
+            .exif_orientation_parsed = .init(
+                key,
+                .{ .orientation = orientation },
+            ),
         }) catch |err| {
             std.log.err(
                 "Failed to push EXIF orientation event: {}",
@@ -501,7 +506,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
         }
 
         if (thumb_surf) |t_surf| {
-            if (isStale(workers, args, key)) {
+            if (cancel.isCanceled()) {
                 t_surf.destroy();
                 return true;
             }
@@ -513,8 +518,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                 full_h,
             );
             workers.event_queue.push(alloc, io, .{
-                .thumb_decoded = .{
-                    .key = key,
+                .thumb_decoded = .init(key, .{
                     .surface = t_surf,
                     .w = @floatFromInt(t_surf.w()),
                     .h = @floatFromInt(t_surf.h()),
@@ -524,7 +528,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                     .thumb_only = args.thumb_only,
                     .raw_metadata = RawMetadata.init(raw_w, raw_h),
                     .dct_snapped = dct_snapped,
-                },
+                }),
             }) catch |err| {
                 std.log.err(
                     "Failed to push thumbnail decode event: {}",
@@ -542,10 +546,9 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
             // If no small thumbnail available, emit dimensions_probed
             // to immediately establish canvas aspect ratio on Frame 1
             // without decoding pixels
-            if (isStale(workers, args, key)) return true;
+            if (cancel.isCanceled()) return true;
             workers.event_queue.push(alloc, io, .{
-                .dimensions_probed = .{
-                    .key = key,
+                .dimensions_probed = .init(key, .{
                     .w = raw_w,
                     .h = raw_h,
                     .full_w = raw_w,
@@ -553,7 +556,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                     .orientation = orientation,
                     .thumb_only = true,
                     .raw_metadata = RawMetadata.init(raw_w, raw_h),
-                },
+                }),
             }) catch |err| {
                 std.log.err(
                     "Failed to push dimensions probed event: {}",
@@ -565,7 +568,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
         }
     }
 
-    if (isStale(workers, args, key)) return true;
+    if (cancel.isCanceled()) return true;
 
     const prev_loc = prev_loc_opt orelse {
         if (is_pair) return false;
@@ -627,8 +630,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                 &p_slices,
                 prev_loc.file_offset + total_read,
             ) catch |err| {
-                if (err == error.Canceled or
-                    workers.exiting.load(.acquire)) return true;
+                if (err == error.Canceled or cancel.isCanceled()) return true;
                 if (is_pair) return false;
                 failDecodeWorker(
                     workers,
@@ -666,13 +668,18 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
         if (exif.parseExifOrientation(prev_bytes)) |o| {
             orientation = o;
             if (orientation != .normal) {
-                if (isStale(workers, args, key)) return true;
+                if (cancel.isCanceled()) return true;
                 workers.event_queue.push(alloc, io, .{
-                    .exif_orientation_parsed = .{
-                        .key = key,
-                        .orientation = orientation,
-                    },
-                }) catch |err| std.log.err("Failed to push EXIF orientation event: {}", .{err});
+                    .exif_orientation_parsed = .init(
+                        key,
+                        .{ .orientation = orientation },
+                    ),
+                }) catch |err| {
+                    std.log.err(
+                        "Failed to push EXIF orientation event: {}",
+                        .{err},
+                    );
+                };
                 context.wakeUpMainThread();
             }
         }
@@ -696,7 +703,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
         return true;
     }
 
-    if (isStale(workers, args, key)) {
+    if (cancel.isCanceled()) {
         surface.?.destroy();
         return true;
     }
@@ -705,7 +712,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
     const final_surface = conv_res.surface;
     const conversion_time_ms = conv_res.conversion_time_ms;
 
-    if (isStale(workers, args, key)) {
+    if (cancel.isCanceled()) {
         if (final_surface) |surf| surf.destroy();
         return true;
     }
@@ -717,8 +724,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
         const final_raw_h: f32 = if (raw_h > 0.0) raw_h else orig_h;
 
         workers.event_queue.push(alloc, io, .{
-            .image_decoded = .{
-                .key = key,
+            .image_decoded = .init(key, .{
                 .surface = f_surf,
                 .w = orig_w,
                 .h = orig_h,
@@ -731,7 +737,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                 .raw_metadata = RawMetadata.init(final_raw_w, final_raw_h),
                 .cbz_decompress_time_ms = 0.0,
                 .compressed_size_bytes = 0,
-            },
+            }),
         }) catch |err| {
             std.log.err("Failed to push image decode event: {}", .{err});
             f_surf.destroy();
@@ -741,9 +747,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
     } else {
         if (is_pair) return false;
         workers.event_queue.push(alloc, io, .{
-            .decode_failed = .{
-                .key = key,
-            },
+            .decode_failed = .init(key, .{}),
         }) catch |err| std.log.err("Failed to push image decode event: {}", .{err});
         context.wakeUpMainThread();
         return true;
@@ -758,6 +762,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     const io = args.io;
     const key = args.key;
     const media_entry = args.entry;
+    const cancel = args.cancelToken();
     defer {
         media_entry.deinit(alloc);
         alloc.destroy(args);
@@ -766,7 +771,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         context.wakeUpMainThread();
     }
 
-    if (isStale(workers, args, key)) return;
+    if (cancel.isCanceled()) return;
 
     var file_bytes: []u8 = undefined;
     var is_allocated = false;
@@ -859,7 +864,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
             var r_buf: [4096]u8 = undefined;
             var reader = file.reader(io, &r_buf);
             reader.interface.readSliceAll(file_bytes) catch |err| {
-                if (err == error.Canceled or workers.exiting.load(.acquire)) return;
+                if (err == error.Canceled or cancel.isCanceled()) return;
                 failDecodeWorker(
                     workers,
                     alloc,
@@ -945,7 +950,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
             var r_buf: [4096]u8 = undefined;
             var reader = file.reader(io, &r_buf);
             reader.interface.readSliceAll(file_bytes) catch |err| {
-                if (err == error.Canceled or workers.exiting.load(.acquire)) return;
+                if (err == error.Canceled or cancel.isCanceled()) return;
                 failDecodeWorker(
                     workers,
                     alloc,
@@ -1024,13 +1029,15 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     }
 
     if (orientation != .normal) {
-        if (isStale(workers, args, key)) return;
+        if (cancel.isCanceled()) return;
         workers.event_queue.push(alloc, io, .{
-            .exif_orientation_parsed = .{
-                .key = key,
-                .orientation = orientation,
-            },
-        }) catch |err| std.log.err("Failed to push EXIF orientation event: {}", .{err});
+            .exif_orientation_parsed = .init(
+                key,
+                .{ .orientation = orientation },
+            ),
+        }) catch |err| {
+            std.log.err("Failed to push EXIF orientation event: {}", .{err});
+        };
         context.wakeUpMainThread();
     }
 
@@ -1061,11 +1068,11 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         }
 
         if (thumb_bytes_opt) |thumb_bytes| {
-            if (isStale(workers, args, key)) {
+            if (cancel.isCanceled()) {
                 return;
             }
             if (sdl.Surface.loadConstMemOpt(thumb_bytes)) |t_surf| {
-                if (isStale(workers, args, key)) {
+                if (cancel.isCanceled()) {
                     t_surf.destroy();
                     return;
                 }
@@ -1073,8 +1080,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                 const full_h: f32 = if (full_dims) |d| d.h else 0.0;
                 const dct_snapped = image.detectThumbnailDctPadding(t_surf, full_w, full_h);
                 workers.event_queue.push(alloc, io, .{
-                    .thumb_decoded = .{
-                        .key = key,
+                    .thumb_decoded = .init(key, .{
                         .surface = t_surf,
                         .w = @floatFromInt(t_surf.w()),
                         .h = @floatFromInt(t_surf.h()),
@@ -1083,7 +1089,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                         .orientation = orientation,
                         .thumb_only = args.thumb_only,
                         .dct_snapped = dct_snapped,
-                    },
+                    }),
                 }) catch |err| {
                     std.log.err("Failed to push thumbnail decode event: {}", .{err});
                     t_surf.destroy();
@@ -1098,12 +1104,11 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     }
 
     if (args.thumb_only) {
-        if (isStale(workers, args, key)) return;
+        if (cancel.isCanceled()) return;
         const full_w: f32 = if (full_dims) |d| d.w else 0.0;
         const full_h: f32 = if (full_dims) |d| d.h else 0.0;
         workers.event_queue.push(alloc, io, .{
-            .dimensions_probed = .{
-                .key = key,
+            .dimensions_probed = .init(key, .{
                 .w = full_w,
                 .h = full_h,
                 .full_w = full_w,
@@ -1117,7 +1122,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                         RawMetadata.init(full_w, full_h))
                 else
                     .none,
-            },
+            }),
         }) catch |err| {
             std.log.err("Failed to push dimensions probed event: {}", .{err});
         };
@@ -1125,7 +1130,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         return;
     }
 
-    if (isStale(workers, args, key)) return;
+    if (cancel.isCanceled()) return;
 
     const bytes_to_decode = if (raw_preview_slice) |s| s else file_bytes[0..read_n];
     const start_decode = sdl.timer.getTicksNs();
@@ -1146,7 +1151,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         return;
     }
 
-    if (isStale(workers, args, key)) {
+    if (cancel.isCanceled()) {
         if (surface) |surf| surf.destroy();
         return;
     }
@@ -1155,7 +1160,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     const final_surface = conv_res.surface;
     const conversion_time_ms = conv_res.conversion_time_ms;
 
-    if (isStale(workers, args, key)) {
+    if (cancel.isCanceled()) {
         if (final_surface) |surf| surf.destroy();
         return;
     }
@@ -1172,8 +1177,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
             .none;
 
         workers.event_queue.push(alloc, io, .{
-            .image_decoded = .{
-                .key = key,
+            .image_decoded = .init(key, .{
                 .surface = f_surf,
                 .w = orig_w,
                 .h = orig_h,
@@ -1186,7 +1190,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                 .raw_metadata = raw_metadata,
                 .cbz_decompress_time_ms = cbz_decompress_time_ms,
                 .compressed_size_bytes = compressed_size_bytes,
-            },
+            }),
         }) catch |err| {
             std.log.err("Failed to push image decode event: {}", .{err});
             f_surf.destroy();
@@ -1194,9 +1198,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         context.wakeUpMainThread();
     } else {
         workers.event_queue.push(alloc, io, .{
-            .decode_failed = .{
-                .key = key,
-            },
+            .decode_failed = .init(key, .{}),
         }) catch |err| std.log.err("Failed to push image decode event: {}", .{err});
     }
 }
@@ -1236,7 +1238,8 @@ test "decodeWorker - thumb_only does not do full decompression on JPEG" {
     while (workers.event_queue.pop()) |*ev| {
         defer ev.deinit(allocator);
         switch (ev.*) {
-            .dimensions_probed => |d| {
+            .dimensions_probed => |d_evt| {
+                const d = d_evt.unwrapForTest();
                 dimensions_probed_seen = true;
                 try std.testing.expect(d.thumb_only);
                 try std.testing.expectEqual(@as(f32, 1024.0), d.full_w);
@@ -1288,7 +1291,8 @@ test "decodeWorker - thumb_only does not do full decompression on PNG" {
     while (workers.event_queue.pop()) |*ev| {
         defer ev.deinit(allocator);
         switch (ev.*) {
-            .dimensions_probed => |d| {
+            .dimensions_probed => |d_evt| {
+                const d = d_evt.unwrapForTest();
                 dimensions_probed_seen = true;
                 try std.testing.expect(d.thumb_only);
                 try std.testing.expect(d.full_w > 0.0);
@@ -1490,7 +1494,8 @@ test "decodeWorker - Sony ARW range reading and preview extraction" {
         while (workers.event_queue.pop()) |*ev| {
             defer ev.deinit(allocator);
             switch (ev.*) {
-                .image_decoded => |img_payload| {
+                .image_decoded => |img_evt| {
+                    const img_payload = img_evt.unwrapForTest();
                     image_decoded_seen = true;
                     try std.testing.expect(img_payload.raw_metadata.isRaw());
                     const s_dims = img_payload.raw_metadata.getSensorDims().?;
@@ -1540,7 +1545,8 @@ test "decodeWorker - Sony ARW range reading and preview extraction" {
         while (workers.event_queue.pop()) |*ev| {
             defer ev.deinit(allocator);
             switch (ev.*) {
-                .thumb_decoded => |t_payload| {
+                .thumb_decoded => |t_evt| {
+                    const t_payload = t_evt.unwrapForTest();
                     thumb_decoded_seen = true;
                     try std.testing.expect(t_payload.raw_metadata.isRaw());
                     try std.testing.expect(t_payload.thumb_only);
@@ -1637,7 +1643,8 @@ test "decodeWorker - Fujifilm RAF range reading and preview extraction" {
     while (workers.event_queue.pop()) |*ev| {
         defer ev.deinit(allocator);
         switch (ev.*) {
-            .image_decoded => |img_payload| {
+            .image_decoded => |img_evt| {
+                const img_payload = img_evt.unwrapForTest();
                 image_decoded_seen = true;
                 try std.testing.expect(img_payload.raw_metadata.isRaw());
                 const s_dims = img_payload.raw_metadata.getSensorDims().?;
@@ -1690,7 +1697,8 @@ test "decodeWorker - progressive 3-tier loading for real DSC00941.ARW" {
         while (workers.event_queue.pop()) |*ev| {
             defer ev.deinit(allocator);
             switch (ev.*) {
-                .thumb_decoded => |t| {
+                .thumb_decoded => |t_evt| {
+                    const t = t_evt.unwrapForTest();
                     thumb_seen = true;
                     try std.testing.expectEqual(@as(f32, 160.0), t.w);
                     try std.testing.expectEqual(@as(f32, 120.0), t.h);
@@ -1729,14 +1737,16 @@ test "decodeWorker - progressive 3-tier loading for real DSC00941.ARW" {
         while (workers.event_queue.pop()) |*ev| {
             defer ev.deinit(allocator);
             switch (ev.*) {
-                .thumb_decoded => |t| {
+                .thumb_decoded => |t_evt| {
+                    const t = t_evt.unwrapForTest();
                     med_thumb_seen = true;
                     try std.testing.expectEqual(@as(f32, 1616.0), t.w);
                     try std.testing.expectEqual(@as(f32, 1080.0), t.h);
                     try std.testing.expectEqual(@as(f32, 6240.0), t.full_w);
                     try std.testing.expectEqual(@as(f32, 4160.0), t.full_h);
                 },
-                .image_decoded => |img| {
+                .image_decoded => |img_evt| {
+                    const img = img_evt.unwrapForTest();
                     full_image_seen = true;
                     try std.testing.expectEqual(@as(f32, 6240.0), img.w);
                     try std.testing.expectEqual(@as(f32, 4160.0), img.h);
@@ -1864,7 +1874,9 @@ test "decodeWorker - progressive pair loading with PairStreamTarget" {
             defer ev.deinit(allocator);
             if (ev.* == .thumb_decoded) {
                 thumb_seen = true;
-                try std.testing.expect(ev.thumb_decoded.raw_metadata.isRaw());
+                try std.testing.expect(
+                    ev.thumb_decoded.unwrapForTest().raw_metadata.isRaw(),
+                );
             }
         }
         try std.testing.expect(thumb_seen);
@@ -1899,9 +1911,10 @@ test "decodeWorker - progressive pair loading with PairStreamTarget" {
             defer ev.deinit(allocator);
             if (ev.* == .image_decoded) {
                 jpeg_seen = true;
-                try std.testing.expect(!ev.image_decoded.raw_metadata.isRaw());
-                try std.testing.expectEqual(@as(f32, 1024.0), ev.image_decoded.w);
-                try std.testing.expectEqual(@as(f32, 682.0), ev.image_decoded.h);
+                const img = ev.image_decoded.unwrapForTest();
+                try std.testing.expect(!img.raw_metadata.isRaw());
+                try std.testing.expectEqual(@as(f32, 1024.0), img.w);
+                try std.testing.expectEqual(@as(f32, 682.0), img.h);
             }
         }
         try std.testing.expect(jpeg_seen);
@@ -1936,7 +1949,9 @@ test "decodeWorker - progressive pair loading with PairStreamTarget" {
             defer ev.deinit(allocator);
             if (ev.* == .image_decoded) {
                 raw_seen = true;
-                try std.testing.expect(ev.image_decoded.raw_metadata.isRaw());
+                try std.testing.expect(
+                    ev.image_decoded.unwrapForTest().raw_metadata.isRaw(),
+                );
             }
         }
         try std.testing.expect(raw_seen);

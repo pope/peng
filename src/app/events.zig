@@ -27,21 +27,33 @@ pub fn drainWorkerEvents(state: *AppState) bool {
         defer evt.deinit(state.allocator);
 
         switch (evt.*) {
-            .exif_orientation_parsed => |e| {
-                if (state.cache.get(e.key)) |entry| {
-                    entry.orientation = e.orientation;
-                }
+            .exif_orientation_parsed => |*e| if (e.resolve(&state.cache)) |r| {
+                r.entry.orientation = r.payload.orientation;
                 state.updateCurrentRotation();
             },
-            .dimensions_probed => |d| handleDimensionsProbedEvent(state, d),
-            .thumb_decoded => |t| handleExifThumbnailEvent(state, t),
-            .image_decoded => |*d| handleImageDecodedEvent(state, d),
-            .decode_failed => |f| handleDecodeFailedEvent(state, f),
+            .dimensions_probed => |*d| if (d.resolve(&state.cache)) |r| {
+                handleDimensionsProbedEvent(state, r.entry, r.payload.*);
+            },
+            .thumb_decoded => |*t| if (t.resolve(&state.cache)) |r| {
+                handleExifThumbnailEvent(state, r.entry, r.payload.*);
+            },
+            .image_decoded => |*d| if (d.resolve(&state.cache)) |r| {
+                handleImageDecodedEvent(state, r.key, r.entry, r.payload);
+            },
+            .decode_failed => |*f| if (f.resolve(&state.cache)) |r| {
+                handleDecodeFailedEvent(r.entry);
+            },
             .path_discovered => |p| handleDirScannedEvent(state, p),
-            .directory_scan_result => |res| handleDirectoryScanResultEvent(state, res),
-            .directory_scan_complete => {},
+            .directory_scan_result => |res| {
+                if (res.resolve(&state.cache.generation)) |payload| {
+                    handleDirectoryScanResultEvent(state, payload);
+                }
+            },
             .palette_folder_count => |cnt| {
-                handlePaletteFolderCountEvent(state, cnt);
+                const active_gen = &state.viewer.ui.palette.dir_scan_generation;
+                if (cnt.resolve(active_gen)) |payload| {
+                    handlePaletteFolderCountEvent(state, payload);
+                }
             },
             .ipc_command => |cmd_data| handleIpcCommandEvent(state, cmd_data),
         }
@@ -49,14 +61,7 @@ pub fn drainWorkerEvents(state: *AppState) bool {
     return true;
 }
 
-fn handleDecodeFailedEvent(
-    state: *AppState,
-    f: events.DecodeFailedPayload,
-) void {
-    const entry = state.cache.get(f.key) orelse {
-        _ = state.cache.updateStatus(f.key, .failed);
-        return;
-    };
+fn handleDecodeFailedEvent(entry: *state_pkg.CacheEntry) void {
     entry.is_promoting = false;
     if (entry.status != .loaded_gpu and entry.status != .loaded_cpu) {
         entry.status = .failed;
@@ -70,10 +75,6 @@ fn handlePaletteFolderCountEvent(
     state: *AppState,
     cnt: events.PaletteFolderCountPayload,
 ) void {
-    const palette = &state.viewer.ui.palette;
-    const active_gen = palette.dir_scan_generation.load(.acquire);
-    if (cnt.generation != active_gen) return;
-
     for (state.viewer.ui.palette.dir_items.items) |*item| {
         if (!std.mem.eql(u8, item.getFullPath(), cnt.path)) continue;
 
@@ -102,10 +103,9 @@ fn handleIpcCommandEvent(state: *AppState, cmd_data: *ipc.IpcCommandData) void {
 
 fn handleDimensionsProbedEvent(
     state: *AppState,
+    entry: *state_pkg.CacheEntry,
     probed: events.DimensionsProbedPayload,
 ) void {
-    const entry = state.cache.get(probed.key) orelse return;
-
     entry.applyProbedMetadata(
         probed.full_w,
         probed.full_h,
@@ -127,10 +127,9 @@ fn handleDimensionsProbedEvent(
 
 fn handleExifThumbnailEvent(
     state: *AppState,
+    entry: *state_pkg.CacheEntry,
     thumb_data: events.ThumbDecodedPayload,
 ) void {
-    const entry = state.cache.get(thumb_data.key) orelse return;
-
     entry.applyProbedMetadata(
         thumb_data.full_w,
         thumb_data.full_h,
@@ -153,31 +152,27 @@ fn handleExifThumbnailEvent(
             state.unpack_compute_pipeline,
             &state.upload_staging,
         )) |upload_res| {
-            if (state.cache.get(thumb_data.key)) |current_entry| {
-                switch (current_entry.thumbnail) {
-                    .loaded => |old_thumb| gpu_dev.releaseTexture(old_thumb.texture),
-                    else => {},
-                }
-                current_entry.thumbnail = .{
-                    .loaded = .{
-                        .texture = upload_res.gpu_texture,
-                        .info = .{
-                            .w = upload_res.w,
-                            .h = upload_res.h,
-                            .upload_time_ms = upload_res.upload_time_ms,
-                            .dct_snapped = thumb_data.dct_snapped,
-                        },
-                    },
-                };
-            } else {
-                gpu_dev.releaseTexture(upload_res.gpu_texture);
+            switch (entry.thumbnail) {
+                .loaded => |old_thumb| {
+                    gpu_dev.releaseTexture(old_thumb.texture);
+                },
+                else => {},
             }
+            entry.thumbnail = .{
+                .loaded = .{
+                    .texture = upload_res.gpu_texture,
+                    .info = .{
+                        .w = upload_res.w,
+                        .h = upload_res.h,
+                        .upload_time_ms = upload_res.upload_time_ms,
+                        .dct_snapped = thumb_data.dct_snapped,
+                    },
+                },
+            };
             state.updateCurrentRotation();
         } else {
-            if (state.cache.get(thumb_data.key)) |current_entry| {
-                if (current_entry.thumbnail == .none or current_entry.thumbnail == .pending) {
-                    current_entry.thumbnail = .not_available;
-                }
+            if (entry.thumbnail == .none or entry.thumbnail == .pending) {
+                entry.thumbnail = .not_available;
             }
         }
     } else {
@@ -187,12 +182,16 @@ fn handleExifThumbnailEvent(
     }
 }
 
-fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedPayload) void {
+fn handleImageDecodedEvent(
+    state: *AppState,
+    key: image.CacheKey,
+    entry: *state_pkg.CacheEntry,
+    decoded_data: *events.ImageDecodedPayload,
+) void {
     const surf = decoded_data.surface orelse return;
-    if (state.cache.get(decoded_data.key) == null) return;
 
     const is_current = if (state.viewer.navigation.current_index) |cur|
-        decoded_data.key.index == cur
+        key.index == cur
     else
         true;
 
@@ -226,6 +225,7 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
         )) |full_res| {
             applyDecodedGpuTexture(
                 state,
+                entry,
                 decoded_data,
                 full_res,
                 is_current,
@@ -235,41 +235,39 @@ fn handleImageDecodedEvent(state: *AppState, decoded_data: *events.ImageDecodedP
         } else {
             std.log.err(
                 "handleImageDecodedEvent: failed to upload surface to GPU for key {any}",
-                .{decoded_data.key},
+                .{key},
             );
-            handleDecodedGpuUploadFailure(state, decoded_data.key, is_current);
+            handleDecodedGpuUploadFailure(state, entry, is_current);
         }
     } else {
-        if (state.cache.get(decoded_data.key)) |entry| {
-            switch (entry.status) {
-                .loaded_cpu => |cpu| cpu.surface.destroy(),
-                .loaded_gpu => |gpu| {
-                    if (state.gpu_device) |gpu_dev| {
-                        gpu_dev.releaseTexture(gpu.gpu_texture);
-                    }
-                },
-                else => {},
-            }
-            applyDecodedMetadata(entry, decoded_data);
-            if (entry.thumbnail == .pending or entry.thumbnail == .none) {
-                entry.thumbnail = .not_available;
-            }
-            entry.status = .{
-                .loaded_cpu = .{
-                    .surface = decoded_data.surface.?,
-                    .w = decoded_data.w,
-                    .h = decoded_data.h,
-                    .size_bytes = decoded_data.size_bytes,
-                    .mime_type = decoded_data.mime_type,
-                    .read_time_ms = decoded_data.read_time_ms,
-                    .decode_time_ms = decoded_data.decode_time_ms,
-                    .conversion_time_ms = decoded_data.conversion_time_ms,
-                    .cbz_decompress_time_ms = decoded_data.cbz_decompress_time_ms,
-                    .compressed_size_bytes = decoded_data.compressed_size_bytes,
-                },
-            };
-            decoded_data.surface = null;
+        switch (entry.status) {
+            .loaded_cpu => |cpu| cpu.surface.destroy(),
+            .loaded_gpu => |gpu| {
+                if (state.gpu_device) |gpu_dev| {
+                    gpu_dev.releaseTexture(gpu.gpu_texture);
+                }
+            },
+            else => {},
         }
+        applyDecodedMetadata(entry, decoded_data);
+        if (entry.thumbnail == .pending or entry.thumbnail == .none) {
+            entry.thumbnail = .not_available;
+        }
+        entry.status = .{
+            .loaded_cpu = .{
+                .surface = decoded_data.surface.?,
+                .w = decoded_data.w,
+                .h = decoded_data.h,
+                .size_bytes = decoded_data.size_bytes,
+                .mime_type = decoded_data.mime_type,
+                .read_time_ms = decoded_data.read_time_ms,
+                .decode_time_ms = decoded_data.decode_time_ms,
+                .conversion_time_ms = decoded_data.conversion_time_ms,
+                .cbz_decompress_time_ms = decoded_data.cbz_decompress_time_ms,
+                .compressed_size_bytes = decoded_data.compressed_size_bytes,
+            },
+        };
+        decoded_data.surface = null;
         state.updateCurrentRotation();
     }
 }
@@ -295,10 +293,9 @@ fn applyDecodedMetadata(
 
 fn handleDecodedGpuUploadFailure(
     state: *AppState,
-    key: image.CacheKey,
+    entry: *state_pkg.CacheEntry,
     is_current: bool,
 ) void {
-    const entry = state.cache.get(key) orelse return;
     entry.is_promoting = false;
     if (entry.status != .loaded_gpu and entry.status != .loaded_cpu) {
         entry.status = .failed;
@@ -347,15 +344,12 @@ fn triggerDecodedGpuCrossfades(
 
 fn applyDecodedGpuTexture(
     state: *AppState,
+    entry: *state_pkg.CacheEntry,
     decoded_data: *events.ImageDecodedPayload,
     full_res: image.GpuUploadResult,
     is_current: bool,
     gpu_dev: sdl.gpu.Device,
 ) void {
-    const entry = state.cache.get(decoded_data.key) orelse {
-        gpu_dev.releaseTexture(full_res.gpu_texture);
-        return;
-    };
     switch (entry.status) {
         .loaded_cpu => |cpu| cpu.surface.destroy(),
         .loaded_gpu => |gpu| gpu_dev.releaseTexture(gpu.gpu_texture),
@@ -382,6 +376,10 @@ fn applyDecodedGpuTexture(
             .compressed_size_bytes = decoded_data.compressed_size_bytes,
         },
     };
+    if (entry.thumbnail == .pending or entry.thumbnail == .none) {
+        entry.thumbnail = .not_available;
+    }
+    triggerDecodedGpuCrossfades(state, is_current, entry);
     state.cache.enforceVramBudget(
         gpu_dev,
         state.viewer.navigation.getVisibleNeighbors(),
@@ -389,10 +387,6 @@ fn applyDecodedGpuTexture(
         state.viewer.navigation.count(),
         image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES,
     );
-    if (entry.thumbnail == .pending or entry.thumbnail == .none) {
-        entry.thumbnail = .not_available;
-    }
-    triggerDecodedGpuCrossfades(state, is_current, entry);
 }
 
 fn handleDirScannedEvent(state: *AppState, scanned_data: events.PathDiscoveredPayload) void {
@@ -479,8 +473,6 @@ fn handleDirectoryScanResultEvent(
     state: *AppState,
     result_data: events.DirectoryScanResultPayload,
 ) void {
-    if (result_data.generation != state.cache.generation.load(.acquire)) return;
-
     const arena_alloc = state.viewer.navigation.directory_arena.allocator();
     if (result_data.is_dir) {
         for (result_data.paths) |item| {
@@ -570,10 +562,10 @@ test "drainWorkerEvents - exif_orientation_parsed & decode_failed" {
     });
 
     try state.workers.event_queue.push(allocator, io, .{
-        .exif_orientation_parsed = .{
-            .key = state.cache.activeKey(0),
-            .orientation = .rotate_90,
-        },
+        .exif_orientation_parsed = .init(
+            state.cache.activeKey(0),
+            .{ .orientation = .rotate_90 },
+        ),
     });
     const processed1 = drainWorkerEvents(&state);
     try std.testing.expect(processed1);
@@ -583,7 +575,7 @@ test "drainWorkerEvents - exif_orientation_parsed & decode_failed" {
     );
 
     try state.workers.event_queue.push(allocator, io, .{
-        .decode_failed = .{ .key = state.cache.activeKey(0) },
+        .decode_failed = .init(state.cache.activeKey(0), .{}),
     });
     const processed2 = drainWorkerEvents(&state);
     try std.testing.expect(processed2);
@@ -605,11 +597,11 @@ test "drainWorkerEvents - directory_scan_result and ipc_command" {
     paths_slice[1] = .{ .filesystem = .{ .path = path1 } };
 
     try state.workers.event_queue.push(allocator, io, .{
-        .directory_scan_result = .{
+        .directory_scan_result = .init(0, .{
             .target_path = target_path,
             .is_dir = false,
             .paths = paths_slice,
-        },
+        }),
     });
 
     const cmd_str = try allocator.dupe(u8, "next");
@@ -655,8 +647,7 @@ test "drainWorkerEvents - neighbor image_decoded stays loaded_cpu while current 
 
     // Neighbor index 1 finishes decoding before index 0
     try state.workers.event_queue.push(allocator, io, .{
-        .image_decoded = .{
-            .key = state.cache.activeKey(1),
+        .image_decoded = .init(state.cache.activeKey(1), .{
             .surface = surf,
             .w = 10,
             .h = 10,
@@ -666,7 +657,7 @@ test "drainWorkerEvents - neighbor image_decoded stays loaded_cpu while current 
             .decode_time_ms = 2.0,
             .conversion_time_ms = 0.0,
             .orientation = .normal,
-        },
+        }),
     });
 
     const processed = drainWorkerEvents(&state);
@@ -689,15 +680,14 @@ test "drainWorkerEvents - dimensions_probed sets dimensions and clears has_threa
     });
 
     try state.workers.event_queue.push(allocator, io, .{
-        .dimensions_probed = .{
-            .key = state.cache.activeKey(0),
+        .dimensions_probed = .init(state.cache.activeKey(0), .{
             .w = 1920.0,
             .h = 1080.0,
             .full_w = 1920.0,
             .full_h = 1080.0,
             .orientation = .normal,
             .thumb_only = true,
-        },
+        }),
     });
 
     const processed = drainWorkerEvents(&state);
@@ -743,12 +733,11 @@ test "drainWorkerEvents - palette_folder_count updates directory and archive ent
     // Push event with mismatched generation (should be ignored)
     const stale_path = try allocator.dupe(u8, "/path/to/folder_a");
     try state.workers.event_queue.push(allocator, io, .{
-        .palette_folder_count = .{
-            .generation = 0,
+        .palette_folder_count = .init(0, .{
             .path = stale_path,
             .image_count = 999,
             .subdir_count = 999,
-        },
+        }),
     });
 
     _ = drainWorkerEvents(&state);
@@ -760,22 +749,20 @@ test "drainWorkerEvents - palette_folder_count updates directory and archive ent
     // Push matching events for directory and archive
     const evt_dir_path = try allocator.dupe(u8, "/path/to/folder_a");
     try state.workers.event_queue.push(allocator, io, .{
-        .palette_folder_count = .{
-            .generation = 1,
+        .palette_folder_count = .init(1, .{
             .path = evt_dir_path,
             .image_count = 12,
             .subdir_count = 3,
-        },
+        }),
     });
 
     const evt_cbz_path = try allocator.dupe(u8, "/path/to/comic.cbz");
     try state.workers.event_queue.push(allocator, io, .{
-        .palette_folder_count = .{
-            .generation = 1,
+        .palette_folder_count = .init(1, .{
             .path = evt_cbz_path,
             .image_count = 45,
             .subdir_count = 0,
-        },
+        }),
     });
 
     _ = drainWorkerEvents(&state);
@@ -833,7 +820,7 @@ test "drainWorkerEvents - pair promotion preserves VRAM and loaded status" {
 
     // 1. If GPU upload of a promotion fails while .loaded_gpu, keep .loaded_gpu
     // and clear is_promoting instead of clobbering with .failed.
-    handleDecodedGpuUploadFailure(&state, key1, true);
+    handleDecodedGpuUploadFailure(&state, entry1, true);
     try std.testing.expect(!entry1.is_promoting);
     try std.testing.expect(entry1.status == .loaded_gpu);
     try std.testing.expectEqual(
@@ -851,8 +838,7 @@ test "drainWorkerEvents - pair promotion preserves VRAM and loaded status" {
     ) orelse return error.SurfaceFailed;
 
     try state.workers.event_queue.push(allocator, io, .{
-        .image_decoded = .{
-            .key = key1,
+        .image_decoded = .init(key1, .{
             .surface = promoted_surf,
             .w = 32,
             .h = 24,
@@ -862,7 +848,7 @@ test "drainWorkerEvents - pair promotion preserves VRAM and loaded status" {
             .decode_time_ms = 2.0,
             .conversion_time_ms = 0.0,
             .orientation = .normal,
-        },
+        }),
     });
 
     try std.testing.expect(drainWorkerEvents(&state));
@@ -872,8 +858,9 @@ test "drainWorkerEvents - pair promotion preserves VRAM and loaded status" {
 
     // 3. Initial decode upload failure on slot 0 transitions to .failed
     const key0 = state.cache.activeKey(0);
-    handleDecodedGpuUploadFailure(&state, key0, true);
-    try std.testing.expect(state.cache.get(key0).?.status == .failed);
+    const entry0 = state.cache.get(key0).?;
+    handleDecodedGpuUploadFailure(&state, entry0, true);
+    try std.testing.expect(entry0.status == .failed);
 }
 
 test "drainWorkerEvents - monotonic full_w and full_h on pair promotion" {
@@ -895,8 +882,7 @@ test "drainWorkerEvents - monotonic full_w and full_h on pair promotion" {
         sdl.PixelFormat.rgba32,
     ) orelse return error.SurfaceFailed;
     try state.workers.event_queue.push(allocator, io, .{
-        .image_decoded = .{
-            .key = key0,
+        .image_decoded = .init(key0, .{
             .surface = preview_surf,
             .w = 1616,
             .h = 1080,
@@ -907,7 +893,7 @@ test "drainWorkerEvents - monotonic full_w and full_h on pair promotion" {
             .conversion_time_ms = 0.0,
             .orientation = .normal,
             .raw_metadata = state_pkg.RawMetadata.init(1616, 1080),
-        },
+        }),
     });
     try std.testing.expect(drainWorkerEvents(&state));
     try std.testing.expectEqual(@as(f32, 1616), entry0.full_w);
@@ -922,8 +908,7 @@ test "drainWorkerEvents - monotonic full_w and full_h on pair promotion" {
         sdl.PixelFormat.rgba32,
     ) orelse return error.SurfaceFailed;
     try state.workers.event_queue.push(allocator, io, .{
-        .image_decoded = .{
-            .key = key0,
+        .image_decoded = .init(key0, .{
             .surface = full_surf,
             .w = 6000,
             .h = 4000,
@@ -934,7 +919,7 @@ test "drainWorkerEvents - monotonic full_w and full_h on pair promotion" {
             .conversion_time_ms = 0.0,
             .orientation = .normal,
             .raw_metadata = .none,
-        },
+        }),
     });
     try std.testing.expect(drainWorkerEvents(&state));
     try std.testing.expectEqual(@as(f32, 6000), entry0.full_w);
@@ -951,8 +936,7 @@ test "drainWorkerEvents - monotonic full_w and full_h on pair promotion" {
         sdl.PixelFormat.rgba32,
     ) orelse return error.SurfaceFailed;
     try state.workers.event_queue.push(allocator, io, .{
-        .image_decoded = .{
-            .key = key0,
+        .image_decoded = .init(key0, .{
             .surface = toggle_surf,
             .w = 1616,
             .h = 1080,
@@ -963,7 +947,7 @@ test "drainWorkerEvents - monotonic full_w and full_h on pair promotion" {
             .conversion_time_ms = 0.0,
             .orientation = .normal,
             .raw_metadata = state_pkg.RawMetadata.init(1616, 1080),
-        },
+        }),
     });
     try std.testing.expect(drainWorkerEvents(&state));
     try std.testing.expectEqual(@as(f32, 6000), entry0.full_w);
@@ -1007,11 +991,11 @@ test "drainWorkerEvents - single-file scan remaps or invalidates slot 0" {
     paths1[1] = .{ .filesystem = .{ .path = try allocator.dupe(u8, "b.jpg") } };
     paths1[2] = .{ .filesystem = .{ .path = try allocator.dupe(u8, "c.jpg") } };
     try state.workers.event_queue.push(allocator, io, .{
-        .directory_scan_result = .{
+        .directory_scan_result = .init(0, .{
             .target_path = try allocator.dupe(u8, "c.jpg"),
             .is_dir = false,
             .paths = paths1,
-        },
+        }),
     });
     try std.testing.expect(drainWorkerEvents(&state));
     try std.testing.expectEqual(
@@ -1043,11 +1027,11 @@ test "drainWorkerEvents - single-file scan remaps or invalidates slot 0" {
     paths2[0] = .{ .filesystem = .{ .path = try allocator.dupe(u8, "a.jpg") } };
     paths2[1] = .{ .filesystem = .{ .path = try allocator.dupe(u8, "b.jpg") } };
     try state.workers.event_queue.push(allocator, io, .{
-        .directory_scan_result = .{
+        .directory_scan_result = .init(0, .{
             .target_path = try allocator.dupe(u8, "b.jpg"),
             .is_dir = false,
             .paths = paths2,
-        },
+        }),
     });
     try std.testing.expect(drainWorkerEvents(&state));
     try std.testing.expectEqual(
@@ -1073,12 +1057,11 @@ test "drainWorkerEvents - discards stale directory_scan_result" {
         .filesystem = .{ .path = try allocator.dupe(u8, "stale.jpg") },
     };
     try state.workers.event_queue.push(allocator, io, .{
-        .directory_scan_result = .{
-            .generation = cur_gen - 1,
+        .directory_scan_result = .init(cur_gen - 1, .{
             .target_path = try allocator.dupe(u8, "."),
             .is_dir = true,
             .paths = stale_paths,
-        },
+        }),
     });
     try std.testing.expect(drainWorkerEvents(&state));
     try std.testing.expectEqual(@as(usize, 0), state.viewer.navigation.count());
