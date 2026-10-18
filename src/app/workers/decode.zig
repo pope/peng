@@ -497,7 +497,9 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
     const raw_h: f32 = if (raw_sensor_dims) |d| d.h else 0.0;
 
     // Fast scrubbing & instant placeholder thumbnail path
-    if (args.has_gpu_device or args.thumb_only) {
+    if ((args.has_gpu_device and args.pair_target == .adaptive) or
+        args.thumb_only)
+    {
         var thumb_surf: ?sdl.Surface = null;
         const target_loc_opt = if (args.thumb_only)
             (thumb_loc_opt orelse med_loc_opt)
@@ -1103,16 +1105,20 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     const full_dims = image.parseImageDimensions(header_buf, mime_type);
 
     // Attempt fast EXIF thumbnail decoding for instant placeholder preview
-    if (std.mem.eql(u8, mime_type, "image/jpeg") and args.has_gpu_device) {
+    if (std.mem.eql(u8, mime_type, "image/jpeg") and
+        args.has_gpu_device and
+        args.pair_target == .adaptive)
+    {
         var thumb_bytes_opt: ?[]const u8 = null;
         if (exif.extractJpegThumbnailLocation(header_buf)) |loc| {
-            const max_thumb_size_bytes = 512 * 1024; // 512 KiB sanity limit for EXIF thumbnails
-            const off = @as(usize, loc.file_offset);
-            const len = @as(usize, loc.length);
-            const within_file_bounds = (len > 0 and len <= max_thumb_size_bytes and
-                len <= read_n and off <= read_n - len);
+            const max_thumb_size_bytes = 512 * 1024;
+            const within_file_bounds = loc.length > 0 and
+                loc.length <= max_thumb_size_bytes and
+                loc.file_offset +| loc.length <= read_n;
 
             if (within_file_bounds) {
+                const off: usize = @intCast(loc.file_offset);
+                const len: usize = @intCast(loc.length);
                 thumb_bytes_opt = file_bytes[off .. off + len];
                 if (off + len <= header_buf.len) {
                     _ = workers.thumb_header_hits.fetchAdd(1, .monotonic);

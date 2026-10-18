@@ -153,6 +153,9 @@ fn handleExifThumbnailEvent(
         }
     }
     state.updateCurrentRotation();
+    if (entry.status == .loaded_gpu or entry.status == .loaded_cpu) {
+        return;
+    }
 
     const surf = thumb_data.surface;
     if (state.gpu_device) |gpu_dev| {
@@ -342,6 +345,7 @@ fn applyDecodedGpuTexture(
     is_current: bool,
     gpu_dev: sdl.gpu.Device,
 ) void {
+    const was_loaded_gpu = entry.status == .loaded_gpu;
     switch (entry.status) {
         .loaded_cpu => |cpu| cpu.surface.destroy(),
         .loaded_gpu => |gpu| gpu_dev.releaseTexture(gpu.gpu_texture),
@@ -371,7 +375,9 @@ fn applyDecodedGpuTexture(
     if (entry.thumbnail == .pending or entry.thumbnail == .none) {
         entry.thumbnail = .not_available;
     }
-    triggerDecodedGpuCrossfades(state, is_current, entry);
+    if (!was_loaded_gpu) {
+        triggerDecodedGpuCrossfades(state, is_current, entry);
+    }
     state.cache.enforceVramBudget(
         gpu_dev,
         state.viewer.navigation.getVisibleNeighbors(),
@@ -1152,4 +1158,55 @@ test "drainWorkerEvents - directory_scan_result updates open .files palette" {
         @as(usize, 2),
         state.viewer.ui.palette.matches.items.len,
     );
+}
+
+test "drainWorkerEvents - ignores thumb_decoded when slot is already loaded" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    const main_surf = sdl.Surface.create(32, 32, sdl.PixelFormat.rgba32).?;
+    const key0 = try state.cache.appendSlot(allocator, 0, .{
+        .loaded_cpu = .{
+            .surface = main_surf,
+            .w = 32.0,
+            .h = 32.0,
+            .size_bytes = 4096,
+            .mime_type = "image/jpeg",
+            .read_time_ms = 0.0,
+            .decode_time_ms = 0.0,
+            .conversion_time_ms = 0.0,
+            .cbz_decompress_time_ms = 0.0,
+            .compressed_size_bytes = 0,
+        },
+    });
+    const entry = state.cache.get(key0).?;
+    entry.thumbnail = .{ .unloaded = .{
+        .w = 16.0,
+        .h = 16.0,
+        .upload_time_ms = 0.0,
+        .dct_snapped = false,
+    } };
+
+    const thumb_surf = sdl.Surface.create(16, 16, sdl.PixelFormat.rgba32).?;
+    try state.workers.event_queue.push(allocator, io, .{
+        .thumb_decoded = .init(key0, .{
+            .surface = thumb_surf,
+            .w = 16.0,
+            .h = 16.0,
+            .full_w = 6000.0,
+            .full_h = 4000.0,
+            .orientation = .rotate_90,
+            .thumb_only = false,
+            .dct_snapped = false,
+        }),
+    });
+
+    try std.testing.expect(drainWorkerEvents(&state));
+    // Metadata updates while thumbnail stays .unloaded and surface is freed
+    try std.testing.expectEqual(@as(f32, 6000.0), entry.full_w);
+    try std.testing.expectEqual(@as(f32, 4000.0), entry.full_h);
+    try std.testing.expectEqual(Orientation.rotate_90, entry.orientation);
+    try std.testing.expect(entry.thumbnail == .unloaded);
 }
