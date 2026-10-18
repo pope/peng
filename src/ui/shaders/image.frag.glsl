@@ -624,6 +624,15 @@ void main() {
             vec2 inv_size = 1.0 / max(tex_size, vec2(1.0));
             float rel_presence = 0.0;
 
+            // Ensure center reference matches the hardware bilinear domain of
+            // the neighbor taps when a non-bilinear resampler is active.
+            float Y_ref = Y_in;
+            if (ubo.scale_mode != 1 && (is_magnified || ubo.scale_mode < 5)) {
+                vec3 c_ref = srgb_to_linear(
+                    clamp(texture(texSampler, inTexCoord).rgb, 0.0, 1.0));
+                Y_ref = dot(c_ref, REC709_LUMA);
+            }
+
             // Texture: High-mid frequency micro-detail (4-16 px radius)
             // Uses an 8-tap circular isotropic bilateral filter with center tap
             if (abs(ubo.texture_adj) > 1e-5) {
@@ -636,14 +645,14 @@ void main() {
 
                 // Center tap initialization (w0 = 1.0 anchors edge stability)
                 float w_sum = 1.0;
-                float Y_accum = Y_in;
+                float Y_accum = Y_ref;
 
                 for (int i = 0; i < 8; ++i) {
                     vec2 uv_samp = inTexCoord + tex_offsets[i] * inv_size;
                     vec3 c_s = srgb_to_linear(
                         clamp(texture(texSampler, uv_samp).rgb, 0.0, 1.0));
                     float Y_s = dot(c_s, REC709_LUMA);
-                    float diff = Y_s - Y_in;
+                    float diff = Y_s - Y_ref;
 
                     // Bilateral edge-stopping weight (sigma_r = 0.06):
                     // 1.0 / (2.0 * 0.06^2) = 1.0 / 0.0072 = 138.889
@@ -653,7 +662,7 @@ void main() {
                 }
 
                 float Y_base_tex = Y_accum / w_sum;
-                float detail_tex = Y_in - Y_base_tex;
+                float detail_tex = Y_ref - Y_base_tex;
 
                 // Edge protection gate: strictly zero modulation on strong
                 // silhouette edges (lips, eyes, hair contours)
@@ -670,9 +679,9 @@ void main() {
                     mix(detail_tex, detail_tex * noise_core, is_pos);
                 tex_mod *= edge_gate;
 
-                // Perceptual Weber-Rose denominator (Y_in + 0.04) prevents
+                // Perceptual Weber-Rose denominator (Y_ref + 0.04) prevents
                 // shadow noise explosion
-                float rel_detail = tex_mod / (Y_in + 0.04);
+                float rel_detail = tex_mod / (Y_ref + 0.04);
                 rel_presence += ubo.texture_adj * rel_detail;
             }
 
@@ -687,7 +696,7 @@ void main() {
                 vec3 c_c0 = srgb_to_linear(clamp(
                     textureLod(texSampler, inTexCoord, 3.0).rgb, 0.0, 1.0));
                 float Y_c0 = dot(c_c0, REC709_LUMA);
-                float diff_c0 = Y_c0 - Y_in;
+                float diff_c0 = Y_c0 - Y_ref;
                 float w_c0 = exp(-(diff_c0 * diff_c0) * 25.0);
                 float w_sum_clar = max(w_c0, 0.25);
                 float Y_accum_clar = w_sum_clar * Y_c0;
@@ -697,14 +706,14 @@ void main() {
                     vec3 c_c = srgb_to_linear(
                         clamp(textureLod(texSampler, uv_c, 3.0).rgb, 0.0, 1.0));
                     float Y_c = dot(c_c, REC709_LUMA);
-                    float diff_c = Y_c - Y_in;
+                    float diff_c = Y_c - Y_ref;
                     float w_c = exp(-(diff_c * diff_c) * 25.0);
                     w_sum_clar += w_c;
                     Y_accum_clar += w_c * Y_c;
                 }
 
                 float Y_base_clar = Y_accum_clar / w_sum_clar;
-                float raw_detail_c = Y_in - Y_base_clar;
+                float raw_detail_c = Y_ref - Y_base_clar;
 
                 // Anti-halo soft-clamping: compress large edge steps
                 const float max_clar_step = 0.15;
@@ -718,7 +727,7 @@ void main() {
                 float midtone_env = smoothstep(0.04, 0.20, Y_curr) *
                                     (1.0 - smoothstep(0.70, 0.95, Y_curr));
 
-                float rel_clarity = clamped_c / (Y_in + 0.05);
+                float rel_clarity = clamped_c / (Y_ref + 0.05);
                 rel_presence += ubo.clarity * rel_clarity * midtone_env;
             }
 
