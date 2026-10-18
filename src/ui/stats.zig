@@ -40,6 +40,83 @@ fn renderStatRow(label: []const u8, value: []const u8) !void {
     });
 }
 
+fn floatingHudCardDeclaration(
+    card_id: []const u8,
+    attach_point: clay.FloatingAttachPointType,
+    panel: types.FloatingPanel,
+    enable_blur: bool,
+) clay.ElementDeclaration {
+    return .{
+        .id = clay.getElementId(card_id),
+        .layout = .{
+            .sizing = .{ .w = .fixed(380), .h = .fit },
+            .direction = .top_to_bottom,
+            .padding = .{ .top = 12, .bottom = 12, .left = 14, .right = 14 },
+            .child_gap = 6,
+        },
+        .background_color = theme.base_translucent,
+        .corner_radius = .all(10),
+        .user_data = if (enable_blur)
+            @ptrFromInt(ElementTag.blurred_surface.toInt())
+        else
+            null,
+        .border = .{
+            .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
+            .color = theme.surface0,
+        },
+        .floating = .{
+            .attach_to = .to_parent,
+            .attach_points = .{
+                .element = attach_point,
+                .parent = attach_point,
+            },
+            .offset = .{
+                .x = panel.offset_x,
+                .y = panel.offset_y,
+            },
+            .z_index = 100,
+        },
+    };
+}
+
+fn renderFloatingHudHeader(title: []const u8, close_btn_id: []const u8) void {
+    clay.UI()(.{
+        .layout = .{
+            .sizing = .{ .w = .grow, .h = .fixed(24) },
+            .direction = .left_to_right,
+            .child_alignment = .{ .x = .left, .y = .center },
+        },
+    })({
+        clay.UI()(.{ .layout = .{
+            .sizing = .{ .w = .grow, .h = .grow },
+        } })({
+            clay.text(title, .{
+                .color = theme.mauve,
+                .font_size = 16,
+                .font_id = 0,
+            });
+        });
+        clay.UI()(.{
+            .id = clay.getElementId(close_btn_id),
+            .layout = .{
+                .sizing = .{
+                    .w = .fixed(24),
+                    .h = .fixed(24),
+                },
+                .child_alignment = .{ .x = .center, .y = .center },
+            },
+            .background_color = theme.surface0,
+            .corner_radius = .all(12),
+        })({
+            clay.text("x", .{
+                .color = theme.text,
+                .font_size = 12,
+                .font_id = 0,
+            });
+        });
+    });
+}
+
 fn getRawContainerName(mime_type: []const u8, filename: []const u8) []const u8 {
     const RawFormat = struct {
         mime: []const u8,
@@ -269,70 +346,13 @@ fn renderInfoOverlay(
         }
     }
 
-    clay.UI()(.{
-        .id = clay.getElementId("InfoOverlayCard"),
-        .layout = .{
-            .sizing = .{ .w = .fixed(380), .h = .fit },
-            .direction = .top_to_bottom,
-            .padding = .{ .top = 12, .bottom = 12, .left = 14, .right = 14 },
-            .child_gap = 6,
-        },
-        .background_color = theme.base_translucent,
-        .corner_radius = .all(10),
-        .user_data = if (ui_model.overlays.enable_blur)
-            @ptrFromInt(ElementTag.blurred_surface.toInt())
-        else
-            null,
-        .border = .{
-            .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-            .color = theme.surface0,
-        },
-        .floating = .{
-            .attach_to = .to_parent,
-            .attach_points = .{ .element = .left_top, .parent = .left_top },
-            .offset = .{
-                .x = ui_model.overlays.info_panel.offset_x,
-                .y = ui_model.overlays.info_panel.offset_y,
-            },
-            .z_index = 100,
-        },
-    })({
-        // Header row
-        clay.UI()(.{
-            .layout = .{
-                .sizing = .{ .w = .grow, .h = .fixed(24) },
-                .direction = .left_to_right,
-                .child_alignment = .{ .x = .left, .y = .center },
-            },
-        })({
-            clay.UI()(.{ .layout = .{
-                .sizing = .{ .w = .grow, .h = .grow },
-            } })({
-                clay.text("Info Overlay", .{
-                    .color = theme.mauve,
-                    .font_size = 16,
-                    .font_id = 0,
-                });
-            });
-            clay.UI()(.{
-                .id = clay.getElementId("InfoCloseBtn"),
-                .layout = .{
-                    .sizing = .{
-                        .w = .fixed(24),
-                        .h = .fixed(24),
-                    },
-                    .child_alignment = .{ .x = .center, .y = .center },
-                },
-                .background_color = theme.surface0,
-                .corner_radius = .all(12),
-            })({
-                clay.text("x", .{
-                    .color = theme.text,
-                    .font_size = 12,
-                    .font_id = 0,
-                });
-            });
-        });
+    clay.UI()(floatingHudCardDeclaration(
+        "InfoOverlayCard",
+        .left_top,
+        ui_model.overlays.info_panel,
+        ui_model.overlays.enable_blur,
+    ))({
+        renderFloatingHudHeader("Info Overlay", "InfoCloseBtn");
 
         // Info details
         try renderStatRow("File Name", filename);
@@ -493,70 +513,13 @@ pub fn renderStatsOverlay(
         }
     }
 
-    clay.UI()(.{
-        .id = clay.getElementId("StatsPanel"),
-        .layout = .{
-            .sizing = .{ .w = .fixed(380), .h = .fit },
-            .direction = .top_to_bottom,
-            .padding = .{ .top = 16, .bottom = 16, .left = 16, .right = 16 },
-            .child_gap = 10,
-        },
-        .background_color = theme.base_overlay,
-        .corner_radius = .all(10),
-        .user_data = if (ui_model.overlays.enable_blur)
-            @ptrFromInt(ElementTag.blurred_surface.toInt())
-        else
-            null,
-        .border = .{
-            .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-            .color = theme.surface0,
-        },
-        .floating = .{
-            .attach_to = .to_parent,
-            .attach_points = .{ .element = .right_top, .parent = .right_top },
-            .offset = .{
-                .x = ui_model.overlays.stats_panel.offset_x,
-                .y = ui_model.overlays.stats_panel.offset_y,
-            },
-            .z_index = 100,
-        },
-    })({
-        // Header row
-        clay.UI()(.{
-            .layout = .{
-                .sizing = .{ .w = .grow, .h = .fixed(24) },
-                .direction = .left_to_right,
-                .child_alignment = .{ .x = .left, .y = .center },
-            },
-        })({
-            clay.UI()(.{ .layout = .{
-                .sizing = .{ .w = .grow, .h = .grow },
-            } })({
-                clay.text("Stats for Nerds", .{
-                    .color = theme.pink,
-                    .font_size = 16,
-                    .font_id = 0,
-                });
-            });
-            clay.UI()(.{
-                .id = clay.getElementId("StatsCloseBtn"),
-                .layout = .{
-                    .sizing = .{
-                        .w = .fixed(24),
-                        .h = .fixed(24),
-                    },
-                    .child_alignment = .{ .x = .center, .y = .center },
-                },
-                .background_color = theme.surface0,
-                .corner_radius = .all(12),
-            })({
-                clay.text("x", .{
-                    .color = theme.text,
-                    .font_size = 12,
-                    .font_id = 0,
-                });
-            });
-        });
+    clay.UI()(floatingHudCardDeclaration(
+        "StatsPanel",
+        .right_top,
+        ui_model.overlays.stats_panel,
+        ui_model.overlays.enable_blur,
+    ))({
+        renderFloatingHudHeader("Stats for Nerds", "StatsCloseBtn");
 
         // Stats details
         const s = ui_model.stats;
@@ -742,4 +705,52 @@ test "getRawContainerName - format detection" {
         "Camera RAW",
         getRawContainerName("image/jpeg", "photo.jpg"),
     );
+}
+
+test "floatingHudCardDeclaration - unifies HUD card styling" {
+    const info_decl = floatingHudCardDeclaration(
+        "InfoOverlayCard",
+        .left_top,
+        .{ .visible = true, .offset_x = 16.0, .offset_y = 16.0 },
+        true,
+    );
+    const stats_decl = floatingHudCardDeclaration(
+        "StatsPanel",
+        .right_top,
+        .{ .visible = true, .offset_x = -16.0, .offset_y = 16.0 },
+        true,
+    );
+
+    try std.testing.expectEqual(
+        theme.base_translucent,
+        info_decl.background_color,
+    );
+    try std.testing.expectEqual(
+        theme.base_translucent,
+        stats_decl.background_color,
+    );
+    try std.testing.expectEqual(
+        info_decl.layout.padding,
+        stats_decl.layout.padding,
+    );
+    try std.testing.expectEqual(
+        info_decl.layout.child_gap,
+        stats_decl.layout.child_gap,
+    );
+    try std.testing.expectEqual(
+        @as(?*anyopaque, @ptrFromInt(ElementTag.blurred_surface.toInt())),
+        info_decl.user_data,
+    );
+    try std.testing.expectEqual(
+        @as(?*anyopaque, @ptrFromInt(ElementTag.blurred_surface.toInt())),
+        stats_decl.user_data,
+    );
+
+    const no_blur_decl = floatingHudCardDeclaration(
+        "StatsPanel",
+        .right_top,
+        .{ .visible = true, .offset_x = -16.0, .offset_y = 16.0 },
+        false,
+    );
+    try std.testing.expectEqual(@as(?*anyopaque, null), no_blur_decl.user_data);
 }

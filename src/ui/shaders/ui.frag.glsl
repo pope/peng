@@ -27,7 +27,7 @@ void main() {
     float isBlur = step(0.5, float(ubo.is_blurred_surface));
     vec3 frostedColor = mix(texColor.rgb, inColor.rgb, inColor.a);
     color.rgb = mix(color.rgb, frostedColor, isBlur);
-    color.a = mix(color.a, min(1.0, inColor.a * (255.0 / 245.0)), isBlur);
+    color.a = mix(color.a, min(1.0, inColor.a * (255.0 / 191.0)), isBlur);
 
     outColor = color;
 }

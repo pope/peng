@@ -15,8 +15,7 @@ pub inline fn withAlpha(color: clay.Color, factor: f32) clay.Color {
 pub const mantle = clay.Color{ 24, 24, 37, 255 };
 pub const crust = clay.Color{ 17, 17, 27, 255 };
 pub const base = clay.Color{ 30, 30, 46, 255 };
-pub const base_translucent = clay.Color{ 30, 30, 46, 245 };
-pub const base_overlay = clay.Color{ 30, 30, 46, 220 };
+pub const base_translucent = clay.Color{ 30, 30, 46, 191 };
 pub const surface0 = clay.Color{ 49, 50, 68, 255 };
 pub const surface1 = clay.Color{ 69, 71, 90, 255 };
 pub const surface2 = clay.Color{ 88, 91, 112, 255 };
