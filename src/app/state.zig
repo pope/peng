@@ -664,7 +664,11 @@ pub const AppState = struct {
                 );
             }
         }
-        try self.rebuildPaletteMatches();
+        if (self.viewer.ui.palette.mode == .files and
+            !self.viewer.ui.palette.is_closing)
+        {
+            try self.rebuildPaletteMatches();
+        }
     }
 
     /// Ensures that the thumbnail GPU texture is loaded for the current entry.
@@ -1148,5 +1152,32 @@ test "AppState.computeFrameWaitStrategy returns poll when bg events drained" {
     try std.testing.expectEqual(
         input.EventWaitStrategy.poll,
         state.computeFrameWaitStrategy(1024.0, 768.0, true, false, 1000),
+    );
+}
+
+test "AppState.openPath preserves closing palette matches" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const len = try tmp.dir.realPath(io, &path_buf);
+    const tmp_path = path_buf[0..len];
+
+    try state.openPalette(.actions);
+    const initial_matches = state.viewer.ui.palette.matches.items.len;
+    try std.testing.expect(initial_matches > 0);
+
+    state.closePalette();
+    try state.openPath(tmp_path);
+
+    // Matches must remain intact during the closing dissolve animation
+    try std.testing.expectEqual(
+        initial_matches,
+        state.viewer.ui.palette.matches.items.len,
     );
 }

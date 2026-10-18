@@ -396,6 +396,17 @@ fn handleDirScannedEvent(state: *AppState, scanned_data: events.PathDiscoveredPa
     {
         _ = state.viewer.navigation.adjustIndexForVisibility();
     }
+    syncActiveFilePaletteMatches(state);
+}
+
+fn syncActiveFilePaletteMatches(state: *AppState) void {
+    if (state.viewer.ui.palette.mode == .files and
+        !state.viewer.ui.palette.is_closing)
+    {
+        state.rebuildPaletteMatches() catch |err| {
+            std.log.err("Failed to rebuild palette file matches: {}", .{err});
+        };
+    }
 }
 
 fn pathMatchesTarget(path: []const u8, target: []const u8) bool {
@@ -515,6 +526,7 @@ fn handleDirectoryScanResultEvent(
             _ = state.viewer.navigation.adjustIndexForVisibility();
         }
     }
+    syncActiveFilePaletteMatches(state);
 }
 
 test "drainWorkerEvents - empty queue" {
@@ -1104,5 +1116,40 @@ test "drainWorkerEvents - decode_failed clears current image_transition" {
         @as(f32, 1.0),
         state.viewer.animations.get(.image_crossfade),
         0.001,
+    );
+}
+
+test "drainWorkerEvents - directory_scan_result updates open .files palette" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    try state.openPalette(.files);
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        state.viewer.ui.palette.matches.items.len,
+    );
+
+    const items = try allocator.alloc(MediaEntry, 2);
+    items[0] = .{ .filesystem = .{ .path = try allocator.dupe(u8, "a.jpg") } };
+    items[1] = .{ .filesystem = .{ .path = try allocator.dupe(u8, "b.jpg") } };
+    const target_dup = try allocator.dupe(u8, "/test");
+
+    try state.workers.event_queue.push(allocator, io, .{
+        .directory_scan_result = .init(
+            state.cache.generation.load(.acquire),
+            .{
+                .paths = items,
+                .target_path = target_dup,
+                .is_dir = true,
+            },
+        ),
+    });
+
+    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expectEqual(
+        @as(usize, 2),
+        state.viewer.ui.palette.matches.items.len,
     );
 }
