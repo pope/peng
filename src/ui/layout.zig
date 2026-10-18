@@ -395,7 +395,7 @@ fn renderTitlePill(
         extra_w += 84.0; // Filter mode badge width + gap 14
     }
     if (count_str != null) {
-        extra_w += count_w + 29.0; // count text + 1px divider + 2x 14px gaps
+        extra_w += count_w + 14.0; // count text + 14px gap
     }
 
     const pill_padding_w: f32 = 36.0; // 18 left + 18 right
@@ -550,13 +550,6 @@ fn renderTitlePill(
         }
 
         if (count_str) |cstr| {
-            clay.UI()(.{
-                .layout = .{
-                    .sizing = .{ .w = .fixed(1), .h = .fixed(14) },
-                },
-                .background_color = theme.withAlpha(theme.surface0, progress),
-            })({});
-
             clay.text(cstr, .{
                 .color = theme.withAlpha(theme.subtext0, progress),
                 .font_size = 12,
