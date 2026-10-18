@@ -62,6 +62,8 @@ fn failDecodeWorker(
     context.wakeUpMainThread();
 }
 
+const max_cbz_entry_bytes: u64 = 256 * 1024 * 1024;
+
 const DecompressCbzResult = struct {
     bytes: []u8,
     read_time_ms: f64,
@@ -73,6 +75,7 @@ fn decompressCbzMediaEntry(
     alloc: std.mem.Allocator,
     io: std.Io,
     entry: ArchiveMediaEntry,
+    max_bytes: ?usize,
 ) !DecompressCbzResult {
     const start_read = sdl.timer.getTicksNs();
     var file = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, entry.archive_path, .{});
@@ -103,8 +106,9 @@ fn decompressCbzMediaEntry(
             if (!std.mem.eql(u8, &local_header.signature, &std.zip.local_file_header_sig))
                 return error.ZipBadFileOffset;
 
-            data_offset = seek.file_offset + @sizeOf(std.zip.LocalFileHeader) +
-                local_header.filename_len + local_header.extra_len;
+            data_offset = seek.file_offset +|
+                @sizeOf(std.zip.LocalFileHeader) +|
+                local_header.filename_len +| local_header.extra_len;
             uncompressed_size = seek.uncompressed_size;
             compressed_size = local_header.compressed_size;
             comp_method_enum = seek.compression_method;
@@ -122,7 +126,8 @@ fn decompressCbzMediaEntry(
                 const temp_alloc = arena.allocator();
 
                 try f_reader.seekTo(
-                    zip_entry.header_zip_offset + @sizeOf(std.zip.CentralDirectoryFileHeader),
+                    zip_entry.header_zip_offset +|
+                        @sizeOf(std.zip.CentralDirectoryFileHeader),
                 );
                 const name = try temp_alloc.alloc(u8, zip_entry.filename_len);
                 try f_reader.interface.readSliceAll(name);
@@ -137,8 +142,9 @@ fn decompressCbzMediaEntry(
                 if (!std.mem.eql(u8, &local_header.signature, &std.zip.local_file_header_sig))
                     return error.ZipBadFileOffset;
 
-                data_offset = zip_entry.file_offset + @sizeOf(std.zip.LocalFileHeader) +
-                    local_header.filename_len + local_header.extra_len;
+                data_offset = zip_entry.file_offset +|
+                    @sizeOf(std.zip.LocalFileHeader) +|
+                    local_header.filename_len +| local_header.extra_len;
                 uncompressed_size = zip_entry.uncompressed_size;
                 compressed_size = zip_entry.compressed_size;
                 comp_method_enum = zip_entry.compression_method;
@@ -150,10 +156,18 @@ fn decompressCbzMediaEntry(
         },
     }
 
+    if (uncompressed_size > max_cbz_entry_bytes) return error.FileTooBig;
+    const target_len_u64 = if (max_bytes) |mb|
+        @min(uncompressed_size, mb)
+    else
+        uncompressed_size;
+    const target_len = std.math.cast(usize, target_len_u64) orelse
+        return error.FileTooBig;
+
     const end_read = sdl.timer.getTicksNs();
     const read_time_ms = @as(f64, @floatFromInt(end_read - start_read)) / 1_000_000.0;
 
-    const out_buf = try alloc.alloc(u8, @intCast(uncompressed_size));
+    const out_buf = try alloc.alloc(u8, target_len);
     errdefer alloc.free(out_buf);
 
     const start_dec = sdl.timer.getTicksNs();
@@ -812,7 +826,13 @@ pub fn decodeWorker(args: *DecodeArgs) void {
 
     switch (media_entry) {
         .archive_entry => |arch| {
-            const dec_res = decompressCbzMediaEntry(alloc, io, arch) catch |err| {
+            const max_bytes: ?usize = if (args.thumb_only) 256 * 1024 else null;
+            const dec_res = decompressCbzMediaEntry(
+                alloc,
+                io,
+                arch,
+                max_bytes,
+            ) catch |err| {
                 if (err == error.Canceled or cancel.isCanceled()) return;
                 failDecodeWorker(
                     workers,
@@ -830,7 +850,10 @@ pub fn decodeWorker(args: *DecodeArgs) void {
             size_bytes = dec_res.bytes.len;
             read_time_ms = dec_res.read_time_ms;
             cbz_decompress_time_ms = dec_res.decompress_time_ms;
-            compressed_size_bytes = @intCast(dec_res.compressed_size);
+            compressed_size_bytes = std.math.cast(
+                usize,
+                dec_res.compressed_size,
+            ) orelse std.math.maxInt(usize);
         },
         .filesystem => |file_item| {
             if (core_fs.isRawFile(file_item.path)) {
@@ -1392,13 +1415,41 @@ test "decompressCbzMediaEntry - deflate entry with 128KB buffer" {
         .entry_name = "000_0_1024x682.jpg",
     };
 
-    const res = try decompressCbzMediaEntry(allocator, io, entry);
+    const res = try decompressCbzMediaEntry(allocator, io, entry, null);
     defer allocator.free(res.bytes);
 
     try std.testing.expectEqual(@as(usize, 58713), res.bytes.len);
     try std.testing.expectEqual(@as(u64, 57867), res.compressed_size);
     try std.testing.expect(res.compressed_size != res.bytes.len);
     try std.testing.expect(res.decompress_time_ms >= 0.0);
+
+    // Partial prefix read (max_bytes = 4096)
+    const prefix_res = try decompressCbzMediaEntry(allocator, io, entry, 4096);
+    defer allocator.free(prefix_res.bytes);
+    try std.testing.expectEqual(@as(usize, 4096), prefix_res.bytes.len);
+    try std.testing.expectEqualSlices(
+        u8,
+        res.bytes[0..4096],
+        prefix_res.bytes,
+    );
+
+    // Oversized uncompressed_size is rejected with error.FileTooBig
+    const oversized_entry = ArchiveMediaEntry{
+        .archive_path = cbz_path,
+        .entry_name = "000_0_1024x682.jpg",
+        .seek_info = .{
+            .indexed = .{
+                .header_zip_offset = 0,
+                .file_offset = 0,
+                .uncompressed_size = max_cbz_entry_bytes + 1,
+                .compression_method = .deflate,
+            },
+        },
+    };
+    try std.testing.expectError(
+        error.FileTooBig,
+        decompressCbzMediaEntry(allocator, io, oversized_entry, null),
+    );
 }
 
 test "decodeWorker - Sony ARW range reading and preview extraction" {
