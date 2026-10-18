@@ -8,6 +8,96 @@ const KeyModifiers = intents.KeyModifiers;
 
 pub const ZoomPreset = intents.ZoomPreset;
 
+/// Display DPI scale factor mapping between logical UI points and physical
+/// framebuffer pixels (`physical = logical * scale`).
+pub const DpiScale = struct {
+    x: f32 = 1.0,
+    y: f32 = 1.0,
+
+    /// Returns a sanitized `DpiScale` where non-positive or non-finite scale
+    /// axes fall back to `1.0`.
+    pub inline fn init(scale_x: f32, scale_y: f32) DpiScale {
+        return .{
+            .x = if (scale_x > 0.0 and std.math.isFinite(scale_x))
+                scale_x
+            else
+                1.0,
+            .y = if (scale_y > 0.0 and std.math.isFinite(scale_y))
+                scale_y
+            else
+                1.0,
+        };
+    }
+};
+
+/// 2D width and height expressed in logical UI points (Clay layout space).
+pub const LogicalDims = struct {
+    w: f32 = 0.0,
+    h: f32 = 0.0,
+
+    /// Converts logical dimensions into physical framebuffer pixel dimensions
+    /// using the display `DpiScale`.
+    pub inline fn toPhysical(self: LogicalDims, scale: DpiScale) PhysicalDims {
+        const s = DpiScale.init(scale.x, scale.y);
+        return .{
+            .w = self.w * s.x,
+            .h = self.h * s.y,
+        };
+    }
+};
+
+/// 2D width and height expressed in physical framebuffer or image texel pixels.
+pub const PhysicalDims = struct {
+    w: f32 = 0.0,
+    h: f32 = 0.0,
+
+    /// Converts physical pixel dimensions into logical UI point dimensions
+    /// using the display `DpiScale`.
+    pub inline fn toLogical(self: PhysicalDims, scale: DpiScale) LogicalDims {
+        const s = DpiScale.init(scale.x, scale.y);
+        return .{
+            .w = self.w / s.x,
+            .h = self.h / s.y,
+        };
+    }
+};
+
+/// 2D coordinates or offset expressed in logical UI points (SDL window / Clay
+/// layout space).
+pub const LogicalPoint = struct {
+    x: f32 = 0.0,
+    y: f32 = 0.0,
+
+    /// Converts a logical UI point into physical framebuffer pixel coordinates
+    /// using the display `DpiScale`.
+    pub inline fn toPhysical(
+        self: LogicalPoint,
+        scale: DpiScale,
+    ) PhysicalPoint {
+        const s = DpiScale.init(scale.x, scale.y);
+        return .{
+            .x = self.x * s.x,
+            .y = self.y * s.y,
+        };
+    }
+};
+
+/// 2D coordinates or offset expressed in physical framebuffer pixels.
+pub const PhysicalPoint = struct {
+    x: f32 = 0.0,
+    y: f32 = 0.0,
+
+    /// Converts physical framebuffer pixel coordinates into a logical UI point
+    /// using the display `DpiScale`.
+    pub inline fn toLogical(self: PhysicalPoint, scale: DpiScale) LogicalPoint {
+        const s = DpiScale.init(scale.x, scale.y);
+        return .{
+            .x = self.x / s.x,
+            .y = self.y / s.y,
+        };
+    }
+};
+
 /// Complete per-quad render descriptor specifying UV sub-rectangles, alpha,
 /// rotation, and dynamic geometry overrides for rendering and transitions.
 pub const UvRect = struct {
@@ -385,21 +475,19 @@ pub const ViewportParams = struct {
     }
 
     /// Zooms viewport to a new zoom factor while anchoring pan offsets relative
-    /// to a focus point (e.g. mouse cursor).
+    /// to a physical framebuffer focus point and viewport center.
     pub fn zoomAtPoint(
         self: *ViewportParams,
         new_zoom: ZoomFactor,
-        mouse_x: f32,
-        mouse_y: f32,
-        center_x: f32,
-        center_y: f32,
+        focus: PhysicalPoint,
+        center: PhysicalPoint,
     ) void {
         self.mode = .manual;
         const old_zoom = self.zoom_factor;
         self.zoom_factor = new_zoom;
         const ratio = old_zoom.ratioTo(new_zoom);
-        const rel_x = mouse_x - center_x;
-        const rel_y = mouse_y - center_y;
+        const rel_x = focus.x - center.x;
+        const rel_y = focus.y - center.y;
         self.pan_x = rel_x - (rel_x - self.pan_x) * ratio;
         self.pan_y = rel_y - (rel_y - self.pan_y) * ratio;
     }
@@ -601,14 +689,35 @@ pub const FrameInput = struct {
     delta_time_ms: f32,
     is_pointer_in_debug_panel: bool = false,
 
+    /// Returns the sanitized display DPI scale factor for this frame.
+    pub inline fn dpiScale(self: FrameInput) DpiScale {
+        return DpiScale.init(self.scale_x, self.scale_y);
+    }
+
+    /// Returns the window dimensions in logical UI points.
+    pub inline fn logicalWinDims(self: FrameInput) LogicalDims {
+        return .{ .w = self.win_w, .h = self.win_h };
+    }
+
+    /// Returns the mouse cursor coordinates in logical UI points.
+    pub inline fn logicalMousePos(self: FrameInput) LogicalPoint {
+        return .{ .x = self.mouse_x, .y = self.mouse_y };
+    }
+
+    /// Returns the mouse cursor coordinates scaled to physical framebuffer
+    /// pixels.
+    pub inline fn physicalMousePos(self: FrameInput) PhysicalPoint {
+        return self.logicalMousePos().toPhysical(self.dpiScale());
+    }
+
     /// Returns the mouse X coordinate scaled to physical framebuffer pixels.
-    pub fn pixMouseX(self: FrameInput) f32 {
-        return self.mouse_x * self.scale_x;
+    pub inline fn pixMouseX(self: FrameInput) f32 {
+        return self.physicalMousePos().x;
     }
 
     /// Returns the mouse Y coordinate scaled to physical framebuffer pixels.
-    pub fn pixMouseY(self: FrameInput) f32 {
-        return self.mouse_y * self.scale_y;
+    pub inline fn pixMouseY(self: FrameInput) f32 {
+        return self.physicalMousePos().y;
     }
 
     /// Returns `true` if the cursor is positioned within Clay's debug sidebar
@@ -1155,7 +1264,7 @@ pub const RawMetadata = union(enum) {
     }
 
     /// Returns true sensor dimensions if RAW, or `null` if standard media format.
-    pub inline fn getSensorDims(self: RawMetadata) ?struct { w: f32, h: f32 } {
+    pub inline fn getSensorDims(self: RawMetadata) ?PhysicalDims {
         return switch (self) {
             .raw => |r| if (r.sensor_w > 0.0 and r.sensor_h > 0.0)
                 .{ .w = r.sensor_w, .h = r.sensor_h }
@@ -1354,7 +1463,7 @@ pub const CacheEntry = struct {
     /// Returns the true physical pixel dimensions of the original image,
     /// irrespective of what downscaled preview or thumbnail is currently
     /// resident.
-    pub fn getAuthoritativeDims(self: CacheEntry) struct { w: f32, h: f32 } {
+    pub fn getAuthoritativeDims(self: CacheEntry) PhysicalDims {
         var best_w: f32 = 0.0;
         var best_h: f32 = 0.0;
         if (self.raw_metadata.getSensorDims()) |s| {
@@ -1728,11 +1837,42 @@ test "ViewportParams.zoomAtPoint anchors zoom relative to focus point" {
     try std.testing.expectEqual(@as(f32, 0.0), vp.pan_x);
     try std.testing.expectEqual(@as(f32, 0.0), vp.pan_y);
 
-    // Zoom in 2x focused at (100, 100) relative to viewport center (500, 400) -> rel = (-400, -300)
-    vp.zoomAtPoint(ZoomFactor.init(2.0), 100.0, 100.0, 500.0, 400.0);
+    // Zoom in 2x focused at (100, 100) relative to viewport center (500, 400)
+    // -> rel = (-400, -300)
+    vp.zoomAtPoint(
+        ZoomFactor.init(2.0),
+        .{ .x = 100.0, .y = 100.0 },
+        .{ .x = 500.0, .y = 400.0 },
+    );
     try std.testing.expectEqual(@as(f32, 2.0), vp.zoom_factor.get());
     try std.testing.expectEqual(@as(f32, 400.0), vp.pan_x);
     try std.testing.expectEqual(@as(f32, 300.0), vp.pan_y);
+}
+
+test "LogicalDims, PhysicalDims, LogicalPoint, and PhysicalPoint conversions" {
+    const scale = DpiScale.init(2.0, 2.0);
+    const log_dims = LogicalDims{ .w = 1000.0, .h = 800.0 };
+    const phys_dims = log_dims.toPhysical(scale);
+    try std.testing.expectApproxEqAbs(@as(f32, 2000.0), phys_dims.w, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1600.0), phys_dims.h, 0.001);
+
+    const roundtrip_dims = phys_dims.toLogical(scale);
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 1000.0),
+        roundtrip_dims.w,
+        0.001,
+    );
+    try std.testing.expectApproxEqAbs(@as(f32, 800.0), roundtrip_dims.h, 0.001);
+
+    const log_pt = LogicalPoint{ .x = 250.0, .y = 150.0 };
+    const phys_pt = log_pt.toPhysical(scale);
+    try std.testing.expectApproxEqAbs(@as(f32, 500.0), phys_pt.x, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 300.0), phys_pt.y, 0.001);
+
+    // Invalid / non-positive scale sanitizes to 1.0
+    const bad_scale = DpiScale.init(0.0, std.math.nan(f32));
+    try std.testing.expectEqual(@as(f32, 1.0), bad_scale.x);
+    try std.testing.expectEqual(@as(f32, 1.0), bad_scale.y);
 }
 
 test "ViewportParams isOverflowing and effectiveZoom" {

@@ -302,7 +302,7 @@ pub const AppState = struct {
 
     /// Computes available viewport dimensions in physical framebuffer pixels,
     /// scaling for display DPI, Clay debug view, and docked edit panel.
-    pub fn getViewportPixelDims(self: *AppState) struct { w: f32, h: f32 } {
+    pub fn getViewportPixelDims(self: *AppState) state_pkg.PhysicalDims {
         var win_w: f32 = 1024.0;
         var win_h: f32 = 768.0;
         var scale_x: f32 = 1.0;

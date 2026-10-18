@@ -162,20 +162,20 @@ pub fn sysUpdateViewport(
             const new_zoom =
                 state_pkg.clampZoomFactor(old_zoom.get() * zoom_mult);
 
-            const focus_x = if (has_pinch)
-                input.pinch_center_x * input.scale_x
+            const scale = input.dpiScale();
+            const focus = if (has_pinch)
+                (state_pkg.LogicalPoint{
+                    .x = input.pinch_center_x,
+                    .y = input.pinch_center_y,
+                }).toPhysical(scale)
             else
-                input.pixMouseX();
-            const focus_y = if (has_pinch)
-                input.pinch_center_y * input.scale_y
-            else
-                input.pixMouseY();
+                input.physicalMousePos();
 
             const vp_data = clay.getElementData(clay.getElementId("Viewport"));
-            const center_x = if (vp_data.found)
-                (vp_data.bounding_box.x + vp_data.bounding_box.width * 0.5) *
-                    input.scale_x
-            else blk: {
+            const logical_center: state_pkg.LogicalPoint = if (vp_data.found) .{
+                .x = vp_data.bounding_box.x + vp_data.bounding_box.width * 0.5,
+                .y = vp_data.bounding_box.y + vp_data.bounding_box.height * 0.5,
+            } else blk: {
                 const debug_w: f32 = if (clay.isDebugModeEnabled())
                     @as(f32, @floatFromInt(clay.Clay__debugViewWidth))
                 else
@@ -188,20 +188,16 @@ pub fn sysUpdateViewport(
                     0.0;
                 const available_width =
                     @max(input.win_w - debug_w - docked_w, 1.0);
-                break :blk (available_width * 0.5) * input.scale_x;
+                break :blk .{
+                    .x = available_width * 0.5,
+                    .y = input.win_h * 0.5,
+                };
             };
-            const center_y = if (vp_data.found)
-                (vp_data.bounding_box.y + vp_data.bounding_box.height * 0.5) *
-                    input.scale_y
-            else
-                (input.win_h * 0.5) * input.scale_y;
 
             state.viewer.viewport.zoomAtPoint(
                 new_zoom,
-                focus_x,
-                focus_y,
-                center_x,
-                center_y,
+                focus,
+                logical_center.toPhysical(scale),
             );
         }
     }

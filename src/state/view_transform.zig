@@ -104,6 +104,34 @@ pub fn computeViewDims(
     };
 }
 
+/// Evaluates `computeViewDims` in physical framebuffer space (`viewport`
+/// converted via `scale`) and converts the resulting draw bounds back into
+/// logical UI points (`LogicalDims`) for Clay layout.
+pub fn computeLogicalDrawDims(
+    src_phys: types.PhysicalDims,
+    viewport_logical: types.LogicalDims,
+    scale: types.DpiScale,
+    rotation_angle: f32,
+    scale_mode: ZoomPreset,
+) types.LogicalDims {
+    if (src_phys.w <= 0.0 or src_phys.h <= 0.0 or
+        viewport_logical.w <= 0.0 or viewport_logical.h <= 0.0)
+    {
+        return .{ .w = 0.0, .h = 0.0 };
+    }
+    const phys_view = viewport_logical.toPhysical(scale);
+    const dims = computeViewDims(
+        src_phys.w,
+        src_phys.h,
+        rotation_angle,
+        @max(phys_view.w, 1.0),
+        @max(phys_view.h, 1.0),
+        scale_mode,
+    );
+    const phys_draw = types.PhysicalDims{ .w = dims.draw_w, .h = dims.draw_h };
+    return phys_draw.toLogical(scale);
+}
+
 /// Computes the universal pixel zoom factor Z for a target preset.
 pub fn computePresetZoom(
     raw_w: f32,

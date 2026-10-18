@@ -25,34 +25,20 @@ const truncateFilename = text_utils.truncateFilename;
 const types = state.types;
 const view_transform = state.view_transform;
 
-/// Computes fitted layout dimensions in logical pixels for an image cache entry
-/// within available logical viewport bounds, evaluating preset fit modes in
-/// physical framebuffer space via `scale_x` and `scale_y`.
+/// Computes fitted layout dimensions in logical UI points (`LogicalDims`) for
+/// an image cache entry within available logical viewport bounds, evaluating
+/// preset fit modes in physical framebuffer space via `scale`.
 pub fn computeDrawDims(
     entry_opt: ?state.CacheEntry,
-    available_width: f32,
-    available_height: f32,
-    scale_x: f32,
-    scale_y: f32,
+    available_dims: state.LogicalDims,
+    scale: state.DpiScale,
     rotation_angle: f32,
     fit_mode: intents.ZoomPreset,
-) struct { w: f32, h: f32 } {
+) state.LogicalDims {
     const entry = entry_opt orelse return .{ .w = 0, .h = 0 };
     const auth = entry.getAuthoritativeDims();
-    const src_w = auth.w;
-    const src_h = auth.h;
 
-    if (src_w > 0 and src_h > 0) {
-        const sx = if (scale_x > 0.0 and std.math.isFinite(scale_x))
-            scale_x
-        else
-            1.0;
-        const sy = if (scale_y > 0.0 and std.math.isFinite(scale_y))
-            scale_y
-        else
-            1.0;
-        const phys_view_w = @max(available_width * sx, 1.0);
-        const phys_view_h = @max(available_height * sy, 1.0);
+    if (auth.w > 0 and auth.h > 0) {
         const is_loading = entry.status != .loaded_gpu and
             entry.status != .loaded_cpu;
         const only_has_thumb = entry.full_w <= 0.0 and
@@ -63,15 +49,13 @@ pub fn computeDrawDims(
                 .full
             else
                 fit_mode;
-        const dims = view_transform.computeViewDims(
-            src_w,
-            src_h,
+        return view_transform.computeLogicalDrawDims(
+            auth,
+            available_dims,
+            scale,
             rotation_angle,
-            phys_view_w,
-            phys_view_h,
             effective_fit_mode,
         );
-        return .{ .w = dims.draw_w / sx, .h = dims.draw_h / sy };
     }
     return .{ .w = 0, .h = 0 };
 }
@@ -94,6 +78,7 @@ pub fn renderFrame(
     const height = input.win_h;
     const scale_x = input.scale_x;
     const scale_y = input.scale_y;
+    const dpi_scale = input.dpiScale();
     const current_entry = ui_model.current_entry;
 
     const total_images = ui_model.total_images;
@@ -114,20 +99,18 @@ pub fn renderFrame(
     const available_width = @max(main_layout_w - docked_w, 1.0);
 
     const padding: f32 = 0.0;
-    const view_w = @max(available_width - padding * 2.0, 1.0);
-    const view_h = @max(height - padding * 2.0, 1.0);
+    const view_dims = state.LogicalDims{
+        .w = @max(available_width - padding * 2.0, 1.0),
+        .h = @max(height - padding * 2.0, 1.0),
+    };
 
-    const dims = computeDrawDims(
+    const draw_dims = computeDrawDims(
         current_entry,
-        view_w,
-        view_h,
-        scale_x,
-        scale_y,
+        view_dims,
+        dpi_scale,
         ui_model.viewport.rotation_angle,
         ui_model.viewport.fit_mode,
     );
-    const draw_w = dims.w;
-    const draw_h = dims.h;
 
     clay.beginLayout();
 
@@ -154,8 +137,8 @@ pub fn renderFrame(
 
         try renderStatsOverlay(
             ui_model,
-            draw_w,
-            draw_h,
+            draw_dims.w,
+            draw_dims.h,
             frame_allocator,
             measure_data,
         );
@@ -171,12 +154,9 @@ pub fn renderFrame(
         renderViewport(
             ui_model,
             current_entry,
-            draw_w,
-            draw_h,
-            view_w,
-            view_h,
-            scale_x,
-            scale_y,
+            draw_dims,
+            view_dims,
+            dpi_scale,
             total_images,
             frame_allocator,
             measure_data,
@@ -1078,10 +1058,8 @@ fn renderImageCanvas(
 fn renderDissolvePrevQuad(
     ui_model: UiViewModel,
     frame_allocator: std.mem.Allocator,
-    view_w: f32,
-    view_h: f32,
-    scale_x: f32,
-    scale_y: f32,
+    view_dims: state.LogicalDims,
+    scale: state.DpiScale,
 ) void {
     const dissolve = switch (ui_model.image_dissolve) {
         .none => return,
@@ -1096,10 +1074,8 @@ fn renderDissolvePrevQuad(
     const prev_auth = prev_entry.getAuthoritativeDims();
     const prev_dims = computeDrawDims(
         prev_entry,
-        view_w,
-        view_h,
-        scale_x,
-        scale_y,
+        view_dims,
+        scale,
         dissolve.prev_rotation,
         ui_model.viewport.fit_mode,
     );
@@ -1155,12 +1131,9 @@ fn renderDissolvePrevQuad(
 fn renderViewport(
     ui_model: UiViewModel,
     current_entry: anytype,
-    draw_w: f32,
-    draw_h: f32,
-    view_w: f32,
-    view_h: f32,
-    scale_x: f32,
-    scale_y: f32,
+    draw_dims: state.LogicalDims,
+    view_dims: state.LogicalDims,
+    scale: state.DpiScale,
     total_images: usize,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
@@ -1176,19 +1149,17 @@ fn renderViewport(
         renderDissolvePrevQuad(
             ui_model,
             frame_allocator,
-            view_w,
-            view_h,
-            scale_x,
-            scale_y,
+            view_dims,
+            scale,
         );
 
         if (current_entry) |entry| {
             renderImageCanvas(
                 ui_model,
                 entry,
-                draw_w,
-                draw_h,
-                view_w,
+                draw_dims.w,
+                draw_dims.h,
+                view_dims.w,
                 ui_model.viewport.rotation_angle,
                 frame_allocator,
                 measure_data,
@@ -1300,15 +1271,16 @@ test "computeDrawDims - matches physical DPI scale in shrink and none modes" {
         .full_h = 900,
     };
 
+    const view_dims = state.LogicalDims{ .w = 1000.0, .h = 800.0 };
+    const retina_scale = state.DpiScale.init(2.0, 2.0);
+
     // Logical viewport 1000x800 on 2.0x Retina display -> physical 2000x1600.
     // A 1200x900 image fits inside the 2000x1600 physical viewport without
     // shrinking (base_scale = 1.0 in physical pixels -> 600x450 logical).
     const shrink_dims = computeDrawDims(
         entry,
-        1000.0,
-        800.0,
-        2.0,
-        2.0,
+        view_dims,
+        retina_scale,
         0.0,
         .shrink,
     );
@@ -1317,10 +1289,8 @@ test "computeDrawDims - matches physical DPI scale in shrink and none modes" {
 
     const none_dims = computeDrawDims(
         entry,
-        1000.0,
-        800.0,
-        2.0,
-        2.0,
+        view_dims,
+        retina_scale,
         0.0,
         .none,
     );
@@ -1331,10 +1301,8 @@ test "computeDrawDims - matches physical DPI scale in shrink and none modes" {
     // 1000x750 logical.
     const full_dims = computeDrawDims(
         entry,
-        1000.0,
-        800.0,
-        2.0,
-        2.0,
+        view_dims,
+        retina_scale,
         0.0,
         .full,
     );
@@ -1435,12 +1403,9 @@ test "renderViewport - floating crossfade quads allow Viewport hit-testing" {
     renderViewport(
         model,
         model.current_entry,
-        800.0,
-        600.0,
-        1000.0,
-        800.0,
-        1.0,
-        1.0,
+        .{ .w = 800.0, .h = 600.0 },
+        .{ .w = 1000.0, .h = 800.0 },
+        .{ .x = 1.0, .y = 1.0 },
         2,
         arena.allocator(),
         &data,
