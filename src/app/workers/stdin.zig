@@ -22,9 +22,9 @@ pub fn stdinWorker(args: *StdinArgs) void {
         if (args.active_file_scans) |scans| {
             _ = scans.fetchSub(1, .release);
         }
-        context.wakeUpMainThread();
         gpa.destroy(args);
         _ = workers.active_threads.fetchSub(1, .release);
+        context.wakeUpMainThread();
     }
 
     var read_buf: [4096]u8 = undefined;

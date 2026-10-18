@@ -142,10 +142,10 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
 
     defer {
         _ = args.active_file_scans.fetchSub(1, .release);
-        context.wakeUpMainThread();
         gpa.free(target_path);
         gpa.destroy(args);
         _ = workers.active_threads.fetchSub(1, .release);
+        context.wakeUpMainThread();
     }
 
     const cancel = args.cancelToken();

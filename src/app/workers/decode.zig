@@ -285,6 +285,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
     if (cancel.isCanceled()) return true;
 
     const s = std.Io.Dir.statFile(std.Io.Dir.cwd(), io, path, .{}) catch |err| {
+        if (err == error.Canceled or cancel.isCanceled()) return true;
         if (is_pair) return false;
         failDecodeWorker(
             workers,
@@ -299,6 +300,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
     const file_size: u64 = s.size;
 
     var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, path, .{}) catch |err| {
+        if (err == error.Canceled or cancel.isCanceled()) return true;
         if (is_pair) return false;
         failDecodeWorker(
             workers,
@@ -358,9 +360,20 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
             {
                 var m_buf: [64 * 1024]u8 = undefined;
                 var m_slices = [_][]u8{m_buf[0..meta_loc.length]};
-                const mn = file.readPositional(io, &m_slices, meta_loc.file_offset) catch 0;
+                const mn = file.readPositional(
+                    io,
+                    &m_slices,
+                    meta_loc.file_offset,
+                ) catch |err| blk: {
+                    if (err == error.Canceled or cancel.isCanceled()) {
+                        return true;
+                    }
+                    break :blk 0;
+                };
                 if (mn >= meta_loc.length) {
-                    raw_sensor_dims = exif.parseFujiRafDimensions(m_buf[0..meta_loc.length]);
+                    raw_sensor_dims = exif.parseFujiRafDimensions(
+                        m_buf[0..meta_loc.length],
+                    );
                 }
             }
         }
@@ -377,7 +390,16 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
             } else {
                 var p_hdr: [8192]u8 = undefined;
                 var p_slices = [_][]u8{&p_hdr};
-                const pn = file.readPositional(io, &p_slices, prev_loc.file_offset) catch 0;
+                const pn = file.readPositional(
+                    io,
+                    &p_slices,
+                    prev_loc.file_offset,
+                ) catch |err| blk: {
+                    if (err == error.Canceled or cancel.isCanceled()) {
+                        return true;
+                    }
+                    break :blk 0;
+                };
                 if (pn > 0) {
                     orientation = exif.parseExifOrientation(p_hdr[0..pn]) orelse .normal;
                     if (exif.extractJpegThumbnailLocation(p_hdr[0..pn])) |j_thumb| {
@@ -490,7 +512,12 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                             io,
                             &ts_slices,
                             tloc.file_offset,
-                        ) catch 0;
+                        ) catch |err| blk: {
+                            if (err == error.Canceled or cancel.isCanceled()) {
+                                return true;
+                            }
+                            break :blk 0;
+                        };
                         if (tn == t_len) {
                             _ = workers.thumb_positional_hits.fetchAdd(
                                 1,
@@ -786,6 +813,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     switch (media_entry) {
         .archive_entry => |arch| {
             const dec_res = decompressCbzMediaEntry(alloc, io, arch) catch |err| {
+                if (err == error.Canceled or cancel.isCanceled()) return;
                 failDecodeWorker(
                     workers,
                     alloc,
@@ -811,6 +839,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
             }
 
             const s = std.Io.Dir.statFile(std.Io.Dir.cwd(), io, file_item.path, .{}) catch |err| {
+                if (err == error.Canceled or cancel.isCanceled()) return;
                 failDecodeWorker(
                     workers,
                     alloc,
@@ -830,6 +859,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                 file_item.path,
                 .{},
             ) catch |err| {
+                if (err == error.Canceled or cancel.isCanceled()) return;
                 failDecodeWorker(
                     workers,
                     alloc,
@@ -897,6 +927,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                 pair.jpeg_path,
                 .{},
             ) catch |err| {
+                if (err == error.Canceled or cancel.isCanceled()) return;
                 failDecodeWorker(
                     workers,
                     alloc,
@@ -916,6 +947,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                 pair.jpeg_path,
                 .{},
             ) catch |err| {
+                if (err == error.Canceled or cancel.isCanceled()) return;
                 failDecodeWorker(
                     workers,
                     alloc,
@@ -1956,4 +1988,49 @@ test "decodeWorker - progressive pair loading with PairStreamTarget" {
         }
         try std.testing.expect(raw_seen);
     }
+}
+
+test "decodeWorker - canceled RAW pair exits without fallback" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var workers = WorkerManager{};
+    defer workers.deinit(allocator, io);
+
+    var current_gen: std.atomic.Value(usize) = .init(2);
+    const pair = state_pkg.FilePair{
+        .raw_path = try allocator.dupe(u8, "nonexistent.raf"),
+        .jpeg_path = try allocator.dupe(
+            u8,
+            "testfiles/images/000_0_1024x682.jpg",
+        ),
+    };
+    const args = try allocator.create(DecodeArgs);
+    args.* = .{
+        .workers = &workers,
+        .allocator = allocator,
+        .io = io,
+        .key = .{ .index = 0, .generation = 1 }, // stale generation -> canceled
+        .current_generation = &current_gen,
+        .entry = .{ .pair = pair },
+        .has_gpu_device = false,
+        .pixel_format = sdl.PixelFormat.rgba32,
+        .thumb_only = false,
+    };
+
+    try std.testing.expect(decodeRawFile(args, pair.raw_path, true));
+
+    _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
+    _ = workers.active_threads.fetchAdd(1, .monotonic);
+    decodeWorker(args);
+
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        workers.active_decode_threads.load(.acquire),
+    );
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        workers.active_threads.load(.acquire),
+    );
+    try std.testing.expect(workers.event_queue.pop() == null);
 }
