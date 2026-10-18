@@ -15,6 +15,13 @@ const KeyModifiers = intents.KeyModifiers;
 const PaletteMode = intents.PaletteMode;
 const key_mapping = input_pkg.key_mapping;
 
+inline fn isViewportZoomed(self: *AppState) bool {
+    return if (self.getCurrentEntry() != null)
+        self.isImageOverflowing()
+    else
+        self.viewer.viewport.isZoomed();
+}
+
 /// Resolves active key context and pushes mapped AppIntents
 fn handleKeyDown(
     self: *AppState,
@@ -33,12 +40,7 @@ fn handleKeyDown(
         return;
     }
 
-    const is_zoomed = if (self.getCurrentEntry() != null)
-        self.isImageOverflowing() or
-            self.viewer.viewport.pan_x != 0.0 or
-            self.viewer.viewport.pan_y != 0.0
-    else
-        self.viewer.viewport.isZoomed();
+    const is_zoomed = isViewportZoomed(self);
     const ctx: key_mapping.KeyContext =
         if (is_zoomed)
             .viewer_zoomed
@@ -86,12 +88,7 @@ pub fn sysProcessInput(
         return;
     }
 
-    const is_zoomed = if (state.getCurrentEntry() != null)
-        state.isImageOverflowing() or
-            state.viewer.viewport.pan_x != 0.0 or
-            state.viewer.viewport.pan_y != 0.0
-    else
-        state.viewer.viewport.isZoomed();
+    const is_zoomed = isViewportZoomed(state);
     const no_mod = input.key_modifiers.eql(.{});
 
     // 1. Coalesce simultaneous directional keys when zoomed
@@ -725,6 +722,35 @@ test "sysProcessInput preserves image navigation when viewport is not zoomed" {
     }, false);
 
     // Unzoomed mode: Right arrow maps to next_image, never pan_by
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        app_st.pending_intents.items.len,
+    );
+    try std.testing.expectEqual(
+        AppIntent.next_image,
+        app_st.pending_intents.items[0],
+    );
+    app_st.clearIntents();
+
+    // Even if a fitted image (800x600 in 1024x768 headless viewport) has
+    // non-zero pan_x / pan_y from incidental scroll/drag, it does not overflow
+    // and must preserve Right/Left image navigation.
+    const key0 = try app_st.cache.appendSlot(allocator, 0, .{
+        .decoding = .{ .has_thread = false },
+    });
+    const entry0 = app_st.cache.get(key0).?;
+    entry0.full_w = 800.0;
+    entry0.full_h = 600.0;
+    app_st.viewer.navigation.current_index = 0;
+    app_st.viewer.viewport.setPan(45.0, -30.0);
+    try std.testing.expect(!app_st.isImageOverflowing());
+
+    try sysProcessInput(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = frame_input,
+        .delta_time_ms = 16.0,
+    }, false);
     try std.testing.expectEqual(
         @as(usize, 1),
         app_st.pending_intents.items.len,
