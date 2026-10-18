@@ -57,7 +57,7 @@ pub const AnimationState = struct {
    }
    ```
 3. **Compile-Time Channel Descriptors**: Static descriptor table `CHANNEL_DESCRIPTORS` maps each `AnimationChannel` to default open/close durations, easings, and base values.
-4. **Adaptive Event Loop Sleeping**: Integrate `hasActiveAnimations()`, `pan_controller.isBusy()`, and `zoom_controller.isBusy()` into `is_busy` (`src/viewer.zig`). When animations or smooth controllers run, the loop ticks at display refresh rate; when settled, it drops to 0% CPU blocking wait (`waitEvent`).
+4. **Adaptive Event Loop Sleeping**: Integrate `hasActiveAnimation()` (`animations.hasActiveAnimations()`), `pan_controller.isBusy()`, and `zoom_controller.isBusy()` into `AppState.computeFrameWaitStrategy` (`isBusy()` / `getWaitTimeoutMs()` in `src/app/state.zig` and `src/viewer.zig`). When animations or smooth controllers run, the loop ticks at display refresh rate; when only timers or background tasks are active, it sleeps via `waitEventTimeout`; when settled, it drops to 0% CPU blocking wait (`waitEvent`).
 
 ______________________________________________________________________
 
@@ -231,10 +231,11 @@ To provide 120Hz-smooth keyboard panning and zooming without discrete OS key-rep
 
 1. **Packed Bitfields & Branchless 16-State Direction LUT**:
    - `DirectionFlags = packed struct(u4)` (`left`, `right`, `up`, `down`) indexes directly into a 16-entry compile-time unit vector lookup table (`DIRECTION_UNIT_LUT[16]`) via `@as(u4, @bitCast(self))` with $\\frac{1}{\\sqrt{2}}$ diagonal normalization and opposite-key cancellation.
-   - `ZoomFlags = packed struct(u2)` (`in`, `out`) converts branchlessly to a scalar direction via `toDirection()` (`-1.0`, `0.0`, or `1.0`).
-2. **Constant Glide Speed & Smooth Tap Completion**:
-   - `PanController` (`smooth_tap_remaining: f32`, `tap_direction: DirectionFlags`, `prev_held: DirectionFlags`) glides at `GLIDE_SPEED = 800.0` px/sec while held and guarantees at least `TAP_DISTANCE = 30.0` px of smooth travel on a brief tap.
-   - `ZoomController` (`smooth_tap_remaining: f32`, `tap_direction: ZoomFlags`, `prev_held: ZoomFlags`, `detent_pause_ms: f32`, `detent_target: f32`) glides at logarithmic rate `GLIDE_RATE = 1.5` ($\\text{zoom} \\times e^{\\pm 1.5 \\cdot dt}$) and completes a `TAP_STEP_RATIO = 1.25` ($\\ln(1.25) \\approx 0.2231$) step on a quick tap.
+   - `ZoomFlags = packed struct(u2)` (`in`, `out`) packs held zoom keys into a 2-bit bitfield (`raw()`, `fromRaw()`, `hasAny()`, `merge()`) with opposite-key cancellation when both `in` and `out` are held.
+2. **Constant Glide Speed, Smooth Tap Completion & Held-Key Suppression**:
+   - `PanController` (`smooth_tap_remaining: f32`, `tap_direction: DirectionFlags`, `prev_held: DirectionFlags`, `suppressed_held: DirectionFlags`) glides at `GLIDE_SPEED = 800.0` px/sec while held and guarantees at least `TAP_DISTANCE = 30.0` px of smooth travel on a brief tap.
+   - `ZoomController` (`smooth_tap_remaining: f32`, `tap_direction: ZoomDirection`, `prev_held: ZoomFlags`, `suppressed_held: ZoomFlags`, `detent_pause_ms: f32`, `detent_target: ?f32`) glides at logarithmic rate `GLIDE_RATE = 1.5` ($\\text{zoom} \\times e^{\\pm 1.5 \\cdot dt}$) and completes a `TAP_STEP_RATIO = 1.25` ($\\ln(1.25) \\approx 0.2231$) step on a quick tap.
+   - Both controllers provide `suppress(held)` to mask out keys held when a modal opens or a UI control is clicked until those keys are physically released.
 3. **100% ($1.0\\times$) Zoom Detent Pause & Event Loop Integration**:
    - When continuous zooming crosses `detent_target` ($1.0\\times$), `ZoomController` snaps to `1.0` and sets `detent_pause_ms = 150.0` (`DETENT_PAUSE_MS`), pausing briefly at native 1:1 pixel scale before continuing if the key remains held.
-   - Both controllers expose `isBusy()` (`smooth_tap_remaining > 0.0` or `prev_held.isActive()`), which is included in `is_busy` in `src/viewer.zig`.
+   - Both controllers expose `isBusy()` (`smooth_tap_remaining > 0.001` / `0.0001` or `prev_held.hasAny()`, plus `or self.detent_pause_ms > 0.001` in `ZoomController`), which is checked in `AppState.computeFrameWaitStrategy()`.

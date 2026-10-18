@@ -1,6 +1,9 @@
 ---
 name: agent-artifacts-reviewer
-description: Specialized subagent that audits .agents/ rules, skills, agent manifests, and documentation for correctness, high information density, rule vs skill classification, and conflicting advice.
+description: >-
+  Specialized subagent that audits .agents/ rules, skills, agent manifests, and
+  documentation for correctness, high information density, rule vs skill
+  classification, and conflicting advice.
 hidden: true
 tools:
   - send_message

@@ -1,6 +1,8 @@
 ---
 name: task-executor
-description: Lightweight execution subagent using a fast thinking model to implement straightforward tasks planned by an orchestrator.
+description: >-
+  Lightweight execution subagent using a fast thinking model to implement
+  straightforward tasks planned by an orchestrator.
 hidden: true
 model: flash
 tools:

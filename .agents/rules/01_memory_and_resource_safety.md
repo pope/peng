@@ -135,18 +135,21 @@
     literals (`[65536]u8`).
 - **Saturating Arithmetic on Untrusted Offsets & Lengths**:
   - In binary parsers (TIFF, EXIF, RAF, ZIP), NEVER validate bounds with
-    `offset + length <= file_size`, which overflows on corrupt headers.
-  - ALWAYS use saturating subtraction: `offset <= file_size -| length` or
-    `offset <= buffer_len -| length`.
+    unchecked `offset + length <= file_size` (which overflows on corrupt
+    headers) AND NEVER use `offset <= file_size -| length` on unsigned integers
+    (when `offset == 0` and `length > file_size`, `file_size -| length == 0`
+    and `0 <= 0` falsely evaluates to `true`).
+  - ALWAYS use saturating addition: `offset +| length <= file_size` or
+    `offset +| length <= buffer_len`.
 - **32-Bit Platform Offset `@intCast` Bounds Safety**:
-  - When container offsets are `u64`, NEVER `@intCast` to `usize` before
-    checking bounds against `slice.len` (which panics on 32-bit targets if
-    offset > 4GB).
-  - Verify bounds in `u64` arithmetic first:
+  - When container offsets or lengths are `u64`, NEVER `@intCast` either
+    `file_offset` or `length` to `usize` before checking bounds against
+    `slice.len` (which panics on 32-bit targets if > 4GB).
+  - Verify `offset +| length <= slice.len` in `u64` arithmetic first:
     ```zig
-    const t_len: usize = @intCast(loc.length);
-    if (loc.file_offset <= slice.len -| loc.length) {
+    if (loc.file_offset +| loc.length <= slice.len) {
         const t_off: usize = @intCast(loc.file_offset);
+        const t_len: usize = @intCast(loc.length);
         return slice[t_off .. t_off + t_len];
     }
     ```

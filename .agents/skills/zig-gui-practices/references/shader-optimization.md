@@ -69,7 +69,7 @@ ______________________________________________________________________
 - **Analytical Lanczos3 (Mode 4)**: Uses trigonometric addition and triple-angle identities to compute all 36 tap weights with only 2 `sin()` calls per fragment, clamping output to the core $2 \\times 2$ neighborhood `[min4, max4]` to eliminate ringing.
 - **Single-Pass AMD FSR 1.0 (Mode 5)**: Integrates RCAS sharpening directly in registers after 12-tap EASU without a secondary ping-pong pass.
 - **Zero-Drift Tiny CNN (Mode 6)**: Uses even-symmetric 2nd-order curvature ($2c - l - r$, never odd-symmetric 1st derivatives that shift edges by Taylor expansion $I(x) + \\Delta \\nabla I$), an 18% local neighborhood headroom clamp, and luminance ratio scaling (`luma_target / l11`) to preserve chroma.
-- **Inigo Quilez AA-Nearest Centering (Mode 2)**: Shifts continuous texel coordinates by $-0.5$ (`p = uv * tex_size - 0.5`) and samples at `(i + f + 0.5) / tex_size` so pixel interiors remain 100% solid with 1-pixel boundary anti-aliasing.
+- **Explicit LOD & AA-Nearest Gradients (Modes 0 & 2)**: `sample_nearest` uses `textureLod(tex, p, 0.0)` so minified pixel art stays crisp at base level 0, while `sample_pixel_art` shifts continuous texel coordinates by $-0.5$ (`p = uv * tex_size - 0.5`) and samples at `(i + f + 0.5) / tex_size` using `textureGrad(..., dFdx(uv), dFdy(uv))` so pixel interiors remain 100% solid with mipmap-stable 1-pixel boundary anti-aliasing.
 
 ______________________________________________________________________
 
@@ -123,12 +123,14 @@ When `ubo.has_adjustments != 0` in `main()`, `image.frag.glsl` converts the samp
 
 *(Note: Because `texture` is a reserved GLSL keyword, the uniform is named `ubo.texture_adj` in GLSL and `texture: f32` in Zig's `ImageUniforms`.)*
 
+- **Consistent Bilinear Center Reference (`Y_ref`)**: Because the spatial surround taps for Texture and Clarity use hardware bilinear sampling, compare them against a matching bilinear center reference `Y_ref` (reusing `Y_in` when `scale_mode == 1`, or a single `texture(texSampler, inTexCoord)` tap otherwise) so high-order resampling filters (FSR, Tiny CNN, Lanczos3) do not bias bilateral difference weights.
+
 1. **Texture (`ubo.texture_adj` — 8-Tap $R = 2.0\\text{px}$ Bilateral Micro-Contrast)**:
-   - Samples 8 equidistant offsets on a $R = 2.0\\text{px}$ ring (`(±2, 0)`, `(0, ±2)`, `(±1.414214, ±1.414214)`).
-   - Applies Gaussian bilateral range weights `exp(-(diff * diff) * 138.889)` ($\\sigma_r = 0.06$), halo suppression `1.0 - smoothstep(0.04, 0.12, abs(detail_tex))`, noise coring `smoothstep(0.002, 0.010, abs(detail_tex))`, and Weber-Rose shadow adaptation `(Y_in + 0.04)`.
-2. **Clarity (`ubo.clarity` — 8-Tap $R = 12\\text{px}$ Bilateral Midtone Structure)**:
-   - Samples 8 wide offsets (`clar_offsets[i] * 8.0`, effective radius $12\\text{px}$) with bilateral range weights `exp(-(diff_c * diff_c) * 25.0)` ($\\sigma_r = 0.20$).
-   - Applies rational soft-clamping `s_c * (a_c * 0.15) / (a_c + 0.15)`, midtone envelope `smoothstep(0.04, 0.20, Y_curr) * (1.0 - smoothstep(0.70, 0.95, Y_curr))`, and Weber-Rose adaptation `(Y_in + 0.05)`.
+   - Samples 8 equidistant offsets on a $R = 2.0\\text{px}$ ring (`(±2, 0)`, `(0, ±2)`, `(±1.414214, ±1.414214)`) and computes `diff = Y_s - Y_ref` (`detail_tex = Y_ref - Y_base_tex`).
+   - Applies Gaussian bilateral range weights `exp(-(diff * diff) * 138.889)` ($\\sigma_r = 0.06$), halo suppression `1.0 - smoothstep(0.04, 0.12, abs(detail_tex))`, noise coring `smoothstep(0.002, 0.010, abs(detail_tex))`, and Weber-Rose shadow adaptation `(Y_ref + 0.04)`.
+2. **Clarity (`ubo.clarity` — 5-Tap $R = 12\\text{px}$ ($\\text{Lod } 3.0$) Bilateral Midtone Structure)**:
+   - Samples 5 taps at mipmap $\\text{Lod } 3.0$ (`textureLod(texSampler, ..., 3.0)`): 1 center tap (`Y_c0`) plus 4 diagonal offsets (`clar_offsets[i] * 8.0` at $\\pm 1.5 \\times 8.0 = \\pm 12\\text{px}$), computing `diff_c = Y_c - Y_ref` with bilateral range weights `exp(-(diff_c * diff_c) * 25.0)` ($\\sigma_r = 0.20$).
+   - Applies rational soft-clamping `s_c * (a_c * 0.15) / (a_c + 0.15)`, midtone envelope `smoothstep(0.04, 0.20, Y_curr) * (1.0 - smoothstep(0.70, 0.95, Y_curr))`, and Weber-Rose adaptation `(Y_ref + 0.05)`.
 
 ### Steps 6 & 7: Display Encoding & Continuous Rational Highlight Soft-Knee
 

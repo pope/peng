@@ -38,21 +38,21 @@ ______________________________________________________________________
 - **Zero CPU 24-to-32-Bit Expansion in GPU Mode**:
   When `decodeWorker` decodes a 24-bit `rgb24` or `bgr24` surface while a GPU device is present (`gpu_mode`), it retains the 3-byte-per-pixel surface in RAM rather than expanding it to 4-byte RGBA32 on the CPU.
 - **Staging & Compute Dispatch (`src/app/core/image.zig`, `src/ui/renderer.zig`)**:
-  1. `uploadSurfaceToGpu` copies the 3-byte packed scanlines into a reusable `UploadStagingBuffer` (`AppState.upload_staging`) and uploads them to a temporary GPU storage buffer.
+  1. `uploadSurfaceToGpu` copies the 3-byte packed scanlines into a reusable `UploadStagingBuffer` (`AppState.upload_staging`) and uploads them to the shared GPU storage buffer with `cycle = true` (`uploadToBuffer` and `ComputeStorageBufferReadOnlyBinding`) to prevent write-after-read hazards across back-to-back uploads.
   2. A compute pass binds `unpack_rgb.comp.glsl` (`local_size_x = 64`), which reads 3 bytes per texel from the `uint data[]` storage buffer using bit-shift extraction, swaps R and B if `ubo.is_bgr != 0`, and writes `vec4(r, g, b, 1.0)` into the destination `rgba8` texture.
-  3. After the compute pass finishes, `cmd_buf.generateMipmapsForTexture(tex)` builds the hardware trilinear mipmap pyramid on the GPU.
+  3. After the compute pass finishes (or after fallback CPU downscaling if `createTexture` exceeded hardware dimension limits), `cmd_buf.generateMipmapsForTexture(tex)` builds the hardware trilinear mipmap pyramid on the GPU, and VRAM accounting records `u_w * u_h * 4` (with $+33%$ mipmap overhead) using the post-upload `RGBA8` texture dimensions.
 
 ______________________________________________________________________
 
-## 4. 4-Pass Dual Kawase Backdrop Blur Pipeline (`src/ui/renderer.zig`)
+## 4. 2-Pass Quarter-Resolution Dual Kawase Backdrop Blur Pipeline (`src/ui/renderer.zig`)
 
 - **Demand-Gated Execution**:
-  When `overlays.enable_blur` is enabled and `packet.blur_rects.items.len > 0` (glassmorphic floating overlays, command palette, or edit panel are visible):
+  When `enable_blur` is enabled and `RenderPacket` contains `.blurred_surface` batches (glassmorphic floating overlays, command palette, or edit panel are visible):
   1. **Scene Offscreen Render**: The image viewport is rendered into `resources.scene_texture` (`w x h`).
-  2. **2-Step Kawase Downsample (`blur_down.frag.glsl`)**: Downsamples `scene_texture` -> `blur_tex_a` (`w/2 x h/2`) -> `blur_tex_b` (`w/4 x h/4`) using 5-tap half-pixel diagonal offsets.
-  3. **2-Step Kawase Upsample (`blur_up.frag.glsl`)**: Upsamples `blur_tex_b` -> `blur_tex_a` (`w/2 x h/2`) -> `blur_tex_a` composite using 8-tap tent-weighted offsets.
-  4. **Scissor-Clipped Backdrop Composite**: In the swapchain render pass, each `blur_rect` samples the blurred texture behind the semi-transparent UI card before drawing UI borders and text.
-- When `blur_rects` is empty or `enable_blur` is false, the offscreen scene pass and all 4 blur passes are completely skipped.
+  2. **Kawase Downsample (`blur_down.frag.glsl`)**: Downsamples `scene_texture` -> `blur_down_texture` (`w/4 x h/4`) using 5-tap half-pixel diagonal offsets.
+  3. **Kawase Upsample (`blur_up.frag.glsl`)**: Filters `blur_down_texture` -> `blur_texture` (`w/4 x h/4`) using 8-tap tent-weighted offsets.
+  4. **Backdrop Composite**: In the swapchain render pass, the scene texture is blitted first, and each `.blurred_surface` batch samples `blur_texture` behind the semi-transparent UI card before drawing UI borders and text.
+- When no `.blurred_surface` batches are present or `enable_blur` is false, the offscreen scene pass and both blur passes are completely skipped.
 
 ______________________________________________________________________
 

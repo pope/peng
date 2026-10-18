@@ -37,7 +37,7 @@ ______________________________________________________________________
 
   - High-quality SDL3_ttf GPU text rendering and zero-allocation text measurement (`TTF_GetStringSize`).
   - GPU compute RGB24/BGR24 unpack pipeline (`unpack_rgb.comp.glsl` & `UploadStagingBuffer`) with hardware mipmap generation.
-  - 4-pass Dual Kawase backdrop blur pipeline (`blur_down.frag.glsl`, `blur_up.frag.glsl`) for glassmorphic overlays.
+  - 2-pass quarter-resolution Dual Kawase backdrop blur pipeline (`blur_down.frag.glsl`, `blur_up.frag.glsl`) for glassmorphic overlays.
 
 - **[VRAM Budgeting & EXIF Parsing Recipes](references/vram-preloading.md)**
 
@@ -51,4 +51,4 @@ ______________________________________________________________________
   - Horner's method for polynomial splines and `#pragma unroll` SPIR-V / Metal compilation (`zig build shaders`).
   - Branchless per-pixel math (`greaterThan()`, `step()`, `mix()`) vs dynamically uniform branches (`if (ubo.has_adjustments != 0)`).
   - 7-filter resampling suite (`Nearest`, `Bilinear`, `AA-Nearest`, `Mitchell-Netravali`, `Lanczos3`, `AMD FSR 1.0`, `Tiny CNN`).
-  - 13-parameter color & presence pipeline: opponent WB, dual-path 18% middle gray contrast, monotonic root-space tonal quad, post-contrast exposure ($2^{2\\cdot\\text{EV}}$), skin-protected vibrance, 8-tap $R=2\\text{px}$ bilateral Texture, 8-tap $R=12\\text{px}$ bilateral Clarity, and rational highlight soft-knee.
+  - 13-parameter color & presence pipeline: opponent WB, dual-path 18% middle gray contrast, monotonic root-space tonal quad, post-contrast exposure ($2^{2\\cdot\\text{EV}}$), skin-protected vibrance, 8-tap $R=2\\text{px}$ bilateral Texture, 5-tap $R=12\\text{px}$ ($\\text{Lod } 3.0$) bilateral Clarity, and rational highlight soft-knee.

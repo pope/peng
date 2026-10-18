@@ -40,8 +40,11 @@
 ## 2. Linear Frame Pipeline, Intents & Capabilities Registry
 
 - **Authoritative 3-Phase Frame Pipeline (`src/viewer.zig`)**:
-  - **Phase 1: Ingestion**: `app.drainWorkerEvents` (`src/app/events.zig`) and
-    `input.pollFrameInput`.
+  - **Phase 1: Ingestion**: `app.drainWorkerEvents` (`src/app/events.zig`) runs
+    both before `computeFrameWaitStrategy` / `input.pollFrameInput` (forcing
+    non-blocking `.poll` when pre-wait events are drained) and again
+    immediately after `input.pollFrameInput` so background events arriving
+    during `waitEventTimeout` are rendered on the same frame.
   - **Phase 2: Sequential Systems Pipeline (`runUpdatePhase`)**: Systems in
     `src/app/systems/` MUST NOT call other systems directly; they communicate
     solely via `AppState` fields or `state.pending_intents`:
@@ -53,8 +56,9 @@
         and click-outside dismissal -> `pending_intents`.
     04. `sysProcessInput(ctx, palette_closed_this_frame)`: Maps keyboard
         shortcuts and file drops -> `pending_intents`.
-    05. `sysProcessUiInteractions(ctx)`: Resolves pointer hover/clicks on
-        overlay controls and edit sliders -> `pending_intents`.
+    05. `sysProcessUiInteractions(ctx, palette_closed_this_frame)`: Resolves
+        pointer hover/clicks on overlay controls and edit sliders ->
+        `pending_intents`.
     06. `sysUpdateViewport(ctx, palette_closed_this_frame)` &
         `sysUpdateSlideshow(ctx)`: Applies mouse/touch pan/zoom deltas, smooth
         `PanController`/`ZoomController` glide, and slideshow timers.
@@ -110,30 +114,33 @@
     (image decodes, path scans, stdin reader) through `WorkerManager`
     (`state.workers.group.async(io, func, args)`).
   - Spawn long-lived daemon listeners (such as the IPC socket server) on
-    dedicated detached threads (`std.Thread.spawn`), never on the cancellable
-    `WorkerManager.group`.
+    dedicated threads (`std.Thread.spawn`) joined on shutdown (`deinit`), never
+    counted in `WorkerManager.active_threads`.
   - Call `workers.drainAndQuiesce(io)` ONLY during application shutdown
     (`AppState.deinit`), never during runtime navigation or path opening.
+  - Order worker exit `defer` blocks so `active_threads.fetchSub(1, .release)`
+    executes *before* `context.wakeUpMainThread()` so the main thread observes
+    updated idle counters upon waking.
   - In workers, never silence `readPositional` errors with `catch 0` without
-    first checking `err == error.Canceled or workers.exiting.load(.acquire)`.
-  - Check `if (isStale(workers, args, key)) return;` before pushing intermediate
-    events (`exif_orientation_parsed`, `dimensions_probed`) and after
-    non-cancellable C decoder calls (`io.isCanceled()`).
-- **Worker Isolation, Telemetry (`ViewerStats`) & Epoch Pruning**:
+    first checking `err == error.Canceled or cancel.isCanceled()`.
+  - Check `if (cancel.isCanceled()) return;` (`const cancel = args.cancelToken();`) before pushing intermediate events
+    (`exif_orientation_parsed`, `dimensions_probed`) and after non-cancellable
+    C decoder calls.
+- **Worker Isolation, Telemetry (`ViewerStats`) & Envelope Pruning**:
   - Worker tasks (`decodeWorker`, `pathScanWorker`, `stdinWorker`,
     `ipcServerWorkerTask`) MUST NOT import or accept `*AppState` or
     `*ViewerState`. Pass explicit argument structs (`DecodeArgs`,
     `PathScanArgs`, `StdinArgs`, `IpcServerArgs`) initialized directly without
     `= undefined` field placeholders.
-  - Keep atomic counters (`active_threads`, `active_decode_threads`, `exiting`)
-    in `WorkerManager` for scheduling (`canSpawnDecode()`, `isBusy()`), and
-    snapshot them once per frame in `sysSyncMetrics` into `ViewerStats`.
-  - Subsystems with generational invalidation (`ImageCache.generation`,
-    `PaletteState.dir_scan_generation`) increment `std.atomic.Value(usize)` with
-    `.release` ordering on the main thread. Workers observe
-    `current_generation: *const std.atomic.Value(usize)` with `.acquire`
-    ordering at coarse checkpoints (task entry, archive/directory step, before
-    surface decode, before pixel conversion) and `return` early on mismatch.
+  - Keep atomic counters (`active_threads`, `active_decode_threads`, `exiting`
+    in `WorkerManager`; `active_file_scans` in `NavigationState`) for scheduling
+    (`canSpawnDecode()`, `isBusy()`, `wait_load`), and snapshot them once per
+    frame in `sysSyncMetrics` into `ViewerStats`.
+  - Wrap generational worker payloads in `SlotBound(T)`
+    (`resolve(&state.cache)`) or `Generational(T)` (`resolve(&generation)`)
+    (`src/app/core/events.zig`) and construct `CancellationToken`
+    (`src/app/workers/context.zig`) via `args.cancelToken()` so stale epoch
+    validation and cooperative cancellation are enforced at the type boundary.
 - **Single-Pass I/O Consolidation in Workers**:
   - Issue `statFile` once and `openFile` once per worker pass.
   - For RAW files (`decodeRawFile`), read a single **256KB** stack header buffer

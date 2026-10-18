@@ -3,11 +3,11 @@
 ## 1. VRAM Cache Budgeting & Memory Management
 
 - **VRAM Budget Calculation with Mipmap Overhead**:
-  When computing VRAM memory footprints, account for the base RGBA32 texture size ($W \\times H \\times 4\\text{ bytes}$) plus the $+33%$ mipmap pyramid overhead ($\\frac{4}{3} \\times \\text{base size}$). Ensure budget caps (e.g. $1024\\text{ MB}$) can accommodate multiple high-resolution ($24\\text{MP}-50\\text{MP}$) images simultaneously.
-- **Neighbor & Transition Slot Protection**:
-  In VRAM cache eviction routines (`enforceVramBudget`), protect the current image, any active outgoing crossfade slide (`getTransitionPrevIndex()`), and immediate neighbors ($\\pm 2$ slots) from eviction.
+  When computing VRAM memory footprints, account for the base RGBA32 texture size ($W \\times H \\times 4\\text{ bytes}$, including 24-bit RGB/BGR surfaces unpacked to `RGBA8` on the GPU) plus the $+33%$ mipmap pyramid overhead ($\\frac{4}{3} \\times \\text{base size}$). Ensure budget caps (e.g. $1024\\text{ MB}$) can accommodate multiple high-resolution ($24\\text{MP}-50\\text{MP}$) images simultaneously, and dynamically cap the neighbor prefetch radius ($2 \\to 1 \\to 0$) in `sysUpdateCache` when the $\\pm 2$ window exceeds `max_vram_bytes`.
+- **ViewMode-Aware Neighbor & Transition Slot Protection**:
+  In `sysUpdateCache` and `enforceVramBudget`, resolve visible neighbors via `NavigationState.getVisibleNeighbors()` (`VisibleNeighbors`) so prefetching and eviction protection respect active `ViewMode` filtering (`.default`, `.picks`, `.rejects`, `.all`) alongside `getTransitionPrevIndex()`.
 - **Worker Concurrency & Lifecycle Synchronization**:
-  Quiesce and clean up background worker tasks and queues (`state.workers.deinit(io)`) in the top-level owner lifecycle method (`AppState.deinit()`).
+  Quiesce and clean up background worker tasks and queues (`state.workers.deinit(self.allocator, self.io)`) in the top-level owner lifecycle method (`AppState.deinit()`).
 - **HashMap String Key Lifetimes**:
   Always iterate `keyIterator()` to free dynamically allocated string keys before calling `clearRetainingCapacity()` or `deinit()` on hash maps:
   ```zig
@@ -23,7 +23,7 @@ ______________________________________________________________________
 ## 2. Synchronous Header Probing, Camera RAW Streaming & Progressive Loading
 
 - **Single-Pass File Read & In-Memory Decoding (`decodeWorker`)**:
-  `decodeWorker` performs a single `statFile` + `openFile` + `file.reader(io, &r_buf).readSliceAll(...)` into a task-scoped buffer for settled standard raster images. In Zig 0.16.0, `readSliceAll` bypasses the internal reader buffer for large slices via `readVec`. Header parsing, EXIF thumbnail slicing (`file_bytes[off..off+len]`), and full surface decoding (`sdl.Surface.loadConstMemOpt`) operate in RAM while respecting `io.isCanceled()`.
+  `decodeWorker` performs a single `statFile` + `openFile` + `file.reader(io, &r_buf).readSliceAll(...)` into a task-scoped buffer for settled standard raster images. In Zig 0.16.0, `readSliceAll` bypasses the internal reader buffer for large slices via `readVec`. Header parsing, EXIF thumbnail slicing (`file_bytes[off..off+len]`), and full surface decoding (`sdl.Surface.loadConstMemOpt`) operate in RAM while respecting `cancel.isCanceled()` (`const cancel = args.cancelToken();`).
 - **Fast-Scrolling Bounded Header Read (`thumb_only = true`)**:
   When `thumb_only = true`, never allocate the full file size on the heap. Read at most `@min(file_size, 128 * 1024)` bytes (128KB) for standard formats (or `@min(file_size, 256 * 1024)` for RAW / companion JPEG fallbacks), dropping read latency from $\\sim 36\\text{ms}$ to $0.17\\text{ms}$.
 - **Main-Thread Synchronous Header Probing (`probeMediaMetadata`)**:
@@ -52,16 +52,17 @@ Camera RAW files (`.arw`, `.raf`, `.cr2`, `.nef`, `.dng`, `.orf`, `.rw2`, `.pef`
 ### Progressive 4-Tier RAW+JPEG Pipeline & Dimension Invariants
 
 1. **Tier 1 (Small Thumbnail, $\\le 512\\text{KB}$)**: Decoded in ~0.17ms directly from the resident 256KB header slice during rapid scrubbing (`thumb_only = true`).
-2. **Tier 2 (Medium Preview, $\\le 2\\text{MB}$, e.g. 1616x1080)**: Decoded as an instant placeholder during settled viewing (`thumb_only = false`). Skipped if the container has only a single preview (`preview == thumbnail`). If `prev_loc.file_offset + prev_loc.length <= header_slice.len`, sliced zero-copy from `header_slice`.
+2. **Tier 2 (Medium Preview, $\\le 2\\text{MB}$, e.g. 1616x1080)**: Decoded as an instant placeholder during settled viewing (`thumb_only = false`). Skipped if the container has only a single preview (`preview == thumbnail`). If `prev_loc.file_offset +| prev_loc.length <= header_slice.len`, sliced zero-copy from `header_slice`.
 3. **Tier 3 (Full-Resolution RAW Preview, e.g. 6240x4160)**: Decoded in the background via positional read and crossfaded over Tier 2.
 4. **Tier 4 (Companion Full-Resolution JPEG)**: Deferred until physical pixel demand exceeds the embedded preview resolution:
    $$M\_{\\text{tex}} = Z \\times \\max\\left(\\frac{W\_{\\text{auth}}}{W\_{\\text{loaded}}}, \\frac{H\_{\\text{auth}}}{H\_{\\text{loaded}}}\\right) > 1.05$$
    (or $M\_{\\text{tex}} > 1.15$ after `250ms` settled in Fit mode), or when the user presses `j` (`.toggle_pair_stream`).
-5. **Progressive Dimension Purity Invariants**:
+5. **Progressive Dimension & Promotion Purity Invariants**:
    - **No Worker Thumbnail Fallback**: Workers MUST set `full_w = 0.0, full_h = 0.0` when true full dimensions are unknown; never substitute `t_surf.w()` / `t_surf.h()`.
-   - **Monotonic Area Updates**: Event handlers (`handleDimensionsProbedEvent`, `handleExifThumbnailEvent`, `handleImageDecodedEvent`) only update `entry.full_w/h` when `cur_area <= 0.0 or new_area > cur_area`.
+   - **Monotonic Area Updates (`applyProbedMetadata`, `updateFullDims`)**: Event handlers only update `entry.full_w/h` when `cur_area <= 0.0 or new_area > cur_area`.
+   - **Pair Promotion Guards**: When `args.pair_target != .adaptive`, skip embedded EXIF thumbnail extraction in `decodeStandardRasterFile`; in `events.zig`, ignore `.thumb_decoded` when `entry.status == .loaded_gpu`/`.loaded_cpu` and gate `triggerDecodedGpuCrossfades` on `!was_loaded_gpu` so promoting a pair never flashes a blurry thumbnail over a sharp preview.
    - **Small-Image Fitting Guard (`only_has_thumb`)**: In `computeDrawDims`, only promote `.shrink` to `.full` during background decode when `entry.full_w <= 0.0 and entry.raw_metadata.getSensorDims() == null and entry.thumbnail != .none`.
-   - **Main-Thread Stale Upload Guard**: In `handleImageDecodedEvent`, check `if (state.cache.get(decoded_data.key) == null) return;` before calling `uploadSurfaceToGpu`.
+   - **Main-Thread Stale Upload & Promotion Release Guard**: Resolve `SlotBound` events via `evt.resolve(&state.cache)` before calling `uploadSurfaceToGpu`, and explicitly release any existing `.loaded_gpu` texture (`gpu_dev.releaseTexture`) or destroy `.loaded_cpu` surface (`cpu.surface.destroy()`) before overwriting `entry.status` in `applyDecodedGpuTexture` / `handleImageDecodedEvent` on in-place pair promotion.
 
 ______________________________________________________________________
 
@@ -76,7 +77,7 @@ ______________________________________________________________________
 - **Telemetry Metric Split ("Stats for Nerds")**:
   High-resolution nanosecond timers (`sdl.timer.getTicksNs()`) measure disk I/O (`read_time_ms`) separately from CPU decompression (`decode_time_ms`) in `ImageDecodedPayload`.
 - **Demand-First Settled Preload & GPU Upload Gating**:
-  Once navigation settles ($\\ge 35\\text{ms}$) AND the active slot is `.loaded_gpu` (or `.loaded_cpu` in headless mode, or `.failed`), `sysUpdateCache` dispatches neighbor prefetch workers ($\\pm 1, \\pm 2$). Completed neighbor surfaces are held as `.loaded_cpu` while the active image is in flight, then trickled to the GPU at 1 texture per frame in `prepareCacheTextures`.
+  Once navigation settles ($\\ge 35\\text{ms}$) AND the active slot is `.loaded_gpu` (or `.loaded_cpu` in headless mode, or `.failed`), `sysUpdateCache` dispatches visible neighbor prefetch workers ($\\pm 1, \\pm 2$). Completed neighbor surfaces are held as `.loaded_cpu` while the active image is in flight, then trickled to the GPU at 1 texture per frame in `prepareCacheTextures`.
 
 ______________________________________________________________________
 
@@ -97,8 +98,8 @@ ______________________________________________________________________
 
 - **Non-Blocking Main-Thread Contract**:
   Calling `std.Io.Group.cancel(io)` blocks (`futexWait`) until in-flight workers finish. Instead, during runtime navigation, the main thread atomically increments `state.cache.generation.fetchAdd(1, .release)` (or `palette.dir_scan_generation.fetchAdd(1, .release)`).
-- **Atomic Generation Pointer Injection (`src/app/workers/decode.zig`)**:
-  `DecodeArgs` bundles the slot's `ImageCacheKey` (`index` and assigned `generation`), `MediaEntry`, and a read-only pointer to the live atomic counter:
+- **`CancellationToken` & `SlotBound` Injection (`src/app/workers/decode.zig`, `src/app/workers/context.zig`)**:
+  `DecodeArgs` bundles the slot's `ImageCacheKey` (`index` and assigned `generation`), `MediaEntry`, and `current_generation: *const std.atomic.Value(usize)`, exposing `cancelToken()` (`context.CancellationToken`) to bind `key.generation`, `current_generation`, and `workers.exiting`:
   ```zig
   pub const DecodeArgs = struct {
       workers: *WorkerManager,
@@ -111,10 +112,18 @@ ______________________________________________________________________
       current_generation: *const std.atomic.Value(usize),
       has_gpu_device: bool,
       pixel_format: u32,
+
+      pub inline fn cancelToken(self: *const DecodeArgs) context.CancellationToken {
+          return .{
+              .exiting = &self.workers.exiting,
+              .generation = self.key.generation,
+              .current_generation = self.current_generation,
+          };
+      }
   };
   ```
 - **Cooperative Checkpoints & `defer` Unwinding**:
-  Workers check `isStale(workers, args, key)` (`args.current_generation.load(.acquire) != key.generation` or `workers.exiting.load(.acquire)`) at task entry, between archive/directory steps, before `Surface.loadConstMemOpt`, and before pixel format conversion, returning early with all local resources unwound via `defer`.
+  Workers construct `const cancel = args.cancelToken();` and check `cancel.isCanceled()` at task entry, between archive/directory steps, before `Surface.loadConstMemOpt`, and before pixel format conversion, returning early with all local resources unwound via `defer`.
 
 ______________________________________________________________________
 

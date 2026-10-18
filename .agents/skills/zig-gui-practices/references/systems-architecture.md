@@ -12,7 +12,7 @@ System passes under `src/app/systems/` follow a deterministic linear pipeline:
     02. `sysExecuteIpcCommands(ctx)`: Ingests & dispatches IPC socket commands -> `pending_intents`.
     03. `sysProcessPaletteInput(ctx)`: Handles command palette query, item selection & click-outside -> `pending_intents`.
     04. `sysProcessInput(ctx, palette_closed)`: Maps keyboard input & file drop events -> `pending_intents`.
-    05. `sysProcessUiInteractions(ctx)`: Resolves pointer hover/click interactions for UI close buttons -> `pending_intents`.
+    05. `sysProcessUiInteractions(ctx, palette_closed)`: Resolves pointer hover/click interactions for UI close buttons and sliders -> `pending_intents`.
     06. `sysUpdateViewport(ctx, palette_closed)` & `sysUpdateSlideshow(ctx)`: Updates motion deltas & slideshow timers -> `pending_intents`.
     07. `sysSyncWindow(ctx)`: Synchronizes OS window title and display fullscreen/state.
     08. `sysExecuteIntents(ctx)`: Single-pass execution of all enqueued discrete intents.
@@ -52,11 +52,11 @@ ______________________________________________________________________
 
 ## ImageCache & Generation Ownership
 
-- **Pattern 4 — Cache Slot Generation Ownership & Structure**:
+- **Pattern 4 — Cache Slot Generation Ownership & Envelope Validation**:
   - `ImageCache` (`state.cache` in `src/app/core/image.zig`) uses Zig's `std.MultiArrayList(CacheSlot)` for Structure-of-Arrays (SoA) memory layout, allowing key scanning without cache-line pollution while mutating key and entry slices atomically.
   - Generation state (`generation: std.atomic.Value(usize) = .init(0)`) is owned exclusively by `ImageCache`.
   - Navigation/directory resets advance the generation via `_ = state.cache.advanceGeneration()`.
-  - Incoming background event payloads validate their `ImageCacheKey` (`state.cache.activeKey(idx)`) against `state.cache.generation.load(.acquire)`. Mismatched generations are ignored to prevent stale decodes from populating active slots.
+  - Incoming background event payloads wrap slot-bound data in `SlotBound(T)` (`evt.resolve(&state.cache)`) and generation-bound data in `Generational(T)` (`evt.resolve(&generation)`). Mismatched generations return `null` at resolution time, preventing stale decodes or scans from mutating active state.
 
 ______________________________________________________________________
 
@@ -169,7 +169,7 @@ ______________________________________________________________________
 ## Declarative Snackbar Feedback (`SnackbarState`)
 
 - **Pattern 11 — Zero-Allocation Declarative Snackbar Rules (`src/state/snackbar.zig`)**:
-  - `SnackbarState` (`enabled: bool`, `notification: SnackbarNotification`, `enabled_mask: u32`) formats notification messages into `ActiveNotification.message_buf: [128]u8` (`message_len: usize`, `timeout_ms: ?f32`) with zero heap allocations and triggers `.snackbar` fade animations on `AnimationState`.
+  - `SnackbarState` (`enabled: bool`, `notification: SnackbarNotification`, `enabled_mask: u32`) formats notification messages into `ActiveNotification.message_buf: [128]u8` (`message_len: u8 = 0`, `timeout_ms: u64 = 0`) with zero heap allocations and triggers `.snackbar` fade animations on `AnimationState`.
   - `DEFAULT_SNACKBAR_RULES` declaratively maps `std.meta.Tag(AppIntent)` variants to `FormatFn` callbacks (`formatClassification`, `formatFilter`, `formatZoom`, `formatAdjustParam`, etc.).
   - **Action-Aware & Advance-Aware Classification Feedback**:
     When marking Reject in Default view filters out the active image and advances the cursor, never derive snackbar text by inspecting the new image's classification after the cursor has already advanced. Derive feedback directly from the executed intent and whether the cursor advanced:

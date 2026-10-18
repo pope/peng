@@ -29,11 +29,14 @@ ______________________________________________________________________
   $$\\text{pan}\_y = r_y - (r_y - \\text{pan}\_y) \\times \\text{ratio}$$
 
 - **Domain Encapsulation**:
-  Use `ViewportParams.zoomAtPoint(new_zoom, mouse_x, mouse_y, center_x, center_y)` to update viewport zoom factor and anchor pan offsets in a single domain call.
+  Use `ViewportParams.zoomAtPoint(new_zoom, focus_phys, center_phys)` (`ZoomFactor`, `PhysicalPoint`, `PhysicalPoint`) to update viewport zoom factor and anchor pan offsets in a single domain call.
 
 ______________________________________________________________________
 
 ## Viewport Panning & Mouse Input Coordinate Space Rules
+
+- **Coordinate Space Wrappers (`src/state/types.zig`)**:
+  Use `LogicalDims` / `LogicalPoint` for Clay layout and window points, `PhysicalDims` / `PhysicalPoint` for GPU framebuffer pixels, and `DpiScale` (`FrameInput.dpiScale()`) to convert between spaces (`toPhysical(scale)`, `toLogical(scale)`).
 
 - **Physical Pixel Basis**:
   `ViewportParams.pan_x` and `pan_y` store offsets in **physical framebuffer pixels** to match GPU rasterization space in `appendImageCommand`.
@@ -51,16 +54,16 @@ ______________________________________________________________________
   $$\\Delta \\text{pan_x} = \\text{scroll_delta_x} \\times \\text{scale_x} \\times 5.0$$
   $$\\Delta \\text{pan_y} = \\text{scroll_delta_y} \\times \\text{scale_y} \\times 5.0$$
 
-- **Mouse Input Scaling (`pixMouseX()` / `pixMouseY()`)**:
+- **Mouse Input Scaling (`physicalMousePos()` / `pixMouseX()` / `pixMouseY()`)**:
   SDL mouse state and Clay pointer events are in **logical points**. Convert mouse positions to physical pixels before performing viewport pan/zoom operations using `FrameInput` helper methods:
   $$\\text{mouse_x}_{\\text{phys}} = \\text{FrameInput.pixMouseX}() = \\text{mouse_x} \\times \\text{scale_x}$$
   $$\\text{mouse_y}_{\\text{phys}} = \\text{FrameInput.pixMouseY}() = \\text{mouse_y} \\times \\text{scale_y}$$
 
 - **Viewport Center in Physical Pixels**:
-  When calling `zoomAtPoint`, the container center $(x\_{\\text{center}}, y\_{\\text{center}})$ must also be converted to physical pixels ($\\text{cx} \\times \\text{scale_x}, \\text{cy} \\times \\text{scale_y}$).
+  When calling `zoomAtPoint`, the container center `logical_center: LogicalPoint` must be converted to physical pixels via `logical_center.toPhysical(scale)`.
 
 - **Logical UI Overlays vs Physical Viewport**:
-  UI overlay elements (`InfoCard`, `StatsCard`) store drag offsets in **logical points** (`input.mouse_x`), whereas Viewport pan and zoom-at-cursor operations operate strictly in **physical pixels** (`input.pixMouseX()`, `input.pixMouseY()`).
+  UI overlay elements (`InfoCard`, `StatsCard`) store drag offsets in **logical points** (`input.mouse_x`), whereas Viewport pan and zoom-at-cursor operations operate strictly in **physical pixels** (`input.physicalMousePos()`).
 
 ______________________________________________________________________
 
@@ -91,7 +94,7 @@ ______________________________________________________________________
     assuming static window center, ensuring correct anchor positioning when
     side panels are docked.
   - **Viewport Anchor Call**:
-    `ViewportParams.zoomAtPoint(new_zoom, focus_x, focus_y, center_x, center_y)`
+    `ViewportParams.zoomAtPoint(new_zoom, focus, logical_center.toPhysical(scale))`
 
 ______________________________________________________________________
 

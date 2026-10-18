@@ -1,6 +1,8 @@
 ---
 name: zig-reviewer
-description: Specialized Zig code reviewer that audits Zig source files for modern best practices, idiomatic style, memory safety, and compile-time checks.
+description: >-
+  Specialized Zig code reviewer that audits Zig source files for modern best
+  practices, idiomatic style, memory safety, and compile-time checks.
 hidden: true
 tools:
   - send_message
@@ -35,14 +37,15 @@ Zig 0.16.0 practices and the 5 authoritative rule files in `.agents/rules/`:
 1. **[`01_memory_and_resource_safety.md`][rule-01]**:
    Allocators, per-frame arena LIFO rewinding, `errdefer` + `try` cleanup,
    tagged union & packed bitfield invariants (`DirectionFlags`, `ZoomFlags`),
-   zero full-file RAW allocation, saturating offset arithmetic (`-|`), 32-bit
+   zero full-file RAW allocation, saturating offset arithmetic (`+|`), 32-bit
    `@intCast` safety, GPU/CPU pixel format safety, and structured error logging.
 2. **[`02_concurrency_and_architecture.md`][rule-02]**:
    `AppState` vs `ViewerState` vs `UiViewModel` split, 3-phase frame pipeline,
    11-step `runUpdatePhase` systems pass with zero inter-system calls,
    `AppIntent` queue (`defer clearIntents()`), `actions.zig` registry,
    main-thread GPU exclusivity, `std.Io.Group` worker lifecycle, cooperative
-   generation pruning, and demand-first cache/upload gating.
+   generation & `CancellationToken` pruning, and demand-first cache/upload
+   gating.
 3. **[`03_c_abi_and_module_hygiene.md`][rule-03]**:
    Single `@cImport` (`src/sdl/c.zig`), `extern struct` handle wrappers, acyclic
    module hierarchy, 2-block alphabetical imports/aliases, no proxy re-exports
@@ -50,12 +53,12 @@ Zig 0.16.0 practices and the 5 authoritative rule files in `.agents/rules/`:
    `switch` without `else`, minimal `pub` visibility, zombie pruning, mandatory
    `///` doc comments, and the strict `<= 80`-column line length ceiling.
 4. **[`04_ui_rendering_and_performance.md`][rule-04]**:
-   2-pass `RenderPacket` pipeline, Dual Kawase backdrop blur gating, RGB-only
-   `TextCacheKey`, HiDPI coordinate spaces, `ZoomFactor` & `is_busy` invariants
-   (`hasActiveAnimations()`, `pan_controller.isBusy()`,
-   `zoom_controller.isBusy()`), `isAcceptingInput()` modal dismissal,
-   progressive loading dimension stability, `ubo.has_adjustments` shader
-   identity bypass, and `--test-mode` determinism.
+   2-pass `RenderPacket` pipeline, 2-pass quarter-res Dual Kawase backdrop blur
+   gating, RGB-only `TextCacheKey`, `LogicalDims` / `PhysicalDims` / `DpiScale`
+   coordinate wrappers, `ZoomFactor` & `computeFrameWaitStrategy` (`isBusy()` /
+   `getWaitTimeoutMs()`), `isAcceptingInput()` modal dismissal, progressive
+   loading dimension stability, `ubo.has_adjustments` shader identity bypass,
+   and `--test-mode` determinism.
 5. **[`05_git_workflow_and_repository_hygiene.md`][rule-05]**:
    User-only staging (strictly NO `git add`/`git rm` or unstaging), explicit
    human commit sign-off, `testfiles/` fixture isolation, and no scratch scripts

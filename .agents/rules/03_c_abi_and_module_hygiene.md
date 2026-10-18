@@ -36,7 +36,7 @@
   - `src/state/`: Pure visual/UI data models (`ViewerState`, `UiState`,
     `UiViewModel`, `AnimationState`, `SnackbarState`, `PanController`,
     `ZoomController`).
-  - `src/config/`: CLI argument parsing (`cli.zig`) and `peng.conf` parser.
+  - `src/config/`: CLI argument parsing (`cli.zig`).
   - `src/sdl/`: Type-safe SDL3, SDL3_image, SDL3_ttf, and SDL3 GPU wrappers.
   - `src/ui/`: Clay layout builders (`layout.zig`, `palette.zig`,
     `edit_panel.zig`, `stats.zig`), 2-pass GPU renderer (`renderer.zig`,

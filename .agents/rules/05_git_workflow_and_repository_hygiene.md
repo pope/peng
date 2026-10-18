@@ -2,38 +2,64 @@
 
 ## 1. User-Only Staging Invariant (Strictly NO `git add`)
 
-- The AI assistant **MUST NEVER** execute `git add`, `git rm`, or any command that modifies the Git staging area / index.
+- The AI assistant **MUST NEVER** execute `git add`, `git rm`, or any command
+  that modifies the Git staging area / index.
 - **Staging changes is strictly reserved for the human user.**
-- All code modifications, bug fixes, refactorings, or documentation updates made by the assistant must remain in the working tree as unstaged changes.
-- **Never Unstage User Changes**: The assistant **MUST NEVER** run `git restore --staged`, `git reset`, or any command that unstages files staged by the user. If `git status` reports staged changes, the assistant must leave them completely undisturbed in the index.
+- All code modifications, bug fixes, refactorings, or documentation updates
+  made by the assistant must remain in the working tree as unstaged changes.
+- **Never Unstage User Changes**: The assistant **MUST NEVER** run
+  `git restore --staged`, `git reset`, or any command that unstages files
+  staged by the user. If `git status` reports staged changes, the assistant
+  must leave them completely undisturbed in the index.
 
 ## 2. Explicit Commit Sign-Off Invariant
 
 - The AI assistant **MUST NEVER** execute `git commit` autonomously.
-- Commits may only happen after the human user explicitly gives sign-off to proceed with committing.
-- The assistant must never assume permission to commit based on tests passing or work being finished.
+- Commits may only happen after the human user explicitly gives sign-off to
+  proceed with committing.
+- The assistant must never assume permission to commit based on tests passing
+  or work being finished.
 
 ## 3. Commit Message Sign-Off & Proposal Workflow
 
-- When a unit of work is completed, compiled, and verified (e.g. via `zig build test`), the assistant must propose that a commit is ready.
-- The assistant must present the proposed commit message (concise title and descriptive body adhering to project conventions) for user review.
-- The user will review the proposed commit message, stage the desired changes themselves, and give explicit sign-off before any commit is executed.
+- When a unit of work is completed, compiled, and verified (e.g. via
+  `zig build test`), the assistant must propose that a commit is ready.
+- The assistant must present the proposed commit message (concise title and
+  descriptive body adhering to project conventions) for user review.
+- The user will review the proposed commit message, stage the desired changes
+  themselves, and give explicit sign-off before any commit is executed.
 
 ## 4. Permitted Read-Only Git Operations
 
-- The assistant is encouraged to run read-only Git inspection commands to verify repository state and changes:
+- The assistant is encouraged to run read-only Git inspection commands to
+  verify repository state and changes:
   - `git status` (verify unstaged state and check for untracked files)
   - `git diff` (inspect working tree modifications)
   - `git log` (inspect recent commit conventions and history)
-- The assistant must never modify Git configuration, hooks, or repository history (`git reset`, `git rebase`, `git push`, `git checkout .`, `git restore .` without user instruction).
+- The assistant must never modify Git configuration, hooks, or repository
+  history (`git reset`, `git rebase`, `git push`, `git checkout .`,
+  `git restore .` without user instruction).
 
 ## 5. Test Fixture Resource Isolation (`testfiles/` Only)
 
-- Unit and integration tests **MUST ONLY** reference test files and fixtures located within the committed `testfiles/` hierarchy (e.g. `testfiles/images/`, `testfiles/golden-screenshots/`, `testfiles/sample.cbz`), or temporary test files explicitly created and cleaned up in `testfiles/current-run/` or via test scratch allocators.
-- Tests **MUST NEVER** reference uncommitted files, personal directory paths (`Capture/`, `ThumbTest/`), untracked archives in the project root, or external absolute paths.
-- Directory scans in tests must target isolated fixture subdirectories (e.g. `testfiles/` or isolated temporary directories), **NEVER** scanning the project root (`"."`), to prevent non-deterministic test failures caused by untracked or local user files.
+- Unit and integration tests **MUST ONLY** reference test files and fixtures
+  located within the committed `testfiles/` hierarchy (e.g.
+  `testfiles/images/`, `testfiles/golden-screenshots/`, `testfiles/sample.cbz`),
+  or temporary test files explicitly created and cleaned up in
+  `testfiles/current-run/` or via test scratch allocators.
+- Tests **MUST NEVER** reference uncommitted files, personal directory paths
+  (`Capture/`, `ThumbTest/`), untracked archives in the project root, or
+  external absolute paths.
+- Directory scans in tests must target isolated fixture subdirectories (e.g.
+  `testfiles/` or isolated temporary directories), **NEVER** scanning the
+  project root (`"."`), to prevent non-deterministic test failures caused by
+  untracked or local user files.
 
 ## 6. No Extraneous Scratch or Audit Scripts in Version Control
 
-- The AI assistant **MUST NOT** commit temporary one-off audit scripts, scratch runners, or benchmark helpers (e.g. `scripts/check_line_length.sh`) into the repository unless explicitly requested by the human user.
-- Verification and audit checks should be performed via inline shell commands or kept in the conversation's scratch directory (`<appDataDir>/brain/<id>/scratch/`).
+- The AI assistant **MUST NOT** commit temporary one-off audit scripts, scratch
+  runners, or benchmark helpers (e.g. `scripts/check_line_length.sh`) into the
+  repository unless explicitly requested by the human user.
+- Verification and audit checks should be performed via inline shell commands
+  or kept in the conversation's scratch directory
+  (`<appDataDir>/brain/<id>/scratch/`).
