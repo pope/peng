@@ -30,10 +30,7 @@ pub fn ipcServerWorkerTask(args: *IpcServerArgs) void {
     const workers = args.workers;
     const gpa = args.allocator;
     const io = args.io;
-    defer {
-        gpa.destroy(args);
-        _ = workers.active_threads.fetchSub(1, .release);
-    }
+    defer gpa.destroy(args);
     runIpcServer(workers, gpa, io) catch |err| {
         std.log.err("IPC Server error: {any}", .{err});
     };
@@ -61,16 +58,26 @@ fn runIpcServer(workers: *WorkerManager, gpa: std.mem.Allocator, io: std.Io) !vo
         };
     }
 
-    var msg_buf: [256]u8 = undefined;
-    const msg = std.fmt.bufPrint(&msg_buf, "IPC socket: {s}\n", .{socket_path}) catch "IPC socket ready\n";
-    var stdout_write_buf: [256]u8 = undefined;
-    var stdout_writer = std.Io.File.Writer.initStreaming(std.Io.File.stdout(), io, &stdout_write_buf);
-    stdout_writer.interface.writeAll(msg) catch |err| {
-        std.log.debug("IPC writeAll to stdout failed: {any}", .{err});
-    };
-    stdout_writer.interface.flush() catch |err| {
-        std.log.debug("IPC flush to stdout failed: {any}", .{err});
-    };
+    if (!builtin.is_test) {
+        var msg_buf: [256]u8 = undefined;
+        const msg = std.fmt.bufPrint(
+            &msg_buf,
+            "IPC socket: {s}\n",
+            .{socket_path},
+        ) catch "IPC socket ready\n";
+        var stdout_write_buf: [256]u8 = undefined;
+        var stdout_writer = std.Io.File.Writer.initStreaming(
+            std.Io.File.stdout(),
+            io,
+            &stdout_write_buf,
+        );
+        stdout_writer.interface.writeAll(msg) catch |err| {
+            std.log.debug("IPC writeAll to stdout failed: {any}", .{err});
+        };
+        stdout_writer.interface.flush() catch |err| {
+            std.log.debug("IPC flush to stdout failed: {any}", .{err});
+        };
+    }
 
     acceptIpcConnections(&server, workers, gpa, io);
 }

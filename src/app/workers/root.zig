@@ -49,21 +49,17 @@ pub fn spawnIpcServer(
     io: std.Io,
 ) !std.Thread {
     const args = try allocator.create(ipc_server.IpcServerArgs);
+    errdefer allocator.destroy(args);
     args.* = .{
         .workers = workers,
         .allocator = allocator,
         .io = io,
     };
-    _ = workers.active_threads.fetchAdd(1, .monotonic);
     return std.Thread.spawn(
         .{},
         ipc_server.ipcServerWorkerTask,
         .{args},
-    ) catch |err| {
-        _ = workers.active_threads.fetchSub(1, .release);
-        allocator.destroy(args);
-        return err;
-    };
+    );
 }
 
 /// Inspects whether standard input is piped (non-TTY) and spawns an asynchronous stdin reader task.
@@ -120,6 +116,26 @@ pub fn startAsyncPathScan(
     };
 
     try spawnPathScan(args);
+}
+
+test "spawnIpcServer does not mark WorkerManager as busy" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var workers = WorkerManager.init();
+    defer workers.deinit(allocator, io);
+    workers.exiting.store(true, .release);
+
+    const thread = try spawnIpcServer(&workers, allocator, io);
+    defer thread.join();
+
+    try std.testing.expect(!workers.isBusy());
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        workers.active_threads.load(.acquire),
+    );
 }
 
 test {

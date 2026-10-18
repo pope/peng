@@ -14,7 +14,7 @@ pub const WorkerManager = struct {
     cached_cpu_count: usize = 0,
 
     /// Atomic counter tracking total actively executing background worker tasks
-    /// (image decodes, directory path scans, stdin reading, and IPC server socket listener).
+    /// (image decodes, directory path scans, and stdin reading).
     active_threads: std.atomic.Value(usize) = .init(0),
 
     /// Atomic counter tracking actively executing image `decodeWorker` tasks.
@@ -37,8 +37,8 @@ pub const WorkerManager = struct {
     /// under Zig 0.16 `std.Io`.
     group: std.Io.Group = .init,
 
-    /// Returns `true` if any background worker tasks (decode, path scan, stdin, or IPC server)
-    /// are currently executing in parallel.
+    /// Returns `true` if any background worker tasks (decode, path scan, or
+    /// stdin) are currently executing in parallel.
     pub fn isBusy(self: *const WorkerManager) bool {
         return self.active_threads.load(.acquire) > 0;
     }
