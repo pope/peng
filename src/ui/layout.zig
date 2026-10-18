@@ -25,12 +25,15 @@ const truncateFilename = text_utils.truncateFilename;
 const types = state.types;
 const view_transform = state.view_transform;
 
-/// Computes fitted layout dimensions for an image cache entry within
-/// available viewport bounds.
+/// Computes fitted layout dimensions in logical pixels for an image cache entry
+/// within available logical viewport bounds, evaluating preset fit modes in
+/// physical framebuffer space via `scale_x` and `scale_y`.
 pub fn computeDrawDims(
     entry_opt: ?state.CacheEntry,
     available_width: f32,
     available_height: f32,
+    scale_x: f32,
+    scale_y: f32,
     rotation_angle: f32,
     fit_mode: intents.ZoomPreset,
 ) struct { w: f32, h: f32 } {
@@ -40,8 +43,16 @@ pub fn computeDrawDims(
     const src_h = auth.h;
 
     if (src_w > 0 and src_h > 0) {
-        const view_w = @max(available_width, 1.0);
-        const view_h = @max(available_height, 1.0);
+        const sx = if (scale_x > 0.0 and std.math.isFinite(scale_x))
+            scale_x
+        else
+            1.0;
+        const sy = if (scale_y > 0.0 and std.math.isFinite(scale_y))
+            scale_y
+        else
+            1.0;
+        const phys_view_w = @max(available_width * sx, 1.0);
+        const phys_view_h = @max(available_height * sy, 1.0);
         const is_loading = entry.status != .loaded_gpu and
             entry.status != .loaded_cpu;
         const only_has_thumb = entry.full_w <= 0.0 and
@@ -56,11 +67,11 @@ pub fn computeDrawDims(
             src_w,
             src_h,
             rotation_angle,
-            view_w,
-            view_h,
+            phys_view_w,
+            phys_view_h,
             effective_fit_mode,
         );
-        return .{ .w = dims.draw_w, .h = dims.draw_h };
+        return .{ .w = dims.draw_w / sx, .h = dims.draw_h / sy };
     }
     return .{ .w = 0, .h = 0 };
 }
@@ -110,6 +121,8 @@ pub fn renderFrame(
         current_entry,
         view_w,
         view_h,
+        scale_x,
+        scale_y,
         ui_model.viewport.rotation_angle,
         ui_model.viewport.fit_mode,
     );
@@ -162,6 +175,8 @@ pub fn renderFrame(
             draw_h,
             view_w,
             view_h,
+            scale_x,
+            scale_y,
             total_images,
             frame_allocator,
             measure_data,
@@ -1065,6 +1080,8 @@ fn renderDissolvePrevQuad(
     frame_allocator: std.mem.Allocator,
     view_w: f32,
     view_h: f32,
+    scale_x: f32,
+    scale_y: f32,
 ) void {
     const dissolve = switch (ui_model.image_dissolve) {
         .none => return,
@@ -1081,6 +1098,8 @@ fn renderDissolvePrevQuad(
         prev_entry,
         view_w,
         view_h,
+        scale_x,
+        scale_y,
         dissolve.prev_rotation,
         ui_model.viewport.fit_mode,
     );
@@ -1140,6 +1159,8 @@ fn renderViewport(
     draw_h: f32,
     view_w: f32,
     view_h: f32,
+    scale_x: f32,
+    scale_y: f32,
     total_images: usize,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
@@ -1152,7 +1173,14 @@ fn renderViewport(
         },
         .clip = .{ .horizontal = true, .vertical = true },
     })({
-        renderDissolvePrevQuad(ui_model, frame_allocator, view_w, view_h);
+        renderDissolvePrevQuad(
+            ui_model,
+            frame_allocator,
+            view_w,
+            view_h,
+            scale_x,
+            scale_y,
+        );
 
         if (current_entry) |entry| {
             renderImageCanvas(
@@ -1258,6 +1286,62 @@ test "formatLoadingText - narrow viewport fallback" {
     try std.testing.expectEqualStrings("Loading...", res);
 }
 
+test "computeDrawDims - matches physical DPI scale in shrink and none modes" {
+    const entry = state.CacheEntry{
+        .status = .{
+            .loaded_cpu = .{
+                .surface = .{ .ptr = undefined },
+                .w = 1200,
+                .h = 900,
+                .size_bytes = 1000,
+            },
+        },
+        .full_w = 1200,
+        .full_h = 900,
+    };
+
+    // Logical viewport 1000x800 on 2.0x Retina display -> physical 2000x1600.
+    // A 1200x900 image fits inside the 2000x1600 physical viewport without
+    // shrinking (base_scale = 1.0 in physical pixels -> 600x450 logical).
+    const shrink_dims = computeDrawDims(
+        entry,
+        1000.0,
+        800.0,
+        2.0,
+        2.0,
+        0.0,
+        .shrink,
+    );
+    try std.testing.expectApproxEqAbs(@as(f32, 600.0), shrink_dims.w, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 450.0), shrink_dims.h, 0.001);
+
+    const none_dims = computeDrawDims(
+        entry,
+        1000.0,
+        800.0,
+        2.0,
+        2.0,
+        0.0,
+        .none,
+    );
+    try std.testing.expectApproxEqAbs(@as(f32, 600.0), none_dims.w, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 450.0), none_dims.h, 0.001);
+
+    // In .full mode, physical 1200x900 scales up to 2000x1500 physical ->
+    // 1000x750 logical.
+    const full_dims = computeDrawDims(
+        entry,
+        1000.0,
+        800.0,
+        2.0,
+        2.0,
+        0.0,
+        .full,
+    );
+    try std.testing.expectApproxEqAbs(@as(f32, 1000.0), full_dims.w, 0.001);
+    try std.testing.expectApproxEqAbs(@as(f32, 750.0), full_dims.h, 0.001);
+}
+
 test "renderViewport - floating crossfade quads allow Viewport hit-testing" {
     const dummyMeasure = struct {
         fn measure(
@@ -1355,6 +1439,8 @@ test "renderViewport - floating crossfade quads allow Viewport hit-testing" {
         600.0,
         1000.0,
         800.0,
+        1.0,
+        1.0,
         2,
         arena.allocator(),
         &data,
