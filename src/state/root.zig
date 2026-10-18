@@ -103,6 +103,7 @@ pub const UvRect = types.UvRect;
 pub const ViewerState = viewer_state.ViewerState;
 pub const ViewMode = types.ViewMode;
 pub const ViewportParams = types.ViewportParams;
+pub const VisibleNeighbors = navigation.VisibleNeighbors;
 pub const VisibleState = types.VisibleState;
 pub const ZoomController = types.ZoomController;
 pub const ZoomDirection = types.ZoomDirection;

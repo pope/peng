@@ -403,7 +403,7 @@ fn applyDecodedGpuTexture(
     };
     state.cache.enforceVramBudget(
         gpu_dev,
-        state.viewer.navigation.current_index,
+        state.viewer.navigation.getVisibleNeighbors(),
         state.viewer.getTransitionPrevIndex(),
         state.viewer.navigation.count(),
         image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES,

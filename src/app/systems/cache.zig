@@ -180,51 +180,29 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
     const len = state.viewer.navigation.count();
     if (len == 0) return;
 
-    const idx = state.viewer.navigation.current_index orelse return;
+    const neighbors = state.viewer.navigation.getVisibleNeighbors() orelse
+        return;
+    const idx = neighbors.current;
     const dev_opt = state.gpu_device;
 
     state.cache.enforceVramBudget(
         dev_opt,
-        idx,
+        neighbors,
         state.viewer.getTransitionPrevIndex(),
         len,
         image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES,
     );
 
-    const max_dist = state.cache.getMaxPrefetchDist(idx);
+    const max_dist = state.cache.getMaxPrefetchDist(neighbors);
 
-    // 1. Gather desired indices (prefetch window: idx, prioritized along
-    // travel direction within the active VRAM prefetch radius)
-    const next_idx = (idx + 1) % len;
-    const prev_idx = (idx + len - 1) % len;
-    const next_2 = (idx + 2) % len;
-    const prev_2 = if (len >= 2) (idx + len - 2) % len else idx;
-
-    const candidates = if (state.viewer.navigation.direction == .backward)
-        [_]usize{ prev_idx, next_idx, prev_2, next_2 }
-    else
-        [_]usize{ next_idx, prev_idx, next_2, prev_2 };
-
-    var desired = try std.ArrayList(usize).initCapacity(
-        ctx.frame_allocator,
-        1 + candidates.len,
+    // 1. Gather desired visible indices (prefetch window: idx, prioritized
+    // along travel direction within the active VRAM prefetch radius)
+    var desired_buf: [5]usize = undefined;
+    const desired = neighbors.collectUnique(
+        state.viewer.navigation.direction,
+        max_dist,
+        &desired_buf,
     );
-    defer desired.deinit(ctx.frame_allocator);
-    desired.appendAssumeCapacity(idx);
-
-    for (candidates) |d| {
-        if (image.calcCyclicDistance(d, idx, len) > max_dist) continue;
-        var unique = true;
-        for (desired.items) |existing| {
-            if (existing == d) {
-                unique = false;
-                break;
-            }
-        }
-        if (unique) {
-            desired.appendAssumeCapacity(d);
-        }
-    }
 
     // 2. Evict cache entries that are no longer wanted, decoupling prefetch from retention
     var i: usize = 0;
@@ -235,7 +213,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
         const entry = entries[i];
 
         var in_desired = false;
-        for (desired.items) |d| {
+        for (desired) |d| {
             if (key.index == d) {
                 in_desired = true;
                 break;
@@ -293,9 +271,9 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
     };
 
     const speculative_idx = if (state.viewer.navigation.direction == .backward)
-        prev_idx
+        neighbors.prev_1
     else
-        next_idx;
+        neighbors.next_1;
 
     // 3. Mark missing slots as decoding in cache map
     const SpawnRequest = struct {
@@ -304,12 +282,12 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
     };
     var to_spawn = try std.ArrayList(SpawnRequest).initCapacity(
         ctx.frame_allocator,
-        desired.items.len,
+        desired.len,
     );
     defer to_spawn.deinit(ctx.frame_allocator);
     var hit = false;
 
-    for (desired.items) |d| {
+    for (desired) |d| {
         if (d >= state.viewer.navigation.count()) continue;
 
         if (d != idx) {
@@ -510,7 +488,13 @@ test "sysUpdateCache - retains loaded entries outside prefetch window until budg
     try std.testing.expect(state.cache.get(state.cache.activeKey(6)) != null);
 
     // Now enforce a small VRAM budget (less than slot 6's 500MB)
-    state.cache.enforceVramBudget(state.gpu_device, 0, null, 10, 100);
+    state.cache.enforceVramBudget(
+        state.gpu_device,
+        state.viewer.navigation.getVisibleNeighbors(),
+        null,
+        10,
+        100,
+    );
 
     // Slot 6 should now be pruned by enforceVramBudget
     try std.testing.expect(state.cache.get(state.cache.activeKey(6)) == null);
@@ -737,22 +721,101 @@ test "sysUpdateCache - caps prefetch radius when window exceeds VRAM budget" {
 
     // Distance 2 slots (indices 3 and 4 relative to 1) should be evicted,
     // and NOT re-inserted as .decoding slots.
+    const n1 = state.viewer.navigation.getVisibleNeighbors().?;
     try std.testing.expectEqual(
         @as(usize, 1),
-        state.cache.getMaxPrefetchDist(1),
+        state.cache.getMaxPrefetchDist(n1),
     );
     try std.testing.expect(state.cache.get(state.cache.activeKey(0)) != null);
     try std.testing.expect(state.cache.get(state.cache.activeKey(1)) != null);
     try std.testing.expect(state.cache.get(state.cache.activeKey(2)) != null);
     try std.testing.expect(state.cache.get(state.cache.activeKey(3)) == null);
     try std.testing.expect(state.cache.get(state.cache.activeKey(4)) == null);
-    try std.testing.expect(!state.cache.hasUnreadyPrefetchSlots(1, 5, true));
+    try std.testing.expect(!state.cache.hasUnreadyPrefetchSlots(n1, true));
 
     // Navigating to a new slide resets the prefetch distance cap for the new
     // index
     state.viewer.navigation.current_index = 2;
+    const n2 = state.viewer.navigation.getVisibleNeighbors().?;
     try std.testing.expectEqual(
         @as(usize, 2),
-        state.cache.getMaxPrefetchDist(2),
+        state.cache.getMaxPrefetchDist(n2),
     );
+}
+
+test "sysUpdateCache - respects ViewMode visibility filtering" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    // 6 images: only indices 0 and 4 are marked .pick; others are .unflagged
+    const dir_alloc = state.viewer.navigation.directory_arena.allocator();
+    const paths = [_][]const u8{
+        "testfiles/golden-screenshots/init.png",
+        "testfiles/golden-screenshots/init.png",
+        "testfiles/golden-screenshots/init.png",
+        "testfiles/golden-screenshots/init.png",
+        "testfiles/golden-screenshots/init.png",
+        "testfiles/golden-screenshots/init.png",
+    };
+    for (paths) |p| {
+        const dup = try dir_alloc.dupe(u8, p);
+        try state.viewer.navigation.appendEntry(
+            allocator,
+            .{ .filesystem = .{ .path = dup } },
+        );
+    }
+
+    state.viewer.navigation.current_index = 0;
+    _ = try state.viewer.navigation.markCurrentPick(allocator);
+    state.viewer.navigation.current_index = 4;
+    _ = try state.viewer.navigation.markCurrentPick(allocator);
+    state.viewer.navigation.current_index = 0;
+    _ = state.viewer.navigation.setViewMode(.picks);
+
+    // Pre-populate active slot 0 as loaded_gpu so neighbor prefetching runs,
+    // plus hidden raw neighbor 1 and visible pick neighbor 4 (200 bytes each).
+    _ = try state.cache.appendSlot(allocator, 0, .{
+        .loaded_gpu = .{
+            .gpu_texture = undefined,
+            .w = 100,
+            .h = 100,
+            .size_bytes = 100,
+            .memory_size_bytes = 200,
+        },
+    });
+    _ = try state.cache.appendSlot(allocator, 1, .{
+        .loaded_gpu = .{
+            .gpu_texture = undefined,
+            .w = 100,
+            .h = 100,
+            .size_bytes = 100,
+            .memory_size_bytes = 200,
+        },
+    });
+    const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
+    try sysUpdateCache(ctx);
+
+    // Visible neighbor 4 must be populated, while hidden raw neighbor 2 is NOT!
+    try std.testing.expect(state.cache.get(state.cache.activeKey(4)) != null);
+    try std.testing.expect(state.cache.get(state.cache.activeKey(2)) == null);
+
+    // Mark visible neighbor 4 as loaded_gpu and enforce a 400-byte VRAM budget:
+    // hidden raw neighbor 1 must be evicted BEFORE visible neighbor 4 (even
+    // though index 4 has raw cyclic distance 2 > index 1's raw distance 1)!
+    _ = state.cache.updateStatus(state.cache.activeKey(4), .{
+        .loaded_gpu = .{
+            .gpu_texture = undefined,
+            .w = 100,
+            .h = 100,
+            .size_bytes = 100,
+            .memory_size_bytes = 200,
+        },
+    });
+    const vis = state.viewer.navigation.getVisibleNeighbors();
+    state.cache.enforceVramBudget(null, vis, null, 6, 400);
+    try std.testing.expect(state.cache.get(state.cache.activeKey(1)) == null);
+    try std.testing.expect(state.cache.get(state.cache.activeKey(4)) != null);
+    try std.testing.expect(!state.cache.hasUnreadyPrefetchSlots(vis.?, true));
 }

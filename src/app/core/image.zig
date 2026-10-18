@@ -51,14 +51,14 @@ pub fn calcCyclicDistance(
 pub const CacheSlotMap = struct {
     slots: std.MultiArrayList(CacheSlot) = .{},
     generation: std.atomic.Value(usize) = .init(0),
-    vram_capped_index: ?usize = null,
+    vram_capped_neighbors: ?state_pkg.VisibleNeighbors = null,
     vram_capped_prev_index: ?usize = null,
     max_prefetch_dist: usize = 2,
 
     /// Atomically increments the cache generation epoch to invalidate
     /// in-flight asynchronous decode tasks.
     pub fn advanceGeneration(self: *CacheSlotMap) usize {
-        self.vram_capped_index = null;
+        self.vram_capped_neighbors = null;
         self.vram_capped_prev_index = null;
         self.max_prefetch_dist = 2;
         return self.generation.fetchAdd(1, .release) +% 1;
@@ -94,7 +94,7 @@ pub const CacheSlotMap = struct {
             entry.deinit(gpu_device);
         }
         self.slots.clearRetainingCapacity();
-        self.vram_capped_index = null;
+        self.vram_capped_neighbors = null;
         self.vram_capped_prev_index = null;
         self.max_prefetch_dist = 2;
     }
@@ -102,7 +102,7 @@ pub const CacheSlotMap = struct {
     /// Clears all slots without releasing underlying capacity.
     pub fn clearRetainingCapacity(self: *CacheSlotMap) void {
         self.slots.clearRetainingCapacity();
-        self.vram_capped_index = null;
+        self.vram_capped_neighbors = null;
         self.vram_capped_prev_index = null;
         self.max_prefetch_dist = 2;
     }
@@ -176,13 +176,13 @@ pub const CacheSlotMap = struct {
     }
 
     /// Returns the maximum circular neighbor distance (`0..2`) to prefetch for
-    /// `current_index` without exceeding the VRAM budget.
+    /// `neighbors` without exceeding the VRAM budget.
     pub fn getMaxPrefetchDist(
         self: *const CacheSlotMap,
-        current_index: usize,
+        neighbors: state_pkg.VisibleNeighbors,
     ) usize {
-        if (self.vram_capped_index) |capped_idx| {
-            if (capped_idx == current_index) {
+        if (self.vram_capped_neighbors) |capped| {
+            if (std.meta.eql(capped, neighbors)) {
                 return self.max_prefetch_dist;
             }
         }
@@ -191,25 +191,26 @@ pub const CacheSlotMap = struct {
 
     /// Enforces maximum VRAM budget by evicting `.loaded_gpu` textures.
     ///
-    /// Eviction ordering uses circular distance relative to `current_index`:
-    /// 1. Distant entries (distance > 2) are evicted furthest first.
-    /// 2. If VRAM budget is still exceeded and only immediate neighbors
-    ///    (distance <= 2) remain, they are evicted furthest first and
+    /// Eviction ordering uses visible neighbor distance from `neighbors`:
+    /// 1. Distant or hidden entries (outside the visible ±2 window) are evicted
+    ///    furthest first.
+    /// 2. If VRAM budget is still exceeded and only visible neighbors
+    ///    (step distance <= 2) remain, they are evicted furthest first and
     ///    `max_prefetch_dist` is lowered to prevent re-decode thrashing.
     /// The currently active image and any active outgoing slideshow transition
     /// image (`protected_prev_index`) are strictly protected.
     pub fn enforceVramBudget(
         self: *CacheSlotMap,
         gpu_device: ?sdl.gpu.Device,
-        current_index: ?usize,
+        neighbors_opt: ?state_pkg.VisibleNeighbors,
         protected_prev_index: ?usize,
         total_items: usize,
         max_bytes: usize,
     ) void {
-        if (current_index != self.vram_capped_index or
+        if (!std.meta.eql(neighbors_opt, self.vram_capped_neighbors) or
             protected_prev_index != self.vram_capped_prev_index)
         {
-            self.vram_capped_index = current_index;
+            self.vram_capped_neighbors = neighbors_opt;
             self.vram_capped_prev_index = protected_prev_index;
             self.max_prefetch_dist = 2;
         }
@@ -226,25 +227,31 @@ pub const CacheSlotMap = struct {
 
             for (entries, keys, 0..) |entry, key, i| {
                 if (entry.status != .loaded_gpu) continue;
-                const cur = current_index orelse {
+                const neighbors = neighbors_opt orelse {
                     distant_victim = i;
                     break;
                 };
-                if (key.index == cur) continue;
+                if (key.index == neighbors.current) continue;
                 if (protected_prev_index) |prev| {
                     if (key.index == prev) continue;
                 }
-                const dist = calcCyclicDistance(key.index, cur, total_items);
-                const is_neighbor_victim = neighbor_victim == null or
-                    dist > max_neighbor_dist;
-                if (dist > 2) {
+                if (neighbors.stepDistance(key.index)) |step_dist| {
+                    const is_neighbor_victim = neighbor_victim == null or
+                        step_dist > max_neighbor_dist;
+                    if (is_neighbor_victim) {
+                        max_neighbor_dist = step_dist;
+                        neighbor_victim = i;
+                    }
+                } else {
+                    const dist = calcCyclicDistance(
+                        key.index,
+                        neighbors.current,
+                        total_items,
+                    );
                     if (distant_victim == null or dist > max_distant_dist) {
                         max_distant_dist = dist;
                         distant_victim = i;
                     }
-                } else if (is_neighbor_victim) {
-                    max_neighbor_dist = dist;
-                    neighbor_victim = i;
                 }
             }
 
@@ -263,7 +270,7 @@ pub const CacheSlotMap = struct {
         }
     }
 
-    /// Checks whether any of the desired prefetch slots (current, ±1, ±2
+    /// Checks whether any desired visible prefetch slots (current, ±1, ±2
     /// circularly within the active VRAM prefetch radius) are missing from the
     /// cache or not in a terminal/ready status.
     ///
@@ -271,40 +278,18 @@ pub const CacheSlotMap = struct {
     /// when a GPU device is present.
     pub fn hasUnreadyPrefetchSlots(
         self: *const CacheSlotMap,
-        current_index: usize,
-        total_items: usize,
+        neighbors: state_pkg.VisibleNeighbors,
         has_gpu: bool,
     ) bool {
-        if (total_items == 0) return false;
-        const len = total_items;
-        const idx = current_index;
-        const max_dist = self.getMaxPrefetchDist(idx);
+        const max_dist = self.getMaxPrefetchDist(neighbors);
+        var desired_buf: [5]usize = undefined;
+        const desired = neighbors.collectUnique(
+            .forward,
+            max_dist,
+            &desired_buf,
+        );
 
-        var desired: [5]usize = undefined;
-        desired[0] = idx;
-        var desired_count: usize = 1;
-
-        for ([_]usize{
-            (idx + 1) % len,
-            (idx + len - 1) % len,
-            (idx + 2) % len,
-            if (len >= 2) (idx + len - 2) % len else idx,
-        }) |d| {
-            if (calcCyclicDistance(d, idx, len) > max_dist) continue;
-            var unique = true;
-            for (desired[0..desired_count]) |existing| {
-                if (existing == d) {
-                    unique = false;
-                    break;
-                }
-            }
-            if (unique) {
-                desired[desired_count] = d;
-                desired_count += 1;
-            }
-        }
-
-        for (desired[0..desired_count]) |d| {
+        for (desired) |d| {
             const key = self.activeKey(d);
             if (self.getIndex(key)) |i| {
                 const entry = self.slots.items(.entry)[i];
@@ -1994,6 +1979,8 @@ test "enforceVramBudget - distant eviction, circular distance, and neighbor prot
         }
     }.create;
 
+    const n10 = state_pkg.VisibleNeighbors.fromRawIndex(0, 10);
+
     // total_items = 10, current = 0
     // Slots: 0 (dist 0), 1 (dist 1), 2 (dist 2), 5 (dist 5), 9 (dist 1 wrap-around)
     _ = try cache.appendSlot(allocator, 0, makeGpuStatus(100));
@@ -2006,7 +1993,7 @@ test "enforceVramBudget - distant eviction, circular distance, and neighbor prot
     try std.testing.expectEqual(@as(usize, 500), cache.getTotalVramBytes());
 
     // 1. Evict down to 400: slot 5 (dist 5) is distant (dist > 2) and must be evicted first
-    cache.enforceVramBudget(null, 0, null, 10, 400);
+    cache.enforceVramBudget(null, n10, null, 10, 400);
     try std.testing.expectEqual(@as(usize, 400), cache.getTotalVramBytes());
     try std.testing.expect(cache.getIndex(.{ .index = 5, .generation = 0 }) == null);
     try std.testing.expect(cache.getIndex(.{ .index = 0, .generation = 0 }) != null);
@@ -2017,23 +2004,24 @@ test "enforceVramBudget - distant eviction, circular distance, and neighbor prot
     // 2. Evict down to 300: Remaining are 0, 1, 2, 9 (dists: 0, 1, 2, 1).
     // All remaining non-cur have dist <= 2. Neighbor protection should evict
     // dist 2 (slot 2) before dist 1 (slot 1 or 9).
-    cache.enforceVramBudget(null, 0, null, 10, 300);
+    cache.enforceVramBudget(null, n10, null, 10, 300);
     try std.testing.expectEqual(@as(usize, 300), cache.getTotalVramBytes());
     try std.testing.expect(cache.getIndex(.{ .index = 2, .generation = 0 }) == null);
     try std.testing.expect(cache.getIndex(.{ .index = 0, .generation = 0 }) != null);
 
     // 3. Evict down to 50: Current slot 0 (100 bytes) should NEVER be evicted
     // even if exceeding budget
-    cache.enforceVramBudget(null, 0, null, 10, 50);
+    cache.enforceVramBudget(null, n10, null, 10, 50);
     try std.testing.expectEqual(@as(usize, 100), cache.getTotalVramBytes());
     try std.testing.expect(cache.getIndex(.{ .index = 0, .generation = 0 }) != null);
     try std.testing.expect(cache.getIndex(.{ .index = 1, .generation = 0 }) == null);
     try std.testing.expect(cache.getIndex(.{ .index = 9, .generation = 0 }) == null);
 
     // 4. Test robustness against linear_dist > total_items (e.g. slot 99 with total_items = 5)
+    const n5 = state_pkg.VisibleNeighbors.fromRawIndex(0, 5);
     _ = try cache.appendSlot(allocator, 99, makeGpuStatus(100));
     try std.testing.expectEqual(@as(usize, 200), cache.getTotalVramBytes());
-    cache.enforceVramBudget(null, 0, null, 5, 100);
+    cache.enforceVramBudget(null, n5, null, 5, 100);
     try std.testing.expectEqual(@as(usize, 100), cache.getTotalVramBytes());
     try std.testing.expect(cache.getIndex(.{ .index = 99, .generation = 0 }) == null);
     try std.testing.expect(cache.getIndex(.{ .index = 0, .generation = 0 }) != null);
@@ -2045,7 +2033,7 @@ test "enforceVramBudget - distant eviction, circular distance, and neighbor prot
     try std.testing.expectEqual(@as(usize, 300), cache.getTotalVramBytes());
     // Evict down to 50 bytes with slot 3 protected as previous slide:
     // slot 4 evicted, slots 0 and 3 protected
-    cache.enforceVramBudget(null, 0, 3, 10, 50);
+    cache.enforceVramBudget(null, n10, 3, 10, 50);
     try std.testing.expectEqual(@as(usize, 200), cache.getTotalVramBytes());
     try std.testing.expect(cache.getIndex(.{ .index = 0, .generation = 0 }) != null);
     try std.testing.expect(cache.getIndex(.{ .index = 3, .generation = 0 }) != null);
@@ -2057,9 +2045,11 @@ test "hasUnreadyPrefetchSlots" {
     var cache = CacheSlotMap{};
     defer cache.deinit(allocator, null);
 
+    const n5 = state_pkg.VisibleNeighbors.fromRawIndex(0, 5);
+
     // Total 5 items, current 0 -> desired: 0, 1, 2, 4, 3
     // Empty cache -> unready
-    try std.testing.expect(cache.hasUnreadyPrefetchSlots(0, 5, true));
+    try std.testing.expect(cache.hasUnreadyPrefetchSlots(n5, true));
 
     const makeGpuStatus = CacheStatus{
         .loaded_gpu = .{
@@ -2075,11 +2065,11 @@ test "hasUnreadyPrefetchSlots" {
     for (0..5) |idx| {
         _ = try cache.appendSlot(allocator, idx, makeGpuStatus);
     }
-    try std.testing.expect(!cache.hasUnreadyPrefetchSlots(0, 5, true));
+    try std.testing.expect(!cache.hasUnreadyPrefetchSlots(n5, true));
 
     // One slot is decoding -> unready
     _ = cache.updateStatus(.{ .index = 2, .generation = 0 }, .{ .decoding = .{} });
-    try std.testing.expect(cache.hasUnreadyPrefetchSlots(0, 5, true));
+    try std.testing.expect(cache.hasUnreadyPrefetchSlots(n5, true));
 
     // One slot is loaded_cpu: unready if has_gpu = true, ready if has_gpu = false
     _ = cache.updateStatus(.{ .index = 2, .generation = 0 }, .{
@@ -2090,8 +2080,8 @@ test "hasUnreadyPrefetchSlots" {
             .size_bytes = 100,
         },
     });
-    try std.testing.expect(cache.hasUnreadyPrefetchSlots(0, 5, true));
-    try std.testing.expect(!cache.hasUnreadyPrefetchSlots(0, 5, false));
+    try std.testing.expect(cache.hasUnreadyPrefetchSlots(n5, true));
+    try std.testing.expect(!cache.hasUnreadyPrefetchSlots(n5, false));
 
     // Reset status to .failed to prevent calling SDL_DestroySurface on
     // undefined mock surface during defer deinit

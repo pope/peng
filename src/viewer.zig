@@ -101,11 +101,14 @@ pub fn updateFrame(
         break :blk (app_state.viewer.navigation.current_index != null);
     };
     const has_unpopulated_cache = blk: {
-        const len = app_state.viewer.navigation.count();
-        if (len <= 1) break :blk false;
-        const cur_idx = app_state.viewer.navigation.current_index orelse break :blk false;
+        if (app_state.viewer.navigation.getVisibleCount() <= 1) {
+            break :blk false;
+        }
+        const neighbors =
+            app_state.viewer.navigation.getVisibleNeighbors() orelse
+            break :blk false;
         const has_gpu = app_state.gpu_device != null;
-        break :blk app_state.cache.hasUnreadyPrefetchSlots(cur_idx, len, has_gpu);
+        break :blk app_state.cache.hasUnreadyPrefetchSlots(neighbors, has_gpu);
     };
     const cur_win_size = window.getSize();
     const cur_win_w = @as(f32, @floatFromInt(cur_win_size.w));

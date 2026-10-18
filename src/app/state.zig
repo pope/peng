@@ -743,12 +743,20 @@ pub const AppState = struct {
 
         if (upload_target == null and can_upload_neighbors) {
             const total_items = self.viewer.navigation.count();
+            const neighbors_opt = self.viewer.navigation.getVisibleNeighbors();
             var best_idx: ?usize = null;
             var min_dist: usize = std.math.maxInt(usize);
 
             for (entries, keys, 0..) |entry, key, i| {
                 if (entry.status != .loaded_cpu) continue;
-                const dist = if (cur_idx_opt) |cur|
+                const dist = if (neighbors_opt) |neighbors|
+                    neighbors.stepDistance(key.index) orelse
+                        (3 + image.calcCyclicDistance(
+                            key.index,
+                            neighbors.current,
+                            total_items,
+                        ))
+                else if (cur_idx_opt) |cur|
                     image.calcCyclicDistance(key.index, cur, total_items)
                 else
                     i;
@@ -810,7 +818,7 @@ pub const AppState = struct {
                     } else {
                         self.cache.enforceVramBudget(
                             gpu_dev,
-                            self.viewer.navigation.current_index,
+                            self.viewer.navigation.getVisibleNeighbors(),
                             self.viewer.getTransitionPrevIndex(),
                             self.viewer.navigation.count(),
                             image.CacheSlotMap.DEFAULT_MAX_VRAM_BYTES,

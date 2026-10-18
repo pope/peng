@@ -425,30 +425,31 @@ pub const NavigationState = struct {
         return self.setViewMode(self.view_mode.cycle());
     }
 
-    /// Advances the selection to the next visible image using circular SIMD scanning.
-    pub fn nextIndex(self: *NavigationState) ?usize {
-        self.slideshow.resetTimer();
-        self.last_nav_time_ms = @max(1, sdl.timer.getTicks());
-        self.direction = .forward;
+    /// Returns the next circularly visible index after `from_idx` without
+    /// mutating navigation state, or `null` if no visible items exist.
+    pub fn peekNextVisible(
+        self: *const NavigationState,
+        from_idx: usize,
+    ) ?usize {
         const len = self.items.len;
         if (len == 0 or self.getVisibleCount() == 0) return null;
-
-        const cur = self.current_index orelse self.anchor_index;
+        const cur = @min(from_idx, len - 1);
         const start = (cur + 1) % len;
         const classes = self.items.items(.classification);
 
         // Forward scan from [start..len]
         if (findNextVisibleInRange(classes, start, len, self.view_mode)) |idx| {
-            self.current_index = idx;
-            self.anchor_index = idx;
             return idx;
         }
 
         // Circular wrap-around scan from [0..start]
         if (start > 0) {
-            if (findNextVisibleInRange(classes, 0, start, self.view_mode)) |idx| {
-                self.current_index = idx;
-                self.anchor_index = idx;
+            if (findNextVisibleInRange(
+                classes,
+                0,
+                start,
+                self.view_mode,
+            )) |idx| {
                 return idx;
             }
         }
@@ -456,34 +457,89 @@ pub const NavigationState = struct {
         return null;
     }
 
-    /// Moves the selection to the previous visible image using circular SIMD scanning.
-    pub fn prevIndex(self: *NavigationState) ?usize {
-        self.slideshow.resetTimer();
-        self.last_nav_time_ms = @max(1, sdl.timer.getTicks());
-        self.direction = .backward;
+    /// Returns the previous circularly visible index before `from_idx` without
+    /// mutating navigation state, or `null` if no visible items exist.
+    pub fn peekPrevVisible(
+        self: *const NavigationState,
+        from_idx: usize,
+    ) ?usize {
         const len = self.items.len;
         if (len == 0 or self.getVisibleCount() == 0) return null;
-
-        const cur = self.current_index orelse self.anchor_index;
+        const cur = @min(from_idx, len - 1);
         const start = if (cur == 0) len - 1 else cur - 1;
         const classes = self.items.items(.classification);
 
         // Backward scan from [0..start]
         if (findPrevVisibleInRange(classes, 0, start, self.view_mode)) |idx| {
-            self.current_index = idx;
-            self.anchor_index = idx;
             return idx;
         }
 
         // Circular wrap-around scan from [start+1..len-1]
         if (start + 1 < len) {
-            if (findPrevVisibleInRange(classes, start + 1, len - 1, self.view_mode)) |idx| {
-                self.current_index = idx;
-                self.anchor_index = idx;
+            if (findPrevVisibleInRange(
+                classes,
+                start + 1,
+                len - 1,
+                self.view_mode,
+            )) |idx| {
                 return idx;
             }
         }
 
+        return null;
+    }
+
+    /// Computes the visible ±1 and ±2 neighbor indices around `current_index`
+    /// in the active `view_mode`.
+    pub fn getVisibleNeighbors(
+        self: *const NavigationState,
+    ) ?VisibleNeighbors {
+        const cur = self.current_index orelse return null;
+        const len = self.items.len;
+        if (cur >= len) return null;
+        const vis_count = self.getVisibleCount();
+        if (vis_count == 0) return null;
+        if (vis_count == len) {
+            return VisibleNeighbors.fromRawIndex(cur, len);
+        }
+        const next_1 = self.peekNextVisible(cur) orelse cur;
+        const prev_1 = self.peekPrevVisible(cur) orelse cur;
+        const next_2 = self.peekNextVisible(next_1) orelse next_1;
+        const prev_2 = self.peekPrevVisible(prev_1) orelse prev_1;
+        return .{
+            .current = cur,
+            .next_1 = next_1,
+            .prev_1 = prev_1,
+            .next_2 = next_2,
+            .prev_2 = prev_2,
+        };
+    }
+
+    /// Advances selection to the next visible image using circular SIMD scan.
+    pub fn nextIndex(self: *NavigationState) ?usize {
+        self.slideshow.resetTimer();
+        self.last_nav_time_ms = @max(1, sdl.timer.getTicks());
+        self.direction = .forward;
+        const cur = self.current_index orelse self.anchor_index;
+        if (self.peekNextVisible(cur)) |idx| {
+            self.current_index = idx;
+            self.anchor_index = idx;
+            return idx;
+        }
+        return null;
+    }
+
+    /// Moves selection to the previous visible image using circular SIMD scan.
+    pub fn prevIndex(self: *NavigationState) ?usize {
+        self.slideshow.resetTimer();
+        self.last_nav_time_ms = @max(1, sdl.timer.getTicks());
+        self.direction = .backward;
+        const cur = self.current_index orelse self.anchor_index;
+        if (self.peekPrevVisible(cur)) |idx| {
+            self.current_index = idx;
+            self.anchor_index = idx;
+            return idx;
+        }
         return null;
     }
 
@@ -505,6 +561,82 @@ pub const NavigationState = struct {
         self.current_index = target;
         self.anchor_index = target;
         return self.current_index;
+    }
+};
+
+/// Visible neighbor indices around `current` at steps ±1 and ±2 in the active
+/// `ViewMode`.
+pub const VisibleNeighbors = struct {
+    current: usize,
+    next_1: usize,
+    prev_1: usize,
+    next_2: usize,
+    prev_2: usize,
+
+    /// Constructs circular ±1 and ±2 neighbors around `idx` in an unfiltered
+    /// list of length `len` (`len > 0`).
+    pub fn fromRawIndex(idx: usize, len: usize) VisibleNeighbors {
+        std.debug.assert(len > 0);
+        return .{
+            .current = idx,
+            .next_1 = (idx + 1) % len,
+            .prev_1 = (idx + len - 1) % len,
+            .next_2 = (idx + 2) % len,
+            .prev_2 = if (len >= 2) (idx + len - 2) % len else idx,
+        };
+    }
+
+    /// Returns the step distance (`0`, `1`, or `2`) if `index` is in the
+    /// visible ±2 window, or `null` if it is outside the window.
+    pub fn stepDistance(self: VisibleNeighbors, index: usize) ?usize {
+        if (index == self.current) return 0;
+        if (index == self.next_1 or index == self.prev_1) return 1;
+        if (index == self.next_2 or index == self.prev_2) return 2;
+        return null;
+    }
+
+    /// Populates `out` with unique visible indices ordered by `direction` and
+    /// capped by `max_step_dist` (`0..2`), returning the active slice.
+    pub fn collectUnique(
+        self: VisibleNeighbors,
+        direction: NavDirection,
+        max_step_dist: usize,
+        out: *[5]usize,
+    ) []const usize {
+        out[0] = self.current;
+        var count: usize = 1;
+
+        const Candidate = struct { idx: usize, dist: usize };
+        const candidates = if (direction == .backward)
+            [_]Candidate{
+                .{ .idx = self.prev_1, .dist = 1 },
+                .{ .idx = self.next_1, .dist = 1 },
+                .{ .idx = self.prev_2, .dist = 2 },
+                .{ .idx = self.next_2, .dist = 2 },
+            }
+        else
+            [_]Candidate{
+                .{ .idx = self.next_1, .dist = 1 },
+                .{ .idx = self.prev_1, .dist = 1 },
+                .{ .idx = self.next_2, .dist = 2 },
+                .{ .idx = self.prev_2, .dist = 2 },
+            };
+
+        for (candidates) |cand| {
+            if (cand.dist > max_step_dist) continue;
+            var unique = true;
+            for (out[0..count]) |existing| {
+                if (existing == cand.idx) {
+                    unique = false;
+                    break;
+                }
+            }
+            if (unique) {
+                out[count] = cand.idx;
+                count += 1;
+            }
+        }
+        return out[0..count];
     }
 };
 
