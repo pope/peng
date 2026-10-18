@@ -855,6 +855,7 @@ fn renderImageCanvas(
                 },
                 .offset = .{ .x = 0.0, .y = 0.0 },
                 .z_index = 0,
+                .pointer_capture_mode = .passthrough,
             },
             .image = .{
                 .image_data = thumb_tex.asOpaque(),
@@ -951,6 +952,7 @@ fn renderImageCanvas(
                     },
                     .offset = .{ .x = 0.0, .y = 0.0 },
                     .z_index = 1,
+                    .pointer_capture_mode = .passthrough,
                 } else .{},
                 .image = .{
                     .image_data = tex.asOpaque(),
@@ -1122,6 +1124,7 @@ fn renderDissolvePrevQuad(
             },
             .offset = .{ .x = 0.0, .y = 0.0 },
             .z_index = 0,
+            .pointer_capture_mode = .passthrough,
         },
         .image = .{
             .image_data = prev_tex.asOpaque(),
@@ -1253,4 +1256,111 @@ test "formatLoadingText - narrow viewport fallback" {
     };
     const res = formatLoadingText(std.testing.allocator, null, 100.0, 22, &data);
     try std.testing.expectEqualStrings("Loading...", res);
+}
+
+test "renderViewport - floating crossfade quads allow Viewport hit-testing" {
+    const dummyMeasure = struct {
+        fn measure(
+            text: []const u8,
+            config: *clay.TextElementConfig,
+            _: void,
+        ) clay.Dimensions {
+            _ = config;
+            return .{ .w = @floatFromInt(text.len * 8), .h = 16.0 };
+        }
+    }.measure;
+    const setNullCtx = @as(
+        *const fn (?*clay.Context) callconv(.c) void,
+        @ptrCast(&clay.cdefs.Clay_SetCurrentContext),
+    );
+    setNullCtx(null);
+    defer setNullCtx(null);
+    const clay_mem = try std.testing.allocator.alloc(u8, clay.minMemorySize());
+    defer std.testing.allocator.free(clay_mem);
+    _ = clay.initialize(
+        clay.Arena.init(clay_mem),
+        .{ .w = 1000, .h = 800 },
+        .{},
+    );
+    clay.setMeasureTextFunction(void, {}, dummyMeasure);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var data = MeasureTextUserData{
+        .allocator = std.testing.allocator,
+        .fonts = &([_]?sdl.Font{null} ** 2),
+    };
+    const dummy_tex: sdl.gpu.Texture = .{ .ptr = @ptrFromInt(0x1000) };
+    const entry = state.CacheEntry{
+        .status = .{
+            .loaded_gpu = .{
+                .gpu_texture = dummy_tex,
+                .w = 800,
+                .h = 600,
+                .size_bytes = 1000,
+                .memory_size_bytes = 1920000,
+            },
+        },
+        .thumbnail = .{
+            .loaded = .{
+                .texture = dummy_tex,
+                .info = .{ .w = 160, .h = 120, .dct_snapped = false },
+            },
+        },
+        .full_w = 800,
+        .full_h = 600,
+    };
+    var pal_state = try state.PaletteState.init(std.testing.allocator);
+    defer pal_state.deinit();
+    const model = UiViewModel{
+        .is_fullscreen = false,
+        .total_images = 2,
+        .current_index = 1,
+        .current_image_entry = null,
+        .current_entry = entry,
+        .current_classification = .unflagged,
+        .view_mode = .default,
+        .visible_state = .empty_directory,
+        .visible_count = 2,
+        .visible_position = 2,
+        .is_loading_files = false,
+        .slideshow = .inactive,
+        .manga_mode = false,
+        .overlays = .{},
+        .window_title = "test",
+        .viewport = .{},
+        .palette = &pal_state,
+        .snackbar = .none,
+        .anim_values = [_]f32{0.5} ** 32,
+        .debug_show_thumb = false,
+        .is_thumb_crossfading = true,
+        .image_dissolve = .{
+            .active = .{
+                .prev_entry = entry,
+                .prev_rotation = 0.0,
+                .prev_zoom = 1.0,
+                .prev_pan_x = 0.0,
+                .prev_pan_y = 0.0,
+            },
+        },
+        .current_time_ms = 100,
+    };
+
+    clay.beginLayout();
+    renderViewport(
+        model,
+        model.current_entry,
+        800.0,
+        600.0,
+        1000.0,
+        800.0,
+        2,
+        arena.allocator(),
+        &data,
+    );
+    _ = clay.endLayout();
+    clay.setPointerState(.{ .x = 500, .y = 400 }, false);
+
+    try std.testing.expect(clay.pointerOver(clay.getElementId("Viewport")));
 }

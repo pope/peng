@@ -1338,6 +1338,10 @@ pub fn renderPalette(
                 .y = y_offset,
             },
             .z_index = 200,
+            .pointer_capture_mode = if (palette.is_closing)
+                .passthrough
+            else
+                .capture,
         },
     })({
         // Title / Header
@@ -1610,4 +1614,94 @@ test "VirtualWindow compute calculations and edge cases" {
     try std.testing.expectEqual(@as(f32, 446.0), w2.top_spacer_h);
     // bottom spacer = (100 - 18) * 50 - 4 = 82 * 50 - 4 = 4096.0
     try std.testing.expectEqual(@as(f32, 4096.0), w2.bottom_spacer_h);
+}
+
+test "renderPalette - closing palette passes pointer through to parent" {
+    const dummyMeasure = struct {
+        fn measure(
+            text: []const u8,
+            config: *clay.TextElementConfig,
+            _: void,
+        ) clay.Dimensions {
+            _ = config;
+            return .{ .w = @floatFromInt(text.len * 8), .h = 16.0 };
+        }
+    }.measure;
+    const setNullCtx = @as(
+        *const fn (?*clay.Context) callconv(.c) void,
+        @ptrCast(&clay.cdefs.Clay_SetCurrentContext),
+    );
+    setNullCtx(null);
+    defer setNullCtx(null);
+    const clay_mem = try std.testing.allocator.alloc(u8, clay.minMemorySize());
+    defer std.testing.allocator.free(clay_mem);
+    _ = clay.initialize(
+        clay.Arena.init(clay_mem),
+        .{ .w = 1000, .h = 800 },
+        .{},
+    );
+    clay.setMeasureTextFunction(void, {}, dummyMeasure);
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var data = MeasureTextUserData{
+        .allocator = std.testing.allocator,
+        .fonts = &([_]?sdl.Font{null} ** 2),
+    };
+    var pal_state = try state.PaletteState.init(std.testing.allocator);
+    defer pal_state.deinit();
+    pal_state.mode = .actions;
+    pal_state.is_closing = false;
+
+    const model = UiViewModel{
+        .is_fullscreen = false,
+        .total_images = 0,
+        .current_index = null,
+        .current_image_entry = null,
+        .current_entry = null,
+        .current_classification = .unflagged,
+        .view_mode = .default,
+        .visible_state = .empty_directory,
+        .visible_count = 0,
+        .visible_position = null,
+        .is_loading_files = false,
+        .slideshow = .inactive,
+        .manga_mode = false,
+        .overlays = .{},
+        .window_title = "test",
+        .viewport = .{},
+        .palette = &pal_state,
+        .snackbar = .none,
+        .anim_values = [_]f32{0.5} ** 32,
+        .debug_show_thumb = false,
+        .is_thumb_crossfading = false,
+        .image_dissolve = .none,
+        .current_time_ms = 100,
+    };
+
+    // 1. Open palette captures pointer over center -> parent is not hit
+    clay.beginLayout();
+    clay.UI()(.{
+        .id = clay.getElementId("RootHost"),
+        .layout = .{ .sizing = .{ .w = .grow, .h = .grow } },
+    })({
+        try renderPalette(model, arena.allocator(), &data);
+    });
+    _ = clay.endLayout();
+    clay.setPointerState(.{ .x = 500, .y = 350 }, false);
+    try std.testing.expect(!clay.pointerOver(clay.getElementId("RootHost")));
+
+    // 2. Closing palette passes pointer through -> parent is hit
+    pal_state.is_closing = true;
+    clay.beginLayout();
+    clay.UI()(.{
+        .id = clay.getElementId("RootHost"),
+        .layout = .{ .sizing = .{ .w = .grow, .h = .grow } },
+    })({
+        try renderPalette(model, arena.allocator(), &data);
+    });
+    _ = clay.endLayout();
+    clay.setPointerState(.{ .x = 500, .y = 350 }, false);
+    try std.testing.expect(clay.pointerOver(clay.getElementId("RootHost")));
 }
