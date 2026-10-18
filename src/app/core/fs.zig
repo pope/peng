@@ -210,7 +210,10 @@ pub fn scanCbzImageEntries(
         _ = arena.reset(.retain_capacity);
         const temp_alloc = arena.allocator();
 
-        try f_reader.seekTo(entry.header_zip_offset + @sizeOf(std.zip.CentralDirectoryFileHeader));
+        try f_reader.seekTo(
+            entry.header_zip_offset +|
+                @sizeOf(std.zip.CentralDirectoryFileHeader),
+        );
         const entry_name = try temp_alloc.alloc(u8, entry.filename_len);
         try f_reader.interface.readSliceAll(entry_name);
 
@@ -335,7 +338,7 @@ pub fn countFolderContents(io: std.Io, folder_path: []const u8) FolderCounts {
             _ = arena.reset(.retain_capacity);
             const temp_alloc = arena.allocator();
             const hdr_size = @sizeOf(std.zip.CentralDirectoryFileHeader);
-            f_reader.seekTo(entry.header_zip_offset + hdr_size) catch continue;
+            f_reader.seekTo(entry.header_zip_offset +| hdr_size) catch continue;
             const entry_name = temp_alloc.alloc(u8, entry.filename_len) catch continue;
             f_reader.interface.readSliceAll(entry_name) catch continue;
             if (isImageFile(entry_name)) {

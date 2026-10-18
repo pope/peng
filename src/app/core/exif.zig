@@ -744,12 +744,13 @@ pub fn extractJpegThumbnailLocation(data: []const u8) ?ThumbnailLocation {
     const ifd0_off = header.ifd0_off;
 
     const num_ifd0_entries = readU16(tiff[ifd0_off..][0..2], is_le);
-    const ifd1_ptr_off = @as(usize, ifd0_off) + 2 + @as(usize, num_ifd0_entries) * 12;
-    if (ifd1_ptr_off + 4 > tiff.len) return null;
+    const ifd1_ptr_off = @as(usize, ifd0_off) +| 2 +|
+        @as(usize, num_ifd0_entries) *| 12;
+    if (ifd1_ptr_off +| 4 > tiff.len) return null;
 
     const ifd1_off = readU32(tiff[ifd1_ptr_off..][0..4], is_le);
-    const ifd1_usize: usize = ifd1_off;
-    if (ifd1_usize == 0 or ifd1_usize + 2 > tiff.len) return null;
+    const ifd1_usize = std.math.cast(usize, ifd1_off) orelse return null;
+    if (ifd1_usize == 0 or ifd1_usize +| 2 > tiff.len) return null;
 
     const num_ifd1_entries = readU16(tiff[ifd1_usize..][0..2], is_le);
     var entry_off = ifd1_usize + 2;
@@ -759,7 +760,7 @@ pub fn extractJpegThumbnailLocation(data: []const u8) ?ThumbnailLocation {
 
     var i: usize = 0;
     while (i < num_ifd1_entries) : (i += 1) {
-        if (entry_off + 12 > tiff.len) break;
+        if (entry_off +| 12 > tiff.len) break;
         const entry = tiff[entry_off .. entry_off + 12];
         entry_off += 12;
 
@@ -774,7 +775,7 @@ pub fn extractJpegThumbnailLocation(data: []const u8) ?ThumbnailLocation {
     if (thumb_off != null and thumb_len != null and thumb_len.? > 0) {
         const tiff_start_off = @intFromPtr(tiff.ptr) - @intFromPtr(data.ptr);
         return .{
-            .file_offset = tiff_start_off + @as(u64, thumb_off.?),
+            .file_offset = tiff_start_off +| @as(u64, thumb_off.?),
             .length = thumb_len.?,
         };
     }

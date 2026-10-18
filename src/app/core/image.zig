@@ -390,8 +390,7 @@ pub fn parseImageDimensions(header: []const u8, mime_type: []const u8) ?ImageDim
     const is_fuji_magic = header.len >= 8 and std.mem.startsWith(u8, header, "FUJIFILM");
     if (is_fuji_mime or is_fuji_magic) {
         if (exif.extractFujiRafMetadataLocation(header)) |meta_loc| {
-            const end = meta_loc.file_offset + meta_loc.length;
-            if (end <= header.len) {
+            if (meta_loc.file_offset +| meta_loc.length <= header.len) {
                 const off: usize = @intCast(meta_loc.file_offset);
                 const len: usize = @intCast(meta_loc.length);
                 if (exif.parseFujiRafDimensions(header[off .. off + len])) |d| {
@@ -400,9 +399,11 @@ pub fn parseImageDimensions(header: []const u8, mime_type: []const u8) ?ImageDim
             }
         }
         if (exif.extractFujiRafPreviewLocation(header)) |prev_loc| {
-            const off: usize = @intCast(prev_loc.file_offset);
-            if (off + 32 <= header.len) {
-                if (exif.readJpegDimensions(header[off..])) |d| return .{ .w = d.w, .h = d.h };
+            if (prev_loc.file_offset +| 32 <= header.len) {
+                const off: usize = @intCast(prev_loc.file_offset);
+                if (exif.readJpegDimensions(header[off..])) |d| {
+                    return .{ .w = d.w, .h = d.h };
+                }
             }
         }
     } else if (std.mem.startsWith(u8, mime_type, "image/x-") or
@@ -607,9 +608,7 @@ fn probeFujiRafMetadata(
 
     if (dims == null) {
         if (exif.extractFujiRafMetadataLocation(header)) |meta_loc| {
-            if (meta_loc.length <= n and
-                meta_loc.file_offset <= n -| meta_loc.length)
-            {
+            if (meta_loc.file_offset +| meta_loc.length <= n) {
                 const start: usize = @intCast(meta_loc.file_offset);
                 const len: usize = @intCast(meta_loc.length);
                 const m_slice = header[start .. start + len];
@@ -645,8 +644,8 @@ fn probeFujiRafMetadata(
 
     if (exif.extractFujiRafPreviewLocation(header)) |prev_loc| {
         has_thumb = true;
-        const off: usize = @intCast(prev_loc.file_offset);
-        if (off + 4096 <= n) {
+        if (prev_loc.file_offset +| 4096 <= n) {
+            const off: usize = @intCast(prev_loc.file_offset);
             rot = exif.parseExifOrientation(header[off..n]) orelse .normal;
             if (dims == null) {
                 dims = parseImageDimensions(header[off..n], "image/jpeg");
@@ -928,13 +927,12 @@ fn loadThumbnailFromLocation(
     const max_thumb_size_bytes = 2 * 1024 * 1024;
     if (loc.length == 0 or
         loc.length > max_thumb_size_bytes or
-        loc.length > file_size or
-        loc.file_offset > file_size - loc.length)
+        loc.file_offset +| loc.length > file_size)
     {
         return null;
     }
     const t_len: usize = @intCast(loc.length);
-    if (loc.file_offset + loc.length <= header_slice.len) {
+    if (loc.file_offset +| loc.length <= header_slice.len) {
         const t_off: usize = @intCast(loc.file_offset);
         return sdl.Surface.loadConstMemOpt(header_slice[t_off .. t_off + t_len]);
     }
@@ -1008,9 +1006,9 @@ fn loadStoredZipThumbnail(
 
     const loc = exif.extractJpegThumbnailLocation(image_slice) orelse
         return null;
+    if (loc.file_offset +| loc.length > image_slice.len) return null;
     const off: usize = @intCast(loc.file_offset);
     const len: usize = @intCast(loc.length);
-    if (off + len > image_slice.len) return null;
 
     const surf = sdl.Surface.loadConstMemOpt(
         image_slice[off .. off + len],
@@ -1051,9 +1049,7 @@ fn resolveFujiRafThumbnail(
     const prev_loc_opt = exif.extractFujiRafPreviewLocation(header_slice);
 
     if (exif.extractFujiRafMetadataLocation(header_slice)) |meta_loc| {
-        if (meta_loc.length <= header_n and
-            meta_loc.file_offset <= header_n - meta_loc.length)
-        {
+        if (meta_loc.file_offset +| meta_loc.length <= header_n) {
             const end = meta_loc.file_offset + meta_loc.length;
             const meta_slice =
                 header_slice[@intCast(meta_loc.file_offset)..@intCast(end)];
@@ -1063,8 +1059,7 @@ fn resolveFujiRafThumbnail(
             }
         } else if (meta_loc.length > 0 and
             meta_loc.length <= 64 * 1024 and
-            meta_loc.length <= file_size and
-            meta_loc.file_offset <= file_size - meta_loc.length)
+            meta_loc.file_offset +| meta_loc.length <= file_size)
         {
             var m_buf: [64 * 1024]u8 = undefined;
             var m_slices = [_][]u8{m_buf[0..meta_loc.length]};
@@ -1091,13 +1086,13 @@ fn resolveFujiRafThumbnail(
     }
 
     if (prev_loc_opt) |prev_loc| {
-        const off: usize = @intCast(prev_loc.file_offset);
-        if (off + 4096 <= header_n) {
+        if (prev_loc.file_offset +| 4096 <= header_n) {
+            const off: usize = @intCast(prev_loc.file_offset);
             const h_sub = header_slice[off..header_n];
             info.orientation = exif.parseExifOrientation(h_sub) orelse .normal;
             if (exif.extractJpegThumbnailLocation(h_sub)) |j_thumb| {
                 info.thumb_loc = .{
-                    .file_offset = prev_loc.file_offset +
+                    .file_offset = prev_loc.file_offset +|
                         j_thumb.file_offset,
                     .length = j_thumb.length,
                 };
@@ -1122,7 +1117,7 @@ fn resolveFujiRafThumbnail(
                     exif.parseExifOrientation(p_hdr[0..pn]) orelse .normal;
                 if (exif.extractJpegThumbnailLocation(p_hdr[0..pn])) |j_thumb| {
                     info.thumb_loc = .{
-                        .file_offset = prev_loc.file_offset +
+                        .file_offset = prev_loc.file_offset +|
                             j_thumb.file_offset,
                         .length = j_thumb.length,
                     };
@@ -2613,4 +2608,32 @@ test "computeFallbackScaleDims and stageSurfaceToRgba32 downscale safely" {
         scaled.format(),
     );
     try std.testing.expect(conv_ms != null);
+}
+
+test "parseImageDimensions - rejects extreme Fuji RAF offsets" {
+    var raf_hdr: [128]u8 = @splat(0);
+    @memcpy(raf_hdr[0..16], "FUJIFILMCCD-RAW ");
+    // Preview JPEG offset = 0xFFFF_FFF0, length = 0x100
+    std.mem.writeInt(u32, raf_hdr[84..88], 0xFFFF_FFF0, .big);
+    std.mem.writeInt(u32, raf_hdr[88..92], 0x0000_0100, .big);
+    // Metadata offset = 0xFFFF_FFF0, length = 0x100
+    std.mem.writeInt(u32, raf_hdr[92..96], 0xFFFF_FFF0, .big);
+    std.mem.writeInt(u32, raf_hdr[96..100], 0x0000_0100, .big);
+
+    try std.testing.expect(
+        parseImageDimensions(&raf_hdr, "image/x-fuji-raf") == null,
+    );
+
+    // Offset = 0 with length > header.len must also be rejected safely
+    std.mem.writeInt(u32, raf_hdr[84..88], 0, .big);
+    std.mem.writeInt(u32, raf_hdr[88..92], 1000, .big);
+    std.mem.writeInt(u32, raf_hdr[92..96], 0, .big);
+    std.mem.writeInt(u32, raf_hdr[96..100], 1000, .big);
+
+    try std.testing.expect(
+        parseImageDimensions(&raf_hdr, "image/x-fuji-raf") == null,
+    );
+    try std.testing.expect(
+        parseImageDimensions(raf_hdr[0..16], "image/x-fuji-raf") == null,
+    );
 }

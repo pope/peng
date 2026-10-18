@@ -364,13 +364,13 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
     if (is_fuji) {
         prev_loc_opt = exif.extractFujiRafPreviewLocation(header_slice);
         if (exif.extractFujiRafMetadataLocation(header_slice)) |meta_loc| {
-            if (meta_loc.file_offset <= header_n -| meta_loc.length) {
+            if (meta_loc.file_offset +| meta_loc.length <= header_n) {
                 const end = meta_loc.file_offset + meta_loc.length;
                 raw_sensor_dims = exif.parseFujiRafDimensions(
                     header_slice[@intCast(meta_loc.file_offset)..@intCast(end)],
                 );
             } else if (meta_loc.length > 0 and meta_loc.length <= 64 * 1024 and
-                meta_loc.file_offset <= file_size -| meta_loc.length)
+                meta_loc.file_offset +| meta_loc.length <= file_size)
             {
                 var m_buf: [64 * 1024]u8 = undefined;
                 var m_slices = [_][]u8{m_buf[0..meta_loc.length]};
@@ -392,12 +392,13 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
             }
         }
         if (prev_loc_opt) |prev_loc| {
-            const off: usize = @intCast(prev_loc.file_offset);
-            if (off <= header_n -| 4096) {
+            if (prev_loc.file_offset +| 4096 <= header_n) {
+                const off: usize = @intCast(prev_loc.file_offset);
                 orientation = exif.parseExifOrientation(header_slice[off..header_n]) orelse .normal;
                 if (exif.extractJpegThumbnailLocation(header_slice[off..header_n])) |j_thumb| {
                     thumb_loc_opt = .{
-                        .file_offset = prev_loc.file_offset + j_thumb.file_offset,
+                        .file_offset = prev_loc.file_offset +|
+                            j_thumb.file_offset,
                         .length = j_thumb.length,
                     };
                 }
@@ -418,7 +419,8 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                     orientation = exif.parseExifOrientation(p_hdr[0..pn]) orelse .normal;
                     if (exif.extractJpegThumbnailLocation(p_hdr[0..pn])) |j_thumb| {
                         thumb_loc_opt = .{
-                            .file_offset = prev_loc.file_offset + j_thumb.file_offset,
+                            .file_offset = prev_loc.file_offset +|
+                                j_thumb.file_offset,
                             .length = j_thumb.length,
                         };
                     }
@@ -508,10 +510,10 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
 
         if (target_loc_opt) |tloc| {
             if (tloc.length > 0 and tloc.length <= max_placeholder_bytes and
-                tloc.file_offset <= file_size -| tloc.length)
+                tloc.file_offset +| tloc.length <= file_size)
             {
                 const t_len: usize = @intCast(tloc.length);
-                if (tloc.file_offset <= header_n -| tloc.length) {
+                if (tloc.file_offset +| tloc.length <= header_n) {
                     const t_off: usize = @intCast(tloc.file_offset);
                     _ = workers.thumb_header_hits.fetchAdd(1, .monotonic);
                     thumb_surf = sdl.Surface.loadConstMemOpt(
@@ -624,7 +626,9 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
         return true;
     };
 
-    if (prev_loc.length == 0 or prev_loc.file_offset > file_size -| prev_loc.length) {
+    if (prev_loc.length == 0 or
+        prev_loc.file_offset +| prev_loc.length > file_size)
+    {
         if (is_pair) return false;
         failDecodeWorker(
             workers,
@@ -643,7 +647,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
 
     var read_time_ms = header_read_time_ms;
 
-    if (prev_loc.file_offset <= header_n -| prev_loc.length) {
+    if (prev_loc.file_offset +| prev_loc.length <= header_n) {
         const off: usize = @intCast(prev_loc.file_offset);
         const len: usize = @intCast(prev_loc.length);
         prev_bytes = header_slice[off .. off + len];
