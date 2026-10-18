@@ -96,14 +96,22 @@ fn processEditPanelClicks(self: *AppState, input: FrameInput) !void {
 /// 1. Updates continuous slider dragging state while mouse button is held.
 /// 2. Tests mouse clicks against interactive buttons (close, compare, reset).
 /// 3. Initiates slider dragging when clicking on track or knob.
-pub fn sysProcessUiInteractions(ctx: FrameContext) !void {
+pub fn sysProcessUiInteractions(
+    ctx: FrameContext,
+    palette_closed_this_frame: bool,
+) !void {
     const self = ctx.state;
     const input = ctx.input orelse return;
+    const palette_blocking = self.viewer.ui.palette.isAcceptingInput() or
+        palette_closed_this_frame;
 
     // 1. Continuous Slider Dragging Update
     switch (self.viewer.drag_state) {
         .slider => |s| {
-            if (input.mouse_left_down) {
+            if (input.mouse_left_down and
+                !palette_blocking and
+                self.viewer.ui.overlays.edit_panel.visible)
+            {
                 const desc = state.getDescriptor(s.param);
                 const val = computeSliderValue(
                     desc,
@@ -123,7 +131,12 @@ pub fn sysProcessUiInteractions(ctx: FrameContext) !void {
     }
 
     // 2. Discrete Clicks (Buttons & Initial Slider Click)
-    if (!input.mouse_left_clicked or input.isPointerInDebugPanel()) return;
+    if (palette_blocking or
+        !input.mouse_left_clicked or
+        input.isPointerInDebugPanel())
+    {
+        return;
+    }
 
     // Floating Overlays Close Buttons
     if (self.viewer.ui.overlays.info_panel.visible and
@@ -141,4 +154,63 @@ pub fn sysProcessUiInteractions(ctx: FrameContext) !void {
     if (self.viewer.ui.overlays.edit_panel.visible) {
         try processEditPanelClicks(self, input);
     }
+}
+
+test "sysProcessUiInteractions cancels slider drag when palette opens" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    app_st.viewer.ui.overlays.edit_panel.visible = true;
+    app_st.viewer.ui.overlays.edit_panel.active_slider = .brightness;
+    app_st.viewer.drag_state = .{
+        .slider = .{
+            .param = .brightness,
+            .track_x = 100.0,
+            .track_w = 200.0,
+        },
+    };
+
+    const frame_input = FrameInput{
+        .win_w = 800,
+        .win_h = 600,
+        .scale_x = 1.0,
+        .scale_y = 1.0,
+        .mouse_x = 150.0,
+        .mouse_y = 100.0,
+        .mouse_left_down = true,
+        .mouse_left_clicked = false,
+        .mouse_inside = true,
+        .quit_requested = false,
+        .scroll_delta_x = 0,
+        .scroll_delta_y = 0,
+        .keys_pressed = .empty,
+        .key_modifiers = .{},
+        .text_input = null,
+        .dropped_path = null,
+        .ticks = 0,
+        .delta_time_ms = 16.0,
+    };
+
+    // Opening the palette while dragging a slider cancels the drag
+    app_st.viewer.ui.palette.mode = .actions;
+    app_st.viewer.ui.palette.is_closing = false;
+    try sysProcessUiInteractions(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = frame_input,
+        .delta_time_ms = 16.0,
+    }, false);
+
+    try std.testing.expectEqual(state.DragState.none, app_st.viewer.drag_state);
+    try std.testing.expectEqual(
+        @as(?state.EditParam, null),
+        app_st.viewer.ui.overlays.edit_panel.active_slider,
+    );
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        app_st.pending_intents.items.len,
+    );
 }

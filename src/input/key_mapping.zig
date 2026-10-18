@@ -125,13 +125,22 @@ pub fn updateDirectionalPan(
     if (std.math.isNan(dt_ms) or dt_ms <= 0.0) return null;
     const dt_sec = @min(dt_ms, 50.0) / 1000.0;
 
-    // 1. Detect newly pressed keys this frame (hardware scancodes + SDL keys)
-    var newly_pressed_raw: u4 = current_held.raw() & ~ctrl.prev_held.raw();
+    // 1. Update suppressed mask and detect newly pressed keys this frame
+    var pressed_mask: u4 = 0;
     for (keys_pressed) |key| {
         if (getDirectionForMappedKey(key)) |dir| {
-            newly_pressed_raw |= dir.raw();
+            pressed_mask |= dir.raw();
         }
     }
+    ctrl.suppressed_held = state.DirectionFlags.fromRaw(
+        (ctrl.suppressed_held.raw() & current_held.raw()) & ~pressed_mask,
+    );
+    const effective_held = state.DirectionFlags.fromRaw(
+        current_held.raw() & ~ctrl.suppressed_held.raw(),
+    );
+
+    const newly_pressed_raw: u4 =
+        (effective_held.raw() & ~ctrl.prev_held.raw()) | pressed_mask;
     const newly_pressed = state.DirectionFlags.fromRaw(newly_pressed_raw);
 
     // 2. If a new direction was pressed from rest, initiate smooth tap travel
@@ -142,12 +151,12 @@ pub fn updateDirectionalPan(
 
     // 3. Determine active directions: physically held keys take precedence;
     // if keys were released but smooth tap travel remains, use tap_direction.
-    var active_flags = current_held;
+    var active_flags = effective_held;
     if (!active_flags.hasAny()) {
         if (ctrl.smooth_tap_remaining > 0.001) {
             active_flags = ctrl.tap_direction;
         } else {
-            ctrl.reset();
+            ctrl.clearMotion();
             return null;
         }
     }
@@ -155,7 +164,7 @@ pub fn updateDirectionalPan(
     // 4. Branchless unit vector lookup & cancellation check
     const dir = DIRECTION_UNIT_LUT[active_flags.raw()];
     if (dir.x == 0.0 and dir.y == 0.0) {
-        ctrl.reset();
+        ctrl.clearMotion();
         return null;
     }
 
@@ -163,7 +172,7 @@ pub fn updateDirectionalPan(
     var step_dist = state.PanController.GLIDE_SPEED * dt_sec;
 
     // If completing a smooth tap after key release, clamp step to remaining
-    if (!current_held.hasAny()) {
+    if (!effective_held.hasAny()) {
         step_dist = @min(step_dist, ctrl.smooth_tap_remaining);
     }
     ctrl.smooth_tap_remaining = @max(
@@ -171,7 +180,7 @@ pub fn updateDirectionalPan(
         ctrl.smooth_tap_remaining - step_dist,
     );
 
-    ctrl.prev_held = current_held;
+    ctrl.prev_held = effective_held;
 
     const dx = dir.x * step_dist;
     const dy = dir.y * step_dist;
@@ -210,32 +219,43 @@ pub fn updateZoomMotion(
     if (std.math.isNan(dt_ms) or dt_ms <= 0.0) return null;
     const dt_sec = @min(dt_ms, 50.0) / 1000.0;
 
+    var pressed_mask: u2 = 0;
+    for (keys_pressed) |key| {
+        if (getZoomDirectionForMappedKey(key)) |dir| {
+            switch (dir) {
+                .in => pressed_mask |= (state.ZoomFlags{ .in = true }).raw(),
+                .out => pressed_mask |= (state.ZoomFlags{ .out = true }).raw(),
+                .none => {},
+            }
+        }
+    }
+    ctrl.suppressed_held = state.ZoomFlags.fromRaw(
+        (ctrl.suppressed_held.raw() & current_held.raw()) & ~pressed_mask,
+    );
+    const effective_held = state.ZoomFlags.fromRaw(
+        current_held.raw() & ~ctrl.suppressed_held.raw(),
+    );
+
     // 1. If currently paused at the 1.0x detent during a continuous hold,
     // countdown detent timer and hold zoom constant until it expires.
     if (ctrl.detent_pause_ms > 0.0) {
         ctrl.detent_pause_ms = @max(0.0, ctrl.detent_pause_ms - dt_ms);
-        ctrl.prev_held = current_held;
-        if (current_held.hasAny()) {
+        ctrl.prev_held = effective_held;
+        if (effective_held.hasAny()) {
             return null;
         } else {
-            ctrl.reset();
+            ctrl.clearMotion();
             return null;
         }
     }
 
     // 2. Detect newly pressed keys from rest
-    var newly_pressed_in = current_held.in and !ctrl.prev_held.in;
-    var newly_pressed_out = current_held.out and !ctrl.prev_held.out;
+    const pressed_flags = state.ZoomFlags.fromRaw(pressed_mask);
+    var newly_pressed_in = effective_held.in and !ctrl.prev_held.in;
+    var newly_pressed_out = effective_held.out and !ctrl.prev_held.out;
     if (!ctrl.prev_held.hasAny()) {
-        for (keys_pressed) |key| {
-            if (getZoomDirectionForMappedKey(key)) |dir| {
-                switch (dir) {
-                    .in => newly_pressed_in = true,
-                    .out => newly_pressed_out = true,
-                    .none => {},
-                }
-            }
-        }
+        if (pressed_flags.in) newly_pressed_in = true;
+        if (pressed_flags.out) newly_pressed_out = true;
     }
 
     if (!ctrl.prev_held.hasAny()) {
@@ -247,27 +267,27 @@ pub fn updateZoomMotion(
     }
 
     // 3. Opposing keys cancel out
-    if (current_held.in and current_held.out) {
-        ctrl.reset();
+    if (effective_held.in and effective_held.out) {
+        ctrl.clearMotion();
         return null;
     }
 
     // 4. Determine active direction: physically held keys take precedence;
     // if keys released but smooth tap travel remains, use tap_direction.
     var active_dir: state.ZoomDirection = .none;
-    if (current_held.in) {
+    if (effective_held.in) {
         active_dir = .in;
-    } else if (current_held.out) {
+    } else if (effective_held.out) {
         active_dir = .out;
     } else if (ctrl.smooth_tap_remaining > 0.0001) {
         active_dir = ctrl.tap_direction;
     } else {
-        ctrl.reset();
+        ctrl.clearMotion();
         return null;
     }
 
     if (active_dir == .none) {
-        ctrl.reset();
+        ctrl.clearMotion();
         return null;
     }
 
@@ -275,7 +295,7 @@ pub fn updateZoomMotion(
     var step_log = state.ZoomController.GLIDE_RATE * dt_sec;
 
     // If completing a smooth tap after key release, clamp step to remaining
-    if (!current_held.hasAny()) {
+    if (!effective_held.hasAny()) {
         step_log = @min(step_log, ctrl.smooth_tap_remaining);
     }
     ctrl.smooth_tap_remaining = @max(
@@ -283,7 +303,7 @@ pub fn updateZoomMotion(
         ctrl.smooth_tap_remaining - step_log,
     );
 
-    ctrl.prev_held = current_held;
+    ctrl.prev_held = effective_held;
 
     if (step_log <= 0.0) return null;
 

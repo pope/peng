@@ -457,14 +457,25 @@ pub const PanController = struct {
     smooth_tap_remaining: f32 = 0.0,
     tap_direction: DirectionFlags = .{},
     prev_held: DirectionFlags = .{},
+    suppressed_held: DirectionFlags = .{},
 
     pub const TAP_DISTANCE: f32 = 30.0;
     pub const GLIDE_SPEED: f32 = 800.0; // Physical pixels per second
 
-    pub inline fn reset(self: *PanController) void {
+    pub inline fn clearMotion(self: *PanController) void {
         self.smooth_tap_remaining = 0.0;
         self.tap_direction = .{};
         self.prev_held = .{};
+    }
+
+    pub inline fn reset(self: *PanController) void {
+        self.clearMotion();
+        self.suppressed_held = .{};
+    }
+
+    pub inline fn suppress(self: *PanController, held: DirectionFlags) void {
+        self.clearMotion();
+        self.suppressed_held = held;
     }
 
     pub inline fn isBusy(self: PanController) bool {
@@ -506,6 +517,7 @@ pub const ZoomController = struct {
     smooth_tap_remaining: f32 = 0.0,
     tap_direction: ZoomDirection = .none,
     prev_held: ZoomFlags = .{},
+    suppressed_held: ZoomFlags = .{},
     detent_pause_ms: f32 = 0.0,
     detent_target: ?f32 = null,
 
@@ -514,12 +526,22 @@ pub const ZoomController = struct {
     pub const GLIDE_RATE: f32 = 1.5; // Log units/sec (~4.5x per sec on hold)
     pub const DETENT_PAUSE_MS: f32 = 150.0; // 150ms detent pause at 1.0x
 
-    pub inline fn reset(self: *ZoomController) void {
+    pub inline fn clearMotion(self: *ZoomController) void {
         self.smooth_tap_remaining = 0.0;
         self.tap_direction = .none;
         self.prev_held = .{};
         self.detent_pause_ms = 0.0;
         self.detent_target = null;
+    }
+
+    pub inline fn reset(self: *ZoomController) void {
+        self.clearMotion();
+        self.suppressed_held = .{};
+    }
+
+    pub inline fn suppress(self: *ZoomController, held: ZoomFlags) void {
+        self.clearMotion();
+        self.suppressed_held = held;
     }
 
     pub inline fn isBusy(self: ZoomController) bool {

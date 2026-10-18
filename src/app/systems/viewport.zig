@@ -15,13 +15,16 @@ pub fn sysUpdateViewport(
     const state = ctx.state;
     const input = ctx.input orelse return;
 
+    const palette_blocking = state.viewer.ui.palette.isAcceptingInput() or
+        palette_closed_this_frame;
+
     // 1. Mouse Drag state machine
     var next_drag_state = state.viewer.drag_state;
     switch (next_drag_state) {
         .none => {},
         .slider => {},
         .viewport => |v| {
-            if (input.mouse_left_down) {
+            if (input.mouse_left_down and !palette_blocking) {
                 const dx = input.pixMouseX() - v.last_x;
                 const dy = input.pixMouseY() - v.last_y;
                 state.viewer.viewport.pan_x += dx;
@@ -37,7 +40,10 @@ pub fn sysUpdateViewport(
             }
         },
         .info => |inf| {
-            if (input.mouse_left_down) {
+            if (input.mouse_left_down and
+                !palette_blocking and
+                state.viewer.ui.overlays.info_panel.visible)
+            {
                 state.viewer.ui.overlays.info_panel.offset_x =
                     input.mouse_x - inf.start_x;
                 state.viewer.ui.overlays.info_panel.offset_y =
@@ -47,7 +53,10 @@ pub fn sysUpdateViewport(
             }
         },
         .stats => |st| {
-            if (input.mouse_left_down) {
+            if (input.mouse_left_down and
+                !palette_blocking and
+                state.viewer.ui.overlays.stats_panel.visible)
+            {
                 state.viewer.ui.overlays.stats_panel.offset_x =
                     input.mouse_x - st.start_x;
                 state.viewer.ui.overlays.stats_panel.offset_y =
@@ -59,49 +68,54 @@ pub fn sysUpdateViewport(
     }
 
     if (next_drag_state == .none and input.mouse_left_clicked and
-        !palette_closed_this_frame)
+        !palette_blocking)
     {
-        if (!state.viewer.ui.palette.isAcceptingInput()) {
-            const is_in_debug_panel = input.isPointerInDebugPanel();
-            const over_info = state.viewer.ui.overlays.info_panel.visible and
-                !is_in_debug_panel and
-                clay.pointerOver(clay.getElementId("InfoOverlayCard"));
-            const over_stats = state.viewer.ui.overlays.stats_panel.visible and
-                !is_in_debug_panel and
-                clay.pointerOver(clay.getElementId("StatsPanel"));
-            const over_edit = (state.viewer.ui.overlays.edit_panel.visible or
-                state.viewer.animations.get(.edit_panel) > 0.001) and
-                !is_in_debug_panel and
-                clay.pointerOver(clay.getElementId("EditSidePanel"));
+        const is_in_debug_panel = input.isPointerInDebugPanel();
+        const over_close_btn = !is_in_debug_panel and
+            ((state.viewer.ui.overlays.info_panel.visible and
+                clay.pointerOver(clay.getElementId("InfoCloseBtn"))) or
+                (state.viewer.ui.overlays.stats_panel.visible and
+                    clay.pointerOver(clay.getElementId("StatsCloseBtn"))));
+        const over_info = state.viewer.ui.overlays.info_panel.visible and
+            !is_in_debug_panel and
+            clay.pointerOver(clay.getElementId("InfoOverlayCard"));
+        const over_stats = state.viewer.ui.overlays.stats_panel.visible and
+            !is_in_debug_panel and
+            clay.pointerOver(clay.getElementId("StatsPanel"));
+        const over_edit = (state.viewer.ui.overlays.edit_panel.visible or
+            state.viewer.animations.get(.edit_panel) > 0.001) and
+            !is_in_debug_panel and
+            clay.pointerOver(clay.getElementId("EditSidePanel"));
 
-            if (over_info) {
-                const off_x = state.viewer.ui.overlays.info_panel.offset_x;
-                const off_y = state.viewer.ui.overlays.info_panel.offset_y;
-                next_drag_state = .{
-                    .info = .{
-                        .start_x = input.mouse_x - off_x,
-                        .start_y = input.mouse_y - off_y,
-                    },
-                };
-            } else if (over_stats) {
-                const off_x = state.viewer.ui.overlays.stats_panel.offset_x;
-                const off_y = state.viewer.ui.overlays.stats_panel.offset_y;
-                next_drag_state = .{
-                    .stats = .{
-                        .start_x = input.mouse_x - off_x,
-                        .start_y = input.mouse_y - off_y,
-                    },
-                };
-            } else if (over_edit) {
-                // Handled in sysProcessUiInteractions
-            } else {
-                next_drag_state = .{
-                    .viewport = .{
-                        .last_x = input.pixMouseX(),
-                        .last_y = input.pixMouseY(),
-                    },
-                };
-            }
+        if (over_close_btn) {
+            // Handled in sysProcessUiInteractions
+        } else if (over_info) {
+            const off_x = state.viewer.ui.overlays.info_panel.offset_x;
+            const off_y = state.viewer.ui.overlays.info_panel.offset_y;
+            next_drag_state = .{
+                .info = .{
+                    .start_x = input.mouse_x - off_x,
+                    .start_y = input.mouse_y - off_y,
+                },
+            };
+        } else if (over_stats) {
+            const off_x = state.viewer.ui.overlays.stats_panel.offset_x;
+            const off_y = state.viewer.ui.overlays.stats_panel.offset_y;
+            next_drag_state = .{
+                .stats = .{
+                    .start_x = input.mouse_x - off_x,
+                    .start_y = input.mouse_y - off_y,
+                },
+            };
+        } else if (over_edit) {
+            // Handled in sysProcessUiInteractions
+        } else {
+            next_drag_state = .{
+                .viewport = .{
+                    .last_x = input.pixMouseX(),
+                    .last_y = input.pixMouseY(),
+                },
+            };
         }
     }
     state.viewer.drag_state = next_drag_state;
@@ -191,4 +205,50 @@ pub fn sysUpdateViewport(
             );
         }
     }
+}
+
+test "sysUpdateViewport cancels active panel drag when panel hides" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    app_st.viewer.ui.overlays.info_panel.visible = false;
+    app_st.viewer.drag_state = .{
+        .info = .{ .start_x = 10.0, .start_y = 20.0 },
+    };
+
+    const frame_input = state_pkg.FrameInput{
+        .win_w = 800,
+        .win_h = 600,
+        .scale_x = 1.0,
+        .scale_y = 1.0,
+        .mouse_x = 50.0,
+        .mouse_y = 60.0,
+        .mouse_left_down = true,
+        .mouse_left_clicked = false,
+        .mouse_inside = true,
+        .quit_requested = false,
+        .scroll_delta_x = 0,
+        .scroll_delta_y = 0,
+        .keys_pressed = .empty,
+        .key_modifiers = .{},
+        .text_input = null,
+        .dropped_path = null,
+        .ticks = 0,
+        .delta_time_ms = 16.0,
+    };
+
+    sysUpdateViewport(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = frame_input,
+        .delta_time_ms = 16.0,
+    }, false);
+
+    try std.testing.expectEqual(
+        state_pkg.DragState.none,
+        app_st.viewer.drag_state,
+    );
 }

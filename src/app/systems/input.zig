@@ -79,7 +79,12 @@ pub fn sysProcessInput(
     }
 
     if (state.viewer.ui.palette.isAcceptingInput() or
-        palette_closed_this_frame) return;
+        palette_closed_this_frame)
+    {
+        state.viewer.pan_controller.suppress(input.directional_held);
+        state.viewer.zoom_controller.suppress(input.zoom_held);
+        return;
+    }
 
     const is_zoomed = if (state.getCurrentEntry() != null)
         state.isImageOverflowing() or
@@ -104,7 +109,7 @@ pub fn sysProcessInput(
             });
         }
     } else {
-        state.viewer.pan_controller.reset();
+        state.viewer.pan_controller.suppress(input.directional_held);
     }
 
     // 2. Coalesce zoom keys for smooth continuous and tap zooming
@@ -123,7 +128,7 @@ pub fn sysProcessInput(
             });
         }
     } else {
-        state.viewer.zoom_controller.reset();
+        state.viewer.zoom_controller.suppress(input.zoom_held);
     }
 
     // 3. Dispatch non-directional, non-zoom keys and normal shortcuts
@@ -788,4 +793,88 @@ test "sysProcessInput continuous gliding and seamless diagonal transition" {
         },
         else => return error.UnexpectedIntent,
     }
+}
+
+test "sysProcessInput suppresses held keys on modal and modifier transitions" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    app_st.viewer.viewport.mode = .manual;
+    app_st.viewer.viewport.zoom_factor = state_pkg.clampZoomFactor(2.0);
+    app_st.viewer.pan_controller.smooth_tap_remaining = 15.0;
+    app_st.viewer.zoom_controller.smooth_tap_remaining = 0.1;
+
+    const keys_empty = std.ArrayList(Key).empty;
+
+    // 1. Frame with palette open while 'i' (zoom in) and 'right' are held:
+    // active motion is cleared and controllers are not busy.
+    app_st.viewer.ui.palette.mode = .actions;
+    app_st.viewer.ui.palette.is_closing = false;
+    try sysProcessInput(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = FrameInput{
+            .win_w = 800,
+            .win_h = 600,
+            .scale_x = 1.0,
+            .scale_y = 1.0,
+            .mouse_x = 0,
+            .mouse_y = 0,
+            .mouse_left_down = false,
+            .mouse_left_clicked = false,
+            .mouse_inside = true,
+            .quit_requested = false,
+            .scroll_delta_x = 0,
+            .scroll_delta_y = 0,
+            .keys_pressed = keys_empty,
+            .key_modifiers = .{},
+            .directional_held = .{ .right = true },
+            .zoom_held = .{ .in = true },
+            .text_input = null,
+            .dropped_path = null,
+            .ticks = 0,
+            .delta_time_ms = 16.0,
+        },
+        .delta_time_ms = 16.0,
+    }, false);
+    try std.testing.expect(!app_st.viewer.pan_controller.isBusy());
+    try std.testing.expect(!app_st.viewer.zoom_controller.isBusy());
+
+    // 2. Palette closes, but keys remain held from the modal: must not bleed
+    // into viewport pan or zoom until released.
+    app_st.viewer.ui.palette.mode = .inactive;
+    try sysProcessInput(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = FrameInput{
+            .win_w = 800,
+            .win_h = 600,
+            .scale_x = 1.0,
+            .scale_y = 1.0,
+            .mouse_x = 0,
+            .mouse_y = 0,
+            .mouse_left_down = false,
+            .mouse_left_clicked = false,
+            .mouse_inside = true,
+            .quit_requested = false,
+            .scroll_delta_x = 0,
+            .scroll_delta_y = 0,
+            .keys_pressed = keys_empty,
+            .key_modifiers = .{},
+            .directional_held = .{ .right = true },
+            .zoom_held = .{ .in = true },
+            .text_input = null,
+            .dropped_path = null,
+            .ticks = 16,
+            .delta_time_ms = 16.0,
+        },
+        .delta_time_ms = 16.0,
+    }, false);
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        app_st.pending_intents.items.len,
+    );
 }
