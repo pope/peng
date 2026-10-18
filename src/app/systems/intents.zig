@@ -26,6 +26,7 @@ fn togglePairStream(self: *AppState) void {
 
     const key = self.cache.activeKey(cur_idx);
     const entry = self.cache.get(key) orelse return;
+    if (entry.status != .loaded_gpu and entry.status != .loaded_cpu) return;
     if (entry.is_promoting or !self.workers.canSpawnDecode()) return;
 
     const target: state.PairStreamTarget = if (entry.raw_metadata.isRaw())
@@ -1365,5 +1366,50 @@ test "sysExecuteIntents - refresh avoids aliasing and uses archive source" {
     try testing.expectEqualStrings(
         comics_dir,
         app_st.viewer.navigation.last_scanned_dir.items,
+    );
+}
+
+test "togglePairStream - requires loaded status before requesting target" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    const dir_alloc = app_st.viewer.navigation.directory_arena.allocator();
+    const raw_p = try dir_alloc.dupe(u8, "photo.ARW");
+    const jpg_p = try dir_alloc.dupe(u8, "photo.JPG");
+    try app_st.viewer.navigation.appendEntry(
+        allocator,
+        .{ .pair = .{ .raw_path = raw_p, .jpeg_path = jpg_p } },
+    );
+    app_st.viewer.navigation.current_index = 0;
+
+    const key0 = try app_st.cache.appendSlot(allocator, 0, .{
+        .decoding = .{ .has_thread = true },
+    });
+    const entry0 = app_st.cache.get(key0).?;
+    entry0.raw_metadata = state.RawMetadata.init(6000, 4000);
+
+    // 1. While .decoding, toggle_pair_stream must be ignored.
+    try executeIntent(&app_st, .toggle_pair_stream);
+    try std.testing.expectEqual(
+        @as(?state.PairStreamTarget, null),
+        entry0.requested_target,
+    );
+
+    // 2. Once .loaded_gpu, toggle_pair_stream sets requested_target.
+    entry0.status = .{
+        .loaded_gpu = .{
+            .gpu_texture = undefined,
+            .w = 1616,
+            .h = 1080,
+            .size_bytes = 500_000,
+            .memory_size_bytes = 7_000_000,
+        },
+    };
+    try executeIntent(&app_st, .toggle_pair_stream);
+    try std.testing.expectEqual(
+        @as(?state.PairStreamTarget, .standalone_jpeg),
+        entry0.requested_target,
     );
 }

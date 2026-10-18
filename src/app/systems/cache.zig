@@ -113,6 +113,8 @@ fn checkPairPromotion(
 ) void {
     const media_item = state.viewer.navigation.getMediaEntry(idx) orelse return;
     if (!media_item.isPair()) return;
+    if (entry.is_promoting) return;
+    if (entry.status != .loaded_gpu and entry.status != .loaded_cpu) return;
 
     if (entry.requested_target) |target| {
         if (!state.workers.canSpawnDecode()) return;
@@ -131,7 +133,7 @@ fn checkPairPromotion(
         return;
     }
 
-    if (entry.is_promoting or !entry.raw_metadata.isRaw()) return;
+    if (!entry.raw_metadata.isRaw()) return;
 
     const loaded_w = entry.getLoadedWidth() orelse 0.0;
     const loaded_h = entry.getLoadedHeight() orelse 0.0;
@@ -348,12 +350,15 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
         if (!state.workers.canSpawnDecode()) continue;
 
         const key = state.cache.activeKey(req.index);
-        const thumb_only = is_fast_scrolling and blk: {
-            if (state.cache.get(key)) |entry| {
-                if (entry.thumbnail == .not_available) break :blk false;
-            }
-            break :blk true;
-        };
+        const entry = state.cache.get(key) orelse continue;
+        if (entry.is_promoting or
+            entry.status != .decoding or
+            entry.status.decoding.has_thread)
+        {
+            continue;
+        }
+        const thumb_only = is_fast_scrolling and
+            entry.thumbnail != .not_available;
 
         spawnCacheDecodeSlot(
             state,
@@ -816,4 +821,61 @@ test "sysUpdateCache - respects ViewMode visibility filtering" {
     try std.testing.expect(state.cache.get(state.cache.activeKey(1)) == null);
     try std.testing.expect(state.cache.get(state.cache.activeKey(4)) != null);
     try std.testing.expect(!state.cache.hasUnreadyPrefetchSlots(vis.?, true));
+}
+
+test "checkPairPromotion - does not spawn while slot is decoding or promoting" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    const dir_alloc = state.viewer.navigation.directory_arena.allocator();
+    const img_path = "testfiles/golden-screenshots/init.png";
+    const raw_p = try dir_alloc.dupe(u8, img_path);
+    const jpg_p = try dir_alloc.dupe(u8, img_path);
+    try state.viewer.navigation.appendEntry(
+        allocator,
+        .{ .pair = .{ .raw_path = raw_p, .jpeg_path = jpg_p } },
+    );
+    state.viewer.navigation.current_index = 0;
+
+    const key0 = try state.cache.appendSlot(allocator, 0, .{
+        .decoding = .{ .has_thread = true },
+    });
+    const entry0 = state.cache.get(key0).?;
+    entry0.requested_target = .standalone_jpeg;
+
+    // 1. While .decoding, checkPairPromotion must not consume requested_target
+    // or spawn a duplicate promotion worker.
+    checkPairPromotion(&state, 0, entry0, 1000);
+    try std.testing.expect(!entry0.is_promoting);
+    try std.testing.expectEqual(
+        @as(?state_pkg.PairStreamTarget, .standalone_jpeg),
+        entry0.requested_target,
+    );
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        state.workers.active_decode_threads.load(.acquire),
+    );
+
+    // 2. While already promoting, checkPairPromotion must also not spawn again.
+    entry0.status = .{
+        .loaded_gpu = .{
+            .gpu_texture = undefined,
+            .w = 100,
+            .h = 100,
+            .size_bytes = 100,
+            .memory_size_bytes = 200,
+        },
+    };
+    entry0.is_promoting = true;
+    checkPairPromotion(&state, 0, entry0, 1000);
+    try std.testing.expectEqual(
+        @as(?state_pkg.PairStreamTarget, .standalone_jpeg),
+        entry0.requested_target,
+    );
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        state.workers.active_decode_threads.load(.acquire),
+    );
 }
