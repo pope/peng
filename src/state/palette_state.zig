@@ -206,20 +206,33 @@ pub const PaletteState = struct {
 
     /// Returns a lazily initialized or resized ASCII fuzzy searcher matching
     /// the requested haystack and needle lengths.
-    pub fn getSearcher(self: *PaletteState, max_haystack: usize, max_needle: usize) !*fuzzig.Ascii {
+    pub fn getSearcher(
+        self: *PaletteState,
+        max_haystack: usize,
+        max_needle: usize,
+    ) !*fuzzig.Ascii {
         const req_haystack = @max(max_haystack, 64);
         const req_needle = @max(max_needle, 16);
         if (self.searcher) |*s| {
             if (!s.hasSize(req_haystack, req_needle)) {
-                const new_h = @max(s.alg.max_haystack * 2, req_haystack);
-                const new_n = @max(s.alg.max_needle * 2, req_needle);
+                const new_h = if (req_haystack > s.alg.max_haystack)
+                    @max(s.alg.max_haystack * 2, req_haystack)
+                else
+                    s.alg.max_haystack;
+                const new_n = if (req_needle > s.alg.max_needle)
+                    @max(s.alg.max_needle * 2, req_needle)
+                else
+                    s.alg.max_needle;
                 try s.resize(new_h, new_n);
             }
             return s;
         } else {
-            self.searcher = try fuzzig.Ascii.init(self.allocator, req_haystack, req_needle, .{
-                .case_sensitive = false,
-            });
+            self.searcher = try fuzzig.Ascii.init(
+                self.allocator,
+                req_haystack,
+                req_needle,
+                .{ .case_sensitive = false },
+            );
             return &self.searcher.?;
         }
     }
@@ -776,4 +789,27 @@ test "PaletteConfig.resolveScrollOffsetY clamps stale scroll and seeds mount" {
     // stale scroll_position.y (-1000.0) to -max_scroll (10 * 58 - 320 = 260)
     const y_shrunk_clean = cfg.resolveScrollOffsetY(-1000.0, 10, 0, false);
     try std.testing.expectApproxEqAbs(@as(f32, -260.0), y_shrunk_clean, 0.001);
+}
+
+test "PaletteState.getSearcher resizes only dimensions that exceed capacity" {
+    const allocator = std.testing.allocator;
+    var state = try PaletteState.init(allocator);
+    defer state.deinit();
+
+    // 1. Initial allocation clamps to (64, 16)
+    const s1 = try state.getSearcher(10, 5);
+    try std.testing.expectEqual(@as(usize, 64), s1.alg.max_haystack);
+    try std.testing.expectEqual(@as(usize, 16), s1.alg.max_needle);
+
+    // 2. Haystack exceeds capacity (100 > 64), needle fits (10 <= 16):
+    // max_haystack doubles to 128, max_needle remains unchanged at 16
+    const s2 = try state.getSearcher(100, 10);
+    try std.testing.expectEqual(@as(usize, 128), s2.alg.max_haystack);
+    try std.testing.expectEqual(@as(usize, 16), s2.alg.max_needle);
+
+    // 3. Needle exceeds capacity (20 > 16), haystack fits (80 <= 128):
+    // max_needle doubles to 32, max_haystack remains unchanged at 128
+    const s3 = try state.getSearcher(80, 20);
+    try std.testing.expectEqual(@as(usize, 128), s3.alg.max_haystack);
+    try std.testing.expectEqual(@as(usize, 32), s3.alg.max_needle);
 }
