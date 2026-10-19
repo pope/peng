@@ -88,13 +88,9 @@ fn handlePaletteFolderCountEvent(
     for (state.viewer.ui.palette.dir_items.items) |*item| {
         if (!std.mem.eql(u8, item.getFullPath(), cnt.path)) continue;
 
-        const counts = state_pkg.EntryScanCounts{
-            .image_count = cnt.image_count,
-            .subdir_count = cnt.subdir_count,
-        };
         switch (item.*) {
-            .directory => |*d| d.scan = .{ .scanned = counts },
-            .archive_file => |*a| a.scan = .{ .scanned = counts },
+            .directory => |*d| d.scan = cnt.scan,
+            .archive_file => |*a| a.scan = cnt.scan,
             else => {},
         }
         state.viewer.ui.palette.selection_dirty = true;
@@ -745,8 +741,9 @@ test "drainWorkerEvents - palette_folder_count updates directory and archive ent
     try state.workers.event_queue.push(allocator, io, .{
         .palette_folder_count = .init(0, .{
             .path = stale_path,
-            .image_count = 999,
-            .subdir_count = 999,
+            .scan = .{
+                .scanned = .{ .image_count = 999, .subdir_count = 999 },
+            },
         }),
     });
 
@@ -761,8 +758,9 @@ test "drainWorkerEvents - palette_folder_count updates directory and archive ent
     try state.workers.event_queue.push(allocator, io, .{
         .palette_folder_count = .init(1, .{
             .path = evt_dir_path,
-            .image_count = 12,
-            .subdir_count = 3,
+            .scan = .{
+                .scanned = .{ .image_count = 12, .subdir_count = 3 },
+            },
         }),
     });
 
@@ -770,8 +768,9 @@ test "drainWorkerEvents - palette_folder_count updates directory and archive ent
     try state.workers.event_queue.push(allocator, io, .{
         .palette_folder_count = .init(1, .{
             .path = evt_cbz_path,
-            .image_count = 45,
-            .subdir_count = 0,
+            .scan = .{
+                .scanned = .{ .image_count = 45, .subdir_count = 0 },
+            },
         }),
     });
 
@@ -790,6 +789,31 @@ test "drainWorkerEvents - palette_folder_count updates directory and archive ent
     };
     try std.testing.expectEqual(
         expected_archive_scan,
+        state.viewer.ui.palette.dir_items.items[1].archive_file.scan,
+    );
+
+    // Push .permission_denied and .failed scan states
+    const locked_dir_path = try allocator.dupe(u8, "/path/to/folder_a");
+    try state.workers.event_queue.push(allocator, io, .{
+        .palette_folder_count = .init(1, .{
+            .path = locked_dir_path,
+            .scan = .permission_denied,
+        }),
+    });
+    const failed_cbz_path = try allocator.dupe(u8, "/path/to/comic.cbz");
+    try state.workers.event_queue.push(allocator, io, .{
+        .palette_folder_count = .init(1, .{
+            .path = failed_cbz_path,
+            .scan = .failed,
+        }),
+    });
+    _ = drainWorkerEvents(&state);
+    try std.testing.expectEqual(
+        state_pkg.EntryScanState.permission_denied,
+        state.viewer.ui.palette.dir_items.items[0].directory.scan,
+    );
+    try std.testing.expectEqual(
+        state_pkg.EntryScanState.failed,
         state.viewer.ui.palette.dir_items.items[1].archive_file.scan,
     );
 }

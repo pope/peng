@@ -316,36 +316,61 @@ pub const FolderCounts = struct {
     subdir_count: usize = 0,
 };
 
-/// Counts supported image files and non-hidden subdirectories inside `folder_path`.
-/// Inspects CBZ central directory tables directly if `folder_path` points to a comic archive.
-pub fn countFolderContents(io: std.Io, folder_path: []const u8) FolderCounts {
+/// Maps a filesystem or archive I/O error into the corresponding
+/// `EntryScanState` badge variant (`.permission_denied` vs `.failed`).
+pub fn mapScanError(err: anyerror) state_pkg.EntryScanState {
+    return switch (err) {
+        error.AccessDenied, error.PermissionDenied => .permission_denied,
+        else => .failed,
+    };
+}
+
+/// Scans `folder_path` (either a filesystem directory or `.cbz` archive) and
+/// returns its `EntryScanState`: `.scanned` with image and subdirectory counts,
+/// `.permission_denied` when access is denied, or `.failed` on I/O or archive
+/// corruption errors.
+pub fn scanFolderContents(
+    io: std.Io,
+    folder_path: []const u8,
+) state_pkg.EntryScanState {
     if (isCbzFile(folder_path)) {
-        var counts: FolderCounts = .{};
-        var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, folder_path, .{}) catch return counts;
+        var counts: state_pkg.EntryScanCounts = .{};
+        var file = std.Io.Dir.openFile(
+            std.Io.Dir.cwd(),
+            io,
+            folder_path,
+            .{},
+        ) catch |err| return mapScanError(err);
         defer file.close(io);
 
-        // Sized to 64KB to minimize positional pread syscalls during rapid central
-        // directory traversal when counting archive pages.
+        // Sized to 64KB to minimize positional pread syscalls during rapid
+        // central directory traversal when counting archive pages.
         var reader_buf: [64 * 1024]u8 = undefined;
         var f_reader = file.reader(io, &reader_buf);
-        var iterator = std.zip.Iterator.init(&f_reader) catch return counts;
+        var iterator = std.zip.Iterator.init(&f_reader) catch |err| {
+            return mapScanError(err);
+        };
 
-        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
-        defer arena.deinit();
-
-        while (iterator.next() catch null) |entry| {
-            if (entry.filename_len == 0) continue;
-            _ = arena.reset(.retain_capacity);
-            const temp_alloc = arena.allocator();
+        var name_buf: [std.fs.max_path_bytes]u8 = undefined;
+        while (true) {
+            const entry = (iterator.next() catch |err| {
+                return mapScanError(err);
+            }) orelse break;
+            if (entry.filename_len == 0 or
+                entry.filename_len > name_buf.len) continue;
             const hdr_size = @sizeOf(std.zip.CentralDirectoryFileHeader);
-            f_reader.seekTo(entry.header_zip_offset +| hdr_size) catch continue;
-            const entry_name = temp_alloc.alloc(u8, entry.filename_len) catch continue;
-            f_reader.interface.readSliceAll(entry_name) catch continue;
+            f_reader.seekTo(entry.header_zip_offset +| hdr_size) catch |err| {
+                return mapScanError(err);
+            };
+            const entry_name = name_buf[0..entry.filename_len];
+            f_reader.interface.readSliceAll(entry_name) catch |err| {
+                return mapScanError(err);
+            };
             if (isImageFile(entry_name)) {
                 counts.image_count += 1;
             }
         }
-        return counts;
+        return .{ .scanned = counts };
     }
 
     var dir = std.Io.Dir.openDir(
@@ -354,17 +379,24 @@ pub fn countFolderContents(io: std.Io, folder_path: []const u8) FolderCounts {
         folder_path,
         .{ .iterate = true },
     ) catch |err| {
-        std.log.debug("countFolderContents openDir failed for '{s}': {}", .{ folder_path, err });
-        return .{};
+        std.log.debug(
+            "scanFolderContents openDir failed for '{s}': {}",
+            .{ folder_path, err },
+        );
+        return mapScanError(err);
     };
     defer dir.close(io);
 
-    var counts: FolderCounts = .{};
+    var counts: state_pkg.EntryScanCounts = .{};
     var it = dir.iterate();
-    while ((it.next(io) catch |err| {
-        std.log.debug("countFolderContents iterate failed for '{s}': {}", .{ folder_path, err });
-        return counts;
-    })) |entry| {
+    while (true) {
+        const entry = (it.next(io) catch |err| {
+            std.log.debug(
+                "scanFolderContents iterate failed for '{s}': {}",
+                .{ folder_path, err },
+            );
+            return mapScanError(err);
+        }) orelse break;
         if (entry.kind == .file) {
             if (isImageFile(entry.name) or isCbzFile(entry.name)) {
                 counts.image_count += 1;
@@ -375,7 +407,20 @@ pub fn countFolderContents(io: std.Io, folder_path: []const u8) FolderCounts {
             }
         }
     }
-    return counts;
+    return .{ .scanned = counts };
+}
+
+/// Counts supported image files and non-hidden subdirectories inside
+/// `folder_path`. Inspects CBZ central directory tables directly if
+/// `folder_path` points to a comic archive.
+pub fn countFolderContents(io: std.Io, folder_path: []const u8) FolderCounts {
+    return switch (scanFolderContents(io, folder_path)) {
+        .scanned, .partial_counted, .cached => |c| .{
+            .image_count = c.image_count,
+            .subdir_count = c.subdir_count,
+        },
+        .unscanned, .failed, .permission_denied => .{},
+    };
 }
 
 /// Scans immediate non-hidden child subdirectories and CBZ archives within `dir_path`,
@@ -844,4 +889,47 @@ test "consolidateRawJpegPairs - disabled stacking leaves entries unchanged" {
     try std.testing.expectEqual(@as(usize, 2), list.items.len);
     try std.testing.expect(!list.items[0].isPair());
     try std.testing.expect(!list.items[1].isPair());
+}
+
+test "scanFolderContents and mapScanError classify errors and corrupt CBZ" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    try std.testing.expectEqual(
+        state_pkg.EntryScanState.permission_denied,
+        mapScanError(error.AccessDenied),
+    );
+    try std.testing.expectEqual(
+        state_pkg.EntryScanState.permission_denied,
+        mapScanError(error.PermissionDenied),
+    );
+    try std.testing.expectEqual(
+        state_pkg.EntryScanState.failed,
+        mapScanError(error.FileNotFound),
+    );
+
+    // Non-existent directory -> .failed
+    try std.testing.expectEqual(
+        state_pkg.EntryScanState.failed,
+        scanFolderContents(io, "testfiles/does_not_exist_dir"),
+    );
+
+    // Corrupt CBZ archive -> .failed
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var path_buf: [128]u8 = undefined;
+    const corrupt_cbz = try std.fmt.bufPrint(
+        &path_buf,
+        ".zig-cache/tmp/{s}/corrupt.cbz",
+        .{tmp.sub_path},
+    );
+    {
+        var f = try tmp.dir.createFile(io, "corrupt.cbz", .{});
+        defer f.close(io);
+        try f.writeStreamingAll(io, "not a valid zip archive");
+    }
+    try std.testing.expectEqual(
+        state_pkg.EntryScanState.failed,
+        scanFolderContents(io, corrupt_cbz),
+    );
 }

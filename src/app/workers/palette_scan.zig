@@ -57,7 +57,7 @@ pub fn paletteScanWorker(args: *PaletteScanArgs) void {
     for (args.paths) |path| {
         if (cancel.isCanceled()) return;
 
-        const counts = core_fs.countFolderContents(io, path);
+        const scan = core_fs.scanFolderContents(io, path);
 
         if (cancel.isCanceled()) return;
 
@@ -72,8 +72,7 @@ pub fn paletteScanWorker(args: *PaletteScanArgs) void {
             .palette_folder_count = cancel.wrap(
                 events.PaletteFolderCountPayload{
                     .path = path_dup,
-                    .image_count = counts.image_count,
-                    .subdir_count = counts.subdir_count,
+                    .scan = scan,
                 },
             ),
         }) catch |err| {
@@ -182,7 +181,7 @@ test "paletteScanWorker - counts directory contents and pushes events" {
                 try std.testing.expectEqual(@as(usize, 42), cnt.generation);
                 const payload = cnt.resolve(&current_gen).?;
                 try std.testing.expectEqualStrings(test_dir, payload.path);
-                try std.testing.expect(payload.image_count > 0);
+                try std.testing.expect(payload.scan.scanned.image_count > 0);
             },
             else => {},
         }

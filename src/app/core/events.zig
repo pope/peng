@@ -168,12 +168,11 @@ pub const DirectoryScanResultPayload = struct {
     paths: []MediaEntry,
 };
 
-/// Payload delivering image and subdirectory counts for a directory item in
-/// the Command Palette.
+/// Payload delivering the scan status (counts, `.permission_denied`, or
+/// `.failed`) for a directory or archive item in the Command Palette.
 pub const PaletteFolderCountPayload = struct {
     path: []const u8,
-    image_count: usize,
-    subdir_count: usize,
+    scan: state_pkg.EntryScanState,
 };
 
 /// Tagged union of all event messages sent from background worker threads to
