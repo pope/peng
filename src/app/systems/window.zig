@@ -101,3 +101,17 @@ test "formatWindowTitle: appends [RAW+JPG] for pair entry" {
     defer allocator.free(title);
     try std.testing.expectEqualStrings("vacation.ARW [RAW+JPG]", title);
 }
+
+test "sysSyncWindow: no-op in headless mode without crashing" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const AppState = @import("../state.zig").AppState;
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    sysSyncWindow(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+    });
+}

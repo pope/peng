@@ -62,11 +62,12 @@
     06. `sysUpdateViewport(ctx, palette_closed_this_frame)` &
         `sysUpdateSlideshow(ctx)`: Applies mouse/touch pan/zoom deltas, smooth
         `PanController`/`ZoomController` glide, and slideshow timers.
-    07. `sysSyncWindow(ctx)`: Synchronizes OS window title and fullscreen/border
-        state.
-    08. `sysExecuteIntents(ctx)`: Single-pass batch execution of all queued
+    07. `sysExecuteIntents(ctx)`: Single-pass batch execution of all queued
         `AppIntent` payloads (`src/app/systems/intents.zig`) and declarative
         snackbar notifications (`src/state/snackbar.zig`).
+    08. `sysSyncWindow(ctx)`: Synchronizes OS window title and display
+        properties with the active image immediately following intent
+        execution.
     09. `sysProcessAssetUploads(ctx)`: Handles EXIF orientation and paced
         CPU-to-GPU texture uploads.
     10. `sysUpdateCache(ctx)`: Enforces VRAM budget, spawns decode workers, and

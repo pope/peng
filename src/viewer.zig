@@ -49,11 +49,12 @@ fn runUpdatePhase(
     app.systems.sysUpdateViewport(ctx, palette_closed_this_frame);
     try app.systems.sysUpdateSlideshow(ctx);
 
-    // Window Management System (synchronizes window title and display properties)
-    app.systems.sysSyncWindow(ctx);
-
     // Execute All Ingested & Generated Intents (IPC, Keyboard, Palette & Slideshow intents)
     try app.systems.sysExecuteIntents(ctx);
+
+    // Window Management System (synchronizes window title and display
+    // properties immediately following intent execution)
+    app.systems.sysSyncWindow(ctx);
 
     // Asset Upload & Texture Pipeline System
     app.systems.sysProcessAssetUploads(ctx);

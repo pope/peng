@@ -14,8 +14,10 @@ System passes under `src/app/systems/` follow a deterministic linear pipeline:
     04. `sysProcessInput(ctx, palette_closed)`: Maps keyboard input & file drop events -> `pending_intents`.
     05. `sysProcessUiInteractions(ctx, palette_closed)`: Resolves pointer hover/click interactions for UI close buttons and sliders -> `pending_intents`.
     06. `sysUpdateViewport(ctx, palette_closed)` & `sysUpdateSlideshow(ctx)`: Updates motion deltas & slideshow timers -> `pending_intents`.
-    07. `sysSyncWindow(ctx)`: Synchronizes OS window title and display fullscreen/state.
-    08. `sysExecuteIntents(ctx)`: Single-pass execution of all enqueued discrete intents.
+    07. `sysExecuteIntents(ctx)`: Single-pass execution of all enqueued
+        discrete intents.
+    08. `sysSyncWindow(ctx)`: Synchronizes OS window title and display
+        fullscreen/state.
     09. `sysProcessAssetUploads(ctx)`: Performs EXIF orientation & GPU texture uploads.
     10. `sysUpdateCache(ctx)`: Manages slot eviction, decodes & performs idle neighbor preloading.
     11. `sysSyncMetrics(ctx)`: Synchronizes telemetry & stats for Nerds overlay.
