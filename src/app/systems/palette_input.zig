@@ -33,16 +33,24 @@ fn handlePaletteReturnSlideshow(ctx: FrameContext, raw_str: []const u8) !void {
     if (raw_str.len > 0) {
         if (std.fmt.parseFloat(f32, raw_str)) |val| {
             if (!std.math.isNan(val) and !std.math.isInf(val) and val > 0.0) {
+                const clamped = std.math.clamp(
+                    val,
+                    state_pkg.SlideshowMode.MIN_INTERVAL_S,
+                    state_pkg.SlideshowMode.MAX_INTERVAL_S,
+                );
                 ctx.state.viewer.navigation.slideshow = .{
                     .active = .{
-                        .interval_s = val,
+                        .interval_s = clamped,
                         .timer_ms = 0.0,
                     },
                 };
                 ctx.state.closePalette();
             }
         } else |err| {
-            std.log.debug("Failed to parse slideshow interval '{s}': {}", .{ raw_str, err });
+            std.log.debug(
+                "Failed to parse slideshow interval '{s}': {}",
+                .{ raw_str, err },
+            );
         }
     }
 }
@@ -1090,5 +1098,42 @@ test "directory_navigator archive_file drill-down and click behavior" {
     try std.testing.expectEqualStrings(
         "/tmp/comics/issue1.cbz",
         state.pending_intents.items[0].open_path,
+    );
+}
+
+test "handlePaletteReturnSlideshow clamps interval to min and max bounds" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    var frame_arena = std.heap.ArenaAllocator.init(allocator);
+    defer frame_arena.deinit();
+
+    const ctx = FrameContext{
+        .state = &state,
+        .frame_allocator = frame_arena.allocator(),
+    };
+
+    // Sub-minimum value clamps to MIN_INTERVAL_S (0.1s)
+    try handlePaletteReturnSlideshow(ctx, "0.005");
+    try std.testing.expectEqual(
+        state_pkg.SlideshowMode.MIN_INTERVAL_S,
+        state.viewer.navigation.slideshow.active.interval_s,
+    );
+
+    // Super-maximum value clamps to MAX_INTERVAL_S (3600.0s)
+    try handlePaletteReturnSlideshow(ctx, "99999.0");
+    try std.testing.expectEqual(
+        state_pkg.SlideshowMode.MAX_INTERVAL_S,
+        state.viewer.navigation.slideshow.active.interval_s,
+    );
+
+    // Normal valid value sets exact interval
+    try handlePaletteReturnSlideshow(ctx, "7.5");
+    try std.testing.expectEqual(
+        @as(f32, 7.5),
+        state.viewer.navigation.slideshow.active.interval_s,
     );
 }
