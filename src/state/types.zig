@@ -215,7 +215,7 @@ pub const MediaEntry = union(enum) {
     pub fn getRawPath(self: MediaEntry) ?[]const u8 {
         return switch (self) {
             .pair => |p| p.raw_path,
-            else => null,
+            .filesystem, .archive_entry => null,
         };
     }
 
@@ -223,7 +223,7 @@ pub const MediaEntry = union(enum) {
     pub fn getJpegPath(self: MediaEntry) ?[]const u8 {
         return switch (self) {
             .pair => |p| p.jpeg_path,
-            else => null,
+            .filesystem, .archive_entry => null,
         };
     }
 
@@ -1402,7 +1402,7 @@ pub const CacheEntry = struct {
         return switch (self.status) {
             .loaded_gpu => |gpu| gpu.w,
             .loaded_cpu => |cpu| @floatFromInt(cpu.surface.w()),
-            else => null,
+            .decoding, .uploading, .failed => null,
         };
     }
 
@@ -1411,7 +1411,7 @@ pub const CacheEntry = struct {
         return switch (self.status) {
             .loaded_gpu => |gpu| gpu.h,
             .loaded_cpu => |cpu| @floatFromInt(cpu.surface.h()),
-            else => null,
+            .decoding, .uploading, .failed => null,
         };
     }
 
@@ -1494,7 +1494,7 @@ pub const CacheEntry = struct {
                     return .{ .w = cpu.w, .h = cpu.h };
                 }
             },
-            else => {},
+            .decoding, .uploading, .failed => {},
         }
         if (self.thumbnail.getInfo()) |info| {
             if (info.w > 0.0 and info.h > 0.0) {
@@ -1512,7 +1512,7 @@ pub const CacheEntry = struct {
                     dev.releaseTexture(thumb.texture);
                 }
             },
-            else => {},
+            .none, .pending, .not_available, .unloaded => {},
         }
         self.thumbnail = .none;
 
@@ -1523,7 +1523,7 @@ pub const CacheEntry = struct {
                     dev.releaseTexture(gpu.gpu_texture);
                 }
             },
-            else => {},
+            .decoding, .uploading, .failed => {},
         }
     }
 };

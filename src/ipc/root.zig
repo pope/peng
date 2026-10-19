@@ -1,6 +1,5 @@
 const builtin = @import("builtin");
 const intents = @import("intents");
-const sdl = @import("sdl");
 const std = @import("std");
 
 const TextureScaleMode = intents.TextureScaleMode;

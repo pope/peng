@@ -87,13 +87,17 @@
   - Use leading-dot inference when the LHS type is explicit (e.g.
     `generation: std.atomic.Value(usize) = .init(0)` instead of repeating
     `std.atomic.Value(usize).init(0)`).
-- **Exhaustive Enum Pattern Matching (Anti-`else => {}`)**:
-  - `switch` statements on core domain enums (`PaletteMode`, `EditParam`,
-    `AppIntent`, `ZoomPreset`, `TextureScaleMode`) MUST exhaustively list all
-    variants without wildcard `else => {}` branches so adding a variant triggers
-    compile-time errors at every unhandled site.
-  - Group shared no-op cases explicitly (`.inactive, .files, .actions => {}`)
-    and never use chained `if (mode == .a) ... else if (mode == .b)` on enums.
+- **Exhaustive Enum & Tagged Union Pattern Matching (Anti-`else => ...`)**:
+  - `switch` statements on core domain enums and tagged unions (`PaletteMode`,
+    `EditParam`, `AppIntent`, `AdjustIntent`, `ZoomPreset`, `TextureScaleMode`,
+    `CacheStatus`, `ThumbnailState`, `DisplayState`, `DragState`, `MediaEntry`,
+    `DirectoryEntry`, `BackgroundEvent`) MUST exhaustively list all variants
+    without wildcard `else => ...` branches (including `else => {}`,
+    `else => null`, `else => false`, `else => 0`, or `else => return`) so
+    adding or modifying a variant triggers compile-time errors at every site.
+  - Group shared cases explicitly (`.inactive, .files, .actions => {}`,
+    `.filesystem, .archive_entry => null`) and never use chained
+    `if (mode == .a) ... else if (mode == .b)` on enums.
 - **Minimal Visibility (`pub`) & Dead-Code Pruning**:
   - Default all declarations to private (`fn`, `const`). Only mark symbols `pub`
     when required across file boundaries or by `@hasDecl` reflection (e.g.

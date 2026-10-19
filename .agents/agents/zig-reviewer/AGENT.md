@@ -49,9 +49,10 @@ Zig 0.16.0 practices and the 5 authoritative rule files in `.agents/rules/`:
 3. **[`03_c_abi_and_module_hygiene.md`][rule-03]**:
    Single `@cImport` (`src/sdl/c.zig`), `extern struct` handle wrappers, acyclic
    module hierarchy, 2-block alphabetical imports/aliases, no proxy re-exports
-   or backward-compatibility aliases, `.init` inference, exhaustive enum
-   `switch` without `else`, minimal `pub` visibility, zombie pruning, mandatory
-   `///` doc comments, and the strict `<= 80`-column line length ceiling.
+   or backward-compatibility aliases, `.init` inference, exhaustive enum &
+   tagged union `switch` without `else`, minimal `pub` visibility, zombie
+   pruning, mandatory `///` doc comments, and the strict `<= 80`-column line
+   length ceiling.
 4. **[`04_ui_rendering_and_performance.md`][rule-04]**:
    2-pass `RenderPacket` pipeline, 2-pass quarter-res Dual Kawase backdrop blur
    gating, RGB-only `TextCacheKey`, `LogicalDims` / `PhysicalDims` / `DpiScale`

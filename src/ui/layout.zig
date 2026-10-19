@@ -909,7 +909,7 @@ fn renderImageCanvas(
                 })({});
             }
         },
-        else => {},
+        .none, .pending, .not_available, .unloaded => {},
     }
 
     if (!drew_thumb) switch (entry.status) {
@@ -1041,7 +1041,7 @@ fn renderImageCanvas(
                 });
             }
         },
-        else => {
+        .uploading, .failed => {
             clay.UI()(.{
                 .layout = .{
                     .sizing = .{ .w = .grow, .h = .grow },
@@ -1073,7 +1073,7 @@ fn renderDissolvePrevQuad(
     const prev_entry = dissolve.prev_entry;
     const gpu = switch (prev_entry.status) {
         .loaded_gpu => |g| g,
-        else => return,
+        .loaded_cpu, .decoding, .uploading, .failed => return,
     };
 
     const prev_auth = prev_entry.getAuthoritativeDims();

@@ -70,7 +70,7 @@ pub fn sysSyncWindow(ctx: FrameContext) void {
                     };
             }
         },
-        else => {},
+        .headless => {},
     }
 }
 

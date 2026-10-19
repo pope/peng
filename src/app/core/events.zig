@@ -206,7 +206,7 @@ pub const BackgroundEvent = union(enum) {
             .palette_folder_count => |cnt| {
                 allocator.free(cnt.unchecked_payload.path);
             },
-            else => {},
+            .exif_orientation_parsed, .decode_failed, .ipc_command => {},
         }
     }
 
@@ -222,7 +222,15 @@ pub const BackgroundEvent = union(enum) {
                 allocator.free(cmd.command);
                 allocator.destroy(cmd);
             },
-            else => self.deinit(allocator),
+            .exif_orientation_parsed,
+            .dimensions_probed,
+            .thumb_decoded,
+            .image_decoded,
+            .decode_failed,
+            .path_discovered,
+            .directory_scan_result,
+            .palette_folder_count,
+            => self.deinit(allocator),
         }
     }
 };

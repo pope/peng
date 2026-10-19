@@ -46,7 +46,7 @@ pub fn sysSyncMetrics(ctx: FrameContext) void {
                     .compressed_size_bytes = cpu.compressed_size_bytes,
                 };
             },
-            else => {
+            .decoding, .uploading, .failed => {
                 state.viewer.stats.active_image = .{
                     .has_thumb = has_thumb,
                     .thumb_upload_time_ms = thumb_upload_time_ms,

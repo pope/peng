@@ -6,7 +6,7 @@ pub fn build(b: *std.Build) void {
     const hot_reload = b.option(
         bool,
         "hot_reload",
-        "Build the application viewer as a dynamic lib to allow for automatic hot-reload of code",
+        "Build viewer as dynamic lib for automatic hot-reload of code",
     ) orelse false;
 
     var options = b.addOptions();
@@ -64,21 +64,56 @@ pub fn build(b: *std.Build) void {
         }
 
         const install_bin = struct {
-            fn run(builder: *std.Build, lazy_path: std.Build.LazyPath, filename: []const u8) void {
-                const install_step = builder.addInstallBinFile(lazy_path, filename);
+            fn run(
+                builder: *std.Build,
+                lazy_path: std.Build.LazyPath,
+                filename: []const u8,
+            ) void {
+                const install_step = builder.addInstallBinFile(
+                    lazy_path,
+                    filename,
+                );
                 builder.getInstallStep().dependOn(&install_step.step);
             }
         }.run;
 
         install_bin(b, sdl3_dep.path("lib/x64/SDL3.dll"), "SDL3.dll");
         install_bin(b, ttf_dep.path("lib/x64/SDL3_ttf.dll"), "SDL3_ttf.dll");
-        install_bin(b, img_dep.path("lib/x64/SDL3_image.dll"), "SDL3_image.dll");
-        install_bin(b, img_dep.path("lib/x64/optional/libavif-16.dll"), "libavif-16.dll");
-        install_bin(b, img_dep.path("lib/x64/optional/libpng16-16.dll"), "libpng16-16.dll");
-        install_bin(b, img_dep.path("lib/x64/optional/libtiff-6.dll"), "libtiff-6.dll");
-        install_bin(b, img_dep.path("lib/x64/optional/libwebp-7.dll"), "libwebp-7.dll");
-        install_bin(b, img_dep.path("lib/x64/optional/libwebpdemux-2.dll"), "libwebpdemux-2.dll");
-        install_bin(b, img_dep.path("lib/x64/optional/libwebpmux-3.dll"), "libwebpmux-3.dll");
+        install_bin(
+            b,
+            img_dep.path("lib/x64/SDL3_image.dll"),
+            "SDL3_image.dll",
+        );
+        install_bin(
+            b,
+            img_dep.path("lib/x64/optional/libavif-16.dll"),
+            "libavif-16.dll",
+        );
+        install_bin(
+            b,
+            img_dep.path("lib/x64/optional/libpng16-16.dll"),
+            "libpng16-16.dll",
+        );
+        install_bin(
+            b,
+            img_dep.path("lib/x64/optional/libtiff-6.dll"),
+            "libtiff-6.dll",
+        );
+        install_bin(
+            b,
+            img_dep.path("lib/x64/optional/libwebp-7.dll"),
+            "libwebp-7.dll",
+        );
+        install_bin(
+            b,
+            img_dep.path("lib/x64/optional/libwebpdemux-2.dll"),
+            "libwebpdemux-2.dll",
+        );
+        install_bin(
+            b,
+            img_dep.path("lib/x64/optional/libwebpmux-3.dll"),
+            "libwebpmux-3.dll",
+        );
     } else {
         const sys_libs = [_][]const u8{ "sdl3", "sdl3-ttf", "sdl3-image" };
         inline for (sys_libs) |lib| {
@@ -376,7 +411,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_integration_tests.step);
 }
 
-/// Configures GLSL to SPIR-V and SPIR-V to MSL compilation for all shader stages in src/ui/shaders.
+/// Configures GLSL to SPIR-V and SPIR-V to MSL compilation for all shader
+/// stages in src/ui/shaders.
 /// Uses content-addressed caching with declared inputs and outputs so
 /// unmodified shaders are not recompiled.
 fn setupShaderCompilation(b: *std.Build) *std.Build.Step {
@@ -436,14 +472,18 @@ fn setupShaderCompilation(b: *std.Build) *std.Build.Step {
         });
         spv_cmd.addFileArg(b.path(src_rel));
         spv_cmd.addArg("-o");
-        const spv_out = spv_cmd.addOutputFileArg(b.fmt("{s}.spv", .{def.out_name}));
+        const spv_out = spv_cmd.addOutputFileArg(
+            b.fmt("{s}.spv", .{def.out_name}),
+        );
 
         const msl_cmd = b.addSystemCommand(&.{
             "spirv-cross",
         });
         msl_cmd.addFileArg(spv_out);
         msl_cmd.addArgs(&.{ "--msl", "--output" });
-        const msl_out = msl_cmd.addOutputFileArg(b.fmt("{s}.msl", .{def.out_name}));
+        const msl_out = msl_cmd.addOutputFileArg(
+            b.fmt("{s}.msl", .{def.out_name}),
+        );
 
         update_shaders.addCopyFileToSource(spv_out, spv_rel);
         update_shaders.addCopyFileToSource(msl_out, msl_rel);

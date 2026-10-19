@@ -524,7 +524,25 @@ pub const AppState = struct {
         );
         self.viewer.ui.palette.selected_idx = switch (active_type) {
             .files => self.viewer.navigation.current_index orelse 0,
-            else => 0,
+            .inactive,
+            .actions,
+            .set_brightness,
+            .set_contrast,
+            .set_contrast_blend,
+            .set_highlights,
+            .set_shadows,
+            .set_whites,
+            .set_blacks,
+            .set_temperature,
+            .set_tint,
+            .set_vibrance,
+            .set_saturation,
+            .set_clarity,
+            .set_texture,
+            .go_to_image,
+            .directory_navigator,
+            .set_slideshow_interval,
+            => 0,
         };
         self.viewer.ui.palette.selection_dirty = true;
 
@@ -567,7 +585,22 @@ pub const AppState = struct {
                 };
                 try self.viewer.ui.palette.query.appendSlice(self.allocator, formatted);
             },
-            else => {},
+            .inactive,
+            .set_brightness,
+            .set_contrast,
+            .set_contrast_blend,
+            .set_highlights,
+            .set_shadows,
+            .set_whites,
+            .set_blacks,
+            .set_temperature,
+            .set_tint,
+            .set_vibrance,
+            .set_saturation,
+            .set_clarity,
+            .set_texture,
+            .go_to_image,
+            => {},
         }
         startTextInput(self.viewer.display);
     }
@@ -704,7 +737,7 @@ pub const AppState = struct {
 
         switch (e.thumbnail) {
             .loaded => |thumb| dev.releaseTexture(thumb.texture),
-            else => {},
+            .none, .pending, .not_available, .unloaded => {},
         }
 
         e.applyProbedMetadata(
@@ -750,7 +783,7 @@ pub const AppState = struct {
                         }
                         entry.thumbnail = .{ .unloaded = thumb.info };
                     },
-                    else => {},
+                    .none, .pending, .not_available, .unloaded => {},
                 }
             }
         }
@@ -830,7 +863,7 @@ pub const AppState = struct {
                             .cpu = cpu,
                         };
                     },
-                    else => {},
+                    .loaded_gpu, .decoding, .uploading, .failed => {},
                 }
             }
         }

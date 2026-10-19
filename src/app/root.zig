@@ -3,7 +3,6 @@
 //! Encapsulates domain sub-states, background event handling, file I/O,
 //! IPC protocol handling, image decoding pipelines, and system update passes.
 
-pub const core = @import("core/root.zig");
 pub const events = @import("events.zig");
 pub const state = @import("state.zig");
 pub const systems = @import("systems/root.zig");

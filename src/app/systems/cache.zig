@@ -48,14 +48,14 @@ fn spawnCacheDecodeSlot(
     if (state.cache.get(key)) |entry| {
         switch (entry.status) {
             .decoding => |*dec| dec.has_thread = true,
-            else => {},
+            .loaded_cpu, .loaded_gpu, .uploading, .failed => {},
         }
     }
     errdefer {
         if (state.cache.get(key)) |entry| {
             switch (entry.status) {
                 .decoding => |*dec| dec.has_thread = false,
-                else => {},
+                .loaded_cpu, .loaded_gpu, .uploading, .failed => {},
             }
         }
     }

@@ -127,7 +127,7 @@ pub fn sysProcessUiInteractions(
                 self.viewer.ui.overlays.edit_panel.active_slider = null;
             }
         },
-        else => {},
+        .none, .viewport, .info, .stats => {},
     }
 
     // 2. Discrete Clicks (Buttons & Initial Slider Click)

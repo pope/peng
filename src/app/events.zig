@@ -91,7 +91,7 @@ fn handlePaletteFolderCountEvent(
         switch (item.*) {
             .directory => |*d| d.scan = cnt.scan,
             .archive_file => |*a| a.scan = cnt.scan,
-            else => {},
+            .parent, .image_file => {},
         }
         state.viewer.ui.palette.selection_dirty = true;
         break;
@@ -121,7 +121,7 @@ fn handleDimensionsProbedEvent(
     if (probed.thumb_only) {
         switch (entry.status) {
             .decoding => |*dec| dec.has_thread = false,
-            else => {},
+            .loaded_cpu, .loaded_gpu, .uploading, .failed => {},
         }
     }
     state.updateCurrentRotation();
@@ -145,7 +145,7 @@ fn handleExifThumbnailEvent(
     if (thumb_data.thumb_only) {
         switch (entry.status) {
             .decoding => |*dec| dec.has_thread = false,
-            else => {},
+            .loaded_cpu, .loaded_gpu, .uploading, .failed => {},
         }
     }
     state.updateCurrentRotation();
@@ -165,7 +165,7 @@ fn handleExifThumbnailEvent(
                 .loaded => |old_thumb| {
                     gpu_dev.releaseTexture(old_thumb.texture);
                 },
-                else => {},
+                .none, .pending, .not_available, .unloaded => {},
             }
             entry.thumbnail = .{
                 .loaded = .{
@@ -211,7 +211,7 @@ fn handleImageDecodedEvent(
         if (state.cache.get(cur_key)) |cur_entry| {
             break :blk switch (cur_entry.status) {
                 .loaded_gpu, .failed => true,
-                else => false,
+                .loaded_cpu, .decoding, .uploading => false,
             };
         }
         break :blk false;
@@ -256,7 +256,7 @@ fn handleImageDecodedEvent(
                     gpu_dev.releaseTexture(gpu.gpu_texture);
                 }
             },
-            else => {},
+            .decoding, .uploading, .failed => {},
         }
         applyDecodedMetadata(entry, decoded_data);
         if (entry.thumbnail == .pending or entry.thumbnail == .none) {
@@ -345,7 +345,7 @@ fn applyDecodedGpuTexture(
     switch (entry.status) {
         .loaded_cpu => |cpu| cpu.surface.destroy(),
         .loaded_gpu => |gpu| gpu_dev.releaseTexture(gpu.gpu_texture),
-        else => {},
+        .decoding, .uploading, .failed => {},
     }
     applyDecodedMetadata(entry, decoded_data);
     entry.status = .{

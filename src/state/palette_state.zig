@@ -94,7 +94,7 @@ pub const DirectoryEntry = union(enum) {
         return switch (self) {
             .directory => |d| d.scan,
             .archive_file => |a| a.scan,
-            else => null,
+            .parent, .image_file => null,
         };
     }
 };

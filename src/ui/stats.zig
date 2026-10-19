@@ -294,7 +294,7 @@ fn renderInfoOverlay(
                 mime_type = "Failed";
                 res_str = "Failed";
             },
-            else => {},
+            .uploading => {},
         }
     }
 
@@ -512,7 +512,7 @@ pub fn renderStatsOverlay(
                 convert_str = "Failed";
                 upload_str = "Failed";
             },
-            else => {},
+            .uploading => {},
         }
     }
 

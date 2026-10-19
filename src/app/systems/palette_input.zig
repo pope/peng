@@ -442,7 +442,23 @@ fn processPaletteItemClick(
                 });
             }
         },
-        else => {},
+        .inactive,
+        .set_brightness,
+        .set_contrast,
+        .set_contrast_blend,
+        .set_highlights,
+        .set_shadows,
+        .set_whites,
+        .set_blacks,
+        .set_temperature,
+        .set_tint,
+        .set_vibrance,
+        .set_saturation,
+        .set_clarity,
+        .set_texture,
+        .go_to_image,
+        .set_slideshow_interval,
+        => {},
     }
     return false;
 }
