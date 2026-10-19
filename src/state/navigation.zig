@@ -228,6 +228,31 @@ pub const NavigationState = struct {
             }
             break :blk .unflagged;
         };
+
+        if (initial_class != .unflagged) {
+            if (entry.getJpegPath()) |jp| {
+                if (!self.path_classifications.contains(jp)) {
+                    const owned_jp = try self.classification_arena
+                        .allocator().dupe(u8, jp);
+                    try self.path_classifications.put(
+                        gpa,
+                        owned_jp,
+                        initial_class,
+                    );
+                }
+                const path = entry.getPath();
+                if (!self.path_classifications.contains(path)) {
+                    const owned_path = try self.classification_arena
+                        .allocator().dupe(u8, path);
+                    try self.path_classifications.put(
+                        gpa,
+                        owned_path,
+                        initial_class,
+                    );
+                }
+            }
+        }
+
         try self.items.append(gpa, .{
             .entry = entry,
             .classification = initial_class,
@@ -332,12 +357,6 @@ pub const NavigationState = struct {
         const old_class = classes[idx];
         if (old_class == new_class) return false;
 
-        classes[idx] = new_class;
-        if (old_class == .pick) self.pick_count -= 1;
-        if (old_class == .reject) self.reject_count -= 1;
-        if (new_class == .pick) self.pick_count += 1;
-        if (new_class == .reject) self.reject_count += 1;
-
         const entry = self.items.items(.entry)[idx];
         const path = entry.getPath();
         if (new_class == .unflagged) {
@@ -349,18 +368,26 @@ pub const NavigationState = struct {
             if (self.path_classifications.getPtr(path)) |ptr| {
                 ptr.* = new_class;
             } else {
-                const owned_path = try self.classification_arena.allocator().dupe(u8, path);
+                const owned_path = try self.classification_arena
+                    .allocator().dupe(u8, path);
                 try self.path_classifications.put(gpa, owned_path, new_class);
             }
             if (entry.getJpegPath()) |jp| {
                 if (self.path_classifications.getPtr(jp)) |ptr| {
                     ptr.* = new_class;
                 } else {
-                    const owned_jp = try self.classification_arena.allocator().dupe(u8, jp);
+                    const owned_jp = try self.classification_arena
+                        .allocator().dupe(u8, jp);
                     try self.path_classifications.put(gpa, owned_jp, new_class);
                 }
             }
         }
+
+        classes[idx] = new_class;
+        if (old_class == .pick) self.pick_count -= 1;
+        if (old_class == .reject) self.reject_count -= 1;
+        if (new_class == .pick) self.pick_count += 1;
+        if (new_class == .reject) self.reject_count += 1;
         return true;
     }
 
@@ -407,12 +434,16 @@ pub const NavigationState = struct {
             return changed;
         }
         if (self.current_index) |cur| {
-            if (self.isIndexVisible(cur)) return false;
+            if (self.isIndexVisible(cur)) {
+                self.anchor_index = cur;
+                return false;
+            }
             self.current_index = self.findClosestVisible(cur);
             if (self.current_index) |idx| self.anchor_index = idx;
             return true;
         } else {
             self.current_index = self.findClosestVisible(self.anchor_index);
+            if (self.current_index) |idx| self.anchor_index = idx;
             return self.current_index != null;
         }
     }
@@ -844,7 +875,89 @@ test "NavigationState - pair classification synchronization" {
 
     // Unflagging clears both paths from table
     _ = try nav.unflagCurrent(allocator);
-    try std.testing.expectEqual(Classification.unflagged, nav.getCurrentClassification());
-    try std.testing.expect(nav.path_classifications.get("photos/DSC00941.ARW") == null);
-    try std.testing.expect(nav.path_classifications.get("photos/DSC00941.JPG") == null);
+    try std.testing.expectEqual(
+        Classification.unflagged,
+        nav.getCurrentClassification(),
+    );
+    try std.testing.expect(
+        nav.path_classifications.get("photos/DSC00941.ARW") == null,
+    );
+    try std.testing.expect(
+        nav.path_classifications.get("photos/DSC00941.JPG") == null,
+    );
+}
+
+test "NavigationState - unstacked to stacked pair flag propagation" {
+    const allocator = std.testing.allocator;
+    var nav = try NavigationState.init(allocator);
+    defer nav.deinit(allocator);
+
+    // 1. Mark standalone JPEG as pick while unstacked
+    try nav.appendEntry(allocator, .{
+        .filesystem = .{ .path = "photos/shot.JPG" },
+    });
+    nav.current_index = 0;
+    _ = try nav.markCurrentPick(allocator);
+    try std.testing.expectEqual(
+        Classification.pick,
+        nav.getCurrentClassification(),
+    );
+
+    // 2. Clear and reload as stacked pair: pair must inherit pick and register
+    // the RAW companion path in path_classifications
+    nav.clearEntries();
+    try nav.appendEntry(allocator, .{
+        .pair = .{
+            .raw_path = "photos/shot.ARW",
+            .jpeg_path = "photos/shot.JPG",
+        },
+    });
+    nav.current_index = 0;
+    try std.testing.expectEqual(
+        Classification.pick,
+        nav.getCurrentClassification(),
+    );
+    try std.testing.expectEqual(
+        Classification.pick,
+        nav.path_classifications.get("photos/shot.ARW").?,
+    );
+
+    // 3. Clear and reload as standalone RAW: must inherit pick
+    nav.clearEntries();
+    try nav.appendEntry(allocator, .{
+        .filesystem = .{ .path = "photos/shot.ARW" },
+    });
+    nav.current_index = 0;
+    try std.testing.expectEqual(
+        Classification.pick,
+        nav.getCurrentClassification(),
+    );
+}
+
+test "NavigationState - adjustIndexForVisibility syncs anchor_index" {
+    const allocator = std.testing.allocator;
+    var nav = try NavigationState.init(allocator);
+    defer nav.deinit(allocator);
+
+    try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "0.jpg" } });
+    try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "1.jpg" } });
+    try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "2.jpg" } });
+    try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "3.jpg" } });
+    nav.current_index = 2;
+
+    // In .all mode with current_index = 2, adjustIndexForVisibility must sync
+    // anchor_index to 2
+    _ = nav.adjustIndexForVisibility();
+    try std.testing.expectEqual(@as(usize, 2), nav.anchor_index);
+
+    // Switch to .picks mode with 0 picks: current_index becomes null,
+    // anchor_index preserved as 2
+    _ = nav.setViewMode(.picks);
+    try std.testing.expectEqual(@as(?usize, null), nav.current_index);
+    try std.testing.expectEqual(@as(usize, 2), nav.anchor_index);
+
+    // Switch back to .all: current_index restores to anchor_index (2), not 0
+    _ = nav.setViewMode(.all);
+    try std.testing.expectEqual(@as(?usize, 2), nav.current_index);
+    try std.testing.expectEqual(@as(usize, 2), nav.anchor_index);
 }
