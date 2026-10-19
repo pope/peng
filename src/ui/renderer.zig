@@ -519,7 +519,11 @@ fn getOrRenderCachedText(
     }
 
     const transfer_buf = gpu_res.transfer_buffers[frame_idx].?;
-    const mapped_raw: [*]u8 = dev.mapTransferBuffer(transfer_buf, false) orelse {
+    const cycle_tb = shouldCycleFrameBuffer(needs_tb, aligned_offset);
+    const mapped_raw: [*]u8 = dev.mapTransferBuffer(
+        transfer_buf,
+        cycle_tb,
+    ) orelse {
         dev.releaseTexture(tex);
         return null;
     };
@@ -572,6 +576,17 @@ fn getOrRenderCachedText(
         .w = w_f,
         .h = h_f,
     };
+}
+
+/// Returns `true` when an existing per-frame GPU or transfer buffer should be
+/// cycled by SDL_GPU on its first write of the frame (`aligned_offset == 0`)
+/// to avoid stalling or overwriting in-flight GPU memory, without cycling a
+/// buffer that was just freshly allocated (`!was_reallocated`).
+inline fn shouldCycleFrameBuffer(
+    was_reallocated: bool,
+    aligned_offset: usize,
+) bool {
+    return !was_reallocated and aligned_offset == 0;
 }
 
 /// Returns `true` if the scissor clipping box has non-positive area or falls
@@ -885,11 +900,16 @@ fn uploadVertexData(
     const vb = gpu_res.vertex_buffers[frame_idx].?;
     const tb = gpu_res.transfer_buffers[frame_idx].?;
 
-    const mapped_raw: [*]u8 = dev.mapTransferBuffer(tb, false) orelse return error.GPUMapFailed;
+    const cycle_tb = shouldCycleFrameBuffer(needs_tb, vert_offset);
+    const mapped_raw: [*]u8 = dev.mapTransferBuffer(
+        tb,
+        cycle_tb,
+    ) orelse return error.GPUMapFailed;
     const mapped: [*]Vertex = @ptrCast(@alignCast(mapped_raw + vert_offset));
     @memcpy(mapped[0..vertex_items.len], vertex_items);
     dev.unmapTransferBuffer(tb);
 
+    const cycle_vb = shouldCycleFrameBuffer(needs_vb, 0);
     copy_pass.uploadToBuffer(&sdl.gpu.TransferBufferLocation{
         .transfer_buffer = tb,
         .offset = @intCast(vert_offset),
@@ -897,7 +917,7 @@ fn uploadVertexData(
         .buffer = vb,
         .offset = 0,
         .size = @intCast(needed_size),
-    }, false);
+    }, cycle_vb);
 
     return vb;
 }
@@ -1525,4 +1545,14 @@ test "scissor stack dynamically grows beyond 16 levels with arena allocator" {
         _ = stack.pop();
     }
     try std.testing.expectEqual(@as(usize, 0), stack.items.len);
+}
+
+test "shouldCycleFrameBuffer cycles reused buffers on first frame write" {
+    // Reused buffer at offset 0 (first sub-allocation of frame) must cycle
+    try std.testing.expect(shouldCycleFrameBuffer(false, 0));
+    // Reused buffer at non-zero offset must NOT cycle (preserves earlier data)
+    try std.testing.expect(!shouldCycleFrameBuffer(false, 512));
+    // Freshly reallocated buffer must NOT cycle even at offset 0
+    try std.testing.expect(!shouldCycleFrameBuffer(true, 0));
+    try std.testing.expect(!shouldCycleFrameBuffer(true, 512));
 }
