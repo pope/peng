@@ -268,51 +268,43 @@ pub fn build(b: *std.Build) void {
         .root_module = sdl_module,
     });
     const run_sdl_tests = b.addRunArtifact(sdl_tests);
-    run_sdl_tests.step.dependOn(b.getInstallStep());
 
     const intents_tests = b.addTest(.{
         .root_module = intents_module,
     });
     const run_intents_tests = b.addRunArtifact(intents_tests);
-    run_intents_tests.step.dependOn(b.getInstallStep());
 
     const config_tests = b.addTest(.{
         .root_module = config_module,
     });
     const run_config_tests = b.addRunArtifact(config_tests);
-    run_config_tests.step.dependOn(b.getInstallStep());
 
     const state_tests = b.addTest(.{
         .root_module = state_module,
     });
     const run_state_tests = b.addRunArtifact(state_tests);
-    run_state_tests.step.dependOn(b.getInstallStep());
 
     const input_tests = b.addTest(.{
         .root_module = input_module,
     });
     const run_input_tests = b.addRunArtifact(input_tests);
-    run_input_tests.step.dependOn(b.getInstallStep());
 
     const ipc_tests = b.addTest(.{
         .root_module = ipc_module,
     });
     const run_ipc_tests = b.addRunArtifact(ipc_tests);
-    run_ipc_tests.step.dependOn(b.getInstallStep());
 
     const app_tests = b.addTest(.{
         .root_module = app_module,
     });
     const run_app_tests = b.addRunArtifact(app_tests);
     run_app_tests.setCwd(b.path("."));
-    run_app_tests.step.dependOn(b.getInstallStep());
 
     const ui_tests = b.addTest(.{
         .root_module = ui_module,
     });
     ui_tests.step.dependOn(compile_shaders);
     const run_ui_tests = b.addRunArtifact(ui_tests);
-    run_ui_tests.step.dependOn(b.getInstallStep());
 
     const core_module = b.createModule(.{
         .root_source_file = b.path("src/app/core/root.zig"),
@@ -327,9 +319,18 @@ pub fn build(b: *std.Build) void {
     });
     const run_core_tests = b.addRunArtifact(core_tests);
     run_core_tests.setCwd(b.path("."));
-    run_core_tests.step.dependOn(b.getInstallStep());
 
     if (target.result.os.tag == .windows) {
+        run_sdl_tests.step.dependOn(b.getInstallStep());
+        run_state_tests.step.dependOn(b.getInstallStep());
+        run_core_tests.step.dependOn(b.getInstallStep());
+        run_app_tests.step.dependOn(b.getInstallStep());
+        run_ui_tests.step.dependOn(b.getInstallStep());
+        run_intents_tests.step.dependOn(b.getInstallStep());
+        run_config_tests.step.dependOn(b.getInstallStep());
+        run_input_tests.step.dependOn(b.getInstallStep());
+        run_ipc_tests.step.dependOn(b.getInstallStep());
+
         run_sdl_tests.addPathDir(b.getInstallPath(.bin, ""));
         run_state_tests.addPathDir(b.getInstallPath(.bin, ""));
         run_core_tests.addPathDir(b.getInstallPath(.bin, ""));
@@ -355,6 +356,12 @@ pub fn build(b: *std.Build) void {
     test_unit_step.dependOn(&run_config_tests.step);
     test_unit_step.dependOn(&run_input_tests.step);
     test_unit_step.dependOn(&run_ipc_tests.step);
+
+    const test_integration_step = b.step(
+        "test-integration",
+        "Run integration tests",
+    );
+    test_integration_step.dependOn(&run_integration_tests.step);
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_sdl_tests.step);
