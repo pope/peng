@@ -119,7 +119,10 @@ fn handlePaletteDirectoryDrillDown(ctx: FrameContext) !void {
     const match_idx = palette.matches.items[palette.selected_idx];
     if (match_idx >= palette.dir_items.items.len) return;
     const entry = palette.dir_items.items[match_idx];
-    const path_copy = try ctx.frame_allocator.dupe(u8, entry.getFullPath());
+    if (entry.isArchive()) return;
+    const full_path = entry.getFullPath();
+    if (full_path.len == 0) return;
+    const path_copy = try ctx.frame_allocator.dupe(u8, full_path);
     defer ctx.frame_allocator.free(path_copy);
     palette.query.clearRetainingCapacity();
     try self.loadPaletteDirectory(path_copy);
@@ -412,10 +415,17 @@ fn processPaletteItemClick(
             const dir_items = self.viewer.ui.palette.dir_items.items;
             if (real_idx < dir_items.len) {
                 const entry = dir_items[real_idx];
+                const full_path = entry.getFullPath();
+                if (full_path.len == 0) return false;
                 const path_copy = try ctx.frame_allocator.dupe(
                     u8,
-                    entry.getFullPath(),
+                    full_path,
                 );
+                if (entry.isArchive()) {
+                    try self.pushIntent(.{ .open_path = path_copy });
+                    self.closePalette();
+                    return true;
+                }
                 try self.pushIntent(.{
                     .set_palette = .{
                         .mode = .directory_navigator,
@@ -958,5 +968,62 @@ test "sysProcessPaletteInput preserves text_input after backspace" {
     try std.testing.expectEqualStrings(
         "car",
         state.viewer.ui.palette.query.items,
+    );
+}
+
+test "directory_navigator archive_file drill-down and click behavior" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    var frame_arena = std.heap.ArenaAllocator.init(allocator);
+    defer frame_arena.deinit();
+
+    const palette = &state.viewer.ui.palette;
+    palette.mode = .directory_navigator;
+    try palette.current_nav_dir.appendSlice(allocator, "/tmp/comics");
+    try palette.dir_items.append(allocator, .{
+        .directory = .{
+            .name = try allocator.dupe(u8, "subfolder"),
+            .full_path = try allocator.dupe(u8, "/tmp/comics/subfolder"),
+        },
+    });
+    try palette.dir_items.append(allocator, .{
+        .archive_file = .{
+            .name = try allocator.dupe(u8, "issue1.cbz"),
+            .full_path = try allocator.dupe(u8, "/tmp/comics/issue1.cbz"),
+        },
+    });
+    try palette.rebuildDirectoryMatches();
+    palette.selected_idx = 1;
+    try palette.query.appendSlice(allocator, "issue");
+
+    const ctx = FrameContext{
+        .state = &state,
+        .frame_allocator = frame_arena.allocator(),
+    };
+
+    // 1. Pressing Right or Tab on an archive_file entry does not reload parent
+    // or clear query/selection
+    _ = try handlePaletteKeys(ctx, .right, .{});
+    try std.testing.expectEqual(@as(usize, 1), palette.selected_idx);
+    try std.testing.expectEqualStrings("issue", palette.query.items);
+    try std.testing.expectEqual(@as(usize, 0), state.pending_intents.items.len);
+
+    _ = try handlePaletteKeys(ctx, .tab, .{});
+    try std.testing.expectEqual(@as(usize, 1), palette.selected_idx);
+    try std.testing.expectEqualStrings("issue", palette.query.items);
+    try std.testing.expectEqual(@as(usize, 0), state.pending_intents.items.len);
+
+    // 2. Clicking an archive_file entry pushes .open_path and closes palette
+    const closed = try processPaletteItemClick(ctx, 1, .directory_navigator);
+    try std.testing.expect(closed);
+    try std.testing.expect(palette.is_closing);
+    try std.testing.expectEqual(@as(usize, 1), state.pending_intents.items.len);
+    try std.testing.expectEqualStrings(
+        "/tmp/comics/issue1.cbz",
+        state.pending_intents.items[0].open_path,
     );
 }
