@@ -639,7 +639,11 @@ pub const IpcCommand = union(enum) {
             } else {
                 return error.UnknownPalette;
             }
-            const query_opt = it.next();
+            const raw_rest = std.mem.trim(u8, it.rest(), " \t\r\n");
+            const query_opt: ?[]const u8 = if (raw_rest.len > 0)
+                raw_rest
+            else
+                null;
             return .{ .palette = .{ .kind = kind, .query = query_opt } };
         } else if (std.mem.eql(u8, cmd, "thumb")) {
             if (it.next()) |val| {
@@ -687,7 +691,8 @@ pub const IpcCommand = union(enum) {
             }
             return error.UnknownViewMode;
         } else if (std.mem.eql(u8, cmd, "screenshot")) {
-            const filepath = it.next() orelse return error.MissingArgument;
+            const filepath = std.mem.trim(u8, it.rest(), " \t\r\n");
+            if (filepath.len == 0) return error.MissingArgument;
             if (filepath.len > 512) return error.PathTooLong;
             return .{ .screenshot = filepath };
         } else if (std.mem.eql(u8, cmd, "quit")) {
@@ -1035,6 +1040,30 @@ test "IpcCommand parsing" {
     try std.testing.expectEqual(
         @as(?f32, 0.8),
         cmd_adj_3.adjust.contrast_blend,
+    );
+
+    const cmd_pal_query = try IpcCommand.parse(
+        "palette actions Set Contrast Blend\n",
+    );
+    try std.testing.expectEqual(
+        PaletteKind.actions,
+        cmd_pal_query.palette.kind,
+    );
+    try std.testing.expectEqualStrings(
+        "Set Contrast Blend",
+        cmd_pal_query.palette.query.?,
+    );
+
+    const cmd_screenshot_spaces = try IpcCommand.parse(
+        "screenshot /tmp/my folder/screen shot.png\n",
+    );
+    try std.testing.expectEqualStrings(
+        "/tmp/my folder/screen shot.png",
+        cmd_screenshot_spaces.screenshot,
+    );
+    try std.testing.expectError(
+        error.MissingArgument,
+        IpcCommand.parse("screenshot   \n"),
     );
 
     try std.testing.expectError(error.UnknownCommand, IpcCommand.parse("invalid_command"));

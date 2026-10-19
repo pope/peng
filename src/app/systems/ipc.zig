@@ -430,3 +430,56 @@ test "sysExecuteIpcCommands - set_palette frame_allocator OOM replies error" {
     const line = try reader.interface.takeDelimiterInclusive('\n');
     try std.testing.expectEqualStrings("ERR OutOfMemory\n", line);
 }
+
+test "sysExecuteIpcCommands - screenshot spaces and swapchain miss error" {
+    if (builtin.os.tag == .windows) return;
+    const prev_level = std.testing.log_level;
+    std.testing.log_level = .err;
+    defer std.testing.log_level = prev_level;
+
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    const sock_path = "/tmp/peng_test_sys_ipc5.sock";
+    std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, sock_path) catch {};
+    defer std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, sock_path) catch {};
+
+    const addr = try std.Io.net.UnixAddress.init(sock_path);
+    var server = try addr.listen(io, .{});
+    defer server.deinit(io);
+    const client = try addr.connect(io);
+    defer client.close(io);
+    const accepted = try server.accept(io);
+
+    const cmd_data = try allocator.create(ipc.IpcCommandData);
+    cmd_data.* = .{
+        .command = try allocator.dupe(
+            u8,
+            "screenshot /tmp/dir with spaces/capture.png",
+        ),
+        .client_stream = accepted,
+    };
+    try state.pending_ipc_commands.append(allocator, cmd_data);
+
+    const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
+    sysExecuteIpcCommands(ctx);
+
+    try std.testing.expect(state.viewer.ui.screenshot_mode == .capturing);
+    try std.testing.expectEqualStrings(
+        "/tmp/dir with spaces/capture.png",
+        state.viewer.ui.screenshot_mode.capturing.path,
+    );
+
+    state.handleScreenshotPostRender(error.SwapchainTextureUnavailable);
+    try std.testing.expect(state.viewer.ui.screenshot_mode == .idle);
+
+    var read_buf: [64]u8 = undefined;
+    var reader = client.reader(io, &read_buf);
+    const line = try reader.interface.takeDelimiterInclusive('\n');
+    try std.testing.expectEqualStrings(
+        "ERR SwapchainTextureUnavailable\n",
+        line,
+    );
+}

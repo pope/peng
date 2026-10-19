@@ -246,6 +246,10 @@ pub fn renderFrame(
             _ = cmd_wrapper.submit();
             if (use_headless) {
                 dev.releaseTexture(tex);
+                target_tex = null;
+            }
+            if (capture_filename != null) {
+                return error.SwapchainTextureUnavailable;
             }
             return;
         }
@@ -301,9 +305,14 @@ pub fn renderFrame(
 
         if (use_headless) {
             dev.releaseTexture(tex);
+            target_tex = null;
         }
     } else {
+        cmd_buf_submitted = true;
         _ = cmd_wrapper.submit();
+        if (capture_filename != null) {
+            return error.SwapchainTextureUnavailable;
+        }
     }
 }
 

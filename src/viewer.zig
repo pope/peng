@@ -173,7 +173,10 @@ pub fn updateFrame(
     );
 
     // Phase 3: Render Phase
-    if (app_state.gpu_device == null) return error.GpuNotInitialized;
+    if (app_state.gpu_device == null) {
+        app_state.handleScreenshotPostRender(error.GpuNotInitialized);
+        return error.GpuNotInitialized;
+    }
 
     const nav = &app_state.viewer.navigation;
     const nav_slice = nav.items.slice();
