@@ -83,6 +83,8 @@ pub const Orientation = types.Orientation;
 pub const OverlayState = types.OverlayState;
 pub const PairStreamTarget = types.PairStreamTarget;
 pub const palette_action_items = types.palette_action_items;
+pub const PALETTE_VIEWPORT_HEIGHT_LOGICAL =
+    palette_state.PALETTE_VIEWPORT_HEIGHT_LOGICAL;
 pub const PaletteConfig = palette_state.PaletteConfig;
 pub const PaletteState = palette_state.PaletteState;
 pub const PanController = types.PanController;

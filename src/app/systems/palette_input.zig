@@ -509,38 +509,23 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
     }
 
     // 3. Selection Scrolling Synchronization
-    if (self.viewer.ui.palette.selection_dirty) {
-        const cfg = state_pkg.getPaletteConfig(self.viewer.ui.palette.mode);
-        const scroll_data = clay.cdefs.Clay_GetScrollContainerData(
-            clay.getElementId(cfg.list_id),
+    const cfg = state_pkg.getPaletteConfig(self.viewer.ui.palette.mode);
+    const scroll_data = clay.cdefs.Clay_GetScrollContainerData(
+        clay.getElementId(cfg.list_id),
+    );
+    if (scroll_data.found) {
+        scroll_data.scroll_position.y = cfg.resolveScrollOffsetY(
+            scroll_data.scroll_position.y,
+            self.viewer.ui.palette.matches.items.len,
+            self.viewer.ui.palette.selected_idx,
+            self.viewer.ui.palette.selection_dirty,
         );
-        if (scroll_data.found) {
-            const item_height = cfg.base_item_height;
-            const viewport_height = 320.0;
-            const sel_f = @as(
-                f32,
-                @floatFromInt(self.viewer.ui.palette.selected_idx),
-            );
-            const item_top = sel_f * item_height;
-            const item_bottom = item_top + item_height;
-            const visible_top = -scroll_data.scroll_position.y;
-            const visible_bottom = visible_top + viewport_height;
-
-            if (item_top < visible_top) {
-                scroll_data.scroll_position.y = -item_top;
-            } else if (item_bottom > visible_bottom) {
-                scroll_data.scroll_position.y =
-                    -(item_bottom - viewport_height);
-            }
-            self.viewer.ui.palette.selection_dirty = false;
-        }
+        self.viewer.ui.palette.selection_dirty = false;
     }
 
     // 4. Mouse Pointer & Click Processing
     var palette_closed_this_frame = false;
     if (input.mouse_left_clicked and !input.isPointerInDebugPanel()) {
-        const cfg = state_pkg.getPaletteConfig(self.viewer.ui.palette.mode);
-
         if (!clay.pointerOver(clay.getElementId(cfg.element_id))) {
             self.closePalette();
             palette_closed_this_frame = true;

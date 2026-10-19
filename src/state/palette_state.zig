@@ -407,8 +407,12 @@ pub const PaletteState = struct {
     }
 };
 
+/// Height in logical UI points of the scrollable item list viewport inside the
+/// command palette modal.
+pub const PALETTE_VIEWPORT_HEIGHT_LOGICAL: f32 = 320.0;
+
 /// Configuration metadata for palette modals (titles, placeholders,
-/// element IDs, spacer IDs, item heights).
+/// element IDs, spacer IDs, logical item and viewport heights).
 pub const PaletteConfig = struct {
     title: []const u8,
     placeholder: []const u8,
@@ -418,6 +422,43 @@ pub const PaletteConfig = struct {
     top_spacer_id: []const u8,
     bottom_spacer_id: []const u8,
     base_item_height: f32,
+    viewport_height_logical: f32 = PALETTE_VIEWPORT_HEIGHT_LOGICAL,
+
+    /// Clamps `current_scroll_y` to the valid logical content scroll range
+    /// `[-max_scroll, 0.0]` and, when `selection_dirty` is true, adjusts the
+    /// scroll offset so `selected_idx` is fully visible within
+    /// `self.viewport_height_logical`.
+    pub fn resolveScrollOffsetY(
+        self: PaletteConfig,
+        current_scroll_y: f32,
+        total_items: usize,
+        selected_idx: usize,
+        selection_dirty: bool,
+    ) f32 {
+        const item_height = self.base_item_height;
+        const viewport_height = self.viewport_height_logical;
+        const total_content_h = @as(f32, @floatFromInt(total_items)) *
+            item_height;
+        const max_scroll = @max(0.0, total_content_h - viewport_height);
+        var scroll_y = std.math.clamp(current_scroll_y, -max_scroll, 0.0);
+
+        if (selection_dirty and total_items > 0) {
+            const clamped_sel = @min(selected_idx, total_items - 1);
+            const item_top = @as(f32, @floatFromInt(clamped_sel)) * item_height;
+            const item_bottom = item_top + item_height;
+            const visible_top = -scroll_y;
+            const visible_bottom = visible_top + viewport_height;
+
+            if (item_top < visible_top) {
+                scroll_y = -item_top;
+            } else if (item_bottom > visible_bottom) {
+                scroll_y = -(item_bottom - viewport_height);
+            }
+            scroll_y = std.math.clamp(scroll_y, -max_scroll, 0.0);
+        }
+
+        return scroll_y;
+    }
 };
 
 /// Returns the static layout configuration struct for a given palette mode.
@@ -715,4 +756,24 @@ test "PaletteState - rebuildFileMatches with RAW+JPEG pair" {
     try state.rebuildFileMatches(&entries);
     try std.testing.expectEqual(@as(usize, 1), state.matches.items.len);
     try std.testing.expectEqual(@as(usize, 0), state.matches.items[0]);
+}
+
+test "PaletteConfig.resolveScrollOffsetY clamps stale scroll and seeds mount" {
+    const cfg = getPaletteConfig(.files); // base_item_height = 58.0
+
+    // 1. Initial mount frame (current_scroll_y = 0.0, selection_dirty = true)
+    // at deep index 50 of 100 items -> scrolls directly to item 50
+    const y_initial = cfg.resolveScrollOffsetY(0.0, 100, 50, true);
+    // item_bottom = 51 * 58 = 2958; -(2958 - 320) = -2638.0
+    try std.testing.expectApproxEqAbs(@as(f32, -2638.0), y_initial, 0.001);
+
+    // 2. Filtered item count shrinks below viewport height (4 items = 232px)
+    // with stale scroll_position.y = -150.0 and selected_idx = 3 -> clamps 0.0
+    const y_shrunk_dirty = cfg.resolveScrollOffsetY(-150.0, 4, 3, true);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.0), y_shrunk_dirty, 0.001);
+
+    // 3. Filtered item count shrinks while selection_dirty is false -> clamps
+    // stale scroll_position.y (-1000.0) to -max_scroll (10 * 58 - 320 = 260)
+    const y_shrunk_clean = cfg.resolveScrollOffsetY(-1000.0, 10, 0, false);
+    try std.testing.expectApproxEqAbs(@as(f32, -260.0), y_shrunk_clean, 0.001);
 }

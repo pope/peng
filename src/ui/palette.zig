@@ -1073,32 +1073,30 @@ fn renderSelectionList(
     progress: f32,
 ) !void {
     const palette = ui_model.palette;
+    const matching_indices = &palette.matches;
     const list_id = clay.getElementId(cfg.list_id);
     const scroll_data = clay.cdefs.Clay_GetScrollContainerData(list_id);
-    var scroll_offset = if (scroll_data.found)
-        scroll_data.scroll_position.*
-    else
-        clay.Vector2{ .x = 0, .y = 0 };
-
     const item_height = cfg.base_item_height;
-    const viewport_height = 320.0;
+    const viewport_height = cfg.viewport_height_logical;
 
-    if (scroll_data.found and palette.selection_dirty) {
-        const item_top = @as(f32, @floatFromInt(palette.selected_idx)) * item_height;
-        const item_bottom = item_top + item_height;
-        const visible_top = -scroll_data.scroll_position.y;
-        const visible_bottom = visible_top + viewport_height;
-
-        if (item_top < visible_top) {
-            scroll_data.scroll_position.y = -item_top;
-            scroll_offset.y = -item_top;
-        } else if (item_bottom > visible_bottom) {
-            scroll_data.scroll_position.y = -(item_bottom - viewport_height);
-            scroll_offset.y = -(item_bottom - viewport_height);
-        }
+    const current_scroll_y = if (scroll_data.found)
+        scroll_data.scroll_position.y
+    else
+        0.0;
+    const resolved_scroll_y = cfg.resolveScrollOffsetY(
+        current_scroll_y,
+        matching_indices.items.len,
+        palette.selected_idx,
+        palette.selection_dirty,
+    );
+    if (scroll_data.found) {
+        scroll_data.scroll_position.y = resolved_scroll_y;
     }
+    const scroll_offset = clay.Vector2{
+        .x = if (scroll_data.found) scroll_data.scroll_position.x else 0.0,
+        .y = resolved_scroll_y,
+    };
 
-    const matching_indices = &palette.matches;
     const window = VirtualWindow.compute(
         matching_indices.items.len,
         scroll_offset.y,
@@ -1110,7 +1108,7 @@ fn renderSelectionList(
     clay.UI()(.{
         .id = clay.getElementId(cfg.list_id),
         .layout = .{
-            .sizing = .{ .w = .grow, .h = .fixed(320) },
+            .sizing = .{ .w = .grow, .h = .fixed(viewport_height) },
             .direction = .top_to_bottom,
             .child_gap = 4,
         },
