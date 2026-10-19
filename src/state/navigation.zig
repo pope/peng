@@ -270,6 +270,16 @@ pub const NavigationState = struct {
         self.anchor_index = 0;
     }
 
+    /// Returns the effective navigation prefetch direction. If no user
+    /// navigation has occurred yet (`last_nav_time_ms == 0`), respects
+    /// `manga_mode` (.backward for RTL reading order, .forward otherwise).
+    pub fn getEffectiveDirection(self: *const NavigationState) NavDirection {
+        if (self.last_nav_time_ms == 0) {
+            return if (self.manga_mode) .backward else .forward;
+        }
+        return self.direction;
+    }
+
     /// Returns `true` if any background directory or stdin file scan is active.
     pub inline fn isLoadingFiles(self: *const NavigationState) bool {
         return self.active_file_scans.load(.acquire) > 0;
@@ -960,4 +970,38 @@ test "NavigationState - adjustIndexForVisibility syncs anchor_index" {
     _ = nav.setViewMode(.all);
     try std.testing.expectEqual(@as(?usize, 2), nav.current_index);
     try std.testing.expectEqual(@as(usize, 2), nav.anchor_index);
+}
+
+test "NavigationState - getEffectiveDirection respects initial manga_mode" {
+    const allocator = std.testing.allocator;
+    var nav = try NavigationState.init(allocator);
+    defer nav.deinit(allocator);
+
+    // Initial state: last_nav_time_ms == 0, manga_mode == false -> forward
+    try std.testing.expectEqual(
+        NavDirection.forward,
+        nav.getEffectiveDirection(),
+    );
+
+    // Manga mode enabled at startup: last_nav_time_ms == 0 -> backward
+    nav.manga_mode = true;
+    try std.testing.expectEqual(
+        NavDirection.backward,
+        nav.getEffectiveDirection(),
+    );
+
+    // Navigating forward: last_nav_time_ms > 0 -> tracks user direction
+    nav.last_nav_time_ms = 100;
+    nav.direction = .forward;
+    try std.testing.expectEqual(
+        NavDirection.forward,
+        nav.getEffectiveDirection(),
+    );
+
+    // Navigating backward: last_nav_time_ms > 0 -> tracks user direction
+    nav.direction = .backward;
+    try std.testing.expectEqual(
+        NavDirection.backward,
+        nav.getEffectiveDirection(),
+    );
 }

@@ -199,7 +199,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
     // along travel direction within the active VRAM prefetch radius)
     var desired_buf: [5]usize = undefined;
     const desired = neighbors.collectUnique(
-        state.viewer.navigation.direction,
+        state.viewer.navigation.getEffectiveDirection(),
         max_dist,
         &desired_buf,
     );
