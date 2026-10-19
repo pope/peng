@@ -252,8 +252,9 @@ pub fn updateFrame(
         .image_dissolve = blk: {
             const progress = app_state.viewer.animations.get(.image_crossfade);
             if (progress >= 0.999) break :blk .none;
-            const cur = app_state.getCurrentEntry() orelse break :blk .none;
-            if (cur.status != .loaded_gpu) break :blk .none;
+            if (app_state.getCurrentEntry()) |cur| {
+                if (cur.status == .failed) break :blk .none;
+            }
 
             switch (app_state.viewer.image_transition) {
                 .none => break :blk .none,

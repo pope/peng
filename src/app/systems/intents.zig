@@ -354,6 +354,10 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 const cur_entry = self.getCurrentEntry();
                 const target_failed =
                     if (cur_entry) |e| e.status == .failed else false;
+                const target_decoded = if (cur_entry) |e|
+                    (e.status == .loaded_gpu or e.status == .loaded_cpu)
+                else
+                    self.gpu_device == null;
                 const is_animating =
                     self.viewer.animations.isActive(.image_crossfade) or
                     self.viewer.image_transition != .none;
@@ -367,7 +371,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 else
                     (nav.crossfade and
                         (prev_nav_time_ms == 0 or elapsed >= 200) and
-                        !is_animating and old_entry_loaded);
+                        !is_animating and old_entry_loaded and target_decoded);
 
                 if (should_crossfade) {
                     self.viewer.image_transition = .{ .active = .{
@@ -1077,6 +1081,47 @@ test "sysExecuteIntents - manual navigation crossfade and rapid navigation cut" 
         .delta_time_ms = 16.0,
     });
     try testing.expectEqual(false, app_st.viewer.navigation.crossfade);
+
+    // 4. Manual navigation to a .decoding slide (e.g. thumbnail loaded after
+    // fast scroll, full image still decoding) must not arm image_transition,
+    // preventing a flash of the previous slide when full decode completes.
+    app_st.viewer.navigation.crossfade = true;
+    app_st.viewer.navigation.current_index = 0;
+    app_st.viewer.navigation.last_nav_time_ms = 0;
+    const key0 = try app_st.cache.appendSlot(allocator, 0, .{
+        .loaded_gpu = .{
+            .gpu_texture = undefined,
+            .w = 100,
+            .h = 100,
+            .size_bytes = 1000,
+            .memory_size_bytes = 40_000,
+        },
+    });
+    defer app_st.cache.get(key0).?.status = .{
+        .decoding = .{ .has_thread = false },
+    };
+    _ = try app_st.cache.appendSlot(allocator, 1, .{
+        .decoding = .{ .has_thread = true },
+    });
+
+    try app_st.pushIntent(.next_image);
+    try sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+    });
+    try testing.expectEqual(
+        @as(usize, 1),
+        app_st.viewer.navigation.current_index.?,
+    );
+    try testing.expectEqual(
+        state.ImageTransition.none,
+        app_st.viewer.image_transition,
+    );
+    try testing.expectEqual(
+        @as(f32, 1.0),
+        app_st.viewer.animations.get(.image_crossfade),
+    );
 }
 
 test "Before/After comparison intents mutate viewport and trigger snackbar" {

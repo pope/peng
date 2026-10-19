@@ -807,6 +807,9 @@ fn renderImageCanvas(
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
 ) void {
+    if (ui_model.image_dissolve == .active and entry.status != .loaded_gpu) {
+        return;
+    }
     const is_thumb_crossfade = ui_model.is_thumb_crossfading;
     const auth = entry.getAuthoritativeDims();
 
