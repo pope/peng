@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const intents = @import("intents");
 const std = @import("std");
 
@@ -261,40 +262,64 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
     var stack_raw_jpeg = true;
     var help = false;
 
+    var end_of_options = false;
+
     while (args_it.next()) |arg| {
-        if (findOptionFor(arg, .main)) |opt| {
-            switch (opt.id) {
-                .help => help = true,
-                .test_mode => test_mode = true,
-                .headless => headless = true,
-                .update_baselines => update_baselines = true,
-                .ipc => ipc_enabled = true,
-                .blur => enable_blur = true,
-                .no_blur => enable_blur = false,
-                .title => show_title = true,
-                .windowless => windowless = true,
-                .stack_raw_jpeg => stack_raw_jpeg = true,
-                .no_stack_raw_jpeg => stack_raw_jpeg = false,
-                .scale => {
-                    const val = args_it.next() orelse {
-                        std.log.err("Missing value for --scale flag.", .{});
-                        continue;
-                    };
-                    if (parseZoomPreset(val)) |mode| {
-                        default_scale = mode;
-                    } else {
-                        std.log.err(
-                            "Unknown scale mode: {s}. Valid modes are: {s}.",
-                            .{ val, intents.scale_modes_string },
-                        );
-                    }
-                },
+        if (!end_of_options and std.mem.eql(u8, arg, "--")) {
+            end_of_options = true;
+            continue;
+        }
+        if (!end_of_options) {
+            if (findOptionFor(arg, .main)) |opt| {
+                switch (opt.id) {
+                    .help => help = true,
+                    .test_mode => test_mode = true,
+                    .headless => headless = true,
+                    .update_baselines => update_baselines = true,
+                    .ipc => ipc_enabled = true,
+                    .blur => enable_blur = true,
+                    .no_blur => enable_blur = false,
+                    .title => show_title = true,
+                    .windowless => windowless = true,
+                    .stack_raw_jpeg => stack_raw_jpeg = true,
+                    .no_stack_raw_jpeg => stack_raw_jpeg = false,
+                    .scale => {
+                        const val = args_it.next() orelse {
+                            if (!builtin.is_test) {
+                                std.log.err(
+                                    "Missing value for --scale flag.",
+                                    .{},
+                                );
+                            }
+                            return error.MissingFlagValue;
+                        };
+                        if (parseZoomPreset(val)) |mode| {
+                            default_scale = mode;
+                        } else {
+                            if (!builtin.is_test) {
+                                std.log.err(
+                                    "Unknown scale mode: {s}. Valid: {s}.",
+                                    .{ val, intents.scale_modes_string },
+                                );
+                            }
+                            return error.InvalidScaleMode;
+                        }
+                    },
+                }
+                continue;
+            } else if (arg.len > 1 and arg[0] == '-') {
+                if (!builtin.is_test) {
+                    std.log.err(
+                        "Unknown flag: {s}. Use --help for usage information.",
+                        .{arg},
+                    );
+                }
+                return error.UnknownFlag;
             }
-        } else {
-            // Treat non-flag arguments as path
-            if (arg_path == null) {
-                arg_path = try gpa.dupe(u8, arg);
-            }
+        }
+        // Treat non-flag arguments (or arguments after `--`) as path
+        if (arg_path == null) {
+            arg_path = try gpa.dupe(u8, arg);
         }
     }
 
@@ -501,5 +526,48 @@ test "parseArgsIterator handles windowless flags" {
         var parsed = try parseArgsIterator(&it, testing.allocator);
         defer parsed.deinit(testing.allocator);
         try testing.expect(parsed.windowless);
+    }
+}
+
+test "parseArgsIterator rejects unknown flags and honors -- separator" {
+    const testing = std.testing;
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "photo.jpg", "--unknown-flag" },
+        };
+        try testing.expectError(
+            error.UnknownFlag,
+            parseArgsIterator(&it, testing.allocator),
+        );
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{"--scale"},
+        };
+        try testing.expectError(
+            error.MissingFlagValue,
+            parseArgsIterator(&it, testing.allocator),
+        );
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "--scale", "bogus" },
+        };
+        try testing.expectError(
+            error.InvalidScaleMode,
+            parseArgsIterator(&it, testing.allocator),
+        );
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "--", "-dash-file.jpg" },
+        };
+        var parsed = try parseArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expectEqualStrings("-dash-file.jpg", parsed.arg_path.?);
     }
 }

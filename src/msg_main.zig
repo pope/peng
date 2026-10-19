@@ -85,7 +85,8 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(1);
     };
     writer.interface.flush() catch |err| {
-        std.log.debug("Failed to flush command stream: {any}", .{err});
+        std.log.err("Failed to flush command stream: {any}", .{err});
+        std.process.exit(1);
     };
 
     var read_buf: [1024]u8 = undefined;
