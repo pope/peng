@@ -453,7 +453,9 @@ fn getOrRenderCachedText(
 
     const frame_idx = gpu_res.frame_index % 2;
 
-    _ = font.setFontSize(target_font_size);
+    if (font.getFontSize() != target_font_size) {
+        _ = font.setFontSize(target_font_size);
+    }
 
     const surf = font.renderTextBlended(frame_allocator, text_slice, .{
         .r = @intFromFloat(text_data.text_color[0]),

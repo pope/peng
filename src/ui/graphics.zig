@@ -62,9 +62,9 @@ pub const RenderResources = struct {
     vertex_capacities: [2]usize = .{ 0, 0 },
     frame_index: usize = 0,
 
-    // Font text texture cache & fonts
+    // Font text texture cache & font
     text_cache: TextCache = .{},
-    fonts: [2]?sdl.Font = .{ null, null },
+    fonts: [1]?sdl.Font = .{null},
 
     /// Manages offscreen textures for the 2-pass Dual Kawase backdrop blur pipeline.
     /// Reallocates textures dynamically when window dimensions change.
@@ -309,14 +309,7 @@ pub fn initGpuResources(
     };
     errdefer font.close();
 
-    // Re-load font at smaller size for stat rows
-    const font_small = sdl.Font.openConstMem(roboto_font_bytes, 14.0 * initial_dpi_scale) orelse {
-        std.log.err("TTF_OpenFontIO Error: {s}", .{sdl.getError()});
-        return error.TTFOpenFontFailed;
-    };
-    errdefer font_small.close();
-
-    const fonts = [2]?sdl.Font{ font, font_small };
+    const fonts = [1]?sdl.Font{font};
 
     // Compile Shaders
     const vert_code_spv = @embedFile("shaders/vert.spv");
