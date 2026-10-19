@@ -10,26 +10,29 @@ const ScoredMatch = state_pkg.ScoredMatch;
 /// directory navigation history (including last-child directory tracking for
 /// upward navigation), increments scan generation, and rebuilds fuzzy directory
 /// matches.
-pub fn loadDirectoryEntries(self: *PaletteState, io: std.Io, dir_path: []const u8) !void {
+pub fn loadDirectoryEntries(
+    self: *PaletteState,
+    io: std.Io,
+    dir_path: []const u8,
+) !void {
     const raw_target = std.mem.trimEnd(u8, dir_path, "/\\");
     const target = if (core_fs.isCbzFile(raw_target))
         (std.fs.path.dirname(raw_target) orelse ".")
     else
         raw_target;
 
-    const dir_path_copy = try self.allocator.dupe(u8, target);
-    defer self.allocator.free(dir_path_copy);
+    var fb = std.heap.stackFallback(std.fs.max_path_bytes, self.allocator);
+    const temp_alloc = fb.get();
+    const dir_path_copy = try temp_alloc.dupe(u8, target);
+    defer temp_alloc.free(dir_path_copy);
+
+    var path_scratch_buf: [std.fs.max_path_bytes]u8 = undefined;
 
     var navigated_up = false;
     if (self.current_nav_dir.items.len > 0) {
-        const parent_buf = try self.allocator.alloc(
-            u8,
-            std.fs.max_path_bytes,
-        );
-        defer self.allocator.free(parent_buf);
         if (core_fs.getParentDirBuf(
             self.current_nav_dir.items,
-            parent_buf,
+            &path_scratch_buf,
         )) |parent_dir| {
             if (std.mem.eql(u8, dir_path_copy, parent_dir)) {
                 navigated_up = true;
@@ -38,15 +41,10 @@ pub fn loadDirectoryEntries(self: *PaletteState, io: std.Io, dir_path: []const u
     }
 
     if (navigated_up) {
-        const buf = try self.allocator.alloc(
-            u8,
-            std.fs.max_path_bytes,
-        );
-        defer self.allocator.free(buf);
         const child_base = core_fs.getChildBasename(
             io,
             self.current_nav_dir.items,
-            buf,
+            &path_scratch_buf,
         );
         self.last_child_dir.clearRetainingCapacity();
         try self.last_child_dir.appendSlice(self.allocator, child_base);
@@ -69,7 +67,10 @@ pub fn loadDirectoryEntries(self: *PaletteState, io: std.Io, dir_path: []const u
         dir_path_copy,
         &self.dir_items,
     ) catch |err| blk: {
-        std.log.warn("Failed to scan directory '{s}': {}", .{ dir_path_copy, err });
+        std.log.warn(
+            "Failed to scan directory '{s}': {}",
+            .{ dir_path_copy, err },
+        );
         break :blk 0;
     };
     try self.rebuildDirectoryMatches();

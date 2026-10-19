@@ -116,20 +116,19 @@ fn decompressCbzMediaEntry(
         },
         .unindexed => {
             var iterator = try std.zip.Iterator.init(&f_reader);
-            var arena = std.heap.ArenaAllocator.init(alloc);
-            defer arena.deinit();
+            var fb = std.heap.stackFallback(std.fs.max_path_bytes, alloc);
+            const temp_alloc = fb.get();
 
             var found = false;
             while (try iterator.next()) |zip_entry| {
                 if (zip_entry.filename_len == 0) continue;
-                _ = arena.reset(.retain_capacity);
-                const temp_alloc = arena.allocator();
 
                 try f_reader.seekTo(
                     zip_entry.header_zip_offset +|
                         @sizeOf(std.zip.CentralDirectoryFileHeader),
                 );
                 const name = try temp_alloc.alloc(u8, zip_entry.filename_len);
+                defer temp_alloc.free(name);
                 try f_reader.interface.readSliceAll(name);
 
                 if (!std.mem.eql(u8, name, entry.entry_name)) continue;

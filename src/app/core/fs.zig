@@ -196,8 +196,8 @@ pub fn scanCbzImageEntries(
 
     var iterator = try std.zip.Iterator.init(&f_reader);
 
-    var arena = std.heap.ArenaAllocator.init(gpa);
-    defer arena.deinit();
+    var fb = std.heap.stackFallback(std.fs.max_path_bytes, gpa);
+    const temp_alloc = fb.get();
 
     var entries: std.ArrayList(MediaEntry) = .empty;
     errdefer {
@@ -207,14 +207,13 @@ pub fn scanCbzImageEntries(
 
     while (try iterator.next()) |entry| {
         if (entry.filename_len == 0) continue;
-        _ = arena.reset(.retain_capacity);
-        const temp_alloc = arena.allocator();
 
         try f_reader.seekTo(
             entry.header_zip_offset +|
                 @sizeOf(std.zip.CentralDirectoryFileHeader),
         );
         const entry_name = try temp_alloc.alloc(u8, entry.filename_len);
+        defer temp_alloc.free(entry_name);
         try f_reader.interface.readSliceAll(entry_name);
 
         if (!isImageFile(entry_name)) continue;
