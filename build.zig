@@ -254,6 +254,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     test_runner_exe.root_module.addImport("sdl", sdl_module);
+    test_runner_exe.root_module.addImport("ipc", ipc_module);
     b.installArtifact(test_runner_exe);
 
     const run_integration_tests = b.addRunArtifact(test_runner_exe);

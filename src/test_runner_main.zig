@@ -1,3 +1,4 @@
+const ipc = @import("ipc");
 const sdl = @import("sdl");
 const std = @import("std");
 
@@ -157,6 +158,11 @@ fn compareScreenshots(
 
 var global_io: std.Io = undefined;
 
+const ipc_timeout_dur: std.Io.Clock.Duration = .{
+    .raw = std.Io.Duration.fromSeconds(15),
+    .clock = .awake,
+};
+
 fn sendCommand(socket_path: []const u8, command: []const u8) !void {
     std.log.info("Sending IPC command: {s}", .{command});
     const io = global_io;
@@ -171,8 +177,12 @@ fn sendCommand(socket_path: []const u8, command: []const u8) !void {
     try writer.interface.flush();
 
     var read_buf: [1024]u8 = undefined;
-    var reader = stream.reader(io, &read_buf);
-    const response_opt = try reader.interface.takeDelimiter('\n');
+    const response_opt = try ipc.readLineTimeout(
+        &stream.socket,
+        io,
+        &read_buf,
+        ipc_timeout_dur,
+    );
     const response = response_opt orelse return error.NoResponse;
 
     const trimmed = std.mem.trim(u8, response, " \t\r");
@@ -195,8 +205,12 @@ fn expectCommandFailure(socket_path: []const u8, command: []const u8) !void {
     try writer.interface.flush();
 
     var read_buf: [1024]u8 = undefined;
-    var reader = stream.reader(io, &read_buf);
-    const response_opt = try reader.interface.takeDelimiter('\n');
+    const response_opt = try ipc.readLineTimeout(
+        &stream.socket,
+        io,
+        &read_buf,
+        ipc_timeout_dur,
+    );
     const response = response_opt orelse return error.NoResponse;
 
     const trimmed = std.mem.trim(u8, response, " \t\r");
@@ -307,7 +321,7 @@ pub fn main(init: std.process.Init) !void {
         },
         .stdin = .ignore,
         .stdout = .pipe,
-        .stderr = .ignore,
+        .stderr = .inherit,
     });
     defer {
         if (child.id != null) {
@@ -713,8 +727,20 @@ pub fn main(init: std.process.Init) !void {
     // Quit
     try sendCommand(socket_path, "quit");
 
-    _ = try child.wait(init.io);
+    const term = try child.wait(init.io);
     child.id = null;
+    switch (term) {
+        .exited => |code| {
+            if (code != 0) {
+                std.log.err("peng child exited with code {d}", .{code});
+                return error.ChildExitedWithError;
+            }
+        },
+        else => {
+            std.log.err("peng child terminated abnormally: {}", .{term});
+            return error.ChildTerminatedAbnormally;
+        },
+    }
 
     if (steps_with_discrepancies > 0) {
         std.log.err(
