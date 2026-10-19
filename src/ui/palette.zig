@@ -646,35 +646,20 @@ fn renderDirectoryListItem(
     real_idx: usize,
     is_selected: bool,
     frame_allocator: std.mem.Allocator,
+    searcher_opt: ?*state.fuzzig.Ascii,
     measure_data: *const MeasureTextUserData,
     progress: f32,
 ) !void {
     if (real_idx >= palette.dir_items.items.len) return;
     const entry = palette.dir_items.items[real_idx];
-    var dir_matches = try std.ArrayList(usize).initCapacity(
-        frame_allocator,
-        16,
-    );
-    defer dir_matches.deinit(frame_allocator);
     const query_str = palette.query.items;
 
+    var dir_matches: []const usize = &.{};
     if (query_str.len > 0 and entry.getName().len > 0) {
-        var searcher = state.fuzzig.Ascii.init(
-            frame_allocator,
-            @max(entry.getName().len, 64),
-            query_str.len,
-            .{ .case_sensitive = false },
-        ) catch null;
-        if (searcher) |*searcher_ptr| {
-            defer searcher_ptr.deinit();
+        if (searcher_opt) |searcher_ptr| {
             const res = searcher_ptr.scoreMatches(entry.getName(), query_str);
             if (res.score != null) {
-                dir_matches.appendSlice(
-                    frame_allocator,
-                    res.matches,
-                ) catch |err| {
-                    std.log.err("appendSlice failed: {}", .{err});
-                };
+                dir_matches = res.matches;
             }
         }
     }
@@ -708,7 +693,7 @@ fn renderDirectoryListItem(
         const display_foldername = trunc_folder.display;
         const final_folder_matches = remapMiddleTruncatedMatches(
             frame_allocator,
-            dir_matches.items,
+            dir_matches,
             trunc_folder.head_len,
             trunc_folder.tail_start_idx,
         ) catch &.{};
@@ -737,27 +722,19 @@ fn renderActionListItem(
     real_idx: usize,
     is_selected: bool,
     frame_allocator: std.mem.Allocator,
+    searcher_opt: ?*state.fuzzig.Ascii,
     progress: f32,
 ) !void {
     const meta = types.palette_action_items[real_idx];
     const query_str = palette.query.items;
 
     var action_matches: []const usize = &.{};
-    var searcher = if (query_str.len > 0)
-        state.fuzzig.Ascii.init(
-            frame_allocator,
-            @max(meta.name.len, 64),
-            query_str.len,
-            .{ .case_sensitive = false },
-        ) catch null
-    else
-        null;
-    defer if (searcher) |*s| s.deinit();
-
-    if (searcher) |*s| {
-        const res = s.scoreMatches(meta.name, query_str);
-        if (res.score != null) {
-            action_matches = res.matches;
+    if (query_str.len > 0) {
+        if (searcher_opt) |s| {
+            const res = s.scoreMatches(meta.name, query_str);
+            if (res.score != null) {
+                action_matches = res.matches;
+            }
         }
     }
 
@@ -841,6 +818,7 @@ fn renderClassificationBadge(
 
 fn computeFileItemMatches(
     frame_allocator: std.mem.Allocator,
+    searcher_opt: ?*state.fuzzig.Ascii,
     basename: []const u8,
     jpeg_path_opt: ?[]const u8,
     is_pair: bool,
@@ -853,16 +831,9 @@ fn computeFileItemMatches(
     errdefer basename_matches.deinit(frame_allocator);
 
     if (query_str.len == 0 or basename.len == 0) return basename_matches;
+    const searcher = searcher_opt orelse return basename_matches;
 
     const jpeg_base = if (jpeg_path_opt) |jp| std.fs.path.basename(jp) else "";
-    const max_h = @max(@max(basename.len, jpeg_base.len), "RAW+JPG".len);
-    var searcher = state.fuzzig.Ascii.init(
-        frame_allocator,
-        @max(max_h, 64),
-        query_str.len,
-        .{ .case_sensitive = false },
-    ) catch return basename_matches;
-    defer searcher.deinit();
 
     var best_score: ?i32 = searcher.score(basename, query_str);
     var best_source: enum { base, jpeg, tag } = .base;
@@ -926,6 +897,7 @@ fn renderFileListItem(
     real_idx: usize,
     is_selected: bool,
     frame_allocator: std.mem.Allocator,
+    searcher_opt: ?*state.fuzzig.Ascii,
     measure_data: *const MeasureTextUserData,
     progress: f32,
 ) !void {
@@ -938,6 +910,7 @@ fn renderFileListItem(
 
     var basename_matches = try computeFileItemMatches(
         frame_allocator,
+        searcher_opt,
         basename,
         jpeg_path_opt,
         is_pair,
@@ -1065,6 +1038,63 @@ fn renderFileListItem(
     }
 }
 
+fn computeWindowMaxHaystack(
+    ui_model: UiViewModel,
+    palette: *const PaletteState,
+    visible_indices: []const usize,
+) usize {
+    var max_h: usize = 64;
+    for (visible_indices) |real_idx| {
+        switch (palette.mode) {
+            .files => {
+                if (ui_model.getMediaEntry(real_idx)) |m| {
+                    max_h = @max(max_h, m.getBasename().len);
+                    if (m.getJpegPath()) |jp| {
+                        max_h = @max(max_h, std.fs.path.basename(jp).len);
+                    }
+                    if (m.isPair()) {
+                        max_h = @max(max_h, "RAW+JPG".len);
+                    }
+                }
+            },
+            .actions => {
+                if (real_idx < types.palette_action_items.len) {
+                    max_h = @max(
+                        max_h,
+                        types.palette_action_items[real_idx].name.len,
+                    );
+                }
+            },
+            .directory_navigator => {
+                if (real_idx < palette.dir_items.items.len) {
+                    max_h = @max(
+                        max_h,
+                        palette.dir_items.items[real_idx].getName().len,
+                    );
+                }
+            },
+            .set_brightness,
+            .set_contrast,
+            .set_contrast_blend,
+            .set_highlights,
+            .set_shadows,
+            .set_whites,
+            .set_blacks,
+            .set_temperature,
+            .set_tint,
+            .set_vibrance,
+            .set_saturation,
+            .set_clarity,
+            .set_texture,
+            .go_to_image,
+            .set_slideshow_interval,
+            .inactive,
+            => {},
+        }
+    }
+    return max_h;
+}
+
 fn renderSelectionList(
     ui_model: UiViewModel,
     cfg: PaletteConfig,
@@ -1105,6 +1135,25 @@ fn renderSelectionList(
         4.0,
     );
 
+    const visible_indices =
+        matching_indices.items[window.start_idx..window.end_idx];
+    const query_str = palette.query.items;
+    var shared_searcher: ?state.fuzzig.Ascii = if (query_str.len > 0 and
+        visible_indices.len > 0)
+        state.fuzzig.Ascii.init(
+            frame_allocator,
+            computeWindowMaxHaystack(ui_model, palette, visible_indices),
+            query_str.len,
+            .{ .case_sensitive = false },
+        ) catch null
+    else
+        null;
+    defer if (shared_searcher) |*s| s.deinit();
+    const searcher_ptr: ?*state.fuzzig.Ascii = if (shared_searcher) |*s|
+        s
+    else
+        null;
+
     clay.UI()(.{
         .id = clay.getElementId(cfg.list_id),
         .layout = .{
@@ -1126,7 +1175,7 @@ fn renderSelectionList(
         }
 
         var match_count = window.start_idx;
-        for (matching_indices.items[window.start_idx..window.end_idx]) |real_idx| {
+        for (visible_indices) |real_idx| {
             const is_selected = (match_count == palette.selected_idx);
 
             var item_id_buf: [64]u8 = undefined;
@@ -1205,6 +1254,7 @@ fn renderSelectionList(
                         real_idx,
                         is_selected,
                         frame_allocator,
+                        searcher_ptr,
                         measure_data,
                         progress,
                     ),
@@ -1213,6 +1263,7 @@ fn renderSelectionList(
                         real_idx,
                         is_selected,
                         frame_allocator,
+                        searcher_ptr,
                         progress,
                     ),
                     .directory_navigator => try renderDirectoryListItem(
@@ -1220,6 +1271,7 @@ fn renderSelectionList(
                         real_idx,
                         is_selected,
                         frame_allocator,
+                        searcher_ptr,
                         measure_data,
                         progress,
                     ),
@@ -1788,10 +1840,18 @@ test "renderPalette - closing palette passes pointer through to parent" {
 
 test "computeFileItemMatches highlights stem on jpeg pair match and skips tag" {
     const alloc = std.testing.allocator;
+    var searcher = try state.fuzzig.Ascii.init(
+        alloc,
+        64,
+        16,
+        .{ .case_sensitive = false },
+    );
+    defer searcher.deinit();
 
     // 1. Direct basename match on "DSC0001.ARW"
     var m1 = try computeFileItemMatches(
         alloc,
+        &searcher,
         "DSC0001.ARW",
         "/photos/DSC0001.JPG",
         true,
@@ -1804,6 +1864,7 @@ test "computeFileItemMatches highlights stem on jpeg pair match and skips tag" {
     // Shared prefix is "DSC0001." (length 8); ".JPG" indices >= 8 are dropped
     var m2 = try computeFileItemMatches(
         alloc,
+        &searcher,
         "DSC0001.ARW",
         "/photos/DSC0001.JPG",
         true,
@@ -1820,6 +1881,7 @@ test "computeFileItemMatches highlights stem on jpeg pair match and skips tag" {
     // highlights on basename characters ('R', 'A', 'W')
     var m3 = try computeFileItemMatches(
         alloc,
+        &searcher,
         "DSC0001.ARW",
         "/photos/DSC0001.JPG",
         true,
@@ -1827,4 +1889,62 @@ test "computeFileItemMatches highlights stem on jpeg pair match and skips tag" {
     );
     defer m3.deinit(alloc);
     try std.testing.expectEqual(@as(usize, 0), m3.items.len);
+}
+
+test "computeWindowMaxHaystack returns max haystack across visible rows" {
+    const alloc = std.testing.allocator;
+    var pal_state = try state.PaletteState.init(alloc);
+    defer pal_state.deinit();
+    pal_state.mode = .directory_navigator;
+
+    const long_name = "a" ** 96;
+    try pal_state.dir_items.append(alloc, .{
+        .directory = .{
+            .name = try alloc.dupe(u8, "short"),
+            .full_path = try alloc.dupe(u8, "/tmp/short"),
+            .scan = .unscanned,
+        },
+    });
+    try pal_state.dir_items.append(alloc, .{
+        .directory = .{
+            .name = try alloc.dupe(u8, long_name),
+            .full_path = try alloc.dupe(u8, "/tmp/" ++ long_name),
+            .scan = .unscanned,
+        },
+    });
+
+    const model = UiViewModel{
+        .is_fullscreen = false,
+        .total_images = 0,
+        .current_index = null,
+        .current_image_entry = null,
+        .current_entry = null,
+        .current_classification = .unflagged,
+        .view_mode = .default,
+        .visible_state = .empty_directory,
+        .visible_count = 0,
+        .visible_position = null,
+        .is_loading_files = false,
+        .slideshow = .inactive,
+        .manga_mode = false,
+        .overlays = .{},
+        .window_title = "test",
+        .viewport = .{},
+        .palette = &pal_state,
+        .snackbar = .none,
+        .anim_values = [_]f32{0.5} ** 32,
+        .debug_show_thumb = false,
+        .is_thumb_crossfading = false,
+        .image_dissolve = .none,
+        .current_time_ms = 100,
+    };
+
+    try std.testing.expectEqual(
+        @as(usize, 64),
+        computeWindowMaxHaystack(model, &pal_state, &[_]usize{0}),
+    );
+    try std.testing.expectEqual(
+        @as(usize, 96),
+        computeWindowMaxHaystack(model, &pal_state, &[_]usize{ 0, 1 }),
+    );
 }
