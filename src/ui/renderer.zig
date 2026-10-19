@@ -560,7 +560,7 @@ fn getOrRenderCachedText(
     const w_f: f32 = @floatFromInt(target_w);
     const h_f: f32 = @floatFromInt(surf_h);
 
-    gpu_res.text_cache.put(gpa_allocator, key, .{
+    gpu_res.text_cache.put(gpa_allocator, dev, key, .{
         .texture = tex,
         .w = w_f,
         .h = h_f,
