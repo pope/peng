@@ -1,4 +1,5 @@
 const clay = @import("zclay");
+const edit_panel = @import("edit_panel.zig");
 const state = @import("state");
 const std = @import("std");
 const text_utils = @import("text_utils.zig");
@@ -405,19 +406,21 @@ fn renderInfoOverlay(
         };
         try renderStatRow("Scaling Filter", filter_str);
 
-        const brightness_val = ui_model.viewport.edits.get(.brightness) * 100.0;
-        const brightness_str = try std.fmt.allocPrint(
-            frame_allocator,
-            "{s}{d:.0}%",
-            .{ if (brightness_val > 0) "+" else "", brightness_val },
-        );
-        const contrast_str = try std.fmt.allocPrint(
-            frame_allocator,
-            "{d:.1}x",
-            .{ui_model.viewport.edits.get(.contrast)},
-        );
-        try renderStatRow("Brightness", brightness_str);
-        try renderStatRow("Contrast", contrast_str);
+        // Photographic adjustments (always show Brightness/Contrast, plus
+        // any non-default adjustments)
+        inline for (std.enums.values(state.EditParam)) |p| {
+            if (p == .brightness or p == .contrast or
+                !ui_model.viewport.edits.isParamDefault(p))
+            {
+                const desc = state.getDescriptor(p);
+                const val_str = try edit_panel.formatValue(
+                    frame_allocator,
+                    desc,
+                    ui_model.viewport.edits.get(p),
+                );
+                try renderStatRow(desc.label, val_str);
+            }
+        }
         if (ui_model.viewport.compare_original) {
             try renderStatRow("Compare Mode", "Before (Original)");
         }
@@ -753,4 +756,31 @@ test "floatingHudCardDeclaration - unifies HUD card styling" {
         false,
     );
     try std.testing.expectEqual(@as(?*anyopaque, null), no_blur_decl.user_data);
+}
+
+test "photographic edit parameter labels and formatted readouts" {
+    const allocator = std.testing.allocator;
+
+    // Test formatting of non-default tone, color, and presence parameters
+    const highlights_desc = state.getDescriptor(.highlights);
+    try std.testing.expectEqualStrings("Highlights", highlights_desc.label);
+    const hl_str = try edit_panel.formatValue(allocator, highlights_desc, 0.25);
+    defer allocator.free(hl_str);
+    try std.testing.expectEqualStrings("+25%", hl_str);
+
+    const temp_desc = state.getDescriptor(.temperature);
+    try std.testing.expectEqualStrings("Temperature", temp_desc.label);
+    const temp_str = try edit_panel.formatValue(allocator, temp_desc, 0.15);
+    defer allocator.free(temp_str);
+    try std.testing.expectEqualStrings("+15 (Warm)", temp_str);
+
+    const clarity_desc = state.getDescriptor(.clarity);
+    try std.testing.expectEqualStrings("Clarity", clarity_desc.label);
+    const clarity_str = try edit_panel.formatValue(
+        allocator,
+        clarity_desc,
+        -0.10,
+    );
+    defer allocator.free(clarity_str);
+    try std.testing.expectEqualStrings("-10%", clarity_str);
 }
