@@ -294,6 +294,18 @@ pub const IpcCommand = union(enum) {
         }
     }
 
+    fn isBoolOn(val: []const u8) bool {
+        return std.mem.eql(u8, val, "true") or
+            std.mem.eql(u8, val, "enable") or
+            std.mem.eql(u8, val, "on");
+    }
+
+    fn isBoolOff(val: []const u8) bool {
+        return std.mem.eql(u8, val, "false") or
+            std.mem.eql(u8, val, "disable") or
+            std.mem.eql(u8, val, "off");
+    }
+
     /// Parses a raw IPC command line string into a strongly-typed `IpcCommand` enum.
     pub fn parse(command: []const u8) !IpcCommand {
         var it = std.mem.tokenizeAny(u8, command, " \t\r\n");
@@ -452,46 +464,24 @@ pub const IpcCommand = union(enum) {
             return error.UnknownFilter;
         } else if (std.mem.eql(u8, cmd, "scale")) {
             const val = it.next() orelse return error.MissingArgument;
-            if (std.mem.eql(u8, val, "fit")) {
-                return .{ .scale = .full };
-            } else if (std.mem.eql(u8, val, "fill")) {
-                return .{ .scale = .crop };
-            } else if (std.mem.eql(u8, val, "1:1") or
-                std.mem.eql(u8, val, "actual"))
-            {
-                return .{ .scale = .none };
-            } else if (std.mem.eql(u8, val, "fit_width") or
-                std.mem.eql(u8, val, "width"))
-            {
-                return .{ .scale = .fit_width };
-            } else if (std.mem.eql(u8, val, "fit_height") or
-                std.mem.eql(u8, val, "height"))
-            {
-                return .{ .scale = .fit_height };
-            } else if (std.meta.stringToEnum(intents.ZoomPreset, val)) |mode| {
+            if (intents.ZoomPreset.parse(val)) |mode| {
                 return .{ .scale = mode };
             }
             return error.UnknownScale;
         } else if (std.mem.eql(u8, cmd, "manga")) {
             const val = it.next() orelse return error.MissingArgument;
-            if (std.mem.eql(u8, val, "true")) {
+            if (isBoolOn(val)) {
                 return .{ .manga = true };
-            } else if (std.mem.eql(u8, val, "false")) {
+            } else if (isBoolOff(val)) {
                 return .{ .manga = false };
             } else {
                 return error.InvalidArgument;
             }
         } else if (std.mem.eql(u8, cmd, "edit")) {
             if (it.next()) |val| {
-                const is_on = std.mem.eql(u8, val, "true") or
-                    std.mem.eql(u8, val, "enable") or
-                    std.mem.eql(u8, val, "on");
-                const is_off = std.mem.eql(u8, val, "false") or
-                    std.mem.eql(u8, val, "disable") or
-                    std.mem.eql(u8, val, "off");
-                if (is_on) {
+                if (isBoolOn(val)) {
                     return .{ .edit = .enable };
-                } else if (is_off) {
+                } else if (isBoolOff(val)) {
                     return .{ .edit = .disable };
                 } else if (std.mem.eql(u8, val, "toggle")) {
                     return .{ .edit = .toggle };
@@ -505,15 +495,9 @@ pub const IpcCommand = union(enum) {
             }
         } else if (std.mem.eql(u8, cmd, "title")) {
             if (it.next()) |val| {
-                const is_on = std.mem.eql(u8, val, "true") or
-                    std.mem.eql(u8, val, "enable") or
-                    std.mem.eql(u8, val, "on");
-                const is_off = std.mem.eql(u8, val, "false") or
-                    std.mem.eql(u8, val, "disable") or
-                    std.mem.eql(u8, val, "off");
-                if (is_on) {
+                if (isBoolOn(val)) {
                     return .{ .title = .enable };
-                } else if (is_off) {
+                } else if (isBoolOff(val)) {
                     return .{ .title = .disable };
                 } else if (std.mem.eql(u8, val, "toggle")) {
                     return .{ .title = .toggle };
@@ -525,15 +509,9 @@ pub const IpcCommand = union(enum) {
             }
         } else if (std.mem.eql(u8, cmd, "snackbar")) {
             if (it.next()) |val| {
-                const is_on = std.mem.eql(u8, val, "true") or
-                    std.mem.eql(u8, val, "enable") or
-                    std.mem.eql(u8, val, "on");
-                const is_off = std.mem.eql(u8, val, "false") or
-                    std.mem.eql(u8, val, "disable") or
-                    std.mem.eql(u8, val, "off");
-                if (is_on) {
+                if (isBoolOn(val)) {
                     return .{ .snackbar = .enable };
-                } else if (is_off) {
+                } else if (isBoolOff(val)) {
                     return .{ .snackbar = .disable };
                 } else if (std.mem.eql(u8, val, "toggle")) {
                     return .{ .snackbar = .toggle };
@@ -545,15 +523,9 @@ pub const IpcCommand = union(enum) {
             }
         } else if (std.mem.eql(u8, cmd, "windowless") or std.mem.eql(u8, cmd, "borderless")) {
             if (it.next()) |val| {
-                const is_on = std.mem.eql(u8, val, "true") or
-                    std.mem.eql(u8, val, "enable") or
-                    std.mem.eql(u8, val, "on");
-                const is_off = std.mem.eql(u8, val, "false") or
-                    std.mem.eql(u8, val, "disable") or
-                    std.mem.eql(u8, val, "off");
-                if (is_on) {
+                if (isBoolOn(val)) {
                     return .{ .windowless = .enable };
-                } else if (is_off) {
+                } else if (isBoolOff(val)) {
                     return .{ .windowless = .disable };
                 } else if (std.mem.eql(u8, val, "toggle")) {
                     return .{ .windowless = .toggle };
@@ -565,15 +537,9 @@ pub const IpcCommand = union(enum) {
             }
         } else if (std.mem.eql(u8, cmd, "crossfade")) {
             if (it.next()) |val| {
-                const is_on = std.mem.eql(u8, val, "true") or
-                    std.mem.eql(u8, val, "enable") or
-                    std.mem.eql(u8, val, "on");
-                const is_off = std.mem.eql(u8, val, "false") or
-                    std.mem.eql(u8, val, "disable") or
-                    std.mem.eql(u8, val, "off");
-                if (is_on) {
+                if (isBoolOn(val)) {
                     return .{ .crossfade = .enable };
-                } else if (is_off) {
+                } else if (isBoolOff(val)) {
                     return .{ .crossfade = .disable };
                 } else if (std.mem.eql(u8, val, "toggle")) {
                     return .{ .crossfade = .toggle };
@@ -585,15 +551,9 @@ pub const IpcCommand = union(enum) {
             }
         } else if (std.mem.eql(u8, cmd, "stack_raw_jpeg")) {
             if (it.next()) |val| {
-                const is_on = std.mem.eql(u8, val, "true") or
-                    std.mem.eql(u8, val, "enable") or
-                    std.mem.eql(u8, val, "on");
-                const is_off = std.mem.eql(u8, val, "false") or
-                    std.mem.eql(u8, val, "disable") or
-                    std.mem.eql(u8, val, "off");
-                if (is_on) {
+                if (isBoolOn(val)) {
                     return .{ .stack_raw_jpeg = .enable };
-                } else if (is_off) {
+                } else if (isBoolOff(val)) {
                     return .{ .stack_raw_jpeg = .disable };
                 } else if (std.mem.eql(u8, val, "toggle")) {
                     return .{ .stack_raw_jpeg = .toggle };
@@ -607,15 +567,9 @@ pub const IpcCommand = union(enum) {
             return .toggle_stream;
         } else if (std.mem.eql(u8, cmd, "compare")) {
             if (it.next()) |val| {
-                const is_on = std.mem.eql(u8, val, "true") or
-                    std.mem.eql(u8, val, "enable") or
-                    std.mem.eql(u8, val, "on");
-                const is_off = std.mem.eql(u8, val, "false") or
-                    std.mem.eql(u8, val, "disable") or
-                    std.mem.eql(u8, val, "off");
-                if (is_on) {
+                if (isBoolOn(val)) {
                     return .{ .compare = .enable };
-                } else if (is_off) {
+                } else if (isBoolOff(val)) {
                     return .{ .compare = .disable };
                 } else if (std.mem.eql(u8, val, "toggle")) {
                     return .{ .compare = .toggle };
@@ -647,9 +601,9 @@ pub const IpcCommand = union(enum) {
             return .{ .palette = .{ .kind = kind, .query = query_opt } };
         } else if (std.mem.eql(u8, cmd, "thumb")) {
             if (it.next()) |val| {
-                if (std.mem.eql(u8, val, "true")) {
+                if (isBoolOn(val)) {
                     return .{ .thumb = .enable };
-                } else if (std.mem.eql(u8, val, "false")) {
+                } else if (isBoolOff(val)) {
                     return .{ .thumb = .disable };
                 } else if (std.mem.eql(u8, val, "toggle")) {
                     return .{ .thumb = .toggle };
@@ -661,9 +615,9 @@ pub const IpcCommand = union(enum) {
             }
         } else if (std.mem.eql(u8, cmd, "debug")) {
             const val = it.next() orelse return error.MissingArgument;
-            if (std.mem.eql(u8, val, "true")) {
+            if (isBoolOn(val)) {
                 return .{ .debug = true };
-            } else if (std.mem.eql(u8, val, "false")) {
+            } else if (isBoolOff(val)) {
                 return .{ .debug = false };
             } else {
                 return error.InvalidArgument;
@@ -1065,6 +1019,13 @@ test "IpcCommand parsing" {
         error.MissingArgument,
         IpcCommand.parse("screenshot   \n"),
     );
+
+    const cmd_manga_on = try IpcCommand.parse("manga on");
+    try std.testing.expect(cmd_manga_on.manga);
+    const cmd_thumb_off = try IpcCommand.parse("thumb off");
+    try std.testing.expectEqual(ThumbAction.disable, cmd_thumb_off.thumb);
+    const cmd_debug_enable = try IpcCommand.parse("debug enable");
+    try std.testing.expect(cmd_debug_enable.debug);
 
     try std.testing.expectError(error.UnknownCommand, IpcCommand.parse("invalid_command"));
 }

@@ -188,11 +188,17 @@ pub const ActionId = enum {
     zoom_config,
     pan_config,
     adjust_config,
+    tone_config,
+    color_config,
+    presence_config,
+    clarity_config,
+    texture_config,
     compare_config,
     filter_config,
     palette_config,
     view_config,
     wait_load,
+    screenshot_config,
 };
 
 /// Master declaration record uniting UI metadata, shortcuts, intent, CLI flags, and IPC verbs.
@@ -384,6 +390,10 @@ pub const actions = [_]ActionDef{
         .show_in_palette = true,
         .shortcuts = &.{ .{ .key = .char_r }, .{ .key = .char_0 } },
         .intent = .reset_zoom,
+        .ipc = .{
+            .name = "reset_view / reset",
+            .description = "Reset zoom factor and pan offset back to center",
+        },
     },
     .{
         .id = .scale_none,
@@ -596,6 +606,10 @@ pub const actions = [_]ActionDef{
         .show_in_palette = true,
         .shortcuts = &.{.{ .key = .char_r, .mod = .{ .shift = true } }},
         .intent = .{ .adjust = .reset_all },
+        .ipc = .{
+            .name = "reset_adjustments",
+            .description = "Reset all color and tonal adjustments to neutral",
+        },
     },
     .{
         .id = .toggle_compare,
@@ -978,7 +992,7 @@ pub const actions = [_]ActionDef{
         .shortcuts = &.{.{ .key = .char_j }},
         .intent = .toggle_pair_stream,
         .ipc = .{
-            .name = "toggle_stream",
+            .name = "toggle_stream / stream",
             .description = "Toggle active stream between RAW preview and companion JPEG",
         },
     },
@@ -1030,12 +1044,67 @@ pub const actions = [_]ActionDef{
     .{
         .id = .adjust_config,
         .title = "Color Adjustment Configuration",
-        .description = "Adjust brightness and contrast",
+        .description = "Adjust brightness, contrast, and contrast blend",
         .show_in_palette = false,
         .ipc = .{
             .name = "adjust",
-            .args = "<bright> <contrast>",
-            .description = "Adjust brightness and contrast",
+            .args = "<bright> <contrast> [blend]",
+            .description = "Adjust brightness, contrast, and contrast blend",
+        },
+    },
+    .{
+        .id = .tone_config,
+        .title = "Tone Adjustment Configuration",
+        .description = "Adjust highlights, shadows, whites, and blacks",
+        .show_in_palette = false,
+        .ipc = .{
+            .name = "tone",
+            .args = "<hl> <sh> <wh> <bl>",
+            .description = "Adjust highlights, shadows, whites, and blacks",
+        },
+    },
+    .{
+        .id = .color_config,
+        .title = "Color Balance Configuration",
+        .description = "Adjust temperature, tint, vibrance, and saturation",
+        .show_in_palette = false,
+        .ipc = .{
+            .name = "color",
+            .args = "<temp> <tint> <vib> <sat>",
+            .description = "Adjust temperature, tint, vibrance, and saturation",
+        },
+    },
+    .{
+        .id = .presence_config,
+        .title = "Presence Adjustment Configuration",
+        .description = "Adjust clarity and texture",
+        .show_in_palette = false,
+        .ipc = .{
+            .name = "presence",
+            .args = "<clarity> <texture>",
+            .description = "Adjust clarity and texture",
+        },
+    },
+    .{
+        .id = .clarity_config,
+        .title = "Clarity Configuration",
+        .description = "Set midtone local contrast clarity (-1.0 to 1.0)",
+        .show_in_palette = false,
+        .ipc = .{
+            .name = "clarity",
+            .args = "<val>",
+            .description = "Set midtone local contrast clarity (-1.0 to 1.0)",
+        },
+    },
+    .{
+        .id = .texture_config,
+        .title = "Texture Configuration",
+        .description = "Set fine detail texture (-1.0 to 1.0)",
+        .show_in_palette = false,
+        .ipc = .{
+            .name = "texture",
+            .args = "<val>",
+            .description = "Set fine detail texture (-1.0 to 1.0)",
         },
     },
     .{
@@ -1063,12 +1132,12 @@ pub const actions = [_]ActionDef{
     .{
         .id = .palette_config,
         .title = "Palette Mode Toggle",
-        .description = "Toggle command/file palette",
+        .description = "Open or close command/file/slideshow palette",
         .show_in_palette = false,
         .ipc = .{
             .name = "palette",
-            .args = "<action|files|none>",
-            .description = "Toggle command/file palette",
+            .args = "<action|files|slideshow|none> [query]",
+            .description = "Open or close command/file/slideshow palette",
         },
     },
     .{
@@ -1090,6 +1159,17 @@ pub const actions = [_]ActionDef{
         .ipc = .{
             .name = "wait_load",
             .description = "Wait for image decoding to complete",
+        },
+    },
+    .{
+        .id = .screenshot_config,
+        .title = "Capture Screenshot",
+        .description = "Save rendered frame to a PNG file",
+        .show_in_palette = false,
+        .ipc = .{
+            .name = "screenshot",
+            .args = "<filepath>",
+            .description = "Save rendered frame to a PNG file",
         },
     },
 };
@@ -1206,8 +1286,8 @@ test "actions registry projections" {
     try testing.expectEqual(OptionId.no_stack_raw_jpeg, action_cli_options[5].id);
     try testing.expectEqual(OptionId.scale, action_cli_options[6].id);
 
-    // IPC commands projection: 22 previous + 2 raw/jpeg commands = 24
-    try testing.expectEqual(@as(usize, 24), ipc_commands.len);
+    // IPC commands projection: 24 previous + 8 complete IPC verbs = 32
+    try testing.expectEqual(@as(usize, 32), ipc_commands.len);
 }
 
 test "actions registry invariants and consistency" {

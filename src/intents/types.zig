@@ -113,6 +113,18 @@ pub const ZoomPreset = enum {
     pub inline fn isFill(self: ZoomPreset) bool {
         return self == .crop;
     }
+
+    /// Parses a scale mode name or alias (`fit`, `fill`, `1:1`, `actual`,
+    /// `width`, `height`) into a `ZoomPreset`.
+    pub fn parse(val: []const u8) ?ZoomPreset {
+        if (std.mem.eql(u8, val, "fit")) return .full;
+        if (std.mem.eql(u8, val, "fill")) return .crop;
+        if (std.mem.eql(u8, val, "1:1") or
+            std.mem.eql(u8, val, "actual")) return .none;
+        if (std.mem.eql(u8, val, "width")) return .fit_width;
+        if (std.mem.eql(u8, val, "height")) return .fit_height;
+        return std.meta.stringToEnum(ZoomPreset, val);
+    }
 };
 
 /// High-quality GPU texture resampling and reconstruction filter algorithms.

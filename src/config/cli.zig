@@ -239,11 +239,7 @@ pub const SliceIterator = struct {
 };
 
 fn parseZoomPreset(val: []const u8) ?ZoomPreset {
-    if (std.mem.eql(u8, val, "fit")) return .full;
-    if (std.mem.eql(u8, val, "fill")) return .crop;
-    if (std.mem.eql(u8, val, "1:1") or
-        std.mem.eql(u8, val, "actual")) return .none;
-    return std.meta.stringToEnum(ZoomPreset, val);
+    return ZoomPreset.parse(val);
 }
 
 /// Parses flags and arguments from any iterator providing `next() ?[]const u8`.
@@ -569,5 +565,23 @@ test "parseArgsIterator rejects unknown flags and honors -- separator" {
         var parsed = try parseArgsIterator(&it, testing.allocator);
         defer parsed.deinit(testing.allocator);
         try testing.expectEqualStrings("-dash-file.jpg", parsed.arg_path.?);
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "--scale", "width" },
+        };
+        var parsed = try parseArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expectEqual(ZoomPreset.fit_width, parsed.default_scale);
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "--scale", "height" },
+        };
+        var parsed = try parseArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expectEqual(ZoomPreset.fit_height, parsed.default_scale);
     }
 }
