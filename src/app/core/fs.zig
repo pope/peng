@@ -316,6 +316,20 @@ pub const FolderCounts = struct {
     subdir_count: usize = 0,
 };
 
+/// Resolves `entry.kind`, following symbolic links via `dir.statFile` when
+/// `entry.kind == .sym_link`. Returns `null` if a symbolic link is hidden,
+/// broken, or inaccessible.
+pub inline fn resolveEntryKind(
+    dir: std.Io.Dir,
+    io: std.Io,
+    entry: std.Io.Dir.Entry,
+) ?std.Io.File.Kind {
+    if (entry.kind != .sym_link) return entry.kind;
+    if (std.mem.startsWith(u8, entry.name, ".")) return null;
+    const s = dir.statFile(io, entry.name, .{}) catch return null;
+    return s.kind;
+}
+
 /// Maps a filesystem or archive I/O error into the corresponding
 /// `EntryScanState` badge variant (`.permission_denied` vs `.failed`).
 pub fn mapScanError(err: anyerror) state_pkg.EntryScanState {
@@ -397,11 +411,12 @@ pub fn scanFolderContents(
             );
             return mapScanError(err);
         }) orelse break;
-        if (entry.kind == .file) {
+        const kind = resolveEntryKind(dir, io, entry) orelse continue;
+        if (kind == .file) {
             if (isImageFile(entry.name) or isCbzFile(entry.name)) {
                 counts.image_count += 1;
             }
-        } else if (entry.kind == .directory) {
+        } else if (kind == .directory) {
             if (!std.mem.startsWith(u8, entry.name, ".")) {
                 counts.subdir_count += 1;
             }
@@ -451,12 +466,13 @@ pub fn scanDirectoryEntries(
     var current_dir_images: usize = 0;
     var it = dir.iterate();
     while (try it.next(io)) |entry| {
-        if (entry.kind == .file and (isImageFile(entry.name) or isCbzFile(entry.name))) {
+        const kind = resolveEntryKind(dir, io, entry) orelse continue;
+        if (kind == .file and isSupportedFile(entry.name)) {
             current_dir_images += 1;
         }
 
-        const is_dir_entry = (entry.kind == .directory);
-        const is_cbz_entry = (entry.kind == .file and isCbzFile(entry.name));
+        const is_dir_entry = (kind == .directory);
+        const is_cbz_entry = (kind == .file and isCbzFile(entry.name));
 
         if (is_dir_entry or is_cbz_entry) {
             if (std.mem.startsWith(u8, entry.name, ".")) continue;
@@ -931,5 +947,69 @@ test "scanFolderContents and mapScanError classify errors and corrupt CBZ" {
     try std.testing.expectEqual(
         state_pkg.EntryScanState.failed,
         scanFolderContents(io, corrupt_cbz),
+    );
+}
+
+test "scanDirectoryEntries and scanFolderContents follow symlinks" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "target_dir");
+    {
+        var f = try tmp.dir.createFile(io, "target_dir/real.jpg", .{});
+        f.close(io);
+    }
+    try tmp.dir.createDirPath(io, "scan_root");
+
+    try tmp.dir.symLink(io, "../target_dir", "scan_root/linked_dir", .{
+        .is_directory = true,
+    });
+    try tmp.dir.symLink(
+        io,
+        "../target_dir/real.jpg",
+        "scan_root/linked.jpg",
+        .{},
+    );
+    try tmp.dir.symLink(
+        io,
+        "../target_dir/real.jpg",
+        "scan_root/.hidden_link.jpg",
+        .{},
+    );
+    try tmp.dir.symLink(io, "../missing.jpg", "scan_root/broken.jpg", .{});
+
+    var path_buf: [128]u8 = undefined;
+    const scan_root = try std.fmt.bufPrint(
+        &path_buf,
+        ".zig-cache/tmp/{s}/scan_root",
+        .{tmp.sub_path},
+    );
+
+    const counts = countFolderContents(io, scan_root);
+    try std.testing.expectEqual(@as(usize, 1), counts.image_count);
+    try std.testing.expectEqual(@as(usize, 1), counts.subdir_count);
+
+    var entries: std.ArrayList(DirectoryEntry) = .empty;
+    defer {
+        for (entries.items) |e| {
+            allocator.free(e.getName());
+            if (e.getFullPath().len > 0) allocator.free(e.getFullPath());
+        }
+        entries.deinit(allocator);
+    }
+    const direct_imgs = try scanDirectoryEntries(
+        allocator,
+        io,
+        scan_root,
+        &entries,
+    );
+    try std.testing.expectEqual(@as(usize, 1), direct_imgs);
+    try std.testing.expectEqual(@as(usize, 1), entries.items.len);
+    try std.testing.expectEqualStrings(
+        "linked_dir",
+        entries.items[0].getName(),
     );
 }

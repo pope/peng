@@ -90,14 +90,26 @@ pub fn scanDirectoryThreadSafe(
         break :blk null;
     }) |entry| {
         if (workers.exiting.load(.acquire)) return;
-        if (entry.kind == .file) {
-            if (core_fs.isImageFile(entry.name)) {
-                const full_path = std.fs.path.join(gpa, &.{ dir_path, entry.name }) catch |err| {
-                    std.log.err("Failed to join path for '{s}': {}", .{ entry.name, err });
+        if (core_fs.isImageFile(entry.name)) {
+            if (core_fs.resolveEntryKind(dir, io, entry) == .file) {
+                const full_path = std.fs.path.join(
+                    gpa,
+                    &.{ dir_path, entry.name },
+                ) catch |err| {
+                    std.log.err(
+                        "Failed to join path for '{s}': {}",
+                        .{ entry.name, err },
+                    );
                     continue;
                 };
-                dir_entries.append(gpa, .{ .filesystem = .{ .path = full_path } }) catch |err| {
-                    std.log.err("Failed to append path '{s}': {}", .{ full_path, err });
+                dir_entries.append(
+                    gpa,
+                    .{ .filesystem = .{ .path = full_path } },
+                ) catch |err| {
+                    std.log.err(
+                        "Failed to append path '{s}': {}",
+                        .{ full_path, err },
+                    );
                     gpa.free(full_path);
                     continue;
                 };
@@ -187,17 +199,26 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
                     break;
                 },
             }) orelse break;
-            if (entry.kind == .file) {
-                if (core_fs.isImageFile(entry.name)) {
+            if (core_fs.isImageFile(entry.name)) {
+                if (core_fs.resolveEntryKind(dir, io, entry) == .file) {
                     const full_path = std.fs.path.join(
                         gpa,
                         &.{ dir_path, entry.name },
                     ) catch |err| {
-                        std.log.err("Failed to join path for '{s}': {}", .{ entry.name, err });
+                        std.log.err(
+                            "Failed to join path for '{s}': {}",
+                            .{ entry.name, err },
+                        );
                         continue;
                     };
-                    dir_entries.append(gpa, .{ .filesystem = .{ .path = full_path } }) catch |err| {
-                        std.log.err("Failed to append path '{s}': {}", .{ full_path, err });
+                    dir_entries.append(
+                        gpa,
+                        .{ .filesystem = .{ .path = full_path } },
+                    ) catch |err| {
+                        std.log.err(
+                            "Failed to append path '{s}': {}",
+                            .{ full_path, err },
+                        );
                         gpa.free(full_path);
                         continue;
                     };
