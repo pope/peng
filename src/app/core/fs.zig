@@ -554,9 +554,34 @@ pub fn getChildBasename(io: std.Io, path: []const u8, buf: []u8) []const u8 {
 
 test "getChildBasename" {
     const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "child_dir/nested");
+
+    var dot_path_buf: [128]u8 = undefined;
+    const dot_path = try std.fmt.bufPrint(
+        &dot_path_buf,
+        ".zig-cache/tmp/{s}/child_dir/.",
+        .{tmp.sub_path},
+    );
+
+    var dotdot_path_buf: [128]u8 = undefined;
+    const dotdot_path = try std.fmt.bufPrint(
+        &dotdot_path_buf,
+        ".zig-cache/tmp/{s}/child_dir/nested/..",
+        .{tmp.sub_path},
+    );
+
     var buf: [std.fs.max_path_bytes]u8 = undefined;
-    const b = getChildBasename(io, ".", &buf);
-    try std.testing.expectEqualStrings("peng", b);
+    try std.testing.expectEqualStrings(
+        "child_dir",
+        getChildBasename(io, dot_path, &buf),
+    );
+    try std.testing.expectEqualStrings(
+        "child_dir",
+        getChildBasename(io, dotdot_path, &buf),
+    );
 }
 
 test "CBZ file functions and archive path parsing" {

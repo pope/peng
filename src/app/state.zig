@@ -468,12 +468,16 @@ pub const AppState = struct {
         );
     }
 
-    const NavigatorInitialPath = struct {
+    pub const NavigatorInitialPath = struct {
         start_dir: []const u8,
         preselect_child: ?[]const u8,
     };
 
-    fn resolveNavigatorInitialPath(self: *const AppState) NavigatorInitialPath {
+    /// Resolves the starting directory and optional child pre-selection for
+    /// `.directory_navigator` palette mode.
+    pub fn resolveNavigatorInitialPath(
+        self: *const AppState,
+    ) NavigatorInitialPath {
         if (self.viewer.navigation.getCurrentImageEntry()) |media| {
             const file_path = media.getSourcePath();
             if (std.fs.path.dirname(file_path)) |parent| {

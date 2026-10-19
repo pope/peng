@@ -24,14 +24,21 @@ pub fn sysUpdateAnimations(ctx: FrameContext) void {
         anim.tick(delta);
     }
 
+    const now = if (ctx.input) |inp|
+        (if (inp.ticks > 0) inp.ticks else @max(sdl.timer.getTicks(), 1))
+    else
+        @max(sdl.timer.getTicks(), 1);
+
     // Check if transient title overlay auto-hide timeout has expired
     switch (state.viewer.ui.overlays.title_display) {
         .transient => |t| {
-            const now = sdl.timer.getTicks();
             if (now >= t.timeout_ms) {
                 state.viewer.ui.overlays.title_display = .hidden;
                 const progress = anim.get(.title_overlay);
-                const dur = @max(state_pkg.DURATION_TITLE_OVERLAY_CLOSE_MS * progress, 30.0);
+                const dur = @max(
+                    state_pkg.DURATION_TITLE_OVERLAY_CLOSE_MS * progress,
+                    30.0,
+                );
                 anim.start(.title_overlay, 0.0, dur, .ease_out_quad);
             }
         },
@@ -42,11 +49,13 @@ pub fn sysUpdateAnimations(ctx: FrameContext) void {
     switch (state.viewer.ui.snackbar.notification) {
         .active => |*active| {
             if (active.timeout_ms > 0) {
-                const now = sdl.timer.getTicks();
                 if (now >= active.timeout_ms) {
                     active.timeout_ms = 0;
                     const progress = anim.get(.snackbar);
-                    const dur = @max(state_pkg.DURATION_SNACKBAR_CLOSE_MS * progress, 30.0);
+                    const dur = @max(
+                        state_pkg.DURATION_SNACKBAR_CLOSE_MS * progress,
+                        30.0,
+                    );
                     anim.start(.snackbar, 0.0, dur, .ease_out_quad);
                 }
             }
@@ -233,7 +242,9 @@ test "sysUpdateAnimations title_overlay auto-hide timeout and fade-out" {
         .ease_out_quad,
     );
     state.viewer.animations.settleAll();
-    state.viewer.ui.overlays.title_display = .{ .transient = .{ .timeout_ms = now -| 10 } };
+    state.viewer.ui.overlays.title_display = .{
+        .transient = .{ .timeout_ms = @max(now -| 10, 1) },
+    };
 
     sysUpdateAnimations(.{
         .state = &state,
@@ -270,7 +281,7 @@ test "sysUpdateAnimations snackbar auto-hide timeout and fade-out" {
     const now = sdl.timer.getTicks();
 
     // Start snackbar animation with message and auto-hide timeout in the past
-    state.viewer.ui.snackbar.show("Filter: Lanczos3", now -| 10);
+    state.viewer.ui.snackbar.show("Filter: Lanczos3", @max(now -| 10, 1));
     state.viewer.animations.start(
         .snackbar,
         1.0,

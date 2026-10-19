@@ -1755,102 +1755,33 @@ test "TIFF multi-IFD chained preview extraction and raw Bayer rejection" {
     try std.testing.expectEqual(@as(u64, 1000), cands.medium.?.file_offset);
     try std.testing.expectEqual(@as(u32, 100000), cands.medium.?.length);
 
-    // Verified: parseExifDimensions rejects raw Bayer 8000x6000 SubIFD
-    // and correctly returns IFD2 visible photograph dimensions 6000x4000.
     const dims = parseExifDimensions(&buf);
     try std.testing.expect(dims != null);
     try std.testing.expectEqual(@as(f32, 6000.0), dims.?.w);
     try std.testing.expectEqual(@as(f32, 4000.0), dims.?.h);
-}
-
-test "extractTiffRawPreviews - real DSC00941.ARW" {
-    const io = std.Io.Threaded.global_single_threaded.io();
-    var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, "DSC00941.ARW", .{}) catch return;
-    defer file.close(io);
-
-    var header_buf: [256 * 1024]u8 = undefined;
-    var slices = [_][]u8{&header_buf};
-    const n = file.readPositional(io, &slices, 0) catch return;
-    if (n < 8) return;
-
-    const cands = extractTiffRawPreviews(header_buf[0..n]);
-    // IFD2 full preview: 6240x4160 JPEG at 303104 len 1067474
-    try std.testing.expect(cands.preview != null);
-    try std.testing.expectEqual(@as(u64, 303104), cands.preview.?.file_offset);
-    try std.testing.expectEqual(@as(u32, 1067474), cands.preview.?.length);
-
-    // IFD0 medium preview: 1616x1080 JPEG at 196770 len 103242
-    try std.testing.expect(cands.medium != null);
-    try std.testing.expectEqual(@as(u64, 196770), cands.medium.?.file_offset);
-    try std.testing.expectEqual(@as(u32, 103242), cands.medium.?.length);
-
-    // IFD1 thumbnail: 160x120 JPEG at 44032 len 5521
-    try std.testing.expect(cands.thumbnail != null);
-    try std.testing.expectEqual(@as(u64, 44032), cands.thumbnail.?.file_offset);
-    try std.testing.expectEqual(@as(u32, 5521), cands.thumbnail.?.length);
-
-    const dims = parseExifDimensions(header_buf[0..n]);
-    try std.testing.expect(dims != null);
-    // Verifies visible photograph dimensions (6240 x 4160) are returned,
-    // rejecting the SubIFD raw Bayer sensor array (6656 x 4608).
-    try std.testing.expectEqual(@as(f32, 6240.0), dims.?.w);
-    try std.testing.expectEqual(@as(f32, 4160.0), dims.?.h);
 
     // Verifies thumbnail letterbox padding detection eliminates black borders:
-    // With full_w = 6240 and full_h = 4160 (AR = 1.500000), 160x120 thumbnail snaps to 8px DCT block.
-    const crop = state_pkg.computeThumbnailUvCrop(dims.?.w, dims.?.h, 160.0, 120.0, true);
+    // With full_w = 6000 and full_h = 4000 (AR = 1.5), 160x120 thumbnail snaps
+    // to 8px DCT block.
+    const crop = state_pkg.computeThumbnailUvCrop(
+        dims.?.w,
+        dims.?.h,
+        160.0,
+        120.0,
+        true,
+    );
     try std.testing.expectEqual(@as(f32, 0.0), crop.u_min);
     try std.testing.expectEqual(@as(f32, 1.0), crop.u_max);
-    try std.testing.expectApproxEqAbs(@as(f32, 8.0 / 120.0), crop.v_min, 0.0001);
-    try std.testing.expectApproxEqAbs(@as(f32, 1.0 - 8.0 / 120.0), crop.v_max, 0.0001);
-}
-
-test "extractTiffRawPreviews - real test.dng streaming tail IFD0" {
-    const io = std.Io.Threaded.global_single_threaded.io();
-    var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, "test.dng", .{}) catch return;
-    defer file.close(io);
-
-    const stat = try file.stat(io);
-    const file_size: u64 = stat.size;
-
-    var header_buf: [256 * 1024]u8 = undefined;
-    var slices = [_][]u8{&header_buf};
-    const header_n = file.readPositional(io, &slices, 0) catch return;
-    if (header_n < 8) return;
-    const header_slice = header_buf[0..header_n];
-
-    const ifd0_off = probeTiffIfd0Offset(header_slice) orelse return;
-    try std.testing.expect(ifd0_off >= header_n); // Confirms tail IFD0 in test.dng
-
-    var tail_buf: [64 * 1024]u8 = undefined;
-    const tail_target: usize = @intCast(@min(file_size - ifd0_off, tail_buf.len));
-    var t_slices = [_][]u8{tail_buf[0..tail_target]};
-    const tn = try file.readPositional(io, &t_slices, ifd0_off);
-    try std.testing.expect(tn > 0);
-
-    const source = TiffSource.initWithTail(header_slice, ifd0_off, tail_buf[0..tn]);
-
-    // SubIFD[1] full preview: 6000x4000 JPEG at offset 27316832 len 2943618
-    const cands = extractTiffRawPreviewsFromSource(source);
-    try std.testing.expect(cands.preview != null);
-    try std.testing.expectEqual(@as(u64, 27316832), cands.preview.?.file_offset);
-    try std.testing.expectEqual(@as(u32, 2943618), cands.preview.?.length);
-
-    // DNGPrivateData MakerNote thumbnail: 720x480 JPEG at offset 97056 len 54247
-    try std.testing.expect(cands.thumbnail != null);
-    try std.testing.expectEqual(@as(u64, 97056), cands.thumbnail.?.file_offset);
-    try std.testing.expectEqual(@as(u32, 54247), cands.thumbnail.?.length);
-
-    // Dimensions: SubIFD[1] 6000x4000, rejecting raw CFA Bayer SubIFD[0] 6112x4064
-    const dims = parseExifDimensionsFromSource(source);
-    try std.testing.expect(dims != null);
-    try std.testing.expectEqual(@as(f32, 6000.0), dims.?.w);
-    try std.testing.expectEqual(@as(f32, 4000.0), dims.?.h);
-
-    // Orientation: tag 0x0112 in IFD0 at tail
-    const orientation = parseExifOrientationFromSource(source);
-    try std.testing.expect(orientation != null);
-    try std.testing.expectEqual(Orientation.normal, orientation.?);
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 8.0 / 120.0),
+        crop.v_min,
+        0.0001,
+    );
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 1.0 - 8.0 / 120.0),
+        crop.v_max,
+        0.0001,
+    );
 }
 
 test "probeTiffIfd0Offset - validation and bounds checks" {
@@ -2274,39 +2205,6 @@ test "extractTiffRawPreviews - synthetic Canon CR2 multi-IFD container" {
 
     // 2. Exif dimensions must extract 4368x2912 from ExifIFD (ignoring IFD2/IFD3)
     const dims = parseExifDimensions(&buf);
-    try std.testing.expect(dims != null);
-    try std.testing.expectEqual(@as(f32, 4368.0), dims.?.w);
-    try std.testing.expectEqual(@as(f32, 2912.0), dims.?.h);
-}
-
-test "extractTiffRawPreviews - real 20240523-Phoebe is mad-0076.CR2" {
-    const io = std.Io.Threaded.global_single_threaded.io();
-    var file = std.Io.Dir.openFile(
-        std.Io.Dir.cwd(),
-        io,
-        "20240523-Phoebe is mad-0076.CR2",
-        .{},
-    ) catch return;
-    defer file.close(io);
-
-    var header_buf: [256 * 1024]u8 = undefined;
-    var slices = [_][]u8{&header_buf};
-    const n = file.readPositional(io, &slices, 0) catch return;
-    if (n < 8) return;
-
-    const cands = extractTiffRawPreviews(header_buf[0..n]);
-    // IFD0 full preview: 2496x1664 baseline JPEG at offset 87197 len 1426156
-    try std.testing.expect(cands.preview != null);
-    try std.testing.expectEqual(@as(u64, 87197), cands.preview.?.file_offset);
-    try std.testing.expectEqual(@as(u32, 1426156), cands.preview.?.length);
-
-    // IFD1 thumbnail: 160x120 JPEG at offset 76348 len 10849
-    try std.testing.expect(cands.thumbnail != null);
-    try std.testing.expectEqual(@as(u64, 76348), cands.thumbnail.?.file_offset);
-    try std.testing.expectEqual(@as(u32, 10849), cands.thumbnail.?.length);
-
-    // Dims from ExifIFD (PixelXDimension / PixelYDimension)
-    const dims = parseExifDimensions(header_buf[0..n]);
     try std.testing.expect(dims != null);
     try std.testing.expectEqual(@as(f32, 4368.0), dims.?.w);
     try std.testing.expectEqual(@as(f32, 2912.0), dims.?.h);

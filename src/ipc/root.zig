@@ -1034,9 +1034,14 @@ test "readLineTimeout - success and timeout" {
     if (builtin.os.tag == .windows) return;
 
     const io = std.Io.Threaded.global_single_threaded.io();
-    const socket_path = "/tmp/peng_test_ipc_timeout.sock";
-    std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, socket_path) catch {};
-    defer std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, socket_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var sock_buf: [108]u8 = undefined;
+    const socket_path = try std.fmt.bufPrint(
+        &sock_buf,
+        ".zig-cache/tmp/{s}/timeout.sock",
+        .{tmp.sub_path},
+    );
 
     const addr = try std.Io.net.UnixAddress.init(socket_path);
     var server = try addr.listen(io, .{});

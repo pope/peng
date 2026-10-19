@@ -248,9 +248,14 @@ test "sysExecuteIpcCommands - drains pending commands and mutates state" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    const sock_path = "/tmp/peng_test_sys_ipc1.sock";
-    std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, sock_path) catch {};
-    defer std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, sock_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var sock_buf: [108]u8 = undefined;
+    const sock_path = try std.fmt.bufPrint(
+        &sock_buf,
+        ".zig-cache/tmp/{s}/ipc1.sock",
+        .{tmp.sub_path},
+    );
 
     const addr = try std.Io.net.UnixAddress.init(sock_path);
     var server = try addr.listen(io, .{});
@@ -288,9 +293,14 @@ test "sysExecuteIpcCommands - multiple queued commands and adjust command" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    const sock_path = "/tmp/peng_test_sys_ipc2.sock";
-    std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, sock_path) catch {};
-    defer std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, sock_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var sock_buf: [108]u8 = undefined;
+    const sock_path = try std.fmt.bufPrint(
+        &sock_buf,
+        ".zig-cache/tmp/{s}/ipc2.sock",
+        .{tmp.sub_path},
+    );
 
     const addr = try std.Io.net.UnixAddress.init(sock_path);
     var server = try addr.listen(io, .{});
@@ -329,9 +339,14 @@ test "sysExecuteIpcCommands - wait_load and re-entrant ipc_command" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    const sock_path = "/tmp/peng_test_sys_ipc3.sock";
-    std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, sock_path) catch {};
-    defer std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, sock_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var sock_buf: [108]u8 = undefined;
+    const sock_path = try std.fmt.bufPrint(
+        &sock_buf,
+        ".zig-cache/tmp/{s}/ipc3.sock",
+        .{tmp.sub_path},
+    );
 
     const addr = try std.Io.net.UnixAddress.init(sock_path);
     var server = try addr.listen(io, .{});
@@ -392,9 +407,14 @@ test "sysExecuteIpcCommands - set_palette frame_allocator OOM replies error" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    const sock_path = "/tmp/peng_test_sys_ipc4.sock";
-    std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, sock_path) catch {};
-    defer std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, sock_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var sock_buf: [108]u8 = undefined;
+    const sock_path = try std.fmt.bufPrint(
+        &sock_buf,
+        ".zig-cache/tmp/{s}/ipc4.sock",
+        .{tmp.sub_path},
+    );
 
     const addr = try std.Io.net.UnixAddress.init(sock_path);
     var server = try addr.listen(io, .{});
@@ -442,9 +462,14 @@ test "sysExecuteIpcCommands - screenshot spaces and swapchain miss error" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    const sock_path = "/tmp/peng_test_sys_ipc5.sock";
-    std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, sock_path) catch {};
-    defer std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, sock_path) catch {};
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var sock_buf: [108]u8 = undefined;
+    const sock_path = try std.fmt.bufPrint(
+        &sock_buf,
+        ".zig-cache/tmp/{s}/ipc5.sock",
+        .{tmp.sub_path},
+    );
 
     const addr = try std.Io.net.UnixAddress.init(sock_path);
     var server = try addr.listen(io, .{});

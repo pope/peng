@@ -559,22 +559,27 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
 test "handlePaletteKeys directory_navigator key interactions" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const cwd = std.Io.Dir.cwd();
 
-    const tmp_dir = "testfiles/tmp_palette_key_test";
-    const sub_has_img = tmp_dir ++ "/sub_has_images";
-    const sub_no_img = tmp_dir ++ "/sub_no_images";
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
 
-    std.Io.Dir.createDirPath(cwd, io, sub_has_img) catch {};
-    std.Io.Dir.createDirPath(cwd, io, sub_no_img) catch {};
-
-    // Create a dummy image file in sub_has_img
-    var f = try std.Io.Dir.createFile(cwd, io, sub_has_img ++ "/pic.png", .{});
+    try tmp.dir.createDirPath(io, "sub_has_images");
+    try tmp.dir.createDirPath(io, "sub_no_images");
+    var f = try tmp.dir.createFile(io, "sub_has_images/pic.png", .{});
     f.close(io);
 
-    defer {
-        std.Io.Dir.deleteTree(cwd, io, tmp_dir) catch {};
-    }
+    var tmp_dir_buf: [128]u8 = undefined;
+    const tmp_dir = try std.fmt.bufPrint(
+        &tmp_dir_buf,
+        ".zig-cache/tmp/{s}",
+        .{tmp.sub_path},
+    );
+    var sub_no_img_buf: [160]u8 = undefined;
+    const sub_no_img = try std.fmt.bufPrint(
+        &sub_no_img_buf,
+        "{s}/sub_no_images",
+        .{tmp_dir},
+    );
 
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
@@ -603,27 +608,60 @@ test "handlePaletteKeys directory_navigator key interactions" {
     // Test Right key on sub_no_images -> navigate into folder
     state.viewer.ui.palette.selected_idx = match_idx_no_img;
     _ = try handlePaletteKeys(ctx, .right, .{});
-    try std.testing.expectEqual(PaletteMode.directory_navigator, state.viewer.ui.palette.mode);
-    try std.testing.expectEqualStrings(sub_no_img, state.viewer.ui.palette.current_nav_dir.items);
-    try std.testing.expectEqual(@as(usize, 0), state.viewer.ui.palette.query.items.len);
+    try std.testing.expectEqual(
+        PaletteMode.directory_navigator,
+        state.viewer.ui.palette.mode,
+    );
+    try std.testing.expectEqualStrings(
+        sub_no_img,
+        state.viewer.ui.palette.current_nav_dir.items,
+    );
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        state.viewer.ui.palette.query.items.len,
+    );
 
     // Test Left key -> step up to parent directory, remembering sub_no_images
     _ = try handlePaletteKeys(ctx, .left, .{});
-    try std.testing.expectEqual(PaletteMode.directory_navigator, state.viewer.ui.palette.mode);
-    try std.testing.expectEqualStrings(tmp_dir, state.viewer.ui.palette.current_nav_dir.items);
-    try std.testing.expectEqual(match_idx_no_img, state.viewer.ui.palette.selected_idx);
+    try std.testing.expectEqual(
+        PaletteMode.directory_navigator,
+        state.viewer.ui.palette.mode,
+    );
+    try std.testing.expectEqualStrings(
+        tmp_dir,
+        state.viewer.ui.palette.current_nav_dir.items,
+    );
+    try std.testing.expectEqual(
+        match_idx_no_img,
+        state.viewer.ui.palette.selected_idx,
+    );
 
     // Test Tab key on sub_no_images -> navigate into folder
     state.viewer.ui.palette.selected_idx = match_idx_no_img;
     _ = try handlePaletteKeys(ctx, .tab, .{});
-    try std.testing.expectEqual(PaletteMode.directory_navigator, state.viewer.ui.palette.mode);
-    try std.testing.expectEqualStrings(sub_no_img, state.viewer.ui.palette.current_nav_dir.items);
-    try std.testing.expectEqual(@as(usize, 0), state.viewer.ui.palette.query.items.len);
+    try std.testing.expectEqual(
+        PaletteMode.directory_navigator,
+        state.viewer.ui.palette.mode,
+    );
+    try std.testing.expectEqualStrings(
+        sub_no_img,
+        state.viewer.ui.palette.current_nav_dir.items,
+    );
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        state.viewer.ui.palette.query.items.len,
+    );
 
     // Test Shift+Tab key -> step up to parent directory
     _ = try handlePaletteKeys(ctx, .tab, .{ .shift = true });
-    try std.testing.expectEqual(PaletteMode.directory_navigator, state.viewer.ui.palette.mode);
-    try std.testing.expectEqualStrings(tmp_dir, state.viewer.ui.palette.current_nav_dir.items);
+    try std.testing.expectEqual(
+        PaletteMode.directory_navigator,
+        state.viewer.ui.palette.mode,
+    );
+    try std.testing.expectEqualStrings(
+        tmp_dir,
+        state.viewer.ui.palette.current_nav_dir.items,
+    );
 
     // Test Enter key on sub_no_images -> queues open_path intent for
     // sub_no_images and initiates palette closing dissolve
@@ -642,31 +680,58 @@ test "handlePaletteKeys directory_navigator key interactions" {
     try std.testing.expect(state.viewer.ui.palette.is_closing);
 }
 
-test "handlePaletteKeys stepping up from dot to parent directory preselects working dir" {
+test "handlePaletteKeys stepping up to parent directory preselects child dir" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "alpha_dir");
+    try tmp.dir.createDirPath(io, "work_dir");
+
+    var parent_buf: [128]u8 = undefined;
+    const parent_dir = try std.fmt.bufPrint(
+        &parent_buf,
+        ".zig-cache/tmp/{s}",
+        .{tmp.sub_path},
+    );
+    var work_buf: [160]u8 = undefined;
+    const work_dir = try std.fmt.bufPrint(
+        &work_buf,
+        "{s}/work_dir",
+        .{parent_dir},
+    );
 
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    try state.loadPaletteDirectory(".");
+    try state.loadPaletteDirectory(work_dir);
     state.viewer.ui.palette.mode = .directory_navigator;
-    try std.testing.expectEqualStrings(".", state.viewer.ui.palette.current_nav_dir.items);
+    try std.testing.expectEqualStrings(
+        work_dir,
+        state.viewer.ui.palette.current_nav_dir.items,
+    );
 
     const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
     _ = try handlePaletteKeys(ctx, .left, .{});
-    try std.testing.expectEqualStrings("..", state.viewer.ui.palette.current_nav_dir.items);
+    try std.testing.expectEqualStrings(
+        parent_dir,
+        state.viewer.ui.palette.current_nav_dir.items,
+    );
 
-    var found_cwd_selected = false;
-    if (state.viewer.ui.palette.selected_idx < state.viewer.ui.palette.dir_items.items.len) {
+    var found_selected = false;
+    if (state.viewer.ui.palette.selected_idx <
+        state.viewer.ui.palette.dir_items.items.len)
+    {
         const sel_name = state.viewer.ui.palette.dir_items.items[
             state.viewer.ui.palette.selected_idx
         ].getName();
-        if (std.mem.eql(u8, sel_name, "peng")) {
-            found_cwd_selected = true;
+        if (std.mem.eql(u8, sel_name, "work_dir")) {
+            found_selected = true;
         }
     }
-    try std.testing.expect(found_cwd_selected);
+    try std.testing.expect(found_selected);
 }
 
 test "sysProcessPaletteInput retains palette when clicking inside debug panel" {
@@ -713,19 +778,29 @@ test "sysProcessPaletteInput retains palette when clicking inside debug panel" {
 test "openPalette directory_navigator starting directory rules" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const cwd = std.Io.Dir.cwd();
 
-    const tmp_dir = "testfiles/tmp_palette_open_dir_test";
-    std.Io.Dir.createDirPath(cwd, io, tmp_dir ++ "/sub1") catch {};
-    defer {
-        std.Io.Dir.deleteTree(cwd, io, tmp_dir) catch {};
-    }
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "sub1");
+    var tmp_dir_buf: [128]u8 = undefined;
+    const tmp_dir = try std.fmt.bufPrint(
+        &tmp_dir_buf,
+        ".zig-cache/tmp/{s}",
+        .{tmp.sub_path},
+    );
 
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    // Rule 1: current_index is valid -> starting directory is dirname of current image
-    const sample_path = tmp_dir ++ "/image1.jpg";
+    // Rule 1: current_index is valid -> starting directory is dirname of
+    // current image
+    var sample_buf: [160]u8 = undefined;
+    const sample_path = try std.fmt.bufPrint(
+        &sample_buf,
+        "{s}/image1.jpg",
+        .{tmp_dir},
+    );
     try state.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = sample_path } },
@@ -733,59 +808,84 @@ test "openPalette directory_navigator starting directory rules" {
     state.viewer.navigation.current_index = 0;
 
     try state.openPalette(.directory_navigator);
-    try std.testing.expectEqual(PaletteMode.directory_navigator, state.viewer.ui.palette.mode);
-    try std.testing.expectEqualStrings(tmp_dir, state.viewer.ui.palette.current_nav_dir.items);
+    try std.testing.expectEqual(
+        PaletteMode.directory_navigator,
+        state.viewer.ui.palette.mode,
+    );
+    try std.testing.expectEqualStrings(
+        tmp_dir,
+        state.viewer.ui.palette.current_nav_dir.items,
+    );
 
-    // Rule 2: current_index is null -> starting directory remembers last_nav_dir
+    // Rule 2: current_index is null -> starting directory remembers
+    // last_nav_dir
     state.viewer.navigation.current_index = null;
     try state.openPalette(.directory_navigator);
-    try std.testing.expectEqualStrings(tmp_dir, state.viewer.ui.palette.current_nav_dir.items);
+    try std.testing.expectEqualStrings(
+        tmp_dir,
+        state.viewer.ui.palette.current_nav_dir.items,
+    );
 
-    // Rule 3: current_index is null and last_nav_dir is empty -> starting directory
-    // falls back to "."
+    // Rule 3: current_index is null and last_nav_dir is empty -> starting
+    // directory falls back to "."
     state.viewer.ui.palette.last_nav_dir.clearRetainingCapacity();
-    try state.openPalette(.directory_navigator);
-    try std.testing.expectEqualStrings(".", state.viewer.ui.palette.current_nav_dir.items);
+    const fallback1 = state.resolveNavigatorInitialPath();
+    try std.testing.expectEqualStrings(".", fallback1.start_dir);
+    try std.testing.expect(fallback1.preselect_child == null);
 
     // Rule 4: current_index out of bounds and last_nav_dir is empty -> starting
     // directory falls back to "."
     state.viewer.navigation.current_index = 999;
     state.viewer.ui.palette.last_nav_dir.clearRetainingCapacity();
-    try state.openPalette(.directory_navigator);
-    try std.testing.expectEqualStrings(".", state.viewer.ui.palette.current_nav_dir.items);
+    const fallback2 = state.resolveNavigatorInitialPath();
+    try std.testing.expectEqualStrings(".", fallback2.start_dir);
+    try std.testing.expect(fallback2.preselect_child == null);
 }
 
 test "openPalette directory_navigator steps up if 0 subdirectories" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const cwd = std.Io.Dir.cwd();
 
-    const tmp_dir = "testfiles/tmp_palette_step_up_test";
-    const sub_leaf = tmp_dir ++ "/child_leaf";
-    std.Io.Dir.createDirPath(cwd, io, sub_leaf) catch {};
-    defer {
-        std.Io.Dir.deleteTree(cwd, io, tmp_dir) catch {};
-    }
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "child_leaf");
+    var tmp_dir_buf: [128]u8 = undefined;
+    const tmp_dir = try std.fmt.bufPrint(
+        &tmp_dir_buf,
+        ".zig-cache/tmp/{s}",
+        .{tmp.sub_path},
+    );
+    var img_buf: [160]u8 = undefined;
+    const img_path = try std.fmt.bufPrint(
+        &img_buf,
+        "{s}/child_leaf/photo.png",
+        .{tmp_dir},
+    );
 
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
     // Image in child_leaf (which has 0 subdirectories itself)
-    const img_path = sub_leaf ++ "/photo.png";
     try state.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = img_path } },
     );
     state.viewer.navigation.current_index = 0;
 
-    // openPalette should see sub_leaf has 0 subdirectories, so it steps up to
+    // openPalette should see child_leaf has 0 subdirectories, so it steps up to
     // tmp_dir and pre-selects child_leaf
     try state.openPalette(.directory_navigator);
-    try std.testing.expectEqualStrings(tmp_dir, state.viewer.ui.palette.current_nav_dir.items);
+    try std.testing.expectEqualStrings(
+        tmp_dir,
+        state.viewer.ui.palette.current_nav_dir.items,
+    );
 
     // Verify child_leaf is selected
     var found_leaf_selected = false;
-    if (state.viewer.ui.palette.selected_idx < state.viewer.ui.palette.dir_items.items.len) {
+    if (state.viewer.ui.palette.selected_idx <
+        state.viewer.ui.palette.dir_items.items.len)
+    {
         const sel_name = state.viewer.ui.palette.dir_items.items[
             state.viewer.ui.palette.selected_idx
         ].getName();
@@ -796,42 +896,22 @@ test "openPalette directory_navigator steps up if 0 subdirectories" {
     try std.testing.expect(found_leaf_selected);
 }
 
-test "openPalette steps up from top-level relative leaf dir without slashes to dot" {
+test "resolveNavigatorInitialPath handles relative file without slashes" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const cwd = std.Io.Dir.cwd();
-
-    const top_leaf = "tmp_top_level_leaf_test";
-    std.Io.Dir.createDirPath(cwd, io, top_leaf) catch {};
-    defer {
-        std.Io.Dir.deleteTree(cwd, io, top_leaf) catch {};
-    }
 
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    const img_path = top_leaf ++ "/photo.png";
     try state.viewer.navigation.appendEntry(
         allocator,
-        .{ .filesystem = .{ .path = img_path } },
+        .{ .filesystem = .{ .path = "photo.png" } },
     );
     state.viewer.navigation.current_index = 0;
 
-    try state.openPalette(.directory_navigator);
-    // Should step up to "." because top_leaf has 0 subdirectories
-    try std.testing.expectEqualStrings(".", state.viewer.ui.palette.current_nav_dir.items);
-
-    // Verify top_leaf is pre-selected in "."
-    var found_leaf_selected = false;
-    if (state.viewer.ui.palette.selected_idx < state.viewer.ui.palette.dir_items.items.len) {
-        const sel_name = state.viewer.ui.palette.dir_items.items[
-            state.viewer.ui.palette.selected_idx
-        ].getName();
-        if (std.mem.eql(u8, sel_name, top_leaf)) {
-            found_leaf_selected = true;
-        }
-    }
-    try std.testing.expect(found_leaf_selected);
+    const nav_path = state.resolveNavigatorInitialPath();
+    try std.testing.expectEqualStrings(".", nav_path.start_dir);
+    try std.testing.expectEqualStrings("photo.png", nav_path.preselect_child.?);
 }
 
 test "handlePaletteKeys backspace removes full multi-byte UTF-8 codepoints" {

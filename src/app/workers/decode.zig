@@ -1753,21 +1753,179 @@ test "decodeWorker - Fujifilm RAF range reading and preview extraction" {
     try std.testing.expect(image_decoded_seen);
 }
 
-test "decodeWorker - progressive 3-tier loading for real DSC00941.ARW" {
+test "decodeWorker - progressive 3-tier loading for synthetic ARW" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
 
-    var test_file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, "DSC00941.ARW", .{}) catch return;
-    test_file.close(io);
+    const thumb_path = "testfiles/images/063_63_1024x576.jpg"; // ~18 KB
+    const med_path = "testfiles/images/024_24_1024x380.jpg"; // ~28 KB
+    const prev_path = "testfiles/images/000_0_1024x682.jpg"; // ~58 KB
+
+    const readJpeg = struct {
+        fn run(
+            alloc: std.mem.Allocator,
+            io_inst: std.Io,
+            path: []const u8,
+        ) ![]u8 {
+            var f = try std.Io.Dir.openFile(
+                std.Io.Dir.cwd(),
+                io_inst,
+                path,
+                .{},
+            );
+            defer f.close(io_inst);
+            const st = try std.Io.Dir.statFile(
+                std.Io.Dir.cwd(),
+                io_inst,
+                path,
+                .{},
+            );
+            const buf = try alloc.alloc(u8, @intCast(st.size));
+            errdefer alloc.free(buf);
+            var slices = [_][]u8{buf};
+            _ = try f.readPositional(io_inst, &slices, 0);
+            return buf;
+        }
+    }.run;
+
+    const thumb_bytes = try readJpeg(allocator, io, thumb_path);
+    defer allocator.free(thumb_bytes);
+    const med_bytes = try readJpeg(allocator, io, med_path);
+    defer allocator.free(med_bytes);
+    const prev_bytes = try readJpeg(allocator, io, prev_path);
+    defer allocator.free(prev_bytes);
+
+    const header_len: usize = 256;
+    const thumb_off: usize = header_len;
+    const med_off: usize = thumb_off + thumb_bytes.len;
+    const prev_off: usize = med_off + med_bytes.len;
+    const total_len: usize = prev_off + prev_bytes.len;
+
+    const tiff_buf = try allocator.alloc(u8, total_len);
+    defer allocator.free(tiff_buf);
+    @memset(tiff_buf, 0);
+
+    // Little-endian TIFF header, IFD0 at offset 8
+    tiff_buf[0] = 'I';
+    tiff_buf[1] = 'I';
+    tiff_buf[2] = 0x2A;
+    tiff_buf[3] = 0x00;
+    std.mem.writeInt(u32, tiff_buf[4..8], 8, .little);
+
+    // IFD0 at 8: 2 entries (medium preview) -> next IFD1 at 60
+    var off: usize = 8;
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 2, .little);
+    off += 2;
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0201, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(
+        u32,
+        tiff_buf[off + 8 ..][0..4],
+        @intCast(med_off),
+        .little,
+    );
+    off += 12;
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0202, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(
+        u32,
+        tiff_buf[off + 8 ..][0..4],
+        @intCast(med_bytes.len),
+        .little,
+    );
+    off += 12;
+    std.mem.writeInt(u32, tiff_buf[off..][0..4], 60, .little);
+
+    // IFD1 at 60: 2 entries (smallest thumbnail) -> next IFD2 at 110
+    off = 60;
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 2, .little);
+    off += 2;
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0201, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(
+        u32,
+        tiff_buf[off + 8 ..][0..4],
+        @intCast(thumb_off),
+        .little,
+    );
+    off += 12;
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0202, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(
+        u32,
+        tiff_buf[off + 8 ..][0..4],
+        @intCast(thumb_bytes.len),
+        .little,
+    );
+    off += 12;
+    std.mem.writeInt(u32, tiff_buf[off..][0..4], 110, .little);
+
+    // IFD2 at 110: 4 entries (largest preview + visible dimensions 6240x4160)
+    off = 110;
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 4, .little);
+    off += 2;
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0100, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], 6240, .little);
+    off += 12;
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0101, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], 4160, .little);
+    off += 12;
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0201, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(
+        u32,
+        tiff_buf[off + 8 ..][0..4],
+        @intCast(prev_off),
+        .little,
+    );
+    off += 12;
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0202, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(
+        u32,
+        tiff_buf[off + 8 ..][0..4],
+        @intCast(prev_bytes.len),
+        .little,
+    );
+    off += 12;
+    std.mem.writeInt(u32, tiff_buf[off..][0..4], 0, .little);
+
+    @memcpy(tiff_buf[thumb_off .. thumb_off + thumb_bytes.len], thumb_bytes);
+    @memcpy(tiff_buf[med_off .. med_off + med_bytes.len], med_bytes);
+    @memcpy(tiff_buf[prev_off .. prev_off + prev_bytes.len], prev_bytes);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var mock_file = try tmp.dir.createFile(io, "mock_3tier.arw", .{});
+    var wr_slices = [_][]const u8{tiff_buf};
+    _ = try mock_file.writePositional(io, &wr_slices, 0);
+    mock_file.close(io);
+
+    var path_buf: [128]u8 = undefined;
+    const arw_path = try std.fmt.bufPrint(
+        &path_buf,
+        ".zig-cache/tmp/{s}/mock_3tier.arw",
+        .{tmp.sub_path},
+    );
 
     var workers = WorkerManager{};
     defer workers.deinit(allocator, io);
 
     var current_gen: std.atomic.Value(usize) = .init(1);
 
-    // Case 1: Fast scrubbing (thumb_only = true) -> receives 160x120 thumbnail
+    // Case 1: Fast scrubbing (thumb_only = true) -> receives IFD1 (1024x576)
     {
-        const p = try allocator.dupe(u8, "DSC00941.ARW");
+        const p = try allocator.dupe(u8, arw_path);
         const entry = MediaEntry{ .filesystem = .{ .path = p } };
         const args = try allocator.create(DecodeArgs);
         args.* = .{
@@ -1793,8 +1951,8 @@ test "decodeWorker - progressive 3-tier loading for real DSC00941.ARW" {
                 .thumb_decoded => |t_evt| {
                     const t = t_evt.unwrapForTest();
                     thumb_seen = true;
-                    try std.testing.expectEqual(@as(f32, 160.0), t.w);
-                    try std.testing.expectEqual(@as(f32, 120.0), t.h);
+                    try std.testing.expectEqual(@as(f32, 1024.0), t.w);
+                    try std.testing.expectEqual(@as(f32, 576.0), t.h);
                     try std.testing.expectEqual(@as(f32, 6240.0), t.full_w);
                     try std.testing.expectEqual(@as(f32, 4160.0), t.full_h);
                 },
@@ -1804,9 +1962,10 @@ test "decodeWorker - progressive 3-tier loading for real DSC00941.ARW" {
         try std.testing.expect(thumb_seen);
     }
 
-    // Case 2: Settled viewing (thumb_only = false) -> receives 1616x1080 medium placeholder, then 6240x4160 full image
+    // Case 2: Settled viewing (thumb_only = false) -> receives IFD0 medium
+    // placeholder (1024x380), then IFD2 full preview (1024x682)
     {
-        const p = try allocator.dupe(u8, "DSC00941.ARW");
+        const p = try allocator.dupe(u8, arw_path);
         const entry = MediaEntry{ .filesystem = .{ .path = p } };
         const args = try allocator.create(DecodeArgs);
         args.* = .{
@@ -1833,16 +1992,19 @@ test "decodeWorker - progressive 3-tier loading for real DSC00941.ARW" {
                 .thumb_decoded => |t_evt| {
                     const t = t_evt.unwrapForTest();
                     med_thumb_seen = true;
-                    try std.testing.expectEqual(@as(f32, 1616.0), t.w);
-                    try std.testing.expectEqual(@as(f32, 1080.0), t.h);
+                    try std.testing.expectEqual(@as(f32, 1024.0), t.w);
+                    try std.testing.expectEqual(@as(f32, 380.0), t.h);
                     try std.testing.expectEqual(@as(f32, 6240.0), t.full_w);
                     try std.testing.expectEqual(@as(f32, 4160.0), t.full_h);
                 },
                 .image_decoded => |img_evt| {
                     const img = img_evt.unwrapForTest();
                     full_image_seen = true;
-                    try std.testing.expectEqual(@as(f32, 6240.0), img.w);
-                    try std.testing.expectEqual(@as(f32, 4160.0), img.h);
+                    try std.testing.expectEqual(@as(f32, 1024.0), img.w);
+                    try std.testing.expectEqual(@as(f32, 682.0), img.h);
+                    const s_dims = img.raw_metadata.getSensorDims().?;
+                    try std.testing.expectEqual(@as(f32, 6240.0), s_dims.w);
+                    try std.testing.expectEqual(@as(f32, 4160.0), s_dims.h);
                 },
                 else => {},
             }
