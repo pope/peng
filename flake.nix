@@ -28,10 +28,18 @@
         "x86_64-darwin"
         "aarch64-darwin"
       ];
+      overlay = final: _prev: {
+        peng = final.callPackage ./nix/peng.nix {
+          sdl3-image = final.sdl3-image.override { enableSTB = false; };
+        };
+      };
       sys-config =
         system:
         let
-          pkgs = import nixpkgs { inherit system; };
+          pkgs = import nixpkgs {
+            inherit system;
+            overlays = [ overlay ];
+          };
           treefmt-eval = treefmt-nix.lib.evalModule pkgs (_: {
             projectRootFile = "flake.nix";
             programs = {
@@ -55,8 +63,7 @@
             };
             settings.global.excludes = [ ".envrc" ];
           });
-          sdl3-image = pkgs.sdl3-image.override { enableSTB = false; };
-          peng = pkgs.callPackage ./nix/peng.nix { inherit sdl3-image; };
+          inherit (pkgs) peng;
           updateNixDeps = pkgs.writeShellApplication {
             name = "update-nix-deps";
             runtimeInputs = with pkgs; [
@@ -113,5 +120,7 @@
           checks.${system}.treefmt = treefmt-eval.config.build.check self;
         };
     in
-    builtins.foldl' nixpkgs.lib.recursiveUpdate { } (map sys-config systems);
+    builtins.foldl' nixpkgs.lib.recursiveUpdate {
+      overlays.default = overlay;
+    } (map sys-config systems);
 }
