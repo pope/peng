@@ -63,6 +63,29 @@ fn failDecodeWorker(
 }
 
 const max_cbz_entry_bytes: u64 = 256 * 1024 * 1024;
+const header_probe_limit: usize = 256 * 1024;
+
+fn readRangePositional(
+    file: std.Io.File,
+    io: std.Io,
+    cancel: context.CancellationToken,
+    dest: []u8,
+    start_offset: u64,
+) !usize {
+    var total_read: usize = 0;
+    while (total_read < dest.len) {
+        if (cancel.isCanceled()) return error.Canceled;
+        var slices = [_][]u8{dest[total_read..]};
+        const n = try file.readPositional(
+            io,
+            &slices,
+            start_offset + total_read,
+        );
+        if (n == 0) break;
+        total_read += n;
+    }
+    return total_read;
+}
 
 const DecompressCbzResult = struct {
     bytes: []u8,
@@ -328,11 +351,16 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
     defer file.close(io);
 
     // Read initial 256KB header via readPositional without allocating full file
-    const header_target: usize = @intCast(@min(file_size, 256 * 1024));
-    var header_buf: [256 * 1024]u8 = undefined;
-    var h_slices = [_][]u8{header_buf[0..header_target]};
+    const header_target: usize = @intCast(@min(file_size, header_probe_limit));
+    var header_buf: [header_probe_limit]u8 = undefined;
     const start_hdr_read = sdl.timer.getTicksNs();
-    const header_n = file.readPositional(io, &h_slices, 0) catch |err| {
+    const header_n = readRangePositional(
+        file,
+        io,
+        cancel,
+        header_buf[0..header_target],
+        0,
+    ) catch |err| {
         if (err == error.Canceled or cancel.isCanceled()) return true;
         if (is_pair) return false;
         failDecodeWorker(
@@ -372,10 +400,11 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                 meta_loc.file_offset +| meta_loc.length <= file_size)
             {
                 var m_buf: [64 * 1024]u8 = undefined;
-                var m_slices = [_][]u8{m_buf[0..meta_loc.length]};
-                const mn = file.readPositional(
+                const mn = readRangePositional(
+                    file,
                     io,
-                    &m_slices,
+                    cancel,
+                    m_buf[0..meta_loc.length],
                     meta_loc.file_offset,
                 ) catch |err| blk: {
                     if (err == error.Canceled or cancel.isCanceled()) {
@@ -403,10 +432,11 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                 }
             } else {
                 var p_hdr: [8192]u8 = undefined;
-                var p_slices = [_][]u8{&p_hdr};
-                const pn = file.readPositional(
+                const pn = readRangePositional(
+                    file,
                     io,
-                    &p_slices,
+                    cancel,
+                    &p_hdr,
                     prev_loc.file_offset,
                 ) catch |err| blk: {
                     if (err == error.Canceled or cancel.isCanceled()) {
@@ -435,10 +465,11 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                 const tail_target: usize =
                     @intCast(@min(file_size -| ifd0_off, tail_buf.len));
                 if (tail_target > 0) {
-                    var t_slices = [_][]u8{tail_buf[0..tail_target]};
-                    const tn = file.readPositional(
+                    const tn = readRangePositional(
+                        file,
                         io,
-                        &t_slices,
+                        cancel,
+                        tail_buf[0..tail_target],
                         ifd0_off,
                     ) catch |err| blk: {
                         if (err == error.Canceled or cancel.isCanceled()) {
@@ -524,10 +555,11 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                     const t_buf = alloc.alloc(u8, t_len) catch null;
                     if (t_buf) |tb| {
                         defer alloc.free(tb);
-                        var ts_slices = [_][]u8{tb};
-                        const tn = file.readPositional(
+                        const tn = readRangePositional(
+                            file,
                             io,
-                            &ts_slices,
+                            cancel,
+                            tb,
                             tloc.file_offset,
                         ) catch |err| blk: {
                             if (err == error.Canceled or cancel.isCanceled()) {
@@ -668,30 +700,26 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
         prev_allocated_buf = p_buf;
 
         const start_p_read = sdl.timer.getTicksNs();
-        var total_read: usize = 0;
-        while (total_read < p_buf.len) {
-            var p_slices = [_][]u8{p_buf[total_read..]};
-            const pn = file.readPositional(
+        const total_read = readRangePositional(
+            file,
+            io,
+            cancel,
+            p_buf,
+            prev_loc.file_offset,
+        ) catch |err| {
+            if (err == error.Canceled or cancel.isCanceled()) return true;
+            if (is_pair) return false;
+            failDecodeWorker(
+                workers,
+                alloc,
                 io,
-                &p_slices,
-                prev_loc.file_offset + total_read,
-            ) catch |err| {
-                if (err == error.Canceled or cancel.isCanceled()) return true;
-                if (is_pair) return false;
-                failDecodeWorker(
-                    workers,
-                    alloc,
-                    io,
-                    key,
-                    "decodeWorker: readPositional failed " ++
-                        "for preview in '{s}': {}",
-                    .{ path, err },
-                );
-                return true;
-            };
-            if (pn == 0) break;
-            total_read += pn;
-        }
+                key,
+                "decodeWorker: readPositional failed " ++
+                    "for preview in '{s}': {}",
+                .{ path, err },
+            );
+            return true;
+        };
         const end_p_read = sdl.timer.getTicksNs();
         if (total_read < p_buf.len) {
             if (is_pair) return false;
@@ -800,6 +828,299 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
     }
 }
 
+/// Encapsulates the two-stage payload lifecycle for `decodeWorker`:
+/// - Stage 1 (`openStagedFile`): reads only up to `header_probe_limit` (256 KB) so EXIF orientation,
+///   dimensions, and embedded JPEG thumbnails can be extracted and pushed to the main thread first.
+/// - Stage 2 (`readRemaining`): reads any remaining file bytes and closes the `std.Io.File` handle
+///   before CPU surface decompression begins.
+const DecodePayload = struct {
+    const Stage = union(enum) {
+        staged_file: std.Io.File,
+        complete,
+    };
+
+    path: []const u8,
+    log_prefix: []const u8 = "",
+    bytes: []u8,
+    read_n: usize,
+    size_bytes: u64,
+    read_time_ms: f64,
+    cbz_decompress_time_ms: f64 = 0.0,
+    compressed_size_bytes: usize = 0,
+    stage: Stage,
+
+    fn fromArchiveEntry(
+        args: *DecodeArgs,
+        arch: ArchiveMediaEntry,
+    ) ?DecodePayload {
+        const max_bytes: ?usize = if (args.thumb_only) header_probe_limit else null;
+        const dec_res = decompressCbzMediaEntry(
+            args.allocator,
+            args.io,
+            arch,
+            max_bytes,
+        ) catch |err| {
+            if (err == error.Canceled or args.cancelToken().isCanceled()) return null;
+            failDecodeWorker(
+                args.workers,
+                args.allocator,
+                args.io,
+                args.key,
+                "decodeWorker: failed to decompress CBZ entry '{s}' from '{s}': {}",
+                .{ arch.entry_name, arch.archive_path, err },
+            );
+            return null;
+        };
+
+        return .{
+            .path = arch.entry_name,
+            .bytes = dec_res.bytes,
+            .read_n = dec_res.bytes.len,
+            .size_bytes = dec_res.bytes.len,
+            .read_time_ms = dec_res.read_time_ms,
+            .cbz_decompress_time_ms = dec_res.decompress_time_ms,
+            .compressed_size_bytes = std.math.cast(
+                usize,
+                dec_res.compressed_size,
+            ) orelse std.math.maxInt(usize),
+            .stage = .complete,
+        };
+    }
+
+    fn openStagedFile(
+        args: *DecodeArgs,
+        file_path: []const u8,
+        log_prefix: []const u8,
+    ) ?DecodePayload {
+        const workers = args.workers;
+        const alloc = args.allocator;
+        const io = args.io;
+        const key = args.key;
+        const cancel = args.cancelToken();
+
+        const s = std.Io.Dir.statFile(std.Io.Dir.cwd(), io, file_path, .{}) catch |err| {
+            if (err == error.Canceled or cancel.isCanceled()) return null;
+            failDecodeWorker(
+                workers,
+                alloc,
+                io,
+                key,
+                "decodeWorker: statFile failed for {s}'{s}': {}",
+                .{ log_prefix, file_path, err },
+            );
+            return null;
+        };
+
+        const file_size = std.math.cast(usize, s.size) orelse {
+            failDecodeWorker(
+                workers,
+                alloc,
+                io,
+                key,
+                "decodeWorker: file too large for {s}'{s}': {}",
+                .{ log_prefix, file_path, s.size },
+            );
+            return null;
+        };
+
+        const start_read = sdl.timer.getTicksNs();
+        const file = std.Io.Dir.openFile(
+            std.Io.Dir.cwd(),
+            io,
+            file_path,
+            .{},
+        ) catch |err| {
+            if (err == error.Canceled or cancel.isCanceled()) return null;
+            failDecodeWorker(
+                workers,
+                alloc,
+                io,
+                key,
+                "decodeWorker: openFile failed for {s}'{s}': {}",
+                .{ log_prefix, file_path, err },
+            );
+            return null;
+        };
+
+        const stage1_target = @min(file_size, header_probe_limit);
+        const target_read_size: usize = if (args.thumb_only)
+            stage1_target
+        else
+            file_size;
+
+        const bytes = alloc.alloc(u8, target_read_size) catch |err| {
+            file.close(io);
+            failDecodeWorker(
+                workers,
+                alloc,
+                io,
+                key,
+                "decodeWorker: alloc failed for {s}'{s}': {}",
+                .{ log_prefix, file_path, err },
+            );
+            return null;
+        };
+
+        const read_n = readRangePositional(
+            file,
+            io,
+            cancel,
+            bytes[0..stage1_target],
+            0,
+        ) catch |err| {
+            alloc.free(bytes);
+            file.close(io);
+            if (err == error.Canceled or cancel.isCanceled()) return null;
+            failDecodeWorker(
+                workers,
+                alloc,
+                io,
+                key,
+                "decodeWorker: readPositional failed for {s}'{s}': {}",
+                .{ log_prefix, file_path, err },
+            );
+            return null;
+        };
+
+        const end_read = sdl.timer.getTicksNs();
+        const read_time_ms = @as(f64, @floatFromInt(end_read - start_read)) / 1_000_000.0;
+
+        const has_more_on_disk = (read_n == stage1_target) and (read_n < file_size);
+        const stage: Stage = if (has_more_on_disk)
+            .{ .staged_file = file }
+        else blk: {
+            file.close(io);
+            break :blk .complete;
+        };
+
+        return .{
+            .path = file_path,
+            .log_prefix = log_prefix,
+            .bytes = bytes,
+            .read_n = read_n,
+            .size_bytes = s.size,
+            .read_time_ms = read_time_ms,
+            .stage = stage,
+        };
+    }
+
+    fn deinit(self: *DecodePayload, alloc: std.mem.Allocator, io: std.Io) void {
+        switch (self.stage) {
+            .staged_file => |file| {
+                file.close(io);
+                self.stage = .complete;
+            },
+            .complete => {},
+        }
+        alloc.free(self.bytes);
+    }
+
+    fn headerSlice(self: *const DecodePayload) []const u8 {
+        return self.bytes[0..@min(self.read_n, header_probe_limit)];
+    }
+
+    fn readRemaining(self: *DecodePayload, args: *DecodeArgs) ?[]const u8 {
+        switch (self.stage) {
+            .complete => return self.bytes[0..self.read_n],
+            .staged_file => |file| {
+                defer {
+                    file.close(args.io);
+                    self.stage = .complete;
+                }
+                if (self.read_n < self.bytes.len) {
+                    const cancel = args.cancelToken();
+                    const start_read = sdl.timer.getTicksNs();
+                    const rem_n = readRangePositional(
+                        file,
+                        args.io,
+                        cancel,
+                        self.bytes[self.read_n..],
+                        self.read_n,
+                    ) catch |err| {
+                        if (err == error.Canceled or cancel.isCanceled()) return null;
+                        failDecodeWorker(
+                            args.workers,
+                            args.allocator,
+                            args.io,
+                            args.key,
+                            "decodeWorker: readPositional failed for {s}'{s}': {}",
+                            .{ self.log_prefix, self.path, err },
+                        );
+                        return null;
+                    };
+                    const end_read = sdl.timer.getTicksNs();
+                    self.read_time_ms += @as(f64, @floatFromInt(end_read - start_read)) / 1_000_000.0;
+                    self.read_n += rem_n;
+                }
+                return self.bytes[0..self.read_n];
+            },
+        }
+    }
+
+    fn loadThumbnailSurface(
+        self: *const DecodePayload,
+        args: *DecodeArgs,
+    ) error{Canceled}!?sdl.Surface {
+        const loc = exif.extractJpegThumbnailLocation(self.headerSlice()) orelse {
+            _ = args.workers.thumb_misses.fetchAdd(1, .monotonic);
+            return null;
+        };
+
+        const max_thumb_size_bytes = 512 * 1024;
+        if (loc.length == 0 or
+            loc.length > max_thumb_size_bytes or
+            loc.file_offset +| loc.length > self.size_bytes)
+        {
+            _ = args.workers.thumb_misses.fetchAdd(1, .monotonic);
+            return null;
+        }
+
+        const len: usize = @intCast(loc.length);
+        const cancel = args.cancelToken();
+
+        if (loc.file_offset +| loc.length <= self.read_n) {
+            if (cancel.isCanceled()) return error.Canceled;
+            const off: usize = @intCast(loc.file_offset);
+            _ = args.workers.thumb_header_hits.fetchAdd(1, .monotonic);
+            return sdl.Surface.loadConstMemOpt(self.bytes[off .. off + len]);
+        }
+
+        const file = switch (self.stage) {
+            .staged_file => |f| f,
+            .complete => {
+                _ = args.workers.thumb_misses.fetchAdd(1, .monotonic);
+                return null;
+            },
+        };
+
+        const tb = args.allocator.alloc(u8, len) catch {
+            _ = args.workers.thumb_misses.fetchAdd(1, .monotonic);
+            return null;
+        };
+        defer args.allocator.free(tb);
+
+        const tn = readRangePositional(
+            file,
+            args.io,
+            cancel,
+            tb,
+            loc.file_offset,
+        ) catch |err| blk: {
+            if (err == error.Canceled or cancel.isCanceled()) return error.Canceled;
+            break :blk 0;
+        };
+
+        if (tn != len) {
+            _ = args.workers.thumb_misses.fetchAdd(1, .monotonic);
+            return null;
+        }
+
+        if (cancel.isCanceled()) return error.Canceled;
+        _ = args.workers.thumb_positional_hits.fetchAdd(1, .monotonic);
+        return sdl.Surface.loadConstMemOpt(tb);
+    }
+};
+
 /// Background worker task that reads image files from disk or CBZ archives, parses metadata,
 /// extracts EXIF thumbnails, and decompresses image surfaces into CPU memory.
 pub fn decodeWorker(args: *DecodeArgs) void {
@@ -819,233 +1140,32 @@ pub fn decodeWorker(args: *DecodeArgs) void {
 
     if (cancel.isCanceled()) return;
 
-    var file_bytes: []u8 = undefined;
-    var is_allocated = false;
-    defer if (is_allocated) alloc.free(file_bytes);
-
-    var read_n: usize = 0;
-    var size_bytes: u64 = 0;
-    var read_time_ms: f64 = 0.0;
-    var cbz_decompress_time_ms: f64 = 0.0;
-    var compressed_size_bytes: usize = 0;
-
-    switch (media_entry) {
-        .archive_entry => |arch| {
-            const max_bytes: ?usize = if (args.thumb_only) 256 * 1024 else null;
-            const dec_res = decompressCbzMediaEntry(
-                alloc,
-                io,
-                arch,
-                max_bytes,
-            ) catch |err| {
-                if (err == error.Canceled or cancel.isCanceled()) return;
-                failDecodeWorker(
-                    workers,
-                    alloc,
-                    io,
-                    key,
-                    "decodeWorker: failed to decompress CBZ entry '{s}' from '{s}': {}",
-                    .{ arch.entry_name, arch.archive_path, err },
-                );
-                return;
-            };
-            file_bytes = dec_res.bytes;
-            is_allocated = true;
-            read_n = dec_res.bytes.len;
-            size_bytes = dec_res.bytes.len;
-            read_time_ms = dec_res.read_time_ms;
-            cbz_decompress_time_ms = dec_res.decompress_time_ms;
-            compressed_size_bytes = std.math.cast(
-                usize,
-                dec_res.compressed_size,
-            ) orelse std.math.maxInt(usize);
-        },
-        .filesystem => |file_item| {
+    var payload: DecodePayload = switch (media_entry) {
+        .archive_entry => |arch| DecodePayload.fromArchiveEntry(args, arch) orelse return,
+        .filesystem => |file_item| blk: {
             if (core_fs.isRawFile(file_item.path)) {
                 _ = decodeRawFile(args, file_item.path, false);
                 return;
             }
-
-            const s = std.Io.Dir.statFile(std.Io.Dir.cwd(), io, file_item.path, .{}) catch |err| {
-                if (err == error.Canceled or cancel.isCanceled()) return;
-                failDecodeWorker(
-                    workers,
-                    alloc,
-                    io,
-                    key,
-                    "decodeWorker: statFile failed for '{s}': {}",
-                    .{ file_item.path, err },
-                );
-                return;
-            };
-            size_bytes = s.size;
-
-            const start_read = sdl.timer.getTicksNs();
-            var file = std.Io.Dir.openFile(
-                std.Io.Dir.cwd(),
-                io,
-                file_item.path,
-                .{},
-            ) catch |err| {
-                if (err == error.Canceled or cancel.isCanceled()) return;
-                failDecodeWorker(
-                    workers,
-                    alloc,
-                    io,
-                    key,
-                    "decodeWorker: openFile failed for '{s}': {}",
-                    .{ file_item.path, err },
-                );
-                return;
-            };
-            defer file.close(io);
-
-            const file_size: usize = @intCast(s.size);
-            const target_read_size: usize = if (args.thumb_only)
-                @min(file_size, 256 * 1024)
-            else
-                file_size;
-
-            file_bytes = alloc.alloc(u8, target_read_size) catch |err| {
-                failDecodeWorker(
-                    workers,
-                    alloc,
-                    io,
-                    key,
-                    "decodeWorker: alloc failed for '{s}': {}",
-                    .{ file_item.path, err },
-                );
-                return;
-            };
-            is_allocated = true;
-
-            var total_read: usize = 0;
-            while (total_read < target_read_size) {
-                if (cancel.isCanceled()) return;
-                var slices = [_][]u8{file_bytes[total_read..]};
-                const n = file.readPositional(io, &slices, total_read) catch |err| {
-                    if (err == error.Canceled or cancel.isCanceled()) return;
-                    failDecodeWorker(
-                        workers,
-                        alloc,
-                        io,
-                        key,
-                        "decodeWorker: readPositional failed for '{s}': {}",
-                        .{ file_item.path, err },
-                    );
-                    return;
-                };
-                if (n == 0) break;
-                total_read += n;
-            }
-            read_n = total_read;
-
-            const end_read = sdl.timer.getTicksNs();
-            read_time_ms = @as(f64, @floatFromInt(end_read - start_read)) / 1_000_000.0;
+            break :blk DecodePayload.openStagedFile(args, file_item.path, "") orelse return;
         },
-        .pair => |pair| {
-            if (args.thumb_only) {
-                if (decodeRawFile(args, pair.raw_path, true)) {
-                    return;
-                }
-            } else if (args.pair_target != .standalone_jpeg) {
+        .pair => |pair| blk: {
+            if (args.thumb_only or args.pair_target != .standalone_jpeg) {
                 if (decodeRawFile(args, pair.raw_path, true)) {
                     return;
                 }
             }
-
-            const s = std.Io.Dir.statFile(
-                std.Io.Dir.cwd(),
-                io,
+            break :blk DecodePayload.openStagedFile(
+                args,
                 pair.jpeg_path,
-                .{},
-            ) catch |err| {
-                if (err == error.Canceled or cancel.isCanceled()) return;
-                failDecodeWorker(
-                    workers,
-                    alloc,
-                    io,
-                    key,
-                    "decodeWorker: statFile failed for companion JPEG '{s}': {}",
-                    .{ pair.jpeg_path, err },
-                );
-                return;
-            };
-            size_bytes = s.size;
-
-            const start_read = sdl.timer.getTicksNs();
-            var file = std.Io.Dir.openFile(
-                std.Io.Dir.cwd(),
-                io,
-                pair.jpeg_path,
-                .{},
-            ) catch |err| {
-                if (err == error.Canceled or cancel.isCanceled()) return;
-                failDecodeWorker(
-                    workers,
-                    alloc,
-                    io,
-                    key,
-                    "decodeWorker: openFile failed for companion JPEG '{s}': {}",
-                    .{ pair.jpeg_path, err },
-                );
-                return;
-            };
-            defer file.close(io);
-
-            const file_size: usize = @intCast(s.size);
-            const target_read_size: usize = if (args.thumb_only)
-                @min(file_size, 256 * 1024)
-            else
-                file_size;
-
-            file_bytes = alloc.alloc(u8, target_read_size) catch |err| {
-                failDecodeWorker(
-                    workers,
-                    alloc,
-                    io,
-                    key,
-                    "decodeWorker: alloc failed for companion JPEG '{s}': {}",
-                    .{ pair.jpeg_path, err },
-                );
-                return;
-            };
-            is_allocated = true;
-
-            var total_read: usize = 0;
-            while (total_read < target_read_size) {
-                if (cancel.isCanceled()) return;
-                var slices = [_][]u8{file_bytes[total_read..]};
-                const n = file.readPositional(io, &slices, total_read) catch |err| {
-                    if (err == error.Canceled or cancel.isCanceled()) return;
-                    failDecodeWorker(
-                        workers,
-                        alloc,
-                        io,
-                        key,
-                        "decodeWorker: readPositional failed for companion JPEG '{s}': {}",
-                        .{ pair.jpeg_path, err },
-                    );
-                    return;
-                };
-                if (n == 0) break;
-                total_read += n;
-            }
-            read_n = total_read;
-
-            const end_read = sdl.timer.getTicksNs();
-            read_time_ms = @as(f64, @floatFromInt(end_read - start_read)) / 1_000_000.0;
+                "companion JPEG ",
+            ) orelse return;
         },
-    }
-
-    const header_n = @min(read_n, 256 * 1024);
-    const header_buf = file_bytes[0..header_n];
-
-    const path = switch (media_entry) {
-        .filesystem => |f| f.path,
-        .archive_entry => |a| a.entry_name,
-        .pair => |p| p.jpeg_path,
     };
+    defer payload.deinit(alloc, io);
+
+    const header_buf = payload.headerSlice();
+    const path = payload.path;
     const mime_type = image.detectMimeType(header_buf, path);
     const is_raw_archive = core_fs.isRawFile(path) or std.mem.startsWith(u8, mime_type, "image/x-");
 
@@ -1054,45 +1174,47 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     var orientation: state_pkg.Orientation = .normal;
 
     if (is_raw_archive) {
+        const raw_bytes = payload.readRemaining(args) orelse return;
         const is_fuji = std.mem.eql(u8, mime_type, "image/x-fuji-raf") or
             (header_buf.len >= 8 and std.mem.startsWith(u8, header_buf, "FUJIFILM"));
         if (is_fuji) {
             if (exif.extractFujiRafPreviewLocation(header_buf)) |ploc| {
-                if (ploc.length > 0 and ploc.length <= file_bytes.len and
-                    ploc.file_offset <= file_bytes.len - ploc.length)
+                if (ploc.length > 0 and ploc.length <= raw_bytes.len and
+                    ploc.file_offset <= raw_bytes.len - ploc.length)
                 {
                     const off: usize = @intCast(ploc.file_offset);
                     const len: usize = @intCast(ploc.length);
-                    raw_preview_slice = file_bytes[off .. off + len];
-                    orientation = exif.parseExifOrientation(raw_preview_slice.?) orelse .normal;
+                    const preview_slice = raw_bytes[off .. off + len];
+                    raw_preview_slice = preview_slice;
+                    orientation = exif.parseExifOrientation(preview_slice) orelse .normal;
                 }
             }
             if (exif.extractFujiRafMetadataLocation(header_buf)) |mloc| {
-                if (mloc.length > 0 and mloc.length <= file_bytes.len and
-                    mloc.file_offset <= file_bytes.len - mloc.length)
+                if (mloc.length > 0 and mloc.length <= raw_bytes.len and
+                    mloc.file_offset <= raw_bytes.len - mloc.length)
                 {
                     const off: usize = @intCast(mloc.file_offset);
                     const len: usize = @intCast(mloc.length);
-                    raw_sensor_dims = exif.parseFujiRafDimensions(file_bytes[off .. off + len]);
+                    raw_sensor_dims = exif.parseFujiRafDimensions(raw_bytes[off .. off + len]);
                 }
             }
         } else {
-            const raw_cands = exif.extractTiffRawPreviews(file_bytes);
+            const raw_cands = exif.extractTiffRawPreviews(raw_bytes);
             const target_prev = if (args.thumb_only)
                 (raw_cands.thumbnail orelse raw_cands.medium orelse raw_cands.preview)
             else
                 raw_cands.preview;
             if (target_prev) |ploc| {
-                if (ploc.length > 0 and ploc.length <= file_bytes.len and
-                    ploc.file_offset <= file_bytes.len - ploc.length)
+                if (ploc.length > 0 and ploc.length <= raw_bytes.len and
+                    ploc.file_offset <= raw_bytes.len - ploc.length)
                 {
                     const off: usize = @intCast(ploc.file_offset);
                     const len: usize = @intCast(ploc.length);
-                    raw_preview_slice = file_bytes[off .. off + len];
+                    raw_preview_slice = raw_bytes[off .. off + len];
                 }
             }
-            raw_sensor_dims = exif.parseExifDimensions(file_bytes);
-            orientation = exif.parseExifOrientation(file_bytes) orelse .normal;
+            raw_sensor_dims = exif.parseExifDimensions(raw_bytes);
+            orientation = exif.parseExifOrientation(raw_bytes) orelse .normal;
         }
     } else {
         orientation = exif.parseExifOrientation(header_buf) orelse .normal;
@@ -1118,61 +1240,34 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         args.has_gpu_device and
         args.pair_target == .adaptive)
     {
-        var thumb_bytes_opt: ?[]const u8 = null;
-        if (exif.extractJpegThumbnailLocation(header_buf)) |loc| {
-            const max_thumb_size_bytes = 512 * 1024;
-            const within_file_bounds = loc.length > 0 and
-                loc.length <= max_thumb_size_bytes and
-                loc.file_offset +| loc.length <= read_n;
-
-            if (within_file_bounds) {
-                const off: usize = @intCast(loc.file_offset);
-                const len: usize = @intCast(loc.length);
-                thumb_bytes_opt = file_bytes[off .. off + len];
-                if (off + len <= header_buf.len) {
-                    _ = workers.thumb_header_hits.fetchAdd(1, .monotonic);
-                } else {
-                    _ = workers.thumb_positional_hits.fetchAdd(1, .monotonic);
-                }
-            } else {
-                _ = workers.thumb_misses.fetchAdd(1, .monotonic);
-            }
-        } else {
-            _ = workers.thumb_misses.fetchAdd(1, .monotonic);
-        }
-
-        if (thumb_bytes_opt) |thumb_bytes| {
+        const thumb_surf_opt = payload.loadThumbnailSurface(args) catch return;
+        if (thumb_surf_opt) |t_surf| {
             if (cancel.isCanceled()) {
+                t_surf.destroy();
                 return;
             }
-            if (sdl.Surface.loadConstMemOpt(thumb_bytes)) |t_surf| {
-                if (cancel.isCanceled()) {
-                    t_surf.destroy();
-                    return;
-                }
-                const full_w: f32 = if (full_dims) |d| d.w else 0.0;
-                const full_h: f32 = if (full_dims) |d| d.h else 0.0;
-                const dct_snapped = image.detectThumbnailDctPadding(t_surf, full_w, full_h);
-                workers.event_queue.push(alloc, io, .{
-                    .thumb_decoded = .init(key, .{
-                        .surface = t_surf,
-                        .w = @floatFromInt(t_surf.w()),
-                        .h = @floatFromInt(t_surf.h()),
-                        .full_w = full_w,
-                        .full_h = full_h,
-                        .orientation = orientation,
-                        .thumb_only = args.thumb_only,
-                        .dct_snapped = dct_snapped,
-                    }),
-                }) catch |err| {
-                    std.log.err("Failed to push thumbnail decode event: {}", .{err});
-                    t_surf.destroy();
-                };
-                context.wakeUpMainThread();
+            const full_w: f32 = if (full_dims) |d| d.w else 0.0;
+            const full_h: f32 = if (full_dims) |d| d.h else 0.0;
+            const dct_snapped = image.detectThumbnailDctPadding(t_surf, full_w, full_h);
+            workers.event_queue.push(alloc, io, .{
+                .thumb_decoded = .init(key, .{
+                    .surface = t_surf,
+                    .w = @floatFromInt(t_surf.w()),
+                    .h = @floatFromInt(t_surf.h()),
+                    .full_w = full_w,
+                    .full_h = full_h,
+                    .orientation = orientation,
+                    .thumb_only = args.thumb_only,
+                    .dct_snapped = dct_snapped,
+                }),
+            }) catch |err| {
+                std.log.err("Failed to push thumbnail decode event: {}", .{err});
+                t_surf.destroy();
+            };
+            context.wakeUpMainThread();
 
-                if (args.thumb_only) {
-                    return;
-                }
+            if (args.thumb_only) {
+                return;
             }
         }
     }
@@ -1206,7 +1301,8 @@ pub fn decodeWorker(args: *DecodeArgs) void {
 
     if (cancel.isCanceled()) return;
 
-    const bytes_to_decode = if (raw_preview_slice) |s| s else file_bytes[0..read_n];
+    const full_bytes = payload.readRemaining(args) orelse return;
+    const bytes_to_decode = if (raw_preview_slice) |s| s else full_bytes;
     const start_decode = sdl.timer.getTicksNs();
     const surface = sdl.Surface.loadConstMemOpt(bytes_to_decode);
     const end_decode = sdl.timer.getTicksNs();
@@ -1256,14 +1352,14 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                 .w = orig_w,
                 .h = orig_h,
                 .mime_type = mime_type,
-                .size_bytes = size_bytes,
-                .read_time_ms = read_time_ms,
+                .size_bytes = payload.size_bytes,
+                .read_time_ms = payload.read_time_ms,
                 .decode_time_ms = decode_time_ms,
                 .conversion_time_ms = conversion_time_ms,
                 .orientation = orientation,
                 .raw_metadata = raw_metadata,
-                .cbz_decompress_time_ms = cbz_decompress_time_ms,
-                .compressed_size_bytes = compressed_size_bytes,
+                .cbz_decompress_time_ms = payload.cbz_decompress_time_ms,
+                .compressed_size_bytes = payload.compressed_size_bytes,
             }),
         }) catch |err| {
             std.log.err("Failed to push image decode event: {}", .{err});
@@ -2265,4 +2361,276 @@ test "decodeWorker - canceled RAW pair exits without fallback" {
         workers.active_threads.load(.acquire),
     );
     try std.testing.expect(workers.event_queue.pop() == null);
+}
+
+test "decodeWorker - two-stage JPEG read emits header and positional thumbnails before Stage 2" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    const main_jpg_path = "testfiles/images/000_0_1024x682.jpg";
+    const thumb_jpg_path = "testfiles/images/063_63_1024x576.jpg";
+
+    const readAll = struct {
+        fn run(alloc: std.mem.Allocator, io_inst: std.Io, p: []const u8) ![]u8 {
+            var f = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io_inst, p, .{});
+            defer f.close(io_inst);
+            const st = try std.Io.Dir.statFile(std.Io.Dir.cwd(), io_inst, p, .{});
+            const buf = try alloc.alloc(u8, @intCast(st.size));
+            errdefer alloc.free(buf);
+            var slices = [_][]u8{buf};
+            _ = try f.readPositional(io_inst, &slices, 0);
+            return buf;
+        }
+    }.run;
+
+    const main_jpg = try readAll(allocator, io, main_jpg_path);
+    defer allocator.free(main_jpg);
+    const thumb_jpg = try readAll(allocator, io, thumb_jpg_path);
+    defer allocator.free(thumb_jpg);
+
+    // Build a synthetic JPEG > 256 KB where:
+    // - SOI (2 bytes) + APP1 EXIF header (72 bytes) with Orientation = 6 (rotate_90)
+    //   and IFD1 JPEGInterchangeFormat pointing to `thumb_tiff_rel_off`.
+    // - Followed by `main_jpg[2..]` so SOF0/SOS/EOI are valid.
+    // - Padded past `header_probe_limit` (256 KB) with `thumb_jpg` placed at `positional_thumb_off`.
+    const app1_payload_len: usize = 6 + 64; // "Exif\x00\x00" + 64-byte TIFF header
+    const app1_total_len: usize = 4 + app1_payload_len; // 0xFF 0xE1 + len(2) + payload
+    const tiff_start_off: usize = 2 + 4 + 6; // offset 12 in file
+    const positional_thumb_off: usize = header_probe_limit + 16 * 1024;
+    const total_file_len: usize = positional_thumb_off + thumb_jpg.len;
+
+    const file_buf = try allocator.alloc(u8, total_file_len);
+    defer allocator.free(file_buf);
+    @memset(file_buf, 0);
+
+    // 1. SOI
+    file_buf[0] = 0xFF;
+    file_buf[1] = 0xD8;
+
+    // 2. APP1 marker at offset 2
+    file_buf[2] = 0xFF;
+    file_buf[3] = 0xE1;
+    std.mem.writeInt(u16, file_buf[4..6], @intCast(2 + app1_payload_len), .big);
+    @memcpy(file_buf[6..12], "Exif\x00\x00");
+
+    // 3. Little-endian TIFF header at `tiff_start_off` (12)
+    const tiff = file_buf[tiff_start_off .. tiff_start_off + 64];
+    tiff[0] = 'I';
+    tiff[1] = 'I';
+    std.mem.writeInt(u16, tiff[2..4], 0x002A, .little);
+    std.mem.writeInt(u32, tiff[4..8], 8, .little); // IFD0 at 8
+
+    // IFD0 at +8: 1 entry (Orientation = 6), next IFD1 at +26
+    std.mem.writeInt(u16, tiff[8..10], 1, .little);
+    std.mem.writeInt(u16, tiff[10..12], 0x0112, .little);
+    std.mem.writeInt(u16, tiff[12..14], 3, .little);
+    std.mem.writeInt(u32, tiff[14..18], 1, .little);
+    std.mem.writeInt(u16, tiff[18..20], 6, .little);
+    std.mem.writeInt(u32, tiff[22..26], 26, .little); // IFD1 offset = 26
+
+    // IFD1 at +26: 2 entries (0x0201 offset, 0x0202 length)
+    std.mem.writeInt(u16, tiff[26..28], 2, .little);
+    std.mem.writeInt(u16, tiff[28..30], 0x0201, .little);
+    std.mem.writeInt(u16, tiff[30..32], 4, .little);
+    std.mem.writeInt(u32, tiff[32..36], 1, .little);
+    std.mem.writeInt(
+        u32,
+        tiff[36..40],
+        @intCast(positional_thumb_off - tiff_start_off),
+        .little,
+    );
+    std.mem.writeInt(u16, tiff[40..42], 0x0202, .little);
+    std.mem.writeInt(u16, tiff[42..44], 4, .little);
+    std.mem.writeInt(u32, tiff[44..48], 1, .little);
+    std.mem.writeInt(u32, tiff[48..52], @intCast(thumb_jpg.len), .little);
+    std.mem.writeInt(u32, tiff[52..56], 0, .little);
+
+    // 4. Copy main JPEG body right after APP1
+    const body_start = 2 + app1_total_len;
+    @memcpy(file_buf[body_start .. body_start + (main_jpg.len - 2)], main_jpg[2..]);
+
+    // 5. Place thumbnail at `positional_thumb_off` (> 256 KB)
+    @memcpy(
+        file_buf[positional_thumb_off .. positional_thumb_off + thumb_jpg.len],
+        thumb_jpg,
+    );
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var mock_file = try tmp.dir.createFile(io, "staged_pos_thumb.jpg", .{});
+    var wr_slices = [_][]const u8{file_buf};
+    _ = try mock_file.writePositional(io, &wr_slices, 0);
+    mock_file.close(io);
+
+    var path_buf: [128]u8 = undefined;
+    const mock_path = try std.fmt.bufPrint(
+        &path_buf,
+        ".zig-cache/tmp/{s}/staged_pos_thumb.jpg",
+        .{tmp.sub_path},
+    );
+
+    var workers = WorkerManager{};
+    defer workers.deinit(allocator, io);
+    var current_gen: std.atomic.Value(usize) = .init(1);
+
+    // Case 1: thumb_only = true with thumbnail past 256 KB succeeds via Stage 1 open file
+    {
+        const args = try allocator.create(DecodeArgs);
+        args.* = .{
+            .workers = &workers,
+            .allocator = allocator,
+            .io = io,
+            .key = .{ .index = 0, .generation = 1 },
+            .current_generation = &current_gen,
+            .entry = .{ .filesystem = .{ .path = try allocator.dupe(u8, mock_path) } },
+            .has_gpu_device = true,
+            .pixel_format = sdl.PixelFormat.rgba32,
+            .thumb_only = true,
+            .pair_target = .adaptive,
+        };
+        _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
+        _ = workers.active_threads.fetchAdd(1, .monotonic);
+        decodeWorker(args);
+
+        try std.testing.expectEqual(@as(usize, 0), workers.thumb_header_hits.load(.monotonic));
+        try std.testing.expectEqual(@as(usize, 1), workers.thumb_positional_hits.load(.monotonic));
+        try std.testing.expectEqual(@as(usize, 0), workers.thumb_misses.load(.monotonic));
+
+        var orient_seen = false;
+        var thumb_seen = false;
+        while (workers.event_queue.pop()) |*ev| {
+            defer ev.deinit(allocator);
+            switch (ev.*) {
+                .exif_orientation_parsed => |o_evt| {
+                    orient_seen = true;
+                    try std.testing.expectEqual(
+                        state_pkg.Orientation.rotate_90,
+                        o_evt.unwrapForTest().orientation,
+                    );
+                },
+                .thumb_decoded => |t_evt| {
+                    const t = t_evt.unwrapForTest();
+                    thumb_seen = true;
+                    try std.testing.expect(t.thumb_only);
+                    try std.testing.expectEqual(@as(f32, 1024.0), t.w);
+                    try std.testing.expectEqual(@as(f32, 576.0), t.h);
+                    try std.testing.expectEqual(@as(f32, 1024.0), t.full_w);
+                    try std.testing.expectEqual(@as(f32, 682.0), t.full_h);
+                },
+                .image_decoded,
+                .dimensions_probed,
+                .decode_failed,
+                .path_discovered,
+                .directory_scan_result,
+                .palette_folder_count,
+                .ipc_command,
+                => {
+                    return error.TestUnexpectedResult;
+                },
+            }
+        }
+        try std.testing.expect(orient_seen);
+        try std.testing.expect(thumb_seen);
+    }
+
+    // Case 2: thumb_only = false emits orientation + thumb in Stage 1, then full image in Stage 2
+    {
+        const args = try allocator.create(DecodeArgs);
+        args.* = .{
+            .workers = &workers,
+            .allocator = allocator,
+            .io = io,
+            .key = .{ .index = 1, .generation = 1 },
+            .current_generation = &current_gen,
+            .entry = .{ .filesystem = .{ .path = try allocator.dupe(u8, mock_path) } },
+            .has_gpu_device = true,
+            .pixel_format = sdl.PixelFormat.rgba32,
+            .thumb_only = false,
+            .pair_target = .adaptive,
+        };
+        _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
+        _ = workers.active_threads.fetchAdd(1, .monotonic);
+        decodeWorker(args);
+
+        try std.testing.expectEqual(@as(usize, 2), workers.thumb_positional_hits.load(.monotonic));
+
+        var batch: std.ArrayList(@TypeOf(workers.event_queue.items.items[0])) = .empty;
+        defer {
+            for (batch.items) |*ev| ev.deinit(allocator);
+            batch.deinit(allocator);
+        }
+        try workers.event_queue.drain(allocator, io, &batch);
+        try std.testing.expectEqual(@as(usize, 3), batch.items.len);
+
+        try std.testing.expect(batch.items[0] == .exif_orientation_parsed);
+        try std.testing.expect(batch.items[1] == .thumb_decoded);
+        const t = batch.items[1].thumb_decoded.unwrapForTest();
+        try std.testing.expect(!t.thumb_only);
+        try std.testing.expectEqual(@as(f32, 1024.0), t.w);
+        try std.testing.expectEqual(@as(f32, 576.0), t.h);
+
+        try std.testing.expect(batch.items[2] == .image_decoded);
+        const img = batch.items[2].image_decoded.unwrapForTest();
+        try std.testing.expectEqual(@as(f32, 1024.0), img.w);
+        try std.testing.expectEqual(@as(f32, 682.0), img.h);
+        try std.testing.expectEqual(@as(u64, total_file_len), img.size_bytes);
+    }
+
+    // Case 3: Header-resident thumbnail in > 256 KB JPEG records thumb_header_hits
+    {
+        const header_thumb_off: usize = 128 * 1024;
+        std.mem.writeInt(
+            u32,
+            file_buf[tiff_start_off + 36 ..][0..4],
+            @intCast(header_thumb_off - tiff_start_off),
+            .little,
+        );
+        @memcpy(
+            file_buf[header_thumb_off .. header_thumb_off + thumb_jpg.len],
+            thumb_jpg,
+        );
+
+        var hdr_file = try tmp.dir.createFile(io, "staged_hdr_thumb.jpg", .{});
+        var hdr_slices = [_][]const u8{file_buf};
+        _ = try hdr_file.writePositional(io, &hdr_slices, 0);
+        hdr_file.close(io);
+
+        var hdr_path_buf: [128]u8 = undefined;
+        const hdr_path = try std.fmt.bufPrint(
+            &hdr_path_buf,
+            ".zig-cache/tmp/{s}/staged_hdr_thumb.jpg",
+            .{tmp.sub_path},
+        );
+
+        const args = try allocator.create(DecodeArgs);
+        args.* = .{
+            .workers = &workers,
+            .allocator = allocator,
+            .io = io,
+            .key = .{ .index = 2, .generation = 1 },
+            .current_generation = &current_gen,
+            .entry = .{ .filesystem = .{ .path = try allocator.dupe(u8, hdr_path) } },
+            .has_gpu_device = true,
+            .pixel_format = sdl.PixelFormat.rgba32,
+            .thumb_only = false,
+            .pair_target = .adaptive,
+        };
+        _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
+        _ = workers.active_threads.fetchAdd(1, .monotonic);
+        decodeWorker(args);
+
+        try std.testing.expectEqual(@as(usize, 1), workers.thumb_header_hits.load(.monotonic));
+        try std.testing.expectEqual(@as(usize, 2), workers.thumb_positional_hits.load(.monotonic));
+
+        var batch: std.ArrayList(@TypeOf(workers.event_queue.items.items[0])) = .empty;
+        defer {
+            for (batch.items) |*ev| ev.deinit(allocator);
+            batch.deinit(allocator);
+        }
+        try workers.event_queue.drain(allocator, io, &batch);
+        try std.testing.expectEqual(@as(usize, 3), batch.items.len);
+        try std.testing.expect(batch.items[0] == .exif_orientation_parsed);
+        try std.testing.expect(batch.items[1] == .thumb_decoded);
+        try std.testing.expect(batch.items[2] == .image_decoded);
+    }
 }
