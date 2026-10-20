@@ -81,10 +81,17 @@ pub fn SlotBound(comptime T: type) type {
             if (self.key.generation != cache.generation.load(.acquire)) {
                 return null;
             }
-            const entry = cache.get(self.key) orelse return null;
+            var lookup_key = self.key;
+            if (cache.alias_index) |alias| {
+                if (self.key.generation == alias.generation and self.key.index == alias.from) {
+                    lookup_key.index = alias.to;
+                }
+            }
+            const slot_idx = cache.getIndex(lookup_key) orelse return null;
+            const slot_key = cache.slots.items(.key)[slot_idx];
             return .{
-                .key = self.key,
-                .entry = entry,
+                .key = slot_key,
+                .entry = &cache.slots.items(.entry)[slot_idx],
                 .payload = &self.unchecked_payload,
             };
         }
@@ -371,4 +378,31 @@ test "SlotBound.resolve validates cache key and returns live entry" {
 
     _ = cache.advanceGeneration();
     try std.testing.expect(bound.resolve(&cache) == null);
+}
+
+test "SlotBound.resolve returns re-keyed slot key when aliased" {
+    const allocator = std.testing.allocator;
+    var cache = image.ImageCache{};
+    defer cache.deinit(allocator, null);
+
+    const key0 = try cache.appendSlot(allocator, 0, .{
+        .decoding = .{ .has_thread = true },
+    });
+    var bound = SlotBound(ExifParsedPayload).init(
+        key0,
+        .{ .orientation = .rotate_180 },
+    );
+
+    // Re-key slot 0 to 25 and set alias
+    cache.slots.items(.key)[0].index = 25;
+    cache.alias_index = .{
+        .from = 0,
+        .to = 25,
+        .generation = key0.generation,
+    };
+
+    const resolved = bound.resolve(&cache).?;
+    try std.testing.expectEqual(@as(usize, 25), resolved.key.index);
+    try std.testing.expectEqual(key0.generation, resolved.key.generation);
+    try std.testing.expectEqual(Orientation.rotate_180, resolved.payload.orientation);
 }

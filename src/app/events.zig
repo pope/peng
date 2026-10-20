@@ -43,7 +43,7 @@ pub fn drainWorkerEvents(state: *AppState) bool {
             .decode_failed => |*f| if (f.resolve(&state.cache)) |r| {
                 const is_current =
                     state.viewer.navigation.current_index == r.key.index;
-                handleDecodeFailedEvent(state, r.entry, is_current);
+                handleDecodeFailedEvent(state, r.key, r.entry, is_current);
             },
             .path_discovered => |p| handleDirScannedEvent(state, p),
             .directory_scan_result => |res| {
@@ -65,9 +65,15 @@ pub fn drainWorkerEvents(state: *AppState) bool {
 
 fn handleDecodeFailedEvent(
     state: *AppState,
+    key: image.ImageCacheKey,
     entry: *state_pkg.CacheEntry,
     is_current: bool,
 ) void {
+    if (state.cache.alias_index) |alias| {
+        if (alias.generation == key.generation and (key.index == alias.to or key.index == alias.from)) {
+            state.cache.alias_index = null;
+        }
+    }
     entry.is_promoting = false;
     if (entry.status != .loaded_gpu and entry.status != .loaded_cpu) {
         entry.status = .failed;
@@ -197,6 +203,12 @@ fn handleImageDecodedEvent(
     entry: *state_pkg.CacheEntry,
     decoded_data: *events.ImageDecodedPayload,
 ) void {
+    if (state.cache.alias_index) |alias| {
+        if (alias.generation == key.generation and (key.index == alias.to or key.index == alias.from)) {
+            state.cache.alias_index = null;
+        }
+    }
+
     const surf = decoded_data.surface orelse return;
 
     const is_current = if (state.viewer.navigation.current_index) |cur|
@@ -246,7 +258,7 @@ fn handleImageDecodedEvent(
                 "handleImageDecodedEvent: failed to upload surface to GPU for key {any}",
                 .{key},
             );
-            handleDecodeFailedEvent(state, entry, is_current);
+            handleDecodeFailedEvent(state, key, entry, is_current);
         }
     } else {
         switch (entry.status) {
@@ -435,35 +447,33 @@ fn reconcileSingleFileScanCache(
     const active_decodes = state.workers.active_decode_threads.load(.acquire);
     if (state.cache.count() == 0 and active_decodes == 0) return;
 
-    if (target_idx) |target_i| {
-        const target_entry = state.viewer.navigation.getMediaEntry(target_i);
-        const is_target_fs = if (target_entry) |e| e == .filesystem else false;
-        if (had_single_fs and is_target_fs) {
+    if (had_single_fs) {
+        if (target_idx) |target_i| {
             if (target_i == 0 and state.cache.count() <= 1) {
                 if (state.cache.count() == 0 or
                     state.cache.slots.items(.key)[0].index == 0)
                 {
                     return;
                 }
-            } else if (target_i != 0 and
-                state.cache.count() == 1 and
-                active_decodes == 0)
-            {
+            } else if (state.cache.count() == 1) {
                 const key0 = state.cache.slots.items(.key)[0];
                 const entry0 = state.cache.slots.items(.entry)[0];
                 const cur_gen = state.cache.generation.load(.acquire);
-                const is_loaded = entry0.status == .loaded_gpu or
-                    entry0.status == .loaded_cpu;
-                if (key0.index == 0 and
-                    key0.generation == cur_gen and
-                    is_loaded and
-                    !entry0.is_promoting and
-                    entry0.thumbnail != .pending)
-                {
+                if (key0.index == 0 and key0.generation == cur_gen) {
                     state.cache.slots.items(.key)[0].index = target_i;
                     state.cache.vram_capped_neighbors = null;
                     state.cache.vram_capped_prev_index = null;
                     state.cache.max_prefetch_dist = 2;
+                    const is_in_flight = active_decodes > 0 or
+                        entry0.status == .decoding or
+                        entry0.status == .uploading;
+                    if (is_in_flight) {
+                        state.cache.alias_index = .{
+                            .from = 0,
+                            .to = target_i,
+                            .generation = cur_gen,
+                        };
+                    }
                     return;
                 }
             }
@@ -854,7 +864,7 @@ test "drainWorkerEvents - pair promotion preserves VRAM and loaded status" {
 
     // 1. If GPU upload of a promotion fails while .loaded_gpu, keep .loaded_gpu
     // and clear is_promoting instead of clobbering with .failed.
-    handleDecodeFailedEvent(&state, entry1, true);
+    handleDecodeFailedEvent(&state, key1, entry1, true);
     try std.testing.expect(!entry1.is_promoting);
     try std.testing.expect(entry1.status == .loaded_gpu);
     try std.testing.expectEqual(
@@ -893,7 +903,7 @@ test "drainWorkerEvents - pair promotion preserves VRAM and loaded status" {
     // 3. Initial decode upload failure on slot 0 transitions to .failed
     const key0 = state.cache.activeKey(0);
     const entry0 = state.cache.get(key0).?;
-    handleDecodeFailedEvent(&state, entry0, true);
+    handleDecodeFailedEvent(&state, key0, entry0, true);
     try std.testing.expect(entry0.status == .failed);
 }
 
@@ -1044,7 +1054,8 @@ test "drainWorkerEvents - single-file scan remaps or invalidates slot 0" {
     try std.testing.expect(state.cache.get(state.cache.activeKey(2)) != null);
 
     // Case 2: Initial single-file entry at 0 is still .decoding in-flight when
-    // scan places it at index 1 -> cache generation advances and cache clears.
+    // scan places it at index 1 -> slot 0 is re-keyed to index 1 and aliased
+    // without advancing generation or clearing cache.
     state.clearCache();
     state.viewer.navigation.clearEntries();
     const init_p2 = try arena_alloc.dupe(u8, "b.jpg");
@@ -1061,7 +1072,7 @@ test "drainWorkerEvents - single-file scan remaps or invalidates slot 0" {
     paths2[0] = .{ .filesystem = .{ .path = try allocator.dupe(u8, "a.jpg") } };
     paths2[1] = .{ .filesystem = .{ .path = try allocator.dupe(u8, "b.jpg") } };
     try state.workers.event_queue.push(allocator, io, .{
-        .directory_scan_result = .init(0, .{
+        .directory_scan_result = .init(gen_before, .{
             .target_path = try allocator.dupe(u8, "b.jpg"),
             .is_dir = false,
             .paths = paths2,
@@ -1073,10 +1084,14 @@ test "drainWorkerEvents - single-file scan remaps or invalidates slot 0" {
         state.viewer.navigation.current_index,
     );
     try std.testing.expectEqual(
-        gen_before + 1,
+        gen_before,
         state.cache.generation.load(.acquire),
     );
-    try std.testing.expectEqual(@as(usize, 0), state.cache.count());
+    try std.testing.expectEqual(@as(usize, 1), state.cache.count());
+    try std.testing.expect(state.cache.get(state.cache.activeKey(1)) != null);
+    try std.testing.expect(state.cache.alias_index != null);
+    try std.testing.expectEqual(@as(usize, 0), state.cache.alias_index.?.from);
+    try std.testing.expectEqual(@as(usize, 1), state.cache.alias_index.?.to);
 }
 
 test "drainWorkerEvents - discards stale directory_scan_result" {
@@ -1233,4 +1248,64 @@ test "drainWorkerEvents - ignores thumb_decoded when slot is already loaded" {
     try std.testing.expectEqual(@as(f32, 4000.0), entry.full_h);
     try std.testing.expectEqual(Orientation.rotate_90, entry.orientation);
     try std.testing.expect(entry.thumbnail == .unloaded);
+}
+
+test "reconcileSingleFileScanCache - preserves and re-keys slot 0 with in-flight decode" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    // Simulate initial single-file state
+    const key0 = try state.cache.appendSlot(allocator, 0, .{
+        .decoding = .{ .has_thread = true },
+    });
+    _ = state.workers.active_decode_threads.fetchAdd(1, .monotonic);
+    defer _ = state.workers.active_decode_threads.fetchSub(1, .release);
+
+    try std.testing.expectEqual(@as(usize, 1), state.cache.count());
+    try std.testing.expect(state.cache.get(key0) != null);
+
+    // Reconcile with target index 15 in scanned directory
+    reconcileSingleFileScanCache(&state, true, 15);
+
+    // Cache count remains 1 (not cleared, generation not advanced)
+    try std.testing.expectEqual(@as(usize, 1), state.cache.count());
+    try std.testing.expectEqual(key0.generation, state.cache.generation.load(.acquire));
+
+    // Slot is re-keyed to 15
+    const key15 = image.ImageCacheKey{ .index = 15, .generation = key0.generation };
+    try std.testing.expect(state.cache.get(key15) != null);
+
+    // Alias is registered for in-flight decode: 0 -> 15
+    try std.testing.expect(state.cache.alias_index != null);
+    try std.testing.expectEqual(@as(usize, 0), state.cache.alias_index.?.from);
+    try std.testing.expectEqual(@as(usize, 15), state.cache.alias_index.?.to);
+
+    // Strict cache lookup for 0 is null, slot 15 exists, but worker event for key0 resolves via alias
+    try std.testing.expect(state.cache.get(key0) == null);
+    try std.testing.expect(state.cache.get(key15) != null);
+
+    // When decode completes, alias is cleared
+    const surf = sdl.Surface.create(10, 10, sdl.PixelFormat.rgba32).?;
+    try state.workers.event_queue.push(allocator, io, .{
+        .image_decoded = .init(key0, .{
+            .surface = surf,
+            .w = 10.0,
+            .h = 10.0,
+            .size_bytes = 400,
+            .mime_type = "image/jpeg",
+            .read_time_ms = 0.0,
+            .decode_time_ms = 0.0,
+            .conversion_time_ms = 0.0,
+            .cbz_decompress_time_ms = 0.0,
+            .compressed_size_bytes = 0,
+            .orientation = .normal,
+            .raw_metadata = .none,
+        }),
+    });
+
+    try std.testing.expect(drainWorkerEvents(&state));
+    try std.testing.expect(state.cache.alias_index == null);
+    try std.testing.expect(state.cache.get(key15).?.status == .loaded_cpu);
 }
