@@ -919,21 +919,26 @@ pub fn decodeWorker(args: *DecodeArgs) void {
             };
             is_allocated = true;
 
-            var r_buf: [4096]u8 = undefined;
-            var reader = file.reader(io, &r_buf);
-            reader.interface.readSliceAll(file_bytes) catch |err| {
-                if (err == error.Canceled or cancel.isCanceled()) return;
-                failDecodeWorker(
-                    workers,
-                    alloc,
-                    io,
-                    key,
-                    "decodeWorker: readSliceAll failed for '{s}': {}",
-                    .{ file_item.path, err },
-                );
-                return;
-            };
-            read_n = file_bytes.len;
+            var total_read: usize = 0;
+            while (total_read < target_read_size) {
+                if (cancel.isCanceled()) return;
+                var slices = [_][]u8{file_bytes[total_read..]};
+                const n = file.readPositional(io, &slices, total_read) catch |err| {
+                    if (err == error.Canceled or cancel.isCanceled()) return;
+                    failDecodeWorker(
+                        workers,
+                        alloc,
+                        io,
+                        key,
+                        "decodeWorker: readPositional failed for '{s}': {}",
+                        .{ file_item.path, err },
+                    );
+                    return;
+                };
+                if (n == 0) break;
+                total_read += n;
+            }
+            read_n = total_read;
 
             const end_read = sdl.timer.getTicksNs();
             read_time_ms = @as(f64, @floatFromInt(end_read - start_read)) / 1_000_000.0;
@@ -1007,21 +1012,26 @@ pub fn decodeWorker(args: *DecodeArgs) void {
             };
             is_allocated = true;
 
-            var r_buf: [4096]u8 = undefined;
-            var reader = file.reader(io, &r_buf);
-            reader.interface.readSliceAll(file_bytes) catch |err| {
-                if (err == error.Canceled or cancel.isCanceled()) return;
-                failDecodeWorker(
-                    workers,
-                    alloc,
-                    io,
-                    key,
-                    "decodeWorker: readSliceAll failed for companion JPEG '{s}': {}",
-                    .{ pair.jpeg_path, err },
-                );
-                return;
-            };
-            read_n = file_bytes.len;
+            var total_read: usize = 0;
+            while (total_read < target_read_size) {
+                if (cancel.isCanceled()) return;
+                var slices = [_][]u8{file_bytes[total_read..]};
+                const n = file.readPositional(io, &slices, total_read) catch |err| {
+                    if (err == error.Canceled or cancel.isCanceled()) return;
+                    failDecodeWorker(
+                        workers,
+                        alloc,
+                        io,
+                        key,
+                        "decodeWorker: readPositional failed for companion JPEG '{s}': {}",
+                        .{ pair.jpeg_path, err },
+                    );
+                    return;
+                };
+                if (n == 0) break;
+                total_read += n;
+            }
+            read_n = total_read;
 
             const end_read = sdl.timer.getTicksNs();
             read_time_ms = @as(f64, @floatFromInt(end_read - start_read)) / 1_000_000.0;

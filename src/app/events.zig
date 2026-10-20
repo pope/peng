@@ -23,7 +23,7 @@ pub fn drainWorkerEvents(state: *AppState) bool {
     };
     if (state.event_batch.items.len == 0) return false;
 
-    for (state.event_batch.items) |*evt| {
+    for (state.event_batch.items, 0..) |*evt, evt_idx| {
         defer evt.deinit(state.allocator);
 
         switch (evt.*) {
@@ -35,7 +35,12 @@ pub fn drainWorkerEvents(state: *AppState) bool {
                 handleDimensionsProbedEvent(state, r.entry, r.payload.*);
             },
             .thumb_decoded => |*t| if (t.resolve(&state.cache)) |r| {
-                handleExifThumbnailEvent(state, r.entry, r.payload.*);
+                const skip_upload = hasSubsequentImageDecoded(
+                    state.event_batch.items[evt_idx + 1 ..],
+                    r.key,
+                    state.cache.alias_index,
+                );
+                handleExifThumbnailEvent(state, r.entry, r.payload.*, skip_upload);
             },
             .image_decoded => |*d| if (d.resolve(&state.cache)) |r| {
                 handleImageDecodedEvent(state, r.key, r.entry, r.payload);
@@ -137,10 +142,45 @@ fn handleDimensionsProbedEvent(
     }
 }
 
+fn hasSubsequentImageDecoded(
+    remaining: []const events.BackgroundEvent,
+    key: image.ImageCacheKey,
+    alias_opt: ?image.ImageCache.IndexAlias,
+) bool {
+    for (remaining) |*evt| {
+        switch (evt.*) {
+            .image_decoded => |*d| {
+                if (d.key.generation == key.generation) {
+                    if (d.key.index == key.index) return true;
+                    if (alias_opt) |alias| {
+                        if (alias.generation == key.generation and
+                            ((d.key.index == alias.from and key.index == alias.to) or
+                                (d.key.index == alias.to and key.index == alias.from)))
+                        {
+                            return true;
+                        }
+                    }
+                }
+            },
+            .exif_orientation_parsed,
+            .dimensions_probed,
+            .thumb_decoded,
+            .decode_failed,
+            .path_discovered,
+            .directory_scan_result,
+            .palette_folder_count,
+            .ipc_command,
+            => {},
+        }
+    }
+    return false;
+}
+
 fn handleExifThumbnailEvent(
     state: *AppState,
     entry: *state_pkg.CacheEntry,
     thumb_data: events.ThumbDecodedPayload,
+    skip_gpu_upload: bool,
 ) void {
     entry.applyProbedMetadata(
         thumb_data.full_w,
@@ -155,7 +195,7 @@ fn handleExifThumbnailEvent(
         }
     }
     state.updateCurrentRotation();
-    if (entry.status == .loaded_gpu or entry.status == .loaded_cpu) {
+    if (skip_gpu_upload or entry.status == .loaded_gpu or entry.status == .loaded_cpu) {
         return;
     }
 
@@ -1308,4 +1348,59 @@ test "reconcileSingleFileScanCache - preserves and re-keys slot 0 with in-flight
     try std.testing.expect(drainWorkerEvents(&state));
     try std.testing.expect(state.cache.alias_index == null);
     try std.testing.expect(state.cache.get(key15).?.status == .loaded_cpu);
+}
+
+test "drainWorkerEvents - skips thumbnail upload when image_decoded is in same batch" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    state.viewer.navigation.current_index = 0;
+    const key0 = try state.cache.appendSlot(allocator, 0, .{
+        .decoding = .{ .has_thread = true },
+    });
+    const entry = state.cache.get(key0).?;
+
+    const thumb_surf = sdl.Surface.create(16, 16, sdl.PixelFormat.rgba32).?;
+    const full_surf = sdl.Surface.create(64, 64, sdl.PixelFormat.rgba32).?;
+
+    // Push both thumb_decoded and image_decoded in same batch
+    try state.workers.event_queue.push(allocator, io, .{
+        .thumb_decoded = .init(key0, .{
+            .surface = thumb_surf,
+            .w = 16.0,
+            .h = 16.0,
+            .full_w = 64.0,
+            .full_h = 64.0,
+            .orientation = .normal,
+            .thumb_only = false,
+            .dct_snapped = false,
+        }),
+    });
+    try state.workers.event_queue.push(allocator, io, .{
+        .image_decoded = .init(key0, .{
+            .surface = full_surf,
+            .w = 64.0,
+            .h = 64.0,
+            .size_bytes = 4096,
+            .mime_type = "image/jpeg",
+            .read_time_ms = 0.0,
+            .decode_time_ms = 0.0,
+            .conversion_time_ms = 0.0,
+            .cbz_decompress_time_ms = 0.0,
+            .compressed_size_bytes = 0,
+            .orientation = .normal,
+            .raw_metadata = .none,
+        }),
+    });
+
+    try std.testing.expect(drainWorkerEvents(&state));
+
+    // Thumbnail upload was skipped, so entry.thumbnail is not .loaded
+    try std.testing.expect(entry.thumbnail != .loaded);
+    // Full image is loaded
+    try std.testing.expect(entry.status == .loaded_cpu);
+    // thumb_crossfade animation is NOT active
+    try std.testing.expect(!state.viewer.animations.isActive(.thumb_crossfade));
 }
