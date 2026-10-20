@@ -15,6 +15,10 @@
   wayland,
   wayland-scanner,
   zig,
+  # CPU target: "baseline", "x86_64_v2", "x86_64_v3", "native", etc.
+  cpu ? (if stdenv.hostPlatform.isx86_64 then "x86_64_v3" else "baseline"),
+  # Optimization mode: "ReleaseSafe", "ReleaseFast", "ReleaseSmall", "Debug"
+  optimize ? "ReleaseSafe",
 }:
 stdenv.mkDerivation (_finalAttrs: {
   pname = "peng";
@@ -22,6 +26,8 @@ stdenv.mkDerivation (_finalAttrs: {
   src = ../.;
 
   __structuredAttrs = true;
+
+  dontSetZigDefaultFlags = true;
 
   desktopItems = lib.optionals stdenv.hostPlatform.isLinux [
     (makeDesktopItem {
@@ -80,6 +86,8 @@ stdenv.mkDerivation (_finalAttrs: {
   zigBuildFlags = [
     "--system"
     ".zig-cache/p"
+    "-Dcpu=${cpu}"
+    "-Doptimize=${optimize}"
   ];
 
   nativeBuildInputs = [
