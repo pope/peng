@@ -34,6 +34,22 @@ pub const BlurUniforms = extern struct {
     padding: f32 = 0.0,
 };
 
+const StaticInitPayload = extern struct {
+    fullscreen_verts: [6]geometry.Vertex = .{
+        .{ .x = -1.0, .y = 1.0, .u = 0.0, .v = 0.0, .color = 0xFFFFFFFF },
+        .{ .x = -1.0, .y = -1.0, .u = 0.0, .v = 1.0, .color = 0xFFFFFFFF },
+        .{ .x = 1.0, .y = 1.0, .u = 1.0, .v = 0.0, .color = 0xFFFFFFFF },
+        .{ .x = 1.0, .y = 1.0, .u = 1.0, .v = 0.0, .color = 0xFFFFFFFF },
+        .{ .x = -1.0, .y = -1.0, .u = 0.0, .v = 1.0, .color = 0xFFFFFFFF },
+        .{ .x = 1.0, .y = -1.0, .u = 1.0, .v = 1.0, .color = 0xFFFFFFFF },
+    },
+    white_pixel: [4]u8 = .{ 255, 255, 255, 255 },
+
+    pub const verts_size = @sizeOf(@FieldType(StaticInitPayload, "fullscreen_verts"));
+    pub const verts_offset = @offsetOf(StaticInitPayload, "fullscreen_verts");
+    pub const pixel_offset = @offsetOf(StaticInitPayload, "white_pixel");
+};
+
 const quad_vertex_attribs = [_]sdl.gpu.VertexAttribute{
     .{
         .location = 0,
@@ -613,49 +629,6 @@ pub fn initGpuResources(
     };
     errdefer dev.releaseTexture(white_texture);
 
-    // Upload white pixel
-    {
-        const cmd_buf_wrapper = dev.acquireCommandBuffer() orelse
-            return error.CommandBufferAcquisitionFailed;
-        const transfer_buf = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
-            .usage = .upload,
-            .size = 4,
-            .props = 0,
-        }) orelse {
-            _ = cmd_buf_wrapper.submit();
-            return error.TransferBufferCreationFailed;
-        };
-        defer dev.releaseTransferBuffer(transfer_buf);
-
-        const mapped = dev.mapTransferBuffer(transfer_buf, false) orelse {
-            _ = cmd_buf_wrapper.submit();
-            return error.MapFailed;
-        };
-        mapped[0] = 255;
-        mapped[1] = 255;
-        mapped[2] = 255;
-        mapped[3] = 255;
-        dev.unmapTransferBuffer(transfer_buf);
-
-        const copy_pass = cmd_buf_wrapper.beginCopyPass() orelse {
-            _ = cmd_buf_wrapper.submit();
-            return error.CopyPassCreationFailed;
-        };
-        copy_pass.uploadToTexture(&sdl.gpu.TextureTransferInfo{
-            .transfer_buffer = transfer_buf,
-            .offset = 0,
-            .pixels_per_row = 1,
-            .rows_per_layer = 1,
-        }, &sdl.gpu.TextureRegion{
-            .texture = white_texture,
-            .w = 1,
-            .h = 1,
-            .d = 1,
-        }, false);
-        copy_pass.end();
-        _ = cmd_buf_wrapper.submit();
-    }
-
     // Create Graphics Pipeline
     var pipeline_info = sdl.gpu.GraphicsPipelineCreateInfo{
         .vertex_shader = vert_shader,
@@ -717,55 +690,52 @@ pub fn initGpuResources(
     errdefer dev.releasePipeline(ui_pipeline);
 
     // Create static 6-vertex buffer for fullscreen passes
-    const fullscreen_verts = [_]geometry.Vertex{
-        .{ .x = -1.0, .y = 1.0, .u = 0.0, .v = 0.0, .color = 0xFFFFFFFF },
-        .{ .x = -1.0, .y = -1.0, .u = 0.0, .v = 1.0, .color = 0xFFFFFFFF },
-        .{ .x = 1.0, .y = 1.0, .u = 1.0, .v = 0.0, .color = 0xFFFFFFFF },
-        .{ .x = 1.0, .y = 1.0, .u = 1.0, .v = 0.0, .color = 0xFFFFFFFF },
-        .{ .x = -1.0, .y = -1.0, .u = 0.0, .v = 1.0, .color = 0xFFFFFFFF },
-        .{ .x = 1.0, .y = -1.0, .u = 1.0, .v = 1.0, .color = 0xFFFFFFFF },
-    };
-    const fs_buf_size = @sizeOf(@TypeOf(fullscreen_verts));
     const fullscreen_vertex_buffer = dev.createBuffer(&sdl.gpu.BufferCreateInfo{
         .usage = sdl.gpu.BufferUsage.vertex,
-        .size = @intCast(fs_buf_size),
+        .size = @intCast(StaticInitPayload.verts_size),
         .props = 0,
     }) orelse return error.GPUVertexBufferCreationFailed;
     errdefer dev.releaseBuffer(fullscreen_vertex_buffer);
 
+    // Upload static 1x1 white pixel texture and 6-vertex fullscreen quad in a single copy pass
     {
-        const cmd_buf_wrapper = dev.acquireCommandBuffer() orelse
-            return error.CommandBufferAcquisitionFailed;
         const transfer_buf = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
             .usage = .upload,
-            .size = @intCast(fs_buf_size),
+            .size = @intCast(@sizeOf(StaticInitPayload)),
             .props = 0,
-        }) orelse {
-            _ = cmd_buf_wrapper.submit();
-            return error.TransferBufferCreationFailed;
-        };
+        }) orelse return error.TransferBufferCreationFailed;
         defer dev.releaseTransferBuffer(transfer_buf);
 
-        const mapped: [*]geometry.Vertex = @ptrCast(@alignCast(
-            dev.mapTransferBuffer(transfer_buf, false) orelse {
-                _ = cmd_buf_wrapper.submit();
-                return error.MapFailed;
-            },
+        const mapped: *StaticInitPayload = @ptrCast(@alignCast(
+            dev.mapTransferBuffer(transfer_buf, false) orelse return error.MapFailed,
         ));
-        @memcpy(mapped[0..fullscreen_verts.len], &fullscreen_verts);
+        mapped.* = .{};
         dev.unmapTransferBuffer(transfer_buf);
 
+        const cmd_buf_wrapper = dev.acquireCommandBuffer() orelse
+            return error.CommandBufferAcquisitionFailed;
         const copy_pass = cmd_buf_wrapper.beginCopyPass() orelse {
-            _ = cmd_buf_wrapper.submit();
+            _ = cmd_buf_wrapper.cancel();
             return error.CopyPassCreationFailed;
         };
+        copy_pass.uploadToTexture(&sdl.gpu.TextureTransferInfo{
+            .transfer_buffer = transfer_buf,
+            .offset = StaticInitPayload.pixel_offset,
+            .pixels_per_row = 1,
+            .rows_per_layer = 1,
+        }, &sdl.gpu.TextureRegion{
+            .texture = white_texture,
+            .w = 1,
+            .h = 1,
+            .d = 1,
+        }, false);
         copy_pass.uploadToBuffer(&sdl.gpu.TransferBufferLocation{
             .transfer_buffer = transfer_buf,
-            .offset = 0,
+            .offset = StaticInitPayload.verts_offset,
         }, &sdl.gpu.BufferRegion{
             .buffer = fullscreen_vertex_buffer,
             .offset = 0,
-            .size = @intCast(fs_buf_size),
+            .size = @intCast(StaticInitPayload.verts_size),
         }, false);
         copy_pass.end();
         _ = cmd_buf_wrapper.submit();
@@ -980,4 +950,15 @@ test "BlurResources tagged union lifecycle and failure latching" {
     // Deinit on failed resets state back to uninitialized without dereferencing dev
     blur.deinit(dummy_dev);
     try std.testing.expect(blur == .uninitialized);
+}
+
+test "StaticInitPayload packs fullscreen quad and 4-byte aligned white pixel" {
+    const payload = StaticInitPayload{};
+    try std.testing.expectEqual(@as(usize, 0), StaticInitPayload.verts_offset);
+    try std.testing.expectEqual(@as(usize, 6 * @sizeOf(geometry.Vertex)), StaticInitPayload.verts_size);
+    try std.testing.expectEqual(@as(usize, 120), StaticInitPayload.pixel_offset);
+    try std.testing.expectEqual(@as(usize, 0), StaticInitPayload.pixel_offset % 4);
+    try std.testing.expectEqual(@as(usize, 124), @sizeOf(StaticInitPayload));
+    try std.testing.expectEqualSlices(u8, &.{ 255, 255, 255, 255 }, &payload.white_pixel);
+    try std.testing.expectEqual(@as(usize, 6), payload.fullscreen_verts.len);
 }
