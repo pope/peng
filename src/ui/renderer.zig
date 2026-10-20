@@ -80,6 +80,19 @@ const CachedText = struct {
     h: f32,
 };
 
+inline fn elementTagFromUserData(user_data: ?*anyopaque) ElementTag {
+    return if (user_data) |ptr| ElementTag.fromInt(@intFromPtr(ptr)) else .none;
+}
+
+fn hasBlurredSurface(r_commands: []const clay.RenderCommand) bool {
+    for (r_commands) |rcmd| {
+        if (rcmd.command_type == .rectangle and elementTagFromUserData(rcmd.user_data) == .blurred_surface) {
+            return true;
+        }
+    }
+    return false;
+}
+
 fn appendRectangleCommand(
     vertices: *std.ArrayList(Vertex),
     batches: *std.ArrayList(BatchItem),
@@ -94,8 +107,11 @@ fn appendRectangleCommand(
     blur_texture: ?sdl.gpu.Texture,
     scissor: ?sdl.Rect,
 ) !void {
-    const tag = if (user_data) |ptr| ElementTag.fromInt(@intFromPtr(ptr)) else .none;
-    const is_blurred = (tag == .blurred_surface) and (blur_texture != null);
+    const active_blur_tex: ?sdl.gpu.Texture = if (elementTagFromUserData(user_data) == .blurred_surface)
+        blur_texture
+    else
+        null;
+    const is_blurred = active_blur_tex != null;
 
     const start = @as(u32, @intCast(vertices.items.len));
 
@@ -125,9 +141,11 @@ fn appendRectangleCommand(
 
     const count = @as(u32, @intCast(vertices.items.len)) - start;
     if (count > 0) {
-        const tex = if (is_blurred) blur_texture.? else white_texture;
-        const mat: MaterialType = if (is_blurred) .blurred_surface else .ui_element;
-        try addBatch(batches, allocator, start, count, tex, mat, scissor);
+        if (active_blur_tex) |btex| {
+            try addBatch(batches, allocator, start, count, btex, .blurred_surface, scissor);
+        } else {
+            try addBatch(batches, allocator, start, count, white_texture, .ui_element, scissor);
+        }
     }
 }
 
@@ -157,8 +175,7 @@ fn appendBorderCommand(
         .bottom_right = @min(config.corner_radius.bottom_right * scale_x, min_radius),
     };
 
-    const tag = if (user_data) |ptr| ElementTag.fromInt(@intFromPtr(ptr)) else .none;
-    const is_dashed = (tag == .drop_zone_box);
+    const is_dashed = (elementTagFromUserData(user_data) == .drop_zone_box);
 
     const r = config.color[0] / 255.0;
     const g = config.color[1] / 255.0;
@@ -628,6 +645,7 @@ fn buildGeometryFromCommands(
     defer scissor_stack.deinit(frame_allocator);
     var prev_text_bb: ?clay.BoundingBox = null;
     var prev_text_end_x: f32 = 0.0;
+    const blur_texture = gpu.blur.getBlurTexture();
 
     for (r_commands) |rcmd| {
         const bb = rcmd.bounding_box;
@@ -690,7 +708,7 @@ fn buildGeometryFromCommands(
                     f_win_w,
                     f_win_h,
                     gpu.white_texture,
-                    gpu.blur_texture,
+                    blur_texture,
                     current_scissor,
                 );
             },
@@ -1036,6 +1054,115 @@ fn drawBatches(
     }
 }
 
+const BlurSplit = struct {
+    blur: graphics.BlurResources.Initialized,
+    split_idx: usize,
+};
+
+fn findBlurSplit(
+    batches: []const BatchItem,
+    blur_res: graphics.BlurResources,
+) ?BlurSplit {
+    const init_res = switch (blur_res) {
+        .initialized => |res| res,
+        .uninitialized, .failed => return null,
+    };
+    for (batches, 0..) |batch, i| {
+        if (batch.material == .blurred_surface) {
+            return .{ .blur = init_res, .split_idx = i };
+        }
+    }
+    return null;
+}
+
+fn renderBatchPass(
+    view_params: ViewportParams,
+    gpu: *const RenderResources,
+    cmd_buf: sdl.gpu.CommandBuffer,
+    target_tex: sdl.gpu.Texture,
+    batches: []const BatchItem,
+    vert_buf: ?sdl.gpu.Buffer,
+    win_w: i32,
+    win_h: i32,
+) bool {
+    const color_target = sdl.gpu.ColorTargetAttachment{
+        .texture = target_tex,
+        .clear_color = .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 },
+        .load_op = .clear,
+        .store_op = .store,
+        .cycle = false,
+    };
+
+    const render_pass = cmd_buf.beginRenderPass(&color_target) orelse {
+        std.log.err("SDL GPU beginRenderPass failed: {s}", .{sdl.getError()});
+        return false;
+    };
+    defer render_pass.end();
+
+    if (vert_buf) |vb| {
+        render_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{.{
+            .buffer = vb,
+            .offset = 0,
+        }});
+        drawBatches(view_params, gpu, render_pass, cmd_buf, batches, win_w, win_h);
+    }
+    return true;
+}
+
+fn runBlurFilterPass(
+    cmd_buf: sdl.gpu.CommandBuffer,
+    gpu: *const RenderResources,
+    target_tex: sdl.gpu.Texture,
+    source_tex: sdl.gpu.Texture,
+    pipeline: sdl.gpu.Pipeline,
+    src_w: u32,
+    src_h: u32,
+    dst_w: u32,
+    dst_h: u32,
+    radius: f32,
+) bool {
+    const target = sdl.gpu.ColorTargetAttachment{
+        .texture = target_tex,
+        .clear_color = .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 },
+        .load_op = .clear,
+        .store_op = .store,
+        .cycle = false,
+    };
+    const pass = cmd_buf.beginRenderPass(&target) orelse {
+        std.log.err("SDL GPU beginRenderPass failed for blur pass: {s}", .{sdl.getError()});
+        return false;
+    };
+    defer pass.end();
+
+    pass.bindPipeline(pipeline);
+    pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{.{
+        .buffer = gpu.fullscreen_vertex_buffer,
+        .offset = 0,
+    }});
+
+    const ubo = graphics.BlurUniforms{
+        .texel_size_x = 1.0 / @as(f32, @floatFromInt(src_w)),
+        .texel_size_y = 1.0 / @as(f32, @floatFromInt(src_h)),
+        .radius = radius,
+        .padding = 0.0,
+    };
+    cmd_buf.pushFragmentUniform(0, std.mem.asBytes(&ubo));
+    pass.bindFragmentSamplers(0, &[_]sdl.gpu.TextureSamplerBinding{.{
+        .texture = source_tex,
+        .sampler = gpu.sampler,
+    }});
+
+    const sc = sdl.Rect{
+        .x = 0,
+        .y = 0,
+        .w = @intCast(dst_w),
+        .h = @intCast(dst_h),
+    };
+    pass.setScissor(&sc);
+    pass.drawPrimitives(6, 1, 0, 0);
+    return true;
+}
+
 fn executeRenderPass(
     view_params: ViewportParams,
     gpu: *const RenderResources,
@@ -1046,161 +1173,29 @@ fn executeRenderPass(
     win_w: i32,
     win_h: i32,
 ) void {
-    var first_blur_idx: ?usize = null;
-    for (batches, 0..) |batch, i| {
-        if (batch.material == .blurred_surface) {
-            first_blur_idx = i;
-            break;
-        }
-    }
+    const split = findBlurSplit(batches, gpu.blur) orelse {
+        _ = renderBatchPass(view_params, gpu, cmd_buf, swap_tex, batches, vert_buf, win_w, win_h);
+        return;
+    };
 
-    const has_blur_tex = gpu.scene_texture != null and
-        gpu.blur_down_texture != null and
-        gpu.blur_texture != null;
-    if (first_blur_idx == null or !has_blur_tex) {
-        const color_target = sdl.gpu.ColorTargetAttachment{
-            .texture = swap_tex,
-            .clear_color = .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 },
-            .load_op = .clear,
-            .store_op = .store,
-            .cycle = false,
-        };
+    const blur = split.blur;
+    const tex = blur.textures;
+    const pipes = blur.pipelines;
+    const idx = split.split_idx;
 
-        const render_pass = cmd_buf.beginRenderPass(&color_target) orelse {
-            std.log.err(
-                "SDL GPU beginRenderPass failed in renderClayCommands: {s}",
-                .{sdl.getError()},
-            );
-            return;
-        };
-        defer render_pass.end();
-
-        if (vert_buf) |vb| {
-            render_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{.{
-                .buffer = vb,
-                .offset = 0,
-            }});
-            drawBatches(view_params, gpu, render_pass, cmd_buf, batches, win_w, win_h);
-        }
+    // Pass 1: Render base scene batches (underneath the blurred surface) into tex.scene
+    if (!renderBatchPass(view_params, gpu, cmd_buf, tex.scene, batches[0..idx], vert_buf, win_w, win_h)) {
         return;
     }
 
-    const idx = first_blur_idx.?;
-
-    // Pass 1: Render base scene batches (underneath the blurred surface) into gpu.scene_texture
-    {
-        const scene_target = sdl.gpu.ColorTargetAttachment{
-            .texture = gpu.scene_texture.?,
-            .clear_color = .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 },
-            .load_op = .clear,
-            .store_op = .store,
-            .cycle = false,
-        };
-        const scene_pass = cmd_buf.beginRenderPass(&scene_target) orelse {
-            std.log.err(
-                "SDL GPU beginRenderPass failed for scene_texture: {s}",
-                .{sdl.getError()},
-            );
-            return;
-        };
-        if (vert_buf) |vb| {
-            scene_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{.{
-                .buffer = vb,
-                .offset = 0,
-            }});
-            drawBatches(view_params, gpu, scene_pass, cmd_buf, batches[0..idx], win_w, win_h);
-        }
-        scene_pass.end();
+    // Pass 2: Downsample scene into blur_down (Dual Kawase pass 1)
+    if (!runBlurFilterPass(cmd_buf, gpu, tex.blur_down, tex.scene, pipes.down, tex.target_w, tex.target_h, tex.down_w, tex.down_h, 2.0)) {
+        return;
     }
 
-    // Pass 2: Downsample scene_texture into blur_down_texture (Dual Kawase pass 1)
-    {
-        const down_target = sdl.gpu.ColorTargetAttachment{
-            .texture = gpu.blur_down_texture.?,
-            .clear_color = .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 },
-            .load_op = .clear,
-            .store_op = .store,
-            .cycle = false,
-        };
-        const down_pass = cmd_buf.beginRenderPass(&down_target) orelse {
-            std.log.err(
-                "SDL GPU beginRenderPass failed for blur_down_texture: {s}",
-                .{sdl.getError()},
-            );
-            return;
-        };
-        down_pass.bindPipeline(gpu.blur_down_pipeline);
-        down_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{.{
-            .buffer = gpu.fullscreen_vertex_buffer,
-            .offset = 0,
-        }});
-
-        const down_ubo = graphics.BlurUniforms{
-            .texel_size_x = 1.0 / @as(f32, @floatFromInt(win_w)),
-            .texel_size_y = 1.0 / @as(f32, @floatFromInt(win_h)),
-            .radius = 2.0,
-            .padding = 0.0,
-        };
-        cmd_buf.pushFragmentUniform(0, std.mem.asBytes(&down_ubo));
-        down_pass.bindFragmentSamplers(0, &[_]sdl.gpu.TextureSamplerBinding{.{
-            .texture = gpu.scene_texture.?,
-            .sampler = gpu.sampler,
-        }});
-
-        const down_sc = sdl.Rect{
-            .x = 0,
-            .y = 0,
-            .w = @intCast(gpu.blur_down_w),
-            .h = @intCast(gpu.blur_down_h),
-        };
-        down_pass.setScissor(&down_sc);
-        down_pass.drawPrimitives(6, 1, 0, 0);
-        down_pass.end();
-    }
-
-    // Pass 3: Upsample blur_down_texture into blur_texture (Dual Kawase pass 2)
-    {
-        const up_target = sdl.gpu.ColorTargetAttachment{
-            .texture = gpu.blur_texture.?,
-            .clear_color = .{ .r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0 },
-            .load_op = .clear,
-            .store_op = .store,
-            .cycle = false,
-        };
-        const up_pass = cmd_buf.beginRenderPass(&up_target) orelse {
-            std.log.err(
-                "SDL GPU beginRenderPass failed for blur_texture: {s}",
-                .{sdl.getError()},
-            );
-            return;
-        };
-        up_pass.bindPipeline(gpu.blur_up_pipeline);
-        up_pass.bindVertexBuffers(0, &[_]sdl.gpu.BufferBinding{.{
-            .buffer = gpu.fullscreen_vertex_buffer,
-            .offset = 0,
-        }});
-
-        const up_ubo = graphics.BlurUniforms{
-            .texel_size_x = 1.0 / @as(f32, @floatFromInt(gpu.blur_down_w)),
-            .texel_size_y = 1.0 / @as(f32, @floatFromInt(gpu.blur_down_h)),
-            .radius = 2.5,
-            .padding = 0.0,
-        };
-        cmd_buf.pushFragmentUniform(0, std.mem.asBytes(&up_ubo));
-        up_pass.bindFragmentSamplers(0, &[_]sdl.gpu.TextureSamplerBinding{.{
-            .texture = gpu.blur_down_texture.?,
-            .sampler = gpu.sampler,
-        }});
-
-        const up_sc = sdl.Rect{
-            .x = 0,
-            .y = 0,
-            .w = @intCast(gpu.blur_down_w),
-            .h = @intCast(gpu.blur_down_h),
-        };
-        up_pass.setScissor(&up_sc);
-        up_pass.drawPrimitives(6, 1, 0, 0);
-        up_pass.end();
+    // Pass 3: Upsample blur_down into blur (Dual Kawase pass 2)
+    if (!runBlurFilterPass(cmd_buf, gpu, tex.blur, tex.blur_down, pipes.up, tex.down_w, tex.down_h, tex.down_w, tex.down_h, 2.5)) {
+        return;
     }
 
     // Pass 4: Composite onto swapchain (blit sharp base scene quad + draw
@@ -1233,7 +1228,7 @@ fn executeRenderPass(
         };
         cmd_buf.pushFragmentUniform(0, std.mem.asBytes(&fs_ubo));
         final_pass.bindFragmentSamplers(0, &[_]sdl.gpu.TextureSamplerBinding{.{
-            .texture = gpu.scene_texture.?,
+            .texture = tex.scene,
             .sampler = gpu.sampler,
         }});
         const full_sc = sdl.Rect{ .x = 0, .y = 0, .w = win_w, .h = win_h };
@@ -1367,19 +1362,8 @@ pub fn renderClayCommands(
     const start_render = sdl.timer.getTicksNs();
     const dev = gpu_res.device;
 
-    var has_blur = false;
-    for (r_commands) |rcmd| {
-        if (rcmd.command_type == .rectangle) {
-            if (rcmd.user_data) |ptr| {
-                if (ElementTag.fromInt(@intFromPtr(ptr)) == .blurred_surface) {
-                    has_blur = true;
-                    break;
-                }
-            }
-        }
-    }
-    if (has_blur) {
-        try gpu_res.ensureBlurTextures(@intCast(win_w), @intCast(win_h), target_format);
+    if (win_w > 0 and win_h > 0 and hasBlurredSurface(r_commands)) {
+        gpu_res.blur.ensure(dev, @intCast(win_w), @intCast(win_h), target_format);
     }
 
     const copy_pass = cmd_buf.beginCopyPass() orelse {
@@ -1557,4 +1541,41 @@ test "shouldCycleFrameBuffer cycles reused buffers on first frame write" {
     // Freshly reallocated buffer must NOT cycle even at offset 0
     try std.testing.expect(!shouldCycleFrameBuffer(true, 0));
     try std.testing.expect(!shouldCycleFrameBuffer(true, 512));
+}
+
+test "findBlurSplit pairs initialized resources with first blurred_surface index" {
+    const dummy_tex: sdl.gpu.Texture = .{ .ptr = @ptrFromInt(0x1000) };
+    const batches = [_]BatchItem{
+        .{ .vertex_start = 0, .vertex_count = 6, .texture = dummy_tex, .material = .ui_element, .scissor = null },
+        .{ .vertex_start = 6, .vertex_count = 6, .texture = dummy_tex, .material = .blurred_surface, .scissor = null },
+        .{ .vertex_start = 12, .vertex_count = 6, .texture = dummy_tex, .material = .ui_element, .scissor = null },
+    };
+
+    try std.testing.expect(findBlurSplit(&batches, .uninitialized) == null);
+    try std.testing.expect(findBlurSplit(&batches, .failed) == null);
+
+    const init_res = graphics.BlurResources.Initialized{
+        .pipelines = .{
+            .down = .{ .ptr = @ptrFromInt(0x2001) },
+            .up = .{ .ptr = @ptrFromInt(0x2002) },
+        },
+        .textures = .{
+            .scene = .{ .ptr = @ptrFromInt(0x2003) },
+            .blur_down = .{ .ptr = @ptrFromInt(0x2004) },
+            .blur = .{ .ptr = @ptrFromInt(0x2005) },
+            .target_w = 800,
+            .target_h = 600,
+            .target_format = .rgba8_unorm,
+            .down_w = 200,
+            .down_h = 150,
+        },
+    };
+    const blur_res: graphics.BlurResources = .{ .initialized = init_res };
+
+    const split = findBlurSplit(&batches, blur_res).?;
+    try std.testing.expectEqual(@as(usize, 1), split.split_idx);
+    try std.testing.expectEqual(@as(u32, 800), split.blur.textures.target_w);
+
+    // No blurred_surface in batch slice returns null even when initialized
+    try std.testing.expect(findBlurSplit(batches[0..1], blur_res) == null);
 }
