@@ -150,10 +150,9 @@ const AppGraphicsAndState = struct {
         self.gpa.free(self.clay_memory);
         self.state.deinit();
         self.resources.deinit(self.gpa);
-        sdl.quitTtf();
         self.setup.gpu_device.destroy();
         self.setup.window.destroy();
-        sdl.quit();
+        ui.graphics.quitSdlCore();
     }
 };
 
@@ -172,29 +171,12 @@ fn initAppGraphicsAndState(init: std.process.Init) !?AppGraphicsAndState {
         return null;
     }
 
-    // 2. Graphics and Window Setup
-    const setup = try ui.graphics.initGraphicsAndWindow("Peng Image Viewer", .{
-        .headless = parsed.headless,
-        .high_dpi = !parsed.test_mode,
-        .borderless = parsed.windowless,
-    });
-    errdefer {
-        sdl.quitTtf();
-        setup.gpu_device.destroy();
-        setup.window.destroy();
-        sdl.quit();
-    }
+    // 2. Initialize SDL Core Subsystems (video, events, TTF)
+    // Must be initialized before background workers touch SDL surface/event APIs.
+    try ui.graphics.initSdlCore(parsed.headless);
+    errdefer ui.graphics.quitSdlCore();
 
-    // 3. GPU Pipeline and Resources Setup
-    var resources = try ui.graphics.initGpuResources(
-        setup.gpu_device,
-        setup.window,
-        setup.initial_dpi_scale,
-        parsed.headless,
-    );
-    errdefer resources.deinit(gpa);
-
-    // 4. State Initialization
+    // 3. State Initialization & Early Path Scan / Decode Launch
     var state = app.state.AppState{
         .viewer = .{
             .navigation = try state_pkg.NavigationState.init(gpa),
@@ -202,11 +184,11 @@ fn initAppGraphicsAndState(init: std.process.Init) !?AppGraphicsAndState {
             .animations = .{},
             .display = if (parsed.headless) .headless else .{
                 .windowed = .{
-                    .handle = setup.window,
+                    .handle = undefined,
                     .pixel_format = sdl.PixelFormat.rgba32,
                     .is_fullscreen = false,
                     .is_borderless = parsed.windowless,
-                    .claimed = true,
+                    .claimed = false,
                 },
             },
             .viewport = blk: {
@@ -219,8 +201,9 @@ fn initAppGraphicsAndState(init: std.process.Init) !?AppGraphicsAndState {
             .rotation_map = .init(gpa),
             .running = true,
         },
-        .gpu_device = setup.gpu_device,
-        .unpack_compute_pipeline = resources.unpack_compute_pipeline,
+        .gpu_device = null,
+        .gpu_enabled = true,
+        .unpack_compute_pipeline = null,
         .cache = .{},
         .workers = .init(),
         .allocator = gpa,
@@ -238,7 +221,40 @@ fn initAppGraphicsAndState(init: std.process.Init) !?AppGraphicsAndState {
     errdefer state.deinit();
     try state.ensureInitialCapacities();
 
-    // 5. Initialize Clay UI Layout Engine
+    // Spawn initial directory scan & decode worker before graphics/GPU initialization
+    // to overlap CPU file I/O & decode with Wayland display and Vulkan device setup.
+    if (parsed.arg_path) |path| {
+        try state.openPath(path);
+    } else {
+        try app.workers.readPipedStdin(
+            &state.workers,
+            &state.viewer.navigation.active_file_scans,
+            init.io,
+            gpa,
+        );
+    }
+
+    // 4. Graphics and Window Setup
+    const setup = try ui.graphics.initGraphicsAndWindow("Peng Image Viewer", .{
+        .headless = parsed.headless,
+        .high_dpi = !parsed.test_mode,
+        .borderless = parsed.windowless,
+    });
+    errdefer {
+        setup.gpu_device.destroy();
+        setup.window.destroy();
+    }
+
+    // 5. GPU Pipeline and Resources Setup
+    var resources = try ui.graphics.initGpuResources(
+        setup.gpu_device,
+        setup.window,
+        setup.initial_dpi_scale,
+        parsed.headless,
+    );
+    errdefer resources.deinit(gpa);
+
+    // 6. Initialize Clay UI Layout Engine
     const clay_memory_size = clay.minMemorySize();
     const clay_memory = try gpa.alloc(u8, clay_memory_size);
     errdefer gpa.free(clay_memory);
@@ -248,6 +264,14 @@ fn initAppGraphicsAndState(init: std.process.Init) !?AppGraphicsAndState {
         .w = @as(f32, @floatFromInt(1024)),
         .h = @as(f32, @floatFromInt(768)),
     }, .{});
+
+    // 7. Bind graphics device and window handle to state
+    state.gpu_device = setup.gpu_device;
+    state.unpack_compute_pipeline = resources.unpack_compute_pipeline;
+    if (!parsed.headless) {
+        state.viewer.display.windowed.handle = setup.window;
+        state.viewer.display.windowed.claimed = true;
+    }
 
     return AppGraphicsAndState{
         .gpa = gpa,
@@ -289,18 +313,6 @@ fn runMainLoop(ctx: *AppGraphicsAndState) !void {
             &ctx.state.workers,
             ctx.gpa,
             ctx.io,
-        );
-    }
-
-    // Populate initial image list from arguments or piped stdin
-    if (ctx.parsed.arg_path) |path| {
-        try ctx.state.openPath(path);
-    } else {
-        try app.workers.readPipedStdin(
-            &ctx.state.workers,
-            &ctx.state.viewer.navigation.active_file_scans,
-            ctx.io,
-            ctx.gpa,
         );
     }
 

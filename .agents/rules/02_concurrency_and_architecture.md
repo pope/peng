@@ -100,6 +100,30 @@
 
 ## 3. Worker Concurrency, Cancellation & Demand-First Cache Gating
 
+- **Startup Concurrency & Overlapped Graphics Initialization**:
+  - `src/main.zig` executes `ui.graphics.initSdlCore` before launching any
+    background workers or initializing `AppState`.
+  - Concurrency branches on CLI inputs: if `parsed.arg_path` is present,
+    `state.openPath(...)` is invoked; otherwise, `app.workers.readPipedStdin`
+    spawns `stdinWorker` for streamed inputs.
+  - When opening a single image file, `openPath` immediately appends slot 0 in
+    `.decoding` status (`has_thread = true`) and spawns `decodeWorker`
+    concurrently alongside `pathScanWorker`. For directories or CBZ archives,
+    only `pathScanWorker` is spawned.
+  - `state.gpu_enabled = true` explicitly declares GPU capability to early
+    workers while `state.gpu_device` is initially `null`, preventing workers
+    from falling back to redundant CPU format conversions or misconfiguring
+    RAW+JPEG stream targets.
+  - Overlaps disk I/O, EXIF parsing, and CPU decompression concurrently on
+    background worker threads with main-thread display server roundtrips,
+    SDL3 GPU device creation (Vulkan / Metal), shader compilation, and Clay
+    layout engine initialization.
+  - Background events queue safely in `workers.event_queue` and are drained in
+    Phase 1 of Frame 1 in `runMainLoop`. If decode finishes during graphics
+    init, Frame 1 renders the active image immediately without blank window
+    flashes; if decode is still in flight (large RAW/TIFF or slow storage),
+    Frame 1 renders the loading state while `computeFrameWaitStrategy` activates
+    an 8ms polling tick until `context.wakeUpMainThread()` signals completion.
 - **Main-Thread Exclusive GPU Access**:
   - All SDL GPU device calls, pipeline bindings, compute dispatches, and texture
     creations/releases MUST execute on the main thread.

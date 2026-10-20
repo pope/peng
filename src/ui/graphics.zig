@@ -180,10 +180,10 @@ pub const RenderResources = struct {
     }
 };
 
-/// Initializes SDL3 subsystems, TTF engine, creates the main window, and
-/// claims the GPU graphics device.
-pub fn initGraphicsAndWindow(window_title: [:0]const u8, options: GraphicsOptions) !GraphicsSetup {
-    if (options.headless and builtin.os.tag != .macos and builtin.os.tag != .windows) {
+/// Initializes SDL3 subsystems (video and events) and TTF engine.
+/// Must be called before background workers start pushing SDL events or loading surfaces.
+pub fn initSdlCore(headless: bool) !void {
+    if (headless and builtin.os.tag != .macos and builtin.os.tag != .windows) {
         _ = sdl.hint.set("SDL_VIDEO_DRIVER", "offscreen");
     }
 
@@ -197,8 +197,17 @@ pub fn initGraphicsAndWindow(window_title: [:0]const u8, options: GraphicsOption
         std.log.err("TTF_Init Error: {}", .{err});
         return error.TTFInitFailed;
     };
-    errdefer sdl.quitTtf();
+}
 
+/// Shuts down SDL TTF engine and SDL subsystems.
+pub fn quitSdlCore() void {
+    sdl.quitTtf();
+    sdl.quit();
+}
+
+/// Creates the main window and claims the GPU graphics device.
+/// Assumes SDL core and TTF subsystems have been initialized via `initSdlCore`.
+pub fn initGraphicsAndWindow(window_title: [:0]const u8, options: GraphicsOptions) !GraphicsSetup {
     // Create window
     var win_flags = if (options.headless)
         sdl.window_flags.hidden
