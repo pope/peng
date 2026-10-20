@@ -23,6 +23,7 @@ pub const GraphicsOptions = struct {
     headless: bool = false,
     high_dpi: bool = true,
     borderless: bool = false,
+    debug_mode: bool = builtin.mode == .Debug,
 };
 
 /// Immediate uniform parameters for Dual Kawase downsample and upsample passes.
@@ -224,7 +225,7 @@ pub fn initGraphicsAndWindow(window_title: [:0]const u8, options: GraphicsOption
 
     // Create GPU Device
     const shader_flags = sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl;
-    const dev = sdl.gpu.Device.create(shader_flags, true) orelse {
+    const dev = sdl.gpu.Device.create(shader_flags, options.debug_mode) orelse {
         std.log.err("SDL_CreateGPUDevice Error: {s}", .{sdl.getError()});
         return error.DeviceCreationFailed;
     };
