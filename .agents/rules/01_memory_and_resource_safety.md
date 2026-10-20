@@ -56,10 +56,14 @@
   - Every struct owning heap memory, GPU handles, socket connections, or child
     sub-states (`AppState`, `ViewerState`, `DisplayState`, `RenderResources`,
     `ParsedArgs`) MUST provide an explicit `deinit` method.
-  - Startup initialization (`initAppGraphicsAndState` in `src/main.zig`) MUST
-    decouple SDL core initialization (`ui.graphics.initSdlCore`) from window and
+  - Startup initialization (`AppGraphicsAndState.init` in `src/main.zig`) MUST
+    initialize `self.state` in-place at its pinned stack address (`*AppGraphicsAndState`)
+    and decouple SDL core initialization (`ui.graphics.initSdlCore`) from window and
     GPU creation (`initGraphicsAndWindow`). SDL events and video MUST be
-    initialized before `AppState` or background workers launch.
+    initialized before `AppState` or background workers launch, and `AppState`
+    MUST NEVER be copied or returned by value after spawning workers that hold
+    pointers to `state.workers`, `state.cache.generation`, or
+    `state.viewer.navigation.active_file_scans`.
   - State initialization and early worker tasks (`openPath` / `readPipedStdin`)
     run concurrently with main-thread window and GPU creation. GPU handles
     (`state.gpu_device`) MUST remain `null` until all pipeline and Clay memory

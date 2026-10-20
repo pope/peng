@@ -154,138 +154,145 @@ const AppGraphicsAndState = struct {
         self.setup.window.destroy();
         ui.graphics.quitSdlCore();
     }
-};
 
-/// Phase 1: Initializes CLI options, SDL graphics, GPU resources, viewer
-/// state, Clay layout engine, and IPC server.
-fn initAppGraphicsAndState(init: std.process.Init) !?AppGraphicsAndState {
-    const gpa = init.gpa;
+    /// Phase 1: Initializes CLI options, SDL graphics, viewer state, early
+    /// background workers, GPU resources, and Clay layout engine in-place.
+    ///
+    /// In-place initialization ensures `self.state` is pinned at its final
+    /// memory address before `openPath` / `readPipedStdin` spawns background
+    /// worker tasks that hold pointers to `self.state.workers`,
+    /// `self.state.cache.generation`, and `self.state.viewer.navigation.active_file_scans`.
+    pub fn init(self: *AppGraphicsAndState, proc_init: std.process.Init) !bool {
+        const gpa = proc_init.gpa;
 
-    // 1. Parse command line arguments
-    var parsed = try app_config.cli.parseCommandLineArgs(init, gpa);
-    errdefer parsed.deinit(gpa);
+        // 1. Parse command line arguments
+        var parsed = try app_config.cli.parseCommandLineArgs(proc_init, gpa);
+        errdefer parsed.deinit(gpa);
 
-    if (parsed.help) {
-        parsed.deinit(gpa);
-        app_config.cli.printHelp(init.io);
-        return null;
-    }
+        if (parsed.help) {
+            parsed.deinit(gpa);
+            app_config.cli.printHelp(proc_init.io);
+            return false;
+        }
 
-    // 2. Initialize SDL Core Subsystems (video, events, TTF)
-    // Must be initialized before background workers touch SDL surface/event APIs.
-    try ui.graphics.initSdlCore(parsed.headless);
-    errdefer ui.graphics.quitSdlCore();
+        // 2. Initialize SDL Core Subsystems (video, events, TTF)
+        // Must be initialized before background workers touch SDL surface/event APIs.
+        try ui.graphics.initSdlCore(parsed.headless);
+        errdefer ui.graphics.quitSdlCore();
 
-    // 3. State Initialization & Early Path Scan / Decode Launch
-    var state = app.state.AppState{
-        .viewer = .{
-            .navigation = try state_pkg.NavigationState.init(gpa),
-            .ui = try state_pkg.UiState.init(gpa),
-            .animations = .{},
-            .display = if (parsed.headless) .headless else .{
-                .windowed = .{
-                    .handle = undefined,
-                    .pixel_format = sdl.PixelFormat.rgba32,
-                    .is_fullscreen = false,
-                    .is_borderless = parsed.windowless,
-                    .claimed = false,
-                },
-            },
-            .viewport = blk: {
-                var vp = state_pkg.ViewportParams{
-                    .fit_mode = parsed.default_scale,
+        // 3. Pinned In-Place State Initialization & Early Path Scan / Decode Launch
+        self.gpa = gpa;
+        self.io = proc_init.io;
+        self.parsed = parsed;
+        self.measure_data = undefined;
+        self.ipc_server = null;
+        self.state = app.state.AppState{
+            .viewer = viewer_blk: {
+                var nav = try state_pkg.NavigationState.init(gpa);
+                errdefer nav.deinit(gpa);
+                const ui_state = try state_pkg.UiState.init(gpa);
+                break :viewer_blk .{
+                    .navigation = nav,
+                    .ui = ui_state,
+                    .animations = .{},
+                    .display = if (parsed.headless) .headless else .{
+                        .windowed = .{
+                            .handle = undefined,
+                            .pixel_format = sdl.PixelFormat.rgba32,
+                            .is_fullscreen = false,
+                            .is_borderless = parsed.windowless,
+                            .claimed = false,
+                        },
+                    },
+                    .viewport = vp_blk: {
+                        var vp = state_pkg.ViewportParams{
+                            .fit_mode = parsed.default_scale,
+                        };
+                        vp.reset();
+                        break :vp_blk vp;
+                    },
+                    .rotation_map = .init(gpa),
+                    .running = true,
                 };
-                vp.reset();
-                break :blk vp;
             },
-            .rotation_map = .init(gpa),
-            .running = true,
-        },
-        .gpu_device = null,
-        .gpu_enabled = true,
-        .unpack_compute_pipeline = null,
-        .cache = .{},
-        .workers = .init(),
-        .allocator = gpa,
-        .io = init.io,
-    };
-    state.viewer.ui.overlays.enable_blur = parsed.enable_blur;
-    state.viewer.ui.overlays.title_display = if (parsed.show_title) .pinned else .hidden;
-    state.viewer.ui.overlays.auto_title = !parsed.test_mode;
-    state.viewer.ui.snackbar.enabled = !parsed.test_mode;
-    state.viewer.navigation.crossfade = !parsed.test_mode;
-    state.viewer.navigation.stack_raw_jpeg = parsed.stack_raw_jpeg;
-    if (parsed.show_title) {
-        state.viewer.animations.setImmediate(.title_overlay, 1.0);
-    }
-    errdefer state.deinit();
-    try state.ensureInitialCapacities();
+            .gpu_device = null,
+            .gpu_enabled = true,
+            .unpack_compute_pipeline = null,
+            .cache = .{},
+            .workers = .init(),
+            .allocator = gpa,
+            .io = proc_init.io,
+        };
+        self.state.viewer.ui.overlays.enable_blur = parsed.enable_blur;
+        self.state.viewer.ui.overlays.title_display = if (parsed.show_title) .pinned else .hidden;
+        self.state.viewer.ui.overlays.auto_title = !parsed.test_mode;
+        self.state.viewer.ui.snackbar.enabled = !parsed.test_mode;
+        self.state.viewer.navigation.crossfade = !parsed.test_mode;
+        self.state.viewer.navigation.stack_raw_jpeg = parsed.stack_raw_jpeg;
+        if (parsed.show_title) {
+            self.state.viewer.animations.setImmediate(.title_overlay, 1.0);
+        }
+        errdefer self.state.deinit();
+        try self.state.ensureInitialCapacities();
 
-    // Spawn initial directory scan & decode worker before graphics/GPU initialization
-    // to overlap CPU file I/O & decode with Wayland display and Vulkan device setup.
-    if (parsed.arg_path) |path| {
-        try state.openPath(path);
-    } else {
-        try app.workers.readPipedStdin(
-            &state.workers,
-            &state.viewer.navigation.active_file_scans,
-            init.io,
-            gpa,
+        // Spawn initial directory scan & decode worker before graphics/GPU initialization
+        // to overlap CPU file I/O & decode with Wayland display and Vulkan device setup.
+        if (self.parsed.arg_path) |path| {
+            try self.state.openPath(path);
+        } else {
+            try app.workers.readPipedStdin(
+                &self.state.workers,
+                &self.state.viewer.navigation.active_file_scans,
+                proc_init.io,
+                gpa,
+            );
+        }
+
+        // 4. Graphics and Window Setup
+        self.setup = try ui.graphics.initGraphicsAndWindow("Peng Image Viewer", .{
+            .headless = parsed.headless,
+            .high_dpi = !parsed.test_mode,
+            .borderless = parsed.windowless,
+        });
+        errdefer {
+            if (!parsed.headless) {
+                self.setup.window.releaseFromGpu(self.setup.gpu_device);
+            }
+            self.setup.gpu_device.destroy();
+            self.setup.window.destroy();
+        }
+
+        // 5. GPU Pipeline and Resources Setup
+        self.resources = try ui.graphics.initGpuResources(
+            self.setup.gpu_device,
+            self.setup.window,
+            self.setup.initial_dpi_scale,
+            parsed.headless,
         );
+        errdefer self.resources.deinit(gpa);
+
+        // 6. Initialize Clay UI Layout Engine
+        const clay_memory_size = clay.minMemorySize();
+        self.clay_memory = try gpa.alloc(u8, clay_memory_size);
+        errdefer gpa.free(self.clay_memory);
+
+        const clay_arena = clay.Arena.init(self.clay_memory);
+        self.clay_context = clay.initialize(clay_arena, .{
+            .w = @as(f32, @floatFromInt(1024)),
+            .h = @as(f32, @floatFromInt(768)),
+        }, .{});
+
+        // 7. Bind graphics device and window handle to state
+        self.state.gpu_device = self.setup.gpu_device;
+        self.state.unpack_compute_pipeline = self.resources.unpack_compute_pipeline;
+        if (!parsed.headless) {
+            self.state.viewer.display.windowed.handle = self.setup.window;
+            self.state.viewer.display.windowed.claimed = true;
+        }
+
+        return true;
     }
-
-    // 4. Graphics and Window Setup
-    const setup = try ui.graphics.initGraphicsAndWindow("Peng Image Viewer", .{
-        .headless = parsed.headless,
-        .high_dpi = !parsed.test_mode,
-        .borderless = parsed.windowless,
-    });
-    errdefer {
-        setup.gpu_device.destroy();
-        setup.window.destroy();
-    }
-
-    // 5. GPU Pipeline and Resources Setup
-    var resources = try ui.graphics.initGpuResources(
-        setup.gpu_device,
-        setup.window,
-        setup.initial_dpi_scale,
-        parsed.headless,
-    );
-    errdefer resources.deinit(gpa);
-
-    // 6. Initialize Clay UI Layout Engine
-    const clay_memory_size = clay.minMemorySize();
-    const clay_memory = try gpa.alloc(u8, clay_memory_size);
-    errdefer gpa.free(clay_memory);
-
-    const clay_arena = clay.Arena.init(clay_memory);
-    const clay_ctx = clay.initialize(clay_arena, .{
-        .w = @as(f32, @floatFromInt(1024)),
-        .h = @as(f32, @floatFromInt(768)),
-    }, .{});
-
-    // 7. Bind graphics device and window handle to state
-    state.gpu_device = setup.gpu_device;
-    state.unpack_compute_pipeline = resources.unpack_compute_pipeline;
-    if (!parsed.headless) {
-        state.viewer.display.windowed.handle = setup.window;
-        state.viewer.display.windowed.claimed = true;
-    }
-
-    return AppGraphicsAndState{
-        .gpa = gpa,
-        .io = init.io,
-        .parsed = parsed,
-        .setup = setup,
-        .resources = resources,
-        .state = state,
-        .clay_memory = clay_memory,
-        .clay_context = clay_ctx,
-        .measure_data = undefined,
-        .ipc_server = null,
-    };
-}
+};
 
 /// Phase 2: Runs the main application event processing, state updating, and rendering loop.
 fn runMainLoop(ctx: *AppGraphicsAndState) !void {
@@ -413,7 +420,8 @@ fn exportClassificationsToStdout(nav: *const state_pkg.NavigationState, io: std.
 /// Application entry point: initializes state and graphics, enters the primary
 /// event loop, and cleans up on exit.
 pub fn main(init: std.process.Init) !void {
-    var app_ctx = (try initAppGraphicsAndState(init)) orelse return;
+    var app_ctx: AppGraphicsAndState = undefined;
+    if (!try app_ctx.init(init)) return;
     defer app_ctx.deinit();
 
     try runMainLoop(&app_ctx);
