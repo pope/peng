@@ -71,6 +71,7 @@ pub const AppState = struct {
 
     /// Hardware & Pipeline Resources
     gpu_device: ?sdl.gpu.Device = null,
+    gpu_enabled: bool = true,
     unpack_compute_pipeline: ?sdl.gpu.ComputePipeline = null,
 
     /// Memory & Async I/O Context
@@ -96,6 +97,7 @@ pub const AppState = struct {
             .workers = .init(),
             .allocator = allocator,
             .io = io,
+            .gpu_enabled = false,
         };
         errdefer state.viewer.deinit(allocator, io);
         try state.ensureInitialCapacities();
@@ -700,6 +702,39 @@ pub const AppState = struct {
                     false,
                     stack_raw,
                 );
+
+                // Spawn immediate decode for slot 0 to overlap with graphics/GPU init
+                const key0 = try self.cache.appendSlot(self.allocator, 0, .{
+                    .decoding = .{ .has_thread = true },
+                });
+                errdefer {
+                    if (self.cache.get(key0)) |entry| {
+                        switch (entry.status) {
+                            .decoding => |*dec| dec.has_thread = false,
+                            .loaded_cpu, .loaded_gpu, .uploading, .failed => {},
+                        }
+                    }
+                }
+                const dup_entry = try (state_pkg.MediaEntry{
+                    .filesystem = .{ .path = owned_path },
+                }).dupe(self.allocator);
+                errdefer dup_entry.deinit(self.allocator);
+
+                const args = try self.allocator.create(workers_mod.DecodeArgs);
+                errdefer self.allocator.destroy(args);
+                args.* = workers_mod.DecodeArgs{
+                    .workers = &self.workers,
+                    .allocator = self.allocator,
+                    .io = self.io,
+                    .key = key0,
+                    .entry = dup_entry,
+                    .has_gpu_device = (self.gpu_device != null) or self.gpu_enabled,
+                    .pixel_format = self.viewer.display.getPixelFormat(),
+                    .thumb_only = false,
+                    .pair_target = if (self.viewer.navigation.stack_raw_jpeg) .adaptive else .standalone_jpeg,
+                    .current_generation = &self.cache.generation,
+                };
+                try workers_mod.spawnDecode(args);
             }
         }
         if (self.viewer.ui.palette.mode == .files and
@@ -1221,4 +1256,21 @@ test "AppState.openPath preserves closing palette matches" {
         initial_matches,
         state.viewer.ui.palette.matches.items.len,
     );
+}
+
+test "AppState.openPath spawns immediate decode for single image file" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    const sample_jpg = "testfiles/images/000_0_1024x682.jpg";
+    try state.openPath(sample_jpg);
+
+    // Slot 0 must be appended immediately with .decoding and .has_thread = true
+    const entry0 = state.cache.get(state.cache.activeKey(0));
+    try std.testing.expect(entry0 != null);
+    try std.testing.expect(entry0.?.status == .decoding);
+    try std.testing.expect(entry0.?.status.decoding.has_thread);
 }

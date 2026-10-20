@@ -46,13 +46,15 @@ ______________________________________________________________________
 
 ## 4. 2-Pass Quarter-Resolution Dual Kawase Backdrop Blur Pipeline (`src/ui/renderer.zig`)
 
-- **Demand-Gated Execution**:
-  When `enable_blur` is enabled and `RenderPacket` contains `.blurred_surface` batches (glassmorphic floating overlays, command palette, or edit panel are visible):
-  1. **Scene Offscreen Render**: The image viewport is rendered into `resources.scene_texture` (`w x h`).
-  2. **Kawase Downsample (`blur_down.frag.glsl`)**: Downsamples `scene_texture` -> `blur_down_texture` (`w/4 x h/4`) using 5-tap half-pixel diagonal offsets.
-  3. **Kawase Upsample (`blur_up.frag.glsl`)**: Filters `blur_down_texture` -> `blur_texture` (`w/4 x h/4`) using 8-tap tent-weighted offsets.
-  4. **Backdrop Composite**: In the swapchain render pass, the scene texture is blitted first, and each `.blurred_surface` batch samples `blur_texture` behind the semi-transparent UI card before drawing UI borders and text.
-- When no `.blurred_surface` batches are present or `enable_blur` is false, the offscreen scene pass and both blur passes are completely skipped.
+- **Demand-Gated Execution & Lazy Blur Initialization (`BlurResources` Tagged Union)**:
+  - `initGpuResources` initializes `blur: BlurResources = .uninitialized` on `RenderResources` to avoid 5–20ms of synchronous driver shader compilation during application startup.
+  - State is strictly modeled as a tagged union (`.uninitialized`, `.failed`, `.initialized: Initialized`), where `Initialized` composes session-lifetime `Pipelines` (`down`, `up`) and window-sized `Textures` (`scene`, `blur_down`, `blur`, and invariant dimensions). Callers cannot observe or assume partially-initialized resources, and `findBlurSplit` pairs `Initialized` with `split_idx` so render passes require zero `.?` unwraps.
+  - When `enable_blur` is enabled and `RenderPacket` contains `.blurred_surface` batches (glassmorphic floating overlays, command palette, or edit panel are visible), `renderClayCommands` invokes `gpu_res.blur.ensure(...)`, which lazily compiles pipelines and allocates offscreen textures on first demand (transitioning to `.initialized` on success, or latching `.failed` on any error to prevent per-frame log spam):
+  1. **Scene Offscreen Render**: The image viewport is rendered into `tex.scene` (`w x h`).
+  2. **Kawase Downsample (`blur_down.frag.glsl`)**: Downsamples `tex.scene` -> `tex.blur_down` (`w/4 x h/4`) using 5-tap half-pixel diagonal offsets.
+  3. **Kawase Upsample (`blur_up.frag.glsl`)**: Filters `tex.blur_down` -> `tex.blur` (`w/4 x h/4`) using 8-tap tent-weighted offsets.
+  4. **Backdrop Composite**: In the swapchain render pass, `tex.scene` is blitted first, and each `.blurred_surface` batch samples `tex.blur` behind the semi-transparent UI card before drawing UI borders and text.
+- When `findBlurSplit` returns `null` (no `.blurred_surface` batches present, `enable_blur` is false, or `gpu.blur != .initialized`), the offscreen scene pass and both blur passes are completely skipped, falling back to direct single-pass swapchain rendering.
 
 ______________________________________________________________________
 

@@ -222,3 +222,15 @@ ______________________________________________________________________
       formatting branches across IPC, UI layouts, and state stores.
     - Let UI widgets and IPC parsers query `state.getDescriptor(param)` to
       clamp and format values consistently.
+
+______________________________________________________________________
+
+## Application Startup & Overlapped Initialization Pattern
+
+- **Pattern 14 — Overlapped I/O, Decode & Graphics Device Startup**:
+  - Rather than initializing SDL, window, GPU device, shaders, and Clay serially before touching any media, peng overlaps CPU disk I/O and image decode with graphics setup:
+    1. **Core SDL Subsystem Init (`initSdlCore`)**: Initializes `SDL_INIT_VIDEO | SDL_INIT_EVENTS` (required by background workers for surface operations and thread wakeup via `context.wakeUpMainThread`) and consolidates `TTF_Init` upfront prior to state construction.
+    2. **Pinned In-Place State & Early Media Ingestion (`AppGraphicsAndState.init` -> `state.openPath` / `readPipedStdin`)**: `AppGraphicsAndState.init(self: *AppGraphicsAndState, ...)` initializes `self.state` directly in-place at its permanent stack address before spawning workers (preventing by-value struct returns from invalidating worker pointers to `state.workers`, `state.cache.generation`, and `active_file_scans`). When given a direct single-image file path, `openPath` appends slot 0 in `.decoding` status (`has_thread = true`) and spawns `decodeWorker` concurrently with `pathScanWorker`. When opening a directory or CBZ, spawns `pathScanWorker`. When piped from stdin, spawns `stdinWorker`.
+    3. **Concurrent Main-Thread Window & GPU Setup**: While workers read file headers, extract EXIF data, and decompress pixels on background threads, the main thread performs window creation, display server negotiation (Wayland/X11 roundtrips), SDL3 GPU device creation (Vulkan / Metal), shader/pipeline compilation, and Clay UI memory allocation.
+    4. **GPU Intent (`gpu_enabled`) & Deferred Binding**: Initializes `state.gpu_enabled = true` so early decode workers know a GPU device will be present (avoiding redundant CPU format conversions and preserving raw surfaces for GPU compute unpack), while keeping `state.gpu_device = null` until all graphics pipelines and Clay memory succeed. If an intermediate setup step fails, `state.deinit()` cleans up worker threads and CPU caches without accessing unowned or destroyed GPU handles (use-after-free).
+    5. **Latency-Hiding First Frame**: When `runMainLoop` starts Frame 1, background events in `workers.event_queue` are drained. If decode completed during graphics init, Frame 1 displays the loaded image immediately; if decode is still in flight (large RAW/TIFF), Frame 1 renders the loading state while `computeFrameWaitStrategy` ticks with 8ms polling until `wakeUpMainThread()` triggers the final GPU upload.

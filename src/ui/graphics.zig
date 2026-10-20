@@ -23,6 +23,7 @@ pub const GraphicsOptions = struct {
     headless: bool = false,
     high_dpi: bool = true,
     borderless: bool = false,
+    debug_mode: bool = builtin.mode == .Debug,
 };
 
 /// Immediate uniform parameters for Dual Kawase downsample and upsample passes.
@@ -33,27 +34,340 @@ pub const BlurUniforms = extern struct {
     padding: f32 = 0.0,
 };
 
+const StaticInitPayload = extern struct {
+    fullscreen_verts: [6]geometry.Vertex = .{
+        .{ .x = -1.0, .y = 1.0, .u = 0.0, .v = 0.0, .color = 0xFFFFFFFF },
+        .{ .x = -1.0, .y = -1.0, .u = 0.0, .v = 1.0, .color = 0xFFFFFFFF },
+        .{ .x = 1.0, .y = 1.0, .u = 1.0, .v = 0.0, .color = 0xFFFFFFFF },
+        .{ .x = 1.0, .y = 1.0, .u = 1.0, .v = 0.0, .color = 0xFFFFFFFF },
+        .{ .x = -1.0, .y = -1.0, .u = 0.0, .v = 1.0, .color = 0xFFFFFFFF },
+        .{ .x = 1.0, .y = -1.0, .u = 1.0, .v = 1.0, .color = 0xFFFFFFFF },
+    },
+    white_pixel: [4]u8 = .{ 255, 255, 255, 255 },
+
+    pub const verts_size = @sizeOf(@FieldType(StaticInitPayload, "fullscreen_verts"));
+    pub const verts_offset = @offsetOf(StaticInitPayload, "fullscreen_verts");
+    pub const pixel_offset = @offsetOf(StaticInitPayload, "white_pixel");
+};
+
+const quad_vertex_attribs = [_]sdl.gpu.VertexAttribute{
+    .{
+        .location = 0,
+        .buffer_slot = 0,
+        .format = .float2,
+        .offset = @offsetOf(geometry.Vertex, "x"),
+    },
+    .{
+        .location = 1,
+        .buffer_slot = 0,
+        .format = .float2,
+        .offset = @offsetOf(geometry.Vertex, "u"),
+    },
+    .{
+        .location = 2,
+        .buffer_slot = 0,
+        .format = .ubyte4_norm,
+        .offset = @offsetOf(geometry.Vertex, "color"),
+    },
+};
+
+const quad_vertex_buf_descs = [_]sdl.gpu.VertexBufferDescription{
+    .{
+        .slot = 0,
+        .pitch = @sizeOf(geometry.Vertex),
+        .input_rate = .vertex,
+        .instance_step_rate = 0,
+    },
+};
+
+/// Manages pipelines and offscreen textures for the 2-pass Dual Kawase backdrop blur.
+/// State is modeled as a tagged union to guarantee that callers can never observe
+/// or assume partially-initialized resources, with no non-null assertions required.
+pub const BlurResources = union(enum) {
+    uninitialized,
+    failed,
+    initialized: Initialized,
+
+    pub const Pipelines = struct {
+        down: sdl.gpu.Pipeline,
+        up: sdl.gpu.Pipeline,
+
+        pub fn deinit(self: Pipelines, dev: sdl.gpu.Device) void {
+            dev.releasePipeline(self.down);
+            dev.releasePipeline(self.up);
+        }
+    };
+
+    pub const Textures = struct {
+        scene: sdl.gpu.Texture,
+        blur_down: sdl.gpu.Texture,
+        blur: sdl.gpu.Texture,
+        target_w: u32,
+        target_h: u32,
+        target_format: sdl.gpu.TextureFormat,
+        down_w: u32,
+        down_h: u32,
+
+        pub fn deinit(self: Textures, dev: sdl.gpu.Device) void {
+            dev.releaseTexture(self.scene);
+            dev.releaseTexture(self.blur_down);
+            dev.releaseTexture(self.blur);
+        }
+
+        pub fn matches(self: Textures, w: u32, h: u32, fmt: sdl.gpu.TextureFormat) bool {
+            return self.target_w == w and self.target_h == h and self.target_format == fmt;
+        }
+    };
+
+    pub const Initialized = struct {
+        pipelines: Pipelines,
+        textures: Textures,
+
+        pub fn deinit(self: *Initialized, dev: sdl.gpu.Device) void {
+            self.pipelines.deinit(dev);
+            self.textures.deinit(dev);
+        }
+    };
+
+    /// Returns the blurred scene texture if blur resources are initialized and ready.
+    pub fn getBlurTexture(self: *const BlurResources) ?sdl.gpu.Texture {
+        return switch (self.*) {
+            .initialized => |init_res| init_res.textures.blur,
+            .uninitialized, .failed => null,
+        };
+    }
+
+    /// Releases blur pipelines and textures and resets state to .uninitialized.
+    pub fn deinit(self: *BlurResources, dev: sdl.gpu.Device) void {
+        switch (self.*) {
+            .initialized => |*init_res| init_res.deinit(dev),
+            .uninitialized, .failed => {},
+        }
+        self.* = .uninitialized;
+    }
+
+    fn createPipelines(dev: sdl.gpu.Device) !Pipelines {
+        const vert_code_spv = @embedFile("shaders/vert.spv");
+        const vert_code_msl = @embedFile("shaders/vert.msl");
+        const blur_down_code_spv = @embedFile("shaders/blur_down.spv");
+        const blur_down_code_msl = @embedFile("shaders/blur_down.msl");
+        const blur_up_code_spv = @embedFile("shaders/blur_up.spv");
+        const blur_up_code_msl = @embedFile("shaders/blur_up.msl");
+
+        const shader_formats = dev.getShaderFormats();
+
+        const vert_shader = try createShaderFromFormat(
+            dev,
+            shader_formats,
+            .vertex,
+            vert_code_spv,
+            vert_code_msl,
+            0,
+            0,
+        );
+        defer dev.releaseShader(vert_shader);
+
+        const blur_down_frag_shader = try createShaderFromFormat(
+            dev,
+            shader_formats,
+            .fragment,
+            blur_down_code_spv,
+            blur_down_code_msl,
+            1,
+            1,
+        );
+        defer dev.releaseShader(blur_down_frag_shader);
+
+        const blur_up_frag_shader = try createShaderFromFormat(
+            dev,
+            shader_formats,
+            .fragment,
+            blur_up_code_spv,
+            blur_up_code_msl,
+            1,
+            1,
+        );
+        defer dev.releaseShader(blur_up_frag_shader);
+
+        var blur_down_pipeline_info = sdl.gpu.GraphicsPipelineCreateInfo{
+            .vertex_shader = vert_shader,
+            .fragment_shader = blur_down_frag_shader,
+            .vertex_input_state = .{
+                .num_vertex_attributes = quad_vertex_attribs.len,
+                .vertex_attributes = &quad_vertex_attribs,
+                .num_vertex_buffers = quad_vertex_buf_descs.len,
+                .vertex_buffer_descriptions = &quad_vertex_buf_descs,
+            },
+            .primitive_type = .triangle_list,
+            .rasterizer_state = .{
+                .fill_mode = .fill,
+                .cull_mode = .none,
+                .front_face = .counter_clockwise,
+            },
+            .multisample_state = .{
+                .sample_count = .count_1,
+            },
+            .depth_stencil_state = .{
+                .compare_op = .never,
+            },
+            .target_info = .{
+                .num_color_targets = 1,
+                .color_target_descriptions = &[_]sdl.gpu.ColorTargetDescription{.{
+                    .format = .rgba8_unorm,
+                    .blend_state = .{
+                        .src_color_blendfactor = .one,
+                        .dst_color_blendfactor = .zero,
+                        .color_blend_op = .add,
+                        .src_alpha_blendfactor = .one,
+                        .dst_alpha_blendfactor = .zero,
+                        .alpha_blend_op = .add,
+                        .color_write_mask = sdl.gpu.ColorComponent.r |
+                            sdl.gpu.ColorComponent.g |
+                            sdl.gpu.ColorComponent.b |
+                            sdl.gpu.ColorComponent.a,
+                        .enable_blend = false,
+                        .enable_color_write_mask = true,
+                    },
+                }},
+                .has_depth_stencil_target = false,
+                .depth_stencil_format = .d16_unorm,
+            },
+            .props = 0,
+        };
+
+        const blur_down_pipeline = dev.createPipeline(&blur_down_pipeline_info) orelse {
+            std.log.err("Failed to create blur down pipeline: {s}", .{sdl.getError()});
+            return error.PipelineCreationFailed;
+        };
+        errdefer dev.releasePipeline(blur_down_pipeline);
+
+        var blur_up_pipeline_info = blur_down_pipeline_info;
+        blur_up_pipeline_info.fragment_shader = blur_up_frag_shader;
+        const blur_up_pipeline = dev.createPipeline(&blur_up_pipeline_info) orelse {
+            std.log.err("Failed to create blur up pipeline: {s}", .{sdl.getError()});
+            return error.PipelineCreationFailed;
+        };
+
+        return .{
+            .down = blur_down_pipeline,
+            .up = blur_up_pipeline,
+        };
+    }
+
+    fn createTextures(
+        dev: sdl.gpu.Device,
+        win_w: u32,
+        win_h: u32,
+        target_format: sdl.gpu.TextureFormat,
+    ) !Textures {
+        const scene_tex = dev.createTexture(&sdl.gpu.TextureCreateInfo{
+            .type = .type_2d,
+            .format = target_format,
+            .usage = sdl.gpu.TextureUsage.color_target | sdl.gpu.TextureUsage.sampler,
+            .width = win_w,
+            .height = win_h,
+            .layer_count_or_depth = 1,
+            .num_levels = 1,
+            .sample_count = .count_1,
+            .props = 0,
+        }) orelse return error.SceneTextureCreationFailed;
+        errdefer dev.releaseTexture(scene_tex);
+
+        const down_w = @max(1, (win_w + 3) / 4);
+        const down_h = @max(1, (win_h + 3) / 4);
+
+        const down_info = sdl.gpu.TextureCreateInfo{
+            .type = .type_2d,
+            .format = .rgba8_unorm,
+            .usage = sdl.gpu.TextureUsage.color_target | sdl.gpu.TextureUsage.sampler,
+            .width = down_w,
+            .height = down_h,
+            .layer_count_or_depth = 1,
+            .num_levels = 1,
+            .sample_count = .count_1,
+            .props = 0,
+        };
+
+        const blur_down_tex = dev.createTexture(&down_info) orelse return error.BlurTextureCreationFailed;
+        errdefer dev.releaseTexture(blur_down_tex);
+
+        const blur_tex = dev.createTexture(&down_info) orelse return error.BlurTextureCreationFailed;
+
+        return .{
+            .scene = scene_tex,
+            .blur_down = blur_down_tex,
+            .blur = blur_tex,
+            .target_w = win_w,
+            .target_h = win_h,
+            .target_format = target_format,
+            .down_w = down_w,
+            .down_h = down_h,
+        };
+    }
+
+    /// Ensures blur pipelines and offscreen textures are ready for rendering.
+    /// On failure, logs a single warning and latches .failed for the session without log spam.
+    pub fn ensure(
+        self: *BlurResources,
+        dev: sdl.gpu.Device,
+        win_w: u32,
+        win_h: u32,
+        target_format: sdl.gpu.TextureFormat,
+    ) void {
+        if (win_w == 0 or win_h == 0) return;
+
+        switch (self.*) {
+            .failed => return,
+            .uninitialized => {
+                const pipes = createPipelines(dev) catch |err| {
+                    std.log.warn("Failed to initialize blur pipelines: {}, disabling backdrop blur", .{err});
+                    self.* = .failed;
+                    return;
+                };
+
+                const textures = createTextures(dev, win_w, win_h, target_format) catch |err| {
+                    std.log.warn("Failed to allocate blur textures: {}, disabling backdrop blur", .{err});
+                    pipes.deinit(dev);
+                    self.* = .failed;
+                    return;
+                };
+
+                self.* = .{
+                    .initialized = .{
+                        .pipelines = pipes,
+                        .textures = textures,
+                    },
+                };
+            },
+            .initialized => |*init_res| {
+                if (init_res.textures.matches(win_w, win_h, target_format)) return;
+
+                const textures = createTextures(dev, win_w, win_h, target_format) catch |err| {
+                    std.log.warn("Failed to reallocate blur textures on resize: {}, disabling backdrop blur", .{err});
+                    init_res.deinit(dev);
+                    self.* = .failed;
+                    return;
+                };
+
+                init_res.textures.deinit(dev);
+                init_res.textures = textures;
+            },
+        }
+    }
+};
+
 /// Cohesive GPU context and render resources initialized for GPU-accelerated rendering.
 pub const RenderResources = struct {
     device: sdl.gpu.Device,
     image_pipeline: sdl.gpu.Pipeline,
     ui_pipeline: sdl.gpu.Pipeline,
-    blur_down_pipeline: sdl.gpu.Pipeline,
-    blur_up_pipeline: sdl.gpu.Pipeline,
     fullscreen_vertex_buffer: sdl.gpu.Buffer,
     unpack_compute_pipeline: ?sdl.gpu.ComputePipeline = null,
     sampler: sdl.gpu.Sampler,
     white_texture: sdl.gpu.Texture,
 
-    // Offscreen blur textures
-    scene_texture: ?sdl.gpu.Texture = null,
-    blur_down_texture: ?sdl.gpu.Texture = null,
-    blur_texture: ?sdl.gpu.Texture = null,
-    blur_target_w: u32 = 0,
-    blur_target_h: u32 = 0,
-    blur_target_format: sdl.gpu.TextureFormat = .invalid,
-    blur_down_w: u32 = 0,
-    blur_down_h: u32 = 0,
+    // Offscreen blur subsystem (lazily initialized on first blur demand)
+    blur: BlurResources = .uninitialized,
 
     // Persistent double-buffered vertex and transfer staging buffers
     vertex_buffers: [2]?sdl.gpu.Buffer = .{ null, null },
@@ -65,90 +379,6 @@ pub const RenderResources = struct {
     // Font text texture cache & font
     text_cache: TextCache = .{},
     fonts: [1]?sdl.Font = .{null},
-
-    /// Manages offscreen textures for the 2-pass Dual Kawase backdrop blur pipeline.
-    /// Reallocates textures dynamically when window dimensions change.
-    pub fn ensureBlurTextures(
-        self: *RenderResources,
-        win_w: u32,
-        win_h: u32,
-        target_format: sdl.gpu.TextureFormat,
-    ) !void {
-        if (win_w == 0 or win_h == 0) return;
-        if (self.blur_target_w == win_w and
-            self.blur_target_h == win_h and
-            self.blur_target_format == target_format and
-            self.scene_texture != null) return;
-
-        // Invalidate and nullify before releasing old handles
-        if (self.scene_texture) |t| {
-            self.device.releaseTexture(t);
-            self.scene_texture = null;
-        }
-        if (self.blur_down_texture) |t| {
-            self.device.releaseTexture(t);
-            self.blur_down_texture = null;
-        }
-        if (self.blur_texture) |t| {
-            self.device.releaseTexture(t);
-            self.blur_texture = null;
-        }
-        self.blur_target_w = 0;
-        self.blur_target_h = 0;
-        self.blur_down_w = 0;
-        self.blur_down_h = 0;
-        self.blur_target_format = .invalid;
-
-        const scene_tex = self.device.createTexture(&sdl.gpu.TextureCreateInfo{
-            .type = .type_2d,
-            .format = target_format,
-            .usage = sdl.gpu.TextureUsage.color_target | sdl.gpu.TextureUsage.sampler,
-            .width = win_w,
-            .height = win_h,
-            .layer_count_or_depth = 1,
-            .num_levels = 1,
-            .sample_count = .count_1,
-            .props = 0,
-        }) orelse return error.SceneTextureCreationFailed;
-        errdefer self.device.releaseTexture(scene_tex);
-
-        const down_w = @max(1, (win_w + 3) / 4);
-        const down_h = @max(1, (win_h + 3) / 4);
-
-        const blur_down_tex = self.device.createTexture(&sdl.gpu.TextureCreateInfo{
-            .type = .type_2d,
-            .format = .rgba8_unorm,
-            .usage = sdl.gpu.TextureUsage.color_target | sdl.gpu.TextureUsage.sampler,
-            .width = down_w,
-            .height = down_h,
-            .layer_count_or_depth = 1,
-            .num_levels = 1,
-            .sample_count = .count_1,
-            .props = 0,
-        }) orelse return error.BlurTextureCreationFailed;
-        errdefer self.device.releaseTexture(blur_down_tex);
-
-        const blur_tex = self.device.createTexture(&sdl.gpu.TextureCreateInfo{
-            .type = .type_2d,
-            .format = .rgba8_unorm,
-            .usage = sdl.gpu.TextureUsage.color_target | sdl.gpu.TextureUsage.sampler,
-            .width = down_w,
-            .height = down_h,
-            .layer_count_or_depth = 1,
-            .num_levels = 1,
-            .sample_count = .count_1,
-            .props = 0,
-        }) orelse return error.BlurTextureCreationFailed;
-
-        self.scene_texture = scene_tex;
-        self.blur_down_texture = blur_down_tex;
-        self.blur_texture = blur_tex;
-        self.blur_target_w = win_w;
-        self.blur_target_h = win_h;
-        self.blur_down_w = down_w;
-        self.blur_down_h = down_h;
-        self.blur_target_format = target_format;
-    }
 
     /// Releases GPU pipelines, samplers, fallback textures, staging buffers,
     /// text cache, and fonts on application teardown.
@@ -163,12 +393,8 @@ pub const RenderResources = struct {
         for (self.transfer_buffers) |tb| {
             if (tb) |b| self.device.releaseTransferBuffer(b);
         }
-        if (self.scene_texture) |t| self.device.releaseTexture(t);
-        if (self.blur_down_texture) |t| self.device.releaseTexture(t);
-        if (self.blur_texture) |t| self.device.releaseTexture(t);
+        self.blur.deinit(self.device);
         self.device.releaseBuffer(self.fullscreen_vertex_buffer);
-        self.device.releasePipeline(self.blur_down_pipeline);
-        self.device.releasePipeline(self.blur_up_pipeline);
         self.device.releasePipeline(self.image_pipeline);
         self.device.releasePipeline(self.ui_pipeline);
         if (self.unpack_compute_pipeline) |pipe| {
@@ -179,10 +405,10 @@ pub const RenderResources = struct {
     }
 };
 
-/// Initializes SDL3 subsystems, TTF engine, creates the main window, and
-/// claims the GPU graphics device.
-pub fn initGraphicsAndWindow(window_title: [:0]const u8, options: GraphicsOptions) !GraphicsSetup {
-    if (options.headless and builtin.os.tag != .macos and builtin.os.tag != .windows) {
+/// Initializes SDL3 subsystems (video and events) and TTF engine.
+/// Must be called before background workers start pushing SDL events or loading surfaces.
+pub fn initSdlCore(headless: bool) !void {
+    if (headless and builtin.os.tag != .macos and builtin.os.tag != .windows) {
         _ = sdl.hint.set("SDL_VIDEO_DRIVER", "offscreen");
     }
 
@@ -196,8 +422,17 @@ pub fn initGraphicsAndWindow(window_title: [:0]const u8, options: GraphicsOption
         std.log.err("TTF_Init Error: {}", .{err});
         return error.TTFInitFailed;
     };
-    errdefer sdl.quitTtf();
+}
 
+/// Shuts down SDL TTF engine and SDL subsystems.
+pub fn quitSdlCore() void {
+    sdl.quitTtf();
+    sdl.quit();
+}
+
+/// Creates the main window and claims the GPU graphics device.
+/// Assumes SDL core and TTF subsystems have been initialized via `initSdlCore`.
+pub fn initGraphicsAndWindow(window_title: [:0]const u8, options: GraphicsOptions) !GraphicsSetup {
     // Create window
     var win_flags = if (options.headless)
         sdl.window_flags.hidden
@@ -224,7 +459,7 @@ pub fn initGraphicsAndWindow(window_title: [:0]const u8, options: GraphicsOption
 
     // Create GPU Device
     const shader_flags = sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl;
-    const dev = sdl.gpu.Device.create(shader_flags, true) orelse {
+    const dev = sdl.gpu.Device.create(shader_flags, options.debug_mode) orelse {
         std.log.err("SDL_CreateGPUDevice Error: {s}", .{sdl.getError()});
         return error.DeviceCreationFailed;
     };
@@ -319,11 +554,6 @@ pub fn initGpuResources(
     const ui_frag_code_spv = @embedFile("shaders/ui.frag.spv");
     const ui_frag_code_msl = @embedFile("shaders/ui.frag.msl");
 
-    const blur_down_code_spv = @embedFile("shaders/blur_down.spv");
-    const blur_down_code_msl = @embedFile("shaders/blur_down.msl");
-    const blur_up_code_spv = @embedFile("shaders/blur_up.spv");
-    const blur_up_code_msl = @embedFile("shaders/blur_up.msl");
-
     const shader_formats = dev.getShaderFormats();
 
     // Vertex & Fragment Shaders
@@ -359,28 +589,6 @@ pub fn initGpuResources(
         1,
     );
     defer dev.releaseShader(ui_frag_shader);
-
-    const blur_down_frag_shader = try createShaderFromFormat(
-        dev,
-        shader_formats,
-        .fragment,
-        blur_down_code_spv,
-        blur_down_code_msl,
-        1,
-        1,
-    );
-    defer dev.releaseShader(blur_down_frag_shader);
-
-    const blur_up_frag_shader = try createShaderFromFormat(
-        dev,
-        shader_formats,
-        .fragment,
-        blur_up_code_spv,
-        blur_up_code_msl,
-        1,
-        1,
-    );
-    defer dev.releaseShader(blur_up_frag_shader);
 
     // Create sampler
     const sampler_info = sdl.gpu.SamplerCreateInfo{
@@ -421,87 +629,15 @@ pub fn initGpuResources(
     };
     errdefer dev.releaseTexture(white_texture);
 
-    // Upload white pixel
-    {
-        const cmd_buf_wrapper = dev.acquireCommandBuffer() orelse
-            return error.CommandBufferAcquisitionFailed;
-        const transfer_buf = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
-            .usage = .upload,
-            .size = 4,
-            .props = 0,
-        }) orelse {
-            _ = cmd_buf_wrapper.submit();
-            return error.TransferBufferCreationFailed;
-        };
-        defer dev.releaseTransferBuffer(transfer_buf);
-
-        const mapped = dev.mapTransferBuffer(transfer_buf, false) orelse {
-            _ = cmd_buf_wrapper.submit();
-            return error.MapFailed;
-        };
-        mapped[0] = 255;
-        mapped[1] = 255;
-        mapped[2] = 255;
-        mapped[3] = 255;
-        dev.unmapTransferBuffer(transfer_buf);
-
-        const copy_pass = cmd_buf_wrapper.beginCopyPass() orelse {
-            _ = cmd_buf_wrapper.submit();
-            return error.CopyPassCreationFailed;
-        };
-        copy_pass.uploadToTexture(&sdl.gpu.TextureTransferInfo{
-            .transfer_buffer = transfer_buf,
-            .offset = 0,
-            .pixels_per_row = 1,
-            .rows_per_layer = 1,
-        }, &sdl.gpu.TextureRegion{
-            .texture = white_texture,
-            .w = 1,
-            .h = 1,
-            .d = 1,
-        }, false);
-        copy_pass.end();
-        _ = cmd_buf_wrapper.submit();
-    }
-
     // Create Graphics Pipeline
-    const vertex_attribs = [_]sdl.gpu.VertexAttribute{
-        .{
-            .location = 0,
-            .buffer_slot = 0,
-            .format = .float2,
-            .offset = @offsetOf(geometry.Vertex, "x"),
-        },
-        .{
-            .location = 1,
-            .buffer_slot = 0,
-            .format = .float2,
-            .offset = @offsetOf(geometry.Vertex, "u"),
-        },
-        .{
-            .location = 2,
-            .buffer_slot = 0,
-            .format = .ubyte4_norm,
-            .offset = @offsetOf(geometry.Vertex, "color"),
-        },
-    };
-    const vertex_buf_descs = [_]sdl.gpu.VertexBufferDescription{
-        .{
-            .slot = 0,
-            .pitch = @sizeOf(geometry.Vertex),
-            .input_rate = .vertex,
-            .instance_step_rate = 0,
-        },
-    };
-
     var pipeline_info = sdl.gpu.GraphicsPipelineCreateInfo{
         .vertex_shader = vert_shader,
         .fragment_shader = image_frag_shader,
         .vertex_input_state = .{
-            .num_vertex_attributes = vertex_attribs.len,
-            .vertex_attributes = &vertex_attribs,
-            .num_vertex_buffers = vertex_buf_descs.len,
-            .vertex_buffer_descriptions = &vertex_buf_descs,
+            .num_vertex_attributes = quad_vertex_attribs.len,
+            .vertex_attributes = &quad_vertex_attribs,
+            .num_vertex_buffers = quad_vertex_buf_descs.len,
+            .vertex_buffer_descriptions = &quad_vertex_buf_descs,
         },
         .primitive_type = .triangle_list,
         .rasterizer_state = .{
@@ -553,95 +689,53 @@ pub fn initGpuResources(
     };
     errdefer dev.releasePipeline(ui_pipeline);
 
-    // Create 2-pass Dual Kawase blur pipelines targeting RGBA8 textures without blending
-    var blur_down_pipeline_info = pipeline_info;
-    blur_down_pipeline_info.fragment_shader = blur_down_frag_shader;
-    blur_down_pipeline_info.target_info = .{
-        .num_color_targets = 1,
-        .color_target_descriptions = &[_]sdl.gpu.ColorTargetDescription{.{
-            .format = .rgba8_unorm,
-            .blend_state = .{
-                .src_color_blendfactor = .one,
-                .dst_color_blendfactor = .zero,
-                .color_blend_op = .add,
-                .src_alpha_blendfactor = .one,
-                .dst_alpha_blendfactor = .zero,
-                .alpha_blend_op = .add,
-                .color_write_mask = sdl.gpu.ColorComponent.r |
-                    sdl.gpu.ColorComponent.g |
-                    sdl.gpu.ColorComponent.b |
-                    sdl.gpu.ColorComponent.a,
-                .enable_blend = false,
-                .enable_color_write_mask = true,
-            },
-        }},
-        .has_depth_stencil_target = false,
-        .depth_stencil_format = .d16_unorm,
-    };
-    const blur_down_pipeline = dev.createPipeline(&blur_down_pipeline_info) orelse {
-        std.log.err("Failed to create blur down pipeline: {s}", .{sdl.getError()});
-        return error.PipelineCreationFailed;
-    };
-    errdefer dev.releasePipeline(blur_down_pipeline);
-
-    var blur_up_pipeline_info = blur_down_pipeline_info;
-    blur_up_pipeline_info.fragment_shader = blur_up_frag_shader;
-    const blur_up_pipeline = dev.createPipeline(&blur_up_pipeline_info) orelse {
-        std.log.err("Failed to create blur up pipeline: {s}", .{sdl.getError()});
-        return error.PipelineCreationFailed;
-    };
-    errdefer dev.releasePipeline(blur_up_pipeline);
-
     // Create static 6-vertex buffer for fullscreen passes
-    const fullscreen_verts = [_]geometry.Vertex{
-        .{ .x = -1.0, .y = 1.0, .u = 0.0, .v = 0.0, .color = 0xFFFFFFFF },
-        .{ .x = -1.0, .y = -1.0, .u = 0.0, .v = 1.0, .color = 0xFFFFFFFF },
-        .{ .x = 1.0, .y = 1.0, .u = 1.0, .v = 0.0, .color = 0xFFFFFFFF },
-        .{ .x = 1.0, .y = 1.0, .u = 1.0, .v = 0.0, .color = 0xFFFFFFFF },
-        .{ .x = -1.0, .y = -1.0, .u = 0.0, .v = 1.0, .color = 0xFFFFFFFF },
-        .{ .x = 1.0, .y = -1.0, .u = 1.0, .v = 1.0, .color = 0xFFFFFFFF },
-    };
-    const fs_buf_size = @sizeOf(@TypeOf(fullscreen_verts));
     const fullscreen_vertex_buffer = dev.createBuffer(&sdl.gpu.BufferCreateInfo{
         .usage = sdl.gpu.BufferUsage.vertex,
-        .size = @intCast(fs_buf_size),
+        .size = @intCast(StaticInitPayload.verts_size),
         .props = 0,
     }) orelse return error.GPUVertexBufferCreationFailed;
     errdefer dev.releaseBuffer(fullscreen_vertex_buffer);
 
+    // Upload static 1x1 white pixel texture and 6-vertex fullscreen quad in a single copy pass
     {
-        const cmd_buf_wrapper = dev.acquireCommandBuffer() orelse
-            return error.CommandBufferAcquisitionFailed;
         const transfer_buf = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
             .usage = .upload,
-            .size = @intCast(fs_buf_size),
+            .size = @intCast(@sizeOf(StaticInitPayload)),
             .props = 0,
-        }) orelse {
-            _ = cmd_buf_wrapper.submit();
-            return error.TransferBufferCreationFailed;
-        };
+        }) orelse return error.TransferBufferCreationFailed;
         defer dev.releaseTransferBuffer(transfer_buf);
 
-        const mapped: [*]geometry.Vertex = @ptrCast(@alignCast(
-            dev.mapTransferBuffer(transfer_buf, false) orelse {
-                _ = cmd_buf_wrapper.submit();
-                return error.MapFailed;
-            },
+        const mapped: *StaticInitPayload = @ptrCast(@alignCast(
+            dev.mapTransferBuffer(transfer_buf, false) orelse return error.MapFailed,
         ));
-        @memcpy(mapped[0..fullscreen_verts.len], &fullscreen_verts);
+        mapped.* = .{};
         dev.unmapTransferBuffer(transfer_buf);
 
+        const cmd_buf_wrapper = dev.acquireCommandBuffer() orelse
+            return error.CommandBufferAcquisitionFailed;
         const copy_pass = cmd_buf_wrapper.beginCopyPass() orelse {
-            _ = cmd_buf_wrapper.submit();
+            _ = cmd_buf_wrapper.cancel();
             return error.CopyPassCreationFailed;
         };
+        copy_pass.uploadToTexture(&sdl.gpu.TextureTransferInfo{
+            .transfer_buffer = transfer_buf,
+            .offset = StaticInitPayload.pixel_offset,
+            .pixels_per_row = 1,
+            .rows_per_layer = 1,
+        }, &sdl.gpu.TextureRegion{
+            .texture = white_texture,
+            .w = 1,
+            .h = 1,
+            .d = 1,
+        }, false);
         copy_pass.uploadToBuffer(&sdl.gpu.TransferBufferLocation{
             .transfer_buffer = transfer_buf,
-            .offset = 0,
+            .offset = StaticInitPayload.verts_offset,
         }, &sdl.gpu.BufferRegion{
             .buffer = fullscreen_vertex_buffer,
             .offset = 0,
-            .size = @intCast(fs_buf_size),
+            .size = @intCast(StaticInitPayload.verts_size),
         }, false);
         copy_pass.end();
         _ = cmd_buf_wrapper.submit();
@@ -680,8 +774,7 @@ pub fn initGpuResources(
         .device = dev,
         .image_pipeline = image_pipeline,
         .ui_pipeline = ui_pipeline,
-        .blur_down_pipeline = blur_down_pipeline,
-        .blur_up_pipeline = blur_up_pipeline,
+        .blur = .uninitialized,
         .fullscreen_vertex_buffer = fullscreen_vertex_buffer,
         .unpack_compute_pipeline = unpack_compute_pipeline,
         .sampler = sampler,
@@ -805,4 +898,67 @@ pub fn sdl3MeasureText(
     const size = font.getStringSize(clean_text) orelse
         return .{ .w = 0, .h = 0 };
     return .{ .w = @floatFromInt(size.w), .h = @floatFromInt(size.h) };
+}
+
+test "BlurResources tagged union lifecycle and failure latching" {
+    var blur: BlurResources = .uninitialized;
+    try std.testing.expect(blur == .uninitialized);
+    try std.testing.expect(blur.getBlurTexture() == null);
+
+    // Window dimensions of zero must short-circuit without attempting GPU calls or mutating state
+    const dummy_dev: sdl.gpu.Device = .{ .ptr = @ptrFromInt(0x1000) };
+    blur.ensure(dummy_dev, 0, 0, .rgba8_unorm);
+    try std.testing.expect(blur == .uninitialized);
+
+    // Initialized state composes session-lifetime Pipelines and window-sized Textures
+    blur = .{
+        .initialized = .{
+            .pipelines = .{
+                .down = .{ .ptr = @ptrFromInt(0x2001) },
+                .up = .{ .ptr = @ptrFromInt(0x2002) },
+            },
+            .textures = .{
+                .scene = .{ .ptr = @ptrFromInt(0x2003) },
+                .blur_down = .{ .ptr = @ptrFromInt(0x2004) },
+                .blur = .{ .ptr = @ptrFromInt(0x2005) },
+                .target_w = 800,
+                .target_h = 600,
+                .target_format = .rgba8_unorm,
+                .down_w = 200,
+                .down_h = 150,
+            },
+        },
+    };
+    try std.testing.expect(blur == .initialized);
+    try std.testing.expect(blur.initialized.textures.matches(800, 600, .rgba8_unorm));
+    try std.testing.expect(!blur.initialized.textures.matches(1024, 768, .rgba8_unorm));
+    try std.testing.expectEqual(@as(?sdl.gpu.Texture, .{ .ptr = @ptrFromInt(0x2005) }), blur.getBlurTexture());
+
+    // Calling ensure with matching dimensions on initialized resources is a no-op
+    blur.ensure(dummy_dev, 800, 600, .rgba8_unorm);
+    try std.testing.expect(blur == .initialized);
+
+    // Transition to failed latches failure and denies texture access
+    blur = .failed;
+    try std.testing.expect(blur == .failed);
+    try std.testing.expect(blur.getBlurTexture() == null);
+
+    // Calls to ensure while failed must remain failed without mutating state
+    blur.ensure(dummy_dev, 800, 600, .rgba8_unorm);
+    try std.testing.expect(blur == .failed);
+
+    // Deinit on failed resets state back to uninitialized without dereferencing dev
+    blur.deinit(dummy_dev);
+    try std.testing.expect(blur == .uninitialized);
+}
+
+test "StaticInitPayload packs fullscreen quad and 4-byte aligned white pixel" {
+    const payload = StaticInitPayload{};
+    try std.testing.expectEqual(@as(usize, 0), StaticInitPayload.verts_offset);
+    try std.testing.expectEqual(@as(usize, 6 * @sizeOf(geometry.Vertex)), StaticInitPayload.verts_size);
+    try std.testing.expectEqual(@as(usize, 120), StaticInitPayload.pixel_offset);
+    try std.testing.expectEqual(@as(usize, 0), StaticInitPayload.pixel_offset % 4);
+    try std.testing.expectEqual(@as(usize, 124), @sizeOf(StaticInitPayload));
+    try std.testing.expectEqualSlices(u8, &.{ 255, 255, 255, 255 }, &payload.white_pixel);
+    try std.testing.expectEqual(@as(usize, 6), payload.fullscreen_verts.len);
 }

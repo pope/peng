@@ -52,6 +52,13 @@ pub const ImageCache = struct {
     vram_capped_neighbors: ?state_pkg.VisibleNeighbors = null,
     vram_capped_prev_index: ?usize = null,
     max_prefetch_dist: usize = 2,
+    alias_index: ?IndexAlias = null,
+
+    pub const IndexAlias = struct {
+        from: usize,
+        to: usize,
+        generation: usize,
+    };
 
     /// Atomically increments the cache generation epoch to invalidate
     /// in-flight asynchronous decode tasks.
@@ -59,6 +66,7 @@ pub const ImageCache = struct {
         self.vram_capped_neighbors = null;
         self.vram_capped_prev_index = null;
         self.max_prefetch_dist = 2;
+        self.alias_index = null;
         return self.generation.fetchAdd(1, .release) +% 1;
     }
 
@@ -97,6 +105,7 @@ pub const ImageCache = struct {
         self.vram_capped_neighbors = null;
         self.vram_capped_prev_index = null;
         self.max_prefetch_dist = 2;
+        self.alias_index = null;
     }
 
     /// Clears all slots without releasing underlying capacity.
@@ -105,6 +114,7 @@ pub const ImageCache = struct {
         self.vram_capped_neighbors = null;
         self.vram_capped_prev_index = null;
         self.max_prefetch_dist = 2;
+        self.alias_index = null;
     }
 
     /// Finds the dense array index of the slot matching `key`, or null if not found.
@@ -163,6 +173,14 @@ pub const ImageCache = struct {
         index_in_list: usize,
         gpu_device: ?sdl.gpu.Device,
     ) void {
+        const removed_key = self.slots.items(.key)[index_in_list];
+        if (self.alias_index) |alias| {
+            if (alias.generation == removed_key.generation and
+                (alias.to == removed_key.index or alias.from == removed_key.index))
+            {
+                self.alias_index = null;
+            }
+        }
         var entry = self.slots.items(.entry)[index_in_list];
         self.slots.swapRemove(index_in_list);
         entry.deinit(gpu_device);
@@ -2662,4 +2680,19 @@ test "computeTextureVramBytes - reports 4bpp RGBA8 footprint with mipmaps" {
         @as(usize, (100 * 50 * 4 * 4) / 3),
         computeTextureVramBytes(100, 50, 8),
     );
+}
+
+test "ImageCache - removeAndDeinit resets alias_index when target slot removed" {
+    const allocator = std.testing.allocator;
+    var cache = ImageCache{};
+    defer cache.deinit(allocator, null);
+
+    const key = try cache.appendSlot(allocator, 42, .{
+        .decoding = .{ .has_thread = true },
+    });
+    cache.alias_index = .{ .from = 0, .to = 42, .generation = key.generation };
+    try std.testing.expect(cache.alias_index != null);
+
+    cache.removeAndDeinit(0, null);
+    try std.testing.expect(cache.alias_index == null);
 }
