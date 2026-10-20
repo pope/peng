@@ -30,7 +30,7 @@ stdenv.mkDerivation (_finalAttrs: {
       genericName = "Image Viewer";
       comment = "GPU-accelerated image viewer built in Zig";
       exec = "peng %F";
-      icon = "multimedia-photo-viewer";
+      icon = "image-x-generic";
       terminal = false;
       categories = [
         "Graphics"
@@ -50,14 +50,23 @@ stdenv.mkDerivation (_finalAttrs: {
         "image/tiff"
         "application/vnd.comicbook+zip"
         "application/x-cbz"
+        "image/x-dcraw"
         "image/x-sony-arw"
+        "image/x-sony-sr2"
+        "image/x-sony-srf"
         "image/x-fuji-raf"
         "image/x-canon-cr2"
+        "image/x-canon-cr3"
+        "image/x-canon-crw"
         "image/x-nikon-nef"
+        "image/x-nikon-nrw"
         "image/x-adobe-dng"
         "image/x-olympus-orf"
+        "image/x-panasonic-rw"
         "image/x-panasonic-rw2"
         "image/x-pentax-pef"
+        "image/x-sigma-x3f"
+        "image/x-samsung-srw"
       ];
     })
   ];
