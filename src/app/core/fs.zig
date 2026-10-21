@@ -260,6 +260,24 @@ fn isAllDotDots(path: []const u8) bool {
     return count > 0;
 }
 
+/// Strips trailing `/` and `\` path separators from `path` while preserving
+/// filesystem roots (`"/"`, `"\\"`, or Windows drive roots such as `"C:\\"`).
+pub fn trimTrailingSeparators(path: []const u8) []const u8 {
+    if (path.len == 0) return path;
+    const trimmed = std.mem.trimEnd(u8, path, "/\\");
+    if (trimmed.len == 0) {
+        return path[0..1];
+    }
+    if (trimmed.len == 2 and
+        std.ascii.isAlphabetic(trimmed[0]) and
+        trimmed[1] == ':' and
+        path.len > 2)
+    {
+        return path[0..3];
+    }
+    return trimmed;
+}
+
 /// Computes the parent directory path of `dir` and writes it into `buf`, handling root paths,
 /// relative `..` path chains, and forward/backward slash separators.
 /// Returns `null` if at filesystem root.
@@ -1036,4 +1054,17 @@ test "scanDirectoryEntries and scanFolderContents follow symlinks" {
         "linked_dir",
         entries.items[0].getName(),
     );
+}
+
+test "trimTrailingSeparators preserves root paths and strips trailing slashes" {
+    try std.testing.expectEqualStrings("", trimTrailingSeparators(""));
+    try std.testing.expectEqualStrings("/", trimTrailingSeparators("/"));
+    try std.testing.expectEqualStrings("/", trimTrailingSeparators("///"));
+    try std.testing.expectEqualStrings("\\", trimTrailingSeparators("\\"));
+    try std.testing.expectEqualStrings("/home/pope", trimTrailingSeparators("/home/pope/"));
+    try std.testing.expectEqualStrings("/home/pope", trimTrailingSeparators("/home/pope"));
+    try std.testing.expectEqualStrings("C:\\", trimTrailingSeparators("C:\\"));
+    try std.testing.expectEqualStrings("C:/", trimTrailingSeparators("C:/"));
+    try std.testing.expectEqualStrings("C:", trimTrailingSeparators("C:"));
+    try std.testing.expectEqualStrings("C:\\Users", trimTrailingSeparators("C:\\Users\\"));
 }

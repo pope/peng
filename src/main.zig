@@ -165,6 +165,21 @@ const AppGraphicsAndState = struct {
     pub fn init(self: *AppGraphicsAndState, proc_init: std.process.Init) !bool {
         const gpa = proc_init.gpa;
 
+        // Pre-scan `process_environ` on both the global debug `Io.Threaded`
+        // instance (used by `std.log` / `std.debug.lockStderr` and panic stack
+        // trace symbolication) and the application `Io` instance before SDL3
+        // initializes Wayland. Under Wayland compositors (e.g. KWin), SDL3
+        // consumes `XDG_ACTIVATION_TOKEN` via `unsetenv`, which shifts `c_envp`
+        // in-place and places a `null` entry inside the startup slice bounds
+        // stored in `std.Io.Threaded`, triggering an `unwrapNull` panic and
+        // mutex deadlock if `scanEnviron` runs lazily after SDL initialization.
+        _ = std.Options.debug_io.vtable.progressParentFile(
+            std.Options.debug_io.userdata,
+        ) catch {};
+        _ = proc_init.io.vtable.progressParentFile(
+            proc_init.io.userdata,
+        ) catch {};
+
         // 1. Parse command line arguments
         var parsed = try app_config.cli.parseCommandLineArgs(proc_init, gpa);
         errdefer parsed.deinit(gpa);

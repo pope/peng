@@ -15,7 +15,7 @@ pub fn loadDirectoryEntries(
     io: std.Io,
     dir_path: []const u8,
 ) !void {
-    const raw_target = std.mem.trimEnd(u8, dir_path, "/\\");
+    const raw_target = core_fs.trimTrailingSeparators(dir_path);
     const target = if (core_fs.isCbzFile(raw_target))
         (std.fs.path.dirname(raw_target) orelse ".")
     else
@@ -75,4 +75,23 @@ pub fn loadDirectoryEntries(
     };
     try self.rebuildDirectoryMatches();
     self.selection_dirty = true;
+}
+
+test "loadDirectoryEntries preserves root path '/' when navigating up from '/home'" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var palette = try PaletteState.init(allocator);
+    defer palette.deinit();
+
+    palette.current_nav_dir.clearRetainingCapacity();
+    try palette.current_nav_dir.appendSlice(allocator, "/home");
+
+    try loadDirectoryEntries(&palette, io, "/");
+
+    try std.testing.expectEqualStrings("/", palette.current_nav_dir.items);
+    try std.testing.expectEqualStrings("/", palette.last_nav_dir.items);
+    try std.testing.expectEqualStrings("home", palette.last_child_dir.items);
 }
