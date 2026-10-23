@@ -339,13 +339,13 @@ fn renderTitlePill(
             switch (ui_model.slideshow) {
                 .active => |s| {
                     if (is_filtered) {
-                        count_str = try std.fmt.bufPrint(
+                        count_str = try std.mem.print(
                             count_buf,
                             "Image {} of {} ({} total) [Slide Show {d:.1}s]",
                             .{ vis_pos, vis_cnt, total_images, s.interval_s },
                         );
                     } else {
-                        count_str = try std.fmt.bufPrint(
+                        count_str = try std.mem.print(
                             count_buf,
                             "Image {} of {} [Slide Show {d:.1}s]",
                             .{ vis_pos, vis_cnt, s.interval_s },
@@ -354,19 +354,19 @@ fn renderTitlePill(
                 },
                 .inactive => {
                     if (is_filtered) {
-                        count_str = try std.fmt.bufPrint(
+                        count_str = try std.mem.print(
                             count_buf,
                             "Image {} of {} ({} total)",
                             .{ vis_pos, vis_cnt, total_images },
                         );
                     } else if (is_loading) {
-                        count_str = try std.fmt.bufPrint(
+                        count_str = try std.mem.print(
                             count_buf,
                             "Image {} of {}...",
                             .{ vis_pos, vis_cnt },
                         );
                     } else {
-                        count_str = try std.fmt.bufPrint(
+                        count_str = try std.mem.print(
                             count_buf,
                             "Image {} of {}",
                             .{ vis_pos, vis_cnt },
@@ -703,7 +703,7 @@ fn renderEmptyState() void {
                 .color = theme.overlay0,
             },
             .corner_radius = .all(12),
-            .user_data = @ptrFromInt(@intFromEnum(ElementTag.drop_zone_box)),
+            .user_data = @ptrFromInt(@backingInt(ElementTag.drop_zone_box)),
         })({
             clay.text("No Images Loaded", .{
                 .color = theme.text,
@@ -746,7 +746,7 @@ fn formatLoadingText(
 
     const font = measure_data.fonts[0] orelse {
         // Fallback for headless test environments without loaded TTF fonts
-        return std.fmt.allocPrint(allocator, "Loading {s}...", .{fname}) catch |err| {
+        return allocator.print("Loading {s}...", .{fname}) catch |err| {
             std.log.warn("Failed to format loading text fallback: {any}", .{err});
             return fallback;
         };
@@ -783,15 +783,16 @@ fn formatLoadingText(
     }
 
     // If already middle-truncated ("..."), avoid double ellipsis at the end
-    const is_middle_truncated = std.mem.indexOf(u8, truncated_fname, "...") != null;
+    const is_middle_truncated =
+        std.mem.find(u8, truncated_fname, "...") != null;
     if (is_middle_truncated) {
-        return std.fmt.allocPrint(allocator, "Loading {s}", .{truncated_fname}) catch |err| {
+        return allocator.print("Loading {s}", .{truncated_fname}) catch |err| {
             std.log.warn("Failed to format loading text: {any}", .{err});
             return fallback;
         };
     }
 
-    return std.fmt.allocPrint(allocator, "Loading {s}...", .{truncated_fname}) catch |err| {
+    return allocator.print("Loading {s}...", .{truncated_fname}) catch |err| {
         std.log.warn("Failed to format loading text: {any}", .{err});
         return fallback;
     };
@@ -1172,8 +1173,7 @@ fn renderViewport(
         } else if (ui_model.visible_state == .filtered_empty) {
             // Informative empty filter canvas
             const fe = ui_model.visible_state.filtered_empty;
-            const subtext = std.fmt.allocPrint(
-                frame_allocator,
+            const subtext = frame_allocator.print(
                 "{s}: 0 of {} images match -- press 'v' to cycle filter",
                 .{ fe.mode.label(), fe.total_count },
             ) catch "No images match current filter";
@@ -1228,7 +1228,7 @@ fn renderViewport(
 test "formatLoadingText - fallback when no filename" {
     var data = MeasureTextUserData{
         .allocator = std.testing.allocator,
-        .fonts = &([_]?sdl.Font{null} ** 2),
+        .fonts = &(@as([2]?sdl.Font, @splat(null))),
     };
     const res = formatLoadingText(std.testing.allocator, null, 400.0, 22, &data);
     try std.testing.expectEqualStrings("Loading image...", res);
@@ -1237,7 +1237,7 @@ test "formatLoadingText - fallback when no filename" {
 test "formatLoadingText - with filename" {
     var data = MeasureTextUserData{
         .allocator = std.testing.allocator,
-        .fonts = &([_]?sdl.Font{null} ** 2),
+        .fonts = &(@as([2]?sdl.Font, @splat(null))),
     };
     const res = formatLoadingText(std.testing.allocator, "photo.jpg", 400.0, 22, &data);
     defer std.testing.allocator.free(res);
@@ -1247,7 +1247,7 @@ test "formatLoadingText - with filename" {
 test "formatLoadingText - fallback when empty filename" {
     var data = MeasureTextUserData{
         .allocator = std.testing.allocator,
-        .fonts = &([_]?sdl.Font{null} ** 2),
+        .fonts = &(@as([2]?sdl.Font, @splat(null))),
     };
     const res = formatLoadingText(std.testing.allocator, "", 400.0, 22, &data);
     try std.testing.expectEqualStrings("Loading image...", res);
@@ -1256,7 +1256,7 @@ test "formatLoadingText - fallback when empty filename" {
 test "formatLoadingText - narrow viewport fallback" {
     var data = MeasureTextUserData{
         .allocator = std.testing.allocator,
-        .fonts = &([_]?sdl.Font{null} ** 2),
+        .fonts = &(@as([2]?sdl.Font, @splat(null))),
     };
     const res = formatLoadingText(std.testing.allocator, null, 100.0, 22, &data);
     try std.testing.expectEqualStrings("Loading...", res);
@@ -1346,7 +1346,7 @@ test "renderViewport - floating crossfade quads allow Viewport hit-testing" {
 
     var data = MeasureTextUserData{
         .allocator = std.testing.allocator,
-        .fonts = &([_]?sdl.Font{null} ** 2),
+        .fonts = &(@as([2]?sdl.Font, @splat(null))),
     };
     const dummy_tex: sdl.gpu.Texture = .{ .ptr = @ptrFromInt(0x1000) };
     const entry = state.CacheEntry{
@@ -1389,7 +1389,7 @@ test "renderViewport - floating crossfade quads allow Viewport hit-testing" {
         .viewport = .{},
         .palette = &pal_state,
         .snackbar = .none,
-        .anim_values = [_]f32{0.5} ** 32,
+        .anim_values = @splat(0.5),
         .debug_show_thumb = false,
         .is_thumb_crossfading = true,
         .image_dissolve = .{

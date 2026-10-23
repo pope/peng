@@ -362,33 +362,39 @@ test "CliTarget appliesTo works correctly" {
 
 test "scale_modes_string and filter_modes_string contain enum variants" {
     const testing = std.testing;
-    try testing.expect(std.mem.indexOf(u8, intents.scale_modes_string, "full") != null);
-    try testing.expect(std.mem.indexOf(u8, intents.scale_modes_string, "fit_width") != null);
-    try testing.expect(std.mem.indexOf(u8, intents.filter_modes_string, "mitchell") != null);
-    try testing.expect(std.mem.indexOf(u8, intents.filter_modes_string, "lanczos3") != null);
-    try testing.expect(std.mem.indexOf(u8, intents.filter_modes_string, "fsr") != null);
-    try testing.expect(std.mem.indexOf(u8, intents.filter_modes_string, "tiny_cnn") != null);
+    const scale_str = intents.scale_modes_string;
+    const filter_str = intents.filter_modes_string;
+    try testing.expect(std.mem.find(u8, scale_str, "full") != null);
+    try testing.expect(std.mem.find(u8, scale_str, "fit_width") != null);
+    try testing.expect(std.mem.find(u8, filter_str, "mitchell") != null);
+    try testing.expect(std.mem.find(u8, filter_str, "lanczos3") != null);
+    try testing.expect(std.mem.find(u8, filter_str, "fsr") != null);
+    try testing.expect(std.mem.find(u8, filter_str, "tiny_cnn") != null);
 }
 
 test "help_text and ipc_help_text contain registered options" {
     const testing = std.testing;
     for (options) |opt| {
         if (opt.target.appliesTo(.main)) {
-            try testing.expect(std.mem.indexOf(u8, main_help_text, opt.long) != null);
+            const has_long = std.mem.find(u8, main_help_text, opt.long) != null;
+            try testing.expect(has_long);
             if (opt.short) |s| {
-                try testing.expect(std.mem.indexOf(u8, main_help_text, s) != null);
+                const has_short = std.mem.find(u8, main_help_text, s) != null;
+                try testing.expect(has_short);
             }
         }
         if (opt.target.appliesTo(.ipc)) {
-            try testing.expect(std.mem.indexOf(u8, ipc_help_text, opt.long) != null);
+            const has_long = std.mem.find(u8, ipc_help_text, opt.long) != null;
+            try testing.expect(has_long);
             if (opt.short) |s| {
-                try testing.expect(std.mem.indexOf(u8, ipc_help_text, s) != null);
+                const has_short = std.mem.find(u8, ipc_help_text, s) != null;
+                try testing.expect(has_short);
             }
         }
     }
 
     for (ipc_commands) |cmd| {
-        try testing.expect(std.mem.indexOf(u8, ipc_help_text, cmd.name) != null);
+        try testing.expect(std.mem.find(u8, ipc_help_text, cmd.name) != null);
     }
 }
 

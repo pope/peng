@@ -1,6 +1,9 @@
+const c_pkg = @import("c.zig");
 const std = @import("std");
-const c = @import("c.zig").c;
-const Surface = @import("surface.zig").Surface;
+const surface = @import("surface.zig");
+
+const c = c_pkg.c;
+const Surface = surface.Surface;
 
 /// Initializes the SDL_ttf font rasterization engine.
 pub fn initTtf() !void {
@@ -95,11 +98,17 @@ pub const Font = struct {
         text: []const u8,
         color: Color,
     ) !Surface {
-        const clean_text = if (std.mem.indexOfScalar(u8, text, 0)) |idx| text[0..idx] else text;
+        const clean_text = if (std.mem.findScalar(u8, text, 0)) |idx|
+            text[0..idx]
+        else
+            text;
         if (clean_text.len == 0) return error.TtfRenderFailed;
 
-        const c_text = allocator.dupeZ(u8, clean_text) catch |err| {
-            std.log.err("dupeZ failed in renderTextBlended for '{s}': {}", .{ clean_text, err });
+        const c_text = allocator.dupeSentinel(u8, clean_text, 0) catch |err| {
+            std.log.err(
+                "dupeSentinel failed in renderTextBlended for '{s}': {}",
+                .{ clean_text, err },
+            );
             return err;
         };
         defer allocator.free(c_text);

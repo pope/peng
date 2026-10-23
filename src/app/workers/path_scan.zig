@@ -92,7 +92,7 @@ pub fn scanDirectoryThreadSafe(
         if (workers.exiting.load(.acquire)) return;
         if (core_fs.isImageFile(entry.name)) {
             if (core_fs.resolveEntryKind(dir, io, entry) == .file) {
-                const full_path = std.fs.path.join(
+                const full_path = std.Io.Dir.path.join(
                     gpa,
                     &.{ dir_path, entry.name },
                 ) catch |err| {
@@ -175,8 +175,10 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
             return;
         };
     } else {
-        const dir_path =
-            if (is_dir) target_path else (std.fs.path.dirname(target_path) orelse ".");
+        const dir_path = if (is_dir)
+            target_path
+        else
+            (std.Io.Dir.path.dirname(target_path) orelse ".");
 
         var dir = std.Io.Dir.openDir(
             std.Io.Dir.cwd(),
@@ -201,7 +203,7 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
             }) orelse break;
             if (core_fs.isImageFile(entry.name)) {
                 if (core_fs.resolveEntryKind(dir, io, entry) == .file) {
-                    const full_path = std.fs.path.join(
+                    const full_path = std.Io.Dir.path.join(
                         gpa,
                         &.{ dir_path, entry.name },
                     ) catch |err| {

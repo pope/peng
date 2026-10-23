@@ -92,8 +92,7 @@ pub fn truncateFilenameMiddle(
         tail_start_idx = head_len;
     }
 
-    const display = std.fmt.allocPrint(
-        allocator,
+    const display = allocator.print(
         "{s}...{s}",
         .{ text[0..head_len], text[tail_start_idx..] },
     ) catch return .{
@@ -189,14 +188,17 @@ pub fn truncateDirectory(
         }
     }
 
-    return std.fmt.allocPrint(allocator, "...{s}", .{text[text.len - best_len ..]}) catch text;
+    return allocator.print(
+        "...{s}",
+        .{text[text.len - best_len ..]},
+    ) catch text;
 }
 
 /// Formats a byte size as a fractional megabyte string (e.g. "1.5 MB").
 pub fn formatSize(allocator: std.mem.Allocator, bytes: u64) ![]const u8 {
     const kb = @as(f64, @floatFromInt(bytes)) / 1024.0;
     const mb = kb / 1024.0;
-    return std.fmt.allocPrint(allocator, "{d:.1} MB", .{mb});
+    return allocator.print("{d:.1} MB", .{mb});
 }
 
 test "formatSize" {

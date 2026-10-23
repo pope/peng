@@ -12,7 +12,8 @@ pub const AnimationChannel = enum(u8) {
     edit_panel = 5,
 };
 
-pub const CHANNEL_COUNT: usize = @typeInfo(AnimationChannel).@"enum".fields.len;
+pub const CHANNEL_COUNT: usize =
+    @typeInfo(AnimationChannel).@"enum".field_names.len;
 pub const MAX_CHANNELS: usize = 32;
 
 /// Standard animation duration constants.
@@ -105,15 +106,15 @@ pub const AnimationState = struct {
     values: [MAX_CHANNELS]f32 = initValues(),
     start_vals: [MAX_CHANNELS]f32 = initValues(),
     target_vals: [MAX_CHANNELS]f32 = initValues(),
-    elapsed_ms: [MAX_CHANNELS]f32 = [_]f32{0.0} ** MAX_CHANNELS,
-    durations_ms: [MAX_CHANNELS]f32 = [_]f32{0.0} ** MAX_CHANNELS,
-    easings: [MAX_CHANNELS]EasingType = [_]EasingType{.linear} ** MAX_CHANNELS,
+    elapsed_ms: [MAX_CHANNELS]f32 = @splat(0.0),
+    durations_ms: [MAX_CHANNELS]f32 = @splat(0.0),
+    easings: [MAX_CHANNELS]EasingType = @splat(.linear),
     active_mask: u32 = 0,
 
     fn initValues() [MAX_CHANNELS]f32 {
-        var vals = [_]f32{0.0} ** MAX_CHANNELS;
+        var vals: [MAX_CHANNELS]f32 = @splat(0.0);
         inline for (std.meta.tags(AnimationChannel)) |ch| {
-            vals[@intFromEnum(ch)] = getDescriptor(ch).default_value;
+            vals[@backingInt(ch)] = getDescriptor(ch).default_value;
         }
         return vals;
     }
@@ -125,12 +126,16 @@ pub const AnimationState = struct {
 
     /// Direct O(1) indexed lookup of the current animated value for `channel`.
     pub inline fn get(self: *const AnimationState, channel: AnimationChannel) f32 {
-        return self.values[@intFromEnum(channel)];
+        return self.values[@backingInt(channel)];
     }
 
     /// Returns true if the specified channel is currently animating.
-    pub inline fn isActive(self: *const AnimationState, channel: AnimationChannel) bool {
-        return (self.active_mask & (@as(u32, 1) << @intCast(@intFromEnum(channel)))) != 0;
+    pub inline fn isActive(
+        self: *const AnimationState,
+        channel: AnimationChannel,
+    ) bool {
+        const bit = @as(u32, 1) << @intCast(@backingInt(channel));
+        return (self.active_mask & bit) != 0;
     }
 
     /// Triggers an animation on `channel` with explicit target, duration, and easing.
@@ -152,7 +157,7 @@ pub const AnimationState = struct {
         duration_ms: f32,
         easing_type: EasingType,
     ) void {
-        const idx = @intFromEnum(channel);
+        const idx = @backingInt(channel);
         const current_val = self.values[idx];
         if (duration_ms <= 0.0 or current_val == target) {
             self.setImmediate(channel, target);
@@ -177,7 +182,7 @@ pub const AnimationState = struct {
         duration_ms: f32,
         easing_type: EasingType,
     ) void {
-        const idx = @intFromEnum(channel);
+        const idx = @backingInt(channel);
         if (duration_ms <= 0.0 or from_val == target) {
             self.setImmediate(channel, target);
             return;
@@ -194,7 +199,7 @@ pub const AnimationState = struct {
 
     /// Sets the value directly without animating, deactivating the channel.
     pub fn setImmediate(self: *AnimationState, channel: AnimationChannel, val: f32) void {
-        const idx = @intFromEnum(channel);
+        const idx = @backingInt(channel);
         self.values[idx] = val;
         self.start_vals[idx] = val;
         self.target_vals[idx] = val;
@@ -203,7 +208,7 @@ pub const AnimationState = struct {
 
     /// Immediately snaps `channel` to its target value and marks it inactive.
     pub fn settle(self: *AnimationState, channel: AnimationChannel) void {
-        const idx = @intFromEnum(channel);
+        const idx = @backingInt(channel);
         self.values[idx] = self.target_vals[idx];
         self.active_mask &= ~(@as(u32, 1) << @intCast(idx));
     }
@@ -281,7 +286,7 @@ test "AnimationState smooth interruption" {
 
     // Reverse mid-flight towards 0.0 over 100ms
     anim.start(.palette_reveal, 0.0, 100.0, .linear);
-    const reveal_idx = @intFromEnum(AnimationChannel.palette_reveal);
+    const reveal_idx = @backingInt(AnimationChannel.palette_reveal);
     try std.testing.expectApproxEqAbs(
         @as(f32, 0.4),
         anim.start_vals[reveal_idx],

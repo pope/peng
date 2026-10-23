@@ -1,5 +1,7 @@
+const c_pkg = @import("c.zig");
 const std = @import("std");
-const c = @import("c.zig").c;
+
+const c = c_pkg.c;
 
 pub const TextureFormat = enum(c_int) {
     rgba8_unorm = c.SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
@@ -684,8 +686,8 @@ pub const CommandBuffer = struct {
         const c_info = c.SDL_GPUColorTargetInfo{
             .texture = target.texture.ptr,
             .clear_color = target.clear_color,
-            .load_op = @intCast(@intFromEnum(target.load_op)),
-            .store_op = @intCast(@intFromEnum(target.store_op)),
+            .load_op = @intCast(@backingInt(target.load_op)),
+            .store_op = @intCast(@backingInt(target.store_op)),
             .cycle = target.cycle,
             .padding1 = 0,
             .padding2 = 0,
@@ -792,8 +794,15 @@ pub const Device = struct {
     }
 
     /// Queries the preferred texture format for a window swapchain on this device.
-    pub fn getSwapchainTextureFormat(self: Device, window: anytype) TextureFormat {
-        return @enumFromInt(c.SDL_GetGPUSwapchainTextureFormat(self.ptr, @ptrCast(window.ptr)));
+    pub fn getSwapchainTextureFormat(
+        self: Device,
+        window: anytype,
+    ) TextureFormat {
+        const raw_fmt = c.SDL_GetGPUSwapchainTextureFormat(
+            self.ptr,
+            @ptrCast(window.ptr),
+        );
+        return @fromBackingInt(@intCast(raw_fmt));
     }
 
     /// Acquires a command buffer for recording GPU commands.
@@ -821,14 +830,14 @@ pub const Device = struct {
     /// Creates a GPU texture according to the provided configuration.
     pub fn createTexture(self: Device, info: *const TextureCreateInfo) ?Texture {
         const c_info = c.SDL_GPUTextureCreateInfo{
-            .type = @intCast(@intFromEnum(info.type)),
-            .format = @intCast(@intFromEnum(info.format)),
+            .type = @intCast(@backingInt(info.type)),
+            .format = @intCast(@backingInt(info.format)),
             .usage = info.usage,
             .width = info.width,
             .height = info.height,
             .layer_count_or_depth = info.layer_count_or_depth,
             .num_levels = info.num_levels,
-            .sample_count = @intCast(@intFromEnum(info.sample_count)),
+            .sample_count = @intCast(@backingInt(info.sample_count)),
             .props = info.props,
         };
         const raw = c.SDL_CreateGPUTexture(self.ptr, &c_info);
@@ -843,15 +852,15 @@ pub const Device = struct {
     /// Creates a GPU texture sampler according to the provided configuration.
     pub fn createSampler(self: Device, info: *const SamplerCreateInfo) ?Sampler {
         const c_info = c.SDL_GPUSamplerCreateInfo{
-            .min_filter = @intCast(@intFromEnum(info.min_filter)),
-            .mag_filter = @intCast(@intFromEnum(info.mag_filter)),
-            .mipmap_mode = @intCast(@intFromEnum(info.mipmap_mode)),
-            .address_mode_u = @intCast(@intFromEnum(info.address_mode_u)),
-            .address_mode_v = @intCast(@intFromEnum(info.address_mode_v)),
-            .address_mode_w = @intCast(@intFromEnum(info.address_mode_w)),
+            .min_filter = @intCast(@backingInt(info.min_filter)),
+            .mag_filter = @intCast(@backingInt(info.mag_filter)),
+            .mipmap_mode = @intCast(@backingInt(info.mipmap_mode)),
+            .address_mode_u = @intCast(@backingInt(info.address_mode_u)),
+            .address_mode_v = @intCast(@backingInt(info.address_mode_v)),
+            .address_mode_w = @intCast(@backingInt(info.address_mode_w)),
             .mip_lod_bias = info.mip_lod_bias,
             .max_anisotropy = info.max_anisotropy,
-            .compare_op = @intCast(@intFromEnum(info.compare_op)),
+            .compare_op = @intCast(@backingInt(info.compare_op)),
             .min_lod = info.min_lod,
             .max_lod = info.max_lod,
             .props = info.props,
@@ -872,7 +881,7 @@ pub const Device = struct {
             .code = info.code,
             .entrypoint = info.entrypoint.ptr,
             .format = info.format,
-            .stage = @intCast(@intFromEnum(info.stage)),
+            .stage = @intCast(@backingInt(info.stage)),
             .num_samplers = info.num_samplers,
             .num_storage_textures = info.num_storage_textures,
             .num_storage_buffers = info.num_storage_buffers,
@@ -933,7 +942,7 @@ pub const Device = struct {
                 c_attributes[i] = .{
                     .location = a.location,
                     .buffer_slot = a.buffer_slot,
-                    .format = @intCast(@intFromEnum(a.format)),
+                    .format = @intCast(@backingInt(a.format)),
                     .offset = a.offset,
                 };
             }
@@ -949,7 +958,7 @@ pub const Device = struct {
                 c_buffers[i] = .{
                     .slot = b.slot,
                     .pitch = b.pitch,
-                    .input_rate = @intCast(@intFromEnum(b.input_rate)),
+                    .input_rate = @intCast(@backingInt(b.input_rate)),
                     .instance_step_rate = b.instance_step_rate,
                 };
             }
@@ -963,15 +972,21 @@ pub const Device = struct {
             for (0..c_target_count) |i| {
                 const t = targets[i];
                 const bs = t.blend_state;
+                const sc_bf = @backingInt(bs.src_color_blendfactor);
+                const dc_bf = @backingInt(bs.dst_color_blendfactor);
+                const c_op = @backingInt(bs.color_blend_op);
+                const sa_bf = @backingInt(bs.src_alpha_blendfactor);
+                const da_bf = @backingInt(bs.dst_alpha_blendfactor);
+                const a_op = @backingInt(bs.alpha_blend_op);
                 c_color_targets[i] = .{
-                    .format = @intCast(@intFromEnum(t.format)),
+                    .format = @intCast(@backingInt(t.format)),
                     .blend_state = .{
-                        .src_color_blendfactor = @intCast(@intFromEnum(bs.src_color_blendfactor)),
-                        .dst_color_blendfactor = @intCast(@intFromEnum(bs.dst_color_blendfactor)),
-                        .color_blend_op = @intCast(@intFromEnum(bs.color_blend_op)),
-                        .src_alpha_blendfactor = @intCast(@intFromEnum(bs.src_alpha_blendfactor)),
-                        .dst_alpha_blendfactor = @intCast(@intFromEnum(bs.dst_alpha_blendfactor)),
-                        .alpha_blend_op = @intCast(@intFromEnum(bs.alpha_blend_op)),
+                        .src_color_blendfactor = @intCast(sc_bf),
+                        .dst_color_blendfactor = @intCast(dc_bf),
+                        .color_blend_op = @intCast(c_op),
+                        .src_alpha_blendfactor = @intCast(sa_bf),
+                        .dst_alpha_blendfactor = @intCast(da_bf),
+                        .alpha_blend_op = @intCast(a_op),
                         .color_write_mask = bs.color_write_mask,
                         .enable_blend = bs.enable_blend,
                         .enable_color_write_mask = bs.enable_color_write_mask,
@@ -982,9 +997,13 @@ pub const Device = struct {
             }
         }
 
+        const rs = info.rasterizer_state;
+        const ms = info.multisample_state;
         const dss = info.depth_stencil_state;
         const back_st = dss.back_stencil_state;
         const front_st = dss.front_stencil_state;
+        const back_df_op = @backingInt(back_st.depth_fail_op);
+        const front_df_op = @backingInt(front_st.depth_fail_op);
 
         const c_info = c.SDL_GPUGraphicsPipelineCreateInfo{
             .vertex_shader = info.vertex_shader.ptr,
@@ -995,40 +1014,40 @@ pub const Device = struct {
                 .num_vertex_buffers = c_buf_count,
                 .vertex_buffer_descriptions = if (c_buf_count > 0) &c_buffers else null,
             },
-            .primitive_type = @intCast(@intFromEnum(info.primitive_type)),
+            .primitive_type = @intCast(@backingInt(info.primitive_type)),
             .rasterizer_state = .{
-                .fill_mode = @intCast(@intFromEnum(info.rasterizer_state.fill_mode)),
-                .cull_mode = @intCast(@intFromEnum(info.rasterizer_state.cull_mode)),
-                .front_face = @intCast(@intFromEnum(info.rasterizer_state.front_face)),
-                .depth_bias_constant_factor = info.rasterizer_state.depth_bias_constant_factor,
-                .depth_bias_clamp = info.rasterizer_state.depth_bias_clamp,
-                .depth_bias_slope_factor = info.rasterizer_state.depth_bias_slope_factor,
-                .enable_depth_bias = info.rasterizer_state.enable_depth_bias,
-                .enable_depth_clip = info.rasterizer_state.enable_depth_clip,
+                .fill_mode = @intCast(@backingInt(rs.fill_mode)),
+                .cull_mode = @intCast(@backingInt(rs.cull_mode)),
+                .front_face = @intCast(@backingInt(rs.front_face)),
+                .depth_bias_constant_factor = rs.depth_bias_constant_factor,
+                .depth_bias_clamp = rs.depth_bias_clamp,
+                .depth_bias_slope_factor = rs.depth_bias_slope_factor,
+                .enable_depth_bias = rs.enable_depth_bias,
+                .enable_depth_clip = rs.enable_depth_clip,
                 .padding1 = 0,
                 .padding2 = 0,
             },
             .multisample_state = .{
-                .sample_count = @intCast(@intFromEnum(info.multisample_state.sample_count)),
-                .sample_mask = info.multisample_state.sample_mask,
-                .enable_mask = info.multisample_state.enable_mask,
-                .enable_alpha_to_coverage = info.multisample_state.enable_alpha_to_coverage,
+                .sample_count = @intCast(@backingInt(ms.sample_count)),
+                .sample_mask = ms.sample_mask,
+                .enable_mask = ms.enable_mask,
+                .enable_alpha_to_coverage = ms.enable_alpha_to_coverage,
                 .padding2 = 0,
                 .padding3 = 0,
             },
             .depth_stencil_state = .{
-                .compare_op = @intCast(@intFromEnum(dss.compare_op)),
+                .compare_op = @intCast(@backingInt(dss.compare_op)),
                 .back_stencil_state = .{
-                    .compare_op = @intCast(@intFromEnum(back_st.compare_op)),
-                    .fail_op = @intCast(@intFromEnum(back_st.fail_op)),
-                    .pass_op = @intCast(@intFromEnum(back_st.pass_op)),
-                    .depth_fail_op = @intCast(@intFromEnum(back_st.depth_fail_op)),
+                    .compare_op = @intCast(@backingInt(back_st.compare_op)),
+                    .fail_op = @intCast(@backingInt(back_st.fail_op)),
+                    .pass_op = @intCast(@backingInt(back_st.pass_op)),
+                    .depth_fail_op = @intCast(back_df_op),
                 },
                 .front_stencil_state = .{
-                    .compare_op = @intCast(@intFromEnum(front_st.compare_op)),
-                    .fail_op = @intCast(@intFromEnum(front_st.fail_op)),
-                    .pass_op = @intCast(@intFromEnum(front_st.pass_op)),
-                    .depth_fail_op = @intCast(@intFromEnum(front_st.depth_fail_op)),
+                    .compare_op = @intCast(@backingInt(front_st.compare_op)),
+                    .fail_op = @intCast(@backingInt(front_st.fail_op)),
+                    .pass_op = @intCast(@backingInt(front_st.pass_op)),
+                    .depth_fail_op = @intCast(front_df_op),
                 },
                 .compare_mask = dss.compare_mask,
                 .write_mask = dss.write_mask,
@@ -1044,7 +1063,7 @@ pub const Device = struct {
                 .color_target_descriptions = if (c_target_count > 0) &c_color_targets else null,
                 .has_depth_stencil_target = info.target_info.has_depth_stencil_target,
                 .depth_stencil_format = @intCast(
-                    @intFromEnum(info.target_info.depth_stencil_format),
+                    @backingInt(info.target_info.depth_stencil_format),
                 ),
                 .padding1 = 0,
                 .padding2 = 0,
@@ -1066,7 +1085,7 @@ pub const Device = struct {
         info: *const TransferBufferCreateInfo,
     ) ?TransferBuffer {
         const c_info = c.SDL_GPUTransferBufferCreateInfo{
-            .usage = @intCast(@intFromEnum(info.usage)),
+            .usage = @intCast(@backingInt(info.usage)),
             .size = info.size,
             .props = info.props,
         };

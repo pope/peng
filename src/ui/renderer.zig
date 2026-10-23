@@ -437,7 +437,7 @@ fn getOrRenderCachedText(
     const len = @as(usize, @intCast(text_data.string_contents.length));
     if (len == 0) return null;
     var text_slice = text_data.string_contents.chars[0..len];
-    if (std.mem.indexOfScalar(u8, text_slice, 0)) |null_idx| {
+    if (std.mem.findScalar(u8, text_slice, 0)) |null_idx| {
         text_slice = text_slice[0..null_idx];
     }
     if (text_slice.len == 0) return null;

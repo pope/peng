@@ -103,15 +103,15 @@ pub const DirectoryEntry = union(enum) {
 pub const PaletteState = struct {
     mode: PaletteMode = .inactive,
     is_closing: bool = false,
-    query: std.ArrayListUnmanaged(u8) = .empty,
+    query: std.ArrayList(u8) = .empty,
     selected_idx: usize = 0,
-    matches: std.ArrayListUnmanaged(usize) = .empty,
-    scored_matches: std.ArrayListUnmanaged(ScoredMatch) = .empty,
+    matches: std.ArrayList(usize) = .empty,
+    scored_matches: std.ArrayList(ScoredMatch) = .empty,
     selection_dirty: bool = false,
-    current_nav_dir: std.ArrayListUnmanaged(u8) = .empty,
-    last_nav_dir: std.ArrayListUnmanaged(u8) = .empty,
-    last_child_dir: std.ArrayListUnmanaged(u8) = .empty,
-    dir_items: std.ArrayListUnmanaged(DirectoryEntry) = .empty,
+    current_nav_dir: std.ArrayList(u8) = .empty,
+    last_nav_dir: std.ArrayList(u8) = .empty,
+    last_child_dir: std.ArrayList(u8) = .empty,
+    dir_items: std.ArrayList(DirectoryEntry) = .empty,
     current_dir_image_count: usize = 0,
     dir_scan_generation: std.atomic.Value(usize) = .init(0),
     allocator: std.mem.Allocator,
@@ -372,7 +372,7 @@ pub const PaletteState = struct {
             const basename = item.getBasename();
             max_h = @max(max_h, basename.len);
             if (item.getJpegPath()) |jpeg_p| {
-                const jpeg_base = std.fs.path.basename(jpeg_p);
+                const jpeg_base = std.Io.Dir.path.basename(jpeg_p);
                 max_h = @max(max_h, jpeg_base.len);
             }
         }
@@ -390,7 +390,7 @@ pub const PaletteState = struct {
             const basename = item.getBasename();
             var best_score = searcher_ptr.score(basename, query_str);
             if (item.getJpegPath()) |jpeg_p| {
-                const jpeg_base = std.fs.path.basename(jpeg_p);
+                const jpeg_base = std.Io.Dir.path.basename(jpeg_p);
                 if (searcher_ptr.score(jpeg_base, query_str)) |jpeg_score| {
                     if (best_score) |s| {
                         best_score = @max(s, jpeg_score);

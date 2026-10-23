@@ -17,19 +17,19 @@
     lists): NEVER use fixed stack arrays `[N]T` that risk silent truncation or
     panic. Use `std.ArrayList(T)` backed by `frame_allocator` with
     `defer list.deinit(frame_allocator)`.
-  - *Large Path Buffers* ($\\ge 4\\text{ KB}$ like `std.fs.max_path_bytes`):
+  - *Large Path Buffers* ($\\ge 4\\text{ KB}$ like `std.Io.Dir.max_path_bytes`):
     - *Per-Frame Layout & Render Passes*: Allocate from `frame_allocator` with
       `defer frame_allocator.free(...)` rather than placing 4 KB arrays on the
       stack inside per-frame loops.
     - *One-Off Main-Thread State Transitions*: In discrete, non-recursive state
       transitions where `frame_allocator` is unavailable (e.g. `openPalette`), a
-      stack buffer (`var parent_buf: [std.fs.max_path_bytes]u8 = undefined;`) is
+      stack buffer (`var parent_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;`) is
       preferred over `self.allocator.alloc` to avoid heap churn.
   - *Assert-Bounded Hardware/FFI Limits* (e.g. 16 vertex buffer slots in SDL3
     GPU, 8 IFD levels in EXIF): Keep on the stack and document the hardware/API
     bound in comments.
   - *Short Formatting Scratchpads for Clay IDs* ($\\le 64$ bytes): Keep on the
-    stack using `std.fmt.bufPrint`. Clay hashes ID strings immediately into
+    stack using `std.mem.print`. Clay hashes ID strings immediately into
     integers (`clay.getElementId`) and does not retain the string.
 - **Caller-Provided Output Buffers & Slice Aliasing**:
   - Functions generating variable-length data should accept caller-provided

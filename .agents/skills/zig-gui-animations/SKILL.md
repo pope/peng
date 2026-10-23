@@ -39,9 +39,9 @@ pub const AnimationState = struct {
     values: [MAX_CHANNELS]f32 = initValues(),
     start_vals: [MAX_CHANNELS]f32 = initValues(),
     target_vals: [MAX_CHANNELS]f32 = initValues(),
-    elapsed_ms: [MAX_CHANNELS]f32 = [_]f32{0.0} ** MAX_CHANNELS,
-    durations_ms: [MAX_CHANNELS]f32 = [_]f32{0.0} ** MAX_CHANNELS,
-    easings: [MAX_CHANNELS]EasingType = [_]EasingType{.linear} ** MAX_CHANNELS,
+    elapsed_ms: [MAX_CHANNELS]f32 = @splat(0.0),
+    durations_ms: [MAX_CHANNELS]f32 = @splat(0.0),
+    easings: [MAX_CHANNELS]EasingType = @splat(.linear),
     active_mask: u32 = 0,
     // ...
 };

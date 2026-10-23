@@ -4,7 +4,7 @@ const std = @import("std");
 
 const TextureScaleMode = intents.TextureScaleMode;
 
-extern "kernel32" fn GetCurrentProcessId() callconv(std.builtin.CallingConvention.winapi) u32;
+extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) u32;
 
 fn getProcessId() u32 {
     if (builtin.os.tag == .windows) {
@@ -58,7 +58,7 @@ pub const IpcServer = struct {
             if (builtin.os.tag != .windows) {
                 const pid = getProcessId();
                 var path_buf: [128]u8 = undefined;
-                if (std.fmt.bufPrint(
+                if (std.mem.print(
                     &path_buf,
                     "/tmp/peng-{d}.sock",
                     .{pid},
@@ -687,7 +687,7 @@ pub fn readLineTimeout(
             if (len == 0) return null;
             return buf[0..len];
         }
-        if (std.mem.indexOfScalar(u8, msg.data, '\n')) |newline_offset| {
+        if (std.mem.findScalar(u8, msg.data, '\n')) |newline_offset| {
             const line_len = len + newline_offset;
             return buf[0..line_len];
         }
@@ -1036,7 +1036,7 @@ test "readLineTimeout - success and timeout" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var sock_buf: [108]u8 = undefined;
-    const socket_path = try std.fmt.bufPrint(
+    const socket_path = try std.mem.print(
         &sock_buf,
         ".zig-cache/tmp/{s}/timeout.sock",
         .{tmp.sub_path},

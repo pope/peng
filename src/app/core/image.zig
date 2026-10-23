@@ -4,6 +4,7 @@ const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
 
+const ArchiveMediaEntry = state_pkg.types.ArchiveMediaEntry;
 const CacheEntry = state_pkg.CacheEntry;
 const CacheStatus = state_pkg.CacheStatus;
 const CpuSurfaceComponent = state_pkg.CpuSurfaceComponent;
@@ -14,7 +15,6 @@ pub const Orientation = state_pkg.Orientation;
 const parseExifDimensions = exif.parseExifDimensions;
 const parseExifOrientation = exif.parseExifOrientation;
 const RawMetadata = state_pkg.RawMetadata;
-const ArchiveMediaEntry = state_pkg.types.ArchiveMediaEntry;
 const ZipSeekOffsets = state_pkg.types.ZipSeekOffsets;
 
 /// Unique lookup key identifying a cached image slot by its playlist index
@@ -367,7 +367,7 @@ pub fn detectMimeType(header: []const u8, path: []const u8) []const u8 {
     const is_tiff_be = header[0] == 0x4D and header[1] == 0x4D and
         header[2] == 0x00 and header[3] == 0x2A;
     if (header.len >= 4 and (is_tiff_le or is_tiff_be)) {
-        const ext = std.fs.path.extension(path);
+        const ext = std.Io.Dir.path.extension(path);
         if (std.ascii.eqlIgnoreCase(ext, ".arw")) return "image/x-sony-arw";
         if (std.ascii.eqlIgnoreCase(ext, ".cr2")) return "image/x-canon-cr2";
         if (std.ascii.eqlIgnoreCase(ext, ".nef")) return "image/x-nikon-nef";
@@ -378,7 +378,7 @@ pub fn detectMimeType(header: []const u8, path: []const u8) []const u8 {
         return "image/tiff";
     }
 
-    const ext = std.fs.path.extension(path);
+    const ext = std.Io.Dir.path.extension(path);
     if (std.ascii.eqlIgnoreCase(ext, ".png")) return "image/png";
     if (std.ascii.eqlIgnoreCase(ext, ".jpg") or
         std.ascii.eqlIgnoreCase(ext, ".jpeg"))
@@ -2410,7 +2410,7 @@ test "loadThumbnailSurface - filesystem TIFF RAW mock" {
     mock_file.close(io);
 
     var path_buf: [128]u8 = undefined;
-    const mock_path = try std.fmt.bufPrint(
+    const mock_path = try std.mem.print(
         &path_buf,
         ".zig-cache/tmp/{s}/mock_thumb_test.arw",
         .{tmp.sub_path},
@@ -2557,7 +2557,7 @@ test "probeMediaMetadata - detects embedded thumbnail and dimensions on mock RAF
     mock_file.close(io);
 
     var path_buf: [128]u8 = undefined;
-    const mock_path = try std.fmt.bufPrint(
+    const mock_path = try std.mem.print(
         &path_buf,
         ".zig-cache/tmp/{s}/mock_probe_test.raf",
         .{tmp.sub_path},

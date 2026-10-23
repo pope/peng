@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const core_fs = @import("fs.zig");
 const state_pkg = @import("state");
 const std = @import("std");
@@ -17,16 +18,17 @@ pub fn loadDirectoryEntries(
 ) !void {
     const raw_target = core_fs.trimTrailingSeparators(dir_path);
     const target = if (core_fs.isCbzFile(raw_target))
-        (std.fs.path.dirname(raw_target) orelse ".")
+        (std.Io.Dir.path.dirname(raw_target) orelse ".")
     else
         raw_target;
 
-    var fb = std.heap.stackFallback(std.fs.max_path_bytes, self.allocator);
-    const temp_alloc = fb.get();
+    var stack_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    var fb: std.heap.BufferFirstAllocator = .init(&stack_buf, self.allocator);
+    const temp_alloc = fb.allocator();
     const dir_path_copy = try temp_alloc.dupe(u8, target);
     defer temp_alloc.free(dir_path_copy);
 
-    var path_scratch_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var path_scratch_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
 
     var navigated_up = false;
     if (self.current_nav_dir.items.len > 0) {
@@ -77,8 +79,8 @@ pub fn loadDirectoryEntries(
     self.selection_dirty = true;
 }
 
-test "loadDirectoryEntries preserves root path '/' when navigating up from '/home'" {
-    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+test "loadDirectoryEntries preserves root path '/' on upward nav" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
 
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();

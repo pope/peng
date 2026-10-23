@@ -109,8 +109,7 @@ fn renderDirectoryBreadcrumbs(
     );
     const curr_img_count = palette.current_dir_image_count;
     const s_suffix = if (curr_img_count == 1) "" else "s";
-    const count_str = try std.fmt.allocPrint(
-        frame_allocator,
+    const count_str = try frame_allocator.print(
         "{} image{s}",
         .{ curr_img_count, s_suffix },
     );
@@ -200,8 +199,7 @@ fn renderGoToImageFeedback(
     };
 
     if (val < 1 or val > total_count) {
-        const err_str = try std.fmt.allocPrint(
-            frame_allocator,
+        const err_str = try frame_allocator.print(
             "Out of bounds: must be between 1 and {}",
             .{total_count},
         );
@@ -226,8 +224,7 @@ fn renderGoToImageFeedback(
         12,
         measure_data,
     );
-    const success_str = try std.fmt.allocPrint(
-        frame_allocator,
+    const success_str = try frame_allocator.print(
         "Press Enter to go to {}: {s}",
         .{ val, display_filename },
     );
@@ -247,8 +244,7 @@ fn renderSlideshowIntervalFeedback(
     if (std.fmt.parseFloat(f32, raw_str)) |val| {
         if (!std.math.isNan(val) and !std.math.isInf(val) and val > 0.0) {
             is_valid = true;
-            const success_str = try std.fmt.allocPrint(
-                frame_allocator,
+            const success_str = try frame_allocator.print(
                 "Press Enter to start slide show ({d:.1}s per slide)",
                 .{val},
             );
@@ -304,8 +300,7 @@ fn renderFloatInputFeedback(
     const default_bounds = intents.TextInputBounds{ .min = 0.0, .max = 1.0 };
     const bounds = mode.getTextInputBounds() orelse default_bounds;
     if (val >= bounds.min and val <= bounds.max) {
-        const success_str = try std.fmt.allocPrint(
-            frame_allocator,
+        const success_str = try frame_allocator.print(
             "Press Enter to set value to: {d:.2}",
             .{val},
         );
@@ -315,8 +310,7 @@ fn renderFloatInputFeedback(
             .font_id = 0,
         });
     } else {
-        const err_str = try std.fmt.allocPrint(
-            frame_allocator,
+        const err_str = try frame_allocator.print(
             "Out of bounds: must be between {d:.1} and {d:.1}",
             .{ bounds.min, bounds.max },
         );
@@ -365,14 +359,12 @@ fn renderTextInputDialog(
                         .font_id = 0,
                     });
                     const range_str = if (ui_model.current_index) |idx|
-                        try std.fmt.allocPrint(
-                            frame_allocator,
+                        try frame_allocator.print(
                             "Allowed range: 1 to {} (current: {})",
                             .{ total_count, idx + 1 },
                         )
                     else
-                        try std.fmt.allocPrint(
-                            frame_allocator,
+                        try frame_allocator.print(
                             "Allowed range: 1 to {} (current: none)",
                             .{total_count},
                         );
@@ -437,8 +429,7 @@ fn renderTextInputDialog(
                             .min = -1.0,
                             .max = 1.0,
                         };
-                    const range_str = try std.fmt.allocPrint(
-                        frame_allocator,
+                    const range_str = try frame_allocator.print(
                         "Allowed range: {d:.1} to {d:.1}",
                         .{ bounds.min, bounds.max },
                     );
@@ -504,8 +495,7 @@ fn renderDirectoryScanBadges(
                 },
             })({
                 if (entry == .archive_file) {
-                    const count_str = try std.fmt.allocPrint(
-                        frame_allocator,
+                    const count_str = try frame_allocator.print(
                         "{}+ pages",
                         .{p.image_count},
                     );
@@ -516,13 +506,11 @@ fn renderDirectoryScanBadges(
                         progress,
                     );
                 } else {
-                    const count_str = try std.fmt.allocPrint(
-                        frame_allocator,
+                    const count_str = try frame_allocator.print(
                         "{}+ images",
                         .{p.image_count},
                     );
-                    const sub_str = try std.fmt.allocPrint(
-                        frame_allocator,
+                    const sub_str = try frame_allocator.print(
                         "{}+ subfolders",
                         .{p.subdir_count},
                     );
@@ -551,8 +539,7 @@ fn renderDirectoryScanBadges(
             })({
                 if (entry == .archive_file) {
                     const s_suffix = if (s.image_count == 1) "" else "s";
-                    const count_str = try std.fmt.allocPrint(
-                        frame_allocator,
+                    const count_str = try frame_allocator.print(
                         "{} page{s}",
                         .{ s.image_count, s_suffix },
                     );
@@ -572,8 +559,7 @@ fn renderDirectoryScanBadges(
                     );
                 } else {
                     const img_suffix = if (s.image_count == 1) "" else "s";
-                    const count_str = try std.fmt.allocPrint(
-                        frame_allocator,
+                    const count_str = try frame_allocator.print(
                         "{} image{s}",
                         .{ s.image_count, img_suffix },
                     );
@@ -587,8 +573,7 @@ fn renderDirectoryScanBadges(
                         theme.green;
 
                     const sub_suffix = if (s.subdir_count == 1) "" else "s";
-                    const sub_str = try std.fmt.allocPrint(
-                        frame_allocator,
+                    const sub_str = try frame_allocator.print(
                         "{} subfolder{s}",
                         .{ s.subdir_count, sub_suffix },
                     );
@@ -833,7 +818,10 @@ fn computeFileItemMatches(
     if (query_str.len == 0 or basename.len == 0) return basename_matches;
     const searcher = searcher_opt orelse return basename_matches;
 
-    const jpeg_base = if (jpeg_path_opt) |jp| std.fs.path.basename(jp) else "";
+    const jpeg_base = if (jpeg_path_opt) |jp|
+        std.Io.Dir.path.basename(jp)
+    else
+        "";
 
     var best_score: ?i32 = searcher.score(basename, query_str);
     var best_source: enum { base, jpeg, tag } = .base;
@@ -1050,7 +1038,7 @@ fn computeWindowMaxHaystack(
                 if (ui_model.getMediaEntry(real_idx)) |m| {
                     max_h = @max(max_h, m.getBasename().len);
                     if (m.getJpegPath()) |jp| {
-                        max_h = @max(max_h, std.fs.path.basename(jp).len);
+                        max_h = @max(max_h, std.Io.Dir.path.basename(jp).len);
                     }
                     if (m.isPair()) {
                         max_h = @max(max_h, "RAW+JPG".len);
@@ -1179,7 +1167,7 @@ fn renderSelectionList(
             const is_selected = (match_count == palette.selected_idx);
 
             var item_id_buf: [64]u8 = undefined;
-            const item_id_str = std.fmt.bufPrint(
+            const item_id_str = std.mem.print(
                 &item_id_buf,
                 "{s}{}",
                 .{ cfg.item_prefix, real_idx },
@@ -1644,8 +1632,7 @@ test "partitionHighlightedText with middle-truncated remapped matches" {
     // tail_start_idx = 50 ("Sunset_Panorama_HDR_Final.jpg")
     const head_len: usize = 25;
     const tail_start_idx: usize = 50;
-    const display = try std.fmt.allocPrint(
-        std.testing.allocator,
+    const display = try std.testing.allocator.print(
         "{s}...{s}",
         .{ long_text[0..head_len], long_text[tail_start_idx..] },
     );
@@ -1779,7 +1766,7 @@ test "renderPalette - closing palette passes pointer through to parent" {
 
     var data = MeasureTextUserData{
         .allocator = std.testing.allocator,
-        .fonts = &([_]?sdl.Font{null} ** 2),
+        .fonts = &(@as([2]?sdl.Font, @splat(null))),
     };
     var pal_state = try state.PaletteState.init(std.testing.allocator);
     defer pal_state.deinit();
@@ -1805,7 +1792,7 @@ test "renderPalette - closing palette passes pointer through to parent" {
         .viewport = .{},
         .palette = &pal_state,
         .snackbar = .none,
-        .anim_values = [_]f32{0.5} ** 32,
+        .anim_values = @splat(0.5),
         .debug_show_thumb = false,
         .is_thumb_crossfading = false,
         .image_dissolve = .none,
@@ -1897,7 +1884,7 @@ test "computeWindowMaxHaystack returns max haystack across visible rows" {
     defer pal_state.deinit();
     pal_state.mode = .directory_navigator;
 
-    const long_name = "a" ** 96;
+    const long_name: [96]u8 = @splat('a');
     try pal_state.dir_items.append(alloc, .{
         .directory = .{
             .name = try alloc.dupe(u8, "short"),
@@ -1907,7 +1894,7 @@ test "computeWindowMaxHaystack returns max haystack across visible rows" {
     });
     try pal_state.dir_items.append(alloc, .{
         .directory = .{
-            .name = try alloc.dupe(u8, long_name),
+            .name = try alloc.dupe(u8, &long_name),
             .full_path = try alloc.dupe(u8, "/tmp/" ++ long_name),
             .scan = .unscanned,
         },
@@ -1932,7 +1919,7 @@ test "computeWindowMaxHaystack returns max haystack across visible rows" {
         .viewport = .{},
         .palette = &pal_state,
         .snackbar = .none,
-        .anim_values = [_]f32{0.5} ** 32,
+        .anim_values = @splat(0.5),
         .debug_show_thumb = false,
         .is_thumb_crossfading = false,
         .image_dissolve = .none,

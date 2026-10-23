@@ -13,7 +13,7 @@ ______________________________________________________________________
 ## 2. Zero-Allocation Text Measurement (`TTF_GetStringSize` / `TTF_MeasureString`)
 
 - **Direct Slice Pointer and Length Passing**:
-  SDL3_ttf functions accept byte counts directly (`text.ptr` and `text.len`). Never allocate temporary null-terminated slices (`allocator.dupeZ`) or force text sizing signatures to accept an unneeded `allocator: std.mem.Allocator` parameter.
+  SDL3_ttf functions accept byte counts directly (`text.ptr` and `text.len`). Never allocate temporary null-terminated slices (`allocator.dupeSentinel`) or force text sizing signatures to accept an unneeded `allocator: std.mem.Allocator` parameter.
 - **Early Return for Empty Strings**:
   Check for empty text slices (`text.len == 0`) before making C-ABI calls to avoid unnecessary FFI overhead:
   ```zig

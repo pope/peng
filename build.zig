@@ -40,8 +40,54 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    // TODO: Remove this WriteFiles workaround once upstream fuzzig removes
+    // Zig 0.16 `**` array repetition syntax from its test blocks in root.zig.
+    const fuzzig_mod = fuzzig_dep.module("fuzzig");
+    {
+        const fuzzig_dir = fuzzig_dep.builder.root.root_dir.handle;
+        const fuzzig_src = fuzzig_dir.readFileAlloc(
+            b.graph.io,
+            "src/root.zig",
+            b.allocator,
+            .unlimited,
+        ) catch @panic("OOM");
+        const cutoff = std.mem.find(u8, fuzzig_src, "\nfn doTestScore(") orelse
+            fuzzig_src.len;
+        const fuzzig_wf = b.addWriteFiles();
+        _ = fuzzig_wf.addCopyFile(
+            fuzzig_dep.path("src/utils.zig"),
+            "utils.zig",
+        );
+        _ = fuzzig_wf.addCopyFile(
+            fuzzig_dep.path("src/structures.zig"),
+            "structures.zig",
+        );
+        _ = fuzzig_wf.addCopyFile(
+            fuzzig_dep.path("src/unicode.zig"),
+            "unicode.zig",
+        );
+        fuzzig_mod.root_source_file = fuzzig_wf.add(
+            "root.zig",
+            fuzzig_src[0..cutoff],
+        );
+    }
 
     // Create the standalone SDL boundary module
+    const wf = b.addWriteFiles();
+    const sdl_c_h = wf.add("sdl_c.h",
+        \\#include <SDL3/SDL.h>
+        \\#include <SDL3/SDL_gpu.h>
+        \\#include <SDL3_ttf/SDL_ttf.h>
+        \\#include <SDL3_image/SDL_image.h>
+        \\
+    );
+    const translate_sdl = b.addTranslateC(.{
+        .root_source_file = sdl_c_h,
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+
     const sdl_module = b.createModule(.{
         .root_source_file = b.path("src/sdl/root.zig"),
         .target = target,
@@ -55,6 +101,7 @@ pub fn build(b: *std.Build) void {
 
         const deps = [_]*std.Build.Dependency{ sdl3_dep, ttf_dep, img_dep };
         inline for (deps) |dep| {
+            translate_sdl.addIncludePath(dep.path("include"));
             sdl_module.addIncludePath(dep.path("include"));
             sdl_module.addLibraryPath(dep.path("lib/x64"));
         }
@@ -117,9 +164,11 @@ pub fn build(b: *std.Build) void {
     } else {
         const sys_libs = [_][]const u8{ "sdl3", "sdl3-ttf", "sdl3-image" };
         inline for (sys_libs) |lib| {
+            translate_sdl.linkSystemLibrary(lib, .{});
             sdl_module.linkSystemLibrary(lib, .{});
         }
     }
+    sdl_module.addImport("sdl_c", translate_sdl.createModule());
 
     const intents_module = b.createModule(.{
         .root_source_file = b.path("src/intents/root.zig"),
@@ -261,10 +310,7 @@ pub fn build(b: *std.Build) void {
     const run_cmd = b.addRunArtifact(exe);
     run_step.dependOn(&run_cmd.step);
     run_cmd.step.dependOn(b.getInstallStep());
-
-    if (b.args) |args| {
-        run_cmd.addArgs(args);
-    }
+    run_cmd.addPassthruArgs();
 
     const msg_exe = b.addExecutable(.{
         .name = "peng-msg",
@@ -295,9 +341,7 @@ pub fn build(b: *std.Build) void {
     const run_integration_tests = b.addRunArtifact(test_runner_exe);
     run_integration_tests.setCwd(b.path("."));
     run_integration_tests.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
-        run_integration_tests.addArgs(args);
-    }
+    run_integration_tests.addPassthruArgs();
 
     const sdl_tests = b.addTest(.{
         .root_module = sdl_module,
@@ -356,26 +400,27 @@ pub fn build(b: *std.Build) void {
     run_core_tests.setCwd(b.path("."));
 
     if (target.result.os.tag == .windows) {
-        run_sdl_tests.step.dependOn(b.getInstallStep());
-        run_state_tests.step.dependOn(b.getInstallStep());
-        run_core_tests.step.dependOn(b.getInstallStep());
-        run_app_tests.step.dependOn(b.getInstallStep());
-        run_ui_tests.step.dependOn(b.getInstallStep());
-        run_intents_tests.step.dependOn(b.getInstallStep());
-        run_config_tests.step.dependOn(b.getInstallStep());
-        run_input_tests.step.dependOn(b.getInstallStep());
-        run_ipc_tests.step.dependOn(b.getInstallStep());
-
-        run_sdl_tests.addPathDir(b.getInstallPath(.bin, ""));
-        run_state_tests.addPathDir(b.getInstallPath(.bin, ""));
-        run_core_tests.addPathDir(b.getInstallPath(.bin, ""));
-        run_app_tests.addPathDir(b.getInstallPath(.bin, ""));
-        run_ui_tests.addPathDir(b.getInstallPath(.bin, ""));
-        run_intents_tests.addPathDir(b.getInstallPath(.bin, ""));
-        run_config_tests.addPathDir(b.getInstallPath(.bin, ""));
-        run_input_tests.addPathDir(b.getInstallPath(.bin, ""));
-        run_ipc_tests.addPathDir(b.getInstallPath(.bin, ""));
-        run_integration_tests.addPathDir(b.getInstallPath(.bin, ""));
+        const win_runs = [_]*std.Build.Step.Run{
+            run_sdl_tests,
+            run_state_tests,
+            run_core_tests,
+            run_app_tests,
+            run_ui_tests,
+            run_intents_tests,
+            run_config_tests,
+            run_input_tests,
+            run_ipc_tests,
+            run_integration_tests,
+        };
+        const prev_path = b.graph.environ_map.get("PATH") orelse "";
+        const new_path = if (prev_path.len > 0)
+            b.fmt("zig-out\\bin;{s}", .{prev_path})
+        else
+            "zig-out\\bin";
+        for (win_runs) |win_run| {
+            win_run.step.dependOn(b.getInstallStep());
+            win_run.setEnvironmentVariable("PATH", new_path);
+        }
     }
 
     const test_core_step = b.step("test-core", "Run core tests");
@@ -470,19 +515,21 @@ fn setupShaderCompilation(b: *std.Build) *std.Build.Step {
             "-S",
             def.stage,
         });
-        spv_cmd.addFileArg(b.path(src_rel));
+        spv_cmd.addFileArg2(b.path(src_rel), .{});
         spv_cmd.addArg("-o");
-        const spv_out = spv_cmd.addOutputFileArg(
+        const spv_out = spv_cmd.addOutputFileArg2(
             b.fmt("{s}.spv", .{def.out_name}),
+            .{},
         );
 
         const msl_cmd = b.addSystemCommand(&.{
             "spirv-cross",
         });
-        msl_cmd.addFileArg(spv_out);
+        msl_cmd.addFileArg2(spv_out, .{});
         msl_cmd.addArgs(&.{ "--msl", "--output" });
-        const msl_out = msl_cmd.addOutputFileArg(
+        const msl_out = msl_cmd.addOutputFileArg2(
             b.fmt("{s}.msl", .{def.out_name}),
+            .{},
         );
 
         update_shaders.addCopyFileToSource(spv_out, spv_rel);

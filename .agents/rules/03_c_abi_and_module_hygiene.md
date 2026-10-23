@@ -2,9 +2,10 @@
 
 ## 1. C-ABI Encapsulation & Dynamic Library Boundaries
 
-- **Single Canonical `@cImport` File (`src/sdl/c.zig`)**:
-  - Consolidate all C header imports (`SDL3`, `SDL3_ttf`, `SDL3_image`) inside
-    `src/sdl/c.zig`. Never issue `@cImport` in `src/app/`, `src/ui/`,
+- **Single Canonical C Translation Wrapper (`src/sdl/c.zig`)**:
+  - Consolidate all C header imports (`SDL3`, `SDL3_ttf`, `SDL3_image`) into the
+    `sdl_c` `addTranslateC` step in `build.zig`, re-exported solely via
+    `src/sdl/c.zig`. Never import `sdl_c` directly in `src/app/`, `src/ui/`,
     `src/state/`, or `src/config/`.
 - **Private C Module & Handle Encapsulation**:
   - Keep `c = @import("c.zig")` private to `src/sdl/`. Encapsulate C handles
@@ -112,7 +113,7 @@
     zero production reads/callers reachable from `main()` MUST be deleted along
     with any obsolete tests referencing it.
 
-## 4. Zig 0.16 Test Architecture
+## 4. Zig 0.17 Test Architecture
 
 - **No `std.testing.refAllDecls` in Application Roots**:
   - Never call `refAllDecls` or `refAllDeclsRecursive` in `src/main.zig`,

@@ -56,7 +56,7 @@ pub const UiViewModel = struct {
     viewport: ViewportParams,
     palette: *const palette_state.PaletteState,
     snackbar: SnackbarDisplay = .none,
-    anim_values: [32]f32 = [_]f32{0.0} ** 32,
+    anim_values: [32]f32 = @splat(0.0),
     debug_show_thumb: bool,
     is_thumb_crossfading: bool = false,
     image_dissolve: ImageDissolve = .none,
@@ -66,7 +66,7 @@ pub const UiViewModel = struct {
 
     /// Returns the animated scalar value for the specified channel.
     pub inline fn anim(self: UiViewModel, channel: AnimationChannel) f32 {
-        return self.anim_values[@intFromEnum(channel)];
+        return self.anim_values[@backingInt(channel)];
     }
 
     /// Safely retrieves the media entry at `idx` if within bounds.

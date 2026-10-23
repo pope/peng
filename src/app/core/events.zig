@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const image = @import("image.zig");
 const ipc = @import("ipc");
 const sdl = @import("sdl");
@@ -40,7 +41,7 @@ pub fn Generational(comptime T: type) type {
         /// Returns the inner payload for unit tests inspecting raw queue
         /// output.
         pub fn unwrapForTest(self: Self) T {
-            if (!@import("builtin").is_test) {
+            if (!builtin.is_test) {
                 @compileError(
                     "unwrapForTest is only allowed in tests; use resolve()",
                 );
@@ -99,7 +100,7 @@ pub fn SlotBound(comptime T: type) type {
         /// Returns the inner payload for unit tests inspecting raw queue output
         /// without an `ImageCache`.
         pub fn unwrapForTest(self: Self) T {
-            if (!@import("builtin").is_test) {
+            if (!builtin.is_test) {
                 @compileError(
                     "unwrapForTest is only allowed in tests; use resolve()",
                 );
@@ -268,9 +269,9 @@ pub fn MpscQueue(comptime T: type) type {
             const deinit_info = @typeInfo(@TypeOf(T.deinit));
             if (deinit_info != .@"fn") return;
 
-            if (deinit_info.@"fn".params.len == 2) {
+            if (deinit_info.@"fn".param_types.len == 2) {
                 item.deinit(allocator);
-            } else if (deinit_info.@"fn".params.len == 1) {
+            } else if (deinit_info.@"fn".param_types.len == 1) {
                 item.deinit();
             }
         }

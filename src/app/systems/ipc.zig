@@ -68,7 +68,7 @@ fn replyIpcParseError(
     err: anyerror,
 ) void {
     var msg_buf: [128]u8 = undefined;
-    const err_msg = std.fmt.bufPrint(
+    const err_msg = std.mem.print(
         &msg_buf,
         "ERR {s}\n",
         .{@errorName(err)},
@@ -178,7 +178,7 @@ fn handleScreenshotCommand(
         replyIpcError(state.io, cmd_data.client_stream, "ERR Busy\n");
         return;
     }
-    const dup_path = state.allocator.dupeZ(u8, filepath) catch {
+    const dup_path = state.allocator.dupeSentinel(u8, filepath, 0) catch {
         replyIpcError(state.io, cmd_data.client_stream, "ERR OutOfMemory\n");
         return;
     };
@@ -251,7 +251,7 @@ test "sysExecuteIpcCommands - drains pending commands and mutates state" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var sock_buf: [108]u8 = undefined;
-    const sock_path = try std.fmt.bufPrint(
+    const sock_path = try std.mem.print(
         &sock_buf,
         ".zig-cache/tmp/{s}/ipc1.sock",
         .{tmp.sub_path},
@@ -296,7 +296,7 @@ test "sysExecuteIpcCommands - multiple queued commands and adjust command" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var sock_buf: [108]u8 = undefined;
-    const sock_path = try std.fmt.bufPrint(
+    const sock_path = try std.mem.print(
         &sock_buf,
         ".zig-cache/tmp/{s}/ipc2.sock",
         .{tmp.sub_path},
@@ -342,7 +342,7 @@ test "sysExecuteIpcCommands - wait_load and re-entrant ipc_command" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var sock_buf: [108]u8 = undefined;
-    const sock_path = try std.fmt.bufPrint(
+    const sock_path = try std.mem.print(
         &sock_buf,
         ".zig-cache/tmp/{s}/ipc3.sock",
         .{tmp.sub_path},
@@ -410,7 +410,7 @@ test "sysExecuteIpcCommands - set_palette frame_allocator OOM replies error" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var sock_buf: [108]u8 = undefined;
-    const sock_path = try std.fmt.bufPrint(
+    const sock_path = try std.mem.print(
         &sock_buf,
         ".zig-cache/tmp/{s}/ipc4.sock",
         .{tmp.sub_path},
@@ -465,7 +465,7 @@ test "sysExecuteIpcCommands - screenshot spaces and swapchain miss error" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
     var sock_buf: [108]u8 = undefined;
-    const sock_path = try std.fmt.bufPrint(
+    const sock_path = try std.mem.print(
         &sock_buf,
         ".zig-cache/tmp/{s}/ipc5.sock",
         .{tmp.sub_path},

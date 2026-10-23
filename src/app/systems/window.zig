@@ -1,8 +1,9 @@
+const app_state = @import("../state.zig");
+const context = @import("context.zig");
 const state_pkg = @import("state");
 const std = @import("std");
 
-const context = @import("context.zig");
-
+const AppState = app_state.AppState;
 const FrameContext = context.FrameContext;
 const MediaEntry = state_pkg.MediaEntry;
 
@@ -14,8 +15,7 @@ fn formatWindowTitle(
 ) []const u8 {
     const media = entry orelse return "Peng Image Viewer";
     if (media.isPair()) {
-        return std.fmt.allocPrint(
-            allocator,
+        return allocator.print(
             "{s} [RAW+JPG]",
             .{media.getBasename()},
         ) catch media.getBasename();
@@ -47,7 +47,7 @@ pub fn sysSyncWindow(ctx: FrameContext) void {
                 true;
 
             if (title_changed) {
-                if (ctx.frame_allocator.dupeZ(u8, raw_title)) |tz| {
+                if (ctx.frame_allocator.dupeSentinel(u8, raw_title, 0)) |tz| {
                     defer ctx.frame_allocator.free(tz);
                     win.handle.setTitle(tz);
                 } else |err| {
@@ -105,7 +105,6 @@ test "formatWindowTitle: appends [RAW+JPG] for pair entry" {
 test "sysSyncWindow: no-op in headless mode without crashing" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
-    const AppState = @import("../state.zig").AppState;
     var app_st = try AppState.initHeadless(allocator, io);
     defer app_st.deinit();
 

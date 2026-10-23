@@ -38,33 +38,31 @@ pub fn formatValue(
             const pct = @as(i32, @intFromFloat(@round(val * 100.0)));
             if (pct == 0) return "0%";
             if (pct > 0) {
-                return try std.fmt.allocPrint(allocator, "+{d}%", .{pct});
+                return try allocator.print("+{d}%", .{pct});
             }
-            return try std.fmt.allocPrint(allocator, "{d}%", .{pct});
+            return try allocator.print("{d}%", .{pct});
         },
         .multiplier => {
             if (@abs(val - 1.0) < 1e-4) return "1.00x";
-            return try std.fmt.allocPrint(allocator, "{d:.2}x", .{val});
+            return try allocator.print("{d:.2}x", .{val});
         },
         .ratio_percent => {
             const pct = @as(i32, @intFromFloat(@round(val * 100.0)));
             if (pct == 100) return "100%";
             if (pct == 50) return "50%";
             if (pct == 0) return "0%";
-            return try std.fmt.allocPrint(allocator, "{d}%", .{pct});
+            return try allocator.print("{d}%", .{pct});
         },
         .temperature => {
             const val_int = @as(i32, @intFromFloat(@round(val * 100.0)));
             if (val_int == 0) return "0";
             if (val_int > 0) {
-                return try std.fmt.allocPrint(
-                    allocator,
+                return try allocator.print(
                     "+{d} (Warm)",
                     .{val_int},
                 );
             }
-            return try std.fmt.allocPrint(
-                allocator,
+            return try allocator.print(
                 "{d} (Cool)",
                 .{val_int},
             );
@@ -73,14 +71,12 @@ pub fn formatValue(
             const val_int = @as(i32, @intFromFloat(@round(val * 100.0)));
             if (val_int == 0) return "0";
             if (val_int > 0) {
-                return try std.fmt.allocPrint(
-                    allocator,
+                return try allocator.print(
                     "+{d} (Magenta)",
                     .{val_int},
                 );
             }
-            return try std.fmt.allocPrint(
-                allocator,
+            return try allocator.print(
                 "{d} (Green)",
                 .{val_int},
             );

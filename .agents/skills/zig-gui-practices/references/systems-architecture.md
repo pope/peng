@@ -40,7 +40,7 @@ ______________________________________________________________________
     rewinds its internal bump offset when the most recent allocation is freed,
     allowing subsequent systems in the same frame tick to reuse that memory
     without triggering arena block growth.
-  - **Frame-Arena String Lifetimes for Retained Clay UI Labels**: In Clay UI layout functions (`layout.zig`, `edit_panel.zig`, `palette.zig`, `palette_items.zig`), text elements take slice references (`clay.text(formatted_str, ...)`). Clay retains these slice pointers across the layout hierarchy and hands them directly to the render execution pass (`executeRenderPacket`). Dynamic text (such as numeric percentages, slider values, formatted labels, or stats strings) MUST NOT use local stack buffers (`var buf: [32]u8 = undefined`), which become invalid once the function returns. Dynamic labels MUST be formatted into `frame_allocator` (e.g. `try std.fmt.allocPrint(frame_allocator, ...)`), guaranteeing memory validity through the GPU text blitting pass.
+  - **Frame-Arena String Lifetimes for Retained Clay UI Labels**: In Clay UI layout functions (`layout.zig`, `edit_panel.zig`, `palette.zig`, `palette_items.zig`), text elements take slice references (`clay.text(formatted_str, ...)`). Clay retains these slice pointers across the layout hierarchy and hands them directly to the render execution pass (`executeRenderPacket`). Dynamic text (such as numeric percentages, slider values, formatted labels, or stats strings) MUST NOT use local stack buffers (`var buf: [32]u8 = undefined`), which become invalid once the function returns. Dynamic labels MUST be formatted into `frame_allocator` (e.g. `try frame_allocator.print(...)`), guaranteeing memory validity through the GPU text blitting pass.
 
 ______________________________________________________________________
 
@@ -104,12 +104,12 @@ ______________________________________________________________________
 
            /// Branchless arithmetic conversion to floating-point degrees: index * 90.0.
            pub inline fn toDegrees(self: Orientation) f32 {
-               return @as(f32, @floatFromInt(@intFromEnum(self))) * 90.0;
+               return @as(f32, @floatFromInt(@backingInt(self))) * 90.0;
            }
 
            /// Branchless bitwise check: odd indices (1 and 3) swap width and height.
            pub inline fn isDimensionSwapped(self: Orientation) bool {
-               return (@intFromEnum(self) & 1) != 0;
+               return (@backingInt(self) & 1) != 0;
            }
        };
        ```

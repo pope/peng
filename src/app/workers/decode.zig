@@ -105,7 +105,8 @@ fn decompressCbzMediaEntry(
     defer file.close(io);
 
     // Sized to 128KB:
-    // - In Zig 0.16.0, `std.compress.flate.Decompress` pulls from `f_reader.interface` bit-by-bit.
+    // - In Zig 0.17.0, `std.compress.flate.Decompress` pulls from
+    //   `f_reader.interface` bit-by-bit.
     //   A 4KB reader buffer forced ~188 `fileReadPositional` syscalls per 1.1MB compressed page.
     //   128KB drops syscalls to ~10 (19x reduction) and matches typical CPU L2 cache boundaries.
     // - Sized comfortably on the stack (< 192KB combined with `flate_buf`), using < 1.2% of the
@@ -139,8 +140,9 @@ fn decompressCbzMediaEntry(
         },
         .unindexed => {
             var iterator = try std.zip.Iterator.init(&f_reader);
-            var fb = std.heap.stackFallback(std.fs.max_path_bytes, alloc);
-            const temp_alloc = fb.get();
+            var stack_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            var fb: std.heap.BufferFirstAllocator = .init(&stack_buf, alloc);
+            const temp_alloc = fb.allocator();
 
             var found = false;
             while (try iterator.next()) |zip_entry| {
@@ -1656,7 +1658,7 @@ test "decodeWorker - Sony ARW range reading and preview extraction" {
     mock_file.close(io);
 
     var path_buf: [128]u8 = undefined;
-    const mock_path = try std.fmt.bufPrint(
+    const mock_path = try std.mem.print(
         &path_buf,
         ".zig-cache/tmp/{s}/mock_test.arw",
         .{tmp.sub_path},
@@ -1806,7 +1808,7 @@ test "decodeWorker - Fujifilm RAF range reading and preview extraction" {
     mock_file.close(io);
 
     var path_buf: [128]u8 = undefined;
-    const mock_path = try std.fmt.bufPrint(
+    const mock_path = try std.mem.print(
         &path_buf,
         ".zig-cache/tmp/{s}/mock_test.raf",
         .{tmp.sub_path},
@@ -2017,7 +2019,7 @@ test "decodeWorker - progressive 3-tier loading for synthetic ARW" {
     mock_file.close(io);
 
     var path_buf: [128]u8 = undefined;
-    const arw_path = try std.fmt.bufPrint(
+    const arw_path = try std.mem.print(
         &path_buf,
         ".zig-cache/tmp/{s}/mock_3tier.arw",
         .{tmp.sub_path},
@@ -2195,7 +2197,7 @@ test "decodeWorker - progressive pair loading with PairStreamTarget" {
     mock_file.close(io);
 
     var path_buf: [128]u8 = undefined;
-    const raw_file = try std.fmt.bufPrint(
+    const raw_file = try std.mem.print(
         &path_buf,
         ".zig-cache/tmp/{s}/mock_pair.arw",
         .{tmp.sub_path},
@@ -2463,7 +2465,7 @@ test "decodeWorker - two-stage JPEG read emits header and positional thumbnails 
     mock_file.close(io);
 
     var path_buf: [128]u8 = undefined;
-    const mock_path = try std.fmt.bufPrint(
+    const mock_path = try std.mem.print(
         &path_buf,
         ".zig-cache/tmp/{s}/staged_pos_thumb.jpg",
         .{tmp.sub_path},
@@ -2596,7 +2598,7 @@ test "decodeWorker - two-stage JPEG read emits header and positional thumbnails 
         hdr_file.close(io);
 
         var hdr_path_buf: [128]u8 = undefined;
-        const hdr_path = try std.fmt.bufPrint(
+        const hdr_path = try std.mem.print(
             &hdr_path_buf,
             ".zig-cache/tmp/{s}/staged_hdr_thumb.jpg",
             .{tmp.sub_path},

@@ -539,7 +539,7 @@ test "mapKeyFromSdl maps backslash key" {
 }
 
 test "sampleHeldDirections extracts arrow and vim directional flags" {
-    var mock_state = [_]bool{false} ** 512;
+    var mock_state: [512]bool = @splat(false);
 
     // Initially neutral
     const neutral = sampleHeldDirections(&mock_state, mock_state.len);
@@ -567,7 +567,7 @@ test "sampleHeldDirections extracts arrow and vim directional flags" {
 }
 
 test "sampleHeldZoom extracts zoom in and out flags" {
-    var mock_state = [_]bool{false} ** 512;
+    var mock_state: [512]bool = @splat(false);
 
     // Initially neutral
     const neutral = sampleHeldZoom(&mock_state, mock_state.len);

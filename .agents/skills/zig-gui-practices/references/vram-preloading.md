@@ -23,7 +23,7 @@ ______________________________________________________________________
 ## 2. Synchronous Header Probing, Camera RAW Streaming & Progressive Loading
 
 - **Single-Pass File Read & In-Memory Decoding (`decodeWorker`)**:
-  `decodeWorker` performs a single `statFile` + `openFile` + `file.reader(io, &r_buf).readSliceAll(...)` into a task-scoped buffer for settled standard raster images. In Zig 0.16.0, `readSliceAll` bypasses the internal reader buffer for large slices via `readVec`. Header parsing, EXIF thumbnail slicing (`file_bytes[off..off+len]`), and full surface decoding (`sdl.Surface.loadConstMemOpt`) operate in RAM while respecting `cancel.isCanceled()` (`const cancel = args.cancelToken();`).
+  `decodeWorker` performs a single `statFile` + `openFile` + `file.reader(io, &r_buf).readSliceAll(...)` into a task-scoped buffer for settled standard raster images. In Zig 0.17.0, `readSliceAll` bypasses the internal reader buffer for large slices via `readVec`. Header parsing, EXIF thumbnail slicing (`file_bytes[off..off+len]`), and full surface decoding (`sdl.Surface.loadConstMemOpt`) operate in RAM while respecting `cancel.isCanceled()` (`const cancel = args.cancelToken();`).
 - **Fast-Scrolling Bounded Header Read (`thumb_only = true`)**:
   When `thumb_only = true`, never allocate the full file size on the heap. Read at most `@min(file_size, 128 * 1024)` bytes (128KB) for standard formats (or `@min(file_size, 256 * 1024)` for RAW / companion JPEG fallbacks), dropping read latency from $\\sim 36\\text{ms}$ to $0.17\\text{ms}$.
 - **Main-Thread Synchronous Header Probing (`probeMediaMetadata`)**:

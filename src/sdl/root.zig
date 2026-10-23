@@ -43,63 +43,63 @@ test "sdl enum mapping and boundary sanity checks" {
     // ScaleMode roundtrip
     try std.testing.expectEqual(
         @as(c_int, c.SDL_SCALEMODE_NEAREST),
-        @intFromEnum(ScaleMode.nearest),
+        @backingInt(ScaleMode.nearest),
     );
     try std.testing.expectEqual(
         @as(c_int, c.SDL_SCALEMODE_LINEAR),
-        @intFromEnum(ScaleMode.linear),
+        @backingInt(ScaleMode.linear),
     );
     try std.testing.expectEqual(
         @as(c_int, c.SDL_SCALEMODE_PIXELART),
-        @intFromEnum(ScaleMode.pixel_art),
+        @backingInt(ScaleMode.pixel_art),
     );
 
     // GPU Filter roundtrip
     try std.testing.expectEqual(
         @as(c_int, c.SDL_GPU_FILTER_NEAREST),
-        @intFromEnum(gpu.Filter.nearest),
+        @backingInt(gpu.Filter.nearest),
     );
     try std.testing.expectEqual(
         @as(c_int, c.SDL_GPU_FILTER_LINEAR),
-        @intFromEnum(gpu.Filter.linear),
+        @backingInt(gpu.Filter.linear),
     );
 
     // GPU SamplerAddressMode roundtrip
     try std.testing.expectEqual(
         @as(c_int, c.SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE),
-        @intFromEnum(gpu.SamplerAddressMode.clamp_to_edge),
+        @backingInt(gpu.SamplerAddressMode.clamp_to_edge),
     );
     try std.testing.expectEqual(
         @as(c_int, c.SDL_GPU_SAMPLERADDRESSMODE_REPEAT),
-        @intFromEnum(gpu.SamplerAddressMode.repeat),
+        @backingInt(gpu.SamplerAddressMode.repeat),
     );
 
     // GPU CompareOp roundtrip
     try std.testing.expectEqual(
         @as(c_int, c.SDL_GPU_COMPAREOP_ALWAYS),
-        @intFromEnum(gpu.CompareOp.always),
+        @backingInt(gpu.CompareOp.always),
     );
     try std.testing.expectEqual(
         @as(c_int, c.SDL_GPU_COMPAREOP_NEVER),
-        @intFromEnum(gpu.CompareOp.never),
+        @backingInt(gpu.CompareOp.never),
     );
 
     // GPU BlendFactor roundtrip
     try std.testing.expectEqual(
         @as(c_int, c.SDL_GPU_BLENDFACTOR_SRC_ALPHA),
-        @intFromEnum(gpu.BlendFactor.src_alpha),
+        @backingInt(gpu.BlendFactor.src_alpha),
     );
     try std.testing.expectEqual(
         @as(c_int, c.SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA),
-        @intFromEnum(gpu.BlendFactor.one_minus_src_alpha),
+        @backingInt(gpu.BlendFactor.one_minus_src_alpha),
     );
     try std.testing.expectEqual(
         @as(c_int, c.SDL_GPU_BLENDFACTOR_ONE),
-        @intFromEnum(gpu.BlendFactor.one),
+        @backingInt(gpu.BlendFactor.one),
     );
     try std.testing.expectEqual(
         @as(c_int, c.SDL_GPU_BLENDFACTOR_ZERO),
-        @intFromEnum(gpu.BlendFactor.zero),
+        @backingInt(gpu.BlendFactor.zero),
     );
 
     // GPU Texture handle equality & opaque conversion

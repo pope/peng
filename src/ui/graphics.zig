@@ -23,7 +23,7 @@ pub const GraphicsOptions = struct {
     headless: bool = false,
     high_dpi: bool = true,
     borderless: bool = false,
-    debug_mode: bool = builtin.mode == .Debug,
+    debug_mode: bool = builtin.mode == .debug,
 };
 
 /// Immediate uniform parameters for Dual Kawase downsample and upsample passes.
@@ -881,7 +881,10 @@ pub fn sdl3MeasureText(
     config: *clay.TextElementConfig,
     data: *const MeasureTextUserData,
 ) clay.Dimensions {
-    const clean_text = if (std.mem.indexOfScalar(u8, text, 0)) |idx| text[0..idx] else text;
+    const clean_text = if (std.mem.findScalar(u8, text, 0)) |idx|
+        text[0..idx]
+    else
+        text;
     if (clean_text.len == 0) return .{ .w = 0, .h = 0 };
 
     if (config.font_id >= data.fonts.len) return .{ .w = 0, .h = 0 };

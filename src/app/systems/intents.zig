@@ -210,7 +210,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
             },
             .step => |s| {
                 const desc = state.getDescriptor(s.param);
-                const dir_f: f32 = @floatFromInt(@intFromEnum(s.direction));
+                const dir_f: f32 = @floatFromInt(@backingInt(s.direction));
                 const delta = desc.step * dir_f;
                 vp.edits.set(s.param, vp.edits.get(s.param) + delta);
                 vp.compare_original = false;
@@ -1395,26 +1395,26 @@ test "sysExecuteIntents - refresh avoids aliasing and uses archive source" {
     try tmp.dir.createDirPath(io, "sub");
     try tmp.dir.createDirPath(io, "comics");
 
-    const empty_zip = [_]u8{ 'P', 'K', 5, 6 } ++ ([_]u8{0} ** 18);
+    const empty_zip = [_]u8{ 'P', 'K', 5, 6 } ++ @as([18]u8, @splat(0));
     var cbz_file = try tmp.dir.createFile(io, "comics/vol1.cbz", .{});
     var wr_slices = [_][]const u8{&empty_zip};
     _ = try cbz_file.writePositional(io, &wr_slices, 0);
     cbz_file.close(io);
 
     var sub_buf: [128]u8 = undefined;
-    const sub_dir = try std.fmt.bufPrint(
+    const sub_dir = try std.mem.print(
         &sub_buf,
         ".zig-cache/tmp/{s}/sub",
         .{tmp.sub_path},
     );
     var cbz_buf: [128]u8 = undefined;
-    const cbz_path = try std.fmt.bufPrint(
+    const cbz_path = try std.mem.print(
         &cbz_buf,
         ".zig-cache/tmp/{s}/comics/vol1.cbz",
         .{tmp.sub_path},
     );
     var comics_buf: [128]u8 = undefined;
-    const comics_dir = try std.fmt.bufPrint(
+    const comics_dir = try std.mem.print(
         &comics_buf,
         ".zig-cache/tmp/{s}/comics",
         .{tmp.sub_path},
@@ -1563,7 +1563,7 @@ test "executeIntent - set_palette directory_navigator clears previous query" {
     try tmp.dir.createDir(io, "alpha_dir", .default_dir);
     try tmp.dir.createDir(io, "beta_dir", .default_dir);
 
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const len = try tmp.dir.realPath(io, &path_buf);
     const tmp_path = path_buf[0..len];
 

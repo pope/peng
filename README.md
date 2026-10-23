@@ -106,7 +106,7 @@ ______________________________________________________________________
 Compile all components using the standard Zig build system:
 
 ```bash
-# Enter the Nix development shell (contains Zig 0.16.0 and SDL3 dependencies)
+# Enter the Nix development shell (contains Zig 0.17.0 and SDL3 dependencies)
 direnv allow
 # OR: nix develop
 

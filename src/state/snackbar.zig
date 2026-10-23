@@ -34,7 +34,8 @@ pub const SnackbarTrigger = enum(u8) {
     adjust = 13,
 };
 
-pub const TRIGGER_COUNT: usize = @typeInfo(SnackbarTrigger).@"enum".fields.len;
+pub const TRIGGER_COUNT: usize =
+    @typeInfo(SnackbarTrigger).@"enum".field_names.len;
 
 /// Read-only snapshot of viewport and navigation state passed to formatters.
 pub const SnackbarContext = struct {
@@ -72,7 +73,7 @@ fn formatFilter(ctx: SnackbarContext, buf: []u8) []const u8 {
         .fsr => "AMD FSR 1.0 (EASU + RCAS)",
         .tiny_cnn => "Tiny CNN (Neural SR)",
     };
-    return std.fmt.bufPrint(buf, "Filter: {s}", .{filter_name}) catch filter_name;
+    return std.mem.print(buf, "Filter: {s}", .{filter_name}) catch filter_name;
 }
 
 fn formatScaleMode(ctx: SnackbarContext, buf: []u8) []const u8 {
@@ -84,22 +85,30 @@ fn formatScaleMode(ctx: SnackbarContext, buf: []u8) []const u8 {
         .fit_width => "Fit Width",
         .fit_height => "Fit Height",
     };
-    return std.fmt.bufPrint(buf, "Scale: {s}", .{mode_name}) catch mode_name;
+    return std.mem.print(buf, "Scale: {s}", .{mode_name}) catch mode_name;
 }
 
 fn formatBrightness(ctx: SnackbarContext, buf: []u8) []const u8 {
     const b = ctx.viewport.edits.get(.brightness);
     const b_pct: i32 = @intFromFloat(@round(b * 100.0));
     if (b_pct > 0) {
-        return std.fmt.bufPrint(buf, "Brightness: +{d}%", .{b_pct}) catch "Brightness";
+        return std.mem.print(
+            buf,
+            "Brightness: +{d}%",
+            .{b_pct},
+        ) catch "Brightness";
     } else {
-        return std.fmt.bufPrint(buf, "Brightness: {d}%", .{b_pct}) catch "Brightness";
+        return std.mem.print(
+            buf,
+            "Brightness: {d}%",
+            .{b_pct},
+        ) catch "Brightness";
     }
 }
 
 fn formatContrast(ctx: SnackbarContext, buf: []u8) []const u8 {
     const c = ctx.viewport.edits.get(.contrast);
-    return std.fmt.bufPrint(buf, "Contrast: {d:.2}x", .{c}) catch "Contrast";
+    return std.mem.print(buf, "Contrast: {d:.2}x", .{c}) catch "Contrast";
 }
 
 fn formatAdjustParam(ctx: SnackbarContext, buf: []u8) []const u8 {
@@ -110,13 +119,13 @@ fn formatAdjustParam(ctx: SnackbarContext, buf: []u8) []const u8 {
         .percent => {
             const pct: i32 = @intFromFloat(@round(val * 100.0));
             if (pct > 0) {
-                return std.fmt.bufPrint(
+                return std.mem.print(
                     buf,
                     "{s}: +{d}%",
                     .{ desc.label, pct },
                 ) catch desc.label;
             } else {
-                return std.fmt.bufPrint(
+                return std.mem.print(
                     buf,
                     "{s}: {d}%",
                     .{ desc.label, pct },
@@ -124,7 +133,7 @@ fn formatAdjustParam(ctx: SnackbarContext, buf: []u8) []const u8 {
             }
         },
         .multiplier => {
-            return std.fmt.bufPrint(
+            return std.mem.print(
                 buf,
                 "{s}: {d:.2}x",
                 .{ desc.label, val },
@@ -132,7 +141,7 @@ fn formatAdjustParam(ctx: SnackbarContext, buf: []u8) []const u8 {
         },
         .ratio_percent => {
             const pct: i32 = @intFromFloat(@round(val * 100.0));
-            return std.fmt.bufPrint(
+            return std.mem.print(
                 buf,
                 "{s}: {d}%",
                 .{ desc.label, pct },
@@ -141,13 +150,13 @@ fn formatAdjustParam(ctx: SnackbarContext, buf: []u8) []const u8 {
         .temperature => {
             const deg: i32 = @intFromFloat(@round(val * 2000.0));
             if (deg > 0) {
-                return std.fmt.bufPrint(
+                return std.mem.print(
                     buf,
                     "{s}: +{d}K",
                     .{ desc.label, deg },
                 ) catch desc.label;
             } else {
-                return std.fmt.bufPrint(
+                return std.mem.print(
                     buf,
                     "{s}: {d}K",
                     .{ desc.label, deg },
@@ -157,19 +166,19 @@ fn formatAdjustParam(ctx: SnackbarContext, buf: []u8) []const u8 {
         .tint => {
             const pct: i32 = @intFromFloat(@round(val * 100.0));
             if (pct > 0) {
-                return std.fmt.bufPrint(
+                return std.mem.print(
                     buf,
                     "{s}: +{d} (Magenta)",
                     .{ desc.label, pct },
                 ) catch desc.label;
             } else if (pct < 0) {
-                return std.fmt.bufPrint(
+                return std.mem.print(
                     buf,
                     "{s}: {d} (Green)",
                     .{ desc.label, pct },
                 ) catch desc.label;
             } else {
-                return std.fmt.bufPrint(
+                return std.mem.print(
                     buf,
                     "{s}: 0",
                     .{desc.label},
@@ -185,12 +194,16 @@ fn formatResetAdjustments(_: SnackbarContext, _: []u8) []const u8 {
 
 fn formatZoom(ctx: SnackbarContext, buf: []u8) []const u8 {
     const z_pct: u32 = @intFromFloat(@round(ctx.viewport.zoom_factor.get() * 100.0));
-    return std.fmt.bufPrint(buf, "Zoom: {d}%", .{z_pct}) catch "Zoom";
+    return std.mem.print(buf, "Zoom: {d}%", .{z_pct}) catch "Zoom";
 }
 
 fn formatRotation(ctx: SnackbarContext, buf: []u8) []const u8 {
     const deg: i32 = @intFromFloat(@round(ctx.viewport.rotation_angle));
-    return std.fmt.bufPrint(buf, "Rotation: {d}°", .{@mod(deg, 360)}) catch "Rotation";
+    return std.mem.print(
+        buf,
+        "Rotation: {d}°",
+        .{@mod(deg, 360)},
+    ) catch "Rotation";
 }
 
 fn formatMangaMode(ctx: SnackbarContext, _: []u8) []const u8 {
@@ -212,27 +225,27 @@ fn formatTesting(ctx: SnackbarContext, _: []u8) []const u8 {
     return if (ctx.snackbar_enabled) "Test Notification" else "";
 }
 
-fn formatClassification(ctx: SnackbarContext, buf: []u8) []const u8 {
+fn formatClassification(ctx: SnackbarContext, _: []u8) []const u8 {
     if (!ctx.has_target_image) {
-        return std.fmt.bufPrint(buf, "No image to classify", .{}) catch "No image to classify";
+        return "No image to classify";
     }
     if (ctx.classification_advanced) {
         return switch (ctx.classification) {
-            .reject => std.fmt.bufPrint(buf, "Previous image flagged as rejected", .{}) catch "Previous image flagged as rejected",
-            .pick => std.fmt.bufPrint(buf, "Previous image flagged as picked", .{}) catch "Previous image flagged as picked",
-            .unflagged => std.fmt.bufPrint(buf, "Previous image unflagged", .{}) catch "Previous image unflagged",
+            .reject => "Previous image flagged as rejected",
+            .pick => "Previous image flagged as picked",
+            .unflagged => "Previous image unflagged",
         };
     }
     return switch (ctx.classification) {
-        .pick => std.fmt.bufPrint(buf, "Flagged as Pick", .{}) catch "Flagged as Pick",
-        .reject => std.fmt.bufPrint(buf, "Flagged as Reject", .{}) catch "Flagged as Reject",
-        .unflagged => std.fmt.bufPrint(buf, "Unflagged", .{}) catch "Unflagged",
+        .pick => "Flagged as Pick",
+        .reject => "Flagged as Reject",
+        .unflagged => "Unflagged",
     };
 }
 
 fn formatViewMode(ctx: SnackbarContext, buf: []u8) []const u8 {
     const lbl = ctx.view_mode.label();
-    return std.fmt.bufPrint(buf, "Filter: {s}", .{lbl}) catch lbl;
+    return std.mem.print(buf, "Filter: {s}", .{lbl}) catch lbl;
 }
 
 /// Master declarative table of snackbar notification rules.
@@ -434,7 +447,7 @@ pub fn findRule(intent: AppIntent) ?SnackbarRule {
 
 /// Notification payload stored in the active variant of `SnackbarNotification`.
 pub const ActiveNotification = struct {
-    message_buf: [MAX_SNACKBAR_LEN]u8 = [_]u8{0} ** MAX_SNACKBAR_LEN,
+    message_buf: [MAX_SNACKBAR_LEN]u8 = @splat(0),
     message_len: u8 = 0,
     timeout_ms: u64 = 0,
 };
@@ -485,13 +498,13 @@ pub const SnackbarState = struct {
 
     /// Returns true if notifications for `trigger` are enabled in the bitmask.
     pub inline fn isTriggerEnabled(self: *const SnackbarState, trigger: SnackbarTrigger) bool {
-        const bit = @as(u32, 1) << @intCast(@intFromEnum(trigger));
+        const bit = @as(u32, 1) << @intCast(@backingInt(trigger));
         return (self.enabled_mask & bit) != 0;
     }
 
     /// Sets or clears the enabled bit for `trigger`.
     pub fn setTriggerEnabled(self: *SnackbarState, trigger: SnackbarTrigger, enabled: bool) void {
-        const bit = @as(u32, 1) << @intCast(@intFromEnum(trigger));
+        const bit = @as(u32, 1) << @intCast(@backingInt(trigger));
         if (enabled) {
             self.enabled_mask |= bit;
         } else {

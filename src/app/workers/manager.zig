@@ -34,7 +34,7 @@ pub const WorkerManager = struct {
     event_queue: events.MpscQueue(events.BackgroundEvent) = .{},
 
     /// Encapsulated task group managing all spawned background worker threads
-    /// under Zig 0.16 `std.Io`.
+    /// under Zig 0.17 `std.Io`.
     group: std.Io.Group = .init,
 
     /// Returns `true` if any background worker tasks (decode, path scan, or

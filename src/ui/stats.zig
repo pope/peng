@@ -162,34 +162,32 @@ fn renderInfoOverlay(
         if (ui_model.getMediaEntry(idx)) |media| {
             switch (media) {
                 .archive_entry => |a| {
-                    const page_basename = std.fs.path.basename(a.entry_name);
-                    const arch_basename = std.fs.path.basename(a.archive_path);
+                    const page_base = std.Io.Dir.path.basename(a.entry_name);
+                    const arch_base = std.Io.Dir.path.basename(a.archive_path);
                     raw_container_candidate = a.entry_name;
-                    filename = try std.fmt.allocPrint(
-                        frame_allocator,
+                    filename = try frame_allocator.print(
                         "{s} (Page {d}/{d})",
-                        .{ page_basename, idx + 1, ui_model.total_images },
+                        .{ page_base, idx + 1, ui_model.total_images },
                     );
-                    display_dir = try std.fmt.allocPrint(
-                        frame_allocator,
+                    display_dir = try frame_allocator.print(
                         "Archive: {s}",
-                        .{arch_basename},
+                        .{arch_base},
                     );
                 },
                 .filesystem => |f| {
                     raw_container_candidate = f.path;
-                    filename = std.fs.path.basename(f.path);
-                    display_dir = std.fs.path.dirname(f.path) orelse ".";
+                    filename = std.Io.Dir.path.basename(f.path);
+                    display_dir = std.Io.Dir.path.dirname(f.path) orelse ".";
                 },
                 .pair => |p| {
                     raw_container_candidate = p.raw_path;
-                    const raw_base = std.fs.path.basename(p.raw_path);
-                    filename = try std.fmt.allocPrint(
-                        frame_allocator,
+                    const raw_base = std.Io.Dir.path.basename(p.raw_path);
+                    filename = try frame_allocator.print(
                         "{s} [RAW+JPG]",
                         .{raw_base},
                     );
-                    display_dir = std.fs.path.dirname(p.raw_path) orelse ".";
+                    display_dir =
+                        std.Io.Dir.path.dirname(p.raw_path) orelse ".";
                 },
             }
         }
@@ -232,8 +230,7 @@ fn renderInfoOverlay(
             screen_h = h * z_val;
         }
     }
-    const screen_str = try std.fmt.allocPrint(
-        frame_allocator,
+    const screen_str = try frame_allocator.print(
         "{d:.0}x{d:.0} px",
         .{ screen_w, screen_h },
     );
@@ -243,8 +240,7 @@ fn renderInfoOverlay(
         if (entry.raw_metadata.getSensorDims()) |s_dims| {
             if (s_dims.w > 0 and s_dims.h > 0) {
                 const raw_mp = (s_dims.w * s_dims.h) / 1_000_000.0;
-                raw_res_str = try std.fmt.allocPrint(
-                    frame_allocator,
+                raw_res_str = try frame_allocator.print(
                     "{d:.0}x{d:.0} ({d:.2} MP)",
                     .{ s_dims.w, s_dims.h, raw_mp },
                 );
@@ -256,8 +252,7 @@ fn renderInfoOverlay(
                 disk_size_str = try formatSize(frame_allocator, cpu.size_bytes);
                 const megapixels = (cpu.w * cpu.h) / 1_000_000.0;
                 const prev_suffix = if (entry.raw_metadata.isRaw()) " [PREVIEW]" else "";
-                res_str = try std.fmt.allocPrint(
-                    frame_allocator,
+                res_str = try frame_allocator.print(
                     "{d:.0}x{d:.0} ({d:.2} MP){s}",
                     .{ cpu.w, cpu.h, megapixels, prev_suffix },
                 );
@@ -267,8 +262,7 @@ fn renderInfoOverlay(
                 disk_size_str = try formatSize(frame_allocator, gpu.size_bytes);
                 const megapixels = (gpu.w * gpu.h) / 1_000_000.0;
                 const prev_suffix = if (entry.raw_metadata.isRaw()) " [PREVIEW]" else "";
-                res_str = try std.fmt.allocPrint(
-                    frame_allocator,
+                res_str = try frame_allocator.print(
                     "{d:.0}x{d:.0} ({d:.2} MP){s}",
                     .{ gpu.w, gpu.h, megapixels, prev_suffix },
                 );
@@ -280,8 +274,7 @@ fn renderInfoOverlay(
                     res_str = "Loading preview...";
                 } else if (entry.full_w > 0 and entry.full_h > 0) {
                     const megapixels = (entry.full_w * entry.full_h) / 1_000_000.0;
-                    res_str = try std.fmt.allocPrint(
-                        frame_allocator,
+                    res_str = try frame_allocator.print(
                         "{d:.0}x{d:.0} ({d:.2} MP)",
                         .{ entry.full_w, entry.full_h, megapixels },
                     );
@@ -299,19 +292,16 @@ fn renderInfoOverlay(
     }
 
     const pixel_zoom_pct = z_val * 100.0;
-    const zoom_str = try std.fmt.allocPrint(
-        frame_allocator,
+    const zoom_str = try frame_allocator.print(
         "{d:.1}x ({d:.0}%)",
         .{ z_val, pixel_zoom_pct },
     );
 
-    const pan_str = try std.fmt.allocPrint(
-        frame_allocator,
+    const pan_str = try frame_allocator.print(
         "{d:.0}, {d:.0} px",
         .{ ui_model.viewport.pan_x, ui_model.viewport.pan_y },
     );
-    const rot_str = try std.fmt.allocPrint(
-        frame_allocator,
+    const rot_str = try frame_allocator.print(
         "{d:.0}°",
         .{ui_model.viewport.rotation_angle},
     );
@@ -321,7 +311,7 @@ fn renderInfoOverlay(
         var is_jpeg = std.mem.eql(u8, mime_type, "image/jpeg");
         if (ui_model.current_index) |idx| {
             if (ui_model.getMediaEntry(idx)) |media| {
-                const ext = std.fs.path.extension(media.getBasename());
+                const ext = std.Io.Dir.path.extension(media.getBasename());
                 if (std.ascii.eqlIgnoreCase(ext, ".jpg") or std.ascii.eqlIgnoreCase(ext, ".jpeg")) {
                     is_jpeg = true;
                 }
@@ -333,8 +323,7 @@ fn renderInfoOverlay(
             .{ false, 0.0, 0.0 };
 
         if (has_thumb) {
-            thumb_info_str = try std.fmt.allocPrint(
-                frame_allocator,
+            thumb_info_str = try frame_allocator.print(
                 "Embedded ({d:.0}x{d:.0} px)",
                 .{ t_w, t_h },
             );
@@ -459,41 +448,34 @@ pub fn renderStatsOverlay(
     if (current_entry) |entry| {
         switch (entry.status) {
             .loaded_cpu => |cpu| {
-                read_str = try std.fmt.allocPrint(
-                    frame_allocator,
+                read_str = try frame_allocator.print(
                     "{d:.2} ms",
                     .{cpu.read_time_ms},
                 );
-                decode_str = try std.fmt.allocPrint(
-                    frame_allocator,
+                decode_str = try frame_allocator.print(
                     "{d:.2} ms",
                     .{cpu.decode_time_ms},
                 );
-                convert_str = try std.fmt.allocPrint(
-                    frame_allocator,
+                convert_str = try frame_allocator.print(
                     "{d:.2} ms",
                     .{cpu.conversion_time_ms},
                 );
             },
             .loaded_gpu => |gpu| {
                 mem_size_str = try formatSize(frame_allocator, gpu.memory_size_bytes);
-                read_str = try std.fmt.allocPrint(
-                    frame_allocator,
+                read_str = try frame_allocator.print(
                     "{d:.2} ms",
                     .{gpu.read_time_ms},
                 );
-                decode_str = try std.fmt.allocPrint(
-                    frame_allocator,
+                decode_str = try frame_allocator.print(
                     "{d:.2} ms",
                     .{gpu.decode_time_ms},
                 );
-                convert_str = try std.fmt.allocPrint(
-                    frame_allocator,
+                convert_str = try frame_allocator.print(
                     "{d:.2} ms",
                     .{gpu.conversion_time_ms},
                 );
-                upload_str = try std.fmt.allocPrint(
-                    frame_allocator,
+                upload_str = try frame_allocator.print(
                     "{d:.2} ms",
                     .{gpu.upload_time_ms},
                 );
@@ -534,8 +516,7 @@ pub fn renderStatsOverlay(
                 if (entry.raw_metadata.getSensorDims()) |s_dims| {
                     if (s_dims.w > 0 and s_dims.h > 0) {
                         const raw_mp = (s_dims.w * s_dims.h) / 1_000_000.0;
-                        const r_str = try std.fmt.allocPrint(
-                            frame_allocator,
+                        const r_str = try frame_allocator.print(
                             "{d:.0}x{d:.0} ({d:.2} MP)",
                             .{ s_dims.w, s_dims.h, raw_mp },
                         );
@@ -550,15 +531,13 @@ pub fn renderStatsOverlay(
         try renderStatRow("Memory Size", mem_size_str);
 
         const formatted_total_vram = try formatSize(frame_allocator, s.total_vram_bytes);
-        const total_vram_str = try std.fmt.allocPrint(
-            frame_allocator,
+        const total_vram_str = try frame_allocator.print(
             "{s} / 1024 MB ({d} slots)",
             .{ formatted_total_vram, s.cached_slot_count },
         );
         try renderStatRow("Total Cache VRAM", total_vram_str);
 
-        const workers_str = try std.fmt.allocPrint(
-            frame_allocator,
+        const workers_str = try frame_allocator.print(
             "{d} / {d}",
             .{ s.active_decode_threads, s.max_decode_threads },
         );
@@ -566,8 +545,7 @@ pub fn renderStatsOverlay(
 
         try renderStatRow("Disk Read Time", read_str);
         if (img.cbz_decompress_time_ms > 0.0) {
-            const cbz_time_str = try std.fmt.allocPrint(
-                frame_allocator,
+            const cbz_time_str = try frame_allocator.print(
                 "{d:.2} ms",
                 .{img.cbz_decompress_time_ms},
             );
@@ -588,7 +566,7 @@ pub fn renderStatsOverlay(
         else
             "Direct VRAM";
         const fallback_time_str: []const u8 = if (img.was_fallback)
-            try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{img.fallback_time_ms})
+            try frame_allocator.print("{d:.2} ms", .{img.fallback_time_ms})
         else
             "N/A";
         try renderStatRow("GPU Upload Mode", upload_mode_str);
@@ -597,15 +575,14 @@ pub fn renderStatsOverlay(
         }
 
         const thumb_time_str: []const u8 = if (img.has_thumb)
-            try std.fmt.allocPrint(frame_allocator, "{d:.2} ms", .{img.thumb_upload_time_ms})
+            try frame_allocator.print("{d:.2} ms", .{img.thumb_upload_time_ms})
         else
             "N/A";
         try renderStatRow("Thumb Load Time", thumb_time_str);
 
         const total_thumbs = s.thumb_header_hits + s.thumb_positional_hits + s.thumb_misses;
         const thumb_hits_str = if (total_thumbs > 0)
-            try std.fmt.allocPrint(
-                frame_allocator,
+            try frame_allocator.print(
                 "{d} Header / {d} Pos / {d} Miss",
                 .{ s.thumb_header_hits, s.thumb_positional_hits, s.thumb_misses },
             )
@@ -619,13 +596,11 @@ pub fn renderStatsOverlay(
             "N/A";
         var mipmap_time_str: []const u8 = if (current_entry != null) "0.00 ms" else "N/A";
         if (img.num_mip_levels > 1) {
-            mipmap_status_str = try std.fmt.allocPrint(
-                frame_allocator,
+            mipmap_status_str = try frame_allocator.print(
                 "Enabled ({d} Levels)",
                 .{img.num_mip_levels},
             );
-            mipmap_time_str = try std.fmt.allocPrint(
-                frame_allocator,
+            mipmap_time_str = try frame_allocator.print(
                 "{d:.2} ms",
                 .{img.mipmap_time_ms},
             );
@@ -634,18 +609,15 @@ pub fn renderStatsOverlay(
         try renderStatRow("Mipmap Gen", mipmap_time_str);
 
         const rm = ui_model.render_metrics;
-        const ui_render_str = try std.fmt.allocPrint(
-            frame_allocator,
+        const ui_render_str = try frame_allocator.print(
             "{d:.2} ± {d:.2} ms",
             .{ rm.mean_render_time_ms, rm.stdev_render_time_ms },
         );
-        const ui_batches_str = try std.fmt.allocPrint(
-            frame_allocator,
+        const ui_batches_str = try frame_allocator.print(
             "{d}",
             .{rm.last_ui_batch_count},
         );
-        const ui_verts_str = try std.fmt.allocPrint(
-            frame_allocator,
+        const ui_verts_str = try frame_allocator.print(
             "{d}",
             .{rm.last_ui_vertex_count},
         );

@@ -279,7 +279,7 @@ fn handlePaletteKeys(
                 if (key == .tab and mod.shift) {
                     const parent_buf = try ctx.frame_allocator.alloc(
                         u8,
-                        std.fs.max_path_bytes,
+                        std.Io.Dir.max_path_bytes,
                     );
                     defer ctx.frame_allocator.free(parent_buf);
                     if (core_fs.getParentDirBuf(
@@ -299,7 +299,7 @@ fn handlePaletteKeys(
             if (palette.mode == .directory_navigator) {
                 const parent_buf = try ctx.frame_allocator.alloc(
                     u8,
-                    std.fs.max_path_bytes,
+                    std.Io.Dir.max_path_bytes,
                 );
                 defer ctx.frame_allocator.free(parent_buf);
                 if (core_fs.getParentDirBuf(
@@ -378,7 +378,7 @@ fn handlePaletteKeys(
             } else if (palette.mode == .directory_navigator) {
                 const parent_buf = try ctx.frame_allocator.alloc(
                     u8,
-                    std.fs.max_path_bytes,
+                    std.Io.Dir.max_path_bytes,
                 );
                 defer ctx.frame_allocator.free(parent_buf);
                 if (core_fs.getParentDirBuf(
@@ -557,7 +557,7 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
             // Check if a list item was clicked
             for (self.viewer.ui.palette.matches.items) |real_idx| {
                 var item_id_buf: [64]u8 = undefined;
-                const item_id_str = std.fmt.bufPrint(
+                const item_id_str = std.mem.print(
                     &item_id_buf,
                     "{s}{}",
                     .{ cfg.item_prefix, real_idx },
@@ -593,13 +593,13 @@ test "handlePaletteKeys directory_navigator key interactions" {
     f.close(io);
 
     var tmp_dir_buf: [128]u8 = undefined;
-    const tmp_dir = try std.fmt.bufPrint(
+    const tmp_dir = try std.mem.print(
         &tmp_dir_buf,
         ".zig-cache/tmp/{s}",
         .{tmp.sub_path},
     );
     var sub_no_img_buf: [160]u8 = undefined;
-    const sub_no_img = try std.fmt.bufPrint(
+    const sub_no_img = try std.mem.print(
         &sub_no_img_buf,
         "{s}/sub_no_images",
         .{tmp_dir},
@@ -715,13 +715,13 @@ test "handlePaletteKeys stepping up to parent directory preselects child dir" {
     try tmp.dir.createDirPath(io, "work_dir");
 
     var parent_buf: [128]u8 = undefined;
-    const parent_dir = try std.fmt.bufPrint(
+    const parent_dir = try std.mem.print(
         &parent_buf,
         ".zig-cache/tmp/{s}",
         .{tmp.sub_path},
     );
     var work_buf: [160]u8 = undefined;
-    const work_dir = try std.fmt.bufPrint(
+    const work_dir = try std.mem.print(
         &work_buf,
         "{s}/work_dir",
         .{parent_dir},
@@ -808,7 +808,7 @@ test "openPalette directory_navigator starting directory rules" {
 
     try tmp.dir.createDirPath(io, "sub1");
     var tmp_dir_buf: [128]u8 = undefined;
-    const tmp_dir = try std.fmt.bufPrint(
+    const tmp_dir = try std.mem.print(
         &tmp_dir_buf,
         ".zig-cache/tmp/{s}",
         .{tmp.sub_path},
@@ -820,7 +820,7 @@ test "openPalette directory_navigator starting directory rules" {
     // Rule 1: current_index is valid -> starting directory is dirname of
     // current image
     var sample_buf: [160]u8 = undefined;
-    const sample_path = try std.fmt.bufPrint(
+    const sample_path = try std.mem.print(
         &sample_buf,
         "{s}/image1.jpg",
         .{tmp_dir},
@@ -875,13 +875,13 @@ test "openPalette directory_navigator steps up if 0 subdirectories" {
 
     try tmp.dir.createDirPath(io, "child_leaf");
     var tmp_dir_buf: [128]u8 = undefined;
-    const tmp_dir = try std.fmt.bufPrint(
+    const tmp_dir = try std.mem.print(
         &tmp_dir_buf,
         ".zig-cache/tmp/{s}",
         .{tmp.sub_path},
     );
     var img_buf: [160]u8 = undefined;
-    const img_path = try std.fmt.bufPrint(
+    const img_path = try std.mem.print(
         &img_buf,
         "{s}/child_leaf/photo.png",
         .{tmp_dir},

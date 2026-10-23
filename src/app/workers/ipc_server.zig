@@ -8,7 +8,7 @@ const std = @import("std");
 const BackgroundEvent = events.BackgroundEvent;
 const WorkerManager = manager.WorkerManager;
 
-extern "kernel32" fn GetCurrentProcessId() callconv(std.builtin.CallingConvention.winapi) u32;
+extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) u32;
 
 fn getProcessId() u32 {
     if (builtin.os.tag == .windows) {
@@ -36,13 +36,29 @@ pub fn ipcServerWorkerTask(args: *IpcServerArgs) void {
     };
 }
 
-fn runIpcServer(workers: *WorkerManager, gpa: std.mem.Allocator, io: std.Io) !void {
+fn runIpcServer(
+    workers: *WorkerManager,
+    gpa: std.mem.Allocator,
+    io: std.Io,
+) !void {
     const pid = getProcessId();
     var path_buf: [128]u8 = undefined;
-    const socket_path = try std.fmt.bufPrint(&path_buf, "/tmp/peng-{d}.sock", .{pid});
+    const socket_path = try std.mem.print(
+        &path_buf,
+        "/tmp/peng-{d}.sock",
+        .{pid},
+    );
 
-    std.Io.Dir.createDir(std.Io.Dir.cwd(), io, "/tmp", @enumFromInt(0)) catch |err| {
-        std.log.debug("IPC createDir /tmp failed or already exists: {any}", .{err});
+    std.Io.Dir.createDir(
+        std.Io.Dir.cwd(),
+        io,
+        "/tmp",
+        .default_dir,
+    ) catch |err| {
+        std.log.debug(
+            "IPC createDir /tmp failed or already exists: {any}",
+            .{err},
+        );
     };
 
     std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, socket_path) catch |err| {
@@ -60,7 +76,7 @@ fn runIpcServer(workers: *WorkerManager, gpa: std.mem.Allocator, io: std.Io) !vo
 
     if (!builtin.is_test) {
         var msg_buf: [256]u8 = undefined;
-        const msg = std.fmt.bufPrint(
+        const msg = std.mem.print(
             &msg_buf,
             "IPC socket: {s}\n",
             .{socket_path},
@@ -171,7 +187,7 @@ test "acceptIpcConnections - accepts command and exits cleanly on wakeup" {
     defer tmp.cleanup();
 
     var sock_buf: [128]u8 = undefined;
-    const sock_path = try std.fmt.bufPrint(
+    const sock_path = try std.mem.print(
         &sock_buf,
         ".zig-cache/tmp/{s}/ipc_test.sock",
         .{tmp.sub_path},

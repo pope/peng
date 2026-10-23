@@ -55,11 +55,11 @@ pub fn parseGitUrl(allocator: std.mem.Allocator, url: []const u8) !GitUrl {
         var base_url = raw_git;
         var rev: []const u8 = "";
 
-        if (std.mem.indexOfScalar(u8, raw_git, '#')) |hash_pos| {
+        if (std.mem.findScalar(u8, raw_git, '#')) |hash_pos| {
             base_url = raw_git[0..hash_pos];
             rev = raw_git[hash_pos + 1 ..];
         }
-        if (std.mem.indexOfScalar(u8, base_url, '?')) |q_pos| {
+        if (std.mem.findScalar(u8, base_url, '?')) |q_pos| {
             base_url = base_url[0..q_pos];
         }
 
@@ -94,44 +94,48 @@ pub fn parseZonDependencies(allocator: std.mem.Allocator, io: std.Io, path: []co
         io,
         path,
         allocator,
-        @enumFromInt(1024 * 1024),
+        .limited(1024 * 1024),
         .of(u8),
         0,
     );
     defer allocator.free(file_contents);
 
-    var ast = try std.zig.Ast.parse(allocator, file_contents, .zon);
+    var ast = try std.zig.Ast.parse(
+        allocator,
+        file_contents,
+        .{ .mode = .zon },
+    );
     defer ast.deinit(allocator);
 
     var zoir = try std.zig.ZonGen.generate(allocator, ast, .{ .parse_str_lits = true });
     defer zoir.deinit(allocator);
 
-    const root_node = std.zig.Zoir.Node.Index.root.get(zoir);
+    const root_node = std.zig.Zoir.Node.Index.root.get(&zoir);
     switch (root_node) {
         .struct_literal => |s| {
             for (s.names, 0..) |name_nts, i| {
-                const field_name = name_nts.get(zoir);
+                const field_name = name_nts.get(&zoir);
                 if (std.mem.eql(u8, field_name, "dependencies")) {
-                    const deps_val_idx: std.zig.Zoir.Node.Index = @enumFromInt(@intFromEnum(s.vals.start) + i);
-                    switch (deps_val_idx.get(zoir)) {
+                    const deps_val_idx = s.vals.at(@intCast(i));
+                    switch (deps_val_idx.get(&zoir)) {
                         .struct_literal => |deps_struct| {
                             for (deps_struct.names, 0..) |dep_nts, j| {
-                                const dep_key_raw = dep_nts.get(zoir);
+                                const dep_key_raw = dep_nts.get(&zoir);
                                 const dep_key = try allocator.dupe(u8, dep_key_raw);
                                 errdefer allocator.free(dep_key);
 
-                                const dep_val_idx: std.zig.Zoir.Node.Index = @enumFromInt(@intFromEnum(deps_struct.vals.start) + j);
+                                const dep_val_idx = deps_struct.vals.at(@intCast(j));
 
                                 var url_opt: ?[]const u8 = null;
                                 var hash_opt: ?[]const u8 = null;
                                 var is_lazy = false;
 
-                                switch (dep_val_idx.get(zoir)) {
+                                switch (dep_val_idx.get(&zoir)) {
                                     .struct_literal => |df| {
                                         for (df.names, 0..) |fn_nts, k| {
-                                            const fn_name = fn_nts.get(zoir);
-                                            const fv_idx: std.zig.Zoir.Node.Index = @enumFromInt(@intFromEnum(df.vals.start) + k);
-                                            const fv_node = fv_idx.get(zoir);
+                                            const fn_name = fn_nts.get(&zoir);
+                                            const fv_idx = df.vals.at(@intCast(k));
+                                            const fv_node = fv_idx.get(&zoir);
 
                                             if (std.mem.eql(u8, fn_name, "url")) {
                                                 switch (fv_node) {
@@ -259,7 +263,7 @@ fn lookupExistingHash(allocator: std.mem.Allocator, io: std.Io, nix_deps_path: [
         io,
         nix_deps_path,
         allocator,
-        @enumFromInt(1024 * 1024),
+        .limited(1024 * 1024),
         .of(u8),
         0,
     ) catch |err| switch (err) {
@@ -271,18 +275,18 @@ fn lookupExistingHash(allocator: std.mem.Allocator, io: std.Io, nix_deps_path: [
     var lines = std.mem.splitScalar(u8, file_contents, '\n');
     var found_name = false;
     while (lines.next()) |line| {
-        if (std.mem.indexOf(u8, line, zon_hash) != null) {
+        if (std.mem.find(u8, line, zon_hash) != null) {
             found_name = true;
             continue;
         }
         if (found_name) {
-            if (std.mem.indexOf(u8, line, "hash =")) |hash_idx| {
-                const quote_start = std.mem.indexOfPos(u8, line, hash_idx + 6, "\"") orelse continue;
-                const quote_end = std.mem.indexOfPos(u8, line, quote_start + 1, "\"") orelse continue;
+            if (std.mem.find(u8, line, "hash =")) |hash_idx| {
+                const quote_start = std.mem.findPos(u8, line, hash_idx + 6, "\"") orelse continue;
+                const quote_end = std.mem.findPos(u8, line, quote_start + 1, "\"") orelse continue;
                 const extracted = line[quote_start + 1 .. quote_end];
                 return try allocator.dupe(u8, extracted);
             }
-            if (std.mem.indexOf(u8, line, "};") != null) {
+            if (std.mem.find(u8, line, "};") != null) {
                 found_name = false;
             }
         }
@@ -302,16 +306,16 @@ fn checkCachedPackage(allocator: std.mem.Allocator, io: std.Io, environ_map: *st
     try bases.append(allocator, try allocator.dupe(u8, ".zig-cache/p"));
 
     if (environ_map.get("HOME")) |home| {
-        try bases.append(allocator, try std.fmt.allocPrint(allocator, "{s}/.cache/zig/p", .{home}));
+        try bases.append(allocator, try allocator.print("{s}/.cache/zig/p", .{home}));
     }
 
     for (bases.items) |base_path| {
-        const direct_dir = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ base_path, dep_hash });
+        const direct_dir = try allocator.print("{s}/{s}", .{ base_path, dep_hash });
         defer allocator.free(direct_dir);
 
         if (std.Io.Dir.cwd().statFile(io, direct_dir, .{})) |stat| {
             if (stat.kind == .directory) {
-                const zon_file = try std.fmt.allocPrint(allocator, "{s}/build.zig.zon", .{direct_dir});
+                const zon_file = try allocator.print("{s}/build.zig.zon", .{direct_dir});
                 errdefer allocator.free(zon_file);
 
                 if (std.Io.Dir.cwd().openFile(io, zon_file, .{})) |f| {
@@ -338,11 +342,11 @@ fn checkCachedPackage(allocator: std.mem.Allocator, io: std.Io, environ_map: *st
 
         var it = dir.iterate();
         while (try it.next(io)) |entry| {
-            if (entry.kind == .directory and std.mem.indexOf(u8, entry.name, dep_hash) != null) {
-                const matched_dir = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ base_path, entry.name });
+            if (entry.kind == .directory and std.mem.find(u8, entry.name, dep_hash) != null) {
+                const matched_dir = try allocator.print("{s}/{s}", .{ base_path, entry.name });
                 defer allocator.free(matched_dir);
 
-                const zon_file = try std.fmt.allocPrint(allocator, "{s}/build.zig.zon", .{matched_dir});
+                const zon_file = try allocator.print("{s}/build.zig.zon", .{matched_dir});
                 errdefer allocator.free(zon_file);
 
                 if (std.Io.Dir.cwd().openFile(io, zon_file, .{})) |f| {
@@ -370,7 +374,7 @@ fn fetchAndExtractZon(
     git_info: GitUrl,
     tmp_count: usize,
 ) !?[]const u8 {
-    const tmp_path = try std.fmt.allocPrint(allocator, "/tmp/zon_dep_{}", .{tmp_count});
+    const tmp_path = try allocator.print("/tmp/zon_dep_{}", .{tmp_count});
     defer allocator.free(tmp_path);
 
     if (git_info.is_git) {
@@ -389,7 +393,7 @@ fn fetchAndExtractZon(
             return error.GitCloneFailed;
         }
 
-        const nested_zon = try std.fmt.allocPrint(allocator, "{s}/build.zig.zon", .{tmp_path});
+        const nested_zon = try allocator.print("{s}/build.zig.zon", .{tmp_path});
         if (std.Io.Dir.cwd().openFile(io, nested_zon, .{})) |f| {
             f.close(io);
             return nested_zon;
@@ -405,7 +409,7 @@ fn fetchAndExtractZon(
         const archive_bytes = try fetchUrlBytes(allocator, io, dep.url);
         defer allocator.free(archive_bytes);
 
-        const archive_path = try std.fmt.allocPrint(allocator, "/tmp/zon_arc_{}.pkg", .{tmp_count});
+        const archive_path = try allocator.print("/tmp/zon_arc_{}.pkg", .{tmp_count});
         defer allocator.free(archive_path);
         defer {
             std.Io.Dir.cwd().deleteFile(io, archive_path) catch |err| {
@@ -454,7 +458,7 @@ fn fetchAndExtractZon(
 
         while (try walker.next(io)) |entry| {
             if (std.mem.eql(u8, entry.basename, "build.zig.zon")) {
-                const found_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ tmp_path, entry.path });
+                const found_path = try allocator.print("{s}/{s}", .{ tmp_path, entry.path });
                 std.log.info("discovered transitive ZON manifest at '{s}'", .{found_path});
                 return found_path;
             }

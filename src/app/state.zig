@@ -482,10 +482,10 @@ pub const AppState = struct {
     ) NavigatorInitialPath {
         if (self.viewer.navigation.getCurrentImageEntry()) |media| {
             const file_path = media.getSourcePath();
-            if (std.fs.path.dirname(file_path)) |parent| {
+            if (std.Io.Dir.path.dirname(file_path)) |parent| {
                 return .{
                     .start_dir = parent,
-                    .preselect_child = std.fs.path.basename(file_path),
+                    .preselect_child = std.Io.Dir.path.basename(file_path),
                 };
             } else {
                 return .{
@@ -559,7 +559,7 @@ pub const AppState = struct {
                 }
                 try self.loadPaletteDirectory(nav_path.start_dir);
                 if (self.viewer.ui.palette.dir_items.items.len == 0) {
-                    var parent_buf: [std.fs.max_path_bytes]u8 = undefined;
+                    var parent_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
                     while (self.viewer.ui.palette.dir_items.items.len == 0) {
                         const curr =
                             self.viewer.ui.palette.current_nav_dir.items;
@@ -578,7 +578,11 @@ pub const AppState = struct {
                     .active => |s| s.interval_s,
                     .inactive => 3.0,
                 };
-                const formatted = std.fmt.bufPrint(&buf, "{d:.1}", .{dur_secs}) catch |err| blk: {
+                const formatted = std.mem.print(
+                    &buf,
+                    "{d:.1}",
+                    .{dur_secs},
+                ) catch |err| blk: {
                     std.log.warn(
                         "Failed to format slideshow interval string: {}, defaulting to 3.0",
                         .{err},
@@ -613,11 +617,12 @@ pub const AppState = struct {
         // Copy `path` upfront because callers may pass a slice backed by
         // `directory_arena` (reset below) or `last_scanned_dir.items`
         // (cleared and written below).
-        var path_sfa = std.heap.stackFallback(
-            std.fs.max_path_bytes,
+        var stack_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        var path_sfa: std.heap.BufferFirstAllocator = .init(
+            &stack_buf,
             self.allocator,
         );
-        const path_alloc = path_sfa.get();
+        const path_alloc = path_sfa.allocator();
         const owned_path = try path_alloc.dupe(u8, path);
         defer path_alloc.free(owned_path);
 
@@ -641,7 +646,7 @@ pub const AppState = struct {
         const dir_target = if (has_stat and stat.kind == .directory)
             owned_path
         else
-            std.fs.path.dirname(owned_path) orelse ".";
+            std.Io.Dir.path.dirname(owned_path) orelse ".";
 
         self.viewer.navigation.last_scanned_dir.clearRetainingCapacity();
         try self.viewer.navigation.last_scanned_dir.appendSlice(
@@ -1240,7 +1245,7 @@ test "AppState.openPath preserves closing palette matches" {
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const len = try tmp.dir.realPath(io, &path_buf);
     const tmp_path = path_buf[0..len];
 

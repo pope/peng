@@ -234,31 +234,34 @@ fn captureAndVerify(
     max_tolerance_pct: f64,
 ) !bool {
     if (update_baselines) {
-        const base_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ base_dir, baseline_name });
+        const base_path = try gpa.print(
+            "{s}/{s}",
+            .{ base_dir, baseline_name },
+        );
         defer gpa.free(base_path);
-        const cmd = try std.fmt.allocPrint(gpa, "screenshot {s}", .{base_path});
+        const cmd = try gpa.print("screenshot {s}", .{base_path});
         defer gpa.free(cmd);
         try sendCommand(socket_path, cmd);
         return false;
     }
 
-    const run_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ run_dir, run_name });
+    const run_path = try gpa.print("{s}/{s}", .{ run_dir, run_name });
     defer gpa.free(run_path);
-    const cmd = try std.fmt.allocPrint(gpa, "screenshot {s}", .{run_path});
+    const cmd = try gpa.print("screenshot {s}", .{run_path});
     defer gpa.free(cmd);
     try sendCommand(socket_path, cmd);
 
-    const base_path = try std.fmt.allocPrint(gpa, "{s}/{s}", .{ base_dir, baseline_name });
+    const base_path = try gpa.print("{s}/{s}", .{ base_dir, baseline_name });
     defer gpa.free(base_path);
-    const base_path_z = try gpa.dupeZ(u8, base_path);
+    const base_path_z = try gpa.dupeSentinel(u8, base_path, 0);
     defer gpa.free(base_path_z);
 
-    const run_path_z = try gpa.dupeZ(u8, run_path);
+    const run_path_z = try gpa.dupeSentinel(u8, run_path, 0);
     defer gpa.free(run_path_z);
 
-    const diff_path = try std.fmt.allocPrint(gpa, "{s}/diff_{s}", .{ run_dir, run_name });
+    const diff_path = try gpa.print("{s}/diff_{s}", .{ run_dir, run_name });
     defer gpa.free(diff_path);
-    const diff_path_z = try gpa.dupeZ(u8, diff_path);
+    const diff_path_z = try gpa.dupeSentinel(u8, diff_path, 0);
     defer gpa.free(diff_path_z);
 
     const res = try compareScreenshots(base_path_z, run_path_z, diff_path_z, max_tolerance_pct);
@@ -338,7 +341,7 @@ pub fn main(init: std.process.Init) !void {
     var socket_path: []const u8 = "";
 
     while (try stdout_stream.takeDelimiter('\n')) |line| {
-        if (std.mem.indexOf(u8, line, "IPC socket: ")) |idx| {
+        if (std.mem.find(u8, line, "IPC socket: ")) |idx| {
             const raw_path = std.mem.trim(u8, line[idx + "IPC socket: ".len ..], " \t\r\n");
             if (raw_path.len <= socket_path_buf.len) {
                 @memcpy(socket_path_buf[0..raw_path.len], raw_path);
@@ -719,7 +722,10 @@ pub fn main(init: std.process.Init) !void {
         // Generate a 513-character screenshot path
         var long_path_buf: [520]u8 = undefined;
         @memset(&long_path_buf, 'a');
-        const long_cmd = try std.fmt.allocPrint(gpa, "screenshot {s}", .{long_path_buf[0..513]});
+        const long_cmd = try gpa.print(
+            "screenshot {s}",
+            .{long_path_buf[0..513]},
+        );
         defer gpa.free(long_cmd);
         try expectCommandFailure(socket_path, long_cmd);
     }

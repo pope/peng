@@ -1,5 +1,7 @@
+const c_pkg = @import("c.zig");
 const std = @import("std");
-const c = @import("c.zig").c;
+
+const c = c_pkg.c;
 
 /// SDL pixel format enumeration constants.
 pub const PixelFormat = struct {
@@ -114,7 +116,12 @@ pub const Surface = struct {
 
     /// Scales this surface to new pixel dimensions using the chosen scaling filter mode.
     pub fn scale(self: Surface, width: i32, height: i32, mode: ScaleMode) ?Surface {
-        const raw = c.SDL_ScaleSurface(self.ptr, width, height, @intFromEnum(mode));
+        const raw = c.SDL_ScaleSurface(
+            self.ptr,
+            width,
+            height,
+            @backingInt(mode),
+        );
         return if (raw) |r| .{ .ptr = r } else null;
     }
 
@@ -187,8 +194,9 @@ pub const Surface = struct {
             return true;
         } else if (bpp == 4) {
             const color_mask_u32 = details.*.Rmask | details.*.Gmask | details.*.Bmask;
-            const color_mask_4: [4]u8 = @bitCast(color_mask_u32);
-            const color_mask_16: Vec16 = color_mask_4 ** 4;
+            const color_mask_4: [4]u8 = std.mem.toBytes(color_mask_u32);
+            const mask_words: [4]u32 = @splat(color_mask_u32);
+            const color_mask_16: Vec16 = std.mem.toBytes(mask_words);
 
             const total_bytes = w_u * 4;
             var idx: usize = 0;
@@ -248,7 +256,7 @@ pub const Surface = struct {
             return true;
         } else if (bpp == 4) {
             const color_mask_u32 = details.*.Rmask | details.*.Gmask | details.*.Bmask;
-            const color_mask_4: [4]u8 = @bitCast(color_mask_u32);
+            const color_mask_4: [4]u8 = std.mem.toBytes(color_mask_u32);
             const Vec4 = @Vector(4, u8);
             const thresh_vec: Vec4 = @splat(threshold);
             const mask_vec: Vec4 = color_mask_4;
@@ -487,7 +495,7 @@ test "Surface.isRowBlack and isColBlack - XRGB8888 ignores unused padding byte" 
     // Now clear only the color components (using SDL_MapRGB or bitwise mask)
     const details = c.SDL_GetPixelFormatDetails(surf.ptr.format) orelse return;
     const color_mask_u32 = details.*.Rmask | details.*.Gmask | details.*.Bmask;
-    const color_mask_4: [4]u8 = @bitCast(color_mask_u32);
+    const color_mask_4: [4]u8 = std.mem.toBytes(color_mask_u32);
 
     y = 0;
     while (y < 16) : (y += 1) {

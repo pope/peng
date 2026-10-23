@@ -167,19 +167,20 @@ pub const MediaEntry = union(enum) {
     /// Returns the leaf filename of the media entry (file basename or archive entry basename).
     pub fn getBasename(self: MediaEntry) []const u8 {
         return switch (self) {
-            .filesystem => |f| std.fs.path.basename(f.path),
-            .archive_entry => |a| std.fs.path.basename(a.entry_name),
-            .pair => |p| std.fs.path.basename(p.raw_path),
+            .filesystem => |f| std.Io.Dir.path.basename(f.path),
+            .archive_entry => |a| std.Io.Dir.path.basename(a.entry_name),
+            .pair => |p| std.Io.Dir.path.basename(p.raw_path),
         };
     }
 
     /// Returns the directory containing this media file or archive container.
     pub fn getContainerName(self: MediaEntry) []const u8 {
-        return switch (self) {
-            .filesystem => |f| std.fs.path.dirname(f.path) orelse ".",
-            .archive_entry => |a| std.fs.path.dirname(a.archive_path) orelse ".",
-            .pair => |p| std.fs.path.dirname(p.raw_path) orelse ".",
+        const raw_dir = switch (self) {
+            .filesystem => |f| f.path,
+            .archive_entry => |a| a.archive_path,
+            .pair => |p| p.raw_path,
         };
+        return std.Io.Dir.path.dirname(raw_dir) orelse ".";
     }
 
     /// Returns the file path or archive internal member path string.
@@ -750,7 +751,7 @@ pub const ElementTag = enum(usize) {
 
     /// Converts element tag enum to raw integer index.
     pub fn toInt(self: ElementTag) usize {
-        return @intFromEnum(self);
+        return @backingInt(self);
     }
 
     /// Converts raw integer index to corresponding `ElementTag` enum variant.
@@ -984,7 +985,7 @@ pub const descriptors = [EditParam.count]ParamDescriptor{
 
 comptime {
     for (0..descriptors.len) |i| {
-        const p: EditParam = @enumFromInt(i);
+        const p: EditParam = @fromBackingInt(@intCast(i));
         std.debug.assert(descriptors[i].param == p);
         std.debug.assert(descriptors[i].min < descriptors[i].max);
         std.debug.assert(descriptors[i].default >= descriptors[i].min);
@@ -994,7 +995,7 @@ comptime {
 
 /// Returns the ParamDescriptor definition for the given EditParam.
 pub inline fn getDescriptor(param: EditParam) ParamDescriptor {
-    return descriptors[@intFromEnum(param)];
+    return descriptors[@backingInt(param)];
 }
 
 /// Element identifiers for Clay layout slider elements.
@@ -1082,30 +1083,30 @@ pub const ImageEdits = struct {
     fn initDefaults() [EditParam.count]f32 {
         var initial: [EditParam.count]f32 = undefined;
         for (std.enums.values(EditParam)) |p| {
-            initial[@intFromEnum(p)] = getDescriptor(p).default;
+            initial[@backingInt(p)] = getDescriptor(p).default;
         }
         return initial;
     }
 
     /// Gets the current value for the specified parameter.
     pub inline fn get(self: ImageEdits, param: EditParam) f32 {
-        return self.values[@intFromEnum(param)];
+        return self.values[@backingInt(param)];
     }
 
     /// Clamps and sets the specified parameter value.
     pub inline fn set(self: *ImageEdits, param: EditParam, val: f32) void {
-        self.values[@intFromEnum(param)] = getDescriptor(param).clamp(val);
+        self.values[@backingInt(param)] = getDescriptor(param).clamp(val);
     }
 
     /// Resets the specified parameter to its default value.
     pub inline fn resetParam(self: *ImageEdits, param: EditParam) void {
-        self.values[@intFromEnum(param)] = getDescriptor(param).default;
+        self.values[@backingInt(param)] = getDescriptor(param).default;
     }
 
     /// Resets all adjustments to neutral defaults.
     pub fn reset(self: *ImageEdits) void {
         for (std.enums.values(EditParam)) |p| {
-            self.values[@intFromEnum(p)] = getDescriptor(p).default;
+            self.values[@backingInt(p)] = getDescriptor(p).default;
         }
     }
 
@@ -1119,7 +1120,7 @@ pub const ImageEdits = struct {
                 if (@abs(self.get(.contrast) - c_def) <= 1e-5) continue;
             }
             const def = getDescriptor(p).default;
-            if (@abs(self.values[@intFromEnum(p)] - def) > 1e-5) return true;
+            if (@abs(self.values[@backingInt(p)] - def) > 1e-5) return true;
         }
         return false;
     }
@@ -1127,7 +1128,7 @@ pub const ImageEdits = struct {
     /// Returns true if the specific parameter is at its neutral default value.
     pub fn isParamDefault(self: ImageEdits, param: EditParam) bool {
         const def = getDescriptor(param).default;
-        return @abs(self.values[@intFromEnum(param)] - def) <= 1e-5;
+        return @abs(self.values[@backingInt(param)] - def) <= 1e-5;
     }
 };
 
@@ -1176,7 +1177,7 @@ pub const OverlayState = struct {
 
 /// Rolling window of recent frame render duration samples computing mean and standard deviation.
 pub const RenderStats = struct {
-    samples: [60]f64 = [_]f64{0.0} ** 60,
+    samples: [60]f64 = @splat(0.0),
     head: usize = 0,
     count: usize = 0,
 
@@ -1376,12 +1377,12 @@ pub const Orientation = enum(u2) {
 
     /// Direct branchless arithmetic conversion to floating-point degrees: index * 90.0.
     pub inline fn toDegrees(self: Orientation) f32 {
-        return @as(f32, @floatFromInt(@intFromEnum(self))) * 90.0;
+        return @as(f32, @floatFromInt(@backingInt(self))) * 90.0;
     }
 
     /// Branchless bitwise check: odd indices (1 and 3) swap width and height.
     pub inline fn isDimensionSwapped(self: Orientation) bool {
-        return (@intFromEnum(self) & 1) != 0;
+        return (@backingInt(self) & 1) != 0;
     }
 };
 
@@ -1761,7 +1762,7 @@ pub const ActiveScreenshot = struct {
         err: anyerror,
     ) void {
         var response_buf: [128]u8 = undefined;
-        const response = std.fmt.bufPrint(
+        const response = std.mem.print(
             &response_buf,
             "ERR {s}\n",
             .{@errorName(err)},

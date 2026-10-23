@@ -6,7 +6,7 @@ const MediaEntry = state_pkg.MediaEntry;
 
 /// Returns `true` if filename is an AppleDouble metadata file starting with `._`.
 fn isAppleDouble(filename: []const u8) bool {
-    const basename = std.fs.path.basename(filename);
+    const basename = std.Io.Dir.path.basename(filename);
     return std.mem.startsWith(u8, basename, "._");
 }
 
@@ -38,7 +38,7 @@ pub fn isRawExtension(ext: []const u8) bool {
 /// is not AppleDouble metadata.
 pub fn isRawFile(filename: []const u8) bool {
     if (isAppleDouble(filename)) return false;
-    return isRawExtension(std.fs.path.extension(filename));
+    return isRawExtension(std.Io.Dir.path.extension(filename));
 }
 
 /// Returns `true` if the file extension is `.cbz` (case-insensitive).
@@ -50,13 +50,13 @@ fn isCbzExtension(ext: []const u8) bool {
 /// and is not AppleDouble metadata.
 pub fn isCbzFile(filename: []const u8) bool {
     if (isAppleDouble(filename)) return false;
-    return isCbzExtension(std.fs.path.extension(filename));
+    return isCbzExtension(std.Io.Dir.path.extension(filename));
 }
 
 /// Returns `true` if the path points to a supported image file and is not AppleDouble metadata.
 pub fn isImageFile(filename: []const u8) bool {
     if (isAppleDouble(filename)) return false;
-    return isImageExtension(std.fs.path.extension(filename));
+    return isImageExtension(std.Io.Dir.path.extension(filename));
 }
 
 /// Returns `true` if the path points to any supported image or CBZ archive
@@ -68,8 +68,8 @@ fn isSupportedFile(filename: []const u8) bool {
 
 /// Returns the stem of `path` (the leaf basename without its file extension).
 pub fn getPathStem(path: []const u8) []const u8 {
-    const base = std.fs.path.basename(path);
-    const ext = std.fs.path.extension(base);
+    const base = std.Io.Dir.path.basename(path);
+    const ext = std.Io.Dir.path.extension(base);
     return base[0 .. base.len - ext.len];
 }
 
@@ -82,7 +82,7 @@ pub fn isJpegExtension(ext: []const u8) bool {
 /// Returns `true` if the path points to a standard JPEG file and is not AppleDouble metadata.
 pub fn isJpegFile(filename: []const u8) bool {
     if (isAppleDouble(filename)) return false;
-    return isJpegExtension(std.fs.path.extension(filename));
+    return isJpegExtension(std.Io.Dir.path.extension(filename));
 }
 
 /// Consolidates adjacent sorted RAW and companion JPEG entries sharing the same
@@ -167,7 +167,7 @@ const ArchiveEntryPath = struct {
 /// Splits a compound path of the form `archive_path::entry_name` into an
 /// `ArchiveEntryPath` struct, or returns `null`.
 fn parseArchiveEntryPath(path: []const u8) ?ArchiveEntryPath {
-    if (std.mem.indexOf(u8, path, "::")) |sep_idx| {
+    if (std.mem.find(u8, path, "::")) |sep_idx| {
         return .{
             .archive_path = path[0..sep_idx],
             .entry_name = path[sep_idx + 2 ..],
@@ -196,8 +196,9 @@ pub fn scanCbzImageEntries(
 
     var iterator = try std.zip.Iterator.init(&f_reader);
 
-    var fb = std.heap.stackFallback(std.fs.max_path_bytes, gpa);
-    const temp_alloc = fb.get();
+    var stack_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    var fb: std.heap.BufferFirstAllocator = .init(&stack_buf, gpa);
+    const temp_alloc = fb.allocator();
 
     var entries: std.ArrayList(MediaEntry) = .empty;
     errdefer {
@@ -286,9 +287,15 @@ pub fn getParentDirBuf(dir: []const u8, buf: []u8) ?[]const u8 {
     if (trimmed.len == 0) return null;
 
     if (isAllDotDots(trimmed)) {
-        const sep = if (std.mem.indexOfScalar(u8, trimmed, '\\') != null) "\\" else "/";
-        return std.fmt.bufPrint(buf, "{s}{s}..", .{ trimmed, sep }) catch |err| {
-            std.log.warn("Failed to format parent directory for '{s}': {}", .{ trimmed, err });
+        const sep = if (std.mem.findScalar(u8, trimmed, '\\') != null)
+            "\\"
+        else
+            "/";
+        return std.mem.print(buf, "{s}{s}..", .{ trimmed, sep }) catch |err| {
+            std.log.warn(
+                "Failed to format parent directory for '{s}': {}",
+                .{ trimmed, err },
+            );
             return null;
         };
     }
@@ -382,7 +389,7 @@ pub fn scanFolderContents(
             return mapScanError(err);
         };
 
-        var name_buf: [std.fs.max_path_bytes]u8 = undefined;
+        var name_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         while (true) {
             const entry = (iterator.next() catch |err| {
                 return mapScanError(err);
@@ -494,7 +501,10 @@ pub fn scanDirectoryEntries(
         if (is_dir_entry or is_cbz_entry) {
             if (std.mem.startsWith(u8, entry.name, ".")) continue;
 
-            const full_path = try std.fs.path.join(gpa, &.{ dir_path, entry.name });
+            const full_path = try std.Io.Dir.path.join(
+                gpa,
+                &.{ dir_path, entry.name },
+            );
             errdefer gpa.free(full_path);
             const name = try gpa.dupe(u8, entry.name);
             errdefer gpa.free(name);
@@ -577,20 +587,20 @@ test "getChildBasename" {
     try tmp.dir.createDirPath(io, "child_dir/nested");
 
     var dot_path_buf: [128]u8 = undefined;
-    const dot_path = try std.fmt.bufPrint(
+    const dot_path = try std.mem.print(
         &dot_path_buf,
         ".zig-cache/tmp/{s}/child_dir/.",
         .{tmp.sub_path},
     );
 
     var dotdot_path_buf: [128]u8 = undefined;
-    const dotdot_path = try std.fmt.bufPrint(
+    const dotdot_path = try std.mem.print(
         &dotdot_path_buf,
         ".zig-cache/tmp/{s}/child_dir/nested/..",
         .{tmp.sub_path},
     );
 
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     try std.testing.expectEqualStrings(
         "child_dir",
         getChildBasename(io, dot_path, &buf),
@@ -692,7 +702,7 @@ test "scanDirectoryEntries - nested directory hierarchy" {
     defer tmp.cleanup();
 
     var path_buf: [128]u8 = undefined;
-    const tmp_dir_path = try std.fmt.bufPrint(
+    const tmp_dir_path = try std.mem.print(
         &path_buf,
         ".zig-cache/tmp/{s}",
         .{tmp.sub_path},
@@ -738,7 +748,7 @@ test "scanDirectoryEntries - nested directory hierarchy" {
     // Index 0: sub_a
     try std.testing.expectEqualStrings("sub_a", entries.items[0].getName());
     try std.testing.expectEqualStrings(
-        try std.fmt.bufPrint(&exp_buf, "{s}/sub_a", .{tmp_dir_path}),
+        try std.mem.print(&exp_buf, "{s}/sub_a", .{tmp_dir_path}),
         entries.items[0].getFullPath(),
     );
     try std.testing.expectEqual(
@@ -753,7 +763,7 @@ test "scanDirectoryEntries - nested directory hierarchy" {
     // Index 1: sub_b
     try std.testing.expectEqualStrings("sub_b", entries.items[1].getName());
     try std.testing.expectEqualStrings(
-        try std.fmt.bufPrint(&exp_buf, "{s}/sub_b", .{tmp_dir_path}),
+        try std.mem.print(&exp_buf, "{s}/sub_b", .{tmp_dir_path}),
         entries.items[1].getFullPath(),
     );
     try std.testing.expectEqual(
@@ -768,7 +778,7 @@ test "scanDirectoryEntries - nested directory hierarchy" {
     // Index 2: sub_empty
     try std.testing.expectEqualStrings("sub_empty", entries.items[2].getName());
     try std.testing.expectEqualStrings(
-        try std.fmt.bufPrint(&exp_buf, "{s}/sub_empty", .{tmp_dir_path}),
+        try std.mem.print(&exp_buf, "{s}/sub_empty", .{tmp_dir_path}),
         entries.items[2].getFullPath(),
     );
     try std.testing.expectEqual(
@@ -804,7 +814,7 @@ test "scanCbzImageEntries - scans archive entries using 64KB reader buffer" {
 }
 
 test "getParentDirBuf - path variations and edge cases" {
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
 
     // Relative nested path
     try std.testing.expectEqualStrings("a", getParentDirBuf("a/b", &buf).?);
@@ -976,7 +986,7 @@ test "scanFolderContents and mapScanError classify errors and corrupt CBZ" {
     defer tmp.cleanup();
 
     var path_buf: [128]u8 = undefined;
-    const corrupt_cbz = try std.fmt.bufPrint(
+    const corrupt_cbz = try std.mem.print(
         &path_buf,
         ".zig-cache/tmp/{s}/corrupt.cbz",
         .{tmp.sub_path},
@@ -1024,7 +1034,7 @@ test "scanDirectoryEntries and scanFolderContents follow symlinks" {
     try tmp.dir.symLink(io, "../missing.jpg", "scan_root/broken.jpg", .{});
 
     var path_buf: [128]u8 = undefined;
-    const scan_root = try std.fmt.bufPrint(
+    const scan_root = try std.mem.print(
         &path_buf,
         ".zig-cache/tmp/{s}/scan_root",
         .{tmp.sub_path},
@@ -1061,10 +1071,19 @@ test "trimTrailingSeparators preserves root paths and strips trailing slashes" {
     try std.testing.expectEqualStrings("/", trimTrailingSeparators("/"));
     try std.testing.expectEqualStrings("/", trimTrailingSeparators("///"));
     try std.testing.expectEqualStrings("\\", trimTrailingSeparators("\\"));
-    try std.testing.expectEqualStrings("/home/pope", trimTrailingSeparators("/home/pope/"));
-    try std.testing.expectEqualStrings("/home/pope", trimTrailingSeparators("/home/pope"));
+    try std.testing.expectEqualStrings(
+        "/usr/local",
+        trimTrailingSeparators("/usr/local/"),
+    );
+    try std.testing.expectEqualStrings(
+        "/usr/local",
+        trimTrailingSeparators("/usr/local"),
+    );
     try std.testing.expectEqualStrings("C:\\", trimTrailingSeparators("C:\\"));
     try std.testing.expectEqualStrings("C:/", trimTrailingSeparators("C:/"));
     try std.testing.expectEqualStrings("C:", trimTrailingSeparators("C:"));
-    try std.testing.expectEqualStrings("C:\\Users", trimTrailingSeparators("C:\\Users\\"));
+    try std.testing.expectEqualStrings(
+        "C:\\Users",
+        trimTrailingSeparators("C:\\Users\\"),
+    );
 }

@@ -142,9 +142,9 @@ pub const TextureScaleMode = enum {
 /// via reflection.
 pub const scale_modes_string: []const u8 = blk: {
     var str: []const u8 = "";
-    const fields = @typeInfo(ZoomPreset).@"enum".fields;
-    for (fields, 0..) |field, i| {
-        str = if (i > 0) str ++ ", " ++ field.name else field.name;
+    const field_names = @typeInfo(ZoomPreset).@"enum".field_names;
+    for (field_names, 0..) |name, i| {
+        str = if (i > 0) str ++ ", " ++ name else name;
     }
     break :blk str;
 };
@@ -153,9 +153,9 @@ pub const scale_modes_string: []const u8 = blk: {
 /// via reflection.
 pub const filter_modes_string: []const u8 = blk: {
     var str: []const u8 = "";
-    const fields = @typeInfo(TextureScaleMode).@"enum".fields;
-    for (fields, 0..) |field, i| {
-        str = if (i > 0) str ++ ", " ++ field.name else field.name;
+    const field_names = @typeInfo(TextureScaleMode).@"enum".field_names;
+    for (field_names, 0..) |name, i| {
+        str = if (i > 0) str ++ ", " ++ name else name;
     }
     break :blk str;
 };

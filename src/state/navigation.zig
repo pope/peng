@@ -1,11 +1,10 @@
-const std = @import("std");
 const sdl = @import("sdl");
+const std = @import("std");
 const types = @import("types.zig");
-const SlideshowMode = types.SlideshowMode;
-
-const MediaEntry = types.MediaEntry;
 
 const Classification = types.Classification;
+const MediaEntry = types.MediaEntry;
+const SlideshowMode = types.SlideshowMode;
 const ViewMode = types.ViewMode;
 
 const Vec32 = @Vector(32, u8);
@@ -24,10 +23,10 @@ pub fn findNextVisibleInRange(
     if (mode == .all) return start;
 
     const target_byte: u8 = switch (mode) {
-        .picks => @intFromEnum(Classification.pick),
-        .rejects => @intFromEnum(Classification.reject),
-        .unflagged => @intFromEnum(Classification.unflagged),
-        .default => @intFromEnum(Classification.reject),
+        .picks => @backingInt(Classification.pick),
+        .rejects => @backingInt(Classification.reject),
+        .unflagged => @backingInt(Classification.unflagged),
+        .default => @backingInt(Classification.reject),
         .all => unreachable,
     };
     const target_vec: Vec32 = @splat(target_byte);
@@ -66,10 +65,10 @@ pub fn findPrevVisibleInRange(
     if (mode == .all) return max_idx;
 
     const target_byte: u8 = switch (mode) {
-        .picks => @intFromEnum(Classification.pick),
-        .rejects => @intFromEnum(Classification.reject),
-        .unflagged => @intFromEnum(Classification.unflagged),
-        .default => @intFromEnum(Classification.reject),
+        .picks => @backingInt(Classification.pick),
+        .rejects => @backingInt(Classification.reject),
+        .unflagged => @backingInt(Classification.unflagged),
+        .default => @backingInt(Classification.reject),
         .all => unreachable,
     };
     const target_vec: Vec32 = @splat(target_byte);
@@ -131,10 +130,10 @@ pub fn countVisibleInRangeSimd(
 
     const raw: []const u8 = @ptrCast(classifications);
     const target_byte: u8 = switch (mode) {
-        .picks => @intFromEnum(Classification.pick),
-        .rejects => @intFromEnum(Classification.reject),
-        .unflagged => @intFromEnum(Classification.unflagged),
-        .default => @intFromEnum(Classification.reject),
+        .picks => @backingInt(Classification.pick),
+        .rejects => @backingInt(Classification.reject),
+        .unflagged => @backingInt(Classification.unflagged),
+        .default => @backingInt(Classification.reject),
         .all => unreachable,
     };
     const target_vec: Vec32 = @splat(target_byte);
@@ -806,7 +805,7 @@ test "NavigationState - SIMD skipping and popcount across large list" {
     // Populate 100 entries
     var buf: [32]u8 = undefined;
     for (0..100) |i| {
-        const path = try std.fmt.bufPrint(&buf, "img_{d}.jpg", .{i});
+        const path = try std.mem.print(&buf, "img_{d}.jpg", .{i});
         try nav.appendEntry(allocator, .{ .filesystem = .{ .path = path } });
     }
     try std.testing.expectEqual(@as(usize, 100), nav.count());
