@@ -522,11 +522,11 @@ pub const DirectionFlags = packed struct(u4) {
     right: bool = false,
 
     pub inline fn raw(self: DirectionFlags) u4 {
-        return @bitCast(self);
+        return @backingInt(self);
     }
 
     pub inline fn fromRaw(val: u4) DirectionFlags {
-        return @bitCast(val);
+        return @fromBackingInt(val);
     }
 
     pub inline fn hasAny(self: DirectionFlags) bool {
@@ -537,7 +537,7 @@ pub const DirectionFlags = packed struct(u4) {
         self: DirectionFlags,
         other: DirectionFlags,
     ) DirectionFlags {
-        return @bitCast(self.raw() | other.raw());
+        return @fromBackingInt(self.raw() | other.raw());
     }
 };
 
@@ -585,11 +585,11 @@ pub const ZoomFlags = packed struct(u2) {
     out: bool = false,
 
     pub inline fn raw(self: ZoomFlags) u2 {
-        return @bitCast(self);
+        return @backingInt(self);
     }
 
     pub inline fn fromRaw(val: u2) ZoomFlags {
-        return @bitCast(val);
+        return @fromBackingInt(val);
     }
 
     pub inline fn hasAny(self: ZoomFlags) bool {
@@ -597,7 +597,7 @@ pub const ZoomFlags = packed struct(u2) {
     }
 
     pub inline fn merge(self: ZoomFlags, other: ZoomFlags) ZoomFlags {
-        return @bitCast(self.raw() | other.raw());
+        return @fromBackingInt(self.raw() | other.raw());
     }
 };
 

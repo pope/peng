@@ -58,7 +58,7 @@ pub const DIRECTION_UNIT_LUT: [16]UnitVec2 = blk: {
     var lut: [16]UnitVec2 = undefined;
     const inv_sqrt2: f32 = 0.70710678;
     for (0..16) |i| {
-        const flags: state.DirectionFlags = @bitCast(@as(u4, @intCast(i)));
+        const flags = state.DirectionFlags.fromRaw(@intCast(i));
         var x: f32 = 0.0;
         var y: f32 = 0.0;
         if (flags.left) x += 1.0;

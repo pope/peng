@@ -302,7 +302,7 @@ pub fn sampleHeldDirections(
             raw |= entry.direction.raw();
         }
     }
-    return @bitCast(raw);
+    return .fromRaw(raw);
 }
 
 /// Declarative mapping between SDL scancodes and zoom direction flags.
@@ -331,7 +331,7 @@ pub fn sampleHeldZoom(
             raw |= entry.direction.raw();
         }
     }
-    return @bitCast(raw);
+    return .fromRaw(raw);
 }
 
 /// Strategy for pumping or waiting on the next SDL event at the start of a
