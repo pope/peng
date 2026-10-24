@@ -78,48 +78,62 @@ fn spawnCacheDecodeSlot(
 
 fn probeActiveSlotMetadata(
     state: *AppState,
-    idx: usize,
-    entry: anytype,
+    key: image.ImageCacheKey,
 ) void {
-    const media_item = state.viewer.navigation.getMediaEntry(idx) orelse return;
+    const media_item = state.viewer.navigation.getMediaEntry(key.index) orelse
+        return;
     const meta = image.probeMediaMetadata(state.io, media_item) orelse {
-        if (entry.thumbnail == .none) {
-            entry.thumbnail = .not_available;
+        if (state.cache.get(key)) |entry| {
+            if (entry.thumbnail == .none) {
+                entry.thumbnail = .not_available;
+            }
         }
         return;
     };
-    entry.applyProbedMetadata(
-        meta.dims.w,
-        meta.dims.h,
-        meta.orientation,
-        meta.raw_metadata,
-    );
-    if (entry.thumbnail == .none) {
-        entry.thumbnail = if (meta.has_embedded_thumbnail)
-            .pending
-        else
-            .not_available;
+    {
+        const entry = state.cache.get(key) orelse return;
+        entry.applyProbedMetadata(
+            meta.dims.w,
+            meta.dims.h,
+            meta.orientation,
+            meta.raw_metadata,
+        );
+        if (entry.thumbnail == .none) {
+            const can_use_thumb_cache =
+                state.workers.thumb_cache_config != .disabled and
+                !media_item.isArchive();
+            entry.thumbnail =
+                if (meta.has_embedded_thumbnail or can_use_thumb_cache)
+                    .pending
+                else
+                    .not_available;
+        }
     }
-    if (idx == state.viewer.navigation.current_index) {
+    if (key.index == state.viewer.navigation.current_index) {
         state.updateCurrentRotation();
     }
 }
 
 fn checkPairPromotion(
     state: *AppState,
-    idx: usize,
-    entry: anytype,
+    key: image.ImageCacheKey,
     now: u64,
 ) void {
+    const idx = key.index;
     const media_item = state.viewer.navigation.getMediaEntry(idx) orelse return;
     if (!media_item.isPair()) return;
-    if (entry.is_promoting) return;
-    if (entry.status != .loaded_gpu and entry.status != .loaded_cpu) return;
+    const entry_val = state.cache.getEntry(key) orelse return;
+    if (entry_val.is_promoting) return;
+    if (entry_val.status != .loaded_gpu and entry_val.status != .loaded_cpu) {
+        return;
+    }
 
-    if (entry.requested_target) |target| {
+    if (entry_val.requested_target) |target| {
         if (!state.workers.canSpawnDecode()) return;
-        entry.requested_target = null;
-        entry.is_promoting = true;
+        if (state.cache.get(key)) |entry| {
+            entry.requested_target = null;
+            entry.is_promoting = true;
+        }
         spawnCacheDecodeSlot(
             state,
             idx,
@@ -127,17 +141,19 @@ fn checkPairPromotion(
             false,
             target,
         ) catch |err| {
-            entry.is_promoting = false;
+            if (state.cache.get(key)) |entry| {
+                entry.is_promoting = false;
+            }
             std.log.err("Failed to spawn requested pair decode: {}", .{err});
         };
         return;
     }
 
-    if (!entry.raw_metadata.isRaw()) return;
+    if (!entry_val.raw_metadata.isRaw()) return;
 
-    const loaded_w = entry.getLoadedWidth() orelse 0.0;
-    const loaded_h = entry.getLoadedHeight() orelse 0.0;
-    const auth = entry.getAuthoritativeDims();
+    const loaded_w = entry_val.getLoadedWidth() orelse 0.0;
+    const loaded_h = entry_val.getLoadedHeight() orelse 0.0;
+    const auth = entry_val.getAuthoritativeDims();
     if (loaded_w <= 0.0 or loaded_h <= 0.0) return;
     if (auth.w <= 0.0 or auth.h <= 0.0) return;
 
@@ -158,7 +174,9 @@ fn checkPairPromotion(
         (tex_demand > 1.15);
 
     if ((is_inspecting or is_settled_fit) and state.workers.canSpawnDecode()) {
-        entry.is_promoting = true;
+        if (state.cache.get(key)) |entry| {
+            entry.is_promoting = true;
+        }
         spawnCacheDecodeSlot(
             state,
             idx,
@@ -166,7 +184,9 @@ fn checkPairPromotion(
             false,
             .standalone_jpeg,
         ) catch |err| {
-            entry.is_promoting = false;
+            if (state.cache.get(key)) |entry| {
+                entry.is_promoting = false;
+            }
             std.log.err("Failed to spawn zoom promotion decode: {}", .{err});
         };
     }
@@ -311,14 +331,16 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
             );
         }
 
-        if (state.cache.get(key)) |entry| {
-            const is_active_slot = (d == idx);
+        if (state.cache.getEntry(key)) |entry| {
             const needs_dimensions = (entry.full_w <= 0.0 or
                 entry.full_h <= 0.0) and entry.thumbnail == .none;
             if (needs_dimensions) {
-                probeActiveSlotMetadata(state, d, entry);
+                probeActiveSlotMetadata(state, key);
             }
+        }
 
+        if (state.cache.getEntry(key)) |entry| {
+            const is_active_slot = (d == idx);
             const is_decoding = entry.status == .decoding and
                 !entry.status.decoding.has_thread;
             if (is_decoding) {
@@ -339,7 +361,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
             }
 
             if (is_active_slot) {
-                checkPairPromotion(state, idx, entry, now);
+                checkPairPromotion(state, key, now);
             }
         }
     }
@@ -847,7 +869,7 @@ test "checkPairPromotion - does not spawn while slot is decoding or promoting" {
 
     // 1. While .decoding, checkPairPromotion must not consume requested_target
     // or spawn a duplicate promotion worker.
-    checkPairPromotion(&state, 0, entry0, 1000);
+    checkPairPromotion(&state, key0, 1000);
     try std.testing.expect(!entry0.is_promoting);
     try std.testing.expectEqual(
         @as(?state_pkg.PairStreamTarget, .standalone_jpeg),
@@ -869,7 +891,7 @@ test "checkPairPromotion - does not spawn while slot is decoding or promoting" {
         },
     };
     entry0.is_promoting = true;
-    checkPairPromotion(&state, 0, entry0, 1000);
+    checkPairPromotion(&state, key0, 1000);
     try std.testing.expectEqual(
         @as(?state_pkg.PairStreamTarget, .standalone_jpeg),
         entry0.requested_target,

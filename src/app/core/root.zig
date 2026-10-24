@@ -12,6 +12,7 @@ pub const exif = @import("exif.zig");
 pub const fs = @import("fs.zig");
 pub const image = @import("image.zig");
 pub const palette = @import("palette.zig");
+pub const thumb_cache = @import("thumb_cache.zig");
 
 test {
     _ = events;
@@ -19,4 +20,5 @@ test {
     _ = exif;
     _ = image;
     _ = palette;
+    _ = thumb_cache;
 }

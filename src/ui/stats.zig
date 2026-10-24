@@ -317,22 +317,17 @@ fn renderInfoOverlay(
                 }
             }
         }
-        const has_thumb, const t_w, const t_h = if (entry.thumbnail.getInfo()) |info|
-            .{ true, info.w, info.h }
-        else
-            .{ false, 0.0, 0.0 };
-
-        if (has_thumb) {
+        if (entry.thumbnail.getInfo()) |info| {
             thumb_info_str = try frame_allocator.print(
-                "Embedded ({d:.0}x{d:.0} px)",
-                .{ t_w, t_h },
+                "{s} ({d:.0}x{d:.0} px)",
+                .{ info.source.infoLabel(), info.w, info.h },
             );
         } else if (entry.raw_metadata.isRaw()) {
             thumb_info_str = "None (Preview JPEG used)";
         } else if (is_jpeg) {
             thumb_info_str = "None (Full decode used)";
         } else {
-            thumb_info_str = "N/A (Non-JPEG)";
+            thumb_info_str = "None";
         }
     }
 
@@ -575,20 +570,37 @@ pub fn renderStatsOverlay(
         }
 
         const thumb_time_str: []const u8 = if (img.has_thumb)
-            try frame_allocator.print("{d:.2} ms", .{img.thumb_upload_time_ms})
+            try frame_allocator.print(
+                "{d:.2} ms ({s})",
+                .{ img.thumb_upload_time_ms, img.thumb_source.shortLabel() },
+            )
         else
             "N/A";
         try renderStatRow("Thumb Load Time", thumb_time_str);
 
-        const total_thumbs = s.thumb_header_hits + s.thumb_positional_hits + s.thumb_misses;
-        const thumb_hits_str = if (total_thumbs > 0)
+        const ts = s.thumbs;
+        const thumb_hits_str = if (ts.totalLookups() > 0)
             try frame_allocator.print(
-                "{d} Header / {d} Pos / {d} Miss",
-                .{ s.thumb_header_hits, s.thumb_positional_hits, s.thumb_misses },
+                "{d} Hdr / {d} Pos / {d} Cache / {d} Miss",
+                .{
+                    ts.header_hits,
+                    ts.positional_hits,
+                    ts.cache_hits,
+                    ts.misses,
+                },
             )
         else
-            "0 Header / 0 Pos / 0 Miss";
+            "0 Hdr / 0 Pos / 0 Cache / 0 Miss";
         try renderStatRow("Thumb Hit Ratio", thumb_hits_str);
+
+        const thumb_writes_str = if (ts.cache_write_queued > 0)
+            try frame_allocator.print(
+                "{d} Written ({d} Queued)",
+                .{ ts.cache_writes, ts.cache_write_queued },
+            )
+        else
+            try frame_allocator.print("{d} Written", .{ts.cache_writes});
+        try renderStatRow("Thumb Cache Writes", thumb_writes_str);
 
         var mipmap_status_str: []const u8 = if (current_entry != null)
             "Disabled (1 Level)"

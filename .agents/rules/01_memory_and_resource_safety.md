@@ -113,12 +113,31 @@
     boundaries (domain state -> view model -> UI), define top-level named
     structs (`ActiveImageTransition`) and provide `inline` convenience accessors
     on the union (`getPrevIndex(self) ?usize`).
-  - **No Interdependent Optionals or Multiplexed Event Payloads**: Bundle
-    semantically coupled optionals into a single tagged union variant
-    (`union(enum) { unindexed, indexed: ZipSeekOffsets }`). Never overload an
-    event payload with an optional handle (`surface: ?sdl.Surface`) to represent
+  - **No Interdependent Optionals, In-Band Zero Sentinels, or Multiplexed Event Payloads**:
+    Bundle semantically coupled optionals into a single tagged union variant
+    (`union(enum) { unindexed, indexed: ZipSeekOffsets }`) or validated optional
+    struct (`source_dims: ?PhysicalDims = null` constructed via
+    `PhysicalDims.initPositive(w, h)`). Never represent optional composite data
+    (such as 2D dimensions) as independent primitive fields with in-band `0` /
+    `0.0` sentinels (`full_w: f32 = 0.0, full_h: f32 = 0.0`) or boolean +
+    defaulted primitive pairs (`needs_thumb_write: bool` +
+    `source_mtime_sec: i64 = 0`), which permit half-valid states (`w > 0` with
+    `h == 0`) and axis-shearing on per-axis fallback. Never overload an event
+    payload with an optional handle (`surface: ?sdl.Surface`) to represent
     different outcomes; define distinct union variants (`dimensions_probed` vs
     `thumb_decoded`) with non-optional resource ownership.
+  - **Weak Generational Keys Over Raw Container Interior Pointers (`ImageCacheKey` vs `*CacheEntry`)**:
+    `ImageCache` (`std.MultiArrayList(CacheSlot)`) evicts entries via
+    `swapRemove`, which relocates the tail element into the evicted index and
+    overwrites the former tail slot with `undefined` (`0xaa` in Debug). Never
+    return or pass raw `*CacheEntry` pointers (or `slots.items(.entry)` /
+    `slots.items(.key)` slices) across function boundaries or across any call
+    that may append to or evict from `ImageCache` (e.g. `enforceVramBudget`,
+    `appendSlot`, `completeDecodedGpuUpload`). Pass `ImageCacheKey` by value,
+    let `SlotBound(T).resolve(&state.cache)` return `{ key: ImageCacheKey, payload: *T }`,
+    read slot state by value via `cache.getEntry(key)`, and scope mutable
+    pointer borrows (`if (cache.get(key)) |entry| { ... }`) strictly to leaf
+    blocks that do not mutate container capacity.
   - **Multi-Role Container Caveat**: Do not force mutually exclusive tagged
     unions onto multi-role container descriptors (such as TIFF IFD0, which
     simultaneously acts as a SubIFD container, preview provider, and EXIF

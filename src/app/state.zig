@@ -10,6 +10,7 @@ const palette_module = @import("core/palette.zig");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
+const thumb_cache = @import("core/thumb_cache.zig");
 const workers_mod = @import("workers/root.zig");
 
 const AppIntent = intents.AppIntent;
@@ -122,6 +123,20 @@ pub const AppState = struct {
         errdefer self.event_batch.deinit(self.allocator);
         // 8 commands: accommodates queued socket IPC command buffers
         try self.pending_ipc_commands.ensureTotalCapacity(self.allocator, 8);
+    }
+
+    /// Initializes the Freedesktop Shared Thumbnail Cache configuration from
+    /// the process environment map (`proc_init.environ_map`).
+    pub fn initThumbCache(
+        self: *AppState,
+        environ_map: *const std.process.Environ.Map,
+    ) void {
+        self.workers.thumb_cache_config.deinit(self.allocator);
+        self.workers.thumb_cache_config =
+            thumb_cache.ThumbCacheConfig.initFromEnviron(
+                self.allocator,
+                environ_map,
+            );
     }
 
     /// Enqueues an application intent to be dispatched and executed during the next frame pass.
@@ -386,13 +401,6 @@ pub const AppState = struct {
     /// Rebuilds fuzzy search matches for command palette action items.
     pub fn rebuildActionMatches(self: *AppState) !void {
         try self.viewer.ui.palette.rebuildActionMatches();
-    }
-
-    /// Returns a mutable pointer to the CacheEntry corresponding to the
-    /// currently active image, or null.
-    pub fn getCurrentEntryPtr(self: *AppState) ?*CacheEntry {
-        const idx = self.viewer.navigation.current_index orelse return null;
-        return self.cache.get(self.cache.activeKey(idx));
     }
 
     /// Returns a copy of the CacheEntry corresponding to the currently active
@@ -751,15 +759,21 @@ pub const AppState = struct {
 
     /// Ensures that the thumbnail GPU texture is loaded for the current entry.
     pub fn ensureCurrentThumbnailLoaded(self: *AppState) void {
-        const e = self.getCurrentEntryPtr() orelse return;
-        if (e.thumbnail == .loaded or e.thumbnail == .not_available) return;
+        const idx = self.viewer.navigation.current_index orelse return;
+        const key = self.cache.activeKey(idx);
+        const cur = self.cache.getEntry(key) orelse return;
+        if (cur.thumbnail == .loaded or cur.thumbnail == .not_available) return;
 
         const media = self.viewer.navigation.getCurrentImageEntry() orelse {
-            e.thumbnail = .not_available;
+            if (self.cache.get(key)) |e| e.thumbnail = .not_available;
             return;
         };
-        const extracted = image.loadThumbnailSurface(self.io, self.allocator, media) orelse {
-            e.thumbnail = .not_available;
+        const extracted = image.loadThumbnailSurface(
+            self.io,
+            self.allocator,
+            media,
+        ) orelse {
+            if (self.cache.get(key)) |e| e.thumbnail = .not_available;
             return;
         };
         defer extracted.surface.destroy();
@@ -771,59 +785,69 @@ pub const AppState = struct {
             self.unpack_compute_pipeline,
             &self.upload_staging,
         ) orelse {
-            e.thumbnail = .not_available;
+            if (self.cache.get(key)) |e| e.thumbnail = .not_available;
             return;
         };
 
-        switch (e.thumbnail) {
-            .loaded => |thumb| dev.releaseTexture(thumb.texture),
-            .none, .pending, .not_available, .unloaded => {},
-        }
+        {
+            const e = self.cache.get(key) orelse {
+                dev.releaseTexture(upload_res.gpu_texture);
+                return;
+            };
+            switch (e.thumbnail) {
+                .loaded => |thumb| dev.releaseTexture(thumb.texture),
+                .none, .pending, .not_available, .unloaded => {},
+            }
 
-        e.applyProbedMetadata(
-            extracted.full_w,
-            extracted.full_h,
-            extracted.orientation,
-            extracted.raw_metadata,
-        );
+            e.applyProbedMetadata(
+                extracted.full_w,
+                extracted.full_h,
+                extracted.orientation,
+                extracted.raw_metadata,
+            );
 
-        e.thumbnail = .{
-            .loaded = .{
-                .texture = upload_res.gpu_texture,
-                .info = .{
-                    .w = upload_res.w,
-                    .h = upload_res.h,
-                    .upload_time_ms = upload_res.upload_time_ms,
-                    .dct_snapped = extracted.dct_snapped,
+            e.thumbnail = .{
+                .loaded = .{
+                    .texture = upload_res.gpu_texture,
+                    .info = .{
+                        .w = upload_res.w,
+                        .h = upload_res.h,
+                        .upload_time_ms = upload_res.upload_time_ms,
+                        .dct_snapped = extracted.dct_snapped,
+                    },
                 },
-            },
-        };
+            };
+        }
         self.updateCurrentRotation();
     }
 
     /// Scans cache slots around the current navigation index, evicting distant
     /// textures and uploading ready surfaces to the GPU.
     pub fn prepareCacheTextures(self: *AppState) void {
-        const entries = self.cache.slots.items(.entry);
-        const keys = self.cache.slots.items(.key);
+        {
+            const entries = self.cache.slots.items(.entry);
+            const keys = self.cache.slots.items(.key);
 
-        for (entries, keys) |*entry, key| {
-            const is_cur = if (self.viewer.navigation.current_index) |cur|
-                self.cache.activeKey(cur).index == key.index
-            else
-                false;
-            const is_crossfading = self.viewer.animations.isActive(.thumb_crossfade) and is_cur;
-            if (!is_crossfading and entry.status == .loaded_gpu and
-                !self.viewer.ui.overlays.debug_show_thumb)
-            {
-                switch (entry.thumbnail) {
-                    .loaded => |thumb| {
-                        if (self.gpu_device) |gpu_dev| {
-                            gpu_dev.releaseTexture(thumb.texture);
-                        }
-                        entry.thumbnail = .{ .unloaded = thumb.info };
-                    },
-                    .none, .pending, .not_available, .unloaded => {},
+            for (entries, keys) |*entry, key| {
+                const is_cur = if (self.viewer.navigation.current_index) |cur|
+                    self.cache.activeKey(cur).index == key.index
+                else
+                    false;
+                const is_crossfading =
+                    self.viewer.animations.isActive(.thumb_crossfade) and
+                    is_cur;
+                if (!is_crossfading and entry.status == .loaded_gpu and
+                    !self.viewer.ui.overlays.debug_show_thumb)
+                {
+                    switch (entry.thumbnail) {
+                        .loaded => |thumb| {
+                            if (self.gpu_device) |gpu_dev| {
+                                gpu_dev.releaseTexture(thumb.texture);
+                            }
+                            entry.thumbnail = .{ .unloaded = thumb.info };
+                        },
+                        .none, .pending, .not_available, .unloaded => {},
+                    }
                 }
             }
         }
@@ -836,16 +860,24 @@ pub const AppState = struct {
         } = null;
 
         if (self.viewer.ui.overlays.debug_show_thumb) {
-            if (self.getCurrentEntryPtr()) |cur_e| {
-                if (cur_e.thumbnail != .loaded and cur_e.thumbnail != .not_available) {
+            if (self.getCurrentEntry()) |cur_e| {
+                if (cur_e.thumbnail != .loaded and
+                    cur_e.thumbnail != .not_available)
+                {
                     self.ensureCurrentThumbnailLoaded();
                 }
             }
         }
 
         const cur_idx_opt = self.viewer.navigation.current_index;
-        const cur_key_opt = if (cur_idx_opt) |ci| self.cache.activeKey(ci) else null;
-        const cur_entry_opt = if (cur_key_opt) |ck| self.cache.get(ck) else null;
+        const cur_key_opt = if (cur_idx_opt) |ci|
+            self.cache.activeKey(ci)
+        else
+            null;
+        const cur_entry_opt = if (cur_key_opt) |ck|
+            self.cache.get(ck)
+        else
+            null;
 
         var can_upload_neighbors = true;
         if (cur_entry_opt) |cur_entry| {
@@ -868,6 +900,8 @@ pub const AppState = struct {
         }
 
         if (upload_target == null and can_upload_neighbors) {
+            const entries = self.cache.slots.items(.entry);
+            const keys = self.cache.slots.items(.key);
             const total_items = self.viewer.navigation.count();
             const neighbors_opt = self.viewer.navigation.getVisibleNeighbors();
             var best_idx: ?usize = null;

@@ -798,6 +798,33 @@ fn formatLoadingText(
     };
 }
 
+fn buildThumbnailUvRect(
+    entry: state.CacheEntry,
+    thumb_info: state.ThumbnailInfo,
+    auth: state.PhysicalDims,
+    rotation_angle: f32,
+) state.UvRect {
+    const pre_oriented = thumb_info.source.isPreOriented();
+    const swapped = pre_oriented and entry.orientation.isDimensionSwapped();
+    const ref_full_w = if (swapped) entry.full_h else entry.full_w;
+    const ref_full_h = if (swapped) entry.full_w else entry.full_h;
+    var uv = state.computeThumbnailUvCrop(
+        ref_full_w,
+        ref_full_h,
+        thumb_info.w,
+        thumb_info.h,
+        thumb_info.dct_snapped,
+    );
+    uv.alpha = 1.0;
+    uv.rotation_angle = if (pre_oriented)
+        @mod(rotation_angle - entry.orientation.toDegrees() + 360.0, 360.0)
+    else
+        rotation_angle;
+    uv.source_w = if (swapped) auth.h else auth.w;
+    uv.source_h = if (swapped) auth.w else auth.h;
+    return uv;
+}
+
 fn renderImageCanvas(
     ui_model: UiViewModel,
     entry: state.CacheEntry,
@@ -817,17 +844,12 @@ fn renderImageCanvas(
     if (is_thumb_crossfade) {
         const thumb = entry.thumbnail.loaded;
         const thumb_tex = thumb.texture;
-        var thumb_uv = state.computeThumbnailUvCrop(
-            entry.full_w,
-            entry.full_h,
-            thumb.info.w,
-            thumb.info.h,
-            thumb.info.dct_snapped,
+        const thumb_uv = buildThumbnailUvRect(
+            entry,
+            thumb.info,
+            auth,
+            rotation_angle,
         );
-        thumb_uv.alpha = 1.0;
-        thumb_uv.rotation_angle = rotation_angle;
-        thumb_uv.source_w = auth.w;
-        thumb_uv.source_h = auth.h;
         const thumb_uv_ptr = frame_allocator.create(state.UvRect) catch |err|
             blk: {
                 std.log.warn(
@@ -873,17 +895,12 @@ fn renderImageCanvas(
             if (show_thumb) {
                 drew_thumb = true;
                 const thumb_tex = thumb.texture;
-                var uv_crop = state.computeThumbnailUvCrop(
-                    entry.full_w,
-                    entry.full_h,
-                    thumb.info.w,
-                    thumb.info.h,
-                    thumb.info.dct_snapped,
+                const uv_crop = buildThumbnailUvRect(
+                    entry,
+                    thumb.info,
+                    auth,
+                    rotation_angle,
                 );
-                uv_crop.alpha = 1.0;
-                uv_crop.rotation_angle = rotation_angle;
-                uv_crop.source_w = auth.w;
-                uv_crop.source_h = auth.h;
                 const uv_crop_ptr =
                     frame_allocator.create(state.UvRect) catch |err| blk: {
                         std.log.warn(
@@ -1419,4 +1436,39 @@ test "renderViewport - floating crossfade quads allow Viewport hit-testing" {
     clay.setPointerState(.{ .x = 500, .y = 400 }, false);
 
     try std.testing.expect(clay.pointerOver(clay.getElementId("Viewport")));
+}
+
+test "buildThumbnailUvRect handles pre-oriented Freedesktop cached thumbnails" {
+    const entry = state.CacheEntry{
+        .status = .{ .decoding = .{} },
+        .full_w = 6000.0,
+        .full_h = 4000.0,
+        .orientation = .rotate_90,
+    };
+    const auth = entry.getAuthoritativeDims();
+
+    // 1. Embedded EXIF thumbnail (unrotated 160x120 landscape) with 90°
+    // viewport rotation: shader must rotate by 90°.
+    const embedded_uv = buildThumbnailUvRect(
+        entry,
+        .{ .w = 160.0, .h = 120.0, .source = .embedded_header },
+        auth,
+        90.0,
+    );
+    try std.testing.expectEqual(@as(f32, 90.0), embedded_uv.rotation_angle);
+    try std.testing.expectEqual(@as(f32, 6000.0), embedded_uv.source_w);
+    try std.testing.expectEqual(@as(f32, 4000.0), embedded_uv.source_h);
+
+    // 2. Freedesktop cached PNG thumbnail (already oriented 170x256 portrait)
+    // with 90° viewport rotation: shader rotation must be 0° (90° - 90°) and
+    // reference dimensions swapped (4000x6000).
+    const cached_uv = buildThumbnailUvRect(
+        entry,
+        .{ .w = 170.0, .h = 256.0, .source = .freedesktop_cache },
+        auth,
+        90.0,
+    );
+    try std.testing.expectEqual(@as(f32, 0.0), cached_uv.rotation_angle);
+    try std.testing.expectEqual(@as(f32, 4000.0), cached_uv.source_w);
+    try std.testing.expectEqual(@as(f32, 6000.0), cached_uv.source_h);
 }

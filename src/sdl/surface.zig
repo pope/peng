@@ -57,6 +57,111 @@ pub const Surface = struct {
         return c.IMG_SavePNG(self.ptr, path.ptr);
     }
 
+    /// Encodes the surface pixel data into an in-memory PNG byte slice
+    /// allocated with `allocator`.
+    pub fn encodePngAlloc(
+        self: Surface,
+        allocator: std.mem.Allocator,
+    ) ![]u8 {
+        const io = c.SDL_IOFromDynamicMem() orelse
+            return error.SdlIoCreateFailed;
+        defer _ = c.SDL_CloseIO(io);
+
+        if (!c.IMG_SavePNG_IO(self.ptr, io, false)) {
+            return error.PngEncodeFailed;
+        }
+        const size_i64 = c.SDL_TellIO(io);
+        if (size_i64 <= 0) return error.PngEncodeFailed;
+        const size: usize = @intCast(size_i64);
+
+        const props = c.SDL_GetIOProperties(io);
+        const raw_ptr = c.SDL_GetPointerProperty(
+            props,
+            c.SDL_PROP_IOSTREAM_DYNAMIC_MEMORY_POINTER,
+            null,
+        ) orelse return error.PngEncodeFailed;
+        const src_bytes: [*]const u8 = @ptrCast(raw_ptr);
+        return allocator.dupe(u8, src_bytes[0..size]);
+    }
+
+    /// Returns a newly allocated RGBA32 surface rotated clockwise by
+    /// `quarter_turns_cw * 90` degrees.
+    pub fn rotateOrthogonal(self: Surface, quarter_turns_cw: u2) ?Surface {
+        const src_w_i = self.w();
+        const src_h_i = self.h();
+        if (src_w_i <= 0 or src_h_i <= 0) return null;
+
+        if (quarter_turns_cw == 0) {
+            return self.convert(PixelFormat.rgba32);
+        }
+
+        const owned_rgba = if (self.format() != PixelFormat.rgba32)
+            self.convert(PixelFormat.rgba32) orelse return null
+        else
+            null;
+        defer if (owned_rgba) |s| s.destroy();
+        const src = owned_rgba orelse self;
+
+        const src_w: usize = @intCast(src.w());
+        const src_h: usize = @intCast(src.h());
+        const is_swapped = (quarter_turns_cw & 1) != 0;
+        const dst_w_i: i32 = if (is_swapped) src.h() else src.w();
+        const dst_h_i: i32 = if (is_swapped) src.w() else src.h();
+
+        const dst = Surface.create(dst_w_i, dst_h_i, PixelFormat.rgba32) orelse
+            return null;
+        const src_pitch: usize = @intCast(src.pitch());
+        const dst_pitch: usize = @intCast(dst.pitch());
+        const src_base = src.pixels();
+        const dst_base = dst.pixels();
+
+        switch (quarter_turns_cw) {
+            0 => unreachable,
+            1 => {
+                // 90° CW: dst(x, y) = src(y, src_h - 1 - x),
+                // dst_w = src_h, dst_h = src_w
+                for (0..src_w) |dy| {
+                    const dst_row = dst_base + dy * dst_pitch;
+                    for (0..src_h) |dx| {
+                        const sy = src_h - 1 - dx;
+                        const sx = dy;
+                        const src_px = src_base + sy * src_pitch + sx * 4;
+                        const dst_px = dst_row + dx * 4;
+                        @memcpy(dst_px[0..4], src_px[0..4]);
+                    }
+                }
+            },
+            2 => {
+                // 180°: dst(x, y) = src(src_w - 1 - x, src_h - 1 - y)
+                for (0..src_h) |dy| {
+                    const sy = src_h - 1 - dy;
+                    const src_row = src_base + sy * src_pitch;
+                    const dst_row = dst_base + dy * dst_pitch;
+                    for (0..src_w) |dx| {
+                        const sx = src_w - 1 - dx;
+                        const src_px = src_row + sx * 4;
+                        const dst_px = dst_row + dx * 4;
+                        @memcpy(dst_px[0..4], src_px[0..4]);
+                    }
+                }
+            },
+            3 => {
+                // 270° clockwise (90° CCW): dst(x, y) = src(src_w - 1 - y, x)
+                for (0..src_w) |dy| {
+                    const sx = src_w - 1 - dy;
+                    const dst_row = dst_base + dy * dst_pitch;
+                    for (0..src_h) |dx| {
+                        const sy = dx;
+                        const src_px = src_base + sy * src_pitch + sx * 4;
+                        const dst_px = dst_row + dx * 4;
+                        @memcpy(dst_px[0..4], src_px[0..4]);
+                    }
+                }
+            },
+        }
+        return dst;
+    }
+
     /// Decodes an image from an in-memory byte slice, returning `null` on failure.
     pub fn loadConstMemOpt(bytes: []const u8) ?Surface {
         const io = c.SDL_IOFromConstMem(bytes.ptr, bytes.len) orelse return null;
@@ -520,4 +625,38 @@ test "Surface.isRowBlack and isColBlack - XRGB8888 ignores unused padding byte" 
     px[8 * pitch + 8 * 4] |= color_mask_4[0];
     try std.testing.expect(!surf.isRowBlack(8, 16));
     try std.testing.expect(!surf.isColBlack(8, 16));
+}
+
+test "Surface.encodePngAlloc and rotateOrthogonal roundtrip" {
+    const allocator = std.testing.allocator;
+    const surf = Surface.create(4, 2, PixelFormat.rgba32) orelse return;
+    defer surf.destroy();
+
+    const pitch: usize = @intCast(surf.pitch());
+    const px = surf.pixels();
+    @memset(px[0 .. pitch * 2], 0);
+    // Set top-left pixel (0, 0) to red (255, 0, 0, 255)
+    px[0] = 255;
+    px[1] = 0;
+    px[2] = 0;
+    px[3] = 255;
+
+    // 90° CW: 4x2 -> 2x4, top-left (0, 0) moves to top-right (1, 0)
+    const rot90 = surf.rotateOrthogonal(1) orelse return error.RotateFailed;
+    defer rot90.destroy();
+    try std.testing.expectEqual(@as(i32, 2), rot90.w());
+    try std.testing.expectEqual(@as(i32, 4), rot90.h());
+    try std.testing.expectEqual(@as(u8, 255), rot90.pixels()[1 * 4 + 0]);
+
+    // Encode to PNG in memory and decode back
+    const png_bytes = try rot90.encodePngAlloc(allocator);
+    defer allocator.free(png_bytes);
+    try std.testing.expect(png_bytes.len > 33);
+    try std.testing.expectEqualSlices(u8, "\x89PNG\r\n\x1a\n", png_bytes[0..8]);
+
+    const decoded = Surface.loadConstMemOpt(png_bytes) orelse
+        return error.DecodeFailed;
+    defer decoded.destroy();
+    try std.testing.expectEqual(@as(i32, 2), decoded.w());
+    try std.testing.expectEqual(@as(i32, 4), decoded.h());
 }

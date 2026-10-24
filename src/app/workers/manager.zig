@@ -3,31 +3,73 @@
 //! Manages background thread lifecycle, active thread counts,
 //! concurrency limits, worker cancellation, and event transport.
 
+const context = @import("context.zig");
 const events = @import("../core/events.zig");
+const sdl = @import("sdl");
+const state_pkg = @import("state");
 const std = @import("std");
+const thumb_cache = @import("../core/thumb_cache.zig");
+
+/// Background job for downscaling, orienting, and atomically saving a PNG
+/// thumbnail to the Freedesktop Shared Thumbnail Cache
+/// (`$XDG_CACHE_HOME/thumbnails/`).
+pub const ThumbWriteJob = struct {
+    surface: sdl.Surface,
+    source_path: []u8,
+    mime_type: []const u8,
+    file_size: u64,
+    mtime_sec: i64,
+    orientation: state_pkg.Orientation,
+    source_dims: ?state_pkg.PhysicalDims = null,
+
+    /// Releases the owned SDL surface and source path string.
+    pub fn deinit(self: *ThumbWriteJob, allocator: std.mem.Allocator) void {
+        self.surface.destroy();
+        allocator.free(self.source_path);
+    }
+};
 
 /// WorkerManager manages background thread lifecycle, active thread counts,
 /// concurrency limits, worker cancellation, and event transport.
 pub const WorkerManager = struct {
+    pub const MAX_QUEUED_THUMB_WRITES: usize = 8;
+
     /// Cached hardware logical CPU core count queried once at startup to eliminate
     /// per-frame `sysconf` or `/proc/cpuinfo` read syscalls.
     cached_cpu_count: usize = 0,
 
-    /// Atomic counter tracking total actively executing background worker tasks
-    /// (image decodes, directory path scans, and stdin reading).
+    /// Atomic counter tracking total actively executing foreground/UI worker
+    /// tasks (image decodes, directory path scans, and stdin reading).
     active_threads: std.atomic.Value(usize) = .init(0),
 
     /// Atomic counter tracking actively executing image `decodeWorker` tasks.
     active_decode_threads: std.atomic.Value(usize) = .init(0),
 
+    /// Atomic counter tracking actively executing background thumbnail writer
+    /// tasks.
+    active_thumb_writers: std.atomic.Value(usize) = .init(0),
+
     /// Worker task cancellation signal used by C library boundaries and worker
     /// loops during shutdown.
     exiting: std.atomic.Value(bool) = .init(false),
 
-    /// Real-time metrics for EXIF thumbnail extraction passes.
+    /// Platform/user configuration for the Freedesktop Shared Thumbnail Cache.
+    thumb_cache_config: thumb_cache.ThumbCacheConfig = .disabled,
+
+    /// Real-time atomic metrics for EXIF & Freedesktop thumbnail extraction and
+    /// writes.
     thumb_header_hits: std.atomic.Value(usize) = .init(0),
     thumb_positional_hits: std.atomic.Value(usize) = .init(0),
+    thumb_cache_hits: std.atomic.Value(usize) = .init(0),
     thumb_misses: std.atomic.Value(usize) = .init(0),
+    thumb_cache_writes: std.atomic.Value(usize) = .init(0),
+    thumb_cache_write_queued: std.atomic.Value(usize) = .init(0),
+
+    /// Bounded background queue for saving Freedesktop thumbnails when decode
+    /// workers are idle.
+    thumb_write_mutex: std.Io.Mutex = .init,
+    thumb_write_queue: std.ArrayList(ThumbWriteJob) = .empty,
+    thumb_writer_running: bool = false,
 
     /// Thread-safe multi-producer single-consumer queue for
     /// background-to-main-thread event transport.
@@ -36,6 +78,194 @@ pub const WorkerManager = struct {
     /// Encapsulated task group managing all spawned background worker threads
     /// under Zig 0.17 `std.Io`.
     group: std.Io.Group = .init,
+
+    /// Takes a consistent atomic snapshot of all thumbnail telemetry counters.
+    pub fn snapshotThumbStats(
+        self: *const WorkerManager,
+    ) state_pkg.ThumbnailStats {
+        return .{
+            .header_hits = self.thumb_header_hits.load(.acquire),
+            .positional_hits = self.thumb_positional_hits.load(.acquire),
+            .cache_hits = self.thumb_cache_hits.load(.acquire),
+            .misses = self.thumb_misses.load(.acquire),
+            .cache_writes = self.thumb_cache_writes.load(.acquire),
+            .cache_write_queued = self.thumb_cache_write_queued.load(.acquire),
+        };
+    }
+
+    /// Enqueues a decoded surface for asynchronous Freedesktop thumbnail
+    /// generation. Bounded to `MAX_QUEUED_THUMB_WRITES` (evicting the oldest
+    /// pending item if full) and executes only when
+    /// `active_decode_threads == 0`.
+    pub fn enqueueThumbWrite(
+        self: *WorkerManager,
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        job: ThumbWriteJob,
+    ) void {
+        if (self.exiting.load(.acquire) or
+            self.thumb_cache_config == .disabled)
+        {
+            var j = job;
+            j.deinit(allocator);
+            return;
+        }
+
+        const should_spawn = blk: {
+            self.thumb_write_mutex.lockUncancelable(io);
+            defer self.thumb_write_mutex.unlock(io);
+
+            for (self.thumb_write_queue.items) |existing| {
+                if (std.mem.eql(u8, existing.source_path, job.source_path)) {
+                    var j = job;
+                    j.deinit(allocator);
+                    return;
+                }
+            }
+
+            if (self.thumb_write_queue.items.len >= MAX_QUEUED_THUMB_WRITES) {
+                var dropped = self.thumb_write_queue.orderedRemove(0);
+                dropped.deinit(allocator);
+                _ = self.thumb_cache_write_queued.fetchSub(1, .monotonic);
+            }
+
+            self.thumb_write_queue.append(allocator, job) catch {
+                var j = job;
+                j.deinit(allocator);
+                return;
+            };
+            _ = self.thumb_cache_write_queued.fetchAdd(1, .release);
+
+            if (!self.thumb_writer_running) {
+                self.thumb_writer_running = true;
+                break :blk true;
+            }
+            break :blk false;
+        };
+
+        if (should_spawn) {
+            _ = self.active_thumb_writers.fetchAdd(1, .monotonic);
+            self.group.async(io, thumbWriterWorker, .{ self, allocator, io });
+        }
+    }
+
+    fn thumbWriterWorker(
+        self: *WorkerManager,
+        allocator: std.mem.Allocator,
+        io: std.Io,
+    ) void {
+        defer _ = self.active_thumb_writers.fetchSub(1, .release);
+
+        while (true) {
+            const has_pending = blk: {
+                self.thumb_write_mutex.lockUncancelable(io);
+                defer self.thumb_write_mutex.unlock(io);
+
+                if (self.exiting.load(.acquire) or
+                    self.thumb_write_queue.items.len == 0)
+                {
+                    const rem = self.thumb_write_queue.items.len;
+                    for (self.thumb_write_queue.items) |*item| {
+                        item.deinit(allocator);
+                    }
+                    self.thumb_write_queue.clearRetainingCapacity();
+                    if (rem > 0) {
+                        _ = self.thumb_cache_write_queued.fetchSub(
+                            rem,
+                            .release,
+                        );
+                    }
+                    self.thumb_writer_running = false;
+                    break :blk false;
+                }
+                break :blk true;
+            };
+            if (!has_pending) return;
+
+            while (!self.exiting.load(.acquire) and
+                self.active_decode_threads.load(.acquire) > 0)
+            {
+                std.Io.sleep(io, .fromMilliseconds(5), .awake) catch break;
+            }
+
+            const job_opt: ?ThumbWriteJob = blk: {
+                self.thumb_write_mutex.lockUncancelable(io);
+                defer self.thumb_write_mutex.unlock(io);
+
+                if (self.exiting.load(.acquire) or
+                    self.thumb_write_queue.items.len == 0)
+                {
+                    const rem = self.thumb_write_queue.items.len;
+                    for (self.thumb_write_queue.items) |*item| {
+                        item.deinit(allocator);
+                    }
+                    self.thumb_write_queue.clearRetainingCapacity();
+                    if (rem > 0) {
+                        _ = self.thumb_cache_write_queued.fetchSub(
+                            rem,
+                            .release,
+                        );
+                    }
+                    self.thumb_writer_running = false;
+                    break :blk null;
+                }
+                break :blk self.thumb_write_queue.orderedRemove(0);
+            };
+
+            var job = job_opt orelse return;
+            defer {
+                job.deinit(allocator);
+                _ = self.thumb_cache_write_queued.fetchSub(1, .release);
+                context.wakeUpMainThread();
+            }
+
+            if (self.exiting.load(.acquire)) continue;
+
+            switch (self.thumb_cache_config) {
+                .disabled => {},
+                .enabled => |cfg| {
+                    const key = thumb_cache.ThumbCacheKey.fromFilePath(
+                        io,
+                        job.source_path,
+                        cfg.cache_dir,
+                    ) orelse continue;
+
+                    if (thumb_cache.hasValidTargetTierThumbnail(
+                        io,
+                        cfg,
+                        &key,
+                        job.mtime_sec,
+                    )) {
+                        continue;
+                    }
+
+                    if (thumb_cache.writeThumbnailPng(
+                        allocator,
+                        io,
+                        cfg,
+                        &key,
+                        job.surface,
+                        job.orientation,
+                        .{
+                            .uri = key.uri(),
+                            .mtime_sec = job.mtime_sec,
+                            .file_size = job.file_size,
+                            .mime_type = job.mime_type,
+                            .source_dims = job.source_dims,
+                        },
+                    )) |_| {
+                        _ = self.thumb_cache_writes.fetchAdd(1, .release);
+                    } else |err| {
+                        std.log.warn(
+                            "thumbWriterWorker: failed to write cached " ++
+                                "thumbnail for '{s}': {}",
+                            .{ job.source_path, err },
+                        );
+                    }
+                },
+            }
+        }
+    }
 
     /// Returns `true` if any background worker tasks (decode, path scan, or
     /// stdin) are currently executing in parallel.
@@ -70,13 +300,24 @@ pub const WorkerManager = struct {
     }
 
     /// Signals worker shutdown, waits for running tasks to finish, and frees
-    /// the background event queue.
+    /// the background event and thumbnail write queues.
     pub fn deinit(
         self: *WorkerManager,
         allocator: std.mem.Allocator,
         io: std.Io,
     ) void {
         self.drainAndQuiesce(io);
+        {
+            self.thumb_write_mutex.lockUncancelable(io);
+            defer self.thumb_write_mutex.unlock(io);
+            for (self.thumb_write_queue.items) |*item| {
+                item.deinit(allocator);
+            }
+            self.thumb_write_queue.deinit(allocator);
+            self.thumb_cache_write_queued.store(0, .release);
+            self.thumb_writer_running = false;
+        }
+        self.thumb_cache_config.deinit(allocator);
         self.event_queue.deinit(allocator, io);
     }
 

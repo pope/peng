@@ -28,11 +28,13 @@ pub fn drainWorkerEvents(state: *AppState) bool {
 
         switch (evt.*) {
             .exif_orientation_parsed => |*e| if (e.resolve(&state.cache)) |r| {
-                r.entry.orientation = r.payload.orientation;
+                if (state.cache.get(r.key)) |entry| {
+                    entry.orientation = r.payload.orientation;
+                }
                 state.updateCurrentRotation();
             },
             .dimensions_probed => |*d| if (d.resolve(&state.cache)) |r| {
-                handleDimensionsProbedEvent(state, r.entry, r.payload.*);
+                handleDimensionsProbedEvent(state, r.key, r.payload.*);
             },
             .thumb_decoded => |*t| if (t.resolve(&state.cache)) |r| {
                 const skip_upload = hasSubsequentImageDecoded(
@@ -40,15 +42,20 @@ pub fn drainWorkerEvents(state: *AppState) bool {
                     r.key,
                     state.cache.alias_index,
                 );
-                handleExifThumbnailEvent(state, r.entry, r.payload.*, skip_upload);
+                handleExifThumbnailEvent(
+                    state,
+                    r.key,
+                    r.payload.*,
+                    skip_upload,
+                );
             },
             .image_decoded => |*d| if (d.resolve(&state.cache)) |r| {
-                handleImageDecodedEvent(state, r.key, r.entry, r.payload);
+                handleImageDecodedEvent(state, r.key, r.payload);
             },
             .decode_failed => |*f| if (f.resolve(&state.cache)) |r| {
                 const is_current =
                     state.viewer.navigation.current_index == r.key.index;
-                handleDecodeFailedEvent(state, r.key, r.entry, is_current);
+                handleDecodeFailedEvent(state, r.key, is_current);
             },
             .path_discovered => |p| handleDirScannedEvent(state, p),
             .directory_scan_result => |res| {
@@ -71,14 +78,16 @@ pub fn drainWorkerEvents(state: *AppState) bool {
 fn handleDecodeFailedEvent(
     state: *AppState,
     key: image.ImageCacheKey,
-    entry: *state_pkg.CacheEntry,
     is_current: bool,
 ) void {
     if (state.cache.alias_index) |alias| {
-        if (alias.generation == key.generation and (key.index == alias.to or key.index == alias.from)) {
+        if (alias.generation == key.generation and
+            (key.index == alias.to or key.index == alias.from))
+        {
             state.cache.alias_index = null;
         }
     }
+    const entry = state.cache.get(key) orelse return;
     entry.is_promoting = false;
     if (entry.status != .loaded_gpu and entry.status != .loaded_cpu) {
         entry.status = .failed;
@@ -120,26 +129,28 @@ fn handleIpcCommandEvent(state: *AppState, cmd_data: *ipc.IpcCommandData) void {
 
 fn handleDimensionsProbedEvent(
     state: *AppState,
-    entry: *state_pkg.CacheEntry,
+    key: image.ImageCacheKey,
     probed: events.DimensionsProbedPayload,
 ) void {
-    entry.applyProbedMetadata(
-        probed.full_w,
-        probed.full_h,
-        probed.orientation,
-        probed.raw_metadata,
-    );
-    if (probed.thumb_only) {
-        switch (entry.status) {
-            .decoding => |*dec| dec.has_thread = false,
-            .loaded_cpu, .loaded_gpu, .uploading, .failed => {},
+    {
+        const entry = state.cache.get(key) orelse return;
+        entry.applyProbedMetadata(
+            probed.full_w,
+            probed.full_h,
+            probed.orientation,
+            probed.raw_metadata,
+        );
+        if (probed.thumb_only) {
+            switch (entry.status) {
+                .decoding => |*dec| dec.has_thread = false,
+                .loaded_cpu, .loaded_gpu, .uploading, .failed => {},
+            }
+        }
+        if (entry.thumbnail == .none or entry.thumbnail == .pending) {
+            entry.thumbnail = .not_available;
         }
     }
     state.updateCurrentRotation();
-
-    if (entry.thumbnail == .none or entry.thumbnail == .pending) {
-        entry.thumbnail = .not_available;
-    }
 }
 
 fn hasSubsequentImageDecoded(
@@ -178,24 +189,28 @@ fn hasSubsequentImageDecoded(
 
 fn handleExifThumbnailEvent(
     state: *AppState,
-    entry: *state_pkg.CacheEntry,
+    key: image.ImageCacheKey,
     thumb_data: events.ThumbDecodedPayload,
     skip_gpu_upload: bool,
 ) void {
-    entry.applyProbedMetadata(
-        thumb_data.full_w,
-        thumb_data.full_h,
-        thumb_data.orientation,
-        thumb_data.raw_metadata,
-    );
-    if (thumb_data.thumb_only) {
-        switch (entry.status) {
-            .decoding => |*dec| dec.has_thread = false,
-            .loaded_cpu, .loaded_gpu, .uploading, .failed => {},
+    const already_loaded = blk: {
+        const entry = state.cache.get(key) orelse return;
+        entry.applyProbedMetadata(
+            thumb_data.full_w,
+            thumb_data.full_h,
+            thumb_data.orientation,
+            thumb_data.raw_metadata,
+        );
+        if (thumb_data.thumb_only) {
+            switch (entry.status) {
+                .decoding => |*dec| dec.has_thread = false,
+                .loaded_cpu, .loaded_gpu, .uploading, .failed => {},
+            }
         }
-    }
+        break :blk entry.status == .loaded_gpu or entry.status == .loaded_cpu;
+    };
     state.updateCurrentRotation();
-    if (skip_gpu_upload or entry.status == .loaded_gpu or entry.status == .loaded_cpu) {
+    if (skip_gpu_upload or already_loaded) {
         return;
     }
 
@@ -207,6 +222,10 @@ fn handleExifThumbnailEvent(
             state.unpack_compute_pipeline,
             &state.upload_staging,
         )) |upload_res| {
+            const entry = state.cache.get(key) orelse {
+                gpu_dev.releaseTexture(upload_res.gpu_texture);
+                return;
+            };
             switch (entry.thumbnail) {
                 .loaded => |old_thumb| {
                     gpu_dev.releaseTexture(old_thumb.texture);
@@ -221,30 +240,74 @@ fn handleExifThumbnailEvent(
                         .h = upload_res.h,
                         .upload_time_ms = upload_res.upload_time_ms,
                         .dct_snapped = thumb_data.dct_snapped,
+                        .source = thumb_data.source,
                     },
                 },
             };
             state.updateCurrentRotation();
         } else {
+            if (state.cache.get(key)) |entry| {
+                if (entry.thumbnail == .none or entry.thumbnail == .pending) {
+                    entry.thumbnail = .not_available;
+                }
+            }
+        }
+    } else {
+        if (state.cache.get(key)) |entry| {
             if (entry.thumbnail == .none or entry.thumbnail == .pending) {
                 entry.thumbnail = .not_available;
             }
         }
-    } else {
-        if (entry.thumbnail == .none or entry.thumbnail == .pending) {
-            entry.thumbnail = .not_available;
-        }
     }
+}
+
+fn enqueueDecodedThumbWrite(
+    state: *AppState,
+    key: image.ImageCacheKey,
+    decoded_data: *const events.ImageDecodedPayload,
+    mtime_sec: i64,
+    surf: sdl.Surface,
+) bool {
+    if (state.workers.thumb_cache_config == .disabled) return false;
+    const entry = state.cache.getEntry(key) orelse return false;
+    const media = state.viewer.navigation.getMediaEntry(key.index) orelse
+        return false;
+    const path_slice: []const u8 = switch (media) {
+        .archive_entry => return false,
+        .filesystem => |f| f.path,
+        .pair => |p| if (entry.raw_metadata.isRaw())
+            p.raw_path
+        else
+            p.jpeg_path,
+    };
+    const owned_path = state.allocator.dupe(u8, path_slice) catch return false;
+    const auth = entry.getAuthoritativeDims();
+    const source_dims =
+        state_pkg.PhysicalDims.initPositive(auth.w, auth.h) orelse
+        decoded_data.source_dims orelse
+        state_pkg.PhysicalDims.initPositive(decoded_data.w, decoded_data.h);
+
+    state.workers.enqueueThumbWrite(state.allocator, state.io, .{
+        .surface = surf,
+        .source_path = owned_path,
+        .mime_type = decoded_data.mime_type,
+        .file_size = decoded_data.size_bytes,
+        .mtime_sec = mtime_sec,
+        .orientation = decoded_data.orientation,
+        .source_dims = source_dims,
+    });
+    return true;
 }
 
 fn handleImageDecodedEvent(
     state: *AppState,
     key: image.ImageCacheKey,
-    entry: *state_pkg.CacheEntry,
     decoded_data: *events.ImageDecodedPayload,
 ) void {
     if (state.cache.alias_index) |alias| {
-        if (alias.generation == key.generation and (key.index == alias.to or key.index == alias.from)) {
+        if (alias.generation == key.generation and
+            (key.index == alias.to or key.index == alias.from))
+        {
             state.cache.alias_index = null;
         }
     }
@@ -258,9 +321,10 @@ fn handleImageDecodedEvent(
 
     // Check if the current image is already loaded on GPU (or failed)
     const is_current_ready = blk: {
-        const cur_idx = state.viewer.navigation.current_index orelse break :blk true;
+        const cur_idx = state.viewer.navigation.current_index orelse
+            break :blk true;
         const cur_key = state.cache.activeKey(cur_idx);
-        if (state.cache.get(cur_key)) |cur_entry| {
+        if (state.cache.getEntry(cur_key)) |cur_entry| {
             break :blk switch (cur_entry.status) {
                 .loaded_gpu, .failed => true,
                 .loaded_cpu, .decoding, .uploading => false,
@@ -274,7 +338,8 @@ fn handleImageDecodedEvent(
     // image is already on the GPU. If a neighbor decode finishes while the active image
     // is still decoding or uploading, keep the neighbor in RAM (.loaded_cpu) to preserve
     // 100% of PCIe bus bandwidth and GPU mipmap downsampling for the active image.
-    const should_upload_gpu = (state.gpu_device != null) and (is_current or is_current_ready);
+    const should_upload_gpu = (state.gpu_device != null) and
+        (is_current or is_current_ready);
 
     if (should_upload_gpu) {
         const gpu_dev = state.gpu_device.?;
@@ -284,52 +349,71 @@ fn handleImageDecodedEvent(
             state.unpack_compute_pipeline,
             &state.upload_staging,
         )) |full_res| {
-            applyDecodedGpuTexture(
+            completeDecodedGpuUpload(
                 state,
-                entry,
+                key,
                 decoded_data,
+                surf,
                 full_res,
                 is_current,
                 gpu_dev,
+                image.ImageCache.DEFAULT_MAX_VRAM_BYTES,
             );
-            state.updateCurrentRotation();
         } else {
             std.log.err(
                 "handleImageDecodedEvent: failed to upload surface to GPU for key {any}",
                 .{key},
             );
-            handleDecodeFailedEvent(state, key, entry, is_current);
+            handleDecodeFailedEvent(state, key, is_current);
         }
     } else {
-        switch (entry.status) {
-            .loaded_cpu => |cpu| cpu.surface.destroy(),
-            .loaded_gpu => |gpu| {
-                if (state.gpu_device) |gpu_dev| {
-                    gpu_dev.releaseTexture(gpu.gpu_texture);
-                }
-            },
-            .decoding, .uploading, .failed => {},
+        {
+            const entry = state.cache.get(key) orelse return;
+            switch (entry.status) {
+                .loaded_cpu => |cpu| cpu.surface.destroy(),
+                .loaded_gpu => |gpu| {
+                    if (state.gpu_device) |gpu_dev| {
+                        gpu_dev.releaseTexture(gpu.gpu_texture);
+                    }
+                },
+                .decoding, .uploading, .failed => {},
+            }
+            applyDecodedMetadata(entry, decoded_data);
+            if (entry.thumbnail == .pending or entry.thumbnail == .none) {
+                entry.thumbnail = .not_available;
+            }
+            const cbz_ms = decoded_data.cbz_decompress_time_ms;
+            const comp_bytes = decoded_data.compressed_size_bytes;
+            entry.status = .{
+                .loaded_cpu = .{
+                    .surface = decoded_data.surface.?,
+                    .w = decoded_data.w,
+                    .h = decoded_data.h,
+                    .size_bytes = decoded_data.size_bytes,
+                    .mime_type = decoded_data.mime_type,
+                    .read_time_ms = decoded_data.read_time_ms,
+                    .decode_time_ms = decoded_data.decode_time_ms,
+                    .conversion_time_ms = decoded_data.conversion_time_ms,
+                    .cbz_decompress_time_ms = cbz_ms,
+                    .compressed_size_bytes = comp_bytes,
+                },
+            };
+            decoded_data.surface = null;
         }
-        applyDecodedMetadata(entry, decoded_data);
-        if (entry.thumbnail == .pending or entry.thumbnail == .none) {
-            entry.thumbnail = .not_available;
-        }
-        entry.status = .{
-            .loaded_cpu = .{
-                .surface = decoded_data.surface.?,
-                .w = decoded_data.w,
-                .h = decoded_data.h,
-                .size_bytes = decoded_data.size_bytes,
-                .mime_type = decoded_data.mime_type,
-                .read_time_ms = decoded_data.read_time_ms,
-                .decode_time_ms = decoded_data.decode_time_ms,
-                .conversion_time_ms = decoded_data.conversion_time_ms,
-                .cbz_decompress_time_ms = decoded_data.cbz_decompress_time_ms,
-                .compressed_size_bytes = decoded_data.compressed_size_bytes,
-            },
-        };
-        decoded_data.surface = null;
         state.updateCurrentRotation();
+        if (decoded_data.thumb_write_mtime_sec) |mtime_sec| {
+            if (surf.scale(surf.w(), surf.h(), .nearest)) |cloned| {
+                if (!enqueueDecodedThumbWrite(
+                    state,
+                    key,
+                    decoded_data,
+                    mtime_sec,
+                    cloned,
+                )) {
+                    cloned.destroy();
+                }
+            }
+        }
     }
 }
 
@@ -340,6 +424,9 @@ fn applyDecodedMetadata(
     entry.orientation = decoded_data.orientation;
     entry.is_promoting = false;
     if (decoded_data.raw_metadata.getSensorDims()) |s_dims| {
+        entry.updateFullDims(s_dims.w, s_dims.h);
+    }
+    if (decoded_data.source_dims) |s_dims| {
         entry.updateFullDims(s_dims.w, s_dims.h);
     }
     entry.updateFullDims(decoded_data.w, decoded_data.h);
@@ -355,9 +442,10 @@ fn applyDecodedMetadata(
 fn triggerDecodedGpuCrossfades(
     state: *AppState,
     is_current: bool,
-    entry: *state_pkg.CacheEntry,
+    key: image.ImageCacheKey,
 ) void {
     if (!is_current) return;
+    const entry = state.cache.getEntry(key) orelse return;
 
     const can_crossfade = entry.thumbnail == .loaded and
         !state.viewer.ui.overlays.debug_show_thumb and
@@ -387,52 +475,94 @@ fn triggerDecodedGpuCrossfades(
 
 fn applyDecodedGpuTexture(
     state: *AppState,
-    entry: *state_pkg.CacheEntry,
+    key: image.ImageCacheKey,
     decoded_data: *events.ImageDecodedPayload,
     full_res: image.GpuUploadResult,
     is_current: bool,
-    gpu_dev: sdl.gpu.Device,
-) void {
-    const was_loaded_gpu = entry.status == .loaded_gpu;
-    switch (entry.status) {
-        .loaded_cpu => |cpu| cpu.surface.destroy(),
-        .loaded_gpu => |gpu| gpu_dev.releaseTexture(gpu.gpu_texture),
-        .decoding, .uploading, .failed => {},
-    }
-    applyDecodedMetadata(entry, decoded_data);
-    entry.status = .{
-        .loaded_gpu = .{
-            .gpu_texture = full_res.gpu_texture,
-            .w = full_res.w,
-            .h = full_res.h,
-            .size_bytes = decoded_data.size_bytes,
-            .mime_type = decoded_data.mime_type,
-            .read_time_ms = decoded_data.read_time_ms,
-            .decode_time_ms = decoded_data.decode_time_ms,
-            .conversion_time_ms = full_res.conversion_time_ms,
-            .upload_time_ms = full_res.upload_time_ms,
-            .memory_size_bytes = full_res.memory_size_bytes,
-            .num_mip_levels = full_res.num_mip_levels,
-            .mipmap_time_ms = full_res.mipmap_time_ms,
-            .was_fallback = full_res.was_fallback,
-            .fallback_time_ms = full_res.fallback_time_ms,
-            .cbz_decompress_time_ms = decoded_data.cbz_decompress_time_ms,
-            .compressed_size_bytes = decoded_data.compressed_size_bytes,
-        },
+    gpu_dev: ?sdl.gpu.Device,
+) bool {
+    const was_loaded_gpu = blk: {
+        const entry = state.cache.get(key) orelse {
+            if (gpu_dev) |dev| dev.releaseTexture(full_res.gpu_texture);
+            return false;
+        };
+        const prev_gpu = entry.status == .loaded_gpu;
+        switch (entry.status) {
+            .loaded_cpu => |cpu| cpu.surface.destroy(),
+            .loaded_gpu => |gpu| if (gpu_dev) |dev| {
+                dev.releaseTexture(gpu.gpu_texture);
+            },
+            .decoding, .uploading, .failed => {},
+        }
+        applyDecodedMetadata(entry, decoded_data);
+        entry.status = .{
+            .loaded_gpu = .{
+                .gpu_texture = full_res.gpu_texture,
+                .w = full_res.w,
+                .h = full_res.h,
+                .size_bytes = decoded_data.size_bytes,
+                .mime_type = decoded_data.mime_type,
+                .read_time_ms = decoded_data.read_time_ms,
+                .decode_time_ms = decoded_data.decode_time_ms,
+                .conversion_time_ms = full_res.conversion_time_ms,
+                .upload_time_ms = full_res.upload_time_ms,
+                .memory_size_bytes = full_res.memory_size_bytes,
+                .num_mip_levels = full_res.num_mip_levels,
+                .mipmap_time_ms = full_res.mipmap_time_ms,
+                .was_fallback = full_res.was_fallback,
+                .fallback_time_ms = full_res.fallback_time_ms,
+                .cbz_decompress_time_ms = decoded_data.cbz_decompress_time_ms,
+                .compressed_size_bytes = decoded_data.compressed_size_bytes,
+            },
+        };
+        if (entry.thumbnail == .pending or entry.thumbnail == .none) {
+            entry.thumbnail = .not_available;
+        }
+        break :blk prev_gpu;
     };
-    if (entry.thumbnail == .pending or entry.thumbnail == .none) {
-        entry.thumbnail = .not_available;
-    }
     if (!was_loaded_gpu) {
-        triggerDecodedGpuCrossfades(state, is_current, entry);
+        triggerDecodedGpuCrossfades(state, is_current, key);
     }
+    return true;
+}
+
+fn completeDecodedGpuUpload(
+    state: *AppState,
+    key: image.ImageCacheKey,
+    decoded_data: *events.ImageDecodedPayload,
+    surf: sdl.Surface,
+    full_res: image.GpuUploadResult,
+    is_current: bool,
+    gpu_dev: ?sdl.gpu.Device,
+    max_vram_bytes: usize,
+) void {
+    if (!applyDecodedGpuTexture(
+        state,
+        key,
+        decoded_data,
+        full_res,
+        is_current,
+        gpu_dev,
+    )) return;
+    state.updateCurrentRotation();
     state.cache.enforceVramBudget(
         gpu_dev,
         state.viewer.navigation.getVisibleNeighbors(),
         state.viewer.getTransitionPrevIndex(),
         state.viewer.navigation.count(),
-        image.ImageCache.DEFAULT_MAX_VRAM_BYTES,
+        max_vram_bytes,
     );
+    if (decoded_data.thumb_write_mtime_sec) |mtime_sec| {
+        if (enqueueDecodedThumbWrite(
+            state,
+            key,
+            decoded_data,
+            mtime_sec,
+            surf,
+        )) {
+            decoded_data.surface = null;
+        }
+    }
 }
 
 fn handleDirScannedEvent(state: *AppState, scanned_data: events.PathDiscoveredPayload) void {
@@ -904,7 +1034,7 @@ test "drainWorkerEvents - pair promotion preserves VRAM and loaded status" {
 
     // 1. If GPU upload of a promotion fails while .loaded_gpu, keep .loaded_gpu
     // and clear is_promoting instead of clobbering with .failed.
-    handleDecodeFailedEvent(&state, key1, entry1, true);
+    handleDecodeFailedEvent(&state, key1, true);
     try std.testing.expect(!entry1.is_promoting);
     try std.testing.expect(entry1.status == .loaded_gpu);
     try std.testing.expectEqual(
@@ -943,7 +1073,7 @@ test "drainWorkerEvents - pair promotion preserves VRAM and loaded status" {
     // 3. Initial decode upload failure on slot 0 transitions to .failed
     const key0 = state.cache.activeKey(0);
     const entry0 = state.cache.get(key0).?;
-    handleDecodeFailedEvent(&state, key0, entry0, true);
+    handleDecodeFailedEvent(&state, key0, true);
     try std.testing.expect(entry0.status == .failed);
 }
 
@@ -1403,4 +1533,135 @@ test "drainWorkerEvents - skips thumbnail upload when image_decoded is in same b
     try std.testing.expect(entry.status == .loaded_cpu);
     // thumb_crossfade animation is NOT active
     try std.testing.expect(!state.viewer.animations.isActive(.thumb_crossfade));
+}
+
+test "completeDecodedGpuUpload - enqueues thumb write before swapRemove" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var dir_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPath(io, &dir_buf);
+    var cache_path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const cache_path = try std.mem.print(
+        &cache_path_buf,
+        "{s}/thumbnails",
+        .{dir_buf[0..dir_len]},
+    );
+    const cache_dir = try allocator.dupe(u8, cache_path);
+    state.workers.thumb_cache_config = .{
+        .enabled = .{
+            .cache_dir = cache_dir,
+            .write_policy = .all_missing,
+            .write_tier = .large,
+        },
+    };
+
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "img_5.arw",
+        .data = "dummy",
+    });
+
+    const arena = state.viewer.navigation.directory_arena.allocator();
+    for (0..6) |idx| {
+        var p_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const p = try std.mem.print(
+            &p_buf,
+            "{s}/img_{d}.arw",
+            .{ dir_buf[0..dir_len], idx },
+        );
+        try state.viewer.navigation.appendEntry(allocator, .{
+            .filesystem = .{ .path = try arena.dupe(u8, p) },
+        });
+    }
+    state.viewer.navigation.current_index = 5;
+
+    // Slot 0: distant GPU texture that will be evicted via swapRemove(0)
+    const dummy_tex: sdl.gpu.Texture = .{ .ptr = @ptrFromInt(0x1000) };
+    _ = try state.cache.appendSlot(allocator, 0, .{
+        .loaded_gpu = .{
+            .gpu_texture = dummy_tex,
+            .w = 100.0,
+            .h = 100.0,
+            .size_bytes = 500,
+            .memory_size_bytes = 500,
+        },
+    });
+
+    // Slot 1 (tail of state.cache.slots): active index 5 being uploaded
+    const key5 = try state.cache.appendSlot(allocator, 5, .{
+        .decoding = .{ .has_thread = true },
+    });
+
+    const surf = sdl.Surface.create(32, 24, sdl.PixelFormat.rgba32).?;
+    var decoded = events.ImageDecodedPayload{
+        .surface = surf,
+        .w = 1616.0,
+        .h = 1080.0,
+        .size_bytes = 4096,
+        .mime_type = "image/x-sony-arw",
+        .read_time_ms = 0.1,
+        .decode_time_ms = 1.0,
+        .conversion_time_ms = 0.0,
+        .cbz_decompress_time_ms = 0.0,
+        .compressed_size_bytes = 0,
+        .orientation = .rotate_270,
+        .raw_metadata = state_pkg.RawMetadata.init(6000.0, 4000.0),
+        .thumb_write_mtime_sec = 1700000000,
+    };
+    defer if (decoded.surface) |s| s.destroy();
+
+    const full_res = image.GpuUploadResult{
+        .gpu_texture = dummy_tex,
+        .w = 1616.0,
+        .h = 1080.0,
+        .conversion_time_ms = 0.0,
+        .upload_time_ms = 0.1,
+        .memory_size_bytes = 500,
+        .num_mip_levels = 1,
+        .mipmap_time_ms = 0.0,
+        .was_fallback = false,
+        .fallback_time_ms = 0.0,
+    };
+
+    // Budget is 600 bytes; 500 + 500 = 1000 > 600, so enforceVramBudget will
+    // evict slot 0 via swapRemove(0), moving tail slot (key5) into index 0
+    // before enqueueDecodedThumbWrite resolves key5 via getEntry(key5).
+    completeDecodedGpuUpload(
+        &state,
+        key5,
+        &decoded,
+        surf,
+        full_res,
+        true,
+        null,
+        600,
+    );
+
+    try std.testing.expect(decoded.surface == null);
+    try std.testing.expectEqual(@as(usize, 1), state.cache.count());
+    try std.testing.expectEqual(
+        @as(u64, 1),
+        state.workers.snapshotThumbStats().cache_writes,
+    );
+
+    // If a slot has expired or been evicted, enqueueDecodedThumbWrite safely
+    // returns false via getEntry(expired_key).
+    const expired_surf = sdl.Surface.create(8, 8, sdl.PixelFormat.rgba32).?;
+    defer expired_surf.destroy();
+    const expired_key = image.ImageCacheKey{
+        .index = 0,
+        .generation = key5.generation,
+    };
+    try std.testing.expect(!enqueueDecodedThumbWrite(
+        &state,
+        expired_key,
+        &decoded,
+        1700000000,
+        expired_surf,
+    ));
 }

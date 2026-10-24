@@ -9,6 +9,7 @@ const ImageCacheKey = image.ImageCacheKey;
 const MediaEntry = state_pkg.MediaEntry;
 const Orientation = state_pkg.Orientation;
 const RawMetadata = state_pkg.RawMetadata;
+const ThumbnailSource = state_pkg.ThumbnailSource;
 
 /// Envelope wrapping an event payload with a generation token.
 /// Callers must invoke `resolve()` against the active atomic generation counter
@@ -52,8 +53,9 @@ pub fn Generational(comptime T: type) type {
 }
 
 /// Envelope binding an event payload to a specific `ImageCacheKey` slot.
-/// Callers must invoke `resolve()` against `ImageCache` to obtain both the
-/// validated `*CacheEntry` and the payload together.
+/// Callers must invoke `resolve()` against `ImageCache` to obtain the
+/// validated, alias-resolved `ImageCacheKey` and the payload together without
+/// handing out raw interior pointers that could be invalidated by `swapRemove`.
 pub fn SlotBound(comptime T: type) type {
     return struct {
         key: ImageCacheKey,
@@ -63,7 +65,6 @@ pub fn SlotBound(comptime T: type) type {
 
         pub const Resolved = struct {
             key: ImageCacheKey,
-            entry: *state_pkg.CacheEntry,
             payload: *T,
         };
 
@@ -75,16 +76,19 @@ pub fn SlotBound(comptime T: type) type {
             };
         }
 
-        /// Looks up `self.key` in `cache`, returning the live `*CacheEntry`
-        /// and a mutable pointer to the payload only if `self.key` matches
-        /// the active `cache.generation` and the slot still exists.
-        pub fn resolve(self: *Self, cache: *image.ImageCache) ?Resolved {
+        /// Looks up `self.key` in `cache`, returning the validated
+        /// `ImageCacheKey` and a mutable pointer to the payload only if
+        /// `self.key` matches the active `cache.generation` and the slot still
+        /// exists.
+        pub fn resolve(self: *Self, cache: *const image.ImageCache) ?Resolved {
             if (self.key.generation != cache.generation.load(.acquire)) {
                 return null;
             }
             var lookup_key = self.key;
             if (cache.alias_index) |alias| {
-                if (self.key.generation == alias.generation and self.key.index == alias.from) {
+                if (self.key.generation == alias.generation and
+                    self.key.index == alias.from)
+                {
                     lookup_key.index = alias.to;
                 }
             }
@@ -92,7 +96,6 @@ pub fn SlotBound(comptime T: type) type {
             const slot_key = cache.slots.items(.key)[slot_idx];
             return .{
                 .key = slot_key,
-                .entry = &cache.slots.items(.entry)[slot_idx],
                 .payload = &self.unchecked_payload,
             };
         }
@@ -139,6 +142,7 @@ pub const ThumbDecodedPayload = struct {
     thumb_only: bool = false,
     raw_metadata: RawMetadata = .none,
     dct_snapped: bool = false,
+    source: ThumbnailSource = .embedded_header,
 };
 
 /// Payload carrying a fully decoded main image surface, performance metrics,
@@ -147,6 +151,7 @@ pub const ImageDecodedPayload = struct {
     surface: ?sdl.Surface,
     w: f32,
     h: f32,
+    source_dims: ?state_pkg.PhysicalDims = null,
     mime_type: []const u8,
     size_bytes: u64,
     read_time_ms: f64,
@@ -156,6 +161,7 @@ pub const ImageDecodedPayload = struct {
     raw_metadata: RawMetadata = .none,
     cbz_decompress_time_ms: f64 = 0.0,
     compressed_size_bytes: usize = 0,
+    thumb_write_mtime_sec: ?i64 = null,
 };
 
 /// Payload indicating image file decode failure or unrecoverable read error
@@ -352,7 +358,7 @@ test "Generational.resolve validates generation counter" {
     try std.testing.expectEqual(@as(?u32, null), wrapped.resolve(&active_gen));
 }
 
-test "SlotBound.resolve validates cache key and returns live entry" {
+test "SlotBound.resolve validates cache key and presence" {
     const allocator = std.testing.allocator;
     var cache = image.ImageCache{};
     defer cache.deinit(allocator, null);
@@ -371,10 +377,10 @@ test "SlotBound.resolve validates cache key and returns live entry" {
         Orientation.rotate_90,
         resolved.payload.orientation,
     );
-    resolved.entry.orientation = resolved.payload.orientation;
+    cache.get(resolved.key).?.orientation = resolved.payload.orientation;
     try std.testing.expectEqual(
         Orientation.rotate_90,
-        cache.get(key).?.orientation,
+        cache.getEntry(key).?.orientation,
     );
 
     _ = cache.advanceGeneration();

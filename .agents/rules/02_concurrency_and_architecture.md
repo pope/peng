@@ -166,13 +166,31 @@
     (`src/app/core/events.zig`) and construct `CancellationToken`
     (`src/app/workers/context.zig`) via `args.cancelToken()` so stale epoch
     validation and cooperative cancellation are enforced at the type boundary.
-- **Single-Pass I/O Consolidation in Workers**:
+- **Two-Stage Header-First I/O & Freedesktop Thumbnail Cache (`DecodePayload`, `thumb_cache.zig`)**:
   - Issue `statFile` once and `openFile` once per worker pass.
   - For RAW files (`decodeRawFile`), read a single **256KB** stack header buffer
-    and extract embedded previews via positional reads; for fast scrolling
-    (`thumb_only = true`), read at most **128KB**; for settled standard raster
-    decodes, read into a task-scoped buffer via `readSliceAll` and run header
-    probes, thumbnail slicing, and `Surface.loadConstMemOpt` in memory.
+    and extract embedded previews via positional reads (`readRangePositional`).
+  - For standard raster files and companion JPEGs, `DecodePayload.openStagedFile`
+    (`Stage = union(enum) { staged_file: std.Io.File, complete }`) reads only
+    Stage 1 (`@min(target_read_size, 256 * 1024)` bytes) via
+    `readRangePositional`, allowing `decodeWorker` to parse orientation, probe
+    dimensions, and extract/emit `.thumb_decoded` (from the Stage 1 slice or via
+    a positional read on `.staged_file` for thumbnails past 256KB) *before*
+    reading the remainder of the file in `readRemaining()` (Stage 2) and closing
+    the file handle prior to CPU decompression.
+  - When no embedded thumbnail is present, `probeFreedesktopThumbCache` probes
+    `$XDG_CACHE_HOME/thumbnails/` (`normal` -> `large` -> `x-large` ->
+    `xx-large`), validating `Thumb::MTime` against the source `statFile`
+    `mtime.toSeconds()`. Cached Freedesktop PNGs are pre-oriented upright on
+    disk (`ThumbnailSource.freedesktop_cache.isPreOriented() == true`) and bypass
+    EXIF orientation dimension swapping in `buildThumbnailUvRect`.
+  - Background cache writes (`WorkerManager.enqueueThumbWrite` ->
+    `thumbWriterWorker`, bounded to `MAX_QUEUED_THUMB_WRITES = 8`, targeting the
+    `large` 256x256 tier with `tEXt` chunks spliced immediately after `IHDR`)
+    pop from `thumb_write_queue` under `thumb_write_mutex` first (exiting
+    immediately when empty) and yield in 5ms slices while
+    `active_decode_threads > 0` so disk writes never contend with foreground
+    decoding.
 - **Demand-First Priority Gating for Cache & GPU Uploads**:
   1. **Decode Gating (`sysUpdateCache`)**: Never spawn neighbor prefetch workers
      ($\\pm 1, \\pm 2$) while the active slot (`idx`) is still decoding or

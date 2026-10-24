@@ -48,13 +48,18 @@
     `libviewer` when built with `-Dhot_reload=true`).
 - **App-Private Core (`src/app/core/`)**:
   - State-free utilities (`events.zig`, `fs.zig`, `exif.zig`, `image.zig`,
-    `palette.zig`) live in `src/app/core/`.
+    `palette.zig`, `thumb_cache.zig`) live in `src/app/core/`.
   - **Acyclic Dependency Invariant**: Pure modules (`intents`, `input`, `ipc`,
     `state`, `config`, `app/core`) MUST NOT import `AppState`,
     `src/app/systems/`, or `src/app/workers/`. Never cross module boundaries via
     relative file paths (e.g. `@import("app/core/exif.zig")` from
     `src/main.zig`); always use the canonical module namespace
     (`app.core.exif`).
+- **Zig 0.17 `std.process.Init` Process Context (`init.environ_map`, `init.io`, `init.gpa`)**:
+  - Entrypoints (`pub fn main(init: std.process.Init) !void`) MUST thread
+    `init.io`, `init.gpa`, `init.minimal.args`, and `init.environ_map`
+    (`*const std.process.Environ.Map`) into subsystems rather than calling C's
+    `std.c.getenv` or legacy global environment helpers.
 - **Build Targets & Test Steps (`build.zig`)**:
   - Executables: `peng` (`src/main.zig`), `peng-msg` (`src/msg_main.zig`), and
     `peng-test-runner` (`src/test_runner_main.zig`).

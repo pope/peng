@@ -1,4 +1,5 @@
 const FrameContext = @import("context.zig").FrameContext;
+const state_pkg = @import("state");
 
 /// System function that copies real-time atomic worker counters, active
 /// image GPU telemetry, and cache status into `state.viewer.stats` once per
@@ -6,20 +7,19 @@ const FrameContext = @import("context.zig").FrameContext;
 pub fn sysSyncMetrics(ctx: FrameContext) void {
     const state = ctx.state;
 
-    state.viewer.stats.thumb_header_hits = state.workers.thumb_header_hits.load(.acquire);
-    state.viewer.stats.thumb_positional_hits = state.workers.thumb_positional_hits.load(.acquire);
-    state.viewer.stats.thumb_misses = state.workers.thumb_misses.load(.acquire);
+    state.viewer.stats.thumbs = state.workers.snapshotThumbStats();
     state.viewer.stats.active_decode_threads = state.workers.active_decode_threads.load(.acquire);
     state.viewer.stats.max_decode_threads = state.workers.getMaxConcurrentDecodes();
     state.viewer.stats.cached_slot_count = state.cache.count();
     state.viewer.stats.total_vram_bytes = state.cache.getTotalVramBytes();
 
     if (state.getCurrentEntry()) |entry| {
-        const has_thumb, const thumb_upload_time_ms =
-            if (entry.thumbnail.getInfo()) |info|
-                .{ true, info.upload_time_ms }
-            else
-                .{ false, 0.0 };
+        const thumb_info = entry.thumbnail.getInfo();
+        const has_thumb = thumb_info != null;
+        const thumb_upload_time_ms: f64 =
+            if (thumb_info) |info| info.upload_time_ms else 0.0;
+        const thumb_source: state_pkg.ThumbnailSource =
+            if (thumb_info) |info| info.source else .embedded_header;
 
         switch (entry.status) {
             .loaded_gpu => |gpu| {
@@ -30,6 +30,7 @@ pub fn sysSyncMetrics(ctx: FrameContext) void {
                     .was_fallback = gpu.was_fallback,
                     .has_thumb = has_thumb,
                     .thumb_upload_time_ms = thumb_upload_time_ms,
+                    .thumb_source = thumb_source,
                     .cbz_decompress_time_ms = gpu.cbz_decompress_time_ms,
                     .compressed_size_bytes = gpu.compressed_size_bytes,
                 };
@@ -42,6 +43,7 @@ pub fn sysSyncMetrics(ctx: FrameContext) void {
                     .was_fallback = false,
                     .has_thumb = has_thumb,
                     .thumb_upload_time_ms = thumb_upload_time_ms,
+                    .thumb_source = thumb_source,
                     .cbz_decompress_time_ms = cpu.cbz_decompress_time_ms,
                     .compressed_size_bytes = cpu.compressed_size_bytes,
                 };
@@ -50,6 +52,7 @@ pub fn sysSyncMetrics(ctx: FrameContext) void {
                 state.viewer.stats.active_image = .{
                     .has_thumb = has_thumb,
                     .thumb_upload_time_ms = thumb_upload_time_ms,
+                    .thumb_source = thumb_source,
                 };
             },
         }

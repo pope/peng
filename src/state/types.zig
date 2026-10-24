@@ -51,6 +51,31 @@ pub const PhysicalDims = struct {
     w: f32 = 0.0,
     h: f32 = 0.0,
 
+    /// Returns a `PhysicalDims` only when both `w` and `h` are strictly
+    /// positive and finite, or `null` otherwise.
+    pub inline fn initPositive(w: f32, h: f32) ?PhysicalDims {
+        if (w > 0.0 and h > 0.0 and
+            std.math.isFinite(w) and std.math.isFinite(h))
+        {
+            return .{ .w = w, .h = h };
+        }
+        return null;
+    }
+
+    /// Converts strictly positive finite physical dimensions to integer pixel
+    /// dimensions, or returns `null` if either axis is non-positive or
+    /// non-finite.
+    pub inline fn toPositiveU32(
+        self: PhysicalDims,
+    ) ?struct { w: u32, h: u32 } {
+        const valid = initPositive(self.w, self.h) orelse return null;
+        const max_dim: f32 = @floatFromInt(std.math.maxInt(u24));
+        const w_u32: u32 = @intFromFloat(@min(valid.w, max_dim));
+        const h_u32: u32 = @intFromFloat(@min(valid.h, max_dim));
+        if (w_u32 == 0 or h_u32 == 0) return null;
+        return .{ .w = w_u32, .h = h_u32 };
+    }
+
     /// Converts physical pixel dimensions into logical UI point dimensions
     /// using the display `DpiScale`.
     pub inline fn toLogical(self: PhysicalDims, scale: DpiScale) LogicalDims {
@@ -1325,12 +1350,52 @@ pub const CacheStatus = union(enum) {
     failed: void,
 };
 
-/// Lightweight thumbnail dimension, GPU upload latency, and DCT block snapping metadata.
+/// Source from which a preview thumbnail was loaded.
+pub const ThumbnailSource = enum {
+    /// Extracted from the initial 256 KB header read (EXIF IFD1 or SubIFD).
+    embedded_header,
+    /// Extracted via positional read at an offset beyond the 256 KB header.
+    embedded_positional,
+    /// Loaded from the Freedesktop Shared Thumbnail Cache
+    /// (`$XDG_CACHE_HOME/thumbnails/`).
+    freedesktop_cache,
+
+    /// Returns `true` if the thumbnail bitmap is already rotated into upright
+    /// visual orientation on disk (true for Freedesktop cached PNGs, false for
+    /// unrotated embedded EXIF thumbnails).
+    pub inline fn isPreOriented(self: ThumbnailSource) bool {
+        return switch (self) {
+            .embedded_header, .embedded_positional => false,
+            .freedesktop_cache => true,
+        };
+    }
+
+    /// Short label for "Stats for Nerds" HUD rows.
+    pub fn shortLabel(self: ThumbnailSource) []const u8 {
+        return switch (self) {
+            .embedded_header => "Header",
+            .embedded_positional => "Positional",
+            .freedesktop_cache => "XDG Cache",
+        };
+    }
+
+    /// Descriptive label for "Info Overlay" HUD rows.
+    pub fn infoLabel(self: ThumbnailSource) []const u8 {
+        return switch (self) {
+            .embedded_header, .embedded_positional => "Embedded",
+            .freedesktop_cache => "Freedesktop",
+        };
+    }
+};
+
+/// Lightweight thumbnail dimension, GPU upload latency, source, and DCT block
+/// snapping metadata.
 pub const ThumbnailInfo = struct {
     w: f32 = 0.0,
     h: f32 = 0.0,
     upload_time_ms: f64 = 0.0,
     dct_snapped: bool = false,
+    source: ThumbnailSource = .embedded_header,
 };
 
 /// State of a cached image's preview thumbnail (none, pending, not available,
@@ -1499,6 +1564,11 @@ pub const CacheEntry = struct {
         }
         if (self.thumbnail.getInfo()) |info| {
             if (info.w > 0.0 and info.h > 0.0) {
+                if (info.source.isPreOriented() and
+                    self.orientation.isDimensionSwapped())
+                {
+                    return .{ .w = info.h, .h = info.w };
+                }
                 return .{ .w = info.w, .h = info.h };
             }
         }
@@ -1642,17 +1712,35 @@ pub const ActiveImageStats = struct {
     was_fallback: bool = false,
     has_thumb: bool = false,
     thumb_upload_time_ms: f64 = 0.0,
+    thumb_source: ThumbnailSource = .embedded_header,
     cbz_decompress_time_ms: f64 = 0.0,
     compressed_size_bytes: usize = 0,
+};
+
+/// Unified telemetry counters for thumbnail extraction, shared cache reads,
+/// and background shared cache writes.
+pub const ThumbnailStats = struct {
+    header_hits: usize = 0,
+    positional_hits: usize = 0,
+    cache_hits: usize = 0,
+    misses: usize = 0,
+    cache_writes: usize = 0,
+    cache_write_queued: usize = 0,
+
+    /// Total number of thumbnail lookup attempts across all sources and misses.
+    pub inline fn totalLookups(self: ThumbnailStats) usize {
+        return self.header_hits +
+            self.positional_hits +
+            self.cache_hits +
+            self.misses;
+    }
 };
 
 /// Snapshot of application telemetry and diagnostic counters copied once per frame
 /// for UI rendering ("Stats for Nerds") without reading live atomics.
 pub const ViewerStats = struct {
-    // EXIF Thumbnail extraction telemetry
-    thumb_header_hits: usize = 0,
-    thumb_positional_hits: usize = 0,
-    thumb_misses: usize = 0,
+    // Unified EXIF & Freedesktop thumbnail telemetry
+    thumbs: ThumbnailStats = .{},
 
     // Cache telemetry
     current_image_cache_hit: bool = false,

@@ -6,12 +6,14 @@ const manager = @import("manager.zig");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
+const thumb_cache = @import("../core/thumb_cache.zig");
 
 const ArchiveMediaEntry = state_pkg.ArchiveMediaEntry;
 const ImageCacheKey = image.ImageCacheKey;
 const MediaEntry = state_pkg.MediaEntry;
 const PairStreamTarget = state_pkg.PairStreamTarget;
 const RawMetadata = state_pkg.RawMetadata;
+const ThumbnailSource = state_pkg.ThumbnailSource;
 const WorkerManager = manager.WorkerManager;
 
 /// Contextual arguments and configuration passed to background image decoding worker threads.
@@ -313,6 +315,134 @@ fn convertAndScaleSurface(
     };
 }
 
+const CacheProbeOutcome = enum {
+    not_probed,
+    excluded_path,
+    target_tier_missing,
+    target_tier_valid,
+};
+
+const LoadedThumbnail = struct {
+    surface: sdl.Surface,
+    source: ThumbnailSource,
+    probe_outcome: CacheProbeOutcome = .not_probed,
+    source_dims: ?state_pkg.PhysicalDims = null,
+};
+
+const ThumbLoadResult = union(enum) {
+    hit: LoadedThumbnail,
+    miss: CacheProbeOutcome,
+};
+
+fn probeFreedesktopThumbCache(
+    workers: *WorkerManager,
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    cancel: context.CancellationToken,
+    path: []const u8,
+    source_mtime_sec: ?i64,
+    had_embedded_candidate: bool,
+) error{Canceled}!ThumbLoadResult {
+    const mtime_sec = source_mtime_sec orelse {
+        if (had_embedded_candidate) {
+            _ = workers.thumb_misses.fetchAdd(1, .monotonic);
+        }
+        return .{ .miss = .not_probed };
+    };
+    switch (workers.thumb_cache_config) {
+        .disabled => {
+            if (had_embedded_candidate) {
+                _ = workers.thumb_misses.fetchAdd(1, .monotonic);
+            }
+            return .{ .miss = .not_probed };
+        },
+        .enabled => |cfg| {
+            const c_key = thumb_cache.ThumbCacheKey.fromFilePath(
+                io,
+                path,
+                cfg.cache_dir,
+            ) orelse {
+                if (had_embedded_candidate) {
+                    _ = workers.thumb_misses.fetchAdd(1, .monotonic);
+                }
+                return .{ .miss = .excluded_path };
+            };
+            if (thumb_cache.loadCachedThumbnail(
+                alloc,
+                io,
+                cfg,
+                &c_key,
+                mtime_sec,
+            )) |cached| {
+                if (cancel.isCanceled()) {
+                    cached.surface.destroy();
+                    return error.Canceled;
+                }
+                _ = workers.thumb_cache_hits.fetchAdd(1, .monotonic);
+                const outcome: CacheProbeOutcome =
+                    if (cached.tier == cfg.write_tier)
+                        .target_tier_valid
+                    else
+                        .not_probed;
+                return .{
+                    .hit = .{
+                        .surface = cached.surface,
+                        .source = .freedesktop_cache,
+                        .probe_outcome = outcome,
+                        .source_dims = cached.source_dims,
+                    },
+                };
+            } else {
+                _ = workers.thumb_misses.fetchAdd(1, .monotonic);
+                return .{ .miss = .target_tier_missing };
+            }
+        },
+    }
+}
+
+fn resolveThumbWriteMtime(
+    io: std.Io,
+    cfg_state: thumb_cache.ThumbCacheConfig,
+    path: []const u8,
+    source_mtime_sec: ?i64,
+    had_embedded_thumb: bool,
+    probe_outcome: CacheProbeOutcome,
+) ?i64 {
+    const mtime_sec = source_mtime_sec orelse return null;
+    return switch (cfg_state) {
+        .disabled => null,
+        .enabled => |cfg| blk: {
+            const had_target_valid = (probe_outcome == .target_tier_valid);
+            if (!cfg.write_policy.shouldWrite(
+                had_embedded_thumb,
+                had_target_valid,
+            )) {
+                break :blk null;
+            }
+            switch (probe_outcome) {
+                .target_tier_valid, .excluded_path => break :blk null,
+                .target_tier_missing => break :blk mtime_sec,
+                .not_probed => {
+                    const c_key = thumb_cache.ThumbCacheKey.fromFilePath(
+                        io,
+                        path,
+                        cfg.cache_dir,
+                    ) orelse break :blk null;
+                    break :blk if (!thumb_cache.hasValidTargetTierThumbnail(
+                        io,
+                        cfg,
+                        &c_key,
+                        mtime_sec,
+                    ))
+                        mtime_sec
+                    else
+                        null;
+                },
+            }
+        },
+    };
+}
+
 fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
     const workers = args.workers;
     const alloc = args.allocator;
@@ -336,6 +466,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
         return true;
     };
     const file_size: u64 = s.size;
+    const source_mtime_sec = s.mtime.toSeconds();
 
     var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, path, .{}) catch |err| {
         if (err == error.Canceled or cancel.isCanceled()) return true;
@@ -527,12 +658,16 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
 
     const raw_w: f32 = if (raw_sensor_dims) |d| d.w else 0.0;
     const raw_h: f32 = if (raw_sensor_dims) |d| d.h else 0.0;
+    var had_embedded_thumb = (thumb_loc_opt != null) or (med_loc_opt != null);
+    var probe_outcome: CacheProbeOutcome = .not_probed;
 
     // Fast scrubbing & instant placeholder thumbnail path
     if ((args.has_gpu_device and args.pair_target == .adaptive) or
         args.thumb_only)
     {
         var thumb_surf: ?sdl.Surface = null;
+        var thumb_source: ThumbnailSource = .embedded_header;
+        var cached_dims: ?state_pkg.PhysicalDims = null;
         const target_loc_opt = if (args.thumb_only)
             (thumb_loc_opt orelse med_loc_opt)
         else
@@ -549,10 +684,14 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                 const t_len: usize = @intCast(tloc.length);
                 if (tloc.file_offset +| tloc.length <= header_n) {
                     const t_off: usize = @intCast(tloc.file_offset);
-                    _ = workers.thumb_header_hits.fetchAdd(1, .monotonic);
                     thumb_surf = sdl.Surface.loadConstMemOpt(
                         header_slice[t_off .. t_off + t_len],
                     );
+                    if (thumb_surf != null) {
+                        _ = workers.thumb_header_hits.fetchAdd(1, .monotonic);
+                        thumb_source = .embedded_header;
+                        had_embedded_thumb = true;
+                    }
                 } else {
                     const t_buf = alloc.alloc(u8, t_len) catch null;
                     if (t_buf) |tb| {
@@ -570,16 +709,42 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                             break :blk 0;
                         };
                         if (tn == t_len) {
-                            _ = workers.thumb_positional_hits.fetchAdd(
-                                1,
-                                .monotonic,
-                            );
                             thumb_surf = sdl.Surface.loadConstMemOpt(tb);
-                        } else {
-                            _ = workers.thumb_misses.fetchAdd(1, .monotonic);
+                            if (thumb_surf != null) {
+                                _ = workers.thumb_positional_hits.fetchAdd(
+                                    1,
+                                    .monotonic,
+                                );
+                                thumb_source = .embedded_positional;
+                                had_embedded_thumb = true;
+                            }
                         }
                     }
                 }
+            }
+        }
+
+        if (thumb_surf == null) {
+            had_embedded_thumb = false;
+            const cache_res = probeFreedesktopThumbCache(
+                workers,
+                alloc,
+                io,
+                cancel,
+                path,
+                source_mtime_sec,
+                target_loc_opt != null,
+            ) catch return true;
+            switch (cache_res) {
+                .hit => |hit| {
+                    thumb_surf = hit.surface;
+                    thumb_source = hit.source;
+                    cached_dims = hit.source_dims;
+                    probe_outcome = hit.probe_outcome;
+                },
+                .miss => |outcome| {
+                    probe_outcome = outcome;
+                },
             }
         }
 
@@ -588,13 +753,26 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                 t_surf.destroy();
                 return true;
             }
-            const full_w: f32 = if (raw_w > 0.0) raw_w else 0.0;
-            const full_h: f32 = if (raw_h > 0.0) raw_h else 0.0;
-            const dct_snapped = image.detectThumbnailDctPadding(
-                t_surf,
-                full_w,
-                full_h,
-            );
+            const full_w: f32 = if (raw_w > 0.0)
+                raw_w
+            else if (cached_dims) |cd|
+                cd.w
+            else
+                0.0;
+            const full_h: f32 = if (raw_h > 0.0)
+                raw_h
+            else if (cached_dims) |cd|
+                cd.h
+            else
+                0.0;
+            const dct_snapped = if (thumb_source == .freedesktop_cache)
+                false
+            else
+                image.detectThumbnailDctPadding(
+                    t_surf,
+                    full_w,
+                    full_h,
+                );
             workers.event_queue.push(alloc, io, .{
                 .thumb_decoded = .init(key, .{
                     .surface = t_surf,
@@ -604,8 +782,9 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                     .full_h = full_h,
                     .orientation = orientation,
                     .thumb_only = args.thumb_only,
-                    .raw_metadata = RawMetadata.init(raw_w, raw_h),
+                    .raw_metadata = RawMetadata.init(full_w, full_h),
                     .dct_snapped = dct_snapped,
+                    .source = thumb_source,
                 }),
             }) catch |err| {
                 std.log.err(
@@ -784,7 +963,13 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
         return true;
     }
 
-    const conv_res = convertAndScaleSurface(surface, args.pixel_format, args.has_gpu_device);
+    const unscaled_w: f32 = @floatFromInt(surface.?.w());
+    const unscaled_h: f32 = @floatFromInt(surface.?.h());
+    const conv_res = convertAndScaleSurface(
+        surface,
+        args.pixel_format,
+        args.has_gpu_device,
+    );
     const final_surface = conv_res.surface;
     const conversion_time_ms = conv_res.conversion_time_ms;
 
@@ -796,14 +981,26 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
     if (final_surface) |f_surf| {
         const orig_w: f32 = @floatFromInt(f_surf.w());
         const orig_h: f32 = @floatFromInt(f_surf.h());
-        const final_raw_w: f32 = if (raw_w > 0.0) raw_w else orig_w;
-        const final_raw_h: f32 = if (raw_h > 0.0) raw_h else orig_h;
+        const final_raw_w: f32 = if (raw_w > 0.0) raw_w else unscaled_w;
+        const final_raw_h: f32 = if (raw_h > 0.0) raw_h else unscaled_h;
+        const thumb_write_mtime_sec = resolveThumbWriteMtime(
+            io,
+            workers.thumb_cache_config,
+            path,
+            source_mtime_sec,
+            had_embedded_thumb,
+            probe_outcome,
+        );
 
         workers.event_queue.push(alloc, io, .{
             .image_decoded = .init(key, .{
                 .surface = f_surf,
                 .w = orig_w,
                 .h = orig_h,
+                .source_dims = state_pkg.PhysicalDims.initPositive(
+                    final_raw_w,
+                    final_raw_h,
+                ),
                 .mime_type = mime_type,
                 .size_bytes = file_size,
                 .read_time_ms = read_time_ms,
@@ -813,6 +1010,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                 .raw_metadata = RawMetadata.init(final_raw_w, final_raw_h),
                 .cbz_decompress_time_ms = 0.0,
                 .compressed_size_bytes = 0,
+                .thumb_write_mtime_sec = thumb_write_mtime_sec,
             }),
         }) catch |err| {
             std.log.err("Failed to push image decode event: {}", .{err});
@@ -846,6 +1044,7 @@ const DecodePayload = struct {
     bytes: []u8,
     read_n: usize,
     size_bytes: u64,
+    mtime_sec: ?i64 = null,
     read_time_ms: f64,
     cbz_decompress_time_ms: f64 = 0.0,
     compressed_size_bytes: usize = 0,
@@ -1001,6 +1200,7 @@ const DecodePayload = struct {
             .bytes = bytes,
             .read_n = read_n,
             .size_bytes = s.size,
+            .mtime_sec = s.mtime.toSeconds(),
             .read_time_ms = read_time_ms,
             .stage = stage,
         };
@@ -1062,64 +1262,72 @@ const DecodePayload = struct {
     fn loadThumbnailSurface(
         self: *const DecodePayload,
         args: *DecodeArgs,
-    ) error{Canceled}!?sdl.Surface {
-        const loc = exif.extractJpegThumbnailLocation(self.headerSlice()) orelse {
-            _ = args.workers.thumb_misses.fetchAdd(1, .monotonic);
-            return null;
-        };
-
-        const max_thumb_size_bytes = 512 * 1024;
-        if (loc.length == 0 or
-            loc.length > max_thumb_size_bytes or
-            loc.file_offset +| loc.length > self.size_bytes)
-        {
-            _ = args.workers.thumb_misses.fetchAdd(1, .monotonic);
-            return null;
-        }
-
-        const len: usize = @intCast(loc.length);
+        valid_jpeg_thumb_loc: ?exif.ThumbnailLocation,
+    ) error{Canceled}!ThumbLoadResult {
         const cancel = args.cancelToken();
 
-        if (loc.file_offset +| loc.length <= self.read_n) {
-            if (cancel.isCanceled()) return error.Canceled;
-            const off: usize = @intCast(loc.file_offset);
-            _ = args.workers.thumb_header_hits.fetchAdd(1, .monotonic);
-            return sdl.Surface.loadConstMemOpt(self.bytes[off .. off + len]);
+        if (valid_jpeg_thumb_loc) |loc| {
+            const len: usize = @intCast(loc.length);
+            if (loc.file_offset +| loc.length <= self.read_n) {
+                if (cancel.isCanceled()) return error.Canceled;
+                const off: usize = @intCast(loc.file_offset);
+                const slice = self.bytes[off .. off + len];
+                if (sdl.Surface.loadConstMemOpt(slice)) |surf| {
+                    _ = args.workers.thumb_header_hits.fetchAdd(
+                        1,
+                        .monotonic,
+                    );
+                    return .{
+                        .hit = .{
+                            .surface = surf,
+                            .source = .embedded_header,
+                        },
+                    };
+                }
+            } else if (self.stage == .staged_file) {
+                const file = self.stage.staged_file;
+                if (args.allocator.alloc(u8, len)) |tb| {
+                    defer args.allocator.free(tb);
+                    const tn = readRangePositional(
+                        file,
+                        args.io,
+                        cancel,
+                        tb,
+                        loc.file_offset,
+                    ) catch |err| blk: {
+                        const canceled = (err == error.Canceled) or
+                            cancel.isCanceled();
+                        if (canceled) {
+                            return error.Canceled;
+                        }
+                        break :blk 0;
+                    };
+                    if (tn == len) {
+                        if (cancel.isCanceled()) return error.Canceled;
+                        if (sdl.Surface.loadConstMemOpt(tb)) |surf| {
+                            _ = args.workers.thumb_positional_hits
+                                .fetchAdd(1, .monotonic);
+                            return .{
+                                .hit = .{
+                                    .surface = surf,
+                                    .source = .embedded_positional,
+                                },
+                            };
+                        }
+                    }
+                } else |_| {}
+            }
         }
 
-        const file = switch (self.stage) {
-            .staged_file => |f| f,
-            .complete => {
-                _ = args.workers.thumb_misses.fetchAdd(1, .monotonic);
-                return null;
-            },
-        };
-
-        const tb = args.allocator.alloc(u8, len) catch {
-            _ = args.workers.thumb_misses.fetchAdd(1, .monotonic);
-            return null;
-        };
-        defer args.allocator.free(tb);
-
-        const tn = readRangePositional(
-            file,
+        return probeFreedesktopThumbCache(
+            args.workers,
+            args.allocator,
             args.io,
             cancel,
-            tb,
-            loc.file_offset,
-        ) catch |err| blk: {
-            if (err == error.Canceled or cancel.isCanceled()) return error.Canceled;
-            break :blk 0;
-        };
-
-        if (tn != len) {
-            _ = args.workers.thumb_misses.fetchAdd(1, .monotonic);
-            return null;
-        }
-
-        if (cancel.isCanceled()) return error.Canceled;
-        _ = args.workers.thumb_positional_hits.fetchAdd(1, .monotonic);
-        return sdl.Surface.loadConstMemOpt(tb);
+            self.path,
+            self.mtime_sec,
+            valid_jpeg_thumb_loc != null,
+        );
     }
 };
 
@@ -1236,41 +1444,90 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     }
 
     const full_dims = image.parseImageDimensions(header_buf, mime_type);
+    const valid_jpeg_thumb_loc: ?exif.ThumbnailLocation = blk: {
+        if (!std.mem.eql(u8, mime_type, "image/jpeg")) break :blk null;
+        const loc = exif.extractJpegThumbnailLocation(header_buf) orelse
+            break :blk null;
+        const max_thumb_size_bytes = 512 * 1024;
+        if (loc.length == 0 or
+            loc.length > max_thumb_size_bytes or
+            loc.file_offset +| loc.length > payload.size_bytes)
+        {
+            break :blk null;
+        }
+        break :blk loc;
+    };
+    var had_embedded_thumb = (valid_jpeg_thumb_loc != null);
+    var probe_outcome: CacheProbeOutcome = .not_probed;
 
-    // Attempt fast EXIF thumbnail decoding for instant placeholder preview
-    if (std.mem.eql(u8, mime_type, "image/jpeg") and
-        args.has_gpu_device and
+    // Attempt fast EXIF or Freedesktop cache thumbnail decoding for instant
+    // placeholder preview
+    const can_try_thumb = (valid_jpeg_thumb_loc != null) or
+        (workers.thumb_cache_config != .disabled and payload.mtime_sec != null);
+    if (can_try_thumb and
+        (args.has_gpu_device or args.thumb_only) and
         args.pair_target == .adaptive)
     {
-        const thumb_surf_opt = payload.loadThumbnailSurface(args) catch return;
-        if (thumb_surf_opt) |t_surf| {
-            if (cancel.isCanceled()) {
-                t_surf.destroy();
-                return;
-            }
-            const full_w: f32 = if (full_dims) |d| d.w else 0.0;
-            const full_h: f32 = if (full_dims) |d| d.h else 0.0;
-            const dct_snapped = image.detectThumbnailDctPadding(t_surf, full_w, full_h);
-            workers.event_queue.push(alloc, io, .{
-                .thumb_decoded = .init(key, .{
-                    .surface = t_surf,
-                    .w = @floatFromInt(t_surf.w()),
-                    .h = @floatFromInt(t_surf.h()),
-                    .full_w = full_w,
-                    .full_h = full_h,
-                    .orientation = orientation,
-                    .thumb_only = args.thumb_only,
-                    .dct_snapped = dct_snapped,
-                }),
-            }) catch |err| {
-                std.log.err("Failed to push thumbnail decode event: {}", .{err});
-                t_surf.destroy();
-            };
-            context.wakeUpMainThread();
+        const thumb_res = payload.loadThumbnailSurface(
+            args,
+            valid_jpeg_thumb_loc,
+        ) catch return;
+        switch (thumb_res) {
+            .hit => |loaded_thumb| {
+                const t_surf = loaded_thumb.surface;
+                had_embedded_thumb =
+                    (loaded_thumb.source != .freedesktop_cache);
+                probe_outcome = loaded_thumb.probe_outcome;
+                if (cancel.isCanceled()) {
+                    t_surf.destroy();
+                    return;
+                }
+                const full_w: f32 = if (full_dims) |d|
+                    d.w
+                else if (loaded_thumb.source_dims) |sd|
+                    sd.w
+                else
+                    0.0;
+                const full_h: f32 = if (full_dims) |d|
+                    d.h
+                else if (loaded_thumb.source_dims) |sd|
+                    sd.h
+                else
+                    0.0;
+                const dct_snapped =
+                    if (loaded_thumb.source == .freedesktop_cache)
+                        false
+                    else
+                        image.detectThumbnailDctPadding(t_surf, full_w, full_h);
+                workers.event_queue.push(alloc, io, .{
+                    .thumb_decoded = .init(key, .{
+                        .surface = t_surf,
+                        .w = @floatFromInt(t_surf.w()),
+                        .h = @floatFromInt(t_surf.h()),
+                        .full_w = full_w,
+                        .full_h = full_h,
+                        .orientation = orientation,
+                        .thumb_only = args.thumb_only,
+                        .dct_snapped = dct_snapped,
+                        .source = loaded_thumb.source,
+                    }),
+                }) catch |err| {
+                    std.log.err(
+                        "Failed to push thumbnail decode event: {}",
+                        .{err},
+                    );
+                    t_surf.destroy();
+                };
+                context.wakeUpMainThread();
 
-            if (args.thumb_only) {
-                return;
-            }
+                if (args.thumb_only) {
+                    return;
+                }
+            },
+            .miss => |outcome| {
+                had_embedded_thumb = false;
+                probe_outcome = outcome;
+            },
         }
     }
 
@@ -1328,7 +1585,13 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         return;
     }
 
-    const conv_res = convertAndScaleSurface(surface, args.pixel_format, args.has_gpu_device);
+    const unscaled_w: f32 = @floatFromInt(surface.?.w());
+    const unscaled_h: f32 = @floatFromInt(surface.?.h());
+    const conv_res = convertAndScaleSurface(
+        surface,
+        args.pixel_format,
+        args.has_gpu_device,
+    );
     const final_surface = conv_res.surface;
     const conversion_time_ms = conv_res.conversion_time_ms;
 
@@ -1340,19 +1603,34 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     if (final_surface) |f_surf| {
         const orig_w: f32 = @floatFromInt(f_surf.w());
         const orig_h: f32 = @floatFromInt(f_surf.h());
+        const source_dims = if (full_dims) |d|
+            state_pkg.PhysicalDims.initPositive(d.w, d.h)
+        else
+            state_pkg.PhysicalDims.initPositive(unscaled_w, unscaled_h);
         const raw_metadata: RawMetadata = if (is_raw_archive)
             (if (raw_sensor_dims) |d|
                 RawMetadata.init(d.w, d.h)
+            else if (source_dims) |sd|
+                RawMetadata.init(sd.w, sd.h)
             else
-                RawMetadata.init(orig_w, orig_h))
+                .none)
         else
             .none;
+        const thumb_write_mtime_sec = resolveThumbWriteMtime(
+            io,
+            workers.thumb_cache_config,
+            path,
+            payload.mtime_sec,
+            had_embedded_thumb,
+            probe_outcome,
+        );
 
         workers.event_queue.push(alloc, io, .{
             .image_decoded = .init(key, .{
                 .surface = f_surf,
                 .w = orig_w,
                 .h = orig_h,
+                .source_dims = source_dims,
                 .mime_type = mime_type,
                 .size_bytes = payload.size_bytes,
                 .read_time_ms = payload.read_time_ms,
@@ -1362,6 +1640,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                 .raw_metadata = raw_metadata,
                 .cbz_decompress_time_ms = payload.cbz_decompress_time_ms,
                 .compressed_size_bytes = payload.compressed_size_bytes,
+                .thumb_write_mtime_sec = thumb_write_mtime_sec,
             }),
         }) catch |err| {
             std.log.err("Failed to push image decode event: {}", .{err});
@@ -2634,5 +2913,150 @@ test "decodeWorker - two-stage JPEG read emits header and positional thumbnails 
         try std.testing.expect(batch.items[0] == .exif_orientation_parsed);
         try std.testing.expect(batch.items[1] == .thumb_decoded);
         try std.testing.expect(batch.items[2] == .image_decoded);
+    }
+}
+
+test "decodeWorker and background writer Freedesktop thumbnail roundtrip" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var cache_dir_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const rel_cache_dir = try std.mem.print(
+        &cache_dir_buf,
+        ".zig-cache/tmp/{s}/thumbnails",
+        .{tmp.sub_path},
+    );
+    try std.Io.Dir.createDirPath(std.Io.Dir.cwd(), io, rel_cache_dir);
+
+    var real_cache_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const real_cache_len = try std.Io.Dir.realPathFile(
+        std.Io.Dir.cwd(),
+        io,
+        rel_cache_dir,
+        &real_cache_buf,
+    );
+    const abs_cache_dir = real_cache_buf[0..real_cache_len];
+
+    var workers = WorkerManager{};
+    defer workers.deinit(allocator, io);
+    workers.thumb_cache_config = try thumb_cache.ThumbCacheConfig.initWithDir(
+        allocator,
+        abs_cache_dir,
+        .large,
+        .all_missing,
+    );
+
+    const png_path = "testfiles/golden-screenshots/init.png";
+    var current_gen: std.atomic.Value(usize) = .init(1);
+
+    // 1. Cold cache: PNG has no embedded thumbnail and no cached thumbnail yet
+    {
+        const args = try allocator.create(DecodeArgs);
+        args.* = .{
+            .workers = &workers,
+            .allocator = allocator,
+            .io = io,
+            .key = .{ .index = 0, .generation = 1 },
+            .current_generation = &current_gen,
+            .entry = .{
+                .filesystem = .{ .path = try allocator.dupe(u8, png_path) },
+            },
+            .has_gpu_device = true,
+            .pixel_format = sdl.PixelFormat.rgba32,
+            .thumb_only = false,
+            .pair_target = .adaptive,
+        };
+        _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
+        _ = workers.active_threads.fetchAdd(1, .monotonic);
+        decodeWorker(args);
+
+        const stats1 = workers.snapshotThumbStats();
+        try std.testing.expectEqual(@as(usize, 0), stats1.cache_hits);
+        try std.testing.expectEqual(@as(usize, 1), stats1.misses);
+
+        var ev = workers.event_queue.pop() orelse return error.MissingEvent;
+        defer ev.deinit(allocator);
+        try std.testing.expect(ev == .image_decoded);
+
+        const img = ev.image_decoded.unwrapForTest();
+        try std.testing.expect(img.thumb_write_mtime_sec != null);
+        try std.testing.expect(img.thumb_write_mtime_sec.? > 0);
+
+        const surf = img.surface orelse return error.MissingSurface;
+        // Disown surface from event and enqueue background Freedesktop
+        // thumbnail write
+        ev.image_decoded.unchecked_payload.surface = null;
+        workers.enqueueThumbWrite(allocator, io, .{
+            .surface = surf,
+            .source_path = try allocator.dupe(u8, png_path),
+            .mime_type = img.mime_type,
+            .file_size = img.size_bytes,
+            .mtime_sec = img.thumb_write_mtime_sec.?,
+            .orientation = img.orientation,
+            .source_dims = .{ .w = img.w, .h = img.h },
+        });
+
+        var wait_iters: usize = 0;
+        while (workers.thumb_cache_write_queued.load(.acquire) > 0 or
+            workers.active_thumb_writers.load(.acquire) > 0) : (wait_iters += 1)
+        {
+            if (wait_iters > 400) return error.ThumbWriteTimeout;
+            try std.Io.sleep(io, .fromMilliseconds(5), .awake);
+        }
+
+        const stats2 = workers.snapshotThumbStats();
+        try std.testing.expectEqual(@as(usize, 1), stats2.cache_writes);
+        try std.testing.expectEqual(@as(usize, 0), stats2.cache_write_queued);
+    }
+
+    // 2. Warm cache: decoding the same PNG now hits the Freedesktop cache in
+    // Stage 1 and sets needs_thumb_write = false
+    {
+        const args = try allocator.create(DecodeArgs);
+        args.* = .{
+            .workers = &workers,
+            .allocator = allocator,
+            .io = io,
+            .key = .{ .index = 0, .generation = 1 },
+            .current_generation = &current_gen,
+            .entry = .{
+                .filesystem = .{ .path = try allocator.dupe(u8, png_path) },
+            },
+            .has_gpu_device = true,
+            .pixel_format = sdl.PixelFormat.rgba32,
+            .thumb_only = false,
+            .pair_target = .adaptive,
+        };
+        _ = workers.active_decode_threads.fetchAdd(1, .monotonic);
+        _ = workers.active_threads.fetchAdd(1, .monotonic);
+        decodeWorker(args);
+
+        const stats3 = workers.snapshotThumbStats();
+        try std.testing.expectEqual(@as(usize, 1), stats3.cache_hits);
+        try std.testing.expectEqual(@as(usize, 1), stats3.misses);
+
+        const EventItem = @TypeOf(workers.event_queue.items.items[0]);
+        var batch: std.ArrayList(EventItem) = .empty;
+        defer {
+            for (batch.items) |*ev| ev.deinit(allocator);
+            batch.deinit(allocator);
+        }
+        try workers.event_queue.drain(allocator, io, &batch);
+        try std.testing.expectEqual(@as(usize, 2), batch.items.len);
+        try std.testing.expect(batch.items[0] == .thumb_decoded);
+        const thumb = batch.items[0].thumb_decoded.unwrapForTest();
+        try std.testing.expectEqual(
+            ThumbnailSource.freedesktop_cache,
+            thumb.source,
+        );
+        try std.testing.expect(!thumb.dct_snapped);
+        try std.testing.expect(thumb.w <= 256.0 and thumb.h <= 256.0);
+
+        try std.testing.expect(batch.items[1] == .image_decoded);
+        const img = batch.items[1].image_decoded.unwrapForTest();
+        try std.testing.expect(img.thumb_write_mtime_sec == null);
     }
 }
