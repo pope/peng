@@ -753,36 +753,27 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                 t_surf.destroy();
                 return true;
             }
-            const full_w: f32 = if (raw_w > 0.0)
-                raw_w
-            else if (cached_dims) |cd|
-                cd.w
-            else
-                0.0;
-            const full_h: f32 = if (raw_h > 0.0)
-                raw_h
-            else if (cached_dims) |cd|
-                cd.h
-            else
-                0.0;
+            const source_dims =
+                state_pkg.PhysicalDims.initPositive(raw_w, raw_h) orelse
+                cached_dims;
             const dct_snapped = if (thumb_source == .freedesktop_cache)
                 false
+            else if (source_dims) |sd|
+                image.detectThumbnailDctPadding(t_surf, sd.w, sd.h)
             else
-                image.detectThumbnailDctPadding(
-                    t_surf,
-                    full_w,
-                    full_h,
-                );
+                false;
             workers.event_queue.push(alloc, io, .{
                 .thumb_decoded = .init(key, .{
                     .surface = t_surf,
                     .w = @floatFromInt(t_surf.w()),
                     .h = @floatFromInt(t_surf.h()),
-                    .full_w = full_w,
-                    .full_h = full_h,
+                    .source_dims = source_dims,
                     .orientation = orientation,
                     .thumb_only = args.thumb_only,
-                    .raw_metadata = RawMetadata.init(full_w, full_h),
+                    .raw_metadata = if (source_dims) |sd|
+                        RawMetadata.init(sd.w, sd.h)
+                    else
+                        .none,
                     .dct_snapped = dct_snapped,
                     .source = thumb_source,
                 }),
@@ -806,10 +797,10 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
             if (cancel.isCanceled()) return true;
             workers.event_queue.push(alloc, io, .{
                 .dimensions_probed = .init(key, .{
-                    .w = raw_w,
-                    .h = raw_h,
-                    .full_w = raw_w,
-                    .full_h = raw_h,
+                    .source_dims = state_pkg.PhysicalDims.initPositive(
+                        raw_w,
+                        raw_h,
+                    ),
                     .orientation = orientation,
                     .thumb_only = true,
                     .raw_metadata = RawMetadata.init(raw_w, raw_h),
@@ -1482,30 +1473,23 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                     t_surf.destroy();
                     return;
                 }
-                const full_w: f32 = if (full_dims) |d|
-                    d.w
-                else if (loaded_thumb.source_dims) |sd|
-                    sd.w
+                const source_dims = if (full_dims) |d|
+                    state_pkg.PhysicalDims.initPositive(d.w, d.h)
                 else
-                    0.0;
-                const full_h: f32 = if (full_dims) |d|
-                    d.h
-                else if (loaded_thumb.source_dims) |sd|
-                    sd.h
-                else
-                    0.0;
+                    loaded_thumb.source_dims;
                 const dct_snapped =
                     if (loaded_thumb.source == .freedesktop_cache)
                         false
+                    else if (source_dims) |sd|
+                        image.detectThumbnailDctPadding(t_surf, sd.w, sd.h)
                     else
-                        image.detectThumbnailDctPadding(t_surf, full_w, full_h);
+                        false;
                 workers.event_queue.push(alloc, io, .{
                     .thumb_decoded = .init(key, .{
                         .surface = t_surf,
                         .w = @floatFromInt(t_surf.w()),
                         .h = @floatFromInt(t_surf.h()),
-                        .full_w = full_w,
-                        .full_h = full_h,
+                        .source_dims = source_dims,
                         .orientation = orientation,
                         .thumb_only = args.thumb_only,
                         .dct_snapped = dct_snapped,
@@ -1533,21 +1517,22 @@ pub fn decodeWorker(args: *DecodeArgs) void {
 
     if (args.thumb_only) {
         if (cancel.isCanceled()) return;
-        const full_w: f32 = if (full_dims) |d| d.w else 0.0;
-        const full_h: f32 = if (full_dims) |d| d.h else 0.0;
+        const source_dims = if (full_dims) |d|
+            state_pkg.PhysicalDims.initPositive(d.w, d.h)
+        else
+            null;
         workers.event_queue.push(alloc, io, .{
             .dimensions_probed = .init(key, .{
-                .w = full_w,
-                .h = full_h,
-                .full_w = full_w,
-                .full_h = full_h,
+                .source_dims = source_dims,
                 .orientation = orientation,
                 .thumb_only = true,
                 .raw_metadata = if (is_raw_archive)
                     (if (raw_sensor_dims) |d|
                         RawMetadata.init(d.w, d.h)
+                    else if (source_dims) |sd|
+                        RawMetadata.init(sd.w, sd.h)
                     else
-                        RawMetadata.init(full_w, full_h))
+                        .none)
                 else
                     .none,
             }),
@@ -1693,8 +1678,10 @@ test "decodeWorker - thumb_only does not do full decompression on JPEG" {
                 const d = d_evt.unwrapForTest();
                 dimensions_probed_seen = true;
                 try std.testing.expect(d.thumb_only);
-                try std.testing.expectEqual(@as(f32, 1024.0), d.full_w);
-                try std.testing.expectEqual(@as(f32, 682.0), d.full_h);
+                try std.testing.expectEqual(
+                    state_pkg.PhysicalDims{ .w = 1024.0, .h = 682.0 },
+                    d.source_dims.?,
+                );
             },
             .image_decoded => {
                 image_decoded_seen = true;
@@ -1746,8 +1733,7 @@ test "decodeWorker - thumb_only does not do full decompression on PNG" {
                 const d = d_evt.unwrapForTest();
                 dimensions_probed_seen = true;
                 try std.testing.expect(d.thumb_only);
-                try std.testing.expect(d.full_w > 0.0);
-                try std.testing.expect(d.full_h > 0.0);
+                try std.testing.expect(d.source_dims != null);
             },
             .image_decoded => {
                 image_decoded_seen = true;
@@ -2339,8 +2325,10 @@ test "decodeWorker - progressive 3-tier loading for synthetic ARW" {
                     thumb_seen = true;
                     try std.testing.expectEqual(@as(f32, 1024.0), t.w);
                     try std.testing.expectEqual(@as(f32, 576.0), t.h);
-                    try std.testing.expectEqual(@as(f32, 6240.0), t.full_w);
-                    try std.testing.expectEqual(@as(f32, 4160.0), t.full_h);
+                    try std.testing.expectEqual(
+                        state_pkg.PhysicalDims{ .w = 6240.0, .h = 4160.0 },
+                        t.source_dims.?,
+                    );
                 },
                 else => {},
             }
@@ -2380,8 +2368,10 @@ test "decodeWorker - progressive 3-tier loading for synthetic ARW" {
                     med_thumb_seen = true;
                     try std.testing.expectEqual(@as(f32, 1024.0), t.w);
                     try std.testing.expectEqual(@as(f32, 380.0), t.h);
-                    try std.testing.expectEqual(@as(f32, 6240.0), t.full_w);
-                    try std.testing.expectEqual(@as(f32, 4160.0), t.full_h);
+                    try std.testing.expectEqual(
+                        state_pkg.PhysicalDims{ .w = 6240.0, .h = 4160.0 },
+                        t.source_dims.?,
+                    );
                 },
                 .image_decoded => |img_evt| {
                     const img = img_evt.unwrapForTest();
@@ -2795,8 +2785,10 @@ test "decodeWorker - two-stage JPEG read emits header and positional thumbnails 
                     try std.testing.expect(t.thumb_only);
                     try std.testing.expectEqual(@as(f32, 1024.0), t.w);
                     try std.testing.expectEqual(@as(f32, 576.0), t.h);
-                    try std.testing.expectEqual(@as(f32, 1024.0), t.full_w);
-                    try std.testing.expectEqual(@as(f32, 682.0), t.full_h);
+                    try std.testing.expectEqual(
+                        state_pkg.PhysicalDims{ .w = 1024.0, .h = 682.0 },
+                        t.source_dims.?,
+                    );
                 },
                 .image_decoded,
                 .dimensions_probed,

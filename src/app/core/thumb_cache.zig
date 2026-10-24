@@ -98,34 +98,45 @@ pub const ThumbCacheConfig = union(enum) {
     disabled,
     enabled: EnabledThumbCacheConfig,
 
-    /// Initializes the default platform configuration from `environ_map`
-    /// (`proc_init.environ_map` provided by `std.process.Init`):
+    /// Initializes the platform configuration from `environ_map`
+    /// (`proc_init.environ_map` provided by `std.process.Init`) and
+    /// `write_policy_opt`:
     /// - Enabled on Linux/FreeBSD using `$XDG_CACHE_HOME/thumbnails` or
-    ///   `$HOME/.cache/thumbnails`.
-    /// - Disabled on macOS and Windows.
+    ///   `$HOME/.cache/thumbnails` when `write_policy_opt != null`.
+    /// - Disabled when `write_policy_opt == null` or on macOS/Windows.
     pub fn initFromEnviron(
         allocator: std.mem.Allocator,
         environ_map: *const std.process.Environ.Map,
+        write_policy_opt: ?ThumbWritePolicy,
     ) ThumbCacheConfig {
         if (builtin.os.tag != .linux and builtin.os.tag != .freebsd) {
             return .disabled;
         }
-        return initPosixFromEnviron(allocator, environ_map);
+        return initPosixFromEnviron(allocator, environ_map, write_policy_opt);
     }
 
     /// Resolves `$XDG_CACHE_HOME/thumbnails` (or `$HOME/.cache/thumbnails` if
-    /// `$XDG_CACHE_HOME` is unset or relative) from `environ_map`.
+    /// `$XDG_CACHE_HOME` is unset or relative) from `environ_map` with
+    /// `write_policy_opt`.
     pub fn initPosixFromEnviron(
         allocator: std.mem.Allocator,
         environ_map: *const std.process.Environ.Map,
+        write_policy_opt: ?ThumbWritePolicy,
     ) ThumbCacheConfig {
+        const policy = write_policy_opt orelse return .disabled;
+
         if (environ_map.get("XDG_CACHE_HOME")) |xdg| {
             if (xdg.len > 0 and std.Io.Dir.path.isAbsolute(xdg)) {
                 if (std.Io.Dir.path.join(
                     allocator,
                     &.{ xdg, "thumbnails" },
                 )) |dir| {
-                    return .{ .enabled = .{ .cache_dir = dir } };
+                    return .{
+                        .enabled = .{
+                            .cache_dir = dir,
+                            .write_policy = policy,
+                        },
+                    };
                 } else |_| {}
             }
         }
@@ -136,7 +147,12 @@ pub const ThumbCacheConfig = union(enum) {
                     allocator,
                     &.{ home, ".cache", "thumbnails" },
                 )) |dir| {
-                    return .{ .enabled = .{ .cache_dir = dir } };
+                    return .{
+                        .enabled = .{
+                            .cache_dir = dir,
+                            .write_policy = policy,
+                        },
+                    };
                 } else |_| {}
             }
         }
@@ -276,8 +292,8 @@ pub fn parsePngThumbnailMetadata(png_bytes: []const u8) ?PngThumbMetadata {
     var thumb_w: u32 = 0;
     var thumb_h: u32 = 0;
     var mtime_sec: ?i64 = null;
-    var full_w: u32 = 0;
-    var full_h: u32 = 0;
+    var full_w_opt: ?u32 = null;
+    var full_h_opt: ?u32 = null;
     var pos: usize = 8;
 
     while (pos + 8 <= png_bytes.len) {
@@ -308,11 +324,11 @@ pub fn parsePngThumbnailMetadata(png_bytes: []const u8) ?PngThumbMetadata {
                     mtime_sec = std.fmt.parseInt(i64, val, 10) catch null;
                 } else if (std.mem.eql(u8, key, "Thumb::Image::Width")) {
                     if (std.fmt.parseInt(u32, val, 10)) |w| {
-                        full_w = w;
+                        if (w > 0) full_w_opt = w;
                     } else |_| {}
                 } else if (std.mem.eql(u8, key, "Thumb::Image::Height")) {
                     if (std.fmt.parseInt(u32, val, 10)) |h| {
-                        full_h = h;
+                        if (h > 0) full_h_opt = h;
                     } else |_| {}
                 }
             }
@@ -324,14 +340,16 @@ pub fn parsePngThumbnailMetadata(png_bytes: []const u8) ?PngThumbMetadata {
     }
 
     if (thumb_w == 0 or thumb_h == 0) return null;
-    const source_dims: ?state_pkg.PhysicalDims =
-        if (full_w > 0 and full_h > 0)
-            .{
-                .w = @floatFromInt(full_w),
-                .h = @floatFromInt(full_h),
-            }
+    const source_dims: ?state_pkg.PhysicalDims = if (full_w_opt) |fw|
+        (if (full_h_opt) |fh|
+            state_pkg.PhysicalDims.initPositive(
+                @floatFromInt(fw),
+                @floatFromInt(fh),
+            )
         else
-            null;
+            null)
+    else
+        null;
     return .{
         .thumb_w = thumb_w,
         .thumb_h = thumb_h,
@@ -663,12 +681,20 @@ test "ThumbCacheConfig.initPosixFromEnviron resolves XDG_CACHE_HOME and HOME" {
         try env.put("XDG_CACHE_HOME", "/custom/xdg_cache");
         try env.put("HOME", "/home/tester");
 
-        var cfg = ThumbCacheConfig.initPosixFromEnviron(allocator, &env);
+        var cfg = ThumbCacheConfig.initPosixFromEnviron(
+            allocator,
+            &env,
+            .all_missing,
+        );
         defer cfg.deinit(allocator);
         try std.testing.expect(cfg == .enabled);
         try std.testing.expectEqualStrings(
             "/custom/xdg_cache/thumbnails",
             cfg.enabled.cache_dir,
+        );
+        try std.testing.expectEqual(
+            ThumbWritePolicy.all_missing,
+            cfg.enabled.write_policy,
         );
     }
 
@@ -680,23 +706,44 @@ test "ThumbCacheConfig.initPosixFromEnviron resolves XDG_CACHE_HOME and HOME" {
         try env.put("XDG_CACHE_HOME", "relative/cache");
         try env.put("HOME", "/home/tester");
 
-        var cfg = ThumbCacheConfig.initPosixFromEnviron(allocator, &env);
+        var cfg = ThumbCacheConfig.initPosixFromEnviron(
+            allocator,
+            &env,
+            .missing_embedded_only,
+        );
         defer cfg.deinit(allocator);
         try std.testing.expect(cfg == .enabled);
         try std.testing.expectEqualStrings(
             "/home/tester/.cache/thumbnails",
             cfg.enabled.cache_dir,
         );
+        try std.testing.expectEqual(
+            ThumbWritePolicy.missing_embedded_only,
+            cfg.enabled.write_policy,
+        );
     }
 
-    // 3. Empty environment returns .disabled
+    // 3. Empty environment or null policy returns .disabled
     {
         var env = std.process.Environ.Map.init(allocator);
         defer env.deinit();
 
-        var cfg = ThumbCacheConfig.initPosixFromEnviron(allocator, &env);
+        var cfg = ThumbCacheConfig.initPosixFromEnviron(
+            allocator,
+            &env,
+            .all_missing,
+        );
         defer cfg.deinit(allocator);
         try std.testing.expect(cfg == .disabled);
+
+        try env.put("HOME", "/home/tester");
+        var off_cfg = ThumbCacheConfig.initPosixFromEnviron(
+            allocator,
+            &env,
+            null,
+        );
+        defer off_cfg.deinit(allocator);
+        try std.testing.expect(off_cfg == .disabled);
     }
 }
 

@@ -42,6 +42,8 @@ pub const OptionId = enum {
     windowless,
     stack_raw_jpeg,
     no_stack_raw_jpeg,
+    thumb_cache,
+    no_thumb_cache,
 };
 
 /// Declarative schema describing a command-line option, its target app,

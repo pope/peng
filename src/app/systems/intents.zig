@@ -1607,8 +1607,7 @@ test "executeIntent - syncs rotation and zoom on nav, rotate, and set_zoom" {
         .decoding = .{ .has_thread = false },
     });
     const entry0 = app_st.cache.get(key0).?;
-    entry0.full_w = 4000;
-    entry0.full_h = 2000;
+    entry0.full_dims = .{ .w = 4000, .h = 2000 };
     entry0.orientation = .normal;
 
     // Slide 1: 4000x2000 with EXIF 90 deg rotation -> rotated dims 2000x4000,
@@ -1617,8 +1616,7 @@ test "executeIntent - syncs rotation and zoom on nav, rotate, and set_zoom" {
         .decoding = .{ .has_thread = false },
     });
     const entry1 = app_st.cache.get(key1).?;
-    entry1.full_w = 4000;
-    entry1.full_h = 2000;
+    entry1.full_dims = .{ .w = 4000, .h = 2000 };
     entry1.orientation = .rotate_90;
 
     // 1. Navigating from slide 0 to slide 1 must update rotation_angle

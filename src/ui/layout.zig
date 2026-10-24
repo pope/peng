@@ -41,7 +41,7 @@ pub fn computeDrawDims(
     if (auth.w > 0 and auth.h > 0) {
         const is_loading = entry.status != .loaded_gpu and
             entry.status != .loaded_cpu;
-        const only_has_thumb = entry.full_w <= 0.0 and
+        const only_has_thumb = entry.full_dims == null and
             entry.raw_metadata.getSensorDims() == null and
             entry.thumbnail != .none;
         const effective_fit_mode: intents.ZoomPreset =
@@ -806,11 +806,13 @@ fn buildThumbnailUvRect(
 ) state.UvRect {
     const pre_oriented = thumb_info.source.isPreOriented();
     const swapped = pre_oriented and entry.orientation.isDimensionSwapped();
-    const ref_full_w = if (swapped) entry.full_h else entry.full_w;
-    const ref_full_h = if (swapped) entry.full_w else entry.full_h;
+    const ref_full: state.PhysicalDims = if (entry.full_dims) |fd|
+        (if (swapped) .{ .w = fd.h, .h = fd.w } else fd)
+    else
+        .{ .w = 0.0, .h = 0.0 };
     var uv = state.computeThumbnailUvCrop(
-        ref_full_w,
-        ref_full_h,
+        ref_full.w,
+        ref_full.h,
         thumb_info.w,
         thumb_info.h,
         thumb_info.dct_snapped,
@@ -1289,8 +1291,7 @@ test "computeDrawDims - matches physical DPI scale in shrink and none modes" {
                 .size_bytes = 1000,
             },
         },
-        .full_w = 1200,
-        .full_h = 900,
+        .full_dims = .{ .w = 1200, .h = 900 },
     };
 
     const view_dims = state.LogicalDims{ .w = 1000.0, .h = 800.0 };
@@ -1382,8 +1383,7 @@ test "renderViewport - floating crossfade quads allow Viewport hit-testing" {
                 .info = .{ .w = 160, .h = 120, .dct_snapped = false },
             },
         },
-        .full_w = 800,
-        .full_h = 600,
+        .full_dims = .{ .w = 800, .h = 600 },
     };
     var pal_state = try state.PaletteState.init(std.testing.allocator);
     defer pal_state.deinit();
@@ -1441,8 +1441,7 @@ test "renderViewport - floating crossfade quads allow Viewport hit-testing" {
 test "buildThumbnailUvRect handles pre-oriented Freedesktop cached thumbnails" {
     const entry = state.CacheEntry{
         .status = .{ .decoding = .{} },
-        .full_w = 6000.0,
-        .full_h = 4000.0,
+        .full_dims = .{ .w = 6000.0, .h = 4000.0 },
         .orientation = .rotate_90,
     };
     const auth = entry.getAuthoritativeDims();

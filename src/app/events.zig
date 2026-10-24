@@ -135,8 +135,7 @@ fn handleDimensionsProbedEvent(
     {
         const entry = state.cache.get(key) orelse return;
         entry.applyProbedMetadata(
-            probed.full_w,
-            probed.full_h,
+            probed.source_dims,
             probed.orientation,
             probed.raw_metadata,
         );
@@ -196,8 +195,7 @@ fn handleExifThumbnailEvent(
     const already_loaded = blk: {
         const entry = state.cache.get(key) orelse return;
         entry.applyProbedMetadata(
-            thumb_data.full_w,
-            thumb_data.full_h,
+            thumb_data.source_dims,
             thumb_data.orientation,
             thumb_data.raw_metadata,
         );
@@ -431,8 +429,8 @@ fn applyDecodedMetadata(
     }
     entry.updateFullDims(decoded_data.w, decoded_data.h);
     entry.raw_metadata = if (decoded_data.raw_metadata.isRaw())
-        if (entry.full_w > 0.0 and entry.full_h > 0.0)
-            state_pkg.RawMetadata.init(entry.full_w, entry.full_h)
+        if (entry.full_dims) |fd|
+            state_pkg.RawMetadata.init(fd.w, fd.h)
         else
             decoded_data.raw_metadata
     else
@@ -867,10 +865,7 @@ test "drainWorkerEvents - dimensions_probed sets dimensions and clears has_threa
 
     try state.workers.event_queue.push(allocator, io, .{
         .dimensions_probed = .init(state.cache.activeKey(0), .{
-            .w = 1920.0,
-            .h = 1080.0,
-            .full_w = 1920.0,
-            .full_h = 1080.0,
+            .source_dims = .{ .w = 1920.0, .h = 1080.0 },
             .orientation = .normal,
             .thumb_only = true,
         }),
@@ -880,8 +875,10 @@ test "drainWorkerEvents - dimensions_probed sets dimensions and clears has_threa
     try std.testing.expect(processed);
 
     const entry = state.cache.get(state.cache.activeKey(0)).?;
-    try std.testing.expectEqual(@as(f32, 1920.0), entry.full_w);
-    try std.testing.expectEqual(@as(f32, 1080.0), entry.full_h);
+    try std.testing.expectEqual(
+        state_pkg.PhysicalDims{ .w = 1920.0, .h = 1080.0 },
+        entry.full_dims.?,
+    );
     switch (entry.status) {
         .decoding => |dec| try std.testing.expect(!dec.has_thread),
         else => try std.testing.expect(false),
@@ -1077,7 +1074,7 @@ test "drainWorkerEvents - pair promotion preserves VRAM and loaded status" {
     try std.testing.expect(entry0.status == .failed);
 }
 
-test "drainWorkerEvents - monotonic full_w and full_h on pair promotion" {
+test "drainWorkerEvents - monotonic full_dims on pair promotion" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var state = try AppState.initHeadless(allocator, io);
@@ -1089,7 +1086,7 @@ test "drainWorkerEvents - monotonic full_w and full_h on pair promotion" {
     });
     const entry0 = state.cache.get(key0).?;
 
-    // 1. Initial preview decode at 1616x1080 sets full_w/full_h to 1616x1080
+    // 1. Initial preview decode at 1616x1080 sets full_dims to 1616x1080
     const preview_surf = sdl.Surface.create(
         16,
         10,
@@ -1110,11 +1107,13 @@ test "drainWorkerEvents - monotonic full_w and full_h on pair promotion" {
         }),
     });
     try std.testing.expect(drainWorkerEvents(&state));
-    try std.testing.expectEqual(@as(f32, 1616), entry0.full_w);
-    try std.testing.expectEqual(@as(f32, 1080), entry0.full_h);
+    try std.testing.expectEqual(
+        state_pkg.PhysicalDims{ .w = 1616, .h = 1080 },
+        entry0.full_dims.?,
+    );
     try std.testing.expect(entry0.raw_metadata.isRaw());
 
-    // 2. Promotion to 6000x4000 standalone JPEG upgrades full_w/full_h
+    // 2. Promotion to 6000x4000 standalone JPEG upgrades full_dims
     entry0.is_promoting = true;
     const full_surf = sdl.Surface.create(
         60,
@@ -1136,14 +1135,16 @@ test "drainWorkerEvents - monotonic full_w and full_h on pair promotion" {
         }),
     });
     try std.testing.expect(drainWorkerEvents(&state));
-    try std.testing.expectEqual(@as(f32, 6000), entry0.full_w);
-    try std.testing.expectEqual(@as(f32, 4000), entry0.full_h);
+    try std.testing.expectEqual(
+        state_pkg.PhysicalDims{ .w = 6000, .h = 4000 },
+        entry0.full_dims.?,
+    );
     try std.testing.expect(!entry0.raw_metadata.isRaw());
     const auth = entry0.getAuthoritativeDims();
     try std.testing.expectEqual(@as(f32, 6000), auth.w);
     try std.testing.expectEqual(@as(f32, 4000), auth.h);
 
-    // 3. Toggling back to 1616x1080 preview does not regress full_w/full_h
+    // 3. Toggling back to 1616x1080 preview does not regress full_dims
     const toggle_surf = sdl.Surface.create(
         16,
         10,
@@ -1164,8 +1165,10 @@ test "drainWorkerEvents - monotonic full_w and full_h on pair promotion" {
         }),
     });
     try std.testing.expect(drainWorkerEvents(&state));
-    try std.testing.expectEqual(@as(f32, 6000), entry0.full_w);
-    try std.testing.expectEqual(@as(f32, 4000), entry0.full_h);
+    try std.testing.expectEqual(
+        state_pkg.PhysicalDims{ .w = 6000, .h = 4000 },
+        entry0.full_dims.?,
+    );
     try std.testing.expect(entry0.raw_metadata.isRaw());
     const toggle_auth = entry0.getAuthoritativeDims();
     try std.testing.expectEqual(@as(f32, 6000), toggle_auth.w);
@@ -1404,8 +1407,7 @@ test "drainWorkerEvents - ignores thumb_decoded when slot is already loaded" {
             .surface = thumb_surf,
             .w = 16.0,
             .h = 16.0,
-            .full_w = 6000.0,
-            .full_h = 4000.0,
+            .source_dims = .{ .w = 6000.0, .h = 4000.0 },
             .orientation = .rotate_90,
             .thumb_only = false,
             .dct_snapped = false,
@@ -1414,8 +1416,10 @@ test "drainWorkerEvents - ignores thumb_decoded when slot is already loaded" {
 
     try std.testing.expect(drainWorkerEvents(&state));
     // Metadata updates while thumbnail stays .unloaded and surface is freed
-    try std.testing.expectEqual(@as(f32, 6000.0), entry.full_w);
-    try std.testing.expectEqual(@as(f32, 4000.0), entry.full_h);
+    try std.testing.expectEqual(
+        state_pkg.PhysicalDims{ .w = 6000.0, .h = 4000.0 },
+        entry.full_dims.?,
+    );
     try std.testing.expectEqual(Orientation.rotate_90, entry.orientation);
     try std.testing.expect(entry.thumbnail == .unloaded);
 }
@@ -1501,8 +1505,7 @@ test "drainWorkerEvents - skips thumbnail upload when image_decoded is in same b
             .surface = thumb_surf,
             .w = 16.0,
             .h = 16.0,
-            .full_w = 64.0,
-            .full_h = 64.0,
+            .source_dims = .{ .w = 64.0, .h = 64.0 },
             .orientation = .normal,
             .thumb_only = false,
             .dct_snapped = false,

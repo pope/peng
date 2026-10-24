@@ -1456,8 +1456,7 @@ pub const Orientation = enum(u2) {
 pub const CacheEntry = struct {
     status: CacheStatus,
     thumbnail: ThumbnailState = .none,
-    full_w: f32 = 0.0,
-    full_h: f32 = 0.0,
+    full_dims: ?PhysicalDims = null,
     orientation: Orientation = .normal,
     raw_metadata: RawMetadata = .none,
     is_promoting: bool = false,
@@ -1484,19 +1483,14 @@ pub const CacheEntry = struct {
     /// Monotonically updates the authoritative full-resolution dimensions if
     /// the candidate `(w, h)` has a larger positive finite pixel area.
     pub fn updateFullDims(self: *CacheEntry, w: f32, h: f32) void {
-        if (w <= 0.0 or h <= 0.0 or
-            !std.math.isFinite(w) or !std.math.isFinite(h))
-        {
-            return;
-        }
-        const cur_area = if (self.full_w > 0.0 and self.full_h > 0.0)
-            @as(f64, self.full_w) * @as(f64, self.full_h)
+        const cand = PhysicalDims.initPositive(w, h) orelse return;
+        const cur_area = if (self.full_dims) |cur|
+            @as(f64, cur.w) * @as(f64, cur.h)
         else
             0.0;
-        const cand_area = @as(f64, w) * @as(f64, h);
+        const cand_area = @as(f64, cand.w) * @as(f64, cand.h);
         if (cand_area > cur_area) {
-            self.full_w = w;
-            self.full_h = h;
+            self.full_dims = cand;
         }
     }
 
@@ -1505,8 +1499,7 @@ pub const CacheEntry = struct {
     /// state when `raw_metadata` is `.none`.
     pub fn applyProbedMetadata(
         self: *CacheEntry,
-        w: f32,
-        h: f32,
+        dims: ?PhysicalDims,
         orientation: Orientation,
         raw_metadata: RawMetadata,
     ) void {
@@ -1516,10 +1509,12 @@ pub const CacheEntry = struct {
         if (raw_metadata.getSensorDims()) |s_dims| {
             self.updateFullDims(s_dims.w, s_dims.h);
         }
-        self.updateFullDims(w, h);
+        if (dims) |d| {
+            self.updateFullDims(d.w, d.h);
+        }
         if (raw_metadata.isRaw() or self.raw_metadata.isRaw()) {
-            if (self.full_w > 0.0 and self.full_h > 0.0) {
-                self.raw_metadata = RawMetadata.init(self.full_w, self.full_h);
+            if (self.full_dims) |fd| {
+                self.raw_metadata = RawMetadata.init(fd.w, fd.h);
             } else if (raw_metadata.isRaw()) {
                 self.raw_metadata = raw_metadata;
             }
@@ -1530,46 +1525,37 @@ pub const CacheEntry = struct {
     /// irrespective of what downscaled preview or thumbnail is currently
     /// resident.
     pub fn getAuthoritativeDims(self: CacheEntry) PhysicalDims {
-        var best_w: f32 = 0.0;
-        var best_h: f32 = 0.0;
-        if (self.raw_metadata.getSensorDims()) |s| {
-            if (s.w > 0.0 and s.h > 0.0) {
-                best_w = s.w;
-                best_h = s.h;
-            }
-        }
-        if (self.full_w > 0.0 and self.full_h > 0.0) {
-            const cur_area = @as(f64, best_w) * @as(f64, best_h);
-            const full_area = @as(f64, self.full_w) * @as(f64, self.full_h);
+        var best: ?PhysicalDims = self.raw_metadata.getSensorDims();
+        if (self.full_dims) |fd| {
+            const cur_area = if (best) |b|
+                @as(f64, b.w) * @as(f64, b.h)
+            else
+                0.0;
+            const full_area = @as(f64, fd.w) * @as(f64, fd.h);
             if (full_area >= cur_area) {
-                best_w = self.full_w;
-                best_h = self.full_h;
+                best = fd;
             }
         }
-        if (best_w > 0.0 and best_h > 0.0) {
-            return .{ .w = best_w, .h = best_h };
+        if (best) |b| {
+            return b;
         }
         switch (self.status) {
             .loaded_gpu => |gpu| {
-                if (gpu.w > 0.0 and gpu.h > 0.0) {
-                    return .{ .w = gpu.w, .h = gpu.h };
-                }
+                if (PhysicalDims.initPositive(gpu.w, gpu.h)) |d| return d;
             },
             .loaded_cpu => |cpu| {
-                if (cpu.w > 0.0 and cpu.h > 0.0) {
-                    return .{ .w = cpu.w, .h = cpu.h };
-                }
+                if (PhysicalDims.initPositive(cpu.w, cpu.h)) |d| return d;
             },
             .decoding, .uploading, .failed => {},
         }
         if (self.thumbnail.getInfo()) |info| {
-            if (info.w > 0.0 and info.h > 0.0) {
+            if (PhysicalDims.initPositive(info.w, info.h)) |d| {
                 if (info.source.isPreOriented() and
                     self.orientation.isDimensionSwapped())
                 {
-                    return .{ .w = info.h, .h = info.w };
+                    return .{ .w = d.h, .h = d.w };
                 }
-                return .{ .w = info.w, .h = info.h };
+                return d;
             }
         }
         return .{ .w = 0.0, .h = 0.0 };

@@ -93,8 +93,7 @@ fn probeActiveSlotMetadata(
     {
         const entry = state.cache.get(key) orelse return;
         entry.applyProbedMetadata(
-            meta.dims.w,
-            meta.dims.h,
+            state_pkg.PhysicalDims.initPositive(meta.dims.w, meta.dims.h),
             meta.orientation,
             meta.raw_metadata,
         );
@@ -332,8 +331,8 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
         }
 
         if (state.cache.getEntry(key)) |entry| {
-            const needs_dimensions = (entry.full_w <= 0.0 or
-                entry.full_h <= 0.0) and entry.thumbnail == .none;
+            const needs_dimensions = entry.full_dims == null and
+                entry.thumbnail == .none;
             if (needs_dimensions) {
                 probeActiveSlotMetadata(state, key);
             }
@@ -691,8 +690,7 @@ test "sysUpdateCache - zoom promotion on downscaled RAW preview" {
         },
     });
     if (state.cache.get(key)) |entry| {
-        entry.full_w = 1616.0;
-        entry.full_h = 1080.0;
+        entry.full_dims = .{ .w = 1616.0, .h = 1080.0 };
         entry.raw_metadata = state_pkg.RawMetadata.init(6000.0, 4000.0);
     }
 

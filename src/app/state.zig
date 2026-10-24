@@ -126,16 +126,24 @@ pub const AppState = struct {
     }
 
     /// Initializes the Freedesktop Shared Thumbnail Cache configuration from
-    /// the process environment map (`proc_init.environ_map`).
+    /// the process environment map (`proc_init.environ_map`) and `mode`.
     pub fn initThumbCache(
         self: *AppState,
         environ_map: *const std.process.Environ.Map,
+        mode: intents.ThumbCacheMode,
     ) void {
         self.workers.thumb_cache_config.deinit(self.allocator);
+        const policy_opt: ?thumb_cache.ThumbWritePolicy = switch (mode) {
+            .off => null,
+            .all => .all_missing,
+            .missing => .missing_embedded_only,
+            .read_only => .never,
+        };
         self.workers.thumb_cache_config =
             thumb_cache.ThumbCacheConfig.initFromEnviron(
                 self.allocator,
                 environ_map,
+                policy_opt,
             );
     }
 
@@ -800,8 +808,7 @@ pub const AppState = struct {
             }
 
             e.applyProbedMetadata(
-                extracted.full_w,
-                extracted.full_h,
+                extracted.source_dims,
                 extracted.orientation,
                 extracted.raw_metadata,
             );

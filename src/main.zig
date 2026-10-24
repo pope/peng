@@ -249,7 +249,10 @@ const AppGraphicsAndState = struct {
         }
         errdefer self.state.deinit();
         try self.state.ensureInitialCapacities();
-        self.state.initThumbCache(proc_init.environ_map);
+        self.state.initThumbCache(
+            proc_init.environ_map,
+            if (parsed.test_mode) .off else parsed.thumb_cache,
+        );
 
         // Spawn initial directory scan & decode worker before graphics/GPU initialization
         // to overlap CPU file I/O & decode with Wayland display and Vulkan device setup.

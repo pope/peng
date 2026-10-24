@@ -2,6 +2,7 @@ const builtin = @import("builtin");
 const intents = @import("intents");
 const std = @import("std");
 
+const ThumbCacheMode = intents.ThumbCacheMode;
 const ZoomPreset = intents.ZoomPreset;
 
 /// Startup process flags that configure runtime initialization (not runtime actions).
@@ -12,6 +13,20 @@ pub const process_flags = [_]intents.CliOption{
         .short = "-h",
         .long = "--help",
         .description = "Show this help message and exit",
+    },
+    .{
+        .id = .thumb_cache,
+        .target = .main,
+        .long = "--thumb-cache",
+        .arg_name = "<MODE>",
+        .description = "Set XDG thumbnail cache policy (" ++
+            intents.thumb_cache_modes_string ++ ")",
+    },
+    .{
+        .id = .no_thumb_cache,
+        .target = .main,
+        .long = "--no-thumb-cache",
+        .description = "Disable Freedesktop XDG shared thumbnail cache",
     },
     .{
         .id = .ipc,
@@ -212,6 +227,7 @@ pub const ParsedArgs = struct {
     show_title: bool = false,
     windowless: bool = false,
     stack_raw_jpeg: bool = true,
+    thumb_cache: ThumbCacheMode = .all,
     help: bool = false,
 
     /// Frees allocated memory associated with parsed command-line arguments.
@@ -256,6 +272,7 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
     var show_title = false;
     var windowless = false;
     var stack_raw_jpeg = true;
+    var thumb_cache: ThumbCacheMode = .all;
     var help = false;
 
     var end_of_options = false;
@@ -279,6 +296,30 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
                     .windowless => windowless = true,
                     .stack_raw_jpeg => stack_raw_jpeg = true,
                     .no_stack_raw_jpeg => stack_raw_jpeg = false,
+                    .no_thumb_cache => thumb_cache = .off,
+                    .thumb_cache => {
+                        const val = args_it.next() orelse {
+                            if (!builtin.is_test) {
+                                std.log.err(
+                                    "Missing value for --thumb-cache flag.",
+                                    .{},
+                                );
+                            }
+                            return error.MissingFlagValue;
+                        };
+                        if (ThumbCacheMode.parse(val)) |mode| {
+                            thumb_cache = mode;
+                        } else {
+                            if (!builtin.is_test) {
+                                std.log.err(
+                                    "Unknown thumb-cache mode: {s}. " ++
+                                        "Valid: {s}.",
+                                    .{ val, intents.thumb_cache_modes_string },
+                                );
+                            }
+                            return error.InvalidThumbCacheMode;
+                        }
+                    },
                     .scale => {
                         const val = args_it.next() orelse {
                             if (!builtin.is_test) {
@@ -330,6 +371,7 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
         .show_title = show_title,
         .windowless = windowless,
         .stack_raw_jpeg = stack_raw_jpeg,
+        .thumb_cache = thumb_cache,
         .help = help,
     };
 }
@@ -589,5 +631,52 @@ test "parseArgsIterator rejects unknown flags and honors -- separator" {
         var parsed = try parseArgsIterator(&it, testing.allocator);
         defer parsed.deinit(testing.allocator);
         try testing.expectEqual(ZoomPreset.fit_height, parsed.default_scale);
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "--thumb-cache", "missing" },
+        };
+        var parsed = try parseArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expectEqual(ThumbCacheMode.missing, parsed.thumb_cache);
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "--thumb-cache", "read-only" },
+        };
+        var parsed = try parseArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expectEqual(ThumbCacheMode.read_only, parsed.thumb_cache);
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{"--no-thumb-cache"},
+        };
+        var parsed = try parseArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expectEqual(ThumbCacheMode.off, parsed.thumb_cache);
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{"--thumb-cache"},
+        };
+        try testing.expectError(
+            error.MissingFlagValue,
+            parseArgsIterator(&it, testing.allocator),
+        );
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "--thumb-cache", "invalid" },
+        };
+        try testing.expectError(
+            error.InvalidThumbCacheMode,
+            parseArgsIterator(&it, testing.allocator),
+        );
     }
 }

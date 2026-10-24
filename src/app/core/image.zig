@@ -843,8 +843,7 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
 pub const ExtractedThumbnail = struct {
     surface: sdl.Surface,
     orientation: Orientation = .normal,
-    full_w: f32 = 0.0,
-    full_h: f32 = 0.0,
+    source_dims: ?state_pkg.PhysicalDims = null,
     raw_metadata: RawMetadata = .none,
     dct_snapped: bool = false,
 };
@@ -1042,23 +1041,26 @@ fn loadStoredZipThumbnail(
 
     const orientation = exif.parseExifOrientation(image_slice) orelse .normal;
     const dims = parseImageDimensions(image_slice, mime_type);
-    const full_w: f32 = if (dims) |d| d.w else @floatFromInt(surf.w());
-    const full_h: f32 = if (dims) |d| d.h else @floatFromInt(surf.h());
-    const dct_snapped = detectThumbnailDctPadding(surf, full_w, full_h);
+    const source_dims = if (dims) |d|
+        state_pkg.PhysicalDims.initPositive(d.w, d.h)
+    else
+        null;
+    const dct_snapped = if (source_dims) |sd|
+        detectThumbnailDctPadding(surf, sd.w, sd.h)
+    else
+        false;
 
     return ExtractedThumbnail{
         .surface = surf,
         .orientation = orientation,
-        .full_w = full_w,
-        .full_h = full_h,
+        .source_dims = source_dims,
         .raw_metadata = .none,
         .dct_snapped = dct_snapped,
     };
 }
 
 const FujiRafThumbnailInfo = struct {
-    raw_w: f32 = 0.0,
-    raw_h: f32 = 0.0,
+    raw_dims: ?state_pkg.PhysicalDims = null,
     orientation: Orientation = .normal,
     thumb_loc: ?exif.ThumbnailLocation = null,
 };
@@ -1080,8 +1082,10 @@ fn resolveFujiRafThumbnail(
             const meta_slice =
                 header_slice[@intCast(meta_loc.file_offset)..@intCast(end)];
             if (exif.parseFujiRafDimensions(meta_slice)) |fd| {
-                info.raw_w = fd.w;
-                info.raw_h = fd.h;
+                info.raw_dims = state_pkg.PhysicalDims.initPositive(
+                    fd.w,
+                    fd.h,
+                );
             }
         } else if (meta_loc.length > 0 and
             meta_loc.length <= 64 * 1024 and
@@ -1104,8 +1108,10 @@ fn resolveFujiRafThumbnail(
             if (mn >= meta_loc.length) {
                 const m_data = m_buf[0..meta_loc.length];
                 if (exif.parseFujiRafDimensions(m_data)) |fd| {
-                    info.raw_w = fd.w;
-                    info.raw_h = fd.h;
+                    info.raw_dims = state_pkg.PhysicalDims.initPositive(
+                        fd.w,
+                        fd.h,
+                    );
                 }
             }
         }
@@ -1203,8 +1209,7 @@ pub fn loadThumbnailSurface(
 
             var thumb_surf: ?sdl.Surface = null;
             var orientation: Orientation = .normal;
-            var raw_w: f32 = 0.0;
-            var raw_h: f32 = 0.0;
+            var source_dims: ?state_pkg.PhysicalDims = null;
 
             if (is_fuji) {
                 const fuji_info = resolveFujiRafThumbnail(
@@ -1214,8 +1219,7 @@ pub fn loadThumbnailSurface(
                     file_size,
                     f.path,
                 );
-                raw_w = fuji_info.raw_w;
-                raw_h = fuji_info.raw_h;
+                source_dims = fuji_info.raw_dims;
                 orientation = fuji_info.orientation;
 
                 if (fuji_info.thumb_loc) |tloc| {
@@ -1240,8 +1244,10 @@ pub fn loadThumbnailSurface(
 
                 const raw_cands = exif.extractTiffRawPreviewsFromSource(tiff_source);
                 if (exif.parseExifDimensionsFromSource(tiff_source)) |dims| {
-                    raw_w = dims.w;
-                    raw_h = dims.h;
+                    source_dims = state_pkg.PhysicalDims.initPositive(
+                        dims.w,
+                        dims.h,
+                    );
                 }
                 orientation = exif.parseExifOrientationFromSource(tiff_source) orelse .normal;
                 if (raw_cands.thumbnail orelse raw_cands.medium) |tloc| {
@@ -1257,8 +1263,10 @@ pub fn loadThumbnailSurface(
             } else if (std.mem.eql(u8, mime_type, "image/jpeg")) {
                 orientation = exif.parseExifOrientation(header_slice) orelse .normal;
                 if (parseImageDimensions(header_slice, mime_type)) |dims| {
-                    raw_w = dims.w;
-                    raw_h = dims.h;
+                    source_dims = state_pkg.PhysicalDims.initPositive(
+                        dims.w,
+                        dims.h,
+                    );
                 }
                 if (exif.extractJpegThumbnailLocation(header_slice)) |loc| {
                     thumb_surf = loadThumbnailFromLocation(
@@ -1273,15 +1281,21 @@ pub fn loadThumbnailSurface(
             }
 
             const surf = thumb_surf orelse return null;
-            const full_w: f32 = if (raw_w > 0.0) raw_w else @floatFromInt(surf.w());
-            const full_h: f32 = if (raw_h > 0.0) raw_h else @floatFromInt(surf.h());
-            const dct_snapped = detectThumbnailDctPadding(surf, full_w, full_h);
+            const dct_snapped = if (source_dims) |sd|
+                detectThumbnailDctPadding(surf, sd.w, sd.h)
+            else
+                false;
             return ExtractedThumbnail{
                 .surface = surf,
                 .orientation = orientation,
-                .full_w = full_w,
-                .full_h = full_h,
-                .raw_metadata = if (is_raw) RawMetadata.init(raw_w, raw_h) else .none,
+                .source_dims = source_dims,
+                .raw_metadata = if (is_raw)
+                    (if (source_dims) |sd|
+                        RawMetadata.init(sd.w, sd.h)
+                    else
+                        .none)
+                else
+                    .none,
                 .dct_snapped = dct_snapped,
             };
         },
@@ -2425,8 +2439,10 @@ test "loadThumbnailSurface - filesystem TIFF RAW mock" {
         try std.testing.expect(t.surface.h() > 0);
         try std.testing.expectEqual(Orientation.rotate_90, t.orientation);
         try std.testing.expect(t.raw_metadata.isRaw());
-        try std.testing.expectEqual(@as(f32, 6000.0), t.full_w);
-        try std.testing.expectEqual(@as(f32, 4000.0), t.full_h);
+        try std.testing.expectEqual(
+            state_pkg.PhysicalDims{ .w = 6000.0, .h = 4000.0 },
+            t.source_dims.?,
+        );
     }
 }
 

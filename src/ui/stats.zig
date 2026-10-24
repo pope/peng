@@ -272,11 +272,11 @@ fn renderInfoOverlay(
                 mime_type = "Loading...";
                 if (entry.raw_metadata.isRaw()) {
                     res_str = "Loading preview...";
-                } else if (entry.full_w > 0 and entry.full_h > 0) {
-                    const megapixels = (entry.full_w * entry.full_h) / 1_000_000.0;
+                } else if (entry.full_dims) |fd| {
+                    const megapixels = (fd.w * fd.h) / 1_000_000.0;
                     res_str = try frame_allocator.print(
                         "{d:.0}x{d:.0} ({d:.2} MP)",
-                        .{ entry.full_w, entry.full_h, megapixels },
+                        .{ fd.w, fd.h, megapixels },
                     );
                 } else {
                     res_str = "Loading...";
