@@ -37,6 +37,8 @@ pub const OptionId = enum {
     title,
     ipc,
     socket,
+    server,
+    spawn,
     headless,
     test_mode,
     update_baselines,
@@ -188,6 +190,7 @@ pub const ActionId = enum {
 
     // Lifecycle
     quit,
+    quit_server,
 
     // Non-palette capabilities (CLI / IPC parameters)
     open_config,
@@ -349,11 +352,14 @@ pub const actions = [_]ActionDef{
         .id = .quit,
         .title = "Quit",
         .shortcut_text = "Q / Esc",
-        .description = "Exit the viewer",
+        .description = "Exit the viewer (or hide window in server mode)",
         .show_in_palette = true,
         .shortcuts = &.{ .{ .key = .char_q }, .{ .key = .escape } },
         .intent = .quit,
-        .ipc = .{ .name = "quit", .description = "Quit the viewer" },
+        .ipc = .{
+            .name = "quit",
+            .description = "Quit the viewer or stop the server",
+        },
     },
     .{
         .id = .first_image,
@@ -1018,6 +1024,15 @@ pub const actions = [_]ActionDef{
             .description = "Pre-cache Freedesktop thumbnails for current directory",
         },
     },
+    .{
+        .id = .quit_server,
+        .title = "Quit Server",
+        .shortcut_text = "Ctrl+Q",
+        .description = "Terminate Peng and stop any resident server",
+        .show_in_palette = true,
+        .shortcuts = &.{.{ .key = .char_q, .mod = .{ .ctrl = true } }},
+        .intent = .quit_server,
+    },
 
     // --- Non-Palette Capabilities (CLI flags and IPC verbs) ---
     .{
@@ -1315,15 +1330,15 @@ pub const ipc_commands = blk: {
 test "actions registry projections" {
     const testing = std.testing;
 
-    // Palette count: 71 previous + 1 precache_directory action = 72
-    try testing.expectEqual(@as(usize, 72), palette_action_items.len);
+    // Palette count: 72 previous + 1 quit_server action = 73
+    try testing.expectEqual(@as(usize, 73), palette_action_items.len);
 
     // Exact index preservation
     try testing.expectEqualStrings("Navigate Directories...", palette_action_items[7].name);
     try testing.expectEqualStrings("Ctrl+O", palette_action_items[7].shortcut_text);
 
-    // Shortcuts: 58 previous + 2 raw/jpeg keys (Alt+J, J) = 60
-    try testing.expectEqual(@as(usize, 60), flat_shortcuts.len);
+    // Shortcuts: 60 previous + 1 quit_server key (Ctrl+Q) = 61
+    try testing.expectEqual(@as(usize, 61), flat_shortcuts.len);
     var total_sc: usize = 0;
     for (palette_action_items) |item| {
         total_sc += item.shortcuts.len;

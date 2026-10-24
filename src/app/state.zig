@@ -25,29 +25,23 @@ const types = state_pkg.types;
 const view_transform = state_pkg.view_transform;
 const ViewerState = state_pkg.ViewerState;
 
-/// Enables SDL text input events if the current display mode is windowed GUI.
-/// No-op when in headless rendering mode.
+/// Enables SDL text input events if the current display mode is a visible
+/// window. No-op when headless or hidden.
 pub fn startTextInput(display: DisplayState) void {
-    switch (display) {
-        .headless => {},
-        .windowed => |win| {
-            if (!win.handle.startTextInput()) {
-                std.log.err("SDL_StartTextInput failed: {s}", .{sdl.getError()});
-            }
-        },
+    if (display.visibleWindow()) |win| {
+        if (!win.startTextInput()) {
+            std.log.err("SDL_StartTextInput failed: {s}", .{sdl.getError()});
+        }
     }
 }
 
-/// Disables SDL text input events if the current display mode is windowed GUI.
-/// No-op when in headless rendering mode.
+/// Disables SDL text input events if the current display mode is a visible
+/// window. No-op when headless or hidden.
 pub fn stopTextInput(display: DisplayState) void {
-    switch (display) {
-        .headless => {},
-        .windowed => |win| {
-            if (!win.handle.stopTextInput()) {
-                std.log.err("SDL_StopTextInput failed: {s}", .{sdl.getError()});
-            }
-        },
+    if (display.visibleWindow()) |win| {
+        if (!win.stopTextInput()) {
+            std.log.err("SDL_StopTextInput failed: {s}", .{sdl.getError()});
+        }
     }
 }
 
@@ -259,6 +253,10 @@ pub const AppState = struct {
         if (force_non_blocking or bg_events_processed) {
             return .poll;
         }
+        switch (self.viewer.display) {
+            .hidden => return .wait_indefinite,
+            .visible => {},
+        }
         const is_current_loading = blk: {
             if (self.getCurrentEntry()) |entry| {
                 break :blk (entry.status == .decoding or
@@ -278,8 +276,8 @@ pub const AppState = struct {
         };
         const last_w = self.viewer.last_win_w;
         const last_h = self.viewer.last_win_h;
-        const window_resized =
-            (last_w != 0 and (last_w != cur_win_w or last_h != cur_win_h));
+        const window_resized = last_w != 0 and
+            (last_w != cur_win_w or last_h != cur_win_h);
         const is_busy = self.isBusy() or
             is_current_loading or
             (self.viewer.drag_state != .none) or
@@ -288,8 +286,10 @@ pub const AppState = struct {
             self.viewer.zoom_controller.isBusy() or
             has_unpopulated_cache or
             window_resized;
-        const wait_timeout_ms =
-            if (!is_busy) self.getWaitTimeoutMs(now_ticks) else null;
+        const wait_timeout_ms = if (!is_busy)
+            self.getWaitTimeoutMs(now_ticks)
+        else
+            null;
 
         return input.selectEventWaitStrategy(false, is_busy, wait_timeout_ms);
     }
@@ -307,13 +307,9 @@ pub const AppState = struct {
         if (self.gpu_device) |dev| {
             self.upload_staging.deinit(dev);
 
-            switch (self.viewer.display) {
+            switch (self.viewer.display.backend()) {
                 .headless => {},
-                .windowed => |*w| {
-                    if (w.claimed) {
-                        w.handle.releaseFromGpu(dev);
-                    }
-                },
+                .windowed => |w| w.handle.releaseFromGpu(dev),
             }
 
             self.cache.deinit(self.allocator, dev);
@@ -359,7 +355,7 @@ pub const AppState = struct {
         var win_h: f32 = 768.0;
         var scale_x: f32 = 1.0;
 
-        switch (self.viewer.display) {
+        switch (self.viewer.display.backend()) {
             .headless => {},
             .windowed => |win| {
                 const win_size = win.handle.getSize();
@@ -498,6 +494,107 @@ pub const AppState = struct {
         stopTextInput(self.viewer.display);
         self.viewer.ui.palette.reset();
         self.viewer.animations.setImmediate(.palette_reveal, 0.0);
+    }
+
+    /// Ensures the application window is visible and raises it to the
+    /// foreground.
+    pub fn showAndRaiseWindow(self: *AppState) void {
+        switch (self.viewer.display) {
+            .hidden => |b| {
+                switch (b) {
+                    .headless => {},
+                    .windowed => |win| {
+                        if (!win.handle.show()) {
+                            std.log.err(
+                                "SDL_ShowWindow failed: {s}",
+                                .{sdl.getError()},
+                            );
+                        }
+                        if (!win.handle.raise()) {
+                            std.log.warn(
+                                "SDL_RaiseWindow failed: {s}",
+                                .{sdl.getError()},
+                            );
+                        }
+                    },
+                }
+                self.viewer.display = .{ .visible = b };
+            },
+            .visible => |b| switch (b) {
+                .headless => {},
+                .windowed => |win| {
+                    if (!win.handle.raise()) {
+                        std.log.warn(
+                            "SDL_RaiseWindow failed: {s}",
+                            .{sdl.getError()},
+                        );
+                    }
+                },
+            },
+        }
+    }
+
+    /// Hides the application window in resident server mode, unloading the
+    /// active image cache and directory playlist while preserving the warm GPU
+    /// device, compiled shaders, and picks/rejects selections.
+    pub fn hideWindow(self: *AppState) void {
+        switch (self.viewer.ui.screenshot_mode) {
+            .idle => {},
+            .capturing => |*s| {
+                s.respondErrName(self.io, self.allocator, "WindowHidden");
+                self.viewer.ui.screenshot_mode = .idle;
+            },
+        }
+        self.closePaletteImmediately();
+        self.viewer.ui.palette.shrinkToWarmCapacity();
+        _ = self.viewer.ui.overlays.dismissFloatingPanels();
+        self.viewer.ui.overlays.edit_panel.visible = false;
+        self.viewer.ui.snackbar.clear();
+        self.viewer.stats = .{};
+        self.viewer.navigation.slideshow = .inactive;
+        self.viewer.image_transition = .none;
+        self.viewer.drag_state = .none;
+        self.viewer.pan_controller.reset();
+        self.viewer.zoom_controller.reset();
+        self.viewer.viewport.reset();
+        self.viewer.animations.settleAll();
+
+        _ = self.cache.advanceGeneration();
+        _ = self.workers.precache_generation.fetchAdd(1, .acq_rel);
+        self.workers.clearThumbWriteQueue(self.allocator, self.io);
+        self.clearCache();
+        if (self.cache.slots.capacity > 16) {
+            self.cache.slots.shrinkAndFree(self.allocator, 0);
+        }
+        if (self.gpu_device) |dev| {
+            self.upload_staging.deinit(dev);
+        }
+        self.clearRotationMap();
+        self.viewer.navigation.clearEntries();
+        if (self.viewer.navigation.items.capacity > 64) {
+            self.viewer.navigation.items.shrinkAndFree(self.allocator, 0);
+        }
+        self.viewer.navigation.last_scanned_dir.clearRetainingCapacity();
+        _ = self.viewer.navigation.directory_arena.reset(.free_all);
+
+        switch (self.viewer.display) {
+            .visible => |b| {
+                switch (b) {
+                    .headless => {},
+                    .windowed => |win| {
+                        if (!win.handle.hide()) {
+                            std.log.err(
+                                "SDL_HideWindow failed: {s}",
+                                .{sdl.getError()},
+                            );
+                        }
+                    },
+                }
+                self.viewer.display = .{ .hidden = b };
+                sdl.reclaimProcessHeap();
+            },
+            .hidden => {},
+        }
     }
 
     /// Loads directory items into the command palette directory navigator and spawns
@@ -715,6 +812,10 @@ pub const AppState = struct {
                 .{ owned_path, err },
             );
             has_stat = false;
+        }
+
+        if (has_stat) {
+            self.showAndRaiseWindow();
         }
 
         const dir_target = if (has_stat and stat.kind == .directory)
@@ -1035,7 +1136,12 @@ pub const AppState = struct {
         }
 
         if (upload_target) |target| {
-            defer target.cpu.surface.destroy();
+            defer {
+                target.cpu.surface.destroy();
+                if (self.workers.active_decode_threads.load(.acquire) == 0) {
+                    sdl.reclaimProcessHeap();
+                }
+            }
             if (self.gpu_device) |gpu_dev| {
                 if (image.uploadSurfaceToGpu(
                     gpu_dev,

@@ -52,12 +52,27 @@ pub const process_flags = [_]intents.CliOption{
     },
     .{
         .id = .socket,
-        .target = .main,
+        .target = .both,
         .short = "-S",
         .long = "--socket",
         .aliases = &.{"--ipc-socket"},
         .arg_name = "<PATH>",
-        .description = "Enable IPC server bound to an explicit socket path",
+        .description = "Use an explicit UNIX domain socket path",
+    },
+    .{
+        .id = .server,
+        .target = .main,
+        .long = "--server",
+        .aliases = &.{"--daemon"},
+        .description = "Run as a resident background server",
+    },
+    .{
+        .id = .spawn,
+        .target = .ipc,
+        .short = "-s",
+        .long = "--spawn",
+        .aliases = &.{"--autospawn"},
+        .description = "Spawn a resident peng --server if not running",
     },
     .{
         .id = .headless,
@@ -213,15 +228,18 @@ pub const main_help_text: []const u8 = generateHelp(.{
 /// Formatted help text dynamically generated for the `peng-msg` IPC utility at compile-time.
 pub const ipc_help_text: []const u8 = generateHelp(.{
     .title = "Peng IPC Message Client",
-    .usage = "peng-msg <socket_path> <command_words...>",
+    .usage = "peng-msg [options] [socket_path] <command_words...>",
     .target = .ipc,
-    .options_col_width = 16,
+    .options_col_width = 30,
     .extra_sections = "Common Commands:\n" ++ formatIpcCommands(30),
 });
 
 fn printHelpString(io: std.Io, text: []const u8) void {
-    var stdout_write_buf: [4096]u8 = undefined;
-    var stdout_writer = std.Io.File.Writer.init(std.Io.File.stdout(), io, &stdout_write_buf);
+    var stdout_write_buf: [4 * 1024]u8 = undefined;
+    var stdout_writer = std.Io.File.stdout().writerStreaming(
+        io,
+        &stdout_write_buf,
+    );
     if (stdout_writer.interface.writeAll(text)) {
         stdout_writer.interface.flush() catch {};
     } else |_| {
@@ -243,21 +261,22 @@ pub fn printIpcHelp(io: std.Io) void {
 pub const IpcMode = union(enum) {
     disabled,
     pid_socket,
+    default_socket,
     custom_socket: []const u8,
 
     /// Returns `true` if the IPC socket server should be started.
     pub fn isEnabled(self: IpcMode) bool {
         return switch (self) {
             .disabled => false,
-            .pid_socket, .custom_socket => true,
+            .pid_socket, .default_socket, .custom_socket => true,
         };
     }
 
     /// Returns the explicit socket path if configured via `--socket`, or `null`
-    /// when disabled or using the default PID-based socket path.
+    /// when disabled or using an environment/PID-derived socket path.
     pub fn customPath(self: IpcMode) ?[]const u8 {
         return switch (self) {
-            .disabled, .pid_socket => null,
+            .disabled, .pid_socket, .default_socket => null,
             .custom_socket => |p| p,
         };
     }
@@ -265,7 +284,7 @@ pub const IpcMode = union(enum) {
     /// Frees any owned custom socket path string and resets to `.disabled`.
     pub fn deinit(self: *IpcMode, gpa: std.mem.Allocator) void {
         switch (self.*) {
-            .disabled, .pid_socket => {},
+            .disabled, .pid_socket, .default_socket => {},
             .custom_socket => |p| {
                 gpa.free(p);
                 self.* = .disabled;
@@ -281,6 +300,7 @@ pub const ParsedArgs = struct {
     test_mode: bool = false,
     update_baselines: bool = false,
     headless: bool = false,
+    server_mode: bool = false,
     ipc_mode: IpcMode = .disabled,
     enable_blur: bool = true,
     show_title: bool = false,
@@ -298,6 +318,36 @@ pub const ParsedArgs = struct {
             self.arg_path = null;
         }
         self.ipc_mode.deinit(gpa);
+    }
+};
+
+/// Parsed command-line arguments for the `peng-msg` IPC client utility.
+pub const ParsedIpcArgs = union(enum) {
+    help,
+    send: Send,
+
+    /// Payload for an IPC command transmission.
+    pub const Send = struct {
+        socket_path: ?[]u8 = null,
+        command: []u8,
+        spawn: bool = false,
+
+        /// Frees allocated memory for the socket path and command string.
+        pub fn deinit(self: *Send, gpa: std.mem.Allocator) void {
+            if (self.socket_path) |p| {
+                gpa.free(p);
+                self.socket_path = null;
+            }
+            gpa.free(self.command);
+        }
+    };
+
+    /// Frees allocated memory for the socket path and command string.
+    pub fn deinit(self: *ParsedIpcArgs, gpa: std.mem.Allocator) void {
+        switch (self.*) {
+            .help => {},
+            .send => |*s| s.deinit(gpa),
+        }
     }
 };
 
@@ -329,6 +379,7 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
     var test_mode = false;
     var update_baselines = false;
     var headless = false;
+    var server_mode = false;
     var ipc_mode: IpcMode = .disabled;
     errdefer ipc_mode.deinit(gpa);
     var enable_blur = true;
@@ -354,9 +405,18 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
                     .test_mode => test_mode = true,
                     .headless => headless = true,
                     .update_baselines => update_baselines = true,
+                    .server => {
+                        server_mode = true;
+                        switch (ipc_mode) {
+                            .disabled, .pid_socket => {
+                                ipc_mode = .default_socket;
+                            },
+                            .default_socket, .custom_socket => {},
+                        }
+                    },
                     .ipc => switch (ipc_mode) {
                         .disabled => ipc_mode = .pid_socket,
-                        .pid_socket, .custom_socket => {},
+                        .pid_socket, .default_socket, .custom_socket => {},
                     },
                     .socket => {
                         const val = args_it.next() orelse {
@@ -380,6 +440,7 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
                         ipc_mode.deinit(gpa);
                         ipc_mode = .{ .custom_socket = try gpa.dupe(u8, val) };
                     },
+                    .spawn => unreachable,
                     .blur => enable_blur = true,
                     .no_blur => enable_blur = false,
                     .title => show_title = true,
@@ -458,6 +519,7 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
         .test_mode = test_mode,
         .update_baselines = update_baselines,
         .headless = headless,
+        .server_mode = server_mode,
         .ipc_mode = ipc_mode,
         .enable_blur = enable_blur,
         .show_title = show_title,
@@ -479,6 +541,147 @@ pub fn parseCommandLineArgs(init: std.process.Init, gpa: std.mem.Allocator) !Par
     _ = args_it.next();
 
     return parseArgsIterator(&args_it, gpa);
+}
+
+/// Returns `true` if `arg` looks like a Unix socket path (contains a path
+/// separator `/` or `\` or ends with `.sock`) rather than an IPC command verb.
+pub fn looksLikeSocketPath(arg: []const u8) bool {
+    return std.mem.findAny(u8, arg, "/\\") != null or
+        std.mem.endsWith(u8, arg, ".sock");
+}
+
+/// Parses `peng-msg` CLI options, optional socket path, and IPC command words
+/// from any iterator providing `next() ?[]const u8`.
+pub fn parseIpcArgsIterator(
+    args_it: anytype,
+    gpa: std.mem.Allocator,
+) !ParsedIpcArgs {
+    var socket_path: ?[]u8 = null;
+    errdefer if (socket_path) |p| gpa.free(p);
+
+    var command_buf: std.ArrayList(u8) = .empty;
+    defer command_buf.deinit(gpa);
+
+    var spawn = false;
+    var help = false;
+    var end_of_options = false;
+    var in_command = false;
+
+    while (args_it.next()) |arg| {
+        if (!in_command and !end_of_options and std.mem.eql(u8, arg, "--")) {
+            end_of_options = true;
+            continue;
+        }
+        if (!in_command and !end_of_options) {
+            if (findOptionFor(arg, .ipc)) |opt| {
+                switch (opt.id) {
+                    .help => help = true,
+                    .spawn => spawn = true,
+                    .socket => {
+                        const val = args_it.next() orelse {
+                            if (!builtin.is_test) {
+                                std.log.err(
+                                    "Missing value for --socket flag.",
+                                    .{},
+                                );
+                            }
+                            return error.MissingFlagValue;
+                        };
+                        if (val.len == 0 or val.len >= 104) {
+                            if (!builtin.is_test) {
+                                std.log.err(
+                                    "Invalid socket path length: {s}",
+                                    .{val},
+                                );
+                            }
+                            return error.InvalidSocketPath;
+                        }
+                        if (socket_path) |old| gpa.free(old);
+                        socket_path = try gpa.dupe(u8, val);
+                    },
+                    .scale,
+                    .blur,
+                    .no_blur,
+                    .title,
+                    .ipc,
+                    .server,
+                    .headless,
+                    .test_mode,
+                    .update_baselines,
+                    .windowless,
+                    .stack_raw_jpeg,
+                    .no_stack_raw_jpeg,
+                    .thumb_cache,
+                    .no_thumb_cache,
+                    .precache,
+                    .recursive,
+                    => unreachable,
+                }
+                continue;
+            } else if (arg.len > 1 and arg[0] == '-') {
+                if (!builtin.is_test) {
+                    std.log.err(
+                        "Unknown flag: {s}. Use --help for usage information.",
+                        .{arg},
+                    );
+                }
+                return error.UnknownFlag;
+            }
+        }
+
+        if (!in_command and socket_path == null and looksLikeSocketPath(arg)) {
+            if (arg.len == 0 or arg.len >= 104) {
+                if (!builtin.is_test) {
+                    std.log.err("Invalid socket path length: {s}", .{arg});
+                }
+                return error.InvalidSocketPath;
+            }
+            socket_path = try gpa.dupe(u8, arg);
+            continue;
+        }
+
+        in_command = true;
+        if (command_buf.items.len > 0) {
+            try command_buf.append(gpa, ' ');
+        }
+        try command_buf.appendSlice(gpa, arg);
+    }
+
+    if (help) {
+        if (socket_path) |p| gpa.free(p);
+        return .help;
+    }
+
+    if (command_buf.items.len == 0) {
+        return error.MissingCommand;
+    }
+    try command_buf.append(gpa, '\n');
+
+    return .{
+        .send = .{
+            .socket_path = socket_path,
+            .command = try command_buf.toOwnedSlice(gpa),
+            .spawn = spawn,
+        },
+    };
+}
+
+/// Parses `peng-msg` command-line flags, optional socket path, and IPC command
+/// words.
+pub fn parseIpcCommandLineArgs(
+    init: std.process.Init,
+    gpa: std.mem.Allocator,
+) !ParsedIpcArgs {
+    var args_it = try std.process.Args.Iterator.initAllocator(
+        init.minimal.args,
+        gpa,
+    );
+    defer args_it.deinit();
+
+    // Skip binary name
+    _ = args_it.next();
+
+    return parseIpcArgsIterator(&args_it, gpa);
 }
 
 test "CliTarget appliesTo works correctly" {
@@ -842,5 +1045,111 @@ test "parseArgsIterator rejects unknown flags and honors -- separator" {
         defer parsed.deinit(testing.allocator);
         try testing.expect(parsed.precache);
         try testing.expect(parsed.recursive);
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{"--server"},
+        };
+        var parsed = try parseArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expect(parsed.server_mode);
+        try testing.expect(parsed.ipc_mode == .default_socket);
+        try testing.expect(parsed.ipc_mode.isEnabled());
+        try testing.expectEqual(
+            @as(?[]const u8, null),
+            parsed.ipc_mode.customPath(),
+        );
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "--server", "-S", "/tmp/srv.sock" },
+        };
+        var parsed = try parseArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expect(parsed.server_mode);
+        try testing.expectEqualStrings(
+            "/tmp/srv.sock",
+            parsed.ipc_mode.customPath().?,
+        );
+    }
+}
+
+test "parseIpcArgsIterator handles explicit/default socket and --spawn" {
+    const testing = std.testing;
+
+    // 1. Positional socket path + command words
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "/tmp/peng.sock", "open", "photo.jpg" },
+        };
+        var parsed = try parseIpcArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expect(!parsed.send.spawn);
+        try testing.expectEqualStrings(
+            "/tmp/peng.sock",
+            parsed.send.socket_path.?,
+        );
+        try testing.expectEqualStrings("open photo.jpg\n", parsed.send.command);
+    }
+
+    // 2. Default socket (no socket path given) + --spawn
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "-s", "open", "/home/user/photo.jpg" },
+        };
+        var parsed = try parseIpcArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expect(parsed.send.spawn);
+        try testing.expectEqual(@as(?[]u8, null), parsed.send.socket_path);
+        try testing.expectEqualStrings(
+            "open /home/user/photo.jpg\n",
+            parsed.send.command,
+        );
+    }
+
+    // 3. Explicit -S / --socket flag + --spawn
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "--spawn", "-S", "custom_name", "quit" },
+        };
+        var parsed = try parseIpcArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expect(parsed.send.spawn);
+        try testing.expectEqualStrings(
+            "custom_name",
+            parsed.send.socket_path.?,
+        );
+        try testing.expectEqualStrings("quit\n", parsed.send.command);
+    }
+
+    // 4. Negative numeric arguments after command verb are preserved
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{
+                "/tmp/peng.sock",
+                "adjust",
+                "-0.25",
+                "1.2",
+            },
+        };
+        var parsed = try parseIpcArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expectEqualStrings(
+            "adjust -0.25 1.2\n",
+            parsed.send.command,
+        );
+    }
+
+    // 5. Missing command returns error.MissingCommand
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{"/tmp/peng.sock"},
+        };
+        try testing.expectError(
+            error.MissingCommand,
+            parseIpcArgsIterator(&it, testing.allocator),
+        );
     }
 }

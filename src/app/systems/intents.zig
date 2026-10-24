@@ -654,7 +654,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
         .toggle_blur => ui.overlays.enable_blur = !ui.overlays.enable_blur,
         .set_blur => |val| ui.overlays.enable_blur = val,
         .toggle_fullscreen => {
-            switch (self.viewer.display) {
+            switch (self.viewer.display.backendPtr().*) {
                 .headless => {},
                 .windowed => |*win| {
                     win.is_fullscreen = !win.is_fullscreen;
@@ -665,7 +665,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
             }
         },
         .set_fullscreen => |val| {
-            switch (self.viewer.display) {
+            switch (self.viewer.display.backendPtr().*) {
                 .headless => {},
                 .windowed => |*win| {
                     win.is_fullscreen = val;
@@ -676,7 +676,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
             }
         },
         .toggle_windowless => {
-            switch (self.viewer.display) {
+            switch (self.viewer.display.backendPtr().*) {
                 .headless => {},
                 .windowed => |*win| {
                     win.is_borderless = !win.is_borderless;
@@ -687,7 +687,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
             }
         },
         .set_windowless => |val| {
-            switch (self.viewer.display) {
+            switch (self.viewer.display.backendPtr().*) {
                 .headless => {},
                 .windowed => |*win| {
                     win.is_borderless = val;
@@ -715,7 +715,14 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
         .set_crossfade => |val| nav.crossfade = val,
         .toggle_manga_mode => nav.manga_mode = !nav.manga_mode,
         .set_manga_mode => |val| nav.manga_mode = val,
-        .quit => self.viewer.running = false,
+        .quit => {
+            if (self.viewer.server_mode) {
+                self.hideWindow();
+            } else {
+                self.viewer.running = false;
+            }
+        },
+        .quit_server => self.viewer.running = false,
     }
 }
 
@@ -1767,4 +1774,41 @@ test "executeIntent - precache_directory handles disabled cache and empty playli
         "Thumbnail cache is disabled",
         app_st.viewer.ui.snackbar.getMessage(),
     );
+}
+
+test "executeIntent - server_mode hides on quit and exits on quit_server" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    app_st.viewer.server_mode = true;
+    try app_st.viewer.navigation.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = "img0.jpg" } },
+    );
+    app_st.viewer.navigation.current_index = 0;
+    _ = try app_st.viewer.navigation.markCurrentPick(allocator);
+    _ = try app_st.cache.appendSlot(allocator, 0, .failed);
+    app_st.viewer.navigation.slideshow = .{ .active = .{ .interval_s = 2.0 } };
+
+    // .quit in server_mode hides the window, stops slideshow, and unloads
+    // cache and directory playlist while preserving picks/rejects selections
+    try executeIntent(&app_st, .quit);
+    try std.testing.expect(app_st.viewer.running);
+    try std.testing.expect(app_st.viewer.display.isHidden());
+    try std.testing.expect(!app_st.viewer.isSlideshowActive());
+    try std.testing.expectEqual(@as(usize, 0), app_st.cache.count());
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        app_st.viewer.navigation.count(),
+    );
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        app_st.viewer.navigation.path_classifications.count(),
+    );
+
+    // .quit_server unconditionally terminates the server
+    try executeIntent(&app_st, .quit_server);
+    try std.testing.expect(!app_st.viewer.running);
 }

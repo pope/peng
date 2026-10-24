@@ -131,7 +131,10 @@ ______________________________________________________________________
     - `action_cli_options`: CLI flags and aliases merged into `app_config.cli.options` (with dynamic column-width wrapping in `src/config/cli.zig`).
     - `ipc_commands`: UDS IPC control commands projected for `peng-msg`.
   - **Contextual Isolation & Readline Navigation**: High-frequency single-key shortcuts (e.g. `s` scale mode cycling, `Shift+S` filter cycling, `h`/`j`/`k`/`l` panning) must be context-isolated to avoid collisions during palette search or default viewing. Command Palette text entry supports standard Readline/Emacs navigation (`Ctrl+N`/`P`/`J`/`V`/`U`/`W`/`G`) and directory stepping (`Tab` / `Shift+Tab`).
-  - **Display State Decoupling**: Runtime window toggles (`setFullscreen`, `setBordered`) operate exclusively through `DisplayState.windowed`. The headless harness (`DisplayState.headless`) must remain a no-op to guarantee deterministic offscreen CI test execution.
+  - **Display State & Resident Server Mode (`DisplayState` / `DisplayBackend`)**:
+    - Visibility and backend are modeled as nested tagged unions: `DisplayState = union(enum) { visible: DisplayBackend, hidden: DisplayBackend }` and `DisplayBackend = union(enum) { headless, windowed: ActiveWindow }`. `ActiveWindow` is only constructed once a valid, GPU-claimed `sdl.Window` exists, eliminating boolean sentinels (`is_hidden`, `claimed`) and undefined handle fields.
+    - Runtime window operations (`setFullscreen`, `setBordered`, `startTextInput`, `stopTextInput`) pattern-match on `DisplayBackend` or `display.visibleWindow()`, keeping the headless harness (`.headless`) a deterministic no-op.
+    - In resident `--server` mode, closing the window (`hideWindow()`) transitions `display` to `.hidden`, unloads the active image cache (`clearCache`), resets `directory_arena`, cancels any pending `screenshot_mode`, and sleeps via `.wait_indefinite` in `computeFrameWaitStrategy` while keeping the warm GPU device, compiled pipelines, and `path_classifications` resident in memory. While `.hidden`, `sysExecuteIpcCommands` rejects view/navigation commands with `{"ok":false,"error":"WindowHidden"}` and only permits `IpcCommand.isAllowedWhenHidden()` (`open`, `selections`, `clear_selections`, `close`, `quit`).
 
 ______________________________________________________________________
 

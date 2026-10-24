@@ -82,7 +82,8 @@ ______________________________________________________________________
 | `:` / `?` / `/` / `F1` / `Ctrl+Shift+P` | Open Command Palette (Actions)                                    |
 | `Ctrl+P`                                | Open File Search Palette                                          |
 | `Ctrl+O`                                | Open Directory Navigator Palette                                  |
-| `q` / `Esc`                             | Close Palette / Dismiss Dialogs / Exit Application                |
+| `q` / `Esc`                             | Close Palette / Dismiss Dialogs / Hide Window (`--server`) / Exit |
+| `Ctrl+Q`                                | Quit Server / Exit Application Unconditionally                    |
 
 ### Command Palette & Line Editor Navigation
 
@@ -153,6 +154,7 @@ Start the image viewer by passing a file or directory path:
 | `--no-thumb-cache`    | None                                                        | Disables the Freedesktop XDG shared thumbnail cache.     |
 | `--precache`          | None                                                        | Pre-generates Freedesktop thumbnails for path and exits. |
 | `-r`, `--recursive`   | None                                                        | Recursively scans subdirectories when pre-caching.       |
+| `--server`            | None                                                        | Runs as a resident background server (`q` hides window). |
 | `--ipc`               | None                                                        | Enables the IPC UNIX Domain Socket server.               |
 | `-S`, `--socket`      | `<PATH>`                                                    | Enables the IPC server bound to an explicit socket path. |
 
@@ -161,13 +163,15 @@ Aliases:
 - `--windowless` can also be specified as `--borderless` or `--undecorated`.
 - `--scale` supports preset aliases: `fit` (alias for `full`), `fill` (alias
   for `crop`), `1:1` or `actual` (alias for `none`).
-- `--socket` can also be specified as `--ipc-socket`; `--precache` as `--cache-thumbs`.
+- `--server` can also be specified as `--daemon`; `--socket` as `--ipc-socket`; `--precache` as `--cache-thumbs`.
 
 ______________________________________________________________________
 
-## Remote IPC Control (`peng-msg`)
+## Remote IPC Control (`peng-msg`) & Resident Server Mode
 
-When `peng` is launched with `--ipc` (default `/tmp/peng-$PID.sock`) or `--socket <path>`, it starts a UDS server and prints the socket path to `stdout`.
+When `peng` is launched with `--server`, `--ipc` (default `/tmp/peng-$PID.sock`), or `--socket <path>`, it starts a UDS server and prints the socket path to `stdout`.
+
+In `--server` mode (or when auto-spawned via `peng-msg --spawn`), `peng` keeps its GPU device and compiled shaders warm in the background. When no `--socket <path>` is specified, both `peng --server` and `peng-msg` resolve the default socket path from `$XDG_RUNTIME_DIR/peng.sock`, falling back to `/tmp/peng-$UID.sock` (or `$TMPDIR/peng.sock` on macOS and `%TEMP%\peng.sock` on Windows). Pressing `q`, `Esc`, clicking the window close button, or sending `peng-msg close` hides the window and unloads the active image cache and directory playlist (preserving only the warm GPU device, shaders, and picks/rejects selections). While hidden, view/navigation IPC commands return `{"ok":false,"error":"WindowHidden"}`, while `open`, `selections`, `clear_selections`, `close`, and `quit` remain available. Pressing `Ctrl+Q`, selecting **Quit Server** in the Command Palette, or sending `peng-msg quit` terminates the server process.
 
 You can send commands to a running instance using the `peng-msg` utility.
 Every `peng-msg` invocation writes a single-line JSON response to `stdout`
@@ -176,9 +180,14 @@ Every `peng-msg` invocation writes a single-line JSON response to `stdout`
 
 ```bash
 # General Usage:
-./zig-out/bin/peng-msg <socket_path> <command_words...>
+./zig-out/bin/peng-msg [-s|--spawn] [-S|--socket <path>] [socket_path] <command_words...>
 
-# Examples:
+# Resident Server Workflow (auto-spawns peng --server on default socket if not running):
+./zig-out/bin/peng-msg --spawn open /path/to/photo.jpg
+./zig-out/bin/peng-msg close
+./zig-out/bin/peng-msg quit
+
+# Examples with explicit socket path:
 # Open a new image file, directory, or .cbz archive in the running instance
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock open /path/to/photo.jpg
 # Adjust zoom factor (min 0.001, max 100.0)
@@ -286,7 +295,10 @@ Every `peng-msg` invocation writes a single-line JSON response to `stdout`
 # Wait for background image decoder to finish loading
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock wait_load
 
-# Quit the app
+# Close/hide the window (in --server mode, keeps the server resident)
+./zig-out/bin/peng-msg /tmp/peng-1234.sock close
+
+# Quit the app / terminate the resident server
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock quit
 ```
 

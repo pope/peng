@@ -90,7 +90,8 @@ pub fn updateFrame(
     );
 
     // Phase 1: Background Event & Input Ingestion
-    const skip_wait = parsed_test_mode or parsed_headless;
+    const skip_wait = (parsed_test_mode or parsed_headless) and
+        !app_state.viewer.display.isHidden();
     if (skip_wait) {
         app_state.viewer.animations.settleAll();
     }
@@ -166,6 +167,7 @@ pub fn updateFrame(
     }
 
     // Phase 2: Update Phase — Run all systems sequentially
+    const was_hidden = app_state.viewer.display.isHidden();
     try runUpdatePhase(
         app_state,
         update_input,
@@ -177,6 +179,22 @@ pub fn updateFrame(
     if (app_state.gpu_device == null) {
         app_state.handleScreenshotPostRender(error.GpuNotInitialized);
         return error.GpuNotInitialized;
+    }
+    switch (app_state.viewer.display) {
+        .hidden => {
+            _ = frame_arena.reset(.free_all);
+            const released_ui = resources.releaseTransientResources(
+                app_state.allocator,
+            );
+            if (!was_hidden or released_ui) {
+                if (app_state.gpu_device) |dev| {
+                    dev.reclaimMemory();
+                }
+                sdl.reclaimProcessHeap();
+            }
+            return;
+        },
+        .visible => {},
     }
 
     const nav = &app_state.viewer.navigation;
@@ -282,7 +300,7 @@ pub fn updateFrame(
         .idle => null,
         .capturing => |s| s.path,
     };
-    const target_window = if (app_state.viewer.display.isClaimed()) window else null;
+    const target_window = app_state.viewer.display.visibleWindow();
     ui.layout.renderFrame(
         ui_model,
         resources,

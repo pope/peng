@@ -332,6 +332,161 @@ fn captureAndVerify(
     return res.pct > max_tolerance_pct;
 }
 
+fn runPengMsg(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+    argv: []const []const u8,
+) ![]u8 {
+    const res = try std.process.run(gpa, io, .{
+        .argv = argv,
+        .environ_map = environ_map,
+    });
+    defer gpa.free(res.stderr);
+    errdefer gpa.free(res.stdout);
+
+    switch (res.term) {
+        .exited => |code| {
+            if (code != 0) {
+                std.log.err(
+                    "peng-msg exited with code {d}: {s}",
+                    .{ code, res.stderr },
+                );
+                return error.PengMsgFailed;
+            }
+        },
+        else => return error.PengMsgTerminatedAbnormally,
+    }
+    return res.stdout;
+}
+
+fn verifyServerModeAndAutoSpawn(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    base_env: *const std.process.Environ.Map,
+    runner_pid: u32,
+) !void {
+    if (builtin.os.tag == .windows) return;
+
+    var xdg_buf: [128]u8 = undefined;
+    const xdg_dir = try std.mem.print(
+        &xdg_buf,
+        "/tmp/peng-xdg-{d}",
+        .{runner_pid},
+    );
+    var sock_buf: [160]u8 = undefined;
+    const default_sock = try std.mem.print(
+        &sock_buf,
+        "{s}/peng.sock",
+        .{xdg_dir},
+    );
+
+    try std.Io.Dir.createDirPath(std.Io.Dir.cwd(), io, xdg_dir);
+    defer {
+        std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, default_sock) catch {};
+        std.Io.Dir.deleteDir(std.Io.Dir.cwd(), io, xdg_dir) catch {};
+    }
+
+    var env = try base_env.clone(gpa);
+    defer env.deinit();
+
+    // Preserve absolute WAYLAND_DISPLAY path before overriding XDG_RUNTIME_DIR
+    if (base_env.get("XDG_RUNTIME_DIR")) |orig_xdg| {
+        if (base_env.get("WAYLAND_DISPLAY")) |wl_disp| {
+            if (wl_disp.len > 0 and wl_disp[0] != '/') {
+                const abs_wl = try std.Io.Dir.path.join(
+                    gpa,
+                    &.{ orig_xdg, wl_disp },
+                );
+                defer gpa.free(abs_wl);
+                try env.put("WAYLAND_DISPLAY", abs_wl);
+            }
+        }
+    }
+    try env.put("XDG_RUNTIME_DIR", xdg_dir);
+    try env.put("PENG_SPAWN_HEADLESS", "1");
+
+    const msg_bin = "./zig-out/bin/peng-msg";
+    errdefer {
+        if (std.process.run(gpa, io, .{
+            .argv = &.{ msg_bin, "quit" },
+            .environ_map = &env,
+        })) |res| {
+            gpa.free(res.stdout);
+            gpa.free(res.stderr);
+        } else |_| {}
+    }
+
+    std.log.info(
+        "Verifying peng-msg --spawn & resident --server mode ({s})",
+        .{default_sock},
+    );
+
+    // 1. Auto-spawn resident server via default socket
+    // ($XDG_RUNTIME_DIR/peng.sock)
+    {
+        const out = try runPengMsg(gpa, io, &env, &.{
+            msg_bin,
+            "--spawn",
+            "open",
+            "testfiles/images/001_1_1024x682.jpg",
+        });
+        defer gpa.free(out);
+        var parsed = try ipc.parseResponse(gpa, out);
+        defer parsed.deinit();
+        if (!parsed.value.ok) return error.AutoSpawnOpenFailed;
+    }
+
+    // 2. Wait for load and mark image as a pick
+    {
+        const out_wait = try runPengMsg(gpa, io, &env, &.{
+            msg_bin,
+            "wait_load",
+        });
+        defer gpa.free(out_wait);
+        const out_pick = try runPengMsg(gpa, io, &env, &.{
+            msg_bin,
+            "pick",
+        });
+        defer gpa.free(out_pick);
+    }
+
+    // 3. Send 'close' — in --server mode this hides the window and unloads
+    // the cache/playlist while keeping the resident server and selections alive
+    {
+        const out_close = try runPengMsg(gpa, io, &env, &.{
+            msg_bin,
+            "close",
+        });
+        defer gpa.free(out_close);
+        var parsed = try ipc.parseResponse(gpa, out_close);
+        defer parsed.deinit();
+        if (!parsed.value.ok) return error.ServerCloseFailed;
+    }
+
+    // 4. Verify navigation/view commands are rejected with WindowHidden while
+    // hidden, whereas 'selections' succeeds and preserves picks
+    try expectCommandFailure(default_sock, "next");
+    try expectSelectionsResponse(
+        gpa,
+        default_sock,
+        &[_][]const u8{"testfiles/images/001_1_1024x682.jpg"},
+        &[_][]const u8{},
+    );
+
+    // 5. Send 'quit' to terminate the resident server
+    {
+        const out_quit = try runPengMsg(gpa, io, &env, &.{
+            msg_bin,
+            "quit",
+        });
+        defer gpa.free(out_quit);
+        var parsed = try ipc.parseResponse(gpa, out_quit);
+        defer parsed.deinit();
+        if (!parsed.value.ok) return error.ServerQuitFailed;
+    }
+}
+
 /// Visual regression and integration test harness runner that executes automated
 /// IPC test sequences and compares screenshots against goldens.
 pub fn main(init: std.process.Init) !void {
@@ -854,6 +1009,13 @@ pub fn main(init: std.process.Init) !void {
             return error.ChildTerminatedAbnormally;
         },
     }
+
+    try verifyServerModeAndAutoSpawn(
+        gpa,
+        init.io,
+        init.environ_map,
+        runner_pid,
+    );
 
     if (steps_with_discrepancies > 0) {
         std.log.err(

@@ -150,12 +150,46 @@ pub const WorkerManager = struct {
         }
     }
 
+    fn clearThumbWriteQueueLocked(
+        self: *WorkerManager,
+        allocator: std.mem.Allocator,
+        free_capacity: bool,
+    ) void {
+        const rem = self.thumb_write_queue.items.len;
+        for (self.thumb_write_queue.items) |*item| {
+            item.deinit(allocator);
+        }
+        if (free_capacity) {
+            self.thumb_write_queue.clearAndFree(allocator);
+        } else {
+            self.thumb_write_queue.clearRetainingCapacity();
+        }
+        if (rem > 0) {
+            _ = self.thumb_cache_write_queued.fetchSub(rem, .release);
+        }
+    }
+
+    /// Clears all pending thumbnail write jobs and frees their owned surfaces.
+    pub fn clearThumbWriteQueue(
+        self: *WorkerManager,
+        allocator: std.mem.Allocator,
+        io: std.Io,
+    ) void {
+        self.thumb_write_mutex.lockUncancelable(io);
+        defer self.thumb_write_mutex.unlock(io);
+
+        self.clearThumbWriteQueueLocked(allocator, true);
+    }
+
     fn thumbWriterWorker(
         self: *WorkerManager,
         allocator: std.mem.Allocator,
         io: std.Io,
     ) void {
-        defer _ = self.active_thumb_writers.fetchSub(1, .release);
+        defer {
+            sdl.reclaimProcessHeap();
+            _ = self.active_thumb_writers.fetchSub(1, .release);
+        }
 
         var scratch_arena: std.heap.ArenaAllocator = .init(allocator);
         defer scratch_arena.deinit();
@@ -171,17 +205,7 @@ pub const WorkerManager = struct {
                 if (self.exiting.load(.acquire) or
                     self.thumb_write_queue.items.len == 0)
                 {
-                    const rem = self.thumb_write_queue.items.len;
-                    for (self.thumb_write_queue.items) |*item| {
-                        item.deinit(allocator);
-                    }
-                    self.thumb_write_queue.clearRetainingCapacity();
-                    if (rem > 0) {
-                        _ = self.thumb_cache_write_queued.fetchSub(
-                            rem,
-                            .release,
-                        );
-                    }
+                    self.clearThumbWriteQueueLocked(allocator, false);
                     self.thumb_writer_running = false;
                     break :blk false;
                 }
@@ -202,17 +226,7 @@ pub const WorkerManager = struct {
                 if (self.exiting.load(.acquire) or
                     self.thumb_write_queue.items.len == 0)
                 {
-                    const rem = self.thumb_write_queue.items.len;
-                    for (self.thumb_write_queue.items) |*item| {
-                        item.deinit(allocator);
-                    }
-                    self.thumb_write_queue.clearRetainingCapacity();
-                    if (rem > 0) {
-                        _ = self.thumb_cache_write_queued.fetchSub(
-                            rem,
-                            .release,
-                        );
-                    }
+                    self.clearThumbWriteQueueLocked(allocator, false);
                     self.thumb_writer_running = false;
                     break :blk null;
                 }
@@ -329,6 +343,7 @@ pub const WorkerManager = struct {
                 );
             }
             batch.deinit();
+            sdl.reclaimProcessHeap();
             _ = self.active_thumb_writers.fetchSub(1, .release);
             context.wakeUpMainThread();
         }
@@ -460,10 +475,7 @@ pub const WorkerManager = struct {
         {
             self.thumb_write_mutex.lockUncancelable(io);
             defer self.thumb_write_mutex.unlock(io);
-            for (self.thumb_write_queue.items) |*item| {
-                item.deinit(allocator);
-            }
-            self.thumb_write_queue.deinit(allocator);
+            self.clearThumbWriteQueueLocked(allocator, true);
             self.thumb_cache_write_queued.store(0, .release);
             self.thumb_writer_running = false;
         }

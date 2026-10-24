@@ -1318,23 +1318,25 @@ pub fn loadThumbnailSurface(
 /// a duration/inactivity threshold (or high-water decay) so memory is reclaimed if a single
 /// exceptionally large image temporarily expanded capacity.
 pub const UploadStagingBuffer = struct {
-    transfer_buffer: ?sdl.gpu.TransferBuffer = null,
-    storage_buffer: ?sdl.gpu.Buffer = null,
-    transfer_capacity: usize = 0,
-    storage_capacity: usize = 0,
+    transfer: sdl.gpu.RetainedTransferBuffer = .unallocated,
+    storage: sdl.gpu.RetainedBuffer = .unallocated,
 
     /// Releases retained GPU transfer and compute storage buffers.
     pub fn deinit(self: *UploadStagingBuffer, dev: sdl.gpu.Device) void {
-        if (self.transfer_buffer) |tb| {
-            dev.releaseTransferBuffer(tb);
-            self.transfer_buffer = null;
+        switch (self.transfer) {
+            .unallocated => {},
+            .allocated => |a| {
+                dev.releaseTransferBuffer(a.handle);
+                self.transfer = .unallocated;
+            },
         }
-        if (self.storage_buffer) |sb| {
-            dev.releaseBuffer(sb);
-            self.storage_buffer = null;
+        switch (self.storage) {
+            .unallocated => {},
+            .allocated => |a| {
+                dev.releaseBuffer(a.handle);
+                self.storage = .unallocated;
+            },
         }
-        self.transfer_capacity = 0;
-        self.storage_capacity = 0;
     }
 
     /// Obtains a transfer buffer with at least `required_size` capacity, reusing the
@@ -1344,28 +1346,26 @@ pub const UploadStagingBuffer = struct {
         dev: sdl.gpu.Device,
         required_size: usize,
     ) ?sdl.gpu.TransferBuffer {
-        if (self.transfer_buffer != null and self.transfer_capacity >= required_size) {
-            return self.transfer_buffer;
-        }
-        const growth_cap = if (self.transfer_capacity > 0)
-            self.transfer_capacity * 2
-        else
-            4 * 1024 * 1024;
+        const growth_cap = switch (self.transfer) {
+            .allocated => |a| blk: {
+                if (a.capacity >= required_size) return a.handle;
+                dev.releaseTransferBuffer(a.handle);
+                self.transfer = .unallocated;
+                break :blk a.capacity * 2;
+            },
+            .unallocated => 4 * 1024 * 1024,
+        };
         const next_cap = @max(required_size, growth_cap);
-        const aligned_cap = std.mem.alignForward(usize, next_cap, 4096);
-        if (self.transfer_buffer) |tb| {
-            dev.releaseTransferBuffer(tb);
-            self.transfer_buffer = null;
-        }
-        self.transfer_capacity = 0;
+        const aligned_cap = std.mem.alignForward(usize, next_cap, 4 * 1024);
 
         const tb = dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
             .usage = .upload,
             .size = @intCast(aligned_cap),
             .props = 0,
         }) orelse return null;
-        self.transfer_buffer = tb;
-        self.transfer_capacity = aligned_cap;
+        self.transfer = .{
+            .allocated = .{ .handle = tb, .capacity = aligned_cap },
+        };
         return tb;
     }
 
@@ -1376,28 +1376,26 @@ pub const UploadStagingBuffer = struct {
         dev: sdl.gpu.Device,
         required_size: usize,
     ) ?sdl.gpu.Buffer {
-        if (self.storage_buffer != null and self.storage_capacity >= required_size) {
-            return self.storage_buffer;
-        }
-        const growth_cap = if (self.storage_capacity > 0)
-            self.storage_capacity * 2
-        else
-            4 * 1024 * 1024;
+        const growth_cap = switch (self.storage) {
+            .allocated => |a| blk: {
+                if (a.capacity >= required_size) return a.handle;
+                dev.releaseBuffer(a.handle);
+                self.storage = .unallocated;
+                break :blk a.capacity * 2;
+            },
+            .unallocated => 4 * 1024 * 1024,
+        };
         const next_cap = @max(required_size, growth_cap);
-        const aligned_cap = std.mem.alignForward(usize, next_cap, 4096);
-        if (self.storage_buffer) |sb| {
-            dev.releaseBuffer(sb);
-            self.storage_buffer = null;
-        }
-        self.storage_capacity = 0;
+        const aligned_cap = std.mem.alignForward(usize, next_cap, 4 * 1024);
 
         const sb = dev.createBuffer(&sdl.gpu.BufferCreateInfo{
             .usage = sdl.gpu.BufferUsage.compute_storage_read,
             .size = @intCast(aligned_cap),
             .props = 0,
         }) orelse return null;
-        self.storage_buffer = sb;
-        self.storage_capacity = aligned_cap;
+        self.storage = .{
+            .allocated = .{ .handle = sb, .capacity = aligned_cap },
+        };
         return sb;
     }
 };
@@ -2155,10 +2153,8 @@ test "ImageCache.updateStatus" {
 
 test "UploadStagingBuffer - capacity growth and clean deinit" {
     var staging = UploadStagingBuffer{};
-    try std.testing.expect(staging.transfer_buffer == null);
-    try std.testing.expect(staging.storage_buffer == null);
-    try std.testing.expectEqual(@as(usize, 0), staging.transfer_capacity);
-    try std.testing.expectEqual(@as(usize, 0), staging.storage_capacity);
+    try std.testing.expect(staging.transfer == .unallocated);
+    try std.testing.expect(staging.storage == .unallocated);
 
     const dev_opt = sdl.gpu.Device.create(
         sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl,
@@ -2170,29 +2166,39 @@ test "UploadStagingBuffer - capacity growth and clean deinit" {
     // Initial allocation should be at least 4MB aligned to 4KB
     const tb1 = staging.getOrCreateTransferBuffer(dev, 1024);
     try std.testing.expect(tb1 != null);
-    try std.testing.expectEqual(@as(usize, 4 * 1024 * 1024), staging.transfer_capacity);
+    try std.testing.expectEqual(
+        @as(usize, 4 * 1024 * 1024),
+        staging.transfer.allocated.capacity,
+    );
 
     // Reuse existing buffer when required_size <= transfer_capacity
     const tb2 = staging.getOrCreateTransferBuffer(dev, 2 * 1024 * 1024);
     try std.testing.expect(tb2 != null);
-    try std.testing.expectEqual(@as(usize, 4 * 1024 * 1024), staging.transfer_capacity);
+    try std.testing.expectEqual(
+        @as(usize, 4 * 1024 * 1024),
+        staging.transfer.allocated.capacity,
+    );
 
     // Reallocation with geometric growth (4MB -> 8MB) when required exceeds capacity
     const tb3 = staging.getOrCreateTransferBuffer(dev, 5 * 1024 * 1024);
     try std.testing.expect(tb3 != null);
-    try std.testing.expectEqual(@as(usize, 8 * 1024 * 1024), staging.transfer_capacity);
+    try std.testing.expectEqual(
+        @as(usize, 8 * 1024 * 1024),
+        staging.transfer.allocated.capacity,
+    );
 
     // Storage buffer test
     const sb1 = staging.getOrCreateStorageBuffer(dev, 1024);
     try std.testing.expect(sb1 != null);
-    try std.testing.expectEqual(@as(usize, 4 * 1024 * 1024), staging.storage_capacity);
+    try std.testing.expectEqual(
+        @as(usize, 4 * 1024 * 1024),
+        staging.storage.allocated.capacity,
+    );
 
     // Deinit releases all buffers and resets capacities
     staging.deinit(dev);
-    try std.testing.expect(staging.transfer_buffer == null);
-    try std.testing.expect(staging.storage_buffer == null);
-    try std.testing.expectEqual(@as(usize, 0), staging.transfer_capacity);
-    try std.testing.expectEqual(@as(usize, 0), staging.storage_capacity);
+    try std.testing.expect(staging.transfer == .unallocated);
+    try std.testing.expect(staging.storage == .unallocated);
 }
 
 test "uploadSurfaceToGpu - staging buffer reuse across consecutive uploads" {
@@ -2206,7 +2212,8 @@ test "uploadSurfaceToGpu - staging buffer reuse across consecutive uploads" {
     var staging = UploadStagingBuffer{};
     defer staging.deinit(dev);
 
-    const surf1 = sdl.Surface.create(64, 64, sdl.PixelFormat.rgba32) orelse return;
+    const surf1 = sdl.Surface.create(64, 64, sdl.PixelFormat.rgba32) orelse
+        return;
     defer surf1.destroy();
 
     const res1 = uploadSurfaceToGpu(dev, surf1, null, &staging);
@@ -2217,12 +2224,13 @@ test "uploadSurfaceToGpu - staging buffer reuse across consecutive uploads" {
         try std.testing.expectEqual(@as(f32, 64.0), r.h);
     }
 
-    try std.testing.expect(staging.transfer_buffer != null);
-    const cap1 = staging.transfer_capacity;
+    try std.testing.expect(staging.transfer == .allocated);
+    const cap1 = staging.transfer.allocated.capacity;
     try std.testing.expect(cap1 >= 64 * 64 * 4);
 
     // Second upload should reuse staging transfer buffer without reallocating
-    const surf2 = sdl.Surface.create(32, 32, sdl.PixelFormat.rgba32) orelse return;
+    const surf2 = sdl.Surface.create(32, 32, sdl.PixelFormat.rgba32) orelse
+        return;
     defer surf2.destroy();
 
     const res2 = uploadSurfaceToGpu(dev, surf2, null, &staging);
@@ -2233,7 +2241,7 @@ test "uploadSurfaceToGpu - staging buffer reuse across consecutive uploads" {
         try std.testing.expectEqual(@as(f32, 32.0), r.h);
     }
 
-    try std.testing.expectEqual(cap1, staging.transfer_capacity);
+    try std.testing.expectEqual(cap1, staging.transfer.allocated.capacity);
 }
 
 test "probeMediaMetadata - filesystem JPEG" {

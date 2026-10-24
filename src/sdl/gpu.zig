@@ -215,6 +215,22 @@ pub const TransferBuffer = struct {
     ptr: *c.SDL_GPUTransferBuffer,
 };
 
+/// Tagged union pairing an allocated GPU buffer or transfer buffer handle with
+/// its non-zero byte capacity, making `(handle == null, capacity > 0)` and
+/// `(handle != null, capacity == 0)` unrepresentable.
+pub fn RetainedResource(comptime Handle: type) type {
+    return union(enum) {
+        unallocated,
+        allocated: struct {
+            handle: Handle,
+            capacity: usize,
+        },
+    };
+}
+
+pub const RetainedBuffer = RetainedResource(Buffer);
+pub const RetainedTransferBuffer = RetainedResource(TransferBuffer);
+
 /// Opaque handle representing a GPU execution synchronization fence.
 pub const Fence = struct {
     ptr: *c.SDL_GPUFence,
@@ -1118,5 +1134,33 @@ pub const Device = struct {
     pub fn waitForFence(self: Device, fence: Fence) bool {
         var f_arr = [1]?*c.SDL_GPUFence{fence.ptr};
         return c.SDL_WaitForGPUFences(self.ptr, true, &f_arr, 1);
+    }
+
+    /// Waits for all in-flight GPU work to complete, flushes deferred resource
+    /// destructions, and submits an empty command buffer so the backend
+    /// deallocates empty device memory blocks.
+    pub fn reclaimMemory(self: Device) void {
+        if (!c.SDL_WaitForGPUIdle(self.ptr)) {
+            std.log.warn(
+                "SDL_WaitForGPUIdle failed before reclaim submit: {s}",
+                .{c.SDL_GetError()},
+            );
+            return;
+        }
+        if (self.acquireCommandBuffer()) |cmd| {
+            if (!cmd.submit()) {
+                std.log.warn(
+                    "SDL_SubmitGPUCommandBuffer failed in reclaimMemory: {s}",
+                    .{c.SDL_GetError()},
+                );
+                return;
+            }
+            if (!c.SDL_WaitForGPUIdle(self.ptr)) {
+                std.log.warn(
+                    "SDL_WaitForGPUIdle failed after reclaim submit: {s}",
+                    .{c.SDL_GetError()},
+                );
+            }
+        }
     }
 };

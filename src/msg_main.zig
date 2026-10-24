@@ -1,86 +1,216 @@
 const app_config = @import("config");
+const builtin = @import("builtin");
 const ipc = @import("ipc");
 const std = @import("std");
+
+fn resolvePengBinary(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+    argv0: ?[]const u8,
+) ![]u8 {
+    if (environ_map.get("PENG_BIN")) |raw_bin| {
+        const trimmed = std.mem.trim(u8, raw_bin, " \t\r\n");
+        if (trimmed.len > 0) {
+            return gpa.dupe(u8, trimmed);
+        }
+    }
+    const exe_name = if (builtin.os.tag == .windows) "peng.exe" else "peng";
+    if (argv0) |prog| {
+        if (std.Io.Dir.path.dirname(prog)) |dir| {
+            const candidate = try std.Io.Dir.path.join(
+                gpa,
+                &.{ dir, exe_name },
+            );
+            if (std.Io.Dir.statFile(
+                std.Io.Dir.cwd(),
+                io,
+                candidate,
+                .{},
+            )) |_| {
+                return candidate;
+            } else |_| {
+                gpa.free(candidate);
+            }
+        }
+    }
+    return gpa.dupe(u8, exe_name);
+}
+
+fn spawnServerProcess(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    environ_map: *const std.process.Environ.Map,
+    argv0: ?[]const u8,
+    socket_path: []const u8,
+) !void {
+    const peng_bin = try resolvePengBinary(gpa, io, environ_map, argv0);
+    defer gpa.free(peng_bin);
+
+    const headless_env = environ_map.get("PENG_SPAWN_HEADLESS");
+    const use_headless = if (headless_env) |val|
+        std.mem.eql(u8, std.mem.trim(u8, val, " \t\r\n"), "1")
+    else
+        false;
+
+    const argv_headless = [_][]const u8{
+        peng_bin,
+        "--server",
+        "--headless",
+        "--test-mode",
+        "--socket",
+        socket_path,
+    };
+    const argv_normal = [_][]const u8{
+        peng_bin,
+        "--server",
+        "--socket",
+        socket_path,
+    };
+    const argv: []const []const u8 = if (use_headless)
+        &argv_headless
+    else
+        &argv_normal;
+
+    _ = try std.process.spawn(io, .{
+        .argv = argv,
+        .environ_map = environ_map,
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+}
 
 /// CLI entry point for sending IPC commands to a running Peng instance via Unix domain socket.
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
 
-    var args_it = try std.process.Args.Iterator.initAllocator(init.minimal.args, gpa);
+    var args_it = try std.process.Args.Iterator.initAllocator(
+        init.minimal.args,
+        gpa,
+    );
     defer args_it.deinit();
 
-    // Skip executable name
-    _ = args_it.next();
-
-    const first_arg = args_it.next() orelse {
-        app_config.cli.printIpcHelp(io);
+    const argv0 = args_it.next();
+    var parsed = app_config.cli.parseIpcArgsIterator(
+        &args_it,
+        gpa,
+    ) catch |err| {
+        if (err == error.MissingCommand) {
+            app_config.cli.printIpcHelp(io);
+        }
         std.process.exit(1);
     };
+    defer parsed.deinit(gpa);
 
-    if (app_config.cli.findOptionFor(first_arg, .ipc)) |opt| {
-        if (opt.id == .help) {
+    var send_args = switch (parsed) {
+        .help => {
             app_config.cli.printIpcHelp(io);
             return;
-        }
-    }
+        },
+        .send => |*s| s,
+    };
 
-    const socket_path = first_arg;
-
-    // Join the rest of the arguments with space
-    var command_buf: std.ArrayList(u8) = .empty;
-    defer command_buf.deinit(gpa);
-    var idx: usize = 0;
-    while (args_it.next()) |arg| : (idx += 1) {
-        if (idx > 0) try command_buf.append(gpa, ' ');
-        try command_buf.appendSlice(gpa, arg);
-    }
-    try command_buf.append(gpa, '\n');
-
-    if (command_buf.items.len <= 1) {
-        std.log.err("Usage: peng-msg <socket_path> <command_words...>", .{});
-        std.process.exit(1);
-    }
+    const socket_path = if (send_args.socket_path) |sp|
+        sp
+    else blk: {
+        const resolved = ipc.resolveDefaultSocketPath(
+            gpa,
+            init.environ_map,
+        ) catch |err| {
+            std.log.err(
+                "Failed to resolve default IPC socket path ({any}): " ++
+                    "set $XDG_RUNTIME_DIR, $UID, or pass --socket <PATH>",
+                .{err},
+            );
+            std.process.exit(1);
+        };
+        send_args.socket_path = resolved;
+        break :blk resolved;
+    };
 
     const address = std.Io.net.UnixAddress.init(socket_path) catch |err| {
         std.log.err("Invalid socket path: {any}", .{err});
         std.process.exit(1);
     };
 
-    const max_connect_attempts = 25; // 25 * 40ms = 1.0s max wait for server socket creation
+    const max_connect_attempts: usize = if (send_args.spawn) 75 else 25;
+    var spawned_server = false;
     var attempt: usize = 0;
     const stream = while (attempt < max_connect_attempts) : (attempt += 1) {
         if (address.connect(io)) |s| {
             break s;
         } else |err| switch (err) {
-            error.FileNotFound, error.WouldBlock => {
+            error.FileNotFound,
+            error.ConnectionRefused,
+            error.WouldBlock,
+            => {
+                if (send_args.spawn and !spawned_server and
+                    (err == error.FileNotFound or
+                        err == error.ConnectionRefused))
+                {
+                    spawned_server = true;
+                    spawnServerProcess(
+                        gpa,
+                        io,
+                        init.environ_map,
+                        argv0,
+                        socket_path,
+                    ) catch |spawn_err| {
+                        std.log.err(
+                            "Failed to spawn peng server for socket {s}: {any}",
+                            .{ socket_path, spawn_err },
+                        );
+                        std.process.exit(1);
+                    };
+                } else if (err == error.ConnectionRefused and !spawned_server) {
+                    std.log.err(
+                        "Failed to connect to socket {s}: {any}",
+                        .{ socket_path, err },
+                    );
+                    std.process.exit(1);
+                }
+
                 if (attempt + 1 < max_connect_attempts) {
                     std.Io.sleep(
                         io,
                         std.Io.Duration.fromMilliseconds(40),
                         .awake,
                     ) catch |sleep_err| {
-                        std.log.debug("Connect retry sleep interrupted: {any}", .{sleep_err});
+                        std.log.debug(
+                            "Connect retry sleep interrupted: {any}",
+                            .{sleep_err},
+                        );
                     };
                     continue;
                 }
-                std.log.err("Failed to connect to socket {s}: {any}", .{ socket_path, err });
+                std.log.err(
+                    "Failed to connect to socket {s}: {any}",
+                    .{ socket_path, err },
+                );
                 std.process.exit(1);
             },
             else => {
-                std.log.err("Failed to connect to socket {s}: {any}", .{ socket_path, err });
+                std.log.err(
+                    "Failed to connect to socket {s}: {any}",
+                    .{ socket_path, err },
+                );
                 std.process.exit(1);
             },
         }
     } else {
-        std.log.err("Failed to connect to socket {s}: Connection timed out", .{socket_path});
+        std.log.err(
+            "Failed to connect to socket {s}: Connection timed out",
+            .{socket_path},
+        );
         std.process.exit(1);
     };
     defer stream.close(io);
 
-    var write_buf: [1024]u8 = undefined;
+    var write_buf: [1 * 1024]u8 = undefined;
     var writer = stream.writer(io, &write_buf);
-    writer.interface.writeAll(command_buf.items) catch |err| {
+    writer.interface.writeAll(send_args.command) catch |err| {
         std.log.err("Failed to send command: {any}", .{err});
         std.process.exit(1);
     };
@@ -113,14 +243,14 @@ pub fn main(init: std.process.Init) !void {
     if (response_opt) |response| {
         defer gpa.free(response);
         const trimmed = std.mem.trim(u8, response, " \t\r\n");
-        var parsed = ipc.parseResponse(gpa, trimmed) catch |err| {
+        var parsed_resp = ipc.parseResponse(gpa, trimmed) catch |err| {
             std.log.err(
                 "Invalid JSON response from peng ({any}): {s}",
                 .{ err, trimmed },
             );
             std.process.exit(1);
         };
-        defer parsed.deinit();
+        defer parsed_resp.deinit();
 
         const stdout = std.Io.File.stdout();
         var stdout_buf: [4 * 1024]u8 = undefined;
@@ -133,7 +263,7 @@ pub fn main(init: std.process.Init) !void {
             std.log.err("Failed to flush stdout: {any}", .{err});
             std.process.exit(1);
         };
-        if (!parsed.value.ok) {
+        if (!parsed_resp.value.ok) {
             std.process.exit(1);
         }
     } else {

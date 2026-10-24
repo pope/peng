@@ -33,6 +33,7 @@ pub const computeThumbnailUvCrop = view_transform.computeThumbnailUvCrop;
 pub const CpuSurfaceComponent = types.CpuSurfaceComponent;
 pub const DirectionFlags = types.DirectionFlags;
 pub const DirectoryEntry = palette_state.DirectoryEntry;
+pub const DisplayBackend = types.DisplayBackend;
 pub const DisplayState = types.DisplayState;
 pub const DpiScale = types.DpiScale;
 pub const DragState = types.DragState;

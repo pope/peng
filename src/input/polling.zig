@@ -122,7 +122,9 @@ pub const FrameInputState = struct {
 /// Processes a single SDL event and updates the frame input accumulator state.
 pub fn processSDLEvent(event: sdl.Event, frame_input: *FrameInputState) !void {
     switch (event.type) {
-        sdl.event_type.quit => frame_input.quit_requested = true,
+        sdl.event_type.quit,
+        sdl.event_type.window_close_requested,
+        => frame_input.quit_requested = true,
         sdl.event_type.mouse_enter => {
             frame_input.mouse_inside = true;
         },

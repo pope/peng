@@ -192,11 +192,32 @@ pub const PaletteState = struct {
         self.current_nav_dir.clearRetainingCapacity();
         self.last_child_dir.clearRetainingCapacity();
         self.clearDirItems();
-        self.dir_scan_generation.store(0, .release);
+        _ = self.dir_scan_generation.fetchAdd(1, .release);
         self.mode = .inactive;
         self.is_closing = false;
         self.selected_idx = 0;
         self.selection_dirty = true;
+    }
+
+    /// Trims oversized backing arrays and fuzzy searcher allocations back to
+    /// their warm initial footprint when hiding the window in server mode.
+    pub fn shrinkToWarmCapacity(self: *PaletteState) void {
+        if (self.matches.capacity > 64) {
+            self.matches.clearAndFree(self.allocator);
+        }
+        if (self.scored_matches.capacity > 64) {
+            self.scored_matches.clearAndFree(self.allocator);
+        }
+        if (self.dir_items.capacity > 64) {
+            self.dir_items.clearAndFree(self.allocator);
+        }
+        if (self.searcher) |*s| {
+            if (s.alg.max_haystack > 64) {
+                s.deinit();
+                self.searcher = null;
+                self.max_haystack_len = 64;
+            }
+        }
     }
 
     /// Returns whether the palette is currently active and accepting user input (not closing).

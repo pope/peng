@@ -1336,6 +1336,9 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         alloc.destroy(args);
         _ = workers.active_decode_threads.fetchSub(1, .release);
         _ = workers.active_threads.fetchSub(1, .release);
+        if (cancel.isCanceled()) {
+            sdl.reclaimProcessHeap();
+        }
         context.wakeUpMainThread();
     }
 

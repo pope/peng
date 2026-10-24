@@ -14,6 +14,72 @@ fn getProcessId() u32 {
     }
 }
 
+fn trimTrailingSeparators(path: []const u8) []const u8 {
+    var end = path.len;
+    while (end > 1 and (path[end - 1] == '/' or path[end - 1] == '\\')) {
+        end -= 1;
+    }
+    return path[0..end];
+}
+
+/// Resolves the default Unix domain socket path from the process environment:
+/// 1. `$XDG_RUNTIME_DIR/peng.sock`
+/// 2. `/tmp/peng-$UID.sock`
+/// 3. On macOS: `$TMPDIR/peng.sock`; on Windows: `%TEMP%\peng.sock`
+/// Returns `error.MissingSocketEnv` if none of the environment variables are
+/// present, or `error.InvalidSocketPath` if the path exceeds socket limits.
+pub fn resolveDefaultSocketPath(
+    allocator: std.mem.Allocator,
+    environ_map: *const std.process.Environ.Map,
+) ![]u8 {
+    if (environ_map.get("XDG_RUNTIME_DIR")) |raw_xdg| {
+        const xdg = std.mem.trim(u8, raw_xdg, " \t\r\n");
+        if (xdg.len > 0) {
+            const clean = trimTrailingSeparators(xdg);
+            const joined = try allocator.print("{s}/peng.sock", .{clean});
+            errdefer allocator.free(joined);
+            if (joined.len >= 104) return error.InvalidSocketPath;
+            return joined;
+        }
+    }
+
+    if (environ_map.get("UID")) |raw_uid| {
+        const uid = std.mem.trim(u8, raw_uid, " \t\r\n");
+        if (uid.len > 0) {
+            const joined = try allocator.print("/tmp/peng-{s}.sock", .{uid});
+            errdefer allocator.free(joined);
+            if (joined.len >= 104) return error.InvalidSocketPath;
+            return joined;
+        }
+    }
+
+    if (builtin.os.tag == .macos) {
+        if (environ_map.get("TMPDIR")) |raw_tmp| {
+            const tmp = std.mem.trim(u8, raw_tmp, " \t\r\n");
+            if (tmp.len > 0) {
+                const clean = trimTrailingSeparators(tmp);
+                const joined = try allocator.print("{s}/peng.sock", .{clean});
+                errdefer allocator.free(joined);
+                if (joined.len >= 104) return error.InvalidSocketPath;
+                return joined;
+            }
+        }
+    } else if (builtin.os.tag == .windows) {
+        if (environ_map.get("TEMP") orelse environ_map.get("TMP")) |raw_tmp| {
+            const tmp = std.mem.trim(u8, raw_tmp, " \t\r\n");
+            if (tmp.len > 0) {
+                const clean = trimTrailingSeparators(tmp);
+                const joined = try allocator.print("{s}\\peng.sock", .{clean});
+                errdefer allocator.free(joined);
+                if (joined.len >= 104) return error.InvalidSocketPath;
+                return joined;
+            }
+        }
+    }
+
+    return error.MissingSocketEnv;
+}
+
 /// Command string payload received from an IPC client together with its open communication stream.
 pub const IpcCommandData = struct {
     command: []const u8,
@@ -200,6 +266,7 @@ pub const IpcCommand = union(enum) {
     clear_selections,
     view: intents.ViewMode,
     precache,
+    close,
     quit,
     open: []const u8,
     screenshot: []const u8,
@@ -302,7 +369,8 @@ pub const IpcCommand = union(enum) {
             .clear_selections => return .clear_classifications,
             .view => |mode| return .{ .set_view_mode = mode },
             .precache => return .precache_directory,
-            .quit => return .quit,
+            .close => return .quit,
+            .quit => return .quit_server,
             .open => |p| return .{ .open_path = p },
             .wait_load, .screenshot, .selections => return null,
         }
@@ -680,11 +748,66 @@ pub const IpcCommand = union(enum) {
             return .{ .screenshot = filepath };
         } else if (std.mem.eql(u8, cmd, "precache")) {
             return .precache;
-        } else if (std.mem.eql(u8, cmd, "quit")) {
+        } else if (std.mem.eql(u8, cmd, "close") or
+            std.mem.eql(u8, cmd, "hide"))
+        {
+            return .close;
+        } else if (std.mem.eql(u8, cmd, "quit") or
+            std.mem.eql(u8, cmd, "quit_server") or
+            std.mem.eql(u8, cmd, "shutdown"))
+        {
             return .quit;
         } else {
             return error.UnknownCommand;
         }
+    }
+
+    /// Returns `true` if this IPC command may be executed while the resident
+    /// server window is hidden (`open`, `selections`, `clear_selections`,
+    /// `close`, `quit`).
+    pub fn isAllowedWhenHidden(self: IpcCommand) bool {
+        return switch (self) {
+            .open,
+            .selections,
+            .clear_selections,
+            .close,
+            .quit,
+            => true,
+            .wait_load,
+            .zoom,
+            .pan,
+            .adjust,
+            .tone,
+            .color,
+            .presence,
+            .clarity,
+            .texture,
+            .compare,
+            .edit,
+            .filter,
+            .scale,
+            .manga,
+            .title,
+            .snackbar,
+            .windowless,
+            .crossfade,
+            .stack_raw_jpeg,
+            .toggle_stream,
+            .palette,
+            .thumb,
+            .debug,
+            .screenshot,
+            .reset_view,
+            .reset_adjustments,
+            .next,
+            .prev,
+            .pick,
+            .reject,
+            .unflag,
+            .view,
+            .precache,
+            => false,
+        };
     }
 };
 
@@ -1267,7 +1390,72 @@ test "IpcCommand parsing" {
         cmd_precache.toIntent().?,
     );
 
+    const cmd_quit = try IpcCommand.parse("quit");
+    try std.testing.expectEqual(IpcCommand.quit, cmd_quit);
+    try std.testing.expectEqual(
+        intents.AppIntent.quit_server,
+        cmd_quit.toIntent().?,
+    );
+
+    const cmd_quit_srv = try IpcCommand.parse("quit_server");
+    try std.testing.expectEqual(IpcCommand.quit, cmd_quit_srv);
+    try std.testing.expectEqual(
+        intents.AppIntent.quit_server,
+        cmd_quit_srv.toIntent().?,
+    );
+
+    const cmd_shutdown = try IpcCommand.parse("shutdown");
+    try std.testing.expectEqual(IpcCommand.quit, cmd_shutdown);
+
+    const cmd_close = try IpcCommand.parse("close");
+    try std.testing.expectEqual(IpcCommand.close, cmd_close);
+    try std.testing.expectEqual(
+        intents.AppIntent.quit,
+        cmd_close.toIntent().?,
+    );
+
+    const cmd_hide = try IpcCommand.parse("hide");
+    try std.testing.expectEqual(IpcCommand.close, cmd_hide);
+
     try std.testing.expectError(error.UnknownCommand, IpcCommand.parse("invalid_command"));
+}
+
+test "resolveDefaultSocketPath - XDG_RUNTIME_DIR, UID fallback, missing env" {
+    const allocator = std.testing.allocator;
+
+    // 1. Prefers XDG_RUNTIME_DIR over UID
+    {
+        var env_map = std.process.Environ.Map.init(allocator);
+        defer env_map.deinit();
+        try env_map.put("XDG_RUNTIME_DIR", "/run/user/1000/");
+        try env_map.put("UID", "1000");
+
+        const p = try resolveDefaultSocketPath(allocator, &env_map);
+        defer allocator.free(p);
+        try std.testing.expectEqualStrings("/run/user/1000/peng.sock", p);
+    }
+
+    // 2. Falls back to /tmp/peng-$UID.sock when XDG_RUNTIME_DIR is absent
+    {
+        var env_map = std.process.Environ.Map.init(allocator);
+        defer env_map.deinit();
+        try env_map.put("UID", "1001");
+
+        const p = try resolveDefaultSocketPath(allocator, &env_map);
+        defer allocator.free(p);
+        try std.testing.expectEqualStrings("/tmp/peng-1001.sock", p);
+    }
+
+    // 3. Returns error.MissingSocketEnv when neither variable is present
+    {
+        var env_map = std.process.Environ.Map.init(allocator);
+        defer env_map.deinit();
+
+        try std.testing.expectError(
+            error.MissingSocketEnv,
+            resolveDefaultSocketPath(allocator, &env_map),
+        );
+    }
 }
 
 test "readLineTimeout - success and timeout" {

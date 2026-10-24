@@ -40,37 +40,44 @@ pub fn sysSyncWindow(ctx: FrameContext) void {
     );
 
     switch (state.viewer.display) {
-        .windowed => |*win| {
-            const title_changed = if (win.cached_title) |cached|
-                !std.mem.eql(u8, cached, raw_title)
-            else
-                true;
+        .visible => |*b| switch (b.*) {
+            .windowed => |*win| {
+                const title_changed = if (win.cached_title) |cached|
+                    !std.mem.eql(u8, cached, raw_title)
+                else
+                    true;
 
-            if (title_changed) {
-                if (ctx.frame_allocator.dupeSentinel(u8, raw_title, 0)) |tz| {
-                    defer ctx.frame_allocator.free(tz);
-                    win.handle.setTitle(tz);
-                } else |err| {
-                    std.log.err(
-                        "Failed to allocate window title string: {}",
-                        .{err},
-                    );
-                }
-
-                if (win.cached_title) |cached| {
-                    state.allocator.free(cached);
-                }
-                win.cached_title =
-                    state.allocator.dupe(u8, raw_title) catch |err| blk: {
+                if (title_changed) {
+                    if (ctx.frame_allocator.dupeSentinel(
+                        u8,
+                        raw_title,
+                        0,
+                    )) |tz| {
+                        defer ctx.frame_allocator.free(tz);
+                        win.handle.setTitle(tz);
+                    } else |err| {
                         std.log.err(
-                            "Failed to update cached window title: {}",
+                            "Failed to allocate window title string: {}",
                             .{err},
                         );
-                        break :blk null;
-                    };
-            }
+                    }
+
+                    if (win.cached_title) |cached| {
+                        state.allocator.free(cached);
+                    }
+                    win.cached_title =
+                        state.allocator.dupe(u8, raw_title) catch |err| blk: {
+                            std.log.err(
+                                "Failed to update cached window title: {}",
+                                .{err},
+                            );
+                            break :blk null;
+                        };
+                }
+            },
+            .headless => {},
         },
-        .headless => {},
+        .hidden => {},
     }
 }
 

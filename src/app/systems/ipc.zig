@@ -19,6 +19,11 @@ pub fn sysExecuteIpcCommands(ctx: FrameContext) void {
     const state = ctx.state;
     if (state.pending_ipc_commands.items.len == 0) return;
 
+    var will_be_hidden = switch (state.viewer.display) {
+        .hidden => true,
+        .visible => false,
+    };
+
     var i: usize = 0;
     while (i < state.pending_ipc_commands.items.len) : (i += 1) {
         const cmd_data = state.pending_ipc_commands.items[i];
@@ -31,6 +36,15 @@ pub fn sysExecuteIpcCommands(ctx: FrameContext) void {
             replyIpcParseError(state.io, cmd_data.client_stream, err);
             continue;
         };
+
+        if (will_be_hidden and !parsed.isAllowedWhenHidden()) {
+            ipc.respondErrorName(
+                state.io,
+                cmd_data.client_stream,
+                "WindowHidden",
+            );
+            continue;
+        }
 
         switch (parsed) {
             .wait_load => handleWaitLoadCommand(ctx, cmd_data.client_stream),
@@ -74,9 +88,10 @@ pub fn sysExecuteIpcCommands(ctx: FrameContext) void {
             .clear_selections,
             .view,
             .precache,
+            .close,
             .quit,
             .open,
-            => handleIntentCommand(ctx, cmd_data, parsed),
+            => handleIntentCommand(ctx, cmd_data, parsed, &will_be_hidden),
         }
     }
     state.pending_ipc_commands.clearRetainingCapacity();
@@ -229,6 +244,7 @@ fn handleIntentCommand(
     ctx: FrameContext,
     cmd_data: *ipc.IpcCommandData,
     parsed: ipc.IpcCommand,
+    will_be_hidden: *bool,
 ) void {
     const state = ctx.state;
     const intent = parsed.toIntent() orelse {
@@ -295,6 +311,49 @@ fn handleIntentCommand(
         );
         return;
     };
+    switch (parsed) {
+        .open => will_be_hidden.* = false,
+        .close => if (state.viewer.server_mode) {
+            will_be_hidden.* = true;
+        },
+        .zoom,
+        .pan,
+        .adjust,
+        .tone,
+        .color,
+        .presence,
+        .clarity,
+        .texture,
+        .compare,
+        .edit,
+        .filter,
+        .scale,
+        .manga,
+        .title,
+        .snackbar,
+        .windowless,
+        .crossfade,
+        .stack_raw_jpeg,
+        .toggle_stream,
+        .palette,
+        .thumb,
+        .debug,
+        .wait_load,
+        .reset_view,
+        .reset_adjustments,
+        .next,
+        .prev,
+        .pick,
+        .reject,
+        .unflag,
+        .selections,
+        .clear_selections,
+        .view,
+        .precache,
+        .quit,
+        .screenshot,
+        => {},
+    }
     ipc.respondOk(state.io, cmd_data.client_stream) catch |err| {
         std.log.err("Failed to respond OK to IPC client: {}", .{err});
     };
@@ -794,4 +853,51 @@ test "sysExecuteIpcCommands - selections and clear_selections JSON workflow" {
     try std.testing.expect(parsed2.value.ok);
     try std.testing.expectEqual(@as(usize, 0), parsed2.value.picks.?.len);
     try std.testing.expectEqual(@as(usize, 0), parsed2.value.rejects.?.len);
+}
+
+test "sysExecuteIpcCommands - rejects navigation when hidden (WindowHidden)" {
+    if (builtin.os.tag == .windows) return;
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    state.viewer.server_mode = true;
+    state.hideWindow();
+    try std.testing.expect(state.viewer.display.isHidden());
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var sock_buf: [108]u8 = undefined;
+    const sock_path = try std.mem.print(
+        &sock_buf,
+        ".zig-cache/tmp/{s}/ipc_hidden.sock",
+        .{tmp.sub_path},
+    );
+
+    const addr = try std.Io.net.UnixAddress.init(sock_path);
+    var server = try addr.listen(io, .{});
+    defer server.deinit(io);
+
+    const c_next = try addr.connect(io);
+    defer c_next.close(io);
+    const s_next = try server.accept(io);
+
+    const d_next = try allocator.create(ipc.IpcCommandData);
+    d_next.* = .{
+        .command = try allocator.dupe(u8, "next"),
+        .client_stream = s_next,
+    };
+    try state.pending_ipc_commands.append(allocator, d_next);
+
+    const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
+    sysExecuteIpcCommands(ctx);
+
+    var rbuf: [256]u8 = undefined;
+    var r_next = c_next.reader(io, &rbuf);
+    const line = try r_next.interface.takeDelimiterInclusive('\n');
+    var parsed = try ipc.parseResponse(allocator, line);
+    defer parsed.deinit();
+    try std.testing.expect(!parsed.value.ok);
+    try std.testing.expectEqualStrings("WindowHidden", parsed.value.@"error".?);
 }

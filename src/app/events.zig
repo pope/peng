@@ -23,6 +23,7 @@ pub fn drainWorkerEvents(state: *AppState) bool {
     };
     if (state.event_batch.items.len == 0) return false;
 
+    var destroyed_full_surface = state.viewer.display.isHidden();
     for (state.event_batch.items, 0..) |*evt, evt_idx| {
         defer evt.deinit(state.allocator);
 
@@ -36,28 +37,41 @@ pub fn drainWorkerEvents(state: *AppState) bool {
             .dimensions_probed => |*d| if (d.resolve(&state.cache)) |r| {
                 handleDimensionsProbedEvent(state, r.key, r.payload.*);
             },
-            .thumb_decoded => |*t| if (t.resolve(&state.cache)) |r| {
-                const skip_upload = hasSubsequentImageDecoded(
-                    state.event_batch.items[evt_idx + 1 ..],
-                    r.key,
-                    state.cache.alias_index,
-                );
-                handleExifThumbnailEvent(
-                    state,
-                    r.key,
-                    r.payload.*,
-                    skip_upload,
-                );
+            .thumb_decoded => |*t| {
+                if (t.resolve(&state.cache)) |r| {
+                    const skip_upload = hasSubsequentImageDecoded(
+                        state.event_batch.items[evt_idx + 1 ..],
+                        r.key,
+                        state.cache.alias_index,
+                    );
+                    handleExifThumbnailEvent(
+                        state,
+                        r.key,
+                        r.payload.*,
+                        skip_upload,
+                    );
+                }
             },
-            .image_decoded => |*d| if (d.resolve(&state.cache)) |r| {
-                handleImageDecodedEvent(state, r.key, r.payload);
+            .image_decoded => |*d| {
+                if (d.resolve(&state.cache)) |r| {
+                    handleImageDecodedEvent(state, r.key, r.payload);
+                    if (r.payload.surface != null) {
+                        destroyed_full_surface = true;
+                    }
+                } else {
+                    destroyed_full_surface = true;
+                }
             },
             .decode_failed => |*f| if (f.resolve(&state.cache)) |r| {
                 const is_current =
                     state.viewer.navigation.current_index == r.key.index;
                 handleDecodeFailedEvent(state, r.key, is_current);
             },
-            .path_discovered => |p| handleDirScannedEvent(state, p),
+            .path_discovered => |p| {
+                if (!state.viewer.display.isHidden()) {
+                    handleDirScannedEvent(state, p);
+                }
+            },
             .directory_scan_result => |res| {
                 if (res.resolve(&state.cache.generation)) |payload| {
                     handleDirectoryScanResultEvent(state, payload);
@@ -77,6 +91,12 @@ pub fn drainWorkerEvents(state: *AppState) bool {
             },
             .ipc_command => |cmd_data| handleIpcCommandEvent(state, cmd_data),
         }
+    }
+    if (destroyed_full_surface and
+        (state.viewer.display.isHidden() or
+            state.workers.active_decode_threads.load(.acquire) == 0))
+    {
+        sdl.reclaimProcessHeap();
     }
     return true;
 }

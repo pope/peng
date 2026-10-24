@@ -26,7 +26,7 @@ pub const ViewerState = struct {
     stats: ViewerStats = .{},
     rotation_map: std.StringHashMap(f32),
 
-    display: DisplayState = .headless,
+    display: DisplayState = .default_headless,
     drag_state: DragState = .none,
 
     image_transition: ImageTransition = .none,
@@ -37,6 +37,7 @@ pub const ViewerState = struct {
     last_win_w: f32 = 0.0,
     last_win_h: f32 = 0.0,
 
+    server_mode: bool = false,
     running: bool = true,
 
     /// Returns the protected previous image index if an image dissolve transition is active.
@@ -57,7 +58,7 @@ pub const ViewerState = struct {
             .ui = ui,
             .animations = .{},
             .rotation_map = .init(allocator),
-            .display = .headless,
+            .display = .default_headless,
         };
     }
 

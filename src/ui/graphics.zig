@@ -18,9 +18,10 @@ pub const GraphicsSetup = struct {
 };
 
 /// Configuration options for graphics and window creation (headless mode,
-/// high-DPI scaling, and borderless mode).
+/// initial hidden state, high-DPI scaling, and borderless mode).
 pub const GraphicsOptions = struct {
     headless: bool = false,
+    hidden: bool = false,
     high_dpi: bool = true,
     borderless: bool = false,
     debug_mode: bool = builtin.mode == .debug,
@@ -86,18 +87,23 @@ const quad_vertex_buf_descs = [_]sdl.gpu.VertexBufferDescription{
 pub const BlurResources = union(enum) {
     uninitialized,
     failed,
+    pipelines_ready: Pipelines,
     initialized: Initialized,
 
+    /// Compiled Dual Kawase downsample and upsample graphics pipelines.
     pub const Pipelines = struct {
         down: sdl.gpu.Pipeline,
         up: sdl.gpu.Pipeline,
 
+        /// Releases both Kawase blur pipelines from `dev`.
         pub fn deinit(self: Pipelines, dev: sdl.gpu.Device) void {
             dev.releasePipeline(self.down);
             dev.releasePipeline(self.up);
         }
     };
 
+    /// Window-sized scene texture and quarter-resolution Kawase ping-pong
+    /// render targets.
     pub const Textures = struct {
         scene: sdl.gpu.Texture,
         blur_down: sdl.gpu.Texture,
@@ -108,21 +114,32 @@ pub const BlurResources = union(enum) {
         down_w: u32,
         down_h: u32,
 
+        /// Releases the scene and downsample/upsample textures from `dev`.
         pub fn deinit(self: Textures, dev: sdl.gpu.Device) void {
             dev.releaseTexture(self.scene);
             dev.releaseTexture(self.blur_down);
             dev.releaseTexture(self.blur);
         }
 
-        pub fn matches(self: Textures, w: u32, h: u32, fmt: sdl.gpu.TextureFormat) bool {
-            return self.target_w == w and self.target_h == h and self.target_format == fmt;
+        /// Returns `true` if the offscreen textures match `w`, `h`, and `fmt`.
+        pub fn matches(
+            self: Textures,
+            w: u32,
+            h: u32,
+            fmt: sdl.gpu.TextureFormat,
+        ) bool {
+            return self.target_w == w and
+                self.target_h == h and
+                self.target_format == fmt;
         }
     };
 
+    /// Fully initialized Kawase blur pipelines and offscreen textures.
     pub const Initialized = struct {
         pipelines: Pipelines,
         textures: Textures,
 
+        /// Releases both pipelines and offscreen textures from `dev`.
         pub fn deinit(self: *Initialized, dev: sdl.gpu.Device) void {
             self.pipelines.deinit(dev);
             self.textures.deinit(dev);
@@ -133,14 +150,28 @@ pub const BlurResources = union(enum) {
     pub fn getBlurTexture(self: *const BlurResources) ?sdl.gpu.Texture {
         return switch (self.*) {
             .initialized => |init_res| init_res.textures.blur,
-            .uninitialized, .failed => null,
+            .uninitialized, .failed, .pipelines_ready => null,
         };
+    }
+
+    /// Releases offscreen blur textures while retaining compiled pipelines in
+    /// `.pipelines_ready`, returning `true` if textures were freed.
+    pub fn releaseTextures(self: *BlurResources, dev: sdl.gpu.Device) bool {
+        switch (self.*) {
+            .initialized => |init_res| {
+                init_res.textures.deinit(dev);
+                self.* = .{ .pipelines_ready = init_res.pipelines };
+                return true;
+            },
+            .uninitialized, .failed, .pipelines_ready => return false,
+        }
     }
 
     /// Releases blur pipelines and textures and resets state to .uninitialized.
     pub fn deinit(self: *BlurResources, dev: sdl.gpu.Device) void {
         switch (self.*) {
             .initialized => |*init_res| init_res.deinit(dev),
+            .pipelines_ready => |pipes| pipes.deinit(dev),
             .uninitialized, .failed => {},
         }
         self.* = .uninitialized;
@@ -320,13 +351,50 @@ pub const BlurResources = union(enum) {
             .failed => return,
             .uninitialized => {
                 const pipes = createPipelines(dev) catch |err| {
-                    std.log.warn("Failed to initialize blur pipelines: {}, disabling backdrop blur", .{err});
+                    std.log.warn(
+                        "Failed to initialize blur pipelines: {}, " ++
+                            "disabling backdrop blur",
+                        .{err},
+                    );
                     self.* = .failed;
                     return;
                 };
 
-                const textures = createTextures(dev, win_w, win_h, target_format) catch |err| {
-                    std.log.warn("Failed to allocate blur textures: {}, disabling backdrop blur", .{err});
+                const textures = createTextures(
+                    dev,
+                    win_w,
+                    win_h,
+                    target_format,
+                ) catch |err| {
+                    std.log.warn(
+                        "Failed to allocate blur textures: {}, " ++
+                            "disabling backdrop blur",
+                        .{err},
+                    );
+                    pipes.deinit(dev);
+                    self.* = .failed;
+                    return;
+                };
+
+                self.* = .{
+                    .initialized = .{
+                        .pipelines = pipes,
+                        .textures = textures,
+                    },
+                };
+            },
+            .pipelines_ready => |pipes| {
+                const textures = createTextures(
+                    dev,
+                    win_w,
+                    win_h,
+                    target_format,
+                ) catch |err| {
+                    std.log.warn(
+                        "Failed to allocate blur textures from warm " ++
+                            "pipelines: {}, disabling backdrop blur",
+                        .{err},
+                    );
                     pipes.deinit(dev);
                     self.* = .failed;
                     return;
@@ -340,10 +408,21 @@ pub const BlurResources = union(enum) {
                 };
             },
             .initialized => |*init_res| {
-                if (init_res.textures.matches(win_w, win_h, target_format)) return;
+                if (init_res.textures.matches(win_w, win_h, target_format)) {
+                    return;
+                }
 
-                const textures = createTextures(dev, win_w, win_h, target_format) catch |err| {
-                    std.log.warn("Failed to reallocate blur textures on resize: {}, disabling backdrop blur", .{err});
+                const textures = createTextures(
+                    dev,
+                    win_w,
+                    win_h,
+                    target_format,
+                ) catch |err| {
+                    std.log.warn(
+                        "Failed to reallocate blur textures on resize: {}, " ++
+                            "disabling backdrop blur",
+                        .{err},
+                    );
                     init_res.deinit(dev);
                     self.* = .failed;
                     return;
@@ -355,6 +434,15 @@ pub const BlurResources = union(enum) {
         }
     }
 };
+
+/// Result of ensuring a per-frame GPU buffer or transfer buffer, pairing the
+/// non-null handle with whether the underlying allocation was freshly replaced.
+pub fn AcquiredFrameBuffer(comptime Handle: type) type {
+    return struct {
+        handle: Handle,
+        reallocated: bool,
+    };
+}
 
 /// Cohesive GPU context and render resources initialized for GPU-accelerated rendering.
 pub const RenderResources = struct {
@@ -370,28 +458,147 @@ pub const RenderResources = struct {
     blur: BlurResources = .uninitialized,
 
     // Persistent double-buffered vertex and transfer staging buffers
-    vertex_buffers: [2]?sdl.gpu.Buffer = .{ null, null },
-    transfer_buffers: [2]?sdl.gpu.TransferBuffer = .{ null, null },
-    buffer_capacities: [2]usize = .{ 0, 0 },
-    vertex_capacities: [2]usize = .{ 0, 0 },
+    vertex_buffers: [2]sdl.gpu.RetainedBuffer = .{
+        .unallocated,
+        .unallocated,
+    },
+    transfer_buffers: [2]sdl.gpu.RetainedTransferBuffer = .{
+        .unallocated,
+        .unallocated,
+    },
     frame_index: usize = 0,
 
     // Font text texture cache & font
     text_cache: TextCache = .{},
     fonts: [1]?sdl.Font = .{null},
 
+    /// Ensures the per-frame vertex buffer at `frame_idx` has at least
+    /// `required_size` bytes, reallocating with 2x geometric growth if needed.
+    pub fn ensureFrameVertexBuffer(
+        self: *RenderResources,
+        frame_idx: usize,
+        required_size: usize,
+    ) ?AcquiredFrameBuffer(sdl.gpu.Buffer) {
+        switch (self.vertex_buffers[frame_idx]) {
+            .allocated => |a| {
+                if (a.capacity >= required_size) {
+                    return .{ .handle = a.handle, .reallocated = false };
+                }
+                self.device.releaseBuffer(a.handle);
+                self.vertex_buffers[frame_idx] = .unallocated;
+            },
+            .unallocated => {},
+        }
+        const new_vcap = std.mem.alignForward(
+            usize,
+            required_size * 2,
+            4 * 1024,
+        );
+        const vb = self.device.createBuffer(&sdl.gpu.BufferCreateInfo{
+            .usage = sdl.gpu.BufferUsage.vertex,
+            .size = @intCast(new_vcap),
+            .props = 0,
+        }) orelse return null;
+        self.vertex_buffers[frame_idx] = .{
+            .allocated = .{ .handle = vb, .capacity = new_vcap },
+        };
+        return .{ .handle = vb, .reallocated = true };
+    }
+
+    /// Ensures the per-frame transfer buffer at `frame_idx` has at least
+    /// `required_size` bytes. If an existing buffer is replaced, appends it to
+    /// `temp_buffers` so in-flight copy operationsEarlier in the frame remain
+    /// valid until command buffer submission.
+    pub fn ensureFrameTransferBuffer(
+        self: *RenderResources,
+        frame_idx: usize,
+        required_size: usize,
+        min_capacity: usize,
+        frame_allocator: std.mem.Allocator,
+        temp_buffers: *std.ArrayList(sdl.gpu.TransferBuffer),
+    ) ?AcquiredFrameBuffer(sdl.gpu.TransferBuffer) {
+        switch (self.transfer_buffers[frame_idx]) {
+            .allocated => |a| {
+                if (a.capacity >= required_size) {
+                    return .{ .handle = a.handle, .reallocated = false };
+                }
+                temp_buffers.append(frame_allocator, a.handle) catch |err| {
+                    std.log.err(
+                        "Failed to append old transfer buffer to cleanup " ++
+                            "list: {}",
+                        .{err},
+                    );
+                    self.device.releaseTransferBuffer(a.handle);
+                };
+                self.transfer_buffers[frame_idx] = .unallocated;
+            },
+            .unallocated => {},
+        }
+        const new_tbcap = std.mem.alignForward(
+            usize,
+            @max(required_size * 2, min_capacity),
+            4 * 1024,
+        );
+        const tb = self.device.createTransferBuffer(
+            &sdl.gpu.TransferBufferCreateInfo{
+                .usage = .upload,
+                .size = @intCast(new_tbcap),
+                .props = 0,
+            },
+        ) orelse return null;
+        self.transfer_buffers[frame_idx] = .{
+            .allocated = .{ .handle = tb, .capacity = new_tbcap },
+        };
+        return .{ .handle = tb, .reallocated = true };
+    }
+
+    /// Releases transient window-scoped GPU allocations (cached glyph textures,
+    /// offscreen blur textures, and double-buffered vertex/transfer buffers)
+    /// while preserving compiled pipelines, sampler, white texture, and fonts.
+    /// Returns `true` if any GPU resources were released.
+    pub fn releaseTransientResources(
+        self: *RenderResources,
+        allocator: std.mem.Allocator,
+    ) bool {
+        var released = false;
+        if (self.text_cache.map.count() > 0) {
+            self.text_cache.deinit(allocator, self.device);
+            self.text_cache = .{};
+            released = true;
+        }
+        if (self.blur.releaseTextures(self.device)) {
+            released = true;
+        }
+        for (&self.vertex_buffers) |*slot| {
+            switch (slot.*) {
+                .unallocated => {},
+                .allocated => |a| {
+                    self.device.releaseBuffer(a.handle);
+                    slot.* = .unallocated;
+                    released = true;
+                },
+            }
+        }
+        for (&self.transfer_buffers) |*slot| {
+            switch (slot.*) {
+                .unallocated => {},
+                .allocated => |a| {
+                    self.device.releaseTransferBuffer(a.handle);
+                    slot.* = .unallocated;
+                    released = true;
+                },
+            }
+        }
+        return released;
+    }
+
     /// Releases GPU pipelines, samplers, fallback textures, staging buffers,
     /// text cache, and fonts on application teardown.
     pub fn deinit(self: *RenderResources, allocator: std.mem.Allocator) void {
+        _ = self.releaseTransientResources(allocator);
         self.text_cache.deinit(allocator, self.device);
         for (self.fonts) |f| {
             if (f) |font| font.close();
-        }
-        for (self.vertex_buffers) |vb| {
-            if (vb) |b| self.device.releaseBuffer(b);
-        }
-        for (self.transfer_buffers) |tb| {
-            if (tb) |b| self.device.releaseTransferBuffer(b);
         }
         self.blur.deinit(self.device);
         self.device.releaseBuffer(self.fullscreen_vertex_buffer);
@@ -442,6 +649,9 @@ pub fn initGraphicsAndWindow(window_title: [:0]const u8, options: GraphicsOption
         sdl.window_flags.resizable;
     if (options.borderless and !options.headless) {
         win_flags |= sdl.window_flags.borderless;
+    }
+    if (options.hidden and !options.headless) {
+        win_flags |= sdl.window_flags.hidden;
     }
     const window = sdl.Window.createZ(window_title, 1024, 768, win_flags) orelse {
         std.log.err("SDL_CreateWindow Error: {s}", .{sdl.getError()});
@@ -940,6 +1150,17 @@ test "BlurResources tagged union lifecycle and failure latching" {
     // Calling ensure with matching dimensions on initialized resources is a no-op
     blur.ensure(dummy_dev, 800, 600, .rgba8_unorm);
     try std.testing.expect(blur == .initialized);
+
+    // Pipelines-ready state preserves warm pipelines while textures are absent
+    blur = .{
+        .pipelines_ready = .{
+            .down = .{ .ptr = @ptrFromInt(0x2001) },
+            .up = .{ .ptr = @ptrFromInt(0x2002) },
+        },
+    };
+    try std.testing.expect(blur == .pipelines_ready);
+    try std.testing.expect(blur.getBlurTexture() == null);
+    try std.testing.expect(!blur.releaseTextures(dummy_dev));
 
     // Transition to failed latches failure and denies texture access
     blur = .failed;

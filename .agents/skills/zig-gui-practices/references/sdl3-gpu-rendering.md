@@ -48,8 +48,9 @@ ______________________________________________________________________
 
 - **Demand-Gated Execution & Lazy Blur Initialization (`BlurResources` Tagged Union)**:
   - `initGpuResources` initializes `blur: BlurResources = .uninitialized` on `RenderResources` to avoid 5–20ms of synchronous driver shader compilation during application startup.
-  - State is strictly modeled as a tagged union (`.uninitialized`, `.failed`, `.initialized: Initialized`), where `Initialized` composes session-lifetime `Pipelines` (`down`, `up`) and window-sized `Textures` (`scene`, `blur_down`, `blur`, and invariant dimensions). Callers cannot observe or assume partially-initialized resources, and `findBlurSplit` pairs `Initialized` with `split_idx` so render passes require zero `.?` unwraps.
-  - When `enable_blur` is enabled and `RenderPacket` contains `.blurred_surface` batches (glassmorphic floating overlays, command palette, or edit panel are visible), `renderClayCommands` invokes `gpu_res.blur.ensure(...)`, which lazily compiles pipelines and allocates offscreen textures on first demand (transitioning to `.initialized` on success, or latching `.failed` on any error to prevent per-frame log spam):
+  - State is strictly modeled as a tagged union (`.uninitialized`, `.failed`, `.pipelines_ready: Pipelines`, `.initialized: Initialized`), where `Initialized` composes session-lifetime `Pipelines` (`down`, `up`) and window-sized `Textures` (`scene`, `blur_down`, `blur`, and invariant dimensions). Callers cannot observe or assume partially-initialized resources, and `findBlurSplit` pairs `Initialized` with `split_idx` so render passes require zero `.?` unwraps.
+  - When hiding the window in `--server` mode, `BlurResources.releaseTextures(dev)` frees the 3 offscreen textures while transitioning `.initialized` -> `.pipelines_ready`, preserving the compiled Kawase pipelines warm for subsequent window re-opens.
+  - When `enable_blur` is enabled and `RenderPacket` contains `.blurred_surface` batches (glassmorphic floating overlays, command palette, or edit panel are visible), `renderClayCommands` invokes `gpu_res.blur.ensure(...)`, which lazily compiles pipelines (or reuses `.pipelines_ready`) and allocates offscreen textures on demand (transitioning to `.initialized` on success, or latching `.failed` on any error to prevent per-frame log spam):
   1. **Scene Offscreen Render**: The image viewport is rendered into `tex.scene` (`w x h`).
   2. **Kawase Downsample (`blur_down.frag.glsl`)**: Downsamples `tex.scene` -> `tex.blur_down` (`w/4 x h/4`) using 5-tap half-pixel diagonal offsets.
   3. **Kawase Upsample (`blur_up.frag.glsl`)**: Filters `tex.blur_down` -> `tex.blur` (`w/4 x h/4`) using 8-tap tent-weighted offsets.
@@ -58,7 +59,21 @@ ______________________________________________________________________
 
 ______________________________________________________________________
 
-## 5. SIMD Vector Alignment
+## 5. Retained GPU Buffers & Deferred Driver Memory Reclamation (`src/sdl/gpu.zig`)
+
+- **`RetainedResource(Handle)` Tagged Union (`RetainedBuffer`, `RetainedTransferBuffer`)**:
+  - Model retained, geometrically grown GPU buffers and transfer buffers (`UploadStagingBuffer` in `src/app/core/image.zig` and double-buffered `vertex_buffers` / `transfer_buffers` in `RenderResources`) via `sdl.gpu.RetainedResource(Handle)` (`union(enum) { unallocated, allocated: .{ handle: Handle, capacity: usize } }`) rather than parallel `?Handle` + `usize` capacity fields and `.?` unwraps.
+- **SDL3 GPU Deferred Destruction & `Device.reclaimMemory()`**:
+  - In SDL3's Vulkan backend (`SDL_gpu_vulkan.c`), `SDL_ReleaseGPUTexture`, `SDL_ReleaseGPUBuffer`, and `SDL_ReleaseGPUTransferBuffer` only append handles to internal deferred queues (`texturesToDestroy`, `buffersToDestroy`, `transferBuffersToDestroy`).
+  - Calling `SDL_WaitForGPUIdle` runs `VULKAN_INTERNAL_PerformPendingDestroys`, which destroys the `VkImage`/`VkBuffer` objects and marks newly emptied `VkDeviceMemory` slabs via `renderer->hasEmptyAllocations = true`, **but does not call `VULKAN_INTERNAL_DeallocateMemory` (`vkFreeMemory`)**. SDL3 only invokes `VULKAN_INTERNAL_DeallocateMemory` inside `SDL_SubmitGPUCommandBuffer` (`VULKAN_Submit`) before processing new pending destroys.
+  - Therefore, when transitioning to `.hidden` in resident `--server` mode (`RenderResources.releaseTransientResources` + `Device.reclaimMemory()`), execute the 3-step flush sequence:
+    1. `waitForIdle()` — drains in-flight work and runs `PerformPendingDestroys` so emptied `VkDeviceMemory` blocks set `hasEmptyAllocations`.
+    2. `acquireCommandBuffer()` -> `submit()` — triggers `VULKAN_INTERNAL_DeallocateMemory` (`vkFreeMemory`) on all empty device-local VRAM and host-visible GTT slabs.
+    3. `waitForIdle()` — retires the empty command buffer so no fences remain pending while hidden.
+
+______________________________________________________________________
+
+## 6. SIMD Vector Alignment
 
 - **SIMD Vector Pointer Loads**:
   When loading pixel data into SIMD vectors (`@Vector(4, u8)`), verify slice alignment and bounds before executing `@ptrCast`:

@@ -54,6 +54,22 @@ pub const Window = extern struct {
         return c.SDL_SetWindowBordered(self.ptr, bordered);
     }
 
+    /// Makes a hidden window visible on screen.
+    pub fn show(self: Window) bool {
+        return c.SDL_ShowWindow(self.ptr);
+    }
+
+    /// Hides the window without destroying its underlying surface or GPU claim.
+    pub fn hide(self: Window) bool {
+        return c.SDL_HideWindow(self.ptr);
+    }
+
+    /// Requests that the window manager raise this window above others and set
+    /// input focus.
+    pub fn raise(self: Window) bool {
+        return c.SDL_RaiseWindow(self.ptr);
+    }
+
     /// Claims this window for rendering with the specified SDL GPU device.
     pub fn claimForGpu(self: Window, device: gpu.Device) bool {
         return c.SDL_ClaimWindowForGPUDevice(device.ptr, @ptrCast(self.ptr));

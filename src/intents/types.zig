@@ -483,4 +483,5 @@ pub const AppIntent = union(enum) {
 
     // Application lifecycle
     quit,
+    quit_server,
 };

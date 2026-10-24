@@ -1770,62 +1770,105 @@ pub const LOADING_GRACE_PERIOD_MS: u64 = 35;
 
 /// Claimed SDL window handle, pixel format, fullscreen state, borderless
 /// state, and title string cache.
+/// Invariant: Only constructed once a real `sdl.Window` has been created and
+/// claimed by the GPU device.
 pub const ActiveWindow = struct {
     handle: sdl.Window,
     pixel_format: u32 = sdl.PixelFormat.unknown,
     cached_title: ?[]const u8 = null,
     is_fullscreen: bool = false,
     is_borderless: bool = false,
-    claimed: bool = false,
 
     /// Frees the cached window title string allocation if present.
     pub fn deinit(self: *ActiveWindow, gpa: std.mem.Allocator) void {
         if (self.cached_title) |t| {
             gpa.free(t);
+            self.cached_title = null;
         }
     }
 };
 
-/// Display mode representing either a windowed SDL environment or a headless test harness.
-pub const DisplayState = union(enum) {
+/// Underlying display backend: either an offscreen/headless harness or a
+/// GPU-claimed SDL window handle.
+pub const DisplayBackend = union(enum) {
     headless,
     windowed: ActiveWindow,
 
+    /// Releases any memory allocations held by the backend (such as window
+    /// title strings).
+    pub fn deinit(self: *DisplayBackend, allocator: std.mem.Allocator) void {
+        switch (self.*) {
+            .headless => {},
+            .windowed => |*w| w.deinit(allocator),
+        }
+    }
+};
+
+/// Display visibility state wrapping the underlying `DisplayBackend`
+/// (`.visible` on screen vs. `.hidden` in resident `--server` mode).
+pub const DisplayState = union(enum) {
+    visible: DisplayBackend,
+    hidden: DisplayBackend,
+
+    /// Default headless visible display state.
+    pub const default_headless: DisplayState = .{ .visible = .headless };
+
+    /// Returns a mutable pointer to the underlying `DisplayBackend`.
+    pub inline fn backendPtr(self: *DisplayState) *DisplayBackend {
+        return switch (self.*) {
+            .visible => |*b| b,
+            .hidden => |*b| b,
+        };
+    }
+
+    /// Returns the underlying `DisplayBackend` value.
+    pub inline fn backend(self: DisplayState) DisplayBackend {
+        return switch (self) {
+            .visible, .hidden => |b| b,
+        };
+    }
+
     /// Returns `true` if the display is currently running in fullscreen mode.
     pub inline fn isFullscreen(self: DisplayState) bool {
-        return switch (self) {
+        return switch (self.backend()) {
             .headless => false,
             .windowed => |w| w.is_fullscreen,
         };
     }
 
-    /// Returns `true` if the SDL window has been claimed by the GPU graphics device.
-    pub inline fn isClaimed(self: DisplayState) bool {
+    /// Returns `true` if the display is currently hidden (e.g. resident
+    /// server mode).
+    pub inline fn isHidden(self: DisplayState) bool {
         return switch (self) {
-            .headless => false,
-            .windowed => |w| w.claimed,
+            .visible => false,
+            .hidden => true,
+        };
+    }
+
+    /// Returns the active SDL window handle if the display is currently visible
+    /// and backed by a GPU-claimed window, or `null` when headless or hidden.
+    pub inline fn visibleWindow(self: DisplayState) ?sdl.Window {
+        return switch (self) {
+            .hidden => null,
+            .visible => |b| switch (b) {
+                .headless => null,
+                .windowed => |w| w.handle,
+            },
         };
     }
 
     /// Returns the swapchain texture pixel format of the display window.
     pub inline fn getPixelFormat(self: DisplayState) u32 {
-        return switch (self) {
+        return switch (self.backend()) {
             .headless => sdl.PixelFormat.unknown,
             .windowed => |w| w.pixel_format,
         };
     }
 
-    /// Releases any memory allocations held by the display state (such as window title strings).
+    /// Releases any memory allocations held by the display state (such as
+    /// window title strings).
     pub fn deinit(self: *DisplayState, allocator: std.mem.Allocator) void {
-        switch (self.*) {
-            .headless => {},
-            .windowed => |*w| {
-                if (w.cached_title) |title| {
-                    allocator.free(title);
-                    w.cached_title = null;
-                }
-            },
-        }
+        self.backendPtr().deinit(allocator);
     }
 };
 
@@ -1881,7 +1924,9 @@ pub const ActiveScreenshot = struct {
         self.respondErrName(io, gpa, "quit");
     }
 
-    fn respondErrName(
+    /// Writes a JSON error response (`{"ok":false,"error":"<err_name>"}\n`) to
+    /// the client IPC stream and frees request resources.
+    pub fn respondErrName(
         self: *ActiveScreenshot,
         io: std.Io,
         gpa: std.mem.Allocator,
@@ -1929,15 +1974,12 @@ pub const DragState = union(enum) {
     },
 };
 
-/// Stops SDL text input processing if a windowed display is active.
+/// Stops SDL text input processing if a visible window is active.
 pub fn stopTextInput(display: DisplayState) void {
-    switch (display) {
-        .headless => {},
-        .windowed => |win| {
-            if (!win.handle.stopTextInput()) {
-                std.log.err("SDL_StopTextInput failed: {s}", .{sdl.getError()});
-            }
-        },
+    if (display.visibleWindow()) |win| {
+        if (!win.stopTextInput()) {
+            std.log.err("SDL_StopTextInput failed: {s}", .{sdl.getError()});
+        }
     }
 }
 

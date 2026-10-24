@@ -3,6 +3,7 @@
 //! Idiomatic Zig wrappers around SDL3 C APIs for window management,
 //! GPU command buffers, event polling, surfaces, fonts, and timers.
 
+const builtin = @import("builtin");
 const c_pkg = @import("c.zig");
 pub const events = @import("events.zig");
 pub const font = @import("font.zig");
@@ -14,6 +15,19 @@ pub const timer = @import("timer.zig");
 pub const window = @import("window.zig");
 
 const c = c_pkg.c;
+const has_glibc_malloc_trim = builtin.link_libc and
+    builtin.os.tag == .linux and
+    builtin.abi.isGnu();
+
+extern "c" fn malloc_trim(pad: usize) c_int;
+
+/// Returns unused freed pages from C `malloc` arenas (including worker thread
+/// arenas created by `SDL_image` / `SDL_Surface` decodes) to the OS kernel.
+pub fn reclaimProcessHeap() void {
+    if (comptime has_glibc_malloc_trim) {
+        _ = malloc_trim(0);
+    }
+}
 
 pub const Color = font.Color;
 pub const Event = events.Event;

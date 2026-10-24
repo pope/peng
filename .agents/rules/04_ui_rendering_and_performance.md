@@ -61,10 +61,14 @@
 ## 3. Clay UI Interaction, Animations & Event Loop Polling
 
 - **Event Loop Wait Strategy (`AppState.computeFrameWaitStrategy`)**:
-  - `computeFrameWaitStrategy` (`src/app/state.zig`) selects `.poll` when
-    pre-wait background events were drained, or schedules a bounded `8ms` tick
-    when `self.isBusy()` (active SoA animations, active slideshow, active
-    workers), `is_current_loading`, `drag_state != .none`,
+  - When `viewer.display == .hidden` (resident `--server` mode with the window
+    closed), `computeFrameWaitStrategy` immediately returns `.wait_indefinite`
+    (unless `had_bg_events` is true) so the resident daemon blocks at 0% CPU
+    until woken by an IPC command or OS event.
+  - When `.visible`, `computeFrameWaitStrategy` (`src/app/state.zig`) selects
+    `.poll` when pre-wait background events were drained, or schedules a bounded
+    `8ms` tick when `self.isBusy()` (active SoA animations, active slideshow,
+    active workers), `is_current_loading`, `drag_state != .none`,
     `pan_controller.isBusy()`, `zoom_controller.isBusy()`,
     `has_unpopulated_cache`, or `window_resized` is true.
   - When idle, `getWaitTimeoutMs` schedules a bounded `waitEventTimeout` for

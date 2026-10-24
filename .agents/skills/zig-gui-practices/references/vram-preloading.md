@@ -17,6 +17,12 @@
   }
   self.rotation_map.clearRetainingCapacity();
   ```
+- **Resident `--server` Mode Reclamation & Cross-Thread C Decoder Arena Trimming (`sdl.reclaimProcessHeap`)**:
+  - When `decodeWorker` decodes images via `SDL_image` / `stb_image` on background worker threads and transfers the resulting `SDL_Surface` to the main thread (`handleImageDecodedEvent`, `prepareCacheTextures`), `SDL_DestroySurface` frees those multi-megabyte pixel buffers back into the worker threads' glibc `ptmalloc2` non-main arenas (`64MB` `mmap` heaps). Because glibc dynamically raises `M_MMAP_THRESHOLD` (up to `32MB`) and `M_TRIM_THRESHOLD` (up to `64MB`) after the first large free, worker thread arenas retain 100MB+ of dirty anonymous pages unless explicitly trimmed via `sdl.reclaimProcessHeap()` (`malloc_trim(0)` on Linux/glibc).
+  - **Contention Guard**: Because `malloc_trim(0)` acquires every per-thread glibc arena lock across the process, NEVER call `sdl.reclaimProcessHeap()` on `.thumb_decoded` events during rapid scrolling or while `workers.active_decode_threads.load(.acquire) > 0` during normal viewing. Invoke `sdl.reclaimProcessHeap()` only when:
+    1. All active decode workers have finished (`active_decode_threads == 0`) after destroying a full-image `SDL_Surface` (`drainWorkerEvents`, `prepareCacheTextures`),
+    2. A background worker exits after cancellation (`cancel.isCanceled()` in `decodeWorker`) or background thumbnail/precache batch completion (`thumbWriterWorker`, `precacheDirectoryWorker`), or
+    3. The window transitions to `.hidden` in `--server` mode (`AppState.hideWindow` + `viewer.zig`, alongside `RenderResources.releaseTransientResources` and `sdl.gpu.Device.reclaimMemory()`).
 
 ______________________________________________________________________
 

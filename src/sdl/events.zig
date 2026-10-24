@@ -29,6 +29,7 @@ pub const mouse = struct {
 /// Event type constants corresponding to SDL3 window, keyboard, touch, and input events.
 pub const event_type = struct {
     pub const quit = c.SDL_EVENT_QUIT;
+    pub const window_close_requested = c.SDL_EVENT_WINDOW_CLOSE_REQUESTED;
     pub const mouse_enter = c.SDL_EVENT_WINDOW_MOUSE_ENTER;
     pub const mouse_leave = c.SDL_EVENT_WINDOW_MOUSE_LEAVE;
     pub const key_down = c.SDL_EVENT_KEY_DOWN;

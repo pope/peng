@@ -66,11 +66,12 @@
     `state.viewer.navigation.active_file_scans`.
   - State initialization and early worker tasks (`openPath` / `readPipedStdin`)
     run concurrently with main-thread window and GPU creation. GPU handles
-    (`state.gpu_device`) MUST remain `null` until all pipeline and Clay memory
-    allocations succeed, while `state.gpu_enabled = true` declares hardware GPU
-    intent to early workers. This guarantees that intermediate failure
-    unwinding only deinitializes CPU state without accessing destroyed GPU
-    handles (use-after-free).
+    (`state.gpu_device`) and the claimed `DisplayBackend.windowed` (`ActiveWindow`)
+    MUST remain unbound (`state.gpu_device = null`, `display` holding `.headless`)
+    until all pipeline and Clay memory allocations succeed, while
+    `state.gpu_enabled = true` declares hardware GPU intent to early workers.
+    This guarantees that intermediate failure unwinding only deinitializes CPU
+    state without accessing destroyed GPU or window handles (use-after-free).
   - Top-level application teardown (`AppGraphicsAndState.deinit` in
     `src/main.zig`) frees CLI arguments upfront as independent CPU memory,
     followed by reverse teardown of runtime subsystems: signal worker
@@ -79,6 +80,21 @@
     deinitialize `AppState`/`ViewerState`, release GPU `RenderResources`,
     destroy the SDL GPU device and window, and finally call
     `ui.graphics.quitSdlCore()`.
+- **Resident `--server` Mode Memory Reclamation (`hideWindow`, `reclaimMemory`, `reclaimProcessHeap`)**:
+  - When hiding the window in `--server` mode (`AppState.hideWindow` +
+    `RenderResources.releaseTransientResources`), release all cached CPU
+    surfaces, GPU image/thumbnail textures, `upload_staging` buffers, glyph
+    `text_cache` textures, offscreen `blur` textures (transitioning
+    `BlurResources` `.initialized` -> `.pipelines_ready`), and double-buffered
+    UI `vertex_buffers`/`transfer_buffers`, and shrink oversized dynamic
+    containers (`cache.slots`, `navigation.items`, `palette`).
+  - Flush SDL3's deferred Vulkan destruction queues (`texturesToDestroy`,
+    `buffersToDestroy`, `transferBuffersToDestroy`) via
+    `sdl.gpu.Device.reclaimMemory()` (`waitForIdle` -> empty `submit` ->
+    `waitForIdle`) so empty `VkDeviceMemory` VRAM/GTT blocks are returned to the
+    OS, and call `sdl.reclaimProcessHeap()` (`malloc_trim(0)` on Linux/glibc,
+    gated on `active_decode_threads == 0` or `.hidden`) to return freed
+    cross-thread C decoder (`SDL_image`/`stb_image`) arena pages to the OS.
 
 ## 2. Tagged Unions, Enums & Domain Invariant Modeling
 
@@ -89,8 +105,9 @@
     ReleaseFast/ReleaseSmall builds.
 - **Strict Domain Invariants via Tagged Unions**:
   - Model mutually exclusive domain states (`SlideshowMode`, `DisplayState`,
-    `CacheStatus`, `ThumbnailState`, `ThumbnailPadding`, `RawMetadata`,
-    `ImageTransition`) using `union(enum)` with validation constructors
+    `DisplayBackend`, `CacheStatus`, `ThumbnailState`, `ThumbnailPadding`,
+    `RawMetadata`, `ImageTransition`, `BlurResources`, `RetainedResource`,
+    `ParsedIpcArgs`) using `union(enum)` with validation constructors
     (`init(...)`) rather than loose booleans or parallel optionals:
     ```zig
     pub const RawMetadata = union(enum) {

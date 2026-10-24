@@ -510,35 +510,18 @@ fn getOrRenderCachedText(
     const aligned_offset = std.mem.alignForward(usize, tb_offset.*, 512);
     const required_capacity = aligned_offset + size;
 
-    const needs_tb = gpu_res.transfer_buffers[frame_idx] == null or
-        gpu_res.buffer_capacities[frame_idx] < required_capacity;
-    if (needs_tb) {
-        const new_tbcap = std.mem.alignForward(usize, @max(required_capacity * 2, 65536), 4096);
-        if (gpu_res.transfer_buffers[frame_idx]) |old_tb| {
-            // Catch OOM on the deferred cleanup list so a non-critical array append failure
-            // does not abort the entire frame's render pass. Release old_tb to prevent leak.
-            temp_buffers.append(frame_allocator, old_tb) catch |err| {
-                std.log.err("Failed to append old transfer buffer to cleanup list: {}", .{err});
-                dev.releaseTransferBuffer(old_tb);
-            };
-        }
-        gpu_res.transfer_buffers[frame_idx] = dev.createTransferBuffer(
-            &sdl.gpu.TransferBufferCreateInfo{
-                .usage = .upload,
-                .size = @intCast(new_tbcap),
-                .props = 0,
-            },
-        );
-        if (gpu_res.transfer_buffers[frame_idx] == null) {
-            gpu_res.buffer_capacities[frame_idx] = 0;
-            dev.releaseTexture(tex);
-            return null;
-        }
-        gpu_res.buffer_capacities[frame_idx] = new_tbcap;
-    }
-
-    const transfer_buf = gpu_res.transfer_buffers[frame_idx].?;
-    const cycle_tb = shouldCycleFrameBuffer(needs_tb, aligned_offset);
+    const tb_acq = gpu_res.ensureFrameTransferBuffer(
+        frame_idx,
+        required_capacity,
+        64 * 1024,
+        frame_allocator,
+        temp_buffers,
+    ) orelse {
+        dev.releaseTexture(tex);
+        return null;
+    };
+    const transfer_buf = tb_acq.handle;
+    const cycle_tb = shouldCycleFrameBuffer(tb_acq.reallocated, aligned_offset);
     const mapped_raw: [*]u8 = dev.mapTransferBuffer(
         transfer_buf,
         cycle_tb,
@@ -873,54 +856,26 @@ fn uploadVertexData(
     const needed_size = vertex_items.len * @sizeOf(Vertex);
     if (needed_size == 0) return null;
 
-    const needs_vb = gpu_res.vertex_buffers[frame_idx] == null or
-        gpu_res.vertex_capacities[frame_idx] < needed_size;
-    if (needs_vb) {
-        if (gpu_res.vertex_buffers[frame_idx]) |vb| {
-            dev.releaseBuffer(vb);
-            gpu_res.vertex_buffers[frame_idx] = null;
-        }
-        const new_vcap = std.mem.alignForward(usize, needed_size * 2, 4096);
-        gpu_res.vertex_buffers[frame_idx] = dev.createBuffer(&sdl.gpu.BufferCreateInfo{
-            .usage = sdl.gpu.BufferUsage.vertex,
-            .size = @intCast(new_vcap),
-            .props = 0,
-        }) orelse return error.GPUVertexBufferCreationFailed;
-        gpu_res.vertex_capacities[frame_idx] = new_vcap;
-    }
+    const vb_acq = gpu_res.ensureFrameVertexBuffer(
+        frame_idx,
+        needed_size,
+    ) orelse return error.GPUVertexBufferCreationFailed;
 
     const vert_offset = std.mem.alignForward(usize, tb_offset, 512);
     const total_tb_needed = vert_offset + needed_size;
 
-    const needs_tb = gpu_res.transfer_buffers[frame_idx] == null or
-        gpu_res.buffer_capacities[frame_idx] < total_tb_needed;
-    if (needs_tb) {
-        if (gpu_res.transfer_buffers[frame_idx]) |old_tb| {
-            // Catch OOM on the deferred cleanup list so a non-critical array append failure
-            // does not abort the entire frame's render pass. Release old_tb to prevent leak.
-            temp_buffers.append(frame_allocator, old_tb) catch |err| {
-                std.log.err(
-                    "Failed to append old transfer buffer to cleanup list in uploadVertexData: {}",
-                    .{err},
-                );
-                dev.releaseTransferBuffer(old_tb);
-            };
-        }
-        const new_tbcap = std.mem.alignForward(usize, total_tb_needed * 2, 4096);
-        gpu_res.transfer_buffers[frame_idx] = dev.createTransferBuffer(
-            &sdl.gpu.TransferBufferCreateInfo{
-                .usage = .upload,
-                .size = @intCast(new_tbcap),
-                .props = 0,
-            },
-        ) orelse return error.GPUTransferBufferCreationFailed;
-        gpu_res.buffer_capacities[frame_idx] = new_tbcap;
-    }
+    const tb_acq = gpu_res.ensureFrameTransferBuffer(
+        frame_idx,
+        total_tb_needed,
+        4 * 1024,
+        frame_allocator,
+        temp_buffers,
+    ) orelse return error.GPUTransferBufferCreationFailed;
 
-    const vb = gpu_res.vertex_buffers[frame_idx].?;
-    const tb = gpu_res.transfer_buffers[frame_idx].?;
+    const vb = vb_acq.handle;
+    const tb = tb_acq.handle;
 
-    const cycle_tb = shouldCycleFrameBuffer(needs_tb, vert_offset);
+    const cycle_tb = shouldCycleFrameBuffer(tb_acq.reallocated, vert_offset);
     const mapped_raw: [*]u8 = dev.mapTransferBuffer(
         tb,
         cycle_tb,
@@ -929,7 +884,7 @@ fn uploadVertexData(
     @memcpy(mapped[0..vertex_items.len], vertex_items);
     dev.unmapTransferBuffer(tb);
 
-    const cycle_vb = shouldCycleFrameBuffer(needs_vb, 0);
+    const cycle_vb = shouldCycleFrameBuffer(vb_acq.reallocated, 0);
     copy_pass.uploadToBuffer(&sdl.gpu.TransferBufferLocation{
         .transfer_buffer = tb,
         .offset = @intCast(vert_offset),
@@ -1065,7 +1020,7 @@ fn findBlurSplit(
 ) ?BlurSplit {
     const init_res = switch (blur_res) {
         .initialized => |res| res,
-        .uninitialized, .failed => return null,
+        .uninitialized, .failed, .pipelines_ready => return null,
     };
     for (batches, 0..) |batch, i| {
         if (batch.material == .blurred_surface) {
@@ -1553,6 +1508,12 @@ test "findBlurSplit pairs initialized resources with first blurred_surface index
 
     try std.testing.expect(findBlurSplit(&batches, .uninitialized) == null);
     try std.testing.expect(findBlurSplit(&batches, .failed) == null);
+    try std.testing.expect(findBlurSplit(&batches, .{
+        .pipelines_ready = .{
+            .down = .{ .ptr = @ptrFromInt(0x2001) },
+            .up = .{ .ptr = @ptrFromInt(0x2002) },
+        },
+    }) == null);
 
     const init_res = graphics.BlurResources.Initialized{
         .pipelines = .{

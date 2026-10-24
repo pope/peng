@@ -196,12 +196,28 @@ const AppGraphicsAndState = struct {
             return false;
         }
 
+        if (parsed.ipc_mode == .default_socket) {
+            const resolved_sock = ipc.resolveDefaultSocketPath(
+                gpa,
+                proc_init.environ_map,
+            ) catch |err| {
+                std.log.err(
+                    "Failed to resolve default IPC socket path ({any}): " ++
+                        "set $XDG_RUNTIME_DIR, $UID, or pass --socket <PATH>",
+                    .{err},
+                );
+                return err;
+            };
+            parsed.ipc_mode = .{ .custom_socket = resolved_sock };
+        }
+
         // 2. Initialize SDL Core Subsystems (video, events, TTF)
         // Must be initialized before background workers touch SDL surface/event APIs.
         try ui.graphics.initSdlCore(parsed.headless);
         errdefer ui.graphics.quitSdlCore();
 
         // 3. Pinned In-Place State Initialization & Early Path Scan / Decode Launch
+        const start_hidden = parsed.server_mode and parsed.arg_path == null;
         self.gpa = gpa;
         self.io = proc_init.io;
         self.parsed = parsed;
@@ -216,15 +232,10 @@ const AppGraphicsAndState = struct {
                     .navigation = nav,
                     .ui = ui_state,
                     .animations = .{},
-                    .display = if (parsed.headless) .headless else .{
-                        .windowed = .{
-                            .handle = undefined,
-                            .pixel_format = sdl.PixelFormat.rgba32,
-                            .is_fullscreen = false,
-                            .is_borderless = parsed.windowless,
-                            .claimed = false,
-                        },
-                    },
+                    .display = if (start_hidden)
+                        .{ .hidden = .headless }
+                    else
+                        .{ .visible = .headless },
                     .viewport = vp_blk: {
                         var vp = state_pkg.ViewportParams{
                             .fit_mode = parsed.default_scale,
@@ -233,6 +244,7 @@ const AppGraphicsAndState = struct {
                         break :vp_blk vp;
                     },
                     .rotation_map = .init(gpa),
+                    .server_mode = parsed.server_mode,
                     .running = true,
                 };
             },
@@ -264,7 +276,7 @@ const AppGraphicsAndState = struct {
         // to overlap CPU file I/O & decode with Wayland display and Vulkan device setup.
         if (self.parsed.arg_path) |path| {
             try self.state.openPath(path);
-        } else {
+        } else if (!self.parsed.server_mode) {
             try app.workers.readPipedStdin(
                 &self.state.workers,
                 &self.state.viewer.navigation.active_file_scans,
@@ -276,6 +288,7 @@ const AppGraphicsAndState = struct {
         // 4. Graphics and Window Setup
         self.setup = try ui.graphics.initGraphicsAndWindow("Peng Image Viewer", .{
             .headless = parsed.headless,
+            .hidden = start_hidden,
             .high_dpi = !parsed.test_mode,
             .borderless = parsed.windowless,
         });
@@ -311,8 +324,14 @@ const AppGraphicsAndState = struct {
         self.state.gpu_device = self.setup.gpu_device;
         self.state.unpack_compute_pipeline = self.resources.unpack_compute_pipeline;
         if (!parsed.headless) {
-            self.state.viewer.display.windowed.handle = self.setup.window;
-            self.state.viewer.display.windowed.claimed = true;
+            self.state.viewer.display.backendPtr().* = .{
+                .windowed = .{
+                    .handle = self.setup.window,
+                    .pixel_format = sdl.PixelFormat.rgba32,
+                    .is_fullscreen = false,
+                    .is_borderless = parsed.windowless,
+                },
+            };
         }
 
         return true;
