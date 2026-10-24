@@ -333,8 +333,11 @@ fn runMainLoop(ctx: *AppGraphicsAndState) !void {
     );
 
     // Initialize IPC server and spawn IPC worker task
-    if (ctx.parsed.ipc_enabled) {
-        const srv = try ipc.IpcServer.init(ctx.gpa);
+    if (ctx.parsed.ipc_mode.isEnabled()) {
+        const srv = try ipc.IpcServer.init(
+            ctx.gpa,
+            ctx.parsed.ipc_mode.customPath(),
+        );
         ctx.ipc_server = srv;
         errdefer {
             ctx.state.workers.exiting.store(true, .release);
@@ -345,6 +348,7 @@ fn runMainLoop(ctx: *AppGraphicsAndState) !void {
             &ctx.state.workers,
             ctx.gpa,
             ctx.io,
+            srv.socket_path,
         );
     }
 

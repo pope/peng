@@ -253,6 +253,28 @@ pub const MediaEntry = union(enum) {
         };
     }
 
+    /// Compares two path strings, normalizing any leading `"./"` prefix.
+    pub fn pathsMatch(path: []const u8, target: []const u8) bool {
+        if (std.mem.eql(u8, path, target)) return true;
+        const p = if (std.mem.startsWith(u8, path, "./")) path[2..] else path;
+        const t = if (std.mem.startsWith(u8, target, "./"))
+            target[2..]
+        else
+            target;
+        return std.mem.eql(u8, p, t);
+    }
+
+    /// Returns `true` if this media entry matches `target_path` (accounting for
+    /// `./` prefixes and matching either member of a RAW+JPEG `.pair`).
+    pub fn matchesTarget(self: MediaEntry, target_path: []const u8) bool {
+        return switch (self) {
+            .filesystem => |f| pathsMatch(f.path, target_path),
+            .archive_entry => |a| pathsMatch(a.archive_path, target_path),
+            .pair => |p| pathsMatch(p.raw_path, target_path) or
+                pathsMatch(p.jpeg_path, target_path),
+        };
+    }
+
     /// Deeply duplicates string paths belonging to this media entry using `allocator`.
     pub fn dupe(self: MediaEntry, allocator: std.mem.Allocator) !MediaEntry {
         return switch (self) {

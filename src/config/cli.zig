@@ -51,6 +51,15 @@ pub const process_flags = [_]intents.CliOption{
         .description = "Enable UNIX Domain Socket IPC server (/tmp/peng-$PID.sock)",
     },
     .{
+        .id = .socket,
+        .target = .main,
+        .short = "-S",
+        .long = "--socket",
+        .aliases = &.{"--ipc-socket"},
+        .arg_name = "<PATH>",
+        .description = "Enable IPC server bound to an explicit socket path",
+    },
+    .{
         .id = .headless,
         .target = .main,
         .long = "--headless",
@@ -230,6 +239,41 @@ pub fn printIpcHelp(io: std.Io) void {
     printHelpString(io, ipc_help_text);
 }
 
+/// IPC socket server configuration mode.
+pub const IpcMode = union(enum) {
+    disabled,
+    pid_socket,
+    custom_socket: []const u8,
+
+    /// Returns `true` if the IPC socket server should be started.
+    pub fn isEnabled(self: IpcMode) bool {
+        return switch (self) {
+            .disabled => false,
+            .pid_socket, .custom_socket => true,
+        };
+    }
+
+    /// Returns the explicit socket path if configured via `--socket`, or `null`
+    /// when disabled or using the default PID-based socket path.
+    pub fn customPath(self: IpcMode) ?[]const u8 {
+        return switch (self) {
+            .disabled, .pid_socket => null,
+            .custom_socket => |p| p,
+        };
+    }
+
+    /// Frees any owned custom socket path string and resets to `.disabled`.
+    pub fn deinit(self: *IpcMode, gpa: std.mem.Allocator) void {
+        switch (self.*) {
+            .disabled, .pid_socket => {},
+            .custom_socket => |p| {
+                gpa.free(p);
+                self.* = .disabled;
+            },
+        }
+    }
+};
+
 /// Parsed command-line configuration options controlling launch behavior and rendering modes.
 pub const ParsedArgs = struct {
     arg_path: ?[]const u8 = null,
@@ -237,7 +281,7 @@ pub const ParsedArgs = struct {
     test_mode: bool = false,
     update_baselines: bool = false,
     headless: bool = false,
-    ipc_enabled: bool = false,
+    ipc_mode: IpcMode = .disabled,
     enable_blur: bool = true,
     show_title: bool = false,
     windowless: bool = false,
@@ -253,6 +297,7 @@ pub const ParsedArgs = struct {
             gpa.free(p);
             self.arg_path = null;
         }
+        self.ipc_mode.deinit(gpa);
     }
 };
 
@@ -284,7 +329,8 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
     var test_mode = false;
     var update_baselines = false;
     var headless = false;
-    var ipc_enabled = false;
+    var ipc_mode: IpcMode = .disabled;
+    errdefer ipc_mode.deinit(gpa);
     var enable_blur = true;
     var show_title = false;
     var windowless = false;
@@ -308,7 +354,32 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
                     .test_mode => test_mode = true,
                     .headless => headless = true,
                     .update_baselines => update_baselines = true,
-                    .ipc => ipc_enabled = true,
+                    .ipc => switch (ipc_mode) {
+                        .disabled => ipc_mode = .pid_socket,
+                        .pid_socket, .custom_socket => {},
+                    },
+                    .socket => {
+                        const val = args_it.next() orelse {
+                            if (!builtin.is_test) {
+                                std.log.err(
+                                    "Missing value for --socket flag.",
+                                    .{},
+                                );
+                            }
+                            return error.MissingFlagValue;
+                        };
+                        if (val.len == 0 or val.len >= 104) {
+                            if (!builtin.is_test) {
+                                std.log.err(
+                                    "Invalid socket path length: {s}",
+                                    .{val},
+                                );
+                            }
+                            return error.InvalidSocketPath;
+                        }
+                        ipc_mode.deinit(gpa);
+                        ipc_mode = .{ .custom_socket = try gpa.dupe(u8, val) };
+                    },
                     .blur => enable_blur = true,
                     .no_blur => enable_blur = false,
                     .title => show_title = true,
@@ -387,7 +458,7 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
         .test_mode = test_mode,
         .update_baselines = update_baselines,
         .headless = headless,
-        .ipc_enabled = ipc_enabled,
+        .ipc_mode = ipc_mode,
         .enable_blur = enable_blur,
         .show_title = show_title,
         .windowless = windowless,
@@ -529,7 +600,11 @@ test "parseArgsIterator handles blur and other flags" {
         var parsed = try parseArgsIterator(&it, testing.allocator);
         defer parsed.deinit(testing.allocator);
         try testing.expect(!parsed.enable_blur);
-        try testing.expect(parsed.ipc_enabled);
+        try testing.expect(parsed.ipc_mode.isEnabled());
+        try testing.expectEqual(
+            @as(?[]const u8, null),
+            parsed.ipc_mode.customPath(),
+        );
         try testing.expect(parsed.headless);
         try testing.expect(parsed.test_mode);
         try testing.expect(parsed.show_title);
@@ -547,8 +622,53 @@ test "parseArgsIterator handles blur and other flags" {
         var parsed = try parseArgsIterator(&it, testing.allocator);
         defer parsed.deinit(testing.allocator);
         try testing.expect(!parsed.enable_blur);
-        try testing.expect(parsed.ipc_enabled);
+        try testing.expect(parsed.ipc_mode.isEnabled());
         try testing.expect(parsed.show_title);
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "--socket", "/tmp/peng.sock", "--ipc" },
+        };
+        var parsed = try parseArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expect(parsed.ipc_mode.isEnabled());
+        try testing.expectEqualStrings(
+            "/tmp/peng.sock",
+            parsed.ipc_mode.customPath().?,
+        );
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "-S", "/tmp/custom.sock" },
+        };
+        var parsed = try parseArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expectEqualStrings(
+            "/tmp/custom.sock",
+            parsed.ipc_mode.customPath().?,
+        );
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{"--socket"},
+        };
+        try testing.expectError(
+            error.MissingFlagValue,
+            parseArgsIterator(&it, testing.allocator),
+        );
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "--socket", "" },
+        };
+        try testing.expectError(
+            error.InvalidSocketPath,
+            parseArgsIterator(&it, testing.allocator),
+        );
     }
 
     {

@@ -636,22 +636,6 @@ fn syncActiveFilePaletteMatches(state: *AppState) void {
     }
 }
 
-fn pathMatchesTarget(path: []const u8, target: []const u8) bool {
-    if (std.mem.eql(u8, path, target)) return true;
-    const p = if (std.mem.startsWith(u8, path, "./")) path[2..] else path;
-    const t = if (std.mem.startsWith(u8, target, "./")) target[2..] else target;
-    return std.mem.eql(u8, p, t);
-}
-
-fn entryMatchesTarget(item: MediaEntry, target: []const u8) bool {
-    return switch (item) {
-        .filesystem => |f| pathMatchesTarget(f.path, target),
-        .archive_entry => |a| pathMatchesTarget(a.archive_path, target),
-        .pair => |p| pathMatchesTarget(p.raw_path, target) or
-            pathMatchesTarget(p.jpeg_path, target),
-    };
-}
-
 fn reconcileSingleFileScanCache(
     state: *AppState,
     had_single_fs: bool,
@@ -737,7 +721,7 @@ fn handleDirectoryScanResultEvent(
                 continue;
             };
             if (target_idx_in_dir == null and
-                entryMatchesTarget(item, result_data.target_path))
+                item.matchesTarget(result_data.target_path))
             {
                 target_idx_in_dir = state.viewer.navigation.count() - 1;
             }

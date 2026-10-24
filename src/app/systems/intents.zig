@@ -152,17 +152,7 @@ fn handleSetPaletteIntent(self: *AppState, p: anytype) !void {
 
 fn syncNavIndexChange(self: *AppState, old_idx: ?usize) void {
     if (old_idx != self.viewer.navigation.current_index) {
-        self.viewer.pan_controller.reset();
-        self.viewer.zoom_controller.reset();
-        self.viewer.viewport.reset();
-        self.updateCurrentRotation();
-        if (self.viewer.viewport.mode != .manual) {
-            self.viewer.viewport.zoom_factor =
-                state.ZoomFactor.init(self.getBaseScale());
-        }
-        self.viewer.image_transition = .none;
-        self.viewer.animations.setImmediate(.image_crossfade, 1.0);
-        self.viewer.animations.setImmediate(.thumb_crossfade, 1.0);
+        self.resetViewportAndTransitions();
     }
 }
 
@@ -492,9 +482,9 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
         },
         .refresh_directory => {
             if (nav.getCurrentImageEntry()) |entry| {
-                try self.openPath(entry.getSourcePath());
+                try self.reloadPath(entry.getSourcePath());
             } else if (nav.last_scanned_dir.items.len > 0) {
-                try self.openPath(nav.last_scanned_dir.items);
+                try self.reloadPath(nav.last_scanned_dir.items);
             }
         },
         .mark_pick => {
@@ -534,9 +524,9 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
             showCustomSnackbar(self, msg);
             _ = self.cache.advanceGeneration();
             if (nav.getCurrentImageEntry()) |entry| {
-                try self.openPath(entry.getSourcePath());
+                try self.reloadPath(entry.getSourcePath());
             } else if (nav.last_scanned_dir.items.len > 0) {
-                try self.openPath(nav.last_scanned_dir.items);
+                try self.reloadPath(nav.last_scanned_dir.items);
             }
         },
         .set_raw_jpeg_stacking => |enable| {
@@ -549,9 +539,9 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 showCustomSnackbar(self, msg);
                 _ = self.cache.advanceGeneration();
                 if (nav.getCurrentImageEntry()) |entry| {
-                    try self.openPath(entry.getSourcePath());
+                    try self.reloadPath(entry.getSourcePath());
                 } else if (nav.last_scanned_dir.items.len > 0) {
-                    try self.openPath(nav.last_scanned_dir.items);
+                    try self.reloadPath(nav.last_scanned_dir.items);
                 }
             }
         },

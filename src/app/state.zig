@@ -627,9 +627,40 @@ pub const AppState = struct {
         startTextInput(self.viewer.display);
     }
 
-    /// Initiates loading a new target path (file or directory). Cancels in-flight tasks,
-    /// clears cache, resets navigation, and starts background discovery workers.
+    /// Resets pan/zoom controllers, viewport state, rotation angle, base scale,
+    /// and active image/thumbnail crossfade transitions.
+    pub fn resetViewportAndTransitions(self: *AppState) void {
+        self.viewer.pan_controller.reset();
+        self.viewer.zoom_controller.reset();
+        self.viewer.viewport.reset();
+        self.updateCurrentRotation();
+        if (self.viewer.viewport.mode != .manual) {
+            self.viewer.viewport.zoom_factor = .init(self.getBaseScale());
+        }
+        self.viewer.image_transition = .none;
+        self.viewer.animations.setImmediate(.image_crossfade, 1.0);
+        self.viewer.animations.setImmediate(.thumb_crossfade, 1.0);
+    }
+
+    /// Initiates loading a target path (file or directory). When opening a
+    /// regular image file that already resides in the active, fully scanned
+    /// directory playlist, jumps directly to that entry while preserving the
+    /// warm VRAM cache and classifications; otherwise performs a full reload.
     pub fn openPath(self: *AppState, path: []const u8) !void {
+        return self.openPathInternal(path, true);
+    }
+
+    /// Forces a full directory re-scan and cache reload for `path` (used by
+    /// directory refresh and RAW+JPEG stacking toggles).
+    pub fn reloadPath(self: *AppState, path: []const u8) !void {
+        return self.openPathInternal(path, false);
+    }
+
+    fn openPathInternal(
+        self: *AppState,
+        path: []const u8,
+        reuse_loaded_dir: bool,
+    ) !void {
         // Copy `path` upfront because callers may pass a slice backed by
         // `directory_arena` (reset below) or `last_scanned_dir.items`
         // (cleared and written below).
@@ -664,6 +695,34 @@ pub const AppState = struct {
         else
             std.Io.Dir.path.dirname(owned_path) orelse ".";
 
+        if (reuse_loaded_dir and
+            has_stat and
+            stat.kind == .file and
+            !core_fs.isCbzFile(owned_path) and
+            !self.viewer.navigation.isLoadingFiles() and
+            state_pkg.MediaEntry.pathsMatch(
+                self.viewer.navigation.last_scanned_dir.items,
+                dir_target,
+            ))
+        {
+            if (self.viewer.navigation.findMatchingIndex(owned_path)) |idx| {
+                const target_class =
+                    self.viewer.navigation.getClassification(idx);
+                if (!self.viewer.navigation.view_mode.matches(target_class)) {
+                    self.viewer.navigation.view_mode =
+                        if (target_class == .reject) .all else .default;
+                }
+                _ = self.viewer.navigation.goToIndex(idx);
+                self.resetViewportAndTransitions();
+                if (self.viewer.ui.palette.mode == .files and
+                    !self.viewer.ui.palette.is_closing)
+                {
+                    try self.rebuildPaletteMatches();
+                }
+                return;
+            }
+        }
+
         self.viewer.navigation.last_scanned_dir.clearRetainingCapacity();
         try self.viewer.navigation.last_scanned_dir.appendSlice(
             self.allocator,
@@ -676,9 +735,6 @@ pub const AppState = struct {
         self.clearRotationMap();
         self.viewer.navigation.clearEntries();
         _ = self.viewer.navigation.directory_arena.reset(.retain_capacity);
-        self.viewer.image_transition = .none;
-        self.viewer.animations.setImmediate(.image_crossfade, 1.0);
-        self.viewer.animations.setImmediate(.thumb_crossfade, 1.0);
 
         if (has_stat) {
             const stack_raw = self.viewer.navigation.stack_raw_jpeg;
@@ -759,6 +815,7 @@ pub const AppState = struct {
                 try workers_mod.spawnDecode(args);
             }
         }
+        self.resetViewportAndTransitions();
         if (self.viewer.ui.palette.mode == .files and
             !self.viewer.ui.palette.is_closing)
         {
@@ -1320,4 +1377,51 @@ test "AppState.openPath spawns immediate decode for single image file" {
     try std.testing.expect(entry0 != null);
     try std.testing.expect(entry0.?.status == .decoding);
     try std.testing.expect(entry0.?.status.decoding.has_thread);
+}
+
+test "AppState.openPath reuses warm directory playlist and resets viewport" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    const dir_alloc = state.viewer.navigation.directory_arena.allocator();
+    const img0 = "testfiles/images/000_0_1024x682.jpg";
+    const img1 = "testfiles/images/001_1_1024x682.jpg";
+    try state.viewer.navigation.last_scanned_dir.appendSlice(
+        allocator,
+        "testfiles/images",
+    );
+    try state.viewer.navigation.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = try dir_alloc.dupe(u8, img0) } },
+    );
+    try state.viewer.navigation.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = try dir_alloc.dupe(u8, img1) } },
+    );
+    state.viewer.navigation.current_index = 0;
+
+    _ = try state.cache.appendSlot(allocator, 0, .failed);
+    const gen_before = state.cache.generation.load(.acquire);
+
+    // Mutate viewport before calling openPath on img1 in same directory
+    state.viewer.viewport.mode = .manual;
+    state.viewer.viewport.setPan(120.0, -80.0);
+
+    try state.openPath(img1);
+
+    // Must reuse the existing generation & cache and jump to index 1
+    try std.testing.expectEqual(
+        gen_before,
+        state.cache.generation.load(.acquire),
+    );
+    try std.testing.expectEqual(
+        @as(?usize, 1),
+        state.viewer.navigation.current_index,
+    );
+    try std.testing.expectEqual(@as(usize, 1), state.cache.count());
+    try std.testing.expectEqual(@as(f32, 0.0), state.viewer.viewport.pan_x);
+    try std.testing.expectEqual(@as(f32, 0.0), state.viewer.viewport.pan_y);
 }

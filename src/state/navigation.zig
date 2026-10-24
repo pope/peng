@@ -312,6 +312,29 @@ pub const NavigationState = struct {
         return null;
     }
 
+    /// Returns the classification at `idx` if within bounds, or `.unflagged`.
+    pub inline fn getClassification(
+        self: *const NavigationState,
+        idx: usize,
+    ) Classification {
+        if (idx < self.items.len) {
+            return self.items.items(.classification)[idx];
+        }
+        return .unflagged;
+    }
+
+    /// Searches the current media list for an entry matching `target_path`,
+    /// returning its index or `null` if not found.
+    pub fn findMatchingIndex(
+        self: *const NavigationState,
+        target_path: []const u8,
+    ) ?usize {
+        for (self.items.items(.entry), 0..) |item, i| {
+            if (item.matchesTarget(target_path)) return i;
+        }
+        return null;
+    }
+
     /// Returns `true` if the item at `idx` is visible in the active `view_mode`.
     pub inline fn isIndexVisible(self: *const NavigationState, idx: usize) bool {
         if (idx >= self.items.len) return false;

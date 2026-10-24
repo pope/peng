@@ -8,21 +8,12 @@ const std = @import("std");
 const BackgroundEvent = events.BackgroundEvent;
 const WorkerManager = manager.WorkerManager;
 
-extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) u32;
-
-fn getProcessId() u32 {
-    if (builtin.os.tag == .windows) {
-        return GetCurrentProcessId();
-    } else {
-        return @intCast(std.posix.system.getpid());
-    }
-}
-
 /// Thread arguments for spawning the background IPC server.
 pub const IpcServerArgs = struct {
     workers: *WorkerManager,
     allocator: std.mem.Allocator,
     io: std.Io,
+    socket_path: []const u8,
 };
 
 /// Entry point executed on a background thread to listen for incoming IPC socket connections.
@@ -30,8 +21,9 @@ pub fn ipcServerWorkerTask(args: *IpcServerArgs) void {
     const workers = args.workers;
     const gpa = args.allocator;
     const io = args.io;
+    const socket_path = args.socket_path;
     defer gpa.destroy(args);
-    runIpcServer(workers, gpa, io) catch |err| {
+    runIpcServer(workers, gpa, io, socket_path) catch |err| {
         std.log.err("IPC Server error: {any}", .{err});
     };
 }
@@ -40,29 +32,28 @@ fn runIpcServer(
     workers: *WorkerManager,
     gpa: std.mem.Allocator,
     io: std.Io,
+    socket_path: []const u8,
 ) !void {
-    const pid = getProcessId();
-    var path_buf: [128]u8 = undefined;
-    const socket_path = try std.mem.print(
-        &path_buf,
-        "/tmp/peng-{d}.sock",
-        .{pid},
-    );
-
-    std.Io.Dir.createDir(
-        std.Io.Dir.cwd(),
-        io,
-        "/tmp",
-        .default_dir,
-    ) catch |err| {
-        std.log.debug(
-            "IPC createDir /tmp failed or already exists: {any}",
-            .{err},
-        );
-    };
+    if (std.Io.Dir.path.dirname(socket_path)) |dir_path| {
+        if (dir_path.len > 0) {
+            std.Io.Dir.createDirPath(
+                std.Io.Dir.cwd(),
+                io,
+                dir_path,
+            ) catch |err| {
+                std.log.debug(
+                    "IPC createDirPath '{s}' failed or already exists: {any}",
+                    .{ dir_path, err },
+                );
+            };
+        }
+    }
 
     std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, socket_path) catch |err| {
-        std.log.debug("IPC socket pre-delete failed (file may not exist): {any}", .{err});
+        std.log.debug(
+            "IPC socket pre-delete failed (file may not exist): {any}",
+            .{err},
+        );
     };
 
     const address = try std.Io.net.UnixAddress.init(socket_path);

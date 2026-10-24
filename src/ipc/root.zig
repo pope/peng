@@ -40,13 +40,33 @@ pub fn wakeSocketListener(io: std.Io, sock_path: []const u8) void {
 /// Context managing the background Unix domain socket IPC server listener and client connections.
 pub const IpcServer = struct {
     allocator: std.mem.Allocator,
+    socket_path: []u8,
     thread: ?std.Thread = null,
 
-    /// Allocates and initializes an `IpcServer` instance.
-    pub fn init(allocator: std.mem.Allocator) !*IpcServer {
+    /// Allocates and initializes an `IpcServer` instance with either an
+    /// explicit custom socket path or `/tmp/peng-{pid}.sock`.
+    pub fn init(
+        allocator: std.mem.Allocator,
+        custom_path: ?[]const u8,
+    ) !*IpcServer {
+        const sock_path = if (custom_path) |cp|
+            try allocator.dupe(u8, cp)
+        else blk: {
+            const pid = getProcessId();
+            var path_buf: [128]u8 = undefined;
+            const formatted = try std.mem.print(
+                &path_buf,
+                "/tmp/peng-{d}.sock",
+                .{pid},
+            );
+            break :blk try allocator.dupe(u8, formatted);
+        };
+        errdefer allocator.free(sock_path);
+
         const self = try allocator.create(IpcServer);
         self.* = .{
             .allocator = allocator,
+            .socket_path = sock_path,
         };
         return self;
     }
@@ -56,24 +76,12 @@ pub const IpcServer = struct {
     pub fn deinit(self: *IpcServer, io: std.Io) void {
         if (self.thread) |t| {
             if (builtin.os.tag != .windows) {
-                const pid = getProcessId();
-                var path_buf: [128]u8 = undefined;
-                if (std.mem.print(
-                    &path_buf,
-                    "/tmp/peng-{d}.sock",
-                    .{pid},
-                )) |sock_path| {
-                    wakeSocketListener(io, sock_path);
-                } else |err| {
-                    std.log.debug(
-                        "IPC deinit socket path format failed: {any}",
-                        .{err},
-                    );
-                }
+                wakeSocketListener(io, self.socket_path);
             }
             t.join();
             self.thread = null;
         }
+        self.allocator.free(self.socket_path);
         self.allocator.destroy(self);
     }
 };
@@ -191,6 +199,7 @@ pub const IpcCommand = union(enum) {
     view: intents.ViewMode,
     precache,
     quit,
+    open: []const u8,
     screenshot: []const u8,
 
     /// Converts an IPC command variant into an `AppIntent`, or returns `null`
@@ -291,6 +300,7 @@ pub const IpcCommand = union(enum) {
             .view => |mode| return .{ .set_view_mode = mode },
             .precache => return .precache_directory,
             .quit => return .quit,
+            .open => |p| return .{ .open_path = p },
             .wait_load, .screenshot => return null,
         }
     }
@@ -645,6 +655,13 @@ pub const IpcCommand = union(enum) {
                 return .{ .view = mode };
             }
             return error.UnknownViewMode;
+        } else if (std.mem.eql(u8, cmd, "open")) {
+            const filepath = std.mem.trim(u8, it.rest(), " \t\r\n");
+            if (filepath.len == 0) return error.MissingArgument;
+            if (filepath.len > std.Io.Dir.max_path_bytes) {
+                return error.PathTooLong;
+            }
+            return .{ .open = filepath };
         } else if (std.mem.eql(u8, cmd, "screenshot")) {
             const filepath = std.mem.trim(u8, it.rest(), " \t\r\n");
             if (filepath.len == 0) return error.MissingArgument;
@@ -1021,6 +1038,40 @@ test "IpcCommand parsing" {
     try std.testing.expectError(
         error.MissingArgument,
         IpcCommand.parse("screenshot   \n"),
+    );
+
+    const cmd_open_spaces = try IpcCommand.parse(
+        "open /tmp/my photos/IMG 0001.JPG\n",
+    );
+    try std.testing.expectEqualStrings(
+        "/tmp/my photos/IMG 0001.JPG",
+        cmd_open_spaces.open,
+    );
+    try std.testing.expectEqualStrings(
+        "/tmp/my photos/IMG 0001.JPG",
+        cmd_open_spaces.toIntent().?.open_path,
+    );
+    try std.testing.expectError(
+        error.MissingArgument,
+        IpcCommand.parse("open   \n"),
+    );
+
+    const srv_default = try IpcServer.init(std.testing.allocator, null);
+    defer srv_default.deinit(std.Io.Threaded.global_single_threaded.io());
+    try std.testing.expect(std.mem.startsWith(
+        u8,
+        srv_default.socket_path,
+        "/tmp/peng-",
+    ));
+
+    const srv_custom = try IpcServer.init(
+        std.testing.allocator,
+        "/tmp/custom-peng.sock",
+    );
+    defer srv_custom.deinit(std.Io.Threaded.global_single_threaded.io());
+    try std.testing.expectEqualStrings(
+        "/tmp/custom-peng.sock",
+        srv_custom.socket_path,
     );
 
     const cmd_manga_on = try IpcCommand.parse("manga on");

@@ -149,19 +149,25 @@ Start the image viewer by passing a file or directory path:
 | `--update-baselines`  | None                                                        | Overwrites baseline golden screenshots.                  |
 | `--stack-raw-jpeg`    | None                                                        | Group RAW and companion JPEG files into a single image.  |
 | `--no-stack-raw-jpeg` | None                                                        | Display RAW and companion JPEG files as separate images. |
+| `--thumb-cache`       | `all`, `missing`, `read_only`, `off`                        | Sets the XDG shared thumbnail cache policy.              |
+| `--no-thumb-cache`    | None                                                        | Disables the Freedesktop XDG shared thumbnail cache.     |
+| `--precache`          | None                                                        | Pre-generates Freedesktop thumbnails for path and exits. |
+| `-r`, `--recursive`   | None                                                        | Recursively scans subdirectories when pre-caching.       |
 | `--ipc`               | None                                                        | Enables the IPC UNIX Domain Socket server.               |
+| `-S`, `--socket`      | `<PATH>`                                                    | Enables the IPC server bound to an explicit socket path. |
 
 Aliases:
 
 - `--windowless` can also be specified as `--borderless` or `--undecorated`.
 - `--scale` supports preset aliases: `fit` (alias for `full`), `fill` (alias
   for `crop`), `1:1` or `actual` (alias for `none`).
+- `--socket` can also be specified as `--ipc-socket`; `--precache` as `--cache-thumbs`.
 
 ______________________________________________________________________
 
 ## Remote IPC Control (`peng-msg`)
 
-When `peng` is launched with the `--ipc` flag, it starts a UDS server at `/tmp/peng-$PID.sock` and prints the socket path to `stdout`.
+When `peng` is launched with `--ipc` (default `/tmp/peng-$PID.sock`) or `--socket <path>`, it starts a UDS server and prints the socket path to `stdout`.
 
 You can send commands to a running instance using the `peng-msg` utility:
 
@@ -170,6 +176,8 @@ You can send commands to a running instance using the `peng-msg` utility:
 ./zig-out/bin/peng-msg <socket_path> <command_words...>
 
 # Examples:
+# Open a new image file, directory, or .cbz archive in the running instance
+./zig-out/bin/peng-msg /tmp/peng-1234.sock open /path/to/photo.jpg
 # Adjust zoom factor (min 0.001, max 100.0)
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock zoom 2.5
 
@@ -262,6 +270,9 @@ You can send commands to a running instance using the `peng-msg` utility:
 
 # Toggle Clay Layout Debug Borders
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock debug true
+
+# Pre-cache Freedesktop thumbnails for the active directory in the background
+./zig-out/bin/peng-msg /tmp/peng-1234.sock precache
 
 # Wait for background image decoder to finish loading
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock wait_load

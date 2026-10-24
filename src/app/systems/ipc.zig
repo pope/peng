@@ -95,14 +95,17 @@ fn handleWaitLoadCommand(ctx: FrameContext, stream: std.Io.net.Stream) void {
         };
         state.prepareCacheTextures();
 
-        if (state.getCurrentEntry()) |entry| {
-            if (entry.status != .decoding and entry.status != .uploading) {
+        if (!state.viewer.navigation.isLoadingFiles()) {
+            if (state.getCurrentEntry()) |entry| {
+                const is_ready = switch (entry.status) {
+                    .decoding, .uploading => false,
+                    .loaded_cpu => state.gpu_device == null,
+                    .loaded_gpu, .failed => true,
+                };
+                if (is_ready) break;
+            } else if (state.viewer.navigation.current_index == null) {
                 break;
             }
-        } else if (!state.viewer.navigation.isLoadingFiles() and
-            state.viewer.navigation.current_index == null)
-        {
-            break;
         }
         std.Io.sleep(
             state.io,
@@ -203,6 +206,30 @@ fn handleIntentCommand(
 
     var final_intent = intent;
     switch (intent) {
+        .open_path => |p| {
+            _ = std.Io.Dir.statFile(
+                std.Io.Dir.cwd(),
+                state.io,
+                p,
+                .{},
+            ) catch |err| {
+                replyIpcParseError(state.io, cmd_data.client_stream, err);
+                return;
+            };
+            const dup_p = ctx.frame_allocator.dupe(u8, p) catch |err| {
+                std.log.warn(
+                    "Failed to dupe path for open_path intent: {}",
+                    .{err},
+                );
+                replyIpcError(
+                    state.io,
+                    cmd_data.client_stream,
+                    "ERR OutOfMemory\n",
+                );
+                return;
+            };
+            final_intent = .{ .open_path = dup_p };
+        },
         .set_palette => |p| {
             if (p.query) |q| {
                 const dup_q = ctx.frame_allocator.dupe(u8, q) catch |err| {
@@ -507,4 +534,98 @@ test "sysExecuteIpcCommands - screenshot spaces and swapchain miss error" {
         "ERR SwapchainTextureUnavailable\n",
         line,
     );
+}
+
+test "sysExecuteIpcCommands - open command dupes into arena and rejects error" {
+    if (builtin.os.tag == .windows) return;
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    var frame_arena: std.heap.ArenaAllocator = .init(allocator);
+    defer frame_arena.deinit();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var sock_buf: [108]u8 = undefined;
+    const sock_path = try std.mem.print(
+        &sock_buf,
+        ".zig-cache/tmp/{s}/ipc_open.sock",
+        .{tmp.sub_path},
+    );
+
+    const addr = try std.Io.net.UnixAddress.init(sock_path);
+    var server = try addr.listen(io, .{});
+    defer server.deinit(io);
+
+    // 1. Nonexistent path replies with ERR and does not push an intent
+    {
+        const client = try addr.connect(io);
+        defer client.close(io);
+        const accepted = try server.accept(io);
+
+        const cmd_data = try allocator.create(ipc.IpcCommandData);
+        cmd_data.* = .{
+            .command = try allocator.dupe(
+                u8,
+                "open testfiles/images/does_not_exist.jpg",
+            ),
+            .client_stream = accepted,
+        };
+        try state.pending_ipc_commands.append(allocator, cmd_data);
+
+        const ctx = FrameContext{
+            .state = &state,
+            .frame_allocator = frame_arena.allocator(),
+        };
+        sysExecuteIpcCommands(ctx);
+        try std.testing.expectEqual(
+            @as(usize, 0),
+            state.pending_intents.items.len,
+        );
+
+        var read_buf: [64]u8 = undefined;
+        var reader = client.reader(io, &read_buf);
+        const line = try reader.interface.takeDelimiterInclusive('\n');
+        try std.testing.expect(std.mem.startsWith(u8, line, "ERR "));
+    }
+
+    // 2. Valid path replies OK, survives command buffer free via
+    // frame_allocator, and executes
+    {
+        const client = try addr.connect(io);
+        defer client.close(io);
+        const accepted = try server.accept(io);
+
+        const cmd_data = try allocator.create(ipc.IpcCommandData);
+        cmd_data.* = .{
+            .command = try allocator.dupe(
+                u8,
+                "open testfiles/images/000_0_1024x682.jpg",
+            ),
+            .client_stream = accepted,
+        };
+        try state.pending_ipc_commands.append(allocator, cmd_data);
+
+        const ctx = FrameContext{
+            .state = &state,
+            .frame_allocator = frame_arena.allocator(),
+        };
+        sysExecuteIpcCommands(ctx);
+        try std.testing.expectEqual(
+            @as(usize, 1),
+            state.pending_intents.items.len,
+        );
+        try intents_system.sysExecuteIntents(ctx);
+        try std.testing.expectEqual(
+            @as(?usize, 0),
+            state.viewer.navigation.current_index,
+        );
+
+        var read_buf: [64]u8 = undefined;
+        var reader = client.reader(io, &read_buf);
+        const line = try reader.interface.takeDelimiterInclusive('\n');
+        try std.testing.expectEqualStrings("OK\n", line);
+    }
 }

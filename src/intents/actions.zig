@@ -36,6 +36,7 @@ pub const OptionId = enum {
     no_blur,
     title,
     ipc,
+    socket,
     headless,
     test_mode,
     update_baselines,
@@ -189,6 +190,7 @@ pub const ActionId = enum {
     quit,
 
     // Non-palette capabilities (CLI / IPC parameters)
+    open_config,
     scale_config,
     zoom_config,
     pan_config,
@@ -1170,6 +1172,17 @@ pub const actions = [_]ActionDef{
         },
     },
     .{
+        .id = .open_config,
+        .title = "Open Path",
+        .description = "Open an image file, directory, or archive",
+        .show_in_palette = false,
+        .ipc = .{
+            .name = "open",
+            .args = "<path>",
+            .description = "Open an image file, directory, or archive",
+        },
+    },
+    .{
         .id = .wait_load,
         .title = "Wait for Load",
         .description = "Wait for image decoding to complete",
@@ -1304,8 +1317,8 @@ test "actions registry projections" {
     try testing.expectEqual(OptionId.no_stack_raw_jpeg, action_cli_options[5].id);
     try testing.expectEqual(OptionId.scale, action_cli_options[6].id);
 
-    // IPC commands projection: 32 previous + 1 precache verb = 33
-    try testing.expectEqual(@as(usize, 33), ipc_commands.len);
+    // IPC commands projection: 33 previous + 1 open verb = 34
+    try testing.expectEqual(@as(usize, 34), ipc_commands.len);
 }
 
 test "actions registry invariants and consistency" {

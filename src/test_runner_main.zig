@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const ipc = @import("ipc");
 const sdl = @import("sdl");
 const std = @import("std");
@@ -313,13 +314,25 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    // Spawn peng in headless mode
+    const runner_pid: u32 = if (builtin.os.tag == .windows)
+        0
+    else
+        @intCast(std.posix.system.getpid());
+    var custom_sock_buf: [128]u8 = undefined;
+    const requested_sock_path = try std.mem.print(
+        &custom_sock_buf,
+        "/tmp/peng-test-{d}.sock",
+        .{runner_pid},
+    );
+
+    // Spawn peng in headless mode with an explicit --socket path
     var child = try std.process.spawn(init.io, .{
         .argv = &[_][]const u8{
             "./zig-out/bin/peng",
             "--headless",
             "--test-mode",
-            "--ipc",
+            "--socket",
+            requested_sock_path,
             "testfiles/images/000_0_1024x682.jpg",
         },
         .stdin = .ignore,
@@ -354,6 +367,13 @@ pub fn main(init: std.process.Init) !void {
     if (socket_path.len == 0) {
         std.log.err("Failed to obtain IPC socket path from peng", .{});
         return error.SocketPathNotFound;
+    }
+    if (!std.mem.eql(u8, socket_path, requested_sock_path)) {
+        std.log.err(
+            "Expected custom IPC socket '{s}', got '{s}'",
+            .{ requested_sock_path, socket_path },
+        );
+        return error.SocketPathMismatch;
     }
 
     std.log.info("Test runner connected to IPC socket: {s}", .{socket_path});
@@ -547,7 +567,7 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    // Navigation (Next & Prev)
+    // Navigation (Next, Prev & Open)
     {
         try sendCommand(socket_path, "palette none");
         try sendCommand(socket_path, "next");
@@ -560,8 +580,15 @@ pub fn main(init: std.process.Init) !void {
         if (try harness.verify("prev_image.png", "init.png")) {
             steps_with_discrepancies += 1;
         }
-        try sendCommand(socket_path, "next");
+        try sendCommand(socket_path, "zoom 2.0");
+        try sendCommand(
+            socket_path,
+            "open testfiles/images/001_1_1024x682.jpg",
+        );
         try sendCommand(socket_path, "wait_load");
+        if (try harness.verify("open_image.png", "next_image.png")) {
+            steps_with_discrepancies += 1;
+        }
     }
 
     // Debug Tools
@@ -718,6 +745,11 @@ pub fn main(init: std.process.Init) !void {
         try expectCommandFailure(socket_path, "palette invalid");
         try expectCommandFailure(socket_path, "thumb invalid");
         try expectCommandFailure(socket_path, "compare invalid");
+        try expectCommandFailure(socket_path, "open");
+        try expectCommandFailure(
+            socket_path,
+            "open testfiles/images/does_not_exist.jpg",
+        );
 
         // Generate a 513-character screenshot path
         var long_path_buf: [520]u8 = undefined;

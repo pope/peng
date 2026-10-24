@@ -3,6 +3,7 @@
 //! Encapsulates all off-main-thread background tasks (image decoding, directory scanning,
 //! stdin reading, and IPC server socket listening) and provides clean worker lifecycle management.
 
+const builtin = @import("builtin");
 pub const context = @import("context.zig");
 pub const decode = @import("decode.zig");
 const events = @import("../core/events.zig");
@@ -47,6 +48,7 @@ pub fn spawnIpcServer(
     workers: *WorkerManager,
     allocator: std.mem.Allocator,
     io: std.Io,
+    socket_path: []const u8,
 ) !std.Thread {
     const args = try allocator.create(ipc_server.IpcServerArgs);
     errdefer allocator.destroy(args);
@@ -54,6 +56,7 @@ pub fn spawnIpcServer(
         .workers = workers,
         .allocator = allocator,
         .io = io,
+        .socket_path = socket_path,
     };
     return std.Thread.spawn(
         .{},
@@ -119,16 +122,25 @@ pub fn startAsyncPathScan(
 }
 
 test "spawnIpcServer does not mark WorkerManager as busy" {
-    if (@import("builtin").os.tag == .windows) return error.SkipZigTest;
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
 
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var sock_buf: [128]u8 = undefined;
+    const sock_path = try std.mem.print(
+        &sock_buf,
+        ".zig-cache/tmp/{s}/worker_ipc.sock",
+        .{tmp.sub_path},
+    );
 
     var workers = WorkerManager.init();
     defer workers.deinit(allocator, io);
     workers.exiting.store(true, .release);
 
-    const thread = try spawnIpcServer(&workers, allocator, io);
+    const thread = try spawnIpcServer(&workers, allocator, io, sock_path);
     defer thread.join();
 
     try std.testing.expect(!workers.isBusy());
