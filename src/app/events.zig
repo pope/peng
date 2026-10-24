@@ -69,6 +69,12 @@ pub fn drainWorkerEvents(state: *AppState) bool {
                     handlePaletteFolderCountEvent(state, payload);
                 }
             },
+            .precache_completed => |res| {
+                const active_gen = &state.workers.precache_generation;
+                if (res.resolve(active_gen)) |payload| {
+                    handlePrecacheCompletedEvent(state, payload);
+                }
+            },
             .ipc_command => |cmd_data| handleIpcCommandEvent(state, cmd_data),
         }
     }
@@ -116,6 +122,44 @@ fn handlePaletteFolderCountEvent(
         state.viewer.ui.palette.selection_dirty = true;
         break;
     }
+}
+
+fn handlePrecacheCompletedEvent(
+    state: *AppState,
+    res: events.PrecacheCompletedPayload,
+) void {
+    if (!state.viewer.ui.snackbar.enabled) return;
+
+    var buf: [state_pkg.snackbar.MAX_SNACKBAR_LEN]u8 = undefined;
+    const msg = if (res.written > 0 and res.already_valid > 0)
+        std.mem.print(
+            &buf,
+            "Pre-cached {d} thumbnails ({d} already cached)",
+            .{ res.written, res.already_valid },
+        ) catch return
+    else if (res.written > 0)
+        std.mem.print(
+            &buf,
+            "Pre-cached {d} thumbnails",
+            .{res.written},
+        ) catch return
+    else if (res.already_valid > 0)
+        std.mem.print(
+            &buf,
+            "All {d} thumbnails already cached",
+            .{res.already_valid},
+        ) catch return
+    else
+        "Thumbnail pre-cache finished";
+
+    const now = sdl.timer.getTicks();
+    state.viewer.ui.snackbar.show(msg, now + 2000);
+    const progress = state.viewer.animations.get(.snackbar);
+    const dur = @max(
+        state_pkg.DURATION_SNACKBAR_OPEN_MS * (1.0 - progress),
+        30.0,
+    );
+    state.viewer.animations.start(.snackbar, 1.0, dur, .ease_out_quad);
 }
 
 fn handleIpcCommandEvent(state: *AppState, cmd_data: *ipc.IpcCommandData) void {
@@ -179,6 +223,7 @@ fn hasSubsequentImageDecoded(
             .path_discovered,
             .directory_scan_result,
             .palette_folder_count,
+            .precache_completed,
             .ipc_command,
             => {},
         }

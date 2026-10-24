@@ -477,6 +477,9 @@ pub const AppIntent = union(enum) {
     set_raw_jpeg_stacking: bool,
     toggle_pair_stream,
 
+    // Thumbnail cache maintenance
+    precache_directory,
+
     // Application lifecycle
     quit,
 };

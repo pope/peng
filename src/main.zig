@@ -190,6 +190,12 @@ const AppGraphicsAndState = struct {
             return false;
         }
 
+        if (parsed.precache) {
+            try runCliPrecache(proc_init, &parsed);
+            parsed.deinit(gpa);
+            return false;
+        }
+
         // 2. Initialize SDL Core Subsystems (video, events, TTF)
         // Must be initialized before background workers touch SDL surface/event APIs.
         try ui.graphics.initSdlCore(parsed.headless);
@@ -401,6 +407,87 @@ fn runMainLoop(ctx: *AppGraphicsAndState) !void {
             );
         }
     }
+}
+
+/// Runs headless CLI thumbnail pre-caching (`peng --precache [path]`) across CPU cores
+/// and prints a completion summary to standard output.
+fn runCliPrecache(
+    proc_init: std.process.Init,
+    parsed: *const app_config.cli.ParsedArgs,
+) !void {
+    const gpa = proc_init.gpa;
+    const io = proc_init.io;
+
+    const policy: app.thumb_cache.ThumbWritePolicy = switch (parsed.thumb_cache) {
+        .missing => .missing_embedded_only,
+        else => .all_missing,
+    };
+    var cfg = app.thumb_cache.ThumbCacheConfig.initFromEnviron(
+        gpa,
+        proc_init.environ_map,
+        policy,
+    );
+    defer cfg.deinit(gpa);
+
+    const enabled_cfg = switch (cfg) {
+        .enabled => |c| c,
+        .disabled => {
+            std.log.err(
+                "Freedesktop thumbnail cache unavailable (check HOME / XDG_CACHE_HOME)",
+                .{},
+            );
+            return error.ThumbCacheDisabled;
+        },
+    };
+
+    const target_path = parsed.arg_path orelse ".";
+    var path_arena: std.heap.ArenaAllocator = .init(gpa);
+    defer path_arena.deinit();
+    const path_alloc = path_arena.allocator();
+
+    var files: std.ArrayList([]const u8) = .empty;
+    app.thumb_cache.collectPrecacheFiles(
+        path_alloc,
+        io,
+        target_path,
+        parsed.recursive,
+        &files,
+    ) catch |err| {
+        std.log.err(
+            "Failed to collect files from '{s}': {s}",
+            .{ target_path, @errorName(err) },
+        );
+        return err;
+    };
+
+    const cpu_count = std.Thread.getCpuCount() catch 4;
+    const max_workers = @max(@as(usize, 1), @min(@as(usize, 8), cpu_count));
+    const stats = app.thumb_cache.precachePathsParallel(
+        gpa,
+        io,
+        enabled_cfg,
+        files.items,
+        max_workers,
+        .{},
+    );
+
+    var stdout_write_buf: [1024]u8 = undefined;
+    var stdout_writer = std.Io.File.stdout().writerStreaming(
+        io,
+        &stdout_write_buf,
+    );
+    _ = stdout_writer.interface.print(
+        "Pre-cached {s}: {d} written, {d} already cached, {d} skipped, {d} failed ({d} total)\n",
+        .{
+            target_path,
+            stats.written,
+            stats.already_valid,
+            stats.skipped,
+            stats.failed,
+            stats.total_files,
+        },
+    ) catch {};
+    _ = stdout_writer.interface.flush() catch {};
 }
 
 /// Writes tab-separated image classifications (PICK / REJECT) to standard output on exit.

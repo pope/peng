@@ -10,6 +10,9 @@
 //!   (`KIO::PreviewJob`), GNOME/GLib, and Yazi.
 
 const builtin = @import("builtin");
+const exif = @import("exif.zig");
+const core_fs = @import("fs.zig");
+const image = @import("image.zig");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
@@ -490,8 +493,7 @@ pub fn hasValidTargetTierThumbnail(
     defer file.close(io);
 
     var hdr_buf: [2048]u8 = undefined;
-    var slices = [_][]u8{&hdr_buf};
-    const n = file.readPositional(io, &slices, 0) catch return false;
+    const n = file.readPositional(io, &.{&hdr_buf}, 0) catch return false;
     const meta = parsePngThumbnailMetadata(hdr_buf[0..n]) orelse return false;
     return meta.mtime_sec == source_mtime_sec;
 }
@@ -516,17 +518,6 @@ pub fn loadCachedThumbnail(
             key.md5_hex,
         ) orelse continue;
 
-        const stat = std.Io.Dir.statFile(
-            std.Io.Dir.cwd(),
-            io,
-            thumb_path,
-            .{},
-        ) catch continue;
-        if (stat.size < ihdr_end_offset or stat.size > max_cached_png_bytes) {
-            continue;
-        }
-        const size: usize = @intCast(stat.size);
-
         var file = std.Io.Dir.openFile(
             std.Io.Dir.cwd(),
             io,
@@ -535,17 +526,16 @@ pub fn loadCachedThumbnail(
         ) catch continue;
         defer file.close(io);
 
+        const stat = file.stat(io) catch continue;
+        if (stat.size < ihdr_end_offset or stat.size > max_cached_png_bytes) {
+            continue;
+        }
+        const size: usize = @intCast(stat.size);
+
         const bytes = allocator.alloc(u8, size) catch continue;
         defer allocator.free(bytes);
 
-        var total_read: usize = 0;
-        while (total_read < size) {
-            var slices = [_][]u8{bytes[total_read..]};
-            const n = file.readPositional(io, &slices, total_read) catch break;
-            if (n == 0) break;
-            total_read += n;
-        }
-        if (total_read != size) continue;
+        if ((file.readPositionalAll(io, bytes, 0) catch 0) != size) continue;
 
         const meta = parsePngThumbnailMetadata(bytes) orelse continue;
         if (meta.mtime_sec != source_mtime_sec) continue;
@@ -653,6 +643,595 @@ pub fn writeThumbnailPng(
 
     try atomic_file.file.writeStreamingAll(io, spliced_png);
     try atomic_file.replace(io);
+}
+
+const precache_header_limit: usize = 256 * 1024;
+
+/// Result of attempting to pre-cache a single image file's Freedesktop
+/// thumbnail.
+pub const PrecacheOutcome = enum {
+    written,
+    already_valid,
+    skipped,
+    failed,
+    canceled,
+};
+
+/// Aggregated statistics from a batch thumbnail pre-caching run.
+pub const PrecacheStats = struct {
+    total_files: usize = 0,
+    written: usize = 0,
+    already_valid: usize = 0,
+    skipped: usize = 0,
+    failed: usize = 0,
+};
+
+/// Cooperative cancellation state for thumbnail pre-caching operations.
+pub const PrecacheCancel = struct {
+    exiting: ?*const std.atomic.Value(bool) = null,
+    generation: usize = 0,
+    current_generation: ?*const std.atomic.Value(usize) = null,
+
+    pub inline fn isCanceled(self: PrecacheCancel) bool {
+        if (self.exiting) |ex| {
+            if (ex.load(.acquire)) return true;
+        }
+        if (self.current_generation) |cur| {
+            if (cur.load(.acquire) != self.generation) return true;
+        }
+        return false;
+    }
+};
+
+fn readPositionalRange(
+    file: std.Io.File,
+    io: std.Io,
+    cancel: PrecacheCancel,
+    dest: []u8,
+    start_offset: u64,
+) !usize {
+    var total_read: usize = 0;
+    while (total_read < dest.len) {
+        if (cancel.isCanceled()) return error.Canceled;
+        const n = try file.readPositional(
+            io,
+            &.{dest[total_read..]},
+            start_offset + total_read,
+        );
+        if (n == 0) break;
+        total_read += n;
+    }
+    return total_read;
+}
+
+fn decodeEmbeddedRangeSurface(
+    allocator: std.mem.Allocator,
+    file: std.Io.File,
+    io: std.Io,
+    cancel: PrecacheCancel,
+    header_slice: []const u8,
+    file_size: u64,
+    loc: exif.ThumbnailLocation,
+) error{Canceled}!?sdl.Surface {
+    if (loc.length == 0 or loc.file_offset +| loc.length > file_size) {
+        return null;
+    }
+    const len: usize = @intCast(loc.length);
+    if (loc.file_offset +| loc.length <= header_slice.len) {
+        if (cancel.isCanceled()) return error.Canceled;
+        const off: usize = @intCast(loc.file_offset);
+        return sdl.Surface.loadConstMemOpt(header_slice[off .. off + len]);
+    }
+
+    const buf = allocator.alloc(u8, len) catch return null;
+    defer allocator.free(buf);
+    const n = readPositionalRange(
+        file,
+        io,
+        cancel,
+        buf,
+        loc.file_offset,
+    ) catch |err| {
+        if (err == error.Canceled or cancel.isCanceled()) {
+            return error.Canceled;
+        }
+        return null;
+    };
+    if (n != len) return null;
+    if (cancel.isCanceled()) return error.Canceled;
+    return sdl.Surface.loadConstMemOpt(buf);
+}
+
+/// Checks whether `path` already has an up-to-date Freedesktop thumbnail in
+/// `cfg.cache_dir`, and if missing or stale, extracts an embedded preview (for
+/// RAW files) or decodes the image and atomically writes the PNG thumbnail.
+pub fn precacheFileThumbnail(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    cfg: EnabledThumbCacheConfig,
+    path: []const u8,
+    cancel: PrecacheCancel,
+) PrecacheOutcome {
+    if (cancel.isCanceled()) return .canceled;
+    if (cfg.write_policy == .never) return .skipped;
+
+    const key = ThumbCacheKey.fromFilePath(io, path, cfg.cache_dir) orelse
+        return .skipped;
+
+    const s = std.Io.Dir.statFile(std.Io.Dir.cwd(), io, path, .{}) catch |err| {
+        if (err == error.Canceled or cancel.isCanceled()) {
+            return .canceled;
+        }
+        return .failed;
+    };
+    const file_size: u64 = s.size;
+    if (file_size == 0) return .failed;
+    const mtime_sec = s.mtime.toSeconds();
+
+    if (hasValidTargetTierThumbnail(io, cfg, &key, mtime_sec)) {
+        return .already_valid;
+    }
+
+    var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, path, .{}) catch |err| {
+        if (err == error.Canceled or cancel.isCanceled()) {
+            return .canceled;
+        }
+        return .failed;
+    };
+    defer file.close(io);
+
+    const header_target: usize = @intCast(@min(file_size, precache_header_limit));
+    var header_buf: [precache_header_limit]u8 = undefined;
+    const header_n = readPositionalRange(
+        file,
+        io,
+        cancel,
+        header_buf[0..header_target],
+        0,
+    ) catch |err| {
+        if (err == error.Canceled or cancel.isCanceled()) {
+            return .canceled;
+        }
+        return .failed;
+    };
+    if (header_n == 0) return .failed;
+    const header_slice = header_buf[0..header_n];
+
+    const mime_type = image.detectMimeType(header_slice, path);
+    const is_fuji = std.mem.eql(u8, mime_type, "image/x-fuji-raf") or
+        (header_slice.len >= 8 and
+            std.mem.startsWith(u8, header_slice, "FUJIFILM"));
+    const is_raw = core_fs.isRawFile(path) or
+        is_fuji or
+        std.mem.startsWith(u8, mime_type, "image/x-");
+
+    if (is_raw) {
+        var prev_loc_opt: ?exif.ThumbnailLocation = null;
+        var med_loc_opt: ?exif.ThumbnailLocation = null;
+        var thumb_loc_opt: ?exif.ThumbnailLocation = null;
+        var raw_sensor_dims: ?exif.JpegDimensions = null;
+        var orientation: Orientation = .normal;
+
+        if (is_fuji) {
+            prev_loc_opt = exif.extractFujiRafPreviewLocation(header_slice);
+            if (exif.extractFujiRafMetadataLocation(header_slice)) |meta_loc| {
+                if (meta_loc.file_offset +| meta_loc.length <= header_n) {
+                    const end = meta_loc.file_offset + meta_loc.length;
+                    raw_sensor_dims = exif.parseFujiRafDimensions(
+                        header_slice[@intCast(meta_loc.file_offset)..@intCast(end)],
+                    );
+                } else if (meta_loc.length > 0 and
+                    meta_loc.length <= 64 * 1024 and
+                    meta_loc.file_offset +| meta_loc.length <= file_size)
+                {
+                    var m_buf: [64 * 1024]u8 = undefined;
+                    const mn = readPositionalRange(
+                        file,
+                        io,
+                        cancel,
+                        m_buf[0..meta_loc.length],
+                        meta_loc.file_offset,
+                    ) catch |err| blk: {
+                        if (err == error.Canceled or cancel.isCanceled()) {
+                            return .canceled;
+                        }
+                        break :blk 0;
+                    };
+                    if (mn >= meta_loc.length) {
+                        raw_sensor_dims = exif.parseFujiRafDimensions(
+                            m_buf[0..meta_loc.length],
+                        );
+                    }
+                }
+            }
+            if (prev_loc_opt) |prev_loc| {
+                if (prev_loc.file_offset +| 4096 <= header_n) {
+                    const off: usize = @intCast(prev_loc.file_offset);
+                    orientation = exif.parseExifOrientation(
+                        header_slice[off..header_n],
+                    ) orelse .normal;
+                    if (exif.extractJpegThumbnailLocation(
+                        header_slice[off..header_n],
+                    )) |j_thumb| {
+                        thumb_loc_opt = .{
+                            .file_offset = prev_loc.file_offset +|
+                                j_thumb.file_offset,
+                            .length = j_thumb.length,
+                        };
+                    }
+                } else {
+                    var p_hdr: [8192]u8 = undefined;
+                    const pn = readPositionalRange(
+                        file,
+                        io,
+                        cancel,
+                        &p_hdr,
+                        prev_loc.file_offset,
+                    ) catch |err| blk: {
+                        if (err == error.Canceled or cancel.isCanceled()) {
+                            return .canceled;
+                        }
+                        break :blk 0;
+                    };
+                    if (pn > 0) {
+                        orientation = exif.parseExifOrientation(
+                            p_hdr[0..pn],
+                        ) orelse .normal;
+                        if (exif.extractJpegThumbnailLocation(
+                            p_hdr[0..pn],
+                        )) |j_thumb| {
+                            thumb_loc_opt = .{
+                                .file_offset = prev_loc.file_offset +|
+                                    j_thumb.file_offset,
+                                .length = j_thumb.length,
+                            };
+                        }
+                    }
+                }
+            }
+        } else {
+            var tail_buf: [16 * 1024]u8 = undefined;
+            const tiff_source = exif.readTiffSource(
+                io,
+                &file,
+                file_size,
+                header_slice,
+                &tail_buf,
+            );
+            const raw_cands = exif.extractTiffRawPreviewsFromSource(tiff_source);
+            prev_loc_opt = raw_cands.preview;
+            med_loc_opt = raw_cands.medium;
+            thumb_loc_opt = raw_cands.thumbnail;
+            raw_sensor_dims = exif.parseExifDimensionsFromSource(tiff_source);
+            if (raw_sensor_dims == null) {
+                if (image.parseImageDimensions(header_slice, mime_type)) |d| {
+                    raw_sensor_dims = .{ .w = d.w, .h = d.h };
+                }
+            }
+            orientation = exif.parseExifOrientationFromSource(tiff_source) orelse
+                .normal;
+        }
+
+        const had_embedded_thumb = (thumb_loc_opt != null) or
+            (med_loc_opt != null);
+        if (!cfg.write_policy.shouldWrite(had_embedded_thumb, false)) {
+            return .skipped;
+        }
+
+        const candidates = [_]?exif.ThumbnailLocation{
+            med_loc_opt,
+            prev_loc_opt,
+            thumb_loc_opt,
+        };
+        var decoded_surf: ?sdl.Surface = null;
+        for (candidates) |cand_opt| {
+            const loc = cand_opt orelse continue;
+            const surf_opt = decodeEmbeddedRangeSurface(
+                allocator,
+                file,
+                io,
+                cancel,
+                header_slice,
+                file_size,
+                loc,
+            ) catch return .canceled;
+            if (surf_opt) |surf| {
+                decoded_surf = surf;
+                break;
+            }
+        }
+        const surf = decoded_surf orelse return .failed;
+        defer surf.destroy();
+
+        if (cancel.isCanceled()) return .canceled;
+
+        const source_dims = if (raw_sensor_dims) |d|
+            state_pkg.PhysicalDims.initPositive(d.w, d.h)
+        else
+            state_pkg.PhysicalDims.initPositive(
+                @floatFromInt(surf.w()),
+                @floatFromInt(surf.h()),
+            );
+
+        writeThumbnailPng(
+            allocator,
+            io,
+            cfg,
+            &key,
+            surf,
+            orientation,
+            .{
+                .uri = key.uri(),
+                .mtime_sec = mtime_sec,
+                .file_size = file_size,
+                .mime_type = mime_type,
+                .source_dims = source_dims,
+            },
+        ) catch return .failed;
+        return .written;
+    }
+
+    const orientation = exif.parseExifOrientation(header_slice) orelse .normal;
+    const full_dims = image.parseImageDimensions(header_slice, mime_type);
+    const had_embedded_thumb: bool = blk: {
+        if (!std.mem.eql(u8, mime_type, "image/jpeg")) break :blk false;
+        const loc = exif.extractJpegThumbnailLocation(header_slice) orelse
+            break :blk false;
+        const max_thumb_size_bytes = 512 * 1024;
+        break :blk loc.length > 0 and
+            loc.length <= max_thumb_size_bytes and
+            loc.file_offset +| loc.length <= file_size;
+    };
+
+    if (!cfg.write_policy.shouldWrite(had_embedded_thumb, false)) {
+        return .skipped;
+    }
+
+    const file_usize = std.math.cast(usize, file_size) orelse return .failed;
+    var full_allocated: ?[]u8 = null;
+    defer if (full_allocated) |b| allocator.free(b);
+
+    const bytes_to_decode: []const u8 = if (file_usize <= header_n)
+        header_slice[0..file_usize]
+    else blk: {
+        const buf = allocator.alloc(u8, file_usize) catch return .failed;
+        full_allocated = buf;
+        @memcpy(buf[0..header_n], header_slice);
+        const rem_n = readPositionalRange(
+            file,
+            io,
+            cancel,
+            buf[header_n..],
+            header_n,
+        ) catch |err| {
+            if (err == error.Canceled or cancel.isCanceled()) {
+                return .canceled;
+            }
+            return .failed;
+        };
+        if (header_n + rem_n != file_usize) return .failed;
+        break :blk buf;
+    };
+
+    if (cancel.isCanceled()) return .canceled;
+    const surf = sdl.Surface.loadConstMemOpt(bytes_to_decode) orelse
+        return .failed;
+    defer surf.destroy();
+
+    if (cancel.isCanceled()) return .canceled;
+
+    const source_dims = if (full_dims) |d|
+        state_pkg.PhysicalDims.initPositive(d.w, d.h)
+    else
+        state_pkg.PhysicalDims.initPositive(
+            @floatFromInt(surf.w()),
+            @floatFromInt(surf.h()),
+        );
+
+    writeThumbnailPng(
+        allocator,
+        io,
+        cfg,
+        &key,
+        surf,
+        orientation,
+        .{
+            .uri = key.uri(),
+            .mtime_sec = mtime_sec,
+            .file_size = file_size,
+            .mime_type = mime_type,
+            .source_dims = source_dims,
+        },
+    ) catch return .failed;
+    return .written;
+}
+
+fn collectPrecacheDirInner(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    dir_path: []const u8,
+    recursive: bool,
+    out_paths: *std.ArrayList([]const u8),
+) !void {
+    var dir = std.Io.Dir.openDir(
+        std.Io.Dir.cwd(),
+        io,
+        dir_path,
+        .{ .iterate = true },
+    ) catch |err| {
+        std.log.warn(
+            "collectPrecacheFiles: openDir failed for '{s}': {}",
+            .{ dir_path, err },
+        );
+        return;
+    };
+    defer dir.close(io);
+
+    var it = dir.iterate();
+    while (it.next(io) catch null) |entry| {
+        const kind = core_fs.resolveEntryKind(dir, io, entry) orelse continue;
+        if (kind == .file) {
+            if (core_fs.isImageFile(entry.name)) {
+                const full = try std.Io.Dir.path.join(
+                    allocator,
+                    &.{ dir_path, entry.name },
+                );
+                errdefer allocator.free(full);
+                try out_paths.append(allocator, full);
+            }
+        } else if (recursive and kind == .directory) {
+            if (std.mem.startsWith(u8, entry.name, ".")) continue;
+            var sub_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            var sub_sfa: std.heap.BufferFirstAllocator = .init(
+                &sub_buf,
+                allocator,
+            );
+            const sub_alloc = sub_sfa.allocator();
+            const sub_path = try std.Io.Dir.path.join(
+                sub_alloc,
+                &.{ dir_path, entry.name },
+            );
+            defer sub_alloc.free(sub_path);
+            try collectPrecacheDirInner(
+                allocator,
+                io,
+                sub_path,
+                true,
+                out_paths,
+            );
+        }
+    }
+}
+
+/// Discovers supported image files in `target_path` (either a single file or a
+/// directory, optionally traversing non-hidden subdirectories when `recursive`
+/// is true) and appends path slices allocated with `allocator` (typically an
+/// `ArenaAllocator`) to `out_paths` in sorted order.
+pub fn collectPrecacheFiles(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    target_path: []const u8,
+    recursive: bool,
+    out_paths: *std.ArrayList([]const u8),
+) !void {
+    const start_len = out_paths.items.len;
+    errdefer {
+        for (out_paths.items[start_len..]) |p| allocator.free(p);
+        out_paths.shrinkRetainingCapacity(start_len);
+    }
+
+    const stat = try std.Io.Dir.statFile(
+        std.Io.Dir.cwd(),
+        io,
+        target_path,
+        .{},
+    );
+    if (stat.kind == .file) {
+        if (core_fs.isImageFile(target_path)) {
+            const dup = try allocator.dupe(u8, target_path);
+            errdefer allocator.free(dup);
+            try out_paths.append(allocator, dup);
+        }
+        return;
+    }
+
+    if (stat.kind == .directory) {
+        try collectPrecacheDirInner(
+            allocator,
+            io,
+            target_path,
+            recursive,
+            out_paths,
+        );
+        std.mem.sort([]const u8, out_paths.items[start_len..], {}, struct {
+            fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                return std.ascii.lessThanIgnoreCase(a, b);
+            }
+        }.lessThan);
+    }
+}
+
+const ParallelPrecacheContext = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    cfg: EnabledThumbCacheConfig,
+    paths: []const []const u8,
+    cancel: PrecacheCancel,
+    next_idx: std.atomic.Value(usize) = .init(0),
+    written: std.atomic.Value(usize) = .init(0),
+    already_valid: std.atomic.Value(usize) = .init(0),
+    skipped: std.atomic.Value(usize) = .init(0),
+    failed: std.atomic.Value(usize) = .init(0),
+
+    fn workerTask(self: *ParallelPrecacheContext) void {
+        var scratch_arena: std.heap.ArenaAllocator = .init(self.allocator);
+        defer scratch_arena.deinit();
+
+        while (!self.cancel.isCanceled()) {
+            defer _ = scratch_arena.reset(.{
+                .retain_with_limit = 4 * 1024 * 1024,
+            });
+            const idx = self.next_idx.fetchAdd(1, .monotonic);
+            if (idx >= self.paths.len) break;
+
+            switch (precacheFileThumbnail(
+                scratch_arena.allocator(),
+                self.io,
+                self.cfg,
+                self.paths[idx],
+                self.cancel,
+            )) {
+                .written => _ = self.written.fetchAdd(1, .monotonic),
+                .already_valid => _ = self.already_valid.fetchAdd(
+                    1,
+                    .monotonic,
+                ),
+                .skipped => _ = self.skipped.fetchAdd(1, .monotonic),
+                .failed => _ = self.failed.fetchAdd(1, .monotonic),
+                .canceled => break,
+            }
+        }
+    }
+};
+
+/// Pre-caches Freedesktop thumbnails for `paths` in parallel across up to
+/// `max_workers` concurrent worker tasks using `std.Io.Group`.
+pub fn precachePathsParallel(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    cfg: EnabledThumbCacheConfig,
+    paths: []const []const u8,
+    max_workers: usize,
+    cancel: PrecacheCancel,
+) PrecacheStats {
+    if (paths.len == 0) return .{};
+
+    var ctx = ParallelPrecacheContext{
+        .allocator = allocator,
+        .io = io,
+        .cfg = cfg,
+        .paths = paths,
+        .cancel = cancel,
+    };
+
+    const worker_count = @max(1, @min(paths.len, max_workers));
+    if (worker_count == 1) {
+        ctx.workerTask();
+    } else {
+        var group: std.Io.Group = .init;
+        for (0..worker_count) |_| {
+            group.async(io, ParallelPrecacheContext.workerTask, .{&ctx});
+        }
+        group.await(io) catch {};
+    }
+
+    return .{
+        .total_files = paths.len,
+        .written = ctx.written.load(.acquire),
+        .already_valid = ctx.already_valid.load(.acquire),
+        .skipped = ctx.skipped.load(.acquire),
+        .failed = ctx.failed.load(.acquire),
+    };
 }
 
 test "ThumbCacheKey.fromCanonicalPath RFC 3986 URI encoding and MD5" {
@@ -836,4 +1415,127 @@ test "writeThumbnailPng and loadCachedThumbnail roundtrip with rotation" {
         loadCachedThumbnail(allocator, io, enabled_cfg, &key, mtime_sec + 5) ==
             null,
     );
+}
+
+test "precacheFileThumbnail and precachePathsParallel generate and skip valid thumbnails" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var cache_dir_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const rel_cache_dir = try std.mem.print(
+        &cache_dir_buf,
+        ".zig-cache/tmp/{s}/thumbnails",
+        .{tmp.sub_path},
+    );
+    try std.Io.Dir.createDirPath(std.Io.Dir.cwd(), io, rel_cache_dir);
+
+    var real_cache_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const real_cache_len = try std.Io.Dir.realPathFile(
+        std.Io.Dir.cwd(),
+        io,
+        rel_cache_dir,
+        &real_cache_buf,
+    );
+    const abs_cache_dir = real_cache_buf[0..real_cache_len];
+
+    var cfg = try ThumbCacheConfig.initWithDir(
+        allocator,
+        abs_cache_dir,
+        .large,
+        .all_missing,
+    );
+    defer cfg.deinit(allocator);
+    const enabled_cfg = cfg.enabled;
+
+    const test_img = "testfiles/images/000_0_1024x682.jpg";
+
+    // First run writes the thumbnail
+    const first_outcome = precacheFileThumbnail(
+        allocator,
+        io,
+        enabled_cfg,
+        test_img,
+        .{},
+    );
+    try std.testing.expectEqual(PrecacheOutcome.written, first_outcome);
+
+    // Second run detects valid cached thumbnail and returns .already_valid
+    const second_outcome = precacheFileThumbnail(
+        allocator,
+        io,
+        enabled_cfg,
+        test_img,
+        .{},
+    );
+    try std.testing.expectEqual(PrecacheOutcome.already_valid, second_outcome);
+}
+
+test "collectPrecacheFiles respects flat vs recursive directory traversal" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    try tmp.dir.createDirPath(io, "nested");
+    try tmp.dir.createDirPath(io, ".hidden");
+    {
+        var f1 = try tmp.dir.createFile(io, "a.jpg", .{});
+        f1.close(io);
+        var f2 = try tmp.dir.createFile(io, "nested/b.png", .{});
+        f2.close(io);
+        var f3 = try tmp.dir.createFile(io, ".hidden/c.png", .{});
+        f3.close(io);
+        var f4 = try tmp.dir.createFile(io, "notes.txt", .{});
+        f4.close(io);
+    }
+
+    var root_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const root_path = try std.mem.print(
+        &root_buf,
+        ".zig-cache/tmp/{s}",
+        .{tmp.sub_path},
+    );
+
+    // Flat scan finds only a.jpg
+    {
+        var arena: std.heap.ArenaAllocator = .init(allocator);
+        defer arena.deinit();
+        var flat_paths: std.ArrayList([]const u8) = .empty;
+        try collectPrecacheFiles(
+            arena.allocator(),
+            io,
+            root_path,
+            false,
+            &flat_paths,
+        );
+        try std.testing.expectEqual(@as(usize, 1), flat_paths.items.len);
+        try std.testing.expect(
+            std.mem.endsWith(u8, flat_paths.items[0], "a.jpg"),
+        );
+    }
+
+    // Recursive scan finds a.jpg and nested/b.png (ignoring .hidden and .txt)
+    {
+        var arena: std.heap.ArenaAllocator = .init(allocator);
+        defer arena.deinit();
+        var rec_paths: std.ArrayList([]const u8) = .empty;
+        try collectPrecacheFiles(
+            arena.allocator(),
+            io,
+            root_path,
+            true,
+            &rec_paths,
+        );
+        try std.testing.expectEqual(@as(usize, 2), rec_paths.items.len);
+        try std.testing.expect(
+            std.mem.endsWith(u8, rec_paths.items[0], "a.jpg"),
+        );
+        try std.testing.expect(
+            std.mem.endsWith(u8, rec_paths.items[1], "nested/b.png"),
+        );
+    }
 }

@@ -6,6 +6,7 @@
 pub const events = @import("events.zig");
 pub const state = @import("state.zig");
 pub const systems = @import("systems/root.zig");
+pub const thumb_cache = @import("core/thumb_cache.zig");
 pub const workers = @import("workers/root.zig");
 
 /// Drains pending worker thread background events from `state.workers.event_queue`,

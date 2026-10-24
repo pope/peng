@@ -29,6 +29,21 @@ pub const process_flags = [_]intents.CliOption{
         .description = "Disable Freedesktop XDG shared thumbnail cache",
     },
     .{
+        .id = .precache,
+        .target = .main,
+        .long = "--precache",
+        .aliases = &.{"--cache-thumbs"},
+        .description = "Pre-generate Freedesktop thumbnails for path and exit",
+    },
+    .{
+        .id = .recursive,
+        .target = .main,
+        .short = "-r",
+        .long = "--recursive",
+        .aliases = &.{"-R"},
+        .description = "Recursively scan subdirectories when pre-caching",
+    },
+    .{
         .id = .ipc,
         .target = .main,
         .long = "--ipc",
@@ -228,6 +243,8 @@ pub const ParsedArgs = struct {
     windowless: bool = false,
     stack_raw_jpeg: bool = true,
     thumb_cache: ThumbCacheMode = .all,
+    precache: bool = false,
+    recursive: bool = false,
     help: bool = false,
 
     /// Frees allocated memory associated with parsed command-line arguments.
@@ -273,6 +290,8 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
     var windowless = false;
     var stack_raw_jpeg = true;
     var thumb_cache: ThumbCacheMode = .all;
+    var precache = false;
+    var recursive = false;
     var help = false;
 
     var end_of_options = false;
@@ -297,6 +316,8 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
                     .stack_raw_jpeg => stack_raw_jpeg = true,
                     .no_stack_raw_jpeg => stack_raw_jpeg = false,
                     .no_thumb_cache => thumb_cache = .off,
+                    .precache => precache = true,
+                    .recursive => recursive = true,
                     .thumb_cache => {
                         const val = args_it.next() orelse {
                             if (!builtin.is_test) {
@@ -372,6 +393,8 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
         .windowless = windowless,
         .stack_raw_jpeg = stack_raw_jpeg,
         .thumb_cache = thumb_cache,
+        .precache = precache,
+        .recursive = recursive,
         .help = help,
     };
 }
@@ -678,5 +701,26 @@ test "parseArgsIterator rejects unknown flags and honors -- separator" {
             error.InvalidThumbCacheMode,
             parseArgsIterator(&it, testing.allocator),
         );
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "--precache", "-r", "photos" },
+        };
+        var parsed = try parseArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expect(parsed.precache);
+        try testing.expect(parsed.recursive);
+        try testing.expectEqualStrings("photos", parsed.arg_path.?);
+    }
+
+    {
+        var it = SliceIterator{
+            .slice = &[_][]const u8{ "--cache-thumbs", "--recursive" },
+        };
+        var parsed = try parseArgsIterator(&it, testing.allocator);
+        defer parsed.deinit(testing.allocator);
+        try testing.expect(parsed.precache);
+        try testing.expect(parsed.recursive);
     }
 }

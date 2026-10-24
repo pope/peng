@@ -44,6 +44,8 @@ pub const OptionId = enum {
     no_stack_raw_jpeg,
     thumb_cache,
     no_thumb_cache,
+    precache,
+    recursive,
 };
 
 /// Declarative schema describing a command-line option, its target app,
@@ -113,6 +115,7 @@ pub const ActionId = enum {
     cycle_view_mode,
     toggle_raw_jpeg_stacking,
     toggle_pair_stream,
+    precache_directory,
 
     // Overlays & UI
     toggle_info,
@@ -998,6 +1001,19 @@ pub const actions = [_]ActionDef{
             .description = "Toggle active stream between RAW preview and companion JPEG",
         },
     },
+    .{
+        .id = .precache_directory,
+        .title = "Pre-cache Directory Thumbnails",
+        .shortcut_text = "",
+        .description = "Pre-generate Freedesktop shared thumbnails for the current directory",
+        .show_in_palette = true,
+        .shortcuts = &.{},
+        .intent = .precache_directory,
+        .ipc = .{
+            .name = "precache",
+            .description = "Pre-cache Freedesktop thumbnails for current directory",
+        },
+    },
 
     // --- Non-Palette Capabilities (CLI flags and IPC verbs) ---
     .{
@@ -1263,8 +1279,8 @@ pub const ipc_commands = blk: {
 test "actions registry projections" {
     const testing = std.testing;
 
-    // Palette count: 69 previous + 2 raw/jpeg pair actions = 71
-    try testing.expectEqual(@as(usize, 71), palette_action_items.len);
+    // Palette count: 71 previous + 1 precache_directory action = 72
+    try testing.expectEqual(@as(usize, 72), palette_action_items.len);
 
     // Exact index preservation
     try testing.expectEqualStrings("Navigate Directories...", palette_action_items[7].name);
@@ -1288,8 +1304,8 @@ test "actions registry projections" {
     try testing.expectEqual(OptionId.no_stack_raw_jpeg, action_cli_options[5].id);
     try testing.expectEqual(OptionId.scale, action_cli_options[6].id);
 
-    // IPC commands projection: 24 previous + 8 complete IPC verbs = 32
-    try testing.expectEqual(@as(usize, 32), ipc_commands.len);
+    // IPC commands projection: 32 previous + 1 precache verb = 33
+    try testing.expectEqual(@as(usize, 33), ipc_commands.len);
 }
 
 test "actions registry invariants and consistency" {

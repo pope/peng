@@ -189,6 +189,7 @@ pub const IpcCommand = union(enum) {
     reject,
     unflag,
     view: intents.ViewMode,
+    precache,
     quit,
     screenshot: []const u8,
 
@@ -288,6 +289,7 @@ pub const IpcCommand = union(enum) {
             .reject => return .mark_reject,
             .unflag => return .unflag,
             .view => |mode| return .{ .set_view_mode = mode },
+            .precache => return .precache_directory,
             .quit => return .quit,
             .wait_load, .screenshot => return null,
         }
@@ -648,6 +650,8 @@ pub const IpcCommand = union(enum) {
             if (filepath.len == 0) return error.MissingArgument;
             if (filepath.len > 512) return error.PathTooLong;
             return .{ .screenshot = filepath };
+        } else if (std.mem.eql(u8, cmd, "precache")) {
+            return .precache;
         } else if (std.mem.eql(u8, cmd, "quit")) {
             return .quit;
         } else {
@@ -1025,6 +1029,11 @@ test "IpcCommand parsing" {
     try std.testing.expectEqual(ThumbAction.disable, cmd_thumb_off.thumb);
     const cmd_debug_enable = try IpcCommand.parse("debug enable");
     try std.testing.expect(cmd_debug_enable.debug);
+    const cmd_precache = try IpcCommand.parse("precache");
+    try std.testing.expectEqual(
+        intents.AppIntent.precache_directory,
+        cmd_precache.toIntent().?,
+    );
 
     try std.testing.expectError(error.UnknownCommand, IpcCommand.parse("invalid_command"));
 }

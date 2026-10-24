@@ -70,6 +70,7 @@ pub const WorkerManager = struct {
     thumb_write_mutex: std.Io.Mutex = .init,
     thumb_write_queue: std.ArrayList(ThumbWriteJob) = .empty,
     thumb_writer_running: bool = false,
+    precache_generation: std.atomic.Value(usize) = .init(0),
 
     /// Thread-safe multi-producer single-consumer queue for
     /// background-to-main-thread event transport.
@@ -156,7 +157,13 @@ pub const WorkerManager = struct {
     ) void {
         defer _ = self.active_thumb_writers.fetchSub(1, .release);
 
+        var scratch_arena: std.heap.ArenaAllocator = .init(allocator);
+        defer scratch_arena.deinit();
+
         while (true) {
+            defer _ = scratch_arena.reset(.{
+                .retain_with_limit = 4 * 1024 * 1024,
+            });
             const has_pending = blk: {
                 self.thumb_write_mutex.lockUncancelable(io);
                 defer self.thumb_write_mutex.unlock(io);
@@ -240,7 +247,7 @@ pub const WorkerManager = struct {
                     }
 
                     if (thumb_cache.writeThumbnailPng(
-                        allocator,
+                        scratch_arena.allocator(),
                         io,
                         cfg,
                         &key,
@@ -264,6 +271,149 @@ pub const WorkerManager = struct {
                     }
                 },
             }
+        }
+    }
+
+    /// Arena-backed batch of file paths for background directory thumbnail
+    /// pre-caching.
+    pub const PrecacheDirectoryBatch = struct {
+        arena: std.heap.ArenaAllocator,
+        paths: []const []const u8,
+
+        pub fn deinit(self: PrecacheDirectoryBatch) void {
+            self.arena.deinit();
+        }
+    };
+
+    /// Spawns a low-priority background job that pre-caches Freedesktop
+    /// thumbnails for `batch.paths` whenever foreground decode workers are
+    /// idle (`active_decode_threads == 0`). Takes ownership of `batch`.
+    pub fn startDirectoryPrecache(
+        self: *WorkerManager,
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        batch: PrecacheDirectoryBatch,
+    ) bool {
+        if (self.exiting.load(.acquire) or
+            self.thumb_cache_config == .disabled or
+            batch.paths.len == 0)
+        {
+            batch.deinit();
+            return false;
+        }
+
+        const gen = self.precache_generation.fetchAdd(1, .acq_rel) +% 1;
+        _ = self.thumb_cache_write_queued.fetchAdd(batch.paths.len, .release);
+        _ = self.active_thumb_writers.fetchAdd(1, .monotonic);
+        self.group.async(
+            io,
+            precacheDirectoryWorker,
+            .{ self, allocator, io, batch, gen },
+        );
+        return true;
+    }
+
+    fn precacheDirectoryWorker(
+        self: *WorkerManager,
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        batch: PrecacheDirectoryBatch,
+        gen: usize,
+    ) void {
+        var remaining_queued: usize = batch.paths.len;
+        defer {
+            if (remaining_queued > 0) {
+                _ = self.thumb_cache_write_queued.fetchSub(
+                    remaining_queued,
+                    .release,
+                );
+            }
+            batch.deinit();
+            _ = self.active_thumb_writers.fetchSub(1, .release);
+            context.wakeUpMainThread();
+        }
+
+        const base_cfg = switch (self.thumb_cache_config) {
+            .disabled => return,
+            .enabled => |c| c,
+        };
+        const cfg = thumb_cache.EnabledThumbCacheConfig{
+            .cache_dir = base_cfg.cache_dir,
+            .write_tier = base_cfg.write_tier,
+            .write_policy = if (base_cfg.write_policy == .never)
+                .all_missing
+            else
+                base_cfg.write_policy,
+        };
+
+        const cancel = context.CancellationToken{
+            .exiting = &self.exiting,
+            .generation = gen,
+            .current_generation = &self.precache_generation,
+        };
+        const precache_cancel = thumb_cache.PrecacheCancel{
+            .exiting = &self.exiting,
+            .generation = gen,
+            .current_generation = &self.precache_generation,
+        };
+
+        var scratch_arena: std.heap.ArenaAllocator = .init(allocator);
+        defer scratch_arena.deinit();
+
+        var res = events.PrecacheCompletedPayload{};
+
+        for (batch.paths) |path| {
+            defer _ = scratch_arena.reset(.{
+                .retain_with_limit = 4 * 1024 * 1024,
+            });
+            if (cancel.isCanceled()) return;
+
+            while (!cancel.isCanceled() and
+                self.active_decode_threads.load(.acquire) > 0)
+            {
+                std.Io.sleep(io, .fromMilliseconds(5), .awake) catch break;
+            }
+
+            if (cancel.isCanceled()) return;
+
+            const outcome = thumb_cache.precacheFileThumbnail(
+                scratch_arena.allocator(),
+                io,
+                cfg,
+                path,
+                precache_cancel,
+            );
+            remaining_queued -= 1;
+            _ = self.thumb_cache_write_queued.fetchSub(1, .release);
+
+            switch (outcome) {
+                .written => {
+                    res.written += 1;
+                    _ = self.thumb_cache_writes.fetchAdd(1, .release);
+                    context.wakeUpMainThread();
+                },
+                .already_valid => {
+                    res.already_valid += 1;
+                },
+                .skipped => {
+                    res.skipped += 1;
+                },
+                .failed => {
+                    res.failed += 1;
+                },
+                .canceled => return,
+            }
+        }
+
+        if (!cancel.isCanceled()) {
+            self.event_queue.push(allocator, io, .{
+                .precache_completed = cancel.wrap(res),
+            }) catch |err| {
+                std.log.warn(
+                    "Failed to push precache_completed event: {}",
+                    .{err},
+                );
+            };
         }
     }
 

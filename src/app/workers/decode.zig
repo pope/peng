@@ -2796,6 +2796,7 @@ test "decodeWorker - two-stage JPEG read emits header and positional thumbnails 
                 .path_discovered,
                 .directory_scan_result,
                 .palette_folder_count,
+                .precache_completed,
                 .ipc_command,
                 => {
                     return error.TestUnexpectedResult;

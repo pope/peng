@@ -42,6 +42,72 @@ fn togglePairStream(self: *AppState) void {
     entry.requested_target = target;
 }
 
+fn precacheCurrentDirectory(self: *AppState) !void {
+    if (self.workers.thumb_cache_config == .disabled) {
+        showCustomSnackbar(self, "Thumbnail cache is disabled");
+        return;
+    }
+
+    const entries = self.viewer.navigation.getEntries();
+    if (entries.len == 0) {
+        showCustomSnackbar(self, "No images in current directory");
+        return;
+    }
+
+    var arena: std.heap.ArenaAllocator = .init(self.allocator);
+    errdefer arena.deinit();
+    const arena_alloc = arena.allocator();
+
+    var paths: std.ArrayList([]const u8) = .empty;
+    try paths.ensureTotalCapacity(arena_alloc, entries.len);
+
+    for (entries) |entry| {
+        switch (entry) {
+            .archive_entry => {},
+            .filesystem => |f| {
+                try paths.append(arena_alloc, try arena_alloc.dupe(u8, f.path));
+            },
+            .pair => |p| {
+                try paths.append(
+                    arena_alloc,
+                    try arena_alloc.dupe(u8, p.raw_path),
+                );
+                try paths.append(
+                    arena_alloc,
+                    try arena_alloc.dupe(u8, p.jpeg_path),
+                );
+            },
+        }
+    }
+
+    if (paths.items.len == 0) {
+        arena.deinit();
+        showCustomSnackbar(self, "No filesystem images to pre-cache");
+        return;
+    }
+
+    const count = paths.items.len;
+    if (self.workers.startDirectoryPrecache(
+        self.allocator,
+        self.io,
+        .{ .arena = arena, .paths = paths.items },
+    )) {
+        var buf: [state.snackbar.MAX_SNACKBAR_LEN]u8 = undefined;
+        if (std.mem.print(
+            &buf,
+            "Pre-caching {d} thumbnails in background...",
+            .{count},
+        )) |msg| {
+            showCustomSnackbar(self, msg);
+        } else |_| {
+            showCustomSnackbar(
+                self,
+                "Pre-caching thumbnails in background...",
+            );
+        }
+    }
+}
+
 fn handleSetPaletteIntent(self: *AppState, p: anytype) !void {
     const ui = &self.viewer.ui;
     if (p.mode == .inactive) {
@@ -490,6 +556,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
             }
         },
         .toggle_pair_stream => togglePairStream(self),
+        .precache_directory => try precacheCurrentDirectory(self),
         .set_palette => |p| try handleSetPaletteIntent(self, p),
         .toggle_info => ui.overlays.info_panel.visible = !ui.overlays.info_panel.visible,
         .set_info => |val| ui.overlays.info_panel.visible = val,
@@ -1679,5 +1746,20 @@ test "executeIntent - syncs rotation and zoom on nav, rotate, and set_zoom" {
         @as(f32, -100.0),
         app_st.viewer.viewport.pan_y,
         0.001,
+    );
+}
+
+test "executeIntent - precache_directory handles disabled cache and empty playlist" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    // When thumbnail cache is disabled (default in initHeadless), shows snackbar message
+    app_st.viewer.ui.snackbar.enabled = true;
+    try executeIntent(&app_st, .precache_directory);
+    try std.testing.expectEqualStrings(
+        "Thumbnail cache is disabled",
+        app_st.viewer.ui.snackbar.getMessage(),
     );
 }

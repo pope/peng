@@ -671,6 +671,7 @@ pub const AppState = struct {
         );
 
         _ = self.cache.advanceGeneration();
+        _ = self.workers.precache_generation.fetchAdd(1, .acq_rel);
         self.clearCache();
         self.clearRotationMap();
         self.viewer.navigation.clearEntries();

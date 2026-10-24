@@ -185,6 +185,14 @@ pub const PaletteFolderCountPayload = struct {
     scan: state_pkg.EntryScanState,
 };
 
+/// Payload emitted when a live background directory pre-cache job completes.
+pub const PrecacheCompletedPayload = struct {
+    written: usize = 0,
+    already_valid: usize = 0,
+    skipped: usize = 0,
+    failed: usize = 0,
+};
+
 /// Tagged union of all event messages sent from background worker threads to
 /// the main engine thread.
 pub const BackgroundEvent = union(enum) {
@@ -196,6 +204,7 @@ pub const BackgroundEvent = union(enum) {
     path_discovered: PathDiscoveredPayload,
     directory_scan_result: Generational(DirectoryScanResultPayload),
     palette_folder_count: Generational(PaletteFolderCountPayload),
+    precache_completed: Generational(PrecacheCompletedPayload),
     ipc_command: *ipc.IpcCommandData,
 
     /// Releases heap memory or SDL surfaces owned by this background event
@@ -216,7 +225,11 @@ pub const BackgroundEvent = union(enum) {
             .palette_folder_count => |cnt| {
                 allocator.free(cnt.unchecked_payload.path);
             },
-            .exif_orientation_parsed, .decode_failed, .ipc_command => {},
+            .exif_orientation_parsed,
+            .decode_failed,
+            .precache_completed,
+            .ipc_command,
+            => {},
         }
     }
 
@@ -240,6 +253,7 @@ pub const BackgroundEvent = union(enum) {
             .path_discovered,
             .directory_scan_result,
             .palette_folder_count,
+            .precache_completed,
             => self.deinit(allocator),
         }
     }
