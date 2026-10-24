@@ -169,7 +169,10 @@ ______________________________________________________________________
 
 When `peng` is launched with `--ipc` (default `/tmp/peng-$PID.sock`) or `--socket <path>`, it starts a UDS server and prints the socket path to `stdout`.
 
-You can send commands to a running instance using the `peng-msg` utility:
+You can send commands to a running instance using the `peng-msg` utility.
+Every `peng-msg` invocation writes a single-line JSON response to `stdout`
+(`{"ok":true}` on success, or `{"ok":false,"error":"<reason>"}` with exit code
+`1` on failure), making it easy to inspect or pipe into `jq`:
 
 ```bash
 # General Usage:
@@ -247,10 +250,16 @@ You can send commands to a running instance using the `peng-msg` utility:
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock next
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock prev
 
-# Image Classification (pick, reject, unflag)
+# Image Classification (pick, reject, unflag, selections, clear_selections)
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock pick
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock reject
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock unflag
+
+# Query current picks and rejects as JSON (`{"ok":true,"picks":[...],...}`)
+./zig-out/bin/peng-msg /tmp/peng-1234.sock selections | jq -r '.picks[]'
+
+# Clear all picks and rejects in the current session
+./zig-out/bin/peng-msg /tmp/peng-1234.sock clear_selections
 
 # Set Active View Mode (default, unflagged, picks, rejects, all)
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock view picks

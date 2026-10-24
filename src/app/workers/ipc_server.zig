@@ -89,6 +89,19 @@ fn runIpcServer(
     acceptIpcConnections(&server, workers, gpa, io);
 }
 
+fn configureSocketSendTimeout(socket: std.Io.net.Socket) void {
+    if (builtin.os.tag == .windows) return;
+    const tv = std.posix.timeval{ .sec = 5, .usec = 0 };
+    std.posix.setsockopt(
+        socket.handle,
+        std.posix.SOL.SOCKET,
+        std.posix.SO.SNDTIMEO,
+        std.mem.asBytes(&tv),
+    ) catch |err| {
+        std.log.debug("IPC setsockopt SO_SNDTIMEO failed: {}", .{err});
+    };
+}
+
 fn acceptIpcConnections(
     server: *std.Io.net.Server,
     workers: *WorkerManager,
@@ -109,8 +122,9 @@ fn acceptIpcConnections(
             break;
         }
         errdefer client_stream.close(io);
+        configureSocketSendTimeout(client_stream.socket);
 
-        var read_buf: [1024]u8 = undefined;
+        var read_buf: [8 * 1024]u8 = undefined;
         const read_timeout: std.Io.Clock.Duration = .{
             .raw = std.Io.Duration.fromSeconds(2),
             .clock = .awake,
@@ -126,7 +140,7 @@ fn acceptIpcConnections(
             } else {
                 std.log.err("IPC server read failed: {any}", .{err});
             }
-            client_stream.close(io);
+            ipc.respondErrorName(io, client_stream, @errorName(err));
             continue;
         };
 
@@ -143,13 +157,13 @@ fn acceptIpcConnections(
 
         const cmd_data = gpa.create(ipc.IpcCommandData) catch |err| {
             std.log.err("IPC create command data failed: {}", .{err});
-            client_stream.close(io);
+            ipc.respondErrorName(io, client_stream, @errorName(err));
             continue;
         };
         const cmd_str = gpa.dupe(u8, trimmed) catch |err| {
             std.log.err("IPC dupe command string failed: {}", .{err});
             gpa.destroy(cmd_data);
-            client_stream.close(io);
+            ipc.respondErrorName(io, client_stream, @errorName(err));
             continue;
         };
         cmd_data.* = .{
@@ -161,7 +175,7 @@ fn acceptIpcConnections(
             std.log.err("Failed to push IPC command to MpscQueue: {}", .{err});
             gpa.free(cmd_str);
             gpa.destroy(cmd_data);
-            client_stream.close(io);
+            ipc.respondErrorName(io, client_stream, @errorName(err));
             continue;
         };
         context.wakeUpMainThread();

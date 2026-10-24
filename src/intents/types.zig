@@ -430,6 +430,7 @@ pub const AppIntent = union(enum) {
     mark_pick,
     mark_reject,
     unflag,
+    clear_classifications,
     cycle_view_mode,
     set_view_mode: ViewMode,
 

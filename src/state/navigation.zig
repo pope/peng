@@ -157,6 +157,68 @@ pub fn countVisibleInRangeSimd(
     return total;
 }
 
+fn writeJsonStringSlice(jw: *std.json.Stringify, bytes: []const u8) !void {
+    try jw.beginWriteRaw();
+    try jw.writer.writeByte('"');
+    try std.json.Stringify.encodeJsonStringChars(bytes, .{}, jw.writer);
+    try jw.writer.writeByte('"');
+    jw.endWriteRaw();
+}
+
+fn writeEntryPathsJson(jw: *std.json.Stringify, entry: MediaEntry) !void {
+    switch (entry) {
+        .filesystem => |f| try writeJsonStringSlice(jw, f.path),
+        .archive_entry => |a| {
+            try jw.beginWriteRaw();
+            try jw.writer.writeByte('"');
+            try std.json.Stringify.encodeJsonStringChars(
+                a.archive_path,
+                .{},
+                jw.writer,
+            );
+            try jw.writer.writeByte('#');
+            try std.json.Stringify.encodeJsonStringChars(
+                a.entry_name,
+                .{},
+                jw.writer,
+            );
+            try jw.writer.writeByte('"');
+            jw.endWriteRaw();
+        },
+        .pair => |p| {
+            try writeJsonStringSlice(jw, p.raw_path);
+            try writeJsonStringSlice(jw, p.jpeg_path);
+        },
+    }
+}
+
+fn entryKeyCount(entry: MediaEntry) usize {
+    return switch (entry) {
+        .filesystem, .archive_entry => 1,
+        .pair => 2,
+    };
+}
+
+fn entryMatchesKey(entry: MediaEntry, key: []const u8) bool {
+    return switch (entry) {
+        .filesystem => |f| std.mem.eql(u8, f.path, key),
+        .pair => |p| std.mem.eql(u8, p.raw_path, key) or
+            std.mem.eql(u8, p.jpeg_path, key),
+        .archive_entry => |a| key.len ==
+            a.archive_path.len + 1 + a.entry_name.len and
+            std.mem.startsWith(u8, key, a.archive_path) and
+            key[a.archive_path.len] == '#' and
+            std.mem.endsWith(u8, key, a.entry_name),
+    };
+}
+
+fn containsItemWithKey(entries: []const MediaEntry, key: []const u8) bool {
+    for (entries) |entry| {
+        if (entryMatchesKey(entry, key)) return true;
+    }
+    return false;
+}
+
 /// Unified media list element stored contiguously in Structure-of-Arrays (SoA) layout.
 pub const MediaItem = struct {
     entry: MediaEntry,
@@ -175,7 +237,8 @@ pub const NavDirection = enum {
 /// Tracks the active media list, current image index, slideshow progression, and directory cache.
 pub const NavigationState = struct {
     items: std.MultiArrayList(MediaItem) = .empty,
-    path_classifications: std.StringHashMapUnmanaged(Classification) = .empty,
+    path_classifications: std.StringArrayHashMapUnmanaged(Classification) =
+        .empty,
     classification_arena: std.heap.ArenaAllocator,
     view_mode: ViewMode = .default,
     pick_count: usize = 0,
@@ -217,39 +280,110 @@ pub const NavigationState = struct {
         self.classification_arena.deinit();
     }
 
-    /// Appends a media entry in lockstep with its classification in a single allocation.
-    pub fn appendEntry(self: *NavigationState, gpa: std.mem.Allocator, entry: MediaEntry) !void {
-        const initial_class = blk: {
-            const path = entry.getPath();
-            if (self.path_classifications.get(path)) |c| break :blk c;
-            if (entry.getJpegPath()) |jp| {
-                if (self.path_classifications.get(jp)) |c| break :blk c;
-            }
-            break :blk .unflagged;
-        };
+    fn lookupEntryClassification(
+        self: *const NavigationState,
+        entry: MediaEntry,
+    ) Classification {
+        switch (entry) {
+            .filesystem => |f| {
+                return self.path_classifications.get(f.path) orelse .unflagged;
+            },
+            .pair => |p| {
+                if (self.path_classifications.get(p.raw_path)) |c| return c;
+                if (self.path_classifications.get(p.jpeg_path)) |c| return c;
+                return .unflagged;
+            },
+            .archive_entry => |a| {
+                var stack_buf: [1024]u8 = undefined;
+                if (std.mem.print(
+                    &stack_buf,
+                    "{s}#{s}",
+                    .{ a.archive_path, a.entry_name },
+                )) |composite_key| {
+                    return self.path_classifications.get(composite_key) orelse
+                        .unflagged;
+                } else |_| {
+                    return .unflagged;
+                }
+            },
+        }
+    }
 
+    fn storeKeyClassification(
+        self: *NavigationState,
+        gpa: std.mem.Allocator,
+        key: []const u8,
+        new_class: Classification,
+    ) !void {
+        if (new_class == .unflagged) {
+            _ = self.path_classifications.orderedRemove(key);
+            return;
+        }
+        if (self.path_classifications.getPtr(key)) |ptr| {
+            ptr.* = new_class;
+        } else {
+            const owned = try self.classification_arena.allocator().dupe(
+                u8,
+                key,
+            );
+            try self.path_classifications.put(gpa, owned, new_class);
+        }
+    }
+
+    fn syncEntryClassificationKeys(
+        self: *NavigationState,
+        gpa: std.mem.Allocator,
+        entry: MediaEntry,
+        new_class: Classification,
+    ) !void {
+        switch (entry) {
+            .filesystem => |f| {
+                try self.storeKeyClassification(gpa, f.path, new_class);
+            },
+            .pair => |p| {
+                try self.storeKeyClassification(gpa, p.raw_path, new_class);
+                try self.storeKeyClassification(gpa, p.jpeg_path, new_class);
+            },
+            .archive_entry => |a| {
+                var stack_buf: [1024]u8 = undefined;
+                if (std.mem.print(
+                    &stack_buf,
+                    "{s}#{s}",
+                    .{ a.archive_path, a.entry_name },
+                )) |composite_key| {
+                    try self.storeKeyClassification(
+                        gpa,
+                        composite_key,
+                        new_class,
+                    );
+                } else |_| {
+                    const owned = try self.classification_arena
+                        .allocator()
+                        .print("{s}#{s}", .{ a.archive_path, a.entry_name });
+                    if (new_class == .unflagged) {
+                        _ = self.path_classifications.orderedRemove(owned);
+                    } else {
+                        try self.path_classifications.put(
+                            gpa,
+                            owned,
+                            new_class,
+                        );
+                    }
+                }
+            },
+        }
+    }
+
+    /// Appends a media entry in lockstep with its classification in a single
+    /// allocation.
+    pub fn appendEntry(
+        self: *NavigationState,
+        gpa: std.mem.Allocator,
+        entry: MediaEntry,
+    ) !void {
+        const initial_class = self.lookupEntryClassification(entry);
         if (initial_class != .unflagged) {
-            if (entry.getJpegPath()) |jp| {
-                if (!self.path_classifications.contains(jp)) {
-                    const owned_jp = try self.classification_arena
-                        .allocator().dupe(u8, jp);
-                    try self.path_classifications.put(
-                        gpa,
-                        owned_jp,
-                        initial_class,
-                    );
-                }
-                const path = entry.getPath();
-                if (!self.path_classifications.contains(path)) {
-                    const owned_path = try self.classification_arena
-                        .allocator().dupe(u8, path);
-                    try self.path_classifications.put(
-                        gpa,
-                        owned_path,
-                        initial_class,
-                    );
-                }
-            }
+            try self.syncEntryClassificationKeys(gpa, entry, initial_class);
         }
 
         try self.items.append(gpa, .{
@@ -390,30 +524,7 @@ pub const NavigationState = struct {
         if (old_class == new_class) return false;
 
         const entry = self.items.items(.entry)[idx];
-        const path = entry.getPath();
-        if (new_class == .unflagged) {
-            _ = self.path_classifications.remove(path);
-            if (entry.getJpegPath()) |jp| {
-                _ = self.path_classifications.remove(jp);
-            }
-        } else {
-            if (self.path_classifications.getPtr(path)) |ptr| {
-                ptr.* = new_class;
-            } else {
-                const owned_path = try self.classification_arena
-                    .allocator().dupe(u8, path);
-                try self.path_classifications.put(gpa, owned_path, new_class);
-            }
-            if (entry.getJpegPath()) |jp| {
-                if (self.path_classifications.getPtr(jp)) |ptr| {
-                    ptr.* = new_class;
-                } else {
-                    const owned_jp = try self.classification_arena
-                        .allocator().dupe(u8, jp);
-                    try self.path_classifications.put(gpa, owned_jp, new_class);
-                }
-            }
-        }
+        try self.syncEntryClassificationKeys(gpa, entry, new_class);
 
         classes[idx] = new_class;
         if (old_class == .pick) self.pick_count -= 1;
@@ -423,16 +534,104 @@ pub const NavigationState = struct {
         return true;
     }
 
+    /// Marks the currently selected image as a pick.
     pub fn markCurrentPick(self: *NavigationState, gpa: std.mem.Allocator) !bool {
         return self.markClassification(gpa, .pick);
     }
 
+    /// Marks the currently selected image as a reject.
     pub fn markCurrentReject(self: *NavigationState, gpa: std.mem.Allocator) !bool {
         return self.markClassification(gpa, .reject);
     }
 
+    /// Clears the classification flag on the currently selected image.
     pub fn unflagCurrent(self: *NavigationState, gpa: std.mem.Allocator) !bool {
         return self.markClassification(gpa, .unflagged);
+    }
+
+    /// Clears all pick and reject classifications across both the active media
+    /// list and persistent path table. Returns `true` if any flags were
+    /// cleared.
+    pub fn clearAllClassifications(self: *NavigationState) bool {
+        const had_flags = (self.pick_count > 0 or
+            self.reject_count > 0 or
+            self.path_classifications.count() > 0);
+        @memset(self.items.items(.classification), .unflagged);
+        self.pick_count = 0;
+        self.reject_count = 0;
+        self.path_classifications.clearRetainingCapacity();
+        _ = self.classification_arena.reset(.retain_capacity);
+        return had_flags;
+    }
+
+    /// Serializes current pick and reject selections as a single-line JSON
+    /// object (`{"ok":true,"picks":[...],"rejects":[...]}\n`) to `writer`.
+    pub fn writeSelectionsJson(
+        self: *const NavigationState,
+        writer: *std.Io.Writer,
+    ) !void {
+        var jw: std.json.Stringify = .{ .writer = writer };
+        try jw.beginObject();
+        try jw.objectField("ok");
+        try jw.write(true);
+
+        const slice = self.items.slice();
+        const entries = slice.items(.entry);
+        const classes = slice.items(.classification);
+
+        var active_key_count: usize = 0;
+        if (self.pick_count > 0 or self.reject_count > 0) {
+            for (entries, classes) |entry, c| {
+                if (c != .unflagged) active_key_count += entryKeyCount(entry);
+            }
+        }
+        const has_external_keys =
+            self.path_classifications.count() > active_key_count;
+
+        try jw.objectField("picks");
+        try jw.beginArray();
+        if (self.pick_count > 0) {
+            for (entries, classes) |entry, c| {
+                if (c != .pick) continue;
+                try writeEntryPathsJson(&jw, entry);
+            }
+        }
+        if (has_external_keys) {
+            for (
+                self.path_classifications.keys(),
+                self.path_classifications.values(),
+            ) |k, c| {
+                if (c != .pick) continue;
+                if (!containsItemWithKey(entries, k)) {
+                    try writeJsonStringSlice(&jw, k);
+                }
+            }
+        }
+        try jw.endArray();
+
+        try jw.objectField("rejects");
+        try jw.beginArray();
+        if (self.reject_count > 0) {
+            for (entries, classes) |entry, c| {
+                if (c != .reject) continue;
+                try writeEntryPathsJson(&jw, entry);
+            }
+        }
+        if (has_external_keys) {
+            for (
+                self.path_classifications.keys(),
+                self.path_classifications.values(),
+            ) |k, c| {
+                if (c != .reject) continue;
+                if (!containsItemWithKey(entries, k)) {
+                    try writeJsonStringSlice(&jw, k);
+                }
+            }
+        }
+        try jw.endArray();
+
+        try jw.endObject();
+        try writer.writeByte('\n');
     }
 
     /// Finds the nearest visible index to `start_idx`, searching forward first, then backward with SIMD.
@@ -1025,5 +1224,78 @@ test "NavigationState - getEffectiveDirection respects initial manga_mode" {
     try std.testing.expectEqual(
         NavDirection.backward,
         nav.getEffectiveDirection(),
+    );
+}
+
+test "NavigationState - writeSelectionsJson and clearAllClassifications" {
+    const allocator = std.testing.allocator;
+    var nav = try NavigationState.init(allocator);
+    defer nav.deinit(allocator);
+
+    try nav.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = "photos/a.jpg" } },
+    );
+    try nav.appendEntry(
+        allocator,
+        .{ .pair = .{
+            .raw_path = "photos/b.ARW",
+            .jpeg_path = "photos/b.JPG",
+        } },
+    );
+    try nav.appendEntry(
+        allocator,
+        .{ .archive_entry = .{
+            .archive_path = "comics/vol1.cbz",
+            .entry_name = "p01.png",
+            .seek_info = .unindexed,
+        } },
+    );
+
+    nav.current_index = 1;
+    _ = try nav.markCurrentPick(allocator);
+    nav.current_index = 2;
+    _ = try nav.markCurrentReject(allocator);
+
+    var buf: [512]u8 = undefined;
+    var fixed_writer: std.Io.Writer = .fixed(&buf);
+    try nav.writeSelectionsJson(&fixed_writer);
+    try std.testing.expectEqualStrings(
+        "{\"ok\":true,\"picks\":[\"photos/b.ARW\",\"photos/b.JPG\"]," ++
+            "\"rejects\":[\"comics/vol1.cbz#p01.png\"]}\n",
+        fixed_writer.buffered(),
+    );
+
+    // Verify cross-directory / cross-archive persistence after clearEntries()
+    nav.clearEntries();
+    try nav.appendEntry(
+        allocator,
+        .{ .archive_entry = .{
+            .archive_path = "comics/vol2.cbz",
+            .entry_name = "p01.png",
+            .seek_info = .unindexed,
+        } },
+    );
+    // vol2.cbz#p01.png must NOT inherit vol1.cbz#p01.png's reject flag
+    try std.testing.expectEqual(@as(usize, 0), nav.reject_count);
+    // Prior directory selections remain visible in writeSelectionsJson
+    var cross_writer: std.Io.Writer = .fixed(&buf);
+    try nav.writeSelectionsJson(&cross_writer);
+    try std.testing.expectEqualStrings(
+        "{\"ok\":true,\"picks\":[\"photos/b.ARW\",\"photos/b.JPG\"]," ++
+            "\"rejects\":[\"comics/vol1.cbz#p01.png\"]}\n",
+        cross_writer.buffered(),
+    );
+
+    try std.testing.expect(nav.clearAllClassifications());
+    try std.testing.expect(!nav.clearAllClassifications());
+    try std.testing.expectEqual(@as(usize, 0), nav.pick_count);
+    try std.testing.expectEqual(@as(usize, 0), nav.reject_count);
+
+    var empty_writer: std.Io.Writer = .fixed(&buf);
+    try nav.writeSelectionsJson(&empty_writer);
+    try std.testing.expectEqualStrings(
+        "{\"ok\":true,\"picks\":[],\"rejects\":[]}\n",
+        empty_writer.buffered(),
     );
 }

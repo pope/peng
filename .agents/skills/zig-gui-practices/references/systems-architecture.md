@@ -149,7 +149,15 @@ ______________________________________________________________________
   - **Unified Allocation**: `MultiArrayList` manages both partitions in a single block allocation, preventing list length desynchronization and eliminating allocator fragmentation.
   - **L1 Cache Line Density**: Dense 1-byte arrays stream 64 items per 64-byte L1 cache line (a 64x density improvement over AoS structs), enabling sub-microsecond SIMD filtering across 10,000+ items.
   - **Read-Only Snapshot Slice**: Slicing via `nav.items.slice()` creates a zero-allocation `MediaItemSlice = std.MultiArrayList(MediaItem).Slice` passed into Phase 3 (Render) `UiViewModel`.
-  - **Encapsulation & Triage Export**: State mutations go through encapsulating methods (`appendEntry`, `clearEntries`), UI view models access items via bounds-checked inline accessors (`getMediaEntry(idx)`, `getClassification(idx)`), and picked file paths (`Classification.pick`) are exported to `stdout` on clean exit (`printPickedFilesToStdout`).
+  - **Encapsulation & Triage Export**: State mutations go through encapsulating
+    methods (`appendEntry`, `clearEntries`, `clearAllClassifications`), UI view
+    models access items via bounds-checked inline accessors
+    (`getMediaEntry(idx)`, `getClassification(idx)`), persistent path flags are
+    tracked in `StringArrayHashMapUnmanaged(Classification)` (keying
+    `.archive_entry` items as `<archive_path>#<entry_name>`), live selections
+    are streamed as JSON via `writeSelectionsJson` (`peng-msg ... selections`),
+    and picked/rejected paths are exported to `stdout` on clean exit
+    (`exportClassificationsToStdout`).
 
 ______________________________________________________________________
 

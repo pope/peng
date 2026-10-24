@@ -34,32 +34,52 @@ pub fn sysExecuteIpcCommands(ctx: FrameContext) void {
 
         switch (parsed) {
             .wait_load => handleWaitLoadCommand(ctx, cmd_data.client_stream),
+            .selections => {
+                handleSelectionsCommand(state, cmd_data.client_stream);
+            },
             .adjust => |adj| {
                 handleAdjustCommand(state, cmd_data.client_stream, adj);
             },
             .screenshot => |filepath| {
                 handleScreenshotCommand(state, cmd_data, filepath);
             },
-            else => handleIntentCommand(ctx, cmd_data, parsed),
+            .zoom,
+            .pan,
+            .tone,
+            .color,
+            .presence,
+            .clarity,
+            .texture,
+            .compare,
+            .edit,
+            .filter,
+            .scale,
+            .manga,
+            .title,
+            .snackbar,
+            .windowless,
+            .crossfade,
+            .stack_raw_jpeg,
+            .toggle_stream,
+            .palette,
+            .thumb,
+            .debug,
+            .reset_view,
+            .reset_adjustments,
+            .next,
+            .prev,
+            .pick,
+            .reject,
+            .unflag,
+            .clear_selections,
+            .view,
+            .precache,
+            .quit,
+            .open,
+            => handleIntentCommand(ctx, cmd_data, parsed),
         }
     }
     state.pending_ipc_commands.clearRetainingCapacity();
-}
-
-fn replyIpcError(
-    io: std.Io,
-    stream: std.Io.net.Stream,
-    err_msg: []const u8,
-) void {
-    var write_buf: [128]u8 = undefined;
-    var writer = stream.writer(io, &write_buf);
-    writer.interface.writeAll(err_msg) catch |err| {
-        std.log.warn("IPC error response failed: {}", .{err});
-    };
-    writer.interface.flush() catch |err| {
-        std.log.warn("IPC error flush failed: {}", .{err});
-    };
-    stream.close(io);
 }
 
 fn replyIpcParseError(
@@ -67,13 +87,17 @@ fn replyIpcParseError(
     stream: std.Io.net.Stream,
     err: anyerror,
 ) void {
-    var msg_buf: [128]u8 = undefined;
-    const err_msg = std.mem.print(
-        &msg_buf,
-        "ERR {s}\n",
-        .{@errorName(err)},
-    ) catch "ERR ParseError\n";
-    replyIpcError(io, stream, err_msg);
+    ipc.respondErrorName(io, stream, @errorName(err));
+}
+
+fn handleSelectionsCommand(state: *AppState, stream: std.Io.net.Stream) void {
+    state.pending_selection_streams.append(
+        state.allocator,
+        stream,
+    ) catch |err| {
+        std.log.err("Failed to queue IPC selections stream: {}", .{err});
+        ipc.respondErrorName(state.io, stream, "OutOfMemory");
+    };
 }
 
 fn handleWaitLoadCommand(ctx: FrameContext, stream: std.Io.net.Stream) void {
@@ -134,7 +158,7 @@ fn handleAdjustCommand(
         },
     }) catch |err| {
         std.log.err("Failed to push brightness adjust: {}", .{err});
-        replyIpcError(state.io, stream, "ERR OutOfMemory\n");
+        ipc.respondErrorName(state.io, stream, "OutOfMemory");
         return;
     };
     state.pushIntent(.{
@@ -146,7 +170,7 @@ fn handleAdjustCommand(
         },
     }) catch |err| {
         std.log.err("Failed to push contrast adjust: {}", .{err});
-        replyIpcError(state.io, stream, "ERR OutOfMemory\n");
+        ipc.respondErrorName(state.io, stream, "OutOfMemory");
         return;
     };
     if (adj.contrast_blend) |cb| {
@@ -159,7 +183,7 @@ fn handleAdjustCommand(
             },
         }) catch |err| {
             std.log.err("Failed to push contrast blend adjust: {}", .{err});
-            replyIpcError(state.io, stream, "ERR OutOfMemory\n");
+            ipc.respondErrorName(state.io, stream, "OutOfMemory");
             return;
         };
     }
@@ -174,15 +198,23 @@ fn handleScreenshotCommand(
     filepath: []const u8,
 ) void {
     if (filepath.len > 512) {
-        replyIpcError(state.io, cmd_data.client_stream, "ERR PathTooLong\n");
+        ipc.respondErrorName(
+            state.io,
+            cmd_data.client_stream,
+            "PathTooLong",
+        );
         return;
     }
     if (state.viewer.ui.screenshot_mode == .capturing) {
-        replyIpcError(state.io, cmd_data.client_stream, "ERR Busy\n");
+        ipc.respondErrorName(state.io, cmd_data.client_stream, "Busy");
         return;
     }
     const dup_path = state.allocator.dupeSentinel(u8, filepath, 0) catch {
-        replyIpcError(state.io, cmd_data.client_stream, "ERR OutOfMemory\n");
+        ipc.respondErrorName(
+            state.io,
+            cmd_data.client_stream,
+            "OutOfMemory",
+        );
         return;
     };
     state.viewer.ui.screenshot_mode = .{
@@ -221,10 +253,10 @@ fn handleIntentCommand(
                     "Failed to dupe path for open_path intent: {}",
                     .{err},
                 );
-                replyIpcError(
+                ipc.respondErrorName(
                     state.io,
                     cmd_data.client_stream,
-                    "ERR OutOfMemory\n",
+                    "OutOfMemory",
                 );
                 return;
             };
@@ -237,10 +269,10 @@ fn handleIntentCommand(
                         "Failed to dupe query for set_palette intent: {}",
                         .{err},
                     );
-                    replyIpcError(
+                    ipc.respondErrorName(
                         state.io,
                         cmd_data.client_stream,
-                        "ERR OutOfMemory\n",
+                        "OutOfMemory",
                     );
                     return;
                 };
@@ -256,10 +288,10 @@ fn handleIntentCommand(
     }
     state.pushIntent(final_intent) catch |err| {
         std.log.err("Failed to push intent from IPC command: {}", .{err});
-        replyIpcError(
+        ipc.respondErrorName(
             state.io,
             cmd_data.client_stream,
-            "ERR OutOfMemory\n",
+            "OutOfMemory",
         );
         return;
     };
@@ -475,7 +507,10 @@ test "sysExecuteIpcCommands - set_palette frame_allocator OOM replies error" {
     var read_buf: [64]u8 = undefined;
     var reader = client.reader(io, &read_buf);
     const line = try reader.interface.takeDelimiterInclusive('\n');
-    try std.testing.expectEqualStrings("ERR OutOfMemory\n", line);
+    try std.testing.expectEqualStrings(
+        "{\"ok\":false,\"error\":\"OutOfMemory\"}\n",
+        line,
+    );
 }
 
 test "sysExecuteIpcCommands - screenshot spaces and swapchain miss error" {
@@ -531,7 +566,7 @@ test "sysExecuteIpcCommands - screenshot spaces and swapchain miss error" {
     var reader = client.reader(io, &read_buf);
     const line = try reader.interface.takeDelimiterInclusive('\n');
     try std.testing.expectEqualStrings(
-        "ERR SwapchainTextureUnavailable\n",
+        "{\"ok\":false,\"error\":\"SwapchainTextureUnavailable\"}\n",
         line,
     );
 }
@@ -559,7 +594,7 @@ test "sysExecuteIpcCommands - open command dupes into arena and rejects error" {
     var server = try addr.listen(io, .{});
     defer server.deinit(io);
 
-    // 1. Nonexistent path replies with ERR and does not push an intent
+    // 1. Nonexistent path replies with JSON error and does not push an intent
     {
         const client = try addr.connect(io);
         defer client.close(io);
@@ -588,7 +623,10 @@ test "sysExecuteIpcCommands - open command dupes into arena and rejects error" {
         var read_buf: [64]u8 = undefined;
         var reader = client.reader(io, &read_buf);
         const line = try reader.interface.takeDelimiterInclusive('\n');
-        try std.testing.expect(std.mem.startsWith(u8, line, "ERR "));
+        try std.testing.expect(ipc.isErrorResponse(line));
+        try std.testing.expect(
+            std.mem.startsWith(u8, line, "{\"ok\":false,\"error\":\""),
+        );
     }
 
     // 2. Valid path replies OK, survives command buffer free via
@@ -626,6 +664,134 @@ test "sysExecuteIpcCommands - open command dupes into arena and rejects error" {
         var read_buf: [64]u8 = undefined;
         var reader = client.reader(io, &read_buf);
         const line = try reader.interface.takeDelimiterInclusive('\n');
-        try std.testing.expectEqualStrings("OK\n", line);
+        try std.testing.expectEqualStrings("{\"ok\":true}\n", line);
     }
+}
+
+test "sysExecuteIpcCommands - selections and clear_selections JSON workflow" {
+    if (builtin.os.tag == .windows) return;
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    try state.viewer.navigation.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = "a.jpg" } },
+    );
+    try state.viewer.navigation.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = "b.jpg" } },
+    );
+    state.viewer.navigation.current_index = 0;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var sock_buf: [108]u8 = undefined;
+    const sock_path = try std.mem.print(
+        &sock_buf,
+        ".zig-cache/tmp/{s}/ipc_sel.sock",
+        .{tmp.sub_path},
+    );
+
+    const addr = try std.Io.net.UnixAddress.init(sock_path);
+    var server = try addr.listen(io, .{});
+    defer server.deinit(io);
+
+    const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
+
+    // Pick first image, advance to second, reject second, then query selections
+    const c_pick = try addr.connect(io);
+    defer c_pick.close(io);
+    const s_pick = try server.accept(io);
+
+    const c_next = try addr.connect(io);
+    defer c_next.close(io);
+    const s_next = try server.accept(io);
+
+    const c_rej = try addr.connect(io);
+    defer c_rej.close(io);
+    const s_rej = try server.accept(io);
+
+    const c_sel1 = try addr.connect(io);
+    defer c_sel1.close(io);
+    const s_sel1 = try server.accept(io);
+
+    const d_pick = try allocator.create(ipc.IpcCommandData);
+    d_pick.* = .{
+        .command = try allocator.dupe(u8, "pick"),
+        .client_stream = s_pick,
+    };
+    const d_next = try allocator.create(ipc.IpcCommandData);
+    d_next.* = .{
+        .command = try allocator.dupe(u8, "next"),
+        .client_stream = s_next,
+    };
+    const d_rej = try allocator.create(ipc.IpcCommandData);
+    d_rej.* = .{
+        .command = try allocator.dupe(u8, "reject"),
+        .client_stream = s_rej,
+    };
+    const d_sel1 = try allocator.create(ipc.IpcCommandData);
+    d_sel1.* = .{
+        .command = try allocator.dupe(u8, "selections"),
+        .client_stream = s_sel1,
+    };
+    try state.pending_ipc_commands.append(allocator, d_pick);
+    try state.pending_ipc_commands.append(allocator, d_next);
+    try state.pending_ipc_commands.append(allocator, d_rej);
+    try state.pending_ipc_commands.append(allocator, d_sel1);
+
+    sysExecuteIpcCommands(ctx);
+    try intents_system.sysExecuteIntents(ctx);
+
+    var rbuf: [256]u8 = undefined;
+    var r_sel1 = c_sel1.reader(io, &rbuf);
+    const line1 = try r_sel1.interface.takeDelimiterInclusive('\n');
+    var parsed1 = try ipc.parseResponse(allocator, line1);
+    defer parsed1.deinit();
+    try std.testing.expect(parsed1.value.ok);
+    try std.testing.expectEqual(@as(usize, 1), parsed1.value.picks.?.len);
+    try std.testing.expectEqualStrings("a.jpg", parsed1.value.picks.?[0]);
+    try std.testing.expectEqual(@as(usize, 1), parsed1.value.rejects.?.len);
+    try std.testing.expectEqualStrings("b.jpg", parsed1.value.rejects.?[0]);
+
+    // Clear selections and query again
+    const c_clr = try addr.connect(io);
+    defer c_clr.close(io);
+    const s_clr = try server.accept(io);
+
+    const c_sel2 = try addr.connect(io);
+    defer c_sel2.close(io);
+    const s_sel2 = try server.accept(io);
+
+    const d_clr = try allocator.create(ipc.IpcCommandData);
+    d_clr.* = .{
+        .command = try allocator.dupe(u8, "clear_selections"),
+        .client_stream = s_clr,
+    };
+    const d_sel2 = try allocator.create(ipc.IpcCommandData);
+    d_sel2.* = .{
+        .command = try allocator.dupe(u8, "selections"),
+        .client_stream = s_sel2,
+    };
+    try state.pending_ipc_commands.append(allocator, d_clr);
+    try state.pending_ipc_commands.append(allocator, d_sel2);
+
+    sysExecuteIpcCommands(ctx);
+    try intents_system.sysExecuteIntents(ctx);
+
+    var r_clr = c_clr.reader(io, &rbuf);
+    const clr_line = try r_clr.interface.takeDelimiterInclusive('\n');
+    var parsed_clr = try ipc.parseResponse(allocator, clr_line);
+    defer parsed_clr.deinit();
+    try std.testing.expect(parsed_clr.value.ok);
+
+    var r_sel2 = c_sel2.reader(io, &rbuf);
+    const line2 = try r_sel2.interface.takeDelimiterInclusive('\n');
+    var parsed2 = try ipc.parseResponse(allocator, line2);
+    defer parsed2.deinit();
+    try std.testing.expect(parsed2.value.ok);
+    try std.testing.expectEqual(@as(usize, 0), parsed2.value.picks.?.len);
+    try std.testing.expectEqual(@as(usize, 0), parsed2.value.rejects.?.len);
 }

@@ -1834,13 +1834,24 @@ pub const ActiveScreenshot = struct {
     path: [:0]const u8,
     stream: std.Io.net.Stream,
 
-    /// Writes an "OK\n" success confirmation back to the client IPC stream and frees
-    /// request resources.
-    pub fn respondOk(self: *ActiveScreenshot, io: std.Io, gpa: std.mem.Allocator) void {
+    /// Writes a JSON success confirmation (`{"ok":true}\n`) back to the client
+    /// IPC stream and frees request resources.
+    pub fn respondOk(
+        self: *ActiveScreenshot,
+        io: std.Io,
+        gpa: std.mem.Allocator,
+    ) void {
         var write_buf: [128]u8 = undefined;
         var writer = self.stream.writer(io, &write_buf);
-        writer.interface.writeAll("OK\n") catch |werr| {
+        std.json.Stringify.value(
+            .{ .ok = true },
+            .{},
+            &writer.interface,
+        ) catch |werr| {
             std.log.warn("Screenshot response failed: {}", .{werr});
+        };
+        writer.interface.writeByte('\n') catch |werr| {
+            std.log.warn("Screenshot newline write failed: {}", .{werr});
         };
         writer.interface.flush() catch |ferr| {
             std.log.warn("Screenshot response flush failed: {}", .{ferr});
@@ -1849,45 +1860,47 @@ pub const ActiveScreenshot = struct {
         gpa.free(self.path);
     }
 
-    /// Writes an "ERR <name>\n" error response back to the client IPC stream and
-    /// frees request resources.
+    /// Writes a JSON error response (`{"ok":false,"error":"<name>"}\n`) back to
+    /// the client IPC stream and frees request resources.
     pub fn respondErr(
         self: *ActiveScreenshot,
         io: std.Io,
         gpa: std.mem.Allocator,
         err: anyerror,
     ) void {
-        var response_buf: [128]u8 = undefined;
-        const response = std.mem.print(
-            &response_buf,
-            "ERR {s}\n",
-            .{@errorName(err)},
-        ) catch |print_err| blk: {
-            std.log.warn("Failed to format IPC error response: {}", .{print_err});
-            break :blk "ERR SaveFailed\n";
-        };
-        var write_buf: [128]u8 = undefined;
+        self.respondErrName(io, gpa, @errorName(err));
+    }
+
+    /// Sends an emergency `{"ok":false,"error":"quit"}\n` response to the
+    /// client IPC stream when exiting unexpectedly.
+    pub fn respondQuit(
+        self: *ActiveScreenshot,
+        io: std.Io,
+        gpa: std.mem.Allocator,
+    ) void {
+        self.respondErrName(io, gpa, "quit");
+    }
+
+    fn respondErrName(
+        self: *ActiveScreenshot,
+        io: std.Io,
+        gpa: std.mem.Allocator,
+        err_name: []const u8,
+    ) void {
+        var write_buf: [160]u8 = undefined;
         var writer = self.stream.writer(io, &write_buf);
-        writer.interface.writeAll(response) catch |werr| {
-            std.log.warn("Screenshot response failed: {}", .{werr});
+        std.json.Stringify.value(
+            .{ .ok = false, .@"error" = err_name },
+            .{},
+            &writer.interface,
+        ) catch |werr| {
+            std.log.warn("Screenshot error response failed: {}", .{werr});
+        };
+        writer.interface.writeByte('\n') catch |werr| {
+            std.log.warn("Screenshot error newline write failed: {}", .{werr});
         };
         writer.interface.flush() catch |ferr| {
             std.log.warn("Screenshot response flush failed: {}", .{ferr});
-        };
-        self.stream.close(io);
-        gpa.free(self.path);
-    }
-
-    /// Sends an emergency "ERR quit\n" error response to the client IPC stream
-    /// when exiting unexpectedly.
-    pub fn respondQuit(self: *ActiveScreenshot, io: std.Io, gpa: std.mem.Allocator) void {
-        var write_buf: [64]u8 = undefined;
-        var writer = self.stream.writer(io, &write_buf);
-        writer.interface.writeAll("ERR quit\n") catch |err| {
-            std.log.warn("Emergency screenshot response write failed: {}", .{err});
-        };
-        writer.interface.flush() catch |ferr| {
-            std.log.warn("Emergency screenshot response flush failed: {}", .{ferr});
         };
         self.stream.close(io);
         gpa.free(self.path);

@@ -32,8 +32,9 @@
   - `src/intents/`: Pure `AppIntent` variants, `ActionDef` registry
     (`actions.zig`), and intent payload structs.
   - `src/input/`: Pure `FrameInput` event polling and shortcut mapping.
-  - `src/ipc/`: Pure `IpcCommand` parsing, `IpcServer` handle, and UDS socket
-    helpers.
+  - `src/ipc/`: Pure `IpcCommand` parsing, `IpcResponse` JSON schema
+    (`parseResponse`, `writeOkLine`, `writeErrorLine`), `IpcServer` handle, and
+    UDS socket helpers (`readLineTimeout`, `readLineTimeoutAlloc`).
   - `src/state/`: Pure visual/UI data models (`ViewerState`, `UiState`,
     `UiViewModel`, `AnimationState`, `SnackbarState`, `PanController`,
     `ZoomController`).
@@ -55,11 +56,22 @@
     relative file paths (e.g. `@import("app/core/exif.zig")` from
     `src/main.zig`); always use the canonical module namespace
     (`app.core.exif`).
-- **Zig 0.17 `std.process.Init` Process Context (`init.environ_map`, `init.io`, `init.gpa`)**:
+- **Zig 0.17 `std.process.Init` & `std.Io` Streaming I/O Invariants**:
   - Entrypoints (`pub fn main(init: std.process.Init) !void`) MUST thread
     `init.io`, `init.gpa`, `init.minimal.args`, and `init.environ_map`
     (`*const std.process.Environ.Map`) into subsystems rather than calling C's
     `std.c.getenv` or legacy global environment helpers.
+  - When writing to `stdout` or `stderr` (`std.Io.File.stdout()`,
+    `std.Io.File.stderr()`), ALWAYS use `.writerStreaming(io, &buf)` (or
+    `std.Io.File.Writer.initStreaming`). Never call `.writer(io, &buf)` on
+    standard streams: in Zig 0.17, `File.writer` defaults to `.mode = .positional` (`pwritev` at offset `0`), which fails with `ESPIPE` on pipes
+    and TTYs before falling back to streaming and overwrites offset `0` when
+    redirected with `>>`.
+  - Format all IPC server responses via `std.json.Stringify` (`writeOkLine`,
+    `writeErrorLine`, `NavigationState.writeSelectionsJson` using
+    `encodeJsonStringChars`) and validate client responses with
+    `ipc.parseResponse` (`std.json.parseFromSlice(IpcResponse, ...)`) rather
+    than raw string interpolation or prefix matching.
 - **Build Targets & Test Steps (`build.zig`)**:
   - Executables: `peng` (`src/main.zig`), `peng-msg` (`src/msg_main.zig`), and
     `peng-test-runner` (`src/test_runner_main.zig`).
@@ -95,9 +107,10 @@
     `std.atomic.Value(usize).init(0)`).
 - **Exhaustive Enum & Tagged Union Pattern Matching (Anti-`else => ...`)**:
   - `switch` statements on core domain enums and tagged unions (`PaletteMode`,
-    `EditParam`, `AppIntent`, `AdjustIntent`, `ZoomPreset`, `TextureScaleMode`,
-    `CacheStatus`, `ThumbnailState`, `DisplayState`, `DragState`, `MediaEntry`,
-    `DirectoryEntry`, `BackgroundEvent`) MUST exhaustively list all variants
+    `EditParam`, `AppIntent`, `AdjustIntent`, `IpcCommand`, `IpcMode`,
+    `ZoomPreset`, `TextureScaleMode`, `CacheStatus`, `ThumbnailState`,
+    `DisplayState`, `DragState`, `MediaEntry`, `DirectoryEntry`,
+    `BackgroundEvent`) MUST exhaustively list all variants
     without wildcard `else => ...` branches (including `else => {}`,
     `else => null`, `else => false`, `else => 0`, or `else => return`) so
     adding or modifying a variant triggers compile-time errors at every site.

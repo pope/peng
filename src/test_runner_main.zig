@@ -187,9 +187,72 @@ fn sendCommand(socket_path: []const u8, command: []const u8) !void {
     const response = response_opt orelse return error.NoResponse;
 
     const trimmed = std.mem.trim(u8, response, " \t\r");
-    if (std.mem.startsWith(u8, trimmed, "ERR")) {
+    if (ipc.isErrorResponse(trimmed)) {
         std.log.err("IPC Command '{s}' failed: {s}", .{ command, trimmed });
         return error.IpcCommandFailed;
+    }
+}
+
+fn expectSelectionsResponse(
+    allocator: std.mem.Allocator,
+    socket_path: []const u8,
+    expected_picks: []const []const u8,
+    expected_rejects: []const []const u8,
+) !void {
+    std.log.info("Sending IPC query command: selections", .{});
+    const io = global_io;
+    const address = try std.Io.net.UnixAddress.init(socket_path);
+    const stream = try address.connect(io);
+    defer stream.close(io);
+
+    var write_buf: [1024]u8 = undefined;
+    var writer = stream.writer(io, &write_buf);
+    try writer.interface.writeAll("selections\n");
+    try writer.interface.flush();
+
+    const response_opt = try ipc.readLineTimeoutAlloc(
+        allocator,
+        &stream.socket,
+        io,
+        ipc_timeout_dur,
+    );
+    const response = response_opt orelse return error.NoResponse;
+    defer allocator.free(response);
+
+    var parsed = try ipc.parseResponse(allocator, response);
+    defer parsed.deinit();
+
+    if (!parsed.value.ok) {
+        std.log.err("IPC selections returned ok=false: {s}", .{response});
+        return error.IpcQueryFailed;
+    }
+    const picks = parsed.value.picks orelse return error.IpcQueryMissingPicks;
+    const rejects = parsed.value.rejects orelse
+        return error.IpcQueryMissingRejects;
+
+    if (picks.len != expected_picks.len or
+        rejects.len != expected_rejects.len)
+    {
+        std.log.err("IPC selections count mismatch: {s}", .{response});
+        return error.IpcQueryMismatch;
+    }
+    for (picks, expected_picks) |actual, exp| {
+        if (!std.mem.eql(u8, actual, exp)) {
+            std.log.err(
+                "IPC selections pick mismatch: expected '{s}', got '{s}'",
+                .{ exp, actual },
+            );
+            return error.IpcQueryMismatch;
+        }
+    }
+    for (rejects, expected_rejects) |actual, exp| {
+        if (!std.mem.eql(u8, actual, exp)) {
+            std.log.err(
+                "IPC selections reject mismatch: expected '{s}', got '{s}'",
+                .{ exp, actual },
+            );
+            return error.IpcQueryMismatch;
+        }
     }
 }
 
@@ -215,7 +278,7 @@ fn expectCommandFailure(socket_path: []const u8, command: []const u8) !void {
     const response = response_opt orelse return error.NoResponse;
 
     const trimmed = std.mem.trim(u8, response, " \t\r");
-    if (!std.mem.startsWith(u8, trimmed, "ERR")) {
+    if (!ipc.isErrorResponse(trimmed)) {
         std.log.err(
             "IPC Command '{s}' was expected to fail, but succeeded with: {s}",
             .{ command, trimmed },
@@ -717,11 +780,23 @@ pub fn main(init: std.process.Init) !void {
         }
         try sendCommand(socket_path, "palette none");
 
-        // 5. Clean up classifications and restore default view
-        try sendCommand(socket_path, "unflag");
+        // 5. Query JSON selections, clear all classifications via
+        // clear_selections, and restore default view
+        try expectSelectionsResponse(
+            gpa,
+            socket_path,
+            &[_][]const u8{"testfiles/images/001_1_1024x682.jpg"},
+            &[_][]const u8{"testfiles/images/002_2_1024x682.jpg"},
+        );
+        try sendCommand(socket_path, "clear_selections");
+        try expectSelectionsResponse(
+            gpa,
+            socket_path,
+            &[_][]const u8{},
+            &[_][]const u8{},
+        );
         try sendCommand(socket_path, "prev");
         try sendCommand(socket_path, "wait_load");
-        try sendCommand(socket_path, "unflag");
         try sendCommand(socket_path, "view default");
     }
 

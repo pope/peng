@@ -89,19 +89,21 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(1);
     };
 
-    var read_buf: [1024]u8 = undefined;
     const timeout_dur: std.Io.Clock.Duration = .{
         .raw = std.Io.Duration.fromSeconds(15),
         .clock = .awake,
     };
-    const response_opt = ipc.readLineTimeout(
+    const response_opt = ipc.readLineTimeoutAlloc(
+        gpa,
         &stream.socket,
         io,
-        &read_buf,
         timeout_dur,
     ) catch |err| {
         if (err == error.Timeout) {
-            std.log.err("Timed out waiting for response from peng ({s})", .{socket_path});
+            std.log.err(
+                "Timed out waiting for response from peng ({s})",
+                .{socket_path},
+            );
         } else {
             std.log.err("Failed to read response: {any}", .{err});
         }
@@ -109,9 +111,29 @@ pub fn main(init: std.process.Init) !void {
     };
 
     if (response_opt) |response| {
-        const trimmed = std.mem.trim(u8, response, " \t\r");
-        std.log.info("{s}", .{trimmed});
-        if (std.mem.startsWith(u8, trimmed, "ERR")) {
+        defer gpa.free(response);
+        const trimmed = std.mem.trim(u8, response, " \t\r\n");
+        var parsed = ipc.parseResponse(gpa, trimmed) catch |err| {
+            std.log.err(
+                "Invalid JSON response from peng ({any}): {s}",
+                .{ err, trimmed },
+            );
+            std.process.exit(1);
+        };
+        defer parsed.deinit();
+
+        const stdout = std.Io.File.stdout();
+        var stdout_buf: [4 * 1024]u8 = undefined;
+        var stdout_writer = stdout.writerStreaming(io, &stdout_buf);
+        stdout_writer.interface.print("{s}\n", .{trimmed}) catch |err| {
+            std.log.err("Failed to write response to stdout: {any}", .{err});
+            std.process.exit(1);
+        };
+        stdout_writer.interface.flush() catch |err| {
+            std.log.err("Failed to flush stdout: {any}", .{err});
+            std.process.exit(1);
+        };
+        if (!parsed.value.ok) {
             std.process.exit(1);
         }
     } else {

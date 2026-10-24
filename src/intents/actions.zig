@@ -191,6 +191,8 @@ pub const ActionId = enum {
 
     // Non-palette capabilities (CLI / IPC parameters)
     open_config,
+    selections_config,
+    clear_selections_config,
     scale_config,
     zoom_config,
     pan_config,
@@ -1183,6 +1185,27 @@ pub const actions = [_]ActionDef{
         },
     },
     .{
+        .id = .selections_config,
+        .title = "List Selections",
+        .description = "Return JSON object of picked and rejected image paths",
+        .show_in_palette = false,
+        .ipc = .{
+            .name = "selections",
+            .description = "Return JSON object of picked and rejected paths",
+        },
+    },
+    .{
+        .id = .clear_selections_config,
+        .title = "Clear Selections",
+        .description = "Clear all pick and reject classifications",
+        .show_in_palette = false,
+        .intent = .clear_classifications,
+        .ipc = .{
+            .name = "clear_selections",
+            .description = "Clear all pick and reject classifications",
+        },
+    },
+    .{
         .id = .wait_load,
         .title = "Wait for Load",
         .description = "Wait for image decoding to complete",
@@ -1317,8 +1340,8 @@ test "actions registry projections" {
     try testing.expectEqual(OptionId.no_stack_raw_jpeg, action_cli_options[5].id);
     try testing.expectEqual(OptionId.scale, action_cli_options[6].id);
 
-    // IPC commands projection: 33 previous + 1 open verb = 34
-    try testing.expectEqual(@as(usize, 34), ipc_commands.len);
+    // IPC commands projection: 34 previous + 2 selection verbs = 36
+    try testing.expectEqual(@as(usize, 36), ipc_commands.len);
 }
 
 test "actions registry invariants and consistency" {

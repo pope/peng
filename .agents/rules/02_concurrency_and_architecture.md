@@ -8,7 +8,8 @@
     `upload_staging: image.UploadStagingBuffer`, `ipc_server: ?*IpcServer`),
     allocators (`allocator`), async I/O (`io`), texture slot cache
     (`cache: ImageCache`), worker manager (`workers: WorkerManager`), IPC
-    command queue (`pending_ipc_commands`), intent queue (`pending_intents`),
+    command queue (`pending_ipc_commands`), deferred IPC selection query
+    streams (`pending_selection_streams`), intent queue (`pending_intents`),
     event batch (`event_batch`), and embeds `viewer: ViewerState`.
   - All system pass functions in `src/app/systems/` accept `ctx: FrameContext`
     (`src/app/systems/context.zig`), which bundles `state: *AppState`,
@@ -63,8 +64,9 @@
         `sysUpdateSlideshow(ctx)`: Applies mouse/touch pan/zoom deltas, smooth
         `PanController`/`ZoomController` glide, and slideshow timers.
     07. `sysExecuteIntents(ctx)`: Single-pass batch execution of all queued
-        `AppIntent` payloads (`src/app/systems/intents.zig`) and declarative
-        snackbar notifications (`src/state/snackbar.zig`).
+        `AppIntent` payloads (`src/app/systems/intents.zig`), declarative
+        snackbar notifications (`src/state/snackbar.zig`), and post-intent IPC
+        selection stream flushing (`defer self.flushPendingSelectionStreams()`).
     08. `sysSyncWindow(ctx)`: Synchronizes OS window title and display
         properties with the active image immediately following intent
         execution.

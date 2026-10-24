@@ -196,6 +196,8 @@ pub const IpcCommand = union(enum) {
     pick,
     reject,
     unflag,
+    selections,
+    clear_selections,
     view: intents.ViewMode,
     precache,
     quit,
@@ -297,11 +299,12 @@ pub const IpcCommand = union(enum) {
             .pick => return .mark_pick,
             .reject => return .mark_reject,
             .unflag => return .unflag,
+            .clear_selections => return .clear_classifications,
             .view => |mode| return .{ .set_view_mode = mode },
             .precache => return .precache_directory,
             .quit => return .quit,
             .open => |p| return .{ .open_path = p },
-            .wait_load, .screenshot => return null,
+            .wait_load, .screenshot, .selections => return null,
         }
     }
 
@@ -649,6 +652,14 @@ pub const IpcCommand = union(enum) {
             return .reject;
         } else if (std.mem.eql(u8, cmd, "unflag")) {
             return .unflag;
+        } else if (std.mem.eql(u8, cmd, "selections") or
+            std.mem.eql(u8, cmd, "list_selections"))
+        {
+            return .selections;
+        } else if (std.mem.eql(u8, cmd, "clear_selections") or
+            std.mem.eql(u8, cmd, "clear_flags"))
+        {
+            return .clear_selections;
         } else if (std.mem.eql(u8, cmd, "view")) {
             const val = it.next() orelse return error.MissingArgument;
             if (std.meta.stringToEnum(intents.ViewMode, val)) |mode| {
@@ -677,42 +688,168 @@ pub const IpcCommand = union(enum) {
     }
 };
 
-/// Sends an "OK\n" acknowledgment response over `stream` and terminates the client socket.
+/// Structured JSON response payload returned by the IPC server.
+pub const IpcResponse = struct {
+    ok: bool,
+    @"error": ?[]const u8 = null,
+    picks: ?[]const []const u8 = null,
+    rejects: ?[]const []const u8 = null,
+};
+
+/// Parses and validates a raw JSON IPC response line into a structured
+/// `IpcResponse`. Caller must call `.deinit()` on the returned handle.
+pub fn parseResponse(
+    allocator: std.mem.Allocator,
+    raw: []const u8,
+) !std.json.Parsed(IpcResponse) {
+    const trimmed = std.mem.trim(u8, raw, " \t\r\n");
+    return std.json.parseFromSlice(
+        IpcResponse,
+        allocator,
+        trimmed,
+        .{ .ignore_unknown_fields = true },
+    );
+}
+
+/// Writes `{"ok":true}\n` to `writer` via `std.json.Stringify`.
+pub fn writeOkLine(writer: *std.Io.Writer) !void {
+    try std.json.Stringify.value(.{ .ok = true }, .{}, writer);
+    try writer.writeByte('\n');
+}
+
+/// Writes `{"ok":false,"error":"<err_name>"}\n` to `writer` via
+/// `std.json.Stringify`.
+pub fn writeErrorLine(writer: *std.Io.Writer, err_name: []const u8) !void {
+    try std.json.Stringify.value(
+        .{ .ok = false, .@"error" = err_name },
+        .{},
+        writer,
+    );
+    try writer.writeByte('\n');
+}
+
+/// Sends a `{"ok":true}\n` JSON acknowledgment response over `stream` and
+/// terminates the client socket.
 pub fn respondOk(io: std.Io, stream: std.Io.net.Stream) !void {
     defer stream.close(io);
     var write_buf: [64]u8 = undefined;
     var writer = stream.writer(io, &write_buf);
-    try writer.interface.writeAll("OK\n");
+    try writeOkLine(&writer.interface);
     try writer.interface.flush();
 }
 
-/// Reads bytes from `socket` with a timeout until '\n' is encountered or the buffer fills.
-/// Returns the slice up to '\n', or error.Timeout / error.BufferOverflow.
+/// Sends a `{"ok":false,"error":"<err_name>"}\n` JSON error response over
+/// `stream` and closes the client socket.
+pub fn respondErrorName(
+    io: std.Io,
+    stream: std.Io.net.Stream,
+    err_name: []const u8,
+) void {
+    defer stream.close(io);
+    var write_buf: [256]u8 = undefined;
+    var writer = stream.writer(io, &write_buf);
+    writeErrorLine(&writer.interface, err_name) catch |err| {
+        std.log.warn("IPC error response write failed: {}", .{err});
+        return;
+    };
+    writer.interface.flush() catch |err| {
+        std.log.warn("IPC error response flush failed: {}", .{err});
+    };
+}
+
+/// Returns `true` if `response` is not valid JSON or if its top-level `"ok"`
+/// field is `false`.
+pub fn isErrorResponse(response: []const u8) bool {
+    const trimmed = std.mem.trim(u8, response, " \t\r\n");
+    var fba_buf: [256]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&fba_buf);
+    const StatusOnly = struct { ok: bool };
+    const parsed = std.json.parseFromSliceLeaky(
+        StatusOnly,
+        fba.allocator(),
+        trimmed,
+        .{ .ignore_unknown_fields = true },
+    ) catch return true;
+    return !parsed.ok;
+}
+
+/// Reads bytes from `socket` with a total deadline until '\n' is encountered
+/// or the buffer fills. Returns the slice up to '\n', `null` on clean initial
+/// EOF, or `error.EndOfStream` / `error.Timeout` / `error.BufferOverflow`.
 pub fn readLineTimeout(
     socket: *const std.Io.net.Socket,
     io: std.Io,
     buf: []u8,
     timeout_duration: std.Io.Clock.Duration,
 ) !?[]const u8 {
+    const deadline: std.Io.Timeout = .{
+        .deadline = .fromNow(io, timeout_duration),
+    };
     var len: usize = 0;
     while (len < buf.len) {
         const msg = socket.receiveTimeout(
             io,
             buf[len..],
-            .{ .duration = timeout_duration },
+            deadline,
         ) catch |err| switch (err) {
             error.Timeout => return error.Timeout,
             else => return err,
         };
         if (msg.data.len == 0) {
             if (len == 0) return null;
-            return buf[0..len];
+            return error.EndOfStream;
         }
         if (std.mem.findScalar(u8, msg.data, '\n')) |newline_offset| {
             const line_len = len + newline_offset;
             return buf[0..line_len];
         }
         len += msg.data.len;
+    }
+    return error.BufferOverflow;
+}
+
+/// Dynamically reads a single `\n`-terminated line from `socket` with a total
+/// deadline, allocating the returned slice with `allocator`. Caller owns the
+/// returned slice when non-null. Returns `error.EndOfStream` if the peer
+/// closes the socket mid-line before sending `\n`.
+pub fn readLineTimeoutAlloc(
+    allocator: std.mem.Allocator,
+    socket: *const std.Io.net.Socket,
+    io: std.Io,
+    timeout_duration: std.Io.Clock.Duration,
+) !?[]u8 {
+    const max_response_bytes = 16 * 1024 * 1024;
+    const deadline: std.Io.Timeout = .{
+        .deadline = .fromNow(io, timeout_duration),
+    };
+    var list: std.ArrayList(u8) = .empty;
+    errdefer list.deinit(allocator);
+
+    var chunk_buf: [4 * 1024]u8 = undefined;
+    while (list.items.len < max_response_bytes) {
+        const msg = socket.receiveTimeout(
+            io,
+            &chunk_buf,
+            deadline,
+        ) catch |err| switch (err) {
+            error.Timeout => return error.Timeout,
+            else => return err,
+        };
+        if (msg.data.len == 0) {
+            if (list.items.len == 0) return null;
+            return error.EndOfStream;
+        }
+        if (std.mem.findScalar(u8, msg.data, '\n')) |newline_offset| {
+            if (list.items.len + newline_offset > max_response_bytes) {
+                return error.BufferOverflow;
+            }
+            try list.appendSlice(allocator, msg.data[0..newline_offset]);
+            return try list.toOwnedSlice(allocator);
+        }
+        if (list.items.len + msg.data.len > max_response_bytes) {
+            return error.BufferOverflow;
+        }
+        try list.appendSlice(allocator, msg.data);
     }
     return error.BufferOverflow;
 }
@@ -751,6 +888,50 @@ test "IpcCommand parsing" {
     const cmd_unflag = try IpcCommand.parse("unflag");
     try std.testing.expectEqual(IpcCommand.unflag, cmd_unflag);
     try std.testing.expectEqual(intents.AppIntent.unflag, cmd_unflag.toIntent().?);
+
+    const cmd_selections = try IpcCommand.parse("selections");
+    try std.testing.expectEqual(IpcCommand.selections, cmd_selections);
+    try std.testing.expectEqual(
+        @as(?intents.AppIntent, null),
+        cmd_selections.toIntent(),
+    );
+
+    const cmd_list_sel = try IpcCommand.parse("list_selections");
+    try std.testing.expectEqual(IpcCommand.selections, cmd_list_sel);
+
+    const cmd_clear_sel = try IpcCommand.parse("clear_selections");
+    try std.testing.expectEqual(IpcCommand.clear_selections, cmd_clear_sel);
+    try std.testing.expectEqual(
+        intents.AppIntent.clear_classifications,
+        cmd_clear_sel.toIntent().?,
+    );
+
+    const cmd_clear_flags = try IpcCommand.parse("clear_flags");
+    try std.testing.expectEqual(IpcCommand.clear_selections, cmd_clear_flags);
+
+    try std.testing.expect(!isErrorResponse("{\"ok\":true}\n"));
+    try std.testing.expect(!isErrorResponse("{ \"ok\" : true }\n"));
+    try std.testing.expect(
+        !isErrorResponse("{\"ok\":true,\"picks\":[],\"rejects\":[]}\n"),
+    );
+    try std.testing.expect(
+        isErrorResponse("{\"ok\":false,\"error\":\"UnknownCommand\"}\n"),
+    );
+    // Truncated or malformed JSON is rejected as an error
+    try std.testing.expect(
+        isErrorResponse("{\"ok\":true,\"picks\":[\"a.jpg\""),
+    );
+    try std.testing.expect(isErrorResponse("{\"ok\":true_corrupt}"));
+
+    var parsed_sel = try parseResponse(
+        std.testing.allocator,
+        "{\"ok\":true,\"picks\":[\"x.jpg\"],\"rejects\":[\"y.jpg\"]}\n",
+    );
+    defer parsed_sel.deinit();
+    try std.testing.expect(parsed_sel.value.ok);
+    try std.testing.expectEqual(@as(usize, 1), parsed_sel.value.picks.?.len);
+    try std.testing.expectEqualStrings("x.jpg", parsed_sel.value.picks.?[0]);
+    try std.testing.expectEqualStrings("y.jpg", parsed_sel.value.rejects.?[0]);
 
     const cmd_view_picks = try IpcCommand.parse("view picks");
     try std.testing.expectEqual(intents.ViewMode.picks, cmd_view_picks.view);
@@ -1110,7 +1291,8 @@ test "readLineTimeout - success and timeout" {
     defer client.close(io);
 
     var accepted = try server.accept(io);
-    defer accepted.close(io);
+    var accepted_open = true;
+    defer if (accepted_open) accepted.close(io);
 
     // Test timeout when no data is sent
     var buf: [128]u8 = undefined;
@@ -1135,4 +1317,36 @@ test "readLineTimeout - success and timeout" {
     };
     const line = (try readLineTimeout(&client.socket, io, &buf, long_dur)) orelse unreachable;
     try std.testing.expectEqualStrings("zoom 2.0", line);
+
+    // Test readLineTimeoutAlloc with multi-KB payload (> 4 KB chunk_buf)
+    var large_payload: [6 * 1024]u8 = undefined;
+    @memset(large_payload[0 .. large_payload.len - 1], 'x');
+    large_payload[large_payload.len - 1] = '\n';
+    try writer.interface.writeAll(&large_payload);
+    try writer.interface.flush();
+
+    const alloc_line = (try readLineTimeoutAlloc(
+        std.testing.allocator,
+        &client.socket,
+        io,
+        long_dur,
+    )) orelse unreachable;
+    defer std.testing.allocator.free(alloc_line);
+    try std.testing.expectEqual(large_payload.len - 1, alloc_line.len);
+
+    // Test truncated line before '\n' returns error.EndOfStream
+    try writer.interface.writeAll("{\"ok\":true,\"picks\":[\"unterminated");
+    try writer.interface.flush();
+    accepted.close(io);
+    accepted_open = false;
+
+    try std.testing.expectError(
+        error.EndOfStream,
+        readLineTimeoutAlloc(
+            std.testing.allocator,
+            &client.socket,
+            io,
+            long_dur,
+        ),
+    );
 }

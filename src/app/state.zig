@@ -87,6 +87,7 @@ pub const AppState = struct {
     /// Queues
     event_batch: std.ArrayList(events.BackgroundEvent) = .empty,
     pending_ipc_commands: std.ArrayList(*ipc.IpcCommandData) = .empty,
+    pending_selection_streams: std.ArrayList(std.Io.net.Stream) = .empty,
     pending_intents: std.ArrayList(AppIntent) = .empty,
 
     /// Initializes top-level `AppState` in headless mode without creating an SDL
@@ -155,6 +156,28 @@ pub const AppState = struct {
     /// Clears all queued application intents while retaining array capacity.
     pub fn clearIntents(self: *AppState) void {
         self.pending_intents.clearRetainingCapacity();
+    }
+
+    /// Streams the active JSON selections payload to each queued IPC stream in
+    /// `pending_selection_streams` and closes the stream.
+    pub fn flushPendingSelectionStreams(self: *AppState) void {
+        if (self.pending_selection_streams.items.len == 0) return;
+        defer self.pending_selection_streams.clearRetainingCapacity();
+
+        for (self.pending_selection_streams.items) |stream| {
+            defer stream.close(self.io);
+            var write_buf: [4 * 1024]u8 = undefined;
+            var writer = stream.writer(self.io, &write_buf);
+            self.viewer.navigation.writeSelectionsJson(
+                &writer.interface,
+            ) catch |err| {
+                std.log.warn("IPC selections write failed: {}", .{err});
+                continue;
+            };
+            writer.interface.flush() catch |err| {
+                std.log.warn("IPC selections flush failed: {}", .{err});
+            };
+        }
     }
 
     /// Returns `true` if files are currently loading, background workers are
@@ -303,8 +326,12 @@ pub const AppState = struct {
             self.allocator.free(cmd_data.command);
             self.allocator.destroy(cmd_data);
         }
+        for (self.pending_selection_streams.items) |stream| {
+            stream.close(self.io);
+        }
         self.viewer.deinit(self.allocator, self.io);
         self.pending_ipc_commands.deinit(self.allocator);
+        self.pending_selection_streams.deinit(self.allocator);
         self.pending_intents.deinit(self.allocator);
         self.event_batch.deinit(self.allocator);
     }

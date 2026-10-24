@@ -505,6 +505,20 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
             _ = nav.adjustIndexForVisibility();
             syncNavIndexChange(self, old_idx);
         },
+        .clear_classifications => {
+            const old_idx = nav.current_index;
+            const had_flags = nav.clearAllClassifications();
+            _ = nav.adjustIndexForVisibility();
+            syncNavIndexChange(self, old_idx);
+            const msg = if (had_flags)
+                "Cleared all picks and rejects"
+            else
+                "No classifications to clear";
+            showCustomSnackbar(self, msg);
+            if (ui.palette.mode == .files and !ui.palette.is_closing) {
+                try self.rebuildPaletteMatches();
+            }
+        },
         .cycle_view_mode => {
             const old_idx = nav.current_index;
             _ = nav.cycleViewMode();
@@ -766,6 +780,7 @@ fn triggerSnackbarForIntent(
 /// completes.
 pub fn sysExecuteIntents(ctx: FrameContext) !void {
     const self = ctx.state;
+    defer self.flushPendingSelectionStreams();
     if (self.pending_intents.items.len == 0) return;
     defer self.clearIntents();
     for (self.pending_intents.items) |intent| {
