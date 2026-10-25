@@ -53,6 +53,15 @@ pub fn calcCyclicDistance(
         linear;
 }
 
+/// Maximum concurrent background decode jobs tracked in the pinned table.
+pub const MAX_DECODE_JOBS: usize = 16;
+
+/// Zero-allocation ticket binding a decode job to a pinned atomic epoch slot.
+pub const JobTicket = struct {
+    job_id: u8,
+    epoch: u32,
+};
+
 /// Structure-of-Arrays (SoA) associative cache managing decoded image slots,
 /// generation epochs, and VRAM memory budgeting.
 pub const ImageCache = struct {
@@ -62,9 +71,71 @@ pub const ImageCache = struct {
     vram_capped_prev_index: ?usize = null,
     max_prefetch_dist: usize = 2,
 
+    /// Pinned array of atomic job epochs for zero-allocation cancellation.
+    job_epochs: [MAX_DECODE_JOBS]std.atomic.Value(u32) = blk: {
+        var arr: [MAX_DECODE_JOBS]std.atomic.Value(u32) = undefined;
+        for (&arr) |*val| val.* = .init(1);
+        break :blk arr;
+    },
+    /// Bitmask tracking active job IDs (0..15).
+    job_alloc_mask: u16 = 0,
+
+    /// Allocates an unused job slot and returns its JobTicket.
+    pub fn allocJob(self: *ImageCache) ?JobTicket {
+        const free_mask = ~self.job_alloc_mask;
+        if (free_mask == 0) return null;
+        const job_id: u8 = @truncate(@ctz(free_mask));
+        if (job_id >= MAX_DECODE_JOBS) return null;
+        self.job_alloc_mask |= (@as(u16, 1) << @as(u4, @truncate(job_id)));
+        const epoch = self.job_epochs[job_id].load(.acquire);
+        return .{ .job_id = job_id, .epoch = epoch };
+    }
+
+    /// Releases a completed or aborted job ID back to the allocation mask,
+    /// advancing its atomic epoch to prevent ABA epoch reuse.
+    pub fn releaseJob(self: *ImageCache, job_id: u8) void {
+        if (job_id < MAX_DECODE_JOBS) {
+            _ = self.job_epochs[job_id].fetchAdd(1, .release);
+            self.job_alloc_mask &= ~(@as(u16, 1) << @as(u4, @truncate(job_id)));
+        }
+    }
+
+    /// Immediately signals cancellation to the worker running `job_id`
+    /// by advancing its atomic epoch counter, then releasing the job slot.
+    pub fn cancelJob(self: *ImageCache, job_id: u8) void {
+        self.releaseJob(job_id);
+    }
+
+    /// Cancels all active in-flight worker jobs and resets the mask.
+    pub fn cancelAllJobs(self: *ImageCache) void {
+        var mask = self.job_alloc_mask;
+        while (mask != 0) {
+            const job_id: u8 = @truncate(@ctz(mask));
+            _ = self.job_epochs[job_id].fetchAdd(1, .release);
+            mask &= ~(@as(u16, 1) << @as(u4, @truncate(job_id)));
+        }
+        self.job_alloc_mask = 0;
+    }
+
+    /// Validates whether a completed job's epoch matches the slot's
+    /// active inflight decode task.
+    pub fn validateJobEpoch(
+        self: *const ImageCache,
+        slot_idx: usize,
+        job_epoch: u32,
+    ) bool {
+        if (slot_idx >= self.slots.len) return false;
+        const entry = self.slots.items(.entry)[slot_idx];
+        if (entry.inflight) |inf| {
+            return inf.job_epoch == job_epoch;
+        }
+        return false;
+    }
+
     /// Atomically increments the cache generation epoch to invalidate
     /// in-flight asynchronous decode tasks.
     pub fn advanceGeneration(self: *ImageCache) usize {
+        self.cancelAllJobs();
         self.vram_capped_neighbors = null;
         self.vram_capped_prev_index = null;
         self.max_prefetch_dist = 2;
@@ -91,6 +162,7 @@ pub const ImageCache = struct {
         allocator: std.mem.Allocator,
         gpu_device: ?sdl.gpu.Device,
     ) void {
+        self.cancelAllJobs();
         const entries = self.slots.items(.entry);
         for (entries) |*entry| {
             entry.deinit(gpu_device);
@@ -101,6 +173,7 @@ pub const ImageCache = struct {
     /// Deinitializes all slot resources and clears the cache while retaining
     /// capacity.
     pub fn clear(self: *ImageCache, gpu_device: ?sdl.gpu.Device) void {
+        self.cancelAllJobs();
         const entries = self.slots.items(.entry);
         for (entries) |*entry| {
             entry.deinit(gpu_device);
@@ -113,6 +186,7 @@ pub const ImageCache = struct {
 
     /// Clears all slots without releasing underlying capacity.
     pub fn clearRetainingCapacity(self: *ImageCache) void {
+        self.cancelAllJobs();
         self.slots.clearRetainingCapacity();
         self.vram_capped_neighbors = null;
         self.vram_capped_prev_index = null;
@@ -160,7 +234,21 @@ pub const ImageCache = struct {
         inflight: ?InFlightDecode,
     ) void {
         const idx = self.getIndex(key) orelse return;
-        self.slots.items(.entry)[idx].inflight = inflight;
+        const entry = &self.slots.items(.entry)[idx];
+        if (entry.inflight) |old_inf| {
+            if (old_inf.has_thread) {
+                if (inflight) |new_inf| {
+                    if (!new_inf.has_thread or
+                        old_inf.job_id != new_inf.job_id)
+                    {
+                        self.cancelJob(old_inf.job_id);
+                    }
+                } else {
+                    self.cancelJob(old_inf.job_id);
+                }
+            }
+        }
+        entry.inflight = inflight;
     }
 
     /// Appends a new slot for media `id` at current generation, returning
@@ -186,6 +274,11 @@ pub const ImageCache = struct {
         gpu_device: ?sdl.gpu.Device,
     ) void {
         var entry = self.slots.items(.entry)[index_in_list];
+        if (entry.inflight) |inf| {
+            if (inf.has_thread) {
+                self.cancelJob(inf.job_id);
+            }
+        }
         self.slots.swapRemove(index_in_list);
         entry.deinit(gpu_device);
     }
@@ -2853,4 +2946,68 @@ test "ImageCache - Key lookup by MediaId remains valid after sort shift" {
     cache.removeAndDeinit(0, null);
     try std.testing.expect(cache.getIndex(key1) == null);
     try std.testing.expect(cache.getIndex(cache.activeKey(id2)) != null);
+}
+
+test "ImageCache - Job ticket allocation, reuse and epoch incrementing" {
+    var cache = ImageCache{};
+
+    // Allocate all 16 job tickets
+    var tickets: [MAX_DECODE_JOBS]JobTicket = undefined;
+    for (0..MAX_DECODE_JOBS) |i| {
+        tickets[i] = cache.allocJob().?;
+        try std.testing.expectEqual(@as(u8, @truncate(i)), tickets[i].job_id);
+        try std.testing.expectEqual(@as(u32, 1), tickets[i].epoch);
+    }
+
+    // 17th allocation must fail
+    try std.testing.expect(cache.allocJob() == null);
+
+    // Cancel job 5: increments epoch and releases slot
+    cache.cancelJob(tickets[5].job_id);
+    try std.testing.expectEqual(
+        @as(u32, 2),
+        cache.job_epochs[5].load(.acquire),
+    );
+
+    // Re-allocating reuses slot 5 with incremented epoch
+    const reused = cache.allocJob().?;
+    try std.testing.expectEqual(@as(u8, 5), reused.job_id);
+    try std.testing.expectEqual(@as(u32, 2), reused.epoch);
+
+    // Release job 5 and cancel all remaining
+    cache.releaseJob(reused.job_id);
+    try std.testing.expectEqual(
+        @as(u32, 3),
+        cache.job_epochs[5].load(.acquire),
+    );
+    cache.cancelAllJobs();
+    try std.testing.expectEqual(@as(u16, 0), cache.job_alloc_mask);
+}
+
+test "removeAndDeinit - Cancels active in-flight job on slot eviction" {
+    const allocator = std.testing.allocator;
+    var cache = ImageCache{};
+    defer cache.deinit(allocator, null);
+
+    const ticket = cache.allocJob().?;
+    const id = MediaId.fromU32(100);
+    _ = try cache.appendSlot(allocator, id, .{
+        .inflight = .{
+            .has_thread = true,
+            .job_id = ticket.job_id,
+            .job_epoch = ticket.epoch,
+        },
+    });
+
+    try std.testing.expectEqual(@as(u32, 1), ticket.epoch);
+    try std.testing.expect(cache.job_alloc_mask != 0);
+
+    // Eviction via removeAndDeinit must cancel and release the active job
+    cache.removeAndDeinit(0, null);
+
+    try std.testing.expectEqual(
+        @as(u32, 2),
+        cache.job_epochs[ticket.job_id].load(.acquire),
+    );
+    try std.testing.expectEqual(@as(u16, 0), cache.job_alloc_mask);
 }

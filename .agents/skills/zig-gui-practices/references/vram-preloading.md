@@ -108,13 +108,21 @@ ______________________________________________________________________
 ## 5. Cooperative Worker Pruning Pattern
 
 - **Non-Blocking Main-Thread Contract**:
-  Calling `std.Io.Group.cancel(io)` blocks (`futexWait`) until in-flight workers finish. Instead, during runtime navigation, the main thread atomically increments `state.cache.generation.fetchAdd(1, .release)` (or `palette.dir_scan_generation.fetchAdd(1, .release)`).
+  Calling `std.Io.Group.cancel(io)` blocks (`futexWait`) until in-flight workers
+  finish. Instead, during runtime navigation or slot reuse, the main thread
+  cancels jobs cooperatively without blocking.
+- **Three-Tiered Cooperative Cancellation**:
+  1. *Application Shutdown*: `workers.exiting` aborts all background activity.
+  2. *Global Generation*: `state.cache.generation.fetchAdd(1, .release)`
+     invalidates all stale directory or navigation decodes en masse.
+  3. *Per-Slot / Per-Job Atomic Epoch*: Each decode job receives a pinned
+     ticket `job_epochs: [16]std.atomic.Value(u32)`. Advancing a job's epoch
+     instantly cancels only that specific worker on eviction or stream switch.
 - **`CancellationToken` & `SlotBound` Injection**:
   `DecodeArgs` in `src/app/workers/decode.zig` bundles the slot's
   `ImageCacheKey` (stable `id: MediaId` and assigned `generation`),
-  `MediaEntry`, and `current_generation: *const std.atomic.Value(usize)`,
-  exposing `cancelToken()` (`context.CancellationToken`) to bind
-  `key.generation`, `current_generation`, and `workers.exiting`:
+  `MediaEntry`, `current_generation`, `job_id`, `job_epoch`, and
+  `current_job_epoch`, exposing `cancelToken()` (`context.CancellationToken`):
   ```zig
   pub const DecodeArgs = struct {
       workers: *WorkerManager,
@@ -125,20 +133,30 @@ ______________________________________________________________________
       thumb_only: bool = false,
       pair_target: PairStreamTarget = .adaptive,
       current_generation: *const std.atomic.Value(usize),
+      job_id: u8 = 0,
+      job_epoch: u32 = 0,
+      current_job_epoch: ?*const std.atomic.Value(u32) = null,
       has_gpu_device: bool,
       pixel_format: u32,
 
-      pub inline fn cancelToken(self: *const DecodeArgs) context.CancellationToken {
+      pub inline fn cancelToken(
+          self: *const DecodeArgs,
+      ) context.CancellationToken {
           return .{
               .exiting = &self.workers.exiting,
               .generation = self.key.generation,
               .current_generation = self.current_generation,
+              .job_epoch = self.job_epoch,
+              .current_job_epoch = self.current_job_epoch,
           };
       }
   };
   ```
 - **Cooperative Checkpoints & `defer` Unwinding**:
-  Workers construct `const cancel = args.cancelToken();` and check `cancel.isCanceled()` at task entry, between archive/directory steps, before `Surface.loadConstMemOpt`, and before pixel format conversion, returning early with all local resources unwound via `defer`.
+  Workers construct `const cancel = args.cancelToken();` and check
+  `cancel.isCanceled()` at task entry, between archive/directory steps,
+  before `Surface.loadConstMemOpt`, and before pixel format conversion,
+  returning early with all local resources unwound via `defer`.
 
 ______________________________________________________________________
 

@@ -36,6 +36,9 @@ fn spawnCacheDecodeSlot(
     thumb_only: bool,
     pair_target: state_pkg.PairStreamTarget,
 ) !void {
+    const ticket = state.cache.allocJob() orelse return error.OutOfMemory;
+    errdefer state.cache.cancelJob(ticket.job_id);
+
     const dup_entry = entry_item.dupe(state.allocator) catch |err| {
         std.log.err("Failed to dupe MediaEntry for decode worker: {}", .{err});
         return err;
@@ -49,12 +52,25 @@ fn spawnCacheDecodeSlot(
     if (state.cache.get(key)) |entry| {
         if (entry.inflight) |*inf| {
             inf.has_thread = true;
+            inf.job_id = ticket.job_id;
+            inf.job_epoch = ticket.epoch;
+        } else {
+            entry.inflight = .{
+                .stage = .decoding,
+                .has_thread = true,
+                .start_time_ms = sdl.timer.getTicks(),
+                .target = pair_target,
+                .job_id = ticket.job_id,
+                .job_epoch = ticket.epoch,
+            };
         }
     }
     errdefer {
         if (state.cache.get(key)) |entry| {
             if (entry.inflight) |*inf| {
                 inf.has_thread = false;
+                inf.job_id = 0;
+                inf.job_epoch = 0;
             }
         }
     }
@@ -64,6 +80,9 @@ fn spawnCacheDecodeSlot(
         .allocator = state.allocator,
         .io = state.io,
         .key = key,
+        .job_id = ticket.job_id,
+        .job_epoch = ticket.epoch,
+        .current_job_epoch = &state.cache.job_epochs[ticket.job_id],
         .entry = dup_entry,
         .has_gpu_device = state.gpu_device != null,
         .pixel_format = state.viewer.display.getPixelFormat(),
@@ -156,6 +175,11 @@ fn checkPairPromotion(
 
     if ((is_inspecting or is_settled_fit) and state.workers.canSpawnDecode()) {
         if (state.cache.get(key)) |entry| {
+            if (entry.inflight) |inf| {
+                if (inf.has_thread) {
+                    state.cache.cancelJob(inf.job_id);
+                }
+            }
             entry.inflight = .{
                 .stage = .decoding,
                 .start_time_ms = now,

@@ -153,9 +153,9 @@
     updated idle counters upon waking.
   - In workers, never silence `readPositional` errors with `catch 0` without
     first checking `err == error.Canceled or cancel.isCanceled()`.
-  - Check `if (cancel.isCanceled()) return;` (`const cancel = args.cancelToken();`) before pushing intermediate events
-    (`exif_orientation_parsed`, `dimensions_probed`) and after non-cancellable
-    C decoder calls.
+  - Check `if (cancel.isCanceled()) return;` (`args.cancelToken()`) before
+    pushing intermediate events (`exif_orientation_parsed`,
+    `dimensions_probed`) and after non-cancellable C decoder calls.
 - **Worker Isolation, Telemetry (`ViewerStats`) & Envelope Pruning**:
   - Worker tasks (`decodeWorker`, `pathScanWorker`, `stdinWorker`,
     `ipcServerWorkerTask`) MUST NOT import or accept `*AppState` or
@@ -171,6 +171,9 @@
     (`src/app/core/events.zig`) and construct `CancellationToken`
     (`src/app/workers/context.zig`) via `args.cancelToken()` so stale epoch
     validation and cooperative cancellation are enforced at the type boundary.
+    Cancellation is three-tiered: application shutdown (`exiting`), global
+    cache generation invalidation, and per-slot atomic job epoch invalidation
+    (`job_epochs: [MAX_DECODE_JOBS]std.atomic.Value(u32)`).
 - **Two-Stage Header-First I/O & Freedesktop Thumbnail Cache (`DecodePayload`, `thumb_cache.zig`)**:
   - Issue `statFile` once and `openFile` once per worker pass.
   - For RAW files (`decodeRawFile`), read a single **256KB** stack header buffer

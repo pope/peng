@@ -148,15 +148,18 @@
     `swapRemove`, which relocates the tail element into the evicted index and
     overwrites the former tail slot with `undefined` (`0xaa` in Debug).
     Never return or pass raw `*CacheEntry` pointers (or `slots.items(.entry)`
-    or `slots.items(.key)` slices) across function boundaries or across any
-    call that may append to or evict from `ImageCache` (e.g.
-    `enforceVramBudget`, `appendSlot`, `completeDecodedGpuUpload`). Pass
+    or `slots.items(.key)` slices) across function boundaries, to workers,
+    or across any call that may append to or evict from `ImageCache` (e.g.
+    `enforceVramBudget`, `appendSlot`, `completeDecodedGpuUpload`). Workers
+    must NEVER hold interior pointers to cache slots; use the pinned static
+    table `job_epochs: [MAX_DECODE_JOBS]std.atomic.Value(u32)` inside
+    `ImageCache` for zero-allocation cooperative cancellation. Pass
     `ImageCacheKey` (composed of stable `id: MediaId` and generation epoch)
-    by value, let `SlotBound(T).resolve(&state.cache)` return
-    `{ key: ImageCacheKey, payload: *T }`, read slot state by value via
-    `cache.getEntry(key)`, and scope mutable pointer borrows
-    (`if (cache.get(key)) |entry| { ... }`) strictly to leaf blocks that do
-    not mutate container capacity.
+    by value, let `SlotBound(T).resolve(&state.cache)` validate both cache
+    generation and per-job epoch before returning `{ key, payload }`, read
+    slot state by value via `cache.getEntry(key)`, and scope mutable pointer
+    borrows (`if (cache.get(key)) |entry| { ... }`) strictly to leaf blocks
+    that do not mutate container capacity.
   - **Multi-Role Container Caveat**: Do not force mutually exclusive tagged
     unions onto multi-role container descriptors (such as TIFF IFD0, which
     simultaneously acts as a SubIFD container, preview provider, and EXIF

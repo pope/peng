@@ -1427,12 +1427,14 @@ pub const InFlightStage = enum {
     uploading,
 };
 
-/// In-flight decode or upload task metadata.
+/// In-flight decode or upload task metadata with per-job cancellation epoch.
 pub const InFlightDecode = struct {
     stage: InFlightStage = .decoding,
     has_thread: bool = false,
     start_time_ms: u64 = 0,
     target: PairStreamTarget = .adaptive,
+    job_id: u8 = 0,
+    job_epoch: u32 = 0,
 };
 
 /// Source from which a preview thumbnail was loaded.

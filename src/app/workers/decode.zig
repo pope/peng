@@ -24,6 +24,9 @@ pub const DecodeArgs = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     key: ImageCacheKey,
+    job_id: u8 = 0,
+    job_epoch: u32 = 0,
+    current_job_epoch: ?*const std.atomic.Value(u32) = null,
     entry: MediaEntry,
     has_gpu_device: bool,
     pixel_format: u32,
@@ -39,6 +42,8 @@ pub const DecodeArgs = struct {
             .exiting = &self.workers.exiting,
             .generation = self.key.generation,
             .current_generation = self.current_generation,
+            .job_epoch = self.job_epoch,
+            .current_job_epoch = self.current_job_epoch,
         };
     }
 };
@@ -56,12 +61,13 @@ fn failDecodeWorker(
     alloc: std.mem.Allocator,
     io: std.Io,
     key: ImageCacheKey,
+    job_epoch: u32,
     comptime fmt: []const u8,
     fmt_args: anytype,
 ) void {
     std.log.err(fmt, fmt_args);
     workers.event_queue.push(alloc, io, .{
-        .decode_failed = .init(key, .{}),
+        .decode_failed = .init(key, job_epoch, .{}),
     }) catch |e| std.log.err("Failed to push decode_failed event: {}", .{e});
     context.wakeUpMainThread();
 }
@@ -462,6 +468,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
             alloc,
             io,
             key,
+            args.job_epoch,
             "decodeWorker: statFile failed for '{s}': {}",
             .{ path, err },
         );
@@ -478,6 +485,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
             alloc,
             io,
             key,
+            args.job_epoch,
             "decodeWorker: openFile failed for '{s}': {}",
             .{ path, err },
         );
@@ -503,6 +511,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
             alloc,
             io,
             key,
+            args.job_epoch,
             "decodeWorker: readPositional failed for '{s}': {}",
             .{ path, err },
         );
@@ -647,6 +656,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
         workers.event_queue.push(alloc, io, .{
             .exif_orientation_parsed = .init(
                 key,
+                args.job_epoch,
                 .{ .orientation = orientation },
             ),
         }) catch |err| {
@@ -765,7 +775,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
             else
                 false;
             workers.event_queue.push(alloc, io, .{
-                .thumb_decoded = .init(key, .{
+                .thumb_decoded = .init(key, args.job_epoch, .{
                     .surface = t_surf,
                     .w = @floatFromInt(t_surf.w()),
                     .h = @floatFromInt(t_surf.h()),
@@ -798,7 +808,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
             // without decoding pixels
             if (cancel.isCanceled()) return true;
             workers.event_queue.push(alloc, io, .{
-                .dimensions_probed = .init(key, .{
+                .dimensions_probed = .init(key, args.job_epoch, .{
                     .source_dims = state_pkg.PhysicalDims.initPositive(
                         raw_w,
                         raw_h,
@@ -827,6 +837,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
             alloc,
             io,
             key,
+            args.job_epoch,
             "decodeWorker: no embedded preview found in RAW file '{s}'",
             .{path},
         );
@@ -842,6 +853,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
             alloc,
             io,
             key,
+            args.job_epoch,
             "decodeWorker: invalid preview location in RAW file '{s}'",
             .{path},
         );
@@ -866,6 +878,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                 alloc,
                 io,
                 key,
+                args.job_epoch,
                 "decodeWorker: alloc failed for preview in '{s}': {}",
                 .{ path, err },
             );
@@ -888,6 +901,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                 alloc,
                 io,
                 key,
+                args.job_epoch,
                 "decodeWorker: readPositional failed " ++
                     "for preview in '{s}': {}",
                 .{ path, err },
@@ -902,6 +916,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                 alloc,
                 io,
                 key,
+                args.job_epoch,
                 "decodeWorker: incomplete preview read for '{s}'",
                 .{path},
             );
@@ -920,6 +935,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                 workers.event_queue.push(alloc, io, .{
                     .exif_orientation_parsed = .init(
                         key,
+                        args.job_epoch,
                         .{ .orientation = orientation },
                     ),
                 }) catch |err| {
@@ -945,6 +961,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
             alloc,
             io,
             key,
+            args.job_epoch,
             "decodeWorker: failed to load RAW preview surface '{s}': {s}",
             .{ path, sdl.getError() },
         );
@@ -986,7 +1003,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
         );
 
         workers.event_queue.push(alloc, io, .{
-            .image_decoded = .init(key, .{
+            .image_decoded = .init(key, args.job_epoch, .{
                 .surface = f_surf,
                 .w = orig_w,
                 .h = orig_h,
@@ -1014,7 +1031,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
     } else {
         if (is_pair) return false;
         workers.event_queue.push(alloc, io, .{
-            .decode_failed = .init(key, .{}),
+            .decode_failed = .init(key, args.job_epoch, .{}),
         }) catch |err| std.log.err("Failed to push image decode event: {}", .{err});
         context.wakeUpMainThread();
         return true;
@@ -1060,6 +1077,7 @@ const DecodePayload = struct {
                 args.allocator,
                 args.io,
                 args.key,
+                args.job_epoch,
                 "decodeWorker: failed to decompress CBZ entry '{s}' from '{s}': {}",
                 .{ arch.entry_name, arch.archive_path, err },
             );
@@ -1099,6 +1117,7 @@ const DecodePayload = struct {
                 alloc,
                 io,
                 key,
+                args.job_epoch,
                 "decodeWorker: statFile failed for {s}'{s}': {}",
                 .{ log_prefix, file_path, err },
             );
@@ -1111,6 +1130,7 @@ const DecodePayload = struct {
                 alloc,
                 io,
                 key,
+                args.job_epoch,
                 "decodeWorker: file too large for {s}'{s}': {}",
                 .{ log_prefix, file_path, s.size },
             );
@@ -1130,6 +1150,7 @@ const DecodePayload = struct {
                 alloc,
                 io,
                 key,
+                args.job_epoch,
                 "decodeWorker: openFile failed for {s}'{s}': {}",
                 .{ log_prefix, file_path, err },
             );
@@ -1149,6 +1170,7 @@ const DecodePayload = struct {
                 alloc,
                 io,
                 key,
+                args.job_epoch,
                 "decodeWorker: alloc failed for {s}'{s}': {}",
                 .{ log_prefix, file_path, err },
             );
@@ -1170,6 +1192,7 @@ const DecodePayload = struct {
                 alloc,
                 io,
                 key,
+                args.job_epoch,
                 "decodeWorker: readPositional failed for {s}'{s}': {}",
                 .{ log_prefix, file_path, err },
             );
@@ -1238,6 +1261,7 @@ const DecodePayload = struct {
                             args.allocator,
                             args.io,
                             args.key,
+                            args.job_epoch,
                             "decodeWorker: readPositional failed for {s}'{s}': {}",
                             .{ self.log_prefix, self.path, err },
                         );
@@ -1431,6 +1455,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         workers.event_queue.push(alloc, io, .{
             .exif_orientation_parsed = .init(
                 key,
+                args.job_epoch,
                 .{ .orientation = orientation },
             ),
         }) catch |err| {
@@ -1490,7 +1515,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                     else
                         false;
                 workers.event_queue.push(alloc, io, .{
-                    .thumb_decoded = .init(key, .{
+                    .thumb_decoded = .init(key, args.job_epoch, .{
                         .surface = t_surf,
                         .w = @floatFromInt(t_surf.w()),
                         .h = @floatFromInt(t_surf.h()),
@@ -1527,7 +1552,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         else
             null;
         workers.event_queue.push(alloc, io, .{
-            .dimensions_probed = .init(key, .{
+            .dimensions_probed = .init(key, args.job_epoch, .{
                 .source_dims = source_dims,
                 .orientation = orientation,
                 .thumb_only = true,
@@ -1563,6 +1588,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
             alloc,
             io,
             key,
+            args.job_epoch,
             "decodeWorker: failed to load image '{s}': {s}",
             .{ path, sdl.getError() },
         );
@@ -1615,7 +1641,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         );
 
         workers.event_queue.push(alloc, io, .{
-            .image_decoded = .init(key, .{
+            .image_decoded = .init(key, args.job_epoch, .{
                 .surface = f_surf,
                 .w = orig_w,
                 .h = orig_h,
@@ -1637,7 +1663,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         };
     } else {
         workers.event_queue.push(alloc, io, .{
-            .decode_failed = .init(key, .{}),
+            .decode_failed = .init(key, args.job_epoch, .{}),
         }) catch |err| std.log.err("Failed to push image decode event: {}", .{err});
     }
 }

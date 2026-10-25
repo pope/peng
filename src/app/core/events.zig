@@ -53,42 +53,50 @@ pub fn Generational(comptime T: type) type {
     };
 }
 
-/// Envelope binding an event payload to a specific `ImageCacheKey` slot.
-/// Callers must invoke `resolve()` against `ImageCache` to obtain the
-/// validated, alias-resolved `ImageCacheKey` and the payload together without
-/// handing out raw interior pointers that could be invalidated by `swapRemove`.
+/// Envelope binding an event payload to an ImageCacheKey slot and per-job
+/// cancellation epoch.
 pub fn SlotBound(comptime T: type) type {
     return struct {
         key: ImageCacheKey,
+        job_epoch: u32 = 0,
         unchecked_payload: T,
 
         const Self = @This();
 
+        /// Resolved cache slot reference binding verified key and payload.
         pub const Resolved = struct {
             key: ImageCacheKey,
             payload: *T,
         };
 
-        /// Binds `payload` to `key`.
-        pub inline fn init(key: ImageCacheKey, payload: T) Self {
+        /// Binds `payload` to `key` and `job_epoch`.
+        pub inline fn init(
+            key: ImageCacheKey,
+            job_epoch: u32,
+            payload: T,
+        ) Self {
             return .{
                 .key = key,
+                .job_epoch = job_epoch,
                 .unchecked_payload = payload,
             };
         }
 
-        /// Looks up `self.key` in `cache`, returning the validated
-        /// `ImageCacheKey` and a mutable pointer to the payload only if
-        /// `self.key` matches the active `cache.generation` and the slot still
-        /// exists.
-        pub fn resolve(self: *Self, cache: *const image.ImageCache) ?Resolved {
+        /// Validates generation epoch, looks up slot index, and validates
+        /// per-job cancellation epoch against the active slot's inflight task.
+        pub fn resolve(
+            self: *Self,
+            cache: *const image.ImageCache,
+        ) ?Resolved {
             if (self.key.generation != cache.generation.load(.acquire)) {
                 return null;
             }
             const slot_idx = cache.getIndex(self.key) orelse return null;
-            const slot_key = cache.slots.items(.key)[slot_idx];
+            if (!cache.validateJobEpoch(slot_idx, self.job_epoch)) {
+                return null;
+            }
             return .{
-                .key = slot_key,
+                .key = cache.slots.items(.key)[slot_idx],
                 .payload = &self.unchecked_payload,
             };
         }
@@ -382,10 +390,11 @@ test "SlotBound.resolve validates cache key and presence" {
 
     const id3 = MediaId.fromU32(3);
     const key = try cache.appendSlot(allocator, id3, .{
-        .inflight = .{ .has_thread = true },
+        .inflight = .{ .has_thread = true, .job_epoch = 0 },
     });
     var bound = SlotBound(ExifParsedPayload).init(
         key,
+        0,
         .{ .orientation = .rotate_90 },
     );
 
@@ -413,10 +422,11 @@ test "SlotBound - Direct resolution by MediaId with zero alias_index" {
 
     const id1 = MediaId.fromU32(1);
     const key0 = try cache.appendSlot(allocator, id1, .{
-        .inflight = .{ .has_thread = true },
+        .inflight = .{ .has_thread = true, .job_epoch = 0 },
     });
     var bound = SlotBound(ExifParsedPayload).init(
         key0,
+        0,
         .{ .orientation = .rotate_180 },
     );
 
@@ -427,4 +437,29 @@ test "SlotBound - Direct resolution by MediaId with zero alias_index" {
         Orientation.rotate_180,
         resolved.payload.orientation,
     );
+}
+
+test "SlotBound - resolve rejects payload when job epoch has advanced" {
+    const allocator = std.testing.allocator;
+    var cache = image.ImageCache{};
+    defer cache.deinit(allocator, null);
+
+    const id = MediaId.fromU32(42);
+    const key = try cache.appendSlot(allocator, id, .{
+        .inflight = .{
+            .has_thread = true,
+            .job_epoch = 1,
+        },
+    });
+
+    var bound = SlotBound(ExifParsedPayload).init(
+        key,
+        1,
+        .{ .orientation = .rotate_90 },
+    );
+
+    try std.testing.expect(bound.resolve(&cache) != null);
+
+    cache.get(key).?.inflight.?.job_epoch = 2;
+    try std.testing.expect(bound.resolve(&cache) == null);
 }

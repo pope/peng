@@ -28,7 +28,11 @@ fn togglePairStream(self: *AppState) void {
     const entry = self.cache.get(key) orelse return;
     if (entry.resident.asset != .loaded_gpu and
         entry.resident.asset != .loaded_cpu) return;
-    if (entry.inflight != null or !self.workers.canSpawnDecode()) return;
+    if (entry.inflight) |inf| {
+        if (inf.has_thread) {
+            self.cache.cancelJob(inf.job_id);
+        }
+    }
 
     const target: state.PairStreamTarget =
         if (entry.metadata.raw_metadata.isRaw())
@@ -1864,4 +1868,74 @@ test "executeIntent - server_mode hides on quit and exits on quit_server" {
     // .quit_server unconditionally terminates the server
     try executeIntent(&app_st, .quit_server);
     try std.testing.expect(!app_st.viewer.running);
+}
+
+test "togglePairStream - Cancels existing job epoch on stream switch" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    _ = try app_st.viewer.navigation.appendEntry(
+        allocator,
+        .{
+            .pair = .{
+                .raw_path = "img0.raf",
+                .jpeg_path = "img0.jpg",
+            },
+        },
+    );
+    app_st.viewer.navigation.current_index = 0;
+    const id0 = app_st.viewer.navigation.getIdAt(0).?;
+
+    const ticket = app_st.cache.allocJob().?;
+    const surf = sdl.Surface.create(16, 16, sdl.PixelFormat.rgba32).?;
+    const key = try app_st.cache.appendSlot(allocator, id0, .{
+        .resident = .{
+            .asset = .{
+                .loaded_cpu = .{
+                    .surface = surf,
+                    .w = 16.0,
+                    .h = 16.0,
+                    .size_bytes = 1024,
+                    .mime_type = "image/jpeg",
+                    .read_time_ms = 0.0,
+                    .decode_time_ms = 0.0,
+                    .conversion_time_ms = 0.0,
+                    .cbz_decompress_time_ms = 0.0,
+                    .compressed_size_bytes = 0,
+                },
+            },
+        },
+        .inflight = .{
+            .stage = .decoding,
+            .has_thread = true,
+            .target = .raw_preview,
+            .job_id = ticket.job_id,
+            .job_epoch = ticket.epoch,
+        },
+        .metadata = .{
+            .raw_metadata = state.RawMetadata.init(6000, 4000),
+        },
+    });
+
+    try std.testing.expectEqual(@as(u32, 1), ticket.epoch);
+    try std.testing.expect(app_st.cache.job_alloc_mask != 0);
+
+    togglePairStream(&app_st);
+
+    // Job ticket epoch must have advanced to signal cancellation
+    try std.testing.expectEqual(
+        @as(u32, 2),
+        app_st.cache.job_epochs[ticket.job_id].load(.acquire),
+    );
+    // Ticket slot was released
+    try std.testing.expectEqual(@as(u16, 0), app_st.cache.job_alloc_mask);
+
+    // New inflight task is queued with opposite stream target
+    const updated = app_st.cache.get(key).?.inflight.?;
+    try std.testing.expectEqual(
+        state.PairStreamTarget.standalone_jpeg,
+        updated.target,
+    );
 }

@@ -43,6 +43,7 @@ pub fn drainWorkerEvents(state: *AppState) bool {
                     const skip_upload = hasSubsequentImageDecoded(
                         state.event_batch.items[evt_idx + 1 ..],
                         r.key,
+                        t.job_epoch,
                     );
                     handleExifThumbnailEvent(
                         state,
@@ -110,6 +111,11 @@ fn handleDecodeFailedEvent(
     is_current: bool,
 ) void {
     const entry = state.cache.get(key) orelse return;
+    if (entry.inflight) |inf| {
+        if (inf.has_thread) {
+            state.cache.releaseJob(inf.job_id);
+        }
+    }
     entry.inflight = null;
     if (entry.resident.asset != .loaded_gpu and
         entry.resident.asset != .loaded_cpu)
@@ -204,7 +210,12 @@ fn handleDimensionsProbedEvent(
             probed.raw_metadata,
         );
         if (probed.thumb_only) {
-            if (entry.inflight) |*dec| dec.has_thread = false;
+            if (entry.inflight) |*dec| {
+                if (dec.has_thread) {
+                    state.cache.releaseJob(dec.job_id);
+                    dec.has_thread = false;
+                }
+            }
         }
         if (entry.resident.thumbnail == .none or
             entry.resident.thumbnail == .pending)
@@ -218,11 +229,12 @@ fn handleDimensionsProbedEvent(
 fn hasSubsequentImageDecoded(
     remaining: []const events.BackgroundEvent,
     key: image.ImageCacheKey,
+    job_epoch: u32,
 ) bool {
     for (remaining) |*evt| {
         switch (evt.*) {
             .image_decoded => |*d| {
-                if (d.key.eql(key)) {
+                if (d.key.eql(key) and d.job_epoch == job_epoch) {
                     return true;
                 }
             },
@@ -255,7 +267,12 @@ fn handleExifThumbnailEvent(
             thumb_data.raw_metadata,
         );
         if (thumb_data.thumb_only) {
-            if (entry.inflight) |*dec| dec.has_thread = false;
+            if (entry.inflight) |*dec| {
+                if (dec.has_thread) {
+                    state.cache.releaseJob(dec.job_id);
+                    dec.has_thread = false;
+                }
+            }
         }
         break :blk entry.resident.asset == .loaded_gpu or
             entry.resident.asset == .loaded_cpu;
@@ -359,6 +376,14 @@ fn handleImageDecodedEvent(
     key: image.ImageCacheKey,
     decoded_data: *events.ImageDecodedPayload,
 ) void {
+    if (state.cache.get(key)) |entry| {
+        if (entry.inflight) |*inf| {
+            if (inf.has_thread) {
+                state.cache.releaseJob(inf.job_id);
+                inf.has_thread = false;
+            }
+        }
+    }
     const surf = decoded_data.surface orelse return;
 
     const is_current =
@@ -758,6 +783,7 @@ test "drainWorkerEvents - exif_orientation_parsed & decode_failed" {
     try state.workers.event_queue.push(allocator, io, .{
         .exif_orientation_parsed = .init(
             state.cache.activeKey(id0),
+            0,
             .{ .orientation = .rotate_90 },
         ),
     });
@@ -769,7 +795,7 @@ test "drainWorkerEvents - exif_orientation_parsed & decode_failed" {
     );
 
     try state.workers.event_queue.push(allocator, io, .{
-        .decode_failed = .init(state.cache.activeKey(id0), .{}),
+        .decode_failed = .init(state.cache.activeKey(id0), 0, .{}),
     });
     const processed2 = drainWorkerEvents(&state);
     try std.testing.expect(processed2);
@@ -843,7 +869,7 @@ test "drainWorkerEvents - neighbor image_decoded stays loaded_cpu while current 
 
     // Neighbor index 1 finishes decoding before index 0
     try state.workers.event_queue.push(allocator, io, .{
-        .image_decoded = .init(state.cache.activeKey(id1), .{
+        .image_decoded = .init(state.cache.activeKey(id1), 0, .{
             .surface = surf,
             .w = 10,
             .h = 10,
@@ -877,7 +903,7 @@ test "drainWorkerEvents - dimensions_probed sets dimensions and clears has_threa
     });
 
     try state.workers.event_queue.push(allocator, io, .{
-        .dimensions_probed = .init(state.cache.activeKey(id0), .{
+        .dimensions_probed = .init(state.cache.activeKey(id0), 0, .{
             .source_dims = .{ .w = 1920.0, .h = 1080.0 },
             .orientation = .normal,
             .thumb_only = true,
@@ -1065,7 +1091,7 @@ test "drainWorkerEvents - pair promotion preserves VRAM and loaded status" {
     ) orelse return error.SurfaceFailed;
 
     try state.workers.event_queue.push(allocator, io, .{
-        .image_decoded = .init(key1, .{
+        .image_decoded = .init(key1, 0, .{
             .surface = promoted_surf,
             .w = 32,
             .h = 24,
@@ -1110,7 +1136,7 @@ test "drainWorkerEvents - monotonic full_dims on pair promotion" {
         sdl.PixelFormat.rgba32,
     ) orelse return error.SurfaceFailed;
     try state.workers.event_queue.push(allocator, io, .{
-        .image_decoded = .init(key0, .{
+        .image_decoded = .init(key0, 0, .{
             .surface = preview_surf,
             .w = 1616,
             .h = 1080,
@@ -1138,7 +1164,7 @@ test "drainWorkerEvents - monotonic full_dims on pair promotion" {
         sdl.PixelFormat.rgba32,
     ) orelse return error.SurfaceFailed;
     try state.workers.event_queue.push(allocator, io, .{
-        .image_decoded = .init(key0, .{
+        .image_decoded = .init(key0, 0, .{
             .surface = full_surf,
             .w = 6000,
             .h = 4000,
@@ -1162,13 +1188,14 @@ test "drainWorkerEvents - monotonic full_dims on pair promotion" {
     try std.testing.expectEqual(@as(f32, 4000), auth.h);
 
     // 3. Toggling back to 1616x1080 preview does not regress full_dims
+    entry0.inflight = .{ .stage = .decoding };
     const toggle_surf = sdl.Surface.create(
         16,
         10,
         sdl.PixelFormat.rgba32,
     ) orelse return error.SurfaceFailed;
     try state.workers.event_queue.push(allocator, io, .{
-        .image_decoded = .init(key0, .{
+        .image_decoded = .init(key0, 0, .{
             .surface = toggle_surf,
             .w = 1616,
             .h = 1080,
@@ -1345,7 +1372,7 @@ test "drainWorkerEvents - decode_failed clears current image_transition" {
     state.viewer.animations.setImmediate(.image_crossfade, 0.0);
 
     try state.workers.event_queue.push(allocator, io, .{
-        .decode_failed = .init(key1, .{}),
+        .decode_failed = .init(key1, 0, .{}),
     });
     try std.testing.expect(drainWorkerEvents(&state));
     try std.testing.expectEqual(
@@ -1407,6 +1434,7 @@ test "drainWorkerEvents - ignores thumb_decoded when slot is already loaded" {
     const main_surf = sdl.Surface.create(32, 32, sdl.PixelFormat.rgba32).?;
     const id0 = MediaId.fromU32(1);
     const key0 = try state.cache.appendSlot(allocator, id0, .{
+        .inflight = .{ .has_thread = true },
         .resident = .{
             .asset = .{
                 .loaded_cpu = .{
@@ -1434,7 +1462,7 @@ test "drainWorkerEvents - ignores thumb_decoded when slot is already loaded" {
 
     const thumb_surf = sdl.Surface.create(16, 16, sdl.PixelFormat.rgba32).?;
     try state.workers.event_queue.push(allocator, io, .{
-        .thumb_decoded = .init(key0, .{
+        .thumb_decoded = .init(key0, 0, .{
             .surface = thumb_surf,
             .w = 16.0,
             .h = 16.0,
@@ -1520,7 +1548,7 @@ test "DirectoryScanResultEvent - Preserves MediaId for initial target file" {
     // 4. In-flight job resolution: a SlotBound created with key0 resolves
     const surf = sdl.Surface.create(10, 10, sdl.PixelFormat.rgba32).?;
     try state.workers.event_queue.push(allocator, io, .{
-        .image_decoded = .init(key0, .{
+        .image_decoded = .init(key0, 0, .{
             .surface = surf,
             .w = 10.0,
             .h = 10.0,
@@ -1563,7 +1591,7 @@ test "drainWorkerEvents - skips thumbnail upload when image_decoded is in same b
 
     // Push both thumb_decoded and image_decoded in same batch
     try state.workers.event_queue.push(allocator, io, .{
-        .thumb_decoded = .init(key0, .{
+        .thumb_decoded = .init(key0, 0, .{
             .surface = thumb_surf,
             .w = 16.0,
             .h = 16.0,
@@ -1574,7 +1602,7 @@ test "drainWorkerEvents - skips thumbnail upload when image_decoded is in same b
         }),
     });
     try state.workers.event_queue.push(allocator, io, .{
-        .image_decoded = .init(key0, .{
+        .image_decoded = .init(key0, 0, .{
             .surface = full_surf,
             .w = 64.0,
             .h = 64.0,
