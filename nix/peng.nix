@@ -29,21 +29,8 @@ stdenv.mkDerivation (_finalAttrs: {
 
   dontSetZigDefaultFlags = true;
 
-  desktopItems = lib.optionals stdenv.hostPlatform.isLinux [
-    (makeDesktopItem {
-      name = "peng";
-      desktopName = "Peng";
-      genericName = "Image Viewer";
-      comment = "GPU-accelerated image viewer built in Zig";
-      exec = "peng %F";
-      icon = "image-x-generic";
-      terminal = false;
-      categories = [
-        "Graphics"
-        "2DGraphics"
-        "Viewer"
-        "Photography"
-      ];
+  desktopItems =
+    let
       mimeTypes = [
         "image/png"
         "image/jpeg"
@@ -74,8 +61,43 @@ stdenv.mkDerivation (_finalAttrs: {
         "image/x-sigma-x3f"
         "image/x-samsung-srw"
       ];
-    })
-  ];
+      categories = [
+        "Graphics"
+        "2DGraphics"
+        "Viewer"
+        "Photography"
+      ];
+    in
+    lib.optionals stdenv.hostPlatform.isLinux [
+      (makeDesktopItem {
+        name = "peng";
+        desktopName = "Peng";
+        genericName = "Image Viewer";
+        comment = "GPU-accelerated image viewer built in Zig";
+        exec = "peng-msg --spawn open %f";
+        icon = "image-x-generic";
+        terminal = false;
+        inherit categories mimeTypes;
+        extraConfig = ''
+          Actions=new-window;
+
+          [Desktop Action new-window]
+          Name=Open in New Window
+          Exec=peng %F
+        '';
+      })
+      (makeDesktopItem {
+        name = "peng-new-window";
+        desktopName = "Peng (New Window)";
+        genericName = "Image Viewer";
+        comment = "Open in a standalone Peng window";
+        exec = "peng %F";
+        icon = "image-x-generic";
+        terminal = false;
+        noDisplay = true;
+        inherit categories mimeTypes;
+      })
+    ];
 
   postConfigure = ''
     mkdir -p .zig-cache/p

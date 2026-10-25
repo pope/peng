@@ -194,6 +194,7 @@ pub const ActionId = enum {
 
     // Non-palette capabilities (CLI / IPC parameters)
     open_config,
+    preview_config,
     selections_config,
     clear_selections_config,
     scale_config,
@@ -1191,12 +1192,23 @@ pub const actions = [_]ActionDef{
     .{
         .id = .open_config,
         .title = "Open Path",
-        .description = "Open an image file, directory, or archive",
+        .description = "Show window or open an image, directory, or archive",
         .show_in_palette = false,
         .ipc = .{
             .name = "open",
-            .args = "<path>",
-            .description = "Open an image file, directory, or archive",
+            .args = "[path]",
+            .description = "Show window or open an image or directory",
+        },
+    },
+    .{
+        .id = .preview_config,
+        .title = "Terminal Image Preview",
+        .description = "Render a fast terminal preview via Kitty graphics",
+        .show_in_palette = false,
+        .ipc = .{
+            .name = "preview",
+            .args = "[--clear|-c] [w h] <filepath>",
+            .description = "Render a fast terminal preview via Kitty graphics",
         },
     },
     .{
@@ -1355,8 +1367,8 @@ test "actions registry projections" {
     try testing.expectEqual(OptionId.no_stack_raw_jpeg, action_cli_options[5].id);
     try testing.expectEqual(OptionId.scale, action_cli_options[6].id);
 
-    // IPC commands projection: 34 previous + 2 selection verbs = 36
-    try testing.expectEqual(@as(usize, 36), ipc_commands.len);
+    // IPC commands projection: 36 previous + 1 preview verb = 37
+    try testing.expectEqual(@as(usize, 37), ipc_commands.len);
 }
 
 test "actions registry invariants and consistency" {

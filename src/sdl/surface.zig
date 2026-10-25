@@ -230,6 +230,40 @@ pub const Surface = struct {
         return if (raw) |r| .{ .ptr = r } else null;
     }
 
+    /// Smoothly scales this surface to `target_w x target_h` in `RGBA32` format
+    /// in a single pass with zero intermediate surface allocations, reading
+    /// `RGB24`, `BGR24`, and `RGBA32` directly using fixed-point stepping.
+    pub fn scaleRgba32Smooth(
+        self: Surface,
+        target_w: i32,
+        target_h: i32,
+    ) ?Surface {
+        if (target_w <= 0 or target_h <= 0) return null;
+        if (self.ptr.pixels == null or self.pitch() <= 0) return null;
+        const src_w_i = self.w();
+        const src_h_i = self.h();
+        if (src_w_i <= 0 or src_h_i <= 0) return null;
+
+        if (src_w_i == target_w and src_h_i == target_h) {
+            return self.convert(PixelFormat.rgba32);
+        }
+
+        const fmt = self.format();
+        if (fmt == PixelFormat.rgb24) {
+            return resampleDirectToRgba32(3, false, self, target_w, target_h);
+        }
+        if (fmt == PixelFormat.bgr24) {
+            return resampleDirectToRgba32(3, true, self, target_w, target_h);
+        }
+        if (fmt == PixelFormat.rgba32) {
+            return resampleDirectToRgba32(4, false, self, target_w, target_h);
+        }
+
+        const converted = self.convert(PixelFormat.rgba32) orelse return null;
+        defer converted.destroy();
+        return resampleDirectToRgba32(4, false, converted, target_w, target_h);
+    }
+
     /// Destroys and frees the underlying `SDL_Surface`.
     pub fn destroy(self: Surface) void {
         c.SDL_DestroySurface(self.ptr);
@@ -659,4 +693,190 @@ test "Surface.encodePngAlloc and rotateOrthogonal roundtrip" {
     defer decoded.destroy();
     try std.testing.expectEqual(@as(i32, 2), decoded.w());
     try std.testing.expectEqual(@as(i32, 4), decoded.h());
+}
+
+inline fn readPixelRgbaU32(
+    comptime bpp: u8,
+    comptime swap_rb: bool,
+    row: [*]const u8,
+    x: usize,
+) @Vector(4, u32) {
+    const p = row + x * bpp;
+    if (bpp == 4) {
+        const v: @Vector(4, u8) = p[0..4].*;
+        return v;
+    }
+    if (swap_rb) {
+        return .{ p[2], p[1], p[0], 255 };
+    }
+    return .{ p[0], p[1], p[2], 255 };
+}
+
+fn resampleDirectToRgba32(
+    comptime bpp: u8,
+    comptime swap_rb: bool,
+    src: Surface,
+    dst_w_i: i32,
+    dst_h_i: i32,
+) ?Surface {
+    const dst = Surface.create(dst_w_i, dst_h_i, PixelFormat.rgba32) orelse
+        return null;
+    const src_w: usize = @intCast(src.w());
+    const src_h: usize = @intCast(src.h());
+    const dst_w: usize = @intCast(dst_w_i);
+    const dst_h: usize = @intCast(dst_h_i);
+    const src_pitch: usize = @intCast(src.pitch());
+    const dst_pitch: usize = @intCast(dst.pitch());
+    const src_base = src.pixels();
+    const dst_base = dst.pixels();
+
+    const max_x: i64 = @intCast(src_w - 1);
+    const max_y: i64 = @intCast(src_h - 1);
+    const dst_w_i64: i64 = @intCast(dst_w);
+    const dst_h_i64: i64 = @intCast(dst_h);
+    const src_w_i64: i64 = @intCast(src_w);
+    const src_h_i64: i64 = @intCast(src_h);
+
+    const Vec4u8 = @Vector(4, u8);
+    const Vec4u32 = @Vector(4, u32);
+
+    if (src_w >= dst_w * 2 and src_h >= dst_h * 2) {
+        const grid_shift: u2 = if (src_w >= dst_w * 4 and src_h >= dst_h * 4)
+            2
+        else
+            1;
+        const grid_n: usize = @as(usize, 1) << grid_shift;
+        const total_shift: u5 = @as(u5, grid_shift) * 2;
+        const bias: Vec4u32 = @splat(@as(u32, 1) << (total_shift - 1));
+        const shift_vec: @Vector(4, u5) = @splat(total_shift);
+
+        const sub_step_x: i64 = @divTrunc(
+            src_w_i64 << 16,
+            dst_w_i64 << grid_shift,
+        );
+        const sub_step_y: i64 = @divTrunc(
+            src_h_i64 << 16,
+            dst_h_i64 << grid_shift,
+        );
+
+        var sy_sub_fp: i64 = sub_step_y >> 1;
+        for (0..dst_h) |dy| {
+            var rows: [4][*]const u8 = undefined;
+            for (0..grid_n) |gy| {
+                const y_idx: usize = @intCast(
+                    std.math.clamp(sy_sub_fp >> 16, 0, max_y),
+                );
+                rows[gy] = src_base + y_idx * src_pitch;
+                sy_sub_fp += sub_step_y;
+            }
+            const dst_row = dst_base + dy * dst_pitch;
+
+            var sx_sub_fp: i64 = sub_step_x >> 1;
+            for (0..dst_w) |dx| {
+                var x_indices: [4]usize = undefined;
+                for (0..grid_n) |gx| {
+                    x_indices[gx] = @intCast(
+                        std.math.clamp(sx_sub_fp >> 16, 0, max_x),
+                    );
+                    sx_sub_fp += sub_step_x;
+                }
+
+                var acc: Vec4u32 = @splat(0);
+                for (0..grid_n) |gy| {
+                    const r_ptr = rows[gy];
+                    for (0..grid_n) |gx| {
+                        acc += readPixelRgbaU32(
+                            bpp,
+                            swap_rb,
+                            r_ptr,
+                            x_indices[gx],
+                        );
+                    }
+                }
+                const out_px: Vec4u8 = @intCast((acc + bias) >> shift_vec);
+                dst_row[dx * 4 ..][0..4].* = out_px;
+            }
+        }
+        return dst;
+    }
+
+    const round_bias: Vec4u32 = @splat(32768);
+    const shift16: @Vector(4, u5) = @splat(16);
+    const step_x_fp: i64 = @divTrunc(src_w_i64 << 16, dst_w_i64);
+    const step_y_fp: i64 = @divTrunc(src_h_i64 << 16, dst_h_i64);
+    const start_x_fp: i64 = (step_x_fp >> 1) - 32768;
+    var sy_fp: i64 = (step_y_fp >> 1) - 32768;
+
+    for (0..dst_h) |dy| {
+        defer sy_fp += step_y_fp;
+        const y0_raw = sy_fp >> 16;
+        const fy: u32 = if (y0_raw < 0 or y0_raw >= max_y)
+            0
+        else
+            @intCast((sy_fp >> 8) & 0xFF);
+        const y0: usize = @intCast(std.math.clamp(y0_raw, 0, max_y));
+        const y1: usize = if (y0 + 1 < src_h) y0 + 1 else y0;
+        const inv_fy: u32 = 256 - fy;
+
+        const row0 = src_base + y0 * src_pitch;
+        const row1 = src_base + y1 * src_pitch;
+        const dst_row = dst_base + dy * dst_pitch;
+
+        var sx_fp: i64 = start_x_fp;
+        for (0..dst_w) |dx| {
+            defer sx_fp += step_x_fp;
+            const x0_raw = sx_fp >> 16;
+            const fx: u32 = if (x0_raw < 0 or x0_raw >= max_x)
+                0
+            else
+                @intCast((sx_fp >> 8) & 0xFF);
+            const x0: usize = @intCast(std.math.clamp(x0_raw, 0, max_x));
+            const x1: usize = if (x0 + 1 < src_w) x0 + 1 else x0;
+            const inv_fx: u32 = 256 - fx;
+
+            const w00: Vec4u32 = @splat(inv_fx * inv_fy);
+            const w10: Vec4u32 = @splat(fx * inv_fy);
+            const w01: Vec4u32 = @splat(inv_fx * fy);
+            const w11: Vec4u32 = @splat(fx * fy);
+
+            const p00 = readPixelRgbaU32(bpp, swap_rb, row0, x0);
+            const p10 = readPixelRgbaU32(bpp, swap_rb, row0, x1);
+            const p01 = readPixelRgbaU32(bpp, swap_rb, row1, x0);
+            const p11 = readPixelRgbaU32(bpp, swap_rb, row1, x1);
+
+            const top_sum = p00 * w00 + p10 * w10;
+            const bot_sum = p01 * w01 + p11 * w11;
+            const sum = top_sum + bot_sum + round_bias;
+            const out_px: Vec4u8 = @intCast(sum >> shift16);
+            dst_row[dx * 4 ..][0..4].* = out_px;
+        }
+    }
+    return dst;
+}
+
+test "Surface.scaleRgba32Smooth box-averages RGB24 and 4x downscales" {
+    // Create a 4x4 RGB24 checkerboard of 0 and 200
+    const surf = Surface.create(4, 4, PixelFormat.rgb24) orelse return;
+    defer surf.destroy();
+
+    const pitch: usize = @intCast(surf.pitch());
+    const px = surf.pixels();
+    for (0..4) |y| {
+        for (0..4) |x| {
+            const val: u8 = if (((x + y) & 1) == 0) 200 else 0;
+            const p = px + y * pitch + x * 3;
+            p[0] = val;
+            p[1] = val;
+            p[2] = val;
+        }
+    }
+
+    // Downscaling 4x4 checkerboard to 1x1 must average all 16 pixels to 100
+    const scaled = surf.scaleRgba32Smooth(1, 1) orelse return error.ScaleFailed;
+    defer scaled.destroy();
+    try std.testing.expectEqual(PixelFormat.rgba32, scaled.format());
+    try std.testing.expectEqual(@as(u8, 100), scaled.pixels()[0]);
+    try std.testing.expectEqual(@as(u8, 100), scaled.pixels()[1]);
+    try std.testing.expectEqual(@as(u8, 100), scaled.pixels()[2]);
+    try std.testing.expectEqual(@as(u8, 255), scaled.pixels()[3]);
 }

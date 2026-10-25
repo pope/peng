@@ -6,6 +6,7 @@ const view_transform = @import("view_transform.zig");
 const Key = intents.Key;
 const KeyModifiers = intents.KeyModifiers;
 
+pub const PositiveDimsU32 = intents.PositiveDimsU32;
 pub const ZoomPreset = intents.ZoomPreset;
 
 /// Display DPI scale factor mapping between logical UI points and physical
@@ -65,9 +66,7 @@ pub const PhysicalDims = struct {
     /// Converts strictly positive finite physical dimensions to integer pixel
     /// dimensions, or returns `null` if either axis is non-positive or
     /// non-finite.
-    pub inline fn toPositiveU32(
-        self: PhysicalDims,
-    ) ?struct { w: u32, h: u32 } {
+    pub inline fn toPositiveU32(self: PhysicalDims) ?PositiveDimsU32 {
         const valid = initPositive(self.w, self.h) orelse return null;
         const max_dim: f32 = @floatFromInt(std.math.maxInt(u24));
         const w_u32: u32 = @intFromFloat(@min(valid.w, max_dim));

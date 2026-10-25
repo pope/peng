@@ -91,6 +91,7 @@ pub const PaletteState = palette_state.PaletteState;
 pub const PanController = types.PanController;
 pub const PhysicalDims = types.PhysicalDims;
 pub const PhysicalPoint = types.PhysicalPoint;
+pub const PositiveDimsU32 = types.PositiveDimsU32;
 pub const RawMetadata = types.RawMetadata;
 pub const ScoredMatch = palette_state.ScoredMatch;
 pub const SlideshowMode = types.SlideshowMode;

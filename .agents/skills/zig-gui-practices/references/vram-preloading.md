@@ -147,6 +147,7 @@ ______________________________________________________________________
   - Compute `raw_pad_px` from full aspect ratio `ar_full` and `nearest_block_px = @round(raw_pad_px / 8.0) * 8.0`.
   - Guard: `nearest_block_px > 0.0 and nearest_block_px * 2.0 < thumb_dim and @abs(raw_pad_px - nearest_block_px) <= 2.0`.
   - Verify padding rows/cols (`test_bound - 1` and `dim - test_bound`) are black ($\\le 16$) AND active content begins at `test_bound` or `dim - test_bound - 1` so dark scenes (astrophotography, studio backdrops) are never falsely cropped.
-- **SIMD Surface Inspection**:
+- **SIMD Surface Inspection & Single-Pass RGBA32 Downscaling (`Surface.scaleRgba32Smooth`)**:
   - Scan contiguous horizontal rows with `@Vector(16, u8)` and `@reduce(.Or, ...)`; scan strided vertical columns with scalar/4-byte reads and early exit.
   - Derive endian-agnostic RGB masks from `details.*.Rmask | details.*.Gmask | details.*.Bmask`.
+  - When downscaling CPU surfaces (`RGB24`, `BGR24`, `RGBA32`) for Freedesktop thumbnail generation (`writeThumbnailPng`) or Kitty terminal previews (`renderPreviewRgbaFile` -> `/dev/shm/tty-graphics-protocol-peng-...` `t=t` transfer), use `Surface.scaleRgba32Smooth` (`resampleDirectToRgba32`) instead of `SDL_ScaleSurface(..., SDL_SCALEMODE_LINEAR)` (which falls back to nearest-neighbor on 24-bit `RGB24` surfaces and exhibits single-pass bilinear aliasing on $>2\\times$ reductions). `scaleRgba32Smooth` performs single-pass `i64` 16.16 fixed-point $4\\times 4$ / $2\\times 2$ box-grid area averaging (or bilinear for $\<2\\times$) directly into the target `RGBA32` buffer with zero intermediate surface allocations.

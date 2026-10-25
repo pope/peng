@@ -214,6 +214,13 @@ pub const StackingAction = enum {
     toggle,
 };
 
+/// Parameters for a terminal Kitty graphics preview request (`preview`).
+pub const PreviewRequest = struct {
+    max_dims: intents.PositiveDimsU32 = .{ .w = 800, .h = 600 },
+    clear_first: bool = false,
+    path: []const u8,
+};
+
 pub const IpcCommand = union(enum) {
     zoom: f32,
     pan: struct { x: f32, y: f32 },
@@ -268,7 +275,8 @@ pub const IpcCommand = union(enum) {
     precache,
     close,
     quit,
-    open: []const u8,
+    open: ?[]const u8,
+    preview: PreviewRequest,
     screenshot: []const u8,
 
     /// Converts an IPC command variant into an `AppIntent`, or returns `null`
@@ -371,8 +379,11 @@ pub const IpcCommand = union(enum) {
             .precache => return .precache_directory,
             .close => return .quit,
             .quit => return .quit_server,
-            .open => |p| return .{ .open_path = p },
-            .wait_load, .screenshot, .selections => return null,
+            .open => |p_opt| return if (p_opt) |p|
+                .{ .open_path = p }
+            else
+                .open_window,
+            .wait_load, .screenshot, .selections, .preview => return null,
         }
     }
 
@@ -736,11 +747,71 @@ pub const IpcCommand = union(enum) {
             return error.UnknownViewMode;
         } else if (std.mem.eql(u8, cmd, "open")) {
             const filepath = std.mem.trim(u8, it.rest(), " \t\r\n");
-            if (filepath.len == 0) return error.MissingArgument;
+            if (filepath.len == 0) return .{ .open = null };
             if (filepath.len > std.Io.Dir.max_path_bytes) {
                 return error.PathTooLong;
             }
             return .{ .open = filepath };
+        } else if (std.mem.eql(u8, cmd, "preview") or
+            std.mem.eql(u8, cmd, "preview-kitty") or
+            std.mem.eql(u8, cmd, "preview-clear") or
+            std.mem.eql(u8, cmd, "preview_clear") or
+            std.mem.eql(u8, cmd, "clear-and-preview"))
+        {
+            var clear_first = std.mem.eql(u8, cmd, "preview-clear") or
+                std.mem.eql(u8, cmd, "preview_clear") or
+                std.mem.eql(u8, cmd, "clear-and-preview");
+
+            var sub_it = it;
+            if (sub_it.next()) |first_tok| {
+                const is_flag = std.mem.eql(u8, first_tok, "--clear") or
+                    std.mem.eql(u8, first_tok, "-c");
+                const is_word = std.mem.eql(u8, first_tok, "clear");
+                const after_clear = std.mem.trim(u8, sub_it.rest(), " \t\r\n");
+                if (is_flag or (is_word and after_clear.len > 0)) {
+                    clear_first = true;
+                    it = sub_it;
+                }
+            }
+
+            const full_rest = std.mem.trim(u8, it.rest(), " \t\r\n");
+            if (full_rest.len == 0) return error.MissingArgument;
+
+            var max_dims: intents.PositiveDimsU32 = .{ .w = 800, .h = 600 };
+            var filepath: []const u8 = full_rest;
+
+            if (it.next()) |tok1| {
+                if (it.next()) |tok2| {
+                    if (std.fmt.parseInt(i64, tok1, 10)) |w_i| {
+                        if (std.fmt.parseInt(i64, tok2, 10)) |h_i| {
+                            const after_dims = std.mem.trim(
+                                u8,
+                                it.rest(),
+                                " \t\r\n",
+                            );
+                            if (after_dims.len == 0) {
+                                return error.MissingArgument;
+                            }
+                            max_dims = intents.PositiveDimsU32.initClamped(
+                                w_i,
+                                h_i,
+                                4096,
+                            ) orelse return error.InvalidArgument;
+                            filepath = after_dims;
+                        } else |_| {}
+                    } else |_| {}
+                }
+            }
+            if (filepath.len > std.Io.Dir.max_path_bytes) {
+                return error.PathTooLong;
+            }
+            return .{
+                .preview = .{
+                    .max_dims = max_dims,
+                    .clear_first = clear_first,
+                    .path = filepath,
+                },
+            };
         } else if (std.mem.eql(u8, cmd, "screenshot")) {
             const filepath = std.mem.trim(u8, it.rest(), " \t\r\n");
             if (filepath.len == 0) return error.MissingArgument;
@@ -763,11 +834,12 @@ pub const IpcCommand = union(enum) {
     }
 
     /// Returns `true` if this IPC command may be executed while the resident
-    /// server window is hidden (`open`, `selections`, `clear_selections`,
-    /// `close`, `quit`).
+    /// server window is hidden (`open`, `preview`, `selections`,
+    /// `clear_selections`, `close`, `quit`).
     pub fn isAllowedWhenHidden(self: IpcCommand) bool {
         return switch (self) {
             .open,
+            .preview,
             .selections,
             .clear_selections,
             .close,
@@ -811,12 +883,36 @@ pub const IpcCommand = union(enum) {
     }
 };
 
+/// Validated preview payload returned inside an `IpcResponse`.
+pub const PreviewPayload = struct {
+    path: []const u8,
+    dims: intents.PositiveDimsU32,
+};
+
 /// Structured JSON response payload returned by the IPC server.
 pub const IpcResponse = struct {
     ok: bool,
     @"error": ?[]const u8 = null,
     picks: ?[]const []const u8 = null,
     rejects: ?[]const []const u8 = null,
+    path: ?[]const u8 = null,
+    w: ?u32 = null,
+    h: ?u32 = null,
+
+    /// Returns the validated preview payload when `ok` is true and `path`,
+    /// `w`, and `h` are all present and strictly positive.
+    pub fn getPreview(self: IpcResponse) ?PreviewPayload {
+        if (!self.ok) return null;
+        const p = self.path orelse return null;
+        const width = self.w orelse return null;
+        const height = self.h orelse return null;
+        const dims = intents.PositiveDimsU32.initClamped(
+            width,
+            height,
+            4096,
+        ) orelse return null;
+        return .{ .path = p, .dims = dims };
+    }
 };
 
 /// Parses and validates a raw JSON IPC response line into a structured
@@ -849,6 +945,38 @@ pub fn writeErrorLine(writer: *std.Io.Writer, err_name: []const u8) !void {
         writer,
     );
     try writer.writeByte('\n');
+}
+
+/// Writes `{"ok":true,"path":"<path>","w":<w>,"h":<h>}\n` to `writer` via
+/// `std.json.Stringify`.
+pub fn writePreviewLine(
+    writer: *std.Io.Writer,
+    path: []const u8,
+    w: u32,
+    h: u32,
+) !void {
+    try std.json.Stringify.value(
+        .{ .ok = true, .path = path, .w = w, .h = h },
+        .{},
+        writer,
+    );
+    try writer.writeByte('\n');
+}
+
+/// Sends a `{"ok":true,"path":"<path>","w":<w>,"h":<h>}\n` JSON preview
+/// response over `stream` and closes the client socket.
+pub fn respondPreview(
+    io: std.Io,
+    stream: std.Io.net.Stream,
+    path: []const u8,
+    w: u32,
+    h: u32,
+) !void {
+    defer stream.close(io);
+    var write_buf: [512]u8 = undefined;
+    var writer = stream.writer(io, &write_buf);
+    try writePreviewLine(&writer.interface, path, w, h);
+    try writer.interface.flush();
 }
 
 /// Sends a `{"ok":true}\n` JSON acknowledgment response over `stream` and
@@ -1349,15 +1477,90 @@ test "IpcCommand parsing" {
     );
     try std.testing.expectEqualStrings(
         "/tmp/my photos/IMG 0001.JPG",
-        cmd_open_spaces.open,
+        cmd_open_spaces.open.?,
     );
     try std.testing.expectEqualStrings(
         "/tmp/my photos/IMG 0001.JPG",
         cmd_open_spaces.toIntent().?.open_path,
     );
+    const cmd_open_bare = try IpcCommand.parse("open   \n");
+    try std.testing.expectEqual(@as(?[]const u8, null), cmd_open_bare.open);
+    try std.testing.expectEqual(
+        intents.AppIntent.open_window,
+        cmd_open_bare.toIntent().?,
+    );
+
+    const cmd_preview_default = try IpcCommand.parse(
+        "preview /tmp/my photos/IMG 0001.JPG\n",
+    );
+    try std.testing.expectEqual(
+        @as(u32, 800),
+        cmd_preview_default.preview.max_dims.w,
+    );
+    try std.testing.expectEqual(
+        @as(u32, 600),
+        cmd_preview_default.preview.max_dims.h,
+    );
+    try std.testing.expect(!cmd_preview_default.preview.clear_first);
+    try std.testing.expectEqualStrings(
+        "/tmp/my photos/IMG 0001.JPG",
+        cmd_preview_default.preview.path,
+    );
+    try std.testing.expect(cmd_preview_default.isAllowedWhenHidden());
+
+    const cmd_preview_dims = try IpcCommand.parse(
+        "preview 320 240 /tmp/my photos/IMG 0001.JPG\n",
+    );
+    try std.testing.expectEqual(
+        @as(u32, 320),
+        cmd_preview_dims.preview.max_dims.w,
+    );
+    try std.testing.expectEqual(
+        @as(u32, 240),
+        cmd_preview_dims.preview.max_dims.h,
+    );
+    try std.testing.expect(!cmd_preview_dims.preview.clear_first);
+    try std.testing.expectEqualStrings(
+        "/tmp/my photos/IMG 0001.JPG",
+        cmd_preview_dims.preview.path,
+    );
+
+    const cmd_preview_clear_flag = try IpcCommand.parse(
+        "preview --clear 320 240 /tmp/my photos/IMG 0001.JPG\n",
+    );
+    try std.testing.expect(cmd_preview_clear_flag.preview.clear_first);
+    try std.testing.expectEqual(
+        @as(u32, 320),
+        cmd_preview_clear_flag.preview.max_dims.w,
+    );
+    try std.testing.expectEqualStrings(
+        "/tmp/my photos/IMG 0001.JPG",
+        cmd_preview_clear_flag.preview.path,
+    );
+
+    const cmd_preview_clear_alias = try IpcCommand.parse(
+        "clear-and-preview /tmp/my photos/IMG 0001.JPG\n",
+    );
+    try std.testing.expect(cmd_preview_clear_alias.preview.clear_first);
+    try std.testing.expectEqualStrings(
+        "/tmp/my photos/IMG 0001.JPG",
+        cmd_preview_clear_alias.preview.path,
+    );
     try std.testing.expectError(
         error.MissingArgument,
-        IpcCommand.parse("open   \n"),
+        IpcCommand.parse("preview --clear\n"),
+    );
+    try std.testing.expectError(
+        error.MissingArgument,
+        IpcCommand.parse("preview\n"),
+    );
+    try std.testing.expectError(
+        error.MissingArgument,
+        IpcCommand.parse("preview 320 240\n"),
+    );
+    try std.testing.expectError(
+        error.InvalidArgument,
+        IpcCommand.parse("preview 0 240 /tmp/a.jpg\n"),
     );
 
     const srv_default = try IpcServer.init(std.testing.allocator, null);

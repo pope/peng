@@ -14,6 +14,7 @@ pub const KeyModifiers = keys.KeyModifiers;
 pub const KeyboardShortcut = keys.KeyboardShortcut;
 
 pub const Classification = types.Classification;
+pub const PositiveDimsU32 = types.PositiveDimsU32;
 pub const ViewMode = types.ViewMode;
 pub const ZoomPreset = types.ZoomPreset;
 pub const TextureScaleMode = types.TextureScaleMode;

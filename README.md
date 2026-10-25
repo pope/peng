@@ -171,18 +171,21 @@ ______________________________________________________________________
 
 When `peng` is launched with `--server`, `--ipc` (default `/tmp/peng-$PID.sock`), or `--socket <path>`, it starts a UDS server and prints the socket path to `stdout`.
 
-In `--server` mode (or when auto-spawned via `peng-msg --spawn`), `peng` keeps its GPU device and compiled shaders warm in the background. When no `--socket <path>` is specified, both `peng --server` and `peng-msg` resolve the default socket path from `$XDG_RUNTIME_DIR/peng.sock`, falling back to `/tmp/peng-$UID.sock` (or `$TMPDIR/peng.sock` on macOS and `%TEMP%\peng.sock` on Windows). Pressing `q`, `Esc`, clicking the window close button, or sending `peng-msg close` hides the window and unloads the active image cache and directory playlist (preserving only the warm GPU device, shaders, and picks/rejects selections). While hidden, view/navigation IPC commands return `{"ok":false,"error":"WindowHidden"}`, while `open`, `selections`, `clear_selections`, `close`, and `quit` remain available. Pressing `Ctrl+Q`, selecting **Quit Server** in the Command Palette, or sending `peng-msg quit` terminates the server process.
+In `--server` mode (or when auto-spawned via `peng-msg --spawn`), `peng` keeps its GPU device and compiled shaders warm in the background. When no `--socket <path>` is specified, both `peng --server` and `peng-msg` resolve the default socket path from `$XDG_RUNTIME_DIR/peng.sock`, falling back to `/tmp/peng-$UID.sock` (or `$TMPDIR/peng.sock` on macOS and `%TEMP%\peng.sock` on Windows). Pressing `q`, `Esc`, clicking the window close button, or sending `peng-msg close` hides the window and unloads the active image cache and directory playlist (preserving only the warm GPU device, shaders, and picks/rejects selections). While hidden, view/navigation IPC commands return `{"ok":false,"error":"WindowHidden"}`, while `open`, `preview`, `selections`, `clear_selections`, `close`, and `quit` remain available. Sending bare `peng-msg --spawn open` shows the window with the File Picker palette open when no media is loaded. Pressing `Ctrl+Q`, selecting **Quit Server** in the Command Palette, or sending `peng-msg quit` terminates the server process.
 
 You can send commands to a running instance using the `peng-msg` utility.
 Every `peng-msg` invocation writes a single-line JSON response to `stdout`
 (`{"ok":true}` on success, or `{"ok":false,"error":"<reason>"}` with exit code
-`1` on failure), making it easy to inspect or pipe into `jq`:
+`1` on failure, except `preview` / `clear-and-preview`, which emit a Kitty
+Graphics Protocol `t=t` escape sequence on success), making it easy to inspect
+or pipe into `jq`:
 
 ```bash
 # General Usage:
 ./zig-out/bin/peng-msg [-s|--spawn] [-S|--socket <path>] [socket_path] <command_words...>
 
 # Resident Server Workflow (auto-spawns peng --server on default socket if not running):
+./zig-out/bin/peng-msg --spawn open
 ./zig-out/bin/peng-msg --spawn open /path/to/photo.jpg
 ./zig-out/bin/peng-msg close
 ./zig-out/bin/peng-msg quit
@@ -291,6 +294,12 @@ Every `peng-msg` invocation writes a single-line JSON response to `stdout`
 
 # Pre-cache Freedesktop thumbnails for the active directory in the background
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock precache
+
+# Render a fast terminal image preview via the Kitty Graphics Protocol
+# (Kitty, Ghostty, WezTerm, Konsole)
+./zig-out/bin/peng-msg -s preview 800 600 /path/to/photo.RAF
+fd . testfiles/images -e jpg | \
+  fzf --preview './zig-out/bin/peng-msg -s preview --clear 800 600 {}'
 
 # Wait for background image decoder to finish loading
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock wait_load

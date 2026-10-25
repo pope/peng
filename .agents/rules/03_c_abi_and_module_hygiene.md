@@ -33,8 +33,9 @@
     (`actions.zig`), and intent payload structs.
   - `src/input/`: Pure `FrameInput` event polling and shortcut mapping.
   - `src/ipc/`: Pure `IpcCommand` parsing, `IpcResponse` JSON schema
-    (`parseResponse`, `writeOkLine`, `writeErrorLine`), `IpcServer` handle, and
-    UDS socket helpers (`readLineTimeout`, `readLineTimeoutAlloc`).
+    (`parseResponse`, `writeOkLine`, `writeErrorLine`, `writePreviewLine`),
+    `IpcServer` handle, and UDS socket helpers (`readLineTimeout`,
+    `readLineTimeoutAlloc`).
   - `src/state/`: Pure visual/UI data models (`ViewerState`, `UiState`,
     `UiViewModel`, `AnimationState`, `SnackbarState`, `PanController`,
     `ZoomController`).
@@ -68,10 +69,11 @@
     and TTYs before falling back to streaming and overwrites offset `0` when
     redirected with `>>`.
   - Format all IPC server responses via `std.json.Stringify` (`writeOkLine`,
-    `writeErrorLine`, `NavigationState.writeSelectionsJson` using
-    `encodeJsonStringChars`) and validate client responses with
-    `ipc.parseResponse` (`std.json.parseFromSlice(IpcResponse, ...)`) rather
-    than raw string interpolation or prefix matching.
+    `writeErrorLine`, `writePreviewLine`,
+    `NavigationState.writeSelectionsJson` using `encodeJsonStringChars`) and
+    validate client responses with `ipc.parseResponse`
+    (`std.json.parseFromSlice(IpcResponse, ...)`) rather than raw string
+    interpolation or prefix matching.
 - **Build Targets & Test Steps (`build.zig`)**:
   - Executables: `peng` (`src/main.zig`), `peng-msg` (`src/msg_main.zig`), and
     `peng-test-runner` (`src/test_runner_main.zig`).

@@ -583,7 +583,7 @@ pub fn writeThumbnailPng(
     }
 
     const scaled_owned = if (target_w != src_w or target_h != src_h)
-        surface.scale(target_w, target_h, .linear) orelse
+        surface.scaleRgba32Smooth(target_w, target_h) orelse
             return error.ScaleFailed
     else
         null;

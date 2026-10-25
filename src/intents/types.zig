@@ -5,6 +5,27 @@
 
 const std = @import("std");
 
+/// Strictly positive (`>= 1`) integer 2D pixel dimensions (`w x h`).
+pub const PositiveDimsU32 = struct {
+    w: u32 = 800,
+    h: u32 = 600,
+
+    /// Constructs `PositiveDimsU32` when both `w_i` and `h_i` are strictly
+    /// positive (`> 0`), clamping each axis to `max_dim`, or returns `null`.
+    pub inline fn initClamped(
+        w_i: i64,
+        h_i: i64,
+        max_dim: u32,
+    ) ?PositiveDimsU32 {
+        if (w_i <= 0 or h_i <= 0 or max_dim == 0) return null;
+        const max_i64: i64 = @intCast(max_dim);
+        return .{
+            .w = @intCast(@min(w_i, max_i64)),
+            .h = @intCast(@min(h_i, max_i64)),
+        };
+    }
+};
+
 /// Tri-state classification for image triage (inspired by Adobe Lightroom).
 /// Uses enum(u2) for high-density flat array storage (fits in 1 byte per
 /// entry, 10 KB for 10k images).
@@ -419,6 +440,7 @@ pub const AppIntent = union(enum) {
 
     // Image navigation
     open_path: []const u8,
+    open_window,
     next_image,
     prev_image,
     first_image,

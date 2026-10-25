@@ -81,6 +81,97 @@ fn spawnServerProcess(
     });
 }
 
+fn normalizeCommandPaths(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    command_ptr: *[]u8,
+) bool {
+    const parsed_cmd = ipc.IpcCommand.parse(command_ptr.*) catch return false;
+    var real_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    switch (parsed_cmd) {
+        .open => |p_opt| {
+            const p = p_opt orelse return false;
+            if (std.Io.Dir.path.isAbsolute(p)) return false;
+            const real_len = std.Io.Dir.realPathFile(
+                std.Io.Dir.cwd(),
+                io,
+                p,
+                &real_buf,
+            ) catch return false;
+            const rewritten = std.fmt.allocPrint(
+                gpa,
+                "open {s}\n",
+                .{real_buf[0..real_len]},
+            ) catch return false;
+            gpa.free(command_ptr.*);
+            command_ptr.* = rewritten;
+            return false;
+        },
+        .preview => |req| {
+            const clear_first = req.clear_first;
+            if (std.Io.Dir.path.isAbsolute(req.path)) return clear_first;
+            const real_len = std.Io.Dir.realPathFile(
+                std.Io.Dir.cwd(),
+                io,
+                req.path,
+                &real_buf,
+            ) catch return clear_first;
+            const clear_flag = if (clear_first) "--clear " else "";
+            const rewritten = std.fmt.allocPrint(
+                gpa,
+                "preview {s}{d} {d} {s}\n",
+                .{
+                    clear_flag,
+                    req.max_dims.w,
+                    req.max_dims.h,
+                    real_buf[0..real_len],
+                },
+            ) catch return clear_first;
+            gpa.free(command_ptr.*);
+            command_ptr.* = rewritten;
+            return clear_first;
+        },
+        .zoom,
+        .pan,
+        .adjust,
+        .tone,
+        .color,
+        .presence,
+        .clarity,
+        .texture,
+        .compare,
+        .edit,
+        .filter,
+        .scale,
+        .manga,
+        .title,
+        .snackbar,
+        .windowless,
+        .crossfade,
+        .stack_raw_jpeg,
+        .toggle_stream,
+        .palette,
+        .thumb,
+        .debug,
+        .wait_load,
+        .reset_view,
+        .reset_adjustments,
+        .next,
+        .prev,
+        .pick,
+        .reject,
+        .unflag,
+        .selections,
+        .clear_selections,
+        .view,
+        .precache,
+        .close,
+        .quit,
+        .screenshot,
+        => return false,
+    }
+}
+
 /// CLI entry point for sending IPC commands to a running Peng instance via Unix domain socket.
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
@@ -111,6 +202,8 @@ pub fn main(init: std.process.Init) !void {
         },
         .send => |*s| s,
     };
+
+    const clear_preview = normalizeCommandPaths(gpa, io, &send_args.command);
 
     const socket_path = if (send_args.socket_path) |sp|
         sp
@@ -255,12 +348,49 @@ pub fn main(init: std.process.Init) !void {
         const stdout = std.Io.File.stdout();
         var stdout_buf: [4 * 1024]u8 = undefined;
         var stdout_writer = stdout.writerStreaming(io, &stdout_buf);
-        stdout_writer.interface.print("{s}\n", .{trimmed}) catch |err| {
-            std.log.err("Failed to write response to stdout: {any}", .{err});
-            std.process.exit(1);
-        };
+        const preview_opt = parsed_resp.value.getPreview();
+        if (preview_opt) |prev| {
+            var b64_buf: [512]u8 = undefined;
+            if (std.base64.standard.Encoder.calcSize(prev.path.len) >
+                b64_buf.len)
+            {
+                std.log.err("Preview temp file path too long for base64", .{});
+                std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, prev.path) catch {};
+                std.process.exit(1);
+            }
+            const encoded = std.base64.standard.Encoder.encode(
+                &b64_buf,
+                prev.path,
+            );
+            const clear_seq = if (clear_preview)
+                "\x1b_Ga=d,d=A,q=2\x1b\\"
+            else
+                "";
+            stdout_writer.interface.print(
+                "{s}\x1b_Ga=T,f=32,s={d},v={d},t=t,q=2;{s}\x1b\\",
+                .{ clear_seq, prev.dims.w, prev.dims.h, encoded },
+            ) catch |err| {
+                std.log.err(
+                    "Failed to write Kitty preview to stdout: {any}",
+                    .{err},
+                );
+                std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, prev.path) catch {};
+                std.process.exit(1);
+            };
+        } else {
+            stdout_writer.interface.print("{s}\n", .{trimmed}) catch |err| {
+                std.log.err(
+                    "Failed to write response to stdout: {any}",
+                    .{err},
+                );
+                std.process.exit(1);
+            };
+        }
         stdout_writer.interface.flush() catch |err| {
             std.log.err("Failed to flush stdout: {any}", .{err});
+            if (preview_opt) |prev| {
+                std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, prev.path) catch {};
+            }
             std.process.exit(1);
         };
         if (!parsed_resp.value.ok) {

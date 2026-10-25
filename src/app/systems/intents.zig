@@ -164,6 +164,12 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
 
     switch (intent) {
         .open_path => |p| try self.openPath(p),
+        .open_window => {
+            self.showAndRaiseWindow();
+            if (nav.count() == 0 and ui.palette.mode == .inactive) {
+                try self.openPalette(.directory_navigator);
+            }
+        },
         .set_zoom => |factor| {
             vp.mode = .manual;
             const old_zoom = vp.zoom_factor;

@@ -18,12 +18,16 @@ pub const stdin = @import("stdin.zig");
 pub const DecodeArgs = decode.DecodeArgs;
 pub const PaletteScanArgs = palette_scan.PaletteScanArgs;
 pub const PathScanArgs = path_scan.PathScanArgs;
+pub const PreviewRenderResult = decode.PreviewRenderResult;
+pub const PreviewWorkerArgs = decode.PreviewWorkerArgs;
 pub const StdinArgs = stdin.StdinArgs;
 pub const WorkerManager = manager.WorkerManager;
 
+pub const renderPreviewRgbaFile = decode.renderPreviewRgbaFile;
 pub const spawnDecode = decode.spawnDecode;
 pub const spawnPaletteScan = palette_scan.spawnPaletteScan;
 pub const spawnPaletteScanForItems = palette_scan.spawnPaletteScanForItems;
+pub const spawnPreview = decode.spawnPreview;
 
 /// Spawns a background `pathScanWorker` task to recursively scan directories
 /// or validate file paths, incrementing the active file scan counter.

@@ -8,6 +8,7 @@ const intents_system = @import("intents.zig");
 const ipc = @import("ipc");
 const state_pkg = @import("state");
 const std = @import("std");
+const workers_mod = @import("../workers/root.zig");
 
 const AppState = app_state.AppState;
 const FrameContext = context.FrameContext;
@@ -56,6 +57,9 @@ pub fn sysExecuteIpcCommands(ctx: FrameContext) void {
             },
             .screenshot => |filepath| {
                 handleScreenshotCommand(state, cmd_data, filepath);
+            },
+            .preview => |req| {
+                handlePreviewCommand(state, cmd_data.client_stream, req);
             },
             .zoom,
             .pan,
@@ -240,6 +244,54 @@ fn handleScreenshotCommand(
     };
 }
 
+fn handlePreviewCommand(
+    state: *AppState,
+    stream: std.Io.net.Stream,
+    req: ipc.PreviewRequest,
+) void {
+    const stat = std.Io.Dir.statFile(
+        std.Io.Dir.cwd(),
+        state.io,
+        req.path,
+        .{},
+    ) catch |err| {
+        replyIpcParseError(state.io, stream, err);
+        return;
+    };
+    if (stat.kind == .directory) {
+        ipc.respondErrorName(state.io, stream, "IsDir");
+        return;
+    }
+    if (stat.kind != .file) {
+        ipc.respondErrorName(state.io, stream, "UnsupportedFileType");
+        return;
+    }
+    if (stat.size == 0) {
+        ipc.respondErrorName(state.io, stream, "EmptyFile");
+        return;
+    }
+    const dup_path = state.allocator.dupe(u8, req.path) catch {
+        ipc.respondErrorName(state.io, stream, "OutOfMemory");
+        return;
+    };
+    const args = state.allocator.create(
+        workers_mod.PreviewWorkerArgs,
+    ) catch {
+        state.allocator.free(dup_path);
+        ipc.respondErrorName(state.io, stream, "OutOfMemory");
+        return;
+    };
+    args.* = .{
+        .workers = &state.workers,
+        .allocator = state.allocator,
+        .io = state.io,
+        .client_stream = stream,
+        .path = dup_path,
+        .max_dims = req.max_dims,
+    };
+    workers_mod.spawnPreview(args);
+}
+
 fn handleIntentCommand(
     ctx: FrameContext,
     cmd_data: *ipc.IpcCommandData,
@@ -300,7 +352,69 @@ fn handleIntentCommand(
                 };
             }
         },
-        else => {},
+        .set_zoom,
+        .zoom_by,
+        .zoom_in,
+        .zoom_out,
+        .set_pan,
+        .pan_by,
+        .reset_zoom,
+        .set_scale,
+        .cycle_scale_mode,
+        .set_filter,
+        .cycle_filter,
+        .cycle_filter_prev,
+        .adjust,
+        .rotate_cw,
+        .rotate_ccw,
+        .reset_rotation,
+        .open_window,
+        .next_image,
+        .prev_image,
+        .first_image,
+        .last_image,
+        .go_to_image,
+        .refresh_directory,
+        .mark_pick,
+        .mark_reject,
+        .unflag,
+        .clear_classifications,
+        .cycle_view_mode,
+        .set_view_mode,
+        .toggle_info,
+        .set_info,
+        .toggle_stats,
+        .set_stats,
+        .toggle_edit_panel,
+        .set_edit_panel,
+        .dismiss_overlays,
+        .toggle_title,
+        .set_title,
+        .toggle_snackbar,
+        .set_snackbar,
+        .toggle_blur,
+        .set_blur,
+        .toggle_fullscreen,
+        .set_fullscreen,
+        .toggle_windowless,
+        .set_windowless,
+        .toggle_debug_mode,
+        .set_debug_mode,
+        .toggle_debug_thumb,
+        .set_debug_thumb,
+        .start_slideshow,
+        .stop_slideshow,
+        .toggle_manga_mode,
+        .set_manga_mode,
+        .toggle_crossfade,
+        .set_crossfade,
+        .toggle_raw_jpeg_stacking,
+        .set_raw_jpeg_stacking,
+        .toggle_pair_stream,
+        .precache_directory,
+        .quit,
+        .quit_server,
+        => {},
     }
     state.pushIntent(final_intent) catch |err| {
         std.log.err("Failed to push intent from IPC command: {}", .{err});
@@ -351,6 +465,7 @@ fn handleIntentCommand(
         .view,
         .precache,
         .quit,
+        .preview,
         .screenshot,
         => {},
     }
@@ -900,4 +1015,86 @@ test "sysExecuteIpcCommands - rejects navigation when hidden (WindowHidden)" {
     defer parsed.deinit();
     try std.testing.expect(!parsed.value.ok);
     try std.testing.expectEqualStrings("WindowHidden", parsed.value.@"error".?);
+}
+
+test "sysExecuteIpcCommands - preview while hidden and bare open window" {
+    if (builtin.os.tag == .windows) return;
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    state.viewer.server_mode = true;
+    state.hideWindow();
+    try std.testing.expect(state.viewer.display.isHidden());
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var sock_buf: [108]u8 = undefined;
+    const sock_path = try std.mem.print(
+        &sock_buf,
+        ".zig-cache/tmp/{s}/ipc_preview.sock",
+        .{tmp.sub_path},
+    );
+
+    const addr = try std.Io.net.UnixAddress.init(sock_path);
+    var server = try addr.listen(io, .{});
+    defer server.deinit(io);
+
+    // 1. Preview while hidden keeps window hidden and writes RGBA32 temp file
+    const c_prev = try addr.connect(io);
+    defer c_prev.close(io);
+    const s_prev = try server.accept(io);
+
+    const d_prev = try allocator.create(ipc.IpcCommandData);
+    d_prev.* = .{
+        .command = try allocator.dupe(
+            u8,
+            "preview 160 120 testfiles/images/000_0_1024x682.jpg",
+        ),
+        .client_stream = s_prev,
+    };
+    try state.pending_ipc_commands.append(allocator, d_prev);
+
+    const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
+    sysExecuteIpcCommands(ctx);
+    try std.testing.expect(state.viewer.display.isHidden());
+
+    var rbuf: [512]u8 = undefined;
+    var r_prev = c_prev.reader(io, &rbuf);
+    const prev_line = try r_prev.interface.takeDelimiterInclusive('\n');
+    var parsed_prev = try ipc.parseResponse(allocator, prev_line);
+    defer parsed_prev.deinit();
+    try std.testing.expect(parsed_prev.value.ok);
+    const temp_path = parsed_prev.value.path.?;
+    defer std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, temp_path) catch {};
+
+    try std.testing.expect(
+        std.mem.indexOf(u8, temp_path, "tty-graphics-protocol") != null,
+    );
+    try std.testing.expectEqual(@as(u32, 160), parsed_prev.value.w.?);
+    try std.testing.expectEqual(@as(u32, 107), parsed_prev.value.h.?);
+
+    const st = try std.Io.Dir.statFile(std.Io.Dir.cwd(), io, temp_path, .{});
+    try std.testing.expectEqual(@as(u64, 160 * 107 * 4), st.size);
+
+    // 2. Bare 'open' unhides the window and opens directory navigator
+    const c_open = try addr.connect(io);
+    defer c_open.close(io);
+    const s_open = try server.accept(io);
+
+    const d_open = try allocator.create(ipc.IpcCommandData);
+    d_open.* = .{
+        .command = try allocator.dupe(u8, "open"),
+        .client_stream = s_open,
+    };
+    try state.pending_ipc_commands.append(allocator, d_open);
+
+    sysExecuteIpcCommands(ctx);
+    try intents_system.sysExecuteIntents(ctx);
+    try std.testing.expect(!state.viewer.display.isHidden());
+    try std.testing.expectEqual(
+        intents.PaletteMode.directory_navigator,
+        state.viewer.ui.palette.mode,
+    );
 }

@@ -465,14 +465,76 @@ fn verifyServerModeAndAutoSpawn(
     }
 
     // 4. Verify navigation/view commands are rejected with WindowHidden while
-    // hidden, whereas 'selections' succeeds and preserves picks
+    // hidden, whereas 'selections' and 'preview' succeed while staying hidden
     try expectCommandFailure(default_sock, "next");
+    var exp_pick_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const exp_pick_len = try std.Io.Dir.realPathFile(
+        std.Io.Dir.cwd(),
+        io,
+        "testfiles/images/001_1_1024x682.jpg",
+        &exp_pick_buf,
+    );
+    const exp_pick = exp_pick_buf[0..exp_pick_len];
     try expectSelectionsResponse(
         gpa,
         default_sock,
-        &[_][]const u8{"testfiles/images/001_1_1024x682.jpg"},
+        &[_][]const u8{exp_pick},
         &[_][]const u8{},
     );
+
+    // 4b. Verify Kitty terminal preview (with --clear) while hidden
+    {
+        const out_prev = try runPengMsg(gpa, io, &env, &.{
+            msg_bin,
+            "preview",
+            "--clear",
+            "160",
+            "120",
+            "testfiles/images/000_0_1024x682.jpg",
+        });
+        defer gpa.free(out_prev);
+        const prefix =
+            "\x1b_Ga=d,d=A,q=2\x1b\\\x1b_Ga=T,f=32,s=160,v=107,t=t,q=2;";
+        const suffix = "\x1b\\";
+        if (!std.mem.startsWith(u8, out_prev, prefix) or
+            !std.mem.endsWith(u8, out_prev, suffix))
+        {
+            std.log.err("Unexpected Kitty preview sequence: {s}", .{out_prev});
+            return error.InvalidPreviewEscapeSequence;
+        }
+        const b64_slice = out_prev[prefix.len .. out_prev.len - suffix.len];
+        const decoded_len = try std.base64.standard.Decoder.calcSizeForSlice(
+            b64_slice,
+        );
+        var path_buf: [256]u8 = undefined;
+        try std.base64.standard.Decoder.decode(
+            path_buf[0..decoded_len],
+            b64_slice,
+        );
+        const temp_path = path_buf[0..decoded_len];
+        defer std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, temp_path) catch {};
+
+        const st = try std.Io.Dir.statFile(
+            std.Io.Dir.cwd(),
+            io,
+            temp_path,
+            .{},
+        );
+        if (st.size != 160 * 107 * 4) return error.InvalidPreviewFileSize;
+    }
+    try expectCommandFailure(default_sock, "next");
+
+    // 4c. Verify bare 'open' re-shows the window
+    {
+        const out_open = try runPengMsg(gpa, io, &env, &.{
+            msg_bin,
+            "open",
+        });
+        defer gpa.free(out_open);
+        var parsed = try ipc.parseResponse(gpa, out_open);
+        defer parsed.deinit();
+        if (!parsed.value.ok) return error.BareOpenWindowFailed;
+    }
 
     // 5. Send 'quit' to terminate the resident server
     {
@@ -975,7 +1037,11 @@ pub fn main(init: std.process.Init) !void {
         try expectCommandFailure(socket_path, "palette invalid");
         try expectCommandFailure(socket_path, "thumb invalid");
         try expectCommandFailure(socket_path, "compare invalid");
-        try expectCommandFailure(socket_path, "open");
+        try expectCommandFailure(socket_path, "preview");
+        try expectCommandFailure(
+            socket_path,
+            "preview testfiles/images/does_not_exist.jpg",
+        );
         try expectCommandFailure(
             socket_path,
             "open testfiles/images/does_not_exist.jpg",
