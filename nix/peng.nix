@@ -78,13 +78,12 @@ stdenv.mkDerivation (_finalAttrs: {
         icon = "image-x-generic";
         terminal = false;
         inherit categories mimeTypes;
-        extraConfig = ''
-          Actions=new-window;
-
-          [Desktop Action new-window]
-          Name=Open in New Window
-          Exec=peng %F
-        '';
+        actions = {
+          new-window = {
+            name = "Open in New Window";
+            exec = "peng %F";
+          };
+        };
       })
       (makeDesktopItem {
         name = "peng-new-window";
