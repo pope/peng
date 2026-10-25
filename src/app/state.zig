@@ -15,7 +15,6 @@ const workers_mod = @import("workers/root.zig");
 
 const AppIntent = intents.AppIntent;
 const CacheEntry = state_pkg.CacheEntry;
-const CacheStatus = state_pkg.CacheStatus;
 const DisplayState = state_pkg.DisplayState;
 const FrameInput = types.FrameInput;
 const ImageCache = image.ImageCache;
@@ -197,11 +196,11 @@ pub const AppState = struct {
             return false;
         }
         if (self.getCurrentEntry()) |entry| {
-            if (entry.is_promoting or entry.requested_target != null) {
+            if (entry.inflight != null) {
                 return false;
             }
-            return switch (entry.status) {
-                .decoding, .uploading => false,
+            return switch (entry.resident.asset) {
+                .none => false,
                 .loaded_cpu => self.gpu_device == null,
                 .loaded_gpu, .failed => true,
             };
@@ -260,11 +259,11 @@ pub const AppState = struct {
             return false;
         const entry = self.cache.getEntry(self.cache.activeKey(cur_id)) orelse
             return false;
-        if (entry.is_promoting or entry.requested_target != null) {
+        if (entry.inflight != null) {
             return true;
         }
-        return switch (entry.status) {
-            .decoding, .uploading => true,
+        return switch (entry.resident.asset) {
+            .none => true,
             .loaded_cpu => self.gpu_device != null,
             .loaded_gpu, .failed => false,
         };
@@ -337,13 +336,7 @@ pub const AppState = struct {
             .hidden => return .wait_indefinite,
             .visible => {},
         }
-        const is_current_loading = blk: {
-            if (self.getCurrentEntry()) |entry| {
-                break :blk (entry.status == .decoding or
-                    entry.status == .uploading);
-            }
-            break :blk (self.viewer.navigation.current_index != null);
-        };
+        const is_current_loading = self.isCurrentSlideLoading();
         const has_unpopulated_cache = blk: {
             if (self.viewer.navigation.getVisibleCount() <= 1) {
                 break :blk false;
@@ -546,7 +539,8 @@ pub const AppState = struct {
         if (self.viewer.rotation_map.get(media.getPath())) |user_rot| {
             self.viewer.viewport.rotation_angle = user_rot;
         } else if (self.getCurrentEntry()) |entry| {
-            self.viewer.viewport.rotation_angle = entry.orientation.toDegrees();
+            self.viewer.viewport.rotation_angle =
+                entry.metadata.orientation.toDegrees();
         } else {
             self.viewer.viewport.rotation_angle = 0.0;
         }
@@ -1002,14 +996,11 @@ pub const AppState = struct {
                 const key0 = try self.cache.appendSlot(
                     self.allocator,
                     initial_id,
-                    .{ .decoding = .{ .has_thread = true } },
+                    .{ .inflight = .{ .has_thread = true } },
                 );
                 errdefer {
                     if (self.cache.get(key0)) |entry| {
-                        switch (entry.status) {
-                            .decoding => |*dec| dec.has_thread = false,
-                            .loaded_cpu, .loaded_gpu, .uploading, .failed => {},
-                        }
+                        if (entry.inflight) |*dec| dec.has_thread = false;
                     }
                 }
                 const dup_entry = try (state_pkg.MediaEntry{
@@ -1047,10 +1038,11 @@ pub const AppState = struct {
         const cur_id = self.viewer.navigation.getCurrentMediaId() orelse return;
         const key = self.cache.activeKey(cur_id);
         const cur = self.cache.getEntry(key) orelse return;
-        if (cur.thumbnail == .loaded or cur.thumbnail == .not_available) return;
+        if (cur.resident.thumbnail == .loaded or
+            cur.resident.thumbnail == .not_available) return;
 
         const media = self.viewer.navigation.getCurrentImageEntry() orelse {
-            if (self.cache.get(key)) |e| e.thumbnail = .not_available;
+            if (self.cache.get(key)) |e| e.resident.thumbnail = .not_available;
             return;
         };
         const extracted = image.loadThumbnailSurface(
@@ -1058,7 +1050,7 @@ pub const AppState = struct {
             self.allocator,
             media,
         ) orelse {
-            if (self.cache.get(key)) |e| e.thumbnail = .not_available;
+            if (self.cache.get(key)) |e| e.resident.thumbnail = .not_available;
             return;
         };
         defer extracted.surface.destroy();
@@ -1070,7 +1062,7 @@ pub const AppState = struct {
             self.unpack_compute_pipeline,
             &self.upload_staging,
         ) orelse {
-            if (self.cache.get(key)) |e| e.thumbnail = .not_available;
+            if (self.cache.get(key)) |e| e.resident.thumbnail = .not_available;
             return;
         };
 
@@ -1079,7 +1071,7 @@ pub const AppState = struct {
                 dev.releaseTexture(upload_res.gpu_texture);
                 return;
             };
-            switch (e.thumbnail) {
+            switch (e.resident.thumbnail) {
                 .loaded => |thumb| dev.releaseTexture(thumb.texture),
                 .none, .pending, .not_available, .unloaded => {},
             }
@@ -1090,7 +1082,7 @@ pub const AppState = struct {
                 extracted.raw_metadata,
             );
 
-            e.thumbnail = .{
+            e.resident.thumbnail = .{
                 .loaded = .{
                     .texture = upload_res.gpu_texture,
                     .info = .{
@@ -1121,15 +1113,18 @@ pub const AppState = struct {
                 const is_crossfading =
                     self.viewer.animations.isActive(.thumb_crossfade) and
                     is_cur;
-                if (!is_crossfading and entry.status == .loaded_gpu and
+                if (!is_crossfading and
+                    entry.resident.asset == .loaded_gpu and
                     !self.viewer.ui.overlays.debug_show_thumb)
                 {
-                    switch (entry.thumbnail) {
+                    switch (entry.resident.thumbnail) {
                         .loaded => |thumb| {
                             if (self.gpu_device) |gpu_dev| {
                                 gpu_dev.releaseTexture(thumb.texture);
                             }
-                            entry.thumbnail = .{ .unloaded = thumb.info };
+                            entry.resident.thumbnail = .{
+                                .unloaded = thumb.info,
+                            };
                         },
                         .none, .pending, .not_available, .unloaded => {},
                     }
@@ -1141,13 +1136,13 @@ pub const AppState = struct {
 
         var upload_target: ?struct {
             key: ImageCacheKey,
-            cpu: @TypeOf(@as(CacheStatus, undefined).loaded_cpu),
+            cpu: state_pkg.CpuSurfaceComponent,
         } = null;
 
         if (self.viewer.ui.overlays.debug_show_thumb) {
             if (self.getCurrentEntry()) |cur_e| {
-                if (cur_e.thumbnail != .loaded and
-                    cur_e.thumbnail != .not_available)
+                if (cur_e.resident.thumbnail != .loaded and
+                    cur_e.resident.thumbnail != .not_available)
                 {
                     self.ensureCurrentThumbnailLoaded();
                 }
@@ -1166,19 +1161,23 @@ pub const AppState = struct {
 
         var can_upload_neighbors = true;
         if (cur_entry_opt) |cur_entry| {
-            switch (cur_entry.status) {
+            switch (cur_entry.resident.asset) {
                 .loaded_gpu, .failed => {
                     can_upload_neighbors = true;
                 },
                 .loaded_cpu => |cpu| {
-                    cur_entry.status = .uploading;
+                    cur_entry.inflight = .{
+                        .stage = .uploading,
+                        .start_time_ms = sdl.timer.getTicks(),
+                    };
                     upload_target = .{
                         .key = cur_key_opt.?,
                         .cpu = cpu,
                     };
+                    cur_entry.resident.asset = .none;
                     can_upload_neighbors = false;
                 },
-                .decoding, .uploading => {
+                .none => {
                     can_upload_neighbors = false;
                 },
             }
@@ -1193,7 +1192,7 @@ pub const AppState = struct {
             var min_dist: usize = std.math.maxInt(usize);
 
             for (entries, keys, 0..) |entry, key, i| {
-                if (entry.status != .loaded_cpu) continue;
+                if (entry.resident.asset != .loaded_cpu) continue;
                 const pos = self.viewer.navigation.posOfId(key.id) orelse
                     continue;
                 const dist = blk: {
@@ -1223,15 +1222,19 @@ pub const AppState = struct {
 
             if (best_idx) |bi| {
                 const entry = &entries[bi];
-                switch (entry.status) {
+                switch (entry.resident.asset) {
                     .loaded_cpu => |cpu| {
-                        entry.status = .uploading;
+                        entry.inflight = .{
+                            .stage = .uploading,
+                            .start_time_ms = sdl.timer.getTicks(),
+                        };
                         upload_target = .{
                             .key = keys[bi],
                             .cpu = cpu,
                         };
+                        entry.resident.asset = .none;
                     },
-                    .loaded_gpu, .decoding, .uploading, .failed => {},
+                    .loaded_gpu, .none, .failed => {},
                 }
             }
         }
@@ -1250,7 +1253,7 @@ pub const AppState = struct {
                     self.unpack_compute_pipeline,
                     &self.upload_staging,
                 )) |res| {
-                    const loaded_gpu_status = CacheStatus{
+                    const loaded_gpu_asset = state_pkg.ResidentAsset{
                         .loaded_gpu = .{
                             .gpu_texture = res.gpu_texture,
                             .w = res.w,
@@ -1270,11 +1273,12 @@ pub const AppState = struct {
                             .compressed_size_bytes = target.cpu.compressed_size_bytes,
                         },
                     };
-                    const updated = self.cache.updateStatus(target.key, loaded_gpu_status);
-
-                    if (!updated) {
-                        gpu_dev.releaseTexture(res.gpu_texture);
-                    } else {
+                    if (self.cache.get(target.key)) |entry| {
+                        entry.resident.asset.replaceGpuTexture(
+                            loaded_gpu_asset.loaded_gpu,
+                            gpu_dev,
+                        );
+                        entry.inflight = null;
                         self.cache.enforceVramBudget(
                             gpu_dev,
                             &self.viewer.navigation,
@@ -1284,6 +1288,8 @@ pub const AppState = struct {
                             image.ImageCache.DEFAULT_MAX_VRAM_BYTES,
                         );
                         checkLoadedGpuCrossfade(self, target.key);
+                    } else {
+                        gpu_dev.releaseTexture(res.gpu_texture);
                     }
                 } else {
                     handleGpuUploadFailure(self, target.key);
@@ -1300,7 +1306,7 @@ pub const AppState = struct {
         if (target_key.id != cur_id) return;
         const entry = self.cache.get(target_key) orelse return;
 
-        const can_crossfade = entry.thumbnail == .loaded and
+        const can_crossfade = entry.resident.thumbnail == .loaded and
             !self.viewer.ui.overlays.debug_show_thumb and
             !self.viewer.isSlideshowActive() and
             self.viewer.image_transition == .none;
@@ -1327,7 +1333,8 @@ pub const AppState = struct {
     }
 
     fn handleGpuUploadFailure(self: *AppState, target_key: ImageCacheKey) void {
-        _ = self.cache.updateStatus(target_key, .failed);
+        self.cache.setResidentAsset(target_key, .failed, self.gpu_device);
+        self.cache.setInFlight(target_key, null);
         const cur_id = self.viewer.navigation.getCurrentMediaId() orelse return;
         if (target_key.id == cur_id) {
             self.viewer.image_transition = .none;
@@ -1371,14 +1378,18 @@ test "AppState.getBaseScale based on image dimensions" {
         sdl.PixelFormat.rgba32,
     ) orelse unreachable;
     _ = try state.cache.appendSlot(std.testing.allocator, id0, .{
-        .loaded_cpu = .{
-            .surface = surf,
-            .w = 4000.0,
-            .h = 3000.0,
-            .mime_type = "image/png",
-            .size_bytes = 1000,
-            .decode_time_ms = 0.0,
-            .conversion_time_ms = 0.0,
+        .resident = .{
+            .asset = .{
+                .loaded_cpu = .{
+                    .surface = surf,
+                    .w = 4000.0,
+                    .h = 3000.0,
+                    .mime_type = "image/png",
+                    .size_bytes = 1000,
+                    .decode_time_ms = 0.0,
+                    .conversion_time_ms = 0.0,
+                },
+            },
         },
     });
 
@@ -1430,14 +1441,18 @@ test "AppState.getViewportPixelDims and isImageOverflowing" {
         sdl.PixelFormat.rgba32,
     ) orelse unreachable;
     _ = try state.cache.appendSlot(std.testing.allocator, id0, .{
-        .loaded_cpu = .{
-            .surface = surf,
-            .w = 4000.0,
-            .h = 3000.0,
-            .mime_type = "image/png",
-            .size_bytes = 1000,
-            .decode_time_ms = 0.0,
-            .conversion_time_ms = 0.0,
+        .resident = .{
+            .asset = .{
+                .loaded_cpu = .{
+                    .surface = surf,
+                    .w = 4000.0,
+                    .h = 3000.0,
+                    .mime_type = "image/png",
+                    .size_bytes = 1000,
+                    .decode_time_ms = 0.0,
+                    .conversion_time_ms = 0.0,
+                },
+            },
         },
     });
 
@@ -1474,9 +1489,9 @@ test "AppState.updateCurrentRotation syncs EXIF orientation" {
     const key = try state.cache.appendSlot(
         std.testing.allocator,
         id0,
-        .{ .decoding = .{} },
+        .{ .inflight = .{} },
     );
-    state.cache.get(key).?.orientation = .rotate_90;
+    state.cache.get(key).?.metadata.orientation = .rotate_90;
 
     // Calling updateCurrentRotation updates rotation_angle from entry
     state.updateCurrentRotation();
@@ -1627,12 +1642,12 @@ test "AppState.openPath spawns immediate decode for single image file" {
     const sample_jpg = "testfiles/images/000_0_1024x682.jpg";
     try state.openPath(sample_jpg);
 
-    // Slot 0 must be appended immediately with .decoding and .has_thread = true
+    // Slot 0 must be appended immediately with .inflight and .has_thread = true
     const id0 = state.viewer.navigation.getIdAt(0).?;
     const entry0 = state.cache.get(state.cache.activeKey(id0));
     try std.testing.expect(entry0 != null);
-    try std.testing.expect(entry0.?.status == .decoding);
-    try std.testing.expect(entry0.?.status.decoding.has_thread);
+    try std.testing.expect(entry0.?.inflight != null);
+    try std.testing.expect(entry0.?.inflight.?.has_thread);
 }
 
 test "AppState.openPath reuses warm directory playlist and resets viewport" {
@@ -1660,7 +1675,9 @@ test "AppState.openPath reuses warm directory playlist and resets viewport" {
     state.viewer.navigation.current_index = 0;
     const id0 = state.viewer.navigation.getIdAt(0).?;
 
-    _ = try state.cache.appendSlot(allocator, id0, .failed);
+    _ = try state.cache.appendSlot(allocator, id0, .{
+        .resident = .{ .asset = .failed },
+    });
     const gen_before = state.cache.generation.load(.acquire);
 
     // Mutate viewport before calling openPath on img1 in same directory
@@ -1681,4 +1698,48 @@ test "AppState.openPath reuses warm directory playlist and resets viewport" {
     try std.testing.expectEqual(@as(usize, 1), state.cache.count());
     try std.testing.expectEqual(@as(f32, 0.0), state.viewer.viewport.pan_x);
     try std.testing.expectEqual(@as(f32, 0.0), state.viewer.viewport.pan_y);
+}
+
+test "prepareCacheTextures - uploads loaded_cpu without double free" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    const dev_opt = sdl.gpu.Device.create(
+        sdl.gpu.ShaderFormat.spirv | sdl.gpu.ShaderFormat.msl,
+        true,
+    );
+    const dev = dev_opt orelse return;
+    defer dev.destroy();
+
+    var state = try AppState.initHeadless(allocator, io);
+    state.gpu_device = dev;
+    defer state.deinit();
+
+    _ = try state.viewer.navigation.appendEntry(allocator, .{
+        .filesystem = .{ .path = "test.jpg" },
+    });
+    state.viewer.navigation.current_index = 0;
+    const id0 = state.viewer.navigation.getIdAt(0).?;
+
+    const surf = sdl.Surface.create(64, 64, sdl.PixelFormat.rgba32) orelse
+        return;
+    const key = try state.cache.appendSlot(allocator, id0, .{
+        .resident = .{
+            .asset = .{
+                .loaded_cpu = .{
+                    .surface = surf,
+                    .w = 64.0,
+                    .h = 64.0,
+                    .size_bytes = 64 * 64 * 4,
+                },
+            },
+        },
+    });
+
+    state.prepareCacheTextures();
+
+    // Verify upload transitioned to loaded_gpu and inflight is cleared
+    const entry = state.cache.get(key).?;
+    try std.testing.expect(entry.resident.asset == .loaded_gpu);
+    try std.testing.expect(entry.inflight == null);
 }

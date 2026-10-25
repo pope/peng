@@ -105,10 +105,10 @@
     ReleaseFast/ReleaseSmall builds.
 - **Strict Domain Invariants via Tagged Unions**:
   - Model mutually exclusive domain states (`SlideshowMode`, `DisplayState`,
-    `DisplayBackend`, `CacheStatus`, `ThumbnailState`, `ThumbnailPadding`,
-    `RawMetadata`, `ImageTransition`, `BlurResources`, `RetainedResource`,
-    `ParsedIpcArgs`) using `union(enum)` with validation constructors
-    (`init(...)`) rather than loose booleans or parallel optionals:
+    `DisplayBackend`, `ResidentAsset`, `InFlightStage`, `ThumbnailState`,
+    `ThumbnailPadding`, `RawMetadata`, `ImageTransition`, `BlurResources`,
+    `RetainedResource`, `ParsedIpcArgs`) using `union(enum)` with validation
+    constructors (`init(...)`) rather than loose booleans or parallel optionals:
     ```zig
     pub const RawMetadata = union(enum) {
         none,

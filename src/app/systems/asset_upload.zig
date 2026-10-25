@@ -37,28 +37,34 @@ test "prepareCacheTextures guards thumbnail eviction during active thumb_crossfa
     const id0 = state.viewer.navigation.getIdAt(0).?;
 
     // Simulate entry with loaded thumbnail and loaded GPU texture
-    const key = try state.cache.appendSlot(allocator, id0, .{ .loaded_gpu = .{
-        .gpu_texture = .{ .ptr = @ptrFromInt(0x1234) },
-        .w = 800,
-        .h = 600,
-        .size_bytes = 800 * 600 * 4,
-        .mime_type = "image/jpeg",
-        .read_time_ms = 1,
-        .decode_time_ms = 1,
-        .conversion_time_ms = 1,
-        .upload_time_ms = 1,
-        .memory_size_bytes = 800 * 600 * 4,
-        .num_mip_levels = 1,
-        .mipmap_time_ms = 1,
-        .was_fallback = false,
-        .fallback_time_ms = 0,
-        .cbz_decompress_time_ms = 0,
-        .compressed_size_bytes = 0,
-    } });
-    state.cache.get(key).?.thumbnail = .{ .loaded = .{
-        .texture = .{ .ptr = @ptrFromInt(0x5678) },
-        .info = .{ .w = 160, .h = 120, .upload_time_ms = 1 },
-    } };
+    _ = try state.cache.appendSlot(allocator, id0, .{
+        .resident = .{
+            .asset = .{
+                .loaded_gpu = .{
+                    .gpu_texture = .{ .ptr = @ptrFromInt(0x1234) },
+                    .w = 800,
+                    .h = 600,
+                    .size_bytes = 800 * 600 * 4,
+                    .mime_type = "image/jpeg",
+                    .read_time_ms = 1,
+                    .decode_time_ms = 1,
+                    .conversion_time_ms = 1,
+                    .upload_time_ms = 1,
+                    .memory_size_bytes = 800 * 600 * 4,
+                    .num_mip_levels = 1,
+                    .mipmap_time_ms = 1,
+                    .was_fallback = false,
+                    .fallback_time_ms = 0,
+                    .cbz_decompress_time_ms = 0,
+                    .compressed_size_bytes = 0,
+                },
+            },
+            .thumbnail = .{ .loaded = .{
+                .texture = .{ .ptr = @ptrFromInt(0x5678) },
+                .info = .{ .w = 160, .h = 120, .upload_time_ms = 1 },
+            } },
+        },
+    });
 
     // Case 1: thumb_crossfade is active -> prepareCacheTextures MUST NOT evict thumbnail
     state.viewer.animations.startFrom(
@@ -70,11 +76,11 @@ test "prepareCacheTextures guards thumbnail eviction during active thumb_crossfa
     );
     state.prepareCacheTextures();
     var entry = state.cache.get(state.cache.activeKey(id0)).?;
-    try std.testing.expect(entry.thumbnail == .loaded);
+    try std.testing.expect(entry.resident.thumbnail == .loaded);
 
     // Case 2: thumb_crossfade settles -> prepareCacheTextures evicts thumbnail
     state.viewer.animations.settle(.thumb_crossfade);
     state.prepareCacheTextures();
     entry = state.cache.get(state.cache.activeKey(id0)).?;
-    try std.testing.expect(entry.thumbnail == .unloaded);
+    try std.testing.expect(entry.resident.thumbnail == .unloaded);
 }

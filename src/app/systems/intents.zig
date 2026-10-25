@@ -26,20 +26,26 @@ fn togglePairStream(self: *AppState) void {
 
     const key = self.cache.activeKey(cur_id);
     const entry = self.cache.get(key) orelse return;
-    if (entry.status != .loaded_gpu and entry.status != .loaded_cpu) return;
-    if (entry.is_promoting or !self.workers.canSpawnDecode()) return;
+    if (entry.resident.asset != .loaded_gpu and
+        entry.resident.asset != .loaded_cpu) return;
+    if (entry.inflight != null or !self.workers.canSpawnDecode()) return;
 
-    const target: state.PairStreamTarget = if (entry.raw_metadata.isRaw())
-        .standalone_jpeg
-    else
-        .raw_preview;
+    const target: state.PairStreamTarget =
+        if (entry.metadata.raw_metadata.isRaw())
+            .standalone_jpeg
+        else
+            .raw_preview;
     const msg = switch (target) {
         .standalone_jpeg => "Stream: Standalone JPEG",
         .raw_preview => "Stream: RAW Embedded Preview",
         .adaptive => "Stream: Adaptive",
     };
     showCustomSnackbar(self, msg);
-    entry.requested_target = target;
+    entry.inflight = .{
+        .stage = .decoding,
+        .start_time_ms = sdl.timer.getTicks(),
+        .target = target,
+    };
 }
 
 fn precacheCurrentDirectory(self: *AppState) !void {
@@ -336,7 +342,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
             if (nav.getCurrentImageEntry()) |entry| {
                 const path = entry.getPath();
                 const exif_rot = if (self.getCurrentEntry()) |e|
-                    e.orientation
+                    e.metadata.orientation
                 else
                     (self.readJpegExifOrientation(path) orelse .normal);
                 vp.rotation_angle = exif_rot.toDegrees();
@@ -427,15 +433,19 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
             if (changed_image) {
                 const old_key = self.cache.activeKey(old_id.?);
                 const old_entry_loaded = if (self.cache.get(old_key)) |e|
-                    (e.status == .loaded_gpu or
-                        (self.gpu_device == null and e.status != .failed))
+                    (e.resident.asset == .loaded_gpu or
+                        (self.gpu_device == null and
+                            e.resident.asset != .failed))
                 else
                     self.gpu_device == null;
                 const cur_entry = self.getCurrentEntry();
-                const target_failed =
-                    if (cur_entry) |e| e.status == .failed else false;
+                const target_failed = if (cur_entry) |e|
+                    e.resident.asset == .failed
+                else
+                    false;
                 const target_decoded = if (cur_entry) |e|
-                    (e.status == .loaded_gpu or e.status == .loaded_cpu)
+                    (e.resident.asset == .loaded_gpu or
+                        e.resident.asset == .loaded_cpu)
                 else
                     self.gpu_device == null;
                 const is_animating =
@@ -462,7 +472,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                         .prev_pan_y = old_pan_y,
                     } };
                     const is_ready = if (cur_entry) |e|
-                        e.status == .loaded_gpu
+                        e.resident.asset == .loaded_gpu
                     else
                         false;
                     if (is_ready) {
@@ -927,9 +937,9 @@ test "rotate_cw, rotate_ccw, and reset_rotation intents" {
     const key = try app_st.cache.appendSlot(
         allocator,
         id0,
-        .{ .decoding = .{} },
+        .{ .inflight = .{} },
     );
-    app_st.cache.get(key).?.orientation = .rotate_270;
+    app_st.cache.get(key).?.metadata.orientation = .rotate_270;
 
     // Rotate CW
     try executeIntent(&app_st, .rotate_cw);
@@ -1205,19 +1215,26 @@ test "sysExecuteIntents - manual navigation crossfade and rapid navigation cut" 
     const id0 = app_st.viewer.navigation.getIdAt(0).?;
     const id1 = app_st.viewer.navigation.getIdAt(1).?;
     const key0 = try app_st.cache.appendSlot(allocator, id0, .{
-        .loaded_gpu = .{
-            .gpu_texture = undefined,
-            .w = 100,
-            .h = 100,
-            .size_bytes = 1000,
-            .memory_size_bytes = 40_000,
+        .resident = .{
+            .asset = .{
+                .loaded_gpu = .{
+                    .gpu_texture = undefined,
+                    .w = 100,
+                    .h = 100,
+                    .size_bytes = 1000,
+                    .memory_size_bytes = 40_000,
+                },
+            },
         },
     });
-    defer app_st.cache.get(key0).?.status = .{
-        .decoding = .{ .has_thread = false },
-    };
+    defer {
+        if (app_st.cache.get(key0)) |e| {
+            e.resident.asset = .none;
+            e.inflight = .{ .has_thread = false };
+        }
+    }
     _ = try app_st.cache.appendSlot(allocator, id1, .{
-        .decoding = .{ .has_thread = true },
+        .inflight = .{ .has_thread = true },
     });
 
     try app_st.pushIntent(.next_image);
@@ -1458,15 +1475,19 @@ test "sysExecuteIntents - raw jpeg stacking and stream toggle" {
     const surf = sdl.Surface.create(10, 10, sdl.PixelFormat.rgba32) orelse
         return error.SurfaceFailed;
     const key = try app_st.cache.appendSlot(allocator, id0, .{
-        .loaded_cpu = .{
-            .surface = surf,
-            .w = 1616.0,
-            .h = 1080.0,
-            .size_bytes = 500_000,
+        .resident = .{
+            .asset = .{
+                .loaded_cpu = .{
+                    .surface = surf,
+                    .w = 1616.0,
+                    .h = 1080.0,
+                    .size_bytes = 500_000,
+                },
+            },
         },
     });
     if (app_st.cache.get(key)) |entry| {
-        entry.raw_metadata = state.RawMetadata.init(6000.0, 4000.0);
+        entry.metadata.raw_metadata = state.RawMetadata.init(6000.0, 4000.0);
     }
 
     try app_st.pushIntent(.toggle_pair_stream);
@@ -1481,7 +1502,7 @@ test "sysExecuteIntents - raw jpeg stacking and stream toggle" {
     );
     try testing.expectEqual(
         state.PairStreamTarget.standalone_jpeg,
-        app_st.cache.get(key).?.requested_target.?,
+        app_st.cache.get(key).?.inflight.?.target,
     );
 }
 
@@ -1585,20 +1606,21 @@ test "togglePairStream - requires loaded status before requesting target" {
     const id0 = app_st.viewer.navigation.getIdAt(0).?;
 
     const key0 = try app_st.cache.appendSlot(allocator, id0, .{
-        .decoding = .{ .has_thread = true },
+        .inflight = .{ .has_thread = true },
     });
     const entry0 = app_st.cache.get(key0).?;
-    entry0.raw_metadata = state.RawMetadata.init(6000, 4000);
+    entry0.metadata.raw_metadata = state.RawMetadata.init(6000, 4000);
 
-    // 1. While .decoding, toggle_pair_stream must be ignored.
+    // 1. While inflight, toggle_pair_stream must be ignored.
     try executeIntent(&app_st, .toggle_pair_stream);
     try std.testing.expectEqual(
-        @as(?state.PairStreamTarget, null),
-        entry0.requested_target,
+        @as(?state.PairStreamTarget, .adaptive),
+        if (entry0.inflight) |inf| inf.target else null,
     );
 
-    // 2. Once .loaded_gpu, toggle_pair_stream sets requested_target.
-    entry0.status = .{
+    // 2. Once .loaded_gpu, toggle_pair_stream sets inflight target.
+    entry0.inflight = null;
+    entry0.resident.asset = .{
         .loaded_gpu = .{
             .gpu_texture = undefined,
             .w = 1616,
@@ -1610,7 +1632,7 @@ test "togglePairStream - requires loaded status before requesting target" {
     try executeIntent(&app_st, .toggle_pair_stream);
     try std.testing.expectEqual(
         @as(?state.PairStreamTarget, .standalone_jpeg),
-        entry0.requested_target,
+        if (entry0.inflight) |inf| inf.target else null,
     );
 }
 
@@ -1635,9 +1657,11 @@ test "executeIntent - navigating onto failed slide skips crossfade" {
     const id1_failed = app_st.viewer.navigation.getIdAt(1).?;
 
     _ = try app_st.cache.appendSlot(allocator, id0_failed, .{
-        .decoding = .{ .has_thread = false },
+        .inflight = .{ .has_thread = false },
     });
-    _ = try app_st.cache.appendSlot(allocator, id1_failed, .failed);
+    _ = try app_st.cache.appendSlot(allocator, id1_failed, .{
+        .resident = .{ .asset = .failed },
+    });
 
     try executeIntent(&app_st, .next_image);
     try std.testing.expectEqual(
@@ -1709,20 +1733,20 @@ test "executeIntent - syncs rotation and zoom on nav, rotate, and set_zoom" {
     // Slide 0: 4000x2000 unrotated -> in 1024x768 headless viewport,
     // base scale is 1024/4000 = 0.256
     const key0 = try app_st.cache.appendSlot(allocator, id0, .{
-        .decoding = .{ .has_thread = false },
+        .inflight = .{ .has_thread = false },
     });
     const entry0 = app_st.cache.get(key0).?;
-    entry0.full_dims = .{ .w = 4000, .h = 2000 };
-    entry0.orientation = .normal;
+    entry0.metadata.full_dims = .{ .w = 4000, .h = 2000 };
+    entry0.metadata.orientation = .normal;
 
     // Slide 1: 4000x2000 with EXIF 90 deg rotation -> rotated dims 2000x4000,
     // base scale is 768/4000 = 0.192
     const key1 = try app_st.cache.appendSlot(allocator, id1, .{
-        .decoding = .{ .has_thread = false },
+        .inflight = .{ .has_thread = false },
     });
     const entry1 = app_st.cache.get(key1).?;
-    entry1.full_dims = .{ .w = 4000, .h = 2000 };
-    entry1.orientation = .rotate_90;
+    entry1.metadata.full_dims = .{ .w = 4000, .h = 2000 };
+    entry1.metadata.orientation = .rotate_90;
 
     // 1. Navigating from slide 0 to slide 1 must update rotation_angle
     // BEFORE getBaseScale()
@@ -1816,7 +1840,9 @@ test "executeIntent - server_mode hides on quit and exits on quit_server" {
     app_st.viewer.navigation.current_index = 0;
     const id0 = app_st.viewer.navigation.getIdAt(0).?;
     _ = try app_st.viewer.navigation.markCurrentPick(allocator);
-    _ = try app_st.cache.appendSlot(allocator, id0, .failed);
+    _ = try app_st.cache.appendSlot(allocator, id0, .{
+        .resident = .{ .asset = .failed },
+    });
     app_st.viewer.navigation.slideshow = .{ .active = .{ .interval_s = 2.0 } };
 
     // .quit in server_mode hides the window, stops slideshow, and unloads

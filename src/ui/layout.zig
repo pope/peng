@@ -39,11 +39,11 @@ pub fn computeDrawDims(
     const auth = entry.getAuthoritativeDims();
 
     if (auth.w > 0 and auth.h > 0) {
-        const is_loading = entry.status != .loaded_gpu and
-            entry.status != .loaded_cpu;
-        const only_has_thumb = entry.full_dims == null and
-            entry.raw_metadata.getSensorDims() == null and
-            entry.thumbnail != .none;
+        const is_loading = entry.resident.asset != .loaded_gpu and
+            entry.resident.asset != .loaded_cpu;
+        const only_has_thumb = entry.metadata.full_dims == null and
+            entry.metadata.raw_metadata.getSensorDims() == null and
+            entry.resident.thumbnail != .none;
         const effective_fit_mode: intents.ZoomPreset =
             if (fit_mode == .shrink and is_loading and only_has_thumb)
                 .full
@@ -805,8 +805,9 @@ fn buildThumbnailUvRect(
     rotation_angle: f32,
 ) state.UvRect {
     const pre_oriented = thumb_info.source.isPreOriented();
-    const swapped = pre_oriented and entry.orientation.isDimensionSwapped();
-    const ref_full: state.PhysicalDims = if (entry.full_dims) |fd|
+    const swapped = pre_oriented and
+        entry.metadata.orientation.isDimensionSwapped();
+    const ref_full: state.PhysicalDims = if (entry.metadata.full_dims) |fd|
         (if (swapped) .{ .w = fd.h, .h = fd.w } else fd)
     else
         .{ .w = 0.0, .h = 0.0 };
@@ -819,7 +820,10 @@ fn buildThumbnailUvRect(
     );
     uv.alpha = 1.0;
     uv.rotation_angle = if (pre_oriented)
-        @mod(rotation_angle - entry.orientation.toDegrees() + 360.0, 360.0)
+        @mod(
+            rotation_angle - entry.metadata.orientation.toDegrees() + 360.0,
+            360.0,
+        )
     else
         rotation_angle;
     uv.source_w = if (swapped) auth.h else auth.w;
@@ -837,14 +841,16 @@ fn renderImageCanvas(
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
 ) void {
-    if (ui_model.image_dissolve == .active and entry.status != .loaded_gpu) {
+    if (ui_model.image_dissolve == .active and
+        entry.resident.asset != .loaded_gpu)
+    {
         return;
     }
     const is_thumb_crossfade = ui_model.is_thumb_crossfading;
     const auth = entry.getAuthoritativeDims();
 
     if (is_thumb_crossfade) {
-        const thumb = entry.thumbnail.loaded;
+        const thumb = entry.resident.thumbnail.loaded;
         const thumb_tex = thumb.texture;
         const thumb_uv = buildThumbnailUvRect(
             entry,
@@ -890,10 +896,10 @@ fn renderImageCanvas(
     }
 
     var drew_thumb = false;
-    switch (entry.thumbnail) {
+    switch (entry.resident.thumbnail) {
         .loaded => |thumb| {
             const show_thumb = ui_model.debug_show_thumb or
-                (entry.status != .loaded_gpu and !is_thumb_crossfade);
+                (entry.resident.asset != .loaded_gpu and !is_thumb_crossfade);
             if (show_thumb) {
                 drew_thumb = true;
                 const thumb_tex = thumb.texture;
@@ -932,7 +938,7 @@ fn renderImageCanvas(
         .none, .pending, .not_available, .unloaded => {},
     }
 
-    if (!drew_thumb) switch (entry.status) {
+    if (!drew_thumb) switch (entry.resident.asset) {
         .loaded_gpu => |gpu| {
             const tex = gpu.gpu_texture;
             const is_image_dissolve = ui_model.image_dissolve == .active;
@@ -991,77 +997,81 @@ fn renderImageCanvas(
                 },
             })({});
         },
-        .decoding => |dec| {
-            const elapsed = ui_model.current_time_ms -| dec.start_time_ms;
-            const show_loading = elapsed > state.LOADING_GRACE_PERIOD_MS;
-            const font_size: u16 = 22;
+        .none => {
+            if (entry.inflight) |dec| {
+                const elapsed = ui_model.current_time_ms -| dec.start_time_ms;
+                const show_loading = elapsed > state.LOADING_GRACE_PERIOD_MS;
+                const font_size: u16 = 22;
 
-            const loading_text = if (show_loading) blk: {
-                const filename_opt: ?[]const u8 = if (ui_model.current_image_entry) |entry_item|
-                    entry_item.getBasename()
-                else if (ui_model.current_index) |idx|
-                    (if (ui_model.getMediaEntry(idx)) |media|
-                        media.getBasename()
-                    else
-                        null)
-                else
-                    null;
+                const loading_text = if (show_loading) blk: {
+                    const filename_opt: ?[]const u8 =
+                        if (ui_model.current_image_entry) |entry_item|
+                            entry_item.getBasename()
+                        else if (ui_model.current_index) |idx|
+                            (if (ui_model.getMediaEntry(idx)) |media|
+                                media.getBasename()
+                            else
+                                null)
+                        else
+                            null;
 
-                const container_w = if (draw_w > 0) @min(draw_w, view_w) else view_w;
-                const max_text_w = @max(container_w - 40.0, 0.0);
-                break :blk formatLoadingText(
-                    frame_allocator,
-                    filename_opt,
-                    max_text_w,
-                    font_size,
-                    measure_data,
-                );
-            } else "";
+                    const container_w =
+                        if (draw_w > 0) @min(draw_w, view_w) else view_w;
+                    const max_text_w = @max(container_w - 40.0, 0.0);
+                    break :blk formatLoadingText(
+                        frame_allocator,
+                        filename_opt,
+                        max_text_w,
+                        font_size,
+                        measure_data,
+                    );
+                } else "";
 
-            if (draw_w > 0 and draw_h > 0) {
-                clay.UI()(.{
-                    .id = clay.getElementId("ImageCanvas"),
-                    .layout = .{
-                        .sizing = .{
-                            .w = .fixed(draw_w),
-                            .h = .fixed(draw_h),
+                if (draw_w > 0 and draw_h > 0) {
+                    clay.UI()(.{
+                        .id = clay.getElementId("ImageCanvas"),
+                        .layout = .{
+                            .sizing = .{
+                                .w = .fixed(draw_w),
+                                .h = .fixed(draw_h),
+                            },
+                            .direction = .top_to_bottom,
+                            .child_alignment = .{ .x = .center, .y = .center },
+                            .child_gap = 10,
                         },
-                        .direction = .top_to_bottom,
-                        .child_alignment = .{ .x = .center, .y = .center },
-                        .child_gap = 10,
-                    },
-                })({
-                    if (show_loading) {
-                        clay.text(loading_text, .{
-                            .color = theme.pink,
-                            .font_size = font_size,
-                            .font_id = 0,
-                            .wrap_mode = .none,
-                        });
-                    }
-                });
-            } else {
-                clay.UI()(.{
-                    .id = clay.getElementId("ImageCanvas"),
-                    .layout = .{
-                        .sizing = .{ .w = .grow, .h = .grow },
-                        .direction = .top_to_bottom,
-                        .child_alignment = .{ .x = .center, .y = .center },
-                        .child_gap = 10,
-                    },
-                })({
-                    if (show_loading) {
-                        clay.text(loading_text, .{
-                            .color = theme.pink,
-                            .font_size = font_size,
-                            .font_id = 0,
-                            .wrap_mode = .none,
-                        });
-                    }
-                });
+                    })({
+                        if (show_loading) {
+                            clay.text(loading_text, .{
+                                .color = theme.pink,
+                                .font_size = font_size,
+                                .font_id = 0,
+                                .wrap_mode = .none,
+                            });
+                        }
+                    });
+                } else {
+                    clay.UI()(.{
+                        .id = clay.getElementId("ImageCanvas"),
+                        .layout = .{
+                            .sizing = .{ .w = .grow, .h = .grow },
+                            .direction = .top_to_bottom,
+                            .child_alignment = .{ .x = .center, .y = .center },
+                            .child_gap = 10,
+                        },
+                    })({
+                        if (show_loading) {
+                            clay.text(loading_text, .{
+                                .color = theme.pink,
+                                .font_size = font_size,
+                                .font_id = 0,
+                                .wrap_mode = .none,
+                            });
+                        }
+                    });
+                }
             }
         },
-        .uploading, .failed => {
+        .failed => {
             clay.UI()(.{
                 .layout = .{
                     .sizing = .{ .w = .grow, .h = .grow },
@@ -1091,9 +1101,9 @@ fn renderDissolvePrevQuad(
         .active => |d| d,
     };
     const prev_entry = dissolve.prev_entry;
-    const gpu = switch (prev_entry.status) {
+    const gpu = switch (prev_entry.resident.asset) {
         .loaded_gpu => |g| g,
-        .loaded_cpu, .decoding, .uploading, .failed => return,
+        .loaded_cpu, .none, .failed => return,
     };
 
     const prev_auth = prev_entry.getAuthoritativeDims();
@@ -1283,15 +1293,17 @@ test "formatLoadingText - narrow viewport fallback" {
 
 test "computeDrawDims - matches physical DPI scale in shrink and none modes" {
     const entry = state.CacheEntry{
-        .status = .{
-            .loaded_cpu = .{
-                .surface = .{ .ptr = undefined },
-                .w = 1200,
-                .h = 900,
-                .size_bytes = 1000,
+        .resident = .{
+            .asset = .{
+                .loaded_cpu = .{
+                    .surface = .{ .ptr = undefined },
+                    .w = 1200,
+                    .h = 900,
+                    .size_bytes = 1000,
+                },
             },
         },
-        .full_dims = .{ .w = 1200, .h = 900 },
+        .metadata = .{ .full_dims = .{ .w = 1200, .h = 900 } },
     };
 
     const view_dims = state.LogicalDims{ .w = 1000.0, .h = 800.0 };
@@ -1368,22 +1380,24 @@ test "renderViewport - floating crossfade quads allow Viewport hit-testing" {
     };
     const dummy_tex: sdl.gpu.Texture = .{ .ptr = @ptrFromInt(0x1000) };
     const entry = state.CacheEntry{
-        .status = .{
-            .loaded_gpu = .{
-                .gpu_texture = dummy_tex,
-                .w = 800,
-                .h = 600,
-                .size_bytes = 1000,
-                .memory_size_bytes = 1920000,
+        .resident = .{
+            .asset = .{
+                .loaded_gpu = .{
+                    .gpu_texture = dummy_tex,
+                    .w = 800,
+                    .h = 600,
+                    .size_bytes = 1000,
+                    .memory_size_bytes = 1920000,
+                },
+            },
+            .thumbnail = .{
+                .loaded = .{
+                    .texture = dummy_tex,
+                    .info = .{ .w = 160, .h = 120, .dct_snapped = false },
+                },
             },
         },
-        .thumbnail = .{
-            .loaded = .{
-                .texture = dummy_tex,
-                .info = .{ .w = 160, .h = 120, .dct_snapped = false },
-            },
-        },
-        .full_dims = .{ .w = 800, .h = 600 },
+        .metadata = .{ .full_dims = .{ .w = 800, .h = 600 } },
     };
     var pal_state = try state.PaletteState.init(std.testing.allocator);
     defer pal_state.deinit();
@@ -1440,9 +1454,11 @@ test "renderViewport - floating crossfade quads allow Viewport hit-testing" {
 
 test "buildThumbnailUvRect handles pre-oriented Freedesktop cached thumbnails" {
     const entry = state.CacheEntry{
-        .status = .{ .decoding = .{} },
-        .full_dims = .{ .w = 6000.0, .h = 4000.0 },
-        .orientation = .rotate_90,
+        .inflight = .{},
+        .metadata = .{
+            .full_dims = .{ .w = 6000.0, .h = 4000.0 },
+            .orientation = .rotate_90,
+        },
     };
     const auth = entry.getAuthoritativeDims();
 

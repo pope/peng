@@ -236,8 +236,8 @@ fn renderInfoOverlay(
     );
 
     if (current_entry) |entry| {
-        is_raw_image = entry.raw_metadata.isRaw();
-        if (entry.raw_metadata.getSensorDims()) |s_dims| {
+        is_raw_image = entry.metadata.raw_metadata.isRaw();
+        if (entry.metadata.raw_metadata.getSensorDims()) |s_dims| {
             if (s_dims.w > 0 and s_dims.h > 0) {
                 const raw_mp = (s_dims.w * s_dims.h) / 1_000_000.0;
                 raw_res_str = try frame_allocator.print(
@@ -246,12 +246,13 @@ fn renderInfoOverlay(
                 );
             }
         }
-        switch (entry.status) {
+        switch (entry.resident.asset) {
             .loaded_cpu => |cpu| {
                 mime_type = cpu.mime_type;
                 disk_size_str = try formatSize(frame_allocator, cpu.size_bytes);
                 const megapixels = (cpu.w * cpu.h) / 1_000_000.0;
-                const prev_suffix = if (entry.raw_metadata.isRaw()) " [PREVIEW]" else "";
+                const is_raw = entry.metadata.raw_metadata.isRaw();
+                const prev_suffix = if (is_raw) " [PREVIEW]" else "";
                 res_str = try frame_allocator.print(
                     "{d:.0}x{d:.0} ({d:.2} MP){s}",
                     .{ cpu.w, cpu.h, megapixels, prev_suffix },
@@ -261,25 +262,28 @@ fn renderInfoOverlay(
                 mime_type = gpu.mime_type;
                 disk_size_str = try formatSize(frame_allocator, gpu.size_bytes);
                 const megapixels = (gpu.w * gpu.h) / 1_000_000.0;
-                const prev_suffix = if (entry.raw_metadata.isRaw()) " [PREVIEW]" else "";
+                const is_raw = entry.metadata.raw_metadata.isRaw();
+                const prev_suffix = if (is_raw) " [PREVIEW]" else "";
                 res_str = try frame_allocator.print(
                     "{d:.0}x{d:.0} ({d:.2} MP){s}",
                     .{ gpu.w, gpu.h, megapixels, prev_suffix },
                 );
             },
-            .decoding => {
-                disk_size_str = "Loading...";
-                mime_type = "Loading...";
-                if (entry.raw_metadata.isRaw()) {
-                    res_str = "Loading preview...";
-                } else if (entry.full_dims) |fd| {
-                    const megapixels = (fd.w * fd.h) / 1_000_000.0;
-                    res_str = try frame_allocator.print(
-                        "{d:.0}x{d:.0} ({d:.2} MP)",
-                        .{ fd.w, fd.h, megapixels },
-                    );
-                } else {
-                    res_str = "Loading...";
+            .none => {
+                if (entry.inflight != null) {
+                    disk_size_str = "Loading...";
+                    mime_type = "Loading...";
+                    if (entry.metadata.raw_metadata.isRaw()) {
+                        res_str = "Loading preview...";
+                    } else if (entry.metadata.full_dims) |fd| {
+                        const megapixels = (fd.w * fd.h) / 1_000_000.0;
+                        res_str = try frame_allocator.print(
+                            "{d:.0}x{d:.0} ({d:.2} MP)",
+                            .{ fd.w, fd.h, megapixels },
+                        );
+                    } else {
+                        res_str = "Loading...";
+                    }
                 }
             },
             .failed => {
@@ -287,7 +291,6 @@ fn renderInfoOverlay(
                 mime_type = "Failed";
                 res_str = "Failed";
             },
-            .uploading => {},
         }
     }
 
@@ -317,12 +320,12 @@ fn renderInfoOverlay(
                 }
             }
         }
-        if (entry.thumbnail.getInfo()) |info| {
+        if (entry.resident.thumbnail.getInfo()) |info| {
             thumb_info_str = try frame_allocator.print(
                 "{s} ({d:.0}x{d:.0} px)",
                 .{ info.source.infoLabel(), info.w, info.h },
             );
-        } else if (entry.raw_metadata.isRaw()) {
+        } else if (entry.metadata.raw_metadata.isRaw()) {
             thumb_info_str = "None (Preview JPEG used)";
         } else if (is_jpeg) {
             thumb_info_str = "None (Full decode used)";
@@ -441,7 +444,7 @@ pub fn renderStatsOverlay(
     var upload_str: []const u8 = "N/A";
 
     if (current_entry) |entry| {
-        switch (entry.status) {
+        switch (entry.resident.asset) {
             .loaded_cpu => |cpu| {
                 read_str = try frame_allocator.print(
                     "{d:.2} ms",
@@ -457,7 +460,8 @@ pub fn renderStatsOverlay(
                 );
             },
             .loaded_gpu => |gpu| {
-                mem_size_str = try formatSize(frame_allocator, gpu.memory_size_bytes);
+                mem_size_str =
+                    try formatSize(frame_allocator, gpu.memory_size_bytes);
                 read_str = try frame_allocator.print(
                     "{d:.2} ms",
                     .{gpu.read_time_ms},
@@ -475,12 +479,14 @@ pub fn renderStatsOverlay(
                     .{gpu.upload_time_ms},
                 );
             },
-            .decoding => {
-                mem_size_str = "Loading...";
-                read_str = "Loading...";
-                decode_str = "Loading...";
-                convert_str = "Loading...";
-                upload_str = "Loading...";
+            .none => {
+                if (entry.inflight != null) {
+                    mem_size_str = "Loading...";
+                    read_str = "Loading...";
+                    decode_str = "Loading...";
+                    convert_str = "Loading...";
+                    upload_str = "Loading...";
+                }
             },
             .failed => {
                 mem_size_str = "Failed";
@@ -489,7 +495,6 @@ pub fn renderStatsOverlay(
                 convert_str = "Failed";
                 upload_str = "Failed";
             },
-            .uploading => {},
         }
     }
 
@@ -506,9 +511,9 @@ pub fn renderStatsOverlay(
         const img = s.active_image;
 
         if (current_entry) |entry| {
-            if (entry.raw_metadata.isRaw()) {
+            if (entry.metadata.raw_metadata.isRaw()) {
                 try renderStatRow("Source Mode", "RAW Embedded Preview");
-                if (entry.raw_metadata.getSensorDims()) |s_dims| {
+                if (entry.metadata.raw_metadata.getSensorDims()) |s_dims| {
                     if (s_dims.w > 0 and s_dims.h > 0) {
                         const raw_mp = (s_dims.w * s_dims.h) / 1_000_000.0;
                         const r_str = try frame_allocator.print(

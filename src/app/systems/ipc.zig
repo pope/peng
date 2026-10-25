@@ -551,7 +551,7 @@ test "sysExecuteIpcCommands - reactive wait_load barrier waits until ready" {
     const key = try state.cache.appendSlot(
         allocator,
         id0,
-        .{ .decoding = .{ .has_thread = true } },
+        .{ .inflight = .{ .has_thread = true } },
     );
 
     var tmp = std.testing.tmpDir(.{});
@@ -589,7 +589,8 @@ test "sysExecuteIpcCommands - reactive wait_load barrier waits until ready" {
     );
 
     // Transition slot to terminal state and run cache system tick
-    state.cache.get(key).?.status = .failed;
+    state.cache.get(key).?.resident.asset = .failed;
+    state.cache.get(key).?.inflight = null;
     try cache_system.sysUpdateCache(ctx);
 
     try std.testing.expectEqual(

@@ -110,9 +110,9 @@
 - **Exhaustive Enum & Tagged Union Pattern Matching (Anti-`else => ...`)**:
   - `switch` statements on core domain enums and tagged unions (`PaletteMode`,
     `EditParam`, `AppIntent`, `AdjustIntent`, `IpcCommand`, `IpcMode`,
-    `ZoomPreset`, `TextureScaleMode`, `CacheStatus`, `ThumbnailState`,
-    `DisplayState`, `DragState`, `MediaEntry`, `DirectoryEntry`,
-    `BackgroundEvent`) MUST exhaustively list all variants
+    `ZoomPreset`, `TextureScaleMode`, `ResidentAsset`, `InFlightStage`,
+    `ThumbnailState`, `DisplayState`, `DragState`, `MediaEntry`,
+    `DirectoryEntry`, `BackgroundEvent`) MUST exhaustively list all variants
     without wildcard `else => ...` branches (including `else => {}`,
     `else => null`, `else => false`, `else => 0`, or `else => return`) so
     adding or modifying a variant triggers compile-time errors at every site.

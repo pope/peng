@@ -6,9 +6,11 @@ const std = @import("std");
 
 const ArchiveMediaEntry = state_pkg.types.ArchiveMediaEntry;
 const CacheEntry = state_pkg.CacheEntry;
-const CacheStatus = state_pkg.CacheStatus;
+const CacheMetadata = state_pkg.CacheMetadata;
+const CacheResident = state_pkg.CacheResident;
 const CpuSurfaceComponent = state_pkg.CpuSurfaceComponent;
 const GpuTextureComponent = state_pkg.GpuTextureComponent;
+const InFlightDecode = state_pkg.InFlightDecode;
 const JpegDimensions = exif.JpegDimensions;
 pub const MediaEntry = state_pkg.MediaEntry;
 const MediaId = state_pkg.MediaId;
@@ -16,6 +18,7 @@ pub const Orientation = state_pkg.Orientation;
 const parseExifDimensions = exif.parseExifDimensions;
 const parseExifOrientation = exif.parseExifOrientation;
 const RawMetadata = state_pkg.RawMetadata;
+const ResidentAsset = state_pkg.ResidentAsset;
 const ZipSeekOffsets = state_pkg.types.ZipSeekOffsets;
 
 /// Unique lookup key identifying a cached image slot by its stable MediaId
@@ -137,17 +140,27 @@ pub const ImageCache = struct {
         return null;
     }
 
-    /// Updates the cache status for the slot matching `key`. Returns true if the key was found.
-    pub fn updateStatus(
+    /// Replaces resident asset in cache slot and frees previous resource.
+    pub fn setResidentAsset(
         self: *ImageCache,
         key: ImageCacheKey,
-        status: CacheStatus,
-    ) bool {
-        if (self.get(key)) |entry| {
-            entry.status = status;
-            return true;
-        }
-        return false;
+        asset: ResidentAsset,
+        gpu_device: ?sdl.gpu.Device,
+    ) void {
+        const idx = self.getIndex(key) orelse return;
+        const entry = &self.slots.items(.entry)[idx];
+        entry.resident.asset.deinit(gpu_device);
+        entry.resident.asset = asset;
+    }
+
+    /// Updates or clears the in-flight decode task state for a cache slot.
+    pub fn setInFlight(
+        self: *ImageCache,
+        key: ImageCacheKey,
+        inflight: ?InFlightDecode,
+    ) void {
+        const idx = self.getIndex(key) orelse return;
+        self.slots.items(.entry)[idx].inflight = inflight;
     }
 
     /// Appends a new slot for media `id` at current generation, returning
@@ -156,12 +169,12 @@ pub const ImageCache = struct {
         self: *ImageCache,
         allocator: std.mem.Allocator,
         id: MediaId,
-        status: CacheStatus,
+        entry: CacheEntry,
     ) !ImageCacheKey {
         const key = self.activeKey(id);
         try self.slots.append(allocator, .{
             .key = key,
-            .entry = .{ .status = status },
+            .entry = entry,
         });
         return key;
     }
@@ -179,14 +192,15 @@ pub const ImageCache = struct {
 
     pub const DEFAULT_MAX_VRAM_BYTES: usize = 1024 * 1024 * 1024;
 
-    /// Computes the total VRAM consumption in bytes across all `.loaded_gpu` textures in the cache.
+    /// Computes the total VRAM consumption in bytes across all `.loaded_gpu`
+    /// textures in the cache.
     pub fn getTotalVramBytes(self: *const ImageCache) usize {
         var total: usize = 0;
         const entries = self.slots.items(.entry);
         for (entries) |entry| {
-            switch (entry.status) {
+            switch (entry.resident.asset) {
                 .loaded_gpu => |gpu| total += gpu.memory_size_bytes,
-                else => {},
+                .none, .failed, .loaded_cpu => {},
             }
         }
         return total;
@@ -244,7 +258,7 @@ pub const ImageCache = struct {
             var neighbor_victim: ?usize = null;
 
             for (entries, keys, 0..) |entry, key, i| {
-                if (entry.status != .loaded_gpu) continue;
+                if (entry.resident.asset != .loaded_gpu) continue;
                 const neighbors = neighbors_opt orelse {
                     distant_victim = i;
                     break;
@@ -317,12 +331,13 @@ pub const ImageCache = struct {
             const key = self.activeKey(id);
             if (self.getIndex(key)) |i| {
                 const entry = self.slots.items(.entry)[i];
-                switch (entry.status) {
+                if (entry.inflight != null) return true;
+                switch (entry.resident.asset) {
                     .loaded_gpu, .failed => {},
                     .loaded_cpu => {
                         if (has_gpu) return true;
                     },
-                    .decoding, .uploading => return true,
+                    .none => return true,
                 }
             } else {
                 return true;
@@ -2014,15 +2029,19 @@ test "enforceVramBudget - distant eviction, circular distance, and neighbor prot
     };
     const mock_nav = MockNav{};
 
-    const makeGpuStatus = struct {
-        fn create(size: usize) CacheStatus {
+    const makeGpuEntry = struct {
+        fn create(size: usize) CacheEntry {
             return .{
-                .loaded_gpu = .{
-                    .gpu_texture = undefined,
-                    .w = 100,
-                    .h = 100,
-                    .size_bytes = size,
-                    .memory_size_bytes = size,
+                .resident = .{
+                    .asset = .{
+                        .loaded_gpu = .{
+                            .gpu_texture = undefined,
+                            .w = 100,
+                            .h = 100,
+                            .size_bytes = size,
+                            .memory_size_bytes = size,
+                        },
+                    },
                 },
             };
         }
@@ -2035,27 +2054,27 @@ test "enforceVramBudget - distant eviction, circular distance, and neighbor prot
     _ = try cache.appendSlot(
         allocator,
         mock_nav.getIdAt(0).?,
-        makeGpuStatus(100),
+        makeGpuEntry(100),
     );
     _ = try cache.appendSlot(
         allocator,
         mock_nav.getIdAt(1).?,
-        makeGpuStatus(100),
+        makeGpuEntry(100),
     );
     _ = try cache.appendSlot(
         allocator,
         mock_nav.getIdAt(2).?,
-        makeGpuStatus(100),
+        makeGpuEntry(100),
     );
     _ = try cache.appendSlot(
         allocator,
         mock_nav.getIdAt(5).?,
-        makeGpuStatus(100),
+        makeGpuEntry(100),
     );
     _ = try cache.appendSlot(
         allocator,
         mock_nav.getIdAt(9).?,
-        makeGpuStatus(100),
+        makeGpuEntry(100),
     );
     // Total VRAM = 500 bytes
 
@@ -2109,7 +2128,7 @@ test "enforceVramBudget - distant eviction, circular distance, and neighbor prot
     _ = try cache.appendSlot(
         allocator,
         mock_nav.getIdAt(99).?,
-        makeGpuStatus(100),
+        makeGpuEntry(100),
     );
     try std.testing.expectEqual(@as(usize, 200), cache.getTotalVramBytes());
     cache.enforceVramBudget(null, mock_nav, n5, null, 5, 100);
@@ -2126,12 +2145,12 @@ test "enforceVramBudget - distant eviction, circular distance, and neighbor prot
     _ = try cache.appendSlot(
         allocator,
         mock_nav.getIdAt(3).?,
-        makeGpuStatus(100),
+        makeGpuEntry(100),
     );
     _ = try cache.appendSlot(
         allocator,
         mock_nav.getIdAt(4).?,
-        makeGpuStatus(100),
+        makeGpuEntry(100),
     );
     try std.testing.expectEqual(@as(usize, 300), cache.getTotalVramBytes());
     cache.enforceVramBudget(null, mock_nav, n10, 3, 10, 50);
@@ -2169,13 +2188,17 @@ test "hasUnreadyPrefetchSlots" {
     // Empty cache -> unready
     try std.testing.expect(cache.hasUnreadyPrefetchSlots(mock_nav, n5, true));
 
-    const makeGpuStatus = CacheStatus{
-        .loaded_gpu = .{
-            .gpu_texture = undefined,
-            .w = 100,
-            .h = 100,
-            .size_bytes = 100,
-            .memory_size_bytes = 100,
+    const makeGpuEntry = CacheEntry{
+        .resident = .{
+            .asset = .{
+                .loaded_gpu = .{
+                    .gpu_texture = undefined,
+                    .w = 100,
+                    .h = 100,
+                    .size_bytes = 100,
+                    .memory_size_bytes = 100,
+                },
+            },
         },
     };
 
@@ -2184,72 +2207,70 @@ test "hasUnreadyPrefetchSlots" {
         _ = try cache.appendSlot(
             allocator,
             mock_nav.getIdAt(idx).?,
-            makeGpuStatus,
+            makeGpuEntry,
         );
     }
     try std.testing.expect(!cache.hasUnreadyPrefetchSlots(mock_nav, n5, true));
 
     // One slot is decoding -> unready
-    _ = cache.updateStatus(
+    cache.setInFlight(
         cache.activeKey(mock_nav.getIdAt(2).?),
-        .{ .decoding = .{} },
+        .{ .stage = .decoding },
     );
     try std.testing.expect(cache.hasUnreadyPrefetchSlots(mock_nav, n5, true));
 
     // One slot is loaded_cpu: unready if has_gpu = true, ready if has_gpu = false
-    _ = cache.updateStatus(cache.activeKey(mock_nav.getIdAt(2).?), .{
+    const surf = sdl.Surface.create(1, 1, sdl.PixelFormat.rgba32) orelse return;
+    cache.setInFlight(cache.activeKey(mock_nav.getIdAt(2).?), null);
+    cache.setResidentAsset(cache.activeKey(mock_nav.getIdAt(2).?), .{
         .loaded_cpu = .{
-            .surface = undefined,
+            .surface = surf,
             .w = 100,
             .h = 100,
             .size_bytes = 100,
         },
-    });
+    }, null);
     try std.testing.expect(cache.hasUnreadyPrefetchSlots(mock_nav, n5, true));
     try std.testing.expect(!cache.hasUnreadyPrefetchSlots(mock_nav, n5, false));
 
     // Reset status to .failed to prevent calling SDL_DestroySurface on
     // undefined mock surface during defer deinit
-    _ = cache.updateStatus(cache.activeKey(mock_nav.getIdAt(2).?), .failed);
+    cache.setResidentAsset(
+        cache.activeKey(mock_nav.getIdAt(2).?),
+        .failed,
+        null,
+    );
 }
 
-test "ImageCache.updateStatus" {
+test "ImageCache.setResidentAsset and setInFlight" {
     const allocator = std.testing.allocator;
     var cache = ImageCache{};
     defer cache.deinit(allocator, null);
 
     const id10 = MediaId.fromU32(10);
     const id20 = MediaId.fromU32(20);
-    const id30 = MediaId.fromU32(30);
 
     _ = cache.advanceGeneration();
-    _ = try cache.appendSlot(allocator, id10, .{ .decoding = .{} });
-    _ = try cache.appendSlot(allocator, id20, .{ .decoding = .{} });
+    _ = try cache.appendSlot(allocator, id10, .{
+        .inflight = .{ .stage = .decoding },
+    });
+    _ = try cache.appendSlot(allocator, id20, .{
+        .inflight = .{ .stage = .decoding },
+    });
 
-    // Test successful update
-    const updated = cache.updateStatus(
-        .{ .id = id20, .generation = 1 },
-        .failed,
-    );
-    try std.testing.expect(updated);
+    // Test updating resident asset and in-flight status
+    const key20 = ImageCacheKey{ .id = id20, .generation = 1 };
+    cache.setResidentAsset(key20, .failed, null);
+    cache.setInFlight(key20, null);
+
     try std.testing.expectEqual(
-        CacheStatus.failed,
-        cache.slots.items(.entry)[1].status,
+        ResidentAsset.failed,
+        cache.slots.items(.entry)[1].resident.asset,
     );
-
-    // Test updating non-existent index
-    const updated_missing = cache.updateStatus(
-        .{ .id = id30, .generation = 1 },
-        .failed,
+    try std.testing.expectEqual(
+        @as(?InFlightDecode, null),
+        cache.slots.items(.entry)[1].inflight,
     );
-    try std.testing.expect(!updated_missing);
-
-    // Test updating matching index but mismatching generation
-    const updated_gen_mismatch = cache.updateStatus(
-        .{ .id = id10, .generation = 2 },
-        .failed,
-    );
-    try std.testing.expect(!updated_gen_mismatch);
 }
 
 test "UploadStagingBuffer - capacity growth and clean deinit" {
@@ -2816,11 +2837,13 @@ test "ImageCache - Key lookup by MediaId remains valid after sort shift" {
 
     const id1 = MediaId.fromU32(1);
     const key1 = try cache.appendSlot(allocator, id1, .{
-        .decoding = .{ .has_thread = true },
+        .inflight = .{ .has_thread = true },
     });
 
     const id2 = MediaId.fromU32(2);
-    _ = try cache.appendSlot(allocator, id2, .failed);
+    _ = try cache.appendSlot(allocator, id2, .{
+        .resident = .{ .asset = .failed },
+    });
 
     // Verify lookup by id1 succeeds
     try std.testing.expect(cache.getIndex(key1) != null);

@@ -382,7 +382,7 @@ test "SlotBound.resolve validates cache key and presence" {
 
     const id3 = MediaId.fromU32(3);
     const key = try cache.appendSlot(allocator, id3, .{
-        .decoding = .{ .has_thread = true },
+        .inflight = .{ .has_thread = true },
     });
     var bound = SlotBound(ExifParsedPayload).init(
         key,
@@ -395,10 +395,11 @@ test "SlotBound.resolve validates cache key and presence" {
         Orientation.rotate_90,
         resolved.payload.orientation,
     );
-    cache.get(resolved.key).?.orientation = resolved.payload.orientation;
+    cache.get(resolved.key).?.metadata.orientation =
+        resolved.payload.orientation;
     try std.testing.expectEqual(
         Orientation.rotate_90,
-        cache.getEntry(key).?.orientation,
+        cache.getEntry(key).?.metadata.orientation,
     );
 
     _ = cache.advanceGeneration();
@@ -412,7 +413,7 @@ test "SlotBound - Direct resolution by MediaId with zero alias_index" {
 
     const id1 = MediaId.fromU32(1);
     const key0 = try cache.appendSlot(allocator, id1, .{
-        .decoding = .{ .has_thread = true },
+        .inflight = .{ .has_thread = true },
     });
     var bound = SlotBound(ExifParsedPayload).init(
         key0,

@@ -14,14 +14,14 @@ pub fn sysSyncMetrics(ctx: FrameContext) void {
     state.viewer.stats.total_vram_bytes = state.cache.getTotalVramBytes();
 
     if (state.getCurrentEntry()) |entry| {
-        const thumb_info = entry.thumbnail.getInfo();
+        const thumb_info = entry.resident.thumbnail.getInfo();
         const has_thumb = thumb_info != null;
         const thumb_upload_time_ms: f64 =
             if (thumb_info) |info| info.upload_time_ms else 0.0;
         const thumb_source: state_pkg.ThumbnailSource =
             if (thumb_info) |info| info.source else .embedded_header;
 
-        switch (entry.status) {
+        switch (entry.resident.asset) {
             .loaded_gpu => |gpu| {
                 state.viewer.stats.active_image = .{
                     .num_mip_levels = gpu.num_mip_levels,
@@ -48,7 +48,7 @@ pub fn sysSyncMetrics(ctx: FrameContext) void {
                     .compressed_size_bytes = cpu.compressed_size_bytes,
                 };
             },
-            .decoding, .uploading, .failed => {
+            .none, .failed => {
                 state.viewer.stats.active_image = .{
                     .has_thumb = has_thumb,
                     .thumb_upload_time_ms = thumb_upload_time_ms,

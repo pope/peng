@@ -260,9 +260,10 @@ pub fn updateFrame(
         .anim_values = app_state.viewer.animations.values,
         .debug_show_thumb = app_state.viewer.ui.overlays.debug_show_thumb,
         .is_thumb_crossfading = blk: {
-            const cur_entry = app_state.getCurrentEntry() orelse break :blk false;
-            break :blk (cur_entry.status == .loaded_gpu) and
-                (cur_entry.thumbnail == .loaded) and
+            const cur_entry =
+                app_state.getCurrentEntry() orelse break :blk false;
+            break :blk (cur_entry.resident.asset == .loaded_gpu) and
+                (cur_entry.resident.thumbnail == .loaded) and
                 !app_state.viewer.ui.overlays.debug_show_thumb and
                 !app_state.viewer.isSlideshowActive() and
                 (app_state.viewer.image_transition == .none) and
@@ -272,14 +273,15 @@ pub fn updateFrame(
             const progress = app_state.viewer.animations.get(.image_crossfade);
             if (progress >= 0.999) break :blk .none;
             if (app_state.getCurrentEntry()) |cur| {
-                if (cur.status == .failed) break :blk .none;
+                if (cur.resident.asset == .failed) break :blk .none;
             }
 
             switch (app_state.viewer.image_transition) {
                 .none => break :blk .none,
                 .active => |t| {
-                    const prev = app_state.getTransitionPrevEntry() orelse break :blk .none;
-                    if (prev.status != .loaded_gpu) break :blk .none;
+                    const prev = app_state.getTransitionPrevEntry() orelse
+                        break :blk .none;
+                    if (prev.resident.asset != .loaded_gpu) break :blk .none;
                     break :blk .{ .active = .{
                         .prev_entry = prev,
                         .prev_rotation = t.prev_rotation,

@@ -741,10 +741,10 @@ test "sysProcessInput preserves image navigation when viewport is not zoomed" {
     app_st.viewer.navigation.current_index = 0;
     const id0 = app_st.viewer.navigation.getIdAt(0).?;
     const key0 = try app_st.cache.appendSlot(allocator, id0, .{
-        .decoding = .{ .has_thread = false },
+        .inflight = .{ .has_thread = false },
     });
     const entry0 = app_st.cache.get(key0).?;
-    entry0.full_dims = .{ .w = 800.0, .h = 600.0 };
+    entry0.metadata.full_dims = .{ .w = 800.0, .h = 600.0 };
     app_st.viewer.viewport.setPan(45.0, -30.0);
     try std.testing.expect(!app_st.isImageOverflowing());
 
