@@ -1,4 +1,3 @@
-const app_events = @import("../events.zig");
 const app_state = @import("../state.zig");
 const builtin = @import("builtin");
 const cache_system = @import("cache.zig");
@@ -18,6 +17,7 @@ const FrameContext = context.FrameContext;
 /// intents into `pending_intents`.
 pub fn sysExecuteIpcCommands(ctx: FrameContext) void {
     const state = ctx.state;
+    state.flushPendingWaitLoadStreams();
     if (state.pending_ipc_commands.items.len == 0) return;
 
     var will_be_hidden = switch (state.viewer.display) {
@@ -48,7 +48,9 @@ pub fn sysExecuteIpcCommands(ctx: FrameContext) void {
         }
 
         switch (parsed) {
-            .wait_load => handleWaitLoadCommand(ctx, cmd_data.client_stream),
+            .wait_load => {
+                handleWaitLoadCommand(state, cmd_data.client_stream);
+            },
             .selections => {
                 handleSelectionsCommand(state, cmd_data.client_stream);
             },
@@ -119,48 +121,16 @@ fn handleSelectionsCommand(state: *AppState, stream: std.Io.net.Stream) void {
     };
 }
 
-fn handleWaitLoadCommand(ctx: FrameContext, stream: std.Io.net.Stream) void {
-    const state = ctx.state;
-    var attempts: u32 = 0;
-    while (attempts < 1000) : (attempts += 1) {
-        intents_system.sysExecuteIntents(ctx) catch |err| {
-            std.log.err(
-                "Failed to execute intents during wait_load: {}",
-                .{err},
-            );
-        };
-        _ = app_events.drainWorkerEvents(state);
-        cache_system.sysUpdateCache(ctx) catch |err| {
-            std.log.err(
-                "Failed to update cache during wait_load: {}",
-                .{err},
-            );
-        };
-        state.prepareCacheTextures();
-
-        if (!state.viewer.navigation.isLoadingFiles()) {
-            if (state.getCurrentEntry()) |entry| {
-                const is_ready = switch (entry.status) {
-                    .decoding, .uploading => false,
-                    .loaded_cpu => state.gpu_device == null,
-                    .loaded_gpu, .failed => true,
-                };
-                if (is_ready) break;
-            } else if (state.viewer.navigation.current_index == null) {
-                break;
-            }
-        }
-        std.Io.sleep(
-            state.io,
-            std.Io.Duration.fromMilliseconds(10),
-            .awake,
-        ) catch |sleep_err| {
-            std.log.warn("wait_load sleep interrupted: {}", .{sleep_err});
-        };
-    }
-    ipc.respondOk(state.io, stream) catch |err| {
-        std.log.err("Failed to respond OK for wait_load command: {}", .{err});
+fn handleWaitLoadCommand(state: *AppState, stream: std.Io.net.Stream) void {
+    state.pending_wait_load_streams.append(
+        state.allocator,
+        stream,
+    ) catch |err| {
+        std.log.err("Failed to queue IPC wait_load stream: {}", .{err});
+        ipc.respondErrorName(state.io, stream, "OutOfMemory");
+        return;
     };
+    state.flushPendingWaitLoadStreams();
 }
 
 fn handleAdjustCommand(
@@ -565,12 +535,23 @@ test "sysExecuteIpcCommands - multiple queued commands and adjust command" {
     );
 }
 
-test "sysExecuteIpcCommands - wait_load and re-entrant ipc_command" {
+test "sysExecuteIpcCommands - reactive wait_load barrier waits until ready" {
     if (builtin.os.tag == .windows) return;
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
+
+    try state.viewer.navigation.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = "testfiles/images/000_0_1024x682.jpg" } },
+    );
+    state.viewer.navigation.current_index = 0;
+    const key = try state.cache.appendSlot(
+        allocator,
+        0,
+        .{ .decoding = .{ .has_thread = true } },
+    );
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -589,12 +570,6 @@ test "sysExecuteIpcCommands - wait_load and re-entrant ipc_command" {
     defer client1.close(io);
     const accepted1 = try server.accept(io);
 
-    const client2 = try addr.connect(io);
-    defer client2.close(io);
-    const accepted2 = try server.accept(io);
-
-    // Queue `wait_load` in `pending_ipc_commands` (capacity 1 so re-entrant
-    // append during `drainWorkerEvents` reallocates the backing slice).
     const cmd1_data = try allocator.create(ipc.IpcCommandData);
     cmd1_data.* = .{
         .command = try allocator.dupe(u8, "wait_load"),
@@ -602,31 +577,29 @@ test "sysExecuteIpcCommands - wait_load and re-entrant ipc_command" {
     };
     try state.pending_ipc_commands.append(allocator, cmd1_data);
 
-    // Push a second IPC command into `workers.event_queue` to be drained
-    // re-entrantly inside `handleWaitLoadCommand`.
-    const cmd2_data = try allocator.create(ipc.IpcCommandData);
-    cmd2_data.* = .{
-        .command = try allocator.dupe(u8, "zoom 3.5"),
-        .client_stream = accepted2,
-    };
-    try state.workers.event_queue.push(
-        allocator,
-        io,
-        .{ .ipc_command = cmd2_data },
-    );
-
     const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
     sysExecuteIpcCommands(ctx);
-    try intents_system.sysExecuteIntents(ctx);
+    try cache_system.sysUpdateCache(ctx);
+
+    // Still decoding: stream remains queued in `pending_wait_load_streams`
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        state.pending_wait_load_streams.items.len,
+    );
+
+    // Transition slot to terminal state and run cache system tick
+    state.cache.get(key).?.status = .failed;
+    try cache_system.sysUpdateCache(ctx);
 
     try std.testing.expectEqual(
         @as(usize, 0),
-        state.pending_ipc_commands.items.len,
+        state.pending_wait_load_streams.items.len,
     );
-    try std.testing.expectEqual(
-        @as(f32, 3.5),
-        state.viewer.viewport.zoom_factor.get(),
-    );
+
+    var read_buf: [64]u8 = undefined;
+    var reader = client1.reader(io, &read_buf);
+    const line = try reader.interface.takeDelimiterInclusive('\n');
+    try std.testing.expectEqualStrings("{\"ok\":true}\n", line);
 }
 
 test "sysExecuteIpcCommands - set_palette frame_allocator OOM replies error" {

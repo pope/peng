@@ -1543,7 +1543,6 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         }) catch |err| {
             std.log.err("Failed to push dimensions probed event: {}", .{err});
         };
-        context.wakeUpMainThread();
         return;
     }
 
@@ -1635,7 +1634,6 @@ pub fn decodeWorker(args: *DecodeArgs) void {
             std.log.err("Failed to push image decode event: {}", .{err});
             f_surf.destroy();
         };
-        context.wakeUpMainThread();
     } else {
         workers.event_queue.push(alloc, io, .{
             .decode_failed = .init(key, .{}),

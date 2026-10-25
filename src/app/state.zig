@@ -82,6 +82,7 @@ pub const AppState = struct {
     event_batch: std.ArrayList(events.BackgroundEvent) = .empty,
     pending_ipc_commands: std.ArrayList(*ipc.IpcCommandData) = .empty,
     pending_selection_streams: std.ArrayList(std.Io.net.Stream) = .empty,
+    pending_wait_load_streams: std.ArrayList(std.Io.net.Stream) = .empty,
     pending_intents: std.ArrayList(AppIntent) = .empty,
 
     /// Initializes top-level `AppState` in headless mode without creating an SDL
@@ -118,6 +119,17 @@ pub const AppState = struct {
         errdefer self.event_batch.deinit(self.allocator);
         // 8 commands: accommodates queued socket IPC command buffers
         try self.pending_ipc_commands.ensureTotalCapacity(self.allocator, 8);
+        errdefer self.pending_ipc_commands.deinit(self.allocator);
+        // 4 streams: accommodates concurrent IPC barrier/query streams
+        try self.pending_selection_streams.ensureTotalCapacity(
+            self.allocator,
+            4,
+        );
+        errdefer self.pending_selection_streams.deinit(self.allocator);
+        try self.pending_wait_load_streams.ensureTotalCapacity(
+            self.allocator,
+            4,
+        );
     }
 
     /// Initializes the Freedesktop Shared Thumbnail Cache configuration from
@@ -174,6 +186,63 @@ pub const AppState = struct {
         }
     }
 
+    /// Returns `true` when all queued intents and background file scans have
+    /// completed and the active slide (if any) has finished decoding and
+    /// uploading.
+    pub fn isWaitLoadReady(self: *const AppState) bool {
+        if (self.pending_intents.items.len > 0 or
+            self.viewer.navigation.isLoadingFiles() or
+            self.workers.event_queue.hasPending())
+        {
+            return false;
+        }
+        if (self.getCurrentEntry()) |entry| {
+            if (entry.is_promoting or entry.requested_target != null) {
+                return false;
+            }
+            return switch (entry.status) {
+                .decoding, .uploading => false,
+                .loaded_cpu => self.gpu_device == null,
+                .loaded_gpu, .failed => true,
+            };
+        }
+        return self.viewer.navigation.current_index == null;
+    }
+
+    /// Replies `{"ok":true}` and closes all queued `wait_load` IPC streams
+    /// once `isWaitLoadReady()` is satisfied.
+    pub fn flushPendingWaitLoadStreams(self: *AppState) void {
+        if (self.pending_wait_load_streams.items.len == 0 or
+            !self.isWaitLoadReady())
+        {
+            return;
+        }
+        defer self.pending_wait_load_streams.clearRetainingCapacity();
+
+        for (self.pending_wait_load_streams.items) |stream| {
+            ipc.respondOk(self.io, stream) catch |err| {
+                std.log.err(
+                    "Failed to respond OK for wait_load command: {}",
+                    .{err},
+                );
+            };
+        }
+    }
+
+    /// Replies with a JSON error `err_name` and closes all queued `wait_load`
+    /// IPC streams when the window is hidden or the application shuts down.
+    pub fn abortPendingWaitLoadStreams(
+        self: *AppState,
+        err_name: []const u8,
+    ) void {
+        if (self.pending_wait_load_streams.items.len == 0) return;
+        defer self.pending_wait_load_streams.clearRetainingCapacity();
+
+        for (self.pending_wait_load_streams.items) |stream| {
+            ipc.respondErrorName(self.io, stream, err_name);
+        }
+    }
+
     /// Returns `true` if files are currently loading, background workers are
     /// active, active unpaused slideshow is running, or animations are active.
     pub inline fn isBusy(self: *const AppState) bool {
@@ -189,6 +258,9 @@ pub const AppState = struct {
     pub fn isCurrentSlideLoading(self: *const AppState) bool {
         const cur_idx = self.viewer.navigation.current_index orelse return false;
         const entry = self.cache.getEntry(self.cache.activeKey(cur_idx)) orelse return false;
+        if (entry.is_promoting or entry.requested_target != null) {
+            return true;
+        }
         return switch (entry.status) {
             .decoding, .uploading => true,
             .loaded_cpu => self.gpu_device != null,
@@ -250,7 +322,10 @@ pub const AppState = struct {
         force_non_blocking: bool,
         now_ticks: u64,
     ) input.EventWaitStrategy {
-        if (force_non_blocking or bg_events_processed) {
+        if (force_non_blocking or
+            bg_events_processed or
+            self.workers.event_queue.hasPending())
+        {
             return .poll;
         }
         switch (self.viewer.display) {
@@ -280,6 +355,7 @@ pub const AppState = struct {
             (last_w != cur_win_w or last_h != cur_win_h);
         const is_busy = self.isBusy() or
             is_current_loading or
+            (self.pending_wait_load_streams.items.len > 0) or
             (self.viewer.drag_state != .none) or
             (self.viewer.viewport.isZoomed() and
                 self.viewer.pan_controller.isBusy()) or
@@ -325,9 +401,11 @@ pub const AppState = struct {
         for (self.pending_selection_streams.items) |stream| {
             stream.close(self.io);
         }
+        self.abortPendingWaitLoadStreams("ShuttingDown");
         self.viewer.deinit(self.allocator, self.io);
         self.pending_ipc_commands.deinit(self.allocator);
         self.pending_selection_streams.deinit(self.allocator);
+        self.pending_wait_load_streams.deinit(self.allocator);
         self.pending_intents.deinit(self.allocator);
         self.event_batch.deinit(self.allocator);
     }
@@ -545,6 +623,7 @@ pub const AppState = struct {
                 self.viewer.ui.screenshot_mode = .idle;
             },
         }
+        self.abortPendingWaitLoadStreams("WindowHidden");
         self.closePaletteImmediately();
         self.viewer.ui.palette.shrinkToWarmCapacity();
         _ = self.viewer.ui.overlays.dismissFloatingPanels();

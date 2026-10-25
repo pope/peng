@@ -194,6 +194,7 @@ fn checkPairPromotion(
 /// System Pass: Update image RAM/GPU texture cache and background preloading window.
 pub fn sysUpdateCache(ctx: FrameContext) !void {
     const state = ctx.state;
+    defer state.flushPendingWaitLoadStreams();
     state.updateCurrentRotation();
 
     const len = state.viewer.navigation.count();
@@ -253,9 +254,13 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
     }
 
     // Fast-scrolling check: only active if navigation has actually occurred
+    // and no IPC `wait_load` barrier is actively waiting for full resolution.
     const now = sdl.timer.getTicks();
-    const is_fast_scrolling = state.viewer.navigation.last_nav_time_ms > 0 and
-        (now -| state.viewer.navigation.last_nav_time_ms < FAST_SCROLL_THRESHOLD_MS);
+    const is_fast_scrolling =
+        state.pending_wait_load_streams.items.len == 0 and
+        state.viewer.navigation.last_nav_time_ms > 0 and
+        (now -| state.viewer.navigation.last_nav_time_ms <
+            FAST_SCROLL_THRESHOLD_MS);
 
     state.viewer.stats.max_decode_threads = state.workers.getMaxConcurrentDecodes();
 

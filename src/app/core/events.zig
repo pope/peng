@@ -264,12 +264,19 @@ pub fn MpscQueue(comptime T: type) type {
     return struct {
         mutex: std.Io.Mutex = .init,
         items: std.ArrayList(T) = .empty,
+        pending_count: std.atomic.Value(usize) = .init(0),
 
         const Self = @This();
 
         /// Initializes a new empty MpscQueue instance.
         pub fn init() Self {
             return .{};
+        }
+
+        /// Returns `true` if one or more items are currently queued awaiting
+        /// `drain()`.
+        pub inline fn hasPending(self: *const Self) bool {
+            return self.pending_count.load(.acquire) > 0;
         }
 
         fn deinitQueueItemElement(
@@ -304,6 +311,7 @@ pub fn MpscQueue(comptime T: type) type {
                 }
             }
             self.items.deinit(allocator);
+            self.pending_count.store(0, .release);
         }
 
         /// Locks the queue and appends a new item.
@@ -311,6 +319,7 @@ pub fn MpscQueue(comptime T: type) type {
             self.mutex.lockUncancelable(io);
             defer self.mutex.unlock(io);
             try self.items.append(allocator, item);
+            _ = self.pending_count.fetchAdd(1, .release);
         }
 
         /// Atomically transfers all currently queued items into `out_list` and
@@ -326,13 +335,18 @@ pub fn MpscQueue(comptime T: type) type {
             if (self.items.items.len == 0) return;
             try out_list.appendSlice(allocator, self.items.items);
             self.items.clearRetainingCapacity();
+            self.pending_count.store(0, .release);
         }
 
         /// Pops the last queued item from the queue without thread
         /// synchronization. Intended for single-threaded testing.
         pub fn pop(self: *Self) ?T {
-            if (self.items.items.len == 0) return null;
-            return self.items.pop();
+            if (!builtin.is_test) {
+                @compileError("pop is only allowed in tests; use drain()");
+            }
+            const val = self.items.pop() orelse return null;
+            _ = self.pending_count.fetchSub(1, .release);
+            return val;
         }
     };
 }

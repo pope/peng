@@ -261,7 +261,6 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
         for (paths_slice) |item| item.deinit(gpa);
         gpa.free(paths_slice);
     };
-    context.wakeUpMainThread();
 }
 
 test "scanDirectoryThreadSafe - discovers and sorts images, ignores non-images" {

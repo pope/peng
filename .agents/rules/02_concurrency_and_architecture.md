@@ -8,8 +8,9 @@
     `upload_staging: image.UploadStagingBuffer`, `ipc_server: ?*IpcServer`),
     allocators (`allocator`), async I/O (`io`), texture slot cache
     (`cache: ImageCache`), worker manager (`workers: WorkerManager`), IPC
-    command queue (`pending_ipc_commands`), deferred IPC selection query
-    streams (`pending_selection_streams`), intent queue (`pending_intents`),
+    command queue (`pending_ipc_commands`), deferred IPC selection and
+    `wait_load` barrier streams (`pending_selection_streams`,
+    `pending_wait_load_streams`), intent queue (`pending_intents`),
     event batch (`event_batch`), and embeds `viewer: ViewerState`.
   - All system pass functions in `src/app/systems/` accept `ctx: FrameContext`
     (`src/app/systems/context.zig`), which bundles `state: *AppState`,
@@ -72,8 +73,10 @@
         execution.
     09. `sysProcessAssetUploads(ctx)`: Handles EXIF orientation and paced
         CPU-to-GPU texture uploads.
-    10. `sysUpdateCache(ctx)`: Enforces VRAM budget, spawns decode workers, and
-        schedules settled neighbor preloading.
+    10. `sysUpdateCache(ctx)`: Enforces VRAM budget, spawns decode workers,
+        schedules settled neighbor preloading, and flushes satisfied IPC
+        `wait_load` barrier streams
+        (`defer state.flushPendingWaitLoadStreams()`).
     11. `sysSyncMetrics(ctx)`: Snapshots atomic worker counters, active image
         telemetry, and cache status into `state.viewer.stats` (`ViewerStats`).
   - **Phase 3: Presentation**: Builds `UiViewModel`, evaluates Clay layout, and
