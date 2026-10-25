@@ -30,13 +30,14 @@ test "prepareCacheTextures guards thumbnail eviction during active thumb_crossfa
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    try state.viewer.navigation.appendEntry(allocator, .{
+    _ = try state.viewer.navigation.appendEntry(allocator, .{
         .filesystem = .{ .path = "img1.jpg" },
     });
     state.viewer.navigation.current_index = 0;
+    const id0 = state.viewer.navigation.getIdAt(0).?;
 
     // Simulate entry with loaded thumbnail and loaded GPU texture
-    const key = try state.cache.appendSlot(allocator, 0, .{ .loaded_gpu = .{
+    const key = try state.cache.appendSlot(allocator, id0, .{ .loaded_gpu = .{
         .gpu_texture = .{ .ptr = @ptrFromInt(0x1234) },
         .w = 800,
         .h = 600,
@@ -68,12 +69,12 @@ test "prepareCacheTextures guards thumbnail eviction during active thumb_crossfa
         .ease_out_quad,
     );
     state.prepareCacheTextures();
-    var entry = state.cache.get(state.cache.activeKey(0)).?;
+    var entry = state.cache.get(state.cache.activeKey(id0)).?;
     try std.testing.expect(entry.thumbnail == .loaded);
 
     // Case 2: thumb_crossfade settles -> prepareCacheTextures evicts thumbnail
     state.viewer.animations.settle(.thumb_crossfade);
     state.prepareCacheTextures();
-    entry = state.cache.get(state.cache.activeKey(0)).?;
+    entry = state.cache.get(state.cache.activeKey(id0)).?;
     try std.testing.expect(entry.thumbnail == .unloaded);
 }

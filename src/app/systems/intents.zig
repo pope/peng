@@ -20,11 +20,11 @@ fn showCustomSnackbar(self: *AppState, msg: []const u8) void {
 
 fn togglePairStream(self: *AppState) void {
     const nav = &self.viewer.navigation;
-    const cur_idx = nav.current_index orelse return;
+    const cur_id = nav.getCurrentMediaId() orelse return;
     const entry_item = nav.getCurrentImageEntry() orelse return;
     if (!entry_item.isPair()) return;
 
-    const key = self.cache.activeKey(cur_idx);
+    const key = self.cache.activeKey(cur_id);
     const entry = self.cache.get(key) orelse return;
     if (entry.status != .loaded_gpu and entry.status != .loaded_cpu) return;
     if (entry.is_promoting or !self.workers.canSpawnDecode()) return;
@@ -380,6 +380,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
             }
             const is_slideshow = nav.isSlideshowActive();
             const old_index = nav.current_index;
+            const old_id = nav.getCurrentMediaId();
             const old_rot = self.viewer.viewport.rotation_angle;
             const old_zoom = vp.zoom_factor.get();
             const old_pan_x = vp.pan_x;
@@ -424,7 +425,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 nav.current_index != null and
                 old_index.? != nav.current_index.?;
             if (changed_image) {
-                const old_key = self.cache.activeKey(old_index.?);
+                const old_key = self.cache.activeKey(old_id.?);
                 const old_entry_loaded = if (self.cache.get(old_key)) |e|
                     (e.status == .loaded_gpu or
                         (self.gpu_device == null and e.status != .failed))
@@ -812,15 +813,15 @@ test "Manga Mode toggles Right-to-Left image navigation" {
     var app_st = try AppState.initHeadless(allocator, io);
     defer app_st.deinit();
 
-    try app_st.viewer.navigation.appendEntry(
+    _ = try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "page1.png" } },
     );
-    try app_st.viewer.navigation.appendEntry(
+    _ = try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "page2.png" } },
     );
-    try app_st.viewer.navigation.appendEntry(
+    _ = try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "page3.png" } },
     );
@@ -850,15 +851,15 @@ test "Navigation intents cleanly advance image index" {
     var app_st = try AppState.initHeadless(allocator, io);
     defer app_st.deinit();
 
-    try app_st.viewer.navigation.appendEntry(
+    _ = try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "img1.png" } },
     );
-    try app_st.viewer.navigation.appendEntry(
+    _ = try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "img2.png" } },
     );
-    try app_st.viewer.navigation.appendEntry(
+    _ = try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "img3.png" } },
     );
@@ -919,10 +920,15 @@ test "rotate_cw, rotate_ccw, and reset_rotation intents" {
     const media_item = state.MediaEntry{
         .filesystem = .{ .path = "test_image.raf" },
     };
-    try app_st.viewer.navigation.appendEntry(allocator, media_item);
+    _ = try app_st.viewer.navigation.appendEntry(allocator, media_item);
     app_st.viewer.navigation.current_index = 0;
+    const id0 = app_st.viewer.navigation.getIdAt(0).?;
 
-    const key = try app_st.cache.appendSlot(allocator, 0, .{ .decoding = .{} });
+    const key = try app_st.cache.appendSlot(
+        allocator,
+        id0,
+        .{ .decoding = .{} },
+    );
     app_st.cache.get(key).?.orientation = .rotate_270;
 
     // Rotate CW
@@ -1003,8 +1009,8 @@ test "fast scrubbing triggers title overlay auto-hide" {
     const media_item = state.MediaEntry{
         .filesystem = .{ .path = "test.jpg" },
     };
-    try app_st.viewer.navigation.appendEntry(allocator, media_item);
-    try app_st.viewer.navigation.appendEntry(allocator, media_item);
+    _ = try app_st.viewer.navigation.appendEntry(allocator, media_item);
+    _ = try app_st.viewer.navigation.appendEntry(allocator, media_item);
     app_st.viewer.navigation.current_index = 0;
 
     // Simulate recent navigation within 200ms
@@ -1078,15 +1084,15 @@ test "sysExecuteIntents slideshow dissolve transitions and interval threshold" {
     var app_st = try AppState.initHeadless(allocator, io);
     defer app_st.deinit();
 
-    try app_st.viewer.navigation.appendEntry(
+    _ = try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "s1.jpg" } },
     );
-    try app_st.viewer.navigation.appendEntry(
+    _ = try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "s2.jpg" } },
     );
-    try app_st.viewer.navigation.appendEntry(
+    _ = try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "s3.jpg" } },
     );
@@ -1138,15 +1144,15 @@ test "sysExecuteIntents - manual navigation crossfade and rapid navigation cut" 
     var app_st = try AppState.initHeadless(allocator, io);
     defer app_st.deinit();
 
-    try app_st.viewer.navigation.appendEntry(
+    _ = try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "s1.jpg" } },
     );
-    try app_st.viewer.navigation.appendEntry(
+    _ = try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "s2.jpg" } },
     );
-    try app_st.viewer.navigation.appendEntry(
+    _ = try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "s3.jpg" } },
     );
@@ -1196,7 +1202,9 @@ test "sysExecuteIntents - manual navigation crossfade and rapid navigation cut" 
     app_st.viewer.navigation.crossfade = true;
     app_st.viewer.navigation.current_index = 0;
     app_st.viewer.navigation.last_nav_time_ms = 0;
-    const key0 = try app_st.cache.appendSlot(allocator, 0, .{
+    const id0 = app_st.viewer.navigation.getIdAt(0).?;
+    const id1 = app_st.viewer.navigation.getIdAt(1).?;
+    const key0 = try app_st.cache.appendSlot(allocator, id0, .{
         .loaded_gpu = .{
             .gpu_texture = undefined,
             .w = 100,
@@ -1208,7 +1216,7 @@ test "sysExecuteIntents - manual navigation crossfade and rapid navigation cut" 
     defer app_st.cache.get(key0).?.status = .{
         .decoding = .{ .has_thread = false },
     };
-    _ = try app_st.cache.appendSlot(allocator, 1, .{
+    _ = try app_st.cache.appendSlot(allocator, id1, .{
         .decoding = .{ .has_thread = true },
     });
 
@@ -1315,8 +1323,14 @@ test "sysExecuteIntents classification snackbar confirms action and advance" {
 
     app_st.viewer.ui.snackbar.enabled = true;
 
-    try app_st.viewer.navigation.appendEntry(allocator, .{ .filesystem = .{ .path = "img1.jpg" } });
-    try app_st.viewer.navigation.appendEntry(allocator, .{ .filesystem = .{ .path = "img2.jpg" } });
+    _ = try app_st.viewer.navigation.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = "img1.jpg" } },
+    );
+    _ = try app_st.viewer.navigation.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = "img2.jpg" } },
+    );
     app_st.viewer.navigation.current_index = 0;
 
     // 1. In default view, mark Pick: image remains visible, does not advance
@@ -1434,15 +1448,16 @@ test "sysExecuteIntents - raw jpeg stacking and stream toggle" {
         u8,
         "testfiles/golden-screenshots/init.png",
     );
-    try app_st.viewer.navigation.appendEntry(
+    _ = try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .pair = .{ .raw_path = raw_p, .jpeg_path = jpg_p } },
     );
     app_st.viewer.navigation.current_index = 0;
+    const id0 = app_st.viewer.navigation.getIdAt(0).?;
 
     const surf = sdl.Surface.create(10, 10, sdl.PixelFormat.rgba32) orelse
         return error.SurfaceFailed;
-    const key = try app_st.cache.appendSlot(allocator, 0, .{
+    const key = try app_st.cache.appendSlot(allocator, id0, .{
         .loaded_cpu = .{
             .surface = surf,
             .w = 1616.0,
@@ -1531,7 +1546,7 @@ test "sysExecuteIntents - refresh avoids aliasing and uses archive source" {
     const arena_alloc = app_st.viewer.navigation.directory_arena.allocator();
     const arch_p = try arena_alloc.dupe(u8, cbz_path);
     const entry_n = try arena_alloc.dupe(u8, "inner_pages/page01.jpg");
-    try app_st.viewer.navigation.appendEntry(allocator, .{
+    _ = try app_st.viewer.navigation.appendEntry(allocator, .{
         .archive_entry = .{
             .archive_path = arch_p,
             .entry_name = entry_n,
@@ -1562,13 +1577,14 @@ test "togglePairStream - requires loaded status before requesting target" {
     const dir_alloc = app_st.viewer.navigation.directory_arena.allocator();
     const raw_p = try dir_alloc.dupe(u8, "photo.ARW");
     const jpg_p = try dir_alloc.dupe(u8, "photo.JPG");
-    try app_st.viewer.navigation.appendEntry(
+    _ = try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .pair = .{ .raw_path = raw_p, .jpeg_path = jpg_p } },
     );
     app_st.viewer.navigation.current_index = 0;
+    const id0 = app_st.viewer.navigation.getIdAt(0).?;
 
-    const key0 = try app_st.cache.appendSlot(allocator, 0, .{
+    const key0 = try app_st.cache.appendSlot(allocator, id0, .{
         .decoding = .{ .has_thread = true },
     });
     const entry0 = app_st.cache.get(key0).?;
@@ -1605,21 +1621,23 @@ test "executeIntent - navigating onto failed slide skips crossfade" {
     defer app_st.deinit();
 
     const dir_alloc = app_st.viewer.navigation.directory_arena.allocator();
-    try app_st.viewer.navigation.appendEntry(
+    _ = try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = try dir_alloc.dupe(u8, "a.jpg") } },
     );
-    try app_st.viewer.navigation.appendEntry(
+    _ = try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = try dir_alloc.dupe(u8, "b.jpg") } },
     );
     app_st.viewer.navigation.current_index = 0;
     app_st.viewer.navigation.crossfade = true;
+    const id0_failed = app_st.viewer.navigation.getIdAt(0).?;
+    const id1_failed = app_st.viewer.navigation.getIdAt(1).?;
 
-    _ = try app_st.cache.appendSlot(allocator, 0, .{
+    _ = try app_st.cache.appendSlot(allocator, id0_failed, .{
         .decoding = .{ .has_thread = false },
     });
-    _ = try app_st.cache.appendSlot(allocator, 1, .failed);
+    _ = try app_st.cache.appendSlot(allocator, id1_failed, .failed);
 
     try executeIntent(&app_st, .next_image);
     try std.testing.expectEqual(
@@ -1676,19 +1694,21 @@ test "executeIntent - syncs rotation and zoom on nav, rotate, and set_zoom" {
     defer app_st.deinit();
 
     const dir_alloc = app_st.viewer.navigation.directory_arena.allocator();
-    try app_st.viewer.navigation.appendEntry(
+    _ = try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = try dir_alloc.dupe(u8, "slide0.jpg") } },
     );
-    try app_st.viewer.navigation.appendEntry(
+    _ = try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = try dir_alloc.dupe(u8, "slide1.jpg") } },
     );
     app_st.viewer.navigation.current_index = 0;
+    const id0 = app_st.viewer.navigation.getIdAt(0).?;
+    const id1 = app_st.viewer.navigation.getIdAt(1).?;
 
     // Slide 0: 4000x2000 unrotated -> in 1024x768 headless viewport,
     // base scale is 1024/4000 = 0.256
-    const key0 = try app_st.cache.appendSlot(allocator, 0, .{
+    const key0 = try app_st.cache.appendSlot(allocator, id0, .{
         .decoding = .{ .has_thread = false },
     });
     const entry0 = app_st.cache.get(key0).?;
@@ -1697,7 +1717,7 @@ test "executeIntent - syncs rotation and zoom on nav, rotate, and set_zoom" {
 
     // Slide 1: 4000x2000 with EXIF 90 deg rotation -> rotated dims 2000x4000,
     // base scale is 768/4000 = 0.192
-    const key1 = try app_st.cache.appendSlot(allocator, 1, .{
+    const key1 = try app_st.cache.appendSlot(allocator, id1, .{
         .decoding = .{ .has_thread = false },
     });
     const entry1 = app_st.cache.get(key1).?;
@@ -1789,13 +1809,14 @@ test "executeIntent - server_mode hides on quit and exits on quit_server" {
     defer app_st.deinit();
 
     app_st.viewer.server_mode = true;
-    try app_st.viewer.navigation.appendEntry(
+    _ = try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "img0.jpg" } },
     );
     app_st.viewer.navigation.current_index = 0;
+    const id0 = app_st.viewer.navigation.getIdAt(0).?;
     _ = try app_st.viewer.navigation.markCurrentPick(allocator);
-    _ = try app_st.cache.appendSlot(allocator, 0, .failed);
+    _ = try app_st.cache.appendSlot(allocator, id0, .failed);
     app_st.viewer.navigation.slideshow = .{ .active = .{ .interval_s = 2.0 } };
 
     // .quit in server_mode hides the window, stops slideshow, and unloads

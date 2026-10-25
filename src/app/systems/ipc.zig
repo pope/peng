@@ -542,14 +542,15 @@ test "sysExecuteIpcCommands - reactive wait_load barrier waits until ready" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    try state.viewer.navigation.appendEntry(
+    _ = try state.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "testfiles/images/000_0_1024x682.jpg" } },
     );
     state.viewer.navigation.current_index = 0;
+    const id0 = state.viewer.navigation.getIdAt(0).?;
     const key = try state.cache.appendSlot(
         allocator,
-        0,
+        id0,
         .{ .decoding = .{ .has_thread = true } },
     );
 
@@ -822,11 +823,11 @@ test "sysExecuteIpcCommands - selections and clear_selections JSON workflow" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    try state.viewer.navigation.appendEntry(
+    _ = try state.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "a.jpg" } },
     );
-    try state.viewer.navigation.appendEntry(
+    _ = try state.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "b.jpg" } },
     );

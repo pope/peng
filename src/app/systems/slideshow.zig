@@ -32,10 +32,10 @@ test "AppState slideshow timer auto-advances slide" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    try state.viewer.navigation.appendEntry(allocator, .{
+    _ = try state.viewer.navigation.appendEntry(allocator, .{
         .filesystem = .{ .path = "img1.jpg" },
     });
-    try state.viewer.navigation.appendEntry(allocator, .{
+    _ = try state.viewer.navigation.appendEntry(allocator, .{
         .filesystem = .{ .path = "img2.jpg" },
     });
     state.viewer.navigation.current_index = 0;
@@ -90,10 +90,10 @@ test "AppState slideshow pauses during command palette, dragging, or explicit pa
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    try state.viewer.navigation.appendEntry(allocator, .{
+    _ = try state.viewer.navigation.appendEntry(allocator, .{
         .filesystem = .{ .path = "img1.jpg" },
     });
-    try state.viewer.navigation.appendEntry(allocator, .{
+    _ = try state.viewer.navigation.appendEntry(allocator, .{
         .filesystem = .{ .path = "img2.jpg" },
     });
     state.viewer.navigation.current_index = 0;

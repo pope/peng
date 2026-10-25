@@ -109,8 +109,12 @@ ______________________________________________________________________
 
 - **Non-Blocking Main-Thread Contract**:
   Calling `std.Io.Group.cancel(io)` blocks (`futexWait`) until in-flight workers finish. Instead, during runtime navigation, the main thread atomically increments `state.cache.generation.fetchAdd(1, .release)` (or `palette.dir_scan_generation.fetchAdd(1, .release)`).
-- **`CancellationToken` & `SlotBound` Injection (`src/app/workers/decode.zig`, `src/app/workers/context.zig`)**:
-  `DecodeArgs` bundles the slot's `ImageCacheKey` (`index` and assigned `generation`), `MediaEntry`, and `current_generation: *const std.atomic.Value(usize)`, exposing `cancelToken()` (`context.CancellationToken`) to bind `key.generation`, `current_generation`, and `workers.exiting`:
+- **`CancellationToken` & `SlotBound` Injection**:
+  `DecodeArgs` in `src/app/workers/decode.zig` bundles the slot's
+  `ImageCacheKey` (stable `id: MediaId` and assigned `generation`),
+  `MediaEntry`, and `current_generation: *const std.atomic.Value(usize)`,
+  exposing `cancelToken()` (`context.CancellationToken`) to bind
+  `key.generation`, `current_generation`, and `workers.exiting`:
   ```zig
   pub const DecodeArgs = struct {
       workers: *WorkerManager,

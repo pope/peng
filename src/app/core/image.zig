@@ -11,17 +11,23 @@ const CpuSurfaceComponent = state_pkg.CpuSurfaceComponent;
 const GpuTextureComponent = state_pkg.GpuTextureComponent;
 const JpegDimensions = exif.JpegDimensions;
 pub const MediaEntry = state_pkg.MediaEntry;
+const MediaId = state_pkg.MediaId;
 pub const Orientation = state_pkg.Orientation;
 const parseExifDimensions = exif.parseExifDimensions;
 const parseExifOrientation = exif.parseExifOrientation;
 const RawMetadata = state_pkg.RawMetadata;
 const ZipSeekOffsets = state_pkg.types.ZipSeekOffsets;
 
-/// Unique lookup key identifying a cached image slot by its playlist index
+/// Unique lookup key identifying a cached image slot by its stable MediaId
 /// and cache generation epoch.
 pub const ImageCacheKey = struct {
-    index: usize,
+    id: MediaId,
     generation: usize,
+
+    /// Equality predicate comparing MediaId and generation epoch.
+    pub inline fn eql(self: ImageCacheKey, other: ImageCacheKey) bool {
+        return self.id == other.id and self.generation == other.generation;
+    }
 };
 
 /// Cache slot structure binding an `ImageCacheKey` to its active `CacheEntry`
@@ -52,13 +58,6 @@ pub const ImageCache = struct {
     vram_capped_neighbors: ?state_pkg.VisibleNeighbors = null,
     vram_capped_prev_index: ?usize = null,
     max_prefetch_dist: usize = 2,
-    alias_index: ?IndexAlias = null,
-
-    pub const IndexAlias = struct {
-        from: usize,
-        to: usize,
-        generation: usize,
-    };
 
     /// Atomically increments the cache generation epoch to invalidate
     /// in-flight asynchronous decode tasks.
@@ -66,14 +65,16 @@ pub const ImageCache = struct {
         self.vram_capped_neighbors = null;
         self.vram_capped_prev_index = null;
         self.max_prefetch_dist = 2;
-        self.alias_index = null;
         return self.generation.fetchAdd(1, .release) +% 1;
     }
 
-    /// Generates an `ImageCacheKey` combining the specified media index and
+    /// Generates an `ImageCacheKey` combining the specified MediaId and
     /// current generation epoch.
-    pub fn activeKey(self: *const ImageCache, index: usize) ImageCacheKey {
-        return .{ .index = index, .generation = self.generation.load(.acquire) };
+    pub fn activeKey(self: *const ImageCache, id: MediaId) ImageCacheKey {
+        return .{
+            .id = id,
+            .generation = self.generation.load(.acquire),
+        };
     }
 
     /// Returns the count of allocated cache slots.
@@ -105,7 +106,6 @@ pub const ImageCache = struct {
         self.vram_capped_neighbors = null;
         self.vram_capped_prev_index = null;
         self.max_prefetch_dist = 2;
-        self.alias_index = null;
     }
 
     /// Clears all slots without releasing underlying capacity.
@@ -114,14 +114,13 @@ pub const ImageCache = struct {
         self.vram_capped_neighbors = null;
         self.vram_capped_prev_index = null;
         self.max_prefetch_dist = 2;
-        self.alias_index = null;
     }
 
     /// Finds the dense array index of the slot matching `key`, or null if not found.
     pub fn getIndex(self: *const ImageCache, key: ImageCacheKey) ?usize {
         const keys = self.slots.items(.key);
         for (keys, 0..) |k, i| {
-            if (k.index == key.index and k.generation == key.generation) return i;
+            if (k.eql(key)) return i;
         }
         return null;
     }
@@ -151,19 +150,19 @@ pub const ImageCache = struct {
         return false;
     }
 
-    /// Appends a new slot for media `index` at current generation, returning
+    /// Appends a new slot for media `id` at current generation, returning
     /// its unique `ImageCacheKey`.
     pub fn appendSlot(
         self: *ImageCache,
         allocator: std.mem.Allocator,
-        index: usize,
+        id: MediaId,
         status: CacheStatus,
     ) !ImageCacheKey {
-        const key = ImageCacheKey{
-            .index = index,
-            .generation = self.generation.load(.acquire),
-        };
-        try self.slots.append(allocator, .{ .key = key, .entry = .{ .status = status } });
+        const key = self.activeKey(id);
+        try self.slots.append(allocator, .{
+            .key = key,
+            .entry = .{ .status = status },
+        });
         return key;
     }
 
@@ -173,14 +172,6 @@ pub const ImageCache = struct {
         index_in_list: usize,
         gpu_device: ?sdl.gpu.Device,
     ) void {
-        const removed_key = self.slots.items(.key)[index_in_list];
-        if (self.alias_index) |alias| {
-            if (alias.generation == removed_key.generation and
-                (alias.to == removed_key.index or alias.from == removed_key.index))
-            {
-                self.alias_index = null;
-            }
-        }
         var entry = self.slots.items(.entry)[index_in_list];
         self.slots.swapRemove(index_in_list);
         entry.deinit(gpu_device);
@@ -228,6 +219,7 @@ pub const ImageCache = struct {
     pub fn enforceVramBudget(
         self: *ImageCache,
         gpu_device: ?sdl.gpu.Device,
+        nav: anytype,
         neighbors_opt: ?state_pkg.VisibleNeighbors,
         protected_prev_index: ?usize,
         total_items: usize,
@@ -257,11 +249,15 @@ pub const ImageCache = struct {
                     distant_victim = i;
                     break;
                 };
-                if (key.index == neighbors.current) continue;
+                const item_pos = nav.posOfId(key.id) orelse {
+                    distant_victim = i;
+                    break;
+                };
+                if (item_pos == neighbors.current) continue;
                 if (protected_prev_index) |prev| {
-                    if (key.index == prev) continue;
+                    if (item_pos == prev) continue;
                 }
-                if (neighbors.stepDistance(key.index)) |step_dist| {
+                if (neighbors.stepDistance(item_pos)) |step_dist| {
                     const is_neighbor_victim = neighbor_victim == null or
                         step_dist > max_neighbor_dist;
                     if (is_neighbor_victim) {
@@ -270,7 +266,7 @@ pub const ImageCache = struct {
                     }
                 } else {
                     const dist = calcCyclicDistance(
-                        key.index,
+                        item_pos,
                         neighbors.current,
                         total_items,
                     );
@@ -300,10 +296,11 @@ pub const ImageCache = struct {
     /// circularly within the active VRAM prefetch radius) are missing from the
     /// cache or not in a terminal/ready status.
     ///
-    /// A slot is considered unready if it is missing, decoding, uploading, or loaded on CPU
-    /// when a GPU device is present.
+    /// A slot is considered unready if it is missing, decoding, uploading,
+    /// or loaded on CPU when a GPU device is present.
     pub fn hasUnreadyPrefetchSlots(
         self: *const ImageCache,
+        nav: anytype,
         neighbors: state_pkg.VisibleNeighbors,
         has_gpu: bool,
     ) bool {
@@ -316,7 +313,8 @@ pub const ImageCache = struct {
         );
 
         for (desired) |d| {
-            const key = self.activeKey(d);
+            const id = nav.getIdAt(d) orelse return true;
+            const key = self.activeKey(id);
             if (self.getIndex(key)) |i| {
                 const entry = self.slots.items(.entry)[i];
                 switch (entry.status) {
@@ -2005,6 +2003,17 @@ test "enforceVramBudget - distant eviction, circular distance, and neighbor prot
     var cache = ImageCache{};
     defer cache.deinit(allocator, null);
 
+    const MockNav = struct {
+        pub fn posOfId(_: @This(), id: MediaId) ?usize {
+            if (!id.isValid()) return null;
+            return id.toU32() - 1;
+        }
+        pub fn getIdAt(_: @This(), idx: usize) ?MediaId {
+            return MediaId.fromU32(@intCast(idx + 1));
+        }
+    };
+    const mock_nav = MockNav{};
+
     const makeGpuStatus = struct {
         fn create(size: usize) CacheStatus {
             return .{
@@ -2022,62 +2031,120 @@ test "enforceVramBudget - distant eviction, circular distance, and neighbor prot
     const n10 = state_pkg.VisibleNeighbors.fromRawIndex(0, 10);
 
     // total_items = 10, current = 0
-    // Slots: 0 (dist 0), 1 (dist 1), 2 (dist 2), 5 (dist 5), 9 (dist 1 wrap-around)
-    _ = try cache.appendSlot(allocator, 0, makeGpuStatus(100));
-    _ = try cache.appendSlot(allocator, 1, makeGpuStatus(100));
-    _ = try cache.appendSlot(allocator, 2, makeGpuStatus(100));
-    _ = try cache.appendSlot(allocator, 5, makeGpuStatus(100));
-    _ = try cache.appendSlot(allocator, 9, makeGpuStatus(100));
+    // Slots: 0 (dist 0), 1 (dist 1), 2 (dist 2), 5 (dist 5), 9 (dist 1 wrap)
+    _ = try cache.appendSlot(
+        allocator,
+        mock_nav.getIdAt(0).?,
+        makeGpuStatus(100),
+    );
+    _ = try cache.appendSlot(
+        allocator,
+        mock_nav.getIdAt(1).?,
+        makeGpuStatus(100),
+    );
+    _ = try cache.appendSlot(
+        allocator,
+        mock_nav.getIdAt(2).?,
+        makeGpuStatus(100),
+    );
+    _ = try cache.appendSlot(
+        allocator,
+        mock_nav.getIdAt(5).?,
+        makeGpuStatus(100),
+    );
+    _ = try cache.appendSlot(
+        allocator,
+        mock_nav.getIdAt(9).?,
+        makeGpuStatus(100),
+    );
     // Total VRAM = 500 bytes
 
     try std.testing.expectEqual(@as(usize, 500), cache.getTotalVramBytes());
 
-    // 1. Evict down to 400: slot 5 (dist 5) is distant (dist > 2) and must be evicted first
-    cache.enforceVramBudget(null, n10, null, 10, 400);
+    // 1. Evict down to 400: slot 5 (dist 5) is distant (dist > 2)
+    cache.enforceVramBudget(null, mock_nav, n10, null, 10, 400);
     try std.testing.expectEqual(@as(usize, 400), cache.getTotalVramBytes());
-    try std.testing.expect(cache.getIndex(.{ .index = 5, .generation = 0 }) == null);
-    try std.testing.expect(cache.getIndex(.{ .index = 0, .generation = 0 }) != null);
-    try std.testing.expect(cache.getIndex(.{ .index = 1, .generation = 0 }) != null);
-    try std.testing.expect(cache.getIndex(.{ .index = 2, .generation = 0 }) != null);
-    try std.testing.expect(cache.getIndex(.{ .index = 9, .generation = 0 }) != null);
+    try std.testing.expect(
+        cache.getIndex(cache.activeKey(mock_nav.getIdAt(5).?)) == null,
+    );
+    try std.testing.expect(
+        cache.getIndex(cache.activeKey(mock_nav.getIdAt(0).?)) != null,
+    );
+    try std.testing.expect(
+        cache.getIndex(cache.activeKey(mock_nav.getIdAt(1).?)) != null,
+    );
+    try std.testing.expect(
+        cache.getIndex(cache.activeKey(mock_nav.getIdAt(2).?)) != null,
+    );
+    try std.testing.expect(
+        cache.getIndex(cache.activeKey(mock_nav.getIdAt(9).?)) != null,
+    );
 
     // 2. Evict down to 300: Remaining are 0, 1, 2, 9 (dists: 0, 1, 2, 1).
-    // All remaining non-cur have dist <= 2. Neighbor protection should evict
-    // dist 2 (slot 2) before dist 1 (slot 1 or 9).
-    cache.enforceVramBudget(null, n10, null, 10, 300);
+    // Neighbor protection should evict dist 2 (slot 2) before dist 1.
+    cache.enforceVramBudget(null, mock_nav, n10, null, 10, 300);
     try std.testing.expectEqual(@as(usize, 300), cache.getTotalVramBytes());
-    try std.testing.expect(cache.getIndex(.{ .index = 2, .generation = 0 }) == null);
-    try std.testing.expect(cache.getIndex(.{ .index = 0, .generation = 0 }) != null);
+    try std.testing.expect(
+        cache.getIndex(cache.activeKey(mock_nav.getIdAt(2).?)) == null,
+    );
+    try std.testing.expect(
+        cache.getIndex(cache.activeKey(mock_nav.getIdAt(0).?)) != null,
+    );
 
     // 3. Evict down to 50: Current slot 0 (100 bytes) should NEVER be evicted
-    // even if exceeding budget
-    cache.enforceVramBudget(null, n10, null, 10, 50);
+    cache.enforceVramBudget(null, mock_nav, n10, null, 10, 50);
     try std.testing.expectEqual(@as(usize, 100), cache.getTotalVramBytes());
-    try std.testing.expect(cache.getIndex(.{ .index = 0, .generation = 0 }) != null);
-    try std.testing.expect(cache.getIndex(.{ .index = 1, .generation = 0 }) == null);
-    try std.testing.expect(cache.getIndex(.{ .index = 9, .generation = 0 }) == null);
+    try std.testing.expect(
+        cache.getIndex(cache.activeKey(mock_nav.getIdAt(0).?)) != null,
+    );
+    try std.testing.expect(
+        cache.getIndex(cache.activeKey(mock_nav.getIdAt(1).?)) == null,
+    );
+    try std.testing.expect(
+        cache.getIndex(cache.activeKey(mock_nav.getIdAt(9).?)) == null,
+    );
 
-    // 4. Test robustness against linear_dist > total_items (e.g. slot 99 with total_items = 5)
+    // 4. Test robustness against linear_dist > total_items
     const n5 = state_pkg.VisibleNeighbors.fromRawIndex(0, 5);
-    _ = try cache.appendSlot(allocator, 99, makeGpuStatus(100));
+    _ = try cache.appendSlot(
+        allocator,
+        mock_nav.getIdAt(99).?,
+        makeGpuStatus(100),
+    );
     try std.testing.expectEqual(@as(usize, 200), cache.getTotalVramBytes());
-    cache.enforceVramBudget(null, n5, null, 5, 100);
+    cache.enforceVramBudget(null, mock_nav, n5, null, 5, 100);
     try std.testing.expectEqual(@as(usize, 100), cache.getTotalVramBytes());
-    try std.testing.expect(cache.getIndex(.{ .index = 99, .generation = 0 }) == null);
-    try std.testing.expect(cache.getIndex(.{ .index = 0, .generation = 0 }) != null);
+    try std.testing.expect(
+        cache.getIndex(cache.activeKey(mock_nav.getIdAt(99).?)) == null,
+    );
+    try std.testing.expect(
+        cache.getIndex(cache.activeKey(mock_nav.getIdAt(0).?)) != null,
+    );
 
     // 5. Slideshow protected_prev_index guard: both current (slot 0) and
     // protected prev (slot 3) must be retained
-    _ = try cache.appendSlot(allocator, 3, makeGpuStatus(100));
-    _ = try cache.appendSlot(allocator, 4, makeGpuStatus(100));
+    _ = try cache.appendSlot(
+        allocator,
+        mock_nav.getIdAt(3).?,
+        makeGpuStatus(100),
+    );
+    _ = try cache.appendSlot(
+        allocator,
+        mock_nav.getIdAt(4).?,
+        makeGpuStatus(100),
+    );
     try std.testing.expectEqual(@as(usize, 300), cache.getTotalVramBytes());
-    // Evict down to 50 bytes with slot 3 protected as previous slide:
-    // slot 4 evicted, slots 0 and 3 protected
-    cache.enforceVramBudget(null, n10, 3, 10, 50);
+    cache.enforceVramBudget(null, mock_nav, n10, 3, 10, 50);
     try std.testing.expectEqual(@as(usize, 200), cache.getTotalVramBytes());
-    try std.testing.expect(cache.getIndex(.{ .index = 0, .generation = 0 }) != null);
-    try std.testing.expect(cache.getIndex(.{ .index = 3, .generation = 0 }) != null);
-    try std.testing.expect(cache.getIndex(.{ .index = 4, .generation = 0 }) == null);
+    try std.testing.expect(
+        cache.getIndex(cache.activeKey(mock_nav.getIdAt(0).?)) != null,
+    );
+    try std.testing.expect(
+        cache.getIndex(cache.activeKey(mock_nav.getIdAt(3).?)) != null,
+    );
+    try std.testing.expect(
+        cache.getIndex(cache.activeKey(mock_nav.getIdAt(4).?)) == null,
+    );
 }
 
 test "hasUnreadyPrefetchSlots" {
@@ -2085,11 +2152,22 @@ test "hasUnreadyPrefetchSlots" {
     var cache = ImageCache{};
     defer cache.deinit(allocator, null);
 
+    const MockNav = struct {
+        pub fn posOfId(_: @This(), id: MediaId) ?usize {
+            if (!id.isValid()) return null;
+            return id.toU32() - 1;
+        }
+        pub fn getIdAt(_: @This(), idx: usize) ?MediaId {
+            return MediaId.fromU32(@intCast(idx + 1));
+        }
+    };
+    const mock_nav = MockNav{};
+
     const n5 = state_pkg.VisibleNeighbors.fromRawIndex(0, 5);
 
     // Total 5 items, current 0 -> desired: 0, 1, 2, 4, 3
     // Empty cache -> unready
-    try std.testing.expect(cache.hasUnreadyPrefetchSlots(n5, true));
+    try std.testing.expect(cache.hasUnreadyPrefetchSlots(mock_nav, n5, true));
 
     const makeGpuStatus = CacheStatus{
         .loaded_gpu = .{
@@ -2103,16 +2181,23 @@ test "hasUnreadyPrefetchSlots" {
 
     // Add 0, 1, 2, 3, 4 as loaded_gpu
     for (0..5) |idx| {
-        _ = try cache.appendSlot(allocator, idx, makeGpuStatus);
+        _ = try cache.appendSlot(
+            allocator,
+            mock_nav.getIdAt(idx).?,
+            makeGpuStatus,
+        );
     }
-    try std.testing.expect(!cache.hasUnreadyPrefetchSlots(n5, true));
+    try std.testing.expect(!cache.hasUnreadyPrefetchSlots(mock_nav, n5, true));
 
     // One slot is decoding -> unready
-    _ = cache.updateStatus(.{ .index = 2, .generation = 0 }, .{ .decoding = .{} });
-    try std.testing.expect(cache.hasUnreadyPrefetchSlots(n5, true));
+    _ = cache.updateStatus(
+        cache.activeKey(mock_nav.getIdAt(2).?),
+        .{ .decoding = .{} },
+    );
+    try std.testing.expect(cache.hasUnreadyPrefetchSlots(mock_nav, n5, true));
 
     // One slot is loaded_cpu: unready if has_gpu = true, ready if has_gpu = false
-    _ = cache.updateStatus(.{ .index = 2, .generation = 0 }, .{
+    _ = cache.updateStatus(cache.activeKey(mock_nav.getIdAt(2).?), .{
         .loaded_cpu = .{
             .surface = undefined,
             .w = 100,
@@ -2120,12 +2205,12 @@ test "hasUnreadyPrefetchSlots" {
             .size_bytes = 100,
         },
     });
-    try std.testing.expect(cache.hasUnreadyPrefetchSlots(n5, true));
-    try std.testing.expect(!cache.hasUnreadyPrefetchSlots(n5, false));
+    try std.testing.expect(cache.hasUnreadyPrefetchSlots(mock_nav, n5, true));
+    try std.testing.expect(!cache.hasUnreadyPrefetchSlots(mock_nav, n5, false));
 
     // Reset status to .failed to prevent calling SDL_DestroySurface on
     // undefined mock surface during defer deinit
-    _ = cache.updateStatus(.{ .index = 2, .generation = 0 }, .failed);
+    _ = cache.updateStatus(cache.activeKey(mock_nav.getIdAt(2).?), .failed);
 }
 
 test "ImageCache.updateStatus" {
@@ -2133,21 +2218,37 @@ test "ImageCache.updateStatus" {
     var cache = ImageCache{};
     defer cache.deinit(allocator, null);
 
+    const id10 = MediaId.fromU32(10);
+    const id20 = MediaId.fromU32(20);
+    const id30 = MediaId.fromU32(30);
+
     _ = cache.advanceGeneration();
-    _ = try cache.appendSlot(allocator, 10, .{ .decoding = .{} });
-    _ = try cache.appendSlot(allocator, 20, .{ .decoding = .{} });
+    _ = try cache.appendSlot(allocator, id10, .{ .decoding = .{} });
+    _ = try cache.appendSlot(allocator, id20, .{ .decoding = .{} });
 
     // Test successful update
-    const updated = cache.updateStatus(.{ .index = 20, .generation = 1 }, .failed);
+    const updated = cache.updateStatus(
+        .{ .id = id20, .generation = 1 },
+        .failed,
+    );
     try std.testing.expect(updated);
-    try std.testing.expectEqual(CacheStatus.failed, cache.slots.items(.entry)[1].status);
+    try std.testing.expectEqual(
+        CacheStatus.failed,
+        cache.slots.items(.entry)[1].status,
+    );
 
     // Test updating non-existent index
-    const updated_missing = cache.updateStatus(.{ .index = 30, .generation = 1 }, .failed);
+    const updated_missing = cache.updateStatus(
+        .{ .id = id30, .generation = 1 },
+        .failed,
+    );
     try std.testing.expect(!updated_missing);
 
     // Test updating matching index but mismatching generation
-    const updated_gen_mismatch = cache.updateStatus(.{ .index = 10, .generation = 2 }, .failed);
+    const updated_gen_mismatch = cache.updateStatus(
+        .{ .id = id10, .generation = 2 },
+        .failed,
+    );
     try std.testing.expect(!updated_gen_mismatch);
 }
 
@@ -2334,12 +2435,14 @@ test "probeMediaMetadata - archive entry handling" {
 
 test "ImageCache - atomic generation advance and activeKey" {
     var cache = ImageCache{};
-    try std.testing.expectEqual(@as(usize, 0), cache.activeKey(0).generation);
+    const id0 = MediaId.fromU32(1);
+    const id5 = MediaId.fromU32(5);
+    try std.testing.expectEqual(@as(usize, 0), cache.activeKey(id0).generation);
     const next_gen = cache.advanceGeneration();
     try std.testing.expectEqual(@as(usize, 1), next_gen);
-    try std.testing.expectEqual(@as(usize, 1), cache.activeKey(0).generation);
-    const key = cache.activeKey(5);
-    try std.testing.expectEqual(@as(usize, 5), key.index);
+    try std.testing.expectEqual(@as(usize, 1), cache.activeKey(id0).generation);
+    const key = cache.activeKey(id5);
+    try std.testing.expectEqual(id5, key.id);
     try std.testing.expectEqual(@as(usize, 1), key.generation);
 }
 
@@ -2706,17 +2809,25 @@ test "computeTextureVramBytes - reports 4bpp RGBA8 footprint with mipmaps" {
     );
 }
 
-test "ImageCache - removeAndDeinit resets alias_index when target slot removed" {
+test "ImageCache - Key lookup by MediaId remains valid after sort shift" {
     const allocator = std.testing.allocator;
     var cache = ImageCache{};
     defer cache.deinit(allocator, null);
 
-    const key = try cache.appendSlot(allocator, 42, .{
+    const id1 = MediaId.fromU32(1);
+    const key1 = try cache.appendSlot(allocator, id1, .{
         .decoding = .{ .has_thread = true },
     });
-    cache.alias_index = .{ .from = 0, .to = 42, .generation = key.generation };
-    try std.testing.expect(cache.alias_index != null);
 
+    const id2 = MediaId.fromU32(2);
+    _ = try cache.appendSlot(allocator, id2, .failed);
+
+    // Verify lookup by id1 succeeds
+    try std.testing.expect(cache.getIndex(key1) != null);
+    try std.testing.expectEqual(id1, cache.slots.items(.key)[0].id);
+
+    // Remove slot 0 (id1) and verify lookup reflects removal
     cache.removeAndDeinit(0, null);
-    try std.testing.expect(cache.alias_index == null);
+    try std.testing.expect(cache.getIndex(key1) == null);
+    try std.testing.expect(cache.getIndex(cache.activeKey(id2)) != null);
 }

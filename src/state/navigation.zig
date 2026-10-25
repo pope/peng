@@ -4,6 +4,7 @@ const types = @import("types.zig");
 
 const Classification = types.Classification;
 const MediaEntry = types.MediaEntry;
+const MediaId = types.MediaId;
 const SlideshowMode = types.SlideshowMode;
 const ViewMode = types.ViewMode;
 
@@ -221,6 +222,7 @@ fn containsItemWithKey(entries: []const MediaEntry, key: []const u8) bool {
 
 /// Unified media list element stored contiguously in Structure-of-Arrays (SoA) layout.
 pub const MediaItem = struct {
+    id: MediaId,
     entry: MediaEntry,
     classification: Classification = .unflagged,
 };
@@ -237,6 +239,7 @@ pub const NavDirection = enum {
 /// Tracks the active media list, current image index, slideshow progression, and directory cache.
 pub const NavigationState = struct {
     items: std.MultiArrayList(MediaItem) = .empty,
+    next_media_id: u32 = 1,
     path_classifications: std.StringArrayHashMapUnmanaged(Classification) =
         .empty,
     classification_arena: std.heap.ArenaAllocator,
@@ -374,24 +377,49 @@ pub const NavigationState = struct {
         }
     }
 
-    /// Appends a media entry in lockstep with its classification in a single
-    /// allocation.
+    /// Allocates a new unique non-zero MediaId for this session.
+    pub fn allocMediaId(self: *NavigationState) MediaId {
+        const id = MediaId.fromU32(self.next_media_id);
+        self.next_media_id +%= 1;
+        if (self.next_media_id == 0) self.next_media_id = 1;
+        return id;
+    }
+
+    /// Appends a new media entry with an automatically allocated MediaId.
     pub fn appendEntry(
         self: *NavigationState,
         gpa: std.mem.Allocator,
         entry: MediaEntry,
+    ) !MediaId {
+        const id = self.allocMediaId();
+        try self.appendEntryWithId(gpa, id, entry);
+        return id;
+    }
+
+    /// Appends a new media entry with an explicit MediaId.
+    pub fn appendEntryWithId(
+        self: *NavigationState,
+        gpa: std.mem.Allocator,
+        id: MediaId,
+        entry: MediaEntry,
     ) !void {
         const initial_class = self.lookupEntryClassification(entry);
-        if (initial_class != .unflagged) {
-            try self.syncEntryClassificationKeys(gpa, entry, initial_class);
-        }
-
         try self.items.append(gpa, .{
+            .id = id,
             .entry = entry,
             .classification = initial_class,
         });
+        errdefer _ = self.items.pop();
+
+        if (initial_class != .unflagged) {
+            try self.syncEntryClassificationKeys(gpa, entry, initial_class);
+        }
         if (initial_class == .pick) self.pick_count += 1;
         if (initial_class == .reject) self.reject_count += 1;
+        if (id.toU32() >= self.next_media_id) {
+            self.next_media_id = id.toU32() +% 1;
+            if (self.next_media_id == 0) self.next_media_id = 1;
+        }
     }
 
     /// Clears active media list, preserving persistent path flags and allocated capacities.
@@ -455,6 +483,37 @@ pub const NavigationState = struct {
             return self.items.items(.classification)[idx];
         }
         return .unflagged;
+    }
+
+    /// Returns the stable MediaId at the specified playlist index if valid.
+    pub fn getIdAt(self: *const NavigationState, idx: usize) ?MediaId {
+        if (idx >= self.items.len) return null;
+        return self.items.items(.id)[idx];
+    }
+
+    /// Returns the active MediaId of the currently displayed slide.
+    pub fn getCurrentMediaId(self: *const NavigationState) ?MediaId {
+        const cur = self.current_index orelse return null;
+        return self.getIdAt(cur);
+    }
+
+    /// Searches for the playlist index currently associated with `id`.
+    pub fn posOfId(self: *const NavigationState, id: MediaId) ?usize {
+        if (!id.isValid()) return null;
+        const ids = self.items.items(.id);
+        for (ids, 0..) |cand, i| {
+            if (cand == id) return i;
+        }
+        return null;
+    }
+
+    /// Returns a copy of the MediaEntry matching `id`.
+    pub fn getMediaEntryById(
+        self: *const NavigationState,
+        id: MediaId,
+    ) ?MediaEntry {
+        const idx = self.posOfId(id) orelse return null;
+        return self.items.items(.entry)[idx];
     }
 
     /// Searches the current media list for an entry matching `target_path`,
@@ -915,9 +974,9 @@ test "NavigationState - direction tracking" {
     try std.testing.expectEqual(NavDirection.forward, nav.direction);
 
     // Populate mock image list with 3 entries
-    try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "a.jpg" } });
-    try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "b.jpg" } });
-    try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "c.jpg" } });
+    _ = try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "a.jpg" } });
+    _ = try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "b.jpg" } });
+    _ = try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "c.jpg" } });
     nav.current_index = 0;
 
     _ = nav.nextIndex();
@@ -942,11 +1001,11 @@ test "NavigationState - triage mutations and visibility filtering" {
     var nav = try NavigationState.init(allocator);
     defer nav.deinit(allocator);
 
-    try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "1.jpg" } });
-    try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "2.jpg" } });
-    try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "3.jpg" } });
-    try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "4.jpg" } });
-    try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "5.jpg" } });
+    _ = try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "1.jpg" } });
+    _ = try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "2.jpg" } });
+    _ = try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "3.jpg" } });
+    _ = try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "4.jpg" } });
+    _ = try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "5.jpg" } });
     nav.current_index = 0;
 
     try std.testing.expectEqual(@as(usize, 5), nav.getVisibleCount());
@@ -1003,7 +1062,10 @@ test "NavigationState - rescan persistence across clearEntries" {
     var nav = try NavigationState.init(allocator);
     defer nav.deinit(allocator);
 
-    try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "photo.jpg" } });
+    _ = try nav.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = "photo.jpg" } },
+    );
     nav.current_index = 0;
     _ = try nav.markCurrentPick(allocator);
     try std.testing.expectEqual(Classification.pick, nav.getCurrentClassification());
@@ -1013,7 +1075,10 @@ test "NavigationState - rescan persistence across clearEntries" {
     try std.testing.expectEqual(@as(usize, 0), nav.count());
 
     // Re-adding the same path restores its pick status
-    try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "photo.jpg" } });
+    _ = try nav.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = "photo.jpg" } },
+    );
     nav.current_index = 0;
     try std.testing.expectEqual(Classification.pick, nav.getCurrentClassification());
     try std.testing.expectEqual(@as(usize, 1), nav.pick_count);
@@ -1028,7 +1093,10 @@ test "NavigationState - SIMD skipping and popcount across large list" {
     var buf: [32]u8 = undefined;
     for (0..100) |i| {
         const path = try std.mem.print(&buf, "img_{d}.jpg", .{i});
-        try nav.appendEntry(allocator, .{ .filesystem = .{ .path = path } });
+        _ = try nav.appendEntry(
+            allocator,
+            .{ .filesystem = .{ .path = path } },
+        );
     }
     try std.testing.expectEqual(@as(usize, 100), nav.count());
 
@@ -1087,7 +1155,7 @@ test "NavigationState - pair classification synchronization" {
     };
     defer pair_entry.deinit(allocator);
 
-    try nav.appendEntry(allocator, pair_entry);
+    _ = try nav.appendEntry(allocator, pair_entry);
     nav.current_index = 0;
 
     try std.testing.expectEqual(Classification.unflagged, nav.getCurrentClassification());
@@ -1124,7 +1192,7 @@ test "NavigationState - unstacked to stacked pair flag propagation" {
     defer nav.deinit(allocator);
 
     // 1. Mark standalone JPEG as pick while unstacked
-    try nav.appendEntry(allocator, .{
+    _ = try nav.appendEntry(allocator, .{
         .filesystem = .{ .path = "photos/shot.JPG" },
     });
     nav.current_index = 0;
@@ -1137,7 +1205,7 @@ test "NavigationState - unstacked to stacked pair flag propagation" {
     // 2. Clear and reload as stacked pair: pair must inherit pick and register
     // the RAW companion path in path_classifications
     nav.clearEntries();
-    try nav.appendEntry(allocator, .{
+    _ = try nav.appendEntry(allocator, .{
         .pair = .{
             .raw_path = "photos/shot.ARW",
             .jpeg_path = "photos/shot.JPG",
@@ -1155,7 +1223,7 @@ test "NavigationState - unstacked to stacked pair flag propagation" {
 
     // 3. Clear and reload as standalone RAW: must inherit pick
     nav.clearEntries();
-    try nav.appendEntry(allocator, .{
+    _ = try nav.appendEntry(allocator, .{
         .filesystem = .{ .path = "photos/shot.ARW" },
     });
     nav.current_index = 0;
@@ -1170,10 +1238,10 @@ test "NavigationState - adjustIndexForVisibility syncs anchor_index" {
     var nav = try NavigationState.init(allocator);
     defer nav.deinit(allocator);
 
-    try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "0.jpg" } });
-    try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "1.jpg" } });
-    try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "2.jpg" } });
-    try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "3.jpg" } });
+    _ = try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "0.jpg" } });
+    _ = try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "1.jpg" } });
+    _ = try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "2.jpg" } });
+    _ = try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "3.jpg" } });
     nav.current_index = 2;
 
     // In .all mode with current_index = 2, adjustIndexForVisibility must sync
@@ -1232,18 +1300,18 @@ test "NavigationState - writeSelectionsJson and clearAllClassifications" {
     var nav = try NavigationState.init(allocator);
     defer nav.deinit(allocator);
 
-    try nav.appendEntry(
+    _ = try nav.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "photos/a.jpg" } },
     );
-    try nav.appendEntry(
+    _ = try nav.appendEntry(
         allocator,
         .{ .pair = .{
             .raw_path = "photos/b.ARW",
             .jpeg_path = "photos/b.JPG",
         } },
     );
-    try nav.appendEntry(
+    _ = try nav.appendEntry(
         allocator,
         .{ .archive_entry = .{
             .archive_path = "comics/vol1.cbz",
@@ -1268,7 +1336,7 @@ test "NavigationState - writeSelectionsJson and clearAllClassifications" {
 
     // Verify cross-directory / cross-archive persistence after clearEntries()
     nav.clearEntries();
-    try nav.appendEntry(
+    _ = try nav.appendEntry(
         allocator,
         .{ .archive_entry = .{
             .archive_path = "comics/vol2.cbz",
@@ -1297,5 +1365,74 @@ test "NavigationState - writeSelectionsJson and clearAllClassifications" {
     try std.testing.expectEqualStrings(
         "{\"ok\":true,\"picks\":[],\"rejects\":[]}\n",
         empty_writer.buffered(),
+    );
+}
+
+test "NavigationState - MediaId allocation and persistence across reset" {
+    const allocator = std.testing.allocator;
+    var nav = try NavigationState.init(allocator);
+    defer nav.deinit(allocator);
+
+    const id1 = nav.allocMediaId();
+    try std.testing.expectEqual(@as(u32, 1), id1.toU32());
+    const id2 = nav.allocMediaId();
+    try std.testing.expectEqual(@as(u32, 2), id2.toU32());
+
+    const id3 = try nav.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = "test1.jpg" } },
+    );
+    try std.testing.expectEqual(@as(u32, 3), id3.toU32());
+    try std.testing.expectEqual(id3, nav.getIdAt(0).?);
+
+    // Monotonic counter must NOT be reset on clearEntries()
+    nav.clearEntries();
+    const id4 = try nav.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = "test2.jpg" } },
+    );
+    try std.testing.expectEqual(@as(u32, 4), id4.toU32());
+    try std.testing.expectEqual(id4, nav.getIdAt(0).?);
+
+    // appendEntryWithId with a higher MediaId must advance next_media_id
+    const high_id = MediaId.fromU32(50);
+    try nav.appendEntryWithId(
+        allocator,
+        high_id,
+        .{ .filesystem = .{ .path = "test3.jpg" } },
+    );
+    try std.testing.expectEqual(
+        @as(u32, 51),
+        nav.allocMediaId().toU32(),
+    );
+}
+
+test "NavigationState - getMediaEntryById and posOfId lookup" {
+    const allocator = std.testing.allocator;
+    var nav = try NavigationState.init(allocator);
+    defer nav.deinit(allocator);
+
+    _ = try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "a.jpg" } });
+    _ = try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "b.jpg" } });
+    _ = try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "c.jpg" } });
+
+    const id_a = nav.getIdAt(0).?;
+    const id_b = nav.getIdAt(1).?;
+    const id_c = nav.getIdAt(2).?;
+
+    try std.testing.expectEqual(@as(?usize, 0), nav.posOfId(id_a));
+    try std.testing.expectEqual(@as(?usize, 1), nav.posOfId(id_b));
+    try std.testing.expectEqual(@as(?usize, 2), nav.posOfId(id_c));
+    try std.testing.expectEqual(@as(?usize, null), nav.posOfId(MediaId.none));
+    try std.testing.expectEqual(
+        @as(?usize, null),
+        nav.posOfId(MediaId.fromU32(999)),
+    );
+
+    const entry_b = nav.getMediaEntryById(id_b).?;
+    try std.testing.expectEqualStrings("b.jpg", entry_b.getPath());
+    try std.testing.expectEqual(
+        @as(?MediaEntry, null),
+        nav.getMediaEntryById(MediaId.fromU32(999)),
     );
 }

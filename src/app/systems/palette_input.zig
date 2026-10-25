@@ -825,7 +825,7 @@ test "openPalette directory_navigator starting directory rules" {
         "{s}/image1.jpg",
         .{tmp_dir},
     );
-    try state.viewer.navigation.appendEntry(
+    _ = try state.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = sample_path } },
     );
@@ -891,7 +891,7 @@ test "openPalette directory_navigator steps up if 0 subdirectories" {
     defer state.deinit();
 
     // Image in child_leaf (which has 0 subdirectories itself)
-    try state.viewer.navigation.appendEntry(
+    _ = try state.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = img_path } },
     );
@@ -927,7 +927,7 @@ test "resolveNavigatorInitialPath handles relative file without slashes" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    try state.viewer.navigation.appendEntry(
+    _ = try state.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "photo.png" } },
     );

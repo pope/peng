@@ -735,12 +735,16 @@ test "sysProcessInput preserves image navigation when viewport is not zoomed" {
     // Even if a fitted image (800x600 in 1024x768 headless viewport) has
     // non-zero pan_x / pan_y from incidental scroll/drag, it does not overflow
     // and must preserve Right/Left image navigation.
-    const key0 = try app_st.cache.appendSlot(allocator, 0, .{
+    _ = try app_st.viewer.navigation.appendEntry(allocator, .{
+        .filesystem = .{ .path = "test.png" },
+    });
+    app_st.viewer.navigation.current_index = 0;
+    const id0 = app_st.viewer.navigation.getIdAt(0).?;
+    const key0 = try app_st.cache.appendSlot(allocator, id0, .{
         .decoding = .{ .has_thread = false },
     });
     const entry0 = app_st.cache.get(key0).?;
     entry0.full_dims = .{ .w = 800.0, .h = 600.0 };
-    app_st.viewer.navigation.current_index = 0;
     app_st.viewer.viewport.setPan(45.0, -30.0);
     try std.testing.expect(!app_st.isImageOverflowing());
 

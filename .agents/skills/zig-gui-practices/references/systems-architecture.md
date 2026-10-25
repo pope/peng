@@ -58,8 +58,20 @@ ______________________________________________________________________
   - `ImageCache` (`state.cache` in `src/app/core/image.zig`) uses Zig's `std.MultiArrayList(CacheSlot)` for Structure-of-Arrays (SoA) memory layout, allowing key scanning without cache-line pollution while mutating key and entry slices atomically.
   - Generation state (`generation: std.atomic.Value(usize) = .init(0)`) is owned exclusively by `ImageCache`.
   - Navigation/directory resets advance the generation via `_ = state.cache.advanceGeneration()`.
-  - When a single-file launch (`peng /dir/img_50.jpg`) finishes its background directory scan, `reconcileSingleFileScanCache` re-keys slot `0` in-place to `target_idx` and sets `cache.alias_index = .{ .from = 0, .to = target_idx, .generation = cur_gen }` so in-flight worker events for slot `0` resolve transparently without canceling or restarting the decode.
-  - Incoming background event payloads wrap slot-bound data in `SlotBound(T)` (`evt.resolve(&state.cache) -> ?struct { key: ImageCacheKey, payload: *T }`) and generation-bound data in `Generational(T)` (`evt.resolve(&generation)`). `SlotBound.resolve` intentionally returns the validated `ImageCacheKey` rather than a raw `*CacheEntry` pointer because `enforceVramBudget` (`swapRemove`) relocates the tail slot and invalidates interior pointers. Callers read slot state by value via `state.cache.getEntry(key)` and scope mutable pointer borrows (`state.cache.get(key)`) to leaf blocks.
+  - In-flight worker jobs and cached textures are keyed by stable `MediaId`
+    (`ImageCacheKey{ .id = MediaId, .generation = usize }`). When a
+    single-file launch (`peng /dir/img_50.jpg`) finishes its background
+    directory scan, the target item retains its allocated `MediaId(1)`,
+    allowing in-flight worker events to resolve directly without slot
+    re-keying, alias mapping, or cache eviction.
+  - Incoming background event payloads wrap slot-bound data in `SlotBound(T)`
+    (`evt.resolve(&state.cache) -> ?SlotBound(T).Resolved`) and
+    generation-bound data in `Generational(T)` (`evt.resolve(&generation)`).
+    `SlotBound.resolve` returns the validated `ImageCacheKey` rather than a
+    raw `*CacheEntry` pointer because `enforceVramBudget` (`swapRemove`)
+    relocates the tail slot and invalidates interior pointers. Callers read
+    slot state by value via `state.cache.getEntry(key)` and scope mutable
+    pointer borrows (`state.cache.get(key)`) to leaf blocks.
 
 ______________________________________________________________________
 

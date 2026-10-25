@@ -143,18 +143,20 @@
     payload with an optional handle (`surface: ?sdl.Surface`) to represent
     different outcomes; define distinct union variants (`dimensions_probed` vs
     `thumb_decoded`) with non-optional resource ownership.
-  - **Weak Generational Keys Over Raw Container Interior Pointers (`ImageCacheKey` vs `*CacheEntry`)**:
+  - **Weak Generational Keys Over Raw Container Interior Pointers**:
     `ImageCache` (`std.MultiArrayList(CacheSlot)`) evicts entries via
     `swapRemove`, which relocates the tail element into the evicted index and
-    overwrites the former tail slot with `undefined` (`0xaa` in Debug). Never
-    return or pass raw `*CacheEntry` pointers (or `slots.items(.entry)` /
-    `slots.items(.key)` slices) across function boundaries or across any call
-    that may append to or evict from `ImageCache` (e.g. `enforceVramBudget`,
-    `appendSlot`, `completeDecodedGpuUpload`). Pass `ImageCacheKey` by value,
-    let `SlotBound(T).resolve(&state.cache)` return `{ key: ImageCacheKey, payload: *T }`,
-    read slot state by value via `cache.getEntry(key)`, and scope mutable
-    pointer borrows (`if (cache.get(key)) |entry| { ... }`) strictly to leaf
-    blocks that do not mutate container capacity.
+    overwrites the former tail slot with `undefined` (`0xaa` in Debug).
+    Never return or pass raw `*CacheEntry` pointers (or `slots.items(.entry)`
+    or `slots.items(.key)` slices) across function boundaries or across any
+    call that may append to or evict from `ImageCache` (e.g.
+    `enforceVramBudget`, `appendSlot`, `completeDecodedGpuUpload`). Pass
+    `ImageCacheKey` (composed of stable `id: MediaId` and generation epoch)
+    by value, let `SlotBound(T).resolve(&state.cache)` return
+    `{ key: ImageCacheKey, payload: *T }`, read slot state by value via
+    `cache.getEntry(key)`, and scope mutable pointer borrows
+    (`if (cache.get(key)) |entry| { ... }`) strictly to leaf blocks that do
+    not mutate container capacity.
   - **Multi-Role Container Caveat**: Do not force mutually exclusive tagged
     unions onto multi-role container descriptors (such as TIFF IFD0, which
     simultaneously acts as a SubIFD container, preview provider, and EXIF

@@ -75,6 +75,7 @@ pub const LogicalDims = types.LogicalDims;
 pub const LogicalPoint = types.LogicalPoint;
 pub const MeasureTextUserData = view_model.MeasureTextUserData;
 pub const MediaEntry = types.MediaEntry;
+pub const MediaId = types.MediaId;
 pub const MediaItem = navigation.MediaItem;
 pub const MediaItemSlice = navigation.MediaItemSlice;
 pub const MIN_SLIDESHOW_DISSOLVE_INTERVAL_S = animation_state.MIN_SLIDESHOW_DISSOLVE_INTERVAL_S;

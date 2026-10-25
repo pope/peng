@@ -7,6 +7,7 @@ const std = @import("std");
 
 const ImageCacheKey = image.ImageCacheKey;
 const MediaEntry = state_pkg.MediaEntry;
+const MediaId = state_pkg.MediaId;
 const Orientation = state_pkg.Orientation;
 const RawMetadata = state_pkg.RawMetadata;
 const ThumbnailSource = state_pkg.ThumbnailSource;
@@ -84,15 +85,7 @@ pub fn SlotBound(comptime T: type) type {
             if (self.key.generation != cache.generation.load(.acquire)) {
                 return null;
             }
-            var lookup_key = self.key;
-            if (cache.alias_index) |alias| {
-                if (self.key.generation == alias.generation and
-                    self.key.index == alias.from)
-                {
-                    lookup_key.index = alias.to;
-                }
-            }
-            const slot_idx = cache.getIndex(lookup_key) orelse return null;
+            const slot_idx = cache.getIndex(self.key) orelse return null;
             const slot_key = cache.slots.items(.key)[slot_idx];
             return .{
                 .key = slot_key,
@@ -387,7 +380,8 @@ test "SlotBound.resolve validates cache key and presence" {
     var cache = image.ImageCache{};
     defer cache.deinit(allocator, null);
 
-    const key = try cache.appendSlot(allocator, 3, .{
+    const id3 = MediaId.fromU32(3);
+    const key = try cache.appendSlot(allocator, id3, .{
         .decoding = .{ .has_thread = true },
     });
     var bound = SlotBound(ExifParsedPayload).init(
@@ -411,12 +405,13 @@ test "SlotBound.resolve validates cache key and presence" {
     try std.testing.expect(bound.resolve(&cache) == null);
 }
 
-test "SlotBound.resolve returns re-keyed slot key when aliased" {
+test "SlotBound - Direct resolution by MediaId with zero alias_index" {
     const allocator = std.testing.allocator;
     var cache = image.ImageCache{};
     defer cache.deinit(allocator, null);
 
-    const key0 = try cache.appendSlot(allocator, 0, .{
+    const id1 = MediaId.fromU32(1);
+    const key0 = try cache.appendSlot(allocator, id1, .{
         .decoding = .{ .has_thread = true },
     });
     var bound = SlotBound(ExifParsedPayload).init(
@@ -424,16 +419,11 @@ test "SlotBound.resolve returns re-keyed slot key when aliased" {
         .{ .orientation = .rotate_180 },
     );
 
-    // Re-key slot 0 to 25 and set alias
-    cache.slots.items(.key)[0].index = 25;
-    cache.alias_index = .{
-        .from = 0,
-        .to = 25,
-        .generation = key0.generation,
-    };
-
     const resolved = bound.resolve(&cache).?;
-    try std.testing.expectEqual(@as(usize, 25), resolved.key.index);
+    try std.testing.expectEqual(id1, resolved.key.id);
     try std.testing.expectEqual(key0.generation, resolved.key.generation);
-    try std.testing.expectEqual(Orientation.rotate_180, resolved.payload.orientation);
+    try std.testing.expectEqual(
+        Orientation.rotate_180,
+        resolved.payload.orientation,
+    );
 }
