@@ -81,18 +81,18 @@ fn handlePaletteReturnEditParam(ctx: FrameContext, raw_str: []const u8) !void {
     const self = ctx.state;
     const palette = &self.viewer.ui.palette;
     const param = palette.mode.toEditParam() orelse return;
-    const desc = state_pkg.getDescriptor(param);
+    const spec = intents.getSpec(param);
     if (raw_str.len == 0) return;
 
     const val = std.fmt.parseFloat(f32, raw_str) catch |err| {
         std.log.debug(
             "Failed to parse {s} value '{s}': {}",
-            .{ desc.name, raw_str, err },
+            .{ spec.slug, raw_str, err },
         );
         return;
     };
     if (std.math.isNan(val) or std.math.isInf(val)) return;
-    if (val < desc.min or val > desc.max) return;
+    if (val < spec.min or val > spec.max) return;
 
     try self.pushIntent(.{
         .adjust = .{

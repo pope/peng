@@ -3,6 +3,7 @@ const intents = @import("intents");
 const std = @import("std");
 const types = @import("types.zig");
 
+const EditParam = intents.EditParam;
 const MediaEntry = types.MediaEntry;
 const PaletteMode = intents.PaletteMode;
 const TextInputBounds = intents.TextInputBounds;
@@ -495,8 +496,29 @@ pub const PaletteConfig = struct {
     }
 };
 
+/// Precomputed command palette configurations for all 13 edit parameters.
+const palette_configs: [EditParam.count]PaletteConfig = blk: {
+    var cfgs: [EditParam.count]PaletteConfig = undefined;
+    for (intents.specs, 0..) |spec, i| {
+        cfgs[i] = .{
+            .title = spec.prompt_label,
+            .placeholder = spec.prompt_placeholder,
+            .element_id = spec.pascal_name ++ "Palette",
+            .list_id = spec.pascal_name ++ "PaletteList",
+            .item_prefix = spec.pascal_name ++ "Item_",
+            .top_spacer_id = spec.pascal_name ++ "TopSpacer",
+            .bottom_spacer_id = spec.pascal_name ++ "BottomSpacer",
+            .base_item_height = 50.0,
+        };
+    }
+    break :blk cfgs;
+};
+
 /// Returns the static layout configuration struct for a given palette mode.
 pub fn getPaletteConfig(mode: PaletteMode) PaletteConfig {
+    if (mode.toEditParam()) |param| {
+        return palette_configs[@backingInt(param)];
+    }
     return switch (mode) {
         .files => .{
             .title = "Search Files",
@@ -516,136 +538,6 @@ pub fn getPaletteConfig(mode: PaletteMode) PaletteConfig {
             .item_prefix = "ActionItem_",
             .top_spacer_id = "ActionTopSpacer",
             .bottom_spacer_id = "ActionBottomSpacer",
-            .base_item_height = 50.0,
-        },
-        .set_brightness => .{
-            .title = "Set Brightness",
-            .placeholder = "Enter brightness (-1.0 to 1.0, e.g. 0.2)...",
-            .element_id = "BrightnessPalette",
-            .list_id = "BrightnessPaletteList",
-            .item_prefix = "BrightnessItem_",
-            .top_spacer_id = "BrightnessTopSpacer",
-            .bottom_spacer_id = "BrightnessBottomSpacer",
-            .base_item_height = 50.0,
-        },
-        .set_contrast => .{
-            .title = "Set Contrast",
-            .placeholder = "Enter contrast (0.0 to 5.0, e.g. 1.5)...",
-            .element_id = "ContrastPalette",
-            .list_id = "ContrastPaletteList",
-            .item_prefix = "ContrastItem_",
-            .top_spacer_id = "ContrastTopSpacer",
-            .bottom_spacer_id = "ContrastBottomSpacer",
-            .base_item_height = 50.0,
-        },
-        .set_contrast_blend => .{
-            .title = "Set Contrast Blend",
-            .placeholder = "Enter contrast blend (0.0 Luma to 1.0 RGB, e.g. 0.5)...",
-            .element_id = "ContrastBlendPalette",
-            .list_id = "ContrastBlendPaletteList",
-            .item_prefix = "ContrastBlendItem_",
-            .top_spacer_id = "ContrastBlendTopSpacer",
-            .bottom_spacer_id = "ContrastBlendBottomSpacer",
-            .base_item_height = 50.0,
-        },
-        .set_highlights => .{
-            .title = "Set Highlights",
-            .placeholder = "Enter highlights (-1.0 to 1.0, e.g. -0.3)...",
-            .element_id = "HighlightsPalette",
-            .list_id = "HighlightsPaletteList",
-            .item_prefix = "HighlightsItem_",
-            .top_spacer_id = "HighlightsTopSpacer",
-            .bottom_spacer_id = "HighlightsBottomSpacer",
-            .base_item_height = 50.0,
-        },
-        .set_shadows => .{
-            .title = "Set Shadows",
-            .placeholder = "Enter shadows (-1.0 to 1.0, e.g. 0.2)...",
-            .element_id = "ShadowsPalette",
-            .list_id = "ShadowsPaletteList",
-            .item_prefix = "ShadowsItem_",
-            .top_spacer_id = "ShadowsTopSpacer",
-            .bottom_spacer_id = "ShadowsBottomSpacer",
-            .base_item_height = 50.0,
-        },
-        .set_whites => .{
-            .title = "Set Whites",
-            .placeholder = "Enter whites (-1.0 to 1.0, e.g. 0.1)...",
-            .element_id = "WhitesPalette",
-            .list_id = "WhitesPaletteList",
-            .item_prefix = "WhitesItem_",
-            .top_spacer_id = "WhitesTopSpacer",
-            .bottom_spacer_id = "WhitesBottomSpacer",
-            .base_item_height = 50.0,
-        },
-        .set_blacks => .{
-            .title = "Set Blacks",
-            .placeholder = "Enter blacks (-1.0 to 1.0, e.g. -0.1)...",
-            .element_id = "BlacksPalette",
-            .list_id = "BlacksPaletteList",
-            .item_prefix = "BlacksItem_",
-            .top_spacer_id = "BlacksTopSpacer",
-            .bottom_spacer_id = "BlacksBottomSpacer",
-            .base_item_height = 50.0,
-        },
-        .set_temperature => .{
-            .title = "Set Temperature",
-            .placeholder = "Enter temperature (-1.0 to 1.0, e.g. 0.2)...",
-            .element_id = "TemperaturePalette",
-            .list_id = "TemperaturePaletteList",
-            .item_prefix = "TemperatureItem_",
-            .top_spacer_id = "TemperatureTopSpacer",
-            .bottom_spacer_id = "TemperatureBottomSpacer",
-            .base_item_height = 50.0,
-        },
-        .set_tint => .{
-            .title = "Set Tint",
-            .placeholder = "Enter tint (-1.0 to 1.0, e.g. 0.05)...",
-            .element_id = "TintPalette",
-            .list_id = "TintPaletteList",
-            .item_prefix = "TintItem_",
-            .top_spacer_id = "TintTopSpacer",
-            .bottom_spacer_id = "TintBottomSpacer",
-            .base_item_height = 50.0,
-        },
-        .set_vibrance => .{
-            .title = "Set Vibrance",
-            .placeholder = "Enter vibrance (-1.0 to 1.0, e.g. 0.25)...",
-            .element_id = "VibrancePalette",
-            .list_id = "VibrancePaletteList",
-            .item_prefix = "VibranceItem_",
-            .top_spacer_id = "VibranceTopSpacer",
-            .bottom_spacer_id = "VibranceBottomSpacer",
-            .base_item_height = 50.0,
-        },
-        .set_saturation => .{
-            .title = "Set Saturation",
-            .placeholder = "Enter saturation (-1.0 to 1.0, e.g. 0.1)...",
-            .element_id = "SaturationPalette",
-            .list_id = "SaturationPaletteList",
-            .item_prefix = "SaturationItem_",
-            .top_spacer_id = "SaturationTopSpacer",
-            .bottom_spacer_id = "SaturationBottomSpacer",
-            .base_item_height = 50.0,
-        },
-        .set_clarity => .{
-            .title = "Set Clarity",
-            .placeholder = "Enter clarity (-1.0 to 1.0, e.g. 0.3)...",
-            .element_id = "ClarityPalette",
-            .list_id = "ClarityPaletteList",
-            .item_prefix = "ClarityItem_",
-            .top_spacer_id = "ClarityTopSpacer",
-            .bottom_spacer_id = "ClarityBottomSpacer",
-            .base_item_height = 50.0,
-        },
-        .set_texture => .{
-            .title = "Set Texture",
-            .placeholder = "Enter texture (-1.0 to 1.0, e.g. 0.25)...",
-            .element_id = "TexturePalette",
-            .list_id = "TexturePaletteList",
-            .item_prefix = "TextureItem_",
-            .top_spacer_id = "TextureTopSpacer",
-            .bottom_spacer_id = "TextureBottomSpacer",
             .base_item_height = 50.0,
         },
         .go_to_image => .{
@@ -678,6 +570,20 @@ pub fn getPaletteConfig(mode: PaletteMode) PaletteConfig {
             .bottom_spacer_id = "SlideshowBottomSpacer",
             .base_item_height = 50.0,
         },
+        .set_brightness,
+        .set_contrast,
+        .set_contrast_blend,
+        .set_highlights,
+        .set_shadows,
+        .set_whites,
+        .set_blacks,
+        .set_temperature,
+        .set_tint,
+        .set_vibrance,
+        .set_saturation,
+        .set_clarity,
+        .set_texture,
+        => unreachable,
         .inactive => getPaletteConfig(.files),
     };
 }
@@ -833,4 +739,16 @@ test "PaletteState.getSearcher resizes only dimensions that exceed capacity" {
     const s3 = try state.getSearcher(80, 20);
     try std.testing.expectEqual(@as(usize, 128), s3.alg.max_haystack);
     try std.testing.expectEqual(@as(usize, 32), s3.alg.max_needle);
+}
+
+test "palette_state - Contrast palette config displays 0.0 to 3.0 range" {
+    const contrast_cfg = getPaletteConfig(.set_contrast);
+    try std.testing.expectEqualStrings("Set Contrast", contrast_cfg.title);
+    try std.testing.expectEqualStrings(
+        "Enter contrast (0.0 to 3.0, e.g. 1.5)...",
+        contrast_cfg.placeholder,
+    );
+    try std.testing.expect(
+        std.mem.indexOf(u8, contrast_cfg.placeholder, "0.0 to 3.0") != null,
+    );
 }

@@ -245,8 +245,10 @@ pub const IpcCommand = union(enum) {
         clarity: f32,
         texture: f32,
     },
-    clarity: f32,
-    texture: f32,
+    set_param: struct {
+        param: intents.EditParam,
+        value: f32,
+    },
     compare: CompareAction,
     edit: EditAction,
     filter: TextureScaleMode,
@@ -302,13 +304,9 @@ pub const IpcCommand = union(enum) {
                 .clarity = p.clarity,
                 .texture = p.texture,
             } } },
-            .clarity => |val| return .{ .adjust = .{ .set = .{
-                .param = .clarity,
-                .value = val,
-            } } },
-            .texture => |val| return .{ .adjust = .{ .set = .{
-                .param = .texture,
-                .value = val,
+            .set_param => |sp| return .{ .adjust = .{ .set = .{
+                .param = sp.param,
+                .value = sp.value,
             } } },
             .compare => |action| switch (action) {
                 .enable => return .{ .adjust = .{ .set_compare = true } },
@@ -533,22 +531,21 @@ pub const IpcCommand = union(enum) {
                     .texture = tex,
                 },
             };
-        } else if (std.mem.eql(u8, cmd, "clarity")) {
+        } else if (intents.fromSlug(cmd)) |param| {
             const val_str = it.next() orelse return error.MissingArgument;
             if (val_str.len > 128) return error.InvalidArgument;
             const val = try std.fmt.parseFloat(f32, val_str);
             if (std.math.isNan(val) or std.math.isInf(val)) {
                 return error.InvalidArgument;
             }
-            return .{ .clarity = val };
-        } else if (std.mem.eql(u8, cmd, "texture")) {
-            const val_str = it.next() orelse return error.MissingArgument;
-            if (val_str.len > 128) return error.InvalidArgument;
-            const val = try std.fmt.parseFloat(f32, val_str);
-            if (std.math.isNan(val) or std.math.isInf(val)) {
-                return error.InvalidArgument;
-            }
-            return .{ .texture = val };
+            if (it.next() != null) return error.InvalidArgument;
+            const spec = intents.getSpec(param);
+            return .{
+                .set_param = .{
+                    .param = param,
+                    .value = spec.clamp(val),
+                },
+            };
         } else if (std.mem.eql(u8, cmd, "filter")) {
             const val = it.next() orelse return error.MissingArgument;
             if (std.meta.stringToEnum(TextureScaleMode, val)) |mode| {
@@ -852,8 +849,7 @@ pub const IpcCommand = union(enum) {
             .tone,
             .color,
             .presence,
-            .clarity,
-            .texture,
+            .set_param,
             .compare,
             .edit,
             .filter,
@@ -1739,5 +1735,34 @@ test "readLineTimeout - success and timeout" {
             io,
             long_dur,
         ),
+    );
+}
+
+test "ipc - Parser accepts individual parameter adjustment commands" {
+    const cmd_bright = try IpcCommand.parse("brightness 0.25");
+    try std.testing.expectEqual(
+        intents.EditParam.brightness,
+        cmd_bright.set_param.param,
+    );
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 0.25),
+        cmd_bright.set_param.value,
+        0.001,
+    );
+
+    const cmd_temp = try IpcCommand.parse("temperature -0.1");
+    try std.testing.expectEqual(
+        intents.EditParam.temperature,
+        cmd_temp.set_param.param,
+    );
+    try std.testing.expectApproxEqAbs(
+        @as(f32, -0.1),
+        cmd_temp.set_param.value,
+        0.001,
+    );
+
+    try std.testing.expectError(
+        error.InvalidArgument,
+        IpcCommand.parse("brightness 0.25 extra"),
     );
 }

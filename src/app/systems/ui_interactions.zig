@@ -1,13 +1,19 @@
+const app_state = @import("../state.zig");
 const clay = @import("zclay");
-const FrameContext = @import("context.zig").FrameContext;
+const context = @import("context.zig");
+const intents = @import("intents");
 const state = @import("state");
 const std = @import("std");
 
-const AppState = @import("../state.zig").AppState;
+const AppState = app_state.AppState;
+const EditParam = intents.EditParam;
+const FrameContext = context.FrameContext;
 const FrameInput = state.FrameInput;
+const getSpec = intents.getSpec;
+const ParamSpec = intents.ParamSpec;
 
 fn computeSliderValue(
-    desc: state.ParamDescriptor,
+    spec: ParamSpec,
     track_x: f32,
     track_w: f32,
     mouse_x: f32,
@@ -17,8 +23,8 @@ fn computeSliderValue(
     const rel_x = mouse_x - track_x;
     const offset_x = rel_x - (knob_d * 0.5);
     const t = std.math.clamp(offset_x / usable_w, 0.0, 1.0);
-    const raw_val = desc.min + t * (desc.max - desc.min);
-    return desc.snap(raw_val);
+    const raw_val = spec.min + t * (spec.max - spec.min);
+    return spec.snap(raw_val);
 }
 
 fn processEditPanelClicks(self: *AppState, input: FrameInput) !void {
@@ -44,17 +50,16 @@ fn processEditPanelClicks(self: *AppState, input: FrameInput) !void {
         0.0;
     const fallback_track_x = input.win_w - debug_w - panel_w + padding;
 
-    inline for (std.enums.values(state.EditParam)) |param| {
-        const desc = state.getDescriptor(param);
-        const names = state.getSliderElementNames(param);
+    inline for (std.enums.values(EditParam)) |param| {
+        const spec = getSpec(param);
 
-        if (clay.pointerOver(clay.getElementId(names.reset))) {
+        if (clay.pointerOver(clay.getElementId(spec.reset_id))) {
             try self.pushIntent(.{ .adjust = .{ .reset_param = param } });
             return;
         }
 
-        const track_id = clay.getElementId(names.track);
-        const knob_id = clay.getElementId(names.knob);
+        const track_id = clay.getElementId(spec.track_id);
+        const knob_id = clay.getElementId(spec.knob_id);
         if (clay.pointerOver(track_id) or clay.pointerOver(knob_id)) {
             const elem_data = clay.getElementData(track_id);
             const track_x = if (elem_data.found)
@@ -76,7 +81,7 @@ fn processEditPanelClicks(self: *AppState, input: FrameInput) !void {
             self.viewer.ui.overlays.edit_panel.active_slider = param;
 
             const val = computeSliderValue(
-                desc,
+                spec,
                 track_x,
                 track_w,
                 input.mouse_x,
@@ -112,9 +117,9 @@ pub fn sysProcessUiInteractions(
                 !palette_blocking and
                 self.viewer.ui.overlays.edit_panel.visible)
             {
-                const desc = state.getDescriptor(s.param);
+                const spec = getSpec(s.param);
                 const val = computeSliderValue(
-                    desc,
+                    spec,
                     s.track_x,
                     s.track_w,
                     input.mouse_x,
@@ -206,7 +211,7 @@ test "sysProcessUiInteractions cancels slider drag when palette opens" {
 
     try std.testing.expectEqual(state.DragState.none, app_st.viewer.drag_state);
     try std.testing.expectEqual(
-        @as(?state.EditParam, null),
+        @as(?EditParam, null),
         app_st.viewer.ui.overlays.edit_panel.active_slider,
     );
     try std.testing.expectEqual(

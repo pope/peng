@@ -9,6 +9,7 @@ const types = @import("types.zig");
 
 const AppIntent = intents.AppIntent;
 const Classification = types.Classification;
+const EditParam = intents.EditParam;
 const ViewMode = types.ViewMode;
 const ViewportParams = types.ViewportParams;
 
@@ -47,7 +48,7 @@ pub const SnackbarContext = struct {
     classification_advanced: bool = false,
     has_target_image: bool = true,
     view_mode: ViewMode = .default,
-    last_param: ?types.EditParam = null,
+    last_param: ?EditParam = null,
 };
 
 /// Signature for declarative notification message formatters.
@@ -113,39 +114,39 @@ fn formatContrast(ctx: SnackbarContext, buf: []u8) []const u8 {
 
 fn formatAdjustParam(ctx: SnackbarContext, buf: []u8) []const u8 {
     const param = ctx.last_param orelse return "";
-    const desc = types.getDescriptor(param);
+    const spec = intents.getSpec(param);
     const val = ctx.viewport.edits.get(param);
-    return switch (desc.display_kind) {
+    return switch (spec.display_kind) {
         .percent => {
             const pct: i32 = @intFromFloat(@round(val * 100.0));
             if (pct > 0) {
                 return std.mem.print(
                     buf,
                     "{s}: +{d}%",
-                    .{ desc.label, pct },
-                ) catch desc.label;
+                    .{ spec.label, pct },
+                ) catch spec.label;
             } else {
                 return std.mem.print(
                     buf,
                     "{s}: {d}%",
-                    .{ desc.label, pct },
-                ) catch desc.label;
+                    .{ spec.label, pct },
+                ) catch spec.label;
             }
         },
         .multiplier => {
             return std.mem.print(
                 buf,
                 "{s}: {d:.2}x",
-                .{ desc.label, val },
-            ) catch desc.label;
+                .{ spec.label, val },
+            ) catch spec.label;
         },
         .ratio_percent => {
             const pct: i32 = @intFromFloat(@round(val * 100.0));
             return std.mem.print(
                 buf,
                 "{s}: {d}%",
-                .{ desc.label, pct },
-            ) catch desc.label;
+                .{ spec.label, pct },
+            ) catch spec.label;
         },
         .temperature => {
             const deg: i32 = @intFromFloat(@round(val * 2000.0));
@@ -153,14 +154,14 @@ fn formatAdjustParam(ctx: SnackbarContext, buf: []u8) []const u8 {
                 return std.mem.print(
                     buf,
                     "{s}: +{d}K",
-                    .{ desc.label, deg },
-                ) catch desc.label;
+                    .{ spec.label, deg },
+                ) catch spec.label;
             } else {
                 return std.mem.print(
                     buf,
                     "{s}: {d}K",
-                    .{ desc.label, deg },
-                ) catch desc.label;
+                    .{ spec.label, deg },
+                ) catch spec.label;
             }
         },
         .tint => {
@@ -169,20 +170,20 @@ fn formatAdjustParam(ctx: SnackbarContext, buf: []u8) []const u8 {
                 return std.mem.print(
                     buf,
                     "{s}: +{d} (Magenta)",
-                    .{ desc.label, pct },
-                ) catch desc.label;
+                    .{ spec.label, pct },
+                ) catch spec.label;
             } else if (pct < 0) {
                 return std.mem.print(
                     buf,
                     "{s}: {d} (Green)",
-                    .{ desc.label, pct },
-                ) catch desc.label;
+                    .{ spec.label, pct },
+                ) catch spec.label;
             } else {
                 return std.mem.print(
                     buf,
                     "{s}: 0",
-                    .{desc.label},
-                ) catch desc.label;
+                    .{spec.label},
+                ) catch spec.label;
             }
         },
     };

@@ -238,14 +238,14 @@ ______________________________________________________________________
         set_compare: bool,
     };
     ```
-  - **Single Source of Truth Descriptor Table**:
-    - Centralize parameter boundaries, defaults, step deltas, snap radii, and
-      formatting kinds into a static comptime array
-      (`descriptors: [EditParam.count]ParamDescriptor`).
+  - **Single Source of Truth Parameter Specification Table**:
+    - Centralize parameter boundaries, defaults, step deltas, snap radii,
+      precomputed Clay element IDs, and formatting kinds into a static
+      comptime array (`specs: [EditParam.count]ParamSpec`).
     - Eliminate duplicated bounds checking, slider hit-testing logic, and
       formatting branches across IPC, UI layouts, and state stores.
-    - Let UI widgets and IPC parsers query `state.getDescriptor(param)` to
-      clamp and format values consistently.
+    - Let UI widgets and IPC parsers query `intents.getSpec(param)` to
+      clamp, snap, and format values consistently.
 
 ______________________________________________________________________
 

@@ -1,5 +1,6 @@
 const clay = @import("zclay");
 const edit_panel = @import("edit_panel.zig");
+const intents = @import("intents");
 const state = @import("state");
 const std = @import("std");
 const text_utils = @import("text_utils.zig");
@@ -9,6 +10,7 @@ const ElementTag = types.ElementTag;
 const MeasureTextUserData = state.MeasureTextUserData;
 const UiViewModel = state.UiViewModel;
 const formatSize = text_utils.formatSize;
+const getSpec = intents.getSpec;
 const truncateDirectory = text_utils.truncateDirectory;
 const truncateFilename = text_utils.truncateFilename;
 const types = state.types;
@@ -395,17 +397,17 @@ fn renderInfoOverlay(
 
         // Photographic adjustments (always show Brightness/Contrast, plus
         // any non-default adjustments)
-        inline for (std.enums.values(state.EditParam)) |p| {
+        inline for (std.enums.values(intents.EditParam)) |p| {
             if (p == .brightness or p == .contrast or
                 !ui_model.viewport.edits.isParamDefault(p))
             {
-                const desc = state.getDescriptor(p);
+                const spec = getSpec(p);
                 const val_str = try edit_panel.formatValue(
                     frame_allocator,
-                    desc,
+                    spec,
                     ui_model.viewport.edits.get(p),
                 );
-                try renderStatRow(desc.label, val_str);
+                try renderStatRow(spec.label, val_str);
             }
         }
         if (ui_model.viewport.compare_original) {
@@ -769,23 +771,23 @@ test "photographic edit parameter labels and formatted readouts" {
     const allocator = std.testing.allocator;
 
     // Test formatting of non-default tone, color, and presence parameters
-    const highlights_desc = state.getDescriptor(.highlights);
-    try std.testing.expectEqualStrings("Highlights", highlights_desc.label);
-    const hl_str = try edit_panel.formatValue(allocator, highlights_desc, 0.25);
+    const highlights_spec = getSpec(.highlights);
+    try std.testing.expectEqualStrings("Highlights", highlights_spec.label);
+    const hl_str = try edit_panel.formatValue(allocator, highlights_spec, 0.25);
     defer allocator.free(hl_str);
     try std.testing.expectEqualStrings("+25%", hl_str);
 
-    const temp_desc = state.getDescriptor(.temperature);
-    try std.testing.expectEqualStrings("Temperature", temp_desc.label);
-    const temp_str = try edit_panel.formatValue(allocator, temp_desc, 0.15);
+    const temp_spec = getSpec(.temperature);
+    try std.testing.expectEqualStrings("Temperature", temp_spec.label);
+    const temp_str = try edit_panel.formatValue(allocator, temp_spec, 0.15);
     defer allocator.free(temp_str);
     try std.testing.expectEqualStrings("+15 (Warm)", temp_str);
 
-    const clarity_desc = state.getDescriptor(.clarity);
-    try std.testing.expectEqualStrings("Clarity", clarity_desc.label);
+    const clarity_spec = getSpec(.clarity);
+    try std.testing.expectEqualStrings("Clarity", clarity_spec.label);
     const clarity_str = try edit_panel.formatValue(
         allocator,
-        clarity_desc,
+        clarity_spec,
         -0.10,
     );
     defer allocator.free(clarity_str);

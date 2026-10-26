@@ -255,11 +255,349 @@ pub const EditParam = enum(u8) {
     tint = 8,
     vibrance = 9,
     saturation = 10,
-    clarity = 11,
-    texture = 12,
+    texture = 11,
+    clarity = 12,
 
+    /// Total number of photographic grading adjustment parameters.
     pub const count = std.enums.values(EditParam).len;
 };
+
+/// Domain category for grouping photographic adjustments.
+pub const EditDomain = enum(u2) {
+    tone = 0,
+    color = 1,
+    presence = 2,
+
+    /// Returns human-readable section title for UI headings.
+    pub fn label(self: EditDomain) []const u8 {
+        return switch (self) {
+            .tone => "LIGHT & TONE",
+            .color => "COLOR & BALANCE",
+            .presence => "PRESENCE & DETAIL",
+        };
+    }
+};
+
+/// Formatting mode for value readouts across UI, snackbar, and stats.
+pub const DisplayKind = enum(u3) {
+    percent,
+    multiplier,
+    temperature,
+    tint,
+    ratio_percent,
+};
+
+/// Canonical compile-time specification for a photographic grading parameter.
+pub const ParamSpec = struct {
+    param: EditParam,
+    domain: EditDomain,
+    slug: []const u8,
+    label: []const u8,
+    pascal_name: []const u8,
+    min: f32,
+    max: f32,
+    default: f32,
+    step: f32,
+    snap_radius: f32,
+    display_kind: DisplayKind,
+    placeholder_example: []const u8,
+    prompt_label: []const u8,
+    prompt_placeholder: []const u8,
+    track_id: []const u8,
+    reset_id: []const u8,
+    knob_id: []const u8,
+
+    /// Clamps value to parameter bounds, defaulting on NaN/Inf.
+    pub fn clamp(self: ParamSpec, val: f32) f32 {
+        if (std.math.isNan(val) or std.math.isInf(val)) return self.default;
+        return std.math.clamp(val, self.min, self.max);
+    }
+
+    /// Snaps value to default within snap_radius, then clamps.
+    pub fn snap(self: ParamSpec, val: f32) f32 {
+        if (@abs(val - self.default) < self.snap_radius) {
+            return self.default;
+        }
+        return self.clamp(val);
+    }
+};
+
+/// Compile-time table of specifications for all 13 photographic adjustments.
+pub const specs = [EditParam.count]ParamSpec{
+    .{
+        .param = .brightness,
+        .domain = .tone,
+        .slug = "brightness",
+        .label = "Exposure",
+        .pascal_name = "Brightness",
+        .min = -1.0,
+        .max = 1.0,
+        .default = 0.0,
+        .step = 0.05,
+        .snap_radius = 0.025,
+        .display_kind = .percent,
+        .placeholder_example = "0.2",
+        .prompt_label = "Set Brightness",
+        .prompt_placeholder = "Enter brightness (-1.0 to 1.0, e.g. 0.2)...",
+        .track_id = "SliderTrack_Brightness",
+        .reset_id = "SliderReset_Brightness",
+        .knob_id = "SliderKnob_Brightness",
+    },
+    .{
+        .param = .contrast,
+        .domain = .tone,
+        .slug = "contrast",
+        .label = "Contrast",
+        .pascal_name = "Contrast",
+        .min = 0.0,
+        .max = 3.0,
+        .default = 1.0,
+        .step = 0.05,
+        .snap_radius = 0.035,
+        .display_kind = .multiplier,
+        .placeholder_example = "1.5",
+        .prompt_label = "Set Contrast",
+        .prompt_placeholder = "Enter contrast (0.0 to 3.0, e.g. 1.5)...",
+        .track_id = "SliderTrack_Contrast",
+        .reset_id = "SliderReset_Contrast",
+        .knob_id = "SliderKnob_Contrast",
+    },
+    .{
+        .param = .contrast_blend,
+        .domain = .tone,
+        .slug = "contrast_blend",
+        .label = "Contrast Blend",
+        .pascal_name = "ContrastBlend",
+        .min = 0.0,
+        .max = 1.0,
+        .default = 1.0,
+        .step = 0.05,
+        .snap_radius = 0.025,
+        .display_kind = .ratio_percent,
+        .placeholder_example = "0.5",
+        .prompt_label = "Set Contrast Blend",
+        .prompt_placeholder = "Enter contrast blend " ++
+            "(0.0 Luma to 1.0 RGB, e.g. 0.5)...",
+        .track_id = "SliderTrack_ContrastBlend",
+        .reset_id = "SliderReset_ContrastBlend",
+        .knob_id = "SliderKnob_ContrastBlend",
+    },
+    .{
+        .param = .highlights,
+        .domain = .tone,
+        .slug = "highlights",
+        .label = "Highlights",
+        .pascal_name = "Highlights",
+        .min = -1.0,
+        .max = 1.0,
+        .default = 0.0,
+        .step = 0.05,
+        .snap_radius = 0.025,
+        .display_kind = .percent,
+        .placeholder_example = "-0.3",
+        .prompt_label = "Set Highlights",
+        .prompt_placeholder = "Enter highlights (-1.0 to 1.0, e.g. -0.3)...",
+        .track_id = "SliderTrack_Highlights",
+        .reset_id = "SliderReset_Highlights",
+        .knob_id = "SliderKnob_Highlights",
+    },
+    .{
+        .param = .shadows,
+        .domain = .tone,
+        .slug = "shadows",
+        .label = "Shadows",
+        .pascal_name = "Shadows",
+        .min = -1.0,
+        .max = 1.0,
+        .default = 0.0,
+        .step = 0.05,
+        .snap_radius = 0.025,
+        .display_kind = .percent,
+        .placeholder_example = "0.2",
+        .prompt_label = "Set Shadows",
+        .prompt_placeholder = "Enter shadows (-1.0 to 1.0, e.g. 0.2)...",
+        .track_id = "SliderTrack_Shadows",
+        .reset_id = "SliderReset_Shadows",
+        .knob_id = "SliderKnob_Shadows",
+    },
+    .{
+        .param = .whites,
+        .domain = .tone,
+        .slug = "whites",
+        .label = "Whites",
+        .pascal_name = "Whites",
+        .min = -1.0,
+        .max = 1.0,
+        .default = 0.0,
+        .step = 0.05,
+        .snap_radius = 0.025,
+        .display_kind = .percent,
+        .placeholder_example = "0.1",
+        .prompt_label = "Set Whites",
+        .prompt_placeholder = "Enter whites (-1.0 to 1.0, e.g. 0.1)...",
+        .track_id = "SliderTrack_Whites",
+        .reset_id = "SliderReset_Whites",
+        .knob_id = "SliderKnob_Whites",
+    },
+    .{
+        .param = .blacks,
+        .domain = .tone,
+        .slug = "blacks",
+        .label = "Blacks",
+        .pascal_name = "Blacks",
+        .min = -1.0,
+        .max = 1.0,
+        .default = 0.0,
+        .step = 0.05,
+        .snap_radius = 0.025,
+        .display_kind = .percent,
+        .placeholder_example = "-0.1",
+        .prompt_label = "Set Blacks",
+        .prompt_placeholder = "Enter blacks (-1.0 to 1.0, e.g. -0.1)...",
+        .track_id = "SliderTrack_Blacks",
+        .reset_id = "SliderReset_Blacks",
+        .knob_id = "SliderKnob_Blacks",
+    },
+    .{
+        .param = .temperature,
+        .domain = .color,
+        .slug = "temperature",
+        .label = "Temperature",
+        .pascal_name = "Temperature",
+        .min = -1.0,
+        .max = 1.0,
+        .default = 0.0,
+        .step = 0.05,
+        .snap_radius = 0.025,
+        .display_kind = .temperature,
+        .placeholder_example = "0.2",
+        .prompt_label = "Set Temperature",
+        .prompt_placeholder = "Enter temperature (-1.0 to 1.0, e.g. 0.2)...",
+        .track_id = "SliderTrack_Temperature",
+        .reset_id = "SliderReset_Temperature",
+        .knob_id = "SliderKnob_Temperature",
+    },
+    .{
+        .param = .tint,
+        .domain = .color,
+        .slug = "tint",
+        .label = "Tint",
+        .pascal_name = "Tint",
+        .min = -1.0,
+        .max = 1.0,
+        .default = 0.0,
+        .step = 0.05,
+        .snap_radius = 0.025,
+        .display_kind = .tint,
+        .placeholder_example = "0.05",
+        .prompt_label = "Set Tint",
+        .prompt_placeholder = "Enter tint (-1.0 to 1.0, e.g. 0.05)...",
+        .track_id = "SliderTrack_Tint",
+        .reset_id = "SliderReset_Tint",
+        .knob_id = "SliderKnob_Tint",
+    },
+    .{
+        .param = .vibrance,
+        .domain = .color,
+        .slug = "vibrance",
+        .label = "Vibrance",
+        .pascal_name = "Vibrance",
+        .min = -1.0,
+        .max = 1.0,
+        .default = 0.0,
+        .step = 0.05,
+        .snap_radius = 0.025,
+        .display_kind = .percent,
+        .placeholder_example = "0.25",
+        .prompt_label = "Set Vibrance",
+        .prompt_placeholder = "Enter vibrance (-1.0 to 1.0, e.g. 0.25)...",
+        .track_id = "SliderTrack_Vibrance",
+        .reset_id = "SliderReset_Vibrance",
+        .knob_id = "SliderKnob_Vibrance",
+    },
+    .{
+        .param = .saturation,
+        .domain = .color,
+        .slug = "saturation",
+        .label = "Saturation",
+        .pascal_name = "Saturation",
+        .min = -1.0,
+        .max = 1.0,
+        .default = 0.0,
+        .step = 0.05,
+        .snap_radius = 0.025,
+        .display_kind = .percent,
+        .placeholder_example = "0.1",
+        .prompt_label = "Set Saturation",
+        .prompt_placeholder = "Enter saturation (-1.0 to 1.0, e.g. 0.1)...",
+        .track_id = "SliderTrack_Saturation",
+        .reset_id = "SliderReset_Saturation",
+        .knob_id = "SliderKnob_Saturation",
+    },
+    .{
+        .param = .texture,
+        .domain = .presence,
+        .slug = "texture",
+        .label = "Texture",
+        .pascal_name = "Texture",
+        .min = -1.0,
+        .max = 1.0,
+        .default = 0.0,
+        .step = 0.05,
+        .snap_radius = 0.025,
+        .display_kind = .percent,
+        .placeholder_example = "0.25",
+        .prompt_label = "Set Texture",
+        .prompt_placeholder = "Enter texture (-1.0 to 1.0, e.g. 0.25)...",
+        .track_id = "SliderTrack_Texture",
+        .reset_id = "SliderReset_Texture",
+        .knob_id = "SliderKnob_Texture",
+    },
+    .{
+        .param = .clarity,
+        .domain = .presence,
+        .slug = "clarity",
+        .label = "Clarity",
+        .pascal_name = "Clarity",
+        .min = -1.0,
+        .max = 1.0,
+        .default = 0.0,
+        .step = 0.05,
+        .snap_radius = 0.025,
+        .display_kind = .percent,
+        .placeholder_example = "0.3",
+        .prompt_label = "Set Clarity",
+        .prompt_placeholder = "Enter clarity (-1.0 to 1.0, e.g. 0.3)...",
+        .track_id = "SliderTrack_Clarity",
+        .reset_id = "SliderReset_Clarity",
+        .knob_id = "SliderKnob_Clarity",
+    },
+};
+
+comptime {
+    std.debug.assert(specs.len == EditParam.count);
+    for (0..specs.len) |i| {
+        const p: EditParam = @fromBackingInt(@intCast(i));
+        std.debug.assert(specs[i].param == p);
+        std.debug.assert(specs[i].min < specs[i].max);
+        std.debug.assert(specs[i].default >= specs[i].min);
+        std.debug.assert(specs[i].default <= specs[i].max);
+        std.debug.assert(specs[i].step > 0.0);
+    }
+}
+
+/// Returns the specification for the given EditParam.
+pub inline fn getSpec(param: EditParam) ParamSpec {
+    return specs[@backingInt(param)];
+}
+
+/// Looks up an EditParam by its IPC/configuration slug.
+pub fn fromSlug(slug: []const u8) ?EditParam {
+    inline for (specs) |spec| {
+        if (std.mem.eql(u8, spec.slug, slug)) return spec.param;
+    }
+    return null;
+}
 
 /// Direction increment for stepped parameter adjustments.
 pub const StepDirection = enum(i8) {
@@ -387,6 +725,8 @@ pub const PaletteMode = enum {
     pub fn getTextInputBounds(self: PaletteMode) ?TextInputBounds {
         return switch (self) {
             .set_brightness,
+            .set_contrast,
+            .set_contrast_blend,
             .set_highlights,
             .set_shadows,
             .set_whites,
@@ -397,9 +737,10 @@ pub const PaletteMode = enum {
             .set_saturation,
             .set_clarity,
             .set_texture,
-            => .{ .min = -1.0, .max = 1.0 },
-            .set_contrast => .{ .min = 0.0, .max = 3.0 },
-            .set_contrast_blend => .{ .min = 0.0, .max = 1.0 },
+            => blk: {
+                const spec = getSpec(self.toEditParam().?);
+                break :blk .{ .min = spec.min, .max = spec.max };
+            },
             .set_slideshow_interval => .{ .min = 0.1, .max = 3600.0 },
             .go_to_image,
             .inactive,
@@ -507,3 +848,61 @@ pub const AppIntent = union(enum) {
     quit,
     quit_server,
 };
+
+test "ParamSpec - Compile-time assertions verify all 13 parameters" {
+    try std.testing.expectEqual(EditParam.count, specs.len);
+    inline for (specs, 0..) |spec, i| {
+        const expected_param: EditParam = @fromBackingInt(@intCast(i));
+        try std.testing.expectEqual(expected_param, spec.param);
+        try std.testing.expect(spec.min < spec.max);
+        try std.testing.expect(spec.default >= spec.min);
+        try std.testing.expect(spec.default <= spec.max);
+        try std.testing.expect(spec.step > 0.0);
+        try std.testing.expect(spec.snap_radius > 0.0);
+        try std.testing.expect(spec.slug.len > 0);
+        try std.testing.expect(spec.label.len > 0);
+        try std.testing.expect(spec.pascal_name.len > 0);
+        try std.testing.expect(spec.track_id.len > 0);
+        try std.testing.expect(spec.reset_id.len > 0);
+        try std.testing.expect(spec.knob_id.len > 0);
+    }
+}
+
+test "ParamSpec - clamp and snap behavior around defaults" {
+    for (specs) |spec| {
+        // Clamp out-of-bounds
+        try std.testing.expectEqual(spec.min, spec.clamp(spec.min - 10.0));
+        try std.testing.expectEqual(spec.max, spec.clamp(spec.max + 10.0));
+        try std.testing.expectEqual(spec.default, spec.clamp(spec.default));
+
+        // Snap near default
+        const near_def = spec.default + spec.snap_radius * 0.5;
+        try std.testing.expectEqual(spec.default, spec.snap(near_def));
+
+        // Beyond snap radius, does not snap to default
+        const far_def = spec.default + spec.snap_radius * 1.5;
+        if (far_def <= spec.max) {
+            try std.testing.expect(spec.snap(far_def) != spec.default);
+        }
+
+        // NaN and Inf clamp to default
+        try std.testing.expectEqual(
+            spec.default,
+            spec.clamp(std.math.nan(f32)),
+        );
+        try std.testing.expectEqual(
+            spec.default,
+            spec.clamp(std.math.inf(f32)),
+        );
+    }
+}
+
+test "ParamSpec - fromSlug lookup returns exact EditParam for all 13 slugs" {
+    for (specs) |spec| {
+        const found = fromSlug(spec.slug);
+        try std.testing.expect(found != null);
+        try std.testing.expectEqual(spec.param, found.?);
+    }
+    try std.testing.expect(fromSlug("nonexistent") == null);
+    try std.testing.expect(fromSlug("") == null);
+}

@@ -7,6 +7,7 @@ const state = @import("state");
 const std = @import("std");
 
 const AppState = app_state.AppState;
+const EditParam = intents.EditParam;
 const FrameContext = context.FrameContext;
 
 fn showCustomSnackbar(self: *AppState, msg: []const u8) void {
@@ -281,9 +282,9 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 vp.compare_original = false;
             },
             .step => |s| {
-                const desc = state.getDescriptor(s.param);
+                const spec = intents.getSpec(s.param);
                 const dir_f: f32 = @floatFromInt(@backingInt(s.direction));
-                const delta = desc.step * dir_f;
+                const delta = spec.step * dir_f;
                 vp.edits.set(s.param, vp.edits.get(s.param) + delta);
                 vp.compare_original = false;
             },
@@ -765,7 +766,7 @@ fn triggerSnackbarForIntent(
         else => self.viewer.navigation.getCurrentClassification(),
     };
 
-    const last_param: ?state.EditParam = switch (intent) {
+    const last_param: ?EditParam = switch (intent) {
         .adjust => |adj| switch (adj) {
             .set => |s| s.param,
             .step => |s| s.param,

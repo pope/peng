@@ -226,9 +226,13 @@ or pipe into `jq`:
 # Batch adjust presence (clarity, texture)
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock presence 0.20 0.15
 
-# Single parameter adjustments (clarity, texture)
+# Single parameter adjustments (all 13 photographic grading slugs supported:
+# brightness, contrast, contrast_blend, highlights, shadows, whites, blacks,
+# temperature, tint, vibrance, saturation, texture, clarity)
+./zig-out/bin/peng-msg /tmp/peng-1234.sock brightness 0.15
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock clarity 0.30
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock texture 0.10
+./zig-out/bin/peng-msg /tmp/peng-1234.sock contrast_blend 0.85
 
 # Reset all image adjustments or reset viewport transform
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock reset_adjustments

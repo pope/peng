@@ -1,9 +1,11 @@
 const clay = @import("zclay");
+const intents = @import("intents");
 const state = @import("state");
 const std = @import("std");
 const theme = @import("theme.zig");
 
-const EditParam = state.EditParam;
+const EditParam = intents.EditParam;
+const ParamSpec = intents.ParamSpec;
 const UiViewModel = state.UiViewModel;
 
 /// Scales a theme color by the animation progress alpha for smooth
@@ -21,11 +23,11 @@ pub const CONTENT_WIDTH: f32 = PANEL_WIDTH - (PANEL_PADDING * 2.0);
 /// and allocates formatted strings in frame_allocator for active values.
 pub fn formatValue(
     allocator: std.mem.Allocator,
-    desc: state.ParamDescriptor,
+    spec: ParamSpec,
     val: f32,
 ) ![]const u8 {
     if (std.math.isNan(val) or std.math.isInf(val)) {
-        return switch (desc.display_kind) {
+        return switch (spec.display_kind) {
             .percent => "0%",
             .multiplier => "1.00x",
             .temperature, .tint => "0",
@@ -33,7 +35,7 @@ pub fn formatValue(
         };
     }
 
-    switch (desc.display_kind) {
+    switch (spec.display_kind) {
         .percent => {
             const pct = @as(i32, @intFromFloat(@round(val * 100.0)));
             if (pct == 0) return "0%";
@@ -86,15 +88,13 @@ pub fn formatValue(
 
 /// Convenience formatter for brightness parameter.
 pub fn formatBrightness(allocator: std.mem.Allocator, val: f32) ![]const u8 {
-    return formatValue(allocator, state.getDescriptor(.brightness), val);
+    return formatValue(allocator, intents.getSpec(.brightness), val);
 }
 
 /// Convenience formatter for contrast parameter.
 pub fn formatContrast(allocator: std.mem.Allocator, val: f32) ![]const u8 {
-    return formatValue(allocator, state.getDescriptor(.contrast), val);
+    return formatValue(allocator, intents.getSpec(.contrast), val);
 }
-
-pub const getSliderElementNames = state.getSliderElementNames;
 
 /// Renders an interactive slider row with parameter title, value readout,
 /// background groove, relative fill bar, landmark notch, and thumb knob.
@@ -105,22 +105,21 @@ pub fn renderSlider(
     progress: f32,
     is_active: bool,
 ) void {
-    const desc = state.getDescriptor(param);
-    const names = getSliderElementNames(param);
-    const track_id = clay.getElementId(names.track);
+    const spec = intents.getSpec(param);
+    const track_id = clay.getElementId(spec.track_id);
     const is_hovered = clay.pointerOver(track_id);
-    const is_modified = @abs(current_val - desc.default) > 1e-4;
+    const is_modified = @abs(current_val - spec.default) > 1e-4;
 
-    const span = desc.max - desc.min;
+    const span = spec.max - spec.min;
     const is_non_finite =
         std.math.isNan(current_val) or std.math.isInf(current_val);
-    const safe_val = if (is_non_finite) desc.default else current_val;
+    const safe_val = if (is_non_finite) spec.default else current_val;
     const t = if (span > 0.0)
-        std.math.clamp((safe_val - desc.min) / span, 0.0, 1.0)
+        std.math.clamp((safe_val - spec.min) / span, 0.0, 1.0)
     else
         0.0;
     const t_neutral = if (span > 0.0)
-        std.math.clamp((desc.default - desc.min) / span, 0.0, 1.0)
+        std.math.clamp((spec.default - spec.min) / span, 0.0, 1.0)
     else
         0.0;
 
@@ -156,7 +155,7 @@ pub fn renderSlider(
             })({
                 const lbl_color =
                     if (is_modified) theme.text else theme.subtext0;
-                clay.text(desc.label, .{
+                clay.text(spec.label, .{
                     .color = a(lbl_color, progress),
                     .font_size = 13,
                     .font_id = 0,
@@ -164,7 +163,7 @@ pub fn renderSlider(
             });
 
             // Value / Reset button
-            const reset_elem_id = clay.getElementId(names.reset);
+            const reset_elem_id = clay.getElementId(spec.reset_id);
             const reset_hovered = clay.pointerOver(reset_elem_id);
             clay.UI()(.{
                 .id = reset_elem_id,
@@ -263,7 +262,7 @@ pub fn renderSlider(
 
             // 4. Thumb Knob Handle
             clay.UI()(.{
-                .id = clay.getElementId(names.knob),
+                .id = clay.getElementId(spec.knob_id),
                 .layout = .{
                     .sizing = .{ .w = .fixed(knob_d), .h = .fixed(knob_d) },
                 },
@@ -464,160 +463,67 @@ pub fn renderEditPanel(
                 .child_offset = scroll_offset,
             },
         })({
-            // -----------------------------------------------------------------
-            // Section 1: Light & Tone
-            // -----------------------------------------------------------------
-            clay.UI()(.{
-                .layout = .{
-                    .sizing = .{ .w = .fixed(CONTENT_WIDTH), .h = .fit },
-                    .direction = .top_to_bottom,
-                    .child_gap = 12,
-                },
-            })({
-                // Section Category Label
+            const active_sl = ui_model.overlays.edit_panel.active_slider;
+
+            inline for (
+                std.enums.values(intents.EditDomain),
+                0..,
+            ) |domain, domain_idx| {
                 clay.UI()(.{
                     .layout = .{
-                        .sizing = .{ .w = .grow, .h = .fit },
-                        .padding = .{ .top = 10, .bottom = 14 },
+                        .sizing = .{ .w = .fixed(CONTENT_WIDTH), .h = .fit },
+                        .direction = .top_to_bottom,
+                        .child_gap = 12,
                     },
                 })({
-                    clay.text("LIGHT & TONE", .{
-                        .color = a(theme.subtext0, progress),
-                        .font_size = 11,
-                        .font_id = 0,
+                    // Section Category Label
+                    clay.UI()(.{
+                        .layout = .{
+                            .sizing = .{ .w = .grow, .h = .fit },
+                            .padding = .{ .top = 10, .bottom = 14 },
+                        },
+                    })({
+                        clay.text(domain.label(), .{
+                            .color = a(theme.subtext0, progress),
+                            .font_size = 11,
+                            .font_id = 0,
+                        });
                     });
+
+                    inline for (intents.specs) |spec| {
+                        if (spec.domain == domain) {
+                            const val = vp.edits.get(spec.param);
+                            const str = try formatValue(
+                                frame_allocator,
+                                spec,
+                                val,
+                            );
+                            const is_active = !is_comparing and
+                                active_sl == spec.param;
+                            renderSlider(
+                                spec.param,
+                                val,
+                                str,
+                                progress,
+                                is_active,
+                            );
+                        }
+                    }
                 });
 
-                const active_sl = ui_model.overlays.edit_panel.active_slider;
-
-                inline for (&[_]EditParam{
-                    .brightness,
-                    .contrast,
-                    .contrast_blend,
-                    .highlights,
-                    .shadows,
-                    .whites,
-                    .blacks,
-                }) |p| {
-                    const desc = state.getDescriptor(p);
-                    const str = try formatValue(
-                        frame_allocator,
-                        desc,
-                        vp.edits.get(p),
-                    );
-                    const is_active = !is_comparing and active_sl == p;
-                    renderSlider(p, vp.edits.get(p), str, progress, is_active);
+                // Divider between sections
+                if (domain_idx + 1 < std.enums.values(intents.EditDomain).len) {
+                    clay.UI()(.{
+                        .layout = .{
+                            .sizing = .{
+                                .w = .fixed(CONTENT_WIDTH),
+                                .h = .fixed(1),
+                            },
+                        },
+                        .background_color = a(theme.surface0, progress),
+                    })({});
                 }
-            });
-
-            // Divider
-            clay.UI()(.{
-                .layout = .{
-                    .sizing = .{ .w = .fixed(CONTENT_WIDTH), .h = .fixed(1) },
-                },
-                .background_color = a(theme.surface0, progress),
-            })({});
-
-            // -----------------------------------------------------------------
-            // Section 2: Color & Balance
-            // -----------------------------------------------------------------
-            clay.UI()(.{
-                .layout = .{
-                    .sizing = .{ .w = .fixed(CONTENT_WIDTH), .h = .fit },
-                    .direction = .top_to_bottom,
-                    .child_gap = 12,
-                },
-            })({
-                // Section Category Label
-                clay.UI()(.{
-                    .layout = .{
-                        .sizing = .{ .w = .grow, .h = .fit },
-                        .padding = .{ .top = 10, .bottom = 14 },
-                    },
-                })({
-                    clay.text("COLOR & BALANCE", .{
-                        .color = a(theme.subtext0, progress),
-                        .font_size = 11,
-                        .font_id = 0,
-                    });
-                });
-
-                const active_sl = ui_model.overlays.edit_panel.active_slider;
-
-                inline for (&[_]EditParam{
-                    .temperature,
-                    .tint,
-                    .vibrance,
-                    .saturation,
-                }) |p| {
-                    const desc = state.getDescriptor(p);
-                    const str = try formatValue(
-                        frame_allocator,
-                        desc,
-                        vp.edits.get(p),
-                    );
-                    const is_active = !is_comparing and active_sl == p;
-                    renderSlider(p, vp.edits.get(p), str, progress, is_active);
-                }
-            });
-
-            // Divider
-            clay.UI()(.{
-                .layout = .{
-                    .sizing = .{
-                        .w = .fixed(CONTENT_WIDTH),
-                        .h = .fixed(1),
-                    },
-                },
-                .background_color = a(theme.surface0, progress),
-            })({});
-
-            // -----------------------------------------------------------------
-            // Section 3: Presence & Detail
-            // -----------------------------------------------------------------
-            clay.UI()(.{
-                .layout = .{
-                    .sizing = .{ .w = .fixed(CONTENT_WIDTH), .h = .fit },
-                    .direction = .top_to_bottom,
-                    .child_gap = 12,
-                },
-            })({
-                // Section Category Label
-                clay.UI()(.{
-                    .layout = .{
-                        .sizing = .{ .w = .grow, .h = .fit },
-                        .padding = .{ .top = 10, .bottom = 14 },
-                    },
-                })({
-                    clay.text("PRESENCE & DETAIL", .{
-                        .color = a(theme.subtext0, progress),
-                        .font_size = 11,
-                        .font_id = 0,
-                    });
-                });
-
-                const active_sl = ui_model.overlays.edit_panel.active_slider;
-
-                inline for (&[_]EditParam{
-                    .texture,
-                    .clarity,
-                }) |p| {
-                    const desc = state.getDescriptor(p);
-                    const str = try formatValue(
-                        frame_allocator,
-                        desc,
-                        vp.edits.get(p),
-                    );
-                    const is_active = !is_comparing and active_sl == p;
-                    renderSlider(
-                        p,
-                        vp.edits.get(p),
-                        str,
-                        progress,
-                        is_active,
-                    );
-                }
-            });
+            }
 
             // Bottom spacer for comfortable scroll padding
             clay.UI()(.{
@@ -663,14 +569,14 @@ test "formatValue string lifetimes" {
     try std.testing.expectEqualStrings("1.00x", c_inf);
 
     // Test temperature & tint formatting
-    const temp_desc = state.getDescriptor(.temperature);
+    const temp_desc = intents.getSpec(.temperature);
     const t0 = try formatValue(std.testing.allocator, temp_desc, 0.0);
     try std.testing.expectEqualStrings("0", t0);
     const tw = try formatValue(std.testing.allocator, temp_desc, 0.35);
     defer std.testing.allocator.free(tw);
     try std.testing.expectEqualStrings("+35 (Warm)", tw);
 
-    const tint_desc = state.getDescriptor(.tint);
+    const tint_desc = intents.getSpec(.tint);
     const m0 = try formatValue(std.testing.allocator, tint_desc, 0.0);
     try std.testing.expectEqualStrings("0", m0);
     const mg = try formatValue(std.testing.allocator, tint_desc, -0.20);
@@ -678,7 +584,7 @@ test "formatValue string lifetimes" {
     try std.testing.expectEqualStrings("-20 (Green)", mg);
 
     // Test contrast_blend formatting
-    const cb_desc = state.getDescriptor(.contrast_blend);
+    const cb_desc = intents.getSpec(.contrast_blend);
     const cb1 = try formatValue(std.testing.allocator, cb_desc, 1.0);
     try std.testing.expectEqualStrings("100%", cb1);
     const cb0 = try formatValue(std.testing.allocator, cb_desc, 0.0);
@@ -690,14 +596,14 @@ test "formatValue string lifetimes" {
     try std.testing.expectEqualStrings("75%", cb75);
 
     // Test clarity and texture formatting
-    const clar_desc = state.getDescriptor(.clarity);
+    const clar_desc = intents.getSpec(.clarity);
     const cl0 = try formatValue(std.testing.allocator, clar_desc, 0.0);
     try std.testing.expectEqualStrings("0%", cl0);
     const cl_pos = try formatValue(std.testing.allocator, clar_desc, 0.35);
     defer std.testing.allocator.free(cl_pos);
     try std.testing.expectEqualStrings("+35%", cl_pos);
 
-    const tex_desc = state.getDescriptor(.texture);
+    const tex_desc = intents.getSpec(.texture);
     const tx_neg = try formatValue(std.testing.allocator, tex_desc, -0.25);
     defer std.testing.allocator.free(tx_neg);
     try std.testing.expectEqualStrings("-25%", tx_neg);
@@ -743,8 +649,7 @@ test "floating slider knob commands are clipped by scroll container scissor" {
     });
 
     const commands = clay.endLayout();
-    const knob_names = getSliderElementNames(.brightness);
-    const knob_id = clay.getElementId(knob_names.knob).id;
+    const knob_id = clay.getElementId(intents.getSpec(.brightness).knob_id).id;
 
     var found_knob = false;
     var current_scissor: ?clay.BoundingBox = null;
