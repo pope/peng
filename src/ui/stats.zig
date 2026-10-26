@@ -448,35 +448,37 @@ pub fn renderStatsOverlay(
             .loaded_cpu => |cpu| {
                 read_str = try frame_allocator.print(
                     "{d:.2} ms",
-                    .{cpu.read_time_ms},
+                    .{cpu.decode.read_time_ms},
                 );
                 decode_str = try frame_allocator.print(
                     "{d:.2} ms",
-                    .{cpu.decode_time_ms},
+                    .{cpu.decode.decode_time_ms},
                 );
                 convert_str = try frame_allocator.print(
                     "{d:.2} ms",
-                    .{cpu.conversion_time_ms},
+                    .{cpu.decode.conversion_time_ms},
                 );
             },
             .loaded_gpu => |gpu| {
-                mem_size_str =
-                    try formatSize(frame_allocator, gpu.memory_size_bytes);
+                mem_size_str = try formatSize(
+                    frame_allocator,
+                    gpu.ingest.memory_size_bytes,
+                );
                 read_str = try frame_allocator.print(
                     "{d:.2} ms",
-                    .{gpu.read_time_ms},
+                    .{gpu.decode.read_time_ms},
                 );
                 decode_str = try frame_allocator.print(
                     "{d:.2} ms",
-                    .{gpu.decode_time_ms},
+                    .{gpu.decode.decode_time_ms},
                 );
                 convert_str = try frame_allocator.print(
                     "{d:.2} ms",
-                    .{gpu.conversion_time_ms},
+                    .{gpu.decode.conversion_time_ms},
                 );
                 upload_str = try frame_allocator.print(
                     "{d:.2} ms",
-                    .{gpu.upload_time_ms},
+                    .{gpu.ingest.upload_time_ms},
                 );
             },
             .none => {
@@ -544,34 +546,45 @@ pub fn renderStatsOverlay(
         try renderStatRow("Decode Workers", workers_str);
 
         try renderStatRow("Disk Read Time", read_str);
-        if (img.cbz_decompress_time_ms > 0.0) {
-            const cbz_time_str = try frame_allocator.print(
-                "{d:.2} ms",
-                .{img.cbz_decompress_time_ms},
-            );
-            try renderStatRow("CBZ Extract Time", cbz_time_str);
-        }
-        if (img.compressed_size_bytes > 0) {
-            const comp_size_str = try formatSize(frame_allocator, img.compressed_size_bytes);
-            try renderStatRow("Compressed Size", comp_size_str);
+        if (img.decode) |dec| {
+            switch (dec.archive) {
+                .none => {},
+                .archive => |arch| {
+                    const cbz_time_str = try frame_allocator.print(
+                        "{d:.2} ms",
+                        .{arch.decompress_time_ms},
+                    );
+                    try renderStatRow("CBZ Extract Time", cbz_time_str);
+                    const comp_size_str = try formatSize(
+                        frame_allocator,
+                        arch.compressed_size_bytes,
+                    );
+                    try renderStatRow("Compressed Size", comp_size_str);
+                },
+            }
         }
         try renderStatRow("Decode Time", decode_str);
         try renderStatRow("Convert Time", convert_str);
         try renderStatRow("GPU Upload", upload_str);
 
-        const upload_mode_str: []const u8 = if (current_entry == null)
-            "N/A"
-        else if (img.was_fallback)
-            "CPU Downscale Fallback"
-        else
-            "Direct VRAM";
-        const fallback_time_str: []const u8 = if (img.was_fallback)
-            try frame_allocator.print("{d:.2} ms", .{img.fallback_time_ms})
-        else
-            "N/A";
-        try renderStatRow("GPU Upload Mode", upload_mode_str);
-        if (img.was_fallback) {
-            try renderStatRow("CPU Fallback Time", fallback_time_str);
+        if (img.ingest) |ing| {
+            const upload_mode_str: []const u8 = switch (ing.mode) {
+                .direct => "Direct VRAM",
+                .fallback => "CPU Downscale Fallback",
+            };
+            try renderStatRow("GPU Upload Mode", upload_mode_str);
+            switch (ing.mode) {
+                .direct => {},
+                .fallback => |fb| {
+                    const fallback_time_str = try frame_allocator.print(
+                        "{d:.2} ms",
+                        .{fb.fallback_time_ms},
+                    );
+                    try renderStatRow("CPU Fallback Time", fallback_time_str);
+                },
+            }
+        } else {
+            try renderStatRow("GPU Upload Mode", "N/A");
         }
 
         const thumb_time_str: []const u8 = if (img.has_thumb)
@@ -607,23 +620,28 @@ pub fn renderStatsOverlay(
             try frame_allocator.print("{d} Written", .{ts.cache_writes});
         try renderStatRow("Thumb Cache Writes", thumb_writes_str);
 
-        var mipmap_status_str: []const u8 = if (current_entry != null)
-            "Disabled (1 Level)"
-        else
-            "N/A";
-        var mipmap_time_str: []const u8 = if (current_entry != null) "0.00 ms" else "N/A";
-        if (img.num_mip_levels > 1) {
-            mipmap_status_str = try frame_allocator.print(
-                "Enabled ({d} Levels)",
-                .{img.num_mip_levels},
-            );
-            mipmap_time_str = try frame_allocator.print(
-                "{d:.2} ms",
-                .{img.mipmap_time_ms},
-            );
+        if (img.ingest) |ing| {
+            const mipmap_status_str: []const u8 = switch (ing.mipmaps) {
+                .disabled => "Disabled (1 Level)",
+                .generated => |mip| try frame_allocator.print(
+                    "Enabled ({d} Levels)",
+                    .{mip.num_levels},
+                ),
+            };
+            try renderStatRow("Mipmap Status", mipmap_status_str);
+
+            const mipmap_time_str: []const u8 = switch (ing.mipmaps) {
+                .disabled => "0.00 ms",
+                .generated => |mip| try frame_allocator.print(
+                    "{d:.2} ms",
+                    .{mip.generate_time_ms},
+                ),
+            };
+            try renderStatRow("Mipmap Gen", mipmap_time_str);
+        } else {
+            try renderStatRow("Mipmap Status", "N/A");
+            try renderStatRow("Mipmap Gen", "N/A");
         }
-        try renderStatRow("Mipmap Status", mipmap_status_str);
-        try renderStatRow("Mipmap Gen", mipmap_time_str);
 
         const rm = ui_model.render_metrics;
         const ui_render_str = try frame_allocator.print(
@@ -772,4 +790,65 @@ test "photographic edit parameter labels and formatted readouts" {
     );
     defer allocator.free(clarity_str);
     try std.testing.expectEqualStrings("-10%", clarity_str);
+}
+
+test "stats - Exhaustive switch renders all telemetry branches correctly" {
+    const frame_allocator = std.testing.allocator;
+
+    // Test ArchiveTelemetry switch formatting
+    const arch = state.ArchiveTelemetry.init(12.34, 4096);
+    const cbz_str = switch (arch) {
+        .none => "none",
+        .archive => |a| try frame_allocator.print(
+            "{d:.2} ms ({d} B)",
+            .{ a.decompress_time_ms, a.compressed_size_bytes },
+        ),
+    };
+    defer frame_allocator.free(cbz_str);
+    try std.testing.expectEqualStrings("12.34 ms (4096 B)", cbz_str);
+
+    // Test UploadMode switch formatting
+    const fb_mode = state.UploadMode.init(true, 8.75);
+    const fb_str = switch (fb_mode) {
+        .direct => "Direct VRAM",
+        .fallback => |fb| try frame_allocator.print(
+            "Fallback {d:.2} ms",
+            .{fb.fallback_time_ms},
+        ),
+    };
+    defer frame_allocator.free(fb_str);
+    try std.testing.expectEqualStrings("Fallback 8.75 ms", fb_str);
+
+    // Test MipmapTelemetry switch formatting
+    const gen_mip = state.MipmapTelemetry.init(5, 2.5);
+    const mip_str = switch (gen_mip) {
+        .disabled => "Disabled (1 Level)",
+        .generated => |g| try frame_allocator.print(
+            "Enabled ({d} Levels) in {d:.2} ms",
+            .{ g.num_levels, g.generate_time_ms },
+        ),
+    };
+    defer frame_allocator.free(mip_str);
+    try std.testing.expectEqualStrings(
+        "Enabled (5 Levels) in 2.50 ms",
+        mip_str,
+    );
+
+    // Test disabled / direct / none variants
+    const none_arch = state.ArchiveTelemetry.none;
+    const direct_upload = state.UploadMode.direct;
+    const disabled_mip = state.MipmapTelemetry.disabled;
+
+    try std.testing.expect(switch (none_arch) {
+        .none => true,
+        .archive => false,
+    });
+    try std.testing.expect(switch (direct_upload) {
+        .direct => true,
+        .fallback => false,
+    });
+    try std.testing.expect(switch (disabled_mip) {
+        .disabled => true,
+        .generated => false,
+    });
 }

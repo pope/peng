@@ -151,13 +151,9 @@ pub const ImageDecodedPayload = struct {
     source_dims: ?state_pkg.PhysicalDims = null,
     mime_type: []const u8,
     size_bytes: u64,
-    read_time_ms: f64,
-    decode_time_ms: f64,
-    conversion_time_ms: f64,
     orientation: Orientation,
     raw_metadata: RawMetadata = .none,
-    cbz_decompress_time_ms: f64 = 0.0,
-    compressed_size_bytes: usize = 0,
+    decode: state_pkg.DecodeTelemetry = .{},
     thumb_write_mtime_sec: ?i64 = null,
 };
 

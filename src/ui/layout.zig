@@ -1387,7 +1387,7 @@ test "renderViewport - floating crossfade quads allow Viewport hit-testing" {
                     .w = 800,
                     .h = 600,
                     .size_bytes = 1000,
-                    .memory_size_bytes = 1920000,
+                    .ingest = .{ .memory_size_bytes = 1920000 },
                 },
             },
             .thumbnail = .{

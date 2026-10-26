@@ -106,9 +106,10 @@
 - **Strict Domain Invariants via Tagged Unions**:
   - Model mutually exclusive domain states (`SlideshowMode`, `DisplayState`,
     `DisplayBackend`, `ResidentAsset`, `InFlightStage`, `ThumbnailState`,
-    `ThumbnailPadding`, `RawMetadata`, `ImageTransition`, `BlurResources`,
-    `RetainedResource`, `ParsedIpcArgs`) using `union(enum)` with validation
-    constructors (`init(...)`) rather than loose booleans or parallel optionals:
+    `ThumbnailPadding`, `RawMetadata`, `ArchiveTelemetry`, `UploadMode`,
+    `MipmapTelemetry`, `ImageTransition`, `BlurResources`, `RetainedResource`,
+    `ParsedIpcArgs`) using `union(enum)` with validation constructors
+    (`init(...)`) rather than loose booleans or parallel optionals:
     ```zig
     pub const RawMetadata = union(enum) {
         none,
@@ -132,12 +133,13 @@
     on the union (`getPrevIndex(self) ?usize`).
   - **No Interdependent Optionals, In-Band Zero Sentinels, or Multiplexed Event Payloads**:
     Bundle semantically coupled optionals into a single tagged union variant
-    (`union(enum) { unindexed, indexed: ZipSeekOffsets }`) or validated optional
-    struct (`source_dims: ?PhysicalDims = null` constructed via
-    `PhysicalDims.initPositive(w, h)`). Never represent optional composite data
-    (such as 2D dimensions) as independent primitive fields with in-band `0` /
-    `0.0` sentinels (`full_w: f32 = 0.0, full_h: f32 = 0.0`) or boolean +
-    defaulted primitive pairs (`needs_thumb_write: bool` +
+    (`union(enum) { unindexed, indexed: ZipSeekOffsets }`, `ArchiveTelemetry =
+    union(enum) { none, archive: struct { ... } }`, `UploadMode`,
+    `MipmapTelemetry`) or validated optional struct (`source_dims: ?PhysicalDims
+    = null` constructed via `PhysicalDims.initPositive(w, h)`). Never represent
+    optional composite data (such as 2D dimensions) as independent primitive
+    fields with in-band `0` / `0.0` sentinels (`full_w: f32 = 0.0, full_h: f32 =
+    0.0`) or boolean + defaulted primitive pairs (`needs_thumb_write: bool` +
     `source_mtime_sec: i64 = 0`), which permit half-valid states (`w > 0` with
     `h == 0`) and axis-shearing on per-axis fallback. Never overload an event
     payload with an optional handle (`surface: ?sdl.Surface`) to represent

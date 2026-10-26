@@ -86,7 +86,11 @@ ______________________________________________________________________
   - **`200ms` Rapid Scrubbing Threshold (`src/app/systems/intents.zig`)**: Navigation steps within $< 200\\text{ms}$ bypass image crossfade animations (snapping immediately) and trigger the transient auto-title overlay.
   - **`250ms` Settled Fit Promotion (`src/app/systems/cache.zig`)**: Companion JPEG Tier-4 promotion in Fit mode waits until $elapsed \\ge 250\\text{ms}$ to avoid 200MB decodes while stepping through a folder.
 - **Telemetry Metric Split ("Stats for Nerds")**:
-  High-resolution nanosecond timers (`sdl.timer.getTicksNs()`) measure disk I/O (`read_time_ms`) separately from CPU decompression (`decode_time_ms`) in `ImageDecodedPayload`.
+  High-resolution nanosecond timers (`sdl.timer.getTicksNs()`) measure disk I/O
+  (`read_time_ms`) separately from CPU decompression (`decode_time_ms`) in
+  `DecodeTelemetry` and GPU texture ingestion in `IngestTelemetry` using
+  zero-sentinel tagged unions (`ArchiveTelemetry`, `UploadMode`,
+  `MipmapTelemetry`).
 - **Demand-First Settled Preload & GPU Upload Gating**:
   Once navigation settles ($\\ge 35\\text{ms}$) AND the active slot is `.loaded_gpu` (or `.loaded_cpu` in headless mode, or `.failed`), `sysUpdateCache` dispatches visible neighbor prefetch workers ($\\pm 1, \\pm 2$). Completed neighbor surfaces are held as `.loaded_cpu` while the active image is in flight, then trickled to the GPU at 1 texture per frame in `prepareCacheTextures`.
 

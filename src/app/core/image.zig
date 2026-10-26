@@ -292,7 +292,7 @@ pub const ImageCache = struct {
         const entries = self.slots.items(.entry);
         for (entries) |entry| {
             switch (entry.resident.asset) {
-                .loaded_gpu => |gpu| total += gpu.memory_size_bytes,
+                .loaded_gpu => |gpu| total += gpu.ingest.memory_size_bytes,
                 .none, .failed, .loaded_cpu => {},
             }
         }
@@ -1506,19 +1506,13 @@ pub const UploadStagingBuffer = struct {
     }
 };
 
-/// Result payload containing the created GPU texture, dimensions, upload timing telemetry,
-/// and VRAM memory footprint.
+/// Result payload containing the created GPU texture, dimensions, and
+/// ingestion telemetry.
 pub const GpuUploadResult = struct {
     gpu_texture: sdl.gpu.Texture,
     w: f32,
     h: f32,
-    upload_time_ms: f64,
-    memory_size_bytes: usize,
-    num_mip_levels: u32,
-    mipmap_time_ms: f64 = 0.0,
-    conversion_time_ms: f64 = 0.0,
-    was_fallback: bool = false,
-    fallback_time_ms: f64 = 0.0,
+    ingest: state_pkg.IngestTelemetry = .{},
 };
 
 /// Computes the mipmap pyramid level count for a 2D texture of size `w` x `h`.
@@ -1905,13 +1899,18 @@ pub fn uploadSurfaceToGpu(
             .gpu_texture = gpu_tex,
             .w = @floatFromInt(img_w),
             .h = @floatFromInt(img_h),
-            .upload_time_ms = upload_time_ms,
-            .memory_size_bytes = memory_size_bytes,
-            .num_mip_levels = num_levels,
-            .mipmap_time_ms = mipmap_time_ms,
-            .conversion_time_ms = 0.0,
-            .was_fallback = was_fallback,
-            .fallback_time_ms = fallback_time_ms,
+            .ingest = .{
+                .upload_time_ms = upload_time_ms,
+                .memory_size_bytes = memory_size_bytes,
+                .mode = state_pkg.UploadMode.init(
+                    was_fallback,
+                    fallback_time_ms,
+                ),
+                .mipmaps = state_pkg.MipmapTelemetry.init(
+                    num_levels,
+                    mipmap_time_ms,
+                ),
+            },
         };
     }
 
@@ -1948,7 +1947,7 @@ pub fn uploadSurfaceToGpu(
         return null;
     };
 
-    const conversion_time_ms = stageSurfaceToRgba32(
+    _ = stageSurfaceToRgba32(
         current_surf,
         mapped[0..size],
         u_w,
@@ -2006,13 +2005,18 @@ pub fn uploadSurfaceToGpu(
         .gpu_texture = gpu_tex,
         .w = @floatFromInt(img_w),
         .h = @floatFromInt(img_h),
-        .upload_time_ms = upload_time_ms,
-        .memory_size_bytes = memory_size_bytes,
-        .num_mip_levels = num_levels,
-        .mipmap_time_ms = mipmap_time_ms,
-        .conversion_time_ms = conversion_time_ms,
-        .was_fallback = was_fallback,
-        .fallback_time_ms = fallback_time_ms,
+        .ingest = .{
+            .upload_time_ms = upload_time_ms,
+            .memory_size_bytes = memory_size_bytes,
+            .mode = state_pkg.UploadMode.init(
+                was_fallback,
+                fallback_time_ms,
+            ),
+            .mipmaps = state_pkg.MipmapTelemetry.init(
+                num_levels,
+                mipmap_time_ms,
+            ),
+        },
     };
 }
 
@@ -2132,7 +2136,7 @@ test "enforceVramBudget - distant eviction, circular distance, and neighbor prot
                             .w = 100,
                             .h = 100,
                             .size_bytes = size,
-                            .memory_size_bytes = size,
+                            .ingest = .{ .memory_size_bytes = size },
                         },
                     },
                 },
@@ -2289,7 +2293,7 @@ test "hasUnreadyPrefetchSlots" {
                     .w = 100,
                     .h = 100,
                     .size_bytes = 100,
-                    .memory_size_bytes = 100,
+                    .ingest = .{ .memory_size_bytes = 100 },
                 },
             },
         },

@@ -1013,13 +1013,14 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                 ),
                 .mime_type = mime_type,
                 .size_bytes = file_size,
-                .read_time_ms = read_time_ms,
-                .decode_time_ms = decode_time_ms,
-                .conversion_time_ms = conversion_time_ms,
                 .orientation = orientation,
                 .raw_metadata = RawMetadata.init(final_raw_w, final_raw_h),
-                .cbz_decompress_time_ms = 0.0,
-                .compressed_size_bytes = 0,
+                .decode = .{
+                    .read_time_ms = read_time_ms,
+                    .decode_time_ms = decode_time_ms,
+                    .conversion_time_ms = conversion_time_ms,
+                    .archive = .none,
+                },
                 .thumb_write_mtime_sec = thumb_write_mtime_sec,
             }),
         }) catch |err| {
@@ -1056,8 +1057,7 @@ const DecodePayload = struct {
     size_bytes: u64,
     mtime_sec: ?i64 = null,
     read_time_ms: f64,
-    cbz_decompress_time_ms: f64 = 0.0,
-    compressed_size_bytes: usize = 0,
+    archive: state_pkg.ArchiveTelemetry = .none,
     stage: Stage,
 
     fn fromArchiveEntry(
@@ -1090,11 +1090,13 @@ const DecodePayload = struct {
             .read_n = dec_res.bytes.len,
             .size_bytes = dec_res.bytes.len,
             .read_time_ms = dec_res.read_time_ms,
-            .cbz_decompress_time_ms = dec_res.decompress_time_ms,
-            .compressed_size_bytes = std.math.cast(
-                usize,
-                dec_res.compressed_size,
-            ) orelse std.math.maxInt(usize),
+            .archive = state_pkg.ArchiveTelemetry.init(
+                dec_res.decompress_time_ms,
+                std.math.cast(
+                    usize,
+                    dec_res.compressed_size,
+                ) orelse std.math.maxInt(usize),
+            ),
             .stage = .complete,
         };
     }
@@ -1648,13 +1650,14 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                 .source_dims = source_dims,
                 .mime_type = mime_type,
                 .size_bytes = payload.size_bytes,
-                .read_time_ms = payload.read_time_ms,
-                .decode_time_ms = decode_time_ms,
-                .conversion_time_ms = conversion_time_ms,
                 .orientation = orientation,
                 .raw_metadata = raw_metadata,
-                .cbz_decompress_time_ms = payload.cbz_decompress_time_ms,
-                .compressed_size_bytes = payload.compressed_size_bytes,
+                .decode = .{
+                    .read_time_ms = payload.read_time_ms,
+                    .decode_time_ms = decode_time_ms,
+                    .conversion_time_ms = conversion_time_ms,
+                    .archive = payload.archive,
+                },
                 .thumb_write_mtime_sec = thumb_write_mtime_sec,
             }),
         }) catch |err| {

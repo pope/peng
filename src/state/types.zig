@@ -1322,40 +1322,104 @@ pub const RawMetadata = union(enum) {
     }
 };
 
-/// Decoded CPU software surface stored in host RAM along with image
-/// dimensions and decompression timing.
+/// Container extraction metrics for compressed images (CBZ / ZIP archives).
+pub const ArchiveTelemetry = union(enum) {
+    none,
+    archive: struct {
+        decompress_time_ms: f64,
+        compressed_size_bytes: usize,
+    },
+
+    /// Constructs an ArchiveTelemetry variant based on decompression stats.
+    pub fn init(
+        decompress_time_ms: f64,
+        compressed_size_bytes: usize,
+    ) ArchiveTelemetry {
+        if (compressed_size_bytes > 0 or decompress_time_ms > 0.0) {
+            return .{
+                .archive = .{
+                    .decompress_time_ms = decompress_time_ms,
+                    .compressed_size_bytes = compressed_size_bytes,
+                },
+            };
+        }
+        return .none;
+    }
+};
+
+/// Hardware upload strategy executed for GPU texture allocation.
+pub const UploadMode = union(enum) {
+    direct,
+    fallback: struct {
+        fallback_time_ms: f64,
+    },
+
+    /// Constructs an UploadMode variant indicating direct upload or fallback.
+    pub fn init(was_fallback: bool, fallback_time_ms: f64) UploadMode {
+        if (was_fallback) {
+            return .{ .fallback = .{ .fallback_time_ms = fallback_time_ms } };
+        }
+        return .direct;
+    }
+};
+
+/// Mipmap pyramid generation status and performance timing.
+pub const MipmapTelemetry = union(enum) {
+    disabled,
+    generated: struct {
+        num_levels: u32,
+        generate_time_ms: f64,
+    },
+
+    /// Constructs a MipmapTelemetry variant for single or multi-level textures.
+    pub fn init(num_levels: u32, generate_time_ms: f64) MipmapTelemetry {
+        if (num_levels > 1) {
+            return .{
+                .generated = .{
+                    .num_levels = num_levels,
+                    .generate_time_ms = generate_time_ms,
+                },
+            };
+        }
+        return .disabled;
+    }
+};
+
+/// Performance timing metrics common to all CPU image decompressions.
+pub const DecodeTelemetry = struct {
+    read_time_ms: f64 = 0.0,
+    decode_time_ms: f64 = 0.0,
+    conversion_time_ms: f64 = 0.0,
+    archive: ArchiveTelemetry = .none,
+};
+
+/// Telemetry metrics specific to GPU texture upload, downscaling, and mipmaps.
+pub const IngestTelemetry = struct {
+    upload_time_ms: f64 = 0.0,
+    memory_size_bytes: usize = 0,
+    mode: UploadMode = .direct,
+    mipmaps: MipmapTelemetry = .disabled,
+};
+
+/// Decoded CPU software surface stored in host RAM.
 pub const CpuSurfaceComponent = struct {
     surface: sdl.Surface,
     w: f32,
     h: f32,
     size_bytes: u64,
     mime_type: []const u8 = "",
-    read_time_ms: f64 = 0.0,
-    decode_time_ms: f64 = 0.0,
-    conversion_time_ms: f64 = 0.0,
-    cbz_decompress_time_ms: f64 = 0.0,
-    compressed_size_bytes: usize = 0,
+    decode: DecodeTelemetry = .{},
 };
 
-/// Resident GPU texture allocation and VRAM memory footprint metadata uploaded
-/// to the graphics device.
+/// Resident GPU texture allocation and VRAM memory footprint metadata.
 pub const GpuTextureComponent = struct {
     gpu_texture: sdl.gpu.Texture,
     w: f32,
     h: f32,
     size_bytes: u64,
     mime_type: []const u8 = "",
-    read_time_ms: f64 = 0.0,
-    decode_time_ms: f64 = 0.0,
-    conversion_time_ms: f64 = 0.0,
-    upload_time_ms: f64 = 0.0,
-    memory_size_bytes: usize,
-    num_mip_levels: u32 = 1,
-    mipmap_time_ms: f64 = 0.0,
-    was_fallback: bool = false,
-    fallback_time_ms: f64 = 0.0,
-    cbz_decompress_time_ms: f64 = 0.0,
-    compressed_size_bytes: usize = 0,
+    decode: DecodeTelemetry = .{},
+    ingest: IngestTelemetry = .{},
 };
 
 /// Tier-0 probed metadata populated during initial header inspection.
@@ -1794,17 +1858,13 @@ pub const SnackbarDisplay = union(enum) {
     }
 };
 
-/// Telemetry metrics for the active image GPU/Decoder status.
+/// Active image performance telemetry for Stats for Nerds overlay.
 pub const ActiveImageStats = struct {
-    num_mip_levels: u32 = 1,
-    mipmap_time_ms: f64 = 0.0,
-    fallback_time_ms: f64 = 0.0,
-    was_fallback: bool = false,
+    decode: ?DecodeTelemetry = null,
+    ingest: ?IngestTelemetry = null,
     has_thumb: bool = false,
     thumb_upload_time_ms: f64 = 0.0,
     thumb_source: ThumbnailSource = .embedded_header,
-    cbz_decompress_time_ms: f64 = 0.0,
-    compressed_size_bytes: usize = 0,
 };
 
 /// Unified telemetry counters for thumbnail extraction, shared cache reads,
@@ -2382,7 +2442,7 @@ test "CacheResident - deinit cleans up both thumbnail and primary textures" {
                 .w = 1920.0,
                 .h = 1080.0,
                 .size_bytes = 1000,
-                .memory_size_bytes = 2000,
+                .ingest = .{ .memory_size_bytes = 2000 },
             },
         },
     };
@@ -2638,4 +2698,57 @@ test "MediaId - type layout and representation" {
 
     const formatted_none = try std.fmt.bufPrint(&buf, "{f}", .{MediaId.none});
     try std.testing.expectEqualStrings("MediaId(none)", formatted_none);
+}
+
+test "ArchiveTelemetry - init returns .none for normal and .archive for CBZ" {
+    const none_val = ArchiveTelemetry.init(0.0, 0);
+    try std.testing.expectEqual(ArchiveTelemetry.none, none_val);
+
+    const arch_time = ArchiveTelemetry.init(14.5, 0);
+    switch (arch_time) {
+        .none => return error.TestExpectedArchive,
+        .archive => |a| {
+            try std.testing.expectEqual(@as(f64, 14.5), a.decompress_time_ms);
+            try std.testing.expectEqual(@as(usize, 0), a.compressed_size_bytes);
+        },
+    }
+
+    const arch_size = ArchiveTelemetry.init(0.0, 1024);
+    switch (arch_size) {
+        .none => return error.TestExpectedArchive,
+        .archive => |a| {
+            try std.testing.expectEqual(@as(f64, 0.0), a.decompress_time_ms);
+            try std.testing.expectEqual(
+                @as(usize, 1024),
+                a.compressed_size_bytes,
+            );
+        },
+    }
+}
+
+test "UploadMode - init distinguishes direct VRAM from fallback" {
+    const direct_mode = UploadMode.init(false, 0.0);
+    try std.testing.expectEqual(UploadMode.direct, direct_mode);
+
+    const fallback_mode = UploadMode.init(true, 12.5);
+    switch (fallback_mode) {
+        .direct => return error.TestExpectedFallback,
+        .fallback => |fb| {
+            try std.testing.expectEqual(@as(f64, 12.5), fb.fallback_time_ms);
+        },
+    }
+}
+
+test "MipmapTelemetry - init distinguishes disabled from multi-level" {
+    const disabled_mip = MipmapTelemetry.init(1, 0.0);
+    try std.testing.expectEqual(MipmapTelemetry.disabled, disabled_mip);
+
+    const gen_mip = MipmapTelemetry.init(4, 5.2);
+    switch (gen_mip) {
+        .disabled => return error.TestExpectedGenerated,
+        .generated => |g| {
+            try std.testing.expectEqual(@as(u32, 4), g.num_levels);
+            try std.testing.expectEqual(@as(f64, 5.2), g.generate_time_ms);
+        },
+    }
 }

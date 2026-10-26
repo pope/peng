@@ -306,7 +306,7 @@ fn handleExifThumbnailEvent(
                     .info = .{
                         .w = upload_res.w,
                         .h = upload_res.h,
-                        .upload_time_ms = upload_res.upload_time_ms,
+                        .upload_time_ms = upload_res.ingest.upload_time_ms,
                         .dct_snapped = thumb_data.dct_snapped,
                         .source = thumb_data.source,
                     },
@@ -456,8 +456,6 @@ fn handleImageDecodedEvent(
             {
                 entry.resident.thumbnail = .not_available;
             }
-            const cbz_ms = decoded_data.cbz_decompress_time_ms;
-            const comp_bytes = decoded_data.compressed_size_bytes;
             entry.resident.asset = .{
                 .loaded_cpu = .{
                     .surface = decoded_data.surface.?,
@@ -465,11 +463,7 @@ fn handleImageDecodedEvent(
                     .h = decoded_data.h,
                     .size_bytes = decoded_data.size_bytes,
                     .mime_type = decoded_data.mime_type,
-                    .read_time_ms = decoded_data.read_time_ms,
-                    .decode_time_ms = decoded_data.decode_time_ms,
-                    .conversion_time_ms = decoded_data.conversion_time_ms,
-                    .cbz_decompress_time_ms = cbz_ms,
-                    .compressed_size_bytes = comp_bytes,
+                    .decode = decoded_data.decode,
                 },
             };
             decoded_data.surface = null;
@@ -568,17 +562,8 @@ fn applyDecodedGpuTexture(
             .h = full_res.h,
             .size_bytes = decoded_data.size_bytes,
             .mime_type = decoded_data.mime_type,
-            .read_time_ms = decoded_data.read_time_ms,
-            .decode_time_ms = decoded_data.decode_time_ms,
-            .conversion_time_ms = full_res.conversion_time_ms,
-            .upload_time_ms = full_res.upload_time_ms,
-            .memory_size_bytes = full_res.memory_size_bytes,
-            .num_mip_levels = full_res.num_mip_levels,
-            .mipmap_time_ms = full_res.mipmap_time_ms,
-            .was_fallback = full_res.was_fallback,
-            .fallback_time_ms = full_res.fallback_time_ms,
-            .cbz_decompress_time_ms = decoded_data.cbz_decompress_time_ms,
-            .compressed_size_bytes = decoded_data.compressed_size_bytes,
+            .decode = decoded_data.decode,
+            .ingest = full_res.ingest,
         }, gpu_dev);
         if (entry.resident.thumbnail == .pending or
             entry.resident.thumbnail == .none)
@@ -875,10 +860,12 @@ test "drainWorkerEvents - neighbor image_decoded stays loaded_cpu while current 
             .h = 10,
             .mime_type = "image/png",
             .size_bytes = 100,
-            .read_time_ms = 1.0,
-            .decode_time_ms = 2.0,
-            .conversion_time_ms = 0.0,
             .orientation = .normal,
+            .decode = .{
+                .read_time_ms = 1.0,
+                .decode_time_ms = 2.0,
+                .conversion_time_ms = 0.0,
+            },
         }),
     });
 
@@ -1054,12 +1041,15 @@ test "drainWorkerEvents - pair promotion preserves VRAM and loaded status" {
                     .h = 1200,
                     .size_bytes = 500_000,
                     .mime_type = "image/jpeg",
-                    .read_time_ms = 1.0,
-                    .decode_time_ms = 2.0,
-                    .conversion_time_ms = 0.0,
-                    .upload_time_ms = 0.5,
-                    .memory_size_bytes = 8 * 1024 * 1024,
-                    .num_mip_levels = 1,
+                    .decode = .{
+                        .read_time_ms = 1.0,
+                        .decode_time_ms = 2.0,
+                        .conversion_time_ms = 0.0,
+                    },
+                    .ingest = .{
+                        .upload_time_ms = 0.5,
+                        .memory_size_bytes = 8 * 1024 * 1024,
+                    },
                 },
             },
         },
@@ -1097,10 +1087,12 @@ test "drainWorkerEvents - pair promotion preserves VRAM and loaded status" {
             .h = 24,
             .mime_type = "image/jpeg",
             .size_bytes = 3072,
-            .read_time_ms = 1.0,
-            .decode_time_ms = 2.0,
-            .conversion_time_ms = 0.0,
             .orientation = .normal,
+            .decode = .{
+                .read_time_ms = 1.0,
+                .decode_time_ms = 2.0,
+                .conversion_time_ms = 0.0,
+            },
         }),
     });
 
@@ -1142,11 +1134,13 @@ test "drainWorkerEvents - monotonic full_dims on pair promotion" {
             .h = 1080,
             .mime_type = "image/jpeg",
             .size_bytes = 500_000,
-            .read_time_ms = 1.0,
-            .decode_time_ms = 2.0,
-            .conversion_time_ms = 0.0,
             .orientation = .normal,
             .raw_metadata = state_pkg.RawMetadata.init(1616, 1080),
+            .decode = .{
+                .read_time_ms = 1.0,
+                .decode_time_ms = 2.0,
+                .conversion_time_ms = 0.0,
+            },
         }),
     });
     try std.testing.expect(drainWorkerEvents(&state));
@@ -1170,11 +1164,13 @@ test "drainWorkerEvents - monotonic full_dims on pair promotion" {
             .h = 4000,
             .mime_type = "image/jpeg",
             .size_bytes = 4_000_000,
-            .read_time_ms = 2.0,
-            .decode_time_ms = 5.0,
-            .conversion_time_ms = 0.0,
             .orientation = .normal,
             .raw_metadata = .none,
+            .decode = .{
+                .read_time_ms = 2.0,
+                .decode_time_ms = 5.0,
+                .conversion_time_ms = 0.0,
+            },
         }),
     });
     try std.testing.expect(drainWorkerEvents(&state));
@@ -1201,11 +1197,13 @@ test "drainWorkerEvents - monotonic full_dims on pair promotion" {
             .h = 1080,
             .mime_type = "image/jpeg",
             .size_bytes = 500_000,
-            .read_time_ms = 1.0,
-            .decode_time_ms = 2.0,
-            .conversion_time_ms = 0.0,
             .orientation = .normal,
             .raw_metadata = state_pkg.RawMetadata.init(1616, 1080),
+            .decode = .{
+                .read_time_ms = 1.0,
+                .decode_time_ms = 2.0,
+                .conversion_time_ms = 0.0,
+            },
         }),
     });
     try std.testing.expect(drainWorkerEvents(&state));
@@ -1443,11 +1441,7 @@ test "drainWorkerEvents - ignores thumb_decoded when slot is already loaded" {
                     .h = 32.0,
                     .size_bytes = 4096,
                     .mime_type = "image/jpeg",
-                    .read_time_ms = 0.0,
-                    .decode_time_ms = 0.0,
-                    .conversion_time_ms = 0.0,
-                    .cbz_decompress_time_ms = 0.0,
-                    .compressed_size_bytes = 0,
+                    .decode = .{},
                 },
             },
             .thumbnail = .{ .unloaded = .{
@@ -1554,13 +1548,9 @@ test "DirectoryScanResultEvent - Preserves MediaId for initial target file" {
             .h = 10.0,
             .size_bytes = 400,
             .mime_type = "image/jpeg",
-            .read_time_ms = 0.0,
-            .decode_time_ms = 0.0,
-            .conversion_time_ms = 0.0,
-            .cbz_decompress_time_ms = 0.0,
-            .compressed_size_bytes = 0,
             .orientation = .normal,
             .raw_metadata = .none,
+            .decode = .{},
         }),
     });
     try std.testing.expect(drainWorkerEvents(&state));
@@ -1608,13 +1598,9 @@ test "drainWorkerEvents - skips thumbnail upload when image_decoded is in same b
             .h = 64.0,
             .size_bytes = 4096,
             .mime_type = "image/jpeg",
-            .read_time_ms = 0.0,
-            .decode_time_ms = 0.0,
-            .conversion_time_ms = 0.0,
-            .cbz_decompress_time_ms = 0.0,
-            .compressed_size_bytes = 0,
             .orientation = .normal,
             .raw_metadata = .none,
+            .decode = .{},
         }),
     });
 
@@ -1685,7 +1671,7 @@ test "completeDecodedGpuUpload - enqueues thumb write before swapRemove" {
                     .w = 100.0,
                     .h = 100.0,
                     .size_bytes = 500,
-                    .memory_size_bytes = 500,
+                    .ingest = .{ .memory_size_bytes = 500 },
                 },
             },
         },
@@ -1703,13 +1689,13 @@ test "completeDecodedGpuUpload - enqueues thumb write before swapRemove" {
         .h = 1080.0,
         .size_bytes = 4096,
         .mime_type = "image/x-sony-arw",
-        .read_time_ms = 0.1,
-        .decode_time_ms = 1.0,
-        .conversion_time_ms = 0.0,
-        .cbz_decompress_time_ms = 0.0,
-        .compressed_size_bytes = 0,
         .orientation = .rotate_270,
         .raw_metadata = state_pkg.RawMetadata.init(6000.0, 4000.0),
+        .decode = .{
+            .read_time_ms = 0.1,
+            .decode_time_ms = 1.0,
+            .conversion_time_ms = 0.0,
+        },
         .thumb_write_mtime_sec = 1700000000,
     };
     defer if (decoded.surface) |s| s.destroy();
@@ -1718,13 +1704,10 @@ test "completeDecodedGpuUpload - enqueues thumb write before swapRemove" {
         .gpu_texture = dummy_tex,
         .w = 1616.0,
         .h = 1080.0,
-        .conversion_time_ms = 0.0,
-        .upload_time_ms = 0.1,
-        .memory_size_bytes = 500,
-        .num_mip_levels = 1,
-        .mipmap_time_ms = 0.0,
-        .was_fallback = false,
-        .fallback_time_ms = 0.0,
+        .ingest = .{
+            .upload_time_ms = 0.1,
+            .memory_size_bytes = 500,
+        },
     };
 
     // Budget is 600 bytes; 500 + 500 = 1000 > 600, so enforceVramBudget will
@@ -1816,17 +1799,12 @@ test "handleImageDecodedEvent - preserves loaded_gpu during promotion" {
                     .h = up_res.h,
                     .size_bytes = 1024,
                     .mime_type = "image/jpeg",
-                    .read_time_ms = 1,
-                    .decode_time_ms = 1,
-                    .conversion_time_ms = 1,
-                    .upload_time_ms = 1,
-                    .memory_size_bytes = up_res.memory_size_bytes,
-                    .num_mip_levels = 1,
-                    .mipmap_time_ms = 1,
-                    .was_fallback = false,
-                    .fallback_time_ms = 0,
-                    .cbz_decompress_time_ms = 0,
-                    .compressed_size_bytes = 0,
+                    .decode = .{
+                        .read_time_ms = 1,
+                        .decode_time_ms = 1,
+                        .conversion_time_ms = 1,
+                    },
+                    .ingest = up_res.ingest,
                 },
             },
         },
@@ -1841,11 +1819,13 @@ test "handleImageDecodedEvent - preserves loaded_gpu during promotion" {
         .h = 32.0,
         .size_bytes = 32 * 32 * 4,
         .mime_type = "image/jpeg",
-        .read_time_ms = 1.0,
-        .decode_time_ms = 1.0,
-        .conversion_time_ms = 1.0,
         .orientation = .normal,
         .raw_metadata = .none,
+        .decode = .{
+            .read_time_ms = 1.0,
+            .decode_time_ms = 1.0,
+            .conversion_time_ms = 1.0,
+        },
     };
 
     handleImageDecodedEvent(&state, key1, &decoded);
