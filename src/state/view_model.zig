@@ -4,11 +4,12 @@ const palette_state = @import("palette_state.zig");
 const sdl = @import("sdl");
 const std = @import("std");
 const types = @import("types.zig");
+const vfs = @import("vfs");
 
 const AnimationChannel = animation_state.AnimationChannel;
 const CacheEntry = types.CacheEntry;
 const Classification = types.Classification;
-const MediaEntry = types.MediaEntry;
+const MediaEntry = vfs.MediaEntry;
 const MediaItemSlice = navigation.MediaItemSlice;
 const OverlayState = types.OverlayState;
 const SlideshowMode = types.SlideshowMode;

@@ -1,5 +1,4 @@
 const context = @import("context.zig");
-const core_fs = @import("../core/fs.zig");
 const image = @import("../core/image.zig");
 const ipc = @import("ipc");
 const manager = @import("manager.zig");
@@ -8,14 +7,18 @@ const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
 const thumb_cache = @import("../core/thumb_cache.zig");
+const vfs = @import("vfs");
 
-const ArchiveMediaEntry = state_pkg.ArchiveMediaEntry;
+const ArchiveMediaEntry = vfs.ArchiveMediaEntry;
+const FilePair = vfs.FilePair;
 const ImageCacheKey = image.ImageCacheKey;
-const MediaEntry = state_pkg.MediaEntry;
+const isRawFile = vfs.isRawFile;
+const MediaEntry = vfs.MediaEntry;
 const MediaId = state_pkg.types.MediaId;
 const Orientation = probe.Orientation;
 const PairStreamTarget = state_pkg.PairStreamTarget;
 const RawMetadata = state_pkg.RawMetadata;
+const scanCbzImageEntries = vfs.scanCbzImageEntries;
 const ThumbnailSource = state_pkg.ThumbnailSource;
 const WorkerManager = manager.WorkerManager;
 
@@ -1384,7 +1387,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     var payload: DecodePayload = switch (media_entry) {
         .archive_entry => |arch| DecodePayload.fromArchiveEntry(args, arch) orelse return,
         .filesystem => |file_item| blk: {
-            if (core_fs.isRawFile(file_item.path)) {
+            if (isRawFile(file_item.path)) {
                 _ = decodeRawFile(args, file_item.path, false);
                 return;
             }
@@ -1408,7 +1411,8 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     const header_buf = payload.headerSlice();
     const path = payload.path;
     const mime_type = probe.detectMimeType(header_buf, path);
-    const is_raw_archive = core_fs.isRawFile(path) or std.mem.startsWith(u8, mime_type, "image/x-");
+    const is_raw_archive = isRawFile(path) or
+        std.mem.startsWith(u8, mime_type, "image/x-");
 
     var raw_preview_slice: ?[]const u8 = null;
     var raw_sensor_dims: ?probe.JpegDimensions = null;
@@ -1831,7 +1835,7 @@ fn decodePreviewSourceSurface(
             for (cbz_entries.items) |item| item.deinit(allocator);
             cbz_entries.deinit(allocator);
         }
-        try core_fs.scanCbzImageEntries(allocator, io, path, &cbz_entries);
+        try scanCbzImageEntries(allocator, io, path, &cbz_entries);
         if (cbz_entries.items.len == 0) return error.NoImagesInArchive;
         if (cancel.isCanceled()) return error.Canceled;
         const decomp = try decompressCbzMediaEntry(
@@ -1896,7 +1900,7 @@ fn decodePreviewSourceSurface(
     const is_fuji = std.mem.eql(u8, mime_type, "image/x-fuji-raf") or
         (header_slice.len >= 8 and
             std.mem.startsWith(u8, header_slice, "FUJIFILM"));
-    const is_raw = core_fs.isRawFile(path) or
+    const is_raw = isRawFile(path) or
         is_fuji or
         std.mem.startsWith(u8, mime_type, "image/x-");
 
@@ -3057,7 +3061,7 @@ test "decodeWorker - progressive pair loading with PairStreamTarget" {
 
     // 1. thumb_only decodes RAW thumbnail
     {
-        const pair = state_pkg.FilePair{
+        const pair = FilePair{
             .raw_path = try allocator.dupe(u8, raw_file),
             .jpeg_path = try allocator.dupe(u8, jpg_file),
         };
@@ -3094,7 +3098,7 @@ test "decodeWorker - progressive pair loading with PairStreamTarget" {
 
     // 2. pair_target = .standalone_jpeg decodes companion JPEG
     {
-        const pair = state_pkg.FilePair{
+        const pair = FilePair{
             .raw_path = try allocator.dupe(u8, raw_file),
             .jpeg_path = try allocator.dupe(u8, jpg_file),
         };
@@ -3132,7 +3136,7 @@ test "decodeWorker - progressive pair loading with PairStreamTarget" {
 
     // 3. pair_target = .adaptive settled decodes RAW preview
     {
-        const pair = state_pkg.FilePair{
+        const pair = FilePair{
             .raw_path = try allocator.dupe(u8, raw_file),
             .jpeg_path = try allocator.dupe(u8, jpg_file),
         };
@@ -3176,7 +3180,7 @@ test "decodeWorker - canceled RAW pair exits without fallback" {
     defer workers.deinit(allocator, io);
 
     var current_gen: std.atomic.Value(usize) = .init(2);
-    const pair = state_pkg.FilePair{
+    const pair = FilePair{
         .raw_path = try allocator.dupe(u8, "nonexistent.raf"),
         .jpeg_path = try allocator.dupe(
             u8,

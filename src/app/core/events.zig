@@ -5,9 +5,11 @@ const probe = @import("probe");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
+const vfs = @import("vfs");
 
+const EntryScanState = vfs.EntryScanState;
 const ImageCacheKey = image.ImageCacheKey;
-const MediaEntry = state_pkg.MediaEntry;
+const MediaEntry = vfs.MediaEntry;
 const MediaId = state_pkg.MediaId;
 const Orientation = probe.Orientation;
 const RawMetadata = state_pkg.RawMetadata;
@@ -187,7 +189,7 @@ pub const DirectoryScanResultPayload = struct {
 /// `.failed`) for a directory or archive item in the Command Palette.
 pub const PaletteFolderCountPayload = struct {
     path: []const u8,
-    scan: state_pkg.EntryScanState,
+    scan: EntryScanState,
 };
 
 /// Payload emitted when a live background directory pre-cache job completes.

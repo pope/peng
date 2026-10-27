@@ -1,10 +1,10 @@
-const core_fs = @import("fs.zig");
 const probe = @import("probe");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
+const vfs = @import("vfs");
 
-const ArchiveMediaEntry = state_pkg.types.ArchiveMediaEntry;
+const ArchiveMediaEntry = vfs.ArchiveMediaEntry;
 const CacheEntry = state_pkg.CacheEntry;
 const CacheMetadata = state_pkg.CacheMetadata;
 const CacheResident = state_pkg.CacheResident;
@@ -13,13 +13,14 @@ const detectMimeType = probe.detectMimeType;
 const GpuTextureComponent = state_pkg.GpuTextureComponent;
 const ImageDimensions = probe.ImageDimensions;
 const InFlightDecode = state_pkg.InFlightDecode;
-const MediaEntry = state_pkg.MediaEntry;
+const isRawFile = vfs.isRawFile;
+const MediaEntry = vfs.MediaEntry;
 const MediaId = state_pkg.MediaId;
 const Orientation = probe.Orientation;
 const parseImageDimensions = probe.parseImageDimensions;
 const RawMetadata = state_pkg.RawMetadata;
 const ResidentAsset = state_pkg.ResidentAsset;
-const ZipSeekOffsets = state_pkg.types.ZipSeekOffsets;
+const ZipSeekOffsets = vfs.ZipSeekOffsets;
 
 /// Unique lookup key identifying a cached image slot by its stable MediaId
 /// and cache generation epoch.
@@ -504,7 +505,7 @@ fn probeStoredZipMetadata(
     const dims = parseImageDimensions(image_slice, mime_type) orelse
         return null;
     const rot = probe.parseExifOrientation(image_slice) orelse .normal;
-    const is_raw = core_fs.isRawFile(a.entry_name) or
+    const is_raw = isRawFile(a.entry_name) or
         std.mem.startsWith(u8, mime_type, "image/x-");
 
     var has_thumb = false;
@@ -626,7 +627,7 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
             };
             defer file.close(io);
 
-            const is_raw_ext = core_fs.isRawFile(f.path);
+            const is_raw_ext = isRawFile(f.path);
             var header_buf: [256 * 1024]u8 = undefined;
             const target_read = if (is_raw_ext) header_buf.len else 128 * 1024;
             var slices = [_][]u8{header_buf[0..target_read]};
@@ -1104,7 +1105,7 @@ pub fn loadThumbnailSurface(
                 );
                 return null;
             };
-            const is_raw_ext = core_fs.isRawFile(f.path);
+            const is_raw_ext = isRawFile(f.path);
             var header_buf: [256 * 1024]u8 = undefined;
             const target_read = if (is_raw_ext) header_buf.len else 128 * 1024;
             var slices = [_][]u8{header_buf[0..target_read]};
@@ -1119,7 +1120,7 @@ pub fn loadThumbnailSurface(
             const header_slice = header_buf[0..header_n];
 
             const mime_type = detectMimeType(header_slice, f.path);
-            const is_raw = core_fs.isRawFile(f.path) or
+            const is_raw = isRawFile(f.path) or
                 std.mem.startsWith(u8, mime_type, "image/x-");
             const is_fuji = std.mem.eql(u8, mime_type, "image/x-fuji-raf") or
                 (header_n >= 8 and std.mem.startsWith(u8, header_slice, "FUJIFILM"));

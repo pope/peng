@@ -1,10 +1,296 @@
-const state_pkg = @import("state");
+//! Standalone Virtual File System (VFS) Module
+//!
+//! Provides pure, zero-SDL filesystem and archive navigation primitives,
+//! container abstractions (MediaEntry, DirectoryEntry, FilePair), comic
+//! archive (CBZ/ZIP) directory indexing, RAW+JPEG pair consolidation, and
+//! directory scanning.
+
 const std = @import("std");
 
-const DirectoryEntry = state_pkg.DirectoryEntry;
-const MediaEntry = state_pkg.MediaEntry;
+/// Pre-discovered byte offsets and compression parameters for O(1) instant
+/// seeking in ZIP/CBZ archives.
+pub const ZipSeekOffsets = struct {
+    header_zip_offset: u64,
+    file_offset: u64,
+    uncompressed_size: u64,
+    compression_method: std.zip.CompressionMethod,
+};
 
-/// Returns `true` if filename is an AppleDouble metadata file starting with `._`.
+/// Tagged union representing indexing status of an archive media entry.
+pub const ArchiveSeekInfo = union(enum) {
+    unindexed,
+    indexed: ZipSeekOffsets,
+};
+
+/// Media entry descriptor for an image stored inside a compressed or
+/// uncompressed archive (CBZ, CBR, ZIP).
+pub const ArchiveMediaEntry = struct {
+    archive_path: []const u8,
+    entry_name: []const u8,
+    seek_info: ArchiveSeekInfo = .unindexed,
+};
+
+/// Holds paths to paired RAW and JPEG files sharing the same base stem.
+pub const FilePair = struct {
+    raw_path: []const u8,
+    jpeg_path: []const u8,
+};
+
+/// Discriminated union representing either a filesystem path, a virtual entry
+/// inside an archive, or a stacked RAW+JPEG file pair.
+pub const MediaEntry = union(enum) {
+    /// Standard file on local filesystem
+    filesystem: struct {
+        path: []const u8,
+    },
+
+    /// Virtual file entry inside an archive (CBZ, CBR, ZIP)
+    archive_entry: ArchiveMediaEntry,
+
+    /// Stacked RAW and companion JPEG file pair
+    pair: FilePair,
+
+    /// Returns the leaf filename of the media entry (file basename or archive
+    /// entry basename).
+    pub fn getBasename(self: MediaEntry) []const u8 {
+        return switch (self) {
+            .filesystem => |f| std.Io.Dir.path.basename(f.path),
+            .archive_entry => |a| std.Io.Dir.path.basename(a.entry_name),
+            .pair => |p| std.Io.Dir.path.basename(p.raw_path),
+        };
+    }
+
+    /// Returns the directory containing this media file or archive container.
+    pub fn getContainerName(self: MediaEntry) []const u8 {
+        const raw_dir = switch (self) {
+            .filesystem => |f| f.path,
+            .archive_entry => |a| a.archive_path,
+            .pair => |p| p.raw_path,
+        };
+        return std.Io.Dir.path.dirname(raw_dir) orelse ".";
+    }
+
+    /// Returns the file path or archive internal member path string.
+    pub fn getPath(self: MediaEntry) []const u8 {
+        return switch (self) {
+            .filesystem => |f| f.path,
+            .archive_entry => |a| a.entry_name,
+            .pair => |p| p.raw_path,
+        };
+    }
+
+    /// Returns the filesystem source path (or containing archive path for
+    /// `.archive_entry`) suitable for reopening or refreshing on disk.
+    pub fn getSourcePath(self: MediaEntry) []const u8 {
+        return switch (self) {
+            .filesystem => |f| f.path,
+            .archive_entry => |a| a.archive_path,
+            .pair => |p| p.raw_path,
+        };
+    }
+
+    /// Returns `true` if this media item resides inside an archive container
+    /// (e.g. CBZ).
+    pub fn isArchive(self: MediaEntry) bool {
+        return self == .archive_entry;
+    }
+
+    /// Returns `true` if this media item is a stacked RAW + JPEG pair.
+    pub fn isPair(self: MediaEntry) bool {
+        return self == .pair;
+    }
+
+    /// Returns the raw file path if this is a pair, or null.
+    pub fn getRawPath(self: MediaEntry) ?[]const u8 {
+        return switch (self) {
+            .pair => |p| p.raw_path,
+            .filesystem, .archive_entry => null,
+        };
+    }
+
+    /// Returns the companion JPEG file path if this is a pair, or null.
+    pub fn getJpegPath(self: MediaEntry) ?[]const u8 {
+        return switch (self) {
+            .pair => |p| p.jpeg_path,
+            .filesystem, .archive_entry => null,
+        };
+    }
+
+    /// Compares two path strings, normalizing any leading `"./"` prefix.
+    pub fn pathsMatch(path: []const u8, target: []const u8) bool {
+        if (std.mem.eql(u8, path, target)) return true;
+        const p = if (std.mem.startsWith(u8, path, "./")) path[2..] else path;
+        const t = if (std.mem.startsWith(u8, target, "./"))
+            target[2..]
+        else
+            target;
+        return std.mem.eql(u8, p, t);
+    }
+
+    /// Returns `true` if this media entry matches `target_path` (accounting for
+    /// `./` prefixes and matching either member of a RAW+JPEG `.pair`).
+    pub fn matchesTarget(self: MediaEntry, target_path: []const u8) bool {
+        return switch (self) {
+            .filesystem => |f| pathsMatch(f.path, target_path),
+            .archive_entry => |a| pathsMatch(a.archive_path, target_path),
+            .pair => |p| pathsMatch(p.raw_path, target_path) or
+                pathsMatch(p.jpeg_path, target_path),
+        };
+    }
+
+    /// Deeply duplicates string paths belonging to this media entry using
+    /// `allocator`.
+    pub fn dupe(self: MediaEntry, allocator: std.mem.Allocator) !MediaEntry {
+        return switch (self) {
+            .filesystem => |f| .{
+                .filesystem = .{ .path = try allocator.dupe(u8, f.path) },
+            },
+            .archive_entry => |a| .{
+                .archive_entry = .{
+                    .archive_path = try allocator.dupe(u8, a.archive_path),
+                    .entry_name = try allocator.dupe(u8, a.entry_name),
+                    .seek_info = a.seek_info,
+                },
+            },
+            .pair => |p| blk: {
+                const raw = try allocator.dupe(u8, p.raw_path);
+                errdefer allocator.free(raw);
+                const jpeg = try allocator.dupe(u8, p.jpeg_path);
+                break :blk .{
+                    .pair = .{
+                        .raw_path = raw,
+                        .jpeg_path = jpeg,
+                    },
+                };
+            },
+        };
+    }
+
+    /// Frees allocated path strings for this media entry.
+    pub fn deinit(self: MediaEntry, allocator: std.mem.Allocator) void {
+        switch (self) {
+            .filesystem => |f| allocator.free(f.path),
+            .archive_entry => |a| {
+                allocator.free(a.archive_path);
+                allocator.free(a.entry_name);
+            },
+            .pair => |p| {
+                allocator.free(p.raw_path);
+                allocator.free(p.jpeg_path);
+            },
+        }
+    }
+};
+
+/// Container holding image and subdirectory counts for a directory or archive
+/// entry.
+pub const EntryScanCounts = struct {
+    image_count: usize = 0,
+    subdir_count: usize = 0,
+};
+
+/// Scan status and discovery metrics for a directory or archive entry.
+pub const EntryScanState = union(enum) {
+    /// Entry has not yet been scanned.
+    unscanned,
+    /// Partial count available during incremental background scanning.
+    partial_counted: EntryScanCounts,
+    /// Background scan finished with complete image and subdirectory counts.
+    scanned: EntryScanCounts,
+    /// Counts retrieved from in-memory or on-disk metadata cache.
+    cached: EntryScanCounts,
+    /// Background scan failed due to I/O or decode error.
+    failed,
+    /// Background scan failed due to filesystem permissions.
+    permission_denied,
+};
+
+/// Supported comic / compressed container formats for directory navigation.
+pub const ArchiveType = enum {
+    cbz,
+    zip,
+};
+
+/// Tagged union representing a single item in directory navigator listings.
+pub const DirectoryEntry = union(enum) {
+    parent: struct {
+        name: []const u8,
+        full_path: []const u8 = "",
+    },
+    directory: struct {
+        name: []const u8,
+        full_path: []const u8 = "",
+        scan: EntryScanState = .unscanned,
+    },
+    archive_file: struct {
+        name: []const u8,
+        full_path: []const u8 = "",
+        scan: EntryScanState = .unscanned,
+        archive_type: ArchiveType = .cbz,
+    },
+    image_file: struct {
+        name: []const u8,
+        full_path: []const u8 = "",
+    },
+
+    /// Returns the display basename of this directory item.
+    pub fn getName(self: DirectoryEntry) []const u8 {
+        return switch (self) {
+            .parent => |p| p.name,
+            .directory => |d| d.name,
+            .archive_file => |a| a.name,
+            .image_file => |f| f.name,
+        };
+    }
+
+    /// Returns the full filesystem path of this directory item.
+    pub fn getFullPath(self: DirectoryEntry) []const u8 {
+        return switch (self) {
+            .parent => |p| p.full_path,
+            .directory => |d| d.full_path,
+            .archive_file => |a| a.full_path,
+            .image_file => |f| f.full_path,
+        };
+    }
+
+    /// Returns `true` if this entry represents an archive file (e.g. CBZ/ZIP).
+    pub fn isArchive(self: DirectoryEntry) bool {
+        return self == .archive_file;
+    }
+
+    /// Returns the active `EntryScanState` if this entry is a directory or
+    /// archive; otherwise `null`.
+    pub fn getScanState(self: DirectoryEntry) ?EntryScanState {
+        return switch (self) {
+            .directory => |d| d.scan,
+            .archive_file => |a| a.scan,
+            .parent, .image_file => null,
+        };
+    }
+};
+
+/// Aggregated count of image files and child subdirectories inside a directory
+/// or CBZ container.
+pub const FolderCounts = struct {
+    image_count: usize = 0,
+    subdir_count: usize = 0,
+};
+
+/// Lightweight callback wrapper allowing cooperative cancellation checks
+/// during long-running VFS scan operations without coupling to worker types.
+pub const CancelCheck = struct {
+    ctx: ?*const anyopaque = null,
+    is_canceled_fn: ?*const fn (?*const anyopaque) bool = null,
+
+    /// Queries whether the underlying cancellation source has signaled cancel.
+    pub inline fn isCanceled(self: CancelCheck) bool {
+        if (self.is_canceled_fn) |f| return f(self.ctx);
+        return false;
+    }
+};
+
+/// Returns `true` if filename is an AppleDouble metadata file starting with
+/// `._`.
 fn isAppleDouble(filename: []const u8) bool {
     const basename = std.Io.Dir.path.basename(filename);
     return std.mem.startsWith(u8, basename, "._");
@@ -53,7 +339,8 @@ pub fn isCbzFile(filename: []const u8) bool {
     return isCbzExtension(std.Io.Dir.path.extension(filename));
 }
 
-/// Returns `true` if the path points to a supported image file and is not AppleDouble metadata.
+/// Returns `true` if the path points to a supported image file and is not
+/// AppleDouble metadata.
 pub fn isImageFile(filename: []const u8) bool {
     if (isAppleDouble(filename)) return false;
     return isImageExtension(std.Io.Dir.path.extension(filename));
@@ -79,17 +366,18 @@ pub fn isJpegExtension(ext: []const u8) bool {
         std.ascii.eqlIgnoreCase(ext, ".jpeg");
 }
 
-/// Returns `true` if the path points to a standard JPEG file and is not AppleDouble metadata.
+/// Returns `true` if the path points to a standard JPEG file and is not
+/// AppleDouble metadata.
 pub fn isJpegFile(filename: []const u8) bool {
     if (isAppleDouble(filename)) return false;
     return isJpegExtension(std.Io.Dir.path.extension(filename));
 }
 
 /// Consolidates adjacent sorted RAW and companion JPEG entries sharing the same
-/// base filename stem into unified `.pair` entries when `stack_enabled` is true.
-/// Consolidates matching (RAW, JPEG) file pairs sharing the same stem into `.pair` MediaEntries.
-/// Inspects contiguous blocks of entries sharing identical stems, correctly handling
-/// interleaved non-JPEG/non-RAW formats (e.g. .ARW, .bmp, .JPG).
+/// base filename stem into unified `.pair` entries when `stack_enabled` is
+/// true. Inspects contiguous blocks of entries sharing identical stems,
+/// correctly handling interleaved non-JPEG/non-RAW formats (e.g. .ARW, .bmp,
+/// .JPG).
 pub fn consolidateRawJpegPairs(
     entries: *std.ArrayList(MediaEntry),
     stack_enabled: bool,
@@ -188,9 +476,10 @@ pub fn scanCbzImageEntries(
     defer file.close(io);
 
     // Sized to 64KB:
-    // Parsing central directory records involves repeated seek and struct reads.
-    // A 64KB stack buffer caches adjacent directory headers, reducing positional pread
-    // syscalls during archive indexing from 7 down to 3 on typical multi-hundred-page archives.
+    // Parsing central directory records involves repeated seek and struct
+    // reads. A 64KB stack buffer caches adjacent directory headers, reducing
+    // positional pread syscalls during archive indexing from 7 down to 3 on
+    // typical multi-hundred-page archives.
     var reader_buf: [64 * 1024]u8 = undefined;
     var f_reader = file.reader(io, &reader_buf);
 
@@ -243,12 +532,118 @@ pub fn scanCbzImageEntries(
 
     std.mem.sort(MediaEntry, entries.items, {}, struct {
         fn lessThan(_: void, a: MediaEntry, b: MediaEntry) bool {
-            return std.ascii.lessThanIgnoreCase(a.getBasename(), b.getBasename());
+            return std.ascii.lessThanIgnoreCase(
+                a.getPath(),
+                b.getPath(),
+            );
         }
     }.lessThan);
 
     try list.appendSlice(allocator, entries.items);
     entries.deinit(allocator);
+}
+
+/// Sorts media entries alphabetically by basename (case-insensitive) and
+/// consolidates matching RAW and JPEG pairs into unified `.pair` entries.
+pub fn sortAndConsolidateMediaEntries(
+    entries: *std.ArrayList(MediaEntry),
+    stack_raw_jpeg: bool,
+) void {
+    std.mem.sort(MediaEntry, entries.items, {}, struct {
+        fn lessThan(_: void, a: MediaEntry, b: MediaEntry) bool {
+            return std.ascii.lessThanIgnoreCase(
+                a.getBasename(),
+                b.getBasename(),
+            );
+        }
+    }.lessThan);
+    consolidateRawJpegPairs(entries, stack_raw_jpeg);
+}
+
+/// Scans image files within `dir_path`, verifies their file kinds, appends
+/// filesystem entries, and performs alphabetical sorting and RAW+JPEG pair
+/// consolidation. Respects cooperative cancellation via `cancel`.
+pub fn scanDirectoryMediaEntries(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    dir_path: []const u8,
+    entries: *std.ArrayList(MediaEntry),
+    stack_raw_jpeg: bool,
+    cancel: CancelCheck,
+) !void {
+    if (cancel.isCanceled()) return error.Canceled;
+
+    var dir = try std.Io.Dir.openDir(
+        std.Io.Dir.cwd(),
+        io,
+        dir_path,
+        .{ .iterate = true },
+    );
+    defer dir.close(io);
+
+    var it = dir.iterate();
+
+    while (!cancel.isCanceled()) {
+        const entry = (it.next(io) catch |err| switch (err) {
+            error.Canceled => break,
+            else => {
+                std.log.warn(
+                    "scanDirectoryMediaEntries iterate failed for '{s}': {}",
+                    .{ dir_path, err },
+                );
+                break;
+            },
+        }) orelse break;
+        if (isImageFile(entry.name)) {
+            if (resolveEntryKind(dir, io, entry) == .file) {
+                const full_path = try std.Io.Dir.path.join(
+                    allocator,
+                    &.{ dir_path, entry.name },
+                );
+                errdefer allocator.free(full_path);
+                try entries.append(
+                    allocator,
+                    .{ .filesystem = .{ .path = full_path } },
+                );
+            }
+        }
+    }
+
+    if (cancel.isCanceled()) return error.Canceled;
+
+    sortAndConsolidateMediaEntries(entries, stack_raw_jpeg);
+}
+
+/// Dispatches media scanning across either a `.cbz` comic archive or a
+/// filesystem target (directory or individual image file path), performing
+/// sorting and RAW+JPEG pair consolidation.
+pub fn scanTargetMediaEntries(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    target_path: []const u8,
+    is_dir: bool,
+    entries: *std.ArrayList(MediaEntry),
+    stack_raw_jpeg: bool,
+    cancel: CancelCheck,
+) !void {
+    if (cancel.isCanceled()) return error.Canceled;
+    if (isCbzFile(target_path)) {
+        try scanCbzImageEntries(allocator, io, target_path, entries);
+        if (cancel.isCanceled()) return error.Canceled;
+    } else {
+        const dir_path = if (is_dir)
+            target_path
+        else
+            (std.Io.Dir.path.dirname(target_path) orelse ".");
+        try scanDirectoryMediaEntries(
+            allocator,
+            io,
+            dir_path,
+            entries,
+            stack_raw_jpeg,
+            cancel,
+        );
+    }
 }
 
 fn isAllDotDots(path: []const u8) bool {
@@ -279,9 +674,9 @@ pub fn trimTrailingSeparators(path: []const u8) []const u8 {
     return trimmed;
 }
 
-/// Computes the parent directory path of `dir` and writes it into `buf`, handling root paths,
-/// relative `..` path chains, and forward/backward slash separators.
-/// Returns `null` if at filesystem root.
+/// Computes the parent directory path of `dir` and writes it into `buf`,
+/// handling root paths, relative `..` path chains, and forward/backward slash
+/// separators. Returns `null` if at filesystem root.
 pub fn getParentDirBuf(dir: []const u8, buf: []u8) ?[]const u8 {
     const trimmed = std.mem.trimEnd(u8, dir, "/\\");
     if (trimmed.len == 0) return null;
@@ -314,7 +709,10 @@ pub fn getParentDirBuf(dir: []const u8, buf: []u8) ?[]const u8 {
         if (sep_idx == 0) {
             return trimmed[0..1];
         }
-        if (sep_idx == 2 and std.ascii.isAlphabetic(trimmed[0]) and trimmed[1] == ':') {
+        if (sep_idx == 2 and
+            std.ascii.isAlphabetic(trimmed[0]) and
+            trimmed[1] == ':')
+        {
             return trimmed[0..3];
         }
         return trimmed[0..sep_idx];
@@ -334,12 +732,6 @@ pub fn getParentDirBuf(dir: []const u8, buf: []u8) ?[]const u8 {
     return ".";
 }
 
-/// Aggregated count of image files and child subdirectories inside a directory or CBZ container.
-pub const FolderCounts = struct {
-    image_count: usize = 0,
-    subdir_count: usize = 0,
-};
-
 /// Resolves `entry.kind`, following symbolic links via `dir.statFile` when
 /// `entry.kind == .sym_link`. Returns `null` if a symbolic link is hidden,
 /// broken, or inaccessible.
@@ -356,7 +748,7 @@ pub inline fn resolveEntryKind(
 
 /// Maps a filesystem or archive I/O error into the corresponding
 /// `EntryScanState` badge variant (`.permission_denied` vs `.failed`).
-pub fn mapScanError(err: anyerror) state_pkg.EntryScanState {
+pub fn mapScanError(err: anyerror) EntryScanState {
     return switch (err) {
         error.AccessDenied, error.PermissionDenied => .permission_denied,
         else => .failed,
@@ -370,9 +762,9 @@ pub fn mapScanError(err: anyerror) state_pkg.EntryScanState {
 pub fn scanFolderContents(
     io: std.Io,
     folder_path: []const u8,
-) state_pkg.EntryScanState {
+) EntryScanState {
     if (isCbzFile(folder_path)) {
-        var counts: state_pkg.EntryScanCounts = .{};
+        var counts: EntryScanCounts = .{};
         var file = std.Io.Dir.openFile(
             std.Io.Dir.cwd(),
             io,
@@ -425,7 +817,7 @@ pub fn scanFolderContents(
     };
     defer dir.close(io);
 
-    var counts: state_pkg.EntryScanCounts = .{};
+    var counts: EntryScanCounts = .{};
     var it = dir.iterate();
     while (true) {
         const entry = (it.next(io) catch |err| {
@@ -462,9 +854,10 @@ pub fn countFolderContents(io: std.Io, folder_path: []const u8) FolderCounts {
     };
 }
 
-/// Scans immediate non-hidden child subdirectories and CBZ archives within `dir_path`,
-/// populates `entries` with initialized `.unscanned` DirectoryEntry records,
-/// and returns the count of image files directly present in `dir_path`.
+/// Scans immediate non-hidden child subdirectories and CBZ archives within
+/// `dir_path`, populates `entries` with initialized `.unscanned`
+/// DirectoryEntry records, and returns the count of image files directly
+/// present in `dir_path`.
 pub fn scanDirectoryEntries(
     gpa: std.mem.Allocator,
     io: std.Io,
@@ -484,7 +877,12 @@ pub fn scanDirectoryEntries(
     // heap reallocation churn during directory scanning.
     try entries.ensureUnusedCapacity(gpa, 32);
 
-    var dir = try std.Io.Dir.openDir(std.Io.Dir.cwd(), io, dir_path, .{ .iterate = true });
+    var dir = try std.Io.Dir.openDir(
+        std.Io.Dir.cwd(),
+        io,
+        dir_path,
+        .{ .iterate = true },
+    );
     defer dir.close(io);
 
     var current_dir_images: usize = 0;
@@ -509,8 +907,6 @@ pub fn scanDirectoryEntries(
             const name = try gpa.dupe(u8, entry.name);
             errdefer gpa.free(name);
 
-            // TODO: Option 3 - Implement an in-memory path-to-count cache (LRU / hash map)
-            // to restore folder counts instantly on back/forth navigation.
             if (is_cbz_entry) {
                 try entries.append(gpa, .{
                     .archive_file = .{
@@ -541,8 +937,9 @@ pub fn scanDirectoryEntries(
     return current_dir_images;
 }
 
-/// Resolves and returns the leaf basename of `path`. If `path` ends in `.` or `..`,
-/// resolves the real filesystem path into `buf` to return the actual directory name.
+/// Resolves and returns the leaf basename of `path`. If `path` ends in `.` or
+/// `..`, resolves the real filesystem path into `buf` to return the actual
+/// directory name.
 pub fn getChildBasename(io: std.Io, path: []const u8, buf: []u8) []const u8 {
     const trimmed = std.mem.trimEnd(u8, path, "/\\");
     const base = blk: {
@@ -570,7 +967,10 @@ pub fn getChildBasename(io: std.Io, path: []const u8, buf: []u8) []const u8 {
                 }
                 return real_trimmed;
             } else |err| {
-                std.log.debug("realPath failed for '{s}': {}", .{ trimmed, err });
+                std.log.debug(
+                    "realPath failed for '{s}': {}",
+                    .{ trimmed, err },
+                );
             }
         } else |err| {
             std.log.debug("openDir failed for '{s}': {}", .{ trimmed, err });
@@ -622,7 +1022,10 @@ test "CBZ file functions and archive path parsing" {
     try std.testing.expectEqualStrings("comic.cbz", parsed.?.archive_path);
     try std.testing.expectEqualStrings("pages/page01.jpg", parsed.?.entry_name);
 
-    try std.testing.expectEqual(null, parseArchiveEntryPath("regular_path.jpg"));
+    try std.testing.expectEqual(
+        null,
+        parseArchiveEntryPath("regular_path.jpg"),
+    );
 }
 
 test "isRawFile and isImageExtension recognition" {
@@ -663,7 +1066,31 @@ test "scanCbzImageEntries on sample archive" {
         "000_0_1024x682.jpg",
         entries.items[0].archive_entry.entry_name,
     );
-    try std.testing.expect(entries.items[0].archive_entry.seek_info == .indexed);
+    try std.testing.expect(
+        entries.items[0].archive_entry.seek_info == .indexed,
+    );
+}
+
+test "vfs scanCbzImageEntries O(1) central directory seek" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var entries: std.ArrayList(MediaEntry) = .empty;
+    defer {
+        for (entries.items) |e| e.deinit(allocator);
+        entries.deinit(allocator);
+    }
+
+    try scanCbzImageEntries(allocator, io, "testfiles/sample.cbz", &entries);
+    try std.testing.expectEqual(@as(usize, 2), entries.items.len);
+
+    const first = entries.items[0].archive_entry;
+    try std.testing.expect(first.seek_info == .indexed);
+    try std.testing.expect(first.seek_info.indexed.uncompressed_size > 0);
+    try std.testing.expect(first.seek_info.indexed.header_zip_offset > 0);
+
+    const second = entries.items[1].archive_entry;
+    try std.testing.expect(second.seek_info.indexed.file_offset > 0);
 }
 
 test "scanCbzImageEntries utilizes scan arena" {
@@ -693,7 +1120,7 @@ test "scanCbzImageEntries utilizes scan arena" {
     );
 }
 
-test "scanDirectoryEntries includes CBZ files and countFolderContents counts CBZ images" {
+test "scanDirectoryEntries includes CBZ and countFolderContents counts" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
 
@@ -714,7 +1141,10 @@ test "scanDirectoryEntries includes CBZ files and countFolderContents counts CBZ
     for (dir_entries.items) |e| {
         if (std.mem.eql(u8, e.getName(), "sample.cbz")) {
             found_cbz = true;
-            try std.testing.expectEqual(state_pkg.EntryScanState.unscanned, e.getScanState().?);
+            try std.testing.expectEqual(
+                EntryScanState.unscanned,
+                e.getScanState().?,
+            );
             break;
         }
     }
@@ -765,7 +1195,12 @@ test "scanDirectoryEntries - nested directory hierarchy" {
         entries.deinit(allocator);
     }
 
-    const img_count = try scanDirectoryEntries(allocator, io, tmp_dir_path, &entries);
+    const img_count = try scanDirectoryEntries(
+        allocator,
+        io,
+        tmp_dir_path,
+        &entries,
+    );
 
     try std.testing.expectEqual(@as(usize, 1), img_count);
     try std.testing.expectEqual(@as(usize, 3), entries.items.len);
@@ -779,7 +1214,7 @@ test "scanDirectoryEntries - nested directory hierarchy" {
         entries.items[0].getFullPath(),
     );
     try std.testing.expectEqual(
-        state_pkg.EntryScanState.unscanned,
+        EntryScanState.unscanned,
         entries.items[0].directory.scan,
     );
     try std.testing.expectEqual(
@@ -794,7 +1229,7 @@ test "scanDirectoryEntries - nested directory hierarchy" {
         entries.items[1].getFullPath(),
     );
     try std.testing.expectEqual(
-        state_pkg.EntryScanState.unscanned,
+        EntryScanState.unscanned,
         entries.items[1].directory.scan,
     );
     try std.testing.expectEqual(
@@ -809,7 +1244,7 @@ test "scanDirectoryEntries - nested directory hierarchy" {
         entries.items[2].getFullPath(),
     );
     try std.testing.expectEqual(
-        state_pkg.EntryScanState.unscanned,
+        EntryScanState.unscanned,
         entries.items[2].directory.scan,
     );
     try std.testing.expectEqual(
@@ -849,7 +1284,10 @@ test "getParentDirBuf - path variations and edge cases" {
 
     // Trailing slashes
     try std.testing.expectEqualStrings("a", getParentDirBuf("a/b/", &buf).?);
-    try std.testing.expectEqualStrings("a/b", getParentDirBuf("a/b/c/", &buf).?);
+    try std.testing.expectEqualStrings(
+        "a/b",
+        getParentDirBuf("a/b/c/", &buf).?,
+    );
 
     // Single-component relative path steps up to "."
     try std.testing.expectEqualStrings(".", getParentDirBuf("photos", &buf).?);
@@ -859,7 +1297,10 @@ test "getParentDirBuf - path variations and edge cases" {
 
     // Parent directory ".." steps up to "../.."
     try std.testing.expectEqualStrings("../..", getParentDirBuf("..", &buf).?);
-    try std.testing.expectEqualStrings("../../..", getParentDirBuf("../..", &buf).?);
+    try std.testing.expectEqualStrings(
+        "../../..",
+        getParentDirBuf("../..", &buf).?,
+    );
 
     // Root directory returns null
     try std.testing.expect(getParentDirBuf("/", &buf) == null);
@@ -869,11 +1310,29 @@ test "getParentDirBuf - path variations and edge cases" {
     try std.testing.expect(getParentDirBuf("", &buf) == null);
 }
 
+test "vfs trimTrailingSeparators and getParentDirBuf" {
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+
+    try std.testing.expectEqualStrings("/", trimTrailingSeparators("/"));
+    try std.testing.expectEqualStrings(".", getParentDirBuf("photo", &buf).?);
+    try std.testing.expectEqualStrings(
+        "photos",
+        getParentDirBuf("photos/item.png", &buf).?,
+    );
+    try std.testing.expect(getParentDirBuf("/", &buf) == null);
+}
+
 test "getPathStem and isJpegFile" {
     try std.testing.expectEqualStrings("photo", getPathStem("photo.jpg"));
     try std.testing.expectEqualStrings("photo", getPathStem("photo.ARW"));
-    try std.testing.expectEqualStrings("photo", getPathStem("sub/dir/photo.nef"));
-    try std.testing.expectEqualStrings("test.archive", getPathStem("test.archive.jpeg"));
+    try std.testing.expectEqualStrings(
+        "photo",
+        getPathStem("sub/dir/photo.nef"),
+    );
+    try std.testing.expectEqualStrings(
+        "test.archive",
+        getPathStem("test.archive.jpeg"),
+    );
 
     try std.testing.expect(isJpegFile("img.jpg"));
     try std.testing.expect(isJpegFile("img.JPEG"));
@@ -919,13 +1378,25 @@ test "consolidateRawJpegPairs - bidirectional pairing and unmatched isolation" {
 
     // Pair 1: DSC00941 (ARW + JPG)
     try std.testing.expect(list.items[0].isPair());
-    try std.testing.expectEqualStrings("DSC00941.ARW", list.items[0].getRawPath().?);
-    try std.testing.expectEqualStrings("DSC00941.JPG", list.items[0].getJpegPath().?);
+    try std.testing.expectEqualStrings(
+        "DSC00941.ARW",
+        list.items[0].getRawPath().?,
+    );
+    try std.testing.expectEqualStrings(
+        "DSC00941.JPG",
+        list.items[0].getJpegPath().?,
+    );
 
     // Pair 2: DSC_0002 (NEF + JPG)
     try std.testing.expect(list.items[1].isPair());
-    try std.testing.expectEqualStrings("DSC_0002.NEF", list.items[1].getRawPath().?);
-    try std.testing.expectEqualStrings("DSC_0002.JPG", list.items[1].getJpegPath().?);
+    try std.testing.expectEqualStrings(
+        "DSC_0002.NEF",
+        list.items[1].getRawPath().?,
+    );
+    try std.testing.expectEqualStrings(
+        "DSC_0002.JPG",
+        list.items[1].getJpegPath().?,
+    );
 
     // Standalone 3: single.png
     try std.testing.expect(!list.items[2].isPair());
@@ -934,6 +1405,34 @@ test "consolidateRawJpegPairs - bidirectional pairing and unmatched isolation" {
     // Standalone 4: lone.raf
     try std.testing.expect(!list.items[3].isPair());
     try std.testing.expectEqualStrings("lone.raf", list.items[3].getPath());
+}
+
+test "vfs consolidateRawJpegPairs case insensitivity" {
+    const allocator = std.testing.allocator;
+
+    var list: std.ArrayList(MediaEntry) = .empty;
+    defer {
+        for (list.items) |item| item.deinit(allocator);
+        list.deinit(allocator);
+    }
+
+    const raw = try allocator.dupe(u8, "img.CR2");
+    const jpg = try allocator.dupe(u8, "img.jpg");
+    try list.append(allocator, .{ .filesystem = .{ .path = raw } });
+    try list.append(allocator, .{ .filesystem = .{ .path = jpg } });
+
+    consolidateRawJpegPairs(&list, true);
+
+    try std.testing.expectEqual(@as(usize, 1), list.items.len);
+    try std.testing.expect(list.items[0].isPair());
+    try std.testing.expectEqualStrings(
+        "img.CR2",
+        list.items[0].getRawPath().?,
+    );
+    try std.testing.expectEqualStrings(
+        "img.jpg",
+        list.items[0].getJpegPath().?,
+    );
 }
 
 test "consolidateRawJpegPairs - interleaved formats with identical stem" {
@@ -958,8 +1457,14 @@ test "consolidateRawJpegPairs - interleaved formats with identical stem" {
     // Should collapse 3 entries to 2 (1 pair + 1 standalone bmp)
     try std.testing.expectEqual(@as(usize, 2), list.items.len);
     try std.testing.expect(list.items[0].isPair());
-    try std.testing.expectEqualStrings("DSC001.ARW", list.items[0].getRawPath().?);
-    try std.testing.expectEqualStrings("DSC001.JPG", list.items[0].getJpegPath().?);
+    try std.testing.expectEqualStrings(
+        "DSC001.ARW",
+        list.items[0].getRawPath().?,
+    );
+    try std.testing.expectEqualStrings(
+        "DSC001.JPG",
+        list.items[0].getJpegPath().?,
+    );
 
     try std.testing.expect(!list.items[1].isPair());
     try std.testing.expectEqualStrings("DSC001.bmp", list.items[1].getPath());
@@ -990,21 +1495,21 @@ test "scanFolderContents and mapScanError classify errors and corrupt CBZ" {
     const io = std.Io.Threaded.global_single_threaded.io();
 
     try std.testing.expectEqual(
-        state_pkg.EntryScanState.permission_denied,
+        EntryScanState.permission_denied,
         mapScanError(error.AccessDenied),
     );
     try std.testing.expectEqual(
-        state_pkg.EntryScanState.permission_denied,
+        EntryScanState.permission_denied,
         mapScanError(error.PermissionDenied),
     );
     try std.testing.expectEqual(
-        state_pkg.EntryScanState.failed,
+        EntryScanState.failed,
         mapScanError(error.FileNotFound),
     );
 
     // Non-existent directory -> .failed
     try std.testing.expectEqual(
-        state_pkg.EntryScanState.failed,
+        EntryScanState.failed,
         scanFolderContents(io, "testfiles/does_not_exist_dir"),
     );
 
@@ -1024,7 +1529,7 @@ test "scanFolderContents and mapScanError classify errors and corrupt CBZ" {
         try f.writeStreamingAll(io, "not a valid zip archive");
     }
     try std.testing.expectEqual(
-        state_pkg.EntryScanState.failed,
+        EntryScanState.failed,
         scanFolderContents(io, corrupt_cbz),
     );
 }
@@ -1113,4 +1618,204 @@ test "trimTrailingSeparators preserves root paths and strips trailing slashes" {
         "C:\\Users",
         trimTrailingSeparators("C:\\Users\\"),
     );
+}
+
+test "MediaEntry - pair dupe, deinit, and accessors" {
+    const allocator = std.testing.allocator;
+    const raw = try allocator.dupe(u8, "photos/DSC00941.ARW");
+    errdefer allocator.free(raw);
+    const jpg = try allocator.dupe(u8, "photos/DSC00941.JPG");
+    errdefer allocator.free(jpg);
+
+    const entry = MediaEntry{
+        .pair = .{
+            .raw_path = raw,
+            .jpeg_path = jpg,
+        },
+    };
+    defer entry.deinit(allocator);
+
+    try std.testing.expect(entry.isPair());
+    try std.testing.expect(!entry.isArchive());
+    try std.testing.expectEqualStrings("DSC00941.ARW", entry.getBasename());
+    try std.testing.expectEqualStrings("photos", entry.getContainerName());
+    try std.testing.expectEqualStrings("photos/DSC00941.ARW", entry.getPath());
+    try std.testing.expectEqualStrings(
+        "photos/DSC00941.ARW",
+        entry.getSourcePath(),
+    );
+    try std.testing.expectEqualStrings(
+        "photos/DSC00941.ARW",
+        entry.getRawPath().?,
+    );
+    try std.testing.expectEqualStrings(
+        "photos/DSC00941.JPG",
+        entry.getJpegPath().?,
+    );
+
+    const duped = try entry.dupe(allocator);
+    defer duped.deinit(allocator);
+
+    try std.testing.expect(duped.isPair());
+    try std.testing.expectEqualStrings(
+        "photos/DSC00941.ARW",
+        duped.getRawPath().?,
+    );
+    try std.testing.expectEqualStrings(
+        "photos/DSC00941.JPG",
+        duped.getJpegPath().?,
+    );
+
+    const archive_item = MediaEntry{
+        .archive_entry = .{
+            .archive_path = "comics/issue1.cbz",
+            .entry_name = "pages/001.jpg",
+            .seek_info = .unindexed,
+        },
+    };
+    try std.testing.expectEqualStrings("pages/001.jpg", archive_item.getPath());
+    try std.testing.expectEqualStrings(
+        "comics/issue1.cbz",
+        archive_item.getSourcePath(),
+    );
+}
+
+test "DirectoryEntry accessors and scan state" {
+    const p = DirectoryEntry{
+        .parent = .{ .name = "..", .full_path = "/home/pope" },
+    };
+    try std.testing.expectEqualStrings("..", p.getName());
+    try std.testing.expectEqualStrings("/home/pope", p.getFullPath());
+    try std.testing.expect(!p.isArchive());
+    try std.testing.expect(p.getScanState() == null);
+
+    const d = DirectoryEntry{
+        .directory = .{
+            .name = "photos",
+            .full_path = "/photos",
+            .scan = .{
+                .scanned = .{ .image_count = 42, .subdir_count = 3 },
+            },
+        },
+    };
+    try std.testing.expectEqualStrings("photos", d.getName());
+    try std.testing.expectEqualStrings("/photos", d.getFullPath());
+    try std.testing.expect(!d.isArchive());
+    try std.testing.expect(d.getScanState() != null);
+    try std.testing.expectEqual(
+        @as(usize, 42),
+        d.getScanState().?.scanned.image_count,
+    );
+    try std.testing.expectEqual(
+        @as(usize, 3),
+        d.getScanState().?.scanned.subdir_count,
+    );
+
+    const a = DirectoryEntry{
+        .archive_file = .{
+            .name = "comic.cbz",
+            .full_path = "/comic.cbz",
+            .scan = .unscanned,
+        },
+    };
+    try std.testing.expectEqualStrings("comic.cbz", a.getName());
+    try std.testing.expect(a.isArchive());
+    try std.testing.expectEqual(EntryScanState.unscanned, a.getScanState().?);
+
+    const f = DirectoryEntry{
+        .image_file = .{ .name = "img.png", .full_path = "/img.png" },
+    };
+    try std.testing.expectEqualStrings("img.png", f.getName());
+    try std.testing.expect(!f.isArchive());
+    try std.testing.expect(f.getScanState() == null);
+}
+
+test "vfs scanDirectoryMediaEntries and scanTargetMediaEntries" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // 1. scanDirectoryMediaEntries on testfiles/images
+    {
+        var entries: std.ArrayList(MediaEntry) = .empty;
+        try scanDirectoryMediaEntries(
+            alloc,
+            io,
+            "testfiles/images",
+            &entries,
+            true,
+            .{},
+        );
+        try std.testing.expect(entries.items.len > 0);
+        for (
+            entries.items[0 .. entries.items.len - 1],
+            entries.items[1..],
+        ) |a, b| {
+            try std.testing.expect(
+                std.ascii.lessThanIgnoreCase(
+                    a.getBasename(),
+                    b.getBasename(),
+                ) or std.mem.eql(u8, a.getBasename(), b.getBasename()),
+            );
+        }
+    }
+
+    // 2. scanTargetMediaEntries on CBZ archive
+    {
+        var entries: std.ArrayList(MediaEntry) = .empty;
+        try scanTargetMediaEntries(
+            alloc,
+            io,
+            "testfiles/sample.cbz",
+            false,
+            &entries,
+            true,
+            .{},
+        );
+        try std.testing.expectEqual(@as(usize, 2), entries.items.len);
+        for (entries.items) |item| {
+            try std.testing.expect(item == .archive_entry);
+        }
+    }
+
+    // 3. scanTargetMediaEntries on directory target
+    {
+        var entries: std.ArrayList(MediaEntry) = .empty;
+        try scanTargetMediaEntries(
+            alloc,
+            io,
+            "testfiles/images",
+            true,
+            &entries,
+            true,
+            .{},
+        );
+        try std.testing.expect(entries.items.len > 0);
+    }
+
+    // 4. CancelCheck returning error.Canceled
+    {
+        var entries: std.ArrayList(MediaEntry) = .empty;
+        var cancel_flag = true;
+        const cancel: CancelCheck = .{
+            .ctx = &cancel_flag,
+            .is_canceled_fn = struct {
+                fn check(ctx: ?*const anyopaque) bool {
+                    const f: *const bool = @ptrCast(@alignCast(ctx.?));
+                    return f.*;
+                }
+            }.check,
+        };
+        const res = scanDirectoryMediaEntries(
+            alloc,
+            io,
+            "testfiles/images",
+            &entries,
+            true,
+            cancel,
+        );
+        try std.testing.expectError(error.Canceled, res);
+    }
 }

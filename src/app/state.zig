@@ -1,5 +1,4 @@
 const clay = @import("zclay");
-const core_fs = @import("core/fs.zig");
 const events = @import("core/events.zig");
 const image = @import("core/image.zig");
 const input = @import("input");
@@ -10,14 +9,18 @@ const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
 const thumb_cache = @import("core/thumb_cache.zig");
+const vfs = @import("vfs");
 const workers_mod = @import("workers/root.zig");
 
 const AppIntent = intents.AppIntent;
 const CacheEntry = state_pkg.CacheEntry;
 const DisplayState = state_pkg.DisplayState;
 const FrameInput = types.FrameInput;
+const getParentDirBuf = vfs.getParentDirBuf;
 const ImageCache = image.ImageCache;
 const ImageCacheKey = image.ImageCacheKey;
+const isCbzFile = vfs.isCbzFile;
+const MediaEntry = vfs.MediaEntry;
 const PaletteMode = intents.PaletteMode;
 const types = state_pkg.types;
 const view_transform = state_pkg.view_transform;
@@ -780,7 +783,7 @@ pub const AppState = struct {
                     while (self.viewer.ui.palette.dir_items.items.len == 0) {
                         const curr =
                             self.viewer.ui.palette.current_nav_dir.items;
-                        const parent = core_fs.getParentDirBuf(
+                        const parent = getParentDirBuf(
                             curr,
                             &parent_buf,
                         ) orelse break;
@@ -903,9 +906,9 @@ pub const AppState = struct {
         if (reuse_loaded_dir and
             has_stat and
             stat.kind == .file and
-            !core_fs.isCbzFile(owned_path) and
+            !isCbzFile(owned_path) and
             !self.viewer.navigation.isLoadingFiles() and
-            state_pkg.MediaEntry.pathsMatch(
+            MediaEntry.pathsMatch(
                 self.viewer.navigation.last_scanned_dir.items,
                 dir_target,
             ))
@@ -958,7 +961,7 @@ pub const AppState = struct {
                     true,
                     stack_raw,
                 );
-            } else if (core_fs.isCbzFile(owned_path)) {
+            } else if (isCbzFile(owned_path)) {
                 try workers_mod.startAsyncPathScan(
                     &self.workers,
                     &self.viewer.navigation.active_file_scans,
@@ -1001,7 +1004,7 @@ pub const AppState = struct {
                         if (entry.inflight) |*dec| dec.has_thread = false;
                     }
                 }
-                const dup_entry = try (state_pkg.MediaEntry{
+                const dup_entry = try (MediaEntry{
                     .filesystem = .{ .path = owned_path },
                 }).dupe(self.allocator);
                 errdefer dup_entry.deinit(self.allocator);

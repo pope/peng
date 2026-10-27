@@ -2,9 +2,13 @@ const fuzzig = @import("fuzzig");
 const intents = @import("intents");
 const std = @import("std");
 const types = @import("types.zig");
+const vfs = @import("vfs");
 
+const DirectoryEntry = vfs.DirectoryEntry;
 const EditParam = intents.EditParam;
-const MediaEntry = types.MediaEntry;
+const EntryScanCounts = vfs.EntryScanCounts;
+const EntryScanState = vfs.EntryScanState;
+const MediaEntry = vfs.MediaEntry;
 const PaletteMode = intents.PaletteMode;
 const TextInputBounds = intents.TextInputBounds;
 
@@ -12,92 +16,6 @@ const TextInputBounds = intents.TextInputBounds;
 pub const ScoredMatch = struct {
     index: usize,
     score: i32,
-};
-
-/// Container holding image and subdirectory counts for a directory or archive entry.
-pub const EntryScanCounts = struct {
-    image_count: usize = 0,
-    subdir_count: usize = 0,
-};
-
-/// Scan status and discovery metrics for a directory or archive entry.
-pub const EntryScanState = union(enum) {
-    /// Entry has not yet been scanned.
-    unscanned,
-    /// Partial count available during incremental background scanning.
-    partial_counted: EntryScanCounts,
-    /// Background scan finished with complete image and subdirectory counts.
-    scanned: EntryScanCounts,
-    /// Counts retrieved from in-memory or on-disk metadata cache.
-    cached: EntryScanCounts,
-    /// Background scan failed due to I/O or decode error.
-    failed,
-    /// Background scan failed due to filesystem permissions.
-    permission_denied,
-};
-
-/// Supported comic / compressed container formats for directory navigation.
-pub const ArchiveType = enum {
-    cbz,
-    zip,
-};
-
-/// Tagged union representing a single item in directory navigator listings.
-pub const DirectoryEntry = union(enum) {
-    parent: struct {
-        name: []const u8,
-        full_path: []const u8 = "",
-    },
-    directory: struct {
-        name: []const u8,
-        full_path: []const u8 = "",
-        scan: EntryScanState = .unscanned,
-    },
-    archive_file: struct {
-        name: []const u8,
-        full_path: []const u8 = "",
-        scan: EntryScanState = .unscanned,
-        archive_type: ArchiveType = .cbz,
-    },
-    image_file: struct {
-        name: []const u8,
-        full_path: []const u8 = "",
-    },
-
-    /// Returns the display basename of this directory item.
-    pub fn getName(self: DirectoryEntry) []const u8 {
-        return switch (self) {
-            .parent => |p| p.name,
-            .directory => |d| d.name,
-            .archive_file => |a| a.name,
-            .image_file => |f| f.name,
-        };
-    }
-
-    /// Returns the full filesystem path of this directory item.
-    pub fn getFullPath(self: DirectoryEntry) []const u8 {
-        return switch (self) {
-            .parent => |p| p.full_path,
-            .directory => |d| d.full_path,
-            .archive_file => |a| a.full_path,
-            .image_file => |f| f.full_path,
-        };
-    }
-
-    /// Returns `true` if this entry represents an archive file (e.g. CBZ/ZIP).
-    pub fn isArchive(self: DirectoryEntry) bool {
-        return self == .archive_file;
-    }
-
-    /// Returns the active `EntryScanState` if this entry is a directory or
-    /// archive; otherwise `null`.
-    pub fn getScanState(self: DirectoryEntry) ?EntryScanState {
-        return switch (self) {
-            .directory => |d| d.scan,
-            .archive_file => |a| a.scan,
-            .parent, .image_file => null,
-        };
-    }
 };
 
 /// Main state model for command palette modals, directory navigation, and fuzzy searching.
@@ -610,44 +528,6 @@ test "PaletteState - lifecycle, action matching, and reset" {
     try std.testing.expectEqual(@as(usize, 0), state.query.items.len);
     try std.testing.expectEqual(@as(usize, 0), state.matches.items.len);
     try std.testing.expectEqual(@as(usize, 0), state.selected_idx);
-}
-
-test "DirectoryEntry accessors and scan state" {
-    const p = DirectoryEntry{ .parent = .{ .name = "..", .full_path = "/home/pope" } };
-    try std.testing.expectEqualStrings("..", p.getName());
-    try std.testing.expectEqualStrings("/home/pope", p.getFullPath());
-    try std.testing.expect(!p.isArchive());
-    try std.testing.expect(p.getScanState() == null);
-
-    const d = DirectoryEntry{
-        .directory = .{
-            .name = "photos",
-            .full_path = "/photos",
-            .scan = .{ .scanned = .{ .image_count = 42, .subdir_count = 3 } },
-        },
-    };
-    try std.testing.expectEqualStrings("photos", d.getName());
-    try std.testing.expectEqualStrings("/photos", d.getFullPath());
-    try std.testing.expect(!d.isArchive());
-    try std.testing.expect(d.getScanState() != null);
-    try std.testing.expectEqual(@as(usize, 42), d.getScanState().?.scanned.image_count);
-    try std.testing.expectEqual(@as(usize, 3), d.getScanState().?.scanned.subdir_count);
-
-    const a = DirectoryEntry{
-        .archive_file = .{
-            .name = "comic.cbz",
-            .full_path = "/comic.cbz",
-            .scan = .unscanned,
-        },
-    };
-    try std.testing.expectEqualStrings("comic.cbz", a.getName());
-    try std.testing.expect(a.isArchive());
-    try std.testing.expectEqual(EntryScanState.unscanned, a.getScanState().?);
-
-    const f = DirectoryEntry{ .image_file = .{ .name = "img.png", .full_path = "/img.png" } };
-    try std.testing.expectEqualStrings("img.png", f.getName());
-    try std.testing.expect(!f.isArchive());
-    try std.testing.expect(f.getScanState() == null);
 }
 
 test "PaletteState - rebuildFileMatches with RAW+JPEG pair" {

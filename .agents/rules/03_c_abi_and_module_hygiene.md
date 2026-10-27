@@ -31,6 +31,9 @@
 - **Top-Level Package Isolation (`src/`)**:
   - `src/probe/`: Pure header dimension, MIME, and EXIF parsers (standalone,
     zero module imports).
+  - `src/vfs/`: Pure filesystem scanning, CBZ ZIP central-directory seeking,
+    media entry models, and RAW+JPEG pair consolidation (zero SDL3/Clay
+    linkage).
   - `src/intents/`: Pure `AppIntent` variants, `ActionDef` registry
     (`actions.zig`), and intent payload structs.
   - `src/input/`: Pure `FrameInput` event polling and shortcut mapping.
@@ -51,13 +54,13 @@
     statically by default, or as a hot-reloadable shared library `viewer` /
     `libviewer` when built with `-Dhot_reload=true`).
 - **App-Private Core (`src/app/core/`)**:
-  - State-free utilities (`events.zig`, `fs.zig`, `image.zig`, `palette.zig`,
+  - State-free utilities (`events.zig`, `image.zig`, `palette.zig`,
     `thumb_cache.zig`) live in `src/app/core/`.
-  - **Acyclic Dependency Invariant**: Pure modules (`probe`, `intents`, `input`,
-    `ipc`, `state`, `config`, `app/core`) MUST NOT import `AppState`,
-    `src/app/systems/`, or `src/app/workers/`. Never cross module boundaries via
-    relative file paths (e.g. `@import("probe/root.zig")` from `src/main.zig`);
-    always use the canonical module namespace (`@import("probe")`).
+  - **Acyclic Dependency Invariant**: Pure modules (`probe`, `vfs`, `intents`,
+    `input`, `ipc`, `state`, `config`, `app/core`) MUST NOT import `AppState`,
+    `src/app/systems/`, or `src/app/workers/`. Never cross module boundaries
+    via relative file paths (e.g. `@import("probe/root.zig")` from
+    `src/main.zig`); always use canonical module namespace (`@import("probe")`).
 - **Zig 0.17 `std.process.Init` & `std.Io` Streaming I/O Invariants**:
   - Entrypoints (`pub fn main(init: std.process.Init) !void`) MUST thread
     `init.io`, `init.gpa`, `init.minimal.args`, and `init.environ_map`
@@ -80,10 +83,11 @@
     `peng-test-runner` (`src/test_runner_main.zig`).
   - Build & Test Commands:
     - `zig build`: Build application binaries.
-    - `zig build test-unit`: Run fast unit tests across all 10 module test
-      targets (`probe`, `sdl`, `state`, `core`, `app`, `ui`, `intents`,
+    - `zig build test-unit`: Run fast unit tests across all 11 module test
+      targets (`probe`, `vfs`, `sdl`, `state`, `core`, `app`, `ui`, `intents`,
       `config`, `input`, `ipc`).
     - `zig build test-probe`: Run `probe` (`src/probe/root.zig`) unit tests.
+    - `zig build test-vfs`: Run `vfs` (`src/vfs/root.zig`) unit tests.
     - `zig build test-core`: Run `core` (`src/app/core/root.zig`) unit tests.
     - `zig build test`: Run all unit tests plus headless integration tests
       (`peng-test-runner`).
@@ -146,9 +150,10 @@
     submodule tests in their own `root.zig` `test` block.
 - **3-Tier Testing Architecture**:
   1. **Tier 1 (Pure Algorithm & Parser Tests)**: Inline `test "..."` blocks for
-     stateless math, binary parsers (`src/probe/root.zig`, `fs.zig`), and
-     pixel converters using self-contained synthetic byte arrays (never
-     relying solely on external disk fixtures guarded by `catch return`).
+     stateless math, binary parsers (`src/probe/root.zig`,
+     `src/vfs/root.zig`), and pixel converters using self-contained
+     synthetic byte arrays (never relying solely on external disk fixtures
+     guarded by `catch return`).
   2. **Tier 2 (Subsystem & State Transition Tests)**: Test state machines and
      intent dispatchers through public inputs and resulting state transitions.
   3. **Tier 3 (Black-Box Integration Tests)**: Verify end-to-end user workflows,

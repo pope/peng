@@ -5,13 +5,14 @@ const image = @import("../core/image.zig");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
+const vfs = @import("vfs");
 
 const AppState = app_state.AppState;
 const CacheEntry = state_pkg.CacheEntry;
 const DecodeArgs = decode_mod.DecodeArgs;
 const FrameContext = context.FrameContext;
 const ImageCache = image.ImageCache;
-const MediaEntry = state_pkg.MediaEntry;
+const MediaEntry = vfs.MediaEntry;
 const MediaId = state_pkg.types.MediaId;
 
 /// Fast-scrolling threshold: when navigation events occur faster than this interval,

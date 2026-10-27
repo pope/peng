@@ -1,11 +1,12 @@
 const context = @import("context.zig");
-const core_fs = @import("../core/fs.zig");
 const events = @import("../core/events.zig");
 const manager = @import("manager.zig");
 const state_pkg = @import("state");
 const std = @import("std");
+const vfs = @import("vfs");
 
-const DirectoryEntry = state_pkg.DirectoryEntry;
+const DirectoryEntry = vfs.DirectoryEntry;
+const scanFolderContents = vfs.scanFolderContents;
 const WorkerManager = manager.WorkerManager;
 
 /// Spawns a background paletteScanWorker task to count directory images and subfolders.
@@ -57,7 +58,7 @@ pub fn paletteScanWorker(args: *PaletteScanArgs) void {
     for (args.paths) |path| {
         if (cancel.isCanceled()) return;
 
-        const scan = core_fs.scanFolderContents(io, path);
+        const scan = scanFolderContents(io, path);
 
         if (cancel.isCanceled()) return;
 

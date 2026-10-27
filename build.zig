@@ -176,6 +176,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const vfs_module = b.createModule(.{
+        .root_source_file = b.path("src/vfs/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const intents_module = b.createModule(.{
         .root_source_file = b.path("src/intents/root.zig"),
         .target = target,
@@ -208,6 +214,7 @@ pub fn build(b: *std.Build) void {
     state_module.addImport("intents", intents_module);
     state_module.addImport("probe", probe_module);
     state_module.addImport("sdl", sdl_module);
+    state_module.addImport("vfs", vfs_module);
     state_module.addImport("fuzzig", fuzzig_dep.module("fuzzig"));
 
     const input_module = b.createModule(.{
@@ -234,6 +241,7 @@ pub fn build(b: *std.Build) void {
     app_module.addImport("state", state_module);
     app_module.addImport("input", input_module);
     app_module.addImport("ipc", ipc_module);
+    app_module.addImport("vfs", vfs_module);
 
     ui_module.addImport("sdl", sdl_module);
     ui_module.addImport("zclay", zclay_dep.module("zclay"));
@@ -400,6 +408,7 @@ pub fn build(b: *std.Build) void {
     core_module.addImport("state", state_module);
     core_module.addImport("probe", probe_module);
     core_module.addImport("sdl", sdl_module);
+    core_module.addImport("vfs", vfs_module);
 
     const core_tests = b.addTest(.{
         .root_module = core_module,
@@ -413,12 +422,19 @@ pub fn build(b: *std.Build) void {
     const run_probe_tests = b.addRunArtifact(probe_tests);
     run_probe_tests.setCwd(b.path("."));
 
+    const vfs_tests = b.addTest(.{
+        .root_module = vfs_module,
+    });
+    const run_vfs_tests = b.addRunArtifact(vfs_tests);
+    run_vfs_tests.setCwd(b.path("."));
+
     if (target.result.os.tag == .windows) {
         const win_runs = [_]*std.Build.Step.Run{
             run_sdl_tests,
             run_state_tests,
             run_core_tests,
             run_probe_tests,
+            run_vfs_tests,
             run_app_tests,
             run_ui_tests,
             run_intents_tests,
@@ -444,11 +460,15 @@ pub fn build(b: *std.Build) void {
     const test_core_step = b.step("test-core", "Run core tests");
     test_core_step.dependOn(&run_core_tests.step);
 
+    const test_vfs_step = b.step("test-vfs", "Run vfs tests");
+    test_vfs_step.dependOn(&run_vfs_tests.step);
+
     const test_unit_step = b.step("test-unit", "Run all unit tests");
     test_unit_step.dependOn(&run_sdl_tests.step);
     test_unit_step.dependOn(&run_state_tests.step);
     test_unit_step.dependOn(&run_core_tests.step);
     test_unit_step.dependOn(&run_probe_tests.step);
+    test_unit_step.dependOn(&run_vfs_tests.step);
     test_unit_step.dependOn(&run_app_tests.step);
     test_unit_step.dependOn(&run_ui_tests.step);
     test_unit_step.dependOn(&run_intents_tests.step);
@@ -467,6 +487,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_state_tests.step);
     test_step.dependOn(&run_core_tests.step);
     test_step.dependOn(&run_probe_tests.step);
+    test_step.dependOn(&run_vfs_tests.step);
     test_step.dependOn(&run_app_tests.step);
     test_step.dependOn(&run_ui_tests.step);
     test_step.dependOn(&run_intents_tests.step);

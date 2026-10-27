@@ -1,11 +1,14 @@
 const context = @import("context.zig");
-const core_fs = @import("../core/fs.zig");
 const events = @import("../core/events.zig");
 const manager = @import("manager.zig");
 const state_pkg = @import("state");
 const std = @import("std");
+const vfs = @import("vfs");
 
-const MediaEntry = state_pkg.MediaEntry;
+const CancelCheck = vfs.CancelCheck;
+const MediaEntry = vfs.MediaEntry;
+const scanDirectoryMediaEntries = vfs.scanDirectoryMediaEntries;
+const scanTargetMediaEntries = vfs.scanTargetMediaEntries;
 const WorkerManager = manager.WorkerManager;
 
 /// Arguments for spawning a background file path or directory scanner worker thread.
@@ -66,69 +69,41 @@ pub fn scanDirectoryThreadSafe(
     dir_path: []const u8,
     stack_raw_jpeg: bool,
 ) void {
-    var dir = std.Io.Dir.openDir(
-        std.Io.Dir.cwd(),
-        io,
-        dir_path,
-        .{ .iterate = true },
-    ) catch |err| {
-        std.log.warn(
-            "scanDirectoryThreadSafe: openDir failed for '{s}': {any}",
-            .{ dir_path, err },
-        );
-        return;
-    };
-    defer dir.close(io);
+    if (workers.exiting.load(.acquire)) return;
 
     var scratch_arena = std.heap.ArenaAllocator.init(gpa);
     defer scratch_arena.deinit();
     const scratch_alloc = scratch_arena.allocator();
 
-    var it = dir.iterate();
     var dir_entries: std.ArrayList(MediaEntry) = .empty;
-    defer dir_entries.deinit(scratch_alloc);
 
-    while (it.next(io) catch |err| blk: {
-        std.log.warn(
-            "scanDirectoryThreadSafe: iterate next failed for '{s}': {any}",
-            .{ dir_path, err },
-        );
-        break :blk null;
-    }) |entry| {
-        if (workers.exiting.load(.acquire)) return;
-        if (core_fs.isImageFile(entry.name)) {
-            if (core_fs.resolveEntryKind(dir, io, entry) == .file) {
-                const full_path = std.Io.Dir.path.join(
-                    scratch_alloc,
-                    &.{ dir_path, entry.name },
-                ) catch |err| {
-                    std.log.err(
-                        "Failed to join path for '{s}': {}",
-                        .{ entry.name, err },
-                    );
-                    continue;
-                };
-                dir_entries.append(
-                    scratch_alloc,
-                    .{ .filesystem = .{ .path = full_path } },
-                ) catch |err| {
-                    std.log.err(
-                        "Failed to append path '{s}': {}",
-                        .{ full_path, err },
-                    );
-                    continue;
-                };
+    const cancel: CancelCheck = .{
+        .ctx = &workers.exiting,
+        .is_canceled_fn = struct {
+            fn check(ctx: ?*const anyopaque) bool {
+                const exiting: *const std.atomic.Value(bool) =
+                    @ptrCast(@alignCast(ctx.?));
+                return exiting.load(.acquire);
             }
-        }
-    }
+        }.check,
+    };
 
-    std.mem.sort(MediaEntry, dir_entries.items, {}, struct {
-        fn lessThan(_: void, a: MediaEntry, b: MediaEntry) bool {
-            return std.ascii.lessThanIgnoreCase(a.getBasename(), b.getBasename());
+    scanDirectoryMediaEntries(
+        scratch_alloc,
+        io,
+        dir_path,
+        &dir_entries,
+        stack_raw_jpeg,
+        cancel,
+    ) catch |err| {
+        if (err != error.Canceled) {
+            std.log.warn(
+                "scanDirectoryThreadSafe: scan failed for '{s}': {any}",
+                .{ dir_path, err },
+            );
         }
-    }.lessThan);
-
-    core_fs.consolidateRawJpegPairs(&dir_entries, stack_raw_jpeg);
+        return;
+    };
 
     if (workers.exiting.load(.acquire)) return;
 
@@ -148,8 +123,8 @@ pub fn scanDirectoryThreadSafe(
     }
 }
 
-/// Background thread entry point executing full path scan (directory or archive)
-/// and notifying completion.
+/// Background thread entry point executing full path scan (directory or
+/// archive) and notifying completion.
 pub fn pathScanWorker(args: *PathScanArgs) void {
     const workers = args.workers;
     const io = args.io;
@@ -175,90 +150,34 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
 
     var dir_entries: std.ArrayList(MediaEntry) = .empty;
 
-    if (core_fs.isCbzFile(target_path)) {
-        core_fs.scanCbzImageEntries(
-            scan_alloc,
-            io,
-            target_path,
-            &dir_entries,
-        ) catch |err| {
+    const cancel_check: CancelCheck = .{
+        .ctx = &cancel,
+        .is_canceled_fn = struct {
+            fn check(ctx: ?*const anyopaque) bool {
+                const tok: *const context.CancellationToken =
+                    @ptrCast(@alignCast(ctx.?));
+                return tok.isCanceled();
+            }
+        }.check,
+    };
+
+    scanTargetMediaEntries(
+        scan_alloc,
+        io,
+        target_path,
+        is_dir,
+        &dir_entries,
+        args.stack_raw_jpeg,
+        cancel_check,
+    ) catch |err| {
+        if (err != error.Canceled) {
             std.log.err(
-                "pathScanWorker: failed to scan CBZ '{s}': {}",
+                "pathScanWorker: failed to scan '{s}': {}",
                 .{ target_path, err },
             );
-            return;
-        };
-    } else {
-        const dir_path = if (is_dir)
-            target_path
-        else
-            (std.Io.Dir.path.dirname(target_path) orelse ".");
-
-        var dir = std.Io.Dir.openDir(
-            std.Io.Dir.cwd(),
-            io,
-            dir_path,
-            .{ .iterate = true },
-        ) catch |err| {
-            std.log.err("Failed to open dir '{s}': {}", .{ dir_path, err });
-            return;
-        };
-        defer dir.close(io);
-
-        var it = dir.iterate();
-
-        while (!cancel.isCanceled()) {
-            const entry = (it.next(io) catch |err| switch (err) {
-                error.Canceled => break,
-                else => {
-                    std.log.warn(
-                        "pathScanWorker iterate failed for '{s}': {}",
-                        .{ dir_path, err },
-                    );
-                    break;
-                },
-            }) orelse break;
-            if (core_fs.isImageFile(entry.name)) {
-                if (core_fs.resolveEntryKind(dir, io, entry) == .file) {
-                    const full_path = std.Io.Dir.path.join(
-                        scan_alloc,
-                        &.{ dir_path, entry.name },
-                    ) catch |err| {
-                        std.log.err(
-                            "Failed to join path for '{s}': {}",
-                            .{ entry.name, err },
-                        );
-                        continue;
-                    };
-                    dir_entries.append(
-                        scan_alloc,
-                        .{ .filesystem = .{ .path = full_path } },
-                    ) catch |err| {
-                        std.log.err(
-                            "Failed to append path '{s}': {}",
-                            .{ full_path, err },
-                        );
-                        continue;
-                    };
-                }
-            }
         }
-    }
-
-    if (cancel.isCanceled()) return;
-
-    // Sort entries alphabetically by basename
-    std.mem.sort(MediaEntry, dir_entries.items, {}, struct {
-        fn lessThan(_: void, a: MediaEntry, b: MediaEntry) bool {
-            return std.ascii.lessThanIgnoreCase(
-                a.getBasename(),
-                b.getBasename(),
-            );
-        }
-    }.lessThan);
-
-    // Consolidate RAW + JPEG pairs sharing the same stem into unified .pair entries
-    core_fs.consolidateRawJpegPairs(&dir_entries, args.stack_raw_jpeg);
+        return;
+    };
 
     if (cancel.isCanceled()) return;
 

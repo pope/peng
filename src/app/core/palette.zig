@@ -1,11 +1,16 @@
 const builtin = @import("builtin");
-const core_fs = @import("fs.zig");
 const state_pkg = @import("state");
 const std = @import("std");
+const vfs = @import("vfs");
 
-const DirectoryEntry = state_pkg.DirectoryEntry;
+const DirectoryEntry = vfs.DirectoryEntry;
+const getChildBasename = vfs.getChildBasename;
+const getParentDirBuf = vfs.getParentDirBuf;
+const isCbzFile = vfs.isCbzFile;
 const PaletteState = state_pkg.PaletteState;
+const scanDirectoryEntries = vfs.scanDirectoryEntries;
 const ScoredMatch = state_pkg.ScoredMatch;
+const trimTrailingSeparators = vfs.trimTrailingSeparators;
 
 /// Populates directory entries for `dir_path` into `PaletteState`, tracks
 /// directory navigation history (including last-child directory tracking for
@@ -16,8 +21,8 @@ pub fn loadDirectoryEntries(
     io: std.Io,
     dir_path: []const u8,
 ) !void {
-    const raw_target = core_fs.trimTrailingSeparators(dir_path);
-    const target = if (core_fs.isCbzFile(raw_target))
+    const raw_target = trimTrailingSeparators(dir_path);
+    const target = if (isCbzFile(raw_target))
         (std.Io.Dir.path.dirname(raw_target) orelse ".")
     else
         raw_target;
@@ -32,7 +37,7 @@ pub fn loadDirectoryEntries(
 
     var navigated_up = false;
     if (self.current_nav_dir.items.len > 0) {
-        if (core_fs.getParentDirBuf(
+        if (getParentDirBuf(
             self.current_nav_dir.items,
             &path_scratch_buf,
         )) |parent_dir| {
@@ -43,7 +48,7 @@ pub fn loadDirectoryEntries(
     }
 
     if (navigated_up) {
-        const child_base = core_fs.getChildBasename(
+        const child_base = getChildBasename(
             io,
             self.current_nav_dir.items,
             &path_scratch_buf,
@@ -63,7 +68,7 @@ pub fn loadDirectoryEntries(
     _ = self.dir_scan_generation.fetchAdd(1, .release);
 
     self.clearDirItems();
-    self.current_dir_image_count = core_fs.scanDirectoryEntries(
+    self.current_dir_image_count = scanDirectoryEntries(
         self.allocator,
         io,
         dir_path_copy,

@@ -1,14 +1,15 @@
 const app_state = @import("../state.zig");
 const clay = @import("zclay");
 const context = @import("context.zig");
-const core_fs = @import("../core/fs.zig");
 const intents = @import("intents");
 const state_pkg = @import("state");
 const std = @import("std");
+const vfs = @import("vfs");
 
 const AppState = app_state.AppState;
 const FrameContext = context.FrameContext;
 const FrameInput = state_pkg.FrameInput;
+const getParentDirBuf = vfs.getParentDirBuf;
 const Key = intents.Key;
 const KeyModifiers = intents.KeyModifiers;
 const PaletteMode = intents.PaletteMode;
@@ -282,7 +283,7 @@ fn handlePaletteKeys(
                         std.Io.Dir.max_path_bytes,
                     );
                     defer ctx.frame_allocator.free(parent_buf);
-                    if (core_fs.getParentDirBuf(
+                    if (getParentDirBuf(
                         palette.current_nav_dir.items,
                         parent_buf,
                     )) |parent_dir| {
@@ -302,7 +303,7 @@ fn handlePaletteKeys(
                     std.Io.Dir.max_path_bytes,
                 );
                 defer ctx.frame_allocator.free(parent_buf);
-                if (core_fs.getParentDirBuf(
+                if (getParentDirBuf(
                     palette.current_nav_dir.items,
                     parent_buf,
                 )) |parent_dir| {
@@ -381,7 +382,7 @@ fn handlePaletteKeys(
                     std.Io.Dir.max_path_bytes,
                 );
                 defer ctx.frame_allocator.free(parent_buf);
-                if (core_fs.getParentDirBuf(
+                if (getParentDirBuf(
                     palette.current_nav_dir.items,
                     parent_buf,
                 )) |parent_dir| {

@@ -6,10 +6,12 @@ const probe = @import("probe");
 const sdl = @import("sdl");
 const state = @import("state");
 const std = @import("std");
+const vfs = @import("vfs");
 
 const AppState = app_state.AppState;
 const EditParam = intents.EditParam;
 const FrameContext = context.FrameContext;
+const MediaEntry = vfs.MediaEntry;
 
 fn showCustomSnackbar(self: *AppState, msg: []const u8, now_ms: u64) void {
     if (!self.viewer.ui.snackbar.enabled) return;
@@ -967,7 +969,7 @@ test "rotate_cw, rotate_ccw, and reset_rotation intents" {
     var app_st = try AppState.initHeadless(allocator, io);
     defer app_st.deinit();
 
-    const media_item = state.MediaEntry{
+    const media_item = MediaEntry{
         .filesystem = .{ .path = "test_image.raf" },
     };
     _ = try app_st.viewer.navigation.appendEntry(allocator, media_item);
@@ -1083,7 +1085,7 @@ test "fast scrubbing triggers title overlay auto-hide" {
     var app_st = try AppState.initHeadless(allocator, io);
     defer app_st.deinit();
 
-    const media_item = state.MediaEntry{
+    const media_item = MediaEntry{
         .filesystem = .{ .path = "test.jpg" },
     };
     _ = try app_st.viewer.navigation.appendEntry(allocator, media_item);

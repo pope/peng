@@ -2,10 +2,11 @@ const app_state = @import("../state.zig");
 const context = @import("context.zig");
 const state_pkg = @import("state");
 const std = @import("std");
+const vfs = @import("vfs");
 
 const AppState = app_state.AppState;
 const FrameContext = context.FrameContext;
-const MediaEntry = state_pkg.MediaEntry;
+const MediaEntry = vfs.MediaEntry;
 
 /// Formats the OS window title for the given media entry.
 /// For pairs (RAW+JPEG), appends " [RAW+JPG]" to the RAW image basename.

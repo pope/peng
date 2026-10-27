@@ -6,9 +6,11 @@ const probe = @import("probe");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
+const vfs = @import("vfs");
 
 const AppState = app_state.AppState;
-const MediaEntry = state_pkg.MediaEntry;
+const EntryScanState = vfs.EntryScanState;
+const MediaEntry = vfs.MediaEntry;
 const MediaId = state_pkg.types.MediaId;
 const Orientation = probe.Orientation;
 
@@ -997,7 +999,7 @@ test "drainWorkerEvents - palette_folder_count updates directory and archive ent
 
     _ = drainWorkerEvents(&state);
     try std.testing.expectEqual(
-        state_pkg.EntryScanState.unscanned,
+        EntryScanState.unscanned,
         state.viewer.ui.palette.dir_items.items[0].directory.scan,
     );
 
@@ -1025,14 +1027,14 @@ test "drainWorkerEvents - palette_folder_count updates directory and archive ent
     _ = drainWorkerEvents(&state);
 
     try std.testing.expect(state.viewer.ui.palette.selection_dirty);
-    const expected_dir_scan = state_pkg.EntryScanState{
+    const expected_dir_scan = EntryScanState{
         .scanned = .{ .image_count = 12, .subdir_count = 3 },
     };
     try std.testing.expectEqual(
         expected_dir_scan,
         state.viewer.ui.palette.dir_items.items[0].directory.scan,
     );
-    const expected_archive_scan = state_pkg.EntryScanState{
+    const expected_archive_scan = EntryScanState{
         .scanned = .{ .image_count = 45, .subdir_count = 0 },
     };
     try std.testing.expectEqual(
@@ -1057,11 +1059,11 @@ test "drainWorkerEvents - palette_folder_count updates directory and archive ent
     });
     _ = drainWorkerEvents(&state);
     try std.testing.expectEqual(
-        state_pkg.EntryScanState.permission_denied,
+        EntryScanState.permission_denied,
         state.viewer.ui.palette.dir_items.items[0].directory.scan,
     );
     try std.testing.expectEqual(
-        state_pkg.EntryScanState.failed,
+        EntryScanState.failed,
         state.viewer.ui.palette.dir_items.items[1].archive_file.scan,
     );
 }

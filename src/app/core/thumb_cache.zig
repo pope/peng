@@ -10,14 +10,17 @@
 //!   (`KIO::PreviewJob`), GNOME/GLib, and Yazi.
 
 const builtin = @import("builtin");
-const core_fs = @import("fs.zig");
 const image = @import("image.zig");
 const probe = @import("probe");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
+const vfs = @import("vfs");
 
+const isImageFile = vfs.isImageFile;
+const isRawFile = vfs.isRawFile;
 const Orientation = probe.Orientation;
+const resolveEntryKind = vfs.resolveEntryKind;
 
 const png_signature = "\x89PNG\r\n\x1a\n";
 const ihdr_end_offset: usize = 33; // 8-byte signature + 25-byte IHDR chunk
@@ -801,7 +804,7 @@ pub fn precacheFileThumbnail(
     const is_fuji = std.mem.eql(u8, mime_type, "image/x-fuji-raf") or
         (header_slice.len >= 8 and
             std.mem.startsWith(u8, header_slice, "FUJIFILM"));
-    const is_raw = core_fs.isRawFile(path) or
+    const is_raw = isRawFile(path) or
         is_fuji or
         std.mem.startsWith(u8, mime_type, "image/x-");
 
@@ -1071,9 +1074,9 @@ fn collectPrecacheDirInner(
 
     var it = dir.iterate();
     while (it.next(io) catch null) |entry| {
-        const kind = core_fs.resolveEntryKind(dir, io, entry) orelse continue;
+        const kind = resolveEntryKind(dir, io, entry) orelse continue;
         if (kind == .file) {
-            if (core_fs.isImageFile(entry.name)) {
+            if (isImageFile(entry.name)) {
                 const full = try std.Io.Dir.path.join(
                     allocator,
                     &.{ dir_path, entry.name },
@@ -1129,7 +1132,7 @@ pub fn collectPrecacheFiles(
         .{},
     );
     if (stat.kind == .file) {
-        if (core_fs.isImageFile(target_path)) {
+        if (isImageFile(target_path)) {
             const dup = try allocator.dupe(u8, target_path);
             errdefer allocator.free(dup);
             try out_paths.append(allocator, dup);

@@ -1,8 +1,9 @@
 const std = @import("std");
 const types = @import("types.zig");
+const vfs = @import("vfs");
 
 const Classification = types.Classification;
-const MediaEntry = types.MediaEntry;
+const MediaEntry = vfs.MediaEntry;
 const MediaId = types.MediaId;
 const SlideshowMode = types.SlideshowMode;
 const ViewMode = types.ViewMode;
