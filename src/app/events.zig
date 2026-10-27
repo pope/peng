@@ -687,7 +687,7 @@ fn handleDirectoryScanResultEvent(
             null;
 
         var target_idx_in_dir: ?usize = null;
-        _ = state.viewer.navigation.directory_arena.reset(.retain_capacity);
+        state.viewer.navigation.resetDirectoryArena();
         state.viewer.navigation.clearEntries();
         for (result_data.paths) |item| {
             const dup = item.dupe(arena_alloc) catch |err| {
@@ -728,6 +728,7 @@ fn handleDirectoryScanResultEvent(
             _ = state.viewer.navigation.adjustIndexForVisibility();
         }
     }
+    state.viewer.navigation.trimExcessCapacity(state.allocator);
     syncActiveFilePaletteMatches(state);
 }
 
@@ -826,6 +827,43 @@ test "drainWorkerEvents - directory_scan_result and ipc_command" {
     const popped_cmd = state.pending_ipc_commands.pop().?;
     allocator.free(popped_cmd.command);
     allocator.destroy(popped_cmd);
+}
+
+test "drainWorkerEvents - directory_scan_result is_dir trims excess capacity" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    // Pre-allocate large capacity simulating prior massive directory scan.
+    try state.viewer.navigation.items.ensureTotalCapacity(allocator, 1000);
+    try std.testing.expect(state.viewer.navigation.items.capacity >= 1000);
+
+    const target_path = try allocator.dupe(u8, "/imgs");
+    const path0 = try allocator.dupe(u8, "/imgs/a.jpg");
+    const path1 = try allocator.dupe(u8, "/imgs/b.jpg");
+    const paths_slice = try allocator.alloc(MediaEntry, 2);
+    paths_slice[0] = .{ .filesystem = .{ .path = path0 } };
+    paths_slice[1] = .{ .filesystem = .{ .path = path1 } };
+
+    try state.workers.event_queue.push(allocator, io, .{
+        .directory_scan_result = .init(0, .{
+            .target_path = target_path,
+            .is_dir = true,
+            .paths = paths_slice,
+        }),
+    });
+
+    const processed = drainWorkerEvents(&state);
+    try std.testing.expect(processed);
+    try std.testing.expectEqual(
+        @as(usize, 2),
+        state.viewer.navigation.count(),
+    );
+    try std.testing.expectEqual(
+        @as(usize, 64),
+        state.viewer.navigation.items.capacity,
+    );
 }
 
 test "drainWorkerEvents - neighbor image_decoded stays loaded_cpu while current is decoding" {

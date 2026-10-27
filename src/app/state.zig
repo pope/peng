@@ -948,7 +948,8 @@ pub const AppState = struct {
         self.clearCache();
         self.clearRotationMap();
         self.viewer.navigation.clearEntries();
-        _ = self.viewer.navigation.directory_arena.reset(.retain_capacity);
+        self.viewer.navigation.resetDirectoryArena();
+        self.viewer.navigation.trimExcessCapacity(self.allocator);
 
         if (has_stat) {
             const stack_raw = self.viewer.navigation.stack_raw_jpeg;

@@ -235,6 +235,12 @@ pub const NavDirection = enum {
     backward,
 };
 
+/// Maximum memory bytes retained across directory arena resets (256 KiB).
+const MAX_RETAINED_DIR_ARENA_BYTES: usize = 256 * 1024;
+
+/// Maximum memory bytes retained across classification arena resets (64 KiB).
+const MAX_RETAINED_CLASS_ARENA_BYTES: usize = 64 * 1024;
+
 /// Tracks the active media list, current image index, slideshow progression, and directory cache.
 pub const NavigationState = struct {
     items: std.MultiArrayList(MediaItem) = .empty,
@@ -280,6 +286,37 @@ pub const NavigationState = struct {
         self.last_scanned_dir.deinit(allocator);
         self.directory_arena.deinit();
         self.classification_arena.deinit();
+    }
+
+    /// Resets directory arena retaining at most 256 KiB of memory pages.
+    pub fn resetDirectoryArena(self: *NavigationState) void {
+        _ = self.directory_arena.reset(.{
+            .retain_with_limit = MAX_RETAINED_DIR_ARENA_BYTES,
+        });
+    }
+
+    /// Resets classification arena retaining at most 64 KiB of memory pages.
+    pub fn resetClassificationArena(self: *NavigationState) void {
+        _ = self.classification_arena.reset(.{
+            .retain_with_limit = MAX_RETAINED_CLASS_ARENA_BYTES,
+        });
+    }
+
+    /// Reclaims over-allocated capacity in `items` if capacity exceeds 2x
+    /// length and exceeds 64 elements, preventing memory retention after
+    /// navigating away from massive directories.
+    pub fn trimExcessCapacity(
+        self: *NavigationState,
+        gpa: std.mem.Allocator,
+    ) void {
+        if (self.items.capacity > @max(64, self.items.len *| 2)) {
+            const target_cap = @max(64, self.items.len);
+            if (self.items.len == 0) {
+                self.items.clearAndFree(gpa);
+            } else {
+                self.items.setCapacity(gpa, target_cap) catch {};
+            }
+        }
     }
 
     fn lookupEntryClassification(
@@ -618,7 +655,7 @@ pub const NavigationState = struct {
         self.pick_count = 0;
         self.reject_count = 0;
         self.path_classifications.clearRetainingCapacity();
-        _ = self.classification_arena.reset(.retain_capacity);
+        self.resetClassificationArena();
         return had_flags;
     }
 
@@ -1486,4 +1523,85 @@ test "NavigationState - empty playlist returns null, keeps last_nav_time_ms 0" {
 
     try std.testing.expectEqual(@as(?usize, null), nav.goToIndex(0, 7000));
     try std.testing.expectEqual(@as(u64, 0), nav.last_nav_time_ms);
+}
+
+test "NavigationState resetDirectoryArena bounds page retention" {
+    const allocator = std.testing.allocator;
+    var nav = try NavigationState.init(allocator);
+    defer nav.deinit(allocator);
+
+    const arena_alloc = nav.directory_arena.allocator();
+    const big_buf = try arena_alloc.alloc(u8, 1024 * 1024 + 1024);
+    @memset(big_buf, 0xaa);
+
+    try std.testing.expect(
+        nav.directory_arena.queryCapacity() > MAX_RETAINED_DIR_ARENA_BYTES,
+    );
+
+    nav.resetDirectoryArena();
+
+    try std.testing.expect(
+        nav.directory_arena.queryCapacity() <= MAX_RETAINED_DIR_ARENA_BYTES,
+    );
+}
+
+test "NavigationState resetClassificationArena bounds page retention" {
+    const allocator = std.testing.allocator;
+    var nav = try NavigationState.init(allocator);
+    defer nav.deinit(allocator);
+
+    const arena_alloc = nav.classification_arena.allocator();
+    const big_buf = try arena_alloc.alloc(u8, 512 * 1024 + 1024);
+    @memset(big_buf, 0xbb);
+
+    try std.testing.expect(
+        nav.classification_arena.queryCapacity() >
+            MAX_RETAINED_CLASS_ARENA_BYTES,
+    );
+
+    nav.resetClassificationArena();
+
+    try std.testing.expect(
+        nav.classification_arena.queryCapacity() <=
+            MAX_RETAINED_CLASS_ARENA_BYTES,
+    );
+}
+
+test "NavigationState trimExcessCapacity downscales excess capacity" {
+    const allocator = std.testing.allocator;
+    var nav = try NavigationState.init(allocator);
+    defer nav.deinit(allocator);
+
+    try nav.items.ensureTotalCapacity(allocator, 1200);
+    try std.testing.expect(nav.items.capacity >= 1200);
+
+    const test_paths = [_][]const u8{
+        "0.jpg", "1.jpg", "2.jpg", "3.jpg", "4.jpg",
+        "5.jpg", "6.jpg", "7.jpg", "8.jpg", "9.jpg",
+    };
+    for (test_paths) |p| {
+        _ = try nav.appendEntry(allocator, .{ .filesystem = .{ .path = p } });
+    }
+    try std.testing.expectEqual(@as(usize, 10), nav.items.len);
+    try std.testing.expect(nav.items.capacity >= 1200);
+
+    nav.trimExcessCapacity(allocator);
+
+    try std.testing.expectEqual(@as(usize, 64), nav.items.capacity);
+    try std.testing.expectEqual(@as(usize, 10), nav.items.len);
+}
+
+test "NavigationState trimExcessCapacity safely handles 0 items" {
+    const allocator = std.testing.allocator;
+    var nav = try NavigationState.init(allocator);
+    defer nav.deinit(allocator);
+
+    try nav.items.ensureTotalCapacity(allocator, 1200);
+    try std.testing.expect(nav.items.capacity >= 1200);
+    try std.testing.expectEqual(@as(usize, 0), nav.items.len);
+
+    nav.trimExcessCapacity(allocator);
+
+    try std.testing.expectEqual(@as(usize, 0), nav.items.capacity);
+    try std.testing.expectEqual(@as(usize, 0), nav.items.len);
 }

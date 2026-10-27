@@ -12,6 +12,20 @@
     Always pair `frame_allocator` scratch allocations with
     `defer frame_allocator.free(...)` or `defer list.deinit(frame_allocator)` so
     sequential systems reuse frame memory without arena growth.
+- **Bounded Session Arena Retention & Collection Trimming**:
+  - Never use unbounded `.reset(.retain_capacity)` on session arenas that hold
+    dynamic directory paths or user classification data.
+  - Reset `directory_arena` via `resetDirectoryArena()` bounding retained
+    memory pages to $\le 256\text{ KiB}$
+    (`MAX_RETAINED_DIR_ARENA_BYTES = 256 * 1024`).
+  - Reset `classification_arena` via `resetClassificationArena()` bounding
+    retained memory pages to $\le 64\text{ KiB}$
+    (`MAX_RETAINED_CLASS_ARENA_BYTES = 64 * 1024`).
+  - After directory scans or playlist replacements, call
+    `NavigationState.trimExcessCapacity` to shrink `MultiArrayList(MediaItem)`
+    via `setCapacity` (or `clearAndFree` when `len == 0`) whenever capacity
+    exceeds $2 \times \text{len}$ and exceeds 64 elements, avoiding retention
+    of peak capacity from massive directories.
 - **Stack Allocation vs. Arena Decision Matrix**:
   - *Dynamic / Unbounded Collections* (prefetch queues, scissor stacks, match
     lists): NEVER use fixed stack arrays `[N]T` that risk silent truncation or
