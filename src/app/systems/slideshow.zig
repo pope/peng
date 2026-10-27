@@ -58,7 +58,6 @@ test "AppState slideshow timer auto-advances slide" {
         .key_modifiers = .{},
         .text_input = null,
         .dropped_path = null,
-        .ticks = 0,
         .delta_time_ms = 1000.0,
     };
 
@@ -116,7 +115,6 @@ test "AppState slideshow pauses during command palette, dragging, or explicit pa
         .key_modifiers = .{},
         .text_input = null,
         .dropped_path = null,
-        .ticks = 0,
         .delta_time_ms = 1000.0,
     };
 

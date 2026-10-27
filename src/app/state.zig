@@ -1101,8 +1101,8 @@ pub const AppState = struct {
     }
 
     /// Scans cache slots around the current navigation index, evicting distant
-    /// textures and uploading ready surfaces to the GPU.
-    pub fn prepareCacheTextures(self: *AppState) void {
+    /// textures and uploading ready surfaces to the GPU, stamped with `now_ms`.
+    pub fn prepareCacheTextures(self: *AppState, now_ms: u64) void {
         {
             const entries = self.cache.slots.items(.entry);
             const keys = self.cache.slots.items(.key);
@@ -1171,7 +1171,7 @@ pub const AppState = struct {
                 .loaded_cpu => |cpu| {
                     cur_entry.inflight = .{
                         .stage = .uploading,
-                        .start_time_ms = sdl.timer.getTicks(),
+                        .start_time_ms = now_ms,
                     };
                     upload_target = .{
                         .key = cur_key_opt.?,
@@ -1229,7 +1229,7 @@ pub const AppState = struct {
                     .loaded_cpu => |cpu| {
                         entry.inflight = .{
                             .stage = .uploading,
-                            .start_time_ms = sdl.timer.getTicks(),
+                            .start_time_ms = now_ms,
                         };
                         upload_target = .{
                             .key = keys[bi],
@@ -1531,7 +1531,6 @@ test "FrameInput.isPointerInDebugPanel and click localization" {
         .key_modifiers = .{},
         .text_input = null,
         .dropped_path = null,
-        .ticks = 0,
         .delta_time_ms = 16.0,
         .is_pointer_in_debug_panel = true,
     };
@@ -1554,7 +1553,6 @@ test "FrameInput.isPointerInDebugPanel and click localization" {
         .key_modifiers = .{},
         .text_input = null,
         .dropped_path = null,
-        .ticks = 0,
         .delta_time_ms = 16.0,
     };
     try std.testing.expect(!input_outside.isPointerInDebugPanel());
@@ -1726,7 +1724,7 @@ test "prepareCacheTextures - uploads loaded_cpu without double free" {
         },
     });
 
-    state.prepareCacheTextures();
+    state.prepareCacheTextures(1000);
 
     // Verify upload transitioned to loaded_gpu and inflight is cleared
     const entry = state.cache.get(key).?;

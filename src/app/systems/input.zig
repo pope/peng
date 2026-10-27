@@ -168,7 +168,6 @@ test "sysProcessInput does not process escape or shortcuts if palette was closed
         .key_modifiers = .{},
         .text_input = null,
         .dropped_path = null,
-        .ticks = 0,
         .delta_time_ms = 16.0,
     };
 
@@ -219,7 +218,6 @@ test "sysProcessInput ignores key shortcuts while palette mode is active" {
         .key_modifiers = .{},
         .text_input = null,
         .dropped_path = null,
-        .ticks = 0,
         .delta_time_ms = 16.0,
     };
 
@@ -267,7 +265,6 @@ test "Escape key closes active palette without triggering quit in sysProcessInpu
         .key_modifiers = .{},
         .text_input = null,
         .dropped_path = null,
-        .ticks = 0,
         .delta_time_ms = 16.0,
     };
 
@@ -326,7 +323,6 @@ test "sysProcessInput accepts shortcuts when palette is dissolving (is_closing =
         .key_modifiers = .{},
         .text_input = null,
         .dropped_path = null,
-        .ticks = 0,
         .delta_time_ms = 16.0,
     };
 
@@ -375,7 +371,6 @@ test "Escape key dismisses floating overlays without triggering quit" {
         .key_modifiers = .{},
         .text_input = null,
         .dropped_path = null,
-        .ticks = 0,
         .delta_time_ms = 16.0,
     };
 
@@ -434,7 +429,6 @@ test "q key triggers quit even when floating overlays are visible" {
         .key_modifiers = .{},
         .text_input = null,
         .dropped_path = null,
-        .ticks = 0,
         .delta_time_ms = 16.0,
     };
 
@@ -482,7 +476,6 @@ test "duplicate Escape keys in single frame safely deduplicate without triggerin
         .key_modifiers = .{},
         .text_input = null,
         .dropped_path = null,
-        .ticks = 0,
         .delta_time_ms = 16.0,
     };
 
@@ -541,7 +534,6 @@ test "sysProcessInput simultaneous directional keys pan diagonally" {
         .directional_held = .{},
         .text_input = null,
         .dropped_path = null,
-        .ticks = 0,
         .delta_time_ms = 16.0,
     };
 
@@ -593,7 +585,6 @@ test "sysProcessInput simultaneous directional keys pan diagonally" {
         .directional_held = .{},
         .text_input = null,
         .dropped_path = null,
-        .ticks = 0,
         .delta_time_ms = 16.0,
     };
 
@@ -651,7 +642,6 @@ test "sysProcessInput repeating key with held orthogonal key pans diagonally" {
         .directional_held = .{ .up = true, .left = true },
         .text_input = null,
         .dropped_path = null,
-        .ticks = 0,
         .delta_time_ms = 16.0,
     };
 
@@ -710,7 +700,6 @@ test "sysProcessInput preserves image navigation when viewport is not zoomed" {
         .directional_held = .{ .up = true },
         .text_input = null,
         .dropped_path = null,
-        .ticks = 0,
         .delta_time_ms = 16.0,
     };
 
@@ -796,7 +785,6 @@ test "sysProcessInput continuous gliding and seamless diagonal transition" {
         .directional_held = .{ .up = true, .left = true },
         .text_input = null,
         .dropped_path = null,
-        .ticks = 0,
         .delta_time_ms = 16.0,
     };
 
@@ -864,7 +852,6 @@ test "sysProcessInput suppresses held keys on modal and modifier transitions" {
             .zoom_held = .{ .in = true },
             .text_input = null,
             .dropped_path = null,
-            .ticks = 0,
             .delta_time_ms = 16.0,
         },
         .delta_time_ms = 16.0,
@@ -897,7 +884,6 @@ test "sysProcessInput suppresses held keys on modal and modifier transitions" {
             .zoom_held = .{ .in = true },
             .text_input = null,
             .dropped_path = null,
-            .ticks = 16,
             .delta_time_ms = 16.0,
         },
         .delta_time_ms = 16.0,

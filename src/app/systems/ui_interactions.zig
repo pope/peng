@@ -195,7 +195,6 @@ test "sysProcessUiInteractions cancels slider drag when palette opens" {
         .key_modifiers = .{},
         .text_input = null,
         .dropped_path = null,
-        .ticks = 0,
         .delta_time_ms = 16.0,
     };
 

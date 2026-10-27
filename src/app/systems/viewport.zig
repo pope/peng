@@ -232,7 +232,6 @@ test "sysUpdateViewport cancels active panel drag when panel hides" {
         .key_modifiers = .{},
         .text_input = null,
         .dropped_path = null,
-        .ticks = 0,
         .delta_time_ms = 16.0,
     };
 

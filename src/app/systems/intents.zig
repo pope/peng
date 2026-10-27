@@ -10,16 +10,15 @@ const AppState = app_state.AppState;
 const EditParam = intents.EditParam;
 const FrameContext = context.FrameContext;
 
-fn showCustomSnackbar(self: *AppState, msg: []const u8) void {
+fn showCustomSnackbar(self: *AppState, msg: []const u8, now_ms: u64) void {
     if (!self.viewer.ui.snackbar.enabled) return;
-    const now = sdl.timer.getTicks();
-    self.viewer.ui.snackbar.show(msg, now + 1500);
+    self.viewer.ui.snackbar.show(msg, now_ms + 1500);
     const progress = self.viewer.animations.get(.snackbar);
     const dur = @max(state.DURATION_SNACKBAR_OPEN_MS * (1.0 - progress), 30.0);
     self.viewer.animations.start(.snackbar, 1.0, dur, .ease_out_quad);
 }
 
-fn togglePairStream(self: *AppState) void {
+fn togglePairStream(self: *AppState, now_ms: u64) void {
     const nav = &self.viewer.navigation;
     const cur_id = nav.getCurrentMediaId() orelse return;
     const entry_item = nav.getCurrentImageEntry() orelse return;
@@ -45,23 +44,23 @@ fn togglePairStream(self: *AppState) void {
         .raw_preview => "Stream: RAW Embedded Preview",
         .adaptive => "Stream: Adaptive",
     };
-    showCustomSnackbar(self, msg);
+    showCustomSnackbar(self, msg, now_ms);
     entry.inflight = .{
         .stage = .decoding,
-        .start_time_ms = sdl.timer.getTicks(),
+        .start_time_ms = now_ms,
         .target = target,
     };
 }
 
-fn precacheCurrentDirectory(self: *AppState) !void {
+fn precacheCurrentDirectory(self: *AppState, now_ms: u64) !void {
     if (self.workers.thumb_cache_config == .disabled) {
-        showCustomSnackbar(self, "Thumbnail cache is disabled");
+        showCustomSnackbar(self, "Thumbnail cache is disabled", now_ms);
         return;
     }
 
     const entries = self.viewer.navigation.getEntries();
     if (entries.len == 0) {
-        showCustomSnackbar(self, "No images in current directory");
+        showCustomSnackbar(self, "No images in current directory", now_ms);
         return;
     }
 
@@ -93,7 +92,7 @@ fn precacheCurrentDirectory(self: *AppState) !void {
 
     if (paths.items.len == 0) {
         arena.deinit();
-        showCustomSnackbar(self, "No filesystem images to pre-cache");
+        showCustomSnackbar(self, "No filesystem images to pre-cache", now_ms);
         return;
     }
 
@@ -109,11 +108,12 @@ fn precacheCurrentDirectory(self: *AppState) !void {
             "Pre-caching {d} thumbnails in background...",
             .{count},
         )) |msg| {
-            showCustomSnackbar(self, msg);
+            showCustomSnackbar(self, msg, now_ms);
         } else |_| {
             showCustomSnackbar(
                 self,
                 "Pre-caching thumbnails in background...",
+                now_ms,
             );
         }
     }
@@ -168,7 +168,11 @@ fn syncNavIndexChange(self: *AppState, old_idx: ?usize) void {
 }
 
 /// Central intent dispatcher. Maps an AppIntent variant to domain state mutations.
-fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
+fn executeIntent(
+    self: *AppState,
+    intent: intents.AppIntent,
+    now_ms: u64,
+) !void {
     const vp = &self.viewer.viewport;
     const nav = &self.viewer.navigation;
     const ui = &self.viewer.ui;
@@ -364,7 +368,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
         },
 
         .next_image, .prev_image, .first_image, .last_image, .go_to_image => {
-            const now = sdl.timer.getTicks();
+            const now = now_ms;
             const prev_nav_time_ms = nav.last_nav_time_ms;
             const elapsed = now -| prev_nav_time_ms;
             const should_show_auto_title = ui.overlays.auto_title and
@@ -536,7 +540,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 "Cleared all picks and rejects"
             else
                 "No classifications to clear";
-            showCustomSnackbar(self, msg);
+            showCustomSnackbar(self, msg, now_ms);
             if (ui.palette.mode == .files and !ui.palette.is_closing) {
                 try self.rebuildPaletteMatches();
             }
@@ -557,7 +561,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 "RAW+JPEG stacking enabled"
             else
                 "RAW+JPEG stacking disabled";
-            showCustomSnackbar(self, msg);
+            showCustomSnackbar(self, msg, now_ms);
             _ = self.cache.advanceGeneration();
             if (nav.getCurrentImageEntry()) |entry| {
                 try self.reloadPath(entry.getSourcePath());
@@ -572,7 +576,7 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                     "RAW+JPEG stacking enabled"
                 else
                     "RAW+JPEG stacking disabled";
-                showCustomSnackbar(self, msg);
+                showCustomSnackbar(self, msg, now_ms);
                 _ = self.cache.advanceGeneration();
                 if (nav.getCurrentImageEntry()) |entry| {
                     try self.reloadPath(entry.getSourcePath());
@@ -581,8 +585,8 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                 }
             }
         },
-        .toggle_pair_stream => togglePairStream(self),
-        .precache_directory => try precacheCurrentDirectory(self),
+        .toggle_pair_stream => togglePairStream(self, now_ms),
+        .precache_directory => try precacheCurrentDirectory(self, now_ms),
         .set_palette => |p| try handleSetPaletteIntent(self, p),
         .toggle_info => ui.overlays.info_panel.visible = !ui.overlays.info_panel.visible,
         .set_info => |val| ui.overlays.info_panel.visible = val,
@@ -754,6 +758,7 @@ fn triggerSnackbarForIntent(
     intent: intents.AppIntent,
     advanced: bool,
     has_target: bool,
+    now_ms: u64,
 ) void {
     if (!self.viewer.ui.snackbar.enabled) return;
     const rule = state.snackbar.findRule(intent) orelse return;
@@ -796,10 +801,12 @@ fn triggerSnackbarForIntent(
     }, &buf);
 
     if (msg.len > 0) {
-        const now = sdl.timer.getTicks();
-        self.viewer.ui.snackbar.show(msg, now + rule.duration_ms);
+        self.viewer.ui.snackbar.show(msg, now_ms + rule.duration_ms);
         const progress = self.viewer.animations.get(.snackbar);
-        const dur = @max(state.DURATION_SNACKBAR_OPEN_MS * (1.0 - progress), 30.0);
+        const dur = @max(
+            state.DURATION_SNACKBAR_OPEN_MS * (1.0 - progress),
+            30.0,
+        );
         self.viewer.animations.start(.snackbar, 1.0, dur, .ease_out_quad);
     }
 }
@@ -814,10 +821,16 @@ pub fn sysExecuteIntents(ctx: FrameContext) !void {
     defer self.clearIntents();
     for (self.pending_intents.items) |intent| {
         const old_idx = self.viewer.navigation.current_index;
-        try executeIntent(self, intent);
+        try executeIntent(self, intent, ctx.now_ms);
         const advanced = (old_idx != null and
             self.viewer.navigation.current_index != old_idx);
-        triggerSnackbarForIntent(self, intent, advanced, old_idx != null);
+        triggerSnackbarForIntent(
+            self,
+            intent,
+            advanced,
+            old_idx != null,
+            ctx.now_ms,
+        );
     }
 }
 
@@ -843,20 +856,29 @@ test "Manga Mode toggles Right-to-Left image navigation" {
     app_st.viewer.navigation.current_index = 0;
 
     // Normal mode: next_image moves 0 -> 1
-    try executeIntent(&app_st, .next_image);
-    try std.testing.expectEqual(@as(usize, 1), app_st.viewer.navigation.current_index.?);
+    try executeIntent(&app_st, .next_image, 1000);
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        app_st.viewer.navigation.current_index.?,
+    );
 
     // Toggle Manga Mode
-    try executeIntent(&app_st, .toggle_manga_mode);
+    try executeIntent(&app_st, .toggle_manga_mode, 1000);
     try std.testing.expect(app_st.viewer.navigation.manga_mode);
 
     // Manga mode (RTL): next_image moves 1 -> 0
-    try executeIntent(&app_st, .next_image);
-    try std.testing.expectEqual(@as(usize, 0), app_st.viewer.navigation.current_index.?);
+    try executeIntent(&app_st, .next_image, 1000);
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        app_st.viewer.navigation.current_index.?,
+    );
 
     // Manga mode (RTL): prev_image moves 0 -> 1
-    try executeIntent(&app_st, .prev_image);
-    try std.testing.expectEqual(@as(usize, 1), app_st.viewer.navigation.current_index.?);
+    try executeIntent(&app_st, .prev_image, 1000);
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        app_st.viewer.navigation.current_index.?,
+    );
 }
 
 test "Navigation intents cleanly advance image index" {
@@ -880,14 +902,23 @@ test "Navigation intents cleanly advance image index" {
     );
     app_st.viewer.navigation.current_index = 0;
 
-    try executeIntent(&app_st, .next_image);
-    try std.testing.expectEqual(@as(usize, 1), app_st.viewer.navigation.current_index.?);
+    try executeIntent(&app_st, .next_image, 1000);
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        app_st.viewer.navigation.current_index.?,
+    );
 
-    try executeIntent(&app_st, .next_image);
-    try std.testing.expectEqual(@as(usize, 2), app_st.viewer.navigation.current_index.?);
+    try executeIntent(&app_st, .next_image, 1000);
+    try std.testing.expectEqual(
+        @as(usize, 2),
+        app_st.viewer.navigation.current_index.?,
+    );
 
-    try executeIntent(&app_st, .prev_image);
-    try std.testing.expectEqual(@as(usize, 1), app_st.viewer.navigation.current_index.?);
+    try executeIntent(&app_st, .prev_image, 1000);
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        app_st.viewer.navigation.current_index.?,
+    );
 }
 
 test "palette_action_items metadata" {
@@ -909,18 +940,18 @@ test "toggle_blur and set_blur intents" {
     try testing.expect(app_st.viewer.ui.overlays.enable_blur);
 
     // Toggle blur off
-    try executeIntent(&app_st, .toggle_blur);
+    try executeIntent(&app_st, .toggle_blur, 1000);
     try testing.expect(!app_st.viewer.ui.overlays.enable_blur);
 
     // Toggle blur on
-    try executeIntent(&app_st, .toggle_blur);
+    try executeIntent(&app_st, .toggle_blur, 1000);
     try testing.expect(app_st.viewer.ui.overlays.enable_blur);
 
     // Explicit set_blur
-    try executeIntent(&app_st, .{ .set_blur = false });
+    try executeIntent(&app_st, .{ .set_blur = false }, 1000);
     try testing.expect(!app_st.viewer.ui.overlays.enable_blur);
 
-    try executeIntent(&app_st, .{ .set_blur = true });
+    try executeIntent(&app_st, .{ .set_blur = true }, 1000);
     try testing.expect(app_st.viewer.ui.overlays.enable_blur);
 }
 
@@ -947,16 +978,25 @@ test "rotate_cw, rotate_ccw, and reset_rotation intents" {
     app_st.cache.get(key).?.metadata.orientation = .rotate_270;
 
     // Rotate CW
-    try executeIntent(&app_st, .rotate_cw);
-    try testing.expectEqual(@as(f32, 90.0), app_st.viewer.viewport.rotation_angle);
+    try executeIntent(&app_st, .rotate_cw, 1000);
+    try testing.expectEqual(
+        @as(f32, 90.0),
+        app_st.viewer.viewport.rotation_angle,
+    );
 
     // Rotate CCW
-    try executeIntent(&app_st, .rotate_ccw);
-    try testing.expectEqual(@as(f32, 0.0), app_st.viewer.viewport.rotation_angle);
+    try executeIntent(&app_st, .rotate_ccw, 1000);
+    try testing.expectEqual(
+        @as(f32, 0.0),
+        app_st.viewer.viewport.rotation_angle,
+    );
 
     // Reset rotation should restore entry orientation (270 degrees)
-    try executeIntent(&app_st, .reset_rotation);
-    try testing.expectEqual(@as(f32, 270.0), app_st.viewer.viewport.rotation_angle);
+    try executeIntent(&app_st, .reset_rotation, 1000);
+    try testing.expectEqual(
+        @as(f32, 270.0),
+        app_st.viewer.viewport.rotation_angle,
+    );
 }
 
 test "toggle_title and set_title intents" {
@@ -968,12 +1008,21 @@ test "toggle_title and set_title intents" {
     defer app_st.deinit();
 
     // Default title_display should be .hidden
-    try testing.expectEqual(state.TitleDisplay.hidden, app_st.viewer.ui.overlays.title_display);
-    try testing.expectEqual(@as(f32, 0.0), app_st.viewer.animations.get(.title_overlay));
+    try testing.expectEqual(
+        state.TitleDisplay.hidden,
+        app_st.viewer.ui.overlays.title_display,
+    );
+    try testing.expectEqual(
+        @as(f32, 0.0),
+        app_st.viewer.animations.get(.title_overlay),
+    );
 
     // Toggle title on
-    try executeIntent(&app_st, .toggle_title);
-    try testing.expectEqual(state.TitleDisplay.pinned, app_st.viewer.ui.overlays.title_display);
+    try executeIntent(&app_st, .toggle_title, 1000);
+    try testing.expectEqual(
+        state.TitleDisplay.pinned,
+        app_st.viewer.ui.overlays.title_display,
+    );
     try testing.expect(app_st.viewer.animations.isActive(.title_overlay));
     app_st.viewer.animations.settleAll();
     try testing.expectApproxEqAbs(
@@ -983,8 +1032,11 @@ test "toggle_title and set_title intents" {
     );
 
     // Toggle title off
-    try executeIntent(&app_st, .toggle_title);
-    try testing.expectEqual(state.TitleDisplay.hidden, app_st.viewer.ui.overlays.title_display);
+    try executeIntent(&app_st, .toggle_title, 1000);
+    try testing.expectEqual(
+        state.TitleDisplay.hidden,
+        app_st.viewer.ui.overlays.title_display,
+    );
     try testing.expect(app_st.viewer.animations.isActive(.title_overlay));
     app_st.viewer.animations.settleAll();
     try testing.expectApproxEqAbs(
@@ -994,8 +1046,11 @@ test "toggle_title and set_title intents" {
     );
 
     // Explicit set_title
-    try executeIntent(&app_st, .{ .set_title = true });
-    try testing.expectEqual(state.TitleDisplay.pinned, app_st.viewer.ui.overlays.title_display);
+    try executeIntent(&app_st, .{ .set_title = true }, 1000);
+    try testing.expectEqual(
+        state.TitleDisplay.pinned,
+        app_st.viewer.ui.overlays.title_display,
+    );
     app_st.viewer.animations.settleAll();
     try testing.expectApproxEqAbs(
         @as(f32, 1.0),
@@ -1003,8 +1058,11 @@ test "toggle_title and set_title intents" {
         0.001,
     );
 
-    try executeIntent(&app_st, .{ .set_title = false });
-    try testing.expectEqual(state.TitleDisplay.hidden, app_st.viewer.ui.overlays.title_display);
+    try executeIntent(&app_st, .{ .set_title = false }, 1000);
+    try testing.expectEqual(
+        state.TitleDisplay.hidden,
+        app_st.viewer.ui.overlays.title_display,
+    );
     app_st.viewer.animations.settleAll();
     try testing.expectApproxEqAbs(
         @as(f32, 0.0),
@@ -1029,10 +1087,10 @@ test "fast scrubbing triggers title overlay auto-hide" {
     app_st.viewer.navigation.current_index = 0;
 
     // Simulate recent navigation within 200ms
-    const now = sdl.timer.getTicks();
+    const now: u64 = 5000;
     app_st.viewer.navigation.last_nav_time_ms = @max(1, now -| 50);
 
-    try executeIntent(&app_st, .next_image);
+    try executeIntent(&app_st, .next_image, now);
 
     // Should have triggered title auto-hide timeout and started animation
     switch (app_st.viewer.ui.overlays.title_display) {
@@ -1058,6 +1116,7 @@ test "sysExecuteIntents triggers snackbar on filter and scale changes" {
         .state = &app_st,
         .frame_allocator = allocator,
         .delta_time_ms = 16.0,
+        .now_ms = 2000,
     });
 
     try testing.expectEqualStrings(
@@ -1065,7 +1124,10 @@ test "sysExecuteIntents triggers snackbar on filter and scale changes" {
         app_st.viewer.ui.snackbar.getMessage(),
     );
     try testing.expect(app_st.viewer.animations.isActive(.snackbar));
-    try testing.expect(app_st.viewer.ui.snackbar.getTimeoutMs() > 0);
+    try testing.expectEqual(
+        @as(u64, 2000 + 1800),
+        app_st.viewer.ui.snackbar.getTimeoutMs(),
+    );
 
     // Push scale intent
     try app_st.pushIntent(.{ .set_scale = .crop });
@@ -1073,11 +1135,16 @@ test "sysExecuteIntents triggers snackbar on filter and scale changes" {
         .state = &app_st,
         .frame_allocator = allocator,
         .delta_time_ms = 16.0,
+        .now_ms = 4000,
     });
 
     try testing.expectEqualStrings(
         "Scale: Fill Window (Crop)",
         app_st.viewer.ui.snackbar.getMessage(),
+    );
+    try testing.expectEqual(
+        @as(u64, 4000 + 1800),
+        app_st.viewer.ui.snackbar.getTimeoutMs(),
     );
 
     // Toggle snackbar off disables notifications
@@ -1086,9 +1153,13 @@ test "sysExecuteIntents triggers snackbar on filter and scale changes" {
         .state = &app_st,
         .frame_allocator = allocator,
         .delta_time_ms = 16.0,
+        .now_ms = 6000,
     });
     try testing.expect(!app_st.viewer.ui.snackbar.enabled);
-    try testing.expectEqual(@as(usize, 0), app_st.viewer.ui.snackbar.getMessage().len);
+    try testing.expectEqual(
+        @as(usize, 0),
+        app_st.viewer.ui.snackbar.getMessage().len,
+    );
 }
 
 test "sysExecuteIntents slideshow dissolve transitions and interval threshold" {
@@ -1617,7 +1688,7 @@ test "togglePairStream - requires loaded status before requesting target" {
     entry0.metadata.raw_metadata = state.RawMetadata.init(6000, 4000);
 
     // 1. While inflight, toggle_pair_stream must be ignored.
-    try executeIntent(&app_st, .toggle_pair_stream);
+    try executeIntent(&app_st, .toggle_pair_stream, 1000);
     try std.testing.expectEqual(
         @as(?state.PairStreamTarget, .adaptive),
         if (entry0.inflight) |inf| inf.target else null,
@@ -1634,7 +1705,7 @@ test "togglePairStream - requires loaded status before requesting target" {
             .ingest = .{ .memory_size_bytes = 7_000_000 },
         },
     };
-    try executeIntent(&app_st, .toggle_pair_stream);
+    try executeIntent(&app_st, .toggle_pair_stream, 1000);
     try std.testing.expectEqual(
         @as(?state.PairStreamTarget, .standalone_jpeg),
         if (entry0.inflight) |inf| inf.target else null,
@@ -1668,7 +1739,7 @@ test "executeIntent - navigating onto failed slide skips crossfade" {
         .resident = .{ .asset = .failed },
     });
 
-    try executeIntent(&app_st, .next_image);
+    try executeIntent(&app_st, .next_image, 1000);
     try std.testing.expectEqual(
         @as(?usize, 1),
         app_st.viewer.navigation.current_index,
@@ -1707,7 +1778,7 @@ test "executeIntent - set_palette directory_navigator clears previous query" {
             .mode = .directory_navigator,
             .query = tmp_path,
         },
-    });
+    }, 1000);
 
     try std.testing.expectEqual(
         @as(usize, 0),
@@ -1756,7 +1827,7 @@ test "executeIntent - syncs rotation and zoom on nav, rotate, and set_zoom" {
     // 1. Navigating from slide 0 to slide 1 must update rotation_angle
     // BEFORE getBaseScale()
     app_st.viewer.pan_controller.smooth_tap_remaining = 15.0;
-    try executeIntent(&app_st, .next_image);
+    try executeIntent(&app_st, .next_image, 1000);
     try std.testing.expectEqual(
         @as(?usize, 1),
         app_st.viewer.navigation.current_index,
@@ -1777,7 +1848,7 @@ test "executeIntent - syncs rotation and zoom on nav, rotate, and set_zoom" {
 
     // 2. Rotating CW (90 -> 180) while in fit mode must resync zoom_factor
     // to unswapped 1024/4000
-    try executeIntent(&app_st, .rotate_cw);
+    try executeIntent(&app_st, .rotate_cw, 1000);
     try std.testing.expectEqual(
         @as(f32, 180.0),
         app_st.viewer.viewport.rotation_angle,
@@ -1789,7 +1860,7 @@ test "executeIntent - syncs rotation and zoom on nav, rotate, and set_zoom" {
     );
 
     // 3. Resetting rotation restores EXIF 90 deg and resyncs zoom_factor
-    try executeIntent(&app_st, .reset_rotation);
+    try executeIntent(&app_st, .reset_rotation, 1000);
     try std.testing.expectEqual(
         @as(f32, 90.0),
         app_st.viewer.viewport.rotation_angle,
@@ -1801,9 +1872,9 @@ test "executeIntent - syncs rotation and zoom on nav, rotate, and set_zoom" {
     );
 
     // 4. set_zoom scales pan_x and pan_y proportionally
-    try executeIntent(&app_st, .{ .set_zoom = 1.0 });
+    try executeIntent(&app_st, .{ .set_zoom = 1.0 }, 1000);
     app_st.viewer.viewport.setPan(100.0, -40.0);
-    try executeIntent(&app_st, .{ .set_zoom = 2.5 });
+    try executeIntent(&app_st, .{ .set_zoom = 2.5 }, 1000);
     try std.testing.expectApproxEqAbs(
         @as(f32, 250.0),
         app_st.viewer.viewport.pan_x,
@@ -1824,7 +1895,7 @@ test "executeIntent - precache_directory handles disabled cache and empty playli
 
     // When thumbnail cache is disabled (default in initHeadless), shows snackbar message
     app_st.viewer.ui.snackbar.enabled = true;
-    try executeIntent(&app_st, .precache_directory);
+    try executeIntent(&app_st, .precache_directory, 1000);
     try std.testing.expectEqualStrings(
         "Thumbnail cache is disabled",
         app_st.viewer.ui.snackbar.getMessage(),
@@ -1852,7 +1923,7 @@ test "executeIntent - server_mode hides on quit and exits on quit_server" {
 
     // .quit in server_mode hides the window, stops slideshow, and unloads
     // cache and directory playlist while preserving picks/rejects selections
-    try executeIntent(&app_st, .quit);
+    try executeIntent(&app_st, .quit, 1000);
     try std.testing.expect(app_st.viewer.running);
     try std.testing.expect(app_st.viewer.display.isHidden());
     try std.testing.expect(!app_st.viewer.isSlideshowActive());
@@ -1867,7 +1938,7 @@ test "executeIntent - server_mode hides on quit and exits on quit_server" {
     );
 
     // .quit_server unconditionally terminates the server
-    try executeIntent(&app_st, .quit_server);
+    try executeIntent(&app_st, .quit_server, 1000);
     try std.testing.expect(!app_st.viewer.running);
 }
 
@@ -1919,7 +1990,7 @@ test "togglePairStream - Cancels existing job epoch on stream switch" {
     try std.testing.expectEqual(@as(u32, 1), ticket.epoch);
     try std.testing.expect(app_st.cache.job_alloc_mask != 0);
 
-    togglePairStream(&app_st);
+    togglePairStream(&app_st, 1000);
 
     // Job ticket epoch must have advanced to signal cancellation
     try std.testing.expectEqual(
@@ -1935,4 +2006,5 @@ test "togglePairStream - Cancels existing job epoch on stream switch" {
         state.PairStreamTarget.standalone_jpeg,
         updated.target,
     );
+    try std.testing.expectEqual(@as(u64, 1000), updated.start_time_ms);
 }

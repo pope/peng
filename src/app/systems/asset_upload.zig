@@ -10,7 +10,7 @@ const FrameContext = context.FrameContext;
 pub fn sysProcessAssetUploads(ctx: FrameContext) void {
     const state = ctx.state;
     state.updateCurrentRotation();
-    state.prepareCacheTextures();
+    state.prepareCacheTextures(ctx.now_ms);
 }
 
 test "sysProcessAssetUploads - safe execution on headless state" {
@@ -19,7 +19,11 @@ test "sysProcessAssetUploads - safe execution on headless state" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
+    const ctx = FrameContext{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 1000,
+    };
     sysProcessAssetUploads(ctx);
 }
 
@@ -72,13 +76,13 @@ test "prepareCacheTextures guards thumbnail eviction during active thumb_crossfa
         120.0,
         .ease_out_quad,
     );
-    state.prepareCacheTextures();
+    state.prepareCacheTextures(1000);
     var entry = state.cache.get(state.cache.activeKey(id0)).?;
     try std.testing.expect(entry.resident.thumbnail == .loaded);
 
     // Case 2: thumb_crossfade settles -> prepareCacheTextures evicts thumbnail
     state.viewer.animations.settle(.thumb_crossfade);
-    state.prepareCacheTextures();
+    state.prepareCacheTextures(1000);
     entry = state.cache.get(state.cache.activeKey(id0)).?;
     try std.testing.expect(entry.resident.thumbnail == .unloaded);
 }

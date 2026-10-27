@@ -1,6 +1,5 @@
 const app_state = @import("../state.zig");
 const context = @import("context.zig");
-const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
 
@@ -24,10 +23,7 @@ pub fn sysUpdateAnimations(ctx: FrameContext) void {
         anim.tick(delta);
     }
 
-    const now = if (ctx.input) |inp|
-        (if (inp.ticks > 0) inp.ticks else @max(sdl.timer.getTicks(), 1))
-    else
-        @max(sdl.timer.getTicks(), 1);
+    const now = ctx.now_ms;
 
     // Check if transient title overlay auto-hide timeout has expired
     switch (state.viewer.ui.overlays.title_display) {
@@ -232,7 +228,7 @@ test "sysUpdateAnimations title_overlay auto-hide timeout and fade-out" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    const now = sdl.timer.getTicks();
+    const now: u64 = 1000;
 
     // Start open animation and set auto-hide timeout in the past
     state.viewer.animations.start(
@@ -250,6 +246,7 @@ test "sysUpdateAnimations title_overlay auto-hide timeout and fade-out" {
         .state = &state,
         .frame_allocator = allocator,
         .delta_time_ms = 16.0,
+        .now_ms = now,
     });
 
     try std.testing.expectEqual(
@@ -263,6 +260,7 @@ test "sysUpdateAnimations title_overlay auto-hide timeout and fade-out" {
         .state = &state,
         .frame_allocator = allocator,
         .delta_time_ms = state_pkg.DURATION_TITLE_OVERLAY_CLOSE_MS,
+        .now_ms = now + 100,
     });
     try std.testing.expectApproxEqAbs(
         @as(f32, 0.0),
@@ -278,7 +276,7 @@ test "sysUpdateAnimations snackbar auto-hide timeout and fade-out" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    const now = sdl.timer.getTicks();
+    const now: u64 = 1000;
 
     // Start snackbar animation with message and auto-hide timeout in the past
     state.viewer.ui.snackbar.show("Filter: Lanczos3", @max(now -| 10, 1));
@@ -294,9 +292,13 @@ test "sysUpdateAnimations snackbar auto-hide timeout and fade-out" {
         .state = &state,
         .frame_allocator = allocator,
         .delta_time_ms = 16.0,
+        .now_ms = now,
     });
 
-    try std.testing.expectEqual(@as(u64, 0), state.viewer.ui.snackbar.getTimeoutMs());
+    try std.testing.expectEqual(
+        @as(u64, 0),
+        state.viewer.ui.snackbar.getTimeoutMs(),
+    );
     try std.testing.expect(state.viewer.animations.isActive(.snackbar));
 
     // Tick through close duration
@@ -304,6 +306,7 @@ test "sysUpdateAnimations snackbar auto-hide timeout and fade-out" {
         .state = &state,
         .frame_allocator = allocator,
         .delta_time_ms = state_pkg.DURATION_SNACKBAR_CLOSE_MS,
+        .now_ms = now + 100,
     });
     try std.testing.expectApproxEqAbs(
         @as(f32, 0.0),
@@ -312,7 +315,44 @@ test "sysUpdateAnimations snackbar auto-hide timeout and fade-out" {
     );
     try std.testing.expect(!state.viewer.hasActiveAnimation());
     // Buffer cleared after settled
-    try std.testing.expectEqual(@as(usize, 0), state.viewer.ui.snackbar.getMessage().len);
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        state.viewer.ui.snackbar.getMessage().len,
+    );
+}
+
+test "sysUpdateAnimations title auto-hide evaluates ctx.now_ms" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    state.viewer.ui.overlays.title_display = .{
+        .transient = .{ .timeout_ms = 500 },
+    };
+
+    // now_ms < 500: stays transient
+    sysUpdateAnimations(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+        .now_ms = 499,
+    });
+    try std.testing.expect(
+        state.viewer.ui.overlays.title_display == .transient,
+    );
+
+    // now_ms >= 500: transitions to .hidden
+    sysUpdateAnimations(.{
+        .state = &state,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+        .now_ms = 500,
+    });
+    try std.testing.expectEqual(
+        state_pkg.TitleDisplay.hidden,
+        state.viewer.ui.overlays.title_display,
+    );
 }
 
 test "sysUpdateAnimations image_crossfade settling clears image_transition" {

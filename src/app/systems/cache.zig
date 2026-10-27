@@ -27,14 +27,17 @@ const FAST_SCROLL_THRESHOLD_MS: u64 = state_pkg.LOADING_GRACE_PERIOD_MS;
 /// - `state`: Pointer to global application state.
 /// - `id`: Stable media ID being decoded.
 /// - `entry_item`: Media entry being decoded.
-/// - `thumb_only`: If true, restricts decoding to low-resolution thumbnail for rapid scrolling.
+/// - `thumb_only`: If true, restricts decoding to low-resolution thumbnail
+///   for rapid scrolling.
 /// - `pair_target`: Stream target for stacked RAW+JPEG pairs.
+/// - `now_ms`: Timestamp in milliseconds used to stamp inflight decode.
 fn spawnCacheDecodeSlot(
     state: *AppState,
     id: MediaId,
     entry_item: MediaEntry,
     thumb_only: bool,
     pair_target: state_pkg.PairStreamTarget,
+    now_ms: u64,
 ) !void {
     const ticket = state.cache.allocJob() orelse return error.OutOfMemory;
     errdefer state.cache.cancelJob(ticket.job_id);
@@ -58,7 +61,7 @@ fn spawnCacheDecodeSlot(
             entry.inflight = .{
                 .stage = .decoding,
                 .has_thread = true,
-                .start_time_ms = sdl.timer.getTicks(),
+                .start_time_ms = now_ms,
                 .target = pair_target,
                 .job_id = ticket.job_id,
                 .job_epoch = ticket.epoch,
@@ -192,6 +195,7 @@ fn checkPairPromotion(
             media_item,
             false,
             .standalone_jpeg,
+            now,
         ) catch |err| {
             if (state.cache.get(key)) |entry| {
                 entry.inflight = null;
@@ -270,7 +274,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
 
     // Fast-scrolling check: only active if navigation has actually occurred
     // and no IPC `wait_load` barrier is actively waiting for full resolution.
-    const now = sdl.timer.getTicks();
+    const now = ctx.now_ms;
     const is_fast_scrolling =
         state.pending_wait_load_streams.items.len == 0 and
         state.viewer.navigation.last_nav_time_ms > 0 and
@@ -418,6 +422,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
             req.entry,
             thumb_only,
             inf.target,
+            now,
         ) catch |err| {
             std.log.err(
                 "Failed to spawn decode worker for media {}: {}",
@@ -630,14 +635,18 @@ test "sysUpdateCache - directional speculative preloading during fast scrolling"
     const id4 = state.viewer.navigation.getIdAt(4).?;
     state.viewer.navigation.direction = .forward;
     // Set last_nav_time_ms to non-zero recent timestamp for fast scrolling
-    state.viewer.navigation.last_nav_time_ms = @max(1, sdl.timer.getTicks());
+    state.viewer.navigation.last_nav_time_ms = 1000;
 
     // Pre-populate active slot 0 as decoding without thumbnail yet
     _ = try state.cache.appendSlot(allocator, id0, .{
         .inflight = .{ .stage = .decoding, .has_thread = true },
     });
 
-    const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
+    const ctx = FrameContext{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 1000,
+    };
 
     // Case 1: Active slot 0 is decoding without thumbnail yet.
     // In this state, is_active_thumb_ready is false, so NO neighbor should be preloaded.
@@ -660,7 +669,7 @@ test "sysUpdateCache - directional speculative preloading during fast scrolling"
 
     // Case 3: Reverse direction to .backward.
     state.viewer.navigation.direction = .backward;
-    state.viewer.navigation.last_nav_time_ms = @max(1, sdl.timer.getTicks());
+    state.viewer.navigation.last_nav_time_ms = 1000;
 
     // Run sysUpdateCache: speculative_idx is now 4 (wrap around from 0).
     // Slot 4 should be populated for speculative preloading!
@@ -717,9 +726,13 @@ test "sysUpdateCache - active image without thumbnail spawns full decode during 
     state.viewer.navigation.current_index = 0;
     const id0 = state.viewer.navigation.getIdAt(0).?;
     // Fast scrolling is active
-    state.viewer.navigation.last_nav_time_ms = @max(1, sdl.timer.getTicks());
+    state.viewer.navigation.last_nav_time_ms = 1000;
 
-    const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
+    const ctx = FrameContext{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 1000,
+    };
     try sysUpdateCache(ctx);
 
     const entry = state.cache.get(state.cache.activeKey(id0));
@@ -1094,4 +1107,88 @@ test "checkPairPromotion - preserves resident GPU during promotion" {
         state_pkg.PairStreamTarget.standalone_jpeg,
         entry.inflight.?.target,
     );
+}
+
+test "sysUpdateCache fast-scroll throttling deterministic with ctx.now_ms" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    const dir_alloc = state.viewer.navigation.directory_arena.allocator();
+    for (0..3) |_| {
+        const dup = try dir_alloc.dupe(
+            u8,
+            "testfiles/golden-screenshots/init.png",
+        );
+        _ = try state.viewer.navigation.appendEntry(
+            allocator,
+            .{ .filesystem = .{ .path = dup } },
+        );
+    }
+    state.viewer.navigation.current_index = 0;
+    const id0 = state.viewer.navigation.getIdAt(0).?;
+    const id1 = state.viewer.navigation.getIdAt(1).?;
+    const id2 = state.viewer.navigation.getIdAt(2).?;
+    state.viewer.navigation.direction = .forward;
+
+    _ = try state.cache.appendSlot(allocator, id0, .{
+        .resident = .{
+            .asset = .failed,
+            .thumbnail = .not_available,
+        },
+    });
+
+    // 1. diff 20ms < 35ms threshold: fast-scrolling active, only speculative
+    state.viewer.navigation.last_nav_time_ms = 980;
+    const ctx_fast = FrameContext{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 1000,
+    };
+    try sysUpdateCache(ctx_fast);
+    try std.testing.expect(state.cache.get(state.cache.activeKey(id1)) != null);
+    try std.testing.expect(state.cache.get(state.cache.activeKey(id2)) == null);
+
+    // 2. diff 120ms >= 35ms: fast-scrolling inactive, settles neighbor slot 2
+    const ctx_settled = FrameContext{
+        .state = &state,
+        .frame_allocator = allocator,
+        .now_ms = 1100,
+    };
+    try sysUpdateCache(ctx_settled);
+    try std.testing.expect(state.cache.get(state.cache.activeKey(id2)) != null);
+}
+
+test "spawnCacheDecodeSlot stamps now_ms on inflight entry" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    const dir_alloc = state.viewer.navigation.directory_arena.allocator();
+    const dup = try dir_alloc.dupe(
+        u8,
+        "testfiles/golden-screenshots/init.png",
+    );
+    _ = try state.viewer.navigation.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = dup } },
+    );
+    state.viewer.navigation.current_index = 0;
+    const id0 = state.viewer.navigation.getIdAt(0).?;
+    const key0 = try state.cache.appendSlot(allocator, id0, .{});
+
+    try spawnCacheDecodeSlot(
+        &state,
+        id0,
+        .{ .filesystem = .{ .path = dup } },
+        false,
+        .adaptive,
+        4200,
+    );
+
+    const entry = state.cache.get(key0).?;
+    try std.testing.expect(entry.inflight != null);
+    try std.testing.expectEqual(@as(u64, 4200), entry.inflight.?.start_time_ms);
 }

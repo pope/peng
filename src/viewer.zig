@@ -28,6 +28,7 @@ fn runUpdatePhase(
         .frame_allocator = frame_allocator,
         .input = input,
         .delta_time_ms = input.delta_time_ms,
+        .now_ms = input.now_ms,
     };
 
     // Data-Oriented Animation System (ticks active SoA animation channels from previous frame)
@@ -292,7 +293,7 @@ pub fn updateFrame(
                 },
             }
         },
-        .current_time_ms = sdl.timer.getTicks(),
+        .current_time_ms = input.now_ms,
         .stats = app_state.viewer.stats,
         .render_metrics = app_state.viewer.ui.metrics.toSnapshot(),
     };

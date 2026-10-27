@@ -734,8 +734,9 @@ pub const FrameInput = struct {
     zoom_held: ZoomFlags = .{},
     text_input: ?[]const u8,
     dropped_path: ?[]const u8,
-    ticks: u64,
     delta_time_ms: f32,
+    /// Current frame timestamp in milliseconds.
+    now_ms: u64 = 0,
     is_pointer_in_debug_panel: bool = false,
 
     /// Returns the sanitized display DPI scale factor for this frame.
@@ -1954,7 +1955,6 @@ test "FrameInput.pixMouseX and pixMouseY scale mouse position by display scale f
         .key_modifiers = .{},
         .text_input = null,
         .dropped_path = null,
-        .ticks = 0,
         .delta_time_ms = 16.0,
     };
     try std.testing.expectEqual(@as(f32, 300.0), input.pixMouseX());

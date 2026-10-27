@@ -785,7 +785,6 @@ test "sysProcessPaletteInput retains palette when clicking inside debug panel" {
         .key_modifiers = .{},
         .text_input = null,
         .dropped_path = null,
-        .ticks = 0,
         .delta_time_ms = 16.0,
     };
     input_inside.is_pointer_in_debug_panel = true;
@@ -1016,7 +1015,6 @@ test "sysProcessPaletteInput preserves text_input after backspace" {
             .key_modifiers = .{},
             .text_input = "r",
             .dropped_path = null,
-            .ticks = 0,
             .delta_time_ms = 16.0,
         },
         .delta_time_ms = 16.0,
@@ -1049,7 +1047,6 @@ test "sysProcessPaletteInput preserves text_input after backspace" {
             .key_modifiers = .{ .alt = true },
             .text_input = "v",
             .dropped_path = null,
-            .ticks = 16,
             .delta_time_ms = 16.0,
         },
         .delta_time_ms = 16.0,

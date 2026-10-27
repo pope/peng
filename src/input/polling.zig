@@ -447,8 +447,8 @@ pub fn pollFrameInput(
         .zoom_held = zoom_held,
         .text_input = frame_input_state.text_input_opt,
         .dropped_path = frame_input_state.dropped_path_opt,
-        .ticks = current_ticks,
         .delta_time_ms = delta_time_ms,
+        .now_ms = current_ticks,
     };
 }
 
