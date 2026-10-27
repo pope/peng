@@ -1,7 +1,6 @@
 const clay = @import("zclay");
 const core_fs = @import("core/fs.zig");
 const events = @import("core/events.zig");
-const exif = @import("core/exif.zig");
 const image = @import("core/image.zig");
 const input = @import("input");
 const intents = @import("intents");
@@ -370,11 +369,6 @@ pub const AppState = struct {
             null;
 
         return input.selectEventWaitStrategy(false, is_busy, wait_timeout_ms);
-    }
-
-    /// Reads EXIF orientation from a JPEG file header on disk, returning `null` if unparseable.
-    pub fn readJpegExifOrientation(self: *const AppState, path: []const u8) ?state_pkg.Orientation {
-        return exif.readJpegExifOrientation(self.io, path);
     }
 
     /// Releases all engine resources, cancels background worker tasks, and

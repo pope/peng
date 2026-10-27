@@ -1,4 +1,5 @@
 const intents = @import("intents");
+const probe = @import("probe");
 const sdl = @import("sdl");
 const std = @import("std");
 const view_transform = @import("view_transform.zig");
@@ -7,6 +8,7 @@ const EditParam = intents.EditParam;
 const getSpec = intents.getSpec;
 const Key = intents.Key;
 const KeyModifiers = intents.KeyModifiers;
+const Orientation = probe.Orientation;
 
 pub const PositiveDimsU32 = intents.PositiveDimsU32;
 pub const ZoomPreset = intents.ZoomPreset;
@@ -1310,37 +1312,6 @@ pub const MediaId = enum(u32) {
     }
 };
 
-/// 4-state orthogonal image orientation enum (0°, 90°, 180°, 270°).
-///
-/// Collapses TIFF EXIF tags 1..8 into the 4 orthogonal rotation states supported by the viewer.
-/// Provides branchless scalar degree conversion and dimension swap checks.
-pub const Orientation = enum(u2) {
-    normal = 0,
-    rotate_90 = 1,
-    rotate_180 = 2,
-    rotate_270 = 3,
-
-    /// Maps TIFF 6.0 / EXIF 2.32 orientation tag values (1..8) to the 4 orthogonal rotation states.
-    pub fn fromTiff(val: u16) Orientation {
-        return switch (val) {
-            6, 7 => .rotate_90,
-            3, 4 => .rotate_180,
-            8, 5 => .rotate_270,
-            else => .normal,
-        };
-    }
-
-    /// Direct branchless arithmetic conversion to floating-point degrees: index * 90.0.
-    pub inline fn toDegrees(self: Orientation) f32 {
-        return @as(f32, @floatFromInt(@backingInt(self))) * 90.0;
-    }
-
-    /// Branchless bitwise check: odd indices (1 and 3) swap width and height.
-    pub inline fn isDimensionSwapped(self: Orientation) bool {
-        return (@backingInt(self) & 1) != 0;
-    }
-};
-
 /// Orthogonal cache slot combining Tier-0 metadata, resident visual assets,
 /// and active background decode tracking.
 pub const CacheEntry = struct {
@@ -1974,36 +1945,6 @@ test "ViewportParams.getShaderScaleModeInt maps filters including lanczos3" {
 
     params.scale_filter = .tiny_cnn;
     try std.testing.expectEqual(@as(i32, 6), params.getShaderScaleModeInt());
-}
-
-test "Orientation.fromTiff and branchless math" {
-    // Tag 1 (normal) and 2 (flip horizontal) -> normal (0°)
-    try std.testing.expectEqual(Orientation.normal, Orientation.fromTiff(1));
-    try std.testing.expectEqual(Orientation.normal, Orientation.fromTiff(2));
-    try std.testing.expectEqual(@as(f32, 0.0), Orientation.normal.toDegrees());
-    try std.testing.expect(!Orientation.normal.isDimensionSwapped());
-
-    // Tag 6 (rotate 90 CW) and 7 (transverse) -> rotate_90 (90°)
-    try std.testing.expectEqual(Orientation.rotate_90, Orientation.fromTiff(6));
-    try std.testing.expectEqual(Orientation.rotate_90, Orientation.fromTiff(7));
-    try std.testing.expectEqual(@as(f32, 90.0), Orientation.rotate_90.toDegrees());
-    try std.testing.expect(Orientation.rotate_90.isDimensionSwapped());
-
-    // Tag 3 (rotate 180) and 4 (flip vertical) -> rotate_180 (180°)
-    try std.testing.expectEqual(Orientation.rotate_180, Orientation.fromTiff(3));
-    try std.testing.expectEqual(Orientation.rotate_180, Orientation.fromTiff(4));
-    try std.testing.expectEqual(@as(f32, 180.0), Orientation.rotate_180.toDegrees());
-    try std.testing.expect(!Orientation.rotate_180.isDimensionSwapped());
-
-    // Tag 8 (rotate 270 CW) and 5 (transpose) -> rotate_270 (270°)
-    try std.testing.expectEqual(Orientation.rotate_270, Orientation.fromTiff(8));
-    try std.testing.expectEqual(Orientation.rotate_270, Orientation.fromTiff(5));
-    try std.testing.expectEqual(@as(f32, 270.0), Orientation.rotate_270.toDegrees());
-    try std.testing.expect(Orientation.rotate_270.isDimensionSwapped());
-
-    // Out of range / unknown tag values default to normal (0°)
-    try std.testing.expectEqual(Orientation.normal, Orientation.fromTiff(0));
-    try std.testing.expectEqual(Orientation.normal, Orientation.fromTiff(99));
 }
 
 test "RawMetadata tagged union invariants and constructor" {

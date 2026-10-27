@@ -2,6 +2,7 @@ const app_state = @import("../state.zig");
 const clay = @import("zclay");
 const context = @import("context.zig");
 const intents = @import("intents");
+const probe = @import("probe");
 const sdl = @import("sdl");
 const state = @import("state");
 const std = @import("std");
@@ -353,7 +354,10 @@ fn executeIntent(
                 const exif_rot = if (self.getCurrentEntry()) |e|
                     e.metadata.orientation
                 else
-                    (self.readJpegExifOrientation(path) orelse .normal);
+                    (probe.readJpegExifOrientation(
+                        self.io,
+                        path,
+                    ) orelse .normal);
                 vp.rotation_angle = exif_rot.toDegrees();
                 if (vp.mode != .manual) {
                     vp.zoom_factor = state.ZoomFactor.init(self.getBaseScale());

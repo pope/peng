@@ -5,6 +5,7 @@
 
 const context = @import("context.zig");
 const events = @import("../core/events.zig");
+const probe = @import("probe");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
@@ -19,7 +20,7 @@ pub const ThumbWriteJob = struct {
     mime_type: []const u8,
     file_size: u64,
     mtime_sec: i64,
-    orientation: state_pkg.Orientation,
+    orientation: probe.Orientation,
     source_dims: ?state_pkg.PhysicalDims = null,
 
     /// Releases the owned SDL surface and source path string.

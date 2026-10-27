@@ -1,6 +1,7 @@
 const builtin = @import("builtin");
 const image = @import("image.zig");
 const ipc = @import("ipc");
+const probe = @import("probe");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
@@ -8,7 +9,7 @@ const std = @import("std");
 const ImageCacheKey = image.ImageCacheKey;
 const MediaEntry = state_pkg.MediaEntry;
 const MediaId = state_pkg.MediaId;
-const Orientation = state_pkg.Orientation;
+const Orientation = probe.Orientation;
 const RawMetadata = state_pkg.RawMetadata;
 const ThumbnailSource = state_pkg.ThumbnailSource;
 

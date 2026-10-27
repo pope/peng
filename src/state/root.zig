@@ -83,7 +83,6 @@ pub const MipmapTelemetry = types.MipmapTelemetry;
 pub const MIN_SLIDESHOW_DISSOLVE_INTERVAL_S = animation_state.MIN_SLIDESHOW_DISSOLVE_INTERVAL_S;
 pub const NavDirection = navigation.NavDirection;
 pub const NavigationState = navigation.NavigationState;
-pub const Orientation = types.Orientation;
 pub const OverlayState = types.OverlayState;
 pub const PairStreamTarget = types.PairStreamTarget;
 pub const palette_action_items = types.palette_action_items;

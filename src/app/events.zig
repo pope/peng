@@ -2,6 +2,7 @@ const app_state = @import("state.zig");
 const events = @import("core/events.zig");
 const image = @import("core/image.zig");
 const ipc = @import("ipc");
+const probe = @import("probe");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
@@ -9,7 +10,7 @@ const std = @import("std");
 const AppState = app_state.AppState;
 const MediaEntry = state_pkg.MediaEntry;
 const MediaId = state_pkg.types.MediaId;
-const Orientation = state_pkg.Orientation;
+const Orientation = probe.Orientation;
 
 /// Drains all background thread events (e.g. image decodes, thumbnail extractions,
 /// directory scans, folder count updates, and IPC commands) from `workers.event_queue`.

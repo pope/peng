@@ -10,14 +10,14 @@
 //!   (`KIO::PreviewJob`), GNOME/GLib, and Yazi.
 
 const builtin = @import("builtin");
-const exif = @import("exif.zig");
 const core_fs = @import("fs.zig");
 const image = @import("image.zig");
+const probe = @import("probe");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
 
-const Orientation = state_pkg.Orientation;
+const Orientation = probe.Orientation;
 
 const png_signature = "\x89PNG\r\n\x1a\n";
 const ihdr_end_offset: usize = 33; // 8-byte signature + 25-byte IHDR chunk
@@ -711,7 +711,7 @@ fn decodeEmbeddedRangeSurface(
     cancel: PrecacheCancel,
     header_slice: []const u8,
     file_size: u64,
-    loc: exif.ThumbnailLocation,
+    loc: probe.ThumbnailLocation,
 ) error{Canceled}!?sdl.Surface {
     if (loc.length == 0 or loc.file_offset +| loc.length > file_size) {
         return null;
@@ -797,7 +797,7 @@ pub fn precacheFileThumbnail(
     if (header_n == 0) return .failed;
     const header_slice = header_buf[0..header_n];
 
-    const mime_type = image.detectMimeType(header_slice, path);
+    const mime_type = probe.detectMimeType(header_slice, path);
     const is_fuji = std.mem.eql(u8, mime_type, "image/x-fuji-raf") or
         (header_slice.len >= 8 and
             std.mem.startsWith(u8, header_slice, "FUJIFILM"));
@@ -806,18 +806,18 @@ pub fn precacheFileThumbnail(
         std.mem.startsWith(u8, mime_type, "image/x-");
 
     if (is_raw) {
-        var prev_loc_opt: ?exif.ThumbnailLocation = null;
-        var med_loc_opt: ?exif.ThumbnailLocation = null;
-        var thumb_loc_opt: ?exif.ThumbnailLocation = null;
-        var raw_sensor_dims: ?exif.JpegDimensions = null;
+        var prev_loc_opt: ?probe.ThumbnailLocation = null;
+        var med_loc_opt: ?probe.ThumbnailLocation = null;
+        var thumb_loc_opt: ?probe.ThumbnailLocation = null;
+        var raw_sensor_dims: ?probe.JpegDimensions = null;
         var orientation: Orientation = .normal;
 
         if (is_fuji) {
-            prev_loc_opt = exif.extractFujiRafPreviewLocation(header_slice);
-            if (exif.extractFujiRafMetadataLocation(header_slice)) |meta_loc| {
+            prev_loc_opt = probe.extractFujiRafPreviewLocation(header_slice);
+            if (probe.extractFujiRafMetadataLocation(header_slice)) |meta_loc| {
                 if (meta_loc.file_offset +| meta_loc.length <= header_n) {
                     const end = meta_loc.file_offset + meta_loc.length;
-                    raw_sensor_dims = exif.parseFujiRafDimensions(
+                    raw_sensor_dims = probe.parseFujiRafDimensions(
                         header_slice[@intCast(meta_loc.file_offset)..@intCast(end)],
                     );
                 } else if (meta_loc.length > 0 and
@@ -838,7 +838,7 @@ pub fn precacheFileThumbnail(
                         break :blk 0;
                     };
                     if (mn >= meta_loc.length) {
-                        raw_sensor_dims = exif.parseFujiRafDimensions(
+                        raw_sensor_dims = probe.parseFujiRafDimensions(
                             m_buf[0..meta_loc.length],
                         );
                     }
@@ -847,10 +847,10 @@ pub fn precacheFileThumbnail(
             if (prev_loc_opt) |prev_loc| {
                 if (prev_loc.file_offset +| 4096 <= header_n) {
                     const off: usize = @intCast(prev_loc.file_offset);
-                    orientation = exif.parseExifOrientation(
+                    orientation = probe.parseExifOrientation(
                         header_slice[off..header_n],
                     ) orelse .normal;
-                    if (exif.extractJpegThumbnailLocation(
+                    if (probe.extractJpegThumbnailLocation(
                         header_slice[off..header_n],
                     )) |j_thumb| {
                         thumb_loc_opt = .{
@@ -874,10 +874,10 @@ pub fn precacheFileThumbnail(
                         break :blk 0;
                     };
                     if (pn > 0) {
-                        orientation = exif.parseExifOrientation(
+                        orientation = probe.parseExifOrientation(
                             p_hdr[0..pn],
                         ) orelse .normal;
-                        if (exif.extractJpegThumbnailLocation(
+                        if (probe.extractJpegThumbnailLocation(
                             p_hdr[0..pn],
                         )) |j_thumb| {
                             thumb_loc_opt = .{
@@ -891,24 +891,26 @@ pub fn precacheFileThumbnail(
             }
         } else {
             var tail_buf: [16 * 1024]u8 = undefined;
-            const tiff_source = exif.readTiffSource(
+            const tiff_source = probe.readTiffSource(
                 io,
                 &file,
                 file_size,
                 header_slice,
                 &tail_buf,
             );
-            const raw_cands = exif.extractTiffRawPreviewsFromSource(tiff_source);
+            const raw_cands =
+                probe.extractTiffRawPreviewsFromSource(tiff_source);
             prev_loc_opt = raw_cands.preview;
             med_loc_opt = raw_cands.medium;
             thumb_loc_opt = raw_cands.thumbnail;
-            raw_sensor_dims = exif.parseExifDimensionsFromSource(tiff_source);
+            raw_sensor_dims = probe.parseExifDimensionsFromSource(tiff_source);
             if (raw_sensor_dims == null) {
-                if (image.parseImageDimensions(header_slice, mime_type)) |d| {
+                if (probe.parseImageDimensions(header_slice, mime_type)) |d| {
                     raw_sensor_dims = .{ .w = d.w, .h = d.h };
                 }
             }
-            orientation = exif.parseExifOrientationFromSource(tiff_source) orelse
+            orientation =
+                probe.parseExifOrientationFromSource(tiff_source) orelse
                 .normal;
         }
 
@@ -918,7 +920,7 @@ pub fn precacheFileThumbnail(
             return .skipped;
         }
 
-        const candidates = [_]?exif.ThumbnailLocation{
+        const candidates = [_]?probe.ThumbnailLocation{
             med_loc_opt,
             prev_loc_opt,
             thumb_loc_opt,
@@ -971,11 +973,11 @@ pub fn precacheFileThumbnail(
         return .written;
     }
 
-    const orientation = exif.parseExifOrientation(header_slice) orelse .normal;
-    const full_dims = image.parseImageDimensions(header_slice, mime_type);
+    const orientation = probe.parseExifOrientation(header_slice) orelse .normal;
+    const full_dims = probe.parseImageDimensions(header_slice, mime_type);
     const had_embedded_thumb: bool = blk: {
         if (!std.mem.eql(u8, mime_type, "image/jpeg")) break :blk false;
-        const loc = exif.extractJpegThumbnailLocation(header_slice) orelse
+        const loc = probe.extractJpegThumbnailLocation(header_slice) orelse
             break :blk false;
         const max_thumb_size_bytes = 512 * 1024;
         break :blk loc.length > 0 and

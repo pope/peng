@@ -1,5 +1,5 @@
 const core_fs = @import("fs.zig");
-const exif = @import("exif.zig");
+const probe = @import("probe");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
@@ -9,14 +9,14 @@ const CacheEntry = state_pkg.CacheEntry;
 const CacheMetadata = state_pkg.CacheMetadata;
 const CacheResident = state_pkg.CacheResident;
 const CpuSurfaceComponent = state_pkg.CpuSurfaceComponent;
+const detectMimeType = probe.detectMimeType;
 const GpuTextureComponent = state_pkg.GpuTextureComponent;
+const ImageDimensions = probe.ImageDimensions;
 const InFlightDecode = state_pkg.InFlightDecode;
-const JpegDimensions = exif.JpegDimensions;
-pub const MediaEntry = state_pkg.MediaEntry;
+const MediaEntry = state_pkg.MediaEntry;
 const MediaId = state_pkg.MediaId;
-pub const Orientation = state_pkg.Orientation;
-const parseExifDimensions = exif.parseExifDimensions;
-const parseExifOrientation = exif.parseExifOrientation;
+const Orientation = probe.Orientation;
+const parseImageDimensions = probe.parseImageDimensions;
 const RawMetadata = state_pkg.RawMetadata;
 const ResidentAsset = state_pkg.ResidentAsset;
 const ZipSeekOffsets = state_pkg.types.ZipSeekOffsets;
@@ -440,204 +440,6 @@ pub const ImageCache = struct {
     }
 };
 
-/// Identifies image MIME container type using magic bytes from the header buffer,
-/// falling back to file extension matching if magic bytes are ambiguous or header is too short.
-pub fn detectMimeType(header: []const u8, path: []const u8) []const u8 {
-    const png_magic = [_]u8{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A };
-    if (header.len >= 8 and std.mem.startsWith(u8, header, &png_magic)) {
-        return "image/png";
-    }
-    if (header.len >= 3 and std.mem.startsWith(u8, header, &[_]u8{ 0xFF, 0xD8, 0xFF })) {
-        return "image/jpeg";
-    }
-    if (header.len >= 6 and
-        (std.mem.startsWith(u8, header, "GIF87a") or
-            std.mem.startsWith(u8, header, "GIF89a")))
-    {
-        return "image/gif";
-    }
-    if (header.len >= 2 and std.mem.startsWith(u8, header, "BM")) {
-        return "image/bmp";
-    }
-    if (header.len >= 12 and
-        std.mem.startsWith(u8, header, "RIFF") and
-        std.mem.eql(u8, header[8..12], "WEBP"))
-    {
-        return "image/webp";
-    }
-    if (header.len >= 8 and std.mem.startsWith(u8, header, "FUJIFILM")) {
-        return "image/x-fuji-raf";
-    }
-    const is_tiff_le = header[0] == 0x49 and header[1] == 0x49 and
-        header[2] == 0x2A and header[3] == 0x00;
-    const is_tiff_be = header[0] == 0x4D and header[1] == 0x4D and
-        header[2] == 0x00 and header[3] == 0x2A;
-    if (header.len >= 4 and (is_tiff_le or is_tiff_be)) {
-        const ext = std.Io.Dir.path.extension(path);
-        if (std.ascii.eqlIgnoreCase(ext, ".arw")) return "image/x-sony-arw";
-        if (std.ascii.eqlIgnoreCase(ext, ".cr2")) return "image/x-canon-cr2";
-        if (std.ascii.eqlIgnoreCase(ext, ".nef")) return "image/x-nikon-nef";
-        if (std.ascii.eqlIgnoreCase(ext, ".dng")) return "image/x-adobe-dng";
-        if (std.ascii.eqlIgnoreCase(ext, ".orf")) return "image/x-olympus-orf";
-        if (std.ascii.eqlIgnoreCase(ext, ".rw2")) return "image/x-panasonic-rw2";
-        if (std.ascii.eqlIgnoreCase(ext, ".pef")) return "image/x-pentax-pef";
-        return "image/tiff";
-    }
-
-    const ext = std.Io.Dir.path.extension(path);
-    if (std.ascii.eqlIgnoreCase(ext, ".png")) return "image/png";
-    if (std.ascii.eqlIgnoreCase(ext, ".jpg") or
-        std.ascii.eqlIgnoreCase(ext, ".jpeg"))
-    {
-        return "image/jpeg";
-    }
-    if (std.ascii.eqlIgnoreCase(ext, ".gif")) return "image/gif";
-    if (std.ascii.eqlIgnoreCase(ext, ".bmp")) return "image/bmp";
-    if (std.ascii.eqlIgnoreCase(ext, ".webp")) return "image/webp";
-    if (std.ascii.eqlIgnoreCase(ext, ".tga")) return "image/x-tga";
-    if (std.ascii.eqlIgnoreCase(ext, ".raf")) return "image/x-fuji-raf";
-    if (std.ascii.eqlIgnoreCase(ext, ".arw")) return "image/x-sony-arw";
-    if (std.ascii.eqlIgnoreCase(ext, ".cr2")) return "image/x-canon-cr2";
-    if (std.ascii.eqlIgnoreCase(ext, ".nef")) return "image/x-nikon-nef";
-    if (std.ascii.eqlIgnoreCase(ext, ".dng")) return "image/x-adobe-dng";
-    if (std.ascii.eqlIgnoreCase(ext, ".orf")) return "image/x-olympus-orf";
-    if (std.ascii.eqlIgnoreCase(ext, ".rw2")) return "image/x-panasonic-rw2";
-    if (std.ascii.eqlIgnoreCase(ext, ".pef")) return "image/x-pentax-pef";
-
-    return "unknown";
-}
-
-/// Image pixel dimensions (width and height) in pixels.
-pub const ImageDimensions = struct {
-    w: f32,
-    h: f32,
-};
-
-/// Parses full image width and height directly from image container headers
-/// (JPEG, PNG, GIF, WebP, BMP, TIFF, RAW) in < 0.05ms without software decompression.
-///
-/// Returns null if the header buffer is insufficient or contains an unsupported format variant.
-pub fn parseImageDimensions(header: []const u8, mime_type: []const u8) ?ImageDimensions {
-    const is_fuji_mime = std.mem.eql(u8, mime_type, "image/x-fuji-raf");
-    const is_fuji_magic = header.len >= 8 and std.mem.startsWith(u8, header, "FUJIFILM");
-    if (is_fuji_mime or is_fuji_magic) {
-        if (exif.extractFujiRafMetadataLocation(header)) |meta_loc| {
-            if (meta_loc.file_offset +| meta_loc.length <= header.len) {
-                const off: usize = @intCast(meta_loc.file_offset);
-                const len: usize = @intCast(meta_loc.length);
-                if (exif.parseFujiRafDimensions(header[off .. off + len])) |d| {
-                    return .{ .w = d.w, .h = d.h };
-                }
-            }
-        }
-        if (exif.extractFujiRafPreviewLocation(header)) |prev_loc| {
-            if (prev_loc.file_offset +| 32 <= header.len) {
-                const off: usize = @intCast(prev_loc.file_offset);
-                if (exif.readJpegDimensions(header[off..])) |d| {
-                    return .{ .w = d.w, .h = d.h };
-                }
-            }
-        }
-    } else if (std.mem.startsWith(u8, mime_type, "image/x-") or
-        std.mem.eql(u8, mime_type, "image/tiff") or
-        (header.len >= 4 and ((header[0] == 0x49 and header[1] == 0x49 and
-            header[2] == 0x2A and header[3] == 0x00) or
-            (header[0] == 0x4D and header[1] == 0x4D and
-                header[2] == 0x00 and header[3] == 0x2A))))
-    {
-        if (exif.parseExifDimensions(header)) |d| return .{ .w = d.w, .h = d.h };
-    } else if (std.mem.eql(u8, mime_type, "image/jpeg") or
-        (header.len >= 3 and
-            std.mem.startsWith(u8, header, &[_]u8{ 0xFF, 0xD8, 0xFF })))
-    {
-        if (exif.readJpegDimensions(header)) |d| return .{ .w = d.w, .h = d.h };
-    } else if (std.mem.eql(u8, mime_type, "image/png") or
-        (header.len >= 8 and
-            std.mem.startsWith(u8, header, &[_]u8{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A })))
-    {
-        const is_png = header.len >= 24 and
-            std.mem.startsWith(
-                u8,
-                header,
-                &[_]u8{ 0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A },
-            ) and
-            std.mem.eql(u8, header[12..16], "IHDR");
-        if (is_png) {
-            const w = std.mem.readInt(u32, header[16..20], .big);
-            const h = std.mem.readInt(u32, header[20..24], .big);
-            if (w > 0 and h > 0) return .{ .w = @floatFromInt(w), .h = @floatFromInt(h) };
-        }
-    } else if (std.mem.eql(u8, mime_type, "image/gif") or
-        (header.len >= 6 and
-            (std.mem.startsWith(u8, header, "GIF87a") or
-                std.mem.startsWith(u8, header, "GIF89a"))))
-    {
-        const is_gif = header.len >= 10 and
-            (std.mem.startsWith(u8, header, "GIF87a") or
-                std.mem.startsWith(u8, header, "GIF89a"));
-        if (is_gif) {
-            const w = std.mem.readInt(u16, header[6..8], .little);
-            const h = std.mem.readInt(u16, header[8..10], .little);
-            if (w > 0 and h > 0) return .{ .w = @floatFromInt(w), .h = @floatFromInt(h) };
-        }
-    } else if (std.mem.eql(u8, mime_type, "image/webp") or
-        (header.len >= 12 and
-            std.mem.startsWith(u8, header, "RIFF") and
-            std.mem.eql(u8, header[8..12], "WEBP")))
-    {
-        if (header.len >= 25 and
-            std.mem.startsWith(u8, header, "RIFF") and
-            std.mem.eql(u8, header[8..12], "WEBP"))
-        {
-            if (std.mem.eql(u8, header[12..16], "VP8X") and header.len >= 30) {
-                const w = 1 + (@as(u32, header[24]) |
-                    (@as(u32, header[25]) << 8) |
-                    (@as(u32, header[26]) << 16));
-                const h = 1 + (@as(u32, header[27]) |
-                    (@as(u32, header[28]) << 8) |
-                    (@as(u32, header[29]) << 16));
-                return .{ .w = @floatFromInt(w), .h = @floatFromInt(h) };
-            } else if (std.mem.eql(u8, header[12..16], "VP8L") and
-                header.len >= 25 and
-                header[20] == 0x2F)
-            {
-                const b0: u32 = header[21];
-                const b1: u32 = header[22];
-                const b2: u32 = header[23];
-                const b3: u32 = header[24];
-                const bits = b0 | (b1 << 8) | (b2 << 16) | (b3 << 24);
-                const w = 1 + (bits & 0x3FFF);
-                const h = 1 + ((bits >> 14) & 0x3FFF);
-                return .{ .w = @floatFromInt(w), .h = @floatFromInt(h) };
-            } else if (std.mem.eql(u8, header[12..16], "VP8 ") and header.len >= 30) {
-                if (header[23] == 0x9D and header[24] == 0x01 and header[25] == 0x2A) {
-                    const w = std.mem.readInt(u16, header[26..28], .little) & 0x3FFF;
-                    const h = std.mem.readInt(u16, header[28..30], .little) & 0x3FFF;
-                    if (w > 0 and h > 0) return .{ .w = @floatFromInt(w), .h = @floatFromInt(h) };
-                }
-            }
-        }
-    } else if (std.mem.eql(u8, mime_type, "image/bmp") or
-        (header.len >= 2 and std.mem.startsWith(u8, header, "BM")))
-    {
-        if (header.len >= 26 and std.mem.startsWith(u8, header, "BM")) {
-            const dib_size = std.mem.readInt(u32, header[14..18], .little);
-            if (dib_size >= 40 and header.len >= 26) {
-                const w = std.mem.readInt(i32, header[18..22], .little);
-                const h = std.mem.readInt(i32, header[22..26], .little);
-                if (w != std.math.minInt(i32) and h != std.math.minInt(i32)) {
-                    const abs_w: u32 = @intCast(if (w < 0) -w else w);
-                    const abs_h: u32 = @intCast(if (h < 0) -h else h);
-                    if (abs_w > 0 and abs_h > 0) {
-                        return .{ .w = @floatFromInt(abs_w), .h = @floatFromInt(abs_h) };
-                    }
-                }
-            }
-        }
-    }
-    return null;
-}
-
 /// Container metadata discovered synchronously by probing file headers
 /// on the main thread (< 0.1ms).
 pub const ProbedImageMetadata = struct {
@@ -701,13 +503,13 @@ fn probeStoredZipMetadata(
     const mime_type = detectMimeType(image_slice, a.entry_name);
     const dims = parseImageDimensions(image_slice, mime_type) orelse
         return null;
-    const rot = exif.parseExifOrientation(image_slice) orelse .normal;
+    const rot = probe.parseExifOrientation(image_slice) orelse .normal;
     const is_raw = core_fs.isRawFile(a.entry_name) or
         std.mem.startsWith(u8, mime_type, "image/x-");
 
     var has_thumb = false;
     if (std.mem.eql(u8, mime_type, "image/jpeg")) {
-        if (exif.extractJpegThumbnailLocation(image_slice)) |_| {
+        if (probe.extractJpegThumbnailLocation(image_slice)) |_| {
             has_thumb = true;
         }
     }
@@ -739,12 +541,12 @@ fn probeFujiRafMetadata(
     const n = header.len;
 
     if (dims == null) {
-        if (exif.extractFujiRafMetadataLocation(header)) |meta_loc| {
+        if (probe.extractFujiRafMetadataLocation(header)) |meta_loc| {
             if (meta_loc.file_offset +| meta_loc.length <= n) {
                 const start: usize = @intCast(meta_loc.file_offset);
                 const len: usize = @intCast(meta_loc.length);
                 const m_slice = header[start .. start + len];
-                if (exif.parseFujiRafDimensions(m_slice)) |fd| {
+                if (probe.parseFujiRafDimensions(m_slice)) |fd| {
                     dims = .{ .w = fd.w, .h = fd.h };
                 }
             } else {
@@ -766,7 +568,7 @@ fn probeFujiRafMetadata(
                 };
                 if (mn >= 4) {
                     const m_sub = meta_tmp[0..mn];
-                    if (exif.parseFujiRafDimensions(m_sub)) |fd| {
+                    if (probe.parseFujiRafDimensions(m_sub)) |fd| {
                         dims = .{ .w = fd.w, .h = fd.h };
                     }
                 }
@@ -774,11 +576,11 @@ fn probeFujiRafMetadata(
         }
     }
 
-    if (exif.extractFujiRafPreviewLocation(header)) |prev_loc| {
+    if (probe.extractFujiRafPreviewLocation(header)) |prev_loc| {
         has_thumb = true;
         if (prev_loc.file_offset +| 4096 <= n) {
             const off: usize = @intCast(prev_loc.file_offset);
-            rot = exif.parseExifOrientation(header[off..n]) orelse .normal;
+            rot = probe.parseExifOrientation(header[off..n]) orelse .normal;
             if (dims == null) {
                 dims = parseImageDimensions(header[off..n], "image/jpeg");
             }
@@ -798,7 +600,7 @@ fn probeFujiRafMetadata(
                 break :blk 0;
             };
             if (pn > 0) {
-                rot = exif.parseExifOrientation(p_buf[0..pn]) orelse .normal;
+                rot = probe.parseExifOrientation(p_buf[0..pn]) orelse .normal;
                 if (dims == null) {
                     dims = parseImageDimensions(p_buf[0..pn], "image/jpeg");
                 }
@@ -857,11 +659,13 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
                 has_thumb = raf_meta.has_thumb;
             } else if (is_raw_ext or std.mem.startsWith(u8, mime_type, "image/x-")) {
                 var tail_buf: [16 * 1024]u8 = undefined;
-                const file_size: u64 = if (exif.probeTiffIfd0Offset(header_buf[0..n])) |ifd0_off|
+                const file_size: u64 = if (probe.probeTiffIfd0Offset(
+                    header_buf[0..n],
+                )) |ifd0_off|
                     (if (ifd0_off >= n) file.length(io) catch 0 else 0)
                 else
                     0;
-                const tiff_source = exif.readTiffSource(
+                const tiff_source = probe.readTiffSource(
                     io,
                     &file,
                     file_size,
@@ -869,8 +673,10 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
                     &tail_buf,
                 );
 
-                rot = exif.parseExifOrientationFromSource(tiff_source) orelse .normal;
-                const raw_cands = exif.extractTiffRawPreviewsFromSource(tiff_source);
+                rot = probe.parseExifOrientationFromSource(tiff_source) orelse
+                    .normal;
+                const raw_cands =
+                    probe.extractTiffRawPreviewsFromSource(tiff_source);
                 if (raw_cands.thumbnail != null or
                     raw_cands.medium != null or
                     raw_cands.preview != null)
@@ -878,17 +684,19 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
                     has_thumb = true;
                 }
                 if (dims == null) {
-                    if (exif.parseExifDimensionsFromSource(tiff_source)) |d| {
+                    if (probe.parseExifDimensionsFromSource(tiff_source)) |d| {
                         dims = .{ .w = d.w, .h = d.h };
                     }
                 }
             } else if (std.mem.eql(u8, mime_type, "image/jpeg")) {
-                rot = exif.parseExifOrientation(header_buf[0..n]) orelse .normal;
-                if (exif.extractJpegThumbnailLocation(header_buf[0..n])) |_| {
+                rot = probe.parseExifOrientation(header_buf[0..n]) orelse
+                    .normal;
+                if (probe.extractJpegThumbnailLocation(header_buf[0..n])) |_| {
                     has_thumb = true;
                 }
             } else {
-                rot = exif.parseExifOrientation(header_buf[0..n]) orelse .normal;
+                rot = probe.parseExifOrientation(header_buf[0..n]) orelse
+                    .normal;
             }
 
             const final_dims = dims orelse return null;
@@ -923,7 +731,8 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
                 return probeMediaMetadata(io, .{ .filesystem = .{ .path = p.raw_path } });
             }
 
-            const rot = exif.parseExifOrientation(header_buf[0..n]) orelse .normal;
+            const rot = probe.parseExifOrientation(header_buf[0..n]) orelse
+                .normal;
             const dims = parseImageDimensions(header_buf[0..n], "image/jpeg") orelse {
                 return probeMediaMetadata(io, .{ .filesystem = .{ .path = p.raw_path } });
             };
@@ -1053,7 +862,7 @@ fn loadThumbnailFromLocation(
     file: *std.Io.File,
     file_size: u64,
     header_slice: []const u8,
-    loc: exif.ThumbnailLocation,
+    loc: probe.ThumbnailLocation,
 ) ?sdl.Surface {
     const max_thumb_size_bytes = 2 * 1024 * 1024;
     if (loc.length == 0 or
@@ -1135,7 +944,7 @@ fn loadStoredZipThumbnail(
     const mime_type = detectMimeType(image_slice, a.entry_name);
     if (!std.mem.eql(u8, mime_type, "image/jpeg")) return null;
 
-    const loc = exif.extractJpegThumbnailLocation(image_slice) orelse
+    const loc = probe.extractJpegThumbnailLocation(image_slice) orelse
         return null;
     if (loc.file_offset +| loc.length > image_slice.len) return null;
     const off: usize = @intCast(loc.file_offset);
@@ -1145,7 +954,7 @@ fn loadStoredZipThumbnail(
         image_slice[off .. off + len],
     ) orelse return null;
 
-    const orientation = exif.parseExifOrientation(image_slice) orelse .normal;
+    const orientation = probe.parseExifOrientation(image_slice) orelse .normal;
     const dims = parseImageDimensions(image_slice, mime_type);
     const source_dims = if (dims) |d|
         state_pkg.PhysicalDims.initPositive(d.w, d.h)
@@ -1168,7 +977,7 @@ fn loadStoredZipThumbnail(
 const FujiRafThumbnailInfo = struct {
     raw_dims: ?state_pkg.PhysicalDims = null,
     orientation: Orientation = .normal,
-    thumb_loc: ?exif.ThumbnailLocation = null,
+    thumb_loc: ?probe.ThumbnailLocation = null,
 };
 
 fn resolveFujiRafThumbnail(
@@ -1180,14 +989,14 @@ fn resolveFujiRafThumbnail(
 ) FujiRafThumbnailInfo {
     var info = FujiRafThumbnailInfo{};
     const header_n = header_slice.len;
-    const prev_loc_opt = exif.extractFujiRafPreviewLocation(header_slice);
+    const prev_loc_opt = probe.extractFujiRafPreviewLocation(header_slice);
 
-    if (exif.extractFujiRafMetadataLocation(header_slice)) |meta_loc| {
+    if (probe.extractFujiRafMetadataLocation(header_slice)) |meta_loc| {
         if (meta_loc.file_offset +| meta_loc.length <= header_n) {
             const end = meta_loc.file_offset + meta_loc.length;
             const meta_slice =
                 header_slice[@intCast(meta_loc.file_offset)..@intCast(end)];
-            if (exif.parseFujiRafDimensions(meta_slice)) |fd| {
+            if (probe.parseFujiRafDimensions(meta_slice)) |fd| {
                 info.raw_dims = state_pkg.PhysicalDims.initPositive(
                     fd.w,
                     fd.h,
@@ -1213,7 +1022,7 @@ fn resolveFujiRafThumbnail(
             };
             if (mn >= meta_loc.length) {
                 const m_data = m_buf[0..meta_loc.length];
-                if (exif.parseFujiRafDimensions(m_data)) |fd| {
+                if (probe.parseFujiRafDimensions(m_data)) |fd| {
                     info.raw_dims = state_pkg.PhysicalDims.initPositive(
                         fd.w,
                         fd.h,
@@ -1227,8 +1036,8 @@ fn resolveFujiRafThumbnail(
         if (prev_loc.file_offset +| 4096 <= header_n) {
             const off: usize = @intCast(prev_loc.file_offset);
             const h_sub = header_slice[off..header_n];
-            info.orientation = exif.parseExifOrientation(h_sub) orelse .normal;
-            if (exif.extractJpegThumbnailLocation(h_sub)) |j_thumb| {
+            info.orientation = probe.parseExifOrientation(h_sub) orelse .normal;
+            if (probe.extractJpegThumbnailLocation(h_sub)) |j_thumb| {
                 info.thumb_loc = .{
                     .file_offset = prev_loc.file_offset +|
                         j_thumb.file_offset,
@@ -1252,8 +1061,10 @@ fn resolveFujiRafThumbnail(
             };
             if (pn > 0) {
                 info.orientation =
-                    exif.parseExifOrientation(p_hdr[0..pn]) orelse .normal;
-                if (exif.extractJpegThumbnailLocation(p_hdr[0..pn])) |j_thumb| {
+                    probe.parseExifOrientation(p_hdr[0..pn]) orelse .normal;
+                if (probe.extractJpegThumbnailLocation(
+                    p_hdr[0..pn],
+                )) |j_thumb| {
                     info.thumb_loc = .{
                         .file_offset = prev_loc.file_offset +|
                             j_thumb.file_offset,
@@ -1340,7 +1151,7 @@ pub fn loadThumbnailSurface(
                 }
             } else if (is_raw) {
                 var tail_buf: [16 * 1024]u8 = undefined;
-                const tiff_source = exif.readTiffSource(
+                const tiff_source = probe.readTiffSource(
                     io,
                     &file,
                     file_size,
@@ -1348,14 +1159,17 @@ pub fn loadThumbnailSurface(
                     &tail_buf,
                 );
 
-                const raw_cands = exif.extractTiffRawPreviewsFromSource(tiff_source);
-                if (exif.parseExifDimensionsFromSource(tiff_source)) |dims| {
+                const raw_cands =
+                    probe.extractTiffRawPreviewsFromSource(tiff_source);
+                if (probe.parseExifDimensionsFromSource(tiff_source)) |dims| {
                     source_dims = state_pkg.PhysicalDims.initPositive(
                         dims.w,
                         dims.h,
                     );
                 }
-                orientation = exif.parseExifOrientationFromSource(tiff_source) orelse .normal;
+                orientation =
+                    probe.parseExifOrientationFromSource(tiff_source) orelse
+                    .normal;
                 if (raw_cands.thumbnail orelse raw_cands.medium) |tloc| {
                     thumb_surf = loadThumbnailFromLocation(
                         io,
@@ -1367,14 +1181,15 @@ pub fn loadThumbnailSurface(
                     );
                 }
             } else if (std.mem.eql(u8, mime_type, "image/jpeg")) {
-                orientation = exif.parseExifOrientation(header_slice) orelse .normal;
+                orientation =
+                    probe.parseExifOrientation(header_slice) orelse .normal;
                 if (parseImageDimensions(header_slice, mime_type)) |dims| {
                     source_dims = state_pkg.PhysicalDims.initPositive(
                         dims.w,
                         dims.h,
                     );
                 }
-                if (exif.extractJpegThumbnailLocation(header_slice)) |loc| {
+                if (probe.extractJpegThumbnailLocation(header_slice)) |loc| {
                     thumb_surf = loadThumbnailFromLocation(
                         io,
                         alloc,
@@ -2018,96 +1833,6 @@ pub fn uploadSurfaceToGpu(
             ),
         },
     };
-}
-
-test "parseImageDimensions" {
-    // PNG test header
-    const png_header = [_]u8{
-        0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, // signature
-        0x00, 0x00, 0x00, 0x0D, // chunk length 13
-        'I', 'H', 'D', 'R', // chunk type
-        0x00, 0x00, 0x03, 0x20, // width 800
-        0x00, 0x00, 0x02, 0x58, // height 600
-        0x08, 0x02, 0x00, 0x00, 0x00, // bit depth, color type, compression, filter, interlace
-    };
-    const png_dims = parseImageDimensions(&png_header, "image/png");
-    try std.testing.expect(png_dims != null);
-    try std.testing.expectEqual(@as(f32, 800.0), png_dims.?.w);
-    try std.testing.expectEqual(@as(f32, 600.0), png_dims.?.h);
-
-    // GIF test header
-    const gif_header = [_]u8{
-        'G', 'I', 'F', '8', '9', 'a',
-        0x40, 0x01, // width 320
-        0xF0, 0x00, // height 240
-    };
-    const gif_dims = parseImageDimensions(&gif_header, "image/gif");
-    try std.testing.expect(gif_dims != null);
-    try std.testing.expectEqual(@as(f32, 320.0), gif_dims.?.w);
-    try std.testing.expectEqual(@as(f32, 240.0), gif_dims.?.h);
-
-    // WebP VP8X test header
-    const webp_vp8x_header = [_]u8{
-        'R',  'I',  'F',  'F',
-        0x16, 0x00, 0x00, 0x00,
-        'W',  'E',  'B',  'P',
-        'V',  'P',  '8',  'X',
-        0x0A, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00, // flags
-        0x7F, 0x07, 0x00, // canvas w - 1 (1919 -> 1920)
-        0x37, 0x04, 0x00, // canvas h - 1 (1079 -> 1080)
-    };
-    const vp8x_dims = parseImageDimensions(&webp_vp8x_header, "image/webp");
-    try std.testing.expect(vp8x_dims != null);
-    try std.testing.expectEqual(@as(f32, 1920.0), vp8x_dims.?.w);
-    try std.testing.expectEqual(@as(f32, 1080.0), vp8x_dims.?.h);
-
-    // WebP VP8L test header (25 bytes minimal)
-    const webp_vp8l_header = [_]u8{
-        'R',  'I',  'F',  'F',
-        0x11, 0x00, 0x00, 0x00,
-        'W',  'E',  'B',  'P',
-        'V',  'P',  '8',  'L',
-        0x05, 0x00, 0x00, 0x00,
-        0x2F, // 1-byte signature
-        0xE7, 0xC3, 0x7C, 0x00, // w: 1000, h: 500
-    };
-    const vp8l_dims = parseImageDimensions(&webp_vp8l_header, "image/webp");
-    try std.testing.expect(vp8l_dims != null);
-    try std.testing.expectEqual(@as(f32, 1000.0), vp8l_dims.?.w);
-    try std.testing.expectEqual(@as(f32, 500.0), vp8l_dims.?.h);
-
-    // WebP VP8 lossy test header
-    const webp_vp8_header = [_]u8{
-        'R',  'I',  'F',  'F',
-        0x16, 0x00, 0x00, 0x00,
-        'W',  'E',  'B',  'P',
-        'V',  'P',  '8',  ' ',
-        0x0A, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, // frame tag
-        0x9D, 0x01, 0x2A, // start code
-        0x80, 0x02, // w: 640
-        0xE0, 0x01, // h: 480
-    };
-    const vp8_dims = parseImageDimensions(&webp_vp8_header, "image/webp");
-    try std.testing.expect(vp8_dims != null);
-    try std.testing.expectEqual(@as(f32, 640.0), vp8_dims.?.w);
-    try std.testing.expectEqual(@as(f32, 480.0), vp8_dims.?.h);
-
-    // BMP test header (top-down with negative height)
-    const bmp_header = [_]u8{
-        'B', 'M',
-        0x36, 0x00, 0x0C, 0x00, // file size
-        0x00, 0x00, 0x00, 0x00, // reserved
-        0x36, 0x00, 0x00, 0x00, // offset to pixels
-        40, 0x00, 0x00, 0x00, // DIB size (40)
-        0x00, 0x04, 0x00, 0x00, // w: 1024
-        0x00, 0xFD, 0xFF, 0xFF, // h: -768 (top-down)
-    };
-    const bmp_dims = parseImageDimensions(&bmp_header, "image/bmp");
-    try std.testing.expect(bmp_dims != null);
-    try std.testing.expectEqual(@as(f32, 1024.0), bmp_dims.?.w);
-    try std.testing.expectEqual(@as(f32, 768.0), bmp_dims.?.h);
 }
 
 test "enforceVramBudget - distant eviction, circular distance, and neighbor protection" {
@@ -2886,34 +2611,6 @@ test "computeFallbackScaleDims and stageSurfaceToRgba32 downscale safely" {
         scaled.format(),
     );
     try std.testing.expect(conv_ms != null);
-}
-
-test "parseImageDimensions - rejects extreme Fuji RAF offsets" {
-    var raf_hdr: [128]u8 = @splat(0);
-    @memcpy(raf_hdr[0..16], "FUJIFILMCCD-RAW ");
-    // Preview JPEG offset = 0xFFFF_FFF0, length = 0x100
-    std.mem.writeInt(u32, raf_hdr[84..88], 0xFFFF_FFF0, .big);
-    std.mem.writeInt(u32, raf_hdr[88..92], 0x0000_0100, .big);
-    // Metadata offset = 0xFFFF_FFF0, length = 0x100
-    std.mem.writeInt(u32, raf_hdr[92..96], 0xFFFF_FFF0, .big);
-    std.mem.writeInt(u32, raf_hdr[96..100], 0x0000_0100, .big);
-
-    try std.testing.expect(
-        parseImageDimensions(&raf_hdr, "image/x-fuji-raf") == null,
-    );
-
-    // Offset = 0 with length > header.len must also be rejected safely
-    std.mem.writeInt(u32, raf_hdr[84..88], 0, .big);
-    std.mem.writeInt(u32, raf_hdr[88..92], 1000, .big);
-    std.mem.writeInt(u32, raf_hdr[92..96], 0, .big);
-    std.mem.writeInt(u32, raf_hdr[96..100], 1000, .big);
-
-    try std.testing.expect(
-        parseImageDimensions(&raf_hdr, "image/x-fuji-raf") == null,
-    );
-    try std.testing.expect(
-        parseImageDimensions(raf_hdr[0..16], "image/x-fuji-raf") == null,
-    );
 }
 
 test "computeTextureVramBytes - reports 4bpp RGBA8 footprint with mipmaps" {
