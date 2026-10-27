@@ -923,7 +923,10 @@ pub const AppState = struct {
                     self.viewer.navigation.view_mode =
                         if (target_class == .reject) .all else .default;
                 }
-                _ = self.viewer.navigation.goToIndex(idx);
+                _ = self.viewer.navigation.goToIndex(
+                    idx,
+                    sdl.timer.getTicks(),
+                );
                 self.resetViewportAndTransitions();
                 if (self.viewer.ui.palette.mode == .files and
                     !self.viewer.ui.palette.is_closing)

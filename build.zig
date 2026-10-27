@@ -217,7 +217,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    ipc_module.addImport("sdl", sdl_module);
     ipc_module.addImport("intents", intents_module);
 
     app_module.addImport("sdl", sdl_module);

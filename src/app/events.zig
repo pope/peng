@@ -720,7 +720,10 @@ fn handleDirectoryScanResultEvent(
         }
 
         if (target_idx_in_dir) |target_i| {
-            _ = state.viewer.navigation.goToIndex(target_i);
+            _ = state.viewer.navigation.goToIndex(
+                target_i,
+                sdl.timer.getTicks(),
+            );
         } else {
             _ = state.viewer.navigation.adjustIndexForVisibility();
         }

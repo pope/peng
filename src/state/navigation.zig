@@ -1,4 +1,3 @@
-const sdl = @import("sdl");
 const std = @import("std");
 const types = @import("types.zig");
 
@@ -842,35 +841,36 @@ pub const NavigationState = struct {
     }
 
     /// Advances selection to the next visible image using circular SIMD scan.
-    pub fn nextIndex(self: *NavigationState) ?usize {
-        self.slideshow.resetTimer();
-        self.last_nav_time_ms = @max(1, sdl.timer.getTicks());
-        self.direction = .forward;
+    /// Updates `last_nav_time_ms` to `@max(1, now_ms)` for fast-scroll
+    /// throttling.
+    pub fn nextIndex(self: *NavigationState, now_ms: u64) ?usize {
         const cur = self.current_index orelse self.anchor_index;
-        if (self.peekNextVisible(cur)) |idx| {
-            self.current_index = idx;
-            self.anchor_index = idx;
-            return idx;
-        }
-        return null;
+        const idx = self.peekNextVisible(cur) orelse return null;
+        self.slideshow.resetTimer();
+        self.last_nav_time_ms = @max(1, now_ms);
+        self.direction = .forward;
+        self.current_index = idx;
+        self.anchor_index = idx;
+        return idx;
     }
 
     /// Moves selection to the previous visible image using circular SIMD scan.
-    pub fn prevIndex(self: *NavigationState) ?usize {
-        self.slideshow.resetTimer();
-        self.last_nav_time_ms = @max(1, sdl.timer.getTicks());
-        self.direction = .backward;
+    /// Updates `last_nav_time_ms` to `@max(1, now_ms)` for fast-scroll
+    /// throttling.
+    pub fn prevIndex(self: *NavigationState, now_ms: u64) ?usize {
         const cur = self.current_index orelse self.anchor_index;
-        if (self.peekPrevVisible(cur)) |idx| {
-            self.current_index = idx;
-            self.anchor_index = idx;
-            return idx;
-        }
-        return null;
+        const idx = self.peekPrevVisible(cur) orelse return null;
+        self.slideshow.resetTimer();
+        self.last_nav_time_ms = @max(1, now_ms);
+        self.direction = .backward;
+        self.current_index = idx;
+        self.anchor_index = idx;
+        return idx;
     }
 
-    /// Directly sets the image selection to `idx` (or closest visible), clamped to valid bounds.
-    pub fn goToIndex(self: *NavigationState, idx: usize) ?usize {
+    /// Directly sets the image selection to `idx` (or closest visible), clamped
+    /// to valid bounds. Updates `last_nav_time_ms` to `@max(1, now_ms)`.
+    pub fn goToIndex(self: *NavigationState, idx: usize, now_ms: u64) ?usize {
         const len = self.items.len;
         if (len == 0 or self.getVisibleCount() == 0) return null;
         const target = self.findClosestVisible(idx) orelse return null;
@@ -883,7 +883,7 @@ pub const NavigationState = struct {
             }
         }
         self.slideshow.resetTimer();
-        self.last_nav_time_ms = @max(1, sdl.timer.getTicks());
+        self.last_nav_time_ms = @max(1, now_ms);
         self.current_index = target;
         self.anchor_index = target;
         return self.current_index;
@@ -979,21 +979,25 @@ test "NavigationState - direction tracking" {
     _ = try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "c.jpg" } });
     nav.current_index = 0;
 
-    _ = nav.nextIndex();
+    _ = nav.nextIndex(5500);
     try std.testing.expectEqual(@as(?usize, 1), nav.current_index);
     try std.testing.expectEqual(NavDirection.forward, nav.direction);
+    try std.testing.expectEqual(@as(u64, 5500), nav.last_nav_time_ms);
 
-    _ = nav.prevIndex();
+    _ = nav.prevIndex(6200);
     try std.testing.expectEqual(@as(?usize, 0), nav.current_index);
     try std.testing.expectEqual(NavDirection.backward, nav.direction);
+    try std.testing.expectEqual(@as(u64, 6200), nav.last_nav_time_ms);
 
-    _ = nav.goToIndex(2);
+    _ = nav.goToIndex(2, 7000);
     try std.testing.expectEqual(@as(?usize, 2), nav.current_index);
     try std.testing.expectEqual(NavDirection.forward, nav.direction);
+    try std.testing.expectEqual(@as(u64, 7000), nav.last_nav_time_ms);
 
-    _ = nav.goToIndex(0);
+    _ = nav.goToIndex(0, 0);
     try std.testing.expectEqual(@as(?usize, 0), nav.current_index);
     try std.testing.expectEqual(NavDirection.backward, nav.direction);
+    try std.testing.expectEqual(@as(u64, 1), nav.last_nav_time_ms);
 }
 
 test "NavigationState - triage mutations and visibility filtering" {
@@ -1029,9 +1033,9 @@ test "NavigationState - triage mutations and visibility filtering" {
 
     // Stepping skips rejected item #3: 2 -> 4 -> 0
     nav.current_index = 2;
-    _ = nav.nextIndex();
+    _ = nav.nextIndex(100);
     try std.testing.expectEqual(@as(?usize, 4), nav.current_index);
-    _ = nav.nextIndex();
+    _ = nav.nextIndex(100);
     try std.testing.expectEqual(@as(?usize, 0), nav.current_index);
 
     // Switching to picks mode
@@ -1121,19 +1125,19 @@ test "NavigationState - SIMD skipping and popcount across large list" {
 
     // Verify forward SIMD scanning across > 32 elements: 10 -> 45 -> 80 -> 10 (wrap)
     nav.current_index = 10;
-    _ = nav.nextIndex();
+    _ = nav.nextIndex(100);
     try std.testing.expectEqual(@as(?usize, 45), nav.current_index);
-    _ = nav.nextIndex();
+    _ = nav.nextIndex(100);
     try std.testing.expectEqual(@as(?usize, 80), nav.current_index);
-    _ = nav.nextIndex();
+    _ = nav.nextIndex(100);
     try std.testing.expectEqual(@as(?usize, 10), nav.current_index);
 
     // Verify backward SIMD scanning across > 32 elements: 10 -> 80 -> 45 -> 10
-    _ = nav.prevIndex();
+    _ = nav.prevIndex(100);
     try std.testing.expectEqual(@as(?usize, 80), nav.current_index);
-    _ = nav.prevIndex();
+    _ = nav.prevIndex(100);
     try std.testing.expectEqual(@as(?usize, 45), nav.current_index);
-    _ = nav.prevIndex();
+    _ = nav.prevIndex(100);
     try std.testing.expectEqual(@as(?usize, 10), nav.current_index);
 }
 
@@ -1435,4 +1439,51 @@ test "NavigationState - getMediaEntryById and posOfId lookup" {
         @as(?MediaEntry, null),
         nav.getMediaEntryById(MediaId.fromU32(999)),
     );
+}
+
+test "NavigationState - nextIndex and prevIndex record explicit now_ms" {
+    const allocator = std.testing.allocator;
+    var nav = try NavigationState.init(allocator);
+    defer nav.deinit(allocator);
+
+    _ = try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "a.jpg" } });
+    _ = try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "b.jpg" } });
+    nav.current_index = 0;
+
+    _ = nav.nextIndex(5500);
+    try std.testing.expectEqual(@as(?usize, 1), nav.current_index);
+    try std.testing.expectEqual(@as(u64, 5500), nav.last_nav_time_ms);
+
+    _ = nav.prevIndex(6200);
+    try std.testing.expectEqual(@as(?usize, 0), nav.current_index);
+    try std.testing.expectEqual(@as(u64, 6200), nav.last_nav_time_ms);
+}
+
+test "NavigationState - goToIndex now_ms zero clamp" {
+    const allocator = std.testing.allocator;
+    var nav = try NavigationState.init(allocator);
+    defer nav.deinit(allocator);
+
+    _ = try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "a.jpg" } });
+    _ = try nav.appendEntry(allocator, .{ .filesystem = .{ .path = "b.jpg" } });
+    nav.current_index = 1;
+
+    _ = nav.goToIndex(0, 0);
+    try std.testing.expectEqual(@as(?usize, 0), nav.current_index);
+    try std.testing.expectEqual(@as(u64, 1), nav.last_nav_time_ms);
+}
+
+test "NavigationState - empty playlist returns null, keeps last_nav_time_ms 0" {
+    const allocator = std.testing.allocator;
+    var nav = try NavigationState.init(allocator);
+    defer nav.deinit(allocator);
+
+    try std.testing.expectEqual(@as(?usize, null), nav.nextIndex(5500));
+    try std.testing.expectEqual(@as(u64, 0), nav.last_nav_time_ms);
+
+    try std.testing.expectEqual(@as(?usize, null), nav.prevIndex(6200));
+    try std.testing.expectEqual(@as(u64, 0), nav.last_nav_time_ms);
+
+    try std.testing.expectEqual(@as(?usize, null), nav.goToIndex(0, 7000));
+    try std.testing.expectEqual(@as(u64, 0), nav.last_nav_time_ms);
 }

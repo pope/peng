@@ -402,15 +402,15 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
             vp.reset();
             _ = switch (intent) {
                 .next_image => if (nav.manga_mode)
-                    nav.prevIndex()
+                    nav.prevIndex(now)
                 else
-                    nav.nextIndex(),
+                    nav.nextIndex(now),
                 .prev_image => if (nav.manga_mode)
-                    nav.nextIndex()
+                    nav.nextIndex(now)
                 else
-                    nav.prevIndex(),
+                    nav.prevIndex(now),
                 .first_image => blk: {
-                    const res = nav.goToIndex(0);
+                    const res = nav.goToIndex(0, now);
                     nav.direction = .forward;
                     break :blk res;
                 },
@@ -419,11 +419,11 @@ fn executeIntent(self: *AppState, intent: intents.AppIntent) !void {
                         nav.count() - 1
                     else
                         0;
-                    const res = nav.goToIndex(last_idx);
+                    const res = nav.goToIndex(last_idx, now);
                     nav.direction = .backward;
                     break :blk res;
                 },
-                .go_to_image => |idx| nav.goToIndex(idx),
+                .go_to_image => |idx| nav.goToIndex(idx, now),
                 else => unreachable,
             };
             self.updateCurrentRotation();
