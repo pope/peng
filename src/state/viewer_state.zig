@@ -1,6 +1,5 @@
 const animation_state = @import("animation_state.zig");
 const navigation = @import("navigation.zig");
-const palette_state = @import("palette_state.zig");
 const std = @import("std");
 const types = @import("types.zig");
 const ui_state = @import("ui_state.zig");

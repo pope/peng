@@ -2,6 +2,7 @@ const app_state = @import("../state.zig");
 const clay = @import("zclay");
 const context = @import("context.zig");
 const intents = @import("intents");
+const palette_pkg = @import("palette");
 const state_pkg = @import("state");
 const std = @import("std");
 const vfs = @import("vfs");
@@ -9,6 +10,7 @@ const vfs = @import("vfs");
 const AppState = app_state.AppState;
 const FrameContext = context.FrameContext;
 const FrameInput = state_pkg.FrameInput;
+const getPaletteConfig = palette_pkg.getPaletteConfig;
 const getParentDirBuf = vfs.getParentDirBuf;
 const Key = intents.Key;
 const KeyModifiers = intents.KeyModifiers;
@@ -534,7 +536,7 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
     }
 
     // 3. Selection Scrolling Synchronization
-    const cfg = state_pkg.getPaletteConfig(self.viewer.ui.palette.mode);
+    const cfg = getPaletteConfig(self.viewer.ui.palette.mode);
     const scroll_data = clay.cdefs.Clay_GetScrollContainerData(
         clay.getElementId(cfg.list_id),
     );

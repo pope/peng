@@ -1,16 +1,25 @@
+//! Palette Module
+//!
+//! Encapsulates command palette state, fuzzy match scoring via `fuzzig`,
+//! readline text editing, and directory navigation history.
+//! Zero SDL, zero Clay, and zero C dependencies.
+
+const builtin = @import("builtin");
 const fuzzig = @import("fuzzig");
 const intents = @import("intents");
 const std = @import("std");
-const types = @import("types.zig");
 const vfs = @import("vfs");
 
 const DirectoryEntry = vfs.DirectoryEntry;
 const EditParam = intents.EditParam;
-const EntryScanCounts = vfs.EntryScanCounts;
-const EntryScanState = vfs.EntryScanState;
+const getChildBasename = vfs.getChildBasename;
+const getParentDirBuf = vfs.getParentDirBuf;
+const isCbzFile = vfs.isCbzFile;
 const MediaEntry = vfs.MediaEntry;
+const palette_action_items = intents.actions.palette_action_items;
 const PaletteMode = intents.PaletteMode;
-const TextInputBounds = intents.TextInputBounds;
+const scanDirectoryEntries = vfs.scanDirectoryEntries;
+const trimTrailingSeparators = vfs.trimTrailingSeparators;
 
 /// Represents a search result item paired with its fuzzy matching score.
 pub const ScoredMatch = struct {
@@ -18,7 +27,8 @@ pub const ScoredMatch = struct {
     score: i32,
 };
 
-/// Main state model for command palette modals, directory navigation, and fuzzy searching.
+/// Main state model for command palette modals, directory navigation, and fuzzy
+/// searching.
 pub const PaletteState = struct {
     mode: PaletteMode = .inactive,
     is_closing: bool = false,
@@ -58,11 +68,13 @@ pub const PaletteState = struct {
         // 64 bytes: accommodates user search query input strings
         // (typical search queries are < 64 chars)
         try self.query.ensureTotalCapacity(allocator, 64);
-        // 64 items: initial filtered match index capacity before dynamic resizing
+        // 64 items: initial filtered match index capacity before dynamic
+        // resizing
         try self.matches.ensureTotalCapacity(allocator, 64);
         // 64 items: initial fuzzy search score entry capacity
         try self.scored_matches.ensureTotalCapacity(allocator, 64);
-        // 128 bytes: accommodates active directory path strings (most paths are < 128 bytes)
+        // 128 bytes: accommodates active directory path strings (most paths
+        // are < 128 bytes)
         try self.current_nav_dir.ensureTotalCapacity(allocator, 128);
         // 128 bytes: accommodates last visited directory path strings
         try self.last_nav_dir.ensureTotalCapacity(allocator, 128);
@@ -78,7 +90,8 @@ pub const PaletteState = struct {
         return self.mode != .inactive;
     }
 
-    /// Frees all dynamically allocated memory, string arrays, searcher state, and directory items.
+    /// Frees all dynamically allocated memory, string arrays, searcher state,
+    /// and directory items.
     pub fn deinit(self: *PaletteState) void {
         if (self.searcher) |*s| {
             s.deinit();
@@ -93,11 +106,14 @@ pub const PaletteState = struct {
         self.dir_items.deinit(self.allocator);
     }
 
-    /// Releases heap strings owned by directory items and clears the list while retaining capacity.
+    /// Releases heap strings owned by directory items and clears the list while
+    /// retaining capacity.
     pub fn clearDirItems(self: *PaletteState) void {
         for (self.dir_items.items) |entry| {
             self.allocator.free(entry.getName());
-            if (entry.getFullPath().len > 0) self.allocator.free(entry.getFullPath());
+            if (entry.getFullPath().len > 0) {
+                self.allocator.free(entry.getFullPath());
+            }
         }
         self.dir_items.clearRetainingCapacity();
     }
@@ -128,6 +144,7 @@ pub const PaletteState = struct {
             self.scored_matches.clearAndFree(self.allocator);
         }
         if (self.dir_items.capacity > 64) {
+            self.clearDirItems();
             self.dir_items.clearAndFree(self.allocator);
         }
         if (self.searcher) |*s| {
@@ -139,14 +156,15 @@ pub const PaletteState = struct {
         }
     }
 
-    /// Returns whether the palette is currently active and accepting user input (not closing).
+    /// Returns whether the palette is currently active and accepting user
+    /// input (not closing).
     pub inline fn isAcceptingInput(self: *const PaletteState) bool {
         return self.mode != .inactive and !self.is_closing;
     }
 
     /// Returns a lazily initialized or resized ASCII fuzzy searcher matching
     /// the requested haystack and needle lengths.
-    pub fn getSearcher(
+    fn getSearcher(
         self: *PaletteState,
         max_haystack: usize,
         max_needle: usize,
@@ -177,13 +195,8 @@ pub const PaletteState = struct {
         }
     }
 
-    /// Rebuilds fuzzy match results for action palette items.
-    ///
-    /// Optimizations:
-    /// - Short-circuits when query is empty, populating `matches` directly
-    ///   without searcher allocation or fuzzy scoring.
-    /// - Pre-allocates `scored_matches` and `matches` capacities to allow
-    ///   `appendAssumeCapacity` writes during scoring.
+    /// Sorts `scored_matches` by score descending and extracts matching
+    /// candidate indices into `matches`.
     fn sortAndExtractMatches(self: *PaletteState) !void {
         std.mem.sort(ScoredMatch, self.scored_matches.items, {}, struct {
             fn lessThan(_: void, a: ScoredMatch, b: ScoredMatch) bool {
@@ -191,7 +204,10 @@ pub const PaletteState = struct {
             }
         }.lessThan);
 
-        try self.matches.ensureTotalCapacity(self.allocator, self.scored_matches.items.len);
+        try self.matches.ensureTotalCapacity(
+            self.allocator,
+            self.scored_matches.items.len,
+        );
         for (self.scored_matches.items) |item| {
             self.matches.appendAssumeCapacity(item.index);
         }
@@ -209,25 +225,33 @@ pub const PaletteState = struct {
         self.scored_matches.clearRetainingCapacity();
         const query_str = self.query.items;
         if (query_str.len == 0) {
-            try self.matches.ensureTotalCapacity(self.allocator, types.palette_action_items.len);
-            for (types.palette_action_items, 0..) |_, idx| {
+            try self.matches.ensureTotalCapacity(
+                self.allocator,
+                palette_action_items.len,
+            );
+            for (palette_action_items, 0..) |_, idx| {
                 self.matches.appendAssumeCapacity(idx);
             }
             return;
         }
 
         var max_h: usize = 0;
-        for (types.palette_action_items) |item| {
+        for (palette_action_items) |item| {
             max_h = @max(max_h, item.name.len);
         }
 
         const searcher_ptr = try self.getSearcher(max_h, query_str.len);
 
-        try self.scored_matches.ensureTotalCapacity(self.allocator, types.palette_action_items.len);
+        try self.scored_matches.ensureTotalCapacity(
+            self.allocator,
+            palette_action_items.len,
+        );
 
-        for (types.palette_action_items, 0..) |item, idx| {
+        for (palette_action_items, 0..) |item, idx| {
             if (searcher_ptr.score(item.name, query_str)) |score| {
-                self.scored_matches.appendAssumeCapacity(.{ .index = idx, .score = score });
+                self.scored_matches.appendAssumeCapacity(
+                    .{ .index = idx, .score = score },
+                );
             }
         }
 
@@ -248,13 +272,20 @@ pub const PaletteState = struct {
         const query_str = self.query.items;
 
         if (query_str.len == 0) {
-            try self.matches.ensureTotalCapacity(self.allocator, self.dir_items.items.len);
+            try self.matches.ensureTotalCapacity(
+                self.allocator,
+                self.dir_items.items.len,
+            );
             for (self.dir_items.items, 0..) |_, idx| {
                 self.matches.appendAssumeCapacity(idx);
             }
             if (self.last_child_dir.items.len > 0) {
                 for (self.dir_items.items, 0..) |entry, match_idx| {
-                    if (std.mem.eql(u8, entry.getName(), self.last_child_dir.items)) {
+                    if (std.mem.eql(
+                        u8,
+                        entry.getName(),
+                        self.last_child_dir.items,
+                    )) {
                         self.selected_idx = match_idx;
                         break;
                     }
@@ -271,11 +302,16 @@ pub const PaletteState = struct {
 
         const searcher_ptr = try self.getSearcher(max_h, query_str.len);
 
-        try self.scored_matches.ensureTotalCapacity(self.allocator, self.dir_items.items.len);
+        try self.scored_matches.ensureTotalCapacity(
+            self.allocator,
+            self.dir_items.items.len,
+        );
 
         for (self.dir_items.items, 0..) |entry, idx| {
             if (searcher_ptr.score(entry.getName(), query_str)) |score| {
-                self.scored_matches.appendAssumeCapacity(.{ .index = idx, .score = score });
+                self.scored_matches.appendAssumeCapacity(
+                    .{ .index = idx, .score = score },
+                );
             }
         }
 
@@ -358,6 +394,162 @@ pub const PaletteState = struct {
 
         try self.sortAndExtractMatches();
     }
+
+    /// Populates directory entries for `dir_path` into `PaletteState`, tracks
+    /// directory navigation history (including last-child directory tracking
+    /// for upward navigation), increments scan generation, and rebuilds fuzzy
+    /// directory matches.
+    pub fn loadDirectoryEntries(
+        self: *PaletteState,
+        io: std.Io,
+        dir_path: []const u8,
+    ) !void {
+        const raw_target = trimTrailingSeparators(dir_path);
+        const target = if (isCbzFile(raw_target))
+            (std.Io.Dir.path.dirname(raw_target) orelse ".")
+        else
+            raw_target;
+
+        var stack_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        var fb: std.heap.BufferFirstAllocator = .init(
+            &stack_buf,
+            self.allocator,
+        );
+        const temp_alloc = fb.allocator();
+        const dir_path_copy = try temp_alloc.dupe(u8, target);
+        defer temp_alloc.free(dir_path_copy);
+
+        var path_scratch_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+
+        var navigated_up = false;
+        if (self.current_nav_dir.items.len > 0) {
+            if (getParentDirBuf(
+                self.current_nav_dir.items,
+                &path_scratch_buf,
+            )) |parent_dir| {
+                if (std.mem.eql(u8, dir_path_copy, parent_dir)) {
+                    navigated_up = true;
+                }
+            }
+        }
+
+        if (navigated_up) {
+            const child_base = getChildBasename(
+                io,
+                self.current_nav_dir.items,
+                &path_scratch_buf,
+            );
+            self.last_child_dir.clearRetainingCapacity();
+            try self.last_child_dir.appendSlice(self.allocator, child_base);
+        } else if (self.current_nav_dir.items.len > 0) {
+            self.last_child_dir.clearRetainingCapacity();
+        }
+
+        self.current_nav_dir.clearRetainingCapacity();
+        try self.current_nav_dir.appendSlice(self.allocator, dir_path_copy);
+
+        self.last_nav_dir.clearRetainingCapacity();
+        try self.last_nav_dir.appendSlice(self.allocator, dir_path_copy);
+
+        _ = self.dir_scan_generation.fetchAdd(1, .release);
+
+        self.clearDirItems();
+        self.current_dir_image_count = scanDirectoryEntries(
+            self.allocator,
+            io,
+            dir_path_copy,
+            &self.dir_items,
+        ) catch |err| blk: {
+            std.log.warn(
+                "Failed to scan directory '{s}': {}",
+                .{ dir_path_copy, err },
+            );
+            break :blk 0;
+        };
+        try self.rebuildDirectoryMatches();
+        self.selection_dirty = true;
+    }
+
+    /// Computes the maximum string length across visible item candidates in the
+    /// active viewport window for allocating or sizing a fuzzy searcher.
+    pub fn computeWindowMaxHaystack(
+        self: *const PaletteState,
+        entries: []const MediaEntry,
+        visible_indices: []const usize,
+    ) usize {
+        var max_h: usize = 64;
+        for (visible_indices) |real_idx| {
+            switch (self.mode) {
+                .files => {
+                    if (real_idx < entries.len) {
+                        const m = entries[real_idx];
+                        max_h = @max(max_h, m.getBasename().len);
+                        if (m.getJpegPath()) |jp| {
+                            max_h = @max(
+                                max_h,
+                                std.Io.Dir.path.basename(jp).len,
+                            );
+                        }
+                        if (m.isPair()) {
+                            max_h = @max(max_h, "RAW+JPG".len);
+                        }
+                    }
+                },
+                .actions => {
+                    if (real_idx < palette_action_items.len) {
+                        max_h = @max(
+                            max_h,
+                            palette_action_items[real_idx].name.len,
+                        );
+                    }
+                },
+                .directory_navigator => {
+                    if (real_idx < self.dir_items.items.len) {
+                        max_h = @max(
+                            max_h,
+                            self.dir_items.items[real_idx].getName().len,
+                        );
+                    }
+                },
+                .set_brightness,
+                .set_contrast,
+                .set_contrast_blend,
+                .set_highlights,
+                .set_shadows,
+                .set_whites,
+                .set_blacks,
+                .set_temperature,
+                .set_tint,
+                .set_vibrance,
+                .set_saturation,
+                .set_clarity,
+                .set_texture,
+                .go_to_image,
+                .set_slideshow_interval,
+                .inactive,
+                => {},
+            }
+        }
+        return max_h;
+    }
+
+    /// Returns a windowed fuzzy highlighter configured for the current search
+    /// query and visible item candidates.
+    pub fn initWindowHighlighter(
+        self: *const PaletteState,
+        allocator: std.mem.Allocator,
+        entries: []const MediaEntry,
+        visible_indices: []const usize,
+    ) FuzzyHighlighter {
+        if (self.query.items.len > 0 and visible_indices.len > 0) {
+            return .init(
+                allocator,
+                self.computeWindowMaxHaystack(entries, visible_indices),
+                self.query.items.len,
+            );
+        }
+        return .{};
+    }
 };
 
 /// Height in logical UI points of the scrollable item list viewport inside the
@@ -397,7 +589,8 @@ pub const PaletteConfig = struct {
 
         if (selection_dirty and total_items > 0) {
             const clamped_sel = @min(selected_idx, total_items - 1);
-            const item_top = @as(f32, @floatFromInt(clamped_sel)) * item_height;
+            const item_top = @as(f32, @floatFromInt(clamped_sel)) *
+                item_height;
             const item_bottom = item_top + item_height;
             const visible_top = -scroll_y;
             const visible_bottom = visible_top + viewport_height;
@@ -411,6 +604,135 @@ pub const PaletteConfig = struct {
         }
 
         return scroll_y;
+    }
+};
+
+/// Encapsulates fuzzy substring match highlighting for palette items without
+/// exposing fuzzy matching library details to UI renderers.
+pub const FuzzyHighlighter = struct {
+    searcher: ?fuzzig.Ascii = null,
+
+    /// Initializes a fuzzy highlighter configured for the given haystack and
+    /// needle bounds. If initialization fails, returns an empty highlighter.
+    pub fn init(
+        allocator: std.mem.Allocator,
+        max_haystack: usize,
+        max_needle: usize,
+    ) FuzzyHighlighter {
+        return .{
+            .searcher = fuzzig.Ascii.init(
+                allocator,
+                max_haystack,
+                max_needle,
+                .{ .case_sensitive = false },
+            ) catch null,
+        };
+    }
+
+    /// Releases internal fuzzy searcher state and resources.
+    pub fn deinit(self: *FuzzyHighlighter) void {
+        if (self.searcher) |*s| {
+            s.deinit();
+        }
+    }
+
+    /// Returns matching byte indices within `haystack` matching `query`.
+    pub fn matchText(
+        self: *FuzzyHighlighter,
+        haystack: []const u8,
+        query: []const u8,
+    ) []const usize {
+        if (query.len == 0 or haystack.len == 0) return &.{};
+        if (self.searcher) |*s| {
+            const res = s.scoreMatches(haystack, query);
+            if (res.score != null) {
+                return res.matches;
+            }
+        }
+        return &.{};
+    }
+
+    /// Computes matching character indices for image file list entries,
+    /// matching against basename, companion JPEG, or RAW+JPG pair tag.
+    pub fn matchFileItem(
+        self: *FuzzyHighlighter,
+        allocator: std.mem.Allocator,
+        basename: []const u8,
+        jpeg_path_opt: ?[]const u8,
+        is_pair: bool,
+        query_str: []const u8,
+    ) !std.ArrayList(usize) {
+        var basename_matches = try std.ArrayList(usize).initCapacity(
+            allocator,
+            16,
+        );
+        errdefer basename_matches.deinit(allocator);
+
+        if (query_str.len == 0 or basename.len == 0) return basename_matches;
+        const searcher = if (self.searcher) |*s|
+            s
+        else
+            return basename_matches;
+
+        const jpeg_base = if (jpeg_path_opt) |jp|
+            std.Io.Dir.path.basename(jp)
+        else
+            "";
+
+        var best_score: ?i32 = searcher.score(basename, query_str);
+        var best_source: enum { base, jpeg, tag } = .base;
+
+        if (jpeg_base.len > 0) {
+            if (searcher.score(jpeg_base, query_str)) |jpeg_score| {
+                if (best_score == null or jpeg_score > best_score.?) {
+                    best_score = jpeg_score;
+                    best_source = .jpeg;
+                }
+            }
+        }
+        if (is_pair) {
+            if (searcher.score("RAW+JPG", query_str)) |tag_score| {
+                if (best_score == null or tag_score > best_score.?) {
+                    best_score = tag_score;
+                    best_source = .tag;
+                }
+            }
+        }
+
+        if (best_score == null) return basename_matches;
+
+        switch (best_source) {
+            .base => {
+                const base_res = searcher.scoreMatches(basename, query_str);
+                if (base_res.score != null) {
+                    try basename_matches.appendSlice(
+                        allocator,
+                        base_res.matches,
+                    );
+                }
+            },
+            .jpeg => {
+                const jpeg_res = searcher.scoreMatches(jpeg_base, query_str);
+                if (jpeg_res.score != null) {
+                    var shared_len: usize = 0;
+                    const min_len = @min(basename.len, jpeg_base.len);
+                    while (shared_len < min_len and
+                        std.ascii.toLower(basename[shared_len]) ==
+                            std.ascii.toLower(jpeg_base[shared_len]))
+                    {
+                        shared_len += 1;
+                    }
+                    for (jpeg_res.matches) |idx| {
+                        if (idx < shared_len) {
+                            try basename_matches.append(allocator, idx);
+                        }
+                    }
+                }
+            },
+            .tag => {},
+        }
+
+        return basename_matches;
     }
 };
 
@@ -621,7 +943,7 @@ test "PaletteState.getSearcher resizes only dimensions that exceed capacity" {
     try std.testing.expectEqual(@as(usize, 32), s3.alg.max_needle);
 }
 
-test "palette_state - Contrast palette config displays 0.0 to 3.0 range" {
+test "PaletteConfig - Contrast palette config displays 0.0 to 3.0 range" {
     const contrast_cfg = getPaletteConfig(.set_contrast);
     try std.testing.expectEqualStrings("Set Contrast", contrast_cfg.title);
     try std.testing.expectEqualStrings(
@@ -630,5 +952,162 @@ test "palette_state - Contrast palette config displays 0.0 to 3.0 range" {
     );
     try std.testing.expect(
         std.mem.indexOf(u8, contrast_cfg.placeholder, "0.0 to 3.0") != null,
+    );
+}
+
+test "loadDirectoryEntries preserves root path '/' on upward nav" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var palette = try PaletteState.init(allocator);
+    defer palette.deinit();
+
+    palette.current_nav_dir.clearRetainingCapacity();
+    try palette.current_nav_dir.appendSlice(allocator, "/home");
+
+    try palette.loadDirectoryEntries(io, "/");
+
+    try std.testing.expectEqualStrings("/", palette.current_nav_dir.items);
+    try std.testing.expectEqualStrings("/", palette.last_nav_dir.items);
+    try std.testing.expectEqualStrings("home", palette.last_child_dir.items);
+}
+
+test "PaletteState directory_navigator mode configuration and item matching" {
+    var palette = try PaletteState.init(std.testing.allocator);
+    defer palette.deinit();
+
+    palette.mode = .directory_navigator;
+    try palette.current_nav_dir.appendSlice(
+        std.testing.allocator,
+        "/home/user/Pictures",
+    );
+
+    try palette.dir_items.append(std.testing.allocator, .{
+        .parent = .{
+            .name = try std.testing.allocator.dupe(u8, ".."),
+            .full_path = try std.testing.allocator.dupe(u8, "/home/user"),
+        },
+    });
+    try palette.dir_items.append(std.testing.allocator, .{
+        .directory = .{
+            .name = try std.testing.allocator.dupe(u8, "Vacation"),
+            .full_path = try std.testing.allocator.dupe(
+                u8,
+                "/home/user/Pictures/Vacation",
+            ),
+            .scan = .{ .scanned = .{ .image_count = 12 } },
+        },
+    });
+
+    try palette.rebuildDirectoryMatches();
+    try std.testing.expectEqual(@as(usize, 2), palette.matches.items.len);
+
+    try palette.query.appendSlice(std.testing.allocator, "Vac");
+    try palette.rebuildDirectoryMatches();
+    try std.testing.expectEqual(@as(usize, 1), palette.matches.items.len);
+    try std.testing.expectEqual(@as(usize, 1), palette.matches.items[0]);
+}
+
+test "getPaletteConfig metadata lookup helper" {
+    const files_cfg = getPaletteConfig(.files);
+    try std.testing.expectEqualStrings("Search Files", files_cfg.title);
+    try std.testing.expectEqualStrings("CommandPalette", files_cfg.element_id);
+
+    const actions_cfg = getPaletteConfig(.actions);
+    try std.testing.expectEqualStrings("Command Palette", actions_cfg.title);
+    try std.testing.expectEqualStrings("ActionPalette", actions_cfg.element_id);
+
+    const bright_cfg = getPaletteConfig(.set_brightness);
+    try std.testing.expectEqualStrings("Set Brightness", bright_cfg.title);
+
+    const contrast_cfg = getPaletteConfig(.set_contrast);
+    try std.testing.expectEqualStrings("Set Contrast", contrast_cfg.title);
+
+    const goto_cfg = getPaletteConfig(.go_to_image);
+    try std.testing.expectEqualStrings("Go to Image", goto_cfg.title);
+
+    const dir_cfg = getPaletteConfig(.directory_navigator);
+    try std.testing.expectEqualStrings("Directory Navigator", dir_cfg.title);
+
+    const slide_cfg = getPaletteConfig(.set_slideshow_interval);
+    try std.testing.expectEqualStrings("Start Slide Show", slide_cfg.title);
+}
+
+test "FuzzyHighlighter.matchFileItem - stem match on jpeg pair" {
+    const alloc = std.testing.allocator;
+    var highlighter = FuzzyHighlighter.init(alloc, 64, 16);
+    defer highlighter.deinit();
+
+    // 1. Direct basename match on "DSC0001.ARW"
+    var m1 = try highlighter.matchFileItem(
+        alloc,
+        "DSC0001.ARW",
+        "/photos/DSC0001.JPG",
+        true,
+        "DSC0001.ARW",
+    );
+    defer m1.deinit(alloc);
+    try std.testing.expectEqual(@as(usize, 11), m1.items.len);
+
+    // 2. JPEG sibling match ("DSC0001.JPG" query on "DSC0001.ARW" basename)
+    // Shared prefix is "DSC0001." (length 8); ".JPG" indices >= 8 are dropped
+    var m2 = try highlighter.matchFileItem(
+        alloc,
+        "DSC0001.ARW",
+        "/photos/DSC0001.JPG",
+        true,
+        "DSC0001.JPG",
+    );
+    defer m2.deinit(alloc);
+    try std.testing.expectEqualSlices(
+        usize,
+        &[_]usize{ 0, 1, 2, 3, 4, 5, 6, 7 },
+        m2.items,
+    );
+
+    // 3. Tag match ("RAW+JPG" query on "DSC0001.ARW" pair) -> no false-positive
+    // highlights on basename characters ('R', 'A', 'W')
+    var m3 = try highlighter.matchFileItem(
+        alloc,
+        "DSC0001.ARW",
+        "/photos/DSC0001.JPG",
+        true,
+        "RAW+JPG",
+    );
+    defer m3.deinit(alloc);
+    try std.testing.expectEqual(@as(usize, 0), m3.items.len);
+}
+
+test "PaletteState.computeWindowMaxHaystack across visible rows" {
+    const alloc = std.testing.allocator;
+    var pal_state = try PaletteState.init(alloc);
+    defer pal_state.deinit();
+    pal_state.mode = .directory_navigator;
+
+    const long_name: [96]u8 = @splat('a');
+    try pal_state.dir_items.append(alloc, .{
+        .directory = .{
+            .name = try alloc.dupe(u8, "short"),
+            .full_path = try alloc.dupe(u8, "/tmp/short"),
+            .scan = .unscanned,
+        },
+    });
+    try pal_state.dir_items.append(alloc, .{
+        .directory = .{
+            .name = try alloc.dupe(u8, &long_name),
+            .full_path = try alloc.dupe(u8, "/tmp/" ++ long_name),
+            .scan = .unscanned,
+        },
+    });
+
+    try std.testing.expectEqual(
+        @as(usize, 64),
+        pal_state.computeWindowMaxHaystack(&.{}, &[_]usize{0}),
+    );
+    try std.testing.expectEqual(
+        @as(usize, 96),
+        pal_state.computeWindowMaxHaystack(&.{}, &[_]usize{ 0, 1 }),
     );
 }

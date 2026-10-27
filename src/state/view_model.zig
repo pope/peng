@@ -1,6 +1,6 @@
 const animation_state = @import("animation_state.zig");
 const navigation = @import("navigation.zig");
-const palette_state = @import("palette_state.zig");
+const palette_pkg = @import("palette");
 const sdl = @import("sdl");
 const std = @import("std");
 const types = @import("types.zig");
@@ -12,6 +12,7 @@ const Classification = types.Classification;
 const MediaEntry = vfs.MediaEntry;
 const MediaItemSlice = navigation.MediaItemSlice;
 const OverlayState = types.OverlayState;
+const PaletteState = palette_pkg.PaletteState;
 const SlideshowMode = types.SlideshowMode;
 const SnackbarDisplay = types.SnackbarDisplay;
 const UiRenderMetricsSnapshot = types.UiRenderMetricsSnapshot;
@@ -55,7 +56,7 @@ pub const UiViewModel = struct {
     overlays: OverlayState,
     window_title: []const u8 = "Peng Image Viewer",
     viewport: ViewportParams,
-    palette: *const palette_state.PaletteState,
+    palette: *const PaletteState,
     snackbar: SnackbarDisplay = .none,
     anim_values: [32]f32 = @splat(0.0),
     debug_show_thumb: bool,

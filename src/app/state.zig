@@ -4,7 +4,6 @@ const image = @import("core/image.zig");
 const input = @import("input");
 const intents = @import("intents");
 const ipc = @import("ipc");
-const palette_module = @import("core/palette.zig");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
@@ -680,7 +679,7 @@ pub const AppState = struct {
     /// Loads directory items into the command palette directory navigator and spawns
     /// a background worker task to asynchronously count images and subdirectories.
     pub fn loadPaletteDirectory(self: *AppState, dir_path: []const u8) !void {
-        try palette_module.loadDirectoryEntries(&self.viewer.ui.palette, self.io, dir_path);
+        try self.viewer.ui.palette.loadDirectoryEntries(self.io, dir_path);
         try workers_mod.spawnPaletteScanForItems(
             &self.workers,
             self.allocator,

@@ -1,10 +1,11 @@
+const palette_pkg = @import("palette");
+const snackbar = @import("snackbar.zig");
 const std = @import("std");
 const types = @import("types.zig");
-const palette_state = @import("palette_state.zig");
-const snackbar = @import("snackbar.zig");
 
-const UiRenderMetrics = types.UiRenderMetrics;
 const OverlayState = types.OverlayState;
+const PaletteState = palette_pkg.PaletteState;
+const UiRenderMetrics = types.UiRenderMetrics;
 
 pub const ScreenshotMode = union(enum) {
     idle,
@@ -14,7 +15,7 @@ pub const ScreenshotMode = union(enum) {
 /// State container managing command palettes, UI overlays, render metrics,
 /// and screenshot capture mode.
 pub const UiState = struct {
-    palette: palette_state.PaletteState,
+    palette: PaletteState,
     overlays: OverlayState = .{},
     snackbar: snackbar.SnackbarState = .{},
     metrics: UiRenderMetrics = .{},
@@ -23,7 +24,7 @@ pub const UiState = struct {
     /// Initializes UI state and allocates command palette storage.
     pub fn init(allocator: std.mem.Allocator) !UiState {
         return .{
-            .palette = try palette_state.PaletteState.init(allocator),
+            .palette = try PaletteState.init(allocator),
         };
     }
 

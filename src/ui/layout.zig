@@ -3,6 +3,7 @@ const edit_panel = @import("edit_panel.zig");
 const graphics = @import("graphics.zig");
 const intents = @import("intents");
 const palette = @import("palette.zig");
+const palette_pkg = @import("palette");
 const renderer = @import("renderer.zig");
 const sdl = @import("sdl");
 const state = @import("state");
@@ -14,6 +15,7 @@ const theme = @import("theme.zig");
 const ElementTag = types.ElementTag;
 const FrameInput = types.FrameInput;
 const MeasureTextUserData = state.MeasureTextUserData;
+const PaletteState = palette_pkg.PaletteState;
 const RenderResources = graphics.RenderResources;
 const UiViewModel = state.UiViewModel;
 const renderEditPanel = edit_panel.renderEditPanel;
@@ -1399,7 +1401,7 @@ test "renderViewport - floating crossfade quads allow Viewport hit-testing" {
         },
         .metadata = .{ .full_dims = .{ .w = 800, .h = 600 } },
     };
-    var pal_state = try state.PaletteState.init(std.testing.allocator);
+    var pal_state = try PaletteState.init(std.testing.allocator);
     defer pal_state.deinit();
     const model = UiViewModel{
         .is_fullscreen = false,

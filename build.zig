@@ -214,17 +214,26 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const palette_module = b.createModule(.{
+        .root_source_file = b.path("src/palette/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    palette_module.addImport("fuzzig", fuzzig_dep.module("fuzzig"));
+    palette_module.addImport("intents", intents_module);
+    palette_module.addImport("vfs", vfs_module);
+
     const state_module = b.createModule(.{
         .root_source_file = b.path("src/state/root.zig"),
         .target = target,
         .optimize = optimize,
     });
     state_module.addImport("intents", intents_module);
+    state_module.addImport("palette", palette_module);
     state_module.addImport("probe", probe_module);
     state_module.addImport("sdl", sdl_module);
     state_module.addImport("triage", triage_module);
     state_module.addImport("vfs", vfs_module);
-    state_module.addImport("fuzzig", fuzzig_dep.module("fuzzig"));
 
     const input_module = b.createModule(.{
         .root_source_file = b.path("src/input/root.zig"),
@@ -244,8 +253,8 @@ pub fn build(b: *std.Build) void {
 
     app_module.addImport("sdl", sdl_module);
     app_module.addImport("zclay", zclay_dep.module("zclay"));
-    app_module.addImport("fuzzig", fuzzig_dep.module("fuzzig"));
     app_module.addImport("intents", intents_module);
+    app_module.addImport("palette", palette_module);
     app_module.addImport("probe", probe_module);
     app_module.addImport("state", state_module);
     app_module.addImport("input", input_module);
@@ -256,6 +265,7 @@ pub fn build(b: *std.Build) void {
     ui_module.addImport("sdl", sdl_module);
     ui_module.addImport("zclay", zclay_dep.module("zclay"));
     ui_module.addImport("intents", intents_module);
+    ui_module.addImport("palette", palette_module);
     ui_module.addImport("state", state_module);
     ui_module.addImport("ipc", ipc_module);
 
@@ -273,7 +283,6 @@ pub fn build(b: *std.Build) void {
     });
     viewer_lib.root_module.addImport("sdl", sdl_module);
     viewer_lib.root_module.addImport("zclay", zclay_dep.module("zclay"));
-    viewer_lib.root_module.addImport("fuzzig", fuzzig_dep.module("fuzzig"));
     viewer_lib.root_module.addImport("app", app_module);
     viewer_lib.root_module.addImport("ui", ui_module);
     viewer_lib.root_module.addImport("state", state_module);
@@ -445,6 +454,12 @@ pub fn build(b: *std.Build) void {
     const run_triage_tests = b.addRunArtifact(triage_tests);
     run_triage_tests.setCwd(b.path("."));
 
+    const palette_tests = b.addTest(.{
+        .root_module = palette_module,
+    });
+    const run_palette_tests = b.addRunArtifact(palette_tests);
+    run_palette_tests.setCwd(b.path("."));
+
     if (target.result.os.tag == .windows) {
         const win_runs = [_]*std.Build.Step.Run{
             run_sdl_tests,
@@ -452,6 +467,7 @@ pub fn build(b: *std.Build) void {
             run_core_tests,
             run_probe_tests,
             run_triage_tests,
+            run_palette_tests,
             run_vfs_tests,
             run_app_tests,
             run_ui_tests,
@@ -478,6 +494,9 @@ pub fn build(b: *std.Build) void {
     const test_core_step = b.step("test-core", "Run core tests");
     test_core_step.dependOn(&run_core_tests.step);
 
+    const test_palette_step = b.step("test-palette", "Run palette tests");
+    test_palette_step.dependOn(&run_palette_tests.step);
+
     const test_triage_step = b.step("test-triage", "Run triage tests");
     test_triage_step.dependOn(&run_triage_tests.step);
 
@@ -489,6 +508,7 @@ pub fn build(b: *std.Build) void {
     test_unit_step.dependOn(&run_state_tests.step);
     test_unit_step.dependOn(&run_core_tests.step);
     test_unit_step.dependOn(&run_probe_tests.step);
+    test_unit_step.dependOn(&run_palette_tests.step);
     test_unit_step.dependOn(&run_triage_tests.step);
     test_unit_step.dependOn(&run_vfs_tests.step);
     test_unit_step.dependOn(&run_app_tests.step);
@@ -509,6 +529,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_state_tests.step);
     test_step.dependOn(&run_core_tests.step);
     test_step.dependOn(&run_probe_tests.step);
+    test_step.dependOn(&run_palette_tests.step);
     test_step.dependOn(&run_triage_tests.step);
     test_step.dependOn(&run_vfs_tests.step);
     test_step.dependOn(&run_app_tests.step);

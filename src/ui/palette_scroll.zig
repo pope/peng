@@ -1,12 +1,13 @@
 const clay = @import("zclay");
 const palette_items = @import("palette_items.zig");
+const palette_pkg = @import("palette");
 const state = @import("state");
 const std = @import("std");
 const text_utils = @import("text_utils.zig");
 const theme = @import("theme.zig");
 
 const MeasureTextUserData = state.MeasureTextUserData;
-const PaletteConfig = state.PaletteConfig;
+const PaletteConfig = palette_pkg.PaletteConfig;
 const remapMiddleTruncatedMatches = text_utils.remapMiddleTruncatedMatches;
 const renderFuzzyMatchText = palette_items.renderFuzzyMatchText;
 const truncateDirectory = text_utils.truncateDirectory;
