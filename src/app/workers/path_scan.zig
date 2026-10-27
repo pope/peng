@@ -66,7 +66,12 @@ pub fn scanDirectoryThreadSafe(
     dir_path: []const u8,
     stack_raw_jpeg: bool,
 ) void {
-    var dir = std.Io.Dir.openDir(std.Io.Dir.cwd(), io, dir_path, .{ .iterate = true }) catch |err| {
+    var dir = std.Io.Dir.openDir(
+        std.Io.Dir.cwd(),
+        io,
+        dir_path,
+        .{ .iterate = true },
+    ) catch |err| {
         std.log.warn(
             "scanDirectoryThreadSafe: openDir failed for '{s}': {any}",
             .{ dir_path, err },
@@ -75,12 +80,13 @@ pub fn scanDirectoryThreadSafe(
     };
     defer dir.close(io);
 
+    var scratch_arena = std.heap.ArenaAllocator.init(gpa);
+    defer scratch_arena.deinit();
+    const scratch_alloc = scratch_arena.allocator();
+
     var it = dir.iterate();
     var dir_entries: std.ArrayList(MediaEntry) = .empty;
-    defer {
-        for (dir_entries.items) |item| item.deinit(gpa);
-        dir_entries.deinit(gpa);
-    }
+    defer dir_entries.deinit(scratch_alloc);
 
     while (it.next(io) catch |err| blk: {
         std.log.warn(
@@ -93,7 +99,7 @@ pub fn scanDirectoryThreadSafe(
         if (core_fs.isImageFile(entry.name)) {
             if (core_fs.resolveEntryKind(dir, io, entry) == .file) {
                 const full_path = std.Io.Dir.path.join(
-                    gpa,
+                    scratch_alloc,
                     &.{ dir_path, entry.name },
                 ) catch |err| {
                     std.log.err(
@@ -103,14 +109,13 @@ pub fn scanDirectoryThreadSafe(
                     continue;
                 };
                 dir_entries.append(
-                    gpa,
+                    scratch_alloc,
                     .{ .filesystem = .{ .path = full_path } },
                 ) catch |err| {
                     std.log.err(
                         "Failed to append path '{s}': {}",
                         .{ full_path, err },
                     );
-                    gpa.free(full_path);
                     continue;
                 };
             }
@@ -163,15 +168,24 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
     const cancel = args.cancelToken();
     if (cancel.isCanceled()) return;
 
+    var scan_arena = std.heap.ArenaAllocator.init(gpa);
+    var owns_scan_arena = true;
+    defer if (owns_scan_arena) scan_arena.deinit();
+    const scan_alloc = scan_arena.allocator();
+
     var dir_entries: std.ArrayList(MediaEntry) = .empty;
-    defer {
-        for (dir_entries.items) |item| item.deinit(gpa);
-        dir_entries.deinit(gpa);
-    }
 
     if (core_fs.isCbzFile(target_path)) {
-        core_fs.scanCbzImageEntries(gpa, io, target_path, &dir_entries) catch |err| {
-            std.log.err("pathScanWorker: failed to scan CBZ '{s}': {}", .{ target_path, err });
+        core_fs.scanCbzImageEntries(
+            scan_alloc,
+            io,
+            target_path,
+            &dir_entries,
+        ) catch |err| {
+            std.log.err(
+                "pathScanWorker: failed to scan CBZ '{s}': {}",
+                .{ target_path, err },
+            );
             return;
         };
     } else {
@@ -197,14 +211,17 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
             const entry = (it.next(io) catch |err| switch (err) {
                 error.Canceled => break,
                 else => {
-                    std.log.warn("pathScanWorker iterate failed for '{s}': {}", .{ dir_path, err });
+                    std.log.warn(
+                        "pathScanWorker iterate failed for '{s}': {}",
+                        .{ dir_path, err },
+                    );
                     break;
                 },
             }) orelse break;
             if (core_fs.isImageFile(entry.name)) {
                 if (core_fs.resolveEntryKind(dir, io, entry) == .file) {
                     const full_path = std.Io.Dir.path.join(
-                        gpa,
+                        scan_alloc,
                         &.{ dir_path, entry.name },
                     ) catch |err| {
                         std.log.err(
@@ -214,14 +231,13 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
                         continue;
                     };
                     dir_entries.append(
-                        gpa,
+                        scan_alloc,
                         .{ .filesystem = .{ .path = full_path } },
                     ) catch |err| {
                         std.log.err(
                             "Failed to append path '{s}': {}",
                             .{ full_path, err },
                         );
-                        gpa.free(full_path);
                         continue;
                     };
                 }
@@ -234,7 +250,10 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
     // Sort entries alphabetically by basename
     std.mem.sort(MediaEntry, dir_entries.items, {}, struct {
         fn lessThan(_: void, a: MediaEntry, b: MediaEntry) bool {
-            return std.ascii.lessThanIgnoreCase(a.getBasename(), b.getBasename());
+            return std.ascii.lessThanIgnoreCase(
+                a.getBasename(),
+                b.getBasename(),
+            );
         }
     }.lessThan);
 
@@ -243,24 +262,21 @@ pub fn pathScanWorker(args: *PathScanArgs) void {
 
     if (cancel.isCanceled()) return;
 
-    const dup_target = gpa.dupe(u8, target_path) catch return;
-    const paths_slice = dir_entries.toOwnedSlice(gpa) catch {
-        gpa.free(dup_target);
-        return;
-    };
+    const dup_target = scan_alloc.dupe(u8, target_path) catch return;
+    const paths_slice = dir_entries.toOwnedSlice(scan_alloc) catch return;
 
     workers.event_queue.push(gpa, io, .{
         .directory_scan_result = cancel.wrap(events.DirectoryScanResultPayload{
+            .arena = scan_arena,
             .target_path = dup_target,
             .is_dir = is_dir,
             .paths = paths_slice,
         }),
     }) catch |err| {
         std.log.err("Failed to push directory_scan_result event: {}", .{err});
-        gpa.free(dup_target);
-        for (paths_slice) |item| item.deinit(gpa);
-        gpa.free(paths_slice);
+        return;
     };
+    owns_scan_arena = false;
 }
 
 test "scanDirectoryThreadSafe - discovers and sorts images, ignores non-images" {
@@ -364,6 +380,156 @@ test "pathScanWorker - directory scan result event generation" {
     _ = workers.active_threads.fetchAdd(1, .monotonic);
     pathScanWorker(stale_args);
     try std.testing.expectEqual(@as(usize, 0), active_scans.load(.acquire));
+    try workers.event_queue.drain(allocator, io, &batch);
+    try std.testing.expectEqual(@as(usize, 0), batch.items.len);
+}
+
+const CancellingAllocator = struct {
+    backing: std.mem.Allocator,
+    cancel_gen: *std.atomic.Value(usize),
+    trigger_after_allocs: usize = 3,
+    alloc_count: usize = 0,
+
+    /// Returns an Allocator interface wrapping this CancellingAllocator.
+    pub fn allocator(self: *CancellingAllocator) std.mem.Allocator {
+        return .{
+            .ptr = self,
+            .vtable = &.{
+                .alloc = alloc,
+                .resize = resize,
+                .remap = remap,
+                .free = free,
+            },
+        };
+    }
+
+    fn alloc(
+        ctx: *anyopaque,
+        len: usize,
+        alignment: std.mem.Alignment,
+        ra: usize,
+    ) ?[*]u8 {
+        const self: *CancellingAllocator = @ptrCast(@alignCast(ctx));
+        const res = self.backing.rawAlloc(
+            len,
+            alignment,
+            ra,
+        ) orelse return null;
+        self.alloc_count += 1;
+        if (self.alloc_count >= self.trigger_after_allocs) {
+            self.cancel_gen.store(self.cancel_gen.load(.acquire) + 1, .release);
+        }
+        return res;
+    }
+
+    fn resize(
+        ctx: *anyopaque,
+        memory: []u8,
+        alignment: std.mem.Alignment,
+        new_len: usize,
+        ra: usize,
+    ) bool {
+        const self: *CancellingAllocator = @ptrCast(@alignCast(ctx));
+        return self.backing.rawResize(memory, alignment, new_len, ra);
+    }
+
+    fn remap(
+        ctx: *anyopaque,
+        memory: []u8,
+        alignment: std.mem.Alignment,
+        new_len: usize,
+        ra: usize,
+    ) ?[*]u8 {
+        const self: *CancellingAllocator = @ptrCast(@alignCast(ctx));
+        return self.backing.rawRemap(memory, alignment, new_len, ra);
+    }
+
+    fn free(
+        ctx: *anyopaque,
+        old_mem: []u8,
+        alignment: std.mem.Alignment,
+        ra: usize,
+    ) void {
+        const self: *CancellingAllocator = @ptrCast(@alignCast(ctx));
+        self.backing.rawFree(old_mem, alignment, ra);
+    }
+};
+
+test "pathScanWorker cooperative cancellation cleans up scan_arena" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var workers = WorkerManager{};
+    defer workers.deinit(allocator, io);
+
+    var cur_gen = std.atomic.Value(usize).init(10);
+    var active_scans = std.atomic.Value(usize).init(1);
+
+    var batch: std.ArrayList(events.BackgroundEvent) = .empty;
+    defer {
+        for (batch.items) |*ev| ev.deinit(allocator);
+        batch.deinit(allocator);
+    }
+
+    // 1. Directory scan mid-scan cooperative cancellation:
+    // CancellingAllocator triggers generation increment after scan_arena
+    // genuinely allocates heap memory for discovered entries.
+    var dir_canceller = CancellingAllocator{
+        .backing = allocator,
+        .cancel_gen = &cur_gen,
+        .trigger_after_allocs = 3,
+    };
+    const dir_gpa = dir_canceller.allocator();
+    const dir_target = try dir_gpa.dupe(u8, "testfiles/images");
+    const dir_args = try dir_gpa.create(PathScanArgs);
+    dir_args.* = .{
+        .workers = &workers,
+        .allocator = dir_gpa,
+        .io = io,
+        .target_path = dir_target,
+        .is_dir = true,
+        .active_file_scans = &active_scans,
+        .generation = 10,
+        .current_generation = &cur_gen,
+    };
+
+    _ = workers.active_threads.fetchAdd(1, .monotonic);
+    pathScanWorker(dir_args);
+
+    try std.testing.expectEqual(@as(usize, 0), active_scans.load(.acquire));
+    try std.testing.expect(dir_canceller.alloc_count >= 3);
+    try workers.event_queue.drain(allocator, io, &batch);
+    try std.testing.expectEqual(@as(usize, 0), batch.items.len);
+
+    // 2. CBZ archive scan mid-scan cooperative cancellation:
+    // CancellingAllocator triggers generation increment while
+    // scanCbzImageEntries is allocating entries in scan_arena.
+    cur_gen.store(20, .release);
+    active_scans.store(1, .release);
+    var cbz_canceller = CancellingAllocator{
+        .backing = allocator,
+        .cancel_gen = &cur_gen,
+        .trigger_after_allocs = 3,
+    };
+    const cbz_gpa = cbz_canceller.allocator();
+    const cbz_target = try cbz_gpa.dupe(u8, "testfiles/sample.cbz");
+    const cbz_args = try cbz_gpa.create(PathScanArgs);
+    cbz_args.* = .{
+        .workers = &workers,
+        .allocator = cbz_gpa,
+        .io = io,
+        .target_path = cbz_target,
+        .is_dir = false,
+        .active_file_scans = &active_scans,
+        .generation = 20,
+        .current_generation = &cur_gen,
+    };
+
+    _ = workers.active_threads.fetchAdd(1, .monotonic);
+    pathScanWorker(cbz_args);
+
+    try std.testing.expectEqual(@as(usize, 0), active_scans.load(.acquire));
+    try std.testing.expect(cbz_canceller.alloc_count >= 3);
     try workers.event_queue.drain(allocator, io, &batch);
     try std.testing.expectEqual(@as(usize, 0), batch.items.len);
 }

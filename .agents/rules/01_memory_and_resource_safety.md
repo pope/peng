@@ -26,6 +26,18 @@
     via `setCapacity` (or `clearAndFree` when `len == 0`) whenever capacity
     exceeds $2 \times \text{len}$ and exceeds 64 elements, avoiding retention
     of peak capacity from massive directories.
+- **Autonomous Worker Arenas for Batched Event Payloads**:
+  - `DirectoryScanResultPayload` embeds a dedicated `std.heap.ArenaAllocator`
+    initialized from `gpa` in `pathScanWorker`.
+  - All joined directory paths, CBZ archive entry names, and the final `paths`
+    slice are allocated from the arena allocator (`scan_alloc`).
+  - On the main thread, `BackgroundEvent.deinit` invokes
+    `res.unchecked_payload.deinit()` to release the entire payload in **O(1)**
+    without per-item freeing loops.
+  - On worker cancellation or queue push failure, `scan_arena.deinit()` executes
+    in O(1), ensuring zero memory leaks.
+  - In `scanDirectoryThreadSafe`, use a local scratch `std.heap.ArenaAllocator`
+    so intermediate path strings are released in O(1) via `defer`.
 - **Stack Allocation vs. Arena Decision Matrix**:
   - *Dynamic / Unbounded Collections* (prefetch queues, scissor stacks, match
     lists): NEVER use fixed stack arrays `[N]T` that risk silent truncation or

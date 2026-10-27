@@ -179,7 +179,7 @@ fn parseArchiveEntryPath(path: []const u8) ?ArchiveEntryPath {
 /// Scans central directory headers in a CBZ ZIP archive, appending all
 /// discovered image entries to `list`.
 pub fn scanCbzImageEntries(
-    gpa: std.mem.Allocator,
+    allocator: std.mem.Allocator,
     io: std.Io,
     cbz_path: []const u8,
     list: *std.ArrayList(MediaEntry),
@@ -197,13 +197,13 @@ pub fn scanCbzImageEntries(
     var iterator = try std.zip.Iterator.init(&f_reader);
 
     var stack_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    var fb: std.heap.BufferFirstAllocator = .init(&stack_buf, gpa);
+    var fb: std.heap.BufferFirstAllocator = .init(&stack_buf, allocator);
     const temp_alloc = fb.allocator();
 
     var entries: std.ArrayList(MediaEntry) = .empty;
     errdefer {
-        for (entries.items) |item| item.deinit(gpa);
-        entries.deinit(gpa);
+        for (entries.items) |item| item.deinit(allocator);
+        entries.deinit(allocator);
     }
 
     while (try iterator.next()) |entry| {
@@ -219,13 +219,13 @@ pub fn scanCbzImageEntries(
 
         if (!isImageFile(entry_name)) continue;
 
-        const arch_path_dup = try gpa.dupe(u8, cbz_path);
-        errdefer gpa.free(arch_path_dup);
+        const arch_path_dup = try allocator.dupe(u8, cbz_path);
+        errdefer allocator.free(arch_path_dup);
 
-        const entry_name_dup = try gpa.dupe(u8, entry_name);
-        errdefer gpa.free(entry_name_dup);
+        const entry_name_dup = try allocator.dupe(u8, entry_name);
+        errdefer allocator.free(entry_name_dup);
 
-        try entries.append(gpa, .{
+        try entries.append(allocator, .{
             .archive_entry = .{
                 .archive_path = arch_path_dup,
                 .entry_name = entry_name_dup,
@@ -247,8 +247,8 @@ pub fn scanCbzImageEntries(
         }
     }.lessThan);
 
-    try list.appendSlice(gpa, entries.items);
-    entries.deinit(gpa);
+    try list.appendSlice(allocator, entries.items);
+    entries.deinit(allocator);
 }
 
 fn isAllDotDots(path: []const u8) bool {
@@ -664,6 +664,33 @@ test "scanCbzImageEntries on sample archive" {
         entries.items[0].archive_entry.entry_name,
     );
     try std.testing.expect(entries.items[0].archive_entry.seek_info == .indexed);
+}
+
+test "scanCbzImageEntries utilizes scan arena" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var scan_arena = std.heap.ArenaAllocator.init(allocator);
+    defer scan_arena.deinit();
+    const scan_alloc = scan_arena.allocator();
+
+    var entries: std.ArrayList(MediaEntry) = .empty;
+    defer entries.deinit(scan_alloc);
+
+    try scanCbzImageEntries(
+        scan_alloc,
+        io,
+        "testfiles/sample.cbz",
+        &entries,
+    );
+    try std.testing.expectEqual(@as(usize, 2), entries.items.len);
+    try std.testing.expectEqualStrings(
+        "000_0_1024x682.jpg",
+        entries.items[0].archive_entry.entry_name,
+    );
+    try std.testing.expect(
+        entries.items[0].archive_entry.seek_info == .indexed,
+    );
 }
 
 test "scanDirectoryEntries includes CBZ files and countFolderContents counts CBZ images" {

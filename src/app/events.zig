@@ -798,15 +798,18 @@ test "drainWorkerEvents - directory_scan_result and ipc_command" {
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    const target_path = try allocator.dupe(u8, "/imgs/b.jpg");
-    const path0 = try allocator.dupe(u8, "/imgs/a.jpg");
-    const path1 = try allocator.dupe(u8, "/imgs/b.jpg");
-    const paths_slice = try allocator.alloc(MediaEntry, 2);
+    var scan_arena = std.heap.ArenaAllocator.init(allocator);
+    const scan_alloc = scan_arena.allocator();
+    const target_path = try scan_alloc.dupe(u8, "/imgs/b.jpg");
+    const path0 = try scan_alloc.dupe(u8, "/imgs/a.jpg");
+    const path1 = try scan_alloc.dupe(u8, "/imgs/b.jpg");
+    const paths_slice = try scan_alloc.alloc(MediaEntry, 2);
     paths_slice[0] = .{ .filesystem = .{ .path = path0 } };
     paths_slice[1] = .{ .filesystem = .{ .path = path1 } };
 
     try state.workers.event_queue.push(allocator, io, .{
         .directory_scan_result = .init(0, .{
+            .arena = scan_arena,
             .target_path = target_path,
             .is_dir = false,
             .paths = paths_slice,
@@ -839,15 +842,18 @@ test "drainWorkerEvents - directory_scan_result is_dir trims excess capacity" {
     try state.viewer.navigation.items.ensureTotalCapacity(allocator, 1000);
     try std.testing.expect(state.viewer.navigation.items.capacity >= 1000);
 
-    const target_path = try allocator.dupe(u8, "/imgs");
-    const path0 = try allocator.dupe(u8, "/imgs/a.jpg");
-    const path1 = try allocator.dupe(u8, "/imgs/b.jpg");
-    const paths_slice = try allocator.alloc(MediaEntry, 2);
+    var scan_arena = std.heap.ArenaAllocator.init(allocator);
+    const scan_alloc = scan_arena.allocator();
+    const target_path = try scan_alloc.dupe(u8, "/imgs");
+    const path0 = try scan_alloc.dupe(u8, "/imgs/a.jpg");
+    const path1 = try scan_alloc.dupe(u8, "/imgs/b.jpg");
+    const paths_slice = try scan_alloc.alloc(MediaEntry, 2);
     paths_slice[0] = .{ .filesystem = .{ .path = path0 } };
     paths_slice[1] = .{ .filesystem = .{ .path = path1 } };
 
     try state.workers.event_queue.push(allocator, io, .{
         .directory_scan_result = .init(0, .{
+            .arena = scan_arena,
             .target_path = target_path,
             .is_dir = true,
             .paths = paths_slice,
@@ -1291,13 +1297,22 @@ test "drainWorkerEvents - single-file scan remaps or invalidates slot 0" {
     });
     const gen_before = state.cache.generation.load(.acquire);
 
-    const paths1 = try allocator.alloc(MediaEntry, 3);
-    paths1[0] = .{ .filesystem = .{ .path = try allocator.dupe(u8, "a.jpg") } };
-    paths1[1] = .{ .filesystem = .{ .path = try allocator.dupe(u8, "b.jpg") } };
-    paths1[2] = .{ .filesystem = .{ .path = try allocator.dupe(u8, "c.jpg") } };
+    var scan_arena1 = std.heap.ArenaAllocator.init(allocator);
+    const scan_alloc1 = scan_arena1.allocator();
+    const paths1 = try scan_alloc1.alloc(MediaEntry, 3);
+    paths1[0] = .{
+        .filesystem = .{ .path = try scan_alloc1.dupe(u8, "a.jpg") },
+    };
+    paths1[1] = .{
+        .filesystem = .{ .path = try scan_alloc1.dupe(u8, "b.jpg") },
+    };
+    paths1[2] = .{
+        .filesystem = .{ .path = try scan_alloc1.dupe(u8, "c.jpg") },
+    };
     try state.workers.event_queue.push(allocator, io, .{
         .directory_scan_result = .init(0, .{
-            .target_path = try allocator.dupe(u8, "c.jpg"),
+            .arena = scan_arena1,
+            .target_path = try scan_alloc1.dupe(u8, "c.jpg"),
             .is_dir = false,
             .paths = paths1,
         }),
@@ -1332,12 +1347,19 @@ test "drainWorkerEvents - single-file scan remaps or invalidates slot 0" {
         .inflight = .{ .has_thread = true },
     });
 
-    const paths2 = try allocator.alloc(MediaEntry, 2);
-    paths2[0] = .{ .filesystem = .{ .path = try allocator.dupe(u8, "a.jpg") } };
-    paths2[1] = .{ .filesystem = .{ .path = try allocator.dupe(u8, "b.jpg") } };
+    var scan_arena2 = std.heap.ArenaAllocator.init(allocator);
+    const scan_alloc2 = scan_arena2.allocator();
+    const paths2 = try scan_alloc2.alloc(MediaEntry, 2);
+    paths2[0] = .{
+        .filesystem = .{ .path = try scan_alloc2.dupe(u8, "a.jpg") },
+    };
+    paths2[1] = .{
+        .filesystem = .{ .path = try scan_alloc2.dupe(u8, "b.jpg") },
+    };
     try state.workers.event_queue.push(allocator, io, .{
         .directory_scan_result = .init(gen_before, .{
-            .target_path = try allocator.dupe(u8, "b.jpg"),
+            .arena = scan_arena2,
+            .target_path = try scan_alloc2.dupe(u8, "b.jpg"),
             .is_dir = false,
             .paths = paths2,
         }),
@@ -1365,13 +1387,16 @@ test "drainWorkerEvents - discards stale directory_scan_result" {
     defer state.deinit();
 
     const cur_gen = state.cache.advanceGeneration();
-    const stale_paths = try allocator.alloc(MediaEntry, 1);
+    var scan_arena = std.heap.ArenaAllocator.init(allocator);
+    const scan_alloc = scan_arena.allocator();
+    const stale_paths = try scan_alloc.alloc(MediaEntry, 1);
     stale_paths[0] = .{
-        .filesystem = .{ .path = try allocator.dupe(u8, "stale.jpg") },
+        .filesystem = .{ .path = try scan_alloc.dupe(u8, "stale.jpg") },
     };
     try state.workers.event_queue.push(allocator, io, .{
         .directory_scan_result = .init(cur_gen - 1, .{
-            .target_path = try allocator.dupe(u8, "."),
+            .arena = scan_arena,
+            .target_path = try scan_alloc.dupe(u8, "."),
             .is_dir = true,
             .paths = stale_paths,
         }),
@@ -1441,15 +1466,22 @@ test "drainWorkerEvents - directory_scan_result updates open .files palette" {
         state.viewer.ui.palette.matches.items.len,
     );
 
-    const items = try allocator.alloc(MediaEntry, 2);
-    items[0] = .{ .filesystem = .{ .path = try allocator.dupe(u8, "a.jpg") } };
-    items[1] = .{ .filesystem = .{ .path = try allocator.dupe(u8, "b.jpg") } };
-    const target_dup = try allocator.dupe(u8, "/test");
+    var scan_arena = std.heap.ArenaAllocator.init(allocator);
+    const scan_alloc = scan_arena.allocator();
+    const items = try scan_alloc.alloc(MediaEntry, 2);
+    items[0] = .{
+        .filesystem = .{ .path = try scan_alloc.dupe(u8, "a.jpg") },
+    };
+    items[1] = .{
+        .filesystem = .{ .path = try scan_alloc.dupe(u8, "b.jpg") },
+    };
+    const target_dup = try scan_alloc.dupe(u8, "/test");
 
     try state.workers.event_queue.push(allocator, io, .{
         .directory_scan_result = .init(
             state.cache.generation.load(.acquire),
             .{
+                .arena = scan_arena,
                 .paths = items,
                 .target_path = target_dup,
                 .is_dir = true,
@@ -1543,16 +1575,19 @@ test "DirectoryScanResultEvent - Preserves MediaId for initial target file" {
     const cur_gen = state.cache.generation.load(.acquire);
 
     // 2. Directory scan result returns 100 files with img_050.jpg at index 49
-    const paths = try allocator.alloc(MediaEntry, 100);
+    var scan_arena = std.heap.ArenaAllocator.init(allocator);
+    const scan_alloc = scan_arena.allocator();
+    const paths = try scan_alloc.alloc(MediaEntry, 100);
     for (paths, 0..) |*p, i| {
         var buf: [32]u8 = undefined;
         const name = try std.fmt.bufPrint(&buf, "img_{d:0>3}.jpg", .{i + 1});
-        p.* = .{ .filesystem = .{ .path = try allocator.dupe(u8, name) } };
+        p.* = .{ .filesystem = .{ .path = try scan_alloc.dupe(u8, name) } };
     }
 
     try state.workers.event_queue.push(allocator, io, .{
         .directory_scan_result = .init(cur_gen, .{
-            .target_path = try allocator.dupe(u8, "img_050.jpg"),
+            .arena = scan_arena,
+            .target_path = try scan_alloc.dupe(u8, "img_050.jpg"),
             .is_dir = false,
             .paths = paths,
         }),

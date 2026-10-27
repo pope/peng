@@ -168,11 +168,18 @@ pub const PathDiscoveredPayload = struct {
 };
 
 /// Payload delivering the complete batch of discovered media entries from an
-/// asynchronous directory scan.
+/// asynchronous directory scan, backed by an autonomous worker arena for O(1)
+/// main-thread teardown.
 pub const DirectoryScanResultPayload = struct {
+    arena: std.heap.ArenaAllocator,
     target_path: []const u8,
     is_dir: bool,
     paths: []MediaEntry,
+
+    /// Releases all paths, string allocations, and backing arena pages in O(1).
+    pub fn deinit(self: DirectoryScanResultPayload) void {
+        self.arena.deinit();
+    }
 };
 
 /// Payload delivering the scan status (counts, `.permission_denied`, or
@@ -215,9 +222,7 @@ pub const BackgroundEvent = union(enum) {
             },
             .path_discovered => |p| p.entry.deinit(allocator),
             .directory_scan_result => |res| {
-                allocator.free(res.unchecked_payload.target_path);
-                for (res.unchecked_payload.paths) |e| e.deinit(allocator);
-                allocator.free(res.unchecked_payload.paths);
+                res.unchecked_payload.deinit();
             },
             .palette_folder_count => |cnt| {
                 allocator.free(cnt.unchecked_payload.path);
@@ -458,4 +463,28 @@ test "SlotBound - resolve rejects payload when job epoch has advanced" {
 
     cache.get(key).?.inflight.?.job_epoch = 2;
     try std.testing.expect(bound.resolve(&cache) == null);
+}
+
+test "DirectoryScanResultPayload O(1) deinit without memory leaks" {
+    const allocator = std.testing.allocator;
+    var scan_arena = std.heap.ArenaAllocator.init(allocator);
+    const scan_alloc = scan_arena.allocator();
+
+    const count: usize = 10000;
+    const paths = try scan_alloc.alloc(MediaEntry, count);
+    for (paths, 0..) |*p, i| {
+        var buf: [32]u8 = undefined;
+        const name = try std.fmt.bufPrint(&buf, "img_{d:0>5}.jpg", .{i});
+        p.* = .{ .filesystem = .{ .path = try scan_alloc.dupe(u8, name) } };
+    }
+
+    const target = try scan_alloc.dupe(u8, "img_00500.jpg");
+    const payload = DirectoryScanResultPayload{
+        .arena = scan_arena,
+        .target_path = target,
+        .is_dir = false,
+        .paths = paths,
+    };
+
+    payload.deinit();
 }
