@@ -1940,7 +1940,7 @@ test "executeIntent - server_mode hides on quit and exits on quit_server" {
     );
     try std.testing.expectEqual(
         @as(usize, 1),
-        app_st.viewer.navigation.path_classifications.count(),
+        app_st.viewer.navigation.triage.count(),
     );
 
     // .quit_server unconditionally terminates the server

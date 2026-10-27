@@ -188,6 +188,14 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    const triage_module = b.createModule(.{
+        .root_source_file = b.path("src/triage/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    triage_module.addImport("intents", intents_module);
+    triage_module.addImport("vfs", vfs_module);
+
     const app_module = b.createModule(.{
         .root_source_file = b.path("src/app/root.zig"),
         .target = target,
@@ -214,6 +222,7 @@ pub fn build(b: *std.Build) void {
     state_module.addImport("intents", intents_module);
     state_module.addImport("probe", probe_module);
     state_module.addImport("sdl", sdl_module);
+    state_module.addImport("triage", triage_module);
     state_module.addImport("vfs", vfs_module);
     state_module.addImport("fuzzig", fuzzig_dep.module("fuzzig"));
 
@@ -241,6 +250,7 @@ pub fn build(b: *std.Build) void {
     app_module.addImport("state", state_module);
     app_module.addImport("input", input_module);
     app_module.addImport("ipc", ipc_module);
+    app_module.addImport("triage", triage_module);
     app_module.addImport("vfs", vfs_module);
 
     ui_module.addImport("sdl", sdl_module);
@@ -408,6 +418,7 @@ pub fn build(b: *std.Build) void {
     core_module.addImport("state", state_module);
     core_module.addImport("probe", probe_module);
     core_module.addImport("sdl", sdl_module);
+    core_module.addImport("triage", triage_module);
     core_module.addImport("vfs", vfs_module);
 
     const core_tests = b.addTest(.{
@@ -428,12 +439,19 @@ pub fn build(b: *std.Build) void {
     const run_vfs_tests = b.addRunArtifact(vfs_tests);
     run_vfs_tests.setCwd(b.path("."));
 
+    const triage_tests = b.addTest(.{
+        .root_module = triage_module,
+    });
+    const run_triage_tests = b.addRunArtifact(triage_tests);
+    run_triage_tests.setCwd(b.path("."));
+
     if (target.result.os.tag == .windows) {
         const win_runs = [_]*std.Build.Step.Run{
             run_sdl_tests,
             run_state_tests,
             run_core_tests,
             run_probe_tests,
+            run_triage_tests,
             run_vfs_tests,
             run_app_tests,
             run_ui_tests,
@@ -460,6 +478,9 @@ pub fn build(b: *std.Build) void {
     const test_core_step = b.step("test-core", "Run core tests");
     test_core_step.dependOn(&run_core_tests.step);
 
+    const test_triage_step = b.step("test-triage", "Run triage tests");
+    test_triage_step.dependOn(&run_triage_tests.step);
+
     const test_vfs_step = b.step("test-vfs", "Run vfs tests");
     test_vfs_step.dependOn(&run_vfs_tests.step);
 
@@ -468,6 +489,7 @@ pub fn build(b: *std.Build) void {
     test_unit_step.dependOn(&run_state_tests.step);
     test_unit_step.dependOn(&run_core_tests.step);
     test_unit_step.dependOn(&run_probe_tests.step);
+    test_unit_step.dependOn(&run_triage_tests.step);
     test_unit_step.dependOn(&run_vfs_tests.step);
     test_unit_step.dependOn(&run_app_tests.step);
     test_unit_step.dependOn(&run_ui_tests.step);
@@ -487,6 +509,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_state_tests.step);
     test_step.dependOn(&run_core_tests.step);
     test_step.dependOn(&run_probe_tests.step);
+    test_step.dependOn(&run_triage_tests.step);
     test_step.dependOn(&run_vfs_tests.step);
     test_step.dependOn(&run_app_tests.step);
     test_step.dependOn(&run_ui_tests.step);

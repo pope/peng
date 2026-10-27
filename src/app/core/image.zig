@@ -2,6 +2,7 @@ const probe = @import("probe");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
+const triage = @import("triage");
 const vfs = @import("vfs");
 
 const ArchiveMediaEntry = vfs.ArchiveMediaEntry;
@@ -20,6 +21,7 @@ const Orientation = probe.Orientation;
 const parseImageDimensions = probe.parseImageDimensions;
 const RawMetadata = state_pkg.RawMetadata;
 const ResidentAsset = state_pkg.ResidentAsset;
+const VisibleNeighbors = triage.VisibleNeighbors;
 const ZipSeekOffsets = vfs.ZipSeekOffsets;
 
 /// Unique lookup key identifying a cached image slot by its stable MediaId
@@ -68,7 +70,7 @@ pub const JobTicket = struct {
 pub const ImageCache = struct {
     slots: std.MultiArrayList(CacheSlot) = .{},
     generation: std.atomic.Value(usize) = .init(0),
-    vram_capped_neighbors: ?state_pkg.VisibleNeighbors = null,
+    vram_capped_neighbors: ?VisibleNeighbors = null,
     vram_capped_prev_index: ?usize = null,
     max_prefetch_dist: usize = 2,
 
@@ -304,7 +306,7 @@ pub const ImageCache = struct {
     /// `neighbors` without exceeding the VRAM budget.
     pub fn getMaxPrefetchDist(
         self: *const ImageCache,
-        neighbors: state_pkg.VisibleNeighbors,
+        neighbors: VisibleNeighbors,
     ) usize {
         if (self.vram_capped_neighbors) |capped| {
             if (std.meta.eql(capped, neighbors)) {
@@ -328,7 +330,7 @@ pub const ImageCache = struct {
         self: *ImageCache,
         gpu_device: ?sdl.gpu.Device,
         nav: anytype,
-        neighbors_opt: ?state_pkg.VisibleNeighbors,
+        neighbors_opt: ?VisibleNeighbors,
         protected_prev_index: ?usize,
         total_items: usize,
         max_bytes: usize,
@@ -409,7 +411,7 @@ pub const ImageCache = struct {
     pub fn hasUnreadyPrefetchSlots(
         self: *const ImageCache,
         nav: anytype,
-        neighbors: state_pkg.VisibleNeighbors,
+        neighbors: VisibleNeighbors,
         has_gpu: bool,
     ) bool {
         const max_dist = self.getMaxPrefetchDist(neighbors);
@@ -1870,7 +1872,7 @@ test "enforceVramBudget - distant eviction, circular distance, and neighbor prot
         }
     }.create;
 
-    const n10 = state_pkg.VisibleNeighbors.fromRawIndex(0, 10);
+    const n10 = VisibleNeighbors.fromRawIndex(0, 10);
 
     // total_items = 10, current = 0
     // Slots: 0 (dist 0), 1 (dist 1), 2 (dist 2), 5 (dist 5), 9 (dist 1 wrap)
@@ -1947,7 +1949,7 @@ test "enforceVramBudget - distant eviction, circular distance, and neighbor prot
     );
 
     // 4. Test robustness against linear_dist > total_items
-    const n5 = state_pkg.VisibleNeighbors.fromRawIndex(0, 5);
+    const n5 = VisibleNeighbors.fromRawIndex(0, 5);
     _ = try cache.appendSlot(
         allocator,
         mock_nav.getIdAt(99).?,
@@ -2005,7 +2007,7 @@ test "hasUnreadyPrefetchSlots" {
     };
     const mock_nav = MockNav{};
 
-    const n5 = state_pkg.VisibleNeighbors.fromRawIndex(0, 5);
+    const n5 = VisibleNeighbors.fromRawIndex(0, 5);
 
     // Total 5 items, current 0 -> desired: 0, 1, 2, 4, 3
     // Empty cache -> unready

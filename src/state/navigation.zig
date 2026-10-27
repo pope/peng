@@ -1,4 +1,5 @@
 const std = @import("std");
+const triage = @import("triage");
 const types = @import("types.zig");
 const vfs = @import("vfs");
 
@@ -6,219 +7,9 @@ const Classification = types.Classification;
 const MediaEntry = vfs.MediaEntry;
 const MediaId = types.MediaId;
 const SlideshowMode = types.SlideshowMode;
+const TriageMap = triage.TriageMap;
 const ViewMode = types.ViewMode;
-
-const Vec32 = @Vector(32, u8);
-
-/// Finds the next index in `[start, end)` matching the active view mode using 256-bit SIMD.
-pub fn findNextVisibleInRange(
-    classifications: []const Classification,
-    start: usize,
-    end: usize,
-    mode: ViewMode,
-) ?usize {
-    if (start >= end or start >= classifications.len) return null;
-    const raw: []const u8 = @ptrCast(classifications);
-    const limit = @min(end, raw.len);
-
-    if (mode == .all) return start;
-
-    const target_byte: u8 = switch (mode) {
-        .picks => @backingInt(Classification.pick),
-        .rejects => @backingInt(Classification.reject),
-        .unflagged => @backingInt(Classification.unflagged),
-        .default => @backingInt(Classification.reject),
-        .all => unreachable,
-    };
-    const target_vec: Vec32 = @splat(target_byte);
-    var i = start;
-
-    // 32-element SIMD vector loop
-    while (i + 32 <= limit) : (i += 32) {
-        const chunk: Vec32 = raw[i..][0..32].*;
-        const matches: @Vector(32, bool) = if (mode == .default)
-            chunk != target_vec
-        else
-            chunk == target_vec;
-        const mask: u32 = @bitCast(matches);
-        if (mask != 0) {
-            return i + @ctz(mask);
-        }
-    }
-
-    // Scalar tail for remainder
-    while (i < limit) : (i += 1) {
-        if (mode.matches(classifications[i])) return i;
-    }
-
-    return null;
-}
-
-/// Finds the previous index in `[min_idx, max_idx]` matching the active view mode using 256-bit SIMD.
-pub fn findPrevVisibleInRange(
-    classifications: []const Classification,
-    min_idx: usize,
-    max_idx: usize,
-    mode: ViewMode,
-) ?usize {
-    if (min_idx > max_idx or max_idx >= classifications.len) return null;
-    const raw: []const u8 = @ptrCast(classifications);
-    if (mode == .all) return max_idx;
-
-    const target_byte: u8 = switch (mode) {
-        .picks => @backingInt(Classification.pick),
-        .rejects => @backingInt(Classification.reject),
-        .unflagged => @backingInt(Classification.unflagged),
-        .default => @backingInt(Classification.reject),
-        .all => unreachable,
-    };
-    const target_vec: Vec32 = @splat(target_byte);
-    var cur = max_idx;
-
-    // Small range optimization: use scalar loop if fewer than 32 elements
-    if (cur - min_idx + 1 < 32) {
-        while (true) {
-            if (mode.matches(classifications[cur])) return cur;
-            if (cur == min_idx) break;
-            cur -= 1;
-        }
-        return null;
-    }
-
-    // Align backwards to a 32-byte boundary relative to min_idx
-    while ((cur - min_idx + 1) % 32 != 0) : (cur -= 1) {
-        if (mode.matches(classifications[cur])) return cur;
-    }
-
-    // 32-element backwards SIMD vector loop
-    while (cur >= min_idx + 31) {
-        const chunk_start = cur - 31;
-        const chunk: Vec32 = raw[chunk_start..][0..32].*;
-        const matches: @Vector(32, bool) = if (mode == .default)
-            chunk != target_vec
-        else
-            chunk == target_vec;
-        const mask: u32 = @bitCast(matches);
-        if (mask != 0) {
-            const highest_bit = 31 - @clz(mask);
-            return chunk_start + highest_bit;
-        }
-        if (chunk_start == 0) return null;
-        cur -= 32;
-    }
-
-    // Scalar remainder between min_idx and cur
-    if (cur >= min_idx) {
-        while (true) {
-            if (mode.matches(classifications[cur])) return cur;
-            if (cur == min_idx) break;
-            cur -= 1;
-        }
-    }
-
-    return null;
-}
-
-/// Computes the count of visible items in `[0, count_limit)` using hardware POPCNT and SIMD.
-pub fn countVisibleInRangeSimd(
-    classifications: []const Classification,
-    count_limit: usize,
-    mode: ViewMode,
-) usize {
-    if (count_limit == 0 or classifications.len == 0) return 0;
-    const limit = @min(count_limit, classifications.len);
-    if (mode == .all) return limit;
-
-    const raw: []const u8 = @ptrCast(classifications);
-    const target_byte: u8 = switch (mode) {
-        .picks => @backingInt(Classification.pick),
-        .rejects => @backingInt(Classification.reject),
-        .unflagged => @backingInt(Classification.unflagged),
-        .default => @backingInt(Classification.reject),
-        .all => unreachable,
-    };
-    const target_vec: Vec32 = @splat(target_byte);
-    var total: usize = 0;
-    var i: usize = 0;
-
-    while (i + 32 <= limit) : (i += 32) {
-        const chunk: Vec32 = raw[i..][0..32].*;
-        const matches: @Vector(32, bool) = if (mode == .default)
-            chunk != target_vec
-        else
-            chunk == target_vec;
-        const mask: u32 = @bitCast(matches);
-        total += @popCount(mask);
-    }
-
-    while (i < limit) : (i += 1) {
-        if (mode.matches(classifications[i])) total += 1;
-    }
-
-    return total;
-}
-
-fn writeJsonStringSlice(jw: *std.json.Stringify, bytes: []const u8) !void {
-    try jw.beginWriteRaw();
-    try jw.writer.writeByte('"');
-    try std.json.Stringify.encodeJsonStringChars(bytes, .{}, jw.writer);
-    try jw.writer.writeByte('"');
-    jw.endWriteRaw();
-}
-
-fn writeEntryPathsJson(jw: *std.json.Stringify, entry: MediaEntry) !void {
-    switch (entry) {
-        .filesystem => |f| try writeJsonStringSlice(jw, f.path),
-        .archive_entry => |a| {
-            try jw.beginWriteRaw();
-            try jw.writer.writeByte('"');
-            try std.json.Stringify.encodeJsonStringChars(
-                a.archive_path,
-                .{},
-                jw.writer,
-            );
-            try jw.writer.writeByte('#');
-            try std.json.Stringify.encodeJsonStringChars(
-                a.entry_name,
-                .{},
-                jw.writer,
-            );
-            try jw.writer.writeByte('"');
-            jw.endWriteRaw();
-        },
-        .pair => |p| {
-            try writeJsonStringSlice(jw, p.raw_path);
-            try writeJsonStringSlice(jw, p.jpeg_path);
-        },
-    }
-}
-
-fn entryKeyCount(entry: MediaEntry) usize {
-    return switch (entry) {
-        .filesystem, .archive_entry => 1,
-        .pair => 2,
-    };
-}
-
-fn entryMatchesKey(entry: MediaEntry, key: []const u8) bool {
-    return switch (entry) {
-        .filesystem => |f| std.mem.eql(u8, f.path, key),
-        .pair => |p| std.mem.eql(u8, p.raw_path, key) or
-            std.mem.eql(u8, p.jpeg_path, key),
-        .archive_entry => |a| key.len ==
-            a.archive_path.len + 1 + a.entry_name.len and
-            std.mem.startsWith(u8, key, a.archive_path) and
-            key[a.archive_path.len] == '#' and
-            std.mem.endsWith(u8, key, a.entry_name),
-    };
-}
-
-fn containsItemWithKey(entries: []const MediaEntry, key: []const u8) bool {
-    for (entries) |entry| {
-        if (entryMatchesKey(entry, key)) return true;
-    }
-    return false;
-}
+const VisibleNeighbors = triage.VisibleNeighbors;
 
 /// Unified media list element stored contiguously in Structure-of-Arrays (SoA) layout.
 pub const MediaItem = struct {
@@ -239,16 +30,11 @@ pub const NavDirection = enum {
 /// Maximum memory bytes retained across directory arena resets (256 KiB).
 const MAX_RETAINED_DIR_ARENA_BYTES: usize = 256 * 1024;
 
-/// Maximum memory bytes retained across classification arena resets (64 KiB).
-const MAX_RETAINED_CLASS_ARENA_BYTES: usize = 64 * 1024;
-
 /// Tracks the active media list, current image index, slideshow progression, and directory cache.
 pub const NavigationState = struct {
     items: std.MultiArrayList(MediaItem) = .empty,
     next_media_id: u32 = 1,
-    path_classifications: std.StringArrayHashMapUnmanaged(Classification) =
-        .empty,
-    classification_arena: std.heap.ArenaAllocator,
+    triage: TriageMap,
     view_mode: ViewMode = .default,
     pick_count: usize = 0,
     reject_count: usize = 0,
@@ -266,15 +52,14 @@ pub const NavigationState = struct {
 
     /// Initializes navigation state with pre-allocated buffer capacities.
     pub fn init(allocator: std.mem.Allocator) !NavigationState {
+        const triage_map = try TriageMap.init(allocator);
         var self = NavigationState{
             .directory_arena = std.heap.ArenaAllocator.init(allocator),
-            .classification_arena = std.heap.ArenaAllocator.init(allocator),
+            .triage = triage_map,
         };
         errdefer self.deinit(allocator);
         // 32 media items: single allocation partitions entry and classification arrays
         try self.items.ensureTotalCapacity(allocator, 32);
-        // 64 classifications: fast initial allocation for steady-state triage
-        try self.path_classifications.ensureTotalCapacity(allocator, 64);
         // 128 bytes: accommodates standard file directory path strings
         try self.last_scanned_dir.ensureTotalCapacity(allocator, 128);
         return self;
@@ -283,23 +68,15 @@ pub const NavigationState = struct {
     /// Releases media list items, directory string buffer, and arenas.
     pub fn deinit(self: *NavigationState, allocator: std.mem.Allocator) void {
         self.items.deinit(allocator);
-        self.path_classifications.deinit(allocator);
+        self.triage.deinit(allocator);
         self.last_scanned_dir.deinit(allocator);
         self.directory_arena.deinit();
-        self.classification_arena.deinit();
     }
 
     /// Resets directory arena retaining at most 256 KiB of memory pages.
     pub fn resetDirectoryArena(self: *NavigationState) void {
         _ = self.directory_arena.reset(.{
             .retain_with_limit = MAX_RETAINED_DIR_ARENA_BYTES,
-        });
-    }
-
-    /// Resets classification arena retaining at most 64 KiB of memory pages.
-    pub fn resetClassificationArena(self: *NavigationState) void {
-        _ = self.classification_arena.reset(.{
-            .retain_with_limit = MAX_RETAINED_CLASS_ARENA_BYTES,
         });
     }
 
@@ -317,100 +94,6 @@ pub const NavigationState = struct {
             } else {
                 self.items.setCapacity(gpa, target_cap) catch {};
             }
-        }
-    }
-
-    fn lookupEntryClassification(
-        self: *const NavigationState,
-        entry: MediaEntry,
-    ) Classification {
-        switch (entry) {
-            .filesystem => |f| {
-                return self.path_classifications.get(f.path) orelse .unflagged;
-            },
-            .pair => |p| {
-                if (self.path_classifications.get(p.raw_path)) |c| return c;
-                if (self.path_classifications.get(p.jpeg_path)) |c| return c;
-                return .unflagged;
-            },
-            .archive_entry => |a| {
-                var stack_buf: [1024]u8 = undefined;
-                if (std.mem.print(
-                    &stack_buf,
-                    "{s}#{s}",
-                    .{ a.archive_path, a.entry_name },
-                )) |composite_key| {
-                    return self.path_classifications.get(composite_key) orelse
-                        .unflagged;
-                } else |_| {
-                    return .unflagged;
-                }
-            },
-        }
-    }
-
-    fn storeKeyClassification(
-        self: *NavigationState,
-        gpa: std.mem.Allocator,
-        key: []const u8,
-        new_class: Classification,
-    ) !void {
-        if (new_class == .unflagged) {
-            _ = self.path_classifications.orderedRemove(key);
-            return;
-        }
-        if (self.path_classifications.getPtr(key)) |ptr| {
-            ptr.* = new_class;
-        } else {
-            const owned = try self.classification_arena.allocator().dupe(
-                u8,
-                key,
-            );
-            try self.path_classifications.put(gpa, owned, new_class);
-        }
-    }
-
-    fn syncEntryClassificationKeys(
-        self: *NavigationState,
-        gpa: std.mem.Allocator,
-        entry: MediaEntry,
-        new_class: Classification,
-    ) !void {
-        switch (entry) {
-            .filesystem => |f| {
-                try self.storeKeyClassification(gpa, f.path, new_class);
-            },
-            .pair => |p| {
-                try self.storeKeyClassification(gpa, p.raw_path, new_class);
-                try self.storeKeyClassification(gpa, p.jpeg_path, new_class);
-            },
-            .archive_entry => |a| {
-                var stack_buf: [1024]u8 = undefined;
-                if (std.mem.print(
-                    &stack_buf,
-                    "{s}#{s}",
-                    .{ a.archive_path, a.entry_name },
-                )) |composite_key| {
-                    try self.storeKeyClassification(
-                        gpa,
-                        composite_key,
-                        new_class,
-                    );
-                } else |_| {
-                    const owned = try self.classification_arena
-                        .allocator()
-                        .print("{s}#{s}", .{ a.archive_path, a.entry_name });
-                    if (new_class == .unflagged) {
-                        _ = self.path_classifications.orderedRemove(owned);
-                    } else {
-                        try self.path_classifications.put(
-                            gpa,
-                            owned,
-                            new_class,
-                        );
-                    }
-                }
-            },
         }
     }
 
@@ -440,7 +123,7 @@ pub const NavigationState = struct {
         id: MediaId,
         entry: MediaEntry,
     ) !void {
-        const initial_class = self.lookupEntryClassification(entry);
+        const initial_class = self.triage.lookupEntry(entry);
         try self.items.append(gpa, .{
             .id = id,
             .entry = entry,
@@ -449,7 +132,7 @@ pub const NavigationState = struct {
         errdefer _ = self.items.pop();
 
         if (initial_class != .unflagged) {
-            try self.syncEntryClassificationKeys(gpa, entry, initial_class);
+            try self.triage.syncEntryKeys(gpa, entry, initial_class);
         }
         if (initial_class == .pick) self.pick_count += 1;
         if (initial_class == .reject) self.reject_count += 1;
@@ -583,13 +266,15 @@ pub const NavigationState = struct {
         };
     }
 
-    /// Computes the 1-based index of `current_index` among currently visible items using SIMD.
+    /// Computes the 1-based index of `current_index` among currently visible
+    /// items using SIMD.
     pub fn getVisiblePosition(self: *const NavigationState) ?usize {
         const cur = self.current_index orelse return null;
-        if (cur >= self.items.len) return null;
-        if (self.view_mode == .all) return cur + 1;
-        const pos = countVisibleInRangeSimd(self.items.items(.classification), cur + 1, self.view_mode);
-        return if (pos > 0) pos else null;
+        return triage.visiblePosition(
+            self.items.items(.classification),
+            cur,
+            self.view_mode,
+        );
     }
 
     /// Retrieves the `MediaEntry` at `current_index`, or `null` if empty or invalid.
@@ -620,7 +305,7 @@ pub const NavigationState = struct {
         if (old_class == new_class) return false;
 
         const entry = self.items.items(.entry)[idx];
-        try self.syncEntryClassificationKeys(gpa, entry, new_class);
+        try self.triage.syncEntryKeys(gpa, entry, new_class);
 
         classes[idx] = new_class;
         if (old_class == .pick) self.pick_count -= 1;
@@ -651,12 +336,11 @@ pub const NavigationState = struct {
     pub fn clearAllClassifications(self: *NavigationState) bool {
         const had_flags = (self.pick_count > 0 or
             self.reject_count > 0 or
-            self.path_classifications.count() > 0);
+            self.triage.count() > 0);
         @memset(self.items.items(.classification), .unflagged);
         self.pick_count = 0;
         self.reject_count = 0;
-        self.path_classifications.clearRetainingCapacity();
-        self.resetClassificationArena();
+        self.triage.clearRetainingCapacity();
         return had_flags;
     }
 
@@ -666,90 +350,44 @@ pub const NavigationState = struct {
         self: *const NavigationState,
         writer: *std.Io.Writer,
     ) !void {
-        var jw: std.json.Stringify = .{ .writer = writer };
-        try jw.beginObject();
-        try jw.objectField("ok");
-        try jw.write(true);
-
         const slice = self.items.slice();
-        const entries = slice.items(.entry);
-        const classes = slice.items(.classification);
-
-        var active_key_count: usize = 0;
-        if (self.pick_count > 0 or self.reject_count > 0) {
-            for (entries, classes) |entry, c| {
-                if (c != .unflagged) active_key_count += entryKeyCount(entry);
-            }
-        }
-        const has_external_keys =
-            self.path_classifications.count() > active_key_count;
-
-        try jw.objectField("picks");
-        try jw.beginArray();
-        if (self.pick_count > 0) {
-            for (entries, classes) |entry, c| {
-                if (c != .pick) continue;
-                try writeEntryPathsJson(&jw, entry);
-            }
-        }
-        if (has_external_keys) {
-            for (
-                self.path_classifications.keys(),
-                self.path_classifications.values(),
-            ) |k, c| {
-                if (c != .pick) continue;
-                if (!containsItemWithKey(entries, k)) {
-                    try writeJsonStringSlice(&jw, k);
-                }
-            }
-        }
-        try jw.endArray();
-
-        try jw.objectField("rejects");
-        try jw.beginArray();
-        if (self.reject_count > 0) {
-            for (entries, classes) |entry, c| {
-                if (c != .reject) continue;
-                try writeEntryPathsJson(&jw, entry);
-            }
-        }
-        if (has_external_keys) {
-            for (
-                self.path_classifications.keys(),
-                self.path_classifications.values(),
-            ) |k, c| {
-                if (c != .reject) continue;
-                if (!containsItemWithKey(entries, k)) {
-                    try writeJsonStringSlice(&jw, k);
-                }
-            }
-        }
-        try jw.endArray();
-
-        try jw.endObject();
-        try writer.writeByte('\n');
+        return self.triage.writeSelectionsJson(
+            writer,
+            slice.items(.entry),
+            slice.items(.classification),
+            self.pick_count,
+            self.reject_count,
+        );
     }
 
-    /// Finds the nearest visible index to `start_idx`, searching forward first, then backward with SIMD.
-    pub fn findClosestVisible(self: *const NavigationState, start_idx: usize) ?usize {
-        const len = self.items.len;
-        if (len == 0 or self.getVisibleCount() == 0) return null;
-        const clamped = @min(start_idx, len - 1);
-        const classes = self.items.items(.classification);
+    /// Serializes current pick and reject selections as tab-separated rows
+    /// (`PICK\t<path>\n` or `REJECT\t<path>\n`) to `writer`.
+    pub fn writeSelectionsTsv(
+        self: *const NavigationState,
+        writer: *std.Io.Writer,
+    ) !void {
+        const slice = self.items.slice();
+        return self.triage.writeSelectionsTsv(
+            writer,
+            slice.items(.entry),
+            slice.items(.classification),
+            self.pick_count,
+            self.reject_count,
+        );
+    }
 
-        // Forward search from clamped to len
-        if (findNextVisibleInRange(classes, clamped, len, self.view_mode)) |idx| {
-            return idx;
-        }
-
-        // Backward search from 0 to clamped - 1
-        if (clamped > 0) {
-            if (findPrevVisibleInRange(classes, 0, clamped - 1, self.view_mode)) |idx| {
-                return idx;
-            }
-        }
-
-        return null;
+    /// Finds the nearest visible index to `start_idx`, searching forward
+    /// first, then backward with SIMD.
+    pub fn findClosestVisible(
+        self: *const NavigationState,
+        start_idx: usize,
+    ) ?usize {
+        return triage.findClosestVisible(
+            self.items.items(.classification),
+            start_idx,
+            self.getVisibleCount(),
+            self.view_mode,
+        );
     }
 
     /// Adjusts `current_index` so it points to a visible item in the current view mode,
@@ -794,30 +432,12 @@ pub const NavigationState = struct {
         self: *const NavigationState,
         from_idx: usize,
     ) ?usize {
-        const len = self.items.len;
-        if (len == 0 or self.getVisibleCount() == 0) return null;
-        const cur = @min(from_idx, len - 1);
-        const start = (cur + 1) % len;
-        const classes = self.items.items(.classification);
-
-        // Forward scan from [start..len]
-        if (findNextVisibleInRange(classes, start, len, self.view_mode)) |idx| {
-            return idx;
-        }
-
-        // Circular wrap-around scan from [0..start]
-        if (start > 0) {
-            if (findNextVisibleInRange(
-                classes,
-                0,
-                start,
-                self.view_mode,
-            )) |idx| {
-                return idx;
-            }
-        }
-
-        return null;
+        return triage.peekNextVisible(
+            self.items.items(.classification),
+            from_idx,
+            self.getVisibleCount(),
+            self.view_mode,
+        );
     }
 
     /// Returns the previous circularly visible index before `from_idx` without
@@ -826,30 +446,12 @@ pub const NavigationState = struct {
         self: *const NavigationState,
         from_idx: usize,
     ) ?usize {
-        const len = self.items.len;
-        if (len == 0 or self.getVisibleCount() == 0) return null;
-        const cur = @min(from_idx, len - 1);
-        const start = if (cur == 0) len - 1 else cur - 1;
-        const classes = self.items.items(.classification);
-
-        // Backward scan from [0..start]
-        if (findPrevVisibleInRange(classes, 0, start, self.view_mode)) |idx| {
-            return idx;
-        }
-
-        // Circular wrap-around scan from [start+1..len-1]
-        if (start + 1 < len) {
-            if (findPrevVisibleInRange(
-                classes,
-                start + 1,
-                len - 1,
-                self.view_mode,
-            )) |idx| {
-                return idx;
-            }
-        }
-
-        return null;
+        return triage.peekPrevVisible(
+            self.items.items(.classification),
+            from_idx,
+            self.getVisibleCount(),
+            self.view_mode,
+        );
     }
 
     /// Computes the visible ±1 and ±2 neighbor indices around `current_index`
@@ -858,24 +460,12 @@ pub const NavigationState = struct {
         self: *const NavigationState,
     ) ?VisibleNeighbors {
         const cur = self.current_index orelse return null;
-        const len = self.items.len;
-        if (cur >= len) return null;
-        const vis_count = self.getVisibleCount();
-        if (vis_count == 0) return null;
-        if (vis_count == len) {
-            return VisibleNeighbors.fromRawIndex(cur, len);
-        }
-        const next_1 = self.peekNextVisible(cur) orelse cur;
-        const prev_1 = self.peekPrevVisible(cur) orelse cur;
-        const next_2 = self.peekNextVisible(next_1) orelse next_1;
-        const prev_2 = self.peekPrevVisible(prev_1) orelse prev_1;
-        return .{
-            .current = cur,
-            .next_1 = next_1,
-            .prev_1 = prev_1,
-            .next_2 = next_2,
-            .prev_2 = prev_2,
-        };
+        return VisibleNeighbors.compute(
+            self.items.items(.classification),
+            cur,
+            self.getVisibleCount(),
+            self.view_mode,
+        );
     }
 
     /// Advances selection to the next visible image using circular SIMD scan.
@@ -925,82 +515,6 @@ pub const NavigationState = struct {
         self.current_index = target;
         self.anchor_index = target;
         return self.current_index;
-    }
-};
-
-/// Visible neighbor indices around `current` at steps ±1 and ±2 in the active
-/// `ViewMode`.
-pub const VisibleNeighbors = struct {
-    current: usize,
-    next_1: usize,
-    prev_1: usize,
-    next_2: usize,
-    prev_2: usize,
-
-    /// Constructs circular ±1 and ±2 neighbors around `idx` in an unfiltered
-    /// list of length `len` (`len > 0`).
-    pub fn fromRawIndex(idx: usize, len: usize) VisibleNeighbors {
-        std.debug.assert(len > 0);
-        return .{
-            .current = idx,
-            .next_1 = (idx + 1) % len,
-            .prev_1 = (idx + len - 1) % len,
-            .next_2 = (idx + 2) % len,
-            .prev_2 = if (len >= 2) (idx + len - 2) % len else idx,
-        };
-    }
-
-    /// Returns the step distance (`0`, `1`, or `2`) if `index` is in the
-    /// visible ±2 window, or `null` if it is outside the window.
-    pub fn stepDistance(self: VisibleNeighbors, index: usize) ?usize {
-        if (index == self.current) return 0;
-        if (index == self.next_1 or index == self.prev_1) return 1;
-        if (index == self.next_2 or index == self.prev_2) return 2;
-        return null;
-    }
-
-    /// Populates `out` with unique visible indices ordered by `direction` and
-    /// capped by `max_step_dist` (`0..2`), returning the active slice.
-    pub fn collectUnique(
-        self: VisibleNeighbors,
-        direction: NavDirection,
-        max_step_dist: usize,
-        out: *[5]usize,
-    ) []const usize {
-        out[0] = self.current;
-        var count: usize = 1;
-
-        const Candidate = struct { idx: usize, dist: usize };
-        const candidates = if (direction == .backward)
-            [_]Candidate{
-                .{ .idx = self.prev_1, .dist = 1 },
-                .{ .idx = self.next_1, .dist = 1 },
-                .{ .idx = self.prev_2, .dist = 2 },
-                .{ .idx = self.next_2, .dist = 2 },
-            }
-        else
-            [_]Candidate{
-                .{ .idx = self.next_1, .dist = 1 },
-                .{ .idx = self.prev_1, .dist = 1 },
-                .{ .idx = self.next_2, .dist = 2 },
-                .{ .idx = self.prev_2, .dist = 2 },
-            };
-
-        for (candidates) |cand| {
-            if (cand.dist > max_step_dist) continue;
-            var unique = true;
-            for (out[0..count]) |existing| {
-                if (existing == cand.idx) {
-                    unique = false;
-                    break;
-                }
-            }
-            if (unique) {
-                out[count] = cand.idx;
-                count += 1;
-            }
-        }
-        return out[0..count];
     }
 };
 
@@ -1204,14 +718,14 @@ test "NavigationState - pair classification synchronization" {
     _ = try nav.markCurrentPick(allocator);
     try std.testing.expectEqual(Classification.pick, nav.getCurrentClassification());
 
-    // Verify both raw_path and jpeg_path are registered in path_classifications table
+    // Verify both raw_path and jpeg_path are registered in triage table
     try std.testing.expectEqual(
         Classification.pick,
-        nav.path_classifications.get("photos/DSC00941.ARW").?,
+        nav.triage.get("photos/DSC00941.ARW").?,
     );
     try std.testing.expectEqual(
         Classification.pick,
-        nav.path_classifications.get("photos/DSC00941.JPG").?,
+        nav.triage.get("photos/DSC00941.JPG").?,
     );
 
     // Unflagging clears both paths from table
@@ -1221,10 +735,10 @@ test "NavigationState - pair classification synchronization" {
         nav.getCurrentClassification(),
     );
     try std.testing.expect(
-        nav.path_classifications.get("photos/DSC00941.ARW") == null,
+        nav.triage.get("photos/DSC00941.ARW") == null,
     );
     try std.testing.expect(
-        nav.path_classifications.get("photos/DSC00941.JPG") == null,
+        nav.triage.get("photos/DSC00941.JPG") == null,
     );
 }
 
@@ -1245,7 +759,7 @@ test "NavigationState - unstacked to stacked pair flag propagation" {
     );
 
     // 2. Clear and reload as stacked pair: pair must inherit pick and register
-    // the RAW companion path in path_classifications
+    // the RAW companion path in triage table
     nav.clearEntries();
     _ = try nav.appendEntry(allocator, .{
         .pair = .{
@@ -1260,7 +774,7 @@ test "NavigationState - unstacked to stacked pair flag propagation" {
     );
     try std.testing.expectEqual(
         Classification.pick,
-        nav.path_classifications.get("photos/shot.ARW").?,
+        nav.triage.get("photos/shot.ARW").?,
     );
 
     // 3. Clear and reload as standalone RAW: must inherit pick
@@ -1543,28 +1057,6 @@ test "NavigationState resetDirectoryArena bounds page retention" {
 
     try std.testing.expect(
         nav.directory_arena.queryCapacity() <= MAX_RETAINED_DIR_ARENA_BYTES,
-    );
-}
-
-test "NavigationState resetClassificationArena bounds page retention" {
-    const allocator = std.testing.allocator;
-    var nav = try NavigationState.init(allocator);
-    defer nav.deinit(allocator);
-
-    const arena_alloc = nav.classification_arena.allocator();
-    const big_buf = try arena_alloc.alloc(u8, 512 * 1024 + 1024);
-    @memset(big_buf, 0xbb);
-
-    try std.testing.expect(
-        nav.classification_arena.queryCapacity() >
-            MAX_RETAINED_CLASS_ARENA_BYTES,
-    );
-
-    nav.resetClassificationArena();
-
-    try std.testing.expect(
-        nav.classification_arena.queryCapacity() <=
-            MAX_RETAINED_CLASS_ARENA_BYTES,
     );
 }
 

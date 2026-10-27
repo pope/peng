@@ -18,7 +18,7 @@
   - Reset `directory_arena` via `resetDirectoryArena()` bounding retained
     memory pages to $\le 256\text{ KiB}$
     (`MAX_RETAINED_DIR_ARENA_BYTES = 256 * 1024`).
-  - Reset `classification_arena` via `resetClassificationArena()` bounding
+  - Reset `classification_arena` via `TriageMap.resetArena()` bounding
     retained memory pages to $\le 64\text{ KiB}$
     (`MAX_RETAINED_CLASS_ARENA_BYTES = 64 * 1024`).
   - After directory scans or playlist replacements, call
