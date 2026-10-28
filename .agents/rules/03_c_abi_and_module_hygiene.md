@@ -41,7 +41,7 @@
     (`fuzzig`), and directory navigation history (zero SDL/Clay).
   - `src/thumbcache/`: Pure Freedesktop Shared Thumbnail Cache specification,
     RFC 3986 URI encoding, MD5 hashing, PNG `tEXt` chunk parsing and splicing,
-    and atomic PNG writing (imports `intents`, `probe`, `vfs`; zero SDL/Clay).
+    and atomic PNG writing (imports `probe`, `vfs`; zero `intents`, SDL/Clay).
   - `src/intents/`: Pure `AppIntent` variants, `ActionDef` registry
     (`actions.zig`), and intent payload structs (imports `triage`).
   - `src/input/`: Pure `FrameInput` event polling and shortcut mapping.

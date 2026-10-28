@@ -1,8 +1,10 @@
 const builtin = @import("builtin");
 const intents = @import("intents");
 const std = @import("std");
+const thumbcache = @import("thumbcache");
 
-const ThumbCacheMode = intents.ThumbCacheMode;
+const ThumbCacheMode = thumbcache.ThumbCacheMode;
+const thumb_cache_modes_string = thumbcache.thumb_cache_modes_string;
 const ZoomPreset = intents.ZoomPreset;
 
 /// Startup process flags that configure runtime initialization (not runtime actions).
@@ -20,7 +22,7 @@ pub const process_flags = [_]intents.CliOption{
         .long = "--thumb-cache",
         .arg_name = "<MODE>",
         .description = "Set XDG thumbnail cache policy (" ++
-            intents.thumb_cache_modes_string ++ ")",
+            thumb_cache_modes_string ++ ")",
     },
     .{
         .id = .no_thumb_cache,
@@ -467,7 +469,7 @@ pub fn parseArgsIterator(args_it: anytype, gpa: std.mem.Allocator) !ParsedArgs {
                                 std.log.err(
                                     "Unknown thumb-cache mode: {s}. " ++
                                         "Valid: {s}.",
-                                    .{ val, intents.thumb_cache_modes_string },
+                                    .{ val, thumb_cache_modes_string },
                                 );
                             }
                             return error.InvalidThumbCacheMode;

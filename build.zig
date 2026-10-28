@@ -201,7 +201,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    thumbcache_module.addImport("intents", intents_module);
     thumbcache_module.addImport("probe", probe_module);
     thumbcache_module.addImport("vfs", vfs_module);
 
@@ -259,6 +258,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     ipc_module.addImport("intents", intents_module);
+    ipc_module.addImport("probe", probe_module);
     ipc_module.addImport("triage", triage_module);
 
     app_module.addImport("sdl", sdl_module);
@@ -281,6 +281,7 @@ pub fn build(b: *std.Build) void {
     ui_module.addImport("ipc", ipc_module);
 
     config_module.addImport("intents", intents_module);
+    config_module.addImport("thumbcache", thumbcache_module);
 
     const viewer_lib = b.addLibrary(.{
         .name = "viewer",

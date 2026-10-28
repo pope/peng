@@ -11,9 +11,9 @@ const getSpec = intents.getSpec;
 const Key = intents.Key;
 const KeyModifiers = intents.KeyModifiers;
 const Orientation = probe.Orientation;
+const PositiveDimsU32 = probe.PositiveDimsU32;
 const ViewMode = triage.ViewMode;
 
-pub const PositiveDimsU32 = intents.PositiveDimsU32;
 pub const ZoomPreset = intents.ZoomPreset;
 
 /// Display DPI scale factor mapping between logical UI points and physical

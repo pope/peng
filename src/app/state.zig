@@ -22,7 +22,7 @@ const isCbzFile = vfs.isCbzFile;
 const MediaEntry = vfs.MediaEntry;
 const PaletteMode = intents.PaletteMode;
 const ThumbCacheConfig = thumbcache.ThumbCacheConfig;
-const ThumbWritePolicy = thumbcache.ThumbWritePolicy;
+const ThumbCacheMode = thumbcache.ThumbCacheMode;
 const types = state_pkg.types;
 const view_transform = state_pkg.view_transform;
 const ViewerState = state_pkg.ViewerState;
@@ -139,20 +139,14 @@ pub const AppState = struct {
     pub fn initThumbCache(
         self: *AppState,
         environ_map: *const std.process.Environ.Map,
-        mode: intents.ThumbCacheMode,
+        mode: ThumbCacheMode,
     ) void {
         self.workers.thumb_cache_config.deinit(self.allocator);
-        const policy_opt: ?ThumbWritePolicy = switch (mode) {
-            .off => null,
-            .all => .all_missing,
-            .missing => .missing_embedded_only,
-            .read_only => .never,
-        };
         self.workers.thumb_cache_config =
             ThumbCacheConfig.initFromEnviron(
                 self.allocator,
                 environ_map,
-                policy_opt,
+                mode.toWritePolicy(),
             );
     }
 

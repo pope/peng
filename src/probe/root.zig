@@ -40,6 +40,27 @@ pub const ImageDimensions = struct {
     h: f32,
 };
 
+/// Strictly positive (`>= 1`) integer 2D pixel dimensions (`w x h`).
+pub const PositiveDimsU32 = struct {
+    w: u32 = 800,
+    h: u32 = 600,
+
+    /// Constructs `PositiveDimsU32` when both `w_i` and `h_i` are strictly
+    /// positive (`> 0`), clamping each axis to `max_dim`, or returns `null`.
+    pub inline fn initClamped(
+        w_i: i64,
+        h_i: i64,
+        max_dim: u32,
+    ) ?PositiveDimsU32 {
+        if (w_i <= 0 or h_i <= 0 or max_dim == 0) return null;
+        const max_i64: i64 = @intCast(max_dim);
+        return .{
+            .w = @intCast(@min(w_i, max_i64)),
+            .h = @intCast(@min(h_i, max_i64)),
+        };
+    }
+};
+
 /// Identifies image MIME container type using magic bytes from header buffer,
 /// falling back to file extension matching if magic bytes are ambiguous.
 pub fn detectMimeType(header: []const u8, path: []const u8) []const u8 {
@@ -3517,4 +3538,28 @@ test "probeRawFileHeader - Fuji RAF and TIFF RAW file streaming" {
     try std.testing.expectEqual(@as(f32, 5304.0), tiff_res.sensor_dims.?.h);
     try std.testing.expectEqual(@as(u64, 1000), tiff_res.preview.?.file_offset);
     try std.testing.expectEqual(@as(u32, 120000), tiff_res.preview.?.length);
+}
+
+test "PositiveDimsU32.initClamped" {
+    // Valid dimensions within max_dim
+    const valid = PositiveDimsU32.initClamped(800, 600, 4096);
+    try std.testing.expect(valid != null);
+    try std.testing.expectEqual(@as(u32, 800), valid.?.w);
+    try std.testing.expectEqual(@as(u32, 600), valid.?.h);
+
+    // Clamping at max_dim
+    const clamped = PositiveDimsU32.initClamped(5000, 3000, 4096);
+    try std.testing.expect(clamped != null);
+    try std.testing.expectEqual(@as(u32, 4096), clamped.?.w);
+    try std.testing.expectEqual(@as(u32, 3000), clamped.?.h);
+
+    // Non-positive (<= 0) dimensions returning null
+    try std.testing.expect(PositiveDimsU32.initClamped(0, 600, 4096) == null);
+    try std.testing.expect(PositiveDimsU32.initClamped(800, 0, 4096) == null);
+    try std.testing.expect(PositiveDimsU32.initClamped(-10, 600, 4096) == null);
+    try std.testing.expect(PositiveDimsU32.initClamped(800, -5, 4096) == null);
+    try std.testing.expect(PositiveDimsU32.initClamped(-1, -1, 4096) == null);
+
+    // max_dim == 0 returning null
+    try std.testing.expect(PositiveDimsU32.initClamped(800, 600, 0) == null);
 }

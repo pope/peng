@@ -1,8 +1,10 @@
 const builtin = @import("builtin");
 const intents = @import("intents");
+const probe = @import("probe");
 const std = @import("std");
 const triage = @import("triage");
 
+const PositiveDimsU32 = probe.PositiveDimsU32;
 const TextureScaleMode = intents.TextureScaleMode;
 const ViewMode = triage.ViewMode;
 
@@ -218,7 +220,7 @@ pub const StackingAction = enum {
 
 /// Parameters for a terminal Kitty graphics preview request (`preview`).
 pub const PreviewRequest = struct {
-    max_dims: intents.PositiveDimsU32 = .{ .w = 800, .h = 600 },
+    max_dims: PositiveDimsU32 = .{ .w = 800, .h = 600 },
     clear_first: bool = false,
     path: []const u8,
 };
@@ -776,7 +778,7 @@ pub const IpcCommand = union(enum) {
             const full_rest = std.mem.trim(u8, it.rest(), " \t\r\n");
             if (full_rest.len == 0) return error.MissingArgument;
 
-            var max_dims: intents.PositiveDimsU32 = .{ .w = 800, .h = 600 };
+            var max_dims: PositiveDimsU32 = .{ .w = 800, .h = 600 };
             var filepath: []const u8 = full_rest;
 
             if (it.next()) |tok1| {
@@ -791,7 +793,7 @@ pub const IpcCommand = union(enum) {
                             if (after_dims.len == 0) {
                                 return error.MissingArgument;
                             }
-                            max_dims = intents.PositiveDimsU32.initClamped(
+                            max_dims = PositiveDimsU32.initClamped(
                                 w_i,
                                 h_i,
                                 4096,
@@ -884,7 +886,7 @@ pub const IpcCommand = union(enum) {
 /// Validated preview payload returned inside an `IpcResponse`.
 pub const PreviewPayload = struct {
     path: []const u8,
-    dims: intents.PositiveDimsU32,
+    dims: PositiveDimsU32,
 };
 
 /// Structured JSON response payload returned by the IPC server.
@@ -904,7 +906,7 @@ pub const IpcResponse = struct {
         const p = self.path orelse return null;
         const width = self.w orelse return null;
         const height = self.h orelse return null;
-        const dims = intents.PositiveDimsU32.initClamped(
+        const dims = PositiveDimsU32.initClamped(
             width,
             height,
             4096,

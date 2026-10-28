@@ -3,7 +3,6 @@
 //! Bridges SDL surface loading, smooth downscaling, orthogonal EXIF rotation,
 //! and PNG encoding with the pure `thumbcache` module.
 
-const intents = @import("intents");
 const probe = @import("probe");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
@@ -13,7 +12,7 @@ const thumbcache = @import("thumbcache");
 const EnabledThumbCacheConfig = thumbcache.EnabledThumbCacheConfig;
 const Orientation = probe.Orientation;
 const PhysicalDims = state_pkg.PhysicalDims;
-const PositiveDimsU32 = intents.PositiveDimsU32;
+const PositiveDimsU32 = probe.PositiveDimsU32;
 const PrecacheOutcome = thumbcache.PrecacheOutcome;
 const ThumbCacheConfig = thumbcache.ThumbCacheConfig;
 const ThumbCacheKey = thumbcache.ThumbCacheKey;

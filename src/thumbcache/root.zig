@@ -13,7 +13,6 @@
 //!   decoupled from graphics libraries via `EncodeThumbPngFn`.
 
 const builtin = @import("builtin");
-const intents = @import("intents");
 const probe = @import("probe");
 const std = @import("std");
 const vfs = @import("vfs");
@@ -21,7 +20,7 @@ const vfs = @import("vfs");
 const isImageFile = vfs.isImageFile;
 const isRawFile = vfs.isRawFile;
 const Orientation = probe.Orientation;
-const PositiveDimsU32 = intents.PositiveDimsU32;
+const PositiveDimsU32 = probe.PositiveDimsU32;
 const resolveEntryKind = vfs.resolveEntryKind;
 
 const png_signature = "\x89PNG\r\n\x1a\n";
@@ -121,6 +120,72 @@ pub const ThumbWritePolicy = enum {
             .all_missing => true,
         };
     }
+};
+
+/// Freedesktop Shared Thumbnail Cache (`$XDG_CACHE_HOME/thumbnails/`) mode.
+pub const ThumbCacheMode = enum {
+    /// Read cached thumbnails and write missing thumbnails for all images,
+    /// including RAW and JPEG files (pre-warming Dolphin/Yazi caches).
+    all,
+    /// Read cached thumbnails and only write missing thumbnails when the source
+    /// image lacks an embedded EXIF/RAW thumbnail (e.g. PNG, WebP, AVIF, TIFF).
+    missing,
+    /// Read cached thumbnails only; never write new thumbnails to disk.
+    read_only,
+    /// Disable reading and writing the Freedesktop thumbnail cache completely.
+    off,
+
+    /// Converts this mode into the active `ThumbWritePolicy`, or `null` when
+    /// the thumbnail cache is disabled (`.off`).
+    pub inline fn toWritePolicy(self: ThumbCacheMode) ?ThumbWritePolicy {
+        return switch (self) {
+            .off => null,
+            .all => .all_missing,
+            .missing => .missing_embedded_only,
+            .read_only => .never,
+        };
+    }
+
+    /// Parses a thumbnail cache mode or alias (`read-only`, `readonly`,
+    /// `never`, `missing-embedded`, `none`, `disabled`, `false`) into a
+    /// `ThumbCacheMode`.
+    pub fn parse(val: []const u8) ?ThumbCacheMode {
+        if (std.mem.eql(u8, val, "all-missing") or
+            std.mem.eql(u8, val, "all_missing"))
+        {
+            return .all;
+        }
+        if (std.mem.eql(u8, val, "missing-embedded") or
+            std.mem.eql(u8, val, "missing_embedded") or
+            std.mem.eql(u8, val, "missing_embedded_only"))
+        {
+            return .missing;
+        }
+        if (std.mem.eql(u8, val, "read-only") or
+            std.mem.eql(u8, val, "readonly") or
+            std.mem.eql(u8, val, "never"))
+        {
+            return .read_only;
+        }
+        if (std.mem.eql(u8, val, "none") or
+            std.mem.eql(u8, val, "disabled") or
+            std.mem.eql(u8, val, "false"))
+        {
+            return .off;
+        }
+        return std.meta.stringToEnum(ThumbCacheMode, val);
+    }
+};
+
+/// Comptime-generated comma-separated list of all valid ThumbCacheMode names
+/// via reflection.
+pub const thumb_cache_modes_string: []const u8 = blk: {
+    var str: []const u8 = "";
+    const field_names = @typeInfo(ThumbCacheMode).@"enum".field_names;
+    for (field_names, 0..) |name, i| {
+        str = if (i > 0) str ++ ", " ++ name else name;
+    }
+    break :blk str;
 };
 
 /// Active configuration when Freedesktop thumbnail caching is enabled.
@@ -1598,4 +1663,98 @@ test "positiveDimsFromFloat clamping and bounds guards" {
     const max_u24 = std.math.maxInt(u24);
     try std.testing.expectEqual(max_u24, huge.w);
     try std.testing.expectEqual(max_u24, huge.h);
+}
+
+test "ThumbCacheMode.parse, toWritePolicy, and thumb_cache_modes_string" {
+    // Exact enum names
+    try std.testing.expectEqual(
+        ThumbCacheMode.all,
+        ThumbCacheMode.parse("all"),
+    );
+    try std.testing.expectEqual(
+        ThumbCacheMode.missing,
+        ThumbCacheMode.parse("missing"),
+    );
+    try std.testing.expectEqual(
+        ThumbCacheMode.read_only,
+        ThumbCacheMode.parse("read_only"),
+    );
+    try std.testing.expectEqual(
+        ThumbCacheMode.off,
+        ThumbCacheMode.parse("off"),
+    );
+
+    // Aliases
+    try std.testing.expectEqual(
+        ThumbCacheMode.all,
+        ThumbCacheMode.parse("all-missing"),
+    );
+    try std.testing.expectEqual(
+        ThumbCacheMode.all,
+        ThumbCacheMode.parse("all_missing"),
+    );
+    try std.testing.expectEqual(
+        ThumbCacheMode.missing,
+        ThumbCacheMode.parse("missing-embedded"),
+    );
+    try std.testing.expectEqual(
+        ThumbCacheMode.missing,
+        ThumbCacheMode.parse("missing_embedded"),
+    );
+    try std.testing.expectEqual(
+        ThumbCacheMode.missing,
+        ThumbCacheMode.parse("missing_embedded_only"),
+    );
+    try std.testing.expectEqual(
+        ThumbCacheMode.read_only,
+        ThumbCacheMode.parse("read-only"),
+    );
+    try std.testing.expectEqual(
+        ThumbCacheMode.read_only,
+        ThumbCacheMode.parse("readonly"),
+    );
+    try std.testing.expectEqual(
+        ThumbCacheMode.read_only,
+        ThumbCacheMode.parse("never"),
+    );
+    try std.testing.expectEqual(
+        ThumbCacheMode.off,
+        ThumbCacheMode.parse("none"),
+    );
+    try std.testing.expectEqual(
+        ThumbCacheMode.off,
+        ThumbCacheMode.parse("disabled"),
+    );
+    try std.testing.expectEqual(
+        ThumbCacheMode.off,
+        ThumbCacheMode.parse("false"),
+    );
+
+    // Invalid string
+    try std.testing.expect(ThumbCacheMode.parse("invalid") == null);
+    try std.testing.expect(ThumbCacheMode.parse("") == null);
+
+    // toWritePolicy
+    try std.testing.expectEqual(
+        @as(?ThumbWritePolicy, .all_missing),
+        ThumbCacheMode.all.toWritePolicy(),
+    );
+    try std.testing.expectEqual(
+        @as(?ThumbWritePolicy, .missing_embedded_only),
+        ThumbCacheMode.missing.toWritePolicy(),
+    );
+    try std.testing.expectEqual(
+        @as(?ThumbWritePolicy, .never),
+        ThumbCacheMode.read_only.toWritePolicy(),
+    );
+    try std.testing.expectEqual(
+        @as(?ThumbWritePolicy, null),
+        ThumbCacheMode.off.toWritePolicy(),
+    );
+
+    // thumb_cache_modes_string
+    try std.testing.expectEqualStrings(
+        "all, missing, read_only, off",
+        thumb_cache_modes_string,
+    );
 }

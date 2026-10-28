@@ -79,7 +79,6 @@ pub const palette_action_items = types.palette_action_items;
 pub const PanController = types.PanController;
 pub const PhysicalDims = types.PhysicalDims;
 pub const PhysicalPoint = types.PhysicalPoint;
-pub const PositiveDimsU32 = types.PositiveDimsU32;
 pub const RawMetadata = types.RawMetadata;
 pub const ResidentAsset = types.ResidentAsset;
 pub const SlideshowMode = types.SlideshowMode;

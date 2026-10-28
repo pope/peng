@@ -20,6 +20,7 @@ const MediaEntry = vfs.MediaEntry;
 const MediaId = state_pkg.types.MediaId;
 const Orientation = probe.Orientation;
 const PairStreamTarget = state_pkg.PairStreamTarget;
+const PositiveDimsU32 = probe.PositiveDimsU32;
 const RawMetadata = state_pkg.RawMetadata;
 const scanCbzImageEntries = vfs.scanCbzImageEntries;
 const ThumbCacheConfig = thumbcache.ThumbCacheConfig;
@@ -1549,7 +1550,7 @@ var preview_file_seq: std.atomic.Value(u64) = .init(0);
 pub const PreviewRenderResult = struct {
     path_buf: [128]u8 = undefined,
     path_len: usize,
-    dims: state_pkg.PositiveDimsU32,
+    dims: PositiveDimsU32,
 
     /// Returns the written temporary file path slice.
     pub fn path(self: *const PreviewRenderResult) []const u8 {
@@ -1564,7 +1565,7 @@ pub const PreviewWorkerArgs = struct {
     io: std.Io,
     client_stream: std.Io.net.Stream,
     path: []const u8,
-    max_dims: state_pkg.PositiveDimsU32,
+    max_dims: PositiveDimsU32,
 
     /// Frees the owned path slice and argument struct.
     pub fn deinit(self: *PreviewWorkerArgs) void {
@@ -1668,7 +1669,7 @@ fn decodePreviewSourceSurface(
     io: std.Io,
     thumb_cfg: ThumbCacheConfig,
     path: []const u8,
-    max_dims: state_pkg.PositiveDimsU32,
+    max_dims: PositiveDimsU32,
     cancel: context.CancellationToken,
 ) !DecodedPreviewSource {
     if (cancel.isCanceled()) return error.Canceled;
@@ -1854,7 +1855,7 @@ pub fn renderPreviewRgbaFile(
     io: std.Io,
     thumb_cfg: ThumbCacheConfig,
     path: []const u8,
-    max_dims: state_pkg.PositiveDimsU32,
+    max_dims: PositiveDimsU32,
     cancel: context.CancellationToken,
 ) !PreviewRenderResult {
     const decoded = try decodePreviewSourceSurface(

@@ -8,27 +8,6 @@ const triage = @import("triage");
 
 const ViewMode = triage.ViewMode;
 
-/// Strictly positive (`>= 1`) integer 2D pixel dimensions (`w x h`).
-pub const PositiveDimsU32 = struct {
-    w: u32 = 800,
-    h: u32 = 600,
-
-    /// Constructs `PositiveDimsU32` when both `w_i` and `h_i` are strictly
-    /// positive (`> 0`), clamping each axis to `max_dim`, or returns `null`.
-    pub inline fn initClamped(
-        w_i: i64,
-        h_i: i64,
-        max_dim: u32,
-    ) ?PositiveDimsU32 {
-        if (w_i <= 0 or h_i <= 0 or max_dim == 0) return null;
-        const max_i64: i64 = @intCast(max_dim);
-        return .{
-            .w = @intCast(@min(w_i, max_i64)),
-            .h = @intCast(@min(h_i, max_i64)),
-        };
-    }
-};
-
 /// Target zoom presets for instant snapping and responsive tracking.
 pub const ZoomPreset = enum {
     none,
@@ -86,61 +65,6 @@ pub const scale_modes_string: []const u8 = blk: {
 pub const filter_modes_string: []const u8 = blk: {
     var str: []const u8 = "";
     const field_names = @typeInfo(TextureScaleMode).@"enum".field_names;
-    for (field_names, 0..) |name, i| {
-        str = if (i > 0) str ++ ", " ++ name else name;
-    }
-    break :blk str;
-};
-
-/// Freedesktop Shared Thumbnail Cache (`$XDG_CACHE_HOME/thumbnails/`) mode.
-pub const ThumbCacheMode = enum {
-    /// Read cached thumbnails and write missing thumbnails for all images,
-    /// including RAW and JPEG files (pre-warming Dolphin/Yazi caches).
-    all,
-    /// Read cached thumbnails and only write missing thumbnails when the source
-    /// image lacks an embedded EXIF/RAW thumbnail (e.g. PNG, WebP, AVIF, TIFF).
-    missing,
-    /// Read cached thumbnails only; never write new thumbnails to disk.
-    read_only,
-    /// Disable reading and writing the Freedesktop thumbnail cache completely.
-    off,
-
-    /// Parses a thumbnail cache mode or alias (`read-only`, `readonly`,
-    /// `never`, `missing-embedded`, `none`, `disabled`, `false`) into a
-    /// `ThumbCacheMode`.
-    pub fn parse(val: []const u8) ?ThumbCacheMode {
-        if (std.mem.eql(u8, val, "all-missing") or
-            std.mem.eql(u8, val, "all_missing"))
-        {
-            return .all;
-        }
-        if (std.mem.eql(u8, val, "missing-embedded") or
-            std.mem.eql(u8, val, "missing_embedded") or
-            std.mem.eql(u8, val, "missing_embedded_only"))
-        {
-            return .missing;
-        }
-        if (std.mem.eql(u8, val, "read-only") or
-            std.mem.eql(u8, val, "readonly") or
-            std.mem.eql(u8, val, "never"))
-        {
-            return .read_only;
-        }
-        if (std.mem.eql(u8, val, "none") or
-            std.mem.eql(u8, val, "disabled") or
-            std.mem.eql(u8, val, "false"))
-        {
-            return .off;
-        }
-        return std.meta.stringToEnum(ThumbCacheMode, val);
-    }
-};
-
-/// Comptime-generated comma-separated list of all valid ThumbCacheMode names
-/// via reflection.
-pub const thumb_cache_modes_string: []const u8 = blk: {
-    var str: []const u8 = "";
-    const field_names = @typeInfo(ThumbCacheMode).@"enum".field_names;
     for (field_names, 0..) |name, i| {
         str = if (i > 0) str ++ ", " ++ name else name;
     }
