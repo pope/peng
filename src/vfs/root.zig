@@ -269,13 +269,6 @@ pub const DirectoryEntry = union(enum) {
     }
 };
 
-/// Aggregated count of image files and child subdirectories inside a directory
-/// or CBZ container.
-pub const FolderCounts = struct {
-    image_count: usize = 0,
-    subdir_count: usize = 0,
-};
-
 /// Lightweight callback wrapper allowing cooperative cancellation checks
 /// during long-running VFS scan operations without coupling to worker types.
 pub const CancelCheck = struct {
@@ -310,7 +303,7 @@ fn isImageExtension(ext: []const u8) bool {
 }
 
 /// Returns `true` if the file extension matches a supported Camera RAW format.
-pub fn isRawExtension(ext: []const u8) bool {
+fn isRawExtension(ext: []const u8) bool {
     const raw_extensions = [_][]const u8{
         ".arw", ".raf", ".cr2", ".nef", ".dng", ".orf", ".rw2", ".pef",
     };
@@ -354,21 +347,21 @@ fn isSupportedFile(filename: []const u8) bool {
 }
 
 /// Returns the stem of `path` (the leaf basename without its file extension).
-pub fn getPathStem(path: []const u8) []const u8 {
+fn getPathStem(path: []const u8) []const u8 {
     const base = std.Io.Dir.path.basename(path);
     const ext = std.Io.Dir.path.extension(base);
     return base[0 .. base.len - ext.len];
 }
 
 /// Returns `true` if the file extension matches a standard JPEG format.
-pub fn isJpegExtension(ext: []const u8) bool {
+fn isJpegExtension(ext: []const u8) bool {
     return std.ascii.eqlIgnoreCase(ext, ".jpg") or
         std.ascii.eqlIgnoreCase(ext, ".jpeg");
 }
 
 /// Returns `true` if the path points to a standard JPEG file and is not
 /// AppleDouble metadata.
-pub fn isJpegFile(filename: []const u8) bool {
+fn isJpegFile(filename: []const u8) bool {
     if (isAppleDouble(filename)) return false;
     return isJpegExtension(std.Io.Dir.path.extension(filename));
 }
@@ -378,7 +371,7 @@ pub fn isJpegFile(filename: []const u8) bool {
 /// true. Inspects contiguous blocks of entries sharing identical stems,
 /// correctly handling interleaved non-JPEG/non-RAW formats (e.g. .ARW, .bmp,
 /// .JPG).
-pub fn consolidateRawJpegPairs(
+fn consolidateRawJpegPairs(
     entries: *std.ArrayList(MediaEntry),
     stack_enabled: bool,
 ) void {
@@ -545,7 +538,7 @@ pub fn scanCbzImageEntries(
 
 /// Sorts media entries alphabetically by basename (case-insensitive) and
 /// consolidates matching RAW and JPEG pairs into unified `.pair` entries.
-pub fn sortAndConsolidateMediaEntries(
+fn sortAndConsolidateMediaEntries(
     entries: *std.ArrayList(MediaEntry),
     stack_raw_jpeg: bool,
 ) void {
@@ -748,7 +741,7 @@ pub inline fn resolveEntryKind(
 
 /// Maps a filesystem or archive I/O error into the corresponding
 /// `EntryScanState` badge variant (`.permission_denied` vs `.failed`).
-pub fn mapScanError(err: anyerror) EntryScanState {
+fn mapScanError(err: anyerror) EntryScanState {
     return switch (err) {
         error.AccessDenied, error.PermissionDenied => .permission_denied,
         else => .failed,
@@ -841,17 +834,54 @@ pub fn scanFolderContents(
     return .{ .scanned = counts };
 }
 
-/// Counts supported image files and non-hidden subdirectories inside
-/// `folder_path`. Inspects CBZ central directory tables directly if
-/// `folder_path` points to a comic archive.
-pub fn countFolderContents(io: std.Io, folder_path: []const u8) FolderCounts {
-    return switch (scanFolderContents(io, folder_path)) {
-        .scanned, .partial_counted, .cached => |c| .{
-            .image_count = c.image_count,
-            .subdir_count = c.subdir_count,
-        },
-        .unscanned, .failed, .permission_denied => .{},
-    };
+/// Frees each owned string element in `slice` and then frees `slice`
+/// itself using `allocator`.
+pub fn freeOwnedStringSlice(
+    allocator: std.mem.Allocator,
+    slice: []const []const u8,
+) void {
+    for (slice) |s| allocator.free(s);
+    allocator.free(slice);
+}
+
+/// Collects and duplicates the full filesystem paths of all `.unscanned`
+/// directory and archive entries in `items` with non-empty `full_path`.
+/// Returns `null` without allocating if no unscanned entries are present.
+pub fn collectUnscannedDirectoryPaths(
+    allocator: std.mem.Allocator,
+    items: []const DirectoryEntry,
+) !?[][]const u8 {
+    if (items.len == 0) return null;
+
+    var count: usize = 0;
+    for (items) |entry| {
+        if (entry.getScanState()) |scan| {
+            if (scan == .unscanned and entry.getFullPath().len > 0) {
+                count += 1;
+            }
+        }
+    }
+    if (count == 0) return null;
+
+    const paths = try allocator.alloc([]const u8, count);
+    var filled: usize = 0;
+    errdefer {
+        for (paths[0..filled]) |p| allocator.free(p);
+        allocator.free(paths);
+    }
+    for (items) |entry| {
+        if (entry.getScanState()) |scan| {
+            if (scan == .unscanned and entry.getFullPath().len > 0) {
+                paths[filled] = try allocator.dupe(
+                    u8,
+                    entry.getFullPath(),
+                );
+                filled += 1;
+            }
+        }
+    }
+    std.debug.assert(filled == count);
+    return paths;
 }
 
 /// Scans immediate non-hidden child subdirectories and CBZ archives within
@@ -1120,12 +1150,14 @@ test "scanCbzImageEntries utilizes scan arena" {
     );
 }
 
-test "scanDirectoryEntries includes CBZ and countFolderContents counts" {
+test "scanDirectoryEntries includes CBZ and scanFolderContents counts" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
 
-    const counts = countFolderContents(io, "testfiles/sample.cbz");
-    try std.testing.expectEqual(@as(usize, 2), counts.image_count);
+    try std.testing.expectEqual(
+        @as(usize, 2),
+        scanFolderContents(io, "testfiles/sample.cbz").scanned.image_count,
+    );
 
     var dir_entries: std.ArrayList(DirectoryEntry) = .empty;
     defer {
@@ -1219,7 +1251,10 @@ test "scanDirectoryEntries - nested directory hierarchy" {
     );
     try std.testing.expectEqual(
         @as(usize, 1),
-        countFolderContents(io, entries.items[0].getFullPath()).image_count,
+        scanFolderContents(
+            io,
+            entries.items[0].getFullPath(),
+        ).scanned.image_count,
     );
 
     // Index 1: sub_b
@@ -1234,7 +1269,10 @@ test "scanDirectoryEntries - nested directory hierarchy" {
     );
     try std.testing.expectEqual(
         @as(usize, 2),
-        countFolderContents(io, entries.items[1].getFullPath()).image_count,
+        scanFolderContents(
+            io,
+            entries.items[1].getFullPath(),
+        ).scanned.image_count,
     );
 
     // Index 2: sub_empty
@@ -1249,7 +1287,10 @@ test "scanDirectoryEntries - nested directory hierarchy" {
     );
     try std.testing.expectEqual(
         @as(usize, 0),
-        countFolderContents(io, entries.items[2].getFullPath()).image_count,
+        scanFolderContents(
+            io,
+            entries.items[2].getFullPath(),
+        ).scanned.image_count,
     );
 }
 
@@ -1572,9 +1613,14 @@ test "scanDirectoryEntries and scanFolderContents follow symlinks" {
         .{tmp.sub_path},
     );
 
-    const counts = countFolderContents(io, scan_root);
-    try std.testing.expectEqual(@as(usize, 1), counts.image_count);
-    try std.testing.expectEqual(@as(usize, 1), counts.subdir_count);
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        scanFolderContents(io, scan_root).scanned.image_count,
+    );
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        scanFolderContents(io, scan_root).scanned.subdir_count,
+    );
 
     var entries: std.ArrayList(DirectoryEntry) = .empty;
     defer {
@@ -1818,4 +1864,145 @@ test "vfs scanDirectoryMediaEntries and scanTargetMediaEntries" {
         );
         try std.testing.expectError(error.Canceled, res);
     }
+}
+
+test "collectUnscannedDirectoryPaths - empty items returns null" {
+    const items = [_]DirectoryEntry{};
+    const res = try collectUnscannedDirectoryPaths(
+        std.testing.allocator,
+        &items,
+    );
+    try std.testing.expect(res == null);
+}
+
+test "collectUnscannedDirectoryPaths - no unscanned entries returns null" {
+    const items = [_]DirectoryEntry{
+        .{ .parent = .{ .name = "..", .full_path = "/path/to/parent" } },
+        .{
+            .image_file = .{
+                .name = "pic.jpg",
+                .full_path = "/path/to/pic.jpg",
+            },
+        },
+        .{
+            .directory = .{
+                .name = "scanned_dir",
+                .full_path = "/path/to/scanned_dir",
+                .scan = .{ .scanned = .{} },
+            },
+        },
+        .{
+            .archive_file = .{
+                .name = "sample.cbz",
+                .full_path = "/path/to/sample.cbz",
+                .scan = .{ .scanned = .{} },
+            },
+        },
+        .{
+            .directory = .{
+                .name = "empty_path",
+                .full_path = "",
+                .scan = .unscanned,
+            },
+        },
+    };
+    const res = try collectUnscannedDirectoryPaths(
+        std.testing.allocator,
+        &items,
+    );
+    try std.testing.expect(res == null);
+}
+
+test "collectUnscannedDirectoryPaths - unscanned dirs and archives" {
+    const items = [_]DirectoryEntry{
+        .{ .parent = .{ .name = "..", .full_path = "/a" } },
+        .{
+            .directory = .{
+                .name = "sub1",
+                .full_path = "/a/sub1",
+                .scan = .unscanned,
+            },
+        },
+        .{
+            .image_file = .{
+                .name = "pic.png",
+                .full_path = "/a/pic.png",
+            },
+        },
+        .{
+            .archive_file = .{
+                .name = "book.cbz",
+                .full_path = "/a/book.cbz",
+                .scan = .unscanned,
+            },
+        },
+        .{
+            .directory = .{
+                .name = "sub2",
+                .full_path = "/a/sub2",
+                .scan = .{ .scanned = .{} },
+            },
+        },
+    };
+    const maybe_paths = try collectUnscannedDirectoryPaths(
+        std.testing.allocator,
+        &items,
+    );
+    try std.testing.expect(maybe_paths != null);
+    const paths = maybe_paths.?;
+    defer freeOwnedStringSlice(std.testing.allocator, paths);
+
+    try std.testing.expectEqual(@as(usize, 2), paths.len);
+    try std.testing.expectEqualStrings("/a/sub1", paths[0]);
+    try std.testing.expectEqualStrings("/a/book.cbz", paths[1]);
+}
+
+fn testCollectUnscannedOom(
+    allocator: std.mem.Allocator,
+    items: []const DirectoryEntry,
+) !void {
+    const paths = (try collectUnscannedDirectoryPaths(
+        allocator,
+        items,
+    )) orelse return;
+    freeOwnedStringSlice(allocator, paths);
+}
+
+test "collectUnscannedDirectoryPaths - OOM checkAllAllocationFailures" {
+    const items = [_]DirectoryEntry{
+        .{
+            .directory = .{
+                .name = "sub1",
+                .full_path = "/a/sub1",
+                .scan = .unscanned,
+            },
+        },
+        .{
+            .archive_file = .{
+                .name = "book.cbz",
+                .full_path = "/a/book.cbz",
+                .scan = .unscanned,
+            },
+        },
+        .{
+            .directory = .{
+                .name = "sub2",
+                .full_path = "/a/sub2",
+                .scan = .unscanned,
+            },
+        },
+    };
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        testCollectUnscannedOom,
+        .{&items},
+    );
+}
+
+test "freeOwnedStringSlice - frees slices and individual strings" {
+    const allocator = std.testing.allocator;
+    const slice = try allocator.alloc([]const u8, 2);
+    slice[0] = try allocator.dupe(u8, "hello");
+    slice[1] = try allocator.dupe(u8, "world");
+    freeOwnedStringSlice(allocator, slice);
 }

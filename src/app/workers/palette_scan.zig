@@ -1,15 +1,17 @@
 const context = @import("context.zig");
 const events = @import("../core/events.zig");
 const manager = @import("manager.zig");
-const state_pkg = @import("state");
 const std = @import("std");
 const vfs = @import("vfs");
 
+const collectUnscannedDirectoryPaths = vfs.collectUnscannedDirectoryPaths;
 const DirectoryEntry = vfs.DirectoryEntry;
+const freeOwnedStringSlice = vfs.freeOwnedStringSlice;
 const scanFolderContents = vfs.scanFolderContents;
 const WorkerManager = manager.WorkerManager;
 
-/// Spawns a background paletteScanWorker task to count directory images and subfolders.
+/// Spawns a background paletteScanWorker task to count directory images
+/// and subfolders.
 pub fn spawnPaletteScan(args: *PaletteScanArgs) !void {
     _ = args.workers.active_threads.fetchAdd(1, .monotonic);
     args.workers.group.async(args.io, paletteScanWorker, .{args});
@@ -46,10 +48,7 @@ pub fn paletteScanWorker(args: *PaletteScanArgs) void {
     const cancel = args.cancelToken();
 
     defer {
-        for (args.paths) |p| {
-            gpa.free(p);
-        }
-        gpa.free(args.paths);
+        freeOwnedStringSlice(gpa, args.paths);
         gpa.destroy(args);
         _ = workers.active_threads.fetchSub(1, .release);
         context.wakeUpMainThread();
@@ -98,32 +97,9 @@ pub fn spawnPaletteScanForItems(
     current_generation: *const std.atomic.Value(usize),
     items: []const DirectoryEntry,
 ) !void {
-    if (items.len == 0) return;
-
-    var count: usize = 0;
-    for (items) |entry| {
-        if (entry.getScanState()) |scan| {
-            if (scan == .unscanned and entry.getFullPath().len > 0) {
-                count += 1;
-            }
-        }
-    }
-    if (count == 0) return;
-
-    const paths = try gpa.alloc([]const u8, count);
-    var filled: usize = 0;
-    errdefer {
-        for (paths[0..filled]) |p| gpa.free(p);
-        gpa.free(paths);
-    }
-    for (items) |entry| {
-        if (entry.getScanState()) |scan| {
-            if (scan == .unscanned and entry.getFullPath().len > 0) {
-                paths[filled] = try gpa.dupe(u8, entry.getFullPath());
-                filled += 1;
-            }
-        }
-    }
+    const paths = (try collectUnscannedDirectoryPaths(gpa, items)) orelse
+        return;
+    errdefer freeOwnedStringSlice(gpa, paths);
 
     const args = try gpa.create(PaletteScanArgs);
     errdefer gpa.destroy(args);
