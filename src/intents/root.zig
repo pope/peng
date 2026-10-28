@@ -11,7 +11,6 @@ pub const types = @import("types.zig");
 
 pub const AdjustIntent = types.AdjustIntent;
 pub const AppIntent = types.AppIntent;
-pub const Classification = types.Classification;
 pub const CliOption = actions.CliOption;
 pub const CliTarget = actions.CliTarget;
 pub const DisplayKind = types.DisplayKind;
@@ -35,7 +34,6 @@ pub const TextInputBounds = types.TextInputBounds;
 pub const TextureScaleMode = types.TextureScaleMode;
 pub const ThumbCacheMode = types.ThumbCacheMode;
 pub const thumb_cache_modes_string = types.thumb_cache_modes_string;
-pub const ViewMode = types.ViewMode;
 pub const ZoomPreset = types.ZoomPreset;
 
 test {

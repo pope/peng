@@ -182,19 +182,19 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const intents_module = b.createModule(.{
-        .root_source_file = b.path("src/intents/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
     const triage_module = b.createModule(.{
         .root_source_file = b.path("src/triage/root.zig"),
         .target = target,
         .optimize = optimize,
     });
-    triage_module.addImport("intents", intents_module);
     triage_module.addImport("vfs", vfs_module);
+
+    const intents_module = b.createModule(.{
+        .root_source_file = b.path("src/intents/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    intents_module.addImport("triage", triage_module);
 
     const thumbcache_module = b.createModule(.{
         .root_source_file = b.path("src/thumbcache/root.zig"),
@@ -259,6 +259,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     ipc_module.addImport("intents", intents_module);
+    ipc_module.addImport("triage", triage_module);
 
     app_module.addImport("sdl", sdl_module);
     app_module.addImport("zclay", zclay_dep.module("zclay"));

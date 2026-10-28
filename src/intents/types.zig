@@ -1,9 +1,12 @@
 //! Pure Intent Data Types & Enums
 //!
-//! Defines intent data structures, scaling modes, palette modes,
-//! bounds, and command payloads with zero dependencies on other modules.
+//! Defines intent data structures, scaling modes, palette modes, bounds,
+//! and command payloads without depending on UI, hardware, or state structs.
 
 const std = @import("std");
+const triage = @import("triage");
+
+const ViewMode = triage.ViewMode;
 
 /// Strictly positive (`>= 1`) integer 2D pixel dimensions (`w x h`).
 pub const PositiveDimsU32 = struct {
@@ -22,98 +25,6 @@ pub const PositiveDimsU32 = struct {
         return .{
             .w = @intCast(@min(w_i, max_i64)),
             .h = @intCast(@min(h_i, max_i64)),
-        };
-    }
-};
-
-/// Tri-state classification for image triage (inspired by Adobe Lightroom).
-/// Uses enum(u2) for high-density flat array storage (fits in 1 byte per
-/// entry, 10 KB for 10k images).
-pub const Classification = enum(u2) {
-    unflagged = 0,
-    pick = 1,
-    reject = 2,
-
-    /// Human-readable display label.
-    pub inline fn label(self: Classification) []const u8 {
-        return switch (self) {
-            .unflagged => "Unflagged",
-            .pick => "Pick",
-            .reject => "Reject",
-        };
-    }
-
-    /// Tab-separated prefix used for stdout triage export, or null if
-    /// unflagged.
-    pub inline fn exportPrefix(self: Classification) ?[]const u8 {
-        return switch (self) {
-            .pick => "PICK",
-            .reject => "REJECT",
-            .unflagged => null,
-        };
-    }
-};
-
-/// Active filter view mode defining which classified images are visible.
-pub const ViewMode = enum(u8) {
-    /// Default mode: shows unflagged images and picks; hides rejects.
-    default = 0,
-    /// Shows only unflagged images.
-    unflagged = 1,
-    /// Shows only picks.
-    picks = 2,
-    /// Shows only rejects.
-    rejects = 3,
-    /// Shows all images regardless of classification.
-    all = 4,
-
-    /// Exhaustive evaluation determining whether an image with
-    /// classification `c` is visible.
-    pub inline fn matches(self: ViewMode, c: Classification) bool {
-        return switch (self) {
-            .default => switch (c) {
-                .unflagged, .pick => true,
-                .reject => false,
-            },
-            .unflagged => c == .unflagged,
-            .picks => c == .pick,
-            .rejects => c == .reject,
-            .all => switch (c) {
-                .unflagged, .pick, .reject => true,
-            },
-        };
-    }
-
-    /// Cycles sequentially to the next view mode.
-    pub inline fn cycle(self: ViewMode) ViewMode {
-        return switch (self) {
-            .default => .picks,
-            .picks => .rejects,
-            .rejects => .unflagged,
-            .unflagged => .all,
-            .all => .default,
-        };
-    }
-
-    /// Human-readable title of the view filter mode.
-    pub inline fn label(self: ViewMode) []const u8 {
-        return switch (self) {
-            .default => "Default (Hide Rejects)",
-            .unflagged => "Unflagged Only",
-            .picks => "Picks Only",
-            .rejects => "Rejects Only",
-            .all => "All Files",
-        };
-    }
-
-    /// Optional badge text for UI overlays when a non-default filter is active.
-    pub inline fn badgeText(self: ViewMode) ?[]const u8 {
-        return switch (self) {
-            .default => null,
-            .unflagged => "UNFLAGGED",
-            .picks => "PICKS ONLY",
-            .rejects => "REJECTS ONLY",
-            .all => "ALL FILES",
         };
     }
 };

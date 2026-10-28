@@ -3,12 +3,12 @@ const triage = @import("triage");
 const types = @import("types.zig");
 const vfs = @import("vfs");
 
-const Classification = types.Classification;
+const Classification = triage.Classification;
 const MediaEntry = vfs.MediaEntry;
 const MediaId = types.MediaId;
 const SlideshowMode = types.SlideshowMode;
 const TriageMap = triage.TriageMap;
-const ViewMode = types.ViewMode;
+const ViewMode = triage.ViewMode;
 const VisibleNeighbors = triage.VisibleNeighbors;
 
 /// Unified media list element stored contiguously in Structure-of-Arrays (SoA) layout.

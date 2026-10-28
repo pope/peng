@@ -35,14 +35,15 @@
     media entry models, and RAW+JPEG pair consolidation (zero SDL3/Clay
     linkage).
   - `src/triage/`: Pure triage selection maps, arena string keys, JSON
-    export serialization, and 256-bit SIMD visibility scans (zero SDL/Clay).
+    export serialization, and 256-bit SIMD visibility scans (imports `vfs`;
+    zero SDL/Clay).
   - `src/palette/`: Pure command palette state models, fuzzy scoring
     (`fuzzig`), and directory navigation history (zero SDL/Clay).
   - `src/thumbcache/`: Pure Freedesktop Shared Thumbnail Cache specification,
     RFC 3986 URI encoding, MD5 hashing, PNG `tEXt` chunk parsing and splicing,
     and atomic PNG writing (imports `intents`, `probe`, `vfs`; zero SDL/Clay).
   - `src/intents/`: Pure `AppIntent` variants, `ActionDef` registry
-    (`actions.zig`), and intent payload structs.
+    (`actions.zig`), and intent payload structs (imports `triage`).
   - `src/input/`: Pure `FrameInput` event polling and shortcut mapping.
   - `src/ipc/`: Pure `IpcCommand` parsing, `IpcResponse` JSON schema
     (`parseResponse`, `writeOkLine`, `writeErrorLine`, `writePreviewLine`),

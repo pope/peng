@@ -3,12 +3,13 @@ const navigation = @import("navigation.zig");
 const palette_pkg = @import("palette");
 const sdl = @import("sdl");
 const std = @import("std");
+const triage = @import("triage");
 const types = @import("types.zig");
 const vfs = @import("vfs");
 
 const AnimationChannel = animation_state.AnimationChannel;
 const CacheEntry = types.CacheEntry;
-const Classification = types.Classification;
+const Classification = triage.Classification;
 const MediaEntry = vfs.MediaEntry;
 const MediaItemSlice = navigation.MediaItemSlice;
 const OverlayState = types.OverlayState;
@@ -17,7 +18,7 @@ const SlideshowMode = types.SlideshowMode;
 const SnackbarDisplay = types.SnackbarDisplay;
 const UiRenderMetricsSnapshot = types.UiRenderMetricsSnapshot;
 const ViewerStats = types.ViewerStats;
-const ViewMode = types.ViewMode;
+const ViewMode = triage.ViewMode;
 const ViewportParams = types.ViewportParams;
 const VisibleState = types.VisibleState;
 

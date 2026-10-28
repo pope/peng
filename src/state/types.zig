@@ -2,13 +2,16 @@ const intents = @import("intents");
 const probe = @import("probe");
 const sdl = @import("sdl");
 const std = @import("std");
+const triage = @import("triage");
 const view_transform = @import("view_transform.zig");
 
+const Classification = triage.Classification;
 const EditParam = intents.EditParam;
 const getSpec = intents.getSpec;
 const Key = intents.Key;
 const KeyModifiers = intents.KeyModifiers;
 const Orientation = probe.Orientation;
+const ViewMode = triage.ViewMode;
 
 pub const PositiveDimsU32 = intents.PositiveDimsU32;
 pub const ZoomPreset = intents.ZoomPreset;
@@ -148,9 +151,6 @@ pub const PairStreamTarget = enum {
     raw_preview,
     standalone_jpeg,
 };
-
-pub const Classification = intents.Classification;
-pub const ViewMode = intents.ViewMode;
 
 /// Tagged union representing the visibility state of the current view.
 /// Distinguishes empty directories, active filtered empty states, and valid image selections.

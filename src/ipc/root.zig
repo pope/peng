@@ -1,8 +1,10 @@
 const builtin = @import("builtin");
 const intents = @import("intents");
 const std = @import("std");
+const triage = @import("triage");
 
 const TextureScaleMode = intents.TextureScaleMode;
+const ViewMode = triage.ViewMode;
 
 extern "kernel32" fn GetCurrentProcessId() callconv(.winapi) u32;
 
@@ -273,7 +275,7 @@ pub const IpcCommand = union(enum) {
     unflag,
     selections,
     clear_selections,
-    view: intents.ViewMode,
+    view: ViewMode,
     precache,
     close,
     quit,
@@ -738,7 +740,7 @@ pub const IpcCommand = union(enum) {
             return .clear_selections;
         } else if (std.mem.eql(u8, cmd, "view")) {
             const val = it.next() orelse return error.MissingArgument;
-            if (std.meta.stringToEnum(intents.ViewMode, val)) |mode| {
+            if (std.meta.stringToEnum(ViewMode, val)) |mode| {
                 return .{ .view = mode };
             }
             return error.UnknownViewMode;
@@ -1181,7 +1183,7 @@ test "IpcCommand parsing" {
     try std.testing.expectEqualStrings("y.jpg", parsed_sel.value.rejects.?[0]);
 
     const cmd_view_picks = try IpcCommand.parse("view picks");
-    try std.testing.expectEqual(intents.ViewMode.picks, cmd_view_picks.view);
+    try std.testing.expectEqual(ViewMode.picks, cmd_view_picks.view);
     try std.testing.expectEqual(intents.AppIntent{ .set_view_mode = .picks }, cmd_view_picks.toIntent().?);
 
     const cmd_reset_view = try IpcCommand.parse("reset_view");

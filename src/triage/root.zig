@@ -1,14 +1,103 @@
-const intents = @import("intents");
 const std = @import("std");
 const vfs = @import("vfs");
 
-const Classification = intents.Classification;
 const MediaEntry = vfs.MediaEntry;
-const ViewMode = intents.ViewMode;
 
 const Vec32 = @Vector(32, u8);
 
 const MAX_RETAINED_CLASS_ARENA_BYTES: usize = 64 * 1024;
+
+/// Tri-state classification for image triage (inspired by Adobe Lightroom).
+/// Uses enum(u2) for high-density flat array storage (fits in 1 byte per
+/// entry, 10 KB for 10k images).
+pub const Classification = enum(u2) {
+    unflagged = 0,
+    pick = 1,
+    reject = 2,
+
+    /// Human-readable display label.
+    pub inline fn label(self: Classification) []const u8 {
+        return switch (self) {
+            .unflagged => "Unflagged",
+            .pick => "Pick",
+            .reject => "Reject",
+        };
+    }
+
+    /// Tab-separated prefix used for stdout triage export, or null if
+    /// unflagged.
+    pub inline fn exportPrefix(self: Classification) ?[]const u8 {
+        return switch (self) {
+            .pick => "PICK",
+            .reject => "REJECT",
+            .unflagged => null,
+        };
+    }
+};
+
+/// Active filter view mode defining which classified images are visible.
+pub const ViewMode = enum(u8) {
+    /// Default mode: shows unflagged images and picks; hides rejects.
+    default = 0,
+    /// Shows only unflagged images.
+    unflagged = 1,
+    /// Shows only picks.
+    picks = 2,
+    /// Shows only rejects.
+    rejects = 3,
+    /// Shows all images regardless of classification.
+    all = 4,
+
+    /// Exhaustive evaluation determining whether an image with
+    /// classification `c` is visible.
+    pub inline fn matches(self: ViewMode, c: Classification) bool {
+        return switch (self) {
+            .default => switch (c) {
+                .unflagged, .pick => true,
+                .reject => false,
+            },
+            .unflagged => c == .unflagged,
+            .picks => c == .pick,
+            .rejects => c == .reject,
+            .all => switch (c) {
+                .unflagged, .pick, .reject => true,
+            },
+        };
+    }
+
+    /// Cycles sequentially to the next view mode.
+    pub inline fn cycle(self: ViewMode) ViewMode {
+        return switch (self) {
+            .default => .picks,
+            .picks => .rejects,
+            .rejects => .unflagged,
+            .unflagged => .all,
+            .all => .default,
+        };
+    }
+
+    /// Human-readable title of the view filter mode.
+    pub inline fn label(self: ViewMode) []const u8 {
+        return switch (self) {
+            .default => "Default (Hide Rejects)",
+            .unflagged => "Unflagged Only",
+            .picks => "Picks Only",
+            .rejects => "Rejects Only",
+            .all => "All Files",
+        };
+    }
+
+    /// Optional badge text for UI overlays when a non-default filter is active.
+    pub inline fn badgeText(self: ViewMode) ?[]const u8 {
+        return switch (self) {
+            .default => null,
+            .unflagged => "UNFLAGGED",
+            .picks => "PICKS ONLY",
+            .rejects => "REJECTS ONLY",
+            .all => "ALL FILES",
+        };
+    }
+};
 
 /// Finds the next index in `[start, end)` matching the active view mode
 /// using 256-bit SIMD.
@@ -1576,4 +1665,87 @@ test "triage - TriageMap registerEntry, updateClassification, and clearAll" {
 
     // Calling clearAll when already empty returns false
     try std.testing.expect(!map.clearAll(&classes));
+}
+
+test "triage - Classification label and exportPrefix" {
+    try std.testing.expectEqualStrings(
+        "Unflagged",
+        Classification.unflagged.label(),
+    );
+    try std.testing.expectEqualStrings("Pick", Classification.pick.label());
+    try std.testing.expectEqualStrings("Reject", Classification.reject.label());
+
+    try std.testing.expectEqual(
+        @as(?[]const u8, null),
+        Classification.unflagged.exportPrefix(),
+    );
+    try std.testing.expectEqualStrings(
+        "PICK",
+        Classification.pick.exportPrefix().?,
+    );
+    try std.testing.expectEqualStrings(
+        "REJECT",
+        Classification.reject.exportPrefix().?,
+    );
+}
+
+test "triage - ViewMode matches, cycle, label, and badgeText" {
+    try std.testing.expect(ViewMode.default.matches(.unflagged));
+    try std.testing.expect(ViewMode.default.matches(.pick));
+    try std.testing.expect(!ViewMode.default.matches(.reject));
+
+    try std.testing.expect(ViewMode.unflagged.matches(.unflagged));
+    try std.testing.expect(!ViewMode.unflagged.matches(.pick));
+    try std.testing.expect(!ViewMode.unflagged.matches(.reject));
+
+    try std.testing.expect(!ViewMode.picks.matches(.unflagged));
+    try std.testing.expect(ViewMode.picks.matches(.pick));
+    try std.testing.expect(!ViewMode.picks.matches(.reject));
+
+    try std.testing.expect(!ViewMode.rejects.matches(.unflagged));
+    try std.testing.expect(!ViewMode.rejects.matches(.pick));
+    try std.testing.expect(ViewMode.rejects.matches(.reject));
+
+    try std.testing.expect(ViewMode.all.matches(.unflagged));
+    try std.testing.expect(ViewMode.all.matches(.pick));
+    try std.testing.expect(ViewMode.all.matches(.reject));
+
+    try std.testing.expectEqual(ViewMode.picks, ViewMode.default.cycle());
+    try std.testing.expectEqual(ViewMode.rejects, ViewMode.picks.cycle());
+    try std.testing.expectEqual(ViewMode.unflagged, ViewMode.rejects.cycle());
+    try std.testing.expectEqual(ViewMode.all, ViewMode.unflagged.cycle());
+    try std.testing.expectEqual(ViewMode.default, ViewMode.all.cycle());
+
+    try std.testing.expectEqualStrings(
+        "Default (Hide Rejects)",
+        ViewMode.default.label(),
+    );
+    try std.testing.expectEqualStrings(
+        "Unflagged Only",
+        ViewMode.unflagged.label(),
+    );
+    try std.testing.expectEqualStrings("Picks Only", ViewMode.picks.label());
+    try std.testing.expectEqualStrings(
+        "Rejects Only",
+        ViewMode.rejects.label(),
+    );
+    try std.testing.expectEqualStrings("All Files", ViewMode.all.label());
+
+    try std.testing.expectEqual(
+        @as(?[]const u8, null),
+        ViewMode.default.badgeText(),
+    );
+    try std.testing.expectEqualStrings(
+        "UNFLAGGED",
+        ViewMode.unflagged.badgeText().?,
+    );
+    try std.testing.expectEqualStrings(
+        "PICKS ONLY",
+        ViewMode.picks.badgeText().?,
+    );
+    try std.testing.expectEqualStrings(
+        "REJECTS ONLY",
+        ViewMode.rejects.badgeText().?,
+    );
+    try std.testing.expectEqualStrings("ALL FILES", ViewMode.all.badgeText().?);
 }

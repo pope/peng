@@ -6,9 +6,11 @@ const probe = @import("probe");
 const sdl = @import("sdl");
 const state = @import("state");
 const std = @import("std");
+const triage = @import("triage");
 const vfs = @import("vfs");
 
 const AppState = app_state.AppState;
+const Classification = triage.Classification;
 const EditParam = intents.EditParam;
 const FrameContext = context.FrameContext;
 const MediaEntry = vfs.MediaEntry;
@@ -774,7 +776,7 @@ fn triggerSnackbarForIntent(
     const rule = state.snackbar.findRule(intent) orelse return;
     if (!self.viewer.ui.snackbar.isTriggerEnabled(rule.trigger)) return;
 
-    const target_class: state.Classification = switch (intent) {
+    const target_class: Classification = switch (intent) {
         .mark_pick => .pick,
         .mark_reject => .reject,
         .unflag => .unflagged,

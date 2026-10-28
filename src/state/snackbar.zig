@@ -5,12 +5,13 @@
 
 const intents = @import("intents");
 const std = @import("std");
+const triage = @import("triage");
 const types = @import("types.zig");
 
 const AppIntent = intents.AppIntent;
-const Classification = types.Classification;
+const Classification = triage.Classification;
 const EditParam = intents.EditParam;
-const ViewMode = types.ViewMode;
+const ViewMode = triage.ViewMode;
 const ViewportParams = types.ViewportParams;
 
 /// Maximum length of a snackbar notification message in bytes.
