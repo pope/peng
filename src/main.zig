@@ -7,8 +7,14 @@ const ipc = @import("ipc");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
+const thumbcache = @import("thumbcache");
 const ui = @import("ui");
 const viewer = if (!build_options.hot_reload) @import("viewer") else struct {};
+
+const collectPrecacheFiles = thumbcache.collectPrecacheFiles;
+const precachePathsParallel = thumbcache.precachePathsParallel;
+const ThumbCacheConfig = thumbcache.ThumbCacheConfig;
+const ThumbWritePolicy = thumbcache.ThumbWritePolicy;
 
 const LibViewer = struct {
     const lib_name = switch (builtin.target.os.tag) {
@@ -441,11 +447,11 @@ fn runCliPrecache(
     const gpa = proc_init.gpa;
     const io = proc_init.io;
 
-    const policy: app.thumb_cache.ThumbWritePolicy = switch (parsed.thumb_cache) {
+    const policy: ThumbWritePolicy = switch (parsed.thumb_cache) {
         .missing => .missing_embedded_only,
         else => .all_missing,
     };
-    var cfg = app.thumb_cache.ThumbCacheConfig.initFromEnviron(
+    var cfg = ThumbCacheConfig.initFromEnviron(
         gpa,
         proc_init.environ_map,
         policy,
@@ -456,7 +462,8 @@ fn runCliPrecache(
         .enabled => |c| c,
         .disabled => {
             std.log.err(
-                "Freedesktop thumbnail cache unavailable (check HOME / XDG_CACHE_HOME)",
+                "Freedesktop thumbnail cache unavailable " ++
+                    "(check HOME / XDG_CACHE_HOME)",
                 .{},
             );
             return error.ThumbCacheDisabled;
@@ -469,7 +476,7 @@ fn runCliPrecache(
     const path_alloc = path_arena.allocator();
 
     var files: std.ArrayList([]const u8) = .empty;
-    app.thumb_cache.collectPrecacheFiles(
+    collectPrecacheFiles(
         path_alloc,
         io,
         target_path,
@@ -485,13 +492,14 @@ fn runCliPrecache(
 
     const cpu_count = std.Thread.getCpuCount() catch 4;
     const max_workers = @max(@as(usize, 1), @min(@as(usize, 8), cpu_count));
-    const stats = app.thumb_cache.precachePathsParallel(
+    const stats = precachePathsParallel(
         gpa,
         io,
         enabled_cfg,
         files.items,
         max_workers,
         .{},
+        app.thumbcache.encodeBytesToThumbnailPng,
     );
 
     var stdout_write_buf: [1024]u8 = undefined;

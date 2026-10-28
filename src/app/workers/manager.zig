@@ -4,12 +4,22 @@
 //! concurrency limits, worker cancellation, and event transport.
 
 const context = @import("context.zig");
+const core_thumbcache = @import("../core/thumbcache.zig");
 const events = @import("../core/events.zig");
 const probe = @import("probe");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
-const thumb_cache = @import("../core/thumb_cache.zig");
+const thumbcache = @import("thumbcache");
+
+const EnabledThumbCacheConfig = thumbcache.EnabledThumbCacheConfig;
+const encodeBytesToThumbnailPng = core_thumbcache.encodeBytesToThumbnailPng;
+const hasValidTargetTierThumbnail = thumbcache.hasValidTargetTierThumbnail;
+const PrecacheCancel = thumbcache.PrecacheCancel;
+const precacheFileThumbnail = thumbcache.precacheFileThumbnail;
+const ThumbCacheConfig = thumbcache.ThumbCacheConfig;
+const ThumbCacheKey = thumbcache.ThumbCacheKey;
+const writeThumbnailPng = core_thumbcache.writeThumbnailPng;
 
 /// Background job for downscaling, orienting, and atomically saving a PNG
 /// thumbnail to the Freedesktop Shared Thumbnail Cache
@@ -55,7 +65,7 @@ pub const WorkerManager = struct {
     exiting: std.atomic.Value(bool) = .init(false),
 
     /// Platform/user configuration for the Freedesktop Shared Thumbnail Cache.
-    thumb_cache_config: thumb_cache.ThumbCacheConfig = .disabled,
+    thumb_cache_config: ThumbCacheConfig = .disabled,
 
     /// Real-time atomic metrics for EXIF & Freedesktop thumbnail extraction and
     /// writes.
@@ -246,13 +256,13 @@ pub const WorkerManager = struct {
             switch (self.thumb_cache_config) {
                 .disabled => {},
                 .enabled => |cfg| {
-                    const key = thumb_cache.ThumbCacheKey.fromFilePath(
+                    const key = ThumbCacheKey.fromFilePath(
                         io,
                         job.source_path,
                         cfg.cache_dir,
                     ) orelse continue;
 
-                    if (thumb_cache.hasValidTargetTierThumbnail(
+                    if (hasValidTargetTierThumbnail(
                         io,
                         cfg,
                         &key,
@@ -261,7 +271,11 @@ pub const WorkerManager = struct {
                         continue;
                     }
 
-                    if (thumb_cache.writeThumbnailPng(
+                    const meta_dims = if (job.source_dims) |d|
+                        d.toPositiveU32()
+                    else
+                        null;
+                    if (writeThumbnailPng(
                         scratch_arena.allocator(),
                         io,
                         cfg,
@@ -273,7 +287,7 @@ pub const WorkerManager = struct {
                             .mtime_sec = job.mtime_sec,
                             .file_size = job.file_size,
                             .mime_type = job.mime_type,
-                            .source_dims = job.source_dims,
+                            .source_dims = meta_dims,
                         },
                     )) |_| {
                         _ = self.thumb_cache_writes.fetchAdd(1, .release);
@@ -353,7 +367,7 @@ pub const WorkerManager = struct {
             .disabled => return,
             .enabled => |c| c,
         };
-        const cfg = thumb_cache.EnabledThumbCacheConfig{
+        const cfg = EnabledThumbCacheConfig{
             .cache_dir = base_cfg.cache_dir,
             .write_tier = base_cfg.write_tier,
             .write_policy = if (base_cfg.write_policy == .never)
@@ -367,7 +381,7 @@ pub const WorkerManager = struct {
             .generation = gen,
             .current_generation = &self.precache_generation,
         };
-        const precache_cancel = thumb_cache.PrecacheCancel{
+        const precache_cancel = PrecacheCancel{
             .exiting = &self.exiting,
             .generation = gen,
             .current_generation = &self.precache_generation,
@@ -392,12 +406,13 @@ pub const WorkerManager = struct {
 
             if (cancel.isCanceled()) return;
 
-            const outcome = thumb_cache.precacheFileThumbnail(
+            const outcome = precacheFileThumbnail(
                 scratch_arena.allocator(),
                 io,
                 cfg,
                 path,
                 precache_cancel,
+                encodeBytesToThumbnailPng,
             );
             remaining_queued -= 1;
             _ = self.thumb_cache_write_queued.fetchSub(1, .release);

@@ -7,7 +7,7 @@ const ipc = @import("ipc");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
-const thumb_cache = @import("core/thumb_cache.zig");
+const thumbcache = @import("thumbcache");
 const vfs = @import("vfs");
 const workers_mod = @import("workers/root.zig");
 
@@ -21,6 +21,8 @@ const ImageCacheKey = image.ImageCacheKey;
 const isCbzFile = vfs.isCbzFile;
 const MediaEntry = vfs.MediaEntry;
 const PaletteMode = intents.PaletteMode;
+const ThumbCacheConfig = thumbcache.ThumbCacheConfig;
+const ThumbWritePolicy = thumbcache.ThumbWritePolicy;
 const types = state_pkg.types;
 const view_transform = state_pkg.view_transform;
 const ViewerState = state_pkg.ViewerState;
@@ -140,14 +142,14 @@ pub const AppState = struct {
         mode: intents.ThumbCacheMode,
     ) void {
         self.workers.thumb_cache_config.deinit(self.allocator);
-        const policy_opt: ?thumb_cache.ThumbWritePolicy = switch (mode) {
+        const policy_opt: ?ThumbWritePolicy = switch (mode) {
             .off => null,
             .all => .all_missing,
             .missing => .missing_embedded_only,
             .read_only => .never,
         };
         self.workers.thumb_cache_config =
-            thumb_cache.ThumbCacheConfig.initFromEnviron(
+            ThumbCacheConfig.initFromEnviron(
                 self.allocator,
                 environ_map,
                 policy_opt,

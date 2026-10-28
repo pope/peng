@@ -10,10 +10,10 @@
 
 pub const events = @import("events.zig");
 pub const image = @import("image.zig");
-pub const thumb_cache = @import("thumb_cache.zig");
+pub const thumbcache = @import("thumbcache.zig");
 
 test {
     _ = events;
     _ = image;
-    _ = thumb_cache;
+    _ = thumbcache;
 }

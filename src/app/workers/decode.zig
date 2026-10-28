@@ -1,4 +1,5 @@
 const context = @import("context.zig");
+const core_thumbcache = @import("../core/thumbcache.zig");
 const image = @import("../core/image.zig");
 const ipc = @import("ipc");
 const manager = @import("manager.zig");
@@ -6,19 +7,23 @@ const probe = @import("probe");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
-const thumb_cache = @import("../core/thumb_cache.zig");
+const thumbcache = @import("thumbcache");
 const vfs = @import("vfs");
 
 const ArchiveMediaEntry = vfs.ArchiveMediaEntry;
 const FilePair = vfs.FilePair;
+const hasValidTargetTierThumbnail = thumbcache.hasValidTargetTierThumbnail;
 const ImageCacheKey = image.ImageCacheKey;
 const isRawFile = vfs.isRawFile;
+const loadCachedThumbnail = core_thumbcache.loadCachedThumbnail;
 const MediaEntry = vfs.MediaEntry;
 const MediaId = state_pkg.types.MediaId;
 const Orientation = probe.Orientation;
 const PairStreamTarget = state_pkg.PairStreamTarget;
 const RawMetadata = state_pkg.RawMetadata;
 const scanCbzImageEntries = vfs.scanCbzImageEntries;
+const ThumbCacheConfig = thumbcache.ThumbCacheConfig;
+const ThumbCacheKey = thumbcache.ThumbCacheKey;
 const ThumbnailSource = state_pkg.ThumbnailSource;
 const WorkerManager = manager.WorkerManager;
 
@@ -369,7 +374,7 @@ fn probeFreedesktopThumbCache(
             return .{ .miss = .not_probed };
         },
         .enabled => |cfg| {
-            const c_key = thumb_cache.ThumbCacheKey.fromFilePath(
+            const c_key = ThumbCacheKey.fromFilePath(
                 io,
                 path,
                 cfg.cache_dir,
@@ -379,7 +384,7 @@ fn probeFreedesktopThumbCache(
                 }
                 return .{ .miss = .excluded_path };
             };
-            if (thumb_cache.loadCachedThumbnail(
+            if (loadCachedThumbnail(
                 alloc,
                 io,
                 cfg,
@@ -414,7 +419,7 @@ fn probeFreedesktopThumbCache(
 
 fn resolveThumbWriteMtime(
     io: std.Io,
-    cfg_state: thumb_cache.ThumbCacheConfig,
+    cfg_state: ThumbCacheConfig,
     path: []const u8,
     source_mtime_sec: ?i64,
     had_embedded_thumb: bool,
@@ -435,12 +440,12 @@ fn resolveThumbWriteMtime(
                 .target_tier_valid, .excluded_path => break :blk null,
                 .target_tier_missing => break :blk mtime_sec,
                 .not_probed => {
-                    const c_key = thumb_cache.ThumbCacheKey.fromFilePath(
+                    const c_key = ThumbCacheKey.fromFilePath(
                         io,
                         path,
                         cfg.cache_dir,
                     ) orelse break :blk null;
-                    break :blk if (!thumb_cache.hasValidTargetTierThumbnail(
+                    break :blk if (!hasValidTargetTierThumbnail(
                         io,
                         cfg,
                         &c_key,
@@ -1815,7 +1820,7 @@ fn decodeEmbeddedLocSurface(
 fn decodePreviewSourceSurface(
     allocator: std.mem.Allocator,
     io: std.Io,
-    thumb_cfg: thumb_cache.ThumbCacheConfig,
+    thumb_cfg: ThumbCacheConfig,
     path: []const u8,
     max_dims: state_pkg.PositiveDimsU32,
     cancel: context.CancellationToken,
@@ -1856,12 +1861,12 @@ fn decodePreviewSourceSurface(
     if (max_dims.w <= 256 and max_dims.h <= 256) {
         switch (thumb_cfg) {
             .enabled => |cfg| {
-                if (thumb_cache.ThumbCacheKey.fromFilePath(
+                if (ThumbCacheKey.fromFilePath(
                     io,
                     path,
                     cfg.cache_dir,
                 )) |cache_key| {
-                    if (thumb_cache.loadCachedThumbnail(
+                    if (loadCachedThumbnail(
                         allocator,
                         io,
                         cfg,
@@ -2076,7 +2081,7 @@ fn decodePreviewSourceSurface(
 pub fn renderPreviewRgbaFile(
     allocator: std.mem.Allocator,
     io: std.Io,
-    thumb_cfg: thumb_cache.ThumbCacheConfig,
+    thumb_cfg: ThumbCacheConfig,
     path: []const u8,
     max_dims: state_pkg.PositiveDimsU32,
     cancel: context.CancellationToken,
@@ -3519,7 +3524,7 @@ test "decodeWorker and background writer Freedesktop thumbnail roundtrip" {
 
     var workers = WorkerManager{};
     defer workers.deinit(allocator, io);
-    workers.thumb_cache_config = try thumb_cache.ThumbCacheConfig.initWithDir(
+    workers.thumb_cache_config = try ThumbCacheConfig.initWithDir(
         allocator,
         abs_cache_dir,
         .large,

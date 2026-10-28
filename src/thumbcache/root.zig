@@ -1,30 +1,33 @@
 //! Freedesktop Shared Thumbnail Cache (`$XDG_CACHE_HOME/thumbnails/`)
 //!
-//! Implements reading and atomic writing of PNG thumbnails conforming to the
-//! Freedesktop Thumbnail Managing Standard:
+//! Implements pure Freedesktop Thumbnail Managing Standard logic:
 //! - Canonical `file:///` URI with RFC 3986 percent-encoding + lowercase hex
 //!   MD5 filename.
 //! - PNG `tEXt` metadata validation (`Thumb::MTime`, `Thumb::URI`,
 //!   `Thumb::Image::Width/Height`) placed immediately after `IHDR` (prior to
 //!   `IDAT`) for compatibility with `libpng` (`png_read_info`), KDE Dolphin
 //!   (`KIO::PreviewJob`), GNOME/GLib, and Yazi.
+//! - Atomic writing of thumbnail PNG bytes with 0o700/0o600 permissions.
+//! - Pure directory and file precache collection.
+//! - Raw embedded preview byte extraction and parallel thumbnail scheduling
+//!   decoupled from graphics libraries via `EncodeThumbPngFn`.
 
 const builtin = @import("builtin");
-const image = @import("image.zig");
+const intents = @import("intents");
 const probe = @import("probe");
-const sdl = @import("sdl");
-const state_pkg = @import("state");
 const std = @import("std");
 const vfs = @import("vfs");
 
 const isImageFile = vfs.isImageFile;
 const isRawFile = vfs.isRawFile;
 const Orientation = probe.Orientation;
+const PositiveDimsU32 = intents.PositiveDimsU32;
 const resolveEntryKind = vfs.resolveEntryKind;
 
 const png_signature = "\x89PNG\r\n\x1a\n";
 const ihdr_end_offset: usize = 33; // 8-byte signature + 25-byte IHDR chunk
 const max_cached_png_bytes: usize = 2 * 1024 * 1024;
+const precache_header_limit: usize = 256 * 1024;
 
 /// Standard Freedesktop thumbnail bounding-box size tiers.
 pub const ThumbTier = enum {
@@ -61,6 +64,35 @@ pub const ThumbTier = enum {
             .x_large => 512,
             .xx_large => 1024,
         };
+    }
+
+    /// Computes aspect-preserving dimensions scaled to fit within the tier's
+    /// bounding box. Returns null if dimensions are invalid (<= 0).
+    pub fn computeScaledDims(
+        self: ThumbTier,
+        src_w: i32,
+        src_h: i32,
+    ) ?struct { w: i32, h: i32 } {
+        if (src_w <= 0 or src_h <= 0) return null;
+        const max_dim = self.maxDim();
+        var target_w = src_w;
+        var target_h = src_h;
+        if (src_w > max_dim or src_h > max_dim) {
+            if (src_w >= src_h) {
+                target_w = max_dim;
+                target_h = @intCast(@max(
+                    1,
+                    @divTrunc(@as(i64, src_h) * max_dim, src_w),
+                ));
+            } else {
+                target_h = max_dim;
+                target_w = @intCast(@max(
+                    1,
+                    @divTrunc(@as(i64, src_w) * max_dim, src_h),
+                ));
+            }
+        }
+        return .{ .w = target_w, .h = target_h };
     }
 };
 
@@ -286,7 +318,7 @@ pub const PngThumbMetadata = struct {
     thumb_w: u32,
     thumb_h: u32,
     mtime_sec: ?i64 = null,
-    source_dims: ?state_pkg.PhysicalDims = null,
+    source_dims: ?PositiveDimsU32 = null,
 };
 
 /// Parses `IHDR` dimensions and Freedesktop `tEXt` chunks (`Thumb::MTime`,
@@ -346,12 +378,9 @@ pub fn parsePngThumbnailMetadata(png_bytes: []const u8) ?PngThumbMetadata {
     }
 
     if (thumb_w == 0 or thumb_h == 0) return null;
-    const source_dims: ?state_pkg.PhysicalDims = if (full_w_opt) |fw|
+    const source_dims: ?PositiveDimsU32 = if (full_w_opt) |fw|
         (if (full_h_opt) |fh|
-            state_pkg.PhysicalDims.initPositive(
-                @floatFromInt(fw),
-                @floatFromInt(fh),
-            )
+            .{ .w = fw, .h = fh }
         else
             null)
     else
@@ -370,7 +399,7 @@ pub const WriteThumbMetadata = struct {
     mtime_sec: i64,
     file_size: u64,
     mime_type: []const u8 = "",
-    source_dims: ?state_pkg.PhysicalDims = null,
+    source_dims: ?PositiveDimsU32 = null,
 };
 
 fn appendTextChunk(
@@ -436,13 +465,11 @@ pub fn splicePngTextChunks(
     if (meta.mime_type.len > 0) {
         try appendTextChunk(&out, allocator, "Thumb::Mimetype", meta.mime_type);
     }
-    if (meta.source_dims) |dims| {
-        if (dims.toPositiveU32()) |px| {
-            const w_str = try std.mem.print(&num_buf, "{d}", .{px.w});
-            try appendTextChunk(&out, allocator, "Thumb::Image::Width", w_str);
-            const h_str = try std.mem.print(&num_buf, "{d}", .{px.h});
-            try appendTextChunk(&out, allocator, "Thumb::Image::Height", h_str);
-        }
+    if (meta.source_dims) |px| {
+        const w_str = try std.mem.print(&num_buf, "{d}", .{px.w});
+        try appendTextChunk(&out, allocator, "Thumb::Image::Width", w_str);
+        const h_str = try std.mem.print(&num_buf, "{d}", .{px.h});
+        try appendTextChunk(&out, allocator, "Thumb::Image::Height", h_str);
     }
 
     // 3. Copy remaining chunks (IDAT .. IEND)
@@ -450,14 +477,9 @@ pub fn splicePngTextChunks(
     return out.toOwnedSlice(allocator);
 }
 
-/// Result of loading a valid Freedesktop cached thumbnail.
-pub const CachedThumbResult = struct {
-    surface: sdl.Surface,
-    tier: ThumbTier,
-    source_dims: ?state_pkg.PhysicalDims = null,
-};
-
-fn formatTierFilePath(
+/// Formats the absolute path for a cached thumbnail file within `cache_dir`
+/// for the specified `tier` and `md5_hex` digest into `buf`.
+pub fn formatTierFilePath(
     buf: *[std.Io.Dir.max_path_bytes]u8,
     cache_dir: []const u8,
     tier: ThumbTier,
@@ -501,110 +523,108 @@ pub fn hasValidTargetTierThumbnail(
     return meta.mtime_sec == source_mtime_sec;
 }
 
-/// Probes cached PNG files across `ThumbTier.read_probe_order`, validates
-/// `Thumb::MTime == source_mtime_sec`, and decodes the cached PNG into an
-/// `sdl.Surface`.
-pub fn loadCachedThumbnail(
+/// Cached PNG bytes and metadata read from disk.
+pub const CachedThumbBytes = struct {
+    png_bytes: []u8,
+    tier: ThumbTier,
+    source_dims: ?PositiveDimsU32 = null,
+
+    /// Releases the owned PNG memory buffer.
+    pub fn deinit(self: CachedThumbBytes, allocator: std.mem.Allocator) void {
+        allocator.free(self.png_bytes);
+    }
+};
+
+fn readTierThumbnailBytes(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    cache_dir: []const u8,
+    tier: ThumbTier,
+    key: *const ThumbCacheKey,
+    source_mtime_sec: i64,
+) ?CachedThumbBytes {
+    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const thumb_path = formatTierFilePath(
+        &path_buf,
+        cache_dir,
+        tier,
+        key.md5_hex,
+    ) orelse return null;
+
+    var file = std.Io.Dir.openFile(
+        std.Io.Dir.cwd(),
+        io,
+        thumb_path,
+        .{},
+    ) catch return null;
+    defer file.close(io);
+
+    const stat = file.stat(io) catch return null;
+    if (stat.size < ihdr_end_offset or stat.size > max_cached_png_bytes) {
+        return null;
+    }
+    const size: usize = @intCast(stat.size);
+
+    const bytes = allocator.alloc(u8, size) catch return null;
+    errdefer allocator.free(bytes);
+
+    if ((file.readPositionalAll(io, bytes, 0) catch 0) != size) {
+        allocator.free(bytes);
+        return null;
+    }
+
+    const meta = parsePngThumbnailMetadata(bytes) orelse {
+        allocator.free(bytes);
+        return null;
+    };
+    if (meta.mtime_sec != source_mtime_sec) {
+        allocator.free(bytes);
+        return null;
+    }
+
+    return .{
+        .png_bytes = bytes,
+        .tier = tier,
+        .source_dims = meta.source_dims,
+    };
+}
+
+/// Probes cached PNG files across `ThumbTier.read_probe_order` in
+/// `cfg.cache_dir`, validates `Thumb::MTime == source_mtime_sec`, and returns
+/// the first valid cached thumbnail byte buffer.
+pub fn readCachedThumbnailBytes(
     allocator: std.mem.Allocator,
     io: std.Io,
     cfg: EnabledThumbCacheConfig,
     key: *const ThumbCacheKey,
     source_mtime_sec: i64,
-) ?CachedThumbResult {
-    var path_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-
+) ?CachedThumbBytes {
     for (ThumbTier.read_probe_order) |tier| {
-        const thumb_path = formatTierFilePath(
-            &path_buf,
+        if (readTierThumbnailBytes(
+            allocator,
+            io,
             cfg.cache_dir,
             tier,
-            key.md5_hex,
-        ) orelse continue;
-
-        var file = std.Io.Dir.openFile(
-            std.Io.Dir.cwd(),
-            io,
-            thumb_path,
-            .{},
-        ) catch continue;
-        defer file.close(io);
-
-        const stat = file.stat(io) catch continue;
-        if (stat.size < ihdr_end_offset or stat.size > max_cached_png_bytes) {
-            continue;
-        }
-        const size: usize = @intCast(stat.size);
-
-        const bytes = allocator.alloc(u8, size) catch continue;
-        defer allocator.free(bytes);
-
-        if ((file.readPositionalAll(io, bytes, 0) catch 0) != size) continue;
-
-        const meta = parsePngThumbnailMetadata(bytes) orelse continue;
-        if (meta.mtime_sec != source_mtime_sec) continue;
-
-        if (sdl.Surface.loadConstMemOpt(bytes)) |surf| {
-            return .{
-                .surface = surf,
-                .tier = tier,
-                .source_dims = meta.source_dims,
-            };
+            key,
+            source_mtime_sec,
+        )) |cached| {
+            return cached;
         }
     }
-
     return null;
 }
 
-/// Downscales `surface` to fit within `cfg.write_tier.maxDim()` (preserving
-/// aspect ratio), applies orthogonal EXIF `orientation` so the saved thumbnail
-/// is visually upright, splices Freedesktop `tEXt` chunks, and atomically
-/// writes `<cache_dir>/<tier>/<md5>.png`.
-pub fn writeThumbnailPng(
+/// Slices `tEXt` chunks into `raw_png` and atomically writes
+/// `<cache_dir>/<tier>/<md5>.png` with `0o700` directory and `0o600` file
+/// permissions.
+pub fn writeCachedThumbnailBytes(
     allocator: std.mem.Allocator,
     io: std.Io,
     cfg: EnabledThumbCacheConfig,
     key: *const ThumbCacheKey,
-    surface: sdl.Surface,
-    orientation: Orientation,
+    raw_png: []const u8,
     meta: WriteThumbMetadata,
 ) !void {
-    const src_w = surface.w();
-    const src_h = surface.h();
-    if (src_w <= 0 or src_h <= 0) return error.InvalidDimensions;
-
-    const max_dim = cfg.write_tier.maxDim();
-    var target_w = src_w;
-    var target_h = src_h;
-    if (src_w > max_dim or src_h > max_dim) {
-        if (src_w >= src_h) {
-            target_w = max_dim;
-            target_h = @max(1, @divTrunc(src_h * max_dim, src_w));
-        } else {
-            target_h = max_dim;
-            target_w = @max(1, @divTrunc(src_w * max_dim, src_h));
-        }
-    }
-
-    const scaled_owned = if (target_w != src_w or target_h != src_h)
-        surface.scaleRgba32Smooth(target_w, target_h) orelse
-            return error.ScaleFailed
-    else
-        null;
-    defer if (scaled_owned) |s| s.destroy();
-    const base_surf = scaled_owned orelse surface;
-
-    const quarter_turns: u2 = @backingInt(orientation);
-    const rotated_owned = if (quarter_turns != 0)
-        base_surf.rotateOrthogonal(quarter_turns) orelse
-            return error.RotateFailed
-    else
-        null;
-    defer if (rotated_owned) |r| r.destroy();
-    const final_surf = rotated_owned orelse base_surf;
-
-    const raw_png = try final_surf.encodePngAlloc(allocator);
-    defer allocator.free(raw_png);
-
     const spliced_png = try splicePngTextChunks(allocator, raw_png, meta);
     defer allocator.free(spliced_png);
 
@@ -619,7 +639,6 @@ pub fn writeThumbnailPng(
         else
             .default_file;
 
-    // Ensure `<cache_dir>/<tier>` exists with 0700 permissions and open it
     var tier_dir_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const tier_dir_path = try std.mem.print(
         &tier_dir_buf,
@@ -648,7 +667,20 @@ pub fn writeThumbnailPng(
     try atomic_file.replace(io);
 }
 
-const precache_header_limit: usize = 256 * 1024;
+/// Encoded thumbnail PNG payload and decoded pixel dimensions.
+pub const EncodedThumbPng = struct {
+    png_bytes: []u8,
+    decoded_dims: ?PositiveDimsU32 = null,
+};
+
+/// Function pointer type for decoding raw source image bytes and encoding
+/// an aspect-scaled, oriented thumbnail PNG.
+pub const EncodeThumbPngFn = *const fn (
+    allocator: std.mem.Allocator,
+    source_bytes: []const u8,
+    tier: ThumbTier,
+    orientation: Orientation,
+) ?EncodedThumbPng;
 
 /// Result of attempting to pre-cache a single image file's Freedesktop
 /// thumbnail.
@@ -675,6 +707,7 @@ pub const PrecacheCancel = struct {
     generation: usize = 0,
     current_generation: ?*const std.atomic.Value(usize) = null,
 
+    /// Returns true if cancellation has been requested.
     pub inline fn isCanceled(self: PrecacheCancel) bool {
         if (self.exiting) |ex| {
             if (ex.load(.acquire)) return true;
@@ -707,7 +740,7 @@ fn readPositionalRange(
     return total_read;
 }
 
-fn decodeEmbeddedRangeSurface(
+fn encodeEmbeddedRangePng(
     allocator: std.mem.Allocator,
     file: std.Io.File,
     io: std.Io,
@@ -715,7 +748,10 @@ fn decodeEmbeddedRangeSurface(
     header_slice: []const u8,
     file_size: u64,
     loc: probe.ThumbnailLocation,
-) error{Canceled}!?sdl.Surface {
+    tier: ThumbTier,
+    orientation: Orientation,
+    encode_fn: EncodeThumbPngFn,
+) error{Canceled}!?EncodedThumbPng {
     if (loc.length == 0 or loc.file_offset +| loc.length > file_size) {
         return null;
     }
@@ -723,7 +759,17 @@ fn decodeEmbeddedRangeSurface(
     if (loc.file_offset +| loc.length <= header_slice.len) {
         if (cancel.isCanceled()) return error.Canceled;
         const off: usize = @intCast(loc.file_offset);
-        return sdl.Surface.loadConstMemOpt(header_slice[off .. off + len]);
+        const res = encode_fn(
+            allocator,
+            header_slice[off .. off + len],
+            tier,
+            orientation,
+        );
+        if (cancel.isCanceled()) {
+            if (res) |enc| allocator.free(enc.png_bytes);
+            return error.Canceled;
+        }
+        return res;
     }
 
     const buf = allocator.alloc(u8, len) catch return null;
@@ -740,20 +786,43 @@ fn decodeEmbeddedRangeSurface(
         }
         return null;
     };
-    if (n != len) return null;
+    if (n != len) {
+        if (cancel.isCanceled()) return error.Canceled;
+        return null;
+    }
     if (cancel.isCanceled()) return error.Canceled;
-    return sdl.Surface.loadConstMemOpt(buf);
+    const res = encode_fn(allocator, buf, tier, orientation);
+    if (cancel.isCanceled()) {
+        if (res) |enc| allocator.free(enc.png_bytes);
+        return error.Canceled;
+    }
+    return res;
+}
+
+fn positiveDimsFromFloat(w: f32, h: f32) ?PositiveDimsU32 {
+    if (w <= 0 or h <= 0 or !std.math.isFinite(w) or !std.math.isFinite(h)) {
+        return null;
+    }
+    const max_f: f32 = @floatFromInt(std.math.maxInt(u24));
+    const clamped_w = @min(w, max_f);
+    const clamped_h = @min(h, max_f);
+    return PositiveDimsU32.initClamped(
+        @intFromFloat(clamped_w),
+        @intFromFloat(clamped_h),
+        std.math.maxInt(u24),
+    );
 }
 
 /// Checks whether `path` already has an up-to-date Freedesktop thumbnail in
 /// `cfg.cache_dir`, and if missing or stale, extracts an embedded preview (for
-/// RAW files) or decodes the image and atomically writes the PNG thumbnail.
+/// RAW files) or reads the image and atomically writes the PNG thumbnail.
 pub fn precacheFileThumbnail(
     allocator: std.mem.Allocator,
     io: std.Io,
     cfg: EnabledThumbCacheConfig,
     path: []const u8,
     cancel: PrecacheCancel,
+    encode_fn: EncodeThumbPngFn,
 ) PrecacheOutcome {
     if (cancel.isCanceled()) return .canceled;
     if (cfg.write_policy == .never) return .skipped;
@@ -775,7 +844,12 @@ pub fn precacheFileThumbnail(
         return .already_valid;
     }
 
-    var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, path, .{}) catch |err| {
+    var file = std.Io.Dir.openFile(
+        std.Io.Dir.cwd(),
+        io,
+        path,
+        .{},
+    ) catch |err| {
         if (err == error.Canceled or cancel.isCanceled()) {
             return .canceled;
         }
@@ -783,7 +857,8 @@ pub fn precacheFileThumbnail(
     };
     defer file.close(io);
 
-    const header_target: usize = @intCast(@min(file_size, precache_header_limit));
+    const header_target: usize =
+        @intCast(@min(file_size, precache_header_limit));
     var header_buf: [precache_header_limit]u8 = undefined;
     const header_n = readPositionalRange(
         file,
@@ -819,10 +894,12 @@ pub fn precacheFileThumbnail(
             prev_loc_opt = probe.extractFujiRafPreviewLocation(header_slice);
             if (probe.extractFujiRafMetadataLocation(header_slice)) |meta_loc| {
                 if (meta_loc.file_offset +| meta_loc.length <= header_n) {
-                    const end = meta_loc.file_offset + meta_loc.length;
-                    raw_sensor_dims = probe.parseFujiRafDimensions(
-                        header_slice[@intCast(meta_loc.file_offset)..@intCast(end)],
+                    const start: usize = @intCast(meta_loc.file_offset);
+                    const stop: usize = @intCast(
+                        meta_loc.file_offset + meta_loc.length,
                     );
+                    const sub_slice = header_slice[start..stop];
+                    raw_sensor_dims = probe.parseFujiRafDimensions(sub_slice);
                 } else if (meta_loc.length > 0 and
                     meta_loc.length <= 64 * 1024 and
                     meta_loc.file_offset +| meta_loc.length <= file_size)
@@ -928,10 +1005,10 @@ pub fn precacheFileThumbnail(
             prev_loc_opt,
             thumb_loc_opt,
         };
-        var decoded_surf: ?sdl.Surface = null;
+        var encoded_thumb: ?EncodedThumbPng = null;
         for (candidates) |cand_opt| {
             const loc = cand_opt orelse continue;
-            const surf_opt = decodeEmbeddedRangeSurface(
+            const res_opt = encodeEmbeddedRangePng(
                 allocator,
                 file,
                 io,
@@ -939,32 +1016,33 @@ pub fn precacheFileThumbnail(
                 header_slice,
                 file_size,
                 loc,
+                cfg.write_tier,
+                orientation,
+                encode_fn,
             ) catch return .canceled;
-            if (surf_opt) |surf| {
-                decoded_surf = surf;
+            if (res_opt) |enc| {
+                encoded_thumb = enc;
                 break;
             }
         }
-        const surf = decoded_surf orelse return .failed;
-        defer surf.destroy();
+        const encoded = encoded_thumb orelse return .failed;
+        defer allocator.free(encoded.png_bytes);
 
         if (cancel.isCanceled()) return .canceled;
 
-        const source_dims = if (raw_sensor_dims) |d|
-            state_pkg.PhysicalDims.initPositive(d.w, d.h)
-        else
-            state_pkg.PhysicalDims.initPositive(
-                @floatFromInt(surf.w()),
-                @floatFromInt(surf.h()),
-            );
+        const source_dims: ?PositiveDimsU32 = blk: {
+            if (raw_sensor_dims) |d| {
+                if (positiveDimsFromFloat(d.w, d.h)) |dims| break :blk dims;
+            }
+            break :blk encoded.decoded_dims;
+        };
 
-        writeThumbnailPng(
+        writeCachedThumbnailBytes(
             allocator,
             io,
             cfg,
             &key,
-            surf,
-            orientation,
+            encoded.png_bytes,
             .{
                 .uri = key.uri(),
                 .mtime_sec = mtime_sec,
@@ -1019,27 +1097,30 @@ pub fn precacheFileThumbnail(
     };
 
     if (cancel.isCanceled()) return .canceled;
-    const surf = sdl.Surface.loadConstMemOpt(bytes_to_decode) orelse
-        return .failed;
-    defer surf.destroy();
+
+    const encoded = encode_fn(
+        allocator,
+        bytes_to_decode,
+        cfg.write_tier,
+        orientation,
+    ) orelse return .failed;
+    defer allocator.free(encoded.png_bytes);
 
     if (cancel.isCanceled()) return .canceled;
 
-    const source_dims = if (full_dims) |d|
-        state_pkg.PhysicalDims.initPositive(d.w, d.h)
-    else
-        state_pkg.PhysicalDims.initPositive(
-            @floatFromInt(surf.w()),
-            @floatFromInt(surf.h()),
-        );
+    const source_dims: ?PositiveDimsU32 = blk: {
+        if (full_dims) |d| {
+            if (positiveDimsFromFloat(d.w, d.h)) |dims| break :blk dims;
+        }
+        break :blk encoded.decoded_dims;
+    };
 
-    writeThumbnailPng(
+    writeCachedThumbnailBytes(
         allocator,
         io,
         cfg,
         &key,
-        surf,
-        orientation,
+        encoded.png_bytes,
         .{
             .uri = key.uri(),
             .mtime_sec = mtime_sec,
@@ -1049,6 +1130,93 @@ pub fn precacheFileThumbnail(
         },
     ) catch return .failed;
     return .written;
+}
+
+const ParallelPrecacheContext = struct {
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    cfg: EnabledThumbCacheConfig,
+    paths: []const []const u8,
+    cancel: PrecacheCancel,
+    encode_fn: EncodeThumbPngFn,
+    next_idx: std.atomic.Value(usize) = .init(0),
+    written: std.atomic.Value(usize) = .init(0),
+    already_valid: std.atomic.Value(usize) = .init(0),
+    skipped: std.atomic.Value(usize) = .init(0),
+    failed: std.atomic.Value(usize) = .init(0),
+
+    fn workerTask(self: *ParallelPrecacheContext) void {
+        var scratch_arena: std.heap.ArenaAllocator = .init(self.allocator);
+        defer scratch_arena.deinit();
+
+        while (!self.cancel.isCanceled()) {
+            defer _ = scratch_arena.reset(.{
+                .retain_with_limit = 4 * 1024 * 1024,
+            });
+            const idx = self.next_idx.fetchAdd(1, .monotonic);
+            if (idx >= self.paths.len) break;
+
+            switch (precacheFileThumbnail(
+                scratch_arena.allocator(),
+                self.io,
+                self.cfg,
+                self.paths[idx],
+                self.cancel,
+                self.encode_fn,
+            )) {
+                .written => _ = self.written.fetchAdd(1, .monotonic),
+                .already_valid => _ = self.already_valid.fetchAdd(
+                    1,
+                    .monotonic,
+                ),
+                .skipped => _ = self.skipped.fetchAdd(1, .monotonic),
+                .failed => _ = self.failed.fetchAdd(1, .monotonic),
+                .canceled => break,
+            }
+        }
+    }
+};
+
+/// Pre-caches Freedesktop thumbnails for `paths` in parallel across up to
+/// `max_workers` concurrent worker tasks using `std.Io.Group`.
+pub fn precachePathsParallel(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    cfg: EnabledThumbCacheConfig,
+    paths: []const []const u8,
+    max_workers: usize,
+    cancel: PrecacheCancel,
+    encode_fn: EncodeThumbPngFn,
+) PrecacheStats {
+    if (paths.len == 0) return .{};
+
+    var ctx = ParallelPrecacheContext{
+        .allocator = allocator,
+        .io = io,
+        .cfg = cfg,
+        .paths = paths,
+        .cancel = cancel,
+        .encode_fn = encode_fn,
+    };
+
+    const worker_count = @max(1, @min(paths.len, max_workers));
+    if (worker_count == 1) {
+        ctx.workerTask();
+    } else {
+        var group: std.Io.Group = .init;
+        for (0..worker_count) |_| {
+            group.async(io, ParallelPrecacheContext.workerTask, .{&ctx});
+        }
+        group.await(io) catch {};
+    }
+
+    return .{
+        .total_files = paths.len,
+        .written = ctx.written.load(.acquire),
+        .already_valid = ctx.already_valid.load(.acquire),
+        .skipped = ctx.skipped.load(.acquire),
+        .failed = ctx.failed.load(.acquire),
+    };
 }
 
 fn collectPrecacheDirInner(
@@ -1156,103 +1324,35 @@ pub fn collectPrecacheFiles(
     }
 }
 
-const ParallelPrecacheContext = struct {
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    cfg: EnabledThumbCacheConfig,
-    paths: []const []const u8,
-    cancel: PrecacheCancel,
-    next_idx: std.atomic.Value(usize) = .init(0),
-    written: std.atomic.Value(usize) = .init(0),
-    already_valid: std.atomic.Value(usize) = .init(0),
-    skipped: std.atomic.Value(usize) = .init(0),
-    failed: std.atomic.Value(usize) = .init(0),
-
-    fn workerTask(self: *ParallelPrecacheContext) void {
-        var scratch_arena: std.heap.ArenaAllocator = .init(self.allocator);
-        defer scratch_arena.deinit();
-
-        while (!self.cancel.isCanceled()) {
-            defer _ = scratch_arena.reset(.{
-                .retain_with_limit = 4 * 1024 * 1024,
-            });
-            const idx = self.next_idx.fetchAdd(1, .monotonic);
-            if (idx >= self.paths.len) break;
-
-            switch (precacheFileThumbnail(
-                scratch_arena.allocator(),
-                self.io,
-                self.cfg,
-                self.paths[idx],
-                self.cancel,
-            )) {
-                .written => _ = self.written.fetchAdd(1, .monotonic),
-                .already_valid => _ = self.already_valid.fetchAdd(
-                    1,
-                    .monotonic,
-                ),
-                .skipped => _ = self.skipped.fetchAdd(1, .monotonic),
-                .failed => _ = self.failed.fetchAdd(1, .monotonic),
-                .canceled => break,
-            }
-        }
-    }
-};
-
-/// Pre-caches Freedesktop thumbnails for `paths` in parallel across up to
-/// `max_workers` concurrent worker tasks using `std.Io.Group`.
-pub fn precachePathsParallel(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    cfg: EnabledThumbCacheConfig,
-    paths: []const []const u8,
-    max_workers: usize,
-    cancel: PrecacheCancel,
-) PrecacheStats {
-    if (paths.len == 0) return .{};
-
-    var ctx = ParallelPrecacheContext{
-        .allocator = allocator,
-        .io = io,
-        .cfg = cfg,
-        .paths = paths,
-        .cancel = cancel,
-    };
-
-    const worker_count = @max(1, @min(paths.len, max_workers));
-    if (worker_count == 1) {
-        ctx.workerTask();
-    } else {
-        var group: std.Io.Group = .init;
-        for (0..worker_count) |_| {
-            group.async(io, ParallelPrecacheContext.workerTask, .{&ctx});
-        }
-        group.await(io) catch {};
-    }
-
-    return .{
-        .total_files = paths.len,
-        .written = ctx.written.load(.acquire),
-        .already_valid = ctx.already_valid.load(.acquire),
-        .skipped = ctx.skipped.load(.acquire),
-        .failed = ctx.failed.load(.acquire),
-    };
-}
-
 test "ThumbCacheKey.fromCanonicalPath RFC 3986 URI encoding and MD5" {
-    // Verified against real Yazi/Freedesktop thumbnail hash:
-    const key = ThumbCacheKey.fromCanonicalPath(
-        "/home/pope/Pictures/Dane/20200130-Dane Halo Boudoir-0026.RAF",
-    ) orelse return error.KeyFailed;
+    {
+        const key = ThumbCacheKey.fromCanonicalPath(
+            "/home/pope/Pictures/Dane/20200130-Dane Halo Boudoir-0026.RAF",
+        ) orelse return error.KeyFailed;
 
-    const expected_uri =
-        "file:///home/pope/Pictures/Dane/" ++
-        "20200130-Dane%20Halo%20Boudoir-0026.RAF";
-    try std.testing.expectEqualStrings(expected_uri, key.uri());
-    try std.testing.expectEqualStrings(
-        "471d74bb412f63823a18d8ea393ef5c2",
-        &key.md5_hex,
-    );
+        const expected_uri =
+            "file:///home/pope/Pictures/Dane/" ++
+            "20200130-Dane%20Halo%20Boudoir-0026.RAF";
+        try std.testing.expectEqualStrings(expected_uri, key.uri());
+        try std.testing.expectEqualStrings(
+            "471d74bb412f63823a18d8ea393ef5c2",
+            &key.md5_hex,
+        );
+    }
+
+    {
+        const key = ThumbCacheKey.fromCanonicalPath(
+            "/photos/café+resumé [2024].jpg",
+        ) orelse return error.KeyFailed;
+
+        const expected_uri =
+            "file:///photos/caf%C3%A9%2Bresum%C3%A9%20%5B2024%5D.jpg";
+        try std.testing.expectEqualStrings(expected_uri, key.uri());
+        try std.testing.expectEqualStrings(
+            "583eeb77cb22f2517919b3aea3630d2e",
+            &key.md5_hex,
+        );
+    }
 }
 
 test "ThumbCacheConfig.initPosixFromEnviron resolves XDG_CACHE_HOME and HOME" {
@@ -1331,153 +1431,6 @@ test "ThumbCacheConfig.initPosixFromEnviron resolves XDG_CACHE_HOME and HOME" {
     }
 }
 
-test "writeThumbnailPng and loadCachedThumbnail roundtrip with rotation" {
-    const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
-
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    var cache_dir_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const rel_cache_dir = try std.mem.print(
-        &cache_dir_buf,
-        ".zig-cache/tmp/{s}/thumbnails",
-        .{tmp.sub_path},
-    );
-    try std.Io.Dir.createDirPath(std.Io.Dir.cwd(), io, rel_cache_dir);
-
-    var real_cache_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const real_cache_len = try std.Io.Dir.realPathFile(
-        std.Io.Dir.cwd(),
-        io,
-        rel_cache_dir,
-        &real_cache_buf,
-    );
-    const abs_cache_dir = real_cache_buf[0..real_cache_len];
-
-    var cfg = try ThumbCacheConfig.initWithDir(
-        allocator,
-        abs_cache_dir,
-        .large,
-        .all_missing,
-    );
-    defer cfg.deinit(allocator);
-    const enabled_cfg = cfg.enabled;
-
-    const key =
-        ThumbCacheKey.fromCanonicalPath("/photos/shoot 01/DSC0001.ARW").?;
-    const mtime_sec: i64 = 1729700000;
-
-    // Create a 600x400 landscape surface with rotate_90 orientation -> should
-    // save as 170x256 portrait
-    const surf = sdl.Surface.create(
-        600,
-        400,
-        sdl.PixelFormat.rgba32,
-    ) orelse return error.SurfaceFailed;
-    defer surf.destroy();
-    @memset(surf.pixels()[0..@intCast(surf.pitch() * 400)], 128);
-
-    try std.testing.expect(
-        !hasValidTargetTierThumbnail(io, enabled_cfg, &key, mtime_sec),
-    );
-
-    try writeThumbnailPng(allocator, io, enabled_cfg, &key, surf, .rotate_90, .{
-        .uri = key.uri(),
-        .mtime_sec = mtime_sec,
-        .file_size = 39358464,
-        .mime_type = "image/x-sony-arw",
-        .source_dims = .{ .w = 600.0, .h = 400.0 },
-    });
-
-    try std.testing.expect(
-        hasValidTargetTierThumbnail(io, enabled_cfg, &key, mtime_sec),
-    );
-    // Mismatched mtime must report invalid
-    try std.testing.expect(
-        !hasValidTargetTierThumbnail(io, enabled_cfg, &key, mtime_sec + 1),
-    );
-
-    // Load back from cache
-    const loaded = loadCachedThumbnail(
-        allocator,
-        io,
-        enabled_cfg,
-        &key,
-        mtime_sec,
-    ) orelse return error.CacheLoadFailed;
-    defer loaded.surface.destroy();
-
-    try std.testing.expectEqual(ThumbTier.large, loaded.tier);
-    // 600x400 scaled to max 256 -> 256x170, then rotated 90° CW -> 170x256
-    try std.testing.expectEqual(@as(i32, 170), loaded.surface.w());
-    try std.testing.expectEqual(@as(i32, 256), loaded.surface.h());
-    try std.testing.expectEqual(@as(f32, 600.0), loaded.source_dims.?.w);
-    try std.testing.expectEqual(@as(f32, 400.0), loaded.source_dims.?.h);
-
-    // Stale mtime must return null
-    try std.testing.expect(
-        loadCachedThumbnail(allocator, io, enabled_cfg, &key, mtime_sec + 5) ==
-            null,
-    );
-}
-
-test "precacheFileThumbnail and precachePathsParallel generate and skip valid thumbnails" {
-    const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
-
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-
-    var cache_dir_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const rel_cache_dir = try std.mem.print(
-        &cache_dir_buf,
-        ".zig-cache/tmp/{s}/thumbnails",
-        .{tmp.sub_path},
-    );
-    try std.Io.Dir.createDirPath(std.Io.Dir.cwd(), io, rel_cache_dir);
-
-    var real_cache_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    const real_cache_len = try std.Io.Dir.realPathFile(
-        std.Io.Dir.cwd(),
-        io,
-        rel_cache_dir,
-        &real_cache_buf,
-    );
-    const abs_cache_dir = real_cache_buf[0..real_cache_len];
-
-    var cfg = try ThumbCacheConfig.initWithDir(
-        allocator,
-        abs_cache_dir,
-        .large,
-        .all_missing,
-    );
-    defer cfg.deinit(allocator);
-    const enabled_cfg = cfg.enabled;
-
-    const test_img = "testfiles/images/000_0_1024x682.jpg";
-
-    // First run writes the thumbnail
-    const first_outcome = precacheFileThumbnail(
-        allocator,
-        io,
-        enabled_cfg,
-        test_img,
-        .{},
-    );
-    try std.testing.expectEqual(PrecacheOutcome.written, first_outcome);
-
-    // Second run detects valid cached thumbnail and returns .already_valid
-    const second_outcome = precacheFileThumbnail(
-        allocator,
-        io,
-        enabled_cfg,
-        test_img,
-        .{},
-    );
-    try std.testing.expectEqual(PrecacheOutcome.already_valid, second_outcome);
-}
-
 test "collectPrecacheFiles respects flat vs recursive directory traversal" {
     const allocator = std.testing.allocator;
     const io = std.Io.Threaded.global_single_threaded.io();
@@ -1543,4 +1496,204 @@ test "collectPrecacheFiles respects flat vs recursive directory traversal" {
             std.mem.endsWith(u8, rec_paths.items[1], "nested/b.png"),
         );
     }
+}
+
+test "splicePngTextChunks and parsePngThumbnailMetadata roundtrip before IDAT" {
+    const allocator = std.testing.allocator;
+
+    // Minimal valid PNG: 8B sig + 25B IHDR + 12B IDAT + 12B IEND
+    var fake_png: [8 + 25 + 12 + 12]u8 = undefined;
+    @memcpy(fake_png[0..8], png_signature);
+
+    // IHDR chunk
+    std.mem.writeInt(u32, fake_png[8..12], 13, .big);
+    @memcpy(fake_png[12..16], "IHDR");
+    std.mem.writeInt(u32, fake_png[16..20], 64, .big); // w = 64
+    std.mem.writeInt(u32, fake_png[20..24], 32, .big); // h = 32
+    fake_png[24] = 8; // bit depth
+    fake_png[25] = 6; // color type RGBA
+    fake_png[26] = 0; // compression
+    fake_png[27] = 0; // filter
+    fake_png[28] = 0; // interlace
+    var ihdr_crc = std.hash.Crc32.init();
+    ihdr_crc.update(fake_png[12..29]);
+    std.mem.writeInt(u32, fake_png[29..33], ihdr_crc.final(), .big);
+
+    // IDAT chunk
+    std.mem.writeInt(u32, fake_png[33..37], 0, .big);
+    @memcpy(fake_png[37..41], "IDAT");
+    var idat_crc = std.hash.Crc32.init();
+    idat_crc.update(fake_png[37..41]);
+    std.mem.writeInt(u32, fake_png[41..45], idat_crc.final(), .big);
+
+    // IEND chunk
+    std.mem.writeInt(u32, fake_png[45..49], 0, .big);
+    @memcpy(fake_png[49..53], "IEND");
+    var iend_crc = std.hash.Crc32.init();
+    iend_crc.update(fake_png[49..53]);
+    std.mem.writeInt(u32, fake_png[53..57], iend_crc.final(), .big);
+
+    const meta: WriteThumbMetadata = .{
+        .uri = "file:///photos/sample.jpg",
+        .mtime_sec = 1712345678,
+        .file_size = 1048576,
+        .mime_type = "image/jpeg",
+        .source_dims = .{ .w = 1920, .h = 1080 },
+    };
+
+    const spliced = try splicePngTextChunks(allocator, &fake_png, meta);
+    defer allocator.free(spliced);
+
+    try std.testing.expect(spliced.len > fake_png.len);
+    try std.testing.expectEqualStrings(png_signature, spliced[0..8]);
+    try std.testing.expectEqualStrings("IHDR", spliced[12..16]);
+
+    const parsed = parsePngThumbnailMetadata(spliced) orelse
+        return error.MetadataNotFound;
+
+    try std.testing.expectEqual(@as(u32, 64), parsed.thumb_w);
+    try std.testing.expectEqual(@as(u32, 32), parsed.thumb_h);
+    try std.testing.expectEqual(@as(?i64, 1712345678), parsed.mtime_sec);
+    try std.testing.expect(parsed.source_dims != null);
+    try std.testing.expectEqual(@as(u32, 1920), parsed.source_dims.?.w);
+    try std.testing.expectEqual(@as(u32, 1080), parsed.source_dims.?.h);
+
+    const invalid_res = splicePngTextChunks(allocator, "not_png_bytes", meta);
+    try std.testing.expectError(error.InvalidPngHeader, invalid_res);
+}
+
+test "writeCachedThumbnailBytes and hasValidTargetTierThumbnail roundtrip" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var cache_dir_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const rel_cache_dir = try std.mem.print(
+        &cache_dir_buf,
+        ".zig-cache/tmp/{s}/thumbnails",
+        .{tmp.sub_path},
+    );
+    try std.Io.Dir.createDirPath(std.Io.Dir.cwd(), io, rel_cache_dir);
+
+    var real_cache_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const real_cache_len = try std.Io.Dir.realPathFile(
+        std.Io.Dir.cwd(),
+        io,
+        rel_cache_dir,
+        &real_cache_buf,
+    );
+    const abs_cache_dir = real_cache_buf[0..real_cache_len];
+
+    var cfg = try ThumbCacheConfig.initWithDir(
+        allocator,
+        abs_cache_dir,
+        .large,
+        .all_missing,
+    );
+    defer cfg.deinit(allocator);
+    const enabled_cfg = cfg.enabled;
+
+    const key =
+        ThumbCacheKey.fromCanonicalPath("/photos/test_img.jpg").?;
+    const mtime_sec: i64 = 1729800000;
+
+    try std.testing.expect(
+        !hasValidTargetTierThumbnail(io, enabled_cfg, &key, mtime_sec),
+    );
+
+    var fake_png: [8 + 25 + 12 + 12]u8 = undefined;
+    @memcpy(fake_png[0..8], png_signature);
+    std.mem.writeInt(u32, fake_png[8..12], 13, .big);
+    @memcpy(fake_png[12..16], "IHDR");
+    std.mem.writeInt(u32, fake_png[16..20], 128, .big);
+    std.mem.writeInt(u32, fake_png[20..24], 128, .big);
+    fake_png[24] = 8;
+    fake_png[25] = 6;
+    fake_png[26] = 0;
+    fake_png[27] = 0;
+    fake_png[28] = 0;
+    var ihdr_crc = std.hash.Crc32.init();
+    ihdr_crc.update(fake_png[12..29]);
+    std.mem.writeInt(u32, fake_png[29..33], ihdr_crc.final(), .big);
+    std.mem.writeInt(u32, fake_png[33..37], 0, .big);
+    @memcpy(fake_png[37..41], "IDAT");
+    var idat_crc = std.hash.Crc32.init();
+    idat_crc.update(fake_png[37..41]);
+    std.mem.writeInt(u32, fake_png[41..45], idat_crc.final(), .big);
+    std.mem.writeInt(u32, fake_png[45..49], 0, .big);
+    @memcpy(fake_png[49..53], "IEND");
+    var iend_crc = std.hash.Crc32.init();
+    iend_crc.update(fake_png[49..53]);
+    std.mem.writeInt(u32, fake_png[53..57], iend_crc.final(), .big);
+
+    try writeCachedThumbnailBytes(
+        allocator,
+        io,
+        enabled_cfg,
+        &key,
+        &fake_png,
+        .{
+            .uri = key.uri(),
+            .mtime_sec = mtime_sec,
+            .file_size = 54321,
+            .mime_type = "image/jpeg",
+            .source_dims = .{ .w = 800, .h = 600 },
+        },
+    );
+
+    try std.testing.expect(
+        hasValidTargetTierThumbnail(io, enabled_cfg, &key, mtime_sec),
+    );
+    try std.testing.expect(
+        !hasValidTargetTierThumbnail(io, enabled_cfg, &key, mtime_sec + 1),
+    );
+
+    // Also test readCachedThumbnailBytes
+    const read_bytes = readCachedThumbnailBytes(
+        allocator,
+        io,
+        enabled_cfg,
+        &key,
+        mtime_sec,
+    ) orelse return error.ReadTierFailed;
+    defer read_bytes.deinit(allocator);
+
+    try std.testing.expectEqual(ThumbTier.large, read_bytes.tier);
+    try std.testing.expect(read_bytes.source_dims != null);
+    try std.testing.expectEqual(@as(u32, 800), read_bytes.source_dims.?.w);
+    try std.testing.expectEqual(@as(u32, 600), read_bytes.source_dims.?.h);
+
+    // Mismatched mtime must return null
+    try std.testing.expect(
+        readCachedThumbnailBytes(
+            allocator,
+            io,
+            enabled_cfg,
+            &key,
+            mtime_sec + 1,
+        ) == null,
+    );
+}
+
+test "positiveDimsFromFloat clamping and bounds guards" {
+    try std.testing.expect(positiveDimsFromFloat(0, 100) == null);
+    try std.testing.expect(positiveDimsFromFloat(100, 0) == null);
+    try std.testing.expect(positiveDimsFromFloat(-5, 100) == null);
+    try std.testing.expect(
+        positiveDimsFromFloat(std.math.nan(f32), 100) == null,
+    );
+    try std.testing.expect(
+        positiveDimsFromFloat(100, std.math.inf(f32)) == null,
+    );
+
+    const normal = positiveDimsFromFloat(1920.0, 1080.0).?;
+    try std.testing.expectEqual(@as(u32, 1920), normal.w);
+    try std.testing.expectEqual(@as(u32, 1080), normal.h);
+
+    const huge = positiveDimsFromFloat(1e30, 2e30).?;
+    const max_u24 = std.math.maxInt(u24);
+    try std.testing.expectEqual(max_u24, huge.w);
+    try std.testing.expectEqual(max_u24, huge.h);
 }

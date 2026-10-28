@@ -174,7 +174,8 @@
     Cancellation is three-tiered: application shutdown (`exiting`), global
     cache generation invalidation, and per-slot atomic job epoch invalidation
     (`job_epochs: [MAX_DECODE_JOBS]std.atomic.Value(u32)`).
-- **Two-Stage Header-First I/O & Freedesktop Thumbnail Cache (`DecodePayload`, `thumb_cache.zig`)**:
+- **Two-Stage Header-First I/O & Freedesktop Thumbnail Cache
+  (`DecodePayload`, `src/thumbcache/root.zig` / `thumbcache.zig`)**:
   - Issue `statFile` once and `openFile` once per worker pass.
   - For RAW files (`decodeRawFile`), read a single **256KB** stack header buffer
     and extract embedded previews via positional reads (`readRangePositional`).

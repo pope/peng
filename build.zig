@@ -196,6 +196,15 @@ pub fn build(b: *std.Build) void {
     triage_module.addImport("intents", intents_module);
     triage_module.addImport("vfs", vfs_module);
 
+    const thumbcache_module = b.createModule(.{
+        .root_source_file = b.path("src/thumbcache/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    thumbcache_module.addImport("intents", intents_module);
+    thumbcache_module.addImport("probe", probe_module);
+    thumbcache_module.addImport("vfs", vfs_module);
+
     const app_module = b.createModule(.{
         .root_source_file = b.path("src/app/root.zig"),
         .target = target,
@@ -259,6 +268,7 @@ pub fn build(b: *std.Build) void {
     app_module.addImport("state", state_module);
     app_module.addImport("input", input_module);
     app_module.addImport("ipc", ipc_module);
+    app_module.addImport("thumbcache", thumbcache_module);
     app_module.addImport("triage", triage_module);
     app_module.addImport("vfs", vfs_module);
 
@@ -290,6 +300,7 @@ pub fn build(b: *std.Build) void {
     viewer_lib.root_module.addImport("intents", intents_module);
     viewer_lib.root_module.addImport("input", input_module);
     viewer_lib.root_module.addImport("ipc", ipc_module);
+    viewer_lib.root_module.addImport("thumbcache", thumbcache_module);
     viewer_lib.root_module.addIncludePath(clay_dep.path(""));
     viewer_lib.root_module.addIncludePath(clay_dep.path("renderers/SDL3"));
 
@@ -322,6 +333,7 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("ipc", ipc_module);
     exe.root_module.addImport("input", input_module);
     exe.root_module.addImport("intents", intents_module);
+    exe.root_module.addImport("thumbcache", thumbcache_module);
 
     // Include Clay and its SDL3 renderer via root_module
     exe.root_module.addIncludePath(clay_dep.path(""));
@@ -424,9 +436,11 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    core_module.addImport("intents", intents_module);
     core_module.addImport("state", state_module);
     core_module.addImport("probe", probe_module);
     core_module.addImport("sdl", sdl_module);
+    core_module.addImport("thumbcache", thumbcache_module);
     core_module.addImport("triage", triage_module);
     core_module.addImport("vfs", vfs_module);
 
@@ -460,12 +474,19 @@ pub fn build(b: *std.Build) void {
     const run_palette_tests = b.addRunArtifact(palette_tests);
     run_palette_tests.setCwd(b.path("."));
 
+    const thumbcache_tests = b.addTest(.{
+        .root_module = thumbcache_module,
+    });
+    const run_thumbcache_tests = b.addRunArtifact(thumbcache_tests);
+    run_thumbcache_tests.setCwd(b.path("."));
+
     if (target.result.os.tag == .windows) {
         const win_runs = [_]*std.Build.Step.Run{
             run_sdl_tests,
             run_state_tests,
             run_core_tests,
             run_probe_tests,
+            run_thumbcache_tests,
             run_triage_tests,
             run_palette_tests,
             run_vfs_tests,
@@ -503,11 +524,18 @@ pub fn build(b: *std.Build) void {
     const test_vfs_step = b.step("test-vfs", "Run vfs tests");
     test_vfs_step.dependOn(&run_vfs_tests.step);
 
+    const test_thumbcache_step = b.step(
+        "test-thumbcache",
+        "Run thumbcache tests",
+    );
+    test_thumbcache_step.dependOn(&run_thumbcache_tests.step);
+
     const test_unit_step = b.step("test-unit", "Run all unit tests");
     test_unit_step.dependOn(&run_sdl_tests.step);
     test_unit_step.dependOn(&run_state_tests.step);
     test_unit_step.dependOn(&run_core_tests.step);
     test_unit_step.dependOn(&run_probe_tests.step);
+    test_unit_step.dependOn(&run_thumbcache_tests.step);
     test_unit_step.dependOn(&run_palette_tests.step);
     test_unit_step.dependOn(&run_triage_tests.step);
     test_unit_step.dependOn(&run_vfs_tests.step);
@@ -529,6 +557,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_state_tests.step);
     test_step.dependOn(&run_core_tests.step);
     test_step.dependOn(&run_probe_tests.step);
+    test_step.dependOn(&run_thumbcache_tests.step);
     test_step.dependOn(&run_palette_tests.step);
     test_step.dependOn(&run_triage_tests.step);
     test_step.dependOn(&run_vfs_tests.step);
