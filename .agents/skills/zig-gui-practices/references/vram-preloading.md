@@ -47,12 +47,12 @@ ______________________________________________________________________
 - **EXIF APP1 & TIFF Rules**:
   - **APP1 Skipping**: When scanning JPEG markers for main image `SOF0`/`SOF2` dimensions, explicitly skip `APP1` (`0xFF, 0xE1`) segments (`idx += seg_len`) so embedded thumbnail SOF headers are not mistaken for main image dimensions.
   - **Truncated APP1 Tolerance**: Never discard an APP1 segment solely because `payload.len < seg_len`; inspect available bytes `data[idx + 2 .. idx + @min(seg_len, data.len - idx)]` for `"Exif\0\0"` and TIFF IFD0 headers.
-  - **Segmented TIFF Virtual Addressing (`TiffSource`)**: Probe the 4-byte IFD0
-    offset (`probe.probeTiffIfd0Offset`) from the initial 8-byte header first.
-    Only call `file.length(io)` and read a 16KB stack `tail_buf`
-    (`[16 * 1024]u8`) when `ifd0_off >= header_len` (e.g. Ricoh/Pentax tail
-    IFD0 at 30MB+). Keep `TiffSource.getSlice`, `init`, and `initWithTail`
-    marked `inline`.
+  - **Segmented TIFF Virtual Addressing (`probeRawFileHeader`)**:
+    `probe.probeRawFileHeader` probes the 4-byte IFD0 offset from the initial
+    8-byte header first, only calling `file.length(io)` and reading a 16KB stack
+    `tail_buf` (`[16 * 1024]u8`) when `ifd0_off >= header_len` (e.g.
+    Ricoh/Pentax tail IFD0 at 30MB+). Keep `TiffSource.getSlice`, `init`, and
+    `initWithTail` marked `inline`.
   - **SubIFD Clamping & Cycle Guard**: Clamp `SubIfdList` to `@min(count, 8)` without erroring, and track `visited: [8]u32` during IFD traversal to break cyclic IFD pointers.
 
 ### Camera RAW Format Quirks & Disqualification Table

@@ -117,6 +117,36 @@ pub fn detectMimeType(header: []const u8, path: []const u8) []const u8 {
     return "unknown";
 }
 
+/// Returns true when `mime_type` is `"image/x-fuji-raf"` or `header_slice`
+/// begins with the `"FUJIFILM"` magic signature.
+pub fn isFujiRafHeader(
+    header_slice: []const u8,
+    mime_type: []const u8,
+) bool {
+    return std.mem.eql(u8, mime_type, "image/x-fuji-raf") or
+        (header_slice.len >= 8 and
+            std.mem.startsWith(u8, header_slice, "FUJIFILM"));
+}
+
+/// Advances past a ZIP `LocalFileHeader` (plus variable-length filename
+/// and extra fields) at the start of `buf` if present, returning the
+/// remaining payload slice or `null` when `buf` is empty or truncated.
+pub fn skipZipLocalFileHeader(buf: []const u8) ?[]const u8 {
+    if (buf.len == 0) return null;
+    var data_offset: usize = 0;
+    if (buf.len >= @sizeOf(std.zip.LocalFileHeader) and
+        std.mem.eql(u8, buf[0..4], &std.zip.local_file_header_sig))
+    {
+        const filename_len = std.mem.readInt(u16, buf[26..28], .little);
+        const extra_len = std.mem.readInt(u16, buf[28..30], .little);
+        data_offset = @sizeOf(std.zip.LocalFileHeader) +|
+            @as(usize, filename_len) +|
+            @as(usize, extra_len);
+    }
+    if (buf.len <= data_offset) return null;
+    return buf[data_offset..];
+}
+
 /// Parses full image width and height directly from image container headers
 /// (JPEG, PNG, GIF, WebP, BMP, TIFF, RAW) in < 0.05ms without decompression.
 ///
@@ -126,16 +156,13 @@ pub fn parseImageDimensions(
     header: []const u8,
     mime_type: []const u8,
 ) ?ImageDimensions {
-    const is_fuji_mime = std.mem.eql(u8, mime_type, "image/x-fuji-raf");
-    const is_fuji_magic = header.len >= 8 and
-        std.mem.startsWith(u8, header, "FUJIFILM");
-    if (is_fuji_mime or is_fuji_magic) {
+    if (isFujiRafHeader(header, mime_type)) {
         if (extractFujiRafMetadataLocation(header)) |meta_loc| {
             if (meta_loc.file_offset +| meta_loc.length <= header.len) {
                 const off: usize = @intCast(meta_loc.file_offset);
                 const len: usize = @intCast(meta_loc.length);
                 if (parseFujiRafDimensions(header[off .. off + len])) |d| {
-                    return .{ .w = d.w, .h = d.h };
+                    return d;
                 }
             }
         }
@@ -143,7 +170,7 @@ pub fn parseImageDimensions(
             if (prev_loc.file_offset +| 32 <= header.len) {
                 const off: usize = @intCast(prev_loc.file_offset);
                 if (readJpegDimensions(header[off..])) |d| {
-                    return .{ .w = d.w, .h = d.h };
+                    return d;
                 }
             }
         }
@@ -154,12 +181,12 @@ pub fn parseImageDimensions(
             (header[0] == 0x4D and header[1] == 0x4D and
                 header[2] == 0x00 and header[3] == 0x2A))))
     {
-        if (parseExifDimensions(header)) |d| return .{ .w = d.w, .h = d.h };
+        if (parseExifDimensions(header)) |d| return d;
     } else if (std.mem.eql(u8, mime_type, "image/jpeg") or
         (header.len >= 3 and
             std.mem.startsWith(u8, header, &[_]u8{ 0xFF, 0xD8, 0xFF })))
     {
-        if (readJpegDimensions(header)) |d| return .{ .w = d.w, .h = d.h };
+        if (readJpegDimensions(header)) |d| return d;
     } else if (std.mem.eql(u8, mime_type, "image/png") or
         (header.len >= 8 and
             std.mem.startsWith(
@@ -278,9 +305,6 @@ pub fn parseImageDimensions(
     return null;
 }
 
-/// Floating-point dimensions (width and height) of a JPEG image in pixels.
-pub const JpegDimensions = struct { w: f32, h: f32 };
-
 /// Parsed TIFF payload header located within an APP1 EXIF segment.
 const TiffHeader = struct {
     tiff: []const u8,
@@ -298,7 +322,7 @@ inline fn readU32(bytes: *const [4]u8, is_le: bool) u32 {
 
 /// Canonical TIFF tag IDs per TIFF 6.0, TIFF-EP (ISO 12234-2),
 /// EXIF 2.32, and Adobe DNG specifications.
-pub const TiffTag = enum(u16) {
+const TiffTag = enum(u16) {
     new_subfile_type = 0x00FE,
     image_width = 0x0100,
     image_length = 0x0101,
@@ -324,36 +348,36 @@ pub const TiffTag = enum(u16) {
     _,
 
     /// Converts a raw 16-bit TIFF tag identifier to `TiffTag`.
-    pub inline fn fromInt(val: u16) TiffTag {
+    inline fn fromInt(val: u16) TiffTag {
         return @fromBackingInt(val);
     }
 };
 
 /// Bitflags for TIFF tag 0x00FE (`NewSubfileType`).
 /// Defined in TIFF 6.0 Section 6 (p. 36) and Adobe DNG Specification Section 2.
-pub const NewSubfileType = struct {
+const NewSubfileType = struct {
     /// Primary full-resolution image (raw Bayer sensor CFA array in RAW
     /// containers).
-    pub const FULL_RESOLUTION: u32 = 0x00000000;
+    const FULL_RESOLUTION: u32 = 0x00000000;
     /// Reduced-resolution version of another image in this file
     /// (thumbnail or medium preview).
-    pub const REDUCED_IMAGE: u32 = 0x00000001;
+    const REDUCED_IMAGE: u32 = 0x00000001;
     /// Multi-page document page.
-    pub const PAGE: u32 = 0x00000002;
+    const PAGE: u32 = 0x00000002;
     /// Transparency / alpha mask.
-    pub const MASK: u32 = 0x00000004;
+    const MASK: u32 = 0x00000004;
     /// Alternative processed preview image (Adobe DNG 1.2+).
-    pub const PREVIEW_IMAGE: u32 = 0x00010000;
+    const PREVIEW_IMAGE: u32 = 0x00010000;
 
     /// Checks if this subfile represents a reduced-resolution preview or
     /// thumbnail.
-    pub inline fn isReducedImage(val: u32) bool {
+    inline fn isReducedImage(val: u32) bool {
         return (val & REDUCED_IMAGE) != 0;
     }
 };
 
 /// PhotometricInterpretation values per TIFF 6.0 and TIFF-EP.
-pub const Photometric = enum(u16) {
+const Photometric = enum(u16) {
     black_is_zero = 1,
     rgb = 2,
     ycbcr = 6,
@@ -363,7 +387,7 @@ pub const Photometric = enum(u16) {
 };
 
 /// Compression values per TIFF 6.0 and TIFF-EP.
-pub const Compression = enum(u16) {
+const Compression = enum(u16) {
     uncompressed = 1,
     jpeg_old = 6,
     jpeg = 7,
@@ -374,19 +398,19 @@ pub const Compression = enum(u16) {
 /// Segmented TIFF source for zero-allocation parsing of files where the root
 /// IFD0 directory is located at the tail of the file rather than the initial
 /// header.
-pub const TiffSource = struct {
+const TiffSource = struct {
     header: []const u8,
     tail_offset: u64 = 0,
     tail: []const u8 = "",
 
     /// Initializes a TIFF source wrapping a single contiguous header slice.
-    pub inline fn init(header: []const u8) TiffSource {
+    inline fn init(header: []const u8) TiffSource {
         return .{ .header = header };
     }
 
     /// Initializes a TIFF source wrapping a header slice and a tail slice
     /// loaded from `tail_offset` in the source file.
-    pub inline fn initWithTail(
+    inline fn initWithTail(
         header: []const u8,
         tail_offset: u64,
         tail: []const u8,
@@ -400,7 +424,7 @@ pub const TiffSource = struct {
 
     /// Retrieves a contiguous slice of `len` bytes starting at `off` from
     /// either the header or tail buffer, or `null` if unavailable.
-    pub inline fn getSlice(
+    inline fn getSlice(
         self: TiffSource,
         off: usize,
         len: usize,
@@ -428,7 +452,7 @@ pub const TiffSource = struct {
 
 /// Probes the 8-byte TIFF container header to extract the root IFD0 offset
 /// without reading or parsing tags.
-pub fn probeTiffIfd0Offset(header: []const u8) ?u32 {
+fn probeTiffIfd0Offset(header: []const u8) ?u32 {
     if (header.len < 8) return null;
     const is_le = if (std.mem.eql(u8, header[0..2], "II"))
         true
@@ -445,7 +469,7 @@ pub fn probeTiffIfd0Offset(header: []const u8) ?u32 {
 
 /// Probes and streams tail IFD0 into tail_buf when located beyond header_slice.
 /// Returns a TiffSource referencing either header alone or header + tail.
-pub fn readTiffSource(
+fn readTiffSource(
     io: std.Io,
     file: *std.Io.File,
     file_size: u64,
@@ -722,12 +746,12 @@ fn extractDngPrivatePreview(
 
 /// Parses image pixel dimensions from EXIF TIFF metadata tags (IFD0, ExifIFD,
 /// or SubIFD).
-pub fn parseExifDimensions(data: []const u8) ?JpegDimensions {
+fn parseExifDimensions(data: []const u8) ?ImageDimensions {
     return parseExifDimensionsFromSource(TiffSource.init(data));
 }
 
 /// Parses image pixel dimensions from a segmented TiffSource.
-pub fn parseExifDimensionsFromSource(source: TiffSource) ?JpegDimensions {
+fn parseExifDimensionsFromSource(source: TiffSource) ?ImageDimensions {
     const header = findTiffPayloadFromSource(source) orelse return null;
     const is_le = header.is_le;
     const ifd0_off = header.ifd0_off;
@@ -905,7 +929,7 @@ pub fn parseExifDimensionsFromSource(source: TiffSource) ?JpegDimensions {
     }
 
     if (best_w != null and best_h != null) {
-        return JpegDimensions{
+        return ImageDimensions{
             .w = @floatFromInt(best_w.?),
             .h = @floatFromInt(best_h.?),
         };
@@ -915,7 +939,7 @@ pub fn parseExifDimensionsFromSource(source: TiffSource) ?JpegDimensions {
 
 /// Reads image dimensions from EXIF metadata or scans JPEG Start-of-Frame
 /// (SOF) markers.
-pub fn readJpegDimensions(data: []const u8) ?JpegDimensions {
+fn readJpegDimensions(data: []const u8) ?ImageDimensions {
     if (parseExifDimensions(data)) |dims| return dims;
     if (data.len < 4) return null;
     if (data[0] != 0xFF or data[1] != 0xD8) return null;
@@ -968,7 +992,7 @@ pub fn readJpegDimensions(data: []const u8) ?JpegDimensions {
 
 /// Inspects a JPEG bitstream header for Lossless Huffman (SOF3 / 0xC3) markers
 /// used for raw Bayer sensor data in camera RAW files (such as Canon CR2).
-pub fn isLosslessJpeg(data: []const u8) bool {
+fn isLosslessJpeg(data: []const u8) bool {
     if (data.len < 4 or data[0] != 0xFF or data[1] != 0xD8) return false;
     var idx: usize = 2;
     while (idx + 1 < data.len) {
@@ -1001,7 +1025,7 @@ pub fn parseExifOrientation(data: []const u8) ?Orientation {
 }
 
 /// Extracts the TIFF orientation tag (0x0112) from a segmented TiffSource.
-pub fn parseExifOrientationFromSource(source: TiffSource) ?Orientation {
+fn parseExifOrientationFromSource(source: TiffSource) ?Orientation {
     const header = findTiffPayloadFromSource(source) orelse return null;
     const is_le = header.is_le;
     const ifd0_off = header.ifd0_off;
@@ -1061,6 +1085,19 @@ pub fn readJpegExifOrientation(io: std.Io, path: []const u8) ?Orientation {
 pub const ThumbnailLocation = struct {
     file_offset: u64,
     length: u32,
+
+    /// Returns `buf[file_offset .. file_offset + length]` when the range
+    /// is non-empty and fits within `buf`, or `null` otherwise.
+    pub inline fn sliceInBounds(
+        self: ThumbnailLocation,
+        buf: []const u8,
+    ) ?[]const u8 {
+        if (self.length == 0) return null;
+        if (self.file_offset +| self.length > buf.len) return null;
+        const start: usize = @intCast(self.file_offset);
+        const end: usize = @intCast(self.file_offset + self.length);
+        return buf[start..end];
+    }
 };
 
 /// Locates the byte offset and length of an embedded JPEG thumbnail in IFD1
@@ -1112,7 +1149,7 @@ pub fn extractJpegThumbnailLocation(data: []const u8) ?ThumbnailLocation {
 
 /// Set of extracted preview, medium-res preview, and thumbnail locations from
 /// a RAW container.
-pub const RawPreviewCandidates = struct {
+const RawPreviewCandidates = struct {
     preview: ?ThumbnailLocation = null,
     medium: ?ThumbnailLocation = null,
     thumbnail: ?ThumbnailLocation = null,
@@ -1120,13 +1157,13 @@ pub const RawPreviewCandidates = struct {
 
 /// Extracts the largest embedded JPEG preview location and smallest thumbnail
 /// location from a TIFF-based RAW container.
-pub fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
+fn extractTiffRawPreviews(data: []const u8) RawPreviewCandidates {
     return extractTiffRawPreviewsFromSource(TiffSource.init(data));
 }
 
 /// Extracts the largest embedded JPEG preview location and smallest thumbnail
 /// location from a segmented TiffSource.
-pub fn extractTiffRawPreviewsFromSource(
+fn extractTiffRawPreviewsFromSource(
     source: TiffSource,
 ) RawPreviewCandidates {
     const header = findTiffPayloadFromSource(source) orelse return .{};
@@ -1431,7 +1468,7 @@ pub fn extractTiffRawPreviewsFromSource(
 
 /// Reads the embedded preview JPEG byte offset and length from a
 /// Fujifilm RAF file header.
-pub fn extractFujiRafPreviewLocation(
+fn extractFujiRafPreviewLocation(
     header_bytes: []const u8,
 ) ?ThumbnailLocation {
     if (header_bytes.len < 92) return null;
@@ -1447,7 +1484,7 @@ pub fn extractFujiRafPreviewLocation(
 
 /// Reads the metadata block byte offset and length from a Fujifilm RAF
 /// file header.
-pub fn extractFujiRafMetadataLocation(
+fn extractFujiRafMetadataLocation(
     header_bytes: []const u8,
 ) ?ThumbnailLocation {
     if (header_bytes.len < 100) return null;
@@ -1463,14 +1500,14 @@ pub fn extractFujiRafMetadataLocation(
 
 /// Parses full camera sensor dimensions from the Fujifilm RAF metadata
 /// records block.
-pub fn parseFujiRafDimensions(meta_bytes: []const u8) ?JpegDimensions {
+fn parseFujiRafDimensions(meta_bytes: []const u8) ?ImageDimensions {
     if (meta_bytes.len < 4) return null;
     const num_records = std.mem.readInt(u32, meta_bytes[0..4], .big);
     var pos: usize = 4;
 
-    var cropped_size: ?JpegDimensions = null;
-    var image_size: ?JpegDimensions = null;
-    var full_size: ?JpegDimensions = null;
+    var cropped_size: ?ImageDimensions = null;
+    var image_size: ?ImageDimensions = null;
+    var full_size: ?ImageDimensions = null;
 
     var i: usize = 0;
     while (i < num_records) : (i += 1) {
@@ -1491,7 +1528,7 @@ pub fn parseFujiRafDimensions(meta_bytes: []const u8) ?JpegDimensions {
             const h = std.mem.readInt(u16, tag_data[0..2], .big);
             const w = std.mem.readInt(u16, tag_data[2..4], .big);
             if (w > 0 and h > 0) {
-                const dims = JpegDimensions{
+                const dims = ImageDimensions{
                     .w = @floatFromInt(w),
                     .h = @floatFromInt(h),
                 };
@@ -1507,6 +1544,214 @@ pub fn parseFujiRafDimensions(meta_bytes: []const u8) ?JpegDimensions {
     }
 
     return cropped_size orelse (image_size orelse full_size);
+}
+
+/// Unified header-probe result for Camera RAW containers (Fujifilm RAF and
+/// TIFF-based RAW formats such as ARW, CR2, NEF, DNG, ORF, RW2, and PEF).
+pub const RawHeaderProbe = struct {
+    preview: ?ThumbnailLocation = null,
+    medium: ?ThumbnailLocation = null,
+    thumbnail: ?ThumbnailLocation = null,
+    sensor_dims: ?ImageDimensions = null,
+    orientation: Orientation = .normal,
+
+    /// Returns true when any embedded preview or thumbnail bitstream was
+    /// located in the container header.
+    pub inline fn hasAnyPreview(self: RawHeaderProbe) bool {
+        return self.thumbnail != null or
+            self.medium != null or
+            self.preview != null;
+    }
+};
+
+/// Probes an in-memory Camera RAW buffer (Fujifilm RAF or TIFF-based RAW)
+/// for preview locations, sensor dimensions, and orientation without
+/// performing full decompression.
+pub fn probeRawBuffer(
+    raw_bytes: []const u8,
+    mime_type: []const u8,
+) RawHeaderProbe {
+    if (isFujiRafHeader(raw_bytes, mime_type)) {
+        var res = RawHeaderProbe{
+            .preview = extractFujiRafPreviewLocation(raw_bytes),
+        };
+        if (extractFujiRafMetadataLocation(raw_bytes)) |mloc| {
+            if (mloc.sliceInBounds(raw_bytes)) |m_slice| {
+                res.sensor_dims = parseFujiRafDimensions(m_slice);
+            }
+        }
+        if (res.preview) |ploc| {
+            const maybe_p_slice: ?[]const u8 =
+                if (ploc.sliceInBounds(raw_bytes)) |s|
+                    s
+                else if (ploc.file_offset < raw_bytes.len)
+                    raw_bytes[@intCast(ploc.file_offset)..]
+                else
+                    null;
+            if (maybe_p_slice) |p_slice| {
+                res.orientation = parseExifOrientation(p_slice) orelse .normal;
+                if (extractJpegThumbnailLocation(p_slice)) |j_thumb| {
+                    res.thumbnail = .{
+                        .file_offset = ploc.file_offset +| j_thumb.file_offset,
+                        .length = j_thumb.length,
+                    };
+                }
+                if (res.sensor_dims == null) {
+                    res.sensor_dims = readJpegDimensions(p_slice);
+                }
+            }
+        }
+        return res;
+    }
+
+    const raw_cands = extractTiffRawPreviews(raw_bytes);
+    var sensor_dims = parseExifDimensions(raw_bytes);
+    if (sensor_dims == null) {
+        sensor_dims = parseImageDimensions(raw_bytes, mime_type);
+    }
+    return .{
+        .preview = raw_cands.preview,
+        .medium = raw_cands.medium,
+        .thumbnail = raw_cands.thumbnail,
+        .sensor_dims = sensor_dims,
+        .orientation = parseExifOrientation(raw_bytes) orelse .normal,
+    };
+}
+
+fn probeFujiRafFileHeader(
+    io: std.Io,
+    file: *std.Io.File,
+    file_size: u64,
+    header_slice: []const u8,
+) RawHeaderProbe {
+    var res = RawHeaderProbe{
+        .preview = extractFujiRafPreviewLocation(header_slice),
+    };
+    const header_n = header_slice.len;
+    if (extractFujiRafMetadataLocation(header_slice)) |meta_loc| {
+        if (meta_loc.sliceInBounds(header_slice)) |m_slice| {
+            res.sensor_dims = parseFujiRafDimensions(m_slice);
+        } else if (meta_loc.length > 0 and meta_loc.length <= 64 * 1024) {
+            const actual_size = if (file_size > 0)
+                file_size
+            else
+                (file.length(io) catch 0);
+            if (actual_size == 0 or
+                meta_loc.file_offset +| meta_loc.length <= actual_size)
+            {
+                var m_buf: [64 * 1024]u8 = undefined;
+                const read_target: usize = @intCast(
+                    @min(meta_loc.length, m_buf.len),
+                );
+                var m_slices = [_][]u8{m_buf[0..read_target]};
+                const mn = file.readPositional(
+                    io,
+                    &m_slices,
+                    meta_loc.file_offset,
+                ) catch 0;
+                if (mn >= 4) {
+                    res.sensor_dims = parseFujiRafDimensions(m_buf[0..mn]);
+                }
+            }
+        }
+    }
+    if (res.preview) |prev_loc| {
+        if (prev_loc.file_offset +| 4 * 1024 <= header_n) {
+            const p_slice =
+                header_slice[@intCast(prev_loc.file_offset)..header_n];
+            res.orientation = parseExifOrientation(p_slice) orelse .normal;
+            if (extractJpegThumbnailLocation(p_slice)) |j_thumb| {
+                res.thumbnail = .{
+                    .file_offset = prev_loc.file_offset +| j_thumb.file_offset,
+                    .length = j_thumb.length,
+                };
+            }
+            if (res.sensor_dims == null) {
+                res.sensor_dims = readJpegDimensions(p_slice);
+            }
+        } else {
+            var p_hdr: [8 * 1024]u8 = undefined;
+            var p_slices = [_][]u8{&p_hdr};
+            const pn = file.readPositional(
+                io,
+                &p_slices,
+                prev_loc.file_offset,
+            ) catch 0;
+            if (pn > 0) {
+                const p_slice = p_hdr[0..pn];
+                res.orientation = parseExifOrientation(p_slice) orelse .normal;
+                if (extractJpegThumbnailLocation(p_slice)) |j_thumb| {
+                    res.thumbnail = .{
+                        .file_offset = prev_loc.file_offset +|
+                            j_thumb.file_offset,
+                        .length = j_thumb.length,
+                    };
+                }
+                if (res.sensor_dims == null) {
+                    res.sensor_dims = readJpegDimensions(p_slice);
+                }
+            }
+        }
+    }
+    return res;
+}
+
+fn probeTiffRawFileHeader(
+    io: std.Io,
+    file: *std.Io.File,
+    file_size: u64,
+    header_slice: []const u8,
+    mime_type: []const u8,
+) RawHeaderProbe {
+    var tail_buf: [16 * 1024]u8 = undefined;
+    const actual_size: u64 = if (file_size > 0)
+        file_size
+    else if (probeTiffIfd0Offset(header_slice)) |ifd0_off|
+        (if (ifd0_off >= header_slice.len) file.length(io) catch 0 else 0)
+    else
+        0;
+    const tiff_source = readTiffSource(
+        io,
+        file,
+        actual_size,
+        header_slice,
+        &tail_buf,
+    );
+    const raw_cands = extractTiffRawPreviewsFromSource(tiff_source);
+    var sensor_dims = parseExifDimensionsFromSource(tiff_source);
+    if (sensor_dims == null) {
+        sensor_dims = parseImageDimensions(header_slice, mime_type);
+    }
+    const orientation = parseExifOrientationFromSource(tiff_source) orelse
+        .normal;
+    return .{
+        .preview = raw_cands.preview,
+        .medium = raw_cands.medium,
+        .thumbnail = raw_cands.thumbnail,
+        .sensor_dims = sensor_dims,
+        .orientation = orientation,
+    };
+}
+
+/// Probes a Camera RAW file header via `io` and `file`, streaming tail
+/// IFD / metadata segments as needed without loading the full file into memory.
+pub fn probeRawFileHeader(
+    io: std.Io,
+    file: *std.Io.File,
+    file_size: u64,
+    header_slice: []const u8,
+    mime_type: []const u8,
+) RawHeaderProbe {
+    if (isFujiRafHeader(header_slice, mime_type)) {
+        return probeFujiRafFileHeader(io, file, file_size, header_slice);
+    }
+    return probeTiffRawFileHeader(
+        io,
+        file,
+        file_size,
+        header_slice,
+        mime_type,
+    );
 }
 
 test "parseExifOrientation" {
@@ -3028,4 +3273,248 @@ test "detectMimeType - magic bytes and extension fallback" {
         "unknown",
         detectMimeType(&empty_hdr, "pic.xyz"),
     );
+}
+
+test "skipZipLocalFileHeader - valid, pass-through, truncated, empty" {
+    // 1. Valid stored ZIP local file header with filename and extra field
+    var zip_buf: [64]u8 = @splat(0);
+    @memcpy(zip_buf[0..4], &std.zip.local_file_header_sig);
+    const fname_len: u16 = 8;
+    const extra_len: u16 = 4;
+    std.mem.writeInt(u16, zip_buf[26..28], fname_len, .little);
+    std.mem.writeInt(u16, zip_buf[28..30], extra_len, .little);
+    const payload_start = @sizeOf(std.zip.LocalFileHeader) +
+        fname_len + extra_len;
+    @memcpy(zip_buf[payload_start .. payload_start + 5], "IMAGE");
+
+    const skipped = skipZipLocalFileHeader(zip_buf[0 .. payload_start + 5]);
+    try std.testing.expect(skipped != null);
+    try std.testing.expectEqualStrings("IMAGE", skipped.?);
+
+    // 2. Non-ZIP raw payload pass-through
+    const raw_jpg = "\xFF\xD8\xFF\xE0\x00\x10JFIF\x00\x01\x01\x00\x00\x01";
+    const pass_thru = skipZipLocalFileHeader(raw_jpg);
+    try std.testing.expect(pass_thru != null);
+    try std.testing.expectEqualStrings(raw_jpg, pass_thru.?);
+
+    // 3. Truncated local file header (payload smaller than header + lengths)
+    const truncated_hdr = zip_buf[0..payload_start];
+    try std.testing.expectEqual(
+        @as(?[]const u8, null),
+        skipZipLocalFileHeader(truncated_hdr),
+    );
+
+    // 4. Empty buffer
+    try std.testing.expectEqual(
+        @as(?[]const u8, null),
+        skipZipLocalFileHeader(""),
+    );
+}
+
+test "isFujiRafHeader and ThumbnailLocation.sliceInBounds" {
+    try std.testing.expect(isFujiRafHeader("test", "image/x-fuji-raf"));
+    try std.testing.expect(isFujiRafHeader("FUJIFILM\x00\x00", "unknown"));
+    try std.testing.expect(!isFujiRafHeader(
+        "RIFF\x00\x00\x00\x00WEBP",
+        "image/webp",
+    ));
+    try std.testing.expect(!isFujiRafHeader("FUJI", "unknown"));
+
+    const buf = "0123456789abcdefghij";
+    const valid_loc = ThumbnailLocation{ .file_offset = 5, .length = 4 };
+    try std.testing.expectEqualStrings("5678", valid_loc.sliceInBounds(buf).?);
+
+    const empty_loc = ThumbnailLocation{ .file_offset = 5, .length = 0 };
+    try std.testing.expectEqual(
+        @as(?[]const u8, null),
+        empty_loc.sliceInBounds(buf),
+    );
+
+    const oob_loc = ThumbnailLocation{ .file_offset = 18, .length = 5 };
+    try std.testing.expectEqual(
+        @as(?[]const u8, null),
+        oob_loc.sliceInBounds(buf),
+    );
+
+    const overflow_loc = ThumbnailLocation{
+        .file_offset = std.math.maxInt(u64) - 2,
+        .length = 10,
+    };
+    try std.testing.expectEqual(
+        @as(?[]const u8, null),
+        overflow_loc.sliceInBounds(buf),
+    );
+}
+
+test "probeRawBuffer - Fuji RAF and TIFF RAW containers" {
+    // 1. Fuji RAF buffer in memory
+    var raf_buf: [256]u8 = @splat(0);
+    @memcpy(raf_buf[0..8], "FUJIFILM");
+    // Preview at offset 128, length 64
+    std.mem.writeInt(u32, raf_buf[84..88], 128, .big);
+    std.mem.writeInt(u32, raf_buf[88..92], 64, .big);
+    // Metadata at offset 64, length 24
+    std.mem.writeInt(u32, raf_buf[92..96], 64, .big);
+    std.mem.writeInt(u32, raf_buf[96..100], 24, .big);
+    // Metadata: num_records = 1, tag 0x0111, len = 4, [h: 4000, w: 6000]
+    std.mem.writeInt(u32, raf_buf[64..68], 1, .big);
+    std.mem.writeInt(u16, raf_buf[68..70], 0x0111, .big);
+    std.mem.writeInt(u16, raf_buf[70..72], 4, .big);
+    std.mem.writeInt(u16, raf_buf[72..74], 4000, .big);
+    std.mem.writeInt(u16, raf_buf[74..76], 6000, .big);
+    // Preview at 128: valid SOI and SOF0 marker
+    raf_buf[128] = 0xFF;
+    raf_buf[129] = 0xD8;
+    raf_buf[130] = 0xFF;
+    raf_buf[131] = 0xC0; // SOF0
+    raf_buf[132] = 0x00; // seg len 11
+    raf_buf[133] = 0x0B;
+    raf_buf[134] = 0x08; // precision
+    std.mem.writeInt(u16, raf_buf[135..137], 200, .big); // h
+    std.mem.writeInt(u16, raf_buf[137..139], 300, .big); // w
+
+    const raf_res = probeRawBuffer(&raf_buf, "image/x-fuji-raf");
+    try std.testing.expect(raf_res.hasAnyPreview());
+    try std.testing.expectEqual(@as(u64, 128), raf_res.preview.?.file_offset);
+    try std.testing.expectEqual(@as(u32, 64), raf_res.preview.?.length);
+    try std.testing.expectEqual(@as(f32, 6000.0), raf_res.sensor_dims.?.w);
+    try std.testing.expectEqual(@as(f32, 4000.0), raf_res.sensor_dims.?.h);
+
+    // 2. TIFF RAW buffer in memory (Sony ARW / TIFF layout)
+    var tiff_buf: [128]u8 = @splat(0);
+    tiff_buf[0] = 'I';
+    tiff_buf[1] = 'I';
+    std.mem.writeInt(u16, tiff_buf[2..4], 0x002A, .little);
+    std.mem.writeInt(u32, tiff_buf[4..8], 8, .little);
+    // IFD0 at 8: 3 entries
+    std.mem.writeInt(u16, tiff_buf[8..10], 3, .little);
+    // Entry 0: 0x0100 (ImageWidth) = 7952
+    std.mem.writeInt(u16, tiff_buf[10..12], 0x0100, .little);
+    std.mem.writeInt(u16, tiff_buf[12..14], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[14..18], 1, .little);
+    std.mem.writeInt(u32, tiff_buf[18..22], 7952, .little);
+    // Entry 1: 0x0101 (ImageLength) = 5304
+    std.mem.writeInt(u16, tiff_buf[22..24], 0x0101, .little);
+    std.mem.writeInt(u16, tiff_buf[24..26], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[26..30], 1, .little);
+    std.mem.writeInt(u32, tiff_buf[30..34], 5304, .little);
+    // Entry 2: 0x0112 (Orientation) = 6 (rotate_90)
+    std.mem.writeInt(u16, tiff_buf[34..36], 0x0112, .little);
+    std.mem.writeInt(u16, tiff_buf[36..38], 3, .little);
+    std.mem.writeInt(u32, tiff_buf[38..42], 1, .little);
+    std.mem.writeInt(u16, tiff_buf[42..44], 6, .little);
+    // Next IFD = 50
+    std.mem.writeInt(u32, tiff_buf[46..50], 50, .little);
+    // IFD1 at 50: 2 entries (JPEG thumbnail)
+    std.mem.writeInt(u16, tiff_buf[50..52], 2, .little);
+    std.mem.writeInt(u16, tiff_buf[52..54], 0x0201, .little);
+    std.mem.writeInt(u16, tiff_buf[54..56], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[56..60], 1, .little);
+    std.mem.writeInt(u32, tiff_buf[60..64], 1000, .little);
+    std.mem.writeInt(u16, tiff_buf[64..66], 0x0202, .little);
+    std.mem.writeInt(u16, tiff_buf[66..68], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[68..72], 1, .little);
+    std.mem.writeInt(u32, tiff_buf[72..76], 120000, .little);
+
+    const tiff_res = probeRawBuffer(&tiff_buf, "image/x-sony-arw");
+    try std.testing.expect(tiff_res.hasAnyPreview());
+    try std.testing.expectEqual(Orientation.rotate_90, tiff_res.orientation);
+    try std.testing.expectEqual(@as(f32, 7952.0), tiff_res.sensor_dims.?.w);
+    try std.testing.expectEqual(@as(f32, 5304.0), tiff_res.sensor_dims.?.h);
+    try std.testing.expectEqual(@as(u64, 1000), tiff_res.preview.?.file_offset);
+    try std.testing.expectEqual(@as(u32, 120000), tiff_res.preview.?.length);
+}
+
+test "probeRawFileHeader - Fuji RAF and TIFF RAW file streaming" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    // 1. Fuji RAF file
+    var raf_buf: [256]u8 = @splat(0);
+    @memcpy(raf_buf[0..8], "FUJIFILM");
+    std.mem.writeInt(u32, raf_buf[84..88], 128, .big);
+    std.mem.writeInt(u32, raf_buf[88..92], 64, .big);
+    std.mem.writeInt(u32, raf_buf[92..96], 64, .big);
+    std.mem.writeInt(u32, raf_buf[96..100], 24, .big);
+    std.mem.writeInt(u32, raf_buf[64..68], 1, .big);
+    std.mem.writeInt(u16, raf_buf[68..70], 0x0111, .big);
+    std.mem.writeInt(u16, raf_buf[70..72], 4, .big);
+    std.mem.writeInt(u16, raf_buf[72..74], 4000, .big);
+    std.mem.writeInt(u16, raf_buf[74..76], 6000, .big);
+
+    var raf_file = try tmp.dir.createFile(
+        io,
+        "sample.raf",
+        .{ .read = true },
+    );
+    defer raf_file.close(io);
+    var r_slices = [_][]const u8{&raf_buf};
+    _ = try raf_file.writePositional(io, &r_slices, 0);
+
+    const raf_res = probeRawFileHeader(
+        io,
+        &raf_file,
+        raf_buf.len,
+        raf_buf[0..100],
+        "image/x-fuji-raf",
+    );
+    try std.testing.expect(raf_res.hasAnyPreview());
+    try std.testing.expectEqual(@as(u64, 128), raf_res.preview.?.file_offset);
+    try std.testing.expectEqual(@as(u32, 64), raf_res.preview.?.length);
+    try std.testing.expectEqual(@as(f32, 6000.0), raf_res.sensor_dims.?.w);
+    try std.testing.expectEqual(@as(f32, 4000.0), raf_res.sensor_dims.?.h);
+
+    // 2. TIFF RAW file
+    var tiff_buf: [128]u8 = @splat(0);
+    tiff_buf[0] = 'I';
+    tiff_buf[1] = 'I';
+    std.mem.writeInt(u16, tiff_buf[2..4], 0x002A, .little);
+    std.mem.writeInt(u32, tiff_buf[4..8], 8, .little);
+    std.mem.writeInt(u16, tiff_buf[8..10], 3, .little);
+    std.mem.writeInt(u16, tiff_buf[10..12], 0x0100, .little);
+    std.mem.writeInt(u16, tiff_buf[12..14], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[14..18], 1, .little);
+    std.mem.writeInt(u32, tiff_buf[18..22], 7952, .little);
+    std.mem.writeInt(u16, tiff_buf[22..24], 0x0101, .little);
+    std.mem.writeInt(u16, tiff_buf[24..26], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[26..30], 1, .little);
+    std.mem.writeInt(u32, tiff_buf[30..34], 5304, .little);
+    std.mem.writeInt(u16, tiff_buf[34..36], 0x0112, .little);
+    std.mem.writeInt(u16, tiff_buf[36..38], 3, .little);
+    std.mem.writeInt(u32, tiff_buf[38..42], 1, .little);
+    std.mem.writeInt(u16, tiff_buf[42..44], 6, .little);
+    std.mem.writeInt(u32, tiff_buf[46..50], 50, .little);
+    std.mem.writeInt(u16, tiff_buf[50..52], 2, .little);
+    std.mem.writeInt(u16, tiff_buf[52..54], 0x0201, .little);
+    std.mem.writeInt(u16, tiff_buf[54..56], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[56..60], 1, .little);
+    std.mem.writeInt(u32, tiff_buf[60..64], 1000, .little);
+    std.mem.writeInt(u16, tiff_buf[64..66], 0x0202, .little);
+    std.mem.writeInt(u16, tiff_buf[66..68], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[68..72], 1, .little);
+    std.mem.writeInt(u32, tiff_buf[72..76], 120000, .little);
+
+    var tiff_file = try tmp.dir.createFile(
+        io,
+        "sample.arw",
+        .{ .read = true },
+    );
+    defer tiff_file.close(io);
+    var t_slices = [_][]const u8{&tiff_buf};
+    _ = try tiff_file.writePositional(io, &t_slices, 0);
+
+    const tiff_res = probeRawFileHeader(
+        io,
+        &tiff_file,
+        tiff_buf.len,
+        &tiff_buf,
+        "image/x-sony-arw",
+    );
+    try std.testing.expect(tiff_res.hasAnyPreview());
+    try std.testing.expectEqual(Orientation.rotate_90, tiff_res.orientation);
+    try std.testing.expectEqual(@as(f32, 7952.0), tiff_res.sensor_dims.?.w);
+    try std.testing.expectEqual(@as(f32, 5304.0), tiff_res.sensor_dims.?.h);
+    try std.testing.expectEqual(@as(u64, 1000), tiff_res.preview.?.file_offset);
+    try std.testing.expectEqual(@as(u32, 120000), tiff_res.preview.?.length);
 }

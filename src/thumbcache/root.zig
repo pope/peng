@@ -876,123 +876,25 @@ pub fn precacheFileThumbnail(
     const header_slice = header_buf[0..header_n];
 
     const mime_type = probe.detectMimeType(header_slice, path);
-    const is_fuji = std.mem.eql(u8, mime_type, "image/x-fuji-raf") or
-        (header_slice.len >= 8 and
-            std.mem.startsWith(u8, header_slice, "FUJIFILM"));
     const is_raw = isRawFile(path) or
-        is_fuji or
+        probe.isFujiRafHeader(header_slice, mime_type) or
         std.mem.startsWith(u8, mime_type, "image/x-");
 
     if (is_raw) {
-        var prev_loc_opt: ?probe.ThumbnailLocation = null;
-        var med_loc_opt: ?probe.ThumbnailLocation = null;
-        var thumb_loc_opt: ?probe.ThumbnailLocation = null;
-        var raw_sensor_dims: ?probe.JpegDimensions = null;
-        var orientation: Orientation = .normal;
+        const raw_probe = probe.probeRawFileHeader(
+            io,
+            &file,
+            file_size,
+            header_slice,
+            mime_type,
+        );
+        if (cancel.isCanceled()) return .canceled;
 
-        if (is_fuji) {
-            prev_loc_opt = probe.extractFujiRafPreviewLocation(header_slice);
-            if (probe.extractFujiRafMetadataLocation(header_slice)) |meta_loc| {
-                if (meta_loc.file_offset +| meta_loc.length <= header_n) {
-                    const start: usize = @intCast(meta_loc.file_offset);
-                    const stop: usize = @intCast(
-                        meta_loc.file_offset + meta_loc.length,
-                    );
-                    const sub_slice = header_slice[start..stop];
-                    raw_sensor_dims = probe.parseFujiRafDimensions(sub_slice);
-                } else if (meta_loc.length > 0 and
-                    meta_loc.length <= 64 * 1024 and
-                    meta_loc.file_offset +| meta_loc.length <= file_size)
-                {
-                    var m_buf: [64 * 1024]u8 = undefined;
-                    const mn = readPositionalRange(
-                        file,
-                        io,
-                        cancel,
-                        m_buf[0..meta_loc.length],
-                        meta_loc.file_offset,
-                    ) catch |err| blk: {
-                        if (err == error.Canceled or cancel.isCanceled()) {
-                            return .canceled;
-                        }
-                        break :blk 0;
-                    };
-                    if (mn >= meta_loc.length) {
-                        raw_sensor_dims = probe.parseFujiRafDimensions(
-                            m_buf[0..meta_loc.length],
-                        );
-                    }
-                }
-            }
-            if (prev_loc_opt) |prev_loc| {
-                if (prev_loc.file_offset +| 4096 <= header_n) {
-                    const off: usize = @intCast(prev_loc.file_offset);
-                    orientation = probe.parseExifOrientation(
-                        header_slice[off..header_n],
-                    ) orelse .normal;
-                    if (probe.extractJpegThumbnailLocation(
-                        header_slice[off..header_n],
-                    )) |j_thumb| {
-                        thumb_loc_opt = .{
-                            .file_offset = prev_loc.file_offset +|
-                                j_thumb.file_offset,
-                            .length = j_thumb.length,
-                        };
-                    }
-                } else {
-                    var p_hdr: [8192]u8 = undefined;
-                    const pn = readPositionalRange(
-                        file,
-                        io,
-                        cancel,
-                        &p_hdr,
-                        prev_loc.file_offset,
-                    ) catch |err| blk: {
-                        if (err == error.Canceled or cancel.isCanceled()) {
-                            return .canceled;
-                        }
-                        break :blk 0;
-                    };
-                    if (pn > 0) {
-                        orientation = probe.parseExifOrientation(
-                            p_hdr[0..pn],
-                        ) orelse .normal;
-                        if (probe.extractJpegThumbnailLocation(
-                            p_hdr[0..pn],
-                        )) |j_thumb| {
-                            thumb_loc_opt = .{
-                                .file_offset = prev_loc.file_offset +|
-                                    j_thumb.file_offset,
-                                .length = j_thumb.length,
-                            };
-                        }
-                    }
-                }
-            }
-        } else {
-            var tail_buf: [16 * 1024]u8 = undefined;
-            const tiff_source = probe.readTiffSource(
-                io,
-                &file,
-                file_size,
-                header_slice,
-                &tail_buf,
-            );
-            const raw_cands =
-                probe.extractTiffRawPreviewsFromSource(tiff_source);
-            prev_loc_opt = raw_cands.preview;
-            med_loc_opt = raw_cands.medium;
-            thumb_loc_opt = raw_cands.thumbnail;
-            raw_sensor_dims = probe.parseExifDimensionsFromSource(tiff_source);
-            if (raw_sensor_dims == null) {
-                if (probe.parseImageDimensions(header_slice, mime_type)) |d| {
-                    raw_sensor_dims = .{ .w = d.w, .h = d.h };
-                }
-            }
-            orientation =
-                probe.parseExifOrientationFromSource(tiff_source) orelse
-                .normal;
-        }
+        const prev_loc_opt = raw_probe.preview;
+        const med_loc_opt = raw_probe.medium;
+        const thumb_loc_opt = raw_probe.thumbnail;
+        const raw_sensor_dims = raw_probe.sensor_dims;
+        const orientation = raw_probe.orientation;
 
         const had_embedded_thumb = (thumb_loc_opt != null) or
             (med_loc_opt != null);
