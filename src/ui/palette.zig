@@ -1,9 +1,6 @@
 const clay = @import("zclay");
-const graphics = @import("graphics.zig");
 const intents = @import("intents");
-const palette_items = @import("palette_items.zig");
 const palette_pkg = @import("palette");
-const palette_scroll = @import("palette_scroll.zig");
 const sdl = @import("sdl");
 const state = @import("state");
 const std = @import("std");
@@ -17,20 +14,78 @@ const MeasureTextUserData = state.MeasureTextUserData;
 const PaletteConfig = palette_pkg.PaletteConfig;
 const PaletteMode = intents.PaletteMode;
 const PaletteState = palette_pkg.PaletteState;
-const partitionHighlightedText = palette_items.partitionHighlightedText;
-const remapMiddleTruncatedMatches = text_utils.remapMiddleTruncatedMatches;
-const renderFuzzyMatchText = palette_items.renderFuzzyMatchText;
-const TextChunk = palette_items.TextChunk;
+const partitionHighlightedText = palette_pkg.partitionHighlightedText;
+const remapMiddleTruncatedMatches = palette_pkg.remapMiddleTruncatedMatches;
 const truncateDirectory = text_utils.truncateDirectory;
 const truncateFilename = text_utils.truncateFilename;
 const truncateFilenameMiddle = text_utils.truncateFilenameMiddle;
 const types = state.types;
 const UiViewModel = state.UiViewModel;
-const VirtualWindow = palette_scroll.VirtualWindow;
+const VirtualWindow = palette_pkg.VirtualWindow;
 
 /// Scales the alpha of a theme color by the modal animation progress (0.0 .. 1.0).
 inline fn a(color: clay.Color, progress: f32) clay.Color {
     return theme.withAlpha(color, progress);
+}
+
+/// Emits Clay text elements partitioning characters into alternating normal
+/// and highlighted segments based on fuzzy match indices.
+fn renderFuzzyMatchText(
+    allocator: std.mem.Allocator,
+    text: []const u8,
+    match_indices: []const usize,
+    font_size: u16,
+    normal_color: clay.Color,
+    highlight_color: clay.Color,
+) void {
+    if (text.len == 0) return;
+    if (match_indices.len == 0) {
+        clay.text(text, .{
+            .color = normal_color,
+            .font_size = font_size,
+            .font_id = 0,
+            .wrap_mode = .none,
+        });
+        return;
+    }
+
+    const chunks = partitionHighlightedText(
+        allocator,
+        text,
+        match_indices,
+    ) catch |err| {
+        std.log.err(
+            "partitionHighlightedText failed for '{s}': {}",
+            .{ text, err },
+        );
+        clay.text(text, .{
+            .color = normal_color,
+            .font_size = font_size,
+            .font_id = 0,
+            .wrap_mode = .none,
+        });
+        return;
+    };
+    defer allocator.free(chunks);
+
+    clay.UI()(.{
+        .layout = .{
+            .sizing = .{ .w = .fit, .h = .fit },
+            .direction = .left_to_right,
+            .child_alignment = .{ .x = .left, .y = .center },
+        },
+    })({
+        for (chunks) |chunk| {
+            const chunk_color =
+                if (chunk.is_matched) highlight_color else normal_color;
+            clay.text(chunk.slice, .{
+                .color = chunk_color,
+                .font_size = font_size,
+                .font_id = 0,
+                .wrap_mode = .none,
+            });
+        }
+    });
 }
 
 fn renderHeader(mode: PaletteMode, title: []const u8, progress: f32) void {
@@ -1308,216 +1363,6 @@ pub fn renderPalette(
             renderDirectoryLegend(progress);
         }
     });
-}
-
-test "partitionHighlightedText correctly partitions matched and unmatched chunks" {
-    // Scenario 1: Query "sc" matching "Set Contrast" (indices 0 and 4)
-    const text1 = "Set Contrast";
-    const matches1 = [_]usize{ 0, 4 };
-
-    const chunks1 = try partitionHighlightedText(std.testing.allocator, text1, &matches1);
-    defer std.testing.allocator.free(chunks1);
-
-    try std.testing.expectEqual(@as(usize, 4), chunks1.len);
-    try std.testing.expectEqualStrings("S", chunks1[0].slice);
-    try std.testing.expect(chunks1[0].is_matched);
-    try std.testing.expectEqualStrings("et ", chunks1[1].slice);
-    try std.testing.expect(!chunks1[1].is_matched);
-    try std.testing.expectEqualStrings("C", chunks1[2].slice);
-    try std.testing.expect(chunks1[2].is_matched);
-    try std.testing.expectEqualStrings("ontrast", chunks1[3].slice);
-    try std.testing.expect(!chunks1[3].is_matched);
-}
-
-test "partitionHighlightedText merges isolated whitespace matches back into unmatched text" {
-    // Scenario 2: Query "sc " matching "Set Contrast (Type Value)..."
-    // (indices 0, 4, and 12)
-    const text2 = "Set Contrast (Type Value)...";
-    const matches2 = [_]usize{ 0, 4, 12 };
-
-    const chunks2 = try partitionHighlightedText(std.testing.allocator, text2, &matches2);
-    defer std.testing.allocator.free(chunks2);
-
-    try std.testing.expectEqual(@as(usize, 4), chunks2.len);
-    try std.testing.expectEqualStrings("S", chunks2[0].slice);
-    try std.testing.expect(chunks2[0].is_matched);
-    try std.testing.expectEqualStrings("et ", chunks2[1].slice);
-    try std.testing.expect(!chunks2[1].is_matched);
-    try std.testing.expectEqualStrings("C", chunks2[2].slice);
-    try std.testing.expect(chunks2[2].is_matched);
-    try std.testing.expectEqualStrings("ontrast (Type Value)...", chunks2[3].slice);
-    try std.testing.expect(!chunks2[3].is_matched);
-}
-
-test "partitionHighlightedText edge cases" {
-    // Empty text
-    const empty_chunks = try partitionHighlightedText(std.testing.allocator, "", &[_]usize{0});
-    try std.testing.expectEqual(@as(usize, 0), empty_chunks.len);
-
-    // Empty matches
-    const no_match_chunks = try partitionHighlightedText(
-        std.testing.allocator,
-        "text",
-        &[_]usize{},
-    );
-    defer std.testing.allocator.free(no_match_chunks);
-    try std.testing.expectEqual(@as(usize, 1), no_match_chunks.len);
-    try std.testing.expectEqualStrings("text", no_match_chunks[0].slice);
-    try std.testing.expect(!no_match_chunks[0].is_matched);
-
-    // Out-of-bounds matches (should be ignored gracefully)
-    const oob_chunks = blk: {
-        const prev_level = std.testing.log_level;
-        std.testing.log_level = .err;
-        defer std.testing.log_level = prev_level;
-        break :blk try partitionHighlightedText(
-            std.testing.allocator,
-            "abc",
-            &[_]usize{ 0, 5, 10 },
-        );
-    };
-    defer std.testing.allocator.free(oob_chunks);
-    try std.testing.expectEqual(@as(usize, 2), oob_chunks.len);
-    try std.testing.expectEqualStrings("a", oob_chunks[0].slice);
-    try std.testing.expect(oob_chunks[0].is_matched);
-    try std.testing.expectEqualStrings("bc", oob_chunks[1].slice);
-    try std.testing.expect(!oob_chunks[1].is_matched);
-
-    // Internal whitespace should NOT be stripped
-    const internal_ws_chunks = try partitionHighlightedText(
-        std.testing.allocator,
-        "a  b",
-        &[_]usize{ 0, 1, 2, 3 },
-    );
-    defer std.testing.allocator.free(internal_ws_chunks);
-    try std.testing.expectEqual(@as(usize, 1), internal_ws_chunks.len);
-    try std.testing.expectEqualStrings("a  b", internal_ws_chunks[0].slice);
-    try std.testing.expect(internal_ws_chunks[0].is_matched);
-
-    // Leading and trailing whitespace should be stripped
-    const edge_ws_chunks = try partitionHighlightedText(
-        std.testing.allocator,
-        " a ",
-        &[_]usize{ 0, 1, 2 },
-    );
-    defer std.testing.allocator.free(edge_ws_chunks);
-    try std.testing.expectEqual(@as(usize, 3), edge_ws_chunks.len);
-    try std.testing.expectEqualStrings(" ", edge_ws_chunks[0].slice);
-    try std.testing.expect(!edge_ws_chunks[0].is_matched);
-    try std.testing.expectEqualStrings("a", edge_ws_chunks[1].slice);
-    try std.testing.expect(edge_ws_chunks[1].is_matched);
-    try std.testing.expectEqualStrings(" ", edge_ws_chunks[2].slice);
-    try std.testing.expect(!edge_ws_chunks[2].is_matched);
-}
-
-test "partitionHighlightedText with middle-truncated remapped matches" {
-    const long_text =
-        "DSC_2026_Yosemite_National_Park_High_Resolution_Sunset_Panorama_HDR_Final.jpg";
-    // Suppose head_len = 25 ("DSC_2026_Yosemite_National")
-    // tail_start_idx = 50 ("Sunset_Panorama_HDR_Final.jpg")
-    const head_len: usize = 25;
-    const tail_start_idx: usize = 50;
-    const display = try std.testing.allocator.print(
-        "{s}...{s}",
-        .{ long_text[0..head_len], long_text[tail_start_idx..] },
-    );
-    defer std.testing.allocator.free(display);
-
-    // Matches at index 2 ('C' in DSC), index 57 ('P' in Panorama)
-    const matches = [_]usize{ 2, 57 };
-    const remapped = try remapMiddleTruncatedMatches(
-        std.testing.allocator,
-        &matches,
-        head_len,
-        tail_start_idx,
-    );
-    defer std.testing.allocator.free(remapped);
-
-    // remapped should be index 2 and (57 - 50) + 25 + 3 = 35
-    try std.testing.expectEqualSlices(usize, &[_]usize{ 2, 35 }, remapped);
-
-    const chunks = try partitionHighlightedText(std.testing.allocator, display, remapped);
-    defer std.testing.allocator.free(chunks);
-
-    try std.testing.expect(chunks.len > 0);
-    // Ensure all matches lie within display bounds without warning
-    for (remapped) |m_idx| {
-        try std.testing.expect(m_idx < display.len);
-    }
-}
-
-test "partitionHighlightedText multi-byte UTF-8 character boundary safety" {
-    // "café" -> 'c' (0), 'a' (1), 'f' (2), 'é' (3..4: 0xC3 0xA9)
-    const utf8_text = "café_au_lait.jpg";
-    // Match index 3 points to start of 'é' (0xC3)
-    const matches = [_]usize{3};
-
-    const chunks = try partitionHighlightedText(std.testing.allocator, utf8_text, &matches);
-    defer std.testing.allocator.free(chunks);
-
-    // Chunks should be: "caf" (unmatched), "é" (matched, full 2-byte UTF-8
-    // code point), "_au_lait.jpg" (unmatched)
-    try std.testing.expectEqual(@as(usize, 3), chunks.len);
-    try std.testing.expectEqualStrings("caf", chunks[0].slice);
-    try std.testing.expect(!chunks[0].is_matched);
-    try std.testing.expectEqualStrings("é", chunks[1].slice);
-    try std.testing.expect(chunks[1].is_matched);
-    try std.testing.expectEqualStrings("_au_lait.jpg", chunks[2].slice);
-    try std.testing.expect(!chunks[2].is_matched);
-
-    // Contiguous match across multi-byte 'é' (bytes 3, 4), space (5), and 'l'
-    // (6) in "café lait.jpg" should keep internal space inside matched span.
-    const spaced_utf8 = "café lait.jpg";
-    const span_matches = [_]usize{ 3, 4, 5, 6 };
-    const span_chunks = try partitionHighlightedText(
-        std.testing.allocator,
-        spaced_utf8,
-        &span_matches,
-    );
-    defer std.testing.allocator.free(span_chunks);
-    try std.testing.expectEqual(@as(usize, 3), span_chunks.len);
-    try std.testing.expectEqualStrings("caf", span_chunks[0].slice);
-    try std.testing.expect(!span_chunks[0].is_matched);
-    try std.testing.expectEqualStrings("é l", span_chunks[1].slice);
-    try std.testing.expect(span_chunks[1].is_matched);
-    try std.testing.expectEqualStrings("ait.jpg", span_chunks[2].slice);
-    try std.testing.expect(!span_chunks[2].is_matched);
-}
-
-test "VirtualWindow compute calculations and edge cases" {
-    const item_height: f32 = 50.0;
-    const viewport_h: f32 = 320.0;
-    const gap: f32 = 4.0;
-
-    // Case 1: Empty list
-    const w0 = VirtualWindow.compute(0, 0.0, viewport_h, item_height, gap);
-    try std.testing.expectEqual(@as(usize, 0), w0.start_idx);
-    try std.testing.expectEqual(@as(usize, 0), w0.end_idx);
-    try std.testing.expectEqual(@as(f32, 0.0), w0.top_spacer_h);
-    try std.testing.expectEqual(@as(f32, 0.0), w0.bottom_spacer_h);
-
-    // Case 2: At top of 100-item list (scroll = 0)
-    // visible top = 0, visible bottom = 320.
-    // floor(0/50) = 0, ceil(320/50) = 7.
-    // overscan: start = 0, end = 8.
-    const w1 = VirtualWindow.compute(100, 0.0, viewport_h, item_height, gap);
-    try std.testing.expectEqual(@as(usize, 0), w1.start_idx);
-    try std.testing.expectEqual(@as(usize, 8), w1.end_idx);
-    try std.testing.expectEqual(@as(f32, 0.0), w1.top_spacer_h);
-    // bottom spacer = (100 - 8) * 50 - 4 = 4600 - 4 = 4596
-    try std.testing.expectEqual(@as(f32, 4596.0), w1.bottom_spacer_h);
-
-    // Case 3: Middle of list (scroll = -500.0, 10 items scrolled off-screen)
-    // visible top = 500, visible bottom = 820.
-    // floor(500/50) = 10, ceil(820/50) = 17.
-    // overscan: start = 9, end = 18.
-    const w2 = VirtualWindow.compute(100, -500.0, viewport_h, item_height, gap);
-    try std.testing.expectEqual(@as(usize, 9), w2.start_idx);
-    try std.testing.expectEqual(@as(usize, 18), w2.end_idx);
-    // top spacer = 9 * 50 - 4 = 446.0
-    try std.testing.expectEqual(@as(f32, 446.0), w2.top_spacer_h);
-    // bottom spacer = (100 - 18) * 50 - 4 = 82 * 50 - 4 = 4096.0
-    try std.testing.expectEqual(@as(f32, 4096.0), w2.bottom_spacer_h);
 }
 
 test "renderPalette - closing palette passes pointer through to parent" {

@@ -140,17 +140,7 @@ fn handlePaletteFolderCountEvent(
     state: *AppState,
     cnt: events.PaletteFolderCountPayload,
 ) void {
-    for (state.viewer.ui.palette.dir_items.items) |*item| {
-        if (!std.mem.eql(u8, item.getFullPath(), cnt.path)) continue;
-
-        switch (item.*) {
-            .directory => |*d| d.scan = cnt.scan,
-            .archive_file => |*a| a.scan = cnt.scan,
-            .parent, .image_file => {},
-        }
-        state.viewer.ui.palette.selection_dirty = true;
-        break;
-    }
+    _ = state.viewer.ui.palette.applyFolderScan(cnt.path, cnt.scan);
 }
 
 fn handlePrecacheCompletedEvent(
@@ -649,7 +639,9 @@ fn syncActiveFilePaletteMatches(state: *AppState) void {
     if (state.viewer.ui.palette.mode == .files and
         !state.viewer.ui.palette.is_closing)
     {
-        state.rebuildPaletteMatches() catch |err| {
+        state.viewer.ui.palette.rebuildFileMatches(
+            state.viewer.navigation.getEntries(),
+        ) catch |err| {
             std.log.err("Failed to rebuild palette file matches: {}", .{err});
         };
     }

@@ -152,6 +152,7 @@ fn handlePaletteKeys(
 ) !bool {
     const self = ctx.state;
     const palette = &self.viewer.ui.palette;
+    const entries = self.viewer.navigation.getEntries();
 
     // Cancel / Close palette: Escape or Ctrl+G
     if (key == .escape or (key == .char_g and mod.ctrl)) {
@@ -161,118 +162,37 @@ fn handlePaletteKeys(
 
     // List Navigation Up: Up Arrow or Ctrl+P
     if (key == .up or (key == .char_p and mod.ctrl)) {
-        if (palette.selected_idx > 0) {
-            palette.selected_idx -= 1;
-            palette.selection_dirty = true;
-        }
+        palette.moveSelectionUp();
         return mod.ctrl;
     }
 
     // List Navigation Down: Down Arrow or Ctrl+N or Ctrl+J
     if (key == .down or ((key == .char_n or key == .char_j) and mod.ctrl)) {
-        const max_count = palette.matches.items.len;
-        if (max_count > 0 and palette.selected_idx + 1 < max_count) {
-            palette.selected_idx += 1;
-            palette.selection_dirty = true;
-        }
+        palette.moveSelectionDown();
         return mod.ctrl;
     }
 
     // Page Up: PageUp or Alt+V
     if (key == .page_up or (key == .char_v and mod.alt)) {
-        if (palette.selected_idx >= 5) {
-            palette.selected_idx -= 5;
-        } else {
-            palette.selected_idx = 0;
-        }
-        palette.selection_dirty = true;
+        palette.pageSelectionUp();
         return mod.alt;
     }
 
     // Page Down: PageDown or Ctrl+V
     if (key == .page_down or (key == .char_v and mod.ctrl)) {
-        const max_count = palette.matches.items.len;
-        if (max_count > 0) {
-            palette.selected_idx = @min(palette.selected_idx + 5, max_count - 1);
-            palette.selection_dirty = true;
-        }
+        palette.pageSelectionDown();
         return mod.ctrl;
     }
 
     // Delete Word Backward: Ctrl+W or Alt+Backspace
     if ((key == .char_w and mod.ctrl) or (key == .backspace and mod.alt)) {
-        if (palette.query.items.len > 0) {
-            var q = palette.query.items;
-            while (q.len > 0 and (q[q.len - 1] == ' ' or q[q.len - 1] == '\t')) {
-                _ = palette.query.pop();
-                q = palette.query.items;
-            }
-            while (q.len > 0 and
-                q[q.len - 1] != ' ' and
-                q[q.len - 1] != '\t' and
-                q[q.len - 1] != '/' and
-                q[q.len - 1] != '\\')
-            {
-                _ = palette.query.pop();
-                q = palette.query.items;
-            }
-            palette.selected_idx = 0;
-            palette.selection_dirty = true;
-            switch (palette.mode) {
-                .files => try self.rebuildPaletteMatches(),
-                .actions => try self.rebuildActionMatches(),
-                .directory_navigator => try palette.rebuildDirectoryMatches(),
-                .set_brightness,
-                .set_contrast,
-                .set_contrast_blend,
-                .set_highlights,
-                .set_shadows,
-                .set_whites,
-                .set_blacks,
-                .set_temperature,
-                .set_tint,
-                .set_vibrance,
-                .set_saturation,
-                .set_clarity,
-                .set_texture,
-                .go_to_image,
-                .set_slideshow_interval,
-                .inactive,
-                => {},
-            }
-        }
+        _ = try palette.deleteWordBackward(entries);
         return true;
     }
 
     // Clear Line: Ctrl+U
     if (key == .char_u and mod.ctrl) {
-        if (palette.query.items.len > 0) {
-            palette.query.clearRetainingCapacity();
-            palette.selected_idx = 0;
-            palette.selection_dirty = true;
-            switch (palette.mode) {
-                .files => try self.rebuildPaletteMatches(),
-                .actions => try self.rebuildActionMatches(),
-                .directory_navigator => try palette.rebuildDirectoryMatches(),
-                .set_brightness,
-                .set_contrast,
-                .set_contrast_blend,
-                .set_highlights,
-                .set_shadows,
-                .set_whites,
-                .set_blacks,
-                .set_temperature,
-                .set_tint,
-                .set_vibrance,
-                .set_saturation,
-                .set_clarity,
-                .set_texture,
-                .go_to_image,
-                .set_slideshow_interval,
-                .inactive,
-                => {},
-            }
-        }
+        _ = try palette.clearQuery(entries);
         return true;
     }
 
@@ -346,37 +266,7 @@ fn handlePaletteKeys(
         },
 
         .backspace => {
-            if (palette.query.items.len > 0) {
-                while (palette.query.items.len > 0) {
-                    const b = palette.query.pop().?;
-                    if ((b & 0xC0) != 0x80) break;
-                }
-                palette.selected_idx = 0;
-                palette.selection_dirty = true;
-                switch (palette.mode) {
-                    .files => try self.rebuildPaletteMatches(),
-                    .actions => try self.rebuildActionMatches(),
-                    .directory_navigator => {
-                        try palette.rebuildDirectoryMatches();
-                    },
-                    .set_brightness,
-                    .set_contrast,
-                    .set_contrast_blend,
-                    .set_highlights,
-                    .set_shadows,
-                    .set_whites,
-                    .set_blacks,
-                    .set_temperature,
-                    .set_tint,
-                    .set_vibrance,
-                    .set_saturation,
-                    .set_clarity,
-                    .set_texture,
-                    .go_to_image,
-                    .set_slideshow_interval,
-                    .inactive,
-                    => {},
-                }
+            if (try palette.deleteCharBackward(entries)) {
                 return false;
             } else if (palette.mode == .directory_navigator) {
                 const parent_buf = try ctx.frame_allocator.alloc(
@@ -497,41 +387,8 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
         input.key_modifiers.gui;
     if (input.text_input) |text| {
         if (!suppress_text_input and !has_cmd_mod) {
-            var any_appended = false;
-            for (text) |ch| {
-                if (ch >= 32 and ch != 127) {
-                    try self.viewer.ui.palette.query.append(self.allocator, ch);
-                    any_appended = true;
-                }
-            }
-            if (any_appended) {
-                self.viewer.ui.palette.selected_idx = 0;
-                self.viewer.ui.palette.selection_dirty = true;
-                switch (self.viewer.ui.palette.mode) {
-                    .files => try self.rebuildPaletteMatches(),
-                    .actions => try self.rebuildActionMatches(),
-                    .directory_navigator => {
-                        try self.viewer.ui.palette.rebuildDirectoryMatches();
-                    },
-                    .set_brightness,
-                    .set_contrast,
-                    .set_contrast_blend,
-                    .set_highlights,
-                    .set_shadows,
-                    .set_whites,
-                    .set_blacks,
-                    .set_temperature,
-                    .set_tint,
-                    .set_vibrance,
-                    .set_saturation,
-                    .set_clarity,
-                    .set_texture,
-                    .go_to_image,
-                    .set_slideshow_interval,
-                    .inactive,
-                    => {},
-                }
-            }
+            const entries = self.viewer.navigation.getEntries();
+            _ = try self.viewer.ui.palette.appendPrintableText(text, entries);
         }
     }
 

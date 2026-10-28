@@ -141,8 +141,10 @@ fn handleSetPaletteIntent(self: *AppState, p: anytype) !void {
     ui.palette.selected_idx = 0;
     ui.palette.selection_dirty = true;
     switch (ui.palette.mode) {
-        .actions => try self.rebuildActionMatches(),
-        .files => try self.rebuildPaletteMatches(),
+        .actions => try self.viewer.ui.palette.rebuildActionMatches(),
+        .files => try self.viewer.ui.palette.rebuildFileMatches(
+            self.viewer.navigation.getEntries(),
+        ),
         .inactive,
         .set_brightness,
         .set_contrast,
@@ -548,7 +550,9 @@ fn executeIntent(
                 "No classifications to clear";
             showCustomSnackbar(self, msg, now_ms);
             if (ui.palette.mode == .files and !ui.palette.is_closing) {
-                try self.rebuildPaletteMatches();
+                try self.viewer.ui.palette.rebuildFileMatches(
+                    self.viewer.navigation.getEntries(),
+                );
             }
         },
         .cycle_view_mode => {

@@ -8,8 +8,6 @@ pub const geometry = @import("geometry.zig");
 pub const graphics = @import("graphics.zig");
 pub const layout = @import("layout.zig");
 pub const palette = @import("palette.zig");
-pub const palette_items = @import("palette_items.zig");
-pub const palette_scroll = @import("palette_scroll.zig");
 pub const render_image = @import("render_image.zig");
 pub const renderer = @import("renderer.zig");
 pub const stats = @import("stats.zig");
@@ -23,8 +21,6 @@ test {
     _ = render_image;
     _ = layout;
     _ = palette;
-    _ = palette_items;
-    _ = palette_scroll;
     _ = stats;
     _ = graphics;
     _ = text_utils;

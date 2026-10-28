@@ -40,7 +40,17 @@ ______________________________________________________________________
     rewinds its internal bump offset when the most recent allocation is freed,
     allowing subsequent systems in the same frame tick to reuse that memory
     without triggering arena block growth.
-  - **Frame-Arena String Lifetimes for Retained Clay UI Labels**: In Clay UI layout functions (`layout.zig`, `edit_panel.zig`, `palette.zig`, `palette_items.zig`), text elements take slice references (`clay.text(formatted_str, ...)`). Clay retains these slice pointers across the layout hierarchy and hands them directly to the render execution pass (`executeRenderPacket`). Dynamic text (such as numeric percentages, slider values, formatted labels, or stats strings) MUST NOT use local stack buffers (`var buf: [32]u8 = undefined`), which become invalid once the function returns. Dynamic labels MUST be formatted into `frame_allocator` (e.g. `try frame_allocator.print(...)`), guaranteeing memory validity through the GPU text blitting pass.
+  - **Frame-Arena String Lifetimes for Retained Clay UI Labels**: In Clay UI
+    layout functions (`layout.zig`, `edit_panel.zig`, `palette.zig`), text
+    elements take slice references (`clay.text(formatted_str, ...)`). Clay
+    retains these slice pointers across the layout hierarchy and hands them
+    directly to the render execution pass (`executeRenderPacket`). Dynamic
+    text (such as numeric percentages, slider values, formatted labels, or
+    stats strings) MUST NOT use local stack buffers (`var buf: [32]u8 =
+    undefined`), which become invalid once the function returns. Dynamic
+    labels MUST be formatted into `frame_allocator` (e.g. `try
+    frame_allocator.print(...)`), guaranteeing memory validity through the GPU
+    text blitting pass.
 
 ______________________________________________________________________
 

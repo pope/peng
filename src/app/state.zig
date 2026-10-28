@@ -502,16 +502,6 @@ pub const AppState = struct {
         );
     }
 
-    /// Rebuilds fuzzy search matches for the command palette image file list.
-    pub fn rebuildPaletteMatches(self: *AppState) !void {
-        try self.viewer.ui.palette.rebuildFileMatches(self.viewer.navigation.getEntries());
-    }
-
-    /// Rebuilds fuzzy search matches for command palette action items.
-    pub fn rebuildActionMatches(self: *AppState) !void {
-        try self.viewer.ui.palette.rebuildActionMatches();
-    }
-
     /// Returns a copy of the CacheEntry corresponding to the currently active
     /// image, or null.
     pub fn getCurrentEntry(self: *const AppState) ?CacheEntry {
@@ -770,8 +760,10 @@ pub const AppState = struct {
         self.viewer.ui.palette.selection_dirty = true;
 
         switch (active_type) {
-            .files => try self.rebuildPaletteMatches(),
-            .actions => try self.rebuildActionMatches(),
+            .files => try self.viewer.ui.palette.rebuildFileMatches(
+                self.viewer.navigation.getEntries(),
+            ),
+            .actions => try self.viewer.ui.palette.rebuildActionMatches(),
             .directory_navigator => {
                 const nav_path = resolveNavigatorInitialPath(self);
                 if (nav_path.preselect_child) |child| {
@@ -929,7 +921,9 @@ pub const AppState = struct {
                 if (self.viewer.ui.palette.mode == .files and
                     !self.viewer.ui.palette.is_closing)
                 {
-                    try self.rebuildPaletteMatches();
+                    try self.viewer.ui.palette.rebuildFileMatches(
+                        self.viewer.navigation.getEntries(),
+                    );
                 }
                 return;
             }
@@ -1031,7 +1025,9 @@ pub const AppState = struct {
         if (self.viewer.ui.palette.mode == .files and
             !self.viewer.ui.palette.is_closing)
         {
-            try self.rebuildPaletteMatches();
+            try self.viewer.ui.palette.rebuildFileMatches(
+                self.viewer.navigation.getEntries(),
+            );
         }
     }
 

@@ -12,6 +12,7 @@ const vfs = @import("vfs");
 
 const DirectoryEntry = vfs.DirectoryEntry;
 const EditParam = intents.EditParam;
+const EntryScanState = vfs.EntryScanState;
 const getChildBasename = vfs.getChildBasename;
 const getParentDirBuf = vfs.getParentDirBuf;
 const isCbzFile = vfs.isCbzFile;
@@ -470,6 +471,177 @@ pub const PaletteState = struct {
         self.selection_dirty = true;
     }
 
+    /// Rebuilds fuzzy search matches based on current palette mode and query.
+    pub fn rebuildMatches(
+        self: *PaletteState,
+        entries: []const MediaEntry,
+    ) !void {
+        switch (self.mode) {
+            .files => try self.rebuildFileMatches(entries),
+            .actions => try self.rebuildActionMatches(),
+            .directory_navigator => try self.rebuildDirectoryMatches(),
+            .set_brightness,
+            .set_contrast,
+            .set_contrast_blend,
+            .set_highlights,
+            .set_shadows,
+            .set_whites,
+            .set_blacks,
+            .set_temperature,
+            .set_tint,
+            .set_vibrance,
+            .set_saturation,
+            .set_clarity,
+            .set_texture,
+            .go_to_image,
+            .set_slideshow_interval,
+            .inactive,
+            => {},
+        }
+    }
+
+    /// Moves selection up by one item if not already at the top.
+    pub fn moveSelectionUp(self: *PaletteState) void {
+        if (self.selected_idx > 0) {
+            self.selected_idx -= 1;
+            self.selection_dirty = true;
+        }
+    }
+
+    /// Moves selection down by one item if not already at the bottom.
+    pub fn moveSelectionDown(self: *PaletteState) void {
+        if (self.matches.items.len > 0 and
+            self.selected_idx + 1 < self.matches.items.len)
+        {
+            self.selected_idx += 1;
+            self.selection_dirty = true;
+        }
+    }
+
+    /// Moves selection up by 5 items, clamping at zero.
+    pub fn pageSelectionUp(self: *PaletteState) void {
+        self.selected_idx = if (self.selected_idx >= 5)
+            self.selected_idx - 5
+        else
+            0;
+        self.selection_dirty = true;
+    }
+
+    /// Moves selection down by 5 items, clamping at the last item.
+    pub fn pageSelectionDown(self: *PaletteState) void {
+        if (self.matches.items.len > 0) {
+            self.selected_idx = @min(
+                self.selected_idx + 5,
+                self.matches.items.len - 1,
+            );
+            self.selection_dirty = true;
+        }
+    }
+
+    /// Deletes the word behind the cursor up to path or whitespace delimiters,
+    /// rebuilding matches and returning `true` if any characters were removed.
+    pub fn deleteWordBackward(
+        self: *PaletteState,
+        entries: []const MediaEntry,
+    ) !bool {
+        if (self.query.items.len == 0) return false;
+        const initial_len = self.query.items.len;
+        var q = self.query.items;
+        while (q.len > 0 and (q[q.len - 1] == ' ' or q[q.len - 1] == '\t')) {
+            _ = self.query.pop();
+            q = self.query.items;
+        }
+        while (q.len > 0 and
+            q[q.len - 1] != ' ' and
+            q[q.len - 1] != '\t' and
+            q[q.len - 1] != '/' and
+            q[q.len - 1] != '\\')
+        {
+            _ = self.query.pop();
+            q = self.query.items;
+        }
+        if (self.query.items.len == initial_len) return false;
+        self.selected_idx = 0;
+        self.selection_dirty = true;
+        try self.rebuildMatches(entries);
+        return true;
+    }
+
+    /// Clears the entire search query, rebuilding matches and returning `true`
+    /// if any characters were removed.
+    pub fn clearQuery(
+        self: *PaletteState,
+        entries: []const MediaEntry,
+    ) !bool {
+        if (self.query.items.len == 0) return false;
+        self.query.clearRetainingCapacity();
+        self.selected_idx = 0;
+        self.selection_dirty = true;
+        try self.rebuildMatches(entries);
+        return true;
+    }
+
+    /// Removes the last UTF-8 codepoint from the query, rebuilding matches and
+    /// returning `true` if a character was removed.
+    pub fn deleteCharBackward(
+        self: *PaletteState,
+        entries: []const MediaEntry,
+    ) !bool {
+        if (self.query.items.len == 0) return false;
+        while (self.query.items.len > 0) {
+            const b = self.query.pop().?;
+            if ((b & 0xC0) != 0x80) break;
+        }
+        self.selected_idx = 0;
+        self.selection_dirty = true;
+        try self.rebuildMatches(entries);
+        return true;
+    }
+
+    /// Appends printable ASCII and UTF-8 characters to the search query,
+    /// rebuilding matches and returning `true` if any bytes were appended.
+    pub fn appendPrintableText(
+        self: *PaletteState,
+        text: []const u8,
+        entries: []const MediaEntry,
+    ) !bool {
+        var any_appended = false;
+        for (text) |ch| {
+            if (ch >= 32 and ch != 127) {
+                try self.query.append(self.allocator, ch);
+                any_appended = true;
+            }
+        }
+        if (any_appended) {
+            self.selected_idx = 0;
+            self.selection_dirty = true;
+            try self.rebuildMatches(entries);
+            return true;
+        }
+        return false;
+    }
+
+    /// Updates directory scan state for an item in the directory navigator
+    /// list matching `path`, returning `true` if an item was found.
+    pub fn applyFolderScan(
+        self: *PaletteState,
+        path: []const u8,
+        scan: EntryScanState,
+    ) bool {
+        for (self.dir_items.items) |*item| {
+            if (std.mem.eql(u8, item.getFullPath(), path)) {
+                switch (item.*) {
+                    .directory => |*d| d.scan = scan,
+                    .archive_file => |*a| a.scan = scan,
+                    .parent, .image_file => {},
+                }
+                self.selection_dirty = true;
+                return true;
+            }
+        }
+        return false;
+    }
+
     /// Computes the maximum string length across visible item candidates in the
     /// active viewport window for allocating or sizing a fuzzy searcher.
     pub fn computeWindowMaxHaystack(
@@ -828,6 +1000,243 @@ pub fn getPaletteConfig(mode: PaletteMode) PaletteConfig {
     };
 }
 
+/// Virtualized window computation for large palette item lists.
+/// Calculates the visible index range and spacer element heights to restrict
+/// Clay UI tree allocations to only items currently visible in the scroll
+/// viewport.
+pub const VirtualWindow = struct {
+    start_idx: usize,
+    end_idx: usize,
+    top_spacer_h: f32,
+    bottom_spacer_h: f32,
+
+    /// Computes visible start/end item indices and top/bottom spacer heights
+    /// for virtualized scrolling.
+    pub fn compute(
+        total_items: usize,
+        scroll_offset_y: f32,
+        viewport_height: f32,
+        item_height: f32,
+        gap: f32,
+    ) VirtualWindow {
+        if (total_items == 0) {
+            return .{
+                .start_idx = 0,
+                .end_idx = 0,
+                .top_spacer_h = 0,
+                .bottom_spacer_h = 0,
+            };
+        }
+
+        const visible_top = -scroll_offset_y;
+        const visible_bottom = visible_top + viewport_height;
+
+        var start_idx = @as(
+            usize,
+            @intFromFloat(@max(0.0, @floor(visible_top / item_height))),
+        );
+        var end_idx = @as(
+            usize,
+            @intFromFloat(@max(0.0, @ceil(visible_bottom / item_height))),
+        );
+
+        start_idx = if (start_idx > 0) start_idx - 1 else 0;
+        end_idx = end_idx + 1;
+
+        if (end_idx > total_items) end_idx = total_items;
+        if (start_idx > end_idx) start_idx = end_idx;
+
+        const top_spacer_h = if (start_idx > 0)
+            @as(f32, @floatFromInt(start_idx)) * item_height - gap
+        else
+            0.0;
+
+        const bottom_spacer_h = if (total_items - end_idx > 0)
+            @as(f32, @floatFromInt(total_items - end_idx)) * item_height - gap
+        else
+            0.0;
+
+        return .{
+            .start_idx = start_idx,
+            .end_idx = end_idx,
+            .top_spacer_h = top_spacer_h,
+            .bottom_spacer_h = bottom_spacer_h,
+        };
+    }
+};
+
+/// Represents a slice of text tagged with whether it matched a fuzzy search
+/// query.
+pub const TextChunk = struct {
+    slice: []const u8,
+    is_matched: bool,
+};
+
+fn appendOrMergeChunk(
+    list: *std.ArrayList(TextChunk),
+    allocator: std.mem.Allocator,
+    slice: []const u8,
+    is_matched: bool,
+) !void {
+    if (slice.len == 0) return;
+    if (list.items.len > 0 and
+        list.items[list.items.len - 1].is_matched == is_matched)
+    {
+        const last = &list.items[list.items.len - 1];
+        const combined_len = last.slice.len + slice.len;
+        last.slice = last.slice.ptr[0..combined_len];
+    } else {
+        try list.append(allocator, .{
+            .slice = slice,
+            .is_matched = is_matched,
+        });
+    }
+}
+
+/// Partitions a string into contiguous matched and unmatched TextChunk slices
+/// for fuzzy search highlighting.
+pub fn partitionHighlightedText(
+    allocator: std.mem.Allocator,
+    text: []const u8,
+    match_indices: []const usize,
+) ![]TextChunk {
+    if (text.len == 0 or match_indices.len == 0) {
+        if (text.len == 0) return &.{};
+        var list: std.ArrayList(TextChunk) = try .initCapacity(allocator, 1);
+        list.appendAssumeCapacity(.{ .slice = text, .is_matched = false });
+        return list.toOwnedSlice(allocator);
+    }
+
+    for (match_indices) |m_idx| {
+        if (m_idx >= text.len) {
+            std.log.warn(
+                "Fuzzy highlight match index {} out of bounds for " ++
+                    "string '{s}' (length {})",
+                .{ m_idx, text, text.len },
+            );
+        }
+    }
+
+    var list: std.ArrayList(TextChunk) = .empty;
+    errdefer list.deinit(allocator);
+
+    var idx: usize = 0;
+    var match_ptr: usize = 0;
+
+    while (idx < text.len) {
+        while (match_ptr < match_indices.len and
+            match_indices[match_ptr] < idx)
+        {
+            match_ptr += 1;
+        }
+
+        const start = idx;
+        idx += 1;
+        while (idx < text.len and (text[idx] & 0xC0) == 0x80) {
+            idx += 1;
+        }
+        const is_matched = (match_ptr < match_indices.len and
+            match_indices[match_ptr] < idx);
+
+        if (is_matched) {
+            while (match_ptr < match_indices.len and
+                match_indices[match_ptr] < idx)
+            {
+                match_ptr += 1;
+            }
+            while (idx < text.len and match_ptr < match_indices.len) {
+                var next_end = idx + 1;
+                while (next_end < text.len and
+                    (text[next_end] & 0xC0) == 0x80)
+                {
+                    next_end += 1;
+                }
+                if (match_indices[match_ptr] >= next_end) break;
+                idx = next_end;
+                while (match_ptr < match_indices.len and
+                    match_indices[match_ptr] < idx)
+                {
+                    match_ptr += 1;
+                }
+            }
+
+            var match_start = start;
+            var match_end = idx;
+
+            while (match_start < match_end and
+                std.ascii.isWhitespace(text[match_start]))
+            {
+                match_start += 1;
+            }
+            while (match_end > match_start and
+                std.ascii.isWhitespace(text[match_end - 1]))
+            {
+                match_end -= 1;
+            }
+
+            if (match_start > start) {
+                try appendOrMergeChunk(
+                    &list,
+                    allocator,
+                    text[start..match_start],
+                    false,
+                );
+            }
+            if (match_end > match_start) {
+                try appendOrMergeChunk(
+                    &list,
+                    allocator,
+                    text[match_start..match_end],
+                    true,
+                );
+            }
+            if (idx > match_end) {
+                try appendOrMergeChunk(
+                    &list,
+                    allocator,
+                    text[match_end..idx],
+                    false,
+                );
+            }
+        } else {
+            try appendOrMergeChunk(
+                &list,
+                allocator,
+                text[start..idx],
+                false,
+            );
+        }
+    }
+
+    return try list.toOwnedSlice(allocator);
+}
+
+/// Remaps matched search character byte indices from the original filename to
+/// the middle-truncated display string.
+pub fn remapMiddleTruncatedMatches(
+    allocator: std.mem.Allocator,
+    matches: []const usize,
+    head_len: usize,
+    tail_start_idx: usize,
+) ![]usize {
+    if (matches.len == 0) return &.{};
+
+    const actual_tail_start = @max(tail_start_idx, head_len);
+    var list: std.ArrayList(usize) = try .initCapacity(allocator, matches.len);
+    errdefer list.deinit(allocator);
+
+    for (matches) |m_idx| {
+        if (m_idx < head_len) {
+            list.appendAssumeCapacity(m_idx);
+        } else if (m_idx >= actual_tail_start) {
+            list.appendAssumeCapacity(
+                (m_idx - actual_tail_start) + head_len + 3,
+            );
+        }
+    }
+    return list.toOwnedSlice(allocator);
+}
+
 test "PaletteState - lifecycle, action matching, and reset" {
     const allocator = std.testing.allocator;
     var state = try PaletteState.init(allocator);
@@ -1110,4 +1519,467 @@ test "PaletteState.computeWindowMaxHaystack across visible rows" {
         @as(usize, 96),
         pal_state.computeWindowMaxHaystack(&.{}, &[_]usize{ 0, 1 }),
     );
+}
+
+test "remapMiddleTruncatedMatches head, tail, and truncated middle" {
+    const matches = [_]usize{ 2, 5, 20, 25, 60, 61 };
+    const head_len: usize = 10;
+    const tail_start_idx: usize = 50;
+
+    const remapped = try remapMiddleTruncatedMatches(
+        std.testing.allocator,
+        &matches,
+        head_len,
+        tail_start_idx,
+    );
+    defer std.testing.allocator.free(remapped);
+
+    // 2 < 10 -> 2
+    // 5 < 10 -> 5
+    // 20 and 25 are in [10, 50) -> dropped
+    // 60 >= 50 -> (60 - 50) + 10 + 3 = 23
+    // 61 >= 50 -> (61 - 50) + 10 + 3 = 24
+    try std.testing.expectEqualSlices(
+        usize,
+        &[_]usize{ 2, 5, 23, 24 },
+        remapped,
+    );
+}
+
+test "remapMiddleTruncatedMatches clamps overlapping tail_start_idx" {
+    const matches = [_]usize{ 3, 7, 12 };
+    const head_len: usize = 10;
+    const tail_start_idx: usize = 5; // tail_start_idx < head_len
+
+    const remapped = try remapMiddleTruncatedMatches(
+        std.testing.allocator,
+        &matches,
+        head_len,
+        tail_start_idx,
+    );
+    defer std.testing.allocator.free(remapped);
+
+    // actual_tail_start becomes max(5, 10) = 10
+    // 3 < 10 -> 3
+    // 7 < 10 -> 7
+    // 12 >= 10 -> (12 - 10) + 10 + 3 = 15
+    try std.testing.expectEqualSlices(usize, &[_]usize{ 3, 7, 15 }, remapped);
+}
+
+test "partitionHighlightedText partitions matched and unmatched chunks" {
+    // Scenario 1: Query "sc" matching "Set Contrast" (indices 0 and 4)
+    const text1 = "Set Contrast";
+    const matches1 = [_]usize{ 0, 4 };
+
+    const chunks1 = try partitionHighlightedText(
+        std.testing.allocator,
+        text1,
+        &matches1,
+    );
+    defer std.testing.allocator.free(chunks1);
+
+    try std.testing.expectEqual(@as(usize, 4), chunks1.len);
+    try std.testing.expectEqualStrings("S", chunks1[0].slice);
+    try std.testing.expect(chunks1[0].is_matched);
+    try std.testing.expectEqualStrings("et ", chunks1[1].slice);
+    try std.testing.expect(!chunks1[1].is_matched);
+    try std.testing.expectEqualStrings("C", chunks1[2].slice);
+    try std.testing.expect(chunks1[2].is_matched);
+    try std.testing.expectEqualStrings("ontrast", chunks1[3].slice);
+    try std.testing.expect(!chunks1[3].is_matched);
+}
+
+test "partitionHighlightedText merges isolated whitespace matches" {
+    // Scenario 2: Query "sc " matching "Set Contrast (Type Value)..."
+    // (indices 0, 4, and 12)
+    const text2 = "Set Contrast (Type Value)...";
+    const matches2 = [_]usize{ 0, 4, 12 };
+
+    const chunks2 = try partitionHighlightedText(
+        std.testing.allocator,
+        text2,
+        &matches2,
+    );
+    defer std.testing.allocator.free(chunks2);
+
+    try std.testing.expectEqual(@as(usize, 4), chunks2.len);
+    try std.testing.expectEqualStrings("S", chunks2[0].slice);
+    try std.testing.expect(chunks2[0].is_matched);
+    try std.testing.expectEqualStrings("et ", chunks2[1].slice);
+    try std.testing.expect(!chunks2[1].is_matched);
+    try std.testing.expectEqualStrings("C", chunks2[2].slice);
+    try std.testing.expect(chunks2[2].is_matched);
+    try std.testing.expectEqualStrings(
+        "ontrast (Type Value)...",
+        chunks2[3].slice,
+    );
+    try std.testing.expect(!chunks2[3].is_matched);
+}
+
+test "partitionHighlightedText edge cases" {
+    // Empty text
+    const empty_chunks = try partitionHighlightedText(
+        std.testing.allocator,
+        "",
+        &[_]usize{0},
+    );
+    try std.testing.expectEqual(@as(usize, 0), empty_chunks.len);
+
+    // Empty matches
+    const no_match_chunks = try partitionHighlightedText(
+        std.testing.allocator,
+        "text",
+        &[_]usize{},
+    );
+    defer std.testing.allocator.free(no_match_chunks);
+    try std.testing.expectEqual(@as(usize, 1), no_match_chunks.len);
+    try std.testing.expectEqualStrings("text", no_match_chunks[0].slice);
+    try std.testing.expect(!no_match_chunks[0].is_matched);
+
+    // Out-of-bounds matches (should be ignored gracefully)
+    const oob_chunks = blk: {
+        const prev_level = std.testing.log_level;
+        std.testing.log_level = .err;
+        defer std.testing.log_level = prev_level;
+        break :blk try partitionHighlightedText(
+            std.testing.allocator,
+            "abc",
+            &[_]usize{ 0, 5, 10 },
+        );
+    };
+    defer std.testing.allocator.free(oob_chunks);
+    try std.testing.expectEqual(@as(usize, 2), oob_chunks.len);
+    try std.testing.expectEqualStrings("a", oob_chunks[0].slice);
+    try std.testing.expect(oob_chunks[0].is_matched);
+    try std.testing.expectEqualStrings("bc", oob_chunks[1].slice);
+    try std.testing.expect(!oob_chunks[1].is_matched);
+
+    // Internal whitespace should NOT be stripped
+    const internal_ws_chunks = try partitionHighlightedText(
+        std.testing.allocator,
+        "a  b",
+        &[_]usize{ 0, 1, 2, 3 },
+    );
+    defer std.testing.allocator.free(internal_ws_chunks);
+    try std.testing.expectEqual(@as(usize, 1), internal_ws_chunks.len);
+    try std.testing.expectEqualStrings("a  b", internal_ws_chunks[0].slice);
+    try std.testing.expect(internal_ws_chunks[0].is_matched);
+
+    // Leading and trailing whitespace should be stripped
+    const edge_ws_chunks = try partitionHighlightedText(
+        std.testing.allocator,
+        " a ",
+        &[_]usize{ 0, 1, 2 },
+    );
+    defer std.testing.allocator.free(edge_ws_chunks);
+    try std.testing.expectEqual(@as(usize, 3), edge_ws_chunks.len);
+    try std.testing.expectEqualStrings(" ", edge_ws_chunks[0].slice);
+    try std.testing.expect(!edge_ws_chunks[0].is_matched);
+    try std.testing.expectEqualStrings("a", edge_ws_chunks[1].slice);
+    try std.testing.expect(edge_ws_chunks[1].is_matched);
+    try std.testing.expectEqualStrings(" ", edge_ws_chunks[2].slice);
+    try std.testing.expect(!edge_ws_chunks[2].is_matched);
+}
+
+test "partitionHighlightedText with middle-truncated remapped matches" {
+    const long_text =
+        "DSC_2026_Yosemite_National_Park_High_Resolution_Sunset_Panorama" ++
+        "_HDR_Final.jpg";
+    // Suppose head_len = 25 ("DSC_2026_Yosemite_National")
+    // tail_start_idx = 50 ("Sunset_Panorama_HDR_Final.jpg")
+    const head_len: usize = 25;
+    const tail_start_idx: usize = 50;
+    const display = try std.testing.allocator.print(
+        "{s}...{s}",
+        .{ long_text[0..head_len], long_text[tail_start_idx..] },
+    );
+    defer std.testing.allocator.free(display);
+
+    // Matches at index 2 ('C' in DSC), index 57 ('P' in Panorama)
+    const matches = [_]usize{ 2, 57 };
+    const remapped = try remapMiddleTruncatedMatches(
+        std.testing.allocator,
+        &matches,
+        head_len,
+        tail_start_idx,
+    );
+    defer std.testing.allocator.free(remapped);
+
+    // remapped should be index 2 and (57 - 50) + 25 + 3 = 35
+    try std.testing.expectEqualSlices(usize, &[_]usize{ 2, 35 }, remapped);
+
+    const chunks = try partitionHighlightedText(
+        std.testing.allocator,
+        display,
+        remapped,
+    );
+    defer std.testing.allocator.free(chunks);
+
+    try std.testing.expect(chunks.len > 0);
+    // Ensure all matches lie within display bounds without warning
+    for (remapped) |m_idx| {
+        try std.testing.expect(m_idx < display.len);
+    }
+}
+
+test "partitionHighlightedText multi-byte UTF-8 character boundary safety" {
+    // "café" -> 'c' (0), 'a' (1), 'f' (2), 'é' (3..4: 0xC3 0xA9)
+    const utf8_text = "café_au_lait.jpg";
+    // Match index 3 points to start of 'é' (0xC3)
+    const matches = [_]usize{3};
+
+    const chunks = try partitionHighlightedText(
+        std.testing.allocator,
+        utf8_text,
+        &matches,
+    );
+    defer std.testing.allocator.free(chunks);
+
+    // Chunks should be: "caf" (unmatched), "é" (matched, full 2-byte UTF-8
+    // code point), "_au_lait.jpg" (unmatched)
+    try std.testing.expectEqual(@as(usize, 3), chunks.len);
+    try std.testing.expectEqualStrings("caf", chunks[0].slice);
+    try std.testing.expect(!chunks[0].is_matched);
+    try std.testing.expectEqualStrings("é", chunks[1].slice);
+    try std.testing.expect(chunks[1].is_matched);
+    try std.testing.expectEqualStrings("_au_lait.jpg", chunks[2].slice);
+    try std.testing.expect(!chunks[2].is_matched);
+
+    // Contiguous match across multi-byte 'é' (bytes 3, 4), space (5), and 'l'
+    // (6) in "café lait.jpg" should keep internal space inside matched span.
+    const spaced_utf8 = "café lait.jpg";
+    const span_matches = [_]usize{ 3, 4, 5, 6 };
+    const span_chunks = try partitionHighlightedText(
+        std.testing.allocator,
+        spaced_utf8,
+        &span_matches,
+    );
+    defer std.testing.allocator.free(span_chunks);
+    try std.testing.expectEqual(@as(usize, 3), span_chunks.len);
+    try std.testing.expectEqualStrings("caf", span_chunks[0].slice);
+    try std.testing.expect(!span_chunks[0].is_matched);
+    try std.testing.expectEqualStrings("é l", span_chunks[1].slice);
+    try std.testing.expect(span_chunks[1].is_matched);
+    try std.testing.expectEqualStrings("ait.jpg", span_chunks[2].slice);
+    try std.testing.expect(!span_chunks[2].is_matched);
+}
+
+test "VirtualWindow compute calculations and edge cases" {
+    const item_height: f32 = 50.0;
+    const viewport_h: f32 = 320.0;
+    const gap: f32 = 4.0;
+
+    // Case 1: Empty list
+    const w0 = VirtualWindow.compute(0, 0.0, viewport_h, item_height, gap);
+    try std.testing.expectEqual(@as(usize, 0), w0.start_idx);
+    try std.testing.expectEqual(@as(usize, 0), w0.end_idx);
+    try std.testing.expectEqual(@as(f32, 0.0), w0.top_spacer_h);
+    try std.testing.expectEqual(@as(f32, 0.0), w0.bottom_spacer_h);
+
+    // Case 2: At top of 100-item list (scroll = 0)
+    // visible top = 0, visible bottom = 320.
+    // floor(0/50) = 0, ceil(320/50) = 7.
+    // overscan: start = 0, end = 8.
+    const w1 = VirtualWindow.compute(100, 0.0, viewport_h, item_height, gap);
+    try std.testing.expectEqual(@as(usize, 0), w1.start_idx);
+    try std.testing.expectEqual(@as(usize, 8), w1.end_idx);
+    try std.testing.expectEqual(@as(f32, 0.0), w1.top_spacer_h);
+    // bottom spacer = (100 - 8) * 50 - 4 = 4600 - 4 = 4596
+    try std.testing.expectEqual(@as(f32, 4596.0), w1.bottom_spacer_h);
+
+    // Case 3: Middle of list (scroll = -500.0, 10 items scrolled off-screen)
+    // visible top = 500, visible bottom = 820.
+    // floor(500/50) = 10, ceil(820/50) = 17.
+    // overscan: start = 9, end = 18.
+    const w2 = VirtualWindow.compute(
+        100,
+        -500.0,
+        viewport_h,
+        item_height,
+        gap,
+    );
+    try std.testing.expectEqual(@as(usize, 9), w2.start_idx);
+    try std.testing.expectEqual(@as(usize, 18), w2.end_idx);
+    // top spacer = 9 * 50 - 4 = 446.0
+    try std.testing.expectEqual(@as(f32, 446.0), w2.top_spacer_h);
+    // bottom spacer = (100 - 18) * 50 - 4 = 82 * 50 - 4 = 4096.0
+    try std.testing.expectEqual(@as(f32, 4096.0), w2.bottom_spacer_h);
+}
+
+test "PaletteState - selection navigation and paging" {
+    const alloc = std.testing.allocator;
+    var state = try PaletteState.init(alloc);
+    defer state.deinit();
+
+    // With 12 dummy matches:
+    for (0..12) |i| {
+        try state.matches.append(alloc, i);
+    }
+
+    try std.testing.expectEqual(@as(usize, 0), state.selected_idx);
+
+    // moveSelectionUp at top does nothing
+    state.selection_dirty = false;
+    state.moveSelectionUp();
+    try std.testing.expectEqual(@as(usize, 0), state.selected_idx);
+    try std.testing.expect(!state.selection_dirty);
+
+    // moveSelectionDown increments
+    state.moveSelectionDown();
+    try std.testing.expectEqual(@as(usize, 1), state.selected_idx);
+    try std.testing.expect(state.selection_dirty);
+
+    // pageSelectionDown moves by 5
+    state.pageSelectionDown();
+    try std.testing.expectEqual(@as(usize, 6), state.selected_idx);
+
+    // pageSelectionDown again moves by 5
+    state.pageSelectionDown();
+    try std.testing.expectEqual(@as(usize, 11), state.selected_idx);
+
+    // pageSelectionDown clamps to max matches.len - 1 (11)
+    state.pageSelectionDown();
+    try std.testing.expectEqual(@as(usize, 11), state.selected_idx);
+
+    // moveSelectionDown at end does nothing
+    state.selection_dirty = false;
+    state.moveSelectionDown();
+    try std.testing.expectEqual(@as(usize, 11), state.selected_idx);
+    try std.testing.expect(!state.selection_dirty);
+
+    // pageSelectionUp moves backward by 5
+    state.pageSelectionUp();
+    try std.testing.expectEqual(@as(usize, 6), state.selected_idx);
+    try std.testing.expect(state.selection_dirty);
+
+    // pageSelectionUp again moves to 1
+    state.pageSelectionUp();
+    try std.testing.expectEqual(@as(usize, 1), state.selected_idx);
+
+    // pageSelectionUp clamps to 0
+    state.pageSelectionUp();
+    try std.testing.expectEqual(@as(usize, 0), state.selected_idx);
+
+    // moveSelectionUp at top does nothing
+    state.selection_dirty = false;
+    state.moveSelectionUp();
+    try std.testing.expectEqual(@as(usize, 0), state.selected_idx);
+    try std.testing.expect(!state.selection_dirty);
+}
+
+test "PaletteState - query editing operations and UTF-8 backspace" {
+    const alloc = std.testing.allocator;
+    var state = try PaletteState.init(alloc);
+    defer state.deinit();
+    state.mode = .files;
+
+    const entries = [_]MediaEntry{
+        .{ .filesystem = .{ .path = "/photos/forest.png" } },
+        .{ .filesystem = .{ .path = "/photos/beach.jpg" } },
+        .{ .filesystem = .{ .path = "/photos/mountain.jpg" } },
+    };
+
+    // 1. appendPrintableText appends valid characters and rebuilds matches
+    const appended = try state.appendPrintableText("fore", &entries);
+    try std.testing.expect(appended);
+    try std.testing.expectEqualStrings("fore", state.query.items);
+    try std.testing.expectEqual(@as(usize, 1), state.matches.items.len);
+
+    // Non-printable bytes return false and do not mutate query
+    const non_printable = [_]u8{ 0x01, 0x1F, 0x7F };
+    try std.testing.expect(
+        !(try state.appendPrintableText(&non_printable, &entries)),
+    );
+    try std.testing.expectEqualStrings("fore", state.query.items);
+
+    // 2. clearQuery resets query and rebuilds matches
+    const cleared = try state.clearQuery(&entries);
+    try std.testing.expect(cleared);
+    try std.testing.expectEqual(@as(usize, 0), state.query.items.len);
+    try std.testing.expectEqual(@as(usize, 3), state.matches.items.len);
+
+    // clearQuery on empty returns false
+    try std.testing.expect(!(try state.clearQuery(&entries)));
+
+    // 3. deleteCharBackward handles multi-byte UTF-8
+    _ = try state.appendPrintableText("café", &entries);
+    try std.testing.expectEqualStrings("café", state.query.items);
+    // 'é' is 2 bytes (0xC3, 0xA9)
+    try std.testing.expectEqual(@as(usize, 5), state.query.items.len);
+
+    const char_deleted = try state.deleteCharBackward(&entries);
+    try std.testing.expect(char_deleted);
+    try std.testing.expectEqualStrings("caf", state.query.items);
+    try std.testing.expectEqual(@as(usize, 3), state.query.items.len);
+
+    // 4. deleteWordBackward removes trailing whitespace and words
+    _ = try state.clearQuery(&entries);
+    _ = try state.appendPrintableText("path/to file   ", &entries);
+    try std.testing.expectEqualStrings("path/to file   ", state.query.items);
+
+    const word_deleted = try state.deleteWordBackward(&entries);
+    try std.testing.expect(word_deleted);
+    try std.testing.expectEqualStrings("path/to ", state.query.items);
+
+    _ = try state.deleteWordBackward(&entries);
+    try std.testing.expectEqualStrings("path/", state.query.items);
+
+    // Calling deleteWordBackward on delimiter boundary returns false
+    try std.testing.expect(!(try state.deleteWordBackward(&entries)));
+    try std.testing.expectEqualStrings("path/", state.query.items);
+
+    _ = try state.clearQuery(&entries);
+    try std.testing.expect(!(try state.deleteWordBackward(&entries)));
+    try std.testing.expect(!(try state.deleteCharBackward(&entries)));
+}
+
+test "PaletteState - applyFolderScan updates matching directory entry" {
+    const alloc = std.testing.allocator;
+    var state = try PaletteState.init(alloc);
+    defer state.deinit();
+
+    try state.dir_items.append(alloc, .{
+        .directory = .{
+            .name = try alloc.dupe(u8, "photos"),
+            .full_path = try alloc.dupe(u8, "/media/photos"),
+            .scan = .unscanned,
+        },
+    });
+    try state.dir_items.append(alloc, .{
+        .archive_file = .{
+            .name = try alloc.dupe(u8, "archive.cbz"),
+            .full_path = try alloc.dupe(u8, "/media/archive.cbz"),
+            .scan = .unscanned,
+        },
+    });
+
+    state.selection_dirty = false;
+    const applied = state.applyFolderScan(
+        "/media/photos",
+        .permission_denied,
+    );
+    try std.testing.expect(applied);
+    try std.testing.expect(state.selection_dirty);
+    try std.testing.expectEqual(
+        EntryScanState.permission_denied,
+        state.dir_items.items[0].directory.scan,
+    );
+
+    // Archive file scan update
+    const archive_applied = state.applyFolderScan(
+        "/media/archive.cbz",
+        .failed,
+    );
+    try std.testing.expect(archive_applied);
+    try std.testing.expectEqual(
+        EntryScanState.failed,
+        state.dir_items.items[1].archive_file.scan,
+    );
+
+    // Non-existent path returns false
+    const non_existent = state.applyFolderScan(
+        "/media/missing",
+        .failed,
+    );
+    try std.testing.expect(!non_existent);
 }

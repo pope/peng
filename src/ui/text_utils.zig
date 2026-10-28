@@ -119,30 +119,6 @@ pub fn truncateFilename(
     return truncateFilenameMiddle(allocator, text, max_w, font_size, data).display;
 }
 
-/// Remaps matched search character byte indices from the original filename to
-/// the middle-truncated display string.
-pub fn remapMiddleTruncatedMatches(
-    allocator: std.mem.Allocator,
-    matches: []const usize,
-    head_len: usize,
-    tail_start_idx: usize,
-) ![]usize {
-    if (matches.len == 0) return &.{};
-
-    const actual_tail_start = @max(tail_start_idx, head_len);
-    var list: std.ArrayList(usize) = try .initCapacity(allocator, matches.len);
-    errdefer list.deinit(allocator);
-
-    for (matches) |m_idx| {
-        if (m_idx < head_len) {
-            list.appendAssumeCapacity(m_idx);
-        } else if (m_idx >= actual_tail_start) {
-            list.appendAssumeCapacity((m_idx - actual_tail_start) + head_len + 3);
-        }
-    }
-    return list.toOwnedSlice(allocator);
-}
-
 /// Truncates a directory path from the left with leading "..." so that
 /// rendered text fits within `max_w` pixels.
 pub fn truncateDirectory(
@@ -229,45 +205,4 @@ test "truncateDirectory fallback without fonts" {
         &data,
     );
     try std.testing.expectEqualStrings("/long/path/to/folder", res);
-}
-
-test "remapMiddleTruncatedMatches head, tail, and truncated middle" {
-    const matches = [_]usize{ 2, 5, 20, 25, 60, 61 };
-    const head_len: usize = 10;
-    const tail_start_idx: usize = 50;
-
-    const remapped = try remapMiddleTruncatedMatches(
-        std.testing.allocator,
-        &matches,
-        head_len,
-        tail_start_idx,
-    );
-    defer std.testing.allocator.free(remapped);
-
-    // 2 < 10 -> 2
-    // 5 < 10 -> 5
-    // 20 and 25 are in [10, 50) -> dropped
-    // 60 >= 50 -> (60 - 50) + 10 + 3 = 23
-    // 61 >= 50 -> (61 - 50) + 10 + 3 = 24
-    try std.testing.expectEqualSlices(usize, &[_]usize{ 2, 5, 23, 24 }, remapped);
-}
-
-test "remapMiddleTruncatedMatches clamps overlapping tail_start_idx < head_len" {
-    const matches = [_]usize{ 3, 7, 12 };
-    const head_len: usize = 10;
-    const tail_start_idx: usize = 5; // tail_start_idx < head_len
-
-    const remapped = try remapMiddleTruncatedMatches(
-        std.testing.allocator,
-        &matches,
-        head_len,
-        tail_start_idx,
-    );
-    defer std.testing.allocator.free(remapped);
-
-    // actual_tail_start becomes max(5, 10) = 10
-    // 3 < 10 -> 3
-    // 7 < 10 -> 7
-    // 12 >= 10 -> (12 - 10) + 10 + 3 = 15
-    try std.testing.expectEqualSlices(usize, &[_]usize{ 3, 7, 15 }, remapped);
 }
