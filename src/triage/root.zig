@@ -164,7 +164,7 @@ fn countVisibleInRangeSimd(
 /// Computes the 1-based index of `cur_idx` among currently visible items
 /// matching `mode` using SIMD hardware POPCNT. Returns `null` if `cur_idx` is
 /// out of bounds or not visible in `mode`.
-pub fn visiblePosition(
+fn visiblePosition(
     classifications: []const Classification,
     cur_idx: usize,
     mode: ViewMode,
@@ -178,7 +178,7 @@ pub fn visiblePosition(
 
 /// Finds the nearest visible index to `start_idx` in `mode`, searching forward
 /// first, then backward using SIMD. Returns `null` if no visible items exist.
-pub fn findClosestVisible(
+fn findClosestVisible(
     classifications: []const Classification,
     start_idx: usize,
     visible_count: usize,
@@ -210,7 +210,7 @@ pub fn findClosestVisible(
 
 /// Returns the next circularly visible index after `from_idx` in `mode`,
 /// or `null` if no visible items exist.
-pub fn peekNextVisible(
+fn peekNextVisible(
     classifications: []const Classification,
     from_idx: usize,
     visible_count: usize,
@@ -238,7 +238,7 @@ pub fn peekNextVisible(
 
 /// Returns the previous circularly visible index before `from_idx` in `mode`,
 /// or `null` if no visible items exist.
-pub fn peekPrevVisible(
+fn peekPrevVisible(
     classifications: []const Classification,
     from_idx: usize,
     visible_count: usize,
@@ -293,7 +293,7 @@ pub const VisibleNeighbors = struct {
 
     /// Computes the visible ±1 and ±2 neighbor indices around `cur_idx` in
     /// `mode`, or `null` if empty or no items are visible.
-    pub fn compute(
+    fn compute(
         classifications: []const Classification,
         cur_idx: usize,
         visible_count: usize,
@@ -486,12 +486,17 @@ fn writeEntriesTsv(
     }
 }
 
+const root = @This();
+
 /// Encapsulates persistent triage flag storage, arena-backed path keys,
 /// and JSON export serialization.
 pub const TriageMap = struct {
     path_classifications: std.StringArrayHashMapUnmanaged(Classification) =
         .empty,
     classification_arena: std.heap.ArenaAllocator,
+    view_mode: ViewMode = .default,
+    pick_count: usize = 0,
+    reject_count: usize = 0,
 
     /// Initializes triage map with an initial capacity of 64 path entries.
     pub fn init(allocator: std.mem.Allocator) !TriageMap {
@@ -510,7 +515,7 @@ pub const TriageMap = struct {
     }
 
     /// Resets classification arena retaining at most 64 KiB of memory pages.
-    pub fn resetArena(self: *TriageMap) void {
+    fn resetArena(self: *TriageMap) void {
         _ = self.classification_arena.reset(.{
             .retain_with_limit = MAX_RETAINED_CLASS_ARENA_BYTES,
         });
@@ -558,7 +563,7 @@ pub const TriageMap = struct {
     }
 
     /// Stores or removes a single classification key in the hash table.
-    pub fn storeKey(
+    fn storeKey(
         self: *TriageMap,
         gpa: std.mem.Allocator,
         key: []const u8,
@@ -580,7 +585,7 @@ pub const TriageMap = struct {
     }
 
     /// Synchronizes all paths associated with `entry` to `new_class`.
-    pub fn syncEntryKeys(
+    fn syncEntryKeys(
         self: *TriageMap,
         gpa: std.mem.Allocator,
         entry: MediaEntry,
@@ -626,9 +631,163 @@ pub const TriageMap = struct {
 
     /// Clears all classification records while retaining capacity and resets
     /// the arena.
-    pub fn clearRetainingCapacity(self: *TriageMap) void {
+    fn clearRetainingCapacity(self: *TriageMap) void {
         self.path_classifications.clearRetainingCapacity();
         self.resetArena();
+    }
+
+    /// Returns `true` if any pick or reject flags exist in the active session
+    /// or persisted path table.
+    pub inline fn hasAnySelections(self: *const TriageMap) bool {
+        return self.pick_count > 0 or
+            self.reject_count > 0 or
+            self.path_classifications.count() > 0;
+    }
+
+    /// Returns `true` if `class` is visible under the active view mode.
+    pub inline fn isVisible(
+        self: *const TriageMap,
+        class: Classification,
+    ) bool {
+        return self.view_mode.matches(class);
+    }
+
+    /// O(1) branchless count of visible items given `total_items` in the
+    /// playlist.
+    pub inline fn visibleCount(
+        self: *const TriageMap,
+        total_items: usize,
+    ) usize {
+        return switch (self.view_mode) {
+            .default => total_items -| self.reject_count,
+            .unflagged => total_items -| (self.pick_count +| self.reject_count),
+            .picks => self.pick_count,
+            .rejects => self.reject_count,
+            .all => total_items,
+        };
+    }
+
+    /// Resets active pick and reject session counts to zero.
+    pub fn resetActiveCounts(self: *TriageMap) void {
+        self.pick_count = 0;
+        self.reject_count = 0;
+    }
+
+    /// Registers an entry and synchronizes path keys and active counts if
+    /// flagged.
+    pub fn registerEntry(
+        self: *TriageMap,
+        gpa: std.mem.Allocator,
+        entry: MediaEntry,
+        initial_class: Classification,
+    ) !void {
+        if (initial_class != .unflagged) {
+            try self.syncEntryKeys(gpa, entry, initial_class);
+        }
+        if (initial_class == .pick) self.pick_count += 1;
+        if (initial_class == .reject) self.reject_count += 1;
+    }
+
+    /// Updates classification for an entry slot, persisting path keys and
+    /// updating active counters. Returns `true` if classification changed.
+    pub fn updateClassification(
+        self: *TriageMap,
+        gpa: std.mem.Allocator,
+        entry: MediaEntry,
+        class_slot: *Classification,
+        new_class: Classification,
+    ) !bool {
+        const old_class = class_slot.*;
+        if (old_class == new_class) return false;
+
+        try self.syncEntryKeys(gpa, entry, new_class);
+
+        class_slot.* = new_class;
+        if (old_class == .pick) self.pick_count -= 1;
+        if (old_class == .reject) self.reject_count -= 1;
+        if (new_class == .pick) self.pick_count += 1;
+        if (new_class == .reject) self.reject_count += 1;
+        return true;
+    }
+
+    /// Clears all pick and reject classifications across both active slice
+    /// and persistent path table. Returns `true` if any flags were cleared.
+    pub fn clearAll(self: *TriageMap, classes: []Classification) bool {
+        const had_flags = self.hasAnySelections();
+        @memset(classes, .unflagged);
+        self.pick_count = 0;
+        self.reject_count = 0;
+        self.clearRetainingCapacity();
+        return had_flags;
+    }
+
+    /// Computes the 1-based index of `cur_idx` among currently visible items
+    /// matching the active view mode.
+    pub fn visiblePosition(
+        self: *const TriageMap,
+        classifications: []const Classification,
+        cur_idx: usize,
+    ) ?usize {
+        return root.visiblePosition(classifications, cur_idx, self.view_mode);
+    }
+
+    /// Finds the nearest visible index to `start_idx` in the active view mode.
+    pub fn findClosestVisible(
+        self: *const TriageMap,
+        classifications: []const Classification,
+        start_idx: usize,
+    ) ?usize {
+        return root.findClosestVisible(
+            classifications,
+            start_idx,
+            self.visibleCount(classifications.len),
+            self.view_mode,
+        );
+    }
+
+    /// Returns the next circularly visible index after `from_idx` in the
+    /// active view mode.
+    pub fn peekNextVisible(
+        self: *const TriageMap,
+        classifications: []const Classification,
+        from_idx: usize,
+    ) ?usize {
+        return root.peekNextVisible(
+            classifications,
+            from_idx,
+            self.visibleCount(classifications.len),
+            self.view_mode,
+        );
+    }
+
+    /// Returns the previous circularly visible index before `from_idx` in the
+    /// active view mode.
+    pub fn peekPrevVisible(
+        self: *const TriageMap,
+        classifications: []const Classification,
+        from_idx: usize,
+    ) ?usize {
+        return root.peekPrevVisible(
+            classifications,
+            from_idx,
+            self.visibleCount(classifications.len),
+            self.view_mode,
+        );
+    }
+
+    /// Computes the visible ±1 and ±2 neighbor indices around `cur_idx` in
+    /// the active view mode.
+    pub fn computeVisibleNeighbors(
+        self: *const TriageMap,
+        classifications: []const Classification,
+        cur_idx: usize,
+    ) ?VisibleNeighbors {
+        return VisibleNeighbors.compute(
+            classifications,
+            cur_idx,
+            self.visibleCount(classifications.len),
+            self.view_mode,
+        );
     }
 
     /// Serializes pick and reject selections as a single-line JSON object
@@ -638,8 +797,6 @@ pub const TriageMap = struct {
         writer: *std.Io.Writer,
         entries: []const MediaEntry,
         classes: []const Classification,
-        pick_count: usize,
-        reject_count: usize,
     ) !void {
         var jw: std.json.Stringify = .{ .writer = writer };
         try jw.beginObject();
@@ -647,7 +804,7 @@ pub const TriageMap = struct {
         try jw.write(true);
 
         var active_key_count: usize = 0;
-        if (pick_count > 0 or reject_count > 0) {
+        if (self.pick_count > 0 or self.reject_count > 0) {
             for (entries, classes) |entry, c| {
                 if (c != .unflagged) active_key_count += entryKeyCount(entry);
             }
@@ -657,7 +814,7 @@ pub const TriageMap = struct {
 
         try jw.objectField("picks");
         try jw.beginArray();
-        if (pick_count > 0) {
+        if (self.pick_count > 0) {
             for (entries, classes) |entry, c| {
                 if (c != .pick) continue;
                 try writeEntryPathsJson(&jw, entry);
@@ -678,7 +835,7 @@ pub const TriageMap = struct {
 
         try jw.objectField("rejects");
         try jw.beginArray();
-        if (reject_count > 0) {
+        if (self.reject_count > 0) {
             for (entries, classes) |entry, c| {
                 if (c != .reject) continue;
                 try writeEntryPathsJson(&jw, entry);
@@ -708,19 +865,17 @@ pub const TriageMap = struct {
         writer: *std.Io.Writer,
         entries: []const MediaEntry,
         classes: []const Classification,
-        pick_count: usize,
-        reject_count: usize,
     ) !void {
         try writeEntriesTsv(
             writer,
             entries,
             classes,
-            pick_count,
-            reject_count,
+            self.pick_count,
+            self.reject_count,
         );
 
         var active_key_count: usize = 0;
-        if (pick_count > 0 or reject_count > 0) {
+        if (self.pick_count > 0 or self.reject_count > 0) {
             for (entries, classes) |entry, c| {
                 if (c != .unflagged) active_key_count += entryKeyCount(entry);
             }
@@ -948,6 +1103,9 @@ test "triage - TriageMap writeSelectionsJson output format and escaping" {
     // Add an external key not in entries list
     try map.storeKey(allocator, "photos/external_pick.jpg", .pick);
 
+    map.pick_count = 1;
+    map.reject_count = 1;
+
     var buf: [1024]u8 = undefined;
     var fixed_writer: std.Io.Writer = .fixed(&buf);
 
@@ -955,8 +1113,6 @@ test "triage - TriageMap writeSelectionsJson output format and escaping" {
         &fixed_writer,
         &entries,
         &classes,
-        1,
-        1,
     );
 
     const output = fixed_writer.buffered();
@@ -1284,7 +1440,9 @@ test "triage - writeSelectionsTsv format and external keys" {
     var fixed_writer: std.Io.Writer = .fixed(&buf);
 
     // 1. TriageMap.writeSelectionsTsv without external keys
-    try map.writeSelectionsTsv(&fixed_writer, &entries, &classes, 2, 1);
+    map.pick_count = 2;
+    map.reject_count = 1;
+    try map.writeSelectionsTsv(&fixed_writer, &entries, &classes);
     const expected_top =
         "PICK\tphotos/img1.jpg\n" ++
         "REJECT\tbundle.zip#sub/img2.png\n" ++
@@ -1300,7 +1458,7 @@ test "triage - writeSelectionsTsv format and external keys" {
 
     var map_buf: [1024]u8 = undefined;
     var map_writer: std.Io.Writer = .fixed(&map_buf);
-    try map.writeSelectionsTsv(&map_writer, &entries, &classes, 2, 1);
+    try map.writeSelectionsTsv(&map_writer, &entries, &classes);
     const expected_map =
         "PICK\tphotos/img1.jpg\n" ++
         "REJECT\tbundle.zip#sub/img2.png\n" ++
@@ -1308,4 +1466,114 @@ test "triage - writeSelectionsTsv format and external keys" {
         "PICK\tphotos/shot.jpg\n" ++
         "PICK\tphotos/external.jpg\n";
     try std.testing.expectEqualStrings(expected_map, map_writer.buffered());
+}
+
+test "triage - TriageMap visibleCount across all view modes" {
+    var map: TriageMap = undefined;
+    map.pick_count = 3;
+    map.reject_count = 2;
+
+    const total: usize = 10;
+
+    map.view_mode = .default;
+    try std.testing.expectEqual(@as(usize, 8), map.visibleCount(total));
+
+    map.view_mode = .unflagged;
+    try std.testing.expectEqual(@as(usize, 5), map.visibleCount(total));
+
+    map.view_mode = .picks;
+    try std.testing.expectEqual(@as(usize, 3), map.visibleCount(total));
+
+    map.view_mode = .rejects;
+    try std.testing.expectEqual(@as(usize, 2), map.visibleCount(total));
+
+    map.view_mode = .all;
+    try std.testing.expectEqual(@as(usize, 10), map.visibleCount(total));
+
+    // Saturating subtraction checks
+    map.pick_count = 8;
+    map.reject_count = 5;
+    map.view_mode = .default;
+    try std.testing.expectEqual(@as(usize, 5), map.visibleCount(total));
+    map.view_mode = .unflagged;
+    try std.testing.expectEqual(@as(usize, 0), map.visibleCount(total));
+}
+
+test "triage - TriageMap registerEntry, updateClassification, and clearAll" {
+    const allocator = std.testing.allocator;
+    var map = try TriageMap.init(allocator);
+    defer map.deinit(allocator);
+
+    try std.testing.expect(!map.hasAnySelections());
+
+    const entry1 = MediaEntry{ .filesystem = .{ .path = "a.jpg" } };
+    const entry2 = MediaEntry{ .filesystem = .{ .path = "b.jpg" } };
+
+    // Register entry with unflagged
+    try map.registerEntry(allocator, entry1, .unflagged);
+    try std.testing.expectEqual(@as(usize, 0), map.pick_count);
+    try std.testing.expectEqual(@as(usize, 0), map.reject_count);
+    try std.testing.expect(!map.hasAnySelections());
+
+    // Register entry with pick
+    try map.registerEntry(allocator, entry1, .pick);
+    try std.testing.expectEqual(@as(usize, 1), map.pick_count);
+    try std.testing.expectEqual(@as(usize, 0), map.reject_count);
+    try std.testing.expect(map.hasAnySelections());
+    try std.testing.expect(map.isVisible(.pick));
+    try std.testing.expect(!map.isVisible(.reject));
+
+    // Register entry with reject
+    try map.registerEntry(allocator, entry2, .reject);
+    try std.testing.expectEqual(@as(usize, 1), map.pick_count);
+    try std.testing.expectEqual(@as(usize, 1), map.reject_count);
+
+    // Update classification: identity no-op
+    var class1: Classification = .pick;
+    const changed_noop = try map.updateClassification(
+        allocator,
+        entry1,
+        &class1,
+        .pick,
+    );
+    try std.testing.expect(!changed_noop);
+    try std.testing.expectEqual(@as(usize, 1), map.pick_count);
+
+    // Update classification: pick -> reject
+    const changed_to_rej = try map.updateClassification(
+        allocator,
+        entry1,
+        &class1,
+        .reject,
+    );
+    try std.testing.expect(changed_to_rej);
+    try std.testing.expectEqual(Classification.reject, class1);
+    try std.testing.expectEqual(@as(usize, 0), map.pick_count);
+    try std.testing.expectEqual(@as(usize, 2), map.reject_count);
+
+    // Update classification: reject -> unflagged
+    const changed_to_unflag = try map.updateClassification(
+        allocator,
+        entry1,
+        &class1,
+        .unflagged,
+    );
+    try std.testing.expect(changed_to_unflag);
+    try std.testing.expectEqual(Classification.unflagged, class1);
+    try std.testing.expectEqual(@as(usize, 0), map.pick_count);
+    try std.testing.expectEqual(@as(usize, 1), map.reject_count);
+
+    // clearAll resets classes array, counts, and hash map
+    var classes = [_]Classification{ .reject, .unflagged };
+    try std.testing.expect(map.hasAnySelections());
+    const had_cleared = map.clearAll(&classes);
+    try std.testing.expect(had_cleared);
+    try std.testing.expectEqual(Classification.unflagged, classes[0]);
+    try std.testing.expectEqual(@as(usize, 0), map.pick_count);
+    try std.testing.expectEqual(@as(usize, 0), map.reject_count);
+    try std.testing.expectEqual(@as(usize, 0), map.count());
+    try std.testing.expect(!map.hasAnySelections());
+
+    // Calling clearAll when already empty returns false
+    try std.testing.expect(!map.clearAll(&classes));
 }

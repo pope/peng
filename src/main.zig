@@ -527,9 +527,7 @@ fn exportClassificationsToStdout(
     nav: *const state_pkg.NavigationState,
     io: std.Io,
 ) void {
-    if (nav.pick_count == 0 and
-        nav.reject_count == 0 and
-        nav.triage.count() == 0) return;
+    if (!nav.triage.hasAnySelections()) return;
 
     var stdout_write_buf: [4096]u8 = undefined;
     var stdout_writer = std.Io.File.Writer.initStreaming(

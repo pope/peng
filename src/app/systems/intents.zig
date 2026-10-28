@@ -806,7 +806,7 @@ fn triggerSnackbarForIntent(
         .classification = target_class,
         .classification_advanced = advanced,
         .has_target_image = has_target,
-        .view_mode = self.viewer.navigation.view_mode,
+        .view_mode = self.viewer.navigation.getViewMode(),
         .last_param = last_param,
     }, &buf);
 
@@ -1463,7 +1463,7 @@ test "sysExecuteIntents classification snackbar confirms action and advance" {
     try testing.expectEqual(@as(?usize, 1), app_st.viewer.navigation.current_index);
 
     // 3. In all view, mark Reject: image remains visible, does not advance
-    app_st.viewer.navigation.view_mode = .all;
+    app_st.viewer.navigation.triage.view_mode = .all;
     try app_st.pushIntent(.mark_reject);
     try sysExecuteIntents(.{
         .state = &app_st,
@@ -1477,7 +1477,7 @@ test "sysExecuteIntents classification snackbar confirms action and advance" {
     try testing.expectEqual(@as(?usize, 1), app_st.viewer.navigation.current_index);
 
     // 4. In picks view where 0 images match, try marking pick or reject: confirms "No image to classify"
-    app_st.viewer.navigation.view_mode = .picks;
+    app_st.viewer.navigation.triage.view_mode = .picks;
     _ = app_st.viewer.navigation.adjustIndexForVisibility();
     try testing.expectEqual(@as(?usize, null), app_st.viewer.navigation.current_index);
 

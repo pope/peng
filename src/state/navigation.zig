@@ -35,9 +35,6 @@ pub const NavigationState = struct {
     items: std.MultiArrayList(MediaItem) = .empty,
     next_media_id: u32 = 1,
     triage: TriageMap,
-    view_mode: ViewMode = .default,
-    pick_count: usize = 0,
-    reject_count: usize = 0,
     anchor_index: usize = 0,
     current_index: ?usize = null,
     slideshow: SlideshowMode = .inactive,
@@ -131,22 +128,18 @@ pub const NavigationState = struct {
         });
         errdefer _ = self.items.pop();
 
-        if (initial_class != .unflagged) {
-            try self.triage.syncEntryKeys(gpa, entry, initial_class);
-        }
-        if (initial_class == .pick) self.pick_count += 1;
-        if (initial_class == .reject) self.reject_count += 1;
+        try self.triage.registerEntry(gpa, entry, initial_class);
         if (id.toU32() >= self.next_media_id) {
             self.next_media_id = id.toU32() +% 1;
             if (self.next_media_id == 0) self.next_media_id = 1;
         }
     }
 
-    /// Clears active media list, preserving persistent path flags and allocated capacities.
+    /// Clears active media list, preserving persistent path flags and
+    /// allocated capacities.
     pub fn clearEntries(self: *NavigationState) void {
         self.items.clearRetainingCapacity();
-        self.pick_count = 0;
-        self.reject_count = 0;
+        self.triage.resetActiveCounts();
         self.current_index = null;
         self.anchor_index = 0;
     }
@@ -248,43 +241,44 @@ pub const NavigationState = struct {
         return null;
     }
 
-    /// Returns `true` if the item at `idx` is visible in the active `view_mode`.
-    pub inline fn isIndexVisible(self: *const NavigationState, idx: usize) bool {
+    /// Returns `true` if the item at `idx` is visible in the active
+    /// `view_mode`.
+    pub inline fn isIndexVisible(
+        self: *const NavigationState,
+        idx: usize,
+    ) bool {
         if (idx >= self.items.len) return false;
-        return self.view_mode.matches(self.items.items(.classification)[idx]);
+        return self.triage.isVisible(self.items.items(.classification)[idx]);
     }
 
     /// O(1) branchless count of visible images in the current media list.
     pub inline fn getVisibleCount(self: *const NavigationState) usize {
-        const total = self.items.len;
-        return switch (self.view_mode) {
-            .default => total -| self.reject_count,
-            .unflagged => total -| (self.pick_count + self.reject_count),
-            .picks => self.pick_count,
-            .rejects => self.reject_count,
-            .all => total,
-        };
+        return self.triage.visibleCount(self.items.len);
     }
 
     /// Computes the 1-based index of `current_index` among currently visible
     /// items using SIMD.
     pub fn getVisiblePosition(self: *const NavigationState) ?usize {
         const cur = self.current_index orelse return null;
-        return triage.visiblePosition(
+        return self.triage.visiblePosition(
             self.items.items(.classification),
             cur,
-            self.view_mode,
         );
     }
 
-    /// Retrieves the `MediaEntry` at `current_index`, or `null` if empty or invalid.
-    pub inline fn getCurrentImageEntry(self: *const NavigationState) ?MediaEntry {
+    /// Retrieves the `MediaEntry` at `current_index`, or `null` if empty or
+    /// invalid.
+    pub inline fn getCurrentImageEntry(
+        self: *const NavigationState,
+    ) ?MediaEntry {
         const idx = self.current_index orelse return null;
         return self.getMediaEntry(idx);
     }
 
     /// Returns the classification of the currently viewed image.
-    pub inline fn getCurrentClassification(self: *const NavigationState) Classification {
+    pub inline fn getCurrentClassification(
+        self: *const NavigationState,
+    ) Classification {
         const idx = self.current_index orelse return .unflagged;
         if (idx < self.items.len) {
             return self.items.items(.classification)[idx];
@@ -292,7 +286,8 @@ pub const NavigationState = struct {
         return .unflagged;
     }
 
-    /// Updates classification of current image, updates running counters, and persists in path table.
+    /// Updates classification of current image, updates running counters, and
+    /// persists in path table.
     pub fn markClassification(
         self: *NavigationState,
         gpa: std.mem.Allocator,
@@ -300,33 +295,35 @@ pub const NavigationState = struct {
     ) !bool {
         const idx = self.current_index orelse return false;
         if (idx >= self.items.len) return false;
-        const classes = self.items.items(.classification);
-        const old_class = classes[idx];
-        if (old_class == new_class) return false;
-
-        const entry = self.items.items(.entry)[idx];
-        try self.triage.syncEntryKeys(gpa, entry, new_class);
-
-        classes[idx] = new_class;
-        if (old_class == .pick) self.pick_count -= 1;
-        if (old_class == .reject) self.reject_count -= 1;
-        if (new_class == .pick) self.pick_count += 1;
-        if (new_class == .reject) self.reject_count += 1;
-        return true;
+        return self.triage.updateClassification(
+            gpa,
+            self.items.items(.entry)[idx],
+            &self.items.items(.classification)[idx],
+            new_class,
+        );
     }
 
     /// Marks the currently selected image as a pick.
-    pub fn markCurrentPick(self: *NavigationState, gpa: std.mem.Allocator) !bool {
+    pub fn markCurrentPick(
+        self: *NavigationState,
+        gpa: std.mem.Allocator,
+    ) !bool {
         return self.markClassification(gpa, .pick);
     }
 
     /// Marks the currently selected image as a reject.
-    pub fn markCurrentReject(self: *NavigationState, gpa: std.mem.Allocator) !bool {
+    pub fn markCurrentReject(
+        self: *NavigationState,
+        gpa: std.mem.Allocator,
+    ) !bool {
         return self.markClassification(gpa, .reject);
     }
 
     /// Clears the classification flag on the currently selected image.
-    pub fn unflagCurrent(self: *NavigationState, gpa: std.mem.Allocator) !bool {
+    pub fn unflagCurrent(
+        self: *NavigationState,
+        gpa: std.mem.Allocator,
+    ) !bool {
         return self.markClassification(gpa, .unflagged);
     }
 
@@ -334,14 +331,7 @@ pub const NavigationState = struct {
     /// list and persistent path table. Returns `true` if any flags were
     /// cleared.
     pub fn clearAllClassifications(self: *NavigationState) bool {
-        const had_flags = (self.pick_count > 0 or
-            self.reject_count > 0 or
-            self.triage.count() > 0);
-        @memset(self.items.items(.classification), .unflagged);
-        self.pick_count = 0;
-        self.reject_count = 0;
-        self.triage.clearRetainingCapacity();
-        return had_flags;
+        return self.triage.clearAll(self.items.items(.classification));
     }
 
     /// Serializes current pick and reject selections as a single-line JSON
@@ -355,8 +345,6 @@ pub const NavigationState = struct {
             writer,
             slice.items(.entry),
             slice.items(.classification),
-            self.pick_count,
-            self.reject_count,
         );
     }
 
@@ -371,8 +359,6 @@ pub const NavigationState = struct {
             writer,
             slice.items(.entry),
             slice.items(.classification),
-            self.pick_count,
-            self.reject_count,
         );
     }
 
@@ -382,16 +368,15 @@ pub const NavigationState = struct {
         self: *const NavigationState,
         start_idx: usize,
     ) ?usize {
-        return triage.findClosestVisible(
+        return self.triage.findClosestVisible(
             self.items.items(.classification),
             start_idx,
-            self.getVisibleCount(),
-            self.view_mode,
         );
     }
 
-    /// Adjusts `current_index` so it points to a visible item in the current view mode,
-    /// preserving `anchor_index` if the current filter contains zero visible images.
+    /// Adjusts `current_index` so it points to a visible item in the current
+    /// view mode, preserving `anchor_index` if the current filter contains
+    /// zero visible images.
     pub fn adjustIndexForVisibility(self: *NavigationState) bool {
         if (self.getVisibleCount() == 0) {
             const changed = self.current_index != null;
@@ -413,17 +398,22 @@ pub const NavigationState = struct {
         }
     }
 
-    /// Sets the active view mode and adjusts index if the current selection is hidden.
+    /// Returns the active triage view filter mode.
+    pub inline fn getViewMode(self: *const NavigationState) ViewMode {
+        return self.triage.view_mode;
+    }
+
+    /// Sets active view mode and adjusts index if current selection is hidden.
     pub fn setViewMode(self: *NavigationState, mode: ViewMode) bool {
-        if (self.view_mode == mode) return false;
-        self.view_mode = mode;
+        if (self.triage.view_mode == mode) return false;
+        self.triage.view_mode = mode;
         _ = self.adjustIndexForVisibility();
         return true;
     }
 
     /// Cycles sequentially to the next view mode.
     pub fn cycleViewMode(self: *NavigationState) bool {
-        return self.setViewMode(self.view_mode.cycle());
+        return self.setViewMode(self.triage.view_mode.cycle());
     }
 
     /// Returns the next circularly visible index after `from_idx` without
@@ -432,11 +422,9 @@ pub const NavigationState = struct {
         self: *const NavigationState,
         from_idx: usize,
     ) ?usize {
-        return triage.peekNextVisible(
+        return self.triage.peekNextVisible(
             self.items.items(.classification),
             from_idx,
-            self.getVisibleCount(),
-            self.view_mode,
         );
     }
 
@@ -446,11 +434,9 @@ pub const NavigationState = struct {
         self: *const NavigationState,
         from_idx: usize,
     ) ?usize {
-        return triage.peekPrevVisible(
+        return self.triage.peekPrevVisible(
             self.items.items(.classification),
             from_idx,
-            self.getVisibleCount(),
-            self.view_mode,
         );
     }
 
@@ -460,11 +446,9 @@ pub const NavigationState = struct {
         self: *const NavigationState,
     ) ?VisibleNeighbors {
         const cur = self.current_index orelse return null;
-        return VisibleNeighbors.compute(
+        return self.triage.computeVisibleNeighbors(
             self.items.items(.classification),
             cur,
-            self.getVisibleCount(),
-            self.view_mode,
         );
     }
 
@@ -572,8 +556,8 @@ test "NavigationState - triage mutations and visibility filtering" {
     nav.current_index = 3;
     _ = try nav.markCurrentReject(allocator);
 
-    try std.testing.expectEqual(@as(usize, 1), nav.pick_count);
-    try std.testing.expectEqual(@as(usize, 1), nav.reject_count);
+    try std.testing.expectEqual(@as(usize, 1), nav.triage.pick_count);
+    try std.testing.expectEqual(@as(usize, 1), nav.triage.reject_count);
 
     // In default view mode: 4 visible (1, 2, 3, 5; 4 is hidden)
     try std.testing.expectEqual(@as(usize, 4), nav.getVisibleCount());
@@ -636,8 +620,11 @@ test "NavigationState - rescan persistence across clearEntries" {
         .{ .filesystem = .{ .path = "photo.jpg" } },
     );
     nav.current_index = 0;
-    try std.testing.expectEqual(Classification.pick, nav.getCurrentClassification());
-    try std.testing.expectEqual(@as(usize, 1), nav.pick_count);
+    try std.testing.expectEqual(
+        Classification.pick,
+        nav.getCurrentClassification(),
+    );
+    try std.testing.expectEqual(@as(usize, 1), nav.triage.pick_count);
 }
 
 test "NavigationState - SIMD skipping and popcount across large list" {
@@ -901,7 +888,7 @@ test "NavigationState - writeSelectionsJson and clearAllClassifications" {
         } },
     );
     // vol2.cbz#p01.png must NOT inherit vol1.cbz#p01.png's reject flag
-    try std.testing.expectEqual(@as(usize, 0), nav.reject_count);
+    try std.testing.expectEqual(@as(usize, 0), nav.triage.reject_count);
     // Prior directory selections remain visible in writeSelectionsJson
     var cross_writer: std.Io.Writer = .fixed(&buf);
     try nav.writeSelectionsJson(&cross_writer);
@@ -913,8 +900,8 @@ test "NavigationState - writeSelectionsJson and clearAllClassifications" {
 
     try std.testing.expect(nav.clearAllClassifications());
     try std.testing.expect(!nav.clearAllClassifications());
-    try std.testing.expectEqual(@as(usize, 0), nav.pick_count);
-    try std.testing.expectEqual(@as(usize, 0), nav.reject_count);
+    try std.testing.expectEqual(@as(usize, 0), nav.triage.pick_count);
+    try std.testing.expectEqual(@as(usize, 0), nav.triage.reject_count);
 
     var empty_writer: std.Io.Writer = .fixed(&buf);
     try nav.writeSelectionsJson(&empty_writer);

@@ -907,10 +907,10 @@ pub const AppState = struct {
             ))
         {
             if (self.viewer.navigation.findMatchingIndex(owned_path)) |idx| {
-                const target_class =
-                    self.viewer.navigation.getClassification(idx);
-                if (!self.viewer.navigation.view_mode.matches(target_class)) {
-                    self.viewer.navigation.view_mode =
+                if (!self.viewer.navigation.isIndexVisible(idx)) {
+                    const target_class =
+                        self.viewer.navigation.getClassification(idx);
+                    self.viewer.navigation.triage.view_mode =
                         if (target_class == .reject) .all else .default;
                 }
                 _ = self.viewer.navigation.goToIndex(

@@ -207,7 +207,7 @@ pub fn updateFrame(
             break :blk .empty_directory;
         } else if (visible_cnt == 0) {
             break :blk .{ .filtered_empty = .{
-                .mode = nav.view_mode,
+                .mode = nav.getViewMode(),
                 .total_count = nav_slice.len,
             } };
         } else if (nav.current_index) |idx| {
@@ -231,7 +231,7 @@ pub fn updateFrame(
         .current_image_entry = nav.getCurrentImageEntry(),
         .current_entry = app_state.getCurrentEntry(),
         .current_classification = nav.getCurrentClassification(),
-        .view_mode = nav.view_mode,
+        .view_mode = nav.getViewMode(),
         .visible_state = visible_st,
         .visible_count = visible_cnt,
         .visible_position = visible_pos,
