@@ -11,7 +11,7 @@ const vfs = @import("vfs");
 const workers_mod = @import("workers/root.zig");
 
 const AppIntent = intents.AppIntent;
-const CacheEntry = state_pkg.CacheEntry;
+const CacheEntry = image.CacheEntry;
 const DisplayState = core.display.DisplayState;
 const events = core.events;
 const FrameInput = types.FrameInput;
@@ -1118,7 +1118,7 @@ pub const AppState = struct {
 
         var upload_target: ?struct {
             key: ImageCacheKey,
-            cpu: state_pkg.CpuSurfaceComponent,
+            cpu: image.CpuSurfaceComponent,
         } = null;
 
         if (self.viewer.ui.overlays.debug_show_thumb) {
@@ -1235,7 +1235,7 @@ pub const AppState = struct {
                     self.unpack_compute_pipeline,
                     &self.upload_staging,
                 )) |res| {
-                    const loaded_gpu_asset = state_pkg.ResidentAsset{
+                    const loaded_gpu_asset = image.ResidentAsset{
                         .loaded_gpu = .{
                             .gpu_texture = res.gpu_texture,
                             .w = res.w,

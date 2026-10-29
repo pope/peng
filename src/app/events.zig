@@ -482,7 +482,7 @@ fn handleImageDecodedEvent(
 }
 
 fn applyDecodedMetadata(
-    entry: *state_pkg.CacheEntry,
+    entry: *image.CacheEntry,
     decoded_data: *const events.ImageDecodedPayload,
 ) void {
     entry.metadata.orientation = decoded_data.orientation;
@@ -1438,7 +1438,7 @@ test "drainWorkerEvents - decode_failed clears current image_transition" {
     });
     try std.testing.expect(drainWorkerEvents(&state));
     try std.testing.expectEqual(
-        state_pkg.ResidentAsset.failed,
+        image.ResidentAsset.failed,
         state.cache.get(key1).?.resident.asset,
     );
     try std.testing.expectEqual(

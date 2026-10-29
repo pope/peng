@@ -9,7 +9,7 @@ const std = @import("std");
 const vfs = @import("vfs");
 
 const AppState = app_state.AppState;
-const CacheEntry = state_pkg.CacheEntry;
+const CacheEntry = image.CacheEntry;
 const DecodeArgs = decode_mod.DecodeArgs;
 const FrameContext = context.FrameContext;
 const image = core.image;
@@ -708,7 +708,7 @@ test "sysUpdateCache - synchronous presence probe sets thumbnail state" {
     // Because test_0_init.png has no embedded thumbnail, synchronous probe
     // on Frame 1 sets .not_available!
     try std.testing.expectEqual(
-        state_pkg.ThumbnailState.not_available,
+        image.ThumbnailState.not_available,
         entry.?.resident.thumbnail,
     );
 }
@@ -743,7 +743,7 @@ test "sysUpdateCache - active image without thumbnail spawns full decode during 
     const entry = state.cache.get(state.cache.activeKey(id0));
     try std.testing.expect(entry != null);
     try std.testing.expectEqual(
-        state_pkg.ThumbnailState.not_available,
+        image.ThumbnailState.not_available,
         entry.?.resident.thumbnail,
     );
     // Active slot 0 should have has_thread = true (decode worker was spawned, not skipped!)
@@ -1105,7 +1105,7 @@ test "checkPairPromotion - preserves resident GPU during promotion" {
     );
     try std.testing.expect(entry.inflight != null);
     try std.testing.expectEqual(
-        state_pkg.InFlightStage.decoding,
+        image.InFlightStage.decoding,
         entry.inflight.?.stage,
     );
     try std.testing.expectEqual(

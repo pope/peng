@@ -6,10 +6,11 @@ const state = @import("state");
 const std = @import("std");
 const text_utils = @import("text_utils.zig");
 const theme = @import("theme.zig");
+const view_model = @import("view_model.zig");
 
 const ElementTag = types.ElementTag;
 const MeasureTextUserData = graphics.MeasureTextUserData;
-const UiViewModel = state.UiViewModel;
+const UiViewModel = view_model.UiViewModel;
 const formatSize = text_utils.formatSize;
 const getSpec = intents.getSpec;
 const truncateDirectory = text_utils.truncateDirectory;

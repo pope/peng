@@ -10,24 +10,18 @@ pub const navigation = @import("navigation.zig");
 pub const snackbar = @import("snackbar.zig");
 pub const types = @import("types.zig");
 pub const ui_state = @import("ui_state.zig");
-pub const view_model = @import("view_model.zig");
 pub const viewer_state = @import("viewer_state.zig");
 pub const view_transform = @import("view_transform.zig");
 
 pub const ActionMetadata = types.ActionMetadata;
-pub const ActiveImageDissolve = view_model.ActiveImageDissolve;
 pub const ActiveImageTransition = types.ActiveImageTransition;
 pub const ActiveNotification = snackbar.ActiveNotification;
 pub const ActiveSnackbar = types.ActiveSnackbar;
 pub const AnimationChannel = animation_state.AnimationChannel;
 pub const AnimationState = animation_state.AnimationState;
 pub const ArchiveTelemetry = types.ArchiveTelemetry;
-pub const CacheEntry = types.CacheEntry;
-pub const CacheMetadata = types.CacheMetadata;
-pub const CacheResident = types.CacheResident;
 pub const clampZoomFactor = view_transform.clampZoomFactor;
 pub const computeThumbnailUvCrop = view_transform.computeThumbnailUvCrop;
-pub const CpuSurfaceComponent = types.CpuSurfaceComponent;
 pub const DecodeTelemetry = types.DecodeTelemetry;
 pub const DirectionFlags = types.DirectionFlags;
 pub const DpiScale = types.DpiScale;
@@ -36,14 +30,19 @@ pub const DURATION_EDIT_PANEL_CLOSE_MS =
     animation_state.DURATION_EDIT_PANEL_CLOSE_MS;
 pub const DURATION_EDIT_PANEL_OPEN_MS =
     animation_state.DURATION_EDIT_PANEL_OPEN_MS;
-pub const DURATION_IMAGE_DISSOLVE_MS = animation_state.DURATION_IMAGE_DISSOLVE_MS;
+pub const DURATION_IMAGE_DISSOLVE_MS =
+    animation_state.DURATION_IMAGE_DISSOLVE_MS;
 pub const DURATION_PALETTE_CLOSE_MS = animation_state.DURATION_PALETTE_CLOSE_MS;
 pub const DURATION_PALETTE_OPEN_MS = animation_state.DURATION_PALETTE_OPEN_MS;
-pub const DURATION_SNACKBAR_CLOSE_MS = animation_state.DURATION_SNACKBAR_CLOSE_MS;
+pub const DURATION_SNACKBAR_CLOSE_MS =
+    animation_state.DURATION_SNACKBAR_CLOSE_MS;
 pub const DURATION_SNACKBAR_OPEN_MS = animation_state.DURATION_SNACKBAR_OPEN_MS;
-pub const DURATION_THUMB_CROSSFADE_MS = animation_state.DURATION_THUMB_CROSSFADE_MS;
-pub const DURATION_TITLE_OVERLAY_CLOSE_MS = animation_state.DURATION_TITLE_OVERLAY_CLOSE_MS;
-pub const DURATION_TITLE_OVERLAY_OPEN_MS = animation_state.DURATION_TITLE_OVERLAY_OPEN_MS;
+pub const DURATION_THUMB_CROSSFADE_MS =
+    animation_state.DURATION_THUMB_CROSSFADE_MS;
+pub const DURATION_TITLE_OVERLAY_CLOSE_MS =
+    animation_state.DURATION_TITLE_OVERLAY_CLOSE_MS;
+pub const DURATION_TITLE_OVERLAY_OPEN_MS =
+    animation_state.DURATION_TITLE_OVERLAY_OPEN_MS;
 pub const EasingType = easing.EasingType;
 pub const EDIT_PANEL_PADDING = types.EDIT_PANEL_PADDING;
 pub const EDIT_PANEL_WIDTH = types.EDIT_PANEL_WIDTH;
@@ -52,12 +51,8 @@ pub const ElementTag = types.ElementTag;
 pub const flat_shortcuts = types.flat_shortcuts;
 pub const FloatingPanel = types.FloatingPanel;
 pub const FrameInput = types.FrameInput;
-pub const GpuTextureComponent = types.GpuTextureComponent;
-pub const ImageDissolve = view_model.ImageDissolve;
 pub const ImageEdits = types.ImageEdits;
 pub const ImageTransition = types.ImageTransition;
-pub const InFlightDecode = types.InFlightDecode;
-pub const InFlightStage = types.InFlightStage;
 pub const IngestTelemetry = types.IngestTelemetry;
 pub const LOADING_GRACE_PERIOD_MS = types.LOADING_GRACE_PERIOD_MS;
 pub const LogicalDims = types.LogicalDims;
@@ -65,7 +60,8 @@ pub const LogicalPoint = types.LogicalPoint;
 pub const MediaItem = navigation.MediaItem;
 pub const MediaItemSlice = navigation.MediaItemSlice;
 pub const MipmapTelemetry = types.MipmapTelemetry;
-pub const MIN_SLIDESHOW_DISSOLVE_INTERVAL_S = animation_state.MIN_SLIDESHOW_DISSOLVE_INTERVAL_S;
+pub const MIN_SLIDESHOW_DISSOLVE_INTERVAL_S =
+    animation_state.MIN_SLIDESHOW_DISSOLVE_INTERVAL_S;
 pub const NavDirection = navigation.NavDirection;
 pub const NavigationState = navigation.NavigationState;
 pub const OverlayState = types.OverlayState;
@@ -73,7 +69,6 @@ pub const palette_action_items = types.palette_action_items;
 pub const PanController = types.PanController;
 pub const PhysicalDims = types.PhysicalDims;
 pub const PhysicalPoint = types.PhysicalPoint;
-pub const ResidentAsset = types.ResidentAsset;
 pub const SlideshowMode = types.SlideshowMode;
 pub const SnackbarDisplay = types.SnackbarDisplay;
 pub const SnackbarNotification = snackbar.SnackbarNotification;
@@ -82,16 +77,15 @@ pub const SnackbarState = snackbar.SnackbarState;
 pub const SnackbarTrigger = snackbar.SnackbarTrigger;
 pub const ThumbnailInfo = types.ThumbnailInfo;
 pub const ThumbnailSource = types.ThumbnailSource;
-pub const ThumbnailState = types.ThumbnailState;
 pub const ThumbnailStats = types.ThumbnailStats;
 pub const TitleDisplay = types.TitleDisplay;
 pub const UiRenderMetrics = types.UiRenderMetrics;
 pub const UiRenderMetricsSnapshot = types.UiRenderMetricsSnapshot;
 pub const UiState = ui_state.UiState;
-pub const UiViewModel = view_model.UiViewModel;
 pub const UploadMode = types.UploadMode;
 pub const UvRect = types.UvRect;
 pub const ViewerState = viewer_state.ViewerState;
+pub const ViewerStats = types.ViewerStats;
 pub const ViewportParams = types.ViewportParams;
 pub const VisibleState = types.VisibleState;
 pub const ZoomController = types.ZoomController;
@@ -108,7 +102,6 @@ test {
     _ = snackbar;
     _ = types;
     _ = ui_state;
-    _ = view_model;
     _ = view_transform;
     _ = viewer_state;
 }

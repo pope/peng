@@ -14,6 +14,11 @@ pub const stats = @import("stats.zig");
 pub const text_cache = @import("text_cache.zig");
 pub const text_utils = @import("text_utils.zig");
 pub const theme = @import("theme.zig");
+pub const view_model = @import("view_model.zig");
+
+pub const ActiveImageDissolve = view_model.ActiveImageDissolve;
+pub const ImageDissolve = view_model.ImageDissolve;
+pub const UiViewModel = view_model.UiViewModel;
 
 test {
     _ = edit_panel;
@@ -27,4 +32,5 @@ test {
     _ = theme;
     _ = geometry;
     _ = text_cache;
+    _ = view_model;
 }

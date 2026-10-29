@@ -6,19 +6,265 @@ const triage = @import("triage");
 const vfs = @import("vfs");
 
 const ArchiveMediaEntry = vfs.ArchiveMediaEntry;
-const CacheEntry = state_pkg.CacheEntry;
+const DecodeTelemetry = state_pkg.DecodeTelemetry;
 const detectMimeType = probe.detectMimeType;
-const InFlightDecode = state_pkg.InFlightDecode;
+const IngestTelemetry = state_pkg.IngestTelemetry;
 const isRawFile = vfs.isRawFile;
 const MediaEntry = vfs.MediaEntry;
 const MediaId = vfs.MediaId;
 const Orientation = probe.Orientation;
+const PairStreamTarget = vfs.PairStreamTarget;
 const parseImageDimensions = probe.parseImageDimensions;
+const PhysicalDims = state_pkg.PhysicalDims;
 const ProbedImageMetadata = probe.ProbedImageMetadata;
 const RawMetadata = probe.RawMetadata;
-const ResidentAsset = state_pkg.ResidentAsset;
+const ThumbnailInfo = state_pkg.ThumbnailInfo;
 const VisibleNeighbors = triage.VisibleNeighbors;
 const ZipSeekOffsets = vfs.ZipSeekOffsets;
+
+/// Decoded CPU software surface stored in host RAM.
+pub const CpuSurfaceComponent = struct {
+    surface: sdl.Surface,
+    w: f32,
+    h: f32,
+    size_bytes: u64,
+    mime_type: []const u8 = "",
+    decode: DecodeTelemetry = .{},
+};
+
+/// Resident GPU texture allocation and VRAM memory footprint metadata.
+pub const GpuTextureComponent = struct {
+    gpu_texture: sdl.gpu.Texture,
+    w: f32,
+    h: f32,
+    size_bytes: u64,
+    mime_type: []const u8 = "",
+    decode: DecodeTelemetry = .{},
+    ingest: IngestTelemetry = .{},
+};
+
+/// Tier-0 probed metadata populated during initial header inspection.
+pub const CacheMetadata = struct {
+    full_dims: ?PhysicalDims = null,
+    orientation: Orientation = .normal,
+    raw_metadata: RawMetadata = .none,
+};
+
+/// Drawable primary surface or GPU texture resident in host RAM or VRAM.
+pub const ResidentAsset = union(enum) {
+    none,
+    failed,
+    loaded_cpu: CpuSurfaceComponent,
+    loaded_gpu: GpuTextureComponent,
+
+    /// Releases resident CPU surface or GPU texture resources.
+    pub fn deinit(self: *ResidentAsset, gpu_device: ?sdl.gpu.Device) void {
+        switch (self.*) {
+            .loaded_cpu => |cpu| cpu.surface.destroy(),
+            .loaded_gpu => |gpu| {
+                if (gpu_device) |dev| {
+                    dev.releaseTexture(gpu.gpu_texture);
+                }
+            },
+            .none, .failed => {},
+        }
+        self.* = .none;
+    }
+
+    /// Atomically replaces the current GPU texture with a newly uploaded
+    /// texture, releasing the old GPU texture if present.
+    pub fn replaceGpuTexture(
+        self: *ResidentAsset,
+        new_gpu: GpuTextureComponent,
+        gpu_device: ?sdl.gpu.Device,
+    ) void {
+        self.deinit(gpu_device);
+        self.* = .{ .loaded_gpu = new_gpu };
+    }
+};
+
+/// All resident visual layers currently uploaded and drawable for a slot.
+pub const CacheResident = struct {
+    thumbnail: ThumbnailState = .none,
+    asset: ResidentAsset = .none,
+
+    /// Releases both thumbnail texture and resident primary asset.
+    pub fn deinit(
+        self: *CacheResident,
+        gpu_device: ?sdl.gpu.Device,
+    ) void {
+        switch (self.thumbnail) {
+            .loaded => |thumb| {
+                if (gpu_device) |dev| {
+                    dev.releaseTexture(thumb.texture);
+                }
+            },
+            .none, .pending, .not_available, .unloaded => {},
+        }
+        self.thumbnail = .none;
+        self.asset.deinit(gpu_device);
+    }
+};
+
+/// Execution stage of an in-flight background worker job.
+pub const InFlightStage = enum {
+    decoding,
+    uploading,
+};
+
+/// In-flight decode or upload task metadata with per-job cancellation epoch.
+pub const InFlightDecode = struct {
+    stage: InFlightStage = .decoding,
+    has_thread: bool = false,
+    start_time_ms: u64 = 0,
+    target: PairStreamTarget = .adaptive,
+    job_id: u8 = 0,
+    job_epoch: u32 = 0,
+};
+
+/// State of a cached image's preview thumbnail (none, pending, not available,
+/// unloaded dimensions, or uploaded GPU texture).
+pub const ThumbnailState = union(enum) {
+    none,
+    pending,
+    not_available,
+    unloaded: ThumbnailInfo,
+    loaded: struct {
+        texture: sdl.gpu.Texture,
+        info: ThumbnailInfo,
+    },
+
+    /// Extracts the thumbnail dimension and upload duration information if
+    /// present.
+    pub fn getInfo(self: ThumbnailState) ?ThumbnailInfo {
+        return switch (self) {
+            .none, .pending, .not_available => null,
+            .unloaded => |info| info,
+            .loaded => |l| l.info,
+        };
+    }
+};
+
+/// Orthogonal cache slot combining Tier-0 metadata, resident visual assets,
+/// and active background decode tracking.
+pub const CacheEntry = struct {
+    metadata: CacheMetadata = .{},
+    resident: CacheResident = .{},
+    inflight: ?InFlightDecode = null,
+
+    /// Returns the pixel width of the currently loaded surface or texture,
+    /// or null if not loaded.
+    pub fn getLoadedWidth(self: CacheEntry) ?f32 {
+        return switch (self.resident.asset) {
+            .loaded_gpu => |gpu| gpu.w,
+            .loaded_cpu => |cpu| @floatFromInt(cpu.surface.w()),
+            .none, .failed => null,
+        };
+    }
+
+    /// Returns the pixel height of the currently loaded surface or texture,
+    /// or null if not loaded.
+    pub fn getLoadedHeight(self: CacheEntry) ?f32 {
+        return switch (self.resident.asset) {
+            .loaded_gpu => |gpu| gpu.h,
+            .loaded_cpu => |cpu| @floatFromInt(cpu.surface.h()),
+            .none, .failed => null,
+        };
+    }
+
+    /// Monotonically updates the authoritative full-resolution dimensions if
+    /// the candidate `(w, h)` has a larger positive finite pixel area.
+    pub fn updateFullDims(self: *CacheEntry, w: f32, h: f32) void {
+        const cand = PhysicalDims.initPositive(w, h) orelse return;
+        const cur_area = if (self.metadata.full_dims) |cur|
+            @as(f64, cur.w) * @as(f64, cur.h)
+        else
+            0.0;
+        const cand_area = @as(f64, cand.w) * @as(f64, cand.h);
+        if (cand_area > cur_area) {
+            self.metadata.full_dims = cand;
+        }
+    }
+
+    /// Applies probed or thumbnail metadata, monotonically upgrading
+    /// authoritative and RAW sensor dimensions without clearing existing RAW
+    /// state when `raw_metadata` is `.none`.
+    pub fn applyProbedMetadata(
+        self: *CacheEntry,
+        dims: ?PhysicalDims,
+        orientation: Orientation,
+        raw_metadata: RawMetadata,
+    ) void {
+        if (orientation != .normal or
+            self.metadata.orientation == .normal)
+        {
+            self.metadata.orientation = orientation;
+        }
+        if (raw_metadata.getSensorDims()) |s_dims| {
+            self.updateFullDims(s_dims.w, s_dims.h);
+        }
+        if (dims) |d| {
+            self.updateFullDims(d.w, d.h);
+        }
+        if (raw_metadata.isRaw() or self.metadata.raw_metadata.isRaw()) {
+            if (self.metadata.full_dims) |fd| {
+                self.metadata.raw_metadata = RawMetadata.init(fd.w, fd.h);
+            } else if (raw_metadata.isRaw()) {
+                self.metadata.raw_metadata = raw_metadata;
+            }
+        }
+    }
+
+    /// Returns the true physical pixel dimensions of the original image,
+    /// irrespective of what downscaled preview or thumbnail is currently
+    /// resident.
+    pub fn getAuthoritativeDims(self: CacheEntry) PhysicalDims {
+        var best: ?PhysicalDims =
+            if (self.metadata.raw_metadata.getSensorDims()) |sd|
+                .{ .w = sd.w, .h = sd.h }
+            else
+                null;
+        if (self.metadata.full_dims) |fd| {
+            const cur_area = if (best) |b|
+                @as(f64, b.w) * @as(f64, b.h)
+            else
+                0.0;
+            const full_area = @as(f64, fd.w) * @as(f64, fd.h);
+            if (full_area >= cur_area) {
+                best = fd;
+            }
+        }
+        if (best) |b| return b;
+
+        switch (self.resident.asset) {
+            .loaded_gpu => |gpu| {
+                if (PhysicalDims.initPositive(gpu.w, gpu.h)) |d| return d;
+            },
+            .loaded_cpu => |cpu| {
+                if (PhysicalDims.initPositive(cpu.w, cpu.h)) |d| return d;
+            },
+            .none, .failed => {},
+        }
+
+        if (self.resident.thumbnail.getInfo()) |info| {
+            if (PhysicalDims.initPositive(info.w, info.h)) |d| {
+                if (info.source.isPreOriented() and
+                    self.metadata.orientation.isDimensionSwapped())
+                {
+                    return .{ .w = d.h, .h = d.w };
+                }
+                return d;
+            }
+        }
+        return .{ .w = 0.0, .h = 0.0 };
+    }
+
+    /// Releases resident thumbnail and primary assets.
+    pub fn deinit(self: *CacheEntry, gpu_device: ?sdl.gpu.Device) void {
+        self.resident.deinit(gpu_device);
+        self.inflight = null;
+    }
+};
 
 /// Unique lookup key identifying a cached image slot by its stable MediaId
 /// and cache generation epoch.
@@ -2211,4 +2457,151 @@ test "removeAndDeinit - Cancels active in-flight job on slot eviction" {
         cache.job_epochs[ticket.job_id].load(.acquire),
     );
     try std.testing.expectEqual(@as(u16, 0), cache.job_alloc_mask);
+}
+
+test "InFlightDecode defaults" {
+    const inf: InFlightDecode = .{};
+    try std.testing.expectEqual(@as(u64, 0), inf.start_time_ms);
+    try std.testing.expect(!inf.has_thread);
+    try std.testing.expectEqual(InFlightStage.decoding, inf.stage);
+    try std.testing.expectEqual(PairStreamTarget.adaptive, inf.target);
+}
+
+test "CacheEntry - updateFullDims and monotonic probed metadata integration" {
+    var entry = CacheEntry{};
+    try std.testing.expectEqual(
+        @as(?PhysicalDims, null),
+        entry.metadata.full_dims,
+    );
+
+    // Initial update sets full_dims
+    entry.updateFullDims(1616.0, 1080.0);
+    try std.testing.expectEqual(
+        PhysicalDims{ .w = 1616.0, .h = 1080.0 },
+        entry.metadata.full_dims.?,
+    );
+
+    // Probing smaller preview does not overwrite larger full_dims
+    entry.applyProbedMetadata(
+        PhysicalDims.initPositive(800.0, 600.0),
+        .rotate_90,
+        .none,
+    );
+    try std.testing.expectEqual(
+        PhysicalDims{ .w = 1616.0, .h = 1080.0 },
+        entry.metadata.full_dims.?,
+    );
+    try std.testing.expectEqual(
+        Orientation.rotate_90,
+        entry.metadata.orientation,
+    );
+
+    // Probing larger dimensions upgrades monotonically
+    entry.applyProbedMetadata(
+        PhysicalDims.initPositive(6000.0, 4000.0),
+        .normal,
+        RawMetadata.init(6000.0, 4000.0),
+    );
+    try std.testing.expectEqual(
+        PhysicalDims{ .w = 6000.0, .h = 4000.0 },
+        entry.metadata.full_dims.?,
+    );
+    // Preserves non-normal orientation when candidate is .normal
+    try std.testing.expectEqual(
+        Orientation.rotate_90,
+        entry.metadata.orientation,
+    );
+    try std.testing.expect(entry.metadata.raw_metadata.isRaw());
+}
+
+test "CacheEntry - getAuthoritativeDims priority resolution" {
+    var entry = CacheEntry{};
+
+    // 0. Empty entry -> 0x0
+    try std.testing.expectEqual(
+        PhysicalDims{ .w = 0.0, .h = 0.0 },
+        entry.getAuthoritativeDims(),
+    );
+
+    // 1. Thumbnail dimensions
+    entry.resident.thumbnail = .{
+        .loaded = .{
+            .texture = undefined,
+            .info = .{ .w = 160.0, .h = 120.0 },
+        },
+    };
+    try std.testing.expectEqual(
+        PhysicalDims{ .w = 160.0, .h = 120.0 },
+        entry.getAuthoritativeDims(),
+    );
+
+    // 2. Resident asset takes priority over thumbnail
+    entry.resident.asset = .{
+        .loaded_cpu = .{
+            .surface = undefined,
+            .w = 1920.0,
+            .h = 1080.0,
+            .size_bytes = 1000,
+        },
+    };
+    try std.testing.expectEqual(
+        PhysicalDims{ .w = 1920.0, .h = 1080.0 },
+        entry.getAuthoritativeDims(),
+    );
+
+    // 3. full_dims takes priority over resident asset
+    entry.metadata.full_dims = .{ .w = 4000.0, .h = 3000.0 };
+    try std.testing.expectEqual(
+        PhysicalDims{ .w = 4000.0, .h = 3000.0 },
+        entry.getAuthoritativeDims(),
+    );
+
+    // 4. raw_metadata sensor dims takes highest priority if larger
+    entry.metadata.raw_metadata = RawMetadata.init(6000.0, 4000.0);
+    try std.testing.expectEqual(
+        PhysicalDims{ .w = 6000.0, .h = 4000.0 },
+        entry.getAuthoritativeDims(),
+    );
+}
+
+test "CacheResident - deinit cleans up both thumbnail and primary textures" {
+    // 1. Populated thumbnail and loaded_gpu asset
+    var resident = CacheResident{
+        .thumbnail = .{
+            .loaded = .{
+                .texture = .{ .ptr = @ptrFromInt(0x1234) },
+                .info = .{ .w = 160.0, .h = 120.0 },
+            },
+        },
+        .asset = .{
+            .loaded_gpu = .{
+                .gpu_texture = .{ .ptr = @ptrFromInt(0x5678) },
+                .w = 1920.0,
+                .h = 1080.0,
+                .size_bytes = 1000,
+                .ingest = .{ .memory_size_bytes = 2000 },
+            },
+        },
+    };
+    // Safe deinit on null gpu device resets both layers to .none
+    resident.deinit(null);
+    try std.testing.expectEqual(ThumbnailState.none, resident.thumbnail);
+    try std.testing.expectEqual(ResidentAsset.none, resident.asset);
+
+    // 2. Populated loaded_cpu asset destroys underlying surface on deinit
+    const surf = sdl.Surface.create(1, 1, sdl.PixelFormat.rgba32) orelse return;
+    var cpu_resident = CacheResident{
+        .thumbnail = .none,
+        .asset = .{
+            .loaded_cpu = .{
+                .surface = surf,
+                .w = 1.0,
+                .h = 1.0,
+                .size_bytes = 4,
+            },
+        },
+    };
+    cpu_resident.deinit(null);
+    try std.testing.expectEqual(ThumbnailState.none, cpu_resident.thumbnail);
+    try std.testing.expectEqual(ResidentAsset.none, cpu_resident.asset);
 }

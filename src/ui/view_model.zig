@@ -1,24 +1,23 @@
-const animation_state = @import("animation_state.zig");
-const navigation = @import("navigation.zig");
+const core = @import("core");
 const palette_pkg = @import("palette");
+const state = @import("state");
 const triage = @import("triage");
-const types = @import("types.zig");
 const vfs = @import("vfs");
 
-const AnimationChannel = animation_state.AnimationChannel;
-const CacheEntry = types.CacheEntry;
+const AnimationChannel = state.AnimationChannel;
+const CacheEntry = core.image.CacheEntry;
 const Classification = triage.Classification;
 const MediaEntry = vfs.MediaEntry;
-const MediaItemSlice = navigation.MediaItemSlice;
-const OverlayState = types.OverlayState;
+const MediaItemSlice = state.MediaItemSlice;
+const OverlayState = state.OverlayState;
 const PaletteState = palette_pkg.PaletteState;
-const SlideshowMode = types.SlideshowMode;
-const SnackbarDisplay = types.SnackbarDisplay;
-const UiRenderMetricsSnapshot = types.UiRenderMetricsSnapshot;
-const ViewerStats = types.ViewerStats;
+const SlideshowMode = state.SlideshowMode;
+const SnackbarDisplay = state.SnackbarDisplay;
+const UiRenderMetricsSnapshot = state.UiRenderMetricsSnapshot;
+const ViewerStats = state.ViewerStats;
 const ViewMode = triage.ViewMode;
-const ViewportParams = types.ViewportParams;
-const VisibleState = types.VisibleState;
+const ViewportParams = state.ViewportParams;
+const VisibleState = state.VisibleState;
 
 /// Active dissolve payload for image transitions between frames.
 pub const ActiveImageDissolve = struct {
@@ -78,8 +77,12 @@ pub const UiViewModel = struct {
         return null;
     }
 
-    /// Safely retrieves the classification at `idx`, defaulting to `.unflagged` if out of bounds.
-    pub inline fn getClassification(self: UiViewModel, idx: usize) Classification {
+    /// Safely retrieves the classification at `idx`, defaulting to `.unflagged`
+    /// if out of bounds.
+    pub inline fn getClassification(
+        self: UiViewModel,
+        idx: usize,
+    ) Classification {
         if (idx < self.items.len) {
             return self.items.items(.classification)[idx];
         }

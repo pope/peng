@@ -7,6 +7,7 @@ const state = @import("state");
 const std = @import("std");
 const text_utils = @import("text_utils.zig");
 const theme = @import("theme.zig");
+const view_model = @import("view_model.zig");
 
 const ElementTag = types.ElementTag;
 const FuzzyHighlighter = palette_pkg.FuzzyHighlighter;
@@ -21,7 +22,7 @@ const truncateDirectory = text_utils.truncateDirectory;
 const truncateFilename = text_utils.truncateFilename;
 const truncateFilenameMiddle = text_utils.truncateFilenameMiddle;
 const types = state.types;
-const UiViewModel = state.UiViewModel;
+const UiViewModel = view_model.UiViewModel;
 const VirtualWindow = palette_pkg.VirtualWindow;
 
 /// Scales the alpha of a theme color by the modal animation progress (0.0 .. 1.0).

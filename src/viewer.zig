@@ -223,7 +223,7 @@ pub fn updateFrame(
         }
     };
 
-    const ui_model = state_pkg.UiViewModel{
+    const ui_model = ui.UiViewModel{
         .is_fullscreen = app_state.isFullscreen(),
         .total_images = nav_slice.len,
         .items = nav_slice,

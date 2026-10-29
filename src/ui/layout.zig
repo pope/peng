@@ -1,4 +1,5 @@
 const clay = @import("zclay");
+const core = @import("core");
 const edit_panel = @import("edit_panel.zig");
 const graphics = @import("graphics.zig");
 const intents = @import("intents");
@@ -11,13 +12,15 @@ const stats = @import("stats.zig");
 const std = @import("std");
 const text_utils = @import("text_utils.zig");
 const theme = @import("theme.zig");
+const view_model = @import("view_model.zig");
 
+const CacheEntry = core.image.CacheEntry;
 const ElementTag = types.ElementTag;
 const FrameInput = types.FrameInput;
 const MeasureTextUserData = graphics.MeasureTextUserData;
 const PaletteState = palette_pkg.PaletteState;
 const RenderResources = graphics.RenderResources;
-const UiViewModel = state.UiViewModel;
+const UiViewModel = view_model.UiViewModel;
 const renderEditPanel = edit_panel.renderEditPanel;
 const renderPalette = palette.renderPalette;
 const renderStatsOverlay = stats.renderStatsOverlay;
@@ -31,7 +34,7 @@ const view_transform = state.view_transform;
 /// an image cache entry within available logical viewport bounds, evaluating
 /// preset fit modes in physical framebuffer space via `scale`.
 pub fn computeDrawDims(
-    entry_opt: ?state.CacheEntry,
+    entry_opt: ?CacheEntry,
     available_dims: state.LogicalDims,
     scale: state.DpiScale,
     rotation_angle: f32,
@@ -801,7 +804,7 @@ fn formatLoadingText(
 }
 
 fn buildThumbnailUvRect(
-    entry: state.CacheEntry,
+    entry: CacheEntry,
     thumb_info: state.ThumbnailInfo,
     auth: state.PhysicalDims,
     rotation_angle: f32,
@@ -835,7 +838,7 @@ fn buildThumbnailUvRect(
 
 fn renderImageCanvas(
     ui_model: UiViewModel,
-    entry: state.CacheEntry,
+    entry: CacheEntry,
     draw_w: f32,
     draw_h: f32,
     view_w: f32,
@@ -1294,7 +1297,7 @@ test "formatLoadingText - narrow viewport fallback" {
 }
 
 test "computeDrawDims - matches physical DPI scale in shrink and none modes" {
-    const entry = state.CacheEntry{
+    const entry = CacheEntry{
         .resident = .{
             .asset = .{
                 .loaded_cpu = .{
@@ -1381,7 +1384,7 @@ test "renderViewport - floating crossfade quads allow Viewport hit-testing" {
         .fonts = &(@as([2]?sdl.Font, @splat(null))),
     };
     const dummy_tex: sdl.gpu.Texture = .{ .ptr = @ptrFromInt(0x1000) };
-    const entry = state.CacheEntry{
+    const entry = CacheEntry{
         .resident = .{
             .asset = .{
                 .loaded_gpu = .{
@@ -1455,7 +1458,7 @@ test "renderViewport - floating crossfade quads allow Viewport hit-testing" {
 }
 
 test "buildThumbnailUvRect handles pre-oriented Freedesktop cached thumbnails" {
-    const entry = state.CacheEntry{
+    const entry = CacheEntry{
         .inflight = .{},
         .metadata = .{
             .full_dims = .{ .w = 6000.0, .h = 4000.0 },

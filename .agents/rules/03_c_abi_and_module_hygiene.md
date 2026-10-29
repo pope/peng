@@ -50,12 +50,13 @@
     `IpcServer` handle, and UDS socket helpers (`readLineTimeout`,
     `readLineTimeoutAlloc`).
   - `src/state/`: Pure visual/UI data models (`ViewerState`, `UiState`,
-    `UiViewModel`, `AnimationState`, `SnackbarState`, `PanController`,
-    `ZoomController`).
+    `AnimationState`, `SnackbarState`, `PanController`, `ZoomController`).
+    Zero SDL3, zero C library linkage, zero I/O.
   - `src/config/`: CLI argument parsing (`cli.zig`).
   - `src/sdl/`: Type-safe SDL3, SDL3_image, SDL3_ttf, and SDL3 GPU wrappers.
   - `src/ui/`: Clay layout builders (`layout.zig`, `palette.zig`,
-    `edit_panel.zig`, `stats.zig`), 2-pass GPU renderer (`renderer.zig`,
+    `edit_panel.zig`, `stats.zig`), `UiViewModel` presentation snapshot
+    (`view_model.zig`), 2-pass GPU renderer (`renderer.zig`,
     `render_image.zig`), Dual Kawase blur, text cache, and shaders
     (`src/ui/shaders/`).
   - `src/viewer.zig`: Frame update and render loop entry point (compiled
@@ -96,6 +97,7 @@
       targets (`probe`, `vfs`, `triage`, `palette`, `sdl`, `state`, `core`,
       `app`, `ui`, `intents`, `config`, `input`, `ipc`, `thumbcache`).
     - `zig build test-probe`: Run `probe` (`src/probe/root.zig`) unit tests.
+    - `zig build test-state`: Run `state` (`src/state/root.zig`) unit tests.
     - `zig build test-vfs`: Run `vfs` (`src/vfs/root.zig`) unit tests.
     - `zig build test-triage`: Run `triage` (`src/triage/root.zig`) unit tests.
     - `zig build test-palette`: Run `palette` (`src/palette/root.zig`) unit

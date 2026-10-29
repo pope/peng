@@ -31,7 +31,7 @@
     It must remain safe for headless unit testing without GPU, I/O, or worker
     setup.
 - **`UiViewModel` (Read-Only Presentation Snapshot)**:
-  - Defined in `src/state/view_model.zig` (`state.UiViewModel`).
+  - Defined in `src/ui/view_model.zig` (`ui.UiViewModel`).
   - Constructed at the end of Phase 2 (`runUpdatePhase`) as an immutable
     snapshot with `*const` references, pre-computed strings (`window_title`),
     and value-copied metrics (`UiRenderMetrics.toSnapshot()`).

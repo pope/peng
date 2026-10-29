@@ -239,7 +239,6 @@ pub fn build(b: *std.Build) void {
     state_module.addImport("intents", intents_module);
     state_module.addImport("palette", palette_module);
     state_module.addImport("probe", probe_module);
-    state_module.addImport("sdl", sdl_module);
     state_module.addImport("triage", triage_module);
     state_module.addImport("vfs", vfs_module);
 
@@ -287,12 +286,14 @@ pub fn build(b: *std.Build) void {
     app_module.addImport("triage", triage_module);
     app_module.addImport("vfs", vfs_module);
 
-    ui_module.addImport("sdl", sdl_module);
-    ui_module.addImport("zclay", zclay_dep.module("zclay"));
+    ui_module.addImport("core", core_module);
     ui_module.addImport("intents", intents_module);
     ui_module.addImport("palette", palette_module);
+    ui_module.addImport("sdl", sdl_module);
     ui_module.addImport("state", state_module);
-    ui_module.addImport("ipc", ipc_module);
+    ui_module.addImport("triage", triage_module);
+    ui_module.addImport("vfs", vfs_module);
+    ui_module.addImport("zclay", zclay_dep.module("zclay"));
 
     config_module.addImport("intents", intents_module);
     config_module.addImport("thumbcache", thumbcache_module);
@@ -515,6 +516,12 @@ pub fn build(b: *std.Build) void {
 
     const test_probe_step = b.step("test-probe", "Run probe tests");
     test_probe_step.dependOn(&run_probe_tests.step);
+
+    const test_state_step = b.step(
+        "test-state",
+        "Run state module unit tests",
+    );
+    test_state_step.dependOn(&run_state_tests.step);
 
     const test_core_step = b.step("test-core", "Run core tests");
     test_core_step.dependOn(&run_core_tests.step);

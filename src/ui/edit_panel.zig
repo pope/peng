@@ -3,10 +3,11 @@ const intents = @import("intents");
 const state = @import("state");
 const std = @import("std");
 const theme = @import("theme.zig");
+const view_model = @import("view_model.zig");
 
 const EditParam = intents.EditParam;
 const ParamSpec = intents.ParamSpec;
-const UiViewModel = state.UiViewModel;
+const UiViewModel = view_model.UiViewModel;
 
 /// Scales a theme color by the animation progress alpha for smooth
 /// fade-in/fade-out.
