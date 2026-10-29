@@ -145,21 +145,20 @@ fn decodeEmbeddedLocSurface(
     file_size: u64,
     loc: ThumbnailLocation,
 ) !?sdl.Surface {
-    if (loc.length == 0 or loc.file_offset +| loc.length > file_size) {
-        return null;
-    }
-    const len: usize = @intCast(loc.length);
-    if (loc.file_offset +| loc.length <= header_slice.len) {
-        if (cancel.isCanceled()) return error.Canceled;
-        const off: usize = @intCast(loc.file_offset);
-        return sdl.Surface.loadConstMemOpt(header_slice[off .. off + len]);
-    }
-    const buf = try allocator.alloc(u8, len);
-    defer allocator.free(buf);
-    const n = try readRangePositional(file, io, cancel, buf, loc.file_offset);
-    if (n != len) return null;
     if (cancel.isCanceled()) return error.Canceled;
-    return sdl.Surface.loadConstMemOpt(buf);
+    var loc_bytes = (try context.readLocationBytes(
+        allocator,
+        file,
+        io,
+        cancel,
+        header_slice,
+        file_size,
+        loc,
+        null,
+    )) orelse return null;
+    defer loc_bytes.deinit(allocator);
+    if (cancel.isCanceled()) return error.Canceled;
+    return sdl.Surface.loadConstMemOpt(loc_bytes.bytes);
 }
 
 fn decodePreviewSourceSurface(
@@ -248,8 +247,7 @@ fn decodePreviewSourceSurface(
 
     const mime_type = probe.detectMimeType(header_slice, path);
     const is_raw = isRawFile(path) or
-        probe.isFujiRafHeader(header_slice, mime_type) or
-        std.mem.startsWith(u8, mime_type, "image/x-");
+        probe.isRawContainer(header_slice, mime_type);
 
     if (is_raw) {
         const raw_probe = probe.probeRawFileHeader(
@@ -261,23 +259,8 @@ fn decodePreviewSourceSurface(
         );
         if (cancel.isCanceled()) return error.Canceled;
 
-        const prev_loc_opt = raw_probe.preview;
-        const med_loc_opt = raw_probe.medium;
-        const thumb_loc_opt = raw_probe.thumbnail;
         const orientation = raw_probe.orientation;
-
-        const candidates = if (max_dims.w <= 320 and max_dims.h <= 320)
-            [_]?ThumbnailLocation{
-                med_loc_opt,
-                prev_loc_opt,
-                thumb_loc_opt,
-            }
-        else
-            [_]?ThumbnailLocation{
-                prev_loc_opt,
-                med_loc_opt,
-                thumb_loc_opt,
-            };
+        const candidates = raw_probe.selectPreviewCandidates(max_dims);
 
         for (candidates) |cand_opt| {
             const loc = cand_opt orelse continue;
@@ -297,10 +280,13 @@ fn decodePreviewSourceSurface(
     }
 
     const orientation = probe.parseExifOrientation(header_slice) orelse .normal;
-    if (max_dims.w <= 200 and max_dims.h <= 200 and
-        std.mem.eql(u8, mime_type, "image/jpeg"))
-    {
-        if (probe.extractJpegThumbnailLocation(header_slice)) |loc| {
+    if (max_dims.w <= 200 and max_dims.h <= 200) {
+        if (probe.extractValidJpegThumbnailLocation(
+            header_slice,
+            mime_type,
+            file_size,
+            null,
+        )) |loc| {
             if (try decodeEmbeddedLocSurface(
                 allocator,
                 file,

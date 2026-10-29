@@ -828,26 +828,32 @@ fn loadThumbnailFromLocation(
     header_slice: []const u8,
     loc: probe.ThumbnailLocation,
 ) ?sdl.Surface {
-    const max_thumb_size_bytes = 2 * 1024 * 1024;
-    if (loc.length == 0 or
-        loc.length > max_thumb_size_bytes or
-        loc.file_offset +| loc.length > file_size)
-    {
-        return null;
-    }
+    if (!loc.isValid(file_size, 2 * 1024 * 1024)) return null;
     const t_len: usize = @intCast(loc.length);
     if (loc.file_offset +| loc.length <= header_slice.len) {
         const t_off: usize = @intCast(loc.file_offset);
-        return sdl.Surface.loadConstMemOpt(header_slice[t_off .. t_off + t_len]);
+        return sdl.Surface.loadConstMemOpt(
+            header_slice[t_off .. t_off + t_len],
+        );
     }
     const t_buf = alloc.alloc(u8, t_len) catch |err| {
-        std.log.warn("loadThumbnailFromLocation: alloc failed ({d} bytes): {any}", .{ t_len, err });
+        std.log.warn(
+            "loadThumbnailFromLocation: alloc failed ({d} bytes): {any}",
+            .{ t_len, err },
+        );
         return null;
     };
     defer alloc.free(t_buf);
     var ts_slices = [_][]u8{t_buf};
-    const tn = file.readPositional(io, &ts_slices, loc.file_offset) catch |err| {
-        std.log.warn("loadThumbnailFromLocation: readPositional failed: {any}", .{err});
+    const tn = file.readPositional(
+        io,
+        &ts_slices,
+        loc.file_offset,
+    ) catch |err| {
+        std.log.warn(
+            "loadThumbnailFromLocation: readPositional failed: {any}",
+            .{err},
+        );
         return null;
     };
     if (tn == t_len) {
@@ -974,8 +980,7 @@ pub fn loadThumbnailSurface(
 
             const mime_type = detectMimeType(header_slice, f.path);
             const is_raw = is_raw_ext or
-                probe.isFujiRafHeader(header_slice, mime_type) or
-                std.mem.startsWith(u8, mime_type, "image/x-");
+                probe.isRawContainer(header_slice, mime_type);
 
             var thumb_surf: ?sdl.Surface = null;
             var orientation: Orientation = .normal;
@@ -996,7 +1001,7 @@ pub fn loadThumbnailSurface(
                     );
                 }
                 orientation = raw_probe.orientation;
-                if (raw_probe.thumbnail orelse raw_probe.medium) |tloc| {
+                if (raw_probe.selectPlaceholder(true, file_size)) |tloc| {
                     thumb_surf = loadThumbnailFromLocation(
                         io,
                         alloc,
@@ -1015,7 +1020,12 @@ pub fn loadThumbnailSurface(
                         dims.h,
                     );
                 }
-                if (probe.extractJpegThumbnailLocation(header_slice)) |loc| {
+                if (probe.extractValidJpegThumbnailLocation(
+                    header_slice,
+                    mime_type,
+                    file_size,
+                    2 * 1024 * 1024,
+                )) |loc| {
                     thumb_surf = loadThumbnailFromLocation(
                         io,
                         alloc,
@@ -1661,6 +1671,114 @@ pub fn uploadSurfaceToGpu(
     };
 }
 
+/// Return payload containing converted/scaled surface and elapsed time in ms.
+pub const ConvertResult = struct {
+    surface: ?sdl.Surface,
+    conversion_time_ms: f64 = 0.0,
+};
+
+/// Scales and converts an image surface on a worker thread to prepare it for
+/// GPU upload or CPU display.
+pub fn convertAndScaleSurface(
+    surface: ?sdl.Surface,
+    pix_fmt: u32,
+    has_gpu_device: bool,
+) ConvertResult {
+    var final_surface = surface;
+    var conversion_time_ms: f64 = 0.0;
+    if (surface) |surf| {
+        if (!has_gpu_device and
+            pix_fmt != sdl.PixelFormat.unknown and
+            surf.format() != pix_fmt)
+        {
+            const start_convert = sdl.timer.getTicksNs();
+            if (surf.convert(pix_fmt)) |conv| {
+                const end_convert = sdl.timer.getTicksNs();
+                conversion_time_ms =
+                    @as(f64, @floatFromInt(end_convert - start_convert)) /
+                    1_000_000.0;
+                surf.destroy();
+                final_surface = conv;
+            } else {
+                std.log.err(
+                    "SDL_ConvertSurface failed: {s}",
+                    .{sdl.getError()},
+                );
+            }
+        } else if (has_gpu_device) {
+            // For GPU rendering:
+            // - 24-bit RGB/BGR surfaces are left as-is so the GPU compute
+            //   unpack shader (`unpack_rgb.comp.glsl`) can unpack them directly
+            //   into RGBA32 in VRAM.
+            // - Exotic formats (e.g. paletted 8-bit, grayscale) are converted
+            //   here on the background worker thread to prevent main-thread
+            //   format conversion stalls.
+            const cur_fmt = surf.format();
+            const is_32bit = switch (cur_fmt) {
+                sdl.PixelFormat.rgba32,
+                sdl.PixelFormat.bgra32,
+                sdl.PixelFormat.xrgb8888,
+                sdl.PixelFormat.xbgr8888,
+                sdl.PixelFormat.rgbx8888,
+                sdl.PixelFormat.bgrx8888,
+                => true,
+                else => false,
+            };
+            if (!is_32bit and
+                cur_fmt != sdl.PixelFormat.rgb24 and
+                cur_fmt != sdl.PixelFormat.bgr24)
+            {
+                const start_convert = sdl.timer.getTicksNs();
+                if (surf.convert(sdl.PixelFormat.rgba32)) |conv| {
+                    const end_convert = sdl.timer.getTicksNs();
+                    conversion_time_ms =
+                        @as(f64, @floatFromInt(end_convert - start_convert)) /
+                        1_000_000.0;
+                    surf.destroy();
+                    final_surface = conv;
+                } else {
+                    std.log.err(
+                        "SDL_ConvertSurface failed: {s}",
+                        .{sdl.getError()},
+                    );
+                }
+            }
+        }
+
+        if (final_surface) |f_surf| {
+            const max_dim: i32 = 8192;
+            if (f_surf.w() > max_dim or f_surf.h() > max_dim) {
+                var new_w = f_surf.w();
+                var new_h = f_surf.h();
+                if (f_surf.w() > f_surf.h()) {
+                    new_w = max_dim;
+                    new_h = @divTrunc(f_surf.h() * max_dim, f_surf.w());
+                } else {
+                    new_h = max_dim;
+                    new_w = @divTrunc(f_surf.w() * max_dim, f_surf.h());
+                }
+                new_w = @max(1, new_w);
+                new_h = @max(1, new_h);
+
+                const scaled = f_surf.scale(new_w, new_h, .linear);
+                if (scaled) |sc| {
+                    f_surf.destroy();
+                    final_surface = sc;
+                } else {
+                    std.log.err(
+                        "convertAndScaleSurface: SDL_ScaleSurface failed: {s}",
+                        .{sdl.getError()},
+                    );
+                }
+            }
+        }
+    }
+    return .{
+        .surface = final_surface,
+        .conversion_time_ms = conversion_time_ms,
+    };
+}
+
 test "enforceVramBudget - distant eviction, circular distance, and neighbor protection" {
     const allocator = std.testing.allocator;
     var cache = ImageCache{};
@@ -2117,79 +2235,32 @@ test "loadThumbnailSurface - filesystem TIFF RAW mock" {
 
     // Read real JPEG from committed fixtures
     const fixture_path = "testfiles/images/000_0_1024x682.jpg";
-    var real_jpg = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, fixture_path, .{});
+    var real_jpg = try std.Io.Dir.openFile(
+        std.Io.Dir.cwd(),
+        io,
+        fixture_path,
+        .{},
+    );
     defer real_jpg.close(io);
-    const jpg_stat = try std.Io.Dir.statFile(std.Io.Dir.cwd(), io, fixture_path, .{});
+    const jpg_stat = try std.Io.Dir.statFile(
+        std.Io.Dir.cwd(),
+        io,
+        fixture_path,
+        .{},
+    );
     const jpg_bytes = try allocator.alloc(u8, @intCast(jpg_stat.size));
     defer allocator.free(jpg_bytes);
     var j_slices = [_][]u8{jpg_bytes};
     _ = try real_jpg.readPositional(io, &j_slices, 0);
 
-    // Construct mock TIFF ARW
-    var tiff_buf = try allocator.alloc(u8, 100 + jpg_bytes.len);
+    const tiff_buf = try probe.buildSyntheticSubIfdArwAlloc(
+        allocator,
+        6000,
+        4000,
+        6,
+        jpg_bytes,
+    );
     defer allocator.free(tiff_buf);
-    @memset(tiff_buf, 0);
-
-    // TIFF Header
-    tiff_buf[0] = 'I';
-    tiff_buf[1] = 'I';
-    tiff_buf[2] = 0x2A;
-    tiff_buf[3] = 0x00;
-    std.mem.writeInt(u32, tiff_buf[4..8], 8, .little);
-
-    // IFD0 (num = 4)
-    std.mem.writeInt(u16, tiff_buf[8..10], 4, .little);
-    var off: usize = 10;
-    // 1. 0x0100 (ImageWidth) = 6000
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0100, .little);
-    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], 6000, .little);
-    off += 12;
-
-    // 2. 0x0101 (ImageLength) = 4000
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0101, .little);
-    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], 4000, .little);
-    off += 12;
-
-    // 3. 0x0112 (Orientation) = 6 (rotate 90)
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0112, .little);
-    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 3, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
-    std.mem.writeInt(u16, tiff_buf[off + 8 ..][0..2], 6, .little);
-    off += 12;
-
-    // 4. 0x014A (SubIFD) pointing to offset 60
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x014A, .little);
-    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], 60, .little);
-    off += 12;
-    std.mem.writeInt(u32, tiff_buf[off..][0..4], 0, .little); // next IFD = 0
-
-    // SubIFD at 60 (num = 2)
-    off = 60;
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 2, .little);
-    off += 2;
-    // 1. 0x0201 (JPEGInterchangeFormat) pointing to 100
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0201, .little);
-    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], 100, .little);
-    off += 12;
-
-    // 2. 0x0202 (JPEGInterchangeFormatLength) = jpg_bytes.len
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0202, .little);
-    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], @intCast(jpg_bytes.len), .little);
-    off += 12;
-    std.mem.writeInt(u32, tiff_buf[off..][0..4], 0, .little);
-
-    // Copy JPEG at 100
-    @memcpy(tiff_buf[100 .. 100 + jpg_bytes.len], jpg_bytes);
 
     // Write mock file in isolated temp directory
     var tmp = std.testing.tmpDir(.{});

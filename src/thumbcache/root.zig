@@ -942,8 +942,7 @@ pub fn precacheFileThumbnail(
 
     const mime_type = probe.detectMimeType(header_slice, path);
     const is_raw = isRawFile(path) or
-        probe.isFujiRafHeader(header_slice, mime_type) or
-        std.mem.startsWith(u8, mime_type, "image/x-");
+        probe.isRawContainer(header_slice, mime_type);
 
     if (is_raw) {
         const raw_probe = probe.probeRawFileHeader(
@@ -1023,15 +1022,12 @@ pub fn precacheFileThumbnail(
 
     const orientation = probe.parseExifOrientation(header_slice) orelse .normal;
     const full_dims = probe.parseImageDimensions(header_slice, mime_type);
-    const had_embedded_thumb: bool = blk: {
-        if (!std.mem.eql(u8, mime_type, "image/jpeg")) break :blk false;
-        const loc = probe.extractJpegThumbnailLocation(header_slice) orelse
-            break :blk false;
-        const max_thumb_size_bytes = 512 * 1024;
-        break :blk loc.length > 0 and
-            loc.length <= max_thumb_size_bytes and
-            loc.file_offset +| loc.length <= file_size;
-    };
+    const had_embedded_thumb = probe.extractValidJpegThumbnailLocation(
+        header_slice,
+        mime_type,
+        file_size,
+        512 * 1024,
+    ) != null;
 
     if (!cfg.write_policy.shouldWrite(had_embedded_thumb, false)) {
         return .skipped;

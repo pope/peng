@@ -200,6 +200,16 @@ pub fn isFujiRafHeader(
             std.mem.startsWith(u8, header_slice, "FUJIFILM"));
 }
 
+/// Returns true when `header_slice` or `mime_type` represents a Camera RAW
+/// container (Fujifilm RAF or `image/x-*` format).
+pub inline fn isRawContainer(
+    header_slice: []const u8,
+    mime_type: []const u8,
+) bool {
+    return isFujiRafHeader(header_slice, mime_type) or
+        std.mem.startsWith(u8, mime_type, "image/x-");
+}
+
 /// Advances past a ZIP `LocalFileHeader` (plus variable-length filename
 /// and extra fields) at the start of `buf` if present, returning the
 /// remaining payload slice or `null` when `buf` is empty or truncated.
@@ -1170,6 +1180,22 @@ pub const ThumbnailLocation = struct {
         const end: usize = @intCast(self.file_offset + self.length);
         return buf[start..end];
     }
+
+    /// Returns `true` when `length > 0`, `file_offset + length <= file_size`,
+    /// and `length` does not exceed `max_bytes` (when specified).
+    pub inline fn isValid(
+        self: ThumbnailLocation,
+        file_size: u64,
+        max_bytes: ?u32,
+    ) bool {
+        if (self.length == 0) return false;
+        if (max_bytes) |limit| {
+            if (self.length > limit) return false;
+        }
+        const end = std.math.add(u64, self.file_offset, self.length) catch
+            return false;
+        return end <= file_size;
+    }
 };
 
 /// Locates the byte offset and length of an embedded JPEG thumbnail in IFD1
@@ -1217,6 +1243,20 @@ pub fn extractJpegThumbnailLocation(data: []const u8) ?ThumbnailLocation {
         };
     }
     return null;
+}
+
+/// Extracts and bounds-checks the IFD1 embedded JPEG thumbnail location
+/// when `mime_type` is `"image/jpeg"`.
+pub fn extractValidJpegThumbnailLocation(
+    header_slice: []const u8,
+    mime_type: []const u8,
+    file_size: u64,
+    max_bytes: ?u32,
+) ?ThumbnailLocation {
+    if (!std.mem.eql(u8, mime_type, "image/jpeg")) return null;
+    const loc = extractJpegThumbnailLocation(header_slice) orelse
+        return null;
+    return if (loc.isValid(file_size, max_bytes)) loc else null;
 }
 
 /// Set of extracted preview, medium-res preview, and thumbnail locations from
@@ -1634,6 +1674,38 @@ pub const RawHeaderProbe = struct {
             self.medium != null or
             self.preview != null;
     }
+
+    /// Selects the best placeholder thumbnail candidate (embedded thumbnail or
+    /// medium preview) based on `thumb_only` and bounds-checked against
+    /// `file_size` and maximum placeholder size.
+    pub fn selectPlaceholder(
+        self: RawHeaderProbe,
+        thumb_only: bool,
+        file_size: u64,
+    ) ?ThumbnailLocation {
+        const candidate = if (thumb_only)
+            (self.thumbnail orelse self.medium)
+        else
+            (self.medium orelse self.thumbnail);
+        const loc = candidate orelse return null;
+        const max_bytes: u32 = if (thumb_only)
+            512 * 1024
+        else
+            2 * 1024 * 1024;
+        return if (loc.isValid(file_size, max_bytes)) loc else null;
+    }
+
+    /// Selects an ordered array of candidate preview locations based on
+    /// requested maximum dimensions.
+    pub fn selectPreviewCandidates(
+        self: RawHeaderProbe,
+        max_dims: PositiveDimsU32,
+    ) [3]?ThumbnailLocation {
+        return if (max_dims.w <= 320 and max_dims.h <= 320)
+            .{ self.medium, self.preview, self.thumbnail }
+        else
+            .{ self.preview, self.medium, self.thumbnail };
+    }
 };
 
 /// Probes an in-memory Camera RAW buffer (Fujifilm RAF or TIFF-based RAW)
@@ -2025,6 +2097,247 @@ pub fn probeCompanionJpegHeaderMetadata(
         .raw_metadata = RawMetadata.init(dims.w, dims.h),
         .has_embedded_thumbnail = true,
     };
+}
+
+/// Builds a synthetic Sony-like SubIFD ARW/TIFF container in memory for
+/// testing. IFD0 defines image dimensions and orientation, pointing to SubIFD
+/// at offset 60, which contains an embedded preview JPEG at offset 100.
+pub fn buildSyntheticSubIfdArwAlloc(
+    allocator: std.mem.Allocator,
+    width: u32,
+    height: u32,
+    orientation_tiff: u16,
+    preview_jpeg: []const u8,
+) ![]u8 {
+    const total_len = 100 + preview_jpeg.len;
+    const tiff_buf = try allocator.alloc(u8, total_len);
+    errdefer allocator.free(tiff_buf);
+    @memset(tiff_buf, 0);
+
+    // TIFF Header
+    tiff_buf[0] = 'I';
+    tiff_buf[1] = 'I';
+    tiff_buf[2] = 0x2A;
+    tiff_buf[3] = 0x00;
+    std.mem.writeInt(u32, tiff_buf[4..8], 8, .little);
+
+    // IFD0 (num = 4)
+    std.mem.writeInt(u16, tiff_buf[8..10], 4, .little);
+    var off: usize = 10;
+    // 1. 0x0100 (ImageWidth)
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0100, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], width, .little);
+    off += 12;
+
+    // 2. 0x0101 (ImageLength)
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0101, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], height, .little);
+    off += 12;
+
+    // 3. 0x0112 (Orientation)
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0112, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 3, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(
+        u16,
+        tiff_buf[off + 8 ..][0..2],
+        orientation_tiff,
+        .little,
+    );
+    off += 12;
+
+    // 4. 0x014A (SubIFD) pointing to offset 60
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x014A, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], 60, .little);
+    off += 12;
+    std.mem.writeInt(u32, tiff_buf[off..][0..4], 0, .little); // next IFD = 0
+
+    // SubIFD at 60 (num = 2)
+    off = 60;
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 2, .little);
+    off += 2;
+    // 1. 0x0201 (JPEGInterchangeFormat) pointing to 100
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0201, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], 100, .little);
+    off += 12;
+
+    // 2. 0x0202 (JPEGInterchangeFormatLength) = preview_jpeg.len
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0202, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(
+        u32,
+        tiff_buf[off + 8 ..][0..4],
+        @intCast(preview_jpeg.len),
+        .little,
+    );
+    off += 12;
+    std.mem.writeInt(u32, tiff_buf[off..][0..4], 0, .little);
+
+    // Copy JPEG at 100
+    @memcpy(tiff_buf[100 .. 100 + preview_jpeg.len], preview_jpeg);
+    return tiff_buf;
+}
+
+/// Builds a synthetic Fujifilm RAF container in memory for testing.
+/// Header defines preview JPEG at offset 200 and metadata block at offset 120.
+pub fn buildSyntheticFujiRafAlloc(
+    allocator: std.mem.Allocator,
+    width: u16,
+    height: u16,
+    preview_jpeg: []const u8,
+) ![]u8 {
+    const total_len = 200 + preview_jpeg.len;
+    const raf_buf = try allocator.alloc(u8, total_len);
+    errdefer allocator.free(raf_buf);
+    @memset(raf_buf, 0);
+
+    @memcpy(raf_buf[0..8], "FUJIFILM");
+    std.mem.writeInt(u32, raf_buf[84..88], 200, .big);
+    std.mem.writeInt(u32, raf_buf[88..92], @intCast(preview_jpeg.len), .big);
+    std.mem.writeInt(u32, raf_buf[92..96], 120, .big);
+    std.mem.writeInt(u32, raf_buf[96..100], 12, .big);
+
+    // Metadata block at 120:
+    std.mem.writeInt(u32, raf_buf[120..124], 1, .big);
+    std.mem.writeInt(u16, raf_buf[124..126], 0x0111, .big);
+    std.mem.writeInt(u16, raf_buf[126..128], 4, .big);
+    std.mem.writeInt(u16, raf_buf[128..130], height, .big);
+    std.mem.writeInt(u16, raf_buf[130..132], width, .big);
+
+    // Copy preview JPEG at 200
+    @memcpy(raf_buf[200 .. 200 + preview_jpeg.len], preview_jpeg);
+    return raf_buf;
+}
+
+/// Builds a synthetic 3-tier Sony ARW container in memory for testing:
+/// IFD0 points to medium preview, IFD1 points to smallest thumbnail,
+/// and IFD2 points to full preview and sets visible dimensions.
+pub fn buildSynthetic3TierArwAlloc(
+    allocator: std.mem.Allocator,
+    width: u32,
+    height: u32,
+    thumb_jpeg: []const u8,
+    med_jpeg: []const u8,
+    prev_jpeg: []const u8,
+) ![]u8 {
+    const header_len: usize = 256;
+    const thumb_off: usize = header_len;
+    const med_off: usize = thumb_off + thumb_jpeg.len;
+    const prev_off: usize = med_off + med_jpeg.len;
+    const total_len: usize = prev_off + prev_jpeg.len;
+
+    const tiff_buf = try allocator.alloc(u8, total_len);
+    errdefer allocator.free(tiff_buf);
+    @memset(tiff_buf, 0);
+
+    // Little-endian TIFF header, IFD0 at offset 8
+    tiff_buf[0] = 'I';
+    tiff_buf[1] = 'I';
+    tiff_buf[2] = 0x2A;
+    tiff_buf[3] = 0x00;
+    std.mem.writeInt(u32, tiff_buf[4..8], 8, .little);
+
+    // IFD0 at 8: 2 entries (medium preview) -> next IFD1 at 60
+    var off: usize = 8;
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 2, .little);
+    off += 2;
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0201, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(
+        u32,
+        tiff_buf[off + 8 ..][0..4],
+        @intCast(med_off),
+        .little,
+    );
+    off += 12;
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0202, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(
+        u32,
+        tiff_buf[off + 8 ..][0..4],
+        @intCast(med_jpeg.len),
+        .little,
+    );
+    off += 12;
+    std.mem.writeInt(u32, tiff_buf[off..][0..4], 60, .little);
+
+    // IFD1 at 60: 2 entries (smallest thumbnail) -> next IFD2 at 110
+    off = 60;
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 2, .little);
+    off += 2;
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0201, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(
+        u32,
+        tiff_buf[off + 8 ..][0..4],
+        @intCast(thumb_off),
+        .little,
+    );
+    off += 12;
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0202, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(
+        u32,
+        tiff_buf[off + 8 ..][0..4],
+        @intCast(thumb_jpeg.len),
+        .little,
+    );
+    off += 12;
+    std.mem.writeInt(u32, tiff_buf[off..][0..4], 110, .little);
+
+    // IFD2 at 110: 4 entries (largest preview + visible dimensions)
+    off = 110;
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 4, .little);
+    off += 2;
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0100, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], width, .little);
+    off += 12;
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0101, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], height, .little);
+    off += 12;
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0201, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(
+        u32,
+        tiff_buf[off + 8 ..][0..4],
+        @intCast(prev_off),
+        .little,
+    );
+    off += 12;
+    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0202, .little);
+    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
+    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
+    std.mem.writeInt(
+        u32,
+        tiff_buf[off + 8 ..][0..4],
+        @intCast(prev_jpeg.len),
+        .little,
+    );
+    off += 12;
+    std.mem.writeInt(u32, tiff_buf[off..][0..4], 0, .little);
+
+    @memcpy(tiff_buf[thumb_off .. thumb_off + thumb_jpeg.len], thumb_jpeg);
+    @memcpy(tiff_buf[med_off .. med_off + med_jpeg.len], med_jpeg);
+    @memcpy(tiff_buf[prev_off .. prev_off + prev_jpeg.len], prev_jpeg);
+    return tiff_buf;
 }
 
 test "parseExifOrientation" {
@@ -4008,4 +4321,163 @@ test "probeFileHeaderMetadata - non-thumbnail formats return false" {
         try std.testing.expect(m.dims.w > 0);
         try std.testing.expect(m.dims.h > 0);
     }
+}
+
+test "isRawContainer, isValid, and synthetic RAW builders" {
+    // 1. isRawContainer
+    try std.testing.expect(isRawContainer("FUJIFILM\x00\x00", "unknown"));
+    try std.testing.expect(isRawContainer("", "image/x-sony-arw"));
+    try std.testing.expect(!isRawContainer("", "image/jpeg"));
+    try std.testing.expect(!isRawContainer("", "image/png"));
+
+    // 2. ThumbnailLocation.isValid
+    const loc = ThumbnailLocation{ .file_offset = 100, .length = 200 };
+    try std.testing.expect(loc.isValid(300, null));
+    try std.testing.expect(loc.isValid(300, 200));
+    try std.testing.expect(!loc.isValid(300, 199));
+    try std.testing.expect(!loc.isValid(299, null));
+
+    const zero_loc = ThumbnailLocation{ .file_offset = 100, .length = 0 };
+    try std.testing.expect(!zero_loc.isValid(500, null));
+
+    const ovf_loc = ThumbnailLocation{
+        .file_offset = std.math.maxInt(u64) - 50,
+        .length = 100,
+    };
+    try std.testing.expect(!ovf_loc.isValid(std.math.maxInt(u64), null));
+
+    // 3. extractValidJpegThumbnailLocation
+    const exif_head = [_]u8{
+        0xFF, 0xD8, 0xFF, 0xE1, 0x00, 0x44, 'E',  'x',  'i',  'f',  0x00, 0x00,
+        'I',  'I',  0x2A, 0x00, 0x08, 0x00, 0x00, 0x00, 0x01, 0x00, 0x12, 0x01,
+        0x03, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x1A, 0x00,
+        0x00, 0x00, 0x02, 0x00, 0x01, 0x02, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x38, 0x00, 0x00, 0x00, 0x02, 0x02, 0x04, 0x00, 0x01, 0x00, 0x00, 0x00,
+        0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    };
+    try std.testing.expectEqual(
+        @as(?ThumbnailLocation, null),
+        extractValidJpegThumbnailLocation(&exif_head, "image/png", 100, null),
+    );
+    try std.testing.expectEqual(
+        @as(?ThumbnailLocation, null),
+        extractValidJpegThumbnailLocation(&exif_head, "image/jpeg", 50, null),
+    );
+    try std.testing.expectEqual(
+        @as(?ThumbnailLocation, null),
+        extractValidJpegThumbnailLocation(&exif_head, "image/jpeg", 100, 2),
+    );
+    const valid_jloc = extractValidJpegThumbnailLocation(
+        &exif_head,
+        "image/jpeg",
+        100,
+        null,
+    );
+    try std.testing.expect(valid_jloc != null);
+    try std.testing.expectEqual(
+        ThumbnailLocation{ .file_offset = 68, .length = 4 },
+        valid_jloc.?,
+    );
+
+    // 4. RawHeaderProbe.selectPlaceholder
+    const probe_both = RawHeaderProbe{
+        .thumbnail = .{ .file_offset = 100, .length = 1000 },
+        .medium = .{ .file_offset = 2000, .length = 50000 },
+    };
+    const sel_thumb = probe_both.selectPlaceholder(true, 100_000);
+    try std.testing.expectEqual(
+        ThumbnailLocation{ .file_offset = 100, .length = 1000 },
+        sel_thumb.?,
+    );
+    const sel_med = probe_both.selectPlaceholder(false, 100_000);
+    try std.testing.expectEqual(
+        ThumbnailLocation{ .file_offset = 2000, .length = 50000 },
+        sel_med.?,
+    );
+
+    const big_thumb = RawHeaderProbe{
+        .thumbnail = .{ .file_offset = 100, .length = 600 * 1024 },
+    };
+    try std.testing.expectEqual(
+        @as(?ThumbnailLocation, null),
+        big_thumb.selectPlaceholder(true, 1024 * 1024),
+    );
+
+    // 5. RawHeaderProbe.selectPreviewCandidates
+    const p1 = ThumbnailLocation{ .file_offset = 10, .length = 100 };
+    const p2 = ThumbnailLocation{ .file_offset = 20, .length = 200 };
+    const p3 = ThumbnailLocation{ .file_offset = 30, .length = 300 };
+    const probe_3 = RawHeaderProbe{
+        .preview = p1,
+        .medium = p2,
+        .thumbnail = p3,
+    };
+    const small_cands = probe_3.selectPreviewCandidates(.{
+        .w = 200,
+        .h = 200,
+    });
+    try std.testing.expectEqual(p2, small_cands[0].?);
+    try std.testing.expectEqual(p1, small_cands[1].?);
+    try std.testing.expectEqual(p3, small_cands[2].?);
+
+    const large_cands = probe_3.selectPreviewCandidates(.{
+        .w = 800,
+        .h = 600,
+    });
+    try std.testing.expectEqual(p1, large_cands[0].?);
+    try std.testing.expectEqual(p2, large_cands[1].?);
+    try std.testing.expectEqual(p3, large_cands[2].?);
+
+    // 6. Synthetic RAW container builders
+    const alloc = std.testing.allocator;
+    const mock_jpeg = "\xFF\xD8\xFF\xD9";
+
+    const arw = try buildSyntheticSubIfdArwAlloc(
+        alloc,
+        4000,
+        3000,
+        6,
+        mock_jpeg,
+    );
+    defer alloc.free(arw);
+    const arw_probe = probeRawBuffer(arw, "image/x-sony-arw");
+    try std.testing.expect(arw_probe.hasAnyPreview());
+    try std.testing.expectEqual(Orientation.rotate_90, arw_probe.orientation);
+    try std.testing.expect(arw_probe.sensor_dims != null);
+    try std.testing.expectEqual(@as(f32, 4000), arw_probe.sensor_dims.?.w);
+    try std.testing.expectEqual(@as(f32, 3000), arw_probe.sensor_dims.?.h);
+
+    const raf = try buildSyntheticFujiRafAlloc(
+        alloc,
+        6000,
+        4000,
+        mock_jpeg,
+    );
+    defer alloc.free(raf);
+    const raf_probe = probeRawBuffer(raf, "image/x-fuji-raf");
+    try std.testing.expect(raf_probe.hasAnyPreview());
+    try std.testing.expect(raf_probe.sensor_dims != null);
+    try std.testing.expectEqual(@as(f32, 6000), raf_probe.sensor_dims.?.w);
+    const mock_thumb = "\xFF\xD8\xFF\xD9" ++ "0123456789";
+    const mock_med = "\xFF\xD8\xFF\xD9" ++
+        "01234567890123456789012345678901234567890";
+    const mock_prev = "\xFF\xD8\xFF\xD9" ++
+        "0123456789012345678901234567890123456789012345678901234567890";
+
+    const arw3 = try buildSynthetic3TierArwAlloc(
+        alloc,
+        8000,
+        6000,
+        mock_thumb,
+        mock_med,
+        mock_prev,
+    );
+    defer alloc.free(arw3);
+    const arw3_probe = probeRawBuffer(arw3, "image/x-sony-arw");
+    try std.testing.expect(arw3_probe.preview != null);
+    try std.testing.expect(arw3_probe.medium != null);
+    try std.testing.expect(arw3_probe.thumbnail != null);
+    try std.testing.expect(arw3_probe.sensor_dims != null);
+    try std.testing.expectEqual(@as(f32, 8000), arw3_probe.sensor_dims.?.w);
+    try std.testing.expectEqual(@as(f32, 6000), arw3_probe.sensor_dims.?.h);
 }

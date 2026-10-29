@@ -9,6 +9,7 @@ const thumbcache = @import("thumbcache");
 const vfs = @import("vfs");
 
 const ArchiveMediaEntry = vfs.ArchiveMediaEntry;
+const convertAndScaleSurface = image.convertAndScaleSurface;
 const decompressCbzMediaEntry = vfs.decompressCbzMediaEntry;
 const FilePair = vfs.FilePair;
 const hasValidTargetTierThumbnail = thumbcache.hasValidTargetTierThumbnail;
@@ -21,6 +22,7 @@ const MediaEntry = vfs.MediaEntry;
 const MediaId = vfs.MediaId;
 const PairStreamTarget = vfs.PairStreamTarget;
 const RawMetadata = probe.RawMetadata;
+const readLocationBytes = context.readLocationBytes;
 const readRangePositional = context.readRangePositional;
 const ThumbCacheConfig = thumbcache.ThumbCacheConfig;
 const ThumbCacheKey = thumbcache.ThumbCacheKey;
@@ -82,93 +84,88 @@ fn failDecodeWorker(
     context.wakeUpMainThread();
 }
 
-const ConvertResult = struct {
-    surface: ?sdl.Surface,
-    conversion_time_ms: f64 = 0.0,
-};
-
-fn convertAndScaleSurface(
-    surface: ?sdl.Surface,
-    pix_fmt: u32,
-    has_gpu_device: bool,
-) ConvertResult {
-    var final_surface = surface;
-    var conversion_time_ms: f64 = 0.0;
-    if (surface) |surf| {
-        if (!has_gpu_device and pix_fmt != sdl.PixelFormat.unknown and surf.format() != pix_fmt) {
-            const start_convert = sdl.timer.getTicksNs();
-            if (surf.convert(pix_fmt)) |conv| {
-                const end_convert = sdl.timer.getTicksNs();
-                conversion_time_ms =
-                    @as(f64, @floatFromInt(end_convert - start_convert)) / 1_000_000.0;
-                surf.destroy();
-                final_surface = conv;
-            } else {
-                std.log.err("SDL_ConvertSurface failed: {s}", .{sdl.getError()});
-            }
-        } else if (has_gpu_device) {
-            // For GPU rendering:
-            // - 24-bit RGB/BGR surfaces are left as-is so the GPU compute unpack shader
-            //   (`unpack_rgb.comp.glsl`) can unpack them directly into RGBA32 in VRAM.
-            // - Exotic formats (e.g. paletted 8-bit, grayscale) are converted here on the
-            //   background worker thread to prevent main-thread format conversion stalls.
-            const cur_fmt = surf.format();
-            const is_32bit = switch (cur_fmt) {
-                sdl.PixelFormat.rgba32,
-                sdl.PixelFormat.bgra32,
-                sdl.PixelFormat.xrgb8888,
-                sdl.PixelFormat.xbgr8888,
-                sdl.PixelFormat.rgbx8888,
-                sdl.PixelFormat.bgrx8888,
-                => true,
-                else => false,
-            };
-            if (!is_32bit and
-                cur_fmt != sdl.PixelFormat.rgb24 and
-                cur_fmt != sdl.PixelFormat.bgr24)
-            {
-                const start_convert = sdl.timer.getTicksNs();
-                if (surf.convert(sdl.PixelFormat.rgba32)) |conv| {
-                    const end_convert = sdl.timer.getTicksNs();
-                    conversion_time_ms =
-                        @as(f64, @floatFromInt(end_convert - start_convert)) / 1_000_000.0;
-                    surf.destroy();
-                    final_surface = conv;
-                } else {
-                    std.log.err("SDL_ConvertSurface failed: {s}", .{sdl.getError()});
-                }
-            }
-        }
-
-        if (final_surface) |f_surf| {
-            const max_dim: i32 = 8192;
-            if (f_surf.w() > max_dim or f_surf.h() > max_dim) {
-                var new_w = f_surf.w();
-                var new_h = f_surf.h();
-                if (f_surf.w() > f_surf.h()) {
-                    new_w = max_dim;
-                    new_h = @divTrunc(f_surf.h() * max_dim, f_surf.w());
-                } else {
-                    new_h = max_dim;
-                    new_w = @divTrunc(f_surf.w() * max_dim, f_surf.h());
-                }
-                new_w = @max(1, new_w);
-                new_h = @max(1, new_h);
-
-                const scaled = f_surf.scale(new_w, new_h, .linear);
-                if (scaled) |sc| {
-                    f_surf.destroy();
-                    final_surface = sc;
-                } else {
-                    std.log.err("decodeWorker: SDL_ScaleSurface failed: {s}", .{sdl.getError()});
-                }
-            }
-        }
-    }
-    return .{
-        .surface = final_surface,
-        .conversion_time_ms = conversion_time_ms,
+fn pushExifOrientation(
+    workers: *WorkerManager,
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    key: ImageCacheKey,
+    job_epoch: u32,
+    orientation: probe.Orientation,
+) void {
+    if (orientation == .normal) return;
+    workers.event_queue.push(alloc, io, .{
+        .exif_orientation_parsed = .init(
+            key,
+            job_epoch,
+            .{ .orientation = orientation },
+        ),
+    }) catch |err| {
+        std.log.err("Failed to push EXIF orientation event: {}", .{err});
     };
+    context.wakeUpMainThread();
+}
+
+fn pushThumbDecoded(
+    workers: *WorkerManager,
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    key: ImageCacheKey,
+    job_epoch: u32,
+    surface: sdl.Surface,
+    source_dims: ?state_pkg.PhysicalDims,
+    orientation: probe.Orientation,
+    thumb_only: bool,
+    source: ThumbnailSource,
+    raw_metadata: RawMetadata,
+) void {
+    const dct_snapped = if (source == .freedesktop_cache)
+        false
+    else if (source_dims) |sd|
+        image.detectThumbnailDctPadding(surface, sd.w, sd.h)
+    else
+        false;
+
+    workers.event_queue.push(alloc, io, .{
+        .thumb_decoded = .init(key, job_epoch, .{
+            .surface = surface,
+            .w = @floatFromInt(surface.w()),
+            .h = @floatFromInt(surface.h()),
+            .source_dims = source_dims,
+            .orientation = orientation,
+            .thumb_only = thumb_only,
+            .raw_metadata = raw_metadata,
+            .dct_snapped = dct_snapped,
+            .source = source,
+        }),
+    }) catch |err| {
+        std.log.err("Failed to push thumbnail decode event: {}", .{err});
+        surface.destroy();
+    };
+    context.wakeUpMainThread();
+}
+
+fn pushDimensionsProbed(
+    workers: *WorkerManager,
+    alloc: std.mem.Allocator,
+    io: std.Io,
+    key: ImageCacheKey,
+    job_epoch: u32,
+    source_dims: ?state_pkg.PhysicalDims,
+    orientation: probe.Orientation,
+    thumb_only: bool,
+    raw_metadata: RawMetadata,
+) void {
+    workers.event_queue.push(alloc, io, .{
+        .dimensions_probed = .init(key, job_epoch, .{
+            .source_dims = source_dims,
+            .orientation = orientation,
+            .thumb_only = thumb_only,
+            .raw_metadata = raw_metadata,
+        }),
+    }) catch |err| {
+        std.log.err("Failed to push dimensions probed event: {}", .{err});
+    };
+    context.wakeUpMainThread();
 }
 
 const CacheProbeOutcome = enum {
@@ -390,21 +387,14 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
 
     if (cancel.isCanceled()) return true;
 
-    if (orientation != .normal) {
-        workers.event_queue.push(alloc, io, .{
-            .exif_orientation_parsed = .init(
-                key,
-                args.job_epoch,
-                .{ .orientation = orientation },
-            ),
-        }) catch |err| {
-            std.log.err(
-                "Failed to push EXIF orientation event: {}",
-                .{err},
-            );
-        };
-        context.wakeUpMainThread();
-    }
+    pushExifOrientation(
+        workers,
+        alloc,
+        io,
+        key,
+        args.job_epoch,
+        orientation,
+    );
 
     const raw_w: f32 = if (raw_sensor_dims) |d| d.w else 0.0;
     const raw_h: f32 = if (raw_sensor_dims) |d| d.h else 0.0;
@@ -418,58 +408,40 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
         var thumb_surf: ?sdl.Surface = null;
         var thumb_source: ThumbnailSource = .embedded_header;
         var cached_dims: ?state_pkg.PhysicalDims = null;
-        const target_loc_opt = if (args.thumb_only)
-            (thumb_loc_opt orelse med_loc_opt)
-        else
-            (med_loc_opt orelse thumb_loc_opt);
-        const max_placeholder_bytes: u32 = if (args.thumb_only)
-            512 * 1024
-        else
-            2 * 1024 * 1024;
+        const target_loc_opt = raw_probe.selectPlaceholder(
+            args.thumb_only,
+            file_size,
+        );
 
         if (target_loc_opt) |tloc| {
-            if (tloc.length > 0 and tloc.length <= max_placeholder_bytes and
-                tloc.file_offset +| tloc.length <= file_size)
-            {
-                const t_len: usize = @intCast(tloc.length);
-                if (tloc.file_offset +| tloc.length <= header_n) {
-                    const t_off: usize = @intCast(tloc.file_offset);
-                    thumb_surf = sdl.Surface.loadConstMemOpt(
-                        header_slice[t_off .. t_off + t_len],
-                    );
-                    if (thumb_surf != null) {
+            var loc_bytes = readLocationBytes(
+                alloc,
+                file,
+                io,
+                cancel,
+                header_slice,
+                file_size,
+                tloc,
+                if (args.thumb_only) 512 * 1024 else 2 * 1024 * 1024,
+            ) catch |err| blk: {
+                if (err == error.Canceled or cancel.isCanceled()) return true;
+                break :blk null;
+            };
+            if (loc_bytes) |*lb| {
+                defer lb.deinit(alloc);
+                thumb_surf = sdl.Surface.loadConstMemOpt(lb.bytes);
+                if (thumb_surf != null) {
+                    if (lb.isFromHeader()) {
                         _ = workers.thumb_header_hits.fetchAdd(1, .monotonic);
                         thumb_source = .embedded_header;
-                        had_embedded_thumb = true;
+                    } else {
+                        _ = workers.thumb_positional_hits.fetchAdd(
+                            1,
+                            .monotonic,
+                        );
+                        thumb_source = .embedded_positional;
                     }
-                } else {
-                    const t_buf = alloc.alloc(u8, t_len) catch null;
-                    if (t_buf) |tb| {
-                        defer alloc.free(tb);
-                        const tn = readRangePositional(
-                            file,
-                            io,
-                            cancel,
-                            tb,
-                            tloc.file_offset,
-                        ) catch |err| blk: {
-                            if (err == error.Canceled or cancel.isCanceled()) {
-                                return true;
-                            }
-                            break :blk 0;
-                        };
-                        if (tn == t_len) {
-                            thumb_surf = sdl.Surface.loadConstMemOpt(tb);
-                            if (thumb_surf != null) {
-                                _ = workers.thumb_positional_hits.fetchAdd(
-                                    1,
-                                    .monotonic,
-                                );
-                                thumb_source = .embedded_positional;
-                                had_embedded_thumb = true;
-                            }
-                        }
-                    }
+                    had_embedded_thumb = true;
                 }
             }
         }
@@ -506,35 +478,23 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
             const source_dims =
                 state_pkg.PhysicalDims.initPositive(raw_w, raw_h) orelse
                 cached_dims;
-            const dct_snapped = if (thumb_source == .freedesktop_cache)
-                false
-            else if (source_dims) |sd|
-                image.detectThumbnailDctPadding(t_surf, sd.w, sd.h)
+            const raw_meta = if (source_dims) |sd|
+                RawMetadata.init(sd.w, sd.h)
             else
-                false;
-            workers.event_queue.push(alloc, io, .{
-                .thumb_decoded = .init(key, args.job_epoch, .{
-                    .surface = t_surf,
-                    .w = @floatFromInt(t_surf.w()),
-                    .h = @floatFromInt(t_surf.h()),
-                    .source_dims = source_dims,
-                    .orientation = orientation,
-                    .thumb_only = args.thumb_only,
-                    .raw_metadata = if (source_dims) |sd|
-                        RawMetadata.init(sd.w, sd.h)
-                    else
-                        .none,
-                    .dct_snapped = dct_snapped,
-                    .source = thumb_source,
-                }),
-            }) catch |err| {
-                std.log.err(
-                    "Failed to push thumbnail decode event: {}",
-                    .{err},
-                );
-                t_surf.destroy();
-            };
-            context.wakeUpMainThread();
+                .none;
+            pushThumbDecoded(
+                workers,
+                alloc,
+                io,
+                key,
+                args.job_epoch,
+                t_surf,
+                source_dims,
+                orientation,
+                args.thumb_only,
+                thumb_source,
+                raw_meta,
+            );
 
             if (args.thumb_only) {
                 return true;
@@ -545,23 +505,17 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
             // to immediately establish canvas aspect ratio on Frame 1
             // without decoding pixels
             if (cancel.isCanceled()) return true;
-            workers.event_queue.push(alloc, io, .{
-                .dimensions_probed = .init(key, args.job_epoch, .{
-                    .source_dims = state_pkg.PhysicalDims.initPositive(
-                        raw_w,
-                        raw_h,
-                    ),
-                    .orientation = orientation,
-                    .thumb_only = true,
-                    .raw_metadata = RawMetadata.init(raw_w, raw_h),
-                }),
-            }) catch |err| {
-                std.log.err(
-                    "Failed to push dimensions probed event: {}",
-                    .{err},
-                );
-            };
-            context.wakeUpMainThread();
+            pushDimensionsProbed(
+                workers,
+                alloc,
+                io,
+                key,
+                args.job_epoch,
+                state_pkg.PhysicalDims.initPositive(raw_w, raw_h),
+                orientation,
+                true,
+                RawMetadata.init(raw_w, raw_h),
+            );
             return true;
         }
     }
@@ -582,9 +536,17 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
         return true;
     };
 
-    if (prev_loc.length == 0 or
-        prev_loc.file_offset +| prev_loc.length > file_size)
-    {
+    var loc_bytes = readLocationBytes(
+        alloc,
+        file,
+        io,
+        cancel,
+        header_slice,
+        file_size,
+        prev_loc,
+        null,
+    ) catch |err| {
+        if (err == error.Canceled or cancel.isCanceled()) return true;
         if (is_pair) return false;
         failDecodeWorker(
             workers,
@@ -592,97 +554,41 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
             io,
             key,
             args.job_epoch,
-            "decodeWorker: invalid preview location in RAW file '{s}'",
+            "decodeWorker: readLocationBytes failed for preview in '{s}': {}",
+            .{ path, err },
+        );
+        return true;
+    };
+    if (loc_bytes == null) {
+        if (is_pair) return false;
+        failDecodeWorker(
+            workers,
+            alloc,
+            io,
+            key,
+            args.job_epoch,
+            "decodeWorker: incomplete preview read for '{s}'",
             .{path},
         );
         return true;
     }
-
-    var prev_bytes: []const u8 = undefined;
-    var prev_allocated_buf: ?[]u8 = null;
-    defer if (prev_allocated_buf) |b| alloc.free(b);
-
-    var read_time_ms = header_read_time_ms;
-
-    if (prev_loc.file_offset +| prev_loc.length <= header_n) {
-        const off: usize = @intCast(prev_loc.file_offset);
-        const len: usize = @intCast(prev_loc.length);
-        prev_bytes = header_slice[off .. off + len];
-    } else {
-        const p_buf = alloc.alloc(u8, prev_loc.length) catch |err| {
-            if (is_pair) return false;
-            failDecodeWorker(
-                workers,
-                alloc,
-                io,
-                key,
-                args.job_epoch,
-                "decodeWorker: alloc failed for preview in '{s}': {}",
-                .{ path, err },
-            );
-            return true;
-        };
-        prev_allocated_buf = p_buf;
-
-        const start_p_read = sdl.timer.getTicksNs();
-        const total_read = readRangePositional(
-            file,
-            io,
-            cancel,
-            p_buf,
-            prev_loc.file_offset,
-        ) catch |err| {
-            if (err == error.Canceled or cancel.isCanceled()) return true;
-            if (is_pair) return false;
-            failDecodeWorker(
-                workers,
-                alloc,
-                io,
-                key,
-                args.job_epoch,
-                "decodeWorker: readPositional failed " ++
-                    "for preview in '{s}': {}",
-                .{ path, err },
-            );
-            return true;
-        };
-        const end_p_read = sdl.timer.getTicksNs();
-        if (total_read < p_buf.len) {
-            if (is_pair) return false;
-            failDecodeWorker(
-                workers,
-                alloc,
-                io,
-                key,
-                args.job_epoch,
-                "decodeWorker: incomplete preview read for '{s}'",
-                .{path},
-            );
-            return true;
-        }
-        read_time_ms = header_read_time_ms +
-            (@as(f64, @floatFromInt(end_p_read - start_p_read)) / 1_000_000.0);
-        prev_bytes = p_buf;
-    }
+    defer loc_bytes.?.deinit(alloc);
+    const prev_bytes = loc_bytes.?.bytes;
+    const read_time_ms = header_read_time_ms + loc_bytes.?.read_time_ms;
 
     if (is_fuji and orientation == .normal) {
         if (probe.parseExifOrientation(prev_bytes)) |o| {
             orientation = o;
             if (orientation != .normal) {
                 if (cancel.isCanceled()) return true;
-                workers.event_queue.push(alloc, io, .{
-                    .exif_orientation_parsed = .init(
-                        key,
-                        args.job_epoch,
-                        .{ .orientation = orientation },
-                    ),
-                }) catch |err| {
-                    std.log.err(
-                        "Failed to push EXIF orientation event: {}",
-                        .{err},
-                    );
-                };
-                context.wakeUpMainThread();
+                pushExifOrientation(
+                    workers,
+                    alloc,
+                    io,
+                    key,
+                    args.job_epoch,
+                    orientation,
+                );
             }
         }
     }
@@ -1024,11 +930,8 @@ const DecodePayload = struct {
         const cancel = args.cancelToken();
 
         if (valid_jpeg_thumb_loc) |loc| {
-            const len: usize = @intCast(loc.length);
-            if (loc.file_offset +| loc.length <= self.read_n) {
+            if (loc.sliceInBounds(self.bytes[0..self.read_n])) |slice| {
                 if (cancel.isCanceled()) return error.Canceled;
-                const off: usize = @intCast(loc.file_offset);
-                const slice = self.bytes[off .. off + len];
                 if (sdl.Surface.loadConstMemOpt(slice)) |surf| {
                     _ = args.workers.thumb_header_hits.fetchAdd(
                         1,
@@ -1043,36 +946,35 @@ const DecodePayload = struct {
                 }
             } else if (self.stage == .staged_file) {
                 const file = self.stage.staged_file;
-                if (args.allocator.alloc(u8, len)) |tb| {
-                    defer args.allocator.free(tb);
-                    const tn = readRangePositional(
-                        file,
-                        args.io,
-                        cancel,
-                        tb,
-                        loc.file_offset,
-                    ) catch |err| blk: {
-                        const canceled = (err == error.Canceled) or
-                            cancel.isCanceled();
-                        if (canceled) {
-                            return error.Canceled;
-                        }
-                        break :blk 0;
-                    };
-                    if (tn == len) {
-                        if (cancel.isCanceled()) return error.Canceled;
-                        if (sdl.Surface.loadConstMemOpt(tb)) |surf| {
-                            _ = args.workers.thumb_positional_hits
-                                .fetchAdd(1, .monotonic);
-                            return .{
-                                .hit = .{
-                                    .surface = surf,
-                                    .source = .embedded_positional,
-                                },
-                            };
-                        }
+                var loc_bytes = readLocationBytes(
+                    args.allocator,
+                    file,
+                    args.io,
+                    cancel,
+                    self.bytes[0..self.read_n],
+                    self.size_bytes,
+                    loc,
+                    null,
+                ) catch |err| blk: {
+                    if (err == error.Canceled or cancel.isCanceled()) {
+                        return error.Canceled;
                     }
-                } else |_| {}
+                    break :blk null;
+                };
+                if (loc_bytes) |*lb| {
+                    defer lb.deinit(args.allocator);
+                    if (cancel.isCanceled()) return error.Canceled;
+                    if (sdl.Surface.loadConstMemOpt(lb.bytes)) |surf| {
+                        _ = args.workers.thumb_positional_hits
+                            .fetchAdd(1, .monotonic);
+                        return .{
+                            .hit = .{
+                                .surface = surf,
+                                .source = .embedded_positional,
+                            },
+                        };
+                    }
+                }
             }
         }
 
@@ -1111,13 +1013,20 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     if (cancel.isCanceled()) return;
 
     var payload: DecodePayload = switch (media_entry) {
-        .archive_entry => |arch| DecodePayload.fromArchiveEntry(args, arch) orelse return,
+        .archive_entry => |arch| DecodePayload.fromArchiveEntry(
+            args,
+            arch,
+        ) orelse return,
         .filesystem => |file_item| blk: {
             if (isRawFile(file_item.path)) {
                 _ = decodeRawFile(args, file_item.path, false);
                 return;
             }
-            break :blk DecodePayload.openStagedFile(args, file_item.path, "") orelse return;
+            break :blk DecodePayload.openStagedFile(
+                args,
+                file_item.path,
+                "",
+            ) orelse return;
         },
         .pair => |pair| blk: {
             if (args.thumb_only or args.pair_target != .standalone_jpeg) {
@@ -1162,34 +1071,23 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         orientation = probe.parseExifOrientation(header_buf) orelse .normal;
     }
 
-    if (orientation != .normal) {
-        if (cancel.isCanceled()) return;
-        workers.event_queue.push(alloc, io, .{
-            .exif_orientation_parsed = .init(
-                key,
-                args.job_epoch,
-                .{ .orientation = orientation },
-            ),
-        }) catch |err| {
-            std.log.err("Failed to push EXIF orientation event: {}", .{err});
-        };
-        context.wakeUpMainThread();
-    }
+    if (cancel.isCanceled()) return;
+    pushExifOrientation(
+        workers,
+        alloc,
+        io,
+        key,
+        args.job_epoch,
+        orientation,
+    );
 
     const full_dims = probe.parseImageDimensions(header_buf, mime_type);
-    const valid_jpeg_thumb_loc: ?probe.ThumbnailLocation = blk: {
-        if (!std.mem.eql(u8, mime_type, "image/jpeg")) break :blk null;
-        const loc = probe.extractJpegThumbnailLocation(header_buf) orelse
-            break :blk null;
-        const max_thumb_size_bytes = 512 * 1024;
-        if (loc.length == 0 or
-            loc.length > max_thumb_size_bytes or
-            loc.file_offset +| loc.length > payload.size_bytes)
-        {
-            break :blk null;
-        }
-        break :blk loc;
-    };
+    const valid_jpeg_thumb_loc = probe.extractValidJpegThumbnailLocation(
+        header_buf,
+        mime_type,
+        payload.size_bytes,
+        512 * 1024,
+    );
     var had_embedded_thumb = (valid_jpeg_thumb_loc != null);
     var probe_outcome: CacheProbeOutcome = .not_probed;
 
@@ -1219,32 +1117,19 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                     state_pkg.PhysicalDims.initPositive(d.w, d.h)
                 else
                     loaded_thumb.source_dims;
-                const dct_snapped =
-                    if (loaded_thumb.source == .freedesktop_cache)
-                        false
-                    else if (source_dims) |sd|
-                        image.detectThumbnailDctPadding(t_surf, sd.w, sd.h)
-                    else
-                        false;
-                workers.event_queue.push(alloc, io, .{
-                    .thumb_decoded = .init(key, args.job_epoch, .{
-                        .surface = t_surf,
-                        .w = @floatFromInt(t_surf.w()),
-                        .h = @floatFromInt(t_surf.h()),
-                        .source_dims = source_dims,
-                        .orientation = orientation,
-                        .thumb_only = args.thumb_only,
-                        .dct_snapped = dct_snapped,
-                        .source = loaded_thumb.source,
-                    }),
-                }) catch |err| {
-                    std.log.err(
-                        "Failed to push thumbnail decode event: {}",
-                        .{err},
-                    );
-                    t_surf.destroy();
-                };
-                context.wakeUpMainThread();
+                pushThumbDecoded(
+                    workers,
+                    alloc,
+                    io,
+                    key,
+                    args.job_epoch,
+                    t_surf,
+                    source_dims,
+                    orientation,
+                    args.thumb_only,
+                    loaded_thumb.source,
+                    .none,
+                );
 
                 if (args.thumb_only) {
                     return;
@@ -1263,24 +1148,26 @@ pub fn decodeWorker(args: *DecodeArgs) void {
             state_pkg.PhysicalDims.initPositive(d.w, d.h)
         else
             null;
-        workers.event_queue.push(alloc, io, .{
-            .dimensions_probed = .init(key, args.job_epoch, .{
-                .source_dims = source_dims,
-                .orientation = orientation,
-                .thumb_only = true,
-                .raw_metadata = if (is_raw_archive)
-                    (if (raw_sensor_dims) |d|
-                        RawMetadata.init(d.w, d.h)
-                    else if (source_dims) |sd|
-                        RawMetadata.init(sd.w, sd.h)
-                    else
-                        .none)
-                else
-                    .none,
-            }),
-        }) catch |err| {
-            std.log.err("Failed to push dimensions probed event: {}", .{err});
-        };
+        const raw_metadata: RawMetadata = if (is_raw_archive)
+            (if (raw_sensor_dims) |d|
+                RawMetadata.init(d.w, d.h)
+            else if (source_dims) |sd|
+                RawMetadata.init(sd.w, sd.h)
+            else
+                .none)
+        else
+            .none;
+        pushDimensionsProbed(
+            workers,
+            alloc,
+            io,
+            key,
+            args.job_epoch,
+            source_dims,
+            orientation,
+            true,
+            raw_metadata,
+        );
         return;
     }
 
@@ -1532,79 +1419,32 @@ test "decodeWorker - Sony ARW range reading and preview extraction" {
 
     // Read real JPEG to embed as preview
     const sample_jpg_path = "testfiles/images/000_0_1024x682.jpg";
-    var real_jpg = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, sample_jpg_path, .{});
+    var real_jpg = try std.Io.Dir.openFile(
+        std.Io.Dir.cwd(),
+        io,
+        sample_jpg_path,
+        .{},
+    );
     defer real_jpg.close(io);
-    const jpg_stat = try std.Io.Dir.statFile(std.Io.Dir.cwd(), io, sample_jpg_path, .{});
+    const jpg_stat = try std.Io.Dir.statFile(
+        std.Io.Dir.cwd(),
+        io,
+        sample_jpg_path,
+        .{},
+    );
     const jpg_bytes = try allocator.alloc(u8, @intCast(jpg_stat.size));
     defer allocator.free(jpg_bytes);
     var j_slices = [_][]u8{jpg_bytes};
     _ = try real_jpg.readPositional(io, &j_slices, 0);
 
-    // Construct mock TIFF ARW
-    var tiff_buf = try allocator.alloc(u8, 100 + jpg_bytes.len);
+    const tiff_buf = try probe.buildSyntheticSubIfdArwAlloc(
+        allocator,
+        6000,
+        4000,
+        6,
+        jpg_bytes,
+    );
     defer allocator.free(tiff_buf);
-    @memset(tiff_buf, 0);
-
-    // TIFF Header
-    tiff_buf[0] = 'I';
-    tiff_buf[1] = 'I';
-    tiff_buf[2] = 0x2A;
-    tiff_buf[3] = 0x00;
-    std.mem.writeInt(u32, tiff_buf[4..8], 8, .little);
-
-    // IFD0 (num = 4)
-    std.mem.writeInt(u16, tiff_buf[8..10], 4, .little);
-    var off: usize = 10;
-    // 1. 0x0100 (ImageWidth) = 6000
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0100, .little);
-    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], 6000, .little);
-    off += 12;
-
-    // 2. 0x0101 (ImageLength) = 4000
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0101, .little);
-    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], 4000, .little);
-    off += 12;
-
-    // 3. 0x0112 (Orientation) = 6 (rotate 90)
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0112, .little);
-    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 3, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
-    std.mem.writeInt(u16, tiff_buf[off + 8 ..][0..2], 6, .little);
-    off += 12;
-
-    // 4. 0x014A (SubIFD) pointing to offset 60
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x014A, .little);
-    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], 60, .little);
-    off += 12;
-    std.mem.writeInt(u32, tiff_buf[off..][0..4], 0, .little); // next IFD = 0
-
-    // SubIFD at 60 (num = 2)
-    off = 60;
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 2, .little);
-    off += 2;
-    // 1. 0x0201 (JPEGInterchangeFormat) pointing to 100
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0201, .little);
-    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], 100, .little);
-    off += 12;
-
-    // 2. 0x0202 (JPEGInterchangeFormatLength) = jpg_bytes.len
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0202, .little);
-    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], @intCast(jpg_bytes.len), .little);
-    off += 12;
-    std.mem.writeInt(u32, tiff_buf[off..][0..4], 0, .little);
-
-    // Copy JPEG at 100
-    @memcpy(tiff_buf[100 .. 100 + jpg_bytes.len], jpg_bytes);
 
     // Write mock file in isolated temp directory
     var tmp = std.testing.tmpDir(.{});
@@ -1728,34 +1568,31 @@ test "decodeWorker - Fujifilm RAF range reading and preview extraction" {
 
     // Read real JPEG to embed as preview
     const sample_jpg_path = "testfiles/images/000_0_1024x682.jpg";
-    var real_jpg = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, sample_jpg_path, .{});
+    var real_jpg = try std.Io.Dir.openFile(
+        std.Io.Dir.cwd(),
+        io,
+        sample_jpg_path,
+        .{},
+    );
     defer real_jpg.close(io);
-    const jpg_stat = try std.Io.Dir.statFile(std.Io.Dir.cwd(), io, sample_jpg_path, .{});
+    const jpg_stat = try std.Io.Dir.statFile(
+        std.Io.Dir.cwd(),
+        io,
+        sample_jpg_path,
+        .{},
+    );
     const jpg_bytes = try allocator.alloc(u8, @intCast(jpg_stat.size));
     defer allocator.free(jpg_bytes);
     var j_slices = [_][]u8{jpg_bytes};
     _ = try real_jpg.readPositional(io, &j_slices, 0);
 
-    // Construct mock Fujifilm RAF
-    var raf_buf = try allocator.alloc(u8, 200 + jpg_bytes.len);
+    const raf_buf = try probe.buildSyntheticFujiRafAlloc(
+        allocator,
+        6240,
+        4160,
+        jpg_bytes,
+    );
     defer allocator.free(raf_buf);
-    @memset(raf_buf, 0);
-
-    @memcpy(raf_buf[0..8], "FUJIFILM");
-    std.mem.writeInt(u32, raf_buf[84..88], 200, .big);
-    std.mem.writeInt(u32, raf_buf[88..92], @intCast(jpg_bytes.len), .big);
-    std.mem.writeInt(u32, raf_buf[92..96], 120, .big);
-    std.mem.writeInt(u32, raf_buf[96..100], 12, .big);
-
-    // Metadata block at 120:
-    std.mem.writeInt(u32, raf_buf[120..124], 1, .big);
-    std.mem.writeInt(u16, raf_buf[124..126], 0x0111, .big);
-    std.mem.writeInt(u16, raf_buf[126..128], 4, .big);
-    std.mem.writeInt(u16, raf_buf[128..130], 4160, .big);
-    std.mem.writeInt(u16, raf_buf[130..132], 6240, .big);
-
-    // Copy preview JPEG at 200
-    @memcpy(raf_buf[200 .. 200 + jpg_bytes.len], jpg_bytes);
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1859,114 +1696,15 @@ test "decodeWorker - progressive 3-tier loading for synthetic ARW" {
     const prev_bytes = try readJpeg(allocator, io, prev_path);
     defer allocator.free(prev_bytes);
 
-    const header_len: usize = 256;
-    const thumb_off: usize = header_len;
-    const med_off: usize = thumb_off + thumb_bytes.len;
-    const prev_off: usize = med_off + med_bytes.len;
-    const total_len: usize = prev_off + prev_bytes.len;
-
-    const tiff_buf = try allocator.alloc(u8, total_len);
+    const tiff_buf = try probe.buildSynthetic3TierArwAlloc(
+        allocator,
+        6240,
+        4160,
+        thumb_bytes,
+        med_bytes,
+        prev_bytes,
+    );
     defer allocator.free(tiff_buf);
-    @memset(tiff_buf, 0);
-
-    // Little-endian TIFF header, IFD0 at offset 8
-    tiff_buf[0] = 'I';
-    tiff_buf[1] = 'I';
-    tiff_buf[2] = 0x2A;
-    tiff_buf[3] = 0x00;
-    std.mem.writeInt(u32, tiff_buf[4..8], 8, .little);
-
-    // IFD0 at 8: 2 entries (medium preview) -> next IFD1 at 60
-    var off: usize = 8;
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 2, .little);
-    off += 2;
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0201, .little);
-    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
-    std.mem.writeInt(
-        u32,
-        tiff_buf[off + 8 ..][0..4],
-        @intCast(med_off),
-        .little,
-    );
-    off += 12;
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0202, .little);
-    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
-    std.mem.writeInt(
-        u32,
-        tiff_buf[off + 8 ..][0..4],
-        @intCast(med_bytes.len),
-        .little,
-    );
-    off += 12;
-    std.mem.writeInt(u32, tiff_buf[off..][0..4], 60, .little);
-
-    // IFD1 at 60: 2 entries (smallest thumbnail) -> next IFD2 at 110
-    off = 60;
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 2, .little);
-    off += 2;
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0201, .little);
-    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
-    std.mem.writeInt(
-        u32,
-        tiff_buf[off + 8 ..][0..4],
-        @intCast(thumb_off),
-        .little,
-    );
-    off += 12;
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0202, .little);
-    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
-    std.mem.writeInt(
-        u32,
-        tiff_buf[off + 8 ..][0..4],
-        @intCast(thumb_bytes.len),
-        .little,
-    );
-    off += 12;
-    std.mem.writeInt(u32, tiff_buf[off..][0..4], 110, .little);
-
-    // IFD2 at 110: 4 entries (largest preview + visible dimensions 6240x4160)
-    off = 110;
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 4, .little);
-    off += 2;
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0100, .little);
-    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], 6240, .little);
-    off += 12;
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0101, .little);
-    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], 4160, .little);
-    off += 12;
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0201, .little);
-    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
-    std.mem.writeInt(
-        u32,
-        tiff_buf[off + 8 ..][0..4],
-        @intCast(prev_off),
-        .little,
-    );
-    off += 12;
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0202, .little);
-    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
-    std.mem.writeInt(
-        u32,
-        tiff_buf[off + 8 ..][0..4],
-        @intCast(prev_bytes.len),
-        .little,
-    );
-    off += 12;
-    std.mem.writeInt(u32, tiff_buf[off..][0..4], 0, .little);
-
-    @memcpy(tiff_buf[thumb_off .. thumb_off + thumb_bytes.len], thumb_bytes);
-    @memcpy(tiff_buf[med_off .. med_off + med_bytes.len], med_bytes);
-    @memcpy(tiff_buf[prev_off .. prev_off + prev_bytes.len], prev_bytes);
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -2087,7 +1825,12 @@ test "decodeWorker - progressive pair loading with PairStreamTarget" {
     const io = std.Io.Threaded.global_single_threaded.io();
 
     const jpg_file = "testfiles/images/000_0_1024x682.jpg";
-    var real_jpg = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, jpg_file, .{});
+    var real_jpg = try std.Io.Dir.openFile(
+        std.Io.Dir.cwd(),
+        io,
+        jpg_file,
+        .{},
+    );
     defer real_jpg.close(io);
     const s = try std.Io.Dir.statFile(std.Io.Dir.cwd(), io, jpg_file, .{});
     const jpg_bytes = try allocator.alloc(u8, s.size);
@@ -2095,60 +1838,14 @@ test "decodeWorker - progressive pair loading with PairStreamTarget" {
     var j_slices = [_][]u8{jpg_bytes};
     _ = try real_jpg.readPositional(io, &j_slices, 0);
 
-    var tiff_buf = try allocator.alloc(u8, 100 + jpg_bytes.len);
+    const tiff_buf = try probe.buildSyntheticSubIfdArwAlloc(
+        allocator,
+        6000,
+        4000,
+        1,
+        jpg_bytes,
+    );
     defer allocator.free(tiff_buf);
-    @memset(tiff_buf, 0);
-
-    tiff_buf[0] = 'I';
-    tiff_buf[1] = 'I';
-    tiff_buf[2] = 0x2A;
-    tiff_buf[3] = 0x00;
-    std.mem.writeInt(u32, tiff_buf[4..8], 8, .little);
-
-    std.mem.writeInt(u16, tiff_buf[8..10], 4, .little);
-    var off: usize = 10;
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0100, .little);
-    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], 6000, .little);
-    off += 12;
-
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0101, .little);
-    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], 4000, .little);
-    off += 12;
-
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0112, .little);
-    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 3, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
-    std.mem.writeInt(u16, tiff_buf[off + 8 ..][0..2], 1, .little);
-    off += 12;
-
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x014A, .little);
-    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], 60, .little);
-    off += 12;
-    std.mem.writeInt(u32, tiff_buf[off..][0..4], 0, .little);
-
-    off = 60;
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 2, .little);
-    off += 2;
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0201, .little);
-    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], 100, .little);
-    off += 12;
-
-    std.mem.writeInt(u16, tiff_buf[off..][0..2], 0x0202, .little);
-    std.mem.writeInt(u16, tiff_buf[off + 2 ..][0..2], 4, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 4 ..][0..4], 1, .little);
-    std.mem.writeInt(u32, tiff_buf[off + 8 ..][0..4], @intCast(jpg_bytes.len), .little);
-    off += 12;
-    std.mem.writeInt(u32, tiff_buf[off..][0..4], 0, .little);
-
-    @memcpy(tiff_buf[100 .. 100 + jpg_bytes.len], jpg_bytes);
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
