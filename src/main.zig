@@ -4,6 +4,7 @@ const build_options = @import("build_options");
 const builtin = @import("builtin");
 const clay = @import("zclay");
 const core = @import("core");
+const gpu = @import("gpu");
 const ipc = @import("ipc");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
@@ -38,8 +39,8 @@ const LibViewer = struct {
     update: *const fn (
         app_state: *app.state.AppState,
         window: sdl.Window,
-        resources: *ui.graphics.RenderResources,
-        measure_data: *ui.graphics.MeasureTextUserData,
+        resources: *gpu.graphics.RenderResources,
+        measure_data: *ui.text_utils.MeasureTextUserData,
         parsed_headless: bool,
         parsed_test_mode: bool,
         frame_arena: *std.heap.ArenaAllocator,
@@ -136,17 +137,18 @@ const LibViewer = struct {
     }
 };
 
-/// Application context encapsulating initialized graphics, state, resources, and IPC server.
+/// Application context encapsulating initialized graphics, state, resources,
+/// and IPC server.
 const AppGraphicsAndState = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
     parsed: app_config.cli.ParsedArgs,
-    setup: ui.graphics.GraphicsSetup,
-    resources: ui.graphics.RenderResources,
+    setup: gpu.graphics.GraphicsSetup,
+    resources: gpu.graphics.RenderResources,
     state: app.state.AppState,
     clay_memory: []u8,
     clay_context: *clay.Context,
-    measure_data: ui.graphics.MeasureTextUserData,
+    measure_data: ui.text_utils.MeasureTextUserData,
     ipc_server: ?*ipc.IpcServer,
 
     /// Releases all application resources, closes IPC server, tears down
@@ -160,7 +162,7 @@ const AppGraphicsAndState = struct {
         self.resources.deinit(self.gpa);
         self.setup.gpu_device.destroy();
         self.setup.window.destroy();
-        ui.graphics.quitSdlCore();
+        gpu.graphics.quitSdlCore();
     }
 
     /// Phase 1: Initializes CLI options, SDL graphics, viewer state, early
@@ -221,8 +223,8 @@ const AppGraphicsAndState = struct {
 
         // 2. Initialize SDL Core Subsystems (video, events, TTF)
         // Must be initialized before background workers touch SDL surface/event APIs.
-        try ui.graphics.initSdlCore(parsed.headless);
-        errdefer ui.graphics.quitSdlCore();
+        try gpu.graphics.initSdlCore(parsed.headless);
+        errdefer gpu.graphics.quitSdlCore();
 
         // 3. Pinned In-Place State Initialization & Early Path Scan / Decode Launch
         const start_hidden = parsed.server_mode and parsed.arg_path == null;
@@ -294,12 +296,15 @@ const AppGraphicsAndState = struct {
         }
 
         // 4. Graphics and Window Setup
-        self.setup = try ui.graphics.initGraphicsAndWindow("Peng Image Viewer", .{
-            .headless = parsed.headless,
-            .hidden = start_hidden,
-            .high_dpi = !parsed.test_mode,
-            .borderless = parsed.windowless,
-        });
+        self.setup = try gpu.graphics.initGraphicsAndWindow(
+            "Peng Image Viewer",
+            .{
+                .headless = parsed.headless,
+                .hidden = start_hidden,
+                .high_dpi = !parsed.test_mode,
+                .borderless = parsed.windowless,
+            },
+        );
         errdefer {
             if (!parsed.headless) {
                 self.setup.window.releaseFromGpu(self.setup.gpu_device);
@@ -309,7 +314,7 @@ const AppGraphicsAndState = struct {
         }
 
         // 5. GPU Pipeline and Resources Setup
-        self.resources = try ui.graphics.initGpuResources(
+        self.resources = try gpu.graphics.initGpuResources(
             self.setup.gpu_device,
             self.setup.window,
             self.setup.initial_dpi_scale,
@@ -346,17 +351,18 @@ const AppGraphicsAndState = struct {
     }
 };
 
-/// Phase 2: Runs the main application event processing, state updating, and rendering loop.
+/// Phase 2: Runs the main application event processing, state updating,
+/// and rendering loop.
 fn runMainLoop(ctx: *AppGraphicsAndState) !void {
     // Configure Clay measure text function with a stable pointer to measure_data
-    ctx.measure_data = ui.graphics.MeasureTextUserData{
+    ctx.measure_data = ui.text_utils.MeasureTextUserData{
         .fonts = ctx.resources.fonts[0..],
         .allocator = ctx.gpa,
     };
     clay.setMeasureTextFunction(
-        *const ui.graphics.MeasureTextUserData,
+        *const ui.text_utils.MeasureTextUserData,
         &ctx.measure_data,
-        ui.graphics.sdl3MeasureText,
+        ui.text_utils.sdl3MeasureText,
     );
 
     // Initialize IPC server and spawn IPC worker task

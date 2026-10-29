@@ -3,34 +3,46 @@
 //! Provides Clay layout integration, geometry transformation passes,
 //! text caching, overlay panels, and SDL3 GPU rendering pipelines.
 
+/// Image adjustment and EXIF metadata editing panels.
 pub const edit_panel = @import("edit_panel.zig");
-pub const geometry = @import("geometry.zig");
-pub const graphics = @import("graphics.zig");
+
+/// Clay layout generation and UI element hierarchy declaration.
 pub const layout = @import("layout.zig");
+
+/// Command palette modal and quick-action menu rendering.
 pub const palette = @import("palette.zig");
-pub const render_image = @import("render_image.zig");
+
+/// Clay render commands to GPU vertex batch translator.
 pub const renderer = @import("renderer.zig");
+
+/// Image metadata, histogram, and statistics display overlay.
 pub const stats = @import("stats.zig");
-pub const text_cache = @import("text_cache.zig");
+
+/// Text truncation, sizing, and SDL_ttf measure helpers.
 pub const text_utils = @import("text_utils.zig");
+
+/// Color palette, styling constants, and theme definitions.
 pub const theme = @import("theme.zig");
+
+/// UI view model state and layout data structures.
 pub const view_model = @import("view_model.zig");
 
+/// Active image dissolve crossfade state.
 pub const ActiveImageDissolve = view_model.ActiveImageDissolve;
+
+/// Image dissolve parameters and animation progress.
 pub const ImageDissolve = view_model.ImageDissolve;
+
+/// Primary UI view model containing active layout state and flags.
 pub const UiViewModel = view_model.UiViewModel;
 
 test {
     _ = edit_panel;
-    _ = renderer;
-    _ = render_image;
     _ = layout;
     _ = palette;
+    _ = renderer;
     _ = stats;
-    _ = graphics;
     _ = text_utils;
     _ = theme;
-    _ = geometry;
-    _ = text_cache;
     _ = view_model;
 }

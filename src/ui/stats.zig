@@ -1,6 +1,5 @@
 const clay = @import("zclay");
 const edit_panel = @import("edit_panel.zig");
-const graphics = @import("graphics.zig");
 const intents = @import("intents");
 const state = @import("state");
 const std = @import("std");
@@ -12,7 +11,7 @@ const ElementTag = state.ElementTag;
 const FloatingPanel = state.FloatingPanel;
 const formatSize = text_utils.formatSize;
 const getSpec = intents.getSpec;
-const MeasureTextUserData = graphics.MeasureTextUserData;
+const MeasureTextUserData = text_utils.MeasureTextUserData;
 const truncateDirectory = text_utils.truncateDirectory;
 const truncateFilename = text_utils.truncateFilename;
 const UiViewModel = view_model.UiViewModel;

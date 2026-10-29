@@ -1,10 +1,45 @@
 const clay = @import("zclay");
-const graphics = @import("graphics.zig");
 const sdl = @import("sdl");
 const std = @import("std");
+const theme = @import("theme.zig");
 
-const MeasureTextUserData = graphics.MeasureTextUserData;
-const sdl3MeasureText = graphics.sdl3MeasureText;
+/// User data context passed to Clay text measurement callbacks containing
+/// font handles and debug flags.
+pub const MeasureTextUserData = struct {
+    fonts: []const ?sdl.Font,
+    is_debug_measuring: bool = false,
+    allocator: std.mem.Allocator = undefined,
+};
+
+/// Measures text pixel width and height via SDL_ttf for Clay layout element
+/// sizing.
+pub fn sdl3MeasureText(
+    text: []const u8,
+    config: *clay.TextElementConfig,
+    data: *const MeasureTextUserData,
+) clay.Dimensions {
+    const clean_text = if (std.mem.findScalar(u8, text, 0)) |idx|
+        text[0..idx]
+    else
+        text;
+    if (clean_text.len == 0) return .{ .w = 0, .h = 0 };
+
+    if (config.font_id >= data.fonts.len) return .{ .w = 0, .h = 0 };
+    const font = data.fonts[config.font_id] orelse return .{ .w = 0, .h = 0 };
+    var target_size = @as(f32, @floatFromInt(config.font_size));
+    if (data.is_debug_measuring) {
+        // Scale down hardcoded 16px Clay debug text to 12px (0.75x) during
+        // debug panel layout
+        target_size *= theme.debug_font_scale;
+    }
+    if (font.getFontSize() != target_size) {
+        _ = font.setFontSize(target_size);
+    }
+
+    const size = font.getStringSize(clean_text) orelse
+        return .{ .w = 0, .h = 0 };
+    return .{ .w = @floatFromInt(size.w), .h = @floatFromInt(size.h) };
+}
 
 /// Result of middle-truncating a filename, containing the display string and
 /// index boundaries for fuzzy match remapping.

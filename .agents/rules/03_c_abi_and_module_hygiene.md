@@ -53,14 +53,15 @@
     `AnimationState`, `SnackbarState`, `PanController`, `ZoomController`).
     Zero SDL3, zero C library linkage, zero I/O.
   - `src/config/`: CLI argument parsing (`cli.zig`).
-  - `src/gpu/`: Pure texture staging buffers, compute unpack pipelines, and
-    GPU texture uploads (zero Clay linkage).
+  - `src/gpu/`: GPU pipelines, geometry tessellation, render image commands,
+    texture cache, shaders (`src/gpu/shaders/`), resources, texture staging
+    buffers, compute unpack pipelines, and GPU texture uploads (zero Clay
+    linkage).
   - `src/sdl/`: Type-safe SDL3, SDL3_image, SDL3_ttf, and SDL3 GPU wrappers.
   - `src/ui/`: Clay layout builders (`layout.zig`, `palette.zig`,
     `edit_panel.zig`, `stats.zig`), `UiViewModel` presentation snapshot
-    (`view_model.zig`), 2-pass GPU renderer (`renderer.zig`,
-    `render_image.zig`), Dual Kawase blur, text cache, and shaders
-    (`src/ui/shaders/`).
+    (`view_model.zig`), 2-pass GPU renderer (`renderer.zig`), text utilities
+    (`text_utils.zig`), and theme styling (`theme.zig`).
   - `src/viewer.zig`: Frame update and render loop entry point (compiled
     statically by default, or as a hot-reloadable shared library `viewer` /
     `libviewer` when built with `-Dhot_reload=true`).
@@ -110,7 +111,7 @@
     - `zig build test-core`: Run `core` (`src/core/root.zig`) unit tests.
     - `zig build test`: Run all unit tests plus headless integration tests
       (`peng-test-runner`).
-    - `zig build shaders`: Compile GLSL shaders in `src/ui/shaders/` to SPIR-V
+    - `zig build shaders`: Compile GLSL shaders in `src/gpu/shaders/` to SPIR-V
       (`.spv`) and Metal (`.msl`).
 
 ## 3. Imports, Visibility, Pattern Matching & Idiomatic Style

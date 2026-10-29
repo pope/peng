@@ -1,10 +1,15 @@
 const app = @import("app");
 const clay = @import("zclay");
+const gpu = @import("gpu");
 const input_pkg = @import("input");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
 const ui = @import("ui");
+
+const MeasureTextUserData = ui.text_utils.MeasureTextUserData;
+const RenderResources = gpu.graphics.RenderResources;
+const sdl3MeasureText = ui.text_utils.sdl3MeasureText;
 
 /// Entry point for loading dynamic UI resources / assets.
 pub fn loadAssets() !void {
@@ -72,12 +77,13 @@ fn runUpdatePhase(
     }
 }
 
-/// Main frame update function encapsulated within the hot-reloadable viewer library.
+/// Main frame update function encapsulated within the hot-reloadable
+/// viewer library.
 pub fn updateFrame(
     app_state: *app.state.AppState,
     window: sdl.Window,
-    resources: *ui.graphics.RenderResources,
-    measure_data: *ui.graphics.MeasureTextUserData,
+    resources: *RenderResources,
+    measure_data: *MeasureTextUserData,
     parsed_headless: bool,
     parsed_test_mode: bool,
     frame_arena: *std.heap.ArenaAllocator,
@@ -85,9 +91,9 @@ pub fn updateFrame(
 ) !void {
     // Re-bind Clay measure text function pointer to the reloaded code address
     clay.setMeasureTextFunction(
-        *const ui.graphics.MeasureTextUserData,
+        *const MeasureTextUserData,
         measure_data,
-        ui.graphics.sdl3MeasureText,
+        sdl3MeasureText,
     );
 
     // Phase 1: Background Event & Input Ingestion
@@ -342,8 +348,8 @@ export fn viewer_unload_assets() callconv(.c) void {
 export fn viewer_update(
     app_state: *app.state.AppState,
     window: sdl.Window,
-    resources: *ui.graphics.RenderResources,
-    measure_data: *ui.graphics.MeasureTextUserData,
+    resources: *RenderResources,
+    measure_data: *MeasureTextUserData,
     parsed_headless: bool,
     parsed_test_mode: bool,
     frame_arena: *std.heap.ArenaAllocator,

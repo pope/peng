@@ -3,14 +3,15 @@
 //! Provides hash-based caching and LRU eviction for rendered text textures
 //! to avoid re-rendering static UI labels every frame.
 
-const std = @import("std");
 const sdl = @import("sdl");
+const std = @import("std");
 
 /// Lookup key for cached text GPU textures.
 pub const TextCacheKey = struct {
     font_id: usize,
     font_size: u16,
-    // RGB color packed as 0x00RRGGBB (alpha is modulated dynamically via GPU vertex color)
+    // RGB color packed as 0x00RRGGBB (alpha is modulated dynamically via GPU
+    // vertex color)
     color: u32,
     hash: u64,
 };
@@ -28,7 +29,11 @@ pub const TextCache = struct {
     map: std.AutoHashMapUnmanaged(TextCacheKey, TextCacheValue) = .empty,
 
     /// Releases all cached glyph GPU textures and frees hash map allocations.
-    pub fn deinit(self: *TextCache, allocator: std.mem.Allocator, dev_opt: ?sdl.gpu.Device) void {
+    pub fn deinit(
+        self: *TextCache,
+        allocator: std.mem.Allocator,
+        dev_opt: ?sdl.gpu.Device,
+    ) void {
         if (dev_opt) |dev| {
             var iter = self.map.iterator();
             while (iter.next()) |entry| {
@@ -64,7 +69,8 @@ pub const TextCache = struct {
         }
     }
 
-    /// Evicts and destroys cached text textures not referenced within `max_unused_frames`.
+    /// Evicts and destroys cached text textures not referenced within
+    /// `max_unused_frames`.
     pub fn evictUnused(
         self: *TextCache,
         allocator: std.mem.Allocator,
@@ -77,12 +83,16 @@ pub const TextCache = struct {
 
         var iter = self.map.iterator();
         while (iter.next()) |entry| {
-            if (current_frame > entry.value_ptr.last_used_frame and
-                current_frame - entry.value_ptr.last_used_frame > max_unused_frames)
-            {
-                to_evict.append(allocator, entry.key_ptr.*) catch |err| {
-                    std.log.err("Failed to append key to eviction list: {}", .{err});
-                };
+            if (current_frame > entry.value_ptr.last_used_frame) {
+                const unused = current_frame - entry.value_ptr.last_used_frame;
+                if (unused > max_unused_frames) {
+                    to_evict.append(allocator, entry.key_ptr.*) catch |err| {
+                        std.log.err(
+                            "Failed to append key to eviction list: {}",
+                            .{err},
+                        );
+                    };
+                }
             }
         }
 

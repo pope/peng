@@ -138,7 +138,8 @@
 *(See `skills/zig-gui-practices/references/shader-optimization.md` for full
 mathematical formulas, filter kernels, and color science equations.)*
 
-- **Shader Numerical & Identity Invariants (`src/ui/shaders/image.frag.glsl`)**:
+- **Shader Numerical & Identity Invariants**
+  (`src/gpu/shaders/image.frag.glsl`):
   1. **CPU-Gated Identity Bypass**: Check the dynamically uniform
      `if (ubo.has_adjustments != 0)` flag (computed via `ImageEdits.hasEdits()`
      across all 13 edit parameters) to completely bypass sRGB \<-> linear

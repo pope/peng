@@ -6,6 +6,18 @@
 //! INVARIANT: Code in `src/gpu/` MUST NOT depend on zclay, `src/ui/`, or
 //! `src/app/` (zero imports of Clay, UI layout/renderer, AppState, or systems).
 
+/// 2D vertex generation, color packing, and rounded rectangle tessellation.
+pub const geometry = @import("geometry.zig");
+
+/// SDL GPU device lifecycle, pipeline creation, and offscreen render targets.
+pub const graphics = @import("graphics.zig");
+
+/// Image viewer vertex emission and viewport batch commands.
+pub const render_image = @import("render_image.zig");
+
+/// Hash-based glyph and text texture caching with LRU eviction.
+pub const text_cache = @import("text_cache.zig");
+
 /// Submodule handling texture staging, compute unpack, and GPU uploads.
 pub const upload = @import("upload.zig");
 
@@ -24,5 +36,9 @@ pub const UploadStagingBuffer = upload.UploadStagingBuffer;
 pub const uploadSurfaceToGpu = upload.uploadSurfaceToGpu;
 
 test {
+    _ = geometry;
+    _ = graphics;
+    _ = render_image;
+    _ = text_cache;
     _ = upload;
 }

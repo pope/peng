@@ -1,25 +1,25 @@
 const clay = @import("zclay");
-const geometry = @import("geometry.zig");
-const graphics = @import("graphics.zig");
-const render_image = @import("render_image.zig");
+const gpu_pkg = @import("gpu");
 const sdl = @import("sdl");
 const state = @import("state");
 const std = @import("std");
-const text_cache = @import("text_cache.zig");
 const theme = @import("theme.zig");
 
-const BatchItem = render_image.BatchItem;
+const BatchItem = gpu_pkg.render_image.BatchItem;
 const ElementTag = state.ElementTag;
-const ImageUniforms = render_image.ImageUniforms;
-const MaterialType = render_image.MaterialType;
-const RenderResources = graphics.RenderResources;
-const TextCacheKey = text_cache.TextCacheKey;
-const UiUniforms = render_image.UiUniforms;
-pub const Vertex = geometry.Vertex;
+const geometry = gpu_pkg.geometry;
+const graphics = gpu_pkg.graphics;
+const ImageUniforms = gpu_pkg.render_image.ImageUniforms;
+const MaterialType = gpu_pkg.render_image.MaterialType;
+const packRgba = gpu_pkg.geometry.packRgba;
+const packRgba255 = gpu_pkg.geometry.packRgba255;
+const packRgbaF = gpu_pkg.geometry.packRgbaF;
+const render_image = gpu_pkg.render_image;
+const RenderResources = gpu_pkg.graphics.RenderResources;
+const TextCacheKey = gpu_pkg.text_cache.TextCacheKey;
+const UiUniforms = gpu_pkg.render_image.UiUniforms;
+const Vertex = gpu_pkg.geometry.Vertex;
 const ViewportParams = state.ViewportParams;
-const packRgba = geometry.packRgba;
-const packRgbaClay = geometry.packRgbaClay;
-const packRgbaF = geometry.packRgbaF;
 
 fn scissorEqual(a: ?sdl.Rect, b: ?sdl.Rect) bool {
     if (a) |sa| {

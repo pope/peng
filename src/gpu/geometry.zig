@@ -1,8 +1,8 @@
-const std = @import("std");
-const clay = @import("zclay");
 const sdl = @import("sdl");
+const std = @import("std");
 
-/// 2D textured colored vertex layout matching GPU pipeline vertex buffer layout.
+/// 2D textured colored vertex layout matching GPU pipeline vertex buffer
+/// layout.
 pub const Vertex = extern struct {
     x: f32,
     y: f32,
@@ -13,24 +13,32 @@ pub const Vertex = extern struct {
 
 /// Packs 8-bit integer RGBA channels into a 32-bit color word.
 pub inline fn packRgba(r: u8, g: u8, b: u8, a: u8) u32 {
-    return @as(u32, r) | (@as(u32, g) << 8) | (@as(u32, b) << 16) | (@as(u32, a) << 24);
+    return @as(u32, r) |
+        (@as(u32, g) << 8) |
+        (@as(u32, b) << 16) |
+        (@as(u32, a) << 24);
 }
 
-/// Clamps and packs Clay float RGBA channels (0.0–255.0) into a 32-bit color word.
-pub inline fn packRgbaClay(clay_color: clay.Color) u32 {
-    const ur: u32 = @intFromFloat(@round(std.math.clamp(clay_color[0], 0.0, 255.0)));
-    const ug: u32 = @intFromFloat(@round(std.math.clamp(clay_color[1], 0.0, 255.0)));
-    const ub: u32 = @intFromFloat(@round(std.math.clamp(clay_color[2], 0.0, 255.0)));
-    const ua: u32 = @intFromFloat(@round(std.math.clamp(clay_color[3], 0.0, 255.0)));
+/// Clamps and packs float RGBA channels (0.0–255.0) into a 32-bit color word.
+pub inline fn packRgba255(color: [4]f32) u32 {
+    const ur: u32 = @intFromFloat(@round(std.math.clamp(color[0], 0.0, 255.0)));
+    const ug: u32 = @intFromFloat(@round(std.math.clamp(color[1], 0.0, 255.0)));
+    const ub: u32 = @intFromFloat(@round(std.math.clamp(color[2], 0.0, 255.0)));
+    const ua: u32 = @intFromFloat(@round(std.math.clamp(color[3], 0.0, 255.0)));
     return ur | (ug << 8) | (ub << 16) | (ua << 24);
 }
 
-/// Clamps and packs normalized float RGBA channels (0.0–1.0) into a 32-bit color word.
+/// Clamps and packs normalized float RGBA channels (0.0–1.0) into a 32-bit
+/// color word.
 pub inline fn packRgbaF(r: f32, g: f32, b: f32, a: f32) u32 {
-    const ur: u32 = @intFromFloat(@round(std.math.clamp(r * 255.0, 0.0, 255.0)));
-    const ug: u32 = @intFromFloat(@round(std.math.clamp(g * 255.0, 0.0, 255.0)));
-    const ub: u32 = @intFromFloat(@round(std.math.clamp(b * 255.0, 0.0, 255.0)));
-    const ua: u32 = @intFromFloat(@round(std.math.clamp(a * 255.0, 0.0, 255.0)));
+    const ur: u32 =
+        @intFromFloat(@round(std.math.clamp(r * 255.0, 0.0, 255.0)));
+    const ug: u32 =
+        @intFromFloat(@round(std.math.clamp(g * 255.0, 0.0, 255.0)));
+    const ub: u32 =
+        @intFromFloat(@round(std.math.clamp(b * 255.0, 0.0, 255.0)));
+    const ua: u32 =
+        @intFromFloat(@round(std.math.clamp(a * 255.0, 0.0, 255.0)));
     return ur | (ug << 8) | (ub << 16) | (ua << 24);
 }
 
@@ -40,7 +48,8 @@ pub const NdcPoint = struct {
     y: f32,
 };
 
-/// Converts screen pixel coordinates into Normalized Device Coordinates [-1.0, 1.0].
+/// Converts screen pixel coordinates into Normalized Device Coordinates
+/// [-1.0, 1.0].
 pub inline fn toNdc(x: f32, y: f32, win_w: f32, win_h: f32) NdcPoint {
     return .{
         .x = (x / win_w) * 2.0 - 1.0,
@@ -48,12 +57,13 @@ pub inline fn toNdc(x: f32, y: f32, win_w: f32, win_h: f32) NdcPoint {
     };
 }
 
-/// Appends a solid axis-aligned rectangle quad (6 vertices / 2 triangles) to the vertex list.
+/// Appends a solid axis-aligned rectangle quad (6 vertices / 2 triangles)
+/// to the vertex list.
 pub fn appendRectQuad(
     vertices: *std.ArrayList(Vertex),
     allocator: std.mem.Allocator,
     rect: sdl.FRect,
-    clay_color: clay.Color,
+    rgba255: [4]f32,
     win_w: f32,
     win_h: f32,
     screen_uv: bool,
@@ -61,7 +71,7 @@ pub fn appendRectQuad(
     const p1 = toNdc(rect.x, rect.y, win_w, win_h);
     const p2 = toNdc(rect.x + rect.w, rect.y + rect.h, win_w, win_h);
 
-    const color = packRgbaClay(clay_color);
+    const color = packRgba255(rgba255);
 
     const uv_u1: f32 = if (screen_uv) rect.x / win_w else 0.0;
     const uv_v1: f32 = if (screen_uv) rect.y / win_h else 0.0;
@@ -125,7 +135,8 @@ fn appendCornerArc(
     num_circle_segments: usize,
 ) void {
     const center_pos = vertices_src[@intCast(center)].position;
-    const angle_step = (end_angle - start_angle) / @as(f32, @floatFromInt(num_circle_segments));
+    const angle_step = (end_angle - start_angle) /
+        @as(f32, @floatFromInt(num_circle_segments));
 
     var i: usize = 0;
     while (i < num_circle_segments) : (i += 1) {
@@ -169,29 +180,38 @@ fn appendCornerArc(
     }
 }
 
-/// Tessellates a filled rounded rectangle with corner arcs into triangle fans and appends vertices.
+/// Tessellates a filled rounded rectangle with corner arcs into triangle
+/// fans and appends vertices.
 pub fn renderFillRoundedRect(
     vertices: *std.ArrayList(Vertex),
     allocator: std.mem.Allocator,
     rect: sdl.FRect,
     corner_radius: f32,
-    clay_color: clay.Color,
+    rgba255: [4]f32,
     win_w: f32,
     win_h: f32,
     screen_uv: bool,
 ) !void {
     const color = sdl.FColor{
-        .r = clay_color[0] / 255.0,
-        .g = clay_color[1] / 255.0,
-        .b = clay_color[2] / 255.0,
-        .a = clay_color[3] / 255.0,
+        .r = rgba255[0] / 255.0,
+        .g = rgba255[1] / 255.0,
+        .b = rgba255[2] / 255.0,
+        .a = rgba255[3] / 255.0,
     };
 
     const min_radius = @min(rect.w, rect.h) / 2.0;
     const clamped_radius = @min(corner_radius, min_radius);
 
     if (clamped_radius <= 0.001) {
-        return appendRectQuad(vertices, allocator, rect, clay_color, win_w, win_h, screen_uv);
+        return appendRectQuad(
+            vertices,
+            allocator,
+            rect,
+            rgba255,
+            win_w,
+            win_h,
+            screen_uv,
+        );
     }
 
     const num_circle_segments = @max(
@@ -211,13 +231,19 @@ pub fn renderFillRoundedRect(
     var index_count: usize = 0;
 
     vertices_src[vertex_count] = .{
-        .position = .{ .x = rect.x + clamped_radius, .y = rect.y + clamped_radius },
+        .position = .{
+            .x = rect.x + clamped_radius,
+            .y = rect.y + clamped_radius,
+        },
         .color = color,
         .tex_coord = .{ .x = 0, .y = 0 },
     };
     vertex_count += 1;
     vertices_src[vertex_count] = .{
-        .position = .{ .x = rect.x + rect.w - clamped_radius, .y = rect.y + clamped_radius },
+        .position = .{
+            .x = rect.x + rect.w - clamped_radius,
+            .y = rect.y + clamped_radius,
+        },
         .color = color,
         .tex_coord = .{ .x = 1, .y = 0 },
     };
@@ -232,7 +258,10 @@ pub fn renderFillRoundedRect(
     };
     vertex_count += 1;
     vertices_src[vertex_count] = .{
-        .position = .{ .x = rect.x + clamped_radius, .y = rect.y + rect.h - clamped_radius },
+        .position = .{
+            .x = rect.x + clamped_radius,
+            .y = rect.y + rect.h - clamped_radius,
+        },
         .color = color,
         .tex_coord = .{ .x = 0, .y = 1 },
     };
@@ -342,7 +371,10 @@ pub fn renderFillRoundedRect(
     };
     vertex_count += 1;
     vertices_src[vertex_count] = .{
-        .position = .{ .x = rect.x + rect.w, .y = rect.y + rect.h - clamped_radius },
+        .position = .{
+            .x = rect.x + rect.w,
+            .y = rect.y + rect.h - clamped_radius,
+        },
         .color = color,
         .tex_coord = .{ .x = 1, .y = 1 },
     };
@@ -363,7 +395,10 @@ pub fn renderFillRoundedRect(
 
     // Bottom edge
     vertices_src[vertex_count] = .{
-        .position = .{ .x = rect.x + rect.w - clamped_radius, .y = rect.y + rect.h },
+        .position = .{
+            .x = rect.x + rect.w - clamped_radius,
+            .y = rect.y + rect.h,
+        },
         .color = color,
         .tex_coord = .{ .x = 1, .y = 1 },
     };
@@ -440,7 +475,7 @@ pub fn drawDashedLineH(
     x2: f32,
     y: f32,
     thickness: f32,
-    color: clay.Color,
+    color: [4]f32,
     dash_len: f32,
     gap_len: f32,
     win_w: f32,
@@ -450,7 +485,15 @@ pub fn drawDashedLineH(
     while (x < x2) {
         const draw_w = @min(dash_len, x2 - x);
         const rect = sdl.FRect{ .x = x, .y = y, .w = draw_w, .h = thickness };
-        try appendRectQuad(vertices, allocator, rect, color, win_w, win_h, false);
+        try appendRectQuad(
+            vertices,
+            allocator,
+            rect,
+            color,
+            win_w,
+            win_h,
+            false,
+        );
         x += dash_len + gap_len;
     }
 }
@@ -463,7 +506,7 @@ pub fn drawDashedLineV(
     y1: f32,
     y2: f32,
     thickness: f32,
-    color: clay.Color,
+    color: [4]f32,
     dash_len: f32,
     gap_len: f32,
     win_w: f32,
@@ -473,12 +516,21 @@ pub fn drawDashedLineV(
     while (y < y2) {
         const draw_h = @min(dash_len, y2 - y);
         const rect = sdl.FRect{ .x = x, .y = y, .w = thickness, .h = draw_h };
-        try appendRectQuad(vertices, allocator, rect, color, win_w, win_h, false);
+        try appendRectQuad(
+            vertices,
+            allocator,
+            rect,
+            color,
+            win_w,
+            win_h,
+            false,
+        );
         y += dash_len + gap_len;
     }
 }
 
-/// Emits geometry for a circular arc or ring sector with custom thickness and RGBA color.
+/// Emits geometry for a circular arc or ring sector with custom thickness and
+/// RGBA color.
 pub fn renderArc(
     vertices: *std.ArrayList(Vertex),
     center: sdl.FPoint,
@@ -499,11 +551,19 @@ pub fn renderArc(
     const rad_end = end_angle * (std.math.pi / 180.0);
     const angle_span = @abs(rad_end - rad_start);
 
-    const quadrant_segs = @max(@as(usize, 8), @as(usize, @intFromFloat(radius * 0.75)));
-    const segs_f = @as(f32, @floatFromInt(quadrant_segs)) * (angle_span / (std.math.pi / 2.0));
-    const num_circle_segments = @max(@as(usize, 8), @as(usize, @intFromFloat(@round(segs_f))));
+    const quadrant_segs = @max(
+        @as(usize, 8),
+        @as(usize, @intFromFloat(radius * 0.75)),
+    );
+    const segs_f = @as(f32, @floatFromInt(quadrant_segs)) *
+        (angle_span / (std.math.pi / 2.0));
+    const num_circle_segments = @max(
+        @as(usize, 8),
+        @as(usize, @intFromFloat(@round(segs_f))),
+    );
 
-    const angle_step = (rad_end - rad_start) / @as(f32, @floatFromInt(num_circle_segments));
+    const angle_step =
+        (rad_end - rad_start) / @as(f32, @floatFromInt(num_circle_segments));
 
     const r_outer = radius;
     const r_inner = @max(radius - thickness, 0.0);
@@ -597,9 +657,9 @@ test "packRgba and packRgbaF packing and clamping" {
     const c_clamped = packRgbaF(-0.5, 2.0, 0.0, 1.0);
     try std.testing.expectEqual(@as(u32, 0xFF00FF00), c_clamped);
 
-    // Clay color packing (0.0 - 255.0)
-    const c_clay = packRgbaClay(.{ 255.0, 128.0, 64.0, 255.0 });
-    try std.testing.expectEqual(@as(u32, 0xFF4080FF), c_clay);
+    // RGBA 255 color packing (0.0 - 255.0)
+    const c_255 = packRgba255(.{ 255.0, 128.0, 64.0, 255.0 });
+    try std.testing.expectEqual(@as(u32, 0xFF4080FF), c_255);
 }
 
 test "toNdc - coordinate conversion" {

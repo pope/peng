@@ -1,15 +1,12 @@
-const std = @import("std");
-const sdl = @import("sdl");
 const geometry = @import("geometry.zig");
+const sdl = @import("sdl");
 const state = @import("state");
+const std = @import("std");
 
-/// 2D textured geometry vertex with screen NDC coordinates and packed RGBA
-/// color.
-pub const Vertex = geometry.Vertex;
-/// Packs four 8-bit color channels (R, G, B, A) into a 32-bit unsigned integer.
-pub const packRgba = geometry.packRgba;
-/// Viewport projection, transformation, zoom, and pan offset state.
-pub const ViewportParams = state.ViewportParams;
+const packRgba = geometry.packRgba;
+const UvRect = state.UvRect;
+const Vertex = geometry.Vertex;
+const ViewportParams = state.ViewportParams;
 
 /// Defines batch rendering material pipelines, controlling whether image
 /// adjustment shader uniforms apply.
@@ -95,7 +92,7 @@ pub fn appendImageCommand(
     f_win_w: f32,
     f_win_h: f32,
     scissor: ?sdl.Rect,
-    uv_rect: state.UvRect,
+    uv_rect: UvRect,
 ) !void {
     const texture: ?sdl.gpu.Texture = if (image_data) |ptr|
         sdl.gpu.Texture{ .ptr = @ptrCast(@alignCast(ptr)) }

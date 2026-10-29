@@ -38,7 +38,10 @@ ______________________________________________________________________
 - **`#pragma unroll` Directives**:
   Annotate GLSL spatial filter loops with `#pragma unroll` so `glslangValidator` inlines tap iterations into scalar registers without stack spilling.
 - **Shader Build Pipeline (`zig build shaders`)**:
-  Shaders in `src/ui/shaders/` (`vert.glsl`, `ui.frag.glsl`, `image.frag.glsl`, `blur_down.frag.glsl`, `blur_up.frag.glsl`, `unpack_rgb.comp.glsl`) are compiled via `glslangValidator -V -Os` to SPIR-V (`.spv`) and cross-compiled via `spirv-cross --msl` to Metal (`.msl`).
+  Shaders in `src/gpu/shaders/` (`vert.glsl`, `ui.frag.glsl`, `image.frag.glsl`,
+  `blur_down.frag.glsl`, `blur_up.frag.glsl`, `unpack_rgb.comp.glsl`) are
+  compiled via `glslangValidator -V -Os` to SPIR-V (`.spv`) and cross-compiled
+  via `spirv-cross --msl` to Metal (`.msl`).
 
 ______________________________________________________________________
 

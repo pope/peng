@@ -500,6 +500,7 @@ pub fn build(b: *std.Build) void {
     const gpu_tests = b.addTest(.{
         .root_module = gpu_module,
     });
+    gpu_tests.step.dependOn(compile_shaders);
     const run_gpu_tests = b.addRunArtifact(gpu_tests);
     run_gpu_tests.setCwd(b.path("."));
 
@@ -606,7 +607,7 @@ pub fn build(b: *std.Build) void {
 }
 
 /// Configures GLSL to SPIR-V and SPIR-V to MSL compilation for all shader
-/// stages in src/ui/shaders.
+/// stages in src/gpu/shaders.
 /// Uses content-addressed caching with declared inputs and outputs so
 /// unmodified shaders are not recompiled.
 fn setupShaderCompilation(b: *std.Build) *std.Build.Step {
@@ -653,9 +654,9 @@ fn setupShaderCompilation(b: *std.Build) *std.Build.Step {
     };
 
     for (shader_defs) |def| {
-        const src_rel = b.fmt("src/ui/shaders/{s}", .{def.src_name});
-        const spv_rel = b.fmt("src/ui/shaders/{s}.spv", .{def.out_name});
-        const msl_rel = b.fmt("src/ui/shaders/{s}.msl", .{def.out_name});
+        const src_rel = b.fmt("src/gpu/shaders/{s}", .{def.src_name});
+        const spv_rel = b.fmt("src/gpu/shaders/{s}.spv", .{def.out_name});
+        const msl_rel = b.fmt("src/gpu/shaders/{s}.msl", .{def.out_name});
 
         const spv_cmd = b.addSystemCommand(&.{
             "glslangValidator",

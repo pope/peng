@@ -1,8 +1,6 @@
 const clay = @import("zclay");
-const graphics = @import("graphics.zig");
 const intents = @import("intents");
 const palette_pkg = @import("palette");
-const sdl = @import("sdl");
 const state = @import("state");
 const std = @import("std");
 const text_utils = @import("text_utils.zig");
@@ -12,7 +10,7 @@ const view_model = @import("view_model.zig");
 const ElementTag = state.ElementTag;
 const FuzzyHighlighter = palette_pkg.FuzzyHighlighter;
 const getPaletteConfig = palette_pkg.getPaletteConfig;
-const MeasureTextUserData = graphics.MeasureTextUserData;
+const MeasureTextUserData = text_utils.MeasureTextUserData;
 const PaletteConfig = palette_pkg.PaletteConfig;
 const palette_action_items = intents.actions.palette_action_items;
 const PaletteMode = intents.PaletteMode;
@@ -1398,7 +1396,7 @@ test "renderPalette - closing palette passes pointer through to parent" {
 
     var data = MeasureTextUserData{
         .allocator = std.testing.allocator,
-        .fonts = &(@as([2]?sdl.Font, @splat(null))),
+        .fonts = &.{ null, null },
     };
     var pal_state = try PaletteState.init(std.testing.allocator);
     defer pal_state.deinit();
