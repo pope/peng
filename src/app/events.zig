@@ -11,7 +11,7 @@ const vfs = @import("vfs");
 const AppState = app_state.AppState;
 const EntryScanState = vfs.EntryScanState;
 const MediaEntry = vfs.MediaEntry;
-const MediaId = state_pkg.types.MediaId;
+const MediaId = vfs.MediaId;
 const Orientation = probe.Orientation;
 
 /// Drains all background thread events (e.g. image decodes, thumbnail extractions,

@@ -14,6 +14,7 @@ const Classification = triage.Classification;
 const EditParam = intents.EditParam;
 const FrameContext = context.FrameContext;
 const MediaEntry = vfs.MediaEntry;
+const PairStreamTarget = vfs.PairStreamTarget;
 
 fn showCustomSnackbar(self: *AppState, msg: []const u8, now_ms: u64) void {
     if (!self.viewer.ui.snackbar.enabled) return;
@@ -39,7 +40,7 @@ fn togglePairStream(self: *AppState, now_ms: u64) void {
         }
     }
 
-    const target: state.PairStreamTarget =
+    const target: PairStreamTarget =
         if (entry.metadata.raw_metadata.isRaw())
             .standalone_jpeg
         else
@@ -1589,7 +1590,7 @@ test "sysExecuteIntents - raw jpeg stacking and stream toggle" {
         app_st.viewer.ui.snackbar.getMessage(),
     );
     try testing.expectEqual(
-        state.PairStreamTarget.standalone_jpeg,
+        PairStreamTarget.standalone_jpeg,
         app_st.cache.get(key).?.inflight.?.target,
     );
 }
@@ -1702,7 +1703,7 @@ test "togglePairStream - requires loaded status before requesting target" {
     // 1. While inflight, toggle_pair_stream must be ignored.
     try executeIntent(&app_st, .toggle_pair_stream, 1000);
     try std.testing.expectEqual(
-        @as(?state.PairStreamTarget, .adaptive),
+        @as(?PairStreamTarget, .adaptive),
         if (entry0.inflight) |inf| inf.target else null,
     );
 
@@ -1719,7 +1720,7 @@ test "togglePairStream - requires loaded status before requesting target" {
     };
     try executeIntent(&app_st, .toggle_pair_stream, 1000);
     try std.testing.expectEqual(
-        @as(?state.PairStreamTarget, .standalone_jpeg),
+        @as(?PairStreamTarget, .standalone_jpeg),
         if (entry0.inflight) |inf| inf.target else null,
     );
 }
@@ -2015,7 +2016,7 @@ test "togglePairStream - Cancels existing job epoch on stream switch" {
     // New inflight task is queued with opposite stream target
     const updated = app_st.cache.get(key).?.inflight.?;
     try std.testing.expectEqual(
-        state.PairStreamTarget.standalone_jpeg,
+        PairStreamTarget.standalone_jpeg,
         updated.target,
     );
     try std.testing.expectEqual(@as(u64, 1000), updated.start_time_ms);

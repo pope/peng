@@ -13,7 +13,8 @@ const DecodeArgs = decode_mod.DecodeArgs;
 const FrameContext = context.FrameContext;
 const ImageCache = image.ImageCache;
 const MediaEntry = vfs.MediaEntry;
-const MediaId = state_pkg.types.MediaId;
+const MediaId = vfs.MediaId;
+const PairStreamTarget = vfs.PairStreamTarget;
 
 /// Fast-scrolling threshold: when navigation events occur faster than this interval,
 /// worker spawning is throttled exclusively to the active slot `idx`.
@@ -37,7 +38,7 @@ fn spawnCacheDecodeSlot(
     id: MediaId,
     entry_item: MediaEntry,
     thumb_only: bool,
-    pair_target: state_pkg.PairStreamTarget,
+    pair_target: PairStreamTarget,
     now_ms: u64,
 ) !void {
     const ticket = state.cache.allocJob() orelse return error.OutOfMemory;
@@ -1021,7 +1022,7 @@ test "checkPairPromotion - does not spawn while slot is decoding or promoting" {
     checkPairPromotion(&state, key0, 1000);
     try std.testing.expect(entry0.inflight != null);
     try std.testing.expectEqual(
-        state_pkg.PairStreamTarget.standalone_jpeg,
+        PairStreamTarget.standalone_jpeg,
         entry0.inflight.?.target,
     );
     try std.testing.expectEqual(
@@ -1042,7 +1043,7 @@ test "checkPairPromotion - does not spawn while slot is decoding or promoting" {
     checkPairPromotion(&state, key0, 1000);
     try std.testing.expect(entry0.inflight != null);
     try std.testing.expectEqual(
-        state_pkg.PairStreamTarget.standalone_jpeg,
+        PairStreamTarget.standalone_jpeg,
         entry0.inflight.?.target,
     );
     try std.testing.expectEqual(
@@ -1105,7 +1106,7 @@ test "checkPairPromotion - preserves resident GPU during promotion" {
         entry.inflight.?.stage,
     );
     try std.testing.expectEqual(
-        state_pkg.PairStreamTarget.standalone_jpeg,
+        PairStreamTarget.standalone_jpeg,
         entry.inflight.?.target,
     );
 }

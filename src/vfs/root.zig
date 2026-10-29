@@ -48,6 +48,47 @@ pub const FilePair = struct {
     jpeg_path: []const u8,
 };
 
+/// Target stream selection for stacked RAW+JPEG file pairs.
+pub const PairStreamTarget = enum {
+    adaptive,
+    raw_preview,
+    standalone_jpeg,
+};
+
+/// Stable 1-based media identity handle within an application session.
+///
+/// `MediaId.none` (0) serves as the 4-byte in-band sentinel within storage
+/// arrays (`MediaItem`), whereas optional `?MediaId` occupies 8 bytes due
+/// to the non-exhaustive tag `_`.
+pub const MediaId = enum(u32) {
+    none = 0,
+    _,
+
+    /// Returns `true` if this handle represents a valid assigned media item.
+    pub inline fn isValid(self: MediaId) bool {
+        return self != .none;
+    }
+
+    /// Converts the strongly typed handle to its raw integer representation.
+    pub inline fn toU32(self: MediaId) u32 {
+        return @backingInt(self);
+    }
+
+    /// Creates a strongly typed handle from a raw integer representation.
+    pub inline fn fromU32(val: u32) MediaId {
+        return @fromBackingInt(val);
+    }
+
+    /// Formats the MediaId for debugging output.
+    pub fn format(self: MediaId, writer: anytype) !void {
+        if (self == .none) {
+            try writer.writeAll("MediaId(none)");
+        } else {
+            try writer.print("MediaId({d})", .{@backingInt(self)});
+        }
+    }
+};
+
 /// Discriminated union representing either a filesystem path, a virtual entry
 /// inside an archive, or a stacked RAW+JPEG file pair.
 pub const MediaEntry = union(enum) {
@@ -2222,4 +2263,25 @@ test "freeOwnedStringSlice - frees slices and individual strings" {
     slice[0] = try allocator.dupe(u8, "hello");
     slice[1] = try allocator.dupe(u8, "world");
     freeOwnedStringSlice(allocator, slice);
+}
+
+test "MediaId - type layout and representation" {
+    try std.testing.expectEqual(@as(usize, 4), @sizeOf(MediaId));
+    try std.testing.expectEqual(@as(usize, 8), @sizeOf(?MediaId));
+    try std.testing.expectEqual(
+        MediaId.none,
+        @as(MediaId, @fromBackingInt(@intCast(0))),
+    );
+    try std.testing.expect(!MediaId.none.isValid());
+
+    const id1 = MediaId.fromU32(1);
+    try std.testing.expect(id1.isValid());
+    try std.testing.expectEqual(@as(u32, 1), id1.toU32());
+
+    var buf: [32]u8 = undefined;
+    const formatted = try std.fmt.bufPrint(&buf, "{f}", .{id1});
+    try std.testing.expectEqualStrings("MediaId(1)", formatted);
+
+    const formatted_none = try std.fmt.bufPrint(&buf, "{f}", .{MediaId.none});
+    try std.testing.expectEqualStrings("MediaId(none)", formatted_none);
 }

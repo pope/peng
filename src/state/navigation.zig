@@ -5,7 +5,7 @@ const vfs = @import("vfs");
 
 const Classification = triage.Classification;
 const MediaEntry = vfs.MediaEntry;
-const MediaId = types.MediaId;
+const MediaId = vfs.MediaId;
 const SlideshowMode = types.SlideshowMode;
 const TriageMap = triage.TriageMap;
 const ViewMode = triage.ViewMode;
