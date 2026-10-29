@@ -37,7 +37,7 @@ const LibViewer = struct {
         app_state: *app.state.AppState,
         window: sdl.Window,
         resources: *ui.graphics.RenderResources,
-        measure_data: *state_pkg.MeasureTextUserData,
+        measure_data: *ui.graphics.MeasureTextUserData,
         parsed_headless: bool,
         parsed_test_mode: bool,
         frame_arena: *std.heap.ArenaAllocator,
@@ -144,7 +144,7 @@ const AppGraphicsAndState = struct {
     state: app.state.AppState,
     clay_memory: []u8,
     clay_context: *clay.Context,
-    measure_data: state_pkg.MeasureTextUserData,
+    measure_data: ui.graphics.MeasureTextUserData,
     ipc_server: ?*ipc.IpcServer,
 
     /// Releases all application resources, closes IPC server, tears down
@@ -238,10 +238,6 @@ const AppGraphicsAndState = struct {
                     .navigation = nav,
                     .ui = ui_state,
                     .animations = .{},
-                    .display = if (start_hidden)
-                        .{ .hidden = .headless }
-                    else
-                        .{ .visible = .headless },
                     .viewport = vp_blk: {
                         var vp = state_pkg.ViewportParams{
                             .fit_mode = parsed.default_scale,
@@ -254,6 +250,10 @@ const AppGraphicsAndState = struct {
                     .running = true,
                 };
             },
+            .display = if (start_hidden)
+                .{ .hidden = .headless }
+            else
+                .{ .visible = .headless },
             .gpu_device = null,
             .gpu_enabled = true,
             .unpack_compute_pipeline = null,
@@ -330,7 +330,7 @@ const AppGraphicsAndState = struct {
         self.state.gpu_device = self.setup.gpu_device;
         self.state.unpack_compute_pipeline = self.resources.unpack_compute_pipeline;
         if (!parsed.headless) {
-            self.state.viewer.display.backendPtr().* = .{
+            self.state.display.backendPtr().* = .{
                 .windowed = .{
                     .handle = self.setup.window,
                     .pixel_format = sdl.PixelFormat.rgba32,
@@ -347,12 +347,12 @@ const AppGraphicsAndState = struct {
 /// Phase 2: Runs the main application event processing, state updating, and rendering loop.
 fn runMainLoop(ctx: *AppGraphicsAndState) !void {
     // Configure Clay measure text function with a stable pointer to measure_data
-    ctx.measure_data = state_pkg.MeasureTextUserData{
+    ctx.measure_data = ui.graphics.MeasureTextUserData{
         .fonts = ctx.resources.fonts[0..],
         .allocator = ctx.gpa,
     };
     clay.setMeasureTextFunction(
-        *const state_pkg.MeasureTextUserData,
+        *const ui.graphics.MeasureTextUserData,
         &ctx.measure_data,
         ui.graphics.sdl3MeasureText,
     );

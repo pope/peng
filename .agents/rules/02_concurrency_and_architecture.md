@@ -4,8 +4,9 @@
 
 - **`AppState` (Outer Engine & Hardware Container)**:
   - Defined in `src/app/state.zig` (`app.state.AppState`).
-  - Owns hardware contexts (`gpu_device`, `unpack_compute_pipeline`,
-    `upload_staging: image.UploadStagingBuffer`, `ipc_server: ?*IpcServer`),
+  - Owns hardware contexts (`display: DisplayState`, `gpu_device`,
+    `unpack_compute_pipeline`, `upload_staging: image.UploadStagingBuffer`,
+    `ipc_server: ?*IpcServer`),
     allocators (`allocator`), async I/O (`io`), texture slot cache
     (`cache: ImageCache`), worker manager (`workers: WorkerManager`), IPC
     command queue (`pending_ipc_commands`), deferred IPC selection and
@@ -21,7 +22,7 @@
   - Contains pure visual, controller, and UI state (`viewport`, `navigation`,
     `ui`, `stats`, `animations: AnimationState`,
     `image_transition: ImageTransition`, `pan_controller: PanController`,
-    `zoom_controller: ZoomController`, `rotation_map`, `display`, `drag_state`,
+    `zoom_controller: ZoomController`, `rotation_map`, `drag_state`,
     `mouse_inside`, `last_win_w`, `last_win_h`, `running`).
   - **Purity Invariant**: `ViewerState` MUST contain **ZERO** GPU device
     pointers, **ZERO** worker thread pools, **ZERO** `std.Io` contexts, and

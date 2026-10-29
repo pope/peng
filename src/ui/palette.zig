@@ -1,4 +1,5 @@
 const clay = @import("zclay");
+const graphics = @import("graphics.zig");
 const intents = @import("intents");
 const palette_pkg = @import("palette");
 const sdl = @import("sdl");
@@ -10,7 +11,7 @@ const theme = @import("theme.zig");
 const ElementTag = types.ElementTag;
 const FuzzyHighlighter = palette_pkg.FuzzyHighlighter;
 const getPaletteConfig = palette_pkg.getPaletteConfig;
-const MeasureTextUserData = state.MeasureTextUserData;
+const MeasureTextUserData = graphics.MeasureTextUserData;
 const PaletteConfig = palette_pkg.PaletteConfig;
 const PaletteMode = intents.PaletteMode;
 const PaletteState = palette_pkg.PaletteState;

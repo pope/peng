@@ -5,7 +5,6 @@ const types = @import("types.zig");
 const ui_state = @import("ui_state.zig");
 
 const AnimationState = animation_state.AnimationState;
-const DisplayState = types.DisplayState;
 const DragState = types.DragState;
 const ImageTransition = types.ImageTransition;
 const NavigationState = navigation.NavigationState;
@@ -25,7 +24,6 @@ pub const ViewerState = struct {
     stats: ViewerStats = .{},
     rotation_map: std.StringHashMap(f32),
 
-    display: DisplayState = .default_headless,
     drag_state: DragState = .none,
 
     image_transition: ImageTransition = .none,
@@ -57,22 +55,15 @@ pub const ViewerState = struct {
             .ui = ui,
             .animations = .{},
             .rotation_map = .init(allocator),
-            .display = .default_headless,
         };
     }
 
-    /// Releases navigation, UI, animations, display, and rotation map resources.
+    /// Releases navigation, UI, animations, and rotation map resources.
     pub fn deinit(self: *ViewerState, allocator: std.mem.Allocator, io: std.Io) void {
         self.navigation.deinit(allocator);
         self.ui.deinit(io, allocator);
-        self.display.deinit(allocator);
         self.clearRotationMap(allocator);
         self.rotation_map.deinit();
-    }
-
-    /// Returns `true` if the window display is currently in fullscreen mode.
-    pub inline fn isFullscreen(self: *const ViewerState) bool {
-        return self.display.isFullscreen();
     }
 
     /// Returns `true` if slideshow mode is active and advancing images on a timer.

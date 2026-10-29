@@ -92,7 +92,7 @@ fn spawnCacheDecodeSlot(
         .current_job_epoch = &state.cache.job_epochs[ticket.job_id],
         .entry = dup_entry,
         .has_gpu_device = state.gpu_device != null,
-        .pixel_format = state.viewer.display.getPixelFormat(),
+        .pixel_format = state.display.getPixelFormat(),
         .thumb_only = thumb_only,
         .pair_target = pair_target,
         .current_generation = &state.cache.generation,

@@ -1,8 +1,6 @@
 const animation_state = @import("animation_state.zig");
 const navigation = @import("navigation.zig");
 const palette_pkg = @import("palette");
-const sdl = @import("sdl");
-const std = @import("std");
 const triage = @import("triage");
 const types = @import("types.zig");
 const vfs = @import("vfs");
@@ -87,12 +85,4 @@ pub const UiViewModel = struct {
         }
         return .unflagged;
     }
-};
-
-/// User data context passed to Clay text measurement callbacks containing font
-/// handles and debug flags.
-pub const MeasureTextUserData = struct {
-    fonts: []const ?sdl.Font,
-    is_debug_measuring: bool = false,
-    allocator: std.mem.Allocator = undefined,
 };

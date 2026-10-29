@@ -1,4 +1,5 @@
 const clay = @import("zclay");
+const display_mod = @import("core/display.zig");
 const events = @import("core/events.zig");
 const image = @import("core/image.zig");
 const input = @import("input");
@@ -13,7 +14,7 @@ const workers_mod = @import("workers/root.zig");
 
 const AppIntent = intents.AppIntent;
 const CacheEntry = state_pkg.CacheEntry;
-const DisplayState = state_pkg.DisplayState;
+const DisplayState = display_mod.DisplayState;
 const FrameInput = types.FrameInput;
 const getParentDirBuf = vfs.getParentDirBuf;
 const ImageCache = image.ImageCache;
@@ -21,31 +22,13 @@ const ImageCacheKey = image.ImageCacheKey;
 const isCbzFile = vfs.isCbzFile;
 const MediaEntry = vfs.MediaEntry;
 const PaletteMode = intents.PaletteMode;
+const startTextInput = display_mod.startTextInput;
+const stopTextInput = display_mod.stopTextInput;
 const ThumbCacheConfig = thumbcache.ThumbCacheConfig;
 const ThumbCacheMode = thumbcache.ThumbCacheMode;
 const types = state_pkg.types;
 const view_transform = state_pkg.view_transform;
 const ViewerState = state_pkg.ViewerState;
-
-/// Enables SDL text input events if the current display mode is a visible
-/// window. No-op when headless or hidden.
-pub fn startTextInput(display: DisplayState) void {
-    if (display.visibleWindow()) |win| {
-        if (!win.startTextInput()) {
-            std.log.err("SDL_StartTextInput failed: {s}", .{sdl.getError()});
-        }
-    }
-}
-
-/// Disables SDL text input events if the current display mode is a visible
-/// window. No-op when headless or hidden.
-pub fn stopTextInput(display: DisplayState) void {
-    if (display.visibleWindow()) |win| {
-        if (!win.stopTextInput()) {
-            std.log.err("SDL_StopTextInput failed: {s}", .{sdl.getError()});
-        }
-    }
-}
 
 /// Cohesive GPU context and render resources initialized for GPU-accelerated rendering.
 /// Main Application State Architecture
@@ -67,6 +50,7 @@ pub const AppState = struct {
     viewer: ViewerState,
 
     /// Hardware & Pipeline Resources
+    display: DisplayState = .default_headless,
     gpu_device: ?sdl.gpu.Device = null,
     gpu_enabled: bool = true,
     unpack_compute_pipeline: ?sdl.gpu.ComputePipeline = null,
@@ -239,6 +223,11 @@ pub const AppState = struct {
         }
     }
 
+    /// Returns `true` if the window display is currently in fullscreen mode.
+    pub inline fn isFullscreen(self: *const AppState) bool {
+        return self.display.isFullscreen();
+    }
+
     /// Returns `true` if files are currently loading, background workers are
     /// active, active unpaused slideshow is running, or animations are active.
     pub inline fn isBusy(self: *const AppState) bool {
@@ -329,7 +318,7 @@ pub const AppState = struct {
         {
             return .poll;
         }
-        switch (self.viewer.display) {
+        switch (self.display) {
             .hidden => return .wait_indefinite,
             .visible => {},
         }
@@ -377,7 +366,7 @@ pub const AppState = struct {
         if (self.gpu_device) |dev| {
             self.upload_staging.deinit(dev);
 
-            switch (self.viewer.display.backend()) {
+            switch (self.display.backend()) {
                 .headless => {},
                 .windowed => |w| w.handle.releaseFromGpu(dev),
             }
@@ -397,6 +386,7 @@ pub const AppState = struct {
         }
         self.abortPendingWaitLoadStreams("ShuttingDown");
         self.viewer.deinit(self.allocator, self.io);
+        self.display.deinit(self.allocator);
         self.pending_ipc_commands.deinit(self.allocator);
         self.pending_selection_streams.deinit(self.allocator);
         self.pending_wait_load_streams.deinit(self.allocator);
@@ -427,7 +417,7 @@ pub const AppState = struct {
         var win_h: f32 = 768.0;
         var scale_x: f32 = 1.0;
 
-        switch (self.viewer.display.backend()) {
+        switch (self.display.backend()) {
             .headless => {},
             .windowed => |win| {
                 const win_size = win.handle.getSize();
@@ -546,7 +536,7 @@ pub const AppState = struct {
 
     /// Initiates animated closing of the command palette, stopping text input.
     pub fn closePalette(self: *AppState) void {
-        stopTextInput(self.viewer.display);
+        stopTextInput(self.display);
         self.viewer.ui.palette.is_closing = true;
         const progress = self.viewer.animations.get(.palette_reveal);
         const duration = @max(state_pkg.DURATION_PALETTE_CLOSE_MS * progress, 30.0);
@@ -555,7 +545,7 @@ pub const AppState = struct {
 
     /// Immediately closes and resets the command palette without animation.
     pub fn closePaletteImmediately(self: *AppState) void {
-        stopTextInput(self.viewer.display);
+        stopTextInput(self.display);
         self.viewer.ui.palette.reset();
         self.viewer.animations.setImmediate(.palette_reveal, 0.0);
     }
@@ -563,7 +553,7 @@ pub const AppState = struct {
     /// Ensures the application window is visible and raises it to the
     /// foreground.
     pub fn showAndRaiseWindow(self: *AppState) void {
-        switch (self.viewer.display) {
+        switch (self.display) {
             .hidden => |b| {
                 switch (b) {
                     .headless => {},
@@ -582,7 +572,7 @@ pub const AppState = struct {
                         }
                     },
                 }
-                self.viewer.display = .{ .visible = b };
+                self.display = .{ .visible = b };
             },
             .visible => |b| switch (b) {
                 .headless => {},
@@ -642,7 +632,7 @@ pub const AppState = struct {
         self.viewer.navigation.last_scanned_dir.clearRetainingCapacity();
         _ = self.viewer.navigation.directory_arena.reset(.free_all);
 
-        switch (self.viewer.display) {
+        switch (self.display) {
             .visible => |b| {
                 switch (b) {
                     .headless => {},
@@ -655,7 +645,7 @@ pub const AppState = struct {
                         }
                     },
                 }
-                self.viewer.display = .{ .hidden = b };
+                self.display = .{ .hidden = b };
                 sdl.reclaimProcessHeap();
             },
             .hidden => {},
@@ -815,7 +805,7 @@ pub const AppState = struct {
             .go_to_image,
             => {},
         }
-        startTextInput(self.viewer.display);
+        startTextInput(self.display);
     }
 
     /// Resets pan/zoom controllers, viewport state, rotation angle, base scale,
@@ -1007,7 +997,7 @@ pub const AppState = struct {
                     .key = key0,
                     .entry = dup_entry,
                     .has_gpu_device = (self.gpu_device != null) or self.gpu_enabled,
-                    .pixel_format = self.viewer.display.getPixelFormat(),
+                    .pixel_format = self.display.getPixelFormat(),
                     .thumb_only = false,
                     .pair_target = if (self.viewer.navigation.stack_raw_jpeg) .adaptive else .standalone_jpeg,
                     .current_generation = &self.cache.generation,

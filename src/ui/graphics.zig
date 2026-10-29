@@ -2,12 +2,10 @@ const builtin = @import("builtin");
 const clay = @import("zclay");
 const geometry = @import("geometry.zig");
 const sdl = @import("sdl");
-const state = @import("state");
 const std = @import("std");
 const text_cache = @import("text_cache.zig");
 const theme = @import("theme.zig");
 
-const MeasureTextUserData = state.MeasureTextUserData;
 const TextCache = text_cache.TextCache;
 
 /// Initialized window handle, SDL GPU device, and DPI scale factor.
@@ -1084,6 +1082,14 @@ pub fn saveTextureToPng(
         return error.SavePngFailed;
     }
 }
+
+/// User data context passed to Clay text measurement callbacks containing font
+/// handles and debug flags.
+pub const MeasureTextUserData = struct {
+    fonts: []const ?sdl.Font,
+    is_debug_measuring: bool = false,
+    allocator: std.mem.Allocator = undefined,
+};
 
 /// Measures text pixel width and height via SDL_ttf for Clay layout element sizing.
 pub fn sdl3MeasureText(

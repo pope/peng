@@ -28,7 +28,7 @@ pub fn drainWorkerEvents(state: *AppState) bool {
     };
     if (state.event_batch.items.len == 0) return false;
 
-    var destroyed_full_surface = state.viewer.display.isHidden();
+    var destroyed_full_surface = state.display.isHidden();
     for (state.event_batch.items, 0..) |*evt, evt_idx| {
         defer evt.deinit(state.allocator);
 
@@ -76,7 +76,7 @@ pub fn drainWorkerEvents(state: *AppState) bool {
                 handleDecodeFailedEvent(state, r.key, is_current);
             },
             .path_discovered => |p| {
-                if (!state.viewer.display.isHidden()) {
+                if (!state.display.isHidden()) {
                     handleDirScannedEvent(state, p);
                 }
             },
@@ -101,7 +101,7 @@ pub fn drainWorkerEvents(state: *AppState) bool {
         }
     }
     if (destroyed_full_surface and
-        (state.viewer.display.isHidden() or
+        (state.display.isHidden() or
             state.workers.active_decode_threads.load(.acquire) == 0))
     {
         sdl.reclaimProcessHeap();

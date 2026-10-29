@@ -20,7 +20,7 @@ pub fn sysExecuteIpcCommands(ctx: FrameContext) void {
     state.flushPendingWaitLoadStreams();
     if (state.pending_ipc_commands.items.len == 0) return;
 
-    var will_be_hidden = switch (state.viewer.display) {
+    var will_be_hidden = switch (state.display) {
         .hidden => true,
         .visible => false,
     };
@@ -952,7 +952,7 @@ test "sysExecuteIpcCommands - rejects navigation when hidden (WindowHidden)" {
 
     state.viewer.server_mode = true;
     state.hideWindow();
-    try std.testing.expect(state.viewer.display.isHidden());
+    try std.testing.expect(state.display.isHidden());
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -999,7 +999,7 @@ test "sysExecuteIpcCommands - preview while hidden and bare open window" {
 
     state.viewer.server_mode = true;
     state.hideWindow();
-    try std.testing.expect(state.viewer.display.isHidden());
+    try std.testing.expect(state.display.isHidden());
 
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -1031,7 +1031,7 @@ test "sysExecuteIpcCommands - preview while hidden and bare open window" {
 
     const ctx = FrameContext{ .state = &state, .frame_allocator = allocator };
     sysExecuteIpcCommands(ctx);
-    try std.testing.expect(state.viewer.display.isHidden());
+    try std.testing.expect(state.display.isHidden());
 
     var rbuf: [512]u8 = undefined;
     var r_prev = c_prev.reader(io, &rbuf);
@@ -1065,7 +1065,7 @@ test "sysExecuteIpcCommands - preview while hidden and bare open window" {
 
     sysExecuteIpcCommands(ctx);
     try intents_system.sysExecuteIntents(ctx);
-    try std.testing.expect(!state.viewer.display.isHidden());
+    try std.testing.expect(!state.display.isHidden());
     try std.testing.expectEqual(
         intents.PaletteMode.directory_navigator,
         state.viewer.ui.palette.mode,

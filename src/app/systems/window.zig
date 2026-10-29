@@ -40,7 +40,7 @@ pub fn sysSyncWindow(ctx: FrameContext) void {
         ctx.frame_allocator,
     );
 
-    switch (state.viewer.display) {
+    switch (state.display) {
         .visible => |*b| switch (b.*) {
             .windowed => |*win| {
                 const title_changed = if (win.cached_title) |cached|

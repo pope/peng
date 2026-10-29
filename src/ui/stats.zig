@@ -1,5 +1,6 @@
 const clay = @import("zclay");
 const edit_panel = @import("edit_panel.zig");
+const graphics = @import("graphics.zig");
 const intents = @import("intents");
 const state = @import("state");
 const std = @import("std");
@@ -7,7 +8,7 @@ const text_utils = @import("text_utils.zig");
 const theme = @import("theme.zig");
 
 const ElementTag = types.ElementTag;
-const MeasureTextUserData = state.MeasureTextUserData;
+const MeasureTextUserData = graphics.MeasureTextUserData;
 const UiViewModel = state.UiViewModel;
 const formatSize = text_utils.formatSize;
 const getSpec = intents.getSpec;

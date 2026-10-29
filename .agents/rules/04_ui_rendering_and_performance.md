@@ -61,7 +61,7 @@
 ## 3. Clay UI Interaction, Animations & Event Loop Polling
 
 - **Event Loop Wait Strategy (`AppState.computeFrameWaitStrategy`)**:
-  - When `viewer.display == .hidden` (resident `--server` mode with the window
+  - When `self.display == .hidden` (resident `--server` mode with the window
     closed), `computeFrameWaitStrategy` immediately returns `.wait_indefinite`
     (unless `had_bg_events` is true) so the resident daemon blocks at 0% CPU
     until woken by an IPC command or OS event.

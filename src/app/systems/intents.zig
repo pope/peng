@@ -694,7 +694,7 @@ fn executeIntent(
         .toggle_blur => ui.overlays.enable_blur = !ui.overlays.enable_blur,
         .set_blur => |val| ui.overlays.enable_blur = val,
         .toggle_fullscreen => {
-            switch (self.viewer.display.backendPtr().*) {
+            switch (self.display.backendPtr().*) {
                 .headless => {},
                 .windowed => |*win| {
                     win.is_fullscreen = !win.is_fullscreen;
@@ -705,7 +705,7 @@ fn executeIntent(
             }
         },
         .set_fullscreen => |val| {
-            switch (self.viewer.display.backendPtr().*) {
+            switch (self.display.backendPtr().*) {
                 .headless => {},
                 .windowed => |*win| {
                     win.is_fullscreen = val;
@@ -716,7 +716,7 @@ fn executeIntent(
             }
         },
         .toggle_windowless => {
-            switch (self.viewer.display.backendPtr().*) {
+            switch (self.display.backendPtr().*) {
                 .headless => {},
                 .windowed => |*win| {
                     win.is_borderless = !win.is_borderless;
@@ -727,7 +727,7 @@ fn executeIntent(
             }
         },
         .set_windowless => |val| {
-            switch (self.viewer.display.backendPtr().*) {
+            switch (self.display.backendPtr().*) {
                 .headless => {},
                 .windowed => |*win| {
                     win.is_borderless = val;
@@ -1939,7 +1939,7 @@ test "executeIntent - server_mode hides on quit and exits on quit_server" {
     // cache and directory playlist while preserving picks/rejects selections
     try executeIntent(&app_st, .quit, 1000);
     try std.testing.expect(app_st.viewer.running);
-    try std.testing.expect(app_st.viewer.display.isHidden());
+    try std.testing.expect(app_st.display.isHidden());
     try std.testing.expect(!app_st.viewer.isSlideshowActive());
     try std.testing.expectEqual(@as(usize, 0), app_st.cache.count());
     try std.testing.expectEqual(

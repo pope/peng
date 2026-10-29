@@ -77,7 +77,7 @@ pub fn updateFrame(
     app_state: *app.state.AppState,
     window: sdl.Window,
     resources: *ui.graphics.RenderResources,
-    measure_data: *state_pkg.MeasureTextUserData,
+    measure_data: *ui.graphics.MeasureTextUserData,
     parsed_headless: bool,
     parsed_test_mode: bool,
     frame_arena: *std.heap.ArenaAllocator,
@@ -85,14 +85,14 @@ pub fn updateFrame(
 ) !void {
     // Re-bind Clay measure text function pointer to the reloaded code address
     clay.setMeasureTextFunction(
-        *const state_pkg.MeasureTextUserData,
+        *const ui.graphics.MeasureTextUserData,
         measure_data,
         ui.graphics.sdl3MeasureText,
     );
 
     // Phase 1: Background Event & Input Ingestion
     const skip_wait = (parsed_test_mode or parsed_headless) and
-        !app_state.viewer.display.isHidden();
+        !app_state.display.isHidden();
     if (skip_wait) {
         app_state.viewer.animations.settleAll();
     }
@@ -168,7 +168,7 @@ pub fn updateFrame(
     }
 
     // Phase 2: Update Phase — Run all systems sequentially
-    const was_hidden = app_state.viewer.display.isHidden();
+    const was_hidden = app_state.display.isHidden();
     try runUpdatePhase(
         app_state,
         update_input,
@@ -181,7 +181,7 @@ pub fn updateFrame(
         app_state.handleScreenshotPostRender(error.GpuNotInitialized);
         return error.GpuNotInitialized;
     }
-    switch (app_state.viewer.display) {
+    switch (app_state.display) {
         .hidden => {
             _ = frame_arena.reset(.free_all);
             const released_ui = resources.releaseTransientResources(
@@ -224,7 +224,7 @@ pub fn updateFrame(
     };
 
     const ui_model = state_pkg.UiViewModel{
-        .is_fullscreen = app_state.viewer.isFullscreen(),
+        .is_fullscreen = app_state.isFullscreen(),
         .total_images = nav_slice.len,
         .items = nav_slice,
         .current_index = nav.current_index,
@@ -303,7 +303,7 @@ pub fn updateFrame(
         .idle => null,
         .capturing => |s| s.path,
     };
-    const target_window = app_state.viewer.display.visibleWindow();
+    const target_window = app_state.display.visibleWindow();
     ui.layout.renderFrame(
         ui_model,
         resources,
@@ -343,7 +343,7 @@ export fn viewer_update(
     app_state: *app.state.AppState,
     window: sdl.Window,
     resources: *ui.graphics.RenderResources,
-    measure_data: *state_pkg.MeasureTextUserData,
+    measure_data: *ui.graphics.MeasureTextUserData,
     parsed_headless: bool,
     parsed_test_mode: bool,
     frame_arena: *std.heap.ArenaAllocator,

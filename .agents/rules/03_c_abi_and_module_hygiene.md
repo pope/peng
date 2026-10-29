@@ -62,8 +62,8 @@
     statically by default, or as a hot-reloadable shared library `viewer` /
     `libviewer` when built with `-Dhot_reload=true`).
 - **App-Private Core (`src/app/core/`)**:
-  - State-free utilities (`events.zig`, `image.zig`, `thumbcache.zig`) live in
-    `src/app/core/`.
+  - State-free utilities (`display.zig`, `events.zig`, `image.zig`,
+    `thumbcache.zig`) live in `src/app/core/`.
   - **Acyclic Dependency Invariant**: Pure modules (`probe`, `vfs`, `triage`,
     `palette`, `thumbcache`, `intents`, `input`, `ipc`, `state`, `config`,
     `app/core`) MUST NOT import `AppState`, `src/app/systems/`, or

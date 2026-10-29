@@ -14,7 +14,7 @@ const theme = @import("theme.zig");
 
 const ElementTag = types.ElementTag;
 const FrameInput = types.FrameInput;
-const MeasureTextUserData = state.MeasureTextUserData;
+const MeasureTextUserData = graphics.MeasureTextUserData;
 const PaletteState = palette_pkg.PaletteState;
 const RenderResources = graphics.RenderResources;
 const UiViewModel = state.UiViewModel;
