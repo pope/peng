@@ -15,6 +15,7 @@ const getParentDirBuf = vfs.getParentDirBuf;
 const Key = intents.Key;
 const KeyModifiers = intents.KeyModifiers;
 const PaletteMode = intents.PaletteMode;
+const palette_action_items = intents.actions.palette_action_items;
 
 /// Processes Return key confirmation for 1-based image index input palette mode (`.go_to_image`).
 fn handlePaletteReturnGoToImage(ctx: FrameContext, raw_str: []const u8) !void {
@@ -118,7 +119,7 @@ fn handlePaletteReturnMatchSelection(ctx: FrameContext) !void {
     if (palette.mode == .files) {
         try self.pushIntent(.{ .go_to_image = target_idx });
     } else if (palette.mode == .actions) {
-        const item = state_pkg.palette_action_items[target_idx];
+        const item = palette_action_items[target_idx];
         try self.pushIntent(item.intent);
     }
 }
@@ -305,7 +306,7 @@ fn processPaletteItemClick(
             return true;
         },
         .actions => {
-            const item = state_pkg.palette_action_items[real_idx];
+            const item = palette_action_items[real_idx];
             try self.pushIntent(item.intent);
             if (self.viewer.ui.palette.mode == old_mode) {
                 self.closePalette();

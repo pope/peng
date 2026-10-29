@@ -936,7 +936,7 @@ test "Navigation intents cleanly advance image index" {
 }
 
 test "palette_action_items metadata" {
-    const nav_item = state.palette_action_items[7];
+    const nav_item = intents.actions.palette_action_items[7];
     try std.testing.expectEqualStrings("Navigate Directories...", nav_item.name);
     try std.testing.expectEqualStrings("Ctrl+O", nav_item.shortcut_text);
     try std.testing.expect(nav_item.show_in_palette);

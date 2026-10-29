@@ -206,7 +206,7 @@ fn handleScreenshotCommand(
         return;
     };
     state.viewer.ui.screenshot_mode = .{
-        .capturing = state_pkg.types.ActiveScreenshot{
+        .capturing = state_pkg.ActiveScreenshot{
             .path = dup_path,
             .stream = cmd_data.client_stream,
         },

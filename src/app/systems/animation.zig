@@ -396,7 +396,7 @@ test "sysUpdateAnimations image_crossfade settling clears image_transition" {
     );
     try std.testing.expect(!state.viewer.hasActiveAnimation());
     try std.testing.expectEqual(
-        state_pkg.types.ImageTransition.none,
+        state_pkg.ImageTransition.none,
         state.viewer.image_transition,
     );
 }

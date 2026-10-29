@@ -7,7 +7,7 @@ const std = @import("std");
 
 const AppState = app_state.AppState;
 const FrameContext = context.FrameContext;
-const types = state_pkg.types;
+const FrameInput = state_pkg.FrameInput;
 
 /// System Pass: Update slideshow playback and timer.
 ///
@@ -41,7 +41,7 @@ test "AppState slideshow timer auto-advances slide" {
     state.viewer.navigation.current_index = 0;
     state.viewer.navigation.slideshow = .{ .active = .{ .interval_s = 2.0 } };
 
-    const frame_input_1s = types.FrameInput{
+    const frame_input_1s = FrameInput{
         .win_w = 100,
         .win_h = 100,
         .scale_x = 1,
@@ -98,7 +98,7 @@ test "AppState slideshow pauses during command palette, dragging, or explicit pa
     state.viewer.navigation.current_index = 0;
     state.viewer.navigation.slideshow = .{ .active = .{ .interval_s = 1.0 } };
 
-    const frame_input_1s = types.FrameInput{
+    const frame_input_1s = FrameInput{
         .win_w = 100,
         .win_h = 100,
         .scale_x = 1,

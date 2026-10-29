@@ -1,18 +1,19 @@
 //! Declarative Snackbar Notification System
 //!
-//! Provides a declarative registry of snackbar notification rules, formatting functions,
-//! and a zero-heap-allocation fixed buffer state container for visual user confirmations.
+//! Provides a declarative registry of snackbar notification rules,
+//! formatting functions, and a zero-heap-allocation fixed buffer state
+//! container for visual user confirmations.
 
 const intents = @import("intents");
 const std = @import("std");
 const triage = @import("triage");
-const types = @import("types.zig");
+const viewport = @import("viewport.zig");
 
 const AppIntent = intents.AppIntent;
 const Classification = triage.Classification;
 const EditParam = intents.EditParam;
 const ViewMode = triage.ViewMode;
-const ViewportParams = types.ViewportParams;
+const ViewportParams = viewport.ViewportParams;
 
 /// Maximum length of a snackbar notification message in bytes.
 pub const MAX_SNACKBAR_LEN: usize = 64;

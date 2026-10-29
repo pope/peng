@@ -9,7 +9,7 @@ const text_cache = @import("text_cache.zig");
 const theme = @import("theme.zig");
 
 const BatchItem = render_image.BatchItem;
-const ElementTag = state.types.ElementTag;
+const ElementTag = state.ElementTag;
 const ImageUniforms = render_image.ImageUniforms;
 const MaterialType = render_image.MaterialType;
 const RenderResources = graphics.RenderResources;
@@ -1312,7 +1312,7 @@ pub fn renderClayCommands(
     scale_x: f32,
     scale_y: f32,
     target_format: sdl.gpu.TextureFormat,
-    metrics: ?*state.types.UiRenderMetrics,
+    metrics: ?*state.UiRenderMetrics,
 ) !void {
     const start_render = sdl.timer.getTicksNs();
     const dev = gpu_res.device;

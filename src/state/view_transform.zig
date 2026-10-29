@@ -1,9 +1,12 @@
 const intents = @import("intents");
 const std = @import("std");
-const types = @import("types.zig");
+const viewport = @import("viewport.zig");
 
-const UvRect = types.UvRect;
-const ZoomFactor = types.ZoomFactor;
+const DpiScale = viewport.DpiScale;
+const LogicalDims = viewport.LogicalDims;
+const PhysicalDims = viewport.PhysicalDims;
+const UvRect = viewport.UvRect;
+const ZoomFactor = viewport.ZoomFactor;
 const ZoomPreset = intents.ZoomPreset;
 
 /// Returns `true` if the normalized rotation angle is approximately 90 or
@@ -108,12 +111,12 @@ pub fn computeViewDims(
 /// converted via `scale`) and converts the resulting draw bounds back into
 /// logical UI points (`LogicalDims`) for Clay layout.
 pub fn computeLogicalDrawDims(
-    src_phys: types.PhysicalDims,
-    viewport_logical: types.LogicalDims,
-    scale: types.DpiScale,
+    src_phys: PhysicalDims,
+    viewport_logical: LogicalDims,
+    scale: DpiScale,
     rotation_angle: f32,
     scale_mode: ZoomPreset,
-) types.LogicalDims {
+) LogicalDims {
     if (src_phys.w <= 0.0 or src_phys.h <= 0.0 or
         viewport_logical.w <= 0.0 or viewport_logical.h <= 0.0)
     {
@@ -128,7 +131,7 @@ pub fn computeLogicalDrawDims(
         @max(phys_view.h, 1.0),
         scale_mode,
     );
-    const phys_draw = types.PhysicalDims{ .w = dims.draw_w, .h = dims.draw_h };
+    const phys_draw = PhysicalDims{ .w = dims.draw_w, .h = dims.draw_h };
     return phys_draw.toLogical(scale);
 }
 

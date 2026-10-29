@@ -5,6 +5,7 @@ const std = @import("std");
 const AppIntent = intents.AppIntent;
 const Key = intents.Key;
 const KeyModifiers = intents.KeyModifiers;
+const flat_shortcuts = intents.actions.flat_shortcuts;
 
 pub const KeyContext = enum {
     global,
@@ -390,8 +391,8 @@ pub fn mapKeyToAction(
         }
     }
 
-    // 3. Command Palette Single Source of Truth Lookup (state.flat_shortcuts)
-    for (state.flat_shortcuts) |shortcut| {
+    // 3. Command Palette Single Source of Truth Lookup (flat_shortcuts)
+    for (flat_shortcuts) |shortcut| {
         if (key == shortcut.key and
             mod.ctrl == shortcut.mod.ctrl and
             mod.shift == shortcut.mod.shift and

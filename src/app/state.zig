@@ -14,7 +14,7 @@ const AppIntent = intents.AppIntent;
 const CacheEntry = image.CacheEntry;
 const DisplayState = core.display.DisplayState;
 const events = core.events;
-const FrameInput = types.FrameInput;
+const FrameInput = state_pkg.FrameInput;
 const getParentDirBuf = vfs.getParentDirBuf;
 const image = core.image;
 const ImageCache = image.ImageCache;
@@ -26,9 +26,9 @@ const startTextInput = core.display.startTextInput;
 const stopTextInput = core.display.stopTextInput;
 const ThumbCacheConfig = thumbcache.ThumbCacheConfig;
 const ThumbCacheMode = thumbcache.ThumbCacheMode;
-const types = state_pkg.types;
-const view_transform = state_pkg.view_transform;
 const ViewerState = state_pkg.ViewerState;
+const view_transform = state_pkg.view_transform;
+const ZoomFactor = state_pkg.ZoomFactor;
 
 /// Cohesive GPU context and render resources initialized for GPU-accelerated rendering.
 /// Main Application State Architecture
@@ -1331,11 +1331,11 @@ test "AppState.getBaseScale based on image dimensions" {
     try std.testing.expectEqual(@as(f32, 1.0), state.getBaseScale());
     try std.testing.expectEqual(
         @as(f32, 100.0),
-        types.ZoomFactor.init(150.0).get(),
+        ZoomFactor.init(150.0).get(),
     );
     try std.testing.expectEqual(
         @as(f32, 0.001),
-        types.ZoomFactor.init(0.0001).get(),
+        ZoomFactor.init(0.0001).get(),
     );
 
     // Test with loaded CPU image entry
@@ -1368,7 +1368,7 @@ test "AppState.getBaseScale based on image dimensions" {
     state.viewer.viewport.fit_mode = .none;
     const base_none = state.getBaseScale();
     try std.testing.expectEqual(@as(f32, 1.0), base_none);
-    const clamped_max_none = types.ZoomFactor.init(15.0);
+    const clamped_max_none = ZoomFactor.init(15.0);
     try std.testing.expectEqual(@as(f32, 15.0), clamped_max_none.get());
 
     // In .full mode in default 1024x768 viewport (768 / 3000 = 0.256)
@@ -1432,7 +1432,7 @@ test "AppState.getViewportPixelDims and isImageOverflowing" {
 
     // In .manual mode with zoom 1.0 (4000x3000 > 1024x768) -> overflowing
     state.viewer.viewport.mode = .manual;
-    state.viewer.viewport.zoom_factor = types.ZoomFactor.init(1.0);
+    state.viewer.viewport.zoom_factor = ZoomFactor.init(1.0);
     try std.testing.expect(state.isImageOverflowing());
 }
 
@@ -1493,7 +1493,7 @@ test "FrameInput.isPointerInDebugPanel and click localization" {
     const win_w: f32 = 1000.0;
     const win_h: f32 = 800.0;
 
-    const input_inside = types.FrameInput{
+    const input_inside = FrameInput{
         .win_w = win_w,
         .win_h = win_h,
         .scale_x = 1.0,
@@ -1515,7 +1515,7 @@ test "FrameInput.isPointerInDebugPanel and click localization" {
     };
     try std.testing.expect(input_inside.isPointerInDebugPanel());
 
-    const input_outside = types.FrameInput{
+    const input_outside = FrameInput{
         .win_w = win_w,
         .win_h = win_h,
         .scale_x = 1.0,

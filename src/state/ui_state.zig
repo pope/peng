@@ -1,15 +1,17 @@
 const palette_pkg = @import("palette");
 const snackbar = @import("snackbar.zig");
 const std = @import("std");
+const telemetry = @import("telemetry.zig");
 const types = @import("types.zig");
 
+const ActiveScreenshot = types.ActiveScreenshot;
 const OverlayState = types.OverlayState;
 const PaletteState = palette_pkg.PaletteState;
-const UiRenderMetrics = types.UiRenderMetrics;
+const UiRenderMetrics = telemetry.UiRenderMetrics;
 
 pub const ScreenshotMode = union(enum) {
     idle,
-    capturing: types.ActiveScreenshot,
+    capturing: ActiveScreenshot,
 };
 
 /// State container managing command palettes, UI overlays, render metrics,
@@ -28,7 +30,8 @@ pub const UiState = struct {
         };
     }
 
-    /// Releases palette allocations and responds to any pending screenshot requests.
+    /// Releases palette allocations and responds to any pending screenshot
+    /// requests.
     pub fn deinit(self: *UiState, io: std.Io, allocator: std.mem.Allocator) void {
         self.palette.deinit();
         switch (self.screenshot_mode) {

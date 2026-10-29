@@ -9,11 +9,12 @@ const text_utils = @import("text_utils.zig");
 const theme = @import("theme.zig");
 const view_model = @import("view_model.zig");
 
-const ElementTag = types.ElementTag;
+const ElementTag = state.ElementTag;
 const FuzzyHighlighter = palette_pkg.FuzzyHighlighter;
 const getPaletteConfig = palette_pkg.getPaletteConfig;
 const MeasureTextUserData = graphics.MeasureTextUserData;
 const PaletteConfig = palette_pkg.PaletteConfig;
+const palette_action_items = intents.actions.palette_action_items;
 const PaletteMode = intents.PaletteMode;
 const PaletteState = palette_pkg.PaletteState;
 const partitionHighlightedText = palette_pkg.partitionHighlightedText;
@@ -21,7 +22,6 @@ const remapMiddleTruncatedMatches = palette_pkg.remapMiddleTruncatedMatches;
 const truncateDirectory = text_utils.truncateDirectory;
 const truncateFilename = text_utils.truncateFilename;
 const truncateFilenameMiddle = text_utils.truncateFilenameMiddle;
-const types = state.types;
 const UiViewModel = view_model.UiViewModel;
 const VirtualWindow = palette_pkg.VirtualWindow;
 
@@ -761,7 +761,7 @@ fn renderActionListItem(
     highlighter: *FuzzyHighlighter,
     progress: f32,
 ) !void {
-    const meta = types.palette_action_items[real_idx];
+    const meta = palette_action_items[real_idx];
     const query_str = palette.query.items;
 
     const action_matches = highlighter.matchText(meta.name, query_str);

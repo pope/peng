@@ -8,14 +8,14 @@ const text_utils = @import("text_utils.zig");
 const theme = @import("theme.zig");
 const view_model = @import("view_model.zig");
 
-const ElementTag = types.ElementTag;
-const MeasureTextUserData = graphics.MeasureTextUserData;
-const UiViewModel = view_model.UiViewModel;
+const ElementTag = state.ElementTag;
+const FloatingPanel = state.FloatingPanel;
 const formatSize = text_utils.formatSize;
 const getSpec = intents.getSpec;
+const MeasureTextUserData = graphics.MeasureTextUserData;
 const truncateDirectory = text_utils.truncateDirectory;
 const truncateFilename = text_utils.truncateFilename;
-const types = state.types;
+const UiViewModel = view_model.UiViewModel;
 
 fn renderStatRow(label: []const u8, value: []const u8) !void {
     clay.UI()(.{
@@ -48,7 +48,7 @@ fn renderStatRow(label: []const u8, value: []const u8) !void {
 fn floatingHudCardDeclaration(
     card_id: []const u8,
     attach_point: clay.FloatingAttachPointType,
-    panel: types.FloatingPanel,
+    panel: FloatingPanel,
     enable_blur: bool,
 ) clay.ElementDeclaration {
     return .{

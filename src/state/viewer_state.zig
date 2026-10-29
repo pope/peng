@@ -1,21 +1,26 @@
 const animation_state = @import("animation_state.zig");
 const navigation = @import("navigation.zig");
 const std = @import("std");
+const telemetry = @import("telemetry.zig");
 const types = @import("types.zig");
 const ui_state = @import("ui_state.zig");
+const viewport = @import("viewport.zig");
 
 const AnimationState = animation_state.AnimationState;
 const DragState = types.DragState;
 const ImageTransition = types.ImageTransition;
 const NavigationState = navigation.NavigationState;
+const PanController = viewport.PanController;
 const UiState = ui_state.UiState;
-const ViewerStats = types.ViewerStats;
-const ViewportParams = types.ViewportParams;
+const ViewerStats = telemetry.ViewerStats;
+const ViewportParams = viewport.ViewportParams;
+const ZoomController = viewport.ZoomController;
 
 /// Pure Visual & UI Data Container for UI Layout & Rendering Passes.
 ///
-/// Contains zero hardware device pointers, zero thread pools, zero memory allocators,
-/// and zero I/O contexts. Safe for UI rendering, testing, and layout calculation.
+/// Contains zero hardware device pointers, zero thread pools, zero memory
+/// allocators, and zero I/O contexts. Safe for UI rendering, testing, and
+/// layout calculation.
 pub const ViewerState = struct {
     viewport: ViewportParams = .{},
     navigation: NavigationState,
@@ -29,20 +34,22 @@ pub const ViewerState = struct {
     image_transition: ImageTransition = .none,
 
     mouse_inside: bool = true,
-    pan_controller: types.PanController = .{},
-    zoom_controller: types.ZoomController = .{},
+    pan_controller: PanController = .{},
+    zoom_controller: ZoomController = .{},
     last_win_w: f32 = 0.0,
     last_win_h: f32 = 0.0,
 
     server_mode: bool = false,
     running: bool = true,
 
-    /// Returns the protected previous image index if an image dissolve transition is active.
+    /// Returns the protected previous image index if an image dissolve
+    /// transition is active.
     pub inline fn getTransitionPrevIndex(self: *const ViewerState) ?usize {
         return self.image_transition.getPrevIndex();
     }
 
-    /// Initializes a headless `ViewerState` instance for CLI, testing, and batch processing.
+    /// Initializes a headless `ViewerState` instance for CLI, testing, and
+    /// batch processing.
     pub fn initHeadless(allocator: std.mem.Allocator) !ViewerState {
         var nav = try NavigationState.init(allocator);
         errdefer nav.deinit(allocator);
@@ -59,14 +66,19 @@ pub const ViewerState = struct {
     }
 
     /// Releases navigation, UI, animations, and rotation map resources.
-    pub fn deinit(self: *ViewerState, allocator: std.mem.Allocator, io: std.Io) void {
+    pub fn deinit(
+        self: *ViewerState,
+        allocator: std.mem.Allocator,
+        io: std.Io,
+    ) void {
         self.navigation.deinit(allocator);
         self.ui.deinit(io, allocator);
         self.clearRotationMap(allocator);
         self.rotation_map.deinit();
     }
 
-    /// Returns `true` if slideshow mode is active and advancing images on a timer.
+    /// Returns `true` if slideshow mode is active and advancing images on
+    /// a timer.
     pub inline fn isSlideshowActive(self: *const ViewerState) bool {
         return self.navigation.isSlideshowActive();
     }
@@ -81,7 +93,8 @@ pub const ViewerState = struct {
         self.viewport.reset();
     }
 
-    /// Associates an override rotation angle with an image file path in the rotation map.
+    /// Associates an override rotation angle with an image file path in the
+    /// rotation map.
     pub fn putRotation(
         self: *ViewerState,
         allocator: std.mem.Allocator,
@@ -98,8 +111,12 @@ pub const ViewerState = struct {
         gop.value_ptr.* = angle;
     }
 
-    /// Frees all duplicated path keys stored in the rotation map and clears its table.
-    pub fn clearRotationMap(self: *ViewerState, allocator: std.mem.Allocator) void {
+    /// Frees all duplicated path keys stored in the rotation map and clears
+    /// its table.
+    pub fn clearRotationMap(
+        self: *ViewerState,
+        allocator: std.mem.Allocator,
+    ) void {
         var it = self.rotation_map.keyIterator();
         while (it.next()) |key_ptr| {
             allocator.free(key_ptr.*);

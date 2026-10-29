@@ -15,19 +15,19 @@ const theme = @import("theme.zig");
 const view_model = @import("view_model.zig");
 
 const CacheEntry = core.image.CacheEntry;
-const ElementTag = types.ElementTag;
-const FrameInput = types.FrameInput;
+const ElementTag = state.ElementTag;
+const FrameInput = state.FrameInput;
 const MeasureTextUserData = graphics.MeasureTextUserData;
 const PaletteState = palette_pkg.PaletteState;
-const RenderResources = graphics.RenderResources;
-const UiViewModel = view_model.UiViewModel;
 const renderEditPanel = edit_panel.renderEditPanel;
 const renderPalette = palette.renderPalette;
+const RenderResources = graphics.RenderResources;
 const renderStatsOverlay = stats.renderStatsOverlay;
 const saveTextureToPng = graphics.saveTextureToPng;
 const sdl3MeasureText = graphics.sdl3MeasureText;
 const truncateFilename = text_utils.truncateFilename;
-const types = state.types;
+const UiRenderMetrics = state.UiRenderMetrics;
+const UiViewModel = view_model.UiViewModel;
 const view_transform = state.view_transform;
 
 /// Computes fitted layout dimensions in logical UI points (`LogicalDims`) for
@@ -76,7 +76,7 @@ pub fn renderFrame(
     fonts: []const ?sdl.Font,
     measure_data: *MeasureTextUserData,
     target_window: ?sdl.Window,
-    render_metrics: ?*types.UiRenderMetrics,
+    render_metrics: ?*UiRenderMetrics,
     capture_filename: ?[:0]const u8,
 ) !void {
     const width = input.win_w;
