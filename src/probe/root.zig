@@ -61,6 +61,57 @@ pub const PositiveDimsU32 = struct {
     }
 };
 
+/// RAW camera sensor metadata variant eliminating impossible states
+/// (e.g. RAW flag without valid dimensions).
+pub const RawMetadata = union(enum) {
+    none,
+    raw: struct {
+        sensor_w: f32,
+        sensor_h: f32,
+    },
+
+    /// Safely constructs a RawMetadata variant, guaranteeing strictly positive
+    /// finite dimensions.
+    pub fn init(sensor_w: f32, sensor_h: f32) RawMetadata {
+        if (sensor_w > 0.0 and sensor_h > 0.0 and
+            std.math.isFinite(sensor_w) and std.math.isFinite(sensor_h))
+        {
+            return .{ .raw = .{ .sensor_w = sensor_w, .sensor_h = sensor_h } };
+        }
+        return .none;
+    }
+
+    /// Returns `true` if this media entry is a Camera RAW file with valid
+    /// embedded preview.
+    pub inline fn isRaw(self: RawMetadata) bool {
+        return self == .raw;
+    }
+
+    /// Returns true sensor dimensions if RAW, or `null` if standard media
+    /// format.
+    pub inline fn getSensorDims(self: RawMetadata) ?ImageDimensions {
+        return switch (self) {
+            .raw => |r| if (r.sensor_w > 0.0 and r.sensor_h > 0.0)
+                .{ .w = r.sensor_w, .h = r.sensor_h }
+            else
+                null,
+            .none => null,
+        };
+    }
+};
+
+/// Container metadata discovered synchronously by probing file headers
+/// on the main thread (< 0.1ms).
+pub const ProbedImageMetadata = struct {
+    dims: ImageDimensions,
+    /// Image orientation metadata.
+    orientation: Orientation = .normal,
+    raw_metadata: RawMetadata = .none,
+    /// True if an embedded preview thumbnail was discovered in container
+    /// headers.
+    has_embedded_thumbnail: bool = false,
+};
+
 /// Identifies image MIME container type using magic bytes from header buffer,
 /// falling back to file extension matching if magic bytes are ambiguous.
 pub fn detectMimeType(header: []const u8, path: []const u8) []const u8 {
@@ -1773,6 +1824,207 @@ pub fn probeRawFileHeader(
         header_slice,
         mime_type,
     );
+}
+
+/// Synchronously probes container headers within an uncompressed ZIP/CBZ
+/// entry for dimensions, EXIF rotation, and embedded thumbnail presence.
+pub fn probeStoredZipHeaderMetadata(
+    io: std.Io,
+    archive_path: []const u8,
+    entry_name: []const u8,
+    file_offset: u64,
+    is_raw_ext: bool,
+) ?ProbedImageMetadata {
+    var file = std.Io.Dir.openFile(
+        std.Io.Dir.cwd(),
+        io,
+        archive_path,
+        .{},
+    ) catch |err| {
+        std.log.warn(
+            "probeStoredZipHeaderMetadata: openFile failed for " ++
+                "archive '{s}': {any}",
+            .{ archive_path, err },
+        );
+        return null;
+    };
+    defer file.close(io);
+
+    var header_buf: [64 * 1024]u8 = undefined;
+    var slices = [_][]u8{&header_buf};
+    const n = file.readPositional(
+        io,
+        &slices,
+        file_offset,
+    ) catch |err| {
+        std.log.warn(
+            "probeStoredZipHeaderMetadata: readPositional failed for " ++
+                "'{s}': {any}",
+            .{ archive_path, err },
+        );
+        return null;
+    };
+    if (n == 0) return null;
+
+    const image_slice = skipZipLocalFileHeader(header_buf[0..n]) orelse
+        return null;
+
+    const mime_type = detectMimeType(image_slice, entry_name);
+    const dims = parseImageDimensions(image_slice, mime_type) orelse
+        return null;
+    const rot = parseExifOrientation(image_slice) orelse .normal;
+    const is_raw = is_raw_ext or
+        std.mem.startsWith(u8, mime_type, "image/x-");
+
+    var has_thumb = false;
+    if (std.mem.eql(u8, mime_type, "image/jpeg")) {
+        if (extractJpegThumbnailLocation(image_slice)) |_| {
+            has_thumb = true;
+        }
+    }
+
+    return ProbedImageMetadata{
+        .dims = dims,
+        .orientation = rot,
+        .raw_metadata = if (is_raw)
+            RawMetadata.init(dims.w, dims.h)
+        else
+            .none,
+        .has_embedded_thumbnail = has_thumb,
+    };
+}
+
+/// Synchronously probes container headers for image dimensions, EXIF rotation,
+/// and embedded thumbnail presence in < 0.1ms before spawning background decode
+/// workers, eliminating Frame-1 layout jumps and UI flicker.
+pub fn probeFileHeaderMetadata(
+    io: std.Io,
+    path: []const u8,
+    is_raw_ext: bool,
+) ?ProbedImageMetadata {
+    var file = std.Io.Dir.openFile(
+        std.Io.Dir.cwd(),
+        io,
+        path,
+        .{},
+    ) catch |err| {
+        std.log.warn(
+            "probeFileHeaderMetadata: openFile failed for '{s}': {any}",
+            .{ path, err },
+        );
+        return null;
+    };
+    defer file.close(io);
+
+    var header_buf: [256 * 1024]u8 = undefined;
+    const target_read = if (is_raw_ext) header_buf.len else 128 * 1024;
+    var slices = [_][]u8{header_buf[0..target_read]};
+    const n = file.readPositional(io, &slices, 0) catch |err| {
+        std.log.warn(
+            "probeFileHeaderMetadata: readPositional failed for '{s}': " ++
+                "{any}",
+            .{ path, err },
+        );
+        return null;
+    };
+    if (n == 0) return null;
+
+    const mime_type = detectMimeType(header_buf[0..n], path);
+    var dims: ?ImageDimensions = null;
+    var rot: Orientation = .normal;
+    var has_thumb = false;
+
+    const is_raw = is_raw_ext or
+        isFujiRafHeader(header_buf[0..n], mime_type) or
+        std.mem.startsWith(u8, mime_type, "image/x-");
+
+    if (is_raw) {
+        const raw_probe = probeRawFileHeader(
+            io,
+            &file,
+            0,
+            header_buf[0..n],
+            mime_type,
+        );
+        dims = raw_probe.sensor_dims orelse
+            parseImageDimensions(header_buf[0..n], mime_type);
+        rot = raw_probe.orientation;
+        has_thumb = raw_probe.hasAnyPreview();
+    } else if (std.mem.eql(u8, mime_type, "image/jpeg")) {
+        dims = parseImageDimensions(header_buf[0..n], mime_type);
+        rot = parseExifOrientation(header_buf[0..n]) orelse
+            .normal;
+        if (extractJpegThumbnailLocation(header_buf[0..n])) |_| {
+            has_thumb = true;
+        }
+    } else {
+        dims = parseImageDimensions(header_buf[0..n], mime_type);
+        rot = parseExifOrientation(header_buf[0..n]) orelse
+            .normal;
+    }
+
+    const final_dims = dims orelse return null;
+
+    return ProbedImageMetadata{
+        .dims = final_dims,
+        .orientation = rot,
+        .raw_metadata = if (is_raw)
+            RawMetadata.init(final_dims.w, final_dims.h)
+        else
+            .none,
+        .has_embedded_thumbnail = has_thumb,
+    };
+}
+
+/// Probes companion JPEG header (first 64KB) for visible photograph
+/// dimensions, avoiding raw optical black calibration borders, falling
+/// back to probing the RAW file directly on error.
+pub fn probeCompanionJpegHeaderMetadata(
+    io: std.Io,
+    jpeg_path: []const u8,
+    raw_path: []const u8,
+    is_raw_ext: bool,
+) ?ProbedImageMetadata {
+    var file = std.Io.Dir.openFile(
+        std.Io.Dir.cwd(),
+        io,
+        jpeg_path,
+        .{},
+    ) catch |err| {
+        std.log.warn(
+            "probeCompanionJpegHeaderMetadata: openFile failed for pair " ++
+                "JPEG '{s}': {any}",
+            .{ jpeg_path, err },
+        );
+        return probeFileHeaderMetadata(io, raw_path, is_raw_ext);
+    };
+    defer file.close(io);
+
+    var header_buf: [64 * 1024]u8 = undefined;
+    var slices = [_][]u8{&header_buf};
+    const n = file.readPositional(io, &slices, 0) catch |err| {
+        std.log.warn(
+            "probeCompanionJpegHeaderMetadata: readPositional failed " ++
+                "for '{s}': {any}",
+            .{ jpeg_path, err },
+        );
+        return probeFileHeaderMetadata(io, raw_path, is_raw_ext);
+    };
+    if (n < 4) {
+        return probeFileHeaderMetadata(io, raw_path, is_raw_ext);
+    }
+
+    const rot = parseExifOrientation(header_buf[0..n]) orelse .normal;
+    const dims = parseImageDimensions(header_buf[0..n], "image/jpeg") orelse {
+        return probeFileHeaderMetadata(io, raw_path, is_raw_ext);
+    };
+
+    return ProbedImageMetadata{
+        .dims = dims,
+        .orientation = rot,
+        .raw_metadata = RawMetadata.init(dims.w, dims.h),
+        .has_embedded_thumbnail = true,
+    };
 }
 
 test "parseExifOrientation" {
@@ -3562,4 +3814,198 @@ test "PositiveDimsU32.initClamped" {
 
     // max_dim == 0 returning null
     try std.testing.expect(PositiveDimsU32.initClamped(800, 600, 0) == null);
+}
+
+test "RawMetadata tagged union invariants and constructor" {
+    // Valid dimensions
+    const valid = RawMetadata.init(6000.0, 4000.0);
+    try std.testing.expect(valid.isRaw());
+    const dims = valid.getSensorDims().?;
+    try std.testing.expectEqual(@as(f32, 6000.0), dims.w);
+    try std.testing.expectEqual(@as(f32, 4000.0), dims.h);
+
+    // Invalid zero or negative dimensions return .none
+    try std.testing.expectEqual(RawMetadata.none, RawMetadata.init(0.0, 0.0));
+    try std.testing.expectEqual(
+        RawMetadata.none,
+        RawMetadata.init(-100.0, 4000.0),
+    );
+    try std.testing.expectEqual(
+        RawMetadata.none,
+        RawMetadata.init(6000.0, 0.0),
+    );
+    try std.testing.expectEqual(
+        RawMetadata.none,
+        RawMetadata.init(std.math.nan(f32), 4000.0),
+    );
+    try std.testing.expectEqual(
+        RawMetadata.none,
+        RawMetadata.init(std.math.inf(f32), 4000.0),
+    );
+
+    // .none variant returns false and null
+    const none_meta: RawMetadata = .none;
+    try std.testing.expect(!none_meta.isRaw());
+    try std.testing.expect(none_meta.getSensorDims() == null);
+}
+
+test "probeFileHeaderMetadata - filesystem JPEG" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const meta = probeFileHeaderMetadata(
+        io,
+        "testfiles/images/000_0_1024x682.jpg",
+        false,
+    );
+    try std.testing.expect(meta != null);
+    if (meta) |m| {
+        try std.testing.expectEqual(@as(f32, 1024.0), m.dims.w);
+        try std.testing.expectEqual(@as(f32, 682.0), m.dims.h);
+        try std.testing.expectEqual(Orientation.normal, m.orientation);
+    }
+}
+
+test "probeFileHeaderMetadata - nonexistent file returns null" {
+    const prev_level = std.testing.log_level;
+    std.testing.log_level = .err;
+    defer std.testing.log_level = prev_level;
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+    try std.testing.expectEqual(
+        @as(?ProbedImageMetadata, null),
+        probeFileHeaderMetadata(io, "testfiles/nonexistent.jpg", false),
+    );
+}
+
+test "probeStoredZipHeaderMetadata and probeCompanionJpegHeaderMetadata" {
+    const prev_level = std.testing.log_level;
+    std.testing.log_level = .err;
+    defer std.testing.log_level = prev_level;
+
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    // Uncompressed entry with valid offset
+    const meta = probeStoredZipHeaderMetadata(
+        io,
+        "testfiles/images/000_0_1024x682.jpg",
+        "test.jpg",
+        0,
+        false,
+    );
+    try std.testing.expect(meta != null);
+    if (meta) |m| {
+        try std.testing.expectEqual(@as(f32, 1024.0), m.dims.w);
+        try std.testing.expectEqual(@as(f32, 682.0), m.dims.h);
+    }
+
+    // Companion JPEG probing
+    const comp_meta = probeCompanionJpegHeaderMetadata(
+        io,
+        "testfiles/images/000_0_1024x682.jpg",
+        "testfiles/nonexistent.raw",
+        true,
+    );
+    try std.testing.expect(comp_meta != null);
+    if (comp_meta) |m| {
+        try std.testing.expectEqual(@as(f32, 1024.0), m.dims.w);
+        try std.testing.expectEqual(@as(f32, 682.0), m.dims.h);
+        try std.testing.expect(m.has_embedded_thumbnail);
+        try std.testing.expect(m.raw_metadata.isRaw());
+    }
+
+    // Companion JPEG missing fallback
+    const fallback = probeCompanionJpegHeaderMetadata(
+        io,
+        "testfiles/nonexistent.jpg",
+        "testfiles/images/000_0_1024x682.jpg",
+        false,
+    );
+    try std.testing.expect(fallback != null);
+    if (fallback) |f| {
+        try std.testing.expectEqual(@as(f32, 1024.0), f.dims.w);
+        try std.testing.expectEqual(@as(f32, 682.0), f.dims.h);
+    }
+}
+
+test "probeFileHeaderMetadata - embedded thumbnail on mock RAF" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    // Read real JPEG to embed as preview
+    const fixture_path = "testfiles/images/000_0_1024x682.jpg";
+    var real_jpg = try std.Io.Dir.openFile(
+        std.Io.Dir.cwd(),
+        io,
+        fixture_path,
+        .{},
+    );
+    defer real_jpg.close(io);
+    const jpg_stat = try std.Io.Dir.statFile(
+        std.Io.Dir.cwd(),
+        io,
+        fixture_path,
+        .{},
+    );
+    const jpg_bytes = try allocator.alloc(u8, @intCast(jpg_stat.size));
+    defer allocator.free(jpg_bytes);
+    var j_slices = [_][]u8{jpg_bytes};
+    _ = try real_jpg.readPositional(io, &j_slices, 0);
+
+    // Construct mock Fujifilm RAF
+    var raf_buf = try allocator.alloc(u8, 200 + jpg_bytes.len);
+    defer allocator.free(raf_buf);
+    @memset(raf_buf, 0);
+
+    @memcpy(raf_buf[0..8], "FUJIFILM");
+    std.mem.writeInt(u32, raf_buf[84..88], 200, .big);
+    std.mem.writeInt(u32, raf_buf[88..92], @intCast(jpg_bytes.len), .big);
+    std.mem.writeInt(u32, raf_buf[92..96], 120, .big);
+    std.mem.writeInt(u32, raf_buf[96..100], 12, .big);
+
+    // Metadata block at 120:
+    std.mem.writeInt(u32, raf_buf[120..124], 1, .big);
+    std.mem.writeInt(u16, raf_buf[124..126], 0x0111, .big);
+    std.mem.writeInt(u16, raf_buf[126..128], 4, .big);
+    std.mem.writeInt(u16, raf_buf[128..130], 4160, .big);
+    std.mem.writeInt(u16, raf_buf[130..132], 6240, .big);
+
+    // Copy preview JPEG at 200
+    @memcpy(raf_buf[200 .. 200 + jpg_bytes.len], jpg_bytes);
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var mock_file = try tmp.dir.createFile(io, "mock_probe_test.raf", .{});
+    var wr_slices = [_][]const u8{raf_buf};
+    _ = try mock_file.writePositional(io, &wr_slices, 0);
+    mock_file.close(io);
+
+    var path_buf: [128]u8 = undefined;
+    const mock_path = try std.mem.print(
+        &path_buf,
+        ".zig-cache/tmp/{s}/mock_probe_test.raf",
+        .{tmp.sub_path},
+    );
+
+    const meta = probeFileHeaderMetadata(io, mock_path, true);
+    try std.testing.expect(meta != null);
+    if (meta) |m| {
+        try std.testing.expect(m.has_embedded_thumbnail);
+        try std.testing.expectEqual(@as(f32, 6240.0), m.dims.w);
+        try std.testing.expectEqual(@as(f32, 4160.0), m.dims.h);
+        try std.testing.expect(m.raw_metadata.isRaw());
+    }
+}
+
+test "probeFileHeaderMetadata - non-thumbnail formats return false" {
+    const io = std.Io.Threaded.global_single_threaded.io();
+    const meta = probeFileHeaderMetadata(
+        io,
+        "testfiles/golden-screenshots/init.png",
+        false,
+    );
+    try std.testing.expect(meta != null);
+    if (meta) |m| {
+        try std.testing.expect(!m.has_embedded_thumbnail);
+        try std.testing.expect(m.dims.w > 0);
+        try std.testing.expect(m.dims.h > 0);
+    }
 }

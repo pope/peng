@@ -14,6 +14,7 @@ const KeyModifiers = intents.KeyModifiers;
 const Orientation = probe.Orientation;
 const PairStreamTarget = vfs.PairStreamTarget;
 const PositiveDimsU32 = probe.PositiveDimsU32;
+const RawMetadata = probe.RawMetadata;
 const ViewMode = triage.ViewMode;
 
 pub const ZoomPreset = intents.ZoomPreset;
@@ -816,42 +817,6 @@ pub const UiRenderMetrics = struct {
     }
 };
 
-/// RAW camera sensor metadata variant eliminating impossible states
-/// (e.g. RAW flag without valid dimensions).
-pub const RawMetadata = union(enum) {
-    none,
-    raw: struct {
-        sensor_w: f32,
-        sensor_h: f32,
-    },
-
-    /// Safely constructs a RawMetadata variant, guaranteeing strictly positive non-NaN dimensions.
-    pub fn init(sensor_w: f32, sensor_h: f32) RawMetadata {
-        if (sensor_w > 0.0 and sensor_h > 0.0 and
-            !std.math.isNan(sensor_w) and !std.math.isNan(sensor_h))
-        {
-            return .{ .raw = .{ .sensor_w = sensor_w, .sensor_h = sensor_h } };
-        }
-        return .none;
-    }
-
-    /// Returns `true` if this media entry is a Camera RAW file with valid embedded preview.
-    pub inline fn isRaw(self: RawMetadata) bool {
-        return self == .raw;
-    }
-
-    /// Returns true sensor dimensions if RAW, or `null` if standard media format.
-    pub inline fn getSensorDims(self: RawMetadata) ?PhysicalDims {
-        return switch (self) {
-            .raw => |r| if (r.sensor_w > 0.0 and r.sensor_h > 0.0)
-                .{ .w = r.sensor_w, .h = r.sensor_h }
-            else
-                null,
-            .none => null,
-        };
-    }
-};
-
 /// Container extraction metrics for compressed images (CBZ / ZIP archives).
 pub const ArchiveTelemetry = union(enum) {
     none,
@@ -1175,7 +1140,11 @@ pub const CacheEntry = struct {
     /// irrespective of what downscaled preview or thumbnail is currently
     /// resident.
     pub fn getAuthoritativeDims(self: CacheEntry) PhysicalDims {
-        var best: ?PhysicalDims = self.metadata.raw_metadata.getSensorDims();
+        var best: ?PhysicalDims =
+            if (self.metadata.raw_metadata.getSensorDims()) |sd|
+                .{ .w = sd.w, .h = sd.h }
+            else
+                null;
         if (self.metadata.full_dims) |fd| {
             const cur_area = if (best) |b|
                 @as(f64, b.w) * @as(f64, b.h)
@@ -1734,26 +1703,6 @@ test "ViewportParams.getShaderScaleModeInt maps filters including lanczos3" {
 
     params.scale_filter = .tiny_cnn;
     try std.testing.expectEqual(@as(i32, 6), params.getShaderScaleModeInt());
-}
-
-test "RawMetadata tagged union invariants and constructor" {
-    // Valid dimensions
-    const valid = RawMetadata.init(6000.0, 4000.0);
-    try std.testing.expect(valid.isRaw());
-    const dims = valid.getSensorDims().?;
-    try std.testing.expectEqual(@as(f32, 6000.0), dims.w);
-    try std.testing.expectEqual(@as(f32, 4000.0), dims.h);
-
-    // Invalid zero or negative dimensions return .none
-    try std.testing.expectEqual(RawMetadata.none, RawMetadata.init(0.0, 0.0));
-    try std.testing.expectEqual(RawMetadata.none, RawMetadata.init(-100.0, 4000.0));
-    try std.testing.expectEqual(RawMetadata.none, RawMetadata.init(6000.0, 0.0));
-    try std.testing.expectEqual(RawMetadata.none, RawMetadata.init(std.math.nan(f32), 4000.0));
-
-    // .none variant returns false and null
-    const none_meta: RawMetadata = .none;
-    try std.testing.expect(!none_meta.isRaw());
-    try std.testing.expect(none_meta.getSensorDims() == null);
 }
 
 test "InFlightDecode defaults" {

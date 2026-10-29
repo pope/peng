@@ -7,19 +7,15 @@ const vfs = @import("vfs");
 
 const ArchiveMediaEntry = vfs.ArchiveMediaEntry;
 const CacheEntry = state_pkg.CacheEntry;
-const CacheMetadata = state_pkg.CacheMetadata;
-const CacheResident = state_pkg.CacheResident;
-const CpuSurfaceComponent = state_pkg.CpuSurfaceComponent;
 const detectMimeType = probe.detectMimeType;
-const GpuTextureComponent = state_pkg.GpuTextureComponent;
-const ImageDimensions = probe.ImageDimensions;
 const InFlightDecode = state_pkg.InFlightDecode;
 const isRawFile = vfs.isRawFile;
 const MediaEntry = vfs.MediaEntry;
 const MediaId = vfs.MediaId;
 const Orientation = probe.Orientation;
 const parseImageDimensions = probe.parseImageDimensions;
-const RawMetadata = state_pkg.RawMetadata;
+const ProbedImageMetadata = probe.ProbedImageMetadata;
+const RawMetadata = probe.RawMetadata;
 const ResidentAsset = state_pkg.ResidentAsset;
 const VisibleNeighbors = triage.VisibleNeighbors;
 const ZipSeekOffsets = vfs.ZipSeekOffsets;
@@ -443,196 +439,36 @@ pub const ImageCache = struct {
     }
 };
 
-/// Container metadata discovered synchronously by probing file headers
-/// on the main thread (< 0.1ms).
-pub const ProbedImageMetadata = struct {
-    dims: ImageDimensions,
-    /// Image orientation metadata.
-    orientation: Orientation = .normal,
-    raw_metadata: RawMetadata = .none,
-    /// True if an embedded preview thumbnail was discovered in container headers.
-    has_embedded_thumbnail: bool = false,
-};
-
-fn probeStoredZipMetadata(
-    io: std.Io,
-    a: ArchiveMediaEntry,
-    seek: ZipSeekOffsets,
-) ?ProbedImageMetadata {
-    if (seek.compression_method != .store) return null;
-
-    var file = std.Io.Dir.openFile(
-        std.Io.Dir.cwd(),
-        io,
-        a.archive_path,
-        .{},
-    ) catch |err| {
-        std.log.warn(
-            "probeMediaMetadata: openFile failed for archive '{s}': {any}",
-            .{ a.archive_path, err },
-        );
-        return null;
-    };
-    defer file.close(io);
-
-    var header_buf: [64 * 1024]u8 = undefined;
-    var slices = [_][]u8{&header_buf};
-    const n = file.readPositional(
-        io,
-        &slices,
-        seek.file_offset,
-    ) catch |err| {
-        std.log.warn(
-            "probeMediaMetadata: readPositional failed for '{s}': {any}",
-            .{ a.archive_path, err },
-        );
-        return null;
-    };
-    if (n == 0) return null;
-
-    const image_slice = probe.skipZipLocalFileHeader(header_buf[0..n]) orelse
-        return null;
-
-    const mime_type = detectMimeType(image_slice, a.entry_name);
-    const dims = parseImageDimensions(image_slice, mime_type) orelse
-        return null;
-    const rot = probe.parseExifOrientation(image_slice) orelse .normal;
-    const is_raw = isRawFile(a.entry_name) or
-        std.mem.startsWith(u8, mime_type, "image/x-");
-
-    var has_thumb = false;
-    if (std.mem.eql(u8, mime_type, "image/jpeg")) {
-        if (probe.extractJpegThumbnailLocation(image_slice)) |_| {
-            has_thumb = true;
-        }
-    }
-
-    return ProbedImageMetadata{
-        .dims = dims,
-        .orientation = rot,
-        .raw_metadata = if (is_raw) RawMetadata.init(dims.w, dims.h) else .none,
-        .has_embedded_thumbnail = has_thumb,
-    };
-}
-
 /// Synchronously probes container headers for image dimensions, EXIF rotation,
 /// and embedded thumbnail presence in < 0.1ms before spawning background decode
 /// workers, eliminating Frame-1 layout jumps and UI flicker.
 pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
-    switch (media) {
-        .filesystem => |f| {
-            var file = std.Io.Dir.openFile(
-                std.Io.Dir.cwd(),
-                io,
-                f.path,
-                .{},
-            ) catch |err| {
-                std.log.warn(
-                    "probeMediaMetadata: openFile failed for '{s}': {any}",
-                    .{ f.path, err },
-                );
-                return null;
-            };
-            defer file.close(io);
-
-            const is_raw_ext = isRawFile(f.path);
-            var header_buf: [256 * 1024]u8 = undefined;
-            const target_read = if (is_raw_ext) header_buf.len else 128 * 1024;
-            var slices = [_][]u8{header_buf[0..target_read]};
-            const n = file.readPositional(io, &slices, 0) catch |err| {
-                std.log.warn(
-                    "probeMediaMetadata: readPositional failed for '{s}': {any}",
-                    .{ f.path, err },
-                );
-                return null;
-            };
-            if (n == 0) return null;
-
-            const mime_type = detectMimeType(header_buf[0..n], f.path);
-            var dims: ?ImageDimensions = null;
-            var rot: Orientation = .normal;
-            var has_thumb = false;
-
-            const is_raw = is_raw_ext or
-                probe.isFujiRafHeader(header_buf[0..n], mime_type) or
-                std.mem.startsWith(u8, mime_type, "image/x-");
-
-            if (is_raw) {
-                const raw_probe = probe.probeRawFileHeader(
+    return switch (media) {
+        .filesystem => |f| probe.probeFileHeaderMetadata(
+            io,
+            f.path,
+            isRawFile(f.path),
+        ),
+        .pair => |p| probe.probeCompanionJpegHeaderMetadata(
+            io,
+            p.jpeg_path,
+            p.raw_path,
+            isRawFile(p.raw_path),
+        ),
+        .archive_entry => |a| switch (a.seek_info) {
+            .indexed => |seek| if (seek.compression_method == .store)
+                probe.probeStoredZipHeaderMetadata(
                     io,
-                    &file,
-                    0,
-                    header_buf[0..n],
-                    mime_type,
-                );
-                dims = raw_probe.sensor_dims orelse
-                    parseImageDimensions(header_buf[0..n], mime_type);
-                rot = raw_probe.orientation;
-                has_thumb = raw_probe.hasAnyPreview();
-            } else if (std.mem.eql(u8, mime_type, "image/jpeg")) {
-                dims = parseImageDimensions(header_buf[0..n], mime_type);
-                rot = probe.parseExifOrientation(header_buf[0..n]) orelse
-                    .normal;
-                if (probe.extractJpegThumbnailLocation(header_buf[0..n])) |_| {
-                    has_thumb = true;
-                }
-            } else {
-                dims = parseImageDimensions(header_buf[0..n], mime_type);
-                rot = probe.parseExifOrientation(header_buf[0..n]) orelse
-                    .normal;
-            }
-
-            const final_dims = dims orelse return null;
-
-            return ProbedImageMetadata{
-                .dims = final_dims,
-                .orientation = rot,
-                .raw_metadata = if (is_raw)
-                    RawMetadata.init(final_dims.w, final_dims.h)
-                else
-                    .none,
-                .has_embedded_thumbnail = has_thumb,
-            };
+                    a.archive_path,
+                    a.entry_name,
+                    seek.file_offset,
+                    isRawFile(a.entry_name),
+                )
+            else
+                null,
+            .unindexed => null,
         },
-        .pair => |p| {
-            // Probe companion JPEG header (first 64KB) for visible photograph dimensions,
-            // avoiding raw optical black calibration borders.
-            var file = std.Io.Dir.openFile(std.Io.Dir.cwd(), io, p.jpeg_path, .{}) catch |err| {
-                std.log.warn(
-                    "probeMediaMetadata: openFile failed for pair JPEG '{s}': {any}",
-                    .{ p.jpeg_path, err },
-                );
-                return probeMediaMetadata(io, .{ .filesystem = .{ .path = p.raw_path } });
-            };
-            defer file.close(io);
-
-            var header_buf: [64 * 1024]u8 = undefined;
-            var slices = [_][]u8{&header_buf};
-            const n = file.readPositional(io, &slices, 0) catch 0;
-            if (n < 4) {
-                return probeMediaMetadata(io, .{ .filesystem = .{ .path = p.raw_path } });
-            }
-
-            const rot = probe.parseExifOrientation(header_buf[0..n]) orelse
-                .normal;
-            const dims = parseImageDimensions(header_buf[0..n], "image/jpeg") orelse {
-                return probeMediaMetadata(io, .{ .filesystem = .{ .path = p.raw_path } });
-            };
-
-            return ProbedImageMetadata{
-                .dims = dims,
-                .orientation = rot,
-                .raw_metadata = RawMetadata.init(dims.w, dims.h),
-                .has_embedded_thumbnail = true,
-            };
-        },
-        .archive_entry => |a| {
-            switch (a.seek_info) {
-                .indexed => |seek| return probeStoredZipMetadata(io, a, seek),
-                .unindexed => return null,
-            }
-        },
-    }
+    };
 }
 
 /// Extracted thumbnail surface along with orientation, full-resolution dimensions,
@@ -1932,73 +1768,37 @@ test "uploadSurfaceToGpu - staging buffer reuse across consecutive uploads" {
     try std.testing.expectEqual(cap1, staging.transfer.allocated.capacity);
 }
 
-test "probeMediaMetadata - filesystem JPEG" {
+test "probeMediaMetadata - dispatches filesystem, pair, and archive_entry" {
     const io = std.Io.Threaded.global_single_threaded.io();
-    const media = MediaEntry{
+
+    // 1. .filesystem
+    const fs_meta = probeMediaMetadata(io, .{
         .filesystem = .{ .path = "testfiles/images/000_0_1024x682.jpg" },
-    };
-    const meta = probeMediaMetadata(io, media);
-    try std.testing.expect(meta != null);
-    if (meta) |m| {
+    });
+    try std.testing.expect(fs_meta != null);
+    if (fs_meta) |m| {
         try std.testing.expectEqual(@as(f32, 1024.0), m.dims.w);
         try std.testing.expectEqual(@as(f32, 682.0), m.dims.h);
         try std.testing.expectEqual(Orientation.normal, m.orientation);
     }
-}
 
-test "probeMediaMetadata - nonexistent file returns null" {
-    const prev_level = std.testing.log_level;
-    std.testing.log_level = .err;
-    defer std.testing.log_level = prev_level;
-
-    const io = std.Io.Threaded.global_single_threaded.io();
-    const media = MediaEntry{
-        .filesystem = .{ .path = "testfiles/nonexistent.jpg" },
-    };
-    try std.testing.expectEqual(
-        @as(?ProbedImageMetadata, null),
-        probeMediaMetadata(io, media),
-    );
-}
-
-test "probeMediaMetadata - archive entry handling" {
-    const io = std.Io.Threaded.global_single_threaded.io();
-
-    // Compressed ZIP entry returns null
-    const media_comp = MediaEntry{
-        .archive_entry = .{
-            .archive_path = "testfiles/images/000_0_1024x682.jpg",
-            .entry_name = "test.jpg",
-            .seek_info = .{
-                .indexed = .{
-                    .header_zip_offset = 0,
-                    .file_offset = 0,
-                    .uncompressed_size = 1000,
-                    .compression_method = .deflate,
-                },
-            },
+    // 2. .pair
+    const pair_meta = probeMediaMetadata(io, .{
+        .pair = .{
+            .raw_path = "testfiles/images/000_0_1024x682.jpg",
+            .jpeg_path = "testfiles/images/000_0_1024x682.jpg",
         },
-    };
-    try std.testing.expectEqual(
-        @as(?ProbedImageMetadata, null),
-        probeMediaMetadata(io, media_comp),
-    );
+    });
+    try std.testing.expect(pair_meta != null);
+    if (pair_meta) |m| {
+        try std.testing.expectEqual(@as(f32, 1024.0), m.dims.w);
+        try std.testing.expectEqual(@as(f32, 682.0), m.dims.h);
+        try std.testing.expect(m.has_embedded_thumbnail);
+        try std.testing.expect(m.raw_metadata.isRaw());
+    }
 
-    // Unindexed entry returns null
-    const media_unindexed = MediaEntry{
-        .archive_entry = .{
-            .archive_path = "testfiles/images/000_0_1024x682.jpg",
-            .entry_name = "test.jpg",
-            .seek_info = .unindexed,
-        },
-    };
-    try std.testing.expectEqual(
-        @as(?ProbedImageMetadata, null),
-        probeMediaMetadata(io, media_unindexed),
-    );
-
-    // Uncompressed entry with valid offset
-    const media_stored = MediaEntry{
+    // 3. .archive_entry (.store)
+    const stored_meta = probeMediaMetadata(io, .{
         .archive_entry = .{
             .archive_path = "testfiles/images/000_0_1024x682.jpg",
             .entry_name = "test.jpg",
@@ -2011,13 +1811,45 @@ test "probeMediaMetadata - archive entry handling" {
                 },
             },
         },
-    };
-    const meta = probeMediaMetadata(io, media_stored);
-    try std.testing.expect(meta != null);
-    if (meta) |m| {
+    });
+    try std.testing.expect(stored_meta != null);
+    if (stored_meta) |m| {
         try std.testing.expectEqual(@as(f32, 1024.0), m.dims.w);
         try std.testing.expectEqual(@as(f32, 682.0), m.dims.h);
     }
+
+    // 4. .archive_entry (.deflate) -> null
+    const deflate_meta = probeMediaMetadata(io, .{
+        .archive_entry = .{
+            .archive_path = "testfiles/images/000_0_1024x682.jpg",
+            .entry_name = "test.jpg",
+            .seek_info = .{
+                .indexed = .{
+                    .header_zip_offset = 0,
+                    .file_offset = 0,
+                    .uncompressed_size = 1000,
+                    .compression_method = .deflate,
+                },
+            },
+        },
+    });
+    try std.testing.expectEqual(
+        @as(?ProbedImageMetadata, null),
+        deflate_meta,
+    );
+
+    // 5. .archive_entry (.unindexed) -> null
+    const unindexed_meta = probeMediaMetadata(io, .{
+        .archive_entry = .{
+            .archive_path = "testfiles/images/000_0_1024x682.jpg",
+            .entry_name = "test.jpg",
+            .seek_info = .unindexed,
+        },
+    });
+    try std.testing.expectEqual(
+        @as(?ProbedImageMetadata, null),
+        unindexed_meta,
+    );
 }
 
 test "ImageCache - atomic generation advance and activeKey" {
@@ -2226,82 +2058,6 @@ test "detectThumbnailDctPadding - solid black background returns false (no false
     // Because rows 8 and 111 are also black (no step-transition to image content at row 8),
     // it correctly avoids a false-positive DCT snapping detection.
     try std.testing.expect(!detectThumbnailDctPadding(surf, 6000.0, 4000.0));
-}
-
-test "probeMediaMetadata - detects embedded thumbnail and dimensions on mock RAF" {
-    const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
-
-    // Read real JPEG to embed as preview
-    const fixture_path = "testfiles/images/000_0_1024x682.jpg";
-    var real_jpg = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, fixture_path, .{});
-    defer real_jpg.close(io);
-    const jpg_stat = try std.Io.Dir.statFile(std.Io.Dir.cwd(), io, fixture_path, .{});
-    const jpg_bytes = try allocator.alloc(u8, @intCast(jpg_stat.size));
-    defer allocator.free(jpg_bytes);
-    var j_slices = [_][]u8{jpg_bytes};
-    _ = try real_jpg.readPositional(io, &j_slices, 0);
-
-    // Construct mock Fujifilm RAF
-    var raf_buf = try allocator.alloc(u8, 200 + jpg_bytes.len);
-    defer allocator.free(raf_buf);
-    @memset(raf_buf, 0);
-
-    @memcpy(raf_buf[0..8], "FUJIFILM");
-    std.mem.writeInt(u32, raf_buf[84..88], 200, .big);
-    std.mem.writeInt(u32, raf_buf[88..92], @intCast(jpg_bytes.len), .big);
-    std.mem.writeInt(u32, raf_buf[92..96], 120, .big);
-    std.mem.writeInt(u32, raf_buf[96..100], 12, .big);
-
-    // Metadata block at 120:
-    std.mem.writeInt(u32, raf_buf[120..124], 1, .big);
-    std.mem.writeInt(u16, raf_buf[124..126], 0x0111, .big);
-    std.mem.writeInt(u16, raf_buf[126..128], 4, .big);
-    std.mem.writeInt(u16, raf_buf[128..130], 4160, .big);
-    std.mem.writeInt(u16, raf_buf[130..132], 6240, .big);
-
-    // Copy preview JPEG at 200
-    @memcpy(raf_buf[200 .. 200 + jpg_bytes.len], jpg_bytes);
-
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
-    var mock_file = try tmp.dir.createFile(io, "mock_probe_test.raf", .{});
-    var wr_slices = [_][]const u8{raf_buf};
-    _ = try mock_file.writePositional(io, &wr_slices, 0);
-    mock_file.close(io);
-
-    var path_buf: [128]u8 = undefined;
-    const mock_path = try std.mem.print(
-        &path_buf,
-        ".zig-cache/tmp/{s}/mock_probe_test.raf",
-        .{tmp.sub_path},
-    );
-
-    const media = MediaEntry{ .filesystem = .{ .path = mock_path } };
-    const meta = probeMediaMetadata(io, media);
-    try std.testing.expect(meta != null);
-    if (meta) |m| {
-        try std.testing.expect(m.has_embedded_thumbnail);
-        try std.testing.expectEqual(@as(f32, 6240.0), m.dims.w);
-        try std.testing.expectEqual(@as(f32, 4160.0), m.dims.h);
-        try std.testing.expect(m.raw_metadata.isRaw());
-    }
-}
-
-test "probeMediaMetadata - non-thumbnail formats return has_embedded_thumbnail = false" {
-    const io = std.Io.Threaded.global_single_threaded.io();
-    const media = MediaEntry{
-        .filesystem = .{
-            .path = "testfiles/golden-screenshots/init.png",
-        },
-    };
-    const meta = probeMediaMetadata(io, media);
-    try std.testing.expect(meta != null);
-    if (meta) |m| {
-        try std.testing.expect(!m.has_embedded_thumbnail);
-        try std.testing.expect(m.dims.w > 0);
-        try std.testing.expect(m.dims.h > 0);
-    }
 }
 
 test "computeFallbackScaleDims and stageSurfaceToRgba32 downscale safely" {

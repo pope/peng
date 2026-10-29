@@ -13,6 +13,7 @@ const EntryScanState = vfs.EntryScanState;
 const MediaEntry = vfs.MediaEntry;
 const MediaId = vfs.MediaId;
 const Orientation = probe.Orientation;
+const RawMetadata = probe.RawMetadata;
 
 /// Drains all background thread events (e.g. image decodes, thumbnail extractions,
 /// directory scans, folder count updates, and IPC commands) from `workers.event_queue`.
@@ -493,7 +494,7 @@ fn applyDecodedMetadata(
     entry.updateFullDims(decoded_data.w, decoded_data.h);
     entry.metadata.raw_metadata = if (decoded_data.raw_metadata.isRaw())
         if (entry.metadata.full_dims) |fd|
-            state_pkg.RawMetadata.init(fd.w, fd.h)
+            RawMetadata.init(fd.w, fd.h)
         else
             decoded_data.raw_metadata
     else
@@ -1177,7 +1178,7 @@ test "drainWorkerEvents - monotonic full_dims on pair promotion" {
             .mime_type = "image/jpeg",
             .size_bytes = 500_000,
             .orientation = .normal,
-            .raw_metadata = state_pkg.RawMetadata.init(1616, 1080),
+            .raw_metadata = RawMetadata.init(1616, 1080),
             .decode = .{
                 .read_time_ms = 1.0,
                 .decode_time_ms = 2.0,
@@ -1240,7 +1241,7 @@ test "drainWorkerEvents - monotonic full_dims on pair promotion" {
             .mime_type = "image/jpeg",
             .size_bytes = 500_000,
             .orientation = .normal,
-            .raw_metadata = state_pkg.RawMetadata.init(1616, 1080),
+            .raw_metadata = RawMetadata.init(1616, 1080),
             .decode = .{
                 .read_time_ms = 1.0,
                 .decode_time_ms = 2.0,
@@ -1761,7 +1762,7 @@ test "completeDecodedGpuUpload - enqueues thumb write before swapRemove" {
         .size_bytes = 4096,
         .mime_type = "image/x-sony-arw",
         .orientation = .rotate_270,
-        .raw_metadata = state_pkg.RawMetadata.init(6000.0, 4000.0),
+        .raw_metadata = RawMetadata.init(6000.0, 4000.0),
         .decode = .{
             .read_time_ms = 0.1,
             .decode_time_ms = 1.0,

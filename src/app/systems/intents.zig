@@ -15,6 +15,7 @@ const EditParam = intents.EditParam;
 const FrameContext = context.FrameContext;
 const MediaEntry = vfs.MediaEntry;
 const PairStreamTarget = vfs.PairStreamTarget;
+const RawMetadata = probe.RawMetadata;
 
 fn showCustomSnackbar(self: *AppState, msg: []const u8, now_ms: u64) void {
     if (!self.viewer.ui.snackbar.enabled) return;
@@ -1576,7 +1577,7 @@ test "sysExecuteIntents - raw jpeg stacking and stream toggle" {
         },
     });
     if (app_st.cache.get(key)) |entry| {
-        entry.metadata.raw_metadata = state.RawMetadata.init(6000.0, 4000.0);
+        entry.metadata.raw_metadata = RawMetadata.init(6000.0, 4000.0);
     }
 
     try app_st.pushIntent(.toggle_pair_stream);
@@ -1698,7 +1699,7 @@ test "togglePairStream - requires loaded status before requesting target" {
         .inflight = .{ .has_thread = true },
     });
     const entry0 = app_st.cache.get(key0).?;
-    entry0.metadata.raw_metadata = state.RawMetadata.init(6000, 4000);
+    entry0.metadata.raw_metadata = RawMetadata.init(6000, 4000);
 
     // 1. While inflight, toggle_pair_stream must be ignored.
     try executeIntent(&app_st, .toggle_pair_stream, 1000);
@@ -1996,7 +1997,7 @@ test "togglePairStream - Cancels existing job epoch on stream switch" {
             .job_epoch = ticket.epoch,
         },
         .metadata = .{
-            .raw_metadata = state.RawMetadata.init(6000, 4000),
+            .raw_metadata = RawMetadata.init(6000, 4000),
         },
     });
 

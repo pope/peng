@@ -2,6 +2,7 @@ const app_state = @import("../state.zig");
 const context = @import("context.zig");
 const decode_mod = @import("../workers/decode.zig");
 const image = @import("../core/image.zig");
+const probe = @import("probe");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
@@ -15,6 +16,7 @@ const ImageCache = image.ImageCache;
 const MediaEntry = vfs.MediaEntry;
 const MediaId = vfs.MediaId;
 const PairStreamTarget = vfs.PairStreamTarget;
+const RawMetadata = probe.RawMetadata;
 
 /// Fast-scrolling threshold: when navigation events occur faster than this interval,
 /// worker spawning is throttled exclusively to the active slot `idx`.
@@ -787,7 +789,7 @@ test "sysUpdateCache - zoom promotion on downscaled RAW preview" {
     if (state.cache.get(key)) |entry| {
         entry.metadata.full_dims = .{ .w = 1616.0, .h = 1080.0 };
         entry.metadata.raw_metadata =
-            state_pkg.RawMetadata.init(6000.0, 4000.0);
+            RawMetadata.init(6000.0, 4000.0);
     }
 
     // When zoom is 1.0x, inflight remains null
@@ -1086,7 +1088,7 @@ test "checkPairPromotion - preserves resident GPU during promotion" {
     if (state.cache.get(key0)) |entry| {
         entry.metadata.full_dims = .{ .w = 1616.0, .h = 1080.0 };
         entry.metadata.raw_metadata =
-            state_pkg.RawMetadata.init(6000.0, 4000.0);
+            RawMetadata.init(6000.0, 4000.0);
     }
 
     state.viewer.viewport.mode = .manual;

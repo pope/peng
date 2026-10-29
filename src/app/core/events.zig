@@ -12,7 +12,7 @@ const ImageCacheKey = image.ImageCacheKey;
 const MediaEntry = vfs.MediaEntry;
 const MediaId = vfs.MediaId;
 const Orientation = probe.Orientation;
-const RawMetadata = state_pkg.RawMetadata;
+const RawMetadata = probe.RawMetadata;
 const ThumbnailSource = state_pkg.ThumbnailSource;
 
 /// Envelope wrapping an event payload with a generation token.
