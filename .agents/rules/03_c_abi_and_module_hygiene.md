@@ -53,6 +53,8 @@
     `AnimationState`, `SnackbarState`, `PanController`, `ZoomController`).
     Zero SDL3, zero C library linkage, zero I/O.
   - `src/config/`: CLI argument parsing (`cli.zig`).
+  - `src/gpu/`: Pure texture staging buffers, compute unpack pipelines, and
+    GPU texture uploads (zero Clay linkage).
   - `src/sdl/`: Type-safe SDL3, SDL3_image, SDL3_ttf, and SDL3 GPU wrappers.
   - `src/ui/`: Clay layout builders (`layout.zig`, `palette.zig`,
     `edit_panel.zig`, `stats.zig`), `UiViewModel` presentation snapshot
@@ -67,7 +69,7 @@
     `thumbcache.zig`) live in `src/core/`.
   - **Acyclic Dependency Invariant**: Pure modules (`probe`, `vfs`, `triage`,
     `palette`, `thumbcache`, `intents`, `input`, `ipc`, `state`, `config`,
-    `core`) MUST NOT import `AppState`, `src/app/systems/`, or
+    `core`, `gpu`) MUST NOT import `AppState`, `src/app/systems/`, or
     `src/app/workers/`. Never cross module boundaries via relative file paths
     (e.g. `@import("probe/root.zig")` from `src/main.zig`); always use canonical
     module namespace (`@import("probe")`).
@@ -93,10 +95,11 @@
     `peng-test-runner` (`src/test_runner_main.zig`).
   - Build & Test Commands:
     - `zig build`: Build application binaries.
-    - `zig build test-unit`: Run fast unit tests across all 14 module test
-      targets (`probe`, `vfs`, `triage`, `palette`, `sdl`, `state`, `core`,
-      `app`, `ui`, `intents`, `config`, `input`, `ipc`, `thumbcache`).
+    - `zig build test-unit`: Run fast unit tests across all 15 module test
+      targets (`probe`, `vfs`, `triage`, `palette`, `sdl`, `gpu`, `state`,
+      `core`, `app`, `ui`, `intents`, `config`, `input`, `ipc`, `thumbcache`).
     - `zig build test-probe`: Run `probe` (`src/probe/root.zig`) unit tests.
+    - `zig build test-gpu`: Run `gpu` (`src/gpu/root.zig`) unit tests.
     - `zig build test-state`: Run `state` (`src/state/root.zig`) unit tests.
     - `zig build test-vfs`: Run `vfs` (`src/vfs/root.zig`) unit tests.
     - `zig build test-triage`: Run `triage` (`src/triage/root.zig`) unit tests.

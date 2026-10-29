@@ -273,7 +273,16 @@ pub fn build(b: *std.Build) void {
     core_module.addImport("triage", triage_module);
     core_module.addImport("vfs", vfs_module);
 
+    const gpu_module = b.createModule(.{
+        .root_source_file = b.path("src/gpu/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    gpu_module.addImport("sdl", sdl_module);
+    gpu_module.addImport("state", state_module);
+
     app_module.addImport("core", core_module);
+    app_module.addImport("gpu", gpu_module);
     app_module.addImport("sdl", sdl_module);
     app_module.addImport("zclay", zclay_dep.module("zclay"));
     app_module.addImport("intents", intents_module);
@@ -287,6 +296,7 @@ pub fn build(b: *std.Build) void {
     app_module.addImport("vfs", vfs_module);
 
     ui_module.addImport("core", core_module);
+    ui_module.addImport("gpu", gpu_module);
     ui_module.addImport("intents", intents_module);
     ui_module.addImport("palette", palette_module);
     ui_module.addImport("sdl", sdl_module);
@@ -311,6 +321,7 @@ pub fn build(b: *std.Build) void {
     viewer_lib.root_module.addImport("sdl", sdl_module);
     viewer_lib.root_module.addImport("zclay", zclay_dep.module("zclay"));
     viewer_lib.root_module.addImport("app", app_module);
+    viewer_lib.root_module.addImport("gpu", gpu_module);
     viewer_lib.root_module.addImport("ui", ui_module);
     viewer_lib.root_module.addImport("state", state_module);
     viewer_lib.root_module.addImport("config", config_module);
@@ -345,6 +356,7 @@ pub fn build(b: *std.Build) void {
     // Import internal modules into executable module
     exe.root_module.addImport("app", app_module);
     exe.root_module.addImport("core", core_module);
+    exe.root_module.addImport("gpu", gpu_module);
     exe.root_module.addImport("ui", ui_module);
     exe.root_module.addImport("state", state_module);
     exe.root_module.addImport("config", config_module);
@@ -485,9 +497,16 @@ pub fn build(b: *std.Build) void {
     const run_thumbcache_tests = b.addRunArtifact(thumbcache_tests);
     run_thumbcache_tests.setCwd(b.path("."));
 
+    const gpu_tests = b.addTest(.{
+        .root_module = gpu_module,
+    });
+    const run_gpu_tests = b.addRunArtifact(gpu_tests);
+    run_gpu_tests.setCwd(b.path("."));
+
     if (target.result.os.tag == .windows) {
         const win_runs = [_]*std.Build.Step.Run{
             run_sdl_tests,
+            run_gpu_tests,
             run_state_tests,
             run_core_tests,
             run_probe_tests,
@@ -513,6 +532,9 @@ pub fn build(b: *std.Build) void {
             win_run.setEnvironmentVariable("PATH", new_path);
         }
     }
+
+    const test_gpu_step = b.step("test-gpu", "Run gpu tests");
+    test_gpu_step.dependOn(&run_gpu_tests.step);
 
     const test_probe_step = b.step("test-probe", "Run probe tests");
     test_probe_step.dependOn(&run_probe_tests.step);
@@ -543,6 +565,7 @@ pub fn build(b: *std.Build) void {
 
     const test_unit_step = b.step("test-unit", "Run all unit tests");
     test_unit_step.dependOn(&run_sdl_tests.step);
+    test_unit_step.dependOn(&run_gpu_tests.step);
     test_unit_step.dependOn(&run_state_tests.step);
     test_unit_step.dependOn(&run_core_tests.step);
     test_unit_step.dependOn(&run_probe_tests.step);
@@ -565,6 +588,7 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_sdl_tests.step);
+    test_step.dependOn(&run_gpu_tests.step);
     test_step.dependOn(&run_state_tests.step);
     test_step.dependOn(&run_core_tests.step);
     test_step.dependOn(&run_probe_tests.step);

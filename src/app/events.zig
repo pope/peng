@@ -1,5 +1,6 @@
 const app_state = @import("state.zig");
 const core = @import("core");
+const gpu = @import("gpu");
 const ipc = @import("ipc");
 const probe = @import("probe");
 const sdl = @import("sdl");
@@ -10,11 +11,13 @@ const vfs = @import("vfs");
 const AppState = app_state.AppState;
 const EntryScanState = vfs.EntryScanState;
 const events = core.events;
+const GpuUploadResult = gpu.GpuUploadResult;
 const image = core.image;
 const MediaEntry = vfs.MediaEntry;
 const MediaId = vfs.MediaId;
 const Orientation = probe.Orientation;
 const RawMetadata = probe.RawMetadata;
+const uploadSurfaceToGpu = gpu.uploadSurfaceToGpu;
 
 /// Drains all background thread events (e.g. image decodes, thumbnail
 /// extractions, directory scans, folder count updates, and IPC commands) from
@@ -280,7 +283,7 @@ fn handleExifThumbnailEvent(
 
     const surf = thumb_data.surface;
     if (state.gpu_device) |gpu_dev| {
-        if (image.uploadSurfaceToGpu(
+        if (uploadSurfaceToGpu(
             gpu_dev,
             surf,
             state.unpack_compute_pipeline,
@@ -418,7 +421,7 @@ fn handleImageDecodedEvent(
 
     if (should_upload_gpu) {
         const gpu_dev = state.gpu_device.?;
-        if (image.uploadSurfaceToGpu(
+        if (uploadSurfaceToGpu(
             gpu_dev,
             surf,
             state.unpack_compute_pipeline,
@@ -541,7 +544,7 @@ fn applyDecodedGpuTexture(
     state: *AppState,
     key: image.ImageCacheKey,
     decoded_data: *events.ImageDecodedPayload,
-    full_res: image.GpuUploadResult,
+    full_res: GpuUploadResult,
     is_current: bool,
     gpu_dev: ?sdl.gpu.Device,
 ) bool {
@@ -579,7 +582,7 @@ fn completeDecodedGpuUpload(
     key: image.ImageCacheKey,
     decoded_data: *events.ImageDecodedPayload,
     surf: sdl.Surface,
-    full_res: image.GpuUploadResult,
+    full_res: GpuUploadResult,
     is_current: bool,
     gpu_dev: ?sdl.gpu.Device,
     max_vram_bytes: usize,
@@ -1774,7 +1777,7 @@ test "completeDecodedGpuUpload - enqueues thumb write before swapRemove" {
     };
     defer if (decoded.surface) |s| s.destroy();
 
-    const full_res = image.GpuUploadResult{
+    const full_res = GpuUploadResult{
         .gpu_texture = dummy_tex,
         .w = 1616.0,
         .h = 1080.0,
@@ -1857,7 +1860,7 @@ test "handleImageDecodedEvent - preserves loaded_gpu during promotion" {
     const surf_dummy = sdl.Surface.create(16, 16, sdl.PixelFormat.rgba32) orelse
         return;
     defer surf_dummy.destroy();
-    const up_res = image.uploadSurfaceToGpu(
+    const up_res = uploadSurfaceToGpu(
         dev,
         surf_dummy,
         null,

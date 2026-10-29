@@ -5,7 +5,7 @@
 - **`AppState` (Outer Engine & Hardware Container)**:
   - Defined in `src/app/state.zig` (`app.state.AppState`).
   - Owns hardware contexts (`display: DisplayState`, `gpu_device`,
-    `unpack_compute_pipeline`, `upload_staging: image.UploadStagingBuffer`,
+    `unpack_compute_pipeline`, `upload_staging: gpu.UploadStagingBuffer`,
     `ipc_server: ?*IpcServer`),
     allocators (`allocator`), async I/O (`io`), texture slot cache
     (`cache: ImageCache`), worker manager (`workers: WorkerManager`), IPC

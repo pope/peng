@@ -1,5 +1,6 @@
 const clay = @import("zclay");
 const core = @import("core");
+const gpu = @import("gpu");
 const input = @import("input");
 const intents = @import("intents");
 const ipc = @import("ipc");
@@ -26,6 +27,8 @@ const startTextInput = core.display.startTextInput;
 const stopTextInput = core.display.stopTextInput;
 const ThumbCacheConfig = thumbcache.ThumbCacheConfig;
 const ThumbCacheMode = thumbcache.ThumbCacheMode;
+const UploadStagingBuffer = gpu.UploadStagingBuffer;
+const uploadSurfaceToGpu = gpu.uploadSurfaceToGpu;
 const ViewerState = state_pkg.ViewerState;
 const view_transform = state_pkg.view_transform;
 const ZoomFactor = state_pkg.ZoomFactor;
@@ -62,7 +65,7 @@ pub const AppState = struct {
     /// Subsystems
     cache: ImageCache,
     workers: workers_mod.WorkerManager = .{},
-    upload_staging: image.UploadStagingBuffer = .{},
+    upload_staging: UploadStagingBuffer = .{},
 
     /// Queues
     event_batch: std.ArrayList(events.BackgroundEvent) = .empty,
@@ -1038,7 +1041,7 @@ pub const AppState = struct {
         defer extracted.surface.destroy();
 
         const dev = self.gpu_device orelse return;
-        const upload_res = image.uploadSurfaceToGpu(
+        const upload_res = uploadSurfaceToGpu(
             dev,
             extracted.surface,
             self.unpack_compute_pipeline,
@@ -1229,7 +1232,7 @@ pub const AppState = struct {
                 }
             }
             if (self.gpu_device) |gpu_dev| {
-                if (image.uploadSurfaceToGpu(
+                if (uploadSurfaceToGpu(
                     gpu_dev,
                     target.cpu.surface,
                     self.unpack_compute_pipeline,

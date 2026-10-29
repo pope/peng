@@ -63,7 +63,7 @@ ______________________________________________________________________
 
 - **`RetainedResource(Handle)` Tagged Union (`RetainedBuffer`, `RetainedTransferBuffer`)**:
   - Model retained, geometrically grown GPU buffers and transfer buffers
-    (`UploadStagingBuffer` in `src/core/image.zig` and double-buffered
+    (`UploadStagingBuffer` in `src/gpu/upload.zig` and double-buffered
     `vertex_buffers` / `transfer_buffers` in `RenderResources`) via
     `sdl.gpu.RetainedResource(Handle)` (`union(enum) { unallocated,
     allocated: .{ handle: Handle, capacity: usize } }`) rather than parallel
