@@ -12,6 +12,9 @@ pub const geometry = @import("geometry.zig");
 /// SDL GPU device lifecycle, pipeline creation, and offscreen render targets.
 pub const graphics = @import("graphics.zig");
 
+/// GPU render pass execution, text glyph upload, and frame target lifecycle.
+pub const pass = @import("pass.zig");
+
 /// Image viewer vertex emission and viewport batch commands.
 pub const render_image = @import("render_image.zig");
 
@@ -38,6 +41,7 @@ pub const uploadSurfaceToGpu = upload.uploadSurfaceToGpu;
 test {
     _ = geometry;
     _ = graphics;
+    _ = pass;
     _ = render_image;
     _ = text_cache;
     _ = upload;

@@ -23,7 +23,6 @@ const renderEditPanel = edit_panel.renderEditPanel;
 const renderPalette = palette.renderPalette;
 const RenderResources = gpu_pkg.graphics.RenderResources;
 const renderStatsOverlay = stats.renderStatsOverlay;
-const saveTextureToPng = gpu_pkg.graphics.saveTextureToPng;
 const sdl3MeasureText = text_utils.sdl3MeasureText;
 const truncateFilename = text_utils.truncateFilename;
 const UiRenderMetrics = state.UiRenderMetrics;
@@ -184,141 +183,68 @@ pub fn renderFrame(
     measure_data.is_debug_measuring = false;
 
     // Render Frame
-    const dev = gpu_res.device;
-    const cmd_wrapper = dev.acquireCommandBuffer() orelse
-        return error.CommandBufferAcquisitionFailed;
-    var cmd_buf_submitted = false;
-    errdefer if (!cmd_buf_submitted) {
-        _ = cmd_wrapper.cancel();
-    };
+    const RenderContext = struct {
+        ui_model: UiViewModel,
+        gpu_res: *RenderResources,
+        fonts: []const ?sdl.Font,
+        render_commands: []const clay.RenderCommand,
+        gpa_allocator: std.mem.Allocator,
+        frame_allocator: std.mem.Allocator,
+        scale_x: f32,
+        scale_y: f32,
+        render_metrics: ?*state.UiRenderMetrics,
 
-    var temp_buffers: std.ArrayList(sdl.gpu.TransferBuffer) = .empty;
-    defer temp_buffers.deinit(frame_allocator);
-    errdefer {
-        for (temp_buffers.items) |buf| {
-            dev.releaseTransferBuffer(buf);
-        }
-    }
-
-    const use_headless = (target_window == null);
-
-    var target_tex: ?sdl.gpu.Texture = null;
-    var target_w: u32 = 0;
-    var target_h: u32 = 0;
-    var target_format: sdl.gpu.TextureFormat = .invalid;
-
-    if (use_headless) {
-        target_w = @intFromFloat(width);
-        target_h = @intFromFloat(height);
-        target_format = .rgba8_unorm;
-
-        const target_tex_info = sdl.gpu.TextureCreateInfo{
-            .type = .type_2d,
-            .format = .rgba8_unorm,
-            .usage = sdl.gpu.TextureUsage.color_target,
-            .width = target_w,
-            .height = target_h,
-            .layer_count_or_depth = 1,
-            .num_levels = 1,
-            .sample_count = .count_1,
-            .props = 0,
-        };
-        target_tex = dev.createTexture(&target_tex_info) orelse {
-            std.log.err("Failed to create offscreen target texture: {s}", .{sdl.getError()});
-            return error.OffscreenTargetTextureCreationFailed;
-        };
-    } else {
-        var swap_w: u32 = 0;
-        var swap_h: u32 = 0;
-        const win = target_window.?;
-        if (win.waitAndAcquireSwapchainTexture(cmd_wrapper, &swap_w, &swap_h)) |swap_tex| {
-            target_tex = swap_tex;
-            target_w = swap_w;
-            target_h = swap_h;
-            target_format = dev.getSwapchainTextureFormat(win);
-        }
-    }
-
-    errdefer if (use_headless) {
-        if (target_tex) |tex| {
-            dev.releaseTexture(tex);
-        }
-    };
-
-    if (target_tex) |tex| {
-        if (target_w == 0 or target_h == 0) {
-            cmd_buf_submitted = true;
-            _ = cmd_wrapper.submit();
-            if (use_headless) {
-                dev.releaseTexture(tex);
-                target_tex = null;
-            }
-            if (capture_filename != null) {
-                return error.SwapchainTextureUnavailable;
-            }
-            return;
-        }
-        try renderer.renderClayCommands(
-            ui_model.viewport,
-            gpu_res,
-            cmd_wrapper,
-            tex,
-            fonts,
-            render_commands,
-            gpa_allocator,
-            frame_allocator,
-            &temp_buffers,
-            @intCast(target_w),
-            @intCast(target_h),
-            scale_x,
-            scale_y,
-            target_format,
-            render_metrics,
-        );
-        if (capture_filename) |filename| {
-            cmd_buf_submitted = true;
-            try saveTextureToPng(
-                dev,
-                cmd_wrapper,
-                tex,
-                target_w,
-                target_h,
+        fn render(
+            ctx: @This(),
+            cmd_buf: sdl.gpu.CommandBuffer,
+            target_tex: sdl.gpu.Texture,
+            target_w: u32,
+            target_h: u32,
+            target_format: sdl.gpu.TextureFormat,
+            temp_buffers: *std.ArrayList(sdl.gpu.TransferBuffer),
+        ) anyerror!void {
+            try renderer.renderClayCommands(
+                ctx.ui_model.viewport,
+                ctx.gpu_res,
+                cmd_buf,
+                target_tex,
+                ctx.fonts,
+                ctx.render_commands,
+                ctx.gpa_allocator,
+                ctx.frame_allocator,
+                temp_buffers,
+                @intCast(target_w),
+                @intCast(target_h),
+                ctx.scale_x,
+                ctx.scale_y,
                 target_format,
-                filename,
+                ctx.render_metrics,
             );
-        } else if (use_headless) {
-            cmd_buf_submitted = true;
-            const fence_opt = cmd_wrapper.submitAndAcquireFence();
-            if (fence_opt) |fence| {
-                _ = dev.waitForFence(fence);
-                dev.releaseFence(fence);
-            } else {
-                std.log.err(
-                    "Failed to acquire GPU fence for headless render: {s}",
-                    .{sdl.getError()},
-                );
-                return error.FenceAcquisitionFailed;
-            }
-        } else {
-            cmd_buf_submitted = true;
-            _ = cmd_wrapper.submit();
         }
+    };
 
-        for (temp_buffers.items) |buf| {
-            dev.releaseTransferBuffer(buf);
-        }
-
-        if (use_headless) {
-            dev.releaseTexture(tex);
-            target_tex = null;
-        }
-    } else {
-        cmd_buf_submitted = true;
-        _ = cmd_wrapper.submit();
-        if (capture_filename != null) {
-            return error.SwapchainTextureUnavailable;
-        }
-    }
+    try gpu_pkg.pass.executeFrame(
+        gpu_res,
+        frame_allocator,
+        .{
+            .window = target_window,
+            .width = @intFromFloat(width),
+            .height = @intFromFloat(height),
+            .capture_filename = capture_filename,
+        },
+        RenderContext{
+            .ui_model = ui_model,
+            .gpu_res = gpu_res,
+            .fonts = fonts,
+            .render_commands = render_commands,
+            .gpa_allocator = gpa_allocator,
+            .frame_allocator = frame_allocator,
+            .scale_x = scale_x,
+            .scale_y = scale_y,
+            .render_metrics = render_metrics,
+        },
+        RenderContext.render,
+    );
 }
 
 fn renderTitlePill(

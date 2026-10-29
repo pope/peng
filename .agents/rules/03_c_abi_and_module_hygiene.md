@@ -54,9 +54,9 @@
     Zero SDL3, zero C library linkage, zero I/O.
   - `src/config/`: CLI argument parsing (`cli.zig`).
   - `src/gpu/`: GPU pipelines, geometry tessellation, render image commands,
-    texture cache, shaders (`src/gpu/shaders/`), resources, texture staging
-    buffers, compute unpack pipelines, and GPU texture uploads (zero Clay
-    linkage).
+    render pass execution and frame lifecycle (`pass.zig`), texture cache,
+    shaders (`src/gpu/shaders/`), resources, texture staging buffers, compute
+    unpack pipelines, and GPU texture uploads (zero Clay linkage).
   - `src/sdl/`: Type-safe SDL3, SDL3_image, SDL3_ttf, and SDL3 GPU wrappers.
   - `src/ui/`: Clay layout builders (`layout.zig`, `palette.zig`,
     `edit_panel.zig`, `stats.zig`), `UiViewModel` presentation snapshot
