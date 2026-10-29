@@ -1,9 +1,9 @@
 const app_state = @import("../state.zig");
-const clay = @import("zclay");
 const context = @import("context.zig");
 const intents = @import("intents");
 const state = @import("state");
 const std = @import("std");
+const ui = @import("ui");
 
 const AppState = app_state.AppState;
 const EditParam = intents.EditParam;
@@ -28,69 +28,35 @@ fn computeSliderValue(
 }
 
 fn processEditPanelClicks(self: *AppState, input: FrameInput) !void {
-    if (clay.pointerOver(clay.getElementId("EditCloseBtn"))) {
-        try self.pushIntent(.{ .set_edit_panel = false });
-        return;
-    }
-    if (clay.pointerOver(clay.getElementId("EditResetBtn"))) {
-        try self.pushIntent(.{ .adjust = .reset_all });
-        return;
-    }
-    if (clay.pointerOver(clay.getElementId("EditCompareBtn"))) {
-        try self.pushIntent(.{ .adjust = .toggle_compare });
-        return;
-    }
-
-    const panel_w = state.EDIT_PANEL_WIDTH;
-    const padding = state.EDIT_PANEL_PADDING;
-    const fallback_track_w = panel_w - (padding * 2.0);
-    const debug_w: f32 = if (clay.isDebugModeEnabled())
-        @as(f32, @floatFromInt(clay.Clay__debugViewWidth))
-    else
-        0.0;
-    const fallback_track_x = input.win_w - debug_w - panel_w + padding;
-
-    inline for (std.enums.values(EditParam)) |param| {
-        const spec = getSpec(param);
-
-        if (clay.pointerOver(clay.getElementId(spec.reset_id))) {
+    const hit = ui.interaction.hitTestEditPanel(input.win_w) orelse return;
+    switch (hit) {
+        .close => try self.pushIntent(.{ .set_edit_panel = false }),
+        .reset_all => try self.pushIntent(.{ .adjust = .reset_all }),
+        .toggle_compare => try self.pushIntent(.{ .adjust = .toggle_compare }),
+        .reset_param => |param| {
             try self.pushIntent(.{ .adjust = .{ .reset_param = param } });
-            return;
-        }
-
-        const track_id = clay.getElementId(spec.track_id);
-        const knob_id = clay.getElementId(spec.knob_id);
-        if (clay.pointerOver(track_id) or clay.pointerOver(knob_id)) {
-            const elem_data = clay.getElementData(track_id);
-            const track_x = if (elem_data.found)
-                elem_data.bounding_box.x
-            else
-                fallback_track_x;
-            const track_w = if (elem_data.found)
-                elem_data.bounding_box.width
-            else
-                fallback_track_w;
-
+        },
+        .slider => |s| {
             self.viewer.drag_state = .{
                 .slider = .{
-                    .param = param,
-                    .track_x = track_x,
-                    .track_w = track_w,
+                    .param = s.param,
+                    .track_x = s.track_x,
+                    .track_w = s.track_w,
                 },
             };
-            self.viewer.ui.overlays.edit_panel.active_slider = param;
+            self.viewer.ui.overlays.edit_panel.active_slider = s.param;
 
+            const spec = getSpec(s.param);
             const val = computeSliderValue(
                 spec,
-                track_x,
-                track_w,
+                s.track_x,
+                s.track_w,
                 input.mouse_x,
             );
             try self.pushIntent(.{
-                .adjust = .{ .set = .{ .param = param, .value = val } },
+                .adjust = .{ .set = .{ .param = s.param, .value = val } },
             });
-            return;
-        }
+        },
     }
 }
 
@@ -145,12 +111,12 @@ pub fn sysProcessUiInteractions(
 
     // Floating Overlays Close Buttons
     if (self.viewer.ui.overlays.info_panel.visible and
-        clay.pointerOver(clay.getElementId("InfoCloseBtn")))
+        ui.interaction.isPointerOverInfoCloseBtn())
     {
         try self.pushIntent(.{ .set_info = false });
     }
     if (self.viewer.ui.overlays.stats_panel.visible and
-        clay.pointerOver(clay.getElementId("StatsCloseBtn")))
+        ui.interaction.isPointerOverStatsCloseBtn())
     {
         try self.pushIntent(.{ .set_stats = false });
     }

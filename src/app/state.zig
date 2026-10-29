@@ -1,4 +1,3 @@
-const clay = @import("zclay");
 const core = @import("core");
 const gpu = @import("gpu");
 const input = @import("input");
@@ -8,6 +7,7 @@ const sdl = @import("sdl");
 const state_pkg = @import("state");
 const std = @import("std");
 const thumbcache = @import("thumbcache");
+const ui = @import("ui");
 const vfs = @import("vfs");
 const workers_mod = @import("workers/root.zig");
 
@@ -436,11 +436,8 @@ pub const AppState = struct {
         }
 
         var available_width = win_w;
-        if (clay.isDebugModeEnabled()) {
-            const dbg_w =
-                @as(f32, @floatFromInt(clay.Clay__debugViewWidth)) * scale_x;
-            available_width = @max(available_width - dbg_w, 1.0);
-        }
+        const dbg_w = ui.interaction.debugPanelWidth() * scale_x;
+        available_width = @max(available_width - dbg_w, 1.0);
         const edit_progress = self.viewer.animations.get(.edit_panel);
         const edit_open = self.viewer.ui.overlays.edit_panel.visible;
         if (edit_open or edit_progress > 0.001) {
@@ -1317,13 +1314,115 @@ pub const AppState = struct {
             self.viewer.animations.setImmediate(.image_crossfade, 1.0);
         }
     }
+
+    /// Constructs a read-only snapshot view-model consumed by the UI layout
+    /// and rendering subsystems for the current frame.
+    pub fn buildUiViewModel(self: *AppState, now_ms: u64) ui.UiViewModel {
+        const nav = &self.viewer.navigation;
+        const nav_slice = nav.items.slice();
+        const visible_cnt = nav.getVisibleCount();
+        const visible_pos = nav.getVisiblePosition();
+        const visible_st: state_pkg.VisibleState = blk: {
+            if (nav_slice.len == 0) {
+                break :blk .empty_directory;
+            } else if (visible_cnt == 0) {
+                break :blk .{ .filtered_empty = .{
+                    .mode = nav.getViewMode(),
+                    .total_count = nav_slice.len,
+                } };
+            } else if (nav.current_index) |idx| {
+                break :blk .{ .selected = .{
+                    .raw_index = idx,
+                    .visible_index = visible_pos orelse 1,
+                    .visible_count = visible_cnt,
+                    .total_count = nav_slice.len,
+                    .classification = nav.getCurrentClassification(),
+                } };
+            } else {
+                break :blk .empty_directory;
+            }
+        };
+
+        return .{
+            .is_fullscreen = self.isFullscreen(),
+            .total_images = nav_slice.len,
+            .items = nav_slice,
+            .current_index = nav.current_index,
+            .current_image_entry = nav.getCurrentImageEntry(),
+            .current_entry = self.getCurrentEntry(),
+            .current_classification = nav.getCurrentClassification(),
+            .view_mode = nav.getViewMode(),
+            .visible_state = visible_st,
+            .visible_count = visible_cnt,
+            .visible_position = visible_pos,
+            .is_loading_files = nav.isLoadingFiles(),
+            .slideshow = self.viewer.navigation.slideshow,
+            .manga_mode = self.viewer.navigation.manga_mode,
+            .overlays = self.viewer.ui.overlays,
+            .window_title = blk: {
+                if (nav.getCurrentImageEntry()) |media| {
+                    break :blk media.getBasename();
+                }
+                break :blk "Peng Image Viewer";
+            },
+            .viewport = self.viewer.viewport,
+            .palette = &self.viewer.ui.palette,
+            .snackbar = blk: {
+                const reveal = self.viewer.animations.get(.snackbar);
+                const msg = self.viewer.ui.snackbar.getMessage();
+                if (reveal > 0.001 and msg.len > 0) {
+                    break :blk .{ .active = .{
+                        .reveal = reveal,
+                        .message = msg,
+                    } };
+                }
+                break :blk .none;
+            },
+            .anim_values = self.viewer.animations.values,
+            .debug_show_thumb = self.viewer.ui.overlays.debug_show_thumb,
+            .is_thumb_crossfading = blk: {
+                const cur_entry =
+                    self.getCurrentEntry() orelse break :blk false;
+                break :blk (cur_entry.resident.asset == .loaded_gpu) and
+                    (cur_entry.resident.thumbnail == .loaded) and
+                    !self.viewer.ui.overlays.debug_show_thumb and
+                    !self.viewer.isSlideshowActive() and
+                    (self.viewer.image_transition == .none) and
+                    (self.viewer.animations.get(.thumb_crossfade) < 0.999);
+            },
+            .image_dissolve = blk: {
+                const progress = self.viewer.animations.get(.image_crossfade);
+                if (progress >= 0.999) break :blk .none;
+                if (self.getCurrentEntry()) |cur| {
+                    if (cur.resident.asset == .failed) break :blk .none;
+                }
+
+                switch (self.viewer.image_transition) {
+                    .none => break :blk .none,
+                    .active => |t| {
+                        const prev = self.getTransitionPrevEntry() orelse
+                            break :blk .none;
+                        if (prev.resident.asset != .loaded_gpu) {
+                            break :blk .none;
+                        }
+                        break :blk .{ .active = .{
+                            .prev_entry = prev,
+                            .prev_rotation = t.prev_rotation,
+                            .prev_zoom = t.prev_zoom,
+                            .prev_pan_x = t.prev_pan_x,
+                            .prev_pan_y = t.prev_pan_y,
+                        } };
+                    },
+                }
+            },
+            .current_time_ms = now_ms,
+            .stats = self.viewer.stats,
+            .render_metrics = self.viewer.ui.metrics.toSnapshot(),
+        };
+    }
 };
 
-var test_clay_memory: [1024 * 1024]u8 = undefined;
-
 test "AppState.getBaseScale based on image dimensions" {
-    _ = clay.initialize(clay.Arena.init(&test_clay_memory), .{ .w = 1024, .h = 768 }, .{});
-
     var state = try AppState.initHeadless(
         std.testing.allocator,
         std.Io.Threaded.global_single_threaded.io(),
@@ -1386,12 +1485,6 @@ test "AppState.getBaseScale based on image dimensions" {
 }
 
 test "AppState.getViewportPixelDims and isImageOverflowing" {
-    _ = clay.initialize(
-        clay.Arena.init(&test_clay_memory),
-        .{ .w = 1024, .h = 768 },
-        .{},
-    );
-
     var state = try AppState.initHeadless(
         std.testing.allocator,
         std.Io.Threaded.global_single_threaded.io(),
@@ -1478,66 +1571,6 @@ test "AppState.updateCurrentRotation syncs EXIF orientation" {
     state.viewer.navigation.current_index = null;
     state.updateCurrentRotation();
     try std.testing.expectEqual(@as(f32, 0.0), state.viewer.viewport.rotation_angle);
-}
-
-test "FrameInput.isPointerInDebugPanel and click localization" {
-    _ = clay.initialize(clay.Arena.init(&test_clay_memory), .{ .w = 1000, .h = 800 }, .{});
-
-    clay.setDebugModeEnabled(true);
-    defer clay.setDebugModeEnabled(false);
-
-    const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
-
-    var state = try AppState.initHeadless(allocator, io);
-    defer state.deinit();
-
-    const debug_w = @as(f32, @floatFromInt(clay.Clay__debugViewWidth));
-    const win_w: f32 = 1000.0;
-    const win_h: f32 = 800.0;
-
-    const input_inside = FrameInput{
-        .win_w = win_w,
-        .win_h = win_h,
-        .scale_x = 1.0,
-        .scale_y = 1.0,
-        .mouse_x = win_w - debug_w + 10.0,
-        .mouse_y = 100.0,
-        .mouse_left_down = false,
-        .mouse_left_clicked = true,
-        .mouse_inside = true,
-        .quit_requested = false,
-        .scroll_delta_x = 0,
-        .scroll_delta_y = 0,
-        .keys_pressed = .empty,
-        .key_modifiers = .{},
-        .text_input = null,
-        .dropped_path = null,
-        .delta_time_ms = 16.0,
-        .is_pointer_in_debug_panel = true,
-    };
-    try std.testing.expect(input_inside.isPointerInDebugPanel());
-
-    const input_outside = FrameInput{
-        .win_w = win_w,
-        .win_h = win_h,
-        .scale_x = 1.0,
-        .scale_y = 1.0,
-        .mouse_x = 100.0,
-        .mouse_y = 100.0,
-        .mouse_left_down = false,
-        .mouse_left_clicked = true,
-        .mouse_inside = true,
-        .quit_requested = false,
-        .scroll_delta_x = 0,
-        .scroll_delta_y = 0,
-        .keys_pressed = .empty,
-        .key_modifiers = .{},
-        .text_input = null,
-        .dropped_path = null,
-        .delta_time_ms = 16.0,
-    };
-    try std.testing.expect(!input_outside.isPointerInDebugPanel());
 }
 
 test "AppState.isBusy is false once open palette animation settles" {

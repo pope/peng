@@ -1,16 +1,14 @@
 const app_state = @import("../state.zig");
-const clay = @import("zclay");
 const context = @import("context.zig");
 const intents = @import("intents");
-const palette_pkg = @import("palette");
 const state_pkg = @import("state");
 const std = @import("std");
+const ui = @import("ui");
 const vfs = @import("vfs");
 
 const AppState = app_state.AppState;
 const FrameContext = context.FrameContext;
 const FrameInput = state_pkg.FrameInput;
-const getPaletteConfig = palette_pkg.getPaletteConfig;
 const getParentDirBuf = vfs.getParentDirBuf;
 const Key = intents.Key;
 const KeyModifiers = intents.KeyModifiers;
@@ -394,47 +392,26 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
     }
 
     // 3. Selection Scrolling Synchronization
-    const cfg = getPaletteConfig(self.viewer.ui.palette.mode);
-    const scroll_data = clay.cdefs.Clay_GetScrollContainerData(
-        clay.getElementId(cfg.list_id),
-    );
-    if (scroll_data.found) {
-        scroll_data.scroll_position.y = cfg.resolveScrollOffsetY(
-            scroll_data.scroll_position.y,
-            self.viewer.ui.palette.matches.items.len,
-            self.viewer.ui.palette.selected_idx,
-            self.viewer.ui.palette.selection_dirty,
-        );
-        self.viewer.ui.palette.selection_dirty = false;
-    }
+    ui.interaction.syncPaletteScroll(&self.viewer.ui.palette);
 
     // 4. Mouse Pointer & Click Processing
     var palette_closed_this_frame = false;
     if (input.mouse_left_clicked and !input.isPointerInDebugPanel()) {
-        if (!clay.pointerOver(clay.getElementId(cfg.element_id))) {
-            self.closePalette();
-            palette_closed_this_frame = true;
-        } else {
-            // Check if a list item was clicked
-            for (self.viewer.ui.palette.matches.items) |real_idx| {
-                var item_id_buf: [64]u8 = undefined;
-                const item_id_str = std.mem.print(
-                    &item_id_buf,
-                    "{s}{}",
-                    .{ cfg.item_prefix, real_idx },
-                ) catch |err| blk: {
-                    std.log.warn("Failed to format palette item ID: {}", .{err});
-                    break :blk cfg.item_prefix;
-                };
-                if (clay.pointerOver(clay.getElementId(item_id_str))) {
-                    palette_closed_this_frame = try processPaletteItemClick(
-                        ctx,
-                        real_idx,
-                        self.viewer.ui.palette.mode,
-                    );
-                    break;
-                }
-            }
+        const click_hit =
+            ui.interaction.hitTestPaletteClick(&self.viewer.ui.palette);
+        switch (click_hit) {
+            .inside_unmatched => {},
+            .outside => {
+                self.closePalette();
+                palette_closed_this_frame = true;
+            },
+            .item => |real_idx| {
+                palette_closed_this_frame = try processPaletteItemClick(
+                    ctx,
+                    real_idx,
+                    self.viewer.ui.palette.mode,
+                );
+            },
         }
     }
 

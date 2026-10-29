@@ -1,3 +1,10 @@
+const state_mod = @import("../state.zig");
+const state_pkg = @import("state");
+const std = @import("std");
+
+const AppState = state_mod.AppState;
+const FrameInput = state_pkg.FrameInput;
+
 pub const animation = @import("animation.zig");
 pub const asset_upload = @import("asset_upload.zig");
 pub const cache = @import("cache.zig");
@@ -25,6 +32,65 @@ pub const sysUpdateAnimations = animation.sysUpdateAnimations;
 pub const sysUpdateCache = cache.sysUpdateCache;
 pub const sysUpdateSlideshow = slideshow.sysUpdateSlideshow;
 pub const sysUpdateViewport = viewport.sysUpdateViewport;
+
+/// Sequential execution of all systems during the Update Phase of the frame.
+/// Guaranteed: All systems run in deterministic order, use frame_allocator,
+/// and do not call each other directly.
+pub fn runUpdatePhase(
+    app_state: *AppState,
+    input_frame: FrameInput,
+    frame_allocator: std.mem.Allocator,
+    parsed_test_mode: bool,
+) !void {
+    const ctx = FrameContext{
+        .state = app_state,
+        .frame_allocator = frame_allocator,
+        .input = input_frame,
+        .delta_time_ms = input_frame.delta_time_ms,
+        .now_ms = input_frame.now_ms,
+    };
+
+    // Data-Oriented Animation System (ticks active SoA animation channels)
+    sysUpdateAnimations(ctx);
+
+    // Socket Command Ingestion System (parses IPC commands -> pending_intents)
+    sysExecuteIpcCommands(ctx);
+
+    // Command Palette Input System (typing query updates, selection, clicks)
+    const palette_closed_this_frame = try sysProcessPaletteInput(ctx);
+
+    // Keyboard & File Drop Input System (maps keypresses -> pending_intents)
+    try sysProcessInput(ctx, palette_closed_this_frame);
+
+    // UI Discrete Interactions (overlay close buttons)
+    try sysProcessUiInteractions(ctx, palette_closed_this_frame);
+
+    // Viewport & Motion Systems (mouse drag/zoom & slideshow timer)
+    sysUpdateViewport(ctx, palette_closed_this_frame);
+    try sysUpdateSlideshow(ctx);
+
+    // Execute All Ingested & Generated Intents
+    try sysExecuteIntents(ctx);
+
+    // Window Management System (synchronizes window title and display)
+    sysSyncWindow(ctx);
+
+    // Asset Upload & Texture Pipeline System
+    sysProcessAssetUploads(ctx);
+
+    // Cache Slot Management System (evicts slots & spawns prefetch workers)
+    sysUpdateCache(ctx) catch |err| {
+        std.log.err("Failed to update cache: {}", .{err});
+    };
+
+    // Metrics & Telemetry System
+    sysSyncMetrics(ctx);
+
+    if (parsed_test_mode) {
+        app_state.viewer.animations.settleAll();
+        app_state.viewer.zoom_controller.reset();
+    }
+}
 
 test {
     _ = @import("animation.zig");

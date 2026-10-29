@@ -2,7 +2,6 @@ const app = @import("app");
 const app_config = @import("config");
 const build_options = @import("build_options");
 const builtin = @import("builtin");
-const clay = @import("zclay");
 const core = @import("core");
 const gpu = @import("gpu");
 const ipc = @import("ipc");
@@ -147,7 +146,7 @@ const AppGraphicsAndState = struct {
     resources: gpu.graphics.RenderResources,
     state: app.state.AppState,
     clay_memory: []u8,
-    clay_context: *clay.Context,
+    clay_context: *ui.interaction.ClayContext,
     measure_data: ui.text_utils.MeasureTextUserData,
     ipc_server: ?*ipc.IpcServer,
 
@@ -157,6 +156,7 @@ const AppGraphicsAndState = struct {
         self.parsed.deinit(self.gpa);
         self.state.workers.exiting.store(true, .release);
         if (self.ipc_server) |srv| srv.deinit(self.io);
+        ui.interaction.resetCurrentClayContext();
         self.gpa.free(self.clay_memory);
         self.state.deinit();
         self.resources.deinit(self.gpa);
@@ -323,15 +323,15 @@ const AppGraphicsAndState = struct {
         errdefer self.resources.deinit(gpa);
 
         // 6. Initialize Clay UI Layout Engine
-        const clay_memory_size = clay.minMemorySize();
+        const clay_memory_size = ui.interaction.minClayMemorySize();
         self.clay_memory = try gpa.alloc(u8, clay_memory_size);
         errdefer gpa.free(self.clay_memory);
 
-        const clay_arena = clay.Arena.init(self.clay_memory);
-        self.clay_context = clay.initialize(clay_arena, .{
-            .w = @as(f32, @floatFromInt(1024)),
-            .h = @as(f32, @floatFromInt(768)),
-        }, .{});
+        self.clay_context = ui.interaction.initClayContext(
+            self.clay_memory,
+            1024,
+            768,
+        );
 
         // 7. Bind graphics device and window handle to state
         self.state.gpu_device = self.setup.gpu_device;
@@ -359,11 +359,7 @@ fn runMainLoop(ctx: *AppGraphicsAndState) !void {
         .fonts = ctx.resources.fonts[0..],
         .allocator = ctx.gpa,
     };
-    clay.setMeasureTextFunction(
-        *const ui.text_utils.MeasureTextUserData,
-        &ctx.measure_data,
-        ui.text_utils.sdl3MeasureText,
-    );
+    ui.interaction.bindMeasureText(&ctx.measure_data);
 
     // Initialize IPC server and spawn IPC worker task
     if (ctx.parsed.ipc_mode.isEnabled()) {
@@ -399,7 +395,7 @@ fn runMainLoop(ctx: *AppGraphicsAndState) !void {
 
         while (ctx.state.viewer.running) {
             defer _ = frame_arena.reset(.retain_capacity);
-            clay.setCurrentContext(ctx.clay_context);
+            ui.interaction.setCurrentClayContext(ctx.clay_context);
             lib_viewer.safeReload(ctx.io);
             if (lib_viewer.is_valid) {
                 lib_viewer.update(

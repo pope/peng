@@ -1,5 +1,6 @@
 const clay = @import("zclay");
 const intents = @import("intents");
+const interaction = @import("interaction.zig");
 const state = @import("state");
 const std = @import("std");
 const theme = @import("theme.zig");
@@ -7,6 +8,7 @@ const view_model = @import("view_model.zig");
 
 const EditParam = intents.EditParam;
 const ParamSpec = intents.ParamSpec;
+const resetCurrentClayContext = interaction.resetCurrentClayContext;
 const UiViewModel = view_model.UiViewModel;
 
 /// Scales a theme color by the animation progress alpha for smooth
@@ -621,6 +623,8 @@ test "floating slider knob commands are clipped by scroll container scissor" {
             return .{ .w = @floatFromInt(text.len * 8), .h = 16.0 };
         }
     }.measure;
+    resetCurrentClayContext();
+    defer resetCurrentClayContext();
     const clay_mem = try std.testing.allocator.alloc(u8, clay.minMemorySize());
     defer std.testing.allocator.free(clay_mem);
     _ = clay.initialize(

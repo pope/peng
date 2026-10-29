@@ -1,5 +1,4 @@
 const app_state = @import("../state.zig");
-const clay = @import("zclay");
 const context = @import("context.zig");
 const intents = @import("intents");
 const probe = @import("probe");
@@ -7,6 +6,7 @@ const sdl = @import("sdl");
 const state = @import("state");
 const std = @import("std");
 const triage = @import("triage");
+const ui_pkg = @import("ui");
 const vfs = @import("vfs");
 
 const AppState = app_state.AppState;
@@ -737,8 +737,8 @@ fn executeIntent(
                 },
             }
         },
-        .toggle_debug_mode => clay.setDebugModeEnabled(!clay.isDebugModeEnabled()),
-        .set_debug_mode => |val| clay.setDebugModeEnabled(val),
+        .toggle_debug_mode => ui_pkg.interaction.toggleDebugMode(),
+        .set_debug_mode => |val| ui_pkg.interaction.setDebugModeEnabled(val),
         .toggle_debug_thumb => {
             ui.overlays.debug_show_thumb = !ui.overlays.debug_show_thumb;
         },

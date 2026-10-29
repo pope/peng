@@ -20,8 +20,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    // Transitively retrieve the clay dependency from zclay's sub-builder
-    const clay_dep = zclay_dep.builder.dependency("clay", .{});
 
     if (hot_reload) {
         for (zclay_dep.module("zclay").link_objects.items) |link_obj| {
@@ -283,16 +281,16 @@ pub fn build(b: *std.Build) void {
 
     app_module.addImport("core", core_module);
     app_module.addImport("gpu", gpu_module);
-    app_module.addImport("sdl", sdl_module);
-    app_module.addImport("zclay", zclay_dep.module("zclay"));
+    app_module.addImport("input", input_module);
     app_module.addImport("intents", intents_module);
+    app_module.addImport("ipc", ipc_module);
     app_module.addImport("palette", palette_module);
     app_module.addImport("probe", probe_module);
+    app_module.addImport("sdl", sdl_module);
     app_module.addImport("state", state_module);
-    app_module.addImport("input", input_module);
-    app_module.addImport("ipc", ipc_module);
     app_module.addImport("thumbcache", thumbcache_module);
     app_module.addImport("triage", triage_module);
+    app_module.addImport("ui", ui_module);
     app_module.addImport("vfs", vfs_module);
 
     ui_module.addImport("core", core_module);
@@ -318,19 +316,16 @@ pub fn build(b: *std.Build) void {
         }),
         .linkage = if (hot_reload) .dynamic else .static,
     });
-    viewer_lib.root_module.addImport("sdl", sdl_module);
-    viewer_lib.root_module.addImport("zclay", zclay_dep.module("zclay"));
     viewer_lib.root_module.addImport("app", app_module);
-    viewer_lib.root_module.addImport("gpu", gpu_module);
-    viewer_lib.root_module.addImport("ui", ui_module);
-    viewer_lib.root_module.addImport("state", state_module);
     viewer_lib.root_module.addImport("config", config_module);
-    viewer_lib.root_module.addImport("intents", intents_module);
+    viewer_lib.root_module.addImport("gpu", gpu_module);
     viewer_lib.root_module.addImport("input", input_module);
+    viewer_lib.root_module.addImport("intents", intents_module);
     viewer_lib.root_module.addImport("ipc", ipc_module);
+    viewer_lib.root_module.addImport("sdl", sdl_module);
+    viewer_lib.root_module.addImport("state", state_module);
     viewer_lib.root_module.addImport("thumbcache", thumbcache_module);
-    viewer_lib.root_module.addIncludePath(clay_dep.path(""));
-    viewer_lib.root_module.addIncludePath(clay_dep.path("renderers/SDL3"));
+    viewer_lib.root_module.addImport("ui", ui_module);
 
     if (hot_reload) {
         b.installArtifact(viewer_lib);
@@ -347,27 +342,18 @@ pub fn build(b: *std.Build) void {
     });
     exe.root_module.addOptions("build_options", options);
 
-    // Import the sdl module into executable module
-    exe.root_module.addImport("sdl", sdl_module);
-
-    // Import the zclay Zig module into our executable module
-    exe.root_module.addImport("zclay", zclay_dep.module("zclay"));
-
-    // Import internal modules into executable module
+    // Import internal and external modules into executable module
     exe.root_module.addImport("app", app_module);
+    exe.root_module.addImport("config", config_module);
     exe.root_module.addImport("core", core_module);
     exe.root_module.addImport("gpu", gpu_module);
-    exe.root_module.addImport("ui", ui_module);
-    exe.root_module.addImport("state", state_module);
-    exe.root_module.addImport("config", config_module);
-    exe.root_module.addImport("ipc", ipc_module);
     exe.root_module.addImport("input", input_module);
     exe.root_module.addImport("intents", intents_module);
+    exe.root_module.addImport("ipc", ipc_module);
+    exe.root_module.addImport("sdl", sdl_module);
+    exe.root_module.addImport("state", state_module);
     exe.root_module.addImport("thumbcache", thumbcache_module);
-
-    // Include Clay and its SDL3 renderer via root_module
-    exe.root_module.addIncludePath(clay_dep.path(""));
-    exe.root_module.addIncludePath(clay_dep.path("renderers/SDL3"));
+    exe.root_module.addImport("ui", ui_module);
 
     if (hot_reload) {
         exe.rdynamic = true;

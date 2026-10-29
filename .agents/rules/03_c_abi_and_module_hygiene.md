@@ -61,10 +61,12 @@
   - `src/ui/`: Clay layout builders (`layout.zig`, `palette.zig`,
     `edit_panel.zig`, `stats.zig`), `UiViewModel` presentation snapshot
     (`view_model.zig`), 2-pass GPU renderer (`renderer.zig`), text utilities
-    (`text_utils.zig`), and theme styling (`theme.zig`).
-  - `src/viewer.zig`: Frame update and render loop entry point (compiled
-    statically by default, or as a hot-reloadable shared library `viewer` /
-    `libviewer` when built with `-Dhot_reload=true`).
+    (`text_utils.zig`), theme styling (`theme.zig`), and encapsulated Clay
+    interaction / hit-testing (`interaction.zig`). Exclusive consumer of
+    `zclay` in the repository.
+  - `src/viewer.zig`: Thin coordinator for frame update and render loop entry
+    point (compiled statically by default, or as a hot-reloadable shared library
+    `viewer` / `libviewer` when built with `-Dhot_reload=true`).
 - **Engine Core (`src/core/`)**:
   - State-free utilities (`display.zig`, `events.zig`, `image.zig`,
     `thumbcache.zig`) live in `src/core/`.
@@ -152,10 +154,11 @@
   - Default all declarations to private (`fn`, `const`). Only mark symbols `pub`
     when required across file boundaries or by `@hasDecl` reflection (e.g.
     `deinitQueueItem`).
-  - In `src/app/systems/`, only `sysXxx` entry points are `pub fn`. In
-    `src/ui/`, only top-level render orchestrators (`renderFrame`,
-    `renderPalette`, `renderStatsOverlay`, `renderClayCommands`) are `pub fn`.
-    In executable roots, only `pub fn main` is public.
+  - In `src/app/systems/`, only `sysXxx` entry points and `runUpdatePhase` are
+    `pub fn`. In `src/ui/`, only top-level render orchestrators (`renderFrame`,
+    `renderPalette`, `renderStatsOverlay`, `renderClayCommands`) and
+    `interaction` query/lifecycle APIs are `pub fn`. In executable roots, only
+    `pub fn main` is public.
   - Same-file `test` blocks can access private declarations directly; never mark
     a symbol `pub` solely for same-file tests.
   - **Zombie Pruning**: Any function, struct, or write-only struct field with

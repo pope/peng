@@ -6,6 +6,9 @@
 /// Image adjustment and EXIF metadata editing panels.
 pub const edit_panel = @import("edit_panel.zig");
 
+/// Clay layout interaction, context encapsulation, and hit-testing.
+pub const interaction = @import("interaction.zig");
+
 /// Clay layout generation and UI element hierarchy declaration.
 pub const layout = @import("layout.zig");
 
@@ -38,6 +41,7 @@ pub const UiViewModel = view_model.UiViewModel;
 
 test {
     _ = edit_panel;
+    _ = interaction;
     _ = layout;
     _ = palette;
     _ = renderer;

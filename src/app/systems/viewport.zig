@@ -1,8 +1,8 @@
 const app_state = @import("../state.zig");
-const clay = @import("zclay");
 const context = @import("context.zig");
 const state_pkg = @import("state");
 const std = @import("std");
+const ui = @import("ui");
 
 const AppState = app_state.AppState;
 const FrameContext = context.FrameContext;
@@ -73,19 +73,19 @@ pub fn sysUpdateViewport(
         const is_in_debug_panel = input.isPointerInDebugPanel();
         const over_close_btn = !is_in_debug_panel and
             ((state.viewer.ui.overlays.info_panel.visible and
-                clay.pointerOver(clay.getElementId("InfoCloseBtn"))) or
+                ui.interaction.isPointerOverInfoCloseBtn()) or
                 (state.viewer.ui.overlays.stats_panel.visible and
-                    clay.pointerOver(clay.getElementId("StatsCloseBtn"))));
+                    ui.interaction.isPointerOverStatsCloseBtn()));
         const over_info = state.viewer.ui.overlays.info_panel.visible and
             !is_in_debug_panel and
-            clay.pointerOver(clay.getElementId("InfoOverlayCard"));
+            ui.interaction.isPointerOverInfoPanel();
         const over_stats = state.viewer.ui.overlays.stats_panel.visible and
             !is_in_debug_panel and
-            clay.pointerOver(clay.getElementId("StatsPanel"));
+            ui.interaction.isPointerOverStatsPanel();
         const over_edit = (state.viewer.ui.overlays.edit_panel.visible or
             state.viewer.animations.get(.edit_panel) > 0.001) and
             !is_in_debug_panel and
-            clay.pointerOver(clay.getElementId("EditSidePanel"));
+            ui.interaction.isPointerOverEditPanel();
 
         if (over_close_btn) {
             // Handled in sysProcessUiInteractions
@@ -133,7 +133,7 @@ pub fn sysUpdateViewport(
     const is_ctrl_down = input.key_modifiers.ctrl;
     const over_viewport = !state.viewer.ui.palette.isAcceptingInput() and
         !input.isPointerInDebugPanel() and
-        clay.pointerOver(clay.getElementId("Viewport"));
+        ui.interaction.isPointerOverViewport();
 
     if ((has_scroll_x or has_scroll_y) and !is_ctrl_down) {
         if (over_viewport) {
@@ -171,28 +171,17 @@ pub fn sysUpdateViewport(
             else
                 input.physicalMousePos();
 
-            const vp_data = clay.getElementData(clay.getElementId("Viewport"));
-            const logical_center: state_pkg.LogicalPoint = if (vp_data.found) .{
-                .x = vp_data.bounding_box.x + vp_data.bounding_box.width * 0.5,
-                .y = vp_data.bounding_box.y + vp_data.bounding_box.height * 0.5,
-            } else blk: {
-                const debug_w: f32 = if (clay.isDebugModeEnabled())
-                    @as(f32, @floatFromInt(clay.Clay__debugViewWidth))
-                else
-                    0.0;
-                const edit_progress = state.viewer.animations.get(.edit_panel);
-                const edit_open = state.viewer.ui.overlays.edit_panel.visible;
-                const docked_w: f32 = if (edit_open or edit_progress > 0.001)
-                    state_pkg.EDIT_PANEL_WIDTH * edit_progress
-                else
-                    0.0;
-                const available_width =
-                    @max(input.win_w - debug_w - docked_w, 1.0);
-                break :blk .{
-                    .x = available_width * 0.5,
-                    .y = input.win_h * 0.5,
-                };
-            };
+            const edit_progress = state.viewer.animations.get(.edit_panel);
+            const edit_open = state.viewer.ui.overlays.edit_panel.visible;
+            const docked_w: f32 = if (edit_open or edit_progress > 0.001)
+                state_pkg.EDIT_PANEL_WIDTH * edit_progress
+            else
+                0.0;
+            const logical_center = ui.interaction.resolveViewportCenter(
+                input.win_w,
+                input.win_h,
+                docked_w,
+            );
 
             state.viewer.viewport.zoomAtPoint(
                 new_zoom,
