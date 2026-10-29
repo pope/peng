@@ -11,11 +11,13 @@ const thumbcache = @import("thumbcache");
 const vfs = @import("vfs");
 
 const ArchiveMediaEntry = vfs.ArchiveMediaEntry;
+const decompressCbzMediaEntry = vfs.decompressCbzMediaEntry;
 const FilePair = vfs.FilePair;
 const hasValidTargetTierThumbnail = thumbcache.hasValidTargetTierThumbnail;
 const ImageCacheKey = image.ImageCacheKey;
 const isRawFile = vfs.isRawFile;
 const loadCachedThumbnail = core_thumbcache.loadCachedThumbnail;
+const max_cbz_entry_bytes = vfs.max_cbz_entry_bytes;
 const MediaEntry = vfs.MediaEntry;
 const MediaId = state_pkg.types.MediaId;
 const Orientation = probe.Orientation;
@@ -82,7 +84,6 @@ fn failDecodeWorker(
     context.wakeUpMainThread();
 }
 
-const max_cbz_entry_bytes: u64 = 256 * 1024 * 1024;
 const header_probe_limit: usize = 256 * 1024;
 
 fn readRangePositional(
@@ -105,143 +106,6 @@ fn readRangePositional(
         total_read += n;
     }
     return total_read;
-}
-
-const DecompressCbzResult = struct {
-    bytes: []u8,
-    read_time_ms: f64,
-    decompress_time_ms: f64,
-    compressed_size: u64,
-};
-
-fn decompressCbzMediaEntry(
-    alloc: std.mem.Allocator,
-    io: std.Io,
-    entry: ArchiveMediaEntry,
-    max_bytes: ?usize,
-) !DecompressCbzResult {
-    const start_read = sdl.timer.getTicksNs();
-    var file = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, entry.archive_path, .{});
-    defer file.close(io);
-
-    // Sized to 128KB:
-    // - In Zig 0.17.0, `std.compress.flate.Decompress` pulls from
-    //   `f_reader.interface` bit-by-bit.
-    //   A 4KB reader buffer forced ~188 `fileReadPositional` syscalls per 1.1MB compressed page.
-    //   128KB drops syscalls to ~10 (19x reduction) and matches typical CPU L2 cache boundaries.
-    // - Sized comfortably on the stack (< 192KB combined with `flate_buf`), using < 1.2% of the
-    //   worker thread's 16MB default stack (`std.Thread.SpawnConfig.default_stack_size`),
-    //   completely avoiding heap allocation, lock contention, and memory fragmentation.
-    var reader_buf: [128 * 1024]u8 = undefined;
-    var f_reader = file.reader(io, &reader_buf);
-
-    var data_offset: u64 = undefined;
-    var uncompressed_size: u64 = undefined;
-    var compressed_size: u64 = undefined;
-    var comp_method_enum: std.zip.CompressionMethod = undefined;
-
-    switch (entry.seek_info) {
-        .indexed => |seek| {
-            try f_reader.seekTo(seek.file_offset);
-            const local_header = try f_reader.interface.takeStruct(
-                std.zip.LocalFileHeader,
-                .little,
-            );
-            if (!std.mem.eql(u8, &local_header.signature, &std.zip.local_file_header_sig))
-                return error.ZipBadFileOffset;
-
-            data_offset = seek.file_offset +|
-                @sizeOf(std.zip.LocalFileHeader) +|
-                local_header.filename_len +| local_header.extra_len;
-            uncompressed_size = seek.uncompressed_size;
-            compressed_size = local_header.compressed_size;
-            comp_method_enum = seek.compression_method;
-            try f_reader.seekTo(data_offset);
-        },
-        .unindexed => {
-            var iterator = try std.zip.Iterator.init(&f_reader);
-            var stack_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-            var fb: std.heap.BufferFirstAllocator = .init(&stack_buf, alloc);
-            const temp_alloc = fb.allocator();
-
-            var found = false;
-            while (try iterator.next()) |zip_entry| {
-                if (zip_entry.filename_len == 0) continue;
-
-                try f_reader.seekTo(
-                    zip_entry.header_zip_offset +|
-                        @sizeOf(std.zip.CentralDirectoryFileHeader),
-                );
-                const name = try temp_alloc.alloc(u8, zip_entry.filename_len);
-                defer temp_alloc.free(name);
-                try f_reader.interface.readSliceAll(name);
-
-                if (!std.mem.eql(u8, name, entry.entry_name)) continue;
-
-                try f_reader.seekTo(zip_entry.file_offset);
-                const local_header = try f_reader.interface.takeStruct(
-                    std.zip.LocalFileHeader,
-                    .little,
-                );
-                if (!std.mem.eql(u8, &local_header.signature, &std.zip.local_file_header_sig))
-                    return error.ZipBadFileOffset;
-
-                data_offset = zip_entry.file_offset +|
-                    @sizeOf(std.zip.LocalFileHeader) +|
-                    local_header.filename_len +| local_header.extra_len;
-                uncompressed_size = zip_entry.uncompressed_size;
-                compressed_size = zip_entry.compressed_size;
-                comp_method_enum = zip_entry.compression_method;
-                try f_reader.seekTo(data_offset);
-                found = true;
-                break;
-            }
-            if (!found) return error.FileNotFound;
-        },
-    }
-
-    if (uncompressed_size > max_cbz_entry_bytes) return error.FileTooBig;
-    const target_len_u64 = if (max_bytes) |mb|
-        @min(uncompressed_size, mb)
-    else
-        uncompressed_size;
-    const target_len = std.math.cast(usize, target_len_u64) orelse
-        return error.FileTooBig;
-
-    const end_read = sdl.timer.getTicksNs();
-    const read_time_ms = @as(f64, @floatFromInt(end_read - start_read)) / 1_000_000.0;
-
-    const out_buf = try alloc.alloc(u8, target_len);
-    errdefer alloc.free(out_buf);
-
-    const start_dec = sdl.timer.getTicksNs();
-    switch (comp_method_enum) {
-        .store => {
-            try f_reader.interface.readSliceAll(out_buf);
-        },
-        .deflate => {
-            // Sized to 64KB (`flate.max_window_len = history_len * 2` where `history_len = 32768`):
-            // Implements RFC 1951 Deflate's double-buffered LZ77 sliding history window.
-            // Benchmarking confirmed that exceeding 64KB yields no additional syscall gains.
-            var flate_buf: [std.compress.flate.max_window_len]u8 = undefined;
-            var decompress: std.compress.flate.Decompress = .init(
-                &f_reader.interface,
-                .raw,
-                &flate_buf,
-            );
-            try decompress.reader.readSliceAll(out_buf);
-        },
-        else => return error.UnsupportedCompressionMethod,
-    }
-
-    const end_dec = sdl.timer.getTicksNs();
-    const decompress_time_ms = @as(f64, @floatFromInt(end_dec - start_dec)) / 1_000_000.0;
-    return .{
-        .bytes = out_buf,
-        .read_time_ms = read_time_ms,
-        .decompress_time_ms = decompress_time_ms,
-        .compressed_size = compressed_size,
-    };
 }
 
 const ConvertResult = struct {
@@ -2142,56 +2006,6 @@ test "decodeWorker - prunes early when current_generation does not match key.gen
     }
 
     try std.testing.expect(!event_seen);
-}
-
-test "decompressCbzMediaEntry - deflate entry with 128KB buffer" {
-    const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
-
-    const cbz_path = "testfiles/sample.cbz";
-    var file = try std.Io.Dir.openFile(std.Io.Dir.cwd(), io, cbz_path, .{});
-    file.close(io);
-
-    const entry = ArchiveMediaEntry{
-        .archive_path = cbz_path,
-        .entry_name = "000_0_1024x682.jpg",
-    };
-
-    const res = try decompressCbzMediaEntry(allocator, io, entry, null);
-    defer allocator.free(res.bytes);
-
-    try std.testing.expectEqual(@as(usize, 58713), res.bytes.len);
-    try std.testing.expectEqual(@as(u64, 57867), res.compressed_size);
-    try std.testing.expect(res.compressed_size != res.bytes.len);
-    try std.testing.expect(res.decompress_time_ms >= 0.0);
-
-    // Partial prefix read (max_bytes = 4096)
-    const prefix_res = try decompressCbzMediaEntry(allocator, io, entry, 4096);
-    defer allocator.free(prefix_res.bytes);
-    try std.testing.expectEqual(@as(usize, 4096), prefix_res.bytes.len);
-    try std.testing.expectEqualSlices(
-        u8,
-        res.bytes[0..4096],
-        prefix_res.bytes,
-    );
-
-    // Oversized uncompressed_size is rejected with error.FileTooBig
-    const oversized_entry = ArchiveMediaEntry{
-        .archive_path = cbz_path,
-        .entry_name = "000_0_1024x682.jpg",
-        .seek_info = .{
-            .indexed = .{
-                .header_zip_offset = 0,
-                .file_offset = 0,
-                .uncompressed_size = max_cbz_entry_bytes + 1,
-                .compression_method = .deflate,
-            },
-        },
-    };
-    try std.testing.expectError(
-        error.FileTooBig,
-        decompressCbzMediaEntry(allocator, io, oversized_entry, null),
-    );
 }
 
 test "decodeWorker - Sony ARW range reading and preview extraction" {
