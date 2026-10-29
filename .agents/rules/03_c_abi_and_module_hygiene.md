@@ -61,12 +61,12 @@
   - `src/viewer.zig`: Frame update and render loop entry point (compiled
     statically by default, or as a hot-reloadable shared library `viewer` /
     `libviewer` when built with `-Dhot_reload=true`).
-- **App-Private Core (`src/app/core/`)**:
+- **Engine Core (`src/core/`)**:
   - State-free utilities (`display.zig`, `events.zig`, `image.zig`,
-    `thumbcache.zig`) live in `src/app/core/`.
+    `thumbcache.zig`) live in `src/core/`.
   - **Acyclic Dependency Invariant**: Pure modules (`probe`, `vfs`, `triage`,
     `palette`, `thumbcache`, `intents`, `input`, `ipc`, `state`, `config`,
-    `app/core`) MUST NOT import `AppState`, `src/app/systems/`, or
+    `core`) MUST NOT import `AppState`, `src/app/systems/`, or
     `src/app/workers/`. Never cross module boundaries via relative file paths
     (e.g. `@import("probe/root.zig")` from `src/main.zig`); always use canonical
     module namespace (`@import("probe")`).
@@ -102,7 +102,7 @@
       tests.
     - `zig build test-thumbcache`: Run `thumbcache` (`src/thumbcache/root.zig`)
       unit tests.
-    - `zig build test-core`: Run `core` (`src/app/core/root.zig`) unit tests.
+    - `zig build test-core`: Run `core` (`src/core/root.zig`) unit tests.
     - `zig build test`: Run all unit tests plus headless integration tests
       (`peng-test-runner`).
     - `zig build shaders`: Compile GLSL shaders in `src/ui/shaders/` to SPIR-V
@@ -120,7 +120,7 @@
      sorted alphabetically by symbol name.
 - **No Proxy Re-Exports or Backward-Compatibility Aliases**:
   - Do NOT re-export types from unrelated sub-modules (`src/app/root.zig` must
-    not re-export `ipc` or `app/core` internals).
+    not re-export `ipc` or `core` internals).
   - Do NOT introduce `pub const OldName = NewName;` aliases during refactors;
     update all call sites to the canonical symbol and delete superseded names.
 - **Result Location Initialization Style (`.empty`, `.init(...)`)**:

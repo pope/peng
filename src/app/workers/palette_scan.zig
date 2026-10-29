@@ -1,11 +1,12 @@
 const context = @import("context.zig");
-const events = @import("../core/events.zig");
+const core = @import("core");
 const manager = @import("manager.zig");
 const std = @import("std");
 const vfs = @import("vfs");
 
 const collectUnscannedDirectoryPaths = vfs.collectUnscannedDirectoryPaths;
 const DirectoryEntry = vfs.DirectoryEntry;
+const events = core.events;
 const freeOwnedStringSlice = vfs.freeOwnedStringSlice;
 const scanFolderContents = vfs.scanFolderContents;
 const WorkerManager = manager.WorkerManager;

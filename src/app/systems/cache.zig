@@ -1,7 +1,7 @@
 const app_state = @import("../state.zig");
 const context = @import("context.zig");
+const core = @import("core");
 const decode_mod = @import("../workers/decode.zig");
-const image = @import("../core/image.zig");
 const probe = @import("probe");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
@@ -12,6 +12,7 @@ const AppState = app_state.AppState;
 const CacheEntry = state_pkg.CacheEntry;
 const DecodeArgs = decode_mod.DecodeArgs;
 const FrameContext = context.FrameContext;
+const image = core.image;
 const ImageCache = image.ImageCache;
 const MediaEntry = vfs.MediaEntry;
 const MediaId = vfs.MediaId;

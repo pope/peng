@@ -37,7 +37,7 @@ ______________________________________________________________________
 
 - **Zero CPU 24-to-32-Bit Expansion in GPU Mode**:
   When `decodeWorker` decodes a 24-bit `rgb24` or `bgr24` surface while a GPU device is present (`gpu_mode`), it retains the 3-byte-per-pixel surface in RAM rather than expanding it to 4-byte RGBA32 on the CPU.
-- **Staging & Compute Dispatch (`src/app/core/image.zig`, `src/ui/renderer.zig`)**:
+- **Staging & Compute Dispatch (`src/core/image.zig`, `src/ui/renderer.zig`)**:
   1. `uploadSurfaceToGpu` copies the 3-byte packed scanlines into a reusable `UploadStagingBuffer` (`AppState.upload_staging`) and uploads them to the shared GPU storage buffer with `cycle = true` (`uploadToBuffer` and `ComputeStorageBufferReadOnlyBinding`) to prevent write-after-read hazards across back-to-back uploads.
   2. A compute pass binds `unpack_rgb.comp.glsl` (`local_size_x = 64`), which reads 3 bytes per texel from the `uint data[]` storage buffer using bit-shift extraction, swaps R and B if `ubo.is_bgr != 0`, and writes `vec4(r, g, b, 1.0)` into the destination `rgba8` texture.
   3. After the compute pass finishes (or after fallback CPU downscaling if `createTexture` exceeded hardware dimension limits), `cmd_buf.generateMipmapsForTexture(tex)` builds the hardware trilinear mipmap pyramid on the GPU, and VRAM accounting records `u_w * u_h * 4` (with $+33%$ mipmap overhead) using the post-upload `RGBA8` texture dimensions.
@@ -62,7 +62,12 @@ ______________________________________________________________________
 ## 5. Retained GPU Buffers & Deferred Driver Memory Reclamation (`src/sdl/gpu.zig`)
 
 - **`RetainedResource(Handle)` Tagged Union (`RetainedBuffer`, `RetainedTransferBuffer`)**:
-  - Model retained, geometrically grown GPU buffers and transfer buffers (`UploadStagingBuffer` in `src/app/core/image.zig` and double-buffered `vertex_buffers` / `transfer_buffers` in `RenderResources`) via `sdl.gpu.RetainedResource(Handle)` (`union(enum) { unallocated, allocated: .{ handle: Handle, capacity: usize } }`) rather than parallel `?Handle` + `usize` capacity fields and `.?` unwraps.
+  - Model retained, geometrically grown GPU buffers and transfer buffers
+    (`UploadStagingBuffer` in `src/core/image.zig` and double-buffered
+    `vertex_buffers` / `transfer_buffers` in `RenderResources`) via
+    `sdl.gpu.RetainedResource(Handle)` (`union(enum) { unallocated,
+    allocated: .{ handle: Handle, capacity: usize } }`) rather than parallel
+    `?Handle` + `usize` capacity fields and `.?` unwraps.
 - **SDL3 GPU Deferred Destruction & `Device.reclaimMemory()`**:
   - In SDL3's Vulkan backend (`SDL_gpu_vulkan.c`), `SDL_ReleaseGPUTexture`, `SDL_ReleaseGPUBuffer`, and `SDL_ReleaseGPUTransferBuffer` only append handles to internal deferred queues (`texturesToDestroy`, `buffersToDestroy`, `transferBuffersToDestroy`).
   - Calling `SDL_WaitForGPUIdle` runs `VULKAN_INTERNAL_PerformPendingDestroys`, which destroys the `VkImage`/`VkBuffer` objects and marks newly emptied `VkDeviceMemory` slabs via `renderer->hasEmptyAllocations = true`, **but does not call `VULKAN_INTERNAL_DeallocateMemory` (`vkFreeMemory`)**. SDL3 only invokes `VULKAN_INTERNAL_DeallocateMemory` inside `SDL_SubmitGPUCommandBuffer` (`VULKAN_Submit`) before processing new pending destroys.

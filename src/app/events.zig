@@ -1,6 +1,5 @@
 const app_state = @import("state.zig");
-const events = @import("core/events.zig");
-const image = @import("core/image.zig");
+const core = @import("core");
 const ipc = @import("ipc");
 const probe = @import("probe");
 const sdl = @import("sdl");
@@ -10,16 +9,19 @@ const vfs = @import("vfs");
 
 const AppState = app_state.AppState;
 const EntryScanState = vfs.EntryScanState;
+const events = core.events;
+const image = core.image;
 const MediaEntry = vfs.MediaEntry;
 const MediaId = vfs.MediaId;
 const Orientation = probe.Orientation;
 const RawMetadata = probe.RawMetadata;
 
-/// Drains all background thread events (e.g. image decodes, thumbnail extractions,
-/// directory scans, folder count updates, and IPC commands) from `workers.event_queue`.
-/// Dispatches each event to update texture cache entries, image lists, rotation maps,
-/// and Command Palette state.
-/// Returns `true` if at least one event was drained and processed; otherwise `false`.
+/// Drains all background thread events (e.g. image decodes, thumbnail
+/// extractions, directory scans, folder count updates, and IPC commands) from
+/// `workers.event_queue`. Dispatches each event to update texture cache
+/// entries, image lists, rotation maps, and Command Palette state.
+/// Returns `true` if at least one event was drained and processed;
+/// otherwise `false`.
 pub fn drainWorkerEvents(state: *AppState) bool {
     state.event_batch.clearRetainingCapacity();
     state.workers.event_queue.drain(state.allocator, state.io, &state.event_batch) catch |err| {

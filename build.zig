@@ -261,6 +261,20 @@ pub fn build(b: *std.Build) void {
     ipc_module.addImport("probe", probe_module);
     ipc_module.addImport("triage", triage_module);
 
+    const core_module = b.createModule(.{
+        .root_source_file = b.path("src/core/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    core_module.addImport("ipc", ipc_module);
+    core_module.addImport("probe", probe_module);
+    core_module.addImport("sdl", sdl_module);
+    core_module.addImport("state", state_module);
+    core_module.addImport("thumbcache", thumbcache_module);
+    core_module.addImport("triage", triage_module);
+    core_module.addImport("vfs", vfs_module);
+
+    app_module.addImport("core", core_module);
     app_module.addImport("sdl", sdl_module);
     app_module.addImport("zclay", zclay_dep.module("zclay"));
     app_module.addImport("intents", intents_module);
@@ -329,6 +343,7 @@ pub fn build(b: *std.Build) void {
 
     // Import internal modules into executable module
     exe.root_module.addImport("app", app_module);
+    exe.root_module.addImport("core", core_module);
     exe.root_module.addImport("ui", ui_module);
     exe.root_module.addImport("state", state_module);
     exe.root_module.addImport("config", config_module);
@@ -432,19 +447,6 @@ pub fn build(b: *std.Build) void {
     });
     ui_tests.step.dependOn(compile_shaders);
     const run_ui_tests = b.addRunArtifact(ui_tests);
-
-    const core_module = b.createModule(.{
-        .root_source_file = b.path("src/app/core/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    core_module.addImport("intents", intents_module);
-    core_module.addImport("state", state_module);
-    core_module.addImport("probe", probe_module);
-    core_module.addImport("sdl", sdl_module);
-    core_module.addImport("thumbcache", thumbcache_module);
-    core_module.addImport("triage", triage_module);
-    core_module.addImport("vfs", vfs_module);
 
     const core_tests = b.addTest(.{
         .root_module = core_module,

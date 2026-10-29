@@ -6,17 +6,16 @@
 pub const events = @import("events.zig");
 pub const state = @import("state.zig");
 pub const systems = @import("systems/root.zig");
-pub const thumbcache = @import("core/thumbcache.zig");
 pub const workers = @import("workers/root.zig");
 
-/// Drains pending worker thread background events from `state.workers.event_queue`,
-/// mutating application state and updating active cache/playlist status accordingly.
+/// Drains pending worker thread background events from
+/// `state.workers.event_queue`, mutating application state and updating active
+/// cache/playlist status accordingly.
 pub const drainWorkerEvents = events.drainWorkerEvents;
 
 test {
     _ = events;
     _ = state;
     _ = systems;
-    _ = thumbcache;
     _ = workers;
 }

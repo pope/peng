@@ -1,17 +1,19 @@
 const context = @import("context.zig");
-const events = @import("../core/events.zig");
+const core = @import("core");
 const manager = @import("manager.zig");
 const state_pkg = @import("state");
 const std = @import("std");
 const vfs = @import("vfs");
 
 const CancelCheck = vfs.CancelCheck;
+const events = core.events;
 const MediaEntry = vfs.MediaEntry;
 const scanDirectoryMediaEntries = vfs.scanDirectoryMediaEntries;
 const scanTargetMediaEntries = vfs.scanTargetMediaEntries;
 const WorkerManager = manager.WorkerManager;
 
-/// Arguments for spawning a background file path or directory scanner worker thread.
+/// Arguments for spawning a background file path or directory scanner worker
+/// thread.
 pub const PathScanArgs = struct {
     workers: *WorkerManager,
     allocator: std.mem.Allocator,

@@ -65,7 +65,10 @@ ______________________________________________________________________
 ## ImageCache & Generation Ownership
 
 - **Pattern 4 — Cache Slot Generation Ownership, Weak Keys & Envelope Validation**:
-  - `ImageCache` (`state.cache` in `src/app/core/image.zig`) uses Zig's `std.MultiArrayList(CacheSlot)` for Structure-of-Arrays (SoA) memory layout, allowing key scanning without cache-line pollution while mutating key and entry slices atomically.
+  - `ImageCache` (`state.cache` in `src/core/image.zig`) uses Zig's
+    `std.MultiArrayList(CacheSlot)` for Structure-of-Arrays (SoA) memory
+    layout, allowing key scanning without cache-line pollution while mutating
+    key and entry slices atomically.
   - Generation state (`generation: std.atomic.Value(usize) = .init(0)`) is owned exclusively by `ImageCache`.
   - Navigation/directory resets advance the generation via `_ = state.cache.advanceGeneration()`.
   - In-flight worker jobs and cached textures are keyed by stable `MediaId`

@@ -3,6 +3,7 @@ const app_config = @import("config");
 const build_options = @import("build_options");
 const builtin = @import("builtin");
 const clay = @import("zclay");
+const core = @import("core");
 const ipc = @import("ipc");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
@@ -12,6 +13,7 @@ const ui = @import("ui");
 const viewer = if (!build_options.hot_reload) @import("viewer") else struct {};
 
 const collectPrecacheFiles = thumbcache.collectPrecacheFiles;
+const encodeBytesToThumbnailPng = core.thumbcache.encodeBytesToThumbnailPng;
 const precachePathsParallel = thumbcache.precachePathsParallel;
 const ThumbCacheConfig = thumbcache.ThumbCacheConfig;
 const ThumbWritePolicy = thumbcache.ThumbWritePolicy;
@@ -499,7 +501,7 @@ fn runCliPrecache(
         files.items,
         max_workers,
         .{},
-        app.thumbcache.encodeBytesToThumbnailPng,
+        encodeBytesToThumbnailPng,
     );
 
     var stdout_write_buf: [1024]u8 = undefined;

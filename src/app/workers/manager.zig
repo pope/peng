@@ -4,8 +4,7 @@
 //! concurrency limits, worker cancellation, and event transport.
 
 const context = @import("context.zig");
-const core_thumbcache = @import("../core/thumbcache.zig");
-const events = @import("../core/events.zig");
+const core = @import("core");
 const probe = @import("probe");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
@@ -13,13 +12,14 @@ const std = @import("std");
 const thumbcache = @import("thumbcache");
 
 const EnabledThumbCacheConfig = thumbcache.EnabledThumbCacheConfig;
-const encodeBytesToThumbnailPng = core_thumbcache.encodeBytesToThumbnailPng;
+const encodeBytesToThumbnailPng = core.thumbcache.encodeBytesToThumbnailPng;
+const events = core.events;
 const hasValidTargetTierThumbnail = thumbcache.hasValidTargetTierThumbnail;
 const PrecacheCancel = thumbcache.PrecacheCancel;
 const precacheFileThumbnail = thumbcache.precacheFileThumbnail;
 const ThumbCacheConfig = thumbcache.ThumbCacheConfig;
 const ThumbCacheKey = thumbcache.ThumbCacheKey;
-const writeThumbnailPng = core_thumbcache.writeThumbnailPng;
+const writeThumbnailPng = core.thumbcache.writeThumbnailPng;
 
 /// Background job for downscaling, orienting, and atomically saving a PNG
 /// thumbnail to the Freedesktop Shared Thumbnail Cache

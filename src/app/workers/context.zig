@@ -1,6 +1,8 @@
-const events = @import("../core/events.zig");
+const core = @import("core");
 const sdl = @import("sdl");
 const std = @import("std");
+
+const events = core.events;
 
 /// Cooperative cancellation token shared with background worker tasks.
 /// Unifies application-shutdown (`exiting`), global cache generation,

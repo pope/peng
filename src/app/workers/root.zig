@@ -1,12 +1,12 @@
 //! Workers Subsystem Module
 //!
-//! Encapsulates all off-main-thread background tasks (image decoding, directory scanning,
-//! stdin reading, and IPC server socket listening) and provides clean worker lifecycle management.
+//! Encapsulates all off-main-thread background tasks (image decoding,
+//! directory scanning, stdin reading, and IPC server socket listening) and
+//! provides clean worker lifecycle management.
 
 const builtin = @import("builtin");
 pub const context = @import("context.zig");
 pub const decode = @import("decode.zig");
-const events = @import("../core/events.zig");
 pub const ipc_server = @import("ipc_server.zig");
 pub const manager = @import("manager.zig");
 pub const palette_scan = @import("palette_scan.zig");

@@ -1,11 +1,11 @@
 const builtin = @import("builtin");
 const context = @import("context.zig");
-const events = @import("../core/events.zig");
+const core = @import("core");
 const ipc = @import("ipc");
 const manager = @import("manager.zig");
 const std = @import("std");
 
-const BackgroundEvent = events.BackgroundEvent;
+const BackgroundEvent = core.events.BackgroundEvent;
 const WorkerManager = manager.WorkerManager;
 
 /// Thread arguments for spawning the background IPC server.
@@ -16,7 +16,8 @@ pub const IpcServerArgs = struct {
     socket_path: []const u8,
 };
 
-/// Entry point executed on a background thread to listen for incoming IPC socket connections.
+/// Entry point executed on a background thread to listen for incoming IPC
+/// socket connections.
 pub fn ipcServerWorkerTask(args: *IpcServerArgs) void {
     const workers = args.workers;
     const gpa = args.allocator;
