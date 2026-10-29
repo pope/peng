@@ -82,6 +82,7 @@ pub const WorkerManager = struct {
     thumb_write_queue: std.ArrayList(ThumbWriteJob) = .empty,
     thumb_writer_running: bool = false,
     precache_generation: std.atomic.Value(usize) = .init(0),
+    preview_generation: std.atomic.Value(usize) = .init(0),
 
     /// Thread-safe multi-producer single-consumer queue for
     /// background-to-main-thread event transport.

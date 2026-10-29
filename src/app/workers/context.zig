@@ -37,6 +37,34 @@ pub const CancellationToken = struct {
     }
 };
 
+/// Maximum byte count probed when reading image headers for EXIF orientation
+/// and dimensions without reading the full file.
+pub const header_probe_limit: usize = 256 * 1024;
+
+/// Sequentially fills `dest` by reading at `start_offset` using positional I/O,
+/// periodically verifying cooperative cancellation between chunks.
+pub fn readRangePositional(
+    file: std.Io.File,
+    io: std.Io,
+    cancel: CancellationToken,
+    dest: []u8,
+    start_offset: u64,
+) !usize {
+    var total_read: usize = 0;
+    while (total_read < dest.len) {
+        if (cancel.isCanceled()) return error.Canceled;
+        var slices = [_][]u8{dest[total_read..]};
+        const n = try file.readPositional(
+            io,
+            &slices,
+            start_offset + total_read,
+        );
+        if (n == 0) break;
+        total_read += n;
+    }
+    return total_read;
+}
+
 /// Posts an SDL user event to wake up the main thread if it is blocked waiting
 /// in SDL_WaitEvent.
 pub fn wakeUpMainThread() void {

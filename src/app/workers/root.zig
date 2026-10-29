@@ -11,6 +11,7 @@ pub const ipc_server = @import("ipc_server.zig");
 pub const manager = @import("manager.zig");
 pub const palette_scan = @import("palette_scan.zig");
 pub const path_scan = @import("path_scan.zig");
+pub const preview = @import("preview.zig");
 const sdl = @import("sdl");
 const std = @import("std");
 pub const stdin = @import("stdin.zig");
@@ -18,16 +19,14 @@ pub const stdin = @import("stdin.zig");
 pub const DecodeArgs = decode.DecodeArgs;
 pub const PaletteScanArgs = palette_scan.PaletteScanArgs;
 pub const PathScanArgs = path_scan.PathScanArgs;
-pub const PreviewRenderResult = decode.PreviewRenderResult;
-pub const PreviewWorkerArgs = decode.PreviewWorkerArgs;
+pub const PreviewWorkerArgs = preview.PreviewWorkerArgs;
 pub const StdinArgs = stdin.StdinArgs;
 pub const WorkerManager = manager.WorkerManager;
 
-pub const renderPreviewRgbaFile = decode.renderPreviewRgbaFile;
 pub const spawnDecode = decode.spawnDecode;
 pub const spawnPaletteScan = palette_scan.spawnPaletteScan;
 pub const spawnPaletteScanForItems = palette_scan.spawnPaletteScanForItems;
-pub const spawnPreview = decode.spawnPreview;
+pub const spawnPreview = preview.spawnPreview;
 
 /// Spawns a background `pathScanWorker` task to recursively scan directories
 /// or validate file paths, incrementing the active file scan counter.
@@ -37,7 +36,8 @@ pub fn spawnPathScan(args: *PathScanArgs) !void {
     args.workers.group.async(args.io, path_scan.pathScanWorker, .{args});
 }
 
-/// Spawns a background `stdinWorker` task to stream image file paths from standard input.
+/// Spawns a background `stdinWorker` task to stream image file paths from
+/// standard input.
 pub fn spawnStdin(args: *StdinArgs) !void {
     _ = args.workers.active_threads.fetchAdd(1, .monotonic);
     if (args.active_file_scans) |scans| {
@@ -157,9 +157,10 @@ test "spawnIpcServer does not mark WorkerManager as busy" {
 test {
     _ = context;
     _ = decode;
-    _ = path_scan;
-    _ = stdin;
     _ = ipc_server;
-    _ = palette_scan;
     _ = manager;
+    _ = palette_scan;
+    _ = path_scan;
+    _ = preview;
+    _ = stdin;
 }
