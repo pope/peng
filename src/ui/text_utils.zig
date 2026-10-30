@@ -1,19 +1,24 @@
 const clay = @import("zclay");
-const sdl = @import("sdl");
+const gpu_pkg = @import("gpu");
 const std = @import("std");
 const theme = @import("theme.zig");
+
+const empty_fonts = gpu_pkg.text_cache.empty_fonts;
+const FontSet = gpu_pkg.text_cache.FontSet;
+const hasPrimaryFont = gpu_pkg.text_cache.hasPrimaryFont;
+const measureFontText = gpu_pkg.text_cache.measureText;
+const measureTextPrefix = gpu_pkg.text_cache.measureTextPrefix;
 
 /// User data context passed to Clay text measurement callbacks containing
 /// font handles and debug flags.
 pub const MeasureTextUserData = struct {
-    fonts: []const ?sdl.Font,
+    fonts: FontSet,
     is_debug_measuring: bool = false,
     allocator: std.mem.Allocator = undefined,
 };
 
-/// Measures text pixel width and height via SDL_ttf for Clay layout element
-/// sizing.
-pub fn sdl3MeasureText(
+/// Measures text pixel width and height for Clay layout element sizing.
+pub fn measureText(
     text: []const u8,
     config: *clay.TextElementConfig,
     data: *const MeasureTextUserData,
@@ -24,21 +29,20 @@ pub fn sdl3MeasureText(
         text;
     if (clean_text.len == 0) return .{ .w = 0, .h = 0 };
 
-    if (config.font_id >= data.fonts.len) return .{ .w = 0, .h = 0 };
-    const font = data.fonts[config.font_id] orelse return .{ .w = 0, .h = 0 };
     var target_size = @as(f32, @floatFromInt(config.font_size));
     if (data.is_debug_measuring) {
         // Scale down hardcoded 16px Clay debug text to 12px (0.75x) during
         // debug panel layout
         target_size *= theme.debug_font_scale;
     }
-    if (font.getFontSize() != target_size) {
-        _ = font.setFontSize(target_size);
-    }
 
-    const size = font.getStringSize(clean_text) orelse
-        return .{ .w = 0, .h = 0 };
-    return .{ .w = @floatFromInt(size.w), .h = @floatFromInt(size.h) };
+    const dims = measureFontText(
+        data.fonts,
+        config.font_id,
+        target_size,
+        clean_text,
+    );
+    return .{ .w = dims.w, .h = dims.h };
 }
 
 /// Result of middle-truncating a filename, containing the display string and
@@ -58,39 +62,40 @@ pub fn truncateFilenameMiddle(
     font_size: u16,
     data: *const MeasureTextUserData,
 ) TruncatedFilename {
-    const font = data.fonts[0] orelse return .{
+    if (!hasPrimaryFont(data.fonts)) return .{
         .display = text,
         .head_len = text.len,
         .tail_start_idx = text.len,
     };
     const target_size = @as(f32, @floatFromInt(font_size));
-    if (font.getFontSize() != target_size) {
-        _ = font.setFontSize(target_size);
+
+    const size = measureFontText(data.fonts, 0, target_size, text);
+    if (size.w <= max_w) {
+        return .{
+            .display = text,
+            .head_len = text.len,
+            .tail_start_idx = text.len,
+        };
     }
 
-    const size = font.getStringSize(text) orelse return .{
-        .display = text,
-        .head_len = text.len,
+    const dots_size = measureFontText(data.fonts, 0, target_size, "...");
+    const available_w = max_w - dots_size.w;
+    if (available_w <= 0) return .{
+        .display = "...",
+        .head_len = 0,
         .tail_start_idx = text.len,
     };
-    if (@as(f32, @floatFromInt(size.w)) <= max_w) {
-        return .{ .display = text, .head_len = text.len, .tail_start_idx = text.len };
-    }
-
-    const dots_size = font.getStringSize("...") orelse
-        sdl.Font.TextSize{ .w = 0, .h = 0 };
-
-    const available_w = max_w - @as(f32, @floatFromInt(dots_size.w));
-    if (available_w <= 0) return .{ .display = "...", .head_len = 0, .tail_start_idx = text.len };
 
     const half_w = available_w / 2.0;
 
     var head_len: usize = 0;
     var head_w: f32 = 0.0;
-    if (font.measureString(text, @intFromFloat(half_w))) |m| {
-        head_len = m.measured_len;
-        head_w = @as(f32, @floatFromInt(m.measured_w));
-        while (head_len > 0 and head_len < text.len and (text[head_len] & 0xC0) == 0x80) {
+    if (measureTextPrefix(data.fonts, 0, target_size, text, half_w)) |m| {
+        head_len = m.len;
+        head_w = m.w;
+        while (head_len > 0 and head_len < text.len and
+            (text[head_len] & 0xC0) == 0x80)
+        {
             head_len -= 1;
         }
     }
@@ -110,9 +115,8 @@ pub fn truncateFilenameMiddle(
         }
 
         const suffix = text[byte_start..];
-        const suf_size = font.getStringSize(suffix) orelse
-            sdl.Font.TextSize{ .w = 0, .h = 0 };
-        if (@as(f32, @floatFromInt(suf_size.w)) <= tail_available_w) {
+        const suf_size = measureFontText(data.fonts, 0, target_size, suffix);
+        if (suf_size.w <= tail_available_w) {
             tail_len = text.len - byte_start;
             low = mid + 1;
         } else {
@@ -142,7 +146,8 @@ pub fn truncateFilenameMiddle(
     };
 }
 
-/// Truncates a filename in the middle with an ellipsis ("...") returning only the display string.
+/// Truncates a filename in the middle with an ellipsis ("...") returning only
+/// the display string.
 pub fn truncateFilename(
     allocator: std.mem.Allocator,
     text: []const u8,
@@ -150,7 +155,13 @@ pub fn truncateFilename(
     font_size: u16,
     data: *const MeasureTextUserData,
 ) []const u8 {
-    return truncateFilenameMiddle(allocator, text, max_w, font_size, data).display;
+    return truncateFilenameMiddle(
+        allocator,
+        text,
+        max_w,
+        font_size,
+        data,
+    ).display;
 }
 
 /// Truncates a directory path from the left with leading "..." so that
@@ -167,12 +178,12 @@ pub fn truncateDirectory(
         .font_size = font_size,
     };
 
-    const initial_dim = sdl3MeasureText(text, &text_config, data);
+    const initial_dim = measureText(text, &text_config, data);
     if (initial_dim.w <= max_w) {
         return text;
     }
 
-    const dots_w = sdl3MeasureText("...", &text_config, data).w;
+    const dots_w = measureText("...", &text_config, data).w;
 
     var low: usize = 0;
     var high: usize = text.len;
@@ -187,7 +198,7 @@ pub fn truncateDirectory(
             byte_start += 1;
         }
 
-        const part_w = sdl3MeasureText(text[byte_start..], &text_config, data).w;
+        const part_w = measureText(text[byte_start..], &text_config, data).w;
 
         if (part_w + dots_w <= max_w) {
             best_len = text.len - byte_start;
@@ -219,16 +230,22 @@ test "formatSize" {
 
 test "truncateFilename fallback without fonts" {
     const data = MeasureTextUserData{
-        .fonts = &.{null},
+        .fonts = &empty_fonts,
         .allocator = std.testing.allocator,
     };
-    const res = truncateFilename(std.testing.allocator, "very_long_filename.png", 100.0, 16, &data);
+    const res = truncateFilename(
+        std.testing.allocator,
+        "very_long_filename.png",
+        100.0,
+        16,
+        &data,
+    );
     try std.testing.expectEqualStrings("very_long_filename.png", res);
 }
 
 test "truncateDirectory fallback without fonts" {
     const data = MeasureTextUserData{
-        .fonts = &.{null},
+        .fonts = &empty_fonts,
         .allocator = std.testing.allocator,
     };
     const res = truncateDirectory(

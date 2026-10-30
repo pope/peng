@@ -6,7 +6,6 @@ const intents = @import("intents");
 const palette = @import("palette.zig");
 const palette_pkg = @import("palette");
 const renderer = @import("renderer.zig");
-const sdl = @import("sdl");
 const state = @import("state");
 const stats = @import("stats.zig");
 const std = @import("std");
@@ -16,18 +15,26 @@ const view_model = @import("view_model.zig");
 
 const CacheEntry = core.image.CacheEntry;
 const ElementTag = state.ElementTag;
+const empty_fonts = gpu_pkg.text_cache.empty_fonts;
+const FontSet = gpu_pkg.text_cache.FontSet;
 const FrameInput = state.FrameInput;
+const GpuTexture = gpu_pkg.graphics.GpuTexture;
+const hasPrimaryFont = gpu_pkg.text_cache.hasPrimaryFont;
 const MeasureTextUserData = text_utils.MeasureTextUserData;
+const measureFontText = gpu_pkg.text_cache.measureText;
+const measureText = text_utils.measureText;
+const PacketBuildContext = gpu_pkg.pass.PacketBuildContext;
 const PaletteState = palette_pkg.PaletteState;
 const renderEditPanel = edit_panel.renderEditPanel;
 const renderPalette = palette.renderPalette;
+const RenderPacket = gpu_pkg.pass.RenderPacket;
 const RenderResources = gpu_pkg.graphics.RenderResources;
 const renderStatsOverlay = stats.renderStatsOverlay;
-const sdl3MeasureText = text_utils.sdl3MeasureText;
 const truncateFilename = text_utils.truncateFilename;
 const UiRenderMetrics = state.UiRenderMetrics;
 const UiViewModel = view_model.UiViewModel;
 const view_transform = state.view_transform;
+const WindowHandle = gpu_pkg.graphics.WindowHandle;
 
 /// Computes fitted layout dimensions in logical UI points (`LogicalDims`) for
 /// an image cache entry within available logical viewport bounds, evaluating
@@ -72,9 +79,9 @@ pub fn renderFrame(
     input: FrameInput,
     gpa_allocator: std.mem.Allocator,
     frame_allocator: std.mem.Allocator,
-    fonts: []const ?sdl.Font,
+    fonts: FontSet,
     measure_data: *MeasureTextUserData,
-    target_window: ?sdl.Window,
+    target_window: ?WindowHandle,
     render_metrics: ?*UiRenderMetrics,
     capture_filename: ?[:0]const u8,
 ) !void {
@@ -176,74 +183,53 @@ pub fn renderFrame(
         }
     });
 
-    // Clay's internal debug panel layout elements are generated inside clay.endLayout().
-    // Flag measure_data so sdl3MeasureText scales debug text down (16px -> 12px) during layout.
+    // Clay's internal debug panel layout elements are generated inside
+    // clay.endLayout(). Flag measure_data so measureText scales debug text down
+    // (16px -> 12px) during layout.
     measure_data.is_debug_measuring = clay.isDebugModeEnabled();
     const render_commands = clay.endLayout();
     measure_data.is_debug_measuring = false;
 
     // Render Frame
     const RenderContext = struct {
-        ui_model: UiViewModel,
-        gpu_res: *RenderResources,
-        fonts: []const ?sdl.Font,
+        view_params: state.ViewportParams,
+        fonts: FontSet,
         render_commands: []const clay.RenderCommand,
-        gpa_allocator: std.mem.Allocator,
-        frame_allocator: std.mem.Allocator,
-        scale_x: f32,
-        scale_y: f32,
-        render_metrics: ?*state.UiRenderMetrics,
 
-        fn render(
+        fn buildPacket(
             ctx: @This(),
-            cmd_buf: sdl.gpu.CommandBuffer,
-            target_tex: sdl.gpu.Texture,
-            target_w: u32,
-            target_h: u32,
-            target_format: sdl.gpu.TextureFormat,
-            temp_buffers: *std.ArrayList(sdl.gpu.TransferBuffer),
-        ) anyerror!void {
-            try renderer.renderClayCommands(
-                ctx.ui_model.viewport,
-                ctx.gpu_res,
-                cmd_buf,
-                target_tex,
+            build_ctx: PacketBuildContext,
+        ) anyerror!RenderPacket {
+            return renderer.buildRenderPacket(
+                ctx.view_params,
+                build_ctx,
                 ctx.fonts,
                 ctx.render_commands,
-                ctx.gpa_allocator,
-                ctx.frame_allocator,
-                temp_buffers,
-                @intCast(target_w),
-                @intCast(target_h),
-                ctx.scale_x,
-                ctx.scale_y,
-                target_format,
-                ctx.render_metrics,
             );
         }
     };
 
     try gpu_pkg.pass.executeFrame(
         gpu_res,
+        ui_model.viewport,
+        gpa_allocator,
         frame_allocator,
         .{
             .window = target_window,
             .width = @intFromFloat(width),
             .height = @intFromFloat(height),
+            .scale_x = scale_x,
+            .scale_y = scale_y,
+            .needs_blur = renderer.hasBlurredSurface(render_commands),
+            .metrics = render_metrics,
             .capture_filename = capture_filename,
         },
         RenderContext{
-            .ui_model = ui_model,
-            .gpu_res = gpu_res,
+            .view_params = ui_model.viewport,
             .fonts = fonts,
             .render_commands = render_commands,
-            .gpa_allocator = gpa_allocator,
-            .frame_allocator = frame_allocator,
-            .scale_x = scale_x,
-            .scale_y = scale_y,
-            .render_metrics = render_metrics,
         },
-        RenderContext.render,
+        RenderContext.buildPacket,
     );
 }
 
@@ -316,7 +302,7 @@ fn renderTitlePill(
             .font_id = 0,
             .font_size = 12,
         };
-        count_w = sdl3MeasureText(cstr, &count_cfg, measure_data).w;
+        count_w = measureText(cstr, &count_cfg, measure_data).w;
     }
 
     var extra_w: f32 = 0.0;
@@ -557,7 +543,7 @@ fn renderBottomOverlayBar(
             .font_id = 0,
             .font_size = 14,
         };
-        const text_w = sdl3MeasureText(snack.message, &snack_cfg, measure_data).w;
+        const text_w = measureText(snack.message, &snack_cfg, measure_data).w;
         snackbar_reservation = text_w + 36.0 + 12.0; // pill padding (36) + child_gap (12)
     }
 
@@ -675,26 +661,28 @@ fn formatLoadingText(
     const fname = filename_opt orelse return fallback;
     if (fname.len == 0) return fallback;
 
-    const font = measure_data.fonts[0] orelse {
+    if (!hasPrimaryFont(measure_data.fonts)) {
         // Fallback for headless test environments without loaded TTF fonts
         return allocator.print("Loading {s}...", .{fname}) catch |err| {
-            std.log.warn("Failed to format loading text fallback: {any}", .{err});
+            std.log.warn(
+                "Failed to format loading text fallback: {any}",
+                .{err},
+            );
             return fallback;
         };
-    };
-
-    const target_size = @as(f32, @floatFromInt(font_size));
-    if (font.getFontSize() != target_size) {
-        _ = font.setFontSize(target_size);
     }
 
     // Measure the prefix "Loading "
     const prefix = "Loading ";
-    const prefix_size = font.getStringSize(prefix) orelse
-        sdl.Font.TextSize{ .w = 0, .h = 0 };
-    const prefix_w = @as(f32, @floatFromInt(prefix_size.w));
+    const prefix_w = measureFontText(
+        measure_data.fonts,
+        0,
+        @floatFromInt(font_size),
+        prefix,
+    ).w;
 
-    // If available width cannot comfortably fit prefix plus a minimal filename, fall back
+    // If available width cannot comfortably fit prefix plus a minimal
+    // filename, fall back
     if (max_w <= prefix_w + 30.0) {
         return fallback;
     }
@@ -1188,18 +1176,25 @@ fn renderViewport(
 test "formatLoadingText - fallback when no filename" {
     var data = MeasureTextUserData{
         .allocator = std.testing.allocator,
-        .fonts = &(@as([2]?sdl.Font, @splat(null))),
+        .fonts = &empty_fonts,
     };
-    const res = formatLoadingText(std.testing.allocator, null, 400.0, 22, &data);
+    const res =
+        formatLoadingText(std.testing.allocator, null, 400.0, 22, &data);
     try std.testing.expectEqualStrings("Loading image...", res);
 }
 
 test "formatLoadingText - with filename" {
     var data = MeasureTextUserData{
         .allocator = std.testing.allocator,
-        .fonts = &(@as([2]?sdl.Font, @splat(null))),
+        .fonts = &empty_fonts,
     };
-    const res = formatLoadingText(std.testing.allocator, "photo.jpg", 400.0, 22, &data);
+    const res = formatLoadingText(
+        std.testing.allocator,
+        "photo.jpg",
+        400.0,
+        22,
+        &data,
+    );
     defer std.testing.allocator.free(res);
     try std.testing.expectEqualStrings("Loading photo.jpg...", res);
 }
@@ -1207,18 +1202,25 @@ test "formatLoadingText - with filename" {
 test "formatLoadingText - fallback when empty filename" {
     var data = MeasureTextUserData{
         .allocator = std.testing.allocator,
-        .fonts = &(@as([2]?sdl.Font, @splat(null))),
+        .fonts = &empty_fonts,
     };
-    const res = formatLoadingText(std.testing.allocator, "", 400.0, 22, &data);
+    const res = formatLoadingText(
+        std.testing.allocator,
+        "",
+        400.0,
+        22,
+        &data,
+    );
     try std.testing.expectEqualStrings("Loading image...", res);
 }
 
 test "formatLoadingText - narrow viewport fallback" {
     var data = MeasureTextUserData{
         .allocator = std.testing.allocator,
-        .fonts = &(@as([2]?sdl.Font, @splat(null))),
+        .fonts = &empty_fonts,
     };
-    const res = formatLoadingText(std.testing.allocator, null, 100.0, 22, &data);
+    const res =
+        formatLoadingText(std.testing.allocator, null, 100.0, 22, &data);
     try std.testing.expectEqualStrings("Loading...", res);
 }
 
@@ -1307,9 +1309,9 @@ test "renderViewport - floating crossfade quads allow Viewport hit-testing" {
 
     var data = MeasureTextUserData{
         .allocator = std.testing.allocator,
-        .fonts = &(@as([2]?sdl.Font, @splat(null))),
+        .fonts = &empty_fonts,
     };
-    const dummy_tex: sdl.gpu.Texture = .{ .ptr = @ptrFromInt(0x1000) };
+    const dummy_tex: GpuTexture = .{ .ptr = @ptrFromInt(0x1000) };
     const entry = CacheEntry{
         .resident = .{
             .asset = .{

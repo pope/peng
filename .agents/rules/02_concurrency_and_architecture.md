@@ -35,10 +35,10 @@
   - Constructed at the end of Phase 2 (`runUpdatePhase`) as an immutable
     snapshot with `*const` references, pre-computed strings (`window_title`),
     and value-copied metrics (`UiRenderMetrics.toSnapshot()`).
-  - **Pure Phase 3 Presentation**: Phase 3 (`ui.layout.renderFrame` and
-    `ui.renderer.renderClayCommands`) is strictly read-only. Layout and render
-    passes MUST NOT mutate `AppState`/`ViewerState`, change OS window state, or
-    enqueue intents.
+  - **Pure Phase 3 Presentation**: Phase 3 (`ui.layout.renderFrame`,
+    `ui.renderer.buildRenderPacket`, and `gpu.pass.executeFrame`) is
+    strictly read-only. Layout and render passes MUST NOT mutate
+    `AppState`/`ViewerState`, change OS window state, or enqueue intents.
 
 ## 2. Linear Frame Pipeline, Intents & Capabilities Registry
 

@@ -1,7 +1,7 @@
 //! UI & Rendering Subsystem Module
 //!
 //! Provides Clay layout integration, geometry transformation passes,
-//! text caching, overlay panels, and SDL3 GPU rendering pipelines.
+//! text measurement, overlay panels, and 2-pass UI render pipelines.
 
 /// Image adjustment and EXIF metadata editing panels.
 pub const edit_panel = @import("edit_panel.zig");
@@ -21,7 +21,7 @@ pub const renderer = @import("renderer.zig");
 /// Image metadata, histogram, and statistics display overlay.
 pub const stats = @import("stats.zig");
 
-/// Text truncation, sizing, and SDL_ttf measure helpers.
+/// Text truncation, sizing, and font measure helpers.
 pub const text_utils = @import("text_utils.zig");
 
 /// Color palette, styling constants, and theme definitions.

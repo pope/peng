@@ -60,10 +60,11 @@
   - `src/sdl/`: Type-safe SDL3, SDL3_image, SDL3_ttf, and SDL3 GPU wrappers.
   - `src/ui/`: Clay layout builders (`layout.zig`, `palette.zig`,
     `edit_panel.zig`, `stats.zig`), `UiViewModel` presentation snapshot
-    (`view_model.zig`), 2-pass GPU renderer (`renderer.zig`), text utilities
-    (`text_utils.zig`), theme styling (`theme.zig`), and encapsulated Clay
-    interaction / hit-testing (`interaction.zig`). Exclusive consumer of
-    `zclay` in the repository.
+    (`view_model.zig`), 2-pass GPU packet builder (`renderer.zig`), text
+    utilities (`text_utils.zig`), theme styling (`theme.zig`), and
+    encapsulated Clay interaction / hit-testing (`interaction.zig`). Exclusive
+    consumer of `zclay` in the repository. Strictly 100% zero-SDL linkage or
+    imports (zero `@import("sdl")`). Tested via `zig build test-ui`.
   - `src/viewer.zig`: Thin coordinator for frame update and render loop entry
     point (compiled statically by default, or as a hot-reloadable shared library
     `viewer` / `libviewer` when built with `-Dhot_reload=true`).
@@ -156,9 +157,9 @@
     `deinitQueueItem`).
   - In `src/app/systems/`, only `sysXxx` entry points and `runUpdatePhase` are
     `pub fn`. In `src/ui/`, only top-level render orchestrators (`renderFrame`,
-    `renderPalette`, `renderStatsOverlay`, `renderClayCommands`) and
-    `interaction` query/lifecycle APIs are `pub fn`. In executable roots, only
-    `pub fn main` is public.
+    `renderPalette`, `renderStatsOverlay`, `buildRenderPacket`,
+    `hasBlurredSurface`) and `interaction` query/lifecycle APIs are `pub fn`. In
+    executable roots, only `pub fn main` is public.
   - Same-file `test` blocks can access private declarations directly; never mark
     a symbol `pub` solely for same-file tests.
   - **Zombie Pruning**: Any function, struct, or write-only struct field with

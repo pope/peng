@@ -297,7 +297,6 @@ pub fn build(b: *std.Build) void {
     ui_module.addImport("gpu", gpu_module);
     ui_module.addImport("intents", intents_module);
     ui_module.addImport("palette", palette_module);
-    ui_module.addImport("sdl", sdl_module);
     ui_module.addImport("state", state_module);
     ui_module.addImport("triage", triage_module);
     ui_module.addImport("vfs", vfs_module);
@@ -549,6 +548,9 @@ pub fn build(b: *std.Build) void {
         "Run thumbcache tests",
     );
     test_thumbcache_step.dependOn(&run_thumbcache_tests.step);
+
+    const test_ui_step = b.step("test-ui", "Run ui tests");
+    test_ui_step.dependOn(&run_ui_tests.step);
 
     const test_unit_step = b.step("test-unit", "Run all unit tests");
     test_unit_step.dependOn(&run_sdl_tests.step);

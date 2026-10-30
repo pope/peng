@@ -19,9 +19,9 @@ const FrameInput = state.FrameInput;
 const getPaletteConfig = palette_pkg.getPaletteConfig;
 const getSpec = intents.getSpec;
 const LogicalPoint = state.LogicalPoint;
+const measureText = text_utils.measureText;
 const MeasureTextUserData = text_utils.MeasureTextUserData;
 const PaletteState = palette_pkg.PaletteState;
-const sdl3MeasureText = text_utils.sdl3MeasureText;
 
 /// Opaque Clay context pointer type.
 pub const ClayContext = clay.Context;
@@ -55,12 +55,12 @@ pub fn resetCurrentClayContext() void {
     setNullCtx(null);
 }
 
-/// Registers the SDL3_ttf font measurement callback with Clay.
+/// Registers the font measurement callback with Clay.
 pub fn bindMeasureText(measure_data: *const MeasureTextUserData) void {
     clay.setMeasureTextFunction(
         *const MeasureTextUserData,
         measure_data,
-        sdl3MeasureText,
+        measureText,
     );
 }
 

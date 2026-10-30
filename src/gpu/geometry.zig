@@ -1,6 +1,12 @@
 const sdl = @import("sdl");
 const std = @import("std");
 
+/// Integer pixel rectangle alias for scissor clipping and bounds.
+pub const Rect = sdl.Rect;
+
+/// Floating-point pixel rectangle alias for UI and viewport quad emission.
+pub const FRect = sdl.FRect;
+
 /// 2D textured colored vertex layout matching GPU pipeline vertex buffer
 /// layout.
 pub const Vertex = extern struct {

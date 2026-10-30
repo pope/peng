@@ -6,6 +6,12 @@ const text_cache = @import("text_cache.zig");
 
 const TextCache = text_cache.TextCache;
 
+/// GPU texture handle alias for UI and renderer modules.
+pub const GpuTexture = sdl.gpu.Texture;
+
+/// Native window handle alias for frame target presentation.
+pub const WindowHandle = sdl.Window;
+
 /// Initialized window handle, SDL GPU device, and DPI scale factor.
 pub const GraphicsSetup = struct {
     window: sdl.Window,

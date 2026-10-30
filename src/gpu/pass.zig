@@ -17,11 +17,13 @@ const text_cache = @import("text_cache.zig");
 const BatchItem = render_image.BatchItem;
 const BlurResources = graphics.BlurResources;
 const BlurUniforms = graphics.BlurUniforms;
+const FontSet = text_cache.FontSet;
 const ImageUniforms = render_image.ImageUniforms;
 const MaterialType = render_image.MaterialType;
 const RenderResources = graphics.RenderResources;
 const saveTextureToPng = graphics.saveTextureToPng;
 const TextCacheKey = text_cache.TextCacheKey;
+const UiRenderMetrics = state.UiRenderMetrics;
 const UiUniforms = render_image.UiUniforms;
 const Vertex = geometry.Vertex;
 const ViewportParams = state.ViewportParams;
@@ -33,11 +35,29 @@ pub const CachedText = struct {
     h: f32,
 };
 
+/// Context provided by `executeFrame` to the UI packet builder during
+/// Pass 1 (geometry and glyph upload recording).
+pub const PacketBuildContext = struct {
+    gpu_res: *RenderResources,
+    copy_pass: sdl.gpu.CopyPass,
+    temp_buffers: *std.ArrayList(sdl.gpu.TransferBuffer),
+    win_w: i32,
+    win_h: i32,
+    scale_x: f32,
+    scale_y: f32,
+    gpa_allocator: std.mem.Allocator,
+    frame_allocator: std.mem.Allocator,
+};
+
 /// Target options and parameters for frame execution and presentation.
 pub const FrameTargetOptions = struct {
     window: ?sdl.Window,
     width: u32,
     height: u32,
+    scale_x: f32 = 1.0,
+    scale_y: f32 = 1.0,
+    needs_blur: bool = false,
+    metrics: ?*UiRenderMetrics = null,
     capture_filename: ?[:0]const u8 = null,
 };
 
@@ -117,18 +137,12 @@ pub fn addBatch(
 /// Renders or retrieves cached text texture for a glyph string. Alpha is
 /// modulated dynamically at draw time via GPU vertex color attributes.
 pub fn getOrRenderCachedText(
-    gpu_res: *RenderResources,
-    copy_pass: sdl.gpu.CopyPass,
-    fonts: []const ?sdl.Font,
+    build_ctx: PacketBuildContext,
+    fonts: FontSet,
     font_id: usize,
     font_size: u16,
     raw_text: []const u8,
     rgb: [3]f32,
-    scale_x: f32,
-    gpa_allocator: std.mem.Allocator,
-    frame_allocator: std.mem.Allocator,
-    temp_buffers: *std.ArrayList(sdl.gpu.TransferBuffer),
-    tb_offset: *usize,
 ) !?CachedText {
     if (font_id >= fonts.len) return null;
     const font = fonts[font_id] orelse return null;
@@ -140,7 +154,8 @@ pub fn getOrRenderCachedText(
     }
     if (text_slice.len == 0) return null;
 
-    const target_font_size = @as(f32, @floatFromInt(font_size)) * scale_x;
+    const target_font_size =
+        @as(f32, @floatFromInt(font_size)) * build_ctx.scale_x;
     const target_font_size_u16 =
         @as(u16, @intFromFloat(@round(target_font_size)));
 
@@ -156,6 +171,7 @@ pub fn getOrRenderCachedText(
         .hash = std.hash.Wyhash.hash(0, text_slice),
     };
 
+    const gpu_res = build_ctx.gpu_res;
     const dev = gpu_res.device;
 
     if (gpu_res.text_cache.getEntry(key)) |entry| {
@@ -167,18 +183,20 @@ pub fn getOrRenderCachedText(
         };
     }
 
-    const frame_idx = gpu_res.frame_index % 2;
-
     if (font.getFontSize() != target_font_size) {
         _ = font.setFontSize(target_font_size);
     }
 
-    const surf = font.renderTextBlended(frame_allocator, text_slice, .{
-        .r = @intFromFloat(rgb[0]),
-        .g = @intFromFloat(rgb[1]),
-        .b = @intFromFloat(rgb[2]),
-        .a = 255,
-    }) catch |err| {
+    const surf = font.renderTextBlended(
+        build_ctx.frame_allocator,
+        text_slice,
+        .{
+            .r = @intFromFloat(rgb[0]),
+            .g = @intFromFloat(rgb[1]),
+            .b = @intFromFloat(rgb[2]),
+            .a = 255,
+        },
+    ) catch |err| {
         std.log.warn(
             "font.renderTextBlended failed for '{s}': {}",
             .{ text_slice, err },
@@ -209,30 +227,33 @@ pub fn getOrRenderCachedText(
     const tex = dev.createTexture(&tex_info) orelse return null;
 
     const size = target_w * surf_h * 4;
-    const aligned_offset = std.mem.alignForward(usize, tb_offset.*, 512);
-    const required_capacity = aligned_offset + size;
-
-    const tb_acq = gpu_res.ensureFrameTransferBuffer(
-        frame_idx,
-        required_capacity,
-        64 * 1024,
-        frame_allocator,
-        temp_buffers,
+    const transfer_buf = dev.createTransferBuffer(
+        &sdl.gpu.TransferBufferCreateInfo{
+            .usage = .upload,
+            .size = @intCast(size),
+            .props = 0,
+        },
     ) orelse {
         dev.releaseTexture(tex);
         return null;
     };
-    const transfer_buf = tb_acq.handle;
-    const cycle_tb =
-        shouldCycleFrameBuffer(tb_acq.reallocated, aligned_offset);
+    build_ctx.temp_buffers.append(
+        build_ctx.frame_allocator,
+        transfer_buf,
+    ) catch {
+        dev.releaseTransferBuffer(transfer_buf);
+        dev.releaseTexture(tex);
+        return null;
+    };
+
     const mapped_raw: [*]u8 = dev.mapTransferBuffer(
         transfer_buf,
-        cycle_tb,
+        false,
     ) orelse {
         dev.releaseTexture(tex);
         return null;
     };
-    const mapped = mapped_raw + aligned_offset;
+    const mapped = mapped_raw;
     const src_row_bytes: usize = surf_w * 4;
     const dst_row_bytes: usize = target_w * 4;
     const pitch: usize = @intCast(converted.pitch());
@@ -250,9 +271,9 @@ pub fn getOrRenderCachedText(
     }
     dev.unmapTransferBuffer(transfer_buf);
 
-    copy_pass.uploadToTexture(&sdl.gpu.TextureTransferInfo{
+    build_ctx.copy_pass.uploadToTexture(&sdl.gpu.TextureTransferInfo{
         .transfer_buffer = transfer_buf,
-        .offset = @intCast(aligned_offset),
+        .offset = 0,
         .pixels_per_row = @intCast(target_w),
         .rows_per_layer = @intCast(surf_h),
     }, &sdl.gpu.TextureRegion{
@@ -262,12 +283,10 @@ pub fn getOrRenderCachedText(
         .d = 1,
     }, false);
 
-    tb_offset.* = aligned_offset + size;
-
     const w_f: f32 = @floatFromInt(target_w);
     const h_f: f32 = @floatFromInt(surf_h);
 
-    gpu_res.text_cache.put(gpa_allocator, dev, key, .{
+    gpu_res.text_cache.put(build_ctx.gpa_allocator, dev, key, .{
         .texture = tex,
         .w = w_f,
         .h = h_f,
@@ -721,9 +740,7 @@ fn executeRenderPass(
     }
 }
 
-/// Pass 2 of 2-pass rendering: Uploads vertex data to GPU memory and executes
-/// batched GPU render pass draw calls for the extracted RenderPacket.
-pub fn executeRenderPacket(
+fn executeRenderPacket(
     view_params: ViewportParams,
     gpu_res: *RenderResources,
     cmd_buf: sdl.gpu.CommandBuffer,
@@ -765,18 +782,15 @@ pub fn executeRenderPacket(
 /// binding, invocation of render callback, screenshot capture, and fence sync.
 pub fn executeFrame(
     gpu_res: *RenderResources,
+    view_params: ViewportParams,
+    gpa_allocator: std.mem.Allocator,
     frame_allocator: std.mem.Allocator,
     target: FrameTargetOptions,
     context: anytype,
-    comptime render_fn: fn (
+    comptime build_packet_fn: fn (
         ctx: @TypeOf(context),
-        cmd_buf: sdl.gpu.CommandBuffer,
-        target_tex: sdl.gpu.Texture,
-        target_w: u32,
-        target_h: u32,
-        target_format: sdl.gpu.TextureFormat,
-        temp_buffers: *std.ArrayList(sdl.gpu.TransferBuffer),
-    ) anyerror!void,
+        build_ctx: PacketBuildContext,
+    ) anyerror!RenderPacket,
 ) !void {
     const dev = gpu_res.device;
     const cmd_buf = dev.acquireCommandBuffer() orelse
@@ -856,15 +870,68 @@ pub fn executeFrame(
             return;
         }
 
-        try render_fn(
-            context,
+        const start_render = sdl.timer.getTicksNs();
+        const win_w: i32 = @intCast(target_w);
+        const win_h: i32 = @intCast(target_h);
+
+        if (win_w > 0 and win_h > 0 and target.needs_blur) {
+            gpu_res.blur.ensure(dev, target_w, target_h, target_format);
+        }
+
+        const copy_pass = cmd_buf.beginCopyPass() orelse {
+            std.log.err(
+                "SDL GPU beginCopyPass failed: {s}",
+                .{sdl.getError()},
+            );
+            return error.GPUCopyPassFailed;
+        };
+        errdefer copy_pass.end();
+
+        var packet = try build_packet_fn(context, .{
+            .gpu_res = gpu_res,
+            .copy_pass = copy_pass,
+            .temp_buffers = &temp_buffers,
+            .win_w = win_w,
+            .win_h = win_h,
+            .scale_x = target.scale_x,
+            .scale_y = target.scale_y,
+            .gpa_allocator = gpa_allocator,
+            .frame_allocator = frame_allocator,
+        });
+        defer packet.deinit(frame_allocator);
+
+        const vertex_count = packet.vertices.items.len;
+        const batch_count = packet.batches.items.len;
+
+        try executeRenderPacket(
+            view_params,
+            gpu_res,
             cmd_buf,
+            copy_pass,
             tex,
-            target_w,
-            target_h,
-            target_format,
+            &packet,
+            frame_allocator,
             &temp_buffers,
+            win_w,
+            win_h,
         );
+
+        gpu_res.text_cache.evictUnused(
+            frame_allocator,
+            dev,
+            gpu_res.frame_index,
+            600,
+        );
+
+        const end_render = sdl.timer.getTicksNs();
+        const render_time_ms =
+            @as(f64, @floatFromInt(end_render - start_render)) / 1_000_000.0;
+        if (target.metrics) |m| {
+            m.ui_render_stats.addSample(render_time_ms);
+            m.last_ui_vertex_count = vertex_count;
+            m.last_ui_batch_count = batch_count;
+        }
+        gpu_res.frame_index += 1;
 
         if (target.capture_filename) |filename| {
             cmd_buf_submitted = true;
