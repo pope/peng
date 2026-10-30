@@ -5,6 +5,7 @@
 
 const context = @import("context.zig");
 const core = @import("core");
+const geom = @import("geom");
 const ipc = @import("ipc");
 const manager = @import("manager.zig");
 const probe = @import("probe");
@@ -21,7 +22,7 @@ const loadCachedThumbnail = core.thumbcache.loadCachedThumbnail;
 const max_cbz_entry_bytes = vfs.max_cbz_entry_bytes;
 const MediaEntry = vfs.MediaEntry;
 const Orientation = probe.Orientation;
-const PositiveDimsU32 = ipc.PositiveDimsU32;
+const PositiveDimsU32 = geom.PositiveDimsU32;
 const readRangePositional = context.readRangePositional;
 const scanCbzImageEntries = vfs.scanCbzImageEntries;
 const ThumbCacheConfig = thumbcache.ThumbCacheConfig;
@@ -259,10 +260,7 @@ fn decodePreviewSourceSurface(
         if (cancel.isCanceled()) return error.Canceled;
 
         const orientation = raw_probe.orientation;
-        const candidates = raw_probe.selectPreviewCandidates(.{
-            .w = max_dims.w,
-            .h = max_dims.h,
-        });
+        const candidates = raw_probe.selectPreviewCandidates(max_dims);
 
         for (candidates) |cand_opt| {
             const loc = cand_opt orelse continue;

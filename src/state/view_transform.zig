@@ -1,11 +1,12 @@
+const geom = @import("geom");
 const intents = @import("intents");
 const std = @import("std");
 const viewport = @import("viewport.zig");
 
-const DpiScale = viewport.DpiScale;
-const LogicalDims = viewport.LogicalDims;
-const PhysicalDims = viewport.PhysicalDims;
-const UvRect = viewport.UvRect;
+const DpiScale = geom.DpiScale;
+const LogicalDims = geom.LogicalDims;
+const PhysicalDims = geom.PhysicalDims;
+const UvRect = geom.UvRect;
 const ZoomFactor = viewport.ZoomFactor;
 const ZoomPreset = intents.ZoomPreset;
 

@@ -34,7 +34,7 @@
     (`LogicalDims`, `LogicalPoint`), whereas GPU framebuffers,
     `ViewportParams.pan_x/y`, `getBaseScale`, and `isImageOverflowing` operate
     in physical pixels (`PhysicalDims`, `PhysicalPoint`, `PositiveDimsU32`,
-    converted via `DpiScale` in `src/state/viewport.zig`).
+    converted via `DpiScale` in `src/geom/root.zig`).
   - Pass strongly typed coordinate/dimension structs (`LogicalDims`,
     `PhysicalDims`, `PositiveDimsU32`, `LogicalPoint`, `PhysicalPoint`) across
     function boundaries rather than raw `w, h` or `x, y` scalar pairs, and pass

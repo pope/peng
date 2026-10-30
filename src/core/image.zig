@@ -1,3 +1,4 @@
+const geom = @import("geom");
 const probe = @import("probe");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
@@ -15,8 +16,8 @@ const MediaId = vfs.MediaId;
 const Orientation = probe.Orientation;
 const PairStreamTarget = vfs.PairStreamTarget;
 const parseImageDimensions = probe.parseImageDimensions;
-const PhysicalDims = state_pkg.PhysicalDims;
-const PositiveDimsU32 = state_pkg.PositiveDimsU32;
+const PhysicalDims = geom.PhysicalDims;
+const PositiveDimsU32 = geom.PositiveDimsU32;
 const ProbedImageMetadata = probe.ProbedImageMetadata;
 const RawMetadata = probe.RawMetadata;
 const ThumbnailInfo = state_pkg.ThumbnailInfo;
@@ -260,11 +261,7 @@ pub const CacheEntry = struct {
     /// irrespective of what downscaled preview or thumbnail is currently
     /// resident.
     pub fn getAuthoritativeDims(self: CacheEntry) PhysicalDims {
-        var best: ?PhysicalDims =
-            if (self.metadata.raw_metadata.getSensorDims()) |sd|
-                .{ .w = sd.w, .h = sd.h }
-            else
-                null;
+        var best: ?PhysicalDims = self.metadata.raw_metadata.getSensorDims();
         if (self.metadata.full_dims) |fd| {
             const cur_area = if (best) |b|
                 @as(f64, b.w) * @as(f64, b.h)
@@ -763,7 +760,7 @@ pub fn probeMediaMetadata(io: std.Io, media: MediaEntry) ?ProbedImageMetadata {
 pub const ExtractedThumbnail = struct {
     surface: sdl.Surface,
     orientation: Orientation = .normal,
-    source_dims: ?state_pkg.PhysicalDims = null,
+    source_dims: ?PhysicalDims = null,
     raw_metadata: RawMetadata = .none,
     dct_snapped: bool = false,
 };
@@ -955,11 +952,7 @@ fn loadStoredZipThumbnail(
     ) orelse return null;
 
     const orientation = probe.parseExifOrientation(image_slice) orelse .normal;
-    const dims = parseImageDimensions(image_slice, mime_type);
-    const source_dims = if (dims) |d|
-        state_pkg.PhysicalDims.initPositive(d.w, d.h)
-    else
-        null;
+    const source_dims = parseImageDimensions(image_slice, mime_type);
     const dct_snapped = if (source_dims) |sd|
         detectThumbnailDctPadding(surf, sd.w, sd.h)
     else
@@ -1025,7 +1018,7 @@ pub fn loadThumbnailSurface(
 
             var thumb_surf: ?sdl.Surface = null;
             var orientation: Orientation = .normal;
-            var source_dims: ?state_pkg.PhysicalDims = null;
+            var source_dims: ?PhysicalDims = null;
 
             if (is_raw) {
                 const raw_probe = probe.probeRawFileHeader(
@@ -1035,12 +1028,7 @@ pub fn loadThumbnailSurface(
                     header_slice,
                     mime_type,
                 );
-                if (raw_probe.sensor_dims) |sd| {
-                    source_dims = state_pkg.PhysicalDims.initPositive(
-                        sd.w,
-                        sd.h,
-                    );
-                }
+                source_dims = raw_probe.sensor_dims;
                 orientation = raw_probe.orientation;
                 if (raw_probe.selectPlaceholder(true, file_size)) |tloc| {
                     thumb_surf = loadThumbnailFromLocation(
@@ -1055,12 +1043,7 @@ pub fn loadThumbnailSurface(
             } else if (std.mem.eql(u8, mime_type, "image/jpeg")) {
                 orientation =
                     probe.parseExifOrientation(header_slice) orelse .normal;
-                if (parseImageDimensions(header_slice, mime_type)) |dims| {
-                    source_dims = state_pkg.PhysicalDims.initPositive(
-                        dims.w,
-                        dims.h,
-                    );
-                }
+                source_dims = parseImageDimensions(header_slice, mime_type);
                 if (probe.extractValidJpegThumbnailLocation(
                     header_slice,
                     mime_type,
@@ -1632,7 +1615,7 @@ test "loadThumbnailSurface - filesystem TIFF RAW mock" {
         try std.testing.expectEqual(Orientation.rotate_90, t.orientation);
         try std.testing.expect(t.raw_metadata.isRaw());
         try std.testing.expectEqual(
-            state_pkg.PhysicalDims{ .w = 6000.0, .h = 4000.0 },
+            PhysicalDims{ .w = 6000.0, .h = 4000.0 },
             t.source_dims.?,
         );
     }

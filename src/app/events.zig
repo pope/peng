@@ -1,5 +1,6 @@
 const app_state = @import("state.zig");
 const core = @import("core");
+const geom = @import("geom");
 const gpu = @import("gpu");
 const ipc = @import("ipc");
 const probe = @import("probe");
@@ -16,6 +17,7 @@ const image = core.image;
 const MediaEntry = vfs.MediaEntry;
 const MediaId = vfs.MediaId;
 const Orientation = probe.Orientation;
+const PhysicalDims = geom.PhysicalDims;
 const RawMetadata = probe.RawMetadata;
 const uploadSurfaceToGpu = gpu.uploadSurfaceToGpu;
 
@@ -354,9 +356,9 @@ fn enqueueDecodedThumbWrite(
     const owned_path = state.allocator.dupe(u8, path_slice) catch return false;
     const auth = entry.getAuthoritativeDims();
     const source_dims =
-        state_pkg.PhysicalDims.initPositive(auth.w, auth.h) orelse
+        PhysicalDims.initPositive(auth.w, auth.h) orelse
         decoded_data.source_dims orelse
-        state_pkg.PhysicalDims.initPositive(decoded_data.w, decoded_data.h);
+        PhysicalDims.initPositive(decoded_data.w, decoded_data.h);
 
     state.workers.enqueueThumbWrite(state.allocator, state.io, .{
         .surface = surf,
@@ -950,7 +952,7 @@ test "drainWorkerEvents - dimensions_probed sets dimensions and clears has_threa
 
     const entry = state.cache.get(state.cache.activeKey(id0)).?;
     try std.testing.expectEqual(
-        state_pkg.PhysicalDims{ .w = 1920.0, .h = 1080.0 },
+        PhysicalDims{ .w = 1920.0, .h = 1080.0 },
         entry.metadata.full_dims.?,
     );
     try std.testing.expect(!entry.inflight.?.has_thread);
@@ -1193,7 +1195,7 @@ test "drainWorkerEvents - monotonic full_dims on pair promotion" {
     });
     try std.testing.expect(drainWorkerEvents(&state));
     try std.testing.expectEqual(
-        state_pkg.PhysicalDims{ .w = 1616, .h = 1080 },
+        PhysicalDims{ .w = 1616, .h = 1080 },
         entry0.metadata.full_dims.?,
     );
     try std.testing.expect(entry0.metadata.raw_metadata.isRaw());
@@ -1223,7 +1225,7 @@ test "drainWorkerEvents - monotonic full_dims on pair promotion" {
     });
     try std.testing.expect(drainWorkerEvents(&state));
     try std.testing.expectEqual(
-        state_pkg.PhysicalDims{ .w = 6000, .h = 4000 },
+        PhysicalDims{ .w = 6000, .h = 4000 },
         entry0.metadata.full_dims.?,
     );
     try std.testing.expect(!entry0.metadata.raw_metadata.isRaw());
@@ -1256,7 +1258,7 @@ test "drainWorkerEvents - monotonic full_dims on pair promotion" {
     });
     try std.testing.expect(drainWorkerEvents(&state));
     try std.testing.expectEqual(
-        state_pkg.PhysicalDims{ .w = 6000, .h = 4000 },
+        PhysicalDims{ .w = 6000, .h = 4000 },
         entry0.metadata.full_dims.?,
     );
     try std.testing.expect(entry0.metadata.raw_metadata.isRaw());
@@ -1544,7 +1546,7 @@ test "drainWorkerEvents - ignores thumb_decoded when slot is already loaded" {
     try std.testing.expect(drainWorkerEvents(&state));
     // Metadata updates while thumbnail stays .unloaded and surface is freed
     try std.testing.expectEqual(
-        state_pkg.PhysicalDims{ .w = 6000.0, .h = 4000.0 },
+        PhysicalDims{ .w = 6000.0, .h = 4000.0 },
         entry.metadata.full_dims.?,
     );
     try std.testing.expectEqual(

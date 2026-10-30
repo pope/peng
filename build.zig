@@ -168,11 +168,18 @@ pub fn build(b: *std.Build) void {
     }
     sdl_module.addImport("sdl_c", translate_sdl.createModule());
 
+    const geom_module = b.createModule(.{
+        .root_source_file = b.path("src/geom/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const probe_module = b.createModule(.{
         .root_source_file = b.path("src/probe/root.zig"),
         .target = target,
         .optimize = optimize,
     });
+    probe_module.addImport("geom", geom_module);
 
     const vfs_module = b.createModule(.{
         .root_source_file = b.path("src/vfs/root.zig"),
@@ -199,6 +206,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    thumbcache_module.addImport("geom", geom_module);
     thumbcache_module.addImport("probe", probe_module);
     thumbcache_module.addImport("vfs", vfs_module);
 
@@ -234,6 +242,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    state_module.addImport("geom", geom_module);
     state_module.addImport("intents", intents_module);
     state_module.addImport("palette", palette_module);
     state_module.addImport("triage", triage_module);
@@ -253,6 +262,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    ipc_module.addImport("geom", geom_module);
     ipc_module.addImport("intents", intents_module);
     ipc_module.addImport("triage", triage_module);
 
@@ -261,6 +271,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    core_module.addImport("geom", geom_module);
     core_module.addImport("ipc", ipc_module);
     core_module.addImport("probe", probe_module);
     core_module.addImport("sdl", sdl_module);
@@ -274,10 +285,12 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    gpu_module.addImport("geom", geom_module);
     gpu_module.addImport("sdl", sdl_module);
     gpu_module.addImport("state", state_module);
 
     app_module.addImport("core", core_module);
+    app_module.addImport("geom", geom_module);
     app_module.addImport("gpu", gpu_module);
     app_module.addImport("input", input_module);
     app_module.addImport("intents", intents_module);
@@ -292,6 +305,7 @@ pub fn build(b: *std.Build) void {
     app_module.addImport("vfs", vfs_module);
 
     ui_module.addImport("core", core_module);
+    ui_module.addImport("geom", geom_module);
     ui_module.addImport("gpu", gpu_module);
     ui_module.addImport("intents", intents_module);
     ui_module.addImport("palette", palette_module);
@@ -443,6 +457,12 @@ pub fn build(b: *std.Build) void {
     const run_core_tests = b.addRunArtifact(core_tests);
     run_core_tests.setCwd(b.path("."));
 
+    const geom_tests = b.addTest(.{
+        .root_module = geom_module,
+    });
+    const run_geom_tests = b.addRunArtifact(geom_tests);
+    run_geom_tests.setCwd(b.path("."));
+
     const probe_tests = b.addTest(.{
         .root_module = probe_module,
     });
@@ -487,6 +507,7 @@ pub fn build(b: *std.Build) void {
             run_state_tests,
             run_core_tests,
             run_probe_tests,
+            run_geom_tests,
             run_thumbcache_tests,
             run_triage_tests,
             run_palette_tests,
@@ -512,6 +533,12 @@ pub fn build(b: *std.Build) void {
 
     const test_gpu_step = b.step("test-gpu", "Run gpu tests");
     test_gpu_step.dependOn(&run_gpu_tests.step);
+
+    const test_geom_step = b.step(
+        "test-geom",
+        "Run geom module unit tests",
+    );
+    test_geom_step.dependOn(&run_geom_tests.step);
 
     const test_probe_step = b.step("test-probe", "Run probe tests");
     test_probe_step.dependOn(&run_probe_tests.step);
@@ -548,6 +575,7 @@ pub fn build(b: *std.Build) void {
     test_unit_step.dependOn(&run_gpu_tests.step);
     test_unit_step.dependOn(&run_state_tests.step);
     test_unit_step.dependOn(&run_core_tests.step);
+    test_unit_step.dependOn(&run_geom_tests.step);
     test_unit_step.dependOn(&run_probe_tests.step);
     test_unit_step.dependOn(&run_thumbcache_tests.step);
     test_unit_step.dependOn(&run_palette_tests.step);
@@ -571,6 +599,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_gpu_tests.step);
     test_step.dependOn(&run_state_tests.step);
     test_step.dependOn(&run_core_tests.step);
+    test_step.dependOn(&run_geom_tests.step);
     test_step.dependOn(&run_probe_tests.step);
     test_step.dependOn(&run_thumbcache_tests.step);
     test_step.dependOn(&run_palette_tests.step);

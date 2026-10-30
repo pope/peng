@@ -1,4 +1,5 @@
 const core = @import("core");
+const geom = @import("geom");
 const gpu = @import("gpu");
 const input = @import("input");
 const intents = @import("intents");
@@ -15,7 +16,6 @@ const AppIntent = intents.AppIntent;
 const CacheEntry = image.CacheEntry;
 const DisplayState = core.display.DisplayState;
 const events = core.events;
-const FrameInput = state_pkg.FrameInput;
 const getParentDirBuf = vfs.getParentDirBuf;
 const image = core.image;
 const ImageCache = image.ImageCache;
@@ -23,6 +23,7 @@ const ImageCacheKey = image.ImageCacheKey;
 const isCbzFile = vfs.isCbzFile;
 const MediaEntry = vfs.MediaEntry;
 const PaletteMode = intents.PaletteMode;
+const PhysicalDims = geom.PhysicalDims;
 const startTextInput = core.display.startTextInput;
 const stopTextInput = core.display.stopTextInput;
 const ThumbCacheConfig = thumbcache.ThumbCacheConfig;
@@ -415,7 +416,7 @@ pub const AppState = struct {
 
     /// Computes available viewport dimensions in physical framebuffer pixels,
     /// scaling for display DPI, Clay debug view, and docked edit panel.
-    pub fn getViewportPixelDims(self: *AppState) state_pkg.PhysicalDims {
+    pub fn getViewportPixelDims(self: *AppState) PhysicalDims {
         var win_w: f32 = 1024.0;
         var win_h: f32 = 768.0;
         var scale_x: f32 = 1.0;

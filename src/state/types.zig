@@ -1,3 +1,4 @@
+const geom = @import("geom");
 const intents = @import("intents");
 const std = @import("std");
 const triage = @import("triage");
@@ -5,13 +6,13 @@ const viewport = @import("viewport.zig");
 
 const Classification = triage.Classification;
 const DirectionFlags = viewport.DirectionFlags;
-const DpiScale = viewport.DpiScale;
+const DpiScale = geom.DpiScale;
 const EditParam = intents.EditParam;
 const Key = intents.Key;
 const KeyModifiers = intents.KeyModifiers;
-const LogicalDims = viewport.LogicalDims;
-const LogicalPoint = viewport.LogicalPoint;
-const PhysicalPoint = viewport.PhysicalPoint;
+const LogicalDims = geom.LogicalDims;
+const LogicalPoint = geom.LogicalPoint;
+const PhysicalPoint = geom.PhysicalPoint;
 const ViewMode = triage.ViewMode;
 const ZoomFlags = viewport.ZoomFlags;
 

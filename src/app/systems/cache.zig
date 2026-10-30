@@ -9,7 +9,6 @@ const std = @import("std");
 const vfs = @import("vfs");
 
 const AppState = app_state.AppState;
-const CacheEntry = image.CacheEntry;
 const DecodeArgs = decode_mod.DecodeArgs;
 const FrameContext = context.FrameContext;
 const image = core.image;
@@ -119,7 +118,7 @@ fn probeActiveSlotMetadata(
     {
         const entry = state.cache.get(key) orelse return;
         entry.applyProbedMetadata(
-            state_pkg.PhysicalDims.initPositive(meta.dims.w, meta.dims.h),
+            meta.dims,
             meta.orientation,
             meta.raw_metadata,
         );

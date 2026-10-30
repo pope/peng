@@ -5,6 +5,7 @@
 
 const context = @import("context.zig");
 const core = @import("core");
+const geom = @import("geom");
 const probe = @import("probe");
 const sdl = @import("sdl");
 const state_pkg = @import("state");
@@ -15,6 +16,7 @@ const EnabledThumbCacheConfig = thumbcache.EnabledThumbCacheConfig;
 const encodeBytesToThumbnailPng = core.thumbcache.encodeBytesToThumbnailPng;
 const events = core.events;
 const hasValidTargetTierThumbnail = thumbcache.hasValidTargetTierThumbnail;
+const PhysicalDims = geom.PhysicalDims;
 const PrecacheCancel = thumbcache.PrecacheCancel;
 const precacheFileThumbnail = thumbcache.precacheFileThumbnail;
 const ThumbCacheConfig = thumbcache.ThumbCacheConfig;
@@ -31,7 +33,7 @@ pub const ThumbWriteJob = struct {
     file_size: u64,
     mtime_sec: i64,
     orientation: probe.Orientation,
-    source_dims: ?state_pkg.PhysicalDims = null,
+    source_dims: ?PhysicalDims = null,
 
     /// Releases the owned SDL surface and source path string.
     pub fn deinit(self: *ThumbWriteJob, allocator: std.mem.Allocator) void {
@@ -272,14 +274,10 @@ pub const WorkerManager = struct {
                         continue;
                     }
 
-                    const meta_dims: ?probe.PositiveDimsU32 =
-                        if (job.source_dims) |d|
-                            if (d.toPositiveU32()) |p|
-                                .{ .w = p.w, .h = p.h }
-                            else
-                                null
-                        else
-                            null;
+                    const meta_dims = if (job.source_dims) |d|
+                        d.toPositiveU32()
+                    else
+                        null;
                     if (writeThumbnailPng(
                         scratch_arena.allocator(),
                         io,

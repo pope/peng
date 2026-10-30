@@ -1,13 +1,14 @@
+const geom = @import("geom");
 const geometry = @import("geometry.zig");
 const sdl = @import("sdl");
 const state = @import("state");
 const std = @import("std");
 
-const FRect = geometry.FRect;
+const FRect = geom.FRect;
 const packRgba = geometry.packRgba;
-const PhysicalDims = state.PhysicalDims;
-const Rect = geometry.Rect;
-const UvRect = state.UvRect;
+const PhysicalDims = geom.PhysicalDims;
+const Rect = geom.Rect;
+const UvRect = geom.UvRect;
 const Vertex = geometry.Vertex;
 const ViewportParams = state.ViewportParams;
 

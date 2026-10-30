@@ -1,11 +1,13 @@
 const app_state = @import("../state.zig");
 const context = @import("context.zig");
+const geom = @import("geom");
 const state_pkg = @import("state");
 const std = @import("std");
 const ui = @import("ui");
 
 const AppState = app_state.AppState;
 const FrameContext = context.FrameContext;
+const LogicalPoint = geom.LogicalPoint;
 
 /// System Pass: Viewport input processing (Mouse Drag & Scroll-Zoom at Cursor)
 pub fn sysUpdateViewport(
@@ -164,7 +166,7 @@ pub fn sysUpdateViewport(
 
             const scale = input.dpiScale();
             const focus = if (has_pinch)
-                (state_pkg.LogicalPoint{
+                (LogicalPoint{
                     .x = input.pinch_center_x,
                     .y = input.pinch_center_y,
                 }).toPhysical(scale)

@@ -1,4 +1,8 @@
+const geom = @import("geom");
 const std = @import("std");
+
+const PhysicalDims = geom.PhysicalDims;
+const PositiveDimsU32 = geom.PositiveDimsU32;
 
 /// 4-state orthogonal image orientation enum (0°, 90°, 180°, 270°).
 ///
@@ -34,33 +38,6 @@ pub const Orientation = enum(u2) {
     }
 };
 
-/// Image pixel dimensions (width and height) in floating-point pixels.
-pub const ImageDimensions = struct {
-    w: f32,
-    h: f32,
-};
-
-/// Strictly positive (`>= 1`) integer 2D pixel dimensions (`w x h`).
-pub const PositiveDimsU32 = struct {
-    w: u32 = 800,
-    h: u32 = 600,
-
-    /// Constructs `PositiveDimsU32` when both `w_i` and `h_i` are strictly
-    /// positive (`> 0`), clamping each axis to `max_dim`, or returns `null`.
-    pub inline fn initClamped(
-        w_i: i64,
-        h_i: i64,
-        max_dim: u32,
-    ) ?PositiveDimsU32 {
-        if (w_i <= 0 or h_i <= 0 or max_dim == 0) return null;
-        const max_i64: i64 = @intCast(max_dim);
-        return .{
-            .w = @intCast(@min(w_i, max_i64)),
-            .h = @intCast(@min(h_i, max_i64)),
-        };
-    }
-};
-
 /// RAW camera sensor metadata variant eliminating impossible states
 /// (e.g. RAW flag without valid dimensions).
 pub const RawMetadata = union(enum) {
@@ -89,7 +66,7 @@ pub const RawMetadata = union(enum) {
 
     /// Returns true sensor dimensions if RAW, or `null` if standard media
     /// format.
-    pub inline fn getSensorDims(self: RawMetadata) ?ImageDimensions {
+    pub inline fn getSensorDims(self: RawMetadata) ?PhysicalDims {
         return switch (self) {
             .raw => |r| if (r.sensor_w > 0.0 and r.sensor_h > 0.0)
                 .{ .w = r.sensor_w, .h = r.sensor_h }
@@ -103,7 +80,7 @@ pub const RawMetadata = union(enum) {
 /// Container metadata discovered synchronously by probing file headers
 /// on the main thread (< 0.1ms).
 pub const ProbedImageMetadata = struct {
-    dims: ImageDimensions,
+    dims: PhysicalDims,
     /// Image orientation metadata.
     orientation: Orientation = .normal,
     raw_metadata: RawMetadata = .none,
@@ -237,7 +214,7 @@ pub fn skipZipLocalFileHeader(buf: []const u8) ?[]const u8 {
 pub fn parseImageDimensions(
     header: []const u8,
     mime_type: []const u8,
-) ?ImageDimensions {
+) ?PhysicalDims {
     if (isFujiRafHeader(header, mime_type)) {
         if (extractFujiRafMetadataLocation(header)) |meta_loc| {
             if (meta_loc.file_offset +| meta_loc.length <= header.len) {
@@ -828,12 +805,12 @@ fn extractDngPrivatePreview(
 
 /// Parses image pixel dimensions from EXIF TIFF metadata tags (IFD0, ExifIFD,
 /// or SubIFD).
-fn parseExifDimensions(data: []const u8) ?ImageDimensions {
+fn parseExifDimensions(data: []const u8) ?PhysicalDims {
     return parseExifDimensionsFromSource(TiffSource.init(data));
 }
 
 /// Parses image pixel dimensions from a segmented TiffSource.
-fn parseExifDimensionsFromSource(source: TiffSource) ?ImageDimensions {
+fn parseExifDimensionsFromSource(source: TiffSource) ?PhysicalDims {
     const header = findTiffPayloadFromSource(source) orelse return null;
     const is_le = header.is_le;
     const ifd0_off = header.ifd0_off;
@@ -1011,7 +988,7 @@ fn parseExifDimensionsFromSource(source: TiffSource) ?ImageDimensions {
     }
 
     if (best_w != null and best_h != null) {
-        return ImageDimensions{
+        return PhysicalDims{
             .w = @floatFromInt(best_w.?),
             .h = @floatFromInt(best_h.?),
         };
@@ -1021,7 +998,7 @@ fn parseExifDimensionsFromSource(source: TiffSource) ?ImageDimensions {
 
 /// Reads image dimensions from EXIF metadata or scans JPEG Start-of-Frame
 /// (SOF) markers.
-fn readJpegDimensions(data: []const u8) ?ImageDimensions {
+fn readJpegDimensions(data: []const u8) ?PhysicalDims {
     if (parseExifDimensions(data)) |dims| return dims;
     if (data.len < 4) return null;
     if (data[0] != 0xFF or data[1] != 0xD8) return null;
@@ -1612,14 +1589,14 @@ fn extractFujiRafMetadataLocation(
 
 /// Parses full camera sensor dimensions from the Fujifilm RAF metadata
 /// records block.
-fn parseFujiRafDimensions(meta_bytes: []const u8) ?ImageDimensions {
+fn parseFujiRafDimensions(meta_bytes: []const u8) ?PhysicalDims {
     if (meta_bytes.len < 4) return null;
     const num_records = std.mem.readInt(u32, meta_bytes[0..4], .big);
     var pos: usize = 4;
 
-    var cropped_size: ?ImageDimensions = null;
-    var image_size: ?ImageDimensions = null;
-    var full_size: ?ImageDimensions = null;
+    var cropped_size: ?PhysicalDims = null;
+    var image_size: ?PhysicalDims = null;
+    var full_size: ?PhysicalDims = null;
 
     var i: usize = 0;
     while (i < num_records) : (i += 1) {
@@ -1640,7 +1617,7 @@ fn parseFujiRafDimensions(meta_bytes: []const u8) ?ImageDimensions {
             const h = std.mem.readInt(u16, tag_data[0..2], .big);
             const w = std.mem.readInt(u16, tag_data[2..4], .big);
             if (w > 0 and h > 0) {
-                const dims = ImageDimensions{
+                const dims = PhysicalDims{
                     .w = @floatFromInt(w),
                     .h = @floatFromInt(h),
                 };
@@ -1664,7 +1641,7 @@ pub const RawHeaderProbe = struct {
     preview: ?ThumbnailLocation = null,
     medium: ?ThumbnailLocation = null,
     thumbnail: ?ThumbnailLocation = null,
-    sensor_dims: ?ImageDimensions = null,
+    sensor_dims: ?PhysicalDims = null,
     orientation: Orientation = .normal,
 
     /// Returns true when any embedded preview or thumbnail bitstream was
@@ -2002,7 +1979,7 @@ pub fn probeFileHeaderMetadata(
     if (n == 0) return null;
 
     const mime_type = detectMimeType(header_buf[0..n], path);
-    var dims: ?ImageDimensions = null;
+    var dims: ?PhysicalDims = null;
     var rot: Orientation = .normal;
     var has_thumb = false;
 
@@ -4103,30 +4080,6 @@ test "probeRawFileHeader - Fuji RAF and TIFF RAW file streaming" {
     try std.testing.expectEqual(@as(f32, 5304.0), tiff_res.sensor_dims.?.h);
     try std.testing.expectEqual(@as(u64, 1000), tiff_res.preview.?.file_offset);
     try std.testing.expectEqual(@as(u32, 120000), tiff_res.preview.?.length);
-}
-
-test "PositiveDimsU32.initClamped" {
-    // Valid dimensions within max_dim
-    const valid = PositiveDimsU32.initClamped(800, 600, 4096);
-    try std.testing.expect(valid != null);
-    try std.testing.expectEqual(@as(u32, 800), valid.?.w);
-    try std.testing.expectEqual(@as(u32, 600), valid.?.h);
-
-    // Clamping at max_dim
-    const clamped = PositiveDimsU32.initClamped(5000, 3000, 4096);
-    try std.testing.expect(clamped != null);
-    try std.testing.expectEqual(@as(u32, 4096), clamped.?.w);
-    try std.testing.expectEqual(@as(u32, 3000), clamped.?.h);
-
-    // Non-positive (<= 0) dimensions returning null
-    try std.testing.expect(PositiveDimsU32.initClamped(0, 600, 4096) == null);
-    try std.testing.expect(PositiveDimsU32.initClamped(800, 0, 4096) == null);
-    try std.testing.expect(PositiveDimsU32.initClamped(-10, 600, 4096) == null);
-    try std.testing.expect(PositiveDimsU32.initClamped(800, -5, 4096) == null);
-    try std.testing.expect(PositiveDimsU32.initClamped(-1, -1, 4096) == null);
-
-    // max_dim == 0 returning null
-    try std.testing.expect(PositiveDimsU32.initClamped(800, 600, 0) == null);
 }
 
 test "RawMetadata tagged union invariants and constructor" {

@@ -1,4 +1,5 @@
 const clay = @import("zclay");
+const geom = @import("geom");
 const gpu_pkg = @import("gpu");
 const state = @import("state");
 const std = @import("std");
@@ -7,18 +8,19 @@ const theme = @import("theme.zig");
 const addBatch = gpu_pkg.pass.addBatch;
 const BatchItem = gpu_pkg.render_image.BatchItem;
 const ElementTag = state.ElementTag;
-const FRect = gpu_pkg.geometry.FRect;
+const FRect = geom.FRect;
 const geometry = gpu_pkg.geometry;
 const getOrRenderCachedText = gpu_pkg.pass.getOrRenderCachedText;
 const intersectScissor = gpu_pkg.pass.intersectScissor;
 const isScissorInvisible = gpu_pkg.pass.isScissorInvisible;
 const PacketBuildContext = gpu_pkg.pass.PacketBuildContext;
 const packRgba = gpu_pkg.geometry.packRgba;
-const PhysicalDims = state.PhysicalDims;
-const Rect = gpu_pkg.geometry.Rect;
+const PhysicalDims = geom.PhysicalDims;
+const Rect = geom.Rect;
 const render_image = gpu_pkg.render_image;
 const RenderPacket = gpu_pkg.pass.RenderPacket;
 const RenderResources = gpu_pkg.graphics.RenderResources;
+const UvRect = geom.UvRect;
 const Vertex = gpu_pkg.geometry.Vertex;
 const ViewportParams = state.ViewportParams;
 
@@ -612,9 +614,9 @@ fn buildGeometryFromCommands(
             .image => {
                 prev_text_bb = null;
                 const uv_rect = if (rcmd.user_data) |ptr|
-                    @as(*const state.UvRect, @ptrCast(@alignCast(ptr))).*
+                    @as(*const UvRect, @ptrCast(@alignCast(ptr))).*
                 else
-                    state.UvRect{};
+                    UvRect{};
 
                 try render_image.appendImageCommand(
                     vertices,

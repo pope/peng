@@ -35,7 +35,7 @@ ______________________________________________________________________
 
 ## Viewport Panning & Mouse Input Coordinate Space Rules
 
-- **Coordinate Space Wrappers (`src/state/viewport.zig`)**:
+- **Coordinate Space Wrappers (`src/geom/root.zig`)**:
   Use `LogicalDims` / `LogicalPoint` for Clay layout and window points,
   `PhysicalDims` / `PhysicalPoint` / `PositiveDimsU32` for GPU framebuffer and
   texture pixels (`PhysicalDims.initPositive(w, h)`,

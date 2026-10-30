@@ -30,8 +30,12 @@
 ## 2. Package Hierarchy, App-Private Core & Build Graph
 
 - **Top-Level Package Isolation (`src/`)**:
-  - `src/probe/`: Pure header dimension, MIME, and EXIF parsers (standalone,
-    zero module imports).
+  - `src/geom/`: Pure geometric primitives (`PositiveDimsU32`, `DpiScale`,
+    `LogicalDims`, `PhysicalDims`, `LogicalPoint`, `PhysicalPoint`, `Rect`,
+    `FRect`, `FPoint`, `UvRect`). Standalone leaf module (zero imports outside
+    `std`, tested via `zig build test-geom`).
+  - `src/probe/`: Pure header dimension, MIME, and EXIF parsers (imports
+    `geom`; zero SDL/Clay).
   - `src/vfs/`: Pure filesystem scanning, CBZ ZIP central-directory seeking,
     media entry models, and RAW+JPEG pair consolidation (zero SDL3/Clay
     linkage).
@@ -42,7 +46,8 @@
     (`fuzzig`), and directory navigation history (zero SDL/Clay).
   - `src/thumbcache/`: Pure Freedesktop Shared Thumbnail Cache specification,
     RFC 3986 URI encoding, MD5 hashing, PNG `tEXt` chunk parsing and splicing,
-    and atomic PNG writing (imports `probe`, `vfs`; zero `intents`, SDL/Clay).
+    and atomic PNG writing (imports `geom`, `probe`, `vfs`; zero `intents`,
+    SDL/Clay).
   - `src/intents/`: Pure `AppIntent` variants, `ActionDef` registry
     (`actions.zig`), and intent payload structs (imports `triage`).
   - `src/input/`: Pure `FrameInput` event polling and shortcut mapping.
@@ -72,9 +77,9 @@
 - **Engine Core (`src/core/`)**:
   - State-free utilities (`display.zig`, `events.zig`, `image.zig`,
     `thumbcache.zig`) live in `src/core/`.
-  - **Acyclic Dependency Invariant**: Pure modules (`probe`, `vfs`, `triage`,
-    `palette`, `thumbcache`, `intents`, `input`, `ipc`, `state`, `config`,
-    `core`, `gpu`) MUST NOT import `AppState`, `src/app/systems/`, or
+  - **Acyclic Dependency Invariant**: Pure modules (`geom`, `probe`, `vfs`,
+    `triage`, `palette`, `thumbcache`, `intents`, `input`, `ipc`, `state`,
+    `config`, `core`, `gpu`) MUST NOT import `AppState`, `src/app/systems/`, or
     `src/app/workers/`. Never cross module boundaries via relative file paths
     (e.g. `@import("probe/root.zig")` from `src/main.zig`); always use canonical
     module namespace (`@import("probe")`).
@@ -100,9 +105,11 @@
     `peng-test-runner` (`src/test_runner_main.zig`).
   - Build & Test Commands:
     - `zig build`: Build application binaries.
-    - `zig build test-unit`: Run fast unit tests across all 15 module test
-      targets (`probe`, `vfs`, `triage`, `palette`, `sdl`, `gpu`, `state`,
-      `core`, `app`, `ui`, `intents`, `config`, `input`, `ipc`, `thumbcache`).
+    - `zig build test-unit`: Run fast unit tests across all 16 module test
+      targets (`geom`, `probe`, `vfs`, `triage`, `palette`, `sdl`, `gpu`,
+      `state`, `core`, `app`, `ui`, `intents`, `config`, `input`, `ipc`,
+      `thumbcache`).
+    - `zig build test-geom`: Run `geom` (`src/geom/root.zig`) unit tests.
     - `zig build test-probe`: Run `probe` (`src/probe/root.zig`) unit tests.
     - `zig build test-gpu`: Run `gpu` (`src/gpu/root.zig`) unit tests.
     - `zig build test-state`: Run `state` (`src/state/root.zig`) unit tests.

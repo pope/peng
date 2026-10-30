@@ -1,4 +1,5 @@
 const builtin = @import("builtin");
+const geom = @import("geom");
 const image = @import("image.zig");
 const ipc = @import("ipc");
 const probe = @import("probe");
@@ -12,6 +13,7 @@ const ImageCacheKey = image.ImageCacheKey;
 const MediaEntry = vfs.MediaEntry;
 const MediaId = vfs.MediaId;
 const Orientation = probe.Orientation;
+const PhysicalDims = geom.PhysicalDims;
 const RawMetadata = probe.RawMetadata;
 const ThumbnailSource = state_pkg.ThumbnailSource;
 
@@ -125,7 +127,7 @@ pub const ExifParsedPayload = struct {
 /// Payload carrying dimension and metadata probed from file header when
 /// no embedded thumbnail exists.
 pub const DimensionsProbedPayload = struct {
-    source_dims: ?state_pkg.PhysicalDims = null,
+    source_dims: ?PhysicalDims = null,
     orientation: Orientation,
     thumb_only: bool = true,
     raw_metadata: RawMetadata = .none,
@@ -137,7 +139,7 @@ pub const ThumbDecodedPayload = struct {
     surface: sdl.Surface,
     w: f32,
     h: f32,
-    source_dims: ?state_pkg.PhysicalDims = null,
+    source_dims: ?PhysicalDims = null,
     orientation: Orientation,
     thumb_only: bool = false,
     raw_metadata: RawMetadata = .none,
@@ -151,7 +153,7 @@ pub const ImageDecodedPayload = struct {
     surface: ?sdl.Surface,
     w: f32,
     h: f32,
-    source_dims: ?state_pkg.PhysicalDims = null,
+    source_dims: ?PhysicalDims = null,
     mime_type: []const u8,
     size_bytes: u64,
     orientation: Orientation,

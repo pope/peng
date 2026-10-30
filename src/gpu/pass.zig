@@ -6,6 +6,7 @@
 //! INVARIANT: Code in `src/gpu/pass.zig` MUST NOT depend on zclay, `src/ui/`,
 //! `src/core/`, or `src/app/`.
 
+const geom = @import("geom");
 const geometry = @import("geometry.zig");
 const graphics = @import("graphics.zig");
 const render_image = @import("render_image.zig");
@@ -17,12 +18,12 @@ const text_cache = @import("text_cache.zig");
 const BatchItem = render_image.BatchItem;
 const BlurResources = graphics.BlurResources;
 const BlurUniforms = graphics.BlurUniforms;
-const DpiScale = state.DpiScale;
+const DpiScale = geom.DpiScale;
 const ImageUniforms = render_image.ImageUniforms;
 const MaterialType = render_image.MaterialType;
-const PhysicalDims = state.PhysicalDims;
-const PositiveDimsU32 = state.PositiveDimsU32;
-const Rect = geometry.Rect;
+const PhysicalDims = geom.PhysicalDims;
+const PositiveDimsU32 = geom.PositiveDimsU32;
+const Rect = geom.Rect;
 const RenderResources = graphics.RenderResources;
 const saveTextureToPng = graphics.saveTextureToPng;
 const TextCacheKey = text_cache.TextCacheKey;

@@ -8,6 +8,7 @@
 //! module.
 
 const clay = @import("zclay");
+const geom = @import("geom");
 const intents = @import("intents");
 const palette_pkg = @import("palette");
 const state = @import("state");
@@ -18,8 +19,8 @@ const EditParam = intents.EditParam;
 const FrameInput = state.FrameInput;
 const getPaletteConfig = palette_pkg.getPaletteConfig;
 const getSpec = intents.getSpec;
-const LogicalDims = state.LogicalDims;
-const LogicalPoint = state.LogicalPoint;
+const LogicalDims = geom.LogicalDims;
+const LogicalPoint = geom.LogicalPoint;
 const measureText = text_utils.measureText;
 const MeasureTextUserData = text_utils.MeasureTextUserData;
 const PaletteState = palette_pkg.PaletteState;

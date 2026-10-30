@@ -1,6 +1,7 @@
 const clay = @import("zclay");
 const core = @import("core");
 const edit_panel = @import("edit_panel.zig");
+const geom = @import("geom");
 const gpu_pkg = @import("gpu");
 const intents = @import("intents");
 const palette = @import("palette.zig");
@@ -14,13 +15,16 @@ const theme = @import("theme.zig");
 const view_model = @import("view_model.zig");
 
 const CacheEntry = core.image.CacheEntry;
+const DpiScale = geom.DpiScale;
 const ElementTag = state.ElementTag;
 const FrameInput = state.FrameInput;
 const FrameTargetOptions = gpu_pkg.pass.FrameTargetOptions;
+const LogicalDims = geom.LogicalDims;
 const MeasureTextUserData = text_utils.MeasureTextUserData;
 const measureText = text_utils.measureText;
 const PacketBuildContext = gpu_pkg.pass.PacketBuildContext;
 const PaletteState = palette_pkg.PaletteState;
+const PhysicalDims = geom.PhysicalDims;
 const renderEditPanel = edit_panel.renderEditPanel;
 const renderPalette = palette.renderPalette;
 const RenderPacket = gpu_pkg.pass.RenderPacket;
@@ -28,6 +32,7 @@ const RenderResources = gpu_pkg.graphics.RenderResources;
 const renderStatsOverlay = stats.renderStatsOverlay;
 const truncateFilename = text_utils.truncateFilename;
 const UiViewModel = view_model.UiViewModel;
+const UvRect = geom.UvRect;
 const view_transform = state.view_transform;
 
 /// Computes fitted layout dimensions in logical UI points (`LogicalDims`) for
@@ -35,11 +40,11 @@ const view_transform = state.view_transform;
 /// preset fit modes in physical framebuffer space via `scale`.
 pub fn computeDrawDims(
     entry_opt: ?CacheEntry,
-    available_dims: state.LogicalDims,
-    scale: state.DpiScale,
+    available_dims: LogicalDims,
+    scale: DpiScale,
     rotation_angle: f32,
     fit_mode: intents.ZoomPreset,
-) state.LogicalDims {
+) LogicalDims {
     const entry = entry_opt orelse return .{ .w = 0, .h = 0 };
     const auth = entry.getAuthoritativeDims();
 
@@ -99,7 +104,7 @@ pub fn renderFrame(
     const available_width = @max(main_layout_w - docked_w, 1.0);
 
     const padding: f32 = 0.0;
-    const view_dims = state.LogicalDims{
+    const view_dims = LogicalDims{
         .w = @max(available_width - padding * 2.0, 1.0),
         .h = @max(height - padding * 2.0, 1.0),
     };
@@ -698,17 +703,17 @@ fn formatLoadingText(
 fn buildThumbnailUvRect(
     entry: CacheEntry,
     thumb_info: state.ThumbnailInfo,
-    auth: state.PhysicalDims,
+    auth: PhysicalDims,
     rotation_angle: f32,
-) state.UvRect {
+) UvRect {
     const pre_oriented = thumb_info.source.isPreOriented();
     const swapped = pre_oriented and
         entry.metadata.orientation.isDimensionSwapped();
-    const ref_full: state.PhysicalDims = if (entry.metadata.full_dims) |fd|
+    const ref_full: PhysicalDims = if (entry.metadata.full_dims) |fd|
         (if (swapped) .{ .w = fd.h, .h = fd.w } else fd)
     else
         .{ .w = 0.0, .h = 0.0 };
-    var uv = state.computeThumbnailUvCrop(
+    var uv = view_transform.computeThumbnailUvCrop(
         ref_full,
         .{ .w = thumb_info.w, .h = thumb_info.h },
         thumb_info.dct_snapped,
@@ -729,7 +734,7 @@ fn buildThumbnailUvRect(
 fn renderImageCanvas(
     ui_model: UiViewModel,
     entry: CacheEntry,
-    draw_dims: state.LogicalDims,
+    draw_dims: LogicalDims,
     view_w: f32,
     rotation_angle: f32,
     frame_allocator: std.mem.Allocator,
@@ -754,7 +759,7 @@ fn renderImageCanvas(
             auth,
             rotation_angle,
         );
-        const thumb_uv_ptr = frame_allocator.create(state.UvRect) catch |err|
+        const thumb_uv_ptr = frame_allocator.create(UvRect) catch |err|
             blk: {
                 std.log.warn(
                     "Failed to allocate UvRect for thumbnail underlay: {any}",
@@ -806,7 +811,7 @@ fn renderImageCanvas(
                     rotation_angle,
                 );
                 const uv_crop_ptr =
-                    frame_allocator.create(state.UvRect) catch |err| blk: {
+                    frame_allocator.create(UvRect) catch |err| blk: {
                         std.log.warn(
                             "Failed to allocate UvRect for thumbnail: {any}",
                             .{err},
@@ -844,7 +849,7 @@ fn renderImageCanvas(
                 ui_model.anim(.thumb_crossfade)
             else
                 1.0;
-            const uv_ptr = frame_allocator.create(state.UvRect) catch |err|
+            const uv_ptr = frame_allocator.create(UvRect) catch |err|
                 blk: {
                     std.log.warn("Failed to allocate UvRect: {any}", .{err});
                     break :blk null;
@@ -989,8 +994,8 @@ fn renderImageCanvas(
 fn renderDissolvePrevQuad(
     ui_model: UiViewModel,
     frame_allocator: std.mem.Allocator,
-    view_dims: state.LogicalDims,
-    scale: state.DpiScale,
+    view_dims: LogicalDims,
+    scale: DpiScale,
 ) void {
     const dissolve = switch (ui_model.image_dissolve) {
         .none => return,
@@ -1014,7 +1019,7 @@ fn renderDissolvePrevQuad(
     const prev_alpha = 1.0 - (progress * progress);
     const prev_tex = gpu.gpu_texture;
 
-    const prev_uv_ptr = frame_allocator.create(state.UvRect) catch |err| blk: {
+    const prev_uv_ptr = frame_allocator.create(UvRect) catch |err| blk: {
         std.log.warn(
             "Failed to allocate UvRect for image dissolve: {any}",
             .{err},
@@ -1062,9 +1067,9 @@ fn renderDissolvePrevQuad(
 fn renderViewport(
     ui_model: UiViewModel,
     current_entry: anytype,
-    draw_dims: state.LogicalDims,
-    view_dims: state.LogicalDims,
-    scale: state.DpiScale,
+    draw_dims: LogicalDims,
+    view_dims: LogicalDims,
+    scale: DpiScale,
     total_images: usize,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
@@ -1211,8 +1216,8 @@ test "computeDrawDims - matches physical DPI scale in shrink and none modes" {
         .metadata = .{ .full_dims = .{ .w = 1200, .h = 900 } },
     };
 
-    const view_dims = state.LogicalDims{ .w = 1000.0, .h = 800.0 };
-    const retina_scale = state.DpiScale.init(2.0, 2.0);
+    const view_dims = LogicalDims{ .w = 1000.0, .h = 800.0 };
+    const retina_scale = DpiScale.init(2.0, 2.0);
 
     // Logical viewport 1000x800 on 2.0x Retina display -> physical 2000x1600.
     // A 1200x900 image fits inside the 2000x1600 physical viewport without

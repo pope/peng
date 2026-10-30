@@ -13,6 +13,7 @@
 //!   decoupled from graphics libraries via `EncodeThumbPngFn`.
 
 const builtin = @import("builtin");
+const geom = @import("geom");
 const probe = @import("probe");
 const std = @import("std");
 const vfs = @import("vfs");
@@ -20,7 +21,7 @@ const vfs = @import("vfs");
 const isImageFile = vfs.isImageFile;
 const isRawFile = vfs.isRawFile;
 const Orientation = probe.Orientation;
-const PositiveDimsU32 = probe.PositiveDimsU32;
+const PositiveDimsU32 = geom.PositiveDimsU32;
 const resolveEntryKind = vfs.resolveEntryKind;
 
 const png_signature = "\x89PNG\r\n\x1a\n";

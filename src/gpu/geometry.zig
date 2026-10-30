@@ -1,29 +1,9 @@
-const state = @import("state");
+const geom = @import("geom");
 const std = @import("std");
 
-const PhysicalDims = state.PhysicalDims;
-
-/// Integer pixel rectangle for scissor clipping and bounds.
-pub const Rect = struct {
-    x: i32,
-    y: i32,
-    w: i32,
-    h: i32,
-};
-
-/// Floating-point pixel rectangle for UI and viewport quad emission.
-pub const FRect = struct {
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-};
-
-/// 2D floating-point coordinate in screen pixels.
-pub const FPoint = struct {
-    x: f32,
-    y: f32,
-};
+const FPoint = geom.FPoint;
+const FRect = geom.FRect;
+const PhysicalDims = geom.PhysicalDims;
 
 const RoundedVertex = struct {
     pos: FPoint,

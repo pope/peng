@@ -3,11 +3,11 @@
 //! Provides hash-based caching and LRU eviction for rendered text textures
 //! to avoid re-rendering static UI labels every frame.
 
+const geom = @import("geom");
 const sdl = @import("sdl");
-const state = @import("state");
 const std = @import("std");
 
-const LogicalDims = state.LogicalDims;
+const LogicalDims = geom.LogicalDims;
 
 /// Measured byte length and pixel width of a prefix fitting within a max width.
 pub const MeasuredPrefix = struct {

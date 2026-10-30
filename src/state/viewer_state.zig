@@ -1,4 +1,5 @@
 const animation_state = @import("animation_state.zig");
+const geom = @import("geom");
 const navigation = @import("navigation.zig");
 const std = @import("std");
 const telemetry = @import("telemetry.zig");
@@ -9,7 +10,7 @@ const viewport = @import("viewport.zig");
 const AnimationState = animation_state.AnimationState;
 const DragState = types.DragState;
 const ImageTransition = types.ImageTransition;
-const LogicalDims = viewport.LogicalDims;
+const LogicalDims = geom.LogicalDims;
 const NavigationState = navigation.NavigationState;
 const PanController = viewport.PanController;
 const UiState = ui_state.UiState;

@@ -1,5 +1,6 @@
 const context = @import("context.zig");
 const core = @import("core");
+const geom = @import("geom");
 const manager = @import("manager.zig");
 const probe = @import("probe");
 const sdl = @import("sdl");
@@ -21,6 +22,7 @@ const loadCachedThumbnail = core.thumbcache.loadCachedThumbnail;
 const MediaEntry = vfs.MediaEntry;
 const MediaId = vfs.MediaId;
 const PairStreamTarget = vfs.PairStreamTarget;
+const PhysicalDims = geom.PhysicalDims;
 const RawMetadata = probe.RawMetadata;
 const readLocationBytes = context.readLocationBytes;
 const readRangePositional = context.readRangePositional;
@@ -112,7 +114,7 @@ fn pushThumbDecoded(
     key: ImageCacheKey,
     job_epoch: u32,
     surface: sdl.Surface,
-    source_dims: ?state_pkg.PhysicalDims,
+    source_dims: ?PhysicalDims,
     orientation: probe.Orientation,
     thumb_only: bool,
     source: ThumbnailSource,
@@ -150,7 +152,7 @@ fn pushDimensionsProbed(
     io: std.Io,
     key: ImageCacheKey,
     job_epoch: u32,
-    source_dims: ?state_pkg.PhysicalDims,
+    source_dims: ?PhysicalDims,
     orientation: probe.Orientation,
     thumb_only: bool,
     raw_metadata: RawMetadata,
@@ -179,7 +181,7 @@ const LoadedThumbnail = struct {
     surface: sdl.Surface,
     source: ThumbnailSource,
     probe_outcome: CacheProbeOutcome = .not_probed,
-    source_dims: ?state_pkg.PhysicalDims = null,
+    source_dims: ?PhysicalDims = null,
 };
 
 const ThumbLoadResult = union(enum) {
@@ -407,7 +409,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
     {
         var thumb_surf: ?sdl.Surface = null;
         var thumb_source: ThumbnailSource = .embedded_header;
-        var cached_dims: ?state_pkg.PhysicalDims = null;
+        var cached_dims: ?PhysicalDims = null;
         const target_loc_opt = raw_probe.selectPlaceholder(
             args.thumb_only,
             file_size,
@@ -476,7 +478,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                 return true;
             }
             const source_dims =
-                state_pkg.PhysicalDims.initPositive(raw_w, raw_h) orelse
+                PhysicalDims.initPositive(raw_w, raw_h) orelse
                 cached_dims;
             const raw_meta = if (source_dims) |sd|
                 RawMetadata.init(sd.w, sd.h)
@@ -511,7 +513,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                 io,
                 key,
                 args.job_epoch,
-                state_pkg.PhysicalDims.initPositive(raw_w, raw_h),
+                PhysicalDims.initPositive(raw_w, raw_h),
                 orientation,
                 true,
                 RawMetadata.init(raw_w, raw_h),
@@ -651,7 +653,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                 .surface = f_surf,
                 .w = orig_w,
                 .h = orig_h,
-                .source_dims = state_pkg.PhysicalDims.initPositive(
+                .source_dims = PhysicalDims.initPositive(
                     final_raw_w,
                     final_raw_h,
                 ),
@@ -1050,7 +1052,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         std.mem.startsWith(u8, mime_type, "image/x-");
 
     var raw_preview_slice: ?[]const u8 = null;
-    var raw_sensor_dims: ?probe.ImageDimensions = null;
+    var raw_sensor_dims: ?PhysicalDims = null;
     var orientation: probe.Orientation = .normal;
 
     if (is_raw_archive) {
@@ -1113,10 +1115,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
                     t_surf.destroy();
                     return;
                 }
-                const source_dims = if (full_dims) |d|
-                    state_pkg.PhysicalDims.initPositive(d.w, d.h)
-                else
-                    loaded_thumb.source_dims;
+                const source_dims = full_dims orelse loaded_thumb.source_dims;
                 pushThumbDecoded(
                     workers,
                     alloc,
@@ -1144,10 +1143,7 @@ pub fn decodeWorker(args: *DecodeArgs) void {
 
     if (args.thumb_only) {
         if (cancel.isCanceled()) return;
-        const source_dims = if (full_dims) |d|
-            state_pkg.PhysicalDims.initPositive(d.w, d.h)
-        else
-            null;
+        const source_dims = full_dims;
         const raw_metadata: RawMetadata = if (is_raw_archive)
             (if (raw_sensor_dims) |d|
                 RawMetadata.init(d.w, d.h)
@@ -1217,10 +1213,8 @@ pub fn decodeWorker(args: *DecodeArgs) void {
     if (final_surface) |f_surf| {
         const orig_w: f32 = @floatFromInt(f_surf.w());
         const orig_h: f32 = @floatFromInt(f_surf.h());
-        const source_dims = if (full_dims) |d|
-            state_pkg.PhysicalDims.initPositive(d.w, d.h)
-        else
-            state_pkg.PhysicalDims.initPositive(unscaled_w, unscaled_h);
+        const source_dims = full_dims orelse
+            PhysicalDims.initPositive(unscaled_w, unscaled_h);
         const raw_metadata: RawMetadata = if (is_raw_archive)
             (if (raw_sensor_dims) |d|
                 RawMetadata.init(d.w, d.h)
@@ -1308,7 +1302,7 @@ test "decodeWorker - thumb_only does not do full decompression on JPEG" {
                 dimensions_probed_seen = true;
                 try std.testing.expect(d.thumb_only);
                 try std.testing.expectEqual(
-                    state_pkg.PhysicalDims{ .w = 1024.0, .h = 682.0 },
+                    PhysicalDims{ .w = 1024.0, .h = 682.0 },
                     d.source_dims.?,
                 );
             },
@@ -1756,7 +1750,7 @@ test "decodeWorker - progressive 3-tier loading for synthetic ARW" {
                     try std.testing.expectEqual(@as(f32, 1024.0), t.w);
                     try std.testing.expectEqual(@as(f32, 576.0), t.h);
                     try std.testing.expectEqual(
-                        state_pkg.PhysicalDims{ .w = 6240.0, .h = 4160.0 },
+                        PhysicalDims{ .w = 6240.0, .h = 4160.0 },
                         t.source_dims.?,
                     );
                 },
@@ -1799,7 +1793,7 @@ test "decodeWorker - progressive 3-tier loading for synthetic ARW" {
                     try std.testing.expectEqual(@as(f32, 1024.0), t.w);
                     try std.testing.expectEqual(@as(f32, 380.0), t.h);
                     try std.testing.expectEqual(
-                        state_pkg.PhysicalDims{ .w = 6240.0, .h = 4160.0 },
+                        PhysicalDims{ .w = 6240.0, .h = 4160.0 },
                         t.source_dims.?,
                     );
                 },
@@ -2176,7 +2170,7 @@ test "decodeWorker - two-stage JPEG read emits header and positional thumbnails 
                     try std.testing.expectEqual(@as(f32, 1024.0), t.w);
                     try std.testing.expectEqual(@as(f32, 576.0), t.h);
                     try std.testing.expectEqual(
-                        state_pkg.PhysicalDims{ .w = 1024.0, .h = 682.0 },
+                        PhysicalDims{ .w = 1024.0, .h = 682.0 },
                         t.source_dims.?,
                     );
                 },

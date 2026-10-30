@@ -1,12 +1,12 @@
 const builtin = @import("builtin");
+const geom = @import("geom");
 const geometry = @import("geometry.zig");
 const sdl = @import("sdl");
-const state = @import("state");
 const std = @import("std");
 const text_cache = @import("text_cache.zig");
 
 const FontMeasurer = text_cache.FontMeasurer;
-const PositiveDimsU32 = state.PositiveDimsU32;
+const PositiveDimsU32 = geom.PositiveDimsU32;
 const TextCache = text_cache.TextCache;
 
 /// Initialized window handle, SDL GPU device, and DPI scale factor.
