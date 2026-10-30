@@ -35,8 +35,13 @@ ______________________________________________________________________
 
 ## Viewport Panning & Mouse Input Coordinate Space Rules
 
-- **Coordinate Space Wrappers (`src/state/types.zig`)**:
-  Use `LogicalDims` / `LogicalPoint` for Clay layout and window points, `PhysicalDims` / `PhysicalPoint` for GPU framebuffer pixels, and `DpiScale` (`FrameInput.dpiScale()`) to convert between spaces (`toPhysical(scale)`, `toLogical(scale)`).
+- **Coordinate Space Wrappers (`src/state/viewport.zig`)**:
+  Use `LogicalDims` / `LogicalPoint` for Clay layout and window points,
+  `PhysicalDims` / `PhysicalPoint` / `PositiveDimsU32` for GPU framebuffer and
+  texture pixels (`PhysicalDims.initPositive(w, h)`,
+  `PhysicalDims.toPositiveU32()`, `PositiveDimsU32.initClamped()`), and
+  `DpiScale` (`FrameInput.dpiScale()`) to convert between spaces
+  (`toPhysical(scale)`, `toLogical(scale)`).
 
 - **Physical Pixel Basis**:
   `ViewportParams.pan_x` and `pan_y` store offsets in **physical framebuffer pixels** to match GPU rasterization space in `appendImageCommand`.

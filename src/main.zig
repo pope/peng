@@ -146,7 +146,7 @@ const AppGraphicsAndState = struct {
     resources: gpu.graphics.RenderResources,
     state: app.state.AppState,
     clay_memory: []u8,
-    clay_context: *ui.interaction.ClayContext,
+    clay_context: ui.interaction.ClayContext,
     measure_data: ui.text_utils.MeasureTextUserData,
     ipc_server: ?*ipc.IpcServer,
 
@@ -329,8 +329,7 @@ const AppGraphicsAndState = struct {
 
         self.clay_context = ui.interaction.initClayContext(
             self.clay_memory,
-            1024,
-            768,
+            .{ .w = 1024, .h = 768 },
         );
 
         // 7. Bind graphics device and window handle to state
@@ -356,7 +355,7 @@ const AppGraphicsAndState = struct {
 fn runMainLoop(ctx: *AppGraphicsAndState) !void {
     // Configure Clay measure text function with a stable pointer to measure_data
     ctx.measure_data = ui.text_utils.MeasureTextUserData{
-        .fonts = ctx.resources.fonts[0..],
+        .measurer = ctx.resources.fontMeasurer(),
         .allocator = ctx.gpa,
     };
     ui.interaction.bindMeasureText(&ctx.measure_data);

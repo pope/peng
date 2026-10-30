@@ -3,16 +3,12 @@ const gpu_pkg = @import("gpu");
 const std = @import("std");
 const theme = @import("theme.zig");
 
-const empty_fonts = gpu_pkg.text_cache.empty_fonts;
-const FontSet = gpu_pkg.text_cache.FontSet;
-const hasPrimaryFont = gpu_pkg.text_cache.hasPrimaryFont;
-const measureFontText = gpu_pkg.text_cache.measureText;
-const measureTextPrefix = gpu_pkg.text_cache.measureTextPrefix;
+const FontMeasurer = gpu_pkg.text_cache.FontMeasurer;
 
 /// User data context passed to Clay text measurement callbacks containing
 /// font handles and debug flags.
 pub const MeasureTextUserData = struct {
-    fonts: FontSet,
+    measurer: FontMeasurer = .empty,
     is_debug_measuring: bool = false,
     allocator: std.mem.Allocator = undefined,
 };
@@ -36,8 +32,7 @@ pub fn measureText(
         target_size *= theme.debug_font_scale;
     }
 
-    const dims = measureFontText(
-        data.fonts,
+    const dims = data.measurer.measure(
         config.font_id,
         target_size,
         clean_text,
@@ -62,14 +57,14 @@ pub fn truncateFilenameMiddle(
     font_size: u16,
     data: *const MeasureTextUserData,
 ) TruncatedFilename {
-    if (!hasPrimaryFont(data.fonts)) return .{
+    if (!data.measurer.hasPrimaryFont()) return .{
         .display = text,
         .head_len = text.len,
         .tail_start_idx = text.len,
     };
     const target_size = @as(f32, @floatFromInt(font_size));
 
-    const size = measureFontText(data.fonts, 0, target_size, text);
+    const size = data.measurer.measure(0, target_size, text);
     if (size.w <= max_w) {
         return .{
             .display = text,
@@ -78,7 +73,7 @@ pub fn truncateFilenameMiddle(
         };
     }
 
-    const dots_size = measureFontText(data.fonts, 0, target_size, "...");
+    const dots_size = data.measurer.measure(0, target_size, "...");
     const available_w = max_w - dots_size.w;
     if (available_w <= 0) return .{
         .display = "...",
@@ -90,7 +85,7 @@ pub fn truncateFilenameMiddle(
 
     var head_len: usize = 0;
     var head_w: f32 = 0.0;
-    if (measureTextPrefix(data.fonts, 0, target_size, text, half_w)) |m| {
+    if (data.measurer.measurePrefix(0, target_size, text, half_w)) |m| {
         head_len = m.len;
         head_w = m.w;
         while (head_len > 0 and head_len < text.len and
@@ -115,7 +110,7 @@ pub fn truncateFilenameMiddle(
         }
 
         const suffix = text[byte_start..];
-        const suf_size = measureFontText(data.fonts, 0, target_size, suffix);
+        const suf_size = data.measurer.measure(0, target_size, suffix);
         if (suf_size.w <= tail_available_w) {
             tail_len = text.len - byte_start;
             low = mid + 1;
@@ -230,7 +225,6 @@ test "formatSize" {
 
 test "truncateFilename fallback without fonts" {
     const data = MeasureTextUserData{
-        .fonts = &empty_fonts,
         .allocator = std.testing.allocator,
     };
     const res = truncateFilename(
@@ -245,7 +239,6 @@ test "truncateFilename fallback without fonts" {
 
 test "truncateDirectory fallback without fonts" {
     const data = MeasureTextUserData{
-        .fonts = &empty_fonts,
         .allocator = std.testing.allocator,
     };
     const res = truncateDirectory(

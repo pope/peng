@@ -236,7 +236,6 @@ pub fn build(b: *std.Build) void {
     });
     state_module.addImport("intents", intents_module);
     state_module.addImport("palette", palette_module);
-    state_module.addImport("probe", probe_module);
     state_module.addImport("triage", triage_module);
     state_module.addImport("vfs", vfs_module);
 
@@ -255,7 +254,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     ipc_module.addImport("intents", intents_module);
-    ipc_module.addImport("probe", probe_module);
     ipc_module.addImport("triage", triage_module);
 
     const core_module = b.createModule(.{
@@ -316,14 +314,9 @@ pub fn build(b: *std.Build) void {
         .linkage = if (hot_reload) .dynamic else .static,
     });
     viewer_lib.root_module.addImport("app", app_module);
-    viewer_lib.root_module.addImport("config", config_module);
     viewer_lib.root_module.addImport("gpu", gpu_module);
     viewer_lib.root_module.addImport("input", input_module);
-    viewer_lib.root_module.addImport("intents", intents_module);
-    viewer_lib.root_module.addImport("ipc", ipc_module);
     viewer_lib.root_module.addImport("sdl", sdl_module);
-    viewer_lib.root_module.addImport("state", state_module);
-    viewer_lib.root_module.addImport("thumbcache", thumbcache_module);
     viewer_lib.root_module.addImport("ui", ui_module);
 
     if (hot_reload) {
@@ -346,8 +339,6 @@ pub fn build(b: *std.Build) void {
     exe.root_module.addImport("config", config_module);
     exe.root_module.addImport("core", core_module);
     exe.root_module.addImport("gpu", gpu_module);
-    exe.root_module.addImport("input", input_module);
-    exe.root_module.addImport("intents", intents_module);
     exe.root_module.addImport("ipc", ipc_module);
     exe.root_module.addImport("sdl", sdl_module);
     exe.root_module.addImport("state", state_module);

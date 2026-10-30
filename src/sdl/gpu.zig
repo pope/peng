@@ -500,8 +500,9 @@ pub const RenderPass = struct {
     }
 
     /// Sets the scissor clipping rectangle for rasterization in this render pass.
-    pub fn setScissor(self: RenderPass, rect: *const c.SDL_Rect) void {
-        c.SDL_SetGPUScissor(self.ptr, rect);
+    pub fn setScissor(self: RenderPass, x: i32, y: i32, w: i32, h: i32) void {
+        const rect = c.SDL_Rect{ .x = x, .y = y, .w = w, .h = h };
+        c.SDL_SetGPUScissor(self.ptr, &rect);
     }
 
     /// Binds texture-sampler pairs to fragment shader binding slots.

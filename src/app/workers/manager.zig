@@ -272,10 +272,14 @@ pub const WorkerManager = struct {
                         continue;
                     }
 
-                    const meta_dims = if (job.source_dims) |d|
-                        d.toPositiveU32()
-                    else
-                        null;
+                    const meta_dims: ?probe.PositiveDimsU32 =
+                        if (job.source_dims) |d|
+                            if (d.toPositiveU32()) |p|
+                                .{ .w = p.w, .h = p.h }
+                            else
+                                null
+                        else
+                            null;
                     if (writeThumbnailPng(
                         scratch_arena.allocator(),
                         io,

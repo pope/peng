@@ -9,8 +9,9 @@
     `src/state/`, or `src/config/`.
 - **Private C Module & Handle Encapsulation**:
   - Keep `c = @import("c.zig")` private to `src/sdl/`. Encapsulate C handles
-    behind type-safe Zig structs with explicit methods rather than exposing raw
-    C pointers in domain code.
+    and geometry behind native Zig structs (`Rect`, `FRect`, `FPoint`, `FColor`,
+    `Vertex`) with explicit methods rather than exposing raw C pointers or
+    re-exporting C structs (`pub const FRect = c.SDL_FRect;` is forbidden).
 - **`extern struct` Handle Wrappers & Hot-Reload Typing**:
   - Any wrapper struct passed by value across `callconv(.c)` boundaries MUST be
     declared `extern struct` (e.g.
@@ -128,8 +129,10 @@
      line; alias extracted symbols (`const AppState = app_state.AppState;`)
      sorted alphabetically by symbol name.
 - **No Proxy Re-Exports or Backward-Compatibility Aliases**:
-  - Do NOT re-export types from unrelated sub-modules (`src/app/root.zig` must
-    not re-export `ipc` or `core` internals).
+  - Never re-export types from dependency modules (`pub const Thing =
+    child_lib.Thing;` across module boundaries is forbidden; only a module's
+    `root.zig` may re-export declarations from its own sibling files within that
+    same module).
   - Do NOT introduce `pub const OldName = NewName;` aliases during refactors;
     update all call sites to the canonical symbol and delete superseded names.
 - **Result Location Initialization Style (`.empty`, `.init(...)`)**:

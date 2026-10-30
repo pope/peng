@@ -9,6 +9,7 @@ const viewport = @import("viewport.zig");
 const AnimationState = animation_state.AnimationState;
 const DragState = types.DragState;
 const ImageTransition = types.ImageTransition;
+const LogicalDims = viewport.LogicalDims;
 const NavigationState = navigation.NavigationState;
 const PanController = viewport.PanController;
 const UiState = ui_state.UiState;
@@ -36,8 +37,7 @@ pub const ViewerState = struct {
     mouse_inside: bool = true,
     pan_controller: PanController = .{},
     zoom_controller: ZoomController = .{},
-    last_win_w: f32 = 0.0,
-    last_win_h: f32 = 0.0,
+    last_win_dims: LogicalDims = .{},
 
     server_mode: bool = false,
     running: bool = true,

@@ -1,10 +1,8 @@
 const builtin = @import("builtin");
 const intents = @import("intents");
-const probe = @import("probe");
 const std = @import("std");
 const triage = @import("triage");
 
-const PositiveDimsU32 = probe.PositiveDimsU32;
 const TextureScaleMode = intents.TextureScaleMode;
 const ViewMode = triage.ViewMode;
 
@@ -216,6 +214,27 @@ pub const StackingAction = enum {
     enable,
     disable,
     toggle,
+};
+
+/// Strictly positive (`>= 1`) integer 2D pixel dimensions (`w x h`).
+pub const PositiveDimsU32 = struct {
+    w: u32 = 800,
+    h: u32 = 600,
+
+    /// Constructs `PositiveDimsU32` when both `w_i` and `h_i` are strictly
+    /// positive (`> 0`), clamping each axis to `max_dim`, or returns `null`.
+    pub inline fn initClamped(
+        w_i: i64,
+        h_i: i64,
+        max_dim: u32,
+    ) ?PositiveDimsU32 {
+        if (w_i <= 0 or h_i <= 0 or max_dim == 0) return null;
+        const max_i64: i64 = @intCast(max_dim);
+        return .{
+            .w = @intCast(@min(w_i, max_i64)),
+            .h = @intCast(@min(h_i, max_i64)),
+        };
+    }
 };
 
 /// Parameters for a terminal Kitty graphics preview request (`preview`).
@@ -952,11 +971,10 @@ pub fn writeErrorLine(writer: *std.Io.Writer, err_name: []const u8) !void {
 pub fn writePreviewLine(
     writer: *std.Io.Writer,
     path: []const u8,
-    w: u32,
-    h: u32,
+    dims: PositiveDimsU32,
 ) !void {
     try std.json.Stringify.value(
-        .{ .ok = true, .path = path, .w = w, .h = h },
+        .{ .ok = true, .path = path, .w = dims.w, .h = dims.h },
         .{},
         writer,
     );
@@ -969,13 +987,12 @@ pub fn respondPreview(
     io: std.Io,
     stream: std.Io.net.Stream,
     path: []const u8,
-    w: u32,
-    h: u32,
+    dims: PositiveDimsU32,
 ) !void {
     defer stream.close(io);
     var write_buf: [512]u8 = undefined;
     var writer = stream.writer(io, &write_buf);
-    try writePreviewLine(&writer.interface, path, w, h);
+    try writePreviewLine(&writer.interface, path, dims);
     try writer.interface.flush();
 }
 

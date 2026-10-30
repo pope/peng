@@ -1,6 +1,7 @@
+const easing = @import("easing.zig");
 const std = @import("std");
-pub const easing = @import("easing.zig");
-pub const EasingType = easing.EasingType;
+
+const EasingType = easing.EasingType;
 
 /// Bounded set of distinct animation channels in the application.
 pub const AnimationChannel = enum(u8) {

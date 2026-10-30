@@ -11,6 +11,7 @@ const ElementTag = state.ElementTag;
 const FloatingPanel = state.FloatingPanel;
 const formatSize = text_utils.formatSize;
 const getSpec = intents.getSpec;
+const LogicalDims = state.LogicalDims;
 const MeasureTextUserData = text_utils.MeasureTextUserData;
 const truncateDirectory = text_utils.truncateDirectory;
 const truncateFilename = text_utils.truncateFilename;
@@ -149,8 +150,7 @@ fn getRawContainerName(mime_type: []const u8, filename: []const u8) []const u8 {
 
 fn renderInfoOverlay(
     ui_model: UiViewModel,
-    draw_w: f32,
-    draw_h: f32,
+    draw_dims: LogicalDims,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
 ) !void {
@@ -219,8 +219,8 @@ fn renderInfoOverlay(
     var raw_res_str: ?[]const u8 = null;
     var is_raw_image = false;
     const z_val = ui_model.viewport.zoom_factor.get();
-    var screen_w = draw_w;
-    var screen_h = draw_h;
+    var screen_w = draw_dims.w;
+    var screen_h = draw_dims.h;
     if (current_entry) |entry| {
         const auth = entry.getAuthoritativeDims();
         if (auth.w > 0.0 and auth.h > 0.0) {
@@ -424,15 +424,13 @@ fn renderInfoOverlay(
 /// performance overlay ("Stats for Nerds"), and preview thumbnail.
 pub fn renderStatsOverlay(
     ui_model: UiViewModel,
-    draw_w: f32,
-    draw_h: f32,
+    draw_dims: LogicalDims,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
 ) !void {
     try renderInfoOverlay(
         ui_model,
-        draw_w,
-        draw_h,
+        draw_dims,
         frame_allocator,
         measure_data,
     );

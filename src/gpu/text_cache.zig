@@ -4,22 +4,10 @@
 //! to avoid re-rendering static UI labels every frame.
 
 const sdl = @import("sdl");
+const state = @import("state");
 const std = @import("std");
 
-/// Optional SDL_ttf font handle wrapper used across UI and GPU modules.
-pub const FontHandle = ?sdl.Font;
-
-/// Read-only slice of optional font handles indexed by Clay `font_id`.
-pub const FontSet = []const FontHandle;
-
-/// Default two-slot null font array for headless tests without loaded TTFs.
-pub const empty_fonts: [2]FontHandle = @splat(null);
-
-/// Measured pixel width and height of a UTF-8 text string.
-pub const TextDims = struct {
-    w: f32,
-    h: f32,
-};
+const LogicalDims = state.LogicalDims;
 
 /// Measured byte length and pixel width of a prefix fitting within a max width.
 pub const MeasuredPrefix = struct {
@@ -27,54 +15,67 @@ pub const MeasuredPrefix = struct {
     w: f32,
 };
 
-/// Returns true if the primary UI font (`fonts[0]`) is loaded and non-null.
-pub inline fn hasPrimaryFont(fonts: FontSet) bool {
-    return fonts.len > 0 and fonts[0] != null;
-}
+/// Encapsulates loaded font slots for text width and prefix measurement
+/// without exposing underlying SDL_ttf font handles to UI callers.
+pub const FontMeasurer = struct {
+    fonts: []const ?sdl.Font = &.{},
 
-/// Measures the pixel width and height of `text` using `fonts[font_id]`
-/// scaled to `target_size`. Returns zero dimensions when the font is null
-/// or `text` is empty.
-pub fn measureText(
-    fonts: FontSet,
-    font_id: usize,
-    target_size: f32,
-    text: []const u8,
-) TextDims {
-    if (text.len == 0 or font_id >= fonts.len) return .{ .w = 0, .h = 0 };
-    const font = fonts[font_id] orelse return .{ .w = 0, .h = 0 };
-    if (font.getFontSize() != target_size) {
-        _ = font.setFontSize(target_size);
-    }
-    const size = font.getStringSize(text) orelse
-        return .{ .w = 0, .h = 0 };
-    return .{
-        .w = @floatFromInt(size.w),
-        .h = @floatFromInt(size.h),
-    };
-}
+    /// Default empty font measurer for headless tests without loaded TTFs.
+    pub const empty: FontMeasurer = .{};
 
-/// Measures how many bytes of `text` fit within `max_w` pixels using
-/// `fonts[font_id]` at `target_size`.
-pub fn measureTextPrefix(
-    fonts: FontSet,
-    font_id: usize,
-    target_size: f32,
-    text: []const u8,
-    max_w: f32,
-) ?MeasuredPrefix {
-    if (text.len == 0 or font_id >= fonts.len or max_w <= 0) return null;
-    const font = fonts[font_id] orelse return null;
-    if (font.getFontSize() != target_size) {
-        _ = font.setFontSize(target_size);
+    /// Returns true if the primary UI font (`fonts[0]`) is loaded and non-null.
+    pub inline fn hasPrimaryFont(self: FontMeasurer) bool {
+        return self.fonts.len > 0 and self.fonts[0] != null;
     }
-    const m = font.measureString(text, @intFromFloat(max_w)) orelse
-        return null;
-    return .{
-        .len = m.measured_len,
-        .w = @floatFromInt(m.measured_w),
-    };
-}
+
+    /// Measures the pixel width and height of `text` using `fonts[font_id]`
+    /// scaled to `target_size`. Returns zero dimensions when the font is null
+    /// or `text` is empty.
+    pub fn measure(
+        self: FontMeasurer,
+        font_id: usize,
+        target_size: f32,
+        text: []const u8,
+    ) LogicalDims {
+        if (text.len == 0 or font_id >= self.fonts.len) {
+            return .{ .w = 0, .h = 0 };
+        }
+        const font = self.fonts[font_id] orelse return .{ .w = 0, .h = 0 };
+        if (font.getFontSize() != target_size) {
+            _ = font.setFontSize(target_size);
+        }
+        const size = font.getStringSize(text) orelse
+            return .{ .w = 0, .h = 0 };
+        return .{
+            .w = @floatFromInt(size.w),
+            .h = @floatFromInt(size.h),
+        };
+    }
+
+    /// Measures how many bytes of `text` fit within `max_w` pixels using
+    /// `fonts[font_id]` at `target_size`.
+    pub fn measurePrefix(
+        self: FontMeasurer,
+        font_id: usize,
+        target_size: f32,
+        text: []const u8,
+        max_w: f32,
+    ) ?MeasuredPrefix {
+        if (text.len == 0 or font_id >= self.fonts.len or max_w <= 0) {
+            return null;
+        }
+        const font = self.fonts[font_id] orelse return null;
+        if (font.getFontSize() != target_size) {
+            _ = font.setFontSize(target_size);
+        }
+        const m = font.measureString(text, @intFromFloat(max_w)) orelse
+            return null;
+        return .{
+            .len = m.measured_len,
+            .w = @floatFromInt(m.measured_w),
+        };
+    }
+};
 
 /// Lookup key for cached text GPU textures.
 pub const TextCacheKey = struct {
@@ -211,17 +212,12 @@ test "TextCache.put replaces existing entry for identical key in-place" {
     try std.testing.expectEqual(@as(usize, 2), entry.value_ptr.last_used_frame);
 }
 
-test "empty_fonts returns zero dimensions and null prefixes" {
-    try std.testing.expect(!hasPrimaryFont(&empty_fonts));
-    const dims = measureText(&empty_fonts, 0, 16.0, "hello");
+test "FontMeasurer.empty returns zero dimensions and null prefixes" {
+    const measurer = FontMeasurer.empty;
+    try std.testing.expect(!measurer.hasPrimaryFont());
+    const dims = measurer.measure(0, 16.0, "hello");
     try std.testing.expectEqual(@as(f32, 0.0), dims.w);
     try std.testing.expectEqual(@as(f32, 0.0), dims.h);
-    const prefix = measureTextPrefix(
-        &empty_fonts,
-        0,
-        16.0,
-        "hello",
-        100.0,
-    );
+    const prefix = measurer.measurePrefix(0, 16.0, "hello", 100.0);
     try std.testing.expect(prefix == null);
 }

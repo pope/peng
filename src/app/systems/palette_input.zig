@@ -393,12 +393,12 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
 
     // 3. Selection Scrolling Synchronization
     ui.interaction.syncPaletteScroll(&self.viewer.ui.palette);
-
     // 4. Mouse Pointer & Click Processing
     var palette_closed_this_frame = false;
     if (input.mouse_left_clicked and !input.isPointerInDebugPanel()) {
-        const click_hit =
-            ui.interaction.hitTestPaletteClick(&self.viewer.ui.palette);
+        const click_hit = ui.interaction.hitTestPaletteClick(
+            &self.viewer.ui.palette,
+        );
         switch (click_hit) {
             .inside_unmatched => {},
             .outside => {

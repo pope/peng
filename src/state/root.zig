@@ -69,6 +69,7 @@ pub const OverlayState = types.OverlayState;
 pub const PanController = viewport.PanController;
 pub const PhysicalDims = viewport.PhysicalDims;
 pub const PhysicalPoint = viewport.PhysicalPoint;
+pub const PositiveDimsU32 = viewport.PositiveDimsU32;
 pub const RenderStats = telemetry.RenderStats;
 pub const SlideshowMode = types.SlideshowMode;
 pub const SnackbarDisplay = types.SnackbarDisplay;

@@ -2,16 +2,19 @@
 
 ## 1. 2-Pass GPU Render Pipeline, Text Caching & Scissor Safety
 
-- **2-Pass UI `RenderPacket` Pipeline (`src/ui/renderer.zig`)**:
+- **2-Pass UI `RenderPacket` Pipeline (`src/ui/renderer.zig`,
+  `src/gpu/pass.zig`)**:
   1. **Extraction Pass (`buildRenderPacket`)**: Traverses the Clay command list
      to populate vertex arrays, scissor rects, and batched draw commands
-     (`RenderPacket`), uploading newly rasterized glyph textures on text cache
-     misses while deferring all render passes.
-  2. **Execution Pass (`executeRenderPacket`)**: Uploads geometry via
-     double-buffered transfer buffers, runs the 2-pass quarter-resolution Dual
-     Kawase backdrop blur (`scene_texture` -> `blur_down_texture` ->
-     `blur_texture`, gated on `enable_blur` and `.blurred_surface` batches), and
-     issues batched GPU draw calls with zero dynamic heap allocations.
+     (`RenderPacket`), while `uploadPendingTextGlyphs` uploads newly rasterized
+     glyph textures on text cache misses and defers all GPU render passes.
+  2. **Execution Pass (`executeRenderPacket` / `FrameTarget`)**: Acquires a
+     unified `FrameTarget` (`swapchain` or `headless` via `acquireTarget`),
+     uploads geometry via double-buffered transfer buffers, runs the 2-pass
+     quarter-resolution Dual Kawase backdrop blur (`scene_texture` ->
+     `blur_down_texture` -> `blur_texture`, gated on `enable_blur` and
+     `.blurred_surface` batches), and issues batched GPU draw calls before
+     presenting via `submitAndPresentTarget`.
 - **GPU Text Texture Alpha Decoupling**:
   - `TextCacheKey` MUST index strictly by `font_id`, `font_size`, `hash`, and
     RGB channels (`color_u32 & 0x00FFFFFF`). Always rasterize glyph surfaces at
@@ -30,8 +33,14 @@
   - Clay layout and overlay drag positions operate in logical window points
     (`LogicalDims`, `LogicalPoint`), whereas GPU framebuffers,
     `ViewportParams.pan_x/y`, `getBaseScale`, and `isImageOverflowing` operate
-    in physical pixels (`PhysicalDims`, `PhysicalPoint`, converted via
-    `DpiScale` in `src/state/types.zig`).
+    in physical pixels (`PhysicalDims`, `PhysicalPoint`, `PositiveDimsU32`,
+    converted via `DpiScale` in `src/state/viewport.zig`).
+  - Pass strongly typed coordinate/dimension structs (`LogicalDims`,
+    `PhysicalDims`, `PositiveDimsU32`, `LogicalPoint`, `PhysicalPoint`) across
+    function boundaries rather than raw `w, h` or `x, y` scalar pairs, and pass
+    `PhysicalDims` (`logical_dims.toPhysical(scale)`) directly when a callee
+    only needs physical pixel dimensions rather than pairing `LogicalDims` +
+    `DpiScale`.
   - Evaluate `computeViewDims` in physical framebuffer space via
     `view_transform.computeLogicalDrawDims` and convert the resulting draw
     bounds back to `LogicalDims` for Clay layout.

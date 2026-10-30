@@ -16,6 +16,7 @@ const Orientation = probe.Orientation;
 const PairStreamTarget = vfs.PairStreamTarget;
 const parseImageDimensions = probe.parseImageDimensions;
 const PhysicalDims = state_pkg.PhysicalDims;
+const PositiveDimsU32 = state_pkg.PositiveDimsU32;
 const ProbedImageMetadata = probe.ProbedImageMetadata;
 const RawMetadata = probe.RawMetadata;
 const ThumbnailInfo = state_pkg.ThumbnailInfo;
@@ -151,6 +152,46 @@ pub const CacheEntry = struct {
     metadata: CacheMetadata = .{},
     resident: CacheResident = .{},
     inflight: ?InFlightDecode = null,
+
+    /// Constructs a synthetic GPU-resident `CacheEntry` for unit testing
+    /// layout and viewport logic without initializing a real GPU device.
+    pub fn stubLoadedGpuForTest(
+        full_dims: PhysicalDims,
+        thumb_dims: PhysicalDims,
+    ) CacheEntry {
+        const dummy_tex: sdl.gpu.Texture = .{ .ptr = @ptrFromInt(0x1000) };
+        const pos: PositiveDimsU32 = full_dims.toPositiveU32() orelse
+            .{ .w = 1, .h = 1 };
+        return .{
+            .resident = .{
+                .asset = .{
+                    .loaded_gpu = .{
+                        .gpu_texture = dummy_tex,
+                        .w = full_dims.w,
+                        .h = full_dims.h,
+                        .size_bytes = 1000,
+                        .ingest = .{
+                            .memory_size_bytes = @as(usize, pos.w) *
+                                @as(usize, pos.h) * 4,
+                        },
+                    },
+                },
+                .thumbnail = .{
+                    .loaded = .{
+                        .texture = dummy_tex,
+                        .info = .{
+                            .w = thumb_dims.w,
+                            .h = thumb_dims.h,
+                            .dct_snapped = false,
+                        },
+                    },
+                },
+            },
+            .metadata = .{
+                .full_dims = full_dims,
+            },
+        };
+    }
 
     /// Returns the pixel width of the currently loaded surface or texture,
     /// or null if not loaded.

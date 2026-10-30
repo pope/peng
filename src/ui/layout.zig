@@ -15,13 +15,9 @@ const view_model = @import("view_model.zig");
 
 const CacheEntry = core.image.CacheEntry;
 const ElementTag = state.ElementTag;
-const empty_fonts = gpu_pkg.text_cache.empty_fonts;
-const FontSet = gpu_pkg.text_cache.FontSet;
 const FrameInput = state.FrameInput;
-const GpuTexture = gpu_pkg.graphics.GpuTexture;
-const hasPrimaryFont = gpu_pkg.text_cache.hasPrimaryFont;
+const FrameTargetOptions = gpu_pkg.pass.FrameTargetOptions;
 const MeasureTextUserData = text_utils.MeasureTextUserData;
-const measureFontText = gpu_pkg.text_cache.measureText;
 const measureText = text_utils.measureText;
 const PacketBuildContext = gpu_pkg.pass.PacketBuildContext;
 const PaletteState = palette_pkg.PaletteState;
@@ -31,10 +27,8 @@ const RenderPacket = gpu_pkg.pass.RenderPacket;
 const RenderResources = gpu_pkg.graphics.RenderResources;
 const renderStatsOverlay = stats.renderStatsOverlay;
 const truncateFilename = text_utils.truncateFilename;
-const UiRenderMetrics = state.UiRenderMetrics;
 const UiViewModel = view_model.UiViewModel;
 const view_transform = state.view_transform;
-const WindowHandle = gpu_pkg.graphics.WindowHandle;
 
 /// Computes fitted layout dimensions in logical UI points (`LogicalDims`) for
 /// an image cache entry within available logical viewport bounds, evaluating
@@ -79,16 +73,11 @@ pub fn renderFrame(
     input: FrameInput,
     gpa_allocator: std.mem.Allocator,
     frame_allocator: std.mem.Allocator,
-    fonts: FontSet,
     measure_data: *MeasureTextUserData,
-    target_window: ?WindowHandle,
-    render_metrics: ?*UiRenderMetrics,
-    capture_filename: ?[:0]const u8,
+    target: FrameTargetOptions,
 ) !void {
     const width = input.win_w;
     const height = input.win_h;
-    const scale_x = input.scale_x;
-    const scale_y = input.scale_y;
     const dpi_scale = input.dpiScale();
     const current_entry = ui_model.current_entry;
 
@@ -148,8 +137,7 @@ pub fn renderFrame(
 
         try renderStatsOverlay(
             ui_model,
-            draw_dims.w,
-            draw_dims.h,
+            draw_dims,
             frame_allocator,
             measure_data,
         );
@@ -193,7 +181,6 @@ pub fn renderFrame(
     // Render Frame
     const RenderContext = struct {
         view_params: state.ViewportParams,
-        fonts: FontSet,
         render_commands: []const clay.RenderCommand,
 
         fn buildPacket(
@@ -203,30 +190,22 @@ pub fn renderFrame(
             return renderer.buildRenderPacket(
                 ctx.view_params,
                 build_ctx,
-                ctx.fonts,
                 ctx.render_commands,
             );
         }
     };
+
+    var frame_target = target;
+    frame_target.needs_blur = renderer.hasBlurredSurface(render_commands);
 
     try gpu_pkg.pass.executeFrame(
         gpu_res,
         ui_model.viewport,
         gpa_allocator,
         frame_allocator,
-        .{
-            .window = target_window,
-            .width = @intFromFloat(width),
-            .height = @intFromFloat(height),
-            .scale_x = scale_x,
-            .scale_y = scale_y,
-            .needs_blur = renderer.hasBlurredSurface(render_commands),
-            .metrics = render_metrics,
-            .capture_filename = capture_filename,
-        },
+        frame_target,
         RenderContext{
             .view_params = ui_model.viewport,
-            .fonts = fonts,
             .render_commands = render_commands,
         },
         RenderContext.buildPacket,
@@ -661,7 +640,7 @@ fn formatLoadingText(
     const fname = filename_opt orelse return fallback;
     if (fname.len == 0) return fallback;
 
-    if (!hasPrimaryFont(measure_data.fonts)) {
+    if (!measure_data.measurer.hasPrimaryFont()) {
         // Fallback for headless test environments without loaded TTF fonts
         return allocator.print("Loading {s}...", .{fname}) catch |err| {
             std.log.warn(
@@ -674,8 +653,7 @@ fn formatLoadingText(
 
     // Measure the prefix "Loading "
     const prefix = "Loading ";
-    const prefix_w = measureFontText(
-        measure_data.fonts,
+    const prefix_w = measure_data.measurer.measure(
         0,
         @floatFromInt(font_size),
         prefix,
@@ -731,10 +709,8 @@ fn buildThumbnailUvRect(
     else
         .{ .w = 0.0, .h = 0.0 };
     var uv = state.computeThumbnailUvCrop(
-        ref_full.w,
-        ref_full.h,
-        thumb_info.w,
-        thumb_info.h,
+        ref_full,
+        .{ .w = thumb_info.w, .h = thumb_info.h },
         thumb_info.dct_snapped,
     );
     uv.alpha = 1.0;
@@ -753,13 +729,14 @@ fn buildThumbnailUvRect(
 fn renderImageCanvas(
     ui_model: UiViewModel,
     entry: CacheEntry,
-    draw_w: f32,
-    draw_h: f32,
+    draw_dims: state.LogicalDims,
     view_w: f32,
     rotation_angle: f32,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
 ) void {
+    const draw_w = draw_dims.w;
+    const draw_h = draw_dims.h;
     if (ui_model.image_dissolve == .active and
         entry.resident.asset != .loaded_gpu)
     {
@@ -1111,8 +1088,7 @@ fn renderViewport(
             renderImageCanvas(
                 ui_model,
                 entry,
-                draw_dims.w,
-                draw_dims.h,
+                draw_dims,
                 view_dims.w,
                 ui_model.viewport.rotation_angle,
                 frame_allocator,
@@ -1176,7 +1152,6 @@ fn renderViewport(
 test "formatLoadingText - fallback when no filename" {
     var data = MeasureTextUserData{
         .allocator = std.testing.allocator,
-        .fonts = &empty_fonts,
     };
     const res =
         formatLoadingText(std.testing.allocator, null, 400.0, 22, &data);
@@ -1186,7 +1161,6 @@ test "formatLoadingText - fallback when no filename" {
 test "formatLoadingText - with filename" {
     var data = MeasureTextUserData{
         .allocator = std.testing.allocator,
-        .fonts = &empty_fonts,
     };
     const res = formatLoadingText(
         std.testing.allocator,
@@ -1202,7 +1176,6 @@ test "formatLoadingText - with filename" {
 test "formatLoadingText - fallback when empty filename" {
     var data = MeasureTextUserData{
         .allocator = std.testing.allocator,
-        .fonts = &empty_fonts,
     };
     const res = formatLoadingText(
         std.testing.allocator,
@@ -1217,7 +1190,6 @@ test "formatLoadingText - fallback when empty filename" {
 test "formatLoadingText - narrow viewport fallback" {
     var data = MeasureTextUserData{
         .allocator = std.testing.allocator,
-        .fonts = &empty_fonts,
     };
     const res =
         formatLoadingText(std.testing.allocator, null, 100.0, 22, &data);
@@ -1309,29 +1281,11 @@ test "renderViewport - floating crossfade quads allow Viewport hit-testing" {
 
     var data = MeasureTextUserData{
         .allocator = std.testing.allocator,
-        .fonts = &empty_fonts,
     };
-    const dummy_tex: GpuTexture = .{ .ptr = @ptrFromInt(0x1000) };
-    const entry = CacheEntry{
-        .resident = .{
-            .asset = .{
-                .loaded_gpu = .{
-                    .gpu_texture = dummy_tex,
-                    .w = 800,
-                    .h = 600,
-                    .size_bytes = 1000,
-                    .ingest = .{ .memory_size_bytes = 1920000 },
-                },
-            },
-            .thumbnail = .{
-                .loaded = .{
-                    .texture = dummy_tex,
-                    .info = .{ .w = 160, .h = 120, .dct_snapped = false },
-                },
-            },
-        },
-        .metadata = .{ .full_dims = .{ .w = 800, .h = 600 } },
-    };
+    const entry = CacheEntry.stubLoadedGpuForTest(
+        .{ .w = 800.0, .h = 600.0 },
+        .{ .w = 160.0, .h = 120.0 },
+    );
     var pal_state = try PaletteState.init(std.testing.allocator);
     defer pal_state.deinit();
     const model = UiViewModel{

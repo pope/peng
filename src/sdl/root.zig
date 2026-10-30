@@ -4,17 +4,16 @@
 //! GPU command buffers, event polling, surfaces, fonts, and timers.
 
 const builtin = @import("builtin");
-const c_pkg = @import("c.zig");
+const std = @import("std");
+
 pub const events = @import("events.zig");
 pub const font = @import("font.zig");
 pub const gpu = @import("gpu.zig");
 pub const keys = @import("keys.zig");
-const std = @import("std");
 pub const surface = @import("surface.zig");
 pub const timer = @import("timer.zig");
 pub const window = @import("window.zig");
 
-const c = c_pkg.c;
 const has_glibc_malloc_trim = builtin.link_libc and
     builtin.os.tag == .linux and
     builtin.abi.isGnu();
@@ -32,10 +31,7 @@ pub fn reclaimProcessHeap() void {
 pub const Color = font.Color;
 pub const Event = events.Event;
 pub const event_type = events.event_type;
-pub const FColor = c.SDL_FColor;
 pub const Font = font.Font;
-pub const FPoint = c.SDL_FPoint;
-pub const FRect = c.SDL_FRect;
 pub const getError = events.getError;
 pub const hint = events.hint;
 pub const init = events.init;
@@ -45,14 +41,13 @@ pub const mouse = events.mouse;
 pub const PixelFormat = surface.PixelFormat;
 pub const quit = events.quit;
 pub const quitTtf = font.quitTtf;
-pub const Rect = c.SDL_Rect;
 pub const ScaleMode = surface.ScaleMode;
 pub const Surface = surface.Surface;
-pub const Vertex = c.SDL_Vertex;
 pub const Window = window.Window;
 pub const window_flags = window.window_flags;
 
 test "sdl enum mapping and boundary sanity checks" {
+    const c = @import("c.zig").c;
 
     // ScaleMode roundtrip
     try std.testing.expectEqual(

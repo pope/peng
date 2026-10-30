@@ -178,8 +178,7 @@ pub fn sysUpdateViewport(
             else
                 0.0;
             const logical_center = ui.interaction.resolveViewportCenter(
-                input.win_w,
-                input.win_h,
+                input.logicalWinDims(),
                 docked_w,
             );
 

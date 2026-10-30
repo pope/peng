@@ -1,16 +1,13 @@
 const builtin = @import("builtin");
 const geometry = @import("geometry.zig");
 const sdl = @import("sdl");
+const state = @import("state");
 const std = @import("std");
 const text_cache = @import("text_cache.zig");
 
+const FontMeasurer = text_cache.FontMeasurer;
+const PositiveDimsU32 = state.PositiveDimsU32;
 const TextCache = text_cache.TextCache;
-
-/// GPU texture handle alias for UI and renderer modules.
-pub const GpuTexture = sdl.gpu.Texture;
-
-/// Native window handle alias for frame target presentation.
-pub const WindowHandle = sdl.Window;
 
 /// Initialized window handle, SDL GPU device, and DPI scale factor.
 pub const GraphicsSetup = struct {
@@ -112,11 +109,9 @@ pub const BlurResources = union(enum) {
         scene: sdl.gpu.Texture,
         blur_down: sdl.gpu.Texture,
         blur: sdl.gpu.Texture,
-        target_w: u32,
-        target_h: u32,
+        target_dims: PositiveDimsU32,
         target_format: sdl.gpu.TextureFormat,
-        down_w: u32,
-        down_h: u32,
+        down_dims: PositiveDimsU32,
 
         /// Releases the scene and downsample/upsample textures from `dev`.
         pub fn deinit(self: Textures, dev: sdl.gpu.Device) void {
@@ -125,15 +120,14 @@ pub const BlurResources = union(enum) {
             dev.releaseTexture(self.blur);
         }
 
-        /// Returns `true` if the offscreen textures match `w`, `h`, and `fmt`.
+        /// Returns `true` if the offscreen textures match `dims` and `fmt`.
         pub fn matches(
             self: Textures,
-            w: u32,
-            h: u32,
+            dims: PositiveDimsU32,
             fmt: sdl.gpu.TextureFormat,
         ) bool {
-            return self.target_w == w and
-                self.target_h == h and
+            return self.target_dims.w == dims.w and
+                self.target_dims.h == dims.h and
                 self.target_format == fmt;
         }
     };
@@ -302,8 +296,7 @@ pub const BlurResources = union(enum) {
 
     fn createTextures(
         dev: sdl.gpu.Device,
-        win_w: u32,
-        win_h: u32,
+        dims: PositiveDimsU32,
         target_format: sdl.gpu.TextureFormat,
     ) !Textures {
         const scene_tex = dev.createTexture(&sdl.gpu.TextureCreateInfo{
@@ -311,8 +304,8 @@ pub const BlurResources = union(enum) {
             .format = target_format,
             .usage = sdl.gpu.TextureUsage.color_target |
                 sdl.gpu.TextureUsage.sampler,
-            .width = win_w,
-            .height = win_h,
+            .width = dims.w,
+            .height = dims.h,
             .layer_count_or_depth = 1,
             .num_levels = 1,
             .sample_count = .count_1,
@@ -320,16 +313,18 @@ pub const BlurResources = union(enum) {
         }) orelse return error.SceneTextureCreationFailed;
         errdefer dev.releaseTexture(scene_tex);
 
-        const down_w = @max(1, (win_w + 3) / 4);
-        const down_h = @max(1, (win_h + 3) / 4);
+        const down_dims = PositiveDimsU32{
+            .w = @max(1, (dims.w + 3) / 4),
+            .h = @max(1, (dims.h + 3) / 4),
+        };
 
         const down_info = sdl.gpu.TextureCreateInfo{
             .type = .type_2d,
             .format = .rgba8_unorm,
             .usage = sdl.gpu.TextureUsage.color_target |
                 sdl.gpu.TextureUsage.sampler,
-            .width = down_w,
-            .height = down_h,
+            .width = down_dims.w,
+            .height = down_dims.h,
             .layer_count_or_depth = 1,
             .num_levels = 1,
             .sample_count = .count_1,
@@ -347,11 +342,9 @@ pub const BlurResources = union(enum) {
             .scene = scene_tex,
             .blur_down = blur_down_tex,
             .blur = blur_tex,
-            .target_w = win_w,
-            .target_h = win_h,
+            .target_dims = dims,
             .target_format = target_format,
-            .down_w = down_w,
-            .down_h = down_h,
+            .down_dims = down_dims,
         };
     }
 
@@ -361,11 +354,10 @@ pub const BlurResources = union(enum) {
     pub fn ensure(
         self: *BlurResources,
         dev: sdl.gpu.Device,
-        win_w: u32,
-        win_h: u32,
+        dims: PositiveDimsU32,
         target_format: sdl.gpu.TextureFormat,
     ) void {
-        if (win_w == 0 or win_h == 0) return;
+        if (dims.w == 0 or dims.h == 0) return;
 
         switch (self.*) {
             .failed => return,
@@ -382,8 +374,7 @@ pub const BlurResources = union(enum) {
 
                 const textures = createTextures(
                     dev,
-                    win_w,
-                    win_h,
+                    dims,
                     target_format,
                 ) catch |err| {
                     std.log.warn(
@@ -406,8 +397,7 @@ pub const BlurResources = union(enum) {
             .pipelines_ready => |pipes| {
                 const textures = createTextures(
                     dev,
-                    win_w,
-                    win_h,
+                    dims,
                     target_format,
                 ) catch |err| {
                     std.log.warn(
@@ -428,14 +418,13 @@ pub const BlurResources = union(enum) {
                 };
             },
             .initialized => |*init_res| {
-                if (init_res.textures.matches(win_w, win_h, target_format)) {
+                if (init_res.textures.matches(dims, target_format)) {
                     return;
                 }
 
                 const textures = createTextures(
                     dev,
-                    win_w,
-                    win_h,
+                    dims,
                     target_format,
                 ) catch |err| {
                     std.log.warn(
@@ -492,6 +481,11 @@ pub const RenderResources = struct {
     // Font text texture cache & font
     text_cache: TextCache = .{},
     fonts: [1]?sdl.Font = .{null},
+
+    /// Returns a `FontMeasurer` bound to this resource context's loaded fonts.
+    pub inline fn fontMeasurer(self: *const RenderResources) FontMeasurer {
+        return .{ .fonts = self.fonts[0..] };
+    }
 
     /// Ensures the per-frame vertex buffer at `frame_idx` has at least
     /// `required_size` bytes, reallocating with 2x geometric growth if needed.
@@ -1060,14 +1054,13 @@ pub fn saveTextureToPng(
     dev: sdl.gpu.Device,
     cmd: sdl.gpu.CommandBuffer,
     texture: sdl.gpu.Texture,
-    width: u32,
-    height: u32,
+    dims: PositiveDimsU32,
     texture_format: sdl.gpu.TextureFormat,
     filename: [:0]const u8,
 ) !void {
     const bpp = getTextureFormatElementSize(texture_format);
-    const pitch = width * bpp;
-    const size = pitch * height;
+    const pitch = dims.w * bpp;
+    const size = pitch * dims.h;
 
     const transfer_buf =
         dev.createTransferBuffer(&sdl.gpu.TransferBufferCreateInfo{
@@ -1094,14 +1087,14 @@ pub fn saveTextureToPng(
         .x = 0,
         .y = 0,
         .z = 0,
-        .w = width,
-        .h = height,
+        .w = dims.w,
+        .h = dims.h,
         .d = 1,
     }, &sdl.gpu.TextureTransferInfo{
         .transfer_buffer = transfer_buf,
         .offset = 0,
-        .pixels_per_row = width,
-        .rows_per_layer = height,
+        .pixels_per_row = dims.w,
+        .rows_per_layer = dims.h,
     });
     copy_pass.end();
 
@@ -1129,8 +1122,8 @@ pub fn saveTextureToPng(
     }
 
     const surface = sdl.Surface.createFrom(
-        @intCast(width),
-        @intCast(height),
+        @intCast(dims.w),
+        @intCast(dims.h),
         pixel_fmt,
         data_ptr,
         @intCast(pitch),
@@ -1154,7 +1147,7 @@ test "BlurResources tagged union lifecycle and failure latching" {
     // Window dimensions of zero must short-circuit without attempting GPU
     // calls or mutating state
     const dummy_dev: sdl.gpu.Device = .{ .ptr = @ptrFromInt(0x1000) };
-    blur.ensure(dummy_dev, 0, 0, .rgba8_unorm);
+    blur.ensure(dummy_dev, .{ .w = 0, .h = 0 }, .rgba8_unorm);
     try std.testing.expect(blur == .uninitialized);
 
     // Initialized state composes session-lifetime Pipelines and window-sized
@@ -1169,20 +1162,24 @@ test "BlurResources tagged union lifecycle and failure latching" {
                 .scene = .{ .ptr = @ptrFromInt(0x2003) },
                 .blur_down = .{ .ptr = @ptrFromInt(0x2004) },
                 .blur = .{ .ptr = @ptrFromInt(0x2005) },
-                .target_w = 800,
-                .target_h = 600,
+                .target_dims = .{ .w = 800, .h = 600 },
                 .target_format = .rgba8_unorm,
-                .down_w = 200,
-                .down_h = 150,
+                .down_dims = .{ .w = 200, .h = 150 },
             },
         },
     };
     try std.testing.expect(blur == .initialized);
     try std.testing.expect(
-        blur.initialized.textures.matches(800, 600, .rgba8_unorm),
+        blur.initialized.textures.matches(
+            .{ .w = 800, .h = 600 },
+            .rgba8_unorm,
+        ),
     );
     try std.testing.expect(
-        !blur.initialized.textures.matches(1024, 768, .rgba8_unorm),
+        !blur.initialized.textures.matches(
+            .{ .w = 1024, .h = 768 },
+            .rgba8_unorm,
+        ),
     );
     try std.testing.expectEqual(
         @as(?sdl.gpu.Texture, .{ .ptr = @ptrFromInt(0x2005) }),
@@ -1191,7 +1188,7 @@ test "BlurResources tagged union lifecycle and failure latching" {
 
     // Calling ensure with matching dimensions on initialized resources is a
     // no-op
-    blur.ensure(dummy_dev, 800, 600, .rgba8_unorm);
+    blur.ensure(dummy_dev, .{ .w = 800, .h = 600 }, .rgba8_unorm);
     try std.testing.expect(blur == .initialized);
 
     // Pipelines-ready state preserves warm pipelines while textures are absent
@@ -1211,7 +1208,7 @@ test "BlurResources tagged union lifecycle and failure latching" {
     try std.testing.expect(blur.getBlurTexture() == null);
 
     // Calls to ensure while failed must remain failed without mutating state
-    blur.ensure(dummy_dev, 800, 600, .rgba8_unorm);
+    blur.ensure(dummy_dev, .{ .w = 800, .h = 600 }, .rgba8_unorm);
     try std.testing.expect(blur == .failed);
 
     // Deinit on failed resets state back to uninitialized without

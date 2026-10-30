@@ -340,8 +340,8 @@ pub const AppState = struct {
                 has_gpu,
             );
         };
-        const last_w = self.viewer.last_win_w;
-        const last_h = self.viewer.last_win_h;
+        const last_w = self.viewer.last_win_dims.w;
+        const last_h = self.viewer.last_win_dims.h;
         const window_resized = last_w != 0 and
             (last_w != cur_win_w or last_h != cur_win_h);
         const is_busy = self.isBusy() or
@@ -462,11 +462,9 @@ pub const AppState = struct {
 
         const dims = self.getViewportPixelDims();
         return view_transform.computePresetZoom(
-            raw_w,
-            raw_h,
+            auth,
             self.viewer.viewport.rotation_angle,
-            dims.w,
-            dims.h,
+            dims,
             self.viewer.viewport.fit_mode,
         );
     }
@@ -479,10 +477,8 @@ pub const AppState = struct {
 
         const dims = self.getViewportPixelDims();
         return self.viewer.viewport.isOverflowing(
-            auth.w,
-            auth.h,
-            dims.w,
-            dims.h,
+            auth,
+            dims,
         );
     }
 

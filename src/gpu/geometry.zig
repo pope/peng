@@ -1,11 +1,35 @@
-const sdl = @import("sdl");
+const state = @import("state");
 const std = @import("std");
 
-/// Integer pixel rectangle alias for scissor clipping and bounds.
-pub const Rect = sdl.Rect;
+const PhysicalDims = state.PhysicalDims;
 
-/// Floating-point pixel rectangle alias for UI and viewport quad emission.
-pub const FRect = sdl.FRect;
+/// Integer pixel rectangle for scissor clipping and bounds.
+pub const Rect = struct {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+};
+
+/// Floating-point pixel rectangle for UI and viewport quad emission.
+pub const FRect = struct {
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+};
+
+/// 2D floating-point coordinate in screen pixels.
+pub const FPoint = struct {
+    x: f32,
+    y: f32,
+};
+
+const RoundedVertex = struct {
+    pos: FPoint,
+    u: f32,
+    v: f32,
+};
 
 /// 2D textured colored vertex layout matching GPU pipeline vertex buffer
 /// layout.
@@ -56,10 +80,10 @@ pub const NdcPoint = struct {
 
 /// Converts screen pixel coordinates into Normalized Device Coordinates
 /// [-1.0, 1.0].
-pub inline fn toNdc(x: f32, y: f32, win_w: f32, win_h: f32) NdcPoint {
+pub inline fn toNdc(x: f32, y: f32, win_dims: PhysicalDims) NdcPoint {
     return .{
-        .x = (x / win_w) * 2.0 - 1.0,
-        .y = 1.0 - (y / win_h) * 2.0,
+        .x = (x / win_dims.w) * 2.0 - 1.0,
+        .y = 1.0 - (y / win_dims.h) * 2.0,
     };
 }
 
@@ -68,21 +92,20 @@ pub inline fn toNdc(x: f32, y: f32, win_w: f32, win_h: f32) NdcPoint {
 pub fn appendRectQuad(
     vertices: *std.ArrayList(Vertex),
     allocator: std.mem.Allocator,
-    rect: sdl.FRect,
+    rect: FRect,
     rgba255: [4]f32,
-    win_w: f32,
-    win_h: f32,
+    win_dims: PhysicalDims,
     screen_uv: bool,
 ) !void {
-    const p1 = toNdc(rect.x, rect.y, win_w, win_h);
-    const p2 = toNdc(rect.x + rect.w, rect.y + rect.h, win_w, win_h);
+    const p1 = toNdc(rect.x, rect.y, win_dims);
+    const p2 = toNdc(rect.x + rect.w, rect.y + rect.h, win_dims);
 
     const color = packRgba255(rgba255);
 
-    const uv_u1: f32 = if (screen_uv) rect.x / win_w else 0.0;
-    const uv_v1: f32 = if (screen_uv) rect.y / win_h else 0.0;
-    const uv_u2: f32 = if (screen_uv) (rect.x + rect.w) / win_w else 1.0;
-    const uv_v2: f32 = if (screen_uv) (rect.y + rect.h) / win_h else 1.0;
+    const uv_u1: f32 = if (screen_uv) rect.x / win_dims.w else 0.0;
+    const uv_v1: f32 = if (screen_uv) rect.y / win_dims.h else 0.0;
+    const uv_u2: f32 = if (screen_uv) (rect.x + rect.w) / win_dims.w else 1.0;
+    const uv_v2: f32 = if (screen_uv) (rect.y + rect.h) / win_dims.h else 1.0;
 
     try vertices.append(allocator, .{
         .x = p1.x,
@@ -129,18 +152,17 @@ pub fn appendRectQuad(
 }
 
 fn appendCornerArc(
-    vertices_src: []sdl.Vertex,
-    indices: []c_int,
+    vertices_src: []RoundedVertex,
+    indices: []usize,
     vertex_count: *usize,
     index_count: *usize,
-    center: c_int,
+    center: usize,
     radius: f32,
     start_angle: f32,
     end_angle: f32,
-    color: sdl.FColor,
     num_circle_segments: usize,
 ) void {
-    const center_pos = vertices_src[@intCast(center)].position;
+    const center_pos = vertices_src[center].pos;
     const angle_step = (end_angle - start_angle) /
         @as(f32, @floatFromInt(num_circle_segments));
 
@@ -155,27 +177,27 @@ fn appendCornerArc(
         const sin_2 = @sin(a2);
 
         vertices_src[vertex_count.*] = .{
-            .position = .{
+            .pos = .{
                 .x = center_pos.x + cos_1 * radius,
                 .y = center_pos.y + sin_1 * radius,
             },
-            .color = color,
-            .tex_coord = .{ .x = 0, .y = 0 },
+            .u = 0.0,
+            .v = 0.0,
         };
         vertex_count.* += 1;
 
         vertices_src[vertex_count.*] = .{
-            .position = .{
+            .pos = .{
                 .x = center_pos.x + cos_2 * radius,
                 .y = center_pos.y + sin_2 * radius,
             },
-            .color = color,
-            .tex_coord = .{ .x = 0, .y = 0 },
+            .u = 0.0,
+            .v = 0.0,
         };
         vertex_count.* += 1;
 
-        const v1_idx: c_int = @intCast(vertex_count.* - 2);
-        const v2_idx: c_int = @intCast(vertex_count.* - 1);
+        const v1_idx: usize = vertex_count.* - 2;
+        const v2_idx: usize = vertex_count.* - 1;
 
         indices[index_count.*] = center;
         index_count.* += 1;
@@ -191,19 +213,13 @@ fn appendCornerArc(
 pub fn renderFillRoundedRect(
     vertices: *std.ArrayList(Vertex),
     allocator: std.mem.Allocator,
-    rect: sdl.FRect,
+    rect: FRect,
     corner_radius: f32,
     rgba255: [4]f32,
-    win_w: f32,
-    win_h: f32,
+    win_dims: PhysicalDims,
     screen_uv: bool,
 ) !void {
-    const color = sdl.FColor{
-        .r = rgba255[0] / 255.0,
-        .g = rgba255[1] / 255.0,
-        .b = rgba255[2] / 255.0,
-        .a = rgba255[3] / 255.0,
-    };
+    const packed_color = packRgba255(rgba255);
 
     const min_radius = @min(rect.w, rect.h) / 2.0;
     const clamped_radius = @min(corner_radius, min_radius);
@@ -214,8 +230,7 @@ pub fn renderFillRoundedRect(
             allocator,
             rect,
             rgba255,
-            win_w,
-            win_h,
+            win_dims,
             screen_uv,
         );
     }
@@ -228,48 +243,48 @@ pub fn renderFillRoundedRect(
     const total_vertices = 4 + (4 * (num_circle_segments * 2)) + 8;
     const total_indices = 6 + (4 * (num_circle_segments * 3)) + 24;
 
-    const vertices_src = try allocator.alloc(sdl.Vertex, total_vertices);
+    const vertices_src = try allocator.alloc(RoundedVertex, total_vertices);
     defer allocator.free(vertices_src);
-    const indices = try allocator.alloc(c_int, total_indices);
+    const indices = try allocator.alloc(usize, total_indices);
     defer allocator.free(indices);
 
     var vertex_count: usize = 0;
     var index_count: usize = 0;
 
     vertices_src[vertex_count] = .{
-        .position = .{
+        .pos = .{
             .x = rect.x + clamped_radius,
             .y = rect.y + clamped_radius,
         },
-        .color = color,
-        .tex_coord = .{ .x = 0, .y = 0 },
+        .u = 0.0,
+        .v = 0.0,
     };
     vertex_count += 1;
     vertices_src[vertex_count] = .{
-        .position = .{
+        .pos = .{
             .x = rect.x + rect.w - clamped_radius,
             .y = rect.y + clamped_radius,
         },
-        .color = color,
-        .tex_coord = .{ .x = 1, .y = 0 },
+        .u = 1.0,
+        .v = 0.0,
     };
     vertex_count += 1;
     vertices_src[vertex_count] = .{
-        .position = .{
+        .pos = .{
             .x = rect.x + rect.w - clamped_radius,
             .y = rect.y + rect.h - clamped_radius,
         },
-        .color = color,
-        .tex_coord = .{ .x = 1, .y = 1 },
+        .u = 1.0,
+        .v = 1.0,
     };
     vertex_count += 1;
     vertices_src[vertex_count] = .{
-        .position = .{
+        .pos = .{
             .x = rect.x + clamped_radius,
             .y = rect.y + rect.h - clamped_radius,
         },
-        .color = color,
-        .tex_coord = .{ .x = 0, .y = 1 },
+        .u = 0.0,
+        .v = 1.0,
     };
     vertex_count += 1;
 
@@ -296,7 +311,6 @@ pub fn renderFillRoundedRect(
         clamped_radius,
         std.math.pi,
         std.math.pi * 1.5,
-        color,
         num_circle_segments,
     );
 
@@ -310,7 +324,6 @@ pub fn renderFillRoundedRect(
         clamped_radius,
         std.math.pi * 1.5,
         std.math.pi * 2.0,
-        color,
         num_circle_segments,
     );
 
@@ -324,7 +337,6 @@ pub fn renderFillRoundedRect(
         clamped_radius,
         0.0,
         std.math.pi * 0.5,
-        color,
         num_circle_segments,
     );
 
@@ -338,137 +350,136 @@ pub fn renderFillRoundedRect(
         clamped_radius,
         std.math.pi * 0.5,
         std.math.pi,
-        color,
         num_circle_segments,
     );
 
     // Top edge
     vertices_src[vertex_count] = .{
-        .position = .{ .x = rect.x + clamped_radius, .y = rect.y },
-        .color = color,
-        .tex_coord = .{ .x = 0, .y = 0 },
+        .pos = .{ .x = rect.x + clamped_radius, .y = rect.y },
+        .u = 0.0,
+        .v = 0.0,
     };
     vertex_count += 1;
     vertices_src[vertex_count] = .{
-        .position = .{ .x = rect.x + rect.w - clamped_radius, .y = rect.y },
-        .color = color,
-        .tex_coord = .{ .x = 1, .y = 0 },
+        .pos = .{ .x = rect.x + rect.w - clamped_radius, .y = rect.y },
+        .u = 1.0,
+        .v = 0.0,
     };
     vertex_count += 1;
 
     indices[index_count] = 0;
     index_count += 1;
-    indices[index_count] = @intCast(vertex_count - 2);
+    indices[index_count] = vertex_count - 2;
     index_count += 1;
-    indices[index_count] = @intCast(vertex_count - 1);
+    indices[index_count] = vertex_count - 1;
     index_count += 1;
     indices[index_count] = 1;
     index_count += 1;
     indices[index_count] = 0;
     index_count += 1;
-    indices[index_count] = @intCast(vertex_count - 1);
+    indices[index_count] = vertex_count - 1;
     index_count += 1;
 
     // Right edge
     vertices_src[vertex_count] = .{
-        .position = .{ .x = rect.x + rect.w, .y = rect.y + clamped_radius },
-        .color = color,
-        .tex_coord = .{ .x = 1, .y = 0 },
+        .pos = .{ .x = rect.x + rect.w, .y = rect.y + clamped_radius },
+        .u = 1.0,
+        .v = 0.0,
     };
     vertex_count += 1;
     vertices_src[vertex_count] = .{
-        .position = .{
+        .pos = .{
             .x = rect.x + rect.w,
             .y = rect.y + rect.h - clamped_radius,
         },
-        .color = color,
-        .tex_coord = .{ .x = 1, .y = 1 },
+        .u = 1.0,
+        .v = 1.0,
     };
     vertex_count += 1;
 
     indices[index_count] = 1;
     index_count += 1;
-    indices[index_count] = @intCast(vertex_count - 2);
+    indices[index_count] = vertex_count - 2;
     index_count += 1;
-    indices[index_count] = @intCast(vertex_count - 1);
+    indices[index_count] = vertex_count - 1;
     index_count += 1;
     indices[index_count] = 2;
     index_count += 1;
     indices[index_count] = 1;
     index_count += 1;
-    indices[index_count] = @intCast(vertex_count - 1);
+    indices[index_count] = vertex_count - 1;
     index_count += 1;
 
     // Bottom edge
     vertices_src[vertex_count] = .{
-        .position = .{
+        .pos = .{
             .x = rect.x + rect.w - clamped_radius,
             .y = rect.y + rect.h,
         },
-        .color = color,
-        .tex_coord = .{ .x = 1, .y = 1 },
+        .u = 1.0,
+        .v = 1.0,
     };
     vertex_count += 1;
     vertices_src[vertex_count] = .{
-        .position = .{ .x = rect.x + clamped_radius, .y = rect.y + rect.h },
-        .color = color,
-        .tex_coord = .{ .x = 0, .y = 1 },
+        .pos = .{ .x = rect.x + clamped_radius, .y = rect.y + rect.h },
+        .u = 0.0,
+        .v = 1.0,
     };
     vertex_count += 1;
 
     indices[index_count] = 2;
     index_count += 1;
-    indices[index_count] = @intCast(vertex_count - 2);
+    indices[index_count] = vertex_count - 2;
     index_count += 1;
-    indices[index_count] = @intCast(vertex_count - 1);
+    indices[index_count] = vertex_count - 1;
     index_count += 1;
     indices[index_count] = 3;
     index_count += 1;
     indices[index_count] = 2;
     index_count += 1;
-    indices[index_count] = @intCast(vertex_count - 1);
+    indices[index_count] = vertex_count - 1;
     index_count += 1;
 
     // Left edge
     vertices_src[vertex_count] = .{
-        .position = .{ .x = rect.x, .y = rect.y + rect.h - clamped_radius },
-        .color = color,
-        .tex_coord = .{ .x = 0, .y = 1 },
+        .pos = .{ .x = rect.x, .y = rect.y + rect.h - clamped_radius },
+        .u = 0.0,
+        .v = 1.0,
     };
     vertex_count += 1;
     vertices_src[vertex_count] = .{
-        .position = .{ .x = rect.x, .y = rect.y + clamped_radius },
-        .color = color,
-        .tex_coord = .{ .x = 0, .y = 0 },
+        .pos = .{ .x = rect.x, .y = rect.y + clamped_radius },
+        .u = 0.0,
+        .v = 0.0,
     };
     vertex_count += 1;
 
     indices[index_count] = 3;
     index_count += 1;
-    indices[index_count] = @intCast(vertex_count - 2);
+    indices[index_count] = vertex_count - 2;
     index_count += 1;
-    indices[index_count] = @intCast(vertex_count - 1);
+    indices[index_count] = vertex_count - 1;
     index_count += 1;
     indices[index_count] = 0;
     index_count += 1;
     indices[index_count] = 3;
     index_count += 1;
-    indices[index_count] = @intCast(vertex_count - 1);
+    indices[index_count] = vertex_count - 1;
     index_count += 1;
 
     // Map indexed vertices into the global non-indexed list
     for (indices[0..index_count]) |idx| {
-        const v = vertices_src[@intCast(idx)];
-        const pt = toNdc(v.position.x, v.position.y, win_w, win_h);
-        const u = if (screen_uv) v.position.x / win_w else v.tex_coord.x;
-        const v_coord = if (screen_uv) v.position.y / win_h else v.tex_coord.y;
+        const v = vertices_src[idx];
+        const pt = toNdc(v.pos.x, v.pos.y, win_dims);
+        const u = if (screen_uv) v.pos.x / win_dims.w else v.u;
+        const v_coord = if (screen_uv) v.pos.y / win_dims.h else v.v;
 
         try vertices.append(allocator, .{
             .x = pt.x,
             .y = pt.y,
             .u = u,
             .v = v_coord,
-            .color = packRgbaF(v.color.r, v.color.g, v.color.b, v.color.a),
+            .color = packed_color,
         });
     }
 }
@@ -484,20 +495,18 @@ pub fn drawDashedLineH(
     color: [4]f32,
     dash_len: f32,
     gap_len: f32,
-    win_w: f32,
-    win_h: f32,
+    win_dims: PhysicalDims,
 ) !void {
     var x = x1;
     while (x < x2) {
         const draw_w = @min(dash_len, x2 - x);
-        const rect = sdl.FRect{ .x = x, .y = y, .w = draw_w, .h = thickness };
+        const rect = FRect{ .x = x, .y = y, .w = draw_w, .h = thickness };
         try appendRectQuad(
             vertices,
             allocator,
             rect,
             color,
-            win_w,
-            win_h,
+            win_dims,
             false,
         );
         x += dash_len + gap_len;
@@ -515,20 +524,18 @@ pub fn drawDashedLineV(
     color: [4]f32,
     dash_len: f32,
     gap_len: f32,
-    win_w: f32,
-    win_h: f32,
+    win_dims: PhysicalDims,
 ) !void {
     var y = y1;
     while (y < y2) {
         const draw_h = @min(dash_len, y2 - y);
-        const rect = sdl.FRect{ .x = x, .y = y, .w = thickness, .h = draw_h };
+        const rect = FRect{ .x = x, .y = y, .w = thickness, .h = draw_h };
         try appendRectQuad(
             vertices,
             allocator,
             rect,
             color,
-            win_w,
-            win_h,
+            win_dims,
             false,
         );
         y += dash_len + gap_len;
@@ -539,7 +546,7 @@ pub fn drawDashedLineV(
 /// RGBA color.
 pub fn renderArc(
     vertices: *std.ArrayList(Vertex),
-    center: sdl.FPoint,
+    center: FPoint,
     radius: f32,
     start_angle: f32,
     end_angle: f32,
@@ -550,8 +557,7 @@ pub fn renderArc(
     a: f32,
     allocator: std.mem.Allocator,
     is_dashed: bool,
-    win_w: f32,
-    win_h: f32,
+    win_dims: PhysicalDims,
 ) !void {
     const rad_start = start_angle * (std.math.pi / 180.0);
     const rad_end = end_angle * (std.math.pi / 180.0);
@@ -597,10 +603,10 @@ pub fn renderArc(
         const in2_x = center.x + cos2 * r_inner;
         const in2_y = center.y + sin2 * r_inner;
 
-        const out1 = toNdc(out1_x, out1_y, win_w, win_h);
-        const out2 = toNdc(out2_x, out2_y, win_w, win_h);
-        const in1 = toNdc(in1_x, in1_y, win_w, win_h);
-        const in2 = toNdc(in2_x, in2_y, win_w, win_h);
+        const out1 = toNdc(out1_x, out1_y, win_dims);
+        const out2 = toNdc(out2_x, out2_y, win_dims);
+        const in1 = toNdc(in1_x, in1_y, win_dims);
+        const in2 = toNdc(in2_x, in2_y, win_dims);
 
         // Triangle 1: out1, out2, in2
         try vertices.append(allocator, .{
@@ -669,21 +675,20 @@ test "packRgba and packRgbaF packing and clamping" {
 }
 
 test "toNdc - coordinate conversion" {
-    const win_w: f32 = 800.0;
-    const win_h: f32 = 600.0;
+    const win_dims = PhysicalDims{ .w = 800.0, .h = 600.0 };
 
     // Top-left (0, 0) maps to (-1.0, 1.0)
-    const p_tl = toNdc(0.0, 0.0, win_w, win_h);
+    const p_tl = toNdc(0.0, 0.0, win_dims);
     try std.testing.expectApproxEqAbs(@as(f32, -1.0), p_tl.x, 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), p_tl.y, 0.0001);
 
     // Bottom-right (800, 600) maps to (1.0, -1.0)
-    const p_br = toNdc(800.0, 600.0, win_w, win_h);
+    const p_br = toNdc(800.0, 600.0, win_dims);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), p_br.x, 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, -1.0), p_br.y, 0.0001);
 
     // Center (400, 300) maps to (0.0, 0.0)
-    const p_c = toNdc(400.0, 300.0, win_w, win_h);
+    const p_c = toNdc(400.0, 300.0, win_dims);
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), p_c.x, 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), p_c.y, 0.0001);
 }

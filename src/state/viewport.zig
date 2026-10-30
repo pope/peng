@@ -1,12 +1,31 @@
 const intents = @import("intents");
-const probe = @import("probe");
 const std = @import("std");
 const view_transform = @import("view_transform.zig");
 
 const EditParam = intents.EditParam;
 const getSpec = intents.getSpec;
-const PositiveDimsU32 = probe.PositiveDimsU32;
 const ZoomPreset = intents.ZoomPreset;
+
+/// Strictly positive (`>= 1`) integer 2D pixel dimensions (`w x h`).
+pub const PositiveDimsU32 = struct {
+    w: u32 = 800,
+    h: u32 = 600,
+
+    /// Constructs `PositiveDimsU32` when both `w_i` and `h_i` are strictly
+    /// positive (`> 0`), clamping each axis to `max_dim`, or returns `null`.
+    pub inline fn initClamped(
+        w_i: i64,
+        h_i: i64,
+        max_dim: u32,
+    ) ?PositiveDimsU32 {
+        if (w_i <= 0 or h_i <= 0 or max_dim == 0) return null;
+        const max_i64: i64 = @intCast(max_dim);
+        return .{
+            .w = @intCast(@min(w_i, max_i64)),
+            .h = @intCast(@min(h_i, max_i64)),
+        };
+    }
+};
 
 /// Display DPI scale factor mapping between logical UI points and physical
 /// framebuffer pixels (`physical = logical * scale`).
@@ -275,29 +294,25 @@ pub const ViewportParams = struct {
     /// Returns the effective physical zoom factor Z for the current frame.
     pub fn effectiveZoom(
         self: ViewportParams,
-        view_w: f32,
-        view_h: f32,
-        raw_w: f32,
-        raw_h: f32,
+        view_dims: PhysicalDims,
+        raw_dims: PhysicalDims,
     ) f32 {
-        if (raw_w <= 0.0 or raw_h <= 0.0 or view_w <= 0.0 or view_h <= 0.0) {
+        if (raw_dims.w <= 0.0 or raw_dims.h <= 0.0 or
+            view_dims.w <= 0.0 or view_dims.h <= 0.0)
+        {
             return self.zoom_factor.get();
         }
         return switch (self.mode) {
             .fit => view_transform.computePresetZoom(
-                raw_w,
-                raw_h,
+                raw_dims,
                 self.rotation_angle,
-                view_w,
-                view_h,
+                view_dims,
                 self.fit_mode,
             ),
             .fill => view_transform.computePresetZoom(
-                raw_w,
-                raw_h,
+                raw_dims,
                 self.rotation_angle,
-                view_w,
-                view_h,
+                view_dims,
                 .crop,
             ),
             .manual => self.zoom_factor.get(),
@@ -307,19 +322,20 @@ pub const ViewportParams = struct {
     /// Returns true if image content overflows the viewport bounds.
     pub fn isOverflowing(
         self: ViewportParams,
-        auth_w: f32,
-        auth_h: f32,
-        view_w: f32,
-        view_h: f32,
+        auth_dims: PhysicalDims,
+        view_dims: PhysicalDims,
     ) bool {
-        if (auth_w <= 0.0 or auth_h <= 0.0 or view_w <= 0.0 or view_h <= 0.0) {
+        if (auth_dims.w <= 0.0 or auth_dims.h <= 0.0 or
+            view_dims.w <= 0.0 or view_dims.h <= 0.0)
+        {
             return false;
         }
         const is_swapped = view_transform.isAngle90or270(self.rotation_angle);
-        const img_w = if (is_swapped) auth_h else auth_w;
-        const img_h = if (is_swapped) auth_w else auth_h;
-        const z = self.effectiveZoom(view_w, view_h, auth_w, auth_h);
-        return (img_w * z > view_w + 1.0) or (img_h * z > view_h + 1.0);
+        const img_w = if (is_swapped) auth_dims.h else auth_dims.w;
+        const img_h = if (is_swapped) auth_dims.w else auth_dims.h;
+        const z = self.effectiveZoom(view_dims, auth_dims);
+        return (img_w * z > view_dims.w + 1.0) or
+            (img_h * z > view_dims.h + 1.0);
     }
 
     /// Returns true if non-neutral photographic exposure or contrast
@@ -625,27 +641,42 @@ test "LogicalDims, PhysicalDims, LogicalPoint, and PhysicalPoint conversions" {
 test "ViewportParams isOverflowing and effectiveZoom" {
     var vp = ViewportParams{};
     // 1024x682 in 1024x768 with .fit (.full) mode does not overflow
-    try std.testing.expect(!vp.isOverflowing(1024.0, 682.0, 1024.0, 768.0));
+    try std.testing.expect(!vp.isOverflowing(
+        .{ .w = 1024.0, .h = 682.0 },
+        .{ .w = 1024.0, .h = 768.0 },
+    ));
 
     // .fit_width on a tall portrait image (800x1600 in 1000x800) overflows Y
     vp.fit_mode = .fit_width;
     vp.reset();
     try std.testing.expectApproxEqAbs(
         @as(f32, 1.25),
-        vp.effectiveZoom(1000.0, 800.0, 800.0, 1600.0),
+        vp.effectiveZoom(
+            .{ .w = 1000.0, .h = 800.0 },
+            .{ .w = 800.0, .h = 1600.0 },
+        ),
         0.0001,
     );
-    try std.testing.expect(vp.isOverflowing(800.0, 1600.0, 1000.0, 800.0));
+    try std.testing.expect(vp.isOverflowing(
+        .{ .w = 800.0, .h = 1600.0 },
+        .{ .w = 1000.0, .h = 800.0 },
+    ));
 
     // .fit_height on a wide landscape image (1600x800 in 1000x800) overflows X
     vp.fit_mode = .fit_height;
     vp.reset();
     try std.testing.expectApproxEqAbs(
         @as(f32, 1.0),
-        vp.effectiveZoom(1000.0, 800.0, 1600.0, 800.0),
+        vp.effectiveZoom(
+            .{ .w = 1000.0, .h = 800.0 },
+            .{ .w = 1600.0, .h = 800.0 },
+        ),
         0.0001,
     );
-    try std.testing.expect(vp.isOverflowing(1600.0, 800.0, 1000.0, 800.0));
+    try std.testing.expect(vp.isOverflowing(
+        .{ .w = 1600.0, .h = 800.0 },
+        .{ .w = 1000.0, .h = 800.0 },
+    ));
 
     // .shrink on a small image (400x300 in 1000x800) keeps 1.0x and does not
     // overflow
@@ -653,10 +684,16 @@ test "ViewportParams isOverflowing and effectiveZoom" {
     vp.reset();
     try std.testing.expectApproxEqAbs(
         @as(f32, 1.0),
-        vp.effectiveZoom(1000.0, 800.0, 400.0, 300.0),
+        vp.effectiveZoom(
+            .{ .w = 1000.0, .h = 800.0 },
+            .{ .w = 400.0, .h = 300.0 },
+        ),
         0.0001,
     );
-    try std.testing.expect(!vp.isOverflowing(400.0, 300.0, 1000.0, 800.0));
+    try std.testing.expect(!vp.isOverflowing(
+        .{ .w = 400.0, .h = 300.0 },
+        .{ .w = 1000.0, .h = 800.0 },
+    ));
 
     // Rotated 90 degrees in .fit_width (1600x800 -> 800x1600 in 1000x800)
     vp.fit_mode = .fit_width;
@@ -664,25 +701,40 @@ test "ViewportParams isOverflowing and effectiveZoom" {
     vp.reset();
     try std.testing.expectApproxEqAbs(
         @as(f32, 1.25),
-        vp.effectiveZoom(1000.0, 800.0, 1600.0, 800.0),
+        vp.effectiveZoom(
+            .{ .w = 1000.0, .h = 800.0 },
+            .{ .w = 1600.0, .h = 800.0 },
+        ),
         0.0001,
     );
-    try std.testing.expect(vp.isOverflowing(1600.0, 800.0, 1000.0, 800.0));
+    try std.testing.expect(vp.isOverflowing(
+        .{ .w = 1600.0, .h = 800.0 },
+        .{ .w = 1000.0, .h = 800.0 },
+    ));
     vp.rotation_angle = 0.0;
 
     // .fill mode (crop) causes overflow
     vp.fit_mode = .crop;
     vp.mode = .fill;
-    try std.testing.expect(vp.isOverflowing(1024.0, 682.0, 1024.0, 768.0));
+    try std.testing.expect(vp.isOverflowing(
+        .{ .w = 1024.0, .h = 682.0 },
+        .{ .w = 1024.0, .h = 768.0 },
+    ));
 
     // .manual mode at 2.0x causes overflow
     vp.mode = .manual;
     vp.zoom_factor = ZoomFactor.init(2.0);
-    try std.testing.expect(vp.isOverflowing(1024.0, 682.0, 1024.0, 768.0));
+    try std.testing.expect(vp.isOverflowing(
+        .{ .w = 1024.0, .h = 682.0 },
+        .{ .w = 1024.0, .h = 768.0 },
+    ));
 
     // .manual mode at 0.5x fits inside
     vp.zoom_factor = ZoomFactor.init(0.5);
-    try std.testing.expect(!vp.isOverflowing(1024.0, 682.0, 1024.0, 768.0));
+    try std.testing.expect(!vp.isOverflowing(
+        .{ .w = 1024.0, .h = 682.0 },
+        .{ .w = 1024.0, .h = 768.0 },
+    ));
 }
 
 test "ViewportParams.getShaderScaleModeInt maps filters including lanczos3" {
@@ -778,4 +830,22 @@ test "ImageEdits and ParamSpec exhaustive verification" {
     try std.testing.expect(edits.hasEdits());
     edits.reset();
     try std.testing.expect(!edits.hasEdits());
+}
+
+test "PositiveDimsU32.initClamped" {
+    const valid = PositiveDimsU32.initClamped(800, 600, 4096);
+    try std.testing.expect(valid != null);
+    try std.testing.expectEqual(@as(u32, 800), valid.?.w);
+    try std.testing.expectEqual(@as(u32, 600), valid.?.h);
+
+    const clamped = PositiveDimsU32.initClamped(5000, 3000, 4096);
+    try std.testing.expect(clamped != null);
+    try std.testing.expectEqual(@as(u32, 4096), clamped.?.w);
+    try std.testing.expectEqual(@as(u32, 3000), clamped.?.h);
+
+    try std.testing.expect(PositiveDimsU32.initClamped(0, 600, 4096) == null);
+    try std.testing.expect(PositiveDimsU32.initClamped(800, 0, 4096) == null);
+    try std.testing.expect(PositiveDimsU32.initClamped(-10, 600, 4096) == null);
+    try std.testing.expect(PositiveDimsU32.initClamped(800, -5, 4096) == null);
+    try std.testing.expect(PositiveDimsU32.initClamped(800, 600, 0) == null);
 }

@@ -3,7 +3,10 @@ const sdl = @import("sdl");
 const state = @import("state");
 const std = @import("std");
 
+const FRect = geometry.FRect;
 const packRgba = geometry.packRgba;
+const PhysicalDims = state.PhysicalDims;
+const Rect = geometry.Rect;
 const UvRect = state.UvRect;
 const Vertex = geometry.Vertex;
 const ViewportParams = state.ViewportParams;
@@ -76,7 +79,7 @@ pub const BatchItem = struct {
     vertex_count: u32,
     texture: sdl.gpu.Texture,
     material: MaterialType = .ui_element,
-    scissor: ?sdl.Rect,
+    scissor: ?Rect,
 };
 
 /// Appends image viewer vertex geometry for the current image texture, applying
@@ -86,12 +89,11 @@ pub fn appendImageCommand(
     batches: *std.ArrayList(BatchItem),
     addBatchFn: anytype,
     allocator: std.mem.Allocator,
-    rect: sdl.FRect,
+    rect: FRect,
     image_data: ?*anyopaque,
     view_params: ViewportParams,
-    f_win_w: f32,
-    f_win_h: f32,
-    scissor: ?sdl.Rect,
+    win_dims: PhysicalDims,
+    scissor: ?Rect,
     uv_rect: UvRect,
 ) !void {
     const texture: ?sdl.gpu.Texture = if (image_data) |ptr|
@@ -167,10 +169,10 @@ pub fn appendImageCommand(
     const world_x4 = c_x + rx4;
     const world_y4 = c_y + ry4;
 
-    const p1 = geometry.toNdc(world_x1, world_y1, f_win_w, f_win_h);
-    const p2 = geometry.toNdc(world_x2, world_y2, f_win_w, f_win_h);
-    const p3 = geometry.toNdc(world_x3, world_y3, f_win_w, f_win_h);
-    const p4 = geometry.toNdc(world_x4, world_y4, f_win_w, f_win_h);
+    const p1 = geometry.toNdc(world_x1, world_y1, win_dims);
+    const p2 = geometry.toNdc(world_x2, world_y2, win_dims);
+    const p3 = geometry.toNdc(world_x3, world_y3, win_dims);
+    const p4 = geometry.toNdc(world_x4, world_y4, win_dims);
 
     const u_min = uv_rect.u_min;
     const v_min = uv_rect.v_min;

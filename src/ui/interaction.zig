@@ -18,13 +18,16 @@ const EditParam = intents.EditParam;
 const FrameInput = state.FrameInput;
 const getPaletteConfig = palette_pkg.getPaletteConfig;
 const getSpec = intents.getSpec;
+const LogicalDims = state.LogicalDims;
 const LogicalPoint = state.LogicalPoint;
 const measureText = text_utils.measureText;
 const MeasureTextUserData = text_utils.MeasureTextUserData;
 const PaletteState = palette_pkg.PaletteState;
 
-/// Opaque Clay context pointer type.
-pub const ClayContext = clay.Context;
+/// Opaque Clay context handle wrapping internal layout engine state.
+pub const ClayContext = struct {
+    raw: *clay.Context,
+};
 
 /// Returns minimum byte buffer capacity required to initialize a Clay context.
 pub fn minClayMemorySize() usize {
@@ -32,17 +35,19 @@ pub fn minClayMemorySize() usize {
 }
 
 /// Initializes a new Clay layout context using caller-provided backing memory.
-pub fn initClayContext(memory: []u8, w: f32, h: f32) *ClayContext {
-    return clay.initialize(
-        clay.Arena.init(memory),
-        .{ .w = w, .h = h },
-        .{},
-    );
+pub fn initClayContext(memory: []u8, dims: LogicalDims) ClayContext {
+    return .{
+        .raw = clay.initialize(
+            clay.Arena.init(memory),
+            .{ .w = dims.w, .h = dims.h },
+            .{},
+        ),
+    };
 }
 
 /// Sets the active thread-local Clay context pointer.
-pub fn setCurrentClayContext(ctx: *ClayContext) void {
-    clay.setCurrentContext(ctx);
+pub fn setCurrentClayContext(ctx: ClayContext) void {
+    clay.setCurrentContext(ctx.raw);
 }
 
 /// Resets Clay's global active context pointer to null, ensuring no dangling
@@ -178,8 +183,7 @@ pub fn isPointerOverViewport() bool {
 /// Resolves the center coordinates of the main viewport element in logical UI
 /// coordinates, falling back to layout math when element is not found.
 pub fn resolveViewportCenter(
-    win_w: f32,
-    win_h: f32,
+    win_dims: LogicalDims,
     edit_docked_w: f32,
 ) LogicalPoint {
     if (isContextActive()) {
@@ -192,10 +196,10 @@ pub fn resolveViewportCenter(
         }
     }
     const available_width =
-        @max(win_w - debugPanelWidth() - edit_docked_w, 1.0);
+        @max(win_dims.w - debugPanelWidth() - edit_docked_w, 1.0);
     return .{
         .x = available_width * 0.5,
-        .y = win_h * 0.5,
+        .y = win_dims.h * 0.5,
     };
 }
 
@@ -293,7 +297,9 @@ pub const PaletteClickHit = union(enum) {
 };
 
 /// Hit-tests a mouse pointer click against the command palette modal and items.
-pub fn hitTestPaletteClick(palette: *const PaletteState) PaletteClickHit {
+pub fn hitTestPaletteClick(
+    palette: *const PaletteState,
+) PaletteClickHit {
     if (!isContextActive()) return .inside_unmatched;
 
     const cfg = getPaletteConfig(palette.mode);
@@ -351,7 +357,7 @@ test "syncFrameInput debug mode pointer localization" {
     resetCurrentClayContext();
     defer resetCurrentClayContext();
 
-    const ctx = initClayContext(&test_clay_memory, 1024, 768);
+    const ctx = initClayContext(&test_clay_memory, .{ .w = 1024, .h = 768 });
     setCurrentClayContext(ctx);
 
     setDebugModeEnabled(true);
@@ -378,11 +384,14 @@ test "resolveViewportCenter fallback arithmetic" {
     resetCurrentClayContext();
     defer resetCurrentClayContext();
 
-    const ctx = initClayContext(&test_clay_memory, 1000, 800);
+    const ctx = initClayContext(&test_clay_memory, .{ .w = 1000, .h = 800 });
     setCurrentClayContext(ctx);
     setDebugModeEnabled(false);
 
-    const center = resolveViewportCenter(1000.0, 800.0, 200.0);
+    const center = resolveViewportCenter(
+        .{ .w = 1000.0, .h = 800.0 },
+        200.0,
+    );
     // available_width = 1000 - 0 - 200 = 800 -> center x = 400, center y = 400
     try std.testing.expectEqual(@as(f32, 400.0), center.x);
     try std.testing.expectEqual(@as(f32, 400.0), center.y);

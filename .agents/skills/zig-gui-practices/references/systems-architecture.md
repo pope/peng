@@ -101,7 +101,7 @@ ______________________________________________________________________
 
 - **Pattern 6 — Game-Engine View Model Snapshot Invariant**:
   - The frame lifecycle enforces a strict barrier between simulation/systems (Phase 2) and rendering (Phase 3).
-  - Prior to calling `ui.layout.renderFrame`, construct `UiViewModel` (`src/state/view_model.zig`) as a fully immutable snapshot struct containing const pointers and value types.
+  - Prior to calling `ui.layout.renderFrame`, construct `UiViewModel` (`src/ui/view_model.zig`) as a fully immutable snapshot struct containing const pointers and value types.
   - UI layout evaluation and vertex generation MUST NOT mutate `AppState` or push intents.
   - Any interactive element (e.g. palette search clicks, overlay close buttons) must have its hit testing and intent dispatch evaluated during Phase 2 system passes (`sysProcessPaletteInput`, `sysProcessUiInteractions`).
 

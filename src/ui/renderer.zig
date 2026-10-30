@@ -6,20 +6,19 @@ const theme = @import("theme.zig");
 
 const addBatch = gpu_pkg.pass.addBatch;
 const BatchItem = gpu_pkg.render_image.BatchItem;
-const CachedText = gpu_pkg.pass.CachedText;
 const ElementTag = state.ElementTag;
-const FontSet = gpu_pkg.text_cache.FontSet;
 const FRect = gpu_pkg.geometry.FRect;
 const geometry = gpu_pkg.geometry;
 const getOrRenderCachedText = gpu_pkg.pass.getOrRenderCachedText;
-const GpuTexture = gpu_pkg.graphics.GpuTexture;
 const intersectScissor = gpu_pkg.pass.intersectScissor;
 const isScissorInvisible = gpu_pkg.pass.isScissorInvisible;
 const PacketBuildContext = gpu_pkg.pass.PacketBuildContext;
 const packRgba = gpu_pkg.geometry.packRgba;
+const PhysicalDims = state.PhysicalDims;
 const Rect = gpu_pkg.geometry.Rect;
 const render_image = gpu_pkg.render_image;
 const RenderPacket = gpu_pkg.pass.RenderPacket;
+const RenderResources = gpu_pkg.graphics.RenderResources;
 const Vertex = gpu_pkg.geometry.Vertex;
 const ViewportParams = state.ViewportParams;
 
@@ -47,15 +46,13 @@ fn appendRectangleCommand(
     config: clay.RectangleRenderData,
     user_data: ?*anyopaque,
     scale_x: f32,
-    f_win_w: f32,
-    f_win_h: f32,
-    white_texture: GpuTexture,
-    blur_texture: ?GpuTexture,
+    win_dims: PhysicalDims,
+    gpu_res: *const RenderResources,
     scissor: ?Rect,
 ) !void {
-    const active_blur_tex: ?GpuTexture =
+    const active_blur_tex =
         if (elementTagFromUserData(user_data) == .blurred_surface)
-            blur_texture
+            gpu_res.blur.getBlurTexture()
         else
             null;
     const is_blurred = active_blur_tex != null;
@@ -70,8 +67,7 @@ fn appendRectangleCommand(
             rect,
             corner_radius,
             config.background_color,
-            f_win_w,
-            f_win_h,
+            win_dims,
             is_blurred,
         );
     } else {
@@ -80,8 +76,7 @@ fn appendRectangleCommand(
             allocator,
             rect,
             config.background_color,
-            f_win_w,
-            f_win_h,
+            win_dims,
             is_blurred,
         );
     }
@@ -104,7 +99,7 @@ fn appendRectangleCommand(
                 allocator,
                 start,
                 count,
-                white_texture,
+                gpu_res.white_texture,
                 .ui_element,
                 scissor,
             );
@@ -120,9 +115,8 @@ fn appendBorderCommand(
     config: clay.BorderRenderData,
     user_data: ?*anyopaque,
     scale_x: f32,
-    f_win_w: f32,
-    f_win_h: f32,
-    white_texture: GpuTexture,
+    win_dims: PhysicalDims,
+    gpu_res: *const RenderResources,
     scissor: ?Rect,
 ) !void {
     const min_radius = @min(rect.w, rect.h) / 2.0;
@@ -174,8 +168,7 @@ fn appendBorderCommand(
                 config.color,
                 8.0 * scale_x,
                 6.0 * scale_x,
-                f_win_w,
-                f_win_h,
+                win_dims,
             );
         } else {
             const line = FRect{
@@ -189,8 +182,7 @@ fn appendBorderCommand(
                 allocator,
                 line,
                 config.color,
-                f_win_w,
-                f_win_h,
+                win_dims,
                 false,
             );
         }
@@ -211,8 +203,7 @@ fn appendBorderCommand(
                 config.color,
                 8.0 * scale_x,
                 6.0 * scale_x,
-                f_win_w,
-                f_win_h,
+                win_dims,
             );
         } else {
             const line = FRect{
@@ -226,8 +217,7 @@ fn appendBorderCommand(
                 allocator,
                 line,
                 config.color,
-                f_win_w,
-                f_win_h,
+                win_dims,
                 false,
             );
         }
@@ -247,8 +237,7 @@ fn appendBorderCommand(
                 config.color,
                 8.0 * scale_x,
                 6.0 * scale_x,
-                f_win_w,
-                f_win_h,
+                win_dims,
             );
         } else {
             const line = FRect{
@@ -262,8 +251,7 @@ fn appendBorderCommand(
                 allocator,
                 line,
                 config.color,
-                f_win_w,
-                f_win_h,
+                win_dims,
                 false,
             );
         }
@@ -284,8 +272,7 @@ fn appendBorderCommand(
                 config.color,
                 8.0 * scale_x,
                 6.0 * scale_x,
-                f_win_w,
-                f_win_h,
+                win_dims,
             );
         } else {
             const line = FRect{
@@ -299,8 +286,7 @@ fn appendBorderCommand(
                 allocator,
                 line,
                 config.color,
-                f_win_w,
-                f_win_h,
+                win_dims,
                 false,
             );
         }
@@ -323,8 +309,7 @@ fn appendBorderCommand(
             a,
             allocator,
             is_dashed,
-            f_win_w,
-            f_win_h,
+            win_dims,
         );
     }
     if (clamped_radii.top_right > 0) {
@@ -344,8 +329,7 @@ fn appendBorderCommand(
             a,
             allocator,
             is_dashed,
-            f_win_w,
-            f_win_h,
+            win_dims,
         );
     }
     if (clamped_radii.bottom_left > 0) {
@@ -365,8 +349,7 @@ fn appendBorderCommand(
             a,
             allocator,
             is_dashed,
-            f_win_w,
-            f_win_h,
+            win_dims,
         );
     }
     if (clamped_radii.bottom_right > 0) {
@@ -386,8 +369,7 @@ fn appendBorderCommand(
             a,
             allocator,
             is_dashed,
-            f_win_w,
-            f_win_h,
+            win_dims,
         );
     }
 
@@ -398,7 +380,7 @@ fn appendBorderCommand(
             allocator,
             start_batch,
             count,
-            white_texture,
+            gpu_res.white_texture,
             .ui_element,
             scissor,
         );
@@ -408,37 +390,36 @@ fn appendBorderCommand(
 fn buildGeometryFromCommands(
     view_params: ViewportParams,
     build_ctx: PacketBuildContext,
-    fonts: FontSet,
     r_commands: []const clay.RenderCommand,
     vertices: *std.ArrayList(Vertex),
     batches: *std.ArrayList(BatchItem),
 ) !void {
-    const f_win_w = @as(f32, @floatFromInt(build_ctx.win_w));
-    const f_win_h = @as(f32, @floatFromInt(build_ctx.win_h));
+    const win_dims = build_ctx.physical_dims;
+    const scale_x = build_ctx.scale.x;
+    const scale_y = build_ctx.scale.y;
 
     var current_scissor: ?Rect = null;
     var scissor_stack: std.ArrayList(Rect) = .empty;
     defer scissor_stack.deinit(build_ctx.frame_allocator);
     var prev_text_bb: ?clay.BoundingBox = null;
     var prev_text_end_x: f32 = 0.0;
-    const blur_texture = build_ctx.gpu_res.blur.getBlurTexture();
 
     for (r_commands) |rcmd| {
         const bb = rcmd.bounding_box;
         const rect = FRect{
-            .x = @round(bb.x * build_ctx.scale_x),
-            .y = @round(bb.y * build_ctx.scale_y),
-            .w = @round(bb.width * build_ctx.scale_x),
-            .h = @round(bb.height * build_ctx.scale_y),
+            .x = @round(bb.x * scale_x),
+            .y = @round(bb.y * scale_y),
+            .w = @round(bb.width * scale_x),
+            .h = @round(bb.height * scale_y),
         };
 
         if (rcmd.command_type == .scissor_start) {
             prev_text_bb = null;
             const raw_sc = Rect{
-                .x = @intFromFloat(@round(bb.x * build_ctx.scale_x)),
-                .y = @intFromFloat(@round(bb.y * build_ctx.scale_y)),
-                .w = @intFromFloat(@round(bb.width * build_ctx.scale_x)),
-                .h = @intFromFloat(@round(bb.height * build_ctx.scale_y)),
+                .x = @intFromFloat(@round(bb.x * scale_x)),
+                .y = @intFromFloat(@round(bb.y * scale_y)),
+                .w = @intFromFloat(@round(bb.width * scale_x)),
+                .h = @intFromFloat(@round(bb.height * scale_y)),
             };
             const eff_sc = if (scissor_stack.items.len > 0) blk: {
                 const parent_sc =
@@ -464,8 +445,7 @@ fn buildGeometryFromCommands(
 
         if (isScissorInvisible(
             current_scissor,
-            build_ctx.win_w,
-            build_ctx.win_h,
+            win_dims,
         )) continue;
 
         switch (rcmd.command_type) {
@@ -484,11 +464,9 @@ fn buildGeometryFromCommands(
                     rect,
                     rcmd.render_data.rectangle,
                     rcmd.user_data,
-                    build_ctx.scale_x,
-                    f_win_w,
-                    f_win_h,
-                    build_ctx.gpu_res.white_texture,
-                    blur_texture,
+                    scale_x,
+                    win_dims,
+                    build_ctx.gpu_res,
                     current_scissor,
                 );
             },
@@ -496,7 +474,7 @@ fn buildGeometryFromCommands(
                 var text_data = rcmd.render_data.text;
                 const debug_w =
                     @as(f32, @floatFromInt(clay.Clay__debugViewWidth));
-                const logical_win_w = f_win_w / build_ctx.scale_x;
+                const logical_win_w = win_dims.w / scale_x;
                 if (clay.isDebugModeEnabled() and
                     bb.x >= (logical_win_w - debug_w - 0.5))
                 {
@@ -520,7 +498,6 @@ fn buildGeometryFromCommands(
                 };
                 if (try getOrRenderCachedText(
                     build_ctx,
-                    fonts,
                     text_data.font_id,
                     text_data.font_size,
                     raw_text,
@@ -548,12 +525,11 @@ fn buildGeometryFromCommands(
                     prev_text_end_x = world_x + cached.w;
 
                     const p1 =
-                        geometry.toNdc(world_x, world_y, f_win_w, f_win_h);
+                        geometry.toNdc(world_x, world_y, win_dims);
                     const p2 = geometry.toNdc(
                         world_x + cached.w,
                         world_y + cached.h,
-                        f_win_w,
-                        f_win_h,
+                        win_dims,
                     );
 
                     const start = @as(u32, @intCast(vertices.items.len));
@@ -627,10 +603,9 @@ fn buildGeometryFromCommands(
                     rect,
                     rcmd.render_data.border,
                     rcmd.user_data,
-                    build_ctx.scale_x,
-                    f_win_w,
-                    f_win_h,
-                    build_ctx.gpu_res.white_texture,
+                    scale_x,
+                    win_dims,
+                    build_ctx.gpu_res,
                     current_scissor,
                 );
             },
@@ -649,8 +624,7 @@ fn buildGeometryFromCommands(
                     rect,
                     rcmd.render_data.image.image_data,
                     view_params,
-                    f_win_w,
-                    f_win_h,
+                    win_dims,
                     current_scissor,
                     uv_rect,
                 );
@@ -671,7 +645,6 @@ fn buildGeometryFromCommands(
 pub fn buildRenderPacket(
     view_params: ViewportParams,
     build_ctx: PacketBuildContext,
-    fonts: FontSet,
     r_commands: []const clay.RenderCommand,
 ) !RenderPacket {
     var packet = RenderPacket{};
@@ -679,7 +652,6 @@ pub fn buildRenderPacket(
     try buildGeometryFromCommands(
         view_params,
         build_ctx,
-        fonts,
         r_commands,
         &packet.vertices,
         &packet.batches,
@@ -691,11 +663,10 @@ pub fn buildRenderPacket(
 test "Clay debug text detection and scaling on HiDPI display" {
     const debug_w = @as(f32, @floatFromInt(clay.Clay__debugViewWidth));
     // physical pixels (1200 logical points at scale_x = 2.0)
-    const win_w: i32 = 2400;
+    const win_dims = PhysicalDims{ .w = 2400.0, .h = 1600.0 };
     const scale_x: f32 = 2.0;
-    const f_win_w = @as(f32, @floatFromInt(win_w));
 
-    const logical_win_w = f_win_w / scale_x; // 1200.0
+    const logical_win_w = win_dims.w / scale_x; // 1200.0
     const debug_panel_min_x = logical_win_w - debug_w - 0.5; // 799.5
 
     // Element inside debug panel at logical x = 800.0

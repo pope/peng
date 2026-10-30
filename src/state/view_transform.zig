@@ -20,35 +20,33 @@ pub fn isAngle90or270(angle: f32) bool {
 /// Computed visual dimensions of an image, its destination layout bounds,
 /// and its base scale factor.
 pub const ViewDims = struct {
-    draw_w: f32,
-    draw_h: f32,
+    draw_dims: PhysicalDims = .{},
     base_scale: f32,
 };
 
 /// Calculates rotated image dimensions, fitted screen rectangle bounds,
 /// and base scale according to `ZoomPreset`.
 pub fn computeViewDims(
-    raw_w: f32,
-    raw_h: f32,
+    raw_dims: PhysicalDims,
     rotation_angle: f32,
-    view_w: f32,
-    view_h: f32,
+    view_dims: PhysicalDims,
     scale_mode: ZoomPreset,
 ) ViewDims {
-    if (raw_w <= 0.0 or raw_h <= 0.0 or view_w <= 0.0 or view_h <= 0.0) {
+    if (raw_dims.w <= 0.0 or raw_dims.h <= 0.0 or
+        view_dims.w <= 0.0 or view_dims.h <= 0.0)
+    {
         return .{
-            .draw_w = 0.0,
-            .draw_h = 0.0,
+            .draw_dims = .{},
             .base_scale = 1.0,
         };
     }
 
     const is_90_or_270 = isAngle90or270(rotation_angle);
-    const img_w = if (is_90_or_270) raw_h else raw_w;
-    const img_h = if (is_90_or_270) raw_w else raw_h;
+    const img_w = if (is_90_or_270) raw_dims.h else raw_dims.w;
+    const img_h = if (is_90_or_270) raw_dims.w else raw_dims.h;
 
     const r_img = img_w / img_h;
-    const r_view = view_w / view_h;
+    const r_view = view_dims.w / view_dims.h;
 
     var draw_w: f32 = img_w;
     var draw_h: f32 = img_h;
@@ -59,50 +57,49 @@ pub fn computeViewDims(
             draw_h = img_h;
         },
         .shrink => {
-            if (img_w <= view_w and img_h <= view_h) {
+            if (img_w <= view_dims.w and img_h <= view_dims.h) {
                 draw_w = img_w;
                 draw_h = img_h;
             } else {
                 if (r_img > r_view) {
-                    draw_w = view_w;
-                    draw_h = view_w / r_img;
+                    draw_w = view_dims.w;
+                    draw_h = view_dims.w / r_img;
                 } else {
-                    draw_h = view_h;
-                    draw_w = view_h * r_img;
+                    draw_h = view_dims.h;
+                    draw_w = view_dims.h * r_img;
                 }
             }
         },
         .full => {
             if (r_img > r_view) {
-                draw_w = view_w;
-                draw_h = view_w / r_img;
+                draw_w = view_dims.w;
+                draw_h = view_dims.w / r_img;
             } else {
-                draw_h = view_h;
-                draw_w = view_h * r_img;
+                draw_h = view_dims.h;
+                draw_w = view_dims.h * r_img;
             }
         },
         .crop => {
             if (r_img > r_view) {
-                draw_h = view_h;
-                draw_w = view_h * r_img;
+                draw_h = view_dims.h;
+                draw_w = view_dims.h * r_img;
             } else {
-                draw_w = view_w;
-                draw_h = view_w / r_img;
+                draw_w = view_dims.w;
+                draw_h = view_dims.w / r_img;
             }
         },
         .fit_width => {
-            draw_w = view_w;
-            draw_h = view_w / r_img;
+            draw_w = view_dims.w;
+            draw_h = view_dims.w / r_img;
         },
         .fit_height => {
-            draw_h = view_h;
-            draw_w = view_h * r_img;
+            draw_h = view_dims.h;
+            draw_w = view_dims.h * r_img;
         },
     }
 
     return .{
-        .draw_w = draw_w,
-        .draw_h = draw_h,
+        .draw_dims = .{ .w = draw_w, .h = draw_h },
         .base_scale = draw_w / img_w,
     };
 }
@@ -124,43 +121,40 @@ pub fn computeLogicalDrawDims(
     }
     const phys_view = viewport_logical.toPhysical(scale);
     const dims = computeViewDims(
-        src_phys.w,
-        src_phys.h,
+        src_phys,
         rotation_angle,
-        @max(phys_view.w, 1.0),
-        @max(phys_view.h, 1.0),
+        .{ .w = @max(phys_view.w, 1.0), .h = @max(phys_view.h, 1.0) },
         scale_mode,
     );
-    const phys_draw = PhysicalDims{ .w = dims.draw_w, .h = dims.draw_h };
-    return phys_draw.toLogical(scale);
+    return dims.draw_dims.toLogical(scale);
 }
 
 /// Computes the universal pixel zoom factor Z for a target preset.
 pub fn computePresetZoom(
-    raw_w: f32,
-    raw_h: f32,
+    raw_dims: PhysicalDims,
     rotation_angle: f32,
-    view_w: f32,
-    view_h: f32,
+    view_dims: PhysicalDims,
     preset: ZoomPreset,
 ) f32 {
-    if (raw_w <= 0.0 or raw_h <= 0.0 or view_w <= 0.0 or view_h <= 0.0) {
+    if (raw_dims.w <= 0.0 or raw_dims.h <= 0.0 or
+        view_dims.w <= 0.0 or view_dims.h <= 0.0)
+    {
         return 1.0;
     }
     const is_90_or_270 = isAngle90or270(rotation_angle);
-    const img_w = if (is_90_or_270) raw_h else raw_w;
-    const img_h = if (is_90_or_270) raw_w else raw_h;
+    const img_w = if (is_90_or_270) raw_dims.h else raw_dims.w;
+    const img_h = if (is_90_or_270) raw_dims.w else raw_dims.h;
 
     return switch (preset) {
         .none => 1.0,
-        .shrink => if (img_w <= view_w and img_h <= view_h)
+        .shrink => if (img_w <= view_dims.w and img_h <= view_dims.h)
             1.0
         else
-            @min(view_w / img_w, view_h / img_h),
-        .full => @min(view_w / img_w, view_h / img_h),
-        .crop => @max(view_w / img_w, view_h / img_h),
-        .fit_width => view_w / img_w,
-        .fit_height => view_h / img_h,
+            @min(view_dims.w / img_w, view_dims.h / img_h),
+        .full => @min(view_dims.w / img_w, view_dims.h / img_h),
+        .crop => @max(view_dims.w / img_w, view_dims.h / img_h),
+        .fit_width => view_dims.w / img_w,
+        .fit_height => view_dims.h / img_h,
     };
 }
 
@@ -220,42 +214,41 @@ pub const ThumbnailPadding = union(enum) {
 /// Computes normalized thumbnail padding to remove letterbox/pillarbox margins
 /// in embedded camera thumbnails.
 pub fn computeThumbnailPadding(
-    full_w: f32,
-    full_h: f32,
-    thumb_w: f32,
-    thumb_h: f32,
+    full_dims: PhysicalDims,
+    thumb_dims: PhysicalDims,
     dct_snapped: bool,
 ) ThumbnailPadding {
-    if (!std.math.isFinite(full_w) or
-        !std.math.isFinite(full_h) or
-        !std.math.isFinite(thumb_w) or
-        !std.math.isFinite(thumb_h) or
-        full_w <= 0.0 or full_h <= 0.0 or thumb_w <= 0.0 or thumb_h <= 0.0)
+    if (!std.math.isFinite(full_dims.w) or
+        !std.math.isFinite(full_dims.h) or
+        !std.math.isFinite(thumb_dims.w) or
+        !std.math.isFinite(thumb_dims.h) or
+        full_dims.w <= 0.0 or full_dims.h <= 0.0 or
+        thumb_dims.w <= 0.0 or thumb_dims.h <= 0.0)
     {
         return .none;
     }
 
-    const ar_full = full_w / full_h;
-    const ar_thumb = thumb_w / thumb_h;
+    const ar_full = full_dims.w / full_dims.h;
+    const ar_thumb = thumb_dims.w / thumb_dims.h;
 
     if (std.math.approxEqAbs(f32, ar_full, ar_thumb, 0.01)) {
         return .none;
     }
 
     if (ar_full > ar_thumb) {
-        // Full image is wider than thumbnail container -> Letterboxing (black bars top/bottom)
-        const raw_pad_px = (thumb_h - (thumb_w / ar_full)) / 2.0;
+        // Full image is wider than thumbnail container -> Letterboxing
+        const raw_pad_px = (thumb_dims.h - (thumb_dims.w / ar_full)) / 2.0;
         const pad_px = if (dct_snapped) blk: {
             // Camera hardware RAW preview JPEG encoders align active image
             // and padding to 8-pixel DCT block boundaries.
             const nearest_block_px = @round(raw_pad_px / 8.0) * 8.0;
             const can_snap = nearest_block_px > 0.0 and
-                nearest_block_px * 2.0 < thumb_h and
+                nearest_block_px * 2.0 < thumb_dims.h and
                 @abs(raw_pad_px - nearest_block_px) <= 2.0;
             break :blk if (can_snap) nearest_block_px else raw_pad_px;
         } else raw_pad_px;
 
-        const v_pad = pad_px / thumb_h;
+        const v_pad = pad_px / thumb_dims.h;
         const v_min = std.math.clamp(v_pad, 0.0, 0.49);
         return .{
             .letterbox = .{
@@ -265,17 +258,17 @@ pub fn computeThumbnailPadding(
             },
         };
     } else {
-        // Full image is taller than thumbnail container -> Pillarboxing (black bars left/right)
-        const raw_pad_px = (thumb_w - (thumb_h * ar_full)) / 2.0;
+        // Full image is taller than thumbnail container -> Pillarboxing
+        const raw_pad_px = (thumb_dims.w - (thumb_dims.h * ar_full)) / 2.0;
         const pad_px = if (dct_snapped) blk: {
             const nearest_block_px = @round(raw_pad_px / 8.0) * 8.0;
             const can_snap = nearest_block_px > 0.0 and
-                nearest_block_px * 2.0 < thumb_w and
+                nearest_block_px * 2.0 < thumb_dims.w and
                 @abs(raw_pad_px - nearest_block_px) <= 2.0;
             break :blk if (can_snap) nearest_block_px else raw_pad_px;
         } else raw_pad_px;
 
-        const u_pad = pad_px / thumb_w;
+        const u_pad = pad_px / thumb_dims.w;
         const u_min = std.math.clamp(u_pad, 0.0, 0.49);
         return .{
             .pillarbox = .{
@@ -296,51 +289,89 @@ pub fn computeThumbnailPadding(
 /// theoretical aspect-ratio padding is preserved to prevent over-cropping real
 /// image pixels and vertical stretch distortion.
 pub fn computeThumbnailUvCrop(
-    full_w: f32,
-    full_h: f32,
-    thumb_w: f32,
-    thumb_h: f32,
+    full_dims: PhysicalDims,
+    thumb_dims: PhysicalDims,
     dct_snapped: bool,
 ) UvRect {
-    return computeThumbnailPadding(full_w, full_h, thumb_w, thumb_h, dct_snapped).toUvRect();
+    return computeThumbnailPadding(
+        full_dims,
+        thumb_dims,
+        dct_snapped,
+    ).toUvRect();
 }
 
 test "computeThumbnailUvCrop letterboxing (3:2 in 4:3 thumb snaps to 8px DCT block)" {
     // 8192x5461 (3:2 = 1.50) in 160x120 (4:3 = 1.333)
     // Theoretical padding is 6.67px; camera hardware preview encoder aligns
     // to 8px DCT block boundary.
-    const crop = computeThumbnailUvCrop(8192.0, 5461.0, 160.0, 120.0, true);
+    const crop = computeThumbnailUvCrop(
+        .{ .w = 8192.0, .h = 5461.0 },
+        .{ .w = 160.0, .h = 120.0 },
+        true,
+    );
     try std.testing.expectEqual(@as(f32, 0.0), crop.u_min);
     try std.testing.expectEqual(@as(f32, 1.0), crop.u_max);
     try std.testing.expectApproxEqAbs(@as(f32, 8.0 / 120.0), crop.v_min, 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 1.0 - (8.0 / 120.0)), crop.v_max, 0.001);
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 1.0 - (8.0 / 120.0)),
+        crop.v_max,
+        0.001,
+    );
 }
 
 test "computeThumbnailUvCrop letterboxing (3:2 in 4:3 thumb when dct_snapped is false)" {
     // 7728x5152 (3:2 = 1.50) in 160x120 (4:3 = 1.333)
     // In-camera JPEGs or non-snapped RAW previews downscale directly to exact
     // aspect ratio with 6.67px padding.
-    const crop = computeThumbnailUvCrop(7728.0, 5152.0, 160.0, 120.0, false);
+    const crop = computeThumbnailUvCrop(
+        .{ .w = 7728.0, .h = 5152.0 },
+        .{ .w = 160.0, .h = 120.0 },
+        false,
+    );
     try std.testing.expectEqual(@as(f32, 0.0), crop.u_min);
     try std.testing.expectEqual(@as(f32, 1.0), crop.u_max);
-    try std.testing.expectApproxEqAbs(@as(f32, 6.66667 / 120.0), crop.v_min, 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 1.0 - (6.66667 / 120.0)), crop.v_max, 0.001);
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 6.66667 / 120.0),
+        crop.v_min,
+        0.001,
+    );
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 1.0 - (6.66667 / 120.0)),
+        crop.v_max,
+        0.001,
+    );
 }
 
 test "computeThumbnailUvCrop letterboxing (16:9 in 4:3 thumb snaps to 16px DCT block)" {
     // 3840x2160 (16:9 = 1.7778) in 160x120 (4:3 = 1.333)
     // Theoretical padding is 15.0px; snaps to nearest 16px DCT block boundary
     // (88px active image).
-    const crop = computeThumbnailUvCrop(3840.0, 2160.0, 160.0, 120.0, true);
+    const crop = computeThumbnailUvCrop(
+        .{ .w = 3840.0, .h = 2160.0 },
+        .{ .w = 160.0, .h = 120.0 },
+        true,
+    );
     try std.testing.expectEqual(@as(f32, 0.0), crop.u_min);
     try std.testing.expectEqual(@as(f32, 1.0), crop.u_max);
-    try std.testing.expectApproxEqAbs(@as(f32, 16.0 / 120.0), crop.v_min, 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 1.0 - (16.0 / 120.0)), crop.v_max, 0.001);
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 16.0 / 120.0),
+        crop.v_min,
+        0.001,
+    );
+    try std.testing.expectApproxEqAbs(
+        @as(f32, 1.0 - (16.0 / 120.0)),
+        crop.v_max,
+        0.001,
+    );
 }
 
 test "computeThumbnailUvCrop pillarboxing (3:4 portrait in 4:3 thumb)" {
     // 3000x4000 (3:4 = 0.75) in 160x120 (4:3 = 1.333)
-    const crop = computeThumbnailUvCrop(3000.0, 4000.0, 160.0, 120.0, false);
+    const crop = computeThumbnailUvCrop(
+        .{ .w = 3000.0, .h = 4000.0 },
+        .{ .w = 160.0, .h = 120.0 },
+        false,
+    );
     try std.testing.expectEqual(@as(f32, 0.0), crop.v_min);
     try std.testing.expectEqual(@as(f32, 1.0), crop.v_max);
     try std.testing.expectApproxEqAbs(@as(f32, 0.21875), crop.u_min, 0.001);
@@ -349,45 +380,67 @@ test "computeThumbnailUvCrop pillarboxing (3:4 portrait in 4:3 thumb)" {
 
 test "computeViewDims fit_width, fit_height, and crop" {
     // 800x1600 portrait image (1:2 aspect ratio) in 1000x800 viewport
-    const fw = computeViewDims(800.0, 1600.0, 0.0, 1000.0, 800.0, .fit_width);
-    try std.testing.expectEqual(@as(f32, 1000.0), fw.draw_w);
-    try std.testing.expectEqual(@as(f32, 2000.0), fw.draw_h);
+    const fw = computeViewDims(
+        .{ .w = 800.0, .h = 1600.0 },
+        0.0,
+        .{ .w = 1000.0, .h = 800.0 },
+        .fit_width,
+    );
+    try std.testing.expectEqual(@as(f32, 1000.0), fw.draw_dims.w);
+    try std.testing.expectEqual(@as(f32, 2000.0), fw.draw_dims.h);
 
-    const fh = computeViewDims(800.0, 1600.0, 0.0, 1000.0, 800.0, .fit_height);
-    try std.testing.expectEqual(@as(f32, 400.0), fh.draw_w);
-    try std.testing.expectEqual(@as(f32, 800.0), fh.draw_h);
+    const fh = computeViewDims(
+        .{ .w = 800.0, .h = 1600.0 },
+        0.0,
+        .{ .w = 1000.0, .h = 800.0 },
+        .fit_height,
+    );
+    try std.testing.expectEqual(@as(f32, 400.0), fh.draw_dims.w);
+    try std.testing.expectEqual(@as(f32, 800.0), fh.draw_dims.h);
 
     // Portrait image (r_img = 0.5 <= r_view = 1.25) in .crop mode fills width
     // (draw_w = 1000) and preserves 1:2 aspect ratio (draw_h = 2000).
     const crop_portrait = computeViewDims(
-        800.0,
-        1600.0,
+        .{ .w = 800.0, .h = 1600.0 },
         0.0,
-        1000.0,
-        800.0,
+        .{ .w = 1000.0, .h = 800.0 },
         .crop,
     );
-    try std.testing.expectEqual(@as(f32, 1000.0), crop_portrait.draw_w);
-    try std.testing.expectEqual(@as(f32, 2000.0), crop_portrait.draw_h);
+    try std.testing.expectEqual(
+        @as(f32, 1000.0),
+        crop_portrait.draw_dims.w,
+    );
+    try std.testing.expectEqual(
+        @as(f32, 2000.0),
+        crop_portrait.draw_dims.h,
+    );
     try std.testing.expectEqual(@as(f32, 1.25), crop_portrait.base_scale);
 
     // Landscape image (1600x800, r_img = 2.0 > r_view = 1.25) in .crop mode
     // fills height (draw_h = 800) and preserves 2:1 aspect (draw_w = 1600).
     const crop_landscape = computeViewDims(
-        1600.0,
-        800.0,
+        .{ .w = 1600.0, .h = 800.0 },
         0.0,
-        1000.0,
-        800.0,
+        .{ .w = 1000.0, .h = 800.0 },
         .crop,
     );
-    try std.testing.expectEqual(@as(f32, 1600.0), crop_landscape.draw_w);
-    try std.testing.expectEqual(@as(f32, 800.0), crop_landscape.draw_h);
+    try std.testing.expectEqual(
+        @as(f32, 1600.0),
+        crop_landscape.draw_dims.w,
+    );
+    try std.testing.expectEqual(
+        @as(f32, 800.0),
+        crop_landscape.draw_dims.h,
+    );
     try std.testing.expectEqual(@as(f32, 1.0), crop_landscape.base_scale);
 }
 
 test "computeThumbnailUvCrop matching aspect ratios" {
-    const crop = computeThumbnailUvCrop(1600.0, 1200.0, 160.0, 120.0, false);
+    const crop = computeThumbnailUvCrop(
+        .{ .w = 1600.0, .h = 1200.0 },
+        .{ .w = 160.0, .h = 120.0 },
+        false,
+    );
     try std.testing.expectEqual(@as(f32, 0.0), crop.u_min);
     try std.testing.expectEqual(@as(f32, 0.0), crop.v_min);
     try std.testing.expectEqual(@as(f32, 1.0), crop.u_max);
@@ -396,52 +449,93 @@ test "computeThumbnailUvCrop matching aspect ratios" {
 
 test "computeThumbnailPadding tagged union variants" {
     // Letterbox test
-    const lb_pad = computeThumbnailPadding(8192.0, 5461.0, 160.0, 120.0, true);
+    const lb_pad = computeThumbnailPadding(
+        .{ .w = 8192.0, .h = 5461.0 },
+        .{ .w = 160.0, .h = 120.0 },
+        true,
+    );
     switch (lb_pad) {
         .letterbox => |lb| {
             try std.testing.expectEqual(@as(f32, 8.0), lb.pad_px);
-            try std.testing.expectApproxEqAbs(@as(f32, 8.0 / 120.0), lb.v_min, 0.001);
-            try std.testing.expectApproxEqAbs(@as(f32, 1.0 - (8.0 / 120.0)), lb.v_max, 0.001);
+            try std.testing.expectApproxEqAbs(
+                @as(f32, 8.0 / 120.0),
+                lb.v_min,
+                0.001,
+            );
+            try std.testing.expectApproxEqAbs(
+                @as(f32, 1.0 - (8.0 / 120.0)),
+                lb.v_max,
+                0.001,
+            );
         },
         else => unreachable,
     }
     try std.testing.expectEqual(@as(f32, 8.0), lb_pad.getPaddingPx());
 
     // Pillarbox test
-    const pb_pad = computeThumbnailPadding(3000.0, 4000.0, 160.0, 120.0, false);
+    const pb_pad = computeThumbnailPadding(
+        .{ .w = 3000.0, .h = 4000.0 },
+        .{ .w = 160.0, .h = 120.0 },
+        false,
+    );
     switch (pb_pad) {
         .pillarbox => |pb| {
             try std.testing.expectApproxEqAbs(@as(f32, 35.0), pb.pad_px, 0.01);
-            try std.testing.expectApproxEqAbs(@as(f32, 0.21875), pb.u_min, 0.001);
-            try std.testing.expectApproxEqAbs(@as(f32, 0.78125), pb.u_max, 0.001);
+            try std.testing.expectApproxEqAbs(
+                @as(f32, 0.21875),
+                pb.u_min,
+                0.001,
+            );
+            try std.testing.expectApproxEqAbs(
+                @as(f32, 0.78125),
+                pb.u_max,
+                0.001,
+            );
         },
         else => unreachable,
     }
 
     // None test
-    const none_pad = computeThumbnailPadding(1600.0, 1200.0, 160.0, 120.0, false);
+    const none_pad = computeThumbnailPadding(
+        .{ .w = 1600.0, .h = 1200.0 },
+        .{ .w = 160.0, .h = 120.0 },
+        false,
+    );
     try std.testing.expectEqual(ThumbnailPadding.none, none_pad);
     try std.testing.expectEqual(@as(f32, 0.0), none_pad.getPaddingPx());
 }
 
 test "computePresetZoom calculations" {
     // 1024x682 image in 1024x768 viewport
-    const z_fit = computePresetZoom(1024.0, 682.0, 0.0, 1024.0, 768.0, .full);
+    const z_fit = computePresetZoom(
+        .{ .w = 1024.0, .h = 682.0 },
+        0.0,
+        .{ .w = 1024.0, .h = 768.0 },
+        .full,
+    );
     try std.testing.expectEqual(@as(f32, 1.0), z_fit);
 
-    const z_crop = computePresetZoom(1024.0, 682.0, 0.0, 1024.0, 768.0, .crop);
+    const z_crop = computePresetZoom(
+        .{ .w = 1024.0, .h = 682.0 },
+        0.0,
+        .{ .w = 1024.0, .h = 768.0 },
+        .crop,
+    );
     try std.testing.expectApproxEqAbs(@as(f32, 768.0 / 682.0), z_crop, 0.0001);
 
-    const z_none = computePresetZoom(1024.0, 682.0, 0.0, 1024.0, 768.0, .none);
+    const z_none = computePresetZoom(
+        .{ .w = 1024.0, .h = 682.0 },
+        0.0,
+        .{ .w = 1024.0, .h = 768.0 },
+        .none,
+    );
     try std.testing.expectEqual(@as(f32, 1.0), z_none);
 
     // Rotated 90 degrees (becomes 682x1024)
     const z_fit_rot = computePresetZoom(
-        1024.0,
-        682.0,
+        .{ .w = 1024.0, .h = 682.0 },
         90.0,
-        1024.0,
-        768.0,
+        .{ .w = 1024.0, .h = 768.0 },
         .full,
     );
     try std.testing.expectApproxEqAbs(
@@ -451,11 +545,9 @@ test "computePresetZoom calculations" {
     );
 
     const z_crop_rot = computePresetZoom(
-        1024.0,
-        682.0,
+        .{ .w = 1024.0, .h = 682.0 },
         90.0,
-        1024.0,
-        768.0,
+        .{ .w = 1024.0, .h = 768.0 },
         .crop,
     );
     try std.testing.expectApproxEqAbs(

@@ -5,6 +5,7 @@ const sdl = @import("sdl");
 const std = @import("std");
 const ui = @import("ui");
 
+const FrameTarget = gpu.pass.FrameTarget;
 const MeasureTextUserData = ui.text_utils.MeasureTextUserData;
 const RenderResources = gpu.graphics.RenderResources;
 
@@ -65,8 +66,7 @@ pub fn updateFrame(
     }
 
     app_state.viewer.mouse_inside = input.mouse_inside;
-    app_state.viewer.last_win_w = input.win_w;
-    app_state.viewer.last_win_h = input.win_h;
+    app_state.viewer.last_win_dims = input.logicalWinDims();
 
     const is_slider_active =
         (app_state.viewer.drag_state == .slider) or
@@ -114,17 +114,23 @@ pub fn updateFrame(
         .capturing => |s| s.path,
     };
     const target_window = app_state.display.visibleWindow();
+    const frame_target: FrameTarget = if (target_window) |win|
+        .{ .window = win }
+    else
+        .{ .headless = input.logicalWinDims().toPhysical(input.dpiScale()) };
     ui.layout.renderFrame(
         ui_model,
         resources,
         input,
         app_state.allocator,
         frame_allocator,
-        resources.fonts[0..],
         measure_data,
-        target_window,
-        &app_state.viewer.ui.metrics,
-        capture_filename,
+        .{
+            .target = frame_target,
+            .scale = input.dpiScale(),
+            .metrics = &app_state.viewer.ui.metrics,
+            .capture_filename = capture_filename,
+        },
     ) catch |err| {
         app_state.handleScreenshotPostRender(err);
         return err;

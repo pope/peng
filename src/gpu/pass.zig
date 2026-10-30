@@ -17,9 +17,12 @@ const text_cache = @import("text_cache.zig");
 const BatchItem = render_image.BatchItem;
 const BlurResources = graphics.BlurResources;
 const BlurUniforms = graphics.BlurUniforms;
-const FontSet = text_cache.FontSet;
+const DpiScale = state.DpiScale;
 const ImageUniforms = render_image.ImageUniforms;
 const MaterialType = render_image.MaterialType;
+const PhysicalDims = state.PhysicalDims;
+const PositiveDimsU32 = state.PositiveDimsU32;
+const Rect = geometry.Rect;
 const RenderResources = graphics.RenderResources;
 const saveTextureToPng = graphics.saveTextureToPng;
 const TextCacheKey = text_cache.TextCacheKey;
@@ -27,6 +30,13 @@ const UiRenderMetrics = state.UiRenderMetrics;
 const UiUniforms = render_image.UiUniforms;
 const Vertex = geometry.Vertex;
 const ViewportParams = state.ViewportParams;
+
+/// Presentation target for a rendered frame: either a native swapchain
+/// window or a headless offscreen render target with physical pixel dimensions.
+pub const FrameTarget = union(enum) {
+    window: sdl.Window,
+    headless: PhysicalDims,
+};
 
 /// Cached text texture and rendered dimensions.
 pub const CachedText = struct {
@@ -41,27 +51,22 @@ pub const PacketBuildContext = struct {
     gpu_res: *RenderResources,
     copy_pass: sdl.gpu.CopyPass,
     temp_buffers: *std.ArrayList(sdl.gpu.TransferBuffer),
-    win_w: i32,
-    win_h: i32,
-    scale_x: f32,
-    scale_y: f32,
+    physical_dims: PhysicalDims,
+    scale: DpiScale,
     gpa_allocator: std.mem.Allocator,
     frame_allocator: std.mem.Allocator,
 };
 
 /// Target options and parameters for frame execution and presentation.
 pub const FrameTargetOptions = struct {
-    window: ?sdl.Window,
-    width: u32,
-    height: u32,
-    scale_x: f32 = 1.0,
-    scale_y: f32 = 1.0,
+    target: FrameTarget,
+    scale: DpiScale = .{},
     needs_blur: bool = false,
     metrics: ?*UiRenderMetrics = null,
     capture_filename: ?[:0]const u8 = null,
 };
 
-fn scissorEqual(a: ?sdl.Rect, b: ?sdl.Rect) bool {
+fn scissorEqual(a: ?Rect, b: ?Rect) bool {
     if (a) |sa| {
         if (b) |sb| {
             return sa.x == sb.x and sa.y == sb.y and
@@ -73,12 +78,12 @@ fn scissorEqual(a: ?sdl.Rect, b: ?sdl.Rect) bool {
 }
 
 /// Computes the rectangular intersection of two scissor clipping rectangles.
-pub fn intersectScissor(a: sdl.Rect, b: sdl.Rect) sdl.Rect {
+pub fn intersectScissor(a: Rect, b: Rect) Rect {
     const x1 = @max(a.x, b.x);
     const y1 = @max(a.y, b.y);
     const x2 = @min(a.x + a.w, b.x + b.w);
     const y2 = @min(a.y + a.h, b.y + b.h);
-    return sdl.Rect{
+    return Rect{
         .x = x1,
         .y = y1,
         .w = @max(0, x2 - x1),
@@ -87,12 +92,16 @@ pub fn intersectScissor(a: sdl.Rect, b: sdl.Rect) sdl.Rect {
 }
 
 /// Returns true if scissor box has non-positive area or falls outside window.
-pub inline fn isScissorInvisible(sc: ?sdl.Rect, win_w: i32, win_h: i32) bool {
-    if (win_w <= 0 or win_h <= 0) return true;
+pub inline fn isScissorInvisible(sc: ?Rect, win_dims: PhysicalDims) bool {
+    if (win_dims.w <= 0.0 or win_dims.h <= 0.0) return true;
     if (sc) |s| {
+        const sw: f32 = @floatFromInt(s.w);
+        const sh: f32 = @floatFromInt(s.h);
+        const sx: f32 = @floatFromInt(s.x);
+        const sy: f32 = @floatFromInt(s.y);
         if (s.w <= 0 or s.h <= 0) return true;
-        if (s.x >= win_w or s.y >= win_h) return true;
-        if (s.x + s.w <= 0 or s.y + s.h <= 0) return true;
+        if (sx >= win_dims.w or sy >= win_dims.h) return true;
+        if (sx + sw <= 0.0 or sy + sh <= 0.0) return true;
     }
     return false;
 }
@@ -113,7 +122,7 @@ pub fn addBatch(
     count: u32,
     texture: sdl.gpu.Texture,
     material: MaterialType,
-    scissor: ?sdl.Rect,
+    scissor: ?Rect,
 ) !void {
     if (batches.items.len > 0) {
         var last = &batches.items[batches.items.len - 1];
@@ -138,12 +147,12 @@ pub fn addBatch(
 /// modulated dynamically at draw time via GPU vertex color attributes.
 pub fn getOrRenderCachedText(
     build_ctx: PacketBuildContext,
-    fonts: FontSet,
     font_id: usize,
     font_size: u16,
     raw_text: []const u8,
     rgb: [3]f32,
 ) !?CachedText {
+    const fonts = build_ctx.gpu_res.fonts[0..];
     if (font_id >= fonts.len) return null;
     const font = fonts[font_id] orelse return null;
 
@@ -155,7 +164,7 @@ pub fn getOrRenderCachedText(
     if (text_slice.len == 0) return null;
 
     const target_font_size =
-        @as(f32, @floatFromInt(font_size)) * build_ctx.scale_x;
+        @as(f32, @floatFromInt(font_size)) * build_ctx.scale.x;
     const target_font_size_u16 =
         @as(u16, @intFromFloat(@round(target_font_size)));
 
@@ -378,11 +387,12 @@ fn drawBatches(
     render_pass: sdl.gpu.RenderPass,
     cmd_buf: sdl.gpu.CommandBuffer,
     batches: []const BatchItem,
-    win_w: i32,
-    win_h: i32,
+    target_dims: PositiveDimsU32,
 ) void {
     var last_pipeline: ?sdl.gpu.Pipeline = null;
     var last_material: ?MaterialType = null;
+    const win_w: i32 = @intCast(target_dims.w);
+    const win_h: i32 = @intCast(target_dims.h);
 
     for (batches) |batch| {
         if (batch.scissor) |sc| {
@@ -394,11 +404,14 @@ fn drawBatches(
             if (safe_sc.w <= 0 or safe_sc.h <= 0 or
                 safe_sc.x >= win_w or safe_sc.y >= win_h) continue;
             safe_sc.w = @min(safe_sc.w, win_w - safe_sc.x);
-            safe_sc.h = @min(safe_sc.h, win_h - safe_sc.y);
-            render_pass.setScissor(&safe_sc);
+            render_pass.setScissor(
+                safe_sc.x,
+                safe_sc.y,
+                safe_sc.w,
+                safe_sc.h,
+            );
         } else {
-            const full_sc = sdl.Rect{ .x = 0, .y = 0, .w = win_w, .h = win_h };
-            render_pass.setScissor(&full_sc);
+            render_pass.setScissor(0, 0, win_w, win_h);
         }
 
         const is_image = (batch.material == .image_viewer);
@@ -517,8 +530,7 @@ fn renderBatchPass(
     target_tex: sdl.gpu.Texture,
     batches: []const BatchItem,
     vert_buf: ?sdl.gpu.Buffer,
-    win_w: i32,
-    win_h: i32,
+    target_dims: PositiveDimsU32,
 ) bool {
     const color_target = sdl.gpu.ColorTargetAttachment{
         .texture = target_tex,
@@ -545,8 +557,7 @@ fn renderBatchPass(
             render_pass,
             cmd_buf,
             batches,
-            win_w,
-            win_h,
+            target_dims,
         );
     }
     return true;
@@ -558,10 +569,8 @@ fn runBlurFilterPass(
     target_tex: sdl.gpu.Texture,
     source_tex: sdl.gpu.Texture,
     pipeline: sdl.gpu.Pipeline,
-    src_w: u32,
-    src_h: u32,
-    dst_w: u32,
-    dst_h: u32,
+    src_dims: PositiveDimsU32,
+    dst_dims: PositiveDimsU32,
     radius: f32,
 ) bool {
     const target = sdl.gpu.ColorTargetAttachment{
@@ -587,8 +596,8 @@ fn runBlurFilterPass(
     }});
 
     const ubo = BlurUniforms{
-        .texel_size_x = 1.0 / @as(f32, @floatFromInt(src_w)),
-        .texel_size_y = 1.0 / @as(f32, @floatFromInt(src_h)),
+        .texel_size_x = 1.0 / @as(f32, @floatFromInt(src_dims.w)),
+        .texel_size_y = 1.0 / @as(f32, @floatFromInt(src_dims.h)),
         .radius = radius,
         .padding = 0.0,
     };
@@ -598,13 +607,7 @@ fn runBlurFilterPass(
         .sampler = gpu.sampler,
     }});
 
-    const sc = sdl.Rect{
-        .x = 0,
-        .y = 0,
-        .w = @intCast(dst_w),
-        .h = @intCast(dst_h),
-    };
-    pass.setScissor(&sc);
+    pass.setScissor(0, 0, @intCast(dst_dims.w), @intCast(dst_dims.h));
     pass.drawPrimitives(6, 1, 0, 0);
     return true;
 }
@@ -616,8 +619,7 @@ fn executeRenderPass(
     swap_tex: sdl.gpu.Texture,
     batches: []const BatchItem,
     vert_buf: ?sdl.gpu.Buffer,
-    win_w: i32,
-    win_h: i32,
+    target_dims: PositiveDimsU32,
 ) void {
     const split = findBlurSplit(batches, gpu.blur) orelse {
         _ = renderBatchPass(
@@ -627,8 +629,7 @@ fn executeRenderPass(
             swap_tex,
             batches,
             vert_buf,
-            win_w,
-            win_h,
+            target_dims,
         );
         return;
     };
@@ -646,8 +647,7 @@ fn executeRenderPass(
         tex.scene,
         batches[0..idx],
         vert_buf,
-        win_w,
-        win_h,
+        target_dims,
     )) {
         return;
     }
@@ -659,10 +659,8 @@ fn executeRenderPass(
         tex.blur_down,
         tex.scene,
         pipes.down,
-        tex.target_w,
-        tex.target_h,
-        tex.down_w,
-        tex.down_h,
+        tex.target_dims,
+        tex.down_dims,
         2.0,
     )) {
         return;
@@ -675,10 +673,8 @@ fn executeRenderPass(
         tex.blur,
         tex.blur_down,
         pipes.up,
-        tex.down_w,
-        tex.down_h,
-        tex.down_w,
-        tex.down_h,
+        tex.down_dims,
+        tex.down_dims,
         2.5,
     )) {
         return;
@@ -717,8 +713,12 @@ fn executeRenderPass(
             .texture = tex.scene,
             .sampler = gpu.sampler,
         }});
-        const full_sc = sdl.Rect{ .x = 0, .y = 0, .w = win_w, .h = win_h };
-        final_pass.setScissor(&full_sc);
+        final_pass.setScissor(
+            0,
+            0,
+            @intCast(target_dims.w),
+            @intCast(target_dims.h),
+        );
         final_pass.drawPrimitives(6, 1, 0, 0);
 
         // 4b. Draw remaining batches (blurred surfaces, text, controls)
@@ -733,8 +733,7 @@ fn executeRenderPass(
                 final_pass,
                 cmd_buf,
                 batches[idx..],
-                win_w,
-                win_h,
+                target_dims,
             );
         }
     }
@@ -749,8 +748,7 @@ fn executeRenderPacket(
     packet: *const RenderPacket,
     frame_allocator: std.mem.Allocator,
     temp_buffers: *std.ArrayList(sdl.gpu.TransferBuffer),
-    win_w: i32,
-    win_h: i32,
+    target_dims: PositiveDimsU32,
 ) !void {
     const frame_idx = gpu_res.frame_index % 2;
 
@@ -773,8 +771,7 @@ fn executeRenderPacket(
         swap_tex,
         packet.batches.items,
         vert_buf,
-        win_w,
-        win_h,
+        target_dims,
     );
 }
 
@@ -808,53 +805,64 @@ pub fn executeFrame(
         temp_buffers.deinit(frame_allocator);
     }
 
-    const use_headless = (target.window == null);
+    const is_headless = switch (target.target) {
+        .headless => true,
+        .window => false,
+    };
 
     var target_tex: ?sdl.gpu.Texture = null;
     var target_w: u32 = 0;
     var target_h: u32 = 0;
     var target_format: sdl.gpu.TextureFormat = .invalid;
 
-    if (use_headless) {
-        target_w = target.width;
-        target_h = target.height;
-        target_format = .rgba8_unorm;
+    const safe_scale = DpiScale.init(target.scale.x, target.scale.y);
+    switch (target.target) {
+        .headless => |phys_dims| {
+            if (phys_dims.toPositiveU32()) |pos| {
+                target_w = pos.w;
+                target_h = pos.h;
+            } else {
+                target_w = 1;
+                target_h = 1;
+            }
+            target_format = .rgba8_unorm;
 
-        const target_tex_info = sdl.gpu.TextureCreateInfo{
-            .type = .type_2d,
-            .format = .rgba8_unorm,
-            .usage = sdl.gpu.TextureUsage.color_target,
-            .width = target_w,
-            .height = target_h,
-            .layer_count_or_depth = 1,
-            .num_levels = 1,
-            .sample_count = .count_1,
-            .props = 0,
-        };
-        target_tex = dev.createTexture(&target_tex_info) orelse {
-            std.log.err(
-                "Failed to create offscreen target texture: {s}",
-                .{sdl.getError()},
-            );
-            return error.OffscreenTargetTextureCreationFailed;
-        };
-    } else {
-        var swap_w: u32 = 0;
-        var swap_h: u32 = 0;
-        const win = target.window.?;
-        if (win.waitAndAcquireSwapchainTexture(
-            cmd_buf,
-            &swap_w,
-            &swap_h,
-        )) |st| {
-            target_tex = st;
-            target_w = swap_w;
-            target_h = swap_h;
-            target_format = dev.getSwapchainTextureFormat(win);
-        }
+            const target_tex_info = sdl.gpu.TextureCreateInfo{
+                .type = .type_2d,
+                .format = .rgba8_unorm,
+                .usage = sdl.gpu.TextureUsage.color_target,
+                .width = target_w,
+                .height = target_h,
+                .layer_count_or_depth = 1,
+                .num_levels = 1,
+                .sample_count = .count_1,
+                .props = 0,
+            };
+            target_tex = dev.createTexture(&target_tex_info) orelse {
+                std.log.err(
+                    "Failed to create offscreen target texture: {s}",
+                    .{sdl.getError()},
+                );
+                return error.OffscreenTargetTextureCreationFailed;
+            };
+        },
+        .window => |win| {
+            var swap_w: u32 = 0;
+            var swap_h: u32 = 0;
+            if (win.waitAndAcquireSwapchainTexture(
+                cmd_buf,
+                &swap_w,
+                &swap_h,
+            )) |st| {
+                target_tex = st;
+                target_w = swap_w;
+                target_h = swap_h;
+                target_format = dev.getSwapchainTextureFormat(win);
+            }
+        },
     }
 
-    defer if (use_headless) {
+    defer if (is_headless) {
         if (target_tex) |tex| {
             dev.releaseTexture(tex);
         }
@@ -871,11 +879,13 @@ pub fn executeFrame(
         }
 
         const start_render = sdl.timer.getTicksNs();
-        const win_w: i32 = @intCast(target_w);
-        const win_h: i32 = @intCast(target_h);
+        const target_dims = PositiveDimsU32{
+            .w = target_w,
+            .h = target_h,
+        };
 
-        if (win_w > 0 and win_h > 0 and target.needs_blur) {
-            gpu_res.blur.ensure(dev, target_w, target_h, target_format);
+        if (target.needs_blur) {
+            gpu_res.blur.ensure(dev, target_dims, target_format);
         }
 
         const copy_pass = cmd_buf.beginCopyPass() orelse {
@@ -891,10 +901,11 @@ pub fn executeFrame(
             .gpu_res = gpu_res,
             .copy_pass = copy_pass,
             .temp_buffers = &temp_buffers,
-            .win_w = win_w,
-            .win_h = win_h,
-            .scale_x = target.scale_x,
-            .scale_y = target.scale_y,
+            .physical_dims = .{
+                .w = @floatFromInt(target_w),
+                .h = @floatFromInt(target_h),
+            },
+            .scale = safe_scale,
             .gpa_allocator = gpa_allocator,
             .frame_allocator = frame_allocator,
         });
@@ -912,8 +923,7 @@ pub fn executeFrame(
             &packet,
             frame_allocator,
             &temp_buffers,
-            win_w,
-            win_h,
+            target_dims,
         );
 
         gpu_res.text_cache.evictUnused(
@@ -939,12 +949,11 @@ pub fn executeFrame(
                 dev,
                 cmd_buf,
                 tex,
-                target_w,
-                target_h,
+                target_dims,
                 target_format,
                 filename,
             );
-        } else if (use_headless) {
+        } else if (is_headless) {
             cmd_buf_submitted = true;
             const fence_opt = cmd_buf.submitAndAcquireFence();
             if (fence_opt) |fence| {
@@ -971,8 +980,8 @@ pub fn executeFrame(
 }
 
 test "intersectScissor computes correct overlapping rectangle" {
-    const a = sdl.Rect{ .x = 10, .y = 20, .w = 100, .h = 100 };
-    const b = sdl.Rect{ .x = 50, .y = 60, .w = 100, .h = 100 };
+    const a = Rect{ .x = 10, .y = 20, .w = 100, .h = 100 };
+    const b = Rect{ .x = 50, .y = 60, .w = 100, .h = 100 };
     const res = intersectScissor(a, b);
     try std.testing.expectEqual(@as(i32, 50), res.x);
     try std.testing.expectEqual(@as(i32, 60), res.y);
@@ -980,14 +989,14 @@ test "intersectScissor computes correct overlapping rectangle" {
     try std.testing.expectEqual(@as(i32, 60), res.h);
 
     // Disjoint rectangles
-    const c = sdl.Rect{ .x = 200, .y = 200, .w = 50, .h = 50 };
+    const c = Rect{ .x = 200, .y = 200, .w = 50, .h = 50 };
     const disjoint = intersectScissor(a, c);
     try std.testing.expectEqual(@as(i32, 0), disjoint.w);
     try std.testing.expectEqual(@as(i32, 0), disjoint.h);
 
     // Negative coordinates and partial overlap
-    const neg1 = sdl.Rect{ .x = -20, .y = -20, .w = 50, .h = 50 };
-    const neg2 = sdl.Rect{ .x = 0, .y = 0, .w = 50, .h = 50 };
+    const neg1 = Rect{ .x = -20, .y = -20, .w = 50, .h = 50 };
+    const neg2 = Rect{ .x = 0, .y = 0, .w = 50, .h = 50 };
     const neg_res = intersectScissor(neg1, neg2);
     try std.testing.expectEqual(@as(i32, 0), neg_res.x);
     try std.testing.expectEqual(@as(i32, 0), neg_res.y);
@@ -996,9 +1005,9 @@ test "intersectScissor computes correct overlapping rectangle" {
 }
 
 test "scissorEqual compares rectangles correctly" {
-    const r1 = sdl.Rect{ .x = 10, .y = 20, .w = 30, .h = 40 };
-    const r2 = sdl.Rect{ .x = 10, .y = 20, .w = 30, .h = 40 };
-    const r3 = sdl.Rect{ .x = 11, .y = 20, .w = 30, .h = 40 };
+    const r1 = Rect{ .x = 10, .y = 20, .w = 30, .h = 40 };
+    const r2 = Rect{ .x = 10, .y = 20, .w = 30, .h = 40 };
+    const r3 = Rect{ .x = 11, .y = 20, .w = 30, .h = 40 };
 
     try std.testing.expect(scissorEqual(null, null));
     try std.testing.expect(!scissorEqual(null, r1));
@@ -1008,34 +1017,42 @@ test "scissorEqual compares rectangles correctly" {
 }
 
 test "isScissorInvisible detects non-visible scissor bounds" {
+    const full_dims = PhysicalDims{ .w = 1000.0, .h = 800.0 };
+
     // Null scissor is visible (covers full window)
-    try std.testing.expect(!isScissorInvisible(null, 1000, 800));
+    try std.testing.expect(!isScissorInvisible(null, full_dims));
 
     // Zero or negative window dimensions
-    try std.testing.expect(isScissorInvisible(null, 0, 800));
-    try std.testing.expect(isScissorInvisible(null, 1000, -10));
+    try std.testing.expect(isScissorInvisible(
+        null,
+        PhysicalDims{ .w = 0.0, .h = 800.0 },
+    ));
+    try std.testing.expect(isScissorInvisible(
+        null,
+        PhysicalDims{ .w = 1000.0, .h = -10.0 },
+    ));
 
     // Normal visible scissor
-    const vis = sdl.Rect{ .x = 10, .y = 10, .w = 100, .h = 100 };
-    try std.testing.expect(!isScissorInvisible(vis, 1000, 800));
+    const vis = Rect{ .x = 10, .y = 10, .w = 100, .h = 100 };
+    try std.testing.expect(!isScissorInvisible(vis, full_dims));
 
     // Zero or negative area
-    const zero_w = sdl.Rect{ .x = 10, .y = 10, .w = 0, .h = 100 };
-    try std.testing.expect(isScissorInvisible(zero_w, 1000, 800));
-    const neg_h = sdl.Rect{ .x = 10, .y = 10, .w = 100, .h = -5 };
-    try std.testing.expect(isScissorInvisible(neg_h, 1000, 800));
+    const zero_w = Rect{ .x = 10, .y = 10, .w = 0, .h = 100 };
+    try std.testing.expect(isScissorInvisible(zero_w, full_dims));
+    const neg_h = Rect{ .x = 10, .y = 10, .w = 100, .h = -5 };
+    try std.testing.expect(isScissorInvisible(neg_h, full_dims));
 
     // Off-screen to right/bottom
-    const off_r = sdl.Rect{ .x = 1000, .y = 10, .w = 100, .h = 100 };
-    try std.testing.expect(isScissorInvisible(off_r, 1000, 800));
-    const off_b = sdl.Rect{ .x = 10, .y = 800, .w = 100, .h = 100 };
-    try std.testing.expect(isScissorInvisible(off_b, 1000, 800));
+    const off_r = Rect{ .x = 1000, .y = 10, .w = 100, .h = 100 };
+    try std.testing.expect(isScissorInvisible(off_r, full_dims));
+    const off_b = Rect{ .x = 10, .y = 800, .w = 100, .h = 100 };
+    try std.testing.expect(isScissorInvisible(off_b, full_dims));
 
     // Off-screen to left/top
-    const off_l = sdl.Rect{ .x = -100, .y = 10, .w = 100, .h = 100 };
-    try std.testing.expect(isScissorInvisible(off_l, 1000, 800));
-    const off_t = sdl.Rect{ .x = 10, .y = -100, .w = 100, .h = 100 };
-    try std.testing.expect(isScissorInvisible(off_t, 1000, 800));
+    const off_l = Rect{ .x = -100, .y = 10, .w = 100, .h = 100 };
+    try std.testing.expect(isScissorInvisible(off_l, full_dims));
+    const off_t = Rect{ .x = 10, .y = -100, .w = 100, .h = 100 };
+    try std.testing.expect(isScissorInvisible(off_t, full_dims));
 }
 
 test "scissor stack dynamically grows beyond 16 levels with arena allocator" {
@@ -1043,13 +1060,13 @@ test "scissor stack dynamically grows beyond 16 levels with arena allocator" {
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    var stack: std.ArrayList(sdl.Rect) = .empty;
+    var stack: std.ArrayList(Rect) = .empty;
     defer stack.deinit(allocator);
 
     // Push 32 nested scissor levels
     var i: i32 = 0;
     while (i < 32) : (i += 1) {
-        const sc = sdl.Rect{ .x = i, .y = i, .w = 500 - i, .h = 500 - i };
+        const sc = Rect{ .x = i, .y = i, .w = 500 - i, .h = 500 - i };
         const eff = if (stack.items.len > 0)
             intersectScissor(stack.items[stack.items.len - 1], sc)
         else
@@ -1121,18 +1138,19 @@ test "findBlurSplit pairs initialized resources with blurred_surface index" {
             .scene = .{ .ptr = @ptrFromInt(0x2003) },
             .blur_down = .{ .ptr = @ptrFromInt(0x2004) },
             .blur = .{ .ptr = @ptrFromInt(0x2005) },
-            .target_w = 800,
-            .target_h = 600,
+            .target_dims = .{ .w = 800, .h = 600 },
             .target_format = .rgba8_unorm,
-            .down_w = 200,
-            .down_h = 150,
+            .down_dims = .{ .w = 200, .h = 150 },
         },
     };
     const blur_res: BlurResources = .{ .initialized = init_res };
 
     const split = findBlurSplit(&batches, blur_res).?;
     try std.testing.expectEqual(@as(usize, 1), split.split_idx);
-    try std.testing.expectEqual(@as(u32, 800), split.blur.textures.target_w);
+    try std.testing.expectEqual(
+        @as(u32, 800),
+        split.blur.textures.target_dims.w,
+    );
 
     // No blurred_surface in batch slice returns null even when initialized
     try std.testing.expect(findBlurSplit(batches[0..1], blur_res) == null);
