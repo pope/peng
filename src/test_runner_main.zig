@@ -871,16 +871,6 @@ pub fn main(init: std.process.Init) !void {
         }
     }
 
-    // Debug Tools
-    {
-        try sendCommand(socket_path, "palette none");
-        try sendCommand(socket_path, "debug true");
-        if (try harness.verify("debug_tools.png", "debug_tools.png")) {
-            steps_with_discrepancies += 1;
-        }
-        try sendCommand(socket_path, "debug false");
-    }
-
     // Title Overlay
     {
         try sendCommand(socket_path, "title");
@@ -941,17 +931,7 @@ pub fn main(init: std.process.Init) !void {
             steps_with_discrepancies += 1;
         }
 
-        // 2. Open Clay debug mode alongside edit panel and verify co-existence
-        try sendCommand(socket_path, "debug true");
-        if (try harness.verify(
-            "edit_panel_and_debug.png",
-            "edit_panel_and_debug.png",
-        )) {
-            steps_with_discrepancies += 1;
-        }
-        try sendCommand(socket_path, "debug false");
-
-        // 3. Test toggling, resetting, and closing
+        // 2. Test toggling, resetting, and closing
         try sendCommand(socket_path, "edit toggle");
         try sendCommand(socket_path, "edit toggle");
         try sendCommand(socket_path, "edit reset");

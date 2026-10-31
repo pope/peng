@@ -1,39 +1,31 @@
-const clay = @import("zclay");
+const geom = @import("geom");
 const gpu_pkg = @import("gpu");
 const std = @import("std");
-const theme = @import("theme.zig");
 
 const FontMeasurer = gpu_pkg.text_cache.FontMeasurer;
+const LogicalDims = geom.LogicalDims;
 
-/// User data context passed to Clay text measurement callbacks containing
-/// font handles and debug flags.
+/// Font measurement context passed to UI layout and truncation helpers.
 pub const MeasureTextUserData = struct {
     measurer: FontMeasurer = .empty,
-    is_debug_measuring: bool = false,
-    allocator: std.mem.Allocator = undefined,
 };
 
-/// Measures text pixel width and height for Clay layout element sizing.
+/// Measures text pixel width and height for layout element sizing.
 pub fn measureText(
     text: []const u8,
-    config: *clay.TextElementConfig,
+    font_id: u16,
+    font_size: u16,
     data: *const MeasureTextUserData,
-) clay.Dimensions {
+) LogicalDims {
     const clean_text = if (std.mem.findScalar(u8, text, 0)) |idx|
         text[0..idx]
     else
         text;
     if (clean_text.len == 0) return .{ .w = 0, .h = 0 };
 
-    var target_size = @as(f32, @floatFromInt(config.font_size));
-    if (data.is_debug_measuring) {
-        // Scale down hardcoded 16px Clay debug text to 12px (0.75x) during
-        // debug panel layout
-        target_size *= theme.debug_font_scale;
-    }
-
+    const target_size = @as(f32, @floatFromInt(font_size));
     const dims = data.measurer.measure(
-        config.font_id,
+        font_id,
         target_size,
         clean_text,
     );
@@ -168,17 +160,12 @@ pub fn truncateDirectory(
     font_size: u16,
     data: *const MeasureTextUserData,
 ) []const u8 {
-    var text_config = clay.TextElementConfig{
-        .font_id = 0,
-        .font_size = font_size,
-    };
-
-    const initial_dim = measureText(text, &text_config, data);
+    const initial_dim = measureText(text, 0, font_size, data);
     if (initial_dim.w <= max_w) {
         return text;
     }
 
-    const dots_w = measureText("...", &text_config, data).w;
+    const dots_w = measureText("...", 0, font_size, data).w;
 
     var low: usize = 0;
     var high: usize = text.len;
@@ -193,7 +180,7 @@ pub fn truncateDirectory(
             byte_start += 1;
         }
 
-        const part_w = measureText(text[byte_start..], &text_config, data).w;
+        const part_w = measureText(text[byte_start..], 0, font_size, data).w;
 
         if (part_w + dots_w <= max_w) {
             best_len = text.len - byte_start;
@@ -224,9 +211,7 @@ test "formatSize" {
 }
 
 test "truncateFilename fallback without fonts" {
-    const data = MeasureTextUserData{
-        .allocator = std.testing.allocator,
-    };
+    const data = MeasureTextUserData{};
     const res = truncateFilename(
         std.testing.allocator,
         "very_long_filename.png",
@@ -238,9 +223,7 @@ test "truncateFilename fallback without fonts" {
 }
 
 test "truncateDirectory fallback without fonts" {
-    const data = MeasureTextUserData{
-        .allocator = std.testing.allocator,
-    };
+    const data = MeasureTextUserData{};
     const res = truncateDirectory(
         std.testing.allocator,
         "/long/path/to/folder",

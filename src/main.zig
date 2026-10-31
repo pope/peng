@@ -145,8 +145,6 @@ const AppGraphicsAndState = struct {
     setup: gpu.graphics.GraphicsSetup,
     resources: gpu.graphics.RenderResources,
     state: app.state.AppState,
-    clay_memory: []u8,
-    clay_context: ui.interaction.ClayContext,
     measure_data: ui.text_utils.MeasureTextUserData,
     ipc_server: ?*ipc.IpcServer,
 
@@ -156,8 +154,6 @@ const AppGraphicsAndState = struct {
         self.parsed.deinit(self.gpa);
         self.state.workers.exiting.store(true, .release);
         if (self.ipc_server) |srv| srv.deinit(self.io);
-        ui.interaction.resetCurrentClayContext();
-        self.gpa.free(self.clay_memory);
         self.state.deinit();
         self.resources.deinit(self.gpa);
         self.setup.gpu_device.destroy();
@@ -166,7 +162,7 @@ const AppGraphicsAndState = struct {
     }
 
     /// Phase 1: Initializes CLI options, SDL graphics, viewer state, early
-    /// background workers, GPU resources, and Clay layout engine in-place.
+    /// background workers, and GPU resources in-place.
     ///
     /// In-place initialization ensures `self.state` is pinned at its final
     /// memory address before `openPath` / `readPipedStdin` spawns background
@@ -322,17 +318,7 @@ const AppGraphicsAndState = struct {
         );
         errdefer self.resources.deinit(gpa);
 
-        // 6. Initialize Clay UI Layout Engine
-        const clay_memory_size = ui.interaction.minClayMemorySize();
-        self.clay_memory = try gpa.alloc(u8, clay_memory_size);
-        errdefer gpa.free(self.clay_memory);
-
-        self.clay_context = ui.interaction.initClayContext(
-            self.clay_memory,
-            .{ .w = 1024, .h = 768 },
-        );
-
-        // 7. Bind graphics device and window handle to state
+        // 6. Bind graphics device and window handle to state
         self.state.gpu_device = self.setup.gpu_device;
         self.state.unpack_compute_pipeline = self.resources.unpack_compute_pipeline;
         if (!parsed.headless) {
@@ -353,12 +339,9 @@ const AppGraphicsAndState = struct {
 /// Phase 2: Runs the main application event processing, state updating,
 /// and rendering loop.
 fn runMainLoop(ctx: *AppGraphicsAndState) !void {
-    // Configure Clay measure text function with a stable pointer to measure_data
     ctx.measure_data = ui.text_utils.MeasureTextUserData{
         .measurer = ctx.resources.fontMeasurer(),
-        .allocator = ctx.gpa,
     };
-    ui.interaction.bindMeasureText(&ctx.measure_data);
 
     // Initialize IPC server and spawn IPC worker task
     if (ctx.parsed.ipc_mode.isEnabled()) {
@@ -394,7 +377,6 @@ fn runMainLoop(ctx: *AppGraphicsAndState) !void {
 
         while (ctx.state.viewer.running) {
             defer _ = frame_arena.reset(.retain_capacity);
-            ui.interaction.setCurrentClayContext(ctx.clay_context);
             lib_viewer.safeReload(ctx.io);
             if (lib_viewer.is_valid) {
                 lib_viewer.update(

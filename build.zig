@@ -15,25 +15,6 @@ pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
-    // zclay (clay-zig-bindings) dependency
-    const zclay_dep = b.dependency("zclay", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
-    if (hot_reload) {
-        for (zclay_dep.module("zclay").link_objects.items) |link_obj| {
-            switch (link_obj) {
-                .other_step => |compile_step| {
-                    if (std.mem.eql(u8, compile_step.name, "clay")) {
-                        compile_step.root_module.pic = true;
-                    }
-                },
-                else => {},
-            }
-        }
-    }
-
     const fuzzig_dep = b.dependency("fuzzig", .{
         .target = target,
         .optimize = optimize,
@@ -312,7 +293,6 @@ pub fn build(b: *std.Build) void {
     ui_module.addImport("state", state_module);
     ui_module.addImport("triage", triage_module);
     ui_module.addImport("vfs", vfs_module);
-    ui_module.addImport("zclay", zclay_dep.module("zclay"));
 
     config_module.addImport("intents", intents_module);
     config_module.addImport("thumbcache", thumbcache_module);

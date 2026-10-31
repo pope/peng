@@ -267,7 +267,6 @@ pub const IpcCommand = union(enum) {
     toggle_stream,
     palette: PaletteTarget,
     thumb: ThumbAction,
-    debug: bool,
     wait_load,
     reset_view,
     reset_adjustments,
@@ -371,7 +370,6 @@ pub const IpcCommand = union(enum) {
                     .toggle => return .toggle_debug_thumb,
                 }
             },
-            .debug => |enabled| return .{ .set_debug_mode = enabled },
             .next => return .next_image,
             .prev => return .prev_image,
             .pick => return .mark_pick,
@@ -708,15 +706,6 @@ pub const IpcCommand = union(enum) {
             } else {
                 return .{ .thumb = .toggle };
             }
-        } else if (std.mem.eql(u8, cmd, "debug")) {
-            const val = it.next() orelse return error.MissingArgument;
-            if (isBoolOn(val)) {
-                return .{ .debug = true };
-            } else if (isBoolOff(val)) {
-                return .{ .debug = false };
-            } else {
-                return error.InvalidArgument;
-            }
         } else if (std.mem.eql(u8, cmd, "wait_load")) {
             return .wait_load;
         } else if (std.mem.eql(u8, cmd, "reset_view") or std.mem.eql(u8, cmd, "reset")) {
@@ -868,7 +857,6 @@ pub const IpcCommand = union(enum) {
             .toggle_stream,
             .palette,
             .thumb,
-            .debug,
             .screenshot,
             .reset_view,
             .reset_adjustments,
@@ -1588,8 +1576,6 @@ test "IpcCommand parsing" {
     try std.testing.expect(cmd_manga_on.manga);
     const cmd_thumb_off = try IpcCommand.parse("thumb off");
     try std.testing.expectEqual(ThumbAction.disable, cmd_thumb_off.thumb);
-    const cmd_debug_enable = try IpcCommand.parse("debug enable");
-    try std.testing.expect(cmd_debug_enable.debug);
     const cmd_precache = try IpcCommand.parse("precache");
     try std.testing.expectEqual(
         intents.AppIntent.precache_directory,

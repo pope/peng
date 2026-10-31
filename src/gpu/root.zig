@@ -1,10 +1,8 @@
 //! GPU Pipeline Module
-//!
-//! Provides zero-Clay GPU pipeline components, texture upload helpers, and
+//! Provides pure-Zig GPU pipeline components, texture upload helpers, and
 //! persistent staging buffers for host-to-device transfers.
-//!
-//! INVARIANT: Code in `src/gpu/` MUST NOT depend on zclay, `src/ui/`, or
-//! `src/app/` (zero imports of Clay, UI layout/renderer, AppState, or systems).
+//! INVARIANT: Code in `src/gpu/` MUST NOT depend on `src/ui/` or `src/app/`
+//! (zero imports of UI layout/renderer, AppState, or systems).
 
 /// 2D vertex generation, color packing, and rounded rectangle tessellation.
 pub const geometry = @import("geometry.zig");

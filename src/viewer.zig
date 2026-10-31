@@ -10,9 +10,7 @@ const MeasureTextUserData = ui.text_utils.MeasureTextUserData;
 const RenderResources = gpu.graphics.RenderResources;
 
 /// Entry point for loading dynamic UI resources / assets.
-pub fn loadAssets() !void {
-    ui.interaction.resetMeasureTextCache();
-}
+pub fn loadAssets() !void {}
 
 /// Entry point for unloading dynamic UI resources / assets upon library reload.
 pub fn unloadAssets() void {}
@@ -29,9 +27,6 @@ pub fn updateFrame(
     frame_arena: *std.heap.ArenaAllocator,
     last_time: *u64,
 ) !void {
-    // Re-bind Clay measure text function pointer to the reloaded code address
-    ui.interaction.bindMeasureText(measure_data);
-
     // Phase 1: Background Event & Input Ingestion
     const skip_wait = (parsed_test_mode or parsed_headless) and
         !app_state.display.isHidden();
@@ -72,14 +67,13 @@ pub fn updateFrame(
         (app_state.viewer.drag_state == .slider) or
         (app_state.viewer.ui.overlays.edit_panel.active_slider != null);
 
-    const update_input =
-        ui.interaction.syncFrameInput(input, is_slider_active);
+    ui.interaction.syncFrameInput(input, is_slider_active);
 
     // Phase 2: Update Phase — Run all systems sequentially
     const was_hidden = app_state.display.isHidden();
     try app.systems.runUpdatePhase(
         app_state,
-        update_input,
+        input,
         frame_allocator,
         parsed_test_mode or parsed_headless,
     );

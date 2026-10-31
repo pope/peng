@@ -1,15 +1,18 @@
-const clay = @import("zclay");
+const geom = @import("geom");
 const intents = @import("intents");
+const interaction = @import("interaction.zig");
 const palette_pkg = @import("palette");
-const state = @import("state");
+const renderer = @import("renderer.zig");
 const std = @import("std");
 const text_utils = @import("text_utils.zig");
 const theme = @import("theme.zig");
 const view_model = @import("view_model.zig");
 
-const ElementTag = state.ElementTag;
+const Color = theme.Color;
+const FRect = geom.FRect;
 const FuzzyHighlighter = palette_pkg.FuzzyHighlighter;
 const getPaletteConfig = palette_pkg.getPaletteConfig;
+const LogicalDims = geom.LogicalDims;
 const MeasureTextUserData = text_utils.MeasureTextUserData;
 const PaletteConfig = palette_pkg.PaletteConfig;
 const palette_action_items = intents.actions.palette_action_items;
@@ -17,30 +20,34 @@ const PaletteMode = intents.PaletteMode;
 const PaletteState = palette_pkg.PaletteState;
 const partitionHighlightedText = palette_pkg.partitionHighlightedText;
 const remapMiddleTruncatedMatches = palette_pkg.remapMiddleTruncatedMatches;
+const TextSpan = renderer.TextSpan;
 const truncateDirectory = text_utils.truncateDirectory;
 const truncateFilename = text_utils.truncateFilename;
 const truncateFilenameMiddle = text_utils.truncateFilenameMiddle;
+const UiDrawList = renderer.UiDrawList;
 const UiViewModel = view_model.UiViewModel;
 const VirtualWindow = palette_pkg.VirtualWindow;
 const withAlpha = theme.withAlpha;
 
-/// Emits Clay text elements partitioning characters into alternating normal
+/// Emits text spans partitioning characters into alternating normal
 /// and highlighted segments based on fuzzy match indices.
 fn renderFuzzyMatchText(
+    list: *UiDrawList,
     allocator: std.mem.Allocator,
+    rect: FRect,
     text: []const u8,
     match_indices: []const usize,
     font_size: u16,
-    normal_color: clay.Color,
-    highlight_color: clay.Color,
-) void {
+    normal_color: Color,
+    highlight_color: Color,
+) !void {
     if (text.len == 0) return;
     if (match_indices.len == 0) {
-        clay.text(text, .{
+        try list.addText(rect, .{
+            .text = text,
             .color = normal_color,
             .font_size = font_size,
             .font_id = 0,
-            .wrap_mode = .none,
         });
         return;
     }
@@ -54,109 +61,204 @@ fn renderFuzzyMatchText(
             "partitionHighlightedText failed for '{s}': {}",
             .{ text, err },
         );
-        clay.text(text, .{
+        try list.addText(rect, .{
+            .text = text,
             .color = normal_color,
             .font_size = font_size,
             .font_id = 0,
-            .wrap_mode = .none,
         });
         return;
     };
     defer allocator.free(chunks);
 
-    clay.UI()(.{
-        .layout = .{
-            .sizing = .{ .w = .fit, .h = .fit },
-            .direction = .left_to_right,
-            .child_alignment = .{ .x = .left, .y = .center },
-        },
-    })({
-        for (chunks) |chunk| {
-            const chunk_color =
-                if (chunk.is_matched) highlight_color else normal_color;
-            clay.text(chunk.slice, .{
-                .color = chunk_color,
-                .font_size = font_size,
-                .font_id = 0,
-                .wrap_mode = .none,
-            });
-        }
+    const spans = try allocator.alloc(TextSpan, chunks.len);
+    for (chunks, 0..) |chunk, i| {
+        spans[i] = .{
+            .text = chunk.slice,
+            .color = if (chunk.is_matched) highlight_color else normal_color,
+        };
+    }
+    try list.addTextRuns(rect, .{
+        .spans = spans,
+        .font_size = font_size,
+        .font_id = 0,
     });
 }
 
-fn renderHeader(mode: PaletteMode, title: []const u8, progress: f32) void {
-    clay.UI()(.{
-        .layout = .{
-            .sizing = .{ .w = .grow, .h = .fit },
-            .direction = .left_to_right,
-            .child_alignment = .{ .x = .left, .y = .center },
-        },
-    })({
-        clay.text(title, .{
-            .color = withAlpha(switch (mode) {
-                .files => theme.pink,
-                .actions => theme.blue,
-                .set_brightness,
-                .set_contrast,
-                .set_contrast_blend,
-                .set_highlights,
-                .set_shadows,
-                .set_whites,
-                .set_blacks,
-                .set_temperature,
-                .set_tint,
-                .set_vibrance,
-                .set_saturation,
-                .set_clarity,
-                .set_texture,
-                => theme.peach,
-                .go_to_image => theme.green,
-                .directory_navigator => theme.mauve,
-                .set_slideshow_interval => theme.yellow,
-                .inactive => theme.text,
-            }, progress),
-            .font_size = 13,
-            .font_id = 0,
-        });
+fn renderHeader(
+    list: *UiDrawList,
+    rect: FRect,
+    mode: PaletteMode,
+    title: []const u8,
+    progress: f32,
+) !void {
+    const text_color = withAlpha(switch (mode) {
+        .files => theme.pink,
+        .actions => theme.blue,
+        .set_brightness,
+        .set_contrast,
+        .set_contrast_blend,
+        .set_highlights,
+        .set_shadows,
+        .set_whites,
+        .set_blacks,
+        .set_temperature,
+        .set_tint,
+        .set_vibrance,
+        .set_saturation,
+        .set_clarity,
+        .set_texture,
+        => theme.peach,
+        .go_to_image => theme.green,
+        .directory_navigator => theme.mauve,
+        .set_slideshow_interval => theme.yellow,
+        .inactive => theme.text,
+    }, progress);
+
+    try list.addText(rect, .{
+        .text = title,
+        .color = text_color,
+        .font_size = 13,
+        .font_id = 0,
     });
 }
 
 fn renderBadge(
+    list: *UiDrawList,
+    x: f32,
+    center_y: f32,
     text: []const u8,
-    text_color: clay.Color,
-    border_color: clay.Color,
+    text_color: Color,
+    border_color: Color,
     progress: f32,
-) void {
-    clay.UI()(.{
-        .layout = .{
-            .sizing = .{ .w = .fit, .h = .fit },
-            .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
-        },
+    measure_data: *const MeasureTextUserData,
+) !f32 {
+    const dims = text_utils.measureText(text, 0, 11, measure_data);
+    const badge_w = dims.w + 12.0;
+    const badge_h = if (dims.h > 0.0) dims.h + 4.0 else 17.0;
+    const y = center_y - badge_h * 0.5;
+    const badge_rect = FRect{ .x = x, .y = y, .w = badge_w, .h = badge_h };
+
+    try list.addRect(badge_rect, .{
         .background_color = withAlpha(theme.crust, progress),
         .corner_radius = .all(4),
-        .border = .{
-            .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-            .color = withAlpha(border_color, progress),
-        },
-    })({
-        clay.text(text, .{
-            .color = withAlpha(text_color, progress),
-            .font_size = 11,
-            .font_id = 0,
-        });
     });
+    try list.addBorder(badge_rect, .{
+        .color = withAlpha(border_color, progress),
+        .width = .all(1),
+        .corner_radius = .all(4),
+    });
+    try list.addText(.{
+        .x = x + 6.0,
+        .y = y + 2.0,
+        .w = dims.w,
+        .h = dims.h,
+    }, .{
+        .text = text,
+        .color = withAlpha(text_color, progress),
+        .font_size = 11,
+        .font_id = 0,
+    });
+    return badge_w;
+}
+
+fn renderShortcutBadge(
+    list: *UiDrawList,
+    x: f32,
+    center_y: f32,
+    text: []const u8,
+    progress: f32,
+    measure_data: *const MeasureTextUserData,
+) !f32 {
+    const dims = text_utils.measureText(text, 0, 11, measure_data);
+    const badge_w = dims.w + 16.0;
+    const badge_h = if (dims.h > 0.0) dims.h + 6.0 else 19.0;
+    const y = center_y - badge_h * 0.5;
+    const badge_rect = FRect{ .x = x, .y = y, .w = badge_w, .h = badge_h };
+
+    try list.addRect(badge_rect, .{
+        .background_color = withAlpha(theme.crust, progress),
+        .corner_radius = .all(4),
+    });
+    try list.addBorder(badge_rect, .{
+        .color = withAlpha(theme.surface0, progress),
+        .width = .all(1),
+        .corner_radius = .all(4),
+    });
+    try list.addText(.{
+        .x = x + 8.0,
+        .y = y + 3.0,
+        .w = dims.w,
+        .h = dims.h,
+    }, .{
+        .text = text,
+        .color = withAlpha(theme.subtext0, progress),
+        .font_size = 11,
+        .font_id = 0,
+    });
+    return badge_w;
+}
+
+fn renderClassificationBadge(
+    list: *UiDrawList,
+    x: f32,
+    center_y: f32,
+    label: []const u8,
+    color: Color,
+    progress: f32,
+    measure_data: *const MeasureTextUserData,
+) !f32 {
+    const dims = text_utils.measureText(label, 0, 11, measure_data);
+    const badge_w = dims.w + 12.0;
+    const badge_h = if (dims.h > 0.0) dims.h + 4.0 else 17.0;
+    const y = center_y - badge_h * 0.5;
+    const badge_rect = FRect{ .x = x, .y = y, .w = badge_w, .h = badge_h };
+
+    try list.addRect(badge_rect, .{
+        .background_color = theme.withAlpha(color, 0.25 * progress),
+        .corner_radius = .all(4),
+    });
+    try list.addBorder(badge_rect, .{
+        .color = withAlpha(color, progress),
+        .width = .all(1),
+        .corner_radius = .all(4),
+    });
+    try list.addText(.{
+        .x = x + 6.0,
+        .y = y + 2.0,
+        .w = dims.w,
+        .h = dims.h,
+    }, .{
+        .text = label,
+        .color = withAlpha(color, progress),
+        .font_size = 11,
+        .font_id = 0,
+    });
+    return badge_w;
 }
 
 fn renderDirectoryBreadcrumbs(
+    list: *UiDrawList,
+    rect: FRect,
     palette: *const PaletteState,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
     progress: f32,
 ) !void {
+    try list.addRect(rect, .{
+        .background_color = withAlpha(theme.crust, progress),
+        .corner_radius = .all(6),
+    });
+    try list.addBorder(rect, .{
+        .color = withAlpha(theme.surface0, progress),
+        .width = .all(1),
+        .corner_radius = .all(6),
+    });
+
     const display_dir = truncateDirectory(
         frame_allocator,
         palette.current_nav_dir.items,
-        320.0,
+        rect.w - 180.0,
         12,
         measure_data,
     );
@@ -166,71 +268,93 @@ fn renderDirectoryBreadcrumbs(
         "{} image{s}",
         .{ curr_img_count, s_suffix },
     );
-    const count_color = if (curr_img_count == 0) theme.subtext1 else theme.green;
+    const count_color =
+        if (curr_img_count == 0) theme.subtext1 else theme.green;
+    const border_color =
+        if (curr_img_count == 0) theme.surface0 else theme.green;
 
-    clay.UI()(.{
-        .layout = .{
-            .sizing = .{ .w = .grow, .h = .fit },
-            .direction = .left_to_right,
-            .child_alignment = .{ .x = .left, .y = .center },
-            .padding = .{ .top = 4, .bottom = 4, .left = 8, .right = 8 },
-            .child_gap = 8,
-        },
-        .background_color = withAlpha(theme.crust, progress),
-        .corner_radius = .all(6),
-        .border = .{
-            .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-            .color = withAlpha(theme.surface0, progress),
-        },
-    })({
-        clay.UI()(.{
-            .layout = .{
-                .sizing = .{ .w = .grow, .h = .fit },
-                .direction = .left_to_right,
-                .child_alignment = .{ .x = .left, .y = .center },
-                .child_gap = 8,
-            },
-        })({
-            renderBadge("DIR", theme.mauve, theme.mauve, progress);
+    var cur_x = rect.x + 8.0;
+    const badge_center_y = rect.y + rect.h * 0.5;
+    const dir_badge_w = try renderBadge(
+        list,
+        cur_x,
+        badge_center_y,
+        "DIR",
+        theme.mauve,
+        theme.mauve,
+        progress,
+        measure_data,
+    );
+    cur_x += dir_badge_w + 8.0;
 
-            clay.text(display_dir, .{
-                .color = withAlpha(theme.mauve, progress),
-                .font_size = 12,
-                .font_id = 0,
-            });
-        });
-
-        const border_color = if (curr_img_count == 0) theme.surface0 else theme.green;
-        renderBadge(count_str, count_color, border_color, progress);
+    const dir_dims = text_utils.measureText(display_dir, 0, 12, measure_data);
+    try list.addText(.{
+        .x = cur_x,
+        .y = rect.y + (rect.h - dir_dims.h) * 0.5,
+        .w = dir_dims.w,
+        .h = dir_dims.h,
+    }, .{
+        .text = display_dir,
+        .color = withAlpha(theme.mauve, progress),
+        .font_size = 12,
+        .font_id = 0,
     });
+
+    const count_dims = text_utils.measureText(count_str, 0, 11, measure_data);
+    const count_badge_w = count_dims.w + 12.0;
+    const right_x = rect.x + rect.w - 8.0 - count_badge_w;
+    _ = try renderBadge(
+        list,
+        right_x,
+        badge_center_y,
+        count_str,
+        count_color,
+        border_color,
+        progress,
+        measure_data,
+    );
 }
 
-fn renderSearchInput(palette: *const PaletteState, placeholder: []const u8, progress: f32) void {
-    clay.UI()(.{
-        .layout = .{
-            .sizing = .{ .w = .grow, .h = .fixed(38) },
-            .direction = .left_to_right,
-            .child_alignment = .{ .x = .left, .y = .center },
-            .padding = .{ .left = 12, .right = 12 },
-        },
+fn renderSearchInput(
+    list: *UiDrawList,
+    rect: FRect,
+    palette: *const PaletteState,
+    placeholder: []const u8,
+    measure_data: *const MeasureTextUserData,
+    progress: f32,
+) !void {
+    try list.addRect(rect, .{
         .background_color = withAlpha(theme.crust, progress),
         .corner_radius = .all(6),
-        .border = .{
-            .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-            .color = withAlpha(theme.blue, progress),
-        },
-    })({
-        const query_str = if (palette.query.items.len > 0) palette.query.items else placeholder;
-        const query_color = if (palette.query.items.len > 0) theme.text else theme.subtext1;
-        clay.text(query_str, .{
-            .color = withAlpha(query_color, progress),
-            .font_size = 14,
-            .font_id = 0,
-        });
+    });
+    try list.addBorder(rect, .{
+        .color = withAlpha(theme.blue, progress),
+        .width = .all(1),
+        .corner_radius = .all(6),
+    });
+
+    const query_str =
+        if (palette.query.items.len > 0) palette.query.items else placeholder;
+    const query_color =
+        if (palette.query.items.len > 0) theme.text else theme.subtext1;
+    const dims = text_utils.measureText(query_str, 0, 14, measure_data);
+
+    try list.addText(.{
+        .x = rect.x + 12.0,
+        .y = rect.y + (rect.h - dims.h) * 0.5,
+        .w = dims.w,
+        .h = dims.h,
+    }, .{
+        .text = query_str,
+        .color = withAlpha(query_color, progress),
+        .font_size = 14,
+        .font_id = 0,
     });
 }
 
 fn renderGoToImageFeedback(
+    list: *UiDrawList,
+    rect: FRect,
     raw_str: []const u8,
     total_count: usize,
     ui_model: UiViewModel,
@@ -243,7 +367,8 @@ fn renderGoToImageFeedback(
             "Failed to parse integer in palette input '{s}': {}",
             .{ raw_str, err },
         );
-        clay.text("Invalid number format. Enter a positive integer.", .{
+        try list.addText(rect, .{
+            .text = "Invalid number format. Enter a positive integer.",
             .color = withAlpha(theme.red, progress),
             .font_size = 13,
             .font_id = 0,
@@ -256,7 +381,8 @@ fn renderGoToImageFeedback(
             "Out of bounds: must be between 1 and {}",
             .{total_count},
         );
-        clay.text(err_str, .{
+        try list.addText(rect, .{
+            .text = err_str,
             .color = withAlpha(theme.red, progress),
             .font_size = 13,
             .font_id = 0,
@@ -273,7 +399,7 @@ fn renderGoToImageFeedback(
     const display_filename = truncateFilename(
         frame_allocator,
         raw_basename,
-        492.0,
+        rect.w,
         12,
         measure_data,
     );
@@ -281,7 +407,8 @@ fn renderGoToImageFeedback(
         "Press Enter to go to {}: {s}",
         .{ val, display_filename },
     );
-    clay.text(success_str, .{
+    try list.addText(rect, .{
+        .text = success_str,
         .color = withAlpha(theme.green, progress),
         .font_size = 13,
         .font_id = 0,
@@ -289,6 +416,8 @@ fn renderGoToImageFeedback(
 }
 
 fn renderSlideshowIntervalFeedback(
+    list: *UiDrawList,
+    rect: FRect,
     raw_str: []const u8,
     frame_allocator: std.mem.Allocator,
     progress: f32,
@@ -301,7 +430,8 @@ fn renderSlideshowIntervalFeedback(
                 "Press Enter to start slide show ({d:.1}s per slide)",
                 .{val},
             );
-            clay.text(success_str, .{
+            try list.addText(rect, .{
+                .text = success_str,
                 .color = withAlpha(theme.green, progress),
                 .font_size = 13,
                 .font_id = 0,
@@ -314,7 +444,8 @@ fn renderSlideshowIntervalFeedback(
         );
     }
     if (!is_valid) {
-        clay.text("Invalid duration. Must be greater than 0 seconds.", .{
+        try list.addText(rect, .{
+            .text = "Invalid duration. Must be greater than 0 seconds.",
             .color = withAlpha(theme.red, progress),
             .font_size = 13,
             .font_id = 0,
@@ -323,6 +454,8 @@ fn renderSlideshowIntervalFeedback(
 }
 
 fn renderFloatInputFeedback(
+    list: *UiDrawList,
+    rect: FRect,
     raw_str: []const u8,
     mode: PaletteMode,
     frame_allocator: std.mem.Allocator,
@@ -333,7 +466,8 @@ fn renderFloatInputFeedback(
             "Failed to parse adjustment float '{s}': {}",
             .{ raw_str, err },
         );
-        clay.text("Invalid float format. Enter a number.", .{
+        try list.addText(rect, .{
+            .text = "Invalid float format. Enter a number.",
             .color = withAlpha(theme.red, progress),
             .font_size = 13,
             .font_id = 0,
@@ -342,7 +476,8 @@ fn renderFloatInputFeedback(
     };
 
     if (std.math.isNan(val) or std.math.isInf(val)) {
-        clay.text("Invalid float format. Enter a number.", .{
+        try list.addText(rect, .{
+            .text = "Invalid float format. Enter a number.",
             .color = withAlpha(theme.red, progress),
             .font_size = 13,
             .font_id = 0,
@@ -357,7 +492,8 @@ fn renderFloatInputFeedback(
             "Press Enter to set value to: {d:.2}",
             .{val},
         );
-        clay.text(success_str, .{
+        try list.addText(rect, .{
+            .text = success_str,
             .color = withAlpha(theme.green, progress),
             .font_size = 13,
             .font_id = 0,
@@ -367,7 +503,8 @@ fn renderFloatInputFeedback(
             "Out of bounds: must be between {d:.1} and {d:.1}",
             .{ bounds.min, bounds.max },
         );
-        clay.text(err_str, .{
+        try list.addText(rect, .{
+            .text = err_str,
             .color = withAlpha(theme.red, progress),
             .font_size = 13,
             .font_id = 0,
@@ -375,311 +512,397 @@ fn renderFloatInputFeedback(
     }
 }
 
-/// Renders the centered single-line modal dialog used for scalar numeric and text inputs
-/// (brightness, contrast, jump-to-image index, and slideshow timer intervals).
 fn renderTextInputDialog(
+    list: *UiDrawList,
+    rect: FRect,
     ui_model: UiViewModel,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
     progress: f32,
 ) !void {
     const palette = ui_model.palette;
-    clay.UI()(.{
-        .layout = .{
-            .sizing = .{ .w = .grow, .h = .fixed(64) },
-            .direction = .top_to_bottom,
-            .child_alignment = .{ .x = .left, .y = .center },
-            .padding = .{ .left = 12, .right = 12, .top = 10, .bottom = 10 },
-            .child_gap = 6,
-        },
+    try list.addRect(rect, .{
         .background_color = withAlpha(theme.crust, progress),
         .corner_radius = .all(6),
-    })({
-        const raw_str = palette.query.items;
-        const total_count = ui_model.total_images;
-        switch (palette.mode) {
-            .go_to_image => {
-                if (total_count == 0) {
-                    clay.text("No images loaded.", .{
-                        .color = withAlpha(theme.red, progress),
-                        .font_size = 13,
-                        .font_id = 0,
-                    });
-                } else if (raw_str.len == 0) {
-                    clay.text("Enter image number, then press Enter to apply.", .{
-                        .color = withAlpha(theme.subtext0, progress),
-                        .font_size = 13,
-                        .font_id = 0,
-                    });
-                    const range_str = if (ui_model.current_index) |idx|
-                        try frame_allocator.print(
-                            "Allowed range: 1 to {} (current: {})",
-                            .{ total_count, idx + 1 },
-                        )
-                    else
-                        try frame_allocator.print(
-                            "Allowed range: 1 to {} (current: none)",
-                            .{total_count},
-                        );
-                    clay.text(range_str, .{
-                        .color = withAlpha(theme.subtext1, progress),
-                        .font_size = 11,
-                        .font_id = 0,
-                    });
-                } else {
-                    try renderGoToImageFeedback(
-                        raw_str,
-                        total_count,
-                        ui_model,
-                        frame_allocator,
-                        measure_data,
-                        progress,
-                    );
-                }
-            },
-            .set_slideshow_interval => {
-                if (raw_str.len == 0) {
-                    clay.text("Enter delay in seconds, then press Enter to start.", .{
-                        .color = withAlpha(theme.subtext0, progress),
-                        .font_size = 13,
-                        .font_id = 0,
-                    });
-                    clay.text("Example: 3 for 3 seconds per slide", .{
-                        .color = withAlpha(theme.subtext1, progress),
-                        .font_size = 11,
-                        .font_id = 0,
-                    });
-                } else {
-                    try renderSlideshowIntervalFeedback(
-                        raw_str,
-                        frame_allocator,
-                        progress,
-                    );
-                }
-            },
-            .set_brightness,
-            .set_contrast,
-            .set_contrast_blend,
-            .set_highlights,
-            .set_shadows,
-            .set_whites,
-            .set_blacks,
-            .set_temperature,
-            .set_tint,
-            .set_vibrance,
-            .set_saturation,
-            .set_clarity,
-            .set_texture,
-            => {
-                if (raw_str.len == 0) {
-                    clay.text("Enter a number, then press Enter to apply.", .{
-                        .color = withAlpha(theme.subtext0, progress),
-                        .font_size = 13,
-                        .font_id = 0,
-                    });
-                    const bounds = palette.mode.getTextInputBounds() orelse
-                        intents.TextInputBounds{
-                            .min = -1.0,
-                            .max = 1.0,
-                        };
-                    const range_str = try frame_allocator.print(
-                        "Allowed range: {d:.1} to {d:.1}",
-                        .{ bounds.min, bounds.max },
-                    );
-                    clay.text(range_str, .{
-                        .color = withAlpha(theme.subtext1, progress),
-                        .font_size = 11,
-                        .font_id = 0,
-                    });
-                } else {
-                    try renderFloatInputFeedback(
-                        raw_str,
-                        palette.mode,
-                        frame_allocator,
-                        progress,
-                    );
-                }
-            },
-            .files, .actions, .directory_navigator, .inactive => {},
-        }
     });
-}
 
-/// Strategy and calculation for virtualized list windowing in Clay
-/// immediate mode UI.
-///
-/// Immediate Mode Virtualization Strategy:
-/// 1. Window Calculation:
-///    Computes the visible item slice `[start_idx..end_idx]` based on
-///    current scroll position (`scroll_offset.y`), viewport height, and
-///    fixed item stride (`item_height`).
-/// 2. Overscan Guard Band:
-///    Adds a 1-item overscan buffer above and below the visible viewport
-///    slice (`start_idx - 1` and `end_idx + 1`). Because Clay layout tree
-///    generation and GPU rendering occur synchronously in the exact same
-///    frame pass, `@floor` and `@ceil` math captures all visible elements.
-///    The 1-item overscan serves as a guard band for sub-pixel `child_gap`
-///    offsets, border widths, and viewport edge hit-testing
-///    (`clay.pointerOver`).
-fn renderDirectoryScanBadges(
-    entry: anytype,
-    scan: anytype,
-    frame_allocator: std.mem.Allocator,
-    progress: f32,
-) !void {
-    switch (scan) {
-        .unscanned => {
-            clay.UI()(.{
-                .layout = .{
-                    .sizing = .{ .w = .fit, .h = .fit },
-                    .direction = .left_to_right,
-                    .child_gap = 6,
-                },
-            })({
-                renderBadge("...", theme.subtext1, theme.surface0, progress);
-            });
-        },
-        .partial_counted => |p| {
-            clay.UI()(.{
-                .layout = .{
-                    .sizing = .{ .w = .fit, .h = .fit },
-                    .direction = .left_to_right,
-                    .child_gap = 6,
-                },
-            })({
-                if (entry == .archive_file) {
-                    const count_str = try frame_allocator.print(
-                        "{}+ pages",
-                        .{p.image_count},
-                    );
-                    renderBadge(
-                        count_str,
-                        theme.yellow,
-                        theme.yellow,
-                        progress,
-                    );
-                } else {
-                    const count_str = try frame_allocator.print(
-                        "{}+ images",
-                        .{p.image_count},
-                    );
-                    const sub_str = try frame_allocator.print(
-                        "{}+ subfolders",
-                        .{p.subdir_count},
-                    );
-                    renderBadge(
-                        count_str,
-                        theme.yellow,
-                        theme.yellow,
-                        progress,
-                    );
-                    renderBadge(
-                        sub_str,
-                        theme.yellow,
-                        theme.yellow,
-                        progress,
-                    );
-                }
-            });
-        },
-        .scanned, .cached => |s| {
-            clay.UI()(.{
-                .layout = .{
-                    .sizing = .{ .w = .fit, .h = .fit },
-                    .direction = .left_to_right,
-                    .child_gap = 6,
-                },
-            })({
-                if (entry == .archive_file) {
-                    const s_suffix = if (s.image_count == 1) "" else "s";
-                    const count_str = try frame_allocator.print(
-                        "{} page{s}",
-                        .{ s.image_count, s_suffix },
-                    );
-                    const count_color = if (s.image_count == 0)
-                        theme.subtext1
-                    else
-                        theme.green;
-                    const border_color = if (s.image_count == 0)
-                        theme.surface0
-                    else
-                        theme.green;
-                    renderBadge(
-                        count_str,
-                        count_color,
-                        border_color,
-                        progress,
-                    );
-                } else {
-                    const img_suffix = if (s.image_count == 1) "" else "s";
-                    const count_str = try frame_allocator.print(
-                        "{} image{s}",
-                        .{ s.image_count, img_suffix },
-                    );
-                    const count_color = if (s.image_count == 0)
-                        theme.subtext1
-                    else
-                        theme.green;
-                    const count_border = if (s.image_count == 0)
-                        theme.surface0
-                    else
-                        theme.green;
+    const raw_str = palette.query.items;
+    const total_count = ui_model.total_images;
+    const content_x = rect.x + 12.0;
+    const content_w = rect.w - 24.0;
+    const line1_y = rect.y + 12.0;
+    const line2_y = rect.y + 34.0;
+    const center_y = rect.y + (rect.h - 16.0) * 0.5;
 
-                    const sub_suffix = if (s.subdir_count == 1) "" else "s";
-                    const sub_str = try frame_allocator.print(
-                        "{} subfolder{s}",
-                        .{ s.subdir_count, sub_suffix },
+    switch (palette.mode) {
+        .go_to_image => {
+            if (total_count == 0) {
+                try list.addText(.{
+                    .x = content_x,
+                    .y = center_y,
+                    .w = content_w,
+                    .h = 16.0,
+                }, .{
+                    .text = "No images loaded.",
+                    .color = withAlpha(theme.red, progress),
+                    .font_size = 13,
+                    .font_id = 0,
+                });
+            } else if (raw_str.len == 0) {
+                try list.addText(.{
+                    .x = content_x,
+                    .y = line1_y,
+                    .w = content_w,
+                    .h = 16.0,
+                }, .{
+                    .text = "Enter image number, then press Enter to apply.",
+                    .color = withAlpha(theme.subtext0, progress),
+                    .font_size = 13,
+                    .font_id = 0,
+                });
+                const range_str = if (ui_model.current_index) |idx|
+                    try frame_allocator.print(
+                        "Allowed range: 1 to {} (current: {})",
+                        .{ total_count, idx + 1 },
+                    )
+                else
+                    try frame_allocator.print(
+                        "Allowed range: 1 to {} (current: none)",
+                        .{total_count},
                     );
-                    const sub_color = if (s.subdir_count == 0)
-                        theme.subtext1
-                    else
-                        theme.blue;
-                    const sub_border = if (s.subdir_count == 0)
-                        theme.surface0
-                    else
-                        theme.blue;
-
-                    renderBadge(
-                        count_str,
-                        count_color,
-                        count_border,
-                        progress,
-                    );
-                    renderBadge(
-                        sub_str,
-                        sub_color,
-                        sub_border,
-                        progress,
-                    );
-                }
-            });
+                try list.addText(.{
+                    .x = content_x,
+                    .y = line2_y,
+                    .w = content_w,
+                    .h = 14.0,
+                }, .{
+                    .text = range_str,
+                    .color = withAlpha(theme.subtext1, progress),
+                    .font_size = 11,
+                    .font_id = 0,
+                });
+            } else {
+                try renderGoToImageFeedback(
+                    list,
+                    .{
+                        .x = content_x,
+                        .y = center_y,
+                        .w = content_w,
+                        .h = 16.0,
+                    },
+                    raw_str,
+                    total_count,
+                    ui_model,
+                    frame_allocator,
+                    measure_data,
+                    progress,
+                );
+            }
         },
-        .failed => {
-            clay.UI()(.{
-                .layout = .{
-                    .sizing = .{ .w = .fit, .h = .fit },
-                    .direction = .left_to_right,
-                    .child_gap = 6,
-                },
-            })({
-                renderBadge("Error", theme.red, theme.red, progress);
-            });
+        .set_slideshow_interval => {
+            if (raw_str.len == 0) {
+                try list.addText(.{
+                    .x = content_x,
+                    .y = line1_y,
+                    .w = content_w,
+                    .h = 16.0,
+                }, .{
+                    .text = "Enter delay in seconds, " ++
+                        "then press Enter to start.",
+                    .color = withAlpha(theme.subtext0, progress),
+                    .font_size = 13,
+                    .font_id = 0,
+                });
+                try list.addText(.{
+                    .x = content_x,
+                    .y = line2_y,
+                    .w = content_w,
+                    .h = 14.0,
+                }, .{
+                    .text = "Example: 3 for 3 seconds per slide",
+                    .color = withAlpha(theme.subtext1, progress),
+                    .font_size = 11,
+                    .font_id = 0,
+                });
+            } else {
+                try renderSlideshowIntervalFeedback(
+                    list,
+                    .{
+                        .x = content_x,
+                        .y = center_y,
+                        .w = content_w,
+                        .h = 16.0,
+                    },
+                    raw_str,
+                    frame_allocator,
+                    progress,
+                );
+            }
         },
-        .permission_denied => {
-            clay.UI()(.{
-                .layout = .{
-                    .sizing = .{ .w = .fit, .h = .fit },
-                    .direction = .left_to_right,
-                    .child_gap = 6,
-                },
-            })({
-                renderBadge("Locked", theme.red, theme.red, progress);
-            });
+        .set_brightness,
+        .set_contrast,
+        .set_contrast_blend,
+        .set_highlights,
+        .set_shadows,
+        .set_whites,
+        .set_blacks,
+        .set_temperature,
+        .set_tint,
+        .set_vibrance,
+        .set_saturation,
+        .set_clarity,
+        .set_texture,
+        => {
+            if (raw_str.len == 0) {
+                try list.addText(.{
+                    .x = content_x,
+                    .y = line1_y,
+                    .w = content_w,
+                    .h = 16.0,
+                }, .{
+                    .text = "Enter a number, then press Enter to apply.",
+                    .color = withAlpha(theme.subtext0, progress),
+                    .font_size = 13,
+                    .font_id = 0,
+                });
+                const bounds = palette.mode.getTextInputBounds() orelse
+                    intents.TextInputBounds{ .min = -1.0, .max = 1.0 };
+                const range_str = try frame_allocator.print(
+                    "Allowed range: {d:.1} to {d:.1}",
+                    .{ bounds.min, bounds.max },
+                );
+                try list.addText(.{
+                    .x = content_x,
+                    .y = line2_y,
+                    .w = content_w,
+                    .h = 14.0,
+                }, .{
+                    .text = range_str,
+                    .color = withAlpha(theme.subtext1, progress),
+                    .font_size = 11,
+                    .font_id = 0,
+                });
+            } else {
+                try renderFloatInputFeedback(
+                    list,
+                    .{
+                        .x = content_x,
+                        .y = center_y,
+                        .w = content_w,
+                        .h = 16.0,
+                    },
+                    raw_str,
+                    palette.mode,
+                    frame_allocator,
+                    progress,
+                );
+            }
         },
+        .files, .actions, .directory_navigator, .inactive => {},
     }
 }
 
+fn renderDirectoryScanBadges(
+    list: *UiDrawList,
+    right_edge: f32,
+    badge_y: f32,
+    entry: anytype,
+    scan: anytype,
+    frame_allocator: std.mem.Allocator,
+    measure_data: *const MeasureTextUserData,
+    progress: f32,
+) !f32 {
+    var cur_right = right_edge;
+    switch (scan) {
+        .unscanned => {
+            const dims = text_utils.measureText("...", 0, 11, measure_data);
+            const bw = dims.w + 12.0;
+            cur_right -= bw;
+            _ = try renderBadge(
+                list,
+                cur_right,
+                badge_y,
+                "...",
+                theme.subtext1,
+                theme.surface0,
+                progress,
+                measure_data,
+            );
+        },
+        .partial_counted => |p| {
+            if (entry == .archive_file) {
+                const count_str = try frame_allocator.print(
+                    "{}+ pages",
+                    .{p.image_count},
+                );
+                const dims =
+                    text_utils.measureText(count_str, 0, 11, measure_data);
+                const bw = dims.w + 12.0;
+                cur_right -= bw;
+                _ = try renderBadge(
+                    list,
+                    cur_right,
+                    badge_y,
+                    count_str,
+                    theme.yellow,
+                    theme.yellow,
+                    progress,
+                    measure_data,
+                );
+            } else {
+                const sub_str = try frame_allocator.print(
+                    "{}+ subfolders",
+                    .{p.subdir_count},
+                );
+                const sub_dims =
+                    text_utils.measureText(sub_str, 0, 11, measure_data);
+                const sub_bw = sub_dims.w + 12.0;
+                cur_right -= sub_bw;
+                _ = try renderBadge(
+                    list,
+                    cur_right,
+                    badge_y,
+                    sub_str,
+                    theme.yellow,
+                    theme.yellow,
+                    progress,
+                    measure_data,
+                );
+
+                cur_right -= 6.0;
+                const count_str = try frame_allocator.print(
+                    "{}+ images",
+                    .{p.image_count},
+                );
+                const cnt_dims =
+                    text_utils.measureText(count_str, 0, 11, measure_data);
+                const cnt_bw = cnt_dims.w + 12.0;
+                cur_right -= cnt_bw;
+                _ = try renderBadge(
+                    list,
+                    cur_right,
+                    badge_y,
+                    count_str,
+                    theme.yellow,
+                    theme.yellow,
+                    progress,
+                    measure_data,
+                );
+            }
+        },
+        .scanned, .cached => |s| {
+            if (entry == .archive_file) {
+                const s_suffix = if (s.image_count == 1) "" else "s";
+                const count_str = try frame_allocator.print(
+                    "{} page{s}",
+                    .{ s.image_count, s_suffix },
+                );
+                const count_color =
+                    if (s.image_count == 0) theme.subtext1 else theme.green;
+                const border_color =
+                    if (s.image_count == 0) theme.surface0 else theme.green;
+                const dims =
+                    text_utils.measureText(count_str, 0, 11, measure_data);
+                const bw = dims.w + 12.0;
+                cur_right -= bw;
+                _ = try renderBadge(
+                    list,
+                    cur_right,
+                    badge_y,
+                    count_str,
+                    count_color,
+                    border_color,
+                    progress,
+                    measure_data,
+                );
+            } else {
+                const sub_suffix = if (s.subdir_count == 1) "" else "s";
+                const sub_str = try frame_allocator.print(
+                    "{} subfolder{s}",
+                    .{ s.subdir_count, sub_suffix },
+                );
+                const sub_color =
+                    if (s.subdir_count == 0) theme.subtext1 else theme.blue;
+                const sub_border =
+                    if (s.subdir_count == 0) theme.surface0 else theme.blue;
+                const sub_dims =
+                    text_utils.measureText(sub_str, 0, 11, measure_data);
+                const sub_bw = sub_dims.w + 12.0;
+                cur_right -= sub_bw;
+                _ = try renderBadge(
+                    list,
+                    cur_right,
+                    badge_y,
+                    sub_str,
+                    sub_color,
+                    sub_border,
+                    progress,
+                    measure_data,
+                );
+
+                cur_right -= 6.0;
+                const img_suffix = if (s.image_count == 1) "" else "s";
+                const count_str = try frame_allocator.print(
+                    "{} image{s}",
+                    .{ s.image_count, img_suffix },
+                );
+                const count_color =
+                    if (s.image_count == 0) theme.subtext1 else theme.green;
+                const count_border =
+                    if (s.image_count == 0) theme.surface0 else theme.green;
+                const cnt_dims =
+                    text_utils.measureText(count_str, 0, 11, measure_data);
+                const cnt_bw = cnt_dims.w + 12.0;
+                cur_right -= cnt_bw;
+                _ = try renderBadge(
+                    list,
+                    cur_right,
+                    badge_y,
+                    count_str,
+                    count_color,
+                    count_border,
+                    progress,
+                    measure_data,
+                );
+            }
+        },
+        .failed => {
+            const dims = text_utils.measureText("Error", 0, 11, measure_data);
+            const bw = dims.w + 12.0;
+            cur_right -= bw;
+            _ = try renderBadge(
+                list,
+                cur_right,
+                badge_y,
+                "Error",
+                theme.red,
+                theme.red,
+                progress,
+                measure_data,
+            );
+        },
+        .permission_denied => {
+            const dims = text_utils.measureText("Locked", 0, 11, measure_data);
+            const bw = dims.w + 12.0;
+            cur_right -= bw;
+            _ = try renderBadge(
+                list,
+                cur_right,
+                badge_y,
+                "Locked",
+                theme.red,
+                theme.red,
+                progress,
+                measure_data,
+            );
+        },
+    }
+    return cur_right;
+}
+
 fn renderDirectoryListItem(
+    list: *UiDrawList,
+    rect: FRect,
     palette: *const PaletteState,
     real_idx: usize,
     is_selected: bool,
@@ -691,154 +914,143 @@ fn renderDirectoryListItem(
     if (real_idx >= palette.dir_items.items.len) return;
     const entry = palette.dir_items.items[real_idx];
     const query_str = palette.query.items;
-
     const dir_matches = highlighter.matchText(entry.getName(), query_str);
 
-    clay.UI()(.{
-        .layout = .{
-            .sizing = .{ .w = .grow, .h = .fit },
-            .direction = .left_to_right,
-            .child_alignment = .{ .x = .left, .y = .center },
-            .child_gap = 8,
-        },
-    })({
-        const badge_text, const badge_color = switch (entry) {
-            .parent => .{ "UP", theme.subtext0 },
-            .directory => .{ "DIR", theme.blue },
-            .archive_file => |arch| switch (arch.archive_type) {
-                .cbz => .{ "CBZ", theme.peach },
-                .zip => .{ "ZIP", theme.peach },
-            },
-            .image_file => .{ "IMG", theme.green },
-        };
-        renderBadge(badge_text, badge_color, badge_color, progress);
-
-        const trunc_folder = truncateFilenameMiddle(
-            frame_allocator,
-            entry.getName(),
-            350.0,
-            13,
-            measure_data,
-        );
-        const display_foldername = trunc_folder.display;
-        const final_folder_matches = remapMiddleTruncatedMatches(
-            frame_allocator,
-            dir_matches,
-            trunc_folder.head_len,
-            trunc_folder.tail_start_idx,
-        ) catch &.{};
-
-        const text_color = if (is_selected)
-            withAlpha(theme.blue, progress)
-        else
-            withAlpha(theme.text, progress);
-        renderFuzzyMatchText(
-            frame_allocator,
-            display_foldername,
-            final_folder_matches,
-            13,
-            text_color,
-            withAlpha(theme.yellow, progress),
-        );
-    });
+    const badge_center_y = rect.y + rect.h * 0.5;
+    var right_limit = rect.x + rect.w - 12.0;
 
     if (entry.getScanState()) |scan| {
-        try renderDirectoryScanBadges(entry, scan, frame_allocator, progress);
+        right_limit = try renderDirectoryScanBadges(
+            list,
+            right_limit,
+            badge_center_y,
+            entry,
+            scan,
+            frame_allocator,
+            measure_data,
+            progress,
+        );
+        right_limit -= 8.0;
     }
+
+    var cur_x = rect.x + 12.0;
+    const badge_text, const badge_color = switch (entry) {
+        .parent => .{ "UP", theme.subtext0 },
+        .directory => .{ "DIR", theme.blue },
+        .archive_file => |arch| switch (arch.archive_type) {
+            .cbz => .{ "CBZ", theme.peach },
+            .zip => .{ "ZIP", theme.peach },
+        },
+        .image_file => .{ "IMG", theme.green },
+    };
+    const badge_w = try renderBadge(
+        list,
+        cur_x,
+        badge_center_y,
+        badge_text,
+        badge_color,
+        badge_color,
+        progress,
+        measure_data,
+    );
+    cur_x += badge_w + 8.0;
+
+    const available_text_w = @max(right_limit - cur_x, 10.0);
+    const trunc_folder = truncateFilenameMiddle(
+        frame_allocator,
+        entry.getName(),
+        available_text_w,
+        13,
+        measure_data,
+    );
+    const final_folder_matches = remapMiddleTruncatedMatches(
+        frame_allocator,
+        dir_matches,
+        trunc_folder.head_len,
+        trunc_folder.tail_start_idx,
+    ) catch &.{};
+
+    const text_color = if (is_selected)
+        withAlpha(theme.blue, progress)
+    else
+        withAlpha(theme.text, progress);
+
+    try renderFuzzyMatchText(
+        list,
+        frame_allocator,
+        .{
+            .x = cur_x,
+            .y = rect.y + (rect.h - 16.0) * 0.5,
+            .w = available_text_w,
+            .h = 16.0,
+        },
+        trunc_folder.display,
+        final_folder_matches,
+        13,
+        text_color,
+        withAlpha(theme.yellow, progress),
+    );
 }
 
 fn renderActionListItem(
+    list: *UiDrawList,
+    rect: FRect,
     palette: *const PaletteState,
     real_idx: usize,
     is_selected: bool,
     frame_allocator: std.mem.Allocator,
     highlighter: *FuzzyHighlighter,
+    measure_data: *const MeasureTextUserData,
     progress: f32,
 ) !void {
     const meta = palette_action_items[real_idx];
     const query_str = palette.query.items;
-
     const action_matches = highlighter.matchText(meta.name, query_str);
 
-    clay.UI()(.{
-        .layout = .{
-            .sizing = .{ .w = .grow, .h = .fit },
-            .direction = .left_to_right,
-            .child_alignment = .{ .x = .left, .y = .center },
-        },
-    })({
-        const text_color = if (is_selected)
-            withAlpha(theme.blue, progress)
-        else
-            withAlpha(theme.text, progress);
-        renderFuzzyMatchText(
-            frame_allocator,
-            meta.name,
-            action_matches,
-            13,
-            text_color,
-            withAlpha(theme.yellow, progress),
-        );
-    });
-
+    var right_limit = rect.x + rect.w - 12.0;
     if (meta.shortcut_text.len > 0) {
-        clay.UI()(.{
-            .layout = .{
-                .sizing = .{ .w = .fit, .h = .fit },
-                .padding = .{ .left = 8, .right = 8, .top = 3, .bottom = 3 },
-            },
-            .background_color = withAlpha(theme.crust, progress),
-            .corner_radius = .all(4),
-            .border = .{
-                .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-                .color = withAlpha(theme.surface0, progress),
-            },
-        })({
-            clay.text(meta.shortcut_text, .{
-                .color = withAlpha(theme.subtext0, progress),
-                .font_size = 11,
-                .font_id = 0,
-            });
-        });
+        const dims =
+            text_utils.measureText(meta.shortcut_text, 0, 11, measure_data);
+        const bw = dims.w + 16.0;
+        right_limit -= bw;
+        _ = try renderShortcutBadge(
+            list,
+            right_limit,
+            rect.y + rect.h * 0.5,
+            meta.shortcut_text,
+            progress,
+            measure_data,
+        );
+        right_limit -= 8.0;
     }
-}
 
-fn renderClassificationBadge(
-    label: []const u8,
-    color: clay.Color,
-    progress: f32,
-) void {
-    clay.UI()(.{
-        .layout = .{
-            .sizing = .{ .w = .fit, .h = .fit },
-            .padding = .{
-                .left = 6,
-                .right = 6,
-                .top = 2,
-                .bottom = 2,
-            },
+    const text_x = rect.x + 12.0;
+    const text_w = @max(right_limit - text_x, 10.0);
+    const text_color = if (is_selected)
+        withAlpha(theme.blue, progress)
+    else
+        withAlpha(theme.text, progress);
+
+    try renderFuzzyMatchText(
+        list,
+        frame_allocator,
+        .{
+            .x = text_x,
+            .y = rect.y + (rect.h - 16.0) * 0.5,
+            .w = text_w,
+            .h = 16.0,
         },
-        .background_color = theme.withAlpha(color, 0.25 * progress),
-        .border = .{
-            .color = withAlpha(color, progress),
-            .width = .{
-                .left = 1,
-                .right = 1,
-                .top = 1,
-                .bottom = 1,
-            },
-        },
-        .corner_radius = .all(4),
-    })({
-        clay.text(label, .{
-            .color = withAlpha(color, progress),
-            .font_size = 11,
-            .font_id = 0,
-        });
-    });
+        meta.name,
+        action_matches,
+        13,
+        text_color,
+        withAlpha(theme.yellow, progress),
+    );
 }
 
 fn renderFileListItem(
+    list: *UiDrawList,
+    rect: FRect,
     ui_model: UiViewModel,
     palette: *const PaletteState,
     real_idx: usize,
@@ -865,25 +1077,85 @@ fn renderFileListItem(
     defer basename_matches.deinit(frame_allocator);
 
     const classification = ui_model.getClassification(real_idx);
-    var max_fn_w: f32 = 492.0;
-    var max_dir_w: f32 = 488.0;
-    if (classification != .unflagged) {
-        max_fn_w -= 64.0;
-        max_dir_w -= 64.0;
+    var right_limit = rect.x + rect.w - 12.0;
+    const badge_center_y = rect.y + rect.h * 0.5;
+
+    switch (classification) {
+        .pick => {
+            const bw =
+                text_utils.measureText("PICK", 0, 11, measure_data).w + 12.0;
+            right_limit -= bw;
+            _ = try renderClassificationBadge(
+                list,
+                right_limit,
+                badge_center_y,
+                "PICK",
+                theme.green,
+                progress,
+                measure_data,
+            );
+            right_limit -= 6.0;
+        },
+        .reject => {
+            const bw =
+                text_utils.measureText("REJECT", 0, 11, measure_data).w + 12.0;
+            right_limit -= bw;
+            _ = try renderClassificationBadge(
+                list,
+                right_limit,
+                badge_center_y,
+                "REJECT",
+                theme.red,
+                progress,
+                measure_data,
+            );
+            right_limit -= 6.0;
+        },
+        .unflagged => {},
     }
+
     if (is_pair) {
-        max_fn_w -= 72.0;
-        max_dir_w -= 72.0;
+        const bw =
+            text_utils.measureText("RAW+JPG", 0, 11, measure_data).w + 12.0;
+        right_limit -= bw;
+        _ = try renderBadge(
+            list,
+            right_limit,
+            badge_center_y,
+            "RAW+JPG",
+            theme.mauve,
+            theme.mauve,
+            progress,
+            measure_data,
+        );
+        right_limit -= 6.0;
     }
+
+    // Left indicator bar
+    const bar_color = if (is_selected)
+        withAlpha(theme.blue, progress)
+    else
+        withAlpha(theme.subtext1, progress);
+    try list.addRect(.{
+        .x = rect.x + 12.0,
+        .y = rect.y + 13.5,
+        .w = 4.0,
+        .h = 12.0,
+    }, .{
+        .background_color = bar_color,
+        .corner_radius = .all(3),
+    });
+
+    const text_x = rect.x + 22.0;
+    const text_w = @max(right_limit - text_x, 10.0);
 
     const trunc_filename = truncateFilenameMiddle(
         frame_allocator,
         basename,
-        max_fn_w,
+        text_w,
         13,
         measure_data,
     );
-    const display_filename = trunc_filename.display;
     const final_basename_matches = remapMiddleTruncatedMatches(
         frame_allocator,
         basename_matches.items,
@@ -894,97 +1166,43 @@ fn renderFileListItem(
     const display_dir = truncateDirectory(
         frame_allocator,
         dirname,
-        max_dir_w,
+        text_w,
         11,
         measure_data,
     );
 
-    clay.UI()(.{
-        .layout = .{
-            .sizing = .{ .w = .grow, .h = .fit },
-            .direction = .top_to_bottom,
-            .child_gap = 2,
-        },
-    })({
-        clay.UI()(.{
-            .layout = .{
-                .sizing = .{ .w = .grow, .h = .fit },
-                .direction = .left_to_right,
-                .child_alignment = .{ .x = .left, .y = .center },
-                .child_gap = 6,
-            },
-        })({
-            clay.UI()(.{
-                .layout = .{
-                    .sizing = .{ .w = .fixed(4), .h = .fixed(12) },
-                },
-                .background_color = if (is_selected)
-                    withAlpha(theme.blue, progress)
-                else
-                    withAlpha(theme.subtext1, progress),
-                .corner_radius = .all(3),
-            })({});
+    const text_color = if (is_selected)
+        withAlpha(theme.blue, progress)
+    else
+        withAlpha(theme.text, progress);
 
-            const text_color = if (is_selected)
-                withAlpha(theme.blue, progress)
-            else
-                withAlpha(theme.text, progress);
-            renderFuzzyMatchText(
-                frame_allocator,
-                display_filename,
-                final_basename_matches,
-                13,
-                text_color,
-                withAlpha(theme.yellow, progress),
-            );
-        });
+    try renderFuzzyMatchText(
+        list,
+        frame_allocator,
+        .{ .x = text_x, .y = rect.y + 11.5, .w = text_w, .h = 16.0 },
+        trunc_filename.display,
+        final_basename_matches,
+        13,
+        text_color,
+        withAlpha(theme.yellow, progress),
+    );
 
-        clay.UI()(.{
-            .layout = .{
-                .sizing = .{ .w = .grow, .h = .fit },
-                .direction = .left_to_right,
-                .padding = .{ .left = 14 },
-            },
-        })({
-            clay.text(display_dir, .{
-                .color = withAlpha(theme.subtext0, progress),
-                .font_size = 11,
-                .font_id = 0,
-                .wrap_mode = .none,
-            });
-        });
+    try list.addText(.{
+        .x = rect.x + 26.0,
+        .y = rect.y + 29.5,
+        .w = @max(right_limit - (rect.x + 26.0), 10.0),
+        .h = 13.0,
+    }, .{
+        .text = display_dir,
+        .color = withAlpha(theme.subtext0, progress),
+        .font_size = 11,
+        .font_id = 0,
     });
-
-    if (is_pair or classification != .unflagged) {
-        clay.UI()(.{
-            .layout = .{
-                .sizing = .{ .w = .fit, .h = .fit },
-                .direction = .left_to_right,
-                .child_alignment = .{ .x = .right, .y = .center },
-                .child_gap = 6,
-            },
-        })({
-            if (is_pair) {
-                renderBadge("RAW+JPG", theme.mauve, theme.mauve, progress);
-            }
-            switch (classification) {
-                .pick => renderClassificationBadge(
-                    "PICK",
-                    theme.green,
-                    progress,
-                ),
-                .reject => renderClassificationBadge(
-                    "REJECT",
-                    theme.red,
-                    progress,
-                ),
-                .unflagged => {},
-            }
-        });
-    }
 }
 
 fn renderSelectionList(
+    list: *UiDrawList,
+    list_rect: FRect,
     ui_model: UiViewModel,
     cfg: PaletteConfig,
     frame_allocator: std.mem.Allocator,
@@ -993,34 +1211,70 @@ fn renderSelectionList(
 ) !void {
     const palette = ui_model.palette;
     const matching_indices = &palette.matches;
-    const list_id = clay.getElementId(cfg.list_id);
-    const scroll_data = clay.cdefs.Clay_GetScrollContainerData(list_id);
-    const item_height = cfg.base_item_height;
-    const viewport_height = cfg.viewport_height_logical;
+    const item_stride = cfg.base_item_height;
+    const actual_item_h: f32 = if (palette.mode == .files) 54.0 else 46.0;
+    const viewport_height = list_rect.h;
 
-    const current_scroll_y = if (scroll_data.found)
-        scroll_data.scroll_position.y
-    else
-        0.0;
+    const current_scroll_y = interaction.getPaletteScrollY();
     const resolved_scroll_y = cfg.resolveScrollOffsetY(
         current_scroll_y,
         matching_indices.items.len,
         palette.selected_idx,
         palette.selection_dirty,
     );
-    if (scroll_data.found) {
-        scroll_data.scroll_position.y = resolved_scroll_y;
+    interaction.setPaletteScrollY(resolved_scroll_y);
+    interaction.setPaletteListRect(list_rect);
+
+    try list.pushScissor(list_rect);
+    defer list.popScissor() catch {};
+
+    if (matching_indices.items.len == 0) {
+        const no_match_msg = switch (palette.mode) {
+            .files => "No matching files found",
+            .actions => "No matching commands found",
+            .directory_navigator => if (palette.query.items.len > 0)
+                "No matching subfolders found"
+            else
+                "0 subfolders found",
+            .set_brightness,
+            .set_contrast,
+            .set_contrast_blend,
+            .set_highlights,
+            .set_shadows,
+            .set_whites,
+            .set_blacks,
+            .set_temperature,
+            .set_tint,
+            .set_vibrance,
+            .set_saturation,
+            .set_clarity,
+            .set_texture,
+            .go_to_image,
+            .set_slideshow_interval,
+            .inactive,
+            => "",
+        };
+        const msg_dims =
+            text_utils.measureText(no_match_msg, 0, 13, measure_data);
+        try list.addText(.{
+            .x = list_rect.x + (list_rect.w - msg_dims.w) * 0.5,
+            .y = list_rect.y + (list_rect.h - msg_dims.h) * 0.5,
+            .w = msg_dims.w,
+            .h = msg_dims.h,
+        }, .{
+            .text = no_match_msg,
+            .color = withAlpha(theme.subtext1, progress),
+            .font_size = 13,
+            .font_id = 0,
+        });
+        return;
     }
-    const scroll_offset = clay.Vector2{
-        .x = if (scroll_data.found) scroll_data.scroll_position.x else 0.0,
-        .y = resolved_scroll_y,
-    };
 
     const window = VirtualWindow.compute(
         matching_indices.items.len,
-        scroll_offset.y,
+        resolved_scroll_y,
         viewport_height,
-        item_height,
+        item_stride,
         4.0,
     );
 
@@ -1033,200 +1287,101 @@ fn renderSelectionList(
     );
     defer highlighter.deinit();
 
-    clay.UI()(.{
-        .id = clay.getElementId(cfg.list_id),
-        .layout = .{
-            .sizing = .{ .w = .grow, .h = .fixed(viewport_height) },
-            .direction = .top_to_bottom,
-            .child_gap = 4,
-        },
-        .clip = .{
-            .horizontal = false,
-            .vertical = true,
-            .child_offset = scroll_offset,
-        },
-    })({
-        if (window.top_spacer_h > 0) {
-            clay.UI()(.{
-                .id = clay.getElementId(cfg.top_spacer_id),
-                .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(window.top_spacer_h) } },
-            })({});
-        }
+    var match_count = window.start_idx;
+    for (visible_indices) |real_idx| {
+        const is_selected = (match_count == palette.selected_idx);
+        const item_y = list_rect.y + resolved_scroll_y +
+            @as(f32, @floatFromInt(match_count)) * item_stride;
+        const item_rect = FRect{
+            .x = list_rect.x,
+            .y = item_y,
+            .w = list_rect.w,
+            .h = actual_item_h,
+        };
 
-        var match_count = window.start_idx;
-        for (visible_indices) |real_idx| {
-            const is_selected = (match_count == palette.selected_idx);
+        interaction.recordPaletteItem(item_rect, real_idx);
 
-            var item_id_buf: [64]u8 = undefined;
-            const item_id_str = std.mem.print(
-                &item_id_buf,
-                "{s}{}",
-                .{ cfg.item_prefix, real_idx },
-            ) catch cfg.item_prefix;
-            const item_id = clay.getElementId(item_id_str);
-            const item_hovered = clay.pointerOver(item_id);
+        const item_hovered = interaction.isHovered(item_rect);
+        const bg_color: ?Color = if (is_selected and item_hovered)
+            withAlpha(theme.row_selected_hover, progress)
+        else if (is_selected)
+            withAlpha(theme.row_selected, progress)
+        else if (item_hovered)
+            withAlpha(theme.row_hover, progress)
+        else
+            null;
 
-            clay.UI()(.{
-                .id = item_id,
-                .layout = .{
-                    .sizing = .{ .w = .grow, .h = .fixed(switch (palette.mode) {
-                        .files => 54.0,
-                        .actions, .directory_navigator => 46.0,
-                        .set_brightness,
-                        .set_contrast,
-                        .set_contrast_blend,
-                        .set_highlights,
-                        .set_shadows,
-                        .set_whites,
-                        .set_blacks,
-                        .set_temperature,
-                        .set_tint,
-                        .set_vibrance,
-                        .set_saturation,
-                        .set_clarity,
-                        .set_texture,
-                        .go_to_image,
-                        .set_slideshow_interval,
-                        .inactive,
-                        => 0.0,
-                    }) },
-                    .direction = .left_to_right,
-                    .child_alignment = .{ .x = .left, .y = .center },
-                    .padding = .{ .left = 12, .right = 12 },
-                    .child_gap = switch (palette.mode) {
-                        .files => 8,
-                        .actions,
-                        .directory_navigator,
-                        .set_brightness,
-                        .set_contrast,
-                        .set_contrast_blend,
-                        .set_highlights,
-                        .set_shadows,
-                        .set_whites,
-                        .set_blacks,
-                        .set_temperature,
-                        .set_tint,
-                        .set_vibrance,
-                        .set_saturation,
-                        .set_clarity,
-                        .set_texture,
-                        .go_to_image,
-                        .set_slideshow_interval,
-                        .inactive,
-                        => 0,
-                    },
-                },
-                .background_color = if (is_selected and item_hovered)
-                    withAlpha(theme.row_selected_hover, progress)
-                else if (is_selected)
-                    withAlpha(theme.row_selected, progress)
-                else if (item_hovered)
-                    withAlpha(theme.row_hover, progress)
-                else
-                    clay.Color{ 0, 0, 0, 0 },
+        if (bg_color) |bg| {
+            try list.addRect(item_rect, .{
+                .background_color = bg,
                 .corner_radius = .all(6),
-            })({
-                switch (palette.mode) {
-                    .files => try renderFileListItem(
-                        ui_model,
-                        palette,
-                        real_idx,
-                        is_selected,
-                        frame_allocator,
-                        &highlighter,
-                        measure_data,
-                        progress,
-                    ),
-                    .actions => try renderActionListItem(
-                        palette,
-                        real_idx,
-                        is_selected,
-                        frame_allocator,
-                        &highlighter,
-                        progress,
-                    ),
-                    .directory_navigator => try renderDirectoryListItem(
-                        palette,
-                        real_idx,
-                        is_selected,
-                        frame_allocator,
-                        &highlighter,
-                        measure_data,
-                        progress,
-                    ),
-                    .set_brightness,
-                    .set_contrast,
-                    .set_contrast_blend,
-                    .set_highlights,
-                    .set_shadows,
-                    .set_whites,
-                    .set_blacks,
-                    .set_temperature,
-                    .set_tint,
-                    .set_vibrance,
-                    .set_saturation,
-                    .set_clarity,
-                    .set_texture,
-                    .go_to_image,
-                    .set_slideshow_interval,
-                    .inactive,
-                    => {},
-                }
-            });
-
-            match_count += 1;
-        }
-
-        if (window.bottom_spacer_h > 0) {
-            clay.UI()(.{
-                .id = clay.getElementId(cfg.bottom_spacer_id),
-                .layout = .{ .sizing = .{ .w = .grow, .h = .fixed(window.bottom_spacer_h) } },
-            })({});
-        }
-
-        if (matching_indices.items.len == 0) {
-            clay.UI()(.{
-                .layout = .{
-                    .sizing = .{ .w = .grow, .h = .fixed(36) },
-                    .child_alignment = .{ .x = .center, .y = .center },
-                },
-            })({
-                const no_match_msg = switch (palette.mode) {
-                    .files => "No matching files found",
-                    .actions => "No matching commands found",
-                    .directory_navigator => if (palette.query.items.len > 0)
-                        "No matching subfolders found"
-                    else
-                        "0 subfolders found",
-                    .set_brightness,
-                    .set_contrast,
-                    .set_contrast_blend,
-                    .set_highlights,
-                    .set_shadows,
-                    .set_whites,
-                    .set_blacks,
-                    .set_temperature,
-                    .set_tint,
-                    .set_vibrance,
-                    .set_saturation,
-                    .set_clarity,
-                    .set_texture,
-                    .go_to_image,
-                    .set_slideshow_interval,
-                    .inactive,
-                    => "",
-                };
-                clay.text(no_match_msg, .{
-                    .color = withAlpha(theme.subtext1, progress),
-                    .font_size = 13,
-                    .font_id = 0,
-                });
             });
         }
-    });
+
+        switch (palette.mode) {
+            .files => try renderFileListItem(
+                list,
+                item_rect,
+                ui_model,
+                palette,
+                real_idx,
+                is_selected,
+                frame_allocator,
+                &highlighter,
+                measure_data,
+                progress,
+            ),
+            .actions => try renderActionListItem(
+                list,
+                item_rect,
+                palette,
+                real_idx,
+                is_selected,
+                frame_allocator,
+                &highlighter,
+                measure_data,
+                progress,
+            ),
+            .directory_navigator => try renderDirectoryListItem(
+                list,
+                item_rect,
+                palette,
+                real_idx,
+                is_selected,
+                frame_allocator,
+                &highlighter,
+                measure_data,
+                progress,
+            ),
+            .set_brightness,
+            .set_contrast,
+            .set_contrast_blend,
+            .set_highlights,
+            .set_shadows,
+            .set_whites,
+            .set_blacks,
+            .set_temperature,
+            .set_tint,
+            .set_vibrance,
+            .set_saturation,
+            .set_clarity,
+            .set_texture,
+            .go_to_image,
+            .set_slideshow_interval,
+            .inactive,
+            => {},
+        }
+
+        match_count += 1;
+    }
 }
 
-fn renderDirectoryLegend(progress: f32) void {
+fn renderDirectoryLegend(
+    list: *UiDrawList,
+    rect: FRect,
+    progress: f32,
+    measure_data: *const MeasureTextUserData,
+) !void {
     const LegendItem = struct { key: []const u8, label: []const u8 };
     const legend_items = [_]LegendItem{
         .{ .key = "Right", .label = "Open" },
@@ -1236,60 +1391,89 @@ fn renderDirectoryLegend(progress: f32) void {
         .{ .key = "Esc", .label = "Close" },
     };
 
-    clay.UI()(.{
-        .layout = .{
-            .sizing = .{ .w = .grow, .h = .fit },
-            .direction = .left_to_right,
-            .child_alignment = .{ .x = .center, .y = .center },
-            .padding = .{ .top = 6, .bottom = 2 },
-            .child_gap = 6,
-        },
-    })({
-        inline for (legend_items) |item| {
-            clay.UI()(.{
-                .layout = .{
-                    .sizing = .{ .w = .fit, .h = .fit },
-                    .direction = .left_to_right,
-                    .child_alignment = .{ .x = .left, .y = .center },
-                    .padding = .{ .left = 5, .right = 7, .top = 3, .bottom = 3 },
-                    .child_gap = 5,
-                },
-                .background_color = withAlpha(theme.crust, progress),
-                .corner_radius = .all(4),
-                .border = .{
-                    .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-                    .color = withAlpha(theme.surface0, progress),
-                },
-            })({
-                clay.UI()(.{
-                    .layout = .{
-                        .sizing = .{ .w = .fit, .h = .fit },
-                        .padding = .{ .left = 4, .right = 4, .top = 1, .bottom = 1 },
-                    },
-                    .background_color = withAlpha(theme.surface0, progress),
-                    .corner_radius = .all(3),
-                })({
-                    clay.text(item.key, .{
-                        .color = withAlpha(theme.mauve, progress),
-                        .font_size = 10,
-                        .font_id = 0,
-                    });
-                });
+    var total_w: f32 = 0.0;
+    var item_widths: [legend_items.len]f32 = undefined;
+    var key_widths: [legend_items.len]f32 = undefined;
+    var label_widths: [legend_items.len]f32 = undefined;
 
-                clay.text(item.label, .{
-                    .color = withAlpha(theme.subtext0, progress),
-                    .font_size = 11,
-                    .font_id = 0,
-                });
-            });
-        }
-    });
+    for (legend_items, 0..) |item, i| {
+        key_widths[i] =
+            text_utils.measureText(item.key, 0, 10, measure_data).w;
+        label_widths[i] =
+            text_utils.measureText(item.label, 0, 11, measure_data).w;
+        const key_badge_w = key_widths[i] + 8.0;
+        item_widths[i] = 5.0 + key_badge_w + 5.0 + label_widths[i] + 7.0;
+        total_w += item_widths[i];
+        if (i + 1 < legend_items.len) total_w += 6.0;
+    }
+
+    var cur_x = rect.x + (rect.w - total_w) * 0.5;
+    const pill_h: f32 = 20.0;
+    const pill_y = rect.y + (rect.h - pill_h) * 0.5;
+
+    for (legend_items, 0..) |item, i| {
+        const item_w = item_widths[i];
+        const pill_rect =
+            FRect{ .x = cur_x, .y = pill_y, .w = item_w, .h = pill_h };
+        try list.addRect(pill_rect, .{
+            .background_color = withAlpha(theme.crust, progress),
+            .corner_radius = .all(4),
+        });
+        try list.addBorder(pill_rect, .{
+            .color = withAlpha(theme.surface0, progress),
+            .width = .all(1),
+            .corner_radius = .all(4),
+        });
+
+        const key_w = key_widths[i];
+        const key_badge_w = key_w + 8.0;
+        const key_badge_h: f32 = 14.0;
+        const key_badge_rect = FRect{
+            .x = cur_x + 5.0,
+            .y = pill_y + (pill_h - key_badge_h) * 0.5,
+            .w = key_badge_w,
+            .h = key_badge_h,
+        };
+        try list.addRect(key_badge_rect, .{
+            .background_color = withAlpha(theme.surface0, progress),
+            .corner_radius = .all(3),
+        });
+        try list.addText(.{
+            .x = key_badge_rect.x + 4.0,
+            .y = key_badge_rect.y + 1.0,
+            .w = key_w,
+            .h = 12.0,
+        }, .{
+            .text = item.key,
+            .color = withAlpha(theme.mauve, progress),
+            .font_size = 10,
+            .font_id = 0,
+        });
+
+        const label_x = key_badge_rect.x + key_badge_w + 5.0;
+        try list.addText(.{
+            .x = label_x,
+            .y = pill_y + 3.0,
+            .w = label_widths[i],
+            .h = 14.0,
+        }, .{
+            .text = item.label,
+            .color = withAlpha(theme.subtext0, progress),
+            .font_size = 11,
+            .font_id = 0,
+        });
+
+        cur_x += item_w + 6.0;
+    }
 }
 
-/// Renders the complete Command Palette floating modal overlay (search input box, header title,
-/// match counter, and virtualized scrollable result list) corresponding to the active palette mode.
+/// Renders the complete Command Palette floating modal overlay (search input
+/// box, header title, match counter, and virtualized scrollable result list)
+/// corresponding to the active palette mode.
 pub fn renderPalette(
+    list: *UiDrawList,
     ui_model: UiViewModel,
+    win_dims: LogicalDims,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
 ) !void {
@@ -1299,100 +1483,124 @@ pub fn renderPalette(
     if (progress <= 0.001) return;
 
     const cfg = getPaletteConfig(palette.mode);
-    const y_offset: f32 = (1.0 - progress) * -18.0;
 
-    // Render Floating Card container
-    clay.UI()(.{
-        .id = clay.getElementId(cfg.element_id),
-        .layout = .{
-            .sizing = .{ .w = .fixed(550), .h = .fit },
-            .direction = .top_to_bottom,
-            .padding = .{ .top = 12, .bottom = 12, .left = 12, .right = 12 },
-            .child_gap = 10,
-        },
+    const pad_y: f32 = 24.0;
+    const header_h: f32 = 16.0;
+    const breadcrumb_h: f32 =
+        if (palette.mode == .directory_navigator) 26.0 else 0.0;
+    const breadcrumb_gap: f32 =
+        if (palette.mode == .directory_navigator) 10.0 else 0.0;
+    const search_h: f32 = 38.0;
+    const content_h: f32 = if (palette.mode.isTextInputDialog())
+        64.0
+    else
+        cfg.viewport_height_logical;
+    const legend_h: f32 =
+        if (palette.mode == .directory_navigator) 26.0 else 0.0;
+    const legend_gap: f32 =
+        if (palette.mode == .directory_navigator) 10.0 else 0.0;
+    const gaps: f32 = 20.0 + breadcrumb_gap + legend_gap;
+    const modal_h: f32 = pad_y + header_h + breadcrumb_h + search_h +
+        content_h + legend_h + gaps;
+
+    const modal_w: f32 = 550.0;
+    const modal_x: f32 = (win_dims.w - modal_w) * 0.5;
+    const modal_y: f32 =
+        (win_dims.h - modal_h) * 0.5 + (1.0 - progress) * -18.0;
+    const modal_rect =
+        FRect{ .x = modal_x, .y = modal_y, .w = modal_w, .h = modal_h };
+
+    interaction.setPaletteModalRect(modal_rect, !palette.is_closing);
+
+    try list.addRect(modal_rect, .{
         .background_color = theme.withAlpha(theme.base_translucent, progress),
         .corner_radius = .all(10),
-        .user_data = if (ui_model.overlays.enable_blur)
-            @ptrFromInt(ElementTag.blurred_surface.toInt())
-        else
-            null,
-        .border = .{
-            .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-            .color = theme.withAlpha(theme.overlay0, progress),
-        },
-        .floating = .{
-            .attach_to = .to_parent,
-            .attach_points = .{
-                .element = .center_center,
-                .parent = .center_center,
-            },
-            .offset = .{
-                .x = 0.0,
-                .y = y_offset,
-            },
-            .z_index = 200,
-            .pointer_capture_mode = if (palette.is_closing)
-                .passthrough
-            else
-                .capture,
-        },
-    })({
-        // Title / Header
-        renderHeader(palette.mode, cfg.title, progress);
-
-        // Breadcrumb box for directory_navigator
-        if (palette.mode == .directory_navigator) {
-            try renderDirectoryBreadcrumbs(palette, frame_allocator, measure_data, progress);
-        }
-
-        // Search Input Box
-        renderSearchInput(palette, cfg.placeholder, progress);
-
-        if (palette.mode.isTextInputDialog()) {
-            try renderTextInputDialog(ui_model, frame_allocator, measure_data, progress);
-        } else {
-            try renderSelectionList(ui_model, cfg, frame_allocator, measure_data, progress);
-        }
-
-        // Footer Legend for Directory Navigator
-        if (palette.mode == .directory_navigator) {
-            renderDirectoryLegend(progress);
-        }
+        .tag = if (ui_model.overlays.enable_blur) .blurred_surface else .none,
     });
+    try list.addBorder(modal_rect, .{
+        .color = theme.withAlpha(theme.overlay0, progress),
+        .width = .all(1),
+        .corner_radius = .all(10),
+    });
+
+    var cur_y = modal_rect.y + 12.0;
+    const content_x = modal_rect.x + 12.0;
+    const content_w = modal_rect.w - 24.0;
+
+    try renderHeader(
+        list,
+        .{ .x = content_x, .y = cur_y, .w = content_w, .h = header_h },
+        palette.mode,
+        cfg.title,
+        progress,
+    );
+    cur_y += header_h + 10.0;
+
+    if (palette.mode == .directory_navigator) {
+        try renderDirectoryBreadcrumbs(
+            list,
+            .{ .x = content_x, .y = cur_y, .w = content_w, .h = breadcrumb_h },
+            palette,
+            frame_allocator,
+            measure_data,
+            progress,
+        );
+        cur_y += breadcrumb_h + 10.0;
+    }
+
+    try renderSearchInput(
+        list,
+        .{ .x = content_x, .y = cur_y, .w = content_w, .h = search_h },
+        palette,
+        cfg.placeholder,
+        measure_data,
+        progress,
+    );
+    cur_y += search_h + 10.0;
+
+    const list_rect =
+        FRect{ .x = content_x, .y = cur_y, .w = content_w, .h = content_h };
+    if (palette.mode.isTextInputDialog()) {
+        try renderTextInputDialog(
+            list,
+            list_rect,
+            ui_model,
+            frame_allocator,
+            measure_data,
+            progress,
+        );
+    } else {
+        try renderSelectionList(
+            list,
+            list_rect,
+            ui_model,
+            cfg,
+            frame_allocator,
+            measure_data,
+            progress,
+        );
+    }
+    cur_y += content_h;
+
+    if (palette.mode == .directory_navigator) {
+        cur_y += 10.0;
+        try renderDirectoryLegend(
+            list,
+            .{ .x = content_x, .y = cur_y, .w = content_w, .h = legend_h },
+            progress,
+            measure_data,
+        );
+    }
 }
 
 test "renderPalette - closing palette passes pointer through to parent" {
-    const dummyMeasure = struct {
-        fn measure(
-            text: []const u8,
-            config: *clay.TextElementConfig,
-            _: void,
-        ) clay.Dimensions {
-            _ = config;
-            return .{ .w = @floatFromInt(text.len * 8), .h = 16.0 };
-        }
-    }.measure;
-    const setNullCtx = @as(
-        *const fn (?*clay.Context) callconv(.c) void,
-        @ptrCast(&clay.cdefs.Clay_SetCurrentContext),
-    );
-    setNullCtx(null);
-    defer setNullCtx(null);
-    const clay_mem = try std.testing.allocator.alloc(u8, clay.minMemorySize());
-    defer std.testing.allocator.free(clay_mem);
-    _ = clay.initialize(
-        clay.Arena.init(clay_mem),
-        .{ .w = 1000, .h = 800 },
-        .{},
-    );
-    clay.setMeasureTextFunction(void, {}, dummyMeasure);
+    interaction.resetInteractionState();
+    defer interaction.resetInteractionState();
 
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
 
-    var data = MeasureTextUserData{
-        .allocator = std.testing.allocator,
-    };
+    var data = MeasureTextUserData{};
     var pal_state = try PaletteState.init(std.testing.allocator);
     defer pal_state.deinit();
     pal_state.mode = .actions;
@@ -1424,28 +1632,44 @@ test "renderPalette - closing palette passes pointer through to parent" {
         .current_time_ms = 100,
     };
 
-    // 1. Open palette captures pointer over center -> parent is not hit
-    clay.beginLayout();
-    clay.UI()(.{
-        .id = clay.getElementId("RootHost"),
-        .layout = .{ .sizing = .{ .w = .grow, .h = .grow } },
-    })({
-        try renderPalette(model, arena.allocator(), &data);
-    });
-    _ = clay.endLayout();
-    clay.setPointerState(.{ .x = 500, .y = 350 }, false);
-    try std.testing.expect(!clay.pointerOver(clay.getElementId("RootHost")));
+    const win_dims = LogicalDims{ .w = 1000.0, .h = 800.0 };
 
-    // 2. Closing palette passes pointer through -> parent is hit
-    pal_state.is_closing = true;
-    clay.beginLayout();
-    clay.UI()(.{
-        .id = clay.getElementId("RootHost"),
-        .layout = .{ .sizing = .{ .w = .grow, .h = .grow } },
-    })({
-        try renderPalette(model, arena.allocator(), &data);
-    });
-    _ = clay.endLayout();
-    clay.setPointerState(.{ .x = 500, .y = 350 }, false);
-    try std.testing.expect(clay.pointerOver(clay.getElementId("RootHost")));
+    // 1. Open palette captures pointer over center -> viewport is not hit
+    {
+        interaction.beginFrameLayout();
+        interaction.setViewportRect(
+            .{ .x = 0.0, .y = 0.0, .w = 1000.0, .h = 800.0 },
+        );
+        var draw_list = UiDrawList{ .allocator = arena.allocator() };
+        try renderPalette(
+            &draw_list,
+            model,
+            win_dims,
+            arena.allocator(),
+            &data,
+        );
+
+        interaction.setPointerStateForTest(.{ .x = 500.0, .y = 350.0 }, false);
+        try std.testing.expect(!interaction.isPointerOverViewport());
+    }
+
+    // 2. Closing palette passes pointer through -> viewport is hit
+    {
+        pal_state.is_closing = true;
+        interaction.beginFrameLayout();
+        interaction.setViewportRect(
+            .{ .x = 0.0, .y = 0.0, .w = 1000.0, .h = 800.0 },
+        );
+        var draw_list = UiDrawList{ .allocator = arena.allocator() };
+        try renderPalette(
+            &draw_list,
+            model,
+            win_dims,
+            arena.allocator(),
+            &data,
+        );
+
+        interaction.setPointerStateForTest(.{ .x = 500.0, .y = 350.0 }, false);
+        try std.testing.expect(interaction.isPointerOverViewport());
+    }
 }

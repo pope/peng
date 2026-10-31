@@ -22,20 +22,18 @@
     // original project's identity. Thus it is recommended to leave the comment
     // on the following line intact, so that it shows up in code reviews that
     // modify the field.
-    .fingerprint = 0x2ccfc4999de8bc47, // Changing this has security and trust implications.
+    // Changing this has security and trust implications.
+    .fingerprint = 0x2ccfc4999de8bc47,
     // Tracks the earliest Zig version that the package considers to be a
     // supported use case.
     .minimum_zig_version = "0.17.0",
     // This field is optional.
     // Each dependency must either provide a `url` and `hash`, or a `path`.
-    // `zig build --fetch` can be used to fetch all dependencies of a package, recursively.
+    // `zig build --fetch` can be used to fetch all dependencies of a package,
+    // recursively.
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
-        .zclay = .{
-            .url = "git+https://github.com/johan0A/clay-zig-bindings#e0286c488a303b93501944ccde10730cc74ecd58",
-            .hash = "zclay-0.2.2-Ej1rkP3RAACYZGzQB5NGPaqfySgKfO26NYk5Ja6Z15gC",
-        },
         .sdl3_devel = .{
             .url = "https://github.com/libsdl-org/SDL/releases/download/release-3.4.12/SDL3-devel-3.4.12-VC.zip",
             .hash = "N-V-__8AAE4JlAMyAncBlb_JYlu-9ZZHJlu9H-XNIGZspCR-",

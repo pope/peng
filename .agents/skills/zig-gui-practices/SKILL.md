@@ -1,9 +1,9 @@
 ---
 name: zig-gui-practices
 description: >-
-  Best practices for Zig GUI development with Clay, SDL3, Vulkan/Metal GPU rendering, EXIF image decoding, navigation preloading, and GLSL shader optimization.
+  Best practices for Zig GUI development with immediate-mode RectCut UI, SDL3, Vulkan/Metal GPU rendering, EXIF image decoding, navigation preloading, and GLSL shader optimization.
   Trigger immediately for:
-  - Layout & DPI: Clay UI layout, High-DPI/Retina scaling, zoom-to-mouse math, aspect fit/fill calculations.
+  - Layout & DPI: RectCut UI layout, High-DPI/Retina scaling, zoom-to-mouse math, aspect fit/fill calculations.
   - Image & Memory: EXIF header dimension parsing, APP1 segment skipping, VRAM cache budgeting, navigation throttling, settled preloading.
   - GPU & Shaders: SDL3 GPU/Vulkan text blitting recipe, hardware mipmapping, GLSL shader optimization, Horner's method, branchless GLSL math.
   DO NOT trigger for:
@@ -23,14 +23,14 @@ ______________________________________________________________________
   - 3-Phase frame loop: Ingestion (1) -> Systems Update Phase (2) -> Render (3).
   - Read-only `UiViewModel` (`src/ui/view_model.zig`) snapshot barrier between Phase 2 and Phase 3 with zero state mutations in render.
   - System lifetime bound to single frame iteration via `FrameContext` (`frame_allocator`) with intra-frame LIFO deallocation.
-  - Frame-arena string lifetime invariants for retained Clay UI layout labels (`layout.zig`, `edit_panel.zig`, `palette.zig`).
+  - Frame-arena string lifetime invariants for `UiDrawList` layout labels (`layout.zig`, `edit_panel.zig`, `palette.zig`).
   - Declarative capabilities (`actions.zig`), zero-allocation `SnackbarState` (`src/state/snackbar.zig`), and `MultiArrayList` SoA SIMD navigation.
 
 - **[Layout, DPI Scaling & Centering Math](references/dpi-layout-math.md)**
 
   - High-DPI / Retina scale factors (`scale_x`, `scale_y`) for viewports and mouse inputs.
   - Zoom-to-mouse panning math and aspect ratio fitting (`full`, `crop`, `shrink`).
-  - Dynamic `clay.getElementData` bounding box sampling for interactive widgets and sliders.
+  - Immediate-mode `FRect` bounding box recording and hit-testing (`src/ui/interaction.zig`) for interactive widgets and sliders.
   - Compound row badge alignment and normalized `[0.0, 1.0]` theme alpha invariants.
 
 - **[SDL3 GPU Rendering Workflows](references/sdl3-gpu-rendering.md)**

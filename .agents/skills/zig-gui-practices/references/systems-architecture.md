@@ -41,17 +41,16 @@ ______________________________________________________________________
     rewinds its internal bump offset when the most recent allocation is freed,
     allowing subsequent systems in the same frame tick to reuse that memory
     without triggering arena block growth.
-  - **Frame-Arena String Lifetimes for Retained Clay UI Labels**: In Clay UI
-    layout functions (`layout.zig`, `edit_panel.zig`, `palette.zig`), text
-    elements take slice references (`clay.text(formatted_str, ...)`). Clay
-    retains these slice pointers across the layout hierarchy and hands them
-    directly to the render execution pass (`executeRenderPacket`). Dynamic
-    text (such as numeric percentages, slider values, formatted labels, or
-    stats strings) MUST NOT use local stack buffers (`var buf: [32]u8 =
-    undefined`), which become invalid once the function returns. Dynamic
-    labels MUST be formatted into `frame_allocator` (e.g. `try
-    frame_allocator.print(...)`), guaranteeing memory validity through the GPU
-    text blitting pass.
+  - **Frame-Arena String Lifetimes for `UiDrawList` Text Commands**: In UI
+    layout functions (`layout.zig`, `edit_panel.zig`, `palette.zig`,
+    `stats.zig`), text commands (`list.addText`, `list.addTextRuns`) store slice
+    references (`[]const u8`) inside `UiDrawList`, which are read during the
+    render packet extraction pass (`buildRenderPacket`). Dynamic text (such as
+    numeric percentages, slider values, formatted labels, or stats strings) MUST
+    NOT use local stack buffers (`var buf: [32]u8 = undefined`) that go out of
+    scope before `buildRenderPacket` runs. Dynamic labels MUST be formatted into
+    `frame_allocator` (e.g. `try frame_allocator.print(...)`), guaranteeing
+    memory validity through the GPU text blitting pass.
 
 ______________________________________________________________________
 
@@ -255,9 +254,9 @@ ______________________________________________________________________
     };
     ```
   - **Single Source of Truth Parameter Specification Table**:
-    - Centralize parameter boundaries, defaults, step deltas, snap radii,
-      precomputed Clay element IDs, and formatting kinds into a static
-      comptime array (`specs: [EditParam.count]ParamSpec`).
+    - Centralize parameter boundaries, defaults, step deltas, snap radii, and
+      formatting kinds into a static comptime array
+      (`specs: [EditParam.count]ParamSpec`).
     - Eliminate duplicated bounds checking, slider hit-testing logic, and
       formatting branches across IPC, UI layouts, and state stores.
     - Let UI widgets and IPC parsers query `intents.getSpec(param)` to
@@ -268,9 +267,9 @@ ______________________________________________________________________
 ## Application Startup & Overlapped Initialization Pattern
 
 - **Pattern 13 — Overlapped I/O, Decode & Graphics Device Startup**:
-  - Rather than initializing SDL, window, GPU device, shaders, and Clay serially before touching any media, peng overlaps CPU disk I/O and image decode with graphics setup:
+  - Rather than initializing SDL, window, GPU device, and shaders serially before touching any media, peng overlaps CPU disk I/O and image decode with graphics setup:
     1. **Core SDL Subsystem Init (`gpu.graphics.initSdlCore` in `src/gpu/graphics.zig`)**: Initializes `SDL_INIT_VIDEO | SDL_INIT_EVENTS` (required by background workers for surface operations and thread wakeup via `context.wakeUpMainThread`) and consolidates `TTF_Init` upfront prior to state construction.
     2. **Pinned In-Place State & Early Media Ingestion (`AppGraphicsAndState.init` -> `state.openPath` / `readPipedStdin`)**: `AppGraphicsAndState.init(self: *AppGraphicsAndState, ...)` initializes `self.state` directly in-place at its permanent stack address before spawning workers (preventing by-value struct returns from invalidating worker pointers to `state.workers`, `state.cache.generation`, and `active_file_scans`). When given a direct single-image file path, `openPath` appends slot 0 in `.decoding` status (`has_thread = true`) and spawns `decodeWorker` concurrently with `pathScanWorker`. When opening a directory or CBZ, spawns `pathScanWorker`. When piped from stdin, spawns `stdinWorker`.
-    3. **Concurrent Main-Thread Window & GPU Setup**: While workers read file headers, extract EXIF data, and decompress pixels on background threads, the main thread performs window creation, display server negotiation (Wayland/X11 roundtrips), SDL3 GPU device creation (Vulkan / Metal), shader/pipeline compilation, and Clay UI memory allocation.
-    4. **GPU Intent (`gpu_enabled`) & Deferred Binding**: Initializes `state.gpu_enabled = true` so early decode workers know a GPU device will be present (avoiding redundant CPU format conversions and preserving raw surfaces for GPU compute unpack), while keeping `state.gpu_device = null` until all graphics pipelines and Clay memory succeed. If an intermediate setup step fails, `state.deinit()` cleans up worker threads and CPU caches without accessing unowned or destroyed GPU handles (use-after-free).
+    3. **Concurrent Main-Thread Window & GPU Setup**: While workers read file headers, extract EXIF data, and decompress pixels on background threads, the main thread performs window creation, display server negotiation (Wayland/X11 roundtrips), SDL3 GPU device creation (Vulkan / Metal), and shader/pipeline compilation.
+    4. **GPU Intent (`gpu_enabled`) & Deferred Binding**: Initializes `state.gpu_enabled = true` so early decode workers know a GPU device will be present (avoiding redundant CPU format conversions and preserving raw surfaces for GPU compute unpack), while keeping `state.gpu_device = null` until all graphics pipelines succeed. If an intermediate setup step fails, `state.deinit()` cleans up worker threads and CPU caches without accessing unowned or destroyed GPU handles (use-after-free).
     5. **Latency-Hiding First Frame**: When `runMainLoop` starts Frame 1, background events in `workers.event_queue` are drained. If decode completed during graphics init, Frame 1 displays the loaded image immediately; if decode is still in flight (large RAW/TIFF), Frame 1 renders the loading state while `computeFrameWaitStrategy` ticks with 8ms polling until `wakeUpMainThread()` triggers the final GPU upload.

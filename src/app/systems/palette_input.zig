@@ -395,7 +395,7 @@ pub fn sysProcessPaletteInput(ctx: FrameContext) !bool {
     ui.interaction.syncPaletteScroll(&self.viewer.ui.palette);
     // 4. Mouse Pointer & Click Processing
     var palette_closed_this_frame = false;
-    if (input.mouse_left_clicked and !input.isPointerInDebugPanel()) {
+    if (input.mouse_left_clicked) {
         const click_hit = ui.interaction.hitTestPaletteClick(
             &self.viewer.ui.palette,
         );
@@ -594,46 +594,6 @@ test "handlePaletteKeys stepping up to parent directory preselects child dir" {
         }
     }
     try std.testing.expect(found_selected);
-}
-
-test "sysProcessPaletteInput retains palette when clicking inside debug panel" {
-    const allocator = std.testing.allocator;
-    const io = std.Io.Threaded.global_single_threaded.io();
-
-    var state = try AppState.initHeadless(allocator, io);
-    defer state.deinit();
-
-    const win_w: f32 = 800.0;
-    const win_h: f32 = 600.0;
-    const debug_w: f32 = 280.0;
-    var input_inside = state_pkg.FrameInput{
-        .win_w = win_w,
-        .win_h = win_h,
-        .scale_x = 1.0,
-        .scale_y = 1.0,
-        .mouse_x = win_w - debug_w + 10.0,
-        .mouse_y = 100.0,
-        .mouse_left_down = false,
-        .mouse_left_clicked = true,
-        .mouse_inside = true,
-        .quit_requested = false,
-        .scroll_delta_x = 0,
-        .scroll_delta_y = 0,
-        .keys_pressed = .empty,
-        .key_modifiers = .{},
-        .text_input = null,
-        .dropped_path = null,
-        .delta_time_ms = 16.0,
-    };
-    input_inside.is_pointer_in_debug_panel = true;
-
-    state.viewer.ui.palette.mode = .actions;
-    _ = try sysProcessPaletteInput(.{
-        .state = &state,
-        .frame_allocator = allocator,
-        .input = input_inside,
-    });
-    try std.testing.expect(state.viewer.ui.palette.mode == .actions);
 }
 
 test "openPalette directory_navigator starting directory rules" {

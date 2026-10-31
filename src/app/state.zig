@@ -413,7 +413,7 @@ pub const AppState = struct {
     }
 
     /// Computes available viewport dimensions in physical framebuffer pixels,
-    /// scaling for display DPI, Clay debug view, and docked edit panel.
+    /// scaling for display DPI and docked edit panel.
     pub fn getViewportPixelDims(self: *AppState) PhysicalDims {
         var win_w: f32 = 1024.0;
         var win_h: f32 = 768.0;
@@ -435,8 +435,6 @@ pub const AppState = struct {
         }
 
         var available_width = win_w;
-        const dbg_w = ui.interaction.debugPanelWidth() * scale_x;
-        available_width = @max(available_width - dbg_w, 1.0);
         const edit_progress = self.viewer.animations.get(.edit_panel);
         const edit_open = self.viewer.ui.overlays.edit_panel.visible;
         if (edit_open or edit_progress > 0.001) {

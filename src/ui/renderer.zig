@@ -1,4 +1,3 @@
-const clay = @import("zclay");
 const geom = @import("geom");
 const gpu_pkg = @import("gpu");
 const state = @import("state");
@@ -7,6 +6,7 @@ const theme = @import("theme.zig");
 
 const addBatch = gpu_pkg.pass.addBatch;
 const BatchItem = gpu_pkg.render_image.BatchItem;
+const Color = theme.Color;
 const ElementTag = state.ElementTag;
 const FRect = geom.FRect;
 const geometry = gpu_pkg.geometry;
@@ -24,15 +24,231 @@ const UvRect = geom.UvRect;
 const Vertex = gpu_pkg.geometry.Vertex;
 const ViewportParams = state.ViewportParams;
 
-inline fn elementTagFromUserData(user_data: ?*anyopaque) ElementTag {
-    return if (user_data) |ptr| ElementTag.fromInt(@intFromPtr(ptr)) else .none;
-}
+/// Corner radii in logical UI points.
+pub const CornerRadius = struct {
+    top_left: f32 = 0.0,
+    top_right: f32 = 0.0,
+    bottom_left: f32 = 0.0,
+    bottom_right: f32 = 0.0,
+
+    /// Returns uniform corner radii across all four corners.
+    pub inline fn all(radius: f32) CornerRadius {
+        return .{
+            .top_left = radius,
+            .top_right = radius,
+            .bottom_left = radius,
+            .bottom_right = radius,
+        };
+    }
+};
+
+/// Border stroke widths per edge in logical UI points.
+pub const BorderWidth = struct {
+    left: u16 = 0,
+    right: u16 = 0,
+    top: u16 = 0,
+    bottom: u16 = 0,
+
+    /// Returns uniform stroke widths across all four edges.
+    pub inline fn all(width: u16) BorderWidth {
+        return .{
+            .left = width,
+            .right = width,
+            .top = width,
+            .bottom = width,
+        };
+    }
+};
+
+/// Configuration for filled rectangle UI render commands.
+pub const RectConfig = struct {
+    background_color: Color,
+    corner_radius: CornerRadius = .{},
+    tag: ElementTag = .none,
+};
+
+/// Configuration for outlined border UI render commands.
+pub const BorderConfig = struct {
+    color: Color,
+    width: BorderWidth = .{},
+    corner_radius: CornerRadius = .{},
+    tag: ElementTag = .none,
+};
+
+/// Configuration for single-string text UI render commands.
+pub const TextConfig = struct {
+    text: []const u8,
+    color: Color,
+    font_size: u16 = 13,
+    font_id: u16 = 0,
+};
+
+/// Styled sub-slice span for multi-color text runs.
+pub const TextSpan = struct {
+    text: []const u8,
+    color: Color,
+};
+
+/// Configuration for contiguous multi-span styled text runs.
+pub const TextRunsConfig = struct {
+    spans: []const TextSpan,
+    font_size: u16 = 13,
+    font_id: u16 = 0,
+};
+
+/// Configuration for textured image quad render commands.
+pub const ImageConfig = struct {
+    image_data: ?*anyopaque,
+    uv: UvRect = .{},
+};
+
+/// Variant payload for pure-Zig immediate-mode UI draw commands.
+pub const CommandPayload = union(enum) {
+    scissor_start,
+    scissor_end,
+    rectangle: RectConfig,
+    border: BorderConfig,
+    text: TextConfig,
+    text_runs: TextRunsConfig,
+    image: ImageConfig,
+};
+
+/// Immediate-mode UI draw command with bounding rectangle and payload.
+pub const UiCommand = struct {
+    rect: FRect = .{},
+    payload: CommandPayload,
+};
+
+/// Flat command list buffer accumulating immediate-mode UI draw commands.
+pub const UiDrawList = struct {
+    allocator: std.mem.Allocator,
+    commands: std.ArrayList(UiCommand) = .empty,
+
+    /// Appends a command to the draw list.
+    pub fn append(self: *UiDrawList, cmd: UiCommand) !void {
+        try self.commands.append(self.allocator, cmd);
+    }
+
+    /// Reserves an empty command slot and returns its index.
+    pub fn reserve(self: *UiDrawList) !usize {
+        const idx = self.commands.items.len;
+        try self.commands.append(self.allocator, .{
+            .rect = .{},
+            .payload = .scissor_end,
+        });
+        return idx;
+    }
+
+    /// Overwrites a previously reserved command slot at `index`.
+    pub fn set(self: *UiDrawList, index: usize, cmd: UiCommand) void {
+        self.commands.items[index] = cmd;
+    }
+
+    /// Appends a filled rectangle command.
+    pub fn addRect(
+        self: *UiDrawList,
+        rect: FRect,
+        config: RectConfig,
+    ) !void {
+        try self.append(.{
+            .rect = rect,
+            .payload = .{ .rectangle = config },
+        });
+    }
+
+    /// Appends an outlined border command.
+    pub fn addBorder(
+        self: *UiDrawList,
+        rect: FRect,
+        config: BorderConfig,
+    ) !void {
+        try self.append(.{
+            .rect = rect,
+            .payload = .{ .border = config },
+        });
+    }
+
+    /// Appends a filled rectangle and border in one call.
+    pub fn addBox(
+        self: *UiDrawList,
+        rect: FRect,
+        bg_color: Color,
+        corner_radius: CornerRadius,
+        border_color: Color,
+        border_width: BorderWidth,
+        tag: ElementTag,
+    ) !void {
+        try self.addRect(rect, .{
+            .background_color = bg_color,
+            .corner_radius = corner_radius,
+            .tag = tag,
+        });
+        try self.addBorder(rect, .{
+            .color = border_color,
+            .width = border_width,
+            .corner_radius = corner_radius,
+            .tag = tag,
+        });
+    }
+
+    /// Appends a single-color text command.
+    pub fn addText(
+        self: *UiDrawList,
+        rect: FRect,
+        config: TextConfig,
+    ) !void {
+        try self.append(.{
+            .rect = rect,
+            .payload = .{ .text = config },
+        });
+    }
+
+    /// Appends a multi-span styled text runs command.
+    pub fn addTextRuns(
+        self: *UiDrawList,
+        rect: FRect,
+        config: TextRunsConfig,
+    ) !void {
+        try self.append(.{
+            .rect = rect,
+            .payload = .{ .text_runs = config },
+        });
+    }
+
+    /// Appends a textured image quad command.
+    pub fn addImage(
+        self: *UiDrawList,
+        rect: FRect,
+        config: ImageConfig,
+    ) !void {
+        try self.append(.{
+            .rect = rect,
+            .payload = .{ .image = config },
+        });
+    }
+
+    /// Pushes a scissor clipping rectangle command.
+    pub fn pushScissor(self: *UiDrawList, rect: FRect) !void {
+        try self.append(.{
+            .rect = rect,
+            .payload = .scissor_start,
+        });
+    }
+
+    /// Pops the most recent scissor clipping rectangle command.
+    pub fn popScissor(self: *UiDrawList) !void {
+        try self.append(.{
+            .rect = .{},
+            .payload = .scissor_end,
+        });
+    }
+};
 
 /// Returns true if any render command in the slice renders a blurred surface.
-pub fn hasBlurredSurface(r_commands: []const clay.RenderCommand) bool {
+pub fn hasBlurredSurface(r_commands: []const UiCommand) bool {
     for (r_commands) |rcmd| {
-        if (rcmd.command_type == .rectangle and
-            elementTagFromUserData(rcmd.user_data) == .blurred_surface)
+        if (rcmd.payload == .rectangle and
+            rcmd.payload.rectangle.tag == .blurred_surface)
         {
             return true;
         }
@@ -45,18 +261,16 @@ fn appendRectangleCommand(
     batches: *std.ArrayList(BatchItem),
     allocator: std.mem.Allocator,
     rect: FRect,
-    config: clay.RectangleRenderData,
-    user_data: ?*anyopaque,
+    config: RectConfig,
     scale_x: f32,
     win_dims: PhysicalDims,
     gpu_res: *const RenderResources,
     scissor: ?Rect,
 ) !void {
-    const active_blur_tex =
-        if (elementTagFromUserData(user_data) == .blurred_surface)
-            gpu_res.blur.getBlurTexture()
-        else
-            null;
+    const active_blur_tex = if (config.tag == .blurred_surface)
+        gpu_res.blur.getBlurTexture()
+    else
+        null;
     const is_blurred = active_blur_tex != null;
 
     const start = @as(u32, @intCast(vertices.items.len));
@@ -114,8 +328,7 @@ fn appendBorderCommand(
     batches: *std.ArrayList(BatchItem),
     allocator: std.mem.Allocator,
     rect: FRect,
-    config: clay.BorderRenderData,
-    user_data: ?*anyopaque,
+    config: BorderConfig,
     scale_x: f32,
     win_dims: PhysicalDims,
     gpu_res: *const RenderResources,
@@ -140,7 +353,7 @@ fn appendBorderCommand(
         ),
     };
 
-    const is_dashed = (elementTagFromUserData(user_data) == .drop_zone_box);
+    const is_dashed = (config.tag == .drop_zone_box);
 
     const r = config.color[0] / 255.0;
     const g = config.color[1] / 255.0;
@@ -389,60 +602,170 @@ fn appendBorderCommand(
     }
 }
 
+fn appendSingleTextRun(
+    vertices: *std.ArrayList(Vertex),
+    batches: *std.ArrayList(BatchItem),
+    build_ctx: PacketBuildContext,
+    rect: FRect,
+    world_x: *f32,
+    font_id: u16,
+    font_size: u16,
+    raw_text: []const u8,
+    color: Color,
+    current_scissor: ?Rect,
+) !void {
+    if (raw_text.len == 0) return;
+    const rgb = [3]f32{ color[0], color[1], color[2] };
+    const win_dims = build_ctx.physical_dims;
+
+    if (try getOrRenderCachedText(
+        build_ctx,
+        font_id,
+        font_size,
+        raw_text,
+        rgb,
+    )) |cached| {
+        const offset_y = @round((rect.h - cached.h) / 2.0);
+        const world_y = rect.y + @max(0.0, offset_y);
+        const start_x = world_x.*;
+
+        const p1 = geometry.toNdc(start_x, world_y, win_dims);
+        const p2 = geometry.toNdc(
+            start_x + cached.w,
+            world_y + cached.h,
+            win_dims,
+        );
+
+        const start = @as(u32, @intCast(vertices.items.len));
+        const text_alpha_u8 = @as(
+            u8,
+            @intFromFloat(std.math.clamp(color[3], 0.0, 255.0)),
+        );
+        const vert_color = packRgba(255, 255, 255, text_alpha_u8);
+        try vertices.append(build_ctx.frame_allocator, .{
+            .x = p1.x,
+            .y = p1.y,
+            .u = 0.0,
+            .v = 0.0,
+            .color = vert_color,
+        });
+        try vertices.append(build_ctx.frame_allocator, .{
+            .x = p2.x,
+            .y = p1.y,
+            .u = 1.0,
+            .v = 0.0,
+            .color = vert_color,
+        });
+        try vertices.append(build_ctx.frame_allocator, .{
+            .x = p1.x,
+            .y = p2.y,
+            .u = 0.0,
+            .v = 1.0,
+            .color = vert_color,
+        });
+        try vertices.append(build_ctx.frame_allocator, .{
+            .x = p2.x,
+            .y = p1.y,
+            .u = 1.0,
+            .v = 0.0,
+            .color = vert_color,
+        });
+        try vertices.append(build_ctx.frame_allocator, .{
+            .x = p2.x,
+            .y = p2.y,
+            .u = 1.0,
+            .v = 1.0,
+            .color = vert_color,
+        });
+        try vertices.append(build_ctx.frame_allocator, .{
+            .x = p1.x,
+            .y = p2.y,
+            .u = 0.0,
+            .v = 1.0,
+            .color = vert_color,
+        });
+
+        try addBatch(
+            batches,
+            build_ctx.frame_allocator,
+            start,
+            6,
+            cached.texture,
+            .ui_element,
+            current_scissor,
+        );
+
+        world_x.* += cached.w;
+    } else {
+        const target_size =
+            @as(f32, @floatFromInt(font_size)) * build_ctx.scale.y;
+        world_x.* += build_ctx.gpu_res.fontMeasurer().measure(
+            font_id,
+            target_size,
+            raw_text,
+        ).w;
+    }
+}
+
 fn buildGeometryFromCommands(
     view_params: ViewportParams,
     build_ctx: PacketBuildContext,
-    r_commands: []const clay.RenderCommand,
+    r_commands: []const UiCommand,
     vertices: *std.ArrayList(Vertex),
     batches: *std.ArrayList(BatchItem),
 ) !void {
     const win_dims = build_ctx.physical_dims;
     const scale_x = build_ctx.scale.x;
     const scale_y = build_ctx.scale.y;
+    const target_sc = Rect{
+        .x = 0,
+        .y = 0,
+        .w = @intFromFloat(@max(0.0, @round(win_dims.w))),
+        .h = @intFromFloat(@max(0.0, @round(win_dims.h))),
+    };
 
     var current_scissor: ?Rect = null;
     var scissor_stack: std.ArrayList(Rect) = .empty;
     defer scissor_stack.deinit(build_ctx.frame_allocator);
-    var prev_text_bb: ?clay.BoundingBox = null;
-    var prev_text_end_x: f32 = 0.0;
 
     for (r_commands) |rcmd| {
-        const bb = rcmd.bounding_box;
         const rect = FRect{
-            .x = @round(bb.x * scale_x),
-            .y = @round(bb.y * scale_y),
-            .w = @round(bb.width * scale_x),
-            .h = @round(bb.height * scale_y),
+            .x = @round(rcmd.rect.x * scale_x),
+            .y = @round(rcmd.rect.y * scale_y),
+            .w = @round(rcmd.rect.w * scale_x),
+            .h = @round(rcmd.rect.h * scale_y),
         };
 
-        if (rcmd.command_type == .scissor_start) {
-            prev_text_bb = null;
-            const raw_sc = Rect{
-                .x = @intFromFloat(@round(bb.x * scale_x)),
-                .y = @intFromFloat(@round(bb.y * scale_y)),
-                .w = @intFromFloat(@round(bb.width * scale_x)),
-                .h = @intFromFloat(@round(bb.height * scale_y)),
-            };
-            const eff_sc = if (scissor_stack.items.len > 0) blk: {
-                const parent_sc =
-                    scissor_stack.items[scissor_stack.items.len - 1];
-                break :blk intersectScissor(parent_sc, raw_sc);
-            } else raw_sc;
-            try scissor_stack.append(build_ctx.frame_allocator, eff_sc);
-            current_scissor = eff_sc;
-            continue;
-        } else if (rcmd.command_type == .scissor_end) {
-            prev_text_bb = null;
-            if (scissor_stack.items.len > 0) {
-                _ = scissor_stack.pop();
-                current_scissor = if (scissor_stack.items.len > 0)
+        switch (rcmd.payload) {
+            .scissor_start => {
+                const raw_sc = Rect{
+                    .x = @intFromFloat(@round(rcmd.rect.x * scale_x)),
+                    .y = @intFromFloat(@round(rcmd.rect.y * scale_y)),
+                    .w = @intFromFloat(@round(rcmd.rect.w * scale_x)),
+                    .h = @intFromFloat(@round(rcmd.rect.h * scale_y)),
+                };
+                const parent_sc = if (scissor_stack.items.len > 0)
                     scissor_stack.items[scissor_stack.items.len - 1]
                 else
-                    null;
-            } else {
-                current_scissor = null;
-            }
-            continue;
+                    target_sc;
+                const eff_sc = intersectScissor(parent_sc, raw_sc);
+                try scissor_stack.append(build_ctx.frame_allocator, eff_sc);
+                current_scissor = eff_sc;
+                continue;
+            },
+            .scissor_end => {
+                if (scissor_stack.items.len > 0) {
+                    _ = scissor_stack.pop();
+                    current_scissor = if (scissor_stack.items.len > 0)
+                        scissor_stack.items[scissor_stack.items.len - 1]
+                    else
+                        null;
+                } else {
+                    current_scissor = null;
+                }
+                continue;
+            },
+            else => {},
         }
 
         if (isScissorInvisible(
@@ -450,204 +773,91 @@ fn buildGeometryFromCommands(
             win_dims,
         )) continue;
 
-        switch (rcmd.command_type) {
-            .scissor_start, .scissor_end => {
-                std.log.err(
-                    "Unexpected scissor command in render switch: {}",
-                    .{rcmd.command_type},
-                );
-            },
-            .rectangle => {
-                prev_text_bb = null;
+        switch (rcmd.payload) {
+            .scissor_start, .scissor_end => unreachable,
+            .rectangle => |config| {
                 try appendRectangleCommand(
                     vertices,
                     batches,
                     build_ctx.frame_allocator,
                     rect,
-                    rcmd.render_data.rectangle,
-                    rcmd.user_data,
+                    config,
                     scale_x,
                     win_dims,
                     build_ctx.gpu_res,
                     current_scissor,
                 );
             },
-            .text => {
-                var text_data = rcmd.render_data.text;
-                const debug_w =
-                    @as(f32, @floatFromInt(clay.Clay__debugViewWidth));
-                const logical_win_w = win_dims.w / scale_x;
-                if (clay.isDebugModeEnabled() and
-                    bb.x >= (logical_win_w - debug_w - 0.5))
-                {
-                    // Scale down hardcoded 16px Clay debug text to 12px
-                    // (0.75x) for GPU text
-                    const scaled_size =
-                        @as(f32, @floatFromInt(text_data.font_size)) *
-                        theme.debug_font_scale;
-                    text_data.font_size = @intFromFloat(@round(scaled_size));
-                }
-                const text_len: usize =
-                    @intCast(text_data.string_contents.length);
-                const raw_text: []const u8 = if (text_len > 0)
-                    text_data.string_contents.chars[0..text_len]
-                else
-                    "";
-                const rgb = [3]f32{
-                    text_data.text_color[0],
-                    text_data.text_color[1],
-                    text_data.text_color[2],
-                };
-                if (try getOrRenderCachedText(
+            .text => |config| {
+                var world_x = rect.x;
+                try appendSingleTextRun(
+                    vertices,
+                    batches,
                     build_ctx,
-                    text_data.font_id,
-                    text_data.font_size,
-                    raw_text,
-                    rgb,
-                )) |cached| {
-                    const offset_y = @round((rect.h - cached.h) / 2.0);
-                    const world_y = rect.y + @max(0.0, offset_y);
-                    var world_x = rect.x;
-
-                    if (prev_text_bb) |pbb| {
-                        const is_same_line =
-                            std.math.approxEqAbs(f32, pbb.y, bb.y, 0.5);
-                        const is_adjacent = std.math.approxEqAbs(
-                            f32,
-                            pbb.x + pbb.width,
-                            bb.x,
-                            0.5,
-                        );
-                        if (is_same_line and is_adjacent) {
-                            world_x = prev_text_end_x;
-                        }
-                    }
-
-                    prev_text_bb = bb;
-                    prev_text_end_x = world_x + cached.w;
-
-                    const p1 =
-                        geometry.toNdc(world_x, world_y, win_dims);
-                    const p2 = geometry.toNdc(
-                        world_x + cached.w,
-                        world_y + cached.h,
-                        win_dims,
-                    );
-
-                    const start = @as(u32, @intCast(vertices.items.len));
-                    const text_alpha_u8 = @as(
-                        u8,
-                        @intFromFloat(
-                            std.math.clamp(text_data.text_color[3], 0.0, 255.0),
-                        ),
-                    );
-                    const vert_color = packRgba(255, 255, 255, text_alpha_u8);
-                    try vertices.append(build_ctx.frame_allocator, .{
-                        .x = p1.x,
-                        .y = p1.y,
-                        .u = 0.0,
-                        .v = 0.0,
-                        .color = vert_color,
-                    });
-                    try vertices.append(build_ctx.frame_allocator, .{
-                        .x = p2.x,
-                        .y = p1.y,
-                        .u = 1.0,
-                        .v = 0.0,
-                        .color = vert_color,
-                    });
-                    try vertices.append(build_ctx.frame_allocator, .{
-                        .x = p1.x,
-                        .y = p2.y,
-                        .u = 0.0,
-                        .v = 1.0,
-                        .color = vert_color,
-                    });
-                    try vertices.append(build_ctx.frame_allocator, .{
-                        .x = p2.x,
-                        .y = p1.y,
-                        .u = 1.0,
-                        .v = 0.0,
-                        .color = vert_color,
-                    });
-                    try vertices.append(build_ctx.frame_allocator, .{
-                        .x = p2.x,
-                        .y = p2.y,
-                        .u = 1.0,
-                        .v = 1.0,
-                        .color = vert_color,
-                    });
-                    try vertices.append(build_ctx.frame_allocator, .{
-                        .x = p1.x,
-                        .y = p2.y,
-                        .u = 0.0,
-                        .v = 1.0,
-                        .color = vert_color,
-                    });
-
-                    try addBatch(
+                    rect,
+                    &world_x,
+                    config.font_id,
+                    config.font_size,
+                    config.text,
+                    config.color,
+                    current_scissor,
+                );
+            },
+            .text_runs => |config| {
+                var world_x = rect.x;
+                for (config.spans) |span| {
+                    try appendSingleTextRun(
+                        vertices,
                         batches,
-                        build_ctx.frame_allocator,
-                        start,
-                        6,
-                        cached.texture,
-                        .ui_element,
+                        build_ctx,
+                        rect,
+                        &world_x,
+                        config.font_id,
+                        config.font_size,
+                        span.text,
+                        span.color,
                         current_scissor,
                     );
                 }
             },
-            .border => {
-                prev_text_bb = null;
+            .border => |config| {
                 try appendBorderCommand(
                     vertices,
                     batches,
                     build_ctx.frame_allocator,
                     rect,
-                    rcmd.render_data.border,
-                    rcmd.user_data,
+                    config,
                     scale_x,
                     win_dims,
                     build_ctx.gpu_res,
                     current_scissor,
                 );
             },
-            .image => {
-                prev_text_bb = null;
-                const uv_rect = if (rcmd.user_data) |ptr|
-                    @as(*const UvRect, @ptrCast(@alignCast(ptr))).*
-                else
-                    UvRect{};
-
+            .image => |config| {
                 try render_image.appendImageCommand(
                     vertices,
                     batches,
                     addBatch,
                     build_ctx.frame_allocator,
                     rect,
-                    rcmd.render_data.image.image_data,
+                    config.image_data,
                     view_params,
                     win_dims,
                     current_scissor,
-                    uv_rect,
-                );
-            },
-            else => {
-                std.log.warn(
-                    "Skipping unhandled render command type: {}",
-                    .{rcmd.command_type},
+                    config.uv,
                 );
             },
         }
     }
 }
 
-/// Pass 1 of 2-pass rendering: Traverses layout tree and builds geometry
+/// Pass 1 of 2-pass rendering: Traverses draw commands and builds geometry
 /// vertices and texture draw command batches into a RenderPacket without
 /// submitting GPU render passes.
 pub fn buildRenderPacket(
     view_params: ViewportParams,
     build_ctx: PacketBuildContext,
-    r_commands: []const clay.RenderCommand,
+    r_commands: []const UiCommand,
 ) !RenderPacket {
     var packet = RenderPacket{};
 
@@ -662,20 +872,31 @@ pub fn buildRenderPacket(
     return packet;
 }
 
-test "Clay debug text detection and scaling on HiDPI display" {
-    const debug_w = @as(f32, @floatFromInt(clay.Clay__debugViewWidth));
-    // physical pixels (1200 logical points at scale_x = 2.0)
-    const win_dims = PhysicalDims{ .w = 2400.0, .h = 1600.0 };
-    const scale_x: f32 = 2.0;
+test "UiDrawList command accumulation" {
+    const allocator = std.testing.allocator;
+    var list = UiDrawList{ .allocator = allocator };
+    defer list.commands.deinit(allocator);
 
-    const logical_win_w = win_dims.w / scale_x; // 1200.0
-    const debug_panel_min_x = logical_win_w - debug_w - 0.5; // 799.5
+    try list.addRect(.{ .x = 10, .y = 20, .w = 100, .h = 50 }, .{
+        .background_color = theme.base,
+    });
+    try list.pushScissor(.{ .x = 0, .y = 0, .w = 800, .h = 600 });
+    try list.addText(.{ .x = 15, .y = 25, .w = 80, .h = 20 }, .{
+        .text = "Hello",
+        .color = theme.text,
+    });
+    try list.popScissor();
 
-    // Element inside debug panel at logical x = 800.0
-    const debug_element_x: f32 = 800.0;
-    try std.testing.expect(debug_element_x >= debug_panel_min_x);
+    try std.testing.expectEqual(@as(usize, 4), list.commands.items.len);
+    try std.testing.expectEqual(
+        @as(f32, 100),
+        list.commands.items[0].rect.w,
+    );
+    try std.testing.expect(!hasBlurredSurface(list.commands.items));
 
-    // Element in main view at logical x = 400.0
-    const main_element_x: f32 = 400.0;
-    try std.testing.expect(!(main_element_x >= debug_panel_min_x));
+    try list.addRect(.{ .x = 0, .y = 0, .w = 50, .h = 50 }, .{
+        .background_color = theme.base_translucent,
+        .tag = .blurred_surface,
+    });
+    try std.testing.expect(hasBlurredSurface(list.commands.items));
 }

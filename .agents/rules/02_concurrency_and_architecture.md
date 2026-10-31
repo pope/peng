@@ -82,9 +82,9 @@
         (`defer state.flushPendingWaitLoadStreams()`).
     11. `sysSyncMetrics(ctx)`: Snapshots atomic worker counters, active image
         telemetry, and cache status into `state.viewer.stats` (`ViewerStats`).
-  - **Phase 3: Presentation**: Builds `UiViewModel`, evaluates Clay layout, and
-    executes the 2-pass GPU renderer (`buildRenderPacket` ->
-    `executeRenderPacket`).
+  - **Phase 3: Presentation**: Builds `UiViewModel`, evaluates immediate-mode
+    `RectCut` UI layout (`UiDrawList`), and executes the 2-pass GPU renderer
+    (`buildRenderPacket` -> `executeRenderPacket`).
 - **Zero-Dependency Intent Queue (`AppIntent`)**:
   - UI controls, keyboard shortcuts, and IPC commands MUST push high-level
     `intents.AppIntent` variants (`src/intents/root.zig`) via
@@ -113,7 +113,7 @@
     `AppGraphicsAndState.init` spawns early workers (`openPath` /
     `readPipedStdin`) with `gpu_enabled = true` and `gpu_device = null`.
   - Disk I/O, EXIF parsing, and decompression run on worker threads overlapped
-    with main-thread window/GPU/shader/Clay initialization.
+    with main-thread window/GPU/shader initialization.
   - Background events queue in `workers.event_queue` and drain on Frame 1
     (see [systems-architecture.md][sys-arch] Pattern 13).
 - **Main-Thread Exclusive GPU Access**:

@@ -2,7 +2,7 @@ const std = @import("std");
 
 /// Represents a dependency parsed from a `build.zig.zon` manifest file.
 pub const Dependency = struct {
-    /// Dependency key name as defined in `build.zig.zon` (e.g., "zclay").
+    /// Dependency key name as defined in `build.zig.zon` (e.g., "fuzzig").
     key: []const u8,
     /// Source URL for fetching the dependency (archive URL or `git+https://...`).
     url: []const u8,

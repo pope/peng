@@ -1,194 +1,266 @@
-//! UI Interaction & Clay Encapsulation Subsystem
+//! UI Interaction & Pure-Zig Layout Encapsulation Subsystem
 //!
-//! Provides the sole boundary for Clay UI layout initialization, context
-//! management, scroll synchronization, and element hit-testing.
-//!
-//! INVARIANT: Code outside `src/ui/` MUST NOT import `zclay`. All UI queries,
-//! dimension calculations, and pointer hit tests must be routed through this
-//! module.
+//! Provides the boundary for UI interaction state, layout hit-testing, and
+//! scroll synchronization across viewer overlays.
 
-const clay = @import("zclay");
 const geom = @import("geom");
 const intents = @import("intents");
 const palette_pkg = @import("palette");
 const state = @import("state");
 const std = @import("std");
-const text_utils = @import("text_utils.zig");
 
 const EditParam = intents.EditParam;
+const FRect = geom.FRect;
 const FrameInput = state.FrameInput;
 const getPaletteConfig = palette_pkg.getPaletteConfig;
-const getSpec = intents.getSpec;
 const LogicalDims = geom.LogicalDims;
 const LogicalPoint = geom.LogicalPoint;
-const measureText = text_utils.measureText;
-const MeasureTextUserData = text_utils.MeasureTextUserData;
 const PaletteState = palette_pkg.PaletteState;
 
-/// Opaque Clay context handle wrapping internal layout engine state.
-pub const ClayContext = struct {
-    raw: *clay.Context,
+/// Visible item hit-test record for the command palette overlay.
+pub const PaletteItemHit = struct {
+    rect: FRect,
+    real_idx: usize,
 };
 
-/// Returns minimum byte buffer capacity required to initialize a Clay context.
-pub fn minClayMemorySize() usize {
-    return clay.minMemorySize();
+/// Internal interaction state tracking pointer location and layout bounds.
+const InteractionState = struct {
+    has_layout: bool = false,
+    pointer: LogicalPoint = .{ .x = -1.0, .y = -1.0 },
+    pointer_inside: bool = false,
+    pointer_down: bool = false,
+    palette_scroll_y: f32 = 0.0,
+    edit_scroll_y: f32 = 0.0,
+    edit_content_h: f32 = 0.0,
+
+    viewport: ?FRect = null,
+    info_card: ?FRect = null,
+    info_close_btn: ?FRect = null,
+    stats_card: ?FRect = null,
+    stats_close_btn: ?FRect = null,
+    edit_panel: ?FRect = null,
+    edit_scroll_list: ?FRect = null,
+    edit_close_btn: ?FRect = null,
+    edit_reset_btn: ?FRect = null,
+    edit_compare_btn: ?FRect = null,
+    slider_tracks: [EditParam.count]?FRect = @splat(null),
+    slider_knobs: [EditParam.count]?FRect = @splat(null),
+    slider_resets: [EditParam.count]?FRect = @splat(null),
+    palette_modal: ?FRect = null,
+    palette_captures_pointer: bool = false,
+    palette_list: ?FRect = null,
+    palette_items: [32]PaletteItemHit = undefined,
+    palette_item_count: usize = 0,
+};
+
+var state_data: InteractionState = .{};
+
+/// Resets all recorded hit-test geometries before the frame layout pass.
+pub fn beginFrameLayout() void {
+    state_data.has_layout = true;
+    state_data.viewport = null;
+    state_data.info_card = null;
+    state_data.info_close_btn = null;
+    state_data.stats_card = null;
+    state_data.stats_close_btn = null;
+    state_data.edit_panel = null;
+    state_data.edit_scroll_list = null;
+    state_data.edit_close_btn = null;
+    state_data.edit_reset_btn = null;
+    state_data.edit_compare_btn = null;
+    state_data.slider_tracks = @splat(null);
+    state_data.slider_knobs = @splat(null);
+    state_data.slider_resets = @splat(null);
+    state_data.palette_modal = null;
+    state_data.palette_captures_pointer = false;
+    state_data.palette_list = null;
+    state_data.palette_item_count = 0;
 }
 
-/// Initializes a new Clay layout context using caller-provided backing memory.
-pub fn initClayContext(memory: []u8, dims: LogicalDims) ClayContext {
-    return .{
-        .raw = clay.initialize(
-            clay.Arena.init(memory),
-            .{ .w = dims.w, .h = dims.h },
-            .{},
-        ),
-    };
+/// Resets global interaction state back to its default uninitialized values.
+pub fn resetInteractionState() void {
+    state_data = .{};
 }
 
-/// Sets the active thread-local Clay context pointer.
-pub fn setCurrentClayContext(ctx: ClayContext) void {
-    clay.setCurrentContext(ctx.raw);
+/// Returns true if the pointer is currently inside `rect`.
+pub fn isHovered(rect: FRect) bool {
+    return state_data.pointer_inside and rect.contains(state_data.pointer);
 }
 
-/// Resets Clay's global active context pointer to null, ensuring no dangling
-/// references remain after deallocating context memory.
-pub fn resetCurrentClayContext() void {
-    const setNullCtx = @as(
-        *const fn (?*clay.Context) callconv(.c) void,
-        @ptrCast(&clay.cdefs.Clay_SetCurrentContext),
-    );
-    setNullCtx(null);
+/// Injects test pointer position and button state for unit testing.
+pub fn setPointerStateForTest(pt: LogicalPoint, down: bool) void {
+    state_data.pointer = pt;
+    state_data.pointer_inside = true;
+    state_data.pointer_down = down;
 }
 
-/// Registers the font measurement callback with Clay.
-pub fn bindMeasureText(measure_data: *const MeasureTextUserData) void {
-    clay.setMeasureTextFunction(
-        *const MeasureTextUserData,
-        measure_data,
-        measureText,
-    );
+/// Sets the main viewport bounding rectangle for hit testing.
+pub fn setViewportRect(rect: FRect) void {
+    state_data.viewport = rect;
 }
 
-/// Clears cached text dimensions within Clay's internal measurement cache.
-pub fn resetMeasureTextCache() void {
-    clay.cdefs.Clay_ResetMeasureTextCache();
+/// Records the bounding rectangles for the info overlay card and close button.
+pub fn setInfoPanelRects(card: FRect, close_btn: FRect) void {
+    state_data.info_card = card;
+    state_data.info_close_btn = close_btn;
 }
 
-fn isContextActive() bool {
-    return @intFromPtr(clay.cdefs.Clay_GetCurrentContext()) != 0;
+/// Records the bounding rectangles for the stats overlay card and close button.
+pub fn setStatsPanelRects(card: FRect, close_btn: FRect) void {
+    state_data.stats_card = card;
+    state_data.stats_close_btn = close_btn;
 }
 
-/// Returns true if Clay's built-in visual debug panel is currently enabled.
-pub fn isDebugModeEnabled() bool {
-    if (!isContextActive()) return false;
-    return clay.isDebugModeEnabled();
+/// Records the bounding rectangles for the edit side panel and its controls.
+pub fn setEditPanelRects(
+    panel: FRect,
+    close_btn: FRect,
+    reset_btn: FRect,
+    compare_btn: FRect,
+    scroll_list: FRect,
+) void {
+    state_data.edit_panel = panel;
+    state_data.edit_close_btn = close_btn;
+    state_data.edit_reset_btn = reset_btn;
+    state_data.edit_compare_btn = compare_btn;
+    state_data.edit_scroll_list = scroll_list;
 }
 
-/// Toggles or sets the visibility of Clay's visual layout debug overlay.
-pub fn setDebugModeEnabled(enabled: bool) void {
-    if (!isContextActive()) return;
-    clay.setDebugModeEnabled(enabled);
+/// Records the bounding rectangles for an individual slider.
+pub fn setSliderRects(
+    param: EditParam,
+    track: FRect,
+    knob: FRect,
+    reset_btn: FRect,
+) void {
+    const idx = @backingInt(param);
+    if (idx < EditParam.count) {
+        state_data.slider_tracks[idx] = track;
+        state_data.slider_knobs[idx] = knob;
+        state_data.slider_resets[idx] = reset_btn;
+    }
 }
 
-/// Toggles the active state of Clay's layout debug inspection mode.
-pub fn toggleDebugMode() void {
-    if (!isContextActive()) return;
-    clay.setDebugModeEnabled(!clay.isDebugModeEnabled());
+/// Returns current scroll offset for the edit side panel.
+pub fn getEditScrollY() f32 {
+    return state_data.edit_scroll_y;
 }
 
-/// Returns logical pixel width of Clay's debug inspection sidebar when open.
-pub fn debugPanelWidth() f32 {
-    if (!isDebugModeEnabled()) return 0.0;
-    return @floatFromInt(clay.Clay__debugViewWidth);
+/// Sets total content height of edit panel to clamp scroll range.
+pub fn setEditContentHeight(h: f32) void {
+    state_data.edit_content_h = h;
 }
 
-/// Bridges leaf `geom.LogicalDims` to extern `clay.Dimensions`.
-inline fn toClayDims(dims: LogicalDims) clay.Dimensions {
-    return .{ .w = dims.w, .h = dims.h };
+/// Returns current scroll offset for the command palette list.
+pub fn getPaletteScrollY() f32 {
+    return state_data.palette_scroll_y;
 }
 
-/// Bridges leaf `geom.LogicalPoint` to extern `clay.Vector2`.
-inline fn toClayVec(pt: LogicalPoint) clay.Vector2 {
-    return .{ .x = pt.x, .y = pt.y };
+/// Sets scroll offset for the command palette list.
+pub fn setPaletteScrollY(y: f32) void {
+    state_data.palette_scroll_y = y;
 }
 
-/// Synchronizes window dimensions, mouse pointer state, and scroll containers
-/// with Clay, updating debug panel pointer intersection on `FrameInput`.
+/// Records the bounding rectangle for the command palette modal dialog.
+pub fn setPaletteModalRect(rect: FRect, captures_pointer: bool) void {
+    state_data.palette_modal = rect;
+    state_data.palette_captures_pointer = captures_pointer;
+}
+
+/// Records the bounding rectangle for the virtualized command palette list.
+pub fn setPaletteListRect(rect: FRect) void {
+    state_data.palette_list = rect;
+}
+
+/// Records a visible palette item hit target.
+pub fn recordPaletteItem(rect: FRect, real_idx: usize) void {
+    if (state_data.palette_item_count < state_data.palette_items.len) {
+        state_data.palette_items[state_data.palette_item_count] = .{
+            .rect = rect,
+            .real_idx = real_idx,
+        };
+        state_data.palette_item_count += 1;
+    }
+}
+
+/// Synchronizes window dimensions, mouse pointer state, and scroll containers.
 pub fn syncFrameInput(
     input: FrameInput,
     is_slider_active: bool,
-) FrameInput {
-    if (!isContextActive()) return input;
-
-    clay.setLayoutDimensions(toClayDims(input.logicalWinDims()));
-
-    if (input.mouse_inside) {
-        clay.setPointerState(
-            toClayVec(input.logicalMousePos()),
-            input.mouse_left_down,
-        );
-    } else {
-        clay.setPointerState(
-            .{ .x = -1.0, .y = -1.0 },
-            false,
-        );
-    }
-
-    const scroll_delta: clay.Vector2 = if (is_slider_active)
-        .{ .x = 0.0, .y = 0.0 }
+) void {
+    state_data.pointer = if (input.mouse_inside)
+        input.logicalMousePos()
     else
-        .{ .x = input.scroll_delta_x, .y = input.scroll_delta_y };
+        .{ .x = -1.0, .y = -1.0 };
+    state_data.pointer_inside = input.mouse_inside;
+    state_data.pointer_down = input.mouse_left_down;
 
-    clay.updateScrollContainers(
-        false,
-        scroll_delta,
-        input.delta_time_ms / 1000.0,
-    );
-
-    var update_input = input;
-    const debug_w = debugPanelWidth();
-    if (debug_w > 0.0) {
-        update_input.is_pointer_in_debug_panel =
-            input.mouse_x >= (input.win_w - debug_w);
+    if (!is_slider_active and input.scroll_delta_y != 0.0) {
+        if (state_data.edit_scroll_list) |srect| {
+            if (srect.contains(state_data.pointer)) {
+                const max_scroll =
+                    @max(0.0, state_data.edit_content_h - srect.h);
+                const next_scroll = state_data.edit_scroll_y +
+                    (input.scroll_delta_y * 24.0);
+                state_data.edit_scroll_y =
+                    std.math.clamp(next_scroll, -max_scroll, 0.0);
+            }
+        }
     }
-    return update_input;
 }
 
 /// Returns true if pointer is hovering over the info close button.
 pub fn isPointerOverInfoCloseBtn() bool {
-    if (!isContextActive()) return false;
-    return clay.pointerOver(clay.getElementId("InfoCloseBtn"));
+    if (!state_data.has_layout) return false;
+    const btn = state_data.info_close_btn orelse return false;
+    return btn.contains(state_data.pointer);
 }
 
 /// Returns true if pointer is hovering over the stats close button.
 pub fn isPointerOverStatsCloseBtn() bool {
-    if (!isContextActive()) return false;
-    return clay.pointerOver(clay.getElementId("StatsCloseBtn"));
+    if (!state_data.has_layout) return false;
+    const btn = state_data.stats_close_btn orelse return false;
+    return btn.contains(state_data.pointer);
 }
 
 /// Returns true if pointer is hovering over the info overlay panel.
 pub fn isPointerOverInfoPanel() bool {
-    if (!isContextActive()) return false;
-    return clay.pointerOver(clay.getElementId("InfoOverlayCard"));
+    if (!state_data.has_layout) return false;
+    const card = state_data.info_card orelse return false;
+    return card.contains(state_data.pointer);
 }
 
 /// Returns true if pointer is hovering over the stats overlay panel.
 pub fn isPointerOverStatsPanel() bool {
-    if (!isContextActive()) return false;
-    return clay.pointerOver(clay.getElementId("StatsPanel"));
+    if (!state_data.has_layout) return false;
+    const card = state_data.stats_card orelse return false;
+    return card.contains(state_data.pointer);
 }
 
 /// Returns true if pointer is hovering over the edit side panel.
 pub fn isPointerOverEditPanel() bool {
-    if (!isContextActive()) return false;
-    return clay.pointerOver(clay.getElementId("EditSidePanel"));
+    if (!state_data.has_layout) return false;
+    const panel = state_data.edit_panel orelse return false;
+    return panel.contains(state_data.pointer);
 }
 
 /// Returns true if pointer is hovering over the main viewport.
 pub fn isPointerOverViewport() bool {
-    if (!isContextActive()) return false;
-    return clay.pointerOver(clay.getElementId("Viewport"));
+    if (!state_data.has_layout) return false;
+    const vp = state_data.viewport orelse return false;
+    if (!vp.contains(state_data.pointer)) return false;
+    if (state_data.palette_captures_pointer) {
+        if (state_data.palette_modal) |modal| {
+            if (modal.contains(state_data.pointer)) return false;
+        }
+    }
+    if (state_data.info_card) |card| {
+        if (card.contains(state_data.pointer)) return false;
+    }
+    if (state_data.stats_card) |card| {
+        if (card.contains(state_data.pointer)) return false;
+    }
+    return true;
 }
 
 /// Resolves the center coordinates of the main viewport element in logical UI
@@ -197,17 +269,11 @@ pub fn resolveViewportCenter(
     win_dims: LogicalDims,
     edit_docked_w: f32,
 ) LogicalPoint {
-    if (isContextActive()) {
-        const vp_data = clay.getElementData(clay.getElementId("Viewport"));
-        if (vp_data.found) {
-            return .{
-                .x = vp_data.bounding_box.x + vp_data.bounding_box.width * 0.5,
-                .y = vp_data.bounding_box.y + vp_data.bounding_box.height * 0.5,
-            };
-        }
+    if (state_data.viewport) |vp| {
+        return vp.center();
     }
     const available_width =
-        @max(win_dims.w - debugPanelWidth() - edit_docked_w, 1.0);
+        @max(win_dims.w - edit_docked_w, 1.0);
     return .{
         .x = available_width * 0.5,
         .y = win_dims.h * 0.5,
@@ -229,75 +295,52 @@ pub const EditPanelHit = union(enum) {
 
 /// Hit-tests pointer clicks against edit panel controls (buttons and sliders).
 pub fn hitTestEditPanel(win_w: f32) ?EditPanelHit {
-    if (!isContextActive()) return null;
+    if (!state_data.has_layout) return null;
+    _ = win_w;
 
-    if (clay.pointerOver(clay.getElementId("EditCloseBtn"))) {
-        return .close;
+    if (state_data.edit_close_btn) |btn| {
+        if (btn.contains(state_data.pointer)) return .close;
     }
-    if (clay.pointerOver(clay.getElementId("EditResetBtn"))) {
-        return .reset_all;
+    if (state_data.edit_reset_btn) |btn| {
+        if (btn.contains(state_data.pointer)) return .reset_all;
     }
-    if (clay.pointerOver(clay.getElementId("EditCompareBtn"))) {
-        return .toggle_compare;
+    if (state_data.edit_compare_btn) |btn| {
+        if (btn.contains(state_data.pointer)) return .toggle_compare;
     }
-
-    const panel_w = state.EDIT_PANEL_WIDTH;
-    const padding = state.EDIT_PANEL_PADDING;
-    const fallback_track_w = panel_w - (padding * 2.0);
-    const debug_w = debugPanelWidth();
-    const fallback_track_x = win_w - debug_w - panel_w + padding;
 
     inline for (std.enums.values(EditParam)) |param| {
-        const spec = getSpec(param);
-
-        if (clay.pointerOver(clay.getElementId(spec.reset_id))) {
-            return .{ .reset_param = param };
-        }
-
-        const track_id = clay.getElementId(spec.track_id);
-        const knob_id = clay.getElementId(spec.knob_id);
-        if (clay.pointerOver(track_id) or clay.pointerOver(knob_id)) {
-            const elem_data = clay.getElementData(track_id);
-            const track_x = if (elem_data.found)
-                elem_data.bounding_box.x
+        const idx = @backingInt(param);
+        if (idx < EditParam.count) {
+            if (state_data.slider_resets[idx]) |rbtn| {
+                if (rbtn.contains(state_data.pointer)) {
+                    return .{ .reset_param = param };
+                }
+            }
+            const track_opt = state_data.slider_tracks[idx];
+            const knob_opt = state_data.slider_knobs[idx];
+            const over_track = if (track_opt) |t|
+                t.contains(state_data.pointer)
             else
-                fallback_track_x;
-            const track_w = if (elem_data.found)
-                elem_data.bounding_box.width
+                false;
+            const over_knob = if (knob_opt) |k|
+                k.contains(state_data.pointer)
             else
-                fallback_track_w;
-
-            return .{
-                .slider = .{
-                    .param = param,
-                    .track_x = track_x,
-                    .track_w = track_w,
-                },
-            };
+                false;
+            if (over_track or over_knob) {
+                if (track_opt) |t| {
+                    return .{
+                        .slider = .{
+                            .param = param,
+                            .track_x = t.x,
+                            .track_w = t.w,
+                        },
+                    };
+                }
+            }
         }
     }
 
     return null;
-}
-
-/// Synchronizes palette scroll container offset with the active selection
-/// index.
-pub fn syncPaletteScroll(palette: *PaletteState) void {
-    if (!isContextActive()) return;
-
-    const cfg = getPaletteConfig(palette.mode);
-    const scroll_data = clay.cdefs.Clay_GetScrollContainerData(
-        clay.getElementId(cfg.list_id),
-    );
-    if (scroll_data.found) {
-        scroll_data.scroll_position.y = cfg.resolveScrollOffsetY(
-            scroll_data.scroll_position.y,
-            palette.matches.items.len,
-            palette.selected_idx,
-            palette.selection_dirty,
-        );
-        palette.selection_dirty = false;
-    }
 }
 
 /// Click hit-test outcome for the command palette overlay.
@@ -311,99 +354,67 @@ pub const PaletteClickHit = union(enum) {
 pub fn hitTestPaletteClick(
     palette: *const PaletteState,
 ) PaletteClickHit {
-    if (!isContextActive()) return .inside_unmatched;
+    _ = palette;
+    if (!state_data.has_layout) return .inside_unmatched;
 
-    const cfg = getPaletteConfig(palette.mode);
-    if (!clay.pointerOver(clay.getElementId(cfg.element_id))) {
-        return .outside;
+    if (state_data.palette_modal) |modal| {
+        if (!modal.contains(state_data.pointer)) {
+            return .outside;
+        }
     }
 
-    for (palette.matches.items) |real_idx| {
-        var item_id_buf: [64]u8 = undefined;
-        const item_id_str = std.mem.print(
-            &item_id_buf,
-            "{s}{}",
-            .{ cfg.item_prefix, real_idx },
-        ) catch |err| blk: {
-            std.log.warn("Failed to format palette item ID: {}", .{err});
-            break :blk cfg.item_prefix;
-        };
-        if (clay.pointerOver(clay.getElementId(item_id_str))) {
-            return .{ .item = real_idx };
+    for (state_data.palette_items[0..state_data.palette_item_count]) |item| {
+        if (item.rect.contains(state_data.pointer)) {
+            return .{ .item = item.real_idx };
         }
     }
     return .inside_unmatched;
 }
 
-fn createTestFrameInput(
-    win_w: f32,
-    win_h: f32,
-    mouse_x: f32,
-    mouse_y: f32,
-) FrameInput {
-    return .{
-        .win_w = win_w,
-        .win_h = win_h,
-        .scale_x = 1.0,
-        .scale_y = 1.0,
-        .mouse_x = mouse_x,
-        .mouse_y = mouse_y,
-        .mouse_left_down = false,
-        .mouse_left_clicked = false,
-        .mouse_inside = true,
-        .quit_requested = false,
-        .scroll_delta_x = 0.0,
-        .scroll_delta_y = 0.0,
-        .keys_pressed = .empty,
-        .key_modifiers = .{},
-        .text_input = null,
-        .dropped_path = null,
-        .delta_time_ms = 16.0,
-    };
-}
-
-var test_clay_memory: [1024 * 1024]u8 = undefined;
-
-test "syncFrameInput debug mode pointer localization" {
-    resetCurrentClayContext();
-    defer resetCurrentClayContext();
-
-    const ctx = initClayContext(&test_clay_memory, .{ .w = 1024, .h = 768 });
-    setCurrentClayContext(ctx);
-
-    setDebugModeEnabled(true);
-    defer setDebugModeEnabled(false);
-
-    const debug_w = debugPanelWidth();
-    try std.testing.expect(debug_w > 0.0);
-
-    const input_outside = createTestFrameInput(1024.0, 768.0, 100.0, 100.0);
-    const synced_outside = syncFrameInput(input_outside, false);
-    try std.testing.expect(!synced_outside.is_pointer_in_debug_panel);
-
-    const input_inside = createTestFrameInput(
-        1024.0,
-        768.0,
-        1024.0 - (debug_w * 0.5),
-        100.0,
+/// Synchronizes palette scroll container offset with the active selection
+/// index.
+pub fn syncPaletteScroll(palette: *PaletteState) void {
+    const cfg = getPaletteConfig(palette.mode);
+    state_data.palette_scroll_y = cfg.resolveScrollOffsetY(
+        state_data.palette_scroll_y,
+        palette.matches.items.len,
+        palette.selected_idx,
+        palette.selection_dirty,
     );
-    const synced_inside = syncFrameInput(input_inside, false);
-    try std.testing.expect(synced_inside.is_pointer_in_debug_panel);
+    palette.selection_dirty = false;
 }
 
 test "resolveViewportCenter fallback arithmetic" {
-    resetCurrentClayContext();
-    defer resetCurrentClayContext();
-
-    const ctx = initClayContext(&test_clay_memory, .{ .w = 1000, .h = 800 });
-    setCurrentClayContext(ctx);
-    setDebugModeEnabled(false);
+    resetInteractionState();
+    defer resetInteractionState();
 
     const center = resolveViewportCenter(
         .{ .w = 1000.0, .h = 800.0 },
         200.0,
     );
-    // available_width = 1000 - 0 - 200 = 800 -> center x = 400, center y = 400
+    // available_width = 1000 - 200 = 800 -> center x = 400, center y = 400
     try std.testing.expectEqual(@as(f32, 400.0), center.x);
     try std.testing.expectEqual(@as(f32, 400.0), center.y);
+}
+
+test "interaction state hit-testing and viewport isolation" {
+    resetInteractionState();
+    defer resetInteractionState();
+
+    beginFrameLayout();
+    setViewportRect(.{ .x = 0, .y = 0, .w = 800, .h = 600 });
+    setInfoPanelRects(
+        .{ .x = 10, .y = 10, .w = 300, .h = 200 },
+        .{ .x = 280, .y = 14, .w = 20, .h = 20 },
+    );
+
+    setPointerStateForTest(.{ .x = 290, .y = 20 }, false);
+    try std.testing.expect(isPointerOverInfoCloseBtn());
+    try std.testing.expect(isPointerOverInfoPanel());
+    try std.testing.expect(!isPointerOverViewport());
+
+    setPointerStateForTest(.{ .x = 500, .y = 300 }, false);
+    try std.testing.expect(!isPointerOverInfoCloseBtn());
+    try std.testing.expect(!isPointerOverInfoPanel());
+    try std.testing.expect(isPointerOverViewport());
 }

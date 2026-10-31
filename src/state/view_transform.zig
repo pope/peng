@@ -107,7 +107,7 @@ pub fn computeViewDims(
 
 /// Evaluates `computeViewDims` in physical framebuffer space (`viewport`
 /// converted via `scale`) and converts the resulting draw bounds back into
-/// logical UI points (`LogicalDims`) for Clay layout.
+/// logical UI points (`LogicalDims`) for UI layout.
 pub fn computeLogicalDrawDims(
     src_phys: PhysicalDims,
     viewport_logical: LogicalDims,

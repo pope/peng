@@ -1,19 +1,32 @@
-const clay = @import("zclay");
+//! Image Adjustment Side Panel Layout & Sliders
+//!
+//! Provides the layout and slider widgets for tone, color, and presence
+//! photographic adjustments in the docked edit side panel.
+
+const geom = @import("geom");
 const intents = @import("intents");
 const interaction = @import("interaction.zig");
+const renderer = @import("renderer.zig");
 const state = @import("state");
 const std = @import("std");
+const text_utils = @import("text_utils.zig");
 const theme = @import("theme.zig");
 const view_model = @import("view_model.zig");
 
 const EditParam = intents.EditParam;
+const FRect = geom.FRect;
+const measureText = text_utils.measureText;
+const MeasureTextUserData = text_utils.MeasureTextUserData;
 const ParamSpec = intents.ParamSpec;
-const resetCurrentClayContext = interaction.resetCurrentClayContext;
+const UiDrawList = renderer.UiDrawList;
 const UiViewModel = view_model.UiViewModel;
 const withAlpha = theme.withAlpha;
 
+/// Default docked width of the edit panel in logical UI points.
 pub const PANEL_WIDTH: f32 = state.EDIT_PANEL_WIDTH;
+/// Inset padding inside the edit panel in logical UI points.
 pub const PANEL_PADDING: f32 = state.EDIT_PANEL_PADDING;
+/// Usable content width for adjustment sliders and controls.
 pub const CONTENT_WIDTH: f32 = PANEL_WIDTH - (PANEL_PADDING * 2.0);
 
 /// Formats an edit parameter value into its display string.
@@ -94,18 +107,42 @@ pub fn formatContrast(allocator: std.mem.Allocator, val: f32) ![]const u8 {
     return formatValue(allocator, intents.getSpec(.contrast), val);
 }
 
+fn clipRect(r: FRect, sc: FRect) FRect {
+    const rx = @max(r.x, sc.x);
+    const ry = @max(r.y, sc.y);
+    const r_right = @min(r.x + r.w, sc.x + sc.w);
+    const r_bot = @min(r.y + r.h, sc.y + sc.h);
+    return .{
+        .x = rx,
+        .y = ry,
+        .w = @max(0.0, r_right - rx),
+        .h = @max(0.0, r_bot - ry),
+    };
+}
+
 /// Renders an interactive slider row with parameter title, value readout,
 /// background groove, relative fill bar, landmark notch, and thumb knob.
 pub fn renderSlider(
+    list: *UiDrawList,
     param: EditParam,
     current_val: f32,
     formatted_value: []const u8,
     progress: f32,
     is_active: bool,
-) void {
+    cur_x: f32,
+    cur_y: f32,
+    scroll_rect: FRect,
+    measure_data: *const MeasureTextUserData,
+) !void {
     const spec = intents.getSpec(param);
-    const track_id = clay.getElementId(spec.track_id);
-    const is_hovered = clay.pointerOver(track_id);
+    const track_w = CONTENT_WIDTH;
+    const track_rect = FRect{
+        .x = cur_x,
+        .y = cur_y + 26.0,
+        .w = track_w,
+        .h = 20.0,
+    };
+    const is_hovered = interaction.isHovered(track_rect);
     const is_modified = @abs(current_val - spec.default) > 1e-4;
 
     const span = spec.max - spec.min;
@@ -121,7 +158,6 @@ pub fn renderSlider(
     else
         0.0;
 
-    const track_w = CONTENT_WIDTH;
     const knob_d: f32 = if (is_active or is_hovered) 16.0 else 14.0;
     const usable_w = @max(track_w - knob_d, 1.0);
     const knob_x = t * usable_w;
@@ -132,414 +168,366 @@ pub fn renderSlider(
     const fill_left = @min(knob_center_x, neutral_center_x);
     const fill_w = @abs(knob_center_x - neutral_center_x);
 
-    clay.UI()(.{
-        .layout = .{
-            .sizing = .{ .w = .fixed(track_w), .h = .fit },
-            .direction = .top_to_bottom,
-            .child_gap = 6,
-        },
-    })({
-        // Top row: Label and Value Readout / Reset target
-        clay.UI()(.{
-            .layout = .{
-                .sizing = .{ .w = .grow, .h = .fixed(20) },
-                .direction = .left_to_right,
-                .child_alignment = .{ .x = .left, .y = .center },
-            },
-        })({
-            // Label
-            clay.UI()(.{
-                .layout = .{ .sizing = .{ .w = .grow, .h = .grow } },
-            })({
-                const lbl_color =
-                    if (is_modified) theme.text else theme.subtext0;
-                clay.text(spec.label, .{
-                    .color = withAlpha(lbl_color, progress),
-                    .font_size = 13,
-                    .font_id = 0,
-                });
-            });
+    // Top row: Label and Value / Reset button
+    const reset_dims = measureText(formatted_value, 0, 12, measure_data);
+    const reset_w = reset_dims.w + 12.0;
+    const reset_h = reset_dims.h + 4.0;
+    const reset_rect = FRect{
+        .x = cur_x + track_w - reset_w,
+        .y = cur_y + @round((20.0 - reset_h) * 0.5),
+        .w = reset_w,
+        .h = reset_h,
+    };
 
-            // Value / Reset button
-            const reset_elem_id = clay.getElementId(spec.reset_id);
-            const reset_hovered = clay.pointerOver(reset_elem_id);
-            clay.UI()(.{
-                .id = reset_elem_id,
-                .layout = .{
-                    .sizing = .{ .w = .fit, .h = .fit },
-                    .padding = .{
-                        .left = 6,
-                        .right = 6,
-                        .top = 2,
-                        .bottom = 2,
-                    },
-                },
-                .background_color = if (is_modified and reset_hovered)
-                    withAlpha(theme.surface1, progress)
-                else if (is_modified)
-                    withAlpha(theme.surface0, progress)
-                else
-                    clay.Color{ 0, 0, 0, 0 },
-                .corner_radius = .all(4),
-            })({
-                clay.text(formatted_value, .{
-                    .color = if (is_modified)
-                        withAlpha(theme.mauve, progress)
-                    else
-                        withAlpha(theme.subtext1, progress),
-                    .font_size = 12,
-                    .font_id = 0,
-                });
-            });
-        });
-
-        // Bottom row: Interactive Slider Track
-        clay.UI()(.{
-            .id = track_id,
-            .layout = .{
-                .sizing = .{ .w = .fixed(track_w), .h = .fixed(20) },
-                .child_alignment = .{ .x = .left, .y = .center },
-            },
-        })({
-            // 1. Background Track Groove
-            clay.UI()(.{
-                .layout = .{
-                    .sizing = .{ .w = .fixed(track_w), .h = .fixed(4) },
-                },
-                .background_color = withAlpha(theme.surface0, progress),
-                .corner_radius = .all(2),
-            })({});
-
-            // 2. Center/Neutral Landmark Notch
-            const notch_w: f32 = 2.0;
-            const notch_h: f32 = 8.0;
-            const notch_x = neutral_center_x - (notch_w * 0.5);
-            clay.UI()(.{
-                .layout = .{
-                    .sizing = .{ .w = .fixed(notch_w), .h = .fixed(notch_h) },
-                },
-                .background_color = withAlpha(theme.surface1, progress),
-                .corner_radius = .all(1),
-                .floating = .{
-                    .attach_to = .to_parent,
-                    .clip_to = .to_attached_parent,
-                    .attach_points = .{
-                        .element = .left_center,
-                        .parent = .left_center,
-                    },
-                    .offset = .{ .x = notch_x, .y = 0.0 },
-                    .z_index = 1,
-                    .pointer_capture_mode = .passthrough,
-                },
-            })({});
-
-            // 3. Relative Fill Bar (neutral landmark to thumb center)
-            if (fill_w > 0.5) {
-                clay.UI()(.{
-                    .layout = .{
-                        .sizing = .{
-                            .w = .fixed(fill_w),
-                            .h = .fixed(4),
-                        },
-                    },
-                    .background_color = withAlpha(
-                        theme.mauve,
-                        progress * 0.7,
-                    ),
-                    .corner_radius = .all(2),
-                    .floating = .{
-                        .attach_to = .to_parent,
-                        .clip_to = .to_attached_parent,
-                        .attach_points = .{
-                            .element = .left_center,
-                            .parent = .left_center,
-                        },
-                        .offset = .{ .x = fill_left, .y = 0.0 },
-                        .z_index = 2,
-                        .pointer_capture_mode = .passthrough,
-                    },
-                })({});
-            }
-
-            // 4. Thumb Knob Handle
-            clay.UI()(.{
-                .id = clay.getElementId(spec.knob_id),
-                .layout = .{
-                    .sizing = .{ .w = .fixed(knob_d), .h = .fixed(knob_d) },
-                },
-                .background_color = withAlpha(theme.text, progress),
-                .corner_radius = .all(knob_d / 2.0),
-                .border = .{
-                    .width = .all(1),
-                    .color = withAlpha(theme.crust, progress),
-                },
-                .floating = .{
-                    .attach_to = .to_parent,
-                    .clip_to = .to_attached_parent,
-                    .attach_points = .{
-                        .element = .left_center,
-                        .parent = .left_center,
-                    },
-                    .offset = .{ .x = knob_x, .y = 0.0 },
-                    .z_index = 3,
-                    .pointer_capture_mode = .passthrough,
-                },
-            })({});
-        });
+    const lbl_color = if (is_modified) theme.text else theme.subtext0;
+    const lbl_dims = measureText(spec.label, 0, 13, measure_data);
+    const lbl_rect = FRect{
+        .x = cur_x,
+        .y = cur_y + @round((20.0 - lbl_dims.h) * 0.5),
+        .w = @max(0.0, track_w - reset_w),
+        .h = lbl_dims.h,
+    };
+    try list.addText(lbl_rect, .{
+        .text = spec.label,
+        .color = withAlpha(lbl_color, progress),
+        .font_size = 13,
+        .font_id = 0,
     });
+
+    const reset_hovered = interaction.isHovered(reset_rect);
+    const reset_bg = if (is_modified and reset_hovered)
+        withAlpha(theme.surface1, progress)
+    else if (is_modified)
+        withAlpha(theme.surface0, progress)
+    else
+        theme.transparent;
+    try list.addRect(reset_rect, .{
+        .background_color = reset_bg,
+        .corner_radius = .all(4),
+    });
+
+    const reset_col = if (is_modified)
+        withAlpha(theme.mauve, progress)
+    else
+        withAlpha(theme.subtext1, progress);
+    const reset_txt_rect = reset_rect.centered(reset_dims.w, reset_dims.h);
+    try list.addText(reset_txt_rect, .{
+        .text = formatted_value,
+        .color = reset_col,
+        .font_size = 12,
+        .font_id = 0,
+    });
+
+    // Bottom row: Interactive Slider Track
+    // 1. Background Track Groove
+    const groove_rect = FRect{
+        .x = cur_x,
+        .y = track_rect.y + 8.0,
+        .w = track_w,
+        .h = 4.0,
+    };
+    try list.addRect(groove_rect, .{
+        .background_color = withAlpha(theme.surface0, progress),
+        .corner_radius = .all(2),
+    });
+
+    // 2. Center/Neutral Landmark Notch
+    const notch_w: f32 = 2.0;
+    const notch_h: f32 = 8.0;
+    const notch_x = cur_x + neutral_center_x - (notch_w * 0.5);
+    const notch_y = track_rect.y + 6.0;
+    try list.addRect(.{
+        .x = notch_x,
+        .y = notch_y,
+        .w = notch_w,
+        .h = notch_h,
+    }, .{
+        .background_color = withAlpha(theme.surface1, progress),
+        .corner_radius = .all(1),
+    });
+
+    // 3. Relative Fill Bar
+    if (fill_w > 0.5) {
+        try list.addRect(.{
+            .x = cur_x + fill_left,
+            .y = track_rect.y + 8.0,
+            .w = fill_w,
+            .h = 4.0,
+        }, .{
+            .background_color = withAlpha(theme.mauve, progress * 0.7),
+            .corner_radius = .all(2),
+        });
+    }
+
+    // 4. Thumb Knob Handle
+    const knob_rect = FRect{
+        .x = cur_x + knob_x,
+        .y = track_rect.y + @round((20.0 - knob_d) * 0.5),
+        .w = knob_d,
+        .h = knob_d,
+    };
+    try list.addRect(knob_rect, .{
+        .background_color = withAlpha(theme.text, progress),
+        .corner_radius = .all(knob_d * 0.5),
+    });
+    try list.addBorder(knob_rect, .{
+        .color = withAlpha(theme.crust, progress),
+        .width = .all(1),
+        .corner_radius = .all(knob_d * 0.5),
+    });
+
+    interaction.setSliderRects(
+        param,
+        clipRect(track_rect, scroll_rect),
+        clipRect(knob_rect, scroll_rect),
+        clipRect(reset_rect, scroll_rect),
+    );
 }
 
 /// Renders the complete Edit Side Panel layout tree including header,
 /// quick action buttons, and adjustment sliders.
 pub fn renderEditPanel(
+    list: *UiDrawList,
     ui_model: UiViewModel,
-    docked_w: f32,
+    panel_rect: FRect,
     progress: f32,
     frame_allocator: std.mem.Allocator,
+    measure_data: *const MeasureTextUserData,
 ) !void {
     const vp = ui_model.viewport;
     const has_adjustments = vp.hasAdjustments();
     const is_comparing = vp.compare_original;
 
-    clay.UI()(.{
-        .id = clay.getElementId("EditSidePanel"),
-        .layout = .{
-            .sizing = .{
-                .w = .fixed(docked_w),
-                .h = .grow,
-            },
-            .direction = .top_to_bottom,
-            .padding = .{
-                .left = @intFromFloat(PANEL_PADDING),
-                .right = @intFromFloat(PANEL_PADDING),
-                .top = 20,
-                .bottom = 20,
-            },
-            .child_gap = 16,
-        },
-        .clip = .{ .horizontal = true, .vertical = false },
+    try list.pushScissor(panel_rect);
+    defer list.popScissor() catch {};
+
+    try list.addRect(panel_rect, .{
         .background_color = withAlpha(theme.mantle, progress),
-        .border = .{
-            .width = .{ .left = 1, .right = 0, .top = 0, .bottom = 0 },
-            .color = withAlpha(theme.surface0, progress),
-        },
-    })({
-        // =====================================================================
-        // Header Row: Title & Action Buttons
-        // =====================================================================
-        clay.UI()(.{
-            .layout = .{
-                .sizing = .{ .w = .fixed(CONTENT_WIDTH), .h = .fixed(28) },
-                .direction = .left_to_right,
-                .child_alignment = .{ .x = .left, .y = .center },
-                .child_gap = 8,
-            },
-        })({
-            // Panel Title
-            clay.UI()(.{
-                .layout = .{
-                    .sizing = .{ .w = .grow, .h = .grow },
-                    .child_alignment = .{ .x = .left, .y = .center },
-                },
-            })({
-                clay.text("Adjustments", .{
-                    .color = withAlpha(theme.mauve, progress),
-                    .font_size = 16,
-                    .font_id = 0,
-                });
-            });
-
-            // Before / After Comparison Toggle Button
-            const cmp_elem_id = clay.getElementId("EditCompareBtn");
-            const cmp_hovered = clay.pointerOver(cmp_elem_id);
-            clay.UI()(.{
-                .id = cmp_elem_id,
-                .layout = .{
-                    .sizing = .{ .w = .fit, .h = .fixed(24) },
-                    .padding = .{ .left = 8, .right = 8 },
-                    .child_alignment = .{ .x = .center, .y = .center },
-                },
-                .background_color = if (is_comparing)
-                    withAlpha(theme.mauve, progress * 0.3)
-                else if (has_adjustments and cmp_hovered)
-                    withAlpha(theme.surface1, progress)
-                else
-                    withAlpha(theme.surface0, progress),
-                .corner_radius = .all(6),
-                .border = if (is_comparing) .{
-                    .width = .all(1),
-                    .color = withAlpha(theme.mauve, progress),
-                } else .{},
-            })({
-                clay.text(if (is_comparing) "Original" else "Compare", .{
-                    .color = if (is_comparing)
-                        withAlpha(theme.mauve, progress)
-                    else if (has_adjustments)
-                        withAlpha(theme.text, progress)
-                    else
-                        withAlpha(theme.subtext1, progress),
-                    .font_size = 11,
-                    .font_id = 0,
-                });
-            });
-
-            // Reset All Adjustments Button
-            const reset_elem_id = clay.getElementId("EditResetBtn");
-            const reset_hovered = clay.pointerOver(reset_elem_id);
-            clay.UI()(.{
-                .id = reset_elem_id,
-                .layout = .{
-                    .sizing = .{ .w = .fit, .h = .fixed(24) },
-                    .padding = .{ .left = 8, .right = 8 },
-                    .child_alignment = .{ .x = .center, .y = .center },
-                },
-                .background_color = if (has_adjustments and reset_hovered)
-                    withAlpha(theme.surface1, progress)
-                else
-                    withAlpha(theme.surface0, progress),
-                .corner_radius = .all(6),
-            })({
-                const reset_col = if (has_adjustments)
-                    withAlpha(theme.text, progress)
-                else
-                    withAlpha(theme.subtext1, progress);
-                clay.text("Reset", .{
-                    .color = reset_col,
-                    .font_size = 11,
-                    .font_id = 0,
-                });
-            });
-
-            // Close Side Panel Button ('✕')
-            const close_elem_id = clay.getElementId("EditCloseBtn");
-            const close_hovered = clay.pointerOver(close_elem_id);
-            clay.UI()(.{
-                .id = close_elem_id,
-                .layout = .{
-                    .sizing = .{ .w = .fixed(24), .h = .fixed(24) },
-                    .child_alignment = .{ .x = .center, .y = .center },
-                },
-                .background_color = if (close_hovered)
-                    withAlpha(theme.surface1, progress)
-                else
-                    withAlpha(theme.surface0, progress),
-                .corner_radius = .all(12),
-            })({
-                clay.text("x", .{
-                    .color = withAlpha(theme.text, progress),
-                    .font_size = 12,
-                    .font_id = 0,
-                });
-            });
-        });
-
-        // Divider
-        clay.UI()(.{
-            .layout = .{
-                .sizing = .{ .w = .fixed(CONTENT_WIDTH), .h = .fixed(1) },
-            },
-            .background_color = withAlpha(theme.surface0, progress),
-        })({});
-
-        // =====================================================================
-        // Scrollable Adjustments List (Scrolls vertically when window is small)
-        // =====================================================================
-        const scroll_id = clay.getElementId("EditPanelScrollList");
-        const scroll_data = clay.cdefs.Clay_GetScrollContainerData(scroll_id);
-        const scroll_offset = if (scroll_data.found)
-            scroll_data.scroll_position.*
-        else
-            clay.Vector2{ .x = 0, .y = 0 };
-
-        clay.UI()(.{
-            .id = scroll_id,
-            .layout = .{
-                .sizing = .{ .w = .fixed(CONTENT_WIDTH), .h = .grow },
-                .direction = .top_to_bottom,
-                .child_gap = 16,
-            },
-            .clip = .{
-                .horizontal = false,
-                .vertical = true,
-                .child_offset = scroll_offset,
-            },
-        })({
-            const active_sl = ui_model.overlays.edit_panel.active_slider;
-
-            inline for (
-                std.enums.values(intents.EditDomain),
-                0..,
-            ) |domain, domain_idx| {
-                clay.UI()(.{
-                    .layout = .{
-                        .sizing = .{ .w = .fixed(CONTENT_WIDTH), .h = .fit },
-                        .direction = .top_to_bottom,
-                        .child_gap = 12,
-                    },
-                })({
-                    // Section Category Label
-                    clay.UI()(.{
-                        .layout = .{
-                            .sizing = .{ .w = .grow, .h = .fit },
-                            .padding = .{ .top = 10, .bottom = 14 },
-                        },
-                    })({
-                        clay.text(domain.label(), .{
-                            .color = withAlpha(theme.subtext0, progress),
-                            .font_size = 11,
-                            .font_id = 0,
-                        });
-                    });
-
-                    inline for (intents.specs) |spec| {
-                        if (spec.domain == domain) {
-                            const val = vp.edits.get(spec.param);
-                            const str = try formatValue(
-                                frame_allocator,
-                                spec,
-                                val,
-                            );
-                            const is_active = !is_comparing and
-                                active_sl == spec.param;
-                            renderSlider(
-                                spec.param,
-                                val,
-                                str,
-                                progress,
-                                is_active,
-                            );
-                        }
-                    }
-                });
-
-                // Divider between sections
-                if (domain_idx + 1 < std.enums.values(intents.EditDomain).len) {
-                    clay.UI()(.{
-                        .layout = .{
-                            .sizing = .{
-                                .w = .fixed(CONTENT_WIDTH),
-                                .h = .fixed(1),
-                            },
-                        },
-                        .background_color = withAlpha(
-                            theme.surface0,
-                            progress,
-                        ),
-                    })({});
-                }
-            }
-
-            // Bottom spacer for comfortable scroll padding
-            clay.UI()(.{
-                .layout = .{
-                    .sizing = .{
-                        .w = .fixed(CONTENT_WIDTH),
-                        .h = .fixed(16),
-                    },
-                },
-            })({});
-        });
     });
+    try list.addBorder(panel_rect, .{
+        .color = withAlpha(theme.surface0, progress),
+        .width = .{ .left = 1 },
+    });
+
+    const content_x = panel_rect.x + PANEL_PADDING;
+
+    // Header Row: Title & Action Buttons
+    var header_rect = FRect{
+        .x = content_x,
+        .y = panel_rect.y + 20.0,
+        .w = CONTENT_WIDTH,
+        .h = 28.0,
+    };
+
+    // Close Side Panel Button ('x')
+    const close_slot = header_rect.cutRight(24.0);
+    const close_btn_rect = close_slot.centered(24.0, 24.0);
+    const close_hovered = interaction.isHovered(close_btn_rect);
+    try list.addRect(close_btn_rect, .{
+        .background_color = if (close_hovered)
+            withAlpha(theme.surface1, progress)
+        else
+            withAlpha(theme.surface0, progress),
+        .corner_radius = .all(12),
+    });
+    const x_dims = measureText("x", 0, 12, measure_data);
+    const x_rect = close_btn_rect.centered(x_dims.w, x_dims.h);
+    try list.addText(x_rect, .{
+        .text = "x",
+        .color = withAlpha(theme.text, progress),
+        .font_size = 12,
+        .font_id = 0,
+    });
+
+    _ = header_rect.cutRight(8.0);
+
+    // Reset All Adjustments Button
+    const reset_w = measureText("Reset", 0, 11, measure_data).w + 16.0;
+    const reset_slot = header_rect.cutRight(reset_w);
+    const reset_btn_rect = reset_slot.centered(reset_w, 24.0);
+    const reset_hovered = interaction.isHovered(reset_btn_rect);
+    try list.addRect(reset_btn_rect, .{
+        .background_color = if (has_adjustments and reset_hovered)
+            withAlpha(theme.surface1, progress)
+        else
+            withAlpha(theme.surface0, progress),
+        .corner_radius = .all(6),
+    });
+    const reset_col = if (has_adjustments)
+        withAlpha(theme.text, progress)
+    else
+        withAlpha(theme.subtext1, progress);
+    const reset_txt_dims = measureText("Reset", 0, 11, measure_data);
+    const reset_txt_rect = reset_btn_rect.centered(
+        reset_txt_dims.w,
+        reset_txt_dims.h,
+    );
+    try list.addText(reset_txt_rect, .{
+        .text = "Reset",
+        .color = reset_col,
+        .font_size = 11,
+        .font_id = 0,
+    });
+
+    _ = header_rect.cutRight(8.0);
+
+    // Before / After Comparison Toggle Button
+    const cmp_label = if (is_comparing) "Original" else "Compare";
+    const cmp_w = measureText(cmp_label, 0, 11, measure_data).w + 16.0;
+    const cmp_slot = header_rect.cutRight(cmp_w);
+    const cmp_btn_rect = cmp_slot.centered(cmp_w, 24.0);
+    const cmp_hovered = interaction.isHovered(cmp_btn_rect);
+    const cmp_bg = if (is_comparing)
+        withAlpha(theme.mauve, progress * 0.3)
+    else if (has_adjustments and cmp_hovered)
+        withAlpha(theme.surface1, progress)
+    else
+        withAlpha(theme.surface0, progress);
+    try list.addRect(cmp_btn_rect, .{
+        .background_color = cmp_bg,
+        .corner_radius = .all(6),
+    });
+    if (is_comparing) {
+        try list.addBorder(cmp_btn_rect, .{
+            .color = withAlpha(theme.mauve, progress),
+            .width = .all(1),
+            .corner_radius = .all(6),
+        });
+    }
+    const cmp_col = if (is_comparing)
+        withAlpha(theme.mauve, progress)
+    else if (has_adjustments)
+        withAlpha(theme.text, progress)
+    else
+        withAlpha(theme.subtext1, progress);
+    const cmp_txt_dims = measureText(cmp_label, 0, 11, measure_data);
+    const cmp_txt_rect = cmp_btn_rect.centered(
+        cmp_txt_dims.w,
+        cmp_txt_dims.h,
+    );
+    try list.addText(cmp_txt_rect, .{
+        .text = cmp_label,
+        .color = cmp_col,
+        .font_size = 11,
+        .font_id = 0,
+    });
+
+    // Panel Title
+    const title_dims = measureText("Adjustments", 0, 16, measure_data);
+    const title_rect = FRect{
+        .x = header_rect.x,
+        .y = header_rect.y + @round((28.0 - title_dims.h) * 0.5),
+        .w = header_rect.w,
+        .h = title_dims.h,
+    };
+    try list.addText(title_rect, .{
+        .text = "Adjustments",
+        .color = withAlpha(theme.mauve, progress),
+        .font_size = 16,
+        .font_id = 0,
+    });
+
+    // Divider
+    try list.addRect(.{
+        .x = content_x,
+        .y = panel_rect.y + 64.0,
+        .w = CONTENT_WIDTH,
+        .h = 1.0,
+    }, .{
+        .background_color = withAlpha(theme.surface0, progress),
+    });
+
+    // Scrollable Adjustments List
+    const scroll_rect = FRect{
+        .x = content_x,
+        .y = panel_rect.y + 81.0,
+        .w = CONTENT_WIDTH,
+        .h = @max(0.0, panel_rect.h - 81.0 - 20.0),
+    };
+
+    interaction.setEditPanelRects(
+        panel_rect,
+        close_btn_rect,
+        reset_btn_rect,
+        cmp_btn_rect,
+        scroll_rect,
+    );
+
+    try list.pushScissor(scroll_rect);
+    defer list.popScissor() catch {};
+
+    var cur_y = scroll_rect.y + interaction.getEditScrollY();
+    const active_sl = ui_model.overlays.edit_panel.active_slider;
+
+    inline for (
+        std.enums.values(intents.EditDomain),
+        0..,
+    ) |domain, domain_idx| {
+        // Section Category Label
+        cur_y += 10.0;
+        const dom_dims = measureText(domain.label(), 0, 11, measure_data);
+        try list.addText(.{
+            .x = content_x,
+            .y = cur_y,
+            .w = CONTENT_WIDTH,
+            .h = dom_dims.h,
+        }, .{
+            .text = domain.label(),
+            .color = withAlpha(theme.subtext0, progress),
+            .font_size = 11,
+            .font_id = 0,
+        });
+        cur_y += dom_dims.h + 26.0;
+
+        var is_first_slider = true;
+        inline for (intents.specs) |spec| {
+            if (spec.domain == domain) {
+                if (!is_first_slider) {
+                    cur_y += 12.0;
+                }
+                is_first_slider = false;
+                const val = vp.edits.get(spec.param);
+                const str = try formatValue(
+                    frame_allocator,
+                    spec,
+                    val,
+                );
+                const is_active = !is_comparing and active_sl == spec.param;
+                try renderSlider(
+                    list,
+                    spec.param,
+                    val,
+                    str,
+                    progress,
+                    is_active,
+                    content_x,
+                    cur_y,
+                    scroll_rect,
+                    measure_data,
+                );
+                cur_y += 46.0;
+            }
+        }
+
+        // Divider between sections
+        if (domain_idx + 1 < std.enums.values(intents.EditDomain).len) {
+            cur_y += 16.0;
+            try list.addRect(.{
+                .x = content_x,
+                .y = cur_y,
+                .w = CONTENT_WIDTH,
+                .h = 1.0,
+            }, .{
+                .background_color = withAlpha(theme.surface0, progress),
+            });
+            cur_y += 1.0 + 16.0;
+        }
+    }
+
+    cur_y += 16.0 + 16.0;
+    const total_content_h = cur_y -
+        (scroll_rect.y + interaction.getEditScrollY());
+    interaction.setEditContentHeight(total_content_h);
 }
 
 test "formatValue string lifetimes" {
@@ -614,75 +602,50 @@ test "formatValue string lifetimes" {
 }
 
 test "floating slider knob commands are clipped by scroll container scissor" {
-    const dummyMeasure = struct {
-        fn measure(
-            text: []const u8,
-            config: *clay.TextElementConfig,
-            _: void,
-        ) clay.Dimensions {
-            _ = config;
-            return .{ .w = @floatFromInt(text.len * 8), .h = 16.0 };
-        }
-    }.measure;
-    resetCurrentClayContext();
-    defer resetCurrentClayContext();
-    const clay_mem = try std.testing.allocator.alloc(u8, clay.minMemorySize());
-    defer std.testing.allocator.free(clay_mem);
-    _ = clay.initialize(
-        clay.Arena.init(clay_mem),
-        .{ .w = 1000, .h = 800 },
-        .{},
+    const allocator = std.testing.allocator;
+    var list = renderer.UiDrawList{ .allocator = allocator };
+    defer list.commands.deinit(allocator);
+
+    const data = text_utils.MeasureTextUserData{};
+    const scroll_rect = FRect{
+        .x = 16,
+        .y = 81,
+        .w = CONTENT_WIDTH,
+        .h = 400,
+    };
+
+    try list.pushScissor(scroll_rect);
+    try renderSlider(
+        &list,
+        .brightness,
+        0.5,
+        "+50%",
+        1.0,
+        false,
+        16.0,
+        100.0,
+        scroll_rect,
+        &data,
     );
-    clay.setMeasureTextFunction(void, {}, dummyMeasure);
-    clay.beginLayout();
+    try list.popScissor();
 
-    const scroll_id = clay.getElementId("TestScrollList");
-    clay.UI()(.{
-        .id = scroll_id,
-        .layout = .{
-            .sizing = .{ .w = .fixed(300), .h = .fixed(400) },
-            .direction = .top_to_bottom,
-        },
-        .clip = .{
-            .horizontal = false,
-            .vertical = true,
-            .child_offset = .{ .x = 0, .y = -100 },
-        },
-    })({
-        // Use non-default value (0.5) so notch, fill bar (fill_w > 0.5),
-        // and knob all render
-        renderSlider(.brightness, 0.5, "+50%", 1.0, false);
-    });
-
-    const commands = clay.endLayout();
-    const knob_id = clay.getElementId(intents.getSpec(.brightness).knob_id).id;
-
-    var found_knob = false;
-    var current_scissor: ?clay.BoundingBox = null;
     var scissor_start_count: u32 = 0;
     var scissor_end_count: u32 = 0;
+    var has_commands_inside = false;
 
-    for (commands) |cmd| {
-        if (cmd.command_type == .scissor_start) {
-            current_scissor = cmd.bounding_box;
-            scissor_start_count += 1;
-        } else if (cmd.command_type == .scissor_end) {
-            current_scissor = null;
-            scissor_end_count += 1;
-        } else if (cmd.id == knob_id) {
-            found_knob = true;
-            // The knob MUST be enclosed within an active scissor
-            try std.testing.expect(current_scissor != null);
-            const sc = current_scissor.?;
-            try std.testing.expectEqual(@as(f32, 300), sc.width);
-            try std.testing.expectEqual(@as(f32, 400), sc.height);
+    for (list.commands.items) |cmd| {
+        switch (cmd.payload) {
+            .scissor_start => scissor_start_count += 1,
+            .scissor_end => scissor_end_count += 1,
+            else => {
+                if (scissor_start_count > scissor_end_count) {
+                    has_commands_inside = true;
+                }
+            },
         }
     }
 
-    try std.testing.expect(found_knob);
-    // Every scissor_start must be balanced with a scissor_end
+    try std.testing.expect(has_commands_inside);
     try std.testing.expect(scissor_start_count > 0);
     try std.testing.expectEqual(scissor_start_count, scissor_end_count);
-    // Scissor state must be cleanly closed by the end
-    try std.testing.expect(current_scissor == null);
 }

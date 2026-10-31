@@ -59,8 +59,8 @@ and return a brief summary of the changes.
   symbol aliases at the top of each file; strictly zero cross-module `pub const`
   proxy re-exports.
 - **Acyclic Module Boundaries**: `geom` is pure `std`; `state`, `palette`,
-  `triage`, `vfs`, `probe`, `thumbcache`, and `ui` are 100% zero-SDL; `ui` is
-  the exclusive consumer of `zclay` in the repository.
+  `triage`, `vfs`, `probe`, `thumbcache`, and `ui` are 100% zero-SDL; `ui` uses
+  native `RectCut` (`geom.FRect`) immediate-mode layout (`UiDrawList`).
 - **Zig 0.17 Idioms**: Use `.empty` / `.init(...)` decl literals, `@backingInt`
   and `@fromBackingInt` for enums/packed structs, `@divCeil`, `@splat`,
   `std.mem.print` / `allocator.print` (never `std.fmt.bufPrint` / `allocPrint`),

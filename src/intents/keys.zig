@@ -1,12 +1,12 @@
 //! Keyboard Key, Modifier, and Shortcut Definitions
 //!
-//! Agnostic input definitions that map physical keystrokes and modifier combinations
-//! without depending on SDL, Clay, or state subsystems.
+//! Agnostic input definitions that map physical keystrokes and modifier
+//! combinations without depending on SDL, UI layout, or state subsystems.
 
 const std = @import("std");
 
-/// Normalized keyboard key enumeration covering standard navigation, function,
-/// and alphanumeric keys.
+/// Normalized keyboard key enumeration covering standard navigation,
+/// function, and alphanumeric keys.
 pub const Key = enum {
     unknown,
     escape,

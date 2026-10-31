@@ -34,22 +34,21 @@
 - **Top-Level Package Isolation (`src/`)**:
   - `src/geom/`: Pure geometric primitives (`PositiveDimsU32`, `DpiScale`,
     `LogicalDims`, `PhysicalDims`, `LogicalPoint`, `PhysicalPoint`, `Rect`,
-    `FRect`, `FPoint`, `UvRect`). Standalone leaf module (zero imports outside
-    `std`, tested via `zig build test-geom`).
+    `FRect` with `RectCut` layout methods, `FPoint`, `UvRect`). Standalone leaf
+    module (zero imports outside `std`, tested via `zig build test-geom`).
   - `src/probe/`: Pure header dimension, MIME, and EXIF parsers (imports
-    `geom`; zero SDL/Clay).
+    `geom`; zero SDL).
   - `src/vfs/`: Pure filesystem scanning, CBZ ZIP central-directory seeking,
-    media entry models, and RAW+JPEG pair consolidation (zero SDL3/Clay
-    linkage).
+    media entry models, and RAW+JPEG pair consolidation (zero SDL3 linkage).
   - `src/triage/`: Pure triage selection maps, arena string keys, JSON
     export serialization, and 256-bit SIMD visibility scans (imports `vfs`;
-    zero SDL/Clay).
+    zero SDL).
   - `src/palette/`: Pure command palette state models, fuzzy scoring
-    (`fuzzig`), and directory navigation history (zero SDL/Clay).
+    (`fuzzig`), and directory navigation history (zero SDL).
   - `src/thumbcache/`: Pure Freedesktop Shared Thumbnail Cache specification,
     RFC 3986 URI encoding, MD5 hashing, PNG `tEXt` chunk parsing and splicing,
-    and atomic PNG writing (imports `geom`, `probe`, `vfs`; zero `intents`,
-    SDL/Clay).
+    and atomic PNG writing (imports `geom`, `probe`, `vfs`; zero `intents` or
+    SDL).
   - `src/intents/`: Pure `AppIntent` variants, `ActionDef` registry
     (`actions.zig`), and intent payload structs (imports `geom`, `triage`).
   - `src/input/`: Pure `FrameInput` event polling and shortcut mapping.
@@ -64,15 +63,15 @@
   - `src/gpu/`: GPU pipelines, geometry tessellation, render image commands,
     render pass execution and frame lifecycle (`pass.zig`), texture cache,
     shaders (`src/gpu/shaders/`), resources, texture staging buffers, compute
-    unpack pipelines, and GPU texture uploads (zero Clay linkage).
+    unpack pipelines, and GPU texture uploads.
   - `src/sdl/`: Type-safe SDL3, SDL3_image, SDL3_ttf, and SDL3 GPU wrappers.
-  - `src/ui/`: Clay layout builders (`layout.zig`, `palette.zig`,
-    `edit_panel.zig`, `stats.zig`), `UiViewModel` presentation snapshot
-    (`view_model.zig`), 2-pass GPU packet builder (`renderer.zig`), text
-    utilities (`text_utils.zig`), theme styling (`theme.zig`), and
-    encapsulated Clay interaction / hit-testing (`interaction.zig`). Exclusive
-    consumer of `zclay` in the repository. Strictly 100% zero-SDL linkage or
-    imports (zero `@import("sdl")`). Tested via `zig build test-ui`.
+  - `src/ui/`: Immediate-mode `RectCut` UI layout builders (`layout.zig`,
+    `palette.zig`, `edit_panel.zig`, `stats.zig`), `UiViewModel` presentation
+    snapshot (`view_model.zig`), `UiDrawList` & 2-pass GPU packet builder
+    (`renderer.zig`), text utilities (`text_utils.zig`), theme styling
+    (`theme.zig`), and immediate-mode interaction / hit-testing
+    (`interaction.zig`). Strictly 100% zero-SDL linkage or imports (zero
+    `@import("sdl")`). Tested via `zig build test-ui`.
   - `src/app/`: Application state (`state.zig`), worker event ingestion
     (`events.zig`), sequential Phase 2 systems (`systems/`), and background
     worker tasks (`workers/`). Tested via `zig build test-unit`.

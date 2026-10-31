@@ -4,11 +4,11 @@
 
 - **2-Pass UI `RenderPacket` Pipeline (`src/ui/renderer.zig`,
   `src/gpu/pass.zig`)**:
-  1. **Extraction Pass (`buildRenderPacket`)**: Traverses the Clay command list
-     to populate vertex arrays, scissor rects, and batched draw commands
-     (`RenderPacket`), while newly rasterized text strings obtain cached
-     glyph textures via `getOrRenderCachedText` (`src/gpu/pass.zig`) on cache
-     misses and defers all GPU render passes.
+  1. **Extraction Pass (`buildRenderPacket`)**: Traverses the immediate-mode
+     `UiCommand` list (`UiDrawList`) to populate vertex arrays, scissor rects,
+     and batched draw commands (`RenderPacket`), while newly rasterized text
+     strings obtain cached glyph textures via `getOrRenderCachedText`
+     (`src/gpu/pass.zig`) on cache misses and defers all GPU render passes.
   2. **Execution Pass (`executeRenderPacket` / `FrameTarget`)**: Orchestrated
      inside `executeFrame` / `executeRenderPacket` against a `FrameTarget`
      (`.window: sdl.Window` or `.headless: PhysicalDims`), uploads geometry via
@@ -31,11 +31,12 @@
 ## 2. DPI Scaling, Universal Zoom & Viewport Invariants
 
 - **Logical Window Points vs. Physical Framebuffer Pixels**:
-  - Clay layout and overlay drag positions operate in logical window points
-    (`LogicalDims`, `LogicalPoint`), whereas GPU framebuffers,
-    `ViewportParams.pan_x/y`, `getBaseScale`, and `isImageOverflowing` operate
-    in physical pixels (`PhysicalDims`, `PhysicalPoint`, `PositiveDimsU32`,
-    converted via `DpiScale` in `src/geom/root.zig`).
+  - Immediate-mode `RectCut` UI layout (`geom.FRect`) and overlay drag positions
+    operate in logical window points (`LogicalDims`, `LogicalPoint`), whereas
+    GPU framebuffers, `ViewportParams.pan_x/y`, `getBaseScale`, and
+    `isImageOverflowing` operate in physical pixels (`PhysicalDims`,
+    `PhysicalPoint`, `PositiveDimsU32`, converted via `DpiScale` in
+    `src/geom/root.zig`).
   - Pass strongly typed coordinate/dimension structs (`LogicalDims`,
     `PhysicalDims`, `PositiveDimsU32`, `LogicalPoint`, `PhysicalPoint`) across
     function boundaries rather than raw `w, h` or `x, y` scalar pairs, and pass
@@ -44,12 +45,12 @@
     `DpiScale`.
   - Evaluate `computeViewDims` in physical framebuffer space via
     `view_transform.computeLogicalDrawDims` and convert the resulting draw
-    bounds back to `LogicalDims` for Clay layout.
-  - Multiply UI panel width deductions (e.g. docked edit panel or debug
-    inspector) by the display scale factor $S = \text{pix_w} / \text{win_w}$
-    before subtracting from physical framebuffer dimensions.
-- **Clay Pre-Scaled Rectangles vs. Manual Zoom Quads**:
-  - In preset modes (`.fit`, `.fill`), Clay's `rect.w` and `rect.h`
+    bounds back to `LogicalDims` for UI layout.
+  - Multiply UI panel width deductions (e.g. docked edit panel) by the display
+    scale factor $S = \text{pix_w} / \text{win_w}$ before subtracting from
+    physical framebuffer dimensions.
+- **Pre-Scaled Layout Rectangles vs. Manual Zoom Quads**:
+  - In preset modes (`.fit`, `.fill`), layout `rect.w` and `rect.h`
     (`computeDrawDims`) are already scaled to screen dimensions; never multiply
     them by $Z_{\text{base}}$ a second time.
   - In manual zoom mode and outgoing crossfade quads
@@ -68,7 +69,7 @@
   - Switch `h`/`j`/`k`/`l` and arrow keys between image navigation and viewport
     panning strictly on `isImageOverflowing()`, never on `zoom > 1.0`.
 
-## 3. Clay UI Interaction, Animations & Event Loop Polling
+## 3. UI Interaction, Animations & Event Loop Polling
 
 - **Event Loop Wait Strategy (`AppState.computeFrameWaitStrategy`)**:
   - When `self.display == .hidden` (resident `--server` mode with the window
@@ -88,16 +89,16 @@
 - **Modal Dismissal Input Decoupling & Held-Key Suppression**:
   - Animated overlays (such as `PaletteState`) MUST decouple input focus from
     close animations via `isAcceptingInput()`
-    (`mode != .inactive and !is_closing`) and set
-    `pointer_capture_mode = .passthrough` while closing or dissolving
-    (`ImageTransitionPrevQuad`) so background controls respond immediately.
+    (`mode != .inactive and !is_closing`) and pass `captures_pointer = false` to
+    `interaction.setPaletteModalRect` while closing so background controls
+    respond immediately.
   - When opening a modal or clicking UI controls, suppress held directional and
     zoom keys (`pan_controller.suppress`, `zoom_controller.suppress`) so held
     keys do not bleed into the viewport upon modal dismissal.
-- **Clay Scroll Containers vs. Pointer Controls**:
-  - Pass `enableDragScrolling = false` to `clay.updateScrollContainers` on
-    desktop containers so clicking child sliders/buttons does not initiate
-    scroll-dragging.
+- **Immediate-Mode Scroll Containers vs. Pointer Controls**:
+  - Update palette and edit panel scroll offsets in
+    `interaction.updatePointerAndScroll` strictly from mouse wheel deltas over
+    `palette_list` or `edit_scroll_list` (never pointer drag-scrolling).
   - Zero `scroll_delta` while a slider drag is active (`drag_state == .slider`
     or `active_slider != null`) to prevent container jitter.
 - **Image Crossfade & Scrubbing Invariants**:
@@ -110,8 +111,8 @@
     thumbnail crossfade concurrently with an active `image_transition` or during
     pair stream promotion, and protect both active and outgoing
     (`getTransitionPrevIndex()`) slots in `enforceVramBudget`.
-- **Clay Modularization & Single-Source-of-Truth State Binding**:
-  - Decompose complex Clay views into private helpers that preserve exact
+- **UI Modularization & Single-Source-of-Truth State Binding**:
+  - Decompose UI views into private `RectCut` helpers that preserve exact
     sizing, padding, corner radii, border widths, and
     `theme.withAlpha(color, progress)` multipliers.
   - Bind UI overlays and "Stats for Nerds" (`src/ui/stats.zig`) directly to

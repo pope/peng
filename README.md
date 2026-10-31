@@ -1,6 +1,6 @@
 # Peng — GPU-Accelerated Image Viewer
 
-Peng is a modern, high-performance, GPU-accelerated image viewer built in **Zig** using **SDL3** (Vulkan/Metal), and **Clay UI**. It is designed to be extremely fast, memory-safe, and scriptable via a thread-safe UNIX Domain Socket (UDS) IPC interface.
+Peng is a modern, high-performance, GPU-accelerated image viewer built in **Zig** using **SDL3** (Vulkan/Metal) and a custom immediate-mode UI engine. It is designed to be extremely fast, memory-safe, and scriptable via a thread-safe UNIX Domain Socket (UDS) IPC interface.
 
 ______________________________________________________________________
 
@@ -68,7 +68,6 @@ ______________________________________________________________________
 | `Shift+R`                               | Reset Brightness & Contrast                                       |
 | `d`                                     | Toggle Image Info Overlay                                         |
 | `Shift+D` / `Shift+I`                   | Toggle Stats for Nerds / Performance Overlay                      |
-| `Ctrl+D`                                | Toggle Clay UI Debug Mode (Layout Borders)                        |
 | `Ctrl+T`                                | Toggle Embedded Thumbnail Debug Overlay                           |
 | `t`                                     | Toggle Title Bar Overlay                                          |
 | `m`                                     | Toggle Manga Mode (Right-to-Left)                                 |
@@ -292,9 +291,6 @@ or pipe into `jq`:
 
 # Toggle Thumbnail Preview (true, false, toggle)
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock thumb toggle
-
-# Toggle Clay Layout Debug Borders
-./zig-out/bin/peng-msg /tmp/peng-1234.sock debug true
 
 # Pre-cache Freedesktop thumbnails for the active directory in the background
 ./zig-out/bin/peng-msg /tmp/peng-1234.sock precache

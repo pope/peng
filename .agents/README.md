@@ -23,8 +23,8 @@ project invariants:
   cache/upload gating.
 - **[`03_c_abi_and_module_hygiene.md`][rule-03]**:
   C-ABI encapsulation (`src/sdl/c.zig`), package hierarchy (`geom`, `core`,
-  `thumbcache`, zero-SDL `ui` exclusive `zclay` consumer), `build.zig` test
-  targets, 2-block alphabetical imports/aliases, Zig 0.17 builtins & stdlib
+  `thumbcache`, zero-SDL `ui` with native `RectCut` immediate-mode layout),
+  `build.zig` test targets, 2-block alphabetical imports/aliases, Zig 0.17 builtins & stdlib
   idioms (`.empty` / `.init(...)`, `@backingInt`, `@divCeil`, `std.mem.print`),
   exhaustive enum `switch` matching, minimal `pub` visibility, 3-tier testing,
   mandatory `///` doc comments, and the strict `<= 80`-column ceiling.

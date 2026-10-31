@@ -1,21 +1,21 @@
 //! UI & Rendering Subsystem Module
 //!
-//! Provides Clay layout integration, geometry transformation passes,
+//! Provides native immediate-mode UI layout, geometry transformation passes,
 //! text measurement, overlay panels, and 2-pass UI render pipelines.
 
 /// Image adjustment and EXIF metadata editing panels.
 pub const edit_panel = @import("edit_panel.zig");
 
-/// Clay layout interaction, context encapsulation, and hit-testing.
+/// Immediate-mode interaction state, hit-testing, and scroll tracking.
 pub const interaction = @import("interaction.zig");
 
-/// Clay layout generation and UI element hierarchy declaration.
+/// UI layout generation and viewport hierarchy declaration.
 pub const layout = @import("layout.zig");
 
 /// Command palette modal and quick-action menu rendering.
 pub const palette = @import("palette.zig");
 
-/// Clay render commands to GPU vertex batch translator.
+/// Immediate-mode UI draw commands to GPU vertex batch translator.
 pub const renderer = @import("renderer.zig");
 
 /// Image metadata, histogram, and statistics display overlay.

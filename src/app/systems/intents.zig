@@ -737,8 +737,6 @@ fn executeIntent(
                 },
             }
         },
-        .toggle_debug_mode => ui_pkg.interaction.toggleDebugMode(),
-        .set_debug_mode => |val| ui_pkg.interaction.setDebugModeEnabled(val),
         .toggle_debug_thumb => {
             ui.overlays.debug_show_thumb = !ui.overlays.debug_show_thumb;
         },

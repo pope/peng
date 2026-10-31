@@ -149,7 +149,6 @@ fn normalizeCommandPaths(
         .toggle_stream,
         .palette,
         .thumb,
-        .debug,
         .wait_load,
         .reset_view,
         .reset_adjustments,

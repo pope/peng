@@ -65,7 +65,6 @@ pub const FrameInput = struct {
     delta_time_ms: f32,
     /// Current frame timestamp in milliseconds.
     now_ms: u64 = 0,
-    is_pointer_in_debug_panel: bool = false,
 
     /// Returns the sanitized display DPI scale factor for this frame.
     pub inline fn dpiScale(self: FrameInput) DpiScale {
@@ -97,15 +96,9 @@ pub const FrameInput = struct {
     pub inline fn pixMouseY(self: FrameInput) f32 {
         return self.physicalMousePos().y;
     }
-
-    /// Returns `true` if the cursor is positioned within Clay's debug sidebar
-    /// panel.
-    pub fn isPointerInDebugPanel(self: FrameInput) bool {
-        return self.is_pointer_in_debug_panel;
-    }
 };
 
-/// Unique identification tags for interactive Clay UI layout elements.
+/// Unique identification tags for interactive UI layout elements.
 pub const ElementTag = enum(usize) {
     none = 0,
     image_viewer = 1,

@@ -72,21 +72,17 @@ pub fn sysUpdateViewport(
     if (next_drag_state == .none and input.mouse_left_clicked and
         !palette_blocking)
     {
-        const is_in_debug_panel = input.isPointerInDebugPanel();
-        const over_close_btn = !is_in_debug_panel and
+        const over_close_btn =
             ((state.viewer.ui.overlays.info_panel.visible and
                 ui.interaction.isPointerOverInfoCloseBtn()) or
                 (state.viewer.ui.overlays.stats_panel.visible and
                     ui.interaction.isPointerOverStatsCloseBtn()));
         const over_info = state.viewer.ui.overlays.info_panel.visible and
-            !is_in_debug_panel and
             ui.interaction.isPointerOverInfoPanel();
         const over_stats = state.viewer.ui.overlays.stats_panel.visible and
-            !is_in_debug_panel and
             ui.interaction.isPointerOverStatsPanel();
         const over_edit = (state.viewer.ui.overlays.edit_panel.visible or
             state.viewer.animations.get(.edit_panel) > 0.001) and
-            !is_in_debug_panel and
             ui.interaction.isPointerOverEditPanel();
 
         if (over_close_btn) {
@@ -134,7 +130,6 @@ pub fn sysUpdateViewport(
     const has_scroll_y = input.scroll_delta_y != 0.0;
     const is_ctrl_down = input.key_modifiers.ctrl;
     const over_viewport = !state.viewer.ui.palette.isAcceptingInput() and
-        !input.isPointerInDebugPanel() and
         ui.interaction.isPointerOverViewport();
 
     if ((has_scroll_x or has_scroll_y) and !is_ctrl_down) {

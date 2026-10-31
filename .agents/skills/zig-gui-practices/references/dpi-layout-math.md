@@ -3,8 +3,9 @@
 ## High-DPI Coordinate Transformations
 
 - **Logical to Physical Pixels**:
-  Clay UI layout engine works in logical coordinate points. Convert logical
-  bounding boxes to physical GPU framebuffer pixels using Retina scale factors:
+  The immediate-mode `RectCut` UI layout engine works in logical coordinate
+  points (`geom.FRect`). Convert logical bounding boxes to physical GPU
+  framebuffer pixels using Retina scale factors:
   $$\text{physical_x} = \lfloor \text{logical_x} \times \text{scale_x} \rceil$$
   $$\text{physical_y} = \lfloor \text{logical_y} \times \text{scale_y} \rceil$$
 
@@ -42,7 +43,7 @@ ______________________________________________________________________
 ## Viewport Panning & Mouse Input Coordinate Space Rules
 
 - **Coordinate Space Wrappers (`src/geom/root.zig`)**:
-  Use `LogicalDims` / `LogicalPoint` for Clay layout and window points,
+  Use `LogicalDims` / `LogicalPoint` for UI layout and window points,
   `PhysicalDims` / `PhysicalPoint` / `PositiveDimsU32` for GPU framebuffer and
   texture pixels (`PhysicalDims.initPositive(w, h)`,
   `PhysicalDims.toPositiveU32()`, `PositiveDimsU32.initClamped()`), and
@@ -66,7 +67,7 @@ ______________________________________________________________________
   $$\Delta \text{pan_y} = \text{scroll_delta_y} \times \text{scale_y} \times 5.0$$
 
 - **Mouse Input Scaling (`physicalMousePos()` / `pixMouseX()` / `pixMouseY()`)**:
-  SDL mouse state and Clay pointer events are in **logical points**. Convert
+  SDL mouse state and UI pointer events are in **logical points**. Convert
   mouse positions to physical pixels before performing viewport pan/zoom
   operations using `FrameInput` helper methods:
   $$\text{mouse_x}_{\text{phys}} = \text{FrameInput.pixMouseX}() = \text{mouse_x} \times \text{scale_x}$$
@@ -116,16 +117,16 @@ ______________________________________________________________________
     an uninitialized or static multiplier.
   - **Dynamic Viewport Center**: Focus coordinates must anchor relative to the
     dynamic center queried from `ui.interaction.resolveViewportCenter(...)`
-    (`clay.getElementData(clay.getElementId("Viewport"))` inside
-    `src/ui/interaction.zig`) rather than assuming static window center,
-    ensuring correct anchor positioning when side panels are docked.
+    (backed by `InteractionState.viewport` inside `src/ui/interaction.zig`)
+    rather than assuming static window center, ensuring correct anchor
+    positioning when side panels are docked.
   - **Viewport Anchor Call**:
     `ViewportParams.zoomAtPoint(`
     `new_zoom, focus, logical_center.toPhysical(scale))`
 
 ______________________________________________________________________
 
-## Dynamic Clay Element Bounding Box Sampling & Interactive Hit-Testing
+## Immediate-Mode `FRect` Bounding Box Recording & Hit-Testing
 
 - **Avoid Static Coordinate Assumptions**:
   When building custom interactive widgets (e.g., sliders, scrubbers, toggle
@@ -133,62 +134,54 @@ ______________________________________________________________________
   drag coordinates using fixed window dimensions or static offsets. Layout
   dimensions change dynamically due to side panels, animations, or DPI changes.
 
-- **Encapsulate Bounds Sampling in `src/ui/interaction.zig`**:
-  Query the actual layout bounding box for a given element ID at event time
-  inside `src/ui/interaction.zig` (`hitTestEditPanel`) and return intents or
-  hit records to `src/app/systems/ui_interactions.zig`, preserving the
-  zero-`zclay`-outside-`src/ui/` boundary:
+- **Record Bounds During Layout & Query in `src/ui/interaction.zig`**:
+  During the immediate-mode `RectCut` layout pass (`renderFrame`,
+  `renderEditPanel`, `renderPalette`, `renderStatsOverlay`), record widget
+  `FRect` bounds into `InteractionState` (`setSliderRects`, `setEditPanelRects`,
+  `setPaletteModalRect`, `recordPaletteItem`, `setInfoOverlayRects`,
+  `setStatsOverlayRects`), and query them in `src/ui/interaction.zig`
+  (`getHoveredSliderTrack`, `isSliderResetHovered`, `getHoveredPaletteItem`):
 
   ```zig
-  // src/ui/interaction.zig: hit-test encapsulates clay.getElementData
-  pub fn hitTestEditPanel(
-      input: FrameInput,
-      spec: EditSliderSpec,
-  ) ?f32 {
-      const track_elem = clay.getElementData(clay.getElementId(spec.track_id));
-      if (track_elem.found and track_elem.bounding_box.width > 0.0) {
-          const box = track_elem.bounding_box;
-          const norm = std.math.clamp(
-              (input.mouse_x - box.x) / box.width,
-              0.0,
-              1.0,
-          );
-          return spec.min_val + norm * (spec.max_val - spec.min_val);
+  // src/ui/interaction.zig: hit-test against recorded slider track FRect
+  pub fn getHoveredSliderTrack() ?SliderTrackHit {
+      if (!state.has_layout) return null;
+      if (!state.edit_scroll_list.contains(state.pointer)) return null;
+      inline for (intents.specs, 0..) |spec, idx| {
+          const track = state.slider_tracks[idx];
+          const knob = state.slider_knobs[idx];
+          if (track.contains(state.pointer) or knob.contains(state.pointer)) {
+              return .{
+                  .param = spec.param,
+                  .x = track.x,
+                  .w = track.w,
+              };
+          }
       }
       return null;
   }
   ```
 
 - **Invariance Across Active Slide Animations & Resizing**:
-  Because `clay.getElementData` queries the exact computed layout bounding box
-  from the preceding Clay layout pass, interactive widgets maintain 100%
-  hit-test accuracy even when containers are mid-flight in an opening/closing
-  animation or dynamically pushed by neighboring UI elements.
+  Because `InteractionState` stores the exact computed `FRect` bounding boxes
+  from the preceding layout pass (clipped against scroll container rects where
+  applicable), interactive widgets maintain 100% hit-test accuracy even when
+  containers are mid-flight in an opening/closing animation or scrolled.
 
 ______________________________________________________________________
 
 ## Compound Row Badge Alignment & Dynamic Truncation Budgeting
 
-- **Right On-Axis & Cross-Axis Centered Badge Alignment**:
-  When positioning status pills/badges (e.g. `[PICK]` or `[REJECT]`) in a multi-line list row (e.g. filename on line 1, directory path on line 2):
-  1. **Row Container**: Configure parent item row with horizontal layout:
-     ```zig
-     .layout = .{
-         .sizing = .{ .w = .grow, .h = .fixed(row_height) },
-         .direction = .left_to_right,
-         .child_alignment = .{ .x = .left, .y = .center },
-         .padding = .{ .left = 12, .right = 12 },
-         .child_gap = 8,
-     }
-     ```
-  2. **Text Column**: Wrap the multi-line text in a vertical child container with `.sizing = .{ .w = .grow, .h = .fit }`. Because width is `.grow`, it expands to consume all available horizontal space, naturally pushing the badge pill to the far right on the horizontal axis.
-  3. **Cross-Axis Centering**: The parent's `.child_alignment = .{ .x = .left, .y = .center }` automatically centers the badge vertically within the fixed row height, symmetrically balanced between the text lines.
-  4. **Dynamic Truncation Budgeting**:
-     When an item is classified, deduct the badge width and gap from the available width passed to string truncation helpers to eliminate text overlap:
-     ```zig
-     const max_fn_w: f32 = if (classification != .unflagged) base_fn_w - badge_budget else base_fn_w;
-     const max_dir_w: f32 = if (classification != .unflagged) base_dir_w - badge_budget else base_dir_w;
-     ```
+- **Right-Cut Badges & Remaining-Width Text Truncation**:
+  When positioning status pills/badges (e.g. `[PICK]`, `[REJECT]`, or shortcut
+  badges) in a list row:
+  1. **Right-to-Left Badge Cuts**: Advance `right_limit` leftward from
+     `rect.x + rect.w - pad_right` as each badge is measured and emitted,
+     vertically centering each badge at `rect.y + (rect.h - badge_h) * 0.5`.
+  2. **Dynamic Truncation Budgeting**: Compute the remaining horizontal space
+     `available_text_w = @max(right_limit - text_x, 10.0)` and pass it directly
+     to `truncateFilenameMiddle` / `truncateDirectory` so text never overlaps
+     adjacent badges.
 
 ______________________________________________________________________
 

@@ -1,12 +1,12 @@
 ---
 name: zig-gui-animations
 description: >-
-  Architectural patterns and implementation recipes for high-performance GUI animations in Zig, Clay UI, and SDL3 GPU.
+  Architectural patterns and implementation recipes for high-performance GUI animations in Zig, immediate-mode RectCut UI, and SDL3 GPU.
   Trigger immediately for:
   - DOD Animation State: flat static SoA arrays, ChannelDescriptor table, bitmask tracking, zero-allocation lifecycle.
   - Easing & Curves: normalized time evaluation, NaN guards, proportional retargeting/interruption duration math.
   - GPU Text Alpha Blitting: RGB-only text texture caching, vertex color alpha modulation, zero font re-rasterization.
-  - Clay UI Transitions: hierarchical alpha scaling, modal dissolve animations, and input decoupling during dismissal.
+  - UI Transitions: hierarchical alpha scaling, modal dissolve animations, and input decoupling during dismissal.
   - Image Crossfade & Scrubbing: dual-quad viewport dissolves, quadratic alpha falloff, fast-navigation snap-and-cut bypasses.
   DO NOT trigger for:
   - Pure non-visual business logic, database queries, CLI arguments, or network I/O.
@@ -14,7 +14,7 @@ description: >-
 
 # Zig GUI & GPU Animation Architecture
 
-This guide provides architectural patterns and procedural recipes for building zero-allocation, 120Hz-smooth GUI animation systems in Zig, integrating with Clay immediate-mode UI and SDL3 GPU hardware rendering.
+This guide provides architectural patterns and procedural recipes for building zero-allocation, 120Hz-smooth GUI animation systems in Zig, integrating with immediate-mode `RectCut` UI and SDL3 GPU hardware rendering.
 
 ______________________________________________________________________
 
@@ -132,10 +132,11 @@ textures across a 140ms fade, exhausting VRAM and thrashing font rasterization.
 
 ______________________________________________________________________
 
-## 4. Clay Immediate-Mode Alpha Modulation
+## 4. Immediate-Mode UI Alpha Modulation
 
-Because Clay does not support CSS-like cascading container opacity, all child
-elements must explicitly scale their color alpha:
+Because immediate-mode draw commands (`UiDrawList`) do not use CSS-like
+cascading container opacity, all child elements explicitly scale their color
+alpha:
 
 ```zig
 const background_color = theme.withAlpha(theme.base_translucent, progress);

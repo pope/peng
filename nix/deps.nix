@@ -8,14 +8,6 @@
 
 linkFarm "zig-packages" [
   {
-    name = "zclay-0.2.2-Ej1rkP3RAACYZGzQB5NGPaqfySgKfO26NYk5Ja6Z15gC";
-    path = fetchgit {
-      url = "https://github.com/johan0A/clay-zig-bindings";
-      rev = "e0286c488a303b93501944ccde10730cc74ecd58";
-      hash = "sha256-D/npnyjGykDygu4z+wrUR1TCGWnG3vMbtF+tH/JrB+g=";
-    };
-  }
-  {
     name = "N-V-__8AAE4JlAMyAncBlb_JYlu-9ZZHJlu9H-XNIGZspCR-";
     path = fetchzip {
       url = "https://github.com/libsdl-org/SDL/releases/download/release-3.4.12/SDL3-devel-3.4.12-VC.zip";
@@ -42,14 +34,6 @@ linkFarm "zig-packages" [
       url = "https://codeberg.org/fjebaker/fuzzig";
       rev = "97ed5ef57c2a11cbc21db061a2ea093c3df64de2";
       hash = "sha256-chHxGrLAiq2qlzldHxdGrZ1oCxRwtRLwqguvbcGRrKU=";
-    };
-  }
-  {
-    name = "N-V-__8AALPgZwA7tLqRlkCCL7OrkEhj4xZ3y_0FxgR42t0W";
-    path = fetchgit {
-      url = "https://github.com/nicbarker/clay";
-      rev = "b25a31c1a152915cd7dd6796e6592273e5a10aac";
-      hash = "sha256-6h1aQXqwzPc4oPuid3RfV7W0WzQFUiddjW7OtkKM0P8=";
     };
   }
   {

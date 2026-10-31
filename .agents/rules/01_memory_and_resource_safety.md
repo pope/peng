@@ -54,9 +54,6 @@
   - *Assert-Bounded Hardware/FFI Limits* (e.g. 16 vertex buffer slots in SDL3
     GPU, 8 IFD levels in EXIF): Keep on the stack and document the hardware/API
     bound in comments.
-  - *Short Formatting Scratchpads for Clay IDs* ($\le 64$ bytes): Keep on the
-    stack using `std.mem.print`. Clay hashes ID strings immediately into
-    integers (`clay.getElementId`) and does not retain the string.
 - **Caller-Provided Output Buffers & Slice Aliasing**:
   - Functions generating variable-length data should accept caller-provided
     output buffers or explicit allocators rather than returning unowned heap
@@ -96,19 +93,18 @@
     run concurrently with main-thread window and GPU creation. GPU handles
     (`state.gpu_device`) and the claimed `DisplayBackend.windowed`
     (`ActiveWindow`) MUST remain unbound (`state.gpu_device = null`, `display`
-    holding `.headless`) until all pipeline and Clay memory allocations succeed,
-    while `state.gpu_enabled = true` declares hardware GPU intent to early
-    workers. This guarantees that intermediate failure unwinding only
+    holding `.headless`) until all pipeline and GPU resource allocations
+    succeed, while `state.gpu_enabled = true` declares hardware GPU intent to
+    early workers. This guarantees that intermediate failure unwinding only
     deinitializes CPU state without accessing destroyed GPU or window handles
     (use-after-free).
   - Top-level application teardown (`AppGraphicsAndState.deinit` in
     `src/main.zig`) frees CLI arguments upfront as independent CPU memory,
     followed by reverse teardown of runtime subsystems: signal worker
     quiescence (`workers.exiting.store(true, .release)`), stop and join the IPC
-    server, free Clay layout memory, quiesce and join background workers and
-    deinitialize `AppState`/`ViewerState`, release GPU `RenderResources`,
-    destroy the SDL GPU device and window, and finally call
-    `gpu.graphics.quitSdlCore()`.
+    server, quiesce and join background workers and deinitialize
+    `AppState`/`ViewerState`, release GPU `RenderResources`, destroy the SDL GPU
+    device and window, and finally call `gpu.graphics.quitSdlCore()`.
 - **Resident `--server` Mode Memory Reclamation (`hideWindow`, `reclaimMemory`, `reclaimProcessHeap`)**:
   - When hiding the window in `--server` mode (`AppState.hideWindow` +
     `RenderResources.releaseTransientResources`), release all cached CPU

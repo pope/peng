@@ -1,9 +1,7 @@
 //! GPU Render Pass Execution and Target Lifecycle Module
-//!
-//! Provides zero-Clay rendering passes, batched draw call execution, text
+//! Provides pure-Zig rendering passes, batched draw call execution, text
 //! glyph upload helpers, and swapchain/headless target submission lifecycle.
-//!
-//! INVARIANT: Code in `src/gpu/pass.zig` MUST NOT depend on zclay, `src/ui/`,
+//! INVARIANT: Code in `src/gpu/pass.zig` MUST NOT depend on `src/ui/`,
 //! `src/core/`, or `src/app/`.
 
 const geom = @import("geom");
@@ -82,14 +80,29 @@ fn scissorEqual(a: ?Rect, b: ?Rect) bool {
 pub fn intersectScissor(a: Rect, b: Rect) Rect {
     const x1 = @max(a.x, b.x);
     const y1 = @max(a.y, b.y);
-    const x2 = @min(a.x + a.w, b.x + b.w);
-    const y2 = @min(a.y + a.h, b.y + b.h);
+    const x2 = @min(a.x +| a.w, b.x +| b.w);
+    const y2 = @min(a.y +| a.h, b.y +| b.h);
     return Rect{
         .x = x1,
         .y = y1,
-        .w = @max(0, x2 - x1),
-        .h = @max(0, y2 - y1),
+        .w = @max(0, x2 -| x1),
+        .h = @max(0, y2 -| y1),
     };
+}
+
+/// Clips a scissor rectangle to positive render target dimensions, returning
+/// `null` if the resulting region has non-positive width or height.
+pub fn clipScissorToTarget(sc: Rect, target_dims: PositiveDimsU32) ?Rect {
+    const win_w: i32 = @intCast(@min(target_dims.w, std.math.maxInt(i32)));
+    const win_h: i32 = @intCast(@min(target_dims.h, std.math.maxInt(i32)));
+    const clipped = intersectScissor(sc, .{
+        .x = 0,
+        .y = 0,
+        .w = win_w,
+        .h = win_h,
+    });
+    if (clipped.w <= 0 or clipped.h <= 0) return null;
+    return clipped;
 }
 
 /// Returns true if scissor box has non-positive area or falls outside window.
@@ -397,14 +410,8 @@ fn drawBatches(
 
     for (batches) |batch| {
         if (batch.scissor) |sc| {
-            var safe_sc = sc;
-            safe_sc.x = @max(0, sc.x);
-            safe_sc.y = @max(0, sc.y);
-            safe_sc.w = @max(0, sc.w - (safe_sc.x - sc.x));
-            safe_sc.h = @max(0, sc.h - (safe_sc.y - sc.y));
-            if (safe_sc.w <= 0 or safe_sc.h <= 0 or
-                safe_sc.x >= win_w or safe_sc.y >= win_h) continue;
-            safe_sc.w = @min(safe_sc.w, win_w - safe_sc.x);
+            const safe_sc = clipScissorToTarget(sc, target_dims) orelse
+                continue;
             render_pass.setScissor(
                 safe_sc.x,
                 safe_sc.y,
@@ -648,7 +655,7 @@ fn executeRenderPass(
         tex.scene,
         batches[0..idx],
         vert_buf,
-        target_dims,
+        tex.target_dims,
     )) {
         return;
     }
@@ -1003,6 +1010,40 @@ test "intersectScissor computes correct overlapping rectangle" {
     try std.testing.expectEqual(@as(i32, 0), neg_res.y);
     try std.testing.expectEqual(@as(i32, 30), neg_res.w);
     try std.testing.expectEqual(@as(i32, 30), neg_res.h);
+}
+
+test "clipScissorToTarget clamps both width and height during window resize" {
+    const target = PositiveDimsU32{ .w = 800, .h = 500 };
+
+    // Scissor taller and wider than swapchain target (window shrank on resize)
+    const oversized = Rect{ .x = 0, .y = 0, .w = 1000, .h = 700 };
+    const clipped = clipScissorToTarget(oversized, target).?;
+    try std.testing.expectEqual(@as(i32, 0), clipped.x);
+    try std.testing.expectEqual(@as(i32, 0), clipped.y);
+    try std.testing.expectEqual(@as(i32, 800), clipped.w);
+    try std.testing.expectEqual(@as(i32, 500), clipped.h);
+
+    // Offset scissor overflowing bottom-right edge
+    const offset_sc = Rect{ .x = 600, .y = 350, .w = 300, .h = 250 };
+    const clipped_offset = clipScissorToTarget(offset_sc, target).?;
+    try std.testing.expectEqual(@as(i32, 600), clipped_offset.x);
+    try std.testing.expectEqual(@as(i32, 350), clipped_offset.y);
+    try std.testing.expectEqual(@as(i32, 200), clipped_offset.w);
+    try std.testing.expectEqual(@as(i32, 150), clipped_offset.h);
+
+    // Negative origin extending past target
+    const neg_sc = Rect{ .x = -50, .y = -100, .w = 900, .h = 700 };
+    const clipped_neg = clipScissorToTarget(neg_sc, target).?;
+    try std.testing.expectEqual(@as(i32, 0), clipped_neg.x);
+    try std.testing.expectEqual(@as(i32, 0), clipped_neg.y);
+    try std.testing.expectEqual(@as(i32, 800), clipped_neg.w);
+    try std.testing.expectEqual(@as(i32, 500), clipped_neg.h);
+
+    // Completely outside target returns null
+    const out_right = Rect{ .x = 800, .y = 0, .w = 100, .h = 100 };
+    const out_bottom = Rect{ .x = 0, .y = 500, .w = 100, .h = 100 };
+    try std.testing.expect(clipScissorToTarget(out_right, target) == null);
+    try std.testing.expect(clipScissorToTarget(out_bottom, target) == null);
 }
 
 test "scissorEqual compares rectangles correctly" {

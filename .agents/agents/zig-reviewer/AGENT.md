@@ -50,7 +50,7 @@ Zig 0.17.0 practices and the 5 authoritative rule files in `.agents/rules/`:
 3. **[`03_c_abi_and_module_hygiene.md`][rule-03]**:
    Single C translation wrapper (`src/sdl/c.zig` via `sdl_c`), `extern struct`
    handle wrappers, acyclic package hierarchy (`geom`, `core`, `thumbcache`,
-   zero-SDL `ui` exclusive `zclay` consumer), 2-block alphabetical
+   zero-SDL `ui` with native `RectCut` layout), 2-block alphabetical
    imports/aliases, no proxy re-exports, Zig 0.17 builtins & stdlib idioms
    (`.empty` / `.init(...)` inference, `@backingInt`, `@divCeil`, `@splat`,
    `std.mem.print`/`allocator.print`, `std.mem.find*`, `.writerStreaming`),

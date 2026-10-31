@@ -1,8 +1,7 @@
 //! Palette Module
 //!
 //! Encapsulates command palette state, fuzzy match scoring via `fuzzig`,
-//! readline text editing, and directory navigation history.
-//! Zero SDL, zero Clay, and zero C dependencies.
+//! Zero SDL and zero C dependencies.
 
 const builtin = @import("builtin");
 const fuzzig = @import("fuzzig");
@@ -729,15 +728,10 @@ pub const PaletteState = struct {
 pub const PALETTE_VIEWPORT_HEIGHT_LOGICAL: f32 = 320.0;
 
 /// Configuration metadata for palette modals (titles, placeholders,
-/// element IDs, spacer IDs, logical item and viewport heights).
+/// logical item and viewport heights).
 pub const PaletteConfig = struct {
     title: []const u8,
     placeholder: []const u8,
-    element_id: []const u8,
-    list_id: []const u8,
-    item_prefix: []const u8,
-    top_spacer_id: []const u8,
-    bottom_spacer_id: []const u8,
     base_item_height: f32,
     viewport_height_logical: f32 = PALETTE_VIEWPORT_HEIGHT_LOGICAL,
 
@@ -915,11 +909,6 @@ const palette_configs: [EditParam.count]PaletteConfig = blk: {
         cfgs[i] = .{
             .title = spec.prompt_label,
             .placeholder = spec.prompt_placeholder,
-            .element_id = spec.pascal_name ++ "Palette",
-            .list_id = spec.pascal_name ++ "PaletteList",
-            .item_prefix = spec.pascal_name ++ "Item_",
-            .top_spacer_id = spec.pascal_name ++ "TopSpacer",
-            .bottom_spacer_id = spec.pascal_name ++ "BottomSpacer",
             .base_item_height = 50.0,
         };
     }
@@ -935,51 +924,26 @@ pub fn getPaletteConfig(mode: PaletteMode) PaletteConfig {
         .files => .{
             .title = "Search Files",
             .placeholder = "Type file name to search...",
-            .element_id = "CommandPalette",
-            .list_id = "CommandPaletteList",
-            .item_prefix = "PaletteItem_",
-            .top_spacer_id = "PaletteTopSpacer",
-            .bottom_spacer_id = "PaletteBottomSpacer",
             .base_item_height = 58.0,
         },
         .actions => .{
             .title = "Command Palette",
             .placeholder = "Type a command to run...",
-            .element_id = "ActionPalette",
-            .list_id = "ActionPaletteList",
-            .item_prefix = "ActionItem_",
-            .top_spacer_id = "ActionTopSpacer",
-            .bottom_spacer_id = "ActionBottomSpacer",
             .base_item_height = 50.0,
         },
         .go_to_image => .{
             .title = "Go to Image",
             .placeholder = "Enter image number...",
-            .element_id = "GoToImagePalette",
-            .list_id = "GoToImageList",
-            .item_prefix = "GoToImageItem_",
-            .top_spacer_id = "GoToImageTopSpacer",
-            .bottom_spacer_id = "GoToImageBottomSpacer",
             .base_item_height = 50.0,
         },
         .directory_navigator => .{
             .title = "Directory Navigator",
             .placeholder = "Search subfolders...",
-            .element_id = "DirectoryNavigatorPalette",
-            .list_id = "DirectoryNavigatorList",
-            .item_prefix = "DirItem_",
-            .top_spacer_id = "DirTopSpacer",
-            .bottom_spacer_id = "DirBottomSpacer",
             .base_item_height = 50.0,
         },
         .set_slideshow_interval => .{
             .title = "Start Slide Show",
             .placeholder = "Enter delay in seconds (e.g. 3 or 2.5)...",
-            .element_id = "SlideshowPalette",
-            .list_id = "SlideshowList",
-            .item_prefix = "SlideshowItem_",
-            .top_spacer_id = "SlideshowTopSpacer",
-            .bottom_spacer_id = "SlideshowBottomSpacer",
             .base_item_height = 50.0,
         },
         .set_brightness,
@@ -1002,7 +966,7 @@ pub fn getPaletteConfig(mode: PaletteMode) PaletteConfig {
 
 /// Virtualized window computation for large palette item lists.
 /// Calculates the visible index range and spacer element heights to restrict
-/// Clay UI tree allocations to only items currently visible in the scroll
+/// UI element allocations to only items currently visible in the scroll
 /// viewport.
 pub const VirtualWindow = struct {
     start_idx: usize,
@@ -1422,11 +1386,17 @@ test "PaletteState directory_navigator mode configuration and item matching" {
 test "getPaletteConfig metadata lookup helper" {
     const files_cfg = getPaletteConfig(.files);
     try std.testing.expectEqualStrings("Search Files", files_cfg.title);
-    try std.testing.expectEqualStrings("CommandPalette", files_cfg.element_id);
+    try std.testing.expectEqualStrings(
+        "Type file name to search...",
+        files_cfg.placeholder,
+    );
 
     const actions_cfg = getPaletteConfig(.actions);
     try std.testing.expectEqualStrings("Command Palette", actions_cfg.title);
-    try std.testing.expectEqualStrings("ActionPalette", actions_cfg.element_id);
+    try std.testing.expectEqualStrings(
+        "Type a command to run...",
+        actions_cfg.placeholder,
+    );
 
     const bright_cfg = getPaletteConfig(.set_brightness);
     try std.testing.expectEqualStrings("Set Brightness", bright_cfg.title);

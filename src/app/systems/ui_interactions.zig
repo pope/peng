@@ -102,10 +102,7 @@ pub fn sysProcessUiInteractions(
     }
 
     // 2. Discrete Clicks (Buttons & Initial Slider Click)
-    if (palette_blocking or
-        !input.mouse_left_clicked or
-        input.isPointerInDebugPanel())
-    {
+    if (palette_blocking or !input.mouse_left_clicked) {
         return;
     }
 

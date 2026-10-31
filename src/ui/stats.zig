@@ -1,126 +1,132 @@
-const clay = @import("zclay");
 const edit_panel = @import("edit_panel.zig");
 const geom = @import("geom");
 const intents = @import("intents");
+const interaction = @import("interaction.zig");
+const renderer = @import("renderer.zig");
 const state = @import("state");
 const std = @import("std");
 const text_utils = @import("text_utils.zig");
 const theme = @import("theme.zig");
 const view_model = @import("view_model.zig");
 
-const ElementTag = state.ElementTag;
-const FloatingPanel = state.FloatingPanel;
 const formatSize = text_utils.formatSize;
+const FRect = geom.FRect;
 const getSpec = intents.getSpec;
 const LogicalDims = geom.LogicalDims;
+const measureText = text_utils.measureText;
 const MeasureTextUserData = text_utils.MeasureTextUserData;
 const truncateDirectory = text_utils.truncateDirectory;
 const truncateFilename = text_utils.truncateFilename;
+const UiDrawList = renderer.UiDrawList;
 const UiViewModel = view_model.UiViewModel;
 
-fn renderStatRow(label: []const u8, value: []const u8) !void {
-    clay.UI()(.{
-        .layout = .{
-            .sizing = .{ .w = .grow, .h = .fixed(20) },
-            .direction = .left_to_right,
-            .child_alignment = .{ .x = .left, .y = .center },
-        },
-    })({
-        clay.UI()(.{ .layout = .{
-            .sizing = .{ .w = .fixed(145), .h = .grow },
-        } })({
-            clay.text(label, .{
-                .color = theme.subtext0,
-                .font_size = 13,
-                .font_id = 0,
-            });
-        });
-
-        clay.UI()(.{ .layout = .{ .sizing = .{ .w = .grow, .h = .grow } } })({
-            clay.text(value, .{
-                .color = theme.text,
-                .font_size = 13,
-                .font_id = 0,
-            });
-        });
-    });
-}
-
-fn floatingHudCardDeclaration(
-    card_id: []const u8,
-    attach_point: clay.FloatingAttachPointType,
-    panel: FloatingPanel,
-    enable_blur: bool,
-) clay.ElementDeclaration {
-    return .{
-        .id = clay.getElementId(card_id),
-        .layout = .{
-            .sizing = .{ .w = .fixed(380), .h = .fit },
-            .direction = .top_to_bottom,
-            .padding = .{ .top = 12, .bottom = 12, .left = 14, .right = 14 },
-            .child_gap = 6,
-        },
-        .background_color = theme.base_translucent,
-        .corner_radius = .all(10),
-        .user_data = if (enable_blur)
-            @ptrFromInt(ElementTag.blurred_surface.toInt())
-        else
-            null,
-        .border = .{
-            .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-            .color = theme.surface0,
-        },
-        .floating = .{
-            .attach_to = .to_parent,
-            .attach_points = .{
-                .element = attach_point,
-                .parent = attach_point,
-            },
-            .offset = .{
-                .x = panel.offset_x,
-                .y = panel.offset_y,
-            },
-            .z_index = 100,
-        },
+fn renderStatRow(
+    list: *UiDrawList,
+    cursor_x: f32,
+    cursor_y: f32,
+    content_w: f32,
+    label: []const u8,
+    value: []const u8,
+    measure_data: *const MeasureTextUserData,
+) !void {
+    var row_rect = FRect{
+        .x = cursor_x,
+        .y = cursor_y,
+        .w = content_w,
+        .h = 20.0,
     };
+    var label_rect = row_rect.cutLeft(145.0);
+    label_rect.h = measureText(label, 0, 13, measure_data).h;
+    var value_rect = row_rect;
+    value_rect.h = measureText(value, 0, 13, measure_data).h;
+
+    try list.addText(label_rect, .{
+        .text = label,
+        .color = theme.subtext0,
+        .font_size = 13,
+        .font_id = 0,
+    });
+    try list.addText(value_rect, .{
+        .text = value,
+        .color = theme.text,
+        .font_size = 13,
+        .font_id = 0,
+    });
 }
 
-fn renderFloatingHudHeader(title: []const u8, close_btn_id: []const u8) void {
-    clay.UI()(.{
-        .layout = .{
-            .sizing = .{ .w = .grow, .h = .fixed(24) },
-            .direction = .left_to_right,
-            .child_alignment = .{ .x = .left, .y = .center },
-        },
-    })({
-        clay.UI()(.{ .layout = .{
-            .sizing = .{ .w = .grow, .h = .grow },
-        } })({
-            clay.text(title, .{
-                .color = theme.mauve,
-                .font_size = 16,
-                .font_id = 0,
-            });
-        });
-        clay.UI()(.{
-            .id = clay.getElementId(close_btn_id),
-            .layout = .{
-                .sizing = .{
-                    .w = .fixed(24),
-                    .h = .fixed(24),
-                },
-                .child_alignment = .{ .x = .center, .y = .center },
-            },
-            .background_color = theme.surface0,
-            .corner_radius = .all(12),
-        })({
-            clay.text("x", .{
-                .color = theme.text,
-                .font_size = 12,
-                .font_id = 0,
-            });
-        });
+const HudLayoutContext = struct {
+    list: *UiDrawList,
+    content_x: f32,
+    content_w: f32,
+    cursor_y: *f32,
+    measure_data: *const MeasureTextUserData,
+
+    fn addRow(
+        self: HudLayoutContext,
+        label: []const u8,
+        value: []const u8,
+    ) !void {
+        self.cursor_y.* += 6.0;
+        try renderStatRow(
+            self.list,
+            self.content_x,
+            self.cursor_y.*,
+            self.content_w,
+            label,
+            value,
+            self.measure_data,
+        );
+        self.cursor_y.* += 20.0;
+    }
+};
+
+fn renderFloatingHudHeader(
+    list: *UiDrawList,
+    cursor_x: f32,
+    cursor_y: f32,
+    content_w: f32,
+    title: []const u8,
+    measure_data: *const MeasureTextUserData,
+) !FRect {
+    const title_w = content_w - 24.0;
+    const title_h = measureText(title, 0, 16, measure_data).h;
+    try list.addText(.{
+        .x = cursor_x,
+        .y = cursor_y,
+        .w = title_w,
+        .h = title_h,
+    }, .{
+        .text = title,
+        .color = theme.mauve,
+        .font_size = 16,
+        .font_id = 0,
     });
+
+    const close_rect = FRect{
+        .x = cursor_x + content_w - 24.0,
+        .y = cursor_y,
+        .w = 24.0,
+        .h = 24.0,
+    };
+    try list.addRect(close_rect, .{
+        .background_color = theme.surface0,
+        .corner_radius = .all(12),
+    });
+    const x_dims = measureText("x", 0, 12, measure_data);
+    const x_off = @round((24.0 - x_dims.w) * 0.5);
+    try list.addText(.{
+        .x = close_rect.x + x_off,
+        .y = close_rect.y,
+        .w = x_dims.w,
+        .h = 24.0,
+    }, .{
+        .text = "x",
+        .color = theme.text,
+        .font_size = 12,
+        .font_id = 0,
+    });
+
+    return close_rect;
 }
 
 fn getRawContainerName(mime_type: []const u8, filename: []const u8) []const u8 {
@@ -150,6 +156,7 @@ fn getRawContainerName(mime_type: []const u8, filename: []const u8) []const u8 {
 }
 
 fn renderInfoOverlay(
+    list: *UiDrawList,
     ui_model: UiViewModel,
     draw_dims: LogicalDims,
     frame_allocator: std.mem.Allocator,
@@ -338,98 +345,147 @@ fn renderInfoOverlay(
         }
     }
 
-    clay.UI()(floatingHudCardDeclaration(
-        "InfoOverlayCard",
-        .left_top,
-        ui_model.overlays.info_panel,
-        ui_model.overlays.enable_blur,
-    ))({
-        renderFloatingHudHeader("Info Overlay", "InfoCloseBtn");
+    const card_x = ui_model.overlays.info_panel.offset_x;
+    const card_y = ui_model.overlays.info_panel.offset_y;
+    const card_w: f32 = 380.0;
+    const content_x = card_x + 14.0;
+    const content_w = card_w - 28.0;
+    var cursor_y = card_y + 12.0;
 
-        // Info details
-        try renderStatRow("File Name", filename);
-        try renderStatRow("Directory", display_dir);
-        if (is_raw_image) {
-            const container_lookup = if (raw_container_candidate.len > 0)
-                raw_container_candidate
-            else
-                filename;
-            try renderStatRow(
-                "Container",
-                getRawContainerName(mime_type, container_lookup),
-            );
-            try renderStatRow("Preview MIME", "image/jpeg");
-            try renderStatRow("Resolution", res_str);
-            if (raw_res_str) |raw_str| {
-                try renderStatRow("RAW Sensor", raw_str);
-            }
-        } else {
-            try renderStatRow("MIME Type", mime_type);
-            try renderStatRow("Resolution", res_str);
-        }
-        try renderStatRow("Size on Disk", disk_size_str);
-        try renderStatRow("Rendered Size", screen_str);
-        const scale_mode_str = switch (ui_model.viewport.fit_mode) {
-            .none => "Original size (100%)",
-            .shrink => "Fit if larger",
-            .full => "Fit to screen (Aspect Fit)",
-            .crop => "Fill screen (Aspect Fill)",
-            .fit_width => "Fit to width",
-            .fit_height => "Fit to height",
-        };
-        try renderStatRow("Scale Mode", scale_mode_str);
-        const reading_dir_str = if (ui_model.manga_mode)
-            "Right-to-Left (Manga)"
+    const bg_idx = try list.reserve();
+    const close_rect = try renderFloatingHudHeader(
+        list,
+        content_x,
+        cursor_y,
+        content_w,
+        "Info Overlay",
+        measure_data,
+    );
+    cursor_y += 24.0;
+
+    var hud = HudLayoutContext{
+        .list = list,
+        .content_x = content_x,
+        .content_w = content_w,
+        .cursor_y = &cursor_y,
+        .measure_data = measure_data,
+    };
+
+    // Info details
+    try hud.addRow("File Name", filename);
+    try hud.addRow("Directory", display_dir);
+    if (is_raw_image) {
+        const container_lookup = if (raw_container_candidate.len > 0)
+            raw_container_candidate
         else
-            "Left-to-Right (Standard)";
-        try renderStatRow("Reading Order", reading_dir_str);
-        try renderStatRow("Zoom Level", zoom_str);
-        try renderStatRow("Pan Offset", pan_str);
-        try renderStatRow("Rotation", rot_str);
-        const filter_str = switch (ui_model.viewport.scale_filter) {
-            .nearest => "Nearest Neighbor",
-            .linear => "Bilinear Filter",
-            .pixel_art => "Pixel Art (AA-Nearest)",
-            .mitchell => "Mitchell-Netravali",
-            .lanczos3 => "Lanczos3 Resampler",
-            .fsr => "AMD FSR 1.0 (EASU + RCAS)",
-            .tiny_cnn => "Tiny CNN (Neural Super-Res)",
-        };
-        try renderStatRow("Scaling Filter", filter_str);
+            filename;
+        try hud.addRow(
+            "Container",
+            getRawContainerName(mime_type, container_lookup),
+        );
+        try hud.addRow("Preview MIME", "image/jpeg");
+        try hud.addRow("Resolution", res_str);
+        if (raw_res_str) |raw_str| {
+            try hud.addRow("RAW Sensor", raw_str);
+        }
+    } else {
+        try hud.addRow("MIME Type", mime_type);
+        try hud.addRow("Resolution", res_str);
+    }
+    try hud.addRow("Size on Disk", disk_size_str);
+    try hud.addRow("Rendered Size", screen_str);
+    const scale_mode_str = switch (ui_model.viewport.fit_mode) {
+        .none => "Original size (100%)",
+        .shrink => "Fit if larger",
+        .full => "Fit to screen (Aspect Fit)",
+        .crop => "Fill screen (Aspect Fill)",
+        .fit_width => "Fit to width",
+        .fit_height => "Fit to height",
+    };
+    try hud.addRow("Scale Mode", scale_mode_str);
+    const reading_dir_str = if (ui_model.manga_mode)
+        "Right-to-Left (Manga)"
+    else
+        "Left-to-Right (Standard)";
+    try hud.addRow("Reading Order", reading_dir_str);
+    try hud.addRow("Zoom Level", zoom_str);
+    try hud.addRow("Pan Offset", pan_str);
+    try hud.addRow("Rotation", rot_str);
+    const filter_str = switch (ui_model.viewport.scale_filter) {
+        .nearest => "Nearest Neighbor",
+        .linear => "Bilinear Filter",
+        .pixel_art => "Pixel Art (AA-Nearest)",
+        .mitchell => "Mitchell-Netravali",
+        .lanczos3 => "Lanczos3 Resampler",
+        .fsr => "AMD FSR 1.0 (EASU + RCAS)",
+        .tiny_cnn => "Tiny CNN (Neural Super-Res)",
+    };
+    try hud.addRow("Scaling Filter", filter_str);
 
-        // Photographic adjustments (always show Brightness/Contrast, plus
-        // any non-default adjustments)
-        inline for (std.enums.values(intents.EditParam)) |p| {
-            if (p == .brightness or p == .contrast or
-                !ui_model.viewport.edits.isParamDefault(p))
-            {
-                const spec = getSpec(p);
-                const val_str = try edit_panel.formatValue(
-                    frame_allocator,
-                    spec,
-                    ui_model.viewport.edits.get(p),
-                );
-                try renderStatRow(spec.label, val_str);
-            }
+    // Photographic adjustments (always show Brightness/Contrast, plus
+    // any non-default adjustments)
+    inline for (std.enums.values(intents.EditParam)) |p| {
+        if (p == .brightness or p == .contrast or
+            !ui_model.viewport.edits.isParamDefault(p))
+        {
+            const spec = getSpec(p);
+            const val_str = try edit_panel.formatValue(
+                frame_allocator,
+                spec,
+                ui_model.viewport.edits.get(p),
+            );
+            try hud.addRow(spec.label, val_str);
         }
-        if (ui_model.viewport.compare_original) {
-            try renderStatRow("Compare Mode", "Before (Original)");
-        }
-        try renderStatRow("EXIF Thumbnail", thumb_info_str);
-        try renderStatRow("Classification", ui_model.current_classification.label());
-        try renderStatRow("View Filter", ui_model.view_mode.label());
+    }
+    if (ui_model.viewport.compare_original) {
+        try hud.addRow("Compare Mode", "Before (Original)");
+    }
+    try hud.addRow("EXIF Thumbnail", thumb_info_str);
+    try hud.addRow(
+        "Classification",
+        ui_model.current_classification.label(),
+    );
+    try hud.addRow("View Filter", ui_model.view_mode.label());
+
+    const total_card_h = (cursor_y - card_y) + 12.0;
+    const card_rect = FRect{
+        .x = card_x,
+        .y = card_y,
+        .w = card_w,
+        .h = total_card_h,
+    };
+    list.set(bg_idx, .{
+        .rect = card_rect,
+        .payload = .{
+            .rectangle = .{
+                .background_color = theme.base_translucent,
+                .corner_radius = .all(10),
+                .tag = if (ui_model.overlays.enable_blur)
+                    .blurred_surface
+                else
+                    .none,
+            },
+        },
     });
+    try list.addBorder(card_rect, .{
+        .color = theme.surface0,
+        .width = .all(1),
+        .corner_radius = .all(10),
+    });
+    interaction.setInfoPanelRects(card_rect, close_rect);
 }
 
-/// Emits Clay UI layout elements for the image metadata panel,
-/// performance overlay ("Stats for Nerds"), and preview thumbnail.
+/// Emits UI draw commands for the image metadata panel and performance overlay.
 pub fn renderStatsOverlay(
+    list: *UiDrawList,
     ui_model: UiViewModel,
+    win_dims: LogicalDims,
     draw_dims: LogicalDims,
     frame_allocator: std.mem.Allocator,
     measure_data: *const MeasureTextUserData,
 ) !void {
     try renderInfoOverlay(
+        list,
         ui_model,
         draw_dims,
         frame_allocator,
@@ -502,166 +558,211 @@ pub fn renderStatsOverlay(
         }
     }
 
-    clay.UI()(floatingHudCardDeclaration(
-        "StatsPanel",
-        .right_top,
-        ui_model.overlays.stats_panel,
-        ui_model.overlays.enable_blur,
-    ))({
-        renderFloatingHudHeader("Stats for Nerds", "StatsCloseBtn");
+    const card_x = win_dims.w - 380.0 + ui_model.overlays.stats_panel.offset_x;
+    const card_y = ui_model.overlays.stats_panel.offset_y;
+    const card_w: f32 = 380.0;
+    const content_x = card_x + 14.0;
+    const content_w = card_w - 28.0;
+    var cursor_y = card_y + 12.0;
 
-        // Stats details
-        const s = ui_model.stats;
-        const img = s.active_image;
+    const bg_idx = try list.reserve();
+    const close_rect = try renderFloatingHudHeader(
+        list,
+        content_x,
+        cursor_y,
+        content_w,
+        "Stats for Nerds",
+        measure_data,
+    );
+    cursor_y += 24.0;
 
-        if (current_entry) |entry| {
-            if (entry.metadata.raw_metadata.isRaw()) {
-                try renderStatRow("Source Mode", "RAW Embedded Preview");
-                if (entry.metadata.raw_metadata.getSensorDims()) |s_dims| {
-                    if (s_dims.w > 0 and s_dims.h > 0) {
-                        const raw_mp = (s_dims.w * s_dims.h) / 1_000_000.0;
-                        const r_str = try frame_allocator.print(
-                            "{d:.0}x{d:.0} ({d:.2} MP)",
-                            .{ s_dims.w, s_dims.h, raw_mp },
-                        );
-                        try renderStatRow("RAW Sensor", r_str);
-                    }
+    var hud = HudLayoutContext{
+        .list = list,
+        .content_x = content_x,
+        .content_w = content_w,
+        .cursor_y = &cursor_y,
+        .measure_data = measure_data,
+    };
+
+    // Stats details
+    const s = ui_model.stats;
+    const img = s.active_image;
+
+    if (current_entry) |entry| {
+        if (entry.metadata.raw_metadata.isRaw()) {
+            try hud.addRow("Source Mode", "RAW Embedded Preview");
+            if (entry.metadata.raw_metadata.getSensorDims()) |s_dims| {
+                if (s_dims.w > 0 and s_dims.h > 0) {
+                    const raw_mp = (s_dims.w * s_dims.h) / 1_000_000.0;
+                    const r_str = try frame_allocator.print(
+                        "{d:.0}x{d:.0} ({d:.2} MP)",
+                        .{ s_dims.w, s_dims.h, raw_mp },
+                    );
+                    try hud.addRow("RAW Sensor", r_str);
                 }
             }
         }
+    }
 
-        const hit_str = if (s.current_image_cache_hit) "Yes" else "No";
-        try renderStatRow("Cache Hit", hit_str);
-        try renderStatRow("Memory Size", mem_size_str);
+    const hit_str = if (s.current_image_cache_hit) "Yes" else "No";
+    try hud.addRow("Cache Hit", hit_str);
+    try hud.addRow("Memory Size", mem_size_str);
 
-        const formatted_total_vram = try formatSize(frame_allocator, s.total_vram_bytes);
-        const total_vram_str = try frame_allocator.print(
-            "{s} / 1024 MB ({d} slots)",
-            .{ formatted_total_vram, s.cached_slot_count },
-        );
-        try renderStatRow("Total Cache VRAM", total_vram_str);
+    const formatted_total_vram =
+        try formatSize(frame_allocator, s.total_vram_bytes);
+    const total_vram_str = try frame_allocator.print(
+        "{s} / 1024 MB ({d} slots)",
+        .{ formatted_total_vram, s.cached_slot_count },
+    );
+    try hud.addRow("Total Cache VRAM", total_vram_str);
 
-        const workers_str = try frame_allocator.print(
-            "{d} / {d}",
-            .{ s.active_decode_threads, s.max_decode_threads },
-        );
-        try renderStatRow("Decode Workers", workers_str);
+    const workers_str = try frame_allocator.print(
+        "{d} / {d}",
+        .{ s.active_decode_threads, s.max_decode_threads },
+    );
+    try hud.addRow("Decode Workers", workers_str);
 
-        try renderStatRow("Disk Read Time", read_str);
-        if (img.decode) |dec| {
-            switch (dec.archive) {
-                .none => {},
-                .archive => |arch| {
-                    const cbz_time_str = try frame_allocator.print(
-                        "{d:.2} ms",
-                        .{arch.decompress_time_ms},
-                    );
-                    try renderStatRow("CBZ Extract Time", cbz_time_str);
-                    const comp_size_str = try formatSize(
-                        frame_allocator,
-                        arch.compressed_size_bytes,
-                    );
-                    try renderStatRow("Compressed Size", comp_size_str);
-                },
-            }
-        }
-        try renderStatRow("Decode Time", decode_str);
-        try renderStatRow("Convert Time", convert_str);
-        try renderStatRow("GPU Upload", upload_str);
-
-        if (img.ingest) |ing| {
-            const upload_mode_str: []const u8 = switch (ing.mode) {
-                .direct => "Direct VRAM",
-                .fallback => "CPU Downscale Fallback",
-            };
-            try renderStatRow("GPU Upload Mode", upload_mode_str);
-            switch (ing.mode) {
-                .direct => {},
-                .fallback => |fb| {
-                    const fallback_time_str = try frame_allocator.print(
-                        "{d:.2} ms",
-                        .{fb.fallback_time_ms},
-                    );
-                    try renderStatRow("CPU Fallback Time", fallback_time_str);
-                },
-            }
-        } else {
-            try renderStatRow("GPU Upload Mode", "N/A");
-        }
-
-        const thumb_time_str: []const u8 = if (img.has_thumb)
-            try frame_allocator.print(
-                "{d:.2} ms ({s})",
-                .{ img.thumb_upload_time_ms, img.thumb_source.shortLabel() },
-            )
-        else
-            "N/A";
-        try renderStatRow("Thumb Load Time", thumb_time_str);
-
-        const ts = s.thumbs;
-        const thumb_hits_str = if (ts.totalLookups() > 0)
-            try frame_allocator.print(
-                "{d} Hdr / {d} Pos / {d} Cache / {d} Miss",
-                .{
-                    ts.header_hits,
-                    ts.positional_hits,
-                    ts.cache_hits,
-                    ts.misses,
-                },
-            )
-        else
-            "0 Hdr / 0 Pos / 0 Cache / 0 Miss";
-        try renderStatRow("Thumb Hit Ratio", thumb_hits_str);
-
-        const thumb_writes_str = if (ts.cache_write_queued > 0)
-            try frame_allocator.print(
-                "{d} Written ({d} Queued)",
-                .{ ts.cache_writes, ts.cache_write_queued },
-            )
-        else
-            try frame_allocator.print("{d} Written", .{ts.cache_writes});
-        try renderStatRow("Thumb Cache Writes", thumb_writes_str);
-
-        if (img.ingest) |ing| {
-            const mipmap_status_str: []const u8 = switch (ing.mipmaps) {
-                .disabled => "Disabled (1 Level)",
-                .generated => |mip| try frame_allocator.print(
-                    "Enabled ({d} Levels)",
-                    .{mip.num_levels},
-                ),
-            };
-            try renderStatRow("Mipmap Status", mipmap_status_str);
-
-            const mipmap_time_str: []const u8 = switch (ing.mipmaps) {
-                .disabled => "0.00 ms",
-                .generated => |mip| try frame_allocator.print(
+    try hud.addRow("Disk Read Time", read_str);
+    if (img.decode) |dec| {
+        switch (dec.archive) {
+            .none => {},
+            .archive => |arch| {
+                const cbz_time_str = try frame_allocator.print(
                     "{d:.2} ms",
-                    .{mip.generate_time_ms},
-                ),
-            };
-            try renderStatRow("Mipmap Gen", mipmap_time_str);
-        } else {
-            try renderStatRow("Mipmap Status", "N/A");
-            try renderStatRow("Mipmap Gen", "N/A");
+                    .{arch.decompress_time_ms},
+                );
+                try hud.addRow("CBZ Extract Time", cbz_time_str);
+                const comp_size_str = try formatSize(
+                    frame_allocator,
+                    arch.compressed_size_bytes,
+                );
+                try hud.addRow("Compressed Size", comp_size_str);
+            },
         }
+    }
+    try hud.addRow("Decode Time", decode_str);
+    try hud.addRow("Convert Time", convert_str);
+    try hud.addRow("GPU Upload", upload_str);
 
-        const rm = ui_model.render_metrics;
-        const ui_render_str = try frame_allocator.print(
-            "{d:.2} ± {d:.2} ms",
-            .{ rm.mean_render_time_ms, rm.stdev_render_time_ms },
-        );
-        const ui_batches_str = try frame_allocator.print(
-            "{d}",
-            .{rm.last_ui_batch_count},
-        );
-        const ui_verts_str = try frame_allocator.print(
-            "{d}",
-            .{rm.last_ui_vertex_count},
-        );
-        try renderStatRow("UI Render Pass", ui_render_str);
-        try renderStatRow("UI Batches", ui_batches_str);
-        try renderStatRow("UI Vertices", ui_verts_str);
+    if (img.ingest) |ing| {
+        const upload_mode_str: []const u8 = switch (ing.mode) {
+            .direct => "Direct VRAM",
+            .fallback => "CPU Downscale Fallback",
+        };
+        try hud.addRow("GPU Upload Mode", upload_mode_str);
+        switch (ing.mode) {
+            .direct => {},
+            .fallback => |fb| {
+                const fallback_time_str = try frame_allocator.print(
+                    "{d:.2} ms",
+                    .{fb.fallback_time_ms},
+                );
+                try hud.addRow("CPU Fallback Time", fallback_time_str);
+            },
+        }
+    } else {
+        try hud.addRow("GPU Upload Mode", "N/A");
+    }
+
+    const thumb_time_str: []const u8 = if (img.has_thumb)
+        try frame_allocator.print(
+            "{d:.2} ms ({s})",
+            .{ img.thumb_upload_time_ms, img.thumb_source.shortLabel() },
+        )
+    else
+        "N/A";
+    try hud.addRow("Thumb Load Time", thumb_time_str);
+
+    const ts = s.thumbs;
+    const thumb_hits_str = if (ts.totalLookups() > 0)
+        try frame_allocator.print(
+            "{d} Hdr / {d} Pos / {d} Cache / {d} Miss",
+            .{
+                ts.header_hits,
+                ts.positional_hits,
+                ts.cache_hits,
+                ts.misses,
+            },
+        )
+    else
+        "0 Hdr / 0 Pos / 0 Cache / 0 Miss";
+    try hud.addRow("Thumb Hit Ratio", thumb_hits_str);
+
+    const thumb_writes_str = if (ts.cache_write_queued > 0)
+        try frame_allocator.print(
+            "{d} Written ({d} Queued)",
+            .{ ts.cache_writes, ts.cache_write_queued },
+        )
+    else
+        try frame_allocator.print("{d} Written", .{ts.cache_writes});
+    try hud.addRow("Thumb Cache Writes", thumb_writes_str);
+
+    if (img.ingest) |ing| {
+        const mipmap_status_str: []const u8 = switch (ing.mipmaps) {
+            .disabled => "Disabled (1 Level)",
+            .generated => |mip| try frame_allocator.print(
+                "Enabled ({d} Levels)",
+                .{mip.num_levels},
+            ),
+        };
+        try hud.addRow("Mipmap Status", mipmap_status_str);
+
+        const mipmap_time_str: []const u8 = switch (ing.mipmaps) {
+            .disabled => "0.00 ms",
+            .generated => |mip| try frame_allocator.print(
+                "{d:.2} ms",
+                .{mip.generate_time_ms},
+            ),
+        };
+        try hud.addRow("Mipmap Gen", mipmap_time_str);
+    } else {
+        try hud.addRow("Mipmap Status", "N/A");
+        try hud.addRow("Mipmap Gen", "N/A");
+    }
+
+    const rm = ui_model.render_metrics;
+    const ui_render_str = try frame_allocator.print(
+        "{d:.2} ± {d:.2} ms",
+        .{ rm.mean_render_time_ms, rm.stdev_render_time_ms },
+    );
+    const ui_batches_str = try frame_allocator.print(
+        "{d}",
+        .{rm.last_ui_batch_count},
+    );
+    const ui_verts_str = try frame_allocator.print(
+        "{d}",
+        .{rm.last_ui_vertex_count},
+    );
+    try hud.addRow("UI Render Pass", ui_render_str);
+    try hud.addRow("UI Batches", ui_batches_str);
+    try hud.addRow("UI Vertices", ui_verts_str);
+
+    const total_card_h = (cursor_y - card_y) + 12.0;
+    const card_rect = FRect{
+        .x = card_x,
+        .y = card_y,
+        .w = card_w,
+        .h = total_card_h,
+    };
+    list.set(bg_idx, .{
+        .rect = card_rect,
+        .payload = .{
+            .rectangle = .{
+                .background_color = theme.base_translucent,
+                .corner_radius = .all(10),
+                .tag = if (ui_model.overlays.enable_blur)
+                    .blurred_surface
+                else
+                    .none,
+            },
+        },
     });
+    try list.addBorder(card_rect, .{
+        .color = theme.surface0,
+        .width = .all(1),
+        .corner_radius = .all(10),
+    });
+    interaction.setStatsPanelRects(card_rect, close_rect);
 }
 
 test "getRawContainerName - format detection" {
@@ -719,52 +820,16 @@ test "getRawContainerName - format detection" {
     );
 }
 
-test "floatingHudCardDeclaration - unifies HUD card styling" {
-    const info_decl = floatingHudCardDeclaration(
-        "InfoOverlayCard",
-        .left_top,
-        .{ .visible = true, .offset_x = 16.0, .offset_y = 16.0 },
-        true,
-    );
-    const stats_decl = floatingHudCardDeclaration(
-        "StatsPanel",
-        .right_top,
-        .{ .visible = true, .offset_x = -16.0, .offset_y = 16.0 },
-        true,
-    );
+test "floating HUD overlay card geometry and hit rects" {
+    interaction.resetInteractionState();
+    defer interaction.resetInteractionState();
 
-    try std.testing.expectEqual(
-        theme.base_translucent,
-        info_decl.background_color,
-    );
-    try std.testing.expectEqual(
-        theme.base_translucent,
-        stats_decl.background_color,
-    );
-    try std.testing.expectEqual(
-        info_decl.layout.padding,
-        stats_decl.layout.padding,
-    );
-    try std.testing.expectEqual(
-        info_decl.layout.child_gap,
-        stats_decl.layout.child_gap,
-    );
-    try std.testing.expectEqual(
-        @as(?*anyopaque, @ptrFromInt(ElementTag.blurred_surface.toInt())),
-        info_decl.user_data,
-    );
-    try std.testing.expectEqual(
-        @as(?*anyopaque, @ptrFromInt(ElementTag.blurred_surface.toInt())),
-        stats_decl.user_data,
-    );
+    const card_rect = FRect{ .x = 10, .y = 10, .w = 380, .h = 200 };
+    const close_rect = FRect{ .x = 360, .y = 22, .w = 24, .h = 24 };
+    interaction.setInfoPanelRects(card_rect, close_rect);
 
-    const no_blur_decl = floatingHudCardDeclaration(
-        "StatsPanel",
-        .right_top,
-        .{ .visible = true, .offset_x = -16.0, .offset_y = 16.0 },
-        false,
-    );
-    try std.testing.expectEqual(@as(?*anyopaque, null), no_blur_decl.user_data);
+    try std.testing.expect(card_rect.contains(.{ .x = 20, .y = 20 }));
+    try std.testing.expect(close_rect.contains(.{ .x = 365, .y = 25 }));
 }
 
 test "photographic edit parameter labels and formatted readouts" {

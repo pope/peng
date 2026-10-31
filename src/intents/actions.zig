@@ -132,7 +132,6 @@ pub const ActionId = enum {
     toggle_windowless,
     file_finder,
     directory_navigator,
-    toggle_debug_mode,
     toggle_debug_thumb,
     command_palette,
     start_slideshow_dialog,
@@ -320,20 +319,6 @@ pub const actions = [_]ActionDef{
         .show_in_palette = true,
         .shortcuts = &.{.{ .key = .char_o, .mod = .{ .ctrl = true } }},
         .intent = .{ .set_palette = .{ .mode = .directory_navigator } },
-    },
-    .{
-        .id = .toggle_debug_mode,
-        .title = "Toggle Clay Debug Mode",
-        .shortcut_text = "Ctrl+D",
-        .description = "Toggle Clay UI layout debug borders and metrics",
-        .show_in_palette = true,
-        .shortcuts = &.{.{ .key = .char_d, .mod = .{ .ctrl = true } }},
-        .intent = .toggle_debug_mode,
-        .ipc = .{
-            .name = "debug",
-            .args = "<true|false>",
-            .description = "Toggle Clay UI layout debug borders",
-        },
     },
     .{
         .id = .toggle_debug_thumb,
@@ -1342,15 +1327,21 @@ pub const ipc_commands = blk: {
 test "actions registry projections" {
     const testing = std.testing;
 
-    // Palette count: 72 previous + 1 quit_server action = 73
-    try testing.expectEqual(@as(usize, 73), palette_action_items.len);
+    // Palette count: 73 previous - 1 toggle_debug_mode action = 72
+    try testing.expectEqual(@as(usize, 72), palette_action_items.len);
 
     // Exact index preservation
-    try testing.expectEqualStrings("Navigate Directories...", palette_action_items[7].name);
-    try testing.expectEqualStrings("Ctrl+O", palette_action_items[7].shortcut_text);
+    try testing.expectEqualStrings(
+        "Navigate Directories...",
+        palette_action_items[7].name,
+    );
+    try testing.expectEqualStrings(
+        "Ctrl+O",
+        palette_action_items[7].shortcut_text,
+    );
 
-    // Shortcuts: 60 previous + 1 quit_server key (Ctrl+Q) = 61
-    try testing.expectEqual(@as(usize, 61), flat_shortcuts.len);
+    // Shortcuts: 61 previous - 1 debug shortcut (Ctrl+D) = 60
+    try testing.expectEqual(@as(usize, 60), flat_shortcuts.len);
     var total_sc: usize = 0;
     for (palette_action_items) |item| {
         total_sc += item.shortcuts.len;
@@ -1364,11 +1355,14 @@ test "actions registry projections" {
     try testing.expectEqual(OptionId.title, action_cli_options[2].id);
     try testing.expectEqual(OptionId.windowless, action_cli_options[3].id);
     try testing.expectEqual(OptionId.stack_raw_jpeg, action_cli_options[4].id);
-    try testing.expectEqual(OptionId.no_stack_raw_jpeg, action_cli_options[5].id);
+    try testing.expectEqual(
+        OptionId.no_stack_raw_jpeg,
+        action_cli_options[5].id,
+    );
     try testing.expectEqual(OptionId.scale, action_cli_options[6].id);
 
-    // IPC commands projection: 36 previous + 1 preview verb = 37
-    try testing.expectEqual(@as(usize, 37), ipc_commands.len);
+    // IPC commands projection: 37 previous - 1 debug verb = 36
+    try testing.expectEqual(@as(usize, 36), ipc_commands.len);
 }
 
 test "actions registry invariants and consistency" {
