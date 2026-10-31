@@ -785,15 +785,21 @@ pub fn initGpuResources(
         dev.getSwapchainTextureFormat(window);
 
     // Load Font from Memory using SDL_IOStream (scaled by DPI scale)
+    const initial_font_size = 20.0 * initial_dpi_scale;
     const roboto_font_bytes = @embedFile("resources/Roboto-Regular.ttf");
-    const font = sdl.Font.openConstMem(
+    var font = sdl.Font.openConstMem(
         roboto_font_bytes,
-        20.0 * initial_dpi_scale,
+        initial_font_size,
     ) orelse {
         std.log.err("TTF_OpenFontIO Error: {s}", .{sdl.getError()});
         return error.TTFOpenFontFailed;
     };
     errdefer font.close();
+
+    const unifont_bytes = @embedFile("resources/unifont_jp.otf");
+    if (sdl.Font.openConstMem(unifont_bytes, initial_font_size)) |fb| {
+        if (!font.addFallback(fb)) fb.close();
+    }
 
     const fonts = [1]?sdl.Font{font};
 

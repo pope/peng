@@ -27,9 +27,11 @@ pub const Color = struct {
     }
 };
 
-/// Safe typed wrapper handle around an underlying `TTF_Font`.
+/// Safe typed wrapper handle around an underlying `TTF_Font` and optional
+/// attached fallback font.
 pub const Font = struct {
     ptr: *c.TTF_Font,
+    fallback_ptr: ?*c.TTF_Font = null,
 
     /// Horizontal and vertical bounding box and advance metrics for a glyph.
     pub const GlyphMetrics = struct {
@@ -40,7 +42,8 @@ pub const Font = struct {
         advance: i32,
     };
 
-    /// Loads a TrueType font directly from a static in-memory byte buffer.
+    /// Loads a TrueType/OpenType font directly from a static in-memory byte
+    /// buffer.
     pub fn openConstMem(bytes: []const u8, ptsize: f32) ?Font {
         const io = c.SDL_IOFromConstMem(bytes.ptr, bytes.len) orelse
             return null;
@@ -48,13 +51,26 @@ pub const Font = struct {
         return if (raw) |r| .{ .ptr = r } else null;
     }
 
+    /// Attaches `fallback` to `self` via `TTF_AddFallbackFont` so codepoints
+    /// missing from `self` are resolved from `fallback`. Transfers ownership
+    /// of `fallback` to `self` when returning `true`.
+    pub fn addFallback(self: *Font, fallback: Font) bool {
+        if (self.fallback_ptr != null) return false;
+        if (!c.TTF_AddFallbackFont(self.ptr, fallback.ptr)) return false;
+        self.fallback_ptr = fallback.ptr;
+        return true;
+    }
+
     /// Returns the currently configured point size of the font.
     pub fn getFontSize(self: Font) f32 {
         return c.TTF_GetFontSize(self.ptr);
     }
 
-    /// Updates the font point size.
+    /// Updates the font point size (and any attached fallback font).
     pub fn setFontSize(self: Font, ptsize: f32) bool {
+        if (self.fallback_ptr) |fb| {
+            _ = c.TTF_SetFontSize(fb, ptsize);
+        }
         return c.TTF_SetFontSize(self.ptr, ptsize);
     }
 
@@ -102,8 +118,12 @@ pub const Font = struct {
         return .{ .ptr = raw };
     }
 
-    /// Closes and deallocates the underlying `TTF_Font`.
+    /// Closes and deallocates the underlying `TTF_Font` and any attached
+    /// fallback font.
     pub fn close(self: Font) void {
         c.TTF_CloseFont(self.ptr);
+        if (self.fallback_ptr) |fb| {
+            c.TTF_CloseFont(fb);
+        }
     }
 };
