@@ -5,12 +5,6 @@ const FPoint = geom.FPoint;
 const FRect = geom.FRect;
 const PhysicalDims = geom.PhysicalDims;
 
-const RoundedVertex = struct {
-    pos: FPoint,
-    u: f32,
-    v: f32,
-};
-
 /// 2D textured colored vertex layout matching GPU pipeline vertex buffer
 /// layout.
 pub const Vertex = extern struct {
@@ -84,55 +78,22 @@ pub fn appendRectQuad(
 
     const uv_u1: f32 = if (screen_uv) rect.x / win_dims.w else 0.0;
     const uv_v1: f32 = if (screen_uv) rect.y / win_dims.h else 0.0;
-    const uv_u2: f32 = if (screen_uv) (rect.x + rect.w) / win_dims.w else 1.0;
-    const uv_v2: f32 = if (screen_uv) (rect.y + rect.h) / win_dims.h else 1.0;
+    const uv_u2: f32 = if (screen_uv) (rect.x + rect.w) / win_dims.w else 0.0;
+    const uv_v2: f32 = if (screen_uv) (rect.y + rect.h) / win_dims.h else 0.0;
 
-    try vertices.append(allocator, .{
-        .x = p1.x,
-        .y = p1.y,
-        .u = uv_u1,
-        .v = uv_v1,
-        .color = color,
-    });
-    try vertices.append(allocator, .{
-        .x = p2.x,
-        .y = p1.y,
-        .u = uv_u2,
-        .v = uv_v1,
-        .color = color,
-    });
-    try vertices.append(allocator, .{
-        .x = p1.x,
-        .y = p2.y,
-        .u = uv_u1,
-        .v = uv_v2,
-        .color = color,
-    });
-    try vertices.append(allocator, .{
-        .x = p2.x,
-        .y = p1.y,
-        .u = uv_u2,
-        .v = uv_v1,
-        .color = color,
-    });
-    try vertices.append(allocator, .{
-        .x = p2.x,
-        .y = p2.y,
-        .u = uv_u2,
-        .v = uv_v2,
-        .color = color,
-    });
-    try vertices.append(allocator, .{
-        .x = p1.x,
-        .y = p2.y,
-        .u = uv_u1,
-        .v = uv_v2,
-        .color = color,
-    });
+    try vertices.ensureUnusedCapacity(allocator, 6);
+    vertices.addManyAsArrayAssumeCapacity(6).* = .{
+        .{ .x = p1.x, .y = p1.y, .u = uv_u1, .v = uv_v1, .color = color },
+        .{ .x = p2.x, .y = p1.y, .u = uv_u2, .v = uv_v1, .color = color },
+        .{ .x = p1.x, .y = p2.y, .u = uv_u1, .v = uv_v2, .color = color },
+        .{ .x = p2.x, .y = p1.y, .u = uv_u2, .v = uv_v1, .color = color },
+        .{ .x = p2.x, .y = p2.y, .u = uv_u2, .v = uv_v2, .color = color },
+        .{ .x = p1.x, .y = p2.y, .u = uv_u1, .v = uv_v2, .color = color },
+    };
 }
 
 fn appendCornerArc(
-    vertices_src: []RoundedVertex,
+    vertices_src: []FPoint,
     indices: []usize,
     vertex_count: *usize,
     index_count: *usize,
@@ -142,7 +103,7 @@ fn appendCornerArc(
     end_angle: f32,
     num_circle_segments: usize,
 ) void {
-    const center_pos = vertices_src[center].pos;
+    const center_pos = vertices_src[center];
     const angle_step = (end_angle - start_angle) /
         @as(f32, @floatFromInt(num_circle_segments));
 
@@ -157,22 +118,14 @@ fn appendCornerArc(
         const sin_2 = @sin(a2);
 
         vertices_src[vertex_count.*] = .{
-            .pos = .{
-                .x = center_pos.x + cos_1 * radius,
-                .y = center_pos.y + sin_1 * radius,
-            },
-            .u = 0.0,
-            .v = 0.0,
+            .x = center_pos.x + cos_1 * radius,
+            .y = center_pos.y + sin_1 * radius,
         };
         vertex_count.* += 1;
 
         vertices_src[vertex_count.*] = .{
-            .pos = .{
-                .x = center_pos.x + cos_2 * radius,
-                .y = center_pos.y + sin_2 * radius,
-            },
-            .u = 0.0,
-            .v = 0.0,
+            .x = center_pos.x + cos_2 * radius,
+            .y = center_pos.y + sin_2 * radius,
         };
         vertex_count.* += 1;
 
@@ -223,7 +176,7 @@ pub fn renderFillRoundedRect(
     const total_vertices = 4 + (4 * (num_circle_segments * 2)) + 8;
     const total_indices = 6 + (4 * (num_circle_segments * 3)) + 24;
 
-    const vertices_src = try allocator.alloc(RoundedVertex, total_vertices);
+    const vertices_src = try allocator.alloc(FPoint, total_vertices);
     defer allocator.free(vertices_src);
     const indices = try allocator.alloc(usize, total_indices);
     defer allocator.free(indices);
@@ -232,39 +185,23 @@ pub fn renderFillRoundedRect(
     var index_count: usize = 0;
 
     vertices_src[vertex_count] = .{
-        .pos = .{
-            .x = rect.x + clamped_radius,
-            .y = rect.y + clamped_radius,
-        },
-        .u = 0.0,
-        .v = 0.0,
+        .x = rect.x + clamped_radius,
+        .y = rect.y + clamped_radius,
     };
     vertex_count += 1;
     vertices_src[vertex_count] = .{
-        .pos = .{
-            .x = rect.x + rect.w - clamped_radius,
-            .y = rect.y + clamped_radius,
-        },
-        .u = 1.0,
-        .v = 0.0,
+        .x = rect.x + rect.w - clamped_radius,
+        .y = rect.y + clamped_radius,
     };
     vertex_count += 1;
     vertices_src[vertex_count] = .{
-        .pos = .{
-            .x = rect.x + rect.w - clamped_radius,
-            .y = rect.y + rect.h - clamped_radius,
-        },
-        .u = 1.0,
-        .v = 1.0,
+        .x = rect.x + rect.w - clamped_radius,
+        .y = rect.y + rect.h - clamped_radius,
     };
     vertex_count += 1;
     vertices_src[vertex_count] = .{
-        .pos = .{
-            .x = rect.x + clamped_radius,
-            .y = rect.y + rect.h - clamped_radius,
-        },
-        .u = 0.0,
-        .v = 1.0,
+        .x = rect.x + clamped_radius,
+        .y = rect.y + rect.h - clamped_radius,
     };
     vertex_count += 1;
 
@@ -335,15 +272,13 @@ pub fn renderFillRoundedRect(
 
     // Top edge
     vertices_src[vertex_count] = .{
-        .pos = .{ .x = rect.x + clamped_radius, .y = rect.y },
-        .u = 0.0,
-        .v = 0.0,
+        .x = rect.x + clamped_radius,
+        .y = rect.y,
     };
     vertex_count += 1;
     vertices_src[vertex_count] = .{
-        .pos = .{ .x = rect.x + rect.w - clamped_radius, .y = rect.y },
-        .u = 1.0,
-        .v = 0.0,
+        .x = rect.x + rect.w - clamped_radius,
+        .y = rect.y,
     };
     vertex_count += 1;
 
@@ -362,18 +297,13 @@ pub fn renderFillRoundedRect(
 
     // Right edge
     vertices_src[vertex_count] = .{
-        .pos = .{ .x = rect.x + rect.w, .y = rect.y + clamped_radius },
-        .u = 1.0,
-        .v = 0.0,
+        .x = rect.x + rect.w,
+        .y = rect.y + clamped_radius,
     };
     vertex_count += 1;
     vertices_src[vertex_count] = .{
-        .pos = .{
-            .x = rect.x + rect.w,
-            .y = rect.y + rect.h - clamped_radius,
-        },
-        .u = 1.0,
-        .v = 1.0,
+        .x = rect.x + rect.w,
+        .y = rect.y + rect.h - clamped_radius,
     };
     vertex_count += 1;
 
@@ -392,18 +322,13 @@ pub fn renderFillRoundedRect(
 
     // Bottom edge
     vertices_src[vertex_count] = .{
-        .pos = .{
-            .x = rect.x + rect.w - clamped_radius,
-            .y = rect.y + rect.h,
-        },
-        .u = 1.0,
-        .v = 1.0,
+        .x = rect.x + rect.w - clamped_radius,
+        .y = rect.y + rect.h,
     };
     vertex_count += 1;
     vertices_src[vertex_count] = .{
-        .pos = .{ .x = rect.x + clamped_radius, .y = rect.y + rect.h },
-        .u = 0.0,
-        .v = 1.0,
+        .x = rect.x + clamped_radius,
+        .y = rect.y + rect.h,
     };
     vertex_count += 1;
 
@@ -422,15 +347,13 @@ pub fn renderFillRoundedRect(
 
     // Left edge
     vertices_src[vertex_count] = .{
-        .pos = .{ .x = rect.x, .y = rect.y + rect.h - clamped_radius },
-        .u = 0.0,
-        .v = 1.0,
+        .x = rect.x,
+        .y = rect.y + rect.h - clamped_radius,
     };
     vertex_count += 1;
     vertices_src[vertex_count] = .{
-        .pos = .{ .x = rect.x, .y = rect.y + clamped_radius },
-        .u = 0.0,
-        .v = 0.0,
+        .x = rect.x,
+        .y = rect.y + clamped_radius,
     };
     vertex_count += 1;
 
@@ -448,13 +371,14 @@ pub fn renderFillRoundedRect(
     index_count += 1;
 
     // Map indexed vertices into the global non-indexed list
+    try vertices.ensureUnusedCapacity(allocator, index_count);
     for (indices[0..index_count]) |idx| {
-        const v = vertices_src[idx];
-        const pt = toNdc(v.pos.x, v.pos.y, win_dims);
-        const u = if (screen_uv) v.pos.x / win_dims.w else v.u;
-        const v_coord = if (screen_uv) v.pos.y / win_dims.h else v.v;
+        const pos = vertices_src[idx];
+        const pt = toNdc(pos.x, pos.y, win_dims);
+        const u = if (screen_uv) pos.x / win_dims.w else 0.0;
+        const v_coord = if (screen_uv) pos.y / win_dims.h else 0.0;
 
-        try vertices.append(allocator, .{
+        vertices.appendAssumeCapacity(.{
             .x = pt.x,
             .y = pt.y,
             .u = u,
@@ -560,6 +484,7 @@ pub fn renderArc(
     const r_outer = radius;
     const r_inner = @max(radius - thickness, 0.0);
     const color = packRgbaF(r, g, b, a);
+    try vertices.ensureUnusedCapacity(allocator, num_circle_segments * 6);
 
     var s: usize = 0;
     while (s < num_circle_segments) : (s += 1) {
@@ -588,51 +513,14 @@ pub fn renderArc(
         const in1 = toNdc(in1_x, in1_y, win_dims);
         const in2 = toNdc(in2_x, in2_y, win_dims);
 
-        // Triangle 1: out1, out2, in2
-        try vertices.append(allocator, .{
-            .x = out1.x,
-            .y = out1.y,
-            .u = 0.0,
-            .v = 0.0,
-            .color = color,
-        });
-        try vertices.append(allocator, .{
-            .x = out2.x,
-            .y = out2.y,
-            .u = 1.0,
-            .v = 0.0,
-            .color = color,
-        });
-        try vertices.append(allocator, .{
-            .x = in2.x,
-            .y = in2.y,
-            .u = 1.0,
-            .v = 1.0,
-            .color = color,
-        });
-
-        // Triangle 2: out1, in2, in1
-        try vertices.append(allocator, .{
-            .x = out1.x,
-            .y = out1.y,
-            .u = 0.0,
-            .v = 0.0,
-            .color = color,
-        });
-        try vertices.append(allocator, .{
-            .x = in2.x,
-            .y = in2.y,
-            .u = 1.0,
-            .v = 1.0,
-            .color = color,
-        });
-        try vertices.append(allocator, .{
-            .x = in1.x,
-            .y = in1.y,
-            .u = 0.0,
-            .v = 1.0,
-            .color = color,
-        });
+        vertices.addManyAsArrayAssumeCapacity(6).* = .{
+            .{ .x = out1.x, .y = out1.y, .u = 0.0, .v = 0.0, .color = color },
+            .{ .x = out2.x, .y = out2.y, .u = 0.0, .v = 0.0, .color = color },
+            .{ .x = in2.x, .y = in2.y, .u = 0.0, .v = 0.0, .color = color },
+            .{ .x = out1.x, .y = out1.y, .u = 0.0, .v = 0.0, .color = color },
+            .{ .x = in2.x, .y = in2.y, .u = 0.0, .v = 0.0, .color = color },
+            .{ .x = in1.x, .y = in1.y, .u = 0.0, .v = 0.0, .color = color },
+        };
     }
 }
 

@@ -35,7 +35,7 @@ ______________________________________________________________________
 
 - **[SDL3 GPU Rendering Workflows](references/sdl3-gpu-rendering.md)**
 
-  - High-quality SDL3_ttf GPU text rendering and zero-allocation text measurement (`TTF_GetStringSize`).
+  - Unified `1024x1024` UI + per-glyph font atlas (`TextCache`, `FontSizePage`, `ShelfPacker`) and zero-allocation glyph metrics measurement (`TTF_GetGlyphMetrics`).
   - GPU compute RGB24/BGR24 unpack pipeline (`unpack_rgb.comp.glsl` & `UploadStagingBuffer`) with hardware mipmap generation.
   - 2-pass quarter-resolution Dual Kawase backdrop blur pipeline (`blur_down.frag.glsl`, `blur_up.frag.glsl`) for glassmorphic overlays.
 

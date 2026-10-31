@@ -1,5 +1,4 @@
 const c_pkg = @import("c.zig");
-const std = @import("std");
 const surface = @import("surface.zig");
 
 const c = c_pkg.c;
@@ -32,18 +31,19 @@ pub const Color = struct {
 pub const Font = struct {
     ptr: *c.TTF_Font,
 
-    /// Pixel dimensions (width and height) of a measured text string.
-    pub const TextSize = struct { w: i32, h: i32 };
-
-    /// Opens a font file from the filesystem at `ptsize`.
-    pub fn open(path: [:0]const u8, ptsize: f32) !Font {
-        const raw = c.TTF_OpenFont(path.ptr, ptsize) orelse return error.TtfOpenFailed;
-        return .{ .ptr = raw };
-    }
+    /// Horizontal and vertical bounding box and advance metrics for a glyph.
+    pub const GlyphMetrics = struct {
+        minx: i32,
+        maxx: i32,
+        miny: i32,
+        maxy: i32,
+        advance: i32,
+    };
 
     /// Loads a TrueType font directly from a static in-memory byte buffer.
     pub fn openConstMem(bytes: []const u8, ptsize: f32) ?Font {
-        const io = c.SDL_IOFromConstMem(bytes.ptr, bytes.len) orelse return null;
+        const io = c.SDL_IOFromConstMem(bytes.ptr, bytes.len) orelse
+            return null;
         const raw = c.TTF_OpenFontIO(io, true, ptsize);
         return if (raw) |r| .{ .ptr = r } else null;
     }
@@ -58,67 +58,47 @@ pub const Font = struct {
         return c.TTF_SetFontSize(self.ptr, ptsize);
     }
 
-    /// Calculates pixel width and height dimensions of `text` when rendered with this font.
-    pub fn getStringSize(self: Font, text: []const u8) ?TextSize {
-        if (text.len == 0) return TextSize{ .w = 0, .h = 0 };
-        var w: c_int = 0;
-        var h: c_int = 0;
-        if (c.TTF_GetStringSize(self.ptr, text.ptr, text.len, &w, &h)) {
-            return TextSize{ .w = w, .h = h };
-        }
-        return null;
+    /// Returns the total pixel line height of the font at its current size.
+    pub fn getHeight(self: Font) i32 {
+        return c.TTF_GetFontHeight(self.ptr);
     }
 
-    /// Measures how many UTF-8 characters fit within `max_w` pixels.
-    pub fn measureString(
-        self: Font,
-        text: []const u8,
-        max_w: i32,
-    ) ?struct { measured_w: usize, measured_len: usize } {
-        if (text.len == 0) return .{ .measured_w = 0, .measured_len = 0 };
-        var measured_w: c_int = 0;
-        var measured_len: usize = 0;
-        if (c.TTF_MeasureString(
+    /// Queries the bounding box and horizontal advance metrics for a Unicode
+    /// codepoint `ch`.
+    pub fn getGlyphMetrics(self: Font, ch: u32) ?GlyphMetrics {
+        var minx: c_int = 0;
+        var maxx: c_int = 0;
+        var miny: c_int = 0;
+        var maxy: c_int = 0;
+        var advance: c_int = 0;
+        if (c.TTF_GetGlyphMetrics(
             self.ptr,
-            text.ptr,
-            text.len,
-            max_w,
-            &measured_w,
-            &measured_len,
+            ch,
+            &minx,
+            &maxx,
+            &miny,
+            &maxy,
+            &advance,
         )) {
-            return .{ .measured_w = @intCast(measured_w), .measured_len = measured_len };
+            return .{
+                .minx = minx,
+                .maxx = maxx,
+                .miny = miny,
+                .maxy = maxy,
+                .advance = advance,
+            };
         }
         return null;
     }
 
-    /// Renders high-quality anti-aliased text into a newly allocated 32-bit software surface.
-    pub fn renderTextBlended(
-        self: Font,
-        allocator: std.mem.Allocator,
-        text: []const u8,
-        color: Color,
-    ) !Surface {
-        const clean_text = if (std.mem.findScalar(u8, text, 0)) |idx|
-            text[0..idx]
-        else
-            text;
-        if (clean_text.len == 0) return error.TtfRenderFailed;
-
-        const c_text = allocator.dupeSentinel(u8, clean_text, 0) catch |err| {
-            std.log.err(
-                "dupeSentinel failed in renderTextBlended for '{s}': {}",
-                .{ clean_text, err },
-            );
-            return err;
-        };
-        defer allocator.free(c_text);
-
-        const raw = c.TTF_RenderText_Blended(
+    /// Renders a single Unicode codepoint `ch` as an anti-aliased 32-bit ARGB
+    /// surface.
+    pub fn renderGlyphBlended(self: Font, ch: u32, color: Color) ?Surface {
+        const raw = c.TTF_RenderGlyph_Blended(
             self.ptr,
-            c_text.ptr,
-            clean_text.len,
+            ch,
             color.toSdlColor(),
-        ) orelse return error.TtfRenderFailed;
+        ) orelse return null;
         return .{ .ptr = raw };
     }
 

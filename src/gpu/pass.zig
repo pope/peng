@@ -17,6 +17,9 @@ const BatchItem = render_image.BatchItem;
 const BlurResources = graphics.BlurResources;
 const BlurUniforms = graphics.BlurUniforms;
 const DpiScale = geom.DpiScale;
+const FontSizePage = text_cache.FontSizePage;
+const GlyphCacheKey = text_cache.GlyphCacheKey;
+const GlyphCacheValue = text_cache.GlyphCacheValue;
 const ImageUniforms = render_image.ImageUniforms;
 const MaterialType = render_image.MaterialType;
 const PhysicalDims = geom.PhysicalDims;
@@ -24,7 +27,6 @@ const PositiveDimsU32 = geom.PositiveDimsU32;
 const Rect = geom.Rect;
 const RenderResources = graphics.RenderResources;
 const saveTextureToPng = graphics.saveTextureToPng;
-const TextCacheKey = text_cache.TextCacheKey;
 const UiRenderMetrics = state.UiRenderMetrics;
 const UiUniforms = render_image.UiUniforms;
 const Vertex = geometry.Vertex;
@@ -35,13 +37,6 @@ const ViewportParams = state.ViewportParams;
 pub const FrameTarget = union(enum) {
     window: sdl.Window,
     headless: PhysicalDims,
-};
-
-/// Cached text texture and rendered dimensions.
-pub const CachedText = struct {
-    texture: sdl.gpu.Texture,
-    w: f32,
-    h: f32,
 };
 
 /// Context provided by `executeFrame` to the UI packet builder during
@@ -157,108 +152,42 @@ pub fn addBatch(
     });
 }
 
-/// Renders or retrieves cached text texture for a glyph string. Alpha is
-/// modulated dynamically at draw time via GPU vertex color attributes.
-pub fn getOrRenderCachedText(
+/// Ensures the unified `1024x1024` UI and font glyph atlas texture exists on
+/// `build_ctx.gpu_res.text_cache`, initializing its top-left `4x4` white
+/// block on first creation. Falls back to `build_ctx.gpu_res.white_texture`
+/// if texture allocation fails.
+pub fn ensureUiAtlasTexture(
     build_ctx: PacketBuildContext,
-    font_id: usize,
-    font_size: u16,
-    raw_text: []const u8,
-    rgb: [3]f32,
-) !?CachedText {
-    const fonts = build_ctx.gpu_res.fonts[0..];
-    if (font_id >= fonts.len) return null;
-    const font = fonts[font_id] orelse return null;
-
-    if (raw_text.len == 0) return null;
-    var text_slice = raw_text;
-    if (std.mem.findScalar(u8, text_slice, 0)) |null_idx| {
-        text_slice = text_slice[0..null_idx];
-    }
-    if (text_slice.len == 0) return null;
-
-    const target_font_size =
-        @as(f32, @floatFromInt(font_size)) * build_ctx.scale.x;
-    const target_font_size_u16 =
-        @as(u16, @intFromFloat(@round(target_font_size)));
-
-    // 1. Check/Lookup cache (RGB only; alpha modulated dynamically via vertex)
-    const color_rgb_u32 = @as(u32, @intFromFloat(rgb[0])) |
-        (@as(u32, @intFromFloat(rgb[1])) << 8) |
-        (@as(u32, @intFromFloat(rgb[2])) << 16);
-
-    const key = TextCacheKey{
-        .font_id = font_id,
-        .font_size = target_font_size_u16,
-        .color = color_rgb_u32,
-        .hash = std.hash.Wyhash.hash(0, text_slice),
-    };
-
+) sdl.gpu.Texture {
     const gpu_res = build_ctx.gpu_res;
+    if (gpu_res.text_cache.atlas_texture) |tex| return tex;
+
     const dev = gpu_res.device;
-
-    if (gpu_res.text_cache.getEntry(key)) |entry| {
-        entry.value_ptr.last_used_frame = gpu_res.frame_index;
-        return CachedText{
-            .texture = entry.value_ptr.texture,
-            .w = entry.value_ptr.w,
-            .h = entry.value_ptr.h,
-        };
-    }
-
-    if (font.getFontSize() != target_font_size) {
-        _ = font.setFontSize(target_font_size);
-    }
-
-    const surf = font.renderTextBlended(
-        build_ctx.frame_allocator,
-        text_slice,
-        .{
-            .r = @intFromFloat(rgb[0]),
-            .g = @intFromFloat(rgb[1]),
-            .b = @intFromFloat(rgb[2]),
-            .a = 255,
-        },
-    ) catch |err| {
-        std.log.warn(
-            "font.renderTextBlended failed for '{s}': {}",
-            .{ text_slice, err },
-        );
-        return null;
-    };
-    defer surf.destroy();
-
-    const converted = surf.convert(sdl.PixelFormat.rgba32) orelse return null;
-    defer converted.destroy();
-
-    const surf_w: usize = @intCast(converted.w());
-    const surf_h: usize = @intCast(converted.h());
-    const target_w: usize = surf_w;
-    const dst_start_byte: usize = 0;
-
     const tex_info = sdl.gpu.TextureCreateInfo{
         .type = .type_2d,
         .format = .rgba8_unorm,
         .usage = sdl.gpu.TextureUsage.sampler,
-        .width = @intCast(target_w),
-        .height = @intCast(surf_h),
+        .width = text_cache.atlas_size,
+        .height = text_cache.atlas_size,
         .layer_count_or_depth = 1,
         .num_levels = 1,
         .sample_count = .count_1,
         .props = 0,
     };
-    const tex = dev.createTexture(&tex_info) orelse return null;
+    const tex = dev.createTexture(&tex_info) orelse
+        return gpu_res.white_texture;
 
-    const size = target_w * surf_h * 4;
+    const wb_size = text_cache.white_block_size;
+    const wb_bytes = wb_size * wb_size * 4;
     const transfer_buf = dev.createTransferBuffer(
         &sdl.gpu.TransferBufferCreateInfo{
             .usage = .upload,
-            .size = @intCast(size),
+            .size = wb_bytes,
             .props = 0,
         },
     ) orelse {
         dev.releaseTexture(tex);
-        return null;
+        return gpu_res.white_texture;
     };
     build_ctx.temp_buffers.append(
         build_ctx.frame_allocator,
@@ -266,30 +195,175 @@ pub fn getOrRenderCachedText(
     ) catch {
         dev.releaseTransferBuffer(transfer_buf);
         dev.releaseTexture(tex);
-        return null;
+        return gpu_res.white_texture;
     };
 
-    const mapped_raw: [*]u8 = dev.mapTransferBuffer(
-        transfer_buf,
-        false,
-    ) orelse {
+    const mapped_raw = dev.mapTransferBuffer(transfer_buf, false) orelse {
         dev.releaseTexture(tex);
-        return null;
+        return gpu_res.white_texture;
     };
-    const mapped = mapped_raw;
-    const src_row_bytes: usize = surf_w * 4;
-    const dst_row_bytes: usize = target_w * 4;
-    const pitch: usize = @intCast(converted.pitch());
+    @memset(mapped_raw[0..wb_bytes], 255);
+    dev.unmapTransferBuffer(transfer_buf);
 
-    @memset(mapped[0..size], 0);
+    build_ctx.copy_pass.uploadToTexture(&sdl.gpu.TextureTransferInfo{
+        .transfer_buffer = transfer_buf,
+        .offset = 0,
+        .pixels_per_row = wb_size,
+        .rows_per_layer = wb_size,
+    }, &sdl.gpu.TextureRegion{
+        .texture = tex,
+        .x = 0,
+        .y = 0,
+        .w = wb_size,
+        .h = wb_size,
+        .d = 1,
+    }, false);
+
+    gpu_res.text_cache.atlas_texture = tex;
+    gpu_res.text_cache.packer.reset();
+    return tex;
+}
+
+/// Returns or initializes the direct-indexed `FontSizePage` for
+/// `(font_id, target_font_size_u16)`, querying `font.getHeight()` only when the
+/// page is first created.
+pub fn ensureFontSizePage(
+    build_ctx: PacketBuildContext,
+    font_id: u16,
+    target_font_size: f32,
+    target_font_size_u16: u16,
+) ?*FontSizePage {
+    if (build_ctx.gpu_res.text_cache.findPageMut(
+        font_id,
+        target_font_size_u16,
+    )) |page| {
+        return page;
+    }
+
+    const fonts = build_ctx.gpu_res.fonts[0..];
+    if (font_id >= fonts.len) return null;
+    const font = fonts[font_id] orelse return null;
+    if (font.getFontSize() != target_font_size) {
+        _ = font.setFontSize(target_font_size);
+    }
+    const line_h: f32 = @floatFromInt(@max(0, font.getHeight()));
+    return build_ctx.gpu_res.text_cache.getOrCreatePage(
+        font_id,
+        target_font_size_u16,
+        line_h,
+    );
+}
+
+/// Retrieves a cached glyph entry from the unified atlas or rasterizes and
+/// uploads `codepoint` into the atlas on a cache miss. Color and alpha are
+/// modulated dynamically at draw time via GPU vertex color attributes.
+pub fn getOrRasterizeGlyph(
+    build_ctx: PacketBuildContext,
+    font_id: u16,
+    target_font_size: f32,
+    target_font_size_u16: u16,
+    codepoint: u32,
+) !?GlyphCacheValue {
+    const gpu_res = build_ctx.gpu_res;
+    const key = GlyphCacheKey{
+        .font_id = font_id,
+        .font_size = target_font_size_u16,
+        .codepoint = codepoint,
+    };
+
+    if (gpu_res.text_cache.getGlyph(key)) |cached| {
+        return cached;
+    }
+
+    const fonts = gpu_res.fonts[0..];
+    if (font_id >= fonts.len) return null;
+    const font = fonts[font_id] orelse return null;
+
+    if (font.getFontSize() != target_font_size) {
+        _ = font.setFontSize(target_font_size);
+    }
+
+    const metrics = font.getGlyphMetrics(codepoint) orelse return null;
+    const advance: f32 = @floatFromInt(metrics.advance);
+    const offset_x: f32 = @floatFromInt(@min(0, metrics.minx));
+
+    if (metrics.maxx <= metrics.minx or metrics.maxy <= metrics.miny) {
+        const val = GlyphCacheValue{
+            .advance = advance,
+            .has_pixels = false,
+        };
+        try gpu_res.text_cache.putGlyph(build_ctx.gpa_allocator, key, val);
+        return val;
+    }
+
+    const atlas_tex = ensureUiAtlasTexture(build_ctx);
+    if (atlas_tex.eql(gpu_res.white_texture)) return null;
+
+    const surf = font.renderGlyphBlended(
+        codepoint,
+        .{ .r = 255, .g = 255, .b = 255, .a = 255 },
+    ) orelse return null;
+    defer surf.destroy();
+
+    const converted = surf.convert(sdl.PixelFormat.rgba32) orelse
+        return null;
+    defer converted.destroy();
+
+    const surf_w: u32 = @intCast(@max(0, converted.w()));
+    const surf_h: u32 = @intCast(@max(0, converted.h()));
+    if (surf_w == 0 or surf_h == 0) {
+        const val = GlyphCacheValue{
+            .advance = advance,
+            .has_pixels = false,
+        };
+        try gpu_res.text_cache.putGlyph(build_ctx.gpa_allocator, key, val);
+        return val;
+    }
+
+    const alloc_w = surf_w + 2;
+    const alloc_h = surf_h + 2;
+    const pos = gpu_res.text_cache.packer.allocate(alloc_w, alloc_h) orelse
+        blk: {
+            gpu_res.text_cache.resetAtlas();
+            break :blk gpu_res.text_cache.packer.allocate(
+                alloc_w,
+                alloc_h,
+            ) orelse return null;
+        };
+
+    const dev = gpu_res.device;
+    const size: usize = @as(usize, alloc_w) * @as(usize, alloc_h) * 4;
+    const transfer_buf = dev.createTransferBuffer(
+        &sdl.gpu.TransferBufferCreateInfo{
+            .usage = .upload,
+            .size = @intCast(size),
+            .props = 0,
+        },
+    ) orelse return null;
+    build_ctx.temp_buffers.append(
+        build_ctx.frame_allocator,
+        transfer_buf,
+    ) catch |err| {
+        dev.releaseTransferBuffer(transfer_buf);
+        return err;
+    };
+
+    const mapped_raw = dev.mapTransferBuffer(transfer_buf, false) orelse
+        return null;
+    const mapped_u32: [*]u32 = @ptrCast(@alignCast(mapped_raw));
+    @memset(mapped_u32[0 .. size / 4], 0x00FFFFFF);
+
+    const src_row_bytes: usize = @as(usize, surf_w) * 4;
+    const dst_row_bytes: usize = @as(usize, alloc_w) * 4;
+    const pitch: usize = @intCast(converted.pitch());
 
     var row_y: usize = 0;
     while (row_y < surf_h) : (row_y += 1) {
         const src_start = row_y * pitch;
         const src_row =
             converted.pixels()[src_start .. src_start + src_row_bytes];
-        const dst_offset = row_y * dst_row_bytes + dst_start_byte;
-        const dst_row = mapped[dst_offset..][0..src_row_bytes];
+        const dst_offset = (row_y + 1) * dst_row_bytes + 4;
+        const dst_row = mapped_raw[dst_offset..][0..src_row_bytes];
         @memcpy(dst_row, src_row);
     }
     dev.unmapTransferBuffer(transfer_buf);
@@ -297,34 +371,34 @@ pub fn getOrRenderCachedText(
     build_ctx.copy_pass.uploadToTexture(&sdl.gpu.TextureTransferInfo{
         .transfer_buffer = transfer_buf,
         .offset = 0,
-        .pixels_per_row = @intCast(target_w),
-        .rows_per_layer = @intCast(surf_h),
+        .pixels_per_row = alloc_w,
+        .rows_per_layer = alloc_h,
     }, &sdl.gpu.TextureRegion{
-        .texture = tex,
-        .w = @intCast(target_w),
-        .h = @intCast(surf_h),
+        .texture = atlas_tex,
+        .x = pos.x,
+        .y = pos.y,
+        .w = alloc_w,
+        .h = alloc_h,
         .d = 1,
     }, false);
 
-    const w_f: f32 = @floatFromInt(target_w);
-    const h_f: f32 = @floatFromInt(surf_h);
-
-    gpu_res.text_cache.put(build_ctx.gpa_allocator, dev, key, .{
-        .texture = tex,
-        .w = w_f,
-        .h = h_f,
-        .last_used_frame = gpu_res.frame_index,
-    }) catch |err| {
-        std.log.err("Failed to cache rendered text: {}", .{err});
-        dev.releaseTexture(tex);
-        return null;
+    const atlas_f: f32 = @floatFromInt(text_cache.atlas_size);
+    const inner_x = pos.x + 1;
+    const inner_y = pos.y + 1;
+    const val = GlyphCacheValue{
+        .u1 = @as(f32, @floatFromInt(inner_x)) / atlas_f,
+        .v1 = @as(f32, @floatFromInt(inner_y)) / atlas_f,
+        .u2 = @as(f32, @floatFromInt(inner_x + surf_w)) / atlas_f,
+        .v2 = @as(f32, @floatFromInt(inner_y + surf_h)) / atlas_f,
+        .w = @floatFromInt(surf_w),
+        .h = @floatFromInt(surf_h),
+        .offset_x = offset_x,
+        .advance = advance,
+        .has_pixels = true,
     };
 
-    return CachedText{
-        .texture = tex,
-        .w = w_f,
-        .h = h_f,
-    };
+    try gpu_res.text_cache.putGlyph(build_ctx.gpa_allocator, key, val);
+    return val;
 }
 
 /// Data-driven render packet holding geometry vertices, batch draw calls,
@@ -934,13 +1008,6 @@ pub fn executeFrame(
             target_dims,
         );
 
-        gpu_res.text_cache.evictUnused(
-            frame_allocator,
-            dev,
-            gpu_res.frame_index,
-            600,
-        );
-
         const end_render = sdl.timer.getTicksNs();
         const render_time_ms =
             @as(f64, @floatFromInt(end_render - start_render)) / 1_000_000.0;
@@ -948,6 +1015,12 @@ pub fn executeFrame(
             m.ui_render_stats.addSample(render_time_ms);
             m.last_ui_vertex_count = vertex_count;
             m.last_ui_batch_count = batch_count;
+            m.atlas_shelf_x = gpu_res.text_cache.packer.cur_x;
+            m.atlas_shelf_y = gpu_res.text_cache.packer.cur_y;
+            m.atlas_used_h = gpu_res.text_cache.usedHeight();
+            m.atlas_page_count = gpu_res.text_cache.page_count;
+            m.atlas_ascii_glyphs = gpu_res.text_cache.countCachedAsciiGlyphs();
+            m.atlas_unicode_glyphs = gpu_res.text_cache.glyphs.count();
         }
         gpu_res.frame_index += 1;
 

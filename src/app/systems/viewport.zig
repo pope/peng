@@ -67,6 +67,19 @@ pub fn sysUpdateViewport(
                 next_drag_state = .none;
             }
         },
+        .atlas => |at| {
+            if (input.mouse_left_down and
+                !palette_blocking and
+                state.viewer.ui.overlays.atlas_panel.visible)
+            {
+                state.viewer.ui.overlays.atlas_panel.offset_x =
+                    input.mouse_x - at.start_x;
+                state.viewer.ui.overlays.atlas_panel.offset_y =
+                    input.mouse_y - at.start_y;
+            } else {
+                next_drag_state = .none;
+            }
+        },
     }
 
     if (next_drag_state == .none and input.mouse_left_clicked and
@@ -76,11 +89,15 @@ pub fn sysUpdateViewport(
             ((state.viewer.ui.overlays.info_panel.visible and
                 ui.interaction.isPointerOverInfoCloseBtn()) or
                 (state.viewer.ui.overlays.stats_panel.visible and
-                    ui.interaction.isPointerOverStatsCloseBtn()));
+                    ui.interaction.isPointerOverStatsCloseBtn()) or
+                (state.viewer.ui.overlays.atlas_panel.visible and
+                    ui.interaction.isPointerOverAtlasCloseBtn()));
         const over_info = state.viewer.ui.overlays.info_panel.visible and
             ui.interaction.isPointerOverInfoPanel();
         const over_stats = state.viewer.ui.overlays.stats_panel.visible and
             ui.interaction.isPointerOverStatsPanel();
+        const over_atlas = state.viewer.ui.overlays.atlas_panel.visible and
+            ui.interaction.isPointerOverAtlasPanel();
         const over_edit = (state.viewer.ui.overlays.edit_panel.visible or
             state.viewer.animations.get(.edit_panel) > 0.001) and
             ui.interaction.isPointerOverEditPanel();
@@ -101,6 +118,15 @@ pub fn sysUpdateViewport(
             const off_y = state.viewer.ui.overlays.stats_panel.offset_y;
             next_drag_state = .{
                 .stats = .{
+                    .start_x = input.mouse_x - off_x,
+                    .start_y = input.mouse_y - off_y,
+                },
+            };
+        } else if (over_atlas) {
+            const off_x = state.viewer.ui.overlays.atlas_panel.offset_x;
+            const off_y = state.viewer.ui.overlays.atlas_panel.offset_y;
+            next_drag_state = .{
+                .atlas = .{
                     .start_x = input.mouse_x - off_x,
                     .start_y = input.mouse_y - off_y,
                 },

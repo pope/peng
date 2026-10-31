@@ -1,14 +1,15 @@
 # UI Rendering & Performance Rules
 
-## 1. 2-Pass GPU Render Pipeline, Text Caching & Scissor Safety
+## 1. 2-Pass GPU Render Pipeline, Unified Font Atlas & Scissor Safety
 
 - **2-Pass UI `RenderPacket` Pipeline (`src/ui/renderer.zig`,
   `src/gpu/pass.zig`)**:
   1. **Extraction Pass (`buildRenderPacket`)**: Traverses the immediate-mode
      `UiCommand` list (`UiDrawList`) to populate vertex arrays, scissor rects,
-     and batched draw commands (`RenderPacket`), while newly rasterized text
-     strings obtain cached glyph textures via `getOrRenderCachedText`
-     (`src/gpu/pass.zig`) on cache misses and defers all GPU render passes.
+     and batched draw commands (`RenderPacket`), ensuring the unified `1024x1024`
+     UI + glyph atlas (`ensureUiAtlasTexture`) and rasterizing uncached
+     codepoints on demand via `getOrRasterizeGlyph` (`src/gpu/pass.zig`) while
+     deferring all GPU render passes.
   2. **Execution Pass (`executeRenderPacket` / `FrameTarget`)**: Orchestrated
      inside `executeFrame` / `executeRenderPacket` against a `FrameTarget`
      (`.window: sdl.Window` or `.headless: PhysicalDims`), uploads geometry via
@@ -16,12 +17,19 @@
      Kawase backdrop blur (`tex.scene` -> `tex.blur_down` -> `tex.blur`, gated
      on `enable_blur` and `.blurred_surface` batches), and issues batched GPU
      draw calls before submitting the command buffer.
-- **GPU Text Texture Alpha Decoupling**:
-  - `TextCacheKey` MUST index strictly by `font_id`, `font_size`, `hash`, and
-    RGB channels (`color_u32 & 0x00FFFFFF`). Always rasterize glyph surfaces at
-    full opacity (`a = 255`) and modulate alpha dynamically via quad vertex
-    color (`inColor.a`) to prevent font re-rasterization and cache thrashing
-    during fades.
+- **Unified UI + Per-Glyph Font Atlas & Vertex Color Modulation**:
+  - `TextCache` (`src/gpu/text_cache.zig`) maintains a single `1024x1024`
+     `RGBA8_UNORM` GPU atlas texture (`atlas_texture`) whose top-left `4x4`
+     block at `(0, 0)` is initialized to opaque white (`0xFFFFFFFF`). Solid UI
+     rectangles, rounded rectangles, borders, and arcs sample `uv = (0.0, 0.0)`
+     from this same texture (`gpu_res.uiTexture()`), collapsing UI chrome and
+     text within the same scissor region into a single GPU draw call.
+  - `GlyphCacheKey` MUST index strictly by `(font_id, font_size, codepoint)`.
+     Always rasterize glyphs in pure white `(255, 255, 255, 255)` with a 1px
+     transparent-white (`0x00FFFFFF`) border and modulate full RGBA color
+     dynamically via `Vertex.color` (`packRgba255(color)`) to prevent font
+     re-rasterization and cache thrashing across colors, dynamic counters, or
+     fades.
 - **Zero-Area Scissor Skipping & SIMD Bounds Safety**:
   - Clip scissor rects against physical framebuffer bounds and skip any draw
     with `scissor.w <= 0` or `scissor.h <= 0`.

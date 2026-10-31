@@ -124,6 +124,7 @@ pub const ActionId = enum {
     toggle_info,
     toggle_manga_mode,
     toggle_stats,
+    toggle_atlas,
     toggle_edit_panel,
     toggle_title,
     toggle_snackbar,
@@ -1011,6 +1012,15 @@ pub const actions = [_]ActionDef{
         },
     },
     .{
+        .id = .toggle_atlas,
+        .title = "Toggle Font Atlas Debug Overlay",
+        .shortcut_text = "Shift+A",
+        .description = "Toggle live GPU font atlas and shelf metrics",
+        .show_in_palette = true,
+        .shortcuts = &.{.{ .key = .char_a, .mod = .{ .shift = true } }},
+        .intent = .toggle_atlas,
+    },
+    .{
         .id = .quit_server,
         .title = "Quit Server",
         .shortcut_text = "Ctrl+Q",
@@ -1327,8 +1337,8 @@ pub const ipc_commands = blk: {
 test "actions registry projections" {
     const testing = std.testing;
 
-    // Palette count: 73 previous - 1 toggle_debug_mode action = 72
-    try testing.expectEqual(@as(usize, 72), palette_action_items.len);
+    // Palette count: 72 previous + 1 toggle_atlas action = 73
+    try testing.expectEqual(@as(usize, 73), palette_action_items.len);
 
     // Exact index preservation
     try testing.expectEqualStrings(
@@ -1340,8 +1350,8 @@ test "actions registry projections" {
         palette_action_items[7].shortcut_text,
     );
 
-    // Shortcuts: 61 previous - 1 debug shortcut (Ctrl+D) = 60
-    try testing.expectEqual(@as(usize, 60), flat_shortcuts.len);
+    // Shortcuts: 60 previous + 1 atlas shortcut (Shift+A) = 61
+    try testing.expectEqual(@as(usize, 61), flat_shortcuts.len);
     var total_sc: usize = 0;
     for (palette_action_items) |item| {
         total_sc += item.shortcuts.len;

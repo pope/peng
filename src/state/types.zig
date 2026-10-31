@@ -372,6 +372,10 @@ pub const DragState = union(enum) {
         start_x: f32,
         start_y: f32,
     },
+    atlas: struct {
+        start_x: f32,
+        start_y: f32,
+    },
     slider: struct {
         param: EditParam,
         track_x: f32,
@@ -392,15 +396,23 @@ pub const OverlayState = struct {
         .offset_x = -20.0,
         .offset_y = 20.0,
     },
+    atlas_panel: FloatingPanel = .{
+        .visible = false,
+        .offset_x = 20.0,
+        .offset_y = 20.0,
+    },
     edit_panel: EditPanelState = .{},
     title_display: TitleDisplay = .hidden,
     auto_title: bool = true,
     debug_show_thumb: bool = false,
     enable_blur: bool = true,
 
-    /// Returns true if any floating HUD dialogs (Info or Stats) are visible.
+    /// Returns true if any floating HUD dialogs (Info, Stats, or Atlas) are
+    /// visible.
     pub fn hasVisibleFloatingPanels(self: OverlayState) bool {
-        return self.info_panel.visible or self.stats_panel.visible;
+        return self.info_panel.visible or
+            self.stats_panel.visible or
+            self.atlas_panel.visible;
     }
 
     /// Dismisses all visible floating HUD dialogs.
@@ -409,6 +421,7 @@ pub const OverlayState = struct {
         const had_visible = self.hasVisibleFloatingPanels();
         self.info_panel.visible = false;
         self.stats_panel.visible = false;
+        self.atlas_panel.visible = false;
         return had_visible;
     }
 };

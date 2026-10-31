@@ -38,6 +38,8 @@ const InteractionState = struct {
     info_close_btn: ?FRect = null,
     stats_card: ?FRect = null,
     stats_close_btn: ?FRect = null,
+    atlas_card: ?FRect = null,
+    atlas_close_btn: ?FRect = null,
     edit_panel: ?FRect = null,
     edit_scroll_list: ?FRect = null,
     edit_close_btn: ?FRect = null,
@@ -63,6 +65,8 @@ pub fn beginFrameLayout() void {
     state_data.info_close_btn = null;
     state_data.stats_card = null;
     state_data.stats_close_btn = null;
+    state_data.atlas_card = null;
+    state_data.atlas_close_btn = null;
     state_data.edit_panel = null;
     state_data.edit_scroll_list = null;
     state_data.edit_close_btn = null;
@@ -109,6 +113,13 @@ pub fn setInfoPanelRects(card: FRect, close_btn: FRect) void {
 pub fn setStatsPanelRects(card: FRect, close_btn: FRect) void {
     state_data.stats_card = card;
     state_data.stats_close_btn = close_btn;
+}
+
+/// Records the bounding rectangles for the font atlas overlay card and close
+/// button.
+pub fn setAtlasPanelRects(card: FRect, close_btn: FRect) void {
+    state_data.atlas_card = card;
+    state_data.atlas_close_btn = close_btn;
 }
 
 /// Records the bounding rectangles for the edit side panel and its controls.
@@ -223,6 +234,13 @@ pub fn isPointerOverStatsCloseBtn() bool {
     return btn.contains(state_data.pointer);
 }
 
+/// Returns true if pointer is hovering over the font atlas close button.
+pub fn isPointerOverAtlasCloseBtn() bool {
+    if (!state_data.has_layout) return false;
+    const btn = state_data.atlas_close_btn orelse return false;
+    return btn.contains(state_data.pointer);
+}
+
 /// Returns true if pointer is hovering over the info overlay panel.
 pub fn isPointerOverInfoPanel() bool {
     if (!state_data.has_layout) return false;
@@ -234,6 +252,13 @@ pub fn isPointerOverInfoPanel() bool {
 pub fn isPointerOverStatsPanel() bool {
     if (!state_data.has_layout) return false;
     const card = state_data.stats_card orelse return false;
+    return card.contains(state_data.pointer);
+}
+
+/// Returns true if pointer is hovering over the font atlas overlay panel.
+pub fn isPointerOverAtlasPanel() bool {
+    if (!state_data.has_layout) return false;
+    const card = state_data.atlas_card orelse return false;
     return card.contains(state_data.pointer);
 }
 
@@ -258,6 +283,9 @@ pub fn isPointerOverViewport() bool {
         if (card.contains(state_data.pointer)) return false;
     }
     if (state_data.stats_card) |card| {
+        if (card.contains(state_data.pointer)) return false;
+    }
+    if (state_data.atlas_card) |card| {
         if (card.contains(state_data.pointer)) return false;
     }
     return true;

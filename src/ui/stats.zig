@@ -475,6 +475,136 @@ fn renderInfoOverlay(
     interaction.setInfoPanelRects(card_rect, close_rect);
 }
 
+fn renderAtlasOverlay(
+    list: *UiDrawList,
+    ui_model: UiViewModel,
+    win_dims: LogicalDims,
+    frame_allocator: std.mem.Allocator,
+    measure_data: *const MeasureTextUserData,
+) !void {
+    if (!ui_model.overlays.atlas_panel.visible) return;
+
+    const max_by_win = @min(win_dims.w, win_dims.h) * 0.75;
+    const preview_size = @round(@max(128.0, @min(1024.0, max_by_win)));
+    const content_w = @max(352.0, preview_size);
+    const card_w = content_w + 28.0;
+    const card_x = ui_model.overlays.atlas_panel.offset_x;
+    const card_y = ui_model.overlays.atlas_panel.offset_y;
+    const content_x = card_x + 14.0;
+    var cursor_y = card_y + 12.0;
+
+    const bg_idx = try list.reserve();
+    const close_rect = try renderFloatingHudHeader(
+        list,
+        content_x,
+        cursor_y,
+        content_w,
+        "Font Atlas Debug",
+        measure_data,
+    );
+    cursor_y += 24.0;
+
+    var hud = HudLayoutContext{
+        .list = list,
+        .content_x = content_x,
+        .content_w = content_w,
+        .cursor_y = &cursor_y,
+        .measure_data = measure_data,
+    };
+
+    const rm = ui_model.render_metrics;
+    const cache_opt = measure_data.measurer.cache;
+    const shelf_x = if (cache_opt) |c| c.packer.cur_x else rm.atlas_shelf_x;
+    const shelf_y = if (cache_opt) |c| c.packer.cur_y else rm.atlas_shelf_y;
+    const used_h = if (cache_opt) |c| c.usedHeight() else rm.atlas_used_h;
+    const page_count = if (cache_opt) |c| c.page_count else rm.atlas_page_count;
+    const ascii_glyphs = if (cache_opt) |c|
+        c.countCachedAsciiGlyphs()
+    else
+        rm.atlas_ascii_glyphs;
+    const unicode_glyphs = if (cache_opt) |c|
+        c.glyphs.count()
+    else
+        rm.atlas_unicode_glyphs;
+
+    const used_pct = (@as(f32, @floatFromInt(used_h)) * 100.0) / 1024.0;
+    const shelf_str = try frame_allocator.print(
+        "x={d}, y={d} ({d}/1024 px, {d:.1}%)",
+        .{ shelf_x, shelf_y, used_h, used_pct },
+    );
+    const pages_str = try frame_allocator.print(
+        "{d} / 12",
+        .{page_count},
+    );
+    const glyphs_str = try frame_allocator.print(
+        "{d} ASCII + {d} Unicode",
+        .{ ascii_glyphs, unicode_glyphs },
+    );
+
+    try hud.addRow("Atlas Texture", "1024x1024 RGBA8 (4.0 MB)");
+    try hud.addRow("Shelf Cursor", shelf_str);
+    try hud.addRow("Font Size Pages", pages_str);
+    try hud.addRow("Cached Glyphs", glyphs_str);
+
+    cursor_y += 6.0;
+    const preview_rect = FRect{
+        .x = content_x + @round((content_w - preview_size) * 0.5),
+        .y = cursor_y,
+        .w = preview_size,
+        .h = preview_size,
+    };
+    try list.addRect(preview_rect, .{
+        .background_color = theme.crust,
+        .corner_radius = .all(4),
+    });
+    try list.addAtlasPreview(preview_rect, theme.text);
+    if (used_h > 0 and used_h <= 1024) {
+        const wy = preview_rect.y +
+            (@as(f32, @floatFromInt(used_h)) / 1024.0) * preview_rect.h;
+        try list.addRect(.{
+            .x = preview_rect.x,
+            .y = wy,
+            .w = preview_rect.w,
+            .h = 1.0,
+        }, .{
+            .background_color = theme.withAlpha(theme.blue, 0.65),
+        });
+    }
+    try list.addBorder(preview_rect, .{
+        .color = theme.surface1,
+        .width = .all(1),
+        .corner_radius = .all(4),
+    });
+    cursor_y += preview_size;
+
+    const total_card_h = (cursor_y - card_y) + 12.0;
+    const card_rect = FRect{
+        .x = card_x,
+        .y = card_y,
+        .w = card_w,
+        .h = total_card_h,
+    };
+    list.set(bg_idx, .{
+        .rect = card_rect,
+        .payload = .{
+            .rectangle = .{
+                .background_color = theme.base_translucent,
+                .corner_radius = .all(10),
+                .tag = if (ui_model.overlays.enable_blur)
+                    .blurred_surface
+                else
+                    .none,
+            },
+        },
+    });
+    try list.addBorder(card_rect, .{
+        .color = theme.surface0,
+        .width = .all(1),
+        .corner_radius = .all(10),
+    });
+    interaction.setAtlasPanelRects(card_rect, close_rect);
+}
+
 /// Emits UI draw commands for the image metadata panel and performance overlay.
 pub fn renderStatsOverlay(
     list: *UiDrawList,
@@ -488,6 +618,13 @@ pub fn renderStatsOverlay(
         list,
         ui_model,
         draw_dims,
+        frame_allocator,
+        measure_data,
+    );
+    try renderAtlasOverlay(
+        list,
+        ui_model,
+        win_dims,
         frame_allocator,
         measure_data,
     );

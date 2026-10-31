@@ -1,38 +1,22 @@
 # SDL3 GPU Rendering & SIMD Vector Reference
 
-## 1. Text Advance Alignment & Whitespace Partitioning
+## 1. Unified UI + Per-Glyph Font Atlas (`src/gpu/text_cache.zig`, `src/gpu/pass.zig`)
 
-- **GPU Text Advance Offset**:
-  When calculating sub-pixel advances for text rendering, compute horizontal
-  offsets using font metrics:
-  $$\text{advance_x} = \text{glyph_advance} + \text{letter_spacing}$$
-- **Whitespace Merging**:
-  Partition string slices by contiguous whitespace chunks before glyph
-  measurement to minimize redundant layout calls.
+- **Shared `1024x1024` Atlas Texture**:
+  - `ensureUiAtlasTexture` lazily allocates a single `1024x1024` `RGBA8_UNORM` GPU texture (`TextCache.atlas_texture`) and uploads a `4x4` opaque white (`0xFFFFFFFF`) block at `(0, 0)`.
+  - Solid UI primitives (`appendRectQuad`, `renderFillRoundedRect`, `renderArc` when `screen_uv == false`) emit `uv = (0.0, 0.0)` and bind `gpu_res.uiTexture()`, allowing rectangles, borders, and text in the same scissor region to merge into a single `BatchItem`.
+- **Shelf-Packed Codepoint Rasterization (`getOrRasterizeGlyph`)**:
+  - Glyphs are indexed by `GlyphCacheKey{ .font_id, .font_size, .codepoint }` and rasterized once in pure white `(255, 255, 255, 255)` via `TTF_RenderGlyph_Blended`.
+  - Each glyph upload is padded by 1px of transparent white (`0x00FFFFFF`) on all four sides (`alloc_w = surf_w + 2`, `alloc_h = surf_h + 2`) inside `ShelfPacker` to prevent bilinear edge bleed or uninitialized VRAM sampling.
+  - Whitespace and zero-ink glyphs (`metrics.maxx <= metrics.minx or metrics.maxy <= metrics.miny`) cache `.has_pixels = false` with their horizontal `advance`, advancing the cursor without consuming atlas space or emitting vertices.
 
 ______________________________________________________________________
 
-## 2. Zero-Allocation Text Measurement (`TTF_GetStringSize` / `TTF_MeasureString`)
+## 2. Zero-Allocation Per-Glyph Text Measurement (`FontMeasurer` & `FontSizePage`)
 
-- **Direct Slice Pointer and Length Passing**:
-  SDL3_ttf functions accept byte counts directly (`text.ptr` and `text.len`).
-  Never allocate temporary null-terminated slices (`allocator.dupeSentinel`) or
-  force text sizing signatures to accept an unneeded
-  `allocator: std.mem.Allocator` parameter.
-- **Early Return for Empty Strings**:
-  Check for empty text slices (`text.len == 0`) before making C-ABI calls to
-  avoid unnecessary FFI overhead:
-  ```zig
-  pub fn getStringSize(self: Font, text: []const u8) ?TextSize {
-      if (text.len == 0) return TextSize{ .w = 0, .h = 0 };
-      var w: c_int = 0;
-      var h: c_int = 0;
-      if (c.TTF_GetStringSize(self.ptr, text.ptr, text.len, &w, &h)) {
-          return TextSize{ .w = w, .h = h };
-      }
-      return null;
-  }
-  ```
+- **Direct-Indexed ASCII Page Tables (`FontSizePage`) & `TTF_GetGlyphMetrics`**:
+  - `TextCache` maintains a flat `pages: [max_font_size_pages]FontSizePage` table (keyed by `(font_id, font_size)`) storing `line_height` and a direct-indexed `ascii: [128]GlyphCacheValue` array, falling back to `glyphs` (`AutoHashMapUnmanaged`) only for non-ASCII codepoints (`cp >= 128`).
+  - Both `appendSingleTextRun` (`src/ui/renderer.zig`) and `FontMeasurer.measure` / `FontMeasurer.measurePrefix` (`src/gpu/text_cache.zig`) consult `FontSizePage.ascii[byte]` first, performing **zero C-FFI calls** and **zero hash map lookups** for warm ASCII text while guaranteeing exact width parity between layout and rendering.
 
 ______________________________________________________________________
 

@@ -100,35 +100,36 @@ self.viewer.animations.start(
 
 ______________________________________________________________________
 
-## 3. GPU Text Renderer Alpha Decoupling (Zero Cache Thrashing)
+## 3. Unified UI + Per-Glyph Font Atlas & Vertex Color Modulation
 
 *(See authoritative invariant: `04_ui_rendering_and_performance.md` §1)*
 
-### The Anti-Pattern: Baking Alpha into Text Textures
+### The Anti-Pattern: Per-String Texture Allocation or Baking Color/Alpha
 
-If alpha is part of `TextCacheKey`, an animating label generates 15–20 distinct
-textures across a 140ms fade, exhausting VRAM and thrashing font rasterization.
+Allocating a separate GPU texture per string or baking RGB/alpha into the cache
+key causes cache misses on dynamic strings (zoom %, sliders, timers) and forces
+a texture-binding state change between every UI rectangle, border, and text run.
 
-### The Correct Pattern: Hardware Vertex Blitting
+### The Correct Pattern: Unified Atlas & Hardware Vertex Modulation
 
-1. **Hash RGB Only in Cache Key**:
+1. **Key Strictly by `(font_id, font_size, codepoint)` (`GlyphCacheKey`)**:
+   - Rasterize each unique Unicode codepoint once in pure white
+     `(255, 255, 255, 255)` surrounded by a 1px transparent-white (`0x00FFFFFF`)
+     gutter into the shared `1024x1024` `TextCache.atlas_texture` via
+     `ShelfPacker`.
+2. **Reserve `(0, 0)` White Block for Solid UI Geometry**:
+   - Initialize the top-left `4x4` block of `atlas_texture` to `0xFFFFFFFF` and
+     emit `uv = (0.0, 0.0)` for all non-blurred UI rectangles, rounded
+     rectangles, borders, and corner arcs so UI primitives and text bind the
+     exact same texture (`gpu_res.uiTexture()`).
+3. **Pack Full RGBA into Vertex Color Quad**:
    ```zig
-   const color_rgb_u32 = @as(u32, @intFromFloat(text_data.text_color[0])) |
-       (@as(u32, @intFromFloat(text_data.text_color[1])) << 8) |
-       (@as(u32, @intFromFloat(text_data.text_color[2])) << 16);
-   ```
-2. **Rasterize Once at Solid Alpha (`a = 255`)**: Cache glyphs at full opacity.
-3. **Pack Requested Alpha into Vertex Color Quad**:
-   ```zig
-   const text_alpha_u8 = @as(
-       u8,
-       @intFromFloat(std.math.clamp(text_data.text_color[3], 0.0, 255.0)),
-   );
-   const vert_color = packRgba(255, 255, 255, text_alpha_u8);
+   const vert_color = packRgba255(color);
    ```
 4. **Shader Multiplication**: The fragment shader computes
-   `outColor = texColor * inColor`, modulating opacity smoothly on GPU with
-   **100% cache hits**.
+   `outColor = texColor * inColor`, modulating both RGB color and animated
+   opacity on the GPU with **100% atlas cache hits** and a **single merged draw
+   call** per scissor layer.
 
 ______________________________________________________________________
 

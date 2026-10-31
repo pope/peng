@@ -606,6 +606,10 @@ fn executeIntent(
         .set_info => |val| ui.overlays.info_panel.visible = val,
         .toggle_stats => ui.overlays.stats_panel.visible = !ui.overlays.stats_panel.visible,
         .set_stats => |val| ui.overlays.stats_panel.visible = val,
+        .toggle_atlas => {
+            ui.overlays.atlas_panel.visible = !ui.overlays.atlas_panel.visible;
+        },
+        .set_atlas => |val| ui.overlays.atlas_panel.visible = val,
         .toggle_edit_panel => {
             const new_vis = !ui.overlays.edit_panel.visible;
             ui.overlays.edit_panel.visible = new_vis;

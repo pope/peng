@@ -98,7 +98,7 @@ pub fn sysProcessUiInteractions(
                 self.viewer.ui.overlays.edit_panel.active_slider = null;
             }
         },
-        .none, .viewport, .info, .stats => {},
+        .none, .viewport, .info, .stats, .atlas => {},
     }
 
     // 2. Discrete Clicks (Buttons & Initial Slider Click)
@@ -116,6 +116,11 @@ pub fn sysProcessUiInteractions(
         ui.interaction.isPointerOverStatsCloseBtn())
     {
         try self.pushIntent(.{ .set_stats = false });
+    }
+    if (self.viewer.ui.overlays.atlas_panel.visible and
+        ui.interaction.isPointerOverAtlasCloseBtn())
+    {
+        try self.pushIntent(.{ .set_atlas = false });
     }
 
     // Edit Side Panel Controls

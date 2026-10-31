@@ -8,13 +8,16 @@ const addBatch = gpu_pkg.pass.addBatch;
 const BatchItem = gpu_pkg.render_image.BatchItem;
 const Color = theme.Color;
 const ElementTag = state.ElementTag;
+const ensureFontSizePage = gpu_pkg.pass.ensureFontSizePage;
+const ensureUiAtlasTexture = gpu_pkg.pass.ensureUiAtlasTexture;
 const FRect = geom.FRect;
 const geometry = gpu_pkg.geometry;
-const getOrRenderCachedText = gpu_pkg.pass.getOrRenderCachedText;
+const getOrRasterizeGlyph = gpu_pkg.pass.getOrRasterizeGlyph;
+const GlyphCacheValue = gpu_pkg.text_cache.GlyphCacheValue;
 const intersectScissor = gpu_pkg.pass.intersectScissor;
 const isScissorInvisible = gpu_pkg.pass.isScissorInvisible;
 const PacketBuildContext = gpu_pkg.pass.PacketBuildContext;
-const packRgba = gpu_pkg.geometry.packRgba;
+const packRgba255 = gpu_pkg.geometry.packRgba255;
 const PhysicalDims = geom.PhysicalDims;
 const Rect = geom.Rect;
 const render_image = gpu_pkg.render_image;
@@ -111,6 +114,7 @@ pub const CommandPayload = union(enum) {
     text: TextConfig,
     text_runs: TextRunsConfig,
     image: ImageConfig,
+    atlas_preview: Color,
 };
 
 /// Immediate-mode UI draw command with bounding rectangle and payload.
@@ -227,6 +231,19 @@ pub const UiDrawList = struct {
         });
     }
 
+    /// Appends a quad sampling the full `(0.0, 0.0)..(1.0, 1.0)` UV range of
+    /// the unified UI + font glyph atlas texture tinted by `tint`.
+    pub fn addAtlasPreview(
+        self: *UiDrawList,
+        rect: FRect,
+        tint: Color,
+    ) !void {
+        try self.append(.{
+            .rect = rect,
+            .payload = .{ .atlas_preview = tint },
+        });
+    }
+
     /// Pushes a scissor clipping rectangle command.
     pub fn pushScissor(self: *UiDrawList, rect: FRect) !void {
         try self.append(.{
@@ -315,7 +332,7 @@ fn appendRectangleCommand(
                 allocator,
                 start,
                 count,
-                gpu_res.white_texture,
+                gpu_res.uiTexture(),
                 .ui_element,
                 scissor,
             );
@@ -595,7 +612,7 @@ fn appendBorderCommand(
             allocator,
             start_batch,
             count,
-            gpu_res.white_texture,
+            gpu_res.uiTexture(),
             .ui_element,
             scissor,
         );
@@ -614,96 +631,148 @@ fn appendSingleTextRun(
     color: Color,
     current_scissor: ?Rect,
 ) !void {
-    if (raw_text.len == 0) return;
-    const rgb = [3]f32{ color[0], color[1], color[2] };
-    const win_dims = build_ctx.physical_dims;
+    var text_slice = raw_text;
+    if (std.mem.findScalar(u8, text_slice, 0)) |null_idx| {
+        text_slice = text_slice[0..null_idx];
+    }
+    if (text_slice.len == 0) return;
 
-    if (try getOrRenderCachedText(
+    const target_font_size =
+        @as(f32, @floatFromInt(font_size)) * build_ctx.scale.x;
+    const target_font_size_u16 =
+        @as(u16, @intFromFloat(@round(target_font_size)));
+    const page_opt = ensureFontSizePage(
         build_ctx,
         font_id,
-        font_size,
-        raw_text,
-        rgb,
-    )) |cached| {
-        const offset_y = @round((rect.h - cached.h) / 2.0);
-        const world_y = rect.y + @max(0.0, offset_y);
-        const start_x = world_x.*;
+        target_font_size,
+        target_font_size_u16,
+    );
+    if (page_opt == null and
+        (font_id >= build_ctx.gpu_res.fonts.len or
+            build_ctx.gpu_res.fonts[font_id] == null))
+    {
+        return;
+    }
 
-        const p1 = geometry.toNdc(start_x, world_y, win_dims);
-        const p2 = geometry.toNdc(
-            start_x + cached.w,
-            world_y + cached.h,
-            win_dims,
-        );
+    const line_h = if (page_opt) |p| p.line_height else 0.0;
+    const offset_y = @round((rect.h - line_h) / 2.0);
+    const world_y = rect.y + @max(0.0, offset_y);
+    const win_dims = build_ctx.physical_dims;
+    const inv_win_w = 2.0 / win_dims.w;
+    const ndc_y1 = 1.0 - (world_y / win_dims.h) * 2.0;
+    const ndc_y2 = 1.0 - ((world_y + line_h) / win_dims.h) * 2.0;
 
-        const start = @as(u32, @intCast(vertices.items.len));
-        const text_alpha_u8 = @as(
-            u8,
-            @intFromFloat(std.math.clamp(color[3], 0.0, 255.0)),
-        );
-        const vert_color = packRgba(255, 255, 255, text_alpha_u8);
-        try vertices.append(build_ctx.frame_allocator, .{
-            .x = p1.x,
-            .y = p1.y,
-            .u = 0.0,
-            .v = 0.0,
-            .color = vert_color,
-        });
-        try vertices.append(build_ctx.frame_allocator, .{
-            .x = p2.x,
-            .y = p1.y,
-            .u = 1.0,
-            .v = 0.0,
-            .color = vert_color,
-        });
-        try vertices.append(build_ctx.frame_allocator, .{
-            .x = p1.x,
-            .y = p2.y,
-            .u = 0.0,
-            .v = 1.0,
-            .color = vert_color,
-        });
-        try vertices.append(build_ctx.frame_allocator, .{
-            .x = p2.x,
-            .y = p1.y,
-            .u = 1.0,
-            .v = 0.0,
-            .color = vert_color,
-        });
-        try vertices.append(build_ctx.frame_allocator, .{
-            .x = p2.x,
-            .y = p2.y,
-            .u = 1.0,
-            .v = 1.0,
-            .color = vert_color,
-        });
-        try vertices.append(build_ctx.frame_allocator, .{
-            .x = p1.x,
-            .y = p2.y,
-            .u = 0.0,
-            .v = 1.0,
-            .color = vert_color,
-        });
+    const vert_color = packRgba255(color);
+    const start_vert = @as(u32, @intCast(vertices.items.len));
+    try vertices.ensureUnusedCapacity(
+        build_ctx.frame_allocator,
+        text_slice.len * 6,
+    );
 
+    var byte_idx: usize = 0;
+    while (byte_idx < text_slice.len) {
+        const first_byte = text_slice[byte_idx];
+        const glyph: GlyphCacheValue = if (first_byte < 0x80) blk: {
+            byte_idx += 1;
+            if (page_opt) |page| {
+                const cached = page.ascii[first_byte];
+                if (cached.cached) break :blk cached;
+            }
+            break :blk (try getOrRasterizeGlyph(
+                build_ctx,
+                font_id,
+                target_font_size,
+                target_font_size_u16,
+                first_byte,
+            )) orelse continue;
+        } else blk: {
+            const cp_len = std.unicode.utf8ByteSequenceLength(
+                first_byte,
+            ) catch 1;
+            const cp: u32 = if (byte_idx + cp_len <= text_slice.len)
+                std.unicode.utf8Decode(
+                    text_slice[byte_idx .. byte_idx + cp_len],
+                ) catch 0xFFFD
+            else
+                0xFFFD;
+            byte_idx += @min(cp_len, text_slice.len - byte_idx);
+            break :blk (try getOrRasterizeGlyph(
+                build_ctx,
+                font_id,
+                target_font_size,
+                target_font_size_u16,
+                cp,
+            )) orelse continue;
+        };
+
+        if (glyph.has_pixels) {
+            const gx = world_x.* + glyph.offset_x;
+            const x1 = gx * inv_win_w - 1.0;
+            const x2 = (gx + glyph.w) * inv_win_w - 1.0;
+            const y2 = if (glyph.h == line_h)
+                ndc_y2
+            else
+                1.0 - ((world_y + glyph.h) / win_dims.h) * 2.0;
+
+            vertices.addManyAsArrayAssumeCapacity(6).* = .{
+                .{
+                    .x = x1,
+                    .y = ndc_y1,
+                    .u = glyph.u1,
+                    .v = glyph.v1,
+                    .color = vert_color,
+                },
+                .{
+                    .x = x2,
+                    .y = ndc_y1,
+                    .u = glyph.u2,
+                    .v = glyph.v1,
+                    .color = vert_color,
+                },
+                .{
+                    .x = x1,
+                    .y = y2,
+                    .u = glyph.u1,
+                    .v = glyph.v2,
+                    .color = vert_color,
+                },
+                .{
+                    .x = x2,
+                    .y = ndc_y1,
+                    .u = glyph.u2,
+                    .v = glyph.v1,
+                    .color = vert_color,
+                },
+                .{
+                    .x = x2,
+                    .y = y2,
+                    .u = glyph.u2,
+                    .v = glyph.v2,
+                    .color = vert_color,
+                },
+                .{
+                    .x = x1,
+                    .y = y2,
+                    .u = glyph.u1,
+                    .v = glyph.v2,
+                    .color = vert_color,
+                },
+            };
+        }
+        world_x.* += glyph.advance;
+    }
+
+    const vert_count = @as(u32, @intCast(vertices.items.len)) - start_vert;
+    if (vert_count > 0) {
         try addBatch(
             batches,
             build_ctx.frame_allocator,
-            start,
-            6,
-            cached.texture,
+            start_vert,
+            vert_count,
+            build_ctx.gpu_res.uiTexture(),
             .ui_element,
             current_scissor,
         );
-
-        world_x.* += cached.w;
-    } else {
-        const target_size =
-            @as(f32, @floatFromInt(font_size)) * build_ctx.scale.y;
-        world_x.* += build_ctx.gpu_res.fontMeasurer().measure(
-            font_id,
-            target_size,
-            raw_text,
-        ).w;
     }
 }
 
@@ -714,6 +783,7 @@ fn buildGeometryFromCommands(
     vertices: *std.ArrayList(Vertex),
     batches: *std.ArrayList(BatchItem),
 ) !void {
+    _ = ensureUiAtlasTexture(build_ctx);
     const win_dims = build_ctx.physical_dims;
     const scale_x = build_ctx.scale.x;
     const scale_y = build_ctx.scale.y;
@@ -846,6 +916,37 @@ fn buildGeometryFromCommands(
                     current_scissor,
                     config.uv,
                 );
+            },
+            .atlas_preview => |tint| {
+                if (rect.w > 0 and rect.h > 0) {
+                    const start_v = @as(u32, @intCast(vertices.items.len));
+                    const x1 = (rect.x / win_dims.w) * 2.0 - 1.0;
+                    const y1 = 1.0 - (rect.y / win_dims.h) * 2.0;
+                    const x2 = ((rect.x + rect.w) / win_dims.w) * 2.0 - 1.0;
+                    const y2 = 1.0 - ((rect.y + rect.h) / win_dims.h) * 2.0;
+                    const col = packRgba255(tint);
+                    try vertices.ensureUnusedCapacity(
+                        build_ctx.frame_allocator,
+                        6,
+                    );
+                    vertices.addManyAsArrayAssumeCapacity(6).* = .{
+                        .{ .x = x1, .y = y1, .u = 0.0, .v = 0.0, .color = col },
+                        .{ .x = x2, .y = y1, .u = 1.0, .v = 0.0, .color = col },
+                        .{ .x = x1, .y = y2, .u = 0.0, .v = 1.0, .color = col },
+                        .{ .x = x2, .y = y1, .u = 1.0, .v = 0.0, .color = col },
+                        .{ .x = x2, .y = y2, .u = 1.0, .v = 1.0, .color = col },
+                        .{ .x = x1, .y = y2, .u = 0.0, .v = 1.0, .color = col },
+                    };
+                    try addBatch(
+                        batches,
+                        build_ctx.frame_allocator,
+                        start_v,
+                        6,
+                        build_ctx.gpu_res.uiTexture(),
+                        .ui_element,
+                        current_scissor,
+                    );
+                }
             },
         }
     }

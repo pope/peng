@@ -46,6 +46,12 @@ pub const UiRenderMetricsSnapshot = struct {
     stdev_render_time_ms: f64 = 0.0,
     last_ui_vertex_count: usize = 0,
     last_ui_batch_count: usize = 0,
+    atlas_shelf_x: u32 = 0,
+    atlas_shelf_y: u32 = 0,
+    atlas_used_h: u32 = 0,
+    atlas_page_count: usize = 0,
+    atlas_ascii_glyphs: usize = 0,
+    atlas_unicode_glyphs: usize = 0,
 };
 
 /// UI frame rendering performance metrics, vertex counts, batch counts, and
@@ -54,6 +60,12 @@ pub const UiRenderMetrics = struct {
     ui_render_stats: RenderStats = .{},
     last_ui_vertex_count: usize = 0,
     last_ui_batch_count: usize = 0,
+    atlas_shelf_x: u32 = 0,
+    atlas_shelf_y: u32 = 0,
+    atlas_used_h: u32 = 0,
+    atlas_page_count: usize = 0,
+    atlas_ascii_glyphs: usize = 0,
+    atlas_unicode_glyphs: usize = 0,
 
     /// Creates an immutable performance snapshot containing calculated
     /// mean/stdev and element counts.
@@ -64,6 +76,12 @@ pub const UiRenderMetrics = struct {
             .stdev_render_time_ms = stats.stdev,
             .last_ui_vertex_count = self.last_ui_vertex_count,
             .last_ui_batch_count = self.last_ui_batch_count,
+            .atlas_shelf_x = self.atlas_shelf_x,
+            .atlas_shelf_y = self.atlas_shelf_y,
+            .atlas_used_h = self.atlas_used_h,
+            .atlas_page_count = self.atlas_page_count,
+            .atlas_ascii_glyphs = self.atlas_ascii_glyphs,
+            .atlas_unicode_glyphs = self.atlas_unicode_glyphs,
         };
     }
 };

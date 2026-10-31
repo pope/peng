@@ -353,6 +353,8 @@ fn handleIntentCommand(
         .set_info,
         .toggle_stats,
         .set_stats,
+        .toggle_atlas,
+        .set_atlas,
         .toggle_edit_panel,
         .set_edit_panel,
         .dismiss_overlays,

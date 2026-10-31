@@ -587,6 +587,8 @@ pub const AppIntent = union(enum) {
     set_info: bool,
     toggle_stats,
     set_stats: bool,
+    toggle_atlas,
+    set_atlas: bool,
     toggle_edit_panel,
     set_edit_panel: bool,
     dismiss_overlays,

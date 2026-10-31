@@ -482,9 +482,19 @@ pub const RenderResources = struct {
     text_cache: TextCache = .{},
     fonts: [1]?sdl.Font = .{null},
 
-    /// Returns a `FontMeasurer` bound to this resource context's loaded fonts.
+    /// Returns a `FontMeasurer` bound to this resource context's loaded fonts
+    /// and glyph cache.
     pub inline fn fontMeasurer(self: *const RenderResources) FontMeasurer {
-        return .{ .fonts = self.fonts[0..] };
+        return .{
+            .fonts = self.fonts[0..],
+            .cache = &self.text_cache,
+        };
+    }
+
+    /// Returns the unified UI + font glyph atlas texture when initialized,
+    /// falling back to the 1x1 `white_texture`.
+    pub inline fn uiTexture(self: *const RenderResources) sdl.gpu.Texture {
+        return self.text_cache.atlas_texture orelse self.white_texture;
     }
 
     /// Ensures the per-frame vertex buffer at `frame_idx` has at least
@@ -576,7 +586,7 @@ pub const RenderResources = struct {
         allocator: std.mem.Allocator,
     ) bool {
         var released = false;
-        if (self.text_cache.map.count() > 0) {
+        if (self.text_cache.hasResources()) {
             self.text_cache.deinit(allocator, self.device);
             self.text_cache = .{};
             released = true;
