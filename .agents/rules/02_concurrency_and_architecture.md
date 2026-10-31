@@ -5,17 +5,18 @@
 - **`AppState` (Outer Engine & Hardware Container)**:
   - Defined in `src/app/state.zig` (`app.state.AppState`).
   - Owns hardware contexts (`display: DisplayState`, `gpu_device`,
-    `unpack_compute_pipeline`, `upload_staging: gpu.UploadStagingBuffer`,
-    `ipc_server: ?*IpcServer`),
-    allocators (`allocator`), async I/O (`io`), texture slot cache
-    (`cache: ImageCache`), worker manager (`workers: WorkerManager`), IPC
-    command queue (`pending_ipc_commands`), deferred IPC selection and
-    `wait_load` barrier streams (`pending_selection_streams`,
-    `pending_wait_load_streams`), intent queue (`pending_intents`),
-    event batch (`event_batch`), and embeds `viewer: ViewerState`.
+    `gpu_enabled: bool`, `unpack_compute_pipeline`,
+    `upload_staging: gpu.UploadStagingBuffer`), allocators (`allocator`),
+    async I/O (`io`), texture slot cache (`cache: ImageCache`), worker manager
+    (`workers: WorkerManager`), IPC command queue (`pending_ipc_commands`),
+    deferred IPC selection and `wait_load` barrier streams
+    (`pending_selection_streams`, `pending_wait_load_streams`), intent queue
+    (`pending_intents`), event batch (`event_batch`), and embeds
+    `viewer: ViewerState`.
   - All system pass functions in `src/app/systems/` accept `ctx: FrameContext`
     (`src/app/systems/context.zig`), which bundles `state: *AppState`,
-    `frame_allocator`, `input: FrameInput`, and `delta_time_ms: f32`.
+    `frame_allocator: Allocator`, `input: ?FrameInput`, `delta_time_ms: f64`,
+    and `now_ms: u64`.
 - **`ViewerState` (Pure Visual & UI Data Model)**:
   - Defined in `src/state/viewer_state.zig` (`state.ViewerState`) and embedded
     at `AppState.viewer`. Lives 100% on the main thread.
@@ -23,11 +24,12 @@
     `ui`, `stats`, `animations: AnimationState`,
     `image_transition: ImageTransition`, `pan_controller: PanController`,
     `zoom_controller: ZoomController`, `rotation_map`, `drag_state`,
-    `mouse_inside`, `last_win_w`, `last_win_h`, `running`).
+    `mouse_inside`, `last_win_dims: LogicalDims`, `server_mode`, `running`).
   - **Purity Invariant**: `ViewerState` MUST contain **ZERO** GPU device
     pointers, **ZERO** worker thread pools, **ZERO** `std.Io` contexts, and
-    **ZERO** mutexes or concurrent queues (only CPU memory allocators/arenas for
-    its self-contained `navigation`, `rotation_map`, and `palette` sub-states).
+    **ZERO** mutexes or concurrent queues (its `rotation_map` stores zero
+    allocator as `std.StringHashMapUnmanaged(f32)`, and only `navigation` and
+    `palette` sub-states hold CPU arenas/allocators).
     It must remain safe for headless unit testing without GPU, I/O, or worker
     setup.
 - **`UiViewModel` (Read-Only Presentation Snapshot)**:
@@ -73,7 +75,7 @@
         properties with the active image immediately following intent
         execution.
     09. `sysProcessAssetUploads(ctx)`: Handles EXIF orientation and paced
-        CPU-to-GPU texture uploads.
+        CPU-to-GPU texture uploads (`src/app/systems/asset_upload.zig`).
     10. `sysUpdateCache(ctx)`: Enforces VRAM budget, spawns decode workers,
         schedules settled neighbor preloading, and flushes satisfied IPC
         `wait_load` barrier streams
@@ -107,29 +109,13 @@
 ## 3. Worker Concurrency, Cancellation & Demand-First Cache Gating
 
 - **Startup Concurrency & Overlapped Graphics Initialization**:
-  - `src/main.zig` executes `ui.graphics.initSdlCore` before launching any
-    background workers or initializing `AppState`.
-  - Concurrency branches on CLI inputs: if `parsed.arg_path` is present,
-    `state.openPath(...)` is invoked; otherwise, `app.workers.readPipedStdin`
-    spawns `stdinWorker` for streamed inputs.
-  - When opening a single image file, `openPath` immediately appends slot 0 in
-    `.decoding` status (`has_thread = true`) and spawns `decodeWorker`
-    concurrently alongside `pathScanWorker`. For directories or CBZ archives,
-    only `pathScanWorker` is spawned.
-  - `state.gpu_enabled = true` explicitly declares GPU capability to early
-    workers while `state.gpu_device` is initially `null`, preventing workers
-    from falling back to redundant CPU format conversions or misconfiguring
-    RAW+JPEG stream targets.
-  - Overlaps disk I/O, EXIF parsing, and CPU decompression concurrently on
-    background worker threads with main-thread display server roundtrips,
-    SDL3 GPU device creation (Vulkan / Metal), shader compilation, and Clay
-    layout engine initialization.
-  - Background events queue safely in `workers.event_queue` and are drained in
-    Phase 1 of Frame 1 in `runMainLoop`. If decode finishes during graphics
-    init, Frame 1 renders the active image immediately without blank window
-    flashes; if decode is still in flight (large RAW/TIFF or slow storage),
-    Frame 1 renders the loading state while `computeFrameWaitStrategy` activates
-    an 8ms polling tick until `context.wakeUpMainThread()` signals completion.
+  - `gpu.graphics.initSdlCore` initializes SDL core before in-place
+    `AppGraphicsAndState.init` spawns early workers (`openPath` /
+    `readPipedStdin`) with `gpu_enabled = true` and `gpu_device = null`.
+  - Disk I/O, EXIF parsing, and decompression run on worker threads overlapped
+    with main-thread window/GPU/shader/Clay initialization.
+  - Background events queue in `workers.event_queue` and drain on Frame 1
+    (see [systems-architecture.md][sys-arch] Pattern 13).
 - **Main-Thread Exclusive GPU Access**:
   - All SDL GPU device calls, pipeline bindings, compute dispatches, and texture
     creations/releases MUST execute on the main thread.
@@ -158,11 +144,12 @@
     pushing intermediate events (`exif_orientation_parsed`,
     `dimensions_probed`) and after non-cancellable C decoder calls.
 - **Worker Isolation, Telemetry (`ViewerStats`) & Envelope Pruning**:
-  - Worker tasks (`decodeWorker`, `pathScanWorker`, `stdinWorker`,
-    `ipcServerWorkerTask`) MUST NOT import or accept `*AppState` or
-    `*ViewerState`. Pass explicit argument structs (`DecodeArgs`,
-    `PathScanArgs`, `StdinArgs`, `IpcServerArgs`) initialized directly without
-    `= undefined` field placeholders.
+  - Worker tasks (`decodeWorker`, `pathScanWorker`, `paletteScanWorker`,
+    `previewWorker`, `stdinWorker`, `ipcServerWorkerTask`) MUST NOT import or
+    accept `*AppState` or `*ViewerState`. Pass explicit argument structs
+    (`DecodeArgs`, `PathScanArgs`, `PaletteScanArgs`, `PreviewWorkerArgs`,
+    `StdinArgs`, `IpcServerArgs`) initialized directly without `= undefined`
+    field placeholders.
   - Keep atomic counters (`active_threads`, `active_decode_threads`, `exiting`
     in `WorkerManager`; `active_file_scans` in `NavigationState`) for scheduling
     (`canSpawnDecode()`, `isBusy()`, `wait_load`), and snapshot them once per
@@ -175,35 +162,18 @@
     Cancellation is three-tiered: application shutdown (`exiting`), global
     cache generation invalidation, and per-slot atomic job epoch invalidation
     (`job_epochs: [MAX_DECODE_JOBS]std.atomic.Value(u32)`).
-- **Two-Stage Header-First I/O & Freedesktop Thumbnail Cache
-  (`DecodePayload`, `src/thumbcache/root.zig` / `thumbcache.zig`)**:
-  - Issue `statFile` once and `openFile` once per worker pass.
-  - For RAW files (`decodeRawFile`), read a single **256KB** stack header buffer
-    and extract embedded previews via positional reads (`readRangePositional`).
-  - For standard raster files and companion JPEGs, `DecodePayload.openStagedFile`
-    (`Stage = union(enum) { staged_file: std.Io.File, complete }`) reads only
-    Stage 1 (`@min(target_read_size, 256 * 1024)` bytes) via
-    `readRangePositional`, allowing `decodeWorker` to parse orientation, probe
-    dimensions, and extract/emit `.thumb_decoded` (from the Stage 1 slice or via
-    a positional read on `.staged_file` for thumbnails past 256KB) *before*
-    reading the remainder of the file in `readRemaining()` (Stage 2) and closing
-    the file handle prior to CPU decompression.
-  - When no embedded thumbnail is present, `probeFreedesktopThumbCache` probes
-    `$XDG_CACHE_HOME/thumbnails/` (`normal` -> `large` -> `x-large` ->
-    `xx-large`), validating `Thumb::MTime` against the source `statFile`
-    `mtime.toSeconds()`. Cached Freedesktop PNGs are pre-oriented upright on
-    disk (`ThumbnailSource.freedesktop_cache.isPreOriented() == true`) and bypass
-    EXIF orientation dimension swapping in `buildThumbnailUvRect`.
-  - Background cache writes (`WorkerManager.enqueueThumbWrite` ->
-    `thumbWriterWorker`, bounded to `MAX_QUEUED_THUMB_WRITES = 8`, targeting the
-    `large` 256x256 tier with `tEXt` chunks spliced immediately after `IHDR`)
-    pop from `thumb_write_queue` under `thumb_write_mutex` first (exiting
-    immediately when empty) and yield in 5ms slices while
-    `active_decode_threads > 0` so disk writes never contend with foreground
-    decoding.
+- **Two-Stage Header-First I/O & Freedesktop Thumbnail Cache**:
+  - Issue single `statFile` and `openFile` per worker pass. Read 256KB Stage 1
+    header via `probe.readRangePositional` for metadata probing and thumbnail
+    extraction before `DecodePayload.readRemaining()` executes Stage 2.
+  - Fall back to `$XDG_CACHE_HOME/thumbnails/` when no embedded preview is
+    present, noting cached Freedesktop PNGs are pre-oriented upright.
+  - Background thumbnail writes (`thumbWriterWorker`) are bounded to
+    `MAX_QUEUED_THUMB_WRITES = 8` and yield in 5ms slices when decodes run
+    (see [vram-preloading.md][vram-preload] §2).
 - **Demand-First Priority Gating for Cache & GPU Uploads**:
   1. **Decode Gating (`sysUpdateCache`)**: Never spawn neighbor prefetch workers
-     ($\\pm 1, \\pm 2$) while the active slot (`idx`) is still decoding or
+     ($\pm 1, \pm 2$) while the active slot (`idx`) is still decoding or
      uploading.
   2. **Upload Gating (`handleImageDecodedEvent`)**: While the active image is in
      flight, store completed neighbor decodes as `.loaded_cpu` in host RAM
@@ -211,3 +181,6 @@
   3. **Paced Trickle Uploads (`prepareCacheTextures`)**: Upload the active image
      first; once it is `.loaded_gpu`, upload queued `.loaded_cpu` neighbors at a
      maximum rate of **1 texture per frame**.
+
+[sys-arch]: ../skills/zig-gui-practices/references/systems-architecture.md
+[vram-preload]: ../skills/zig-gui-practices/references/vram-preloading.md

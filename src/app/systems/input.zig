@@ -147,7 +147,7 @@ test "sysProcessInput does not process escape or shortcuts if palette was closed
     var state = try AppState.initHeadless(allocator, io);
     defer state.deinit();
 
-    var keys = std.ArrayList(Key).empty;
+    var keys: std.ArrayList(Key) = .empty;
     defer keys.deinit(allocator);
     try keys.append(allocator, .escape);
 
@@ -197,7 +197,7 @@ test "sysProcessInput ignores key shortcuts while palette mode is active" {
 
     state.viewer.ui.palette.mode = .actions;
 
-    var keys = std.ArrayList(Key).empty;
+    var keys: std.ArrayList(Key) = .empty;
     defer keys.deinit(allocator);
     try keys.append(allocator, .escape);
 
@@ -244,7 +244,7 @@ test "Escape key closes active palette without triggering quit in sysProcessInpu
     try std.testing.expectEqual(PaletteMode.actions, state.viewer.ui.palette.mode);
 
     // 2. User presses Escape to dismiss the palette
-    var keys = std.ArrayList(Key).empty;
+    var keys: std.ArrayList(Key) = .empty;
     defer keys.deinit(allocator);
     try keys.append(allocator, .escape);
 
@@ -302,7 +302,7 @@ test "sysProcessInput accepts shortcuts when palette is dissolving (is_closing =
     state.viewer.ui.palette.mode = .actions;
     state.viewer.ui.palette.is_closing = true;
 
-    var keys = std.ArrayList(Key).empty;
+    var keys: std.ArrayList(Key) = .empty;
     defer keys.deinit(allocator);
     try keys.append(allocator, .right);
 
@@ -350,7 +350,7 @@ test "Escape key dismisses floating overlays without triggering quit" {
     state.viewer.ui.overlays.info_panel.visible = true;
 
     // 2. User presses Escape
-    var keys = std.ArrayList(Key).empty;
+    var keys: std.ArrayList(Key) = .empty;
     defer keys.deinit(allocator);
     try keys.append(allocator, .escape);
 
@@ -408,7 +408,7 @@ test "q key triggers quit even when floating overlays are visible" {
 
     state.viewer.ui.overlays.stats_panel.visible = true;
 
-    var keys = std.ArrayList(Key).empty;
+    var keys: std.ArrayList(Key) = .empty;
     defer keys.deinit(allocator);
     try keys.append(allocator, .char_q);
 
@@ -454,7 +454,7 @@ test "duplicate Escape keys in single frame safely deduplicate without triggerin
     state.viewer.ui.overlays.stats_panel.visible = true;
 
     // Simulate key bounce / rapid input with two Escape events in one frame
-    var keys = std.ArrayList(Key).empty;
+    var keys: std.ArrayList(Key) = .empty;
     defer keys.deinit(allocator);
     try keys.append(allocator, .escape);
     try keys.append(allocator, .escape);
@@ -511,7 +511,7 @@ test "sysProcessInput simultaneous directional keys pan diagonally" {
     app_st.viewer.viewport.zoom_factor = state_pkg.clampZoomFactor(2.0);
 
     // 1. Simultaneous Up and Left keys pressed in single frame
-    var keys_ul = std.ArrayList(Key).empty;
+    var keys_ul: std.ArrayList(Key) = .empty;
     defer keys_ul.deinit(allocator);
     try keys_ul.append(allocator, .up);
     try keys_ul.append(allocator, .left);
@@ -562,7 +562,7 @@ test "sysProcessInput simultaneous directional keys pan diagonally" {
     app_st.clearIntents();
 
     // 2. Simultaneous Down and Right keys pressed in single frame
-    var keys_dr = std.ArrayList(Key).empty;
+    var keys_dr: std.ArrayList(Key) = .empty;
     defer keys_dr.deinit(allocator);
     try keys_dr.append(allocator, .down);
     try keys_dr.append(allocator, .right);
@@ -620,7 +620,7 @@ test "sysProcessInput repeating key with held orthogonal key pans diagonally" {
     app_st.viewer.viewport.zoom_factor = state_pkg.clampZoomFactor(2.0);
 
     // Left key repeating while Up key is physically held
-    var keys_left = std.ArrayList(Key).empty;
+    var keys_left: std.ArrayList(Key) = .empty;
     defer keys_left.deinit(allocator);
     try keys_left.append(allocator, .left);
 
@@ -678,7 +678,7 @@ test "sysProcessInput preserves image navigation when viewport is not zoomed" {
     // Default zoom_factor is 1.0 (not zoomed)
     try std.testing.expect(!app_st.viewer.viewport.isZoomed());
 
-    var keys_right = std.ArrayList(Key).empty;
+    var keys_right: std.ArrayList(Key) = .empty;
     defer keys_right.deinit(allocator);
     try keys_right.append(allocator, .right);
 
@@ -766,7 +766,7 @@ test "sysProcessInput continuous gliding and seamless diagonal transition" {
     // Simulate already moving upward
     app_st.viewer.pan_controller.prev_held = .{ .up = true };
 
-    const keys_empty = std.ArrayList(Key).empty;
+    const keys_empty: std.ArrayList(Key) = .empty;
     const frame_input = FrameInput{
         .win_w = 800,
         .win_h = 600,
@@ -824,7 +824,7 @@ test "sysProcessInput suppresses held keys on modal and modifier transitions" {
     app_st.viewer.pan_controller.smooth_tap_remaining = 15.0;
     app_st.viewer.zoom_controller.smooth_tap_remaining = 0.1;
 
-    const keys_empty = std.ArrayList(Key).empty;
+    const keys_empty: std.ArrayList(Key) = .empty;
 
     // 1. Frame with palette open while 'i' (zoom in) and 'right' are held:
     // active motion is cleared and controllers are not busy.

@@ -314,8 +314,8 @@ pub const BlurResources = union(enum) {
         errdefer dev.releaseTexture(scene_tex);
 
         const down_dims = PositiveDimsU32{
-            .w = @max(1, (dims.w + 3) / 4),
-            .h = @max(1, (dims.h + 3) / 4),
+            .w = @max(1, @divCeil(dims.w, 4)),
+            .h = @max(1, @divCeil(dims.h, 4)),
         };
 
         const down_info = sdl.gpu.TextureCreateInfo{

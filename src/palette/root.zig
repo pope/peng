@@ -834,7 +834,7 @@ pub const FuzzyHighlighter = struct {
         is_pair: bool,
         query_str: []const u8,
     ) !std.ArrayList(usize) {
-        var basename_matches = try std.ArrayList(usize).initCapacity(
+        var basename_matches: std.ArrayList(usize) = try .initCapacity(
             allocator,
             16,
         );
@@ -1360,7 +1360,7 @@ test "PaletteConfig - Contrast palette config displays 0.0 to 3.0 range" {
         contrast_cfg.placeholder,
     );
     try std.testing.expect(
-        std.mem.indexOf(u8, contrast_cfg.placeholder, "0.0 to 3.0") != null,
+        std.mem.find(u8, contrast_cfg.placeholder, "0.0 to 3.0") != null,
     );
 }
 

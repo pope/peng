@@ -199,6 +199,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    intents_module.addImport("geom", geom_module);
     intents_module.addImport("triage", triage_module);
 
     const thumbcache_module = b.createModule(.{
@@ -568,6 +569,9 @@ pub fn build(b: *std.Build) void {
 
     const test_ui_step = b.step("test-ui", "Run ui tests");
     test_ui_step.dependOn(&run_ui_tests.step);
+
+    const test_ipc_step = b.step("test-ipc", "Run ipc tests");
+    test_ipc_step.dependOn(&run_ipc_tests.step);
 
     const test_unit_step = b.step("test-unit", "Run all unit tests");
     test_unit_step.dependOn(&run_sdl_tests.step);

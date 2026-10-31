@@ -73,7 +73,10 @@ pub inline fn eval(self: EasingType, t: f32) f32 {
     const ct = std.math.clamp(t, 0.0, 1.0);
     return switch (self) {
         .linear => ct,
-        .ease_out_cubic => 1.0 - std.math.pow(f32, 1.0 - ct, 3),
+        .ease_out_cubic => {
+            const inv = 1.0 - ct;
+            return 1.0 - inv * inv * inv;
+        },
         .ease_out_quad => 1.0 - (1.0 - ct) * (1.0 - ct),
         // ...
     };
@@ -135,12 +138,10 @@ Because Clay does not support CSS-like cascading container opacity, all child
 elements must explicitly scale their color alpha:
 
 ```zig
-inline fn a(color: clay.Color, progress: f32) clay.Color {
-    return theme.withAlpha(color, progress);
-}
+const background_color = theme.withAlpha(theme.base_translucent, progress);
 ```
 
-Wrap every background, border, and text element in `a(color, progress)`. When
+Pass animated colors directly using `theme.withAlpha(color, progress)`. When in
 steady state ($progress = 1.0$), `withAlpha(c, 1.0)` is a mathematical identity,
 guaranteeing 0-pixel differences on golden test screenshots.
 
@@ -183,7 +184,7 @@ fading a single modal or button opacity from 0.4 back to 0.0), it is a
 ### The Correct Pattern: Snap-and-Cut on Scrubbing or Interruption
 
 1. **Rapid Scrubbing Bypass**: If navigation occurs within 200ms of the previous
-   navigation action ($elapsed < 200\\text{ms}$), bypass the animation entirely
+   navigation action ($elapsed < 200\text{ms}$), bypass the animation entirely
    and cut immediately.
 2. **Interruption Snap-and-Cut**: If an animation is already in flight
    ($0.0 < p < 0.999$), immediately snap to the settled state:
@@ -192,15 +193,16 @@ fading a single modal or button opacity from 0.4 back to 0.0), it is a
    self.viewer.image_transition = .none;
    ```
 3. **Outgoing Slide GPU Invariant**: Only initiate crossfade if the outgoing
-   slide is resident in VRAM (`old_entry.status == .loaded_gpu`). Navigating
-   away from a slide that is still decoding or failed cuts immediately.
+   slide is resident in VRAM (`old_entry.resident.asset == .loaded_gpu`).
+   Navigating away from a slide that is still decoding or failed cuts
+   immediately.
 4. **Dual-Quad Alpha & Layering Math**:
    - Outgoing Quad (`ImageTransitionPrevQuad`): Floating at $z = 0$,
-     centered in viewport, opacity $A\_{\\text{prev}} = 1.0 - p^2$ (quadratic
+     centered in viewport, opacity $A_{\text{prev}} = 1.0 - p^2$ (quadratic
      falloff preserves perceived luminance).
    - Incoming Quad (`ImageCanvas`): Floating at $z = 1$, centered in viewport,
-     opacity $A\_{\\text{cur}} = p$.
-   - When settled ($p \\ge 0.999$): Transition resets to `.none`, rendering a
+     opacity $A_{\text{cur}} = p$.
+   - When settled ($p \ge 0.999$): Transition resets to `.none`, rendering a
      single static quad at $A = 1.0$.
 5. **Mutual Exclusion**: Guard thumbnail crossfade underlays so they never
    execute while an image dissolve is active, preventing quad collisions at
@@ -212,8 +214,8 @@ fading a single modal or button opacity from 0.4 back to 0.0), it is a
   (`ImageTransitionPrevQuad`) must be sized from native unrotated source
   texture dimensions scaled by the outgoing slide's universal zoom factor:
   $$
-  \\text{dst_w} = sw \\times Z\_{\\text{prev}}, \\quad
-  \\text{dst_h} = sh \\times Z\_{\\text{prev}}
+  \text{dst_w} = sw \times Z_{\text{prev}}, \quad
+  \text{dst_h} = sh \times Z_{\text{prev}}
   $$
   Centering coordinates must align with viewport center plus pan offset,
   ensuring that outgoing images dissolve smoothly even if they have different
@@ -227,15 +229,39 @@ ______________________________________________________________________
 
 ## 7. Continuous Smooth Motion Controllers (`PanController`, `ZoomController`)
 
-To provide 120Hz-smooth keyboard panning and zooming without discrete OS key-repeat stutter, `ViewerState` embeds allocation-free motion controllers (`src/state/types.zig`, ticked via `src/input/key_mapping.zig`):
+To provide 120Hz-smooth keyboard panning and zooming without discrete OS
+key-repeat stutter, `ViewerState` embeds allocation-free motion controllers
+(`src/state/viewport.zig`, ticked via `src/input/key_mapping.zig`):
 
 1. **Packed Bitfields & Branchless 16-State Direction LUT**:
-   - `DirectionFlags = packed struct(u4)` (`left`, `right`, `up`, `down`) indexes directly into a 16-entry compile-time unit vector lookup table (`DIRECTION_UNIT_LUT[16]`) via `@as(u4, @bitCast(self))` with $\\frac{1}{\\sqrt{2}}$ diagonal normalization and opposite-key cancellation.
-   - `ZoomFlags = packed struct(u2)` (`in`, `out`) packs held zoom keys into a 2-bit bitfield (`raw()`, `fromRaw()`, `hasAny()`, `merge()`) with opposite-key cancellation when both `in` and `out` are held.
+   - `DirectionFlags = packed struct(u4)` (`left`, `right`, `up`, `down`)
+     indexes directly into a 16-entry compile-time unit vector lookup table
+     (`DIRECTION_UNIT_LUT[16]`) via `@backingInt(self)` (`self.raw()`) with
+     $\frac{1}{\sqrt{2}}$ diagonal normalization and opposite-key cancellation.
+   - `ZoomFlags = packed struct(u2)` (`in`, `out`) packs held zoom keys into a
+     2-bit bitfield (`raw()`, `fromRaw()`, `hasAny()`, `merge()`) with
+     opposite-key cancellation when both `in` and `out` are held.
 2. **Constant Glide Speed, Smooth Tap Completion & Held-Key Suppression**:
-   - `PanController` (`smooth_tap_remaining: f32`, `tap_direction: DirectionFlags`, `prev_held: DirectionFlags`, `suppressed_held: DirectionFlags`) glides at `GLIDE_SPEED = 800.0` px/sec while held and guarantees at least `TAP_DISTANCE = 30.0` px of smooth travel on a brief tap.
-   - `ZoomController` (`smooth_tap_remaining: f32`, `tap_direction: ZoomDirection`, `prev_held: ZoomFlags`, `suppressed_held: ZoomFlags`, `detent_pause_ms: f32`, `detent_target: ?f32`) glides at logarithmic rate `GLIDE_RATE = 1.5` ($\\text{zoom} \\times e^{\\pm 1.5 \\cdot dt}$) and completes a `TAP_STEP_RATIO = 1.25` ($\\ln(1.25) \\approx 0.2231$) step on a quick tap.
-   - Both controllers provide `suppress(held)` to mask out keys held when a modal opens or a UI control is clicked until those keys are physically released.
-3. **100% ($1.0\\times$) Zoom Detent Pause & Event Loop Integration**:
-   - When continuous zooming crosses `detent_target` ($1.0\\times$), `ZoomController` snaps to `1.0` and sets `detent_pause_ms = 150.0` (`DETENT_PAUSE_MS`), pausing briefly at native 1:1 pixel scale before continuing if the key remains held.
-   - Both controllers expose `isBusy()` (`smooth_tap_remaining > 0.001` / `0.0001` or `prev_held.hasAny()`, plus `or self.detent_pause_ms > 0.001` in `ZoomController`), which is checked in `AppState.computeFrameWaitStrategy()`.
+   - `PanController` (`smooth_tap_remaining: f32`, `tap_direction:
+     DirectionFlags`, `prev_held: DirectionFlags`, `suppressed_held:
+     DirectionFlags`) glides at `GLIDE_SPEED = 800.0` px/sec while held and
+     guarantees at least `TAP_DISTANCE = 30.0` px of smooth travel on a brief
+     tap.
+   - `ZoomController` (`smooth_tap_remaining: f32`, `tap_direction:
+     ZoomDirection`, `prev_held: ZoomFlags`, `suppressed_held: ZoomFlags`,
+     `detent_pause_ms: f32`, `detent_target: ?f32`) glides at logarithmic rate
+     `GLIDE_RATE = 1.5` ($\text{zoom} \times e^{\pm 1.5 \cdot dt}$) and
+     completes a `TAP_STEP_RATIO = 1.25` ($\ln(1.25) \approx 0.2231$) step on
+     a quick tap.
+   - Both controllers provide `suppress(held)` to mask out keys held when a
+     modal opens or a UI control is clicked until those keys are physically
+     released.
+3. **100% ($1.0\times$) Zoom Detent Pause & Event Loop Integration**:
+   - When continuous zooming crosses `detent_target` ($1.0\times$),
+     `ZoomController` snaps to `1.0` and sets `detent_pause_ms = 150.0`
+     (`DETENT_PAUSE_MS`), pausing briefly at native 1:1 pixel scale before
+     continuing if the key remains held.
+   - Both controllers expose `isBusy()` (`smooth_tap_remaining > 0.001` /
+     `0.0001` or `prev_held.hasAny()`, plus `or self.detent_pause_ms > 0.001` in
+     `ZoomController`), which is checked in
+     `AppState.computeFrameWaitStrategy()`.

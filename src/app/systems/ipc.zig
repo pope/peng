@@ -1043,7 +1043,7 @@ test "sysExecuteIpcCommands - preview while hidden and bare open window" {
     defer std.Io.Dir.deleteFile(std.Io.Dir.cwd(), io, temp_path) catch {};
 
     try std.testing.expect(
-        std.mem.indexOf(u8, temp_path, "tty-graphics-protocol") != null,
+        std.mem.find(u8, temp_path, "tty-graphics-protocol") != null,
     );
     try std.testing.expectEqual(@as(u32, 160), parsed_prev.value.w.?);
     try std.testing.expectEqual(@as(u32, 107), parsed_prev.value.h.?);

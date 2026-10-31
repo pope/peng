@@ -356,7 +356,7 @@ fn enqueueDecodedThumbWrite(
     const owned_path = state.allocator.dupe(u8, path_slice) catch return false;
     const auth = entry.getAuthoritativeDims();
     const source_dims =
-        PhysicalDims.initPositive(auth.w, auth.h) orelse
+        auth.asPositive() orelse
         decoded_data.source_dims orelse
         PhysicalDims.initPositive(decoded_data.w, decoded_data.h);
 
@@ -493,15 +493,15 @@ fn applyDecodedMetadata(
     entry.metadata.orientation = decoded_data.orientation;
     entry.inflight = null;
     if (decoded_data.raw_metadata.getSensorDims()) |s_dims| {
-        entry.updateFullDims(s_dims.w, s_dims.h);
+        entry.updateFullDims(s_dims);
     }
     if (decoded_data.source_dims) |s_dims| {
-        entry.updateFullDims(s_dims.w, s_dims.h);
+        entry.updateFullDims(s_dims);
     }
-    entry.updateFullDims(decoded_data.w, decoded_data.h);
+    entry.updateFullDims(.{ .w = decoded_data.w, .h = decoded_data.h });
     entry.metadata.raw_metadata = if (decoded_data.raw_metadata.isRaw())
         if (entry.metadata.full_dims) |fd|
-            RawMetadata.init(fd.w, fd.h)
+            RawMetadata.fromDims(fd)
         else
             decoded_data.raw_metadata
     else
@@ -1583,7 +1583,7 @@ test "DirectoryScanResultEvent - Preserves MediaId for initial target file" {
     const paths = try scan_alloc.alloc(MediaEntry, 100);
     for (paths, 0..) |*p, i| {
         var buf: [32]u8 = undefined;
-        const name = try std.fmt.bufPrint(&buf, "img_{d:0>3}.jpg", .{i + 1});
+        const name = try std.mem.print(&buf, "img_{d:0>3}.jpg", .{i + 1});
         p.* = .{ .filesystem = .{ .path = try scan_alloc.dupe(u8, name) } };
     }
 

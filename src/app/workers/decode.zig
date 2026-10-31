@@ -343,7 +343,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
     // Read initial 256KB header via readPositional without allocating full file
     const header_target: usize = @intCast(@min(file_size, header_probe_limit));
     var header_buf: [header_probe_limit]u8 = undefined;
-    const start_hdr_read = sdl.timer.getTicksNs();
+    const start_hdr_read = std.Io.Clock.awake.now(io);
     const header_n = readRangePositional(
         file,
         io,
@@ -364,9 +364,12 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
         );
         return true;
     };
-    const end_hdr_read = sdl.timer.getTicksNs();
-    const header_read_time_ms =
-        @as(f64, @floatFromInt(end_hdr_read - start_hdr_read)) / 1_000_000.0;
+    const header_read_time_ms = @as(
+        f64,
+        @floatFromInt(
+            @max(0, start_hdr_read.untilNow(io, .awake).nanoseconds),
+        ),
+    ) / 1_000_000.0;
     const header_slice = header_buf[0..header_n];
 
     const mime_type = probe.detectMimeType(header_slice, path);
@@ -481,7 +484,7 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
                 PhysicalDims.initPositive(raw_w, raw_h) orelse
                 cached_dims;
             const raw_meta = if (source_dims) |sd|
-                RawMetadata.init(sd.w, sd.h)
+                RawMetadata.fromDims(sd)
             else
                 .none;
             pushThumbDecoded(
@@ -595,10 +598,12 @@ fn decodeRawFile(args: *DecodeArgs, path: []const u8, is_pair: bool) bool {
         }
     }
 
-    const start_dec = sdl.timer.getTicksNs();
+    const start_dec = std.Io.Clock.awake.now(io);
     const surface = sdl.Surface.loadConstMemOpt(prev_bytes);
-    const end_dec = sdl.timer.getTicksNs();
-    const decode_time_ms = @as(f64, @floatFromInt(end_dec - start_dec)) / 1_000_000.0;
+    const decode_time_ms = @as(
+        f64,
+        @floatFromInt(@max(0, start_dec.untilNow(io, .awake).nanoseconds)),
+    ) / 1_000_000.0;
 
     if (surface == null) {
         if (is_pair) return false;
@@ -785,7 +790,7 @@ const DecodePayload = struct {
             return null;
         };
 
-        const start_read = sdl.timer.getTicksNs();
+        const start_read = std.Io.Clock.awake.now(io);
         const file = std.Io.Dir.openFile(
             std.Io.Dir.cwd(),
             io,
@@ -847,8 +852,10 @@ const DecodePayload = struct {
             return null;
         };
 
-        const end_read = sdl.timer.getTicksNs();
-        const read_time_ms = @as(f64, @floatFromInt(end_read - start_read)) / 1_000_000.0;
+        const read_time_ms = @as(
+            f64,
+            @floatFromInt(@max(0, start_read.untilNow(io, .awake).nanoseconds)),
+        ) / 1_000_000.0;
 
         const has_more_on_disk = (read_n == stage1_target) and (read_n < file_size);
         const stage: Stage = if (has_more_on_disk)
@@ -895,7 +902,7 @@ const DecodePayload = struct {
                 }
                 if (self.read_n < self.bytes.len) {
                     const cancel = args.cancelToken();
-                    const start_read = sdl.timer.getTicksNs();
+                    const start_read = std.Io.Clock.awake.now(args.io);
                     const rem_n = readRangePositional(
                         file,
                         args.io,
@@ -915,8 +922,16 @@ const DecodePayload = struct {
                         );
                         return null;
                     };
-                    const end_read = sdl.timer.getTicksNs();
-                    self.read_time_ms += @as(f64, @floatFromInt(end_read - start_read)) / 1_000_000.0;
+                    self.read_time_ms += @as(
+                        f64,
+                        @floatFromInt(
+                            @max(
+                                0,
+                                start_read.untilNow(args.io, .awake)
+                                    .nanoseconds,
+                            ),
+                        ),
+                    ) / 1_000_000.0;
                     self.read_n += rem_n;
                 }
                 return self.bytes[0..self.read_n];
@@ -1146,9 +1161,9 @@ pub fn decodeWorker(args: *DecodeArgs) void {
         const source_dims = full_dims;
         const raw_metadata: RawMetadata = if (is_raw_archive)
             (if (raw_sensor_dims) |d|
-                RawMetadata.init(d.w, d.h)
+                RawMetadata.fromDims(d)
             else if (source_dims) |sd|
-                RawMetadata.init(sd.w, sd.h)
+                RawMetadata.fromDims(sd)
             else
                 .none)
         else
@@ -1171,11 +1186,14 @@ pub fn decodeWorker(args: *DecodeArgs) void {
 
     const full_bytes = payload.readRemaining(args) orelse return;
     const bytes_to_decode = if (raw_preview_slice) |s| s else full_bytes;
-    const start_decode = sdl.timer.getTicksNs();
+    const start_decode = std.Io.Clock.awake.now(io);
     const surface = sdl.Surface.loadConstMemOpt(bytes_to_decode);
-    const end_decode = sdl.timer.getTicksNs();
-
-    const decode_time_ms = @as(f64, @floatFromInt(end_decode - start_decode)) / 1_000_000.0;
+    const decode_time_ms = @as(
+        f64,
+        @floatFromInt(
+            @max(0, start_decode.untilNow(io, .awake).nanoseconds),
+        ),
+    ) / 1_000_000.0;
 
     if (surface == null) {
         failDecodeWorker(
@@ -1217,9 +1235,9 @@ pub fn decodeWorker(args: *DecodeArgs) void {
             PhysicalDims.initPositive(unscaled_w, unscaled_h);
         const raw_metadata: RawMetadata = if (is_raw_archive)
             (if (raw_sensor_dims) |d|
-                RawMetadata.init(d.w, d.h)
+                RawMetadata.fromDims(d)
             else if (source_dims) |sd|
-                RawMetadata.init(sd.w, sd.h)
+                RawMetadata.fromDims(sd)
             else
                 .none)
         else

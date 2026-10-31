@@ -3,9 +3,11 @@ const state = @import("state");
 const std = @import("std");
 
 const AppIntent = intents.AppIntent;
+const flat_shortcuts = intents.actions.flat_shortcuts;
 const Key = intents.Key;
 const KeyModifiers = intents.KeyModifiers;
-const flat_shortcuts = intents.actions.flat_shortcuts;
+const PanController = state.PanController;
+const ZoomController = state.ZoomController;
 
 pub const KeyContext = enum {
     global,
@@ -642,7 +644,7 @@ test "DIRECTION_UNIT_LUT precomputed resolutions" {
 }
 
 test "updateDirectionalPan constant speed cardinal and diagonal motion" {
-    var ctrl = state.PanController{};
+    var ctrl: PanController = .{};
     const empty_keys = [_]Key{};
 
     const inv_sqrt2: f32 = 0.70710678;
@@ -697,7 +699,7 @@ test "updateDirectionalPan constant speed cardinal and diagonal motion" {
 }
 
 test "updateDirectionalPan smooth tap completion after key release" {
-    var ctrl = state.PanController{};
+    var ctrl: PanController = .{};
     const empty_keys = [_]Key{};
 
     const exp_cardinal = state.PanController.GLIDE_SPEED * (16.0 / 1000.0);
@@ -740,7 +742,7 @@ test "updateDirectionalPan smooth tap completion after key release" {
 }
 
 test "updateDirectionalPan continuous hold without pauses or jumps" {
-    var ctrl = state.PanController{};
+    var ctrl: PanController = .{};
     const empty_keys = [_]Key{};
     const exp_cardinal = state.PanController.GLIDE_SPEED * (16.0 / 1000.0);
 
@@ -760,7 +762,7 @@ test "updateDirectionalPan continuous hold without pauses or jumps" {
 }
 
 test "updateDirectionalPan seamless orthogonal transition without stutter" {
-    var ctrl = state.PanController{};
+    var ctrl: PanController = .{};
     const empty_keys = [_]Key{};
 
     const inv_sqrt2: f32 = 0.70710678;
@@ -805,7 +807,7 @@ test "updateDirectionalPan seamless orthogonal transition without stutter" {
 }
 
 test "updateZoomMotion constant rate continuous hold" {
-    var ctrl = state.ZoomController{};
+    var ctrl: ZoomController = .{};
     const empty_keys = [_]Key{};
     const dt_ms = 16.0;
     const exp_ratio = @exp(state.ZoomController.GLIDE_RATE * (dt_ms / 1000.0));
@@ -827,7 +829,7 @@ test "updateZoomMotion constant rate continuous hold" {
 }
 
 test "updateZoomMotion smooth tap completion after key release" {
-    var ctrl = state.ZoomController{};
+    var ctrl: ZoomController = .{};
     const empty_keys = [_]Key{};
     const dt_ms = 16.0;
 
@@ -879,7 +881,7 @@ test "updateZoomMotion smooth tap completion after key release" {
 }
 
 test "updateZoomMotion opposing keys cancel out" {
-    var ctrl = state.ZoomController{};
+    var ctrl: ZoomController = .{};
     const empty_keys = [_]Key{};
 
     const res = updateZoomMotion(
@@ -894,7 +896,7 @@ test "updateZoomMotion opposing keys cancel out" {
 }
 
 test "updateZoomMotion snap to 1.0 detent on tap" {
-    var ctrl = state.ZoomController{};
+    var ctrl: ZoomController = .{};
     const empty_keys = [_]Key{};
     const dt_ms = 16.0;
 
@@ -928,7 +930,7 @@ test "updateZoomMotion snap to 1.0 detent on tap" {
 }
 
 test "updateZoomMotion detent pause on continuous hold" {
-    var ctrl = state.ZoomController{};
+    var ctrl: ZoomController = .{};
     const empty_keys = [_]Key{};
 
     // 0.999 approaching 1.0
@@ -957,7 +959,7 @@ test "updateZoomMotion detent pause on continuous hold" {
 }
 
 test "updateZoomMotion key release stops immediately after hold" {
-    var ctrl = state.ZoomController{};
+    var ctrl: ZoomController = .{};
     const repeat_keys = [_]Key{.char_i};
     const empty_keys = [_]Key{};
 

@@ -35,24 +35,27 @@ safety, resource management, and correctness, ensuring alignment with
 Zig 0.17.0 practices and the 5 authoritative rule files in `.agents/rules/`:
 
 1. **[`01_memory_and_resource_safety.md`][rule-01]**:
-   Allocators, per-frame arena LIFO rewinding, `errdefer` + `try` cleanup,
-   tagged union & packed bitfield invariants (`DirectionFlags`, `ZoomFlags`),
-   zero full-file RAW allocation, saturating offset arithmetic (`+|`), 32-bit
-   `@intCast` safety, GPU/CPU pixel format safety, and structured error logging.
+   Allocators, bounded session arenas, per-frame arena LIFO rewinding,
+   `--server` mode memory reclamation (`reclaimMemory`, `reclaimProcessHeap`),
+   `errdefer` + `try` cleanup, tagged union & packed bitfield invariants
+   (`DirectionFlags`, `ZoomFlags`), zero full-file RAW allocation, saturating
+   offset arithmetic (`+|`), 32-bit `@intCast` safety, and error logging.
 2. **[`02_concurrency_and_architecture.md`][rule-02]**:
    `AppState` vs `ViewerState` vs `UiViewModel` split, 3-phase frame pipeline,
    11-step `runUpdatePhase` systems pass with zero inter-system calls,
    `AppIntent` queue (`defer clearIntents()`), `actions.zig` registry,
    main-thread GPU exclusivity, `std.Io.Group` worker lifecycle, cooperative
-   generation & `CancellationToken` pruning, and demand-first cache/upload
-   gating.
+   cancellation via `ImageCacheKey` (`MediaId` + generation) and `job_epochs`,
+   and demand-first cache/upload gating.
 3. **[`03_c_abi_and_module_hygiene.md`][rule-03]**:
    Single C translation wrapper (`src/sdl/c.zig` via `sdl_c`), `extern struct`
-   handle wrappers, acyclic module hierarchy, 2-block alphabetical
-   imports/aliases, no proxy re-exports or backward-compatibility aliases,
-   `.init` inference, exhaustive enum & tagged union `switch` without `else`,
-   minimal `pub` visibility, zombie pruning, mandatory `///` doc comments, and
-   the strict `<= 80`-column line length ceiling.
+   handle wrappers, acyclic package hierarchy (`geom`, `core`, `thumbcache`,
+   zero-SDL `ui` exclusive `zclay` consumer), 2-block alphabetical
+   imports/aliases, no proxy re-exports, Zig 0.17 builtins & stdlib idioms
+   (`.empty` / `.init(...)` inference, `@backingInt`, `@divCeil`, `@splat`,
+   `std.mem.print`/`allocator.print`, `std.mem.find*`, `.writerStreaming`),
+   exhaustive enum & union `switch` without `else`, minimal `pub` visibility,
+   zombie pruning, mandatory `///` docs, and strict `<= 80`-column ceiling.
 4. **[`04_ui_rendering_and_performance.md`][rule-04]**:
    2-pass `RenderPacket` pipeline, 2-pass quarter-res Dual Kawase backdrop blur
    gating, RGB-only `TextCacheKey`, `LogicalDims` / `PhysicalDims` / `DpiScale`

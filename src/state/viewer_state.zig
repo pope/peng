@@ -29,7 +29,7 @@ pub const ViewerState = struct {
     ui: UiState,
     animations: AnimationState,
     stats: ViewerStats = .{},
-    rotation_map: std.StringHashMap(f32),
+    rotation_map: std.StringHashMapUnmanaged(f32) = .empty,
 
     drag_state: DragState = .none,
 
@@ -62,7 +62,7 @@ pub const ViewerState = struct {
             .navigation = nav,
             .ui = ui,
             .animations = .{},
-            .rotation_map = .init(allocator),
+            .rotation_map = .empty,
         };
     }
 
@@ -75,7 +75,7 @@ pub const ViewerState = struct {
         self.navigation.deinit(allocator);
         self.ui.deinit(io, allocator);
         self.clearRotationMap(allocator);
-        self.rotation_map.deinit();
+        self.rotation_map.deinit(allocator);
     }
 
     /// Returns `true` if slideshow mode is active and advancing images on
@@ -105,7 +105,7 @@ pub const ViewerState = struct {
         const duped_key = try allocator.dupe(u8, path);
         errdefer allocator.free(duped_key);
 
-        const gop = try self.rotation_map.getOrPut(duped_key);
+        const gop = try self.rotation_map.getOrPut(allocator, duped_key);
         if (gop.found_existing) {
             allocator.free(duped_key);
         }

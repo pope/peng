@@ -470,8 +470,8 @@ pub fn uploadSurfaceToGpu(
 
         compute_pass.bindPipeline(pipeline_handle);
         compute_pass.bindStorageBuffers(0, &[_]sdl.gpu.Buffer{storage_buf});
-        const group_x: u32 = @intCast((u_w + 15) / 16);
-        const group_y: u32 = @intCast((u_h + 15) / 16);
+        const group_x: u32 = @intCast(@divCeil(u_w, 16));
+        const group_y: u32 = @intCast(@divCeil(u_h, 16));
         compute_pass.dispatch(group_x, group_y, 1);
         compute_pass.end();
 

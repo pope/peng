@@ -35,17 +35,20 @@ under `.agents/` (`README.md`, `rules/*.md`, `skills/*`, and `agents/*`).
 
 Specifically, audit against these quality standards:
 
-1. **Rule vs Skill Classification**: Verify that universal behavioral
+1. **Codebase Fidelity Check**: Verify every file path, module name,
+   type/field/function name, and `build.zig` step in `.agents/` against actual
+   definitions in `src/` and `build.zig` to eliminate stale documentation.
+2. **Rule vs Skill Classification**: Verify that universal behavioral
    guardrails, strict architectural constraints, and safety invariants live
    in `.agents/rules/`, while actionable multi-step toolchains, UI layout
    recipes, or procedural workflows live in `.agents/skills/`.
-2. **Conflicting Advice Check**: Scan all rule files, skills, and agent
+3. **Conflicting Advice Check**: Scan all rule files, skills, and agent
    manifests for any contradictory instructions, outdated standards, or
    conflicting guidance.
-3. **Agent Definition Consistency**: Verify that custom agent system prompts
+4. **Agent Definition Consistency**: Verify that custom agent system prompts
    in `.agents/agents/*/AGENT.md` accurately reflect current project rules and
    tool configurations.
-4. **High Information Density & Authority**: Ensure rule files remain concise,
+5. **High Information Density & Authority**: Ensure rule files remain concise,
    high-density, authoritative guardrails without unnecessary fluff or
    redundant prose.
 

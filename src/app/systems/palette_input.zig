@@ -827,7 +827,7 @@ test "sysProcessPaletteInput preserves text_input after backspace" {
     try state.openPalette(.actions);
     try state.viewer.ui.palette.query.appendSlice(allocator, "cat");
 
-    var keys = std.ArrayList(Key).empty;
+    var keys: std.ArrayList(Key) = .empty;
     defer keys.deinit(allocator);
     try keys.append(allocator, .backspace);
     try keys.append(allocator, .char_r);

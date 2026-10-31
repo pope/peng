@@ -217,9 +217,9 @@ pub const CacheEntry = struct {
     }
 
     /// Monotonically updates the authoritative full-resolution dimensions if
-    /// the candidate `(w, h)` has a larger positive finite pixel area.
-    pub fn updateFullDims(self: *CacheEntry, w: f32, h: f32) void {
-        const cand = PhysicalDims.initPositive(w, h) orelse return;
+    /// the candidate `dims` has a larger positive finite pixel area.
+    pub fn updateFullDims(self: *CacheEntry, dims: PhysicalDims) void {
+        const cand = dims.asPositive() orelse return;
         const cur_area = if (self.metadata.full_dims) |cur|
             @as(f64, cur.w) * @as(f64, cur.h)
         else
@@ -245,14 +245,14 @@ pub const CacheEntry = struct {
             self.metadata.orientation = orientation;
         }
         if (raw_metadata.getSensorDims()) |s_dims| {
-            self.updateFullDims(s_dims.w, s_dims.h);
+            self.updateFullDims(s_dims);
         }
         if (dims) |d| {
-            self.updateFullDims(d.w, d.h);
+            self.updateFullDims(d);
         }
         if (raw_metadata.isRaw() or self.metadata.raw_metadata.isRaw()) {
             if (self.metadata.full_dims) |fd| {
-                self.metadata.raw_metadata = RawMetadata.init(fd.w, fd.h);
+                self.metadata.raw_metadata = RawMetadata.fromDims(fd);
             } else if (raw_metadata.isRaw()) {
                 self.metadata.raw_metadata = raw_metadata;
             }
@@ -350,18 +350,14 @@ pub const JobTicket = struct {
 /// Structure-of-Arrays (SoA) associative cache managing decoded image slots,
 /// generation epochs, and VRAM memory budgeting.
 pub const ImageCache = struct {
-    slots: std.MultiArrayList(CacheSlot) = .{},
+    slots: std.MultiArrayList(CacheSlot) = .empty,
     generation: std.atomic.Value(usize) = .init(0),
     vram_capped_neighbors: ?VisibleNeighbors = null,
     vram_capped_prev_index: ?usize = null,
     max_prefetch_dist: usize = 2,
 
     /// Pinned array of atomic job epochs for zero-allocation cancellation.
-    job_epochs: [MAX_DECODE_JOBS]std.atomic.Value(u32) = blk: {
-        var arr: [MAX_DECODE_JOBS]std.atomic.Value(u32) = undefined;
-        for (&arr) |*val| val.* = .init(1);
-        break :blk arr;
-    },
+    job_epochs: [MAX_DECODE_JOBS]std.atomic.Value(u32) = @splat(.init(1)),
     /// Bitmask tracking active job IDs (0..15).
     job_alloc_mask: u16 = 0,
 
@@ -1060,7 +1056,7 @@ pub fn loadThumbnailSurface(
                 .source_dims = source_dims,
                 .raw_metadata = if (is_raw)
                     (if (source_dims) |sd|
-                        RawMetadata.init(sd.w, sd.h)
+                        RawMetadata.fromDims(sd)
                     else
                         .none)
                 else
@@ -1798,7 +1794,7 @@ test "CacheEntry - updateFullDims and monotonic probed metadata integration" {
     );
 
     // Initial update sets full_dims
-    entry.updateFullDims(1616.0, 1080.0);
+    entry.updateFullDims(.{ .w = 1616.0, .h = 1080.0 });
     try std.testing.expectEqual(
         PhysicalDims{ .w = 1616.0, .h = 1080.0 },
         entry.metadata.full_dims.?,

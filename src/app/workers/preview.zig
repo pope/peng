@@ -404,7 +404,8 @@ fn renderPreviewRgbaFile(
     if (cancel.isCanceled()) return error.Canceled;
 
     const seq = preview_file_seq.fetchAdd(1, .monotonic);
-    const tick = sdl.timer.getTicksNs();
+    const tick: u64 =
+        @intCast(@max(0, std.Io.Clock.awake.now(io).nanoseconds));
     const file_perms: std.Io.File.Permissions =
         if (std.Io.File.Permissions.has_executable_bit)
             .fromMode(0o600)

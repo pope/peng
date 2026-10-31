@@ -18,7 +18,7 @@ System passes under `src/app/systems/` follow a deterministic linear pipeline:
         discrete intents.
     08. `sysSyncWindow(ctx)`: Synchronizes OS window title and display
         fullscreen/state.
-    09. `sysProcessAssetUploads(ctx)`: Performs EXIF orientation & GPU texture uploads.
+    09. `sysProcessAssetUploads(ctx)`: Performs EXIF orientation & GPU texture uploads (`src/app/systems/asset_upload.zig`).
     10. `sysUpdateCache(ctx)`: Manages slot eviction, decodes & performs idle neighbor preloading.
     11. `sysSyncMetrics(ctx)`: Synchronizes telemetry & stats for Nerds overlay.
 
@@ -27,8 +27,9 @@ ______________________________________________________________________
 ## Frame Context & Memory Lifetimes
 
 - **Pattern 2 — Frame Arena Lifetimes & Capacity Pre-allocation**
-  (`FrameContext`):
-  - Every system function signature accepts `ctx: FrameContext` containing `state: *AppState`, `frame_allocator: Allocator`, `input: FrameInput`, and `delta_time_ms: f32`.
+  - Every system function signature accepts `ctx: FrameContext` containing
+    `state: *AppState`, `frame_allocator: Allocator`, `input: ?FrameInput`,
+    `delta_time_ms: f64`, and `now_ms: u64`.
   - Systems must use `ctx.frame_allocator` for transient frame-bound allocations (such as string duping for enqueued intents). Memory allocated with `frame_allocator` automatically resets at frame boundaries.
   - **Dynamic Array Pre-allocation**: State constructors (`NavigationState.init`, `PaletteState.init`, `AppState.ensureInitialCapacities`) and filesystem directory scanners (`scanDirectoryEntries`) use `try entries.ensureTotalCapacity(allocator, N)` to reserve capacity upfront with explicit rationale comments explaining chosen capacities.
   - **Capacity Retention**: Interactive reset methods (`clearIntents()`, `PaletteState.reset()`, `clearDirItems()`) must use `clearRetainingCapacity()` to prevent runtime heap reallocation churn during UI update passes.
@@ -169,10 +170,12 @@ ______________________________________________________________________
   - When domain collections maintain parallel attributes (such as `MediaEntry` (~56 bytes) and `Classification` (1 byte)), avoid separate parallel `ArrayList` collections:
     ```zig
     pub const MediaItem = struct {
+        id: MediaId,
         entry: MediaEntry,
         classification: Classification = .unflagged,
     };
     pub const MediaItemList = std.MultiArrayList(MediaItem);
+    pub const MediaItemSlice = std.MultiArrayList(MediaItem).Slice;
     ```
   - **Unified Allocation**: `MultiArrayList` manages both partitions in a single block allocation, preventing list length desynchronization and eliminating allocator fragmentation.
   - **L1 Cache Line Density**: Dense 1-byte arrays stream 64 items per 64-byte L1 cache line (a 64x density improvement over AoS structs), enabling sub-microsecond SIMD filtering across 10,000+ items.
@@ -264,9 +267,9 @@ ______________________________________________________________________
 
 ## Application Startup & Overlapped Initialization Pattern
 
-- **Pattern 14 — Overlapped I/O, Decode & Graphics Device Startup**:
+- **Pattern 13 — Overlapped I/O, Decode & Graphics Device Startup**:
   - Rather than initializing SDL, window, GPU device, shaders, and Clay serially before touching any media, peng overlaps CPU disk I/O and image decode with graphics setup:
-    1. **Core SDL Subsystem Init (`initSdlCore`)**: Initializes `SDL_INIT_VIDEO | SDL_INIT_EVENTS` (required by background workers for surface operations and thread wakeup via `context.wakeUpMainThread`) and consolidates `TTF_Init` upfront prior to state construction.
+    1. **Core SDL Subsystem Init (`gpu.graphics.initSdlCore` in `src/gpu/graphics.zig`)**: Initializes `SDL_INIT_VIDEO | SDL_INIT_EVENTS` (required by background workers for surface operations and thread wakeup via `context.wakeUpMainThread`) and consolidates `TTF_Init` upfront prior to state construction.
     2. **Pinned In-Place State & Early Media Ingestion (`AppGraphicsAndState.init` -> `state.openPath` / `readPipedStdin`)**: `AppGraphicsAndState.init(self: *AppGraphicsAndState, ...)` initializes `self.state` directly in-place at its permanent stack address before spawning workers (preventing by-value struct returns from invalidating worker pointers to `state.workers`, `state.cache.generation`, and `active_file_scans`). When given a direct single-image file path, `openPath` appends slot 0 in `.decoding` status (`has_thread = true`) and spawns `decodeWorker` concurrently with `pathScanWorker`. When opening a directory or CBZ, spawns `pathScanWorker`. When piped from stdin, spawns `stdinWorker`.
     3. **Concurrent Main-Thread Window & GPU Setup**: While workers read file headers, extract EXIF data, and decompress pixels on background threads, the main thread performs window creation, display server negotiation (Wayland/X11 roundtrips), SDL3 GPU device creation (Vulkan / Metal), shader/pipeline compilation, and Clay UI memory allocation.
     4. **GPU Intent (`gpu_enabled`) & Deferred Binding**: Initializes `state.gpu_enabled = true` so early decode workers know a GPU device will be present (avoiding redundant CPU format conversions and preserving raw surfaces for GPU compute unpack), while keeping `state.gpu_device = null` until all graphics pipelines and Clay memory succeed. If an intermediate setup step fails, `state.deinit()` cleans up worker threads and CPU caches without accessing unowned or destroyed GPU handles (use-after-free).

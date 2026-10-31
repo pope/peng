@@ -4,6 +4,7 @@ const intents = @import("intents");
 const std = @import("std");
 const triage = @import("triage");
 
+const PhysicalPoint = geom.PhysicalPoint;
 const PositiveDimsU32 = geom.PositiveDimsU32;
 const TextureScaleMode = intents.TextureScaleMode;
 const ViewMode = triage.ViewMode;
@@ -227,7 +228,7 @@ pub const PreviewRequest = struct {
 
 pub const IpcCommand = union(enum) {
     zoom: f32,
-    pan: struct { x: f32, y: f32 },
+    pan: PhysicalPoint,
     adjust: struct {
         brightness: f32,
         contrast: f32,
@@ -290,7 +291,7 @@ pub const IpcCommand = union(enum) {
     pub fn toIntent(self: IpcCommand) ?intents.AppIntent {
         switch (self) {
             .zoom => |factor| return .{ .set_zoom = factor },
-            .pan => |p| return .{ .set_pan = .{ .x = p.x, .y = p.y } },
+            .pan => |p| return .{ .set_pan = p },
             .adjust => return null,
             .tone => |t| return .{ .adjust = .{ .batch_tone = .{
                 .highlights = t.highlights,
@@ -1110,6 +1111,10 @@ test "IpcCommand parsing" {
     const cmd_pan = try IpcCommand.parse("pan 100 -50");
     try std.testing.expectEqual(@as(f32, 100), cmd_pan.pan.x);
     try std.testing.expectEqual(@as(f32, -50), cmd_pan.pan.y);
+    try std.testing.expectEqual(
+        intents.AppIntent{ .set_pan = .{ .x = 100, .y = -50 } },
+        cmd_pan.toIntent().?,
+    );
 
     const cmd_filter = try IpcCommand.parse("filter mitchell");
     try std.testing.expectEqual(TextureScaleMode.mitchell, cmd_filter.filter);

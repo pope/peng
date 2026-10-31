@@ -3,9 +3,11 @@
 //! Defines intent data structures, scaling modes, palette modes, bounds,
 //! and command payloads without depending on UI, hardware, or state structs.
 
+const geom = @import("geom");
 const std = @import("std");
 const triage = @import("triage");
 
+const PhysicalPoint = geom.PhysicalPoint;
 const ViewMode = triage.ViewMode;
 
 /// Target zoom presets for instant snapping and responsive tracking.
@@ -595,7 +597,7 @@ pub const AppIntent = union(enum) {
     zoom_by: struct { ratio: f32 },
     zoom_in,
     zoom_out,
-    set_pan: struct { x: f32, y: f32 },
+    set_pan: PhysicalPoint,
     pan_by: struct { dx: f32, dy: f32 },
     reset_zoom,
 

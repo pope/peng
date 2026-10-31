@@ -3,31 +3,34 @@
 ## 1. Text Advance Alignment & Whitespace Partitioning
 
 - **GPU Text Advance Offset**:
-  When calculating sub-pixel advances for text rendering, compute horizontal offsets using font metrics:
-  $$\\text{advance_x} = \\text{glyph_advance} + \\text{letter_spacing}$$
+  When calculating sub-pixel advances for text rendering, compute horizontal
+  offsets using font metrics:
+  $$\text{advance_x} = \text{glyph_advance} + \text{letter_spacing}$$
 - **Whitespace Merging**:
-  Partition string slices by contiguous whitespace chunks before glyph measurement to minimize redundant layout calls.
+  Partition string slices by contiguous whitespace chunks before glyph
+  measurement to minimize redundant layout calls.
 
 ______________________________________________________________________
 
 ## 2. Zero-Allocation Text Measurement (`TTF_GetStringSize` / `TTF_MeasureString`)
 
 - **Direct Slice Pointer and Length Passing**:
-  SDL3_ttf functions accept byte counts directly (`text.ptr` and `text.len`). Never allocate temporary null-terminated slices (`allocator.dupeSentinel`) or force text sizing signatures to accept an unneeded `allocator: std.mem.Allocator` parameter.
+  SDL3_ttf functions accept byte counts directly (`text.ptr` and `text.len`).
+  Never allocate temporary null-terminated slices (`allocator.dupeSentinel`) or
+  force text sizing signatures to accept an unneeded
+  `allocator: std.mem.Allocator` parameter.
 - **Early Return for Empty Strings**:
-  Check for empty text slices (`text.len == 0`) before making C-ABI calls to avoid unnecessary FFI overhead:
+  Check for empty text slices (`text.len == 0`) before making C-ABI calls to
+  avoid unnecessary FFI overhead:
   ```zig
   pub fn getStringSize(self: Font, text: []const u8) ?TextSize {
       if (text.len == 0) return TextSize{ .w = 0, .h = 0 };
       var w: c_int = 0;
       var h: c_int = 0;
-      if (!c.TTF_GetStringSize(self.ptr, text.ptr, text.len, &w, &h)) {
-          return null;
+      if (c.TTF_GetStringSize(self.ptr, text.ptr, text.len, &w, &h)) {
+          return TextSize{ .w = w, .h = h };
       }
-      return TextSize{
-          .w = @intCast(@max(0, w)),
-          .h = @intCast(@max(0, h)),
-      };
+      return null;
   }
   ```
 
@@ -37,8 +40,7 @@ ______________________________________________________________________
 
 - **Zero CPU 24-to-32-Bit Expansion in GPU Mode**:
   When `decodeWorker` decodes a 24-bit `rgb24` or `bgr24` surface while a GPU device is present (`gpu_mode`), it retains the 3-byte-per-pixel surface in RAM rather than expanding it to 4-byte RGBA32 on the CPU.
-- **Staging & Compute Dispatch (`src/core/image.zig`,
-  `src/gpu/render_image.zig`)**:
+- **Staging & Compute Dispatch (`src/gpu/upload.zig`)**:
   1. `uploadSurfaceToGpu` copies the 3-byte packed scanlines into a reusable `UploadStagingBuffer` (`AppState.upload_staging`) and uploads them to the shared GPU storage buffer with `cycle = true` (`uploadToBuffer` and `ComputeStorageBufferReadOnlyBinding`) to prevent write-after-read hazards across back-to-back uploads.
   2. A compute pass binds `unpack_rgb.comp.glsl` (`local_size_x = 64`), which reads 3 bytes per texel from the `uint data[]` storage buffer using bit-shift extraction, swaps R and B if `ubo.is_bgr != 0`, and writes `vec4(r, g, b, 1.0)` into the destination `rgba8` texture.
   3. After the compute pass finishes (or after fallback CPU downscaling if `createTexture` exceeded hardware dimension limits), `cmd_buf.generateMipmapsForTexture(tex)` builds the hardware trilinear mipmap pyramid on the GPU, and VRAM accounting records `u_w * u_h * 4` (with $+33%$ mipmap overhead) using the post-upload `RGBA8` texture dimensions.

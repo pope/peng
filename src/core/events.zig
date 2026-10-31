@@ -479,7 +479,7 @@ test "DirectoryScanResultPayload O(1) deinit without memory leaks" {
     const paths = try scan_alloc.alloc(MediaEntry, count);
     for (paths, 0..) |*p, i| {
         var buf: [32]u8 = undefined;
-        const name = try std.fmt.bufPrint(&buf, "img_{d:0>5}.jpg", .{i});
+        const name = try std.mem.print(&buf, "img_{d:0>5}.jpg", .{i});
         p.* = .{ .filesystem = .{ .path = try scan_alloc.dupe(u8, name) } };
     }
 

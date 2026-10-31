@@ -2279,9 +2279,9 @@ test "MediaId - type layout and representation" {
     try std.testing.expectEqual(@as(u32, 1), id1.toU32());
 
     var buf: [32]u8 = undefined;
-    const formatted = try std.fmt.bufPrint(&buf, "{f}", .{id1});
+    const formatted = try std.mem.print(&buf, "{f}", .{id1});
     try std.testing.expectEqualStrings("MediaId(1)", formatted);
 
-    const formatted_none = try std.fmt.bufPrint(&buf, "{f}", .{MediaId.none});
+    const formatted_none = try std.mem.print(&buf, "{f}", .{MediaId.none});
     try std.testing.expectEqualStrings("MediaId(none)", formatted_none);
 }

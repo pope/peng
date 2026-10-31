@@ -84,11 +84,17 @@ pub const PhysicalDims = struct {
         return null;
     }
 
+    /// Returns this instance if both dimensions are strictly positive and
+    /// finite, or `null` otherwise.
+    pub inline fn asPositive(self: PhysicalDims) ?PhysicalDims {
+        return initPositive(self.w, self.h);
+    }
+
     /// Converts strictly positive finite physical dimensions to integer pixel
     /// dimensions, or returns `null` if either axis is non-positive or
     /// non-finite.
     pub inline fn toPositiveU32(self: PhysicalDims) ?PositiveDimsU32 {
-        const valid = initPositive(self.w, self.h) orelse return null;
+        const valid = self.asPositive() orelse return null;
         const max_dim: f32 = @floatFromInt(std.math.maxInt(u24));
         const w_u32: u32 = @intFromFloat(@min(valid.w, max_dim));
         const h_u32: u32 = @intFromFloat(@min(valid.h, max_dim));
@@ -228,4 +234,49 @@ test "LogicalDims, PhysicalDims, LogicalPoint, and PhysicalPoint conversions" {
     const bad_scale = DpiScale.init(0.0, std.math.nan(f32));
     try std.testing.expectEqual(@as(f32, 1.0), bad_scale.x);
     try std.testing.expectEqual(@as(f32, 1.0), bad_scale.y);
+}
+
+test "PhysicalDims.initPositive and asPositive validation" {
+    // Valid strictly positive dimensions
+    const valid = PhysicalDims.initPositive(100.0, 50.0);
+    try std.testing.expect(valid != null);
+    try std.testing.expectEqual(
+        PhysicalDims{ .w = 100.0, .h = 50.0 },
+        valid.?,
+    );
+    try std.testing.expectEqual(
+        PhysicalDims{ .w = 100.0, .h = 50.0 },
+        valid.?.asPositive().?,
+    );
+
+    // Zero dimensions
+    try std.testing.expect(PhysicalDims.initPositive(0.0, 50.0) == null);
+    try std.testing.expect(PhysicalDims.initPositive(100.0, 0.0) == null);
+    try std.testing.expect(
+        (PhysicalDims{ .w = 0.0, .h = 50.0 }).asPositive() == null,
+    );
+    try std.testing.expect(
+        (PhysicalDims{ .w = 100.0, .h = 0.0 }).asPositive() == null,
+    );
+
+    // Negative dimensions
+    try std.testing.expect(PhysicalDims.initPositive(-10.0, 50.0) == null);
+    try std.testing.expect(PhysicalDims.initPositive(100.0, -10.0) == null);
+    try std.testing.expect(
+        (PhysicalDims{ .w = -10.0, .h = 50.0 }).asPositive() == null,
+    );
+
+    // NaN and Inf
+    try std.testing.expect(
+        PhysicalDims.initPositive(std.math.nan(f32), 50.0) == null,
+    );
+    try std.testing.expect(
+        PhysicalDims.initPositive(100.0, std.math.nan(f32)) == null,
+    );
+    try std.testing.expect(
+        PhysicalDims.initPositive(std.math.inf(f32), 50.0) == null,
+    );
+    try std.testing.expect(
+        PhysicalDims.initPositive(100.0, std.math.inf(f32)) == null,
+    );
 }

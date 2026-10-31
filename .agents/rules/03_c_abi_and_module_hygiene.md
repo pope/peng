@@ -9,9 +9,11 @@
     `src/state/`, or `src/config/`.
 - **Private C Module & Handle Encapsulation**:
   - Keep `c = @import("c.zig")` private to `src/sdl/`. Encapsulate C handles
-    and geometry behind native Zig structs (`Rect`, `FRect`, `FPoint`, `FColor`,
-    `Vertex`) with explicit methods rather than exposing raw C pointers or
-    re-exporting C structs (`pub const FRect = c.SDL_FRect;` is forbidden).
+    behind native Zig types: 2D geometry (`Rect`, `FRect`, `FPoint`) lives in
+    `src/geom/root.zig` and is converted at the `src/sdl/` boundary, while
+    GPU/render types (`FColor`, `Vertex`) are wrapped in `src/sdl/`. Explicit
+    methods replace raw C pointers or re-exporting C structs (`pub const FRect =
+    c.SDL_FRect;` is forbidden).
 - **`extern struct` Handle Wrappers & Hot-Reload Typing**:
   - Any wrapper struct passed by value across `callconv(.c)` boundaries MUST be
     declared `extern struct` (e.g.
@@ -27,7 +29,7 @@
     than `[*c]const u8` (except when an SDL3 API natively accepts `ptr` + `len`
     such as `TTF_GetStringSize`).
 
-## 2. Package Hierarchy, App-Private Core & Build Graph
+## 2. Package Hierarchy, Engine Core & Build Graph
 
 - **Top-Level Package Isolation (`src/`)**:
   - `src/geom/`: Pure geometric primitives (`PositiveDimsU32`, `DpiScale`,
@@ -49,7 +51,7 @@
     and atomic PNG writing (imports `geom`, `probe`, `vfs`; zero `intents`,
     SDL/Clay).
   - `src/intents/`: Pure `AppIntent` variants, `ActionDef` registry
-    (`actions.zig`), and intent payload structs (imports `triage`).
+    (`actions.zig`), and intent payload structs (imports `geom`, `triage`).
   - `src/input/`: Pure `FrameInput` event polling and shortcut mapping.
   - `src/ipc/`: Pure `IpcCommand` parsing, `IpcResponse` JSON schema
     (`parseResponse`, `writeOkLine`, `writeErrorLine`, `writePreviewLine`),
@@ -71,6 +73,9 @@
     encapsulated Clay interaction / hit-testing (`interaction.zig`). Exclusive
     consumer of `zclay` in the repository. Strictly 100% zero-SDL linkage or
     imports (zero `@import("sdl")`). Tested via `zig build test-ui`.
+  - `src/app/`: Application state (`state.zig`), worker event ingestion
+    (`events.zig`), sequential Phase 2 systems (`systems/`), and background
+    worker tasks (`workers/`). Tested via `zig build test-unit`.
   - `src/viewer.zig`: Thin coordinator for frame update and render loop entry
     point (compiled statically by default, or as a hot-reloadable shared library
     `viewer` / `libviewer` when built with `-Dhot_reload=true`).
@@ -91,9 +96,10 @@
   - When writing to `stdout` or `stderr` (`std.Io.File.stdout()`,
     `std.Io.File.stderr()`), ALWAYS use `.writerStreaming(io, &buf)` (or
     `std.Io.File.Writer.initStreaming`). Never call `.writer(io, &buf)` on
-    standard streams: in Zig 0.17, `File.writer` defaults to `.mode = .positional` (`pwritev` at offset `0`), which fails with `ESPIPE` on pipes
-    and TTYs before falling back to streaming and overwrites offset `0` when
-    redirected with `>>`.
+    standard streams: in Zig 0.17, `File.writer` defaults to
+    `.mode = .positional` (`pwritev` at offset `0`), which fails with `ESPIPE`
+    on pipes and TTYs before falling back to streaming and overwrites offset `0`
+    when redirected with `>>`.
   - Format all IPC server responses via `std.json.Stringify` (`writeOkLine`,
     `writeErrorLine`, `writePreviewLine`,
     `NavigationState.writeSelectionsJson` using `encodeJsonStringChars`) and
@@ -120,6 +126,10 @@
     - `zig build test-thumbcache`: Run `thumbcache` (`src/thumbcache/root.zig`)
       unit tests.
     - `zig build test-core`: Run `core` (`src/core/root.zig`) unit tests.
+    - `zig build test-ui`: Run `ui` (`src/ui/root.zig`) unit tests.
+    - `zig build test-ipc`: Run `ipc` (`src/ipc/root.zig`) unit tests.
+    - `zig build test-integration`: Run headless integration tests
+      (`peng-test-runner`).
     - `zig build test`: Run all unit tests plus headless integration tests
       (`peng-test-runner`).
     - `zig build shaders`: Compile GLSL shaders in `src/gpu/shaders/` to SPIR-V
@@ -146,6 +156,21 @@
   - Use leading-dot inference when the LHS type is explicit (e.g.
     `generation: std.atomic.Value(usize) = .init(0)` instead of repeating
     `std.atomic.Value(usize).init(0)`).
+- **Zig 0.17 Builtins & Standard Library Idioms**:
+  - Use `@backingInt` / `@fromBackingInt` for enums and `packed struct`
+    bitfields (never removed `@intFromEnum` / `@enumFromInt` or `@bitCast` on
+    packed structs).
+  - Use `@divCeil(a, b)` for integer ceiling division instead of manual
+    `(a + b - 1) / b` arithmetic, and `@splat(...)` for uniform array/vector
+    initialization.
+  - Use `std.mem.print` and `allocator.print` instead of deprecated
+    `std.fmt.bufPrint` and `std.fmt.allocPrint`, and `std.mem.find` /
+    `std.mem.findScalar` instead of deprecated `std.mem.indexOf` /
+    `std.mem.indexOfScalar`.
+  - Prefer unmanaged collections (`std.ArrayList`, `std.MultiArrayList`,
+    `std.StringHashMapUnmanaged`, `std.StringArrayHashMapUnmanaged`,
+    `std.AutoHashMapUnmanaged`) initialized with `.empty`, and use
+    `std.Io.Clock.awake.now(io)` for timing in `std.Io`-aware background tasks.
 - **Exhaustive Enum & Tagged Union Pattern Matching (Anti-`else => ...`)**:
   - `switch` statements on core domain enums and tagged unions (`PaletteMode`,
     `EditParam`, `EditDomain`, `AppIntent`, `AdjustIntent`, `IpcCommand`,
@@ -167,9 +192,10 @@
     `deinitQueueItem`).
   - In `src/app/systems/`, only `sysXxx` entry points and `runUpdatePhase` are
     `pub fn`. In `src/ui/`, only top-level render orchestrators (`renderFrame`,
-    `renderPalette`, `renderStatsOverlay`, `buildRenderPacket`,
-    `hasBlurredSurface`) and `interaction` query/lifecycle APIs are `pub fn`. In
-    executable roots, only `pub fn main` is public.
+    `renderPalette`, `renderEditPanel`, `renderStatsOverlay`,
+    `buildRenderPacket`, `hasBlurredSurface`), layout geometry
+    (`computeDrawDims`), and `interaction`/`text_utils`/`theme` APIs are
+    `pub fn`. In executable roots, only `pub fn main` is public.
   - Same-file `test` blocks can access private declarations directly; never mark
     a symbol `pub` solely for same-file tests.
   - **Zombie Pruning**: Any function, struct, or write-only struct field with

@@ -42,20 +42,21 @@ pub const Orientation = enum(u2) {
 /// (e.g. RAW flag without valid dimensions).
 pub const RawMetadata = union(enum) {
     none,
-    raw: struct {
-        sensor_w: f32,
-        sensor_h: f32,
-    },
+    raw: PhysicalDims,
 
     /// Safely constructs a RawMetadata variant, guaranteeing strictly positive
     /// finite dimensions.
     pub fn init(sensor_w: f32, sensor_h: f32) RawMetadata {
-        if (sensor_w > 0.0 and sensor_h > 0.0 and
-            std.math.isFinite(sensor_w) and std.math.isFinite(sensor_h))
-        {
-            return .{ .raw = .{ .sensor_w = sensor_w, .sensor_h = sensor_h } };
+        if (PhysicalDims.initPositive(sensor_w, sensor_h)) |dims| {
+            return .{ .raw = dims };
         }
         return .none;
+    }
+
+    /// Safely constructs a RawMetadata variant from `PhysicalDims`,
+    /// guaranteeing strictly positive finite dimensions.
+    pub inline fn fromDims(dims: PhysicalDims) RawMetadata {
+        return init(dims.w, dims.h);
     }
 
     /// Returns `true` if this media entry is a Camera RAW file with valid
@@ -68,11 +69,8 @@ pub const RawMetadata = union(enum) {
     /// format.
     pub inline fn getSensorDims(self: RawMetadata) ?PhysicalDims {
         return switch (self) {
-            .raw => |r| if (r.sensor_w > 0.0 and r.sensor_h > 0.0)
-                .{ .w = r.sensor_w, .h = r.sensor_h }
-            else
-                null,
             .none => null,
+            .raw => |dims| dims.asPositive(),
         };
     }
 };
@@ -2126,7 +2124,7 @@ pub fn probeStoredZipHeaderMetadata(
         .dims = dims,
         .orientation = rot,
         .raw_metadata = if (is_raw)
-            RawMetadata.init(dims.w, dims.h)
+            RawMetadata.fromDims(dims)
         else
             .none,
         .has_embedded_thumbnail = has_thumb,
@@ -2208,7 +2206,7 @@ pub fn probeFileHeaderMetadata(
         .dims = final_dims,
         .orientation = rot,
         .raw_metadata = if (is_raw)
-            RawMetadata.init(final_dims.w, final_dims.h)
+            RawMetadata.fromDims(final_dims)
         else
             .none,
         .has_embedded_thumbnail = has_thumb,
@@ -2261,7 +2259,7 @@ pub fn probeCompanionJpegHeaderMetadata(
     return ProbedImageMetadata{
         .dims = dims,
         .orientation = rot,
-        .raw_metadata = RawMetadata.init(dims.w, dims.h),
+        .raw_metadata = RawMetadata.fromDims(dims),
         .has_embedded_thumbnail = true,
     };
 }
@@ -4279,6 +4277,15 @@ test "RawMetadata tagged union invariants and constructor" {
     const dims = valid.getSensorDims().?;
     try std.testing.expectEqual(@as(f32, 6000.0), dims.w);
     try std.testing.expectEqual(@as(f32, 4000.0), dims.h);
+
+    try std.testing.expectEqual(
+        valid,
+        RawMetadata.fromDims(.{ .w = 6000.0, .h = 4000.0 }),
+    );
+    try std.testing.expectEqual(
+        RawMetadata.none,
+        RawMetadata.fromDims(.{ .w = 0.0, .h = 4000.0 }),
+    );
 
     // Invalid zero or negative dimensions return .none
     try std.testing.expectEqual(RawMetadata.none, RawMetadata.init(0.0, 0.0));

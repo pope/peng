@@ -423,7 +423,7 @@ pub fn parsePngThumbnailMetadata(png_bytes: []const u8) ?PngThumbMetadata {
             thumb_w = std.mem.readInt(u32, payload[0..4], .big);
             thumb_h = std.mem.readInt(u32, payload[4..8], .big);
         } else if (std.mem.eql(u8, chunk_type, "tEXt")) {
-            if (std.mem.indexOfScalar(u8, payload, 0)) |sep_idx| {
+            if (std.mem.findScalar(u8, payload, 0)) |sep_idx| {
                 const key = payload[0..sep_idx];
                 const val = payload[sep_idx + 1 ..];
                 if (std.mem.eql(u8, key, "Thumb::MTime")) {

@@ -328,7 +328,7 @@ pub fn sysUpdateCache(ctx: FrameContext) !void {
         id: MediaId,
         entry: MediaEntry,
     };
-    var to_spawn = try std.ArrayList(SpawnRequest).initCapacity(
+    var to_spawn: std.ArrayList(SpawnRequest) = try .initCapacity(
         ctx.frame_allocator,
         desired.len,
     );

@@ -11,19 +11,23 @@ The 5 files in `.agents/rules/` are the single authoritative source of truth for
 project invariants:
 
 - **[`01_memory_and_resource_safety.md`][rule-01]**:
-  Allocators, per-frame arena LIFO rewinding, `errdefer` + `try` lifecycles,
-  tagged union / packed bitfield domain invariants, binary parsing bounds
-  safety, and structured error handling.
+  Allocators, bounded session arenas, per-frame arena LIFO rewinding,
+  `--server` mode memory reclamation (`reclaimMemory`, `reclaimProcessHeap`),
+  `errdefer` + `try` lifecycles, tagged union & packed bitfield domain
+  invariants, binary parsing bounds safety, and structured error handling.
 - **[`02_concurrency_and_architecture.md`][rule-02]**:
   `AppState` vs `ViewerState` vs `UiViewModel` split, 3-phase frame pipeline,
   11-step `runUpdatePhase` systems pass, `AppIntent` queue & `actions.zig`
-  registry, `std.Io.Group` worker concurrency, and demand-first cache/upload
-  gating.
+  registry, `std.Io.Group` worker concurrency, cooperative cancellation via
+  `ImageCacheKey` (`MediaId` + generation) and `job_epochs`, and demand-first
+  cache/upload gating.
 - **[`03_c_abi_and_module_hygiene.md`][rule-03]**:
-  C-ABI encapsulation (`src/sdl/c.zig`), package hierarchy & `build.zig` test
-  targets, 2-block alphabetical imports/aliases, exhaustive enum `switch`
-  matching, minimal `pub` visibility, 3-tier testing, mandatory `///` doc
-  comments, and the strict `<= 80`-column ceiling.
+  C-ABI encapsulation (`src/sdl/c.zig`), package hierarchy (`geom`, `core`,
+  `thumbcache`, zero-SDL `ui` exclusive `zclay` consumer), `build.zig` test
+  targets, 2-block alphabetical imports/aliases, Zig 0.17 builtins & stdlib
+  idioms (`.empty` / `.init(...)`, `@backingInt`, `@divCeil`, `std.mem.print`),
+  exhaustive enum `switch` matching, minimal `pub` visibility, 3-tier testing,
+  mandatory `///` doc comments, and the strict `<= 80`-column ceiling.
 - **[`04_ui_rendering_and_performance.md`][rule-04]**:
   2-pass `RenderPacket` GPU pipeline, Dual Kawase backdrop blur gating, RGB-only
   `TextCacheKey`, HiDPI coordinate spaces, `ZoomFactor` & `is_busy` invariants,

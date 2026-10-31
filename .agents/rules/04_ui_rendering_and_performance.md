@@ -6,15 +6,16 @@
   `src/gpu/pass.zig`)**:
   1. **Extraction Pass (`buildRenderPacket`)**: Traverses the Clay command list
      to populate vertex arrays, scissor rects, and batched draw commands
-     (`RenderPacket`), while `uploadPendingTextGlyphs` uploads newly rasterized
-     glyph textures on text cache misses and defers all GPU render passes.
-  2. **Execution Pass (`executeRenderPacket` / `FrameTarget`)**: Acquires a
-     unified `FrameTarget` (`swapchain` or `headless` via `acquireTarget`),
-     uploads geometry via double-buffered transfer buffers, runs the 2-pass
-     quarter-resolution Dual Kawase backdrop blur (`scene_texture` ->
-     `blur_down_texture` -> `blur_texture`, gated on `enable_blur` and
-     `.blurred_surface` batches), and issues batched GPU draw calls before
-     presenting via `submitAndPresentTarget`.
+     (`RenderPacket`), while newly rasterized text strings obtain cached
+     glyph textures via `getOrRenderCachedText` (`src/gpu/pass.zig`) on cache
+     misses and defers all GPU render passes.
+  2. **Execution Pass (`executeRenderPacket` / `FrameTarget`)**: Orchestrated
+     inside `executeFrame` / `executeRenderPacket` against a `FrameTarget`
+     (`.window: sdl.Window` or `.headless: PhysicalDims`), uploads geometry via
+     double-buffered transfer buffers, runs the 2-pass quarter-resolution Dual
+     Kawase backdrop blur (`tex.scene` -> `tex.blur_down` -> `tex.blur`, gated
+     on `enable_blur` and `.blurred_surface` batches), and issues batched GPU
+     draw calls before submitting the command buffer.
 - **GPU Text Texture Alpha Decoupling**:
   - `TextCacheKey` MUST index strictly by `font_id`, `font_size`, `hash`, and
     RGB channels (`color_u32 & 0x00FFFFFF`). Always rasterize glyph surfaces at
@@ -45,12 +46,12 @@
     `view_transform.computeLogicalDrawDims` and convert the resulting draw
     bounds back to `LogicalDims` for Clay layout.
   - Multiply UI panel width deductions (e.g. docked edit panel or debug
-    inspector) by the display scale factor $S = \\text{pix_w} / \\text{win_w}$
+    inspector) by the display scale factor $S = \text{pix_w} / \text{win_w}$
     before subtracting from physical framebuffer dimensions.
 - **Clay Pre-Scaled Rectangles vs. Manual Zoom Quads**:
   - In preset modes (`.fit`, `.fill`), Clay's `rect.w` and `rect.h`
     (`computeDrawDims`) are already scaled to screen dimensions; never multiply
-    them by $Z\_{\\text{base}}$ a second time.
+    them by $Z_{\text{base}}$ a second time.
   - In manual zoom mode and outgoing crossfade quads
     (`ImageTransitionPrevQuad`), compute physical quad dimensions directly from
     unrotated source dimensions and `ZoomFactor` (`dst_w = sw * z`,
@@ -101,7 +102,7 @@
     or `active_slider != null`) to prevent container jitter.
 - **Image Crossfade & Scrubbing Invariants**:
   - **Snap-and-Cut on Scrubbing/Interruption**: Never retarget duration across
-    three textures. If navigation steps occur within $< 200\\text{ms}$ or
+    three textures. If navigation steps occur within $< 200\text{ms}$ or
     interrupt an in-flight crossfade, immediately snap
     (`setImmediate(.image_crossfade, 1.0)`, `image_transition = .none`) and cut.
   - **GPU Residency & Mutual Exclusion**: Only start a crossfade if the outgoing
@@ -121,31 +122,30 @@
 
 - **Raw Bayer Sensor Stream Exclusion**:
   - Header probes (`probeMediaMetadata`) MUST exclude unprocessed raw sensor
-    streams so `full_w`/`full_h` reflect true visible photo dimensions rather
-    than optical-black sensor dimensions *(see `vram-preloading.md` §2 for
-    format-specific TIFF tags)*.
+    streams so `metadata.full_dims` and `source_dims` reflect true visible photo
+    dimensions rather than optical-black sensor dimensions (see
+    [vram-preloading.md][vram-preload] §2 for format-specific TIFF tags).
 - **No Worker Thumbnail Dimension Fallback**:
   - Decode workers (`decodeRawFile`, `decodeWorker`) MUST leave
-    `full_w = 0.0, full_h = 0.0` when true full dimensions are unknown; never
-    substitute thumbnail dimensions (`t_surf.w()`), which poisons cache aspect
-    ratios.
+    `full_dims = null` when true full dimensions are unknown; never substitute
+    thumbnail dimensions (`t_surf.w()`), which poisons cache aspect ratios.
 - **Monotonic Area Updates & `only_has_thumb` Guard**:
   - Guard asynchronous dimension updates (`applyProbedMetadata`,
-    `updateFullDims`) with monotonic area checks
-    (`cur_area <= 0.0 or new_area > cur_area`) so lower-tier previews never
-    downgrade authoritative dimensions.
+    `CacheEntry.updateFullDims(dims: PhysicalDims)`) with monotonic area checks
+    (`cand_area > cur_area`) so lower-tier previews never downgrade
+    authoritative dimensions.
   - Guard `.shrink` -> `.full` placeholder promotion in `computeDrawDims` with
-    `only_has_thumb` (`full_w <= 0.0`, `raw_metadata.getSensorDims() == null`,
-    and `thumbnail != .none`) so small icons with known dimensions never blow up
-    to fill the viewport.
+    `only_has_thumb` (`full_dims == null`,
+    `raw_metadata.getSensorDims() == null`, and `thumbnail != .none`) so small
+    icons with known dimensions never blow up to fill the viewport.
 - **Case-Insensitive Deterministic Sorting**:
   - Sort all filesystem scans, archives, and directory lists with
     `std.ascii.lessThanIgnoreCase`.
 
 ## 5. GPU Shader & Visual Regression Test Invariants
 
-*(See `skills/zig-gui-practices/references/shader-optimization.md` for full
-mathematical formulas, filter kernels, and color science equations.)*
+*(See [shader-optimization.md][shader-opt] for full mathematical formulas,
+filter kernels, and color science equations.)*
 
 - **Shader Numerical & Identity Invariants**
   (`src/gpu/shaders/image.frag.glsl`):
@@ -163,7 +163,7 @@ mathematical formulas, filter kernels, and color science equations.)*
      detail ring taps against a consistent bilinear center reference `Y_ref`.
   4. **Photometric Exposure Ordering & Monotonic Tonal Quad**: Apply contrast
      around 18% linear middle gray (`0.18`) *before* optical stop exposure gain
-     $\\exp_2(\\text{brightness} \\times 2.0)$, and keep root-space tonal curves
+     $\exp_2(\text{brightness} \times 2.0)$, and keep root-space tonal curves
      within monotonic derivative bounds.
 - **Headless Test Mode (`--test-mode`) & Overlay Isolation**:
   - Disable non-instant animations and transient overlays in test mode
@@ -176,3 +176,6 @@ mathematical formulas, filter kernels, and color science equations.)*
   - When testing glassmorphic or blurred UI overlays, use synthetic triggers
     (`SnackbarTrigger.testing`) rather than mutating viewport zoom/filter/edit
     state so background pixels beneath the overlay remain invariant.
+
+[vram-preload]: ../skills/zig-gui-practices/references/vram-preloading.md
+[shader-opt]: ../skills/zig-gui-practices/references/shader-optimization.md

@@ -103,6 +103,16 @@ pub fn debugPanelWidth() f32 {
     return @floatFromInt(clay.Clay__debugViewWidth);
 }
 
+/// Bridges leaf `geom.LogicalDims` to extern `clay.Dimensions`.
+inline fn toClayDims(dims: LogicalDims) clay.Dimensions {
+    return .{ .w = dims.w, .h = dims.h };
+}
+
+/// Bridges leaf `geom.LogicalPoint` to extern `clay.Vector2`.
+inline fn toClayVec(pt: LogicalPoint) clay.Vector2 {
+    return .{ .x = pt.x, .y = pt.y };
+}
+
 /// Synchronizes window dimensions, mouse pointer state, and scroll containers
 /// with Clay, updating debug panel pointer intersection on `FrameInput`.
 pub fn syncFrameInput(
@@ -111,11 +121,11 @@ pub fn syncFrameInput(
 ) FrameInput {
     if (!isContextActive()) return input;
 
-    clay.setLayoutDimensions(.{ .w = input.win_w, .h = input.win_h });
+    clay.setLayoutDimensions(toClayDims(input.logicalWinDims()));
 
     if (input.mouse_inside) {
         clay.setPointerState(
-            .{ .x = input.mouse_x, .y = input.mouse_y },
+            toClayVec(input.logicalMousePos()),
             input.mouse_left_down,
         );
     } else {
@@ -310,7 +320,7 @@ pub fn hitTestPaletteClick(
 
     for (palette.matches.items) |real_idx| {
         var item_id_buf: [64]u8 = undefined;
-        const item_id_str = std.fmt.bufPrint(
+        const item_id_str = std.mem.print(
             &item_id_buf,
             "{s}{}",
             .{ cfg.item_prefix, real_idx },

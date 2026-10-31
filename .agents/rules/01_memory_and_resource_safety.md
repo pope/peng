@@ -43,18 +43,18 @@
     lists): NEVER use fixed stack arrays `[N]T` that risk silent truncation or
     panic. Use `std.ArrayList(T)` backed by `frame_allocator` with
     `defer list.deinit(frame_allocator)`.
-  - *Large Path Buffers* ($\\ge 4\\text{ KB}$ like `std.Io.Dir.max_path_bytes`):
+  - *Large Path Buffers* ($\ge 4\text{ KB}$ like `std.Io.Dir.max_path_bytes`):
     - *Per-Frame Layout & Render Passes*: Allocate from `frame_allocator` with
       `defer frame_allocator.free(...)` rather than placing 4 KB arrays on the
       stack inside per-frame loops.
     - *One-Off Main-Thread State Transitions*: In discrete, non-recursive state
-      transitions where `frame_allocator` is unavailable (e.g. `openPalette`), a
-      stack buffer (`var parent_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;`) is
-      preferred over `self.allocator.alloc` to avoid heap churn.
+      transitions where `frame_allocator` is unavailable (e.g. `openPalette`),
+      a stack buffer (`var parent_buf: [std.Io.Dir.max_path_bytes]u8 =
+      undefined;`) is preferred over `self.allocator.alloc` to avoid heap churn.
   - *Assert-Bounded Hardware/FFI Limits* (e.g. 16 vertex buffer slots in SDL3
     GPU, 8 IFD levels in EXIF): Keep on the stack and document the hardware/API
     bound in comments.
-  - *Short Formatting Scratchpads for Clay IDs* ($\\le 64$ bytes): Keep on the
+  - *Short Formatting Scratchpads for Clay IDs* ($\le 64$ bytes): Keep on the
     stack using `std.mem.print`. Clay hashes ID strings immediately into
     integers (`clay.getElementId`) and does not retain the string.
 - **Caller-Provided Output Buffers & Slice Aliasing**:
@@ -72,9 +72,10 @@
   - Do NOT write manual `catch |err| { allocator.free(...); }` teardown blocks;
     propagate errors via `try` and rely on `errdefer` stack unwinding.
 - **HashMap Key & Socket Stream Cleanup**:
-  - When managing `std.StringHashMap` or custom key-value maps, free owned keys
+  - When managing `std.StringHashMapUnmanaged`,
+    `std.StringArrayHashMapUnmanaged`, or custom key-value maps, free owned keys
     via `keyIterator()` prior to calling `clearRetainingCapacity()` or
-    `deinit()`.
+    `deinit(allocator)`.
   - Always invoke `stream.close(io)` on `std.Io.net.Stream` socket handles
     during queue item teardown (`deinitQueueItem`) and `AppState.deinit` to
     prevent OS file/socket descriptor leaks.
@@ -83,21 +84,23 @@
     sub-states (`AppState`, `ViewerState`, `DisplayState`, `RenderResources`,
     `ParsedArgs`) MUST provide an explicit `deinit` method.
   - Startup initialization (`AppGraphicsAndState.init` in `src/main.zig`) MUST
-    initialize `self.state` in-place at its pinned stack address (`*AppGraphicsAndState`)
-    and decouple SDL core initialization (`ui.graphics.initSdlCore`) from window and
-    GPU creation (`initGraphicsAndWindow`). SDL events and video MUST be
-    initialized before `AppState` or background workers launch, and `AppState`
-    MUST NEVER be copied or returned by value after spawning workers that hold
-    pointers to `state.workers`, `state.cache.generation`, or
+    initialize `self.state` in-place at its pinned stack address
+    (`*AppGraphicsAndState`) and decouple SDL core initialization
+    (`gpu.graphics.initSdlCore`) from window and GPU creation
+    (`initGraphicsAndWindow`). SDL events and video MUST be initialized before
+    `AppState` or background workers launch, and `AppState` MUST NEVER be copied
+    or returned by value after spawning workers that hold pointers to
+    `state.workers`, `state.cache.generation`, or
     `state.viewer.navigation.active_file_scans`.
   - State initialization and early worker tasks (`openPath` / `readPipedStdin`)
     run concurrently with main-thread window and GPU creation. GPU handles
-    (`state.gpu_device`) and the claimed `DisplayBackend.windowed` (`ActiveWindow`)
-    MUST remain unbound (`state.gpu_device = null`, `display` holding `.headless`)
-    until all pipeline and Clay memory allocations succeed, while
-    `state.gpu_enabled = true` declares hardware GPU intent to early workers.
-    This guarantees that intermediate failure unwinding only deinitializes CPU
-    state without accessing destroyed GPU or window handles (use-after-free).
+    (`state.gpu_device`) and the claimed `DisplayBackend.windowed`
+    (`ActiveWindow`) MUST remain unbound (`state.gpu_device = null`, `display`
+    holding `.headless`) until all pipeline and Clay memory allocations succeed,
+    while `state.gpu_enabled = true` declares hardware GPU intent to early
+    workers. This guarantees that intermediate failure unwinding only
+    deinitializes CPU state without accessing destroyed GPU or window handles
+    (use-after-free).
   - Top-level application teardown (`AppGraphicsAndState.deinit` in
     `src/main.zig`) frees CLI arguments upfront as independent CPU memory,
     followed by reverse teardown of runtime subsystems: signal worker
@@ -105,7 +108,7 @@
     server, free Clay layout memory, quiesce and join background workers and
     deinitialize `AppState`/`ViewerState`, release GPU `RenderResources`,
     destroy the SDL GPU device and window, and finally call
-    `ui.graphics.quitSdlCore()`.
+    `gpu.graphics.quitSdlCore()`.
 - **Resident `--server` Mode Memory Reclamation (`hideWindow`, `reclaimMemory`, `reclaimProcessHeap`)**:
   - When hiding the window in `--server` mode (`AppState.hideWindow` +
     `RenderResources.releaseTransientResources`), release all cached CPU
@@ -131,25 +134,25 @@
     ReleaseFast/ReleaseSmall builds.
 - **Strict Domain Invariants via Tagged Unions**:
   - Model mutually exclusive domain states (`SlideshowMode`, `DisplayState`,
-    `DisplayBackend`, `ResidentAsset`, `InFlightStage`, `ThumbnailState`,
-    `ThumbnailPadding`, `RawMetadata`, `ArchiveTelemetry`, `UploadMode`,
-    `MipmapTelemetry`, `ImageTransition`, `BlurResources`, `RetainedResource`,
-    `ParsedIpcArgs`) using `union(enum)` with validation constructors
-    (`init(...)`) rather than loose booleans or parallel optionals:
+    `DisplayBackend`, `ResidentAsset`, `ThumbnailState`, `ThumbnailPadding`,
+    `RawMetadata`, `ArchiveTelemetry`, `UploadMode`, `MipmapTelemetry`,
+    `ImageTransition`, `BlurResources`, `RetainedResource`, `ParsedIpcArgs`)
+    using `union(enum)` with validation constructors (`init(...)`) rather than
+    loose booleans or parallel optionals:
     ```zig
     pub const RawMetadata = union(enum) {
         none,
-        raw: struct { sensor_w: f32, sensor_h: f32 },
+        raw: PhysicalDims,
 
         pub fn init(sensor_w: f32, sensor_h: f32) RawMetadata {
-            if (sensor_w > 0.0 and sensor_h > 0.0 and
-                std.math.isFinite(sensor_w) and std.math.isFinite(sensor_h))
-            {
-                return .{
-                    .raw = .{ .sensor_w = sensor_w, .sensor_h = sensor_h },
-                };
+            if (PhysicalDims.initPositive(sensor_w, sensor_h)) |dims| {
+                return .{ .raw = dims };
             }
             return .none;
+        }
+
+        pub inline fn fromDims(dims: PhysicalDims) RawMetadata {
+            return init(dims.w, dims.h);
         }
     };
     ```
@@ -211,8 +214,8 @@
 ## 3. Binary Parsing, Large Media & Pixel Format Safety
 
 - **Zero Full-File Allocation for Large Media Formats**:
-  - Camera RAW files, archives, and large containers (50MB–500MB+) MUST NEVER be
-    read entirely into RAM.
+  - Camera RAW files, archives, and large containers (50MB–500MB+) MUST NEVER
+    be read entirely into RAM.
   - Use fixed-size buffers for header inspection and range-limited positional
     reads (`file.readPositional(io, &slices, offset)`) into exact-sized buffers
     for embedded preview extraction.
@@ -264,8 +267,9 @@
     `sdl.getError()` on failure.
 - **Strongly-Typed Worker Procedures**:
   - Background thread functions must accept strongly-typed struct parameter
-    pointers (`DecodeArgs`, `PathScanArgs`, `StdinArgs`, `IpcServerArgs`). Never
-    use raw `?*anyopaque` handles or untyped pointer downcasting.
+    pointers (`DecodeArgs`, `PathScanArgs`, `PaletteScanArgs`,
+    `PreviewWorkerArgs`, `StdinArgs`, `IpcServerArgs`). Never use raw
+    `?*anyopaque` handles or untyped pointer downcasting.
 - **Worker Task Early-Exit & Fail-Fast Invariants**:
   - When a worker encounters a file I/O or decode failure (and the task was not
     canceled):

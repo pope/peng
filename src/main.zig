@@ -249,7 +249,7 @@ const AppGraphicsAndState = struct {
                         vp.reset();
                         break :vp_blk vp;
                     },
-                    .rotation_map = .init(gpa),
+                    .rotation_map = .empty,
                     .server_mode = parsed.server_mode,
                     .running = true,
                 };

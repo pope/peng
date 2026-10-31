@@ -52,3 +52,21 @@ and return a brief summary of the changes.
   all lines of code and comments under 80 characters (except unbreakable URLs in
   comments). Use trailing commas for multi-line formatting and verify with
   `zig fmt --check <file>`.
+
+## Zig 0.17 & Architecture Invariants
+
+- **2-Block Imports & Clean Aliases**: Place 2-block alphabetical `@import` and
+  symbol aliases at the top of each file; strictly zero cross-module `pub const`
+  proxy re-exports.
+- **Acyclic Module Boundaries**: `geom` is pure `std`; `state`, `palette`,
+  `triage`, `vfs`, `probe`, `thumbcache`, and `ui` are 100% zero-SDL; `ui` is
+  the exclusive consumer of `zclay` in the repository.
+- **Zig 0.17 Idioms**: Use `.empty` / `.init(...)` decl literals, `@backingInt`
+  and `@fromBackingInt` for enums/packed structs, `@divCeil`, `@splat`,
+  `std.mem.print` / `allocator.print` (never `std.fmt.bufPrint` / `allocPrint`),
+  `std.mem.find` / `findScalar` (never `std.mem.indexOf*`),
+  `.writerStreaming(io, &buf)` on `stdout`/`stderr`, and
+  `std.Io.Clock.awake.now(io)` in `std.Io`-aware workers.
+- **Safety & Error Invariants**: Pair every allocation with co-located
+  `errdefer` immediately above or below `try`, write exhaustive `switch`
+  statements without wildcard `else =>`, and maintain minimal `pub` visibility.

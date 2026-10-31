@@ -98,8 +98,7 @@ fn normalizeCommandPaths(
                 p,
                 &real_buf,
             ) catch return false;
-            const rewritten = std.fmt.allocPrint(
-                gpa,
+            const rewritten = gpa.print(
                 "open {s}\n",
                 .{real_buf[0..real_len]},
             ) catch return false;
@@ -117,8 +116,7 @@ fn normalizeCommandPaths(
                 &real_buf,
             ) catch return clear_first;
             const clear_flag = if (clear_first) "--clear " else "";
-            const rewritten = std.fmt.allocPrint(
-                gpa,
+            const rewritten = gpa.print(
                 "preview {s}{d} {d} {s}\n",
                 .{
                     clear_flag,

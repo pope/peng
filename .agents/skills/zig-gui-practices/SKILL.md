@@ -21,7 +21,7 @@ ______________________________________________________________________
 - **[Systems Architecture & Execution Rules](references/systems-architecture.md)**
 
   - 3-Phase frame loop: Ingestion (1) -> Systems Update Phase (2) -> Render (3).
-  - Read-only `UiViewModel` (`src/state/view_model.zig`) snapshot barrier between Phase 2 and Phase 3 with zero state mutations in render.
+  - Read-only `UiViewModel` (`src/ui/view_model.zig`) snapshot barrier between Phase 2 and Phase 3 with zero state mutations in render.
   - System lifetime bound to single frame iteration via `FrameContext` (`frame_allocator`) with intra-frame LIFO deallocation.
   - Frame-arena string lifetime invariants for retained Clay UI layout labels (`layout.zig`, `edit_panel.zig`, `palette.zig`).
   - Declarative capabilities (`actions.zig`), zero-allocation `SnackbarState` (`src/state/snackbar.zig`), and `MultiArrayList` SoA SIMD navigation.
@@ -54,4 +54,8 @@ ______________________________________________________________________
   - Horner's method for polynomial splines and `#pragma unroll` SPIR-V / Metal compilation (`zig build shaders`).
   - Branchless per-pixel math (`greaterThan()`, `step()`, `mix()`) vs dynamically uniform branches (`if (ubo.has_adjustments != 0)`).
   - 7-filter resampling suite (`Nearest`, `Bilinear`, `AA-Nearest`, `Mitchell-Netravali`, `Lanczos3`, `AMD FSR 1.0`, `Tiny CNN`).
-  - 13-parameter color & presence pipeline: opponent WB, dual-path 18% middle gray contrast, monotonic root-space tonal quad, post-contrast exposure ($2^{2\\cdot\\text{EV}}$), skin-protected vibrance, 8-tap $R=2\\text{px}$ bilateral Texture, 5-tap $R=12\\text{px}$ ($\\text{Lod } 3.0$) bilateral Clarity, and rational highlight soft-knee.
+  - 13-parameter color & presence pipeline: opponent WB, dual-path 18% middle
+    gray contrast, monotonic root-space tonal quad, post-contrast exposure
+    ($2^{2\cdot\text{EV}}$), skin-protected vibrance, 8-tap $R=2\text{px}$
+    bilateral Texture, 5-tap $R=12\text{px}$ ($\text{Lod } 3.0$) bilateral
+    Clarity, and rational highlight soft-knee.
