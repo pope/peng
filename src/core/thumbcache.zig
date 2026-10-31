@@ -62,6 +62,67 @@ pub fn loadCachedThumbnail(
     return null;
 }
 
+/// Holds an SDL surface transformed by scaling, rotating, or pixel format
+/// conversion, tracking whether the underlying pointer must be destroyed.
+pub const TransformedSurface = struct {
+    surface: sdl.Surface,
+    owned: bool,
+
+    /// Destroys the surface if it was created during the transformation pass.
+    pub fn deinit(self: TransformedSurface) void {
+        if (self.owned) self.surface.destroy();
+    }
+};
+
+/// Scales `surface` to `(target_w, target_h)` if different from its
+/// current dimensions, applies orthogonal EXIF `orientation` rotation,
+/// and optionally converts the resulting surface to `rgba32`.
+/// Caller must call `.deinit()` on the returned `TransformedSurface`.
+pub fn scaleAndOrientSurface(
+    surface: sdl.Surface,
+    target_w: i32,
+    target_h: i32,
+    orientation: Orientation,
+    ensure_rgba32: bool,
+) !TransformedSurface {
+    const src_w = surface.w();
+    const src_h = surface.h();
+    if (src_w <= 0 or src_h <= 0 or target_w <= 0 or target_h <= 0) {
+        return error.InvalidDimensions;
+    }
+
+    var cur = surface;
+    var owned = false;
+    errdefer if (owned) cur.destroy();
+
+    if (target_w != src_w or target_h != src_h) {
+        const scaled = cur.scaleRgba32Smooth(target_w, target_h) orelse
+            return error.ScaleFailed;
+        if (owned) cur.destroy();
+        cur = scaled;
+        owned = true;
+    }
+
+    const quarter_turns: u2 = @backingInt(orientation);
+    if (quarter_turns != 0) {
+        const rotated = cur.rotateOrthogonal(quarter_turns) orelse
+            return error.RotateFailed;
+        if (owned) cur.destroy();
+        cur = rotated;
+        owned = true;
+    }
+
+    if (ensure_rgba32 and cur.format() != sdl.PixelFormat.rgba32) {
+        const converted = cur.convert(sdl.PixelFormat.rgba32) orelse
+            return error.ConvertFailed;
+        if (owned) cur.destroy();
+        cur = converted;
+        owned = true;
+    }
+
+    return .{ .surface = cur, .owned = owned };
+}
+
 fn encodeSurfaceToPngAlloc(
     allocator: std.mem.Allocator,
     surface: sdl.Surface,
@@ -73,24 +134,16 @@ fn encodeSurfaceToPngAlloc(
     const scaled_dims = tier.computeScaledDims(src_w, src_h) orelse
         return error.InvalidDimensions;
 
-    const scaled_owned = if (scaled_dims.w != src_w or scaled_dims.h != src_h)
-        surface.scaleRgba32Smooth(scaled_dims.w, scaled_dims.h) orelse
-            return error.ScaleFailed
-    else
-        null;
-    defer if (scaled_owned) |s| s.destroy();
-    const base_surf = scaled_owned orelse surface;
+    const transformed = try scaleAndOrientSurface(
+        surface,
+        scaled_dims.w,
+        scaled_dims.h,
+        orientation,
+        false,
+    );
+    defer transformed.deinit();
 
-    const quarter_turns: u2 = @backingInt(orientation);
-    const rotated_owned = if (quarter_turns != 0)
-        base_surf.rotateOrthogonal(quarter_turns) orelse
-            return error.RotateFailed
-    else
-        null;
-    defer if (rotated_owned) |r| r.destroy();
-    const final_surf = rotated_owned orelse base_surf;
-
-    return final_surf.encodePngAlloc(allocator);
+    return transformed.surface.encodePngAlloc(allocator);
 }
 
 /// Downscales `surface` to fit within `cfg.write_tier.maxDim()` (preserving
@@ -317,4 +370,35 @@ test "precacheFileThumbnail and precachePathsParallel valid thumbnails" {
         encodeBytesToThumbnailPng,
     );
     try std.testing.expectEqual(PrecacheOutcome.already_valid, second_outcome);
+}
+
+test "scaleAndOrientSurface - identity, rgba32 conversion, and invalid dims" {
+    const src = sdl.Surface.create(
+        16,
+        12,
+        sdl.PixelFormat.rgb24,
+    ) orelse return error.SurfaceFailed;
+    defer src.destroy();
+
+    // 1. Identity call (same dims, .normal, ensure_rgba32 = false) -> borrowed
+    var id_res = try scaleAndOrientSurface(src, 16, 12, .normal, false);
+    defer id_res.deinit();
+    try std.testing.expect(!id_res.owned);
+    try std.testing.expectEqual(src.ptr, id_res.surface.ptr);
+
+    // 2. Format conversion on rgb24 with ensure_rgba32 = true -> owned rgba32
+    var conv_res = try scaleAndOrientSurface(src, 16, 12, .normal, true);
+    defer conv_res.deinit();
+    try std.testing.expect(conv_res.owned);
+    try std.testing.expect(conv_res.surface.ptr != src.ptr);
+    try std.testing.expectEqual(
+        sdl.PixelFormat.rgba32,
+        conv_res.surface.format(),
+    );
+
+    // 3. Invalid non-positive target dimensions -> error.InvalidDimensions
+    try std.testing.expectError(
+        error.InvalidDimensions,
+        scaleAndOrientSurface(src, 0, 12, .normal, false),
+    );
 }

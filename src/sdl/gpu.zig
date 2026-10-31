@@ -435,10 +435,19 @@ pub const GraphicsPipelineCreateInfo = struct {
     props: u32 = 0,
 };
 
-/// Render target texture attachment, clear color, and load/store operations for a render pass.
+/// Floating-point RGBA color value normalized to 0.0..1.0.
+pub const FColor = struct {
+    r: f32 = 0,
+    g: f32 = 0,
+    b: f32 = 0,
+    a: f32 = 1,
+};
+
+/// Render target texture attachment, clear color, and load/store operations
+/// for a render pass.
 pub const ColorTargetAttachment = struct {
     texture: Texture,
-    clear_color: c.SDL_FColor = .{ .r = 0, .g = 0, .b = 0, .a = 1 },
+    clear_color: FColor = .{},
     load_op: LoadOp = .clear,
     store_op: StoreOp = .store,
     cycle: bool = false,
@@ -698,11 +707,20 @@ pub const CommandBuffer = struct {
         c.SDL_PushGPUFragmentUniformData(self.ptr, slot, data.ptr, @intCast(data.len));
     }
 
-    /// Begins recording commands for a graphics render pass targeting a color attachment.
-    pub fn beginRenderPass(self: CommandBuffer, target: *const ColorTargetAttachment) ?RenderPass {
+    /// Begins recording commands for a graphics render pass targeting a color
+    /// attachment.
+    pub fn beginRenderPass(
+        self: CommandBuffer,
+        target: *const ColorTargetAttachment,
+    ) ?RenderPass {
         const c_info = c.SDL_GPUColorTargetInfo{
             .texture = target.texture.ptr,
-            .clear_color = target.clear_color,
+            .clear_color = .{
+                .r = target.clear_color.r,
+                .g = target.clear_color.g,
+                .b = target.clear_color.b,
+                .a = target.clear_color.a,
+            },
             .load_op = @intCast(@backingInt(target.load_op)),
             .store_op = @intCast(@backingInt(target.store_op)),
             .cycle = target.cycle,

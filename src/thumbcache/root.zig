@@ -22,6 +22,8 @@ const isImageFile = vfs.isImageFile;
 const isRawFile = vfs.isRawFile;
 const Orientation = probe.Orientation;
 const PositiveDimsU32 = geom.PositiveDimsU32;
+const readLocationBytes = probe.readLocationBytes;
+const readRangePositional = probe.readRangePositional;
 const resolveEntryKind = vfs.resolveEntryKind;
 
 const png_signature = "\x89PNG\r\n\x1a\n";
@@ -785,27 +787,6 @@ pub const PrecacheCancel = struct {
     }
 };
 
-fn readPositionalRange(
-    file: std.Io.File,
-    io: std.Io,
-    cancel: PrecacheCancel,
-    dest: []u8,
-    start_offset: u64,
-) !usize {
-    var total_read: usize = 0;
-    while (total_read < dest.len) {
-        if (cancel.isCanceled()) return error.Canceled;
-        const n = try file.readPositional(
-            io,
-            &.{dest[total_read..]},
-            start_offset + total_read,
-        );
-        if (n == 0) break;
-        total_read += n;
-    }
-    return total_read;
-}
-
 fn encodeEmbeddedRangePng(
     allocator: std.mem.Allocator,
     file: std.Io.File,
@@ -818,65 +799,38 @@ fn encodeEmbeddedRangePng(
     orientation: Orientation,
     encode_fn: EncodeThumbPngFn,
 ) error{Canceled}!?EncodedThumbPng {
-    if (loc.length == 0 or loc.file_offset +| loc.length > file_size) {
-        return null;
-    }
-    const len: usize = @intCast(loc.length);
-    if (loc.file_offset +| loc.length <= header_slice.len) {
-        if (cancel.isCanceled()) return error.Canceled;
-        const off: usize = @intCast(loc.file_offset);
-        const res = encode_fn(
-            allocator,
-            header_slice[off .. off + len],
-            tier,
-            orientation,
-        );
-        if (cancel.isCanceled()) {
-            if (res) |enc| allocator.free(enc.png_bytes);
-            return error.Canceled;
-        }
-        return res;
-    }
-
-    const buf = allocator.alloc(u8, len) catch return null;
-    defer allocator.free(buf);
-    const n = readPositionalRange(
+    if (cancel.isCanceled()) return error.Canceled;
+    var loc_bytes = (readLocationBytes(
+        allocator,
         file,
         io,
         cancel,
-        buf,
-        loc.file_offset,
+        header_slice,
+        file_size,
+        loc,
+        null,
     ) catch |err| {
         if (err == error.Canceled or cancel.isCanceled()) {
             return error.Canceled;
         }
         return null;
-    };
-    if (n != len) {
+    }) orelse {
         if (cancel.isCanceled()) return error.Canceled;
         return null;
-    }
+    };
+    defer loc_bytes.deinit(allocator);
     if (cancel.isCanceled()) return error.Canceled;
-    const res = encode_fn(allocator, buf, tier, orientation);
+    const res = encode_fn(
+        allocator,
+        loc_bytes.bytes,
+        tier,
+        orientation,
+    );
     if (cancel.isCanceled()) {
         if (res) |enc| allocator.free(enc.png_bytes);
         return error.Canceled;
     }
     return res;
-}
-
-fn positiveDimsFromFloat(w: f32, h: f32) ?PositiveDimsU32 {
-    if (w <= 0 or h <= 0 or !std.math.isFinite(w) or !std.math.isFinite(h)) {
-        return null;
-    }
-    const max_f: f32 = @floatFromInt(std.math.maxInt(u24));
-    const clamped_w = @min(w, max_f);
-    const clamped_h = @min(h, max_f);
-    return PositiveDimsU32.initClamped(
-        @intFromFloat(clamped_w),
-        @intFromFloat(clamped_h),
-        std.math.maxInt(u24),
-    );
 }
 
 /// Checks whether `path` already has an up-to-date Freedesktop thumbnail in
@@ -926,7 +880,7 @@ pub fn precacheFileThumbnail(
     const header_target: usize =
         @intCast(@min(file_size, precache_header_limit));
     var header_buf: [precache_header_limit]u8 = undefined;
-    const header_n = readPositionalRange(
+    const header_n = readRangePositional(
         file,
         io,
         cancel,
@@ -997,12 +951,10 @@ pub fn precacheFileThumbnail(
 
         if (cancel.isCanceled()) return .canceled;
 
-        const source_dims: ?PositiveDimsU32 = blk: {
-            if (raw_sensor_dims) |d| {
-                if (positiveDimsFromFloat(d.w, d.h)) |dims| break :blk dims;
-            }
-            break :blk encoded.decoded_dims;
-        };
+        const source_dims = (if (raw_sensor_dims) |d|
+            d.toPositiveU32()
+        else
+            null) orelse encoded.decoded_dims;
 
         writeCachedThumbnailBytes(
             allocator,
@@ -1044,7 +996,7 @@ pub fn precacheFileThumbnail(
         const buf = allocator.alloc(u8, file_usize) catch return .failed;
         full_allocated = buf;
         @memcpy(buf[0..header_n], header_slice);
-        const rem_n = readPositionalRange(
+        const rem_n = readRangePositional(
             file,
             io,
             cancel,
@@ -1072,12 +1024,10 @@ pub fn precacheFileThumbnail(
 
     if (cancel.isCanceled()) return .canceled;
 
-    const source_dims: ?PositiveDimsU32 = blk: {
-        if (full_dims) |d| {
-            if (positiveDimsFromFloat(d.w, d.h)) |dims| break :blk dims;
-        }
-        break :blk encoded.decoded_dims;
-    };
+    const source_dims = (if (full_dims) |d|
+        d.toPositiveU32()
+    else
+        null) orelse encoded.decoded_dims;
 
     writeCachedThumbnailBytes(
         allocator,
@@ -1639,27 +1589,6 @@ test "writeCachedThumbnailBytes and hasValidTargetTierThumbnail roundtrip" {
             mtime_sec + 1,
         ) == null,
     );
-}
-
-test "positiveDimsFromFloat clamping and bounds guards" {
-    try std.testing.expect(positiveDimsFromFloat(0, 100) == null);
-    try std.testing.expect(positiveDimsFromFloat(100, 0) == null);
-    try std.testing.expect(positiveDimsFromFloat(-5, 100) == null);
-    try std.testing.expect(
-        positiveDimsFromFloat(std.math.nan(f32), 100) == null,
-    );
-    try std.testing.expect(
-        positiveDimsFromFloat(100, std.math.inf(f32)) == null,
-    );
-
-    const normal = positiveDimsFromFloat(1920.0, 1080.0).?;
-    try std.testing.expectEqual(@as(u32, 1920), normal.w);
-    try std.testing.expectEqual(@as(u32, 1080), normal.h);
-
-    const huge = positiveDimsFromFloat(1e30, 2e30).?;
-    const max_u24 = std.math.maxInt(u24);
-    try std.testing.expectEqual(max_u24, huge.w);
-    try std.testing.expectEqual(max_u24, huge.h);
 }
 
 test "ThumbCacheMode.parse, toWritePolicy, and thumb_cache_modes_string" {

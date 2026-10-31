@@ -13,6 +13,7 @@ const IngestTelemetry = state_pkg.IngestTelemetry;
 const isRawFile = vfs.isRawFile;
 const MediaEntry = vfs.MediaEntry;
 const MediaId = vfs.MediaId;
+const NoCancel = probe.NoCancel;
 const Orientation = probe.Orientation;
 const PairStreamTarget = vfs.PairStreamTarget;
 const parseImageDimensions = probe.parseImageDimensions;
@@ -20,6 +21,7 @@ const PhysicalDims = geom.PhysicalDims;
 const PositiveDimsU32 = geom.PositiveDimsU32;
 const ProbedImageMetadata = probe.ProbedImageMetadata;
 const RawMetadata = probe.RawMetadata;
+const readLocationBytes = probe.readLocationBytes;
 const ThumbnailInfo = state_pkg.ThumbnailInfo;
 const VisibleNeighbors = triage.VisibleNeighbors;
 const ZipSeekOffsets = vfs.ZipSeekOffsets;
@@ -866,38 +868,24 @@ fn loadThumbnailFromLocation(
     header_slice: []const u8,
     loc: probe.ThumbnailLocation,
 ) ?sdl.Surface {
-    if (!loc.isValid(file_size, 2 * 1024 * 1024)) return null;
-    const t_len: usize = @intCast(loc.length);
-    if (loc.file_offset +| loc.length <= header_slice.len) {
-        const t_off: usize = @intCast(loc.file_offset);
-        return sdl.Surface.loadConstMemOpt(
-            header_slice[t_off .. t_off + t_len],
-        );
-    }
-    const t_buf = alloc.alloc(u8, t_len) catch |err| {
-        std.log.warn(
-            "loadThumbnailFromLocation: alloc failed ({d} bytes): {any}",
-            .{ t_len, err },
-        );
-        return null;
-    };
-    defer alloc.free(t_buf);
-    var ts_slices = [_][]u8{t_buf};
-    const tn = file.readPositional(
+    var loc_bytes = (readLocationBytes(
+        alloc,
+        file.*,
         io,
-        &ts_slices,
-        loc.file_offset,
+        NoCancel{},
+        header_slice,
+        file_size,
+        loc,
+        2 * 1024 * 1024,
     ) catch |err| {
         std.log.warn(
-            "loadThumbnailFromLocation: readPositional failed: {any}",
+            "loadThumbnailFromLocation: read failed: {any}",
             .{err},
         );
         return null;
-    };
-    if (tn == t_len) {
-        return sdl.Surface.loadConstMemOpt(t_buf);
-    }
-    return null;
+    }) orelse return null;
+    defer loc_bytes.deinit(alloc);
+    return sdl.Surface.loadConstMemOpt(loc_bytes.bytes);
 }
 
 fn loadStoredZipThumbnail(

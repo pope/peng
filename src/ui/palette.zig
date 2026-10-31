@@ -22,11 +22,7 @@ const truncateFilename = text_utils.truncateFilename;
 const truncateFilenameMiddle = text_utils.truncateFilenameMiddle;
 const UiViewModel = view_model.UiViewModel;
 const VirtualWindow = palette_pkg.VirtualWindow;
-
-/// Scales the alpha of a theme color by the modal animation progress (0.0 .. 1.0).
-inline fn a(color: clay.Color, progress: f32) clay.Color {
-    return theme.withAlpha(color, progress);
-}
+const withAlpha = theme.withAlpha;
 
 /// Emits Clay text elements partitioning characters into alternating normal
 /// and highlighted segments based on fuzzy match indices.
@@ -97,7 +93,7 @@ fn renderHeader(mode: PaletteMode, title: []const u8, progress: f32) void {
         },
     })({
         clay.text(title, .{
-            .color = a(switch (mode) {
+            .color = withAlpha(switch (mode) {
                 .files => theme.pink,
                 .actions => theme.blue,
                 .set_brightness,
@@ -136,15 +132,15 @@ fn renderBadge(
             .sizing = .{ .w = .fit, .h = .fit },
             .padding = .{ .left = 6, .right = 6, .top = 2, .bottom = 2 },
         },
-        .background_color = a(theme.crust, progress),
+        .background_color = withAlpha(theme.crust, progress),
         .corner_radius = .all(4),
         .border = .{
             .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-            .color = a(border_color, progress),
+            .color = withAlpha(border_color, progress),
         },
     })({
         clay.text(text, .{
-            .color = a(text_color, progress),
+            .color = withAlpha(text_color, progress),
             .font_size = 11,
             .font_id = 0,
         });
@@ -180,11 +176,11 @@ fn renderDirectoryBreadcrumbs(
             .padding = .{ .top = 4, .bottom = 4, .left = 8, .right = 8 },
             .child_gap = 8,
         },
-        .background_color = a(theme.crust, progress),
+        .background_color = withAlpha(theme.crust, progress),
         .corner_radius = .all(6),
         .border = .{
             .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-            .color = a(theme.surface0, progress),
+            .color = withAlpha(theme.surface0, progress),
         },
     })({
         clay.UI()(.{
@@ -198,7 +194,7 @@ fn renderDirectoryBreadcrumbs(
             renderBadge("DIR", theme.mauve, theme.mauve, progress);
 
             clay.text(display_dir, .{
-                .color = a(theme.mauve, progress),
+                .color = withAlpha(theme.mauve, progress),
                 .font_size = 12,
                 .font_id = 0,
             });
@@ -217,17 +213,17 @@ fn renderSearchInput(palette: *const PaletteState, placeholder: []const u8, prog
             .child_alignment = .{ .x = .left, .y = .center },
             .padding = .{ .left = 12, .right = 12 },
         },
-        .background_color = a(theme.crust, progress),
+        .background_color = withAlpha(theme.crust, progress),
         .corner_radius = .all(6),
         .border = .{
             .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-            .color = a(theme.blue, progress),
+            .color = withAlpha(theme.blue, progress),
         },
     })({
         const query_str = if (palette.query.items.len > 0) palette.query.items else placeholder;
         const query_color = if (palette.query.items.len > 0) theme.text else theme.subtext1;
         clay.text(query_str, .{
-            .color = a(query_color, progress),
+            .color = withAlpha(query_color, progress),
             .font_size = 14,
             .font_id = 0,
         });
@@ -248,7 +244,7 @@ fn renderGoToImageFeedback(
             .{ raw_str, err },
         );
         clay.text("Invalid number format. Enter a positive integer.", .{
-            .color = a(theme.red, progress),
+            .color = withAlpha(theme.red, progress),
             .font_size = 13,
             .font_id = 0,
         });
@@ -261,7 +257,7 @@ fn renderGoToImageFeedback(
             .{total_count},
         );
         clay.text(err_str, .{
-            .color = a(theme.red, progress),
+            .color = withAlpha(theme.red, progress),
             .font_size = 13,
             .font_id = 0,
         });
@@ -286,7 +282,7 @@ fn renderGoToImageFeedback(
         .{ val, display_filename },
     );
     clay.text(success_str, .{
-        .color = a(theme.green, progress),
+        .color = withAlpha(theme.green, progress),
         .font_size = 13,
         .font_id = 0,
     });
@@ -306,7 +302,7 @@ fn renderSlideshowIntervalFeedback(
                 .{val},
             );
             clay.text(success_str, .{
-                .color = a(theme.green, progress),
+                .color = withAlpha(theme.green, progress),
                 .font_size = 13,
                 .font_id = 0,
             });
@@ -319,7 +315,7 @@ fn renderSlideshowIntervalFeedback(
     }
     if (!is_valid) {
         clay.text("Invalid duration. Must be greater than 0 seconds.", .{
-            .color = a(theme.red, progress),
+            .color = withAlpha(theme.red, progress),
             .font_size = 13,
             .font_id = 0,
         });
@@ -338,7 +334,7 @@ fn renderFloatInputFeedback(
             .{ raw_str, err },
         );
         clay.text("Invalid float format. Enter a number.", .{
-            .color = a(theme.red, progress),
+            .color = withAlpha(theme.red, progress),
             .font_size = 13,
             .font_id = 0,
         });
@@ -347,7 +343,7 @@ fn renderFloatInputFeedback(
 
     if (std.math.isNan(val) or std.math.isInf(val)) {
         clay.text("Invalid float format. Enter a number.", .{
-            .color = a(theme.red, progress),
+            .color = withAlpha(theme.red, progress),
             .font_size = 13,
             .font_id = 0,
         });
@@ -362,7 +358,7 @@ fn renderFloatInputFeedback(
             .{val},
         );
         clay.text(success_str, .{
-            .color = a(theme.green, progress),
+            .color = withAlpha(theme.green, progress),
             .font_size = 13,
             .font_id = 0,
         });
@@ -372,7 +368,7 @@ fn renderFloatInputFeedback(
             .{ bounds.min, bounds.max },
         );
         clay.text(err_str, .{
-            .color = a(theme.red, progress),
+            .color = withAlpha(theme.red, progress),
             .font_size = 13,
             .font_id = 0,
         });
@@ -396,7 +392,7 @@ fn renderTextInputDialog(
             .padding = .{ .left = 12, .right = 12, .top = 10, .bottom = 10 },
             .child_gap = 6,
         },
-        .background_color = a(theme.crust, progress),
+        .background_color = withAlpha(theme.crust, progress),
         .corner_radius = .all(6),
     })({
         const raw_str = palette.query.items;
@@ -405,13 +401,13 @@ fn renderTextInputDialog(
             .go_to_image => {
                 if (total_count == 0) {
                     clay.text("No images loaded.", .{
-                        .color = a(theme.red, progress),
+                        .color = withAlpha(theme.red, progress),
                         .font_size = 13,
                         .font_id = 0,
                     });
                 } else if (raw_str.len == 0) {
                     clay.text("Enter image number, then press Enter to apply.", .{
-                        .color = a(theme.subtext0, progress),
+                        .color = withAlpha(theme.subtext0, progress),
                         .font_size = 13,
                         .font_id = 0,
                     });
@@ -426,7 +422,7 @@ fn renderTextInputDialog(
                             .{total_count},
                         );
                     clay.text(range_str, .{
-                        .color = a(theme.subtext1, progress),
+                        .color = withAlpha(theme.subtext1, progress),
                         .font_size = 11,
                         .font_id = 0,
                     });
@@ -444,12 +440,12 @@ fn renderTextInputDialog(
             .set_slideshow_interval => {
                 if (raw_str.len == 0) {
                     clay.text("Enter delay in seconds, then press Enter to start.", .{
-                        .color = a(theme.subtext0, progress),
+                        .color = withAlpha(theme.subtext0, progress),
                         .font_size = 13,
                         .font_id = 0,
                     });
                     clay.text("Example: 3 for 3 seconds per slide", .{
-                        .color = a(theme.subtext1, progress),
+                        .color = withAlpha(theme.subtext1, progress),
                         .font_size = 11,
                         .font_id = 0,
                     });
@@ -477,7 +473,7 @@ fn renderTextInputDialog(
             => {
                 if (raw_str.len == 0) {
                     clay.text("Enter a number, then press Enter to apply.", .{
-                        .color = a(theme.subtext0, progress),
+                        .color = withAlpha(theme.subtext0, progress),
                         .font_size = 13,
                         .font_id = 0,
                     });
@@ -491,7 +487,7 @@ fn renderTextInputDialog(
                         .{ bounds.min, bounds.max },
                     );
                     clay.text(range_str, .{
-                        .color = a(theme.subtext1, progress),
+                        .color = withAlpha(theme.subtext1, progress),
                         .font_size = 11,
                         .font_id = 0,
                     });
@@ -733,16 +729,16 @@ fn renderDirectoryListItem(
         ) catch &.{};
 
         const text_color = if (is_selected)
-            a(theme.blue, progress)
+            withAlpha(theme.blue, progress)
         else
-            a(theme.text, progress);
+            withAlpha(theme.text, progress);
         renderFuzzyMatchText(
             frame_allocator,
             display_foldername,
             final_folder_matches,
             13,
             text_color,
-            a(theme.yellow, progress),
+            withAlpha(theme.yellow, progress),
         );
     });
 
@@ -772,16 +768,16 @@ fn renderActionListItem(
         },
     })({
         const text_color = if (is_selected)
-            a(theme.blue, progress)
+            withAlpha(theme.blue, progress)
         else
-            a(theme.text, progress);
+            withAlpha(theme.text, progress);
         renderFuzzyMatchText(
             frame_allocator,
             meta.name,
             action_matches,
             13,
             text_color,
-            a(theme.yellow, progress),
+            withAlpha(theme.yellow, progress),
         );
     });
 
@@ -791,15 +787,15 @@ fn renderActionListItem(
                 .sizing = .{ .w = .fit, .h = .fit },
                 .padding = .{ .left = 8, .right = 8, .top = 3, .bottom = 3 },
             },
-            .background_color = a(theme.crust, progress),
+            .background_color = withAlpha(theme.crust, progress),
             .corner_radius = .all(4),
             .border = .{
                 .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-                .color = a(theme.surface0, progress),
+                .color = withAlpha(theme.surface0, progress),
             },
         })({
             clay.text(meta.shortcut_text, .{
-                .color = a(theme.subtext0, progress),
+                .color = withAlpha(theme.subtext0, progress),
                 .font_size = 11,
                 .font_id = 0,
             });
@@ -824,7 +820,7 @@ fn renderClassificationBadge(
         },
         .background_color = theme.withAlpha(color, 0.25 * progress),
         .border = .{
-            .color = a(color, progress),
+            .color = withAlpha(color, progress),
             .width = .{
                 .left = 1,
                 .right = 1,
@@ -835,7 +831,7 @@ fn renderClassificationBadge(
         .corner_radius = .all(4),
     })({
         clay.text(label, .{
-            .color = a(color, progress),
+            .color = withAlpha(color, progress),
             .font_size = 11,
             .font_id = 0,
         });
@@ -923,23 +919,23 @@ fn renderFileListItem(
                     .sizing = .{ .w = .fixed(4), .h = .fixed(12) },
                 },
                 .background_color = if (is_selected)
-                    a(theme.blue, progress)
+                    withAlpha(theme.blue, progress)
                 else
-                    a(theme.subtext1, progress),
+                    withAlpha(theme.subtext1, progress),
                 .corner_radius = .all(3),
             })({});
 
             const text_color = if (is_selected)
-                a(theme.blue, progress)
+                withAlpha(theme.blue, progress)
             else
-                a(theme.text, progress);
+                withAlpha(theme.text, progress);
             renderFuzzyMatchText(
                 frame_allocator,
                 display_filename,
                 final_basename_matches,
                 13,
                 text_color,
-                a(theme.yellow, progress),
+                withAlpha(theme.yellow, progress),
             );
         });
 
@@ -951,7 +947,7 @@ fn renderFileListItem(
             },
         })({
             clay.text(display_dir, .{
-                .color = a(theme.subtext0, progress),
+                .color = withAlpha(theme.subtext0, progress),
                 .font_size = 11,
                 .font_id = 0,
                 .wrap_mode = .none,
@@ -1121,11 +1117,11 @@ fn renderSelectionList(
                     },
                 },
                 .background_color = if (is_selected and item_hovered)
-                    a(theme.row_selected_hover, progress)
+                    withAlpha(theme.row_selected_hover, progress)
                 else if (is_selected)
-                    a(theme.row_selected, progress)
+                    withAlpha(theme.row_selected, progress)
                 else if (item_hovered)
-                    a(theme.row_hover, progress)
+                    withAlpha(theme.row_hover, progress)
                 else
                     clay.Color{ 0, 0, 0, 0 },
                 .corner_radius = .all(6),
@@ -1221,7 +1217,7 @@ fn renderSelectionList(
                     => "",
                 };
                 clay.text(no_match_msg, .{
-                    .color = a(theme.subtext1, progress),
+                    .color = withAlpha(theme.subtext1, progress),
                     .font_size = 13,
                     .font_id = 0,
                 });
@@ -1258,11 +1254,11 @@ fn renderDirectoryLegend(progress: f32) void {
                     .padding = .{ .left = 5, .right = 7, .top = 3, .bottom = 3 },
                     .child_gap = 5,
                 },
-                .background_color = a(theme.crust, progress),
+                .background_color = withAlpha(theme.crust, progress),
                 .corner_radius = .all(4),
                 .border = .{
                     .width = .{ .left = 1, .right = 1, .top = 1, .bottom = 1 },
-                    .color = a(theme.surface0, progress),
+                    .color = withAlpha(theme.surface0, progress),
                 },
             })({
                 clay.UI()(.{
@@ -1270,18 +1266,18 @@ fn renderDirectoryLegend(progress: f32) void {
                         .sizing = .{ .w = .fit, .h = .fit },
                         .padding = .{ .left = 4, .right = 4, .top = 1, .bottom = 1 },
                     },
-                    .background_color = a(theme.surface0, progress),
+                    .background_color = withAlpha(theme.surface0, progress),
                     .corner_radius = .all(3),
                 })({
                     clay.text(item.key, .{
-                        .color = a(theme.mauve, progress),
+                        .color = withAlpha(theme.mauve, progress),
                         .font_size = 10,
                         .font_id = 0,
                     });
                 });
 
                 clay.text(item.label, .{
-                    .color = a(theme.subtext0, progress),
+                    .color = withAlpha(theme.subtext0, progress),
                     .font_size = 11,
                     .font_id = 0,
                 });

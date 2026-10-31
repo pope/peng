@@ -295,7 +295,6 @@ pub fn build(b: *std.Build) void {
     app_module.addImport("input", input_module);
     app_module.addImport("intents", intents_module);
     app_module.addImport("ipc", ipc_module);
-    app_module.addImport("palette", palette_module);
     app_module.addImport("probe", probe_module);
     app_module.addImport("sdl", sdl_module);
     app_module.addImport("state", state_module);

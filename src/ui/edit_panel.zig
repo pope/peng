@@ -10,12 +10,7 @@ const EditParam = intents.EditParam;
 const ParamSpec = intents.ParamSpec;
 const resetCurrentClayContext = interaction.resetCurrentClayContext;
 const UiViewModel = view_model.UiViewModel;
-
-/// Scales a theme color by the animation progress alpha for smooth
-/// fade-in/fade-out.
-inline fn a(color: clay.Color, progress: f32) clay.Color {
-    return theme.withAlpha(color, progress);
-}
+const withAlpha = theme.withAlpha;
 
 pub const PANEL_WIDTH: f32 = state.EDIT_PANEL_WIDTH;
 pub const PANEL_PADDING: f32 = state.EDIT_PANEL_PADDING;
@@ -159,7 +154,7 @@ pub fn renderSlider(
                 const lbl_color =
                     if (is_modified) theme.text else theme.subtext0;
                 clay.text(spec.label, .{
-                    .color = a(lbl_color, progress),
+                    .color = withAlpha(lbl_color, progress),
                     .font_size = 13,
                     .font_id = 0,
                 });
@@ -180,18 +175,18 @@ pub fn renderSlider(
                     },
                 },
                 .background_color = if (is_modified and reset_hovered)
-                    a(theme.surface1, progress)
+                    withAlpha(theme.surface1, progress)
                 else if (is_modified)
-                    a(theme.surface0, progress)
+                    withAlpha(theme.surface0, progress)
                 else
                     clay.Color{ 0, 0, 0, 0 },
                 .corner_radius = .all(4),
             })({
                 clay.text(formatted_value, .{
                     .color = if (is_modified)
-                        a(theme.mauve, progress)
+                        withAlpha(theme.mauve, progress)
                     else
-                        a(theme.subtext1, progress),
+                        withAlpha(theme.subtext1, progress),
                     .font_size = 12,
                     .font_id = 0,
                 });
@@ -211,7 +206,7 @@ pub fn renderSlider(
                 .layout = .{
                     .sizing = .{ .w = .fixed(track_w), .h = .fixed(4) },
                 },
-                .background_color = a(theme.surface0, progress),
+                .background_color = withAlpha(theme.surface0, progress),
                 .corner_radius = .all(2),
             })({});
 
@@ -223,7 +218,7 @@ pub fn renderSlider(
                 .layout = .{
                     .sizing = .{ .w = .fixed(notch_w), .h = .fixed(notch_h) },
                 },
-                .background_color = a(theme.surface1, progress),
+                .background_color = withAlpha(theme.surface1, progress),
                 .corner_radius = .all(1),
                 .floating = .{
                     .attach_to = .to_parent,
@@ -247,7 +242,10 @@ pub fn renderSlider(
                             .h = .fixed(4),
                         },
                     },
-                    .background_color = a(theme.mauve, progress * 0.7),
+                    .background_color = withAlpha(
+                        theme.mauve,
+                        progress * 0.7,
+                    ),
                     .corner_radius = .all(2),
                     .floating = .{
                         .attach_to = .to_parent,
@@ -269,11 +267,11 @@ pub fn renderSlider(
                 .layout = .{
                     .sizing = .{ .w = .fixed(knob_d), .h = .fixed(knob_d) },
                 },
-                .background_color = a(theme.text, progress),
+                .background_color = withAlpha(theme.text, progress),
                 .corner_radius = .all(knob_d / 2.0),
                 .border = .{
                     .width = .all(1),
-                    .color = a(theme.crust, progress),
+                    .color = withAlpha(theme.crust, progress),
                 },
                 .floating = .{
                     .attach_to = .to_parent,
@@ -320,10 +318,10 @@ pub fn renderEditPanel(
             .child_gap = 16,
         },
         .clip = .{ .horizontal = true, .vertical = false },
-        .background_color = a(theme.mantle, progress),
+        .background_color = withAlpha(theme.mantle, progress),
         .border = .{
             .width = .{ .left = 1, .right = 0, .top = 0, .bottom = 0 },
-            .color = a(theme.surface0, progress),
+            .color = withAlpha(theme.surface0, progress),
         },
     })({
         // =====================================================================
@@ -345,7 +343,7 @@ pub fn renderEditPanel(
                 },
             })({
                 clay.text("Adjustments", .{
-                    .color = a(theme.mauve, progress),
+                    .color = withAlpha(theme.mauve, progress),
                     .font_size = 16,
                     .font_id = 0,
                 });
@@ -362,24 +360,24 @@ pub fn renderEditPanel(
                     .child_alignment = .{ .x = .center, .y = .center },
                 },
                 .background_color = if (is_comparing)
-                    a(theme.mauve, progress * 0.3)
+                    withAlpha(theme.mauve, progress * 0.3)
                 else if (has_adjustments and cmp_hovered)
-                    a(theme.surface1, progress)
+                    withAlpha(theme.surface1, progress)
                 else
-                    a(theme.surface0, progress),
+                    withAlpha(theme.surface0, progress),
                 .corner_radius = .all(6),
                 .border = if (is_comparing) .{
                     .width = .all(1),
-                    .color = a(theme.mauve, progress),
+                    .color = withAlpha(theme.mauve, progress),
                 } else .{},
             })({
                 clay.text(if (is_comparing) "Original" else "Compare", .{
                     .color = if (is_comparing)
-                        a(theme.mauve, progress)
+                        withAlpha(theme.mauve, progress)
                     else if (has_adjustments)
-                        a(theme.text, progress)
+                        withAlpha(theme.text, progress)
                     else
-                        a(theme.subtext1, progress),
+                        withAlpha(theme.subtext1, progress),
                     .font_size = 11,
                     .font_id = 0,
                 });
@@ -396,15 +394,15 @@ pub fn renderEditPanel(
                     .child_alignment = .{ .x = .center, .y = .center },
                 },
                 .background_color = if (has_adjustments and reset_hovered)
-                    a(theme.surface1, progress)
+                    withAlpha(theme.surface1, progress)
                 else
-                    a(theme.surface0, progress),
+                    withAlpha(theme.surface0, progress),
                 .corner_radius = .all(6),
             })({
                 const reset_col = if (has_adjustments)
-                    a(theme.text, progress)
+                    withAlpha(theme.text, progress)
                 else
-                    a(theme.subtext1, progress);
+                    withAlpha(theme.subtext1, progress);
                 clay.text("Reset", .{
                     .color = reset_col,
                     .font_size = 11,
@@ -422,13 +420,13 @@ pub fn renderEditPanel(
                     .child_alignment = .{ .x = .center, .y = .center },
                 },
                 .background_color = if (close_hovered)
-                    a(theme.surface1, progress)
+                    withAlpha(theme.surface1, progress)
                 else
-                    a(theme.surface0, progress),
+                    withAlpha(theme.surface0, progress),
                 .corner_radius = .all(12),
             })({
                 clay.text("x", .{
-                    .color = a(theme.text, progress),
+                    .color = withAlpha(theme.text, progress),
                     .font_size = 12,
                     .font_id = 0,
                 });
@@ -440,7 +438,7 @@ pub fn renderEditPanel(
             .layout = .{
                 .sizing = .{ .w = .fixed(CONTENT_WIDTH), .h = .fixed(1) },
             },
-            .background_color = a(theme.surface0, progress),
+            .background_color = withAlpha(theme.surface0, progress),
         })({});
 
         // =====================================================================
@@ -487,7 +485,7 @@ pub fn renderEditPanel(
                         },
                     })({
                         clay.text(domain.label(), .{
-                            .color = a(theme.subtext0, progress),
+                            .color = withAlpha(theme.subtext0, progress),
                             .font_size = 11,
                             .font_id = 0,
                         });
@@ -523,7 +521,10 @@ pub fn renderEditPanel(
                                 .h = .fixed(1),
                             },
                         },
-                        .background_color = a(theme.surface0, progress),
+                        .background_color = withAlpha(
+                            theme.surface0,
+                            progress,
+                        ),
                     })({});
                 }
             }

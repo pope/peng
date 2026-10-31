@@ -23,7 +23,9 @@ const max_cbz_entry_bytes = vfs.max_cbz_entry_bytes;
 const MediaEntry = vfs.MediaEntry;
 const Orientation = probe.Orientation;
 const PositiveDimsU32 = geom.PositiveDimsU32;
-const readRangePositional = context.readRangePositional;
+const readLocationBytes = probe.readLocationBytes;
+const readRangePositional = probe.readRangePositional;
+const scaleAndOrientSurface = core.thumbcache.scaleAndOrientSurface;
 const scanCbzImageEntries = vfs.scanCbzImageEntries;
 const ThumbCacheConfig = thumbcache.ThumbCacheConfig;
 const ThumbCacheKey = thumbcache.ThumbCacheKey;
@@ -146,7 +148,7 @@ fn decodeEmbeddedLocSurface(
     loc: ThumbnailLocation,
 ) !?sdl.Surface {
     if (cancel.isCanceled()) return error.Canceled;
-    var loc_bytes = (try context.readLocationBytes(
+    var loc_bytes = (try readLocationBytes(
         allocator,
         file,
         io,
@@ -389,30 +391,15 @@ fn renderPreviewRgbaFile(
         );
     }
 
-    const scaled_owned = if (target_w != src_w or target_h != src_h)
-        decoded.surface.scaleRgba32Smooth(target_w, target_h) orelse
-            return error.ScaleFailed
-    else
-        null;
-    defer if (scaled_owned) |s| s.destroy();
-    const base_surf = scaled_owned orelse decoded.surface;
-
-    const rotated_owned = if (quarter_turns != 0)
-        base_surf.rotateOrthogonal(quarter_turns) orelse
-            return error.RotateFailed
-    else
-        null;
-    defer if (rotated_owned) |r| r.destroy();
-    const oriented_surf = rotated_owned orelse base_surf;
-
-    const needs_rgba = oriented_surf.format() != sdl.PixelFormat.rgba32;
-    const converted_owned = if (needs_rgba)
-        oriented_surf.convert(sdl.PixelFormat.rgba32) orelse
-            return error.ConvertFailed
-    else
-        null;
-    defer if (converted_owned) |c| c.destroy();
-    const final_surf = converted_owned orelse oriented_surf;
+    const transformed = try scaleAndOrientSurface(
+        decoded.surface,
+        target_w,
+        target_h,
+        decoded.orientation,
+        true,
+    );
+    defer transformed.deinit();
+    const final_surf = transformed.surface;
 
     if (cancel.isCanceled()) return error.Canceled;
 
