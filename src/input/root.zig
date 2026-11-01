@@ -51,8 +51,22 @@ test "processSDLEvent updates FrameInputState" {
     try std.testing.expect(state.mouse_inside);
 
     evt = sdl.Event{
+        .type = sdl.event_type.window_close_requested,
+    };
+    try processSDLEvent(evt, &state);
+    try std.testing.expectEqual(.window_close, state.quit_request);
+
+    // Terminate supersedes window_close and cannot be downgraded by a
+    // subsequent window_close
+    evt = sdl.Event{
         .type = sdl.event_type.quit,
     };
     try processSDLEvent(evt, &state);
-    try std.testing.expect(state.quit_requested);
+    try std.testing.expectEqual(.terminate, state.quit_request);
+
+    evt = sdl.Event{
+        .type = sdl.event_type.window_close_requested,
+    };
+    try processSDLEvent(evt, &state);
+    try std.testing.expectEqual(.terminate, state.quit_request);
 }

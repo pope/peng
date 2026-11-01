@@ -54,7 +54,9 @@ fn handleKeyDown(
 /// System Pass: Process FrameInput snapshot and map keypresses/shortcuts to AppIntents
 ///
 /// Responsibilities:
-/// 1. Enqueues quit intent on OS window quit request.
+/// 1. Enqueues `quit_server` on process termination (`SDL_EVENT_QUIT` /
+///    `SIGINT` / `SIGTERM`) and `quit` on window close
+///    (`SDL_EVENT_WINDOW_CLOSE_REQUESTED`).
 /// 2. Dispatches dropped filesystem path selection.
 /// 3. Maps active keyboard shortcuts to AppIntents if command palette is not
 ///    accepting input and wasn't dismissed this frame.
@@ -67,8 +69,20 @@ pub fn sysProcessInput(
     const state = ctx.state;
     const input = ctx.input orelse return;
 
-    if (input.quit_requested) {
-        try state.pushIntent(.quit);
+    switch (input.quit_request) {
+        .none => {},
+        .window_close => {
+            try state.pushIntent(.quit);
+            state.viewer.pan_controller.suppress(input.directional_held);
+            state.viewer.zoom_controller.suppress(input.zoom_held);
+            return;
+        },
+        .terminate => {
+            try state.pushIntent(.quit_server);
+            state.viewer.pan_controller.suppress(input.directional_held);
+            state.viewer.zoom_controller.suppress(input.zoom_held);
+            return;
+        },
     }
 
     if (input.dropped_path) |path| {
@@ -161,7 +175,7 @@ test "sysProcessInput does not process escape or shortcuts if palette was closed
         .mouse_left_down = false,
         .mouse_left_clicked = false,
         .mouse_inside = true,
-        .quit_requested = false,
+        .quit_request = .none,
         .scroll_delta_x = 0,
         .scroll_delta_y = 0,
         .keys_pressed = keys,
@@ -211,7 +225,7 @@ test "sysProcessInput ignores key shortcuts while palette mode is active" {
         .mouse_left_down = false,
         .mouse_left_clicked = false,
         .mouse_inside = true,
-        .quit_requested = false,
+        .quit_request = .none,
         .scroll_delta_x = 0,
         .scroll_delta_y = 0,
         .keys_pressed = keys,
@@ -258,7 +272,7 @@ test "Escape key closes active palette without triggering quit in sysProcessInpu
         .mouse_left_down = false,
         .mouse_left_clicked = false,
         .mouse_inside = true,
-        .quit_requested = false,
+        .quit_request = .none,
         .scroll_delta_x = 0,
         .scroll_delta_y = 0,
         .keys_pressed = keys,
@@ -316,7 +330,7 @@ test "sysProcessInput accepts shortcuts when palette is dissolving (is_closing =
         .mouse_left_down = false,
         .mouse_left_clicked = false,
         .mouse_inside = true,
-        .quit_requested = false,
+        .quit_request = .none,
         .scroll_delta_x = 0,
         .scroll_delta_y = 0,
         .keys_pressed = keys,
@@ -364,7 +378,7 @@ test "Escape key dismisses floating overlays without triggering quit" {
         .mouse_left_down = false,
         .mouse_left_clicked = false,
         .mouse_inside = true,
-        .quit_requested = false,
+        .quit_request = .none,
         .scroll_delta_x = 0,
         .scroll_delta_y = 0,
         .keys_pressed = keys,
@@ -422,7 +436,7 @@ test "q key triggers quit even when floating overlays are visible" {
         .mouse_left_down = false,
         .mouse_left_clicked = false,
         .mouse_inside = true,
-        .quit_requested = false,
+        .quit_request = .none,
         .scroll_delta_x = 0,
         .scroll_delta_y = 0,
         .keys_pressed = keys,
@@ -469,7 +483,7 @@ test "duplicate Escape keys in single frame safely deduplicate without triggerin
         .mouse_left_down = false,
         .mouse_left_clicked = false,
         .mouse_inside = true,
-        .quit_requested = false,
+        .quit_request = .none,
         .scroll_delta_x = 0,
         .scroll_delta_y = 0,
         .keys_pressed = keys,
@@ -526,7 +540,7 @@ test "sysProcessInput simultaneous directional keys pan diagonally" {
         .mouse_left_down = false,
         .mouse_left_clicked = false,
         .mouse_inside = true,
-        .quit_requested = false,
+        .quit_request = .none,
         .scroll_delta_x = 0,
         .scroll_delta_y = 0,
         .keys_pressed = keys_ul,
@@ -577,7 +591,7 @@ test "sysProcessInput simultaneous directional keys pan diagonally" {
         .mouse_left_down = false,
         .mouse_left_clicked = false,
         .mouse_inside = true,
-        .quit_requested = false,
+        .quit_request = .none,
         .scroll_delta_x = 0,
         .scroll_delta_y = 0,
         .keys_pressed = keys_dr,
@@ -634,7 +648,7 @@ test "sysProcessInput repeating key with held orthogonal key pans diagonally" {
         .mouse_left_down = false,
         .mouse_left_clicked = false,
         .mouse_inside = true,
-        .quit_requested = false,
+        .quit_request = .none,
         .scroll_delta_x = 0,
         .scroll_delta_y = 0,
         .keys_pressed = keys_left,
@@ -692,7 +706,7 @@ test "sysProcessInput preserves image navigation when viewport is not zoomed" {
         .mouse_left_down = false,
         .mouse_left_clicked = false,
         .mouse_inside = true,
-        .quit_requested = false,
+        .quit_request = .none,
         .scroll_delta_x = 0,
         .scroll_delta_y = 0,
         .keys_pressed = keys_right,
@@ -777,7 +791,7 @@ test "sysProcessInput continuous gliding and seamless diagonal transition" {
         .mouse_left_down = false,
         .mouse_left_clicked = false,
         .mouse_inside = true,
-        .quit_requested = false,
+        .quit_request = .none,
         .scroll_delta_x = 0,
         .scroll_delta_y = 0,
         .keys_pressed = keys_empty,
@@ -843,7 +857,7 @@ test "sysProcessInput suppresses held keys on modal and modifier transitions" {
             .mouse_left_down = false,
             .mouse_left_clicked = false,
             .mouse_inside = true,
-            .quit_requested = false,
+            .quit_request = .none,
             .scroll_delta_x = 0,
             .scroll_delta_y = 0,
             .keys_pressed = keys_empty,
@@ -875,7 +889,7 @@ test "sysProcessInput suppresses held keys on modal and modifier transitions" {
             .mouse_left_down = false,
             .mouse_left_clicked = false,
             .mouse_inside = true,
-            .quit_requested = false,
+            .quit_request = .none,
             .scroll_delta_x = 0,
             .scroll_delta_y = 0,
             .keys_pressed = keys_empty,
@@ -891,5 +905,87 @@ test "sysProcessInput suppresses held keys on modal and modifier transitions" {
     try std.testing.expectEqual(
         @as(usize, 0),
         app_st.pending_intents.items.len,
+    );
+}
+
+test "sysProcessInput maps QuitRequest and suppresses same-frame input" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    var keys: std.ArrayList(Key) = .empty;
+    defer keys.deinit(allocator);
+    try keys.append(allocator, .char_o);
+
+    // 1. OS/Signal quit (SDL_EVENT_QUIT) -> .quit_server only (ignores keys &
+    // dropped_path in the same frame)
+    try sysProcessInput(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = FrameInput{
+            .win_w = 800,
+            .win_h = 600,
+            .scale_x = 1.0,
+            .scale_y = 1.0,
+            .mouse_x = 0,
+            .mouse_y = 0,
+            .mouse_left_down = false,
+            .mouse_left_clicked = false,
+            .mouse_inside = true,
+            .quit_request = .terminate,
+            .scroll_delta_x = 0,
+            .scroll_delta_y = 0,
+            .keys_pressed = keys,
+            .key_modifiers = .{},
+            .text_input = null,
+            .dropped_path = "ignored.jpg",
+            .delta_time_ms = 16.0,
+        },
+        .delta_time_ms = 16.0,
+    }, false);
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        app_st.pending_intents.items.len,
+    );
+    try std.testing.expectEqual(
+        AppIntent.quit_server,
+        app_st.pending_intents.items[0],
+    );
+    app_st.pending_intents.clearRetainingCapacity();
+
+    // 2. Window close request (SDL_EVENT_WINDOW_CLOSE_REQUESTED) -> .quit only
+    try sysProcessInput(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = FrameInput{
+            .win_w = 800,
+            .win_h = 600,
+            .scale_x = 1.0,
+            .scale_y = 1.0,
+            .mouse_x = 0,
+            .mouse_y = 0,
+            .mouse_left_down = false,
+            .mouse_left_clicked = false,
+            .mouse_inside = true,
+            .quit_request = .window_close,
+            .scroll_delta_x = 0,
+            .scroll_delta_y = 0,
+            .keys_pressed = keys,
+            .key_modifiers = .{},
+            .text_input = null,
+            .dropped_path = "ignored.jpg",
+            .delta_time_ms = 16.0,
+        },
+        .delta_time_ms = 16.0,
+    }, false);
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        app_st.pending_intents.items.len,
+    );
+    try std.testing.expectEqual(
+        AppIntent.quit,
+        app_st.pending_intents.items[0],
     );
 }

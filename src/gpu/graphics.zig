@@ -644,6 +644,10 @@ pub fn initSdlCore(headless: bool) !void {
     if (headless and builtin.os.tag != .macos and builtin.os.tag != .windows) {
         _ = sdl.hint.set("SDL_VIDEO_DRIVER", "offscreen");
     }
+    // Keep window close (SDL_EVENT_WINDOW_CLOSE_REQUESTED) distinct from
+    // process termination (SDL_EVENT_QUIT from SIGINT/SIGTERM) so server mode
+    // hides the window on close while exiting cleanly on termination signals.
+    _ = sdl.hint.set("SDL_QUIT_ON_LAST_WINDOW_CLOSE", "0");
 
     if (!sdl.init(sdl.init_flags.video | sdl.init_flags.events)) {
         std.log.err("SDL_Init Error: {s}", .{sdl.getError()});

@@ -64,6 +64,7 @@ pub const NavDirection = navigation.NavDirection;
 pub const NavigationState = navigation.NavigationState;
 pub const OverlayState = types.OverlayState;
 pub const PanController = viewport.PanController;
+pub const QuitRequest = types.QuitRequest;
 pub const RenderStats = telemetry.RenderStats;
 pub const SlideshowMode = types.SlideshowMode;
 pub const SnackbarDisplay = types.SnackbarDisplay;

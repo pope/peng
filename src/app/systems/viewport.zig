@@ -236,7 +236,7 @@ test "sysUpdateViewport cancels active panel drag when panel hides" {
         .mouse_left_down = true,
         .mouse_left_clicked = false,
         .mouse_inside = true,
-        .quit_requested = false,
+        .quit_request = .none,
         .scroll_delta_x = 0,
         .scroll_delta_y = 0,
         .keys_pressed = .empty,

@@ -57,17 +57,22 @@ pub fn runUpdatePhase(
     sysExecuteIpcCommands(ctx);
 
     // Command Palette Input System (typing query updates, selection, clicks)
-    const palette_closed_this_frame = try sysProcessPaletteInput(ctx);
+    const palette_closed_this_frame = if (input_frame.quit_request == .none)
+        try sysProcessPaletteInput(ctx)
+    else
+        false;
 
     // Keyboard & File Drop Input System (maps keypresses -> pending_intents)
     try sysProcessInput(ctx, palette_closed_this_frame);
 
-    // UI Discrete Interactions (overlay close buttons)
-    try sysProcessUiInteractions(ctx, palette_closed_this_frame);
+    if (input_frame.quit_request == .none) {
+        // UI Discrete Interactions (overlay close buttons)
+        try sysProcessUiInteractions(ctx, palette_closed_this_frame);
 
-    // Viewport & Motion Systems (mouse drag/zoom & slideshow timer)
-    sysUpdateViewport(ctx, palette_closed_this_frame);
-    try sysUpdateSlideshow(ctx);
+        // Viewport & Motion Systems (mouse drag/zoom & slideshow timer)
+        sysUpdateViewport(ctx, palette_closed_this_frame);
+        try sysUpdateSlideshow(ctx);
+    }
 
     // Execute All Ingested & Generated Intents
     try sysExecuteIntents(ctx);

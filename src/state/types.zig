@@ -38,6 +38,19 @@ pub const VisibleState = union(enum) {
     },
 };
 
+/// Window close or process termination request accumulated during frame input
+/// polling.
+pub const QuitRequest = enum {
+    none,
+    /// User requested closing the window (`SDL_EVENT_WINDOW_CLOSE_REQUESTED`).
+    /// Hides the window in `--server` mode; exits the process in normal mode.
+    window_close,
+    /// OS or signal requested process termination (`SDL_EVENT_QUIT`, `SIGINT`,
+    /// `SIGTERM`). Unconditionally terminates the process even in `--server`
+    /// mode.
+    terminate,
+};
+
 /// Aggregated input events, mouse coordinates, keyboard actions, and window
 /// metrics for a single frame iteration.
 pub const FrameInput = struct {
@@ -50,7 +63,7 @@ pub const FrameInput = struct {
     mouse_left_down: bool,
     mouse_left_clicked: bool,
     mouse_inside: bool,
-    quit_requested: bool,
+    quit_request: QuitRequest = .none,
     scroll_delta_x: f32,
     scroll_delta_y: f32,
     pinch_delta: f32 = 0.0,
@@ -458,7 +471,6 @@ test "FrameInput.pixMouseX and pixMouseY scale mouse by display scale" {
         .mouse_left_down = false,
         .mouse_left_clicked = false,
         .mouse_inside = true,
-        .quit_requested = false,
         .scroll_delta_x = 0.0,
         .scroll_delta_y = 0.0,
         .keys_pressed = undefined,

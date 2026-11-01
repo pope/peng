@@ -114,7 +114,7 @@ pub const FrameInputState = struct {
     pinch_center_y: f32 = 0,
     mouse_left_clicked: bool = false,
     mouse_inside: bool = false,
-    quit_requested: bool = false,
+    quit_request: state.QuitRequest = .none,
     win_w: f32 = 0,
     win_h: f32 = 0,
 };
@@ -122,9 +122,12 @@ pub const FrameInputState = struct {
 /// Processes a single SDL event and updates the frame input accumulator state.
 pub fn processSDLEvent(event: sdl.Event, frame_input: *FrameInputState) !void {
     switch (event.type) {
-        sdl.event_type.quit,
-        sdl.event_type.window_close_requested,
-        => frame_input.quit_requested = true,
+        sdl.event_type.quit => frame_input.quit_request = .terminate,
+        sdl.event_type.window_close_requested => {
+            if (frame_input.quit_request == .none) {
+                frame_input.quit_request = .window_close;
+            }
+        },
         sdl.event_type.mouse_enter => {
             frame_input.mouse_inside = true;
         },
@@ -389,8 +392,15 @@ pub fn pollFrameInput(
     };
     errdefer frame_input_state.keys_pressed.deinit(frame_allocator);
 
+    const pre_wait_terminated = sdl.events.consumeTerminateSignal();
+    if (pre_wait_terminated) {
+        frame_input_state.quit_request = .terminate;
+    }
+
     var event: sdl.Event = undefined;
-    const wait_success = switch (wait_strategy) {
+    const wait_success = if (pre_wait_terminated)
+        sdl.events.pollEvent(&event)
+    else switch (wait_strategy) {
         .poll => sdl.events.pollEvent(&event),
         .wait_timeout_ms => |ms| sdl.events.waitEventTimeout(&event, ms),
         .wait_indefinite => sdl.events.waitEvent(&event),
@@ -404,6 +414,9 @@ pub fn pollFrameInput(
     while (has_event) {
         try processSDLEvent(event, &frame_input_state);
         has_event = sdl.events.pollEvent(&event);
+    }
+    if (sdl.events.consumeTerminateSignal()) {
+        frame_input_state.quit_request = .terminate;
     }
 
     var directional_held = state.DirectionFlags{};
@@ -435,7 +448,7 @@ pub fn pollFrameInput(
         .mouse_left_down = mouse_left_down,
         .mouse_left_clicked = frame_input_state.mouse_left_clicked,
         .mouse_inside = frame_input_state.mouse_inside,
-        .quit_requested = frame_input_state.quit_requested,
+        .quit_request = frame_input_state.quit_request,
         .scroll_delta_x = frame_input_state.scroll_delta_x,
         .scroll_delta_y = frame_input_state.scroll_delta_y,
         .pinch_delta = frame_input_state.pinch_delta,

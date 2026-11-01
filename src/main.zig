@@ -336,6 +336,24 @@ const AppGraphicsAndState = struct {
     }
 };
 
+/// Handles SDL quit and window close events in the hot-reload fallback loop.
+fn handleFallbackHotReloadEvent(
+    state: *app.state.AppState,
+    event: sdl.Event,
+) void {
+    switch (event.type) {
+        sdl.event_type.quit => state.viewer.running = false,
+        sdl.event_type.window_close_requested => {
+            if (state.viewer.server_mode) {
+                state.hideWindow();
+            } else {
+                state.viewer.running = false;
+            }
+        },
+        else => {},
+    }
+}
+
 /// Phase 2: Runs the main application event processing, state updating,
 /// and rendering loop.
 fn runMainLoop(ctx: *AppGraphicsAndState) !void {
@@ -390,15 +408,18 @@ fn runMainLoop(ctx: *AppGraphicsAndState) !void {
                     &last_time,
                 );
             } else {
-                var event: sdl.Event = undefined;
-                if (sdl.events.waitEventTimeout(&event, 100)) {
-                    if (event.type == sdl.event_type.quit) {
-                        ctx.state.viewer.running = false;
-                    }
-                    while (sdl.events.pollEvent(&event)) {
-                        if (event.type == sdl.event_type.quit) {
-                            ctx.state.viewer.running = false;
+                if (sdl.events.consumeTerminateSignal()) {
+                    ctx.state.viewer.running = false;
+                } else {
+                    var event: sdl.Event = undefined;
+                    if (sdl.events.waitEventTimeout(&event, 100)) {
+                        handleFallbackHotReloadEvent(&ctx.state, event);
+                        while (sdl.events.pollEvent(&event)) {
+                            handleFallbackHotReloadEvent(&ctx.state, event);
                         }
+                    }
+                    if (sdl.events.consumeTerminateSignal()) {
+                        ctx.state.viewer.running = false;
                     }
                 }
             }
