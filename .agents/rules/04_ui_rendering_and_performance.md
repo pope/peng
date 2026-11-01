@@ -19,17 +19,17 @@
      draw calls before submitting the command buffer.
 - **Unified UI + Per-Glyph Font Atlas & Vertex Color Modulation**:
   - `TextCache` (`src/gpu/text_cache.zig`) maintains a single `1024x1024`
-     `RGBA8_UNORM` GPU atlas texture (`atlas_texture`) whose top-left `4x4`
-     block at `(0, 0)` is initialized to opaque white (`0xFFFFFFFF`). Solid UI
-     rectangles, rounded rectangles, borders, and arcs sample `uv = (0.0, 0.0)`
-     from this same texture (`gpu_res.uiTexture()`), collapsing UI chrome and
-     text within the same scissor region into a single GPU draw call.
+    `RGBA8_UNORM` GPU atlas texture (`atlas_texture`) whose top-left `4x4`
+    block at `(0, 0)` is initialized to opaque white (`0xFFFFFFFF`). Solid UI
+    rectangles, rounded rectangles, borders, and arcs sample `uv = (0.0, 0.0)`
+    from this same texture (`gpu_res.uiTexture()`), collapsing UI chrome and
+    text within the same scissor region into a single GPU draw call.
   - `GlyphCacheKey` MUST index strictly by `(font_id, font_size, codepoint)`.
-     Always rasterize glyphs in pure white `(255, 255, 255, 255)` with a 1px
-     transparent-white (`0x00FFFFFF`) border and modulate full RGBA color
-     dynamically via `Vertex.color` (`packRgba255(color)`) to prevent font
-     re-rasterization and cache thrashing across colors, dynamic counters, or
-     fades.
+    Always rasterize glyphs in pure white `(255, 255, 255, 255)` with a 1px
+    transparent-white (`0x00FFFFFF`) border and modulate full RGBA color
+    dynamically via `Vertex.color` (`packRgba255(color)`) to prevent font
+    re-rasterization and cache thrashing across colors, dynamic counters, or
+    fades.
 - **Zero-Area Scissor Skipping & SIMD Bounds Safety**:
   - Clip scissor rects against physical framebuffer bounds and skip any draw
     with `scissor.w <= 0` or `scissor.h <= 0`.
@@ -55,12 +55,12 @@
     `view_transform.computeLogicalDrawDims` and convert the resulting draw
     bounds back to `LogicalDims` for UI layout.
   - Multiply UI panel width deductions (e.g. docked edit panel) by the display
-    scale factor $S = \text{pix_w} / \text{win_w}$ before subtracting from
+    scale factor $S = \\text{pix_w} / \\text{win_w}$ before subtracting from
     physical framebuffer dimensions.
 - **Pre-Scaled Layout Rectangles vs. Manual Zoom Quads**:
   - In preset modes (`.fit`, `.fill`), layout `rect.w` and `rect.h`
     (`computeDrawDims`) are already scaled to screen dimensions; never multiply
-    them by $Z_{\text{base}}$ a second time.
+    them by $Z\_{\\text{base}}$ a second time.
   - In manual zoom mode and outgoing crossfade quads
     (`ImageTransitionPrevQuad`), compute physical quad dimensions directly from
     unrotated source dimensions and `ZoomFactor` (`dst_w = sw * z`,
@@ -111,7 +111,7 @@
     or `active_slider != null`) to prevent container jitter.
 - **Image Crossfade & Scrubbing Invariants**:
   - **Snap-and-Cut on Scrubbing/Interruption**: Never retarget duration across
-    three textures. If navigation steps occur within $< 200\text{ms}$ or
+    three textures. If navigation steps occur within $< 200\\text{ms}$ or
     interrupt an in-flight crossfade, immediately snap
     (`setImmediate(.image_crossfade, 1.0)`, `image_transition = .none`) and cut.
   - **GPU Residency & Mutual Exclusion**: Only start a crossfade if the outgoing
@@ -172,7 +172,7 @@ filter kernels, and color science equations.)*
      detail ring taps against a consistent bilinear center reference `Y_ref`.
   4. **Photometric Exposure Ordering & Monotonic Tonal Quad**: Apply contrast
      around 18% linear middle gray (`0.18`) *before* optical stop exposure gain
-     $\exp_2(\text{brightness} \times 2.0)$, and keep root-space tonal curves
+     $\\exp_2(\\text{brightness} \\times 2.0)$, and keep root-space tonal curves
      within monotonic derivative bounds.
 - **Headless Test Mode (`--test-mode`) & Overlay Isolation**:
   - Disable non-instant animations and transient overlays in test mode
@@ -186,5 +186,5 @@ filter kernels, and color science equations.)*
     (`SnackbarTrigger.testing`) rather than mutating viewport zoom/filter/edit
     state so background pixels beneath the overlay remain invariant.
 
-[vram-preload]: ../skills/zig-gui-practices/references/vram-preloading.md
 [shader-opt]: ../skills/zig-gui-practices/references/shader-optimization.md
+[vram-preload]: ../skills/zig-gui-practices/references/vram-preloading.md

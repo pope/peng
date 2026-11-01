@@ -17,6 +17,9 @@ ______________________________________________________________________
 - **Direct-Indexed ASCII Page Tables (`FontSizePage`) & `TTF_GetGlyphMetrics`**:
   - `TextCache` maintains a flat `pages: [max_font_size_pages]FontSizePage` table (keyed by `(font_id, font_size)`) storing `line_height` and a direct-indexed `ascii: [128]GlyphCacheValue` array, falling back to `glyphs` (`AutoHashMapUnmanaged`) only for non-ASCII codepoints (`cp >= 128`).
   - Both `appendSingleTextRun` (`src/ui/renderer.zig`) and `FontMeasurer.measure` / `FontMeasurer.measurePrefix` (`src/gpu/text_cache.zig`) consult `FontSizePage.ascii[byte]` first, performing **zero C-FFI calls** and **zero hash map lookups** for warm ASCII text while guaranteeing exact width parity between layout and rendering.
+- **Embedded Pan-Unicode/CJK Fallback Font (`src/sdl/font.zig`, `src/gpu/graphics.zig`)**:
+  - `initGpuResources` loads `Roboto-Regular.ttf` as the primary UI font (`fonts[0].ptr`) and attaches embedded GNU `unifont_jp.otf` (`@embedFile("resources/unifont_jp.otf")`) via `Font.addFallback` (`TTF_AddFallbackFont`) so codepoints outside Roboto's Latin/Cyrillic coverage resolve seamlessly across the Unicode BMP and Japanese JIS X 0213.
+  - Because `TTF_SetFontSize` and `TTF_CloseFont` in `SDL3_ttf` do not automatically resize or free attached fallback handles, `sdl.Font.setFontSize` and `sdl.Font.close` MUST propagate point-size updates and teardown to `fallback_ptr` alongside `ptr`.
 
 ______________________________________________________________________
 
@@ -58,8 +61,7 @@ ______________________________________________________________________
   - Model retained, geometrically grown GPU buffers and transfer buffers
     (`UploadStagingBuffer` in `src/gpu/upload.zig` and double-buffered
     `vertex_buffers` / `transfer_buffers` in `RenderResources`) via
-    `sdl.gpu.RetainedResource(Handle)` (`union(enum) { unallocated,
-    allocated: .{ handle: Handle, capacity: usize } }`) rather than parallel
+    `sdl.gpu.RetainedResource(Handle)` (`union(enum) { unallocated, allocated: .{ handle: Handle, capacity: usize } }`) rather than parallel
     `?Handle` + `usize` capacity fields and `.?` unwraps.
 - **SDL3 GPU Deferred Destruction & `Device.reclaimMemory()`**:
   - In SDL3's Vulkan backend (`SDL_gpu_vulkan.c`), `SDL_ReleaseGPUTexture`, `SDL_ReleaseGPUBuffer`, and `SDL_ReleaseGPUTransferBuffer` only append handles to internal deferred queues (`texturesToDestroy`, `buffersToDestroy`, `transferBuffersToDestroy`).

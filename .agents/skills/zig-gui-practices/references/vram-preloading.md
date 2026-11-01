@@ -37,7 +37,7 @@ ______________________________________________________________________
 - **Freedesktop Shared Thumbnail Cache (`src/thumbcache/root.zig` /
   `src/core/thumbcache.zig`)**:
   - **Stage-1 Read Fallback (`probeFreedesktopThumbCache`)**: When a file has no embedded thumbnail, workers compute the canonical `file://` URI (`std.Io.Dir.realPathFile`, RFC 3986 percent-encoding) and lowercase MD5 hex digest (`ThumbCacheKey`, excluding `/tmp/` and `cache_dir` itself), probing `$XDG_CACHE_HOME/thumbnails/` across `.normal` -> `.large` -> `.x_large` -> `.xx_large` and verifying `Thumb::MTime` matches `statFile` `mtime.toSeconds()`. Cached Freedesktop PNGs are pre-oriented upright on disk (`ThumbnailSource.freedesktop_cache.isPreOriented() == true`).
-  - **Idle-Gated Background Writer (`thumbWriterWorker`)**: On a full decode where `resolveThumbWriteMtime` returns a valid `mtime_sec` (`ThumbWritePolicy.all_missing`), `handleImageDecodedEvent` transfers the CPU `sdl.Surface` zero-copy into `WorkerManager.enqueueThumbWrite` (`MAX_QUEUED_THUMB_WRITES = 8`). `thumbWriterWorker` pops jobs under `thumb_write_mutex` (exiting immediately when empty), yields while `active_decode_threads > 0`, downscales to `.large` ($256\times256$), applies orthogonal EXIF rotation (`scaleAndOrientSurface` in `src/core/thumbcache.zig`), splices `tEXt` metadata chunks (`Thumb::URI`, `Thumb::MTime`, `Thumb::Size`, `Thumb::Mimetype`, `Thumb::Image::Width`/`Height`, `Software`) immediately after the 33-byte `IHDR`, and writes via `0600` temp file + atomic `rename`.
+  - **Idle-Gated Background Writer (`thumbWriterWorker`)**: On a full decode where `resolveThumbWriteMtime` returns a valid `mtime_sec` (`ThumbWritePolicy.all_missing`), `handleImageDecodedEvent` transfers the CPU `sdl.Surface` zero-copy into `WorkerManager.enqueueThumbWrite` (`MAX_QUEUED_THUMB_WRITES = 8`). `thumbWriterWorker` pops jobs under `thumb_write_mutex` (exiting immediately when empty), yields while `active_decode_threads > 0`, downscales to `.large` ($256\\times256$), applies orthogonal EXIF rotation (`scaleAndOrientSurface` in `src/core/thumbcache.zig`), splices `tEXt` metadata chunks (`Thumb::URI`, `Thumb::MTime`, `Thumb::Size`, `Thumb::Mimetype`, `Thumb::Image::Width`/`Height`, `Software`) immediately after the 33-byte `IHDR`, and writes via `0600` temp file + atomic `rename`.
 - **Main-Thread Synchronous Header Probing (`probeMediaMetadata`)**:
   - Reads up to **256KB** into a stack buffer for Camera RAW files and **128KB** for non-RAW images (< 0.1ms, 0 heap allocations) before spawning background decode workers.
   - Extracts target canvas dimensions (`metadata.full_dims` / `source_dims`), EXIF orientation, and `has_embedded_thumbnail: bool` on Frame 1 so `getBaseScale` and aspect ratio fitting size `ImageCanvas` immediately.
@@ -68,12 +68,12 @@ Camera RAW files (`.arw`, `.raf`, `.cr2`, `.nef`, `.dng`, `.orf`, `.rw2`, `.pef`
 
 ### Progressive 4-Tier RAW+JPEG Pipeline & Dimension Invariants
 
-1. **Tier 1 (Small Thumbnail, $\le 512\text{KB}$)**: Decoded in ~0.17ms directly from the resident 256KB header slice during rapid scrubbing (`thumb_only = true`).
-2. **Tier 2 (Medium Preview, $\le 2\text{MB}$, e.g. 1616x1080)**: Decoded as an instant placeholder during settled viewing (`thumb_only = false`). Skipped if the container has only a single preview (`preview == thumbnail`). If `prev_loc.file_offset +| prev_loc.length <= header_slice.len`, sliced zero-copy from `header_slice`.
+1. **Tier 1 (Small Thumbnail, $\\le 512\\text{KB}$)**: Decoded in ~0.17ms directly from the resident 256KB header slice during rapid scrubbing (`thumb_only = true`).
+2. **Tier 2 (Medium Preview, $\\le 2\\text{MB}$, e.g. 1616x1080)**: Decoded as an instant placeholder during settled viewing (`thumb_only = false`). Skipped if the container has only a single preview (`preview == thumbnail`). If `prev_loc.file_offset +| prev_loc.length <= header_slice.len`, sliced zero-copy from `header_slice`.
 3. **Tier 3 (Full-Resolution RAW Preview, e.g. 6240x4160)**: Decoded in the background via positional read and crossfaded over Tier 2.
 4. **Tier 4 (Companion Full-Resolution JPEG)**: Deferred until physical pixel demand exceeds the embedded preview resolution:
-   $$M_{\text{tex}} = Z \times \max\left(\frac{W_{\text{auth}}}{W_{\text{loaded}}}, \frac{H_{\text{auth}}}{H_{\text{loaded}}}\right) > 1.05$$
-   (or $M_{\text{tex}} > 1.15$ after `250ms` settled in Fit mode), or when the user presses `j` (`.toggle_pair_stream`).
+   $$M\_{\\text{tex}} = Z \\times \\max\\left(\\frac{W\_{\\text{auth}}}{W\_{\\text{loaded}}}, \\frac{H\_{\\text{auth}}}{H\_{\\text{loaded}}}\\right) > 1.05$$
+   (or $M\_{\\text{tex}} > 1.15$ after `250ms` settled in Fit mode), or when the user presses `j` (`.toggle_pair_stream`).
 5. **Progressive Dimension & Promotion Purity Invariants**:
    - **No Worker Thumbnail Fallback**: Workers MUST set `full_dims = null`
      when true full dimensions are unknown; never substitute `t_surf.w()` / `t_surf.h()`.
@@ -100,11 +100,11 @@ ______________________________________________________________________
 ## 3. Throttled Navigation, Telemetry & Settled Preloading
 
 - **Navigation Throttling Thresholds**:
-  - **`FAST_SCROLL_THRESHOLD_MS = 35` (`LOADING_GRACE_PERIOD_MS` in `src/app/systems/cache.zig`)**: When the interval since `last_nav_time_ms` is $< 35\text{ms}$, `is_fast_scrolling` is true:
+  - **`FAST_SCROLL_THRESHOLD_MS = 35` (`LOADING_GRACE_PERIOD_MS` in `src/app/systems/cache.zig`)**: When the interval since `last_nav_time_ms` is $< 35\\text{ms}$, `is_fast_scrolling` is true:
     1. *Embedded Thumbnails Available*: Workers run with `thumb_only = true` (~0.17ms). Once the active thumbnail is ready (`is_active_thumb_ready`), `sysUpdateCache` speculatively preloads the next single thumbnail (`speculative_idx`) along `direction` (`NavDirection`: `.forward` / `.backward`).
-    2. *Non-Thumbnail Formats*: If `entry.resident.thumbnail == .not_available` (e.g. PNG), `sysUpdateCache` spawns a full decode (`thumb_only = false`) for the active slot immediately while withholding neighbor decodes until navigation settles ($\ge 35\text{ms}$).
-  - **`200ms` Rapid Scrubbing Threshold (`src/app/systems/intents.zig`)**: Navigation steps within $< 200\text{ms}$ bypass image crossfade animations (snapping immediately) and trigger the transient auto-title overlay.
-  - **`250ms` Settled Fit Promotion (`src/app/systems/cache.zig`)**: Companion JPEG Tier-4 promotion in Fit mode waits until $elapsed \ge 250\text{ms}$ to avoid 200MB decodes while stepping through a folder.
+    2. *Non-Thumbnail Formats*: If `entry.resident.thumbnail == .not_available` (e.g. PNG), `sysUpdateCache` spawns a full decode (`thumb_only = false`) for the active slot immediately while withholding neighbor decodes until navigation settles ($\\ge 35\\text{ms}$).
+  - **`200ms` Rapid Scrubbing Threshold (`src/app/systems/intents.zig`)**: Navigation steps within $< 200\\text{ms}$ bypass image crossfade animations (snapping immediately) and trigger the transient auto-title overlay.
+  - **`250ms` Settled Fit Promotion (`src/app/systems/cache.zig`)**: Companion JPEG Tier-4 promotion in Fit mode waits until $elapsed \\ge 250\\text{ms}$ to avoid 200MB decodes while stepping through a folder.
 - **Telemetry Metric Split ("Stats for Nerds")**:
   High-resolution nanosecond timers (`std.Io.Clock.awake.now(io)` for disk I/O
   and worker decode timing, and `sdl.timer.getTicksNs()` for GPU texture
@@ -113,10 +113,10 @@ ______________________________________________________________________
   ingestion in `IngestTelemetry` using zero-sentinel tagged unions
   (`ArchiveTelemetry`, `UploadMode`, `MipmapTelemetry`).
 - **Demand-First Settled Preload & GPU Upload Gating**:
-  Once navigation settles ($\ge 35\text{ms}$) AND the active slot is
+  Once navigation settles ($\\ge 35\\text{ms}$) AND the active slot is
   `.loaded_gpu` (or `.loaded_cpu` in headless mode, or `.failed`),
   `sysUpdateCache` dispatches visible neighbor prefetch workers
-  ($\pm 1, \pm 2$). Completed neighbor surfaces are held as `.loaded_cpu` while
+  ($\\pm 1, \\pm 2$). Completed neighbor surfaces are held as `.loaded_cpu` while
   the active image is in flight, then trickled to the GPU at 1 texture per frame
   in `prepareCacheTextures` (`src/app/systems/asset_upload.zig`).
 
@@ -198,8 +198,8 @@ ______________________________________________________________________
 - **Candidate Boundary & Step-Transition Verification**:
   - Compute `raw_pad_px` from full aspect ratio `ar_full` and `nearest_block_px = @round(raw_pad_px / 8.0) * 8.0`.
   - Guard: `nearest_block_px > 0.0 and nearest_block_px * 2.0 < thumb_dim and @abs(raw_pad_px - nearest_block_px) <= 2.0`.
-  - Verify padding rows/cols (`test_bound - 1` and `dim - test_bound`) are black ($\le 16$) AND active content begins at `test_bound` or `dim - test_bound - 1` so dark scenes (astrophotography, studio backdrops) are never falsely cropped.
+  - Verify padding rows/cols (`test_bound - 1` and `dim - test_bound`) are black ($\\le 16$) AND active content begins at `test_bound` or `dim - test_bound - 1` so dark scenes (astrophotography, studio backdrops) are never falsely cropped.
 - **SIMD Surface Inspection & Single-Pass RGBA32 Downscaling (`Surface.scaleRgba32Smooth`)**:
   - Scan contiguous horizontal rows with `@Vector(16, u8)` and `@reduce(.Or, ...)`; scan strided vertical columns with scalar/4-byte reads and early exit.
   - Derive endian-agnostic RGB masks from `details.*.Rmask | details.*.Gmask | details.*.Bmask`.
-  - When downscaling CPU surfaces (`RGB24`, `BGR24`, `RGBA32`) for Freedesktop thumbnail generation (`writeThumbnailPng`) or Kitty terminal previews (`renderPreviewRgbaFile` -> `/dev/shm/tty-graphics-protocol-peng-...` `t=t` transfer), use `Surface.scaleRgba32Smooth` (`resampleDirectToRgba32`) instead of `SDL_ScaleSurface(..., SDL_SCALEMODE_LINEAR)` (which falls back to nearest-neighbor on 24-bit `RGB24` surfaces and exhibits single-pass bilinear aliasing on $>2\times$ reductions). `scaleRgba32Smooth` performs single-pass `i64` 16.16 fixed-point $4\times 4$ / $2\times 2$ box-grid area averaging (or bilinear for $<2\times$) directly into the target `RGBA32` buffer with zero intermediate surface allocations.
+  - When downscaling CPU surfaces (`RGB24`, `BGR24`, `RGBA32`) for Freedesktop thumbnail generation (`writeThumbnailPng`) or Kitty terminal previews (`renderPreviewRgbaFile` -> `/dev/shm/tty-graphics-protocol-peng-...` `t=t` transfer), use `Surface.scaleRgba32Smooth` (`resampleDirectToRgba32`) instead of `SDL_ScaleSurface(..., SDL_SCALEMODE_LINEAR)` (which falls back to nearest-neighbor on 24-bit `RGB24` surfaces and exhibits single-pass bilinear aliasing on $>2\\times$ reductions). `scaleRgba32Smooth` performs single-pass `i64` 16.16 fixed-point $4\\times 4$ / $2\\times 2$ box-grid area averaging (or bilinear for $\<2\\times$) directly into the target `RGBA32` buffer with zero intermediate surface allocations.

@@ -12,8 +12,7 @@
     behind native Zig types: 2D geometry (`Rect`, `FRect`, `FPoint`) lives in
     `src/geom/root.zig` and is converted at the `src/sdl/` boundary, while
     GPU/render types (`FColor`, `Vertex`) are wrapped in `src/sdl/`. Explicit
-    methods replace raw C pointers or re-exporting C structs (`pub const FRect =
-    c.SDL_FRect;` is forbidden).
+    methods replace raw C pointers or re-exporting C structs (`pub const FRect = c.SDL_FRect;` is forbidden).
 - **`extern struct` Handle Wrappers & Hot-Reload Typing**:
   - Any wrapper struct passed by value across `callconv(.c)` boundaries MUST be
     declared `extern struct` (e.g.
@@ -145,8 +144,7 @@
      line; alias extracted symbols (`const AppState = app_state.AppState;`)
      sorted alphabetically by symbol name.
 - **No Proxy Re-Exports or Backward-Compatibility Aliases**:
-  - Never re-export types from dependency modules (`pub const Thing =
-    child_lib.Thing;` across module boundaries is forbidden; only a module's
+  - Never re-export types from dependency modules (`pub const Thing = child_lib.Thing;` across module boundaries is forbidden; only a module's
     `root.zig` may re-export declarations from its own sibling files within that
     same module).
   - Do NOT introduce `pub const OldName = NewName;` aliases during refactors;

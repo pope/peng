@@ -16,15 +16,15 @@
   - Never use unbounded `.reset(.retain_capacity)` on session arenas that hold
     dynamic directory paths or user classification data.
   - Reset `directory_arena` via `resetDirectoryArena()` bounding retained
-    memory pages to $\le 256\text{ KiB}$
+    memory pages to $\\le 256\\text{ KiB}$
     (`MAX_RETAINED_DIR_ARENA_BYTES = 256 * 1024`).
   - Reset `classification_arena` via `TriageMap.resetArena()` bounding
-    retained memory pages to $\le 64\text{ KiB}$
+    retained memory pages to $\\le 64\\text{ KiB}$
     (`MAX_RETAINED_CLASS_ARENA_BYTES = 64 * 1024`).
   - After directory scans or playlist replacements, call
     `NavigationState.trimExcessCapacity` to shrink `MultiArrayList(MediaItem)`
     via `setCapacity` (or `clearAndFree` when `len == 0`) whenever capacity
-    exceeds $2 \times \text{len}$ and exceeds 64 elements, avoiding retention
+    exceeds $2 \\times \\text{len}$ and exceeds 64 elements, avoiding retention
     of peak capacity from massive directories.
 - **Autonomous Worker Arenas for Batched Event Payloads**:
   - `DirectoryScanResultPayload` embeds a dedicated `std.heap.ArenaAllocator`
@@ -43,14 +43,13 @@
     lists): NEVER use fixed stack arrays `[N]T` that risk silent truncation or
     panic. Use `std.ArrayList(T)` backed by `frame_allocator` with
     `defer list.deinit(frame_allocator)`.
-  - *Large Path Buffers* ($\ge 4\text{ KB}$ like `std.Io.Dir.max_path_bytes`):
+  - *Large Path Buffers* ($\\ge 4\\text{ KB}$ like `std.Io.Dir.max_path_bytes`):
     - *Per-Frame Layout & Render Passes*: Allocate from `frame_allocator` with
       `defer frame_allocator.free(...)` rather than placing 4 KB arrays on the
       stack inside per-frame loops.
     - *One-Off Main-Thread State Transitions*: In discrete, non-recursive state
       transitions where `frame_allocator` is unavailable (e.g. `openPalette`),
-      a stack buffer (`var parent_buf: [std.Io.Dir.max_path_bytes]u8 =
-      undefined;`) is preferred over `self.allocator.alloc` to avoid heap churn.
+      a stack buffer (`var parent_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;`) is preferred over `self.allocator.alloc` to avoid heap churn.
   - *Assert-Bounded Hardware/FFI Limits* (e.g. 16 vertex buffer slots in SDL3
     GPU, 8 IFD levels in EXIF): Keep on the stack and document the hardware/API
     bound in comments.
@@ -158,13 +157,10 @@
     on the union (`getPrevIndex(self) ?usize`).
   - **No Interdependent Optionals, In-Band Zero Sentinels, or Multiplexed Event Payloads**:
     Bundle semantically coupled optionals into a single tagged union variant
-    (`union(enum) { unindexed, indexed: ZipSeekOffsets }`, `ArchiveTelemetry =
-    union(enum) { none, archive: struct { ... } }`, `UploadMode`,
-    `MipmapTelemetry`) or validated optional struct (`source_dims: ?PhysicalDims
-    = null` constructed via `PhysicalDims.initPositive(w, h)`). Never represent
+    (`union(enum) { unindexed, indexed: ZipSeekOffsets }`, `ArchiveTelemetry = union(enum) { none, archive: struct { ... } }`, `UploadMode`,
+    `MipmapTelemetry`) or validated optional struct (`source_dims: ?PhysicalDims = null` constructed via `PhysicalDims.initPositive(w, h)`). Never represent
     optional composite data (such as 2D dimensions) as independent primitive
-    fields with in-band `0` / `0.0` sentinels (`full_w: f32 = 0.0, full_h: f32 =
-    0.0`) or boolean + defaulted primitive pairs (`needs_thumb_write: bool` +
+    fields with in-band `0` / `0.0` sentinels (`full_w: f32 = 0.0, full_h: f32 = 0.0`) or boolean + defaulted primitive pairs (`needs_thumb_write: bool` +
     `source_mtime_sec: i64 = 0`), which permit half-valid states (`w > 0` with
     `h == 0`) and axis-shearing on per-axis fallback. Never overload an event
     payload with an optional handle (`surface: ?sdl.Surface`) to represent

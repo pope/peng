@@ -56,6 +56,6 @@ ______________________________________________________________________
   - 7-filter resampling suite (`Nearest`, `Bilinear`, `AA-Nearest`, `Mitchell-Netravali`, `Lanczos3`, `AMD FSR 1.0`, `Tiny CNN`).
   - 13-parameter color & presence pipeline: opponent WB, dual-path 18% middle
     gray contrast, monotonic root-space tonal quad, post-contrast exposure
-    ($2^{2\cdot\text{EV}}$), skin-protected vibrance, 8-tap $R=2\text{px}$
-    bilateral Texture, 5-tap $R=12\text{px}$ ($\text{Lod } 3.0$) bilateral
+    ($2^{2\\cdot\\text{EV}}$), skin-protected vibrance, 8-tap $R=2\\text{px}$
+    bilateral Texture, 5-tap $R=12\\text{px}$ ($\\text{Lod } 3.0$) bilateral
     Clarity, and rational highlight soft-knee.
