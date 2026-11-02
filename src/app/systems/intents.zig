@@ -245,6 +245,13 @@ fn executeIntent(
             vp.reset();
             vp.zoom_factor = state.ZoomFactor.init(self.getBaseScale());
         },
+        .reset_window_trim => {
+            self.viewer.trim.mode = .auto_trim;
+            self.viewer.trim.pending_programmatic = null;
+            self.viewer.trim.last_trimmed_media_id = null;
+            self.viewer.trim.last_trimmed_raw_dims = .{};
+            showCustomSnackbar(self, "Auto-trim enabled", now_ms);
+        },
         .set_scale => |mode| {
             self.viewer.pan_controller.reset();
             self.viewer.zoom_controller.reset();
@@ -2113,4 +2120,35 @@ test "togglePairStream - Cancels existing job epoch on stream switch" {
         updated.target,
     );
     try std.testing.expectEqual(@as(u64, 1000), updated.start_time_ms);
+}
+
+test "executeIntent - reset_window_trim re-enables auto-trim and clears trim tracking" {
+    const testing = std.testing;
+    const allocator = testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    app_st.viewer.ui.snackbar.enabled = true;
+    app_st.viewer.trim.mode = .manual;
+    app_st.viewer.trim.pending_programmatic = .{ .w = 800, .h = 600, .deadline_ms = 1000 };
+    app_st.viewer.trim.last_trimmed_media_id = @fromBackingInt(@intCast(42));
+    app_st.viewer.trim.last_trimmed_raw_dims = .{ .w = 1920.0, .h = 1080.0 };
+
+    try app_st.pushIntent(.reset_window_trim);
+    try sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+        .now_ms = 5000,
+    });
+
+    try testing.expectEqual(state.WindowSizingMode.auto_trim, app_st.viewer.trim.mode);
+    try testing.expectEqual(@as(?state.PendingProgrammaticResize, null), app_st.viewer.trim.pending_programmatic);
+    try testing.expectEqual(@as(?vfs.MediaId, null), app_st.viewer.trim.last_trimmed_media_id);
+    try testing.expectEqual(@as(f32, 0.0), app_st.viewer.trim.last_trimmed_raw_dims.w);
+    try testing.expectEqual(@as(f32, 0.0), app_st.viewer.trim.last_trimmed_raw_dims.h);
+    try testing.expectEqualStrings("Auto-trim enabled", app_st.viewer.ui.snackbar.getMessage());
+    try testing.expect(app_st.viewer.animations.isActive(.snackbar));
 }

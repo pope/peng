@@ -191,6 +191,7 @@ pub const ActionId = enum {
     // Lifecycle
     quit,
     quit_server,
+    reset_window_trim,
 
     // Non-palette capabilities (CLI / IPC parameters)
     open_config,
@@ -1029,6 +1030,19 @@ pub const actions = [_]ActionDef{
         .shortcuts = &.{.{ .key = .char_q, .mod = .{ .ctrl = true } }},
         .intent = .quit_server,
     },
+    .{
+        .id = .reset_window_trim,
+        .title = "Reset Window Trim (Hug Image)",
+        .shortcut_text = "Shift+W",
+        .description = "Re-enable auto-trimming and resize window to hug active image aspect ratio",
+        .show_in_palette = true,
+        .shortcuts = &.{.{ .key = .char_w, .mod = .{ .shift = true } }},
+        .intent = .reset_window_trim,
+        .ipc = .{
+            .name = "trim",
+            .description = "Re-enable auto-trimming window to image aspect ratio",
+        },
+    },
 
     // --- Non-Palette Capabilities (CLI flags and IPC verbs) ---
     .{
@@ -1337,8 +1351,8 @@ pub const ipc_commands = blk: {
 test "actions registry projections" {
     const testing = std.testing;
 
-    // Palette count: 72 previous + 1 toggle_atlas action = 73
-    try testing.expectEqual(@as(usize, 73), palette_action_items.len);
+    // Palette count: 73 previous + 1 reset_window_trim action = 74
+    try testing.expectEqual(@as(usize, 74), palette_action_items.len);
 
     // Exact index preservation
     try testing.expectEqualStrings(
@@ -1350,8 +1364,8 @@ test "actions registry projections" {
         palette_action_items[7].shortcut_text,
     );
 
-    // Shortcuts: 60 previous + 1 atlas shortcut (Shift+A) = 61
-    try testing.expectEqual(@as(usize, 61), flat_shortcuts.len);
+    // Shortcuts: 61 previous + 1 reset_window_trim shortcut (Shift+W) = 62
+    try testing.expectEqual(@as(usize, 62), flat_shortcuts.len);
     var total_sc: usize = 0;
     for (palette_action_items) |item| {
         total_sc += item.shortcuts.len;
@@ -1371,8 +1385,8 @@ test "actions registry projections" {
     );
     try testing.expectEqual(OptionId.scale, action_cli_options[6].id);
 
-    // IPC commands projection: 37 previous - 1 debug verb = 36
-    try testing.expectEqual(@as(usize, 36), ipc_commands.len);
+    // IPC commands projection: 36 previous + 1 trim command = 37
+    try testing.expectEqual(@as(usize, 37), ipc_commands.len);
 }
 
 test "actions registry invariants and consistency" {
@@ -1434,4 +1448,13 @@ test "actions registry invariants and consistency" {
     }
     try testing.expect(found_shift_d);
     try testing.expect(found_shift_i);
+
+    // 7. Verify shortcut resolution for Shift+W (Reset Window Trim)
+    var found_shift_w = false;
+    for (flat_shortcuts) |sc| {
+        if (sc.key == .char_w and sc.mod.eql(.{ .shift = true })) {
+            if (sc.intent == .reset_window_trim) found_shift_w = true;
+        }
+    }
+    try testing.expect(found_shift_w);
 }

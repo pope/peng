@@ -350,6 +350,32 @@ fn renderTitlePill(
         cur_x += bw + 14.0;
     }
 
+    if (ui_model.window_sizing_mode == .manual) {
+        const dims = measureText("TRIM", 0, 11, measure_data);
+        const bw = dims.w + 12.0;
+        const bh = if (dims.h > 0.0) dims.h + 4.0 else 17.0;
+        const trim_rect = FRect{
+            .x = cur_x,
+            .y = badge_center_y - bh * 0.5,
+            .w = bw,
+            .h = bh,
+        };
+        _ = try renderPillBadge(
+            list,
+            cur_x,
+            badge_center_y,
+            "TRIM",
+            theme.withAlpha(theme.crust, progress),
+            theme.yellow,
+            progress,
+            measure_data,
+        );
+        if (progress > 0.5) {
+            interaction.setTrimPillRect(trim_rect);
+        }
+        cur_x += bw + 14.0;
+    }
+
     if (count_str) |cstr| {
         const count_dims = measureText(cstr, 0, 12, measure_data);
         try list.addText(.{
@@ -497,6 +523,9 @@ fn renderBottomOverlayBar(
     }
     if (ui_model.view_mode.badgeText()) |mode_txt| {
         extra_w += measureText(mode_txt, 0, 11, measure_data).w + 26.0;
+    }
+    if (ui_model.window_sizing_mode == .manual) {
+        extra_w += measureText("TRIM", 0, 11, measure_data).w + 26.0;
     }
     if (count_str != null) extra_w += count_w + 14.0;
 

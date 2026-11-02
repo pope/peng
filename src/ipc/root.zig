@@ -269,6 +269,7 @@ pub const IpcCommand = union(enum) {
     thumb: ThumbAction,
     wait_load,
     reset_view,
+    trim,
     reset_adjustments,
     next,
     prev,
@@ -324,6 +325,7 @@ pub const IpcCommand = union(enum) {
                 .reset => return .{ .adjust = .reset_all },
             },
             .reset_view => return .reset_zoom,
+            .trim => return .reset_window_trim,
             .reset_adjustments => return .{ .adjust = .reset_all },
             .filter => |mode| return .{ .set_filter = mode },
             .scale => |mode| return .{ .set_scale = mode },
@@ -710,6 +712,9 @@ pub const IpcCommand = union(enum) {
             return .wait_load;
         } else if (std.mem.eql(u8, cmd, "reset_view") or std.mem.eql(u8, cmd, "reset")) {
             return .reset_view;
+        } else if (std.mem.eql(u8, cmd, "trim") or std.mem.eql(u8, cmd, "auto_trim")) {
+            if (it.next() != null) return error.InvalidArgument;
+            return .trim;
         } else if (std.mem.eql(u8, cmd, "reset_adjustments")) {
             return .reset_adjustments;
         } else if (std.mem.eql(u8, cmd, "next")) {
@@ -859,6 +864,7 @@ pub const IpcCommand = union(enum) {
             .thumb,
             .screenshot,
             .reset_view,
+            .trim,
             .reset_adjustments,
             .next,
             .prev,
@@ -1186,6 +1192,18 @@ test "IpcCommand parsing" {
     const cmd_reset = try IpcCommand.parse("reset");
     try std.testing.expectEqual(IpcCommand.reset_view, cmd_reset);
     try std.testing.expectEqual(intents.AppIntent.reset_zoom, cmd_reset.toIntent().?);
+
+    const cmd_trim = try IpcCommand.parse("trim");
+    try std.testing.expectEqual(IpcCommand.trim, cmd_trim);
+    try std.testing.expectEqual(intents.AppIntent.reset_window_trim, cmd_trim.toIntent().?);
+    try std.testing.expect(!cmd_trim.isAllowedWhenHidden());
+
+    const cmd_auto_trim = try IpcCommand.parse("auto_trim");
+    try std.testing.expectEqual(IpcCommand.trim, cmd_auto_trim);
+    try std.testing.expectEqual(intents.AppIntent.reset_window_trim, cmd_auto_trim.toIntent().?);
+
+    try std.testing.expectError(error.InvalidArgument, IpcCommand.parse("trim extra"));
+    try std.testing.expectError(error.InvalidArgument, IpcCommand.parse("auto_trim extra"));
 
     const cmd_reset_adjustments = try IpcCommand.parse("reset_adjustments");
     try std.testing.expectEqual(IpcCommand.reset_adjustments, cmd_reset_adjustments);

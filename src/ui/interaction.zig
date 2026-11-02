@@ -53,6 +53,7 @@ const InteractionState = struct {
     palette_list: ?FRect = null,
     palette_items: [32]PaletteItemHit = undefined,
     palette_item_count: usize = 0,
+    trim_pill_btn: ?FRect = null,
 };
 
 var state_data: InteractionState = .{};
@@ -79,6 +80,7 @@ pub fn beginFrameLayout() void {
     state_data.palette_captures_pointer = false;
     state_data.palette_list = null;
     state_data.palette_item_count = 0;
+    state_data.trim_pill_btn = null;
 }
 
 /// Resets global interaction state back to its default uninitialized values.
@@ -120,6 +122,11 @@ pub fn setStatsPanelRects(card: FRect, close_btn: FRect) void {
 pub fn setAtlasPanelRects(card: FRect, close_btn: FRect) void {
     state_data.atlas_card = card;
     state_data.atlas_close_btn = close_btn;
+}
+
+/// Records the bounding rectangle for the trim reset pill button in the title overlay.
+pub fn setTrimPillRect(rect: FRect) void {
+    state_data.trim_pill_btn = rect;
 }
 
 /// Records the bounding rectangles for the edit side panel and its controls.
@@ -241,6 +248,13 @@ pub fn isPointerOverAtlasCloseBtn() bool {
     return btn.contains(state_data.pointer);
 }
 
+/// Returns true if pointer is hovering over the trim reset pill button.
+pub fn isPointerOverTrimPillBtn() bool {
+    if (!state_data.has_layout) return false;
+    const btn = state_data.trim_pill_btn orelse return false;
+    return btn.contains(state_data.pointer);
+}
+
 /// Returns true if pointer is hovering over the info overlay panel.
 pub fn isPointerOverInfoPanel() bool {
     if (!state_data.has_layout) return false;
@@ -287,6 +301,9 @@ pub fn isPointerOverViewport() bool {
     }
     if (state_data.atlas_card) |card| {
         if (card.contains(state_data.pointer)) return false;
+    }
+    if (state_data.trim_pill_btn) |btn| {
+        if (btn.contains(state_data.pointer)) return false;
     }
     return true;
 }

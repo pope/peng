@@ -544,6 +544,7 @@ pub const AppIntent = union(enum) {
     set_pan: PhysicalPoint,
     pan_by: struct { dx: f32, dy: f32 },
     reset_zoom,
+    reset_window_trim,
 
     // Image scaling modes & GPU filters
     set_scale: ZoomPreset,

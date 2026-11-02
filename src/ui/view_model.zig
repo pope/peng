@@ -52,6 +52,7 @@ pub const UiViewModel = struct {
     slideshow: SlideshowMode = .inactive,
     manga_mode: bool = false,
     overlays: OverlayState,
+    window_sizing_mode: state.WindowSizingMode = .auto_trim,
     window_title: []const u8 = "Peng Image Viewer",
     viewport: ViewportParams,
     palette: *const PaletteState,

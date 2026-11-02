@@ -1073,6 +1073,7 @@ pub const AppState = struct {
             .slideshow = self.viewer.navigation.slideshow,
             .manga_mode = self.viewer.navigation.manga_mode,
             .overlays = self.viewer.ui.overlays,
+            .window_sizing_mode = self.viewer.trim.mode,
             .window_title = blk: {
                 if (nav.getCurrentImageEntry()) |media| {
                     break :blk media.getBasename();

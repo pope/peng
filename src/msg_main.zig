@@ -151,6 +151,7 @@ fn normalizeCommandPaths(
         .thumb,
         .wait_load,
         .reset_view,
+        .trim,
         .reset_adjustments,
         .next,
         .prev,

@@ -123,6 +123,12 @@ pub fn sysProcessUiInteractions(
         try self.pushIntent(.{ .set_atlas = false });
     }
 
+    if (self.viewer.trim.mode == .manual and
+        ui.interaction.isPointerOverTrimPillBtn())
+    {
+        try self.pushIntent(.reset_window_trim);
+    }
+
     // Edit Side Panel Controls
     if (self.viewer.ui.overlays.edit_panel.visible) {
         try processEditPanelClicks(self, input);
@@ -185,4 +191,50 @@ test "sysProcessUiInteractions cancels slider drag when palette opens" {
         @as(usize, 0),
         app_st.pending_intents.items.len,
     );
+}
+
+test "sysProcessUiInteractions - clicking TRIM pill button enqueues reset_window_trim" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    defer ui.interaction.resetInteractionState();
+
+    app_st.viewer.trim.mode = .manual;
+
+    ui.interaction.beginFrameLayout();
+    ui.interaction.setTrimPillRect(.{ .x = 100.0, .y = 500.0, .w = 60.0, .h = 24.0 });
+    ui.interaction.setPointerStateForTest(.{ .x = 120.0, .y = 510.0 }, false);
+
+    const frame_input = FrameInput{
+        .win_w = 800,
+        .win_h = 600,
+        .scale_x = 1.0,
+        .scale_y = 1.0,
+        .mouse_x = 120.0,
+        .mouse_y = 510.0,
+        .mouse_left_down = false,
+        .mouse_left_clicked = true,
+        .mouse_inside = true,
+        .quit_request = .none,
+        .scroll_delta_x = 0,
+        .scroll_delta_y = 0,
+        .keys_pressed = .empty,
+        .key_modifiers = .{},
+        .text_input = null,
+        .dropped_path = null,
+        .delta_time_ms = 16.0,
+    };
+
+    try sysProcessUiInteractions(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = frame_input,
+        .delta_time_ms = 16.0,
+    }, false);
+
+    try std.testing.expectEqual(@as(usize, 1), app_st.pending_intents.items.len);
+    try std.testing.expectEqual(intents.AppIntent.reset_window_trim, app_st.pending_intents.items[0]);
 }
