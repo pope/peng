@@ -29,12 +29,49 @@ pub const Window = extern struct {
         return .{ .w = w, .h = h };
     }
 
+    /// Sets the logical dimensions of the window in screen points.
+    pub fn setSize(self: Window, w: i32, h: i32) bool {
+        return c.SDL_SetWindowSize(self.ptr, w, h);
+    }
+
+    /// Sets the minimum logical dimensions allowed for the window.
+    pub fn setMinimumSize(self: Window, min_w: i32, min_h: i32) bool {
+        return c.SDL_SetWindowMinimumSize(self.ptr, min_w, min_h);
+    }
+
     /// Returns the physical framebuffer size of the window in pixels.
     pub fn getSizeInPixels(self: Window) struct { w: i32, h: i32 } {
         var w: c_int = 0;
         var h: c_int = 0;
         _ = c.SDL_GetWindowSizeInPixels(self.ptr, &w, &h);
         return .{ .w = w, .h = h };
+    }
+
+    /// Returns the window coordinates on desktop, or `null` if querying the
+    /// position is unsupported (such as on Wayland).
+    pub fn getPosition(self: Window) ?struct { x: i32, y: i32 } {
+        var x: c_int = 0;
+        var y: c_int = 0;
+        if (!c.SDL_GetWindowPosition(self.ptr, &x, &y)) {
+            return null;
+        }
+        return .{ .x = x, .y = y };
+    }
+
+    /// Sets the desktop coordinates of the window.
+    pub fn setPosition(self: Window, x: i32, y: i32) bool {
+        return c.SDL_SetWindowPosition(self.ptr, x, y);
+    }
+
+    /// Returns the usable desktop bounds (excluding taskbars and system docks)
+    /// for the display containing this window, or `null` if unavailable.
+    pub fn getDisplayUsableBounds(self: Window) ?struct { x: i32, y: i32, w: i32, h: i32 } {
+        const display_id = c.SDL_GetDisplayForWindow(self.ptr);
+        if (display_id == 0) return null;
+        var rect: c.SDL_Rect = undefined;
+        if (!c.SDL_GetDisplayUsableBounds(display_id, &rect)) return null;
+        if (rect.w <= 0 or rect.h <= 0) return null;
+        return .{ .x = rect.x, .y = rect.y, .w = rect.w, .h = rect.h };
     }
 
     /// Enables or disables borderless fullscreen mode on this window.
@@ -115,3 +152,11 @@ pub const Window = extern struct {
         c.SDL_DestroyWindow(self.ptr);
     }
 };
+
+test "Window method declarations" {
+    _ = Window.setSize;
+    _ = Window.setMinimumSize;
+    _ = Window.getPosition;
+    _ = Window.setPosition;
+    _ = Window.getDisplayUsableBounds;
+}

@@ -1,5 +1,6 @@
 //! Window display state and active SDL window backend management.
 
+const geom = @import("geom");
 const sdl = @import("sdl");
 const std = @import("std");
 
@@ -92,6 +93,29 @@ pub const DisplayState = union(enum) {
         };
     }
 
+    /// Returns the underlying SDL window handle when backed by a windowed
+    /// backend regardless of whether the display is visible or hidden, or `null`
+    /// when headless.
+    pub inline fn anyWindow(self: DisplayState) ?sdl.Window {
+        return switch (self.backend()) {
+            .headless => null,
+            .windowed => |w| w.handle,
+        };
+    }
+
+    /// Returns the usable desktop bounds for the display containing this window,
+    /// or `null` if headless or if the display bounds query failed.
+    pub fn getUsableBounds(self: DisplayState) ?geom.Rect {
+        const win = self.anyWindow() orelse return null;
+        const b = win.getDisplayUsableBounds() orelse return null;
+        return geom.Rect{
+            .x = b.x,
+            .y = b.y,
+            .w = b.w,
+            .h = b.h,
+        };
+    }
+
     /// Returns the swapchain texture pixel format of the display window.
     pub inline fn getPixelFormat(self: DisplayState) u32 {
         return switch (self.backend()) {
@@ -134,6 +158,8 @@ test "DisplayState lifecycle and properties" {
     try testing.expect(!display.isHidden());
     try testing.expect(!display.isFullscreen());
     try testing.expectEqual(@as(?sdl.Window, null), display.visibleWindow());
+    try testing.expectEqual(@as(?sdl.Window, null), display.anyWindow());
+    try testing.expectEqual(@as(?geom.Rect, null), display.getUsableBounds());
     try testing.expectEqual(
         @as(u32, sdl.PixelFormat.unknown),
         display.getPixelFormat(),
@@ -144,13 +170,16 @@ test "DisplayState lifecycle and properties" {
     try testing.expect(display.isHidden());
     try testing.expect(!display.isFullscreen());
     try testing.expectEqual(@as(?sdl.Window, null), display.visibleWindow());
+    try testing.expectEqual(@as(?sdl.Window, null), display.anyWindow());
+    try testing.expectEqual(@as(?geom.Rect, null), display.getUsableBounds());
 
     // Test windowed state & deinit freeing cached_title
     const title = try testing.allocator.dupe(u8, "peng - Test Window");
+    const fake_win: sdl.Window = .{ .ptr = @ptrFromInt(0x12340) };
     display = .{
         .visible = .{
             .windowed = .{
-                .handle = undefined,
+                .handle = fake_win,
                 .pixel_format = sdl.PixelFormat.rgba32,
                 .cached_title = title,
                 .is_fullscreen = true,
@@ -161,10 +190,41 @@ test "DisplayState lifecycle and properties" {
 
     try testing.expect(!display.isHidden());
     try testing.expect(display.isFullscreen());
+    try testing.expectEqual(@as(?sdl.Window, fake_win), display.visibleWindow());
+    try testing.expectEqual(@as(?sdl.Window, fake_win), display.anyWindow());
     try testing.expectEqual(
         @as(u32, sdl.PixelFormat.rgba32),
         display.getPixelFormat(),
     );
+
+    // Hidden windowed state retains anyWindow() while visibleWindow() is null
+    display = .{
+        .hidden = .{
+            .windowed = .{
+                .handle = fake_win,
+                .pixel_format = sdl.PixelFormat.rgba32,
+                .cached_title = null,
+                .is_fullscreen = false,
+                .is_borderless = false,
+            },
+        },
+    };
+    try testing.expect(display.isHidden());
+    try testing.expectEqual(@as(?sdl.Window, null), display.visibleWindow());
+    try testing.expectEqual(@as(?sdl.Window, fake_win), display.anyWindow());
+
+    // Restore visible windowed state with allocated cached_title for deinit check
+    display = .{
+        .visible = .{
+            .windowed = .{
+                .handle = fake_win,
+                .pixel_format = sdl.PixelFormat.rgba32,
+                .cached_title = title,
+                .is_fullscreen = true,
+                .is_borderless = false,
+            },
+        },
+    };
 
     const backend_ptr = display.backendPtr();
     try testing.expectEqual(
