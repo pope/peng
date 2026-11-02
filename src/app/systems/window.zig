@@ -201,6 +201,12 @@ pub fn sysSyncWindow(ctx: FrameContext) void {
                     .{ .w = geom.DEFAULT_MIN_W, .h = geom.DEFAULT_MIN_H },
                 ) orelse return;
 
+                const prev_dims = state.viewer.trim.last_trimmed_dims;
+                if (prev_dims.w != target_dims.w or prev_dims.h != target_dims.h) {
+                    state.viewer.image_transition = .none;
+                    state.viewer.animations.setImmediate(.image_crossfade, 1.0);
+                }
+
                 state.viewer.trim.last_trimmed_media_id = cur_id;
                 state.viewer.trim.last_trimmed_rotation = cur_rot;
                 state.viewer.trim.last_trimmed_dims = target_dims;
@@ -215,6 +221,8 @@ pub fn sysSyncWindow(ctx: FrameContext) void {
                         .windowed => |*win| {
                             const curr_size = win.handle.getSize();
                             if (curr_size.w != target_dims.w or curr_size.h != target_dims.h) {
+                                state.viewer.image_transition = .none;
+                                state.viewer.animations.setImmediate(.image_crossfade, 1.0);
                                 if (win.handle.getPosition()) |curr_pos| {
                                     const new_pos = geom.computeCenterPreservedPosition(
                                         .{ .x = curr_pos.x, .y = curr_pos.y },
@@ -635,4 +643,111 @@ test "sysSyncWindow: initial configure echo at default 1024x768 preserves auto_t
         .now_ms = 200,
     });
     try std.testing.expectEqual(state_pkg.WindowSizingMode.manual, app_st.viewer.trim.mode);
+}
+
+test "sysSyncWindow: bypasses crossfade when trimmed dimensions change and preserves crossfade when unchanged" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    _ = try app_st.viewer.navigation.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = "img0.png" } },
+    );
+    _ = try app_st.viewer.navigation.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = "img1.png" } },
+    );
+    _ = try app_st.viewer.navigation.appendEntry(
+        allocator,
+        .{ .filesystem = .{ .path = "img2.png" } },
+    );
+
+    const id0 = app_st.viewer.navigation.getIdAt(0).?;
+    const id1 = app_st.viewer.navigation.getIdAt(1).?;
+    const id2 = app_st.viewer.navigation.getIdAt(2).?;
+
+    // img0: 800x400 (aspect 2.0 -> trimmed 1024x512)
+    _ = try app_st.cache.appendSlot(allocator, id0, .{
+        .metadata = .{ .full_dims = .{ .w = 800.0, .h = 400.0 } },
+    });
+    // img1: 400x600 (aspect 2/3 -> trimmed 512x768)
+    _ = try app_st.cache.appendSlot(allocator, id1, .{
+        .metadata = .{ .full_dims = .{ .w = 400.0, .h = 600.0 } },
+    });
+    // img2: 400x600 (aspect 2/3 -> trimmed 512x768)
+    _ = try app_st.cache.appendSlot(allocator, id2, .{
+        .metadata = .{ .full_dims = .{ .w = 400.0, .h = 600.0 } },
+    });
+
+    app_st.viewer.navigation.current_index = 0;
+
+    // Initial sync on img0
+    sysSyncWindow(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = createTestInput(null, 100),
+        .delta_time_ms = 16.0,
+        .now_ms = 100,
+    });
+    try std.testing.expectEqual(@as(i32, 1024), app_st.viewer.trim.last_trimmed_dims.w);
+    try std.testing.expectEqual(@as(i32, 512), app_st.viewer.trim.last_trimmed_dims.h);
+
+    // 1. Start active crossfade transition from img0 to img1 (1024x512 -> 512x768: dimensions differ)
+    app_st.viewer.image_transition = .{ .active = .{ .prev_index = 0, .prev_rotation = 0.0 } };
+    app_st.viewer.animations.startFrom(
+        .image_crossfade,
+        0.0,
+        1.0,
+        state_pkg.DURATION_IMAGE_DISSOLVE_MS,
+        .ease_in_out_cubic,
+    );
+    try std.testing.expect(app_st.viewer.image_transition != .none);
+    try std.testing.expect(app_st.viewer.animations.isActive(.image_crossfade));
+
+    app_st.viewer.navigation.current_index = 1;
+
+    sysSyncWindow(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = createTestInput(null, 200),
+        .delta_time_ms = 16.0,
+        .now_ms = 200,
+    });
+
+    // Trimmed dimensions changed (1024x512 -> 512x768): crossfade must be bypassed immediately
+    try std.testing.expectEqual(@as(i32, 512), app_st.viewer.trim.last_trimmed_dims.w);
+    try std.testing.expectEqual(@as(i32, 768), app_st.viewer.trim.last_trimmed_dims.h);
+    try std.testing.expectEqual(state_pkg.ImageTransition.none, app_st.viewer.image_transition);
+    try std.testing.expectEqual(@as(f32, 1.0), app_st.viewer.animations.get(.image_crossfade));
+
+    // 2. Start active crossfade transition from img1 to img2 (512x768 -> 512x768: dimensions unchanged)
+    app_st.viewer.image_transition = .{ .active = .{ .prev_index = 1, .prev_rotation = 0.0 } };
+    app_st.viewer.animations.startFrom(
+        .image_crossfade,
+        0.0,
+        1.0,
+        state_pkg.DURATION_IMAGE_DISSOLVE_MS,
+        .ease_in_out_cubic,
+    );
+    try std.testing.expect(app_st.viewer.image_transition != .none);
+    try std.testing.expect(app_st.viewer.animations.isActive(.image_crossfade));
+
+    app_st.viewer.navigation.current_index = 2;
+
+    sysSyncWindow(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = createTestInput(null, 300),
+        .delta_time_ms = 16.0,
+        .now_ms = 300,
+    });
+
+    // Trimmed dimensions unchanged (512x768 -> 512x768): crossfade transition must be preserved
+    try std.testing.expectEqual(@as(i32, 512), app_st.viewer.trim.last_trimmed_dims.w);
+    try std.testing.expectEqual(@as(i32, 768), app_st.viewer.trim.last_trimmed_dims.h);
+    try std.testing.expect(app_st.viewer.image_transition != .none);
+    try std.testing.expect(app_st.viewer.image_transition == .active);
+    try std.testing.expect(app_st.viewer.animations.isActive(.image_crossfade));
 }
