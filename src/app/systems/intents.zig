@@ -698,10 +698,14 @@ fn executeIntent(
         .toggle_blur => ui.overlays.enable_blur = !ui.overlays.enable_blur,
         .set_blur => |val| ui.overlays.enable_blur = val,
         .toggle_fullscreen => {
+            self.viewer.trim.suppress_manual_until_ms = now_ms +| 500;
             switch (self.display.backendPtr().*) {
                 .headless => {},
                 .windowed => |*win| {
                     win.is_fullscreen = !win.is_fullscreen;
+                    if (!win.is_fullscreen) {
+                        self.viewer.trim.last_trimmed_media_id = null;
+                    }
                     win.handle.setFullscreen(win.is_fullscreen) catch |err| {
                         std.log.err("setFullscreen failed: {}", .{err});
                     };
@@ -709,10 +713,14 @@ fn executeIntent(
             }
         },
         .set_fullscreen => |val| {
+            self.viewer.trim.suppress_manual_until_ms = now_ms +| 500;
             switch (self.display.backendPtr().*) {
                 .headless => {},
                 .windowed => |*win| {
                     win.is_fullscreen = val;
+                    if (!win.is_fullscreen) {
+                        self.viewer.trim.last_trimmed_media_id = null;
+                    }
                     win.handle.setFullscreen(val) catch |err| {
                         std.log.err("setFullscreen failed: {}", .{err});
                     };

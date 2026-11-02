@@ -2,7 +2,35 @@ const geom = @import("geom");
 const intents = @import("intents");
 const std = @import("std");
 const triage = @import("triage");
+const vfs = @import("vfs");
 const viewport = @import("viewport.zig");
+
+pub const WindowDimsI32 = geom.WindowDimsI32;
+pub const WindowPosI32 = geom.WindowPosI32;
+
+/// Window sizing behavior mode: automatic aspect-ratio hugging vs. manual user sizing.
+pub const WindowSizingMode = enum {
+    auto_trim,
+    manual,
+};
+
+/// In-flight programmatic window resize target awaiting OS configure confirmation.
+pub const PendingProgrammaticResize = struct {
+    w: i32,
+    h: i32,
+    deadline_ms: u64,
+};
+
+/// State tracking automatic aspect-ratio window trimming and manual resize takeover.
+pub const WindowTrimState = struct {
+    mode: WindowSizingMode = .auto_trim,
+    pending_programmatic: ?PendingProgrammaticResize = null,
+    suppress_manual_until_ms: u64 = 0,
+    last_trimmed_media_id: ?vfs.MediaId = null,
+    last_trimmed_dims: WindowDimsI32 = .{},
+    last_trimmed_rotation: f32 = 0.0,
+    last_trimmed_raw_dims: geom.PhysicalDims = .{},
+};
 
 const Classification = triage.Classification;
 const DirectionFlags = viewport.DirectionFlags;
@@ -64,6 +92,7 @@ pub const FrameInput = struct {
     mouse_left_clicked: bool,
     mouse_inside: bool,
     quit_request: QuitRequest = .none,
+    window_resized: ?WindowDimsI32 = null,
     scroll_delta_x: f32,
     scroll_delta_y: f32,
     pinch_delta: f32 = 0.0,

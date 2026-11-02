@@ -55,6 +55,7 @@ pub const ViewerState = struct {
     pan_controller: PanController = .{},
     zoom_controller: ZoomController = .{},
     last_win_dims: LogicalDims = .{},
+    trim: types.WindowTrimState = .{},
 
     server_mode: bool = false,
     running: bool = true,
@@ -95,6 +96,7 @@ pub const ViewerState = struct {
         self.drag_state = .none;
         self.pan_controller.reset();
         self.zoom_controller.reset();
+        self.trim = .{};
     }
 
     /// Returns the protected previous image index if an image dissolve

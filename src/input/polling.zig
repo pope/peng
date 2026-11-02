@@ -115,6 +115,7 @@ pub const FrameInputState = struct {
     mouse_left_clicked: bool = false,
     mouse_inside: bool = false,
     quit_request: state.QuitRequest = .none,
+    window_resized: ?state.WindowDimsI32 = null,
     win_w: f32 = 0,
     win_h: f32 = 0,
 };
@@ -126,6 +127,16 @@ pub fn processSDLEvent(event: sdl.Event, frame_input: *FrameInputState) !void {
         sdl.event_type.window_close_requested => {
             if (frame_input.quit_request == .none) {
                 frame_input.quit_request = .window_close;
+            }
+        },
+        sdl.event_type.window_resized => {
+            if (event.window.data1 > 0 and event.window.data2 > 0) {
+                frame_input.window_resized = .{
+                    .w = event.window.data1,
+                    .h = event.window.data2,
+                };
+                frame_input.win_w = @floatFromInt(event.window.data1);
+                frame_input.win_h = @floatFromInt(event.window.data2);
             }
         },
         sdl.event_type.mouse_enter => {
@@ -371,14 +382,14 @@ pub fn pollFrameInput(
     wait_strategy: EventWaitStrategy,
 ) !FrameInput {
     // Get window sizes and scale
-    const win_size = window.getSize();
-    const pix_size = window.getSizeInPixels();
+    var win_size = window.getSize();
+    var pix_size = window.getSizeInPixels();
 
-    const scale_x = if (win_size.w > 0)
+    var scale_x = if (win_size.w > 0)
         @as(f32, @floatFromInt(pix_size.w)) / @as(f32, @floatFromInt(win_size.w))
     else
         1.0;
-    const scale_y = if (win_size.h > 0)
+    var scale_y = if (win_size.h > 0)
         @as(f32, @floatFromInt(pix_size.h)) / @as(f32, @floatFromInt(win_size.h))
     else
         1.0;
@@ -419,6 +430,19 @@ pub fn pollFrameInput(
         frame_input_state.quit_request = .terminate;
     }
 
+    if (frame_input_state.window_resized != null) {
+        win_size = window.getSize();
+        pix_size = window.getSizeInPixels();
+        scale_x = if (win_size.w > 0)
+            @as(f32, @floatFromInt(pix_size.w)) / @as(f32, @floatFromInt(win_size.w))
+        else
+            1.0;
+        scale_y = if (win_size.h > 0)
+            @as(f32, @floatFromInt(pix_size.h)) / @as(f32, @floatFromInt(win_size.h))
+        else
+            1.0;
+    }
+
     var directional_held = state.DirectionFlags{};
     var zoom_held = state.ZoomFlags{};
     var num_keys: c_int = 0;
@@ -439,8 +463,8 @@ pub fn pollFrameInput(
     const mouse_left_down = (mouse_buttons & sdl.mouse.mask(sdl.mouse.left)) != 0;
 
     return FrameInput{
-        .win_w = @as(f32, @floatFromInt(win_size.w)),
-        .win_h = @as(f32, @floatFromInt(win_size.h)),
+        .win_w = frame_input_state.win_w,
+        .win_h = frame_input_state.win_h,
         .scale_x = scale_x,
         .scale_y = scale_y,
         .mouse_x = mouse_x_raw,
@@ -449,6 +473,7 @@ pub fn pollFrameInput(
         .mouse_left_clicked = frame_input_state.mouse_left_clicked,
         .mouse_inside = frame_input_state.mouse_inside,
         .quit_request = frame_input_state.quit_request,
+        .window_resized = frame_input_state.window_resized,
         .scroll_delta_x = frame_input_state.scroll_delta_x,
         .scroll_delta_y = frame_input_state.scroll_delta_y,
         .pinch_delta = frame_input_state.pinch_delta,
@@ -651,4 +676,53 @@ test "processSDLEvent concatenates multiple text_input events per frame" {
     try processSDLEvent(evt2, &fis);
 
     try std.testing.expectEqualStrings("abcd", fis.text_input_opt.?);
+}
+
+test "processSDLEvent window_resized populates dims and ignores non-positive" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+
+    var fis = FrameInputState{
+        .frame_allocator = arena.allocator(),
+        .keys_pressed = .empty,
+        .win_w = 1024.0,
+        .win_h = 768.0,
+    };
+
+    // Valid positive resize event
+    var evt = std.mem.zeroes(sdl.Event);
+    evt.type = sdl.event_type.window_resized;
+    evt.window.data1 = 800;
+    evt.window.data2 = 600;
+    try processSDLEvent(evt, &fis);
+
+    try std.testing.expect(fis.window_resized != null);
+    try std.testing.expectEqual(@as(i32, 800), fis.window_resized.?.w);
+    try std.testing.expectEqual(@as(i32, 600), fis.window_resized.?.h);
+    try std.testing.expectEqual(@as(f32, 800.0), fis.win_w);
+    try std.testing.expectEqual(@as(f32, 600.0), fis.win_h);
+
+    // Non-positive width ignored
+    var evt_bad_w = std.mem.zeroes(sdl.Event);
+    evt_bad_w.type = sdl.event_type.window_resized;
+    evt_bad_w.window.data1 = 0;
+    evt_bad_w.window.data2 = 500;
+    try processSDLEvent(evt_bad_w, &fis);
+
+    try std.testing.expectEqual(@as(i32, 800), fis.window_resized.?.w);
+    try std.testing.expectEqual(@as(i32, 600), fis.window_resized.?.h);
+    try std.testing.expectEqual(@as(f32, 800.0), fis.win_w);
+    try std.testing.expectEqual(@as(f32, 600.0), fis.win_h);
+
+    // Non-positive height ignored
+    var evt_bad_h = std.mem.zeroes(sdl.Event);
+    evt_bad_h.type = sdl.event_type.window_resized;
+    evt_bad_h.window.data1 = 500;
+    evt_bad_h.window.data2 = -10;
+    try processSDLEvent(evt_bad_h, &fis);
+
+    try std.testing.expectEqual(@as(i32, 800), fis.window_resized.?.w);
+    try std.testing.expectEqual(@as(i32, 600), fis.window_resized.?.h);
+    try std.testing.expectEqual(@as(f32, 800.0), fis.win_w);
+    try std.testing.expectEqual(@as(f32, 600.0), fis.win_h);
 }

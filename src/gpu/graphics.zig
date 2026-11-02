@@ -693,6 +693,10 @@ pub fn initGraphicsAndWindow(
         };
     errdefer window.destroy();
 
+    if (!options.headless) {
+        _ = window.setMinimumSize(geom.DEFAULT_MIN_W, geom.DEFAULT_MIN_H);
+    }
+
     // Get scales
     const win_size = window.getSize();
     const pix_size = window.getSizeInPixels();

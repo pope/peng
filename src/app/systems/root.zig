@@ -80,9 +80,6 @@ pub fn runUpdatePhase(
     // Execute All Ingested & Generated Intents
     try sysExecuteIntents(ctx);
 
-    // Window Management System (synchronizes window title and display)
-    sysSyncWindow(ctx);
-
     // Asset Upload & Texture Pipeline System
     sysProcessAssetUploads(ctx);
 
@@ -90,6 +87,9 @@ pub fn runUpdatePhase(
     sysUpdateCache(ctx) catch |err| {
         std.log.err("Failed to update cache: {}", .{err});
     };
+
+    // Window Management System (synchronizes window title and display auto-trim)
+    sysSyncWindow(ctx);
 
     // Metrics & Telemetry System
     sysSyncMetrics(ctx);
