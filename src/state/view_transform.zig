@@ -12,11 +12,7 @@ const ZoomPreset = intents.ZoomPreset;
 
 /// Returns `true` if the normalized rotation angle is approximately 90 or
 /// 270 degrees (swapping width and height).
-pub fn isAngle90or270(angle: f32) bool {
-    const norm = @mod(@mod(angle, 360.0) + 360.0, 360.0);
-    return std.math.approxEqAbs(f32, norm, 90.0, 0.1) or
-        std.math.approxEqAbs(f32, norm, 270.0, 0.1);
-}
+pub const isAngle90or270 = geom.isAngle90or270;
 
 /// Computed visual dimensions of an image, its destination layout bounds,
 /// and its base scale factor.

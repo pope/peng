@@ -302,6 +302,17 @@ pub const UvRect = struct {
     source_h: ?f32 = null,
 };
 
+pub const window_trim = @import("window_trim.zig");
+pub const DEFAULT_CEILING_W = window_trim.DEFAULT_CEILING_W;
+pub const DEFAULT_CEILING_H = window_trim.DEFAULT_CEILING_H;
+pub const DEFAULT_MIN_W = window_trim.DEFAULT_MIN_W;
+pub const DEFAULT_MIN_H = window_trim.DEFAULT_MIN_H;
+pub const WindowDimsI32 = window_trim.WindowDimsI32;
+pub const WindowPosI32 = window_trim.WindowPosI32;
+pub const isAngle90or270 = window_trim.isAngle90or270;
+pub const computeTrimmedWindowDims = window_trim.computeTrimmedWindowDims;
+pub const computeCenterPreservedPosition = window_trim.computeCenterPreservedPosition;
+
 test "PositiveDimsU32.initClamped" {
     const valid = PositiveDimsU32.initClamped(800, 600, 4096);
     try std.testing.expect(valid != null);
@@ -512,4 +523,8 @@ test "FRect.inset, insetXY, insetEdges, center, centered, contains" {
     // Empty rect contains nothing
     const empty_rect = FRect{ .x = 0.0, .y = 0.0, .w = 0.0, .h = 10.0 };
     try std.testing.expect(!empty_rect.contains(.{ .x = 0.0, .y = 5.0 }));
+}
+
+test {
+    _ = window_trim;
 }
