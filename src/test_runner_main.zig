@@ -449,6 +449,14 @@ fn verifyServerModeAndAutoSpawn(
             "pick",
         });
         defer gpa.free(out_pick);
+        const out_trim = try runPengMsg(gpa, io, &env, &.{
+            msg_bin,
+            "trim",
+        });
+        defer gpa.free(out_trim);
+        var parsed = try ipc.parseResponse(gpa, out_trim);
+        defer parsed.deinit();
+        if (!parsed.value.ok) return error.TrimCommandFailed;
     }
 
     // 3. Send 'close' — in --server mode this hides the window and unloads
@@ -467,6 +475,7 @@ fn verifyServerModeAndAutoSpawn(
     // 4. Verify navigation/view commands are rejected with WindowHidden while
     // hidden, whereas 'selections' and 'preview' succeed while staying hidden
     try expectCommandFailure(default_sock, "next");
+    try expectCommandFailure(default_sock, "trim");
     var exp_pick_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     const exp_pick_len = try std.Io.Dir.realPathFile(
         std.Io.Dir.cwd(),
@@ -1017,6 +1026,7 @@ pub fn main(init: std.process.Init) !void {
         try expectCommandFailure(socket_path, "palette invalid");
         try expectCommandFailure(socket_path, "thumb invalid");
         try expectCommandFailure(socket_path, "compare invalid");
+        try expectCommandFailure(socket_path, "trim invalid");
         try expectCommandFailure(socket_path, "preview");
         try expectCommandFailure(
             socket_path,

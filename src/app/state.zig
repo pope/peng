@@ -548,6 +548,7 @@ pub const AppState = struct {
     pub fn showAndRaiseWindow(self: *AppState) void {
         switch (self.display) {
             .hidden => |b| {
+                self.syncWindowSizeBeforeShow(b);
                 switch (b) {
                     .headless => {},
                     .windowed => |win| {
@@ -581,6 +582,122 @@ pub const AppState = struct {
         }
     }
 
+    fn syncWindowSizeBeforeShow(
+        self: *AppState,
+        b: core.display.DisplayBackend,
+    ) void {
+        if (self.viewer.trim.mode != .auto_trim) return;
+        switch (b) {
+            .windowed => |win| {
+                if (win.is_fullscreen) return;
+            },
+            .headless => {},
+        }
+        const usable_bounds = self.display.getUsableBounds();
+        const target_dims: geom.WindowDimsI32 = blk: {
+            if (self.viewer.navigation.getCurrentMediaId()) |cur_id| {
+                var raw_dims_opt: ?geom.PhysicalDims = null;
+                if (self.getCurrentEntry()) |entry| {
+                    const auth = entry.getAuthoritativeDims();
+                    if (auth.w > 0.0 and auth.h > 0.0) {
+                        raw_dims_opt = auth;
+                    }
+                }
+                if (raw_dims_opt == null) {
+                    if (self.viewer.navigation.getCurrentImageEntry()) |media| {
+                        if (image.probeMediaMetadata(self.io, media)) |meta| {
+                            if (self.cache.get(self.cache.activeKey(cur_id))) |slot| {
+                                slot.applyProbedMetadata(
+                                    meta.dims,
+                                    meta.orientation,
+                                    meta.raw_metadata,
+                                );
+                                if (slot.resident.thumbnail == .none) {
+                                    const can_use_thumb_cache =
+                                        self.workers.thumb_cache_config != .disabled and
+                                        !media.isArchive();
+                                    slot.resident.thumbnail =
+                                        if (meta.has_embedded_thumbnail or can_use_thumb_cache)
+                                            .pending
+                                        else
+                                            .not_available;
+                                }
+                            }
+                            if (meta.dims.w > 0.0 and meta.dims.h > 0.0) {
+                                raw_dims_opt = meta.dims;
+                                if (self.viewer.rotation_map.get(media.getPath()) == null) {
+                                    self.viewer.viewport.rotation_angle =
+                                        meta.orientation.toDegrees();
+                                }
+                            }
+                        }
+                    }
+                }
+                if (raw_dims_opt) |raw_dims| {
+                    const cur_rot = self.viewer.viewport.rotation_angle;
+                    const computed = geom.computeTrimmedWindowDims(
+                        raw_dims,
+                        cur_rot,
+                        .{},
+                        usable_bounds,
+                        .{ .w = geom.DEFAULT_MIN_W, .h = geom.DEFAULT_MIN_H },
+                    ) orelse return;
+                    self.viewer.trim.last_trimmed_media_id = cur_id;
+                    self.viewer.trim.last_trimmed_rotation = cur_rot;
+                    self.viewer.trim.last_trimmed_dims = computed;
+                    self.viewer.trim.last_trimmed_raw_dims = raw_dims;
+                    break :blk computed;
+                } else {
+                    return;
+                }
+            } else {
+                var def = geom.WindowDimsI32{};
+                if (usable_bounds) |ub| {
+                    def.w = @max(geom.DEFAULT_MIN_W, @min(def.w, ub.w));
+                    def.h = @max(geom.DEFAULT_MIN_H, @min(def.h, ub.h));
+                }
+                self.viewer.trim.last_trimmed_media_id = null;
+                self.viewer.trim.last_trimmed_dims = def;
+                self.viewer.trim.last_trimmed_raw_dims = .{};
+                break :blk def;
+            }
+        };
+
+        self.viewer.trim.pending_programmatic = .{
+            .w = target_dims.w,
+            .h = target_dims.h,
+            .deadline_ms = sdl.timer.getTicks() +| 500,
+        };
+
+        switch (b) {
+            .headless => {},
+            .windowed => |win| {
+                const curr_size = win.handle.getSize();
+                if (curr_size.w != target_dims.w or curr_size.h != target_dims.h) {
+                    if (win.handle.getPosition()) |curr_pos| {
+                        const new_pos = geom.computeCenterPreservedPosition(
+                            .{ .x = curr_pos.x, .y = curr_pos.y },
+                            .{ .w = curr_size.w, .h = curr_size.h },
+                            target_dims,
+                            usable_bounds,
+                        );
+                        _ = win.handle.setPosition(new_pos.x, new_pos.y);
+                    }
+                    _ = win.handle.setSize(target_dims.w, target_dims.h);
+                }
+                self.viewer.last_win_dims = .{
+                    .w = @floatFromInt(target_dims.w),
+                    .h = @floatFromInt(target_dims.h),
+                };
+            },
+        }
+
+        if (self.viewer.viewport.mode != .manual) {
+            self.viewer.viewport.zoom_factor =
+                ZoomFactor.init(self.getBaseScale());
+        }
+    }
+
     /// Hides the application window in resident server mode, resetting all
     /// viewport, adjustment, filter, overlay, navigation, and window settings
     /// back to startup defaults and unloading the active image cache and
@@ -600,6 +717,7 @@ pub const AppState = struct {
         self.viewer.ui.palette.current_dir_image_count = 0;
         self.viewer.ui.palette.shrinkToWarmCapacity();
         self.viewer.resetToDefaults();
+        self.viewer.trim.suppress_manual_until_ms = sdl.timer.getTicks() +| 500;
         ui.interaction.resetInteractionState();
 
         _ = self.cache.advanceGeneration();
@@ -885,10 +1003,6 @@ pub const AppState = struct {
             has_stat = false;
         }
 
-        if (has_stat) {
-            self.showAndRaiseWindow();
-        }
-
         const dir_target = if (has_stat and stat.kind == .directory)
             owned_path
         else
@@ -923,6 +1037,7 @@ pub const AppState = struct {
                         self.viewer.navigation.getEntries(),
                     );
                 }
+                self.showAndRaiseWindow();
                 return;
             }
         }
@@ -1026,6 +1141,9 @@ pub const AppState = struct {
             try self.viewer.ui.palette.rebuildFileMatches(
                 self.viewer.navigation.getEntries(),
             );
+        }
+        if (has_stat) {
+            self.showAndRaiseWindow();
         }
     }
 
@@ -1416,4 +1534,47 @@ test "AppState.openPath reuses warm directory playlist and resets viewport" {
     try std.testing.expectEqual(@as(usize, 1), state.cache.count());
     try std.testing.expectEqual(@as(f32, 0.0), state.viewer.viewport.pan_x);
     try std.testing.expectEqual(@as(f32, 0.0), state.viewer.viewport.pan_y);
+}
+
+test "AppState.hideWindow resets manual window trim back to auto_trim" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    state.viewer.trim.mode = .manual;
+    state.viewer.trim.last_trimmed_media_id = @fromBackingInt(@intCast(1));
+    state.viewer.trim.last_trimmed_dims = .{ .w = 800, .h = 600 };
+
+    state.hideWindow();
+
+    try std.testing.expect(state.display.isHidden());
+    try std.testing.expectEqual(state_pkg.WindowSizingMode.auto_trim, state.viewer.trim.mode);
+    try std.testing.expectEqual(@as(?vfs.MediaId, null), state.viewer.trim.last_trimmed_media_id);
+    try std.testing.expectEqual(@as(i32, 1024), state.viewer.trim.last_trimmed_dims.w);
+    try std.testing.expectEqual(@as(i32, 768), state.viewer.trim.last_trimmed_dims.h);
+}
+
+test "AppState.openPath from hidden server state pre-trims before show" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var state = try AppState.initHeadless(allocator, io);
+    defer state.deinit();
+
+    state.hideWindow();
+    try std.testing.expect(state.display.isHidden());
+
+    try state.openPath("testfiles/images/000_0_1024x682.jpg");
+
+    try std.testing.expect(!state.display.isHidden());
+    try std.testing.expectEqual(state_pkg.WindowSizingMode.auto_trim, state.viewer.trim.mode);
+    try std.testing.expect(state.viewer.trim.last_trimmed_media_id != null);
+    try std.testing.expectEqual(@as(i32, 1024), state.viewer.trim.last_trimmed_dims.w);
+    try std.testing.expectEqual(@as(i32, 682), state.viewer.trim.last_trimmed_dims.h);
+
+    const entry0 = state.getCurrentEntry();
+    try std.testing.expect(entry0 != null);
+    try std.testing.expect(entry0.?.metadata.full_dims != null);
 }

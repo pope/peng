@@ -136,6 +136,10 @@ fn probeActiveSlotMetadata(
     if (state.viewer.navigation.getCurrentMediaId()) |cur_id| {
         if (key.id == cur_id) {
             state.updateCurrentRotation();
+            if (state.viewer.viewport.mode != .manual) {
+                state.viewer.viewport.zoom_factor =
+                    state_pkg.ZoomFactor.init(state.getBaseScale());
+            }
         }
     }
 }

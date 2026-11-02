@@ -123,10 +123,11 @@ pub fn sysSyncWindow(ctx: FrameContext) void {
                 }
             } else {
                 // No pending programmatic resize; check if it's just a duplicate echo of last_trimmed_dims:
-                const is_echo = if (state.viewer.trim.last_trimmed_media_id != null)
-                    dimsMatchWithinTolerance(resized, state.viewer.trim.last_trimmed_dims, 2)
-                else
-                    false;
+                const is_echo = dimsMatchWithinTolerance(
+                    resized,
+                    state.viewer.trim.last_trimmed_dims,
+                    2,
+                );
 
                 if (!is_echo) {
                     state.viewer.trim.mode = .manual;
@@ -596,4 +597,35 @@ test "sysSyncWindow: authoritative dimensions upgrade re-trims window on same me
     try std.testing.expect(app_st.viewer.trim.pending_programmatic != null);
     try std.testing.expectEqual(@as(i32, 1024), app_st.viewer.trim.pending_programmatic.?.w);
     try std.testing.expectEqual(@as(i32, 512), app_st.viewer.trim.pending_programmatic.?.h);
+}
+
+test "sysSyncWindow: initial configure echo at default 1024x768 preserves auto_trim whereas 800x600 transitions to manual" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+    var app_st = try AppState.initHeadless(allocator, io);
+    defer app_st.deinit();
+
+    try std.testing.expectEqual(@as(?vfs.MediaId, null), app_st.viewer.trim.last_trimmed_media_id);
+    try std.testing.expect(app_st.viewer.trim.pending_programmatic == null);
+    try std.testing.expectEqual(state_pkg.WindowSizingMode.auto_trim, app_st.viewer.trim.mode);
+
+    // Initial OS configure echo at default opening size (1024x768)
+    sysSyncWindow(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = createTestInput(.{ .w = 1024, .h = 768 }, 100),
+        .delta_time_ms = 16.0,
+        .now_ms = 100,
+    });
+    try std.testing.expectEqual(state_pkg.WindowSizingMode.auto_trim, app_st.viewer.trim.mode);
+
+    // Manual window resize event of 800x600 transitions to manual
+    sysSyncWindow(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = createTestInput(.{ .w = 800, .h = 600 }, 200),
+        .delta_time_ms = 16.0,
+        .now_ms = 200,
+    });
+    try std.testing.expectEqual(state_pkg.WindowSizingMode.manual, app_st.viewer.trim.mode);
 }
