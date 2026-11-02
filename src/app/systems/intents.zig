@@ -705,7 +705,7 @@ fn executeIntent(
         .toggle_blur => ui.overlays.enable_blur = !ui.overlays.enable_blur,
         .set_blur => |val| ui.overlays.enable_blur = val,
         .toggle_fullscreen => {
-            self.viewer.trim.suppress_manual_until_ms = now_ms +| 500;
+            self.viewer.trim.suppressManualTakeover(now_ms);
             switch (self.display.backendPtr().*) {
                 .headless => {},
                 .windowed => |*win| {
@@ -720,7 +720,7 @@ fn executeIntent(
             }
         },
         .set_fullscreen => |val| {
-            self.viewer.trim.suppress_manual_until_ms = now_ms +| 500;
+            self.viewer.trim.suppressManualTakeover(now_ms);
             switch (self.display.backendPtr().*) {
                 .headless => {},
                 .windowed => |*win| {
@@ -735,6 +735,7 @@ fn executeIntent(
             }
         },
         .toggle_windowless => {
+            self.viewer.trim.suppressManualTakeover(now_ms);
             switch (self.display.backendPtr().*) {
                 .headless => {},
                 .windowed => |*win| {
@@ -746,6 +747,7 @@ fn executeIntent(
             }
         },
         .set_windowless => |val| {
+            self.viewer.trim.suppressManualTakeover(now_ms);
             switch (self.display.backendPtr().*) {
                 .headless => {},
                 .windowed => |*win| {

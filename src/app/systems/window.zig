@@ -107,13 +107,21 @@ pub fn sysSyncWindow(ctx: FrameContext) void {
 
             if (state.display.isFullscreen() or ctx.now_ms < state.viewer.trim.suppress_manual_until_ms) {
                 if (state.viewer.trim.pending_programmatic) |p| {
-                    if (dimsMatchWithinTolerance(resized, .{ .w = p.w, .h = p.h }, 2)) {
+                    if (dimsMatchWithinTolerance(
+                        resized,
+                        .{ .w = p.w, .h = p.h },
+                        state_pkg.WINDOW_RESIZE_TOLERANCE_PX,
+                    )) {
                         state.viewer.trim.pending_programmatic = null;
                     }
                 }
                 // Do not switch to .manual
             } else if (state.viewer.trim.pending_programmatic) |p| {
-                if (dimsMatchWithinTolerance(resized, .{ .w = p.w, .h = p.h }, 2)) {
+                if (dimsMatchWithinTolerance(
+                    resized,
+                    .{ .w = p.w, .h = p.h },
+                    state_pkg.WINDOW_RESIZE_TOLERANCE_PX,
+                )) {
                     // Matches our programmatic resize echo!
                     state.viewer.trim.pending_programmatic = null;
                 } else {
@@ -126,7 +134,7 @@ pub fn sysSyncWindow(ctx: FrameContext) void {
                 const is_echo = dimsMatchWithinTolerance(
                     resized,
                     state.viewer.trim.last_trimmed_dims,
-                    2,
+                    state_pkg.WINDOW_RESIZE_TOLERANCE_PX,
                 );
 
                 if (!is_echo) {
@@ -197,11 +205,10 @@ pub fn sysSyncWindow(ctx: FrameContext) void {
                 state.viewer.trim.last_trimmed_rotation = cur_rot;
                 state.viewer.trim.last_trimmed_dims = target_dims;
                 state.viewer.trim.last_trimmed_raw_dims = raw_dims;
-                state.viewer.trim.pending_programmatic = .{
-                    .w = target_dims.w,
-                    .h = target_dims.h,
-                    .deadline_ms = ctx.now_ms +| 500,
-                };
+                state.viewer.trim.expectProgrammaticResize(
+                    target_dims,
+                    ctx.now_ms,
+                );
 
                 switch (state.display) {
                     .visible => |*b| switch (b.*) {

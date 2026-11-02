@@ -663,11 +663,10 @@ pub const AppState = struct {
             }
         };
 
-        self.viewer.trim.pending_programmatic = .{
-            .w = target_dims.w,
-            .h = target_dims.h,
-            .deadline_ms = sdl.timer.getTicks() +| 500,
-        };
+        self.viewer.trim.expectProgrammaticResize(
+            target_dims,
+            sdl.timer.getTicks(),
+        );
 
         switch (b) {
             .headless => {},
@@ -717,7 +716,7 @@ pub const AppState = struct {
         self.viewer.ui.palette.current_dir_image_count = 0;
         self.viewer.ui.palette.shrinkToWarmCapacity();
         self.viewer.resetToDefaults();
-        self.viewer.trim.suppress_manual_until_ms = sdl.timer.getTicks() +| 500;
+        self.viewer.trim.suppressManualTakeover(sdl.timer.getTicks());
         ui.interaction.resetInteractionState();
 
         _ = self.cache.advanceGeneration();

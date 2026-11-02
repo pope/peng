@@ -14,6 +14,16 @@ pub const WindowSizingMode = enum {
     manual,
 };
 
+/// Grace window in milliseconds for asynchronous X11/Wayland configure
+/// events after programmatic window resizes or state transitions
+/// (fullscreen, borderless, hide/show).
+pub const WINDOW_RESIZE_GRACE_MS: u64 = 500;
+
+/// Maximum logical pixel delta tolerated when matching an OS window resize
+/// configure echo against our requested target dimensions (accounts for
+/// compositor fractional-DPI rounding).
+pub const WINDOW_RESIZE_TOLERANCE_PX: u32 = 2;
+
 /// In-flight programmatic window resize target awaiting OS configure confirmation.
 pub const PendingProgrammaticResize = struct {
     w: i32,
@@ -30,6 +40,26 @@ pub const WindowTrimState = struct {
     last_trimmed_dims: WindowDimsI32 = .{},
     last_trimmed_rotation: f32 = 0.0,
     last_trimmed_raw_dims: geom.PhysicalDims = .{},
+
+    /// Suppresses manual-resize takeover detection for `WINDOW_RESIZE_GRACE_MS`
+    /// after an asynchronous OS window state change (e.g. fullscreen or hide).
+    pub inline fn suppressManualTakeover(self: *WindowTrimState, now_ms: u64) void {
+        self.suppress_manual_until_ms = now_ms +| WINDOW_RESIZE_GRACE_MS;
+    }
+
+    /// Records an in-flight programmatic resize target and arms its confirmation
+    /// deadline (`now_ms +| WINDOW_RESIZE_GRACE_MS`).
+    pub inline fn expectProgrammaticResize(
+        self: *WindowTrimState,
+        target: WindowDimsI32,
+        now_ms: u64,
+    ) void {
+        self.pending_programmatic = .{
+            .w = target.w,
+            .h = target.h,
+            .deadline_ms = now_ms +| WINDOW_RESIZE_GRACE_MS,
+        };
+    }
 };
 
 const Classification = triage.Classification;
@@ -598,4 +628,25 @@ test "OverlayState floating panel dismissal" {
 
     // Subsequent dismissal returns false
     try std.testing.expect(!overlays.dismissFloatingPanels());
+}
+
+test "WindowTrimState suppressManualTakeover and expectProgrammaticResize" {
+    var trim = WindowTrimState{};
+    try std.testing.expectEqual(@as(u64, 0), trim.suppress_manual_until_ms);
+    try std.testing.expect(trim.pending_programmatic == null);
+
+    trim.suppressManualTakeover(1000);
+    try std.testing.expectEqual(
+        @as(u64, 1000 + WINDOW_RESIZE_GRACE_MS),
+        trim.suppress_manual_until_ms,
+    );
+
+    trim.expectProgrammaticResize(.{ .w = 800, .h = 600 }, 2000);
+    try std.testing.expect(trim.pending_programmatic != null);
+    try std.testing.expectEqual(@as(i32, 800), trim.pending_programmatic.?.w);
+    try std.testing.expectEqual(@as(i32, 600), trim.pending_programmatic.?.h);
+    try std.testing.expectEqual(
+        @as(u64, 2000 + WINDOW_RESIZE_GRACE_MS),
+        trim.pending_programmatic.?.deadline_ms,
+    );
 }
