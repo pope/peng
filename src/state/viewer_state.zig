@@ -1,5 +1,6 @@
 const animation_state = @import("animation_state.zig");
 const geom = @import("geom");
+const intents = @import("intents");
 const navigation = @import("navigation.zig");
 const std = @import("std");
 const telemetry = @import("telemetry.zig");
@@ -17,6 +18,20 @@ const UiState = ui_state.UiState;
 const ViewerStats = telemetry.ViewerStats;
 const ViewportParams = viewport.ViewportParams;
 const ZoomController = viewport.ZoomController;
+const ZoomPreset = intents.ZoomPreset;
+
+/// Default startup configuration options restored whenever the viewer window
+/// is closed/hidden in server mode.
+pub const ViewerDefaults = struct {
+    default_scale: ZoomPreset = .full,
+    enable_blur: bool = true,
+    show_title: bool = false,
+    auto_title: bool = true,
+    snackbar_enabled: bool = true,
+    crossfade: bool = true,
+    stack_raw_jpeg: bool = true,
+    windowless: bool = false,
+};
 
 /// Pure Visual & UI Data Container for UI Layout & Rendering Passes.
 ///
@@ -24,6 +39,7 @@ const ZoomController = viewport.ZoomController;
 /// allocators, and zero I/O contexts. Safe for UI rendering, testing, and
 /// layout calculation.
 pub const ViewerState = struct {
+    defaults: ViewerDefaults = .{},
     viewport: ViewportParams = .{},
     navigation: NavigationState,
     ui: UiState,
@@ -43,6 +59,44 @@ pub const ViewerState = struct {
     server_mode: bool = false,
     running: bool = true,
 
+    /// Resets all viewport, adjustment, filter, overlay, snackbar, animation,
+    /// and navigation session settings back to the configured startup defaults.
+    pub fn resetToDefaults(self: *ViewerState) void {
+        self.viewport = .{
+            .fit_mode = self.defaults.default_scale,
+        };
+        self.viewport.reset();
+
+        self.ui.overlays = .{
+            .enable_blur = self.defaults.enable_blur,
+            .title_display = if (self.defaults.show_title) .pinned else .hidden,
+            .auto_title = self.defaults.auto_title,
+        };
+        self.ui.snackbar = .{
+            .enabled = self.defaults.snackbar_enabled,
+        };
+        self.ui.metrics = .{};
+
+        self.animations = .{};
+        if (self.defaults.show_title) {
+            self.animations.setImmediate(.title_overlay, 1.0);
+        }
+
+        self.navigation.slideshow = .inactive;
+        self.navigation.manga_mode = false;
+        self.navigation.crossfade = self.defaults.crossfade;
+        self.navigation.stack_raw_jpeg = self.defaults.stack_raw_jpeg;
+        self.navigation.last_nav_time_ms = 0;
+        self.navigation.direction = .forward;
+        self.navigation.triage.view_mode = .default;
+
+        self.stats = .{};
+        self.image_transition = .none;
+        self.drag_state = .none;
+        self.pan_controller.reset();
+        self.zoom_controller.reset();
+    }
+
     /// Returns the protected previous image index if an image dissolve
     /// transition is active.
     pub inline fn getTransitionPrevIndex(self: *const ViewerState) ?usize {
@@ -58,12 +112,14 @@ pub const ViewerState = struct {
         var ui = try UiState.init(allocator);
         errdefer ui.palette.deinit();
 
-        return .{
+        var vs = ViewerState{
             .navigation = nav,
             .ui = ui,
             .animations = .{},
             .rotation_map = .empty,
         };
+        vs.resetToDefaults();
+        return vs;
     }
 
     /// Releases navigation, UI, animations, and rotation map resources.
@@ -125,3 +181,87 @@ pub const ViewerState = struct {
         self.rotation_map.clearRetainingCapacity();
     }
 };
+
+test "ViewerState.resetToDefaults restores configured startup defaults" {
+    const allocator = std.testing.allocator;
+    const io = std.Io.Threaded.global_single_threaded.io();
+
+    var viewer = try ViewerState.initHeadless(allocator);
+    defer viewer.deinit(allocator, io);
+
+    viewer.defaults = .{
+        .default_scale = .shrink,
+        .enable_blur = false,
+        .show_title = true,
+        .auto_title = false,
+        .snackbar_enabled = false,
+        .crossfade = false,
+        .stack_raw_jpeg = false,
+        .windowless = true,
+    };
+
+    // Mutate session settings away from defaults
+    viewer.viewport.fit_mode = .crop;
+    viewer.viewport.mode = .fill;
+    viewer.viewport.scale_filter = .lanczos3;
+    viewer.viewport.setAdjustments(0.4, 1.8);
+    viewer.viewport.edits.set(.saturation, 0.5);
+    viewer.viewport.compare_original = true;
+    viewer.viewport.rotation_angle = 180.0;
+    viewer.ui.overlays.enable_blur = true;
+    viewer.ui.overlays.title_display = .hidden;
+    viewer.ui.overlays.info_panel.visible = true;
+    viewer.ui.overlays.stats_panel.visible = true;
+    viewer.ui.overlays.atlas_panel.visible = true;
+    viewer.ui.overlays.edit_panel.visible = true;
+    viewer.ui.overlays.debug_show_thumb = true;
+    viewer.ui.snackbar.enabled = true;
+    viewer.ui.snackbar.show("Modified", 5000);
+    viewer.animations.setImmediate(.edit_panel, 1.0);
+    viewer.animations.setImmediate(.title_overlay, 0.0);
+    viewer.navigation.manga_mode = true;
+    viewer.navigation.crossfade = true;
+    viewer.navigation.stack_raw_jpeg = true;
+    viewer.navigation.triage.view_mode = .picks;
+
+    viewer.resetToDefaults();
+
+    try std.testing.expectEqual(ZoomPreset.shrink, viewer.viewport.fit_mode);
+    try std.testing.expectEqual(viewport.ZoomMode.fit, viewer.viewport.mode);
+    try std.testing.expectEqual(
+        intents.TextureScaleMode.linear,
+        viewer.viewport.scale_filter,
+    );
+    try std.testing.expect(!viewer.viewport.hasAdjustments());
+    try std.testing.expect(!viewer.viewport.compare_original);
+    try std.testing.expectEqual(@as(f32, 0.0), viewer.viewport.rotation_angle);
+    try std.testing.expect(!viewer.ui.overlays.enable_blur);
+    try std.testing.expectEqual(
+        types.TitleDisplay.pinned,
+        viewer.ui.overlays.title_display,
+    );
+    try std.testing.expect(!viewer.ui.overlays.auto_title);
+    try std.testing.expect(!viewer.ui.overlays.hasVisibleFloatingPanels());
+    try std.testing.expect(!viewer.ui.overlays.edit_panel.visible);
+    try std.testing.expect(!viewer.ui.overlays.debug_show_thumb);
+    try std.testing.expect(!viewer.ui.snackbar.enabled);
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        viewer.ui.snackbar.getMessage().len,
+    );
+    try std.testing.expectEqual(
+        @as(f32, 0.0),
+        viewer.animations.get(.edit_panel),
+    );
+    try std.testing.expectEqual(
+        @as(f32, 1.0),
+        viewer.animations.get(.title_overlay),
+    );
+    try std.testing.expect(!viewer.navigation.manga_mode);
+    try std.testing.expect(!viewer.navigation.crossfade);
+    try std.testing.expect(!viewer.navigation.stack_raw_jpeg);
+    try std.testing.expectEqual(
+        .default,
+        viewer.navigation.triage.view_mode,
+    );
+}

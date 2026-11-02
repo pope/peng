@@ -224,6 +224,16 @@ const AppGraphicsAndState = struct {
 
         // 3. Pinned In-Place State Initialization & Early Path Scan / Decode Launch
         const start_hidden = parsed.server_mode and parsed.arg_path == null;
+        const defaults = state_pkg.ViewerDefaults{
+            .default_scale = parsed.default_scale,
+            .enable_blur = parsed.enable_blur,
+            .show_title = parsed.show_title,
+            .auto_title = !parsed.test_mode,
+            .snackbar_enabled = !parsed.test_mode,
+            .crossfade = !parsed.test_mode,
+            .stack_raw_jpeg = parsed.stack_raw_jpeg,
+            .windowless = parsed.windowless,
+        };
         self.gpa = gpa;
         self.io = proc_init.io;
         self.parsed = parsed;
@@ -235,16 +245,10 @@ const AppGraphicsAndState = struct {
                 errdefer nav.deinit(gpa);
                 const ui_state = try state_pkg.UiState.init(gpa);
                 break :viewer_blk .{
+                    .defaults = defaults,
                     .navigation = nav,
                     .ui = ui_state,
                     .animations = .{},
-                    .viewport = vp_blk: {
-                        var vp = state_pkg.ViewportParams{
-                            .fit_mode = parsed.default_scale,
-                        };
-                        vp.reset();
-                        break :vp_blk vp;
-                    },
                     .rotation_map = .empty,
                     .server_mode = parsed.server_mode,
                     .running = true,
@@ -262,15 +266,7 @@ const AppGraphicsAndState = struct {
             .allocator = gpa,
             .io = proc_init.io,
         };
-        self.state.viewer.ui.overlays.enable_blur = parsed.enable_blur;
-        self.state.viewer.ui.overlays.title_display = if (parsed.show_title) .pinned else .hidden;
-        self.state.viewer.ui.overlays.auto_title = !parsed.test_mode;
-        self.state.viewer.ui.snackbar.enabled = !parsed.test_mode;
-        self.state.viewer.navigation.crossfade = !parsed.test_mode;
-        self.state.viewer.navigation.stack_raw_jpeg = parsed.stack_raw_jpeg;
-        if (parsed.show_title) {
-            self.state.viewer.animations.setImmediate(.title_overlay, 1.0);
-        }
+        self.state.viewer.resetToDefaults();
         errdefer self.state.deinit();
         try self.state.ensureInitialCapacities();
         self.state.initThumbCache(

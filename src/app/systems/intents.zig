@@ -18,7 +18,7 @@ const PairStreamTarget = vfs.PairStreamTarget;
 const RawMetadata = probe.RawMetadata;
 
 fn showCustomSnackbar(self: *AppState, msg: []const u8, now_ms: u64) void {
-    if (!self.viewer.ui.snackbar.enabled) return;
+    if (!self.viewer.ui.snackbar.enabled or self.display.isHidden()) return;
     self.viewer.ui.snackbar.show(msg, now_ms + 1500);
     const progress = self.viewer.animations.get(.snackbar);
     const dur = @max(state.DURATION_SNACKBAR_OPEN_MS * (1.0 - progress), 30.0);
@@ -776,7 +776,7 @@ fn triggerSnackbarForIntent(
     has_target: bool,
     now_ms: u64,
 ) void {
-    if (!self.viewer.ui.snackbar.enabled) return;
+    if (!self.viewer.ui.snackbar.enabled or self.display.isHidden()) return;
     const rule = state.snackbar.findRule(intent) orelse return;
     if (!self.viewer.ui.snackbar.isTriggerEnabled(rule.trigger)) return;
 
@@ -836,6 +836,7 @@ pub fn sysExecuteIntents(ctx: FrameContext) !void {
     if (self.pending_intents.items.len == 0) return;
     defer self.clearIntents();
     for (self.pending_intents.items) |intent| {
+        if (!self.viewer.running) break;
         const old_idx = self.viewer.navigation.current_index;
         try executeIntent(self, intent, ctx.now_ms);
         const advanced = (old_idx != null and
@@ -1925,6 +1926,12 @@ test "executeIntent - server_mode hides on quit and exits on quit_server" {
     defer app_st.deinit();
 
     app_st.viewer.server_mode = true;
+    app_st.viewer.defaults = .{
+        .default_scale = .shrink,
+        .enable_blur = false,
+        .show_title = true,
+        .stack_raw_jpeg = false,
+    };
     _ = try app_st.viewer.navigation.appendEntry(
         allocator,
         .{ .filesystem = .{ .path = "img0.jpg" } },
@@ -1937,12 +1944,68 @@ test "executeIntent - server_mode hides on quit and exits on quit_server" {
     });
     app_st.viewer.navigation.slideshow = .{ .active = .{ .interval_s = 2.0 } };
 
-    // .quit in server_mode hides the window, stops slideshow, and unloads
-    // cache and directory playlist while preserving picks/rejects selections
-    try executeIntent(&app_st, .quit, 1000);
+    // Mutate session settings (adjustments, filter, scale, overlays, nav modes)
+    app_st.viewer.viewport.setAdjustments(0.35, 1.5);
+    app_st.viewer.viewport.scale_filter = .mitchell;
+    app_st.viewer.viewport.fit_mode = .crop;
+    app_st.viewer.ui.overlays.enable_blur = true;
+    app_st.viewer.ui.overlays.title_display = .hidden;
+    app_st.viewer.ui.overlays.edit_panel.visible = true;
+    app_st.viewer.animations.setImmediate(.edit_panel, 1.0);
+    app_st.viewer.navigation.manga_mode = true;
+    app_st.viewer.navigation.crossfade = false;
+    app_st.viewer.navigation.stack_raw_jpeg = true;
+    app_st.viewer.navigation.triage.view_mode = .picks;
+
+    ui_pkg.interaction.setPaletteScrollY(120.0);
+
+    // .quit in server_mode hides the window, stops slideshow, resets all
+    // session settings back to startup defaults, and unloads cache and
+    // directory playlist while preserving picks/rejects selections.
+    try app_st.pushIntent(.quit);
+    try sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+        .now_ms = 1000,
+    });
     try std.testing.expect(app_st.viewer.running);
     try std.testing.expect(app_st.display.isHidden());
     try std.testing.expect(!app_st.viewer.isSlideshowActive());
+    try std.testing.expect(!app_st.viewer.viewport.hasAdjustments());
+    try std.testing.expectEqual(
+        intents.TextureScaleMode.linear,
+        app_st.viewer.viewport.scale_filter,
+    );
+    try std.testing.expectEqual(
+        intents.ZoomPreset.shrink,
+        app_st.viewer.viewport.fit_mode,
+    );
+    try std.testing.expect(!app_st.viewer.ui.overlays.enable_blur);
+    try std.testing.expectEqual(
+        state.TitleDisplay.pinned,
+        app_st.viewer.ui.overlays.title_display,
+    );
+    try std.testing.expect(!app_st.viewer.ui.overlays.edit_panel.visible);
+    try std.testing.expectEqual(
+        @as(f32, 0.0),
+        app_st.viewer.animations.get(.edit_panel),
+    );
+    try std.testing.expectEqual(
+        @as(f32, 1.0),
+        app_st.viewer.animations.get(.title_overlay),
+    );
+    try std.testing.expectEqual(
+        @as(f32, 0.0),
+        ui_pkg.interaction.getPaletteScrollY(),
+    );
+    try std.testing.expect(!app_st.viewer.navigation.manga_mode);
+    try std.testing.expect(app_st.viewer.navigation.crossfade);
+    try std.testing.expect(!app_st.viewer.navigation.stack_raw_jpeg);
+    try std.testing.expectEqual(
+        triage.ViewMode.default,
+        app_st.viewer.navigation.triage.view_mode,
+    );
     try std.testing.expectEqual(@as(usize, 0), app_st.cache.count());
     try std.testing.expectEqual(
         @as(usize, 0),
@@ -1951,6 +2014,25 @@ test "executeIntent - server_mode hides on quit and exits on quit_server" {
     try std.testing.expectEqual(
         @as(usize, 1),
         app_st.viewer.navigation.triage.count(),
+    );
+
+    // clear_classifications while hidden clears selections without starting a
+    // snackbar animation
+    try app_st.pushIntent(.clear_classifications);
+    try sysExecuteIntents(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .delta_time_ms = 16.0,
+        .now_ms = 1000,
+    });
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        app_st.viewer.navigation.triage.count(),
+    );
+    try std.testing.expect(!app_st.viewer.animations.isActive(.snackbar));
+    try std.testing.expectEqual(
+        @as(usize, 0),
+        app_st.viewer.ui.snackbar.getMessage().len,
     );
 
     // .quit_server unconditionally terminates the server

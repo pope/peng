@@ -155,7 +155,7 @@ fn handlePrecacheCompletedEvent(
     state: *AppState,
     res: events.PrecacheCompletedPayload,
 ) void {
-    if (!state.viewer.ui.snackbar.enabled) return;
+    if (!state.viewer.ui.snackbar.enabled or state.display.isHidden()) return;
 
     var buf: [state_pkg.snackbar.MAX_SNACKBAR_LEN]u8 = undefined;
     const msg = if (res.written > 0 and res.already_valid > 0)

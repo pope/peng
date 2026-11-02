@@ -56,16 +56,19 @@ pub fn runUpdatePhase(
     // Socket Command Ingestion System (parses IPC commands -> pending_intents)
     sysExecuteIpcCommands(ctx);
 
+    const is_visible = !app_state.display.isHidden();
+
     // Command Palette Input System (typing query updates, selection, clicks)
-    const palette_closed_this_frame = if (input_frame.quit_request == .none)
-        try sysProcessPaletteInput(ctx)
-    else
-        false;
+    const palette_closed_this_frame =
+        if (is_visible and input_frame.quit_request == .none)
+            try sysProcessPaletteInput(ctx)
+        else
+            false;
 
     // Keyboard & File Drop Input System (maps keypresses -> pending_intents)
     try sysProcessInput(ctx, palette_closed_this_frame);
 
-    if (input_frame.quit_request == .none) {
+    if (is_visible and input_frame.quit_request == .none) {
         // UI Discrete Interactions (overlay close buttons)
         try sysProcessUiInteractions(ctx, palette_closed_this_frame);
 

@@ -581,9 +581,11 @@ pub const AppState = struct {
         }
     }
 
-    /// Hides the application window in resident server mode, unloading the
-    /// active image cache and directory playlist while preserving the warm GPU
-    /// device, compiled shaders, and picks/rejects selections.
+    /// Hides the application window in resident server mode, resetting all
+    /// viewport, adjustment, filter, overlay, navigation, and window settings
+    /// back to startup defaults and unloading the active image cache and
+    /// directory playlist while preserving the warm GPU device, compiled
+    /// shaders, and picks/rejects selections.
     pub fn hideWindow(self: *AppState) void {
         switch (self.viewer.ui.screenshot_mode) {
             .idle => {},
@@ -594,18 +596,11 @@ pub const AppState = struct {
         }
         self.abortPendingWaitLoadStreams("WindowHidden");
         self.closePaletteImmediately();
+        self.viewer.ui.palette.last_nav_dir.clearRetainingCapacity();
+        self.viewer.ui.palette.current_dir_image_count = 0;
         self.viewer.ui.palette.shrinkToWarmCapacity();
-        _ = self.viewer.ui.overlays.dismissFloatingPanels();
-        self.viewer.ui.overlays.edit_panel.visible = false;
-        self.viewer.ui.snackbar.clear();
-        self.viewer.stats = .{};
-        self.viewer.navigation.slideshow = .inactive;
-        self.viewer.image_transition = .none;
-        self.viewer.drag_state = .none;
-        self.viewer.pan_controller.reset();
-        self.viewer.zoom_controller.reset();
-        self.viewer.viewport.reset();
-        self.viewer.animations.settleAll();
+        self.viewer.resetToDefaults();
+        ui.interaction.resetInteractionState();
 
         _ = self.cache.advanceGeneration();
         _ = self.workers.precache_generation.fetchAdd(1, .acq_rel);
@@ -624,6 +619,32 @@ pub const AppState = struct {
         }
         self.viewer.navigation.last_scanned_dir.clearRetainingCapacity();
         _ = self.viewer.navigation.directory_arena.reset(.free_all);
+
+        switch (self.display.backendPtr().*) {
+            .headless => {},
+            .windowed => |*win| {
+                if (win.is_fullscreen) {
+                    win.is_fullscreen = false;
+                    win.handle.setFullscreen(false) catch |err| {
+                        std.log.err("setFullscreen failed: {}", .{err});
+                    };
+                }
+                if (win.is_borderless != self.viewer.defaults.windowless) {
+                    win.is_borderless = self.viewer.defaults.windowless;
+                    if (!win.handle.setBordered(!win.is_borderless)) {
+                        std.log.err(
+                            "SDL_SetWindowBordered failed: {s}",
+                            .{sdl.getError()},
+                        );
+                    }
+                }
+                win.handle.setTitle("Peng Image Viewer");
+                if (win.cached_title) |cached| {
+                    self.allocator.free(cached);
+                    win.cached_title = null;
+                }
+            },
+        }
 
         switch (self.display) {
             .visible => |b| {

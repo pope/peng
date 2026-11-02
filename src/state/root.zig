@@ -80,6 +80,7 @@ pub const UiRenderMetrics = telemetry.UiRenderMetrics;
 pub const UiRenderMetricsSnapshot = telemetry.UiRenderMetricsSnapshot;
 pub const UiState = ui_state.UiState;
 pub const UploadMode = telemetry.UploadMode;
+pub const ViewerDefaults = viewer_state.ViewerDefaults;
 pub const ViewerState = viewer_state.ViewerState;
 pub const ViewerStats = telemetry.ViewerStats;
 pub const ViewportParams = viewport.ViewportParams;

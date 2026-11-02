@@ -22,13 +22,15 @@ inline fn isViewportZoomed(self: *AppState) bool {
         self.viewer.viewport.isZoomed();
 }
 
-/// Resolves active key context and pushes mapped AppIntents
+/// Resolves active key context and pushes mapped AppIntents.
+/// Returns `true` if a `.quit` or `.quit_server` intent was pushed so further
+/// keypresses in the same frame are ignored.
 fn handleKeyDown(
     self: *AppState,
     key: Key,
     mod: KeyModifiers,
-) !void {
-    if (self.viewer.ui.palette.isAcceptingInput()) return;
+) !bool {
+    if (self.viewer.ui.palette.isAcceptingInput()) return false;
 
     // Intercept Escape key when dialogs or panels (Stats / Info / Edit Panel)
     // are visible before falling back to closing the application.
@@ -37,7 +39,7 @@ fn handleKeyDown(
         self.viewer.ui.overlays.edit_panel.visible;
     if (is_escape and has_dialogs) {
         try self.pushIntent(.dismiss_overlays);
-        return;
+        return false;
     }
 
     const is_zoomed = isViewportZoomed(self);
@@ -48,7 +50,9 @@ fn handleKeyDown(
             .viewer_normal;
     if (key_mapping.mapKeyToAction(key, mod, ctx)) |intent| {
         try self.pushIntent(intent);
+        return intent == .quit or intent == .quit_server;
     }
+    return false;
 }
 
 /// System Pass: Process FrameInput snapshot and map keypresses/shortcuts to AppIntents
@@ -83,6 +87,12 @@ pub fn sysProcessInput(
             state.viewer.zoom_controller.suppress(input.zoom_held);
             return;
         },
+    }
+
+    if (state.display.isHidden()) {
+        state.viewer.pan_controller.suppress(input.directional_held);
+        state.viewer.zoom_controller.suppress(input.zoom_held);
+        return;
     }
 
     if (input.dropped_path) |path| {
@@ -150,7 +160,11 @@ pub fn sysProcessInput(
         if (no_mod and key_mapping.isZoomKey(key)) {
             continue; // Handled by smooth zoom controller above
         }
-        try handleKeyDown(state, key, input.key_modifiers);
+        if (try handleKeyDown(state, key, input.key_modifiers)) {
+            state.viewer.pan_controller.suppress(input.directional_held);
+            state.viewer.zoom_controller.suppress(input.zoom_held);
+            break;
+        }
     }
 }
 
@@ -976,6 +990,44 @@ test "sysProcessInput maps QuitRequest and suppresses same-frame input" {
             .key_modifiers = .{},
             .text_input = null,
             .dropped_path = "ignored.jpg",
+            .delta_time_ms = 16.0,
+        },
+        .delta_time_ms = 16.0,
+    }, false);
+    try std.testing.expectEqual(
+        @as(usize, 1),
+        app_st.pending_intents.items.len,
+    );
+    try std.testing.expectEqual(
+        AppIntent.quit,
+        app_st.pending_intents.items[0],
+    );
+    app_st.pending_intents.clearRetainingCapacity();
+
+    // 3. Pressing quit key ('q') stops processing trailing keys in the same frame
+    keys.clearRetainingCapacity();
+    try keys.append(allocator, .char_q);
+    try keys.append(allocator, .char_f);
+    try sysProcessInput(.{
+        .state = &app_st,
+        .frame_allocator = allocator,
+        .input = FrameInput{
+            .win_w = 800,
+            .win_h = 600,
+            .scale_x = 1.0,
+            .scale_y = 1.0,
+            .mouse_x = 0,
+            .mouse_y = 0,
+            .mouse_left_down = false,
+            .mouse_left_clicked = false,
+            .mouse_inside = true,
+            .quit_request = .none,
+            .scroll_delta_x = 0,
+            .scroll_delta_y = 0,
+            .keys_pressed = keys,
+            .key_modifiers = .{},
+            .text_input = null,
+            .dropped_path = null,
             .delta_time_ms = 16.0,
         },
         .delta_time_ms = 16.0,

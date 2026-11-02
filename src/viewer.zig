@@ -63,14 +63,16 @@ pub fn updateFrame(
     app_state.viewer.mouse_inside = input.mouse_inside;
     app_state.viewer.last_win_dims = input.logicalWinDims();
 
-    const is_slider_active =
-        (app_state.viewer.drag_state == .slider) or
-        (app_state.viewer.ui.overlays.edit_panel.active_slider != null);
+    const was_hidden = app_state.display.isHidden();
+    if (!was_hidden) {
+        const is_slider_active =
+            (app_state.viewer.drag_state == .slider) or
+            (app_state.viewer.ui.overlays.edit_panel.active_slider != null);
 
-    ui.interaction.syncFrameInput(input, is_slider_active);
+        ui.interaction.syncFrameInput(input, is_slider_active);
+    }
 
     // Phase 2: Update Phase — Run all systems sequentially
-    const was_hidden = app_state.display.isHidden();
     try app.systems.runUpdatePhase(
         app_state,
         input,
